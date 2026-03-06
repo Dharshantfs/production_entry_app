@@ -30,3 +30,5 @@ scheduler_events = {
 		"production_entry.production_entry.doctype.production_entry.production_entry.daily_cleanup"
 	]
 }
+after_install = "production_entry.production_entry.setup_custom_fields.execute"
+after_migrate = "production_entry.production_entry.setup_custom_fields.execute"
