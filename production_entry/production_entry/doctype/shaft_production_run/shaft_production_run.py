@@ -211,13 +211,48 @@ class ShaftProductionRun(Document):
 
 
 @frappe.whitelist()
-def get_shaft_jobs(production_plan):
+def get_work_orders(production_plan):
+    """Fetch all work orders linked to a production plan"""
+    if not production_plan:
+        return []
+    
+    return frappe.get_all("Work Order",
+        filters={"production_plan": production_plan, "docstatus": ["!=", 2]},
+        fields=["name", "production_item", "qty", "produced_qty", "status", "custom_gsm", "custom_color", "custom_quality"]
+    )
+
+
+@frappe.whitelist()
+def get_shaft_jobs(production_plan, work_orders=None):
     """Fetch shaft details from Production Plan and map to Shaft Production Run Job format"""
     if not production_plan:
         return []
+    
+    if isinstance(work_orders, str):
+        import json
+        work_orders = json.loads(work_orders)
         
     doc = frappe.get_doc("Production Plan", production_plan)
     source_table = doc.get("custom_shaft_details") or []
+    
+    relevant_widths = set()
+    if work_orders:
+        wos = frappe.get_all("Work Order",
+            filters={"name": ["in", work_orders]},
+            fields=["production_item", "custom_width_inch"]
+        )
+        for wo in wos:
+            if wo.custom_width_inch:
+                relevant_widths.add(round(flt(wo.custom_width_inch), 1))
+            else:
+                # Fallback to item code parsing
+                ic = str(wo.production_item)
+                if len(ic) >= 16:
+                    try:
+                        w = round(int(ic[12:16]) / 25.4, 1)
+                        relevant_widths.add(w)
+                    except: pass
+
     jobs = []
     
     for d in source_table:
@@ -227,33 +262,47 @@ def get_shaft_jobs(production_plan):
         if "combination" in comb or "job" in comb or "gsm" in gsm_val:
             continue
             
-        t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
-        if isinstance(t_width_val, str) and "total" in t_width_val.lower():
-            continue
-
-        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no")
-        if not job_id_val:
-            job_id_val = f"{d.get('combination') or 'Job'}"
+        # Parse combination widths to check relevance
+        comb_str = str(d.get("combination") or "")
+        widths = []
+        for s in comb_str.split('+'):
+            s = s.strip().replace('"', '')
+            try:
+                widths.append(round(float(s), 1))
+            except: continue
             
+        if work_orders:
+            # Skip jobs that don't match any of our selected WO widths
+            if not any(w in relevant_widths for w in widths):
+                continue
+                
+        t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
         m_roll = d.get("meter_roll_mtrs") or d.get("meter_per_roll") or d.get("meter_roll")
         n_shafts = d.get("no_of_shafts") or d.get("shafts") or d.get("no_of_rolls") or d.get("no_of_shaft")
         
+        # Better ID mapping: use 'name' (Row Name) if 'job_id' etc. missing
+        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("name")
+
         jobs.append({
             "job_id": job_id_val,
             "gsm": d.get("gsm"),
             "combination": d.get("combination"),
             "total_width": flt(t_width_val),
             "meter_roll_mtrs": flt(m_roll),
-            "no_of_shafts": cint(n_shafts) if n_shafts else 0
+            "no_of_shafts": cint(n_shafts) if n_shafts else 1
         })
         
     return jobs
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0):
+def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, work_orders=None):
     """
     Fetch exact rows required for the Popup Roll Entry based on combination and no_of_shafts.
     """
+    if isinstance(work_orders, str):
+        import json
+        work_orders = json.loads(work_orders)
+
     items_to_add = []
     
     widths = []
@@ -265,23 +314,36 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             except ValueError:
                 continue
 
-    work_orders = frappe.db.sql("""
-        SELECT wo.name, wo.production_item, wo.qty, wo.stock_uom, wo.custom_quality, wo.custom_color
-        FROM `tabWork Order` wo
-        WHERE wo.production_plan = %s
-        AND wo.production_plan_item = %s
-        AND wo.docstatus != 2
-    """, (production_plan, job_id), as_dict=True)
+    query_filters = {
+        "production_plan": production_plan,
+        "docstatus": ["!=", 2]
+    }
+    
+    # If selected work_orders are provided, restrict to them
+    if work_orders:
+        query_filters["name"] = ["in", work_orders]
+    else:
+        # If no explicit selection, we fallback to production_plan_item if job_id is numeric
+        if str(job_id).isdigit():
+            query_filters["production_plan_item"] = job_id
+            
+    # Generic fetch
+    wos = frappe.get_all("Work Order",
+        filters=query_filters,
+        fields=["name", "production_item", "qty", "stock_uom", "custom_quality", "custom_color", "custom_width_inch"]
+    )
 
     wo_by_width = {}
-    for wo in work_orders:
-        item_code = wo.production_item
-        try:
-            if len(item_code) >= 16:
-                width_inch = round(int(item_code[12:16]) / 25.4, 1)
-                wo_by_width[width_inch] = wo
-        except (ValueError, IndexError):
-            pass
+    for wo in wos:
+        if wo.custom_width_inch:
+            wo_by_width[round(flt(wo.custom_width_inch), 1)] = wo
+        else:
+            ic = wo.production_item
+            try:
+                if len(ic) >= 16:
+                    width_inch = round(int(ic[12:16]) / 25.4, 1)
+                    wo_by_width[width_inch] = wo
+            except: pass
             
     n_shafts = cint(no_of_shafts) if cint(no_of_shafts) > 0 else 1
     

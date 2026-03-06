@@ -9,6 +9,12 @@ frappe.ui.form.on('Shaft Production Run', {
             }).addClass('btn-primary');
         }
 
+        if (frm.doc.production_plan && frm.doc.docstatus === 0) {
+            frm.add_custom_button(__('Re-select Work Orders'), function () {
+                select_work_orders(frm);
+            });
+        }
+
         setTimeout(function () {
             if (frm.fields_dict['items'] && frm.fields_dict['items'].grid) {
                 let grid = frm.fields_dict['items'].grid;
@@ -32,7 +38,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
     production_plan: function (frm) {
         if (frm.doc.production_plan) {
-            frm.trigger('fetch_shaft_details');
+            select_work_orders(frm);
         } else {
             frm.clear_table('shaft_jobs');
             frm.clear_table('items');
@@ -84,7 +90,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
                 combination: row.combination,
                 no_of_shafts: row.no_of_shafts,
                 gsm: row.gsm,
-                meter_roll: row.meter_roll_mtrs
+                meter_roll: row.meter_roll_mtrs,
+                work_orders: frm.custom_selected_wos
             },
             callback: function (r) {
                 if (r.message && r.message.length > 0) {
@@ -130,6 +137,62 @@ function calculate_total(frm) {
     });
     frm.set_value('total_produced_weight', total);
 }
+
+function select_work_orders(frm) {
+    new frappe.ui.form.MultiSelectDialog({
+        doctype: "Work Order",
+        target: frm,
+        setters: {
+            status: "Not Started",
+        },
+        add_filters_group: 1,
+        get_query() {
+            return {
+                filters: {
+                    production_plan: frm.doc.production_plan,
+                    docstatus: 1,
+                    status: ["not in", ["Completed", "Closed", "Cancelled"]]
+                }
+            };
+        },
+        action(selections) {
+            if (selections.length > 0) {
+                fetch_jobs_for_wos(frm, selections);
+            }
+        }
+    });
+}
+
+function fetch_jobs_for_wos(frm, work_orders) {
+    frm.custom_selected_wos = work_orders;
+    frappe.call({
+        method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_shaft_jobs',
+        args: {
+            production_plan: frm.doc.production_plan,
+            work_orders: work_orders
+        },
+        callback: function (r) {
+            if (r.message) {
+                frm.clear_table('shaft_jobs');
+                if (r.message.length > 0) {
+                    r.message.forEach(d => {
+                        let job_row = frm.add_child('shaft_jobs');
+                        job_row.job_id = d.job_id;
+                        job_row.gsm = d.gsm;
+                        job_row.combination = d.combination;
+                        job_row.total_width = d.total_width;
+                        job_row.meter_roll_mtrs = d.meter_roll_mtrs;
+                        job_row.no_of_shafts = d.no_of_shafts;
+                    });
+                    frm.refresh_field('shaft_jobs');
+                } else {
+                    frappe.msgprint("No matching Shaft Jobs found in Production Plan for the selected Work Orders.");
+                }
+            }
+        }
+    });
+}
+
 
 function open_roll_entry_dialog(frm, job_row, expected_rolls) {
     let d = new frappe.ui.Dialog({
