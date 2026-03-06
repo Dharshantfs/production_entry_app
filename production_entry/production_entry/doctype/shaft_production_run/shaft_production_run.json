@@ -11,6 +11,8 @@
         "naming_series",
         "run_date",
         "production_plan",
+        "shift",
+        "column_break_shift",
         "column_break_2",
         "status",
         "section_break_5",
@@ -47,6 +49,16 @@
             "label": "Production Plan",
             "options": "Production Plan",
             "reqd": 1
+        },
+        {
+            "fieldname": "shift",
+            "fieldtype": "Data",
+            "label": "Shift",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_shift",
+            "fieldtype": "Column Break"
         },
         {
             "fieldname": "column_break_2",
