@@ -30,7 +30,7 @@ frappe.ui.form.on('Shaft Production Run', {
                     args: {
                         doctype: 'Work Order',
                         filters: { name: ['in', selections] },
-                        fields: ['name', 'production_item', 'qty', 'uom', 'custom_quality', 'custom_color', 'custom_width_inch', 'custom_gsm']
+                        fields: ['name', 'production_item', 'qty', 'stock_uom', 'custom_quality', 'custom_color', 'custom_width_inch', 'custom_gsm']
                     },
                     callback: function (r) {
                         if (r.message) {
@@ -38,7 +38,7 @@ frappe.ui.form.on('Shaft Production Run', {
                                 let row = frm.add_child('items');
                                 row.work_order = wo.name;
                                 row.item_code = wo.production_item;
-                                row.uom = wo.uom;
+                                row.uom = wo.stock_uom;
                                 row.quality = wo.custom_quality;
                                 row.color = wo.custom_color;
                                 row.width_inch = wo.custom_width_inch;
