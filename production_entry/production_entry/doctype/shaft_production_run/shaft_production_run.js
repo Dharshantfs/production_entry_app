@@ -30,7 +30,12 @@ frappe.ui.form.on('Shaft Production Run', {
     },
     populate_items_from_job: function (frm, job_row) {
         let combination = job_row.combination || "";
-        let widths = combination.split('+').map(s => parseFloat(s.trim())).filter(w => !isNaN(w));
+        // Extract widths from combination (e.g. "46 + 46 + 26")
+        let widths = combination.split('+').map(s => {
+            let val = parseFloat(s.trim().replace(/[^0-9.]/g, ''));
+            return val;
+        }).filter(w => !isNaN(w));
+
         let gsm = job_row.gsm;
 
         if (widths.length === 0) {
@@ -38,21 +43,32 @@ frappe.ui.form.on('Shaft Production Run', {
             return;
         }
 
+        // Clear existing items for this job OR clear all? 
+        // User says "need entry for each job id", usually means one job at a time.
+        // Let's clear ALL produced rolls to avoid mess, as selection of a job is a "Set" action.
+        frm.clear_table('items');
+
         frappe.call({
             method: 'frappe.client.get_list',
             args: {
                 doctype: 'Work Order',
                 filters: {
                     production_plan: frm.doc.production_plan,
+                    docstatus: 1,
                     status: ['in', ['Ready to Manufacture', 'In Progress']],
                     custom_gsm: gsm
                 },
-                fields: ['name', 'production_item', 'custom_width_inch', 'stock_uom', 'custom_quality', 'custom_color']
+                fields: ['name', 'production_item', 'custom_width_inch', 'stock_uom', 'custom_quality', 'custom_color', 'custom_gsm']
             },
             callback: function (r) {
                 if (r.message && r.message.length > 0) {
                     widths.forEach(width => {
-                        let matching_wo = r.message.find(wo => Math.abs(parseFloat(wo.custom_width_inch) - width) < 0.1);
+                        // Find a WO where width matches (allowing small tolerance)
+                        let matching_wo = r.message.find(wo => {
+                            let wo_width = parseFloat(wo.custom_width_inch || 0);
+                            return Math.abs(wo_width - width) < 0.25; // slightly wider tolerance
+                        });
+
                         if (matching_wo) {
                             let item_row = frm.add_child('items');
                             item_row.job = job_row.job_id;
@@ -61,15 +77,22 @@ frappe.ui.form.on('Shaft Production Run', {
                             item_row.uom = matching_wo.stock_uom;
                             item_row.quality = matching_wo.custom_quality;
                             item_row.color = matching_wo.custom_color;
-                            item_row.gsm = gsm;
+                            item_row.gsm = matching_wo.custom_gsm || gsm;
                             item_row.width_inch = matching_wo.custom_width_inch;
+
+                            // Also set roll details to 0/empty to ensure user enters them as mistakes were made previously
+                            item_row.net_weight = 0;
+                            item_row.gross_weight = 0;
                         } else {
-                            frappe.msgprint(`Warning: Could not find a Work Order with Width ${width} and GSM ${gsm} for this Production Plan.`);
+                            frappe.show_alert({
+                                message: `Work Order not found for Width ${width}" and GSM ${gsm}`,
+                                indicator: 'orange'
+                            });
                         }
                     });
                     frm.refresh_field('items');
                 } else {
-                    frappe.msgprint(`No Work Orders found for GSM ${gsm} in this Production Plan.`);
+                    frappe.msgprint(`No matching Work Orders found in this Production Plan with GSM ${gsm}.`);
                 }
             }
         });

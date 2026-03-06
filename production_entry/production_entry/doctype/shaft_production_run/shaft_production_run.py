@@ -57,14 +57,34 @@ def get_shaft_jobs(production_plan):
     jobs = []
     
     for d in source_table:
-        # Map based on the observed structure in the user's "Customize Form" screenshot
+        # 1. SKIP HEADER ROWS
+        # If any field contains its own label text, it's a header
+        comb = str(d.get("combination") or "").lower()
+        gsm_val = str(d.get("gsm") or "").lower()
+        if "combination" in comb or "job" in comb or "gsm" in gsm_val:
+            continue
+            
+        t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
+        if isinstance(t_width_val, str) and "total" in t_width_val.lower():
+            continue
+
+        # 2. RESILIENT MAPPING
+        # Job ID: Prefer a real Job field, fallback to Combination if name is a hash
+        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no")
+        # If job_id_val is missing, use a readable format: Combination + name[:4]
+        if not job_id_val:
+            job_id_val = f"{d.get('combination') or 'Job'}"
+            
+        m_roll = d.get("meter_roll_mtrs") or d.get("meter_per_roll") or d.get("meter_roll") or d.get("meter_per_roll_mtrs") or d.get("meter_roll_mtr")
+        n_shafts = d.get("no_of_shafts") or d.get("shafts") or d.get("no_of_rolls") or d.get("no_of_shaft")
+        
         jobs.append({
-            "job_id": d.get("job") or d.get("job_id") or d.get("name"),
+            "job_id": job_id_val,
             "gsm": d.get("gsm"),
             "combination": d.get("combination"),
-            "total_width": d.get("total_width") or d.get("total_width_inches"),
-            "meter_roll_mtrs": d.get("meter_roll_mtrs") or d.get("meter_per_roll"),
-            "no_of_shafts": d.get("no_of_shafts")
+            "total_width": flt(t_width_val),
+            "meter_roll_mtrs": flt(m_roll),
+            "no_of_shafts": cint(n_shafts) if n_shafts else 0
         })
         
     return jobs
