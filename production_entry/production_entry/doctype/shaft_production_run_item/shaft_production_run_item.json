@@ -28,7 +28,8 @@
             "fieldtype": "Link",
             "in_list_view": 1,
             "label": "Work Order",
-            "options": "Work Order"
+            "options": "Work Order",
+            "reqd": 1
         },
         {
             "fetch_from": "work_order.production_item",
@@ -72,7 +73,8 @@
             "fieldname": "net_weight",
             "fieldtype": "Float",
             "in_list_view": 1,
-            "label": "Net Weight"
+            "label": "Net Weight",
+            "reqd": 1
         },
         {
             "fieldname": "gross_weight",

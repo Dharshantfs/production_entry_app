@@ -101,7 +101,8 @@
             "fieldname": "items",
             "fieldtype": "Table",
             "label": "Roll Production Results",
-            "options": "Shaft Production Run Item"
+            "options": "Shaft Production Run Item",
+            "reqd": 1
         }
     ],
     "index_web_pages_for_search": 1,
