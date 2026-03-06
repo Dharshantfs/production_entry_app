@@ -15,20 +15,10 @@ app_license = "MIT"
 # app_include_css = "/assets/production_entry/css/production_entry.css"
 # app_include_js = "/assets/production_entry/js/production_entry.js"
 
-doctype_js = {
-    "Production Entry": "public/js/production_entry.js"
-}
+doctype_js = {}
 
-doc_events = {
-	"Production Entry": {
-		"on_submit": "production_entry.production_entry.doctype.production_entry.production_entry.on_submit"
-	}
-}
+doc_events = {}
 
-scheduler_events = {
-	"daily": [
-		"production_entry.production_entry.doctype.production_entry.production_entry.daily_cleanup"
-	]
-}
+scheduler_events = {}
 after_install = "production_entry.production_entry.setup_custom_fields.execute"
 after_migrate = "production_entry.production_entry.setup_custom_fields.execute"

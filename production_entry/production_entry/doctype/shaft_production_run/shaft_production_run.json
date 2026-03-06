@@ -9,6 +9,7 @@
     "field_order": [
         "section_break_1",
         "naming_series",
+        "allocated_unit",
         "production_plan",
         "column_break_3",
         "run_date",
@@ -33,12 +34,19 @@
             "options": "SPR-.YYYY.-.#####"
         },
         {
+            "fieldname": "allocated_unit",
+            "fieldtype": "Link",
+            "label": "Allocated Unit",
+            "options": "Unit Capacity",
+            "reqd": 1,
+            "in_list_view": 1
+        },
+        {
             "fieldname": "production_plan",
             "fieldtype": "Link",
             "in_list_view": 1,
             "label": "Production Plan",
-            "options": "Production Plan",
-            "reqd": 1
+            "options": "Production Plan"
         },
         {
             "fieldname": "column_break_3",

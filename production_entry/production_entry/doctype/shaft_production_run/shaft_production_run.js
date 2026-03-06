@@ -1,7 +1,7 @@
 frappe.ui.form.on('Shaft Production Run', {
     fetch_work_orders: function (frm) {
-        if (!frm.doc.production_plan) {
-            frappe.msgprint(__('Please select a Production Plan (Job) first'));
+        if (!frm.doc.allocated_unit) {
+            frappe.msgprint(__('Please select an Allocated Unit (Machine) first'));
             return;
         }
 
@@ -9,17 +9,21 @@ frappe.ui.form.on('Shaft Production Run', {
             doctype: "Work Order",
             target: frm,
             setters: {
-                production_plan: frm.doc.production_plan,
+                custom_allocated_unit: frm.doc.allocated_unit,
                 status: "In Progress"
             },
             add_filters_group: 1,
             get_query() {
+                let filters = {
+                    status: ["in", ["Ready to Manufacture", "In Progress"]],
+                    docstatus: 1,
+                    custom_allocated_unit: frm.doc.allocated_unit
+                };
+                if (frm.doc.production_plan) {
+                    filters.production_plan = frm.doc.production_plan;
+                }
                 return {
-                    filters: {
-                        status: ["in", ["Ready to Manufacture", "In Progress"]],
-                        docstatus: 1,
-                        production_plan: frm.doc.production_plan
-                    }
+                    filters: filters
                 }
             },
             action(selections) {
