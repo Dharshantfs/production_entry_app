@@ -255,11 +255,11 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
     jobs = []
     
-    for d in source_table:
+    for idx, d in enumerate(source_table):
         # SKIP HEADER ROWS
         comb = str(d.get("combination") or "").lower()
         gsm_val = str(d.get("gsm") or "").lower()
-        if "combination" in comb or "job" in comb or "gsm" in gsm_val:
+        if not comb or "combination" in comb or "job" in comb or "gsm" in gsm_val:
             continue
             
         # Parse combination widths to check relevance
@@ -268,20 +268,22 @@ def get_shaft_jobs(production_plan, work_orders=None):
         for s in comb_str.split('+'):
             s = s.strip().replace('"', '')
             try:
-                widths.append(round(float(s), 1))
+                # Handle cases like "46" or "46 inch"
+                val = float(re.findall(r"[-+]?\d*\.\d+|\d+", s)[0])
+                widths.append(round(val, 1))
             except: continue
             
         if work_orders:
             # Skip jobs that don't match any of our selected WO widths
-            if not any(w in relevant_widths for w in widths):
+            if not widths or not any(w in relevant_widths for w in widths):
                 continue
                 
         t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
         m_roll = d.get("meter_roll_mtrs") or d.get("meter_per_roll") or d.get("meter_roll")
         n_shafts = d.get("no_of_shafts") or d.get("shafts") or d.get("no_of_rolls") or d.get("no_of_shaft")
         
-        # Better ID mapping: use 'name' (Row Name) if 'job_id' etc. missing
-        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("name")
+        # Priority: explicit job_id -> custom field -> name -> index
+        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("custom_job_id") or d.get("name") or str(idx + 1)
 
         jobs.append({
             "job_id": job_id_val,
@@ -293,6 +295,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         })
         
     return jobs
+
 
 @frappe.whitelist()
 def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, work_orders=None):

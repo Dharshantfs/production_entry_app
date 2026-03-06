@@ -139,11 +139,12 @@ function calculate_total(frm) {
 }
 
 function select_work_orders(frm) {
-    new frappe.ui.form.MultiSelectDialog({
+    let d = new frappe.ui.form.MultiSelectDialog({
         doctype: "Work Order",
         target: frm,
         setters: {
-            status: "Not Started",
+            production_plan: frm.doc.production_plan,
+            status: "In Process",
         },
         add_filters_group: 1,
         get_query() {
@@ -151,17 +152,28 @@ function select_work_orders(frm) {
                 filters: {
                     production_plan: frm.doc.production_plan,
                     docstatus: 1,
-                    status: ["not in", ["Completed", "Closed", "Cancelled"]]
+                    status: ["not in", ["Cancelled", "Closed"]]
                 }
             };
         },
-        action(selections) {
-            if (selections.length > 0) {
+        primary_action(selections) {
+            if (selections && selections.length > 0) {
                 fetch_jobs_for_wos(frm, selections);
+                d.dialog.hide();
+            } else {
+                frappe.msgprint("Please select at least one Work Order.");
+            }
+        },
+        action(selections) {
+            // Fallback for different framework versions
+            if (selections && selections.length > 0) {
+                fetch_jobs_for_wos(frm, selections);
+                d.dialog.hide();
             }
         }
     });
 }
+
 
 function fetch_jobs_for_wos(frm, work_orders) {
     frm.custom_selected_wos = work_orders;
