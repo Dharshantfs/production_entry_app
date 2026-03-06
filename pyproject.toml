@@ -5,7 +5,7 @@ authors = [
 ]
 description = "Production Scheduler App"
 requires-python = ">=3.10"
-dynamic = ["version"]
+version = "0.0.1"
 dependencies = []
 
 [build-system]
