@@ -32,7 +32,7 @@ def execute():
             {
                 "fieldname": "custom_gsm",
                 "label": "GSM",
-                "fieldtype": "Int",
+                "fieldtype": "Data",
                 "insert_after": "custom_width_inch"
             }
         ]
