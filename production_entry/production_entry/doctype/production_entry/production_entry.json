@@ -111,6 +111,7 @@
             "reqd": 1
         }
     ],
+    "in_global_search": 1,
     "index_web_pages_for_search": 1,
     "is_submittable": 1,
     "modified": "2026-03-05 18:00:00.000000",

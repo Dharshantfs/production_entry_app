@@ -1,0 +1,67 @@
+{
+    "charts": [],
+    "content": "[{\"id\":\"shaft_production_run_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Shaft Production Run\",\"shortcut_type\":\"DocType\",\"shortcut_url\":\"Shaft Production Run\",\"label\":\"Shaft Production Run\"}},{\"id\":\"production_entry_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Production Entry\",\"shortcut_type\":\"DocType\",\"shortcut_url\":\"Production Entry\",\"label\":\"Production Entry\"}}]",
+    "creation": "2026-03-05 12:00:00.000000",
+    "custom_blocks": [],
+    "docstatus": 0,
+    "doctype": "Workspace",
+    "for_user": "",
+    "hide_custom": 0,
+    "icon": "setting",
+    "idx": 0,
+    "is_hidden": 0,
+    "label": "Production Entry",
+    "links": [
+        {
+            "description": "Shaft Production Run",
+            "icon": "list",
+            "label": "Shaft Production Run",
+            "link_to": "Shaft Production Run",
+            "link_type": "DocType",
+            "onboard": 1,
+            "type": "Link"
+        },
+        {
+            "description": "Production Entry",
+            "icon": "list",
+            "label": "Production Entry",
+            "link_to": "Production Entry",
+            "link_type": "DocType",
+            "onboard": 1,
+            "type": "Link"
+        },
+        {
+            "description": "Unit Capacity",
+            "icon": "list",
+            "label": "Unit Capacity",
+            "link_to": "Unit Capacity",
+            "link_type": "DocType",
+            "onboard": 1,
+            "type": "Link"
+        }
+    ],
+    "modified": "2026-03-05 12:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Production Entry",
+    "name": "Production Entry",
+    "number_cards": [],
+    "owner": "Administrator",
+    "parent_page": "",
+    "public": 1,
+    "restrict_to_domain": "",
+    "roles": [],
+    "sequence_id": 35,
+    "shortcuts": [
+        {
+            "label": "Shaft Production Run",
+            "link_to": "Shaft Production Run",
+            "type": "DocType"
+        },
+        {
+            "label": "Production Entry",
+            "link_to": "Production Entry",
+            "type": "DocType"
+        }
+    ],
+    "title": "Production Entry"
+}
