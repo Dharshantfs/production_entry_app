@@ -19,17 +19,14 @@ class ShaftProductionRun(Document):
 
     @frappe.whitelist()
     def fetch_pending_work_orders(self):
-        if not self.allocated_unit:
-            frappe.throw("Please select an Allocated Unit (Machine) first")
+        if not self.production_plan:
+            frappe.throw("Please select a Production Plan first")
         
         filters = {
             "status": ["in", ["Ready to Manufacture", "In Progress"]],
             "docstatus": 1,
-            "custom_allocated_unit": self.allocated_unit
+            "production_plan": self.production_plan
         }
-        
-        if self.production_plan:
-            filters["production_plan"] = self.production_plan
         
         wos = frappe.get_all("Work Order", 
             filters=filters,
@@ -37,9 +34,9 @@ class ShaftProductionRun(Document):
         )
         
         if not wos:
-            return f"No pending Work Orders found for {self.allocated_unit}."
+            return f"No pending Work Orders found for {self.production_plan}."
             
-        return f"Found {len(wos)} Work Orders for {self.allocated_unit}. Please add roll weights below."
+        return f"Found {len(wos)} Work Orders. Please add roll weights below."
 
     def create_roll_production_entries(self):
         """
