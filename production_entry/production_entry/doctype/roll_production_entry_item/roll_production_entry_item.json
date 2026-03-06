@@ -1,0 +1,140 @@
+{
+    "actions": [],
+    "creation": "2026-03-06 17:00:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "job_no",
+        "shaft_combination",
+        "planned_qty",
+        "order_code",
+        "section_break_5",
+        "wo_id",
+        "item_code",
+        "item_name",
+        "gsm",
+        "width_inches",
+        "column_break_11",
+        "batch_no",
+        "roll_no",
+        "meter_per_roll",
+        "net_weight",
+        "gross_weight"
+    ],
+    "fields": [
+        {
+            "fieldname": "job_no",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Job No",
+            "read_only": 1
+        },
+        {
+            "fieldname": "shaft_combination",
+            "fieldtype": "Data",
+            "label": "Shaft Combination",
+            "read_only": 1
+        },
+        {
+            "fieldname": "planned_qty",
+            "fieldtype": "Float",
+            "label": "Planned Qty (KG)",
+            "read_only": 1
+        },
+        {
+            "fieldname": "order_code",
+            "fieldtype": "Data",
+            "label": "Order Code",
+            "read_only": 1
+        },
+        {
+            "fieldname": "section_break_5",
+            "fieldtype": "Section Break",
+            "label": "Roll Details"
+        },
+        {
+            "fieldname": "wo_id",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Work Order",
+            "options": "Work Order",
+            "read_only": 1
+        },
+        {
+            "fieldname": "item_code",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Item Code",
+            "options": "Item",
+            "read_only": 1
+        },
+        {
+            "fieldname": "item_name",
+            "fieldtype": "Data",
+            "label": "Item Name",
+            "read_only": 1
+        },
+        {
+            "fieldname": "gsm",
+            "fieldtype": "Int",
+            "label": "GSM",
+            "read_only": 1
+        },
+        {
+            "fieldname": "width_inches",
+            "fieldtype": "Float",
+            "label": "Width (Inches)",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_11",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "batch_no",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Batch No",
+            "options": "Batch"
+        },
+        {
+            "fieldname": "roll_no",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Roll No",
+            "reqd": 1
+        },
+        {
+            "fieldname": "meter_per_roll",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Meter/Roll",
+            "reqd": 1
+        },
+        {
+            "fieldname": "net_weight",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Net Weight",
+            "reqd": 1
+        },
+        {
+            "fieldname": "gross_weight",
+            "fieldtype": "Float",
+            "label": "Gross Weight"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "istable": 1,
+    "modified": "2026-03-06 17:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Production Entry",
+    "name": "Roll Production Entry Item",
+    "naming_rule": "By fieldname",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+}

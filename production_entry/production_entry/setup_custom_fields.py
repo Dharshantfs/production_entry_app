@@ -35,5 +35,21 @@ def execute():
                 "fieldtype": "Data",
                 "insert_after": "custom_width_inch"
             }
+        ],
+        "Stock Entry": [
+            {
+                "fieldname": "custom_shaft_production_run",
+                "label": "Shaft Production Run",
+                "fieldtype": "Link",
+                "options": "Shaft Production Run",
+                "insert_after": "work_order"
+            },
+            {
+                "fieldname": "custom_roll_production_entry",
+                "label": "Roll Production Entry",
+                "fieldtype": "Link",
+                "options": "Roll Production Entry",
+                "insert_after": "custom_shaft_production_run"
+            }
         ]
     })
