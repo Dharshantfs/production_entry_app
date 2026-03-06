@@ -255,6 +255,12 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
     jobs = []
     
+    # If we have work_orders but couldn't find ANY widths, we should probably show all jobs
+    # but warn the user that width matching failed.
+    if work_orders and not relevant_widths:
+        frappe.msgprint("Note: Selected Work Orders do not have Width information. Showing all available jobs.")
+        work_orders = None 
+    
     for idx, d in enumerate(source_table):
         # SKIP HEADER ROWS
         comb = str(d.get("combination") or "").lower()
@@ -262,20 +268,29 @@ def get_shaft_jobs(production_plan, work_orders=None):
         if not comb or "combination" in comb or "job" in comb or "gsm" in gsm_val:
             continue
             
-        # Parse combination widths to check relevance
+        # Parse combination widths
         comb_str = str(d.get("combination") or "")
         widths = []
         for s in comb_str.split('+'):
             s = s.strip().replace('"', '')
             try:
-                # Handle cases like "46" or "46 inch"
-                val = float(re.findall(r"[-+]?\d*\.\d+|\d+", s)[0])
-                widths.append(round(val, 1))
+                # Better regex to extract numeric values even with units
+                matches = re.findall(r"\d+\.?\d*", s)
+                if matches:
+                    val = float(matches[0])
+                    widths.append(round(val, 1))
             except: continue
             
         if work_orders:
-            # Skip jobs that don't match any of our selected WO widths
-            if not widths or not any(w in relevant_widths for w in widths):
+            # Match with tolerance (0.1 inch)
+            match_found = False
+            for w in widths:
+                # Check if this width matches any relevant_width within 0.1
+                if any(abs(w - rw) <= 0.1 for rw in relevant_widths):
+                    match_found = True
+                    break
+            
+            if not match_found:
                 continue
                 
         t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
@@ -295,6 +310,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         })
         
     return jobs
+
 
 
 @frappe.whitelist()
