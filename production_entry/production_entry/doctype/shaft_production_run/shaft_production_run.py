@@ -101,27 +101,9 @@ def get_shaft_jobs(production_plan):
 
     # --- Fetch Work Orders and pre-calculate Roll Production Results (items) ---
     items = []
-    
-    work_orders = frappe.get_list('Work Order', filters={
-        'production_plan': production_plan,
-        'docstatus': 1,
-        'status': ['in', ['Ready to Manufacture', 'In Progress', 'Completed']]
-    }, fields=['name', 'production_item', 'qty', 'produced_qty'])
-
-    for wo in work_orders:
-        item_code = wo.production_item
-        if len(item_code) >= 16:
-            try:
-                wo.parsed_gsm = int(item_code[9:12])
-                wo.parsed_width_inch = round(int(item_code[12:16]) / 25.4, 1)
-            except (ValueError, IndexError):
-                wo.parsed_gsm = 0
-                wo.parsed_width_inch = 0
-        else:
-            wo.parsed_gsm = 0
-            wo.parsed_width_inch = 0
 
     for job in jobs:
+        job_id = job.get('job_id')
         combination = job.get('combination') or ''
         widths = []
         for s in combination.split('+'):
@@ -132,22 +114,51 @@ def get_shaft_jobs(production_plan):
 
         no_of_shafts = job.get('no_of_shafts') or 1
         
+        work_orders = frappe.db.sql("""
+            SELECT wo.name, wo.production_item, wo.qty
+            FROM `tabWork Order` wo
+            WHERE wo.production_plan = %s
+            AND wo.production_plan_item = %s
+            AND wo.docstatus != 2
+        """, (production_plan, job_id), as_dict=True)
+
+        wo_by_width = {}
+        for wo in work_orders:
+            item_code = wo.production_item
+            try:
+                if len(item_code) >= 16:
+                    width_inch = round(int(item_code[12:16]) / 25.4, 1)
+                    wo_by_width[width_inch] = wo
+            except (ValueError, IndexError):
+                pass
+
         for _ in range(no_of_shafts):
-            for w in widths:
-                matching_wo = next((wo for wo in work_orders if 
-                                   abs(wo.parsed_gsm - cint(job.get('gsm'))) < 1 and 
-                                   abs(wo.parsed_width_inch - w) < 0.5), None)
+            for width in widths:
+                target_width = round(float(width), 1)
+                wo = wo_by_width.get(target_width, {})
                 
-                if matching_wo:
+                item_code = wo.get('production_item', '') if wo else ''
+                item_name = frappe.db.get_value('Item', item_code, 'item_name') if item_code else ''
+                
+                gsm_val = job.get('gsm')
+                width_val = width
+                
+                if item_code and len(item_code) >= 16:
+                    try:
+                        gsm_val = int(item_code[9:12])
+                        width_val = round(int(item_code[12:16]) / 25.4, 1)
+                    except:
+                        pass
+                
+                if wo:
                     items.append({
-                        'job_no': job.get('job_id'),
+                        'job_no': job_id,
                         'shaft_combination': combination,
-                        'planned_qty': 0, # Cannot calculate easily without WO planning details here
-                        'work_order': matching_wo.name,
-                        'item_code': matching_wo.production_item,
-                        'item_name': frappe.db.get_value('Item', matching_wo.production_item, 'item_name'),
-                        'gsm': wo.parsed_gsm or job.get('gsm'),
-                        'width_inch': wo.parsed_width_inch or w,
+                        'work_order': wo.get('name', ''),
+                        'item_code': item_code,
+                        'item_name': item_name,
+                        'gsm': gsm_val,
+                        'width_inch': width_val,
                         'net_weight': 0,
                     })
 
@@ -200,49 +211,60 @@ def get_or_create_roll_entry(shaft_production_run):
                 except ValueError:
                     continue
         
-        # Get ALL WOs for this Production Plan
-        # Prompt says: Each WO has production_plan field linking back
-        work_orders = frappe.get_list('Work Order', filters={
-            'production_plan': pp_name,
-            'docstatus': 1,
-            'status': ['in', ['Ready to Manufacture', 'In Progress', 'Completed']]
-        }, fields=['name', 'production_item', 'qty', 'produced_qty'])
+        # Get all WOs for this PP + job
+        work_orders = frappe.db.sql("""
+            SELECT wo.name, wo.production_item, wo.qty
+            FROM `tabWork Order` wo
+            WHERE wo.production_plan = %s
+            AND wo.production_plan_item = %s
+            AND wo.docstatus != 2
+        """, (pp_name, job_id), as_dict=True)
 
-        # Pre-calculate parsed details for each WO for faster matching
+        # Map WOs to widths
+        wo_by_width = {}
         for wo in work_orders:
             item_code = wo.production_item
-            if len(item_code) >= 16:
-                # 0-2 Process, 3-5 Quality, 6-8 Color, 9-11 GSM, 12-15 Width(mm)
-                try:
-                    wo.parsed_gsm = int(item_code[9:12])
-                    wo.parsed_width_inch = round(int(item_code[12:16]) / 25.4, 1)
-                except (ValueError, IndexError):
-                    wo.parsed_gsm = 0
-                    wo.parsed_width_inch = 0
-            else:
-                wo.parsed_gsm = 0
-                wo.parsed_width_inch = 0
-
+            try:
+                if len(item_code) >= 16:
+                    # Item code positions 12-15 = width in mm
+                    width_inch = round(int(item_code[12:16]) / 25.4, 1)
+                    wo_by_width[width_inch] = wo
+            except (ValueError, IndexError):
+                pass
+                
         no_of_shafts = cint(job.no_of_shafts) if job.no_of_shafts else 1
         
         for _ in range(no_of_shafts):
-            for w in widths:
-                # Match by GSM and Width
-                matching_wo = next((wo for wo in work_orders if 
-                                   abs(wo.parsed_gsm - cint(job.gsm)) < 1 and 
-                                   abs(wo.parsed_width_inch - w) < 0.5), None)
+            for width in widths:
+                # Find WO for this specific width
+                target_width = round(float(width), 1)
+                wo = wo_by_width.get(target_width, {})
                 
-                if matching_wo:
+                item_code = wo.get('production_item', '') if wo else ''
+                item_name = frappe.db.get_value('Item', item_code, 'item_name') if item_code else ''
+                
+                # Try to parse properties from item code, fallback to job properties
+                gsm_val = job.gsm
+                width_val = width
+                
+                if item_code and len(item_code) >= 16:
+                    try:
+                        gsm_val = int(item_code[9:12])
+                        width_val = round(int(item_code[12:16]) / 25.4, 1)
+                    except:
+                        pass
+                
+                if wo:
                     roll_wise_entry.append({
                         'job_no': job_id,
                         'shaft_combination': combination,
-                        'planned_qty': 0, # total_weight not in schema
-                        'wo_id': matching_wo.name,
-                        'item_code': matching_wo.production_item,
-                        'item_name': frappe.db.get_value('Item', matching_wo.production_item, 'item_name'),
-                        'gsm': wo.parsed_gsm or job.gsm,
-                        'width': wo.parsed_width_inch or w,
-                        'order_code': matching_wo.name,
+                        'planned_qty': job.total_width,
+                        'wo_id': wo.get('name', ''),
+                        'item_code': item_code,
+                        'item_name': item_name,
+                        'gsm': gsm_val,
+                        'width': width_val,
+                        'order_code': wo.get('name', ''),
                         'meter_per_roll': job.meter_roll_mtrs,
                         'batch_no': '',
                         'roll_no': '',
