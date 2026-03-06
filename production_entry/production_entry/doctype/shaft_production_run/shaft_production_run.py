@@ -98,8 +98,60 @@ def get_shaft_jobs(production_plan):
             "meter_roll_mtrs": flt(m_roll),
             "no_of_shafts": cint(n_shafts) if n_shafts else 0
         })
+
+    # --- Fetch Work Orders and pre-calculate Roll Production Results (items) ---
+    items = []
+    
+    work_orders = frappe.get_list('Work Order', filters={
+        'production_plan': production_plan,
+        'docstatus': 1,
+        'status': ['in', ['Ready to Manufacture', 'In Progress', 'Completed']]
+    }, fields=['name', 'production_item', 'qty', 'produced_qty'])
+
+    for wo in work_orders:
+        item_code = wo.production_item
+        if len(item_code) >= 16:
+            try:
+                wo.parsed_gsm = int(item_code[9:12])
+                wo.parsed_width_inch = round(int(item_code[12:16]) / 25.4, 1)
+            except (ValueError, IndexError):
+                wo.parsed_gsm = 0
+                wo.parsed_width_inch = 0
+        else:
+            wo.parsed_gsm = 0
+            wo.parsed_width_inch = 0
+
+    for job in jobs:
+        combination = job.get('combination') or ''
+        widths = []
+        for s in combination.split('+'):
+            s = s.strip().replace('"', '')
+            if s:
+                try: widths.append(float(s))
+                except ValueError: continue
+
+        no_of_shafts = job.get('no_of_shafts') or 1
         
-    return jobs
+        for _ in range(no_of_shafts):
+            for w in widths:
+                matching_wo = next((wo for wo in work_orders if 
+                                   abs(wo.parsed_gsm - cint(job.get('gsm'))) < 1 and 
+                                   abs(wo.parsed_width_inch - w) < 0.5), None)
+                
+                if matching_wo:
+                    items.append({
+                        'job_no': job.get('job_id'),
+                        'shaft_combination': combination,
+                        'planned_qty': 0, # Cannot calculate easily without WO planning details here
+                        'work_order': matching_wo.name,
+                        'item_code': matching_wo.production_item,
+                        'item_name': frappe.db.get_value('Item', matching_wo.production_item, 'item_name'),
+                        'gsm': wo.parsed_gsm or job.get('gsm'),
+                        'width_inch': wo.parsed_width_inch or w,
+                        'net_weight': 0,
+                    })
+
+    return {'jobs': jobs, 'items': items}
 
 
 @frappe.whitelist()
@@ -171,29 +223,32 @@ def get_or_create_roll_entry(shaft_production_run):
                 wo.parsed_gsm = 0
                 wo.parsed_width_inch = 0
 
-        for w in widths:
-            # Match by GSM and Width
-            matching_wo = next((wo for wo in work_orders if 
-                               abs(wo.parsed_gsm - cint(job.gsm)) < 1 and 
-                               abs(wo.parsed_width_inch - w) < 0.5), None)
-            
-            if matching_wo:
-                roll_wise_entry.append({
-                    'job_no': job_id,
-                    'shaft_combination': combination,
-                    'planned_qty': job.total_weight if hasattr(job, 'total_weight') else 0,
-                    'wo_id': matching_wo.name,
-                    'item_code': matching_wo.production_item,
-                    'item_name': frappe.db.get_value('Item', matching_wo.production_item, 'item_name'),
-                    'gsm': wo.parsed_gsm or job.gsm,
-                    'width': wo.parsed_width_inch or w,
-                    'order_code': matching_wo.name,
-                    'meter_per_roll': job.meter_roll_mtrs,
-                    'batch_no': '',
-                    'roll_no': '',
-                    'net_weight': 0,
-                    'gross_weight': 0,
-                })
+        no_of_shafts = cint(job.get('no_of_shafts') or 1)
+        
+        for _ in range(no_of_shafts):
+            for w in widths:
+                # Match by GSM and Width
+                matching_wo = next((wo for wo in work_orders if 
+                                   abs(wo.parsed_gsm - cint(job.gsm)) < 1 and 
+                                   abs(wo.parsed_width_inch - w) < 0.5), None)
+                
+                if matching_wo:
+                    roll_wise_entry.append({
+                        'job_no': job_id,
+                        'shaft_combination': combination,
+                        'planned_qty': job.total_weight if hasattr(job, 'total_weight') else 0,
+                        'wo_id': matching_wo.name,
+                        'item_code': matching_wo.production_item,
+                        'item_name': frappe.db.get_value('Item', matching_wo.production_item, 'item_name'),
+                        'gsm': wo.parsed_gsm or job.gsm,
+                        'width': wo.parsed_width_inch or w,
+                        'order_code': matching_wo.name,
+                        'meter_per_roll': job.meter_roll_mtrs,
+                        'batch_no': '',
+                        'roll_no': '',
+                        'net_weight': 0,
+                        'gross_weight': 0,
+                    })
 
     return {
         'production_plan': pp_name,

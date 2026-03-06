@@ -51,15 +51,26 @@ frappe.ui.form.on('Shaft Production Run', {
             callback: function (r) {
                 if (r.message) {
                     frm.clear_table('shaft_jobs');
-                    r.message.forEach(d => {
-                        let row = frm.add_child('shaft_jobs');
-                        Object.assign(row, d);
-                    });
+                    if (r.message.jobs) {
+                        r.message.jobs.forEach(d => {
+                            let row = frm.add_child('shaft_jobs');
+                            Object.assign(row, d);
+                        });
+                    }
                     frm.refresh_field('shaft_jobs');
 
-                    if (r.message.length > 0) {
+                    frm.clear_table('items');
+                    if (r.message.items) {
+                        r.message.items.forEach(d => {
+                            let row = frm.add_child('items');
+                            Object.assign(row, d);
+                        });
+                    }
+                    frm.refresh_field('items');
+
+                    if (r.message.jobs && r.message.jobs.length > 0) {
                         frappe.show_alert({
-                            message: __('{0} jobs fetched. Submit to proceed.').format(r.message.length),
+                            message: __('{0} jobs fetched. Submit to proceed.').format(r.message.jobs.length),
                             indicator: 'green'
                         });
                     }

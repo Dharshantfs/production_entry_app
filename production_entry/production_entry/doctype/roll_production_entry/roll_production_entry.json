@@ -11,6 +11,8 @@
         "shift",
         "column_break_2",
         "status",
+        "posting_date",
+        "posting_time",
         "actual_qty",
         "manufacturing_entries",
         "section_break_item_details",
@@ -56,6 +58,20 @@
             "label": "Status",
             "options": "Draft\nSubmitted\nCancelled\nCompleted",
             "read_only": 1
+        },
+        {
+            "default": "Today",
+            "fieldname": "posting_date",
+            "fieldtype": "Date",
+            "label": "Posting Date",
+            "reqd": 1
+        },
+        {
+            "default": "Now",
+            "fieldname": "posting_time",
+            "fieldtype": "Time",
+            "label": "Posting Time",
+            "reqd": 1
         },
         {
             "fieldname": "actual_qty",

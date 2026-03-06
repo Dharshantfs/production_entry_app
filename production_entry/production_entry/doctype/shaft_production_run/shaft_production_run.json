@@ -18,7 +18,9 @@
         "column_break_7",
         "total_produced_weight",
         "section_break_9",
-        "shaft_jobs"
+        "shaft_jobs",
+        "section_break_items",
+        "items"
     ],
     "fields": [
         {
