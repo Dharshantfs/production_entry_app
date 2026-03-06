@@ -9,7 +9,7 @@ __version__ = "0.0.1"
 setup(
 	name="production_entry",
 	version=__version__,
-	description="Production Scheduler App",
+	description="Production Entry App",
 	author="Admin",
 	author_email="admin@example.com",
 	packages=find_packages(),

@@ -3,7 +3,7 @@ name = "production_entry"
 authors = [
     { name = "Admin", email = "admin@example.com"}
 ]
-description = "Production Scheduler App"
+description = "Production Entry App"
 requires-python = ">=3.10"
 version = "0.0.1"
 dependencies = []
