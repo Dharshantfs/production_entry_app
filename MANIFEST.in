@@ -1,0 +1,2 @@
+include MANIFEST.in requirements.txt
+recursive-include production_entry *.json *.md *.html *.sql *.csv *.jinja *.css *.scss *.js *.svg *.png *.jpg *.gif

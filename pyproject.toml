@@ -1,0 +1,16 @@
+[project]
+name = "production_entry"
+authors = [
+    { name = "Admin", email = "admin@example.com"}
+]
+description = "Production Scheduler App"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.bench.frappe-dependencies]
+frappe = ">=16.0.0"

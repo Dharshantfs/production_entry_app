@@ -1,0 +1,123 @@
+{
+    "actions": [],
+    "allow_rename": 1,
+    "autoname": "SPR-.YYYY.-.#####",
+    "creation": "2026-03-05 18:20:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "section_break_1",
+        "naming_series",
+        "production_plan",
+        "column_break_3",
+        "run_date",
+        "status",
+        "section_break_fetch",
+        "fetch_work_orders",
+        "section_break_items",
+        "items",
+        "section_break_totals",
+        "total_produced_weight"
+    ],
+    "fields": [
+        {
+            "fieldname": "section_break_1",
+            "fieldtype": "Section Break",
+            "label": "Run Configuration"
+        },
+        {
+            "fieldname": "naming_series",
+            "fieldtype": "Select",
+            "label": "Naming Series",
+            "options": "SPR-.YYYY.-.#####"
+        },
+        {
+            "fieldname": "production_plan",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Production Plan",
+            "options": "Production Plan",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_3",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Today",
+            "fieldname": "run_date",
+            "fieldtype": "Date",
+            "in_list_view": 1,
+            "label": "Run Date",
+            "reqd": 1
+        },
+        {
+            "default": "Draft",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Draft\nIn Progress\nCompleted\nCancelled",
+            "read_only": 1
+        },
+        {
+            "fieldname": "section_break_fetch",
+            "fieldtype": "Section Break"
+        },
+        {
+            "depends_on": "eval:doc.docstatus==0",
+            "fieldname": "fetch_work_orders",
+            "fieldtype": "Button",
+            "label": "Fetch Scheduled Work Orders"
+        },
+        {
+            "fieldname": "section_break_items",
+            "fieldtype": "Section Break",
+            "label": "Roll Production Results"
+        },
+        {
+            "fieldname": "items",
+            "fieldtype": "Table",
+            "label": "Produced Rolls",
+            "options": "Shaft Production Run Item",
+            "reqd": 1
+        },
+        {
+            "fieldname": "section_break_totals",
+            "fieldtype": "Section Break"
+        },
+        {
+            "fieldname": "total_produced_weight",
+            "fieldtype": "Float",
+            "label": "Total Produced Weight (KG)",
+            "read_only": 1
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "is_submittable": 1,
+    "modified": "2026-03-05 18:20:00.000000",
+    "modified_by": "Administrator",
+    "module": "Production Entry",
+    "name": "Shaft Production Run",
+    "naming_rule": "By fieldname",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "submit": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+}

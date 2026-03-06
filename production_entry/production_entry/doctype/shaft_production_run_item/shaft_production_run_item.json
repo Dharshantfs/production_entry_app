@@ -1,0 +1,107 @@
+{
+    "actions": [],
+    "creation": "2026-03-05 18:20:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "work_order",
+        "item_code",
+        "column_break_4",
+        "net_weight",
+        "uom",
+        "section_break_8",
+        "quality",
+        "color",
+        "column_break_11",
+        "width_inch",
+        "gsm"
+    ],
+    "fields": [
+        {
+            "fieldname": "work_order",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Work Order",
+            "options": "Work Order",
+            "reqd": 1
+        },
+        {
+            "fetch_from": "work_order.production_item",
+            "fieldname": "item_code",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Item Code",
+            "options": "Item",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_4",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "net_weight",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Roll Net Weight",
+            "reqd": 1
+        },
+        {
+            "fetch_from": "work_order.uom",
+            "fieldname": "uom",
+            "fieldtype": "Link",
+            "label": "UOM",
+            "options": "UOM",
+            "read_only": 1
+        },
+        {
+            "fieldname": "section_break_8",
+            "fieldtype": "Section Break",
+            "label": "Details"
+        },
+        {
+            "fetch_from": "work_order.custom_quality",
+            "fieldname": "quality",
+            "fieldtype": "Data",
+            "label": "Quality",
+            "read_only": 1
+        },
+        {
+            "fetch_from": "work_order.custom_color",
+            "fieldname": "color",
+            "fieldtype": "Data",
+            "label": "Color",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_11",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fetch_from": "work_order.custom_width_inch",
+            "fieldname": "width_inch",
+            "fieldtype": "Float",
+            "label": "Width (Inch)",
+            "read_only": 1
+        },
+        {
+            "fetch_from": "work_order.custom_gsm",
+            "fieldname": "gsm",
+            "fieldtype": "Int",
+            "label": "GSM",
+            "read_only": 1
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "istable": 1,
+    "modified": "2026-03-05 18:20:00.000000",
+    "modified_by": "Administrator",
+    "module": "Production Entry",
+    "name": "Shaft Production Run Item",
+    "naming_rule": "By fieldname",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+}
