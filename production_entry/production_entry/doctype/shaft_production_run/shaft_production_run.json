@@ -2,24 +2,25 @@
     "actions": [],
     "allow_rename": 1,
     "autoname": "SPR-.YYYY.-.#####",
-    "creation": "2026-03-05 18:20:00.000000",
+    "creation": "2026-03-05 18:00:00.000000",
     "doctype": "DocType",
     "editable_grid": 1,
     "engine": "InnoDB",
     "field_order": [
         "section_break_1",
         "naming_series",
-        "production_plan",
-        "allocated_unit",
-        "column_break_3",
         "run_date",
+        "production_plan",
+        "column_break_2",
         "status",
-        "section_break_fetch",
-        "fetch_work_orders",
+        "section_break_5",
+        "allocated_unit",
+        "column_break_7",
+        "total_produced_weight",
+        "section_break_9",
+        "shaft_jobs",
         "section_break_items",
-        "items",
-        "section_break_totals",
-        "total_produced_weight"
+        "items"
     ],
     "fields": [
         {
@@ -34,78 +35,79 @@
             "options": "SPR-.YYYY.-.#####"
         },
         {
+            "default": "Today",
+            "fieldname": "run_date",
+            "fieldtype": "Date",
+            "label": "Run Date",
+            "reqd": 1
+        },
+        {
             "fieldname": "production_plan",
             "fieldtype": "Link",
-            "in_list_view": 1,
             "label": "Production Plan",
             "options": "Production Plan",
             "reqd": 1
         },
         {
-            "fieldname": "allocated_unit",
-            "fieldtype": "Link",
-            "label": "Allocated Unit",
-            "options": "Unit Capacity",
-            "in_list_view": 1
-        },
-        {
-            "fieldname": "column_break_3",
+            "fieldname": "column_break_2",
             "fieldtype": "Column Break"
-        },
-        {
-            "default": "Today",
-            "fieldname": "run_date",
-            "fieldtype": "Date",
-            "in_list_view": 1,
-            "label": "Run Date",
-            "reqd": 1
         },
         {
             "default": "Draft",
             "fieldname": "status",
             "fieldtype": "Select",
-            "in_list_view": 1,
             "label": "Status",
-            "options": "Draft\nIn Progress\nCompleted\nCancelled",
+            "options": "Draft\nCompleted\nCancelled",
             "read_only": 1
         },
         {
-            "fieldname": "section_break_fetch",
-            "fieldtype": "Section Break"
-        },
-        {
-            "depends_on": "eval:doc.docstatus==0",
-            "fieldname": "fetch_work_orders",
-            "fieldtype": "Button",
-            "label": "Fetch Scheduled Work Orders"
-        },
-        {
-            "fieldname": "section_break_items",
+            "fieldname": "section_break_5",
             "fieldtype": "Section Break",
-            "label": "Roll Production Results"
+            "label": "Unit Allocation"
         },
         {
-            "fieldname": "items",
-            "fieldtype": "Table",
-            "label": "Produced Rolls",
-            "options": "Shaft Production Run Item",
-            "reqd": 1
+            "fieldname": "allocated_unit",
+            "fieldtype": "Link",
+            "label": "Allocated Unit",
+            "options": "Unit Capacity"
         },
         {
-            "fieldname": "section_break_totals",
-            "fieldtype": "Section Break"
+            "fieldname": "column_break_7",
+            "fieldtype": "Column Break"
         },
         {
             "fieldname": "total_produced_weight",
             "fieldtype": "Float",
             "label": "Total Produced Weight (KG)",
             "read_only": 1
+        },
+        {
+            "fieldname": "section_break_9",
+            "fieldtype": "Section Break",
+            "label": "Shaft Details (Select Job)"
+        },
+        {
+            "fieldname": "shaft_jobs",
+            "fieldtype": "Table",
+            "label": "Available Jobs",
+            "options": "Shaft Production Run Job"
+        },
+        {
+            "fieldname": "section_break_items",
+            "fieldtype": "Section Break",
+            "label": "Produced Rolls"
+        },
+        {
+            "fieldname": "items",
+            "fieldtype": "Table",
+            "label": "Roll Production Results",
+            "options": "Shaft Production Run Item",
+            "reqd": 1
         }
     ],
-    "in_global_search": 1,
     "index_web_pages_for_search": 1,
     "is_submittable": 1,
-    "modified": "2026-03-05 18:20:00.000000",
+    "modified": "2026-03-06 16:10:00.000000",
     "modified_by": "Administrator",
     "module": "Production Entry",
     "name": "Shaft Production Run",

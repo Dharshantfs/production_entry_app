@@ -7,8 +7,8 @@ class ShaftProductionRun(Document):
         self.calculate_totals()
 
     def on_submit(self):
-        """Auto-create individual Roll Production Entries for the logged roll weights"""
-        self.create_roll_production_entries()
+        """Build Stock Entries for each item/roll recorded"""
+        self.create_stock_entries()
         self.status = "Completed"
 
     def calculate_totals(self):
@@ -17,61 +17,30 @@ class ShaftProductionRun(Document):
             total += flt(item.net_weight)
         self.total_produced_weight = total
 
-    @frappe.whitelist()
-    def fetch_pending_work_orders(self):
-        if not self.production_plan:
-            frappe.throw("Please select a Production Plan first")
-        
-        filters = {
-            "status": ["in", ["Ready to Manufacture", "In Progress"]],
-            "docstatus": 1,
-            "production_plan": self.production_plan
-        }
-        
-        wos = frappe.get_all("Work Order", 
-            filters=filters,
-            fields=["name", "production_item", "qty", "produced_qty"]
-        )
-        
-        if not wos:
-            return f"No pending Work Orders found for {self.production_plan}."
-            
-        return f"Found {len(wos)} Work Orders. Please add roll weights below."
-
-    def create_roll_production_entries(self):
-        """
-        Consolidates weights by Work Order and creates 'Manufacture' Stock Entries.
-        This updates the WO status and Warehouse stock in ERPNext.
-        """
-        from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
-        
-        # Group rolls by Work Order to create consolidated entries
+    def create_stock_entries(self):
+        """Group items by Work Order and create Manufacture entries"""
         wo_groups = {}
         for item in self.items:
-            if not item.work_order: continue
             if item.work_order not in wo_groups:
-                wo_groups[item.work_order] = 0
-            wo_groups[item.work_order] += flt(item.net_weight)
+                wo_groups[item.work_order] = []
+            wo_groups[item.work_order].append(item)
             
-        created_entries = []
-        
-        for wo_name, total_weight in wo_groups.items():
-            try:
-                # 1. Create the Stock Entry (Manufacture)
-                # This moves raw materials from WIP to FG and updates WO produced_qty
-                se_doc = make_stock_entry(wo_name, "Manufacture", total_weight)
-                se = frappe.get_doc(se_doc)
-                se.insert()
-                se.submit()
+        for wo_name, items in wo_groups.items():
+            total_qty = sum([flt(i.net_weight) for i in items])
+            if total_qty <= 0:
+                continue
                 
-                created_entries.append(se.name)
-                
-                # Tag the Stock Entry for reference
-                se.db_set("remarks", f"Created from Shaft Production Run {self.name}")
-                
-            except Exception as e:
-                frappe.log_error(f"Shaft Production Run Error for {wo_name}: {str(e)}")
-                frappe.msgprint(f"Error creating production entry for {wo_name}: {str(e)}")
-                
-        if created_entries:
-            frappe.msgprint(f"Successfully created Production (Stock) Entries: {', '.join(created_entries)}")
+            wo = frappe.get_doc("Work Order", wo_name)
+            
+            # Create Stock Entry (Manufacture)
+            from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
+            # The standard function returns a doc object
+            se_doc = frappe.get_doc(make_stock_entry(wo.name, "Manufacture", total_qty))
+            
+            # If we have multiple rolls for the same WO, we might need to handle batch creation
+            # For now, we consolidate the qty into one Stock Entry per WO in this run.
+            
+            se_doc.insert()
+            se_doc.submit()
+            
+            frappe.msgprint(f"Created Stock Entry {se_doc.name} for Work Order {wo_name}")

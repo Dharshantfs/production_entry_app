@@ -7,8 +7,13 @@
     "field_order": [
         "work_order",
         "item_code",
+        "job",
+        "batch_no",
         "column_break_4",
+        "roll_no",
+        "meter_roll",
         "net_weight",
+        "gross_weight",
         "uom",
         "section_break_8",
         "quality",
@@ -36,15 +41,45 @@
             "read_only": 1
         },
         {
+            "fieldname": "job",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Job",
+            "read_only": 1
+        },
+        {
+            "fieldname": "batch_no",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Batch No"
+        },
+        {
             "fieldname": "column_break_4",
             "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "roll_no",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Roll No"
+        },
+        {
+            "fieldname": "meter_roll",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Meter/Roll"
         },
         {
             "fieldname": "net_weight",
             "fieldtype": "Float",
             "in_list_view": 1,
-            "label": "Roll Net Weight",
+            "label": "Net Weight",
             "reqd": 1
+        },
+        {
+            "fieldname": "gross_weight",
+            "fieldtype": "Float",
+            "label": "Gross Weight"
         },
         {
             "fetch_from": "work_order.stock_uom",
