@@ -17,23 +17,21 @@ frappe.ui.form.on('Shaft Production Run', {
             args: {
                 doctype: 'Production Plan',
                 filters: { name: frm.doc.production_plan },
-                fieldname: 'shaft_details'
+                fieldname: 'custom_shaft_details' // Use custom prefix
             },
             callback: function (r) {
-                if (r.message && r.message.shaft_details) {
+                if (r.message && r.message.custom_shaft_details) {
                     frm.clear_table('shaft_jobs');
-                    // In your system, shaft_details is likely a child table on Production Plan
-                    // We need to fetch the actual rows
+                    // Fetch the actual rows from the child table
                     frappe.call({
-                        method: 'frappe.client.get_list',
+                        method: 'frappe.client.get_doc',
                         args: {
-                            doctype: 'Shaft Detail', // Assuming the child table name
-                            filters: { parent: frm.doc.production_plan },
-                            fields: ['job', 'gsm', 'combination', 'total_width', 'total_weight']
+                            doctype: 'Production Plan',
+                            name: frm.doc.production_plan
                         },
-                        callback: function (list_res) {
-                            if (list_res.message) {
-                                list_res.message.forEach(d => {
+                        callback: function (res) {
+                            if (res.message && res.message.custom_shaft_details) {
+                                res.message.custom_shaft_details.forEach(d => {
                                     let row = frm.add_child('shaft_jobs');
                                     row.job_id = d.job;
                                     row.gsm = d.gsm;
@@ -65,8 +63,14 @@ frappe.ui.form.on('Shaft Production Run Job', {
 frappe.ui.form.on('Shaft Production Run', {
     populate_items_from_job: function (frm, job_row) {
         // 1. Parse combination string (e.g. "46 + 46 + 26")
-        let widths = job_row.combination.split('+').map(s => parseFloat(s.trim()));
+        let combination = job_row.combination || "";
+        let widths = combination.split('+').map(s => parseFloat(s.trim())).filter(w => !isNaN(w));
         let gsm = job_row.gsm;
+
+        if (widths.length === 0) {
+            frappe.msgprint("No valid widths found in combination: " + combination);
+            return;
+        }
 
         // 2. Fetch Work Orders for this PP matching widths and GSM
         frappe.call({
@@ -76,12 +80,12 @@ frappe.ui.form.on('Shaft Production Run', {
                 filters: {
                     production_plan: frm.doc.production_plan,
                     status: ['in', ['Ready to Manufacture', 'In Progress']],
-                    custom_gsm: gsm
+                    custom_gsm: gsm // Ensure GSM matches
                 },
                 fields: ['name', 'production_item', 'custom_width_inch', 'stock_uom', 'custom_quality', 'custom_color']
             },
             callback: function (r) {
-                if (r.message) {
+                if (r.message && r.message.length > 0) {
                     // Match each width in combination to a WO
                     widths.forEach(width => {
                         let matching_wo = r.message.find(wo => Math.abs(parseFloat(wo.custom_width_inch) - width) < 0.1);
@@ -95,9 +99,13 @@ frappe.ui.form.on('Shaft Production Run', {
                             item_row.color = matching_wo.custom_color;
                             item_row.gsm = gsm;
                             item_row.width_inch = matching_wo.custom_width_inch;
+                        } else {
+                            frappe.msgprint(`Warning: Could not find a Work Order with Width ${width} and GSM ${gsm} for this Production Plan.`);
                         }
                     });
                     frm.refresh_field('items');
+                } else {
+                    frappe.msgprint(`No Work Orders found for GSM ${gsm} in this Production Plan.`);
                 }
             }
         });
