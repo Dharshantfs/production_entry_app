@@ -223,7 +223,7 @@ def get_or_create_roll_entry(shaft_production_run):
                 wo.parsed_gsm = 0
                 wo.parsed_width_inch = 0
 
-        no_of_shafts = cint(job.get('no_of_shafts') or 1)
+        no_of_shafts = cint(job.no_of_shafts) if job.no_of_shafts else 1
         
         for _ in range(no_of_shafts):
             for w in widths:
@@ -236,7 +236,7 @@ def get_or_create_roll_entry(shaft_production_run):
                     roll_wise_entry.append({
                         'job_no': job_id,
                         'shaft_combination': combination,
-                        'planned_qty': job.total_weight if hasattr(job, 'total_weight') else 0,
+                        'planned_qty': 0, # total_weight not in schema
                         'wo_id': matching_wo.name,
                         'item_code': matching_wo.production_item,
                         'item_name': frappe.db.get_value('Item', matching_wo.production_item, 'item_name'),
