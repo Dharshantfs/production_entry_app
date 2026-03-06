@@ -1,6 +1,5 @@
 frappe.ui.form.on('Shaft Production Run', {
     refresh: function (frm) {
-        // Remove standard "Add Row" for shaft_jobs as it should be fetched from PP
         frm.get_field('shaft_jobs').grid.cannot_add_rows = true;
     },
     production_plan: function (frm) {
@@ -13,58 +12,23 @@ frappe.ui.form.on('Shaft Production Run', {
     },
     fetch_shaft_details: function (frm) {
         frappe.call({
-            method: 'frappe.client.get_value',
+            method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_shaft_jobs',
             args: {
-                doctype: 'Production Plan',
-                filters: { name: frm.doc.production_plan },
-                fieldname: 'custom_shaft_details'
+                production_plan: frm.doc.production_plan
             },
             callback: function (r) {
-                if (r.message && r.message.custom_shaft_details) {
+                if (r.message) {
                     frm.clear_table('shaft_jobs');
-                    // Fetch the actual rows from the child table
-                    frappe.call({
-                        method: 'frappe.client.get_doc',
-                        args: {
-                            doctype: 'Production Plan',
-                            name: frm.doc.production_plan
-                        },
-                        callback: function (res) {
-                            if (res.message && res.message.custom_shaft_details) {
-                                res.message.custom_shaft_details.forEach(d => {
-                                    let row = frm.add_child('shaft_jobs');
-                                    row.job_id = d.job;
-                                    row.gsm = d.gsm;
-                                    row.combination = d.combination;
-                                    // Map based on the likely customized field names
-                                    row.total_width = d.total_width || d.total_width_inches;
-                                    row.meter_roll_mtrs = d.meter_roll_mtrs || d.meter_per_roll;
-                                    row.no_of_shafts = d.no_of_shafts;
-                                });
-                                frm.refresh_field('shaft_jobs');
-                            }
-                        }
+                    r.message.forEach(d => {
+                        let row = frm.add_child('shaft_jobs');
+                        Object.assign(row, d);
                     });
+                    frm.refresh_field('shaft_jobs');
                 }
             }
         });
-    }
-});
-
-frappe.ui.form.on('Shaft Production Run Job', {
-    // When a job is clicked/selected in the summary table
-    job_id: function (frm, cdt, cdn) {
-        let row = locals[cdt][cdn];
-        if (row.job_id) {
-            frm.trigger('populate_items_from_job', row);
-        }
-    }
-});
-
-// Implementation of the mapping logic
-frappe.ui.form.on('Shaft Production Run', {
+    },
     populate_items_from_job: function (frm, job_row) {
-        // 1. Parse combination string (e.g. "46 + 46 + 26")
         let combination = job_row.combination || "";
         let widths = combination.split('+').map(s => parseFloat(s.trim())).filter(w => !isNaN(w));
         let gsm = job_row.gsm;
@@ -74,7 +38,6 @@ frappe.ui.form.on('Shaft Production Run', {
             return;
         }
 
-        // 2. Fetch Work Orders for this PP matching widths and GSM
         frappe.call({
             method: 'frappe.client.get_list',
             args: {
@@ -88,7 +51,6 @@ frappe.ui.form.on('Shaft Production Run', {
             },
             callback: function (r) {
                 if (r.message && r.message.length > 0) {
-                    // Match each width in combination to a WO
                     widths.forEach(width => {
                         let matching_wo = r.message.find(wo => Math.abs(parseFloat(wo.custom_width_inch) - width) < 0.1);
                         if (matching_wo) {
@@ -111,5 +73,14 @@ frappe.ui.form.on('Shaft Production Run', {
                 }
             }
         });
+    }
+});
+
+frappe.ui.form.on('Shaft Production Run Job', {
+    job_id: function (frm, cdt, cdn) {
+        let row = locals[cdt][cdn];
+        if (row.job_id) {
+            frm.trigger('populate_items_from_job', row);
+        }
     }
 });

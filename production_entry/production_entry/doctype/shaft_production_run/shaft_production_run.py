@@ -34,13 +34,37 @@ class ShaftProductionRun(Document):
             
             # Create Stock Entry (Manufacture)
             from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
-            # The standard function returns a doc object
             se_doc = frappe.get_doc(make_stock_entry(wo.name, "Manufacture", total_qty))
             
-            # If we have multiple rolls for the same WO, we might need to handle batch creation
-            # For now, we consolidate the qty into one Stock Entry per WO in this run.
+            # Inherit properties from first item group for labeling
+            first_item = items[0]
             
             se_doc.insert()
             se_doc.submit()
             
             frappe.msgprint(f"Created Stock Entry {se_doc.name} for Work Order {wo_name}")
+
+@frappe.whitelist()
+def get_shaft_jobs(production_plan):
+    """Fetch shaft details from Production Plan and map to Shaft Production Run Job format"""
+    if not production_plan:
+        return []
+        
+    doc = frappe.get_doc("Production Plan", production_plan)
+    
+    # The user's field name is custom_shaft_details
+    source_table = doc.get("custom_shaft_details") or []
+    jobs = []
+    
+    for d in source_table:
+        # Map based on the observed structure in the user's "Customize Form" screenshot
+        jobs.append({
+            "job_id": d.get("job") or d.get("job_id") or d.get("name"),
+            "gsm": d.get("gsm"),
+            "combination": d.get("combination"),
+            "total_width": d.get("total_width") or d.get("total_width_inches"),
+            "meter_roll_mtrs": d.get("meter_roll_mtrs") or d.get("meter_per_roll"),
+            "no_of_shafts": d.get("no_of_shafts")
+        })
+        
+    return jobs
