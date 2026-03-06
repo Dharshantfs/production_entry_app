@@ -17,7 +17,7 @@ frappe.ui.form.on('Shaft Production Run', {
             args: {
                 doctype: 'Production Plan',
                 filters: { name: frm.doc.production_plan },
-                fieldname: 'custom_shaft_details' // Use custom prefix
+                fieldname: 'custom_shaft_details'
             },
             callback: function (r) {
                 if (r.message && r.message.custom_shaft_details) {
@@ -36,8 +36,10 @@ frappe.ui.form.on('Shaft Production Run', {
                                     row.job_id = d.job;
                                     row.gsm = d.gsm;
                                     row.combination = d.combination;
-                                    row.total_width = d.total_width;
-                                    row.planned_weight = d.total_weight;
+                                    // Map based on the likely customized field names
+                                    row.total_width = d.total_width || d.total_width_inches;
+                                    row.meter_roll_mtrs = d.meter_roll_mtrs || d.meter_per_roll;
+                                    row.no_of_shafts = d.no_of_shafts;
                                 });
                                 frm.refresh_field('shaft_jobs');
                             }
@@ -80,7 +82,7 @@ frappe.ui.form.on('Shaft Production Run', {
                 filters: {
                     production_plan: frm.doc.production_plan,
                     status: ['in', ['Ready to Manufacture', 'In Progress']],
-                    custom_gsm: gsm // Ensure GSM matches
+                    custom_gsm: gsm
                 },
                 fields: ['name', 'production_item', 'custom_width_inch', 'stock_uom', 'custom_quality', 'custom_color']
             },
