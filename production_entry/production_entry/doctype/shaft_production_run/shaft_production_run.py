@@ -131,7 +131,7 @@ def get_or_create_roll_entry(shaft_production_run):
         else:
             frappe.throw(_('Could not find Production Plan linked to {0}').format(shaft_production_run))
 
-    items = []
+    roll_wise_entry = []
 
     # Loop through all jobs in SPR
     for job in spr_doc.shaft_jobs:
@@ -178,7 +178,7 @@ def get_or_create_roll_entry(shaft_production_run):
                                abs(wo.parsed_width_inch - w) < 0.5), None)
             
             if matching_wo:
-                items.append({
+                roll_wise_entry.append({
                     'job_no': job_id,
                     'shaft_combination': combination,
                     'planned_qty': job.total_weight if hasattr(job, 'total_weight') else 0,
@@ -186,7 +186,7 @@ def get_or_create_roll_entry(shaft_production_run):
                     'item_code': matching_wo.production_item,
                     'item_name': frappe.db.get_value('Item', matching_wo.production_item, 'item_name'),
                     'gsm': wo.parsed_gsm or job.gsm,
-                    'width_inches': wo.parsed_width_inch or w,
+                    'width': wo.parsed_width_inch or w,
                     'order_code': matching_wo.name,
                     'meter_per_roll': job.meter_roll_mtrs,
                     'batch_no': '',
@@ -197,5 +197,5 @@ def get_or_create_roll_entry(shaft_production_run):
 
     return {
         'production_plan': pp_name,
-        'items': items
+        'roll_wise_entry': roll_wise_entry
     }
