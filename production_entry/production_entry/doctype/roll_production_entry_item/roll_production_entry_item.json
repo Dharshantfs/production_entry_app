@@ -5,26 +5,29 @@
     "editable_grid": 1,
     "engine": "InnoDB",
     "field_order": [
-        "job_no",
+        "job_id",
         "shaft_combination",
         "planned_qty",
         "order_code",
         "section_break_5",
-        "wo_id",
+        "work_order",
         "item_code",
         "item_name",
         "gsm",
-        "width",
+        "width_inch",
         "column_break_11",
         "batch_no",
         "roll_no",
         "meter_per_roll",
         "net_weight",
-        "gross_weight"
+        "gross_weight",
+        "color",
+        "quality",
+        "uom"
     ],
     "fields": [
         {
-            "fieldname": "job_no",
+            "fieldname": "job_id",
             "fieldtype": "Data",
             "in_list_view": 1,
             "label": "Job No",
@@ -54,7 +57,7 @@
             "label": "Roll Details"
         },
         {
-            "fieldname": "wo_id",
+            "fieldname": "work_order",
             "fieldtype": "Link",
             "in_list_view": 1,
             "label": "Work Order",
@@ -82,7 +85,7 @@
             "read_only": 1
         },
         {
-            "fieldname": "width",
+            "fieldname": "width_inch",
             "fieldtype": "Float",
             "label": "Width (Inches)",
             "read_only": 1
@@ -123,6 +126,21 @@
             "fieldname": "gross_weight",
             "fieldtype": "Float",
             "label": "Gross Weight"
+        },
+        {
+            "fieldname": "color",
+            "fieldtype": "Data",
+            "label": "Color"
+        },
+        {
+            "fieldname": "quality",
+            "fieldtype": "Data",
+            "label": "Quality"
+        },
+        {
+            "fieldname": "uom",
+            "fieldtype": "Data",
+            "label": "UOM"
         }
     ],
     "index_web_pages_for_search": 1,

@@ -23,7 +23,7 @@ frappe.ui.form.on('Shaft Production Run', {
                                 frappe.new_doc('Roll Production Entry', {
                                     shaft_production_run: frm.doc.name,
                                     production_plan: r.message.production_plan,
-                                    roll_wise_entry: r.message.roll_wise_entry
+                                    items: r.message.items
                                 });
                             }
                         }

@@ -1,4 +1,4 @@
-frappe.ui.form.on('Roll Production Entry', {
+﻿frappe.ui.form.on('Roll Production Entry', {
     refresh: function (frm) {
         render_job_sections(frm);
         calculate_total(frm);
@@ -22,8 +22,8 @@ frappe.ui.form.on('Roll Production Entry', {
         }
 
         setTimeout(function () {
-            if (frm.fields_dict['roll_wise_entry'] && frm.fields_dict['roll_wise_entry'].grid) {
-                let grid = frm.fields_dict['roll_wise_entry'].grid;
+            if (frm.fields_dict['items'] && frm.fields_dict['items'].grid) {
+                let grid = frm.fields_dict['items'].grid;
                 grid.get_field('print_sticker').formatter = function (value, row_doc) {
                     return `<button type="button" class="btn btn-xs btn-default" 
                         style="width: 100%; font-weight: bold; cursor: pointer !important; pointer-events: auto;" 
@@ -67,12 +67,12 @@ frappe.ui.form.on('Roll Production Entry', {
 
     // TRIGGER: When the Item Name on the MAIN form is populated
     production_item_name: function (frm) {
-        if (frm.doc.production_item_name && frm.doc.roll_wise_entry) {
+        if (frm.doc.production_item_name && frm.doc.items) {
             // Update all existing rows in the child table
-            frm.doc.roll_wise_entry.forEach(row => {
+            frm.doc.items.forEach(row => {
                 extract_specs_to_row(frm, row.doctype, row.name);
             });
-            frm.refresh_field('roll_wise_entry');
+            frm.refresh_field('items');
         }
     }
 });
@@ -84,7 +84,7 @@ frappe.ui.form.on('Roll Production Entry Item', {
     meter_per_roll: function (frm, cdt, cdn) {
         render_job_sections(frm);
     },
-    width: function (frm, cdt, cdn) {
+    width_inch: function (frm, cdt, cdn) {
         validate_total_width(frm);
         render_job_sections(frm);
     },
@@ -95,17 +95,17 @@ frappe.ui.form.on('Roll Production Entry Item', {
     gross_weight: function (frm, cdt, cdn) {
         render_job_sections(frm);
     },
-    roll_wise_entry_remove: function (frm) {
+    items_remove: function (frm) {
         if (frm.doc.docstatus === 0) calculate_total(frm);
         validate_total_width(frm);
         render_job_sections(frm);
     },
-    roll_wise_entry_add: function (frm, cdt, cdn) {
+    items_add: function (frm, cdt, cdn) {
         extract_specs_to_row(frm, cdt, cdn);
 
         if (frm.doc.docstatus === 0) {
             let max_roll = 0;
-            (frm.doc.roll_wise_entry || []).forEach(row => {
+            (frm.doc.items || []).forEach(row => {
                 let r = parseInt(row.roll_no) || 0;
                 if (r > max_roll) max_roll = r;
             });
@@ -122,10 +122,10 @@ frappe.ui.form.on('Roll Production Entry Item', {
 function validate_total_width(frm) {
     if (!frm.doc.custom_batch_width) return;
     let shaft_totals = {};
-    (frm.doc.roll_wise_entry || []).forEach(row => {
+    (frm.doc.items || []).forEach(row => {
         let s_num = row.shaft_number || 1;
         if (!shaft_totals[s_num]) shaft_totals[s_num] = 0;
-        shaft_totals[s_num] += flt(row.width);
+        shaft_totals[s_num] += flt(row.width_inch);
     });
     for (let s_num in shaft_totals) {
         if (shaft_totals[s_num] > frm.doc.custom_batch_width) {
@@ -180,7 +180,7 @@ function extract_specs_to_row(frm, cdt, cdn) {
     }
 
     if (width_match) {
-        frappe.model.set_value(cdt, cdn, 'width', width_match[1]);
+        frappe.model.set_value(cdt, cdn, 'width_inch', width_match[1]);
     }
 }
 
@@ -189,7 +189,7 @@ frappe.generate_sticker_flow = function (row_name) {
     var label_type = raw_label.trim().toLowerCase();
 
     var row = locals['Roll Production Entry Item'][row_name];
-    if (!row && cur_frm) row = (cur_frm.doc.roll_wise_entry || []).find(r => r.name === row_name);
+    if (!row && cur_frm) row = (cur_frm.doc.items || []).find(r => r.name === row_name);
 
     var item_name = cur_frm.doc.production_item_name || cur_frm.doc.item_name || "";
     var item_code = cur_frm.doc.production_item || "";
@@ -318,7 +318,7 @@ function flow_reliance_cm(row_name, gsm, color, quality) {
 // =================================================================
 frappe.run_print_logic = function (row_name, final_width_display, final_gsm, final_color, final_quality) {
     var row = locals['Roll Production Entry Item'][row_name];
-    if (!row && cur_frm) row = (cur_frm.doc.roll_wise_entry || []).find(r => r.name === row_name);
+    if (!row && cur_frm) row = (cur_frm.doc.items || []).find(r => r.name === row_name);
     if (!row) return;
 
     var d = {
@@ -387,7 +387,7 @@ function get_grid_format(d, type) {
 
     var lenVal = d.length + " Mtrs";
 
-    var widthLabel = "WIDTH";
+    var widthLabel = "width_inch";
     var widthVal = d.width_val;
 
     if (isPerfect) {
@@ -523,17 +523,17 @@ function trigger_submission(frm) {
 
 function calculate_total(frm) {
     let total_qty = 0;
-    (frm.doc.roll_wise_entry || []).forEach(row => {
+    (frm.doc.items || []).forEach(row => {
         total_qty += flt(row.net_weight || row.net_wt || 0);
     });
     frm.set_value('actual_qty', total_qty);
 }
 
 function render_job_sections(frm) {
-    if (!frm.doc.roll_wise_entry || frm.doc.roll_wise_entry.length === 0) {
+    if (!frm.doc.items || frm.doc.items.length === 0) {
         // Remove headers if grid is empty
-        if (frm.fields_dict['roll_wise_entry'] && frm.fields_dict['roll_wise_entry'].grid && frm.fields_dict['roll_wise_entry'].grid.wrapper) {
-            let grid_wrapper = frm.fields_dict['roll_wise_entry'].grid.wrapper;
+        if (frm.fields_dict['items'] && frm.fields_dict['items'].grid && frm.fields_dict['items'].grid.wrapper) {
+            let grid_wrapper = frm.fields_dict['items'].grid.wrapper;
             grid_wrapper.find('.job-section-header').remove();
         }
         return;
@@ -546,7 +546,7 @@ function render_job_sections(frm) {
     let total_gross = 0;
     let total_planned = 0;
 
-    frm.doc.roll_wise_entry.forEach(function (row) {
+    frm.doc.items.forEach(function (row) {
         let job = row.job_no || 'Unknown';
         if (!jobs[job]) {
             jobs[job] = {
@@ -562,10 +562,10 @@ function render_job_sections(frm) {
         total_gross += flt(row.gross_weight);
     });
 
-    if (!frm.fields_dict['roll_wise_entry'] || !frm.fields_dict['roll_wise_entry'].grid) return;
+    if (!frm.fields_dict['items'] || !frm.fields_dict['items'].grid) return;
 
     // Inject visual job headers and totals above the grid
-    let grid_wrapper = frm.fields_dict['roll_wise_entry'].grid.wrapper;
+    let grid_wrapper = frm.fields_dict['items'].grid.wrapper;
 
     // Remove old job headers if any
     grid_wrapper.find('.job-section-header').remove();
@@ -640,3 +640,4 @@ function render_job_sections(frm) {
 
     grid_wrapper.before(summary_html);
 }
+

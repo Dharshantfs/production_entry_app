@@ -9,7 +9,7 @@ class RollProductionEntry(Document):
         
     def calculate_actual_qty(self):
         total_qty = 0.0
-        for row in self.roll_wise_entry:
+        for row in self.items:
             total_qty += flt(row.net_weight or row.get("net_wt") or 0.0)
         self.actual_qty = total_qty
         
@@ -17,7 +17,7 @@ class RollProductionEntry(Document):
         if not self.production_item:
             return
             
-        wo = frappe.get_doc("Work Order", self.roll_wise_entry[0].wo_id) if self.roll_wise_entry and self.roll_wise_entry[0].wo_id else None
+        wo = frappe.get_doc("Work Order", self.items[0].work_order) if self.items and self.items[0].work_order else None
         if not wo:
             return
             
@@ -34,7 +34,7 @@ class RollProductionEntry(Document):
         wo_party = wo.get("custom_party_code") or wo.get("party_code")
         shift_name = str(self.get("shift") or "DAY").upper()
 
-        for row in self.roll_wise_entry:
+        for row in self.items:
             row.party_code = wo_party
 
             target_batch_id = f"{series_prefix}-{row.roll_no}"
@@ -116,8 +116,8 @@ def execute_production(roll_entry):
 
         # Fallback to get Work Order from the first item if not globally set
         wo_name = None
-        if re_doc.roll_wise_entry and len(re_doc.roll_wise_entry) > 0:
-            wo_name = re_doc.roll_wise_entry[0].wo_id
+        if re_doc.items and len(re_doc.items) > 0:
+            wo_name = re_doc.items[0].work_order
             
         if not wo_name:
             frappe.throw("Work Order not found in items")
@@ -217,7 +217,7 @@ def execute_production(roll_entry):
         wo = frappe.get_doc("Work Order", wo_name)
 
         actual_qty = 0.0
-        for row in re_doc.roll_wise_entry:
+        for row in re_doc.items:
             w = float(row.get("net_weight") or row.get("net_wt") or 0)
             actual_qty += w
 
@@ -257,7 +257,7 @@ def execute_production(roll_entry):
         shift_name = str(re_doc.get("shift") or "DAY").upper()
         fg_uom = wo.stock_uom or "Kg"
 
-        for row in re_doc.roll_wise_entry:
+        for row in re_doc.items:
             row_weight = float(row.get("net_weight") or 0)
             if row_weight <= 0:
                 continue

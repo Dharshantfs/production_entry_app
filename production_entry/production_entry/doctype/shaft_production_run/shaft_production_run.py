@@ -152,7 +152,7 @@ def get_shaft_jobs(production_plan):
                 
                 if wo:
                     items.append({
-                        'job_no': job_id,
+                        'job': job_id,
                         'shaft_combination': combination,
                         'work_order': wo.get('name', ''),
                         'item_code': item_code,
@@ -194,7 +194,7 @@ def get_or_create_roll_entry(shaft_production_run):
         else:
             frappe.throw(_('Could not find Production Plan linked to {0}').format(shaft_production_run))
 
-    roll_wise_entry = []
+    items = []
 
     # Loop through all jobs in SPR
     for job in spr_doc.shaft_jobs:
@@ -255,15 +255,18 @@ def get_or_create_roll_entry(shaft_production_run):
                         pass
                 
                 if wo:
-                    roll_wise_entry.append({
-                        'job_no': job_id,
+                    items.append({
+                        'job_id': job_id,
                         'shaft_combination': combination,
                         'planned_qty': job.total_width,
-                        'wo_id': wo.get('name', ''),
+                        'work_order': wo.get('name', ''),
                         'item_code': item_code,
                         'item_name': item_name,
                         'gsm': gsm_val,
-                        'width': width_val,
+                        'width_inch': width_val,
+                        'color': '',
+                        'quality': '',
+                        'uom': 'Kg',
                         'order_code': wo.get('name', ''),
                         'meter_per_roll': job.meter_roll_mtrs,
                         'batch_no': '',
@@ -274,5 +277,5 @@ def get_or_create_roll_entry(shaft_production_run):
 
     return {
         'production_plan': pp_name,
-        'roll_wise_entry': roll_wise_entry
+        'items': items
     }

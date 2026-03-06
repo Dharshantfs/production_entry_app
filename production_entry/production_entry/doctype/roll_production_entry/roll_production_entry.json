@@ -24,7 +24,7 @@
         "custom_batch_width",
         "manufacture_stock_entry",
         "section_break_5",
-        "roll_wise_entry"
+        "items"
     ],
     "fields": [
         {
@@ -135,7 +135,7 @@
             "label": "Production Items"
         },
         {
-            "fieldname": "roll_wise_entry",
+            "fieldname": "items",
             "fieldtype": "Table",
             "label": "Roll Entries",
             "options": "Roll Production Entry Item"
