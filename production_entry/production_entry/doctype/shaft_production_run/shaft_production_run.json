@@ -15,8 +15,6 @@
         "column_break_shift",
         "column_break_2",
         "status",
-        "section_break_5",
-        "allocated_unit",
         "column_break_7",
         "total_produced_weight",
         "section_break_9",
@@ -71,17 +69,6 @@
             "label": "Status",
             "options": "Draft\nCompleted\nCancelled",
             "read_only": 1
-        },
-        {
-            "fieldname": "section_break_5",
-            "fieldtype": "Section Break",
-            "label": "Unit Allocation"
-        },
-        {
-            "fieldname": "allocated_unit",
-            "fieldtype": "Link",
-            "label": "Allocated Unit",
-            "options": "Unit Capacity"
         },
         {
             "fieldname": "column_break_7",

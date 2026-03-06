@@ -7,6 +7,7 @@
     "field_order": [
         "work_order",
         "item_code",
+        "planned_qty",
         "job",
         "batch_no",
         "column_break_4",
@@ -38,6 +39,12 @@
             "in_list_view": 1,
             "label": "Item Code",
             "options": "Item",
+            "read_only": 1
+        },
+        {
+            "fieldname": "planned_qty",
+            "fieldtype": "Float",
+            "label": "Planned Qty",
             "read_only": 1
         },
         {

@@ -10,7 +10,8 @@
         "combination",
         "total_width",
         "meter_roll_mtrs",
-        "no_of_shafts"
+        "no_of_shafts",
+        "create_roll_entry"
     ],
     "fields": [
         {
@@ -54,6 +55,12 @@
             "in_list_view": 1,
             "label": "No of Shafts",
             "read_only": 1
+        },
+        {
+            "fieldname": "create_roll_entry",
+            "fieldtype": "Button",
+            "in_list_view": 1,
+            "label": "Create Entry"
         }
     ],
     "index_web_pages_for_search": 1,

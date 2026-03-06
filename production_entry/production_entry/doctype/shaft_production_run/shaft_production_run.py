@@ -212,77 +212,99 @@ class ShaftProductionRun(Document):
 
 @frappe.whitelist()
 def get_shaft_jobs(production_plan):
-    """
-    Fetch jobs from the Production Plan and map them tightly against assigned Work Orders.
-    Returns the exact rows to inject into the `items` child table.
-    """
+    """Fetch shaft details from Production Plan and map to Shaft Production Run Job format"""
     if not production_plan:
         return []
         
     doc = frappe.get_doc("Production Plan", production_plan)
     source_table = doc.get("custom_shaft_details") or []
-    items_to_add = []
+    jobs = []
     
-    # Track which jobs we processed
-    for pd_job in source_table:
-        job_id = str(pd_job.get("job_id") or pd_job.get("job") or pd_job.get("job_no") or "").strip()
-        combination = pd_job.get("combination") or ""
-        
-        if "combination" in combination.lower() or not job_id:
+    for d in source_table:
+        # SKIP HEADER ROWS
+        comb = str(d.get("combination") or "").lower()
+        gsm_val = str(d.get("gsm") or "").lower()
+        if "combination" in comb or "job" in comb or "gsm" in gsm_val:
             continue
             
-        # Parse available widths from this Job's combination (e.g., 46+46+26)
-        widths = []
-        for s in combination.split('+'):
-            s = s.strip().replace('"', '')
-            if s:
-                try:
-                    widths.append(float(s))
-                except ValueError:
-                    continue
+        t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
+        if isinstance(t_width_val, str) and "total" in t_width_val.lower():
+            continue
 
-        # Get work orders directly linked to this Job row
-        work_orders = frappe.db.sql("""
-            SELECT wo.name, wo.production_item, wo.qty, wo.stock_uom, wo.custom_quality, wo.custom_color
-            FROM `tabWork Order` wo
-            WHERE wo.production_plan = %s
-            AND wo.production_plan_item = %s
-            AND wo.docstatus != 2
-        """, (production_plan, job_id), as_dict=True)
-
-        # Match WOs to physical widths
-        wo_by_width = {}
-        for wo in work_orders:
-            item_code = wo.production_item
-            try:
-                if len(item_code) >= 16:
-                    # Specific to user schema: Item code chars 12-16 = width mm
-                    width_inch = round(int(item_code[12:16]) / 25.4, 1)
-                    wo_by_width[width_inch] = wo
-            except (ValueError, IndexError):
-                pass
-                
-        no_of_shafts = cint(pd_job.get('no_of_shafts') or 1)
-        if no_of_shafts <= 0: no_of_shafts = 1
+        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no")
+        if not job_id_val:
+            job_id_val = f"{d.get('combination') or 'Job'}"
+            
+        m_roll = d.get("meter_roll_mtrs") or d.get("meter_per_roll") or d.get("meter_roll")
+        n_shafts = d.get("no_of_shafts") or d.get("shafts") or d.get("no_of_rolls") or d.get("no_of_shaft")
         
-        for _ in range(no_of_shafts):
-            for target_width in widths:
-                tw_rounded = round(float(target_width), 1)
-                wo = wo_by_width.get(tw_rounded)
+        jobs.append({
+            "job_id": job_id_val,
+            "gsm": d.get("gsm"),
+            "combination": d.get("combination"),
+            "total_width": flt(t_width_val),
+            "meter_roll_mtrs": flt(m_roll),
+            "no_of_shafts": cint(n_shafts) if n_shafts else 0
+        })
+        
+    return jobs
+
+@frappe.whitelist()
+def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0):
+    """
+    Fetch exact rows required for the Popup Roll Entry based on combination and no_of_shafts.
+    """
+    items_to_add = []
+    
+    widths = []
+    for s in (combination or "").split('+'):
+        s = s.strip().replace('"', '')
+        if s:
+            try:
+                widths.append(float(s))
+            except ValueError:
+                continue
+
+    work_orders = frappe.db.sql("""
+        SELECT wo.name, wo.production_item, wo.qty, wo.stock_uom, wo.custom_quality, wo.custom_color
+        FROM `tabWork Order` wo
+        WHERE wo.production_plan = %s
+        AND wo.production_plan_item = %s
+        AND wo.docstatus != 2
+    """, (production_plan, job_id), as_dict=True)
+
+    wo_by_width = {}
+    for wo in work_orders:
+        item_code = wo.production_item
+        try:
+            if len(item_code) >= 16:
+                width_inch = round(int(item_code[12:16]) / 25.4, 1)
+                wo_by_width[width_inch] = wo
+        except (ValueError, IndexError):
+            pass
+            
+    n_shafts = cint(no_of_shafts) if cint(no_of_shafts) > 0 else 1
+    
+    for _ in range(n_shafts):
+        for target_width in widths:
+            tw_rounded = round(float(target_width), 1)
+            wo = wo_by_width.get(tw_rounded)
+            
+            if wo:
+                items_to_add.append({
+                    "job": job_id,
+                    "work_order": wo.name,
+                    "item_code": wo.production_item,
+                    "planned_qty": flt(wo.qty),
+                    "width_inch": tw_rounded,
+                    "gsm": gsm,
+                    "uom": wo.stock_uom,
+                    "color": wo.custom_color,
+                    "quality": wo.custom_quality,
+                    "meter_roll": meter_roll,
+                    "net_weight": 0.0,
+                    "gross_weight": 0.0,
+                    "roll_no": 0
+                })
                 
-                if wo:
-                    items_to_add.append({
-                        "job": job_id,
-                        "work_order": wo.name,
-                        "item_code": wo.production_item,
-                        "width_inch": tw_rounded,
-                        "gsm": pd_job.get("gsm"),
-                        "uom": wo.stock_uom,
-                        "color": wo.custom_color,
-                        "quality": wo.custom_quality,
-                        "meter_roll": pd_job.get("meter_roll_mtrs") or pd_job.get("meter_per_roll"),
-                        "net_weight": 0.0,
-                        "roll_no": 0
-                    })
-                    
     return items_to_add
