@@ -90,12 +90,8 @@ def get_shaft_jobs(production_plan):
         if isinstance(t_width, str) and "total" in t_width.lower():
             continue
 
-        job_id_val = row.get("job_id") or row.get("job") or row.get("job_no") or row.get("name")
-        if not job_id_val or len(job_id_val) > 20: # usually hash
-             job_id_val = row.get("combination") or "Job"
-            
         jobs.append({
-            "job_id": job_id_val,
+            "job_id": str(len(jobs) + 1), # Use sequential number as Job ID
             "gsm": row.get("gsm"),
             "combination": row.get("combination"),
             "total_width": flt(t_width),
