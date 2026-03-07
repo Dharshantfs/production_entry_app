@@ -149,15 +149,6 @@ frappe.ui.form.on('Shaft Production Run Item', {
 
     items_remove: function (frm) {
         calculate_total(frm);
-        if (frm.doc.docstatus === 0) {
-            frappe.call({
-                doc: frm.doc,
-                method: 'generate_batch_numbers',
-                callback: function (r) {
-                    frm.refresh_field('items');
-                }
-            });
-        }
     },
 
     items_add: function (frm, cdt, cdn) {
@@ -189,8 +180,7 @@ function select_work_orders(frm) {
         doctype: "Work Order",
         target: frm,
         setters: {
-            production_plan: frm.doc.production_plan,
-            status: "In Process",
+            production_plan: frm.doc.production_plan
         },
         add_filters_group: 1,
         get_query() {

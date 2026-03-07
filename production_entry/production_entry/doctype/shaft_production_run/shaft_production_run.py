@@ -39,14 +39,33 @@ class ShaftProductionRun(Document):
 
             wo_party = wo.get("custom_party_code") or wo.get("party_code")
             
-            # Map batch for Roll No uniqueness
-            if not row.roll_no:
-                continue
-
-            target_batch_id = f"{series_prefix}-{row.roll_no}"
-
+            # Handle sequential Batch and Roll numbering across the shift.
+            if not row.batch_no:
+                # 1. Fetch highest roll_no for this precise series_prefix globally today
+                existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}-%"]}, fields=["batch_id"])
+                max_roll_num = 0
+                for b in existing_batches:
+                    try:
+                        roll_part = b.batch_id.split("-")[-1]
+                        max_roll_num = max(max_roll_num, int(roll_part))
+                    except: pass
+                
+                # 2. Check current un-saved rows in memory
+                for r in self.items:
+                    if r.batch_no and r.batch_no.startswith(f"{series_prefix}-"):
+                        try:
+                            rp = r.batch_no.split("-")[-1]
+                            max_roll_num = max(max_roll_num, int(rp))
+                        except: pass
+                        
+                next_roll = max_roll_num + 1
+                row.batch_no = f"{series_prefix}-{next_roll}"
+                row.roll_no = next_roll
+            
+            target_batch_id = row.batch_no
+            
             # Allow overwriting batch_no logic safely (delete old if wrong prefix)
-            if row.batch_no and row.batch_no != target_batch_id:
+            if target_batch_id and not target_batch_id.startswith(f"{series_prefix}-"):
                 if frappe.db.exists("Batch", row.batch_no):
                     try:
                         if row.batch_no.startswith(series_prefix[:5]):
@@ -339,7 +358,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "total_width": flt(t_width_val),
             "meter_roll_mtrs": flt(m_roll),
             "no_of_shafts": cint(n_shafts) if n_shafts else 1,
-            "net_weight": job_net_weight_val or job_net_weight_str, # Send the string if parsing fails
+            "net_weight": job_net_weight_str, # Always send exactly the equation string
             "total_weight": job_total_weight
         })
         
@@ -392,8 +411,24 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
     # Generic fetch
     wos = frappe.get_all("Work Order",
         filters=query_filters,
-        fields=["name", "production_item", "qty", "stock_uom", "custom_quality", "custom_color", "custom_width_inch"]
     )
+    
+    # Build Map for Quality / Color from Production Plan po_items
+    pp_item_map = {}
+    if production_plan:
+        try:
+            pp_doc = frappe.get_doc("Production Plan", production_plan)
+            for p in pp_doc.get("po_items", []):
+                pp_item_map[p.item_code] = {
+                    "quality": p.get("custom_quality") or p.get("quality"),
+                    "color": p.get("custom_color") or p.get("color")
+                }
+            for p in pp_doc.get("sub_assembly_items", []):
+                pp_item_map[p.production_item] = {
+                    "quality": p.get("custom_quality") or p.get("quality"),
+                    "color": p.get("custom_color") or p.get("color")
+                }
+        except: pass
 
     wo_by_width = {}
     for wo in wos:
@@ -435,6 +470,10 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 # Calculate planned net weight per roll based on combo
                 # If a WO is 191kg for 12 shafts, it's roughly 15.9kg per shaft. We can divide by qty or use standard metric.
                 wo_planned_weight = flt(wo.qty) / (n_shafts if n_shafts else 1)
+                    
+                # Get Quality and Color from Production Plan Assembly items
+                wo_quality = pp_item_map.get(wo.production_item, {}).get("quality") or wo.custom_quality
+                wo_color = pp_item_map.get(wo.production_item, {}).get("color") or wo.custom_color
                 
                 items_to_add.append({
                     "job": job_id,
@@ -444,10 +483,10 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                     "width_inch": tw_rounded,
                     "gsm": gsm,
                     "uom": wo.stock_uom,
-                    "color": wo.custom_color,
-                    "quality": wo.custom_quality,
+                    "color": wo_color,
+                    "quality": wo_quality,
                     "meter_roll": meter_roll,
-                    "net_weight": 0.0,
+                    "net_weight": round(wo_planned_weight, 3),
                     "gross_weight": 0.0,
                     "roll_no": 0
                 })
