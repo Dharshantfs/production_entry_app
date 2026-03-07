@@ -328,7 +328,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         for w in widths:
             # Find the closest width in our WO map
             for rw in wo_qty_by_width.keys():
-                if abs(w - rw) <= 0.1:
+                if abs(w - rw) <= 1.0:
                     job_total_planned_weight += wo_qty_by_width[rw]
                     break
                     
@@ -455,7 +455,7 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             
             matched_wo_width = None
             for w in wo_by_width.keys():
-                if abs(w - tw_rounded) <= 0.1:
+                if abs(w - tw_rounded) <= 1.0:
                     if len(wo_by_width[w]) > 0:
                         matched_wo_width = w
                         break

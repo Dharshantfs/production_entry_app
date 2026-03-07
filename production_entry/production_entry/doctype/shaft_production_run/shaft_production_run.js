@@ -98,10 +98,22 @@ frappe.ui.form.on('Shaft Production Run Job', {
                     let rolls_to_add = r.message;
                     let max_roll = 0;
 
+                    // Clean up empty default rows
+                    let valid_rows = [];
                     (frm.doc.items || []).forEach(r_row => {
-                        let rn = parseInt(r_row.roll_no) || 0;
-                        if (rn > max_roll) max_roll = rn;
+                        if (r_row.work_order || r_row.item_code) {
+                            valid_rows.push(r_row);
+                            let rn = parseInt(r_row.roll_no) || 0;
+                            if (rn > max_roll) max_roll = rn;
+                        }
                     });
+
+                    if (valid_rows.length === 0) {
+                        frm.clear_table('items');
+                    } else if (valid_rows.length < (frm.doc.items || []).length) {
+                        // Remove invalid rows physically from memory so Frappe doesn't validate them
+                        frm.doc.items = valid_rows;
+                    }
 
                     rolls_to_add.forEach(r_info => {
                         let new_row = frm.add_child('items');
@@ -257,8 +269,7 @@ function fetch_jobs_for_wos(frm, work_orders) {
 // Popup dialog removed by user request, rows now fill automatically.
 
 function set_shift_production(frm) {
-    let system_time = frappe.datetime.now_datetime();
-    let current_hour = moment(system_time).hour();
+    let current_hour = new Date().getHours();
 
     if (current_hour >= 8 && current_hour < 20) {
         frm.set_value('shift', 'Day Shift');
