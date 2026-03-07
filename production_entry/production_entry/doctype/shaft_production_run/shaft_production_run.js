@@ -116,10 +116,22 @@ frappe.ui.form.on('Shaft Production Run Job', {
                         calculate_total(frm);
                     }
 
-                    frappe.msgprint({
-                        title: 'Success',
-                        message: `Successfully added ${rolls_to_add.length} rolls for Job ${row.job_id} to the Produced Rolls table.`,
-                        indicator: 'green'
+                    // Auto-generate batch numbers right away
+                    frm.save('Save', () => {
+                        frappe.call({
+                            doc: cur_frm.doc,
+                            method: 'generate_batch_numbers',
+                            callback: function (r) {
+                                if (!r.exc) {
+                                    cur_frm.refresh_field('items');
+                                    frappe.msgprint({
+                                        title: 'Success',
+                                        message: `Successfully added ${rolls_to_add.length} rolls for Job ${row.job_id} to the Produced Rolls table and generated batch numbers.`,
+                                        indicator: 'green'
+                                    });
+                                }
+                            }
+                        });
                     });
                 } else {
                     frappe.msgprint("Could not find matching Work Orders for this Job's widths. Ensure WOs are created and not closed/cancelled.");
@@ -137,6 +149,15 @@ frappe.ui.form.on('Shaft Production Run Item', {
 
     items_remove: function (frm) {
         calculate_total(frm);
+        if (frm.doc.docstatus === 0) {
+            frappe.call({
+                doc: frm.doc,
+                method: 'generate_batch_numbers',
+                callback: function (r) {
+                    frm.refresh_field('items');
+                }
+            });
+        }
     },
 
     items_add: function (frm, cdt, cdn) {

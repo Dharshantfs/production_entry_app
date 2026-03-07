@@ -13,6 +13,7 @@ class ShaftProductionRun(Document):
             total_qty += flt(row.net_weight or 0.0)
         self.total_produced_weight = total_qty
         
+    @frappe.whitelist()
     def generate_batch_numbers(self):
         # Only operate if shift has been determined
         shift_name = str(self.get("shift") or "DAY").upper()
