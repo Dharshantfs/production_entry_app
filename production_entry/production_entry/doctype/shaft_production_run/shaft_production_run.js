@@ -31,7 +31,7 @@ frappe.ui.form.on('Shaft Production Run', {
                     return '<button type="button" class="btn btn-xs btn-default" ' +
                         'style="width: 100%; font-weight: bold; cursor: pointer !important; pointer-events: auto;" ' +
                         'onclick="frappe.generate_sticker_flow(\'' + row_doc.name + '\')"> ' +
-                        'Print Label ' +
+                        'Create Label ' +
                         '</button>';
                 };
                 grid.refresh();
@@ -64,11 +64,14 @@ frappe.ui.form.on('Shaft Production Run', {
             },
             callback: function (r) {
                 if (r.message) {
+                    var jobs = r.message.jobs || [];
+                    var label_type = r.message.label_type || "Default";
+
                     frm.clear_table('shaft_jobs');
                     // We intentionally don't clear 'items' in case they've already started entering rolls
 
-                    if (r.message.length > 0) {
-                        r.message.forEach(function (d) {
+                    if (jobs.length > 0) {
+                        jobs.forEach(function (d) {
                             var job_row = frm.add_child('shaft_jobs');
                             job_row.job_id = d.job_id;
                             job_row.combination = d.combination;
@@ -78,8 +81,9 @@ frappe.ui.form.on('Shaft Production Run', {
                             job_row.gsm = d.gsm;
                         });
 
+                        frm.set_value('custom_label', label_type);
                         frm.refresh_field('shaft_jobs');
-                        frappe.msgprint(`Fetched ${r.message.length} jobs from Production Plan.`);
+                        frappe.msgprint(`Fetched ${jobs.length} jobs from Production Plan. Label Type set to ${label_type}.`);
                     }
                 }
             }
@@ -261,9 +265,12 @@ function fetch_jobs_for_wos(frm, work_orders) {
         },
         callback: function (r) {
             if (r.message) {
+                var jobs = r.message.jobs || [];
+                var label_type = r.message.label_type || "Default";
+
                 frm.clear_table('shaft_jobs');
-                if (r.message.length > 0) {
-                    r.message.forEach(d => {
+                if (jobs.length > 0) {
+                    jobs.forEach(function (d) {
                         var job_row = frm.add_child('shaft_jobs');
                         job_row.job_id = d.job_id;
                         job_row.gsm = d.gsm;
@@ -274,6 +281,7 @@ function fetch_jobs_for_wos(frm, work_orders) {
                         job_row.total_weight = d.total_weight;
                         job_row.no_of_shafts = d.no_of_shafts;
                     });
+                    frm.set_value('custom_label', label_type);
                     frm.refresh_field('shaft_jobs');
                 } else {
                     frappe.msgprint("No matching Shaft Jobs found in Production Plan for the selected Work Orders.");

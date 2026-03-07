@@ -328,7 +328,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         
     wos = frappe.get_all("Work Order",
         filters=wo_filters,
-        fields=["name", "production_item", "custom_width_inch", "qty"]
+        fields=["name", "production_item", "custom_width_inch", "qty", "custom_label"]
     )
     
     # Fetch exact widths from Production Plan items
@@ -361,6 +361,13 @@ def get_shaft_jobs(production_plan, work_orders=None):
         if w_inch is not None:
             relevant_widths.add(w_inch)
             wo_qty_by_width[w_inch] = wo_qty_by_width.get(w_inch, 0) + flt(wo.qty)
+
+    # Determine the label type from the first Work Order (they usually match)
+    label_type = "Default"
+    for wo in wos:
+        if wo.get("custom_label"):
+            label_type = wo.custom_label
+            break
 
     jobs = []
     
@@ -435,7 +442,10 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "total_weight": job_total_weight
         })
         
-    return jobs
+    return {
+        "jobs": jobs,
+        "label_type": label_type
+    }
 
 
 
