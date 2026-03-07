@@ -568,6 +568,22 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 quality = matched_p_item.get("quality") or matched_p_item.get("custom_quality")
                 color = matched_p_item.get("color") or matched_p_item.get("custom_color")
                 uom = matched_p_item.get("uom") or "Kg"
+                
+                # FALLBACK: If color/quality missing, fetch from Item Master
+                if not quality or not color:
+                    item_doc = frappe.get_cached_doc("Item", item_code)
+                    if not quality:
+                        quality = item_doc.get("quality") or item_doc.get("custom_quality")
+                    if not color:
+                        color = item_doc.get("color") or item_doc.get("custom_color")
+                    
+                    # FINAL FALLBACK: Parse from Item Name
+                    if not quality or not color:
+                        item_name = item_doc.item_name or item_doc.item_code
+                        parsed = extract_details_from_name(item_name, item_code)
+                        if not quality: quality = parsed.get("quality")
+                        if not color: color = parsed.get("color")
+
                 # If we didn't get a weight component from formula, fallback to the item's planned_qty
                 if planned_qty <= 0:
                     planned_qty = flt(matched_p_item.get("planned_qty")) or flt(matched_p_item.get("qty"))
@@ -624,3 +640,50 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
     })
 
     return items_to_add
+
+
+def extract_details_from_name(name, code):
+    """Mirror of JS extract_details_enhanced logic for server-side use"""
+    QUALITY_MASTER = {
+        "100": "PREMIUM", "101": "PLATINUM", "102": "SUPER PLATINUM",
+        "103": "GOLD", "104": "SILVER", "105": "BRONZE",
+        "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
+        "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
+        "112": "ULTRA", "113": "DELUXE", "114": "UV"
+    }
+    
+    res = {"gsm": None, "color": None, "width_inch": None, "quality": None}
+    name_upper = (name or "").upper()
+    code = str(code or "")
+
+    # 1. Try extraction from 16-digit code
+    if len(code) == 16 and code.isdigit():
+        qual_code = code[3:6]
+        if qual_code in QUALITY_MASTER:
+            res["quality"] = QUALITY_MASTER[qual_code]
+        
+        try:
+            res["gsm"] = str(int(code[9:12]))
+            res["width_inch"] = str(round(int(code[12:16]) / 25.4))
+        except: pass
+
+    # 2. Try extraction from Name if still missing
+    if not res["quality"]:
+        known_qualities = sorted(QUALITY_MASTER.values(), key=len, reverse=True)
+        for q in known_qualities:
+            if q.upper() in name_upper:
+                res["quality"] = q
+                break
+
+    if res["quality"] and name:
+        import re
+        q_regex = re.escape(res["quality"].upper())
+        match = re.search(q_regex, name_upper)
+        if match:
+            after_qual = name[match.end():].strip()
+            # Remove GSM parts
+            after_qual = re.split(r'\s*\d+\s*GSM', after_qual, flags=re.I)[0].strip()
+            if after_qual:
+                res["color"] = after_qual
+
+    return res

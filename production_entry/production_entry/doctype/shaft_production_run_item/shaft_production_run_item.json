@@ -133,6 +133,7 @@
         {
             "fieldname": "print_sticker",
             "fieldtype": "Button",
+            "in_list_view": 1,
             "label": "Print Label"
         }
     ],

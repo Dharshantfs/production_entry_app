@@ -313,27 +313,36 @@ frappe.generate_sticker_flow = function (row_name) {
         return;
     }
 
-    var raw_label = cur_frm.doc.custom_label || "Default";
-    var label_type = raw_label.trim().toLowerCase();
-
     var row = locals['Shaft Production Run Item'][row_name];
     if (!row) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
 
     if (!row) {
-        console.error("Label Printing: Row " + row_name + " not found in locals or items.");
+        console.error("Label Printing: Row " + row_name + " not found.");
         return;
     }
 
-    console.log("Generating Label for Row:", row);
-
     var item_code = row.item_code || "";
-    // In our system, the item name isn't directly on the row, we might need to get it from the Item link if missing
-    // But we'll try to extract from code first.
-    var details = extract_details_enhanced("", item_code);
+
+    // Fetch item name to improve extraction accuracy
+    frappe.db.get_value('Item', item_code, 'item_name', function (r) {
+        var item_name = (r && r.item_name) || "";
+        trigger_print_with_details(row_name, item_name);
+    });
+};
+
+function trigger_print_with_details(row_name, item_name) {
+    var raw_label = cur_frm.doc.custom_label || "Default";
+    var label_type = raw_label.trim().toLowerCase();
+    var row = locals['Shaft Production Run Item'][row_name] || (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+    if (!row) return;
+
+    var details = extract_details_enhanced(item_name, row.item_code);
 
     var final_gsm = row.gsm || details.gsm || "";
     var final_color = row.color || details.color || "";
     var final_quality = row.quality || details.quality || "";
+
+    console.log("Sticker Flow:", { label_type: label_type, row: row, details: details });
 
     if (label_type.includes("reliance") || label_type.includes("relience")) {
         flow_reliance_cm(row_name, final_gsm, final_color, final_quality);
@@ -341,7 +350,7 @@ frappe.generate_sticker_flow = function (row_name) {
         var w = row.width_inch || details.width_inch || "0";
         frappe.run_print_logic(row_name, w + " Inches", final_gsm, final_color, final_quality);
     }
-};
+}
 
 var QUALITY_MASTER = {
     "100": "PREMIUM", "101": "PLATINUM", "102": "SUPER PLATINUM",
