@@ -106,21 +106,19 @@ frappe.ui.form.on('Shaft Production Run Job', {
                     rolls_to_add.forEach(r_info => {
                         let new_row = frm.add_child('items');
                         max_roll++;
-                        frappe.model.set_value(new_row.doctype, new_row.name, {
-                            job: r_info.job,
-                            work_order: r_info.work_order,
-                            item_code: r_info.item_code,
-                            planned_qty: r_info.planned_qty,
-                            width_inch: r_info.width_inch,
-                            gsm: r_info.gsm,
-                            uom: r_info.uom,
-                            color: r_info.color,
-                            quality: r_info.quality,
-                            meter_roll: r_info.meter_roll,
-                            net_weight: r_info.net_weight,
-                            gross_weight: r_info.gross_weight,
-                            roll_no: max_roll
-                        });
+                        new_row.job = r_info.job;
+                        new_row.work_order = r_info.work_order;
+                        new_row.item_code = r_info.item_code;
+                        new_row.planned_qty = r_info.planned_qty;
+                        new_row.width_inch = r_info.width_inch;
+                        new_row.gsm = r_info.gsm;
+                        new_row.uom = r_info.uom;
+                        new_row.color = r_info.color;
+                        new_row.quality = r_info.quality;
+                        new_row.meter_roll = r_info.meter_roll;
+                        new_row.net_weight = r_info.net_weight;
+                        new_row.gross_weight = r_info.gross_weight;
+                        new_row.roll_no = max_roll;
                     });
 
                     frm.refresh_field('items');
