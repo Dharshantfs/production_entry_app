@@ -59,7 +59,7 @@ frappe.ui.form.on('Shaft Production Run', {
                     // We intentionally don't clear 'items' in case they've already started entering rolls
 
                     if (r.message.length > 0) {
-                        r.message.forEach(d => {
+                        r.message.forEach(function (d) {
                             let job_row = frm.add_child('shaft_jobs');
                             job_row.job_id = d.job_id;
                             job_row.combination = d.combination;
@@ -185,7 +185,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
     items_add: function (frm, cdt, cdn) {
         if (frm.doc.docstatus === 0) {
             let max_roll = 0;
-            (frm.doc.items || []).forEach(row => {
+            (frm.doc.items || []).forEach(function (row) {
                 let r = parseInt(row.roll_no) || 0;
                 if (r > max_roll) max_roll = r;
             });
@@ -293,7 +293,9 @@ frappe.generate_sticker_flow = function (row_name) {
     var label_type = raw_label.trim().toLowerCase();
 
     var row = locals['Shaft Production Run Item'][row_name];
-    if (!row && cur_frm) row = (cur_frm.doc.items || []).find(r => r.name === row_name);
+    if (!row && cur_frm) {
+        row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+    }
 
     if (!row) return;
 
@@ -315,7 +317,9 @@ frappe.generate_sticker_flow = function (row_name) {
 
 function flow_reliance_cm(row_name, final_gsm, final_color, final_quality) {
     var d = locals['Shaft Production Run Item'][row_name];
-    if (!d && cur_frm) d = (cur_frm.doc.items || []).find(r => r.name === row_name);
+    if (!d && cur_frm) {
+        d = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+    }
     if (!d) return;
 
     var w = parseFloat(d.width_inch || 0);
