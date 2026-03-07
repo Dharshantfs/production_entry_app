@@ -222,10 +222,14 @@ class ShaftProductionRun(Document):
 
                 frappe.msgprint(f"✅ Auto-Generated & Submitted Stock Entry: <a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for Work Order <b>{wo.name}</b>.")
 
-            # Finalize Produced Qty and Status
-            total_produced = frappe.db.get_value("Stock Entry Detail", 
-                {"parent": ["in", frappe.get_all("Stock Entry", {"work_order": wo.name, "docstatus": 1}, pluck="name")], "is_finished_item": 1}, 
-                {"sum": "qty"}) or 0.0
+            # Finalize Produced Qty and Status by summing across all submitted Stock Entries
+            se_names = frappe.get_all("Stock Entry", filters={"work_order": wo.name, "docstatus": 1}, pluck="name")
+            total_produced = 0.0
+            if se_names:
+                total_produced = sum(flt(d.qty) for d in frappe.get_all("Stock Entry Detail", 
+                    filters={"parent": ["in", se_names], "is_finished_item": 1}, 
+                    fields=["qty"]
+                ))
 
             frappe.db.set_value("Work Order", wo.name, {
                 "produced_qty": total_produced,
