@@ -95,7 +95,32 @@ frappe.ui.form.on('Shaft Production Run Job', {
             },
             callback: function (r) {
                 if (r.message && r.message.length > 0) {
-                    open_roll_entry_dialog(frm, row, r.message);
+                    let rolls_to_add = r.message;
+                    let max_roll = 0;
+
+                    (frm.doc.items || []).forEach(r_row => {
+                        let rn = parseInt(r_row.roll_no) || 0;
+                        if (rn > max_roll) max_roll = rn;
+                    });
+
+                    rolls_to_add.forEach(r_info => {
+                        let new_row = frm.add_child('items');
+                        max_roll++;
+                        Object.assign(new_row, r_info);
+                        new_row.roll_no = max_roll;
+                        new_row.name = undefined;
+                    });
+
+                    frm.refresh_field('items');
+                    if (typeof calculate_total === "function") {
+                        calculate_total(frm);
+                    }
+
+                    frappe.msgprint({
+                        title: 'Success',
+                        message: `Successfully added ${rolls_to_add.length} rolls for Job ${row.job_id} to the Produced Rolls table.`,
+                        indicator: 'green'
+                    });
                 } else {
                     frappe.msgprint("Could not find matching Work Orders for this Job's widths. Ensure WOs are created and not closed/cancelled.");
                 }
@@ -208,64 +233,7 @@ function fetch_jobs_for_wos(frm, work_orders) {
 }
 
 
-function open_roll_entry_dialog(frm, job_row, expected_rolls) {
-    let d = new frappe.ui.Dialog({
-        title: 'Enter Rolls for Job ' + job_row.job_id,
-        size: 'extra-large',
-        fields: [
-            {
-                fieldname: 'roll_entries',
-                fieldtype: 'Table',
-                label: 'Physical Rolls for this Job',
-                options: 'Shaft Production Run Item',
-                cannot_add_rows: true,
-                cannot_delete_rows: true,
-                in_place_edit: true
-            }
-        ],
-        primary_action_label: 'Append Rolls to Main Table',
-        primary_action(values) {
-            let rolls = values.roll_entries || [];
-
-            let entered_weight = 0.0;
-            rolls.forEach(r => entered_weight += flt(r.net_weight));
-
-            if (entered_weight <= 0) {
-                frappe.msgprint({ title: 'Validation Error', indicator: 'red', message: "Total entered Net Weight must be greater than 0" });
-                return;
-            }
-
-            frappe.confirm(`Adding ${rolls.length} rolls with a total Net Weight of ${entered_weight.toFixed(2)} kg. Proceed?`, () => {
-                rolls.forEach(r => {
-                    let new_row = frm.add_child('items');
-                    Object.assign(new_row, r);
-                    new_row.name = undefined;
-                });
-
-                let max_roll = 0;
-                (frm.doc.items || []).forEach(row => {
-                    let r_no = parseInt(row.roll_no) || 0;
-                    if (r_no > max_roll) max_roll = r_no;
-                });
-
-                (frm.doc.items || []).forEach(row => {
-                    if (!row.roll_no) {
-                        max_roll++;
-                        row.roll_no = max_roll;
-                    }
-                });
-
-                frm.refresh_field('items');
-                calculate_total(frm);
-                d.hide();
-            });
-        }
-    });
-
-    d.fields_dict.roll_entries.df.data = expected_rolls;
-    d.fields_dict.roll_entries.grid.refresh();
-    d.show();
-}
+// Popup dialog removed by user request, rows now fill automatically.
 
 function set_shift_production(frm) {
     let system_time = frappe.datetime.now_datetime();
