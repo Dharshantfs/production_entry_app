@@ -184,7 +184,6 @@ class ShaftProductionRun(Document):
                         "qty": suggested_qty,
                         "uom": wo_item.stock_uom,
                         "stock_uom": wo_item.stock_uom,
-                        "conversion_factor": wo_item.conversion_factor or 1.0,
                         "is_finished_item": 0,
                     })
 
