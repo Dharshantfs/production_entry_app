@@ -274,14 +274,28 @@ def get_shaft_jobs(production_plan, work_orders=None):
         fields=["name", "production_item", "custom_width_inch", "qty"]
     )
     
+    # Fetch exact widths from Production Plan items
+    pp_widths = {}
+    if production_plan:
+        try:
+            pp_doc = frappe.get_doc("Production Plan", production_plan)
+            for p in pp_doc.get("po_items", []):
+                pp_widths[p.item_code] = flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
+            for p in pp_doc.get("sub_assembly_items", []):
+                pp_widths[p.production_item] = flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
+        except: pass
+
     for wo in wos:
         w_inch = None
-        if wo.custom_width_inch and flt(wo.custom_width_inch) > 0:
+        # Priority 1: Exact mapping from Production Plan
+        if wo.production_item in pp_widths and pp_widths[wo.production_item]:
+            w_inch = round(float(pp_widths[wo.production_item]), 1)
+        # Priority 2: Work Order custom field
+        elif wo.custom_width_inch and flt(wo.custom_width_inch) > 0:
             w_inch = round(flt(wo.custom_width_inch), 1)
+        # Priority 3: Parse metric item code
         else:
             ic = str(wo.production_item)
-            # Example item code: 1001091010800660
-            # Length is 16. Digits 12:16 represent mm. "0660" -> 660. 660 / 25.4 = 25.98 -> 26.0
             if len(ic) >= 16:
                 try:
                     w_inch = round(int(ic[12:16]) / 25.4, 1)
@@ -421,20 +435,28 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             for p in pp_doc.get("po_items", []):
                 pp_item_map[p.item_code] = {
                     "quality": p.get("custom_quality") or p.get("quality"),
-                    "color": p.get("custom_color") or p.get("color")
+                    "color": p.get("custom_color") or p.get("color"),
+                    "width": flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
                 }
             for p in pp_doc.get("sub_assembly_items", []):
                 pp_item_map[p.production_item] = {
                     "quality": p.get("custom_quality") or p.get("quality"),
-                    "color": p.get("custom_color") or p.get("color")
+                    "color": p.get("custom_color") or p.get("color"),
+                    "width": flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
                 }
         except: pass
 
     wo_by_width = {}
     for wo in wos:
         w = None
-        if wo.custom_width_inch and flt(wo.custom_width_inch) > 0:
+        
+        # Priority 1: Exact mapping from Production Plan
+        if wo.production_item in pp_item_map and pp_item_map[wo.production_item].get("width"):
+            w = round(float(pp_item_map[wo.production_item]["width"]), 1)
+        # Priority 2: Work Order custom field
+        elif wo.custom_width_inch and flt(wo.custom_width_inch) > 0:
             w = round(flt(wo.custom_width_inch), 1)
+        # Priority 3: Parse metric item code
         else:
             ic = str(wo.production_item)
             if len(ic) >= 16:
@@ -501,5 +523,15 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                     "gross_weight": 0.0,
                     "roll_no": 0
                 })
-                
+    # Add one extra unmapped empty row for user flexibility as requested
+    items_to_add.append({
+        "job": job_id,
+        "width_inch": 0.0,
+        "gsm": gsm,
+        "meter_roll": 0.0,
+        "net_weight": 0.0,
+        "gross_weight": 0.0,
+        "roll_no": 0
+    })
+
     return items_to_add
