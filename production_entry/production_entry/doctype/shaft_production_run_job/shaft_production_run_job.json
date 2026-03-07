@@ -53,7 +53,7 @@
         },
         {
             "fieldname": "net_weight",
-            "fieldtype": "Float",
+            "fieldtype": "Data",
             "in_list_view": 1,
             "label": "Net Weight",
             "read_only": 1

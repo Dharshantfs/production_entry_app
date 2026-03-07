@@ -309,9 +309,24 @@ def get_shaft_jobs(production_plan, work_orders=None):
                 if abs(w - rw) <= 0.1:
                     job_total_planned_weight += wo_qty_by_width[rw]
                     break
+                    
+        # net_wt might be a string like "74.78 + 74.78 + 42.27 = 191.83"
+        job_net_weight_str = str(net_wt or "")
+        job_net_weight_val = 0.0
+        if "=" in job_net_weight_str:
+            try:
+                job_net_weight_val = flt(job_net_weight_str.split("=")[-1].strip())
+            except: pass
+        else:
+            try:
+                # Just pluck the first number we see if there's no =
+                matches = re.findall(r"\d+\.?\d*", job_net_weight_str)
+                if matches:
+                    job_net_weight_val = flt(matches[-1]) 
+            except: pass
+            
+        # The user's system often calculates the final "combination" weight, so pass the raw string too
         
-        # Alternatively trust the 'net_wt' / 'tot_wt' from custom_shaft_details if it exists
-        job_net_weight = flt(net_wt) if flt(net_wt) > 0 else 0
         job_total_weight = flt(tot_wt) if flt(tot_wt) > 0 else job_total_planned_weight
 
         jobs.append({
@@ -321,7 +336,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "total_width": flt(t_width_val),
             "meter_roll_mtrs": flt(m_roll),
             "no_of_shafts": cint(n_shafts) if n_shafts else 1,
-            "net_weight": job_net_weight,
+            "net_weight": job_net_weight_val or job_net_weight_str, # Send the string if parsing fails
             "total_weight": job_total_weight
         })
         
