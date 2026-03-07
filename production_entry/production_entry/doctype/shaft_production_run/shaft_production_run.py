@@ -411,16 +411,13 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
     query_filters = {
         "production_plan": production_plan,
-        "docstatus": ["!=", 2]
+        "docstatus": ["!=", 2],
+        "status": ["!=", "Completed"]
     }
     
     # If selected work_orders are provided, restrict to them
     if work_orders:
         query_filters["name"] = ["in", work_orders]
-    else:
-        # If no explicit selection, we fallback to production_plan_item if job_id is numeric
-        if str(job_id).isdigit():
-            query_filters["production_plan_item"] = job_id
             
     # Generic fetch
     wos = frappe.get_all("Work Order",
