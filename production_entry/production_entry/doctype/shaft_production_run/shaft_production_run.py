@@ -90,13 +90,18 @@ class ShaftProductionRun(Document):
                         pass
 
             row.batch_no = target_batch_id
-
-            row.batch_no = target_batch_id
-            row.roll_no = next_roll
+            
+            # Ensure roll_no is at least numeric and syncs with batch_no suffix if possible
+            if row.batch_no and "-" in row.batch_no:
+                try:
+                    row.roll_no = int(row.batch_no.split("-")[-1])
+                except:
+                    pass
         
         # If this is called via button (whitelisted), we must save to persist row assignments
         if frappe.request and frappe.request.path.endswith("run_method"):
             self.save(ignore_permissions=True)
+            return self.as_dict()
 
 
     def get_shift_series_by_identity(self, item_code, unit_code, current_shift):

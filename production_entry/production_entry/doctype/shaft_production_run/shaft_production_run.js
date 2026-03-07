@@ -9,8 +9,9 @@ frappe.ui.form.on('Shaft Production Run', {
                     doc: frm.doc,
                     method: 'generate_batch_numbers',
                     callback: function (r) {
-                        if (!r.exc) {
-                            frm.refresh_field('items');
+                        if (r.message && !r.exc) {
+                            frappe.model.sync(r.message);
+                            frm.refresh();
                             frappe.msgprint("Shift and Batch Sequence calculated. Please verify Roll Numbers.");
                         }
                     }
@@ -165,8 +166,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
                                 doc: frm.doc,
                                 method: 'generate_batch_numbers',
                                 callback: function (r) {
-                                    if (!r.exc) {
-                                        frm.refresh_field('items');
+                                    if (r.message && !r.exc) {
+                                        frappe.model.sync(r.message);
+                                        frm.refresh();
                                         frappe.msgprint({
                                             title: 'Success',
                                             message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + ' to the Produced Rolls table and generated batch numbers.',
@@ -306,12 +308,23 @@ function set_shift_production(frm) {
 }
 
 frappe.generate_sticker_flow = function (row_name) {
+    if (!cur_frm || !cur_frm.doc) {
+        console.error("Label Printing: cur_frm not found.");
+        return;
+    }
+
     var raw_label = cur_frm.doc.custom_label || "Default";
     var label_type = raw_label.trim().toLowerCase();
 
     var row = locals['Shaft Production Run Item'][row_name];
-    if (!row && cur_frm) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
-    if (!row) return;
+    if (!row) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+
+    if (!row) {
+        console.error("Label Printing: Row " + row_name + " not found in locals or items.");
+        return;
+    }
+
+    console.log("Generating Label for Row:", row);
 
     var item_code = row.item_code || "";
     // In our system, the item name isn't directly on the row, we might need to get it from the Item link if missing
