@@ -17,7 +17,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
         setTimeout(function () {
             if (frm.fields_dict['items'] && frm.fields_dict['items'].grid) {
-                let grid = frm.fields_dict['items'].grid;
+                var grid = frm.fields_dict['items'].grid;
                 grid.get_field('print_sticker').formatter = function (value, row_doc) {
                     return '<button type="button" class="btn btn-xs btn-default" ' +
                         'style="width: 100%; font-weight: bold; cursor: pointer !important; pointer-events: auto;" ' +
@@ -60,7 +60,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
                     if (r.message.length > 0) {
                         r.message.forEach(function (d) {
-                            let job_row = frm.add_child('shaft_jobs');
+                            var job_row = frm.add_child('shaft_jobs');
                             job_row.job_id = d.job_id;
                             job_row.combination = d.combination;
                             job_row.total_width = d.total_width;
@@ -80,9 +80,9 @@ frappe.ui.form.on('Shaft Production Run', {
 
 frappe.ui.form.on('Shaft Production Run Job', {
     create_roll_entry: function (frm, cdt, cdn) {
-        let row = locals[cdt][cdn];
+        var row = locals[cdt][cdn];
 
-        let wos = [];
+        var wos = [];
         if (row.work_orders && row.work_orders.trim() !== "") {
             wos = row.work_orders.split(',').map(s => s.trim()).filter(s => s);
         }
@@ -101,15 +101,15 @@ frappe.ui.form.on('Shaft Production Run Job', {
             },
             callback: function (r) {
                 if (r.message && r.message.length > 0) {
-                    let rolls_to_add = r.message;
-                    let max_roll = 0;
+                    var rolls_to_add = r.message;
+                    var max_roll = 0;
 
                     // Clean up empty default rows
-                    let valid_rows = [];
+                    var valid_rows = [];
                     (frm.doc.items || []).forEach(function (r_row) {
                         if (r_row.work_order || r_row.item_code) {
                             valid_rows.push(r_row);
-                            let rn = parseInt(r_row.roll_no) || 0;
+                            var rn = parseInt(r_row.roll_no) || 0;
                             if (rn > max_roll) max_roll = rn;
                         }
                     });
@@ -122,7 +122,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
                     }
 
                     rolls_to_add.forEach(function (r_info) {
-                        let new_row = frm.add_child('items');
+                        var new_row = frm.add_child('items');
                         max_roll++;
                         new_row.job = r_info.job;
                         new_row.work_order = r_info.work_order;
@@ -184,9 +184,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 
     items_add: function (frm, cdt, cdn) {
         if (frm.doc.docstatus === 0) {
-            let max_roll = 0;
+            var max_roll = 0;
             (frm.doc.items || []).forEach(function (row) {
-                let r = parseInt(row.roll_no) || 0;
+                var r = parseInt(row.roll_no) || 0;
                 if (r > max_roll) max_roll = r;
             });
             frappe.model.set_value(cdt, cdn, 'roll_no', max_roll + 1);
@@ -199,7 +199,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 // ==========================================
 
 function calculate_total(frm) {
-    let total = 0.0;
+    var total = 0.0;
     (frm.doc.items || []).forEach(function (row) {
         total += flt(row.net_weight);
     });
@@ -207,7 +207,7 @@ function calculate_total(frm) {
 }
 
 function select_work_orders(frm) {
-    let d = new frappe.ui.form.MultiSelectDialog({
+    var d = new frappe.ui.form.MultiSelectDialog({
         doctype: "Work Order",
         target: frm,
         setters: {
@@ -255,7 +255,7 @@ function fetch_jobs_for_wos(frm, work_orders) {
                 frm.clear_table('shaft_jobs');
                 if (r.message.length > 0) {
                     r.message.forEach(d => {
-                        let job_row = frm.add_child('shaft_jobs');
+                        var job_row = frm.add_child('shaft_jobs');
                         job_row.job_id = d.job_id;
                         job_row.gsm = d.gsm;
                         job_row.combination = d.combination;
@@ -278,7 +278,7 @@ function fetch_jobs_for_wos(frm, work_orders) {
 // Popup dialog removed by user request, rows now fill automatically.
 
 function set_shift_production(frm) {
-    let current_hour = new Date().getHours();
+    var current_hour = new Date().getHours();
 
     if (current_hour >= 8 && current_hour < 20) {
         frm.set_value('shift', 'Day Shift');
@@ -383,7 +383,7 @@ function frappe_run_print_logic(row_name, final_width, final_gsm, final_color, f
 frappe.run_print_logic = function (row_name, final_width, final_gsm, final_color, final_quality) {
     if (typeof qz === "undefined") {
         frappe.msgprint("QZ Tray not detected. Printing bypass for preview.");
-        let print_url = frappe.urllib.get_full_url(
+        var print_url = frappe.urllib.get_full_url(
             '/printview?doctype=Shaft Production Run&name=' + cur_frm.doc.name + '&format=Roll Label'
         );
         window.open(print_url, '_blank');
