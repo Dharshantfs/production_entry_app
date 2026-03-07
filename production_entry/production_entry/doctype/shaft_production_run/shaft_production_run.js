@@ -96,6 +96,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
                 no_of_shafts: parseInt(row.no_of_shafts) || 1,
                 gsm: parseFloat(row.gsm) || 0,
                 meter_roll: parseFloat(row.meter_roll_mtrs) || 0,
+                net_weight: row.net_weight, // Pass the formula string (e.g. 74.78 + 74.78 + 42.27 = 191.83)
                 work_orders: wos.length > 0 ? JSON.stringify(wos) : null
             },
             callback: function (r) {

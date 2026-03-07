@@ -132,19 +132,30 @@ class ShaftProductionRun(Document):
         wo_groups = {}
         for row in self.items:
             if not row.work_order: continue
-            if flt(row.net_weight) <= 0: continue
             
             if row.work_order not in wo_groups:
-                wo_groups[row.work_order] = {"total_weight": 0.0, "rows": []}
+                wo_groups[row.work_order] = {
+                    "total_actual_weight": 0.0, 
+                    "total_planned_weight": 0.0,
+                    "rows": []
+                }
                 
-            wo_groups[row.work_order]["total_weight"] += flt(row.net_weight)
+            wo_groups[row.work_order]["total_actual_weight"] += flt(row.net_weight)
+            wo_groups[row.work_order]["total_planned_weight"] += flt(row.planned_qty)
             wo_groups[row.work_order]["rows"].append(row)
             
         
         for wo_name, group in wo_groups.items():
-            actual_qty = group["total_weight"]
+            actual_qty = group["total_actual_weight"]
+            planned_qty = group["total_planned_weight"]
+            
             wo = frappe.get_doc("Work Order", wo_name)
             
+            # If the user wants to override the WO's planned Qty with our calculated sum
+            if planned_qty > 0:
+                frappe.db.set_value("Work Order", wo.name, "qty", planned_qty)
+                wo.qty = planned_qty # Sync for ratio calc
+
             # 1. Clean up old drafts
             old_drafts = frappe.get_all("Stock Entry",
                 filters={"work_order": wo.name, "stock_entry_type": "Manufacture", "docstatus": 0},
@@ -155,7 +166,10 @@ class ShaftProductionRun(Document):
 
             se_items = []
             wo_planned_qty = flt(wo.qty) or 1.0
-            ratio = actual_qty / wo_planned_qty
+            
+            # Use actual weight for consumption ratio
+            # If we produced 191.83kg, we consume material for 191.83kg.
+            ratio = actual_qty / wo_planned_qty if actual_qty > 0 else 0
 
             # Raw Materials Consumption
             for wo_item in wo.required_items:
@@ -177,56 +191,46 @@ class ShaftProductionRun(Document):
             # Finished Goods per Roll (for unique Batches)
             fg_uom = wo.stock_uom or "Kg"
             for row in group["rows"]:
-                se_items.append({
-                    "item_code": wo.production_item,
-                    "s_warehouse": "",
-                    "t_warehouse": wo.fg_warehouse,
-                    "qty": flt(row.net_weight),
-                    "uom": fg_uom,
-                    "stock_uom": fg_uom,
-                    "conversion_factor": 1.0,
-                    "is_finished_item": 1,
-                    "batch_no": row.batch_no
-                })
+                if flt(row.net_weight) > 0:
+                    se_items.append({
+                        "item_code": wo.production_item,
+                        "s_warehouse": "",
+                        "t_warehouse": wo.fg_warehouse,
+                        "qty": flt(row.net_weight),
+                        "uom": fg_uom,
+                        "stock_uom": fg_uom,
+                        "conversion_factor": 1.0,
+                        "is_finished_item": 1,
+                        "batch_no": row.batch_no
+                    })
 
-            se = frappe.new_doc("Stock Entry")
-            se.stock_entry_type = "Manufacture"
-            se.work_order = wo.name
-            se.company = wo.company
-            se.from_bom = 1
-            se.bom_no = wo.bom_no
-            se.use_multi_level_bom = wo.use_multi_level_bom
-            se.fg_completed_qty = actual_qty
-            
-            # Need to attach items properly
-            for item in se_items:
-                se.append("items", item)
+            if se_items:
+                se = frappe.new_doc("Stock Entry")
+                se.stock_entry_type = "Manufacture"
+                se.work_order = wo.name
+                se.company = wo.company
+                se.from_bom = 1
+                se.bom_no = wo.bom_no
+                se.use_multi_level_bom = wo.use_multi_level_bom
+                se.fg_completed_qty = actual_qty
                 
-            se.insert(ignore_permissions=True)
-            se.submit()
+                # Need to attach items properly
+                for item in se_items:
+                    se.append("items", item)
+                    
+                se.insert(ignore_permissions=True)
+                se.submit()
 
-            frappe.msgprint(f"✅ Auto-Generated & Submitted Stock Entry: <a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for Work Order <b>{wo.name}</b>.")
+                frappe.msgprint(f"✅ Auto-Generated & Submitted Stock Entry: <a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for Work Order <b>{wo.name}</b>.")
 
-            # Update WO Qty manually as post-processing 
-            total_produced = 0.0
-            all_ses = frappe.get_all("Stock Entry",
-                filters={"work_order": wo.name, "stock_entry_type": "Manufacture", "docstatus": 1},
-                fields=["name"]
-            )
-            for s in all_ses:
-                rows = frappe.get_all("Stock Entry Detail",
-                    filters={"parent": s.name, "is_finished_item": 1},
-                    fields=["qty"]
-                )
-                total_produced += sum(flt(r.qty) for r in rows)
-                
-            new_status = "Completed" if total_produced >= wo_planned_qty else "In Process"
-            additional_qty = max(0.0, total_produced - wo_planned_qty)
-            
+            # Finalize Produced Qty and Status
+            total_produced = frappe.db.get_value("Stock Entry Detail", 
+                {"parent": ["in", frappe.get_all("Stock Entry", {"work_order": wo.name, "docstatus": 1}, pluck="name")], "is_finished_item": 1}, 
+                "sum(qty)") or 0.0
+
             frappe.db.set_value("Work Order", wo.name, {
                 "produced_qty": total_produced,
-                "additional_transferred_qty": additional_qty,
-                "status": new_status
+                "status": "Completed" if total_produced >= wo_planned_qty else "In Process"
             })
 
 
@@ -383,10 +387,10 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, work_orders=None):
+def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None):
     """
     Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
-    Maps Work Orders accurately by matching GSM, Width, Quality, and Color from the Production Plan's Assembly Items.
+    Maps Work Orders accurately and sets Planned Qty based on the individual weight components in net_weight formula.
     """
     if isinstance(work_orders, str) and work_orders and work_orders != "undefined":
         import json
@@ -450,11 +454,34 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
         
         return None
 
-    # 3. Build the roll rows
+    # 3. Parse individual weight components from net_weight formula (e.g. 74.78 + 74.78 + 42.27 = 191.83)
+    # Goal: Extract [74.78, 74.78, 42.27]
+    weight_components = []
+    if net_weight and "=" in str(net_weight):
+        try:
+            formula_part = str(net_weight).split('=')[0].strip()
+            # Split by + and extract numbers
+            for p in formula_part.split('+'):
+                matches = re.findall(r"\d+\.?\d*", p)
+                if matches:
+                    weight_components.append(flt(matches[0]))
+        except:
+            pass
+    elif net_weight:
+        # Fallback: maybe it's just a list of numbers or a single number
+        try:
+            matches = re.findall(r"\d+\.?\d*", str(net_weight))
+            if matches:
+                 # If it was just "191.83", we might have one component. 
+                 # If it was "74.78 + 74.78", we get two.
+                 weight_components = [flt(m) for m in matches]
+        except: pass
+
+    # 4. Build the roll rows
     n_shafts = cint(no_of_shafts) if cint(no_of_shafts) > 0 else 1
     
     for _ in range(n_shafts):
-        for target_width in widths:
+        for idx, target_width in enumerate(widths):
             matched_p_item = get_matched_item_detail(target_width, gsm)
             
             wo_name = None
@@ -464,12 +491,21 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             color = None
             uom = "Kg"
             
+            # Map the weight component from the formula if index matches
+            if idx < len(weight_components):
+                planned_qty = weight_components[idx]
+            
             if matched_p_item:
                 item_code = matched_p_item.item_code
                 quality = matched_p_item.get("quality") or matched_p_item.get("custom_quality")
                 color = matched_p_item.get("color") or matched_p_item.get("custom_color")
                 uom = matched_p_item.get("uom") or "Kg"
-                planned_qty = flt(matched_p_item.get("planned_qty")) or flt(matched_p_item.get("qty"))
+                # If we didn't get a weight component from formula, fallback to the item's planned_qty
+                if planned_qty <= 0:
+                    planned_qty = flt(matched_p_item.get("planned_qty")) or flt(matched_p_item.get("qty"))
+
+                # Fetch Work Order for this specific Item in this Plan
+                # ... rest of the logic
 
                 # Fetch Work Order for this specific Item in this Plan
                 wo_filters = {
