@@ -21,7 +21,8 @@
         "color",
         "column_break_11",
         "width_inch",
-        "gsm"
+        "gsm",
+        "print_sticker"
     ],
     "fields": [
         {
@@ -128,6 +129,11 @@
             "fieldtype": "Int",
             "label": "GSM",
             "read_only": 1
+        },
+        {
+            "fieldname": "print_sticker",
+            "fieldtype": "Button",
+            "label": "Print Label"
         }
     ],
     "index_web_pages_for_search": 1,

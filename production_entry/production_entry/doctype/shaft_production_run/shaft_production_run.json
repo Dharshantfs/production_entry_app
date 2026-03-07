@@ -20,7 +20,9 @@
         "section_break_9",
         "shaft_jobs",
         "section_break_items",
-        "items"
+        "items",
+        "custom_label",
+        "custom_batch_width"
     ],
     "fields": [
         {
@@ -102,6 +104,17 @@
             "label": "Roll Production Results",
             "options": "Shaft Production Run Item",
             "reqd": 1
+        },
+        {
+            "fieldname": "custom_label",
+            "fieldtype": "Select",
+            "label": "Label Type",
+            "options": "Default\nReliance\nPerfect\nPlain CC\nPlain"
+        },
+        {
+            "fieldname": "custom_batch_width",
+            "fieldtype": "Float",
+            "label": "Custom Label Width (CM)"
         }
     ],
     "index_web_pages_for_search": 1,

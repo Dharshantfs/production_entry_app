@@ -302,101 +302,185 @@ frappe.generate_sticker_flow = function (row_name) {
     var label_type = raw_label.trim().toLowerCase();
 
     var row = locals['Shaft Production Run Item'][row_name];
-    if (!row && cur_frm) {
-        row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
-    }
-
+    if (!row && cur_frm) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
     if (!row) return;
 
-    var final_gsm = row.gsm || "";
-    var final_color = row.color || "";
-    var final_quality = row.quality || "";
-    var w = row.width_inch || "0";
+    var item_code = row.item_code || "";
+    // In our system, the item name isn't directly on the row, we might need to get it from the Item link if missing
+    // But we'll try to extract from code first.
+    var details = extract_details_enhanced("", item_code);
+
+    var final_gsm = row.gsm || details.gsm || "";
+    var final_color = row.color || details.color || "";
+    var final_quality = row.quality || details.quality || "";
 
     if (label_type.includes("reliance") || label_type.includes("relience")) {
         flow_reliance_cm(row_name, final_gsm, final_color, final_quality);
     } else {
+        var w = row.width_inch || details.width_inch || "0";
         frappe.run_print_logic(row_name, w + " Inches", final_gsm, final_color, final_quality);
     }
 };
 
-// ==========================================
-// Print Logics copied exactly from old scripts
-// ==========================================
-
-function flow_reliance_cm(row_name, final_gsm, final_color, final_quality) {
-    var d = locals['Shaft Production Run Item'][row_name];
-    if (!d && cur_frm) {
-        d = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
-    }
-    if (!d) return;
-
-    var w = parseFloat(d.width_inch || 0);
-
-    var raw_machine = cur_frm.doc.allocated_unit || "";
-    var machine_code = raw_machine.includes("3") ? "A" : raw_machine.includes("2") ? "B" : raw_machine.includes("1") ? "C" : "";
-
-    var month_map = { 1: "A", 2: "B", 3: "C", 4: "D", 5: "E", 6: "F", 7: "G", 8: "H", 9: "I", 10: "J", 11: "K", 12: "L" };
-    var date_obj = new Date();
-    var yyyy = date_obj.getFullYear();
-    var last_digit_year = String(yyyy).slice(-1);
-    var mm = date_obj.getMonth() + 1;
-    var month_char = month_map[mm] || "";
-
-    var base_length = String(Math.round(parseFloat(d.meter_roll || 0)));
-    var code_len = Math.round(parseFloat(d.meter_roll || 0));
-    var length_code = code_len < 1000 ? "S" : code_len === 1000 ? "N" : code_len > 1000 ? "C" : "";
-
-    var base_width = String(Math.round(w)).padStart(2, "0");
-    var batch = String(d.batch_no || "");
-    var roll_raw = batch.split('-').pop();
-    var display_roll = parseInt(roll_raw, 10);
-    if (isNaN(display_roll)) display_roll = 1;
-    var padded_roll = String(display_roll).padStart(3, "0");
-
-    var prefix = machine_code + last_digit_year + month_char + length_code + base_width + padded_roll;
-    var suffix1 = "NW0" + base_width;
-    var suffix2 = "40X" + String(parseFloat(final_gsm)).padStart(3, "0");
-    var nw_val = parseFloat(d.net_weight || 0).toFixed(3);
-    var the_barcode = prefix + suffix1 + suffix2 + nw_val.replace(".", "");
-
-    var zpl = "^XA\n";
-    zpl += "^PW812\n";
-    zpl += "^BY2,3,50\n";
-    zpl += "^FO140,20^BCN,50,Y,N,N^FD" + the_barcode + "^FS\n";
-
-    var qty_val = String((w * 2.54) / 100).substring(0, 4) + "*" + base_length;
-    var dt_str = frappe.datetime.get_datetime_as_string().split(" ")[0].split("-").reverse().join("-");
-
-    zpl += "^CFA,20\n";
-    zpl += "^FO140,110^FDCm :^FS ^FO200,110^FD" + String(w * 2.54).substring(0, 4) + "^FS\n";
-    zpl += "^FO360,110^FDSha :^FS ^FO430,110^FD" + final_color + "^FS\n";
-    zpl += "^FO580,110^FDQty :^FS ^FO650,110^FD" + qty_val + "^FS\n";
-
-    zpl += "^FO140,140^FDIn :^FS ^FO200,140^FD" + w + "^FS\n";
-    zpl += "^FO360,140^FDGsm :^FS ^FO430,140^FD" + final_gsm + "^FS\n";
-    zpl += "^FO580,140^FDDat :^FS ^FO650,140^FD" + dt_str + "^FS\n";
-
-    zpl += "^FO140,170^FDMt :^FS ^FO200,170^FD" + base_length + "^FS\n";
-    zpl += "^FO360,170^FDN.W :^FS ^FO430,170^FD" + d.net_weight + " kg^FS\n";
-    zpl += "^FO580,170^FDG.W :^FS ^FO650,170^FD" + (d.gross_weight || d.net_weight) + " kg^FS\n";
-    zpl += "^XZ";
-
-    send_zpl_to_qz(zpl, the_barcode);
-}
-
-function frappe_run_print_logic(row_name, final_width, final_gsm, final_color, final_quality) {
-    frappe.run_print_logic(row_name, final_width, final_gsm, final_color, final_quality);
-}
-
-frappe.run_print_logic = function (row_name, final_width, final_gsm, final_color, final_quality) {
-    if (typeof qz === "undefined") {
-        frappe.msgprint("QZ Tray not detected. Printing bypass for preview.");
-        var print_url = frappe.urllib.get_full_url(
-            '/printview?doctype=Shaft Production Run&name=' + cur_frm.doc.name + '&format=Roll Label'
-        );
-        window.open(print_url, '_blank');
-        return;
-    }
-    // Logic for QZ Tray printing exists in the user's base scripts, we bridge to it if available.
+var QUALITY_MASTER = {
+    "100": "PREMIUM", "101": "PLATINUM", "102": "SUPER PLATINUM",
+    "103": "GOLD", "104": "SILVER", "105": "BRONZE",
+    "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
+    "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
+    "112": "ULTRA", "113": "DELUXE", "114": "UV"
 };
+
+function extract_details_enhanced(name, code) {
+    var res = { gsm: null, color: null, width_inch: null, quality: null };
+    var name_upper = (name || "").toUpperCase();
+
+    if (code && code.length === 16 && /^\d+$/.test(code)) {
+        var qual_code = code.substring(3, 6);
+        if (QUALITY_MASTER[qual_code]) res.quality = QUALITY_MASTER[qual_code];
+
+        var code_gsm = parseInt(code.substring(9, 12));
+        if (code_gsm > 0) res.gsm = String(code_gsm);
+
+        var code_width_mm = parseFloat(code.substring(12, 16));
+        if (code_width_mm > 0) res.width_inch = Math.round(code_width_mm / 25.4);
+
+        if (res.quality && name) {
+            var qual_pos = name_upper.indexOf(res.quality.toUpperCase());
+            if (qual_pos !== -1) {
+                var after_qual = name.substring(qual_pos + res.quality.length).trim();
+                after_qual = after_qual.replace(/\s*\d+\s*GSM.*/i, "").trim();
+                if (after_qual) res.color = after_qual;
+            }
+        }
+    } else if (name) {
+        var known_qualities = ["SUPER PLATINUM", "SUPER CLASSIC", "LIFE STYLE", "ECO SPECIAL",
+            "ECO GREEN", "SUPER ECO", "DELUXE", "PREMIUM", "PLATINUM", "GOLD",
+            "SILVER", "BRONZE", "CLASSIC", "ULTRA", "UV"];
+        known_qualities.sort(function (a, b) { return b.length - a.length; });
+        for (var i = 0; i < known_qualities.length; i++) {
+            var q = known_qualities[i];
+            var qb = new RegExp('\\b' + q + '\\b', 'i');
+            if (qb.test(name_upper)) { res.quality = q; break; }
+        }
+        if (res.quality) {
+            var qp = name_upper.indexOf(res.quality.toUpperCase());
+            if (qp !== -1) {
+                var aq = name.substring(qp + res.quality.length).trim();
+                aq = aq.replace(/\s*\d+\s*GSM.*/i, "").trim();
+                if (aq) res.color = aq;
+            }
+        }
+        var mg = name.match(/(\d+)\s*GSM/i);
+        if (mg) res.gsm = mg[1];
+        var mw = name.match(/(\d+(\.\d+)?)\s*("|inch|in|'')/i);
+        if (mw) res.width_inch = mw[1];
+    }
+    return res;
+}
+
+function flow_reliance_cm(row_name, gsm, color, quality) {
+    var saved_val = cur_frm.doc.custom_batch_width || 0;
+    if (saved_val > 0) {
+        frappe.run_print_logic(row_name, saved_val + " CM", gsm, color, quality);
+    } else {
+        var row = locals['Shaft Production Run Item'][row_name];
+        if (!row && cur_frm) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+        var item_code = row ? (row.item_code || "") : "";
+
+        var width_mm = (item_code.length >= 4) ? parseFloat(item_code.slice(-4)) : 0;
+        var width_cm = (width_mm > 0) ? (width_mm / 10) : 0;
+
+        frappe.prompt([{ label: 'Verify Width (CM)', fieldname: 'width_cm', fieldtype: 'Float', default: width_cm, reqd: 1 }],
+            function (values) {
+                cur_frm.set_value('custom_batch_width', values.width_cm);
+                frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality);
+            }, 'Confirm Reliance Size', 'Preview Label');
+    }
+}
+
+frappe.run_print_logic = function (row_name, final_width_display, final_gsm, final_color, final_quality) {
+    var row = locals['Shaft Production Run Item'][row_name];
+    if (!row && cur_frm) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+    if (!row) return;
+
+    var d = {
+        company: "JAYASHREE SPUN BOND",
+        quality: final_quality || "NON WOVEN FABRIC",
+        gsm: final_gsm,
+        color: final_color,
+        width_val: final_width_display,
+        party_code: "", // Could be fetched from WO if needed
+        item_code: row.item_code || "",
+        barcode_data: row.batch_no || "",
+        length: row.meter_roll || "0",
+        gw: (row.gross_weight || row.net_weight || 0).toFixed(2),
+        nw: (row.net_weight || 0).toFixed(2),
+        batch_no: row.batch_no || "",
+        roll_no: row.roll_no || ""
+    };
+
+    var htmlContent = get_grid_format(d, (cur_frm.doc.custom_label || "").toLowerCase());
+    var printWindow = window.open('', 'PRINT', 'height=650,width=500');
+    if (printWindow) {
+        printWindow.document.write(htmlContent);
+        printWindow.document.close();
+    }
+};
+
+function get_grid_format(d, type) {
+    type = (type || "default").trim().toLowerCase();
+    var isReliance = type.includes("reliance") || type.includes("relience");
+    var isPerfect = type.includes("perfect");
+    var isPlainCC = type.includes("plain cc");
+    var isPlain = type.includes("plain") && !isPlainCC;
+    var isDefault = !isReliance && !isPerfect && !isPlainCC && !isPlain;
+
+    var header = "Non Woven Fabrics";
+    var sub1 = d.quality;
+    var sub2 = "";
+
+    if (isDefault) {
+        header = "JayaShree Spun Bond";
+        sub1 = "\u2709 info@jayashreespunbond.com";
+        sub2 = d.quality + (d.party_code ? (" | " + d.party_code) : "");
+    } else if (isPlainCC) {
+        sub1 = d.quality + (d.party_code ? (" | " + d.party_code) : "");
+    }
+
+    var rows = [];
+    rows.push('<tr><td><span class="lbl">GSM:</span><span class="val">' + d.gsm + '</span></td><td><span class="lbl">COLOR:</span><span class="val">' + d.color + '</span></td></tr>');
+
+    if (isPerfect) {
+        rows.push('<tr><td colspan="2"><span class="lbl">Mtrs / Roll:</span><span class="val">' + d.length + ' Mtrs</span></td></tr>');
+    } else {
+        rows.push('<tr><td><span class="lbl">Mtrs / Roll:</span><span class="val">' + d.length + ' Mtrs</span></td><td><span class="lbl">WIDTH:</span><span class="val">' + d.width_val + '</span></td></tr>');
+    }
+
+    rows.push('<tr><td><span class="lbl">NET WT:</span><span class="val">' + d.nw + ' Kgs</span></td><td><span class="lbl">GROSS WT:</span><span class="val">' + d.gw + ' Kgs</span></td></tr>');
+
+    return '<html><head><title>Label Preview</title><style>' +
+        '@media print { .btn-panel { display: none !important; } @page { size: 4in 4in; margin: 0; } body { margin: 0; } }' +
+        'body { font-family: "Arial", sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; }' +
+        '.btn-panel { padding: 10px; background: #eee; }' +
+        '.sticker { width: 4in; height: 4in; margin: 20px auto; border: 2px solid black; background: white; box-sizing: border-box; display: flex; flex-direction: column; }' +
+        'table { width: 100%; border-collapse: collapse; table-layout: fixed; }' +
+        'td { border: 1px solid black; padding: 4px; vertical-align: top; overflow: hidden; }' +
+        '.header { text-align: center; height: 18mm; vertical-align: middle; padding: 2px 0; }' +
+        '.company { font-size: 20px; font-weight: 900; letter-spacing: 0.3px; line-height: 1.1; }' +
+        '.email { font-size: 11px; font-weight: bold; color: #333; margin: 1px 0; }' +
+        '.subheader { font-size: 12px; font-weight: bold; color: black; }' +
+        '.lbl { font-size: 10px; font-weight: bold; color: #444; display: block; }' +
+        '.val { font-size: 15px; font-weight: 900; color: #000; display: block; }' +
+        '.barcode-container { flex-grow: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 5px; border-top: 1px solid black; }' +
+        '#barcode { max-width: 95%; height: 70px; }' +
+        '.footer-info { font-size: 13px; font-weight: bold; margin-top: 10px; padding-bottom: 5px; }' +
+        '</style></head><body>' +
+        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px; font-weight:bold; cursor:pointer;">PRINT</button><button onclick="window.close()" style="padding:10px 20px; margin-left:10px;">CLOSE</button></div>' +
+        '<div class="sticker"><table><tr><td colspan="2" class="header"><div class="company">' + header + '</div><div class="' + (isDefault ? 'email' : 'subheader') + '">' + sub1 + '</div>' + (sub2 ? '<div class="subheader">' + sub2 + '</div>' : '') + '</td></tr>' +
+        '<tr><td colspan="2" style="text-align:center;"><span class="lbl">ITEM:</span><span class="val">' + d.item_code + '</span></td></tr>' +
+        rows.join('') + '</table>' +
+        '<div class="barcode-container"><svg id="barcode"></svg><div class="footer-info">BATCH: ' + d.batch_no + ' | ROLL: ' + d.roll_no + '</div></div></div>' +
+        '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"></script>' +
+        '<script>JsBarcode("#barcode", "' + d.barcode_data + '", { format: "CODE128", displayValue: false, height: 70, width: 2.0, margin: 0 });</script>' +
+        '</body></html>';
+}
