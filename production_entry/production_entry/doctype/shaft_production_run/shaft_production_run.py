@@ -368,6 +368,8 @@ def get_shaft_jobs(production_plan, work_orders=None):
         jobs.append({
             "job_id": job_id_val,
             "gsm": d.get("gsm"),
+            "quality": d.get("quality") or d.get("custom_quality"), # Try both
+            "color": d.get("color") or d.get("custom_color"), # Try both
             "combination": d.get("combination"),
             "total_width": flt(t_width_val),
             "meter_roll_mtrs": flt(m_roll),
@@ -383,7 +385,8 @@ def get_shaft_jobs(production_plan, work_orders=None):
 @frappe.whitelist()
 def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, work_orders=None):
     """
-    Fetch exact rows required for the Popup Roll Entry based on combination and no_of_shafts.
+    Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
+    Maps Work Orders accurately by matching GSM, Width, Quality, and Color from the Production Plan's Assembly Items.
     """
     if isinstance(work_orders, str) and work_orders and work_orders != "undefined":
         import json
@@ -396,132 +399,116 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
     items_to_add = []
     
+    # 1. Parse widths from combination string (e.g. 46 + 46 + 26)
     widths = []
+    import re
+    # Match numbers like 46, 46.5, etc.
     for s in (combination or "").split('+'):
         s = s.strip().replace('"', '')
         if s:
             try:
-                import re
                 matches = re.findall(r"\d+\.?\d*", s)
                 if matches:
                     val = float(matches[0])
-                    widths.append(round(val, 1))
+                    widths.append(round(val, 2))
             except:
                 continue
 
-    query_filters = {
-        "production_plan": production_plan,
-        "docstatus": ["!=", 2],
-        "status": ["!=", "Completed"]
-    }
-    
-    # If selected work_orders are provided, restrict to them
-    if work_orders:
-        query_filters["name"] = ["in", work_orders]
-            
-    # Generic fetch
-    wos = frappe.get_all("Work Order",
-        filters=query_filters,
-        fields=["name", "production_item", "qty", "stock_uom", "custom_quality", "custom_color", "custom_width_inch"]
-    )
-    
-    # Build Map for Quality / Color from Production Plan po_items
-    pp_item_map = {}
+    # 2. Cache Production Plan Assembly Items (po_items) for lookup
+    pp_items = []
     if production_plan:
-        try:
-            pp_doc = frappe.get_doc("Production Plan", production_plan)
-            for p in pp_doc.get("po_items", []):
-                pp_item_map[p.item_code] = {
-                    "quality": p.get("custom_quality") or p.get("quality"),
-                    "color": p.get("custom_color") or p.get("color"),
-                    "width": flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
-                }
-            for p in pp_doc.get("sub_assembly_items", []):
-                pp_item_map[p.production_item] = {
-                    "quality": p.get("custom_quality") or p.get("quality"),
-                    "color": p.get("custom_color") or p.get("color"),
-                    "width": flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
-                }
-        except: pass
+        pp_doc = frappe.get_doc("Production Plan", production_plan)
+        pp_items = pp_doc.get("po_items") or []
 
-    wo_by_width = {}
-    for wo in wos:
-        w = None
+    # Helper function to match width in mm or inch
+    def get_matched_item_detail(target_width_inch, target_gsm):
+        # target_gsm = flt(target_gsm)
+        tw_rounded = round(flt(target_width_inch), 1)
         
-        # Priority 1: Exact mapping from Production Plan
-        if wo.production_item in pp_item_map and pp_item_map[wo.production_item].get("width"):
-            w = round(float(pp_item_map[wo.production_item]["width"]), 1)
-        # Priority 2: Work Order custom field
-        elif wo.custom_width_inch and flt(wo.custom_width_inch) > 0:
-            w = round(flt(wo.custom_width_inch), 1)
-        # Priority 3: Parse metric item code
-        else:
-            ic = str(wo.production_item)
-            if len(ic) >= 16:
+        # 1. Exact match on GSM and Width (Inches)
+        for p in pp_items:
+            p_gsm = flt(p.get("gsm")) or flt(p.get("custom_gsm"))
+            p_width = flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
+            if abs(p_gsm - flt(target_gsm)) < 0.1 and abs(p_width - tw_rounded) < 0.5:
+                return p
+        
+        # 2. Fallback: Metric check (46 inch -> 1170mm)
+        width_mm = round(flt(target_width_inch) * 25.4)
+        for p in pp_items:
+            p_gsm = flt(p.get("gsm")) or flt(p.get("custom_gsm"))
+            if abs(p_gsm - flt(target_gsm)) < 0.1:
+                ic = str(p.item_code)
+                # Check if width_mm is in item_code (e.g. ...1170)
+                if str(width_mm) in ic:
+                    return p
+                # Check nearest mm values (e.g. 1168 vs 1170)
                 try:
-                    w = round(int(ic[12:16]) / 25.4, 1)
+                    # Slice last 4 digits for width mm in some formats
+                    if len(ic) >= 4 and abs(cint(ic[-4:]) - width_mm) <= 5:
+                        return p
                 except: pass
-                
-        if w is not None:
-            if w not in wo_by_width:
-                wo_by_width[w] = []
-            wo_by_width[w].append(wo)
+        
+        return None
 
+    # 3. Build the roll rows
     n_shafts = cint(no_of_shafts) if cint(no_of_shafts) > 0 else 1
     
     for _ in range(n_shafts):
         for target_width in widths:
-            tw_rounded = round(float(target_width), 1)
+            matched_p_item = get_matched_item_detail(target_width, gsm)
             
-            matched_wo_width = None
-            for w in wo_by_width.keys():
-                if abs(w - tw_rounded) <= 1.0:
-                    if len(wo_by_width[w]) > 0:
-                        matched_wo_width = w
-                        break
-                        
-            if matched_wo_width is not None and len(wo_by_width[matched_wo_width]) > 0:
-                wo = None
-                if len(wo_by_width[matched_wo_width]) == 1:
-                    wo = wo_by_width[matched_wo_width][0] # Keep reusing
-                else:
-                    wo = wo_by_width[matched_wo_width].pop(0) # Consume
-                    
-                # Calculate planned net weight per roll based on combo
-                # If a WO is 191kg for 12 shafts, it's roughly 15.9kg per shaft. We can divide by qty or use standard metric.
-                wo_planned_weight = flt(wo.qty) / (n_shafts if n_shafts else 1)
-                    
-                # Get Quality and Color from Production Plan Assembly items
-                wo_quality = pp_item_map.get(wo.production_item, {}).get("quality") or wo.custom_quality
-                wo_color = pp_item_map.get(wo.production_item, {}).get("color") or wo.custom_color
+            wo_name = None
+            item_code = None
+            planned_qty = 0.0
+            quality = None
+            color = None
+            uom = "Kg"
+            
+            if matched_p_item:
+                item_code = matched_p_item.item_code
+                quality = matched_p_item.get("quality") or matched_p_item.get("custom_quality")
+                color = matched_p_item.get("color") or matched_p_item.get("custom_color")
+                uom = matched_p_item.get("uom") or "Kg"
+                planned_qty = flt(matched_p_item.get("planned_qty")) or flt(matched_p_item.get("qty"))
+
+                # Fetch Work Order for this specific Item in this Plan
+                wo_filters = {
+                    "production_plan": production_plan,
+                    "production_item": item_code,
+                    "docstatus": 1,
+                    "status": ["!=", "Completed"]
+                }
+                if work_orders:
+                    wo_filters["name"] = ["in", work_orders]
                 
-                items_to_add.append({
-                    "job": job_id,
-                    "work_order": wo.name,
-                    "item_code": wo.production_item,
-                    "planned_qty": flt(wo.qty),
-                    "width_inch": tw_rounded,
-                    "gsm": gsm,
-                    "uom": wo.stock_uom,
-                    "color": wo_color,
-                    "quality": wo_quality,
-                    "meter_roll": meter_roll,
-                    "net_weight": round(wo_planned_weight, 3),
-                    "gross_weight": 0.0,
-                    "roll_no": 0
-                })
-            else:
-                # Fallback: assign an empty row for user to pick WO manually
-                items_to_add.append({
-                    "job": job_id,
-                    "width_inch": tw_rounded,
-                    "gsm": gsm,
-                    "meter_roll": meter_roll,
-                    "net_weight": 0.0,
-                    "gross_weight": 0.0,
-                    "roll_no": 0
-                })
-    # Add one extra unmapped empty row for user flexibility as requested
+                wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
+            
+            # If no WO found but we have Item Code, try even if it's completed? 
+            # Or just use the first matching WO name available.
+            if not wo_name and item_code:
+                wo_name = frappe.db.get_value("Work Order", {
+                    "production_plan": production_plan,
+                    "production_item": item_code,
+                    "docstatus": 1
+                }, "name")
+
+            items_to_add.append({
+                "job": job_id,
+                "work_order": wo_name,
+                "item_code": item_code,
+                "planned_qty": planned_qty,
+                "width_inch": target_width,
+                "gsm": gsm,
+                "uom": uom,
+                "color": color,
+                "quality": quality,
+                "meter_roll": meter_roll,
+                "net_weight": 0.0,
+                "gross_weight": 0.0,
+                "roll_no": 0
+            })
+                
+    # Add one extra unmapped empty row for user flexibility
     items_to_add.append({
         "job": job_id,
         "width_inch": 0.0,
