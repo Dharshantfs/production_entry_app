@@ -41,7 +41,7 @@ class ShaftProductionRun(Document):
             
             # Handle sequential Batch and Roll numbering across the shift.
             if not row.batch_no:
-                # 1. Fetch highest roll_no for this precise series_prefix globally today
+                # 1. Fetch highest roll_no for this precise series_prefix globally today from Batch documents
                 existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}-%"]}, fields=["batch_id"])
                 max_roll_num = 0
                 for b in existing_batches:
@@ -50,7 +50,23 @@ class ShaftProductionRun(Document):
                         max_roll_num = max(max_roll_num, int(roll_part))
                     except: pass
                 
-                # 2. Check current un-saved rows in memory
+                # 2. Check other Shaft Production Runs (Drafts/Submitted) for today
+                # This prevents duplicates if multiple people are working at once
+                other_runs = frappe.get_all("Shaft Production Run Item", 
+                    filters={
+                        "parent": ["!=", self.name],
+                        "batch_no": ["like", f"{series_prefix}-%"],
+                        "creation": [">=", frappe.utils.today()]
+                    },
+                    fields=["batch_no"]
+                )
+                for orun in other_runs:
+                    try:
+                        rp = orun.batch_no.split("-")[-1]
+                        max_roll_num = max(max_roll_num, int(rp))
+                    except: pass
+
+                # 3. Check current un-saved rows in memory
                 for r in self.items:
                     if r.batch_no and r.batch_no.startswith(f"{series_prefix}-"):
                         try:
@@ -75,21 +91,8 @@ class ShaftProductionRun(Document):
 
             row.batch_no = target_batch_id
 
-            if not frappe.db.exists("Batch", target_batch_id):
-                b = frappe.new_doc("Batch")
-                b.batch_id = target_batch_id
-                b.item = wo.production_item
-                b.custom_net_weight = flt(row.get("net_weight"))
-                b.custom_gross_weight = flt(row.get("gross_weight"))
-                b.custom_meter = flt(row.get("meter_roll"))
-                b.custom_party_code_text = wo_party
-                b.description = f"Shift: {shift_name}"
-                b.insert(ignore_permissions=True)
-            else:
-                frappe.db.set_value("Batch", target_batch_id, {
-                    "description": f"Shift: {shift_name}",
-                    "custom_net_weight": flt(row.get("net_weight"))
-                })
+            row.batch_no = target_batch_id
+            row.roll_no = next_roll
         
         # If this is called via button (whitelisted), we must save to persist row assignments
         if frappe.request and frappe.request.path.endswith("run_method"):
@@ -173,8 +176,30 @@ class ShaftProductionRun(Document):
             planned_qty = group["total_planned_weight"]
             
             wo = frappe.get_doc("Work Order", wo_name)
+            wo_party = wo.get("custom_party_code") or wo.get("party_code")
 
-            # 1. Clean up old drafts
+            # 1. Ensure Batch records exist
+            for row in group["rows"]:
+                if not row.batch_no: continue
+                if not frappe.db.exists("Batch", row.batch_no):
+                    b = frappe.new_doc("Batch")
+                    b.batch_id = row.batch_no
+                    b.item = wo.production_item
+                    b.custom_net_weight = flt(row.net_weight)
+                    b.custom_gross_weight = flt(row.gross_weight)
+                    b.custom_meter = flt(row.meter_roll)
+                    b.custom_party_code_text = wo_party
+                    b.description = f"Shift: {self.shift}"
+                    b.insert(ignore_permissions=True)
+                else:
+                    # Update metadata if it already exists
+                    frappe.db.set_value("Batch", row.batch_no, {
+                        "custom_net_weight": flt(row.net_weight),
+                        "custom_meter": flt(row.meter_roll),
+                        "description": f"Shift: {self.shift}"
+                    })
+
+            # 2. Clean up old drafts
             old_drafts = frappe.get_all("Stock Entry",
                 filters={"work_order": wo.name, "stock_entry_type": "Manufacture", "docstatus": 0},
                 fields=["name"]
