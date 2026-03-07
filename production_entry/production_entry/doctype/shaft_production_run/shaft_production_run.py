@@ -286,6 +286,18 @@ def get_shaft_jobs(production_plan, work_orders=None):
         net_wt = d.get("net_weight")
         tot_wt = d.get("total_weight_kgs") or d.get("total_weight")
         
+        # Parse combination widths for weight calc
+        comb_str = str(d.get("combination") or "")
+        widths = []
+        import re
+        for s in comb_str.split('+'):
+            s = s.strip().replace('"', '')
+            try:
+                matches = re.findall(r"\d+\.?\d*", s)
+                if matches:
+                    widths.append(round(float(matches[0]), 1))
+            except: continue
+        
         # Priority: explicit job_id -> custom field -> name -> index
         job_id_val = d.get("s_no") or d.get("job_id") or d.get("job") or str(idx + 1)
         
