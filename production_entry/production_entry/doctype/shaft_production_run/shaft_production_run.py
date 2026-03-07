@@ -228,30 +228,46 @@ def get_shaft_jobs(production_plan, work_orders=None):
     if not production_plan:
         return []
     
-    if isinstance(work_orders, str):
+    if isinstance(work_orders, str) and work_orders and work_orders != "undefined":
         import json
-        work_orders = json.loads(work_orders)
+        try:
+            work_orders = json.loads(work_orders)
+        except Exception:
+            work_orders = None
+    elif isinstance(work_orders, str):
+        work_orders = None
         
     doc = frappe.get_doc("Production Plan", production_plan)
     source_table = doc.get("custom_shaft_details") or []
     
     relevant_widths = set()
+    wo_qty_by_width = {}
+    
+    # We fetch ALL work orders for the production plan if no explicit work_orders are given,
+    # so we can calculate the total planned weight for jobs.
+    wo_filters = {"production_plan": production_plan, "docstatus": ["!=", 2]}
     if work_orders:
-        wos = frappe.get_all("Work Order",
-            filters={"name": ["in", work_orders]},
-            fields=["production_item", "custom_width_inch"]
-        )
-        for wo in wos:
-            if wo.custom_width_inch:
-                relevant_widths.add(round(flt(wo.custom_width_inch), 1))
-            else:
-                # Fallback to item code parsing
-                ic = str(wo.production_item)
-                if len(ic) >= 16:
-                    try:
-                        w = round(int(ic[12:16]) / 25.4, 1)
-                        relevant_widths.add(w)
-                    except: pass
+        wo_filters["name"] = ["in", work_orders]
+        
+    wos = frappe.get_all("Work Order",
+        filters=wo_filters,
+        fields=["name", "production_item", "custom_width_inch", "qty"]
+    )
+    
+    for wo in wos:
+        w_inch = None
+        if wo.custom_width_inch:
+            w_inch = round(flt(wo.custom_width_inch), 1)
+        else:
+            ic = str(wo.production_item)
+            if len(ic) >= 16:
+                try:
+                    w_inch = round(int(ic[12:16]) / 25.4, 1)
+                except: pass
+                
+        if w_inch is not None:
+            relevant_widths.add(w_inch)
+            wo_qty_by_width[w_inch] = wo_qty_by_width.get(w_inch, 0) + flt(wo.qty)
 
     jobs = []
     
@@ -272,6 +288,19 @@ def get_shaft_jobs(production_plan, work_orders=None):
         
         # Priority: explicit job_id -> custom field -> name -> index
         job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("custom_job_id") or str(idx + 1)
+        
+        # Calculate planned weights from Work Orders associated with these widths
+        job_total_planned_weight = 0
+        for w in widths:
+            # Find the closest width in our WO map
+            for rw in wo_qty_by_width.keys():
+                if abs(w - rw) <= 0.1:
+                    job_total_planned_weight += wo_qty_by_width[rw]
+                    break
+        
+        # Alternatively trust the 'net_wt' / 'tot_wt' from custom_shaft_details if it exists
+        job_net_weight = flt(net_wt) if flt(net_wt) > 0 else 0
+        job_total_weight = flt(tot_wt) if flt(tot_wt) > 0 else job_total_planned_weight
 
         jobs.append({
             "job_id": job_id_val,
@@ -280,8 +309,8 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "total_width": flt(t_width_val),
             "meter_roll_mtrs": flt(m_roll),
             "no_of_shafts": cint(n_shafts) if n_shafts else 1,
-            "net_weight": flt(net_wt),
-            "total_weight": flt(tot_wt)
+            "net_weight": job_net_weight,
+            "total_weight": job_total_weight
         })
         
     return jobs
@@ -293,9 +322,14 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
     """
     Fetch exact rows required for the Popup Roll Entry based on combination and no_of_shafts.
     """
-    if isinstance(work_orders, str):
+    if isinstance(work_orders, str) and work_orders and work_orders != "undefined":
         import json
-        work_orders = json.loads(work_orders)
+        try:
+            work_orders = json.loads(work_orders)
+        except Exception:
+            work_orders = None
+    elif isinstance(work_orders, str):
+        work_orders = None
 
     items_to_add = []
     
