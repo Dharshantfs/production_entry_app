@@ -19,11 +19,11 @@ frappe.ui.form.on('Shaft Production Run', {
             if (frm.fields_dict['items'] && frm.fields_dict['items'].grid) {
                 let grid = frm.fields_dict['items'].grid;
                 grid.get_field('print_sticker').formatter = function (value, row_doc) {
-                    return `<button type="button" class="btn btn-xs btn-default" 
-                        style="width: 100%; font-weight: bold; cursor: pointer !important; pointer-events: auto;" 
-                        onclick="frappe.generate_sticker_flow('${row_doc.name}')">
-                        🖨️ Print Label
-                    </button>`;
+                    return '<button type="button" class="btn btn-xs btn-default" ' +
+                        'style="width: 100%; font-weight: bold; cursor: pointer !important; pointer-events: auto;" ' +
+                        'onclick="frappe.generate_sticker_flow(\'' + row_doc.name + '\')"> ' +
+                        'Print Label ' +
+                        '</button>';
                 };
                 grid.refresh();
             }
@@ -106,7 +106,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
                     // Clean up empty default rows
                     let valid_rows = [];
-                    (frm.doc.items || []).forEach(r_row => {
+                    (frm.doc.items || []).forEach(function (r_row) {
                         if (r_row.work_order || r_row.item_code) {
                             valid_rows.push(r_row);
                             let rn = parseInt(r_row.roll_no) || 0;
@@ -121,7 +121,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
                         frm.doc.items = valid_rows;
                     }
 
-                    rolls_to_add.forEach(r_info => {
+                    rolls_to_add.forEach(function (r_info) {
                         let new_row = frm.add_child('items');
                         max_roll++;
                         new_row.job = r_info.job;
@@ -146,8 +146,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
                     }
 
                     // Force a save to validate and generate batches
-                    setTimeout(() => {
-                        frm.save().then(() => {
+                    setTimeout(function () {
+                        frm.save().then(function () {
                             frm.call({
                                 doc: frm.doc,
                                 method: 'generate_batch_numbers',
@@ -156,7 +156,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
                                         frm.refresh_field('items');
                                         frappe.msgprint({
                                             title: 'Success',
-                                            message: `Successfully added ${rolls_to_add.length} rolls for Job ${row.job_id} to the Produced Rolls table and generated batch numbers.`,
+                                            message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + ' to the Produced Rolls table and generated batch numbers.',
                                             indicator: 'green'
                                         });
                                     }
@@ -200,7 +200,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 
 function calculate_total(frm) {
     let total = 0.0;
-    (frm.doc.items || []).forEach(row => {
+    (frm.doc.items || []).forEach(function (row) {
         total += flt(row.net_weight);
     });
     frm.set_value('total_produced_weight', total);
