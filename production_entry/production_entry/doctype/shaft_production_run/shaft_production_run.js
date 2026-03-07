@@ -392,23 +392,27 @@ function extract_details_enhanced(name, code) {
 
 function flow_reliance_cm(row_name, gsm, color, quality, frm) {
     var doc = frm.doc;
-    var saved_val = doc.custom_batch_width || 0;
-    if (saved_val > 0) {
-        frappe.run_print_logic(row_name, saved_val + " CM", gsm, color, quality, frm);
-    } else {
-        var row = locals['Shaft Production Run Item'][row_name];
-        if (!row) row = (doc.items || []).find(function (r) { return r.name === row_name; });
-        var item_code = row ? (row.item_code || "") : "";
+    var row = locals['Shaft Production Run Item'][row_name];
+    if (!row) row = (doc.items || []).find(function (r) { return r.name === row_name; });
+    var item_code = row ? (row.item_code || "") : "";
 
-        var width_mm = (item_code.length >= 4) ? parseFloat(item_code.slice(-4)) : 0;
-        var width_cm = (width_mm > 0) ? (width_mm / 10) : 0;
+    // Extract last 4 digits (e.g. 0760 -> 760mm -> 76cm)
+    var width_mm = (item_code.length >= 4) ? parseFloat(item_code.slice(-4)) : 0;
+    var width_cm = (width_mm > 0) ? (width_mm / 10) : 0;
 
-        frappe.prompt([{ label: 'Verify Width (CM)', fieldname: 'width_cm', fieldtype: 'Float', default: width_cm, reqd: 1 }],
-            function (values) {
-                frm.set_value('custom_batch_width', values.width_cm);
-                frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality, frm);
-            }, 'Confirm Reliance Size', 'Preview Label');
-    }
+    // Use the calculated width for this specific row. 
+    // We still prompt to verify, but the default is now correct for THIS row.
+    frappe.prompt([{
+        label: 'Verify Width (CM) for ' + (item_code || 'this row'),
+        fieldname: 'width_cm',
+        fieldtype: 'Float',
+        default: width_cm,
+        reqd: 1
+    }],
+        function (values) {
+            // We don't save it to the parent because it's row-specific
+            frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality, frm);
+        }, 'Confirm Reliance Size (' + row.roll_no + ')', 'Preview Label');
 }
 
 frappe.run_print_logic = function (row_name, final_width_display, final_gsm, final_color, final_quality, frm) {
