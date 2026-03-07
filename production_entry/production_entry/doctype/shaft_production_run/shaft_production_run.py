@@ -268,8 +268,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         m_roll = d.get("meter_roll_mtrs") or d.get("meter_per_roll") or d.get("meter_roll")
         n_shafts = d.get("no_of_shafts") or d.get("shafts") or d.get("no_of_rolls") or d.get("no_of_shaft")
         
-        # Priority: explicit job_id -> custom field -> name -> index
-        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("custom_job_id") or d.get("name") or str(idx + 1)
+        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("custom_job_id") or str(idx + 1)
 
         jobs.append({
             "job_id": job_id_val,
@@ -300,8 +299,12 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
         s = s.strip().replace('"', '')
         if s:
             try:
-                widths.append(float(s))
-            except ValueError:
+                import re
+                matches = re.findall(r"\d+\.?\d*", s)
+                if matches:
+                    val = float(matches[0])
+                    widths.append(round(val, 1))
+            except:
                 continue
 
     query_filters = {
