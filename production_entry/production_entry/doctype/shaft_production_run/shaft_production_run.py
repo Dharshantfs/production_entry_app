@@ -432,6 +432,10 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 else:
                     wo = wo_by_width[matched_wo_width].pop(0) # Consume
                     
+                # Calculate planned net weight per roll based on combo
+                # If a WO is 191kg for 12 shafts, it's roughly 15.9kg per shaft. We can divide by qty or use standard metric.
+                wo_planned_weight = flt(wo.qty) / (n_shafts if n_shafts else 1)
+                
                 items_to_add.append({
                     "job": job_id,
                     "work_order": wo.name,
