@@ -194,6 +194,8 @@ function fetch_jobs_for_wos(frm, work_orders) {
                         job_row.combination = d.combination;
                         job_row.total_width = d.total_width;
                         job_row.meter_roll_mtrs = d.meter_roll_mtrs;
+                        job_row.net_weight = d.net_weight;
+                        job_row.total_weight = d.total_weight;
                         job_row.no_of_shafts = d.no_of_shafts;
                     });
                     frm.refresh_field('shaft_jobs');

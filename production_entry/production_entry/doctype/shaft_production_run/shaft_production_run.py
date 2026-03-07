@@ -267,7 +267,10 @@ def get_shaft_jobs(production_plan, work_orders=None):
         t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
         m_roll = d.get("meter_roll_mtrs") or d.get("meter_per_roll") or d.get("meter_roll")
         n_shafts = d.get("no_of_shafts") or d.get("shafts") or d.get("no_of_rolls") or d.get("no_of_shaft")
+        net_wt = d.get("net_weight") or d.get("weight") or d.get("roll_weight")
+        tot_wt = d.get("total_weight") or d.get("job_weight")
         
+        # Priority: explicit job_id -> custom field -> name -> index
         job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("custom_job_id") or str(idx + 1)
 
         jobs.append({
@@ -276,7 +279,9 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "combination": d.get("combination"),
             "total_width": flt(t_width_val),
             "meter_roll_mtrs": flt(m_roll),
-            "no_of_shafts": cint(n_shafts) if n_shafts else 1
+            "no_of_shafts": cint(n_shafts) if n_shafts else 1,
+            "net_weight": flt(net_wt),
+            "total_weight": flt(tot_wt)
         })
         
     return jobs

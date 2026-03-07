@@ -10,6 +10,8 @@
         "combination",
         "total_width",
         "meter_roll_mtrs",
+        "net_weight",
+        "total_weight",
         "no_of_shafts",
         "create_roll_entry"
     ],
@@ -47,6 +49,20 @@
             "fieldtype": "Float",
             "in_list_view": 1,
             "label": "Meter / Roll (Mtrs)",
+            "read_only": 1
+        },
+        {
+            "fieldname": "net_weight",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Net Weight",
+            "read_only": 1
+        },
+        {
+            "fieldname": "total_weight",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Total Weight",
             "read_only": 1
         },
         {
