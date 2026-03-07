@@ -150,11 +150,6 @@ class ShaftProductionRun(Document):
             planned_qty = group["total_planned_weight"]
             
             wo = frappe.get_doc("Work Order", wo_name)
-            
-            # If the user wants to override the WO's planned Qty with our calculated sum
-            if planned_qty > 0:
-                frappe.db.set_value("Work Order", wo.name, "qty", planned_qty)
-                wo.qty = planned_qty # Sync for ratio calc
 
             # 1. Clean up old drafts
             old_drafts = frappe.get_all("Stock Entry",
@@ -231,9 +226,16 @@ class ShaftProductionRun(Document):
                     fields=["qty"]
                 ))
 
+            updated_status = "In Process"
+            if total_produced >= wo_planned_qty:
+                # Only set to completed if it actually reached the ORIGINAL planned qty
+                updated_status = "Completed"
+            elif total_produced > 0:
+                updated_status = "In Process"
+
             frappe.db.set_value("Work Order", wo.name, {
                 "produced_qty": total_produced,
-                "status": "Completed" if total_produced >= wo_planned_qty else "In Process"
+                "status": updated_status
             })
 
 
