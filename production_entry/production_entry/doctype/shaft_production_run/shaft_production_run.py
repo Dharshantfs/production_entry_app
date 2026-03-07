@@ -422,6 +422,7 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
     # Generic fetch
     wos = frappe.get_all("Work Order",
         filters=query_filters,
+        fields=["name", "production_item", "qty", "stock_uom", "custom_quality", "custom_color", "custom_width_inch"]
     )
     
     # Build Map for Quality / Color from Production Plan po_items

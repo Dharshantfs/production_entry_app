@@ -139,27 +139,30 @@ frappe.ui.form.on('Shaft Production Run Job', {
                     });
 
                     frm.refresh_field('items');
+
                     if (typeof calculate_total === "function") {
                         calculate_total(frm);
                     }
 
-                    // Auto-generate batch numbers right away
-                    frm.save('Save', () => {
-                        frappe.call({
-                            doc: cur_frm.doc,
-                            method: 'generate_batch_numbers',
-                            callback: function (r) {
-                                if (!r.exc) {
-                                    cur_frm.refresh_field('items');
-                                    frappe.msgprint({
-                                        title: 'Success',
-                                        message: `Successfully added ${rolls_to_add.length} rolls for Job ${row.job_id} to the Produced Rolls table and generated batch numbers.`,
-                                        indicator: 'green'
-                                    });
+                    // Force a save to validate and generate batches
+                    setTimeout(() => {
+                        frm.save().then(() => {
+                            frm.call({
+                                doc: frm.doc,
+                                method: 'generate_batch_numbers',
+                                callback: function (r) {
+                                    if (!r.exc) {
+                                        frm.refresh_field('items');
+                                        frappe.msgprint({
+                                            title: 'Success',
+                                            message: `Successfully added ${rolls_to_add.length} rolls for Job ${row.job_id} to the Produced Rolls table and generated batch numbers.`,
+                                            indicator: 'green'
+                                        });
+                                    }
                                 }
-                            }
+                            });
                         });
-                    });
+                    }, 500);
                 } else {
                     frappe.msgprint("Could not find matching Work Orders for this Job's widths. Ensure WOs are created and not closed/cancelled.");
                 }

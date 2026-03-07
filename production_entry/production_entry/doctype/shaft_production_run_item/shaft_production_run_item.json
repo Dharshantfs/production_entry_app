@@ -102,14 +102,12 @@
             "label": "Details"
         },
         {
-            "fetch_from": "work_order.custom_quality",
             "fieldname": "quality",
             "fieldtype": "Data",
             "label": "Quality",
             "read_only": 1
         },
         {
-            "fetch_from": "work_order.custom_color",
             "fieldname": "color",
             "fieldtype": "Data",
             "label": "Color",
@@ -120,14 +118,12 @@
             "fieldtype": "Column Break"
         },
         {
-            "fetch_from": "work_order.custom_width_inch",
             "fieldname": "width_inch",
             "fieldtype": "Float",
             "label": "Width (Inch)",
             "read_only": 1
         },
         {
-            "fetch_from": "work_order.custom_gsm",
             "fieldname": "gsm",
             "fieldtype": "Int",
             "label": "GSM",
