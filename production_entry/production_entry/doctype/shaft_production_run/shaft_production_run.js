@@ -5,7 +5,16 @@ frappe.ui.form.on('Shaft Production Run', {
         if (!frm.is_new() && frm.doc.docstatus === 0) {
             frm.add_custom_button(__('Generate Batches'), function () {
                 set_shift_production(frm);
-                frappe.msgprint("Shift and Batch Sequence calculated. Please verify Roll Numbers.");
+                frm.call({
+                    doc: frm.doc,
+                    method: 'generate_batch_numbers',
+                    callback: function (r) {
+                        if (!r.exc) {
+                            frm.refresh_field('items');
+                            frappe.msgprint("Shift and Batch Sequence calculated. Please verify Roll Numbers.");
+                        }
+                    }
+                });
             }).addClass('btn-primary');
         }
 

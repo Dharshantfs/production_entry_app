@@ -90,6 +90,10 @@ class ShaftProductionRun(Document):
                     "description": f"Shift: {shift_name}",
                     "custom_net_weight": flt(row.get("net_weight"))
                 })
+        
+        # If this is called via button (whitelisted), we must save to persist row assignments
+        if frappe.request and frappe.request.path.endswith("run_method"):
+            self.save(ignore_permissions=True)
 
 
     def get_shift_series_by_identity(self, item_code, unit_code, current_shift):
