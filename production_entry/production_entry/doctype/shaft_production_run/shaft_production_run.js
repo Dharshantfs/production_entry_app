@@ -88,8 +88,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
         }
 
         frappe.call({
-            doc: frm.doc,
-            method: 'get_job_roll_details',
+            method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_job_roll_details',
             args: {
                 production_plan: frm.doc.production_plan,
                 job_id: row.job_id,
