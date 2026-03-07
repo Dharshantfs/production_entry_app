@@ -24,20 +24,6 @@ frappe.ui.form.on('Shaft Production Run', {
                 select_work_orders(frm);
             });
         }
-
-        setTimeout(function () {
-            if (frm.fields_dict['items'] && frm.fields_dict['items'].grid) {
-                var grid = frm.fields_dict['items'].grid;
-                grid.get_field('print_sticker').formatter = function (value, row_doc) {
-                    return '<button type="button" class="btn btn-xs btn-default" ' +
-                        'style="width: 100%; font-weight: bold; cursor: pointer !important; pointer-events: auto;" ' +
-                        'onclick="frappe.generate_sticker_flow(\'' + row_doc.name + '\')"> ' +
-                        'Create Label ' +
-                        '</button>';
-                };
-                grid.refresh();
-            }
-        }, 500);
     },
 
     onload: function (frm) {
@@ -197,15 +183,8 @@ frappe.ui.form.on('Shaft Production Run Item', {
         calculate_total(frm);
     },
 
-    items_add: function (frm, cdt, cdn) {
-        if (frm.doc.docstatus === 0) {
-            var max_roll = 0;
-            (frm.doc.items || []).forEach(function (row) {
-                var r = parseInt(row.roll_no) || 0;
-                if (r > max_roll) max_roll = r;
-            });
-            frappe.model.set_value(cdt, cdn, 'roll_no', max_roll + 1);
-        }
+    print_sticker: function (frm, cdt, cdn) {
+        frappe.generate_sticker_flow(cdn, frm);
     }
 });
 
@@ -307,14 +286,15 @@ function set_shift_production(frm) {
     }
 }
 
-frappe.generate_sticker_flow = function (row_name) {
-    if (!cur_frm || !cur_frm.doc) {
-        console.error("Label Printing: cur_frm not found.");
+frappe.generate_sticker_flow = function (row_name, frm) {
+    var f = frm || cur_frm;
+    if (!f || !f.doc) {
+        console.error("Label Printing: Form not found.");
         return;
     }
 
     var row = locals['Shaft Production Run Item'][row_name];
-    if (!row) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+    if (!row) row = (f.doc.items || []).find(function (r) { return r.name === row_name; });
 
     if (!row) {
         console.error("Label Printing: Row " + row_name + " not found.");
@@ -326,14 +306,15 @@ frappe.generate_sticker_flow = function (row_name) {
     // Fetch item name to improve extraction accuracy
     frappe.db.get_value('Item', item_code, 'item_name', function (r) {
         var item_name = (r && r.item_name) || "";
-        trigger_print_with_details(row_name, item_name);
+        trigger_print_with_details(row_name, item_name, f);
     });
 };
 
-function trigger_print_with_details(row_name, item_name) {
-    var raw_label = cur_frm.doc.custom_label || "Default";
+function trigger_print_with_details(row_name, item_name, frm) {
+    var doc = frm.doc;
+    var raw_label = doc.custom_label || "Default";
     var label_type = raw_label.trim().toLowerCase();
-    var row = locals['Shaft Production Run Item'][row_name] || (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+    var row = locals['Shaft Production Run Item'][row_name] || (doc.items || []).find(function (r) { return r.name === row_name; });
     if (!row) return;
 
     var details = extract_details_enhanced(item_name, row.item_code);
@@ -345,10 +326,10 @@ function trigger_print_with_details(row_name, item_name) {
     console.log("Sticker Flow:", { label_type: label_type, row: row, details: details });
 
     if (label_type.includes("reliance") || label_type.includes("relience")) {
-        flow_reliance_cm(row_name, final_gsm, final_color, final_quality);
+        flow_reliance_cm(row_name, final_gsm, final_color, final_quality, frm);
     } else {
         var w = row.width_inch || details.width_inch || "0";
-        frappe.run_print_logic(row_name, w + " Inches", final_gsm, final_color, final_quality);
+        frappe.run_print_logic(row_name, w + " Inches", final_gsm, final_color, final_quality, frm);
     }
 }
 
@@ -396,7 +377,8 @@ function extract_details_enhanced(name, code) {
             var qp = name_upper.indexOf(res.quality.toUpperCase());
             if (qp !== -1) {
                 var aq = name.substring(qp + res.quality.length).trim();
-                aq = aq.replace(/\s*\d+\s*GSM.*/i, "").trim();
+                aq = aq.split(/\s*\d+\s*GSM/i)[0].trim();
+                aq = aq.replace(/^[\s,:-]+|[\s,:-]+$/g, "");
                 if (aq) res.color = aq;
             }
         }
@@ -408,13 +390,14 @@ function extract_details_enhanced(name, code) {
     return res;
 }
 
-function flow_reliance_cm(row_name, gsm, color, quality) {
-    var saved_val = cur_frm.doc.custom_batch_width || 0;
+function flow_reliance_cm(row_name, gsm, color, quality, frm) {
+    var doc = frm.doc;
+    var saved_val = doc.custom_batch_width || 0;
     if (saved_val > 0) {
-        frappe.run_print_logic(row_name, saved_val + " CM", gsm, color, quality);
+        frappe.run_print_logic(row_name, saved_val + " CM", gsm, color, quality, frm);
     } else {
         var row = locals['Shaft Production Run Item'][row_name];
-        if (!row && cur_frm) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+        if (!row) row = (doc.items || []).find(function (r) { return r.name === row_name; });
         var item_code = row ? (row.item_code || "") : "";
 
         var width_mm = (item_code.length >= 4) ? parseFloat(item_code.slice(-4)) : 0;
@@ -422,15 +405,16 @@ function flow_reliance_cm(row_name, gsm, color, quality) {
 
         frappe.prompt([{ label: 'Verify Width (CM)', fieldname: 'width_cm', fieldtype: 'Float', default: width_cm, reqd: 1 }],
             function (values) {
-                cur_frm.set_value('custom_batch_width', values.width_cm);
-                frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality);
+                frm.set_value('custom_batch_width', values.width_cm);
+                frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality, frm);
             }, 'Confirm Reliance Size', 'Preview Label');
     }
 }
 
-frappe.run_print_logic = function (row_name, final_width_display, final_gsm, final_color, final_quality) {
+frappe.run_print_logic = function (row_name, final_width_display, final_gsm, final_color, final_quality, frm) {
+    var doc = frm.doc;
     var row = locals['Shaft Production Run Item'][row_name];
-    if (!row && cur_frm) row = (cur_frm.doc.items || []).find(function (r) { return r.name === row_name; });
+    if (!row) row = (doc.items || []).find(function (r) { return r.name === row_name; });
     if (!row) return;
 
     var d = {
@@ -449,8 +433,8 @@ frappe.run_print_logic = function (row_name, final_width_display, final_gsm, fin
         roll_no: row.roll_no || ""
     };
 
-    var htmlContent = get_grid_format(d, (cur_frm.doc.custom_label || "").toLowerCase());
-    var printWindow = window.open('', 'PRINT', 'height=650,width=500');
+    var htmlContent = get_grid_format(d, (doc.custom_label || "Default").toLowerCase());
+    var printWindow = window.open('', '_blank', 'height=650,width=500');
     if (printWindow) {
         printWindow.document.write(htmlContent);
         printWindow.document.close();
