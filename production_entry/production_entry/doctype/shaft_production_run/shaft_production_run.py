@@ -256,10 +256,12 @@ def get_shaft_jobs(production_plan, work_orders=None):
     
     for wo in wos:
         w_inch = None
-        if wo.custom_width_inch:
+        if wo.custom_width_inch and flt(wo.custom_width_inch) > 0:
             w_inch = round(flt(wo.custom_width_inch), 1)
         else:
             ic = str(wo.production_item)
+            # Example item code: 1001091010800660
+            # Length is 16. Digits 12:16 represent mm. "0660" -> 660. 660 / 25.4 = 25.98 -> 26.0
             if len(ic) >= 16:
                 try:
                     w_inch = round(int(ic[12:16]) / 25.4, 1)
@@ -394,24 +396,41 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
     wo_by_width = {}
     for wo in wos:
-        if wo.custom_width_inch:
-            wo_by_width[round(flt(wo.custom_width_inch), 1)] = wo
+        w = None
+        if wo.custom_width_inch and flt(wo.custom_width_inch) > 0:
+            w = round(flt(wo.custom_width_inch), 1)
         else:
-            ic = wo.production_item
-            try:
-                if len(ic) >= 16:
-                    width_inch = round(int(ic[12:16]) / 25.4, 1)
-                    wo_by_width[width_inch] = wo
-            except: pass
-            
+            ic = str(wo.production_item)
+            if len(ic) >= 16:
+                try:
+                    w = round(int(ic[12:16]) / 25.4, 1)
+                except: pass
+                
+        if w is not None:
+            if w not in wo_by_width:
+                wo_by_width[w] = []
+            wo_by_width[w].append(wo)
+
     n_shafts = cint(no_of_shafts) if cint(no_of_shafts) > 0 else 1
     
     for _ in range(n_shafts):
         for target_width in widths:
             tw_rounded = round(float(target_width), 1)
-            wo = wo_by_width.get(tw_rounded)
             
-            if wo:
+            matched_wo_width = None
+            for w in wo_by_width.keys():
+                if abs(w - tw_rounded) <= 0.1:
+                    if len(wo_by_width[w]) > 0:
+                        matched_wo_width = w
+                        break
+                        
+            if matched_wo_width is not None and len(wo_by_width[matched_wo_width]) > 0:
+                wo = None
+                if len(wo_by_width[matched_wo_width]) == 1:
+                    wo = wo_by_width[matched_wo_width][0] # Keep reusing
+                else:
+                    wo = wo_by_width[matched_wo_width].pop(0) # Consume
+                    
                 items_to_add.append({
                     "job": job_id,
                     "work_order": wo.name,
