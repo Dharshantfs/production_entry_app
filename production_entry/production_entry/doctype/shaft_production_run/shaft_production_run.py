@@ -225,7 +225,7 @@ class ShaftProductionRun(Document):
             # Finalize Produced Qty and Status
             total_produced = frappe.db.get_value("Stock Entry Detail", 
                 {"parent": ["in", frappe.get_all("Stock Entry", {"work_order": wo.name, "docstatus": 1}, pluck="name")], "is_finished_item": 1}, 
-                "sum(qty)") or 0.0
+                {"sum": "qty"}) or 0.0
 
             frappe.db.set_value("Work Order", wo.name, {
                 "produced_qty": total_produced,
