@@ -280,14 +280,14 @@ def get_shaft_jobs(production_plan, work_orders=None):
         if not comb or "combination" in comb or "job" in comb or "gsm" in gsm_val:
             continue
             
-        t_width_val = d.get("total_width") or d.get("total_width_inches") or d.get("total_width_incl_wastage") or d.get("total_width_inch") or d.get("total_width_incl")
-        m_roll = d.get("meter_roll_mtrs") or d.get("meter_per_roll") or d.get("meter_roll")
-        n_shafts = d.get("no_of_shafts") or d.get("shafts") or d.get("no_of_rolls") or d.get("no_of_shaft")
-        net_wt = d.get("net_weight") or d.get("weight") or d.get("roll_weight")
-        tot_wt = d.get("total_weight") or d.get("job_weight")
+        t_width_val = d.get("combined_width") or d.get("total_width") or d.get("total_width_inches")
+        m_roll = d.get("meter__roll") or d.get("meter_roll_mtrs") or d.get("meter_per_roll")
+        n_shafts = d.get("no_of_shaft") or d.get("no_of_shafts") or d.get("shafts")
+        net_wt = d.get("net_weight")
+        tot_wt = d.get("total_weight_kgs") or d.get("total_weight")
         
         # Priority: explicit job_id -> custom field -> name -> index
-        job_id_val = d.get("job_id") or d.get("job") or d.get("job_no") or d.get("custom_job_id") or str(idx + 1)
+        job_id_val = d.get("s_no") or d.get("job_id") or d.get("job") or str(idx + 1)
         
         # Calculate planned weights from Work Orders associated with these widths
         job_total_planned_weight = 0
