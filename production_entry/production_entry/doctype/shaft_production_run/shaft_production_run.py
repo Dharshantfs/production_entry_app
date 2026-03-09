@@ -332,6 +332,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
     
     relevant_widths = set()
     wo_qty_by_width = {}
+    wo_names_by_width = {}
     
     # We fetch ALL work orders for the production plan if no explicit work_orders are given,
     # so we can calculate the total planned weight for jobs.
@@ -374,8 +375,10 @@ def get_shaft_jobs(production_plan, work_orders=None):
         if w_inch is not None:
             relevant_widths.add(w_inch)
             wo_qty_by_width[w_inch] = wo_qty_by_width.get(w_inch, 0) + flt(wo.qty)
+            if w_inch not in wo_names_by_width: wo_names_by_width[w_inch] = []
+            wo_names_by_width[w_inch].append(wo.name)
 
-    # Determine the label type from the first Work Order (they usually match)
+    # Determine the label type from the first Work Order
     label_type = "Default"
     for wo in wos:
         if wo.get("custom_label"):
@@ -416,11 +419,14 @@ def get_shaft_jobs(production_plan, work_orders=None):
         
         # Calculate planned weights from Work Orders associated with these widths
         job_total_planned_weight = 0
+        job_wos = set()
         for w in widths:
             # Find the closest width in our WO map
             for rw in wo_qty_by_width.keys():
                 if abs(w - rw) <= 1.0:
                     job_total_planned_weight += wo_qty_by_width[rw]
+                    if rw in wo_names_by_width:
+                        job_wos.update(wo_names_by_width[rw])
                     break
                     
         # net_wt might be a string like "74.78 + 74.78 + 42.27 = 191.83"
@@ -452,7 +458,8 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "meter_roll_mtrs": flt(m_roll),
             "no_of_shafts": cint(n_shafts) if n_shafts else 1,
             "net_weight": job_net_weight_str, # Always send exactly the equation string
-            "total_weight": job_total_weight
+            "total_weight": job_total_weight,
+            "work_orders": ", ".join(job_wos)
         })
         
     return {
@@ -647,11 +654,20 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                     "production_item": item_code,
                     "docstatus": 1
                 }, "name")
+            party_code = None
+            if wo_name:
+                wo_data = frappe.db.get_value("Work Order", wo_name, ["status", "custom_party_code", "party_code"], as_dict=1)
+                if wo_data:
+                    party_code = wo_data.get("custom_party_code") or wo_data.get("party_code")
+                    wo_status = wo_data.get("status")
+            else:
+                wo_status = None
 
             items_to_add.append({
                 "job": job_id,
                 "work_order": wo_name,
-                "wo_status": frappe.db.get_value("Work Order", wo_name, "status") if wo_name else None,
+                "wo_status": wo_status,
+                "party_code": party_code,
                 "item_code": item_code,
                 "planned_qty": planned_qty,
                 "width_inch": target_width,

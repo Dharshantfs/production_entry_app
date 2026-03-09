@@ -11,6 +11,7 @@
         "planned_qty",
         "job",
         "batch_no",
+        "party_code",
         "column_break_4",
         "roll_no",
         "meter_roll",
@@ -69,6 +70,12 @@
             "fieldtype": "Data",
             "in_list_view": 1,
             "label": "Batch No"
+        },
+        {
+            "fieldname": "party_code",
+            "fieldtype": "Data",
+            "label": "Order Code",
+            "read_only": 1
         },
         {
             "fieldname": "column_break_4",

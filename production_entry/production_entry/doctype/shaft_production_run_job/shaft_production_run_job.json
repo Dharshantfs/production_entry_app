@@ -13,6 +13,7 @@
         "net_weight",
         "total_weight",
         "no_of_shafts",
+        "work_orders",
         "is_manual",
         "manual_items",
         "create_roll_entry"
@@ -67,6 +68,12 @@
             "fieldtype": "Int",
             "in_list_view": 1,
             "label": "No of Shafts"
+        },
+        {
+            "fieldname": "work_orders",
+            "fieldtype": "Small Text",
+            "in_list_view": 1,
+            "label": "Work Orders"
         },
         {
             "default": "0",
