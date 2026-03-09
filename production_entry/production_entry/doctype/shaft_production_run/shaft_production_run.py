@@ -115,10 +115,8 @@ class ShaftProductionRun(Document):
                 except:
                     pass
         
-        # If this is called via button (whitelisted), we must save to persist row assignments
-        if frappe.request and frappe.request.path.endswith("run_method"):
-            self.save(ignore_permissions=True)
-            return self.as_dict()
+        # Return the document dict so the client can refresh values (PREVIEW ONLY until saved)
+        return self.as_dict()
 
 
     def get_shift_series_by_identity(self, item_code, unit_code, current_shift):
@@ -204,9 +202,10 @@ class ShaftProductionRun(Document):
             wo = frappe.get_doc("Work Order", wo_name)
             wo_party = wo.get("custom_party_code") or wo.get("party_code")
 
-            # 1. Ensure Batch records exist
+            # 1. Prepare Batch creation (will only be inserted if we have valid production)
             for row in group["rows"]:
-                if not row.batch_no: continue
+                if not row.batch_no or flt(row.net_weight) <= 0: continue
+                
                 if not frappe.db.exists("Batch", row.batch_no):
                     b = frappe.new_doc("Batch")
                     b.batch_id = row.batch_no
@@ -218,7 +217,6 @@ class ShaftProductionRun(Document):
                     b.description = f"Shift: {self.shift}"
                     b.insert(ignore_permissions=True)
                 else:
-                    # Update metadata if it already exists
                     frappe.db.set_value("Batch", row.batch_no, {
                         "custom_net_weight": flt(row.net_weight),
                         "custom_meter": flt(row.meter_roll),
@@ -733,20 +731,25 @@ def create_manual_work_order(production_plan, item_code, qty, company=None):
     if not company:
         company = frappe.db.get_default("Company")
 
-    # Check if a usable WO already exists for this item in this PP
-    existing_wo = frappe.db.get_value("Work Order", {
-        "production_plan": production_plan,
-        "production_item": item_code,
-        "docstatus": ["!=", 2],
-        "status": ["not in", ["Completed", "Closed", "Cancelled"]]
-    }, "name")
-    if existing_wo:
-        return existing_wo
-
     # Get warehouse defaults from the Production Plan or Settings
     pp_doc = frappe.get_doc("Production Plan", production_plan)
-    wip_wh = pp_doc.get("wip_warehouse") or frappe.db.get_single_value("Manufacturing Settings", "default_wip_warehouse") or frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
-    fg_wh = pp_doc.get("fg_warehouse") or frappe.db.get_single_value("Manufacturing Settings", "default_fg_warehouse") or frappe.db.get_value("Stock Settings", None, "default_finished_goods_warehouse")
+    
+    # Defensive fetching for wip_warehouse
+    wip_wh = pp_doc.get("wip_warehouse")
+    if not wip_wh:
+        # In some versions it's wip_warehouse, in others default_wip_warehouse
+        m_settings = frappe.get_single("Manufacturing Settings")
+        wip_wh = m_settings.get("wip_warehouse") or m_settings.get("default_wip_warehouse")
+    if not wip_wh:
+        wip_wh = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+
+    # Defensive fetching for fg_warehouse
+    fg_wh = pp_doc.get("fg_warehouse")
+    if not fg_wh:
+        m_settings = frappe.get_single("Manufacturing Settings")
+        fg_wh = m_settings.get("fg_warehouse") or m_settings.get("default_fg_warehouse")
+    if not fg_wh:
+        fg_wh = frappe.db.get_value("Stock Settings", None, "default_finished_goods_warehouse")
 
     wo = frappe.new_doc("Work Order")
     wo.production_plan = production_plan
@@ -766,7 +769,7 @@ def create_manual_work_order(production_plan, item_code, qty, company=None):
     if bom:
         wo.submit()
     else:
-        frappe.msgprint(f"Work Order {wo.name} created as Draft — no active BOM found for {item_code}. Please add a BOM and submit the WO manually.")
+        frappe.msgprint(f"Work Order {wo.name} created as Draft \u2014 no active BOM found for {item_code}. Please add a BOM and submit the WO manually.")
 
     return wo.name
 
