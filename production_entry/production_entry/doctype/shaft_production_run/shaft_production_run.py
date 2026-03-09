@@ -343,7 +343,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         
     wos = frappe.get_all("Work Order",
         filters=wo_filters,
-        fields=["name", "production_item", "custom_width_inch", "qty", "custom_label", "custom_party_code", "party_code", "status"]
+        fields=["name", "production_item", "custom_width_inch", "qty", "custom_label", "custom_party_code", "status"]
     )
     
     # Fetch exact widths from Production Plan items
@@ -378,7 +378,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
             if w_inch not in wo_names_by_width: wo_names_by_width[w_inch] = []
             if w_inch not in wo_party_by_width: wo_party_by_width[w_inch] = set()
             wo_names_by_width[w_inch].append(wo.name)
-            p_code = wo.get("custom_party_code") or wo.get("party_code")
+            p_code = wo.get("custom_party_code")
             if p_code: wo_party_by_width[w_inch].add(p_code)
 
     # Determine the label type from the first Work Order
@@ -472,7 +472,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
     all_party_codes = set()
     wo_summary = []
     for wo in wos:
-        p_code = wo.get("custom_party_code") or wo.get("party_code")
+        p_code = wo.get("custom_party_code")
         if p_code:
             all_party_codes.add(p_code)
         
@@ -679,9 +679,9 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 }, "name")
             party_code = None
             if wo_name:
-                wo_data = frappe.db.get_value("Work Order", wo_name, ["status", "custom_party_code", "party_code"], as_dict=1)
+                wo_data = frappe.db.get_value("Work Order", wo_name, ["status", "custom_party_code"], as_dict=1)
                 if wo_data:
-                    party_code = wo_data.get("custom_party_code") or wo_data.get("party_code")
+                    party_code = wo_data.get("custom_party_code")
                     wo_status = wo_data.get("status")
             else:
                 wo_status = None
@@ -689,7 +689,6 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             items_to_add.append({
                 "job": job_id,
                 "work_order": wo_name,
-                "wo_status": wo_status,
                 "party_code": party_code,
                 "item_code": item_code,
                 "planned_qty": planned_qty,
