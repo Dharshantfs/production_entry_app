@@ -90,9 +90,34 @@ frappe.ui.form.on('Shaft Production Run Job', {
                             frappe.model.set_value(cdt, cdn, 'net_weight', job_match.net_weight);
                             frappe.model.set_value(cdt, cdn, 'total_weight', job_match.total_weight);
                             frappe.model.set_value(cdt, cdn, 'no_of_shafts', job_match.no_of_shafts);
-                            if (job_match.work_orders) {
-                                frappe.model.set_value(cdt, cdn, 'work_orders', job_match.work_orders);
-                            }
+
+                            // Open Selection Dialog for Work Orders
+                            new frappe.ui.form.MultiSelectDialog({
+                                doctype: "Work Order",
+                                target: frm,
+                                setters: {
+                                    production_plan: frm.doc.production_plan,
+                                },
+                                add_filters_group: 1,
+                                columns: ["status", "production_item", "qty"],
+                                get_query() {
+                                    return {
+                                        filters: {
+                                            production_plan: frm.doc.production_plan,
+                                            docstatus: 1,
+                                            status: ["not in", ["Cancelled", "Closed"]]
+                                        }
+                                    };
+                                },
+                                primary_action(selections) {
+                                    if (selections && selections.length > 0) {
+                                        frappe.model.set_value(cdt, cdn, 'work_orders', selections.join(', '));
+                                        this.dialog.hide();
+                                    } else {
+                                        frappe.msgprint("Please select at least one Work Order.");
+                                    }
+                                }
+                            });
                         }
                     }
                 }
@@ -145,18 +170,18 @@ function execute_create_roll_entry(frm, row) {
 
                 // Clean up empty default rows safely to prevent validation errors
                 var items = frm.doc.items || [];
-                var valid_items = [];
+                var to_remove = [];
                 for (var i = 0; i < items.length; i++) {
                     var r_row = items[i];
                     if (!r_row.work_order && !r_row.item_code) {
-                        frappe.model.clear_doc('Shaft Production Run Item', r_row.name);
+                        to_remove.push(r_row.name);
                     } else {
-                        valid_items.push(r_row);
                         var rn = parseInt(r_row.roll_no) || 0;
                         if (rn > max_roll) max_roll = rn;
                     }
                 }
-                frm.doc.items = valid_items;
+                to_remove.forEach(name => frappe.model.clear_doc('Shaft Production Run Item', name));
+                frm.refresh_field('items');
 
                 rolls_to_add.forEach(function (d) {
                     var child = frm.add_child('items');
@@ -250,6 +275,10 @@ function update_job_filter_options(frm) {
 }
 
 function add_manual_job_dialog(frm) {
+    if (!frm.doc.production_plan) {
+        frappe.msgprint("Please select a Production Plan first.");
+        return;
+    }
     let d = new frappe.ui.Dialog({
         title: 'Add Manual Job',
         fields: [
@@ -605,16 +634,16 @@ function get_grid_format(d, type) {
     var isPlain = type.includes("plain") && !isPlainCC;
     var isDefault = !isReliance && !isPerfect && !isPlainCC && !isPlain;
 
-    var header = "Non Woven Fabrics";
-    var sub1 = d.quality;
-    var sub2 = d.party_code ? ("Order Code: " + d.party_code) : "";
+    var header = d.party_code ? ("ORDER CODE: " + d.party_code) : "Non Woven Fabrics";
+    var sub1 = "JayaShree Spun Bond";
+    var sub2 = d.quality;
 
     if (isDefault) {
-        header = "JayaShree Spun Bond";
         sub1 = "\u2709 info@jayashreespunbond.com";
-        sub2 = d.quality + (d.party_code ? " | Order Code: " + d.party_code : "");
+        sub2 = d.quality + (d.party_code ? " | Code: " + d.party_code : "");
     } else if (isPlainCC) {
         sub1 = d.quality;
+        sub2 = d.party_code ? ("Order Code: " + d.party_code) : "";
     }
 
     var rows = [];
