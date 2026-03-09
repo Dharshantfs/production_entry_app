@@ -553,28 +553,36 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
     def get_matched_item_detail(target_width_inch, target_gsm):
         tw_rounded = round(flt(target_width_inch), 1)
+        tg_rounded = round(flt(target_gsm), 1)
         
         # 1. First priority: Check manual items if this is a manual job
         if manual_item_list:
             for item_code in manual_item_list:
                 item_doc = frappe.get_cached_doc("Item", item_code)
                 details = extract_details_from_name(item_doc.item_name or item_doc.item_code, item_doc.item_code)
-                # Check for Width match
-                if abs(flt(details.get("width_inch")) - flt(target_width_inch)) < 0.2:
-                    return item_doc
+                # Check for Width and GSM match (within 0.2 and 0.5 tolerances)
+                i_width = flt(details.get("width_inch"))
+                i_gsm = flt(details.get("gsm"))
+                
+                if abs(i_width - flt(target_width_inch)) < 0.2:
+                    # If it's a manual job, we almost always want this item, but check GSM if we have it
+                    if i_gsm > 0 and abs(i_gsm - tg_rounded) < 1.0:
+                        return item_doc
+                    elif i_gsm <= 0:
+                        return item_doc
 
         # 2. Second priority: Production Plan items (Exact match on GSM and Width)
         for p in pp_items:
             p_gsm = flt(p.get("gsm")) or flt(p.get("custom_gsm"))
             p_width = flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
-            if abs(p_gsm - flt(target_gsm)) < 0.1 and abs(p_width - tw_rounded) < 0.5:
+            if abs(p_gsm - tg_rounded) < 0.2 and abs(p_width - tw_rounded) < 0.5:
                 return p
         
         # 3. Third priority: Metric check (46 inch -> 1170mm) for Production Plan items
         width_mm = round(flt(target_width_inch) * 25.4)
         for p in pp_items:
             p_gsm = flt(p.get("gsm")) or flt(p.get("custom_gsm"))
-            if abs(p_gsm - flt(target_gsm)) < 0.1:
+            if abs(p_gsm - tg_rounded) < 0.5:
                 ic = str(p.item_code)
                 if str(width_mm) in ic:
                     return p
@@ -690,7 +698,9 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                     wo_doc = frappe.db.get_value("Work Order", {"name": wo, "production_item": item_code}, "name")
                     if wo_doc:
                         wo_name = wo_doc
-                        work_orders.remove(wo) # Prevent this WO from being assigned to the next identical roll
+                        # NOTE: We do NOT remove(wo) here because multiple rolls in one job 
+                        # often share the same Work Order (e.g. 46+46).
+                        # claimed_wos already protects against OTHER jobs stealing it.
                         break
             
             # 2. FALLBACK: Search Plan's Work Orders, but EXCLUDE anything claimed by other jobs
