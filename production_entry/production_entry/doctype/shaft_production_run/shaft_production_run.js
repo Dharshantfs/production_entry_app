@@ -37,12 +37,20 @@ frappe.ui.form.on('Shaft Production Run', {
     },
 
     before_save: function (frm) {
-        // Clean up empty default rows safely to prevent validation errors
+        // Double check cleanup before every save
         if (frm.doc.items) {
-            var to_keep = frm.doc.items.filter(r => r.work_order || r.item_code);
-            var to_remove = frm.doc.items.filter(r => !r.work_order && !r.item_code);
-            to_remove.forEach(r => frappe.model.clear_doc('Shaft Production Run Item', r.name));
-            frm.doc.items = to_keep;
+            frm.doc.items = frm.doc.items.filter(r => r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
+        }
+    },
+
+    validate: function (frm) {
+        // Aggressively remove empty default rows to prevent mandatory validation errors
+        if (frm.doc.items) {
+            let initial_len = frm.doc.items.length;
+            frm.doc.items = frm.doc.items.filter(r => r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
+            if (frm.doc.items.length !== initial_len) {
+                frm.refresh_field('items');
+            }
         }
     }
 });
