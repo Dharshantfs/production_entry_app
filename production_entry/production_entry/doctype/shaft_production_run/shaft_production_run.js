@@ -113,21 +113,20 @@ frappe.ui.form.on('Shaft Production Run Job', {
                     var rolls_to_add = r.message;
                     var max_roll = 0;
 
-                    // Clean up empty default rows
-                    var valid_rows = [];
-                    (frm.doc.items || []).forEach(function (r_row) {
+                    // Clean up empty default rows safely (without detaching Frappe's array reference)
+                    var items = frm.doc.items || [];
+                    for (var i = items.length - 1; i >= 0; i--) {
+                        var r_row = items[i];
                         if (r_row.work_order || r_row.item_code) {
-                            valid_rows.push(r_row);
                             var rn = parseInt(r_row.roll_no) || 0;
                             if (rn > max_roll) max_roll = rn;
+                        } else {
+                            items.splice(i, 1);
                         }
-                    });
+                    }
 
-                    if (valid_rows.length === 0) {
+                    if (items.length === 0) {
                         frm.clear_table('items');
-                    } else if (valid_rows.length < (frm.doc.items || []).length) {
-                        // Remove invalid rows physically from memory so Frappe doesn't validate them
-                        frm.doc.items = valid_rows;
                     }
 
                     rolls_to_add.forEach(function (r_info) {
@@ -255,7 +254,7 @@ function apply_grid_filter(frm) {
         $(this).css('border-left', '5px solid ' + job_colors[row.job]);
 
         // 2. Filtering
-        if (filter !== "All" && row.job !== filter) {
+        if (filter !== "All" && String(row.job) !== String(filter)) {
             $(this).hide();
         } else {
             $(this).show();
