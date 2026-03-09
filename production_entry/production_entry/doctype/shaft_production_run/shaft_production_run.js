@@ -14,9 +14,9 @@ frappe.ui.form.on('Shaft Production Run', {
         setup_grid_filter(frm);
 
         if (frm.doc.docstatus === 0) {
-            frm.get_field('shaft_jobs').grid.add_custom_button(__('Add Manual Job'), function () {
+            frm.add_custom_button(__('Add Manual Job'), function () {
                 add_manual_job_dialog(frm);
-            });
+            }, __('Actions'));
             // Disable manual row addition to the grid itself to force use of buttons/fetch
             frm.get_field('shaft_jobs').grid.cannot_add_rows = true;
         }
@@ -347,68 +347,210 @@ function update_job_filter_options(frm) {
 }
 
 function add_manual_job_dialog(frm) {
-    console.log("Loading Manual Job Dialog v2..."); // Debug log to check if JS is refreshed
     if (!frm.doc.production_plan) {
         frappe.msgprint(__("Please select a Production Plan first."));
         return;
     }
 
-    new frappe.ui.form.MultiSelectDialog({
-        doctype: "Item",
-        target: frm,
-        size: "large",
-        setters: {
-            item_name: null, // This forces the column to show up
-            custom_gsm: null,
-        },
-        add_filters_group: 1,
-        columns: ["name", "item_name", "custom_gsm"],
-        get_query() {
-            return {
-                filters: {
-                    is_stock_item: 1,
-                    disabled: 0
+    let selected_items = []; // [{item_code, item_name, width_inch, gsm}]
+
+    let d = new frappe.ui.Dialog({
+        title: __('Add Manual Job'),
+        size: 'large',
+        fields: [
+            {
+                fieldname: 'item_select',
+                fieldtype: 'Link',
+                label: 'Search & Add Product',
+                options: 'Item',
+                only_select: 1,
+                get_query: function () {
+                    return {
+                        filters: { is_stock_item: 1, disabled: 0 }
+                    };
                 }
-            };
-        },
-        primary_action_label: __("Select Products"),
-        primary_action(selections) {
-            if (!selections || selections.length === 0) {
-                frappe.msgprint(__("Please select at least one item."));
+            },
+            {
+                fieldname: 'btn_add',
+                fieldtype: 'Button',
+                label: 'Add Product',
+                click: function () {
+                    let item_code = d.get_value('item_select');
+                    if (!item_code) {
+                        frappe.show_alert({ message: __('Select an item first'), indicator: 'orange' });
+                        return;
+                    }
+                    if (selected_items.find(i => i.item_code === item_code)) {
+                        frappe.show_alert({ message: __('Item already added'), indicator: 'orange' });
+                        d.set_value('item_select', '');
+                        return;
+                    }
+                    frappe.call({
+                        method: 'frappe.client.get',
+                        args: { doctype: 'Item', name: item_code },
+                        callback: function (r) {
+                            if (r.message) {
+                                let item = r.message;
+                                let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
+                                selected_items.push({
+                                    item_code: item.item_code,
+                                    item_name: item.item_name || item.item_code,
+                                    width_inch: parseFloat(details.width_inch) || 0,
+                                    gsm: parseInt(details.gsm) || parseInt(item.custom_gsm) || 0
+                                });
+                                d.set_value('item_select', '');
+                                refresh_manual_job_preview(d, selected_items);
+                            }
+                        }
+                    });
+                }
+            },
+            {
+                fieldname: 'products_html',
+                fieldtype: 'HTML',
+                label: 'Selected Products'
+            },
+            { fieldtype: 'Section Break', label: 'Job Summary' },
+            {
+                fieldname: 'combination_display',
+                fieldtype: 'Data',
+                label: 'Combination',
+                read_only: 1
+            },
+            {
+                fieldname: 'total_width_display',
+                fieldtype: 'Float',
+                label: 'Total Width (Inches)',
+                read_only: 1
+            },
+            { fieldtype: 'Column Break' },
+            {
+                fieldname: 'gsm_display',
+                fieldtype: 'Data',
+                label: 'GSM',
+                read_only: 1
+            },
+            {
+                fieldname: 'gsm_alert_html',
+                fieldtype: 'HTML'
+            },
+            { fieldtype: 'Section Break' },
+            {
+                fieldname: 'no_of_shafts',
+                fieldtype: 'Int',
+                label: 'Number of Shafts',
+                default: 4,
+                reqd: 1
+            },
+            { fieldtype: 'Column Break' },
+            {
+                fieldname: 'meter_roll',
+                fieldtype: 'Float',
+                label: 'Meter / Roll',
+                default: 800,
+                reqd: 1
+            }
+        ],
+        primary_action_label: __('Create Job'),
+        primary_action: function (values) {
+            if (selected_items.length === 0) {
+                frappe.msgprint(__('Please add at least one product.'));
                 return;
             }
-            this.dialog.hide();
 
-            // Step 2: Prompt for details
-            let d = new frappe.ui.Dialog({
-                title: __('Details for Manual Job'),
-                fields: [
-                    {
-                        label: 'Meter / Roll',
-                        fieldname: 'meter_roll',
-                        fieldtype: 'Float',
-                        default: 800,
-                        reqd: 1
-                    },
-                    {
-                        label: 'Number of Shafts',
-                        fieldname: 'no_of_shafts',
-                        fieldtype: 'Int',
-                        default: 4,
-                        reqd: 1
-                    }
-                ],
-                primary_action_label: __('Create Job'),
-                primary_action(values) {
-                    execute_manual_job_creation(frm, selections, values, d);
+            // GSM mismatch check
+            let gsm_values = selected_items.map(i => flt(i.gsm)).filter(g => g > 0);
+            let unique_gsms = [...new Set(gsm_values)];
+            if (unique_gsms.length > 1) {
+                let max_diff = Math.max(...unique_gsms) - Math.min(...unique_gsms);
+                if (max_diff > 1) {
+                    frappe.msgprint({
+                        title: __('GSM Mismatch'),
+                        message: __('Selected items have different GSM values: {0}. All items in one job should have the same GSM.', [unique_gsms.join(', ')]),
+                        indicator: 'red'
+                    });
+                    return;
                 }
-            });
-            d.show();
+            }
+
+            // Width check
+            let widths_missing = selected_items.filter(i => !i.width_inch || flt(i.width_inch) <= 0);
+            if (widths_missing.length > 0) {
+                frappe.msgprint({
+                    title: __('Missing Width'),
+                    message: __('Could not determine width for: {0}. Ensure item names contain width in inches (e.g. 46 inch, 46").', [widths_missing.map(i => i.item_name).join(', ')]),
+                    indicator: 'orange'
+                });
+                return;
+            }
+
+            execute_manual_job_from_dialog(frm, selected_items, values, d);
         }
     });
+    d.show();
+    refresh_manual_job_preview(d, selected_items);
 }
 
-function execute_manual_job_creation(frm, selected_items, values, dialog_to_hide) {
+function refresh_manual_job_preview(dialog, selected_items) {
+    let html = '';
+    if (selected_items.length === 0) {
+        html = '<div style="padding: 20px; text-align: center; color: #888;">No products added yet. Search and add products above.</div>';
+    } else {
+        html = '<table class="table table-bordered table-condensed" style="margin-top: 5px; margin-bottom: 0;">' +
+            '<thead><tr style="background: #f5f5f5;">' +
+            '<th style="width:30px">#</th>' +
+            '<th>Item Code</th>' +
+            '<th>Item Name</th>' +
+            '<th style="width:80px">Width</th>' +
+            '<th style="width:60px">GSM</th>' +
+            '<th style="width:40px"></th>' +
+            '</tr></thead><tbody>';
+        selected_items.forEach(function (item, idx) {
+            html += '<tr>' +
+                '<td>' + (idx + 1) + '</td>' +
+                '<td><strong>' + item.item_code + '</strong></td>' +
+                '<td>' + item.item_name + '</td>' +
+                '<td>' + (item.width_inch ? item.width_inch + '"' : '<span style="color:red">?</span>') + '</td>' +
+                '<td>' + (item.gsm || '<span style="color:red">?</span>') + '</td>' +
+                '<td style="text-align:center"><button class="btn btn-xs btn-danger remove-manual-item" data-idx="' + idx + '">&times;</button></td>' +
+                '</tr>';
+        });
+        html += '</tbody></table>';
+    }
+
+    dialog.fields_dict.products_html.$wrapper.html(html);
+
+    // Bind remove buttons
+    dialog.fields_dict.products_html.$wrapper.find('.remove-manual-item').on('click', function () {
+        let idx = parseInt($(this).attr('data-idx'));
+        selected_items.splice(idx, 1);
+        refresh_manual_job_preview(dialog, selected_items);
+    });
+
+    // Update combination, total width, GSM
+    let widths = selected_items.map(function (i) { return flt(i.width_inch); }).filter(function (w) { return w > 0; });
+    let combination = widths.map(function (w) { return w + '"'; }).join(' + ');
+    let total_width = widths.reduce(function (sum, w) { return sum + w; }, 0);
+
+    let gsm_values = selected_items.map(function (i) { return flt(i.gsm); }).filter(function (g) { return g > 0; });
+    let unique_gsms = [];
+    gsm_values.forEach(function (g) { if (unique_gsms.indexOf(g) === -1) unique_gsms.push(g); });
+    let gsm_display = unique_gsms.length > 0 ? String(unique_gsms[0]) : '';
+    let gsm_mismatch = unique_gsms.length > 1 && (Math.max.apply(null, unique_gsms) - Math.min.apply(null, unique_gsms) > 1);
+
+    dialog.set_value('combination_display', combination || '');
+    dialog.set_value('total_width_display', total_width);
+    dialog.set_value('gsm_display', gsm_display);
+
+    // GSM alert
+    let alert_html = '';
+    if (gsm_mismatch) {
+        alert_html = '<div class="alert alert-danger" style="margin:5px 0;padding:6px 10px;font-size:12px;"><strong>GSM Mismatch!</strong> Values: ' + unique_gsms.join(', ') + '</div>';
+    }
+    dialog.fields_dict.gsm_alert_html.$wrapper.html(alert_html);
+}
+
+function execute_manual_job_from_dialog(frm, selected_items, values, dialog) {
     let max_id = 0;
     (frm.doc.shaft_jobs || []).forEach(j => {
         let id = parseInt(j.job_id) || 0;
@@ -416,114 +558,71 @@ function execute_manual_job_creation(frm, selected_items, values, dialog_to_hide
     });
     let new_job_id = String(max_id + 1);
 
-    frappe.show_alert({ message: __('Fetching details for {0} items...', [selected_items.length]), indicator: 'blue' });
+    let item_codes = selected_items.map(function (i) { return i.item_code; });
+    let widths = selected_items.map(function (i) { return flt(i.width_inch); });
+    let combination_str = widths.map(function (w) { return w + '"'; }).join(' + ');
+    let total_width = widths.reduce(function (s, w) { return s + w; }, 0);
+    let common_gsm = selected_items[0].gsm || 0;
 
-    frappe.call({
-        method: 'frappe.client.get_list',
-        args: {
-            doctype: 'Item',
-            filters: { name: ['in', selected_items] },
-            fields: ['name', 'item_name', 'item_code', 'custom_gsm']
-        },
-        callback: function (r) {
-            if (r.message && r.message.length > 0) {
-                let items_data = r.message;
-                let common_gsm = null;
-                let widths = [];
-                let gsm_mismatch = false;
-                let matched_item_names = [];
+    frappe.show_alert({ message: __('Creating Work Orders for {0} items...', [item_codes.length]), indicator: 'blue' });
 
-                items_data.forEach(item => {
-                    let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
-                    let item_gsm = details.gsm || item.custom_gsm || 0;
-
-                    if (common_gsm === null) {
-                        common_gsm = item_gsm;
-                    } else if (Math.abs(flt(common_gsm) - flt(item_gsm)) > 1.0) { // Slight tolerance
-                        gsm_mismatch = true;
-                    }
-
-                    if (details.width_inch) {
-                        widths.push(details.width_inch);
-                    }
-                    matched_item_names.push(item.item_name || item.item_code);
-                });
-
-                if (gsm_mismatch) {
-                    frappe.msgprint({
-                        title: __('GSM Mismatch'),
-                        message: __('Selected items have different GSM values. Please select items with the same GSM for a single job.'),
-                        indicator: 'red'
-                    });
-                    return;
+    let new_wos = [];
+    let wo_errors = [];
+    let promises = item_codes.map(function (item_code) {
+        return new Promise(function (resolve) {
+            frappe.call({
+                method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.create_manual_work_order',
+                args: {
+                    production_plan: frm.doc.production_plan,
+                    item_code: item_code,
+                    qty: values.meter_roll * values.no_of_shafts
+                },
+                callback: function (res) {
+                    if (res.message) new_wos.push(res.message);
+                    resolve();
+                },
+                error: function () {
+                    wo_errors.push(item_code);
+                    resolve();
                 }
+            });
+        });
+    });
 
-                if (widths.length === 0) {
-                    frappe.msgprint({
-                        title: __('Missing Widths'),
-                        message: __('Could not determine width for any of the selected items. Please ensure item names include width in inches.'),
-                        indicator: 'orange'
-                    });
-                    return;
-                }
-
-                // Format combination with inch marks: 46" + 26"
-                let combination_str = widths.map(w => w + '"').join(' + ');
-                let total_width = widths.reduce((sum, w) => sum + parseFloat(w || 0), 0);
-
-                frappe.show_alert({ message: __('Creating Work Orders...'), indicator: 'blue' });
-
-                let new_wos = [];
-                let p_arr = selected_items.map(item_code => {
-                    return new Promise((resolve, reject) => {
-                        frappe.call({
-                            method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.create_manual_work_order',
-                            args: {
-                                production_plan: frm.doc.production_plan,
-                                item_code: item_code,
-                                qty: values.meter_roll * values.no_of_shafts
-                            },
-                            callback: function (res) {
-                                if (res.message) new_wos.push(res.message);
-                                resolve();
-                            },
-                            error: function () {
-                                reject();
-                            }
-                        });
-                    });
-                });
-
-                Promise.all(p_arr).then(() => {
-                    let job_row = frm.add_child('shaft_jobs');
-                    job_row.job_id = new_job_id;
-                    job_row.gsm = common_gsm;
-                    job_row.combination = combination_str;
-                    job_row.total_width = total_width;
-                    job_row.meter_roll_mtrs = values.meter_roll;
-                    job_row.no_of_shafts = values.no_of_shafts;
-                    job_row.is_manual = 1;
-                    job_row.manual_items = JSON.stringify(selected_items);
-                    job_row.work_orders = new_wos.join(', ');
-                    job_row.net_weight = ""; // Keep empty for user entry
-                    job_row.total_weight = 0.0;
-
-                    frm.refresh_field('shaft_jobs');
-                    update_job_filter_options(frm);
-                    if (dialog_to_hide) dialog_to_hide.hide();
-
-                    frappe.msgprint({
-                        title: __('Manual Job Created'),
-                        message: __('Manual Job {0} added with products: <br> {1}', [new_job_id, matched_item_names.join(', ')]),
-                        indicator: 'green'
-                    });
-                }).catch(() => {
-                    frappe.msgprint(__("Failed to create Work Orders for some items. Please check if items have valid BOMs."));
-                });
-            } else {
-                frappe.msgprint(__("Could not fetch details for selected items."));
-            }
+    Promise.all(promises).then(function () {
+        if (new_wos.length === 0) {
+            frappe.msgprint({
+                title: __('Error'),
+                message: __('Failed to create Work Orders. Please check that items have active BOMs.'),
+                indicator: 'red'
+            });
+            return;
         }
+
+        let job_row = frm.add_child('shaft_jobs');
+        job_row.job_id = new_job_id;
+        job_row.gsm = common_gsm;
+        job_row.combination = combination_str;
+        job_row.total_width = total_width;
+        job_row.meter_roll_mtrs = values.meter_roll;
+        job_row.no_of_shafts = values.no_of_shafts;
+        job_row.is_manual = 1;
+        job_row.manual_items = JSON.stringify(item_codes);
+        job_row.work_orders = new_wos.join(', ');
+        job_row.net_weight = '';
+        job_row.total_weight = 0.0;
+
+        frm.refresh_field('shaft_jobs');
+        update_job_filter_options(frm);
+        dialog.hide();
+
+        let msg = __('Manual Job {0} created', [new_job_id]) +
+            '<br>Combination: <strong>' + combination_str + '</strong>' +
+            '<br>Work Orders: ' + new_wos.join(', ');
+        if (wo_errors.length > 0) {
+            msg += '<br><br><span style="color:orange">Warning: Could not create WO for: ' + wo_errors.join(', ') + '</span>';
+        }
+        frappe.msgprint({ title: __('Manual Job Created'), message: msg, indicator: 'green' });
     });
 }
 

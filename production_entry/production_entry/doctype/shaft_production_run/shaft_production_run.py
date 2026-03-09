@@ -673,16 +673,33 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 }
                 if work_orders:
                     wo_filters["name"] = ["in", work_orders]
-                
+
                 wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
+
+                # Fallback: check draft WOs (manual jobs may not have BOMs for auto-submit)
+                if not wo_name:
+                    draft_filters = {
+                        "production_plan": production_plan,
+                        "production_item": item_code,
+                        "docstatus": 0
+                    }
+                    if work_orders:
+                        draft_filters["name"] = ["in", work_orders]
+                    wo_name = frappe.db.get_value("Work Order", draft_filters, "name")
             
-            # If no WO found but we have Item Code, try even if it's completed? 
-            # Or just use the first matching WO name available.
+            # If no WO found but we have Item Code, try broader search
             if not wo_name and item_code:
                 wo_name = frappe.db.get_value("Work Order", {
                     "production_plan": production_plan,
                     "production_item": item_code,
                     "docstatus": 1
+                }, "name")
+            # Fallback: draft WO
+            if not wo_name and item_code:
+                wo_name = frappe.db.get_value("Work Order", {
+                    "production_plan": production_plan,
+                    "production_item": item_code,
+                    "docstatus": 0
                 }, "name")
             party_code = None
             if wo_name:
@@ -712,25 +729,45 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
 @frappe.whitelist()
 def create_manual_work_order(production_plan, item_code, qty, company=None):
-    """Create a manual Work Order for a job addition"""
+    """Create a manual Work Order for a job addition, linked to the same Production Plan"""
     if not company:
         company = frappe.db.get_default("Company")
-        
+
+    # Check if a usable WO already exists for this item in this PP
+    existing_wo = frappe.db.get_value("Work Order", {
+        "production_plan": production_plan,
+        "production_item": item_code,
+        "docstatus": ["!=", 2],
+        "status": ["not in", ["Completed", "Closed", "Cancelled"]]
+    }, "name")
+    if existing_wo:
+        return existing_wo
+
+    # Get warehouse defaults from the Production Plan or Settings
+    pp_doc = frappe.get_doc("Production Plan", production_plan)
+    wip_wh = pp_doc.get("wip_warehouse") or frappe.db.get_single_value("Manufacturing Settings", "default_wip_warehouse") or frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+    fg_wh = pp_doc.get("fg_warehouse") or frappe.db.get_single_value("Manufacturing Settings", "default_fg_warehouse") or frappe.db.get_value("Stock Settings", None, "default_finished_goods_warehouse")
+
     wo = frappe.new_doc("Work Order")
     wo.production_plan = production_plan
     wo.production_item = item_code
     wo.qty = flt(qty)
-    wo.company = company
-    wo.wip_warehouse = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
-    wo.fg_warehouse = frappe.db.get_value("Stock Settings", None, "default_finished_goods_warehouse")
-    
+    wo.company = company or pp_doc.company
+    wo.wip_warehouse = wip_wh
+    wo.fg_warehouse = fg_wh
+
     # Try to fetch default BOM
     bom = frappe.db.get_value("BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name")
     if bom:
         wo.bom_no = bom
-        
-    wo.insert()
-    wo.submit() # Auto-submit to make it ready for production entry
+
+    wo.insert(ignore_permissions=True)
+
+    if bom:
+        wo.submit()
+    else:
+        frappe.msgprint(f"Work Order {wo.name} created as Draft — no active BOM found for {item_code}. Please add a BOM and submit the WO manually.")
+
     return wo.name
 
 
@@ -777,5 +814,19 @@ def extract_details_from_name(name, code):
             after_qual = re.split(r'\s*\d+\s*GSM', after_qual, flags=re.I)[0].strip()
             if after_qual:
                 res["color"] = after_qual
+
+    # Parse GSM from name if not already found
+    if not res["gsm"] and name:
+        import re
+        gsm_match = re.search(r'(\d+)\s*GSM', name, re.I)
+        if gsm_match:
+            res["gsm"] = gsm_match.group(1)
+
+    # Parse width (inch) from name if not already found
+    if not res["width_inch"] and name:
+        import re
+        width_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|inch|in(?:ch)?|\'\')', name, re.I)
+        if width_match:
+            res["width_inch"] = width_match.group(1)
 
     return res
