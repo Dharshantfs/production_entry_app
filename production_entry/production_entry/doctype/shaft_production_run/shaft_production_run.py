@@ -80,23 +80,7 @@ class ShaftProductionRun(Document):
                         max_roll_num = max(max_roll_num, int(roll_part))
                     except: pass
                 
-                # 2. Check other Shaft Production Runs (Drafts/Submitted)
-                # This prevents duplicates across documents
-                other_runs = frappe.get_all("Shaft Production Run Item", 
-                    filters={
-                        "parent": ["!=", self.name],
-                        "batch_no": ["like", f"{series_prefix}-%"],
-                        "docstatus": ["!=", 2] # Skip cancelled
-                    },
-                    fields=["batch_no"]
-                )
-                for orun in other_runs:
-                    try:
-                        rp = orun.batch_no.split("-")[-1]
-                        max_roll_num = max(max_roll_num, int(rp))
-                    except: pass
-
-                # 3. Check current rows in this document
+                # 2. Check current rows in this document
                 for r in self.items:
                     if r.batch_no and r.batch_no.startswith(f"{series_prefix}-"):
                         try:
@@ -664,7 +648,7 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 # User formula: (gsm * target_width * meter_roll * 0.0254) / 1000
                 planned_qty = round((flt(gsm) * flt(target_width) * flt(meter_roll) * 0.0254) / 1000.0, 3)
 
-            # Force UOM to Kg for these manual rolls
+            # Force UOM to Kg for ALL rolls returned by this function
             uom = "Kg"
 
             # Fetch Work Order for this specific Item in this Plan

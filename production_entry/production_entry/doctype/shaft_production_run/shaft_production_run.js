@@ -269,7 +269,7 @@ function execute_create_roll_entry(frm, row) {
                     frappe.model.set_value(child.doctype, child.name, 'net_weight', d.net_weight);
                     frappe.model.set_value(child.doctype, child.name, 'quality', d.quality);
                     frappe.model.set_value(child.doctype, child.name, 'color', d.color);
-                    frappe.model.set_value(child.doctype, child.name, 'uom', d.uom);
+                    frappe.model.set_value(child.doctype, child.name, 'uom', 'Kg'); // Force to Kg explicitly
                     frappe.model.set_value(child.doctype, child.name, 'party_code', d.party_code);
 
                     max_roll++;
