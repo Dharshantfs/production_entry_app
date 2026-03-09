@@ -767,6 +767,7 @@ def create_manual_work_order(production_plan, item_code, qty, company=None):
     wo.insert(ignore_permissions=True)
 
     if bom:
+        wo.reload()
         wo.submit()
     else:
         frappe.msgprint(f"Work Order {wo.name} created as Draft \u2014 no active BOM found for {item_code}. Please add a BOM and submit the WO manually.")
