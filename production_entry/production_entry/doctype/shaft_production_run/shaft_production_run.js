@@ -356,13 +356,13 @@ function add_manual_job_dialog(frm) {
     new frappe.ui.form.MultiSelectDialog({
         doctype: "Item",
         target: frm,
-        size: "large", // Make it bigger to see columns
+        size: "large",
         setters: {
-            item_group: null,
-            is_stock_item: 1,
+            item_name: null, // This forces the column to show up
+            custom_gsm: null,
         },
         add_filters_group: 1,
-        columns: ["name", "item_name", "custom_gsm"], // Explicitly request Name and Item Name
+        columns: ["name", "item_name", "custom_gsm"],
         get_query() {
             return {
                 filters: {
