@@ -9,7 +9,7 @@ class ShaftProductionRun(Document):
         self.sync_job_weights()
 
     def sync_job_weights(self):
-        """Sync weights from produced rolls back to job rows"""
+        """Sync weights from produced rolls back to job rows (Manual Jobs Only)"""
         job_totals = {}
         job_net_formulas = {}
 
@@ -27,7 +27,8 @@ class ShaftProductionRun(Document):
 
         for job in self.shaft_jobs:
             jid = str(job.job_id)
-            if jid in job_totals:
+            # ONLY SYNC IF JOB IS MANUAL
+            if jid in job_totals and job.is_manual:
                 job.total_weight = job_totals[jid]
                 # Format: "74.78 + 74.78 = 149.56"
                 formula = " + ".join(job_net_formulas[jid])
@@ -559,17 +560,6 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
         pp_doc = frappe.get_doc("Production Plan", production_plan)
         pp_items = pp_doc.po_items
 
-    def get_matched_item_detail(width_inch, gsm):
-        # First priority: Check manual items if this is a manual job
-        if manual_item_list:
-            for item_code in manual_item_list:
-                item_doc = frappe.get_cached_doc("Item", item_code)
-                # Parse gsm/width from item to verify match
-                details = extract_details_from_name(item_doc.item_name or item_doc.item_code, item_doc.item_code)
-                if abs(flt(details.get("width_inch")) - flt(width_inch)) <= 0.1:
-                    # Found a manual match
-                    return item_doc
-
     def get_matched_item_detail(target_width_inch, target_gsm):
         tw_rounded = round(flt(target_width_inch), 1)
         
@@ -712,7 +702,7 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 "width_inch": target_width,
                 "gsm": gsm,
                 "meter_roll": meter_roll,
-                "net_weight": planned_qty,
+                "net_weight": 0.0, # RESET TO 0.0 FOR MANUAL ENTRY
                 "quality": quality,
                 "color": color,
                 "uom": uom

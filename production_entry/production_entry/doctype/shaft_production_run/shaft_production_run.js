@@ -351,105 +351,126 @@ function add_manual_job_dialog(frm) {
         frappe.msgprint("Please select a Production Plan first.");
         return;
     }
-    let d = new frappe.ui.Dialog({
-        title: 'Add Manual Job',
-        fields: [
-            {
-                label: 'Select Items',
-                fieldname: 'items',
-                fieldtype: 'MultiSelect',
-                get_data: function () {
-                    return frappe.db.get_link_options('Item', '', { 'is_stock_item': 1 });
-                },
-                reqd: 1
-            },
-            {
-                label: 'Meter / Roll',
-                fieldname: 'meter_roll',
-                fieldtype: 'Float',
-                default: 800,
-                reqd: 1
-            },
-            {
-                label: 'Number of Shafts',
-                fieldname: 'no_of_shafts',
-                fieldtype: 'Int',
-                default: 4,
-                reqd: 1
+
+    new frappe.ui.form.MultiSelectDialog({
+        doctype: "Item",
+        target: frm,
+        setters: {
+            is_stock_item: 1,
+        },
+        add_filters_group: 1,
+        get_query() {
+            return {
+                filters: {
+                    is_stock_item: 1,
+                    disabled: 0
+                }
+            };
+        },
+        primary_action(selections) {
+            if (!selections || selections.length === 0) {
+                frappe.msgprint("Please select at least one item.");
+                return;
             }
-        ],
-        primary_action_label: 'Create Job',
-        primary_action(values) {
-            let selected_items = values.items.split(',').map(i => i.trim());
-            let max_id = 0;
-            (frm.doc.shaft_jobs || []).forEach(j => {
-                let id = parseInt(j.job_id) || 0;
-                if (id > max_id) max_id = id;
-            });
-            let new_job_id = String(max_id + 1);
+            this.dialog.hide();
 
-            frappe.call({
-                method: 'frappe.client.get_list',
-                args: {
-                    doctype: 'Item',
-                    filters: { name: ['in', selected_items] },
-                    fields: ['name', 'item_name', 'item_code', 'custom_gsm', 'item_group']
-                },
-                callback: function (r) {
-                    if (r.message) {
-                        let items_data = r.message;
-                        let gsm = 0;
-                        let widths = [];
-                        items_data.forEach(item => {
-                            let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
-                            if (details.gsm) gsm = details.gsm;
-                            if (details.width_inch) widths.push(details.width_inch);
-                        });
-
-                        let h_val = widths.join('\" + ') + '\"';
-                        let total_width = widths.reduce((a, b) => a + b, 0);
-
-                        let new_wos = [];
-                        let p_arr = selected_items.map(item_code => {
-                            return new Promise(resolve => {
-                                frappe.call({
-                                    method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.create_manual_work_order',
-                                    args: {
-                                        production_plan: frm.doc.production_plan,
-                                        item_code: item_code,
-                                        qty: values.meter_roll * values.no_of_shafts
-                                    },
-                                    callback: function (r) {
-                                        if (r.message) new_wos.push(r.message);
-                                        resolve();
-                                    }
-                                });
-                            });
-                        });
-
-                        Promise.all(p_arr).then(() => {
-                            let job_row = frm.add_child('shaft_jobs');
-                            job_row.job_id = new_job_id;
-                            job_row.gsm = gsm;
-                            job_row.combination = h_val;
-                            job_row.total_width = total_width;
-                            job_row.meter_roll_mtrs = values.meter_roll;
-                            job_row.no_of_shafts = values.no_of_shafts;
-                            job_row.is_manual = 1;
-                            job_row.manual_items = JSON.stringify(selected_items);
-                            job_row.work_orders = new_wos.join(', ');
-
-                            frm.refresh_field('shaft_jobs');
-                            update_job_filter_options(frm);
-                            d.hide();
-                            frappe.show_alert({ message: __('Manual Job Added Successfully'), indicator: 'green' });
-                        });
+            // Step 2: Prompt for details
+            let d = new frappe.ui.Dialog({
+                title: __('Details for Manual Job'),
+                fields: [
+                    {
+                        label: 'Meter / Roll',
+                        fieldname: 'meter_roll',
+                        fieldtype: 'Float',
+                        default: 800,
+                        reqd: 1
+                    },
+                    {
+                        label: 'Number of Shafts',
+                        fieldname: 'no_of_shafts',
+                        fieldtype: 'Int',
+                        default: 4,
+                        reqd: 1
                     }
+                ],
+                primary_action_label: __('Create Job'),
+                primary_action(values) {
+                    execute_manual_job_creation(frm, selections, values, d);
                 }
             });
+            d.show();
         }
     });
-    d.show();
+}
+
+function execute_manual_job_creation(frm, selected_items, values, dialog_to_hide) {
+    let max_id = 0;
+    (frm.doc.shaft_jobs || []).forEach(j => {
+        let id = parseInt(j.job_id) || 0;
+        if (id > max_id) max_id = id;
+    });
+    let new_job_id = String(max_id + 1);
+
+    frappe.call({
+        method: 'frappe.client.get_list',
+        args: {
+            doctype: 'Item',
+            filters: { name: ['in', selected_items] },
+            fields: ['name', 'item_name', 'item_code']
+        },
+        callback: function (r) {
+            if (r.message && r.message.length > 0) {
+                let items_data = r.message;
+                let gsm = 0;
+                let widths = [];
+                items_data.forEach(item => {
+                    let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
+                    if (details.gsm) gsm = details.gsm;
+                    if (details.width_inch) widths.push(details.width_inch);
+                });
+
+                let combination_str = widths.join('\" + ') + '\"';
+                let total_width = widths.reduce((sum, w) => sum + parseFloat(w || 0), 0);
+
+                let new_wos = [];
+                let p_arr = selected_items.map(item_code => {
+                    return new Promise(resolve => {
+                        frappe.call({
+                            method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.create_manual_work_order',
+                            args: {
+                                production_plan: frm.doc.production_plan,
+                                item_code: item_code,
+                                qty: values.meter_roll * values.no_of_shafts
+                            },
+                            callback: function (r) {
+                                if (r.message) new_wos.push(r.message);
+                                resolve();
+                            }
+                        });
+                    });
+                });
+
+                Promise.all(p_arr).then(() => {
+                    let job_row = frm.add_child('shaft_jobs');
+                    job_row.job_id = new_job_id;
+                    job_row.gsm = gsm;
+                    job_row.combination = combination_str;
+                    job_row.total_width = total_width;
+                    job_row.meter_roll_mtrs = values.meter_roll;
+                    job_row.no_of_shafts = values.no_of_shafts;
+                    job_row.is_manual = 1;
+                    job_row.manual_items = JSON.stringify(selected_items);
+                    job_row.work_orders = new_wos.join(', ');
+
+                    frm.refresh_field('shaft_jobs');
+                    update_job_filter_options(frm);
+                    if (dialog_to_hide) dialog_to_hide.hide();
+
+                    frappe.show_alert({ message: __('Manual Job {0} Added Successfully', [new_job_id]), indicator: 'green' });
+                });
+            }
+        }
+    });
 }
 
 function setup_grid_filter(frm) {
