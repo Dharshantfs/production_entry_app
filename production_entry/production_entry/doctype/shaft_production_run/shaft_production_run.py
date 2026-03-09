@@ -63,11 +63,14 @@ class ShaftProductionRun(Document):
 
             series_prefix = self.get_shift_series_by_identity(wo.production_item, unit_code, shift_name)
 
-            wo_party = wo.get("custom_party_code") or wo.get("party_code")
-            
+            # FORCE RE-GENERATION IF PREFIX MISMATCH (e.g. Shift Changed)
+            if row.batch_no and not row.batch_no.startswith(f"{series_prefix}-"):
+                row.batch_no = None
+                row.roll_no = None
+
             # Handle sequential Batch and Roll numbering across the shift.
             if not row.batch_no:
-                # 1. Fetch highest roll_no for this precise series_prefix globally today from Batch documents
+                # 1. Fetch highest roll_no for this precise series_prefix globally from Batch documents
                 existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}-%"]}, fields=["batch_id"])
                 max_roll_num = 0
                 for b in existing_batches:
@@ -76,13 +79,13 @@ class ShaftProductionRun(Document):
                         max_roll_num = max(max_roll_num, int(roll_part))
                     except: pass
                 
-                # 2. Check other Shaft Production Runs (Drafts/Submitted) for today
-                # This prevents duplicates if multiple people are working at once
+                # 2. Check other Shaft Production Runs (Drafts/Submitted)
+                # This prevents duplicates across documents
                 other_runs = frappe.get_all("Shaft Production Run Item", 
                     filters={
                         "parent": ["!=", self.name],
                         "batch_no": ["like", f"{series_prefix}-%"],
-                        "creation": [">=", frappe.utils.today()]
+                        "docstatus": ["!=", 2] # Skip cancelled
                     },
                     fields=["batch_no"]
                 )
@@ -92,7 +95,7 @@ class ShaftProductionRun(Document):
                         max_roll_num = max(max_roll_num, int(rp))
                     except: pass
 
-                # 3. Check current un-saved rows in memory
+                # 3. Check current rows in this document
                 for r in self.items:
                     if r.batch_no and r.batch_no.startswith(f"{series_prefix}-"):
                         try:
@@ -104,20 +107,7 @@ class ShaftProductionRun(Document):
                 row.batch_no = f"{series_prefix}-{next_roll}"
                 row.roll_no = next_roll
             
-            target_batch_id = row.batch_no
-            
-            # Allow overwriting batch_no logic safely (delete old if wrong prefix)
-            if target_batch_id and not target_batch_id.startswith(f"{series_prefix}-"):
-                if frappe.db.exists("Batch", row.batch_no):
-                    try:
-                        if row.batch_no.startswith(series_prefix[:5]):
-                            frappe.delete_doc("Batch", row.batch_no, force=1, ignore_permissions=True)
-                    except:
-                        pass
-
-            row.batch_no = target_batch_id
-            
-            # Ensure roll_no is at least numeric and syncs with batch_no suffix if possible
+            # Ensure roll_no syncs with batch_no suffix if possible
             if row.batch_no and "-" in row.batch_no:
                 try:
                     row.roll_no = int(row.batch_no.split("-")[-1])
@@ -137,6 +127,8 @@ class ShaftProductionRun(Document):
         
         date_prefix = f"{month_str}{unit_code}{year_str}"
 
+        # 1. Search for an existing prefix assigned to this shift today
+        # Check Batch records first (Submitted)
         existing_shift_batch = frappe.db.get_value("Batch",
             filters={
                 "batch_id": ["like", f"{date_prefix}%"],
@@ -145,20 +137,40 @@ class ShaftProductionRun(Document):
             fieldname="batch_id"
         )
 
+        if not existing_shift_batch:
+            # Check other Shaft Production Runs for this shift (Drafts)
+            other_run_item = frappe.db.sql("""
+                select i.batch_no 
+                from `tabShaft Production Run Item` i
+                join `tabShaft Production Run` p on i.parent = p.name
+                where p.shift = %s and i.batch_no like %s
+                limit 1
+            """, (current_shift, f"{date_prefix}%"))
+            if other_run_item:
+                existing_shift_batch = other_run_item[0][0]
+
         if existing_shift_batch:
             return existing_shift_batch.replace("/", "-").split('-')[0]
         else:
-            all_batches_today = frappe.get_all("Batch",
-                filters={"batch_id": ["like", f"{date_prefix}%"]},
-                fields=["batch_id"]
-            )
+            # Find max series suffix globally for today across both Batch and SPR Item
             max_series_num = 0
+            
+            # Check Batches
+            all_batches_today = frappe.get_all("Batch", filters={"batch_id": ["like", f"{date_prefix}%"]}, fields=["batch_id"])
             for b in all_batches_today:
                 try:
                     temp_series = b.batch_id.replace(date_prefix, "").replace("/", "-").split('-')[0]
                     max_series_num = max(max_series_num, int(temp_series))
-                except:
-                    continue
+                except: pass
+                
+            # Check SPR Items (Drafts)
+            all_items_today = frappe.get_all("Shaft Production Run Item", filters={"batch_no": ["like", f"{date_prefix}%"]}, fields=["batch_no"])
+            for i in all_items_today:
+                try:
+                    temp_series = i.batch_no.replace(date_prefix, "").replace("/", "-").split('-')[0]
+                    max_series_num = max(max_series_num, int(temp_series))
+                except: pass
+
             return f"{date_prefix}{max_series_num + 1}"
 
 
