@@ -347,6 +347,7 @@ function update_job_filter_options(frm) {
 }
 
 function add_manual_job_dialog(frm) {
+    console.log("Loading Manual Job Dialog v2..."); // Debug log to check if JS is refreshed
     if (!frm.doc.production_plan) {
         frappe.msgprint(__("Please select a Production Plan first."));
         return;
@@ -355,12 +356,13 @@ function add_manual_job_dialog(frm) {
     new frappe.ui.form.MultiSelectDialog({
         doctype: "Item",
         target: frm,
+        size: "large", // Make it bigger to see columns
         setters: {
             item_group: null,
             is_stock_item: 1,
         },
         add_filters_group: 1,
-        columns: ["item_name", "custom_gsm"], // Explicitly request these columns
+        columns: ["name", "item_name", "custom_gsm"], // Explicitly request Name and Item Name
         get_query() {
             return {
                 filters: {
