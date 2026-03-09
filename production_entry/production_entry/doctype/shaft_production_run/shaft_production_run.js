@@ -553,31 +553,51 @@ function execute_manual_job_from_dialog(frm, selected_items, values, dialog) {
     });
     let new_job_id = String(max_id + 1);
 
-    let item_codes = selected_items.map(function (i) { return i.item_code; });
+    // Group items by item_code to sum the manufactured qty if user selects identical items (e.g. 42 + 42 + 42)
+    let grouped_items = {};
+    selected_items.forEach(function (item) {
+        if (!grouped_items[item.item_code]) {
+            grouped_items[item.item_code] = {
+                item_code: item.item_code,
+                item_name: item.item_name,
+                width_inch: flt(item.width_inch),
+                gsm: flt(item.gsm),
+                count: 0
+            };
+        }
+        grouped_items[item.item_code].count += 1;
+    });
+
     let widths = selected_items.map(function (i) { return flt(i.width_inch); });
     let combination_str = widths.map(function (w) { return w + '"'; }).join(' + ');
     let total_width = widths.reduce(function (s, w) { return s + w; }, 0);
     let common_gsm = selected_items[0].gsm || 0;
 
-    frappe.show_alert({ message: __('Creating Work Orders for {0} items...', [item_codes.length]), indicator: 'blue' });
+    frappe.show_alert({ message: __('Creating Work Orders for {0} distinct items...', [Object.keys(grouped_items).length]), indicator: 'blue' });
 
     let new_wos = [];
     let wo_errors = [];
-    let promises = item_codes.map(function (item_code) {
+    let promises = Object.keys(grouped_items).map(function (item_code) {
+        let item = grouped_items[item_code];
         return new Promise(function (resolve) {
+            // Formula requested by user: ((gsm * width * meter/roll * 0.0254)/1000)
+            let net_weight_per_roll = (flt(item.gsm) * flt(item.width_inch) * values.meter_roll * 0.0254) / 1000;
+            // Total manufactured qty for this item's Work Order (net weight * no of shafts * count of this item in job)
+            let qty = net_weight_per_roll * values.no_of_shafts * item.count;
+
             frappe.call({
                 method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.create_manual_work_order',
                 args: {
                     production_plan: frm.doc.production_plan,
-                    item_code: item_code,
-                    qty: values.meter_roll * values.no_of_shafts
+                    item_code: item.item_code,
+                    qty: qty
                 },
                 callback: function (res) {
                     if (res.message) new_wos.push(res.message);
                     resolve();
                 },
                 error: function () {
-                    wo_errors.push(item_code);
+                    wo_errors.push(item.item_code);
                     resolve();
                 }
             });
@@ -602,10 +622,25 @@ function execute_manual_job_from_dialog(frm, selected_items, values, dialog) {
         job_row.meter_roll_mtrs = values.meter_roll;
         job_row.no_of_shafts = values.no_of_shafts;
         job_row.is_manual = 1;
-        job_row.manual_items = JSON.stringify(item_codes);
+
+        let manual_items_arr = selected_items.map(function (i) { return i.item_code; });
+        job_row.manual_items = JSON.stringify(manual_items_arr);
         job_row.work_orders = new_wos.join(', ');
-        job_row.net_weight = '';
-        job_row.total_weight = 0.0;
+
+        // Calculate exact string: 74.78 + 74.78 + 42.27 = 191.83
+        let net_weights = selected_items.map(function (item) {
+            let w = flt(item.width_inch);
+            let g = flt(item.gsm) || common_gsm;
+            let nw = (g * w * values.meter_roll * 0.0254) / 1000;
+            return nw;
+        });
+
+        let net_weights_str = net_weights.map(function (nw) { return nw.toFixed(2); }).join(' + ');
+        let total_net_weight = net_weights.reduce(function (s, a) { return s + a; }, 0);
+
+        job_row.net_weight = net_weights_str + " = " + total_net_weight.toFixed(2);
+        // User requested: total weight is sum of combination netweight * no of shafts
+        job_row.total_weight = total_net_weight * values.no_of_shafts;
 
         frm.refresh_field('shaft_jobs');
         update_job_filter_options(frm);
@@ -740,4 +775,53 @@ function set_shift_production(frm) {
     }
 }
 
+var QUALITY_MASTER = {
+    "100": "PREMIUM", "101": "PLATINUM", "102": "SUPER PLATINUM",
+    "103": "GOLD", "104": "SILVER", "105": "BRONZE",
+    "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
+    "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
+    "112": "ULTRA", "113": "DELUXE", "114": "UV"
+};
 
+function extract_details_enhanced(name, code) {
+    var res = { gsm: null, color: null, width_inch: null, quality: null };
+    var name_upper = (name || "").toUpperCase();
+
+    if (code && code.length === 16 && /^\d+$/.test(code)) {
+        var qual_code = code.substring(3, 6);
+        if (QUALITY_MASTER[qual_code]) res.quality = QUALITY_MASTER[qual_code];
+        var code_gsm = parseInt(code.substring(9, 12));
+        if (code_gsm > 0) res.gsm = String(code_gsm);
+        var code_width_mm = parseFloat(code.substring(12, 16));
+        if (code_width_mm > 0) res.width_inch = Math.round(code_width_mm / 25.4);
+        if (res.quality && name) {
+            var qual_pos = name_upper.indexOf(res.quality.toUpperCase());
+            if (qual_pos !== -1) {
+                var after_qual = name.substring(qual_pos + res.quality.length).trim();
+                after_qual = after_qual.replace(/\s*\d+\s*GSM.*/i, "").trim();
+                if (after_qual) res.color = after_qual;
+            }
+        }
+    } else if (name) {
+        var known_qualities = ["SUPER PLATINUM", "SUPER CLASSIC", "LIFE STYLE", "ECO SPECIAL", "ECO GREEN", "SUPER ECO", "DELUXE", "PREMIUM", "PLATINUM", "GOLD", "SILVER", "BRONZE", "CLASSIC", "ULTRA", "UV"];
+        known_qualities.sort(function (a, b) { return b.length - a.length; });
+        for (var i = 0; i < known_qualities.length; i++) {
+            var q = known_qualities[i];
+            if (new RegExp('\\b' + q + '\\b', 'i').test(name_upper)) { res.quality = q; break; }
+        }
+        if (res.quality) {
+            var qp = name_upper.indexOf(res.quality.toUpperCase());
+            if (qp !== -1) {
+                var aq = name.substring(qp + res.quality.length).trim();
+                aq = aq.split(/\s*\d+\s*GSM/i)[0].trim();
+                aq = aq.replace(/^[\s,:-]+|[\s,:-]+$/g, "");
+                if (aq) res.color = aq;
+            }
+        }
+        var mg = name.match(/(\d+)\s*GSM/i);
+        if (mg) res.gsm = mg[1];
+        var mw = name.match(/(\d+(\.\d+)?)\s*("|inch|in|'')/i);
+        if (mw) res.width_inch = mw[1];
+    }
+    return res;
+}

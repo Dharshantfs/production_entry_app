@@ -661,8 +661,8 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             
             # Final calculation fallback for manual entries (Width * GSM * Length formula)
             if planned_qty <= 0 and target_width and gsm and meter_roll:
-                # (Width in Inches / 39.37) * (GSM / 1000) * Meter
-                planned_qty = round((flt(target_width) / 39.37) * (flt(gsm) / 1000.0) * flt(meter_roll), 3)
+                # User formula: (gsm * target_width * meter_roll * 0.0254) / 1000
+                planned_qty = round((flt(gsm) * flt(target_width) * flt(meter_roll) * 0.0254) / 1000.0, 3)
 
             # Force UOM to Kg for these manual rolls
             uom = "Kg"
