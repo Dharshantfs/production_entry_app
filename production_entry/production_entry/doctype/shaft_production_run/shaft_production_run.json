@@ -117,8 +117,7 @@
             "fieldname": "items",
             "fieldtype": "Table",
             "label": "Roll Production Results",
-            "options": "Shaft Production Run Item",
-            "reqd": 1
+            "options": "Shaft Production Run Item"
         },
         {
             "fieldname": "custom_label",

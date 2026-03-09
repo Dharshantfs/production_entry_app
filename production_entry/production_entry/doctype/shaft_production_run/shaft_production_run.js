@@ -185,22 +185,17 @@ frappe.ui.form.on('Shaft Production Run Job', {
     create_roll_entry: function (frm, cdt, cdn) {
         var row = locals[cdt][cdn];
 
-        // Cleanup empty rows before save to avoid validation errors
+        // Cleanup empty rows before fetching to keep the grid clean
         if (frm.doc.items) {
-            var to_keep = frm.doc.items.filter(r => r.work_order || r.item_code);
-            var to_remove = frm.doc.items.filter(r => !r.work_order && !r.item_code);
+            var to_keep = frm.doc.items.filter(r => r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
+            var to_remove = frm.doc.items.filter(r => !r.work_order && !r.item_code && !(r.net_weight && r.net_weight > 0));
             to_remove.forEach(r => frappe.model.clear_doc('Shaft Production Run Item', r.name));
             frm.doc.items = to_keep;
             frm.refresh_field('items');
         }
 
-        if (frm.is_new() || frm.is_dirty()) {
-            frm.save().then(() => {
-                execute_create_roll_entry(frm, row);
-            });
-        } else {
-            execute_create_roll_entry(frm, row);
-        }
+        // Call logic - it will handle saving AFTER adding rolls to satisfy mandatory validation
+        execute_create_roll_entry(frm, row);
     }
 });
 
@@ -221,26 +216,27 @@ function execute_create_roll_entry(frm, row) {
             meter_roll: parseFloat(row.meter_roll_mtrs) || 0,
             net_weight: row.net_weight,
             work_orders: wos.length > 0 ? JSON.stringify(wos) : null,
-            parent_spr: frm.doc.name
+            parent_spr: frm.is_new() ? null : frm.doc.name,
+            manual_item_list: row.manual_items || null
         },
         callback: function (r) {
             if (r.message && r.message.length > 0) {
                 var rolls_to_add = r.message;
                 var max_roll = 0;
 
-                // Clean up empty default rows safely to prevent validation errors
-                var items = frm.doc.items || [];
-                var to_remove = [];
-                for (var i = 0; i < items.length; i++) {
-                    var r_row = items[i];
-                    if (!r_row.work_order && !r_row.item_code) {
-                        to_remove.push(r_row.name);
-                    } else {
+                // Cleanup empty rows before adding new ones
+                if (frm.doc.items) {
+                    var to_keep = frm.doc.items.filter(r => r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
+                    var to_remove = frm.doc.items.filter(r => !r.work_order && !r.item_code && !(r.net_weight && r.net_weight > 0));
+                    to_remove.forEach(r => frappe.model.clear_doc('Shaft Production Run Item', r.name));
+                    frm.doc.items = to_keep;
+
+                    // Find max roll no among existing items
+                    frm.doc.items.forEach(r_row => {
                         var rn = parseInt(r_row.roll_no) || 0;
                         if (rn > max_roll) max_roll = rn;
-                    }
+                    });
                 }
-                to_remove.forEach(name => frappe.model.clear_doc('Shaft Production Run Item', name));
                 frm.refresh_field('items');
 
                 rolls_to_add.forEach(function (d) {
@@ -256,7 +252,6 @@ function execute_create_roll_entry(frm, row) {
                     frappe.model.set_value(child.doctype, child.name, 'quality', d.quality);
                     frappe.model.set_value(child.doctype, child.name, 'color', d.color);
                     frappe.model.set_value(child.doctype, child.name, 'uom', d.uom);
-                    frappe.model.set_value(child.doctype, child.name, 'wo_status', d.wo_status);
                     frappe.model.set_value(child.doctype, child.name, 'party_code', d.party_code);
 
                     max_roll++;
@@ -272,25 +267,24 @@ function execute_create_roll_entry(frm, row) {
                     calculate_total(frm);
                 }
 
-                setTimeout(function () {
-                    frm.save().then(function () {
-                        frm.call({
-                            doc: frm.doc,
-                            method: 'generate_batch_numbers',
-                            callback: function (r) {
-                                if (r.message && !r.exc) {
-                                    frappe.model.sync(r.message);
-                                    frm.refresh();
-                                    frappe.msgprint({
-                                        title: 'Success',
-                                        message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + '.',
-                                        indicator: 'green'
-                                    });
-                                }
+                // Save now - items exist, so mandatory validation will pass
+                frm.save().then(function () {
+                    frm.call({
+                        doc: frm.doc,
+                        method: 'generate_batch_numbers',
+                        callback: function (resp) {
+                            if (resp.message && !resp.exc) {
+                                frappe.model.sync(resp.message);
+                                frm.refresh();
+                                frappe.msgprint({
+                                    title: 'Success',
+                                    message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + '.',
+                                    indicator: 'green'
+                                });
                             }
-                        });
+                        }
                     });
-                }, 500);
+                });
             } else {
                 frappe.msgprint("Could not find matching Work Orders for this Job's widths. Ensure WOs are created and not closed/cancelled.");
             }

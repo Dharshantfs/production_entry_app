@@ -493,7 +493,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None, parent_spr=None):
+def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None, parent_spr=None, manual_item_list=None):
     """
     Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
     Maps Work Orders accurately and sets Planned Qty based on the individual weight components in net_weight formula.
@@ -506,6 +506,12 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             work_orders = None
     elif isinstance(work_orders, str):
         work_orders = None
+        
+    if isinstance(manual_item_list, str) and manual_item_list:
+        import json
+        try:
+            manual_item_list = json.loads(manual_item_list)
+        except: pass
 
     items_to_add = []
     
@@ -526,9 +532,8 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
     # 2. Cache Production Plan Assembly Items (po_items) for lookup
     pp_items = []
-    manual_item_list = []
     
-    if parent_spr:
+    if not manual_item_list and parent_spr:
         spr_doc = frappe.get_doc("Shaft Production Run", parent_spr)
         for j in spr_doc.shaft_jobs:
             if str(j.job_id) == str(job_id) and j.is_manual:
