@@ -460,7 +460,8 @@ function add_manual_job_dialog(frm) {
                 fieldtype: 'Int',
                 label: 'Number of Shafts',
                 default: 4,
-                reqd: 1
+                reqd: 1,
+                onchange: function () { refresh_manual_job_preview(d, selected_items); }
             },
             { fieldtype: 'Column Break' },
             {
@@ -468,7 +469,13 @@ function add_manual_job_dialog(frm) {
                 fieldtype: 'Float',
                 label: 'Meter / Roll',
                 default: 800,
-                reqd: 1
+                reqd: 1,
+                onchange: function () { refresh_manual_job_preview(d, selected_items); }
+            },
+            { fieldtype: 'Section Break', label: 'Production Preview' },
+            {
+                fieldname: 'production_preview_html',
+                fieldtype: 'HTML'
             }
         ],
         primary_action_label: __('Create Job'),
@@ -539,6 +546,53 @@ function refresh_manual_job_preview(dialog, selected_items) {
     }
 
     dialog.fields_dict.products_html.$wrapper.html(html);
+
+    // Calculate Production Preview
+    let shafts = parseInt(dialog.get_value('no_of_shafts')) || 0;
+    let meters = parseFloat(dialog.get_value('meter_roll')) || 0;
+    let preview_html = '';
+
+    if (selected_items.length > 0 && shafts > 0 && meters > 0) {
+        // Group by item code to match eventual Work Order creation
+        let groups = {};
+        selected_items.forEach(item => {
+            if (!groups[item.item_code]) {
+                groups[item.item_code] = {
+                    item_code: item.item_code,
+                    width_inch: flt(item.width_inch),
+                    gsm: flt(item.gsm),
+                    count: 0
+                };
+            }
+            groups[item.item_code].count += 1;
+        });
+
+        preview_html = '<div style="margin-bottom:10px;"><small class="text-muted">Expected Work Orders based on this configuration:</small></div>' +
+            '<table class="table table-bordered table-condensed" style="background: #fffbe6;">' +
+            '<thead><tr style="font-size: 11px; color: #555;">' +
+            '<th>Item Code</th>' +
+            '<th>Net Weight/Roll</th>' +
+            '<th>Total WO Qty (Kg)</th>' +
+            '</tr></thead><tbody>';
+
+        Object.values(groups).forEach(g => {
+            // Formula: (gsm * width * meters * 0.0254) / 1000
+            let nw = (g.gsm * g.width_inch * meters * 0.0254) / 1000;
+            let total_qty = nw * shafts * g.count;
+            preview_html += '<tr>' +
+                '<td>' + g.item_code + ' (x' + g.count + ')</td>' +
+                '<td>' + nw.toFixed(3) + ' Kg</td>' +
+                '<td><strong>' + total_qty.toFixed(3) + ' Kg</strong></td>' +
+                '</tr>';
+        });
+        preview_html += '</tbody></table>';
+    } else if (selected_items.length > 0) {
+        preview_html = '<div class="text-muted" style="font-size: 12px; padding: 10px;">Enter Shafts and Meter/Roll to see production preview.</div>';
+    }
+
+    if (dialog.fields_dict.production_preview_html) {
+        dialog.fields_dict.production_preview_html.$wrapper.html(preview_html);
+    }
 
     // Bind remove buttons
     dialog.fields_dict.products_html.$wrapper.find('.remove-manual-item').on('click', function () {
