@@ -359,6 +359,7 @@ function add_manual_job_dialog(frm) {
             is_stock_item: 1,
         },
         add_filters_group: 1,
+        columns: ["item_name", "custom_gsm", "item_group"], // Show Item Name and GSM
         get_query() {
             return {
                 filters: {
@@ -416,20 +417,42 @@ function execute_manual_job_creation(frm, selected_items, values, dialog_to_hide
         args: {
             doctype: 'Item',
             filters: { name: ['in', selected_items] },
-            fields: ['name', 'item_name', 'item_code']
+            fields: ['name', 'item_name', 'item_code', 'custom_gsm']
         },
         callback: function (r) {
             if (r.message && r.message.length > 0) {
                 let items_data = r.message;
-                let gsm = 0;
+                let common_gsm = null;
                 let widths = [];
+                let gsm_mismatch = false;
+
                 items_data.forEach(item => {
                     let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
-                    if (details.gsm) gsm = details.gsm;
-                    if (details.width_inch) widths.push(details.width_inch);
+                    let item_gsm = details.gsm || item.custom_gsm || 0;
+
+                    if (common_gsm === null) {
+                        common_gsm = item_gsm;
+                    } else if (Math.abs(flt(common_gsm) - flt(item_gsm)) > 0.1) {
+                        gsm_mismatch = true;
+                    }
+
+                    if (details.width_inch) {
+                        widths.push(details.width_inch);
+                    }
                 });
 
-                let combination_str = widths.join('\" + ') + '\"';
+                if (gsm_mismatch) {
+                    frappe.throw(__("GSM mismatch detected among selected items. All items in a manual job must have the same GSM."));
+                    return;
+                }
+
+                if (widths.length === 0) {
+                    frappe.throw(__("Could not extract widths from the selected items. Please ensure item names follow the 16-digit or 'Width GSM' pattern."));
+                    return;
+                }
+
+                // Format combination with inch marks: 46" + 26"
+                let combination_str = widths.map(w => w + '"').join(' + ');
                 let total_width = widths.reduce((sum, w) => sum + parseFloat(w || 0), 0);
 
                 let new_wos = [];
@@ -453,7 +476,7 @@ function execute_manual_job_creation(frm, selected_items, values, dialog_to_hide
                 Promise.all(p_arr).then(() => {
                     let job_row = frm.add_child('shaft_jobs');
                     job_row.job_id = new_job_id;
-                    job_row.gsm = gsm;
+                    job_row.gsm = common_gsm;
                     job_row.combination = combination_str;
                     job_row.total_width = total_width;
                     job_row.meter_roll_mtrs = values.meter_roll;
@@ -461,6 +484,8 @@ function execute_manual_job_creation(frm, selected_items, values, dialog_to_hide
                     job_row.is_manual = 1;
                     job_row.manual_items = JSON.stringify(selected_items);
                     job_row.work_orders = new_wos.join(', ');
+                    job_row.net_weight = ""; // Keep empty for user entry
+                    job_row.total_weight = 0.0;
 
                     frm.refresh_field('shaft_jobs');
                     update_job_filter_options(frm);
