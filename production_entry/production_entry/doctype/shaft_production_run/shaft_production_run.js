@@ -311,6 +311,19 @@ function execute_create_roll_entry(frm, row) {
 }
 
 frappe.ui.form.on('Shaft Production Run Item', {
+    item_code: function (frm, cdt, cdn) {
+        var row = locals[cdt][cdn];
+        if (row.job && parseInt(row.job) > 0) {
+            frappe.model.set_value(cdt, cdn, 'uom', 'Kg');
+        }
+    },
+    uom: function (frm, cdt, cdn) {
+        var row = locals[cdt][cdn];
+        if (row.job && parseInt(row.job) > 0 && row.uom !== 'Kg') {
+            frappe.model.set_value(cdt, cdn, 'uom', 'Kg');
+            frappe.show_alert({ message: "UOM forced to Kg for manual products.", indicator: "orange" });
+        }
+    },
     net_weight: function (frm, cdt, cdn) {
         calculate_total(frm);
     },

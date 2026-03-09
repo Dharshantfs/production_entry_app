@@ -652,42 +652,35 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             uom = "Kg"
 
             # Fetch Work Order for this specific Item in this Plan
-            wo_filters = {
-                "production_plan": production_plan,
-                "production_item": item_code,
-                "docstatus": 1,
-                "status": ["!=", "Completed"]
-            }
-            if work_orders:
-                wo_filters["name"] = ["in", work_orders]
-
-            wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
-
-            # Fallback: check draft WOs (manual jobs may not have BOMs for auto-submit)
+            
+            wo_name = None
+            if work_orders and isinstance(work_orders, list):
+                # Ensure we match to a UNIQUE work order for duplicates by popping from the list
+                for wo in work_orders:
+                    wo_doc = frappe.db.get_value("Work Order", {"name": wo, "production_item": item_code}, "name")
+                    if wo_doc:
+                        wo_name = wo_doc
+                        work_orders.remove(wo) # Prevent this WO from being assigned to the next identical roll
+                        break
+            
+            # If no direct match in passed work_orders list, fallback to finding nearest available one
             if not wo_name:
-                draft_filters = {
+                wo_filters = {
                     "production_plan": production_plan,
                     "production_item": item_code,
-                    "docstatus": 0
+                    "docstatus": 1,
+                    "status": ["!=", "Completed"]
                 }
-                if work_orders:
-                    draft_filters["name"] = ["in", work_orders]
-                wo_name = frappe.db.get_value("Work Order", draft_filters, "name")
-        
-            # If no WO found but we have Item Code, try broader search
-            if not wo_name and item_code:
-                wo_name = frappe.db.get_value("Work Order", {
-                    "production_plan": production_plan,
-                    "production_item": item_code,
-                    "docstatus": 1
-                }, "name")
-            # Fallback: draft WO
-            if not wo_name and item_code:
-                wo_name = frappe.db.get_value("Work Order", {
-                    "production_plan": production_plan,
-                    "production_item": item_code,
-                    "docstatus": 0
-                }, "name")
+                wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
+
+                # Fallback: draft WOs
+                if not wo_name:
+                    wo_name = frappe.db.get_value("Work Order", {
+                        "production_plan": production_plan,
+                        "production_item": item_code,
+                        "docstatus": 0
+                    }, "name")
+            
             party_code = None
             if wo_name:
                 wo_data = frappe.db.get_value("Work Order", wo_name, ["status", "custom_party_code"], as_dict=1)
