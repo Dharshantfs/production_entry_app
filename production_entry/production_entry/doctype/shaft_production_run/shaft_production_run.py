@@ -658,33 +658,38 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 # If we didn't get a weight component from formula, fallback to the item's planned_qty
                 if planned_qty <= 0:
                     planned_qty = flt(matched_p_item.get("planned_qty")) or flt(matched_p_item.get("qty"))
+            
+            # Final calculation fallback for manual entries (Width * GSM * Length formula)
+            if planned_qty <= 0 and target_width and gsm and meter_roll:
+                # (Width in Inches / 39.37) * (GSM / 1000) * Meter
+                planned_qty = round((flt(target_width) / 39.37) * (flt(gsm) / 1000.0) * flt(meter_roll), 3)
 
-                # Fetch Work Order for this specific Item in this Plan
-                # ... rest of the logic
+            # Force UOM to Kg for these manual rolls
+            uom = "Kg"
 
-                # Fetch Work Order for this specific Item in this Plan
-                wo_filters = {
+            # Fetch Work Order for this specific Item in this Plan
+            wo_filters = {
+                "production_plan": production_plan,
+                "production_item": item_code,
+                "docstatus": 1,
+                "status": ["!=", "Completed"]
+            }
+            if work_orders:
+                wo_filters["name"] = ["in", work_orders]
+
+            wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
+
+            # Fallback: check draft WOs (manual jobs may not have BOMs for auto-submit)
+            if not wo_name:
+                draft_filters = {
                     "production_plan": production_plan,
                     "production_item": item_code,
-                    "docstatus": 1,
-                    "status": ["!=", "Completed"]
+                    "docstatus": 0
                 }
                 if work_orders:
-                    wo_filters["name"] = ["in", work_orders]
-
-                wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
-
-                # Fallback: check draft WOs (manual jobs may not have BOMs for auto-submit)
-                if not wo_name:
-                    draft_filters = {
-                        "production_plan": production_plan,
-                        "production_item": item_code,
-                        "docstatus": 0
-                    }
-                    if work_orders:
-                        draft_filters["name"] = ["in", work_orders]
-                    wo_name = frappe.db.get_value("Work Order", draft_filters, "name")
-            
+                    draft_filters["name"] = ["in", work_orders]
+                wo_name = frappe.db.get_value("Work Order", draft_filters, "name")
+        
             # If no WO found but we have Item Code, try broader search
             if not wo_name and item_code:
                 wo_name = frappe.db.get_value("Work Order", {
@@ -758,6 +763,8 @@ def create_manual_work_order(production_plan, item_code, qty, company=None):
     wo.company = company or pp_doc.company
     wo.wip_warehouse = wip_wh
     wo.fg_warehouse = fg_wh
+    wo.fg_uom = "Kg"
+    wo.stock_uom = "Kg"
 
     # Try to fetch default BOM
     bom = frappe.db.get_value("BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name")
