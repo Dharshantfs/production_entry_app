@@ -600,6 +600,18 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                  weight_components = [flt(m) for m in matches]
         except: pass
 
+    # Gather all Work Orders already claimed by other manual jobs in this document to prevent cross-job re-use
+    excluded_wos = []
+    if parent_spr:
+        try:
+            spr_doc = frappe.get_doc("Shaft Production Run", parent_spr)
+            for j in spr_doc.shaft_jobs:
+                if str(j.job_id) != str(job_id) and j.work_orders:
+                    for w in j.work_orders.split(","):
+                        if w.strip():
+                            excluded_wos.append(w.strip())
+        except Exception: pass
+
     # 4. Build the roll rows
     n_shafts = cint(no_of_shafts) if cint(no_of_shafts) > 0 else 1
     
@@ -671,15 +683,21 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                     "docstatus": 1,
                     "status": ["!=", "Completed"]
                 }
+                if excluded_wos:
+                    wo_filters["name"] = ["not in", excluded_wos]
+
                 wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
 
                 # Fallback: draft WOs
                 if not wo_name:
-                    wo_name = frappe.db.get_value("Work Order", {
+                    draft_filters = {
                         "production_plan": production_plan,
                         "production_item": item_code,
                         "docstatus": 0
-                    }, "name")
+                    }
+                    if excluded_wos:
+                        draft_filters["name"] = ["not in", excluded_wos]
+                    wo_name = frappe.db.get_value("Work Order", draft_filters, "name")
             
             party_code = None
             if wo_name:
