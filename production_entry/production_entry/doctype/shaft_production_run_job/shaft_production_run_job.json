@@ -13,6 +13,7 @@
         "net_weight",
         "total_weight",
         "no_of_shafts",
+        "party_code",
         "work_orders",
         "is_manual",
         "manual_items",
@@ -68,6 +69,13 @@
             "fieldtype": "Int",
             "in_list_view": 1,
             "label": "No of Shafts"
+        },
+        {
+            "fieldname": "party_code",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Order Code",
+            "read_only": 1
         },
         {
             "fieldname": "work_orders",

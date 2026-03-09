@@ -60,6 +60,8 @@ function fetch_shaft_details(frm) {
                         job_row.net_weight = d.net_weight;
                         job_row.total_weight = d.total_weight;
                         job_row.no_of_shafts = d.no_of_shafts;
+                        job_row.work_orders = d.work_orders;
+                        job_row.party_code = d.party_code;
                     });
 
                     frm.set_value('custom_label', label_type);
@@ -90,6 +92,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
                             frappe.model.set_value(cdt, cdn, 'net_weight', job_match.net_weight);
                             frappe.model.set_value(cdt, cdn, 'total_weight', job_match.total_weight);
                             frappe.model.set_value(cdt, cdn, 'no_of_shafts', job_match.no_of_shafts);
+                            frappe.model.set_value(cdt, cdn, 'party_code', job_match.party_code);
 
                             // Open Selection Dialog for Work Orders
                             new frappe.ui.form.MultiSelectDialog({
