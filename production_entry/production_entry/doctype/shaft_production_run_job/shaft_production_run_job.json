@@ -13,6 +13,8 @@
         "net_weight",
         "total_weight",
         "no_of_shafts",
+        "is_manual",
+        "manual_items",
         "create_roll_entry"
     ],
     "fields": [
@@ -20,36 +22,31 @@
             "fieldname": "job_id",
             "fieldtype": "Data",
             "in_list_view": 1,
-            "label": "Job ID",
-            "read_only": 1
+            "label": "Job ID"
         },
         {
             "fieldname": "gsm",
             "fieldtype": "Int",
             "in_list_view": 1,
-            "label": "GSM",
-            "read_only": 1
+            "label": "GSM"
         },
         {
             "fieldname": "combination",
             "fieldtype": "Data",
             "in_list_view": 1,
-            "label": "Combination",
-            "read_only": 1
+            "label": "Combination"
         },
         {
             "fieldname": "total_width",
             "fieldtype": "Float",
             "in_list_view": 1,
-            "label": "Total Width (Inches)",
-            "read_only": 1
+            "label": "Total Width (Inches)"
         },
         {
             "fieldname": "meter_roll_mtrs",
             "fieldtype": "Float",
             "in_list_view": 1,
-            "label": "Meter / Roll (Mtrs)",
-            "read_only": 1
+            "label": "Meter / Roll (Mtrs)"
         },
         {
             "fieldname": "net_weight",
@@ -69,8 +66,20 @@
             "fieldname": "no_of_shafts",
             "fieldtype": "Int",
             "in_list_view": 1,
-            "label": "No of Shafts",
-            "read_only": 1
+            "label": "No of Shafts"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_manual",
+            "fieldtype": "Check",
+            "hidden": 1,
+            "label": "Is Manual"
+        },
+        {
+            "fieldname": "manual_items",
+            "fieldtype": "Text",
+            "hidden": 1,
+            "label": "Manual Items"
         },
         {
             "fieldname": "create_roll_entry",

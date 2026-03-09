@@ -6,6 +6,32 @@ class ShaftProductionRun(Document):
     def validate(self):
         self.calculate_actual_qty()
         self.generate_batch_numbers()
+        self.sync_job_weights()
+
+    def sync_job_weights(self):
+        """Sync weights from produced rolls back to job rows"""
+        job_totals = {}
+        job_net_formulas = {}
+
+        for row in self.items:
+            if not row.job: continue
+            job_id = str(row.job)
+            
+            # Sum total weights
+            job_totals[job_id] = job_totals.get(job_id, 0.0) + flt(row.net_weight or 0.0)
+            
+            # Build net weight formula (74.78 + 74.78...)
+            if job_id not in job_net_formulas:
+                job_net_formulas[job_id] = []
+            job_net_formulas[job_id].append(str(flt(row.net_weight or 0.0)))
+
+        for job in self.shaft_jobs:
+            jid = str(job.job_id)
+            if jid in job_totals:
+                job.total_weight = job_totals[jid]
+                # Format: "74.78 + 74.78 = 149.56"
+                formula = " + ".join(job_net_formulas[jid])
+                job.net_weight = f"{formula} = {job_totals[jid]}"
         
     def calculate_actual_qty(self):
         total_qty = 0.0
@@ -437,7 +463,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None):
+def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None, parent_spr=None):
     """
     Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
     Maps Work Orders accurately and sets Planned Qty based on the individual weight components in net_weight formula.
@@ -470,32 +496,60 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
     # 2. Cache Production Plan Assembly Items (po_items) for lookup
     pp_items = []
+    manual_item_list = []
+    
+    if parent_spr:
+        spr_doc = frappe.get_doc("Shaft Production Run", parent_spr)
+        for j in spr_doc.shaft_jobs:
+            if str(j.job_id) == str(job_id) and j.is_manual:
+                import json
+                try:
+                    manual_item_list = json.loads(j.manual_items) if j.manual_items else []
+                except: pass
+                break
+
     if production_plan:
         pp_doc = frappe.get_doc("Production Plan", production_plan)
-        pp_items = pp_doc.get("po_items") or []
+        pp_items = pp_doc.po_items
 
-    # Helper function to match width in mm or inch
+    def get_matched_item_detail(width_inch, gsm):
+        # First priority: Check manual items if this is a manual job
+        if manual_item_list:
+            for item_code in manual_item_list:
+                item_doc = frappe.get_cached_doc("Item", item_code)
+                # Parse gsm/width from item to verify match
+                details = extract_details_from_name(item_doc.item_name or item_doc.item_code, item_doc.item_code)
+                if abs(flt(details.get("width_inch")) - flt(width_inch)) <= 0.1:
+                    # Found a manual match
+                    return item_doc
+
     def get_matched_item_detail(target_width_inch, target_gsm):
-        # target_gsm = flt(target_gsm)
         tw_rounded = round(flt(target_width_inch), 1)
         
-        # 1. Exact match on GSM and Width (Inches)
+        # 1. First priority: Check manual items if this is a manual job
+        if manual_item_list:
+            for item_code in manual_item_list:
+                item_doc = frappe.get_cached_doc("Item", item_code)
+                details = extract_details_from_name(item_doc.item_name or item_doc.item_code, item_doc.item_code)
+                # Check for Width match
+                if abs(flt(details.get("width_inch")) - flt(target_width_inch)) < 0.2:
+                    return item_doc
+
+        # 2. Second priority: Production Plan items (Exact match on GSM and Width)
         for p in pp_items:
             p_gsm = flt(p.get("gsm")) or flt(p.get("custom_gsm"))
             p_width = flt(p.get("width_inch")) or flt(p.get("custom_width_inch"))
             if abs(p_gsm - flt(target_gsm)) < 0.1 and abs(p_width - tw_rounded) < 0.5:
                 return p
         
-        # 2. Fallback: Metric check (46 inch -> 1170mm)
+        # 3. Third priority: Metric check (46 inch -> 1170mm) for Production Plan items
         width_mm = round(flt(target_width_inch) * 25.4)
         for p in pp_items:
             p_gsm = flt(p.get("gsm")) or flt(p.get("custom_gsm"))
             if abs(p_gsm - flt(target_gsm)) < 0.1:
                 ic = str(p.item_code)
-                # Check if width_mm is in item_code (e.g. ...1170)
                 if str(width_mm) in ic:
                     return p
-                # Check nearest mm values (e.g. 1168 vs 1170)
                 try:
                     # Slice last 4 digits for width mm in some formats
                     if len(ic) >= 4 and abs(cint(ic[-4:]) - width_mm) <= 5:
@@ -597,20 +651,42 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             items_to_add.append({
                 "job": job_id,
                 "work_order": wo_name,
+                "wo_status": frappe.db.get_value("Work Order", wo_name, "status") if wo_name else None,
                 "item_code": item_code,
                 "planned_qty": planned_qty,
                 "width_inch": target_width,
                 "gsm": gsm,
-                "uom": uom,
-                "color": color,
-                "quality": quality,
                 "meter_roll": meter_roll,
-                "net_weight": 0.0,
-                "gross_weight": 0.0,
-                "roll_no": 0
+                "net_weight": planned_qty,
+                "quality": quality,
+                "color": color,
+                "uom": uom
             })
                 
     return items_to_add
+
+@frappe.whitelist()
+def create_manual_work_order(production_plan, item_code, qty, company=None):
+    """Create a manual Work Order for a job addition"""
+    if not company:
+        company = frappe.db.get_default("Company")
+        
+    wo = frappe.new_doc("Work Order")
+    wo.production_plan = production_plan
+    wo.production_item = item_code
+    wo.qty = flt(qty)
+    wo.company = company
+    wo.wip_warehouse = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+    wo.fg_warehouse = frappe.db.get_value("Stock Settings", None, "default_finished_goods_warehouse")
+    
+    # Try to fetch default BOM
+    bom = frappe.db.get_value("BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name")
+    if bom:
+        wo.bom_no = bom
+        
+    wo.insert()
+    wo.submit() # Auto-submit to make it ready for production entry
+    return wo.name
 
 
 def extract_details_from_name(name, code):

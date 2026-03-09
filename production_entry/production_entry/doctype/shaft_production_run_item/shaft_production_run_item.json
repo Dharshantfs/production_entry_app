@@ -6,6 +6,7 @@
     "engine": "InnoDB",
     "field_order": [
         "work_order",
+        "wo_status",
         "item_code",
         "planned_qty",
         "job",
@@ -32,6 +33,14 @@
             "label": "Work Order",
             "options": "Work Order",
             "reqd": 1
+        },
+        {
+            "fetch_from": "work_order.status",
+            "fieldname": "wo_status",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "WO Status",
+            "read_only": 1
         },
         {
             "fetch_from": "work_order.production_item",
