@@ -223,6 +223,17 @@ function execute_create_roll_entry(frm, row) {
         wos = row.work_orders.split(',').map(s => s.trim()).filter(s => s);
     }
 
+    var claimed_wos = [];
+    if (frm.doc.shaft_jobs) {
+        frm.doc.shaft_jobs.forEach(j => {
+            if (j.job_id !== row.job_id && j.work_orders) {
+                j.work_orders.split(',').forEach(wo => {
+                    if (wo.trim()) claimed_wos.push(wo.trim());
+                });
+            }
+        });
+    }
+
     frappe.call({
         method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_job_roll_details',
         args: {
@@ -234,6 +245,7 @@ function execute_create_roll_entry(frm, row) {
             meter_roll: parseFloat(row.meter_roll_mtrs) || 0,
             net_weight: row.net_weight,
             work_orders: wos.length > 0 ? JSON.stringify(wos) : null,
+            claimed_wos: claimed_wos.length > 0 ? JSON.stringify(claimed_wos) : null,
             parent_spr: frm.is_new() ? null : frm.doc.name,
             manual_item_list: row.manual_items || null
         },

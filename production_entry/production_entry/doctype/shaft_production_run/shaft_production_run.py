@@ -488,7 +488,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None, parent_spr=None, manual_item_list=None):
+def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None, claimed_wos=None, parent_spr=None, manual_item_list=None):
     """
     Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
     Maps Work Orders accurately and sets Planned Qty based on the individual weight components in net_weight formula.
@@ -501,6 +501,15 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             work_orders = None
     elif isinstance(work_orders, str):
         work_orders = None
+
+    if isinstance(claimed_wos, str) and claimed_wos and claimed_wos != "undefined":
+        import json
+        try:
+            claimed_wos = json.loads(claimed_wos)
+        except Exception:
+            claimed_wos = None
+    elif isinstance(claimed_wos, str):
+        claimed_wos = None
         
     if isinstance(manual_item_list, str) and manual_item_list:
         import json
@@ -602,13 +611,20 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
     # Gather all Work Orders already claimed by other manual jobs in this document to prevent cross-job re-use
     excluded_wos = []
+    
+    # Add WOs explicitly passed from the frontend (unsaved on screen)
+    if claimed_wos and isinstance(claimed_wos, list):
+        for w in claimed_wos:
+            if w.strip() and w.strip() not in excluded_wos:
+                excluded_wos.append(w.strip())
+
     if parent_spr:
         try:
             spr_doc = frappe.get_doc("Shaft Production Run", parent_spr)
             for j in spr_doc.shaft_jobs:
                 if str(j.job_id) != str(job_id) and j.work_orders:
                     for w in j.work_orders.split(","):
-                        if w.strip():
+                        if w.strip() and w.strip() not in excluded_wos:
                             excluded_wos.append(w.strip())
         except Exception: pass
 
@@ -666,16 +682,18 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
             # Fetch Work Order for this specific Item in this Plan
             
             wo_name = None
+            # 1. PRIMARY: Match from the specific work_orders list passed for this Job
             if work_orders and isinstance(work_orders, list):
                 # Ensure we match to a UNIQUE work order for duplicates by popping from the list
                 for wo in work_orders:
+                    # Match by item_code to ensure we grabbed the right one from the set
                     wo_doc = frappe.db.get_value("Work Order", {"name": wo, "production_item": item_code}, "name")
                     if wo_doc:
                         wo_name = wo_doc
                         work_orders.remove(wo) # Prevent this WO from being assigned to the next identical roll
                         break
             
-            # If no direct match in passed work_orders list, fallback to finding nearest available one
+            # 2. FALLBACK: Search Plan's Work Orders, but EXCLUDE anything claimed by other jobs
             if not wo_name:
                 wo_filters = {
                     "production_plan": production_plan,
@@ -688,7 +706,7 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
 
                 wo_name = frappe.db.get_value("Work Order", wo_filters, "name")
 
-                # Fallback: draft WOs
+                # 3. FINAL FALLBACK: Draft WOs
                 if not wo_name:
                     draft_filters = {
                         "production_plan": production_plan,
