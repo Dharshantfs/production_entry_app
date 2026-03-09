@@ -628,17 +628,6 @@ def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm
                 "roll_no": 0
             })
                 
-    # Add one extra unmapped empty row for user flexibility
-    items_to_add.append({
-        "job": job_id,
-        "width_inch": 0.0,
-        "gsm": gsm,
-        "meter_roll": 0.0,
-        "net_weight": 0.0,
-        "gross_weight": 0.0,
-        "roll_no": 0
-    })
-
     return items_to_add
 
 

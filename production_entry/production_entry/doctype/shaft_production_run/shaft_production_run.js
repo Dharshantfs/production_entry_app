@@ -1,6 +1,7 @@
 frappe.ui.form.on('Shaft Production Run', {
     refresh: function (frm) {
         frm.get_field('shaft_jobs').grid.cannot_add_rows = true;
+        frm.get_field('items').grid.cannot_delete_rows = false;
 
         if (!frm.is_new() && frm.doc.docstatus === 0) {
             frm.add_custom_button(__('Generate Batches'), function () {
