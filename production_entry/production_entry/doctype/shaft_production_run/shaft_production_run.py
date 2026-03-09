@@ -136,24 +136,6 @@ class ShaftProductionRun(Document):
             return f"{date_prefix}{max_series_num + 1}"
 
 
-    def validate(self):
-        self.validate_all_jobs_entered()
-
-    def validate_all_jobs_entered(self):
-        """Ensure every job in shaft_jobs has at least one entry in items"""
-        if not self.shaft_jobs:
-            return
-            
-        required_jobs = set(str(d.job_id) for d in self.shaft_jobs)
-        entered_jobs = set(str(d.job) for d in self.items if d.job)
-        
-        missing = required_jobs - entered_jobs
-        if missing:
-            frappe.throw(
-                f"Cannot submit/save. The following Job IDs are missing entries in the Produced Rolls table: "
-                f"<b>{', '.join(sorted(list(missing)))}</b>. <br><br>"
-                f"Please click <b>'Create Entry'</b> for all jobs in the 'Available Jobs' table before proceeding."
-            )
 
     def on_submit(self):
         """Create Stock Entries grouped by Work Order for all completed rows"""
