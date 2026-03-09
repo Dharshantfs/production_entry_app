@@ -20,6 +20,7 @@
         "section_break_9",
         "shaft_jobs",
         "section_break_items",
+        "filter_job_id",
         "items",
         "custom_label",
         "custom_batch_width"
@@ -97,6 +98,13 @@
             "fieldname": "section_break_items",
             "fieldtype": "Section Break",
             "label": "Produced Rolls"
+        },
+        {
+            "fieldname": "filter_job_id",
+            "fieldtype": "Select",
+            "label": "View Rolls for Job",
+            "options": "All",
+            "default": "All"
         },
         {
             "fieldname": "items",

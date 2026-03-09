@@ -24,6 +24,13 @@ frappe.ui.form.on('Shaft Production Run', {
                 select_work_orders(frm);
             });
         }
+
+        update_job_filter_options(frm);
+        setup_grid_filter(frm);
+    },
+
+    filter_job_id: function (frm) {
+        apply_grid_filter(frm);
     },
 
     onload: function (frm) {
@@ -70,6 +77,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
                         frm.set_value('custom_label', label_type);
                         frm.refresh_field('shaft_jobs');
+                        update_job_filter_options(frm);
                         frappe.msgprint(`Fetched ${jobs.length} jobs from Production Plan. Label Type set to ${label_type}.`);
                     }
                 }
@@ -141,11 +149,14 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
                     frm.refresh_field('items');
 
+                    // Auto-set filter to this job so the user sees what they just added
+                    frm.set_value('filter_job_id', row.job_id);
+
                     if (typeof calculate_total === "function") {
                         calculate_total(frm);
                     }
 
-                    // Force a save to validate and generate batches
+                    // Force a save to validate and generate batches automatically
                     setTimeout(function () {
                         frm.save().then(function () {
                             frm.call({
@@ -157,7 +168,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
                                         frm.refresh();
                                         frappe.msgprint({
                                             title: 'Success',
-                                            message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + ' to the Produced Rolls table and generated batch numbers.',
+                                            message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + '. Batches generated and view filtered.',
                                             indicator: 'green'
                                         });
                                     }
@@ -198,6 +209,63 @@ function calculate_total(frm) {
         total += flt(row.net_weight);
     });
     frm.set_value('total_produced_weight', total);
+}
+
+function update_job_filter_options(frm) {
+    var options = ["All"];
+    (frm.doc.shaft_jobs || []).forEach(function (j) {
+        if (j.job_id && !options.includes(j.job_id)) {
+            options.push(j.job_id);
+        }
+    });
+    frm.set_df_property('filter_job_id', 'options', options.join('\n'));
+}
+
+function setup_grid_filter(frm) {
+    // We'll hook into the grid refresh to apply our filter
+    var grid = frm.get_field('items').grid;
+    var old_refresh = grid.refresh;
+    grid.refresh = function () {
+        old_refresh.apply(grid, arguments);
+        apply_grid_filter(frm);
+    };
+}
+
+function apply_grid_filter(frm) {
+    var filter = frm.doc.filter_job_id || "All";
+    var grid = frm.get_field('items').grid;
+    if (!grid || !grid.wrapper) return;
+
+    var job_colors = {};
+    var color_palette = ['#2980b9', '#27ae60', '#8e44ad', '#f39c12', '#c0392b', '#16a085', '#2c3e50'];
+    var color_idx = 0;
+
+    $(grid.wrapper).find('.grid-row').each(function () {
+        var name = $(this).attr('data-name');
+        var row = (frm.doc.items || []).find(r => r.name === name);
+        if (!row) return;
+
+        // 1. Grouping Color
+        if (!job_colors[row.job]) {
+            job_colors[row.job] = color_palette[color_idx % color_palette.length];
+            color_idx++;
+        }
+        $(this).css('border-left', '5px solid ' + job_colors[row.job]);
+
+        // 2. Filtering
+        if (filter !== "All" && row.job !== filter) {
+            $(this).hide();
+        } else {
+            $(this).show();
+        }
+    });
+
+    // Also hide the 'Add row' button if filtered to avoid confusion
+    if (filter !== "All") {
+        $(grid.wrapper).find('.grid-footer').hide();
+    } else {
+        $(grid.wrapper).find('.grid-footer').show();
+    }
 }
 
 function select_work_orders(frm) {
