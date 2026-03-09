@@ -101,10 +101,10 @@
         },
         {
             "fieldname": "filter_job_id",
-            "fieldtype": "Select",
+            "fieldtype": "Data",
             "label": "View Rolls for Job",
-            "options": "All",
-            "default": "All"
+            "default": "All",
+            "read_only": 0
         },
         {
             "fieldname": "items",

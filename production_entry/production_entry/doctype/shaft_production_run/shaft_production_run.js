@@ -219,6 +219,7 @@ function update_job_filter_options(frm) {
             options.push(j.job_id);
         }
     });
+    frm.set_df_property('filter_job_id', 'fieldtype', 'Select');
     frm.set_df_property('filter_job_id', 'options', options.join('\n'));
 }
 
