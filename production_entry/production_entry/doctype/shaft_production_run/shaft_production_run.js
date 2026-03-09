@@ -380,11 +380,6 @@ function add_manual_job_dialog(frm) {
                         frappe.show_alert({ message: __('Select an item first'), indicator: 'orange' });
                         return;
                     }
-                    if (selected_items.find(i => i.item_code === item_code)) {
-                        frappe.show_alert({ message: __('Item already added'), indicator: 'orange' });
-                        d.set_value('item_select', '');
-                        return;
-                    }
                     frappe.call({
                         method: 'frappe.client.get',
                         args: { doctype: 'Item', name: item_code },
