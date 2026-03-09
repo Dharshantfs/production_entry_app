@@ -343,7 +343,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         
     wos = frappe.get_all("Work Order",
         filters=wo_filters,
-        fields=["name", "production_item", "custom_width_inch", "qty", "custom_label", "custom_party_code", "party_code"]
+        fields=["name", "production_item", "custom_width_inch", "qty", "custom_label", "custom_party_code", "party_code", "status"]
     )
     
     # Fetch exact widths from Production Plan items
@@ -469,9 +469,25 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "party_code": ", ".join(job_parties)
         })
         
+    all_party_codes = set()
+    wo_summary = []
+    for wo in wos:
+        p_code = wo.get("custom_party_code") or wo.get("party_code")
+        if p_code:
+            all_party_codes.add(p_code)
+        
+        wo_summary.append({
+            "name": wo.name,
+            "item": wo.production_item,
+            "status": wo.status,
+            "qty": wo.qty
+        })
+
     return {
         "jobs": jobs,
-        "label_type": label_type
+        "label_type": label_type,
+        "all_party_codes": ", ".join(sorted(list(all_party_codes))),
+        "wo_summary": wo_summary
     }
 
 

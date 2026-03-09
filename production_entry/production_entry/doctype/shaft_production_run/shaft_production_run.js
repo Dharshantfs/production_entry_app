@@ -65,9 +65,46 @@ function fetch_shaft_details(frm) {
                     });
 
                     frm.set_value('custom_label', label_type);
+                    frm.set_value('custom_order_code', r.message.all_party_codes || "");
                     frm.refresh_field('shaft_jobs');
                     update_job_filter_options(frm);
-                    frappe.msgprint(`Fetched ${jobs.length} jobs from Production Plan. Label Type set to ${label_type}.`);
+
+                    // Show Work Order Status Dialog
+                    if (r.message.wo_summary && r.message.wo_summary.length > 0) {
+                        let wo_html = `
+                            <table class="table table-bordered table-condensed" style="margin-top: 10px;">
+                                <thead>
+                                    <tr>
+                                        <th>Work Order</th>
+                                        <th>Item</th>
+                                        <th>Qty</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${r.message.wo_summary.map(wo => `
+                                        <tr>
+                                            <td>${wo.name}</td>
+                                            <td>${wo.item}</td>
+                                            <td>${wo.qty}</td>
+                                            <td><span class="label label-${wo.status === 'Completed' ? 'success' : (wo.status === 'In Progress' ? 'orange' : 'default')}">${wo.status}</span></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        `;
+
+                        frappe.msgprint({
+                            title: __('Work Order Statuses for Plan'),
+                            message: wo_html,
+                            wide: true
+                        });
+                    }
+
+                    frappe.show_alert({
+                        message: `Fetched ${jobs.length} jobs from Production Plan.`,
+                        indicator: 'green'
+                    });
                 }
             }
         }

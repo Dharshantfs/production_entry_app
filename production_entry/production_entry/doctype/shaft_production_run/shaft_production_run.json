@@ -15,6 +15,7 @@
         "column_break_shift",
         "column_break_2",
         "status",
+        "custom_order_code",
         "column_break_7",
         "total_produced_weight",
         "section_break_9",
@@ -71,6 +72,12 @@
             "fieldtype": "Select",
             "label": "Status",
             "options": "Draft\nCompleted\nCancelled",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_order_code",
+            "fieldtype": "Small Text",
+            "label": "Order Code",
             "read_only": 1
         },
         {
