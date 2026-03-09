@@ -52,6 +52,24 @@ frappe.ui.form.on('Shaft Production Run', {
                 frm.refresh_field('items');
             }
         }
+    },
+
+    shift: function (frm) {
+        if (frm.doc.items && frm.doc.items.length > 0) {
+            frm.call({
+                doc: frm.doc,
+                method: 'generate_batch_numbers',
+                callback: function (r) {
+                    if (r.message) {
+                        frm.refresh_field('items');
+                        frappe.show_alert({
+                            message: __('Batch numbers updated for shift: {0}', [frm.doc.shift]),
+                            indicator: 'blue'
+                        });
+                    }
+                }
+            });
+        }
     }
 });
 
