@@ -34,6 +34,16 @@ frappe.ui.form.on('Shaft Production Run', {
 
     filter_job_id: function (frm) {
         apply_grid_filter(frm);
+    },
+
+    before_save: function (frm) {
+        // Clean up empty default rows safely to prevent validation errors
+        if (frm.doc.items) {
+            var to_keep = frm.doc.items.filter(r => r.work_order || r.item_code);
+            var to_remove = frm.doc.items.filter(r => !r.work_order && !r.item_code);
+            to_remove.forEach(r => frappe.model.clear_doc('Shaft Production Run Item', r.name));
+            frm.doc.items = to_keep;
+        }
     }
 });
 
@@ -166,20 +176,22 @@ frappe.ui.form.on('Shaft Production Run Job', {
     },
     create_roll_entry: function (frm, cdt, cdn) {
         var row = locals[cdt][cdn];
-        if (frm.is_new()) {
-            frappe.confirm("Create Entry requires the document to be saved first. Save now?", () => {
-                frm.save().then(() => {
-                    execute_create_roll_entry(frm, row);
-                });
+
+        // Cleanup empty rows before save to avoid validation errors
+        if (frm.doc.items) {
+            var to_keep = frm.doc.items.filter(r => r.work_order || r.item_code);
+            var to_remove = frm.doc.items.filter(r => !r.work_order && !r.item_code);
+            to_remove.forEach(r => frappe.model.clear_doc('Shaft Production Run Item', r.name));
+            frm.doc.items = to_keep;
+            frm.refresh_field('items');
+        }
+
+        if (frm.is_new() || frm.is_dirty()) {
+            frm.save().then(() => {
+                execute_create_roll_entry(frm, row);
             });
         } else {
-            if (frm.is_dirty()) {
-                frm.save().then(() => {
-                    execute_create_roll_entry(frm, row);
-                });
-            } else {
-                execute_create_roll_entry(frm, row);
-            }
+            execute_create_roll_entry(frm, row);
         }
     }
 });
