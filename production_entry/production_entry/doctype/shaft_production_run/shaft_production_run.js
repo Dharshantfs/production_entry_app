@@ -1,29 +1,13 @@
 frappe.ui.form.on('Shaft Production Run', {
+    setup: function (frm) {
+        frm.set_df_property('filter_job_id', 'fieldtype', 'Select');
+        frm.set_df_property('filter_job_id', 'options', ['All']);
+    },
     refresh: function (frm) {
-        frm.get_field('shaft_jobs').grid.cannot_add_rows = true;
-        frm.get_field('items').grid.cannot_delete_rows = false;
-
-        if (!frm.is_new() && frm.doc.docstatus === 0) {
-            frm.add_custom_button(__('Generate Batches'), function () {
-                set_shift_production(frm);
-                frm.call({
-                    doc: frm.doc,
-                    method: 'generate_batch_numbers',
-                    callback: function (r) {
-                        if (r.message && !r.exc) {
-                            frappe.model.sync(r.message);
-                            frm.refresh();
-                            frappe.msgprint("Shift and Batch Sequence calculated. Please verify Roll Numbers.");
-                        }
-                    }
-                });
-            }).addClass('btn-primary');
-        }
-
-        if (frm.doc.production_plan && frm.doc.docstatus === 0) {
-            frm.add_custom_button(__('Re-select Work Orders'), function () {
+        if (frm.doc.production_plan) {
+            frm.add_custom_button(__('Select Work Orders'), function () {
                 select_work_orders(frm);
-            });
+            }, __('Actions'));
         }
 
         update_job_filter_options(frm);
@@ -33,14 +17,10 @@ frappe.ui.form.on('Shaft Production Run', {
             frm.get_field('shaft_jobs').grid.add_custom_button(__('Add Manual Job'), function () {
                 add_manual_job_dialog(frm);
             });
+            // Disable manual row addition to the grid itself to force use of buttons/fetch
+            frm.get_field('shaft_jobs').grid.cannot_add_rows = true;
         }
-    },
 
-    filter_job_id: function (frm) {
-        apply_grid_filter(frm);
-    },
-
-    onload: function (frm) {
         if (frm.is_new()) {
             set_shift_production(frm);
         }
@@ -48,167 +28,172 @@ frappe.ui.form.on('Shaft Production Run', {
 
     production_plan: function (frm) {
         if (frm.doc.production_plan) {
-            select_work_orders(frm);
-        } else {
-            frm.clear_table('shaft_jobs');
-            frm.clear_table('items');
-            frm.refresh_field('shaft_jobs');
-            frm.refresh_field('items');
+            fetch_shaft_details(frm);
         }
     },
 
-    fetch_shaft_details: function (frm) {
-        frappe.call({
-            method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_shaft_jobs',
-            args: {
-                production_plan: frm.doc.production_plan
-            },
-            callback: function (r) {
-                if (r.message) {
-                    var jobs = r.message.jobs || [];
-                    var label_type = r.message.label_type || "Default";
-
-                    frm.clear_table('shaft_jobs');
-                    // We intentionally don't clear 'items' in case they've already started entering rolls
-
-                    if (jobs.length > 0) {
-                        jobs.forEach(function (d) {
-                            var job_row = frm.add_child('shaft_jobs');
-                            job_row.job_id = d.job_id;
-                            job_row.combination = d.combination;
-                            job_row.total_width = d.total_width;
-                            job_row.meter_roll_mtrs = d.meter_roll_mtrs;
-                            job_row.no_of_shafts = d.no_of_shafts;
-                            job_row.gsm = d.gsm;
-                        });
-
-                        frm.set_value('custom_label', label_type);
-                        frm.refresh_field('shaft_jobs');
-                        update_job_filter_options(frm);
-                        frappe.msgprint(`Fetched ${jobs.length} jobs from Production Plan. Label Type set to ${label_type}.`);
-                    }
-                }
-            }
-        });
+    filter_job_id: function (frm) {
+        apply_grid_filter(frm);
     }
 });
+
+function fetch_shaft_details(frm) {
+    frappe.call({
+        method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_shaft_jobs',
+        args: {
+            production_plan: frm.doc.production_plan
+        },
+        callback: function (r) {
+            if (r.message) {
+                var jobs = r.message.jobs || [];
+                var label_type = r.message.label_type || "Default";
+
+                frm.clear_table('shaft_jobs');
+                if (jobs.length > 0) {
+                    jobs.forEach(function (d) {
+                        var job_row = frm.add_child('shaft_jobs');
+                        job_row.job_id = d.job_id;
+                        job_row.gsm = d.gsm;
+                        job_row.combination = d.combination;
+                        job_row.total_width = d.total_width;
+                        job_row.meter_roll_mtrs = d.meter_roll_mtrs;
+                        job_row.net_weight = d.net_weight;
+                        job_row.total_weight = d.total_weight;
+                        job_row.no_of_shafts = d.no_of_shafts;
+                    });
+
+                    frm.set_value('custom_label', label_type);
+                    frm.refresh_field('shaft_jobs');
+                    update_job_filter_options(frm);
+                    frappe.msgprint(`Fetched ${jobs.length} jobs from Production Plan. Label Type set to ${label_type}.`);
+                }
+            }
+        }
+    });
+}
 
 frappe.ui.form.on('Shaft Production Run Job', {
     create_roll_entry: function (frm, cdt, cdn) {
         var row = locals[cdt][cdn];
-
-        var wos = [];
-        if (row.work_orders && row.work_orders.trim() !== "") {
-            wos = row.work_orders.split(',').map(s => s.trim()).filter(s => s);
-        }
-
-        frappe.call({
-            method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_job_roll_details',
-            args: {
-                production_plan: frm.doc.production_plan,
-                job_id: row.job_id,
-                combination: row.combination,
-                no_of_shafts: parseInt(row.no_of_shafts) || 1,
-                gsm: parseFloat(row.gsm) || 0,
-                meter_roll: parseFloat(row.meter_roll_mtrs) || 0,
-                net_weight: row.net_weight, // Pass the formula string (e.g. 74.78 + 74.78 + 42.27 = 191.83)
-                work_orders: wos.length > 0 ? JSON.stringify(wos) : null,
-                parent_spr: frm.doc.name
-            },
-            callback: function (r) {
-                if (r.message && r.message.length > 0) {
-                    var rolls_to_add = r.message;
-                    var max_roll = 0;
-
-                    // Clean up empty default rows safely (without detaching Frappe's array reference)
-                    var items = frm.doc.items || [];
-                    for (var i = items.length - 1; i >= 0; i--) {
-                        var r_row = items[i];
-                        if (r_row.work_order || r_row.item_code) {
-                            var rn = parseInt(r_row.roll_no) || 0;
-                            if (rn > max_roll) max_roll = rn;
-                        } else {
-                            items.splice(i, 1);
-                        }
-                    }
-
-                    if (items.length === 0) {
-                        frm.clear_table('items');
-                    }
-
-                    rolls_to_add.forEach(function (r_info) {
-                        var new_row = frm.add_child('items');
-                        max_roll++;
-                        new_row.job = r_info.job;
-                        new_row.work_order = r_info.work_order;
-                        new_row.item_code = r_info.item_code;
-                        new_row.planned_qty = r_info.planned_qty;
-                        new_row.width_inch = r_info.width_inch;
-                        new_row.gsm = r_info.gsm;
-                        new_row.uom = r_info.uom;
-                        new_row.color = r_info.color;
-                        new_row.quality = r_info.quality;
-                        new_row.meter_roll = r_info.meter_roll;
-                        new_row.net_weight = r_info.net_weight;
-                        new_row.gross_weight = r_info.gross_weight;
-                        new_row.roll_no = max_roll;
-                    });
-
-                    frm.refresh_field('items');
-
-                    // Auto-set filter to this job so the user sees what they just added
-                    frm.set_value('filter_job_id', row.job_id);
-
-                    if (typeof calculate_total === "function") {
-                        calculate_total(frm);
-                    }
-
-                    // Force a save to validate and generate batches automatically
-                    setTimeout(function () {
-                        frm.save().then(function () {
-                            frm.call({
-                                doc: frm.doc,
-                                method: 'generate_batch_numbers',
-                                callback: function (r) {
-                                    if (r.message && !r.exc) {
-                                        frappe.model.sync(r.message);
-                                        frm.refresh();
-                                        frappe.msgprint({
-                                            title: 'Success',
-                                            message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + '. Batches generated and view filtered.',
-                                            indicator: 'green'
-                                        });
-                                    }
-                                }
-                            });
-                        });
-                    }, 500);
-                } else {
-                    frappe.msgprint("Could not find matching Work Orders for this Job's widths. Ensure WOs are created and not closed/cancelled.");
-                }
+        if (frm.is_new()) {
+            frappe.confirm("Create Entry requires the document to be saved first. Save now?", () => {
+                frm.save().then(() => {
+                    execute_create_roll_entry(frm, row);
+                });
+            });
+        } else {
+            if (frm.is_dirty()) {
+                frm.save().then(() => {
+                    execute_create_roll_entry(frm, row);
+                });
+            } else {
+                execute_create_roll_entry(frm, row);
             }
-        });
+        }
     }
 });
 
+function execute_create_roll_entry(frm, row) {
+    var wos = [];
+    if (row.work_orders && row.work_orders.trim() !== "") {
+        wos = row.work_orders.split(',').map(s => s.trim()).filter(s => s);
+    }
+
+    frappe.call({
+        method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_job_roll_details',
+        args: {
+            production_plan: frm.doc.production_plan,
+            job_id: row.job_id,
+            combination: row.combination,
+            no_of_shafts: parseInt(row.no_of_shafts) || 1,
+            gsm: parseFloat(row.gsm) || 0,
+            meter_roll: parseFloat(row.meter_roll_mtrs) || 0,
+            net_weight: row.net_weight,
+            work_orders: wos.length > 0 ? JSON.stringify(wos) : null,
+            parent_spr: frm.doc.name
+        },
+        callback: function (r) {
+            if (r.message && r.message.length > 0) {
+                var rolls_to_add = r.message;
+                var max_roll = 0;
+
+                // Clean up empty default rows safely
+                var items = frm.doc.items || [];
+                for (var i = items.length - 1; i >= 0; i--) {
+                    var r_row = items[i];
+                    if (!r_row.work_order && !r_row.item_code) {
+                        frm.get_field('items').grid.grid_rows[i].remove();
+                    } else {
+                        var rn = parseInt(r_row.roll_no) || 0;
+                        if (rn > max_roll) max_roll = rn;
+                    }
+                }
+
+                rolls_to_add.forEach(function (d) {
+                    var child = frm.add_child('items');
+                    frappe.model.set_value(child.doctype, child.name, 'job', d.job);
+                    frappe.model.set_value(child.doctype, child.name, 'work_order', d.work_order);
+                    frappe.model.set_value(child.doctype, child.name, 'item_code', d.item_code);
+                    frappe.model.set_value(child.doctype, child.name, 'planned_qty', d.planned_qty);
+                    frappe.model.set_value(child.doctype, child.name, 'width_inch', d.width_inch);
+                    frappe.model.set_value(child.doctype, child.name, 'gsm', d.gsm);
+                    frappe.model.set_value(child.doctype, child.name, 'meter_roll', d.meter_roll);
+                    frappe.model.set_value(child.doctype, child.name, 'net_weight', d.net_weight);
+                    frappe.model.set_value(child.doctype, child.name, 'quality', d.quality);
+                    frappe.model.set_value(child.doctype, child.name, 'color', d.color);
+                    frappe.model.set_value(child.doctype, child.name, 'uom', d.uom);
+                    frappe.model.set_value(child.doctype, child.name, 'wo_status', d.wo_status);
+
+                    max_roll++;
+                    frappe.model.set_value(child.doctype, child.name, 'roll_no', max_roll);
+                });
+
+                frm.refresh_field('items');
+                update_job_filter_options(frm);
+                apply_grid_filter(frm);
+                frm.set_value('filter_job_id', row.job_id);
+
+                if (typeof calculate_total === "function") {
+                    calculate_total(frm);
+                }
+
+                setTimeout(function () {
+                    frm.save().then(function () {
+                        frm.call({
+                            doc: frm.doc,
+                            method: 'generate_batch_numbers',
+                            callback: function (r) {
+                                if (r.message && !r.exc) {
+                                    frappe.model.sync(r.message);
+                                    frm.refresh();
+                                    frappe.msgprint({
+                                        title: 'Success',
+                                        message: 'Successfully added ' + rolls_to_add.length + ' rolls for Job ' + row.job_id + '.',
+                                        indicator: 'green'
+                                    });
+                                }
+                            }
+                        });
+                    });
+                }, 500);
+            } else {
+                frappe.msgprint("Could not find matching Work Orders for this Job's widths. Ensure WOs are created and not closed/cancelled.");
+            }
+        }
+    });
+}
 
 frappe.ui.form.on('Shaft Production Run Item', {
     net_weight: function (frm, cdt, cdn) {
         calculate_total(frm);
     },
-
     items_remove: function (frm) {
         calculate_total(frm);
     },
-
     print_sticker: function (frm, cdt, cdn) {
         frappe.generate_sticker_flow(cdn, frm);
     }
 });
-
-// ==========================================
-// Logics
-// ==========================================
 
 function calculate_total(frm) {
     var total = 0.0;
@@ -226,7 +211,6 @@ function update_job_filter_options(frm) {
         }
     });
 
-    // Force fieldtype to Select on client side to get dropdown behavior
     frm.set_df_property('filter_job_id', 'fieldtype', 'Select');
     frm.set_df_property('filter_job_id', 'options', options.join('\n'));
 
@@ -266,8 +250,6 @@ function add_manual_job_dialog(frm) {
         primary_action_label: 'Create Job',
         primary_action(values) {
             let selected_items = values.items.split(',').map(i => i.trim());
-
-            // Create a new Job ID (next available)
             let max_id = 0;
             (frm.doc.shaft_jobs || []).forEach(j => {
                 let id = parseInt(j.job_id) || 0;
@@ -287,35 +269,32 @@ function add_manual_job_dialog(frm) {
                         let items_data = r.message;
                         let gsm = 0;
                         let widths = [];
-
                         items_data.forEach(item => {
-                            // Extract GSM and Width from name/code
                             let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
                             if (details.gsm) gsm = details.gsm;
                             if (details.width_inch) widths.push(details.width_inch);
                         });
 
-                        let combination = widths.join('\" + ') + '\"';
+                        let h_val = widths.join('\" + ') + '\"';
                         let total_width = widths.reduce((a, b) => a + b, 0);
 
                         let job_row = frm.add_child('shaft_jobs');
                         job_row.job_id = new_job_id;
                         job_row.gsm = gsm;
-                        job_row.combination = combination;
+                        job_row.combination = h_val;
                         job_row.total_width = total_width;
                         job_row.meter_roll_mtrs = values.meter_roll;
                         job_row.no_of_shafts = values.no_of_shafts;
                         job_row.is_manual = 1;
                         job_row.manual_items = JSON.stringify(selected_items);
 
-                        // Create Work Orders for these items if they don't exist
                         selected_items.forEach(item_code => {
                             frappe.call({
                                 method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.create_manual_work_order',
                                 args: {
                                     production_plan: frm.doc.production_plan,
                                     item_code: item_code,
-                                    qty: values.meter_roll * values.no_of_shafts // Approximation
+                                    qty: values.meter_roll * values.no_of_shafts
                                 }
                             });
                         });
@@ -333,13 +312,17 @@ function add_manual_job_dialog(frm) {
 }
 
 function setup_grid_filter(frm) {
-    // We'll hook into the grid refresh to apply our filter
-    var grid = frm.get_field('items').grid;
-    var old_refresh = grid.refresh;
-    grid.refresh = function () {
-        old_refresh.apply(grid, arguments);
-        apply_grid_filter(frm);
-    };
+    if (frm.get_field('items')) {
+        var grid = frm.get_field('items').grid;
+        var old_refresh = grid.refresh;
+        grid.refresh = function () {
+            old_refresh.apply(grid, arguments);
+            apply_grid_filter(frm);
+        };
+        frm.fields_dict['items'].grid.on_grid_refresh = function () {
+            apply_grid_filter(frm);
+        };
+    }
 }
 
 function apply_grid_filter(frm) {
@@ -356,14 +339,12 @@ function apply_grid_filter(frm) {
         var row = (frm.doc.items || []).find(r => r.name === name);
         if (!row) return;
 
-        // 1. Grouping Color
         if (!job_colors[row.job]) {
             job_colors[row.job] = color_palette[color_idx % color_palette.length];
             color_idx++;
         }
         $(this).css('border-left', '5px solid ' + job_colors[row.job]);
 
-        // 2. Filtering
         if (filter !== "All" && String(row.job) !== String(filter)) {
             $(this).hide();
         } else {
@@ -371,7 +352,6 @@ function apply_grid_filter(frm) {
         }
     });
 
-    // Also hide the 'Add row' button if filtered to avoid confusion
     if (filter !== "All") {
         $(grid.wrapper).find('.grid-footer').hide();
     } else {
@@ -387,6 +367,7 @@ function select_work_orders(frm) {
             production_plan: frm.doc.production_plan
         },
         add_filters_group: 1,
+        columns: ["status", "production_plan", "item_code", "qty"],
         get_query() {
             return {
                 filters: {
@@ -403,20 +384,11 @@ function select_work_orders(frm) {
             } else {
                 frappe.msgprint("Please select at least one Work Order.");
             }
-        },
-        action(selections) {
-            // Fallback for different framework versions
-            if (selections && selections.length > 0) {
-                fetch_jobs_for_wos(frm, selections);
-                d.dialog.hide();
-            }
         }
     });
 }
 
-
 function fetch_jobs_for_wos(frm, work_orders) {
-    frm.custom_selected_wos = work_orders;
     frappe.call({
         method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_shaft_jobs',
         args: {
@@ -443,47 +415,27 @@ function fetch_jobs_for_wos(frm, work_orders) {
                     });
                     frm.set_value('custom_label', label_type);
                     frm.refresh_field('shaft_jobs');
-                } else {
-                    frappe.msgprint("No matching Shaft Jobs found in Production Plan for the selected Work Orders.");
                 }
             }
         }
     });
 }
 
-
-// Popup dialog removed by user request, rows now fill automatically.
-
 function set_shift_production(frm) {
     var current_hour = new Date().getHours();
-
     if (current_hour >= 8 && current_hour < 20) {
         frm.set_value('shift', 'Day Shift');
-    }
-    else {
+    } else {
         frm.set_value('shift', 'Night Shift');
     }
 }
 
 frappe.generate_sticker_flow = function (row_name, frm) {
     var f = frm || cur_frm;
-    if (!f || !f.doc) {
-        console.error("Label Printing: Form not found.");
-        return;
-    }
+    var row = locals['Shaft Production Run Item'][row_name] || (f.doc.items || []).find(function (r) { return r.name === row_name; });
+    if (!row) return;
 
-    var row = locals['Shaft Production Run Item'][row_name];
-    if (!row) row = (f.doc.items || []).find(function (r) { return r.name === row_name; });
-
-    if (!row) {
-        console.error("Label Printing: Row " + row_name + " not found.");
-        return;
-    }
-
-    var item_code = row.item_code || "";
-
-    // Fetch item name to improve extraction accuracy
-    frappe.db.get_value('Item', item_code, 'item_name', function (r) {
+    frappe.db.get_value('Item', row.item_code, 'item_name', function (r) {
         var item_name = (r && r.item_name) || "";
         trigger_print_with_details(row_name, item_name, f);
     });
@@ -497,12 +449,9 @@ function trigger_print_with_details(row_name, item_name, frm) {
     if (!row) return;
 
     var details = extract_details_enhanced(item_name, row.item_code);
-
     var final_gsm = row.gsm || details.gsm || "";
     var final_color = row.color || details.color || "";
     var final_quality = row.quality || details.quality || "";
-
-    console.log("Sticker Flow:", { label_type: label_type, row: row, details: details });
 
     if (label_type.includes("reliance") || label_type.includes("relience")) {
         flow_reliance_cm(row_name, final_gsm, final_color, final_quality, frm);
@@ -527,13 +476,10 @@ function extract_details_enhanced(name, code) {
     if (code && code.length === 16 && /^\d+$/.test(code)) {
         var qual_code = code.substring(3, 6);
         if (QUALITY_MASTER[qual_code]) res.quality = QUALITY_MASTER[qual_code];
-
         var code_gsm = parseInt(code.substring(9, 12));
         if (code_gsm > 0) res.gsm = String(code_gsm);
-
         var code_width_mm = parseFloat(code.substring(12, 16));
         if (code_width_mm > 0) res.width_inch = Math.round(code_width_mm / 25.4);
-
         if (res.quality && name) {
             var qual_pos = name_upper.indexOf(res.quality.toUpperCase());
             if (qual_pos !== -1) {
@@ -543,14 +489,11 @@ function extract_details_enhanced(name, code) {
             }
         }
     } else if (name) {
-        var known_qualities = ["SUPER PLATINUM", "SUPER CLASSIC", "LIFE STYLE", "ECO SPECIAL",
-            "ECO GREEN", "SUPER ECO", "DELUXE", "PREMIUM", "PLATINUM", "GOLD",
-            "SILVER", "BRONZE", "CLASSIC", "ULTRA", "UV"];
+        var known_qualities = ["SUPER PLATINUM", "SUPER CLASSIC", "LIFE STYLE", "ECO SPECIAL", "ECO GREEN", "SUPER ECO", "DELUXE", "PREMIUM", "PLATINUM", "GOLD", "SILVER", "BRONZE", "CLASSIC", "ULTRA", "UV"];
         known_qualities.sort(function (a, b) { return b.length - a.length; });
         for (var i = 0; i < known_qualities.length; i++) {
             var q = known_qualities[i];
-            var qb = new RegExp('\\b' + q + '\\b', 'i');
-            if (qb.test(name_upper)) { res.quality = q; break; }
+            if (new RegExp('\\b' + q + '\\b', 'i').test(name_upper)) { res.quality = q; break; }
         }
         if (res.quality) {
             var qp = name_upper.indexOf(res.quality.toUpperCase());
@@ -570,34 +513,24 @@ function extract_details_enhanced(name, code) {
 }
 
 function flow_reliance_cm(row_name, gsm, color, quality, frm) {
-    var doc = frm.doc;
-    var row = locals['Shaft Production Run Item'][row_name];
-    if (!row) row = (doc.items || []).find(function (r) { return r.name === row_name; });
+    var row = locals['Shaft Production Run Item'][row_name] || (frm.doc.items || []).find(r => r.name === row_name);
     var item_code = row ? (row.item_code || "") : "";
-
-    // Extract last 4 digits (e.g. 0760 -> 760mm -> 76cm)
     var width_mm = (item_code.length >= 4) ? parseFloat(item_code.slice(-4)) : 0;
     var width_cm = (width_mm > 0) ? (width_mm / 10) : 0;
 
-    // Use the calculated width for this specific row. 
-    // We still prompt to verify, but the default is now correct for THIS row.
     frappe.prompt([{
         label: 'Verify Width (CM) for ' + (item_code || 'this row'),
         fieldname: 'width_cm',
         fieldtype: 'Float',
         default: width_cm,
         reqd: 1
-    }],
-        function (values) {
-            // We don't save it to the parent because it's row-specific
-            frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality, frm);
-        }, 'Confirm Reliance Size (' + row.roll_no + ')', 'Preview Label');
+    }], function (values) {
+        frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality, frm);
+    }, 'Confirm Reliance Size (' + row.roll_no + ')', 'Preview Label');
 }
 
 frappe.run_print_logic = function (row_name, final_width_display, final_gsm, final_color, final_quality, frm) {
-    var doc = frm.doc;
-    var row = locals['Shaft Production Run Item'][row_name];
-    if (!row) row = (doc.items || []).find(function (r) { return r.name === row_name; });
+    var row = locals['Shaft Production Run Item'][row_name] || (frm.doc.items || []).find(r => r.name === row_name);
     if (!row) return;
 
     var d = {
@@ -606,17 +539,16 @@ frappe.run_print_logic = function (row_name, final_width_display, final_gsm, fin
         gsm: final_gsm,
         color: final_color,
         width_val: final_width_display,
-        party_code: "", // Could be fetched from WO if needed
         item_code: row.item_code || "",
         barcode_data: row.batch_no || "",
         length: row.meter_roll || "0",
-        gw: (row.gross_weight || row.net_weight || 0).toFixed(2),
-        nw: (row.net_weight || 0).toFixed(2),
+        gw: (flt(row.gross_weight) || flt(row.net_weight)).toFixed(2),
+        nw: flt(row.net_weight).toFixed(2),
         batch_no: row.batch_no || "",
         roll_no: row.roll_no || ""
     };
 
-    var htmlContent = get_grid_format(d, (doc.custom_label || "Default").toLowerCase());
+    var htmlContent = get_grid_format(d, (frm.doc.custom_label || "Default").toLowerCase());
     var printWindow = window.open('', '_blank', 'height=650,width=500');
     if (printWindow) {
         printWindow.document.write(htmlContent);
@@ -639,20 +571,18 @@ function get_grid_format(d, type) {
     if (isDefault) {
         header = "JayaShree Spun Bond";
         sub1 = "\u2709 info@jayashreespunbond.com";
-        sub2 = d.quality + (d.party_code ? (" | " + d.party_code) : "");
+        sub2 = d.quality;
     } else if (isPlainCC) {
-        sub1 = d.quality + (d.party_code ? (" | " + d.party_code) : "");
+        sub1 = d.quality;
     }
 
     var rows = [];
     rows.push('<tr><td><span class="lbl">GSM:</span><span class="val">' + d.gsm + '</span></td><td><span class="lbl">COLOR:</span><span class="val">' + d.color + '</span></td></tr>');
-
     if (isPerfect) {
         rows.push('<tr><td colspan="2"><span class="lbl">Mtrs / Roll:</span><span class="val">' + d.length + ' Mtrs</span></td></tr>');
     } else {
         rows.push('<tr><td><span class="lbl">Mtrs / Roll:</span><span class="val">' + d.length + ' Mtrs</span></td><td><span class="lbl">WIDTH:</span><span class="val">' + d.width_val + '</span></td></tr>');
     }
-
     rows.push('<tr><td><span class="lbl">NET WT:</span><span class="val">' + d.nw + ' Kgs</span></td><td><span class="lbl">GROSS WT:</span><span class="val">' + d.gw + ' Kgs</span></td></tr>');
 
     return '<html><head><title>Label Preview</title><style>' +
