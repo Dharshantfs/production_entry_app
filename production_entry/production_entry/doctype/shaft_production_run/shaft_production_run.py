@@ -89,59 +89,82 @@ class ShaftProductionRun(Document):
             except:
                 unit_code = "2"
 
+            # Get Series Prefix (Identity) for current shift e.g. "032261"
             series_prefix = self.get_shift_series_by_identity(row.item_code or (wo.production_item if wo else None), unit_code, shift_name)
+            
+            today_str = frappe.utils.today()
+            month_str = today_str[5:7]
+            year_str = today_str[2:4]
+            date_prefix = f"{month_str}{unit_code}{year_str}" # e.g. "03226"
 
             # FORCE RE-GENERATION IF PREFIX MISMATCH (e.g. Shift Changed)
             if row.batch_no and not row.batch_no.startswith(f"{series_prefix}\\"):
                 row.batch_no = None
                 row.roll_no = None
 
-            # Handle sequential Batch and Roll numbering across the shift.
+            # Handle sequential Batch and Roll numbering across the unit for the day.
             if not row.batch_no:
-                # 1. Fetch highest roll_no for this precise series_prefix globally from Batch documents
-                existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}/%"]}, fields=["batch_id"])
-                max_roll_num = 0
-                for b in existing_batches:
-                    try:
-                        roll_part = b.batch_id.split("/")[-1]
-                        max_roll_num = max(max_roll_num, int(roll_part))
-                    except: pass
+                # 1. Fetch highest roll_no for this precise series_prefix globally
+                existing_batches = frappe.get_all("Batch", 
+                    filters={"batch_id": ["like", f"{series_prefix}/%"]}, 
+                    fields=["batch_id"])
                 
-                # 2. Check current rows in this document
+                max_roll_num = 0
+                
+                def parse_roll_num(bid):
+                    if not bid: return None
+                    if "/" in bid:
+                        last_part = bid.split("/")[-1]
+                        if last_part.isdigit():
+                            return int(last_part)
+                    return None
+
+                for b in existing_batches:
+                    val = parse_roll_num(b.batch_id)
+                    if val is not None:
+                        max_roll_num = max(max_roll_num, val)
+                
+                # 2. Check current and other Draft SPRs
+                all_draft_items = frappe.get_all("Shaft Production Run Item", 
+                    filters={"batch_no": ["like", f"{series_prefix}/%"]}, 
+                    fields=["batch_no"])
+                for i in all_draft_items:
+                    val = parse_roll_num(i.batch_no)
+                    if val is not None:
+                        max_roll_num = max(max_roll_num, val)
+                
+                # 3. Check items already in this doc
                 for r in self.items:
                     if r.batch_no and r.batch_no.startswith(f"{series_prefix}/"):
-                        try:
-                            rp = r.batch_no.split("/")[-1]
-                            max_roll_num = max(max_roll_num, int(rp))
-                        except: pass
+                        val = parse_roll_num(r.batch_no)
+                        if val is not None:
+                            max_roll_num = max(max_roll_num, val)
                         
                 next_roll = max_roll_num + 1
                 row.batch_no = f"{series_prefix}/{next_roll}"
                 row.roll_no = next_roll
             
-            # Ensure roll_no syncs with batch_no suffix if possible
-            if row.batch_no and "/" in row.batch_no:
-                try:
+            # Synchronize roll_no field
+            try:
+                if "/" in row.batch_no:
                     row.roll_no = int(row.batch_no.split("/")[-1])
-                except:
-                    pass
+            except:
+                pass
         
         # Return the document dict so the client can refresh values (PREVIEW ONLY until saved)
         return self.as_dict()
 
 
     def get_shift_series_by_identity(self, item_code, unit_code, current_shift):
-        today_obj = frappe.utils.getdate(self.run_date or frappe.utils.today())
-        month_str = today_obj.strftime("%m")
-        year_str = today_obj.strftime("%y")
-        day_str = today_obj.strftime("%d")
+        today_str = frappe.utils.today()
+        month_str = today_str[5:7]
+        year_str = today_str[2:4]
         
-        # Format: MM U YY DD (e.g. 03 2 26 10)
-        date_prefix = f"{month_str}{unit_code}{year_str}{int(day_str)}"
+        # Shift identifier: 1 for Day, 2 for Night
+        shift_digit = "1" if "DAY" in str(current_shift).upper() else "2"
         
-        # The user wants ONE continuous numbering for the day regardless of shift.
-        # So the prefix for the whole day is just the date_prefix.
-        return date_prefix
+        # Format: MM U YY S (e.g. 03 2 26 1)
+        return f"{month_str}{unit_code}{year_str}{shift_digit}"
 
 
 
