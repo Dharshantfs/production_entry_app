@@ -4,6 +4,9 @@ from frappe.utils import flt, cint
 
 class ShaftProductionRun(Document):
     def validate(self):
+        # Force cleanup of any UI overrides that cause duplicates or missing units (one-time logic)
+        frappe.db.delete("Property Setter", {"doc_type": "Shaft Production Run", "field_name": "custom_unit"})
+        
         self.validate_production_plan()
         self.calculate_actual_qty()
         self.generate_batch_numbers()
@@ -643,9 +646,37 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
             if str(j.job_id) == str(job_id) and j.is_manual:
                 import json
                 try:
-                    manual_item_list = json.loads(j.manual_items) if j.manual_items else []
+                    manual_item_list = j.manual_items
                 except: pass
                 break
+    
+    # 2. Parse manual_item_list into a flat list of strings
+    if manual_item_list:
+        if isinstance(manual_item_list, str):
+            try:
+                # Try JSON first [ "item1", "item2" ]
+                loaded = json.loads(manual_item_list)
+                if isinstance(loaded, list):
+                    manual_item_list = loaded
+                else:
+                    manual_item_list = [str(loaded)]
+            except:
+                # Fallback to comma split "item1, item2"
+                manual_item_list = [x.strip() for x in manual_item_list.split(",") if x.strip()]
+        
+        # Ensure it's a list for flattening logic below
+        if not isinstance(manual_item_list, list):
+            manual_item_list = [manual_item_list]
+    
+    # Flatten any sub-lists if strings contain commas "item1,item2" inside a list ["item1,item2", "item3"]
+    final_items = []
+    if manual_item_list and isinstance(manual_item_list, list):
+        for entry in manual_item_list:
+            if isinstance(entry, str) and "," in entry:
+                final_items.extend([x.strip() for x in entry.split(",") if x.strip()])
+            else:
+                final_items.append(entry)
+    manual_item_list = final_items
 
     if production_plan:
         pp_doc = frappe.get_doc("Production Plan", production_plan)
@@ -844,6 +875,12 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
             else:
                 wo_status = None
 
+            # For Mix Rolls, we want the Calculated Weight to be the Net Weight by default
+            # so it syncs back to the Job row immediately.
+            final_net_weight = 0.0
+            if parent_spr and frappe.db.get_value("Shaft Production Run", parent_spr, "is_mix_roll"):
+                final_net_weight = planned_qty
+
             items_to_add.append({
                 "job": job_id,
                 "work_order": wo_name,
@@ -853,7 +890,7 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                 "width_inch": target_width,
                 "gsm": gsm,
                 "meter_roll": meter_roll,
-                "net_weight": 0.0, # RESET TO 0.0 FOR MANUAL ENTRY
+                "net_weight": final_net_weight, 
                 "quality": quality,
                 "color": color,
                 "uom": uom
@@ -914,61 +951,64 @@ def create_manual_work_order(production_plan, item_code, qty, company=None):
 
 
 def extract_details_from_name(name, code):
-    """Mirror of JS extract_details_enhanced logic for server-side use"""
     QUALITY_MASTER = {
         "100": "PREMIUM", "101": "PLATINUM", "102": "SUPER PLATINUM",
         "103": "GOLD", "104": "SILVER", "105": "BRONZE",
         "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
         "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
-        "112": "ULTRA", "113": "DELUXE", "114": "UV"
+        "112": "ULTRA", "113": "DELUXE", "114": "UV",
+        "120": "PREMIUM PLUS"
     }
     
     res = {"gsm": None, "color": None, "width_inch": None, "quality": None}
     name_upper = (name or "").upper()
     code = str(code or "")
 
-    # 1. Try extraction from 16-digit code
-    if len(code) == 16 and code.isdigit():
-        qual_code = code[3:6]
-        if qual_code in QUALITY_MASTER:
-            res["quality"] = QUALITY_MASTER[qual_code]
-        
-        try:
-            res["gsm"] = str(int(code[9:12]))
-            res["width_inch"] = str(round(int(code[12:16]) / 25.4))
-        except: pass
+    # Helper: Search patterns in string
+    import re
+    
+    # 1. GSM Pattern (e.g. 80 GSM)
+    gsm_m = re.search(r'(\d+)\s*GSM', name_upper)
+    if gsm_m: res["gsm"] = gsm_m.group(1)
+    
+    # 2. Width Pattern (e.g. 46" or 46 INCH)
+    width_m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|INCH|IN|inch|\'\')', name_upper)
+    if width_m: res["width_inch"] = width_m.group(1)
 
-    # 2. Try extraction from Name if still missing
-    if not res["quality"]:
-        known_qualities = sorted(QUALITY_MASTER.values(), key=len, reverse=True)
-        for q in known_qualities:
-            if q.upper() in name_upper:
-                res["quality"] = q
-                break
+    # 3. Code Extraction (supports 12 and 16 digit codes)
+    if code.isdigit():
+        if len(code) == 16:
+            qual_code = code[3:6]
+            if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
+            if not res["gsm"]: res["gsm"] = str(int(code[9:12]))
+            if not res["width_inch"]: res["width_inch"] = str(round(int(code[12:16]) / 25.4))
+        elif len(code) == 12:
+            # 012-060-080-32? Or similar? 
+            # 080 for GSM is likely. 32 for width.
+            if not res["gsm"]: res["gsm"] = str(int(code[7:10]))
+            if not res["width_inch"]: res["width_inch"] = str(int(code[10:12]))
+            qual_code = code[0:3]
+            if qual_code.startswith("0"): qual_code = "1" + qual_code[1:] # 012 -> 112 Ultra?
+            if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
 
-    if res["quality"] and name:
-        import re
-        q_regex = re.escape(res["quality"].upper())
-        match = re.search(q_regex, name_upper)
-        if match:
-            after_qual = name[match.end():].strip()
-            # Remove GSM parts
-            after_qual = re.split(r'\s*\d+\s*GSM', after_qual, flags=re.I)[0].strip()
-            if after_qual:
-                res["color"] = after_qual
-
-    # Parse GSM from name if not already found
-    if not res["gsm"] and name:
-        import re
-        gsm_match = re.search(r'(\d+)\s*GSM', name, re.I)
-        if gsm_match:
-            res["gsm"] = gsm_match.group(1)
-
-    # Parse width (inch) from name if not already found
-    if not res["width_inch"] and name:
-        import re
-        width_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|inch|in(?:ch)?|\'\')', name, re.I)
-        if width_match:
-            res["width_inch"] = width_match.group(1)
+    # 4. Final Color Search (anything after GSM/Quality)
+    # Be aggressive: find anything that looks like color words if quality missing
+    if name:
+        parts = re.split(r'(\d+\s*GSM|(?:"|INCH|IN|inch|\'\'))', name_upper)
+        if parts:
+            # Look at parts that are not the gsm/width ones
+            for p in parts:
+                p_clean = p.strip()
+                if not p_clean or "GSM" in p_clean or '"' in p_clean or "INCH" in p_clean:
+                    continue
+                # If it's a known quality, it's not the color
+                is_qual = False
+                for q in QUALITY_MASTER.values():
+                    if q in p_clean: is_qual = True; break
+                if is_qual: continue
+                # Otherwise, it might be the color
+                if len(p_clean) > 2:
+                    res["color"] = p_clean
+                    break
 
     return res

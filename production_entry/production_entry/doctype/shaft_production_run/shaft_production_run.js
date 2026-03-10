@@ -165,19 +165,25 @@ frappe.ui.form.on('Shaft Production Run Job', {
     net_weight: function (frm, cdt, cdn) {
         var row = locals[cdt][cdn];
         if (row.net_weight) {
+            var val_str = row.net_weight.toString().trim();
+            // Don't format while typing the formula
+            if (val_str.endsWith('+') || val_str.endsWith('.')) return;
+
             var sum = 0;
-            var val_str = row.net_weight.toString();
-            var base_part = val_str;
-            if (val_str.includes('=')) {
-                base_part = val_str.split('=')[0];
-            }
+            var base_part = val_str.includes('=') ? val_str.split('=')[0] : val_str;
             var parts = base_part.split('+');
             parts.forEach(p => {
                 var p_val = parseFloat(p.trim());
                 if (!isNaN(p_val)) sum += p_val;
             });
+
             if (sum > 0) {
                 frappe.model.set_value(cdt, cdn, 'total_weight', sum);
+                // Auto-append calculation result for clarity
+                var formatted = base_part.trim() + " = " + sum.toFixed(2);
+                if (!val_str.includes('=') && val_str !== formatted) {
+                    frappe.model.set_value(cdt, cdn, 'net_weight', formatted);
+                }
             }
         }
     },
