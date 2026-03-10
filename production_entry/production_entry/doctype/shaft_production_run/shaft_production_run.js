@@ -395,10 +395,31 @@ frappe.ui.form.on('Shaft Production Run Item', {
 
 function calculate_total(frm) {
     var total = 0.0;
+    var job_sums = {};
+    var job_formulas = {};
+
     (frm.doc.items || []).forEach(function (row) {
-        total += flt(row.net_weight);
+        var nw = flt(row.net_weight);
+        total += nw;
+        if (row.job) {
+            var jid = String(row.job);
+            job_sums[jid] = (job_sums[jid] || 0) + nw;
+            if (!job_formulas[jid]) job_formulas[jid] = [];
+            job_formulas[jid].push(nw.toFixed(2));
+        }
     });
     frm.set_value('total_produced_weight', total);
+
+    // Update Job rows
+    (frm.doc.shaft_jobs || []).forEach(function (job) {
+        var jid = String(job.job_id);
+        if (job_sums[jid] !== undefined) {
+            job.total_weight = job_sums[jid];
+            // Optional: update formula string in job row too
+            job.net_weight = job_formulas[jid].join(" + ") + " = " + job_sums[jid].toFixed(3);
+        }
+    });
+    frm.refresh_field('shaft_jobs');
 }
 
 function update_job_filter_options(frm) {

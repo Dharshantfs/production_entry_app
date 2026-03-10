@@ -889,11 +889,8 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
             else:
                 wo_status = None
 
-            # For Mix Rolls, we want the Calculated Weight to be the Net Weight by default
-            # so it syncs back to the Job row immediately.
+            # RESET TO 0.0 INITIALLY so user has to fill it in
             final_net_weight = 0.0
-            if parent_spr and frappe.db.get_value("Shaft Production Run", parent_spr, "is_mix_roll"):
-                final_net_weight = planned_qty
 
             items_to_add.append({
                 "job": job_id,
@@ -972,70 +969,79 @@ def extract_details_from_name(name, code):
         "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
         "112": "ULTRA", "113": "DELUXE", "114": "UV",
         "120": "PREMIUM PLUS",
-        "012": "ULTRA", "010": "PREMIUM", "011": "PLATINUM" # Support for codes starting with 0
+        "012": "ULTRA", "010": "PREMIUM", "011": "PLATINUM"
     }
     
     res = {"gsm": None, "color": None, "width_inch": None, "quality": None}
     name_upper = (name or "").upper()
     code = str(code or "")
 
-    # Helper: Search patterns in string
     import re
-    
-    # 1. GSM Pattern (e.g. 80 GSM)
+
+    # 1. First priority: Check dedicated Master tables using code parts
+    if code.isdigit() and len(code) >= 6:
+        q_code = code[0:3]
+        c_code = code[3:6]
+        
+        # Check Quality Master
+        if q_code.isdigit():
+             try:
+                 q_match = frappe.db.get_value("Quality Master", {"code": q_code}, "quality_name")
+                 if q_match: res["quality"] = q_match
+             except Exception: pass
+             
+             if not res["quality"] and q_code in QUALITY_MASTER: 
+                 res["quality"] = QUALITY_MASTER[q_code]
+
+        # Check Color Master
+        if c_code.isdigit():
+             try:
+                 c_match = frappe.db.get_value("Color Master", {"code": c_code}, "color_name")
+                 if c_match: res["color"] = c_match
+             except Exception: pass
+
+    # 2. Extract standard patterns from name
     gsm_m = re.search(r'(\d+)\s*GSM', name_upper)
     if gsm_m: res["gsm"] = gsm_m.group(1)
     
-    # 2. Width Pattern (e.g. 46" or 46 INCH)
     width_m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|INCH|IN|inch|\'\')', name_upper)
     if width_m: res["width_inch"] = width_m.group(1)
 
-    # 3. Code Extraction (supports 12, 15, and 16 digit codes)
+    # 3. Fallback extraction from code if still missing
     if code.isdigit():
         cl = len(code)
         if cl == 16:
-            qual_code = code[3:6]
-            if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
+            if not res["quality"]:
+                qc = code[3:6]
+                if qc in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qc]
             if not res["gsm"]: res["gsm"] = str(int(code[9:12]))
             if not res["width_inch"]: res["width_inch"] = str(round(int(code[12:16]) / 25.4))
         elif cl == 15:
-             # Pattern: [Qual 3][Sub 2][? 2][GSM 3][Width 4] or similar
-             # Looking at 012060000800760: 012(ULT), 06(?), 00(?), 008(?), 00760(Width)
-             # Wait, 080 is often GSM. 01206000080 0760. 
-             # Let's try: Qual[0:3], GSM[8:11], Width[11:15]
-             qual_code = code[0:3]
-             if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
              if not res["gsm"]: res["gsm"] = str(int(code[8:11]))
              if not res["width_inch"]: res["width_inch"] = str(round(int(code[11:15]) / 25.4))
         elif cl == 12:
-            # 012-060-080-32?
             if not res["gsm"]: res["gsm"] = str(int(code[7:10]))
             if not res["width_inch"]: res["width_inch"] = str(int(code[10:12]))
-            qual_code = code[0:3]
-            if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
 
-    # 4. Final Color Search (anything after GSM/Quality)
+    # 4. Final keyword lookup in name if still missing
     if not res["quality"]:
         for q_code, q_name in QUALITY_MASTER.items():
             if q_name in name_upper:
                 res["quality"] = q_name
                 break
 
-    if name:
-        # Split by known markers to find color
+    if name and not res["color"]:
+        # Try to find anything after GSM or Quality
         parts = re.split(r'(\d+\s*GSM|(?:"|INCH|IN|inch|\'\')|PLATINUM|PREMIUM|ULTRA|GOLD|SILVER|BRONZE|UV)', name_upper)
         if parts:
             for p in parts:
                 p_clean = p.strip()
                 if not p_clean or len(p_clean) < 3: continue
-                # Skip if it's just a number or known keyword
                 if p_clean.isdigit(): continue
-                # If it's not a known quality, GSM, or width, it's likely color
                 is_marker = False
                 for q in QUALITY_MASTER.values():
                     if q in p_clean: is_marker = True; break
                 if is_marker: continue
-                
                 res["color"] = p_clean
                 break
 
