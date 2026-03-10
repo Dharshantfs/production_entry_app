@@ -45,6 +45,16 @@ class ShaftProductionRun(Document):
         # Only operate if shift has been determined
         shift_name = str(self.get("shift") or "DAY").upper()
 
+        # Fetch Production Plan unit STRICTLY from PP
+        pp_unit_val = None
+        if self.get("production_plan"):
+            pp_data = frappe.db.get_value("Production Plan", self.production_plan, ["custom_unit", "allocated_unit"], as_dict=True)
+            if pp_data:
+                pp_unit_val = pp_data.get("custom_unit") or pp_data.get("allocated_unit")
+        
+        if not pp_unit_val:
+            frappe.throw("Please ensure the linked Production Plan has a Unit assigned.")
+
         wo_cache = {}
             
         for row in self.items:
@@ -55,14 +65,15 @@ class ShaftProductionRun(Document):
                 wo_cache[row.work_order] = frappe.get_doc("Work Order", row.work_order)
             wo = wo_cache[row.work_order]
             
-            unit_val = self.get("allocated_unit") or wo.get("custom_unit_") or wo.get("unit")
+            # Unit Mapping: Strictly from PP
+            unit_val = pp_unit_val
             try:
                 unit_code = str(unit_val).strip()[-1]
                 if not unit_code.isdigit(): unit_code = "3"
             except:
-                unit_code = "3"
+                unit_code = "2"
 
-            series_prefix = self.get_shift_series_by_identity(wo.production_item, unit_code, shift_name)
+            series_prefix = self.get_shift_series_by_identity(row.item_code or (wo.production_item if wo else None), unit_code, shift_name)
 
             # FORCE RE-GENERATION IF PREFIX MISMATCH (e.g. Shift Changed)
             if row.batch_no and not row.batch_no.startswith(f"{series_prefix}-"):
@@ -179,6 +190,20 @@ class ShaftProductionRun(Document):
             wo_groups[row.work_order]["rows"].append(row)
             
         
+        if self.is_mix_roll:
+            # Group by Item Code instead of Work Order
+            groups = {}
+            for row in self.items:
+                if not row.item_code: continue
+                if row.item_code not in groups:
+                    groups[row.item_code] = {"total_actual_weight": 0.0, "rows": []}
+                groups[row.item_code]["total_actual_weight"] += flt(row.net_weight)
+                groups[row.item_code]["rows"].append(row)
+            
+            for item_code, group in groups.items():
+                self.process_mix_roll_submission(item_code, group)
+            return
+
         for wo_name, group in wo_groups.items():
             actual_qty = group["total_actual_weight"]
             planned_qty = group["total_planned_weight"]
@@ -256,13 +281,15 @@ class ShaftProductionRun(Document):
 
             if se_items:
                 se = frappe.new_doc("Stock Entry")
-                se.stock_entry_type = "Manufacture"
-                se.work_order = wo.name
-                se.company = wo.company
-                se.from_bom = 1
-                se.bom_no = wo.bom_no
-                se.use_multi_level_bom = wo.use_multi_level_bom
-                se.fg_completed_qty = actual_qty
+                se.stock_entry_type = "Manufacture" if not self.is_mix_roll else "Material Receipt"
+                if not self.is_mix_roll:
+                    se.work_order = wo.name
+                    se.from_bom = 1
+                    se.bom_no = wo.bom_no
+                    se.use_multi_level_bom = wo.use_multi_level_bom
+                    se.fg_completed_qty = actual_qty
+                
+                se.company = wo.company if wo else "Jayashree Spun Bond"
                 
                 # Need to attach items properly
                 for item in se_items:
@@ -271,7 +298,10 @@ class ShaftProductionRun(Document):
                 se.insert(ignore_permissions=True)
                 se.submit()
 
-                frappe.msgprint(f"✅ Auto-Generated & Submitted Stock Entry: <a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for Work Order <b>{wo.name}</b>.")
+                msg = f"✅ Auto-Generated & Submitted Stock Entry: <a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a>"
+                if not self.is_mix_roll:
+                     msg += f" for Work Order <b>{wo.name}</b>."
+                frappe.msgprint(msg)
 
             # Finalize Produced Qty and Status by summing across all submitted Stock Entries
             se_names = frappe.get_all("Stock Entry", filters={"work_order": wo.name, "docstatus": 1}, pluck="name")
@@ -293,6 +323,50 @@ class ShaftProductionRun(Document):
                 "produced_qty": total_produced,
                 "status": updated_status
             })
+
+    def process_mix_roll_submission(self, item_code, group):
+        actual_qty = group["total_actual_weight"]
+        
+        # 1. Prepare/Sync Batch creation
+        for row in group["rows"]:
+            if not row.batch_no or flt(row.net_weight) <= 0: continue
+            
+            if not frappe.db.exists("Batch", row.batch_no):
+                b = frappe.new_doc("Batch")
+                b.batch_id = row.batch_no
+                b.item = item_code
+                b.custom_net_weight = flt(row.net_weight)
+                b.description = f"Shift: {self.shift} (Mix Roll)"
+                b.insert(ignore_permissions=True)
+            else:
+                frappe.db.set_value("Batch", row.batch_no, {
+                    "custom_net_weight": flt(row.net_weight),
+                    "description": f"Shift: {self.shift} (Mix Roll)"
+                })
+
+        se_items = []
+        for row in group["rows"]:
+            if flt(row.net_weight) > 0:
+                se_items.append({
+                    "item_code": item_code,
+                    "t_warehouse": "Finished Goods - JSB-1ZT",
+                    "qty": flt(row.net_weight),
+                    "uom": "Kg",
+                    "stock_uom": "Kg",
+                    "conversion_factor": 1.0,
+                    "batch_no": row.batch_no
+                })
+
+        if se_items:
+            se = frappe.new_doc("Stock Entry")
+            se.stock_entry_type = "Material Receipt"
+            se.company = "Jayashree Spun Bond"
+            for item in se_items:
+                se.append("items", item)
+            se.insert(ignore_permissions=True)
+            se.submit()
+
+            frappe.msgprint(f"✅ Auto-Generated & Submitted Stock Entry (Material Receipt): <a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for Item <b>{item_code}</b>.")
 
 
 @frappe.whitelist()
