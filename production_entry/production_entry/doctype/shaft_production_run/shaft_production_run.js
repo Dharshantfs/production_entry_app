@@ -119,6 +119,19 @@ function fetch_shaft_details(frm) {
                     frm.refresh_field('shaft_jobs');
                     update_job_filter_options(frm);
 
+                    // Auto-generate batch numbers if shift is already present
+                    if (frm.doc.shift && frm.doc.custom_unit) {
+                        frm.call({
+                            doc: frm.doc,
+                            method: 'generate_batch_numbers',
+                            callback: function (r) {
+                                if (r.message) {
+                                    frm.refresh_field('items');
+                                }
+                            }
+                        });
+                    }
+
                     // Show Work Order Status Dialog
                     if (r.message.wo_summary && r.message.wo_summary.length > 0) {
                         let wo_html = `

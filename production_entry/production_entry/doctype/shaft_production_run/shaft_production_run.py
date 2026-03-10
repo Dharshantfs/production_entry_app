@@ -92,75 +92,64 @@ class ShaftProductionRun(Document):
             # 1. Get Series Prefix (Identity) for current shift e.g. "032261"
             series_prefix = self.get_shift_series_by_identity(row.item_code or (wo.production_item if wo else None), unit_code, shift_name)
             
-            today_str = frappe.utils.today()
-            month_str = today_str[5:7]
-            year_str = today_str[2:4]
-            date_prefix = f"{month_str}{unit_code}{year_str}" # e.g. "03226"
-
-            # FORCE RE-GENERATION IF PREFIX MISMATCH (e.g. Shift Changed or legacy 7-digit prefix found)
-            # If current batch_no has a 7-digit prefix (like 0322610/), clear it to fix the "extra zero" issue.
+            # FORCE RE-GENERATION IF PREFIX MISMATCH (e.g. Shift Changed, legacy delimiter, or extra digit)
             if row.batch_no:
-                curr_prefix = row.batch_no.split("/")[0] if "/" in row.batch_no else ""
-                if curr_prefix != series_prefix or len(curr_prefix) > 6:
+                # Extract whatever prefix is there before any separator (\ or / or -)
+                curr_prefix = ""
+                for sep in ["/", "\\", "-"]:
+                    if sep in row.batch_no:
+                        curr_prefix = row.batch_no.split(sep)[0]
+                        break
+                
+                # If prefix differs or contains legacy delimiters like '\', clear it
+                if curr_prefix != series_prefix or "\\" in row.batch_no or "-" in row.batch_no:
                     row.batch_no = None
                     row.roll_no = None
 
             # Handle sequential Batch and Roll numbering across the unit for the day.
             if not row.batch_no:
-                # 1. Fetch highest roll_no globally for this series prefix.
-                # Use a broad LIKE filter to find both \ and / versions.
-                # In SQL, '%' matches any sequence. We search for anything starting with our prefix.
+                # 1. Fetch highest roll_no globally for this precise 6-digit series prefix.
                 existing_batches = frappe.get_all("Batch", 
-                    filters={"batch_id": ["like", f"{series_prefix}%"]}, 
+                    filters={"batch_id": ["like", f"{series_prefix}/%"]}, 
                     fields=["batch_id"])
                 
                 max_roll_num = 0
                 
                 def parse_roll_num(bid):
-                    if not bid: return None
-                    # Split by common separators, return last part if it is a number
-                    for sep in ["\\", "/", "-"]:
-                        if sep in bid:
-                            parts = bid.split(sep)
-                            if parts and parts[-1].isdigit():
-                                return int(parts[-1])
+                    if not bid or "/" not in bid: return None
+                    last_part = bid.split("/")[-1]
+                    if last_part.isdigit():
+                        return int(last_part)
                     return None
 
                 for b in existing_batches:
                     val = parse_roll_num(b.batch_id)
                     if val is not None:
-                        # Only take it if the prefix matches (to avoid 0322610 matching 032261)
-                        if b.batch_id.startswith(f"{series_prefix}\\") or b.batch_id.startswith(f"{series_prefix}/"):
-                            max_roll_num = max(max_roll_num, val)
+                        max_roll_num = max(max_roll_num, val)
                 
-                # 2. Check current and other Draft SPRs
+                # 2. Check current and other Draft SPRs for this series
                 all_draft_items = frappe.get_all("Shaft Production Run Item", 
-                    filters={"batch_no": ["like", f"{series_prefix}%"]}, 
+                    filters={"batch_no": ["like", f"{series_prefix}/%"]}, 
                     fields=["batch_no"])
                 for i in all_draft_items:
                     val = parse_roll_num(i.batch_no)
                     if val is not None:
-                        if i.batch_no.startswith(f"{series_prefix}\\") or i.batch_no.startswith(f"{series_prefix}/"):
-                            max_roll_num = max(max_roll_num, val)
+                        max_roll_num = max(max_roll_num, val)
                 
-                # 3. Check items already in this doc
+                # 3. Check items already processed in THIS document instance
                 for r in self.items:
-                    if r.batch_no:
+                    if r.batch_no and r.batch_no.startswith(f"{series_prefix}/"):
                         val = parse_roll_num(r.batch_no)
                         if val is not None:
-                             # Internal rows might use either, check prefix
-                             if r.batch_no.startswith(f"{series_prefix}\\") or r.batch_no.startswith(f"{series_prefix}/"):
-                                max_roll_num = max(max_roll_num, val)
+                            max_roll_num = max(max_roll_num, val)
                         
                 next_roll = max_roll_num + 1
-                row.batch_no = f"{series_prefix}\\{next_roll}"
+                row.batch_no = f"{series_prefix}/{next_roll}"
                 row.roll_no = next_roll
             
             # Synchronize roll_no field
             try:
-                if "\\" in row.batch_no:
-                    row.roll_no = int(row.batch_no.split("\\")[-1])
-                elif "/" in row.batch_no:
+                if "/" in row.batch_no:
                     row.roll_no = int(row.batch_no.split("/")[-1])
             except:
                 pass
@@ -176,62 +165,62 @@ class ShaftProductionRun(Document):
         year_str = frappe.utils.getdate(run_date).strftime("%y")
         root_prefix = f"{month_str}{unit_code}{year_str}"
 
-        # 2. Check if this specific shift on this date already has a prefix started
-        # Logic: Find any batch_no for this unit today that matches the current shift
-        existing_shift_prefix = frappe.db.sql("""
-            select i.batch_no 
-            from `tabShaft Production Run Item` i
-            join `tabShaft Production Run` p on i.parent = p.name
-            where p.run_date = %s and p.shift = %s and p.custom_unit like %s
-            and i.batch_no like %s
-            limit 1
-        """, (run_date, current_shift, f"%{unit_code}%", f"{root_prefix}%"))
-
-        if existing_shift_prefix:
-             # Extract prefix before our slash separator
-             return str(existing_shift_prefix[0][0]).split("/")[0]
-
-        # 3. Check official 'Batch' records as well for today's shift
-        # (Looking for keywords in description since Batch doesn't store run_date/shift natively)
-        existing_batch = frappe.get_all("Batch", filters={
-            "batch_id": ["like", f"{root_prefix}%"],
-            "description": ["like", f"%Shift: {current_shift}%"],
-            "creation": ["between", [frappe.utils.get_datetime(run_date), frappe.utils.add_days(run_date, 1)]]
-        }, fields=["batch_id"])
+        # 2. Check if this specific shift on this literal date already has a prefix started
+        # We search specifically in Shaft Production Run to find the literal shift link
+        existing_shift_doc = frappe.db.get_value("Shaft Production Run", 
+            {"run_date": run_date, "shift": current_shift, "custom_unit": ["like", f"%{unit_code}%"], "docstatus": ["<", 2]}, 
+            "name")
         
-        if existing_batch:
-            return str(existing_batch[0].batch_id).split("/")[0]
+        if existing_shift_doc:
+            # Find any item in this doc that has a batch number with root_prefix
+            existing_batch = frappe.db.get_value("Shaft Production Run Item", 
+                {"parent": existing_shift_doc, "batch_no": ["like", f"{root_prefix}%"]}, 
+                "batch_no")
+            if existing_batch:
+                # Split by any separator to get just the 6-digit prefix
+                for sep in ["/", "\\", "-"]:
+                    if sep in str(existing_batch):
+                        return str(existing_batch).split(sep)[0]
+                return str(existing_batch)
 
-        # 4. If no prefix exists for this shift yet, increment the global suffix 'S'
-        # Query max 'S' for the month/year root e.g. "03226"
-        all_today_batches = frappe.db.sql("""
-            select i.batch_no 
-            from `tabShaft Production Run Item` i
-            where i.batch_no like %s
+        # 3. If no document/prefix exists for this literal shift yet, increment the global suffix 'S'
+        # based on ALL prefixes using this MMUYY root globally.
+        # This ensures S=1, S=2, S=3... regardless of day, as long as the month/unit/year is the same.
+        
+        # Search Shaft Production Run Item
+        all_today_items = frappe.db.sql("""
+            select batch_no from `tabShaft Production Run Item` 
+            where batch_no like %s
         """, (f"{root_prefix}%",))
         
-        # Also check Batch
+        # Search official Batch records
         all_official_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{root_prefix}%"]}, fields=["batch_id"])
         
         max_s = 0
         def get_s(bid):
-            if not bid or "/" not in bid: return None
-            # Prefix is bid.split("/")[0]
-            prefix_part = bid.split("/")[0]
-            # ONLY consider prefixes that are exactly 6 digits (MM U YY S)
-            if len(prefix_part) != 6: return None
+            if not bid: return None
+            # Find prefix part before / or \ or -
+            pref = ""
+            for sep in ["/", "\\", "-"]:
+                if sep in bid:
+                    pref = bid.split(sep)[0]
+                    break
             
-            s_val = prefix_part.replace(root_prefix, "")
-            if s_val.isdigit(): return int(s_val)
+            if not pref or len(pref) != 6: return None
+            
+            # S is the 6th digit
+            s_val = pref[5:6]
+            if s_val.isdigit(): return int(pref.replace(root_prefix, ""))
             return None
 
-        for b in all_today_batches:
+        for b in all_today_items:
             val = get_s(b[0])
             if val is not None: max_s = max(max_s, val)
         for b in all_official_batches:
             val = get_s(b.batch_id)
             if val is not None: max_s = max(max_s, val)
 
+        # Start from 1 if none found, else increment
         return f"{root_prefix}{max_s + 1}"
 
 
