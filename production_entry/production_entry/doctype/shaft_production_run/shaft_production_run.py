@@ -355,9 +355,13 @@ class ShaftProductionRun(Document):
         se_items = []
         for row in group["rows"]:
             if flt(row.net_weight) > 0:
+                target_wh = "Finished Goods - JSB-1ZT"
+                if not frappe.db.exists("Warehouse", target_wh):
+                    target_wh = "Finished Goods - IZT"
+                
                 se_items.append({
                     "item_code": item_code,
-                    "t_warehouse": "Finished Goods - JSB-1ZT",
+                    "t_warehouse": target_wh,
                     "qty": flt(row.net_weight),
                     "uom": "Kg",
                     "stock_uom": "Kg",
@@ -571,7 +575,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan, job_id, combination, no_of_shafts, gsm=0, meter_roll=0, net_weight="", work_orders=None, claimed_wos=None, parent_spr=None, manual_item_list=None):
+def get_job_roll_details(production_plan=None, job_id=None, combination=None, no_of_shafts=1, gsm=0, meter_roll=0, net_weight="", work_orders=None, claimed_wos=None, parent_spr=None, manual_item_list=None):
     """
     Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
     Maps Work Orders accurately and sets Planned Qty based on the individual weight components in net_weight formula.

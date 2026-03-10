@@ -162,6 +162,25 @@ function fetch_shaft_details(frm) {
 }
 
 frappe.ui.form.on('Shaft Production Run Job', {
+    net_weight: function (frm, cdt, cdn) {
+        var row = locals[cdt][cdn];
+        if (row.net_weight) {
+            var sum = 0;
+            var val_str = row.net_weight.toString();
+            var base_part = val_str;
+            if (val_str.includes('=')) {
+                base_part = val_str.split('=')[0];
+            }
+            var parts = base_part.split('+');
+            parts.forEach(p => {
+                var p_val = parseFloat(p.trim());
+                if (!isNaN(p_val)) sum += p_val;
+            });
+            if (sum > 0) {
+                frappe.model.set_value(cdt, cdn, 'total_weight', sum);
+            }
+        }
+    },
     job_id: function (frm, cdt, cdn) {
         var row = locals[cdt][cdn];
         if (row.job_id && frm.doc.production_plan && !row.is_manual) {
@@ -384,6 +403,15 @@ function update_job_filter_options(frm) {
         frm.set_value('filter_job_id', 'All');
     }
 }
+
+frappe.ui.form.on('Shaft Production Run Item', {
+    item_code: function (frm, cdt, cdn) {
+        var row = locals[cdt][cdn];
+        if (row.item_code && !row.uom) {
+            frappe.model.set_value(cdt, cdn, 'uom', 'Kg');
+        }
+    }
+});
 
 function toggle_mix_roll_fields(frm) {
     let mode = frm.doc.is_mix_roll;

@@ -31,8 +31,7 @@
             "fieldtype": "Link",
             "in_list_view": 1,
             "label": "Work Order",
-            "options": "Work Order",
-            "reqd": 1
+            "options": "Work Order"
         },
         {
             "fetch_from": "work_order.production_item",
