@@ -1019,12 +1019,12 @@ def extract_details_from_name(name, code):
     import re
 
     # 1. First priority: Check dedicated Master tables using code parts
-    if code.isdigit() and len(code) >= 6:
-        q_code = code[0:3]
-        c_code = code[3:6]
+    if code.isdigit() and len(code) >= 9:
+        q_code = code[3:6]
+        c_code = code[6:9]
         
         # Check Quality Master
-        if q_code.isdigit():
+        if q_code.isdigit() and frappe.db.exists("DocType", "Quality Master"):
              try:
                  q_match = frappe.db.get_value("Quality Master", {"code": q_code}, "quality_name")
                  if q_match: res["quality"] = q_match
@@ -1034,7 +1034,7 @@ def extract_details_from_name(name, code):
                  res["quality"] = QUALITY_MASTER[q_code]
 
         # Check Color Master
-        if c_code.isdigit():
+        if c_code.isdigit() and frappe.db.exists("DocType", "Color Master"):
              try:
                  c_match = frappe.db.get_value("Color Master", {"code": c_code}, "color_name")
                  if c_match: res["color"] = c_match
