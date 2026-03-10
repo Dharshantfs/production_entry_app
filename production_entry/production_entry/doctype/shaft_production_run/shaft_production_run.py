@@ -859,7 +859,7 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                 "uom": uom
             })
                 
-        return items_to_add
+    return items_to_add
 
 @frappe.whitelist()
 def create_manual_work_order(production_plan, item_code, qty, company=None):
