@@ -97,6 +97,10 @@ function fetch_shaft_details(frm) {
                 var label_type = r.message.label_type || "Default";
 
                 frm.clear_table('shaft_jobs');
+                frm.set_value('custom_label', label_type);
+                frm.set_value('custom_unit', r.message.custom_unit || "");
+                frm.set_value('custom_order_code', r.message.all_party_codes || "");
+
                 if (jobs.length > 0) {
                     jobs.forEach(function (d) {
                         var job_row = frm.add_child('shaft_jobs');
@@ -112,9 +116,6 @@ function fetch_shaft_details(frm) {
                         job_row.party_code = d.party_code;
                     });
 
-                    frm.set_value('custom_label', label_type);
-                    frm.set_value('custom_unit', r.message.custom_unit || "");
-                    frm.set_value('custom_order_code', r.message.all_party_codes || "");
                     frm.refresh_field('shaft_jobs');
                     update_job_filter_options(frm);
 

@@ -63,7 +63,7 @@
             "fieldname": "custom_unit",
             "fieldtype": "Select",
             "label": "Unit",
-            "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4"
+            "options": "UNIT 1\nUNIT 2\nUNIT 3\nUNIT 4"
         },
         {
             "fieldname": "shift",
