@@ -99,32 +99,30 @@ class ShaftProductionRun(Document):
             # Handle sequential Batch and Roll numbering across the shift.
             if not row.batch_no:
                 # 1. Fetch highest roll_no for this precise series_prefix globally from Batch documents
-                # Note: In SQL LIKE, backslash might need extra escaping depending on Frappe version, 
-                # but standard startswith logic handles it here.
-                existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}\\%"]}, fields=["batch_id"])
+                existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}/%"]}, fields=["batch_id"])
                 max_roll_num = 0
                 for b in existing_batches:
                     try:
-                        roll_part = b.batch_id.split("\\")[-1]
+                        roll_part = b.batch_id.split("/")[-1]
                         max_roll_num = max(max_roll_num, int(roll_part))
                     except: pass
                 
                 # 2. Check current rows in this document
                 for r in self.items:
-                    if r.batch_no and r.batch_no.startswith(f"{series_prefix}\\"):
+                    if r.batch_no and r.batch_no.startswith(f"{series_prefix}/"):
                         try:
-                            rp = r.batch_no.split("\\")[-1]
+                            rp = r.batch_no.split("/")[-1]
                             max_roll_num = max(max_roll_num, int(rp))
                         except: pass
                         
                 next_roll = max_roll_num + 1
-                row.batch_no = f"{series_prefix}\\{next_roll}"
+                row.batch_no = f"{series_prefix}/{next_roll}"
                 row.roll_no = next_roll
             
             # Ensure roll_no syncs with batch_no suffix if possible
-            if row.batch_no and "\\" in row.batch_no:
+            if row.batch_no and "/" in row.batch_no:
                 try:
-                    row.roll_no = int(row.batch_no.split("\\")[-1])
+                    row.roll_no = int(row.batch_no.split("/")[-1])
                 except:
                     pass
         
@@ -133,66 +131,17 @@ class ShaftProductionRun(Document):
 
 
     def get_shift_series_by_identity(self, item_code, unit_code, current_shift):
-        today_str = frappe.utils.today()
-        month_str = today_str[5:7]
-        year_str = today_str[2:4]
+        today_obj = frappe.utils.getdate(self.run_date or frappe.utils.today())
+        month_str = today_obj.strftime("%m")
+        year_str = today_obj.strftime("%y")
+        day_str = today_obj.strftime("%d")
         
-        date_prefix = f"{month_str}{unit_code}{year_str}"
-
-        # 1. Search for an existing prefix assigned to this shift today
-        # Check Batch records first (Submitted)
-        existing_shift_batch = frappe.db.get_value("Batch",
-            filters={
-                "batch_id": ["like", f"{date_prefix}%"],
-                "description": ["like", f"%Shift: {current_shift}%"]
-            },
-            fieldname="batch_id"
-        )
-
-        if not existing_shift_batch:
-            # Check other Shaft Production Runs for this shift (Drafts)
-            other_run_item = frappe.db.sql("""
-                select i.batch_no 
-                from `tabShaft Production Run Item` i
-                join `tabShaft Production Run` p on i.parent = p.name
-                where p.shift = %s and i.batch_no like %s
-                limit 1
-            """, (current_shift, f"{date_prefix}%"))
-            if other_run_item:
-                existing_shift_batch = other_run_item[0][0]
-
-        if existing_shift_batch:
-            if "\\" in existing_shift_batch:
-                return existing_shift_batch.split("\\")[0]
-            return existing_shift_batch.replace("/", "-").split('-')[0]
-        else:
-            # Find max series suffix globally for today across both Batch and SPR Item
-            max_series_num = 0
-            
-            # Check Batches
-            all_batches_today = frappe.get_all("Batch", filters={"batch_id": ["like", f"{date_prefix}%"]}, fields=["batch_id"])
-            for b in all_batches_today:
-                try:
-                    # Try splitting by our new separator first
-                    if "\\" in b.batch_id:
-                         temp_series = b.batch_id.replace(date_prefix, "").split("\\")[0]
-                    else:
-                         temp_series = b.batch_id.replace(date_prefix, "").replace("/", "-").split("-")[0]
-                    max_series_num = max(max_series_num, int(temp_series))
-                except: pass
-                
-            # Check SPR Items (Drafts)
-            all_items_today = frappe.get_all("Shaft Production Run Item", filters={"batch_no": ["like", f"{date_prefix}%"]}, fields=["batch_no"])
-            for i in all_items_today:
-                try:
-                    if "\\" in i.batch_no:
-                         temp_series = i.batch_no.replace(date_prefix, "").split("\\")[0]
-                    else:
-                         temp_series = i.batch_no.replace(date_prefix, "").replace("/", "-").split("-")[0]
-                    max_series_num = max(max_series_num, int(temp_series))
-                except: pass
-
-            return f"{date_prefix}{max_series_num + 1}"
+        # Format: MM U YY DD (e.g. 03 2 26 10)
+        date_prefix = f"{month_str}{unit_code}{year_str}{int(day_str)}"
+        
+        # The user wants ONE continuous numbering for the day regardless of shift.
+        # So the prefix for the whole day is just the date_prefix.
+        return date_prefix
 
 
 
