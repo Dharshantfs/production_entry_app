@@ -86,37 +86,39 @@ class ShaftProductionRun(Document):
             series_prefix = self.get_shift_series_by_identity(row.item_code or (wo.production_item if wo else None), unit_code, shift_name)
 
             # FORCE RE-GENERATION IF PREFIX MISMATCH (e.g. Shift Changed)
-            if row.batch_no and not row.batch_no.startswith(f"{series_prefix}-"):
+            if row.batch_no and not row.batch_no.startswith(f"{series_prefix}\\"):
                 row.batch_no = None
                 row.roll_no = None
 
             # Handle sequential Batch and Roll numbering across the shift.
             if not row.batch_no:
                 # 1. Fetch highest roll_no for this precise series_prefix globally from Batch documents
-                existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}-%"]}, fields=["batch_id"])
+                # Note: In SQL LIKE, backslash might need extra escaping depending on Frappe version, 
+                # but standard startswith logic handles it here.
+                existing_batches = frappe.get_all("Batch", filters={"batch_id": ["like", f"{series_prefix}\\%"]}, fields=["batch_id"])
                 max_roll_num = 0
                 for b in existing_batches:
                     try:
-                        roll_part = b.batch_id.split("-")[-1]
+                        roll_part = b.batch_id.split("\\")[-1]
                         max_roll_num = max(max_roll_num, int(roll_part))
                     except: pass
                 
                 # 2. Check current rows in this document
                 for r in self.items:
-                    if r.batch_no and r.batch_no.startswith(f"{series_prefix}-"):
+                    if r.batch_no and r.batch_no.startswith(f"{series_prefix}\\"):
                         try:
-                            rp = r.batch_no.split("-")[-1]
+                            rp = r.batch_no.split("\\")[-1]
                             max_roll_num = max(max_roll_num, int(rp))
                         except: pass
                         
                 next_roll = max_roll_num + 1
-                row.batch_no = f"{series_prefix}-{next_roll}"
+                row.batch_no = f"{series_prefix}\\{next_roll}"
                 row.roll_no = next_roll
             
             # Ensure roll_no syncs with batch_no suffix if possible
-            if row.batch_no and "-" in row.batch_no:
+            if row.batch_no and "\\" in row.batch_no:
                 try:
-                    row.roll_no = int(row.batch_no.split("-")[-1])
+                    row.roll_no = int(row.batch_no.split("\\")[-1])
                 except:
                     pass
         
@@ -154,6 +156,8 @@ class ShaftProductionRun(Document):
                 existing_shift_batch = other_run_item[0][0]
 
         if existing_shift_batch:
+            if "\\" in existing_shift_batch:
+                return existing_shift_batch.split("\\")[0]
             return existing_shift_batch.replace("/", "-").split('-')[0]
         else:
             # Find max series suffix globally for today across both Batch and SPR Item
@@ -163,7 +167,11 @@ class ShaftProductionRun(Document):
             all_batches_today = frappe.get_all("Batch", filters={"batch_id": ["like", f"{date_prefix}%"]}, fields=["batch_id"])
             for b in all_batches_today:
                 try:
-                    temp_series = b.batch_id.replace(date_prefix, "").replace("/", "-").split('-')[0]
+                    # Try splitting by our new separator first
+                    if "\\" in b.batch_id:
+                         temp_series = b.batch_id.replace(date_prefix, "").split("\\")[0]
+                    else:
+                         temp_series = b.batch_id.replace(date_prefix, "").replace("/", "-").split("-")[0]
                     max_series_num = max(max_series_num, int(temp_series))
                 except: pass
                 
@@ -171,7 +179,10 @@ class ShaftProductionRun(Document):
             all_items_today = frappe.get_all("Shaft Production Run Item", filters={"batch_no": ["like", f"{date_prefix}%"]}, fields=["batch_no"])
             for i in all_items_today:
                 try:
-                    temp_series = i.batch_no.replace(date_prefix, "").replace("/", "-").split('-')[0]
+                    if "\\" in i.batch_no:
+                         temp_series = i.batch_no.replace(date_prefix, "").split("\\")[0]
+                    else:
+                         temp_series = i.batch_no.replace(date_prefix, "").replace("/", "-").split("-")[0]
                     max_series_num = max(max_series_num, int(temp_series))
                 except: pass
 
@@ -646,7 +657,15 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
         
         # 1. First priority: Check manual items if this is a manual job
         if manual_item_list:
-            for item_code in manual_item_list:
+            # Flatten list if strings contain commas
+            flattened_items = []
+            for entry in manual_item_list:
+                if isinstance(entry, str) and "," in entry:
+                    flattened_items.extend([x.strip() for x in entry.split(",") if x.strip()])
+                else:
+                    flattened_items.append(entry)
+            
+            for item_code in flattened_items:
                 item_doc = frappe.get_cached_doc("Item", item_code)
                 details = extract_details_from_name(item_doc.item_name or item_doc.item_code, item_doc.item_code)
                 # Check for Width and GSM match (within 0.2 and 0.5 tolerances)
@@ -840,7 +859,7 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                 "uom": uom
             })
                 
-    return items_to_add
+        return items_to_add
 
 @frappe.whitelist()
 def create_manual_work_order(production_plan, item_code, qty, company=None):
