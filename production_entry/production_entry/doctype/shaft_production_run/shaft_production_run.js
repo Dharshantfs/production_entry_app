@@ -427,6 +427,9 @@ function toggle_mix_roll_fields(frm) {
     frm.fields_dict.shaft_jobs.grid.get_docfield('work_orders').hidden = mode;
     frm.fields_dict.items.grid.get_docfield('work_order').hidden = mode;
 
+    // Item Code should NOT be read-only for Mix Rolls
+    frm.fields_dict.items.grid.get_docfield('item_code').read_only = !mode;
+
     frm.fields_dict.shaft_jobs.grid.refresh();
     frm.fields_dict.items.grid.refresh();
 }

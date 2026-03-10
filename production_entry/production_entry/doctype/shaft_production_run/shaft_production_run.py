@@ -66,12 +66,14 @@ class ShaftProductionRun(Document):
         wo_cache = {}
             
         for row in self.items:
-            if not row.work_order:
+            wo = None
+            if row.work_order:
+                if row.work_order not in wo_cache:
+                    wo_cache[row.work_order] = frappe.get_doc("Work Order", row.work_order)
+                wo = wo_cache[row.work_order]
+            
+            elif not self.is_mix_roll:
                 continue
-
-            if row.work_order not in wo_cache:
-                wo_cache[row.work_order] = frappe.get_doc("Work Order", row.work_order)
-            wo = wo_cache[row.work_order]
             
             # Unit Mapping: Strictly from PP
             unit_val = pp_unit_val
