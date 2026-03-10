@@ -1033,10 +1033,10 @@ def extract_details_from_name(name, code):
              if not res["quality"] and q_code in QUALITY_MASTER: 
                  res["quality"] = QUALITY_MASTER[q_code]
 
-        # Check Color Master
-        if c_code.isdigit() and frappe.db.exists("DocType", "Color Master"):
+        # Check Colour Master
+        if c_code.isdigit() and frappe.db.exists("DocType", "Colour Master"):
              try:
-                 c_match = frappe.db.get_value("Color Master", {"code": c_code}, "color_name")
+                 c_match = frappe.db.get_value("Colour Master", {"code": c_code}, "color_name")
                  if c_match: res["color"] = c_match
              except Exception: pass
 
