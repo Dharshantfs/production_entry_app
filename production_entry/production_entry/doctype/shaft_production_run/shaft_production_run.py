@@ -48,12 +48,10 @@ class ShaftProductionRun(Document):
         # Fetch Production Plan unit STRICTLY from PP
         pp_unit_val = None
         if self.get("production_plan"):
-            pp_data = frappe.db.get_value("Production Plan", self.production_plan, ["custom_unit", "allocated_unit"], as_dict=True)
-            if pp_data:
-                pp_unit_val = pp_data.get("custom_unit") or pp_data.get("allocated_unit")
+            pp_unit_val = frappe.db.get_value("Production Plan", self.production_plan, "custom_unit")
         
         if not pp_unit_val:
-            frappe.throw("Please ensure the linked Production Plan has a Unit assigned.")
+            frappe.throw("Please ensure the linked Production Plan has a Unit assigned (custom_unit field).")
 
         wo_cache = {}
             
