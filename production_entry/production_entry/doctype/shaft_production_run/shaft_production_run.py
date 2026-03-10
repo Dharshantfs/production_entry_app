@@ -3,10 +3,13 @@ from frappe.model.document import Document
 from frappe.utils import flt, cint
 
 class ShaftProductionRun(Document):
+    def onload(self):
+        # Force cleanup of any Property Setters that interfere with the Unit dropdown
+        if frappe.db.exists("Property Setter", {"doc_type": "Shaft Production Run", "field_name": "custom_unit"}):
+            frappe.db.delete("Property Setter", {"doc_type": "Shaft Production Run", "field_name": "custom_unit"})
+            frappe.db.commit()
+
     def validate(self):
-        # Force cleanup of any UI overrides that cause duplicates or missing units (one-time logic)
-        frappe.db.delete("Property Setter", {"doc_type": "Shaft Production Run", "field_name": "custom_unit"})
-        
         self.validate_production_plan()
         self.calculate_actual_qty()
         self.generate_batch_numbers()
@@ -352,21 +355,32 @@ class ShaftProductionRun(Document):
         actual_qty = group["total_actual_weight"]
         
         # 1. Prepare/Sync Batch creation
+        item_has_batch = frappe.db.get_value("Item", item_code, "has_batch_no")
+
         for row in group["rows"]:
             if not row.batch_no or flt(row.net_weight) <= 0: continue
             
-            if not frappe.db.exists("Batch", row.batch_no):
-                b = frappe.new_doc("Batch")
-                b.batch_id = row.batch_no
-                b.item = item_code
-                b.custom_net_weight = flt(row.net_weight)
-                b.description = f"Shift: {self.shift} (Mix Roll)"
-                b.insert(ignore_permissions=True)
+            if item_has_batch:
+                if not frappe.db.exists("Batch", row.batch_no):
+                    b = frappe.new_doc("Batch")
+                    b.batch_id = row.batch_no
+                    b.item = item_code
+                    b.custom_net_weight = flt(row.net_weight)
+                    b.custom_gross_weight = flt(row.gross_weight) or flt(row.net_weight)
+                    b.custom_meter = flt(row.meter_roll)
+                    b.description = f"Shift: {self.shift} (Mix Roll)"
+                    b.insert(ignore_permissions=True)
+                else:
+                    frappe.db.set_value("Batch", row.batch_no, {
+                        "custom_net_weight": flt(row.net_weight),
+                        "custom_gross_weight": flt(row.gross_weight) or flt(row.net_weight),
+                        "custom_meter": flt(row.meter_roll),
+                        "description": f"Shift: {self.shift} (Mix Roll)"
+                    })
             else:
-                frappe.db.set_value("Batch", row.batch_no, {
-                    "custom_net_weight": flt(row.net_weight),
-                    "description": f"Shift: {self.shift} (Mix Roll)"
-                })
+                # If item is not batch enabled, we just clear the batch_no on the row to avoid errors
+                # but keep the production.
+                row.batch_no = None
 
         se_items = []
         for row in group["rows"]:
@@ -957,7 +971,8 @@ def extract_details_from_name(name, code):
         "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
         "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
         "112": "ULTRA", "113": "DELUXE", "114": "UV",
-        "120": "PREMIUM PLUS"
+        "120": "PREMIUM PLUS",
+        "012": "ULTRA", "010": "PREMIUM", "011": "PLATINUM" # Support for codes starting with 0
     }
     
     res = {"gsm": None, "color": None, "width_inch": None, "quality": None}
@@ -975,40 +990,53 @@ def extract_details_from_name(name, code):
     width_m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|INCH|IN|inch|\'\')', name_upper)
     if width_m: res["width_inch"] = width_m.group(1)
 
-    # 3. Code Extraction (supports 12 and 16 digit codes)
+    # 3. Code Extraction (supports 12, 15, and 16 digit codes)
     if code.isdigit():
-        if len(code) == 16:
+        cl = len(code)
+        if cl == 16:
             qual_code = code[3:6]
             if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
             if not res["gsm"]: res["gsm"] = str(int(code[9:12]))
             if not res["width_inch"]: res["width_inch"] = str(round(int(code[12:16]) / 25.4))
-        elif len(code) == 12:
-            # 012-060-080-32? Or similar? 
-            # 080 for GSM is likely. 32 for width.
+        elif cl == 15:
+             # Pattern: [Qual 3][Sub 2][? 2][GSM 3][Width 4] or similar
+             # Looking at 012060000800760: 012(ULT), 06(?), 00(?), 008(?), 00760(Width)
+             # Wait, 080 is often GSM. 01206000080 0760. 
+             # Let's try: Qual[0:3], GSM[8:11], Width[11:15]
+             qual_code = code[0:3]
+             if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
+             if not res["gsm"]: res["gsm"] = str(int(code[8:11]))
+             if not res["width_inch"]: res["width_inch"] = str(round(int(code[11:15]) / 25.4))
+        elif cl == 12:
+            # 012-060-080-32?
             if not res["gsm"]: res["gsm"] = str(int(code[7:10]))
             if not res["width_inch"]: res["width_inch"] = str(int(code[10:12]))
             qual_code = code[0:3]
-            if qual_code.startswith("0"): qual_code = "1" + qual_code[1:] # 012 -> 112 Ultra?
             if qual_code in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qual_code]
 
     # 4. Final Color Search (anything after GSM/Quality)
-    # Be aggressive: find anything that looks like color words if quality missing
+    if not res["quality"]:
+        for q_code, q_name in QUALITY_MASTER.items():
+            if q_name in name_upper:
+                res["quality"] = q_name
+                break
+
     if name:
-        parts = re.split(r'(\d+\s*GSM|(?:"|INCH|IN|inch|\'\'))', name_upper)
+        # Split by known markers to find color
+        parts = re.split(r'(\d+\s*GSM|(?:"|INCH|IN|inch|\'\')|PLATINUM|PREMIUM|ULTRA|GOLD|SILVER|BRONZE|UV)', name_upper)
         if parts:
-            # Look at parts that are not the gsm/width ones
             for p in parts:
                 p_clean = p.strip()
-                if not p_clean or "GSM" in p_clean or '"' in p_clean or "INCH" in p_clean:
-                    continue
-                # If it's a known quality, it's not the color
-                is_qual = False
+                if not p_clean or len(p_clean) < 3: continue
+                # Skip if it's just a number or known keyword
+                if p_clean.isdigit(): continue
+                # If it's not a known quality, GSM, or width, it's likely color
+                is_marker = False
                 for q in QUALITY_MASTER.values():
-                    if q in p_clean: is_qual = True; break
-                if is_qual: continue
-                # Otherwise, it might be the color
-                if len(p_clean) > 2:
-                    res["color"] = p_clean
-                    break
+                    if q in p_clean: is_marker = True; break
+                if is_marker: continue
+                
+                res["color"] = p_clean
+                break
 
     return res

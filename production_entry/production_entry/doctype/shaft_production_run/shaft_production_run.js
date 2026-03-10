@@ -376,7 +376,14 @@ frappe.ui.form.on('Shaft Production Run Item', {
         }
     },
     net_weight: function (frm, cdt, cdn) {
+        var row = locals[cdt][cdn];
+        if (row.net_weight && !row.gross_weight) {
+            frappe.model.set_value(cdt, cdn, 'gross_weight', row.net_weight);
+        }
         calculate_total(frm);
+    },
+    meter_roll: function (frm, cdt, cdn) {
+        // Just for re-triggering save if needed
     },
     items_remove: function (frm) {
         calculate_total(frm);
@@ -428,6 +435,11 @@ function toggle_mix_roll_fields(frm) {
     // Show custom_unit for both, but read-only for standard runs
     frm.toggle_display('custom_unit', true);
     frm.set_df_property('custom_unit', 'read_only', !mode);
+
+    // Ensure options are strictly enforced (overriding any buggy Property Setters cached in UI)
+    if (mode && frm.fields_dict.custom_unit) {
+        frm.set_df_property('custom_unit', 'options', ["UNIT 1", "UNIT 2", "UNIT 3", "UNIT 4"].join('\n'));
+    }
 
     // Hide Work Order columns in grids
     frm.fields_dict.shaft_jobs.grid.get_docfield('work_orders').hidden = mode;
