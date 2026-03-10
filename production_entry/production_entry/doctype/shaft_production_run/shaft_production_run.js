@@ -24,6 +24,18 @@ frappe.ui.form.on('Shaft Production Run', {
         if (frm.is_new()) {
             set_shift_production(frm);
         }
+
+        toggle_mix_roll_fields(frm);
+    },
+
+    is_mix_roll: function (frm) {
+        toggle_mix_roll_fields(frm);
+    },
+
+    custom_unit: function (frm) {
+        if (frm.doc.is_mix_roll) {
+            frm.call("generate_batch_numbers");
+        }
     },
 
     production_plan: function (frm) {
@@ -369,6 +381,23 @@ function update_job_filter_options(frm) {
     if (!frm.doc.filter_job_id) {
         frm.set_value('filter_job_id', 'All');
     }
+}
+
+function toggle_mix_roll_fields(frm) {
+    let mode = frm.doc.is_mix_roll;
+
+    // Hide Production Plan and its Section
+    frm.toggle_display('production_plan', !mode);
+
+    // Show custom_unit for Mix Rolls, hide for standard (since standard has it in PP)
+    frm.toggle_display('custom_unit', mode);
+
+    // Hide Work Order columns in grids
+    frm.fields_dict.shaft_jobs.grid.get_docfield('work_orders').hidden = mode;
+    frm.fields_dict.items.grid.get_docfield('work_order').hidden = mode;
+
+    frm.fields_dict.shaft_jobs.grid.refresh();
+    frm.fields_dict.items.grid.refresh();
 }
 
 function add_manual_job_dialog(frm) {

@@ -4,9 +4,14 @@ from frappe.utils import flt, cint
 
 class ShaftProductionRun(Document):
     def validate(self):
+        self.validate_production_plan()
         self.calculate_actual_qty()
         self.generate_batch_numbers()
         self.sync_job_weights()
+
+    def validate_production_plan(self):
+        if not self.is_mix_roll and not self.production_plan:
+            frappe.throw("Production Plan is required for standard runs.")
 
     def sync_job_weights(self):
         """Sync weights from produced rolls back to job rows (Manual Jobs Only)"""
@@ -45,13 +50,20 @@ class ShaftProductionRun(Document):
         # Only operate if shift has been determined
         shift_name = str(self.get("shift") or "DAY").upper()
 
-        # Fetch Production Plan unit STRICTLY from PP
+        # Fetch Production Plan unit STRICTLY from PP or from custom_unit if Mix Roll
         pp_unit_val = None
         if self.get("production_plan"):
             pp_unit_val = frappe.db.get_value("Production Plan", self.production_plan, "custom_unit")
+        elif self.is_mix_roll:
+            pp_unit_val = self.custom_unit
         
         if not pp_unit_val:
-            frappe.throw("Please ensure the linked Production Plan has a Unit assigned (custom_unit field).")
+            msg = "Please ensure a Unit is assigned."
+            if not self.is_mix_roll:
+                msg = "Please ensure the linked Production Plan has a Unit assigned (custom_unit field)."
+            else:
+                msg = "Please select a Unit for this Mix Roll run."
+            frappe.throw(msg)
 
         wo_cache = {}
             

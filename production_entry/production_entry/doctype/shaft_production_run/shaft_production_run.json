@@ -10,7 +10,9 @@
         "section_break_1",
         "naming_series",
         "run_date",
+        "is_mix_roll",
         "production_plan",
+        "custom_unit",
         "shift",
         "column_break_shift",
         "column_break_2",
@@ -46,11 +48,22 @@
             "reqd": 1
         },
         {
+            "default": "0",
+            "fieldname": "is_mix_roll",
+            "fieldtype": "Check",
+            "label": "Is Mix Roll"
+        },
+        {
             "fieldname": "production_plan",
             "fieldtype": "Link",
             "label": "Production Plan",
-            "options": "Production Plan",
-            "reqd": 1
+            "options": "Production Plan"
+        },
+        {
+            "fieldname": "custom_unit",
+            "fieldtype": "Select",
+            "label": "Unit",
+            "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4"
         },
         {
             "fieldname": "shift",
