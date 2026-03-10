@@ -58,12 +58,10 @@ class ShaftProductionRun(Document):
             pp_unit_val = self.custom_unit
         
         if not pp_unit_val:
-            msg = "Please ensure a Unit is assigned."
-            if not self.is_mix_roll:
-                msg = "Please ensure the linked Production Plan has a Unit assigned (custom_unit field)."
-            else:
-                msg = "Please select a Unit for this Mix Roll run."
-            frappe.throw(msg)
+            if self.is_mix_roll:
+                # Return early if no unit selected yet, so we can save as draft
+                return
+            frappe.throw("Please ensure the linked Production Plan has a Unit assigned (custom_unit field).")
 
         wo_cache = {}
             
@@ -565,6 +563,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
     return {
         "jobs": jobs,
         "label_type": label_type,
+        "custom_unit": doc.custom_unit,
         "all_party_codes": ", ".join(sorted(list(all_party_codes))),
         "wo_summary": wo_summary
     }

@@ -113,6 +113,7 @@ function fetch_shaft_details(frm) {
                     });
 
                     frm.set_value('custom_label', label_type);
+                    frm.set_value('custom_unit', r.message.custom_unit || "");
                     frm.set_value('custom_order_code', r.message.all_party_codes || "");
                     frm.refresh_field('shaft_jobs');
                     update_job_filter_options(frm);
@@ -389,8 +390,9 @@ function toggle_mix_roll_fields(frm) {
     // Hide Production Plan and its Section
     frm.toggle_display('production_plan', !mode);
 
-    // Show custom_unit for Mix Rolls, hide for standard (since standard has it in PP)
-    frm.toggle_display('custom_unit', mode);
+    // Show custom_unit for both, but read-only for standard runs
+    frm.toggle_display('custom_unit', true);
+    frm.set_df_property('custom_unit', 'read_only', !mode);
 
     // Hide Work Order columns in grids
     frm.fields_dict.shaft_jobs.grid.get_docfield('work_orders').hidden = mode;
