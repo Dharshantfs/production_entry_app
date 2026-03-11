@@ -104,16 +104,16 @@ function fetch_shaft_details(frm) {
                 if (jobs.length > 0) {
                     jobs.forEach(function (d) {
                         var job_row = frm.add_child('shaft_jobs');
-                        job_row.job_id = d.job_id;
-                        job_row.gsm = d.gsm;
-                        job_row.combination = d.combination;
-                        job_row.total_width = d.total_width;
-                        job_row.meter_roll_mtrs = d.meter_roll_mtrs;
-                        job_row.net_weight = d.net_weight;
-                        job_row.total_weight = d.total_weight;
-                        job_row.no_of_shafts = d.no_of_shafts;
-                        job_row.work_orders = d.work_orders;
-                        job_row.party_code = d.party_code;
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'job_id', String(d.job_id));
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'gsm', d.gsm);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'combination', d.combination);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'total_width', d.total_width);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'meter_roll_mtrs', d.meter_roll_mtrs);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'net_weight', d.net_weight);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'total_weight', d.total_weight);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'no_of_shafts', d.no_of_shafts);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'work_orders', d.work_orders);
+                        frappe.model.set_value(job_row.doctype, job_row.name, 'party_code', d.party_code);
                     });
 
                     frm.refresh_field('shaft_jobs');
@@ -323,7 +323,7 @@ function execute_create_roll_entry(frm, row) {
 
                 rolls_to_add.forEach(function (d) {
                     var child = frm.add_child('items');
-                    frappe.model.set_value(child.doctype, child.name, 'job', d.job);
+                    frappe.model.set_value(child.doctype, child.name, 'job', String(d.job));
                     frappe.model.set_value(child.doctype, child.name, 'work_order', d.work_order);
                     frappe.model.set_value(child.doctype, child.name, 'item_code', d.item_code);
                     frappe.model.set_value(child.doctype, child.name, 'planned_qty', d.planned_qty);
@@ -415,7 +415,7 @@ function calculate_total(frm) {
         var nw = flt(row.net_weight);
         total += nw;
         if (row.job) {
-            var jid = String(row.job);
+            var jid = String(row.job).trim();
             job_sums[jid] = (job_sums[jid] || 0) + nw;
             if (!job_formulas[jid]) job_formulas[jid] = [];
             job_formulas[jid].push(nw.toFixed(2));
@@ -425,11 +425,14 @@ function calculate_total(frm) {
 
     // Update Job rows
     (frm.doc.shaft_jobs || []).forEach(function (job) {
-        var jid = String(job.job_id);
+        var jid = String(job.job_id).trim();
         if (job_sums[jid] !== undefined) {
             job.total_weight = job_sums[jid];
-            // Optional: update formula string in job row too
             job.net_weight = job_formulas[jid].join(" + ") + " = " + job_sums[jid].toFixed(3);
+        } else if (job.is_manual) {
+            // Reset weights for manual jobs if no rolls found
+            job.total_weight = 0;
+            job.net_weight = "0";
         }
     });
     frm.refresh_field('shaft_jobs');
@@ -860,16 +863,22 @@ function setup_grid_filter(frm) {
         var old_refresh = grid.refresh;
         grid.refresh = function () {
             old_refresh.apply(grid, arguments);
-            apply_grid_filter(frm);
+            // Delay slightly to ensure DOM is rendered
+            setTimeout(function() {
+                apply_grid_filter(frm);
+            }, 50);
         };
         frm.fields_dict['items'].grid.on_grid_refresh = function () {
-            apply_grid_filter(frm);
+            setTimeout(function() {
+                apply_grid_filter(frm);
+            }, 50);
         };
     }
 }
 
 function apply_grid_filter(frm) {
-    var filter = frm.doc.filter_job_id || "All";
+    var raw_filter = frm.doc.filter_job_id || "All";
+    var filter = String(raw_filter).trim();
     var grid = frm.get_field('items').grid;
     if (!grid || !grid.wrapper) return;
 
@@ -882,13 +891,17 @@ function apply_grid_filter(frm) {
         var row = (frm.doc.items || []).find(r => r.name === name);
         if (!row) return;
 
-        if (!job_colors[row.job]) {
-            job_colors[row.job] = color_palette[color_idx % color_palette.length];
-            color_idx++;
-        }
-        $(this).css('border-left', '5px solid ' + job_colors[row.job]);
+        var row_job = String(row.job || "").trim();
 
-        if (filter !== "All" && String(row.job) !== String(filter)) {
+        if (row_job) {
+            if (!job_colors[row_job]) {
+                job_colors[row_job] = color_palette[color_idx % color_palette.length];
+                color_idx++;
+            }
+            $(this).css('border-left', '5px solid ' + job_colors[row_job]);
+        }
+
+        if (filter !== "All" && row_job !== filter) {
             $(this).hide();
         } else {
             $(this).show();

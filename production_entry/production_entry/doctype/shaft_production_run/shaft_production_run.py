@@ -158,7 +158,8 @@ class ShaftProductionRun(Document):
             except:
                 pass
         
-        # Return the document dict so the client can refresh values (PREVIEW ONLY until saved)
+        # Save the document once so batch numbers are persistent
+        self.save()
         return self.as_dict()
 
 
@@ -600,7 +601,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         job_total_weight = flt(tot_wt) if flt(tot_wt) > 0 else job_total_planned_weight
 
         jobs.append({
-            "job_id": job_id_val,
+            "job_id": str(job_id_val),
             "gsm": d.get("gsm"),
             "quality": d.get("quality") or d.get("custom_quality"), # Try both
             "color": d.get("color") or d.get("custom_color"), # Try both
