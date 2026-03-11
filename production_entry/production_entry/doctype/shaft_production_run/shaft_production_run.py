@@ -1046,98 +1046,57 @@ def extract_details_from_name(name, code):
     
     res = {"gsm": "", "color": "", "width_inch": "", "quality": ""}
     name_upper = (name or "").upper()
-    code_str = str(code or "")
+    code_str = str(code or "").strip()
 
-    # 1. First priority: Check dedicated Master tables using code parts
-    if code_str.isdigit() and len(code_str) >= 9:
+    # 1. First priority: 16-digit Mapping provided by user
+    if len(code_str) == 16 and code_str.isdigit():
+        # [0-2] Process, [3-5] Quality, [6-8] Color, [9-11] GSM, [12-15] Width MM
         q_code = code_str[3:6]
         c_code = code_str[6:9]
-        
-        # Check Quality Master
-        if q_code.isdigit() and frappe.db.exists("DocType", "Quality Master"):
-            try:
+        gsm_code = code_str[9:12]
+        mm_code = code_str[12:16]
+
+        # Extract Quality
+        try:
+            if frappe.db.exists("DocType", "Quality Master"):
                 q_match = frappe.db.get_value("Quality Master", {"code": q_code}, "quality_name")
                 if q_match: res["quality"] = q_match
-            except Exception: pass
-            
+        except: pass
         if not res["quality"] and q_code in QUALITY_MASTER: 
             res["quality"] = QUALITY_MASTER[q_code]
 
-        # Check Colour Master
-        if c_code.isdigit() and frappe.db.exists("DocType", "Colour Master"):
-            try:
+        # Extract Color
+        try:
+            if frappe.db.exists("DocType", "Colour Master"):
                 c_match = frappe.db.get_value("Colour Master", {"code": c_code}, "color_name")
                 if c_match: res["color"] = c_match
-            except Exception: pass
+        except: pass
 
-    # 2. Extract standard patterns from name
-    gsm_m = re.search(r'(\d+)\s*GSM', name_upper)
-    if gsm_m: res["gsm"] = gsm_m.group(1)
+        # Extract GSM
+        try:
+            res["gsm"] = str(cint(gsm_code))
+        except: pass
+
+        # Extract Width
+        try:
+            mm_val = flt(mm_code)
+            if mm_val > 0:
+                res["width_inch"] = str(round(mm_val / 25.4, 1))
+        except: pass
+
+    # 2. Extract from Name patterns if still missing
+    if not res["gsm"]:
+        gsm_m = re.search(r'(\d+)\s*GSM', name_upper)
+        if gsm_m: res["gsm"] = gsm_m.group(1)
     
-    width_m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|INCH|IN|inch|\'\'|mm|MM)', name_upper)
-    if width_m: res["width_inch"] = width_m.group(1)
+    if not res["width_inch"]:
+        width_m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|INCH|IN|inch|\'\'|mm|MM)', name_upper)
+        if width_m: res["width_inch"] = width_m.group(1)
 
-    # 3. Fallback extraction from code if still missing
-    if code_str.isdigit():
-        cl = len(code_str)
-        if cl == 16:
-            # Quality (4-6)
-            if not res["quality"]:
-                qc = code_str[3:6]
-                if qc in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qc]
-                elif frappe.db.exists("DocType", "Quality Master"):
-                    try:
-                        q_match = frappe.db.get_value("Quality Master", {"code": qc}, "quality_name")
-                        if q_match: res["quality"] = q_match
-                    except: pass
-            
-            # Color (7-9)
-            if not res["color"]:
-                cc = code_str[6:9]
-                if frappe.db.exists("DocType", "Colour Master"):
-                    try:
-                        c_match = frappe.db.get_value("Colour Master", {"code": cc}, "color_name")
-                        if c_match: res["color"] = c_match
-                    except: pass
-            
-            # GSM (10-12)
-            if not res["gsm"]: 
-                res["gsm"] = str(int(code_str[9:12]))
-            
-            # Width (13-16)
-            if not res["width_inch"]: 
-                res["width_inch"] = str(round(int(code_str[12:16]) / 25.4))
-        
-        elif cl == 15:
-            if not res["gsm"]: res["gsm"] = str(int(code_str[8:11]))
-            if not res["width_inch"]: res["width_inch"] = str(round(int(code_str[11:15]) / 25.4))
-        
-        elif cl == 12:
-            if not res["gsm"]: res["gsm"] = str(int(code_str[7:10]))
-            if not res["width_inch"]: res["width_inch"] = str(int(code_str[10:12]))
-
-    # 4. Final keyword lookup in name if still missing
     if not res["quality"]:
-        for q_code, q_name in list(QUALITY_MASTER.items()):
-            if q_name in name_upper:
-                res["quality"] = q_name
-                break
-
-    if name and not res["color"]:
-        # Try to find anything after GSM or Quality
-        parts = re.split(r'(\d+\s*GSM|(?:"|INCH|IN|inch|\'\')|PLATINUM|PREMIUM|ULTRA|GOLD|SILVER|BRONZE|UV)', name_upper)
-        if parts:
-            for p in parts:
-                p_clean = p.strip()
-                if not p_clean or len(p_clean) < 3: continue
-                if p_clean.isdigit(): continue
-                is_marker = False
-                for q in list(QUALITY_MASTER.values()):
-                    if q in p_clean: 
-                        is_marker = True
-                        break
-                if is_marker: continue
-                res["color"] = p_clean
+        for qname in QUALITY_MASTER.values():
+            if qname in name_upper:
+                res["quality"] = qname
                 break
 
     return res
