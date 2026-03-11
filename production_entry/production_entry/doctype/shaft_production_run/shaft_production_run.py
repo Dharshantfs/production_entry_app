@@ -1,6 +1,9 @@
 import frappe
 from frappe.model.document import Document
 from frappe.utils import flt, cint
+import json
+import re
+
 
 class ShaftProductionRun(Document):
     def onload(self):
@@ -512,14 +515,18 @@ def get_shaft_jobs(production_plan, work_orders=None):
                 try:
                     w_inch = round(int(ic[12:16]) / 25.4, 1)
                 except: pass
-                
+
+        if w_inch is not None:
             relevant_widths.add(w_inch)
             wo_qty_by_width[w_inch] = wo_qty_by_width.get(w_inch, 0) + flt(wo.qty)
-            if w_inch not in wo_names_by_width: wo_names_by_width[w_inch] = []
-            if w_inch not in wo_party_by_width: wo_party_by_width[w_inch] = set()
+            if w_inch not in wo_names_by_width: 
+                wo_names_by_width[w_inch] = []
+            if w_inch not in wo_party_by_width: 
+                wo_party_by_width[w_inch] = set()
             wo_names_by_width[w_inch].append(wo.name)
             p_code = wo.get("custom_party_code")
-            if p_code: wo_party_by_width[w_inch].add(p_code)
+            if p_code: 
+                wo_party_by_width[w_inch].add(p_code)
 
     # Determine the label type from the first Work Order
     label_type = "Default"
@@ -528,8 +535,6 @@ def get_shaft_jobs(production_plan, work_orders=None):
             label_type = wo.custom_label
             break
 
-    jobs = []
-    
     jobs = []
     
     for idx, d in enumerate(source_table):
@@ -566,7 +571,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
         job_parties = set()
         for w in widths:
             # Find the closest width in our WO map
-            for rw in wo_qty_by_width.keys():
+            for rw in list(wo_qty_by_width.keys()):
                 if abs(w - rw) <= 1.0:
                     job_total_planned_weight += wo_qty_by_width[rw]
                     if rw in wo_names_by_width:
@@ -649,7 +654,6 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
         work_orders = None
 
     if isinstance(claimed_wos, str) and claimed_wos and claimed_wos != "undefined":
-        import json
         try:
             claimed_wos = json.loads(claimed_wos)
         except Exception:
@@ -658,7 +662,6 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
         claimed_wos = None
         
     if isinstance(manual_item_list, str) and manual_item_list:
-        import json
         try:
             manual_item_list = json.loads(manual_item_list)
         except: pass
@@ -1001,33 +1004,31 @@ def extract_details_from_name(name, code):
         "012": "ULTRA", "010": "PREMIUM", "011": "PLATINUM"
     }
     
-    res = {"gsm": None, "color": None, "width_inch": None, "quality": None}
+    res = {"gsm": "", "color": "", "width_inch": "", "quality": ""}
     name_upper = (name or "").upper()
-    code = str(code or "")
-
-    import re
+    code_str = str(code or "")
 
     # 1. First priority: Check dedicated Master tables using code parts
-    if code.isdigit() and len(code) >= 9:
-        q_code = code[3:6]
-        c_code = code[6:9]
+    if code_str.isdigit() and len(code_str) >= 9:
+        q_code = code_str[3:6]
+        c_code = code_str[6:9]
         
         # Check Quality Master
         if q_code.isdigit() and frappe.db.exists("DocType", "Quality Master"):
-             try:
-                 q_match = frappe.db.get_value("Quality Master", {"code": q_code}, "quality_name")
-                 if q_match: res["quality"] = q_match
-             except Exception: pass
-             
-             if not res["quality"] and q_code in QUALITY_MASTER: 
-                 res["quality"] = QUALITY_MASTER[q_code]
+            try:
+                q_match = frappe.db.get_value("Quality Master", {"code": q_code}, "quality_name")
+                if q_match: res["quality"] = q_match
+            except Exception: pass
+            
+        if not res["quality"] and q_code in QUALITY_MASTER: 
+            res["quality"] = QUALITY_MASTER[q_code]
 
         # Check Colour Master
         if c_code.isdigit() and frappe.db.exists("DocType", "Colour Master"):
-             try:
-                 c_match = frappe.db.get_value("Colour Master", {"code": c_code}, "color_name")
-                 if c_match: res["color"] = c_match
-             except Exception: pass
+            try:
+                c_match = frappe.db.get_value("Colour Master", {"code": c_code}, "color_name")
+                if c_match: res["color"] = c_match
+            except Exception: pass
 
     # 2. Extract standard patterns from name
     gsm_m = re.search(r'(\d+)\s*GSM', name_upper)
@@ -1037,24 +1038,47 @@ def extract_details_from_name(name, code):
     if width_m: res["width_inch"] = width_m.group(1)
 
     # 3. Fallback extraction from code if still missing
-    if code.isdigit():
-        cl = len(code)
+    if code_str.isdigit():
+        cl = len(code_str)
         if cl == 16:
+            # Quality (4-6)
             if not res["quality"]:
-                qc = code[3:6]
+                qc = code_str[3:6]
                 if qc in QUALITY_MASTER: res["quality"] = QUALITY_MASTER[qc]
-            if not res["gsm"]: res["gsm"] = str(int(code[9:12]))
-            if not res["width_inch"]: res["width_inch"] = str(round(int(code[12:16]) / 25.4))
+                elif frappe.db.exists("DocType", "Quality Master"):
+                    try:
+                        q_match = frappe.db.get_value("Quality Master", {"code": qc}, "quality_name")
+                        if q_match: res["quality"] = q_match
+                    except: pass
+            
+            # Color (7-9)
+            if not res["color"]:
+                cc = code_str[6:9]
+                if frappe.db.exists("DocType", "Colour Master"):
+                    try:
+                        c_match = frappe.db.get_value("Colour Master", {"code": cc}, "color_name")
+                        if c_match: res["color"] = c_match
+                    except: pass
+            
+            # GSM (10-12)
+            if not res["gsm"]: 
+                res["gsm"] = str(int(code_str[9:12]))
+            
+            # Width (13-16)
+            if not res["width_inch"]: 
+                res["width_inch"] = str(round(int(code_str[12:16]) / 25.4))
+        
         elif cl == 15:
-             if not res["gsm"]: res["gsm"] = str(int(code[8:11]))
-             if not res["width_inch"]: res["width_inch"] = str(round(int(code[11:15]) / 25.4))
+            if not res["gsm"]: res["gsm"] = str(int(code_str[8:11]))
+            if not res["width_inch"]: res["width_inch"] = str(round(int(code_str[11:15]) / 25.4))
+        
         elif cl == 12:
-            if not res["gsm"]: res["gsm"] = str(int(code[7:10]))
-            if not res["width_inch"]: res["width_inch"] = str(int(code[10:12]))
+            if not res["gsm"]: res["gsm"] = str(int(code_str[7:10]))
+            if not res["width_inch"]: res["width_inch"] = str(int(code_str[10:12]))
 
     # 4. Final keyword lookup in name if still missing
     if not res["quality"]:
-        for q_code, q_name in QUALITY_MASTER.items():
+        for q_code, q_name in list(QUALITY_MASTER.items()):
             if q_name in name_upper:
                 res["quality"] = q_name
                 break
@@ -1068,8 +1092,10 @@ def extract_details_from_name(name, code):
                 if not p_clean or len(p_clean) < 3: continue
                 if p_clean.isdigit(): continue
                 is_marker = False
-                for q in QUALITY_MASTER.values():
-                    if q in p_clean: is_marker = True; break
+                for q in list(QUALITY_MASTER.values()):
+                    if q in p_clean: 
+                        is_marker = True
+                        break
                 if is_marker: continue
                 res["color"] = p_clean
                 break
