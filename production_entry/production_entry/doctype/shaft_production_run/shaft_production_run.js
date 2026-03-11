@@ -224,35 +224,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
                             frappe.model.set_value(cdt, cdn, 'no_of_shafts', job_match.no_of_shafts);
                             frappe.model.set_value(cdt, cdn, 'party_code', job_match.party_code);
 
-                            // Open Selection Dialog for Work Orders (Only if NOT fetching details on load)
-                            if (!frm.is_fetching_details) {
-                                new frappe.ui.form.MultiSelectDialog({
-                                    doctype: "Work Order",
-                                    target: frm,
-                                    setters: {
-                                        production_plan: frm.doc.production_plan,
-                                    },
-                                    add_filters_group: 1,
-                                    columns: ["status", "production_item", "qty"],
-                                    get_query() {
-                                        return {
-                                            filters: {
-                                                production_plan: frm.doc.production_plan,
-                                                docstatus: 1,
-                                                status: ["not in", ["Cancelled", "Closed"]]
-                                            }
-                                        };
-                                    },
-                                    primary_action(selections) {
-                                        if (selections && selections.length > 0) {
-                                            frappe.model.set_value(cdt, cdn, 'work_orders', selections.join(', '));
-                                            this.dialog.hide();
-                                        } else {
-                                            frappe.msgprint("Please select at least one Work Order.");
-                                        }
-                                    }
-                                });
-                            }
+                            // Automatic Selection Dialog for Work Orders removed as per user request
                         }
                     }
                 }
