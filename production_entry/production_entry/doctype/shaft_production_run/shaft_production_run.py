@@ -843,8 +843,12 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
             # if we have any, because Mix Rolls often use generic "MIX" items that don't match width/gsm.
             if not matched_p_item and manual_item_list and len(manual_item_list) > 0 and cint(is_mix_roll):
                 ic_fallback = manual_item_list[0]
-                if ic_fallback and frappe.db.exists("Item", ic_fallback):
-                    matched_p_item = frappe.get_cached_doc("Item", ic_fallback)
+                if ic_fallback:
+                    if frappe.db.exists("Item", ic_fallback):
+                        matched_p_item = frappe.get_cached_doc("Item", ic_fallback)
+                    else:
+                        # Even if Item doesn't exist, we MUST have a string item_code to prevent filtering
+                        item_code = ic_fallback
             
             wo_name = None
             item_code = None
@@ -863,6 +867,12 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                 color = matched_p_item.get("color") or matched_p_item.get("custom_color")
                 uom = matched_p_item.get("uom") or "Kg"
                 
+                # If we didn't get a weight component from formula, fallback to the item's planned_qty
+                if planned_qty <= 0:
+                    planned_qty = flt(matched_p_item.get("planned_qty")) or flt(matched_p_item.get("qty"))
+
+            # 4. Final Metadata Extraction if we have an item_code string
+            if item_code:
                 # FALLBACK: If color/quality missing, fetch from Item Master
                 if not quality or not color:
                     if frappe.db.exists("Item", item_code):
@@ -879,14 +889,10 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                             if not quality: quality = parsed.get("quality")
                             if not color: color = parsed.get("color")
                     else:
-                        # If item doesn't exist, try parsing from code directly if possible
+                        # If item doesn't exist in DB, try parsing from code string directly
                         parsed = extract_details_from_name(item_code, item_code)
                         if not quality: quality = parsed.get("quality")
                         if not color: color = parsed.get("color")
-
-                # If we didn't get a weight component from formula, fallback to the item's planned_qty
-                if planned_qty <= 0:
-                    planned_qty = flt(matched_p_item.get("planned_qty")) or flt(matched_p_item.get("qty"))
             
             # Final calculation fallback for manual entries (Width * GSM * Length formula)
             if planned_qty <= 0 and target_width and gsm and meter_roll:

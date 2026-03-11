@@ -49,9 +49,10 @@ frappe.ui.form.on('Shaft Production Run', {
     },
 
     before_save: function (frm) {
-        // Double check cleanup before every save
+        // Double check cleanup before every save. 
+        // We MUST preserve rows that have a job ID (newly added rolls) or item_code.
         if (frm.doc.items) {
-            frm.doc.items = frm.doc.items.filter(r => r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
+            frm.doc.items = frm.doc.items.filter(r => r.job || r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
         }
     },
 
@@ -59,8 +60,9 @@ frappe.ui.form.on('Shaft Production Run', {
         // Aggressively remove empty default rows to prevent mandatory validation errors
         if (frm.doc.items) {
             let initial_len = frm.doc.items.length;
-            // Mix Rolls often lack Work Orders, so we MUST preserve rows that have at least an item_code
-            frm.doc.items = frm.doc.items.filter(r => r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
+            // Mix Rolls often lack Work Orders, and new rolls have 0 weight. 
+            // We MUST preserve rows that have a JOB ID or an ITEM CODE.
+            frm.doc.items = frm.doc.items.filter(r => r.job || r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
             if (frm.doc.items.length !== initial_len) {
                 frm.refresh_field('items');
             }
@@ -329,9 +331,9 @@ function execute_create_roll_entry(frm, row) {
 
                 rolls_to_add.forEach(function (d) {
                     var child = frm.add_child('items');
-                    frappe.model.set_value(child.doctype, child.name, 'job', String(d.job));
-                    frappe.model.set_value(child.doctype, child.name, 'work_order', d.work_order);
-                    frappe.model.set_value(child.doctype, child.name, 'item_code', d.item_code);
+                    frappe.model.set_value(child.doctype, child.name, 'job', String(d.job || ""));
+                    frappe.model.set_value(child.doctype, child.name, 'work_order', d.work_order || "");
+                    frappe.model.set_value(child.doctype, child.name, 'item_code', d.item_code || "");
                     frappe.model.set_value(child.doctype, child.name, 'planned_qty', d.planned_qty);
                     frappe.model.set_value(child.doctype, child.name, 'width_inch', d.width_inch);
                     frappe.model.set_value(child.doctype, child.name, 'gsm', d.gsm);
