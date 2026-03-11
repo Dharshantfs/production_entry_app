@@ -695,30 +695,31 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
     # 2. Parse manual_item_list into a flat list of strings
     if manual_item_list:
         if isinstance(manual_item_list, str):
-            try:
-                # Try JSON first [ "item1", "item2" ]
-                loaded = json.loads(manual_item_list)
-                if isinstance(loaded, list):
-                    manual_item_list = loaded
-                else:
-                    manual_item_list = [str(loaded)]
-            except:
-                # Fallback to comma split "item1, item2"
-                manual_item_list = [x.strip() for x in manual_item_list.split(",") if x.strip()]
-        
-        # Ensure it's a list for flattening logic below
-        if not isinstance(manual_item_list, list):
             manual_item_list = [manual_item_list]
-    
-    # Flatten any sub-lists if strings contain commas "item1,item2" inside a list ["item1,item2", "item3"]
-    final_items = []
-    if manual_item_list and isinstance(manual_item_list, list):
-        for entry in manual_item_list:
-            if isinstance(entry, str) and "," in entry:
-                final_items.extend([x.strip() for x in entry.split(",") if x.strip()])
-            else:
-                final_items.append(entry)
-    manual_item_list = final_items
+        
+        if isinstance(manual_item_list, list):
+            final_items = []
+            for entry in manual_item_list:
+                if not entry: continue
+                # If entry is a string, try to parse it as JSON list first
+                if isinstance(entry, str):
+                    entry = entry.strip()
+                    if (entry.startswith('[') and entry.endswith(']')):
+                        try:
+                            loaded = json.loads(entry)
+                            if isinstance(loaded, list):
+                                final_items.extend([str(x).strip() for x in loaded if x])
+                                continue
+                        except: pass
+                    
+                    # If not JSON list, check for comma-separated
+                    if "," in entry:
+                        final_items.extend([x.strip() for x in entry.split(",") if x.strip()])
+                    else:
+                        final_items.append(entry.strip())
+                else:
+                    final_items.append(entry)
+            manual_item_list = final_items
 
     if production_plan:
         pp_doc = frappe.get_doc("Production Plan", production_plan)
