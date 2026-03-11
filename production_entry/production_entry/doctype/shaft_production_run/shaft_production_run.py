@@ -740,6 +740,8 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                     flattened_items.append(entry)
             
             for item_code in flattened_items:
+                if not frappe.db.exists("Item", item_code):
+                    continue
                 item_doc = frappe.get_cached_doc("Item", item_code)
                 details = extract_details_from_name(item_doc.item_name or item_doc.item_code, item_doc.item_code)
                 # Check for Width and GSM match (within 0.2 and 0.5 tolerances)
@@ -844,16 +846,22 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                 
                 # FALLBACK: If color/quality missing, fetch from Item Master
                 if not quality or not color:
-                    item_doc = frappe.get_cached_doc("Item", item_code)
-                    if not quality:
-                        quality = item_doc.get("quality") or item_doc.get("custom_quality")
-                    if not color:
-                        color = item_doc.get("color") or item_doc.get("custom_color")
-                    
-                    # FINAL FALLBACK: Parse from Item Name
-                    if not quality or not color:
-                        item_name = item_doc.item_name or item_doc.item_code
-                        parsed = extract_details_from_name(item_name, item_code)
+                    if frappe.db.exists("Item", item_code):
+                        item_doc = frappe.get_cached_doc("Item", item_code)
+                        if not quality:
+                            quality = item_doc.get("quality") or item_doc.get("custom_quality")
+                        if not color:
+                            color = item_doc.get("color") or item_doc.get("custom_color")
+                        
+                        # FINAL FALLBACK: Parse from Item Name
+                        if not quality or not color:
+                            item_name = item_doc.item_name or item_doc.item_code
+                            parsed = extract_details_from_name(item_name, item_code)
+                            if not quality: quality = parsed.get("quality")
+                            if not color: color = parsed.get("color")
+                    else:
+                        # If item doesn't exist, try parsing from code directly if possible
+                        parsed = extract_details_from_name(item_code, item_code)
                         if not quality: quality = parsed.get("quality")
                         if not color: color = parsed.get("color")
 
