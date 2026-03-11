@@ -695,28 +695,37 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
     # 2. Parse manual_item_list into a flat list of strings
     if manual_item_list:
         if isinstance(manual_item_list, str):
-            manual_item_list = [manual_item_list]
-        
+            curr = manual_item_list.strip()
+            # Handle possible double/triple encoding or strings wrapped in brackets
+            for _ in range(3):
+                if not (curr.startswith('[') and curr.endswith(']')):
+                    break
+                try:
+                    loaded = json.loads(curr)
+                    if isinstance(loaded, list):
+                        manual_item_list = loaded
+                        break
+                    elif isinstance(loaded, str):
+                        curr = loaded.strip()
+                except:
+                    break
+            
+            # If after JSON attempts it's still a string, split by comma
+            if isinstance(manual_item_list, str):
+                manual_item_list = [manual_item_list]
+
         if isinstance(manual_item_list, list):
             final_items = []
             for entry in manual_item_list:
                 if not entry: continue
-                # If entry is a string, try to parse it as JSON list first
+                # Strip brackets and quotes from every string entry
                 if isinstance(entry, str):
-                    entry = entry.strip()
-                    if (entry.startswith('[') and entry.endswith(']')):
-                        try:
-                            loaded = json.loads(entry)
-                            if isinstance(loaded, list):
-                                final_items.extend([str(x).strip() for x in loaded if x])
-                                continue
-                        except: pass
-                    
-                    # If not JSON list, check for comma-separated
-                    if "," in entry:
-                        final_items.extend([x.strip() for x in entry.split(",") if x.strip()])
+                    s = entry.strip().lstrip('[').rstrip(']').strip('"').strip("'").strip()
+                    if "," in s:
+                        # Handle cases like ["item1, item2"]
+                        final_items.extend([x.strip().strip('"').strip("'") for x in s.split(",") if x.strip()])
                     else:
-                        final_items.append(entry.strip())
+                        final_items.append(s)
                 else:
                     final_items.append(entry)
             manual_item_list = final_items
