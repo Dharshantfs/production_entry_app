@@ -158,8 +158,6 @@ class ShaftProductionRun(Document):
             except:
                 pass
         
-        # Save the document once so batch numbers are persistent
-        self.save()
         return self.as_dict()
 
 
