@@ -638,7 +638,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan=None, job_id=None, combination=None, no_of_shafts=1, gsm=0, meter_roll=0, net_weight="", work_orders=None, claimed_wos=None, parent_spr=None, manual_item_list=None):
+def get_job_roll_details(production_plan=None, job_id=None, combination=None, no_of_shafts=1, gsm=0, meter_roll=0, net_weight="", work_orders=None, claimed_wos=None, parent_spr=None, manual_item_list=None, is_mix_roll=0):
     """
     Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
     Maps Work Orders accurately and sets Planned Qty based on the individual weight components in net_weight formula.
@@ -825,6 +825,13 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
     for _ in range(n_shafts):
         for idx, target_width in enumerate(widths):
             matched_p_item = get_matched_item_detail(target_width, gsm)
+            
+            # If no match from plan, and it's a mix roll, try to match from manual items directly
+            if not matched_p_item and (cint(is_mix_roll) or manual_item_list):
+                 # We already tried manual_item_list in get_matched_item_detail, 
+                 # but if that failed due to width tolerances, we might need a more relaxed search 
+                 # or just return the first manual item that exists if it's a mix roll handle.
+                 pass
             
             wo_name = None
             item_code = None
@@ -1038,7 +1045,7 @@ def extract_details_from_name(name, code):
     gsm_m = re.search(r'(\d+)\s*GSM', name_upper)
     if gsm_m: res["gsm"] = gsm_m.group(1)
     
-    width_m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|INCH|IN|inch|\'\')', name_upper)
+    width_m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|INCH|IN|inch|\'\'|mm|MM)', name_upper)
     if width_m: res["width_inch"] = width_m.group(1)
 
     # 3. Fallback extraction from code if still missing

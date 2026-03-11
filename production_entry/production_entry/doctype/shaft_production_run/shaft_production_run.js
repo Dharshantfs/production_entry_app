@@ -102,6 +102,7 @@ function fetch_shaft_details(frm) {
                 frm.set_value('custom_order_code', r.message.all_party_codes || "");
 
                 if (jobs.length > 0) {
+                    frm.is_fetching_details = true;
                     jobs.forEach(function (d) {
                         var job_row = frm.add_child('shaft_jobs');
                         frappe.model.set_value(job_row.doctype, job_row.name, 'job_id', String(d.job_id));
@@ -118,6 +119,7 @@ function fetch_shaft_details(frm) {
 
                     frm.refresh_field('shaft_jobs');
                     update_job_filter_options(frm);
+                    frm.is_fetching_details = false;
 
                     // Auto-generate batch numbers if shift is already present
                     if (frm.doc.shift && frm.doc.custom_unit) {
@@ -219,33 +221,35 @@ frappe.ui.form.on('Shaft Production Run Job', {
                             frappe.model.set_value(cdt, cdn, 'no_of_shafts', job_match.no_of_shafts);
                             frappe.model.set_value(cdt, cdn, 'party_code', job_match.party_code);
 
-                            // Open Selection Dialog for Work Orders
-                            new frappe.ui.form.MultiSelectDialog({
-                                doctype: "Work Order",
-                                target: frm,
-                                setters: {
-                                    production_plan: frm.doc.production_plan,
-                                },
-                                add_filters_group: 1,
-                                columns: ["status", "production_item", "qty"],
-                                get_query() {
-                                    return {
-                                        filters: {
-                                            production_plan: frm.doc.production_plan,
-                                            docstatus: 1,
-                                            status: ["not in", ["Cancelled", "Closed"]]
+                            // Open Selection Dialog for Work Orders (Only if NOT fetching details on load)
+                            if (!frm.is_fetching_details) {
+                                new frappe.ui.form.MultiSelectDialog({
+                                    doctype: "Work Order",
+                                    target: frm,
+                                    setters: {
+                                        production_plan: frm.doc.production_plan,
+                                    },
+                                    add_filters_group: 1,
+                                    columns: ["status", "production_item", "qty"],
+                                    get_query() {
+                                        return {
+                                            filters: {
+                                                production_plan: frm.doc.production_plan,
+                                                docstatus: 1,
+                                                status: ["not in", ["Cancelled", "Closed"]]
+                                            }
+                                        };
+                                    },
+                                    primary_action(selections) {
+                                        if (selections && selections.length > 0) {
+                                            frappe.model.set_value(cdt, cdn, 'work_orders', selections.join(', '));
+                                            this.dialog.hide();
+                                        } else {
+                                            frappe.msgprint("Please select at least one Work Order.");
                                         }
-                                    };
-                                },
-                                primary_action(selections) {
-                                    if (selections && selections.length > 0) {
-                                        frappe.model.set_value(cdt, cdn, 'work_orders', selections.join(', '));
-                                        this.dialog.hide();
-                                    } else {
-                                        frappe.msgprint("Please select at least one Work Order.");
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
                     }
                 }
@@ -299,7 +303,8 @@ function execute_create_roll_entry(frm, row) {
             work_orders: wos.length > 0 ? JSON.stringify(wos) : null,
             claimed_wos: claimed_wos.length > 0 ? JSON.stringify(claimed_wos) : null,
             parent_spr: frm.is_new() ? null : frm.doc.name,
-            manual_item_list: row.manual_items || null
+            manual_item_list: row.manual_items || null,
+            is_mix_roll: frm.doc.is_mix_roll || 0
         },
         callback: function (r) {
             if (r.message && r.message.length > 0) {
@@ -1045,7 +1050,7 @@ function extract_details_enhanced(name, code) {
 
         // Width lookup from name
         if (!res.width_inch) {
-            var mw = name_upper.match(/(\d+(\.\dots+)?)\s*("|inch|in|'')/i);
+            var mw = name_upper.match(/(\d+(\.\d+)?)\s*("|inch|in|''|mm|MM)/i);
             if (mw) res.width_inch = mw[1];
         }
 
