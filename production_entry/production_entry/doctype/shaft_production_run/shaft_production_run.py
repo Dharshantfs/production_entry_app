@@ -3,6 +3,7 @@ from frappe.model.document import Document
 from frappe.utils import flt, cint
 import json
 import re
+import hashlib
 
 
 class ShaftProductionRun(Document):
@@ -553,7 +554,6 @@ def get_shaft_jobs(production_plan, work_orders=None):
         # Parse combination widths for weight calc
         comb_str = str(d.get("combination") or "")
         widths = []
-        import re
         for s in comb_str.split('+'):
             s = s.strip().replace('"', '')
             try:
@@ -667,10 +667,8 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
         except: pass
 
     items_to_add = []
-    
     # 1. Parse widths from combination string (e.g. 46 + 46 + 26)
     widths = []
-    import re
     # Match numbers like 46, 46.5, etc.
     for s in (combination or "").split('+'):
         s = s.strip().replace('"', '')
@@ -690,7 +688,6 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
         spr_doc = frappe.get_doc("Shaft Production Run", parent_spr)
         for j in spr_doc.shaft_jobs:
             if str(j.job_id) == str(job_id) and j.is_manual:
-                import json
                 try:
                     manual_item_list = j.manual_items
                 except: pass

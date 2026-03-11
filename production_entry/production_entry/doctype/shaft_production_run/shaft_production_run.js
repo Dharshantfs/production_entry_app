@@ -520,22 +520,26 @@ function add_manual_job_dialog(frm) {
                         frappe.show_alert({ message: __('Select an item first'), indicator: 'orange' });
                         return;
                     }
-                    frappe.call({
-                        method: 'frappe.client.get',
-                        args: { doctype: 'Item', name: item_code },
-                        callback: function (r) {
-                            if (r.message) {
-                                let item = r.message;
-                                let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
-                                selected_items.push({
-                                    item_code: item.item_code,
-                                    item_name: item.item_name || item.item_code,
-                                    width_inch: parseFloat(details.width_inch) || 0,
-                                    gsm: parseInt(details.gsm) || parseInt(item.custom_gsm) || 0
-                                });
-                                d.set_value('item_select', '');
-                                refresh_manual_job_preview(d, selected_items);
-                            }
+                    
+                    // Use get_value to check existence without triggering modal error
+                    frappe.db.get_value('Item', item_code, ['name', 'item_name', 'item_code', 'custom_gsm'], (r) => {
+                        if (r && r.name) {
+                            let item = r;
+                            let details = extract_details_enhanced(item.item_name || item.item_code, item.item_code);
+                            selected_items.push({
+                                item_code: item.item_code,
+                                item_name: item.item_name || item.item_code,
+                                width_inch: parseFloat(details.width_inch) || 0,
+                                gsm: parseInt(details.gsm) || parseInt(item.custom_gsm) || 0
+                            });
+                            d.set_value('item_select', '');
+                            refresh_manual_job_preview(d, selected_items);
+                        } else {
+                            frappe.msgprint({
+                                title: __('Item Not Found'),
+                                message: __('Item code <b>{0}</b> does not exist in the Item master. Please ensure the item is created first.', [item_code]),
+                                indicator: 'red'
+                            });
                         }
                     });
                 }
