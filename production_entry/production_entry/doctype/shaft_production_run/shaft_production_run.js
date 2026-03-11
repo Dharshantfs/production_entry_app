@@ -279,7 +279,8 @@ function execute_create_roll_entry(frm, row) {
             claimed_wos: claimed_wos.length > 0 ? JSON.stringify(claimed_wos) : null,
             parent_spr: frm.is_new() ? null : frm.doc.name,
             manual_item_list: row.manual_items || null,
-            is_mix_roll: frm.doc.is_mix_roll || 0
+            is_mix_roll: frm.doc.is_mix_roll || 0,
+            party_code: row.party_code || null
         },
         callback: function (r) {
             if (r.message && r.message.length > 0) {

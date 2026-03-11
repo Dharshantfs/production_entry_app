@@ -610,7 +610,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
             "net_weight": job_net_weight_str, # Always send exactly the equation string
             "total_weight": job_total_weight,
             "work_orders": ", ".join(job_wos),
-            "party_code": ", ".join(job_parties)
+            "party_code": ", ".join(job_parties) if job_parties else d.get("party_code")
         })
         
     all_party_codes = set()
@@ -638,7 +638,7 @@ def get_shaft_jobs(production_plan, work_orders=None):
 
 
 @frappe.whitelist()
-def get_job_roll_details(production_plan=None, job_id=None, combination=None, no_of_shafts=1, gsm=0, meter_roll=0, net_weight="", work_orders=None, claimed_wos=None, parent_spr=None, manual_item_list=None, is_mix_roll=0):
+def get_job_roll_details(production_plan=None, job_id=None, combination=None, no_of_shafts=1, gsm=0, meter_roll=0, net_weight="", work_orders=None, claimed_wos=None, parent_spr=None, manual_item_list=None, is_mix_roll=0, party_code=None):
     """
     Fetch exact rows required for the Produced Rolls table based on combination and no_of_shafts.
     Maps Work Orders accurately and sets Planned Qty based on the individual weight components in net_weight formula.
@@ -952,11 +952,12 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                         draft_filters["name"] = ["not in", excluded_wos]
                     wo_name = frappe.db.get_value("Work Order", draft_filters, "name")
             
-            party_code = None
+            final_party_code = party_code
             if wo_name:
                 wo_data = frappe.db.get_value("Work Order", wo_name, ["status", "custom_party_code"], as_dict=1)
                 if wo_data:
-                    party_code = wo_data.get("custom_party_code")
+                    if not final_party_code:
+                        final_party_code = wo_data.get("custom_party_code")
                     wo_status = wo_data.get("status")
             else:
                 wo_status = None
@@ -967,7 +968,7 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
             items_to_add.append({
                 "job": job_id,
                 "work_order": wo_name,
-                "party_code": party_code,
+                "party_code": final_party_code,
                 "item_code": item_code,
                 "planned_qty": planned_qty,
                 "width_inch": target_width,
