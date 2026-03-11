@@ -826,9 +826,23 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
         for idx, target_width in enumerate(widths):
             matched_p_item = get_matched_item_detail(target_width, gsm)
             
-            # If no match found via rounding logic, try matching from manual_item_list using the current width index
-            if not matched_p_item and manual_item_list and idx < len(manual_item_list):
-                ic_fallback = manual_item_list[idx]
+            # If no match found via rounding logic, try matching from manual_item_list
+            if not matched_p_item and manual_item_list:
+                # 1. Try index-based match first
+                ic_fallback = None
+                if idx < len(manual_item_list):
+                    ic_fallback = manual_item_list[idx]
+                elif len(manual_item_list) > 0:
+                    # 2. If index out of bounds (e.g. 1 item for 3 shafts), use the FIRST item as global fallback for the job
+                    ic_fallback = manual_item_list[0]
+                
+                if ic_fallback and frappe.db.exists("Item", ic_fallback):
+                    matched_p_item = frappe.get_cached_doc("Item", ic_fallback)
+                
+            # 3. Final fallback for Mix Rolls: If STILL no match, just take whatever the first manual item is
+            # if we have any, because Mix Rolls often use generic "MIX" items that don't match width/gsm.
+            if not matched_p_item and manual_item_list and len(manual_item_list) > 0 and cint(is_mix_roll):
+                ic_fallback = manual_item_list[0]
                 if ic_fallback and frappe.db.exists("Item", ic_fallback):
                     matched_p_item = frappe.get_cached_doc("Item", ic_fallback)
             

@@ -59,6 +59,7 @@ frappe.ui.form.on('Shaft Production Run', {
         // Aggressively remove empty default rows to prevent mandatory validation errors
         if (frm.doc.items) {
             let initial_len = frm.doc.items.length;
+            // Mix Rolls often lack Work Orders, so we MUST preserve rows that have at least an item_code
             frm.doc.items = frm.doc.items.filter(r => r.work_order || r.item_code || (r.net_weight && r.net_weight > 0));
             if (frm.doc.items.length !== initial_len) {
                 frm.refresh_field('items');
