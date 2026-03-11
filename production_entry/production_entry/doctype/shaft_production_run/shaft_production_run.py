@@ -826,12 +826,11 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
         for idx, target_width in enumerate(widths):
             matched_p_item = get_matched_item_detail(target_width, gsm)
             
-            # If no match from plan, and it's a mix roll, try to match from manual items directly
-            if not matched_p_item and (cint(is_mix_roll) or manual_item_list):
-                 # We already tried manual_item_list in get_matched_item_detail, 
-                 # but if that failed due to width tolerances, we might need a more relaxed search 
-                 # or just return the first manual item that exists if it's a mix roll handle.
-                 pass
+            # If no match found via rounding logic, try matching from manual_item_list using the current width index
+            if not matched_p_item and manual_item_list and idx < len(manual_item_list):
+                ic_fallback = manual_item_list[idx]
+                if ic_fallback and frappe.db.exists("Item", ic_fallback):
+                    matched_p_item = frappe.get_cached_doc("Item", ic_fallback)
             
             wo_name = None
             item_code = None
