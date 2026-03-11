@@ -660,9 +660,17 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
     elif isinstance(claimed_wos, str):
         claimed_wos = None
         
-    if isinstance(manual_item_list, str) and manual_item_list:
         try:
             manual_item_list = json.loads(manual_item_list)
+        except: pass
+
+    # FALLBACK: If party_code is missing but we have a job_id, try fetching it from the Job row
+    if (not party_code or party_code == "null") and job_id and parent_spr:
+        try:
+            job_party = frappe.db.get_value("Shaft Production Run Job", 
+                {"parent": parent_spr, "job_id": str(job_id)}, "party_code")
+            if job_party:
+                party_code = job_party
         except: pass
 
     items_to_add = []
