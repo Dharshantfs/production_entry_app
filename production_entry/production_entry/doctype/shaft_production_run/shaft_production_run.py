@@ -839,6 +839,13 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                 if ic_fallback and frappe.db.exists("Item", ic_fallback):
                     matched_p_item = frappe.get_cached_doc("Item", ic_fallback)
                 
+            wo_name = None
+            item_code = None
+            planned_qty = 0.0
+            quality = None
+            color = None
+            uom = "Kg"
+
             # 3. Final fallback for Mix Rolls: If STILL no match, just take whatever the first manual item is
             # if we have any, because Mix Rolls often use generic "MIX" items that don't match width/gsm.
             if not matched_p_item and manual_item_list and len(manual_item_list) > 0 and cint(is_mix_roll):
@@ -849,13 +856,6 @@ def get_job_roll_details(production_plan=None, job_id=None, combination=None, no
                     else:
                         # Even if Item doesn't exist, we MUST have a string item_code to prevent filtering
                         item_code = ic_fallback
-            
-            wo_name = None
-            item_code = None
-            planned_qty = 0.0
-            quality = None
-            color = None
-            uom = "Kg"
             
             # Map the weight component from the formula if index matches
             if idx < len(weight_components):
