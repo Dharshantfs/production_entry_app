@@ -1033,6 +1033,25 @@ def create_manual_work_order(production_plan, item_code, qty, company=None):
     return wo.name
 
 
+def get_master_name(doctype, code, code_fields, name_fields=["name"]):
+    """Helper to find a master record name by various possible code fields."""
+    if not code: return None
+    try:
+        if not frappe.db.exists("DocType", doctype): return None
+        meta = frappe.get_meta(doctype)
+        valid_fields = [f.fieldname for f in meta.fields]
+        
+        # Check each code field
+        for cf in code_fields:
+            if cf in valid_fields:
+                # Try each name field
+                for nf in name_fields:
+                    if nf == "name" or nf in valid_fields:
+                        val = frappe.db.get_value(doctype, {cf: str(code)}, nf)
+                        if val: return val
+    except: pass
+    return None
+
 def extract_details_from_name(name, code):
     QUALITY_MASTER = {
         "100": "PREMIUM", "101": "PLATINUM", "102": "SUPER PLATINUM",
@@ -1040,7 +1059,7 @@ def extract_details_from_name(name, code):
         "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
         "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
         "112": "ULTRA", "113": "DELUXE", "114": "UV",
-        "120": "PREMIUM PLUS",
+        "120": "VIRGIN MIX",
         "012": "ULTRA", "010": "PREMIUM", "011": "PLATINUM"
     }
     
@@ -1056,21 +1075,21 @@ def extract_details_from_name(name, code):
         gsm_code = code_str[9:12]
         mm_code = code_str[12:16]
 
-        # Extract Quality
-        try:
-            if frappe.db.exists("DocType", "Quality Master"):
-                q_match = frappe.db.get_value("Quality Master", {"code": q_code}, "quality_name")
-                if q_match: res["quality"] = q_match
-        except: pass
+        # Extract Quality from DB
+        res["quality"] = get_master_name(
+            "Quality Master", q_code, 
+            ["quality_code", "custom_quality_code", "short_code", "code"],
+            ["quality_name", "name"]
+        )
         if not res["quality"] and q_code in QUALITY_MASTER: 
             res["quality"] = QUALITY_MASTER[q_code]
 
-        # Extract Color
-        try:
-            if frappe.db.exists("DocType", "Colour Master"):
-                c_match = frappe.db.get_value("Colour Master", {"code": c_code}, "color_name")
-                if c_match: res["color"] = c_match
-        except: pass
+        # Extract Color from DB
+        res["color"] = get_master_name(
+            "Colour Master", c_code,
+            ["color_code", "colour_code", "custom_color_code", "short_code", "code"],
+            ["color_name", "colour_name", "name"]
+        )
 
         # Extract GSM
         try:
