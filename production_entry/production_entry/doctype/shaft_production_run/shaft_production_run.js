@@ -974,48 +974,77 @@ var QUALITY_MASTER = {
     "103": "GOLD", "104": "SILVER", "105": "BRONZE",
     "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
     "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
-    "112": "ULTRA", "113": "DELUXE", "114": "UV"
+    "112": "ULTRA", "113": "DELUXE", "114": "UV",
+    "120": "PREMIUM PLUS",
+    "012": "ULTRA", "010": "PREMIUM", "011": "PLATINUM"
 };
 
 function extract_details_enhanced(name, code) {
     var res = { gsm: null, color: null, width_inch: null, quality: null };
     var name_upper = (name || "").toUpperCase();
+    var code_str = String(code || "").trim();
 
-    if (code && code.length === 16 && /^\d+$/.test(code)) {
-        var qual_code = code.substring(3, 6);
+    if (code_str && code_str.length === 16 && /^\d+$/.test(code_str)) {
+        // 16-digit decoding rules
+        // Quality (3-6)
+        var qual_code = code_str.substring(3, 6);
         if (QUALITY_MASTER[qual_code]) res.quality = QUALITY_MASTER[qual_code];
-        var code_gsm = parseInt(code.substring(9, 12));
+
+        // Color (6-9) - Use indices if possible
+        var color_code = code_str.substring(6, 9);
+        // JS doesn't have easy access to DocType data without async calls here, 
+        // so we'll rely on item name parsing for color if indices don't map to a name we know.
+        // However, we can at least try to extract it from name if code is present.
+
+        // GSM (9-12)
+        var code_gsm = parseInt(code_str.substring(9, 12));
         if (code_gsm > 0) res.gsm = String(code_gsm);
-        var code_width_mm = parseFloat(code.substring(12, 16));
-        if (code_width_mm > 0) res.width_inch = Math.round(code_width_mm / 25.4);
-        if (res.quality && name) {
-            var qual_pos = name_upper.indexOf(res.quality.toUpperCase());
-            if (qual_pos !== -1) {
-                var after_qual = name.substring(qual_pos + res.quality.length).trim();
-                after_qual = after_qual.replace(/\s*\d+\s*GSM.*/i, "").trim();
-                if (after_qual) res.color = after_qual;
+
+        // Width (12-16)
+        var code_width_mm = parseFloat(code_str.substring(12, 16));
+        if (code_width_mm > 0) res.width_inch = String(Math.round(code_width_mm / 25.4));
+    }
+
+    // Pattern matching from name (Fallback or primary for non-16-digit)
+    if (name_upper) {
+        // Quality lookup from name
+        if (!res.quality) {
+            var known_qualities = Object.values(QUALITY_MASTER);
+            known_qualities.sort(function (a, b) { return b.length - a.length; });
+            for (var i = 0; i < known_qualities.length; i++) {
+                var q = known_qualities[i];
+                if (new RegExp('\\b' + q + '\\b', 'i').test(name_upper)) {
+                    res.quality = q;
+                    break;
+                }
             }
         }
-    } else if (name) {
-        var known_qualities = ["SUPER PLATINUM", "SUPER CLASSIC", "LIFE STYLE", "ECO SPECIAL", "ECO GREEN", "SUPER ECO", "DELUXE", "PREMIUM", "PLATINUM", "GOLD", "SILVER", "BRONZE", "CLASSIC", "ULTRA", "UV"];
-        known_qualities.sort(function (a, b) { return b.length - a.length; });
-        for (var i = 0; i < known_qualities.length; i++) {
-            var q = known_qualities[i];
-            if (new RegExp('\\b' + q + '\\b', 'i').test(name_upper)) { res.quality = q; break; }
+
+        // GSM lookup from name
+        if (!res.gsm) {
+            var mg = name_upper.match(/(\d+)\s*GSM/i);
+            if (mg) res.gsm = mg[1];
         }
-        if (res.quality) {
-            var qp = name_upper.indexOf(res.quality.toUpperCase());
-            if (qp !== -1) {
-                var aq = name.substring(qp + res.quality.length).trim();
-                aq = aq.split(/\s*\d+\s*GSM/i)[0].trim();
-                aq = aq.replace(/^[\s,:-]+|[\s,:-]+$/g, "");
-                if (aq) res.color = aq;
+
+        // Width lookup from name
+        if (!res.width_inch) {
+            var mw = name_upper.match(/(\d+(\.\dots+)?)\s*("|inch|in|'')/i);
+            if (mw) res.width_inch = mw[1];
+        }
+
+        // Color extraction from name strings
+        if (!res.color) {
+            // Logic: Take everything after Quality/GSM as color
+            var parts = name_upper.split(/(\d+\s*GSM|PLATINUM|PREMIUM|ULTRA|GOLD|SILVER|BRONZE|UV|CLASSIC|DELUXE|STYLE|ECO)/i);
+            if (parts.length > 2) {
+                var last_part = parts[parts.length - 1].trim();
+                // Clean up prefixes like ":" or "-"
+                last_part = last_part.replace(/^[\s,:-]+|[\s,:-]+$/g, "");
+                if (last_part && last_part.length > 2 && !/^\d+$/.test(last_part)) {
+                    res.color = last_part;
+                }
             }
         }
-        var mg = name.match(/(\d+)\s*GSM/i);
-        if (mg) res.gsm = mg[1];
-        var mw = name.match(/(\d+(\.\d+)?)\s*("|inch|in|'')/i);
-        if (mw) res.width_inch = mw[1];
     }
     return res;
 }
