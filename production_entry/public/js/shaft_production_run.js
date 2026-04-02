@@ -16,6 +16,15 @@ frappe.ui.form.on('Shaft Production Run', {
 		);
 	},
 
+	onload: function (frm) {
+		setTimeout(function () {
+			spr_patch_items_grid_refresh(frm);
+		}, 0);
+		setTimeout(function () {
+			spr_patch_items_grid_refresh(frm);
+		}, 400);
+	},
+
 	production_plan: function (frm) {
 		if (!frm.doc.production_plan) {
 			frm.clear_table('shaft_jobs');
@@ -107,6 +116,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
 		schedule_spr_item_row_styles(frm);
 	},
@@ -396,29 +406,116 @@ function update_shaft_job_achieved_from_items(frm) {
 	});
 }
 
+function spr_patch_items_grid_refresh(frm) {
+	if (frm._spr_items_grid_patched) {
+		return;
+	}
+	const fd = frm.fields_dict && frm.fields_dict.items;
+	if (!fd || !fd.grid) {
+		return;
+	}
+	const grid = fd.grid;
+	let hooked = false;
+	function schedule() {
+		[0, 80, 200, 450].forEach(function (ms) {
+			setTimeout(function () {
+				apply_spr_item_row_styles(frm);
+			}, ms);
+		});
+	}
+	function wrap(method) {
+		const orig = grid[method];
+		if (typeof orig !== 'function') {
+			return;
+		}
+		const bound = orig.bind(grid);
+		grid[method] = function () {
+			const ret = bound.apply(grid, arguments);
+			schedule();
+			return ret;
+		};
+		hooked = true;
+	}
+	wrap('refresh');
+	wrap('render');
+	if (hooked) {
+		frm._spr_items_grid_patched = true;
+	}
+}
+
 function ensure_spr_item_stylesheet() {
 	if (window.__sprspr_style) {
 		return;
 	}
 	window.__sprspr_style = true;
+	/* Roll Production Results: dark green rows + white text (Desk reference). Scoped to items field only. */
 	const css = `
-		.grid-body .grid-row.spr-gsm-diff-0 { background-color: #bbf7d0 !important; }
-		.grid-body .grid-row.spr-gsm-diff-0 .static-value,
-		.grid-body .grid-row.spr-gsm-diff-0 .row-index { color: #000 !important; }
-		.grid-body .grid-row.spr-gsm-diff-1 { background-color: #fdba74 !important; }
-		.grid-body .grid-row.spr-gsm-diff-1 .static-value,
-		.grid-body .grid-row.spr-gsm-diff-1 .row-index { color: #000 !important; }
-		.grid-body .grid-row.spr-gsm-diff-2 { background-color: #fbbf24 !important; }
-		.grid-body .grid-row.spr-gsm-diff-2 .static-value,
-		.grid-body .grid-row.spr-gsm-diff-2 .row-index,
-		.grid-body .grid-row.spr-gsm-diff-2 input { color: #000 !important; }
-		.grid-body .grid-row.spr-gsm-diff-3 { background-color: #fecaca !important; }
-		.grid-body .grid-row.spr-gsm-diff-3 .static-value,
-		.grid-body .grid-row.spr-gsm-diff-3 .row-index { color: #000 !important; }
-		.grid-body .grid-row.spr-prod { background-color: #ecfdf5 !important; }
-		.grid-body .grid-row.spr-open { background-color: #f9fafb !important; }
+		.form-group[data-fieldname="items"] .grid-body .grid-row.spr-roll-highlight,
+		.form-group[data-fieldname="items"] .form-grid .grid-row.spr-roll-highlight,
+		.frappe-control[data-fieldname="items"] .grid-body .grid-row.spr-roll-highlight,
+		.frappe-control[data-fieldname="items"] .form-grid .grid-row.spr-roll-highlight,
+		.fieldname-items .grid-body .grid-row.spr-roll-highlight,
+		.fieldname-items .form-grid .grid-row.spr-roll-highlight {
+			background-color: #166534 !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-0,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-0 {
+			box-shadow: inset 5px 0 0 #4ade80 !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-1,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-1 {
+			box-shadow: inset 5px 0 0 #fb923c !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-2,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-2 {
+			box-shadow: inset 5px 0 0 #facc15 !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-3,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-3 {
+			box-shadow: inset 5px 0 0 #fca5a5 !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .static-value,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .row-index,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .col,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight input,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight select,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight textarea,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight a,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .like-disabled-input,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .indicator-pill,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .btn-open-row,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .static-value,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .row-index,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .col,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight input,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight select,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight textarea,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight a,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .like-disabled-input,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .indicator-pill,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .btn-open-row {
+			color: #ffffff !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight input,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight select,
+		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight textarea,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight input,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight select,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight textarea {
+			background-color: rgba(255,255,255,0.12) !important;
+			border-color: rgba(255,255,255,0.4) !important;
+		}
+		.fieldname-items .grid-row.spr-roll-highlight .static-value,
+		.fieldname-items .grid-row.spr-roll-highlight .row-index,
+		.fieldname-items .grid-row.spr-roll-highlight .col,
+		.fieldname-items .grid-row.spr-roll-highlight input,
+		.fieldname-items .grid-row.spr-roll-highlight select,
+		.fieldname-items .grid-row.spr-roll-highlight textarea,
+		.fieldname-items .grid-row.spr-roll-highlight a {
+			color: #ffffff !important;
+		}
 	`;
-	$('head').append(`<style data-spr-items="1">${css}</style>`);
+	$('head').append(`<style data-spr-items="2">${css}</style>`);
 }
 
 function schedule_spr_item_row_styles(frm) {
@@ -426,9 +523,11 @@ function schedule_spr_item_row_styles(frm) {
 		return;
 	}
 	ensure_spr_item_stylesheet();
-	setTimeout(function () {
-		apply_spr_item_row_styles(frm);
-	}, 200);
+	[0, 120, 280, 500].forEach(function (ms) {
+		setTimeout(function () {
+			apply_spr_item_row_styles(frm);
+		}, ms);
+	});
 }
 
 function apply_spr_item_row_styles(frm) {
@@ -437,8 +536,18 @@ function apply_spr_item_row_styles(frm) {
 		return;
 	}
 	const diffClasses = ['spr-gsm-diff-0', 'spr-gsm-diff-1', 'spr-gsm-diff-2', 'spr-gsm-diff-3'];
-	grid.grid_rows.forEach(function (grow) {
-		const $row = grow.row;
+	const baseClasses = 'spr-roll-highlight spr-gsm-diff-0 spr-gsm-diff-1 spr-gsm-diff-2 spr-gsm-diff-3';
+	const $wrap = frm.fields_dict.items.$wrapper;
+	const $fallbackRows =
+		$wrap && $wrap.length
+			? $wrap.find('.grid-body .grid-row').add($wrap.find('.form-grid .grid-row'))
+			: $();
+
+	grid.grid_rows.forEach(function (grow, idx) {
+		let $row = grow.row;
+		if ((!$row || !$row.length) && $fallbackRows.length > idx) {
+			$row = $($fallbackRows.get(idx));
+		}
 		if (!$row || !$row.length) {
 			return;
 		}
@@ -450,10 +559,8 @@ function apply_spr_item_row_styles(frm) {
 		const prod = flt(doc.produced_gsm);
 		const net = flt(doc.net_weight);
 		const gross = flt(doc.gross_weight);
-		const produced = net > 0 || gross > 0;
-		$row.removeClass(
-			'spr-prod spr-open spr-gsm-diff-0 spr-gsm-diff-1 spr-gsm-diff-2 spr-gsm-diff-3'
-		);
+		$row.removeClass(baseClasses);
+		$row.addClass('spr-roll-highlight');
 		const hasGsmCompare = sticker > 0 && (prod > 0 || net > 0);
 		if (hasGsmCompare) {
 			const diff = Math.abs(prod - sticker);
@@ -466,12 +573,6 @@ function apply_spr_item_row_styles(frm) {
 				band = 2;
 			}
 			$row.addClass(diffClasses[band]);
-			return;
-		}
-		if (produced) {
-			$row.addClass('spr-prod');
-		} else {
-			$row.addClass('spr-open');
 		}
 	});
 }
