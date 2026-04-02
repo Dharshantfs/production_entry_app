@@ -107,8 +107,7 @@
   {
    "fieldname": "create_roll_entry",
    "fieldtype": "Button",
-   "label": "Create Entry",
-   "read_only": 1
+   "label": "Create Entry"
   }
  ],
  "index_web_pages_for_search": 1,

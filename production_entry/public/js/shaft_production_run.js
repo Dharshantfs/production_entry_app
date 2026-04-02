@@ -70,11 +70,6 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
-		if (frm.doc.docstatus === 1) {
-			frm.add_custom_button(__('Create Roll Production Entry'), function () {
-				create_roll_production_entry(frm);
-			}).addClass('btn-primary');
-		}
 		schedule_spr_item_row_styles(frm);
 	},
 
@@ -85,6 +80,47 @@ frappe.ui.form.on('Shaft Production Run', {
 		items_remove: function (frm) {
 			schedule_spr_item_row_styles(frm);
 		},
+	},
+});
+
+frappe.ui.form.on('Shaft Production Run Job', {
+	create_roll_entry: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		const job_id = row.job_id;
+		if (!job_id) {
+			frappe.msgprint(__('Job ID is required'));
+			return;
+		}
+		if (frm.is_new() || !frm.doc.name) {
+			frappe.msgprint(__('Save the Shaft Production Run before creating a Roll Production Entry.'));
+			return;
+		}
+		frappe.call({
+			method:
+				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_or_create_roll_entry_for_job',
+			args: {
+				shaft_production_run: frm.doc.name,
+				job_id: String(job_id),
+			},
+			freeze: true,
+			freeze_message: __('Preparing Roll Production Entry for this job...'),
+			callback: function (r) {
+				const msg = r.message;
+				if (!msg) {
+					return;
+				}
+				if (msg.existing) {
+					frappe.set_route('Form', 'Roll Production Entry', msg.existing);
+				} else {
+					frappe.new_doc('Roll Production Entry', {
+						shaft_production_run: frm.doc.name,
+						production_plan: msg.production_plan,
+						job_id: msg.job_id,
+						items: msg.items,
+					});
+				}
+			},
+		});
 	},
 });
 
@@ -155,31 +191,5 @@ function apply_spr_item_row_styles(frm) {
 		if (bandClass) {
 			$row.addClass(bandClass);
 		}
-	});
-}
-
-function create_roll_production_entry(frm) {
-	frappe.call({
-		method:
-			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_or_create_roll_entry',
-		args: {
-			shaft_production_run: frm.doc.name,
-		},
-		freeze: true,
-		freeze_message: __('Fetching all job details...'),
-		callback: function (r) {
-			if (r.message) {
-				if (r.message.existing) {
-					frappe.set_route('Form', 'Roll Production Entry', r.message.existing);
-				} else {
-					let data = r.message;
-					frappe.new_doc('Roll Production Entry', {
-						shaft_production_run: frm.doc.name,
-						production_plan: data.production_plan,
-						items: data.items,
-					});
-				}
-			}
-		},
 	});
 }

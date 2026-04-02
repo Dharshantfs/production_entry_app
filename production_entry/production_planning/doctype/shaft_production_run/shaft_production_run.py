@@ -470,13 +470,17 @@ def _build_spr_items_from_pp(spr_doc, pp_name):
 	return items
 
 
-def _build_roll_items_from_spr(spr_doc, pp_name):
+def _build_roll_items_from_spr(spr_doc, pp_name, job_id_filter=None):
 	items = []
 	for job in _spr_job_rows(spr_doc):
 		job_id = _spr_job_id(job)
 		if not job_id:
 			continue
+		if job_id_filter is not None and _cstr(job_id) != _cstr(job_id_filter):
+			continue
 		shaft_combination = get_shaft_combination(pp_name, job_id)
+		if getattr(job, "combination", None) and not shaft_combination:
+			shaft_combination = job.combination
 		planned_qty = getattr(job, "total_weight", None) or 0
 		for wo in get_work_orders_for_job(pp_name, job_id):
 			wo_doc = frappe.get_doc("Work Order", wo["name"])
@@ -518,6 +522,7 @@ def get_item_rows_for_production_plan(production_plan):
 
 @frappe.whitelist()
 def get_or_create_roll_entry(shaft_production_run):
+	"""All jobs on SPR (legacy API). Prefer get_or_create_roll_entry_for_job from shaft_jobs row."""
 	existing = frappe.db.get_value(
 		"Roll Production Entry",
 		{"shaft_production_run": shaft_production_run, "docstatus": ["!=", 2]},
@@ -531,6 +536,39 @@ def get_or_create_roll_entry(shaft_production_run):
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	items = _build_roll_items_from_spr(spr_doc, pp_name)
 	return {"production_plan": pp_name, "items": items}
+
+
+@frappe.whitelist()
+def get_or_create_roll_entry_for_job(shaft_production_run, job_id):
+	"""Open/create Roll Production Entry for a single PP job (shaft + combination from shaft_jobs row)."""
+	if not job_id:
+		frappe.throw(_("Job ID is required"))
+	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
+		frappe.throw(_("Save Shaft Production Run first"))
+	meta_rpe = frappe.get_meta("Roll Production Entry")
+	filters = {
+		"shaft_production_run": shaft_production_run,
+		"docstatus": ["!=", 2],
+	}
+	if meta_rpe.has_field("job_id"):
+		filters["job_id"] = _cstr(job_id)
+	existing = frappe.db.get_value("Roll Production Entry", filters, "name")
+	if existing:
+		return {"existing": existing, "job_id": _cstr(job_id)}
+	pp_name = get_pp_from_spr(shaft_production_run)
+	if not pp_name:
+		frappe.throw(_("Could not find Production Plan linked to {0}").format(shaft_production_run))
+	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	items = _build_roll_items_from_spr(spr_doc, pp_name, job_id_filter=job_id)
+	if not items:
+		frappe.throw(
+			_("No roll lines for job {0}. Check Work Orders for this Production Plan.").format(job_id)
+		)
+	return {
+		"production_plan": pp_name,
+		"items": items,
+		"job_id": _cstr(job_id),
+	}
 
 
 def get_pp_from_spr(spr_name):
