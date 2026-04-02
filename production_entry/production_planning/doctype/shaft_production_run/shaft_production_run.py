@@ -5,6 +5,10 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
 
+from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+	extract_quality_and_color,
+)
+
 
 def batch_shift_value(shift: str | None) -> str:
 	if not shift:
@@ -18,10 +22,85 @@ def batch_shift_value(shift: str | None) -> str:
 
 class ShaftProductionRun(Document):
 	def validate(self):
+		self.sync_cloud_field_aliases()
+		self.calculate_item_weights()
 		self.generate_batch_numbers()
+
+	def sync_cloud_field_aliases(self):
+		"""Align legacy cloud column names (Frappe Cloud DB) with current app field names."""
+		if self.get("custom_customer") and not self.customer:
+			self.customer = self.custom_customer
+		elif self.customer and not self.get("custom_customer"):
+			self.custom_customer = self.customer
+		if self.operator and not self.get("custom_operator"):
+			self.custom_operator = self.operator
+		elif self.get("custom_operator") and not self.operator:
+			self.operator = self.custom_operator
+		if self.supervisor and not self.get("custom_supervisor"):
+			self.custom_supervisor = self.supervisor
+		elif self.get("custom_supervisor") and not self.supervisor:
+			self.supervisor = self.custom_supervisor
+
+		planned_sum = 0.0
+		achieved = 0.0
+		for row in self.items or []:
+			if row.get("work_order") and not row.wo_id:
+				row.wo_id = row.work_order
+			elif row.wo_id and not row.get("work_order"):
+				row.work_order = row.wo_id
+			if row.get("job") and not row.job_no:
+				row.job_no = row.job
+			elif row.job_no and not row.get("job"):
+				row.job = row.job_no
+			mpr = flt(row.meter_per_roll)
+			mroll = flt(row.meter_roll)
+			if mpr <= 0 and mroll > 0:
+				row.meter_per_roll = mroll
+			elif mpr > 0 and mroll <= 0:
+				row.meter_roll = mpr
+			wi = flt(row.width_inches)
+			wic = flt(row.width_inch)
+			if wi <= 0 and wic > 0:
+				row.width_inches = wic
+			elif wi > 0 and wic <= 0:
+				row.width_inch = wi
+			planned_sum += flt(row.planned_qty)
+			gw = flt(row.gross_weight)
+			nw = flt(row.net_weight)
+			achieved += gw if gw > 0 else nw
+		for job in self.jobs or []:
+			if job.get("job_id") and not job.job_no:
+				job.job_no = job.job_id
+			elif job.job_no and not job.get("job_id"):
+				job.job_id = job.job_no
+		self.custom_total_planned_qty = planned_sum
+		self.custom_total_achieved_weight = achieved
+		self.total_produced_weight = achieved
 
 	def on_submit(self):
 		self.sync_batch_custom_fields()
+		self.create_manufacturing_stock_entries()
+		self.update_work_order_statuses()
+
+	def on_cancel(self):
+		self.cancel_manufacturing_stock_entries()
+
+	def calculate_item_weights(self):
+		"""Net weight (kg) = GSM × width(m) × meter/roll / 1000 — same as Roll Production Entry."""
+		for row in self.items or []:
+			gsm_val = flt(row.gsm) or flt(row.get("custom_production_gsm"))
+			w_in = flt(row.width_inches) or flt(row.get("width_inch"))
+			m_roll = flt(row.meter_per_roll) or flt(row.get("meter_roll"))
+			if gsm_val and w_in and m_roll:
+				width_m = w_in * 0.0254
+				row.net_weight = round(gsm_val * width_m * m_roll / 1000, 3)
+				if not row.width_inches:
+					row.width_inches = w_in
+				if not row.meter_per_roll:
+					row.meter_per_roll = m_roll
+				cpg = flt(row.get("custom_production_gsm"))
+				if not row.gsm and cpg > 0:
+					row.gsm = int(cpg)
 
 	def _unit_digit(self) -> int:
 		u = (self.get("custom_unit") or "").strip()
@@ -174,6 +253,129 @@ class ShaftProductionRun(Document):
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), "SPR Batch sync skipped")
 
+	def _row_fg_qty(self, row) -> float:
+		qty = flt(row.net_weight)
+		if qty <= 0:
+			qty = flt(row.gross_weight)
+		return qty
+
+	def _set_stock_entry_spr_link(self, se):
+		meta = frappe.get_meta("Stock Entry")
+		if meta.has_field("shaft_production_run"):
+			se.shaft_production_run = self.name
+
+	def create_manufacturing_stock_entries(self):
+		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry."""
+		wo_groups = {}
+		for row in self.items or []:
+			if not row.wo_id:
+				continue
+			wo_groups.setdefault(row.wo_id, []).append(row)
+
+		created_entries = []
+
+		for wo_id, rows in wo_groups.items():
+			wo_doc = frappe.get_doc("Work Order", wo_id)
+			total_qty = sum(self._row_fg_qty(r) for r in rows)
+
+			if total_qty <= 0:
+				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)
+				continue
+
+			se = frappe.new_doc("Stock Entry")
+			se.stock_entry_type = "Manufacture"
+			se.work_order = wo_id
+			se.production_item = wo_doc.production_item
+			se.fg_completed_qty = total_qty
+			se.from_bom = 1
+			se.bom_no = wo_doc.bom_no
+			se.use_multi_level_bom = wo_doc.use_multi_level_bom
+			se.wip_warehouse = wo_doc.wip_warehouse
+			se.to_warehouse = wo_doc.fg_warehouse
+
+			self._set_stock_entry_spr_link(se)
+
+			for row in rows:
+				se.append(
+					"items",
+					{
+						"item_code": row.item_code,
+						"item_name": row.item_name,
+						"qty": self._row_fg_qty(row),
+						"uom": "Kg",
+						"batch_no": row.batch_no,
+						"serial_no": row.roll_no,
+						"t_warehouse": wo_doc.fg_warehouse,
+						"is_finished_item": 1,
+					},
+				)
+
+			se.get_items()
+
+			se.insert()
+			se.submit()
+			created_entries.append(se.name)
+
+			frappe.msgprint(
+				_("Manufacturing Entry {0} created for WO {1}").format(se.name, wo_id),
+				alert=True,
+			)
+
+		if created_entries:
+			self.db_set("manufacturing_entries", ", ".join(created_entries))
+			frappe.msgprint(
+				_("Created {0} Manufacturing Entries: {1}").format(
+					len(created_entries), ", ".join(created_entries)
+				)
+			)
+
+	def update_work_order_statuses(self):
+		wo_ids = list({row.wo_id for row in (self.items or []) if row.wo_id})
+		for wo_id in wo_ids:
+			wo_doc = frappe.get_doc("Work Order", wo_id)
+			total_produced = frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(fg_completed_qty), 0)
+				FROM `tabStock Entry`
+				WHERE work_order = %s
+				  AND stock_entry_type = 'Manufacture'
+				  AND docstatus = 1
+				""",
+				wo_id,
+			)[0][0]
+
+			if flt(total_produced) >= flt(wo_doc.qty):
+				wo_doc.db_set("status", "Completed")
+				frappe.msgprint(_("Work Order {0} marked as Completed").format(wo_id), alert=True)
+
+	def cancel_manufacturing_stock_entries(self):
+		names = []
+		if self.manufacturing_entries:
+			names = [x.strip() for x in self.manufacturing_entries.split(",") if x.strip()]
+		meta_se = frappe.get_meta("Stock Entry")
+		if not names and meta_se.has_field("shaft_production_run"):
+			conds = [
+				"shaft_production_run = %s",
+				"stock_entry_type = 'Manufacture'",
+				"docstatus = 1",
+			]
+			params = [self.name]
+			if meta_se.has_field("roll_production_entry"):
+				conds.append("IFNULL(roll_production_entry, '') = ''")
+			names = frappe.db.sql_list(
+				f"SELECT name FROM `tabStock Entry` WHERE {' AND '.join(conds)}",
+				params,
+			)
+		for name in names:
+			if not frappe.db.exists("Stock Entry", name):
+				continue
+			if frappe.db.get_value("Stock Entry", name, "docstatus") != 1:
+				continue
+			se = frappe.get_doc("Stock Entry", name)
+			se.cancel()
+			frappe.msgprint(_("Cancelled Manufacturing Entry {0}").format(name), alert=True)
+		self.db_set("manufacturing_entries", "")
+
 
 @frappe.whitelist()
 def get_production_plan_details(production_plan):
@@ -183,6 +385,7 @@ def get_production_plan_details(production_plan):
 	pp = frappe.get_doc("Production Plan", production_plan)
 	out = {
 		"customer": pp.get("customer"),
+		"custom_unit": pp.get("custom_unit"),
 	}
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
@@ -215,35 +418,96 @@ def get_job_rows_for_production_plan(production_plan):
 	return [{"job_no": r.job_no, "total_weight": flt(r.total_weight)} for r in rows]
 
 
+def get_planning_sheet_item_for_wo(wo_name: str) -> dict:
+	"""Match Planning Sheet Item row saved against this Work Order (from Planning Sheet submit)."""
+	if not wo_name:
+		return {}
+	rows = frappe.db.sql(
+		"""
+		SELECT so_item, unit, dot_spec, gsm, meter, meter_per_roll, no_of_rolls,
+			weight_per_roll, width_inch, quality, color, warehouse, allocated_to_unit
+		FROM `tabPlanning Sheet Item`
+		WHERE work_order = %(wo)s
+		ORDER BY modified DESC
+		LIMIT 1
+		""",
+		{"wo": wo_name},
+		as_dict=True,
+	)
+	return rows[0] if rows else {}
+
+
+def _merge_planning_sheet_item_line(base: dict, ctx: dict) -> None:
+	if not ctx:
+		return
+	if ctx.get("quality"):
+		base["quality"] = ctx["quality"]
+	if ctx.get("color"):
+		base["color"] = ctx["color"]
+	if ctx.get("gsm") not in (None, ""):
+		try:
+			base["gsm"] = int(ctx["gsm"])
+		except (TypeError, ValueError):
+			pass
+	if ctx.get("width_inch") is not None:
+		w = flt(ctx["width_inch"])
+		base["width_inches"] = w
+		base["width_inch"] = w
+	if ctx.get("so_item"):
+		base["so_item"] = ctx["so_item"]
+	if ctx.get("unit"):
+		base["unit"] = ctx["unit"]
+	if ctx.get("dot_spec"):
+		base["dot_spec"] = ctx["dot_spec"]
+	if ctx.get("meter") is not None:
+		base["meter"] = ctx["meter"]
+	if ctx.get("meter_per_roll") is not None:
+		mp = flt(ctx["meter_per_roll"])
+		base["meter_per_roll"] = mp
+		base["meter_roll"] = mp
+	if ctx.get("no_of_rolls") is not None:
+		base["no_of_rolls"] = ctx["no_of_rolls"]
+	if ctx.get("weight_per_roll") is not None:
+		base["weight_per_roll"] = flt(ctx["weight_per_roll"])
+	if ctx.get("warehouse"):
+		base["warehouse"] = ctx["warehouse"]
+	if ctx.get("allocated_to_unit"):
+		base["allocated_to_unit"] = ctx["allocated_to_unit"]
+
+
 def _build_roll_items_from_spr(spr_doc, pp_name):
 	items = []
 	for job in spr_doc.jobs or []:
 		job_no = job.job_no
 		shaft_combination = get_shaft_combination(pp_name, job_no)
-		planned_qty = getattr(job, "total_weight", None) or 0
 		for wo in get_work_orders_for_job(pp_name, job_no):
 			wo_doc = frappe.get_doc("Work Order", wo["name"])
 			item_code = wo_doc.production_item
-			item_name = frappe.db.get_value("Item", item_code, "item_name")
+			item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
 			gsm, width_inch = parse_item_code(item_code)
-			items.append(
-				{
-					"job_no": job_no,
-					"shaft_combination": shaft_combination,
-					"planned_qty": planned_qty,
-					"wo_id": wo["name"],
-					"item_code": item_code,
-					"item_name": item_name,
-					"gsm": gsm,
-					"width_inches": width_inch,
-					"order_code": get_order_code(wo_doc),
-					"batch_no": "",
-					"roll_no": "",
-					"meter_per_roll": 0,
-					"net_weight": 0,
-					"gross_weight": 0,
-				}
-			)
+			quality, color = extract_quality_and_color(item_name)
+			wo_planned = flt(wo.get("planned_qty"))
+			ctx = get_planning_sheet_item_for_wo(wo["name"])
+			row = {
+				"job_no": job_no,
+				"shaft_combination": shaft_combination,
+				"planned_qty": wo_planned,
+				"wo_id": wo["name"],
+				"item_code": item_code,
+				"item_name": item_name,
+				"quality": quality,
+				"color": color,
+				"gsm": gsm,
+				"width_inches": width_inch,
+				"order_code": get_order_code(wo_doc),
+				"batch_no": "",
+				"roll_no": "",
+				"meter_per_roll": 0,
+				"net_weight": 0,
+				"gross_weight": 0,
+			}
+			_merge_planning_sheet_item_line(row, ctx)
+			items.append(row)
 	return items
 
 

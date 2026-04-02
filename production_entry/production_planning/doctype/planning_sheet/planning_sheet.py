@@ -227,8 +227,12 @@ class PlanningSheet(Document):
 
 # Utility Functions
 
-def extract_quality_and_color(item_name):
-    """Extract quality and color from item name"""
+
+@frappe.whitelist()
+def extract_quality_and_color(item_name=None):
+    """Extract quality and color from item name (callable from client)."""
+    if item_name is None:
+        item_name = frappe.form_dict.get("item_name") or ""
     QUAL_LIST = ["SUPER PLATINUM", "SUPER CLASSIC", "SUPER ECO", "ECO SPECIAL", 
                  "ECO GREEN", "ECO SPL", "LIFE STYLE", "LIFESTYLE", "PREMIUM", 
                  "PLATINUM", "CLASSIC", "DELUXE", "BRONZE", "SILVER", "ULTRA", 
