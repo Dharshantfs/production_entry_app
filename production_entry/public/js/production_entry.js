@@ -1,4 +1,4 @@
-﻿// Planning Sheet Client Script
+// Planning Sheet Client Script
 // NOTE: This file is placed under `public/js` at the app root (not under the python package folder)
 // so Frappe/esbuild can find it and bundle production_entry assets.
 
@@ -108,7 +108,7 @@ frappe.ui.form.on('Planning Sheet Item', {
         if (row.item_code) {
             // Parse item name to extract quality and color
             frappe.call({
-                method: 'production_entry.doctype.planning_sheet.planning_sheet.extract_quality_and_color',
+                method: 'production_entry.production_planning.doctype.planning_sheet.planning_sheet.extract_quality_and_color',
                 args: {
                     item_name: row.item_name
                 },
@@ -195,7 +195,7 @@ function get_item_unit_recommendation(frm, cdt, cdn) {
     let row = locals[cdt][cdn];
 
     frappe.call({
-        method: 'production_entry.doctype.planning_sheet.planning_sheet.get_quality_based_recommendation',
+        method: 'production_entry.production_planning.doctype.planning_sheet.planning_sheet.get_quality_based_recommendation',
         args: {
             quality: row.quality,
             gsm: row.gsm
@@ -246,7 +246,7 @@ function get_unit_recommendation(frm) {
 
     if (dominant_quality) {
         frappe.call({
-            method: 'production_entry.doctype.planning_sheet.planning_sheet.get_quality_based_recommendation',
+            method: 'production_entry.production_planning.doctype.planning_sheet.planning_sheet.get_quality_based_recommendation',
             args: {
                 quality: dominant_quality,
                 gsm: avg_gsm
@@ -279,7 +279,7 @@ function view_queue_status(frm) {
     }
 
     frappe.call({
-        method: 'production_entry.doctype.planning_sheet.planning_sheet.get_unit_queue_status',
+        method: 'production_entry.production_planning.doctype.planning_sheet.planning_sheet.get_unit_queue_status',
         args: {
             unit_name: frm.doc.allocated_unit
         },

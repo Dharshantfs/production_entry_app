@@ -95,9 +95,9 @@ doctype_js = {
 
 doc_events = {
     "Planning Sheet": {
-        "validate": "production_entry.doctype.planning_sheet.planning_sheet.validate_planning_sheet",
-        "before_save": "production_entry.doctype.planning_sheet.planning_sheet.allocate_unit",
-        "on_submit": "production_entry.doctype.planning_sheet.planning_sheet.update_queue"
+        "validate": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.validate_planning_sheet",
+        "before_save": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.allocate_unit",
+        "on_submit": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.update_queue"
     }
 }
 
@@ -106,10 +106,10 @@ doc_events = {
 
 scheduler_events = {
     "daily": [
-        "production_entry.doctype.planning_sheet.planning_sheet.daily_capacity_reset"
+        "production_entry.production_planning.doctype.planning_sheet.planning_sheet.daily_capacity_reset"
     ],
     "hourly": [
-        "production_entry.doctype.planning_sheet.planning_sheet.update_production_queue"
+        "production_entry.production_planning.doctype.planning_sheet.planning_sheet.update_production_queue"
     ]
 }
 
