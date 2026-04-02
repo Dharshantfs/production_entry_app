@@ -600,15 +600,12 @@ class ShaftProductionRun(Document):
 			frappe.log_error(frappe.get_traceback(), "SPR ensure Batch")
 
 	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list):
-		"""Finished-good lines: same batch number as SPR; one SE line per distinct batch (qty summed if rolls share batch)."""
+		"""One finished-good Stock Entry line per SPR roll (no merging qty by batch)."""
 		item_code = wo_doc.production_item
 		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
 		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
 		item_name = frappe.db.get_value("Item", item_code, "item_name")
 
-		# group by normalized batch so identical SPR batch strings merge to one FG row
-		totals: dict[str, float] = {}
-		order: list[str] = []
 		for spr in spr_rows:
 			qty = self._row_fg_qty(spr)
 			if qty <= 0:
@@ -623,24 +620,9 @@ class ShaftProductionRun(Document):
 						),
 						title=_("Missing Batch"),
 					)
-				key = bn
-			else:
-				key = "__no_batch__"
-			if key not in totals:
-				order.append(key)
-				totals[key] = 0.0
-			totals[key] += qty
-
-		for key in order:
-			qty = totals[key]
-			if qty <= 0:
-				continue
-			if has_batch:
-				bn = key
 				self._ensure_batch_document(bn, item_code, wo_doc.company)
 				se_batch = self._batch_doc_name_for_stock_entry(bn, item_code)
 			else:
-				bn = ""
 				se_batch = ""
 
 			row = {
