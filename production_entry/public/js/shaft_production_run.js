@@ -465,6 +465,21 @@ function spr_patch_items_grid_refresh(frm) {
 	}
 }
 
+function sprEffectiveProducedGsm(doc) {
+	const p = flt(doc.produced_gsm);
+	if (p > 0) {
+		return p;
+	}
+	const nw = flt(doc.net_weight);
+	if (nw <= 0) {
+		return 0;
+	}
+	const w = flt(doc.width_inch);
+	const ln = flt(doc.meter_roll);
+	const den = w * ln * 0.254;
+	return den > 0 ? Math.round((nw * 10000) / den * 100) / 100 : 0;
+}
+
 function ensure_spr_item_stylesheet() {
 	if (window.__sprspr_style) {
 		return;
@@ -472,21 +487,31 @@ function ensure_spr_item_stylesheet() {
 	window.__sprspr_style = true;
 	/* Roll Production Results: 4 row colors by |Sticker GSM − Produced GSM| (diff <1 / <2 / <3 / else). */
 	const css = `
+		.spr-items-wrap .grid-row.spr-gsm-band-0,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-0,
 		.fieldname-items .grid-row.spr-gsm-band-0 { background-color: #bbf7d0 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-1,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-1,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-1,
 		.fieldname-items .grid-row.spr-gsm-band-1 { background-color: #fdba74 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-2,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-2,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-2,
 		.fieldname-items .grid-row.spr-gsm-band-2 { background-color: #fbbf24 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-3,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-3,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-3,
 		.fieldname-items .grid-row.spr-gsm-band-3 { background-color: #fecaca !important; }
+		.spr-items-wrap .grid-row.spr-gsm-pending,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending,
-		.fieldname-items .grid-row.spr-gsm-pending { background-color: #f9fafb !important; }
+		.fieldname-items .grid-row.spr-gsm-pending { background-color: #dbeafe !important; }
+		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .static-value,
+		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .row-index,
+		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .col,
+		.spr-items-wrap .grid-row[class*="spr-gsm-band"] input,
+		.spr-items-wrap .grid-row[class*="spr-gsm-band"] select,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .static-value,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .row-index,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .col,
@@ -514,12 +539,15 @@ function ensure_spr_item_stylesheet() {
 			color: #374151 !important;
 		}
 	`;
-	$('head').append(`<style data-spr-items="3">${css}</style>`);
+	$('head').append(`<style data-spr-items="4">${css}</style>`);
 }
 
 function schedule_spr_item_row_styles(frm) {
 	if (!frm.fields_dict.items || !frm.fields_dict.items.grid) {
 		return;
+	}
+	if (frm.fields_dict.items.$wrapper && frm.fields_dict.items.$wrapper.length) {
+		frm.fields_dict.items.$wrapper.addClass('spr-items-wrap');
 	}
 	ensure_spr_item_stylesheet();
 	[0, 120, 280, 500].forEach(function (ms) {
@@ -556,13 +584,11 @@ function apply_spr_item_row_styles(frm) {
 			return;
 		}
 		const sticker = flt(doc.gsm);
-		const prod = flt(doc.produced_gsm);
-		const net = flt(doc.net_weight);
+		const effProd = sprEffectiveProducedGsm(doc);
 		$row.removeClass(baseClasses);
-		/* Compare when sticker is set and we have produced GSM (or net so produced can be derived). */
-		const hasGsmCompare = sticker > 0 && (prod > 0 || net > 0);
+		const hasGsmCompare = sticker > 0 && effProd > 0;
 		if (hasGsmCompare) {
-			const diff = Math.abs(prod - sticker);
+			const diff = Math.abs(effProd - sticker);
 			let band = 3;
 			if (diff < 1) {
 				band = 0;

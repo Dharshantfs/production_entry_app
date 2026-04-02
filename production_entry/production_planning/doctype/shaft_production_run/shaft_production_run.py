@@ -3,7 +3,7 @@ import re
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, flt, getdate
+from frappe.utils import cint, flt, getdate, nowtime, today
 
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	extract_quality_and_color,
@@ -576,7 +576,13 @@ class ShaftProductionRun(Document):
 				continue
 
 			se = frappe.new_doc("Stock Entry")
+			se.company = wo_doc.company
+			se.posting_date = self.run_date or today()
+			se.posting_time = nowtime()
+			se.set_posting_time = 1
 			se.stock_entry_type = "Manufacture"
+			# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
+			se.purpose = "Manufacture"
 			se.work_order = wo_id
 			se.production_item = wo_doc.production_item
 			se.fg_completed_qty = total_qty
@@ -588,21 +594,7 @@ class ShaftProductionRun(Document):
 
 			self._set_stock_entry_spr_link(se)
 
-			for row in rows:
-				se.append(
-					"items",
-					{
-						"item_code": row.item_code,
-						"item_name": row.item_name,
-						"qty": self._row_fg_qty(row),
-						"uom": "Kg",
-						"batch_no": row.batch_no,
-						"serial_no": str(row.roll_no) if row.roll_no is not None else "",
-						"t_warehouse": wo_doc.fg_warehouse,
-						"is_finished_item": 1,
-					},
-				)
-
+			# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
 			se.get_items()
 
 			se.insert()
