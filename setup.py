@@ -4,14 +4,14 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="production_planning",
-    version="0.0.1",
+    name="production_entry",
+    version="0.0.3",
     author="Your Company",
     author_email="info@yourcompany.com",
     description="Production Planning and Queuing System for Manufacturing Units",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourcompany/production_planning",
+    url="https://github.com/Dharshantfs/production_entry",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
