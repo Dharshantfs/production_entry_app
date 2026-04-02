@@ -1,21 +1,20 @@
 [build-system]
-requires = ["flit_core >=3.4,<4"]
-build-backend = "flit_core.buildapi"
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "production_planning"
+name = "production-entry"
+version = "0.0.3"
 authors = [
     {name = "Your Company", email = "info@yourcompany.com"}
 ]
 description = "Production Planning and Queuing System for Manufacturing Units"
-requires-python = ">=3.10"
 readme = "README.md"
-dynamic = ["version"]
-# Do not list `frappe` here — bench provides it; PyPI resolution fails in Docker/uv builds.
+requires-python = ">=3.10"
 dependencies = []
 
 [project.urls]
-Home = "https://github.com/Dharshantfs/production_planning"
+Home = "https://github.com/Dharshantfs/production_entry"
 
 [tool.bench.dev-dependencies]
 
