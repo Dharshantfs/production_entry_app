@@ -5,15 +5,80 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
 
+from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+	extract_quality_and_color,
+)
+
 
 def batch_shift_value(shift: str | None) -> str:
 	if not shift:
 		return ""
-	if "night" in shift.lower():
+	s = shift.lower()
+	if "night" in s:
 		return "Night"
-	if "day" in shift.lower():
+	if "day" in s:
 		return "Day"
 	return shift
+
+
+def _cstr(v) -> str:
+	return str(v).strip() if v is not None else ""
+
+
+def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None:
+	"""One row per Production Plan Shaft Detail line, field-aligned with Shaft Production Run Job."""
+	if not production_plan or not frappe.db.exists("DocType", "Production Plan Shaft Detail"):
+		return None
+	if not frappe.db.exists("Production Plan", production_plan):
+		return None
+	pp_rows = frappe.db.sql(
+		"""
+		SELECT * FROM `tabProduction Plan Shaft Detail`
+		WHERE parent = %(p)s
+		ORDER BY idx ASC
+		""",
+		{"p": production_plan},
+		as_dict=True,
+	)
+	if not pp_rows:
+		return None
+	job_meta = frappe.get_meta("Shaft Production Run Job")
+	out: list[dict] = []
+	for r in pp_rows:
+		m: dict = {}
+		jn = r.get("job_no") or r.get("job_id")
+		if not jn:
+			continue
+		m["job_id"] = _cstr(jn)
+		if r.get("shaft_combination") is not None and job_meta.has_field("combination"):
+			m["combination"] = r.get("shaft_combination")
+		for fn in (
+			"gsm",
+			"quality",
+			"combination",
+			"total_width",
+			"meter_roll_mtrs",
+			"net_weight",
+			"total_weight",
+			"custom_total_achieved_weight",
+			"no_of_shafts",
+			"party_code",
+			"work_orders",
+		):
+			if fn in r and r[fn] is not None and job_meta.has_field(fn):
+				m[fn] = r[fn]
+		if (not m.get("total_weight")) and jn:
+			tw = frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(qty), 0) FROM `tabWork Order`
+				WHERE production_plan = %(pp)s AND production_plan_item = %(job)s AND docstatus < 2
+				""",
+				{"pp": production_plan, "job": _cstr(jn)},
+			)[0][0]
+			if flt(tw) > 0:
+				m["total_weight"] = flt(tw)
+		out.append(m)
+	return out or None
 
 
 class ShaftProductionRun(Document):
@@ -340,6 +405,9 @@ def get_job_rows_for_production_plan(production_plan):
 		return []
 	if not frappe.db.exists("Production Plan", production_plan):
 		frappe.throw(_("Production Plan {0} not found").format(production_plan))
+	detailed = _build_shaft_jobs_from_pp_details(production_plan)
+	if detailed is not None:
+		return detailed
 	rows = frappe.db.sql(
 		"""
 		SELECT wo.production_plan_item AS job_no, SUM(wo.qty) AS total_weight
@@ -369,10 +437,12 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	item_code = wo_doc.production_item
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
 	gsm, width_inch = parse_item_code(item_code)
+	quality, color = extract_quality_and_color(item_name or "")
 	return {
 		"work_order": wo["name"],
 		"item_code": item_code,
 		"item_name": item_name,
+		"quality": quality or None,
 		"gsm": gsm,
 		"planned_qty": planned_qty,
 		"job": job_id,
@@ -383,6 +453,7 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		"net_weight": 0,
 		"gross_weight": 0,
 		"width_inch": width_inch,
+		"color": color or None,
 	}
 
 
