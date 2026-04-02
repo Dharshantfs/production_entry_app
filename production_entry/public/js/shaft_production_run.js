@@ -2,25 +2,76 @@ frappe.ui.form.on('Shaft Production Run', {
     production_plan: function (frm) {
         if (!frm.doc.production_plan) {
             frm.clear_table('jobs');
+            frm.clear_table('items');
             frm.refresh_field('jobs');
+            frm.refresh_field('items');
             return;
         }
+
+        if (!frm.doc.run_date) {
+            frm.set_value('run_date', frappe.datetime.get_today());
+        }
+
+        frappe.call({
+            method:
+                'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_production_plan_details',
+            args: { production_plan: frm.doc.production_plan },
+            callback: function (r) {
+                const d = r.message || {};
+                if (d.customer) {
+                    frm.set_value('customer', d.customer);
+                }
+            },
+        });
+
         frappe.call({
             method:
                 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_job_rows_for_production_plan',
-            args: {
-                production_plan: frm.doc.production_plan,
-            },
+            args: { production_plan: frm.doc.production_plan },
             freeze: true,
             freeze_message: __('Loading jobs from Work Orders...'),
             callback: function (r) {
                 frm.clear_table('jobs');
                 (r.message || []).forEach(function (row) {
-                    let child = frm.add_child('jobs');
-                    child.job_no = row.job_no;
-                    child.total_weight = row.total_weight;
+                    let c = frm.add_child('jobs');
+                    c.job_no = row.job_no;
+                    c.total_weight = row.total_weight;
                 });
                 frm.refresh_field('jobs');
+
+                frappe.call({
+                    method:
+                        'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_item_rows_for_production_plan',
+                    args: { production_plan: frm.doc.production_plan },
+                    freeze: true,
+                    freeze_message: __('Loading roll lines from Work Orders...'),
+                    callback: function (r2) {
+                        frm.clear_table('items');
+                        (r2.message || []).forEach(function (row) {
+                            let it = frm.add_child('items');
+                            [
+                                'job_no',
+                                'wo_id',
+                                'item_code',
+                                'item_name',
+                                'shaft_combination',
+                                'batch_no',
+                                'roll_no',
+                                'meter_per_roll',
+                                'net_weight',
+                                'gross_weight',
+                                'gsm',
+                                'width_inches',
+                                'order_code',
+                            ].forEach(function (k) {
+                                if (row[k] !== undefined && row[k] !== null) {
+                                    it[k] = row[k];
+                                }
+                            });
+                        });
+                        frm.refresh_field('items');
+                    },
+                });
             },
         });
     },
