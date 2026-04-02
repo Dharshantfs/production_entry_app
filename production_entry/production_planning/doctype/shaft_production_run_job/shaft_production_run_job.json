@@ -4,26 +4,9 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "field_order": [
-  "job_no",
-  "job_id",
-  "gsm",
-  "combination",
-  "total_width",
-  "meter_roll_mtrs",
-  "no_of_shafts",
-  "net_weight",
-  "total_weight"
- ],
+ "field_order": ["job_no", "total_weight"],
  "fields": [
-  {"fieldname": "job_no", "fieldtype": "Data", "in_list_view": 1, "label": "Job No"},
-  {"fieldname": "job_id", "fieldtype": "Data", "in_list_view": 1, "label": "Job ID (cloud)"},
-  {"fieldname": "gsm", "fieldtype": "Int", "label": "GSM"},
-  {"fieldname": "combination", "fieldtype": "Small Text", "label": "Combination"},
-  {"fieldname": "total_width", "fieldtype": "Float", "label": "Total Width"},
-  {"fieldname": "meter_roll_mtrs", "fieldtype": "Float", "label": "Meter / Roll (m)"},
-  {"fieldname": "no_of_shafts", "fieldtype": "Int", "label": "No of Shafts"},
-  {"fieldname": "net_weight", "fieldtype": "Small Text", "label": "Net Weight (text / notes)"},
+  {"fieldname": "job_no", "fieldtype": "Data", "in_list_view": 1, "label": "Job No", "reqd": 1},
   {"fieldname": "total_weight", "fieldtype": "Float", "in_list_view": 1, "label": "Total Weight (Kgs)"}
  ],
  "index_web_pages_for_search": 1,
