@@ -390,22 +390,41 @@ function remove_spr_items_for_job(frm, job_id) {
 	});
 }
 
+function sprNormalizeJobKey(v) {
+	if (v === undefined || v === null) {
+		return '';
+	}
+	const s = String(v).trim();
+	return s;
+}
+
+function sprShaftJobRowKey(sj) {
+	if (!sj) {
+		return '';
+	}
+	const id = sj.job_id;
+	if (id !== undefined && id !== null && String(id).trim() !== '') {
+		return sprNormalizeJobKey(id);
+	}
+	return sprNormalizeJobKey(sj.job_no);
+}
+
 function update_shaft_job_achieved_from_items(frm) {
 	if (!frappe.meta.get_docfield('Shaft Production Run Job', 'custom_total_achieved_weight')) {
 		return;
 	}
 	const sums = {};
 	(frm.doc.items || []).forEach(function (it) {
-		if (it.job === undefined || it.job === null || it.job === '') {
+		const k = sprNormalizeJobKey(it.job);
+		if (!k) {
 			return;
 		}
-		const k = String(it.job);
 		sums[k] = (sums[k] || 0) + flt(it.net_weight);
 	});
 	(frm.doc.shaft_jobs || []).forEach(function (sj) {
-		const jid = String(sj.job_id);
-		const v = sums[jid] !== undefined ? sums[jid] : 0;
-		frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', v);
+		const jid = sprShaftJobRowKey(sj);
+		const v = jid && sums[jid] !== undefined ? sums[jid] : 0;
+		frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', flt(v));
 	});
 }
 
