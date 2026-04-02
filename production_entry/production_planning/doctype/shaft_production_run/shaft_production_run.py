@@ -232,6 +232,8 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 		if job_meta.has_field("work_orders"):
 			m["work_orders"] = _work_order_names_for_pp_job(production_plan, m, idx)
 
+		_enrich_shaft_job_from_planning_sheet(production_plan, m, idx)
+
 		out.append(m)
 	return out or None
 
@@ -252,6 +254,133 @@ def _ordered_production_plan_items(production_plan: str) -> list[str]:
 		as_dict=True,
 	)
 	return [_cstr(r.ppi) for r in rows]
+
+
+def _planning_sheet_name_for_production_plan(pp_name: str) -> str | None:
+	"""Resolve Planning Sheet linked to this PP (custom field on PP, or via WO → Planning Sheet Item)."""
+	if not pp_name or not frappe.db.exists("Production Plan", pp_name):
+		return None
+	try:
+		pp_meta = frappe.get_meta("Production Plan")
+	except Exception:
+		pp_meta = None
+	if pp_meta:
+		for fname in ("planning_sheet", "custom_planning_sheet"):
+			if pp_meta.has_field(fname):
+				v = frappe.db.get_value("Production Plan", pp_name, fname)
+				if v:
+					return v
+	if not frappe.db.exists("DocType", "Planning Sheet Item"):
+		return None
+	wo_rows = frappe.db.sql(
+		"""
+		SELECT name FROM `tabWork Order`
+		WHERE production_plan = %(pp)s AND docstatus < 2
+		ORDER BY creation ASC
+		LIMIT 1
+		""",
+		{"pp": pp_name},
+	)
+	wo_name = wo_rows[0][0] if wo_rows else None
+	if wo_name:
+		pr = frappe.db.sql(
+			"SELECT parent FROM `tabPlanning Sheet Item` WHERE work_order = %s LIMIT 1",
+			wo_name,
+		)
+		if pr:
+			return pr[0][0]
+	return None
+
+
+def _planning_sheet_items_ordered(planning_sheet: str) -> list[dict]:
+	if not planning_sheet or not frappe.db.exists("Planning Sheet", planning_sheet):
+		return []
+	if not frappe.db.exists("DocType", "Planning Sheet Item"):
+		return []
+	return (
+		frappe.db.sql(
+			"""
+			SELECT * FROM `tabPlanning Sheet Item`
+			WHERE parent = %(ps)s
+			ORDER BY idx ASC
+			""",
+			{"ps": planning_sheet},
+			as_dict=True,
+		)
+		or []
+	)
+
+
+def _select_planning_sheet_item_for_job(
+	pp_name: str, m: dict, row_idx: int, items: list[dict]
+) -> dict | None:
+	if not items:
+		return None
+	woset = set()
+	if m.get("work_orders"):
+		woset = {x.strip() for x in _cstr(m["work_orders"]).split(",") if x.strip()}
+	if woset:
+		for psi in items:
+			wo = psi.get("work_order")
+			if wo and wo in woset:
+				return psi
+	ppi = m.get("production_plan_item") or m.get("job_id")
+	if ppi:
+		wonames = frappe.db.sql(
+			"""
+			SELECT name FROM `tabWork Order`
+			WHERE production_plan = %(pp)s AND production_plan_item = %(ppi)s AND docstatus < 2
+			""",
+			{"pp": pp_name, "ppi": _cstr(ppi)},
+		)
+		won = {w[0] for w in wonames or []}
+		for psi in items:
+			if psi.get("work_order") and psi["work_order"] in won:
+				return psi
+	if 0 <= row_idx < len(items):
+		return items[row_idx]
+	return None
+
+
+def _job_field_missing_or_zero(m: dict, key: str) -> bool:
+	if key not in m or m[key] is None:
+		return True
+	if isinstance(m[key], str) and _cstr(m[key]) == "":
+		return True
+	try:
+		return flt(m[key]) == 0
+	except Exception:
+		return False
+
+
+def _apply_planning_sheet_item_to_job_row(m: dict, psi: dict | None) -> None:
+	"""Fill total width, meter/roll, no. of shafts from Planning Sheet Item when not set on PP shaft row."""
+	if not psi:
+		return
+	job_meta = frappe.get_meta("Shaft Production Run Job")
+	if job_meta.has_field("total_width") and _job_field_missing_or_zero(m, "total_width"):
+		w = psi.get("width_inch")
+		if w is not None and flt(w) != 0:
+			m["total_width"] = flt(w)
+	if job_meta.has_field("meter_roll_mtrs") and _job_field_missing_or_zero(m, "meter_roll_mtrs"):
+		mp = psi.get("meter_per_roll")
+		if mp is None or flt(mp) == 0:
+			mp = psi.get("meter")
+		if mp is not None and flt(mp) != 0:
+			m["meter_roll_mtrs"] = flt(mp)
+	if job_meta.has_field("no_of_shafts") and _job_field_missing_or_zero(m, "no_of_shafts"):
+		ns = psi.get("no_of_shaft") or psi.get("no_of_shafts") or psi.get("no_of_rolls")
+		if ns is not None and flt(ns) != 0:
+			m["no_of_shafts"] = int(flt(ns))
+
+
+def _enrich_shaft_job_from_planning_sheet(pp_name: str, m: dict, row_idx: int) -> None:
+	ps = _planning_sheet_name_for_production_plan(pp_name)
+	if not ps:
+		return
+	items = _planning_sheet_items_ordered(ps)
+	psi = _select_planning_sheet_item_for_job(pp_name, m, row_idx, items)
+	_apply_planning_sheet_item_to_job_row(m, psi)
 
 
 def _spr_job_row_index(spr_doc, job_row) -> int | None:
@@ -308,7 +437,7 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 		return None
 	job_meta = frappe.get_meta("Shaft Production Run Job")
 	out: list[dict] = []
-	for r in pp_rows:
+	for row_i, r in enumerate(pp_rows):
 		m: dict = {}
 		jn = r.get("job_no") or r.get("job_id")
 		if not jn:
@@ -344,6 +473,7 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			)[0][0]
 			if flt(tw) > 0:
 				m["total_weight"] = flt(tw)
+		_enrich_shaft_job_from_planning_sheet(production_plan, m, row_i)
 		out.append(m)
 	return out or None
 
@@ -783,7 +913,15 @@ def get_job_rows_for_production_plan(production_plan):
 		{"pp": production_plan},
 		as_dict=True,
 	)
-	return [{"job_id": r.job_no, "total_weight": flt(r.total_weight)} for r in rows]
+	out = []
+	job_meta = frappe.get_meta("Shaft Production Run Job")
+	for i, r in enumerate(rows):
+		row = {"job_id": r.job_no, "total_weight": flt(r.total_weight)}
+		if job_meta.has_field("production_plan_item"):
+			row["production_plan_item"] = r.job_no
+		_enrich_shaft_job_from_planning_sheet(production_plan, row, i)
+		out.append(row)
+	return out
 
 
 def _spr_job_rows(spr_doc):
