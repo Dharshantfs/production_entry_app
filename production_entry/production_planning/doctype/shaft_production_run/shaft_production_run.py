@@ -47,12 +47,16 @@ class ShaftProductionRun(Document):
 		root_5 = f"{rd.month:02d}{unit_d}{rd.year % 100:02d}"
 		series_prefix = self._resolve_series_prefix(root_5)
 		next_roll = self._next_roll_starting(series_prefix)
+		item_meta = frappe.get_meta("Shaft Production Run Item")
 		for row in rows:
 			if row.batch_no:
 				continue
 			row.batch_no = f"{series_prefix}/{next_roll}"
-			row.roll_no = str(next_roll)
-			row.custom_shift = batch_shift_value(self.shift)
+			if item_meta.has_field("roll_no"):
+				rf = item_meta.get_field("roll_no")
+				row.roll_no = int(next_roll) if rf and rf.fieldtype == "Int" else str(next_roll)
+			if item_meta.has_field("custom_shift"):
+				row.custom_shift = batch_shift_value(self.shift)
 			next_roll += 1
 
 	def _resolve_series_prefix(self, root_5: str) -> str:
@@ -158,19 +162,20 @@ class ShaftProductionRun(Document):
 			return 0
 
 	def sync_batch_custom_fields(self):
+		batch_meta = frappe.get_meta("Batch")
 		for row in self.items or []:
 			if not row.batch_no or not frappe.db.exists("Batch", row.batch_no):
 				continue
 			data = {}
-			if row.get("gross_weight") is not None:
+			if batch_meta.has_field("custom_gross_weight") and row.get("gross_weight") is not None:
 				data["custom_gross_weight"] = flt(row.gross_weight)
-			if row.get("custom_cbm") is not None:
+			if batch_meta.has_field("custom_cbm") and row.get("custom_cbm") is not None:
 				data["custom_cbm"] = flt(row.custom_cbm)
-			if row.get("custom_diameter") is not None:
+			if batch_meta.has_field("custom_diameter") and row.get("custom_diameter") is not None:
 				data["custom_diameter"] = flt(row.custom_diameter)
-			if row.get("custom_shift"):
+			if batch_meta.has_field("custom_shift") and row.get("custom_shift"):
 				data["custom_shift"] = row.custom_shift
-			if row.get("custom_party_code_text"):
+			if batch_meta.has_field("custom_party_code_text") and row.get("custom_party_code_text"):
 				data["custom_party_code_text"] = row.custom_party_code_text
 			if not data:
 				continue
@@ -194,9 +199,10 @@ class ShaftProductionRun(Document):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry."""
 		wo_groups = {}
 		for row in self.items or []:
-			if not row.wo_id:
+			wo_name = row.get("work_order") or row.get("wo_id")
+			if not wo_name:
 				continue
-			wo_groups.setdefault(row.wo_id, []).append(row)
+			wo_groups.setdefault(wo_name, []).append(row)
 
 		created_entries = []
 
@@ -230,7 +236,7 @@ class ShaftProductionRun(Document):
 						"qty": self._row_fg_qty(row),
 						"uom": "Kg",
 						"batch_no": row.batch_no,
-						"serial_no": row.roll_no,
+						"serial_no": str(row.roll_no) if row.roll_no is not None else "",
 						"t_warehouse": wo_doc.fg_warehouse,
 						"is_finished_item": 1,
 					},
@@ -256,7 +262,13 @@ class ShaftProductionRun(Document):
 			)
 
 	def update_work_order_statuses(self):
-		wo_ids = list({row.wo_id for row in (self.items or []) if row.wo_id})
+		wo_ids = list(
+			{
+				(row.get("work_order") or row.get("wo_id"))
+				for row in (self.items or [])
+				if row.get("work_order") or row.get("wo_id")
+			}
+		)
 		for wo_id in wo_ids:
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			total_produced = frappe.db.sql(
@@ -341,23 +353,68 @@ def get_job_rows_for_production_plan(production_plan):
 		{"pp": production_plan},
 		as_dict=True,
 	)
-	return [{"job_no": r.job_no, "total_weight": flt(r.total_weight)} for r in rows]
+	return [{"job_id": r.job_no, "total_weight": flt(r.total_weight)} for r in rows]
+
+
+def _spr_job_rows(spr_doc):
+	return getattr(spr_doc, "shaft_jobs", None) or getattr(spr_doc, "jobs", None) or []
+
+
+def _spr_job_id(job):
+	return getattr(job, "job_id", None) or getattr(job, "job_no", None)
+
+
+def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
+	wo_doc = frappe.get_doc("Work Order", wo["name"])
+	item_code = wo_doc.production_item
+	item_name = frappe.db.get_value("Item", item_code, "item_name")
+	gsm, width_inch = parse_item_code(item_code)
+	return {
+		"work_order": wo["name"],
+		"item_code": item_code,
+		"item_name": item_name,
+		"gsm": gsm,
+		"planned_qty": planned_qty,
+		"job": job_id,
+		"batch_no": "",
+		"party_code": get_order_code(wo_doc),
+		"roll_no": 0,
+		"meter_roll": 0,
+		"net_weight": 0,
+		"gross_weight": 0,
+		"width_inch": width_inch,
+	}
+
+
+def _build_spr_items_from_pp(spr_doc, pp_name):
+	items = []
+	for job in _spr_job_rows(spr_doc):
+		job_id = _spr_job_id(job)
+		if not job_id:
+			continue
+		shaft_combination = get_shaft_combination(pp_name, job_id)
+		planned_qty = getattr(job, "total_weight", None) or 0
+		for wo in get_work_orders_for_job(pp_name, job_id):
+			items.append(_spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo))
+	return items
 
 
 def _build_roll_items_from_spr(spr_doc, pp_name):
 	items = []
-	for job in spr_doc.jobs or []:
-		job_no = job.job_no
-		shaft_combination = get_shaft_combination(pp_name, job_no)
+	for job in _spr_job_rows(spr_doc):
+		job_id = _spr_job_id(job)
+		if not job_id:
+			continue
+		shaft_combination = get_shaft_combination(pp_name, job_id)
 		planned_qty = getattr(job, "total_weight", None) or 0
-		for wo in get_work_orders_for_job(pp_name, job_no):
+		for wo in get_work_orders_for_job(pp_name, job_id):
 			wo_doc = frappe.get_doc("Work Order", wo["name"])
 			item_code = wo_doc.production_item
 			item_name = frappe.db.get_value("Item", item_code, "item_name")
 			gsm, width_inch = parse_item_code(item_code)
 			items.append(
 				{
-					"job_no": job_no,
+					"job_no": job_id,
 					"shaft_combination": shaft_combination,
 					"planned_qty": planned_qty,
 					"wo_id": wo["name"],
@@ -382,10 +439,10 @@ def get_item_rows_for_production_plan(production_plan):
 	if not production_plan:
 		return []
 	jobs = get_job_rows_for_production_plan(production_plan)
-	spr = frappe._dict(jobs=[])
+	spr = frappe._dict(shaft_jobs=[])
 	for j in jobs:
-		spr.jobs.append(frappe._dict(job_no=j["job_no"], total_weight=j.get("total_weight")))
-	return _build_roll_items_from_spr(spr, production_plan)
+		spr.shaft_jobs.append(frappe._dict(job_id=j["job_id"], total_weight=j.get("total_weight")))
+	return _build_spr_items_from_pp(spr, production_plan)
 
 
 @frappe.whitelist()
