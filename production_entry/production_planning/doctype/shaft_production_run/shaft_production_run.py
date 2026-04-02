@@ -1,9 +1,49 @@
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 
 class ShaftProductionRun(frappe.model.document.Document):
     pass
+
+
+@frappe.whitelist()
+def get_job_rows_for_production_plan(production_plan):
+    """
+    Build rows for the Jobs child table from Work Orders linked to this Production Plan.
+    One row per distinct production_plan_item (job) with total planned qty as weight.
+    """
+    if not production_plan:
+        return []
+
+    if not frappe.db.exists("Production Plan", production_plan):
+        frappe.throw(_("Production Plan {0} not found").format(production_plan))
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            wo.production_plan_item AS job_no,
+            SUM(wo.qty) AS total_weight
+        FROM `tabWork Order` wo
+        WHERE wo.production_plan = %(pp)s
+          AND wo.docstatus < 2
+          AND IFNULL(wo.production_plan_item, '') != ''
+        GROUP BY wo.production_plan_item
+        ORDER BY MIN(wo.creation)
+        """,
+        {"pp": production_plan},
+        as_dict=True,
+    )
+
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "job_no": r.job_no,
+                "total_weight": flt(r.total_weight),
+            }
+        )
+    return out
 
 
 @frappe.whitelist()
