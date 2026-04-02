@@ -556,6 +556,64 @@ class ShaftProductionRun(Document):
 		if meta.has_field("shaft_production_run"):
 			se.shaft_production_run = self.name
 
+	def _strip_finished_goods_from_stock_entry(self, se):
+		"""Remove FG rows from BOM-generated Stock Entry (we re-add per roll with batch_no)."""
+		items = se.get("items") or []
+		for i in range(len(items) - 1, -1, -1):
+			if getattr(items[i], "is_finished_item", 0):
+				se.items.pop(i)
+
+	def _ensure_batch_document(self, batch_id: str, item_code: str, company: str | None) -> None:
+		"""Create Batch doc if missing (item has batch; auto-create may be off on Item)."""
+		if not batch_id or frappe.db.exists("Batch", batch_id):
+			return
+		b = frappe.new_doc("Batch")
+		b.batch_id = batch_id
+		b.item = item_code
+		meta = frappe.get_meta("Batch")
+		if meta.has_field("company") and company:
+			b.company = company
+		if meta.has_field("manufacturing_date"):
+			b.manufacturing_date = self.run_date or today()
+		try:
+			b.insert(ignore_permissions=True)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR ensure Batch")
+
+	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list):
+		"""One finished-good line per SPR roll so batch_no is set (mandatory for batch-tracked FG)."""
+		item_code = wo_doc.production_item
+		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
+		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
+		item_name = frappe.db.get_value("Item", item_code, "item_name")
+
+		for spr in spr_rows:
+			qty = self._row_fg_qty(spr)
+			if qty <= 0:
+				continue
+			bn = spr.get("batch_no")
+			if has_batch:
+				if not bn:
+					frappe.throw(
+						_("Batch No is required on each roll line for batch-tracked item {0}").format(
+							item_code
+						),
+						title=_("Missing Batch"),
+					)
+				self._ensure_batch_document(_cstr(bn), item_code, wo_doc.company)
+
+			row = {
+				"item_code": item_code,
+				"item_name": item_name,
+				"qty": qty,
+				"uom": stock_uom,
+				"t_warehouse": wo_doc.fg_warehouse,
+				"is_finished_item": 1,
+			}
+			if has_batch and bn:
+				row["batch_no"] = bn
+			se.append("items", row)
+
 	def create_manufacturing_stock_entries(self):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry."""
 		wo_groups = {}
@@ -596,6 +654,9 @@ class ShaftProductionRun(Document):
 
 			# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
 			se.get_items()
+			# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
+			self._strip_finished_goods_from_stock_entry(se)
+			self._append_manufacture_fg_from_spr_rolls(se, wo_doc, rows)
 
 			se.insert()
 			se.submit()
@@ -629,7 +690,7 @@ class ShaftProductionRun(Document):
 				SELECT IFNULL(SUM(fg_completed_qty), 0)
 				FROM `tabStock Entry`
 				WHERE work_order = %s
-				  AND stock_entry_type = 'Manufacture'
+				  AND IFNULL(purpose, '') = 'Manufacture'
 				  AND docstatus = 1
 				""",
 				wo_id,
@@ -647,7 +708,7 @@ class ShaftProductionRun(Document):
 		if not names and meta_se.has_field("shaft_production_run"):
 			conds = [
 				"shaft_production_run = %s",
-				"stock_entry_type = 'Manufacture'",
+				"IFNULL(purpose, '') = 'Manufacture'",
 				"docstatus = 1",
 			]
 			params = [self.name]

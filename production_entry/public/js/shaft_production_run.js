@@ -485,7 +485,7 @@ function ensure_spr_item_stylesheet() {
 		return;
 	}
 	window.__sprspr_style = true;
-	/* Roll Production Results: 4 row colors by |Sticker GSM − Produced GSM| (diff <1 / <2 / <3 / else). */
+	/* |Sticker GSM − Produced GSM|: <1 green, 1–2 golden yellow, 2–3 orange, 3+ red */
 	const css = `
 		.spr-items-wrap .grid-row.spr-gsm-band-0,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0,
@@ -494,11 +494,11 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .grid-row.spr-gsm-band-1,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-1,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-1,
-		.fieldname-items .grid-row.spr-gsm-band-1 { background-color: #fdba74 !important; }
+		.fieldname-items .grid-row.spr-gsm-band-1 { background-color: #eab308 !important; }
 		.spr-items-wrap .grid-row.spr-gsm-band-2,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-2,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-2,
-		.fieldname-items .grid-row.spr-gsm-band-2 { background-color: #fbbf24 !important; }
+		.fieldname-items .grid-row.spr-gsm-band-2 { background-color: #fb923c !important; }
 		.spr-items-wrap .grid-row.spr-gsm-band-3,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-3,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-3,
@@ -539,7 +539,26 @@ function ensure_spr_item_stylesheet() {
 			color: #374151 !important;
 		}
 	`;
-	$('head').append(`<style data-spr-items="4">${css}</style>`);
+	$('head').append(`<style data-spr-items="5">${css}</style>`);
+}
+
+const SPR_GSM_BG = ['#bbf7d0', '#eab308', '#fb923c', '#fecaca'];
+const SPR_GSM_PENDING_BG = '#dbeafe';
+
+function sprApplyGsmRowVisual($row, bandOrPending) {
+	if (!$row || !$row.length) {
+		return;
+	}
+	if (bandOrPending === 'pending') {
+		$row.css('background-color', SPR_GSM_PENDING_BG);
+		$row.find('td').css('background-color', SPR_GSM_PENDING_BG);
+		return;
+	}
+	const n = Number(bandOrPending);
+	if (n >= 0 && n < SPR_GSM_BG.length) {
+		$row.css('background-color', SPR_GSM_BG[n]);
+		$row.find('td').css('background-color', SPR_GSM_BG[n]);
+	}
 }
 
 function schedule_spr_item_row_styles(frm) {
@@ -568,11 +587,16 @@ function apply_spr_item_row_styles(frm) {
 	const $wrap = frm.fields_dict.items.$wrapper;
 	const $fallbackRows =
 		$wrap && $wrap.length
-			? $wrap.find('.grid-body .grid-row').add($wrap.find('.form-grid .grid-row'))
+			? $wrap.find(
+					'.grid-body .grid-row, .form-grid .grid-row, .form-grid .rows .grid-row, .datatable .dt-row'
+				)
 			: $();
 
 	grid.grid_rows.forEach(function (grow, idx) {
 		let $row = grow.row;
+		if ((!$row || !$row.length) && grow.wrapper && grow.wrapper.length) {
+			$row = grow.wrapper;
+		}
 		if ((!$row || !$row.length) && $fallbackRows.length > idx) {
 			$row = $($fallbackRows.get(idx));
 		}
@@ -586,6 +610,7 @@ function apply_spr_item_row_styles(frm) {
 		const sticker = flt(doc.gsm);
 		const effProd = sprEffectiveProducedGsm(doc);
 		$row.removeClass(baseClasses);
+		$row.find('td').css('background-color', '');
 		const hasGsmCompare = sticker > 0 && effProd > 0;
 		if (hasGsmCompare) {
 			const diff = Math.abs(effProd - sticker);
@@ -598,8 +623,10 @@ function apply_spr_item_row_styles(frm) {
 				band = 2;
 			}
 			$row.addClass(bandClasses[band]);
+			sprApplyGsmRowVisual($row, band);
 		} else {
 			$row.addClass('spr-gsm-pending');
+			sprApplyGsmRowVisual($row, 'pending');
 		}
 	});
 }
