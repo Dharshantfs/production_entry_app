@@ -563,12 +563,31 @@ class ShaftProductionRun(Document):
 			if getattr(items[i], "is_finished_item", 0):
 				se.items.pop(i)
 
+	def _batch_doc_name_for_stock_entry(self, batch_id: str, item_code: str) -> str:
+		"""Resolve Batch `name` used on Stock Entry — must match existing Batch for the same batch number as SPR."""
+		bid = _cstr(batch_id)
+		if not bid:
+			return bid
+		if frappe.db.exists("Batch", bid):
+			return bid
+		nm = frappe.db.get_value(
+			"Batch",
+			{"item": item_code, "batch_id": bid},
+			"name",
+		)
+		return nm or bid
+
 	def _ensure_batch_document(self, batch_id: str, item_code: str, company: str | None) -> None:
-		"""Create Batch doc if missing (item has batch; auto-create may be off on Item)."""
-		if not batch_id or frappe.db.exists("Batch", batch_id):
+		"""Create Batch doc if missing (item has batch; auto-create may be off on Item). Uses same id string as SPR."""
+		bid = _cstr(batch_id)
+		if not bid:
+			return
+		if frappe.db.exists("Batch", bid):
+			return
+		if frappe.db.get_value("Batch", {"item": item_code, "batch_id": bid}, "name"):
 			return
 		b = frappe.new_doc("Batch")
-		b.batch_id = batch_id
+		b.batch_id = bid
 		b.item = item_code
 		meta = frappe.get_meta("Batch")
 		if meta.has_field("company") and company:
@@ -581,17 +600,21 @@ class ShaftProductionRun(Document):
 			frappe.log_error(frappe.get_traceback(), "SPR ensure Batch")
 
 	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list):
-		"""One finished-good line per SPR roll so batch_no is set (mandatory for batch-tracked FG)."""
+		"""Finished-good lines: same batch number as SPR; one SE line per distinct batch (qty summed if rolls share batch)."""
 		item_code = wo_doc.production_item
 		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
 		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
 		item_name = frappe.db.get_value("Item", item_code, "item_name")
 
+		# group by normalized batch so identical SPR batch strings merge to one FG row
+		totals: dict[str, float] = {}
+		order: list[str] = []
 		for spr in spr_rows:
 			qty = self._row_fg_qty(spr)
 			if qty <= 0:
 				continue
-			bn = spr.get("batch_no")
+			bn_raw = spr.get("batch_no")
+			bn = _cstr(bn_raw) if bn_raw is not None else ""
 			if has_batch:
 				if not bn:
 					frappe.throw(
@@ -600,7 +623,25 @@ class ShaftProductionRun(Document):
 						),
 						title=_("Missing Batch"),
 					)
-				self._ensure_batch_document(_cstr(bn), item_code, wo_doc.company)
+				key = bn
+			else:
+				key = "__no_batch__"
+			if key not in totals:
+				order.append(key)
+				totals[key] = 0.0
+			totals[key] += qty
+
+		for key in order:
+			qty = totals[key]
+			if qty <= 0:
+				continue
+			if has_batch:
+				bn = key
+				self._ensure_batch_document(bn, item_code, wo_doc.company)
+				se_batch = self._batch_doc_name_for_stock_entry(bn, item_code)
+			else:
+				bn = ""
+				se_batch = ""
 
 			row = {
 				"item_code": item_code,
@@ -610,8 +651,8 @@ class ShaftProductionRun(Document):
 				"t_warehouse": wo_doc.fg_warehouse,
 				"is_finished_item": 1,
 			}
-			if has_batch and bn:
-				row["batch_no"] = bn
+			if has_batch and se_batch:
+				row["batch_no"] = se_batch
 			se.append("items", row)
 
 	def create_manufacturing_stock_entries(self):
