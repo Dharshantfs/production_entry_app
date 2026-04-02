@@ -10,6 +10,7 @@
   "gsm",
   "quality",
   "combination",
+  "notes",
   "total_width",
   "meter_roll_mtrs",
   "net_weight",
@@ -52,6 +53,12 @@
    "fieldname": "combination",
    "fieldtype": "Small Text",
    "label": "Combination",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes",
    "read_only": 1
   },
   {

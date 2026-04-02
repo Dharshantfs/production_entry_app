@@ -130,6 +130,7 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 		field_aliases = {
 			"gsm": ("gsm", "custom_gsm"),
 			"quality": ("quality", "custom_quality"),
+			"notes": ("notes", "custom_notes"),
 			"total_width": (
 				"combined_width",
 				"total_width",
@@ -321,6 +322,7 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			"gsm",
 			"quality",
 			"combination",
+			"notes",
 			"total_width",
 			"meter_roll_mtrs",
 			"net_weight",
