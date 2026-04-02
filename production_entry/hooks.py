@@ -1,6 +1,6 @@
 from . import __version__ as app_version
 
-app_name = "production_planning"
+app_name = "production_entry"
 app_title = "Production Planning"
 app_publisher = "Your Company"
 app_description = "Production Planning and Queuing System for Manufacturing Units"
@@ -13,15 +13,15 @@ app_license = "MIT"
 # ------------------
 
 # include js, css files in header of desk.html
-# app_include_css = "/assets/production_planning/css/production_planning.css"
-# app_include_js = "/assets/production_planning/js/production_planning.js"
+# app_include_css = "/assets/production_entry/css/production_entry.css"
+# app_include_js = "/assets/production_entry/js/production_entry.js"
 
 # include js, css files in header of web template
-# web_include_css = "/assets/production_planning/css/production_planning.css"
-# web_include_js = "/assets/production_planning/js/production_planning.js"
+# web_include_css = "/assets/production_entry/css/production_entry.css"
+# web_include_js = "/assets/production_entry/js/production_entry.js"
 
 # include custom scss in every website theme (without file extension ".scss")
-# website_theme_scss = "production_planning/public/scss/website"
+# website_theme_scss = "production_entry/public/scss/website"
 
 # include js, css files in header of web form
 # webform_include_js = {"doctype": "public/js/doctype.js"}
@@ -32,7 +32,9 @@ app_license = "MIT"
 
 # include js in doctype views
 doctype_js = {
-    "Planning Sheet": "public/js/planning_sheet.js"
+    "Planning Sheet": "public/js/production_entry.js",
+    "Shaft Production Run": "public/js/shaft_production_run.js",
+    "Roll Production Entry": "public/js/roll_production_entry.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -58,14 +60,14 @@ doctype_js = {
 # Installation
 # ------------
 
-# before_install = "production_planning.install.before_install"
-# after_install = "production_planning.install.after_install"
+# before_install = "production_entry.install.before_install"
+# after_install = "production_entry.install.after_install"
 
 # Desk Notifications
 # -------------------
 # See frappe.core.notifications.get_notification_config
 
-# notification_config = "production_planning.notifications.get_notification_config"
+# notification_config = "production_entry.notifications.get_notification_config"
 
 # Permissions
 # -----------
@@ -93,9 +95,9 @@ doctype_js = {
 
 doc_events = {
     "Planning Sheet": {
-        "validate": "production_planning.production_planning.doctype.planning_sheet.planning_sheet.validate_planning_sheet",
-        "before_save": "production_planning.production_planning.doctype.planning_sheet.planning_sheet.allocate_unit",
-        "on_submit": "production_planning.production_planning.doctype.planning_sheet.planning_sheet.update_queue"
+        "validate": "production_entry.production_entry.doctype.planning_sheet.planning_sheet.validate_planning_sheet",
+        "before_save": "production_entry.production_entry.doctype.planning_sheet.planning_sheet.allocate_unit",
+        "on_submit": "production_entry.production_entry.doctype.planning_sheet.planning_sheet.update_queue"
     }
 }
 
@@ -104,30 +106,30 @@ doc_events = {
 
 scheduler_events = {
     "daily": [
-        "production_planning.production_planning.doctype.planning_sheet.planning_sheet.daily_capacity_reset"
+        "production_entry.production_entry.doctype.planning_sheet.planning_sheet.daily_capacity_reset"
     ],
     "hourly": [
-        "production_planning.production_planning.doctype.planning_sheet.planning_sheet.update_production_queue"
+        "production_entry.production_entry.doctype.planning_sheet.planning_sheet.update_production_queue"
     ]
 }
 
 # Testing
 # -------
 
-# before_tests = "production_planning.install.before_tests"
+# before_tests = "production_entry.install.before_tests"
 
 # Overriding Methods
 # ------------------------------
 #
 # override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "production_planning.event.get_events"
+# 	"frappe.desk.doctype.event.event.get_events": "production_entry.event.get_events"
 # }
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
 # along with any modifications made in other Frappe apps
 # override_doctype_dashboards = {
-# 	"Task": "production_planning.task.get_dashboard_data"
+# 	"Task": "production_entry.task.get_dashboard_data"
 # }
 
 # exempt linked doctypes from being automatically cancelled
@@ -163,5 +165,5 @@ user_data_fields = [
 # --------------------------------
 
 # auth_hooks = [
-# 	"production_planning.auth.validate"
+# 	"production_entry.auth.validate"
 # ]

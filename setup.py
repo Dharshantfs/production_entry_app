@@ -25,9 +25,7 @@ setup(
         "Framework :: Frappe",
     ],
     python_requires=">=3.7",
-    install_requires=[
-        "frappe",
-    ],
+    install_requires=[],
     zip_safe=False,
     include_package_data=True,
 )

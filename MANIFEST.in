@@ -1,0 +1,5 @@
+include README.md
+include license.txt
+recursive-include production_entry *.py *.txt
+recursive-include production_entry/doctype *.json *.py *.js *.html
+recursive-include production_entry/public *

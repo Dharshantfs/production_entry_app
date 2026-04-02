@@ -1,0 +1,1 @@
+﻿# Frappe is installed by the bench environment, not from PyPI here.

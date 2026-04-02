@@ -32,7 +32,11 @@
   "total_weight",
   "column_break_17",
   "estimated_production_days",
-  "queue_position"
+  "queue_position",
+  "section_break_approval",
+  "custom_approval_status",
+  "custom_draft_planned_date",
+  "custom_draft_idx"
  ],
  "fields": [
   {
@@ -194,6 +198,30 @@
    "fieldname": "queue_position",
    "fieldtype": "Int",
    "label": "Queue Position",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_approval",
+   "fieldtype": "Section Break",
+   "label": "Approval Workflow"
+  },
+  {
+   "fieldname": "custom_approval_status",
+   "fieldtype": "Select",
+   "label": "Approval Status",
+   "options": "\nPending Approval\nApproved",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_draft_planned_date",
+   "fieldtype": "Date",
+   "label": "Draft Planned Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_draft_idx",
+   "fieldtype": "Int",
+   "label": "Draft Index",
    "read_only": 1
   }
  ],

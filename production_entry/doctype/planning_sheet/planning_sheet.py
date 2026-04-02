@@ -20,14 +20,89 @@ class PlanningSheet(Document):
             self.allocate_unit_to_sheet()
     
     def on_submit(self):
-        """Update queue and create work orders on submit"""
+        """Update queue and create Production Plans + Work Orders on submit"""
         self.update_queue_position()
+        self.create_production_docs()
         self.planning_status = "Finalized"
     
+    def create_production_docs(self):
+        """Build separate Production Plans and Work Orders for each item to handle mixing details"""
+        for item in self.items:
+            # Create Production Plan
+            pp = frappe.get_doc({
+                "doctype": "Production Plan",
+                "naming_series": "PP-",
+                "company": self.company or frappe.get_cached_value('Company', None, 'name') or frappe.defaults.get_user_default('company'),
+                "get_items_from": "Sales Order",
+                "posting_date": getdate(),
+                "custom_unit": self.allocated_unit,
+                "po_items": [
+                    {
+                        "sales_order": self.sales_order,
+                        "sales_order_item": item.so_item,
+                        "item_code": item.item_code,
+                        "planned_qty": item.qty,
+                        "warehouse": item.warehouse or frappe.db.get_value("Item", item.item_code, "default_warehouse")
+                    }
+                ]
+            })
+            pp.insert()
+            pp.submit()
+            
+            # Create Work Order from PP
+            # Note: In standard ERPNext, we call make_work_order from PP
+            pp.make_work_orders()
+            
+            # Map WO name back to item
+            wo_name = frappe.db.get_value("Work Order", {"production_plan": pp.name, "production_plan_item": pp.po_items[0].name}, "name")
+            if wo_name:
+                item.work_order = wo_name
+        
+        self.db_update()
+
     def validate_items(self):
         """Validate that items are present"""
         if not self.items:
             frappe.throw("Please add at least one item to the Planning Sheet")
+    
+    @frappe.whitelist()
+    def make_consolidated_production_entry(self):
+        """Generate a single step Production Entry for all Work Orders in this Planning Sheet"""
+        self.check_permission("write")
+        
+        entry_results = []
+        for item in self.items:
+            if not item.work_order:
+                continue
+            
+            wo = frappe.get_doc("Work Order", item.work_order)
+            if wo.status in ["Completed", "Closed"]:
+                continue
+            
+            try:
+                # Calculate what's left to produce
+                pending_qty = flt(wo.qty) - flt(wo.produced_qty)
+                if pending_qty <= 0:
+                    continue
+                
+                # Logic to determine production qty (for now full pending)
+                # In a real scenario, this would be passed from a dialog
+                prod_qty = pending_qty
+                
+                # Create Stock Entry for Manufacture
+                from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
+                se = frappe.get_doc(make_stock_entry(wo.name, "Manufacture", prod_qty))
+                se.insert()
+                se.submit()
+                
+                entry_results.append(f"Created Entry {se.name} for {item.item_code}")
+                
+            except Exception as e:
+                frappe.log_error(f"Production Entry Error for {item.work_order}: {str(e)}")
+                entry_results.append(f"Error for {item.item_code}: {str(e)}")
+        
+        return entry_results
+
     
     def calculate_totals(self):
         """Calculate total quantity and weight"""

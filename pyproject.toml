@@ -1,9 +1,9 @@
-[build-system]
+﻿[build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "production-entry"
+name = "production_entry"
 version = "0.0.3"
 authors = [
     {name = "Your Company", email = "info@yourcompany.com"}
@@ -15,6 +15,10 @@ dependencies = []
 
 [project.urls]
 Home = "https://github.com/Dharshantfs/production_entry"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["production_entry*"]
 
 [tool.bench.dev-dependencies]
 

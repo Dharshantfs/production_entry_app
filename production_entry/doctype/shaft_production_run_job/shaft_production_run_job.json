@@ -1,0 +1,24 @@
+﻿{
+ "actions": [],
+ "creation": "2026-04-02 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["job_no", "total_weight"],
+ "fields": [
+  {"fieldname": "job_no", "fieldtype": "Data", "in_list_view": 1, "label": "Job No", "reqd": 1},
+  {"fieldname": "total_weight", "fieldtype": "Float", "in_list_view": 1, "label": "Total Weight"}
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-02 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "Shaft Production Run Job",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

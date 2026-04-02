@@ -1,4 +1,4 @@
-frappe.ui.form.on('Shaft Production Run', {
+﻿frappe.ui.form.on('Shaft Production Run', {
     refresh: function(frm) {
         if (frm.doc.docstatus === 1) {
             frm.add_custom_button(__('Create Roll Production Entry'), function() {
@@ -10,7 +10,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
 function create_roll_production_entry(frm) {
     frappe.call({
-        method: 'production_entry.production_entry.doctype.shaft_production_run.shaft_production_run.get_or_create_roll_entry',
+        method: 'production_entry.doctype.shaft_production_run.shaft_production_run.get_or_create_roll_entry',
         args: {
             shaft_production_run: frm.doc.name
         },
@@ -34,3 +34,4 @@ function create_roll_production_entry(frm) {
         }
     });
 }
+
