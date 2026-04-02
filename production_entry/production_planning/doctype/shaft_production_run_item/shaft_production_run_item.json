@@ -18,6 +18,7 @@
   "roll_no",
   "meter_roll",
   "net_weight",
+  "produced_gsm",
   "gross_weight",
   "save_row",
   "uom",
@@ -104,6 +105,13 @@
    "fieldtype": "Float",
    "label": "Net Weight",
    "read_only": 1
+  },
+  {
+   "fieldname": "produced_gsm",
+   "fieldtype": "Float",
+   "label": "Produced GSM",
+   "read_only": 1,
+   "precision": "2"
   },
   {
    "fieldname": "gross_weight",

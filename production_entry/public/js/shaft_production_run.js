@@ -107,6 +107,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					});
 				});
 				frm.refresh_field('items');
+				(frm.doc.items || []).forEach(function (row) {
+					spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
+				});
 				schedule_spr_item_row_styles(frm);
 				frappe.show_alert({
 					message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
@@ -118,7 +121,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 });
 
 frappe.ui.form.on('Shaft Production Run Item', {
-	net_weight: function (frm) {
+	net_weight: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
 		schedule_spr_item_row_styles(frm);
 	},
 	gross_weight: function (frm) {
@@ -127,7 +131,26 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);
 	},
+	width_inch: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+	},
+	meter_roll: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+	},
 });
+
+function spr_update_produced_gsm(frm, cdt, cdn) {
+	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_gsm')) {
+		return;
+	}
+	const row = locals[cdt][cdn];
+	const nw = flt(row.net_weight);
+	const w = flt(row.width_inch);
+	const ln = flt(row.meter_roll);
+	const den = w * ln * 0.254;
+	const val = den > 0 ? Math.round((nw * 10000) / den * 100) / 100 : 0;
+	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
+}
 
 function fetch_and_show_pp_wo_summary(frm) {
 	if (!frm.doc.production_plan) {

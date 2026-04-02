@@ -3,7 +3,7 @@ import re
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	extract_quality_and_color,
@@ -48,6 +48,30 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 	return t.isalnum()
 
 
+def compute_produced_gsm(net_weight, width_inch, length_m) -> float:
+	"""Roll line GSM from actuals: (net_weight * 10000) / (width_inch * length_m * 0.254)."""
+	nw = flt(net_weight)
+	w = flt(width_inch)
+	ln = flt(length_m)
+	den = w * ln * 0.254
+	if den <= 0:
+		return 0.0
+	return round((nw * 10000.0) / den, 2)
+
+
+def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
+	"""Comma-separated WO names for this shaft row (matches WO resolution order)."""
+	wo_key = m.get("production_plan_item") or m.get("job_id")
+	wos = []
+	if wo_key:
+		wos = get_work_orders_for_job(production_plan, _cstr(wo_key))
+	if not wos:
+		ord_ppi = _ordered_production_plan_items(production_plan)
+		if idx < len(ord_ppi):
+			wos = get_work_orders_for_job(production_plan, ord_ppi[idx])
+	return ", ".join(w["name"] for w in wos) if wos else ""
+
+
 def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[dict] | None:
 	"""
 	Load Available Jobs from Production Plan.custom_shaft_details (Table field on PP).
@@ -73,14 +97,22 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 	out: list[dict] = []
 	for idx, r in enumerate(pp_rows):
 		m: dict = {}
-		readable = (
-			r.get("job")
-			if r.get("job") is not None and _cstr(r.get("job")) != ""
-			else None
-		)
-		if readable is None:
+		# Shaft Plan Detail: Job is field s_no (Int); also accept job / job_no / job_id
+		readable = None
+		if r.get("s_no") is not None and _cstr(r.get("s_no")) != "":
+			try:
+				readable = str(int(flt(r["s_no"])))
+			except (TypeError, ValueError):
+				readable = _cstr(r.get("s_no"))
+		if not readable:
+			readable = (
+				_cstr(r.get("job"))
+				if r.get("job") is not None and _cstr(r.get("job")) != ""
+				else None
+			)
+		if not readable:
 			readable = r.get("job_no") or r.get("job_id")
-		if readable is None or _cstr(readable) == "":
+		if not readable or _cstr(readable) == "":
 			readable = str(idx + 1)
 		m["job_id"] = _cstr(readable)
 
@@ -94,14 +126,25 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 		if comb is not None and job_meta.has_field("combination"):
 			m["combination"] = comb
 
+		# Map Shaft Plan Detail fieldnames: combined_width, meter__roll, no_of_shaft, total_weight_kgs
 		field_aliases = {
 			"gsm": ("gsm", "custom_gsm"),
 			"quality": ("quality", "custom_quality"),
-			"total_width": ("total_width", "total_width_inches", "custom_total_width"),
-			"meter_roll_mtrs": ("meter_roll_mtrs", "meter_per_roll", "custom_meter_roll_mtrs"),
-			"no_of_shafts": ("no_of_shafts", "custom_no_of_shafts"),
+			"total_width": (
+				"combined_width",
+				"total_width",
+				"total_width_inches",
+				"custom_total_width",
+			),
+			"meter_roll_mtrs": (
+				"meter__roll",
+				"meter_roll_mtrs",
+				"meter_per_roll",
+				"custom_meter_roll_mtrs",
+			),
+			"no_of_shafts": ("no_of_shafts", "no_of_shaft", "custom_no_of_shafts"),
 			"net_weight": ("net_weight", "net_weight_per_shaft", "custom_net_weight_per_shaft"),
-			"total_weight": ("total_weight", "custom_total_weight"),
+			"total_weight": ("total_weight_kgs", "total_weight", "custom_total_weight"),
 			"custom_total_achieved_weight": ("custom_total_achieved_weight",),
 			"party_code": ("party_code", "order_code", "custom_party_code"),
 			"work_orders": ("work_orders", "custom_work_orders"),
@@ -116,6 +159,12 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 						val = str(val)
 					m[target] = val
 					break
+
+		if m.get("gsm") is not None and m.get("gsm") != "":
+			try:
+				m["gsm"] = int(flt(str(m["gsm"]).strip().split()[0]))
+			except Exception:
+				pass
 
 		skip_copy = {
 			"name",
@@ -134,11 +183,16 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 			"job",
 			"job_no",
 			"job_id",
+			"s_no",
 			"name",
 			"production_plan_item",
 			"against_production_plan_item",
 			"shaft_combination",
 			"combination",
+			"combined_width",
+			"meter__roll",
+			"no_of_shaft",
+			"total_weight_kgs",
 		}
 		for fn, v in r.items():
 			if fn in skip_copy or fn in skip_alias or v is None:
@@ -173,6 +227,10 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 					)[0][0]
 			if flt(tw) > 0:
 				m["total_weight"] = flt(tw)
+
+		if job_meta.has_field("work_orders"):
+			m["work_orders"] = _work_order_names_for_pp_job(production_plan, m, idx)
+
 		out.append(m)
 	return out or None
 
@@ -290,7 +348,16 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 
 class ShaftProductionRun(Document):
 	def validate(self):
+		self.calculate_produced_gsm()
 		self.generate_batch_numbers()
+
+	def calculate_produced_gsm(self):
+		"""Set produced_gsm on each roll line from net weight, width (inch), length (m)."""
+		meta = frappe.get_meta("Shaft Production Run Item")
+		if not meta.has_field("produced_gsm"):
+			return
+		for row in self.items or []:
+			row.produced_gsm = compute_produced_gsm(row.net_weight, row.width_inch, row.meter_roll)
 
 	def on_submit(self):
 		self.sync_batch_custom_fields()
@@ -887,6 +954,18 @@ def get_shaft_combination(pp_name, job_no):
 	child_dt = _production_plan_custom_shaft_child_doctype()
 	if child_dt:
 		meta_child = frappe.get_meta(child_dt)
+		if meta_child.has_field("s_no"):
+			s_no_candidates = [job_no]
+			try:
+				s_no_candidates.append(cint(job_no))
+			except Exception:
+				pass
+			for candidate in s_no_candidates:
+				if candidate is None or candidate == "":
+					continue
+				v = frappe.db.get_value(child_dt, {"parent": pp_name, "s_no": candidate}, "combination")
+				if v:
+					return v
 		for jf in ("job", "job_no", "job_id"):
 			if not meta_child.has_field(jf):
 				continue
