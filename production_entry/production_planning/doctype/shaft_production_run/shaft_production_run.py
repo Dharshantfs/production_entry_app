@@ -682,10 +682,15 @@ def get_production_plan_details(production_plan):
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
 		return {}
 	pp = frappe.get_doc("Production Plan", production_plan)
+	pp_meta = frappe.get_meta("Production Plan")
 	out = {
 		"customer": pp.get("customer"),
 		"custom_unit": pp.get("custom_unit"),
 	}
+	if pp_meta.has_field("custom_order_code") and pp.get("custom_order_code") is not None:
+		out["custom_order_code"] = pp.get("custom_order_code")
+	if pp_meta.has_field("custom_party_code") and pp.get("custom_party_code") not in (None, ""):
+		out["custom_party_code"] = pp.get("custom_party_code")
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True
@@ -761,26 +766,49 @@ def _segment_weights_kg(job_row, segs: int) -> list[float]:
 	return [0.0] * segs
 
 
-def _shaft_kgs(job_row) -> float:
-	"""Target kg per shaft: total target weight / no of shafts (minimum 1 shaft)."""
-	tw = flt(getattr(job_row, "total_weight", 0) or 0)
-	ns = int(flt(getattr(job_row, "no_of_shafts", 0) or 0))
-	if ns < 1:
-		ns = 1
-	return tw / ns if tw else 0.0
-
-
 def _planned_qty_for_roll_line(job_row, roll_index: int, segs: int) -> float:
-	"""Planned qty = (segment net kg for this combination) / shaft_kgs."""
+	"""Planned qty = net weight (kg) for this combination segment (e.g. 48\"→89.61, 37\"→69.08)."""
 	if segs < 1:
 		segs = 1
 	seg_weights = _segment_weights_kg(job_row, segs)
 	seg_i = roll_index % segs
 	seg_kg = seg_weights[seg_i] if seg_i < len(seg_weights) else 0.0
-	sk = _shaft_kgs(job_row)
-	if sk > 1e-9:
-		return round(seg_kg / sk, 3)
-	return round(seg_kg, 3)
+	return round(flt(seg_kg), 3)
+
+
+@frappe.whitelist()
+def get_next_spr_batch_numbers(shaft_production_run, count, client_max_roll=None):
+	"""
+	Preview batch/roll numbers for new rows (e.g. after Create Entry) without submitting SPR.
+	Requires run_date, custom_unit, shift. Optional client_max_roll = highest roll index already on the form.
+	"""
+	count = cint(count)
+	if count < 1:
+		return []
+	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
+		frappe.throw(_("Save the Shaft Production Run first"))
+	doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	if not doc.run_date or not doc.get("custom_unit") or not doc.shift:
+		frappe.throw(_("Set Run Date, Unit, and Shift to assign batch numbers."))
+	rd = getdate(doc.run_date)
+	unit_d = doc._unit_digit()
+	root_5 = f"{rd.month:02d}{unit_d}{rd.year % 100:02d}"
+	series_prefix = doc._resolve_series_prefix(root_5)
+	next_roll = doc._next_roll_starting(series_prefix)
+	try:
+		if client_max_roll is not None and cint(client_max_roll) >= 0:
+			next_roll = max(int(next_roll), cint(client_max_roll) + 1)
+	except Exception:
+		pass
+	item_meta = frappe.get_meta("Shaft Production Run Item")
+	out = []
+	for _i in range(count):
+		bn = f"{series_prefix}/{next_roll}"
+		rf = item_meta.get_field("roll_no")
+		rn = int(next_roll) if rf and rf.fieldtype == "Int" else str(next_roll)
+		out.append({"batch_no": bn, "roll_no": rn})
+		next_roll += 1
+	return out
 
 
 @frappe.whitelist()

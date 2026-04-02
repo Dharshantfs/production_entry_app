@@ -1,4 +1,21 @@
 frappe.ui.form.on('Shaft Production Run', {
+	setup: function (frm) {
+		frm.add_custom_button(
+			__('Manual job'),
+			function () {
+				frm.scroll_to_field('shaft_jobs');
+			},
+			__('Actions')
+		);
+		frm.add_custom_button(
+			__('Bundle packaging'),
+			function () {
+				frm.scroll_to_field('bundle_stickers');
+			},
+			__('Actions')
+		);
+	},
+
 	production_plan: function (frm) {
 		if (!frm.doc.production_plan) {
 			frm.clear_table('shaft_jobs');
@@ -27,6 +44,35 @@ frappe.ui.form.on('Shaft Production Run', {
 				}
 				if (d.custom_unit !== undefined && d.custom_unit !== null && d.custom_unit !== '') {
 					frm.set_value('custom_unit', d.custom_unit);
+				}
+				if (d.custom_order_code !== undefined && d.custom_order_code !== null && d.custom_order_code !== '') {
+					frm.set_value('custom_order_code', d.custom_order_code);
+				}
+				if (d.custom_party_code !== undefined && d.custom_party_code !== null && String(d.custom_party_code).trim() !== '') {
+					const v = String(d.custom_party_code).trim();
+					const field = frm.get_field('custom_label');
+					const raw = field && field.df && field.df.options ? field.df.options : '';
+					const opts = raw
+						? raw
+								.split('\n')
+								.map(function (s) {
+									return s.trim();
+								})
+								.filter(Boolean)
+						: [];
+					let pick = opts.indexOf(v) >= 0 ? v : null;
+					if (!pick) {
+						const low = v.toLowerCase();
+						for (let i = 0; i < opts.length; i++) {
+							if (opts[i].toLowerCase() === low) {
+								pick = opts[i];
+								break;
+							}
+						}
+					}
+					if (pick) {
+						frm.set_value('custom_label', pick);
+					}
 				}
 			},
 		});
@@ -110,15 +156,77 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					});
 				});
 				frm.refresh_field('items');
-				(frm.doc.items || []).forEach(function (row) {
-					spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
-				});
-				update_shaft_job_achieved_from_items(frm);
-				schedule_spr_item_row_styles(frm);
-				frappe.show_alert({
-					message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
-					indicator: 'green',
-				});
+				const n = lines.length;
+				const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
+
+				function maxRollBeforeNew() {
+					let maxRoll = 0;
+					const all = frm.doc.items || [];
+					for (let i = 0; i < startIdx; i++) {
+						const row = all[i];
+						if (row.batch_no && String(row.batch_no).indexOf('/') !== -1) {
+							const parts = String(row.batch_no).split('/');
+							const p = parts[parts.length - 1];
+							const num = parseInt(p, 10);
+							if (!isNaN(num)) {
+								maxRoll = Math.max(maxRoll, num);
+							}
+						}
+						if (row.roll_no !== undefined && row.roll_no !== null && row.roll_no !== '') {
+							const num = parseInt(String(row.roll_no), 10);
+							if (!isNaN(num)) {
+								maxRoll = Math.max(maxRoll, num);
+							}
+						}
+					}
+					return maxRoll;
+				}
+
+				function finishCreateEntry() {
+					(frm.doc.items || []).forEach(function (row) {
+						spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
+					});
+					update_shaft_job_achieved_from_items(frm);
+					schedule_spr_item_row_styles(frm);
+					frappe.show_alert({
+						message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
+						indicator: 'green',
+					});
+				}
+
+				if (n > 0) {
+					frappe.call({
+						method:
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_next_spr_batch_numbers',
+						args: {
+							shaft_production_run: frm.doc.name,
+							count: n,
+							client_max_roll: maxRollBeforeNew(),
+						},
+						callback: function (r2) {
+							const nums = r2.message || [];
+							const fresh = frm.doc.items || [];
+							for (let i = 0; i < nums.length; i++) {
+								const row = fresh[startIdx + i];
+								if (row && nums[i]) {
+									if (nums[i].batch_no) {
+										frappe.model.set_value(row.doctype, row.name, 'batch_no', nums[i].batch_no);
+									}
+									if (nums[i].roll_no !== undefined && nums[i].roll_no !== null) {
+										frappe.model.set_value(row.doctype, row.name, 'roll_no', nums[i].roll_no);
+									}
+								}
+							}
+							frm.refresh_field('items');
+							finishCreateEntry();
+						},
+						error: function () {
+							finishCreateEntry();
+						},
+					});
+				} else {
+					finishCreateEntry();
+				}
 			},
 		});
 	},
