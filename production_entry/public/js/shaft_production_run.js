@@ -539,26 +539,78 @@ function ensure_spr_item_stylesheet() {
 			color: #374151 !important;
 		}
 	`;
-	$('head').append(`<style data-spr-items="5">${css}</style>`);
+	$('head').append(`<style data-spr-items="6">${css}</style>`);
 }
 
 const SPR_GSM_BG = ['#bbf7d0', '#eab308', '#fb923c', '#fecaca'];
 const SPR_GSM_PENDING_BG = '#dbeafe';
+
+function sprSetRowBgImportant($el, color) {
+	if (!$el || !$el.length) {
+		return;
+	}
+	const set = function (node) {
+		if (node && node.style) {
+			node.style.setProperty('background-color', color, 'important');
+		}
+	};
+	$el.each(function () {
+		set(this);
+	});
+	$el.find('td, .col, .static-value, .editable-row, .row-index').each(function () {
+		set(this);
+	});
+}
 
 function sprApplyGsmRowVisual($row, bandOrPending) {
 	if (!$row || !$row.length) {
 		return;
 	}
 	if (bandOrPending === 'pending') {
-		$row.css('background-color', SPR_GSM_PENDING_BG);
-		$row.find('td').css('background-color', SPR_GSM_PENDING_BG);
+		sprSetRowBgImportant($row, SPR_GSM_PENDING_BG);
 		return;
 	}
 	const n = Number(bandOrPending);
 	if (n >= 0 && n < SPR_GSM_BG.length) {
-		$row.css('background-color', SPR_GSM_BG[n]);
-		$row.find('td').css('background-color', SPR_GSM_BG[n]);
+		sprSetRowBgImportant($row, SPR_GSM_BG[n]);
 	}
+}
+
+function sprClearRowBg($row) {
+	if (!$row || !$row.length) {
+		return;
+	}
+	const clear = function (node) {
+		if (node && node.style) {
+			node.style.removeProperty('background-color');
+		}
+	};
+	$row.each(function () {
+		clear(this);
+	});
+	$row.find('td, .col, .static-value, .editable-row, .row-index').each(function () {
+		clear(this);
+	});
+}
+
+function sprEnsureItemsGridObserver(frm) {
+	if (frm._spr_items_mo) {
+		return;
+	}
+	const $w = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
+	if (!$w || !$w.length) {
+		return;
+	}
+	let timer = null;
+	frm._spr_items_mo = new MutationObserver(function () {
+		if (timer) {
+			clearTimeout(timer);
+		}
+		timer = setTimeout(function () {
+			apply_spr_item_row_styles(frm);
+		}, 80);
+	});
+	frm._spr_items_mo.observe($w[0], { childList: true, subtree: true });
 }
 
 function schedule_spr_item_row_styles(frm) {
@@ -568,49 +620,71 @@ function schedule_spr_item_row_styles(frm) {
 	if (frm.fields_dict.items.$wrapper && frm.fields_dict.items.$wrapper.length) {
 		frm.fields_dict.items.$wrapper.addClass('spr-items-wrap');
 	}
+	sprEnsureItemsGridObserver(frm);
 	ensure_spr_item_stylesheet();
-	[0, 120, 280, 500].forEach(function (ms) {
+	[0, 50, 150, 400, 900].forEach(function (ms) {
 		setTimeout(function () {
 			apply_spr_item_row_styles(frm);
 		}, ms);
 	});
 }
 
+function sprResolveItemsRowElement(frm, doc, grid, idx) {
+	let $row = null;
+	const byName = doc && doc.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[doc.name];
+	if (byName) {
+		if (byName.row && byName.row.length) {
+			$row = byName.row;
+		} else if (byName.wrapper && byName.wrapper.length) {
+			$row = byName.wrapper;
+		}
+	}
+	const $wrap = frm.fields_dict.items.$wrapper;
+	if ((!$row || !$row.length) && $wrap && $wrap.length && doc && doc.name) {
+		$row = $wrap.find('.grid-row[data-docname="' + doc.name + '"]');
+		if (!$row.length) {
+			$row = $wrap.find('.grid-row[data-name="' + doc.name + '"]');
+		}
+		if (!$row.length) {
+			$row = $wrap.find('[data-name="' + doc.name + '"]').closest('.grid-row, .grid-form-row, tr');
+		}
+		if (!$row.length) {
+			$row = $wrap
+				.find('.form-in-grid [data-name="' + doc.name + '"]')
+				.closest('.grid-row, tr, .dt-row');
+		}
+	}
+	const $fb =
+		$wrap && $wrap.length
+			? $wrap.find(
+					'.grid-body .grid-row, .form-grid .grid-row, .form-grid .rows .grid-row, .datatable .dt-row, tbody tr[data-idx]'
+				)
+			: $();
+	if ((!$row || !$row.length) && $fb.length > idx) {
+		$row = $($fb.get(idx));
+	}
+	return $row;
+}
+
 function apply_spr_item_row_styles(frm) {
 	const grid = frm.fields_dict.items.grid;
-	if (!grid || !grid.grid_rows) {
+	if (!grid) {
 		return;
 	}
 	const bandClasses = ['spr-gsm-band-0', 'spr-gsm-band-1', 'spr-gsm-band-2', 'spr-gsm-band-3'];
 	const baseClasses =
 		'spr-gsm-band-0 spr-gsm-band-1 spr-gsm-band-2 spr-gsm-band-3 spr-gsm-pending';
-	const $wrap = frm.fields_dict.items.$wrapper;
-	const $fallbackRows =
-		$wrap && $wrap.length
-			? $wrap.find(
-					'.grid-body .grid-row, .form-grid .grid-row, .form-grid .rows .grid-row, .datatable .dt-row'
-				)
-			: $();
+	const items = frm.doc.items || [];
 
-	grid.grid_rows.forEach(function (grow, idx) {
-		let $row = grow.row;
-		if ((!$row || !$row.length) && grow.wrapper && grow.wrapper.length) {
-			$row = grow.wrapper;
-		}
-		if ((!$row || !$row.length) && $fallbackRows.length > idx) {
-			$row = $($fallbackRows.get(idx));
-		}
+	items.forEach(function (doc, idx) {
+		let $row = sprResolveItemsRowElement(frm, doc, grid, idx);
 		if (!$row || !$row.length) {
-			return;
-		}
-		const doc = grow.doc;
-		if (!doc) {
 			return;
 		}
 		const sticker = flt(doc.gsm);
 		const effProd = sprEffectiveProducedGsm(doc);
 		$row.removeClass(baseClasses);
-		$row.find('td').css('background-color', '');
+		sprClearRowBg($row);
 		const hasGsmCompare = sticker > 0 && effProd > 0;
 		if (hasGsmCompare) {
 			const diff = Math.abs(effProd - sticker);
