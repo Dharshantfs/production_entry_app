@@ -12,7 +12,10 @@ requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
-    "frappe~=15.0"
+    # Do NOT declare `frappe` as a PyPI dependency.
+    # In a bench environment, `frappe` is provided by the bench/Frappe core source,
+    # and declaring it here breaks `uv pip install` during container builds
+    # when the `frappe` distribution metadata is not available.
 ]
 
 [project.urls]
