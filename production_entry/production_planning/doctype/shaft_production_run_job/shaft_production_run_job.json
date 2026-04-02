@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "job_id",
+  "production_plan_item",
   "gsm",
   "quality",
   "combination",
@@ -27,6 +28,13 @@
    "fieldtype": "Data",
    "label": "Job ID",
    "read_only": 1
+  },
+  {
+   "fieldname": "production_plan_item",
+   "fieldtype": "Data",
+   "label": "Production Plan Item (WO link)",
+   "read_only": 1,
+   "hidden": 1
   },
   {
    "fieldname": "gsm",

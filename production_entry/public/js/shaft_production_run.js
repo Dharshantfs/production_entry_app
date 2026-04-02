@@ -8,6 +8,10 @@ frappe.ui.form.on('Shaft Production Run', {
 			return;
 		}
 
+		// Do not keep old roll lines when switching PP (also blocks client scripts that fill later)
+		frm.clear_table('items');
+		frm.refresh_field('items');
+
 		if (!frm.doc.run_date) {
 			frm.set_value('run_date', frappe.datetime.get_today());
 		}
@@ -44,27 +48,14 @@ frappe.ui.form.on('Shaft Production Run', {
 					});
 				});
 				frm.refresh_field('shaft_jobs');
-
-				frappe.call({
-					method:
-						'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_item_rows_for_production_plan',
-					args: { production_plan: frm.doc.production_plan },
-					freeze: true,
-					freeze_message: __('Loading roll lines from Work Orders...'),
-					callback: function (r2) {
-						frm.clear_table('items');
-						(r2.message || []).forEach(function (row) {
-							let it = frm.add_child('items');
-							Object.keys(row).forEach(function (k) {
-								if (row[k] !== undefined && row[k] !== null) {
-									it[k] = row[k];
-								}
-							});
-						});
-						frm.refresh_field('items');
-						schedule_spr_item_row_styles(frm);
-					},
-				});
+				frm.clear_table('items');
+				frm.refresh_field('items');
+				fetch_and_show_pp_wo_summary(frm);
+			},
+			error: function () {
+				frm.clear_table('items');
+				frm.refresh_field('items');
+				fetch_and_show_pp_wo_summary(frm);
 			},
 		});
 	},
@@ -92,33 +83,35 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			return;
 		}
 		if (frm.is_new() || !frm.doc.name) {
-			frappe.msgprint(__('Save the Shaft Production Run before creating a Roll Production Entry.'));
+			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
 			return;
 		}
 		frappe.call({
 			method:
-				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_or_create_roll_entry_for_job',
+				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.build_spr_roll_result_lines_for_job',
 			args: {
 				shaft_production_run: frm.doc.name,
 				job_id: String(job_id),
 			},
 			freeze: true,
-			freeze_message: __('Preparing Roll Production Entry for this job...'),
+			freeze_message: __('Creating roll lines for this job...'),
 			callback: function (r) {
-				const msg = r.message;
-				if (!msg) {
-					return;
-				}
-				if (msg.existing) {
-					frappe.set_route('Form', 'Roll Production Entry', msg.existing);
-				} else {
-					frappe.new_doc('Roll Production Entry', {
-						shaft_production_run: frm.doc.name,
-						production_plan: msg.production_plan,
-						job_id: msg.job_id,
-						items: msg.items,
+				const lines = r.message || [];
+				remove_spr_items_for_job(frm, job_id);
+				lines.forEach(function (line) {
+					let it = frm.add_child('items');
+					Object.keys(line).forEach(function (k) {
+						if (line[k] !== undefined && line[k] !== null) {
+							it[k] = line[k];
+						}
 					});
-				}
+				});
+				frm.refresh_field('items');
+				schedule_spr_item_row_styles(frm);
+				frappe.show_alert({
+					message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
+					indicator: 'green',
+				});
 			},
 		});
 	},
@@ -135,6 +128,115 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		schedule_spr_item_row_styles(frm);
 	},
 });
+
+function fetch_and_show_pp_wo_summary(frm) {
+	if (!frm.doc.production_plan) {
+		return;
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_production_plan_wo_summary',
+		args: { production_plan: frm.doc.production_plan },
+		callback: function (r) {
+			show_pp_work_order_summary_dialog(r.message || []);
+		},
+		error: function () {
+			show_pp_work_order_summary_dialog([]);
+		},
+	});
+}
+
+function show_pp_work_order_summary_dialog(rows) {
+	const esc =
+		frappe.utils && frappe.utils.escape_html
+			? frappe.utils.escape_html
+			: function (t) {
+					return $('<div>').text(t || '').html();
+				};
+	let html;
+	if (rows && rows.length) {
+		let body =
+			'<thead><tr><th>' +
+			__('Work Order') +
+			'</th><th>' +
+			__('Status') +
+			'</th><th>' +
+			__('Order Qty') +
+			'</th><th>' +
+			__('Pending Qty') +
+			'</th></tr></thead><tbody>';
+		rows.forEach(function (r) {
+			body +=
+				'<tr><td>' +
+				esc(r.work_order || '') +
+				'</td><td>' +
+				esc(r.status || '') +
+				'</td><td>' +
+				flt(r.order_qty, 3) +
+				'</td><td>' +
+				flt(r.pending_qty, 3) +
+				'</td></tr>';
+		});
+		body += '</tbody>';
+		html =
+			'<div class="table-responsive"><table class="table table-bordered table-condensed">' +
+			body +
+			'</table></div>';
+	} else {
+		html =
+			'<p class="text-muted">' +
+			__('No Work Orders linked to this Production Plan.') +
+			'</p>';
+	}
+	// Next tick so dialog is not blocked by freeze/refresh from the previous call chain
+	setTimeout(function () {
+		try {
+			const d = new frappe.ui.Dialog({
+				title: __('Production Plan — Work Orders'),
+				fields: [{ fieldtype: 'HTML', fieldname: 'wo_table', options: html }],
+				primary_action_label: __('OK'),
+				primary_action: function () {
+					d.hide();
+				},
+			});
+			d.show();
+		} catch (e) {
+			frappe.msgprint({
+				title: __('Production Plan — Work Orders'),
+				message: html,
+				indicator: 'blue',
+				wide: true,
+			});
+		}
+	}, 200);
+}
+
+function remove_spr_items_for_job(frm, job_id) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return;
+	}
+	const names = (frm.doc.items || [])
+		.filter(function (d) {
+			return String(d.job) === String(job_id);
+		})
+		.map(function (d) {
+			return d.name;
+		});
+	names.forEach(function (name) {
+		const gr = grid.grid_rows_by_docname && grid.grid_rows_by_docname[name];
+		if (gr && gr.remove) {
+			gr.remove();
+			return;
+		}
+		const idx = (frm.doc.items || []).findIndex(function (d) {
+			return d.name === name;
+		});
+		if (idx !== -1 && grid.grid_rows && grid.grid_rows[idx]) {
+			grid.grid_rows[idx].remove();
+		}
+	});
+}
 
 function ensure_spr_item_stylesheet() {
 	if (window.__sprspr_style) {
