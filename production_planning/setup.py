@@ -25,10 +25,8 @@ setup(
         "Framework :: Frappe",
     ],
     python_requires=">=3.7",
-    install_requires=[
-        # Do not declare `frappe` as a PyPI dependency in bench apps.
-        # Frappe is already available in the runtime via bench core.
-    ],
+    # Do not list `frappe` — bench provides it.
+    install_requires=[],
     zip_safe=False,
     include_package_data=True,
 )

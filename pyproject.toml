@@ -11,9 +11,8 @@ description = "Production Planning and Queuing System for Manufacturing Units"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
-dependencies = [
-    "frappe~=15.0"
-]
+# Do not list `frappe` here — bench provides it; PyPI resolution fails in Docker/uv builds.
+dependencies = []
 
 [project.urls]
 Home = "https://github.com/Dharshantfs/production_planning"
