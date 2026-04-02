@@ -777,10 +777,20 @@ def _planned_qty_for_roll_line(job_row, roll_index: int, segs: int) -> float:
 
 
 @frappe.whitelist()
-def get_next_spr_batch_numbers(shaft_production_run, count, client_max_roll=None):
+def get_next_spr_batch_numbers(
+	shaft_production_run,
+	count,
+	client_max_roll=None,
+	run_date=None,
+	custom_unit=None,
+	shift=None,
+):
 	"""
 	Preview batch/roll numbers for new rows (e.g. after Create Entry) without submitting SPR.
 	Requires run_date, custom_unit, shift. Optional client_max_roll = highest roll index already on the form.
+
+	Pass run_date, custom_unit, shift from the desk form when the document is saved but header
+	fields were just edited and not yet re-saved — otherwise get_doc() would see stale DB values.
 	"""
 	count = cint(count)
 	if count < 1:
@@ -788,9 +798,18 @@ def get_next_spr_batch_numbers(shaft_production_run, count, client_max_roll=None
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save the Shaft Production Run first"))
 	doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
-	if not doc.run_date or not doc.get("custom_unit") or not doc.shift:
+	if run_date not in (None, ""):
+		doc.run_date = run_date
+	if custom_unit not in (None, "") and str(custom_unit).strip():
+		doc.custom_unit = custom_unit
+	if shift not in (None, "") and str(shift).strip():
+		doc.shift = shift
+	rd_val = doc.run_date
+	cu = _cstr(doc.get("custom_unit"))
+	sh = _cstr(doc.shift)
+	if not rd_val or not cu or not sh:
 		frappe.throw(_("Set Run Date, Unit, and Shift to assign batch numbers."))
-	rd = getdate(doc.run_date)
+	rd = getdate(rd_val)
 	unit_d = doc._unit_digit()
 	root_5 = f"{rd.month:02d}{unit_d}{rd.year % 100:02d}"
 	series_prefix = doc._resolve_series_prefix(root_5)

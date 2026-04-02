@@ -212,6 +212,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 							shaft_production_run: frm.doc.name,
 							count: n,
 							client_max_roll: maxRollBeforeNew(),
+							run_date: frm.doc.run_date,
+							custom_unit: frm.doc.custom_unit,
+							shift: frm.doc.shift,
 						},
 						callback: function (r2) {
 							const nums = r2.message || [];
@@ -448,74 +451,51 @@ function ensure_spr_item_stylesheet() {
 		return;
 	}
 	window.__sprspr_style = true;
-	/* Roll Production Results: dark green rows + white text (Desk reference). Scoped to items field only. */
+	/* Roll Production Results: 4 row colors by |Sticker GSM − Produced GSM| (diff <1 / <2 / <3 / else). */
 	const css = `
-		.form-group[data-fieldname="items"] .grid-body .grid-row.spr-roll-highlight,
-		.form-group[data-fieldname="items"] .form-grid .grid-row.spr-roll-highlight,
-		.frappe-control[data-fieldname="items"] .grid-body .grid-row.spr-roll-highlight,
-		.frappe-control[data-fieldname="items"] .form-grid .grid-row.spr-roll-highlight,
-		.fieldname-items .grid-body .grid-row.spr-roll-highlight,
-		.fieldname-items .form-grid .grid-row.spr-roll-highlight {
-			background-color: #166534 !important;
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-0,
+		.fieldname-items .grid-row.spr-gsm-band-0 { background-color: #bbf7d0 !important; }
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-1,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-1,
+		.fieldname-items .grid-row.spr-gsm-band-1 { background-color: #fdba74 !important; }
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-2,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-2,
+		.fieldname-items .grid-row.spr-gsm-band-2 { background-color: #fbbf24 !important; }
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-3,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-3,
+		.fieldname-items .grid-row.spr-gsm-band-3 { background-color: #fecaca !important; }
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending,
+		.fieldname-items .grid-row.spr-gsm-pending { background-color: #f9fafb !important; }
+		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .static-value,
+		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .row-index,
+		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .col,
+		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] input,
+		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] select,
+		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] textarea,
+		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] a,
+		.frappe-control[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .static-value,
+		.frappe-control[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .row-index,
+		.frappe-control[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .col,
+		.frappe-control[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] input,
+		.frappe-control[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] select,
+		.frappe-control[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] textarea,
+		.frappe-control[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] a,
+		.fieldname-items .grid-row[class*="spr-gsm-band"] .static-value,
+		.fieldname-items .grid-row[class*="spr-gsm-band"] .row-index,
+		.fieldname-items .grid-row[class*="spr-gsm-band"] input,
+		.fieldname-items .grid-row[class*="spr-gsm-band"] select {
+			color: #111827 !important;
 		}
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-0,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-0 {
-			box-shadow: inset 5px 0 0 #4ade80 !important;
-		}
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-1,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-1 {
-			box-shadow: inset 5px 0 0 #fb923c !important;
-		}
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-2,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-2 {
-			box-shadow: inset 5px 0 0 #facc15 !important;
-		}
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-3,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight.spr-gsm-diff-3 {
-			box-shadow: inset 5px 0 0 #fca5a5 !important;
-		}
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .static-value,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .row-index,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .col,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight input,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight select,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight textarea,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight a,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .like-disabled-input,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .indicator-pill,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight .btn-open-row,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .static-value,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .row-index,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .col,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight input,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight select,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight textarea,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight a,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .like-disabled-input,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .indicator-pill,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight .btn-open-row {
-			color: #ffffff !important;
-		}
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight input,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight select,
-		.form-group[data-fieldname="items"] .grid-row.spr-roll-highlight textarea,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight input,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight select,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-roll-highlight textarea {
-			background-color: rgba(255,255,255,0.12) !important;
-			border-color: rgba(255,255,255,0.4) !important;
-		}
-		.fieldname-items .grid-row.spr-roll-highlight .static-value,
-		.fieldname-items .grid-row.spr-roll-highlight .row-index,
-		.fieldname-items .grid-row.spr-roll-highlight .col,
-		.fieldname-items .grid-row.spr-roll-highlight input,
-		.fieldname-items .grid-row.spr-roll-highlight select,
-		.fieldname-items .grid-row.spr-roll-highlight textarea,
-		.fieldname-items .grid-row.spr-roll-highlight a {
-			color: #ffffff !important;
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending .static-value,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending .row-index,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending .static-value,
+		.fieldname-items .grid-row.spr-gsm-pending .static-value {
+			color: #374151 !important;
 		}
 	`;
-	$('head').append(`<style data-spr-items="2">${css}</style>`);
+	$('head').append(`<style data-spr-items="3">${css}</style>`);
 }
 
 function schedule_spr_item_row_styles(frm) {
@@ -535,8 +515,9 @@ function apply_spr_item_row_styles(frm) {
 	if (!grid || !grid.grid_rows) {
 		return;
 	}
-	const diffClasses = ['spr-gsm-diff-0', 'spr-gsm-diff-1', 'spr-gsm-diff-2', 'spr-gsm-diff-3'];
-	const baseClasses = 'spr-roll-highlight spr-gsm-diff-0 spr-gsm-diff-1 spr-gsm-diff-2 spr-gsm-diff-3';
+	const bandClasses = ['spr-gsm-band-0', 'spr-gsm-band-1', 'spr-gsm-band-2', 'spr-gsm-band-3'];
+	const baseClasses =
+		'spr-gsm-band-0 spr-gsm-band-1 spr-gsm-band-2 spr-gsm-band-3 spr-gsm-pending';
 	const $wrap = frm.fields_dict.items.$wrapper;
 	const $fallbackRows =
 		$wrap && $wrap.length
@@ -558,9 +539,8 @@ function apply_spr_item_row_styles(frm) {
 		const sticker = flt(doc.gsm);
 		const prod = flt(doc.produced_gsm);
 		const net = flt(doc.net_weight);
-		const gross = flt(doc.gross_weight);
 		$row.removeClass(baseClasses);
-		$row.addClass('spr-roll-highlight');
+		/* Compare when sticker is set and we have produced GSM (or net so produced can be derived). */
 		const hasGsmCompare = sticker > 0 && (prod > 0 || net > 0);
 		if (hasGsmCompare) {
 			const diff = Math.abs(prod - sticker);
@@ -572,7 +552,9 @@ function apply_spr_item_row_styles(frm) {
 			} else if (diff < 3) {
 				band = 2;
 			}
-			$row.addClass(diffClasses[band]);
+			$row.addClass(bandClasses[band]);
+		} else {
+			$row.addClass('spr-gsm-pending');
 		}
 	});
 }
