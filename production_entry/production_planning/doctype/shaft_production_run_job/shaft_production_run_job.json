@@ -7,7 +7,7 @@
  "field_order": ["job_no", "total_weight"],
  "fields": [
   {"fieldname": "job_no", "fieldtype": "Data", "in_list_view": 1, "label": "Job No", "reqd": 1},
-  {"fieldname": "total_weight", "fieldtype": "Float", "in_list_view": 1, "label": "Total Weight (Kgs)"}
+  {"fieldname": "total_weight", "fieldtype": "Float", "in_list_view": 1, "label": "Total Weight"}
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
