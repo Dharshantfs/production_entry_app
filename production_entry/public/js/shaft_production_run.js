@@ -61,14 +61,17 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		update_shaft_job_achieved_from_items(frm);
 		schedule_spr_item_row_styles(frm);
 	},
 
 	items: {
 		items_add: function (frm) {
+			update_shaft_job_achieved_from_items(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 		items_remove: function (frm) {
+			update_shaft_job_achieved_from_items(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 	},
@@ -110,6 +113,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				(frm.doc.items || []).forEach(function (row) {
 					spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
 				});
+				update_shaft_job_achieved_from_items(frm);
 				schedule_spr_item_row_styles(frm);
 				frappe.show_alert({
 					message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
@@ -123,6 +127,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
+		update_shaft_job_achieved_from_items(frm);
 		schedule_spr_item_row_styles(frm);
 	},
 	gross_weight: function (frm) {
@@ -136,6 +141,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	},
 	meter_roll: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
+	},
+	produced_gsm: function (frm) {
+		schedule_spr_item_row_styles(frm);
 	},
 });
 
@@ -261,18 +269,46 @@ function remove_spr_items_for_job(frm, job_id) {
 	});
 }
 
+function update_shaft_job_achieved_from_items(frm) {
+	if (!frappe.meta.get_docfield('Shaft Production Run Job', 'custom_total_achieved_weight')) {
+		return;
+	}
+	const sums = {};
+	(frm.doc.items || []).forEach(function (it) {
+		if (it.job === undefined || it.job === null || it.job === '') {
+			return;
+		}
+		const k = String(it.job);
+		sums[k] = (sums[k] || 0) + flt(it.net_weight);
+	});
+	(frm.doc.shaft_jobs || []).forEach(function (sj) {
+		const jid = String(sj.job_id);
+		const v = sums[jid] !== undefined ? sums[jid] : 0;
+		frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', v);
+	});
+}
+
 function ensure_spr_item_stylesheet() {
 	if (window.__sprspr_style) {
 		return;
 	}
 	window.__sprspr_style = true;
 	const css = `
+		.grid-body .grid-row.spr-gsm-diff-0 { background-color: #bbf7d0 !important; }
+		.grid-body .grid-row.spr-gsm-diff-0 .static-value,
+		.grid-body .grid-row.spr-gsm-diff-0 .row-index { color: #000 !important; }
+		.grid-body .grid-row.spr-gsm-diff-1 { background-color: #fdba74 !important; }
+		.grid-body .grid-row.spr-gsm-diff-1 .static-value,
+		.grid-body .grid-row.spr-gsm-diff-1 .row-index { color: #000 !important; }
+		.grid-body .grid-row.spr-gsm-diff-2 { background-color: #fbbf24 !important; }
+		.grid-body .grid-row.spr-gsm-diff-2 .static-value,
+		.grid-body .grid-row.spr-gsm-diff-2 .row-index,
+		.grid-body .grid-row.spr-gsm-diff-2 input { color: #000 !important; }
+		.grid-body .grid-row.spr-gsm-diff-3 { background-color: #fecaca !important; }
+		.grid-body .grid-row.spr-gsm-diff-3 .static-value,
+		.grid-body .grid-row.spr-gsm-diff-3 .row-index { color: #000 !important; }
 		.grid-body .grid-row.spr-prod { background-color: #ecfdf5 !important; }
 		.grid-body .grid-row.spr-open { background-color: #f9fafb !important; }
-		.grid-body .grid-row.spr-gsm-a { box-shadow: inset 4px 0 0 #6366f1; }
-		.grid-body .grid-row.spr-gsm-b { box-shadow: inset 4px 0 0 #f97316; }
-		.grid-body .grid-row.spr-gsm-c { box-shadow: inset 4px 0 0 #22c55e; }
-		.grid-body .grid-row.spr-gsm-d { box-shadow: inset 4px 0 0 #a855f7; }
 	`;
 	$('head').append(`<style data-spr-items="1">${css}</style>`);
 }
@@ -292,6 +328,7 @@ function apply_spr_item_row_styles(frm) {
 	if (!grid || !grid.grid_rows) {
 		return;
 	}
+	const diffClasses = ['spr-gsm-diff-0', 'spr-gsm-diff-1', 'spr-gsm-diff-2', 'spr-gsm-diff-3'];
 	grid.grid_rows.forEach(function (grow) {
 		const $row = grow.row;
 		if (!$row || !$row.length) {
@@ -301,20 +338,32 @@ function apply_spr_item_row_styles(frm) {
 		if (!doc) {
 			return;
 		}
+		const sticker = flt(doc.gsm);
+		const prod = flt(doc.produced_gsm);
 		const net = flt(doc.net_weight);
 		const gross = flt(doc.gross_weight);
 		const produced = net > 0 || gross > 0;
-		const gsm = cint(doc.gsm);
-		$row.removeClass('spr-prod spr-open spr-gsm-a spr-gsm-b spr-gsm-c spr-gsm-d');
+		$row.removeClass(
+			'spr-prod spr-open spr-gsm-diff-0 spr-gsm-diff-1 spr-gsm-diff-2 spr-gsm-diff-3'
+		);
+		const hasGsmCompare = sticker > 0 && (prod > 0 || net > 0);
+		if (hasGsmCompare) {
+			const diff = Math.abs(prod - sticker);
+			let band = 3;
+			if (diff < 1) {
+				band = 0;
+			} else if (diff < 2) {
+				band = 1;
+			} else if (diff < 3) {
+				band = 2;
+			}
+			$row.addClass(diffClasses[band]);
+			return;
+		}
 		if (produced) {
 			$row.addClass('spr-prod');
 		} else {
 			$row.addClass('spr-open');
-		}
-		const band = Math.floor((gsm || 0) / 30) % 4;
-		const bandClass = ['spr-gsm-a', 'spr-gsm-b', 'spr-gsm-c', 'spr-gsm-d'][band];
-		if (bandClass) {
-			$row.addClass(bandClass);
 		}
 	});
 }

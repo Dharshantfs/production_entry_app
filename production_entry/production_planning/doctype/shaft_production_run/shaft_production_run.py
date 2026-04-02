@@ -351,7 +351,23 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 class ShaftProductionRun(Document):
 	def validate(self):
 		self.calculate_produced_gsm()
+		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+
+	def recalculate_job_achieved_weights(self):
+		"""Total Achieved Weight on each Available Jobs row = sum of net_weight in Roll Results for that job."""
+		meta = frappe.get_meta("Shaft Production Run Job")
+		if not meta.has_field("custom_total_achieved_weight"):
+			return
+		sums: dict[str, float] = {}
+		for it in self.items or []:
+			jid = _cstr(getattr(it, "job", None))
+			if not jid:
+				continue
+			sums[jid] = sums.get(jid, 0.0) + flt(it.net_weight)
+		for row in self.shaft_jobs or []:
+			jid = _cstr(_spr_job_id(row))
+			row.custom_total_achieved_weight = flt(sums.get(jid, 0.0))
 
 	def calculate_produced_gsm(self):
 		"""Set produced_gsm on each roll line from net weight, width (inch), length (m)."""
@@ -377,7 +393,11 @@ class ShaftProductionRun(Document):
 		return int(m.group(1)) if m else 0
 
 	def generate_batch_numbers(self):
-		"""Assign batch IDs as MMUYY{S}/N using shared series for this date/shift/unit."""
+		"""Assign batch_no on each roll line when draft is saved (after Create Entry + required header fields).
+
+		Format: ``{MM}{U}{YY}{S}/{N}`` — month (2) + unit digit + year (2) + shift suffix ``S`` + ``/`` + roll sequence ``N``.
+		``tabBatch`` rows are created/updated on **submit** via ``sync_batch_custom_fields``, not on every save.
+		"""
 		if not self.run_date or not self.get("custom_unit") or not self.shift:
 			return
 		rows = [r for r in (self.items or []) if r.item_code]
@@ -705,6 +725,64 @@ def _count_combination_segments(combination) -> int:
 	return max(1, len(parts))
 
 
+def _parse_net_weight_kg_parts(net_weight) -> list[float]:
+	"""Parse '89.61 + 6.2' style net weight from shaft job into kg numbers."""
+	if not net_weight:
+		return []
+	s = str(net_weight).strip()
+	if not s:
+		return []
+	out: list[float] = []
+	for part in re.split(r"\s*\+\s*", s):
+		part = part.strip()
+		if not part:
+			continue
+		m = re.search(r"(\d+(?:\.\d+)?)", part.replace(",", ""))
+		if m:
+			out.append(flt(m.group(1)))
+	return out
+
+
+def _segment_weights_kg(job_row, segs: int) -> list[float]:
+	"""Per-combination-segment kg; falls back to equal split of total target weight."""
+	if segs < 1:
+		segs = 1
+	parts = _parse_net_weight_kg_parts(getattr(job_row, "net_weight", None))
+	tw = flt(getattr(job_row, "total_weight", 0) or 0)
+	if len(parts) >= segs:
+		return [flt(x) for x in parts[:segs]]
+	if parts:
+		avg = sum(parts) / len(parts)
+		while len(parts) < segs:
+			parts.append(avg)
+		return [flt(x) for x in parts[:segs]]
+	if tw > 0:
+		return [tw / segs] * segs
+	return [0.0] * segs
+
+
+def _shaft_kgs(job_row) -> float:
+	"""Target kg per shaft: total target weight / no of shafts (minimum 1 shaft)."""
+	tw = flt(getattr(job_row, "total_weight", 0) or 0)
+	ns = int(flt(getattr(job_row, "no_of_shafts", 0) or 0))
+	if ns < 1:
+		ns = 1
+	return tw / ns if tw else 0.0
+
+
+def _planned_qty_for_roll_line(job_row, roll_index: int, segs: int) -> float:
+	"""Planned qty = (segment net kg for this combination) / shaft_kgs."""
+	if segs < 1:
+		segs = 1
+	seg_weights = _segment_weights_kg(job_row, segs)
+	seg_i = roll_index % segs
+	seg_kg = seg_weights[seg_i] if seg_i < len(seg_weights) else 0.0
+	sk = _shaft_kgs(job_row)
+	if sk > 1e-9:
+		return round(seg_kg / sk, 3)
+	return round(seg_kg, 3)
+
+
 @frappe.whitelist()
 def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	"""
@@ -737,7 +815,6 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	shaft_combination = get_shaft_combination(pp_name, job_id)
 	if getattr(job_row, "combination", None) and not shaft_combination:
 		shaft_combination = job_row.combination
-	planned_qty = getattr(job_row, "total_weight", None) or 0
 
 	wo_list = _get_work_orders_for_spr_job(pp_name, spr_doc, job_row)
 	if not wo_list:
@@ -746,6 +823,7 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	lines = []
 	for idx in range(n_rolls):
 		wo = wo_list[idx % len(wo_list)]
+		planned_qty = _planned_qty_for_roll_line(job_row, idx, segs)
 		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
 		if getattr(job_row, "gsm", None) not in (None, 0, "0"):
 			try:
