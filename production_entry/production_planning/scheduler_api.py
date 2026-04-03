@@ -1841,6 +1841,19 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
         "moved_to": {"date": final_date, "unit": final_unit}
     }
 
+def _sync_legacy_planning_sheet_item_unit(source_item, unit):
+    """After a board move, mirror only `unit` onto Planning sheet Item (SO snapshot grid)."""
+    name = (source_item or "").strip()
+    if not name or not frappe.db.exists("Planning sheet Item", name):
+        return
+    if not frappe.db.has_column("Planning sheet Item", "unit"):
+        return
+    frappe.db.sql(
+        "UPDATE `tabPlanning sheet Item` SET unit = %s WHERE name = %s",
+        (unit, name),
+    )
+
+
 def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     """Internal helper to move a Planning Sheet Item to a specific slot.
     Re-parents item if date changes, avoiding moving the entire order."""
@@ -1856,7 +1869,6 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
 
     # 2. Handle IDX Shifting if inserting at specific position
     # Update Item unit and parent first ΓÇö use raw SQL to bypass docstatus immutability
-    # Legacy Planning sheet Item rows are not updated on board moves (SO snapshot only).
 
     update_fields = {"unit": unit, "source_item": item_doc.source_item}
     if frappe.db.has_column("Planning Table", "planned_date"):
@@ -1868,7 +1880,8 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     )
     frappe.db.commit() # FORCE SAVE FOR BOARD
     item_doc.unit = unit
-    
+    _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit)
+
     if new_idx is not None:
         try:
             eff = _effective_date_expr("sheet")
@@ -5121,6 +5134,8 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
                 SET parent = %s, idx = %s, unit = %s, parenttype='Planning sheet', parentfield=%s{set_date}
                 WHERE name = %s
             """, (target_sheet.name, new_idx, new_unit, pt_pf, item_doc.name))
+
+            _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), new_unit)
 
             count = int(count) + 1
         
