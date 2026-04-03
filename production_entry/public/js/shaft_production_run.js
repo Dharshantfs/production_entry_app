@@ -263,6 +263,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	meter_roll: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
+	produced_length_mtrs: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+	},
 	produced_gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);
 	},
@@ -275,7 +278,13 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	const row = locals[cdt][cdn];
 	const nw = flt(row.net_weight);
 	const w = flt(row.width_inch);
-	const ln = flt(row.meter_roll);
+	let ln = flt(row.meter_roll);
+	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
+		const pl = row.produced_length_mtrs;
+		if (pl !== undefined && pl !== null && pl !== '') {
+			ln = flt(pl);
+		}
+	}
 	const den = w * ln * 0.254;
 	const val = den > 0 ? Math.round((nw * 10000) / den * 100) / 100 : 0;
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
@@ -475,7 +484,10 @@ function sprEffectiveProducedGsm(doc) {
 		return 0;
 	}
 	const w = flt(doc.width_inch);
-	const ln = flt(doc.meter_roll);
+	let ln = flt(doc.meter_roll);
+	if (doc.produced_length_mtrs !== undefined && doc.produced_length_mtrs !== null && doc.produced_length_mtrs !== '') {
+		ln = flt(doc.produced_length_mtrs);
+	}
 	const den = w * ln * 0.254;
 	return den > 0 ? Math.round((nw * 10000) / den * 100) / 100 : 0;
 }

@@ -17,6 +17,7 @@
   "column_break_4",
   "roll_no",
   "meter_roll",
+  "produced_length_mtrs",
   "net_weight",
   "produced_gsm",
   "gross_weight",
@@ -99,6 +100,11 @@
    "fieldname": "meter_roll",
    "fieldtype": "Float",
    "label": "Meter/Roll"
+  },
+  {
+   "fieldname": "produced_length_mtrs",
+   "fieldtype": "Float",
+   "label": "Produced Length (Mtrs)"
   },
   {
    "fieldname": "net_weight",

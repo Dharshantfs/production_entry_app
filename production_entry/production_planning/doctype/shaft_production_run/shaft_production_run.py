@@ -25,6 +25,96 @@ def _cstr(v) -> str:
 	return str(v).strip() if v is not None else ""
 
 
+def _spr_row_get(spr_row, key: str):
+	if spr_row is None:
+		return None
+	if isinstance(spr_row, dict):
+		return spr_row.get(key)
+	return spr_row.get(key)
+
+
+def _batch_field_net_weight_kgs(batch_meta) -> str | None:
+	for df in batch_meta.fields:
+		lab = (df.label or "").lower()
+		if "net" in lab and "weight" in lab:
+			return df.fieldname
+	for fn in ("custom_net_weight_kgs", "custom_net_weight", "net_weight_kgs"):
+		if batch_meta.has_field(fn):
+			return fn
+	return None
+
+
+def _batch_field_gross_weight_kgs(batch_meta) -> str | None:
+	for df in batch_meta.fields:
+		lab = (df.label or "").lower()
+		if "gross" in lab and "weight" in lab:
+			return df.fieldname
+	for fn in ("custom_gross_weight_kgs", "custom_gross_weight", "gross_weight_kgs"):
+		if batch_meta.has_field(fn):
+			return fn
+	return None
+
+
+def _batch_field_length_mtrs(batch_meta) -> str | None:
+	for df in batch_meta.fields:
+		lab = (df.label or "").lower()
+		if "planned qty" in lab:
+			continue
+		if "length" in lab and ("mtr" in lab or "meter" in lab or "mtrs" in lab):
+			return df.fieldname
+		if "ordered" in lab and "length" in lab:
+			return df.fieldname
+	for fn in ("custom_length_mtrs", "length_mtrs", "custom_meter_roll", "meter_roll"):
+		if batch_meta.has_field(fn):
+			return fn
+	return None
+
+
+def _spr_length_meters(spr_row) -> float | None:
+	"""Length in m for Batch + reporting: prefers Produced Length (Mtrs), then Meter/Roll."""
+	if spr_row is None:
+		return None
+	for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
+		v = _spr_row_get(spr_row, key)
+		if v is not None:
+			return flt(v)
+	try:
+		spi_meta = frappe.get_meta("Shaft Production Run Item")
+		for df in spi_meta.fields:
+			if df.fieldtype not in ("Float", "Int", "Currency"):
+				continue
+			lab = (df.label or "").lower()
+			if "produced" in lab and "length" in lab:
+				v = _spr_row_get(spr_row, df.fieldname)
+				if v is not None:
+					return flt(v)
+	except Exception:
+		pass
+	for key in ("meter_roll", "ordered_length", "custom_ordered_length"):
+		v = _spr_row_get(spr_row, key)
+		if v is not None:
+			return flt(v)
+	return None
+
+
+def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
+	"""Map Roll Production Result line to Batch fields (Net/Gross Weight Kgs, Length Mtrs)."""
+	if not spr_row:
+		return {}
+	out = {}
+	fn_n = _batch_field_net_weight_kgs(batch_meta)
+	fn_g = _batch_field_gross_weight_kgs(batch_meta)
+	fn_l = _batch_field_length_mtrs(batch_meta)
+	if fn_n is not None and _spr_row_get(spr_row, "net_weight") is not None:
+		out[fn_n] = flt(_spr_row_get(spr_row, "net_weight"))
+	if fn_g is not None and _spr_row_get(spr_row, "gross_weight") is not None:
+		out[fn_g] = flt(_spr_row_get(spr_row, "gross_weight"))
+	ln = _spr_length_meters(spr_row)
+	if fn_l is not None and ln is not None:
+		out[fn_l] = flt(ln)
+	return out
+
+
 def _production_plan_custom_shaft_child_doctype() -> str | None:
 	"""Child table Doctype behind Production Plan.custom_shaft_details (e.g. Shaft Plan Detail)."""
 	try:
@@ -375,7 +465,12 @@ class ShaftProductionRun(Document):
 		if not meta.has_field("produced_gsm"):
 			return
 		for row in self.items or []:
-			row.produced_gsm = compute_produced_gsm(row.net_weight, row.width_inch, row.meter_roll)
+			ln = _spr_length_meters(row)
+			if ln is None:
+				ln = flt(getattr(row, "meter_roll", None))
+			else:
+				ln = flt(ln)
+			row.produced_gsm = compute_produced_gsm(row.net_weight, row.width_inch, ln)
 
 	def on_submit(self):
 		self.sync_batch_custom_fields()
@@ -540,7 +635,7 @@ class ShaftProductionRun(Document):
 				)
 			if not batch_name or not frappe.db.exists("Batch", batch_name):
 				continue
-			data = {}
+			data = dict(_batch_fields_from_spr_row(batch_meta, row))
 			if batch_meta.has_field("custom_gross_weight") and row.get("gross_weight") is not None:
 				data["custom_gross_weight"] = flt(row.gross_weight)
 			if batch_meta.has_field("custom_cbm") and row.get("custom_cbm") is not None:
@@ -576,15 +671,25 @@ class ShaftProductionRun(Document):
 			if getattr(items[i], "is_finished_item", 0):
 				se.items.pop(i)
 
-	def _get_batch_link_name_for_stock_entry(self, batch_id: str, item_code: str, company: str | None) -> str:
+	def _get_batch_link_name_for_stock_entry(
+		self,
+		batch_id: str,
+		item_code: str,
+		company: str | None,
+		spr_row=None,
+	) -> str:
 		"""
 		Return tabBatch.name for Stock Entry Detail `batch_no` (Link).
 		Frappe's savedocs validates every Link: the value must exist as Batch.name before insert().
 		ERPNext Batch.autoname sets name = batch_id when batch_id is provided; use ERPNext make_batch when available.
+		``spr_row`` fills Batch mandatory custom fields (net/gross weight, length) from the roll line.
 		"""
 		bid = _cstr(batch_id)
 		if not bid:
 			return ""
+
+		batch_meta = frappe.get_meta("Batch")
+		roll_batch_data = _batch_fields_from_spr_row(batch_meta, spr_row)
 
 		def _existing_name() -> str | None:
 			if frappe.db.exists("Batch", bid):
@@ -602,6 +707,11 @@ class ShaftProductionRun(Document):
 
 		found = _existing_name()
 		if found:
+			if roll_batch_data:
+				try:
+					frappe.db.set_value("Batch", found, roll_batch_data)
+				except Exception:
+					frappe.log_error(frappe.get_traceback(), "SPR Batch roll fields on existing Batch")
 			return found
 
 		try:
@@ -613,9 +723,10 @@ class ShaftProductionRun(Document):
 				manufacturing_date=self.run_date or today(),
 			)
 			if company:
-				meta_b = frappe.get_meta("Batch")
-				if meta_b.has_field("company"):
+				if batch_meta.has_field("company"):
 					kw.company = company
+			for fk, fv in roll_batch_data.items():
+				kw[fk] = fv
 			mb = make_batch(kw)
 			if mb:
 				return mb
@@ -629,11 +740,12 @@ class ShaftProductionRun(Document):
 		b = frappe.new_doc("Batch")
 		b.batch_id = bid
 		b.item = item_code
-		meta = frappe.get_meta("Batch")
-		if meta.has_field("company") and company:
+		if batch_meta.has_field("company") and company:
 			b.company = company
-		if meta.has_field("manufacturing_date"):
+		if batch_meta.has_field("manufacturing_date"):
 			b.manufacturing_date = self.run_date or today()
+		for fk, fv in roll_batch_data.items():
+			b.set(fk, fv)
 		try:
 			b.insert(ignore_permissions=True)
 			return b.name
@@ -664,7 +776,9 @@ class ShaftProductionRun(Document):
 						),
 						title=_("Missing Batch"),
 					)
-				se_batch = self._get_batch_link_name_for_stock_entry(bn, item_code, wo_doc.company)
+				se_batch = self._get_batch_link_name_for_stock_entry(
+					bn, item_code, wo_doc.company, spr
+				)
 				if not se_batch:
 					frappe.throw(
 						_("Could not resolve Batch master for batch id {0}").format(bn),
