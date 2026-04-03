@@ -525,7 +525,20 @@ class ShaftProductionRun(Document):
 	def sync_batch_custom_fields(self):
 		batch_meta = frappe.get_meta("Batch")
 		for row in self.items or []:
-			if not row.batch_no or not frappe.db.exists("Batch", row.batch_no):
+			if not row.batch_no:
+				continue
+			bn = _cstr(row.batch_no)
+			batch_name = bn
+			if not frappe.db.exists("Batch", batch_name) and row.get("item_code"):
+				batch_name = (
+					frappe.db.get_value(
+						"Batch",
+						{"item": row.item_code, "batch_id": bn},
+						"name",
+					)
+					or batch_name
+				)
+			if not batch_name or not frappe.db.exists("Batch", batch_name):
 				continue
 			data = {}
 			if batch_meta.has_field("custom_gross_weight") and row.get("gross_weight") is not None:
@@ -541,7 +554,7 @@ class ShaftProductionRun(Document):
 			if not data:
 				continue
 			try:
-				frappe.db.set_value("Batch", row.batch_no, data)
+				frappe.db.set_value("Batch", batch_name, data)
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), "SPR Batch sync skipped")
 
@@ -563,29 +576,56 @@ class ShaftProductionRun(Document):
 			if getattr(items[i], "is_finished_item", 0):
 				se.items.pop(i)
 
-	def _batch_doc_name_for_stock_entry(self, batch_id: str, item_code: str) -> str:
-		"""Resolve Batch `name` used on Stock Entry — must match existing Batch for the same batch number as SPR."""
+	def _get_batch_link_name_for_stock_entry(self, batch_id: str, item_code: str, company: str | None) -> str:
+		"""
+		Return tabBatch.name for Stock Entry Detail `batch_no` (Link).
+		Frappe's savedocs validates every Link: the value must exist as Batch.name before insert().
+		ERPNext Batch.autoname sets name = batch_id when batch_id is provided; use ERPNext make_batch when available.
+		"""
 		bid = _cstr(batch_id)
 		if not bid:
-			return bid
-		if frappe.db.exists("Batch", bid):
-			return bid
-		nm = frappe.db.get_value(
-			"Batch",
-			{"item": item_code, "batch_id": bid},
-			"name",
-		)
-		return nm or bid
+			return ""
 
-	def _ensure_batch_document(self, batch_id: str, item_code: str, company: str | None) -> None:
-		"""Create Batch doc if missing (item has batch; auto-create may be off on Item). Uses same id string as SPR."""
-		bid = _cstr(batch_id)
-		if not bid:
-			return
-		if frappe.db.exists("Batch", bid):
-			return
-		if frappe.db.get_value("Batch", {"item": item_code, "batch_id": bid}, "name"):
-			return
+		def _existing_name() -> str | None:
+			if frappe.db.exists("Batch", bid):
+				it = frappe.db.get_value("Batch", bid, "item")
+				if it == item_code:
+					return bid
+			nm = frappe.db.get_value(
+				"Batch",
+				{"item": item_code, "batch_id": bid},
+				"name",
+			)
+			if nm:
+				return nm
+			return frappe.db.get_value("Batch", {"batch_id": bid, "item": item_code}, "name")
+
+		found = _existing_name()
+		if found:
+			return found
+
+		try:
+			from erpnext.stock.doctype.batch.batch import make_batch
+
+			kw = frappe._dict(
+				item=item_code,
+				batch_id=bid,
+				manufacturing_date=self.run_date or today(),
+			)
+			if company:
+				meta_b = frappe.get_meta("Batch")
+				if meta_b.has_field("company"):
+					kw.company = company
+			mb = make_batch(kw)
+			if mb:
+				return mb
+		except ImportError:
+			pass
+		except Exception:
+			found = _existing_name()
+			if found:
+				return found
+
 		b = frappe.new_doc("Batch")
 		b.batch_id = bid
 		b.item = item_code
@@ -596,8 +636,12 @@ class ShaftProductionRun(Document):
 			b.manufacturing_date = self.run_date or today()
 		try:
 			b.insert(ignore_permissions=True)
+			return b.name
 		except Exception:
-			frappe.log_error(frappe.get_traceback(), "SPR ensure Batch")
+			found = _existing_name()
+			if found:
+				return found
+			raise
 
 	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list):
 		"""One finished-good Stock Entry line per SPR roll (no merging qty by batch)."""
@@ -620,8 +664,12 @@ class ShaftProductionRun(Document):
 						),
 						title=_("Missing Batch"),
 					)
-				self._ensure_batch_document(bn, item_code, wo_doc.company)
-				se_batch = self._batch_doc_name_for_stock_entry(bn, item_code)
+				se_batch = self._get_batch_link_name_for_stock_entry(bn, item_code, wo_doc.company)
+				if not se_batch:
+					frappe.throw(
+						_("Could not resolve Batch master for batch id {0}").format(bn),
+						title=_("Batch"),
+					)
 			else:
 				se_batch = ""
 
