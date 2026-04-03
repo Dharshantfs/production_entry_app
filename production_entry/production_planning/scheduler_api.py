@@ -1787,7 +1787,9 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_row_doc.unit = unit
             new_row_doc.is_split = 1
             new_row_doc.split_from = item.name
-            new_row_doc.source_item = item.source_item
+            new_row_doc.source_item = _resolve_planning_table_source_item_link(
+                item.get("source_item"), item.name
+            )
             new_row_doc.insert(ignore_permissions=True)
 
             frappe.db.commit()
@@ -1852,6 +1854,32 @@ def _sync_legacy_planning_sheet_item_unit(source_item, unit):
         "UPDATE `tabPlanning sheet Item` SET unit = %s WHERE name = %s",
         (unit, name),
     )
+
+
+def _resolve_planning_table_source_item_link(source_item_value, board_row_name=None):
+    """Planning Table.source_item must link to Planning sheet Item. Board row ids often get stored by mistake.
+
+    Walk Planning Table.source_item chains until a valid Planning sheet Item is found.
+    """
+    def _walk(cur):
+        cur = (cur or "").strip()
+        for _ in range(8):
+            if not cur:
+                return None
+            if frappe.db.exists("Planning sheet Item", cur):
+                return cur
+            if frappe.db.exists("Planning Table", cur):
+                cur = frappe.db.get_value("Planning Table", cur, "source_item") or ""
+                continue
+            return None
+        return None
+
+    out = _walk(source_item_value)
+    if out:
+        return out
+    if board_row_name:
+        return _walk(board_row_name)
+    return None
 
 
 def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
@@ -4345,7 +4373,7 @@ def split_order(item_name, split_qty, target_unit):
     new_row_doc.split_from = doc.name
     new_row_doc.planning_sheet = parent_name
     new_row_doc.source_ps = parent_name
-    new_row_doc.source_item = doc.source_item
+    new_row_doc.source_item = _resolve_planning_table_source_item_link(doc.get("source_item"), doc.name)
     new_row_doc.insert(ignore_permissions=True)
 
     frappe.db.commit()
@@ -4994,6 +5022,9 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
                 new_row_doc.qty = flt(req_qty)
                 new_row_doc.is_split = 1
                 new_row_doc.split_from = doc.name
+                new_row_doc.source_item = _resolve_planning_table_source_item_link(
+                    new_row_doc.get("source_item"), doc.name
+                )
                 new_row_doc.insert(ignore_permissions=True)
 
                 # Reduce original item quantity
