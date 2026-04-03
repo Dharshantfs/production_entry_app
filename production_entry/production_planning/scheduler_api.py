@@ -479,6 +479,24 @@ def _populate_planning_sheet_items(ps, doc):
                     col = c
                     break
 
+        # Mandatory DocField `quality` on Planning sheet Item / Planning Table (not only custom_quality)
+        line_quality = (qual or "").strip()
+        if not line_quality:
+            line_quality = (
+                str(getattr(it, "custom_quality", None) or getattr(it, "quality", None) or "").strip()
+            )
+        if not line_quality and it.item_code:
+            try:
+                line_quality = str(
+                    frappe.db.get_value("Item", it.item_code, "custom_quality")
+                    or frappe.db.get_value("Item", it.item_code, "quality")
+                    or ""
+                ).strip()
+            except Exception:
+                line_quality = ""
+        if not line_quality:
+            line_quality = "GENERIC"
+
         m_roll = flt(it.custom_meter_per_roll)
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
@@ -515,7 +533,8 @@ def _populate_planning_sheet_items(ps, doc):
             "no_of_rolls": flt(it.custom_no_of_rolls),
             "gsm": gsm,
             "width_inch": width,
-            "custom_quality": qual,
+            "quality": line_quality,
+            "custom_quality": (qual or line_quality),
             "color": col,
             "weight_per_roll": wt,
             "unit": unit,
@@ -530,7 +549,8 @@ def _populate_planning_sheet_items(ps, doc):
             for existing_psi in existing_psi_list:
                 # Update base info but PRESERVE unit and qty (don't overwrite board splits)
                 existing_psi.uom = it.uom
-                existing_psi.custom_quality = qual
+                existing_psi.quality = line_quality
+                existing_psi.custom_quality = qual or line_quality
                 existing_psi.color = col
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
