@@ -4,7 +4,7 @@
 
 import frappe
 from frappe.model.document import Document
-from frappe.utils import flt, now_datetime, getdate, add_days
+from frappe.utils import cint, flt, now_datetime, getdate, add_days
 import re
 
 from production_entry.production_planning.planning_doctypes import PLANNING_SHEET as PLANNING_SHEET_DOCTYPE
@@ -12,11 +12,77 @@ from production_entry.production_planning.planning_doctypes import PLANNING_SHEE
 
 # Class name must equal DocType name with spaces removed (Frappe get_controller), e.g. "Planning sheet" -> Planningsheet.
 class Planningsheet(Document):
+    def _validate_links(self):
+        """Run before Document's link check: Frappe calls _validate_links() before validate()/hooks."""
+        if not self.flags.get("ignore_links") and self._action != "cancel":
+            self._fix_planned_items_source_item_links()
+        super()._validate_links()
+
     def validate(self):
         """Validate planning sheet before saving"""
         self.validate_items()
         self.calculate_totals()
         self.parse_item_details()
+
+    def _fix_planned_items_source_item_links(self):
+        """Ensure planned_items.source_item points to Planning sheet Item, not a Planning Table row id.
+
+        Board rows and legacy rows share similar autonames; desk / splits sometimes store the wrong id in
+        the Link field, which causes LinkValidationError on save.
+        """
+
+        def _resolve_to_planning_sheet_item(stored):
+            """Follow Planning Table.source_item chain until a valid Planning sheet Item name or give up."""
+            cur = (stored or "").strip()
+            for _ in range(6):
+                if not cur:
+                    return None
+                if frappe.db.exists("Planning sheet Item", cur):
+                    return cur
+                if frappe.db.exists("Planning Table", cur):
+                    cur = frappe.db.get_value("Planning Table", cur, "source_item") or ""
+                    continue
+                return None
+            return None
+
+        planned = list(self.planned_items or [])
+        if not planned:
+            return
+
+        legacy = sorted(
+            list(self.get("items") or []),
+            key=lambda x: (cint(x.idx), getattr(x, "name", None) or ""),
+        )
+        planned_sorted = sorted(
+            planned,
+            key=lambda x: (cint(x.idx), getattr(x, "name", None) or ""),
+        )
+        can_pos_map = len(legacy) == len(planned_sorted) and bool(legacy)
+
+        for pos, row in enumerate(planned_sorted):
+            si = (row.source_item or "").strip()
+            if not si:
+                continue
+            if frappe.db.exists("Planning sheet Item", si):
+                continue
+
+            resolved = _resolve_to_planning_sheet_item(si)
+
+            row_id = (row.name or "").strip()
+            if not resolved and row_id:
+                resolved = _resolve_to_planning_sheet_item(row_id)
+
+            if resolved:
+                row.source_item = resolved
+                continue
+
+            if can_pos_map and pos < len(legacy):
+                ln = legacy[pos].name
+                if ln and frappe.db.exists("Planning sheet Item", ln):
+                    row.source_item = ln
+                    continue
+
+            row.source_item = None
     
     def before_save(self):
         """Allocate unit before saving"""
