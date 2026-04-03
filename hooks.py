@@ -1,4 +1,4 @@
-from . import __version__ as app_version
+﻿from . import __version__ as app_version
 
 app_name = "production_planning"
 app_title = "Production Planning"
@@ -93,9 +93,15 @@ doctype_js = {
 
 doc_events = {
     "Planning Sheet": {
-        "validate": "production_planning.production_planning.doctype.planning_sheet.planning_sheet.validate_planning_sheet",
-        "before_save": "production_planning.production_planning.doctype.planning_sheet.planning_sheet.allocate_unit",
-        "on_submit": "production_planning.production_planning.doctype.planning_sheet.planning_sheet.update_queue"
+        "validate": "planning_sheet.validate_planning_sheet",
+        "before_save": "planning_sheet.allocate_unit",
+        "on_submit": "planning_sheet.update_queue"
+    },
+    "Sales Order": {
+        "on_submit": "planning_sheet.auto_create_planning_sheet"
+    },
+    "Production Plan": {
+        "on_submit": "planning_sheet.sync_to_planning_table"
     }
 }
 
@@ -104,10 +110,10 @@ doc_events = {
 
 scheduler_events = {
     "daily": [
-        "production_planning.production_planning.doctype.planning_sheet.planning_sheet.daily_capacity_reset"
+        "planning_sheet.daily_capacity_reset"
     ],
     "hourly": [
-        "production_planning.production_planning.doctype.planning_sheet.planning_sheet.update_production_queue"
+        "planning_sheet.update_production_queue"
     ]
 }
 
@@ -165,3 +171,4 @@ user_data_fields = [
 # auth_hooks = [
 # 	"production_planning.auth.validate"
 # ]
+

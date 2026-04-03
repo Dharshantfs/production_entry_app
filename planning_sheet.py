@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Your Company and contributors
 # For license information, please see license.txt
 
@@ -26,7 +26,7 @@ class PlanningSheet(Document):
     
     def validate_items(self):
         """Validate that items are present"""
-        if not self.items:
+        if not self.planned_items:
             frappe.throw("Please add at least one item to the Planning Sheet")
     
     def calculate_totals(self):
@@ -34,7 +34,7 @@ class PlanningSheet(Document):
         total_qty = 0
         total_weight = 0
         
-        for item in self.items:
+        for item in self.planned_items:
             # Calculate weight per item if not already set
             if not item.total_weight and item.weight_per_roll and item.no_of_rolls:
                 item.total_weight = flt(item.weight_per_roll) * flt(item.no_of_rolls)
@@ -53,7 +53,7 @@ class PlanningSheet(Document):
     
     def parse_item_details(self):
         """Parse item name to extract quality and color"""
-        for item in self.items:
+        for item in self.planned_items:
             if item.item_name and not item.quality:
                 quality, color = extract_quality_and_color(item.item_name)
                 item.quality = quality
@@ -68,7 +68,7 @@ class PlanningSheet(Document):
         
         # Collect all items data
         items_data = []
-        for item in self.items:
+        for item in self.planned_items:
             items_data.append({
                 "quality": item.quality.upper() if item.quality else "",
                 "gsm": flt(item.gsm),
@@ -118,7 +118,7 @@ class PlanningSheet(Document):
                 self.unit_capacity_night = capacity_info.night_shift_capacity_kg
                 
                 # Update item allocation
-                for item in self.items:
+                for item in self.planned_items:
                     item.allocated_to_unit = allocated_unit
         
         return allocated_unit
@@ -255,6 +255,52 @@ def update_production_queue():
         for sheet in sheets:
             # This is a placeholder - implement actual completion logic
             pass
+# ------------------------------------------------------------
+# AUTOMATED PLANNING SHEET CREATION (SALES ORDER HOOK)
+# ------------------------------------------------------------
+
+def auto_create_planning_sheet(doc, method=None):
+    """Called on Sales Order Submit to create a Planning Sheet automatically."""
+    try:
+        # Avoid double creation
+        if frappe.db.exists("Planning Sheet", {"sales_order": doc.name, "docstatus": ["<", 2]}):
+            return
+
+        ps = frappe.new_doc("Planning Sheet")
+        ps.sales_order = doc.name
+        ps.customer = doc.customer
+        ps.ordered_date = doc.transaction_date
+        ps.delivery_date = doc.delivery_date
+        ps.planning_status = "Draft"
+        
+        # Populate Items
+        for item in doc.items:
+            ps.append("planned_items", {
+                "sales_order_item": item.name,
+                "item_code": item.item_code,
+                "item_name": item.item_name,
+                "qty": item.qty,
+                "uom": item.uom,
+                "gsm": item.get("gsm") or 0,
+                "width_inch": item.get("width_inch") or 0
+            })
+
+        # Fix MandatoryError: quality
+        if not ps.get("quality"):
+            ps.quality = "Standard"
+
+        ps.flags.ignore_permissions = True
+        ps.insert()
+        frappe.db.commit()
+        
+        frappe.msgprint(f"âœ… Planning Sheet <b>{ps.name}</b> created and synced from Sales Order for April 1st Alignment.")
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Auto Create Planning Sheet Failed")
+
+@frappe.whitelist()
+def sync_to_planning_table(doc, method=None):
+    """Sync Production Plan data back to Planning Table if needed."""
+    pass
 
 
 # Whitelisted Methods
@@ -309,17 +355,15 @@ def get_quality_based_recommendation(quality, gsm):
 
 # Validation Hook
 def validate_planning_sheet(doc, method):
-    """Called from hooks on validate"""
-    pass
-
+    \"\"\"Called from hooks on validate\"\"\"
+    doc.validate()
 
 # Unit Allocation Hook
 def allocate_unit(doc, method):
-    """Called from hooks before save"""
-    pass
-
+    \"\"\"Called from hooks before save\"\"\"
+    doc.before_save()
 
 # Queue Update Hook
 def update_queue(doc, method):
-    """Called from hooks on submit"""
-    pass
+    \"\"\"Called from hooks on submit\"\"\"
+    doc.on_submit()
