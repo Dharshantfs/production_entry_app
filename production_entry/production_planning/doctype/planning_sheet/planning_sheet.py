@@ -7,7 +7,10 @@ from frappe.model.document import Document
 from frappe.utils import cint, flt, now_datetime, getdate, add_days
 import re
 
-from production_entry.production_planning.planning_doctypes import PLANNING_SHEET as PLANNING_SHEET_DOCTYPE
+from production_entry.production_planning.planning_doctypes import (
+    PLANNING_SHEET as PLANNING_SHEET_DOCTYPE,
+    normalize_planning_unit_for_select,
+)
 
 
 # Class name must equal DocType name with spaces removed (Frappe get_controller), e.g. "Planning sheet" -> Planningsheet.
@@ -16,7 +19,15 @@ class Planningsheet(Document):
         """Run before Document's link check: Frappe calls _validate_links() before validate()/hooks."""
         if not self.flags.get("ignore_links") and self._action != "cancel":
             self._fix_planned_items_source_item_links()
+            # Runs before super(): insert() also validates links before before_validate.
+            self._normalize_child_table_units()
         super()._validate_links()
+
+    def _normalize_child_table_units(self):
+        for row in self.get("planned_items") or []:
+            row.unit = normalize_planning_unit_for_select(getattr(row, "unit", None))
+        for row in self.get("items") or []:
+            row.unit = normalize_planning_unit_for_select(getattr(row, "unit", None))
 
     def validate(self):
         """Validate planning sheet before saving"""

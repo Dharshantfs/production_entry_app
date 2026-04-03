@@ -5,6 +5,8 @@ import json
 import re
 import datetime
 
+from production_entry.production_planning.planning_doctypes import normalize_planning_unit_for_select
+
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
 # Set True to enable; False disables all calls (no codes generated, no SO writeback from this path).
 PARTY_CODE_GENERATION_ENABLED = False
@@ -1687,7 +1689,8 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     force_move = flt(force_move)
     perform_split = flt(perform_split)
     strict_next_day = flt(strict_next_day)
-    
+    unit = normalize_planning_unit_for_select(unit)
+
     # 1. Get Item and Parent Details
     item = frappe.get_doc("Planning Table", item_name)
     parent_sheet = frappe.get_doc("Planning sheet", item.parent)
@@ -1850,6 +1853,7 @@ def _sync_legacy_planning_sheet_item_unit(source_item, unit):
         return
     if not frappe.db.has_column("Planning sheet Item", "unit"):
         return
+    unit = normalize_planning_unit_for_select(unit)
     frappe.db.sql(
         "UPDATE `tabPlanning sheet Item` SET unit = %s WHERE name = %s",
         (unit, name),
@@ -1885,6 +1889,7 @@ def _resolve_planning_table_source_item_link(source_item_value, board_row_name=N
 def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     """Internal helper to move a Planning Sheet Item to a specific slot.
     Re-parents item if date changes, avoiding moving the entire order."""
+    unit = normalize_planning_unit_for_select(unit)
     target_date = getdate(date)
     source_parent = frappe.get_doc("Planning sheet", item_doc.parent)
     
@@ -3817,7 +3822,9 @@ def update_item_unit(item_name, unit):
     if not item_name or not unit:
         frappe.throw(_("Item Name and Unit are required"))
 
-    frappe.db.set_value("Planning Table", item_name, "unit", unit)
+    frappe.db.set_value(
+        "Planning Table", item_name, "unit", normalize_planning_unit_for_select(unit)
+    )
     return {"status": "success"}
 
 
@@ -4347,6 +4354,8 @@ def split_order(item_name, split_qty, target_unit):
 
     if split_qty_val <= 0:
         frappe.throw("Split quantity must be positive")
+
+    target_unit = normalize_planning_unit_for_select(target_unit)
 
     # 1. Update Board qty
     remaining_qty = original_qty - split_qty_val
@@ -4934,6 +4943,8 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
         return {"status": "failed", "message": "No items selected"}
 
     target_date = getdate(target_date)
+    if target_unit:
+        target_unit = normalize_planning_unit_for_select(target_unit)
     
     # --- CAPACITY VALIDATION & SPLITTING PREPARATION ---
     # 1. Calculate weight to add per unit and prepare docs
@@ -6167,6 +6178,7 @@ def push_items_to_pb(
 
             # --- FIND CAPACITY SLOT ACROSS MULTIPLE DATES (LIMITED CASCADE) ---
             unit = target_unit or item_doc.unit or get_preferred_unit(item_doc.custom_quality)
+            unit = normalize_planning_unit_for_select(unit)
             limit = HARD_LIMITS.get(unit, 999.0)
             
             current_check_date = target_dates[0] if target_dates else str(parent_doc.get("custom_planned_date") or parent_doc.ordered_date)
@@ -6313,7 +6325,7 @@ def push_items_to_pb(
             if target_unit:
                 frappe.db.sql("""
                     UPDATE `tabPlanning Table` SET unit = %s WHERE name = %s
-                """, (target_unit, name))
+                """, (unit, name))
 
             # ΓöÇΓöÇ Find or create a dedicated PB Planning Sheet ΓöÇΓöÇ
             # BUG FIX: Prefer keeping items in original sheet if possible to prevent "Multiple Sheets per SO" issue.
