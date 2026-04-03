@@ -832,8 +832,10 @@ function isRowAlreadyPushed(d) {
     const isWhite = ["WHITE", "BRIGHT WHITE", "SUNSHINE WHITE", "MILKY WHITE", "SUPER WHITE", "BLEACH WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"].includes(c);
     if (isWhite) return true;
 
-    const pb = (d.pbPlanName || d.custom_pb_plan_name || '').toString().trim();
-    return !!pb;
+    // Align with push_items_to_pb: sheet-level custom_pb_plan_name is copied onto every row
+    // in the API and must NOT mean "already pushed". Only item-level planned_date does.
+    const planned = String(d.plannedDate || d.planned_date || "").trim();
+    return !!planned;
 }
 
 function stripPlanPrefix(name) {
@@ -4223,7 +4225,7 @@ async function pushToProductionBoard() {
                         plannedDate: s.plannedDate || '',
                         itemName: s.name,
                         description: s.description || s.item_name || '',
-                        pushed: isExcludedWhite(s.color) ? true : !!s.pbPlanName
+                        pushed: isExcludedWhite(s.color) ? true : !!String(s.plannedDate || s.planned_date || "").trim()
                     };
                     
                     if (mapped.pushed) {
@@ -4654,8 +4656,14 @@ async function fetchData() {
             partyName: d.party_name || d.partyName || "",
             approvalStatus: d.custom_approval_status || d.approvalStatus || "Draft",
             itemName: d.itemName || d.item_name || d.name || "",
-            // Robust mapping: Prioritize PB plan name if it exists, especially if planName is "Default"
-            planName: (d.pbPlanName && d.pbPlanName !== "") ? d.pbPlanName : (d.planName || d.custom_pb_plan_name || d.custom_plan_name || "Default"),
+            // Use PB plan name for grouping only after the line is actually scheduled (item planned_date).
+            // Otherwise sheet-level pb fields would steal planName and break CC plan filters + push eligibility.
+            planName: (() => {
+                const hasItemPlanned = !!String(d.plannedDate || d.planned_date || "").trim();
+                const pb = (d.pbPlanName || d.custom_pb_plan_name || "").toString().trim();
+                if (hasItemPlanned && pb) return pb;
+                return d.planName || d.custom_pb_plan_name || d.custom_plan_name || "Default";
+            })(),
             pbPlanName: d.pbPlanName || d.custom_pb_plan_name || ""
         };
     });
