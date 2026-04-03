@@ -32,7 +32,7 @@ app_license = "MIT"
 
 # include js in doctype views
 doctype_js = {
-    "Planning Sheet": "public/js/production_entry.js",
+    "Planning sheet": "public/js/production_entry.js",
     "Shaft Production Run": "public/js/shaft_production_run.js",
     "Roll Production Entry": "public/js/roll_production_entry.js",
 }
@@ -96,7 +96,7 @@ after_migrate = ["production_entry.setup.after_migrate"]
 # Hook on document methods and events
 
 doc_events = {
-    "Planning Sheet": {
+    "Planning sheet": {
         "validate": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.validate_planning_sheet",
         "before_save": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.allocate_unit",
         "on_submit": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.update_queue"

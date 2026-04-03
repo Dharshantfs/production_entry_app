@@ -2,7 +2,7 @@
 // NOTE: This file is placed under `public/js` at the app root (not under the python package folder)
 // so Frappe/esbuild can find it and bundle production_entry assets.
 
-frappe.ui.form.on('Planning Sheet', {
+frappe.ui.form.on('Planning sheet', {
     refresh: function (frm) {
         // Add custom buttons
         if (frm.doc.docstatus === 1 && frm.doc.planning_status === "Finalized") {
@@ -10,7 +10,7 @@ frappe.ui.form.on('Planning Sheet', {
                 frappe.call({
                     method: 'frappe.client.set_value',
                     args: {
-                        doctype: 'Planning Sheet',
+                        doctype: 'Planning sheet',
                         name: frm.doc.name,
                         fieldname: 'planning_status',
                         value: 'In Production'
@@ -78,7 +78,7 @@ frappe.ui.form.on('Planning Sheet', {
                 callback: function (r) {
                     if (r.message) {
                         frm.set_value('customer', r.message.customer);
-                        frm.set_value('delivery_date', r.message.delivery_date);
+                        frm.set_value('dod', r.message.delivery_date);
 
                         // Optionally populate items
                         if (r.message.items) {
@@ -101,7 +101,7 @@ frappe.ui.form.on('Planning Sheet', {
     }
 });
 
-frappe.ui.form.on('Planning Sheet Item', {
+frappe.ui.form.on('Planning sheet Item', {
     item_code: function (frm, cdt, cdn) {
         let row = locals[cdt][cdn];
 
@@ -343,7 +343,7 @@ function show_queue_dialog(unit_name, data) {
                 <td><a href="/app/planning-sheet/${sheet.name}">${sheet.name}</a></td>
                 <td>${sheet.customer || ''}</td>
                 <td>${flt(sheet.total_weight).toFixed(2)}</td>
-                <td>${frappe.datetime.str_to_user(sheet.delivery_date)}</td>
+                <td>${frappe.datetime.str_to_user(sheet.dod || sheet.delivery_date)}</td>
                 <td><span style="color: ${status_color};">${sheet.planning_status}</span></td>
             </tr>
         `;

@@ -3,38 +3,54 @@
 
 import frappe
 
+# Live DB / legacy sites use this exact DocType name (table `tabPlanning sheet`).
+PLANNING_SHEET_DOCTYPE = "Planning sheet"
 
-def after_migrate():
-	_rename_planning_sheet_workspace_if_it_hijacks_doctype_route()
 
-
-def _rename_planning_sheet_workspace_if_it_hijacks_doctype_route():
-	"""
-	A Workspace named exactly like the DocType steals the same Desk route as the form
-	(Frappe Desk: workspace vs doctype route). Users see 404 / not found though data exists.
-	Rename only the Workspace document; Planning Sheet data is untouched.
-	"""
-	if frappe.flags.in_test:
+def _fix_planning_sheet_child_parenttype():
+	"""Old deploys used DocType name ``Planning Sheet``; live DB uses ``Planning sheet``. Align child rows (no deletes)."""
+	if not frappe.db.exists("DocType", PLANNING_SHEET_DOCTYPE):
 		return
-	if not frappe.db.exists("DocType", "Planning Sheet"):
-		return
-	if not frappe.db.exists("Workspace", "Planning Sheet"):
-		return
-	new_name = "Planning Sheet Navigation"
-	n = 1
-	while frappe.db.exists("Workspace", new_name):
-		n += 1
-		new_name = f"Planning Sheet Navigation {n}"
+	table = "`tabPlanning sheet Item`"
 	try:
-		frappe.rename_doc(
-			"Workspace",
-			"Planning Sheet",
-			new_name,
-			merge=False,
-			force=True,
+		frappe.db.sql(
+			f"UPDATE {table} SET parenttype = %s WHERE IFNULL(parenttype, '') = %s",
+			(PLANNING_SHEET_DOCTYPE, "Planning Sheet"),
 		)
 	except Exception:
 		frappe.log_error(
 			frappe.get_traceback(),
-			"production_entry: rename Workspace Planning Sheet (route clash with DocType)",
+			"production_entry: fix Planning sheet Item parenttype",
 		)
+
+
+def after_migrate():
+	_fix_planning_sheet_child_parenttype()
+	_rename_workspace_that_hijacks_planning_sheet_route()
+
+
+def _rename_workspace_that_hijacks_planning_sheet_route():
+	"""
+	A Workspace whose name equals the Planning sheet DocType can steal the same Desk route
+	as the form (404 / not found while rows exist in `tabPlanning sheet`).
+	Rename only Workspace documents; data tables are untouched.
+	"""
+	if frappe.flags.in_test:
+		return
+	if not frappe.db.exists("DocType", PLANNING_SHEET_DOCTYPE):
+		return
+	for ws in ("Planning sheet", "Planning Sheet"):
+		if not frappe.db.exists("Workspace", ws):
+			continue
+		new_name = f"{ws} Navigation"
+		n = 1
+		while frappe.db.exists("Workspace", new_name):
+			n += 1
+			new_name = f"{ws} Navigation {n}"
+		try:
+			frappe.rename_doc("Workspace", ws, new_name, merge=False, force=True)
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				"production_entry: rename Workspace that clashes with Planning sheet DocType route",
+			)

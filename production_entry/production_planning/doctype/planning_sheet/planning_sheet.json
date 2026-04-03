@@ -17,14 +17,24 @@
   "party_code",
   "customer",
   "column_break_7",
-  "delivery_date",
+  "dod",
+  "ordered_date",
+  "section_break_meta",
+  "unit",
+  "dot_spec",
+  "plan_name",
+  "order_sheet",
+  "custom_plan_name",
+  "custom_planned_date",
+  "custom_pb_plan_name",
+  "custom_plan_code",
   "section_break_9",
   "allocated_unit",
   "unit_capacity_day",
   "unit_capacity_night",
   "column_break_11",
   "work_order_created",
-  "work_order_creation_date",
+  "work_order_created_on",
   "section_break_13",
   "items",
   "section_break_15",
@@ -71,7 +81,7 @@
    "fieldtype": "Link",
    "label": "Amended From",
    "no_copy": 1,
-   "options": "Planning Sheet",
+   "options": "Planning sheet",
    "print_hide": 1,
    "read_only": 1
   },
@@ -84,32 +94,79 @@
   {
    "fieldname": "section_break_5",
    "fieldtype": "Section Break",
-   "label": "Customer Details"
+   "label": "Customer / Order"
   },
   {
    "fieldname": "party_code",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Party Code",
-   "reqd": 1
+   "label": "Party Code"
   },
   {
    "fieldname": "customer",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Customer",
-   "options": "Customer",
-   "reqd": 1
+   "options": "Customer"
   },
   {
    "fieldname": "column_break_7",
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "delivery_date",
+   "fieldname": "dod",
    "fieldtype": "Date",
-   "label": "Delivery Date",
-   "reqd": 1
+   "label": "Delivery Date (DOD)"
+  },
+  {
+   "fieldname": "ordered_date",
+   "fieldtype": "Date",
+   "label": "Ordered Date"
+  },
+  {
+   "fieldname": "section_break_meta",
+   "fieldtype": "Section Break",
+   "label": "Plan identifiers"
+  },
+  {
+   "fieldname": "unit",
+   "fieldtype": "Data",
+   "label": "Unit"
+  },
+  {
+   "fieldname": "dot_spec",
+   "fieldtype": "Data",
+   "label": "Dot Spec"
+  },
+  {
+   "fieldname": "plan_name",
+   "fieldtype": "Data",
+   "label": "Plan Name"
+  },
+  {
+   "fieldname": "order_sheet",
+   "fieldtype": "Data",
+   "label": "Order Sheet"
+  },
+  {
+   "fieldname": "custom_plan_name",
+   "fieldtype": "Data",
+   "label": "Custom Plan Name"
+  },
+  {
+   "fieldname": "custom_planned_date",
+   "fieldtype": "Date",
+   "label": "Planned Date"
+  },
+  {
+   "fieldname": "custom_pb_plan_name",
+   "fieldtype": "Data",
+   "label": "PB Plan Name"
+  },
+  {
+   "fieldname": "custom_plan_code",
+   "fieldtype": "Data",
+   "label": "Plan Code"
   },
   {
    "fieldname": "section_break_9",
@@ -149,9 +206,9 @@
    "read_only": 1
   },
   {
-   "fieldname": "work_order_creation_date",
+   "fieldname": "work_order_created_on",
    "fieldtype": "Datetime",
-   "label": "Work Order Creation Date",
+   "label": "Work Order Created On",
    "read_only": 1
   },
   {
@@ -163,8 +220,7 @@
    "fieldname": "items",
    "fieldtype": "Table",
    "label": "Planning Sheet Items",
-   "options": "Planning Sheet Item",
-   "reqd": 1
+   "options": "Planning sheet Item"
   },
   {
    "fieldname": "section_break_15",
@@ -209,7 +265,7 @@
    "fieldname": "custom_approval_status",
    "fieldtype": "Select",
    "label": "Approval Status",
-   "options": "\nPending Approval\nApproved",
+   "options": "Draft\nPending Approval\nApproved",
    "read_only": 1
   },
   {
@@ -228,10 +284,10 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-04-03 18:00:00.000000",
+ "modified": "2026-04-03 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Production Planning",
- "name": "Planning Sheet",
+ "name": "Planning sheet",
  "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [

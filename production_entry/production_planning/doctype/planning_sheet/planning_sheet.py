@@ -7,6 +7,10 @@ from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate, add_days
 import re
 
+# Must match `name` in planning_sheet.json (DB table `tabPlanning sheet`).
+PLANNING_SHEET_DOCTYPE = "Planning sheet"
+
+
 class PlanningSheet(Document):
     def validate(self):
         """Validate planning sheet before saving"""
@@ -204,15 +208,17 @@ class PlanningSheet(Document):
             return
         
         # Get all finalized planning sheets for this unit
-        existing_sheets = frappe.get_all("Planning Sheet",
-                                        filters={
-                                            "allocated_unit": self.allocated_unit,
-                                            "planning_status": ["in", ["Finalized", "In Production"]],
-                                            "docstatus": 1,
-                                            "name": ["!=", self.name]
-                                        },
-                                        fields=["name", "queue_position", "delivery_date"],
-                                        order_by="queue_position asc")
+        existing_sheets = frappe.get_all(
+            PLANNING_SHEET_DOCTYPE,
+            filters={
+                "allocated_unit": self.allocated_unit,
+                "planning_status": ["in", ["Finalized", "In Production"]],
+                "docstatus": 1,
+                "name": ["!=", self.name],
+            },
+            fields=["name", "queue_position", "dod"],
+            order_by="queue_position asc",
+        )
         
         # Calculate new queue position
         if existing_sheets:
@@ -279,13 +285,15 @@ def get_unit_daily_capacity(unit_name):
 def update_unit_capacity_usage(unit_name):
     """Update current queue weight and available capacity"""
     # Get all finalized sheets for this unit
-    sheets = frappe.get_all("Planning Sheet",
-                           filters={
-                               "allocated_unit": unit_name,
-                               "planning_status": ["in", ["Finalized", "In Production"]],
-                               "docstatus": 1
-                           },
-                           fields=["total_weight"])
+    sheets = frappe.get_all(
+        PLANNING_SHEET_DOCTYPE,
+        filters={
+            "allocated_unit": unit_name,
+            "planning_status": ["in", ["Finalized", "In Production"]],
+            "docstatus": 1,
+        },
+        fields=["total_weight"],
+    )
     
     total_queue_weight = sum([flt(sheet.total_weight) for sheet in sheets])
     
@@ -318,13 +326,15 @@ def update_production_queue():
     
     for unit in units:
         # Get all sheets in production
-        sheets = frappe.get_all("Planning Sheet",
-                               filters={
-                                   "allocated_unit": unit,
-                                   "planning_status": "In Production",
-                                   "docstatus": 1
-                               },
-                               fields=["name", "total_weight", "estimated_production_days"])
+        sheets = frappe.get_all(
+            PLANNING_SHEET_DOCTYPE,
+            filters={
+                "allocated_unit": unit,
+                "planning_status": "In Production",
+                "docstatus": 1,
+            },
+            fields=["name", "total_weight", "estimated_production_days"],
+        )
         
         # Check if any sheets are completed (logic can be enhanced)
         for sheet in sheets:
@@ -337,15 +347,16 @@ def update_production_queue():
 @frappe.whitelist()
 def get_unit_queue_status(unit_name):
     """Get current queue status for a unit"""
-    sheets = frappe.get_all("Planning Sheet",
-                           filters={
-                               "allocated_unit": unit_name,
-                               "planning_status": ["in", ["Finalized", "In Production"]],
-                               "docstatus": 1
-                           },
-                           fields=["name", "customer", "total_weight", "queue_position", 
-                                  "delivery_date", "planning_status"],
-                           order_by="queue_position asc")
+    sheets = frappe.get_all(
+        PLANNING_SHEET_DOCTYPE,
+        filters={
+            "allocated_unit": unit_name,
+            "planning_status": ["in", ["Finalized", "In Production"]],
+            "docstatus": 1,
+        },
+        fields=["name", "customer", "total_weight", "queue_position", "dod", "planning_status"],
+        order_by="queue_position asc",
+    )
     
     capacity = frappe.db.get_value("Unit Capacity", unit_name, 
                                    ["current_queue_weight", "available_capacity", 
