@@ -479,7 +479,7 @@ def _populate_planning_sheet_items(ps, doc):
                     col = c
                     break
 
-        # Mandatory DocField `quality` on Planning sheet Item / Planning Table (not only custom_quality)
+        # Mandatory `quality` on Planning sheet Item / Planning Table (DocType requires it)
         line_quality = (qual or "").strip()
         if not line_quality:
             line_quality = (
@@ -7827,7 +7827,6 @@ def auto_create_planning_sheet(doc, method=None):
     # Rows were appended in the same order, so idx should match 1:1.
     final_doc = frappe.get_doc("Planning sheet", ps.name)
     
-    # Legacy = `items` (Planning sheet Item). Board = Planning Table child (often `planned_items` in production_entry).
     legacy_rows = sorted((final_doc.get("items") or []), key=lambda x: x.idx)
     board_rows = []
     for field in [

@@ -29,4 +29,5 @@ production_entry = [
   "production_planning/**/*.json",
   "patches/*.py",
   "public/**/*",
+  "config/*.py",
 ]
