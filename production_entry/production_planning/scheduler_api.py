@@ -7827,15 +7827,20 @@ def auto_create_planning_sheet(doc, method=None):
     # Rows were appended in the same order, so idx should match 1:1.
     final_doc = frappe.get_doc("Planning sheet", ps.name)
     
-    # We assume 'items' is the legacy table and 'planning_table' is the new board table.
+    # Legacy = `items` (Planning sheet Item). Board = Planning Table child (often `planned_items` in production_entry).
     legacy_rows = sorted((final_doc.get("items") or []), key=lambda x: x.idx)
-    board_rows = sorted((final_doc.get("planning_table") or []), key=lambda x: x.idx)
-    
-    # If board_rows is empty, check alternate fields from _populate_planning_sheet_items
-    if not board_rows:
-        for field in ["planned_items", "custom_planned_items", "custom_planning_table", "table"]:
-            board_rows = sorted((final_doc.get(field) or []), key=lambda x: x.idx)
-            if board_rows: break
+    board_rows = []
+    for field in [
+        "planned_items",
+        "planning_table",
+        "custom_planned_items",
+        "custom_planning_table",
+        "table",
+    ]:
+        br = final_doc.get(field) or []
+        if br:
+            board_rows = sorted(br, key=lambda x: x.idx)
+            break
             
     if legacy_rows and board_rows and len(legacy_rows) == len(board_rows):
         for i in range(len(legacy_rows)):
@@ -7905,12 +7910,18 @@ def regenerate_planning_sheet(so_name):
     # LINK BOARD ROWS TO LEGACY ROWS (source_item)
     final_doc = frappe.get_doc("Planning sheet", ps.name)
     legacy_rows = sorted((final_doc.get("items") or []), key=lambda x: x.idx)
-    board_rows = sorted((final_doc.get("planning_table") or []), key=lambda x: x.idx)
-
-    if not board_rows:
-        for field in ["planned_items", "custom_planned_items", "custom_planning_table", "table"]:
-            board_rows = sorted((final_doc.get(field) or []), key=lambda x: x.idx)
-            if board_rows: break
+    board_rows = []
+    for field in [
+        "planned_items",
+        "planning_table",
+        "custom_planned_items",
+        "custom_planning_table",
+        "table",
+    ]:
+        br = final_doc.get(field) or []
+        if br:
+            board_rows = sorted(br, key=lambda x: x.idx)
+            break
 
     if legacy_rows and board_rows and len(legacy_rows) == len(board_rows):
         for i in range(len(legacy_rows)):
