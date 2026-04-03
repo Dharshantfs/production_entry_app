@@ -355,15 +355,16 @@ def get_quality_based_recommendation(quality, gsm):
 
 # Validation Hook
 def validate_planning_sheet(doc, method):
-    \"\"\"Called from hooks on validate\"\"\"
+    """Called from hooks on validate"""
     doc.validate()
 
 # Unit Allocation Hook
 def allocate_unit(doc, method):
-    \"\"\"Called from hooks before save\"\"\"
+    """Called from hooks before save"""
     doc.before_save()
 
 # Queue Update Hook
 def update_queue(doc, method):
-    \"\"\"Called from hooks on submit\"\"\"
+    """Called from hooks on submit"""
     doc.on_submit()
+
