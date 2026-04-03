@@ -1,0 +1,25 @@
+﻿953a259 Fix PP shaft detail mapping and force replace placeholder SPR jobs
+e2216d2 Show item display name and force WO popup on SPR redirect
+6240f09 Fix SPR PP auto-fill of available jobs and stale SPR handling
+6a5b826 Fix: Use custom_shaft_production_run_id field name instead of shaft_production_run
+75c8eae Add custom script for SPR form: auto-fill PP ID and show Work Order status popup
+307601a Fetch SPR from Production Plan + detect deleted SPRs + allow recreating if deleted
+534c34c Fetch shaft details from Production Plan instead of Planning Sheet Item
+7c643c5 Link SPR back to Production Plan via shaft_production_run field after creation
+ffcccf0 Simplify: Remove SPR linking logic since not storing in Planning Sheet Item
+6dad9d8 Fix: Handle missing custom_spr_name field gracefully + add debug endpoint for PSI fields
+bd92e46 Fix: Use correct production_plan field name for SPR creation
+fdb8ed8 Improve SPR creation error logging - detect field name issues and validation errors
+38bacaf Add detailed error logging and debug endpoint for PP ID resolution issues
+72be6ed Improve merged item validation: better PP grouping feedback and WO validation before SPR creation
+b0aaebf Add Stock Entry creation from Production Table with auto-filled SPR
+253050c Ensure View Plan button shows correct production plan for all items
+4ad2bda Sync item-level PP and order-sheet fields in backfill APIs
+aa0508d Support item-level order-sheet PP routing for multi-PP rows
+1e59821 Add order-code item fallback for production qty mapping
+210a072 Fix SO-item production fallback for mixed WO sales order links
+23a1a00 Fix SQL error by handling missing order_code columns gracefully
+524fa04 Fix fallback to use PP/WO order_code instead of SO order_code
+ebfdfab Add debug_production_qty_fallback_map API to trace exact map lookups
+7bc3ab1 Fix strict fallback execution when WO.sales_order is null
+5414dfb Fix indentation error in SO-PP-WO strict qty mapping block
