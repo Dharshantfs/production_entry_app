@@ -1,5 +1,6 @@
 from frappe.model.document import Document
 
 
-class PlanningSheetItem(Document):
+# "Planning sheet Item" -> PlanningsheetItem (see frappe.model.base_document.import_controller)
+class PlanningsheetItem(Document):
 	pass

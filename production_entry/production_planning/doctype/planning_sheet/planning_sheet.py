@@ -10,7 +10,8 @@ import re
 from production_entry.production_planning.planning_doctypes import PLANNING_SHEET as PLANNING_SHEET_DOCTYPE
 
 
-class PlanningSheet(Document):
+# Class name must equal DocType name with spaces removed (Frappe get_controller), e.g. "Planning sheet" -> Planningsheet.
+class Planningsheet(Document):
     def validate(self):
         """Validate planning sheet before saving"""
         self.validate_items()
