@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "production_entry"
-version = "0.0.5"
+version = "0.1.0"
 authors = [
     { name = "Your Company", email = "info@yourcompany.com" },
 ]
@@ -27,5 +27,6 @@ include = ["production_entry*"]
 [tool.setuptools.package-data]
 production_entry = [
   "production_planning/**/*.json",
+  "patches/*.py",
   "public/**/*",
 ]

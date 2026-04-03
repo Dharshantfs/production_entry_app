@@ -12,9 +12,9 @@ app_license = "MIT"
 # Includes in <head>
 # ------------------
 
-# include js, css files in header of desk.html
-# app_include_css = "/assets/production_entry/css/production_entry.css"
-# app_include_js = "/assets/production_entry/js/production_entry.js"
+# Scheduler board / Color Chart Vue (production_scheduler POC merged here)
+app_include_css = "/assets/production_entry/css/scheduler.css"
+app_include_js = "scheduler.bundle.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/production_entry/css/production_entry.css"
@@ -32,7 +32,10 @@ app_license = "MIT"
 
 # include js in doctype views
 doctype_js = {
-    "Planning sheet": "public/js/production_entry.js",
+    "Planning sheet": [
+        "public/js/production_entry.js",
+        "public/js/planning_sheet_custom.js",
+    ],
     "Shaft Production Run": "public/js/shaft_production_run.js",
     "Roll Production Entry": "public/js/roll_production_entry.js",
 }
@@ -97,11 +100,23 @@ after_migrate = ["production_entry.setup.after_migrate"]
 # Hook on document methods and events
 
 doc_events = {
+    "Sales Order": {
+        "on_submit": "production_entry.production_planning.scheduler_api.auto_create_planning_sheet",
+    },
     "Planning sheet": {
-        "validate": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.validate_planning_sheet",
-        "before_save": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.allocate_unit",
-        "on_submit": "production_entry.production_planning.doctype.planning_sheet.planning_sheet.update_queue"
-    }
+        "before_validate": "production_entry.production_planning.scheduler_hooks.planning_sheet_before_validate",
+        "validate": "production_entry.production_planning.scheduler_hooks.planning_sheet_validate_combined",
+        "before_save": "production_entry.production_planning.scheduler_hooks.planning_sheet_allocate_unit",
+        "on_submit": "production_entry.production_planning.scheduler_hooks.planning_sheet_update_queue",
+        "before_cancel": "production_entry.production_planning.scheduler_hooks.planning_sheet_before_cancel",
+    },
+    "Work Order": {
+        "before_validate": "production_entry.production_planning.scheduler_api.normalize_work_order_pending_status",
+    },
+    "Shaft Production Run": {
+        "before_validate": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",
+        "before_submit": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",
+    },
 }
 
 # Scheduled Tasks

@@ -37,6 +37,8 @@
   "work_order_created_on",
   "section_break_13",
   "items",
+  "section_planned_board",
+  "planned_items",
   "section_break_15",
   "total_quantity",
   "total_weight",
@@ -221,6 +223,17 @@
    "fieldtype": "Table",
    "label": "Planning Sheet Items",
    "options": "Planning sheet Item"
+  },
+  {
+   "fieldname": "section_planned_board",
+   "fieldtype": "Section Break",
+   "label": "Production board"
+  },
+  {
+   "fieldname": "planned_items",
+   "fieldtype": "Table",
+   "label": "Planned items (board)",
+   "options": "Planning Table"
   },
   {
    "fieldname": "section_break_15",

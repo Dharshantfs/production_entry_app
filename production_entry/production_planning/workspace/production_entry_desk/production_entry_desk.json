@@ -1,8 +1,13 @@
 {
  "app": "production_entry",
  "charts": [],
- "content": "[{\"id\":\"pe-desk-h1\",\"source\":\"production_entry_desk\",\"type\":\"header\",\"data\":{\"text\":\" Production Planning \",\"col\":12}}]",
- "custom_blocks": [],
+ "content": "[{\"id\":\"pe-desk-h1\",\"source\":\"production_entry_desk\",\"type\":\"header\",\"data\":{\"text\":\" Production Planning \",\"col\":12}},{\"id\":\"pe-desk-queue\",\"source\":\"production_entry_desk\",\"type\":\"custom_block\",\"data\":{\"custom_block_name\":\"production-queue\",\"col\":12}}]",
+ "custom_blocks": [
+  {
+   "custom_block_name": "production-queue",
+   "label": "Production queue"
+  }
+ ],
  "docstatus": 0,
  "doctype": "Workspace",
  "for_user": "",
@@ -12,6 +17,74 @@
  "is_hidden": 0,
  "label": "Production Entry",
  "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Scheduler pages",
+   "link_count": 0,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "gantt",
+   "is_query_report": 0,
+   "label": "Production Board",
+   "link_count": 0,
+   "link_to": "production-board",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "color",
+   "is_query_report": 0,
+   "label": "Color Chart",
+   "link_count": 0,
+   "link_to": "color-chart",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "table",
+   "is_query_report": 0,
+   "label": "Production Table",
+   "link_count": 0,
+   "link_to": "production-table",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "tick",
+   "is_query_report": 0,
+   "label": "Confirmed Order",
+   "link_count": 0,
+   "link_to": "confirmed-order",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "list",
+   "is_query_report": 0,
+   "label": "Sequence Approval",
+   "link_count": 0,
+   "link_to": "sequence-approval",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
   {
    "hidden": 0,
    "is_query_report": 0,
@@ -65,7 +138,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-04-03 21:00:00.000000",
+ "modified": "2026-04-03 22:30:00.000000",
  "module": "Production Planning",
  "name": "Production Entry Desk",
  "number_cards": [],
@@ -76,7 +149,33 @@
  "restrict_to_domain": "",
  "roles": [],
  "sequence_id": 91.0,
- "shortcuts": [],
+ "shortcuts": [
+  {
+   "label": "Production Board",
+   "link_to": "production-board",
+   "type": "Page"
+  },
+  {
+   "label": "Color Chart",
+   "link_to": "color-chart",
+   "type": "Page"
+  },
+  {
+   "label": "Production Table",
+   "link_to": "production-table",
+   "type": "Page"
+  },
+  {
+   "label": "Confirmed Order",
+   "link_to": "confirmed-order",
+   "type": "Page"
+  },
+  {
+   "label": "Sequence Approval",
+   "link_to": "sequence-approval",
+   "type": "Page"
+  }
+ ],
  "title": "Production Entry",
  "type": "Workspace"
 }
