@@ -63,6 +63,8 @@ doctype_js = {
 # before_install = "production_entry.install.before_install"
 # after_install = "production_entry.install.after_install"
 
+after_migrate = ["production_entry.setup.after_migrate"]
+
 # Desk Notifications
 # -------------------
 # See frappe.core.notifications.get_notification_config
