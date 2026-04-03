@@ -5106,8 +5106,8 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
                     item_doc.custom_quality or "Generic", new_unit, item_doc.item_name
                 ))
 
-            # HEAL UNASSIGNED: If unit is missing OR "Unassigned"/"Mixed", auto-assign based on Quality
-            if not new_unit or new_unit in ["Unassigned", "Mixed"]:
+            # HEAL UNASSIGNED: If unit is missing OR pool rows, auto-assign based on Quality
+            if not new_unit or new_unit in ["Unassigned", "UNASSIGNED", "Mixed"]:
                 # Use item quality to find best unit
                 qual = item_doc.custom_quality or ""
                 new_unit = get_preferred_unit(qual)
