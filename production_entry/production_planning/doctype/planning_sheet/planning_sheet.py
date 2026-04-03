@@ -7,8 +7,7 @@ from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate, add_days
 import re
 
-# Must match `name` in planning_sheet.json (DB table `tabPlanning sheet`).
-PLANNING_SHEET_DOCTYPE = "Planning sheet"
+from production_entry.production_planning.planning_doctypes import PLANNING_SHEET as PLANNING_SHEET_DOCTYPE
 
 
 class PlanningSheet(Document):

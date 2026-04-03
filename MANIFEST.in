@@ -1,5 +1,8 @@
 include README.md
 include license.txt
 recursive-include production_entry *.py *.txt
+recursive-include production_entry *.json
+recursive-include production_entry/production_planning *.json *.py
 recursive-include production_entry/production_planning/doctype *.json *.py *.js *.html
+recursive-include production_entry/production_planning/workspace *.json
 recursive-include production_entry/public *

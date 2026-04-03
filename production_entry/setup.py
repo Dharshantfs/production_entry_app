@@ -1,21 +1,58 @@
 # -*- coding: utf-8 -*-
-"""Migrate hooks for production_entry."""
+"""Install / migrate hooks for production_entry."""
 
 import frappe
 
-# Live DB / legacy sites use this exact DocType name (table `tabPlanning sheet`).
-PLANNING_SHEET_DOCTYPE = "Planning sheet"
+from production_entry.production_planning.planning_doctypes import (
+	LEGACY_PLANNING_SHEET,
+	PLANNING_SHEET,
+)
+
+
+def after_install():
+	"""Ensure app JSON (DocTypes, workspaces) is loaded on first install."""
+	if frappe.flags.in_test:
+		return
+	_sync_app_if_planning_missing()
+
+
+def after_migrate():
+	_sync_app_if_planning_missing()
+	_fix_planning_sheet_child_parenttype()
+	_rename_workspace_that_hijacks_planning_sheet_route()
+
+
+def _sync_app_if_planning_missing():
+	"""
+	If ``Planning sheet`` is not in ``tabDocType``, the app JSON never reached the site
+	(packaging / failed migrate / app not fully installed). Re-sync — does not delete table data.
+	"""
+	if frappe.flags.in_test:
+		return
+	if frappe.db.exists("DocType", PLANNING_SHEET):
+		return
+	if "production_entry" not in frappe.get_installed_apps():
+		return
+	try:
+		from frappe.model.sync import sync_for
+
+		sync_for("production_entry")
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			"production_entry: sync_for failed while Planning sheet DocType was missing",
+		)
 
 
 def _fix_planning_sheet_child_parenttype():
-	"""Old deploys used DocType name ``Planning Sheet``; live DB uses ``Planning sheet``. Align child rows (no deletes)."""
-	if not frappe.db.exists("DocType", PLANNING_SHEET_DOCTYPE):
+	"""Legacy rows used parenttype ``Planning Sheet``; DB DocType is ``Planning sheet``."""
+	if not frappe.db.exists("DocType", PLANNING_SHEET):
 		return
 	table = "`tabPlanning sheet Item`"
 	try:
 		frappe.db.sql(
 			f"UPDATE {table} SET parenttype = %s WHERE IFNULL(parenttype, '') = %s",
-			(PLANNING_SHEET_DOCTYPE, "Planning Sheet"),
+			(PLANNING_SHEET, LEGACY_PLANNING_SHEET),
 		)
 	except Exception:
 		frappe.log_error(
@@ -24,22 +61,13 @@ def _fix_planning_sheet_child_parenttype():
 		)
 
 
-def after_migrate():
-	_fix_planning_sheet_child_parenttype()
-	_rename_workspace_that_hijacks_planning_sheet_route()
-
-
 def _rename_workspace_that_hijacks_planning_sheet_route():
-	"""
-	A Workspace whose name equals the Planning sheet DocType can steal the same Desk route
-	as the form (404 / not found while rows exist in `tabPlanning sheet`).
-	Rename only Workspace documents; data tables are untouched.
-	"""
+	"""Workspace with same name as DocType breaks desk form/list routes."""
 	if frappe.flags.in_test:
 		return
-	if not frappe.db.exists("DocType", PLANNING_SHEET_DOCTYPE):
+	if not frappe.db.exists("DocType", PLANNING_SHEET):
 		return
-	for ws in ("Planning sheet", "Planning Sheet"):
+	for ws in (PLANNING_SHEET, LEGACY_PLANNING_SHEET):
 		if not frappe.db.exists("Workspace", ws):
 			continue
 		new_name = f"{ws} Navigation"

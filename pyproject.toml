@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "production_entry"
-version = "0.0.3"
+version = "0.0.4"
 authors = [
     { name = "Your Company", email = "info@yourcompany.com" },
 ]
@@ -22,3 +22,10 @@ frappe = ">=15.0.0,<17.0.0"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["production_entry*"]
+
+# Frappe Cloud / pip installs must ship DocType JSON, workspace JSON, and public assets.
+[tool.setuptools.package-data]
+production_entry = [
+  "production_planning/**/*.json",
+  "public/**/*",
+]
