@@ -1609,11 +1609,10 @@ def generate_plan_code(date_str, unit, plan_name):
     except Exception:
         return ""
 
-def update_sheet_plan_codes(sheet_doc):
+def update_sheet_plan_codes(sheet_doc, include_legacy=False):
     """
-    Calculates and sets the `plan_name` for each item in BOTH the legacy (items)
-    and new (Planning Table) child tables, and aggregates them on the header.
-    Must be called right before saving a sheet or after manual SQL updates.
+    Sets `plan_name` on Planning Table (board) rows. Optionally on legacy `items`
+    when include_legacy=True (SO create / manual bulk on snapshot rows).
     """
     sheet_date = sheet_doc.get("custom_planned_date") or sheet_doc.get("ordered_date")
     active_plan = sheet_doc.get("custom_plan_name") or "Default"
@@ -1631,12 +1630,12 @@ def update_sheet_plan_codes(sheet_doc):
         item_date = item.get("planned_date") or sheet_date
         return generate_plan_code(item_date, item_unit, active_plan)
 
-    # Old table (Planning Sheet Item / "items")
-    for item in sheet_doc.get("items", []):
-        code = _calc_code_for_item(item)
-        item.plan_name = code
-        if code:
-            unique_codes.add(code)
+    if include_legacy:
+        for item in sheet_doc.get("items", []):
+            code = _calc_code_for_item(item)
+            item.plan_name = code
+            if code:
+                unique_codes.add(code)
 
     # New table (Planning Table) -- check all possible fieldnames
     for tf in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:
@@ -1649,60 +1648,11 @@ def update_sheet_plan_codes(sheet_doc):
                     unique_codes.add(code)
             break
 
-@frappe.whitelist()
-def recalculate_all_plan_codes():
-    """
-    Bulk recalculates plan codes for all unlocked Planning Sheets.
-    Persists plan_name to both legacy (Planning Sheet Item) and new (Planning Table) rows.
-    """
-    create_plan_name_field()
-    frappe.clear_cache(doctype="Planning sheet Item")
-    frappe.clear_cache(doctype="Planning Table")
+    if unique_codes:
+        sheet_doc.custom_plan_code = ", ".join(sorted(unique_codes))
+    elif getattr(sheet_doc, "custom_plan_code", None) is None:
+        sheet_doc.custom_plan_code = ""
 
-    has_psi_plan = frappe.db.has_column("Planning sheet Item", "plan_name")
-    has_psi_unit = frappe.db.has_column("Planning sheet Item", "unit")
-    has_psi_pd = frappe.db.has_column("Planning sheet Item", "planned_date")
-
-    sheets = frappe.get_all("Planning sheet", filters={"docstatus": 0})
-    count = 0
-    for s in sheets:
-        try:
-            doc = frappe.get_doc("Planning sheet", s.name)
-            sheet_date = doc.get("custom_planned_date") or doc.get("ordered_date")
-            active_plan = doc.get("custom_plan_name") or "Default"
-
-            update_sheet_plan_codes(doc)
-
-            # Persist to new table rows via in-memory objects
-            for tf in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:
-                new_items = doc.get(tf)
-                if new_items:
-                    for i in new_items:
-                        if i.get("plan_name"):
-                            frappe.db.sql("UPDATE `tabPlanning Table` SET plan_name = %s WHERE name = %s", (i.plan_name, i.name))
-                    break
-
-            # Persist to old table rows via direct SQL (more reliable than in-memory)
-            if has_psi_plan:
-                unit_col = "unit" if has_psi_unit else "NULL"
-                pd_col = "planned_date" if has_psi_pd else "NULL"
-                old_rows = frappe.db.sql(f"""
-                    SELECT name, {unit_col} as item_unit, {pd_col} as item_pd
-                    FROM `tabPlanning sheet Item` WHERE parent = %s
-                """, (doc.name,), as_dict=True)
-                for row in old_rows:
-                    item_unit = row.get("item_unit") or ""
-                    item_date = row.get("item_pd") or sheet_date
-                    code = generate_plan_code(item_date, item_unit, active_plan)
-                    if code:
-                        frappe.db.sql("UPDATE `tabPlanning sheet Item` SET plan_name = %s WHERE name = %s", (code, row.name))
-
-            count += 1
-        except Exception:
-            pass
-
-    frappe.db.commit()
-    return {"status": "success", "count": count}
 
 @frappe.whitelist()
 def update_sequence(items):
@@ -1817,27 +1767,8 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             item.qty = remainder_qty
             item.is_split = 1
             item.save()
-            
-            legacy_table = "Planning sheet Item"
+
             parent_name = item.parent
-            table_fieldname = "planned_items"
-
-            new_legacy_name = None
-            if item.source_item:
-                if item.unit != unit:
-                    # CROSS-UNIT SPLIT: Split legacy row 1:1
-                    frappe.db.set_value(legacy_table, item.source_item, "qty", flt(remainder_qty))
-
-                    old_legacy_doc = frappe.get_doc(legacy_table, item.source_item)
-                    new_legacy_doc = frappe.copy_doc(old_legacy_doc)
-                    new_legacy_doc.name = None
-                    new_legacy_doc.qty = flt(split_qty)
-                    new_legacy_doc.unit = unit
-                    new_legacy_doc.insert(ignore_permissions=True)
-                    new_legacy_name = new_legacy_doc.name
-                else:
-                    # SAME-UNIT SPLIT: Legacy row stays one row
-                    frappe.db.set_value(legacy_table, item.source_item, "unit", unit)
 
             max_idx = frappe.db.sql(
                 "SELECT MAX(idx) FROM `tabPlanning Table` WHERE parent = %s", (parent_name,)
@@ -1856,7 +1787,7 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_row_doc.unit = unit
             new_row_doc.is_split = 1
             new_row_doc.split_from = item.name
-            new_row_doc.source_item = new_legacy_name if (item.source_item and item.unit != unit) else item.source_item
+            new_row_doc.source_item = item.source_item
             new_row_doc.insert(ignore_permissions=True)
 
             frappe.db.commit()
@@ -1925,70 +1856,7 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
 
     # 2. Handle IDX Shifting if inserting at specific position
     # Update Item unit and parent first ΓÇö use raw SQL to bypass docstatus immutability
-    
-    # DUAL TABLE SYNC: HYBRID Move/Lazy Split
-    if item_doc.source_item:
-        legacy_table = "Planning sheet Item"
-        
-        # Check for board siblings sharing this legacy row
-        siblings = frappe.get_all("Planning Table", filters={
-            "source_item": item_doc.source_item,
-            "name": ["!=", item_doc.name]
-        }, fields=["name", "unit"])
-        
-        # If siblings exist and we are moving this item to a unit DIFFERENT from them, LAZY SPLIT
-        if siblings and unit != siblings[0].unit:
-            old_legacy_doc = frappe.get_doc(legacy_table, item_doc.source_item)
-            
-            # 1. Create a new legacy row for the moved piece
-            new_legacy_doc = frappe.copy_doc(old_legacy_doc)
-            new_legacy_doc.name = None
-            new_legacy_doc.qty = flt(item_doc.qty)
-            new_legacy_doc.unit = unit
-            new_legacy_doc.insert(ignore_permissions=True)
-            
-            # 2. Reduce original legacy row weight (keep tracking accurate)
-            new_orig_qty = max(0, flt(old_legacy_doc.qty) - flt(item_doc.qty))
-            frappe.db.set_value(legacy_table, old_legacy_doc.name, "qty", new_orig_qty)
-            
-            # 3. Update board card to point to new legacy row
-            item_doc.source_item = new_legacy_doc.name
-        else:
-            # 4. Same Unit or No Siblings: Just update the Unit normally
-            frappe.db.set_value(legacy_table, item_doc.source_item, "unit", unit)
-
-        # OLD-TABLE ONLY: Merge split legacy rows back into one when they end up in the same unit.
-        # New table (Planning Table) rows are NEVER merged — they stay separate.
-        try:
-            cur_legacy = frappe.get_doc(legacy_table, item_doc.source_item)
-            so_item = cur_legacy.get("sales_order_item")
-            legacy_parent = cur_legacy.parent
-            if so_item and legacy_parent:
-                unit_key = unit.upper().replace(" ", "")
-                dupes = frappe.db.sql("""
-                    SELECT name, qty FROM `tabPlanning sheet Item`
-                    WHERE parent = %s AND sales_order_item = %s
-                      AND UPPER(REPLACE(unit, ' ', '')) = %s
-                      AND name != %s
-                """, (legacy_parent, so_item, unit_key, cur_legacy.name), as_dict=True)
-
-                if dupes:
-                    merged_qty = flt(cur_legacy.qty)
-                    for d in dupes:
-                        merged_qty += flt(d.qty)
-                        frappe.db.sql(
-                            "UPDATE `tabPlanning Table` SET source_item = %s WHERE source_item = %s",
-                            (cur_legacy.name, d.name),
-                        )
-                        frappe.db.sql("DELETE FROM `tabPlanning sheet Item` WHERE name = %s", (d.name,))
-                    frappe.db.set_value(legacy_table, cur_legacy.name, {
-                        "qty": merged_qty,
-                        "unit": unit,
-                    })
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Legacy merge error")
-
-        frappe.db.commit()
+    # Legacy Planning sheet Item rows are not updated on board moves (SO snapshot only).
 
     update_fields = {"unit": unit, "source_item": item_doc.source_item}
     if frappe.db.has_column("Planning Table", "planned_date"):
@@ -2043,14 +1911,13 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
         except Exception as e:
             frappe.log_error(f"Global Sequence Fix Error: {str(e)}")
 
-    # 3. Update Plan Codes for Affected Sheets (both tables)
+    # 3. Update Plan Codes for Affected Sheets (Planning Table only)
     for sheet_name in set([source_parent.name, item_doc.parent]):
         if frappe.db.exists("Planning sheet", sheet_name):
             doc_sheet = frappe.get_doc("Planning sheet", sheet_name, ignore_cache=True)
             update_sheet_plan_codes(doc_sheet)
             frappe.db.sql("UPDATE `tabPlanning sheet` SET custom_plan_code = %s WHERE name = %s", (doc_sheet.custom_plan_code, doc_sheet.name))
 
-            # Persist plan codes to new table
             for tf in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:
                 new_items = doc_sheet.get(tf)
                 if new_items:
@@ -2058,21 +1925,6 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
                         if d.get("plan_name"):
                             frappe.db.sql("UPDATE `tabPlanning Table` SET plan_name = %s WHERE name = %s", (d.plan_name, d.name))
                     break
-
-            # Persist plan codes to old table via direct SQL
-            if frappe.db.has_column("Planning sheet Item", "plan_name"):
-                s_date = doc_sheet.get("custom_planned_date") or doc_sheet.get("ordered_date")
-                a_plan = doc_sheet.get("custom_plan_name") or "Default"
-                unit_col = "unit" if frappe.db.has_column("Planning sheet Item", "unit") else "NULL"
-                pd_col = "planned_date" if frappe.db.has_column("Planning sheet Item", "planned_date") else "NULL"
-                old_rows = frappe.db.sql(f"""
-                    SELECT name, {unit_col} as item_unit, {pd_col} as item_pd
-                    FROM `tabPlanning sheet Item` WHERE parent = %s
-                """, (doc_sheet.name,), as_dict=True)
-                for row in old_rows:
-                    code = generate_plan_code(row.get("item_pd") or s_date, row.get("item_unit") or "", a_plan)
-                    if code:
-                        frappe.db.sql("UPDATE `tabPlanning sheet Item` SET plan_name = %s WHERE name = %s", (code, row.name))
 
 @frappe.whitelist()
 def get_kanban_board(start_date, end_date):
@@ -4408,9 +4260,19 @@ def backfill_plan_codes():
     sheets = frappe.get_all("Planning sheet", filters={"docstatus": ["<", 2]}, fields=["name"])
     count = 0
     for s in sheets:
-        from production_entry.production_planning.scheduler_api import update_sheet_plan_codes
         try:
-            update_sheet_plan_codes(s.name)
+            doc = frappe.get_doc("Planning sheet", s.name)
+            update_sheet_plan_codes(doc)
+            for tf in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:
+                new_items = doc.get(tf)
+                if new_items:
+                    for i in new_items:
+                        if i.get("plan_name"):
+                            frappe.db.sql(
+                                "UPDATE `tabPlanning Table` SET plan_name = %s WHERE name = %s",
+                                (i.plan_name, i.name),
+                            )
+                    break
             count += 1
         except Exception:
             pass
@@ -4448,31 +4310,8 @@ def split_order(item_name, split_qty, target_unit):
     # 1. Update Board qty
     remaining_qty = original_qty - split_qty_val
     doc.db_set("qty", remaining_qty)
-    
-    # 2. Logic for Legacy Row (Hybrid Sync)
-    unit_changed = (doc.unit != target_unit)
-    legacy_table = "Planning sheet Item"
+
     parent_name = doc.parent
-    
-    # Use confirmed field name
-    table_fieldname = "planned_items"
-
-    new_legacy_name = None
-    if unit_changed:
-        # Cross-Unit: Split legacy row 1:1
-        if doc.source_item:
-            frappe.db.set_value(legacy_table, doc.source_item, "qty", remaining_qty)
-
-            old_legacy_doc = frappe.get_doc(legacy_table, doc.source_item)
-            new_legacy_doc = frappe.copy_doc(old_legacy_doc)
-            new_legacy_doc.name = None
-            new_legacy_doc.qty = split_qty_val
-            new_legacy_doc.unit = target_unit
-            new_legacy_doc.insert(ignore_permissions=True)
-            new_legacy_name = new_legacy_doc.name
-    else:
-        if doc.source_item:
-            frappe.db.set_value(legacy_table, doc.source_item, "unit", target_unit)
 
     max_idx = frappe.db.sql(
         "SELECT MAX(idx) FROM `tabPlanning Table` WHERE parent = %s", (parent_name,)
@@ -4493,7 +4332,7 @@ def split_order(item_name, split_qty, target_unit):
     new_row_doc.split_from = doc.name
     new_row_doc.planning_sheet = parent_name
     new_row_doc.source_ps = parent_name
-    new_row_doc.source_item = new_legacy_name if unit_changed else doc.source_item
+    new_row_doc.source_item = doc.source_item
     new_row_doc.insert(ignore_permissions=True)
 
     frappe.db.commit()
@@ -5283,15 +5122,6 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
                 WHERE name = %s
             """, (target_sheet.name, new_idx, new_unit, pt_pf, item_doc.name))
 
-            # DUAL-TABLE SYNC: old table only needs unit aligned with new table on pull/move.
-            legacy_name = (item_doc.get("source_item") or "").strip()
-            if legacy_name and frappe.db.exists("Planning sheet Item", legacy_name):
-                if frappe.db.has_column("Planning sheet Item", "unit"):
-                    frappe.db.sql(
-                        "UPDATE `tabPlanning sheet Item` SET unit = %s WHERE name = %s",
-                        (new_unit, legacy_name),
-                    )
-            
             count = int(count) + 1
         
         frappe.db.commit() # Save SQL updates
@@ -5611,7 +5441,9 @@ def create_planning_sheet_from_so(doc):
         ps.custom_pb_plan_name = pb_plan
 
         _populate_planning_sheet_items(ps, doc)
-        update_sheet_plan_codes(ps) # Call new helper
+        update_sheet_plan_codes(ps, include_legacy=True)
+        if not ps.get("quality"):
+            ps.quality = "Standard"
         ps.flags.ignore_permissions = True
         ps.insert()
         frappe.db.commit()
@@ -5795,7 +5627,9 @@ def create_planning_sheets_bulk(sales_orders):
             ps.planning_status = "Draft"
             
             _populate_planning_sheet_items(ps, doc)
-            update_sheet_plan_codes(ps) # Call new helper
+            update_sheet_plan_codes(ps, include_legacy=True)
+            if not ps.get("quality"):
+                ps.quality = "Standard"
             ps.insert(ignore_permissions=True)
             created.append(ps.name)
             
@@ -7792,7 +7626,7 @@ def auto_create_planning_sheet(doc, method=None):
                 generate_party_code(sheet)
 
             _populate_planning_sheet_items(sheet, doc)
-            update_sheet_plan_codes(sheet)
+            update_sheet_plan_codes(sheet, include_legacy=True)
             sheet.save(ignore_permissions=True)
             frappe.db.commit()
 
@@ -7816,7 +7650,10 @@ def auto_create_planning_sheet(doc, method=None):
 
     _populate_planning_sheet_items(ps, doc)
     
-    update_sheet_plan_codes(ps)
+    update_sheet_plan_codes(ps, include_legacy=True)
+
+    if not ps.get("quality"):
+        ps.quality = "Standard"
 
     ps.flags.ignore_permissions = True
     ps.insert()
@@ -7850,7 +7687,7 @@ def auto_create_planning_sheet(doc, method=None):
     
     # RE-FETCH TO UPDATE HEADER PLAN CODES ΓÇö ONLY ITEMS ENABLED, HEADER DISABLED PER USER REQUEST
     final_doc = frappe.get_doc("Planning sheet", ps.name)
-    update_sheet_plan_codes(final_doc)
+    update_sheet_plan_codes(final_doc, include_legacy=True)
     # frappe.db.set_value("Planning sheet", ps.name, "custom_plan_code", final_doc.custom_plan_code)
     
     return final_doc
@@ -7900,7 +7737,10 @@ def regenerate_planning_sheet(so_name):
 
     _populate_planning_sheet_items(ps, doc)
     
-    update_sheet_plan_codes(ps)
+    update_sheet_plan_codes(ps, include_legacy=True)
+
+    if not ps.get("quality"):
+        ps.quality = "Standard"
 
     ps.flags.ignore_permissions = True
     ps.insert()
@@ -8275,18 +8115,7 @@ def revert_split_item(item_name):
             
         target = candidates[0]
         new_qty = flt(target.qty) + flt(it.qty)
-        
-        # DUAL TABLE SYNC: 1:1 Merge Cleanup
-        legacy_table = "Planning sheet Item"
-        if it.source_item and target.source_item:
-            # Merging piece 'it' back into 'target'
-            # 1. Add qty back to target legacy row
-            frappe.db.set_value(legacy_table, target.source_item, "qty", flt(new_qty))
-            
-            # 2. Delete the extra legacy row
-            if it.source_item != target.source_item:
-                frappe.db.sql(f"DELETE FROM `tab{legacy_table}` WHERE name = %s", (it.source_item,))
-            
+
         # Update target and remove current in Planning Table
         frappe.db.sql("UPDATE `tabPlanning Table` SET qty = %s WHERE name = %s", (new_qty, target.name))
         frappe.db.sql("DELETE FROM `tabPlanning Table` WHERE name = %s", (it.name,))
@@ -8464,10 +8293,10 @@ def debug_plan_check():
 @frappe.whitelist()
 def recalculate_all_plan_codes():
     """
-    Bulk-recalculates and writes plan_name for EVERY Planning Sheet and its items.
-    Call this once from Frappe console or a Script button to fix historical blank plan codes.
-    Returns count of sheets updated.
+    Bulk-recalculates and persists plan_name on Planning Table rows and header plan code.
+    Does not write legacy Planning sheet Item rows (board is source of truth for plan codes).
     """
+    create_plan_name_field()
     sheets = frappe.db.sql("""
         SELECT name FROM `tabPlanning sheet`
         WHERE docstatus < 2
@@ -8481,21 +8310,21 @@ def recalculate_all_plan_codes():
         try:
             doc = frappe.get_doc("Planning sheet", row.name)
             update_sheet_plan_codes(doc)
-            
-            # Write the plan code to the sheet header
-            frappe.db.sql(
-                "UPDATE `tabPlanning sheet` SET plan_name = %s WHERE name = %s",
-                (doc.plan_name, doc.name)
-            )
-            
-            # Write each item's plan code
-            for item in doc.items:
-                if item.plan_name:
-                    frappe.db.sql(
-                        "UPDATE `tabPlanning Table` SET plan_name = %s WHERE name = %s",
-                        (item.plan_name, item.name)
-                    )
-            
+            if getattr(doc, "custom_plan_code", None):
+                frappe.db.sql(
+                    "UPDATE `tabPlanning sheet` SET custom_plan_code = %s WHERE name = %s",
+                    (doc.custom_plan_code, doc.name),
+                )
+            for tf in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:
+                new_items = doc.get(tf)
+                if new_items:
+                    for i in new_items:
+                        if i.get("plan_name"):
+                            frappe.db.sql(
+                                "UPDATE `tabPlanning Table` SET plan_name = %s WHERE name = %s",
+                                (i.plan_name, i.name),
+                            )
+                    break
             updated += 1
         except Exception as e:
             frappe.log_error(f"Failed to recalculate plan code for {row.name}: {e}")
