@@ -740,6 +740,18 @@ const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
 const hasRecentlyReset = ref(false);
+
+/** Pool rows (UNASSIGNED / legacy Mixed) must match any Unit 1–4 filter so matrix + Push see them; otherwise all rows vanish after unit field became UNASSIGNED-only. */
+function rowUnitMatchesFilter(rowUnit, filterU) {
+    if (!filterU) return true;
+    const ru = String(rowUnit || "UNASSIGNED").toUpperCase().replace(/\s/g, "");
+    const fu = String(filterU || "").toUpperCase().replace(/\s/g, "");
+    if (fu === "UNASSIGNED") {
+        return ru === "UNASSIGNED" || ru === "MIXED";
+    }
+    if (ru === "UNASSIGNED" || ru === "MIXED") return true;
+    return ru === fu;
+}
 const filterStatus = ref("");
 const selectedPlan = ref("Default");
 
@@ -1039,8 +1051,8 @@ const matrixData = computed(() => {
         // ---- PLAN FILTER (columns show only selected plan) ----
         if (!isPlanSelected(d.planName)) return false;
 
-        // UNIT FILTER
-        if (filterUnit.value && (d.unit || "UNASSIGNED").toUpperCase() !== filterUnit.value.toUpperCase()) return false;
+        // UNIT FILTER (UNASSIGNED pool visible for every machine column)
+        if (!rowUnitMatchesFilter(d.unit, filterUnit.value)) return false;
         
         // STATUS FILTER
         if (filterStatus.value && d.planningStatus !== filterStatus.value) return false;
@@ -1071,7 +1083,7 @@ const matrixData = computed(() => {
         const sheetCode = d.planningSheet || "Unassigned";
         const gsm = d.gsm || "-";
         const quality = d.quality || "-";
-        const unit = d.unit || "Mixed";
+        const unit = d.unit || "UNASSIGNED";
         // Backend returns the plan code as 'planCode' key
         const planCode = d.planCode || "-";
         const compositeKey = `${sheetCode}|${unit}|${planCode}|${gsm}|${quality}`;
@@ -1329,7 +1341,7 @@ const filteredData = computed(() => {
     );
   }
   if (filterUnit.value) {
-    data = data.filter((d) => (d.unit || "").toUpperCase() === (filterUnit.value || "").toUpperCase());
+    data = data.filter((d) => rowUnitMatchesFilter(d.unit, filterUnit.value));
   }
   if (filterStatus.value) {
     data = data.filter((d) => d.planningStatus === filterStatus.value);
@@ -1917,7 +1929,7 @@ function getSortLabel(unit) {
 function getUnitTotal(unit) {
   return rawData.value
     .filter((d) => {
-        if ((d.unit || "UNASSIGNED") !== unit) return false;
+        if (!rowUnitMatchesFilter(d.unit, unit)) return false;
                 const colorUpper = String(d.color || "").toUpperCase();
         if (colorUpper.includes("IVORY") || colorUpper.includes("CREAM") || colorUpper.includes("OFF WHITE")) return true;
         if (EXCLUDED_WHITES.some(ex => colorUpper.includes(ex))) return false;
@@ -1929,7 +1941,7 @@ function getUnitTotal(unit) {
 function getHiddenWhiteTotal(unit) {
   return rawData.value
     .filter((d) => {
-        if ((d.unit || "UNASSIGNED") !== unit) return false;
+        if (!rowUnitMatchesFilter(d.unit, unit)) return false;
                 const colorUpper = String(d.color || "").toUpperCase();
         // Check if it IS an excluded white
         if (colorUpper.includes("IVORY") || colorUpper.includes("CREAM") || colorUpper.includes("OFF WHITE")) return false;
@@ -2667,7 +2679,7 @@ function getItemsForDay(dateStr, unit) {
        
        // Filter by Unit and Exact Date (with date normalization)
        let dayItems = filteredData.value.filter(d => {
-           if ((d.unit || "UNASSIGNED") !== unit) return false;
+           if (!rowUnitMatchesFilter(d.unit, unit)) return false;
            // Normalize item's orderDate for comparison
            const itemDate = (d.orderDate || "").trim();
            // Try exact match first
@@ -2680,7 +2692,7 @@ function getItemsForDay(dateStr, unit) {
        // Debug: log when plan is not Default and no items found
        if (selectedPlan.value && selectedPlan.value !== 'Default' && dayItems.length === 0) {
            // Only log once per unit per day to avoid spam
-           const allForUnit = filteredData.value.filter(d => (d.unit || "UNASSIGNED") === unit);
+           const allForUnit = filteredData.value.filter(d => rowUnitMatchesFilter(d.unit, unit));
            if (allForUnit.length > 0 && !getItemsForDay._logged) {
                console.warn(`[ColorChart Debug] Plan="${selectedPlan.value}", Unit="${unit}", DateStr="${normalizedDateStr}"`,
                    `filteredData has ${allForUnit.length} items for this unit.`,
@@ -4645,11 +4657,12 @@ async function fetchData() {
     
     // Normalize API fields for consistent UI behavior across views
     rawData.value = (r.message || []).map(d => {
-        let u = d.unit || "Mixed";
+        let u = d.unit || "UNASSIGNED";
         if (u.toUpperCase() === "UNIT 1") u = "Unit 1";
         else if (u.toUpperCase() === "UNIT 2") u = "Unit 2";
         else if (u.toUpperCase() === "UNIT 3") u = "Unit 3";
         else if (u.toUpperCase() === "UNIT 4") u = "Unit 4";
+        else if (u.toUpperCase() === "MIXED") u = "UNASSIGNED";
 
         return {
             ...d,
@@ -5200,7 +5213,7 @@ async function openPushColorDialog(color, inputTargetDate = null) {
         if ((d.color || "").toUpperCase().trim() !== color.toUpperCase().trim()) return false;
         const colorUpper = (d.color || "").toUpperCase().trim();
         if (colorUpper === "WHITE" || colorUpper === "BRIGHT WHITE") return false;
-        if (filterUnit.value && (d.unit || "UNASSIGNED") !== filterUnit.value) return false;
+        if (!rowUnitMatchesFilter(d.unit, filterUnit.value)) return false;
         if (filterStatus.value && d.planningStatus !== filterStatus.value) return false;
         return true;
     });
