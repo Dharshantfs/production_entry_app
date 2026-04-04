@@ -3,7 +3,7 @@
 #
 # This file must NOT import frappe. It is executed during isolated `pip`/`uv` builds
 # (e.g. Docker bench get-app) where only build-system deps exist.
-# Install / migrate logic lives in production_entry/setup.py (package module: production_entry.setup).
+# Migrate/install hooks: production_entry/install.py (module production_entry.install), not setup.py.
 
 from setuptools import setup
 

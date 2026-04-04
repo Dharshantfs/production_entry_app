@@ -64,10 +64,9 @@ doctype_js = {
 # ------------
 
 # before_install = "production_entry.install.before_install"
-# after_install = "production_entry.install.after_install"
-
-after_install = "production_entry.setup.after_install"
-after_migrate = ["production_entry.setup.after_migrate"]
+# Install/migrate hooks MUST live in install.py — not setup.py (setuptools build file at app root).
+after_install = "production_entry.install.after_install"
+after_migrate = ["production_entry.install.after_migrate"]
 
 # Desk Notifications
 # -------------------
