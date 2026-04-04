@@ -1762,11 +1762,21 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             if available_space < 0.1:
                 frappe.throw(_("Available space ({:.3f}T) is too small to split (Min 0.1T).").format(available_space))
             
-            # Logic: Reduce original item weight, create new item in Target Unit
-            remainder_qty = item.qty - (available_space * 1000.0)
+            # Split qty stays on the target slot; remainder goes to find_best_slot — decide *that* before legacy logic.
+            original_board_qty = flt(item.qty)
+            remainder_qty = original_board_qty - (available_space * 1000.0)
             split_qty = available_space * 1000.0
-            
-            # Update Original Item -> This will go to Best Slot
+
+            best_slot_rem = find_best_slot(remainder_qty / 1000.0, quality, unit, target_date)
+            if not best_slot_rem:
+                frappe.throw(_("Could not find slot for remaining quantity."))
+
+            nu_rem = normalize_planning_unit_for_select(best_slot_rem.get("unit"))
+            nu_split = normalize_planning_unit_for_select(unit)
+            # Only add a second Planning sheet Item row when remainder and split piece land on different units.
+            units_differ = nu_rem != nu_split
+
+            # Update Original Item -> remainder; will be moved to best_slot_rem below
             item.qty = remainder_qty
             item.is_split = 1
             item.save()
@@ -1776,17 +1786,21 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_legacy_name = None
             src_psi = _resolve_planning_table_source_item_link(item.get("source_item"), item.name)
             if src_psi and frappe.db.exists(legacy_table, src_psi):
-                if item.unit != unit:
+                if units_differ:
                     frappe.db.set_value(legacy_table, src_psi, "qty", flt(remainder_qty))
                     old_legacy_doc = frappe.get_doc(legacy_table, src_psi)
                     new_legacy_doc = frappe.copy_doc(old_legacy_doc)
                     new_legacy_doc.name = None
                     new_legacy_doc.qty = flt(split_qty)
-                    new_legacy_doc.unit = unit
+                    new_legacy_doc.unit = nu_split
                     new_legacy_doc.insert(ignore_permissions=True)
                     new_legacy_name = new_legacy_doc.name
                 else:
-                    frappe.db.set_value(legacy_table, src_psi, "unit", unit)
+                    frappe.db.set_value(
+                        legacy_table,
+                        src_psi,
+                        {"unit": nu_rem, "qty": original_board_qty},
+                    )
 
             max_idx = frappe.db.sql(
                 "SELECT MAX(idx) FROM `tabPlanning Table` WHERE parent = %s", (parent_name,)
@@ -1805,7 +1819,7 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_row_doc.unit = unit
             new_row_doc.is_split = 1
             new_row_doc.split_from = item.name
-            if new_legacy_name and src_psi and item.unit != unit:
+            if new_legacy_name and src_psi and units_differ:
                 new_row_doc.source_item = new_legacy_name
             else:
                 new_row_doc.source_item = src_psi or _resolve_planning_table_source_item_link(
@@ -1814,17 +1828,9 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_row_doc.insert(ignore_permissions=True)
 
             frappe.db.commit()
-            
-            # Find best slot for the REMAINDER (Original item)
-            best_slot_rem = find_best_slot(remainder_qty / 1000.0, quality, unit, target_date)
-            if not best_slot_rem:
-                frappe.throw(_("Could not find slot for remaining quantity."))
-            
-            # Move Original Item to the best slot
-            # Note: We recurse or just manually move? Manually move is safer here.
-            # But we need to handle re-parenting if date is different.
+
             _move_item_to_slot(item, best_slot_rem["unit"], best_slot_rem["date"], None, plan_name)
-            
+
             frappe.db.commit()
             try:
                 frappe.publish_realtime("production_board_update", {"date": str(best_slot_rem["date"])})
