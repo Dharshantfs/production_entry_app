@@ -709,13 +709,17 @@ WHITE_COLORS = {
 }
 
 def _normalize_unit(raw):
-    """Returns title-case unit names like 'Unit 1', 'Unit 2', etc. from any raw string."""
+    """Returns title-case unit names like 'Unit 1', … or UNASSIGNED for unassigned / legacy Mixed."""
     r = (raw or "").strip().upper().replace(" ", "")
-    if "UNIT1" in r: return "Unit 1"
-    if "UNIT2" in r: return "Unit 2"
-    if "UNIT3" in r: return "Unit 3"
-    if "UNIT4" in r: return "Unit 4"
-    return "Mixed"
+    if "UNIT1" in r:
+        return "Unit 1"
+    if "UNIT2" in r:
+        return "Unit 2"
+    if "UNIT3" in r:
+        return "Unit 3"
+    if "UNIT4" in r:
+        return "Unit 4"
+    return "UNASSIGNED"
 
 def _get_standard_month_name(month_index):
     # month_index 1-12
@@ -1669,7 +1673,7 @@ def generate_plan_code(date_str, unit, plan_name):
     """
     Generates a readable plan code: {YY}{MonthLetter}{Unit}-{PlanName}
     e.g. 26CU1-PLAN 1
-    Also supports UNASSIGNED (UA) and Mixed (MX) so Planning sheet Item rows get codes from the active plan.
+    UNASSIGNED uses segment UA. Legacy Mixed normalizes to UNASSIGNED before this runs.
     """
     if not str(date_str) or not plan_name or not unit:
         return ""
@@ -1685,9 +1689,7 @@ def generate_plan_code(date_str, unit, plan_name):
             u_code = "U3"
         elif "UNIT4" in u_clean:
             u_code = "U4"
-        elif "MIXED" in u_clean:
-            u_code = "MX"
-        elif u_clean in ("UNASSIGNED", "NONE", "NA"):
+        elif u_clean in ("UNASSIGNED", "NONE", "NA") or "MIXED" in u_clean:
             u_code = "UA"
         else:
             return ""
@@ -5052,7 +5054,7 @@ def get_smart_push_sequence(item_names, target_date=None, seed_quality=None, see
     
     # Group by unit for specialized sorting
     result_sequence = []
-    for u in ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"]:
+    for u in ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "UNASSIGNED"]:
         unit_items = [it for it in items if _normalize_unit(it.get("unit")) == u]
         if not unit_items: continue
         
@@ -5167,7 +5169,7 @@ def move_items_to_plan(item_names, target_plan, date=None, start_date=None, end_
             item_doc = frappe.get_doc("Planning Table", name)
             parent_sheet = frappe.get_doc("Planning sheet", item_doc.parent)
 
-            target_unit = item_doc.unit or "Mixed"
+            target_unit = item_doc.unit or "UNASSIGNED"
             effective_date = parent_sheet.get("custom_planned_date") or parent_sheet.ordered_date
             party_code = parent_sheet.party_code or ""
 
