@@ -1937,17 +1937,21 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
             filters={"source_item": item_doc.source_item, "name": ["!=", item_doc.name]},
             fields=["name", "unit"],
         )
-        s0 = normalize_planning_unit_for_select(siblings[0].unit or "")
-        if siblings and normalize_planning_unit_for_select(unit) != s0:
-            old_legacy_doc = frappe.get_doc(legacy_table, item_doc.source_item)
-            new_legacy_doc = frappe.copy_doc(old_legacy_doc)
-            new_legacy_doc.name = None
-            new_legacy_doc.qty = flt(item_doc.qty)
-            new_legacy_doc.unit = unit
-            new_legacy_doc.insert(ignore_permissions=True)
-            new_orig_qty = max(0, flt(old_legacy_doc.qty) - flt(item_doc.qty))
-            frappe.db.set_value(legacy_table, old_legacy_doc.name, "qty", new_orig_qty)
-            item_doc.source_item = new_legacy_doc.name
+        # No other Planning Table rows share this legacy PSI (e.g. sole split leaving Unassigned): only sync legacy unit.
+        if siblings:
+            s0 = normalize_planning_unit_for_select(siblings[0].unit or "")
+            if normalize_planning_unit_for_select(unit) != s0:
+                old_legacy_doc = frappe.get_doc(legacy_table, item_doc.source_item)
+                new_legacy_doc = frappe.copy_doc(old_legacy_doc)
+                new_legacy_doc.name = None
+                new_legacy_doc.qty = flt(item_doc.qty)
+                new_legacy_doc.unit = unit
+                new_legacy_doc.insert(ignore_permissions=True)
+                new_orig_qty = max(0, flt(old_legacy_doc.qty) - flt(item_doc.qty))
+                frappe.db.set_value(legacy_table, old_legacy_doc.name, "qty", new_orig_qty)
+                item_doc.source_item = new_legacy_doc.name
+            else:
+                _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit)
         else:
             _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit)
 
