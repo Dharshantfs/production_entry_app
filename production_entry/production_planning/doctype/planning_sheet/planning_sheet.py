@@ -308,6 +308,37 @@ class Planningsheet(Document):
             return True
         return False
 
+    def link_work_orders_for_production_plan(self, pp_name):
+        """After a Production Plan is submitted, attach Work Orders to Planning sheet Item rows that use that PP."""
+        from production_entry.production_planning.scheduler_api import (
+            _get_item_level_production_plan,
+            _production_plan_usable,
+            _resolve_existing_production_plan_for_planning_sheet,
+        )
+
+        pp_name = (pp_name or "").strip()
+        if not pp_name or not frappe.db.exists("Production Plan", pp_name):
+            return False
+        if cint(frappe.db.get_value("Production Plan", pp_name, "docstatus")) != 1:
+            return False
+        sheet_level_pp = _resolve_existing_production_plan_for_planning_sheet(self.name)
+        updated = False
+        for item in self.items:
+            item_pp = _get_item_level_production_plan(item.name)
+            pp_for_row = _production_plan_usable(item_pp) or sheet_level_pp
+            if pp_for_row != pp_name:
+                continue
+            if self._try_link_work_order_from_existing_production_plan(item, pp_for_row):
+                frappe.db.set_value(
+                    "Planning sheet Item",
+                    item.name,
+                    "work_order",
+                    item.work_order,
+                    update_modified=False,
+                )
+                updated = True
+        return updated
+
     def create_production_docs(self):
         """Link Work Orders from existing Production Plan(s). Optionally create PP per line only in legacy mode."""
         from production_entry.production_planning.scheduler_api import (
@@ -335,14 +366,9 @@ class Planningsheet(Document):
                     continue
                 ds = frappe.db.get_value("Production Plan", pp_for_row, "docstatus")
                 if cint(ds) == 0:
-                    frappe.throw(
-                        _(
-                            "This planning sheet is already linked to draft Production Plan {0}. "
-                            "Submit that plan first (Work Orders are created on Production Plan submit only). "
-                            "Then finalize this Planning sheet — no extra Production Plan will be created."
-                        ).format(pp_for_row),
-                        title=_("Submit Production Plan first"),
-                    )
+                    # Draft PP: Work Orders do not exist yet. Skip this line; user can submit each PP in any order.
+                    # WO links are filled when each PP is submitted (see on_production_plan_submitted) or on re-save.
+                    continue
                 if cint(ds) == 1:
                     frappe.throw(
                         _(

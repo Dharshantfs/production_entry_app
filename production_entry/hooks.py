@@ -109,6 +109,9 @@ doc_events = {
         "on_submit": "production_entry.production_planning.scheduler_hooks.planning_sheet_update_queue",
         "before_cancel": "production_entry.production_planning.scheduler_hooks.planning_sheet_before_cancel",
     },
+    "Production Plan": {
+        "on_submit": "production_entry.production_planning.scheduler_api.on_production_plan_submitted",
+    },
     "Work Order": {
         "before_validate": [
             "production_entry.production_planning.scheduler_api.sync_work_order_custom_production_plan",

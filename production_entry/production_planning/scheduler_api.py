@@ -397,9 +397,94 @@ def _get_item_level_production_plan(item_name):
 
     for fieldname in _psi_production_plan_fields():
         pp = frappe.db.get_value("Planning Table", item_name, fieldname)
+        if not pp and frappe.db.has_column("Planning sheet Item", fieldname):
+            pp = frappe.db.get_value("Planning sheet Item", item_name, fieldname)
         if pp:
             return pp
     return None
+
+
+def _collect_all_production_plans_for_planning_sheet(sheet_name):
+    """Return distinct Production Plan names linked to this Planning sheet (header, lines, reverse link)."""
+    if not sheet_name:
+        return []
+    names = set()
+    for col in ("custom_production_plan", "production_plan", "production_plan_id", "pp_id"):
+        if frappe.db.has_column("Planning sheet", col):
+            v = frappe.db.get_value("Planning sheet", sheet_name, col)
+            if v:
+                names.add(v)
+    for row in frappe.get_all("Planning sheet Item", filters={"parent": sheet_name}, fields=["name"]):
+        pp = _get_item_level_production_plan(row.name)
+        if pp:
+            names.add(pp)
+    for col in ("custom_planning_sheet", "planning_sheet"):
+        if not frappe.db.has_column("Production Plan", col):
+            continue
+        for r in frappe.get_all("Production Plan", filters={col: sheet_name}, fields=["name"]):
+            names.add(r.name)
+    return [n for n in names if _production_plan_usable(n)]
+
+
+def _planning_sheets_referencing_production_plan(pp_name):
+    """Planning sheet document names that reference this Production Plan (header, board row, or reverse)."""
+    sheets = set()
+    pp_name = (pp_name or "").strip()
+    if not pp_name:
+        return []
+    for col in ("custom_planning_sheet", "planning_sheet"):
+        if not frappe.db.has_column("Production Plan", col):
+            continue
+        v = frappe.db.get_value("Production Plan", pp_name, col)
+        if v:
+            sheets.add(v)
+    for col in ("custom_production_plan", "production_plan", "production_plan_id", "pp_id"):
+        if frappe.db.has_column("Planning sheet", col):
+            for r in frappe.get_all("Planning sheet", filters={col: pp_name}, fields=["name"]):
+                sheets.add(r.name)
+    for fieldname in _psi_production_plan_fields():
+        for r in frappe.get_all("Planning Table", filters={fieldname: pp_name}, fields=["parent"]):
+            if r.parent:
+                sheets.add(r.parent)
+        if frappe.db.has_column("Planning sheet Item", fieldname):
+            for r in frappe.get_all("Planning sheet Item", filters={fieldname: pp_name}, fields=["parent"]):
+                if r.parent:
+                    sheets.add(r.parent)
+    return list(sheets)
+
+
+def _planning_sheet_all_linked_production_plans_submitted(sheet_name):
+    """True if every Production Plan linked to the sheet exists and is submitted (docstatus 1)."""
+    pps = _collect_all_production_plans_for_planning_sheet(sheet_name)
+    if not pps:
+        return False
+    for pp in pps:
+        if cint(frappe.db.get_value("Production Plan", pp, "docstatus")) != 1:
+            return False
+    return True
+
+
+def on_production_plan_submitted(doc, method=None):
+    """Link Work Orders onto Planning sheet items when a PP is submitted; auto-submit Planning sheet when all PPs are."""
+    pp_name = doc.name if doc else None
+    if not pp_name:
+        return
+    try:
+        for sheet_name in _planning_sheets_referencing_production_plan(pp_name):
+            if not frappe.db.exists("Planning sheet", sheet_name):
+                continue
+            ps = frappe.get_doc("Planning sheet", sheet_name)
+            ps.link_work_orders_for_production_plan(pp_name)
+            if cint(frappe.db.get_value("Planning sheet", sheet_name, "docstatus")) != 0:
+                continue
+            if _planning_sheet_all_linked_production_plans_submitted(sheet_name):
+                frappe.flags.ignore_permissions = True
+                try:
+                    frappe.get_doc("Planning sheet", sheet_name).submit()
+                finally:
+                    frappe.flags.ignore_permissions = False
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), f"on_production_plan_submitted: {pp_name}")
 
 
 def _resolve_pp_by_sales_order_item(sales_order_item):
