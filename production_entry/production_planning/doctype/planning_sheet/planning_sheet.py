@@ -300,9 +300,8 @@ class Planningsheet(Document):
                 frappe.throw(
                     _(
                         "No Production Plan linked to this Planning sheet or row. "
-                        "Use the app to create the Production Plan and save the PP id on the Planning sheet "
-                        "and table rows, submit the Production Plan (creates Work Orders only), "
-                        "then finalize this Planning sheet."
+                        "Link Production Plan(s) on the sheet and lines, submit the Production Plan "
+                        "(Work Orders are created from the Production Plan), then finalize this Planning sheet."
                     ),
                     title=_("Production Plan required"),
                 )

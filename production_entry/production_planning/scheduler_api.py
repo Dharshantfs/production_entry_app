@@ -364,12 +364,11 @@ def _single_submitted_production_plan_for_sales_order_when_unique(sales_order):
 
 
 def _psi_production_plan_fields():
-    """Return available Planning Sheet Item fields that may store item-level Production Plan links."""
+    """Return available Planning Table fields that may store item-level Production Plan links."""
     candidates = [
         "custom_production_plan",
         "production_plan",
         "custom_production_plan_id",
-        # Legacy/custom deployments sometimes store PP in order-sheet style fields.
         "custom_order_sheet",
         "order_sheet",
         "custom_order_plan",
