@@ -1893,6 +1893,22 @@ def _sync_legacy_planning_sheet_item_unit(source_item, unit):
     )
 
 
+def _legacy_psi_has_board_on_unit(sheet_parent, psi_name, target_unit):
+    """True if any Planning Table row on this sheet links to this PSI with the given normalized unit."""
+    if not sheet_parent or not psi_name:
+        return False
+    nu_t = normalize_planning_unit_for_select(target_unit)
+    rows = frappe.get_all(
+        "Planning Table",
+        filters={"parent": sheet_parent, "source_item": psi_name},
+        fields=["unit"],
+    )
+    for r in rows:
+        if normalize_planning_unit_for_select(r.unit) == nu_t:
+            return True
+    return False
+
+
 def _resolve_planning_table_source_item_link(source_item_value, board_row_name=None):
     """Planning Table.source_item must link to Planning sheet Item. Board row ids often get stored by mistake.
 
@@ -1968,17 +1984,23 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
             so_item = str(so_item or "").strip()
             legacy_parent = cur_legacy.parent
             if so_col and so_item and legacy_parent:
-                unit_key = unit.upper().replace(" ", "")
-                dupes = frappe.db.sql(
+                # Same SO line can have multiple Planning sheet Item rows after splits. Merge when they
+                # represent the same unit again. Do not rely only on legacy `unit` — it often lags the board.
+                dupes_all = frappe.db.sql(
                     f"""
-                    SELECT name, qty FROM `tab{legacy_table}`
-                    WHERE parent = %s AND `{so_col}` = %s
-                      AND UPPER(REPLACE(unit, ' ', '')) = %s
-                      AND name != %s
+                    SELECT name, qty, unit FROM `tab{legacy_table}`
+                    WHERE parent = %s AND `{so_col}` = %s AND name != %s
                     """,
-                    (legacy_parent, so_item, unit_key, cur_legacy.name),
+                    (legacy_parent, so_item, cur_legacy.name),
                     as_dict=True,
                 )
+                dupes = []
+                for d in dupes_all or []:
+                    nu_row = normalize_planning_unit_for_select(d.get("unit"))
+                    if nu_row == unit:
+                        dupes.append(d)
+                    elif _legacy_psi_has_board_on_unit(legacy_parent, d.name, unit):
+                        dupes.append(d)
                 if dupes:
                     merged_qty = flt(cur_legacy.qty)
                     for d in dupes:
