@@ -37,6 +37,45 @@ def get_item_default_warehouse(item_code, company):
     return frappe.db.get_value("Company", company, "default_warehouse")
 
 
+def get_default_bom_for_item(item_code, company=None):
+    """Resolve an active submitted BOM for Production Plan `po_items` (BOM No is mandatory in ERPNext).
+
+    Prefers default BOM for the company, then any active BOM for the item.
+    """
+    if not item_code:
+        return None
+    try:
+        from erpnext.manufacturing.doctype.bom.bom import get_default_bom
+
+        try:
+            name = get_default_bom(item_code, company)
+        except TypeError:
+            name = get_default_bom(item_code)
+        if name:
+            return name
+    except Exception:
+        pass
+    base_filters = {"item": item_code, "docstatus": 1, "is_active": 1}
+    if company:
+        rows = frappe.get_all(
+            "BOM",
+            filters={**base_filters, "company": company},
+            fields=["name"],
+            order_by="is_default desc, modified desc",
+            limit_page_length=1,
+        )
+        if rows:
+            return rows[0].name
+    rows = frappe.get_all(
+        "BOM",
+        filters=base_filters,
+        fields=["name"],
+        order_by="is_default desc, modified desc",
+        limit_page_length=1,
+    )
+    return rows[0].name if rows else None
+
+
 # Class name must equal DocType name with spaces removed (Frappe get_controller), e.g. "Planning sheet" -> Planningsheet.
 class Planningsheet(Document):
     def _validate_links(self):
@@ -153,6 +192,14 @@ class Planningsheet(Document):
                 title=_("Company missing"),
             )
         for item in self.items:
+            bom_no = get_default_bom_for_item(item.item_code, company)
+            if not bom_no:
+                frappe.throw(
+                    _(
+                        "No active default BOM found for item {0}. Set a default BOM on the BOM master before finalizing the Planning sheet."
+                    ).format(item.item_code),
+                    title=_("BOM No required"),
+                )
             # Create Production Plan
             pp = frappe.get_doc({
                 "doctype": "Production Plan",
@@ -166,6 +213,7 @@ class Planningsheet(Document):
                         "sales_order": self.sales_order,
                         "sales_order_item": item.so_item,
                         "item_code": item.item_code,
+                        "bom_no": bom_no,
                         "planned_qty": item.qty,
                         "warehouse": item.warehouse or get_item_default_warehouse(item.item_code, company)
                     }
