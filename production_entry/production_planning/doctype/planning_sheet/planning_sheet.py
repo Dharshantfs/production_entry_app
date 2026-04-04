@@ -202,15 +202,92 @@ class Planningsheet(Document):
             out["custom_plan_code"] = code
         return out
 
+    def _try_link_work_order_from_existing_production_plan(self, item, pp_name):
+        """
+        If this Planning sheet row already belongs to an existing Production Plan, set work_order
+        from WO(production_plan, production_plan_item) — no second PP insert.
+        Returns True if work_order was set or PP matched.
+        """
+        if not pp_name or not frappe.db.exists("Production Plan", pp_name):
+            return False
+        pp = frappe.get_doc("Production Plan", pp_name)
+        so_item = item.get("so_item") or item.get("sales_order_item")
+        ppi_name = None
+        for ppi in pp.get("po_items") or []:
+            if (ppi.get("item_code") or "") != (item.item_code or ""):
+                continue
+            if (ppi.get("sales_order_item") or "") != (so_item or ""):
+                continue
+            ppi_name = ppi.name
+            break
+        if not ppi_name:
+            return False
+        wo_name = frappe.db.get_value(
+            "Work Order",
+            {
+                "production_plan": pp.name,
+                "production_plan_item": ppi_name,
+                "docstatus": ["<", 2],
+            },
+            "name",
+        )
+        if not wo_name:
+            rows = frappe.db.sql(
+                """
+                SELECT name FROM `tabWork Order`
+                WHERE production_plan = %s AND docstatus < 2
+                ORDER BY creation DESC
+                LIMIT 1
+                """,
+                pp.name,
+            )
+            wo_name = rows[0][0] if rows else None
+        if wo_name:
+            item.work_order = wo_name
+            return True
+        return False
+
     def create_production_docs(self):
-        """Build separate Production Plans per item; Work Orders come from Production Plan submit (not from here)."""
+        """Build Production Plans per item only when no PP already exists for this sheet/row (avoids duplicate PP/WO)."""
+        from production_entry.production_planning.scheduler_api import (
+            _get_item_level_production_plan,
+            _production_plan_usable,
+            _resolve_existing_production_plan_for_planning_sheet,
+        )
+
         company = self._resolve_company_for_production_docs()
         if not company:
             frappe.throw(
                 _("Set Company on Planning sheet or link a Sales Order with Company before submitting."),
                 title=_("Company missing"),
             )
+
+        sheet_level_pp = _resolve_existing_production_plan_for_planning_sheet(self.name)
+
         for item in self.items:
+            item_pp = _get_item_level_production_plan(item.name)
+            pp_for_row = _production_plan_usable(item_pp) or sheet_level_pp
+
+            if pp_for_row:
+                if self._try_link_work_order_from_existing_production_plan(item, pp_for_row):
+                    continue
+                ds = frappe.db.get_value("Production Plan", pp_for_row, "docstatus")
+                if cint(ds) == 0:
+                    frappe.throw(
+                        _(
+                            "This planning sheet is already linked to draft Production Plan {0}. "
+                            "Submit that plan first (so Work Orders are created), or remove the link, "
+                            "before finalizing the Planning sheet — otherwise duplicate plans are created."
+                        ).format(pp_for_row),
+                        title=_("Production Plan already linked"),
+                    )
+                if cint(ds) == 1:
+                    frappe.log_error(
+                        title="Planning sheet: PP linked but no WO matched",
+                        message=f"Sheet={self.name} item={item.name} pp={pp_for_row} item_code={item.item_code}",
+                    )
+                    continue
+
             bom_no = get_default_bom_for_item(item.item_code, company)
             if not bom_no:
                 frappe.throw(
