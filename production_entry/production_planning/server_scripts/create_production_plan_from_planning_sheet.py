@@ -1,21 +1,12 @@
-# SCRIPT: SYNC PRODUCTION PLAN - ITEM LEVEL MAPPING (one po_item per Planning sheet Item row)
+# SCRIPT: SYNC PRODUCTION PLAN - ITEM LEVEL MAPPING
 # TYPE: API (Server Script)
 # METHOD NAME: create_production_plan_from_planning_sheet
 #
-# Paste into Frappe Server Script (API). safe_exec limitations:
-# - NO frappe.db.has_column — use frappe.get_meta(...).has_field(...)
-# - NO leading _ on names
-# - NO tuple unpacking in for-loops (for a, b in x) — use index access (NameError _unpack_sequence_)
+# One Production Plan per (unit + quality + color) group. Multiple Planning sheet Item rows in the
+# same group share one PP. Within each PP, quantities are aggregated by item_code (item_agg).
 #
-# ---------- DO YOU NEED TO "DISABLE" ANYTHING? ----------
-# • Do NOT disable the Planning sheet DocType or the form — keep using it normally.
-# • Replace the OLD Server Script body with this script (same API method name). Do not keep two
-#   different scripts both creating Production Plans for the same sheet, or you risk duplicates.
-# • In the app code, PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY should stay True (default):
-#   then Submit on Planning sheet only LINKS Work Orders from existing PPs — it does NOT insert
-#   new Production Plans. Flow: run this API first (creates/updates draft PPs) → link PPs on lines
-#   if needed → Submit Production Plans → Submit Planning sheet.
-# • If that flag were False (legacy), Submit would also try to create PPs — avoid that double path.
+# safe_exec: no frappe.db.has_column; no for-loop tuple unpacking; no names starting with _.
+# get_all returns dicts — use row.get("field") not row.field.
 
 planning_sheet = frappe.form_dict.get("planning_sheet")
 if not planning_sheet:
@@ -28,37 +19,7 @@ sales_order = str(ps.sales_order).strip() if ps.sales_order else ""
 company = frappe.db.get_default("company") or frappe.db.get_value("Global Defaults", None, "default_company")
 today = frappe.utils.nowdate()
 
-# safe_exec: use Meta.has_field — not frappe.db.has_column
-pp_meta = frappe.get_meta("Production Plan")
-
-
-def norm_num(v, places=4):
-    try:
-        return round(float(v or 0), places)
-    except Exception:
-        return 0.0
-
-
-def row_pp_group_key(unit, r):
-    """Widen key with GSM + width so different physical lines do not share one PP unless you want one PP with many lines."""
-    quality = (r.custom_quality or "").strip().upper() or "NO_QUALITY"
-    color = (r.color or "").strip().upper() or "NO_COLOR"
-    gsm = norm_num(r.gsm)
-    width = norm_num(r.width_inch)
-    return f"{unit}||{quality}||{color}||{gsm}||{width}"
-
-
-def existing_pp_key_from_doc(pp):
-    """Build same shape key as row_pp_group_key for draft PP reuse."""
-    ex_unit = (pp.custom_unit or "").strip()
-    ex_quality = (pp.custom_quality or "").strip().upper() or "NO_QUALITY"
-    ex_color = (pp.custom_color or "").strip().upper() or "NO_COLOR"
-    gsm = norm_num(getattr(pp, "custom_gsm", None))
-    width = norm_num(getattr(pp, "custom_width_", None) or getattr(pp, "custom_width", None))
-    return f"{ex_unit}||{ex_quality}||{ex_color}||{gsm}||{width}"
-
-
-# ========== GROUP FROM OLD TABLE ONLY (ps.items) ==========
+# ========== GROUP FROM OLD TABLE ONLY (ps.items) — unit || quality || color ==========
 group_map = {}
 row_to_pp_map = {}
 
@@ -66,26 +27,25 @@ for r in ps.items:
     if not r.unit:
         continue
     units_list = [u.strip() for u in str(r.unit).split(",") if u.strip()]
+    quality = (r.custom_quality or "").strip().upper() or "NO_QUALITY"
+    color = (r.color or "").strip().upper() or "NO_COLOR"
     for unit in units_list:
-        key = row_pp_group_key(unit, r)
-        group_map.setdefault(key, []).append((unit, r))  # keep unit with row for header
+        key = f"{unit}||{quality}||{color}"
+        group_map.setdefault(key, []).append(r)
 
 # ========== FETCH EXISTING PLANS ==========
-pp_fields = ["name", "custom_unit", "custom_quality", "custom_color"]
-for col in ("custom_gsm", "custom_width_", "custom_width"):
-    if pp_meta.has_field(col):
-        pp_fields.append(col)
-
 existing_pp = frappe.get_all(
     "Production Plan",
     filters={"custom_planning_sheet": ps.name, "docstatus": 0},
-    fields=pp_fields,
+    fields=["name", "custom_unit", "custom_quality", "custom_color"],
 )
 
 existing_map = {}
 for row in existing_pp:
-    pp = frappe.get_doc("Production Plan", row.name)
-    existing_map[existing_pp_key_from_doc(pp)] = pp.name
+    ex_unit = (row.get("custom_unit") or "").strip()
+    ex_quality = (row.get("custom_quality") or "").strip().upper() or "NO_QUALITY"
+    ex_color = (row.get("custom_color") or "").strip().upper() or "NO_COLOR"
+    existing_map[f"{ex_unit}||{ex_quality}||{ex_color}"] = row.get("name")
 
 created = []
 updated = []
@@ -93,21 +53,14 @@ all_pp_list = []
 
 # ========== CREATE / UPDATE PPs ==========
 for key in group_map:
-    unit_rows = group_map[key]
-    # All rows in this group share same unit/quality/color/gsm/width per key — take header from first
-    first_pair = unit_rows[0]
-    unit_val = first_pair[0]
-    first_r = first_pair[1]
-    quality_val = (first_r.custom_quality or "").strip() or ""
-    color_val = (first_r.color or "").strip() or ""
-    gsm_val = norm_num(first_r.gsm)
-    width_val = norm_num(first_r.width_inch)
+    rows = group_map[key]
+    parts = key.split("||")
+    unit_val = parts[0]
+    quality_val = parts[1] if len(parts) > 1 and parts[1] != "NO_QUALITY" else ""
+    color_val = parts[2] if len(parts) > 2 and parts[2] != "NO_COLOR" else ""
 
     plan_codes = []
-    for ri in range(len(unit_rows)):
-        pair = unit_rows[ri]
-        unit_token = pair[0]
-        r = pair[1]
+    for r in rows:
         if r.custom_plan_code:
             code = str(r.custom_plan_code).strip()
             if code and code not in plan_codes:
@@ -118,12 +71,6 @@ for key in group_map:
         pp.flags.ignore_mandatory = True
         pp.set("po_items", [])
         pp.custom_plan_code = ", ".join(plan_codes)
-        if pp_meta.has_field("custom_gsm"):
-            pp.custom_gsm = gsm_val
-        if pp_meta.has_field("custom_width_"):
-            pp.custom_width_ = width_val
-        elif pp_meta.has_field("custom_width"):
-            pp.custom_width = width_val
         updated.append(pp.name)
         all_pp_list.append(pp.name)
     else:
@@ -137,22 +84,14 @@ for key in group_map:
         pp.custom_unit = unit_val
         pp.custom_quality = quality_val
         pp.custom_color = color_val
-        if pp_meta.has_field("custom_gsm"):
-            pp.custom_gsm = gsm_val
-        if pp_meta.has_field("custom_width_"):
-            pp.custom_width_ = width_val
-        elif pp_meta.has_field("custom_width"):
-            pp.custom_width = width_val
         pp.custom_plan_code = ", ".join(plan_codes)
         pp.insert(ignore_permissions=True)
         created.append(pp.name)
         all_pp_list.append(pp.name)
 
-    # ✅ One po_items line per Planning sheet Item row — NO aggregation by item_code
-    for ri in range(len(unit_rows)):
-        pair = unit_rows[ri]
-        unit_token = pair[0]
-        r = pair[1]
+    # Aggregate qty by item_code within this PP group
+    item_agg = {}
+    for r in rows:
         planned_qty = float(r.qty or 0)
         if planned_qty <= 0:
             continue
@@ -160,7 +99,16 @@ for key in group_map:
         row_to_pp_map[r.name] = pp.name
         r.order_sheet = pp.name
 
-        item_code = r.item_code
+        icode = r.item_code
+        if icode not in item_agg:
+            item_agg[icode] = {"qty": 0.0, "row": r}
+        item_agg[icode]["qty"] = item_agg[icode]["qty"] + planned_qty
+
+    for item_code in item_agg:
+        agg = item_agg[item_code]
+        r = agg["row"]
+        total_qty = agg["qty"]
+
         bom = frappe.db.get_value("BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name")
         if not bom:
             bom = frappe.db.get_value("BOM", {"item": item_code, "is_active": 1}, "name")
@@ -171,7 +119,7 @@ for key in group_map:
             {
                 "item_code": item_code,
                 "bom_no": bom,
-                "planned_qty": planned_qty,
+                "planned_qty": total_qty,
                 "uom": item_uom,
                 "stock_uom": item_uom,
                 "sales_order": sales_order,
@@ -192,7 +140,7 @@ for key in group_map:
 
     pp.save(ignore_permissions=True)
 
-# ========== SET order_sheet ON NEW TABLE IN MEMORY ==========
+# ========== SET order_sheet ON PLANNED ITEMS (board) ==========
 pt_items = ps.get("planned_items") or []
 for pt in pt_items:
     src = str(pt.source_item or "").strip()
