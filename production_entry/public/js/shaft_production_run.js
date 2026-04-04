@@ -269,7 +269,10 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	produced_gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);
 	},
-	/** Persist roll line + job totals; Button fields do not auto-save the document. */
+	/**
+	 * Save this roll line, lock it for editing, and reveal Print Label.
+	 * Until Save Row: Print Label stays hidden (see spr_apply_items_row_lock_ui).
+	 */
 	save_row: function (frm, cdt, cdn) {
 		if (frm.is_new()) {
 			frappe.msgprint(__('Save the Shaft Production Run first.'));
@@ -279,8 +282,69 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.show_alert({ message: __('Submitted document cannot be edited from Save Row.'), indicator: 'orange' });
 			return;
 		}
+		const row = locals[cdt][cdn];
+		if (cint(row.row_locked)) {
+			frappe.show_alert({ message: __('This row is already locked. Click Edit Row to change.'), indicator: 'blue' });
+			return;
+		}
 		update_shaft_job_achieved_from_items(frm);
-		frm.save();
+		frappe.model.set_value(cdt, cdn, 'row_locked', 1);
+		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
+			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 1);
+		}
+		const save_promise = frm.save();
+		if (save_promise && typeof save_promise.then === 'function') {
+			save_promise.then(function () {
+				spr_apply_items_row_lock_ui(frm);
+				frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
+			});
+		} else {
+			setTimeout(function () {
+				spr_apply_items_row_lock_ui(frm);
+			}, 400);
+		}
+	},
+	/** Print roll label (after Save Row). Set Print Format name on site: spr_roll_label_print_format in hooks or use default. */
+	print_sticker: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		if (!cint(row.row_ready_for_print) || !cint(row.row_locked)) {
+			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
+			return;
+		}
+		const fmt =
+			(frappe.boot.spr_roll_label_print_format || window.SPR_ROLL_LABEL_PRINT_FORMAT || 'Roll Production Label') + '';
+		const args = {
+			doctype: frm.doctype,
+			name: frm.doc.name,
+			format: fmt,
+			no_letterhead: 1,
+		};
+		if (row && row.name) {
+			args._row_name = row.name;
+		}
+		const qs = $.param(args);
+		window.open(frappe.urllib.get_full_url('/printview?' + qs), '_blank');
+	},
+	/** Unlock this row for editing; hide Print Label until Save Row again. */
+	edit_row: function (frm, cdt, cdn) {
+		if (frm.is_new() || (frm.doc.docstatus && frm.doc.docstatus !== 0)) {
+			return;
+		}
+		frappe.model.set_value(cdt, cdn, 'row_locked', 0);
+		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
+			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 0);
+		}
+		const save_promise = frm.save();
+		if (save_promise && typeof save_promise.then === 'function') {
+			save_promise.then(function () {
+				spr_apply_items_row_lock_ui(frm);
+				frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
+			});
+		} else {
+			setTimeout(function () {
+				spr_apply_items_row_lock_ui(frm);
+			}, 400);
+		}
 	},
 });
 
@@ -506,6 +570,35 @@ function sprEffectiveProducedGsm(doc) {
 }
 
 function ensure_spr_item_stylesheet() {
+	if (!window.__sprspr_lock_style) {
+		window.__sprspr_lock_style = true;
+		const lockCss = `
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) {
+			pointer-events: none;
+			opacity: 0.94;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button,
+		.fieldname-items .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button {
+			display: none !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button {
+			visibility: hidden !important;
+			pointer-events: none !important;
+			min-height: 0 !important;
+			height: 0 !important;
+			padding: 0 !important;
+			margin: 0 !important;
+			overflow: hidden !important;
+			border: none !important;
+		}
+	`;
+		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
+	}
 	if (window.__sprspr_style) {
 		return;
 	}
@@ -565,6 +658,26 @@ function ensure_spr_item_stylesheet() {
 		}
 	`;
 	$('head').append(`<style data-spr-items="6">${css}</style>`);
+}
+
+/** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
+function spr_apply_items_row_lock_ui(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return;
+	}
+	const items = frm.doc.items || [];
+	items.forEach(function (doc, idx) {
+		const $row = sprResolveItemsRowElement(frm, doc, grid, idx);
+		if (!$row || !$row.length) {
+			return;
+		}
+		const locked = cint(doc.row_locked);
+		const labelReady = cint(doc.row_ready_for_print) && locked;
+		$row.addClass('spr-spr-row');
+		$row.toggleClass('spr-spr-row-locked', !!locked);
+		$row.toggleClass('spr-spr-row-label-ready', !!labelReady);
+	});
 }
 
 const SPR_GSM_BG = ['#bbf7d0', '#eab308', '#fb923c', '#fecaca'];
@@ -728,4 +841,5 @@ function apply_spr_item_row_styles(frm) {
 			sprApplyGsmRowVisual($row, 'pending');
 		}
 	});
+	spr_apply_items_row_lock_ui(frm);
 }
