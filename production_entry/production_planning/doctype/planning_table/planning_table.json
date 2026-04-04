@@ -100,7 +100,7 @@
    "fieldname": "unit",
    "fieldtype": "Select",
    "label": "Unit",
-   "options": "UNASSIGNED"
+   "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4"
   },
   {
    "fieldname": "dot_spec",

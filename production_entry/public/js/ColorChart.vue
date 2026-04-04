@@ -3594,10 +3594,11 @@ async function pushToProductionBoard() {
             { fieldname: 'fetch_dates', fieldtype: 'Data', label: 'Fetch Date(s)', default: (fetchDates.join(", ") || defaultTargetDate), read_only: 1 },
             { fieldname: 'plan_name_display', fieldtype: 'Data', label: 'Current Plan', default: selectedPlanLabel.value, read_only: 1 },
             { fieldtype: 'Column Break' },
-            { fieldname: 'target_date', fieldtype: 'Date', label: 'Target Date', default: defaultTargetDate, reqd: 1, description: 'Push start point.' },
+            { fieldname: 'target_date', fieldtype: 'Date', label: 'Target Date', default: defaultTargetDate, reqd: 1, description: 'Production board date for pushed lines.' },
+            { fieldname: 'push_target_unit', fieldtype: 'Select', label: 'Target Unit', reqd: 1, options: ['Unit 1', 'Unit 2', 'Unit 3', 'Unit 4'], default: 'Unit 1', description: 'Machine unit lines are assigned to when pushed (like Target Date).' },
             
             { fieldtype: 'Section Break', label: 'Filters' },
-            { fieldname: 'filter_unit', fieldtype: 'Select', label: 'Unit', options: ['All Units', 'Unit 1', 'Unit 2', 'Unit 3', 'Unit 4'], default: 'All Units' },
+            { fieldname: 'filter_unit', fieldtype: 'Select', label: 'Unit', options: ['All Units', 'Unit 1', 'Unit 2', 'Unit 3', 'Unit 4', 'UNASSIGNED'], default: 'All Units' },
             { fieldtype: 'Column Break' },
             { fieldname: 'filter_logic', fieldtype: 'Select', label: 'Match', options: ['AND', 'OR'], default: 'AND' },
             { fieldtype: 'Section Break' },
@@ -3623,6 +3624,7 @@ async function pushToProductionBoard() {
                            '📤 Request Arrangement Approval')),
         primary_action: async (values) => {
             const targetDate = (values.target_date || defaultTargetDate || today).trim();
+            const pushTargetUnit = (values.push_target_unit || 'Unit 1').toString().trim() || 'Unit 1';
             const currentStatus = dialogOverallStatus || d.overallStatus || overallStatus;
             
             const normalizeUnit = (u) => {
@@ -3631,7 +3633,8 @@ async function pushToProductionBoard() {
                 if (r.indexOf('UNIT2') !== -1) return 'Unit 2';
                 if (r.indexOf('UNIT3') !== -1) return 'Unit 3';
                 if (r.indexOf('UNIT4') !== -1) return 'Unit 4';
-                return 'Mixed';
+                if (r === 'UNASSIGNED' || r === 'MIXED') return 'UNASSIGNED';
+                return 'UNASSIGNED';
             };
 
             const checkedItems = currentSequence.filter(i => i.checked !== false && !i.pushed);
@@ -3722,7 +3725,7 @@ async function pushToProductionBoard() {
                     itemsToMove.push({
                         name: item.name,
                         target_date: targetDate,
-                        target_unit: item.unit || 'Unit 1',
+                        target_unit: pushTargetUnit,
                         sequence_no: seqNo++
                     });
                 }
