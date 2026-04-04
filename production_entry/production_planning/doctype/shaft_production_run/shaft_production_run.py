@@ -152,15 +152,13 @@ def compute_produced_gsm(net_weight, width_inch, length_m) -> float:
 
 
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
-	"""Comma-separated WO names for this shaft row (matches WO resolution order)."""
-	wo_key = m.get("production_plan_item") or m.get("job_id")
-	wos = []
-	if wo_key:
-		wos = get_work_orders_for_job(production_plan, _cstr(wo_key))
-	if not wos:
-		ord_ppi = _ordered_production_plan_items(production_plan)
-		if idx < len(ord_ppi):
-			wos = get_work_orders_for_job(production_plan, ord_ppi[idx])
+	"""Comma-separated WO names for this shaft row (same rules as _get_work_orders_for_spr_job)."""
+	wos = _resolve_wos_for_pp_job_row(
+		production_plan,
+		ppi=m.get("production_plan_item"),
+		job_id=m.get("job_id"),
+		row_index=idx,
+	)
 	return ", ".join(w["name"] for w in wos) if wos else ""
 
 
@@ -300,24 +298,13 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 
 		jn = m.get("job_id")
 		if jn and (not m.get("total_weight")):
-			wo_key = m.get("production_plan_item") or jn
-			tw = frappe.db.sql(
-				"""
-				SELECT IFNULL(SUM(qty), 0) FROM `tabWork Order`
-				WHERE production_plan = %(pp)s AND production_plan_item = %(job)s AND docstatus < 2
-				""",
-				{"pp": production_plan, "job": _cstr(wo_key)},
-			)[0][0]
-			if flt(tw) <= 0:
-				ord_ppi = _ordered_production_plan_items(production_plan)
-				if idx < len(ord_ppi):
-					tw = frappe.db.sql(
-						"""
-						SELECT IFNULL(SUM(qty), 0) FROM `tabWork Order`
-						WHERE production_plan = %(pp)s AND production_plan_item = %(job)s AND docstatus < 2
-						""",
-						{"pp": production_plan, "job": _cstr(ord_ppi[idx])},
-					)[0][0]
+			wos_tw = _resolve_wos_for_pp_job_row(
+				production_plan,
+				ppi=m.get("production_plan_item"),
+				job_id=_cstr(jn),
+				row_index=idx,
+			)
+			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
 				m["total_weight"] = flt(tw)
 
@@ -358,27 +345,72 @@ def _spr_job_row_index(spr_doc, job_row) -> int | None:
 	return None
 
 
+def _get_all_work_orders_for_production_plan(pp_name: str) -> list:
+	"""All Work Orders for a Production Plan (fallback when job id does not match production_plan_item)."""
+	if not pp_name:
+		return []
+	return frappe.db.sql(
+		"""
+		SELECT wo.name, wo.production_item, wo.qty as planned_qty, wo.produced_qty, wo.status
+		FROM `tabWork Order` wo
+		WHERE wo.production_plan = %(pp)s
+		  AND wo.docstatus != 2
+		ORDER BY wo.creation ASC, wo.name ASC
+		""",
+		{"pp": pp_name},
+		as_dict=True,
+	)
+
+
+def _resolve_wos_for_pp_job_row(
+	pp_name: str,
+	*,
+	ppi: str | None = None,
+	job_id: str | None = None,
+	row_index: int | None = None,
+) -> list:
+	"""
+	Resolve Work Orders for one shaft job line: PPI link, human job id, ordinal PP lines, shared WO, PP-wide fallback.
+	Used when building SPR jobs from PP and when resolving WOs on saved Shaft Production Run.
+	"""
+	if ppi:
+		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
+		if wos:
+			return wos
+	if job_id:
+		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
+		if wos:
+			return wos
+	ord_ppi = _ordered_production_plan_items(pp_name)
+	if row_index is not None and ord_ppi:
+		if 0 <= row_index < len(ord_ppi):
+			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
+			if wos:
+				return wos
+		# Several shaft jobs share one Production Plan Item / one WO — reuse that WO for every job row.
+		if len(ord_ppi) == 1:
+			wos = get_work_orders_for_job(pp_name, ord_ppi[0])
+			if wos:
+				return wos
+	all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	if not all_wos:
+		return []
+	if len(all_wos) == 1:
+		return all_wos
+	if row_index is not None:
+		return [all_wos[row_index % len(all_wos)]]
+	return [all_wos[0]]
+
+
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
 	"""Resolve Work Orders using production_plan_item, job_id, or ordinal row index."""
 	meta = frappe.get_meta("Shaft Production Run Job")
 	ppi = None
 	if meta.has_field("production_plan_item"):
 		ppi = getattr(job_row, "production_plan_item", None)
-	if ppi:
-		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos:
-			return wos
 	jid = _spr_job_id(job_row)
-	if jid:
-		wos = get_work_orders_for_job(pp_name, _cstr(jid))
-		if wos:
-			return wos
 	idx = _spr_job_row_index(spr_doc, job_row)
-	if idx is not None:
-		ord_ppi = _ordered_production_plan_items(pp_name)
-		if 0 <= idx < len(ord_ppi):
-			return get_work_orders_for_job(pp_name, ord_ppi[idx])
-	return []
+	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx)
 
 
 def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None:
@@ -400,7 +432,7 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 		return None
 	job_meta = frappe.get_meta("Shaft Production Run Job")
 	out: list[dict] = []
-	for r in pp_rows:
+	for idx, r in enumerate(pp_rows):
 		m: dict = {}
 		jn = r.get("job_no") or r.get("job_id")
 		if not jn:
@@ -427,13 +459,13 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			if fn in r and r[fn] is not None and job_meta.has_field(fn):
 				m[fn] = r[fn]
 		if (not m.get("total_weight")) and jn:
-			tw = frappe.db.sql(
-				"""
-				SELECT IFNULL(SUM(qty), 0) FROM `tabWork Order`
-				WHERE production_plan = %(pp)s AND production_plan_item = %(job)s AND docstatus < 2
-				""",
-				{"pp": production_plan, "job": _cstr(jn)},
-			)[0][0]
+			wos_tw = _resolve_wos_for_pp_job_row(
+				production_plan,
+				ppi=m.get("production_plan_item"),
+				job_id=_cstr(jn),
+				row_index=idx,
+			)
+			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
 				m["total_weight"] = flt(tw)
 		out.append(m)
@@ -1354,8 +1386,55 @@ def get_shaft_combination(pp_name, job_no):
 	return ""
 
 
+def _production_plan_item_row_names_ordered(pp_name: str) -> list[str]:
+	"""Production Plan Item row `name` values in table order (matches WO.production_plan_item)."""
+	if not pp_name or not frappe.db.exists("Production Plan", pp_name):
+		return []
+	if not frappe.db.exists("DocType", "Production Plan Item"):
+		return []
+	rows = frappe.db.sql(
+		"""
+		SELECT name FROM `tabProduction Plan Item`
+		WHERE parent = %(p)s
+		ORDER BY idx ASC, name ASC
+		""",
+		{"p": pp_name},
+	)
+	return [_cstr(r[0]) for r in rows if r[0]]
+
+
+def _resolve_job_ref_to_production_plan_item(pp_name: str, job_ref: str) -> str | None:
+	"""
+	Map human job id (1, 2, … from s_no) to the correct Production Plan Item row name.
+	Work Orders link via production_plan_item = PPI row name, not the display job number.
+	When the PP has only one line, every shaft job row maps to that line (same WO for multiple SPR jobs).
+	"""
+	names = _production_plan_item_row_names_ordered(pp_name)
+	if not names:
+		return None
+	t = _cstr(job_ref).strip()
+	if not t:
+		return None
+	if t in names:
+		return t
+	if len(names) == 1:
+		if t.isdigit():
+			return names[0]
+		return None
+	if t.isdigit():
+		n = int(t)
+		if 1 <= n <= len(names):
+			return names[n - 1]
+	return None
+
+
 def get_work_orders_for_job(pp_name, job_no):
-	return frappe.db.sql(
+	if not pp_name or job_no is None:
+		return []
+	jn = _cstr(job_no).strip()
+	if not jn:
+		return []
+	wos = frappe.db.sql(
 		"""
 		SELECT wo.name, wo.production_item, wo.qty as planned_qty, wo.produced_qty, wo.status
 		FROM `tabWork Order` wo
@@ -1364,9 +1443,15 @@ def get_work_orders_for_job(pp_name, job_no):
 		  AND wo.docstatus != 2
 		ORDER BY wo.name
 		""",
-		{"pp_name": pp_name, "job_no": job_no},
+		{"pp_name": pp_name, "job_no": jn},
 		as_dict=True,
 	)
+	if wos:
+		return wos
+	pi = _resolve_job_ref_to_production_plan_item(pp_name, jn)
+	if pi and pi != jn:
+		return get_work_orders_for_job(pp_name, pi)
+	return []
 
 
 def parse_item_code(item_code):

@@ -171,6 +171,7 @@
    "label": "Row Printed"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "print_sticker",
    "fieldtype": "Button",
    "label": "Print Label",

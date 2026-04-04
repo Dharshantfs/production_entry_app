@@ -23,6 +23,11 @@ frappe.ui.form.on('Shaft Production Run', {
 		setTimeout(function () {
 			spr_patch_items_grid_refresh(frm);
 		}, 400);
+		[0, 200, 600, 1200].forEach(function (ms) {
+			setTimeout(function () {
+				schedule_spr_item_row_styles(frm);
+			}, ms);
+		});
 	},
 
 	production_plan: function (frm) {
@@ -551,6 +556,22 @@ function spr_patch_items_grid_refresh(frm) {
 	}
 }
 
+/** Sticker / planned GSM: field or parsed from item_code (same rule as server parse_item_code). */
+function sprStickerGsmFromDoc(doc) {
+	let g = flt(doc.gsm);
+	if (g > 0) {
+		return g;
+	}
+	const ic = (doc.item_code || '') + '';
+	if (ic.length >= 16) {
+		const n = parseInt(ic.substring(9, 12), 10);
+		if (!isNaN(n) && n > 0) {
+			return n;
+		}
+	}
+	return 0;
+}
+
 function sprEffectiveProducedGsm(doc) {
 	const p = flt(doc.produced_gsm);
 	if (p > 0) {
@@ -585,8 +606,14 @@ function ensure_spr_item_stylesheet() {
 			display: none !important;
 		}
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a,
 		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
-		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button {
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a {
 			visibility: hidden !important;
 			pointer-events: none !important;
 			min-height: 0 !important;
@@ -819,7 +846,7 @@ function apply_spr_item_row_styles(frm) {
 		if (!$row || !$row.length) {
 			return;
 		}
-		const sticker = flt(doc.gsm);
+		const sticker = sprStickerGsmFromDoc(doc);
 		const effProd = sprEffectiveProducedGsm(doc);
 		$row.removeClass(baseClasses);
 		sprClearRowBg($row);
