@@ -278,6 +278,61 @@ def _find_existing_sheet_for_sales_order(sales_order, exclude_name=None):
     return existing[0] if existing else None
 
 
+def _production_plan_usable(pp_name):
+    """Return pp_name if document exists and is not cancelled; else None."""
+    if not pp_name or not str(pp_name).strip():
+        return None
+    pp_name = str(pp_name).strip()
+    if not frappe.db.exists("Production Plan", pp_name):
+        return None
+    if frappe.db.get_value("Production Plan", pp_name, "docstatus") == 2:
+        return None
+    return pp_name
+
+
+def _resolve_existing_production_plan_for_planning_sheet(sheet_name):
+    """
+    If this Planning sheet already has a Production Plan, return its name so callers
+    do not create duplicate PP rows for the same sheet (repeated "Create Plan" clicks).
+    Order: header link → first item-level link → PP.custom_planning_sheet / planning_sheet.
+    """
+    if not sheet_name or not frappe.db.exists("Planning sheet", sheet_name):
+        return None
+
+    for col in ("custom_production_plan", "production_plan", "production_plan_id", "pp_id"):
+        if frappe.db.has_column("Planning sheet", col):
+            pp = _production_plan_usable(frappe.db.get_value("Planning sheet", sheet_name, col))
+            if pp:
+                return pp
+
+    for fieldname in _psi_production_plan_fields():
+        rows = frappe.get_all(
+            "Planning Table",
+            filters={"parent": sheet_name},
+            fields=[fieldname],
+            limit=50,
+        )
+        for r in rows:
+            pp = _production_plan_usable(r.get(fieldname))
+            if pp:
+                return pp
+
+    for col in ("custom_planning_sheet", "planning_sheet"):
+        if not frappe.db.has_column("Production Plan", col):
+            continue
+        rows = frappe.get_all(
+            "Production Plan",
+            filters={col: sheet_name, "docstatus": ["!=", 2]},
+            fields=["name"],
+            order_by="creation desc",
+            limit_page_length=1,
+        )
+        if rows:
+            return rows[0].name
+
+    return None
+
+
 def _psi_production_plan_fields():
     """Return available Planning Sheet Item fields that may store item-level Production Plan links."""
     candidates = [
@@ -5752,10 +5807,16 @@ def create_planning_sheet_from_so(doc):
 def create_production_plan_from_sheet(sheet_name):
     """
     Creates a Production Plan from a Planning Sheet.
+    If the sheet already has a linked Production Plan (header or row), returns it — no duplicate PP.
     """
-    if not sheet_name: return
+    if not sheet_name:
+        return
     sheet = frappe.get_doc("Planning sheet", sheet_name)
-    
+
+    existing = _resolve_existing_production_plan_for_planning_sheet(sheet_name)
+    if existing:
+        return existing
+
     pp = frappe.new_doc("Production Plan")
     pp.company = frappe.defaults.get_user_default("Company")
     pp.customer = sheet.customer
@@ -5770,6 +5831,11 @@ def create_production_plan_from_sheet(sheet_name):
              row.sales_order_item = item.sales_order_item
              
     pp.insert()
+
+    if frappe.db.has_column("Production Plan", "custom_planning_sheet"):
+        frappe.db.set_value("Production Plan", pp.name, "custom_planning_sheet", sheet.name)
+    elif frappe.db.has_column("Production Plan", "planning_sheet"):
+        frappe.db.set_value("Production Plan", pp.name, "planning_sheet", sheet.name)
 
     # Persist PP link at sheet header (legacy) and item-level (source of truth for row actions)
     if frappe.db.has_column("Planning sheet", "custom_production_plan"):
@@ -5836,6 +5902,31 @@ def create_production_plan_bulk(sheets):
         
     # 3. Create Plans
     for cust, cust_sheets in sheets_by_customer.items():
+        existing_pps = [
+            _resolve_existing_production_plan_for_planning_sheet(s.name) for s in cust_sheets
+        ]
+        non_null = [p for p in existing_pps if p]
+        if non_null:
+            unique = set(non_null)
+            if len(unique) > 1:
+                frappe.throw(
+                    _(
+                        "These planning sheets are already linked to different Production Plans ({0}). "
+                        "Cancel duplicate plans in Manufacturing or unlink sheets before creating a new merged plan."
+                    ).format(", ".join(sorted(unique)))
+                )
+            only_pp = list(unique)[0]
+            if len(non_null) == len(cust_sheets):
+                # Every sheet in this batch already points at the same PP — do not create another.
+                created_plans.append(only_pp)
+                continue
+            frappe.throw(
+                _(
+                    "Some planning sheets already have Production Plan {0}; others do not. "
+                    "Link all rows first or create plans one sheet at a time."
+                ).format(only_pp)
+            )
+
         pp = frappe.new_doc("Production Plan")
         pp.company = frappe.defaults.get_user_default("Company")
         pp.customer = cust if cust != "No Customer" else None
@@ -5868,6 +5959,13 @@ def create_production_plan_bulk(sheets):
         
         pp.insert()
 
+        if len(cust_sheets) == 1:
+            s0 = cust_sheets[0]
+            if frappe.db.has_column("Production Plan", "custom_planning_sheet"):
+                frappe.db.set_value("Production Plan", pp.name, "custom_planning_sheet", s0.name)
+            elif frappe.db.has_column("Production Plan", "planning_sheet"):
+                frappe.db.set_value("Production Plan", pp.name, "planning_sheet", s0.name)
+
         # Persist PP link at item-level for exact row-to-PP mapping
         psi_pp_field = _psi_production_plan_field()
         psi_order_sheet_field = _psi_order_sheet_field()
@@ -5887,6 +5985,45 @@ def create_production_plan_bulk(sheets):
         created_plans.append(pp.name)
         
     return created_plans
+
+
+@frappe.whitelist()
+def audit_production_plans_for_planning_sheet(planning_sheet_name):
+    """
+    Read-only helper: list Production Plan documents tied to a Planning sheet.
+    Use after repeated "Create Plan" clicks to see duplicates before cancelling extras in Manufacturing.
+    """
+    if not planning_sheet_name:
+        return {"ok": False, "message": "planning_sheet_name required"}
+    if not frappe.db.exists("Planning sheet", planning_sheet_name):
+        return {"ok": False, "message": "Planning sheet not found"}
+
+    resolved = _resolve_existing_production_plan_for_planning_sheet(planning_sheet_name)
+    by_link = []
+    for col in ("custom_planning_sheet", "planning_sheet"):
+        if frappe.db.has_column("Production Plan", col):
+            by_link.extend(
+                frappe.get_all(
+                    "Production Plan",
+                    filters={col: planning_sheet_name},
+                    fields=["name", "docstatus", "status", "creation"],
+                    order_by="creation asc",
+                )
+            )
+
+    header_pp = None
+    for col in ("custom_production_plan", "production_plan"):
+        if frappe.db.has_column("Planning sheet", col):
+            header_pp = frappe.db.get_value("Planning sheet", planning_sheet_name, col)
+            break
+
+    return {
+        "ok": True,
+        "planning_sheet": planning_sheet_name,
+        "reuse_would_return": resolved,
+        "header_production_plan": header_pp,
+        "production_plans_with_reverse_link": by_link,
+    }
 
 
 @frappe.whitelist()
