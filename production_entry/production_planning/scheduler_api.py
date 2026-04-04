@@ -564,6 +564,13 @@ def _populate_planning_sheet_items(ps, doc):
                 if (" " + c + " ") in search_text:
                     col = c
                     break
+        # Fallback: substring match (longest-first COL_LIST) when spacing breaks " GOLDEN YELLOW " style match
+        if not col:
+            su = search_text.upper()
+            for c in COL_LIST:
+                if c in su:
+                    col = c
+                    break
 
         # Mandatory `quality` on Planning sheet Item / Planning Table (DocType requires it)
         line_quality = (qual or "").strip()
@@ -588,22 +595,7 @@ def _populate_planning_sheet_items(ps, doc):
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
-        unit = ""
-        if _is_white_color(col):
-            unit = "UNASSIGNED"
-        else:
-            UNIT_WIDTHS = {"Unit 1": 63, "Unit 2": 126, "Unit 3": 126, "Unit 4": 90}
-            UNIT_TONNAGE_LIMITS = {"Unit 1": 4.4, "Unit 2": 12, "Unit 3": 9, "Unit 4": 5.5}
-            item_tonnage = flt(it.qty) / 1000.0
-            viable_units = []
-            for u in ["Unit 1", "Unit 2", "Unit 3", "Unit 4"]:
-                unit_width = UNIT_WIDTHS[u]
-                if unit_width >= width:
-                    viable_units.append({"name": u, "width_waste": unit_width - width})
-            if viable_units:
-                best_unit_option = min(viable_units, key=lambda x: x["width_waste"])
-                unit = best_unit_option["name"]
-            else: unit = "Unit 2"
+        unit = compute_default_production_unit(col, width)
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
 
@@ -671,6 +663,56 @@ def _is_white_color(color):
         return False
     c = color.upper().strip()
     return any(w == c for w in WHITE_COLORS)
+
+
+def compute_default_production_unit(color, width_inch):
+    """
+    Only white-family colors use UNASSIGNED (pool for that order date).
+    All other colors: pick one of Unit 1–4 by minimum width waste (same rule as SO populate).
+    """
+    w = flt(width_inch)
+    if _is_white_color(color):
+        return "UNASSIGNED"
+    UNIT_WIDTHS = {"Unit 1": 63, "Unit 2": 126, "Unit 3": 126, "Unit 4": 90}
+    viable_units = []
+    for u in ["Unit 1", "Unit 2", "Unit 3", "Unit 4"]:
+        uw = UNIT_WIDTHS[u]
+        if uw >= w:
+            viable_units.append({"name": u, "width_waste": uw - w})
+    if viable_units:
+        return min(viable_units, key=lambda x: x["width_waste"])["name"]
+    return "Unit 2"
+
+
+def resolve_color_name_for_planning_row(item_code, item_name, existing_color=None):
+    """Resolve color for width/unit rules when `color` was blank (item text / code parsing)."""
+    if (existing_color or "").strip():
+        return (existing_color or "").strip()
+    raw_txt = ((item_code or "") + " " + (item_name or "")).strip()
+    if not raw_txt:
+        return ""
+    clean_txt = raw_txt.upper().replace("-", " ").replace("_", " ").replace("(", " ").replace(")", " ")
+    words = clean_txt.split()
+    search_text = " " + " ".join(words) + " "
+    col = ""
+    item_code_str = str(item_code or "").strip()
+    if len(item_code_str) >= 9 and item_code_str.startswith("100"):
+        c_code = item_code_str[6:9]
+        try:
+            color_result = _get_color_by_code(c_code)
+            if color_result:
+                return color_result.upper().strip()
+        except Exception:
+            pass
+    for c in COL_LIST:
+        if (" " + c + " ") in search_text:
+            return c
+    su = search_text.upper()
+    for c in COL_LIST:
+        if c in su:
+            return c
+    return ""
+
 
 def _get_color_by_code(color_code):
     """

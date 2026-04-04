@@ -83,9 +83,38 @@ class Planningsheet(Document):
         """Run before Document's link check: Frappe calls _validate_links() before validate()/hooks."""
         if not self.flags.get("ignore_links") and self._action != "cancel":
             self._fix_planned_items_source_item_links()
+            # Whites → UNASSIGNED; colors → Unit 1–4 by width before Select normalization.
+            self._recompute_line_units_from_width_and_color()
             # Runs before super(): insert() also validates links before before_validate.
             self._normalize_child_table_units()
         super()._validate_links()
+
+    def _recompute_line_units_from_width_and_color(self):
+        """Only white orders stay UNASSIGNED; other colors get machine unit from width (and resolved color)."""
+        if cint(self.docstatus) != 0:
+            return
+        from production_entry.production_planning.scheduler_api import (
+            compute_default_production_unit,
+            resolve_color_name_for_planning_row,
+        )
+
+        for table_key in ("items", "planned_items"):
+            for row in self.get(table_key) or []:
+                if getattr(row, "planned_date", None) and str(row.planned_date).strip():
+                    continue
+                color = (getattr(row, "color", None) or "").strip()
+                resolved = resolve_color_name_for_planning_row(
+                    getattr(row, "item_code", None),
+                    getattr(row, "item_name", None),
+                    color,
+                )
+                if resolved and not color:
+                    row.color = resolved
+                    color = resolved
+                elif not color:
+                    color = resolved or ""
+                width = flt(getattr(row, "width_inch", None))
+                row.unit = compute_default_production_unit(color, width)
 
     def _normalize_child_table_units(self):
         for row in self.get("planned_items") or []:
