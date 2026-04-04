@@ -222,9 +222,11 @@ class Planningsheet(Document):
             pp.insert()
             pp.submit()
             
-            # Create Work Order from PP
-            # Note: In standard ERPNext, we call make_work_order from PP
-            pp.make_work_orders()
+            # Create Work Order(s) from PP (ERPNext v15+ exposes make_work_order, not make_work_orders)
+            if hasattr(pp, "make_work_order"):
+                pp.make_work_order()
+            elif hasattr(pp, "make_work_orders"):
+                pp.make_work_orders()
             
             # Map WO name back to item
             wo_name = frappe.db.get_value("Work Order", {"production_plan": pp.name, "production_plan_item": pp.po_items[0].name}, "name")
