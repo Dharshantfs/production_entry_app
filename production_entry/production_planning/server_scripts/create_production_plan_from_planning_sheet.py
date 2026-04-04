@@ -4,6 +4,16 @@
 #
 # Paste into Frappe Server Script (API). Fixes: rows with same item_code/quality/color/unit
 # were merged via item_agg — now each ps.items row becomes its own Production Plan Item line.
+#
+# ---------- DO YOU NEED TO "DISABLE" ANYTHING? ----------
+# • Do NOT disable the Planning sheet DocType or the form — keep using it normally.
+# • Replace the OLD Server Script body with this script (same API method name). Do not keep two
+#   different scripts both creating Production Plans for the same sheet, or you risk duplicates.
+# • In the app code, PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY should stay True (default):
+#   then Submit on Planning sheet only LINKS Work Orders from existing PPs — it does NOT insert
+#   new Production Plans. Flow: run this API first (creates/updates draft PPs) → link PPs on lines
+#   if needed → Submit Production Plans → Submit Planning sheet.
+# • If that flag were False (legacy), Submit would also try to create PPs — avoid that double path.
 
 planning_sheet = frappe.form_dict.get("planning_sheet")
 if not planning_sheet:
@@ -177,7 +187,7 @@ for pt in pt_items:
 
 # ========== SAVE EVERYTHING ==========
 ps.planning_status = "Finalized"
-ps.order_sheet = ", ".join(all_pp_list)
+ps.order_sheet = ", ".join(sorted(set(all_pp_list)))
 ps.save(ignore_permissions=True)
 
 frappe.db.commit()
