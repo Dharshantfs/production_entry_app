@@ -98,10 +98,21 @@ class Planningsheet(Document):
             resolve_color_name_for_planning_row,
         )
 
+        linked_psi_names = set()
+        for pr in self.get("planned_items") or []:
+            si = (getattr(pr, "source_item", None) or "").strip()
+            if si:
+                linked_psi_names.add(si)
+
         for table_key in ("items", "planned_items"):
             for row in self.get(table_key) or []:
                 if getattr(row, "planned_date", None) and str(row.planned_date).strip():
                     continue
+                # Board row drives unit for linked legacy line — do not overwrite Planning sheet Item from width.
+                if table_key == "items":
+                    psi_name = (getattr(row, "name", None) or "").strip()
+                    if psi_name and psi_name in linked_psi_names:
+                        continue
                 color = (getattr(row, "color", None) or "").strip()
                 resolved = resolve_color_name_for_planning_row(
                     getattr(row, "item_code", None),
@@ -116,6 +127,18 @@ class Planningsheet(Document):
                 width = flt(getattr(row, "width_inch", None))
                 row.unit = compute_default_production_unit(color, width)
 
+    def _sync_planned_board_units_to_legacy_items(self):
+        """Mirror `planned_items.unit` onto the linked `Planning sheet Item` row (`source_item` = PSI name)."""
+        if cint(self.docstatus) != 0:
+            return
+        items_by_name = {((getattr(r, "name", None) or "").strip()): r for r in (self.get("items") or [])}
+        for pr in self.get("planned_items") or []:
+            si = (getattr(pr, "source_item", None) or "").strip()
+            if not si or si not in items_by_name:
+                continue
+            bu = normalize_planning_unit_for_select(getattr(pr, "unit", None))
+            items_by_name[si].unit = bu
+
     def _normalize_child_table_units(self):
         for row in self.get("planned_items") or []:
             row.unit = normalize_planning_unit_for_select(getattr(row, "unit", None))
@@ -124,6 +147,7 @@ class Planningsheet(Document):
 
     def validate(self):
         """Validate planning sheet before saving"""
+        self._sync_planned_board_units_to_legacy_items()
         self.validate_items()
         self.calculate_totals()
         self.parse_item_details()
