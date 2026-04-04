@@ -98,6 +98,13 @@ class Planningsheet(Document):
         self.validate_items()
         self.calculate_totals()
         self.parse_item_details()
+        self._sync_line_plan_codes()
+
+    def _sync_line_plan_codes(self):
+        """Fill Planning sheet Item / board row Plan Code from active plan + date + unit (color chart alignment)."""
+        from production_entry.production_planning.scheduler_api import update_sheet_plan_codes
+
+        update_sheet_plan_codes(self, include_legacy=True)
 
     def _fix_planned_items_source_item_links(self):
         """Ensure planned_items.source_item points to Planning sheet Item, not a Planning Table row id.

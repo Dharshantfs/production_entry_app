@@ -25,18 +25,18 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         parts = [p.strip() for p in s.split("|")]
         if len(parts) >= 2 and parts[1]:
             return normalize_planning_unit_for_select(parts[1], _depth + 1)
-    allowed = ("UNASSIGNED", "Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed")
+    allowed = ("UNASSIGNED", "Mixed")
     if s in allowed:
         return s
     u = s.upper().replace(" ", "").replace("_", "")
     if u in ("UNASSIGNED", "NONE", "NA", ""):
         return "UNASSIGNED"
-    # Exact "Mixed" only — substring match caused false positives (e.g. composite keys containing |Mixed|).
     if u == "MIXED":
         return "Mixed"
+    # Legacy per-machine units (Unit 1–4): collapse to UNASSIGNED — selection is only UNASSIGNED or Mixed.
     for i in (1, 2, 3, 4):
-        if f"UNIT{i}" in u:
-            return f"Unit {i}"
+        if f"UNIT{i}" in u or s == f"Unit {i}":
+            return "UNASSIGNED"
     return "UNASSIGNED"
 
 

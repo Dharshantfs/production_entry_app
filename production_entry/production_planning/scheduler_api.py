@@ -1669,6 +1669,7 @@ def generate_plan_code(date_str, unit, plan_name):
     """
     Generates a readable plan code: {YY}{MonthLetter}{Unit}-{PlanName}
     e.g. 26CU1-PLAN 1
+    Also supports UNASSIGNED (UA) and Mixed (MX) so Planning sheet Item rows get codes from the active plan.
     """
     if not str(date_str) or not plan_name or not unit:
         return ""
@@ -1676,11 +1677,20 @@ def generate_plan_code(date_str, unit, plan_name):
     try:
         # Robust unit normalization for code generation
         u_clean = str(unit).upper().replace(" ", "")
-        if "UNIT1" in u_clean: u_code = "U1"
-        elif "UNIT2" in u_clean: u_code = "U2"
-        elif "UNIT3" in u_clean: u_code = "U3"
-        elif "UNIT4" in u_clean: u_code = "U4"
-        else: return ""
+        if "UNIT1" in u_clean:
+            u_code = "U1"
+        elif "UNIT2" in u_clean:
+            u_code = "U2"
+        elif "UNIT3" in u_clean:
+            u_code = "U3"
+        elif "UNIT4" in u_clean:
+            u_code = "U4"
+        elif "MIXED" in u_clean:
+            u_code = "MX"
+        elif u_clean in ("UNASSIGNED", "NONE", "NA"):
+            u_code = "UA"
+        else:
+            return ""
 
         d = frappe.utils.getdate(str(date_str))
         yy = str(d.year)[-2:]
@@ -1697,29 +1707,67 @@ def generate_plan_code(date_str, unit, plan_name):
 
 def update_sheet_plan_codes(sheet_doc, include_legacy=False):
     """
-    Sets `plan_name` on Planning Table (board) rows. Optionally on legacy `items`
-    when include_legacy=True (SO create / manual bulk on snapshot rows).
+    Sets plan codes on board rows (`plan_name` + `custom_plan_code`) and on legacy `items`
+    (`custom_plan_code` — the field shown as Plan Code on Planning sheet Item).
+    Aligns with color chart / active plan name + date + unit segment.
     """
     sheet_date = sheet_doc.get("custom_planned_date") or sheet_doc.get("ordered_date")
     active_plan = sheet_doc.get("custom_plan_name") or "Default"
 
     unique_codes = set()
 
-    def _calc_code_for_item(item):
-        item_unit = item.get("unit")
+    def _row_unit(raw):
+        item_unit = raw
         if item_unit:
-            iu_upper = item_unit.upper().replace(" ", "")
-            if "UNIT1" in iu_upper: item_unit = "Unit 1"
-            elif "UNIT2" in iu_upper: item_unit = "Unit 2"
-            elif "UNIT3" in iu_upper: item_unit = "Unit 3"
-            elif "UNIT4" in iu_upper: item_unit = "Unit 4"
-        item_date = item.get("planned_date") or sheet_date
+            iu_upper = str(item_unit).upper().replace(" ", "")
+            if "UNIT1" in iu_upper:
+                item_unit = "Unit 1"
+            elif "UNIT2" in iu_upper:
+                item_unit = "Unit 2"
+            elif "UNIT3" in iu_upper:
+                item_unit = "Unit 3"
+            elif "UNIT4" in iu_upper:
+                item_unit = "Unit 4"
+        return normalize_planning_unit_for_select(item_unit)
+
+    def _row_planned_date(item):
+        if isinstance(item, dict):
+            return (
+                item.get("planned_date")
+                or item.get("custom_item_planned_date")
+                or sheet_date
+            )
+        return (
+            getattr(item, "planned_date", None)
+            or getattr(item, "custom_item_planned_date", None)
+            or sheet_date
+        )
+
+    def _item_unit_raw(item):
+        if isinstance(item, dict):
+            return item.get("unit")
+        return getattr(item, "unit", None)
+
+    def _calc_code_for_item(item):
+        item_unit = _row_unit(_item_unit_raw(item))
+        item_date = _row_planned_date(item)
         return generate_plan_code(item_date, item_unit, active_plan)
+
+    def _apply_code_to_row(item, code):
+        """Set only fields that exist on the child DocType (Planning sheet Item vs Planning Table)."""
+        dt = getattr(item, "doctype", None)
+        if not dt:
+            return
+        meta = frappe.get_meta(dt)
+        if meta.has_field("custom_plan_code"):
+            item.custom_plan_code = code
+        if meta.has_field("plan_name"):
+            item.plan_name = code
 
     if include_legacy:
         for item in sheet_doc.get("items", []):
             code = _calc_code_for_item(item)
-            item.plan_name = code
+            _apply_code_to_row(item, code)
             if code:
                 unique_codes.add(code)
 
@@ -1729,7 +1777,7 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
         if new_items:
             for item in new_items:
                 code = _calc_code_for_item(item)
-                item.plan_name = code
+                _apply_code_to_row(item, code)
                 if code:
                     unique_codes.add(code)
             break
