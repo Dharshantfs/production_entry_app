@@ -1,8 +1,9 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Your Company and contributors
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt, now_datetime, getdate, add_days
 import re
@@ -105,15 +106,35 @@ class Planningsheet(Document):
         self.update_queue_position()
         self.create_production_docs()
         self.planning_status = "Finalized"
+
+    def _resolve_company_for_production_docs(self):
+        """Planning sheet JSON may not include `company`; never use bare self.company (AttributeError)."""
+        co = self.get("company")
+        if co:
+            return co
+        if self.sales_order:
+            co = frappe.db.get_value("Sales Order", self.sales_order, "company")
+            if co:
+                return co
+        co = frappe.defaults.get_user_default("Company")
+        if co:
+            return co
+        return frappe.db.get_single_value("Global Defaults", "default_company")
     
     def create_production_docs(self):
         """Build separate Production Plans and Work Orders for each item to handle mixing details"""
+        company = self._resolve_company_for_production_docs()
+        if not company:
+            frappe.throw(
+                _("Set Company on Planning sheet or link a Sales Order with Company before submitting."),
+                title=_("Company missing"),
+            )
         for item in self.items:
             # Create Production Plan
             pp = frappe.get_doc({
                 "doctype": "Production Plan",
                 "naming_series": "PP-",
-                "company": self.company or frappe.get_cached_value('Company', None, 'name') or frappe.defaults.get_user_default('company'),
+                "company": company,
                 "get_items_from": "Sales Order",
                 "posting_date": getdate(),
                 "custom_unit": self.allocated_unit,
