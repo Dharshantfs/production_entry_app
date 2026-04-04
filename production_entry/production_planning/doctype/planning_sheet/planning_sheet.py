@@ -164,7 +164,7 @@ class Planningsheet(Document):
             self.allocate_unit_to_sheet()
     
     def on_submit(self):
-        """Update queue and create Production Plans + Work Orders on submit"""
+        """Update queue and create Production Plans on submit (WOs are created on PP submit)."""
         self.update_queue_position()
         self.create_production_docs()
         self.planning_status = "Finalized"
@@ -182,9 +182,28 @@ class Planningsheet(Document):
         if co:
             return co
         return frappe.db.get_single_value("Global Defaults", "default_company")
-    
+
+    def _production_plan_header_fields_from_planning_sheet(self):
+        """Optional Production Plan header fields so list views are not blank (custom fields vary per site)."""
+        out = {}
+        pp = "Production Plan"
+        cust = self.get("customer")
+        if not cust and self.sales_order:
+            cust = frappe.db.get_value("Sales Order", self.sales_order, "customer")
+        if cust and frappe.db.has_column(pp, "customer"):
+            out["customer"] = cust
+        if frappe.db.has_column(pp, "custom_planning_sheet"):
+            out["custom_planning_sheet"] = self.name
+        plan_label = (self.get("custom_plan_name") or self.get("plan_name") or "").strip()
+        if plan_label and frappe.db.has_column(pp, "custom_plan_name"):
+            out["custom_plan_name"] = plan_label
+        code = (self.get("custom_plan_code") or "").strip()
+        if code and frappe.db.has_column(pp, "custom_plan_code"):
+            out["custom_plan_code"] = code
+        return out
+
     def create_production_docs(self):
-        """Build separate Production Plans and Work Orders for each item to handle mixing details"""
+        """Build separate Production Plans per item; Work Orders come from Production Plan submit (not from here)."""
         company = self._resolve_company_for_production_docs()
         if not company:
             frappe.throw(
@@ -200,8 +219,8 @@ class Planningsheet(Document):
                     ).format(item.item_code),
                     title=_("BOM No required"),
                 )
-            # Create Production Plan
-            pp = frappe.get_doc({
+            # Create Production Plan (one PP per Planning sheet item — separate WOs / mixing)
+            pp_dict = {
                 "doctype": "Production Plan",
                 "naming_series": "PP-",
                 "company": company,
@@ -217,32 +236,39 @@ class Planningsheet(Document):
                         "planned_qty": item.qty,
                         "warehouse": item.warehouse or get_item_default_warehouse(item.item_code, company)
                     }
-                ]
-            })
+                ],
+            }
+            pp_dict.update(self._production_plan_header_fields_from_planning_sheet())
+            pp = frappe.get_doc(pp_dict)
             pp.insert()
             pp.submit()
-            
-            # Create Work Order(s) from PP only if none already linked (avoid duplicate with server scripts / retries)
+
+            # Work Orders are NOT created here — only from Production Plan (e.g. PP After Submit Server Script).
+            # After submit, resolve the WO the PP flow created and link it on this Planning sheet line.
+            # Map WO back to this Planning sheet line (prefer exact PP Item link)
             ppi_name = (pp.po_items[0].name if pp.get("po_items") else None)
-            wo_already = (
-                ppi_name
-                and frappe.db.exists(
+            wo_name = None
+            if ppi_name:
+                wo_name = frappe.db.get_value(
                     "Work Order",
                     {
                         "production_plan": pp.name,
                         "production_plan_item": ppi_name,
                         "docstatus": ["<", 2],
                     },
+                    "name",
                 )
-            )
-            if not wo_already:
-                if hasattr(pp, "make_work_order"):
-                    pp.make_work_order()
-                elif hasattr(pp, "make_work_orders"):
-                    pp.make_work_orders()
-            
-            # Map WO name back to item
-            wo_name = frappe.db.get_value("Work Order", {"production_plan": pp.name, "production_plan_item": pp.po_items[0].name}, "name")
+            if not wo_name:
+                rows = frappe.db.sql(
+                    """
+                    SELECT name FROM `tabWork Order`
+                    WHERE production_plan = %s AND docstatus < 2
+                    ORDER BY creation DESC
+                    LIMIT 1
+                    """,
+                    pp.name,
+                )
+                wo_name = rows[0][0] if rows else None
             if wo_name:
                 item.work_order = wo_name
         
