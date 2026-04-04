@@ -740,6 +740,28 @@ const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
 const hasRecentlyReset = ref(false);
+
+/** Pool rows (UNASSIGNED / legacy Mixed) must match any Unit 1–4 filter so matrix + Push see them; otherwise all rows vanish after unit field became UNASSIGNED-only. */
+function rowUnitMatchesFilter(rowUnit, filterU) {
+    if (!filterU) return true;
+    const ru = String(rowUnit || "UNASSIGNED").toUpperCase().replace(/\s/g, "");
+    const fu = String(filterU || "").toUpperCase().replace(/\s/g, "");
+    if (fu === "UNASSIGNED") {
+        return ru === "UNASSIGNED" || ru === "MIXED";
+    }
+    if (ru === "UNASSIGNED" || ru === "MIXED") return true;
+    return ru === fu;
+}
+
+/** Same key as matrix column `col.id` so Push from a cell filters the same rows as that cell. */
+function matrixRowCompositeKey(d) {
+    const sheetCode = d.planningSheet || "Unassigned";
+    const gsm = d.gsm || "-";
+    const quality = d.quality || "-";
+    const unit = d.unit || "UNASSIGNED";
+    const planCode = d.planCode || "-";
+    return `${sheetCode}|${unit}|${planCode}|${gsm}|${quality}`;
+}
 const filterStatus = ref("");
 const selectedPlan = ref("Default");
 
@@ -794,7 +816,7 @@ async function togglePlanLock() {
     const newLock = p.locked ? 0 : 1;
     try {
         await frappe.call({
-            method: "production_scheduler.api.toggle_plan_lock",
+            method: "production_entry.production_planning.scheduler_api.toggle_plan_lock",
             args: { plan_type: "color_chart", name: selectedPlan.value, locked: newLock }
         });
         p.locked = newLock;
@@ -957,7 +979,7 @@ const customRowOrder = ref([]);    // Store user-defined row order (List of Colo
 async function fetchMaintenanceRecords() {
 	try {
 		const res = await frappe.call({
-			method: "production_scheduler.api.get_all_equipment_maintenance"
+			method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance"
 		});
 		if (res.message) {
 			maintenanceRecords.value = res.message;
@@ -1006,7 +1028,7 @@ async function syncAllPlanCodes() {
             frappe.show_alert({ message: "Syncing Plan Codes...", indicator: "blue" });
             try {
                 const res = await frappe.call({
-                    method: "production_scheduler.api.recalculate_all_plan_codes"
+                    method: "production_entry.production_planning.scheduler_api.recalculate_all_plan_codes"
                 });
                 if (res.message && res.message.status === "success") {
                     frappe.show_alert({ message: `Successfully synced plan codes for ${res.message.count} sheets`, indicator: "green" });
@@ -1039,8 +1061,8 @@ const matrixData = computed(() => {
         // ---- PLAN FILTER (columns show only selected plan) ----
         if (!isPlanSelected(d.planName)) return false;
 
-        // UNIT FILTER
-        if (filterUnit.value && (d.unit || "UNASSIGNED").toUpperCase() !== filterUnit.value.toUpperCase()) return false;
+        // UNIT FILTER (UNASSIGNED pool visible for every machine column)
+        if (!rowUnitMatchesFilter(d.unit, filterUnit.value)) return false;
         
         // STATUS FILTER
         if (filterStatus.value && d.planningStatus !== filterStatus.value) return false;
@@ -1071,7 +1093,7 @@ const matrixData = computed(() => {
         const sheetCode = d.planningSheet || "Unassigned";
         const gsm = d.gsm || "-";
         const quality = d.quality || "-";
-        const unit = d.unit || "Mixed";
+        const unit = d.unit || "UNASSIGNED";
         // Backend returns the plan code as 'planCode' key
         const planCode = d.planCode || "-";
         const compositeKey = `${sheetCode}|${unit}|${planCode}|${gsm}|${quality}`;
@@ -1329,7 +1351,7 @@ const filteredData = computed(() => {
     );
   }
   if (filterUnit.value) {
-    data = data.filter((d) => (d.unit || "").toUpperCase() === (filterUnit.value || "").toUpperCase());
+    data = data.filter((d) => rowUnitMatchesFilter(d.unit, filterUnit.value));
   }
   if (filterStatus.value) {
     data = data.filter((d) => d.planningStatus === filterStatus.value);
@@ -1431,7 +1453,7 @@ async function rebuildMixRolls() {
     let saved = [];
     try {
         const r = await frappe.call({
-            method: "production_scheduler.api.get_mix_roll_data",
+            method: "production_entry.production_planning.scheduler_api.get_mix_roll_data",
             args: { date_key: dateKey },
             async: true
         });
@@ -1497,7 +1519,7 @@ function saveMixRolls() {
     }));
 
     frappe.call({
-        method: "production_scheduler.api.save_mix_roll_data",
+        method: "production_entry.production_planning.scheduler_api.save_mix_roll_data",
         args: { date_key: dateKey, entries: JSON.stringify(entries) },
         async: true
     });
@@ -1574,7 +1596,7 @@ async function createMixItem(mix) {
     
     try {
         const r = await frappe.call({
-            method: "production_scheduler.api.create_mix_item",
+            method: "production_entry.production_planning.scheduler_api.create_mix_item",
             args: {
                 quality: mix.quality,
                 cl_type: mix.clType,
@@ -1632,7 +1654,7 @@ async function createMixStockEntry(mix) {
             
             // We pass the single mix as an array for the API
             const r = await frappe.call({
-                method: "production_scheduler.api.create_mix_spr",
+                method: "production_entry.production_planning.scheduler_api.create_mix_spr",
                 args: {
                     date_key: dateKey,
                     mix_data: [mixDataPayload]
@@ -1732,7 +1754,7 @@ async function loadMergeData(statusDate) {
   
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.get_merges_for_date",
+      method: "production_entry.production_planning.scheduler_api.get_merges_for_date",
       args: {
         date: statusDate,
         unit: filterUnit.value || null,
@@ -1779,7 +1801,7 @@ async function createMergeFromSelection() {
   
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.create_merge",
+      method: "production_entry.production_planning.scheduler_api.create_merge",
       args: {
         date: filterOrderDate.value,
         unit: filterUnit.value || "Unit 1",
@@ -1917,7 +1939,7 @@ function getSortLabel(unit) {
 function getUnitTotal(unit) {
   return rawData.value
     .filter((d) => {
-        if ((d.unit || "UNASSIGNED") !== unit) return false;
+        if (!rowUnitMatchesFilter(d.unit, unit)) return false;
                 const colorUpper = String(d.color || "").toUpperCase();
         if (colorUpper.includes("IVORY") || colorUpper.includes("CREAM") || colorUpper.includes("OFF WHITE")) return true;
         if (EXCLUDED_WHITES.some(ex => colorUpper.includes(ex))) return false;
@@ -1929,7 +1951,7 @@ function getUnitTotal(unit) {
 function getHiddenWhiteTotal(unit) {
   return rawData.value
     .filter((d) => {
-        if ((d.unit || "UNASSIGNED") !== unit) return false;
+        if (!rowUnitMatchesFilter(d.unit, unit)) return false;
                 const colorUpper = String(d.color || "").toUpperCase();
         // Check if it IS an excluded white
         if (colorUpper.includes("IVORY") || colorUpper.includes("CREAM") || colorUpper.includes("OFF WHITE")) return false;
@@ -2025,7 +2047,7 @@ async function initSortable() {
                                       const itemNames = group.items.map(i => i.itemName);
                                       try {
                                           await frappe.call({
-                                              method: "production_scheduler.api.move_orders_to_date",
+                                              method: "production_entry.production_planning.scheduler_api.move_orders_to_date",
                                               args: { item_names: itemNames, target_date: targetDate }
                                           });
                                           fetchData();
@@ -2062,7 +2084,7 @@ async function initSortable() {
                           const rows = Array.from(bodyEl.querySelectorAll('.matrix-row'));
                           customRowOrder.value = rows.map(r => r.dataset.color);
                           frappe.call({
-                              method: "production_scheduler.api.save_color_order",
+                              method: "production_entry.production_planning.scheduler_api.save_color_order",
                               args: { order: customRowOrder.value },
                               callback: () => frappe.show_alert("Color Order Saved", 2)
                           });
@@ -2101,7 +2123,7 @@ async function initSortable() {
                 setTimeout(async () => {
                     try {
                         await frappe.call({
-                            method: "production_scheduler.api.update_schedule",
+                            method: "production_entry.production_planning.scheduler_api.update_schedule",
                             args: {
                                 item_name: itemName,
                                 unit: newUnit,
@@ -2156,7 +2178,7 @@ async function initSortable() {
                  try {
                     const performMove = async (force=0, split=0) => {
                         return await frappe.call({
-                            method: "production_scheduler.api.update_schedule",
+                            method: "production_entry.production_planning.scheduler_api.update_schedule",
                             args: {
                                 item_name: itemName, 
                                 unit: newUnit,
@@ -2203,7 +2225,7 @@ async function initSortable() {
                                 primary_action: async () => {
                                     d.hide();
                                     const res2 = await frappe.call({
-                                        method: "production_scheduler.api.update_schedule",
+                                        method: "production_entry.production_planning.scheduler_api.update_schedule",
                                         args: { item_name: itemName, unit: moveUnit, date: moveDate, index: targetIdx, force_move: 1, plan_name: selectedPlan.value }
                                     });
                                     if (res2.message && res2.message.status === 'success') {
@@ -2220,7 +2242,7 @@ async function initSortable() {
                              d.add_custom_action('📅 Next Day', async () => {
                                  d.hide();
                                  const res3 = await frappe.call({
-                                     method: "production_scheduler.api.update_schedule",
+                                     method: "production_entry.production_planning.scheduler_api.update_schedule",
                                      args: { item_name: itemName, unit: moveUnit, date: moveDate, index: 0, strict_next_day: 1 }
                                  });
                                  if (res3.message && res3.message.status === 'overflow') {
@@ -2667,7 +2689,7 @@ function getItemsForDay(dateStr, unit) {
        
        // Filter by Unit and Exact Date (with date normalization)
        let dayItems = filteredData.value.filter(d => {
-           if ((d.unit || "UNASSIGNED") !== unit) return false;
+           if (!rowUnitMatchesFilter(d.unit, unit)) return false;
            // Normalize item's orderDate for comparison
            const itemDate = (d.orderDate || "").trim();
            // Try exact match first
@@ -2680,7 +2702,7 @@ function getItemsForDay(dateStr, unit) {
        // Debug: log when plan is not Default and no items found
        if (selectedPlan.value && selectedPlan.value !== 'Default' && dayItems.length === 0) {
            // Only log once per unit per day to avoid spam
-           const allForUnit = filteredData.value.filter(d => (d.unit || "UNASSIGNED") === unit);
+           const allForUnit = filteredData.value.filter(d => rowUnitMatchesFilter(d.unit, unit));
            if (allForUnit.length > 0 && !getItemsForDay._logged) {
                console.warn(`[ColorChart Debug] Plan="${selectedPlan.value}", Unit="${unit}", DateStr="${normalizedDateStr}"`,
                    `filteredData has ${allForUnit.length} items for this unit.`,
@@ -2829,7 +2851,7 @@ async function persistSequence(unit) {
     
     try {
         await frappe.call({
-            method: "production_scheduler.api.save_color_sequence",
+            method: "production_entry.production_planning.scheduler_api.save_color_sequence",
             args: {
                 date: filterOrderDate.value,
                 unit: unit,
@@ -2854,12 +2876,12 @@ async function requestApproval(unit) {
         // Save sequence first
         const items = getUnitEntries(unit).map(i => i.itemName);
         await frappe.call({
-            method: "production_scheduler.api.save_color_sequence",
+            method: "production_entry.production_planning.scheduler_api.save_color_sequence",
             args: { date: filterOrderDate.value, unit: unit, sequence_data: items, plan_name: selectedPlan.value }
         });
 
         await frappe.call({
-            method: "production_scheduler.api.request_sequence_approval",
+            method: "production_entry.production_planning.scheduler_api.request_sequence_approval",
             args: { date: filterOrderDate.value, unit: unit, plan_name: selectedPlan.value }
         });
         sequenceStatuses.value[unit] = 'Pending Approval';
@@ -2873,12 +2895,12 @@ async function approveSequence(unit) {
         // Save sequence first
         const items = getUnitEntries(unit).map(i => i.itemName);
         await frappe.call({
-            method: "production_scheduler.api.save_color_sequence",
+            method: "production_entry.production_planning.scheduler_api.save_color_sequence",
             args: { date: filterOrderDate.value, unit: unit, sequence_data: items, plan_name: selectedPlan.value }
         });
 
         await frappe.call({
-            method: "production_scheduler.api.approve_sequence",
+            method: "production_entry.production_planning.scheduler_api.approve_sequence",
             args: { date: filterOrderDate.value, unit: unit, plan_name: selectedPlan.value }
         });
         sequenceStatuses.value[unit] = 'Approved';
@@ -2894,14 +2916,14 @@ async function analyzePreviousFlow() {
   if (!filterOrderDate.value) return;
   try {
     const prevDateArgs = await frappe.call({
-      method: "production_scheduler.api.get_previous_production_date",
+      method: "production_entry.production_planning.scheduler_api.get_previous_production_date",
       args: { date: filterOrderDate.value }
     });
     const prevDate = prevDateArgs.message;
     
     if (prevDate) {
       const r = await frappe.call({
-        method: "production_scheduler.api.get_color_chart_data",
+        method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
         args: { date: prevDate }
       });
       const prevData = r.message || [];
@@ -3027,7 +3049,7 @@ async function fetchPlans(args) {
         }
         
         const r = await frappe.call({
-            method: "production_scheduler.api.get_monthly_plans",
+            method: "production_entry.production_planning.scheduler_api.get_monthly_plans",
             args: planArgs
         });
         plans.value = r.message || [{name: "Default", locked: 0}];
@@ -3090,7 +3112,7 @@ function createNewPlan() {
             plans.value.push({name: fullName, locked: 0});
             // Persist the new plan so it survives refresh
             frappe.call({
-                method: "production_scheduler.api.add_persistent_plan",
+                method: "production_entry.production_planning.scheduler_api.add_persistent_plan",
                 args: { plan_type: "color_chart", name: fullName }
             });
         }
@@ -3122,7 +3144,7 @@ function deletePlan() {
             }
             try {
                 const r = await frappe.call({
-                    method: "production_scheduler.api.delete_plan",
+                    method: "production_entry.production_planning.scheduler_api.delete_plan",
                     args: deleteArgs
                 });
                 const count = (r.message && r.message.deleted_count) || 0;
@@ -3489,7 +3511,7 @@ async function pushToProductionBoard() {
         try {
             // Capacity preview is target-day only.
             const rData = await frappe.call({
-                method: "production_scheduler.api.get_color_chart_data",
+                method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
                 args: { date: targetDate, plan_name: '__all__', planned_only: 1 }
             });
             const allItems = rData.message || [];
@@ -3582,10 +3604,11 @@ async function pushToProductionBoard() {
             { fieldname: 'fetch_dates', fieldtype: 'Data', label: 'Fetch Date(s)', default: (fetchDates.join(", ") || defaultTargetDate), read_only: 1 },
             { fieldname: 'plan_name_display', fieldtype: 'Data', label: 'Current Plan', default: selectedPlanLabel.value, read_only: 1 },
             { fieldtype: 'Column Break' },
-            { fieldname: 'target_date', fieldtype: 'Date', label: 'Target Date', default: defaultTargetDate, reqd: 1, description: 'Push start point.' },
+            { fieldname: 'target_date', fieldtype: 'Date', label: 'Target Date', default: defaultTargetDate, reqd: 1, description: 'Production board date for pushed lines.' },
+            { fieldname: 'push_target_unit', fieldtype: 'Select', label: 'Target Unit', reqd: 1, options: ['Unit 1', 'Unit 2', 'Unit 3', 'Unit 4'], default: 'Unit 1', description: 'Machine unit lines are assigned to when pushed (like Target Date).' },
             
             { fieldtype: 'Section Break', label: 'Filters' },
-            { fieldname: 'filter_unit', fieldtype: 'Select', label: 'Unit', options: ['All Units', 'Unit 1', 'Unit 2', 'Unit 3', 'Unit 4'], default: 'All Units' },
+            { fieldname: 'filter_unit', fieldtype: 'Select', label: 'Unit', options: ['All Units', 'Unit 1', 'Unit 2', 'Unit 3', 'Unit 4', 'UNASSIGNED'], default: 'All Units' },
             { fieldtype: 'Column Break' },
             { fieldname: 'filter_logic', fieldtype: 'Select', label: 'Match', options: ['AND', 'OR'], default: 'AND' },
             { fieldtype: 'Section Break' },
@@ -3611,6 +3634,7 @@ async function pushToProductionBoard() {
                            '📤 Request Arrangement Approval')),
         primary_action: async (values) => {
             const targetDate = (values.target_date || defaultTargetDate || today).trim();
+            const pushTargetUnit = (values.push_target_unit || 'Unit 1').toString().trim() || 'Unit 1';
             const currentStatus = dialogOverallStatus || d.overallStatus || overallStatus;
             
             const normalizeUnit = (u) => {
@@ -3619,7 +3643,8 @@ async function pushToProductionBoard() {
                 if (r.indexOf('UNIT2') !== -1) return 'Unit 2';
                 if (r.indexOf('UNIT3') !== -1) return 'Unit 3';
                 if (r.indexOf('UNIT4') !== -1) return 'Unit 4';
-                return 'Mixed';
+                if (r === 'UNASSIGNED' || r === 'MIXED') return 'UNASSIGNED';
+                return 'UNASSIGNED';
             };
 
             const checkedItems = currentSequence.filter(i => i.checked !== false && !i.pushed);
@@ -3637,12 +3662,12 @@ async function pushToProductionBoard() {
                     for (const u of unitsToRequest) {
                         const unitItems = checkedItems.filter(s => normalizeUnit(s.unit || 'Unit 1') === u).map(s => s.name);
                         await frappe.call({
-                            method: "production_scheduler.api.save_color_sequence",
+                            method: "production_entry.production_planning.scheduler_api.save_color_sequence",
                             args: { date: targetDate, unit: u, sequence_data: unitItems, plan_name: selectedPlan.value }
                         });
                         
                         await frappe.call({
-                            method: "production_scheduler.api.request_sequence_approval",
+                            method: "production_entry.production_planning.scheduler_api.request_sequence_approval",
                             args: { date: targetDate, unit: u, plan_name: selectedPlan.value }
                         });
                     }
@@ -3662,12 +3687,12 @@ async function pushToProductionBoard() {
                         
                         // Always save the latest selection before approving
                         await frappe.call({
-                            method: "production_scheduler.api.save_color_sequence",
+                            method: "production_entry.production_planning.scheduler_api.save_color_sequence",
                             args: { date: targetDate, unit: u, sequence_data: unitItems, plan_name: selectedPlan.value }
                         });
 
                         await frappe.call({
-                            method: "production_scheduler.api.approve_sequence",
+                            method: "production_entry.production_planning.scheduler_api.approve_sequence",
                             args: { date: targetDate, unit: u, plan_name: selectedPlan.value }
                         });
                     }
@@ -3710,13 +3735,13 @@ async function pushToProductionBoard() {
                     itemsToMove.push({
                         name: item.name,
                         target_date: targetDate,
-                        target_unit: item.unit || 'Unit 1',
+                        target_unit: pushTargetUnit,
                         sequence_no: seqNo++
                     });
                 }
 
                 const r = await frappe.call({
-                    method: "production_scheduler.api.push_items_to_pb",
+                    method: "production_entry.production_planning.scheduler_api.push_items_to_pb",
                     args: {
                         items_data: JSON.stringify(itemsToMove),
                         fetch_dates: fetchDatesValue,
@@ -3744,7 +3769,7 @@ async function pushToProductionBoard() {
                       return;
                     }
                     const r2 = await frappe.call({
-                      method: "production_scheduler.api.push_items_to_pb",
+                      method: "production_entry.production_planning.scheduler_api.push_items_to_pb",
                       args: {
                         items_data: JSON.stringify(itemsToMove),
                         fetch_dates: fetchDatesValue,
@@ -3776,7 +3801,7 @@ async function pushToProductionBoard() {
                       return;
                     }
                     const r2 = await frappe.call({
-                      method: "production_scheduler.api.push_items_to_pb",
+                      method: "production_entry.production_planning.scheduler_api.push_items_to_pb",
                       args: {
                         items_data: JSON.stringify(itemsToMove),
                         fetch_dates: fetchDatesValue,
@@ -3841,7 +3866,7 @@ async function pushToProductionBoard() {
         
         for (const u of relevantUnits) {
             const res = await frappe.call({
-                method: "production_scheduler.api.get_color_sequence",
+                method: "production_entry.production_planning.scheduler_api.get_color_sequence",
                 args: { date: newTargetDate, unit: u, plan_name: selectedPlan.value }
             });
             const msg = res.message || {};
@@ -3882,7 +3907,7 @@ async function pushToProductionBoard() {
         // Fetch Board Seeds proactively to show "Board End" immediately
         try {
             const rSeeds = await frappe.call({
-                method: "production_scheduler.api.get_board_seeds",
+                method: "production_entry.production_planning.scheduler_api.get_board_seeds",
                 args: { 
                     target_date: newTargetDate, 
                     plan_name: selectedPlan.value,
@@ -4154,7 +4179,7 @@ async function pushToProductionBoard() {
             const singleTargetDate = (d.get_value && d.get_value('target_date') ? d.get_value('target_date') : itemDate).trim();
             
             const r = await frappe.call({
-                method: 'production_scheduler.api.get_smart_push_sequence',
+                method: 'production_entry.production_planning.scheduler_api.get_smart_push_sequence',
                 args: { 
                     // Use masterSequence instead of currentSequence to ensure we don't LOSE un-pushed items that are currently filtered out!
                     item_names: JSON.stringify(masterSequence.filter(s => !s.pushed).map(s => s.name)),
@@ -4172,7 +4197,7 @@ async function pushToProductionBoard() {
                 try {
                     const targetDatesStr = singleTargetDate;
                     const rCap = await frappe.call({
-                        method: "production_scheduler.api.get_multiple_dates_capacity",
+                        method: "production_entry.production_planning.scheduler_api.get_multiple_dates_capacity",
                         args: { dates: targetDatesStr, plan_name: '__all__', pb_only: 1 }
                     });
                     
@@ -4233,7 +4258,7 @@ async function pushToProductionBoard() {
                         plannedDate: s.plannedDate || '',
                         itemName: s.name,
                         description: s.description || s.item_name || '',
-                        pushed: isExcludedWhite(s.color) ? true : !!s.pbPlanName
+                        pushed: isExcludedWhite(s.color) ? true : !!String(s.plannedDate || s.planned_date || "").trim()
                     };
                     
                     if (mapped.pushed) {
@@ -4506,7 +4531,7 @@ async function openMovePlanDialog() {
                 }
 
                 const r = await frappe.call({
-                    method: 'production_scheduler.api.move_items_to_plan',
+                    method: 'production_entry.production_planning.scheduler_api.move_items_to_plan',
                     args: {
                         item_names: JSON.stringify(checkedNames),
                         target_plan: targetPlan,
@@ -4613,7 +4638,7 @@ async function fetchData() {
 
   try {
     const r = await frappe.call({
-      method: "production_scheduler.api.get_color_chart_data",
+      method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
       args: args,
     });
     
@@ -4627,7 +4652,7 @@ async function fetchData() {
         
         for (const unit of units) {
             const seqRes = await frappe.call({
-                method: "production_scheduler.api.get_color_sequence",
+                method: "production_entry.production_planning.scheduler_api.get_color_sequence",
                 args: { date: statusDate, unit: unit, plan_name: selectedPlan.value }
             });
             if (seqRes.message) {
@@ -4645,11 +4670,12 @@ async function fetchData() {
     
     // Normalize API fields for consistent UI behavior across views
     rawData.value = (r.message || []).map(d => {
-        let u = d.unit || "Mixed";
+        let u = d.unit || "UNASSIGNED";
         if (u.toUpperCase() === "UNIT 1") u = "Unit 1";
         else if (u.toUpperCase() === "UNIT 2") u = "Unit 2";
         else if (u.toUpperCase() === "UNIT 3") u = "Unit 3";
         else if (u.toUpperCase() === "UNIT 4") u = "Unit 4";
+        else if (u.toUpperCase() === "MIXED") u = "UNASSIGNED";
 
         return {
             ...d,
@@ -4664,8 +4690,14 @@ async function fetchData() {
             partyName: d.party_name || d.partyName || "",
             approvalStatus: d.custom_approval_status || d.approvalStatus || "Draft",
             itemName: d.itemName || d.item_name || d.name || "",
-            // Robust mapping: Prioritize PB plan name if it exists, especially if planName is "Default"
-            planName: (d.pbPlanName && d.pbPlanName !== "") ? d.pbPlanName : (d.planName || d.custom_pb_plan_name || d.custom_plan_name || "Default"),
+            // Use PB plan name for grouping only after the line is actually scheduled (item planned_date).
+            // Otherwise sheet-level pb fields would steal planName and break CC plan filters + push eligibility.
+            planName: (() => {
+                const hasItemPlanned = !!String(d.plannedDate || d.planned_date || "").trim();
+                const pb = (d.pbPlanName || d.custom_pb_plan_name || "").toString().trim();
+                if (hasItemPlanned && pb) return pb;
+                return d.planName || d.custom_pb_plan_name || d.custom_plan_name || "Default";
+            })(),
             pbPlanName: d.pbPlanName || d.custom_pb_plan_name || ""
         };
     });
@@ -4681,7 +4713,7 @@ async function fetchData() {
     
     // Load Custom Color Order (Sync)
     try {
-        const orderRes = await frappe.call("production_scheduler.api.get_color_order");
+        const orderRes = await frappe.call("production_entry.production_planning.scheduler_api.get_color_order");
         customRowOrder.value = orderRes.message || [];
     } catch(e) { console.error("Failed to load color order", e); }
 
@@ -4806,7 +4838,7 @@ async function autoAllocate() {
           });
 
           await frappe.call({
-            method: "production_scheduler.api.update_items_bulk",
+            method: "production_entry.production_planning.scheduler_api.update_items_bulk",
             args: { items: updates }
           });
           
@@ -4843,7 +4875,7 @@ async function autoAllocate() {
           
           try {
               await frappe.call({
-                method: "production_scheduler.api.update_items_bulk",
+                method: "production_entry.production_planning.scheduler_api.update_items_bulk",
                 args: { items: dateUpdates }
               });
               frappe.show_alert({ message: `⏩ Moved ${unallocated.length} orders to ${nextDate}`, indicator: "orange" });
@@ -5014,13 +5046,13 @@ onMounted(async () => {
   if (params.get('plan')) selectedPlan.value = params.get('plan');
   
   // 2. Fetch Data
-  frappe.call({ method: "production_scheduler.api.cleanup_legacy_plans" });
+  frappe.call({ method: "production_entry.production_planning.scheduler_api.cleanup_legacy_plans" });
   await fetchData();
   analyzePreviousFlow();
   
   // DEBUG: Check plan field status
   try {
-      const dbg = await frappe.call("production_scheduler.api.debug_plan_check");
+      const dbg = await frappe.call("production_entry.production_planning.scheduler_api.debug_plan_check");
       console.log("[CC Debug] Plan field check:", JSON.stringify(dbg.message, null, 2));
   } catch(e) { console.warn("debug_plan_check failed:", e); }
 
@@ -5063,7 +5095,7 @@ async function handleMoveOrders(items, date, unit, plan, dialog) {
         if (plan) args.plan_name = plan;
 
         const r = await frappe.call({
-            method: "production_scheduler.api.move_orders_to_date",
+            method: "production_entry.production_planning.scheduler_api.move_orders_to_date",
             args: args,
             freeze: true
         });
@@ -5172,9 +5204,16 @@ async function openPushColorDialog(color, inputTargetDate = null) {
     // Matrix cell click passes col.id (composite: sheet|unit|planCode|gsm|quality), not a date — parse it.
     let dialogTargetDate = filterOrderDate.value || frappe.datetime.get_today();
     let defaultPushTargetUnit = "";
+    /** When pushing from a matrix cell, use that cell's unit (and composite), not the global unit filter — otherwise width-assigned Unit 2 rows vanish when filter says Unit 1. */
+    let effectiveUnitFilter = filterUnit.value;
+    let matrixCellComposite = null;
     if (inputTargetDate && String(inputTargetDate).includes("|")) {
-        const parts = String(inputTargetDate).split("|");
+        matrixCellComposite = String(inputTargetDate);
+        const parts = matrixCellComposite.split("|");
         const uHint = (parts[1] || "").trim();
+        if (["Unit 1", "Unit 2", "Unit 3", "Unit 4", "UNASSIGNED"].includes(uHint)) {
+            effectiveUnitFilter = uHint;
+        }
         if (["Unit 1", "Unit 2", "Unit 3", "Unit 4"].includes(uHint)) {
             defaultPushTargetUnit = uHint;
         }
@@ -5183,21 +5222,25 @@ async function openPushColorDialog(color, inputTargetDate = null) {
     }
     
     // ── Available options for filters ──
-    const allForColor = rawData.value.filter(d => {
-        // ✅ FIX: Only push orders from selected plan
+    function rowEligibleForPushDialog(d, requireComposite) {
         if (selectedPlan.value && selectedPlan.value !== 'Default') {
             if (d.planName !== selectedPlan.value && d.planName !== selectedPlanLabel.value) return false;
         } else {
             if (d.planName && d.planName !== '' && d.planName !== 'Default') return false;
         }
-        
         if ((d.color || "").toUpperCase().trim() !== color.toUpperCase().trim()) return false;
         const colorUpper = (d.color || "").toUpperCase().trim();
         if (colorUpper === "WHITE" || colorUpper === "BRIGHT WHITE") return false;
-        if (filterUnit.value && (d.unit || "UNASSIGNED") !== filterUnit.value) return false;
+        if (!rowUnitMatchesFilter(d.unit, effectiveUnitFilter)) return false;
+        if (requireComposite && matrixCellComposite && matrixRowCompositeKey(d) !== matrixCellComposite) return false;
         if (filterStatus.value && d.planningStatus !== filterStatus.value) return false;
         return true;
-    });
+    }
+
+    let allForColor = rawData.value.filter((d) => rowEligibleForPushDialog(d, true));
+    if (matrixCellComposite && allForColor.length === 0) {
+        allForColor = rawData.value.filter((d) => rowEligibleForPushDialog(d, false));
+    }
 
     // Active filter state
     let fQuality = "";
@@ -5259,7 +5302,7 @@ async function openPushColorDialog(color, inputTargetDate = null) {
              let overflowLines = [];
              try {
                  const capRes = await frappe.call({
-                     method: "production_scheduler.api.get_multiple_dates_capacity",
+                     method: "production_entry.production_planning.scheduler_api.get_multiple_dates_capacity",
                      args: { dates: targetDate, plan_name: "__all__", pb_only: 1 },
                      freeze: false
                  });
@@ -5292,7 +5335,7 @@ async function openPushColorDialog(color, inputTargetDate = null) {
                  d.get_primary_btn().prop("disabled", true).text("Pushing...");
                  try {
                      const r = await frappe.call({
-                         method: "production_scheduler.api.push_items_to_pb",
+                         method: "production_entry.production_planning.scheduler_api.push_items_to_pb",
                         args: { items_data: JSON.stringify(payload), pb_plan_name: pbPlan, approve_cross_month: 0, approve_maintenance_move: 0 },
                          freeze: true
                      });
@@ -5313,7 +5356,7 @@ async function openPushColorDialog(color, inputTargetDate = null) {
                             return;
                         }
                         const r2 = await frappe.call({
-                          method: "production_scheduler.api.push_items_to_pb",
+                          method: "production_entry.production_planning.scheduler_api.push_items_to_pb",
                           args: { items_data: JSON.stringify(payload), pb_plan_name: pbPlan, approve_maintenance_move: 1, approve_cross_month: 0 },
                           freeze: true
                         });
@@ -5338,7 +5381,7 @@ async function openPushColorDialog(color, inputTargetDate = null) {
                             return;
                         }
                         const r2 = await frappe.call({
-                          method: "production_scheduler.api.push_items_to_pb",
+                          method: "production_entry.production_planning.scheduler_api.push_items_to_pb",
                           args: { items_data: JSON.stringify(payload), pb_plan_name: pbPlan, approve_cross_month: 1, approve_maintenance_move: 1 },
                           freeze: true
                         });
@@ -5558,7 +5601,7 @@ async function revertColorGroup(color) {
     
     try {
         const r = await frappe.call({
-            method: "production_scheduler.api.revert_items_to_color_chart",
+            method: "production_entry.production_planning.scheduler_api.revert_items_to_color_chart",
             args: { item_names: JSON.stringify(itemNames) }
         });
         if (r.message && r.message.status === 'success') {
@@ -5575,7 +5618,7 @@ async function revertColorGroup(color) {
 
 async function restoreWhiteOrders() {
     try {
-        const r = await frappe.call("production_scheduler.api.fix_recently_cleared_whites");
+        const r = await frappe.call("production_entry.production_planning.scheduler_api.fix_recently_cleared_whites");
         if (r.message && r.message.status === 'success') {
             frappe.show_alert({ message: `✅ Restored ${r.message.restored_count} white orders to the Board.`, indicator: 'green' });
             hasRecentlyReset.value = false;
@@ -5592,7 +5635,7 @@ async function emergencyReset() {
         async () => {
             try {
                 const r = await frappe.call({
-                    method: "production_scheduler.api.emergency_cleanup_all_pushed_status",
+                    method: "production_entry.production_planning.scheduler_api.emergency_cleanup_all_pushed_status",
                     freeze: true
                 });
                 if (r.message && r.message.status === 'success') {
@@ -5664,7 +5707,7 @@ async function loadOrders(d) {
     
     try {
         const r = await frappe.call({
-            method: "production_scheduler.api.get_color_chart_data",
+            method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
             args: { date: date, mode: 'pull_board' }
         });
         
@@ -5933,7 +5976,7 @@ async function loadRescueItems(d) {
     
     try {
         const r = await frappe.call({
-            method: "production_scheduler.api.get_items_by_sheet",
+            method: "production_entry.production_planning.scheduler_api.get_items_by_sheet",
             args: { sheet_name: sheet }
         });
         

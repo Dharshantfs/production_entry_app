@@ -752,6 +752,16 @@ function rowUnitMatchesFilter(rowUnit, filterU) {
     if (ru === "UNASSIGNED" || ru === "MIXED") return true;
     return ru === fu;
 }
+
+/** Same key as matrix column `col.id` so Push from a cell filters the same rows as that cell. */
+function matrixRowCompositeKey(d) {
+    const sheetCode = d.planningSheet || "Unassigned";
+    const gsm = d.gsm || "-";
+    const quality = d.quality || "-";
+    const unit = d.unit || "UNASSIGNED";
+    const planCode = d.planCode || "-";
+    return `${sheetCode}|${unit}|${planCode}|${gsm}|${quality}`;
+}
 const filterStatus = ref("");
 const selectedPlan = ref("Default");
 
@@ -5194,9 +5204,16 @@ async function openPushColorDialog(color, inputTargetDate = null) {
     // Matrix cell click passes col.id (composite: sheet|unit|planCode|gsm|quality), not a date — parse it.
     let dialogTargetDate = filterOrderDate.value || frappe.datetime.get_today();
     let defaultPushTargetUnit = "";
+    /** When pushing from a matrix cell, use that cell's unit (and composite), not the global unit filter — otherwise width-assigned Unit 2 rows vanish when filter says Unit 1. */
+    let effectiveUnitFilter = filterUnit.value;
+    let matrixCellComposite = null;
     if (inputTargetDate && String(inputTargetDate).includes("|")) {
-        const parts = String(inputTargetDate).split("|");
+        matrixCellComposite = String(inputTargetDate);
+        const parts = matrixCellComposite.split("|");
         const uHint = (parts[1] || "").trim();
+        if (["Unit 1", "Unit 2", "Unit 3", "Unit 4", "UNASSIGNED"].includes(uHint)) {
+            effectiveUnitFilter = uHint;
+        }
         if (["Unit 1", "Unit 2", "Unit 3", "Unit 4"].includes(uHint)) {
             defaultPushTargetUnit = uHint;
         }
@@ -5205,21 +5222,25 @@ async function openPushColorDialog(color, inputTargetDate = null) {
     }
     
     // ── Available options for filters ──
-    const allForColor = rawData.value.filter(d => {
-        // ✅ FIX: Only push orders from selected plan
+    function rowEligibleForPushDialog(d, requireComposite) {
         if (selectedPlan.value && selectedPlan.value !== 'Default') {
             if (d.planName !== selectedPlan.value && d.planName !== selectedPlanLabel.value) return false;
         } else {
             if (d.planName && d.planName !== '' && d.planName !== 'Default') return false;
         }
-        
         if ((d.color || "").toUpperCase().trim() !== color.toUpperCase().trim()) return false;
         const colorUpper = (d.color || "").toUpperCase().trim();
         if (colorUpper === "WHITE" || colorUpper === "BRIGHT WHITE") return false;
-        if (!rowUnitMatchesFilter(d.unit, filterUnit.value)) return false;
+        if (!rowUnitMatchesFilter(d.unit, effectiveUnitFilter)) return false;
+        if (requireComposite && matrixCellComposite && matrixRowCompositeKey(d) !== matrixCellComposite) return false;
         if (filterStatus.value && d.planningStatus !== filterStatus.value) return false;
         return true;
-    });
+    }
+
+    let allForColor = rawData.value.filter((d) => rowEligibleForPushDialog(d, true));
+    if (matrixCellComposite && allForColor.length === 0) {
+        allForColor = rawData.value.filter((d) => rowEligibleForPushDialog(d, false));
+    }
 
     // Active filter state
     let fQuality = "";
