@@ -126,6 +126,19 @@ frappe.ui.form.on('Shaft Production Run', {
 		schedule_spr_item_row_styles(frm);
 	},
 
+	after_save: function (frm) {
+		schedule_spr_item_row_styles(frm);
+	},
+
+	on_submit: function (frm) {
+		schedule_spr_item_row_styles(frm);
+		[0, 150, 500, 1200].forEach(function (ms) {
+			setTimeout(function () {
+				schedule_spr_item_row_styles(frm);
+			}, ms);
+		});
+	},
+
 	items: {
 		items_add: function (frm) {
 			update_shaft_job_achieved_from_items(frm);
@@ -254,10 +267,10 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
-		schedule_spr_item_row_styles(frm);
 	},
-	gross_weight: function (frm) {
-		schedule_spr_item_row_styles(frm);
+	gross_weight: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+		update_shaft_job_achieved_from_items(frm);
 	},
 	gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);
@@ -298,15 +311,20 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 1);
 		}
 		const save_promise = frm.save();
-		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(function () {
-				spr_apply_items_row_lock_ui(frm);
-				frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
+		function afterSprRowSave() {
+			frm.refresh_field('items');
+			[0, 50, 200, 500].forEach(function (ms) {
+				setTimeout(function () {
+					spr_apply_items_row_lock_ui(frm);
+					apply_spr_item_row_styles(frm);
+				}, ms);
 			});
+			frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
+		}
+		if (save_promise && typeof save_promise.then === 'function') {
+			save_promise.then(afterSprRowSave);
 		} else {
-			setTimeout(function () {
-				spr_apply_items_row_lock_ui(frm);
-			}, 400);
+			setTimeout(afterSprRowSave, 400);
 		}
 	},
 	/** Print roll label (after Save Row). Set Print Format name on site: spr_roll_label_print_format in hooks or use default. */
@@ -340,15 +358,20 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 0);
 		}
 		const save_promise = frm.save();
-		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(function () {
-				spr_apply_items_row_lock_ui(frm);
-				frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
+		function afterSprEditSave() {
+			frm.refresh_field('items');
+			[0, 50, 200].forEach(function (ms) {
+				setTimeout(function () {
+					spr_apply_items_row_lock_ui(frm);
+					apply_spr_item_row_styles(frm);
+				}, ms);
 			});
+			frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
+		}
+		if (save_promise && typeof save_promise.then === 'function') {
+			save_promise.then(afterSprEditSave);
 		} else {
-			setTimeout(function () {
-				spr_apply_items_row_lock_ui(frm);
-			}, 400);
+			setTimeout(afterSprEditSave, 400);
 		}
 	},
 });
@@ -359,6 +382,8 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	}
 	const row = locals[cdt][cdn];
 	const nw = flt(row.net_weight);
+	const gw = flt(row.gross_weight);
+	const wgt = nw > 0 ? nw : gw;
 	const w = flt(row.width_inch);
 	let ln = flt(row.meter_roll);
 	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
@@ -368,8 +393,9 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 		}
 	}
 	const den = w * ln * 0.254;
-	const val = den > 0 ? Math.round((nw * 10000) / den * 100) / 100 : 0;
+	const val = den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
+	schedule_spr_item_row_styles(frm);
 }
 
 function fetch_and_show_pp_wo_summary(frm) {
@@ -578,7 +604,9 @@ function sprEffectiveProducedGsm(doc) {
 		return p;
 	}
 	const nw = flt(doc.net_weight);
-	if (nw <= 0) {
+	const gw = flt(doc.gross_weight);
+	const wgt = nw > 0 ? nw : gw;
+	if (wgt <= 0) {
 		return 0;
 	}
 	const w = flt(doc.width_inch);
@@ -587,7 +615,7 @@ function sprEffectiveProducedGsm(doc) {
 		ln = flt(doc.produced_length_mtrs);
 	}
 	const den = w * ln * 0.254;
-	return den > 0 ? Math.round((nw * 10000) / den * 100) / 100 : 0;
+	return den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
 }
 
 function ensure_spr_item_stylesheet() {
@@ -599,6 +627,18 @@ function ensure_spr_item_stylesheet() {
 		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) {
 			pointer-events: none;
 			opacity: 0.94;
+		}
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select {
+			pointer-events: none !important;
+			background-color: transparent !important;
 		}
 		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button,
@@ -614,23 +654,21 @@ function ensure_spr_item_stylesheet() {
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a {
+			opacity: 0 !important;
 			visibility: hidden !important;
 			pointer-events: none !important;
-			min-height: 0 !important;
-			height: 0 !important;
-			padding: 0 !important;
-			margin: 0 !important;
-			overflow: hidden !important;
-			border: none !important;
 		}
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	if (window.__sprspr_style) {
+	const sprItemsCssVer = '7';
+	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
+	window.__sprspr_items_css_ver = sprItemsCssVer;
 	window.__sprspr_style = true;
-	/* |Sticker GSM − Produced GSM|: <1 green, 1–2 golden yellow, 2–3 orange, 3+ red */
+	$('head style[data-spr-items]').remove();
+	/* |Sticker GSM − Produced GSM|: <1 green, 1–2 golden yellow, 2–3 orange, 3+ red; incomplete compare → neutral gray */
 	const css = `
 		.spr-items-wrap .grid-row.spr-gsm-band-0,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0,
@@ -651,7 +689,7 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .grid-row.spr-gsm-pending,
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending,
-		.fieldname-items .grid-row.spr-gsm-pending { background-color: #dbeafe !important; }
+		.fieldname-items .grid-row.spr-gsm-pending { background-color: #f3f4f6 !important; }
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .static-value,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .row-index,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .col,
@@ -681,10 +719,10 @@ function ensure_spr_item_stylesheet() {
 		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending .row-index,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending .static-value,
 		.fieldname-items .grid-row.spr-gsm-pending .static-value {
-			color: #374151 !important;
+			color: #4b5563 !important;
 		}
 	`;
-	$('head').append(`<style data-spr-items="6">${css}</style>`);
+	$('head').append(`<style data-spr-items="7">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -708,7 +746,8 @@ function spr_apply_items_row_lock_ui(frm) {
 }
 
 const SPR_GSM_BG = ['#bbf7d0', '#eab308', '#fb923c', '#fecaca'];
-const SPR_GSM_PENDING_BG = '#dbeafe';
+/** Neutral row when GSM compare not yet possible (no blue). */
+const SPR_GSM_PENDING_BG = '#f3f4f6';
 
 function sprSetRowBgImportant($el, color) {
 	if (!$el || !$el.length) {
@@ -848,6 +887,7 @@ function apply_spr_item_row_styles(frm) {
 		}
 		const sticker = sprStickerGsmFromDoc(doc);
 		const effProd = sprEffectiveProducedGsm(doc);
+		const rowLocked = cint(doc.row_locked);
 		$row.removeClass(baseClasses);
 		sprClearRowBg($row);
 		const hasGsmCompare = sticker > 0 && effProd > 0;
@@ -863,6 +903,9 @@ function apply_spr_item_row_styles(frm) {
 			}
 			$row.addClass(bandClasses[band]);
 			sprApplyGsmRowVisual($row, band);
+		} else if (rowLocked) {
+			$row.addClass('spr-gsm-band-0');
+			sprApplyGsmRowVisual($row, 0);
 		} else {
 			$row.addClass('spr-gsm-pending');
 			sprApplyGsmRowVisual($row, 'pending');
