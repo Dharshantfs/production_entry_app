@@ -1910,33 +1910,30 @@ def _legacy_psi_has_board_on_unit(sheet_parent, psi_name, target_unit):
 
 
 def _merge_reunited_legacy_psi_rows(sheet_parent):
-    """Merge duplicate Planning sheet Item rows for the same SO line when all board rows are on one unit again.
+    """Merge duplicate Planning sheet Item rows when all board rows for that group are on one unit again.
 
-    After split → different units → move both back to the same unit, the in-move merge can miss if order/state
-    differs; this pass reconciles legacy rows from current Planning Table state.
+    Groups by sales-order line when `so_item` / `sales_order_item` is set; otherwise by `item_code` on the
+    same sheet (splits often lose the SO line link on cloned PSI rows).
     """
     legacy_table = "Planning sheet Item"
-    so_col = _planning_sheet_item_so_line_column()
-    if not so_col or not sheet_parent:
+    if not sheet_parent:
         return
+
+    so_col = _planning_sheet_item_so_line_column()
+    fields = ["name", "qty", "item_code"]
+    if so_col:
+        fields.append(so_col)
 
     all_rows = frappe.get_all(
         legacy_table,
         filters={"parent": sheet_parent},
-        fields=["name", "qty", so_col],
+        fields=fields,
     )
     from collections import defaultdict
 
-    by_so = defaultdict(list)
-    for r in all_rows:
-        key = str(r.get(so_col) or "").strip()
-        if not key:
-            continue
-        by_so[key].append(r)
-
-    for _so_key, lst in by_so.items():
+    def _try_merge_group(lst):
         if len(lst) < 2:
-            continue
+            return
         names_with_pts = []
         for row in lst:
             pts = frappe.get_all(
@@ -1948,14 +1945,14 @@ def _merge_reunited_legacy_psi_rows(sheet_parent):
                 continue
             names_with_pts.append((row.name, pts))
         if len(names_with_pts) < 2:
-            continue
+            return
 
         union_units = set()
         for _n, pts in names_with_pts:
             for p in pts:
                 union_units.add(normalize_planning_unit_for_select(p.unit))
         if len(union_units) != 1:
-            continue
+            return
 
         u_only = list(union_units)[0]
         psi_names = [n for n, _pts in names_with_pts]
@@ -1979,6 +1976,27 @@ def _merge_reunited_legacy_psi_rows(sheet_parent):
             keeper,
             {"qty": merged_qty, "unit": u_only},
         )
+
+    # 1) Same SO line (preferred)
+    if so_col:
+        by_so = defaultdict(list)
+        for r in all_rows:
+            key = str(r.get(so_col) or "").strip()
+            if key:
+                by_so[key].append(r)
+        for lst in by_so.values():
+            _try_merge_group(lst)
+
+    # 2) Same item_code on this sheet when SO line is blank (common after split / clone)
+    by_item = defaultdict(list)
+    for r in all_rows:
+        if so_col and str(r.get(so_col) or "").strip():
+            continue
+        ic = str(r.get("item_code") or "").strip()
+        if ic:
+            by_item[ic].append(r)
+    for lst in by_item.values():
+        _try_merge_group(lst)
 
 
 def _resolve_planning_table_source_item_link(source_item_value, board_row_name=None):
