@@ -3319,16 +3319,29 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
     except Exception as e:
         frappe.log_error(f"Error fetching SPR achieved weights: {str(e)}")
 
-    # Fetch SPR production via spr_name field on Planning Sheet Items
+    # Fetch SPR production via spr_name field on Planning Table (board rows)
     spr_psi_achieved_weight_map = {}  # Map PSI to SPR achieved weight
     try:
-        if frappe.db.has_column("Planning Table", "spr_name"):
-            produced_col_sql = f"COALESCE(spr.{spr_produced_col}, 0)" if spr_produced_col else "0"
-            achieved_col_sql = "0"
-            for _ach_col in ["custom_total_achieved_weight", "total_achieved_weight", "total_achieved_weight_kgs", "achieved_weight", "total_achieved"]:
-                if _ach_col in spr_cols:
-                    achieved_col_sql = f"COALESCE(spr.{_ach_col}, 0)"
+        if frappe.db.has_column("Planning Table", "spr_name") and frappe.db.exists("DocType", "Shaft Production Run"):
+            spr_cols_pt = frappe.db.get_table_columns("Shaft Production Run") or []
+            spr_produced_col_pt = None
+            for c in ["total_produced_weight", "custom_total_produced_weight", "produced_qty"]:
+                if c in spr_cols_pt:
+                    spr_produced_col_pt = c
                     break
+            # Parent SPR fields are often 0 until submit; always include sum of roll line net weights.
+            items_net_sql = (
+                "(SELECT IFNULL(SUM(IFNULL(spi.net_weight, 0)), 0) FROM `tabShaft Production Run Item` spi "
+                "WHERE spi.parent = spr.name)"
+            )
+            base_prod = f"COALESCE(spr.{spr_produced_col_pt}, 0)" if spr_produced_col_pt else "0"
+            produced_col_sql = f"GREATEST({base_prod}, {items_net_sql})"
+            base_ach = "0"
+            for _ach_col in ["custom_total_achieved_weight", "total_achieved_weight", "total_achieved_weight_kgs", "achieved_weight", "total_achieved"]:
+                if _ach_col in spr_cols_pt:
+                    base_ach = f"COALESCE(spr.{_ach_col}, 0)"
+                    break
+            achieved_col_sql = f"GREATEST({base_ach}, {items_net_sql})"
 
             psi_spr_data = frappe.db.sql(f"""
                 SELECT 
@@ -3350,11 +3363,14 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 spr_name = row.get('spr_name')
                 produced = flt(row.get('total_produced', 0))
                 achieved = flt(row.get('total_achieved', 0))
+                eff_kg = max(achieved, produced)
                 if psi_name and spr_name:
                     if psi_name not in spr_psi_name_map:
                         spr_psi_name_map[psi_name] = spr_name
-                    if achieved > 0:
-                        spr_psi_achieved_weight_map[psi_name] = achieved
+                    if eff_kg > 0:
+                        spr_psi_achieved_weight_map[psi_name] = max(
+                            flt(spr_psi_achieved_weight_map.get(psi_name, 0)), eff_kg
+                        )
                     if produced > 0:
                         spr_psi_produced_map[psi_name] = spr_psi_produced_map.get(psi_name, 0) + produced
                         spr_psi_count_map[psi_name] = spr_psi_count_map.get(psi_name, 0) + 1
@@ -3895,10 +3911,16 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 else:
                     total_achieved_weight_kgs = _take_next_pp_header_achieved(item_pp, item.get("qty"))
 
-            # Production Table shows actual_production_weight_kgs from this field. For split lines, PP-level
-            # SPR achieved fallback above repeats the same total on every row without its own spr_name.
+            # Production Table shows actual_production_weight_kgs from this field.
+            # Split rows: keep per-row SPR weight when this Planning Table row is linked to an SPR
+            # (spr_psi_* maps); only use allocated item_level_produced when no SPR weight exists.
             if cint(item.get("is_split")) or split_group:
-                total_achieved_weight_kgs = flt(item_level_produced)
+                has_psi_spr_weight = psi_name and (
+                    (psi_name in spr_psi_achieved_weight_map and flt(spr_psi_achieved_weight_map.get(psi_name)) > 0)
+                    or (psi_name in spr_psi_produced_map and flt(spr_psi_produced_map.get(psi_name)) > 0)
+                )
+                if not has_psi_spr_weight:
+                    total_achieved_weight_kgs = flt(item_level_produced)
             
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),

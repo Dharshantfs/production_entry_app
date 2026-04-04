@@ -98,7 +98,7 @@ def _spr_length_meters(spr_row) -> float | None:
 
 
 def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
-	"""Map Roll Production Result line to Batch fields (Net/Gross Weight Kgs, Length Mtrs)."""
+	"""Map Roll Production Result line to Batch fields (Net/Gross Weight Kgs, Length Mtrs, CBM)."""
 	if not spr_row:
 		return {}
 	out = {}
@@ -112,6 +112,8 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 	ln = _spr_length_meters(spr_row)
 	if fn_l is not None and ln is not None:
 		out[fn_l] = flt(ln)
+	if batch_meta.has_field("custom_cbm") and _spr_row_get(spr_row, "custom_cbm") is not None:
+		out["custom_cbm"] = flt(_spr_row_get(spr_row, "custom_cbm"))
 	return out
 
 
@@ -1180,6 +1182,7 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		"job": job_id,
 		"batch_no": "",
 		"party_code": get_order_code(wo_doc),
+		"uom": _item_stock_uom_for_spr(item_code),
 		"roll_no": 0,
 		"meter_roll": 0,
 		"net_weight": 0,
@@ -1378,5 +1381,32 @@ def parse_item_code(item_code):
 	return 0, 0
 
 
+def _item_stock_uom_for_spr(item_code: str) -> str:
+	"""Resolve a valid UOM Link for Shaft Production Run Item (prefer Item.stock_uom, usually Kg)."""
+	if not item_code:
+		return "Kg"
+	u = frappe.db.get_value("Item", item_code, "stock_uom")
+	u = (u or "").strip()
+	if u and frappe.db.exists("UOM", u):
+		return u
+	for cand in ("Kg", "kg", "Kgs", "KG"):
+		if frappe.db.exists("UOM", cand):
+			return cand
+	return u or "Kg"
+
+
 def get_order_code(wo_doc):
-	return getattr(wo_doc, "order_code", None) or getattr(wo_doc, "sales_order", None) or ""
+	"""Party / order code for roll lines: WO custom fields, then Sales Order."""
+	for attr in ("order_code", "custom_order_code", "custom_party_code"):
+		v = getattr(wo_doc, attr, None)
+		if v is not None and str(v).strip():
+			return str(v).strip()
+	so = getattr(wo_doc, "sales_order", None)
+	if so:
+		for col in ("custom_party_code", "po_no"):
+			if frappe.db.has_column("Sales Order", col):
+				v = frappe.db.get_value("Sales Order", so, col)
+				if v is not None and str(v).strip():
+					return str(v).strip()
+		return str(so).strip()
+	return ""

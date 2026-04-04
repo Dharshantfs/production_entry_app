@@ -269,6 +269,19 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	produced_gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);
 	},
+	/** Persist roll line + job totals; Button fields do not auto-save the document. */
+	save_row: function (frm, cdt, cdn) {
+		if (frm.is_new()) {
+			frappe.msgprint(__('Save the Shaft Production Run first.'));
+			return;
+		}
+		if (frm.doc.docstatus && frm.doc.docstatus !== 0) {
+			frappe.show_alert({ message: __('Submitted document cannot be edited from Save Row.'), indicator: 'orange' });
+			return;
+		}
+		update_shaft_job_achieved_from_items(frm);
+		frm.save();
+	},
 });
 
 function spr_update_produced_gsm(frm, cdt, cdn) {
