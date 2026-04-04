@@ -1909,6 +1909,78 @@ def _legacy_psi_has_board_on_unit(sheet_parent, psi_name, target_unit):
     return False
 
 
+def _merge_reunited_legacy_psi_rows(sheet_parent):
+    """Merge duplicate Planning sheet Item rows for the same SO line when all board rows are on one unit again.
+
+    After split → different units → move both back to the same unit, the in-move merge can miss if order/state
+    differs; this pass reconciles legacy rows from current Planning Table state.
+    """
+    legacy_table = "Planning sheet Item"
+    so_col = _planning_sheet_item_so_line_column()
+    if not so_col or not sheet_parent:
+        return
+
+    all_rows = frappe.get_all(
+        legacy_table,
+        filters={"parent": sheet_parent},
+        fields=["name", "qty", so_col],
+    )
+    from collections import defaultdict
+
+    by_so = defaultdict(list)
+    for r in all_rows:
+        key = str(r.get(so_col) or "").strip()
+        if not key:
+            continue
+        by_so[key].append(r)
+
+    for _so_key, lst in by_so.items():
+        if len(lst) < 2:
+            continue
+        names_with_pts = []
+        for row in lst:
+            pts = frappe.get_all(
+                "Planning Table",
+                filters={"parent": sheet_parent, "source_item": row.name},
+                fields=["unit"],
+            )
+            if not pts:
+                continue
+            names_with_pts.append((row.name, pts))
+        if len(names_with_pts) < 2:
+            continue
+
+        union_units = set()
+        for _n, pts in names_with_pts:
+            for p in pts:
+                union_units.add(normalize_planning_unit_for_select(p.unit))
+        if len(union_units) != 1:
+            continue
+
+        u_only = list(union_units)[0]
+        psi_names = [n for n, _pts in names_with_pts]
+        keeper = min(psi_names)
+        others = [n for n in psi_names if n != keeper]
+
+        merged_qty = flt(frappe.db.get_value(legacy_table, keeper, "qty"))
+        for o in others:
+            merged_qty += flt(frappe.db.get_value(legacy_table, o, "qty"))
+            frappe.db.sql(
+                """
+                UPDATE `tabPlanning Table`
+                SET source_item=%s
+                WHERE parent=%s AND source_item=%s
+                """,
+                (keeper, sheet_parent, o),
+            )
+            frappe.db.sql(f"DELETE FROM `tab{legacy_table}` WHERE name=%s", (o,))
+        frappe.db.set_value(
+            legacy_table,
+            keeper,
+            {"qty": merged_qty, "unit": u_only},
+        )
+
+
 def _resolve_planning_table_source_item_link(source_item_value, board_row_name=None):
     """Planning Table.source_item must link to Planning sheet Item. Board row ids often get stored by mistake.
 
@@ -2033,6 +2105,12 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     )
     frappe.db.commit() # FORCE SAVE FOR BOARD
     item_doc.unit = unit
+
+    try:
+        _merge_reunited_legacy_psi_rows(item_doc.parent)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "merge reunited legacy PSI")
 
     if new_idx is not None:
         try:
