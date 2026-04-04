@@ -2,8 +2,10 @@
 # TYPE: API (Server Script)
 # METHOD NAME: create_production_plan_from_planning_sheet
 #
-# Paste into Frappe Server Script (API). Server Script safe_exec has NO frappe.db.has_column —
-# use frappe.get_meta(...).has_field(...) instead. Do not use names starting with _.
+# Paste into Frappe Server Script (API). safe_exec limitations:
+# - NO frappe.db.has_column — use frappe.get_meta(...).has_field(...)
+# - NO leading _ on names
+# - NO tuple unpacking in for-loops (for a, b in x) — use index access (NameError _unpack_sequence_)
 #
 # ---------- DO YOU NEED TO "DISABLE" ANYTHING? ----------
 # • Do NOT disable the Planning sheet DocType or the form — keep using it normally.
@@ -90,16 +92,22 @@ updated = []
 all_pp_list = []
 
 # ========== CREATE / UPDATE PPs ==========
-for key, unit_rows in group_map.items():
+for key in group_map:
+    unit_rows = group_map[key]
     # All rows in this group share same unit/quality/color/gsm/width per key — take header from first
-    unit_val, first_r = unit_rows[0][0], unit_rows[0][1]
+    first_pair = unit_rows[0]
+    unit_val = first_pair[0]
+    first_r = first_pair[1]
     quality_val = (first_r.custom_quality or "").strip() or ""
     color_val = (first_r.color or "").strip() or ""
     gsm_val = norm_num(first_r.gsm)
     width_val = norm_num(first_r.width_inch)
 
     plan_codes = []
-    for unit_token, r in unit_rows:
+    for ri in range(len(unit_rows)):
+        pair = unit_rows[ri]
+        unit_token = pair[0]
+        r = pair[1]
         if r.custom_plan_code:
             code = str(r.custom_plan_code).strip()
             if code and code not in plan_codes:
@@ -141,7 +149,10 @@ for key, unit_rows in group_map.items():
         all_pp_list.append(pp.name)
 
     # ✅ One po_items line per Planning sheet Item row — NO aggregation by item_code
-    for unit_token, r in unit_rows:
+    for ri in range(len(unit_rows)):
+        pair = unit_rows[ri]
+        unit_token = pair[0]
+        r = pair[1]
         planned_qty = float(r.qty or 0)
         if planned_qty <= 0:
             continue
