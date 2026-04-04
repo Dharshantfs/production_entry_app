@@ -111,7 +111,10 @@ doc_events = {
         "before_cancel": "production_entry.production_planning.scheduler_hooks.planning_sheet_before_cancel",
     },
     "Work Order": {
-        "before_validate": "production_entry.production_planning.scheduler_api.normalize_work_order_pending_status",
+        "before_validate": [
+            "production_entry.production_planning.scheduler_api.sync_work_order_custom_production_plan",
+            "production_entry.production_planning.scheduler_api.normalize_work_order_pending_status",
+        ],
     },
     "Shaft Production Run": {
         "before_validate": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",

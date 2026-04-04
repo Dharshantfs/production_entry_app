@@ -8245,6 +8245,24 @@ def validate_planning_sheet_duplicates(doc, method=None):
         )
 
 
+def sync_work_order_custom_production_plan(doc, method=None):
+    """Keep Work Order.custom_production_plan in sync with production_plan when the custom field exists.
+
+    Many sites filter list views by custom_production_plan; ERPNext only fills production_plan.
+    Without mirroring, filters show no rows even when WOs exist.
+    """
+    try:
+        if not frappe.db.has_column("tabWork Order", "custom_production_plan"):
+            return
+        pp = (doc.get("production_plan") or "").strip()
+        if not pp:
+            return
+        if not (doc.get("custom_production_plan") or "").strip():
+            doc.custom_production_plan = pp
+    except Exception:
+        pass
+
+
 def normalize_work_order_pending_status(doc, method=None):
     """
     Defensive normalization: ERPNext Work Order does not allow status "Pending".

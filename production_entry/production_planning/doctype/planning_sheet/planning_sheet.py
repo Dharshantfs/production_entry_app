@@ -222,11 +222,24 @@ class Planningsheet(Document):
             pp.insert()
             pp.submit()
             
-            # Create Work Order(s) from PP (ERPNext v15+ exposes make_work_order, not make_work_orders)
-            if hasattr(pp, "make_work_order"):
-                pp.make_work_order()
-            elif hasattr(pp, "make_work_orders"):
-                pp.make_work_orders()
+            # Create Work Order(s) from PP only if none already linked (avoid duplicate with server scripts / retries)
+            ppi_name = (pp.po_items[0].name if pp.get("po_items") else None)
+            wo_already = (
+                ppi_name
+                and frappe.db.exists(
+                    "Work Order",
+                    {
+                        "production_plan": pp.name,
+                        "production_plan_item": ppi_name,
+                        "docstatus": ["<", 2],
+                    },
+                )
+            )
+            if not wo_already:
+                if hasattr(pp, "make_work_order"):
+                    pp.make_work_order()
+                elif hasattr(pp, "make_work_orders"):
+                    pp.make_work_orders()
             
             # Map WO name back to item
             wo_name = frappe.db.get_value("Work Order", {"production_plan": pp.name, "production_plan_item": pp.po_items[0].name}, "name")
