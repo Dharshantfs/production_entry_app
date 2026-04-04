@@ -8,6 +8,12 @@ Use these constants anywhere code references the doctype string (no literals lik
 PLANNING_SHEET = "Planning sheet"
 PLANNING_SHEET_ITEM = "Planning sheet Item"
 
+# When True (recommended): submitting/finalizing a Planning sheet does NOT insert new Production Plans.
+# Flow: app/API creates PP → PP id stored on Planning sheet header + Planning Table rows → user submits PP
+# (ERPNext creates Work Orders only) → user finalizes Planning sheet → we only link work_order on lines.
+# Set False only for legacy sites that relied on auto-creating one PP per line on sheet submit.
+PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY = True
+
 
 def normalize_planning_unit_for_select(raw, _depth=0):
     """Map free-text to exact options on Planning Table / Planning sheet Item `unit` (Select)."""

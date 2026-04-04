@@ -10,6 +10,7 @@ import re
 
 from production_entry.production_planning.planning_doctypes import (
     PLANNING_SHEET as PLANNING_SHEET_DOCTYPE,
+    PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY,
     normalize_planning_unit_for_select,
 )
 
@@ -248,7 +249,7 @@ class Planningsheet(Document):
         return False
 
     def create_production_docs(self):
-        """Build Production Plans per item only when no PP already exists for this sheet/row (avoids duplicate PP/WO)."""
+        """Link Work Orders from existing Production Plan(s). Optionally create PP per line only in legacy mode."""
         from production_entry.production_planning.scheduler_api import (
             _get_item_level_production_plan,
             _production_plan_usable,
@@ -263,6 +264,7 @@ class Planningsheet(Document):
             )
 
         sheet_level_pp = _resolve_existing_production_plan_for_planning_sheet(self.name)
+        links_only = PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY
 
         for item in self.items:
             item_pp = _get_item_level_production_plan(item.name)
@@ -276,17 +278,34 @@ class Planningsheet(Document):
                     frappe.throw(
                         _(
                             "This planning sheet is already linked to draft Production Plan {0}. "
-                            "Submit that plan first (so Work Orders are created), or remove the link, "
-                            "before finalizing the Planning sheet — otherwise duplicate plans are created."
+                            "Submit that plan first (Work Orders are created on Production Plan submit only). "
+                            "Then finalize this Planning sheet — no extra Production Plan will be created."
                         ).format(pp_for_row),
-                        title=_("Production Plan already linked"),
+                        title=_("Submit Production Plan first"),
                     )
                 if cint(ds) == 1:
-                    frappe.log_error(
-                        title="Planning sheet: PP linked but no WO matched",
-                        message=f"Sheet={self.name} item={item.name} pp={pp_for_row} item_code={item.item_code}",
+                    frappe.throw(
+                        _(
+                            "Production Plan {0} is submitted but no Work Order matched this line "
+                            "(item {1}). Check item code and Sales Order line on the Production Plan."
+                        ).format(pp_for_row, item.item_code or ""),
+                        title=_("Work Order not found for line"),
                     )
-                    continue
+                frappe.throw(
+                    _("Production Plan {0} is not in a valid state to link Work Orders.").format(pp_for_row),
+                    title=_("Production Plan state"),
+                )
+
+            if links_only:
+                frappe.throw(
+                    _(
+                        "No Production Plan linked to this Planning sheet or row. "
+                        "Use the app to create the Production Plan and save the PP id on the Planning sheet "
+                        "and table rows, submit the Production Plan (creates Work Orders only), "
+                        "then finalize this Planning sheet."
+                    ),
+                    title=_("Production Plan required"),
+                )
 
             bom_no = get_default_bom_for_item(item.item_code, company)
             if not bom_no:
@@ -296,7 +315,7 @@ class Planningsheet(Document):
                     ).format(item.item_code),
                     title=_("BOM No required"),
                 )
-            # Create Production Plan (one PP per Planning sheet item — separate WOs / mixing)
+            # Legacy: create one Production Plan per Planning sheet item (avoid when PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY is True)
             pp_dict = {
                 "doctype": "Production Plan",
                 "naming_series": "PP-",
@@ -320,9 +339,6 @@ class Planningsheet(Document):
             pp.insert()
             pp.submit()
 
-            # Work Orders are NOT created here — only from Production Plan (e.g. PP After Submit Server Script).
-            # After submit, resolve the WO the PP flow created and link it on this Planning sheet line.
-            # Map WO back to this Planning sheet line (prefer exact PP Item link)
             ppi_name = (pp.po_items[0].name if pp.get("po_items") else None)
             wo_name = None
             if ppi_name:
@@ -348,7 +364,7 @@ class Planningsheet(Document):
                 wo_name = rows[0][0] if rows else None
             if wo_name:
                 item.work_order = wo_name
-        
+
         self.db_update()
 
     def validate_items(self):
