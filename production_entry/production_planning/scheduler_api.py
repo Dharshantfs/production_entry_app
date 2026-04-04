@@ -3780,6 +3780,7 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 "customer": sheet.customer,
                 "customer_name": (sheet.get("party_name") or sheet.customer or sheet.party_code or ""),
                 "partyCode": sheet.party_code,
+                "salesOrder": (sheet.sales_order or "").strip(),
                 "planningStatus": sheet.planning_status or "Draft",
                 "docstatus": sheet.docstatus,
                 "orderDate": effective_date_str,

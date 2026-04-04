@@ -228,7 +228,12 @@
                         <span style="font-weight:700; color:#111827;">{{ entry.partyCode }}</span>
                         <span v-if="entry.partyCode !== entry.customer_name" style="font-weight:400; color:#6b7280;"> · {{ entry.customer_name }}</span>
                     </div>
-                    <div class="cc-card-details" style="display:flex; align-items:center;">
+                    <div v-if="entry.planningSheet || entry.salesOrder" class="text-[9px] text-gray-500 mt-0.5 font-mono leading-tight" style="word-break:break-all;">
+                        <span v-if="entry.planningSheet" title="Planning sheet">PS: {{ entry.planningSheet }}</span>
+                        <span v-if="entry.planningSheet && entry.salesOrder"> · </span>
+                        <span v-if="entry.salesOrder" title="Sales Order">SO: {{ entry.salesOrder }}</span>
+                    </div>
+                    <div class="cc-card-details" style="display:flex; align-items:center; flex-wrap:wrap;">
                         {{ entry.quality }} · {{ entry.gsm }} GSM
                         <span v-if="entry.has_wo" style="font-size:9px; padding:1px 4px; background:#dcfce7; color:#166534; border-radius:3px; margin-left:4px; font-weight:bold; border:1px solid #bbf7d0;" title="Work Order Created">WO</span>
                         <span v-else-if="entry.has_pp" style="font-size:9px; padding:1px 4px; background:#dbeafe; color:#1e40af; border-radius:3px; margin-left:4px; font-weight:bold; border:1px solid #bfdbfe;" title="Production Plan Created">PP</span>
@@ -313,6 +318,9 @@
                                       <div style="display:flex; flex-direction:column; max-width:65%;">
                                           <div class="text-[10px] text-gray-800 truncate" style="line-height:1.1;" :title="entry.customer">
                                               <b>{{ entry.partyCode || entry.customer }}</b>
+                                          </div>
+                                          <div v-if="entry.planningSheet || entry.salesOrder" class="text-[8px] text-gray-500 truncate w-full" :title="(entry.planningSheet || '') + ' ' + (entry.salesOrder || '')">
+                                              {{ entry.planningSheet }}<template v-if="entry.salesOrder"> · {{ entry.salesOrder }}</template>
                                           </div>
                                           <div class="text-[9px] text-gray-500 truncate" style="line-height:1.1; display:flex; align-items:center; gap:3px;">
                                               <span>{{ entry.quality }}</span>
@@ -834,7 +842,7 @@ function isRowAlreadyPushed(d) {
 
     // Align with push_items_to_pb: sheet-level custom_pb_plan_name is copied onto every row
     // in the API and must NOT mean "already pushed". Only item-level planned_date does.
-    const planned = String(d.plannedDate || d.planned_date || "").trim();
+    const planned = String(d.plannedDate || d.planned_date || d.custom_item_planned_date || "").trim();
     return !!planned;
 }
 
@@ -1161,7 +1169,7 @@ const matrixData = computed(() => {
                     totalItems++;
                     // Non-white: only "pushed" if it has plannedDate (manually pushed from Color Chart)
                     // White: always considered "on the board" (auto-placed)
-                    let pushedForThisItem = isItemWhite ? true : (!!m.plannedDate && m.plannedDate !== "");
+                    let pushedForThisItem = isItemWhite ? true : (!!(m.plannedDate || m.planned_date || m.custom_item_planned_date) && String(m.plannedDate || m.planned_date || m.custom_item_planned_date).trim() !== "");
 
                     if (pushedForThisItem) {
                         anyPushed = true;
@@ -5521,21 +5529,34 @@ async function goToSequenceApprovals() {
     frappe.set_route("sequence-approval");
 }
 
+function _normColor(c) {
+    return (c || "").trim().toUpperCase();
+}
+
 async function revertColorGroup(color) {
     if (!confirm(`Revert pushed items for color "${color}" back to the Color Chart?`)) return;
-    
-    // ✅ FIX: Only revert items from the selected plan
-    const itemsToRevert = rawData.value.filter(d => {
-        if (selectedPlan.value && selectedPlan.value !== 'Default') {
-            if (d.planName !== selectedPlan.value && d.planName !== selectedPlanLabel.value) return false;
-        } else {
-            if (d.planName && d.planName !== '' && d.planName !== 'Default') return false;
-        }
-        return d.color === color && isRowAlreadyPushed(d);
+
+    const want = _normColor(color);
+    const itemsToRevert = rawData.value.filter((d) => {
+        if (!isPlanSelected(d.planName)) return false;
+        if (_normColor(d.color) !== want) return false;
+        return isRowAlreadyPushed(d);
     });
-    
+
     if (itemsToRevert.length === 0) {
-        frappe.msgprint(`No pushed orders found for ${color}.`);
+        const samePlanColor = rawData.value.filter(
+            (d) => isPlanSelected(d.planName) && _normColor(d.color) === want
+        );
+        const pushed = samePlanColor.filter((d) => isRowAlreadyPushed(d));
+        if (samePlanColor.length && !pushed.length) {
+            frappe.msgprint(
+                `No pushed orders found for ${color}. Rows exist in this plan but none have a planned date (not treated as pushed). Try refreshing the Color Chart, then push again if needed.`
+            );
+        } else if (!samePlanColor.length) {
+            frappe.msgprint(`No orders found for ${color} in the current plan filter.`);
+        } else {
+            frappe.msgprint(`No pushed orders found for ${color}.`);
+        }
         return;
     }
     
