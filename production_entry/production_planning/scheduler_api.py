@@ -1772,6 +1772,21 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             item.save()
 
             parent_name = item.parent
+            legacy_table = "Planning sheet Item"
+            new_legacy_name = None
+            src_psi = _resolve_planning_table_source_item_link(item.get("source_item"), item.name)
+            if src_psi and frappe.db.exists(legacy_table, src_psi):
+                if item.unit != unit:
+                    frappe.db.set_value(legacy_table, src_psi, "qty", flt(remainder_qty))
+                    old_legacy_doc = frappe.get_doc(legacy_table, src_psi)
+                    new_legacy_doc = frappe.copy_doc(old_legacy_doc)
+                    new_legacy_doc.name = None
+                    new_legacy_doc.qty = flt(split_qty)
+                    new_legacy_doc.unit = unit
+                    new_legacy_doc.insert(ignore_permissions=True)
+                    new_legacy_name = new_legacy_doc.name
+                else:
+                    frappe.db.set_value(legacy_table, src_psi, "unit", unit)
 
             max_idx = frappe.db.sql(
                 "SELECT MAX(idx) FROM `tabPlanning Table` WHERE parent = %s", (parent_name,)
@@ -1790,9 +1805,12 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_row_doc.unit = unit
             new_row_doc.is_split = 1
             new_row_doc.split_from = item.name
-            new_row_doc.source_item = _resolve_planning_table_source_item_link(
-                item.get("source_item"), item.name
-            )
+            if new_legacy_name and src_psi and item.unit != unit:
+                new_row_doc.source_item = new_legacy_name
+            else:
+                new_row_doc.source_item = src_psi or _resolve_planning_table_source_item_link(
+                    item.get("source_item"), item.name
+                )
             new_row_doc.insert(ignore_permissions=True)
 
             frappe.db.commit()
@@ -1845,6 +1863,15 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
         "status": "success", 
         "moved_to": {"date": final_date, "unit": final_unit}
     }
+
+def _planning_sheet_item_so_line_column():
+    """Column on Planning sheet Item that links to the Sales Order line (for merge logic)."""
+    if frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+        return "sales_order_item"
+    if frappe.db.has_column("Planning sheet Item", "so_item"):
+        return "so_item"
+    return None
+
 
 def _sync_legacy_planning_sheet_item_unit(source_item, unit):
     """After a board move, mirror only `unit` onto Planning sheet Item (SO snapshot grid)."""
@@ -1900,8 +1927,69 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     # Therefore, we do not reparent items to new sheets when their date changes.
     # We rely solely on updating the `planned_date` at the item level below.
 
-    # 2. Handle IDX Shifting if inserting at specific position
-    # Update Item unit and parent first ΓÇö use raw SQL to bypass docstatus immutability
+    # 2. DUAL TABLE SYNC: Planning Table <-> Planning sheet Item (legacy grid)
+    # When split rows share one legacy PSI and move to different units, clone the legacy row.
+    # When two legacy rows for the same SO line end up on the same unit again, merge them.
+    legacy_table = "Planning sheet Item"
+    if item_doc.get("source_item") and frappe.db.exists(legacy_table, item_doc.source_item):
+        siblings = frappe.get_all(
+            "Planning Table",
+            filters={"source_item": item_doc.source_item, "name": ["!=", item_doc.name]},
+            fields=["name", "unit"],
+        )
+        s0 = normalize_planning_unit_for_select(siblings[0].unit or "")
+        if siblings and normalize_planning_unit_for_select(unit) != s0:
+            old_legacy_doc = frappe.get_doc(legacy_table, item_doc.source_item)
+            new_legacy_doc = frappe.copy_doc(old_legacy_doc)
+            new_legacy_doc.name = None
+            new_legacy_doc.qty = flt(item_doc.qty)
+            new_legacy_doc.unit = unit
+            new_legacy_doc.insert(ignore_permissions=True)
+            new_orig_qty = max(0, flt(old_legacy_doc.qty) - flt(item_doc.qty))
+            frappe.db.set_value(legacy_table, old_legacy_doc.name, "qty", new_orig_qty)
+            item_doc.source_item = new_legacy_doc.name
+        else:
+            _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit)
+
+        try:
+            cur_legacy = frappe.get_doc(legacy_table, item_doc.source_item)
+            so_col = _planning_sheet_item_so_line_column()
+            so_item = (cur_legacy.get(so_col) if so_col else None) or ""
+            so_item = str(so_item or "").strip()
+            legacy_parent = cur_legacy.parent
+            if so_col and so_item and legacy_parent:
+                unit_key = unit.upper().replace(" ", "")
+                dupes = frappe.db.sql(
+                    f"""
+                    SELECT name, qty FROM `tab{legacy_table}`
+                    WHERE parent = %s AND `{so_col}` = %s
+                      AND UPPER(REPLACE(unit, ' ', '')) = %s
+                      AND name != %s
+                    """,
+                    (legacy_parent, so_item, unit_key, cur_legacy.name),
+                    as_dict=True,
+                )
+                if dupes:
+                    merged_qty = flt(cur_legacy.qty)
+                    for d in dupes:
+                        merged_qty += flt(d.qty)
+                        frappe.db.sql(
+                            "UPDATE `tabPlanning Table` SET source_item = %s WHERE source_item = %s",
+                            (cur_legacy.name, d.name),
+                        )
+                        frappe.db.sql(f"DELETE FROM `tab{legacy_table}` WHERE name = %s", (d.name,))
+                    frappe.db.set_value(
+                        legacy_table,
+                        cur_legacy.name,
+                        {"qty": merged_qty, "unit": unit},
+                    )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Legacy merge error")
+
+        frappe.db.commit()
+
+    # 3. Handle IDX Shifting if inserting at specific position
+    # Update Item unit and parent first — use raw SQL to bypass docstatus immutability
 
     update_fields = {"unit": unit, "source_item": item_doc.source_item}
     if frappe.db.has_column("Planning Table", "planned_date"):
@@ -1913,7 +2001,6 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     )
     frappe.db.commit() # FORCE SAVE FOR BOARD
     item_doc.unit = unit
-    _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit)
 
     if new_idx is not None:
         try:
@@ -6137,6 +6224,7 @@ def push_items_to_pb(
     approve_maintenance_move = cint(approve_maintenance_move)
     count = 0
     skipped_already_pushed = []
+    push_errors = []
     updated_sheets = set()
     pb_sheet_cache = {}  # (party_code, target_date) -> pb sheet name
     local_loads = {} # (date, unit) -> current load
@@ -6442,7 +6530,8 @@ def push_items_to_pb(
             count += 1
 
         except Exception as e:
-            frappe.log_error(f"Push to PB failed: {str(e)}", "Push to Board Error")
+            frappe.log_error(frappe.get_traceback(), "Push to Board Error")
+            push_errors.append({"item": name, "error": str(e)})
 
     if maintenance_move_candidates and not approve_maintenance_move:
         frappe.db.rollback()
@@ -6485,8 +6574,12 @@ def push_items_to_pb(
         "skipped_already_pushed": len(skipped_already_pushed),
         "updated_sheets": len(updated_sheets),
         "plan_name": pb_plan_name,
+        "errors": push_errors[:50],
     }
-    
+    if push_errors and not count:
+        response["status"] = "error"
+        response["message"] = push_errors[0].get("error") or "Push failed"
+
     # Add maintenance conflicts if any were encountered
     if "maintenance_conflicts" in locals() and maintenance_conflicts:
         response["maintenance_conflicts"] = maintenance_conflicts

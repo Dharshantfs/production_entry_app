@@ -832,8 +832,10 @@ function isRowAlreadyPushed(d) {
     const isWhite = ["WHITE", "BRIGHT WHITE", "SUNSHINE WHITE", "MILKY WHITE", "SUPER WHITE", "BLEACH WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"].includes(c);
     if (isWhite) return true;
 
-    const pb = (d.pbPlanName || d.custom_pb_plan_name || '').toString().trim();
-    return !!pb;
+    // Align with push_items_to_pb: sheet-level custom_pb_plan_name is copied onto every row
+    // in the API and must NOT mean "already pushed". Only item-level planned_date does.
+    const planned = String(d.plannedDate || d.planned_date || "").trim();
+    return !!planned;
 }
 
 function stripPlanPrefix(name) {
@@ -5159,8 +5161,18 @@ async function handleMoveOrders(items, date, unit, plan, dialog) {
 }
 
 async function openPushColorDialog(color, inputTargetDate = null) {
-    // Determine the default target date based on what was passed in, falling back to the global filter or today
-    const dialogTargetDate = inputTargetDate || filterOrderDate.value || frappe.datetime.get_today();
+    // Matrix cell click passes col.id (composite: sheet|unit|planCode|gsm|quality), not a date — parse it.
+    let dialogTargetDate = filterOrderDate.value || frappe.datetime.get_today();
+    let defaultPushTargetUnit = "";
+    if (inputTargetDate && String(inputTargetDate).includes("|")) {
+        const parts = String(inputTargetDate).split("|");
+        const uHint = (parts[1] || "").trim();
+        if (["Unit 1", "Unit 2", "Unit 3", "Unit 4"].includes(uHint)) {
+            defaultPushTargetUnit = uHint;
+        }
+    } else if (inputTargetDate) {
+        dialogTargetDate = inputTargetDate;
+    }
     
     // ── Available options for filters ──
     const allForColor = rawData.value.filter(d => {
@@ -5209,7 +5221,7 @@ async function openPushColorDialog(color, inputTargetDate = null) {
         title: `📤 Push ${color} to Production Board`,
         fields: [
             { fieldname: "target_date", label: "Target Date", fieldtype: "Date", reqd: 1, default: dialogTargetDate },
-            { fieldname: "target_unit", label: "Target Unit", fieldtype: "Select", options: "\nUnit 1\nUnit 2\nUnit 3\nUnit 4", description: "Unit to push items to. Leave blank to preserve item's current unit." },
+            { fieldname: "target_unit", label: "Target Unit", fieldtype: "Select", options: "\nUnit 1\nUnit 2\nUnit 3\nUnit 4", default: defaultPushTargetUnit, description: "Unit to push items to. Leave blank to preserve item's current unit." },
             { fieldname: "filters_info", label: "Filters", fieldtype: "HTML" },
             { fieldname: "items_info", label: "Order Selection", fieldtype: "HTML" }
         ],
