@@ -330,6 +330,36 @@ def _resolve_existing_production_plan_for_planning_sheet(sheet_name):
         if rows:
             return rows[0].name
 
+    # Last resort: exactly one submitted PP for this sheet's Sales Order (e.g. PP created/submitted
+    # from Manufacturing before Planning sheet stored custom_production_plan — avoids a second PP on finalize).
+    so = frappe.db.get_value("Planning sheet", sheet_name, "sales_order")
+    if so:
+        pp_so = _single_submitted_production_plan_for_sales_order_when_unique(so)
+        if pp_so:
+            return _production_plan_usable(pp_so)
+
+    return None
+
+
+def _single_submitted_production_plan_for_sales_order_when_unique(sales_order):
+    """If exactly one submitted Production Plan has po_items for this Sales Order, return its name."""
+    if not sales_order:
+        return None
+    if not frappe.db.has_column("Production Plan Item", "sales_order"):
+        return None
+    rows = frappe.db.sql(
+        """
+        SELECT DISTINCT pp.name
+        FROM `tabProduction Plan` pp
+        INNER JOIN `tabProduction Plan Item` ppi ON ppi.parent = pp.name
+        WHERE pp.docstatus = 1 AND IFNULL(ppi.sales_order, '') = %s
+        """,
+        (sales_order,),
+        as_dict=True,
+    )
+    names = [r["name"] for r in rows]
+    if len(names) == 1:
+        return names[0]
     return None
 
 
