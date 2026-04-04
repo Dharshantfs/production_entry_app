@@ -14,6 +14,29 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 
+def get_item_default_warehouse(item_code, company):
+    """Resolve default warehouse for an item without querying a removed `tabItem.default_warehouse` column.
+
+    ERPNext stores per-company defaults on **Item Default**; older setups may still have `Item.default_warehouse`.
+    """
+    if not item_code or not company:
+        return None
+    wh = frappe.db.get_value(
+        "Item Default",
+        {"parent": item_code, "company": company},
+        "default_warehouse",
+    )
+    if wh:
+        return wh
+    try:
+        meta = frappe.get_meta("Item")
+        if meta.has_field("default_warehouse"):
+            return frappe.db.get_value("Item", item_code, "default_warehouse")
+    except Exception:
+        pass
+    return frappe.db.get_value("Company", company, "default_warehouse")
+
+
 # Class name must equal DocType name with spaces removed (Frappe get_controller), e.g. "Planning sheet" -> Planningsheet.
 class Planningsheet(Document):
     def _validate_links(self):
@@ -144,7 +167,7 @@ class Planningsheet(Document):
                         "sales_order_item": item.so_item,
                         "item_code": item.item_code,
                         "planned_qty": item.qty,
-                        "warehouse": item.warehouse or frappe.db.get_value("Item", item.item_code, "default_warehouse")
+                        "warehouse": item.warehouse or get_item_default_warehouse(item.item_code, company)
                     }
                 ]
             })
