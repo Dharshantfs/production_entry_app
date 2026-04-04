@@ -3,7 +3,8 @@
 # METHOD NAME: create_production_plan_from_planning_sheet
 #
 # One Production Plan per (unit + quality + color) group. Multiple Planning sheet Item rows in the
-# same group share one PP. Within each PP, quantities are aggregated by item_code (item_agg).
+# same group share one PP. Within each PP: one po_items line per planning row — same item_code is
+# NOT merged; each row keeps its own planned_qty.
 #
 # safe_exec: no frappe.db.has_column; no for-loop tuple unpacking; no names starting with _.
 # get_all returns dicts — use row.get("field") not row.field.
@@ -89,8 +90,7 @@ for key in group_map:
         created.append(pp.name)
         all_pp_list.append(pp.name)
 
-    # Aggregate qty by item_code within this PP group
-    item_agg = {}
+    # One po_items line per Planning sheet Item row (no aggregation by item_code)
     for r in rows:
         planned_qty = float(r.qty or 0)
         if planned_qty <= 0:
@@ -99,16 +99,7 @@ for key in group_map:
         row_to_pp_map[r.name] = pp.name
         r.order_sheet = pp.name
 
-        icode = r.item_code
-        if icode not in item_agg:
-            item_agg[icode] = {"qty": 0.0, "row": r}
-        item_agg[icode]["qty"] = item_agg[icode]["qty"] + planned_qty
-
-    for item_code in item_agg:
-        agg = item_agg[item_code]
-        r = agg["row"]
-        total_qty = agg["qty"]
-
+        item_code = r.item_code
         bom = frappe.db.get_value("BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name")
         if not bom:
             bom = frappe.db.get_value("BOM", {"item": item_code, "is_active": 1}, "name")
@@ -119,7 +110,7 @@ for key in group_map:
             {
                 "item_code": item_code,
                 "bom_no": bom,
-                "planned_qty": total_qty,
+                "planned_qty": planned_qty,
                 "uom": item_uom,
                 "stock_uom": item_uom,
                 "sales_order": sales_order,
