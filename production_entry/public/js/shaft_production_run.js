@@ -870,7 +870,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			
 			let calc_net = gw - core_weight;
 			let net_val = calc_net > 0 ? calc_net : gw;
-			frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
+			row.net_weight = net_val;
 			
 			// Also calculate produced_gsm immediately
 			let mr = flt(row.meter_roll) || 0;
@@ -878,7 +878,8 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			if (net_val > 0 && width > 0 && mr > 0) {
 				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
 			}
-			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+			row.produced_gsm = newGsm;
+			frm.refresh_field('items');
 		}
 		
 		spr_update_produced_gsm(frm, cdt, cdn);
@@ -899,7 +900,8 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 		}
 		
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+		row.produced_gsm = newGsm;
+		frm.refresh_field('items');
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	meter_roll: function (frm, cdt, cdn) {
@@ -914,7 +916,8 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 		}
 		
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+		row.produced_gsm = newGsm;
+		frm.refresh_field('items');
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_length_mtrs: function (frm, cdt, cdn) {
