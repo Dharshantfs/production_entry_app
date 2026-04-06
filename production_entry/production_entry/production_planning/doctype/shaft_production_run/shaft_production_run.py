@@ -2291,11 +2291,8 @@ def spr_apply_bundle_packaging_for_job_width(
 
 	for it in matching:
 		it.gross_weight = single_gross
-		# For single roll packaging: initialize net_weight = gross_weight as default.
-		# Operator can adjust net_weight based on actual wastage. This ensures GSM calculation
-		# can proceed immediately, and avg bundle net is computed correctly.
-		if flt(getattr(it, "net_weight", None)) <= 0:
-			it.net_weight = single_gross
+		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
+		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
 	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
 	bundle_net = round(avg_n * float(no_of_packaging), 2)

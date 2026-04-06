@@ -1196,9 +1196,18 @@ function sprRollProducedLengthIncomplete(doc) {
 		return false;
 	}
 	if (pl === null || pl === '') {
-		return true;
+		// If produced_length_mtrs not set, check for fallback (meter_roll or ordered_length)
+		const mr = flt(doc.meter_roll);
+		const ol = flt(doc.ordered_length);
+		return mr <= 0 && ol <= 0;  // Only incomplete if both fallbacks are missing
 	}
-	return flt(pl) <= 0;
+	// If produced_length_mtrs is set but <= 0, still allow fallback
+	if (flt(pl) <= 0) {
+		const mr = flt(doc.meter_roll);
+		const ol = flt(doc.ordered_length);
+		return mr <= 0 && ol <= 0;  // Only incomplete if both fallbacks are missing
+	}
+	return false;
 }
 
 /** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
