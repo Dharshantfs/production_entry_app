@@ -118,12 +118,22 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
+		[400, 800, 1500, 3000].forEach(function (ms) {
+			setTimeout(function () {
+				spr_register_spr_page_buttons(frm);
+			}, ms);
+		});
 		spr_inject_gsm_legend(frm);
 		schedule_spr_item_row_styles(frm);
 	},
 
 	after_save: function (frm) {
-		schedule_spr_item_row_styles(frm);
+		spr_register_spr_page_buttons_after_save(frm);
+		[0, 100, 400, 900, 1500, 2500].forEach(function (ms) {
+			setTimeout(function () {
+				schedule_spr_item_row_styles(frm);
+			}, ms);
+		});
 	},
 
 	on_submit: function (frm) {
@@ -148,34 +158,98 @@ frappe.ui.form.on('Shaft Production Run', {
 });
 
 /**
- * Register toolbar + Tools menu (after page is ready). Duplicate labels are skipped by Frappe,
- * so we use unique labels for the Tools dropdown.
+ * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh — remove then re-add
+ * every time so buttons do not disappear (do not use a one-shot _spr_page_buttons_ok guard).
+ * Also registers custom buttons — they survive some toolbar rebuilds better than inner_group alone.
  */
 function spr_register_spr_page_buttons(frm) {
+	if (!frm) {
+		return;
+	}
+	const canRemoveCustom = typeof frm.remove_custom_button === 'function';
+	if (canRemoveCustom) {
+		try {
+			frm.remove_custom_button(__('Manual job'));
+		} catch (e) {}
+		try {
+			frm.remove_custom_button(__('Bundle packaging'));
+		} catch (e) {}
+	}
+	if (canRemoveCustom && typeof frm.add_custom_button === 'function') {
+		try {
+			frm.add_custom_button(__('Manual job'), function () {
+				spr_open_manual_job_dialog(frm);
+			});
+		} catch (e) {}
+		try {
+			frm.add_custom_button(__('Bundle packaging'), function () {
+				spr_open_bundle_packaging_dialog(frm);
+			});
+		} catch (e) {}
+	}
 	if (!frm.page || typeof frm.page.add_inner_button !== 'function') {
 		return;
 	}
-	if (frm._spr_page_buttons_ok) {
-		return;
+	const tg = __('Tools');
+	const rm = frm.page.remove_inner_button;
+	if (typeof rm === 'function') {
+		[__('Manual job'), __('Bundle packaging')].forEach(function (lbl) {
+			try {
+				rm.call(frm.page, lbl);
+			} catch (e) {}
+		});
+		[__('SPR — Manual job'), __('SPR — Bundle packaging')].forEach(function (lbl) {
+			try {
+				rm.call(frm.page, lbl, tg);
+			} catch (e) {}
+			try {
+				rm.call(frm.page, lbl, 'Tools');
+			} catch (e) {}
+		});
 	}
-	try {
+	function addInner(fn) {
+		try {
+			fn();
+		} catch (e) {}
+	}
+	addInner(function () {
 		frm.page.add_inner_button(__('Manual job'), function () {
 			spr_open_manual_job_dialog(frm);
 		});
+	});
+	addInner(function () {
 		frm.page.add_inner_button(__('Bundle packaging'), function () {
 			spr_open_bundle_packaging_dialog(frm);
 		});
-		const tg = __('Tools');
-		frm.page.add_inner_button(__('SPR — Manual job'), function () {
-			spr_open_manual_job_dialog(frm);
-		}, tg);
-		frm.page.add_inner_button(__('SPR — Bundle packaging'), function () {
-			spr_open_bundle_packaging_dialog(frm);
-		}, tg);
-		frm._spr_page_buttons_ok = true;
-	} catch (e) {
-		/* leave _spr_page_buttons_ok false so a later refresh can retry */
-	}
+	});
+	addInner(function () {
+		frm.page.add_inner_button(
+			__('SPR — Manual job'),
+			function () {
+				spr_open_manual_job_dialog(frm);
+			},
+			tg
+		);
+	});
+	addInner(function () {
+		frm.page.add_inner_button(
+			__('SPR — Bundle packaging'),
+			function () {
+				spr_open_bundle_packaging_dialog(frm);
+			},
+			tg
+		);
+	});
+}
+
+/** After Save the toolbar is rebuilt asynchronously — retry so Manual job / Bundle packaging stay visible. */
+function spr_register_spr_page_buttons_after_save(frm) {
+	spr_register_spr_page_buttons(frm);
+	[120, 300, 600, 1200, 2000, 3500, 5000].forEach(function (ms) {
+		setTimeout(function () {
+			spr_register_spr_page_buttons(frm);
+		}, ms);
+	});
 }
 
 /** Actions → Manual job: pick PP line, # shafts; server creates WO + manual shaft_jobs row. */
@@ -833,7 +907,12 @@ function update_shaft_job_achieved_from_items(frm) {
 	(frm.doc.shaft_jobs || []).forEach(function (sj) {
 		const jid = sprShaftJobRowKey(sj);
 		const v = jid && sums[jid] !== undefined ? sums[jid] : 0;
-		frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', flt(v));
+		const next = flt(v);
+		const cur = flt(sj.custom_total_achieved_weight);
+		// Avoid set_value when unchanged — set_value marks the form dirty and causes "Not Saved" after a successful save.
+		if (Math.abs(cur - next) > 0.005) {
+			frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', next);
+		}
 	});
 }
 
@@ -875,6 +954,9 @@ function spr_patch_items_grid_refresh(frm) {
 			setTimeout(function () {
 				apply_spr_item_row_styles(frm);
 			}, 50);
+		});
+		grid.wrapper.on('focusin', function () {
+			schedule_spr_item_row_styles(frm);
 		});
 		grid.wrapper.on('change input blur', 'input, textarea, select', function () {
 			if (frm._spr_grid_input_debounce) {
@@ -975,7 +1057,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '10';
+	const sprItemsCssVer = '12';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -1065,8 +1147,30 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .dt-row.spr-gsm-band-2 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-2 td { background-color: #fb923c !important; }
 		.spr-items-wrap .dt-row.spr-gsm-band-3 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-3 td { background-color: #fecaca !important; }
 		.spr-items-wrap .dt-row.spr-gsm-pending .dt-cell, .spr-items-wrap .dt-row.spr-gsm-pending td { background-color: #f3f4f6 !important; }
+		/* Selected / active row (editing) — Frappe defaults to white; keep GSM band visible */
+		.spr-items-wrap .dt-row.selected.spr-gsm-band-0, .spr-items-wrap .dt-row.active.spr-gsm-band-0,
+		.form-group[data-fieldname="items"] .dt-row.selected.spr-gsm-band-0,
+		.frappe-control[data-fieldname="items"] .dt-row.selected.spr-gsm-band-0,
+		.fieldname-items .dt-row.selected.spr-gsm-band-0,
+		.spr-items-wrap .grid-row.selected.spr-gsm-band-0, .spr-items-wrap .grid-row.grid-row-open.spr-gsm-band-0 { background-color: #bbf7d0 !important; }
+		.spr-items-wrap .dt-row.selected.spr-gsm-band-1, .spr-items-wrap .dt-row.active.spr-gsm-band-1,
+		.form-group[data-fieldname="items"] .dt-row.selected.spr-gsm-band-1,
+		.frappe-control[data-fieldname="items"] .dt-row.selected.spr-gsm-band-1,
+		.fieldname-items .dt-row.selected.spr-gsm-band-1,
+		.spr-items-wrap .grid-row.selected.spr-gsm-band-1, .spr-items-wrap .grid-row.grid-row-open.spr-gsm-band-1 { background-color: #eab308 !important; }
+		.spr-items-wrap .dt-row.selected.spr-gsm-band-2, .spr-items-wrap .dt-row.active.spr-gsm-band-2,
+		.form-group[data-fieldname="items"] .dt-row.selected.spr-gsm-band-2,
+		.frappe-control[data-fieldname="items"] .dt-row.selected.spr-gsm-band-2,
+		.fieldname-items .dt-row.selected.spr-gsm-band-2,
+		.spr-items-wrap .grid-row.selected.spr-gsm-band-2, .spr-items-wrap .grid-row.grid-row-open.spr-gsm-band-2 { background-color: #fb923c !important; }
+		.spr-items-wrap .dt-row.selected.spr-gsm-band-3, .spr-items-wrap .dt-row.active.spr-gsm-band-3,
+		.form-group[data-fieldname="items"] .dt-row.selected.spr-gsm-band-3,
+		.frappe-control[data-fieldname="items"] .dt-row.selected.spr-gsm-band-3,
+		.fieldname-items .dt-row.selected.spr-gsm-band-3,
+		.spr-items-wrap .grid-row.selected.spr-gsm-band-3, .spr-items-wrap .grid-row.grid-row-open.spr-gsm-band-3 { background-color: #fecaca !important; }
+		.spr-items-wrap .dt-row.selected.spr-gsm-pending, .spr-items-wrap .grid-row.selected.spr-gsm-pending { background-color: #f3f4f6 !important; }
 	`;
-	$('head').append(`<style data-spr-items="10">${css}</style>`);
+	$('head').append(`<style data-spr-items="12">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -1076,8 +1180,15 @@ function spr_apply_items_row_lock_ui(frm) {
 		return;
 	}
 	const items = frm.doc.items || [];
+	const $domRows = sprGetItemsDatatableBodyRows(frm);
 	items.forEach(function (doc, idx) {
-		const $wrap = sprResolveItemsRowWrapper(frm, doc, grid, idx);
+		let $wrap = null;
+		if ($domRows && $domRows.length > idx) {
+			$wrap = $($domRows.get(idx));
+		}
+		if (!$wrap || !$wrap.length) {
+			$wrap = sprResolveItemsRowWrapper(frm, doc, grid, idx);
+		}
 		if (!$wrap || !$wrap.length) {
 			return;
 		}
@@ -1231,6 +1342,49 @@ function sprResolveItemsRowElement(frm, doc, grid, idx) {
 	return $row;
 }
 
+/**
+ * All visible DataTable body rows in order. Prefer this over grid.grid_rows[idx] — Frappe often only
+ * wires row 0 there while rows 1+ still exist in the DOM (causes only-first-row coloring).
+ */
+function sprGetItemsDatatableBodyRows(frm) {
+	const $wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
+	if (!$wrap || !$wrap.length) {
+		return null;
+	}
+	const selectors = [
+		'.datatable-body .dt-row',
+		'.dt-scrollable .datatable-body .dt-row',
+		'.dt-scrollable .dt-row',
+		'.datatable .dt-row:not(.dt-row-filter)',
+		'.dt-row:not(.dt-row-filter)',
+	];
+	let $rows = $();
+	for (let i = 0; i < selectors.length; i++) {
+		const $f = $wrap.find(selectors[i]);
+		if ($f.length) {
+			$rows = $f;
+			break;
+		}
+	}
+	if (!$rows.length) {
+		$rows = $wrap.find('tbody tr[data-idx], .grid-body .grid-row').not('.grid-form-row');
+	}
+	if (!$rows.length) {
+		return null;
+	}
+	$rows = $rows.filter(function () {
+		const $t = $(this);
+		if ($t.hasClass('dt-row-header') || $t.closest('.dt-row-header').length) {
+			return false;
+		}
+		if ($t.closest('thead').length) {
+			return false;
+		}
+		return true;
+	});
+	return $rows.length ? $rows : null;
+}
+
 /** DataTable / grid: row index matches `items` child order on cloud (grid_rows_by_docname often incomplete). */
 function sprGetPrimaryItemsRowTarget(frm, idx) {
 	const $wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
@@ -1254,17 +1408,70 @@ function sprGetPrimaryItemsRowTarget(frm, idx) {
 	return null;
 }
 
-/** Prefer index-based DataTable row, then GridRow.wrapper, then name lookup. */
+/**
+ * Prefer Frappe GridRow at index (matches child table order; works when DataTable only mounts row 0 in DOM).
+ * Then docname lookup, then DOM fallbacks.
+ */
 function sprResolveItemsRowWrapper(frm, doc, grid, idx) {
+	let gr = null;
+	if (grid && grid.grid_rows && grid.grid_rows[idx] !== undefined) {
+		gr = grid.grid_rows[idx];
+	}
+	if (gr) {
+		if (gr.wrapper && gr.wrapper.length) {
+			return gr.wrapper;
+		}
+		if (gr.row && gr.row.length) {
+			return gr.row;
+		}
+	}
+	gr = doc && doc.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[doc.name];
+	if (gr) {
+		if (gr.wrapper && gr.wrapper.length) {
+			return gr.wrapper;
+		}
+		if (gr.row && gr.row.length) {
+			return gr.row;
+		}
+	}
 	const $byIdx = sprGetPrimaryItemsRowTarget(frm, idx);
 	if ($byIdx && $byIdx.length) {
 		return $byIdx;
 	}
-	const gr = doc && doc.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[doc.name];
-	if (gr && gr.wrapper && gr.wrapper.length) {
-		return gr.wrapper;
-	}
 	return sprResolveItemsRowElement(frm, doc, grid, idx);
+}
+
+function sprCollectItemRowTargets(frm, doc, idx, $primaryRow, $wrap) {
+	if (!$wrap || !$wrap.length) {
+		$wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
+	}
+	let $targets = $();
+	if ($primaryRow && $primaryRow.length) {
+		$targets = $targets.add($primaryRow);
+		const $ed = $primaryRow.closest('.editable-row');
+		if ($ed && $ed.length) {
+			$targets = $targets.add($ed);
+		}
+	}
+	if (!doc || !doc.name || !$wrap || !$wrap.length) {
+		return $targets;
+	}
+	const $byDoc = $wrap.find('.grid-row[data-docname="' + doc.name + '"]');
+	$targets = $targets.add($byDoc);
+	const $formRows = $wrap.find('.grid-form-row').filter(function () {
+		return $(this).find('[data-name="' + doc.name + '"]').length > 0;
+	});
+	$targets = $targets.add($formRows);
+	const $fig = $wrap.find('.form-in-grid').filter(function () {
+		return $(this).find('[data-name="' + doc.name + '"]').length > 0;
+	});
+	$fig.each(function () {
+		const $p = $(this).closest('.grid-form-row, .grid-row, tr, .dt-row');
+		if ($p.length) {
+			$targets = $targets.add($p);
+		}
+	});
+	return $targets;
 }
 
 function apply_spr_item_row_styles(frm) {
@@ -1276,14 +1483,21 @@ function apply_spr_item_row_styles(frm) {
 	const baseClasses =
 		'spr-gsm-band-0 spr-gsm-band-1 spr-gsm-band-2 spr-gsm-band-3 spr-gsm-pending';
 	const items = frm.doc.items || [];
+	const $domRows = sprGetItemsDatatableBodyRows(frm);
+	const $wrap = frm.fields_dict.items.$wrapper;
 
 	items.forEach(function (doc, idx) {
-		let $row = sprResolveItemsRowWrapper(frm, doc, grid, idx);
+		let $row = null;
+		if ($domRows && $domRows.length > idx) {
+			$row = $($domRows.get(idx));
+		}
+		if (!$row || !$row.length) {
+			$row = sprResolveItemsRowWrapper(frm, doc, grid, idx);
+		}
 		if (!$row || !$row.length) {
 			return;
 		}
-		const $editable = $row.closest('.editable-row');
-		const $targets = $editable && $editable.length ? $row.add($editable) : $row;
+		const $targets = sprCollectItemRowTargets(frm, doc, idx, $row, $wrap);
 		// Roll Production Results: color only when both Sticker GSM (`gsm`) and Produced GSM are set (>0)
 		const sticker = sprStickerGsmFromDoc(doc);
 		const produced = flt(doc.produced_gsm);
