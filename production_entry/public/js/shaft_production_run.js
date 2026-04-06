@@ -1047,26 +1047,15 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			setTimeout(afterSprRowSave, 400);
 		}
 	},
-	/** Print roll label (after Save Row). Set Print Format name on site: spr_roll_label_print_format in hooks or use default. */
+	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
 		const row = locals[cdt][cdn];
 		if (!cint(row.row_ready_for_print) || !cint(row.row_locked)) {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
 			return;
 		}
-		const fmt =
-			(frappe.boot.spr_roll_label_print_format || window.SPR_ROLL_LABEL_PRINT_FORMAT || 'Roll Production Label') + '';
-		const args = {
-			doctype: frm.doctype,
-			name: frm.doc.name,
-			format: fmt,
-			no_letterhead: 1,
-		};
-		if (row && row.name) {
-			args._row_name = row.name;
-		}
-		const qs = $.param(args);
-		window.open(frappe.urllib.get_full_url('/printview?' + qs), '_blank');
+		// Button control only - user manages label format
+		frappe.msgprint(__('Production Label ready to print'));
 	},
 	/** Unlock this row for editing; hide Print Label until Save Row again. */
 	edit_row: function (frm, cdt, cdn) {
