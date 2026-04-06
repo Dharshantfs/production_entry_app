@@ -535,17 +535,49 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
 				m["total_weight"] = flt(tw)
+		if job_meta.has_field("work_orders") and not m.get("work_orders"):
+			m["work_orders"] = _work_order_names_for_pp_job(production_plan, m, idx)
 		out.append(m)
 	return out or None
 
 
 class ShaftProductionRun(Document):
 	def validate(self):
+		self.sync_shaft_job_work_orders_from_plan()
 		self.sync_roll_line_net_weights_from_planned()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
 		self.ensure_batch_masters_for_roll_lines()
+
+	def sync_shaft_job_work_orders_from_plan(self):
+		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
+		meta = frappe.get_meta("Shaft Production Run Job")
+		if not meta.has_field("work_orders"):
+			return
+		pp = self.get("production_plan")
+		if not pp:
+			return
+		for row in self.shaft_jobs or []:
+			if cint(getattr(row, "is_manual", 0)):
+				continue
+			idx = _spr_job_row_index(self, row)
+			if idx is None:
+				idx = 0
+			m = {
+				"job_id": _spr_job_id(row),
+				"production_plan_item": getattr(row, "production_plan_item", None),
+				"combination": getattr(row, "combination", None),
+			}
+			wos = _resolve_wos_for_pp_job_row(
+				pp,
+				ppi=m.get("production_plan_item"),
+				job_id=_cstr(m.get("job_id")),
+				row_index=idx,
+				combination=m.get("combination"),
+			)
+			if wos:
+				row.work_orders = ", ".join(w["name"] for w in wos)
 
 	def sync_roll_line_net_weights_from_planned(self):
 		"""If net weight was never filled, use planned qty so GSM / highlighting can run (net is read-only on the grid)."""
@@ -1309,10 +1341,25 @@ def get_job_rows_for_production_plan(production_plan):
 	)
 	job_meta = frappe.get_meta("Shaft Production Run Job")
 	out = []
-	for r in rows:
+	for i, r in enumerate(rows):
 		row = {"job_id": r.job_no, "total_weight": flt(r.total_weight)}
 		if job_meta.has_field("production_plan_item"):
 			row["production_plan_item"] = r.job_no
+		comb = None
+		if job_meta.has_field("combination"):
+			comb = get_shaft_combination(production_plan, r.job_no)
+			if comb:
+				row["combination"] = comb
+		m = dict(row)
+		wos = _resolve_wos_for_pp_job_row(
+			production_plan,
+			ppi=m.get("production_plan_item"),
+			job_id=_cstr(m.get("job_id")),
+			row_index=i,
+			combination=m.get("combination"),
+		)
+		if job_meta.has_field("work_orders") and wos:
+			row["work_orders"] = ", ".join(w["name"] for w in wos)
 		out.append(row)
 	return out
 
