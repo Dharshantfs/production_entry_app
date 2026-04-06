@@ -334,17 +334,24 @@ function spr_open_manual_job_dialog(frm) {
 							return;
 						}
 						const q = flt(d.$wrapper.find('.spr-manual-qty[data-idx="' + idx + '"]').val());
+						const mr = flt(d.$wrapper.find('.spr-manual-meter-roll[data-idx="' + idx + '"]').val());
 						if (!(q > 0)) {
+							frappe.msgprint(__('Enter valid Work Order qty for selected line.'));
+							return;
+						}
+						if (!(mr > 0)) {
+							frappe.msgprint(__('Enter valid Meter/Roll for selected line.'));
 							return;
 						}
 						items.push({
 							item_code: line.item_code,
 							production_plan_item: line.production_plan_item,
 							wo_qty: q,
+							meter_roll: mr,
 						});
 					});
 					if (!items.length) {
-						frappe.msgprint(__('Select at least one line and enter Work Order qty greater than zero.'));
+						frappe.msgprint(__('Select at least one line with valid Meter/Roll and Work Order qty.'));
 						return;
 					}
 					d.hide();
@@ -385,6 +392,8 @@ function spr_open_manual_job_dialog(frm) {
 					'</th><th>' +
 					__('Width (in)') +
 					'</th><th>' +
+					__('Meter/Roll') +
+					'</th><th>' +
 					__('Net/shaft (Kg)') +
 					'</th><th>' +
 					__('WO qty (Kg)') +
@@ -397,7 +406,7 @@ function spr_open_manual_job_dialog(frm) {
 							: null;
 					const npsLabel =
 						nps != null && nps > 0
-							? nps.toFixed(3) +
+							? nps.toFixed(2) +
 							  (line.matched_job_id
 								  ? ' (' + __('job') + ' ' + String(line.matched_job_id) + ')'
 								  : '')
@@ -416,6 +425,10 @@ function spr_open_manual_job_dialog(frm) {
 						'" checked /></td>';
 					html += '<td style="max-width:220px;word-break:break-all;">' + frappe.utils.escape_html(label) + '</td>';
 					html += '<td>' + wIn.toFixed(1) + '</td>';
+					html +=
+						'<td><input type="number" class="input-with-feedback spr-manual-meter-roll" data-idx="' +
+						idx +
+						'" value="500" step="0.1" style="width:100px" placeholder="500"/></td>';
 					html += '<td>' + frappe.utils.escape_html(npsLabel) + '</td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-qty" data-idx="' +
