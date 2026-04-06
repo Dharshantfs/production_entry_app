@@ -477,6 +477,7 @@ class ShaftProductionRun(Document):
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+		self.ensure_batch_masters_for_roll_lines()
 
 	def recalculate_job_achieved_weights(self):
 		"""Total Achieved Weight on each Available Jobs row = sum of net_weight in Roll Results for that job."""
@@ -619,26 +620,74 @@ class ShaftProductionRun(Document):
 			return 0
 
 	def _next_roll_starting(self, series_prefix: str) -> int:
+		"""
+		Next roll suffix for ``{series_prefix}/{N}``:
+		1) Max ``N`` from ``tabBatch`` for this series (optionally filtered by manufacturing_date + custom_shift).
+		2) Max ``N`` from Roll lines on **any** SPR with the **same** run_date, shift, and unit (not global/unscoped SPI).
+
+		So the sequence is driven by Batch when present, and aligned with run date + shift until the shift (series prefix) changes.
+		"""
 		mx = 0
-		rows = frappe.db.sql(
-			"""
-			SELECT batch_id FROM `tabBatch`
-			WHERE batch_id LIKE %(pat)s
-			""",
-			{"pat": f"{series_prefix}/%"},
-		)
-		for (bid,) in rows or []:
-			mx = max(mx, self._roll_no_from_batch(bid, series_prefix))
-		rows2 = frappe.db.sql(
-			"""
-			SELECT batch_no FROM `tabShaft Production Run Item`
-			WHERE IFNULL(batch_no,'') != '' AND batch_no LIKE %(pat)s
-			""",
-			{"pat": f"{series_prefix}/%"},
-		)
-		for (bn,) in rows2 or []:
-			mx = max(mx, self._roll_no_from_batch(bn, series_prefix))
+		pat = f"{series_prefix}/%"
+		rd = self.run_date
+		sh = _cstr(self.shift)
+		un = _cstr(self.get("custom_unit"))
+		batch_meta = frappe.get_meta("Batch")
+
+		bconds = ["b.batch_id LIKE %(pat)s"]
+		bparams: dict = {"pat": pat}
+		# Align with this run's date; series_prefix already encodes shift (suffix before "/").
+		if rd and batch_meta.has_field("manufacturing_date"):
+			bconds.append("b.manufacturing_date = %(mfd)s")
+			bparams["mfd"] = rd
+
+		b_sql = "SELECT b.batch_id FROM `tabBatch` b WHERE " + " AND ".join(bconds)
+		for (bid,) in frappe.db.sql(b_sql, bparams) or []:
+			mx = max(mx, self._roll_no_from_batch(_cstr(bid), series_prefix))
+
+		if not rd or not sh or not un:
+			return mx + 1
+
+		spr_sql = """
+			SELECT spi.batch_no
+			FROM `tabShaft Production Run Item` spi
+			INNER JOIN `tabShaft Production Run` spr ON spr.name = spi.parent
+			WHERE spr.run_date = %(rd)s
+			  AND spr.shift = %(sh)s
+			  AND spr.custom_unit = %(un)s
+			  AND IFNULL(spi.batch_no, '') != ''
+			  AND spi.batch_no LIKE %(pat)s
+		"""
+		for (bn,) in frappe.db.sql(
+			spr_sql,
+			{"rd": rd, "sh": sh, "un": un, "pat": pat},
+		) or []:
+			mx = max(mx, self._roll_no_from_batch(_cstr(bn), series_prefix))
+
 		return mx + 1
+
+	def ensure_batch_masters_for_roll_lines(self):
+		"""Create Batch documents for each roll line so ``tabBatch`` exists for sequencing and Stock (draft saves)."""
+		if getattr(frappe.flags, "in_install", None) or getattr(frappe.flags, "in_migrate", None):
+			return
+		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+			"Global Defaults", "default_company"
+		)
+		if not company:
+			return
+		for row in self.items or []:
+			bn = _cstr(getattr(row, "batch_no", None))
+			ic = _cstr(getattr(row, "item_code", None))
+			if not bn or not ic:
+				continue
+			if frappe.db.exists("Batch", bn):
+				continue
+			if frappe.db.get_value("Batch", {"batch_id": bn, "item": ic}, "name"):
+				continue
+			try:
+				self._get_batch_link_name_for_stock_entry(bn, ic, company, spr_row=row)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "SPR ensure_batch_masters_for_roll_lines")
 
 	def _roll_no_from_batch(self, batch_id: str, series_prefix: str) -> int:
 		if not batch_id or "/" not in batch_id:
@@ -724,6 +773,8 @@ class ShaftProductionRun(Document):
 
 		batch_meta = frappe.get_meta("Batch")
 		roll_batch_data = _batch_fields_from_spr_row(batch_meta, spr_row)
+		if spr_row and batch_meta.has_field("custom_shift") and getattr(spr_row, "custom_shift", None):
+			roll_batch_data["custom_shift"] = _cstr(spr_row.custom_shift)
 
 		def _existing_name() -> str | None:
 			if frappe.db.exists("Batch", bid):
