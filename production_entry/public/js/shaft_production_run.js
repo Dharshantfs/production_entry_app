@@ -583,95 +583,29 @@ function spr_open_bundle_packaging_dialog(frm) {
 								),
 								indicator: 'green',
 							});
-									frm.reload_doc().then(function () {
-								if (!cur_frm || !cur_frm.doc || !cur_frm.doc.items) {
-									return;
-								}
-								
-								// Loop through each item and calculate manually
-								cur_frm.doc.items.forEach(function (row, idx) {
-									if (!row || !row.name) {
-										return;
-									}
-									
-									const cdt = 'Shaft Production Run Item';
-									const cdn = row.name;
-									
-									// DIRECTLY calculate net_weight inline (don't wait for handlers)
-									let width = flt(row.width_inch);
-									let gw = flt(row.gross_weight);
-									
-									// Calculate net_weight only from width + gross_weight (no GSM/meter_roll dependency)
-									if (width > 0 && gw > 0) {
-										let width_in_meter = width * 0.0254;
-										// Use GSM if available, else use sticker_gsm as fallback
-										let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
-										let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
-										const standard_widths = [63, 85, 90, 118, 126];
-										let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
-										
-										let core_weight = 0;
-										if (is_standard) {
-											let base_weight_of_core = 1.3;
-											if (raw_weight >= 50 && raw_weight <= 100) {
-												base_weight_of_core = 1.8;
-											} else if (raw_weight > 100) {
-												base_weight_of_core = 2.5;
-											}
-											let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
-											core_weight = (base_weight_of_core / 1600) * numeric_core_width;
-										} else {
-											let core_width, prorate;
-											if (width < 63) { core_width = 63; prorate = 1.30; }
-											else if (width < 85) { core_width = 85; prorate = 1.75; }
-											else if (width < 90) { core_width = 90; prorate = 1.86; }
-											else if (width < 118) { core_width = 118; prorate = 2.43; }
-											else { core_width = 126; prorate = 2.60; }
-											core_weight = (width / core_width) * prorate;
-										}
-										
-										let calc_net = flt(gw - core_weight, 3);
-										// If calculated net is 0 or negative, fallback to gross_weight
-										row.net_weight = (calc_net > 0) ? calc_net : flt(gw);
-									} else {
-										// No width or gross_weight - use 0
-										row.net_weight = 0;
-									}
-									
-									// Now calculate produced_gsm using net_weight
-									let nw = flt(row.net_weight) || flt(row.gross_weight) || 0;
+							frm.reload_doc();
+							setTimeout(function () {
+								if (!cur_frm || !cur_frm.doc || !cur_frm.doc.items) return;
+								let hasChanges = false;
+								cur_frm.doc.items.forEach(function (row) {
+									if (!row) return;
+									let nw = flt(row.net_weight) || 0;
 									let wi = flt(row.width_inch) || 0;
 									let mr = flt(row.meter_roll) || 0;
-									
-									// DEBUG: log values to console
-									console.log('Row ' + idx + ': nw=' + nw + ' wi=' + wi + ' mr=' + mr + ' gsm_calc=' + (nw > 0 && wi > 0 && mr > 0 ? ((nw * 1000) / (wi * mr * 0.0254)) : 'invalid'));
-									
-									// Calculate GSM only if we have valid values. If meter_roll is 0, result is 0
-									if (nw > 0 && wi > 0 && mr > 0) {
-										row.produced_gsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
-									} else {
-										row.produced_gsm = 0;
+									let newGsm = (nw > 0 && wi > 0 && mr > 0) ? 
+										Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100 : 0;
+									if (flt(row.produced_gsm) !== newGsm) {
+										row.produced_gsm = newGsm;
+										hasChanges = true;
 									}
 								});
-								
-								// Refresh grid to show updated values via grid API
-								let grid = cur_frm.fields_dict.items.grid;
-								if (grid) {
-									grid.df.data = cur_frm.doc.items;
-									grid.refresh();
-								} else {
+								if (hasChanges) {
 									cur_frm.refresh_field('items');
+									cur_frm.save();
 								}
-								
-								// Now save the calculated net_weight and produced_gsm to database
-								cur_frm.save().then(function() {
-									// Apply row styling and colors after save
-									setTimeout(function () {
-										apply_spr_item_row_styles(cur_frm);
-										schedule_spr_item_row_styles(cur_frm);
-									}, 100);
-								});
-									});
+								apply_spr_item_row_styles(cur_frm);
+								schedule_spr_item_row_styles(cur_frm);
+							}, 1500);
 						},
 					});
 				},

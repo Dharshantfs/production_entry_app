@@ -116,7 +116,6 @@
    "fieldname": "produced_gsm",
    "fieldtype": "Float",
    "label": "Produced GSM",
-   "read_only": 1,
    "precision": "2"
   },
   {
