@@ -1127,12 +1127,12 @@ function sprRollProducedLengthIncomplete(doc) {
 
 /** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
 function sprEffectiveProducedGsm(doc) {
-	if (sprRollProducedLengthIncomplete(doc)) {
-		return 0;
-	}
 	let p = flt(doc.produced_gsm);
 	if (p > 0) {
 		return p;
+	}
+	if (sprRollProducedLengthIncomplete(doc)) {
+		return 0;
 	}
 	const nw = flt(doc.net_weight);
 	const gw = flt(doc.gross_weight);

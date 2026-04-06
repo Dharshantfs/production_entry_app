@@ -552,7 +552,6 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 class ShaftProductionRun(Document):
 	def validate(self):
 		self.sync_shaft_job_work_orders_from_plan()
-		self.sync_roll_line_net_weights_from_planned()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
@@ -587,16 +586,8 @@ class ShaftProductionRun(Document):
 				row.work_orders = ", ".join(w["name"] for w in wos)
 
 	def sync_roll_line_net_weights_from_planned(self):
-		"""If net was never filled, default from planned qty so GSM can run when the line is still empty.
-
-		Do not set net from planned when gross is already entered — net may be computed elsewhere (tare, etc.).
-		"""
-		for row in self.items or []:
-			pq = flt(getattr(row, "planned_qty", None))
-			nw = flt(getattr(row, "net_weight", None))
-			gw = flt(getattr(row, "gross_weight", None))
-			if pq > 0 and nw <= 0 and gw <= 0:
-				row.net_weight = pq
+		"""No longer used on save: net weight must come from operators or site scripts, not planned qty."""
+		pass
 
 	def recalculate_job_achieved_weights(self):
 		"""Total Achieved Weight on each Available Jobs row = sum of net_weight in Roll Results for that job."""
