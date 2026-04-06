@@ -1294,13 +1294,14 @@ def _spr_bundle_job_label(sj):
 
 
 def _spr_roll_matches_bundle_width(it, width_inch: float, job_w: float) -> bool:
-	"""Match roll to selected width; if roll width_inch is 0, match using job total width only."""
+	"""Match roll to selected width (tolerant); if roll width_inch is 0, match using job total width."""
 	rw = flt(getattr(it, "width_inch", None))
 	wx = flt(width_inch)
-	if rw > 0:
-		return abs(rw - wx) <= 0.05
-	if job_w > 0 and wx > 0:
-		return abs(job_w - wx) <= 0.05
+	jw = flt(job_w)
+	if rw > 0.001:
+		return abs(rw - wx) <= 0.5
+	if jw > 0.001 and wx > 0.001:
+		return abs(jw - wx) <= 0.5
 	return False
 
 
@@ -1636,6 +1637,15 @@ def spr_get_manual_job_catalog(shaft_production_run):
 			continue
 		item_name = frappe.db.get_value("Item", ic, "item_name")
 		gsm, width_inch = parse_item_code(ic)
+		first_seg_kg = None
+		for sj in _spr_job_rows(spr):
+			if _cstr(getattr(sj, "production_plan_item", None)) != _cstr(row.name):
+				continue
+			segs = max(1, _count_combination_segments(getattr(sj, "combination", None)))
+			segw = _segment_weights_kg(sj, segs)
+			if segw:
+				first_seg_kg = round(flt(segw[0]), 3)
+			break
 		out.append(
 			{
 				"item_code": ic,
@@ -1645,6 +1655,7 @@ def spr_get_manual_job_catalog(shaft_production_run):
 				"gsm": gsm,
 				"width_inch": width_inch,
 				"existing_net_weight_kg": round(net_by_item.get(ic, 0.0), 2),
+				"first_segment_planned_kg": first_seg_kg,
 			}
 		)
 	return {"production_plan": pp_name, "company": company, "lines": out}
@@ -1732,7 +1743,7 @@ def spr_create_manual_job(
 				)
 
 	job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
-	for _ in range(20):
+	for _attempt in range(20):
 		if not any(_cstr(_spr_job_id(j)) == job_id for j in _spr_job_rows(spr)):
 			break
 		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
@@ -1854,11 +1865,20 @@ def spr_apply_bundle_packaging_for_job_width(
 
 	job_w = flt(getattr(sj, "total_width", None)) or width_inch
 	matching = []
+	jid_norm = job_id.strip()
 	for it in spr.items or []:
-		if _cstr(getattr(it, "job", None)) != job_id:
+		if _cstr(getattr(it, "job", None)).strip() != jid_norm:
 			continue
 		if _spr_roll_matches_bundle_width(it, width_inch, job_w):
 			matching.append(it)
+
+	if not matching:
+		for it in spr.items or []:
+			if _cstr(getattr(it, "job", None)).strip() != jid_norm:
+				continue
+			rw = flt(getattr(it, "width_inch", None))
+			if rw <= 0.001 and abs(flt(width_inch) - job_w) <= 0.5:
+				matching.append(it)
 
 	if not matching:
 		frappe.throw(

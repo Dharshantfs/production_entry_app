@@ -354,15 +354,26 @@ function spr_open_manual_job_dialog(frm) {
 				if (!line || !el.length) {
 					return;
 				}
-				const net = flt(line.existing_net_weight_kg);
-				el.html(
+				const netOnSpr = flt(line.existing_net_weight_kg);
+				const firstSeg =
+					line.first_segment_planned_kg != null && line.first_segment_planned_kg !== ''
+						? flt(line.first_segment_planned_kg)
+						: null;
+				let html =
 					'<div>' +
-						__('Width: {0} in · Planned net on SPR for this item: {1} Kg', [
-							flt(line.width_inch),
-							net.toFixed(2),
+					__('Width: {0} in', [flt(line.width_inch)]) +
+					' · ';
+				if (firstSeg != null) {
+					html +=
+						__('First combination segment planned (Available Jobs): {0} Kg', [
+							firstSeg.toFixed(3),
 						]) +
-						'</div>'
-				);
+						' · ';
+				}
+				html +=
+					__('Net weight already on SPR rolls for this item: {0} Kg', [netOnSpr.toFixed(2)]) +
+					'</div>';
+				el.html(html);
 			}
 			d.show();
 			updateInfo();
