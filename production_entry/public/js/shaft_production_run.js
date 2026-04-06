@@ -452,7 +452,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 						options:
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
-								'Choose the job from Available Jobs, then the width (in). The same single-roll gross is applied to every roll line for that job with that width. Sticker width uses Total Width from Available Jobs × number of packaging.'
+								'Choose the job from Available Jobs, then the width (in). The same single-roll gross is applied to every roll line for that job with that width. Sticker width uses selected width × number of packaging.'
 							) +
 							'</p>',
 					},
@@ -568,11 +568,10 @@ function spr_open_bundle_packaging_dialog(frm) {
 				if (!jp || !el.length) {
 					return;
 				}
-				const jobW = flt(jp.total_width_available);
 				const single = n > 0 ? whole / n : 0;
-				const tw = jobW > 0 ? jobW * n : flt(wsel) * n;
+				const tw = flt(wsel) * n;
 				el.html(
-					__('Single gross: {0} Kg · Sticker width (Available Jobs width × pkg): {1} in', [
+					__('Single gross: {0} Kg · Sticker width (selected width × pkg): {1} in', [
 						single.toFixed(2),
 						tw.toFixed(4),
 					])
@@ -1113,6 +1112,7 @@ function sprRollProducedLengthIncomplete(doc) {
 		return false;
 	}
 	const pl = doc.produced_length_mtrs;
+	// Undefined = field not in row payload yet — do not force "incomplete" (restores band colours after save/reload).
 	if (pl === undefined) {
 		return false;
 	}
@@ -1484,7 +1484,7 @@ function spr_schedule_item_row_styles_after_doc_write(frm) {
 	}
 	sprEnsureItemsGridObserver(frm);
 	ensure_spr_item_stylesheet();
-	[0, 80, 200, 500, 1000, 1800, 3000, 5000, 8000, 12000, 16000, 20000].forEach(function (ms) {
+	[0, 80, 200, 500, 1000, 1800, 3000, 5000, 8000, 12000, 16000, 20000, 25000, 30000].forEach(function (ms) {
 		setTimeout(function () {
 			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
 				return;

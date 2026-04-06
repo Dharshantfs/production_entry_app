@@ -548,6 +548,44 @@ class ShaftProductionRun(Document):
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+		self.ensure_batch_masters_for_roll_lines()
+
+	def sync_shaft_job_work_orders_from_plan(self):
+		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
+		meta = frappe.get_meta("Shaft Production Run Job")
+		if not meta.has_field("work_orders"):
+			return
+		pp = self.get("production_plan")
+		if not pp:
+			return
+		for row in self.shaft_jobs or []:
+			if cint(getattr(row, "is_manual", 0)):
+				continue
+			idx = _spr_job_row_index(self, row)
+			if idx is None:
+				idx = 0
+			m = {
+				"job_id": _spr_job_id(row),
+				"production_plan_item": getattr(row, "production_plan_item", None),
+				"combination": getattr(row, "combination", None),
+			}
+			wos = _resolve_wos_for_pp_job_row(
+				pp,
+				ppi=m.get("production_plan_item"),
+				job_id=_cstr(m.get("job_id")),
+				row_index=idx,
+				combination=m.get("combination"),
+			)
+			if wos:
+				row.work_orders = ", ".join(w["name"] for w in wos)
+
+	def sync_roll_line_net_weights_from_planned(self):
+		"""If net weight was never filled, use planned qty so GSM / highlighting can run (net is read-only on the grid)."""
+		for row in self.items or []:
+			pq = flt(getattr(row, "planned_qty", None))
+			nw = flt(getattr(row, "net_weight", None))
+			if pq > 0 and nw <= 0:
+				row.net_weight = pq
 
 	def sync_shaft_job_work_orders_from_plan(self):
 		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
@@ -727,26 +765,74 @@ class ShaftProductionRun(Document):
 			return 0
 
 	def _next_roll_starting(self, series_prefix: str) -> int:
+		"""
+		Next roll suffix for ``{series_prefix}/{N}``:
+		1) Max ``N`` from ``tabBatch`` for this series (optionally filtered by manufacturing_date + custom_shift).
+		2) Max ``N`` from Roll lines on **any** SPR with the **same** run_date, shift, and unit (not global/unscoped SPI).
+
+		So the sequence is driven by Batch when present, and aligned with run date + shift until the shift (series prefix) changes.
+		"""
 		mx = 0
-		rows = frappe.db.sql(
-			"""
-			SELECT batch_id FROM `tabBatch`
-			WHERE batch_id LIKE %(pat)s
-			""",
-			{"pat": f"{series_prefix}/%"},
-		)
-		for (bid,) in rows or []:
-			mx = max(mx, self._roll_no_from_batch(bid, series_prefix))
-		rows2 = frappe.db.sql(
-			"""
-			SELECT batch_no FROM `tabShaft Production Run Item`
-			WHERE IFNULL(batch_no,'') != '' AND batch_no LIKE %(pat)s
-			""",
-			{"pat": f"{series_prefix}/%"},
-		)
-		for (bn,) in rows2 or []:
-			mx = max(mx, self._roll_no_from_batch(bn, series_prefix))
+		pat = f"{series_prefix}/%"
+		rd = self.run_date
+		sh = _cstr(self.shift)
+		un = _cstr(self.get("custom_unit"))
+		batch_meta = frappe.get_meta("Batch")
+
+		bconds = ["b.batch_id LIKE %(pat)s"]
+		bparams: dict = {"pat": pat}
+		# Align with this run's date; series_prefix already encodes shift (suffix before "/").
+		if rd and batch_meta.has_field("manufacturing_date"):
+			bconds.append("b.manufacturing_date = %(mfd)s")
+			bparams["mfd"] = rd
+
+		b_sql = "SELECT b.batch_id FROM `tabBatch` b WHERE " + " AND ".join(bconds)
+		for (bid,) in frappe.db.sql(b_sql, bparams) or []:
+			mx = max(mx, self._roll_no_from_batch(_cstr(bid), series_prefix))
+
+		if not rd or not sh or not un:
+			return mx + 1
+
+		spr_sql = """
+			SELECT spi.batch_no
+			FROM `tabShaft Production Run Item` spi
+			INNER JOIN `tabShaft Production Run` spr ON spr.name = spi.parent
+			WHERE spr.run_date = %(rd)s
+			  AND spr.shift = %(sh)s
+			  AND spr.custom_unit = %(un)s
+			  AND IFNULL(spi.batch_no, '') != ''
+			  AND spi.batch_no LIKE %(pat)s
+		"""
+		for (bn,) in frappe.db.sql(
+			spr_sql,
+			{"rd": rd, "sh": sh, "un": un, "pat": pat},
+		) or []:
+			mx = max(mx, self._roll_no_from_batch(_cstr(bn), series_prefix))
+
 		return mx + 1
+
+	def ensure_batch_masters_for_roll_lines(self):
+		"""Create Batch documents for each roll line so ``tabBatch`` exists for sequencing and Stock (draft saves)."""
+		if getattr(frappe.flags, "in_install", None) or getattr(frappe.flags, "in_migrate", None):
+			return
+		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+			"Global Defaults", "default_company"
+		)
+		if not company:
+			return
+		for row in self.items or []:
+			bn = _cstr(getattr(row, "batch_no", None))
+			ic = _cstr(getattr(row, "item_code", None))
+			if not bn or not ic:
+				continue
+			if frappe.db.exists("Batch", bn):
+				continue
+			if frappe.db.get_value("Batch", {"batch_id": bn, "item": ic}, "name"):
+				continue
+			try:
+				self._get_batch_link_name_for_stock_entry(bn, ic, company, spr_row=row)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "SPR ensure_batch_masters_for_roll_lines")
 
 	def _roll_no_from_batch(self, batch_id: str, series_prefix: str) -> int:
 		if not batch_id or "/" not in batch_id:
@@ -832,6 +918,8 @@ class ShaftProductionRun(Document):
 
 		batch_meta = frappe.get_meta("Batch")
 		roll_batch_data = _batch_fields_from_spr_row(batch_meta, spr_row)
+		if spr_row and batch_meta.has_field("custom_shift") and getattr(spr_row, "custom_shift", None):
+			roll_batch_data["custom_shift"] = _cstr(spr_row.custom_shift)
 
 		def _existing_name() -> str | None:
 			if frappe.db.exists("Batch", bid):
@@ -1226,7 +1314,7 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	job_row = None
 	for j in _spr_job_rows(spr_doc):
-		if _cstr(_spr_job_id(j)) == _cstr(job_id):
+		if _spr_job_keys_match(_spr_job_id(j), job_id):
 			job_row = j
 			break
 	if not job_row:
@@ -1408,6 +1496,37 @@ def _spr_bundle_job_label(sj):
 	return f"Job {jid}"
 
 
+def _spr_bundle_segment_widths_for_job(spr_doc, sj) -> list[float]:
+	"""Per-job width options for Bundle Packaging: combination segments / WO item widths / existing roll widths."""
+	out: list[float] = []
+	if not sj:
+		return out
+	comb = _cstr(getattr(sj, "combination", None) or "")
+	for w in _parse_combination_widths_inches(comb):
+		fw = flt(w)
+		if fw > 0 and fw not in out:
+			out.append(fw)
+	for wo in _get_work_orders_for_spr_job(get_pp_from_spr(spr_doc.name), spr_doc, sj):
+		wo_name = _cstr(wo.get("name"))
+		if not wo_name:
+			continue
+		item_code = frappe.db.get_value("Work Order", wo_name, "production_item")
+		_gsm, width_inch = parse_item_code(item_code)
+		fw = flt(width_inch)
+		if fw > 0 and fw not in out:
+			out.append(fw)
+	jid = _cstr(_spr_job_id(sj))
+	for it in spr_doc.items or []:
+		if not _spr_item_roll_matches_bundle_job(sj, it, jid):
+			continue
+		fw = flt(getattr(it, "width_inch", None))
+		if fw > 0 and fw not in out:
+			out.append(fw)
+	if not out:
+		tw = flt(getattr(sj, "total_width", None))
+		if tw > 0:
+			out.append(tw)
+	return sorted(set(out))
 def _spr_roll_matches_bundle_width(it, width_inch: float, job_w: float) -> bool:
 	"""Match roll to selected width (tolerant); if roll width_inch is 0, match using job total width."""
 	rw = flt(getattr(it, "width_inch", None))
@@ -1914,7 +2033,7 @@ def spr_create_manual_job(
 
 @frappe.whitelist()
 def spr_get_bundle_packaging_catalog(shaft_production_run):
-	"""Jobs from Available Jobs; width options = distinct roll widths per job + job total_width fallback."""
+	"""Jobs from Available Jobs; width options use per-segment widths (combination/WO), then roll widths."""
 	_spr_require_saved(shaft_production_run)
 	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	jobs_out = []
@@ -1931,27 +2050,12 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 				"total_width_available": flt(getattr(sj, "total_width", None)),
 			}
 		)
-	widths_by_job: dict[str, list] = {}
-	for j in jobs_out:
-		widths_by_job[j["job_id"]] = []
-	for it in spr.items or []:
-		jid = _spr_resolve_item_job_to_canonical_id(spr, it)
-		w = flt(getattr(it, "width_inch", None))
-		if not jid or w <= 0:
-			continue
-		if jid not in widths_by_job:
-			widths_by_job[jid] = []
-		if w not in widths_by_job[jid]:
-			widths_by_job[jid].append(w)
-	for jid in list(widths_by_job.keys()):
-		widths_by_job[jid] = sorted(set(widths_by_job[jid]))
+	widths_by_job: dict[str, list] = {j["job_id"]: [] for j in jobs_out}
 	for j in jobs_out:
 		jid = j["job_id"]
-		if not widths_by_job.get(jid):
-			sj = _spr_shaft_job_for_roll(spr, jid)
-			tw = flt(getattr(sj, "total_width", None)) if sj else 0.0
-			if tw > 0:
-				widths_by_job[jid] = [tw]
+		sj = _spr_shaft_job_for_roll(spr, jid)
+		if sj:
+			widths_by_job[jid] = _spr_bundle_segment_widths_for_job(spr, sj)
 	return {"jobs": jobs_out, "widths_by_job": widths_by_job}
 
 
@@ -1969,7 +2073,7 @@ def spr_apply_bundle_packaging_for_job_width(
 	no_of_packaging,
 	whole_gross_kg,
 ):
-	"""Apply same single-roll gross to every roll line matching Job + Width; sticker width uses Available Jobs total_width."""
+	"""Apply same single-roll gross to every roll line matching Job + selected width segment."""
 	_spr_require_saved(shaft_production_run)
 	job_id = _cstr(job_id)
 	width_inch = flt(width_inch)
@@ -1989,7 +2093,7 @@ def spr_apply_bundle_packaging_for_job_width(
 	if not sj:
 		frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
 
-	job_w = flt(getattr(sj, "total_width", None)) or width_inch
+	job_w = width_inch
 	matching = []
 	for it in spr.items or []:
 		if not _spr_item_roll_matches_bundle_job(sj, it, job_id):
@@ -2013,7 +2117,7 @@ def spr_apply_bundle_packaging_for_job_width(
 		)
 
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
-	total_width_inch = round(job_w * float(no_of_packaging), 4)
+	total_width_inch = round(width_inch * float(no_of_packaging), 4)
 
 	for it in matching:
 		it.gross_weight = single_gross
