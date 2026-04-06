@@ -2291,10 +2291,8 @@ def spr_apply_bundle_packaging_for_job_width(
 
 	for it in matching:
 		it.gross_weight = single_gross
-		pq = flt(getattr(it, "planned_qty", None))
-		nw = flt(getattr(it, "net_weight", None))
-		if nw <= 0 and pq > 0:
-			it.net_weight = pq
+		# Do NOT set net_weight from planned_qty. Net weight must come from operators or be auto-calculated,
+		# never from planned quantity (per sync_roll_line_net_weights_from_planned comment).
 
 	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
 	bundle_net = round(avg_n * float(no_of_packaging), 2)

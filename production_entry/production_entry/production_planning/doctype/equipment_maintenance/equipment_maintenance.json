@@ -1,0 +1,111 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2026-03-24 10:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "unit",
+    "maintenance_type",
+    "start_date",
+    "end_date",
+    "column_break_maintenance",
+    "status",
+    "notes"
+  ],
+  "fields": [
+    {
+      "fieldname": "unit",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Unit",
+      "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4",
+      "reqd": 1
+    },
+    {
+      "fieldname": "maintenance_type",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Maintenance Type",
+      "options": "Mesh Change\nDie Change\nBreakdown - Partial\nBreakdown - Full\nEB Shutdown\nMachine Off",
+      "reqd": 1
+    },
+    {
+      "fieldname": "start_date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "Start Date",
+      "reqd": 1
+    },
+    {
+      "fieldname": "end_date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "End Date",
+      "reqd": 1
+    },
+    {
+      "fieldname": "column_break_maintenance",
+      "fieldtype": "Column Break"
+    },
+    {
+      "default": "Planned",
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Status",
+      "options": "Planned\nIn Progress\nCompleted"
+    },
+    {
+      "fieldname": "notes",
+      "fieldtype": "Text",
+      "label": "Notes"
+    }
+  ],
+  "index_web_pages_for_search": 1,
+  "links": [],
+  "modified": "2026-03-24 10:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Production Planning",
+  "name": "Equipment Maintenance",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    },
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "Manufacturing Manager",
+      "share": 1,
+      "write": 1
+    },
+    {
+      "create": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "Manufacturing User",
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}

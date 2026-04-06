@@ -1803,18 +1803,39 @@ function apply_spr_item_row_styles(frm) {
 	const $wrap = frm.fields_dict.items.$wrapper;
 
 	items.forEach(function (doc, idx) {
-		let $row = sprFindItemsRowDomByDocname(frm, doc);
+		// Try multiple resolution methods to find row element for DataTable / Frappe grids
+		let $row = null;
+		
+		// Method 1: Try by docname first (works when grid_rows_by_docname is populated)
 		if (!$row || !$row.length) {
-			if ($domRows && $domRows.length > idx) {
-				$row = $($domRows.get(idx));
-			}
+			$row = sprFindItemsRowDomByDocname(frm, doc);
 		}
+		
+		// Method 2: Use DOM rows array by index (DataTable body rows in order)
+		if ((!$row || !$row.length) && $domRows && $domRows.length > idx) {
+			$row = $($domRows.get(idx));
+		}
+		
+		// Method 3: Try wrapper resolution by index
 		if (!$row || !$row.length) {
 			$row = sprResolveItemsRowWrapper(frm, doc, grid, idx);
 		}
+		
+		// Method 4: Direct selector search if other methods fail
+		if ((!$row || !$row.length) && $wrap && $wrap.length && doc && doc.name) {
+			$row = $wrap
+				.find('.dt-row, .grid-row, tbody tr')
+				.filter(function (i) {
+					return i === idx || $(this).attr('data-docname') === doc.name || $(this).attr('data-name') === doc.name;
+				})
+				.first();
+		}
+		
 		if (!$row || !$row.length) {
+			console.warn('Could not resolve row for item at index', idx, doc);
 			return;
 		}
+		
 		const $targets = sprCollectItemRowTargets(frm, doc, idx, $row, $wrap);
 		// Roll Production Results: Sticker GSM vs produced (field or computed from net/gross × width × length)
 		const sticker = sprStickerGsmFromDoc(doc);
