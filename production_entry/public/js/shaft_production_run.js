@@ -571,6 +571,20 @@ function spr_open_bundle_packaging_dialog(frm) {
 								indicator: 'green',
 							});
 							frm.reload_doc();
+							// After reload, trigger field change handlers on all items so net_weight and produced_gsm auto-calculate
+							setTimeout(function () {
+								if (frm.doc && frm.doc.items) {
+									frm.doc.items.forEach(function (row, idx) {
+										if (row && row.name) {
+											// Trigger gross_weight handler to invoke spr_update_produced_gsm
+											spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
+										}
+									});
+									// Refresh styles after GSM calculations
+									apply_spr_item_row_styles(frm);
+									schedule_spr_item_row_styles(frm);
+								}
+							}, 500);
 						},
 					});
 				},
