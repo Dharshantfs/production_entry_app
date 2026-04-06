@@ -787,19 +787,8 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
 			return;
 		}
-		const fmt =
-			(frappe.boot.spr_roll_label_print_format || window.SPR_ROLL_LABEL_PRINT_FORMAT || 'Roll Production Label') + '';
-		const args = {
-			doctype: frm.doctype,
-			name: frm.doc.name,
-			format: fmt,
-			no_letterhead: 1,
-		};
-		if (row && row.name) {
-			args._row_name = row.name;
-		}
-		const qs = $.param(args);
-		window.open(frappe.urllib.get_full_url('/printview?' + qs), '_blank');
+		// Call existing label script to open 4x4 label preview
+		frappe.generate_sticker_flow(row.name, frm);
 	},
 	/** Unlock this row for editing; hide Print Label until Save Row again. */
 	edit_row: function (frm, cdt, cdn) {
