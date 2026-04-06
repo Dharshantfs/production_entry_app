@@ -123,7 +123,12 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	after_save: function (frm) {
-		schedule_spr_item_row_styles(frm);
+		[0, 100, 400].forEach(function (ms) {
+			setTimeout(function () {
+				spr_register_spr_page_buttons(frm);
+				schedule_spr_item_row_styles(frm);
+			}, ms);
+		});
 	},
 
 	on_submit: function (frm) {
@@ -148,15 +153,26 @@ frappe.ui.form.on('Shaft Production Run', {
 });
 
 /**
- * Register toolbar + Tools menu (after page is ready). Duplicate labels are skipped by Frappe,
- * so we use unique labels for the Tools dropdown.
+ * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh — remove then re-add
+ * every time so buttons do not disappear (do not use a one-shot _spr_page_buttons_ok guard).
  */
 function spr_register_spr_page_buttons(frm) {
 	if (!frm.page || typeof frm.page.add_inner_button !== 'function') {
 		return;
 	}
-	if (frm._spr_page_buttons_ok) {
-		return;
+	const tg = __('Tools');
+	const rm = frm.page.remove_inner_button;
+	if (typeof rm === 'function') {
+		[__('Manual job'), __('Bundle packaging')].forEach(function (lbl) {
+			try {
+				rm.call(frm.page, lbl);
+			} catch (e) {}
+		});
+		[__('SPR — Manual job'), __('SPR — Bundle packaging')].forEach(function (lbl) {
+			try {
+				rm.call(frm.page, lbl, tg);
+			} catch (e) {}
+		});
 	}
 	try {
 		frm.page.add_inner_button(__('Manual job'), function () {
@@ -165,17 +181,13 @@ function spr_register_spr_page_buttons(frm) {
 		frm.page.add_inner_button(__('Bundle packaging'), function () {
 			spr_open_bundle_packaging_dialog(frm);
 		});
-		const tg = __('Tools');
 		frm.page.add_inner_button(__('SPR — Manual job'), function () {
 			spr_open_manual_job_dialog(frm);
 		}, tg);
 		frm.page.add_inner_button(__('SPR — Bundle packaging'), function () {
 			spr_open_bundle_packaging_dialog(frm);
 		}, tg);
-		frm._spr_page_buttons_ok = true;
-	} catch (e) {
-		/* leave _spr_page_buttons_ok false so a later refresh can retry */
-	}
+	} catch (e) {}
 }
 
 /** Actions → Manual job: pick PP line, # shafts; server creates WO + manual shaft_jobs row. */
@@ -1254,15 +1266,35 @@ function sprGetPrimaryItemsRowTarget(frm, idx) {
 	return null;
 }
 
-/** Prefer index-based DataTable row, then GridRow.wrapper, then name lookup. */
+/**
+ * Prefer Frappe GridRow at index (matches child table order; works when DataTable only mounts row 0 in DOM).
+ * Then docname lookup, then DOM fallbacks.
+ */
 function sprResolveItemsRowWrapper(frm, doc, grid, idx) {
+	let gr = null;
+	if (grid && grid.grid_rows && grid.grid_rows[idx] !== undefined) {
+		gr = grid.grid_rows[idx];
+	}
+	if (gr) {
+		if (gr.wrapper && gr.wrapper.length) {
+			return gr.wrapper;
+		}
+		if (gr.row && gr.row.length) {
+			return gr.row;
+		}
+	}
+	gr = doc && doc.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[doc.name];
+	if (gr) {
+		if (gr.wrapper && gr.wrapper.length) {
+			return gr.wrapper;
+		}
+		if (gr.row && gr.row.length) {
+			return gr.row;
+		}
+	}
 	const $byIdx = sprGetPrimaryItemsRowTarget(frm, idx);
 	if ($byIdx && $byIdx.length) {
 		return $byIdx;
-	}
-	const gr = doc && doc.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[doc.name];
-	if (gr && gr.wrapper && gr.wrapper.length) {
-		return gr.wrapper;
 	}
 	return sprResolveItemsRowElement(frm, doc, grid, idx);
 }

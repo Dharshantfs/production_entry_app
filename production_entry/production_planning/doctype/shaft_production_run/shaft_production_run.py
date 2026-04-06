@@ -1480,6 +1480,261 @@ def _item_stock_uom_for_spr(item_code: str) -> str:
 	return u or "Kg"
 
 
+# Manual job + bundle packaging (Actions on Shaft Production Run)
+SPR_MANUAL_SOURCE_WH = "Raw Materials - JSB-1ZT"
+SPR_MANUAL_FG_WH = "Finished Goods - JSB-1ZT"
+
+
+def _spr_require_saved(spr_name: str):
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Save the Shaft Production Run first"))
+
+
+def _spr_pp_and_company(spr_name: str):
+	pp_name = get_pp_from_spr(spr_name)
+	if not pp_name:
+		frappe.throw(_("Set Production Plan on this Shaft Production Run"))
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
+	company = doc.get("company") or frappe.db.get_value("Production Plan", pp_name, "company")
+	if not company:
+		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+			"Global Defaults", "default_company"
+		)
+	if not company:
+		frappe.throw(_("Company could not be resolved"))
+	return pp_name, company, doc
+
+
+def _spr_warehouses_exist():
+	for wh in (SPR_MANUAL_SOURCE_WH, SPR_MANUAL_FG_WH):
+		if not frappe.db.exists("Warehouse", wh):
+			frappe.throw(_("Warehouse {0} not found. Create it or update SPR_MANUAL_* constants.").format(wh))
+
+
+@frappe.whitelist()
+def spr_get_manual_job_catalog(shaft_production_run):
+	"""Production Plan po_items + width + existing net on SPR by item_code (reuse hint)."""
+	_spr_require_saved(shaft_production_run)
+	pp_name, company, spr = _spr_pp_and_company(shaft_production_run)
+	pp = frappe.get_doc("Production Plan", pp_name)
+	out = []
+	net_by_item: dict[str, float] = {}
+	for it in spr.items or []:
+		ic = _cstr(getattr(it, "item_code", None))
+		if not ic:
+			continue
+		net_by_item[ic] = net_by_item.get(ic, 0.0) + flt(getattr(it, "net_weight", None))
+	for row in pp.get("po_items") or []:
+		ic = _cstr(getattr(row, "item_code", None))
+		if not ic:
+			continue
+		item_name = frappe.db.get_value("Item", ic, "item_name")
+		gsm, width_inch = parse_item_code(ic)
+		out.append(
+			{
+				"item_code": ic,
+				"item_name": item_name or ic,
+				"production_plan_item": row.name,
+				"planned_qty": flt(getattr(row, "planned_qty", None)),
+				"gsm": gsm,
+				"width_inch": width_inch,
+				"existing_net_weight_kg": round(net_by_item.get(ic, 0.0), 2),
+			}
+		)
+	return {"production_plan": pp_name, "company": company, "lines": out}
+
+
+@frappe.whitelist()
+def spr_create_manual_job(
+	shaft_production_run,
+	item_code,
+	production_plan_item,
+	no_of_shafts,
+):
+	"""Create draft Work Order + append manual Shaft Production Run Job row."""
+	item_code = _cstr(item_code)
+	production_plan_item = _cstr(production_plan_item)
+	no_of_shafts = cint(no_of_shafts)
+	if no_of_shafts < 1:
+		frappe.throw(_("Number of shafts must be at least 1"))
+	if not item_code or not production_plan_item:
+		frappe.throw(_("Item and Production Plan line are required"))
+
+	_spr_require_saved(shaft_production_run)
+	pp_name, company, spr = _spr_pp_and_company(shaft_production_run)
+	_spr_warehouses_exist()
+
+	pp = frappe.get_doc("Production Plan", pp_name)
+	ppi_row = None
+	for r in pp.get("po_items") or []:
+		if _cstr(r.name) == production_plan_item and _cstr(r.item_code) == item_code:
+			ppi_row = r
+			break
+	if not ppi_row:
+		frappe.throw(_("Production Plan item line not found for this item"))
+
+	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+		get_default_bom_for_item,
+	)
+
+	bom = get_default_bom_for_item(item_code, company)
+	if not bom:
+		frappe.throw(_("No active BOM for item {0}").format(item_code))
+
+	qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
+
+	wo = frappe.new_doc("Work Order")
+	wo.production_item = item_code
+	wo.bom_no = bom
+	wo.qty = qty
+	wo.company = company
+	wo.production_plan = pp_name
+	wo.production_plan_item = production_plan_item
+	if pp.get("sales_order"):
+		wo.sales_order = pp.sales_order
+	if frappe.get_meta("Work Order").has_field("sales_order_item"):
+		wo.sales_order_item = getattr(ppi_row, "sales_order_item", None) or None
+	wo.source_warehouse = SPR_MANUAL_SOURCE_WH
+	wo.fg_warehouse = SPR_MANUAL_FG_WH
+	if frappe.get_meta("Work Order").has_field("wip_warehouse"):
+		wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+		if wip:
+			wo.wip_warehouse = wip
+	wo.insert(ignore_permissions=True)
+
+	job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
+	for _ in range(20):
+		if not any(_cstr(_spr_job_id(j)) == job_id for j in _spr_job_rows(spr)):
+			break
+		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
+
+	gsm, width_inch = parse_item_code(item_code)
+	item_name = frappe.db.get_value("Item", item_code, "item_name")
+	quality, color = extract_quality_and_color(item_name or "")
+
+	row = {
+		"job_id": job_id,
+		"production_plan_item": production_plan_item,
+		"is_manual": 1,
+		"no_of_shafts": no_of_shafts,
+		"work_orders": wo.name,
+		"total_weight": qty,
+	}
+	meta = frappe.get_meta("Shaft Production Run Job")
+	if meta.has_field("gsm") and gsm:
+		try:
+			row["gsm"] = int(gsm)
+		except Exception:
+			row["gsm"] = gsm
+	if meta.has_field("quality") and quality:
+		row["quality"] = quality
+	if meta.has_field("combination") and color:
+		row["combination"] = color
+	if meta.has_field("total_width"):
+		row["total_width"] = width_inch
+	if meta.has_field("manual_items"):
+		row["manual_items"] = item_code
+
+	spr.reload()
+	spr.append("shaft_jobs", row)
+	spr.save(ignore_permissions=True)
+
+	return {
+		"work_order": wo.name,
+		"job_id": job_id,
+		"shaft_production_run": spr.name,
+	}
+
+
+@frappe.whitelist()
+def spr_get_bundle_packaging_lines(shaft_production_run):
+	"""Roll lines on this SPR for bundle packaging (job + item + width + net)."""
+	_spr_require_saved(shaft_production_run)
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	out = []
+	for it in spr.items or []:
+		jid = _cstr(getattr(it, "job", None))
+		ic = _cstr(getattr(it, "item_code", None))
+		if not jid or not ic:
+			continue
+		w = flt(getattr(it, "width_inch", None))
+		nw = flt(getattr(it, "net_weight", None))
+		label = f"{jid} | {ic} | {w} in | NW {nw:.2f} Kg | {it.name}"
+		out.append(
+			{
+				"name": it.name,
+				"job": jid,
+				"item_code": ic,
+				"width_inch": w,
+				"net_weight": nw,
+				"label": label,
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def spr_apply_bundle_packaging(
+	shaft_production_run,
+	spr_item_row_name,
+	no_of_packaging,
+	whole_gross_kg,
+):
+	"""Single-roll gross on matched line + Bundle Stickers row (Kg / inch)."""
+	_spr_require_saved(shaft_production_run)
+	no_of_packaging = cint(no_of_packaging)
+	whole_gross_kg = flt(whole_gross_kg)
+	if no_of_packaging < 1:
+		frappe.throw(_("Number of packaging must be at least 1"))
+	if whole_gross_kg <= 0:
+		frappe.throw(_("Whole gross weight must be greater than zero"))
+	if not spr_item_row_name:
+		frappe.throw(_("Select a roll line"))
+
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	target = None
+	for it in spr.items or []:
+		if _cstr(it.name) == _cstr(spr_item_row_name):
+			target = it
+			break
+	if not target:
+		frappe.throw(_("Roll line not found"))
+
+	sel_w = flt(getattr(target, "width_inch", None))
+	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
+	total_width_inch = round(sel_w * float(no_of_packaging), 4)
+	net_one = flt(getattr(target, "net_weight", None))
+	bundle_net = round(net_one * float(no_of_packaging), 2)
+
+	target.gross_weight = single_gross
+
+	jid = _cstr(getattr(target, "job", None))
+	comb = ""
+	for sj in spr.shaft_jobs or []:
+		if _cstr(_spr_job_id(sj)) == jid:
+			comb = _cstr(getattr(sj, "combination", None))
+			break
+
+	bs = {
+		"combination": comb or None,
+		"rolls_per_bundle": no_of_packaging,
+		"single_roll_gross_weight_kg": single_gross,
+		"sticker_width": total_width_inch,
+		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
+		"sticker_bundle_weight": bundle_net,
+	}
+	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
+		bs["job_id"] = None
+	spr.append("bundle_stickers", bs)
+	spr.save(ignore_permissions=True)
+
+	return {
+		"single_roll_gross_kg": single_gross,
+		"total_width_inch": total_width_inch,
+		"sticker_bundle_weight_kg": bundle_net,
+	}
+
+
 def get_order_code(wo_doc):
 	"""Party / order code for roll lines: WO custom fields, then Sales Order."""
 	for attr in ("order_code", "custom_order_code", "custom_party_code"):
