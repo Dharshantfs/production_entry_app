@@ -158,6 +158,7 @@ def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str
 		ppi=m.get("production_plan_item"),
 		job_id=m.get("job_id"),
 		row_index=idx,
+		combination=m.get("combination"),
 	)
 	return ", ".join(w["name"] for w in wos) if wos else ""
 
@@ -303,6 +304,7 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 				ppi=m.get("production_plan_item"),
 				job_id=_cstr(jn),
 				row_index=idx,
+				combination=m.get("combination"),
 			)
 			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
@@ -362,17 +364,80 @@ def _get_all_work_orders_for_production_plan(pp_name: str) -> list:
 	)
 
 
+def _parse_combination_widths_inches(combination) -> list[float]:
+	"""Numeric widths per '+' segment, aligned with _count_combination_segments (e.g. 39\" + 24\" → [39, 24])."""
+	if not combination:
+		return []
+	parts = [p.strip() for p in re.split(r"\+", str(combination)) if p.strip()]
+	out: list[float] = []
+	for part in parts:
+		m = re.search(r"(\d+(?:\.\d+)?)", part.replace(",", ""))
+		if m:
+			out.append(flt(m.group(1)))
+	return out
+
+
+def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -> list | None:
+	"""
+	For multi-width combinations (e.g. 39\" + 24\"), return one Work Order per segment by matching
+	production_item width (from item code) to each segment width. Distinct WOs only.
+	"""
+	comb = _cstr(combination)
+	if not comb:
+		return None
+	segs = _count_combination_segments(comb)
+	if segs < 2:
+		return None
+	widths = _parse_combination_widths_inches(comb)
+	if len(widths) < segs:
+		return None
+	widths = widths[:segs]
+	all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	if not all_wos or len(all_wos) < segs:
+		return None
+	used: set[str] = set()
+	out: list = []
+	tol = 1.25
+	for target_w in widths:
+		best = None
+		best_d = 999.0
+		for wo in all_wos:
+			nm = _cstr(wo.get("name"))
+			if nm in used:
+				continue
+			_, w_in = parse_item_code(_cstr(wo.get("production_item")))
+			if w_in <= 0:
+				continue
+			d = abs(flt(w_in) - flt(target_w))
+			if d < best_d:
+				best_d = d
+				best = wo
+		if best is None or best_d > tol:
+			return None
+		used.add(_cstr(best.get("name")))
+		out.append(best)
+	return out if len(out) == segs else None
+
+
 def _resolve_wos_for_pp_job_row(
 	pp_name: str,
 	*,
 	ppi: str | None = None,
 	job_id: str | None = None,
 	row_index: int | None = None,
+	combination: str | None = None,
 ) -> list:
 	"""
 	Resolve Work Orders for one shaft job line: PPI link, human job id, ordinal PP lines, shared WO, PP-wide fallback.
 	Used when building SPR jobs from PP and when resolving WOs on saved Shaft Production Run.
 	"""
+	comb = _cstr(combination)
+	if comb:
+		segs = _count_combination_segments(comb)
+		if segs > 1:
+			matched = _match_work_orders_to_combination_segments(pp_name, comb)
+			if matched:
+				return matched
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
 		if wos:
@@ -410,7 +475,8 @@ def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
 		ppi = getattr(job_row, "production_plan_item", None)
 	jid = _spr_job_id(job_row)
 	idx = _spr_job_row_index(spr_doc, job_row)
-	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx)
+	comb = getattr(job_row, "combination", None) if meta.has_field("combination") else None
+	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx, combination=comb)
 
 
 def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None:
@@ -464,6 +530,7 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 				ppi=m.get("production_plan_item"),
 				job_id=_cstr(jn),
 				row_index=idx,
+				combination=m.get("combination"),
 			)
 			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
