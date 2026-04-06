@@ -22,6 +22,9 @@ frappe.ui.form.on('Shaft Production Run', {
 				schedule_spr_item_row_styles(frm);
 			}, ms);
 		});
+		if (frm.doc && cint(frm.doc.docstatus) === 1) {
+			spr_schedule_item_row_styles_after_doc_write(frm);
+		}
 	},
 
 	production_plan: function (frm) {
@@ -125,24 +128,20 @@ frappe.ui.form.on('Shaft Production Run', {
 		});
 		spr_inject_gsm_legend(frm);
 		schedule_spr_item_row_styles(frm);
+		if (frm.doc && cint(frm.doc.docstatus) === 1) {
+			spr_schedule_item_row_styles_after_doc_write(frm);
+		}
 	},
 
 	after_save: function (frm) {
 		spr_register_spr_page_buttons_after_save(frm);
-		[0, 100, 400, 900, 1500, 2500].forEach(function (ms) {
-			setTimeout(function () {
-				schedule_spr_item_row_styles(frm);
-			}, ms);
-		});
+		schedule_spr_item_row_styles(frm);
+		spr_schedule_item_row_styles_after_doc_write(frm);
 	},
 
 	on_submit: function (frm) {
 		schedule_spr_item_row_styles(frm);
-		[0, 150, 500, 1200].forEach(function (ms) {
-			setTimeout(function () {
-				schedule_spr_item_row_styles(frm);
-			}, ms);
-		});
+		spr_schedule_item_row_styles_after_doc_write(frm);
 	},
 
 	items: {
@@ -1057,7 +1056,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '12';
+	const sprItemsCssVer = '13';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -1169,8 +1168,34 @@ function ensure_spr_item_stylesheet() {
 		.fieldname-items .dt-row.selected.spr-gsm-band-3,
 		.spr-items-wrap .grid-row.selected.spr-gsm-band-3, .spr-items-wrap .grid-row.grid-row-open.spr-gsm-band-3 { background-color: #fecaca !important; }
 		.spr-items-wrap .dt-row.selected.spr-gsm-pending, .spr-items-wrap .grid-row.selected.spr-gsm-pending { background-color: #f3f4f6 !important; }
+		/* Submitted / read-only child table: rows are often plain tbody tr */
+		.spr-items-wrap tbody tr.spr-gsm-band-0 td, .spr-items-wrap tbody tr.spr-gsm-band-0 th { background-color: #bbf7d0 !important; }
+		.spr-items-wrap tbody tr.spr-gsm-band-1 td, .spr-items-wrap tbody tr.spr-gsm-band-1 th { background-color: #eab308 !important; }
+		.spr-items-wrap tbody tr.spr-gsm-band-2 td, .spr-items-wrap tbody tr.spr-gsm-band-2 th { background-color: #fb923c !important; }
+		.spr-items-wrap tbody tr.spr-gsm-band-3 td, .spr-items-wrap tbody tr.spr-gsm-band-3 th { background-color: #fecaca !important; }
+		.spr-items-wrap tbody tr.spr-gsm-pending td, .spr-items-wrap tbody tr.spr-gsm-pending th { background-color: #f3f4f6 !important; }
+		.form-readonly .spr-items-wrap .dt-row.spr-gsm-band-0, .form-readonly .spr-items-wrap .grid-row.spr-gsm-band-0,
+		.form-readonly .spr-items-wrap tbody tr.spr-gsm-band-0 td { background-color: #bbf7d0 !important; }
+		.form-readonly .spr-items-wrap .dt-row.spr-gsm-band-1, .form-readonly .spr-items-wrap .grid-row.spr-gsm-band-1,
+		.form-readonly .spr-items-wrap tbody tr.spr-gsm-band-1 td { background-color: #eab308 !important; }
+		.form-readonly .spr-items-wrap .dt-row.spr-gsm-band-2, .form-readonly .spr-items-wrap .grid-row.spr-gsm-band-2,
+		.form-readonly .spr-items-wrap tbody tr.spr-gsm-band-2 td { background-color: #fb923c !important; }
+		.form-readonly .spr-items-wrap .dt-row.spr-gsm-band-3, .form-readonly .spr-items-wrap .grid-row.spr-gsm-band-3,
+		.form-readonly .spr-items-wrap tbody tr.spr-gsm-band-3 td { background-color: #fecaca !important; }
+		.form-readonly .spr-items-wrap .dt-row.spr-gsm-pending, .form-readonly .spr-items-wrap .grid-row.spr-gsm-pending,
+		.form-readonly .spr-items-wrap tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
+		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-band-0, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-band-0,
+		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-band-0 td { background-color: #bbf7d0 !important; }
+		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-band-1, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-band-1,
+		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-band-1 td { background-color: #eab308 !important; }
+		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-band-2, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-band-2,
+		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-band-2 td { background-color: #fb923c !important; }
+		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-band-3, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-band-3,
+		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-band-3 td { background-color: #fecaca !important; }
+		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-pending, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-pending,
+		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
 	`;
-	$('head').append(`<style data-spr-items="12">${css}</style>`);
+	$('head').append(`<style data-spr-items="13">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -1263,12 +1288,25 @@ function sprClearRowBg($row) {
 }
 
 function sprEnsureItemsGridObserver(frm) {
-	if (frm._spr_items_mo) {
-		return;
-	}
 	const $w = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
 	if (!$w || !$w.length) {
 		return;
+	}
+	const node = $w[0];
+	if (frm._spr_items_mo) {
+		const ok =
+			frm._spr_items_mo_target &&
+			typeof document !== 'undefined' &&
+			document.contains(frm._spr_items_mo_target) &&
+			frm._spr_items_mo_target === node;
+		if (ok) {
+			return;
+		}
+		try {
+			frm._spr_items_mo.disconnect();
+		} catch (e) {}
+		frm._spr_items_mo = null;
+		frm._spr_items_mo_target = null;
 	}
 	let timer = null;
 	frm._spr_items_mo = new MutationObserver(function () {
@@ -1279,7 +1317,8 @@ function sprEnsureItemsGridObserver(frm) {
 			apply_spr_item_row_styles(frm);
 		}, 40);
 	});
-	frm._spr_items_mo.observe($w[0], { childList: true, subtree: true });
+	frm._spr_items_mo_target = node;
+	frm._spr_items_mo.observe(node, { childList: true, subtree: true });
 }
 
 function schedule_spr_item_row_styles(frm) {
@@ -1288,11 +1327,33 @@ function schedule_spr_item_row_styles(frm) {
 	}
 	if (frm.fields_dict.items.$wrapper && frm.fields_dict.items.$wrapper.length) {
 		frm.fields_dict.items.$wrapper.addClass('spr-items-wrap');
+		frm.fields_dict.items.$wrapper.toggleClass('spr-doc-submitted', frm.doc && cint(frm.doc.docstatus) === 1);
 	}
 	sprEnsureItemsGridObserver(frm);
 	ensure_spr_item_stylesheet();
 	[0, 50, 150, 400, 900].forEach(function (ms) {
 		setTimeout(function () {
+			apply_spr_item_row_styles(frm);
+		}, ms);
+	});
+}
+
+/** After Save / Submit the grid DOM is rebuilt (and read-only when submitted). Re-apply GSM bands for several seconds. */
+function spr_schedule_item_row_styles_after_doc_write(frm) {
+	if (!frm || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
+		return;
+	}
+	if (frm.fields_dict.items.$wrapper && frm.fields_dict.items.$wrapper.length) {
+		frm.fields_dict.items.$wrapper.addClass('spr-items-wrap');
+		frm.fields_dict.items.$wrapper.toggleClass('spr-doc-submitted', frm.doc && cint(frm.doc.docstatus) === 1);
+	}
+	sprEnsureItemsGridObserver(frm);
+	ensure_spr_item_stylesheet();
+	[0, 80, 200, 500, 1000, 1800, 3000, 5000, 8000, 12000].forEach(function (ms) {
+		setTimeout(function () {
+			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
+				return;
+			}
 			apply_spr_item_row_styles(frm);
 		}, ms);
 	});
