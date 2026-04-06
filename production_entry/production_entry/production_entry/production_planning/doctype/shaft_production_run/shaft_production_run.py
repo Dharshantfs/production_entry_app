@@ -2070,15 +2070,9 @@ def spr_apply_bundle_packaging_for_job_width(
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(job_w * float(no_of_packaging), 4)
 
+	# Only set gross_weight - net_weight and produced_gsm will be calculated by Frappe backend script
 	for it in matching:
 		it.gross_weight = single_gross
-		pq = flt(getattr(it, "planned_qty", None))
-		nw = flt(getattr(it, "net_weight", None))
-		if nw <= 0 and pq > 0:
-			it.net_weight = pq
-
-	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
-	bundle_net = round(avg_n * float(no_of_packaging), 2)
 
 	comb = _cstr(getattr(sj, "combination", None))
 	bs = {
@@ -2087,7 +2081,6 @@ def spr_apply_bundle_packaging_for_job_width(
 		"single_roll_gross_weight_kg": single_gross,
 		"sticker_width": total_width_inch,
 		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
-		"sticker_bundle_weight": bundle_net,
 	}
 	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
 		bs["job_id"] = job_id or None
@@ -2098,7 +2091,6 @@ def spr_apply_bundle_packaging_for_job_width(
 		"updated_rolls": len(matching),
 		"single_roll_gross_kg": single_gross,
 		"total_width_inch": total_width_inch,
-		"sticker_bundle_weight_kg": bundle_net,
 	}
 
 
