@@ -1,20 +1,6 @@
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
-		// Same group as standard Frappe "Tools" menu so items appear in Tools dropdown (always available in Draft / before submit)
-		frm.add_custom_button(
-			__('Manual job'),
-			function () {
-				spr_open_manual_job_dialog(frm);
-			},
-			__('Tools')
-		);
-		frm.add_custom_button(
-			__('Bundle packaging'),
-			function () {
-				spr_open_bundle_packaging_dialog(frm);
-			},
-			__('Tools')
-		);
+		// Buttons registered in refresh — see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
 	},
 
 	onload: function (frm) {
@@ -24,6 +10,12 @@ frappe.ui.form.on('Shaft Production Run', {
 		setTimeout(function () {
 			spr_patch_items_grid_refresh(frm);
 		}, 400);
+		setTimeout(function () {
+			spr_register_spr_page_buttons(frm);
+		}, 0);
+		setTimeout(function () {
+			spr_register_spr_page_buttons(frm);
+		}, 600);
 		[0, 200, 600, 1200].forEach(function (ms) {
 			setTimeout(function () {
 				spr_inject_gsm_legend(frm);
@@ -125,6 +117,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	refresh: function (frm) {
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
+		spr_register_spr_page_buttons(frm);
 		spr_inject_gsm_legend(frm);
 		schedule_spr_item_row_styles(frm);
 	},
@@ -153,6 +146,37 @@ frappe.ui.form.on('Shaft Production Run', {
 		},
 	},
 });
+
+/**
+ * Register toolbar + Tools menu (after page is ready). Duplicate labels are skipped by Frappe,
+ * so we use unique labels for the Tools dropdown.
+ */
+function spr_register_spr_page_buttons(frm) {
+	if (!frm.page || typeof frm.page.add_inner_button !== 'function') {
+		return;
+	}
+	if (frm._spr_page_buttons_ok) {
+		return;
+	}
+	try {
+		frm.page.add_inner_button(__('Manual job'), function () {
+			spr_open_manual_job_dialog(frm);
+		});
+		frm.page.add_inner_button(__('Bundle packaging'), function () {
+			spr_open_bundle_packaging_dialog(frm);
+		});
+		const tg = __('Tools');
+		frm.page.add_inner_button(__('SPR — Manual job'), function () {
+			spr_open_manual_job_dialog(frm);
+		}, tg);
+		frm.page.add_inner_button(__('SPR — Bundle packaging'), function () {
+			spr_open_bundle_packaging_dialog(frm);
+		}, tg);
+		frm._spr_page_buttons_ok = true;
+	} catch (e) {
+		/* leave _spr_page_buttons_ok false so a later refresh can retry */
+	}
+}
 
 /** Actions → Manual job: pick PP line, # shafts; server creates WO + manual shaft_jobs row. */
 function spr_open_manual_job_dialog(frm) {
@@ -546,10 +570,11 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_gsm: function (frm) {
+		apply_spr_item_row_styles(frm);
 		schedule_spr_item_row_styles(frm);
-		[0, 120, 350].forEach(function (ms) {
+		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
 			setTimeout(function () {
-				schedule_spr_item_row_styles(frm);
+				apply_spr_item_row_styles(frm);
 			}, ms);
 		});
 	},
@@ -661,6 +686,7 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	const den = w * ln * 0.254;
 	const val = den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
+	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
 }
 
@@ -850,6 +876,15 @@ function spr_patch_items_grid_refresh(frm) {
 				apply_spr_item_row_styles(frm);
 			}, 50);
 		});
+		grid.wrapper.on('change input blur', 'input, textarea, select', function () {
+			if (frm._spr_grid_input_debounce) {
+				clearTimeout(frm._spr_grid_input_debounce);
+			}
+			frm._spr_grid_input_debounce = setTimeout(function () {
+				frm._spr_grid_input_debounce = null;
+				schedule_spr_item_row_styles(frm);
+			}, 120);
+		});
 	}
 	if (hooked) {
 		frm._spr_items_grid_patched = true;
@@ -940,7 +975,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '9';
+	const sprItemsCssVer = '10';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -1025,8 +1060,13 @@ function ensure_spr_item_stylesheet() {
 		.fieldname-items .grid-row.spr-gsm-pending .static-value {
 			color: #4b5563 !important;
 		}
+		.spr-items-wrap .dt-row.spr-gsm-band-0 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-0 td { background-color: #bbf7d0 !important; }
+		.spr-items-wrap .dt-row.spr-gsm-band-1 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-1 td { background-color: #eab308 !important; }
+		.spr-items-wrap .dt-row.spr-gsm-band-2 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-2 td { background-color: #fb923c !important; }
+		.spr-items-wrap .dt-row.spr-gsm-band-3 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-3 td { background-color: #fecaca !important; }
+		.spr-items-wrap .dt-row.spr-gsm-pending .dt-cell, .spr-items-wrap .dt-row.spr-gsm-pending td { background-color: #f3f4f6 !important; }
 	`;
-	$('head').append(`<style data-spr-items="9">${css}</style>`);
+	$('head').append(`<style data-spr-items="10">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -1126,7 +1166,7 @@ function sprEnsureItemsGridObserver(frm) {
 		}
 		timer = setTimeout(function () {
 			apply_spr_item_row_styles(frm);
-		}, 80);
+		}, 40);
 	});
 	frm._spr_items_mo.observe($w[0], { childList: true, subtree: true });
 }
@@ -1191,8 +1231,35 @@ function sprResolveItemsRowElement(frm, doc, grid, idx) {
 	return $row;
 }
 
-/** Prefer Frappe GridRow.wrapper so list row + expanded form row stay one colored block. */
+/** DataTable / grid: row index matches `items` child order on cloud (grid_rows_by_docname often incomplete). */
+function sprGetPrimaryItemsRowTarget(frm, idx) {
+	const $wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
+	if (!$wrap || !$wrap.length) {
+		return null;
+	}
+	let $dt = $wrap.find('.datatable .dt-row:not(.dt-row-filter)');
+	if (!$dt.length) {
+		$dt = $wrap.find('.dt-scrollable .dt-row:not(.dt-row-filter)');
+	}
+	if (!$dt.length) {
+		$dt = $wrap.find('.dt-row:not(.dt-row-filter)');
+	}
+	if ($dt.length > idx) {
+		return $($dt.get(idx));
+	}
+	const $gr = $wrap.find('.grid-body .grid-row').not('.grid-form-row');
+	if ($gr.length > idx) {
+		return $($gr.get(idx));
+	}
+	return null;
+}
+
+/** Prefer index-based DataTable row, then GridRow.wrapper, then name lookup. */
 function sprResolveItemsRowWrapper(frm, doc, grid, idx) {
+	const $byIdx = sprGetPrimaryItemsRowTarget(frm, idx);
+	if ($byIdx && $byIdx.length) {
+		return $byIdx;
+	}
 	const gr = doc && doc.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[doc.name];
 	if (gr && gr.wrapper && gr.wrapper.length) {
 		return gr.wrapper;
@@ -1215,11 +1282,15 @@ function apply_spr_item_row_styles(frm) {
 		if (!$row || !$row.length) {
 			return;
 		}
+		const $editable = $row.closest('.editable-row');
+		const $targets = $editable && $editable.length ? $row.add($editable) : $row;
 		// Roll Production Results: color only when both Sticker GSM (`gsm`) and Produced GSM are set (>0)
 		const sticker = sprStickerGsmFromDoc(doc);
 		const produced = flt(doc.produced_gsm);
-		$row.removeClass(baseClasses);
-		sprClearRowBg($row);
+		$targets.removeClass(baseClasses);
+		$targets.each(function () {
+			sprClearRowBg($(this));
+		});
 		if (sticker > 0 && produced > 0) {
 			const diff = Math.abs(produced - sticker);
 			let band = 3;
@@ -1230,12 +1301,15 @@ function apply_spr_item_row_styles(frm) {
 			} else if (diff < 3) {
 				band = 2;
 			}
-			$row.addClass(bandClasses[band]);
-			sprApplyGsmRowVisual($row, band);
+			$targets.addClass(bandClasses[band]);
+			$targets.each(function () {
+				sprApplyGsmRowVisual($(this), band);
+			});
 		} else {
-			// No produced GSM yet (0) or missing sticker → neutral gray (not red)
-			$row.addClass('spr-gsm-pending');
-			sprApplyGsmRowVisual($row, 'pending');
+			$targets.addClass('spr-gsm-pending');
+			$targets.each(function () {
+				sprApplyGsmRowVisual($(this), 'pending');
+			});
 		}
 	});
 	spr_apply_items_row_lock_ui(frm);
