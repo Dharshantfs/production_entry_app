@@ -825,6 +825,15 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
+		// Refresh grid display and apply row styling to show net_weight instantly
+		frm.refresh_field('items');
+		apply_spr_item_row_styles(frm);
+		schedule_spr_item_row_styles(frm);
+		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
+			setTimeout(function () {
+				apply_spr_item_row_styles(frm);
+			}, ms);
+		});
 	},
 	gross_weight: function (frm, cdt, cdn) {
 		// Calculate net_weight instantly when gross_weight changes
