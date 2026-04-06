@@ -652,11 +652,14 @@ function spr_open_bundle_packaging_dialog(frm) {
 								// Refresh grid to show updated values
 								cur_frm.refresh_field('items');
 								
-								// Apply row styling and colors
-								setTimeout(function () {
-									apply_spr_item_row_styles(cur_frm);
-									schedule_spr_item_row_styles(cur_frm);
-								}, 100);
+								// Now save the calculated net_weight and produced_gsm to database
+								cur_frm.save().then(function() {
+									// Apply row styling and colors after save
+									setTimeout(function () {
+										apply_spr_item_row_styles(cur_frm);
+										schedule_spr_item_row_styles(cur_frm);
+									}, 100);
+								});
 							}, 800);
 						},
 					});
