@@ -306,6 +306,15 @@ function spr_open_manual_job_dialog(frm) {
 						options: '<div class="text-muted spr-manual-info"></div>',
 					},
 					{
+						fieldname: 'wo_planned_qty',
+						fieldtype: 'Float',
+						label: __('Work Order qty (Kg — manufacturing / planned)'),
+						reqd: 1,
+						description: __(
+							'Defaults from Production Plan or first combination segment from Available Jobs. Edit if needed.'
+						),
+					},
+					{
 						fieldname: 'no_of_shafts',
 						fieldtype: 'Int',
 						label: __('Number of shafts'),
@@ -317,12 +326,17 @@ function spr_open_manual_job_dialog(frm) {
 				primary_action: function (values) {
 					const line = byLabel[values.pp_line];
 					const no_of_shafts = cint(values.no_of_shafts);
+					const woPlanned = flt(values.wo_planned_qty);
 					if (!line) {
 						frappe.msgprint(__('Select a valid line.'));
 						return;
 					}
 					if (no_of_shafts < 1) {
 						frappe.msgprint(__('Number of shafts must be at least 1.'));
+						return;
+					}
+					if (!(woPlanned > 0)) {
+						frappe.msgprint(__('Enter a Work Order qty greater than zero.'));
 						return;
 					}
 					d.hide();
@@ -334,6 +348,7 @@ function spr_open_manual_job_dialog(frm) {
 							item_code: line.item_code,
 							production_plan_item: line.production_plan_item,
 							no_of_shafts: no_of_shafts,
+							wo_qty: woPlanned,
 						},
 						freeze: true,
 						freeze_message: __('Creating Work Order...'),
@@ -359,6 +374,14 @@ function spr_open_manual_job_dialog(frm) {
 					line.first_segment_planned_kg != null && line.first_segment_planned_kg !== ''
 						? flt(line.first_segment_planned_kg)
 						: null;
+				const ppQty = flt(line.planned_qty);
+				const defaultWo = firstSeg != null && firstSeg > 0 ? firstSeg : ppQty > 0 ? ppQty : 1;
+				if (d.fields_dict.wo_planned_qty) {
+					const cur = d.get_value('wo_planned_qty');
+					if (cur === null || cur === undefined || flt(cur) <= 0) {
+						d.set_value('wo_planned_qty', defaultWo);
+					}
+				}
 				let html =
 					'<div>' +
 					__('Width: {0} in', [flt(line.width_inch)]) +
@@ -371,7 +394,10 @@ function spr_open_manual_job_dialog(frm) {
 						' · ';
 				}
 				html +=
-					__('Net weight already on SPR rolls for this item: {0} Kg', [netOnSpr.toFixed(2)]) +
+					__('Production Plan line qty: {0} Kg · Net on SPR rolls (this item): {1} Kg', [
+						ppQty.toFixed(3),
+						netOnSpr.toFixed(2),
+					]) +
 					'</div>';
 				el.html(html);
 			}
@@ -807,6 +833,12 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 		return;
 	}
 	const row = locals[cdt][cdn];
+	if (sprRollProducedLengthIncomplete(row)) {
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
+		apply_spr_item_row_styles(frm);
+		schedule_spr_item_row_styles(frm);
+		return;
+	}
 	const nw = flt(row.net_weight);
 	const gw = flt(row.gross_weight);
 	const wgt = nw > 0 ? nw : gw;
@@ -1075,8 +1107,27 @@ function sprStickerGsmFromDoc(doc) {
 	return 0;
 }
 
+/** True when produced length is missing or zero — do not infer GSM from ordered meter_roll (legend: incomplete / grey). */
+function sprRollProducedLengthIncomplete(doc) {
+	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
+		return false;
+	}
+	const pl = doc.produced_length_mtrs;
+	// Undefined = field not in row payload yet — do not force "incomplete" (restores band colours after save/reload).
+	if (pl === undefined) {
+		return false;
+	}
+	if (pl === null || pl === '') {
+		return true;
+	}
+	return flt(pl) <= 0;
+}
+
 /** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
 function sprEffectiveProducedGsm(doc) {
+	if (sprRollProducedLengthIncomplete(doc)) {
+		return 0;
+	}
 	let p = flt(doc.produced_gsm);
 	if (p > 0) {
 		return p;
@@ -1139,7 +1190,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '15';
+	const sprItemsCssVer = '16';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -1278,7 +1329,7 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-pending, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-pending,
 		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
 	`;
-	$('head').append(`<style data-spr-items="15">${css}</style>`);
+	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -1290,9 +1341,11 @@ function spr_apply_items_row_lock_ui(frm) {
 	const items = frm.doc.items || [];
 	const $domRows = sprGetItemsDatatableBodyRows(frm);
 	items.forEach(function (doc, idx) {
-		let $wrap = null;
-		if ($domRows && $domRows.length > idx) {
-			$wrap = $($domRows.get(idx));
+		let $wrap = sprFindItemsRowDomByDocname(frm, doc);
+		if (!$wrap || !$wrap.length) {
+			if ($domRows && $domRows.length > idx) {
+				$wrap = $($domRows.get(idx));
+			}
 		}
 		if (!$wrap || !$wrap.length) {
 			$wrap = sprResolveItemsRowWrapper(frm, doc, grid, idx);
@@ -1432,7 +1485,7 @@ function spr_schedule_item_row_styles_after_doc_write(frm) {
 	}
 	sprEnsureItemsGridObserver(frm);
 	ensure_spr_item_stylesheet();
-	[0, 80, 200, 500, 1000, 1800, 3000, 5000, 8000, 12000].forEach(function (ms) {
+	[0, 80, 200, 500, 1000, 1800, 3000, 5000, 8000, 12000, 16000, 20000].forEach(function (ms) {
 		setTimeout(function () {
 			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
 				return;
@@ -1585,6 +1638,44 @@ function sprResolveItemsRowWrapper(frm, doc, grid, idx) {
 	return sprResolveItemsRowElement(frm, doc, grid, idx);
 }
 
+/** Resolve the visible row node for a child row (Frappe 16 DataTable uses .dt-row; index order can diverge). */
+function sprFindItemsRowDomByDocname(frm, doc) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (grid && grid.grid_rows && grid.grid_rows.length) {
+		for (let i = 0; i < grid.grid_rows.length; i++) {
+			const gr = grid.grid_rows[i];
+			if (!gr || !gr.doc || gr.doc.name !== doc.name) {
+				continue;
+			}
+			if (gr.wrapper && gr.wrapper.length) {
+				return gr.wrapper;
+			}
+			if (gr.row && gr.row.length) {
+				return gr.row;
+			}
+		}
+	}
+	const grByName = doc && doc.name && grid && grid.grid_rows_by_docname && grid.grid_rows_by_docname[doc.name];
+	if (grByName) {
+		if (grByName.wrapper && grByName.wrapper.length) {
+			return grByName.wrapper;
+		}
+		if (grByName.row && grByName.row.length) {
+			return grByName.row;
+		}
+	}
+	const $wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
+	if (!$wrap || !$wrap.length || !doc || !doc.name) {
+		return null;
+	}
+	const name = String(doc.name);
+	const $byDom = $wrap.find('.datatable .dt-row, .dt-row, .grid-row, tbody tr[data-idx]').filter(function () {
+		const $t = $(this);
+		return $t.attr('data-docname') === name || $t.attr('data-name') === name;
+	});
+	return $byDom.length ? $byDom.first() : null;
+}
+
 function sprCollectItemRowTargets(frm, doc, idx, $primaryRow, $wrap) {
 	if (!$wrap || !$wrap.length) {
 		$wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
@@ -1600,7 +1691,10 @@ function sprCollectItemRowTargets(frm, doc, idx, $primaryRow, $wrap) {
 	if (!doc || !doc.name || !$wrap || !$wrap.length) {
 		return $targets;
 	}
-	const $byDoc = $wrap.find('.grid-row[data-docname="' + doc.name + '"]');
+	const $byDoc = $wrap.find('.grid-row, .dt-row').filter(function () {
+		const $t = $(this);
+		return $t.attr('data-docname') === doc.name || $t.attr('data-name') === doc.name;
+	});
 	$targets = $targets.add($byDoc);
 	const $formRows = $wrap.find('.grid-form-row').filter(function () {
 		return $(this).find('[data-name="' + doc.name + '"]').length > 0;
@@ -1631,9 +1725,11 @@ function apply_spr_item_row_styles(frm) {
 	const $wrap = frm.fields_dict.items.$wrapper;
 
 	items.forEach(function (doc, idx) {
-		let $row = null;
-		if ($domRows && $domRows.length > idx) {
-			$row = $($domRows.get(idx));
+		let $row = sprFindItemsRowDomByDocname(frm, doc);
+		if (!$row || !$row.length) {
+			if ($domRows && $domRows.length > idx) {
+				$row = $($domRows.get(idx));
+			}
 		}
 		if (!$row || !$row.length) {
 			$row = sprResolveItemsRowWrapper(frm, doc, grid, idx);

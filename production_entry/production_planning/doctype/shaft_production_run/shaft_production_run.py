@@ -1212,9 +1212,61 @@ def _spr_shaft_job_for_roll(spr_doc, job_id_str):
 	if not pid:
 		return None
 	for sj in _spr_job_rows(spr_doc):
-		if _cstr(_spr_job_id(sj)) == pid:
+		if _spr_job_keys_match(_spr_job_id(sj), pid):
+			return sj
+		if _cstr(getattr(sj, "production_plan_item", None)) == pid:
 			return sj
 	return None
+
+
+def _spr_numeric_str_ok_for_eq(s: str) -> bool:
+	s = (s or "").strip()
+	if not s:
+		return False
+	try:
+		float(s)
+		return True
+	except ValueError:
+		return False
+
+
+def _spr_job_keys_match(a, b) -> bool:
+	"""Match job ids across 1 / 1.0 / '1 ' and identical non-numeric strings."""
+	na = _cstr(a)
+	nb = _cstr(b)
+	if na == nb:
+		return True
+	if not na or not nb:
+		return False
+	if _spr_numeric_str_ok_for_eq(na) and _spr_numeric_str_ok_for_eq(nb):
+		return flt(na) == flt(nb)
+	return False
+
+
+def _spr_item_roll_matches_bundle_job(sj, it, job_id: str) -> bool:
+	if _spr_job_keys_match(getattr(it, "job", None), job_id):
+		return True
+	if sj:
+		jj = _cstr(getattr(it, "job", None))
+		ppi = _cstr(getattr(sj, "production_plan_item", None))
+		if ppi and jj == ppi:
+			return True
+	return False
+
+
+def _spr_resolve_item_job_to_canonical_id(spr_doc, it) -> str:
+	"""Map a roll line's job field to shaft_jobs job_id (handles numeric drift + PP item name)."""
+	raw = _cstr(getattr(it, "job", None))
+	if not raw:
+		return ""
+	for sj in _spr_job_rows(spr_doc):
+		canon = _cstr(_spr_job_id(sj))
+		if _spr_job_keys_match(raw, canon):
+			return canon
+		ppi = _cstr(getattr(sj, "production_plan_item", None))
+		if ppi and raw == ppi:
+			return canon
+	return raw
 
 
 def _spr_job_product_code(sj):
@@ -1588,13 +1640,21 @@ def spr_get_manual_job_catalog(shaft_production_run):
 		gsm, width_inch = parse_item_code(ic)
 		first_seg_kg = None
 		for sj in _spr_job_rows(spr):
-			if _cstr(getattr(sj, "production_plan_item", None)) != _cstr(row.name):
-				continue
-			segs = max(1, _count_combination_segments(getattr(sj, "combination", None)))
-			segw = _segment_weights_kg(sj, segs)
-			if segw:
-				first_seg_kg = round(flt(segw[0]), 3)
-			break
+			if _cstr(getattr(sj, "production_plan_item", None)) == _cstr(row.name):
+				segs = max(1, _count_combination_segments(getattr(sj, "combination", None)))
+				segw = _segment_weights_kg(sj, segs)
+				if segw:
+					first_seg_kg = round(flt(segw[0]), 3)
+				break
+		if first_seg_kg is None:
+			for sj in _spr_job_rows(spr):
+				if _spr_job_product_code(sj) != ic:
+					continue
+				segs = max(1, _count_combination_segments(getattr(sj, "combination", None)))
+				segw = _segment_weights_kg(sj, segs)
+				if segw:
+					first_seg_kg = round(flt(segw[0]), 3)
+				break
 		out.append(
 			{
 				"item_code": ic,
@@ -1616,6 +1676,7 @@ def spr_create_manual_job(
 	item_code,
 	production_plan_item,
 	no_of_shafts,
+	wo_qty=None,
 ):
 	"""Create draft Work Order + append manual Shaft Production Run Job row."""
 	item_code = _cstr(item_code)
@@ -1647,7 +1708,9 @@ def spr_create_manual_job(
 	if not bom:
 		frappe.throw(_("No active BOM for item {0}").format(item_code))
 
-	qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
+	qty = flt(wo_qty) if wo_qty is not None and str(wo_qty).strip() != "" else None
+	if qty is None or qty <= 0:
+		qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
 
 	wo_filters = {
 		"production_plan": pp_name,
@@ -1758,7 +1821,7 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 	for j in jobs_out:
 		widths_by_job[j["job_id"]] = []
 	for it in spr.items or []:
-		jid = _cstr(getattr(it, "job", None))
+		jid = _spr_resolve_item_job_to_canonical_id(spr, it)
 		w = flt(getattr(it, "width_inch", None))
 		if not jid or w <= 0:
 			continue
@@ -1814,16 +1877,15 @@ def spr_apply_bundle_packaging_for_job_width(
 
 	job_w = flt(getattr(sj, "total_width", None)) or width_inch
 	matching = []
-	jid_norm = job_id.strip()
 	for it in spr.items or []:
-		if _cstr(getattr(it, "job", None)).strip() != jid_norm:
+		if not _spr_item_roll_matches_bundle_job(sj, it, job_id):
 			continue
 		if _spr_roll_matches_bundle_width(it, width_inch, job_w):
 			matching.append(it)
 
 	if not matching:
 		for it in spr.items or []:
-			if _cstr(getattr(it, "job", None)).strip() != jid_norm:
+			if not _spr_item_roll_matches_bundle_job(sj, it, job_id):
 				continue
 			rw = flt(getattr(it, "width_inch", None))
 			if rw <= 0.001 and abs(flt(width_inch) - job_w) <= 0.5:
