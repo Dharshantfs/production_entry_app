@@ -591,18 +591,6 @@ function spr_open_bundle_packaging_dialog(frm) {
 									return;
 								}
 								
-								// Build map of job_id => meter_roll_mtrs from Available Jobs
-								const jobMeterRollMap = {};
-								if (cur_frm.doc.shaft_jobs) {
-									cur_frm.doc.shaft_jobs.forEach(function (job) {
-										const jobId = String(job.job_id || '');
-										const mr = flt(job.meter_roll_mtrs || 0);
-										if (jobId && mr > 0) {
-											jobMeterRollMap[jobId] = mr;
-										}
-									});
-								}
-								
 								// Loop through each item and calculate manually
 								cur_frm.doc.items.forEach(function (row, idx) {
 									if (!row || !row.name) {
@@ -649,21 +637,13 @@ function spr_open_bundle_packaging_dialog(frm) {
 										nw = flt(row.gross_weight);
 									}
 									let wi = flt(row.width_inch);
-									let mr = flt(row.meter_roll);
-									if (flt(row.produced_length_mtrs) > 0) {
-										mr = flt(row.produced_length_mtrs);
-									}
+									let mr = flt(row.meter_roll);  // This is the "Ordered Length (Mtrs)" field - NO FALLBACK
 									
-									// If meter_roll is still 0 or missing, try to fetch from Available Jobs
-									if (mr <= 0 && row.job_id) {
-										const jobId = String(row.job_id || '');
-										mr = jobMeterRollMap[jobId] || 500;
-									}
-									
+									// Calculate GSM only if we have valid values. If meter_roll (Ordered Length) is 0, result is 0
 									if (nw > 0 && wi > 0 && mr > 0) {
 										row.produced_gsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 									} else {
-										row.produced_gsm = 0;
+										row.produced_gsm = 0;  // Zero means incomplete - ZERO IS ZERO, no fallback
 									}
 								});
 								

@@ -2303,9 +2303,12 @@ def spr_apply_bundle_packaging_for_job_width(
 	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
 	bundle_net = round(avg_n * float(no_of_packaging), 2)
 
-	comb = _cstr(getattr(sj, "combination", None))
+	# Format combination as: "39" * 4 (width * packaging_count)
+	comb_str = f'"{int(width_inch)}"' if width_inch == int(width_inch) else f'"{width_inch}"'
+	comb_str = comb_str + f" × {int(no_of_packaging)}"
+	
 	bs = {
-		"combination": comb or None,
+		"combination": comb_str,
 		"rolls_per_bundle": no_of_packaging,
 		"single_roll_gross_weight_kg": single_gross,
 		"sticker_width": total_width_inch,
