@@ -396,8 +396,6 @@ function spr_open_manual_job_dialog(frm) {
 					'</th><th>' +
 					__('Net/shaft (Kg)') +
 					'</th><th>' +
-					__('Produced GSM') +
-					'</th><th>' +
 					__('WO qty (Kg)') +
 					'</th></tr></thead><tbody>';
 				lines.forEach(function (line, idx) {
@@ -433,10 +431,6 @@ function spr_open_manual_job_dialog(frm) {
 						'" value="500" step="0.1" style="width:100px" placeholder="500"/></td>';
 					html += '<td>' + frappe.utils.escape_html(npsLabel) + '</td>';
 					html +=
-						'<td class="spr-manual-gsm-display" data-idx="' +
-						idx +
-						'" style="text-align:center;font-weight:bold;">—</td>';
-					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-qty" data-idx="' +
 						idx +
 						'" value="' +
@@ -446,36 +440,6 @@ function spr_open_manual_job_dialog(frm) {
 				});
 				html += '</tbody></table>';
 				wrap.html(html);
-				
-				// Attach change handler to meter_roll inputs to recalculate GSM
-				updateAllManualGsmCalculations();
-			}
-			
-			function updateAllManualGsmCalculations() {
-				d.$wrapper.find('.spr-manual-meter-roll').on('change input', function () {
-					const idx = $(this).data('idx');
-					calculateManualLineGsm(idx);
-				});
-			}
-			
-			function calculateManualLineGsm(idx) {
-				if (idx == null || !lines[idx]) {
-					return;
-				}
-				const line = lines[idx];
-				const mr = flt(d.$wrapper.find('.spr-manual-meter-roll[data-idx="' + idx + '"]').val());
-				const nps = flt(line.net_per_shaft_kg);
-				const wIn = flt(line.width_inch);
-				
-				let gsm = '—';
-				if (mr > 0 && nps > 0 && wIn > 0) {
-					gsm = Math.round((nps * 1000) / (wIn * mr * 0.0254) * 100) / 100;
-				}
-				
-				const display = d.$wrapper.find('.spr-manual-gsm-display[data-idx="' + idx + '"]');
-				if (display.length) {
-					display.text(String(gsm));
-				}
 			}
 
 			d.show();
