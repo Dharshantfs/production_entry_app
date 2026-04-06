@@ -715,6 +715,17 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		update_shaft_job_achieved_from_items(frm);
 	},
 	gross_weight: function (frm, cdt, cdn) {
+		// CRITICAL: Calculate net_weight from gross_weight FIRST
+		const row = locals[cdt][cdn];
+		const net_val = calculate_net_weight_from_gross(row);
+		
+		// Set net_weight directly on row
+		row.net_weight = net_val;
+		
+		// Refresh grid to display net_weight immediately
+		frm.refresh_field('items');
+		
+		// Now calculate produced_gsm if meter_roll is present
 		spr_update_produced_gsm(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
 	},
@@ -818,6 +829,51 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		}
 	},
 });
+
+function calculate_net_weight_from_gross(row) {
+	// Calculate core_weight to get net_weight = gross_weight - core_weight
+	const gw = flt(row.gross_weight) || 0;
+	if (gw === 0) return 0;
+	
+	const width_inch = flt(row.width_inch) || 0;
+	const gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
+	const width_in_meter = width_inch * 0.0254;
+	const raw_weight = (gsm_val * width_in_meter * gw) / 1000.0;
+	
+	// Standard widths: [63, 85, 90, 118, 126]
+	const standard_widths = [63, 85, 90, 118, 126];
+	const is_standard = standard_widths.some(w => Math.abs(width_inch - w) < 0.01);
+	
+	let core_weight = 0;
+	if (is_standard) {
+		let base_weight_of_core = 1.3;
+		if (raw_weight >= 50 && raw_weight <= 100) {
+			base_weight_of_core = 1.8;
+		} else if (raw_weight > 100) {
+			base_weight_of_core = 2.5;
+		}
+		const numeric_core_width = flt(row.custom_core_width_mm) || 1600;
+		core_weight = (base_weight_of_core / 1600.0) * numeric_core_width;
+	} else {
+		// Non-standard width proration
+		let core_width, prorate;
+		if (width_inch < 63) {
+			core_width = 63; prorate = 1.30;
+		} else if (width_inch < 85) {
+			core_width = 85; prorate = 1.75;
+		} else if (width_inch < 90) {
+			core_width = 90; prorate = 1.86;
+		} else if (width_inch < 118) {
+			core_width = 118; prorate = 2.43;
+		} else {
+			core_width = 126; prorate = 2.60;
+		}
+		core_weight = (width_inch / core_width) * prorate;
+	}
+	
+	const calc_net = gw - core_weight;
+	return calc_net > 0 ? Math.round(calc_net * 100) / 100 : gw;
+}
 
 function spr_update_produced_gsm(frm, cdt, cdn) {
 	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_gsm')) {
