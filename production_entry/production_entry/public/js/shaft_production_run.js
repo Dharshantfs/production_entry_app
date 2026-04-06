@@ -1,19 +1,12 @@
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
-		frm.add_custom_button(
-			__('Manual job'),
-			function () {
-				spr_open_manual_job_dialog(frm);
-			},
-			__('Actions')
-		);
-		frm.add_custom_button(
-			__('Bundle packaging'),
-			function () {
-				spr_open_bundle_packaging_dialog(frm);
-			},
-			__('Actions')
-		);
+		// No third arg = each button is its own control on the inner toolbar (not hidden under "Actions")
+		frm.add_custom_button(__('Manual job'), function () {
+			spr_open_manual_job_dialog(frm);
+		});
+		frm.add_custom_button(__('Bundle packaging'), function () {
+			spr_open_bundle_packaging_dialog(frm);
+		});
 	},
 
 	onload: function (frm) {
@@ -856,26 +849,6 @@ function sprStickerGsmFromDoc(doc) {
 	return 0;
 }
 
-function sprEffectiveProducedGsm(doc) {
-	const p = flt(doc.produced_gsm);
-	if (p > 0) {
-		return p;
-	}
-	const nw = flt(doc.net_weight);
-	const gw = flt(doc.gross_weight);
-	const wgt = nw > 0 ? nw : gw;
-	if (wgt <= 0) {
-		return 0;
-	}
-	const w = flt(doc.width_inch);
-	let ln = flt(doc.meter_roll);
-	if (doc.produced_length_mtrs !== undefined && doc.produced_length_mtrs !== null && doc.produced_length_mtrs !== '') {
-		ln = flt(doc.produced_length_mtrs);
-	}
-	const den = w * ln * 0.254;
-	return den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
-}
-
 function ensure_spr_item_stylesheet() {
 	if (!window.__sprspr_lock_style) {
 		window.__sprspr_lock_style = true;
@@ -919,40 +892,45 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '7';
+	const sprItemsCssVer = '8';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
 	window.__sprspr_items_css_ver = sprItemsCssVer;
 	window.__sprspr_style = true;
 	$('head style[data-spr-items]').remove();
-	/* |Sticker GSM − Produced GSM|: <1 green, 1–2 golden yellow, 2–3 orange, 3+ red; incomplete compare → neutral gray */
+	/* |Sticker GSM (gsm) − Produced GSM (produced_gsm)|: <1 green, 1–2 yellow, 2–3 orange, 3+ red */
 	const css = `
-		.spr-items-wrap .grid-row.spr-gsm-band-0,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-0,
-		.fieldname-items .grid-row.spr-gsm-band-0 { background-color: #bbf7d0 !important; }
-		.spr-items-wrap .grid-row.spr-gsm-band-1,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-1,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-1,
-		.fieldname-items .grid-row.spr-gsm-band-1 { background-color: #eab308 !important; }
-		.spr-items-wrap .grid-row.spr-gsm-band-2,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-2,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-2,
-		.fieldname-items .grid-row.spr-gsm-band-2 { background-color: #fb923c !important; }
-		.spr-items-wrap .grid-row.spr-gsm-band-3,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-3,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-3,
-		.fieldname-items .grid-row.spr-gsm-band-3 { background-color: #fecaca !important; }
-		.spr-items-wrap .grid-row.spr-gsm-pending,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending,
-		.fieldname-items .grid-row.spr-gsm-pending { background-color: #f3f4f6 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-0, .spr-items-wrap .dt-row.spr-gsm-band-0,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-0,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-0, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-0,
+		.fieldname-items .grid-row.spr-gsm-band-0, .fieldname-items .dt-row.spr-gsm-band-0 { background-color: #bbf7d0 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-1, .spr-items-wrap .dt-row.spr-gsm-band-1,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-1, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-1,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-1, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-1,
+		.fieldname-items .grid-row.spr-gsm-band-1, .fieldname-items .dt-row.spr-gsm-band-1 { background-color: #eab308 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-2, .spr-items-wrap .dt-row.spr-gsm-band-2,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-2, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-2,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-2, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-2,
+		.fieldname-items .grid-row.spr-gsm-band-2, .fieldname-items .dt-row.spr-gsm-band-2 { background-color: #fb923c !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-3, .spr-items-wrap .dt-row.spr-gsm-band-3,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-3, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-3,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-3, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-3,
+		.fieldname-items .grid-row.spr-gsm-band-3, .fieldname-items .dt-row.spr-gsm-band-3 { background-color: #fecaca !important; }
+		.spr-items-wrap .grid-row.spr-gsm-pending, .spr-items-wrap .dt-row.spr-gsm-pending,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending, .form-group[data-fieldname="items"] .dt-row.spr-gsm-pending,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-pending,
+		.fieldname-items .grid-row.spr-gsm-pending, .fieldname-items .dt-row.spr-gsm-pending { background-color: #f3f4f6 !important; }
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .static-value,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] .static-value,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .row-index,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] .row-index,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .col,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] .col,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] input,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] input,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] select,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] select,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .static-value,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .row-index,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .col,
@@ -980,7 +958,7 @@ function ensure_spr_item_stylesheet() {
 			color: #4b5563 !important;
 		}
 	`;
-	$('head').append(`<style data-spr-items="7">${css}</style>`);
+	$('head').append(`<style data-spr-items="8">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -1019,7 +997,7 @@ function sprSetRowBgImportant($el, color) {
 	$el.each(function () {
 		set(this);
 	});
-	$el.find('td, .col, .static-value, .editable-row, .row-index').each(function () {
+	$el.find('td, .col, .static-value, .editable-row, .row-index, .dt-cell').each(function () {
 		set(this);
 	});
 }
@@ -1050,7 +1028,7 @@ function sprClearRowBg($row) {
 	$row.each(function () {
 		clear(this);
 	});
-	$row.find('td, .col, .static-value, .editable-row, .row-index').each(function () {
+	$row.find('td, .col, .static-value, .editable-row, .row-index, .dt-cell').each(function () {
 		clear(this);
 	});
 }
@@ -1125,6 +1103,13 @@ function sprResolveItemsRowElement(frm, doc, grid, idx) {
 	if ((!$row || !$row.length) && $fb.length > idx) {
 		$row = $($fb.get(idx));
 	}
+	// Frappe DataTable child grid: rows are often .dt-row only (no grid-row / docname on row)
+	if ((!$row || !$row.length) && $wrap && $wrap.length) {
+		const $dtOnly = $wrap.find('.datatable .dt-row:not(.dt-row-filter)');
+		if ($dtOnly.length > idx) {
+			$row = $($dtOnly.get(idx));
+		}
+	}
 	return $row;
 }
 
@@ -1143,14 +1128,14 @@ function apply_spr_item_row_styles(frm) {
 		if (!$row || !$row.length) {
 			return;
 		}
+		// Roll Production Results: compare Sticker GSM field `gsm` vs column `produced_gsm` (not a recalculated estimate)
 		const sticker = sprStickerGsmFromDoc(doc);
-		const effProd = sprEffectiveProducedGsm(doc);
+		const produced = flt(doc.produced_gsm);
 		const rowLocked = cint(doc.row_locked);
 		$row.removeClass(baseClasses);
 		sprClearRowBg($row);
-		const hasGsmCompare = sticker > 0 && effProd > 0;
-		if (hasGsmCompare) {
-			const diff = Math.abs(effProd - sticker);
+		if (sticker > 0 && produced > 0) {
+			const diff = Math.abs(produced - sticker);
 			let band = 3;
 			if (diff < 1) {
 				band = 0;
@@ -1161,6 +1146,10 @@ function apply_spr_item_row_styles(frm) {
 			}
 			$row.addClass(bandClasses[band]);
 			sprApplyGsmRowVisual($row, band);
+		} else if (sticker > 0 && produced <= 0) {
+			// Sticker set but no produced GSM yet (e.g. 0) → worst band
+			$row.addClass('spr-gsm-band-3');
+			sprApplyGsmRowVisual($row, 3);
 		} else if (rowLocked) {
 			$row.addClass('spr-gsm-band-0');
 			sprApplyGsmRowVisual($row, 0);

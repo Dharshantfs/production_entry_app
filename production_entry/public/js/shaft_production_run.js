@@ -1,19 +1,12 @@
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
-		frm.add_custom_button(
-			__('Manual job'),
-			function () {
-				frm.scroll_to_field('shaft_jobs');
-			},
-			__('Actions')
-		);
-		frm.add_custom_button(
-			__('Bundle packaging'),
-			function () {
-				frm.scroll_to_field('bundle_stickers');
-			},
-			__('Actions')
-		);
+		// No third arg = each button is its own control on the inner toolbar (not hidden under "Actions")
+		frm.add_custom_button(__('Manual job'), function () {
+			spr_open_manual_job_dialog(frm);
+		});
+		frm.add_custom_button(__('Bundle packaging'), function () {
+			spr_open_bundle_packaging_dialog(frm);
+		});
 	},
 
 	onload: function (frm) {
@@ -150,6 +143,264 @@ frappe.ui.form.on('Shaft Production Run', {
 		},
 	},
 });
+
+/** Actions → Manual job: pick PP line, # shafts; server creates WO + manual shaft_jobs row. */
+function spr_open_manual_job_dialog(frm) {
+	if (frm.is_new() || !frm.doc.name) {
+		frappe.msgprint(__('Save the Shaft Production Run first.'));
+		return;
+	}
+	if (frm.doc.docstatus && frm.doc.docstatus !== 0) {
+		frappe.msgprint(__('This document is submitted and cannot be edited.'));
+		return;
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_manual_job_catalog',
+		args: { shaft_production_run: frm.doc.name },
+		freeze: true,
+		freeze_message: __('Loading Production Plan lines...'),
+		callback: function (r) {
+			const payload = r.message || {};
+			const lines = payload.lines || [];
+			if (!lines.length) {
+				frappe.msgprint(
+					__('No Production Plan lines found. Set Production Plan and ensure it has planned items.')
+				);
+				return;
+			}
+			const byLabel = {};
+			const optLines = [];
+			lines.forEach(function (l) {
+				const label =
+					l.item_code +
+					' | ' +
+					flt(l.width_inch) +
+					' in | ' +
+					String(l.production_plan_item || '');
+				byLabel[label] = l;
+				optLines.push(label);
+			});
+			const opts = optLines.join('\n');
+			const d = new frappe.ui.Dialog({
+				title: __('Manual job'),
+				fields: [
+					{
+						fieldname: 'pp_line',
+						fieldtype: 'Select',
+						label: __('Production Plan line'),
+						options: opts,
+						reqd: 1,
+					},
+					{
+						fieldname: 'info_html',
+						fieldtype: 'HTML',
+						label: ' ',
+						options: '<div class="text-muted spr-manual-info"></div>',
+					},
+					{
+						fieldname: 'no_of_shafts',
+						fieldtype: 'Int',
+						label: __('Number of shafts'),
+						reqd: 1,
+						default: 1,
+					},
+				],
+				primary_action_label: __('Create Work Order'),
+				primary_action: function (values) {
+					const line = byLabel[values.pp_line];
+					const no_of_shafts = cint(values.no_of_shafts);
+					if (!line) {
+						frappe.msgprint(__('Select a valid line.'));
+						return;
+					}
+					if (no_of_shafts < 1) {
+						frappe.msgprint(__('Number of shafts must be at least 1.'));
+						return;
+					}
+					d.hide();
+					frappe.call({
+						method:
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_create_manual_job',
+						args: {
+							shaft_production_run: frm.doc.name,
+							item_code: line.item_code,
+							production_plan_item: line.production_plan_item,
+							no_of_shafts: no_of_shafts,
+						},
+						freeze: true,
+						freeze_message: __('Creating Work Order...'),
+						callback: function (r2) {
+							const m = r2.message || {};
+							frappe.show_alert({
+								message: __('Work Order {0} created (job {1}).', [m.work_order || '', m.job_id || '']),
+								indicator: 'green',
+							});
+							frm.reload_doc();
+						},
+					});
+				},
+			});
+			function updateInfo() {
+				const line = byLabel[d.get_value('pp_line')];
+				const el = d.$wrapper.find('.spr-manual-info');
+				if (!line || !el.length) {
+					return;
+				}
+				const net = flt(line.existing_net_weight_kg);
+				el.html(
+					'<div>' +
+						__('Width: {0} in · Planned net on SPR for this item: {1} Kg', [
+							flt(line.width_inch),
+							net.toFixed(2),
+						]) +
+						'</div>'
+				);
+			}
+			d.show();
+			updateInfo();
+			if (d.fields_dict.pp_line && d.fields_dict.pp_line.$input) {
+				d.fields_dict.pp_line.$input.on('change', updateInfo);
+			}
+		},
+	});
+}
+
+/** Actions → Bundle packaging: pick roll line, set gross + sticker row (Kg / inch). */
+function spr_open_bundle_packaging_dialog(frm) {
+	if (frm.is_new() || !frm.doc.name) {
+		frappe.msgprint(__('Save the Shaft Production Run first.'));
+		return;
+	}
+	if (frm.doc.docstatus && frm.doc.docstatus !== 0) {
+		frappe.msgprint(__('This document is submitted and cannot be edited.'));
+		return;
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_bundle_packaging_lines',
+		args: { shaft_production_run: frm.doc.name },
+		freeze: true,
+		freeze_message: __('Loading roll lines...'),
+		callback: function (r) {
+			const packLines = r.message || [];
+			if (!packLines.length) {
+				frappe.msgprint(
+					__('No roll lines yet. Use Create Roll Entry on a shaft job to add lines to Items.')
+				);
+				return;
+			}
+			const byLabel = {};
+			packLines.forEach(function (l) {
+				byLabel[l.label] = l;
+			});
+			const opts = packLines
+				.map(function (l) {
+					return l.label;
+				})
+				.join('\n');
+			const d = new frappe.ui.Dialog({
+				title: __('Bundle packaging'),
+				fields: [
+					{
+						fieldname: 'roll_line',
+						fieldtype: 'Select',
+						label: __('Roll line'),
+						options: opts,
+						reqd: 1,
+					},
+					{
+						fieldname: 'calc_html',
+						fieldtype: 'HTML',
+						options: '<div class="spr-bundle-calc text-muted small"></div>',
+					},
+					{
+						fieldname: 'no_of_packaging',
+						fieldtype: 'Int',
+						label: __('Number of packaging'),
+						reqd: 1,
+						default: 1,
+					},
+					{
+						fieldname: 'whole_gross_kg',
+						fieldtype: 'Float',
+						label: __('Whole gross (Kg)'),
+						reqd: 1,
+					},
+				],
+				primary_action_label: __('Apply'),
+				primary_action: function (values) {
+					const line = byLabel[values.roll_line];
+					const n = cint(values.no_of_packaging);
+					const whole = flt(values.whole_gross_kg);
+					if (!line) {
+						frappe.msgprint(__('Select a roll line.'));
+						return;
+					}
+					if (n < 1 || whole <= 0) {
+						frappe.msgprint(__('Enter a valid packaging count and whole gross weight.'));
+						return;
+					}
+					d.hide();
+					frappe.call({
+						method:
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_apply_bundle_packaging',
+						args: {
+							shaft_production_run: frm.doc.name,
+							spr_item_row_name: line.name,
+							no_of_packaging: n,
+							whole_gross_kg: whole,
+						},
+						freeze: true,
+						freeze_message: __('Applying bundle packaging...'),
+						callback: function (r2) {
+							const m = r2.message || {};
+							frappe.show_alert({
+								message: __(
+									'Applied: single gross {0} Kg, total width {1} in, bundle net {2} Kg.',
+									[
+										String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
+										String(m.total_width_inch != null ? m.total_width_inch : ''),
+										String(m.sticker_bundle_weight_kg != null ? m.sticker_bundle_weight_kg : ''),
+									]
+								),
+								indicator: 'green',
+							});
+							frm.reload_doc();
+						},
+					});
+				},
+			});
+			function recalc() {
+				const line = byLabel[d.get_value('roll_line')];
+				const n = cint(d.get_value('no_of_packaging'));
+				const whole = flt(d.get_value('whole_gross_kg'));
+				const el = d.$wrapper.find('.spr-bundle-calc');
+				if (!line || !el.length) {
+					return;
+				}
+				const single = n > 0 ? whole / n : 0;
+				const tw = flt(line.width_inch) * n;
+				const bnet = flt(line.net_weight) * n;
+				el.html(
+					__('Single gross: {0} Kg · Total width: {1} in · Bundle net (sticker): {2} Kg', [
+						single.toFixed(2),
+						tw.toFixed(4),
+						bnet.toFixed(2),
+					])
+				);
+			}
+			d.show();
+			recalc();
+			['roll_line', 'no_of_packaging', 'whole_gross_kg'].forEach(function (fn) {
+				const f = d.fields_dict[fn];
+				if (f && f.$input) {
+					f.$input.on('change input', recalc);
+				}
+			});
+		},
+	});
+}
 
 frappe.ui.form.on('Shaft Production Run Job', {
 	create_roll_entry: function (frm, cdt, cdn) {
@@ -598,26 +849,6 @@ function sprStickerGsmFromDoc(doc) {
 	return 0;
 }
 
-function sprEffectiveProducedGsm(doc) {
-	const p = flt(doc.produced_gsm);
-	if (p > 0) {
-		return p;
-	}
-	const nw = flt(doc.net_weight);
-	const gw = flt(doc.gross_weight);
-	const wgt = nw > 0 ? nw : gw;
-	if (wgt <= 0) {
-		return 0;
-	}
-	const w = flt(doc.width_inch);
-	let ln = flt(doc.meter_roll);
-	if (doc.produced_length_mtrs !== undefined && doc.produced_length_mtrs !== null && doc.produced_length_mtrs !== '') {
-		ln = flt(doc.produced_length_mtrs);
-	}
-	const den = w * ln * 0.254;
-	return den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
-}
-
 function ensure_spr_item_stylesheet() {
 	if (!window.__sprspr_lock_style) {
 		window.__sprspr_lock_style = true;
@@ -661,40 +892,45 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '7';
+	const sprItemsCssVer = '8';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
 	window.__sprspr_items_css_ver = sprItemsCssVer;
 	window.__sprspr_style = true;
 	$('head style[data-spr-items]').remove();
-	/* |Sticker GSM − Produced GSM|: <1 green, 1–2 golden yellow, 2–3 orange, 3+ red; incomplete compare → neutral gray */
+	/* |Sticker GSM (gsm) − Produced GSM (produced_gsm)|: <1 green, 1–2 yellow, 2–3 orange, 3+ red */
 	const css = `
-		.spr-items-wrap .grid-row.spr-gsm-band-0,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-0,
-		.fieldname-items .grid-row.spr-gsm-band-0 { background-color: #bbf7d0 !important; }
-		.spr-items-wrap .grid-row.spr-gsm-band-1,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-1,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-1,
-		.fieldname-items .grid-row.spr-gsm-band-1 { background-color: #eab308 !important; }
-		.spr-items-wrap .grid-row.spr-gsm-band-2,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-2,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-2,
-		.fieldname-items .grid-row.spr-gsm-band-2 { background-color: #fb923c !important; }
-		.spr-items-wrap .grid-row.spr-gsm-band-3,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-3,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-3,
-		.fieldname-items .grid-row.spr-gsm-band-3 { background-color: #fecaca !important; }
-		.spr-items-wrap .grid-row.spr-gsm-pending,
-		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending,
-		.fieldname-items .grid-row.spr-gsm-pending { background-color: #f3f4f6 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-0, .spr-items-wrap .dt-row.spr-gsm-band-0,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-0, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-0,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-0, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-0,
+		.fieldname-items .grid-row.spr-gsm-band-0, .fieldname-items .dt-row.spr-gsm-band-0 { background-color: #bbf7d0 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-1, .spr-items-wrap .dt-row.spr-gsm-band-1,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-1, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-1,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-1, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-1,
+		.fieldname-items .grid-row.spr-gsm-band-1, .fieldname-items .dt-row.spr-gsm-band-1 { background-color: #eab308 !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-2, .spr-items-wrap .dt-row.spr-gsm-band-2,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-2, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-2,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-2, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-2,
+		.fieldname-items .grid-row.spr-gsm-band-2, .fieldname-items .dt-row.spr-gsm-band-2 { background-color: #fb923c !important; }
+		.spr-items-wrap .grid-row.spr-gsm-band-3, .spr-items-wrap .dt-row.spr-gsm-band-3,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-band-3, .form-group[data-fieldname="items"] .dt-row.spr-gsm-band-3,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-band-3, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-band-3,
+		.fieldname-items .grid-row.spr-gsm-band-3, .fieldname-items .dt-row.spr-gsm-band-3 { background-color: #fecaca !important; }
+		.spr-items-wrap .grid-row.spr-gsm-pending, .spr-items-wrap .dt-row.spr-gsm-pending,
+		.form-group[data-fieldname="items"] .grid-row.spr-gsm-pending, .form-group[data-fieldname="items"] .dt-row.spr-gsm-pending,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-gsm-pending, .frappe-control[data-fieldname="items"] .dt-row.spr-gsm-pending,
+		.fieldname-items .grid-row.spr-gsm-pending, .fieldname-items .dt-row.spr-gsm-pending { background-color: #f3f4f6 !important; }
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .static-value,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] .static-value,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .row-index,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] .row-index,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] .col,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] .col,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] input,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] input,
 		.spr-items-wrap .grid-row[class*="spr-gsm-band"] select,
+		.spr-items-wrap .dt-row[class*="spr-gsm-band"] select,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .static-value,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .row-index,
 		.form-group[data-fieldname="items"] .grid-row[class*="spr-gsm-band"] .col,
@@ -722,7 +958,7 @@ function ensure_spr_item_stylesheet() {
 			color: #4b5563 !important;
 		}
 	`;
-	$('head').append(`<style data-spr-items="7">${css}</style>`);
+	$('head').append(`<style data-spr-items="8">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -761,7 +997,7 @@ function sprSetRowBgImportant($el, color) {
 	$el.each(function () {
 		set(this);
 	});
-	$el.find('td, .col, .static-value, .editable-row, .row-index').each(function () {
+	$el.find('td, .col, .static-value, .editable-row, .row-index, .dt-cell').each(function () {
 		set(this);
 	});
 }
@@ -792,7 +1028,7 @@ function sprClearRowBg($row) {
 	$row.each(function () {
 		clear(this);
 	});
-	$row.find('td, .col, .static-value, .editable-row, .row-index').each(function () {
+	$row.find('td, .col, .static-value, .editable-row, .row-index, .dt-cell').each(function () {
 		clear(this);
 	});
 }
@@ -867,6 +1103,13 @@ function sprResolveItemsRowElement(frm, doc, grid, idx) {
 	if ((!$row || !$row.length) && $fb.length > idx) {
 		$row = $($fb.get(idx));
 	}
+	// Frappe DataTable child grid: rows are often .dt-row only (no grid-row / docname on row)
+	if ((!$row || !$row.length) && $wrap && $wrap.length) {
+		const $dtOnly = $wrap.find('.datatable .dt-row:not(.dt-row-filter)');
+		if ($dtOnly.length > idx) {
+			$row = $($dtOnly.get(idx));
+		}
+	}
 	return $row;
 }
 
@@ -885,14 +1128,14 @@ function apply_spr_item_row_styles(frm) {
 		if (!$row || !$row.length) {
 			return;
 		}
+		// Roll Production Results: compare Sticker GSM field `gsm` vs column `produced_gsm` (not a recalculated estimate)
 		const sticker = sprStickerGsmFromDoc(doc);
-		const effProd = sprEffectiveProducedGsm(doc);
+		const produced = flt(doc.produced_gsm);
 		const rowLocked = cint(doc.row_locked);
 		$row.removeClass(baseClasses);
 		sprClearRowBg($row);
-		const hasGsmCompare = sticker > 0 && effProd > 0;
-		if (hasGsmCompare) {
-			const diff = Math.abs(effProd - sticker);
+		if (sticker > 0 && produced > 0) {
+			const diff = Math.abs(produced - sticker);
 			let band = 3;
 			if (diff < 1) {
 				band = 0;
@@ -903,6 +1146,10 @@ function apply_spr_item_row_styles(frm) {
 			}
 			$row.addClass(bandClasses[band]);
 			sprApplyGsmRowVisual($row, band);
+		} else if (sticker > 0 && produced <= 0) {
+			// Sticker set but no produced GSM yet (e.g. 0) → worst band
+			$row.addClass('spr-gsm-band-3');
+			sprApplyGsmRowVisual($row, 3);
 		} else if (rowLocked) {
 			$row.addClass('spr-gsm-band-0');
 			sprApplyGsmRowVisual($row, 0);
