@@ -571,26 +571,80 @@ function spr_open_bundle_packaging_dialog(frm) {
 								indicator: 'green',
 							});
 							frm.reload_doc();
-							// After reload, trigger all field change handlers by re-setting key fields
-							// This ensures custom scripts (calculate_net_weight) and system calculations (spr_update_produced_gsm) run
+							
+							// After reload, wait for DOM to update then trigger calculations properly
 							setTimeout(function () {
-								if (frm.doc && frm.doc.items) {
-									frm.doc.items.forEach(function (row, idx) {
-										if (row && row.name) {
-											const cdt = 'Shaft Production Run Item';
-											const cdn = row.name;
-											// Trigger handlers by re-setting gross_weight (this is the field bundle packaging touched)
-											// frappe.model.set_value will trigger all field change handlers
-											frappe.model.set_value(cdt, cdn, 'gross_weight', flt(row.gross_weight));
-										}
-									});
-									// After field handlers run, refresh styles
-									setTimeout(function () {
-										apply_spr_item_row_styles(frm);
-										schedule_spr_item_row_styles(frm);
-									}, 300);
+								if (!cur_frm || !cur_frm.doc || !cur_frm.doc.items) {
+									return;
 								}
-							}, 500);
+								
+								// Loop through each item and calculate manually
+								cur_frm.doc.items.forEach(function (row, idx) {
+									if (!row || !row.name) {
+										return;
+									}
+									
+									const cdt = 'Shaft Production Run Item';
+									const cdn = row.name;
+									
+									// DIRECTLY calculate net_weight inline (don't wait for handlers)
+									let width = flt(row.width_inch);
+									if (width > 0 && flt(row.gsm) > 0 && flt(row.meter_roll) > 0 && flt(row.gross_weight) > 0) {
+										// Your custom core weight logic
+										let width_in_meter = width * 0.0254;
+										let raw_weight = (flt(row.gsm) * width_in_meter * flt(row.meter_roll)) / 1000;
+										const standard_widths = [63, 85, 90, 118, 126];
+										let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
+										
+										if (is_standard) {
+											let base_weight_of_core = 1.3;
+											if (raw_weight >= 50 && raw_weight <= 100) {
+												base_weight_of_core = 1.8;
+											} else if (raw_weight > 100) {
+												base_weight_of_core = 2.5;
+											}
+											let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
+											let core_weight = (base_weight_of_core / 1600) * numeric_core_width;
+											row.net_weight = flt(flt(row.gross_weight) - core_weight, 3);
+										} else {
+											let core_width, prorate;
+											if (width < 63) { core_width = 63; prorate = 1.30; }
+											else if (width < 85) { core_width = 85; prorate = 1.75; }
+											else if (width < 90) { core_width = 90; prorate = 1.86; }
+											else if (width < 118) { core_width = 118; prorate = 2.43; }
+											else { core_width = 126; prorate = 2.60; }
+											let core_weight = (width / core_width) * prorate;
+											row.net_weight = flt(flt(row.gross_weight) - core_weight, 3);
+										}
+									}
+									
+									// Now calculate produced_gsm using net_weight
+									let nw = flt(row.net_weight);
+									if (nw <= 0) {
+										nw = flt(row.gross_weight);
+									}
+									let wi = flt(row.width_inch);
+									let mr = flt(row.meter_roll);
+									if (flt(row.produced_length_mtrs) > 0) {
+										mr = flt(row.produced_length_mtrs);
+									}
+									
+									if (nw > 0 && wi > 0 && mr > 0) {
+										row.produced_gsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+									} else {
+										row.produced_gsm = 0;
+									}
+								});
+								
+								// Refresh grid to show updated values
+								cur_frm.refresh_field('items');
+								
+								// Apply row styling and colors
+								setTimeout(function () {
+									apply_spr_item_row_styles(cur_frm);
+									schedule_spr_item_row_styles(cur_frm);
+								}, 100);
+							}, 800);
 						},
 					});
 				},
