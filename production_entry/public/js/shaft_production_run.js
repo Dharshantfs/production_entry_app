@@ -480,12 +480,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 			}
 			const jobOpts = jobs
 				.map(function (j) {
-					return j.label || j.job_id;
+					return j.job_id;
 				})
 				.join('\n');
 			const jobByLabel = {};
 			jobs.forEach(function (j) {
-				jobByLabel[j.label || j.job_id] = j;
+				jobByLabel[j.job_id] = j;
 			});
 			const d = new frappe.ui.Dialog({
 				title: __('Bundle packaging'),
@@ -827,6 +827,42 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		update_shaft_job_achieved_from_items(frm);
 	},
 	gross_weight: function (frm, cdt, cdn) {
+		// Calculate net_weight instantly when gross_weight changes
+		const row = locals[cdt][cdn];
+		let width = flt(row.width_inch);
+		let gw = flt(row.gross_weight);
+		
+		if (width > 0 && gw > 0) {
+			let width_in_meter = width * 0.0254;
+			let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
+			let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
+			const standard_widths = [63, 85, 90, 118, 126];
+			let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
+			
+			let core_weight = 0;
+			if (is_standard) {
+				let base_weight_of_core = 1.3;
+				if (raw_weight >= 50 && raw_weight <= 100) {
+					base_weight_of_core = 1.8;
+				} else if (raw_weight > 100) {
+					base_weight_of_core = 2.5;
+				}
+				let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
+				core_weight = (base_weight_of_core / 1600) * numeric_core_width;
+			} else {
+				let core_width, prorate;
+				if (width < 63) { core_width = 63; prorate = 1.30; }
+				else if (width < 85) { core_width = 85; prorate = 1.75; }
+				else if (width < 90) { core_width = 90; prorate = 1.86; }
+				else if (width < 118) { core_width = 118; prorate = 2.43; }
+				else { core_width = 126; prorate = 2.60; }
+				core_weight = (width / core_width) * prorate;
+			}
+			
+			let calc_net = gw - core_weight;
+			frappe.model.set_value(cdt, cdn, 'net_weight', calc_net > 0 ? calc_net : gw);
+		}
+		
 		spr_update_produced_gsm(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
 	},
