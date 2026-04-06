@@ -583,10 +583,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 								),
 								indicator: 'green',
 							});
-							frm.reload_doc();
-							
-							// After reload, wait for DOM to update then trigger calculations properly
-							setTimeout(function () {
+									frm.reload_doc().then(function () {
 								if (!cur_frm || !cur_frm.doc || !cur_frm.doc.items) {
 									return;
 								}
@@ -674,7 +671,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 										schedule_spr_item_row_styles(cur_frm);
 									}, 100);
 								});
-							}, 800);
+									});
 						},
 					});
 				},
