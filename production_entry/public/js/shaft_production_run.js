@@ -869,7 +869,16 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			}
 			
 			let calc_net = gw - core_weight;
-			frappe.model.set_value(cdt, cdn, 'net_weight', calc_net > 0 ? calc_net : gw);
+			let net_val = calc_net > 0 ? calc_net : gw;
+			frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
+			
+			// Also calculate produced_gsm immediately
+			let mr = flt(row.meter_roll) || 0;
+			let newGsm = 0;
+			if (net_val > 0 && width > 0 && mr > 0) {
+				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
+			}
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		}
 		
 		spr_update_produced_gsm(frm, cdt, cdn);
@@ -879,15 +888,41 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		schedule_spr_item_row_styles(frm);
 	},
 	width_inch: function (frm, cdt, cdn) {
+		// Recalculate produced_gsm when width changes
+		const row = locals[cdt][cdn];
+		let nw = flt(row.net_weight) || 0;
+		let wi = flt(row.width_inch) || 0;
+		let mr = flt(row.meter_roll) || 0;
+		
+		let newGsm = 0;
+		if (nw > 0 && wi > 0 && mr > 0) {
+			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+		}
+		
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	meter_roll: function (frm, cdt, cdn) {
+		// Recalculate produced_gsm when meter_roll changes
+		const row = locals[cdt][cdn];
+		let nw = flt(row.net_weight) || 0;
+		let wi = flt(row.width_inch) || 0;
+		let mr = flt(row.meter_roll) || 0;
+		
+		let newGsm = 0;
+		if (nw > 0 && wi > 0 && mr > 0) {
+			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+		}
+		
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_length_mtrs: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_gsm: function (frm) {
+		// Refresh grid to show the calculated produced_gsm value
+		frm.refresh_field('items');
 		apply_spr_item_row_styles(frm);
 		schedule_spr_item_row_styles(frm);
 		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
