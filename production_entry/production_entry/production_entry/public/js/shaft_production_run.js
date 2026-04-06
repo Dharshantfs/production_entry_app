@@ -798,8 +798,8 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
 			return;
 		}
-		// Use existing label format (defined in DocType or Print Format)
-		frappe.ui.form.open_grid_form_row(frm, row);
+		// Call the existing label generation script
+		frappe.generate_sticker_flow(row.name, frm);
 	},
 	/** Unlock this row for editing; hide Print Label until Save Row again. */
 	edit_row: function (frm, cdt, cdn) {
