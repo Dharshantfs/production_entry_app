@@ -2085,7 +2085,7 @@ def spr_create_manual_job(
 def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 	"""
 	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
-	items: list of { item_code, production_plan_item, wo_qty } (wo_qty = manufacturing qty in Kg, e.g. net/shaft × shafts).
+	items: list of { item_code, production_plan_item, wo_qty, meter_roll } (wo_qty in Kg, meter_roll in meters).
 	"""
 	no_of_shafts = cint(no_of_shafts)
 	if no_of_shafts < 1:
@@ -2104,6 +2104,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 	qtys: list[float] = []
 	widths_list: list[float] = []
 	item_codes_list: list[str] = []
+	meter_rolls: list[float] = []
 	ppi_rows = []
 
 	for raw in items:
@@ -2112,8 +2113,11 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		item_code = _cstr(raw.get("item_code"))
 		production_plan_item = _cstr(raw.get("production_plan_item"))
 		qty = flt(raw.get("wo_qty"))
+		meter_roll = flt(raw.get("meter_roll"))
 		if not item_code or not production_plan_item or qty <= 0:
 			frappe.throw(_("Each line needs item, Production Plan row, and Work Order qty greater than zero"))
+		if meter_roll <= 0:
+			frappe.throw(_("Meter/Roll must be greater than zero for {0}").format(item_code))
 		ppi_row = None
 		for r in pp.get("po_items") or []:
 			if _cstr(r.name) == production_plan_item and _cstr(r.item_code) == item_code:
@@ -2135,6 +2139,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 					)
 		wo_names.append(wo_name)
 		qtys.append(qty)
+		meter_rolls.append(meter_roll)
 		item_codes_list.append(item_code)
 		ppi_rows.append(ppi_row)
 		_gsm, w_in = parse_item_code(item_code)
@@ -2168,6 +2173,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		"no_of_shafts": no_of_shafts,
 		"work_orders": ",".join(wo_names),
 		"total_weight": total_qty,
+		"meter_roll_mtrs": sum(meter_rolls) / len(meter_rolls) if meter_rolls else 500,
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
 	if meta.has_field("gsm") and gsm:
