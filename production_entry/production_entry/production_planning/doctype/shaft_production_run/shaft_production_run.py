@@ -140,15 +140,23 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 	return t.isalnum()
 
 
-def compute_produced_gsm(net_weight, width_inch, length_m) -> float:
-	"""Roll line GSM from actuals: (net_weight * 10000) / (width_inch * length_m * 0.254)."""
-	nw = flt(net_weight)
+def _effective_weight_kg_for_produced_gsm(row) -> float:
+	"""Prefer net weight; if not entered yet, use gross (same rule as desk JS spr_update_produced_gsm)."""
+	nw = flt(getattr(row, "net_weight", None))
+	if nw > 0:
+		return nw
+	return flt(getattr(row, "gross_weight", None))
+
+
+def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
+	"""Roll line GSM from actuals: (weight_kg * 10000) / (width_inch * length_m * 0.254)."""
+	wgt = flt(weight_kg)
 	w = flt(width_inch)
 	ln = flt(length_m)
 	den = w * ln * 0.254
 	if den <= 0:
 		return 0.0
-	return round((nw * 10000.0) / den, 2)
+	return round((wgt * 10000.0) / den, 2)
 
 
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
@@ -580,11 +588,15 @@ class ShaftProductionRun(Document):
 				row.work_orders = ", ".join(w["name"] for w in wos)
 
 	def sync_roll_line_net_weights_from_planned(self):
-		"""If net weight was never filled, use planned qty so GSM / highlighting can run (net is read-only on the grid)."""
+		"""If net was never filled, default from planned qty so GSM can run when the line is still empty.
+
+		Do not set net from planned when gross is already entered — net may be computed elsewhere (tare, etc.).
+		"""
 		for row in self.items or []:
 			pq = flt(getattr(row, "planned_qty", None))
 			nw = flt(getattr(row, "net_weight", None))
-			if pq > 0 and nw <= 0:
+			gw = flt(getattr(row, "gross_weight", None))
+			if pq > 0 and nw <= 0 and gw <= 0:
 				row.net_weight = pq
 
 	def recalculate_job_achieved_weights(self):
@@ -603,7 +615,7 @@ class ShaftProductionRun(Document):
 			row.custom_total_achieved_weight = flt(sums.get(jid, 0.0))
 
 	def calculate_produced_gsm(self):
-		"""Set produced_gsm on each roll line from net weight, width (inch), length (m)."""
+		"""Set produced_gsm on each roll line from effective weight (net, else gross), width, length (m)."""
 		meta = frappe.get_meta("Shaft Production Run Item")
 		if not meta.has_field("produced_gsm"):
 			return
@@ -613,7 +625,8 @@ class ShaftProductionRun(Document):
 				ln = flt(getattr(row, "meter_roll", None))
 			else:
 				ln = flt(ln)
-			row.produced_gsm = compute_produced_gsm(row.net_weight, row.width_inch, ln)
+			wgt = _effective_weight_kg_for_produced_gsm(row)
+			row.produced_gsm = compute_produced_gsm(wgt, row.width_inch, ln)
 
 	def on_submit(self):
 		self.sync_batch_custom_fields()

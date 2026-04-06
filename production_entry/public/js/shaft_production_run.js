@@ -842,6 +842,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const save_promise = frm.save();
 		function afterSprRowSave() {
 			frm.refresh_field('items');
+			spr_schedule_item_row_styles_after_doc_write(frm);
 			[0, 50, 200, 500].forEach(function (ms) {
 				setTimeout(function () {
 					spr_apply_items_row_lock_ui(frm);
@@ -889,6 +890,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const save_promise = frm.save();
 		function afterSprEditSave() {
 			frm.refresh_field('items');
+			spr_schedule_item_row_styles_after_doc_write(frm);
 			[0, 50, 200].forEach(function (ms) {
 				setTimeout(function () {
 					spr_apply_items_row_lock_ui(frm);
