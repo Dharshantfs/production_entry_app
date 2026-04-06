@@ -373,7 +373,7 @@ function spr_open_manual_job_dialog(frm) {
 	});
 }
 
-/** Actions → Bundle packaging: pick roll line, set gross + sticker row (Kg / inch). */
+/** Actions → Bundle packaging: Job + Width from Available Jobs / roll widths; gross applied to all matching rolls. */
 function spr_open_bundle_packaging_dialog(frm) {
 	if (frm.is_new() || !frm.doc.name) {
 		frappe.msgprint(__('Save the Shaft Production Run first.'));
@@ -385,27 +385,27 @@ function spr_open_bundle_packaging_dialog(frm) {
 	}
 	frappe.call({
 		method:
-			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_bundle_packaging_lines',
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_bundle_packaging_catalog',
 		args: { shaft_production_run: frm.doc.name },
 		freeze: true,
-		freeze_message: __('Loading roll lines...'),
+		freeze_message: __('Loading jobs...'),
 		callback: function (r) {
-			const packLines = r.message || [];
-			if (!packLines.length) {
-				frappe.msgprint(
-					__('No roll lines yet. Use Create Roll Entry on a shaft job to add lines to Items.')
-				);
+			const cat = r.message || {};
+			const jobs = cat.jobs || [];
+			const widthsByJob = cat.widths_by_job || {};
+			if (!jobs.length) {
+				frappe.msgprint(__('Add Available Jobs (shaft jobs) first.'));
 				return;
 			}
-			const byLabel = {};
-			packLines.forEach(function (l) {
-				byLabel[l.label] = l;
-			});
-			const opts = packLines
-				.map(function (l) {
-					return l.label;
+			const jobOpts = jobs
+				.map(function (j) {
+					return j.label || j.job_id;
 				})
 				.join('\n');
+			const jobByLabel = {};
+			jobs.forEach(function (j) {
+				jobByLabel[j.label || j.job_id] = j;
+			});
 			const d = new frappe.ui.Dialog({
 				title: __('Bundle packaging'),
 				fields: [
@@ -415,15 +415,22 @@ function spr_open_bundle_packaging_dialog(frm) {
 						options:
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
-								'Sticker width uses Total Width (in) from Available Jobs for the roll’s job. Roll net weight comes from the roll line.'
+								'Choose the job from Available Jobs, then the width (in). The same single-roll gross is applied to every roll line for that job with that width. Sticker width uses Total Width from Available Jobs × number of packaging.'
 							) +
 							'</p>',
 					},
 					{
-						fieldname: 'roll_line',
+						fieldname: 'job_pick',
 						fieldtype: 'Select',
-						label: __('Roll line'),
-						options: opts,
+						label: __('Job (Available Jobs)'),
+						options: jobOpts,
+						reqd: 1,
+					},
+					{
+						fieldname: 'width_inch',
+						fieldtype: 'Select',
+						label: __('Width (in) for this job'),
+						options: '',
 						reqd: 1,
 					},
 					{
@@ -447,11 +454,16 @@ function spr_open_bundle_packaging_dialog(frm) {
 				],
 				primary_action_label: __('Apply'),
 				primary_action: function (values) {
-					const line = byLabel[values.roll_line];
+					const jp = jobByLabel[values.job_pick];
+					const w = flt(values.width_inch);
 					const n = cint(values.no_of_packaging);
 					const whole = flt(values.whole_gross_kg);
-					if (!line) {
-						frappe.msgprint(__('Select a roll line.'));
+					if (!jp || !jp.job_id) {
+						frappe.msgprint(__('Select a job.'));
+						return;
+					}
+					if (w <= 0) {
+						frappe.msgprint(__('Select a width.'));
 						return;
 					}
 					if (n < 1 || whole <= 0) {
@@ -461,10 +473,11 @@ function spr_open_bundle_packaging_dialog(frm) {
 					d.hide();
 					frappe.call({
 						method:
-							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_apply_bundle_packaging',
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_apply_bundle_packaging_for_job_width',
 						args: {
 							shaft_production_run: frm.doc.name,
-							spr_item_row_name: line.name,
+							job_id: jp.job_id,
+							width_inch: w,
 							no_of_packaging: n,
 							whole_gross_kg: whole,
 						},
@@ -474,8 +487,9 @@ function spr_open_bundle_packaging_dialog(frm) {
 							const m = r2.message || {};
 							frappe.show_alert({
 								message: __(
-									'Applied: single gross {0} Kg, total width {1} in, bundle net {2} Kg.',
+									'Updated {0} roll(s). Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
 									[
+										String(m.updated_rolls != null ? m.updated_rolls : ''),
 										String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
 										String(m.total_width_inch != null ? m.total_width_inch : ''),
 										String(m.sticker_bundle_weight_kg != null ? m.sticker_bundle_weight_kg : ''),
@@ -488,28 +502,55 @@ function spr_open_bundle_packaging_dialog(frm) {
 					});
 				},
 			});
+			function refreshWidthOptions() {
+				const jp = jobByLabel[d.get_value('job_pick')];
+				const wf = d.fields_dict.width_inch;
+				if (!jp || !wf) {
+					return;
+				}
+				const arr = widthsByJob[jp.job_id] || [];
+				if (!arr.length) {
+					wf.df.options = '';
+					wf.refresh();
+					return;
+				}
+				wf.df.options = arr
+					.map(function (x) {
+						return String(x);
+					})
+					.join('\n');
+				wf.refresh();
+				d.set_value('width_inch', String(arr[0]));
+			}
 			function recalc() {
-				const line = byLabel[d.get_value('roll_line')];
+				const jp = jobByLabel[d.get_value('job_pick')];
+				const wsel = d.get_value('width_inch');
 				const n = cint(d.get_value('no_of_packaging'));
 				const whole = flt(d.get_value('whole_gross_kg'));
 				const el = d.$wrapper.find('.spr-bundle-calc');
-				if (!line || !el.length) {
+				if (!jp || !el.length) {
 					return;
 				}
+				const jobW = flt(jp.total_width_available);
 				const single = n > 0 ? whole / n : 0;
-				const tw = flt(line.width_inch) * n;
-				const bnet = flt(line.net_weight) * n;
+				const tw = jobW > 0 ? jobW * n : flt(wsel) * n;
 				el.html(
-					__('Single gross: {0} Kg · Total width: {1} in · Bundle net (sticker): {2} Kg', [
+					__('Single gross: {0} Kg · Sticker width (Available Jobs width × pkg): {1} in', [
 						single.toFixed(2),
 						tw.toFixed(4),
-						bnet.toFixed(2),
 					])
 				);
 			}
 			d.show();
+			refreshWidthOptions();
 			recalc();
-			['roll_line', 'no_of_packaging', 'whole_gross_kg'].forEach(function (fn) {
+			if (d.fields_dict.job_pick && d.fields_dict.job_pick.$input) {
+				d.fields_dict.job_pick.$input.on('change', function () {
+					refreshWidthOptions();
+					recalc();
+				});
+			}
+			['width_inch', 'no_of_packaging', 'whole_gross_kg'].forEach(function (fn) {
 				const f = d.fields_dict[fn];
 				if (f && f.$input) {
 					f.$input.on('change input', recalc);
@@ -1087,7 +1128,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '14';
+	const sprItemsCssVer = '15';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -1226,7 +1267,7 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-pending, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-pending,
 		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
 	`;
-	$('head').append(`<style data-spr-items="14">${css}</style>`);
+	$('head').append(`<style data-spr-items="15">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */

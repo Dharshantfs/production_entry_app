@@ -474,10 +474,19 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 
 class ShaftProductionRun(Document):
 	def validate(self):
+		self.sync_roll_line_net_weights_from_planned()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
 		self.ensure_batch_masters_for_roll_lines()
+
+	def sync_roll_line_net_weights_from_planned(self):
+		"""If net weight was never filled, use planned qty so GSM / highlighting can run (net is read-only on the grid)."""
+		for row in self.items or []:
+			pq = flt(getattr(row, "planned_qty", None))
+			nw = flt(getattr(row, "net_weight", None))
+			if pq > 0 and nw <= 0:
+				row.net_weight = pq
 
 	def recalculate_job_achieved_weights(self):
 		"""Total Achieved Weight on each Available Jobs row = sum of net_weight in Roll Results for that job."""
@@ -1276,6 +1285,25 @@ def _spr_job_product_code(sj):
 	return ""
 
 
+def _spr_bundle_job_label(sj):
+	jid = _cstr(_spr_job_id(sj))
+	prod = _spr_job_product_code(sj) or ""
+	if prod:
+		return f"Job {jid} — {prod}"
+	return f"Job {jid}"
+
+
+def _spr_roll_matches_bundle_width(it, width_inch: float, job_w: float) -> bool:
+	"""Match roll to selected width; if roll width_inch is 0, match using job total width only."""
+	rw = flt(getattr(it, "width_inch", None))
+	wx = flt(width_inch)
+	if rw > 0:
+		return abs(rw - wx) <= 0.05
+	if job_w > 0 and wx > 0:
+		return abs(job_w - wx) <= 0.05
+	return False
+
+
 def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	wo_doc = frappe.get_doc("Work Order", wo["name"])
 	item_code = wo_doc.production_item
@@ -1748,49 +1776,130 @@ def spr_create_manual_job(
 
 
 @frappe.whitelist()
-def spr_get_bundle_packaging_lines(shaft_production_run):
-	"""Roll lines for bundle packaging: sticker width uses Available Jobs total_width; labels are human-readable."""
+def spr_get_bundle_packaging_catalog(shaft_production_run):
+	"""Jobs from Available Jobs; width options = distinct roll widths per job + job total_width fallback."""
 	_spr_require_saved(shaft_production_run)
 	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
-	out = []
-	line_no = 0
-	for it in spr.items or []:
-		jid = _cstr(getattr(it, "job", None))
-		ic = _cstr(getattr(it, "item_code", None))
-		if not jid or not ic:
+	jobs_out = []
+	seen = set()
+	for sj in _spr_job_rows(spr):
+		jid = _cstr(_spr_job_id(sj))
+		if not jid or jid in seen:
 			continue
-		line_no += 1
-		sj = _spr_shaft_job_for_roll(spr, jid)
-		job_width = flt(getattr(sj, "total_width", None)) if sj else 0.0
-		if job_width <= 0:
-			job_width = flt(getattr(it, "width_inch", None))
-		roll_width = flt(getattr(it, "width_inch", None))
-		nw = flt(getattr(it, "net_weight", None))
-		product = _spr_job_product_code(sj) if sj else ""
-		if not product:
-			product = ic
-		item_name = frappe.db.get_value("Item", ic, "item_name") or ic
-		batch_no = _cstr(getattr(it, "batch_no", None) or "").strip()
-		rn = getattr(it, "roll_no", None)
-		roll_hint = batch_no if batch_no else (f"Roll {rn}" if rn not in (None, "") else f"Line {line_no}")
-		label = (
-			f"{line_no} | Job {jid} | {product} | "
-			f"Job width {job_width:g} in | Roll net {nw:.2f} kg | {roll_hint}"
-		)
-		out.append(
+		seen.add(jid)
+		jobs_out.append(
 			{
-				"name": it.name,
-				"job": jid,
-				"item_code": ic,
-				"item_name": item_name,
-				"product_from_job": product,
-				"width_inch": job_width,
-				"roll_width_inch": roll_width,
-				"net_weight": nw,
-				"label": label,
+				"job_id": jid,
+				"label": _spr_bundle_job_label(sj),
+				"total_width_available": flt(getattr(sj, "total_width", None)),
 			}
 		)
-	return out
+	widths_by_job: dict[str, list] = {}
+	for j in jobs_out:
+		widths_by_job[j["job_id"]] = []
+	for it in spr.items or []:
+		jid = _cstr(getattr(it, "job", None))
+		w = flt(getattr(it, "width_inch", None))
+		if not jid or w <= 0:
+			continue
+		if jid not in widths_by_job:
+			widths_by_job[jid] = []
+		if w not in widths_by_job[jid]:
+			widths_by_job[jid].append(w)
+	for jid in list(widths_by_job.keys()):
+		widths_by_job[jid] = sorted(set(widths_by_job[jid]))
+	for j in jobs_out:
+		jid = j["job_id"]
+		if not widths_by_job.get(jid):
+			sj = _spr_shaft_job_for_roll(spr, jid)
+			tw = flt(getattr(sj, "total_width", None)) if sj else 0.0
+			if tw > 0:
+				widths_by_job[jid] = [tw]
+	return {"jobs": jobs_out, "widths_by_job": widths_by_job}
+
+
+@frappe.whitelist()
+def spr_get_bundle_packaging_lines(shaft_production_run):
+	"""Deprecated: use spr_get_bundle_packaging_catalog."""
+	return spr_get_bundle_packaging_catalog(shaft_production_run)
+
+
+@frappe.whitelist()
+def spr_apply_bundle_packaging_for_job_width(
+	shaft_production_run,
+	job_id,
+	width_inch,
+	no_of_packaging,
+	whole_gross_kg,
+):
+	"""Apply same single-roll gross to every roll line matching Job + Width; sticker width uses Available Jobs total_width."""
+	_spr_require_saved(shaft_production_run)
+	job_id = _cstr(job_id)
+	width_inch = flt(width_inch)
+	no_of_packaging = cint(no_of_packaging)
+	whole_gross_kg = flt(whole_gross_kg)
+	if no_of_packaging < 1:
+		frappe.throw(_("Number of packaging must be at least 1"))
+	if whole_gross_kg <= 0:
+		frappe.throw(_("Whole gross weight must be greater than zero"))
+	if not job_id:
+		frappe.throw(_("Select a job from Available Jobs"))
+	if width_inch <= 0:
+		frappe.throw(_("Select a width (in)"))
+
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	sj = _spr_shaft_job_for_roll(spr, job_id)
+	if not sj:
+		frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
+
+	job_w = flt(getattr(sj, "total_width", None)) or width_inch
+	matching = []
+	for it in spr.items or []:
+		if _cstr(getattr(it, "job", None)) != job_id:
+			continue
+		if _spr_roll_matches_bundle_width(it, width_inch, job_w):
+			matching.append(it)
+
+	if not matching:
+		frappe.throw(
+			_("No roll lines for job {0} with width {1} in. Create roll entry or check widths.").format(
+				job_id, width_inch
+			)
+		)
+
+	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
+	total_width_inch = round(job_w * float(no_of_packaging), 4)
+
+	for it in matching:
+		it.gross_weight = single_gross
+		pq = flt(getattr(it, "planned_qty", None))
+		nw = flt(getattr(it, "net_weight", None))
+		if nw <= 0 and pq > 0:
+			it.net_weight = pq
+
+	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
+	bundle_net = round(avg_n * float(no_of_packaging), 2)
+
+	comb = _cstr(getattr(sj, "combination", None))
+	bs = {
+		"combination": comb or None,
+		"rolls_per_bundle": no_of_packaging,
+		"single_roll_gross_weight_kg": single_gross,
+		"sticker_width": total_width_inch,
+		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
+		"sticker_bundle_weight": bundle_net,
+	}
+	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
+		bs["job_id"] = job_id or None
+	spr.append("bundle_stickers", bs)
+	spr.save(ignore_permissions=True)
+
+	return {
+		"updated_rolls": len(matching),
+		"single_roll_gross_kg": single_gross,
+		"total_width_inch": total_width_inch,
+		"sticker_bundle_weight_kg": bundle_net,
+	}
 
 
 @frappe.whitelist()
