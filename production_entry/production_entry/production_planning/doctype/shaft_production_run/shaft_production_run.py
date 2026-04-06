@@ -2380,6 +2380,20 @@ def spr_apply_bundle_packaging_for_job_width(
 		bs["job_id"] = job_id or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
+	
+	# FORCE UPDATE: Use db_set to explicitly update each matching row's values in database
+	# This bypasses Frappe's child table modification detection
+	for it in matching:
+		frappe.db.set_value(
+			"Shaft Production Run Item",
+			it.name,
+			{
+				"gross_weight": single_gross,
+				"net_weight": single_net,
+				"produced_gsm": it.produced_gsm or 0,
+			},
+			update_modified=False
+		)
 
 	return {
 		"updated_rolls": len(matching),
