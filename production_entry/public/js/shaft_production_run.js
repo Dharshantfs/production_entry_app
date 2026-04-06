@@ -602,10 +602,11 @@ function spr_open_bundle_packaging_dialog(frm) {
 									
 									// DIRECTLY calculate net_weight inline (don't wait for handlers)
 									let width = flt(row.width_inch);
-									if (width > 0 && flt(row.gsm) > 0 && flt(row.meter_roll) > 0 && flt(row.gross_weight) > 0) {
+									let gw = flt(row.gross_weight);
+									if (width > 0 && gw > 0) {
 										// Your custom core weight logic
 										let width_in_meter = width * 0.0254;
-										let raw_weight = (flt(row.gsm) * width_in_meter * flt(row.meter_roll)) / 1000;
+										let raw_weight = (flt(row.gsm) * width_in_meter * gw) / 1000;
 										const standard_widths = [63, 85, 90, 118, 126];
 										let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
 										
@@ -618,7 +619,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 											}
 											let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
 											let core_weight = (base_weight_of_core / 1600) * numeric_core_width;
-											row.net_weight = flt(flt(row.gross_weight) - core_weight, 3);
+											row.net_weight = flt(flt(gw) - core_weight, 3);
 										} else {
 											let core_width, prorate;
 											if (width < 63) { core_width = 63; prorate = 1.30; }
@@ -627,23 +628,23 @@ function spr_open_bundle_packaging_dialog(frm) {
 											else if (width < 118) { core_width = 118; prorate = 2.43; }
 											else { core_width = 126; prorate = 2.60; }
 											let core_weight = (width / core_width) * prorate;
-											row.net_weight = flt(flt(row.gross_weight) - core_weight, 3);
+											row.net_weight = flt(flt(gw) - core_weight, 3);
 										}
 									}
 									
 									// Now calculate produced_gsm using net_weight
-									let nw = flt(row.net_weight);
-									if (nw <= 0) {
-										nw = flt(row.gross_weight);
-									}
-									let wi = flt(row.width_inch);
-									let mr = flt(row.meter_roll);  // This is the "Ordered Length (Mtrs)" field - NO FALLBACK
+									let nw = flt(row.net_weight) || flt(row.gross_weight) || 0;
+									let wi = flt(row.width_inch) || 0;
+									let mr = flt(row.meter_roll) || 0;
 									
-									// Calculate GSM only if we have valid values. If meter_roll (Ordered Length) is 0, result is 0
+									// DEBUG: log values to console
+									console.log('Row ' + idx + ': nw=' + nw + ' wi=' + wi + ' mr=' + mr + ' gsm_calc=' + (nw > 0 && wi > 0 && mr > 0 ? ((nw * 1000) / (wi * mr * 0.0254)) : 'invalid'));
+									
+									// Calculate GSM only if we have valid values. If meter_roll is 0, result is 0
 									if (nw > 0 && wi > 0 && mr > 0) {
 										row.produced_gsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 									} else {
-										row.produced_gsm = 0;  // Zero means incomplete - ZERO IS ZERO, no fallback
+										row.produced_gsm = 0;
 									}
 								});
 								
