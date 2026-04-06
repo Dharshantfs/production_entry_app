@@ -483,21 +483,26 @@ function spr_open_bundle_packaging_dialog(frm) {
 						options:
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
-								'Choose the job from Available Jobs, then the width (in). The same single-roll gross is applied to every roll line for that job with that width. Sticker width uses selected width × number of packaging.'
+								'Step 1: pick Job ID. Step 2: pick width for that segment (combination widths and WO items are shown below). Same single-roll gross applies to all roll lines for that job and width. Sticker width = selected width × number of packaging.'
 							) +
 							'</p>',
 					},
 					{
 						fieldname: 'job_pick',
 						fieldtype: 'Select',
-						label: __('Job (Available Jobs)'),
+						label: __('Job ID (Available Jobs)'),
 						options: jobOpts,
 						reqd: 1,
 					},
 					{
+						fieldname: 'job_detail_html',
+						fieldtype: 'HTML',
+						options: '<div class="spr-bundle-job-detail text-muted small"></div>',
+					},
+					{
 						fieldname: 'width_inch',
 						fieldtype: 'Select',
-						label: __('Width (in) for this job'),
+						label: __('Width / segment (in) — pick one row from the table above'),
 						options: '',
 						reqd: 1,
 					},
@@ -573,22 +578,64 @@ function spr_open_bundle_packaging_dialog(frm) {
 			function refreshWidthOptions() {
 				const jp = jobByLabel[d.get_value('job_pick')];
 				const wf = d.fields_dict.width_inch;
+				const det = d.$wrapper.find('.spr-bundle-job-detail');
 				if (!jp || !wf) {
 					return;
 				}
+				const segs = jp.segments || [];
 				const arr = widthsByJob[jp.job_id] || [];
-				if (!arr.length) {
-					wf.df.options = '';
-					wf.refresh();
-					return;
+				if (segs.length) {
+					let html =
+						'<table class="table table-bordered table-condensed" style="font-size:11px;margin:4px 0;"><thead><tr><th>' +
+						__('Width') +
+						'</th><th>' +
+						__('Net/shaft (Kg)') +
+						'</th><th>' +
+						__('WO item') +
+						'</th></tr></thead><tbody>';
+					segs.forEach(function (s) {
+						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(3) : '—';
+						const ic = [s.item_code || '', (s.item_name || '').substring(0, 28)].join(' ').trim();
+						html +=
+							'<tr><td>' +
+							flt(s.width_inch).toFixed(1) +
+							'</td><td>' +
+							net +
+							'</td><td>' +
+							frappe.utils.escape_html(ic) +
+							'</td></tr>';
+					});
+					html += '</tbody></table>';
+					det.html(html);
+					wf.df.options = segs
+						.map(function (s) {
+							return String(flt(s.width_inch));
+						})
+						.join('\n');
+				} else {
+					const comb = jp.combination_text || '';
+					det.html(
+						comb
+							? '<p class="small">' + frappe.utils.escape_html(comb) + '</p>'
+							: '<p class="small text-muted">' + __('No segment breakdown — use width list.') + '</p>'
+					);
+					if (!arr.length) {
+						wf.df.options = '';
+						wf.refresh();
+						return;
+					}
+					wf.df.options = arr
+						.map(function (x) {
+							return String(x);
+						})
+						.join('\n');
 				}
-				wf.df.options = arr
-					.map(function (x) {
-						return String(x);
-					})
-					.join('\n');
 				wf.refresh();
-				d.set_value('width_inch', String(arr[0]));
+				const firstW =
+					segs.length > 0 ? flt(segs[0].width_inch) : arr.length > 0 ? flt(arr[0]) : 0;
+				if (firstW > 0) {
+					d.set_value('width_inch', String(firstW));
+				}
 			}
 			function recalc() {
 				const jp = jobByLabel[d.get_value('job_pick')];
@@ -1143,7 +1190,6 @@ function sprRollProducedLengthIncomplete(doc) {
 		return false;
 	}
 	const pl = doc.produced_length_mtrs;
-	// Undefined = field not in row payload yet — do not force "incomplete" (restores band colours after save/reload).
 	if (pl === undefined) {
 		return false;
 	}
