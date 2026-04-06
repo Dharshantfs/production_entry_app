@@ -1249,6 +1249,33 @@ def _spr_job_id(job):
 	return getattr(job, "job_id", None) or getattr(job, "job_no", None)
 
 
+def _spr_shaft_job_for_roll(spr_doc, job_id_str):
+	pid = _cstr(job_id_str)
+	if not pid:
+		return None
+	for sj in _spr_job_rows(spr_doc):
+		if _cstr(_spr_job_id(sj)) == pid:
+			return sj
+	return None
+
+
+def _spr_job_product_code(sj):
+	"""Product item from Available Jobs: manual_items, else Work Order production_item."""
+	if not sj:
+		return ""
+	mi = _cstr(getattr(sj, "manual_items", None) or "").strip()
+	if mi:
+		return mi
+	wos = _cstr(getattr(sj, "work_orders", None) or "")
+	for raw in wos.replace("\n", ",").split(","):
+		wo = raw.strip()
+		if wo and frappe.db.exists("Work Order", wo):
+			pi = frappe.db.get_value("Work Order", wo, "production_item")
+			if pi:
+				return _cstr(pi)
+	return ""
+
+
 def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	wo_doc = frappe.get_doc("Work Order", wo["name"])
 	item_code = wo_doc.production_item
@@ -1634,24 +1661,47 @@ def spr_create_manual_job(
 
 	qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
 
-	wo = frappe.new_doc("Work Order")
-	wo.production_item = item_code
-	wo.bom_no = bom
-	wo.qty = qty
-	wo.company = company
-	wo.production_plan = pp_name
-	wo.production_plan_item = production_plan_item
-	if pp.get("sales_order"):
-		wo.sales_order = pp.sales_order
-	if frappe.get_meta("Work Order").has_field("sales_order_item"):
-		wo.sales_order_item = getattr(ppi_row, "sales_order_item", None) or None
-	wo.source_warehouse = SPR_MANUAL_SOURCE_WH
-	wo.fg_warehouse = SPR_MANUAL_FG_WH
-	if frappe.get_meta("Work Order").has_field("wip_warehouse"):
-		wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
-		if wip:
-			wo.wip_warehouse = wip
-	wo.insert(ignore_permissions=True)
+	wo_filters = {
+		"production_plan": pp_name,
+		"production_plan_item": production_plan_item,
+		"production_item": item_code,
+		"docstatus": ["!=", 2],
+	}
+	existing_wo = frappe.get_all("Work Order", filters=wo_filters, pluck="name", limit=1)
+	if existing_wo:
+		wo_name = existing_wo[0]
+	else:
+		wo = frappe.new_doc("Work Order")
+		wo.production_item = item_code
+		wo.bom_no = bom
+		wo.qty = qty
+		wo.company = company
+		wo.production_plan = pp_name
+		wo.production_plan_item = production_plan_item
+		if pp.get("sales_order"):
+			wo.sales_order = pp.sales_order
+		if frappe.get_meta("Work Order").has_field("sales_order_item"):
+			wo.sales_order_item = getattr(ppi_row, "sales_order_item", None) or None
+		wo.source_warehouse = SPR_MANUAL_SOURCE_WH
+		wo.fg_warehouse = SPR_MANUAL_FG_WH
+		if frappe.get_meta("Work Order").has_field("wip_warehouse"):
+			wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+			if wip:
+				wo.wip_warehouse = wip
+		wo.insert(ignore_permissions=True)
+		wo_name = wo.name
+
+	spr.reload()
+	for j in _spr_job_rows(spr):
+		wos = _cstr(getattr(j, "work_orders", None) or "")
+		for part in wos.replace("\n", ",").split(","):
+			if part.strip() == wo_name:
+				frappe.throw(
+					_("Work Order {0} is already linked to this Shaft Production Run (Job {1}).").format(
+						wo_name,
+						_spr_job_id(j),
+					)
+				)
 
 	job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
 	for _ in range(20):
@@ -1668,7 +1718,7 @@ def spr_create_manual_job(
 		"production_plan_item": production_plan_item,
 		"is_manual": 1,
 		"no_of_shafts": no_of_shafts,
-		"work_orders": wo.name,
+		"work_orders": wo_name,
 		"total_weight": qty,
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
@@ -1691,7 +1741,7 @@ def spr_create_manual_job(
 	spr.save(ignore_permissions=True)
 
 	return {
-		"work_order": wo.name,
+		"work_order": wo_name,
 		"job_id": job_id,
 		"shaft_production_run": spr.name,
 	}
@@ -1699,24 +1749,43 @@ def spr_create_manual_job(
 
 @frappe.whitelist()
 def spr_get_bundle_packaging_lines(shaft_production_run):
-	"""Roll lines on this SPR for bundle packaging (job + item + width + net)."""
+	"""Roll lines for bundle packaging: sticker width uses Available Jobs total_width; labels are human-readable."""
 	_spr_require_saved(shaft_production_run)
 	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	out = []
+	line_no = 0
 	for it in spr.items or []:
 		jid = _cstr(getattr(it, "job", None))
 		ic = _cstr(getattr(it, "item_code", None))
 		if not jid or not ic:
 			continue
-		w = flt(getattr(it, "width_inch", None))
+		line_no += 1
+		sj = _spr_shaft_job_for_roll(spr, jid)
+		job_width = flt(getattr(sj, "total_width", None)) if sj else 0.0
+		if job_width <= 0:
+			job_width = flt(getattr(it, "width_inch", None))
+		roll_width = flt(getattr(it, "width_inch", None))
 		nw = flt(getattr(it, "net_weight", None))
-		label = f"{jid} | {ic} | {w} in | NW {nw:.2f} Kg | {it.name}"
+		product = _spr_job_product_code(sj) if sj else ""
+		if not product:
+			product = ic
+		item_name = frappe.db.get_value("Item", ic, "item_name") or ic
+		batch_no = _cstr(getattr(it, "batch_no", None) or "").strip()
+		rn = getattr(it, "roll_no", None)
+		roll_hint = batch_no if batch_no else (f"Roll {rn}" if rn not in (None, "") else f"Line {line_no}")
+		label = (
+			f"{line_no} | Job {jid} | {product} | "
+			f"Job width {job_width:g} in | Roll net {nw:.2f} kg | {roll_hint}"
+		)
 		out.append(
 			{
 				"name": it.name,
 				"job": jid,
 				"item_code": ic,
-				"width_inch": w,
+				"item_name": item_name,
+				"product_from_job": product,
+				"width_inch": job_width,
+				"roll_width_inch": roll_width,
 				"net_weight": nw,
 				"label": label,
 			}
@@ -1751,7 +1820,11 @@ def spr_apply_bundle_packaging(
 	if not target:
 		frappe.throw(_("Roll line not found"))
 
-	sel_w = flt(getattr(target, "width_inch", None))
+	jid = _cstr(getattr(target, "job", None))
+	sj = _spr_shaft_job_for_roll(spr, jid)
+	sel_w = flt(getattr(sj, "total_width", None)) if sj else 0.0
+	if sel_w <= 0:
+		sel_w = flt(getattr(target, "width_inch", None))
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(sel_w * float(no_of_packaging), 4)
 	net_one = flt(getattr(target, "net_weight", None))
@@ -1759,12 +1832,14 @@ def spr_apply_bundle_packaging(
 
 	target.gross_weight = single_gross
 
-	jid = _cstr(getattr(target, "job", None))
 	comb = ""
-	for sj in spr.shaft_jobs or []:
-		if _cstr(_spr_job_id(sj)) == jid:
-			comb = _cstr(getattr(sj, "combination", None))
-			break
+	if sj:
+		comb = _cstr(getattr(sj, "combination", None))
+	else:
+		for row in spr.shaft_jobs or []:
+			if _cstr(_spr_job_id(row)) == jid:
+				comb = _cstr(getattr(row, "combination", None))
+				break
 
 	bs = {
 		"combination": comb or None,
@@ -1775,7 +1850,7 @@ def spr_apply_bundle_packaging(
 		"sticker_bundle_weight": bundle_net,
 	}
 	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
-		bs["job_id"] = None
+		bs["job_id"] = jid or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
 

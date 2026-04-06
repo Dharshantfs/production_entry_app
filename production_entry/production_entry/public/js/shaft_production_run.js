@@ -410,6 +410,16 @@ function spr_open_bundle_packaging_dialog(frm) {
 				title: __('Bundle packaging'),
 				fields: [
 					{
+						fieldname: 'spr_bundle_hint',
+						fieldtype: 'HTML',
+						options:
+							'<p class="text-muted small" style="margin-bottom:10px;">' +
+							__(
+								'Sticker width uses Total Width (in) from Available Jobs for the roll’s job. Roll net weight comes from the roll line.'
+							) +
+							'</p>',
+					},
+					{
 						fieldname: 'roll_line',
 						fieldtype: 'Select',
 						label: __('Roll line'),
@@ -1013,6 +1023,27 @@ function sprStickerGsmFromDoc(doc) {
 	return 0;
 }
 
+/** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
+function sprEffectiveProducedGsm(doc) {
+	let p = flt(doc.produced_gsm);
+	if (p > 0) {
+		return p;
+	}
+	const nw = flt(doc.net_weight);
+	const gw = flt(doc.gross_weight);
+	const wgt = nw > 0 ? nw : gw;
+	const w = flt(doc.width_inch);
+	let ln = flt(doc.meter_roll);
+	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
+		const pl = doc.produced_length_mtrs;
+		if (pl !== undefined && pl !== null && pl !== '') {
+			ln = flt(pl);
+		}
+	}
+	const den = w * ln * 0.254;
+	return den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
+}
+
 function ensure_spr_item_stylesheet() {
 	if (!window.__sprspr_lock_style) {
 		window.__sprspr_lock_style = true;
@@ -1056,7 +1087,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '13';
+	const sprItemsCssVer = '14';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -1195,7 +1226,7 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-pending, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-pending,
 		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
 	`;
-	$('head').append(`<style data-spr-items="13">${css}</style>`);
+	$('head').append(`<style data-spr-items="14">${css}</style>`);
 }
 
 /** Apply row_locked / row_ready_for_print to grid DOM (Print Label only after Save Row). */
@@ -1559,9 +1590,9 @@ function apply_spr_item_row_styles(frm) {
 			return;
 		}
 		const $targets = sprCollectItemRowTargets(frm, doc, idx, $row, $wrap);
-		// Roll Production Results: color only when both Sticker GSM (`gsm`) and Produced GSM are set (>0)
+		// Roll Production Results: Sticker GSM vs produced (field or computed from net/gross × width × length)
 		const sticker = sprStickerGsmFromDoc(doc);
-		const produced = flt(doc.produced_gsm);
+		const produced = sprEffectiveProducedGsm(doc);
 		$targets.removeClass(baseClasses);
 		$targets.each(function () {
 			sprClearRowBg($(this));
