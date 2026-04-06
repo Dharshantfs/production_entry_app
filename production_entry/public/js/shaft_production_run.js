@@ -603,13 +603,17 @@ function spr_open_bundle_packaging_dialog(frm) {
 									// DIRECTLY calculate net_weight inline (don't wait for handlers)
 									let width = flt(row.width_inch);
 									let gw = flt(row.gross_weight);
+									
+									// Calculate net_weight only from width + gross_weight (no GSM/meter_roll dependency)
 									if (width > 0 && gw > 0) {
-										// Your custom core weight logic
 										let width_in_meter = width * 0.0254;
-										let raw_weight = (flt(row.gsm) * width_in_meter * gw) / 1000;
+										// Use GSM if available, else use sticker_gsm as fallback
+										let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
+										let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
 										const standard_widths = [63, 85, 90, 118, 126];
 										let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
 										
+										let core_weight = 0;
 										if (is_standard) {
 											let base_weight_of_core = 1.3;
 											if (raw_weight >= 50 && raw_weight <= 100) {
@@ -618,8 +622,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 												base_weight_of_core = 2.5;
 											}
 											let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
-											let core_weight = (base_weight_of_core / 1600) * numeric_core_width;
-											row.net_weight = flt(flt(gw) - core_weight, 3);
+											core_weight = (base_weight_of_core / 1600) * numeric_core_width;
 										} else {
 											let core_width, prorate;
 											if (width < 63) { core_width = 63; prorate = 1.30; }
@@ -627,9 +630,15 @@ function spr_open_bundle_packaging_dialog(frm) {
 											else if (width < 90) { core_width = 90; prorate = 1.86; }
 											else if (width < 118) { core_width = 118; prorate = 2.43; }
 											else { core_width = 126; prorate = 2.60; }
-											let core_weight = (width / core_width) * prorate;
-											row.net_weight = flt(flt(gw) - core_weight, 3);
+											core_weight = (width / core_width) * prorate;
 										}
+										
+										let calc_net = flt(gw - core_weight, 3);
+										// If calculated net is 0 or negative, fallback to gross_weight
+										row.net_weight = (calc_net > 0) ? calc_net : flt(gw);
+									} else {
+										// No width or gross_weight - use 0
+										row.net_weight = 0;
 									}
 									
 									// Now calculate produced_gsm using net_weight

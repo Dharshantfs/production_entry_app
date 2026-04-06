@@ -2300,8 +2300,9 @@ def spr_apply_bundle_packaging_for_job_width(
 		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
 		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
-	bundle_net = round(avg_n * float(no_of_packaging), 2)
+	# Use first matching roll's net_weight (all rolls have same gross, so same net_weight)
+	first_net = flt(getattr(matching[0], "net_weight", None)) if matching else 0
+	bundle_net = round(first_net * float(no_of_packaging), 2)
 
 	# Format combination: "39" x 4 (width x packaging_count)
 	width_str = str(int(width_inch)) if width_inch == int(width_inch) else str(width_inch)
