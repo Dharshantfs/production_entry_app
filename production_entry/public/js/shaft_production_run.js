@@ -571,24 +571,24 @@ function spr_open_bundle_packaging_dialog(frm) {
 								indicator: 'green',
 							});
 							frm.reload_doc();
-							// After reload, trigger field change handlers on all items
+							// After reload, trigger all field change handlers by re-setting key fields
+							// This ensures custom scripts (calculate_net_weight) and system calculations (spr_update_produced_gsm) run
 							setTimeout(function () {
 								if (frm.doc && frm.doc.items) {
 									frm.doc.items.forEach(function (row, idx) {
 										if (row && row.name) {
 											const cdt = 'Shaft Production Run Item';
 											const cdn = row.name;
-											// Trigger custom calculate_net_weight if it exists (user script with core weight logic)
-											if (typeof calculate_net_weight === 'function') {
-												calculate_net_weight(frm, cdt, cdn);
-											}
-											// Then trigger produced_gsm calculation (uses net_weight result)
-											spr_update_produced_gsm(frm, cdt, cdn);
+											// Trigger handlers by re-setting gross_weight (this is the field bundle packaging touched)
+											// frappe.model.set_value will trigger all field change handlers
+											frappe.model.set_value(cdt, cdn, 'gross_weight', flt(row.gross_weight));
 										}
 									});
-									// Refresh styles after all calculations
-									apply_spr_item_row_styles(frm);
-									schedule_spr_item_row_styles(frm);
+									// After field handlers run, refresh styles
+									setTimeout(function () {
+										apply_spr_item_row_styles(frm);
+										schedule_spr_item_row_styles(frm);
+									}, 300);
 								}
 							}, 500);
 						},
