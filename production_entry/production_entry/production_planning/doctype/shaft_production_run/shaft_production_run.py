@@ -2300,13 +2300,68 @@ def spr_apply_bundle_packaging_for_job_width(
 		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
 		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	# Use first matching roll's net_weight (all rolls have same gross, so same net_weight)
-	first_net = flt(getattr(matching[0], "net_weight", None)) if matching else 0
-	bundle_net = round(first_net * float(no_of_packaging), 2)
+	# Calculate net_weight for Bundle Stickers using first matching roll's core weight logic
+	# (since all rolls get same gross_weight, they should all calculate to same net_weight)
+	first_roll = matching[0] if matching else None
+	bundle_net = 0
+	
+	if first_roll:
+		# Replicate core weight calculation for first roll
+		width = flt(first_roll.width_inch)
+		gw = single_gross
+		
+		if width > 0 and gw > 0:
+			# Calculate raw weight using GSM
+			gsm_val = flt(getattr(first_roll, 'gsm', None)) or flt(getattr(first_roll, 'sticker_gsm', None)) or 90
+			width_in_meter = width * 0.0254
+			raw_weight = (gsm_val * width_in_meter * gw) / 1000.0
+			
+			# Standard widths: [63, 85, 90, 118, 126]
+			standard_widths = [63, 85, 90, 118, 126]
+			is_standard = any(abs(width - w) < 0.01 for w in standard_widths)
+			
+			core_weight = 0
+			if is_standard:
+				base_weight_of_core = 1.3
+				if 50 <= raw_weight <= 100:
+					base_weight_of_core = 1.8
+				elif raw_weight > 100:
+					base_weight_of_core = 2.5
+				numeric_core_width = float(getattr(first_roll, 'custom_core_width_mm', None)) or 1600
+				core_weight = (base_weight_of_core / 1600.0) * numeric_core_width
+			else:
+				# Non-standard width proration
+				if width < 63:
+					core_width, prorate = 63, 1.30
+				elif width < 85:
+					core_width, prorate = 85, 1.75
+				elif width < 90:
+					core_width, prorate = 90, 1.86
+				elif width < 118:
+					core_width, prorate = 118, 2.43
+				else:
+					core_width, prorate = 126, 2.60
+				core_weight = (width / float(core_width)) * prorate
+			
+			# Calculate net_weight for single roll
+			calc_net = gw - core_weight
+			single_net = calc_net if calc_net > 0 else gw
+			
+			# Bundle net = single roll net * packaging count
+			bundle_net = round(single_net * float(no_of_packaging), 2)
 
 	# Format combination: "39" x 4 (width x packaging_count)
 	width_str = str(int(width_inch)) if width_inch == int(width_inch) else str(width_inch)
 	comb_str = '"{0}" x {1}'.format(width_str, int(no_of_packaging))
+	
+	# Clear old bundle stickers for this job+width combination BEFORE adding new ones
+	spr.bundle_stickers = [bs for bs in (spr.bundle_stickers or [])
+		if not (
+			frappe.get_meta("Bundle Stickers").has_field("job_id") and 
+			getattr(bs, "job_id", None) == job_id and
+			getattr(bs, "sticker_width", None) == total_width_inch
+		)
+	]
 	
 	bs = {
 		"combination": comb_str,
