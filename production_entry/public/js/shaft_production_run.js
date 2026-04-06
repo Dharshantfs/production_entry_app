@@ -583,9 +583,17 @@ function spr_open_bundle_packaging_dialog(frm) {
 								),
 								indicator: 'green',
 							});
+							
+							// Reload from server
 							frm.reload_doc();
+							
+							// Wait for reload to complete, then refresh grid display
 							setTimeout(function () {
 								if (!cur_frm || !cur_frm.doc || !cur_frm.doc.items) return;
+								
+								// FIRST: Refresh grid to display all newly loaded values (gross_weight, net_weight, etc)
+								frm.refresh_field('items');
+								
 								let hasChanges = false;
 								cur_frm.doc.items.forEach(function (row) {
 									if (!row) return;
@@ -599,13 +607,15 @@ function spr_open_bundle_packaging_dialog(frm) {
 										hasChanges = true;
 									}
 								});
+								
 								if (hasChanges) {
 									cur_frm.refresh_field('items');
 									cur_frm.save();
 								}
+								
 								apply_spr_item_row_styles(cur_frm);
 								schedule_spr_item_row_styles(cur_frm);
-							}, 1500);
+							}, 500);
 						},
 					});
 				},

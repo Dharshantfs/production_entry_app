@@ -2295,18 +2295,13 @@ def spr_apply_bundle_packaging_for_job_width(
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(width_inch * float(no_of_packaging), 4)
 
-	for it in matching:
-		it.gross_weight = single_gross
-		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
-		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
-
-	# Calculate net_weight for Bundle Stickers using first matching roll's core weight logic
-	# (since all rolls get same gross_weight, they should all calculate to same net_weight)
+	# Pre-calculate net_weight for all matching rolls (since they all get same gross_weight)
+	# This ensures net_weight displays immediately after reload
 	first_roll = matching[0] if matching else None
-	bundle_net = 0
+	single_net = single_gross  # Default
 	
+	# Calculate single_net using core weight logic
 	if first_roll:
-		# Replicate core weight calculation for first roll
 		width = flt(first_roll.width_inch)
 		gw = single_gross
 		
@@ -2346,9 +2341,19 @@ def spr_apply_bundle_packaging_for_job_width(
 			# Calculate net_weight for single roll
 			calc_net = gw - core_weight
 			single_net = calc_net if calc_net > 0 else gw
-			
-			# Bundle net = single roll net * packaging count
-			bundle_net = round(single_net * float(no_of_packaging), 2)
+	
+	bundle_net = round(single_net * float(no_of_packaging), 2)
+	
+	# Set both gross_weight AND net_weight on all matching rolls
+	for it in matching:
+		it.gross_weight = single_gross
+		it.net_weight = single_net  # Set net_weight so it displays immediately after reload
+		
+		# Also calculate produced_gsm if meter_roll is present
+		if single_net > 0 and width_inch > 0 and flt(getattr(it, 'meter_roll', None)) > 0:
+			mr = flt(it.meter_roll)
+			produced_gsm = (single_net * 1000) / (width_inch * mr * 0.0254)
+			it.produced_gsm = round(produced_gsm, 2)
 
 	# Format combination: "39" x 4 (width x packaging_count)
 	width_str = str(int(width_inch)) if width_inch == int(width_inch) else str(width_inch)
