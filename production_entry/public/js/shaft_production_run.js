@@ -944,6 +944,68 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			}, ms);
 		});
 	},
+	
+	/**
+	 * OVERRIDE: Ensure net_weight calculation runs ONLY based on gross_weight & core_weight
+	 * NOT dependent on meter_roll (which may be empty when bundle packaging sets gross_weight)
+	 * This handler runs AFTER any old conflicting scripts to guarantee correct behavior
+	 */
+	custom_net_weight_trigger: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		let width = flt(row.width_inch);
+		let gw = flt(row.gross_weight);
+		
+		// Net weight calculation should ONLY depend on gross_weight & width, NOT meter_roll
+		if (width > 0 && gw > 0) {
+			let width_in_meter = width * 0.0254;
+			let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
+			let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
+			const standard_widths = [63, 85, 90, 118, 126];
+			let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
+			
+			let core_weight = 0;
+			if (is_standard) {
+				let base_weight_of_core = 1.3;
+				if (raw_weight >= 50 && raw_weight <= 100) {
+					base_weight_of_core = 1.8;
+				} else if (raw_weight > 100) {
+					base_weight_of_core = 2.5;
+				}
+				let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
+				core_weight = (base_weight_of_core / 1600) * numeric_core_width;
+			} else {
+				let core_width, prorate;
+				if (width < 63) { core_width = 63; prorate = 1.30; }
+				else if (width < 85) { core_width = 85; prorate = 1.75; }
+				else if (width < 90) { core_width = 90; prorate = 1.86; }
+				else if (width < 118) { core_width = 118; prorate = 2.43; }
+				else { core_width = 126; prorate = 2.60; }
+				core_weight = (width / core_width) * prorate;
+			}
+			
+			let calc_net = gw - core_weight;
+			let net_val = calc_net > 0 ? calc_net : gw;
+			row.net_weight = net_val;
+		}
+	},
+	
+	/**
+	 * FINAL: Calculate produced_gsm only when ALL three values are ready
+	 * This runs last to ensure net_weight is already set
+	 */
+	final_produced_gsm_calc: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		let nw = flt(row.net_weight) || 0;
+		let wi = flt(row.width_inch) || 0;
+		let mr = flt(row.meter_roll) || 0;
+		
+		if (nw > 0 && wi > 0 && mr > 0) {
+			let newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+			row.produced_gsm = newGsm;
+		} else {
+			row.produced_gsm = 0;
+		}
+	},
 	/**
 	 * Save this roll line, lock it for editing, and reveal Print Label.
 	 * Until Save Row: Print Label stays hidden (see spr_apply_items_row_lock_ui).
