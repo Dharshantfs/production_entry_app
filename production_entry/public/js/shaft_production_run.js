@@ -591,6 +591,18 @@ function spr_open_bundle_packaging_dialog(frm) {
 									return;
 								}
 								
+								// Build map of job_id => meter_roll_mtrs from Available Jobs
+								const jobMeterRollMap = {};
+								if (cur_frm.doc.shaft_jobs) {
+									cur_frm.doc.shaft_jobs.forEach(function (job) {
+										const jobId = String(job.job_id || '');
+										const mr = flt(job.meter_roll_mtrs || 0);
+										if (jobId && mr > 0) {
+											jobMeterRollMap[jobId] = mr;
+										}
+									});
+								}
+								
 								// Loop through each item and calculate manually
 								cur_frm.doc.items.forEach(function (row, idx) {
 									if (!row || !row.name) {
@@ -640,6 +652,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 									let mr = flt(row.meter_roll);
 									if (flt(row.produced_length_mtrs) > 0) {
 										mr = flt(row.produced_length_mtrs);
+									}
+									
+									// If meter_roll is still 0 or missing, try to fetch from Available Jobs
+									if (mr <= 0 && row.job_id) {
+										const jobId = String(row.job_id || '');
+										mr = jobMeterRollMap[jobId] || 500;
 									}
 									
 									if (nw > 0 && wi > 0 && mr > 0) {
