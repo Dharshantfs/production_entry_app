@@ -657,8 +657,14 @@ function spr_open_bundle_packaging_dialog(frm) {
 									}
 								});
 								
-								// Refresh grid to show updated values
-								cur_frm.refresh_field('items');
+								// Refresh grid to show updated values via grid API
+								let grid = cur_frm.fields_dict.items.grid;
+								if (grid) {
+									grid.df.data = cur_frm.doc.items;
+									grid.refresh();
+								} else {
+									cur_frm.refresh_field('items');
+								}
 								
 								// Now save the calculated net_weight and produced_gsm to database
 								cur_frm.save().then(function() {
