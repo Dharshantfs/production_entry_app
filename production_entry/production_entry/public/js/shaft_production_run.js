@@ -570,7 +570,31 @@ function spr_open_bundle_packaging_dialog(frm) {
 								),
 								indicator: 'green',
 							});
-							frm.reload_doc();
+							
+							// Reload document and trigger calculations for all items
+							const reloadPromise = frm.reload_doc();
+							function triggerCalculationsAfterReload() {
+								// Trigger net_weight and produced_gsm calculation for all affected items
+								if (frm.doc.items) {
+									frm.doc.items.forEach(function (item) {
+										spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
+									});
+								}
+								frm.refresh_field('items');
+								schedule_spr_item_row_styles(frm);
+								[0, 100, 300, 600].forEach(function (ms) {
+									setTimeout(function () {
+										apply_spr_item_row_styles(frm);
+									}, ms);
+								});
+							}
+							
+							// Wait for reload to complete if it's a promise, otherwise trigger immediately
+							if (reloadPromise && typeof reloadPromise.then === 'function') {
+								reloadPromise.then(triggerCalculationsAfterReload);
+							} else {
+								setTimeout(triggerCalculationsAfterReload, 300);
+							}
 						},
 					});
 				},

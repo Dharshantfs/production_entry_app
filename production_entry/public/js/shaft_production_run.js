@@ -584,38 +584,30 @@ function spr_open_bundle_packaging_dialog(frm) {
 								indicator: 'green',
 							});
 							
-							// Reload from server
-							frm.reload_doc();
-							
-							// Wait for reload to complete, then refresh grid display
-							setTimeout(function () {
-								if (!cur_frm || !cur_frm.doc || !cur_frm.doc.items) return;
-								
-								// FIRST: Refresh grid to display all newly loaded values (gross_weight, net_weight, etc)
-								frm.refresh_field('items');
-								
-								let hasChanges = false;
-								cur_frm.doc.items.forEach(function (row) {
-									if (!row) return;
-									let nw = flt(row.net_weight) || 0;
-									let wi = flt(row.width_inch) || 0;
-									let mr = flt(row.meter_roll) || 0;
-									let newGsm = (nw > 0 && wi > 0 && mr > 0) ? 
-										Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100 : 0;
-									if (flt(row.produced_gsm) !== newGsm) {
-										row.produced_gsm = newGsm;
-										hasChanges = true;
-									}
-								});
-								
-								if (hasChanges) {
-									cur_frm.refresh_field('items');
-									cur_frm.save();
+							// Reload document and trigger calculations for all items
+							const reloadPromise = frm.reload_doc();
+							function triggerCalculationsAfterReload() {
+								// Trigger net_weight and produced_gsm calculation for all affected items
+								if (frm.doc.items) {
+									frm.doc.items.forEach(function (item) {
+										spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
+									});
 								}
-								
-								apply_spr_item_row_styles(cur_frm);
-								schedule_spr_item_row_styles(cur_frm);
-							}, 500);
+								frm.refresh_field('items');
+								schedule_spr_item_row_styles(frm);
+								[0, 100, 300, 600].forEach(function (ms) {
+									setTimeout(function () {
+										apply_spr_item_row_styles(frm);
+									}, ms);
+								});
+							}
+							
+							// Wait for reload to complete if it's a promise, otherwise trigger immediately
+							if (reloadPromise && typeof reloadPromise.then === 'function') {
+								reloadPromise.then(triggerCalculationsAfterReload);
+							} else {
+								setTimeout(triggerCalculationsAfterReload, 300);
+							}
 						},
 					});
 				},
