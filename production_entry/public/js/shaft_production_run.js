@@ -589,9 +589,23 @@ function spr_open_bundle_packaging_dialog(frm) {
 							function triggerCalculationsAfterReload() {
 								// Trigger net_weight and produced_gsm calculation for all affected items
 								if (frm.doc.items) {
+									let has_changes = false;
 									frm.doc.items.forEach(function (item) {
+										if (item.gross_weight > 0) {
+											let current_net = item.net_weight || 0;
+											let net_val = calculate_net_weight_from_gross(item);
+											
+											if (Math.abs(current_net - net_val) > 0.01) {
+												frappe.model.set_value(item.doctype, item.name, 'net_weight', net_val);
+												has_changes = true;
+											}
+										}
 										spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
 									});
+									if (has_changes) {
+										update_shaft_job_achieved_from_items(frm);
+										setTimeout(function() { frm.save(); }, 500);
+									}
 								}
 								frm.refresh_field('items');
 								schedule_spr_item_row_styles(frm);
