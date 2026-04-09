@@ -611,7 +611,7 @@ class ShaftProductionRun(Document):
 			return
 		for row in self.items or []:
 			ln = _spr_length_meters(row)
-			if ln is None:
+			if ln is None or ln <= 0:
 				ln = flt(getattr(row, "meter_roll", None))
 			else:
 				ln = flt(ln)

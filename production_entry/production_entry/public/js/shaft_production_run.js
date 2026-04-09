@@ -963,7 +963,7 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	let ln = flt(row.meter_roll);
 	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
 		const pl = row.produced_length_mtrs;
-		if (pl !== undefined && pl !== null && pl !== '') {
+		if (flt(pl) > 0) {
 			ln = flt(pl);
 		}
 	}
@@ -1255,7 +1255,7 @@ function sprEffectiveProducedGsm(doc) {
 	let ln = flt(doc.meter_roll);
 	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
 		const pl = doc.produced_length_mtrs;
-		if (pl !== undefined && pl !== null && pl !== '') {
+		if (flt(pl) > 0) {
 			ln = flt(pl);
 		}
 	}
