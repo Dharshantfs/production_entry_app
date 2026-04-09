@@ -592,26 +592,37 @@ function spr_open_bundle_packaging_dialog(frm) {
 									let has_changes = false;
 									frm.doc.items.forEach(function (item) {
 										if (item.gross_weight > 0) {
+											let width = flt(item.width_inch);
 											let current_net = item.net_weight || 0;
-											let net_val = calculate_net_weight_from_gross(item);
 											
-											if (Math.abs(current_net - net_val) > 0.01) {
+											let net_val = 0;
+											if (width > 0) {
+												let core_weight = width * (1.3 / 63);
+												net_val = flt(item.gross_weight) - core_weight;
+												net_val = flt(net_val, 3);
+											}
+											
+											if (Math.abs(current_net - net_val) > 0.01 && net_val > 0) {
 												frappe.model.set_value(item.doctype, item.name, 'net_weight', net_val);
 												has_changes = true;
 											}
 										}
-										spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
+										try {
+											if (typeof spr_update_produced_gsm === 'function') {
+												spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
+											}
+										} catch(e) {}
 									});
 									if (has_changes) {
-										update_shaft_job_achieved_from_items(frm);
+										try { update_shaft_job_achieved_from_items(frm); } catch(e) {}
 										setTimeout(function() { frm.save(); }, 500);
 									}
 								}
 								frm.refresh_field('items');
-								schedule_spr_item_row_styles(frm);
+								try { schedule_spr_item_row_styles(frm); } catch(e) {}
 								[0, 100, 300, 600].forEach(function (ms) {
 									setTimeout(function () {
-										apply_spr_item_row_styles(frm);
+										try { apply_spr_item_row_styles(frm); } catch(e) {}
 									}, ms);
 								});
 							}
