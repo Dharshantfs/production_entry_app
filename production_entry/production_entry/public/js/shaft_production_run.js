@@ -146,12 +146,14 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	items: {
 		items_add: function (frm) {
-			// Calculate produced_gsm for all newly added rows
-			(frm.doc.items || []).forEach(function(row) {
-				if (row.produced_gsm === undefined || row.produced_gsm === null || row.produced_gsm === 0) {
-					spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
-				}
-			});
+			// Delay GSM calculation to ensure row data is fully loaded
+			setTimeout(function() {
+				(frm.doc.items || []).forEach(function(row) {
+					if ((row.width_inch || 0) > 0) {
+						spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
+					}
+				});
+			}, 100);
 			update_shaft_job_achieved_from_items(frm);
 			schedule_spr_item_row_styles(frm);
 		},
