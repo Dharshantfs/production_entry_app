@@ -850,6 +850,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	},
 	gross_weight: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
+		frm.refresh_field('items');
 		update_shaft_job_achieved_from_items(frm);
 	},
 	gsm: function (frm) {
@@ -978,6 +979,8 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	const den = w * ln * 0.254;
 	const val = den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
+	// Refresh grid immediately so produced_gsm value displays
+	frm.refresh_field('items');
 	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
 }
