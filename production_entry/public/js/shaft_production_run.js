@@ -797,7 +797,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
 				function finishCreateEntry() {
 					(frm.doc.items || []).forEach(function (row) {
-						spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
+						spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', row.name);
 					});
 					update_shaft_job_achieved_from_items(frm);
 					schedule_spr_item_row_styles(frm);
@@ -850,7 +850,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
 frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
 		// Refresh grid display and apply row styling to show net_weight instantly
 		frm.refresh_field('items');
@@ -909,7 +909,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frm.refresh_field('items');
 		}
 
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
 	},
 	gsm: function (frm) {
@@ -929,7 +929,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		
 		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		frm.refresh_field('items');
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	meter_roll: function (frm, cdt, cdn) {
 		// Recalculate produced_gsm when meter_roll changes
@@ -945,22 +945,22 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		
 		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		frm.refresh_field('items');
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	produced_length_mtrs: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	meter_roll_mtrs: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	ordered_length: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	ordered_length_mtrs: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	custom_ordered_length: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	produced_gsm: function (frm) {
 		// Refresh grid to show the calculated produced_gsm value
@@ -1140,8 +1140,21 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	}
 	
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', pgsm);
+	frm.refresh_field('items');
 	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
+}
+
+function spr_update_produced_gsm_with_retry(frm, cdt, cdn) {
+	[0, 80, 220].forEach(function (ms) {
+		setTimeout(function () {
+			try {
+				spr_update_produced_gsm(frm, cdt, cdn);
+			} catch (e) {
+				// Ignore transient timing issues while rows are being populated.
+			}
+		}, ms);
+	});
 }
 
 function sprResolveLengthMeters(doc) {
