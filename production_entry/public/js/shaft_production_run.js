@@ -900,7 +900,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
 
 			// Also calculate produced_gsm immediately
-			let mr = flt(row.meter_roll) || 0;
+			let mr = sprResolveLengthMeters(row) || 0;
 			let newGsm = 0;
 			if (net_val > 0 && width > 0 && mr > 0) {
 				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
@@ -920,14 +920,14 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const row = locals[cdt][cdn];
 		let nw = flt(row.net_weight) || 0;
 		let wi = flt(row.width_inch) || 0;
-		let mr = flt(row.meter_roll) || 0;
+		let mr = sprResolveLengthMeters(row) || 0;
 		
 		let newGsm = 0;
 		if (nw > 0 && wi > 0 && mr > 0) {
 			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 		}
 		
-		row.produced_gsm = newGsm;
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		frm.refresh_field('items');
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
@@ -936,18 +936,30 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const row = locals[cdt][cdn];
 		let nw = flt(row.net_weight) || 0;
 		let wi = flt(row.width_inch) || 0;
-		let mr = flt(row.meter_roll) || 0;
+		let mr = sprResolveLengthMeters(row) || 0;
 		
 		let newGsm = 0;
 		if (nw > 0 && wi > 0 && mr > 0) {
 			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 		}
 		
-		row.produced_gsm = newGsm;
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		frm.refresh_field('items');
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_length_mtrs: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+	},
+	meter_roll_mtrs: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+	},
+	ordered_length: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+	},
+	ordered_length_mtrs: function (frm, cdt, cdn) {
+		spr_update_produced_gsm(frm, cdt, cdn);
+	},
+	custom_ordered_length: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_gsm: function (frm) {
@@ -1014,13 +1026,13 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const row = locals[cdt][cdn];
 		let nw = flt(row.net_weight) || 0;
 		let wi = flt(row.width_inch) || 0;
-		let mr = flt(row.meter_roll) || 0;
+		let mr = sprResolveLengthMeters(row) || 0;
 		
 		if (nw > 0 && wi > 0 && mr > 0) {
 			let newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
-			row.produced_gsm = newGsm;
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		} else {
-			row.produced_gsm = 0;
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
 		}
 	},
 	/**
@@ -1118,20 +1130,7 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	// Get width (required)
 	const wi = flt(row.width_inch);
 	
-	// Get length: prefer produced_length_mtrs, then meter_roll, then ordered_length
-	let mr = flt(row.meter_roll);
-	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
-		const pl = flt(row.produced_length_mtrs);
-		if (pl > 0) {
-			mr = pl;
-		}
-	}
-	if (mr <= 0) {
-		mr = flt(row.ordered_length);
-	}
-	if (mr <= 0) {
-		mr = flt(row.custom_ordered_length);
-	}
+	const mr = sprResolveLengthMeters(row);
 	
 	// Calculate GSM only if all required values are present
 	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
@@ -1143,6 +1142,27 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', pgsm);
 	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
+}
+
+function sprResolveLengthMeters(doc) {
+	const aliases = [
+		'produced_length_mtrs',
+		'meter_roll',
+		'meter_roll_mtrs',
+		'custom_meter_roll_mtrs',
+		'ordered_length',
+		'ordered_length_mtrs',
+		'custom_ordered_length',
+		'roll_mtrs',
+		'roll',
+	];
+	for (let i = 0; i < aliases.length; i++) {
+		const v = flt(doc[aliases[i]]);
+		if (v > 0) {
+			return v;
+		}
+	}
+	return 0;
 }
 
 function fetch_and_show_pp_wo_summary(frm) {
@@ -1405,16 +1425,11 @@ function sprRollProducedLengthIncomplete(doc) {
 		return false;
 	}
 	if (pl === null || pl === '') {
-		// If produced_length_mtrs not set, check for fallback (meter_roll or ordered_length)
-		const mr = flt(doc.meter_roll);
-		const ol = flt(doc.ordered_length);
-		return mr <= 0 && ol <= 0;  // Only incomplete if both fallbacks are missing
+		return sprResolveLengthMeters(doc) <= 0;
 	}
 	// If produced_length_mtrs is set but <= 0, still allow fallback
 	if (flt(pl) <= 0) {
-		const mr = flt(doc.meter_roll);
-		const ol = flt(doc.ordered_length);
-		return mr <= 0 && ol <= 0;  // Only incomplete if both fallbacks are missing
+		return sprResolveLengthMeters(doc) <= 0;
 	}
 	return false;
 }
@@ -1435,20 +1450,7 @@ function sprEffectiveProducedGsm(doc) {
 	// Get width (required)
 	const wi = flt(doc.width_inch);
 	
-	// Get length: prefer produced_length_mtrs, then meter_roll, then ordered_length
-	let mr = flt(doc.meter_roll);
-	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
-		const pl = flt(doc.produced_length_mtrs);
-		if (pl > 0) {
-			mr = pl;
-		}
-	}
-	if (mr <= 0) {
-		mr = flt(doc.ordered_length);
-	}
-	if (mr <= 0) {
-		mr = flt(doc.custom_ordered_length);
-	}
+	const mr = sprResolveLengthMeters(doc);
 	
 	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
 	if (nw > 0 && wi > 0 && mr > 0) {
