@@ -626,6 +626,42 @@ class ShaftProductionRun(Document):
 	def on_cancel(self):
 		self.cancel_manufacturing_stock_entries()
 
+	def on_trash(self):
+		"""Remove stale row links so deleted SPR is not shown as Continue Entry on Production Table."""
+		try:
+			if frappe.db.exists("DocType", "Planning Table") and frappe.db.has_column("Planning Table", "spr_name"):
+				frappe.db.sql(
+					"""
+					UPDATE `tabPlanning Table`
+					SET spr_name = ''
+					WHERE IFNULL(spr_name, '') = %s
+					""",
+					(self.name,),
+				)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Planning Table spr_name")
+
+		# Also remove this SPR from Production Plan link list to avoid stale PP-level references elsewhere.
+		try:
+			if not frappe.db.has_column("Production Plan", "custom_shaft_production_run_id"):
+				return
+			rows = frappe.db.sql(
+				"""
+				SELECT name, custom_shaft_production_run_id
+				FROM `tabProduction Plan`
+				WHERE IFNULL(custom_shaft_production_run_id, '') != ''
+				""",
+				as_dict=True,
+			)
+			for r in rows or []:
+				raw = str(r.get("custom_shaft_production_run_id") or "")
+				parts = [p.strip() for p in raw.split(",") if p and p.strip()]
+				filtered = [p for p in parts if p != self.name]
+				if filtered != parts:
+					frappe.db.set_value("Production Plan", r["name"], "custom_shaft_production_run_id", ", ".join(filtered))
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Production Plan links")
+
 	def _unit_digit(self) -> int:
 		u = (self.get("custom_unit") or "").strip()
 		if not u:
