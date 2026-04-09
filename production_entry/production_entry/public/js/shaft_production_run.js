@@ -976,6 +976,12 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 			ln = flt(pl);
 		}
 	}
+	if (ln <= 0) {
+		ln = flt(row.ordered_length);
+	}
+	if (ln <= 0) {
+		ln = flt(row.custom_ordered_length);
+	}
 	const den = w * ln * 0.254;
 	const val = den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
@@ -1259,6 +1265,12 @@ function sprEffectiveProducedGsm(doc) {
 		if (flt(pl) > 0) {
 			ln = flt(pl);
 		}
+	}
+	if (ln <= 0) {
+		ln = flt(doc.ordered_length);
+	}
+	if (ln <= 0) {
+		ln = flt(doc.custom_ordered_length);
 	}
 	const den = w * ln * 0.254;
 	return den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;

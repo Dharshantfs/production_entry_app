@@ -76,7 +76,7 @@ def _spr_length_meters(spr_row) -> float | None:
 		return None
 	for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	try:
 		spi_meta = frappe.get_meta("Shaft Production Run Item")
@@ -86,13 +86,13 @@ def _spr_length_meters(spr_row) -> float | None:
 			lab = (df.label or "").lower()
 			if "produced" in lab and "length" in lab:
 				v = _spr_row_get(spr_row, df.fieldname)
-				if v is not None:
+				if v is not None and flt(v) > 0:
 					return flt(v)
 	except Exception:
 		pass
 	for key in ("meter_roll", "ordered_length", "custom_ordered_length"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	return None
 

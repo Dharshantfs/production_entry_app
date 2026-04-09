@@ -1118,13 +1118,19 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	// Get width (required)
 	const wi = flt(row.width_inch);
 	
-	// Get length: prefer produced_length_mtrs, fallback to meter_roll
+	// Get length: prefer produced_length_mtrs, then meter_roll, then ordered_length
 	let mr = flt(row.meter_roll);
 	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
 		const pl = flt(row.produced_length_mtrs);
 		if (pl > 0) {
 			mr = pl;
 		}
+	}
+	if (mr <= 0) {
+		mr = flt(row.ordered_length);
+	}
+	if (mr <= 0) {
+		mr = flt(row.custom_ordered_length);
 	}
 	
 	// Calculate GSM only if all required values are present
@@ -1429,13 +1435,19 @@ function sprEffectiveProducedGsm(doc) {
 	// Get width (required)
 	const wi = flt(doc.width_inch);
 	
-	// Get length: prefer produced_length_mtrs, fallback to meter_roll
+	// Get length: prefer produced_length_mtrs, then meter_roll, then ordered_length
 	let mr = flt(doc.meter_roll);
 	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
 		const pl = flt(doc.produced_length_mtrs);
 		if (pl > 0) {
 			mr = pl;
 		}
+	}
+	if (mr <= 0) {
+		mr = flt(doc.ordered_length);
+	}
+	if (mr <= 0) {
+		mr = flt(doc.custom_ordered_length);
 	}
 	
 	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
