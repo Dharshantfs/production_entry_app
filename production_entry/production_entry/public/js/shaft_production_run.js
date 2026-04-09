@@ -1226,17 +1226,7 @@ function sprStickerGsmFromDoc(doc) {
 
 /** True when produced length is missing or zero — do not infer GSM from ordered meter_roll (legend: incomplete / grey). */
 function sprRollProducedLengthIncomplete(doc) {
-	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
-		return false;
-	}
-	const pl = doc.produced_length_mtrs;
-	if (pl === undefined) {
-		return false;
-	}
-	if (pl === null || pl === '') {
-		return true;
-	}
-	return flt(pl) <= 0;
+	return false;
 }
 
 /** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
