@@ -52,35 +52,31 @@ frappe.ui.form.on('Shaft Production Run', {
 				const d = r.message || {};
 				console.log('[SPR] get_production_plan_details response:', d);
 				console.log('[SPR] response keys:', Object.keys(d));
-				console.log('[SPR] custom_order_code value:', d.custom_order_code);
-				console.log('[SPR] custom_label value:', d.custom_label);
-				console.log('[SPR] custom_total_planned_qty value:', d.custom_total_planned_qty);
-				console.log('[SPR] response keys:', Object.keys(d));
-				console.log('[SPR] custom_order_code value:', d.custom_order_code);
-				console.log('[SPR] custom_label value:', d.custom_label);
-				console.log('[SPR] custom_total_planned_qty value:', d.custom_total_planned_qty);
+				
+				// Set all returned fields
 				if (d.customer) {
 					console.log('[SPR] Setting customer:', d.customer);
 					frm.set_value('customer', d.customer);
 				}
-				if (d.custom_unit !== undefined && d.custom_unit !== null && d.custom_unit !== '') {
+				if (d.custom_unit) {
 					console.log('[SPR] Setting custom_unit:', d.custom_unit);
 					frm.set_value('custom_unit', d.custom_unit);
 				}
-				if (d.custom_order_code !== undefined && d.custom_order_code !== null && d.custom_order_code !== '') {
+				if ('custom_order_code' in d) {
 					console.log('[SPR] Setting custom_order_code:', d.custom_order_code);
-					frm.set_value('custom_order_code', d.custom_order_code);
+					frm.set_value('custom_order_code', d.custom_order_code || '');
 				}
-				if (flt(d.custom_total_planned_qty) > 0) {
+				if ('custom_label' in d) {
+					console.log('[SPR] Setting custom_label:', d.custom_label);
+					frm.set_value('custom_label', d.custom_label || '');
+				}
+				if ('custom_total_planned_qty' in d) {
 					console.log('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
-					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty));
+					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty || 0));
 				}
-				if (d.custom_label) {
-					const v = String(d.custom_label).trim();
-					if (v) {
-						console.log('[SPR] Directly setting custom_label from response:', v);
-						frm.set_value('custom_label', v);
-					}
+				if ('custom_party_code' in d) {
+					console.log('[SPR] Setting custom_party_code:', d.custom_party_code);
+					frm.set_value('custom_party_code', d.custom_party_code || '');
 				}
 			},
 		});

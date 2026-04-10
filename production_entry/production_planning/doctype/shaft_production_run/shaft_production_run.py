@@ -1107,8 +1107,12 @@ def get_production_plan_details(production_plan):
 		"customer": pp.get("customer"),
 		"custom_unit": pp.get("custom_unit"),
 	}
-	if pp_meta.has_field("custom_order_code") and pp.get("custom_order_code") is not None:
+	if pp_meta.has_field("custom_order_code"):
 		out["custom_order_code"] = pp.get("custom_order_code")
+	if pp_meta.has_field("custom_label"):
+		out["custom_label"] = pp.get("custom_label")
+	if pp_meta.has_field("custom_total_planned_qty"):
+		out["custom_total_planned_qty"] = pp.get("custom_total_planned_qty")
 	if pp_meta.has_field("custom_party_code") and pp.get("custom_party_code") not in (None, ""):
 		out["custom_party_code"] = pp.get("custom_party_code")
 	if pp.get("sales_order"):
