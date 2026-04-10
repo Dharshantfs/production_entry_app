@@ -609,6 +609,8 @@ function spr_open_bundle_packaging_dialog(frm) {
 									}
 								}
 								frm.refresh_field('items');
+								// Sync total_produced_weight from items net_weight sum (real-time calculation)
+								spr_sync_total_produced_weight(frm);
 								try { schedule_spr_item_row_styles(frm); } catch(e) {}
 								[0, 100, 300, 600].forEach(function (ms) {
 									setTimeout(function () {
