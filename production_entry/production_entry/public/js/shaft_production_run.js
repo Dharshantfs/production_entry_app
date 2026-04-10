@@ -726,41 +726,8 @@ function spr_open_bundle_packaging_dialog(frm) {
 									}
 								}
 								frm.refresh_field('items');
-								try { schedule_spr_item_row_styles(frm); } catch(e) {}
-								[0, 100, 300, 600].forEach(function (ms) {
-									setTimeout(function () {
-										try { apply_spr_item_row_styles(frm); } catch(e) {}
-									}, ms);
-								});
-							}
-							
-							// Wait for reload to complete if it's a promise, otherwise trigger immediately
-							if (reloadPromise && typeof reloadPromise.then === 'function') {
-								reloadPromise.then(triggerCalculationsAfterReload);
-							} else {
-								setTimeout(triggerCalculationsAfterReload, 300);
-							}
-						},
-					});
-				},
-			});
-			function refreshWidthOptions() {
-				const jp = jobByLabel[d.get_value('job_pick')];
-				const wf = d.fields_dict.width_inch;
-				const det = d.$wrapper.find('.spr-bundle-job-detail');
-				if (!jp || !wf) {
-					return;
-				}
-				const segs = jp.segments || [];
-				const arr = widthsByJob[jp.job_id] || [];
-				if (segs.length) {
-					let html =
-						'<table class="table table-bordered table-condensed" style="font-size:11px;margin:4px 0;"><thead><tr><th>' +
-						__('Width') +
-						'</th><th>' +
-						__('Net/shaft (Kg)') +
-						'</th><th>' +
-						__('WO item') +
+							// Sync total_produced_weight from items net_weight sum (real-time calculation)
+							spr_sync_total_produced_weight(frm);
 						'</th></tr></thead><tbody>';
 					segs.forEach(function (s) {
 						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(3) : '—';
