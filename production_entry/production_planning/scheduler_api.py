@@ -10064,6 +10064,11 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         )
         wo_names_str = ", ".join([wo.name for wo in pp_work_orders]) if pp_work_orders else ""
         wo_total_qty = sum(flt(wo.qty) for wo in pp_work_orders)
+        
+        # Set custom_total_planned_qty from Work Orders (same as manual creation)
+        if wo_total_qty > 0:
+            spr.custom_total_planned_qty = wo_total_qty
+            frappe.logger().info(f"[create_spr_from_psi] Set custom_total_planned_qty={wo_total_qty} from WO sum for PP {pp_id}")
 
         # PP-level fallback values - try all possible field name variations
         # Standard PP fields + custom_ prefix variants
