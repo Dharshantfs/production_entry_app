@@ -108,19 +108,42 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
+		frm.set_df_property('total_produced_weight', 'read_only', 1);
+
+		console.log('[SPR REFRESH] === REFRESH HOOK START ===');
+		
+		spr_sync_total_planned_qty_from_jobs(frm);
+		console.log('[SPR REFRESH] After total_planned_qty sync');
+		
+		spr_sync_total_produced_weight(frm);
+		console.log('[SPR REFRESH] After total_produced_weight sync (immediate)');
+		
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
+		
+		// Delayed retries for total_produced_weight
+		[200, 500, 1000, 2000].forEach(function (ms) {
+			setTimeout(function () {
+				console.log('[SPR REFRESH] Delayed sync at ' + ms + 'ms');
+				spr_sync_total_produced_weight(frm);
+			}, ms);
+		});
+		
 		[400, 800, 1500, 3000].forEach(function (ms) {
 			setTimeout(function () {
 				spr_register_spr_page_buttons(frm);
 			}, ms);
 		});
+		
 		spr_inject_gsm_legend(frm);
 		schedule_spr_item_row_styles(frm);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
+		
+		console.log('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 
 	after_save: function (frm) {
@@ -136,7 +159,10 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	items: {
 		items_add: function (frm) {
+			console.log('[SPR DEBUG] items_add fired');
 			update_shaft_job_achieved_from_items(frm);
+			console.log('[SPR DEBUG] items_add: calling spr_sync_total_produced_weight with', (frm.doc.items || []).length, 'items');
+			spr_sync_total_produced_weight(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 		items_remove: function (frm) {
@@ -2050,6 +2076,7 @@ function apply_spr_item_row_styles(frm) {
 			$row = sprFindItemsRowDomByDocname(frm, doc);
 		}
 		
+		
 		// Method 2: Use DOM rows array by index (DataTable body rows in order)
 		if ((!$row || !$row.length) && $domRows && $domRows.length > idx) {
 			$row = $($domRows.get(idx));
@@ -2105,4 +2132,56 @@ function apply_spr_item_row_styles(frm) {
 		}
 	});
 	spr_apply_items_row_lock_ui(frm);
+}
+
+
+// ===== TOTAL PRODUCED WEIGHT CALCULATION =====
+
+function spr_compute_total_produced_weight(frm) {
+	console.log('[SPR COMPUTE] START: frm exists?', !!frm, 'doc exists?', !!(frm && frm.doc));
+	
+	if (!frm || !frm.doc) {
+		console.log('[SPR COMPUTE] ERROR: No frm or doc');
+		return 0;
+	}
+	
+	const items = frm.doc.items || [];
+	console.log('[SPR COMPUTE] items array length:', items.length);
+	console.log('[SPR COMPUTE] items array:', items);
+	
+	let total = 0;
+	for (let i = 0; i < items.length; i++) {
+		const row = items[i];
+		const nw = row.net_weight ? parseFloat(row.net_weight) : 0;
+		total = total + nw;
+		console.log('[SPR COMPUTE] Item ' + i + ':', row.name, '-> net_weight:', nw, '-> running total:', total);
+	}
+	
+	console.log('[SPR COMPUTE] FINAL TOTAL:', total);
+	return total;
+}
+
+function spr_sync_total_produced_weight(frm) {
+	console.log('[SPR SYNC] START');
+	
+	if (!frm || !frm.doc) {
+		console.log('[SPR SYNC] ERROR: No frm or doc');
+		return;
+	}
+	
+	console.log('[SPR SYNC] Calling compute function...');
+	const calculated = spr_compute_total_produced_weight(frm);
+	const current = frm.doc.total_produced_weight ? parseFloat(frm.doc.total_produced_weight) : 0;
+	
+	console.log('[SPR SYNC] Current value:', current, '| Calculated value:', calculated);
+	
+	if (Math.abs(current - calculated) > 0.01) {
+		console.log('[SPR SYNC] VALUES DIFFER - Setting total_produced_weight to:', calculated);
+		frm.set_value('total_produced_weight', calculated);
+		console.log('[SPR SYNC] Set_value called');
+	} else {
+		console.log('[SPR SYNC] VALUES MATCH - No change needed');
+	}
+	
+	console.log('[SPR SYNC] END');
 }
