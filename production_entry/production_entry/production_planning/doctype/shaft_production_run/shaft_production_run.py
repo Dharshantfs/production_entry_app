@@ -550,11 +550,60 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 
 
 class ShaftProductionRun(Document):
+	TOLERANCE_PERCENT = 5.0
+
 	def validate(self):
 		self.sync_shaft_job_work_orders_from_plan()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+
+	def _planned_weight_for_tolerance(self) -> float:
+		return flt(self.get("custom_total_planned_qty"))
+
+	def _produced_weight_for_tolerance(self) -> float:
+		# Prefer document summary total; fallback to roll-wise effective weight.
+		total = flt(self.get("total_produced_weight"))
+		if total > 0:
+			return total
+		return sum(_effective_weight_kg_for_produced_gsm(row) for row in (self.items or []))
+
+	def _weight_variance_percent(self) -> float:
+		planned = self._planned_weight_for_tolerance()
+		if planned <= 0:
+			return 0.0
+		produced = self._produced_weight_for_tolerance()
+		return abs(produced - planned) * 100.0 / planned
+
+	def validate_submit_tolerance(self):
+		planned = self._planned_weight_for_tolerance()
+		if planned <= 0:
+			return
+
+		produced = self._produced_weight_for_tolerance()
+		variance_pct = self._weight_variance_percent()
+		tolerance_pct = flt(self.TOLERANCE_PERCENT)
+
+		if variance_pct <= tolerance_pct:
+			return
+
+		override_ok = cint(self.get("tolerance_override_approved")) == 1
+		reason = _cstr(self.get("tolerance_override_reason"))
+		if override_ok and reason:
+			return
+
+		frappe.throw(
+			_(
+				"Weight variance is {0}% (Planned: {1} KG, Produced: {2} KG), above allowed tolerance of {3}%. "
+				"To submit, enable Tolerance Override Approved and enter Tolerance Override Reason."
+			).format(
+				flt(variance_pct).__round__(2),
+				flt(planned).__round__(2),
+				flt(produced).__round__(2),
+				flt(tolerance_pct).__round__(2),
+			),
+			title=_("Tolerance Check"),
+		)
 
 	def sync_shaft_job_work_orders_from_plan(self):
 		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
@@ -619,6 +668,7 @@ class ShaftProductionRun(Document):
 			row.produced_gsm = compute_produced_gsm(wgt, row.width_inch, ln)
 
 	def on_submit(self):
+		self.validate_submit_tolerance()
 		self.sync_batch_custom_fields()
 		self.create_manufacturing_stock_entries()
 		self.update_work_order_statuses()

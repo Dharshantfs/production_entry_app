@@ -144,6 +144,10 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_schedule_item_row_styles_after_doc_write(frm);
 	},
 
+	before_submit: function (frm) {
+		spr_validate_submit_tolerance(frm);
+	},
+
 	items: {
 		items_add: function (frm) {
 			// Delay GSM calculation to ensure row data is fully loaded
@@ -257,6 +261,45 @@ function spr_register_spr_page_buttons_after_save(frm) {
 			spr_register_spr_page_buttons(frm);
 		}, ms);
 	});
+}
+
+function spr_validate_submit_tolerance(frm) {
+	const tolerancePct = 5;
+	const planned = flt(frm.doc.custom_total_planned_qty);
+	if (planned <= 0) {
+		return;
+	}
+
+	let produced = flt(frm.doc.total_produced_weight);
+	if (produced <= 0) {
+		produced = (frm.doc.items || []).reduce(function (sum, row) {
+			const net = flt(row.net_weight);
+			const gross = flt(row.gross_weight);
+			return sum + (net > 0 ? net : gross);
+		}, 0);
+	}
+
+	const variancePct = Math.abs(produced - planned) * 100 / planned;
+	if (variancePct <= tolerancePct) {
+		return;
+	}
+
+	const overrideApproved = cint(frm.doc.tolerance_override_approved) === 1;
+	const reason = (frm.doc.tolerance_override_reason || '').trim();
+	if (overrideApproved && reason) {
+		return;
+	}
+
+	frappe.throw(
+		__(
+			'Weight variance is {0}% (Planned: {1} KG, Produced: {2} KG), above allowed tolerance of {3}%. To submit, enable Tolerance Override Approved and enter Tolerance Override Reason.'
+		).format(
+			variancePct.toFixed(2),
+			planned.toFixed(2),
+			produced.toFixed(2),
+			tolerancePct.toFixed(2)
+		)
+	);
 }
 
 /** Default WO qty (Kg): net/shaft from Available Jobs × shafts, else segment/PP fallbacks. */
