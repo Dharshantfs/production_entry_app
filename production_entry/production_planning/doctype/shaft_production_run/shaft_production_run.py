@@ -1107,12 +1107,11 @@ def get_production_plan_details(production_plan):
 		"customer": pp.get("customer"),
 		"custom_unit": pp.get("custom_unit"),
 	}
-	if pp_meta.has_field("custom_order_code"):
-		out["custom_order_code"] = pp.get("custom_order_code") or ""
+	# custom_order_code comes from PP's custom_party_code
+	if pp_meta.has_field("custom_party_code"):
+		out["custom_order_code"] = pp.get("custom_party_code") or ""
 	if pp_meta.has_field("custom_label"):
 		out["custom_label"] = pp.get("custom_label") or ""
-	if pp_meta.has_field("custom_party_code"):
-		out["custom_party_code"] = pp.get("custom_party_code") or ""
 	
 	# Calculate custom_total_planned_qty from WO sum
 	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
