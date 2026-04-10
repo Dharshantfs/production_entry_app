@@ -125,14 +125,21 @@ frappe.ui.form.on('Shaft Production Run', {
 		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
 		
-		// Ensure total_produced_weight is calculated after form is fully rendered
-		[100, 300, 600, 1000].forEach(function (ms) {
+		// Ensure total_produced_weight is calculated after form is fully rendered with AGGRESSIVE retries
+		console.log('[SPR] refresh hook: Starting aggressive sync attempts, items.length=' + (frm.doc.items || []).length);
+		[50, 100, 200, 300, 500, 800, 1200, 1500, 2000, 3000].forEach(function (ms) {
 			setTimeout(function () {
-				console.log('[SPR] Delayed refresh trigger at ' + ms + 'ms, items.length=' + (frm.doc.items || []).length);
+				const itemsLength = (frm.doc.items || []).length;
+				console.log('[SPR] Sync attempt at ' + ms + 'ms, items.length=' + itemsLength);
+				if (itemsLength > 0) {
+					console.log('[SPR] Items found! Syncing now.');
+				} else {
+					console.log('[SPR] Items still empty, but syncing anyway (might get from grid)');
+				}
 				spr_sync_total_produced_weight(frm);
-				spr_register_spr_page_buttons(frm);
 			}, ms);
 		});
+		
 		[400, 800, 1500, 3000].forEach(function (ms) {
 			setTimeout(function () {
 				spr_register_spr_page_buttons(frm);
@@ -192,11 +199,37 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 function spr_compute_total_produced_weight(frm) {
-	if (!frm || !frm.doc || !frm.doc.items) {
-		console.log('[SPR] No items or doc available');
+	if (!frm || !frm.doc) {
+		console.log('[SPR] No frm or doc available in compute');
 		return 0;
 	}
-	const total = (frm.doc.items || []).reduce(function (sum, row) {
+	
+	// Try to get items from frm.doc.items first, with detailed logging
+	const items = frm.doc.items || [];
+	console.log('[SPR] compute: frm.doc.items.length=', items.length, 'items=', items);
+	
+	if (items.length === 0) {
+		console.log('[SPR] WARNING: frm.doc.items is empty! Attempting to get from grid...');
+		// Last resort: try to get from the grid widget directly
+		if (frm.fields_dict && frm.fields_dict.items && frm.fields_dict.items.grid) {
+			const gridItems = frm.fields_dict.items.grid.data || [];
+			console.log('[SPR] Grid data found:', gridItems.length, 'items');
+			if (gridItems.length > 0) {
+				// Grid has data but frm.doc doesn't - sync it
+				console.log('[SPR] Using grid data instead of frm.doc.items');
+				const gridTotal = gridItems.reduce(function (sum, row) {
+					const nw = flt(row.net_weight || 0);
+					console.log('[SPR] Grid Item:', row.name, 'net_weight:', nw);
+					return sum + nw;
+				}, 0);
+				console.log('[SPR] Grid-based total:', gridTotal);
+				return gridTotal;
+			}
+		}
+		return 0;
+	}
+	
+	const total = items.reduce(function (sum, row) {
 		const nw = flt(row.net_weight || 0);
 		console.log('[SPR] Item:', row.name, 'net_weight:', nw, 'sum:', sum + nw);
 		return sum + nw;
@@ -257,14 +290,24 @@ function spr_sync_total_produced_weight(frm) {
 		console.log('[SPR] No frm or doc available in sync_total_produced_weight');
 		return;
 	}
+	
+	console.log('[SPR] SYNC START: frm.doc.items.length=' + (frm.doc.items || []).length);
+	
 	const next = spr_compute_total_produced_weight(frm);
 	const cur = flt(frm.doc.total_produced_weight);
-	console.log('[SPR] spr_sync_total_produced_weight: current=' + cur + ', calculated=' + next + ', items.length=' + (frm.doc.items || []).length);
+	
+	console.log('[SPR] SYNC: current=' + cur + ', calculated=' + next);
+	
+	if (next === 0 && (frm.doc.items || []).length === 0) {
+		console.log('[SPR] SYNC: Both next and items are 0/empty - might still be loading, will check grid');
+	}
+	
 	if (Math.abs(cur - next) > 0.0005) {
-		console.log('[SPR] Setting total_produced_weight to:', next);
+		console.log('[SPR] SYNC: Setting total_produced_weight from ' + cur + ' to ' + next);
 		frm.set_value('total_produced_weight', next);
+		console.log('[SPR] SYNC: Set_value called, frm value is now:', flt(frm.doc.total_produced_weight));
 	} else {
-		console.log('[SPR] No change needed (difference < 0.0005)');
+		console.log('[SPR] SYNC: No change needed (difference < 0.0005)');
 	}
 }
 
