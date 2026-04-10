@@ -109,9 +109,9 @@ frappe.ui.form.on('Shaft Production Run', {
 				});
 				frm.refresh_field('shaft_jobs');
 				const plannedFromJobs = (r.message || []).reduce(function (sum, row) {
-					return sum + flt(row.total_weight);
+					return sum + spr_parse_planned_weight_from_job_row(row);
 				}, 0);
-				if (plannedFromJobs > 0 && flt(frm.doc.custom_total_planned_qty) <= 0) {
+				if (plannedFromJobs > 0) {
 					frm.set_value('custom_total_planned_qty', plannedFromJobs);
 				}
 				frm.clear_table('items');
@@ -129,6 +129,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		spr_sync_total_planned_qty_from_jobs(frm);
 		spr_sync_total_produced_weight(frm);
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
@@ -188,6 +189,53 @@ function spr_compute_total_produced_weight(frm) {
 		const gross = flt(row.gross_weight);
 		return sum + (net > 0 ? net : gross);
 	}, 0);
+}
+
+function spr_sum_weight_expression(v) {
+	if (v === undefined || v === null) {
+		return 0;
+	}
+	if (typeof v === 'number') {
+		return flt(v);
+	}
+	const s = String(v || '').trim();
+	if (!s) {
+		return 0;
+	}
+	let total = 0;
+	s.split(/\s*\+\s*/).forEach(function (part) {
+		const m = String(part || '').replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+		if (m && m[1]) {
+			total += flt(m[1]);
+		}
+	});
+	return total;
+}
+
+function spr_parse_planned_weight_from_job_row(row) {
+	if (!row) {
+		return 0;
+	}
+	let w = spr_sum_weight_expression(row.total_weight);
+	if (w <= 0) {
+		w = spr_sum_weight_expression(row.net_weight);
+	}
+	if (w <= 0) {
+		w = spr_sum_weight_expression(row.planned_qty);
+	}
+	return flt(w);
+}
+
+function spr_sync_total_planned_qty_from_jobs(frm) {
+	if (!frm || !frm.doc) {
+		return;
+	}
+	const next = (frm.doc.shaft_jobs || []).reduce(function (sum, row) {
+		return sum + spr_parse_planned_weight_from_job_row(row);
+	}, 0);
+	if (next > 0 && Math.abs(flt(frm.doc.custom_total_planned_qty) - next) > 0.0005) {
+		frm.set_value('custom_total_planned_qty', next);
+	}
 }
 
 function spr_sync_total_produced_weight(frm) {

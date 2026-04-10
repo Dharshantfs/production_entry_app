@@ -148,6 +148,42 @@ def _effective_weight_kg_for_produced_gsm(row) -> float:
 	return flt(getattr(row, "gross_weight", None))
 
 
+def _sum_weight_expression(v) -> float:
+	"""Parse numeric or '+' separated string weights such as '89.61 + 6.2'."""
+	if v is None:
+		return 0.0
+	if isinstance(v, (int, float)):
+		return flt(v)
+	s = _cstr(v)
+	if not s:
+		return 0.0
+	total = 0.0
+	for part in re.split(r"\s*\+\s*", s):
+		part = part.strip()
+		if not part:
+			continue
+		m = re.search(r"(\d+(?:\.\d+)?)", part.replace(",", ""))
+		if m:
+			total += flt(m.group(1))
+	return total
+
+
+def _planned_qty_from_job_rows(rows: list[dict] | None) -> float:
+	if not rows:
+		return 0.0
+	total = 0.0
+	for r in rows:
+		if not isinstance(r, dict):
+			continue
+		w = _sum_weight_expression(r.get("total_weight"))
+		if w <= 0:
+			w = _sum_weight_expression(r.get("net_weight"))
+		if w <= 0:
+			w = _sum_weight_expression(r.get("planned_qty"))
+		total += flt(w)
+	return flt(total)
+
+
 def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
 	"""Roll line GSM from actuals: (weight_kg * 10000) / (width_inch * length_m * 0.254)."""
 	wgt = flt(weight_kg)
@@ -171,12 +207,15 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 			if v > 0:
 				return v
 	try:
+		where_parts = ["wo.production_plan = %(pp)s"]
+		if frappe.db.has_column("tabWork Order", "custom_production_plan"):
+			where_parts.append("wo.custom_production_plan = %(pp)s")
 		wo_qty = flt(
 			frappe.db.sql(
-				"""
+				f"""
 				SELECT IFNULL(SUM(wo.qty), 0)
 				FROM `tabWork Order` wo
-				WHERE wo.production_plan = %(pp)s
+				WHERE ({' OR '.join(where_parts)})
 				  AND wo.docstatus < 2
 				""",
 				{"pp": production_plan},
@@ -184,6 +223,22 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 		)
 		if wo_qty > 0:
 			return wo_qty
+	except Exception:
+		pass
+
+	try:
+		custom_sd = _build_shaft_jobs_from_custom_shaft_details(production_plan)
+		planned = _planned_qty_from_job_rows(custom_sd)
+		if planned > 0:
+			return planned
+	except Exception:
+		pass
+
+	try:
+		detailed = _build_shaft_jobs_from_pp_details(production_plan)
+		planned = _planned_qty_from_job_rows(detailed)
+		if planned > 0:
+			return planned
 	except Exception:
 		pass
 	return 0.0
