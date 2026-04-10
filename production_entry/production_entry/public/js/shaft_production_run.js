@@ -171,12 +171,29 @@ frappe.ui.form.on('Shaft Production Run', {
 			schedule_spr_item_row_styles(frm);
 		},
 	},
-});
+	
+	// Handle net_weight changes in items grid
+	'items.net_weight': function (frm, cdt, cdn) {
+		console.log('[SPR] Item net_weight changed:', cdt, cdn);
+		spr_sync_total_produced_weight(frm);
+	},
+	'items.gross_weight': function (frm, cdt, cdn) {
+		console.log('[SPR] Item gross_weight changed:', cdt, cdn);
+		spr_sync_total_produced_weight(frm);
+	},
 
 function spr_compute_total_produced_weight(frm) {
-	return (frm.doc.items || []).reduce(function (sum, row) {
-		return sum + flt(row.net_weight);
+	if (!frm || !frm.doc || !frm.doc.items) {
+		console.log('[SPR] No items or doc available');
+		return 0;
+	}
+	const total = (frm.doc.items || []).reduce(function (sum, row) {
+		const nw = flt(row.net_weight || 0);
+		console.log('[SPR] Item:', row.name, 'net_weight:', nw, 'sum:', sum + nw);
+		return sum + nw;
 	}, 0);
+	console.log('[SPR] compute_total_produced_weight final total:', total);
+	return total;
 }
 
 function spr_sum_weight_expression(v) {
@@ -228,12 +245,17 @@ function spr_sync_total_planned_qty_from_jobs(frm) {
 
 function spr_sync_total_produced_weight(frm) {
 	if (!frm || !frm.doc) {
+		console.log('[SPR] No frm or doc available in sync_total_produced_weight');
 		return;
 	}
 	const next = spr_compute_total_produced_weight(frm);
 	const cur = flt(frm.doc.total_produced_weight);
+	console.log('[SPR] spr_sync_total_produced_weight: current=' + cur + ', calculated=' + next + ', items.length=' + (frm.doc.items || []).length);
 	if (Math.abs(cur - next) > 0.0005) {
+		console.log('[SPR] Setting total_produced_weight to:', next);
 		frm.set_value('total_produced_weight', next);
+	} else {
+		console.log('[SPR] No change needed (difference < 0.0005)');
 	}
 }
 
