@@ -59,6 +59,9 @@ frappe.ui.form.on('Shaft Production Run', {
 				if (d.custom_order_code !== undefined && d.custom_order_code !== null && d.custom_order_code !== '') {
 					frm.set_value('custom_order_code', d.custom_order_code);
 				}
+				if (flt(d.custom_total_planned_qty) > 0) {
+					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty));
+				}
 				if (d.custom_party_code !== undefined && d.custom_party_code !== null && String(d.custom_party_code).trim() !== '') {
 					const v = String(d.custom_party_code).trim();
 					const field = frm.get_field('custom_label');
@@ -105,19 +108,28 @@ frappe.ui.form.on('Shaft Production Run', {
 					});
 				});
 				frm.refresh_field('shaft_jobs');
+				const plannedFromJobs = (r.message || []).reduce(function (sum, row) {
+					return sum + flt(row.total_weight);
+				}, 0);
+				if (plannedFromJobs > 0 && flt(frm.doc.custom_total_planned_qty) <= 0) {
+					frm.set_value('custom_total_planned_qty', plannedFromJobs);
+				}
 				frm.clear_table('items');
 				frm.refresh_field('items');
+				spr_sync_total_produced_weight(frm);
 				fetch_and_show_pp_wo_summary(frm);
 			},
 			error: function () {
 				frm.clear_table('items');
 				frm.refresh_field('items');
+				spr_sync_total_produced_weight(frm);
 				fetch_and_show_pp_wo_summary(frm);
 			},
 		});
 	},
 
 	refresh: function (frm) {
+		spr_sync_total_produced_weight(frm);
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
@@ -159,14 +171,35 @@ frappe.ui.form.on('Shaft Production Run', {
 				});
 			}, 100);
 			update_shaft_job_achieved_from_items(frm);
+			spr_sync_total_produced_weight(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 		items_remove: function (frm) {
 			update_shaft_job_achieved_from_items(frm);
+			spr_sync_total_produced_weight(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 	},
 });
+
+function spr_compute_total_produced_weight(frm) {
+	return (frm.doc.items || []).reduce(function (sum, row) {
+		const net = flt(row.net_weight);
+		const gross = flt(row.gross_weight);
+		return sum + (net > 0 ? net : gross);
+	}, 0);
+}
+
+function spr_sync_total_produced_weight(frm) {
+	if (!frm || !frm.doc) {
+		return;
+	}
+	const next = spr_compute_total_produced_weight(frm);
+	const cur = flt(frm.doc.total_produced_weight);
+	if (Math.abs(cur - next) > 0.0005) {
+		frm.set_value('total_produced_weight', next);
+	}
+}
 
 /**
  * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh — remove then re-add
@@ -890,11 +923,13 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
+		spr_sync_total_produced_weight(frm);
 	},
 	gross_weight: function (frm, cdt, cdn) {
 		spr_update_produced_gsm(frm, cdt, cdn);
 		frm.refresh_field('items');
 		update_shaft_job_achieved_from_items(frm);
+		spr_sync_total_produced_weight(frm);
 	},
 	gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);

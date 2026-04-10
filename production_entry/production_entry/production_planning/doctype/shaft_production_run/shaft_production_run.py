@@ -159,6 +159,36 @@ def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
 	return round((wgt * 10000.0) / den, 2)
 
 
+def _production_plan_total_planned_qty(production_plan: str) -> float:
+	"""Resolve planned KG from Production Plan fields, then fall back to linked Work Orders sum."""
+	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
+		return 0.0
+	pp = frappe.get_doc("Production Plan", production_plan)
+	pp_meta = frappe.get_meta("Production Plan")
+	for fn in ("custom_total_planned_qty", "total_planned_qty", "planned_qty", "qty"):
+		if pp_meta.has_field(fn):
+			v = flt(pp.get(fn))
+			if v > 0:
+				return v
+	try:
+		wo_qty = flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(wo.qty), 0)
+				FROM `tabWork Order` wo
+				WHERE wo.production_plan = %(pp)s
+				  AND wo.docstatus < 2
+				""",
+				{"pp": production_plan},
+			)[0][0]
+		)
+		if wo_qty > 0:
+			return wo_qty
+	except Exception:
+		pass
+	return 0.0
+
+
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
 	"""Comma-separated WO names for this shaft row (same rules as _get_work_orders_for_spr_job)."""
 	wos = _resolve_wos_for_pp_job_row(
@@ -553,10 +583,25 @@ class ShaftProductionRun(Document):
 	TOLERANCE_PERCENT = 5.0
 
 	def validate(self):
+		self.sync_planned_qty_from_production_plan()
+		self.recalculate_total_produced_weight()
 		self.sync_shaft_job_work_orders_from_plan()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+
+	def sync_planned_qty_from_production_plan(self):
+		pp = _cstr(self.get("production_plan"))
+		if not pp:
+			return
+		planned = _production_plan_total_planned_qty(pp)
+		if planned > 0:
+			self.custom_total_planned_qty = planned
+
+	def recalculate_total_produced_weight(self):
+		self.total_produced_weight = sum(
+			_effective_weight_kg_for_produced_gsm(row) for row in (self.items or [])
+		)
 
 	def _planned_weight_for_tolerance(self) -> float:
 		return flt(self.get("custom_total_planned_qty"))
@@ -1120,6 +1165,7 @@ def get_production_plan_details(production_plan):
 	out = {
 		"customer": pp.get("customer"),
 		"custom_unit": pp.get("custom_unit"),
+		"custom_total_planned_qty": _production_plan_total_planned_qty(production_plan),
 	}
 	if pp_meta.has_field("custom_order_code") and pp.get("custom_order_code") is not None:
 		out["custom_order_code"] = pp.get("custom_order_code")
