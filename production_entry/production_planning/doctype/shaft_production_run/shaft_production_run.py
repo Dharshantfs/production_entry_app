@@ -1108,13 +1108,15 @@ def get_production_plan_details(production_plan):
 		"custom_unit": pp.get("custom_unit"),
 	}
 	if pp_meta.has_field("custom_order_code"):
-		out["custom_order_code"] = pp.get("custom_order_code")
+		out["custom_order_code"] = pp.get("custom_order_code") or ""
 	if pp_meta.has_field("custom_label"):
-		out["custom_label"] = pp.get("custom_label")
-	if pp_meta.has_field("custom_total_planned_qty"):
-		out["custom_total_planned_qty"] = pp.get("custom_total_planned_qty")
-	if pp_meta.has_field("custom_party_code") and pp.get("custom_party_code") not in (None, ""):
-		out["custom_party_code"] = pp.get("custom_party_code")
+		out["custom_label"] = pp.get("custom_label") or ""
+	if pp_meta.has_field("custom_party_code"):
+		out["custom_party_code"] = pp.get("custom_party_code") or ""
+	
+	# Calculate custom_total_planned_qty from WO sum
+	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
+	
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True

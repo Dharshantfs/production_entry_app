@@ -53,7 +53,7 @@ frappe.ui.form.on('Shaft Production Run', {
 				console.log('[SPR] get_production_plan_details response:', d);
 				console.log('[SPR] response keys:', Object.keys(d));
 				
-				// Set all returned fields
+				// Set all returned fields that exist on the form
 				if (d.customer) {
 					console.log('[SPR] Setting customer:', d.customer);
 					frm.set_value('customer', d.customer);
@@ -74,10 +74,7 @@ frappe.ui.form.on('Shaft Production Run', {
 					console.log('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
 					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty || 0));
 				}
-				if ('custom_party_code' in d) {
-					console.log('[SPR] Setting custom_party_code:', d.custom_party_code);
-					frm.set_value('custom_party_code', d.custom_party_code || '');
-				}
+				// Note: custom_party_code is only in the child table, not the header, so don't set it here
 			},
 		});
 
