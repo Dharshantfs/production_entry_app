@@ -198,15 +198,12 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 		return 0.0
 
 	try:
-		where_parts = ["wo.production_plan = %(pp)s"]
-		if frappe.db.has_column("tabWork Order", "custom_production_plan"):
-			where_parts.append("wo.custom_production_plan = %(pp)s")
 		wo_qty = flt(
 			frappe.db.sql(
-				f"""
+				"""
 				SELECT IFNULL(SUM(wo.qty), 0)
 				FROM `tabWork Order` wo
-				WHERE ({' OR '.join(where_parts)})
+				WHERE wo.production_plan = %(pp)s
 				  AND wo.docstatus < 2
 				""",
 				{"pp": production_plan},
@@ -214,7 +211,8 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 		)
 		if wo_qty > 0:
 			return wo_qty
-	except Exception:
+	except Exception as e:
+		frappe.logger().error(f"Error fetching WO sum for {production_plan}: {e}")
 		pass
 
 	try:
