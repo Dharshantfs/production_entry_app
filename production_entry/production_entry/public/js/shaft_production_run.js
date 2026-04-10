@@ -50,20 +50,28 @@ frappe.ui.form.on('Shaft Production Run', {
 			args: { production_plan: frm.doc.production_plan },
 			callback: function (r) {
 				const d = r.message || {};
+				console.log('[SPR] get_production_plan_details response:', d);
 				if (d.customer) {
+					console.log('[SPR] Setting customer:', d.customer);
 					frm.set_value('customer', d.customer);
 				}
 				if (d.custom_unit !== undefined && d.custom_unit !== null && d.custom_unit !== '') {
+					console.log('[SPR] Setting custom_unit:', d.custom_unit);
 					frm.set_value('custom_unit', d.custom_unit);
 				}
 				if (d.custom_order_code !== undefined && d.custom_order_code !== null && d.custom_order_code !== '') {
+					console.log('[SPR] Setting custom_order_code:', d.custom_order_code);
 					frm.set_value('custom_order_code', d.custom_order_code);
+				} else {
+					console.log('[SPR] custom_order_code not in response or empty. Full response:', d);
 				}
 				if (flt(d.custom_total_planned_qty) > 0) {
+					console.log('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
 					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty));
 				}
 				if (d.custom_label !== undefined && d.custom_label !== null && String(d.custom_label).trim() !== '') {
 					const v = String(d.custom_label).trim();
+					console.log('[SPR] Attempting to set custom_label. Value from PP:', v);
 					const field = frm.get_field('custom_label');
 					const raw = field && field.df && field.df.options ? field.df.options : '';
 					const opts = raw
@@ -74,6 +82,7 @@ frappe.ui.form.on('Shaft Production Run', {
 								})
 								.filter(Boolean)
 						: [];
+					console.log('[SPR] Dropdown options for custom_label:', opts);
 					let pick = opts.indexOf(v) >= 0 ? v : null;
 					if (!pick) {
 						const low = v.toLowerCase();
@@ -84,9 +93,14 @@ frappe.ui.form.on('Shaft Production Run', {
 							}
 						}
 					}
+					console.log('[SPR] Final custom_label to set:', pick);
 					if (pick) {
 						frm.set_value('custom_label', pick);
+					} else {
+						console.warn('[SPR] No matching custom_label found. Value:', v, 'Options:', opts);
 					}
+				} else {
+					console.log('[SPR] custom_label not in response');
 				}
 			},
 		});
