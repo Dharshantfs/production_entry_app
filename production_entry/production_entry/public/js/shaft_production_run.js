@@ -69,38 +69,12 @@ frappe.ui.form.on('Shaft Production Run', {
 					console.log('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
 					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty));
 				}
-				if (d.custom_label !== undefined && d.custom_label !== null && String(d.custom_label).trim() !== '') {
+				if (d.custom_label) {
 					const v = String(d.custom_label).trim();
-					console.log('[SPR] Attempting to set custom_label. Value from PP:', v);
-					const field = frm.get_field('custom_label');
-					const raw = field && field.df && field.df.options ? field.df.options : '';
-					const opts = raw
-						? raw
-								.split('\n')
-								.map(function (s) {
-									return s.trim();
-								})
-								.filter(Boolean)
-						: [];
-					console.log('[SPR] Dropdown options for custom_label:', opts);
-					let pick = opts.indexOf(v) >= 0 ? v : null;
-					if (!pick) {
-						const low = v.toLowerCase();
-						for (let i = 0; i < opts.length; i++) {
-							if (opts[i].toLowerCase() === low) {
-								pick = opts[i];
-								break;
-							}
-						}
+					if (v) {
+						console.log('[SPR] Directly setting custom_label from response:', v);
+						frm.set_value('custom_label', v);
 					}
-					console.log('[SPR] Final custom_label to set:', pick);
-					if (pick) {
-						frm.set_value('custom_label', pick);
-					} else {
-						console.warn('[SPR] No matching custom_label found. Value:', v, 'Options:', opts);
-					}
-				} else {
-					console.log('[SPR] custom_label not in response');
 				}
 			},
 		});
