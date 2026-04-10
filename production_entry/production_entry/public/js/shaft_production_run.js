@@ -124,6 +124,15 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
+		
+		// Ensure total_produced_weight is calculated after form is fully rendered
+		[100, 300, 600, 1000].forEach(function (ms) {
+			setTimeout(function () {
+				console.log('[SPR] Delayed refresh trigger at ' + ms + 'ms, items.length=' + (frm.doc.items || []).length);
+				spr_sync_total_produced_weight(frm);
+				spr_register_spr_page_buttons(frm);
+			}, ms);
+		});
 		[400, 800, 1500, 3000].forEach(function (ms) {
 			setTimeout(function () {
 				spr_register_spr_page_buttons(frm);
