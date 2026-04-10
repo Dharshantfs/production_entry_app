@@ -51,6 +51,10 @@ frappe.ui.form.on('Shaft Production Run', {
 			callback: function (r) {
 				const d = r.message || {};
 				console.log('[SPR] get_production_plan_details response:', d);
+				console.log('[SPR] response keys:', Object.keys(d));
+				console.log('[SPR] custom_order_code value:', d.custom_order_code);
+				console.log('[SPR] custom_label value:', d.custom_label);
+				console.log('[SPR] custom_total_planned_qty value:', d.custom_total_planned_qty);
 				if (d.customer) {
 					console.log('[SPR] Setting customer:', d.customer);
 					frm.set_value('customer', d.customer);
@@ -62,8 +66,6 @@ frappe.ui.form.on('Shaft Production Run', {
 				if (d.custom_order_code !== undefined && d.custom_order_code !== null && d.custom_order_code !== '') {
 					console.log('[SPR] Setting custom_order_code:', d.custom_order_code);
 					frm.set_value('custom_order_code', d.custom_order_code);
-				} else {
-					console.log('[SPR] custom_order_code not in response or empty. Full response:', d);
 				}
 				if (flt(d.custom_total_planned_qty) > 0) {
 					console.log('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
