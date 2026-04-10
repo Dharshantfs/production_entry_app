@@ -62,8 +62,8 @@ frappe.ui.form.on('Shaft Production Run', {
 				if (flt(d.custom_total_planned_qty) > 0) {
 					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty));
 				}
-				if (d.custom_party_code !== undefined && d.custom_party_code !== null && String(d.custom_party_code).trim() !== '') {
-					const v = String(d.custom_party_code).trim();
+				if (d.custom_label !== undefined && d.custom_label !== null && String(d.custom_label).trim() !== '') {
+					const v = String(d.custom_label).trim();
 					const field = frm.get_field('custom_label');
 					const raw = field && field.df && field.df.options ? field.df.options : '';
 					const opts = raw

@@ -1228,6 +1228,10 @@ def get_production_plan_details(production_plan):
 		out["custom_order_code"] = pp.get("custom_order_code")
 	if pp_meta.has_field("custom_party_code") and pp.get("custom_party_code") not in (None, ""):
 		out["custom_party_code"] = pp.get("custom_party_code")
+		if not out.get("custom_order_code"):
+			out["custom_order_code"] = pp.get("custom_party_code")
+	if pp_meta.has_field("custom_label") and pp.get("custom_label") not in (None, ""):
+		out["custom_label"] = pp.get("custom_label")
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True
@@ -1467,6 +1471,15 @@ def get_job_rows_for_production_plan(production_plan):
 		if job_meta.has_field("work_orders") and wos:
 			row["work_orders"] = ", ".join(w["name"] for w in wos)
 		out.append(row)
+		
+	# Fallback: fill in party_code from Production Plan's custom_party_code if missing in jobs
+	if out:
+		pp_party_code = frappe.db.get_value("Production Plan", production_plan, "custom_party_code")
+		if pp_party_code and job_meta.has_field("party_code"):
+			for row in out:
+				if not row.get("party_code"):
+					row["party_code"] = pp_party_code
+					
 	return out
 
 
