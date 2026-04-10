@@ -209,10 +209,11 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 				{"pp": production_plan},
 			)[0][0]
 		)
+		frappe.logger().info(f"[_production_plan_total_planned_qty] {production_plan}: WO qty sum = {wo_qty}")
 		if wo_qty > 0:
 			return wo_qty
 	except Exception as e:
-		frappe.logger().error(f"Error fetching WO sum for {production_plan}: {e}")
+		frappe.logger().error(f"[_production_plan_total_planned_qty] Error fetching WO sum for {production_plan}: {e}")
 		pass
 
 	try:
@@ -1246,7 +1247,7 @@ def get_production_plan_wo_summary(production_plan):
 	"""Work Orders linked to this PP: status, order qty, pending qty — for desk popup after PP is set."""
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
 		return []
-	return frappe.db.sql(
+	result = frappe.db.sql(
 		"""
 		SELECT
 			wo.name AS work_order,
@@ -1261,6 +1262,10 @@ def get_production_plan_wo_summary(production_plan):
 		{"pp": production_plan},
 		as_dict=True,
 	)
+	frappe.logger().info(f"[WO SUMMARY] Production Plan: {production_plan}, Found {len(result)} WOs")
+	for row in result:
+		frappe.logger().info(f"  WO: {row.get('work_order')}, order_qty: {row.get('order_qty')}, pending_qty: {row.get('pending_qty')}")
+	return result
 
 
 def _count_combination_segments(combination) -> int:

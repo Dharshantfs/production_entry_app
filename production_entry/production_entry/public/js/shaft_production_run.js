@@ -1128,10 +1128,15 @@ function fetch_and_show_pp_wo_summary(frm) {
 		args: { production_plan: frm.doc.production_plan },
 		callback: function (r) {
 			const rows = r.message || [];
+			console.log('[SPR] WO Summary rows:', rows);
 			const woSum = rows.reduce(function (sum, row) {
-				return sum + flt(row.order_qty);
+				const qty = flt(row.order_qty || 0);
+				console.log('[SPR] Row:', row.work_order, 'qty:', qty);
+				return sum + qty;
 			}, 0);
+			console.log('[SPR] WO Total Sum:', woSum);
 			if (woSum > 0) {
+				console.log('[SPR] Setting custom_total_planned_qty to:', woSum);
 				frm.set_value('custom_total_planned_qty', woSum);
 			}
 			show_pp_work_order_summary_dialog(rows);
