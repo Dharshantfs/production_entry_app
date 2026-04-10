@@ -9160,6 +9160,9 @@ def create_mix_spr(date_key, mix_data):
     # Sync mix name to order code header if available
     if mix_data and len(mix_data) > 0:
         doc.custom_order_code = mix_data[0].get("mixName")
+        # Also try to fetch label from mix data if available
+        if mix_data[0].get("custom_label"):
+            doc.custom_label = mix_data[0].get("custom_label")
 
     # Map mix data to shaft jobs
     for i, mix in enumerate(mix_data):

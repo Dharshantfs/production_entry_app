@@ -1149,12 +1149,20 @@ def get_production_plan_details(production_plan):
 	# custom_order_code comes from PP's custom_party_code
 	if pp_meta.has_field("custom_party_code"):
 		out["custom_order_code"] = pp.get("custom_party_code") or ""
+	
+	# Try both custom_label and label fields
+	label_value = ""
 	if pp_meta.has_field("custom_label"):
-		out["custom_label"] = pp.get("custom_label") or ""
+		label_value = pp.get("custom_label") or ""
+	if not label_value and pp_meta.has_field("label"):
+		label_value = pp.get("label") or ""
+	if label_value:
+		out["custom_label"] = label_value
 	
 	# Calculate custom_total_planned_qty from WO sum
 	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
 	
+	frappe.logger().info(f"[get_production_plan_details] PP {production_plan}: custom_order_code={out.get('custom_order_code')}, custom_label={out.get('custom_label')}, custom_total_planned_qty={out.get('custom_total_planned_qty')}")
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True
