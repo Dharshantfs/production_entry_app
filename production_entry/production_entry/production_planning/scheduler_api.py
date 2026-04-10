@@ -10074,6 +10074,17 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         spr.custom_order_code = parent_sheet.party_code or ""
         spr.customer = pp.customer or parent_sheet.customer or ""
         
+        # Fetch label from Production Plan (with fallback logic)
+        pp_meta = frappe.get_meta("Production Plan")
+        label_value = ""
+        if pp_meta.has_field("custom_label"):
+            label_value = pp.get("custom_label") or ""
+        if not label_value and pp_meta.has_field("label"):
+            label_value = pp.get("label") or ""
+        if label_value:
+            spr.custom_label = label_value
+            frappe.logger().info(f"[create_spr_from_psi] Set custom_label={label_value} from PP {pp_id}")
+        
         def pick_value(source, keys, default=None):
             for k in keys:
                 v = source.get(k)
