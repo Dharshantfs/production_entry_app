@@ -129,6 +129,13 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
+		frm.set_df_property('total_produced_weight', 'read_only', 1);
+		let net_weight_df = frappe.meta.get_docfield('Shaft Production Run Item', 'net_weight', frm.doc.name);
+		if (net_weight_df) {
+			net_weight_df.read_only = 1;
+		}
+
 		spr_sync_total_planned_qty_from_jobs(frm);
 		spr_sync_total_produced_weight(frm);
 		spr_patch_items_grid_refresh(frm);
@@ -185,9 +192,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
 function spr_compute_total_produced_weight(frm) {
 	return (frm.doc.items || []).reduce(function (sum, row) {
-		const net = flt(row.net_weight);
-		const gross = flt(row.gross_weight);
-		return sum + (net > 0 ? net : gross);
+		return sum + flt(row.net_weight);
 	}, 0);
 }
 

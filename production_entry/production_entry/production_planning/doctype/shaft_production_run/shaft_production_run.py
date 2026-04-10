@@ -141,11 +141,8 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 
 
 def _effective_weight_kg_for_produced_gsm(row) -> float:
-	"""Prefer net weight; if not entered yet, use gross (same rule as desk JS spr_update_produced_gsm)."""
-	nw = flt(getattr(row, "net_weight", None))
-	if nw > 0:
-		return nw
-	return flt(getattr(row, "gross_weight", None))
+	"""Strictly use net weight for totals per request."""
+	return flt(getattr(row, "net_weight", None))
 
 
 def _sum_weight_expression(v) -> float:
@@ -199,13 +196,7 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 	"""Resolve planned KG from Production Plan fields, then fall back to linked Work Orders sum."""
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
 		return 0.0
-	pp = frappe.get_doc("Production Plan", production_plan)
-	pp_meta = frappe.get_meta("Production Plan")
-	for fn in ("custom_total_planned_qty", "total_planned_qty", "planned_qty", "qty"):
-		if pp_meta.has_field(fn):
-			v = flt(pp.get(fn))
-			if v > 0:
-				return v
+
 	try:
 		where_parts = ["wo.production_plan = %(pp)s"]
 		if frappe.db.has_column("tabWork Order", "custom_production_plan"):
@@ -241,6 +232,19 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 			return planned
 	except Exception:
 		pass
+
+	# Final fallback to direct PP fields
+	try:
+		pp = frappe.get_doc("Production Plan", production_plan)
+		pp_meta = frappe.get_meta("Production Plan")
+		for fn in ("custom_total_planned_qty", "total_planned_qty", "planned_qty", "qty"):
+			if pp_meta.has_field(fn):
+				v = flt(pp.get(fn))
+				if v > 0:
+					return v
+	except Exception:
+		pass
+		
 	return 0.0
 
 
