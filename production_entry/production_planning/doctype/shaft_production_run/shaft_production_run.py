@@ -355,20 +355,30 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 					m[fn] = v
 
 		jn = m.get("job_id")
-		if jn and (not m.get("total_weight")):
-			wos_tw = _resolve_wos_for_pp_job_row(
-				production_plan,
-				ppi=m.get("production_plan_item"),
-				job_id=_cstr(jn),
-				row_index=idx,
-				combination=m.get("combination"),
-			)
-			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
+		job_gsm = None
+		if m.get("gsm") is not None and m.get("gsm") != "":
+			try:
+				job_gsm = int(flt(str(m.get("gsm")).strip().split()[0]))
+			except Exception:
+				try:
+					job_gsm = int(flt(m.get("gsm")))
+				except Exception:
+					pass
+		wos_res = _resolve_wos_for_pp_job_row(
+			production_plan,
+			ppi=m.get("production_plan_item"),
+			job_id=_cstr(jn) if jn else None,
+			row_index=idx,
+			combination=m.get("combination"),
+			job_gsm=job_gsm,
+		)
+		if jn and (not m.get("total_weight")) and wos_res:
+			tw = sum(flt(w.get("planned_qty")) for w in wos_res)
 			if flt(tw) > 0:
 				m["total_weight"] = flt(tw)
-
 		if job_meta.has_field("work_orders"):
-			m["work_orders"] = _work_order_names_for_pp_job(production_plan, m, idx)
+			m["work_orders"] = ", ".join(w["name"] for w in wos_res) if wos_res else ""
+		_fill_party_code_from_resolved_wos(m, job_meta, wos_res)
 
 		out.append(m)
 	return out or None
@@ -535,6 +545,25 @@ def _wo_has_gsm(wo: dict, target_gsm: int) -> bool:
 	return False
 
 
+def _pick_one_wo_by_gsm(wos: list, job_gsm: int | None) -> list:
+	"""Narrow a WO list to one row; prefer GSM match on production_item when several WOs share a PPI."""
+	if not wos:
+		return []
+	if len(wos) == 1:
+		return wos
+	if job_gsm and job_gsm > 0:
+		for wo in wos:
+			try:
+				prod_item = wo.get("production_item")
+				if prod_item:
+					gsm, _width = parse_item_code(_cstr(prod_item))
+					if gsm == job_gsm:
+						return [wo]
+			except Exception:
+				pass
+	return [wos[0]]
+
+
 def _resolve_wos_for_pp_job_row(
 	pp_name: str,
 	*,
@@ -549,37 +578,29 @@ def _resolve_wos_for_pp_job_row(
 	``combination`` is accepted for API compatibility (e.g. 63\"+63\") but we do **not** allocate
 	one WO per segment here — same-width combo lines share one WO. Multi-GSM combos are handled by
 	filtering WOs on the job row GSM when multiple WOs exist for the same PPI.
+
+	If ``production_plan_item`` does not match any Work Order link, we fall back to ``job_id``,
+	then row order, then any WO on the plan (so the grid does not stay blank when PPI is stale).
 	"""
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if not wos:
-			return []
-		if len(wos) == 1:
-			return wos
-		if job_gsm and job_gsm > 0:
-			for wo in wos:
-				try:
-					prod_item = wo.get("production_item")
-					if prod_item:
-						gsm, _width = parse_item_code(_cstr(prod_item))
-						if gsm == job_gsm:
-							return [wo]
-				except Exception:
-					pass
-		return [wos[0]]
+		if wos:
+			return _pick_one_wo_by_gsm(wos, job_gsm)
 
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
-		return [wos[0]] if wos else []
+		if wos:
+			return _pick_one_wo_by_gsm(wos, job_gsm)
 
 	if row_index is not None:
 		ord_ppi = _ordered_production_plan_items(pp_name)
 		if ord_ppi and 0 <= row_index < len(ord_ppi):
 			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
-			return [wos[0]] if wos else []
+			if wos:
+				return _pick_one_wo_by_gsm(wos, job_gsm)
 
 	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	return [all_wos[0]] if all_wos else []
+	return _pick_one_wo_by_gsm(all_wos, job_gsm) if all_wos else []
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
@@ -648,26 +669,27 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 		):
 			if fn in r and r[fn] is not None and job_meta.has_field(fn):
 				m[fn] = r[fn]
-		if (not m.get("total_weight")) and jn:
-			job_gsm = None
-			if m.get("gsm"):
-				try:
-					job_gsm = int(flt(m.get("gsm")))
-				except Exception:
-					pass
-			wos_tw = _resolve_wos_for_pp_job_row(
-				production_plan,
-				ppi=m.get("production_plan_item"),
-				job_id=_cstr(jn),
-				row_index=idx,
-				combination=m.get("combination"),
-				job_gsm=job_gsm,
-			)
-			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
+		job_gsm = None
+		if m.get("gsm"):
+			try:
+				job_gsm = int(flt(m.get("gsm")))
+			except Exception:
+				pass
+		wos_res = _resolve_wos_for_pp_job_row(
+			production_plan,
+			ppi=m.get("production_plan_item"),
+			job_id=_cstr(jn),
+			row_index=idx,
+			combination=m.get("combination"),
+			job_gsm=job_gsm,
+		)
+		if (not m.get("total_weight")) and jn and wos_res:
+			tw = sum(flt(w.get("planned_qty")) for w in wos_res)
 			if flt(tw) > 0:
 				m["total_weight"] = flt(tw)
 		if job_meta.has_field("work_orders") and not m.get("work_orders"):
-			m["work_orders"] = _work_order_names_for_pp_job(production_plan, m, idx)
+			m["work_orders"] = ", ".join(w["name"] for w in wos_res) if wos_res else ""
+		_fill_party_code_from_resolved_wos(m, job_meta, wos_res)
 		out.append(m)
 	return out or None
 
@@ -717,6 +739,16 @@ class ShaftProductionRun(Document):
 			)
 			if wos:
 				row.work_orders = ", ".join(w["name"] for w in wos)
+				if meta.has_field("party_code"):
+					pc_existing = getattr(row, "party_code", None)
+					if pc_existing is None or not str(pc_existing).strip():
+						try:
+							wo_doc = frappe.get_doc("Work Order", wos[0]["name"])
+							pc = get_order_code(wo_doc)
+							if pc:
+								row.party_code = pc
+						except Exception:
+							pass
 
 	def sync_roll_line_net_weights_from_planned(self):
 		"""No longer used on save: net weight must come from operators or site scripts, not planned qty."""
@@ -1617,15 +1649,23 @@ def get_job_rows_for_production_plan(production_plan):
 			if comb:
 				row["combination"] = comb
 		m = dict(row)
+		job_gsm = None
+		if m.get("gsm") is not None:
+			try:
+				job_gsm = int(flt(m.get("gsm")))
+			except Exception:
+				pass
 		wos = _resolve_wos_for_pp_job_row(
 			production_plan,
 			ppi=m.get("production_plan_item"),
 			job_id=_cstr(m.get("job_id")),
 			row_index=i,
 			combination=m.get("combination"),
+			job_gsm=job_gsm,
 		)
 		if job_meta.has_field("work_orders") and wos:
 			row["work_orders"] = ", ".join(w["name"] for w in wos)
+		_fill_party_code_from_resolved_wos(row, job_meta, wos)
 		out.append(row)
 	return out
 
@@ -2699,6 +2739,22 @@ def spr_apply_bundle_packaging(
 		"total_width_inch": total_width_inch,
 		"sticker_bundle_weight_kg": bundle_net,
 	}
+
+
+def _fill_party_code_from_resolved_wos(m: dict, job_meta, wos: list) -> None:
+	"""Set child row party_code (Order Code) from the resolved WO when the plan row did not supply it."""
+	if not wos or not job_meta or not job_meta.has_field("party_code"):
+		return
+	v = m.get("party_code")
+	if v is not None and str(v).strip():
+		return
+	try:
+		wo_doc = frappe.get_doc("Work Order", wos[0]["name"])
+		pc = get_order_code(wo_doc)
+		if pc:
+			m["party_code"] = pc
+	except Exception:
+		pass
 
 
 def get_order_code(wo_doc):
