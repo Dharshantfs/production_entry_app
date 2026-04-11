@@ -694,12 +694,51 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 	return out or None
 
 
+def _spr_net_weight_tolerance_percent() -> float:
+	"""Allowed deviation of roll net (or gross) vs planned_qty (%). Set `spr_net_weight_tolerance_percent` in site_config."""
+	pc = frappe.conf.get("spr_net_weight_tolerance_percent")
+	if pc is not None:
+		return max(flt(pc), 0.0)
+	return 5.0
+
+
+def _spr_effective_roll_weight_kg_for_tolerance(row) -> float:
+	nw = flt(_spr_row_get(row, "net_weight"))
+	if nw > 0:
+		return nw
+	return flt(_spr_row_get(row, "gross_weight"))
+
+
+def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
+	spi = frappe.get_meta("Shaft Production Run Item")
+	if not spi.has_field("planned_qty"):
+		return []
+	tol = _spr_net_weight_tolerance_percent()
+	if tol <= 0:
+		return []
+	out: list[tuple] = []
+	for row in doc.items or []:
+		pq = flt(_spr_row_get(row, "planned_qty"))
+		if pq <= 0:
+			continue
+		act = _spr_effective_roll_weight_kg_for_tolerance(row)
+		if act <= 0:
+			continue
+		dev_pct = abs(act - pq) / pq * 100.0
+		if dev_pct > tol + 1e-9:
+			jb = _cstr(_spr_row_get(row, "job"))
+			rn = _spr_row_get(row, "roll_no")
+			out.append((jb, rn, pq, act, dev_pct))
+	return out
+
+
 class ShaftProductionRun(Document):
 	def validate(self):
 		self.sync_shaft_job_work_orders_from_plan()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+		self._validate_roll_weight_tolerance()
 
 	def sync_shaft_job_work_orders_from_plan(self):
 		"""Fill Available Jobs.work_orders from Production Plan (one WO per row; GSM disambiguates when several WOs share a PPI)."""
@@ -753,6 +792,36 @@ class ShaftProductionRun(Document):
 	def sync_roll_line_net_weights_from_planned(self):
 		"""No longer used on save: net weight must come from operators or site scripts, not planned qty."""
 		pass
+
+	def _validate_roll_weight_tolerance(self):
+		meta = frappe.get_meta("Shaft Production Run")
+		if not meta.has_field("tolerance_override_approved") or not meta.has_field("tolerance_override_reason"):
+			return
+		violations = _spr_collect_roll_planned_tolerance_violations(self)
+		if not violations:
+			if cint(self.get("tolerance_override_approved")):
+				self.tolerance_override_approved = 0
+				self.tolerance_override_reason = ""
+			return
+		reason = (self.get("tolerance_override_reason") or "").strip()
+		if cint(self.get("tolerance_override_approved")) and reason:
+			return
+		tol = _spr_net_weight_tolerance_percent()
+		parts = []
+		for jb, rn, pq, act, dp in violations[:8]:
+			parts.append(
+				_("job {0} roll {1}: planned {2} vs {3} kg ({4:.2f}%)").format(
+					jb or "—", rn if rn is not None else "—", flt(pq, 3), flt(act, 3), dp
+				)
+			)
+		detail = "; ".join(parts)
+		frappe.throw(
+			_(
+				"Net/gross weight differs from planned qty by more than {0}%. {1} "
+				"Use Save from desk to open the approval dialog, or set Tolerance override with a reason."
+			).format(tol, detail),
+			title=_("Tolerance approval required"),
+		)
 
 	def recalculate_job_achieved_weights(self):
 		"""Total Achieved Weight on each Available Jobs row = sum of net_weight in Roll Results for that job."""

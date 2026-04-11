@@ -146,6 +146,31 @@ frappe.ui.form.on('Shaft Production Run', {
 		console.log('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 
+	validate: function (frm) {
+		if (!frm || !frm.doc) {
+			return;
+		}
+		if (cint(frm.doc.docstatus) !== 0) {
+			return;
+		}
+		if (!frappe.meta.get_docfield('Shaft Production Run', 'tolerance_override_approved')) {
+			return;
+		}
+		const violations = spr_collect_planned_tolerance_violations(frm);
+		if (!violations.length) {
+			return;
+		}
+		if (cint(frm.doc.tolerance_override_approved) && (frm.doc.tolerance_override_reason || '').trim()) {
+			return;
+		}
+		frappe.validated = false;
+		// Avoid double dialog if another client script (e.g. production_scheduler) also registers validate
+		if (window.sprTolDialogOpen) {
+			return;
+		}
+		spr_show_tolerance_override_dialog(frm, violations);
+	},
+
 	after_save: function (frm) {
 		spr_register_spr_page_buttons_after_save(frm);
 		schedule_spr_item_row_styles(frm);
@@ -171,6 +196,142 @@ frappe.ui.form.on('Shaft Production Run', {
 		},
 	},
 });
+
+/** Allowed deviation of roll net/gross vs planned_qty (%). Match server `spr_net_weight_tolerance_percent` in site_config (default 5). */
+function spr_net_weight_tolerance_percent() {
+	return 5.0;
+}
+
+function spr_effective_roll_weight_kg(row) {
+	if (!row) {
+		return 0;
+	}
+	let w = flt(row.net_weight);
+	if (w > 0) {
+		return w;
+	}
+	return flt(row.gross_weight);
+}
+
+function spr_collect_planned_tolerance_violations(frm) {
+	const tol = spr_net_weight_tolerance_percent();
+	if (!(tol > 0)) {
+		return [];
+	}
+	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'planned_qty')) {
+		return [];
+	}
+	const out = [];
+	(frm.doc.items || []).forEach(function (row) {
+		const pq = flt(row.planned_qty);
+		if (!(pq > 0)) {
+			return;
+		}
+		const act = spr_effective_roll_weight_kg(row);
+		if (!(act > 0)) {
+			return;
+		}
+		const dev_pct = (Math.abs(act - pq) / pq) * 100;
+		if (dev_pct > tol + 1e-9) {
+			out.push({
+				job: row.job,
+				roll_no: row.roll_no,
+				planned: pq,
+				actual: act,
+				dev_pct: dev_pct,
+			});
+		}
+	});
+	return out;
+}
+
+function spr_escape_html(s) {
+	return String(s === undefined || s === null ? '' : s)
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;');
+}
+
+function spr_show_tolerance_override_dialog(frm, violations) {
+	window.sprTolDialogOpen = true;
+	const tol = spr_net_weight_tolerance_percent();
+	const rows = violations
+		.map(function (v) {
+			return (
+				'<tr><td>' +
+				spr_escape_html(v.job) +
+				'</td><td>' +
+				spr_escape_html(v.roll_no != null && v.roll_no !== '' ? v.roll_no : '—') +
+				'</td><td class="text-right">' +
+				flt(v.planned).toFixed(3) +
+				'</td><td class="text-right">' +
+				flt(v.actual).toFixed(3) +
+				'</td><td class="text-right">' +
+				flt(v.dev_pct).toFixed(2) +
+				'%</td></tr>'
+			);
+		})
+		.join('');
+	const html =
+		'<p class="text-muted">' +
+		__(
+			'Allowed deviation: ±{0}%. Enter a reason and confirm approval to save, or adjust roll weights.',
+			[tol]
+		) +
+		'</p><table class="table table-bordered table-condensed" style="font-size:12px;"><thead><tr><th>' +
+		__('Job') +
+		'</th><th>' +
+		__('Roll') +
+		'</th><th>' +
+		__('Planned (Kg)') +
+		'</th><th>' +
+		__('Net/Gross (Kg)') +
+		'</th><th>' +
+		__('Variance') +
+		'</th></tr></thead><tbody>' +
+		rows +
+		'</tbody></table>';
+
+	const d = new frappe.ui.Dialog({
+		title: __('Tolerance — approval required'),
+		onhide: function () {
+			window.sprTolDialogOpen = false;
+		},
+		fields: [
+			{ fieldname: 'h', fieldtype: 'HTML', options: html },
+			{
+				fieldname: 'reason',
+				fieldtype: 'Small Text',
+				label: __('Reason for override'),
+				reqd: 1,
+			},
+			{
+				fieldname: 'approved',
+				fieldtype: 'Check',
+				label: __('I approve this deviation'),
+				default: 0,
+			},
+		],
+		primary_action_label: __('Save with approval'),
+		primary_action: function () {
+			const reason = (d.get_value('reason') || '').trim();
+			if (!reason) {
+				frappe.msgprint(__('Reason is required.'));
+				return;
+			}
+			if (!cint(d.get_value('approved'))) {
+				frappe.msgprint(__('Confirm approval to continue.'));
+				return;
+			}
+			d.hide();
+			frm.set_value('tolerance_override_reason', reason);
+			frm.set_value('tolerance_override_approved', 1);
+			frm.save();
+		},
+	});
+	d.show();
+}
 
 /**
  * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh — remove then re-add

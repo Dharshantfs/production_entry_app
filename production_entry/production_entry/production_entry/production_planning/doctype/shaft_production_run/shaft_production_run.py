@@ -694,12 +694,51 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 	return out or None
 
 
+def _spr_net_weight_tolerance_percent() -> float:
+	"""Allowed deviation of roll net (or gross) vs planned_qty (%). Set `spr_net_weight_tolerance_percent` in site_config."""
+	pc = frappe.conf.get("spr_net_weight_tolerance_percent")
+	if pc is not None:
+		return max(flt(pc), 0.0)
+	return 5.0
+
+
+def _spr_effective_roll_weight_kg_for_tolerance(row) -> float:
+	nw = flt(_spr_row_get(row, "net_weight"))
+	if nw > 0:
+		return nw
+	return flt(_spr_row_get(row, "gross_weight"))
+
+
+def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
+	spi = frappe.get_meta("Shaft Production Run Item")
+	if not spi.has_field("planned_qty"):
+		return []
+	tol = _spr_net_weight_tolerance_percent()
+	if tol <= 0:
+		return []
+	out: list[tuple] = []
+	for row in doc.items or []:
+		pq = flt(_spr_row_get(row, "planned_qty"))
+		if pq <= 0:
+			continue
+		act = _spr_effective_roll_weight_kg_for_tolerance(row)
+		if act <= 0:
+			continue
+		dev_pct = abs(act - pq) / pq * 100.0
+		if dev_pct > tol + 1e-9:
+			jb = _cstr(_spr_row_get(row, "job"))
+			rn = _spr_row_get(row, "roll_no")
+			out.append((jb, rn, pq, act, dev_pct))
+	return out
+
+
 class ShaftProductionRun(Document):
 	def validate(self):
 		self.sync_shaft_job_work_orders_from_plan()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+		self._validate_roll_weight_tolerance()
 
 	def sync_shaft_job_work_orders_from_plan(self):
 		"""Fill Available Jobs.work_orders from Production Plan (one WO per row; GSM disambiguates when several WOs share a PPI)."""
@@ -753,6 +792,36 @@ class ShaftProductionRun(Document):
 	def sync_roll_line_net_weights_from_planned(self):
 		"""No longer used on save: net weight must come from operators or site scripts, not planned qty."""
 		pass
+
+	def _validate_roll_weight_tolerance(self):
+		meta = frappe.get_meta("Shaft Production Run")
+		if not meta.has_field("tolerance_override_approved") or not meta.has_field("tolerance_override_reason"):
+			return
+		violations = _spr_collect_roll_planned_tolerance_violations(self)
+		if not violations:
+			if cint(self.get("tolerance_override_approved")):
+				self.tolerance_override_approved = 0
+				self.tolerance_override_reason = ""
+			return
+		reason = (self.get("tolerance_override_reason") or "").strip()
+		if cint(self.get("tolerance_override_approved")) and reason:
+			return
+		tol = _spr_net_weight_tolerance_percent()
+		parts = []
+		for jb, rn, pq, act, dp in violations[:8]:
+			parts.append(
+				_("job {0} roll {1}: planned {2} vs {3} kg ({4:.2f}%)").format(
+					jb or "—", rn if rn is not None else "—", flt(pq, 3), flt(act, 3), dp
+				)
+			)
+		detail = "; ".join(parts)
+		frappe.throw(
+			_(
+				"Net/gross weight differs from planned qty by more than {0}%. {1} "
+				"Use Save from desk to open the approval dialog, or set Tolerance override with a reason."
+			).format(tol, detail),
+			title=_("Tolerance approval required"),
+		)
 
 	def recalculate_job_achieved_weights(self):
 		"""Total Achieved Weight on each Available Jobs row = sum of net_weight in Roll Results for that job."""
@@ -1424,6 +1493,31 @@ def _planned_qty_for_roll_line(job_row, roll_index: int, segs: int) -> float:
 	return round(flt(seg_kg), 3)
 
 
+def _planned_kg_for_spr_result_roll(job_row, roll_index: int, n_rolls: int, segs: int) -> float:
+	"""Planned kg for one Produced Rolls line: per physical roll, not full job total on every line.
+
+	When ``net_weight`` lists one value per roll, use that. When it lists one value per combination
+	segment, cycle segments as rolls repeat (multi-shaft). Otherwise split ``total_weight`` evenly
+	across ``n_rolls`` (e.g. 97.08 kg / 2 rolls → 48.54 each).
+	"""
+	if n_rolls < 1:
+		n_rolls = 1
+	if segs < 1:
+		segs = 1
+	tw = flt(getattr(job_row, "total_weight", 0) or 0)
+	parts = _parse_net_weight_kg_parts(getattr(job_row, "net_weight", None))
+
+	if len(parts) == n_rolls:
+		return round(flt(parts[roll_index]), 3)
+
+	if parts and segs > 1 and len(parts) >= segs:
+		return round(flt(parts[roll_index % segs]), 3)
+
+	if tw > 0:
+		return round(tw / n_rolls, 3)
+	return 0.0
+
+
 @frappe.whitelist()
 def get_next_spr_batch_numbers(
 	shaft_production_run,
@@ -1508,7 +1602,13 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 		no_shafts = 1
 	comb = getattr(job_row, "combination", None) or ""
 	segs = _count_combination_segments(comb)
-	n_rolls = max(1, no_shafts * segs)
+	rolls_per_shaft = cint(getattr(job_row, "no_of_rolls", 0) or 0)
+	if rolls_per_shaft < 1:
+		rolls_per_shaft = 1
+	if segs <= 1:
+		n_rolls = max(1, no_shafts * rolls_per_shaft)
+	else:
+		n_rolls = max(1, no_shafts * segs * rolls_per_shaft)
 
 	shaft_combination = get_shaft_combination(pp_name, job_id)
 	if getattr(job_row, "combination", None) and not shaft_combination:
@@ -1530,7 +1630,6 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 
 	gsm_width_to_wo = _build_gsm_width_to_wo_map_from_item_names(wo_list)
 
-	planned_qty = flt(getattr(job_row, "total_weight", None) or 0)
 	meter_roll_job = None
 	mr_attr = getattr(job_row, "meter_roll_mtrs", None)
 	if mr_attr not in (None, "", 0):
@@ -1564,6 +1663,7 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 				f"[SPR WARNING] No exact match for GSM {job_gsm}, Width {individual_width}, using {wo['name']}"
 			)
 
+		planned_qty = _planned_kg_for_spr_result_roll(job_row, idx, n_rolls, segs)
 		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
 		if job_gsm is not None:
 			row["gsm"] = job_gsm
@@ -2450,14 +2550,18 @@ def spr_create_manual_job(
 
 
 @frappe.whitelist()
-def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
+def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_of_rolls=None):
 	"""
 	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
-	items: list of { item_code, production_plan_item, wo_qty } (wo_qty = manufacturing qty in Kg, e.g. net/shaft × shafts).
+	items: list of { item_code, production_plan_item, wo_qty, meter_roll }.
+	wo_qty is manufacturing Kg = net per roll × rolls_per_shaft × shafts (from the dialog).
 	"""
 	no_of_shafts = cint(no_of_shafts)
 	if no_of_shafts < 1:
 		frappe.throw(_("Number of shafts must be at least 1"))
+	no_of_rolls = cint(no_of_rolls) if no_of_rolls is not None else 1
+	if no_of_rolls < 1:
+		no_of_rolls = 1
 	if isinstance(items, str):
 		items = frappe.parse_json(items)
 	if not items or not isinstance(items, list):
@@ -2543,6 +2647,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		"total_weight": total_qty,
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
+	if meta.has_field("no_of_rolls"):
+		row["no_of_rolls"] = no_of_rolls
 	if meta.has_field("gsm") and gsm:
 		try:
 			row["gsm"] = int(gsm)

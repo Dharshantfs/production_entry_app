@@ -108,19 +108,67 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
+		frm.set_df_property('total_produced_weight', 'read_only', 1);
+
+		console.log('[SPR REFRESH] === REFRESH HOOK START ===');
+		
+		spr_sync_total_planned_qty_from_jobs(frm);
+		console.log('[SPR REFRESH] After total_planned_qty sync');
+		
+		spr_sync_total_produced_weight(frm);
+		console.log('[SPR REFRESH] After total_produced_weight sync (immediate)');
+		
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
+		
+		// Delayed retries for total_produced_weight
+		[200, 500, 1000, 2000].forEach(function (ms) {
+			setTimeout(function () {
+				console.log('[SPR REFRESH] Delayed sync at ' + ms + 'ms');
+				spr_sync_total_produced_weight(frm);
+			}, ms);
+		});
+		
 		[400, 800, 1500, 3000].forEach(function (ms) {
 			setTimeout(function () {
 				spr_register_spr_page_buttons(frm);
 			}, ms);
 		});
+		
 		spr_inject_gsm_legend(frm);
 		schedule_spr_item_row_styles(frm);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
+		
+		console.log('[SPR REFRESH] === REFRESH HOOK END ===');
+	},
+
+	validate: function (frm) {
+		if (!frm || !frm.doc) {
+			return;
+		}
+		if (cint(frm.doc.docstatus) !== 0) {
+			return;
+		}
+		if (!frappe.meta.get_docfield('Shaft Production Run', 'tolerance_override_approved')) {
+			return;
+		}
+		const violations = spr_collect_planned_tolerance_violations(frm);
+		if (!violations.length) {
+			return;
+		}
+		if (cint(frm.doc.tolerance_override_approved) && (frm.doc.tolerance_override_reason || '').trim()) {
+			return;
+		}
+		frappe.validated = false;
+		// Avoid double dialog if another client script (e.g. production_scheduler) also registers validate
+		if (window.sprTolDialogOpen) {
+			return;
+		}
+		spr_show_tolerance_override_dialog(frm, violations);
 	},
 
 	after_save: function (frm) {
@@ -136,7 +184,10 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	items: {
 		items_add: function (frm) {
+			console.log('[SPR DEBUG] items_add fired');
 			update_shaft_job_achieved_from_items(frm);
+			console.log('[SPR DEBUG] items_add: calling spr_sync_total_produced_weight with', (frm.doc.items || []).length, 'items');
+			spr_sync_total_produced_weight(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 		items_remove: function (frm) {
@@ -145,6 +196,142 @@ frappe.ui.form.on('Shaft Production Run', {
 		},
 	},
 });
+
+/** Allowed deviation of roll net/gross vs planned_qty (%). Match server `spr_net_weight_tolerance_percent` in site_config (default 5). */
+function spr_net_weight_tolerance_percent() {
+	return 5.0;
+}
+
+function spr_effective_roll_weight_kg(row) {
+	if (!row) {
+		return 0;
+	}
+	let w = flt(row.net_weight);
+	if (w > 0) {
+		return w;
+	}
+	return flt(row.gross_weight);
+}
+
+function spr_collect_planned_tolerance_violations(frm) {
+	const tol = spr_net_weight_tolerance_percent();
+	if (!(tol > 0)) {
+		return [];
+	}
+	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'planned_qty')) {
+		return [];
+	}
+	const out = [];
+	(frm.doc.items || []).forEach(function (row) {
+		const pq = flt(row.planned_qty);
+		if (!(pq > 0)) {
+			return;
+		}
+		const act = spr_effective_roll_weight_kg(row);
+		if (!(act > 0)) {
+			return;
+		}
+		const dev_pct = (Math.abs(act - pq) / pq) * 100;
+		if (dev_pct > tol + 1e-9) {
+			out.push({
+				job: row.job,
+				roll_no: row.roll_no,
+				planned: pq,
+				actual: act,
+				dev_pct: dev_pct,
+			});
+		}
+	});
+	return out;
+}
+
+function spr_escape_html(s) {
+	return String(s === undefined || s === null ? '' : s)
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;');
+}
+
+function spr_show_tolerance_override_dialog(frm, violations) {
+	window.sprTolDialogOpen = true;
+	const tol = spr_net_weight_tolerance_percent();
+	const rows = violations
+		.map(function (v) {
+			return (
+				'<tr><td>' +
+				spr_escape_html(v.job) +
+				'</td><td>' +
+				spr_escape_html(v.roll_no != null && v.roll_no !== '' ? v.roll_no : '—') +
+				'</td><td class="text-right">' +
+				flt(v.planned).toFixed(3) +
+				'</td><td class="text-right">' +
+				flt(v.actual).toFixed(3) +
+				'</td><td class="text-right">' +
+				flt(v.dev_pct).toFixed(2) +
+				'%</td></tr>'
+			);
+		})
+		.join('');
+	const html =
+		'<p class="text-muted">' +
+		__(
+			'Allowed deviation: ±{0}%. Enter a reason and confirm approval to save, or adjust roll weights.',
+			[tol]
+		) +
+		'</p><table class="table table-bordered table-condensed" style="font-size:12px;"><thead><tr><th>' +
+		__('Job') +
+		'</th><th>' +
+		__('Roll') +
+		'</th><th>' +
+		__('Planned (Kg)') +
+		'</th><th>' +
+		__('Net/Gross (Kg)') +
+		'</th><th>' +
+		__('Variance') +
+		'</th></tr></thead><tbody>' +
+		rows +
+		'</tbody></table>';
+
+	const d = new frappe.ui.Dialog({
+		title: __('Tolerance — approval required'),
+		onhide: function () {
+			window.sprTolDialogOpen = false;
+		},
+		fields: [
+			{ fieldname: 'h', fieldtype: 'HTML', options: html },
+			{
+				fieldname: 'reason',
+				fieldtype: 'Small Text',
+				label: __('Reason for override'),
+				reqd: 1,
+			},
+			{
+				fieldname: 'approved',
+				fieldtype: 'Check',
+				label: __('I approve this deviation'),
+				default: 0,
+			},
+		],
+		primary_action_label: __('Save with approval'),
+		primary_action: function () {
+			const reason = (d.get_value('reason') || '').trim();
+			if (!reason) {
+				frappe.msgprint(__('Reason is required.'));
+				return;
+			}
+			if (!cint(d.get_value('approved'))) {
+				frappe.msgprint(__('Confirm approval to continue.'));
+				return;
+			}
+			d.hide();
+			frm.set_value('tolerance_override_reason', reason);
+			frm.set_value('tolerance_override_approved', 1);
+			frm.save();
+		},
+	});
+	d.show();
+}
 
 /**
  * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh — remove then re-add
@@ -241,7 +428,28 @@ function spr_register_spr_page_buttons_after_save(frm) {
 	});
 }
 
-/** Actions → Manual job: pick PP line, # shafts; server creates WO + manual shaft_jobs row. */
+/** Default WO qty (Kg): net per roll × rolls per shaft × number of shafts (deck positions). */
+function sprManualDefaultWoQty(line, noShafts, noRolls) {
+	const shafts = cint(noShafts);
+	const rolls = cint(noRolls);
+	const s = shafts > 0 ? shafts : 1;
+	const r = rolls > 0 ? rolls : 1;
+	const nps = line.net_per_shaft_kg != null ? flt(line.net_per_shaft_kg) : null;
+	if (nps != null && nps > 0) {
+		return nps * r * s;
+	}
+	const fs =
+		line.first_segment_planned_kg != null && line.first_segment_planned_kg !== ''
+			? flt(line.first_segment_planned_kg)
+			: null;
+	if (fs != null && fs > 0) {
+		return fs * r * s;
+	}
+	const pq = flt(line.planned_qty);
+	return pq > 0 ? pq : 1;
+}
+
+/** Actions → Manual job: multi-select PP lines; WO qty defaults to net/shaft × shafts from Available Jobs. */
 function spr_open_manual_job_dialog(frm) {
 	if (frm.is_new() || !frm.doc.name) {
 		frappe.msgprint(__('Save the Shaft Production Run first.'));
@@ -260,92 +468,103 @@ function spr_open_manual_job_dialog(frm) {
 		callback: function (r) {
 			const payload = r.message || {};
 			const lines = payload.lines || [];
+			const ppName = payload.production_plan || '';
 			if (!lines.length) {
 				frappe.msgprint(
 					__('No Production Plan lines found. Set Production Plan and ensure it has planned items.')
 				);
 				return;
 			}
-			const byLabel = {};
-			const optLines = [];
-			lines.forEach(function (l) {
-				const label =
-					l.item_code +
-					' | ' +
-					flt(l.width_inch) +
-					' in | ' +
-					String(l.production_plan_item || '');
-				byLabel[label] = l;
-				optLines.push(label);
-			});
-			const opts = optLines.join('\n');
 			const d = new frappe.ui.Dialog({
 				title: __('Manual job'),
 				fields: [
 					{
-						fieldname: 'pp_line',
-						fieldtype: 'Select',
-						label: __('Production Plan line'),
-						options: opts,
-						reqd: 1,
-					},
-					{
-						fieldname: 'info_html',
+						fieldname: 'spr_manual_pp_hint',
 						fieldtype: 'HTML',
-						label: ' ',
-						options: '<div class="text-muted spr-manual-info"></div>',
-					},
-					{
-						fieldname: 'wo_planned_qty',
-						fieldtype: 'Float',
-						label: __('Work Order qty (Kg — manufacturing / planned)'),
-						reqd: 1,
-						description: __(
-							'Defaults from Production Plan or first combination segment from Available Jobs. Edit if needed.'
-						),
+						options:
+							'<p class="text-muted small" style="margin-bottom:8px;">' +
+							__('Production Plan: {0}', [ppName || '—']) +
+							'</p>',
 					},
 					{
 						fieldname: 'no_of_shafts',
 						fieldtype: 'Int',
-						label: __('Number of shafts'),
+						label: __('Number of shafts (deck positions)'),
 						reqd: 1,
 						default: 1,
 					},
+					{
+						fieldname: 'no_of_rolls',
+						fieldtype: 'Int',
+						label: __('Number of rolls (per shaft)'),
+						reqd: 1,
+						default: 1,
+					},
+					{
+						fieldname: 'line_select_html',
+						fieldtype: 'HTML',
+						label: __(
+							'Select items (WO qty default = net/roll Kg × rolls × shafts)'
+						),
+						options: '<div class="spr-manual-lines-wrap"></div>',
+					},
 				],
-				primary_action_label: __('Create Work Order'),
-				primary_action: function (values) {
-					const line = byLabel[values.pp_line];
-					const no_of_shafts = cint(values.no_of_shafts);
-					const woPlanned = flt(values.wo_planned_qty);
-					if (!line) {
-						frappe.msgprint(__('Select a valid line.'));
-						return;
-					}
+				primary_action_label: __('Create Work Order(s)'),
+				primary_action: function () {
+					const no_of_shafts = cint(d.get_value('no_of_shafts'));
+					const no_of_rolls = cint(d.get_value('no_of_rolls'));
 					if (no_of_shafts < 1) {
 						frappe.msgprint(__('Number of shafts must be at least 1.'));
 						return;
 					}
-					if (!(woPlanned > 0)) {
-						frappe.msgprint(__('Enter a Work Order qty greater than zero.'));
+					if (no_of_rolls < 1) {
+						frappe.msgprint(__('Number of rolls per shaft must be at least 1.'));
+						return;
+					}
+					const items = [];
+					lines.forEach(function (line, idx) {
+						const cb = d.$wrapper.find('.spr-manual-inc[data-idx="' + idx + '"]');
+						if (!cb.length || !cb.is(':checked')) {
+							return;
+						}
+						const q = flt(d.$wrapper.find('.spr-manual-qty[data-idx="' + idx + '"]').val());
+						const mr = flt(d.$wrapper.find('.spr-manual-meter-roll[data-idx="' + idx + '"]').val());
+						if (!(q > 0)) {
+							frappe.msgprint(__('Enter valid Work Order qty for selected line.'));
+							return;
+						}
+						if (!(mr > 0)) {
+							frappe.msgprint(__('Enter valid Meter/Roll for selected line.'));
+							return;
+						}
+						items.push({
+							item_code: line.item_code,
+							production_plan_item: line.production_plan_item,
+							wo_qty: q,
+							meter_roll: mr,
+						});
+					});
+					if (!items.length) {
+						frappe.msgprint(__('Select at least one line with valid Meter/Roll and Work Order qty.'));
 						return;
 					}
 					d.hide();
 					frappe.call({
 						method:
-							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_create_manual_job',
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_create_manual_jobs_multi',
 						args: {
 							shaft_production_run: frm.doc.name,
-							item_code: line.item_code,
-							production_plan_item: line.production_plan_item,
 							no_of_shafts: no_of_shafts,
-							wo_qty: woPlanned,
+							no_of_rolls: cint(d.get_value('no_of_rolls')) || 1,
+							items: items,
 						},
 						freeze: true,
-						freeze_message: __('Creating Work Order...'),
+						freeze_message: __('Creating Work Order(s)...'),
 						callback: function (r2) {
 							const m = r2.message || {};
+							const wos = (m.work_orders || []).join(', ');
 							frappe.show_alert({
-								message: __('Work Order {0} created (job {1}).', [m.work_order || '', m.job_id || '']),
+								message: __('Work Order(s) {0} (job {1}).', [wos || '', m.job_id || '']),
 								indicator: 'green',
 							});
 							frm.reload_doc();
@@ -353,48 +572,85 @@ function spr_open_manual_job_dialog(frm) {
 					});
 				},
 			});
-			function updateInfo() {
-				const line = byLabel[d.get_value('pp_line')];
-				const el = d.$wrapper.find('.spr-manual-info');
-				if (!line || !el.length) {
+
+			function renderManualLinesTable() {
+				const nShafts = cint(d.get_value('no_of_shafts'));
+				const nRolls = cint(d.get_value('no_of_rolls')) || 1;
+				const wrap = d.$wrapper.find('.spr-manual-lines-wrap');
+				if (!wrap.length) {
 					return;
 				}
-				const netOnSpr = flt(line.existing_net_weight_kg);
-				const firstSeg =
-					line.first_segment_planned_kg != null && line.first_segment_planned_kg !== ''
-						? flt(line.first_segment_planned_kg)
-						: null;
-				const ppQty = flt(line.planned_qty);
-				const defaultWo = firstSeg != null && firstSeg > 0 ? firstSeg : ppQty > 0 ? ppQty : 1;
-				if (d.fields_dict.wo_planned_qty) {
-					const cur = d.get_value('wo_planned_qty');
-					if (cur === null || cur === undefined || flt(cur) <= 0) {
-						d.set_value('wo_planned_qty', defaultWo);
-					}
-				}
 				let html =
-					'<div>' +
-					__('Width: {0} in', [flt(line.width_inch)]) +
-					' · ';
-				if (firstSeg != null) {
-					html +=
-						__('First combination segment planned (Available Jobs): {0} Kg', [
-							firstSeg.toFixed(3),
-						]) +
-						' · ';
-				}
+					'<table class="table table-bordered table-condensed" style="font-size:12px;margin-bottom:0;">';
 				html +=
-					__('Production Plan line qty: {0} Kg · Net on SPR rolls (this item): {1} Kg', [
-						ppQty.toFixed(3),
-						netOnSpr.toFixed(2),
-					]) +
-					'</div>';
-				el.html(html);
+					'<thead><tr><th style="width:36px;"></th><th>' +
+					__('Item / PP row') +
+					'</th><th>' +
+					__('Width (in)') +
+					'</th><th>' +
+					__('Meter/Roll') +
+					'</th><th>' +
+					__('Net/roll (Kg)') +
+					'</th><th>' +
+					__('WO qty (Kg)') +
+					'</th></tr></thead><tbody>';
+				lines.forEach(function (line, idx) {
+					const wIn = flt(line.width_inch);
+					const nps =
+						line.net_per_shaft_kg != null && line.net_per_shaft_kg !== ''
+							? flt(line.net_per_shaft_kg)
+							: null;
+					const npsLabel =
+						nps != null && nps > 0
+							? nps.toFixed(2) +
+							  (line.matched_job_id
+								  ? ' (' + __('job') + ' ' + String(line.matched_job_id) + ')'
+								  : '')
+							: '—';
+					const defQ = sprManualDefaultWoQty(line, nShafts, nRolls);
+					const label =
+						String(line.item_code || '') +
+						' · ' +
+						String(line.item_name || '').substring(0, 28) +
+						' · ' +
+						String(line.production_plan_item || '');
+					html += '<tr>';
+					html +=
+						'<td style="text-align:center;"><input type="checkbox" class="spr-manual-inc" data-idx="' +
+						idx +
+						'" checked /></td>';
+					html += '<td style="max-width:220px;word-break:break-all;">' + frappe.utils.escape_html(label) + '</td>';
+					html += '<td>' + wIn.toFixed(1) + '</td>';
+					html +=
+						'<td><input type="number" class="input-with-feedback spr-manual-meter-roll" data-idx="' +
+						idx +
+						'" value="500" step="0.1" style="width:100px" placeholder="500"/></td>';
+					html += '<td>' + frappe.utils.escape_html(npsLabel) + '</td>';
+					html +=
+						'<td><input type="number" class="input-with-feedback spr-manual-qty" data-idx="' +
+						idx +
+						'" value="' +
+						defQ.toFixed(3) +
+						'" step="0.001" style="width:100px"/></td>';
+					html += '</tr>';
+				});
+				html += '</tbody></table>';
+				wrap.html(html);
 			}
+
 			d.show();
-			updateInfo();
-			if (d.fields_dict.pp_line && d.fields_dict.pp_line.$input) {
-				d.fields_dict.pp_line.$input.on('change', updateInfo);
+			renderManualLinesTable();
+			const ns = d.fields_dict.no_of_shafts;
+			if (ns && ns.$input) {
+				ns.$input.on('change input', function () {
+					renderManualLinesTable();
+				});
+			}
+			const nr = d.fields_dict.no_of_rolls;
+			if (nr && nr.$input) {
+				nr.$input.on('change input', function () {
+					renderManualLinesTable();
+				});
 			}
 		},
 	});
@@ -426,12 +682,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 			}
 			const jobOpts = jobs
 				.map(function (j) {
-					return j.label || j.job_id;
+					return j.job_id;
 				})
 				.join('\n');
 			const jobByLabel = {};
 			jobs.forEach(function (j) {
-				jobByLabel[j.label || j.job_id] = j;
+				jobByLabel[j.job_id] = j;
 			});
 			const d = new frappe.ui.Dialog({
 				title: __('Bundle packaging'),
@@ -442,21 +698,26 @@ function spr_open_bundle_packaging_dialog(frm) {
 						options:
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
-								'Choose the job from Available Jobs, then the width (in). The same single-roll gross is applied to every roll line for that job with that width. Sticker width uses Total Width from Available Jobs × number of packaging.'
+								'Step 1: pick Job ID. Step 2: pick width for that segment (combination widths and WO items are shown below). Same single-roll gross applies to all roll lines for that job and width. Sticker width = selected width × number of packaging.'
 							) +
 							'</p>',
 					},
 					{
 						fieldname: 'job_pick',
 						fieldtype: 'Select',
-						label: __('Job (Available Jobs)'),
+						label: __('Job ID (Available Jobs)'),
 						options: jobOpts,
 						reqd: 1,
 					},
 					{
+						fieldname: 'job_detail_html',
+						fieldtype: 'HTML',
+						options: '<div class="spr-bundle-job-detail text-muted small"></div>',
+					},
+					{
 						fieldname: 'width_inch',
 						fieldtype: 'Select',
-						label: __('Width (in) for this job'),
+						label: __('Width / segment (in) — pick one row from the table above'),
 						options: '',
 						reqd: 1,
 					},
@@ -560,6 +821,8 @@ function spr_open_bundle_packaging_dialog(frm) {
 									}
 								}
 								frm.refresh_field('items');
+								// Sync total_produced_weight from items net_weight sum (real-time calculation)
+								spr_sync_total_produced_weight(frm);
 								try { schedule_spr_item_row_styles(frm); } catch(e) {}
 								[0, 100, 300, 600].forEach(function (ms) {
 									setTimeout(function () {
@@ -581,22 +844,64 @@ function spr_open_bundle_packaging_dialog(frm) {
 			function refreshWidthOptions() {
 				const jp = jobByLabel[d.get_value('job_pick')];
 				const wf = d.fields_dict.width_inch;
+				const det = d.$wrapper.find('.spr-bundle-job-detail');
 				if (!jp || !wf) {
 					return;
 				}
+				const segs = jp.segments || [];
 				const arr = widthsByJob[jp.job_id] || [];
-				if (!arr.length) {
-					wf.df.options = '';
-					wf.refresh();
-					return;
+				if (segs.length) {
+					let html =
+						'<table class="table table-bordered table-condensed" style="font-size:11px;margin:4px 0;"><thead><tr><th>' +
+						__('Width') +
+						'</th><th>' +
+						__('Net/shaft (Kg)') +
+						'</th><th>' +
+						__('WO item') +
+						'</th></tr></thead><tbody>';
+					segs.forEach(function (s) {
+						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(3) : '—';
+						const ic = [s.item_code || '', (s.item_name || '').substring(0, 28)].join(' ').trim();
+						html +=
+							'<tr><td>' +
+							flt(s.width_inch).toFixed(1) +
+							'</td><td>' +
+							net +
+							'</td><td>' +
+							frappe.utils.escape_html(ic) +
+							'</td></tr>';
+					});
+					html += '</tbody></table>';
+					det.html(html);
+					wf.df.options = segs
+						.map(function (s) {
+							return String(flt(s.width_inch));
+						})
+						.join('\n');
+				} else {
+					const comb = jp.combination_text || '';
+					det.html(
+						comb
+							? '<p class="small">' + frappe.utils.escape_html(comb) + '</p>'
+							: '<p class="small text-muted">' + __('No segment breakdown — use width list.') + '</p>'
+					);
+					if (!arr.length) {
+						wf.df.options = '';
+						wf.refresh();
+						return;
+					}
+					wf.df.options = arr
+						.map(function (x) {
+							return String(x);
+						})
+						.join('\n');
 				}
-				wf.df.options = arr
-					.map(function (x) {
-						return String(x);
-					})
-					.join('\n');
 				wf.refresh();
-				d.set_value('width_inch', String(arr[0]));
+				const firstW =
+					segs.length > 0 ? flt(segs[0].width_inch) : arr.length > 0 ? flt(arr[0]) : 0;
+				if (firstW > 0) {
+					d.set_value('width_inch', String(firstW));
+				}
 			}
 			function recalc() {
 				const jp = jobByLabel[d.get_value('job_pick')];
@@ -607,11 +912,10 @@ function spr_open_bundle_packaging_dialog(frm) {
 				if (!jp || !el.length) {
 					return;
 				}
-				const jobW = flt(jp.total_width_available);
 				const single = n > 0 ? whole / n : 0;
-				const tw = jobW > 0 ? jobW * n : flt(wsel) * n;
+				const tw = flt(wsel) * n;
 				el.html(
-					__('Single gross: {0} Kg · Sticker width (Available Jobs width × pkg): {1} in', [
+					__('Single gross: {0} Kg · Sticker width (selected width × pkg): {1} in', [
 						single.toFixed(2),
 						tw.toFixed(4),
 					])
@@ -697,7 +1001,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
 				function finishCreateEntry() {
 					(frm.doc.items || []).forEach(function (row) {
-						spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
+						spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', row.name);
 					});
 					update_shaft_job_achieved_from_items(frm);
 					schedule_spr_item_row_styles(frm);
@@ -750,37 +1054,10 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
 frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
-	},
-	gross_weight: function (frm, cdt, cdn) {
-		// CRITICAL: Calculate net_weight from gross_weight FIRST
-		const row = locals[cdt][cdn];
-		const net_val = calculate_net_weight_from_gross(row);
-		
-		// Set net_weight directly on row
-		row.net_weight = net_val;
-		
-		// Refresh grid to display net_weight immediately
+		// Refresh grid display and apply row styling to show net_weight instantly
 		frm.refresh_field('items');
-		
-		// Now calculate produced_gsm if meter_roll is present
-		spr_update_produced_gsm(frm, cdt, cdn);
-		update_shaft_job_achieved_from_items(frm);
-	},
-	gsm: function (frm) {
-		schedule_spr_item_row_styles(frm);
-	},
-	width_inch: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
-	},
-	meter_roll: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
-	},
-	produced_length_mtrs: function (frm, cdt, cdn) {
-		spr_update_produced_gsm(frm, cdt, cdn);
-	},
-	produced_gsm: function (frm) {
 		apply_spr_item_row_styles(frm);
 		schedule_spr_item_row_styles(frm);
 		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
@@ -788,6 +1065,179 @@ frappe.ui.form.on('Shaft Production Run Item', {
 				apply_spr_item_row_styles(frm);
 			}, ms);
 		});
+	},
+	gross_weight: function (frm, cdt, cdn) {
+		// Calculate net_weight instantly when gross_weight changes
+		const row = locals[cdt][cdn];
+		let width = flt(row.width_inch);
+		let gw = flt(row.gross_weight);
+		
+		if (width > 0 && gw > 0) {
+			let width_in_meter = width * 0.0254;
+			let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
+			let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
+			const standard_widths = [63, 85, 90, 118, 126];
+			let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
+			
+			let core_weight = 0;
+			if (is_standard) {
+				let base_weight_of_core = 1.3;
+				if (raw_weight >= 50 && raw_weight <= 100) {
+					base_weight_of_core = 1.8;
+				} else if (raw_weight > 100) {
+					base_weight_of_core = 2.5;
+				}
+				let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
+				core_weight = (base_weight_of_core / 1600) * numeric_core_width;
+			} else {
+				let core_width, prorate;
+				if (width < 63) { core_width = 63; prorate = 1.30; }
+				else if (width < 85) { core_width = 85; prorate = 1.75; }
+				else if (width < 90) { core_width = 90; prorate = 1.86; }
+				else if (width < 118) { core_width = 118; prorate = 2.43; }
+				else { core_width = 126; prorate = 2.60; }
+				core_weight = (width / core_width) * prorate;
+			}
+			
+			let calc_net = gw - core_weight;
+			let net_val = calc_net > 0 ? calc_net : gw;
+			frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
+
+			// Also calculate produced_gsm immediately
+			let mr = sprResolveLengthMeters(row) || 0;
+			let newGsm = 0;
+			if (net_val > 0 && width > 0 && mr > 0) {
+				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
+			}
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+			frm.refresh_field('items');
+		}
+
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		update_shaft_job_achieved_from_items(frm);
+	},
+	gsm: function (frm) {
+		schedule_spr_item_row_styles(frm);
+	},
+	width_inch: function (frm, cdt, cdn) {
+		// Recalculate produced_gsm when width changes
+		const row = locals[cdt][cdn];
+		let nw = flt(row.net_weight) || 0;
+		let wi = flt(row.width_inch) || 0;
+		let mr = sprResolveLengthMeters(row) || 0;
+		
+		let newGsm = 0;
+		if (nw > 0 && wi > 0 && mr > 0) {
+			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+		}
+		
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+		frm.refresh_field('items');
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+	},
+	meter_roll: function (frm, cdt, cdn) {
+		// Recalculate produced_gsm when meter_roll changes
+		const row = locals[cdt][cdn];
+		let nw = flt(row.net_weight) || 0;
+		let wi = flt(row.width_inch) || 0;
+		let mr = sprResolveLengthMeters(row) || 0;
+		
+		let newGsm = 0;
+		if (nw > 0 && wi > 0 && mr > 0) {
+			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+		}
+		
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+		frm.refresh_field('items');
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+	},
+	produced_length_mtrs: function (frm, cdt, cdn) {
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+	},
+	meter_roll_mtrs: function (frm, cdt, cdn) {
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+	},
+	ordered_length: function (frm, cdt, cdn) {
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+	},
+	ordered_length_mtrs: function (frm, cdt, cdn) {
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+	},
+	custom_ordered_length: function (frm, cdt, cdn) {
+		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+	},
+	produced_gsm: function (frm) {
+		// Refresh grid to show the calculated produced_gsm value
+		frm.refresh_field('items');
+		apply_spr_item_row_styles(frm);
+		schedule_spr_item_row_styles(frm);
+		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
+			setTimeout(function () {
+				apply_spr_item_row_styles(frm);
+			}, ms);
+		});
+	},
+	
+	/**
+	 * OVERRIDE: Ensure net_weight calculation runs ONLY based on gross_weight & core_weight
+	 * NOT dependent on meter_roll (which may be empty when bundle packaging sets gross_weight)
+	 * This handler runs AFTER any old conflicting scripts to guarantee correct behavior
+	 */
+	custom_net_weight_trigger: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		let width = flt(row.width_inch);
+		let gw = flt(row.gross_weight);
+		
+		// Net weight calculation should ONLY depend on gross_weight & width, NOT meter_roll
+		if (width > 0 && gw > 0) {
+			let width_in_meter = width * 0.0254;
+			let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
+			let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
+			const standard_widths = [63, 85, 90, 118, 126];
+			let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
+			
+			let core_weight = 0;
+			if (is_standard) {
+				let base_weight_of_core = 1.3;
+				if (raw_weight >= 50 && raw_weight <= 100) {
+					base_weight_of_core = 1.8;
+				} else if (raw_weight > 100) {
+					base_weight_of_core = 2.5;
+				}
+				let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
+				core_weight = (base_weight_of_core / 1600) * numeric_core_width;
+			} else {
+				let core_width, prorate;
+				if (width < 63) { core_width = 63; prorate = 1.30; }
+				else if (width < 85) { core_width = 85; prorate = 1.75; }
+				else if (width < 90) { core_width = 90; prorate = 1.86; }
+				else if (width < 118) { core_width = 118; prorate = 2.43; }
+				else { core_width = 126; prorate = 2.60; }
+				core_weight = (width / core_width) * prorate;
+			}
+			
+			let calc_net = gw - core_weight;
+			let net_val = calc_net > 0 ? calc_net : gw;
+			row.net_weight = net_val;
+		}
+	},
+	
+	/**
+	 * FINAL: Calculate produced_gsm only when ALL three values are ready
+	 * This runs last to ensure net_weight is already set
+	 */
+	final_produced_gsm_calc: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		let nw = flt(row.net_weight) || 0;
+		let wi = flt(row.width_inch) || 0;
+		let mr = sprResolveLengthMeters(row) || 0;
+		
+		if (nw > 0 && wi > 0 && mr > 0) {
+			let newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+		} else {
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
+		}
 	},
 	/**
 	 * Save this roll line, lock it for editing, and reveal Print Label.
@@ -830,15 +1280,15 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			setTimeout(afterSprRowSave, 400);
 		}
 	},
-	/** Print roll label (after Save Row). Calls custom print flow. */
+	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
 		const row = locals[cdt][cdn];
 		if (!cint(row.row_ready_for_print) || !cint(row.row_locked)) {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
 			return;
 		}
-		// Redirect to custom sticker generation flow
-		frappe.generate_sticker_flow(row.name, frm);
+		// Button control only - user manages label format
+		frappe.msgprint(__('Production Label ready to print'));
 	},
 	/** Unlock this row for editing; hide Print Label until Save Row again. */
 	edit_row: function (frm, cdt, cdn) {
@@ -869,84 +1319,67 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	},
 });
 
-function calculate_net_weight_from_gross(row) {
-	// Calculate core_weight to get net_weight = gross_weight - core_weight
-	const gw = flt(row.gross_weight) || 0;
-	if (gw === 0) return 0;
-	
-	const width_inch = flt(row.width_inch) || 0;
-	const gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
-	const width_in_meter = width_inch * 0.0254;
-	const raw_weight = (gsm_val * width_in_meter * gw) / 1000.0;
-	
-	// Standard widths: [63, 85, 90, 118, 126]
-	const standard_widths = [63, 85, 90, 118, 126];
-	const is_standard = standard_widths.some(w => Math.abs(width_inch - w) < 0.01);
-	
-	let core_weight = 0;
-	if (is_standard) {
-		let base_weight_of_core = 1.3;
-		if (raw_weight >= 50 && raw_weight <= 100) {
-			base_weight_of_core = 1.8;
-		} else if (raw_weight > 100) {
-			base_weight_of_core = 2.5;
-		}
-		const numeric_core_width = flt(row.custom_core_width_mm) || 1600;
-		core_weight = (base_weight_of_core / 1600.0) * numeric_core_width;
-	} else {
-		// Non-standard width proration
-		let core_width, prorate;
-		if (width_inch < 63) {
-			core_width = 63; prorate = 1.30;
-		} else if (width_inch < 85) {
-			core_width = 85; prorate = 1.75;
-		} else if (width_inch < 90) {
-			core_width = 90; prorate = 1.86;
-		} else if (width_inch < 118) {
-			core_width = 118; prorate = 2.43;
-		} else {
-			core_width = 126; prorate = 2.60;
-		}
-		core_weight = (width_inch / core_width) * prorate;
-	}
-	
-	const calc_net = gw - core_weight;
-	return calc_net > 0 ? Math.round(calc_net * 100) / 100 : gw;
-}
-
 function spr_update_produced_gsm(frm, cdt, cdn) {
 	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_gsm')) {
 		return;
 	}
 	const row = locals[cdt][cdn];
-	if (sprRollProducedLengthIncomplete(row)) {
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
-		apply_spr_item_row_styles(frm);
-		schedule_spr_item_row_styles(frm);
-		return;
+	
+	// Get weight: prefer net_weight, fallback to gross_weight
+	let nw = flt(row.net_weight);
+	if (nw <= 0) {
+		nw = flt(row.gross_weight);
 	}
-	const nw = flt(row.net_weight);
-	const gw = flt(row.gross_weight);
-	const wgt = nw > 0 ? nw : gw;
-	const w = flt(row.width_inch);
-	let ln = flt(row.meter_roll);
-	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
-		const pl = row.produced_length_mtrs;
-		if (pl !== undefined && pl !== null && pl !== '') {
-			ln = flt(pl);
-		}
+	
+	// Get width (required)
+	const wi = flt(row.width_inch);
+	
+	const mr = sprResolveLengthMeters(row);
+	
+	// Calculate GSM only if all required values are present
+	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
+	let pgsm = 0;
+	if (nw > 0 && wi > 0 && mr > 0) {
+		pgsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 	}
-	if (ln <= 0) {
-		ln = flt(row.ordered_length);
-	}
-	if (ln <= 0) {
-		ln = flt(row.custom_ordered_length);
-	}
-	const den = w * ln * 0.254;
-	const val = den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
-	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
+	
+	frappe.model.set_value(cdt, cdn, 'produced_gsm', pgsm);
+	frm.refresh_field('items');
 	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
+}
+
+function spr_update_produced_gsm_with_retry(frm, cdt, cdn) {
+	[0, 80, 220].forEach(function (ms) {
+		setTimeout(function () {
+			try {
+				spr_update_produced_gsm(frm, cdt, cdn);
+			} catch (e) {
+				// Ignore transient timing issues while rows are being populated.
+			}
+		}, ms);
+	});
+}
+
+function sprResolveLengthMeters(doc) {
+	const aliases = [
+		'produced_length_mtrs',
+		'meter_roll',
+		'meter_roll_mtrs',
+		'custom_meter_roll_mtrs',
+		'ordered_length',
+		'ordered_length_mtrs',
+		'custom_ordered_length',
+		'roll_mtrs',
+		'roll',
+	];
+	for (let i = 0; i < aliases.length; i++) {
+		const v = flt(doc[aliases[i]]);
+		if (v > 0) {
+			return v;
+		}
+	}
+	return 0;
 }
 
 function fetch_and_show_pp_wo_summary(frm) {
@@ -1205,14 +1638,17 @@ function sprRollProducedLengthIncomplete(doc) {
 		return false;
 	}
 	const pl = doc.produced_length_mtrs;
-	// Undefined = field not in row payload yet — do not force "incomplete" (restores band colours after save/reload).
 	if (pl === undefined) {
 		return false;
 	}
 	if (pl === null || pl === '') {
-		return true;
+		return sprResolveLengthMeters(doc) <= 0;
 	}
-	return flt(pl) <= 0;
+	// If produced_length_mtrs is set but <= 0, still allow fallback
+	if (flt(pl) <= 0) {
+		return sprResolveLengthMeters(doc) <= 0;
+	}
+	return false;
 }
 
 /** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
@@ -1221,28 +1657,23 @@ function sprEffectiveProducedGsm(doc) {
 	if (p > 0) {
 		return p;
 	}
-	if (sprRollProducedLengthIncomplete(doc)) {
-		return 0;
+	
+	// Get weight: prefer net_weight, fallback to gross_weight
+	let nw = flt(doc.net_weight);
+	if (nw <= 0) {
+		nw = flt(doc.gross_weight);
 	}
-	const nw = flt(doc.net_weight);
-	const gw = flt(doc.gross_weight);
-	const wgt = nw > 0 ? nw : gw;
-	const w = flt(doc.width_inch);
-	let ln = flt(doc.meter_roll);
-	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
-		const pl = doc.produced_length_mtrs;
-		if (pl !== undefined && pl !== null && pl !== '') {
-			ln = flt(pl);
-		}
+	
+	// Get width (required)
+	const wi = flt(doc.width_inch);
+	
+	const mr = sprResolveLengthMeters(doc);
+	
+	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
+	if (nw > 0 && wi > 0 && mr > 0) {
+		return Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 	}
-	if (ln <= 0) {
-		ln = flt(doc.ordered_length);
-	}
-	if (ln <= 0) {
-		ln = flt(doc.custom_ordered_length);
-	}
-	const den = w * ln * 0.254;
-	return den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
+	return 0;
 }
 
 function ensure_spr_item_stylesheet() {
@@ -1583,7 +2014,7 @@ function spr_schedule_item_row_styles_after_doc_write(frm) {
 	}
 	sprEnsureItemsGridObserver(frm);
 	ensure_spr_item_stylesheet();
-	[0, 80, 200, 500, 1000, 1800, 3000, 5000, 8000, 12000, 16000, 20000].forEach(function (ms) {
+	[0, 80, 200, 500, 1000, 1800, 3000, 5000, 8000, 12000, 16000, 20000, 25000, 30000].forEach(function (ms) {
 		setTimeout(function () {
 			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
 				return;
@@ -1823,18 +2254,40 @@ function apply_spr_item_row_styles(frm) {
 	const $wrap = frm.fields_dict.items.$wrapper;
 
 	items.forEach(function (doc, idx) {
-		let $row = sprFindItemsRowDomByDocname(frm, doc);
+		// Try multiple resolution methods to find row element for DataTable / Frappe grids
+		let $row = null;
+		
+		// Method 1: Try by docname first (works when grid_rows_by_docname is populated)
 		if (!$row || !$row.length) {
-			if ($domRows && $domRows.length > idx) {
-				$row = $($domRows.get(idx));
-			}
+			$row = sprFindItemsRowDomByDocname(frm, doc);
 		}
+		
+		
+		// Method 2: Use DOM rows array by index (DataTable body rows in order)
+		if ((!$row || !$row.length) && $domRows && $domRows.length > idx) {
+			$row = $($domRows.get(idx));
+		}
+		
+		// Method 3: Try wrapper resolution by index
 		if (!$row || !$row.length) {
 			$row = sprResolveItemsRowWrapper(frm, doc, grid, idx);
 		}
+		
+		// Method 4: Direct selector search if other methods fail
+		if ((!$row || !$row.length) && $wrap && $wrap.length && doc && doc.name) {
+			$row = $wrap
+				.find('.dt-row, .grid-row, tbody tr')
+				.filter(function (i) {
+					return i === idx || $(this).attr('data-docname') === doc.name || $(this).attr('data-name') === doc.name;
+				})
+				.first();
+		}
+		
 		if (!$row || !$row.length) {
+			console.warn('Could not resolve row for item at index', idx, doc);
 			return;
 		}
+		
 		const $targets = sprCollectItemRowTargets(frm, doc, idx, $row, $wrap);
 		// Roll Production Results: Sticker GSM vs produced (field or computed from net/gross × width × length)
 		const sticker = sprStickerGsmFromDoc(doc);
@@ -1866,869 +2319,55 @@ function apply_spr_item_row_styles(frm) {
 	});
 	spr_apply_items_row_lock_ui(frm);
 }
-// ===== CUSTOM PRINT STICKER FLOW =====
 
-// Overwrite the print button behavior
-frappe.generate_sticker_flow = function (row_name, frm) {
-    var f = frm || cur_frm;
-    var row = (locals['Shaft Production Run Item'] || {})[row_name] || (f.doc.items || []).find(function (r) { return r.name === row_name; }) || (f.doc.roll_wise_entry || []).find(function (r) { return r.name === row_name; });
-    if (!row) return;
 
-    frappe.db.get_value('Item', row.item_code, 'item_name', function (r) {
-        var item_name = (r && r.item_name) || "";
-        trigger_print_with_details(row_name, item_name, f);
-    });
-};
+// ===== TOTAL PRODUCED WEIGHT CALCULATION =====
 
-/** Scandinavian 6x4: skip "Select Fields to Print" and open label directly. */
-function is_scandinavian_skip_custom_dialog(row, frm) {
-    var f = frm || cur_frm;
-    var lt = String(((f.doc || {}).custom_label || "Default")).toLowerCase();
-    var customer_id = String(
-        row.custom_customer ||
-        row.custom_custom_customer ||
-        row.customer ||
-        ((f.doc || {}).custom_customer) ||
-        ((f.doc || {}).customer) ||
-        ""
-    ).trim();
-    return (
-        lt.includes("customer 4x6") ||
-        lt.includes("scandinavian") ||
-        customer_id === "EXP-0071"
-    );
+function spr_compute_total_produced_weight(frm) {
+	console.log('[SPR COMPUTE] START: frm exists?', !!frm, 'doc exists?', !!(frm && frm.doc));
+	
+	if (!frm || !frm.doc) {
+		console.log('[SPR COMPUTE] ERROR: No frm or doc');
+		return 0;
+	}
+	
+	const items = frm.doc.items || [];
+	console.log('[SPR COMPUTE] items array length:', items.length);
+	console.log('[SPR COMPUTE] items array:', items);
+	
+	let total = 0;
+	for (let i = 0; i < items.length; i++) {
+		const row = items[i];
+		const nw = row.net_weight ? parseFloat(row.net_weight) : 0;
+		total = total + nw;
+		console.log('[SPR COMPUTE] Item ' + i + ':', row.name, '-> net_weight:', nw, '-> running total:', total);
+	}
+	
+	console.log('[SPR COMPUTE] FINAL TOTAL:', total);
+	return total;
 }
 
-function trigger_print_with_details(row_name, item_name, frm) {
-    var doc = frm.doc;
-    var raw_label = doc.custom_label || "Default";
-    var label_type = raw_label.trim().toLowerCase();
-    var row = (locals['Shaft Production Run Item'] || {})[row_name] || (doc.items || []).find(function (r) { return r.name === row_name; }) || (doc.roll_wise_entry || []).find(function (r) { return r.name === row_name; });
-    if (!row) return;
-
-    var details = extract_details_enhanced(item_name, row.item_code);
-    var final_gsm = row.gsm || details.gsm || "";
-    var final_color = row.color || details.color || "";
-    var final_quality = row.quality || details.quality || "";
-
-    if (label_type.includes("reliance") || label_type.includes("relience")) {
-        flow_reliance_cm(row_name, final_gsm, final_color, final_quality, frm);
-    } else if (label_type.includes("custom")) {
-        var w_custom = row.width_inch || details.width_inch || "0";
-        if (is_scandinavian_skip_custom_dialog(row, frm)) {
-            frappe.run_print_logic(row_name, w_custom + " Inches", final_gsm, final_color, final_quality, frm);
-        } else {
-            flow_customized_label(row_name, final_gsm, final_color, final_quality, frm, w_custom);
-        }
-    } else {
-        var w = row.width_inch || details.width_inch || "0";
-        frappe.run_print_logic(row_name, w + " Inches", final_gsm, final_color, final_quality, frm);
-    }
-}
-
-var QUALITY_MASTER = {
-    "100": "PREMIUM", "101": "PLATINUM", "102": "SUPER PLATINUM",
-    "103": "GOLD", "104": "SILVER", "105": "BRONZE",
-    "106": "CLASSIC", "107": "SUPER CLASSIC", "108": "LIFE STYLE",
-    "109": "ECO SPECIAL", "110": "ECO GREEN", "111": "SUPER ECO",
-    "112": "ULTRA", "113": "DELUXE", "114": "UV"
-};
-
-function extract_details_enhanced(name, code) {
-    var res = { gsm: null, color: null, width_inch: null, quality: null };
-    var name_upper = (name || "").toUpperCase();
-
-    if (code && code.length === 16 && /^\d+$/.test(code)) {
-        var qual_code = code.substring(3, 6);
-        if (QUALITY_MASTER[qual_code]) res.quality = QUALITY_MASTER[qual_code];
-        var code_gsm = parseInt(code.substring(9, 12));
-        if (code_gsm > 0) res.gsm = String(code_gsm);
-        var code_width_mm = parseFloat(code.substring(12, 16));
-        if (code_width_mm > 0) res.width_inch = Math.round(code_width_mm / 25.4);
-        if (res.quality && name) {
-            var qual_pos = name_upper.indexOf(res.quality.toUpperCase());
-            if (qual_pos !== -1) {
-                var after_qual = name.substring(qual_pos + res.quality.length).trim();
-                after_qual = after_qual.replace(/\s*\d+\s*GSM.*/i, "").trim();
-                if (after_qual) res.color = after_qual;
-            }
-        }
-    } else if (name) {
-        var known_qualities = ["SUPER PLATINUM", "SUPER CLASSIC", "LIFE STYLE", "ECO SPECIAL", "ECO GREEN", "SUPER ECO", "DELUXE", "PREMIUM", "PLATINUM", "GOLD", "SILVER", "BRONZE", "CLASSIC", "ULTRA", "UV"];
-        known_qualities.sort(function (a, b) { return b.length - a.length; });
-        for (var i = 0; i < known_qualities.length; i++) {
-            var q = known_qualities[i];
-            if (new RegExp('\\b' + q + '\\b', 'i').test(name_upper)) { res.quality = q; break; }
-        }
-        if (res.quality) {
-            var qp = name_upper.indexOf(res.quality.toUpperCase());
-            if (qp !== -1) {
-                var aq = name.substring(qp + res.quality.length).trim();
-                aq = aq.split(/\s*\d+\s*GSM/i)[0].trim();
-                aq = aq.replace(/^[\s,:-]+|[\s,:-]+$/g, "");
-                if (aq) res.color = aq;
-            }
-        }
-        var mg = name.match(/(\d+)\s*GSM/i);
-        if (mg) res.gsm = mg[1];
-        var mw = name.match(/(\d+(\.\d+)?)\s*("|inch|in|'')/i);
-        if (mw) res.width_inch = mw[1];
-    }
-    return res;
-}
-
-function flow_reliance_cm(row_name, gsm, color, quality, frm) {
-    var f = frm || cur_frm;
-    var row = (locals['Shaft Production Run Item'] || {})[row_name] || (f.doc.items || []).find(function(r) { return r.name === row_name; }) || (f.doc.roll_wise_entry || []).find(function(r) { return r.name === row_name; });
-    var item_code = row ? (row.item_code || "") : "";
-    var width_mm = (item_code.length >= 4) ? parseFloat(item_code.slice(-4)) : 0;
-    var width_cm = (width_mm > 0) ? (width_mm / 10) : 0;
-
-    frappe.prompt([{
-        label: 'Verify Width (CM) for ' + (item_code || 'this row'),
-        fieldname: 'width_cm',
-        fieldtype: 'Float',
-        default: width_cm,
-        reqd: 1
-    }], function (values) {
-        frappe.run_print_logic(row_name, values.width_cm + " CM", gsm, color, quality, frm);
-    }, 'Confirm Reliance Size (' + row.roll_no + ')', 'Preview Label');
-}
-
-function flow_customized_label(row_name, gsm, color, quality, frm, width_inch) {
-    var dialog = new frappe.ui.Dialog({
-        title: 'Select Fields to Print',
-        fields: [
-            { fieldtype: 'Section Break', label: 'Header Fields' },
-            { fieldtype: 'Check', fieldname: 'show_company', label: 'Company Name', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_email', label: 'Company Email', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_customer', label: 'Customer Name', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_quality', label: 'Quality', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_order_code', label: 'Order Code', default: 1 },
-            { fieldtype: 'Section Break', label: 'Body Fields' },
-            { fieldtype: 'Check', fieldname: 'show_gsm', label: 'GSM', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_width', label: 'Width', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_length', label: 'Length', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_gw', label: 'Gross Weight', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_nw', label: 'Net Weight', default: 1 },
-            { fieldtype: 'Section Break', label: 'Bottom Fields' },
-            { fieldtype: 'Check', fieldname: 'show_batch', label: 'Batch No (Bottom)', default: 1 },
-            { fieldtype: 'Check', fieldname: 'show_barcode', label: 'Barcode', default: 1 }
-        ],
-        primary_action_label: 'Print Label',
-        primary_action: function(values) {
-            dialog.hide();
-            frappe.run_print_logic(row_name, width_inch + " Inches", gsm, color, quality, frm, values);
-        }
-    });
-    dialog.show();
-}
-
-frappe.run_print_logic = function (row_name, final_width_display, final_gsm, final_color, final_quality, frm, custom_fields) {
-    var f = frm || cur_frm;
-    var row = (locals['Shaft Production Run Item'] || {})[row_name] || (f.doc.items || []).find(function(r) { return r.name === row_name; }) || (f.doc.roll_wise_entry || []).find(function(r) { return r.name === row_name; });
-    if (!row) return;
-    var normalized_custom_fields = normalize_custom_fields(custom_fields);
-    var label_type = String(((f.doc || {}).custom_label || "Default")).toLowerCase();
-    var customer_id_for_4x6 = String(
-        row.custom_customer ||
-        row.custom_custom_customer ||
-        row.customer ||
-        ((f.doc || {}).custom_customer) ||
-        ((f.doc || {}).customer) ||
-        ""
-    ).trim();
-    var is_customer_4x6 = (
-        label_type.includes("customer 4x6") ||
-        label_type.includes("scandinavian") ||
-        customer_id_for_4x6 === "EXP-0071"
-    );
-
-    var proceed_run = function(customer_name) {
-        var d = {
-            company: "JAYASHREE SPUN BOND",
-            quality: final_quality || "NON WOVEN FABRIC",
-            gsm: final_gsm,
-            color: final_color,
-            width_val: final_width_display,
-            item_code: row.item_code || "",
-            barcode_data: row.batch_no || "",
-            length: row.custom_produced_length_mtrs || "0",
-            gw: (flt(row.gross_weight) || flt(row.net_weight)).toFixed(2),
-            nw: flt(row.net_weight).toFixed(2),
-            batch_no: row.batch_no || "",
-            roll_no: row.roll_no || "",
-            party_code: row.party_code || "",
-            customer_name: customer_name || ""
-        };
-
-        if (is_customer_4x6) {
-            build_customer_4x6_data(row, d, function (label_data) {
-                var html4x6 = get_customer_4x6_format(label_data);
-                var pw = window.open('', '_blank', 'width=920,height=520');
-                if (pw) {
-                    pw.document.write(html4x6);
-                    pw.document.close();
-                }
-            });
-            return;
-        }
-
-        var htmlContent = get_grid_format(d, label_type, normalized_custom_fields);
-        var printWindow = window.open('', '_blank', 'height=650,width=500');
-        if (printWindow) {
-            printWindow.document.write(htmlContent);
-            printWindow.document.close();
-        }
-    };
-
-    var custom_customer_id = String(
-        row.custom_customer ||
-        row.custom_custom_customer ||
-        row.customer ||
-        ((f.doc || {}).custom_customer) ||
-        ((f.doc || {}).customer) ||
-        ""
-    ).trim();
-    if (custom_customer_id) {
-        fetch_customer_display_name(custom_customer_id, function (name) {
-            proceed_run(name);
-        });
-    } else if (row.party_code) {
-        frappe.call({
-            method: 'frappe.client.get_value',
-            args: {
-                doctype: 'Customer',
-                filters: { name: String(row.party_code).trim() },
-                fieldname: 'customer_name'
-            },
-            callback: function(r) {
-                if (r && r.message && r.message.customer_name) {
-                    proceed_run(r.message.customer_name);
-                } else {
-                    frappe.call({
-                        method: 'frappe.client.get_value',
-                        args: {
-                            doctype: 'Sales Order',
-                            filters: { name: row.party_code },
-                            fieldname: ['customer_name', 'customer']
-                        },
-                        callback: function(r2) {
-                            if (r2 && r2.message && r2.message.customer_name) {
-                                proceed_run(r2.message.customer_name);
-                            } else if (r2 && r2.message && r2.message.customer) {
-                                fetch_customer_display_name(r2.message.customer, function (name) {
-                                    proceed_run(name);
-                                });
-                            } else {
-                                proceed_run(String(row.party_code || "").trim());
-                            }
-                        }
-                    });
-                }
-            }
-        });
-    } else {
-        proceed_run("");
-    }
-};
-
-function fetch_customer_display_name(customer_id, callback) {
-    customer_id = String(customer_id || "").trim();
-    if (!customer_id) {
-        callback("");
-        return;
-    }
-    function finish(display) {
-        callback(String(display || "").trim() || customer_id);
-    }
-    frappe.call({
-        method: 'frappe.client.get_value',
-        args: {
-            doctype: 'Customer',
-            filters: { name: customer_id },
-            fieldname: ['customer_name']
-        },
-        callback: function (r) {
-            var msg = (r && r.message) || {};
-            var nm = String(msg.customer_name || "").trim();
-            if (nm) {
-                finish(nm);
-                return;
-            }
-            frappe.call({
-                method: 'frappe.client.get',
-                args: { doctype: 'Customer', name: customer_id },
-                callback: function (r2) {
-                    var doc = (r2 && r2.message) || {};
-                    var from_doc = String(doc.customer_name || "").trim();
-                    finish(from_doc || customer_id);
-                },
-                error: function () {
-                    finish(customer_id);
-                }
-            });
-        },
-        error: function () {
-            finish(customer_id);
-        }
-    });
-}
-
-function round_width_mm_to_5(wmm) {
-    var n = flt(wmm);
-    if (n <= 0) return 0;
-    return Math.round(n / 5) * 5;
-}
-
-function scandinavian_raw_width_mm(row) {
-    var wmm = flt(row.width);
-    if (wmm > 0) return wmm;
-    var win = flt(row.width_inch);
-    if (win > 0) return win * 25.4;
-    return 0;
-}
-
-function compute_scandinavian_m2(row, length_m_str) {
-    var L = flt(length_m_str);
-    if (L <= 0) return "";
-    var width_mm_r = round_width_mm_to_5(scandinavian_raw_width_mm(row));
-    if (width_mm_r <= 0) return "";
-    var width_m = width_mm_r / 1000;
-    var m2 = width_m * L;
-    return String(Math.round(m2));
-}
-
-function scandinavian_width_mm_display(row) {
-    var w = round_width_mm_to_5(scandinavian_raw_width_mm(row));
-    return w > 0 ? String(w) : "";
-}
-
-function scandinavian_order_code(row) {
-    return String(
-        row.party_code ||
-        row.custom_party_code ||
-        row.sales_order ||
-        row.order_code ||
-        ""
-    ).trim();
-}
-
-function resolve_sales_order_docname(order_code, callback) {
-    var code = String(order_code || "").trim();
-    if (!code) {
-        callback(null);
-        return;
-    }
-    frappe.call({
-        method: 'frappe.client.get_list',
-        args: {
-            doctype: 'Sales Order',
-            filters: { custom_party_code: code },
-            fields: ['name'],
-            limit_page_length: 1
-        },
-        callback: function (r) {
-            var msg = (r && r.message) || [];
-            if (msg.length > 0 && msg[0].name) {
-                callback(msg[0].name);
-                return;
-            }
-            frappe.call({
-                method: 'frappe.client.get_list',
-                args: {
-                    doctype: 'Sales Order',
-                    filters: { name: code },
-                    fields: ['name'],
-                    limit_page_length: 1
-                },
-                callback: function (r2) {
-                    var msg2 = (r2 && r2.message) || [];
-                    if (msg2.length > 0 && msg2[0].name) {
-                        callback(msg2[0].name);
-                    } else {
-                        callback(null);
-                    }
-                },
-                error: function () {
-                    callback(null);
-                }
-            });
-        },
-        error: function () {
-            callback(null);
-        }
-    });
-}
-
-function strip_html_simple(s) {
-    return String(s || "")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-function scandinavian_treatment_display(raw) {
-    var s = String(raw || "").toLowerCase().replace(/\s+/g, " ").trim();
-    if (!s) return "";
-    if (s.indexOf("hydrophilic") !== -1) return "HI";
-    if (s.indexOf("hydrophobic") !== -1) return "HO";
-    if (s.indexOf("fire retardant") !== -1 || s.indexOf("fire-retardant") !== -1) return "FR";
-    if (/\buv\b/.test(s)) return "UV";
-    return String(raw || "").trim();
-}
-
-function scandinavian_from_so_line(line, so_doc, fallbacks) {
-    line = line || {};
-    var article_no = String(
-        line.custom_purchase_no ||
-        line.item_code ||
-        ""
-    ).trim();
-    var article_name = String(
-        line.custom_purchase_quality_name ||
-        strip_html_simple(line.description) ||
-        line.item_name ||
-        ""
-    ).trim();
-    var tracking = "";
-    if (so_doc) {
-        tracking = String(so_doc.po_no || "").trim();
-    }
-    if (!tracking) {
-        tracking = fallbacks.tracking_no;
-    }
-    return {
-        article_no: article_no,
-        article_name: article_name,
-        tracking_no: tracking,
-        basis_weight: fallbacks.basis_weight,
-        rolls_in_package: fallbacks.rolls_in_package,
-        length_per_roll: fallbacks.length_per_roll,
-        width_mm: fallbacks.width_mm,
-        m2_in_package: fallbacks.m2_in_package,
-        kg_per_package: fallbacks.kg_per_package,
-        treatment: fallbacks.treatment,
-        customer_company: fallbacks.customer_company,
-        customer_address: fallbacks.customer_address,
-        customer_contact: fallbacks.customer_contact
-    };
-}
-
-function build_customer_4x6_data(row, base_data, callback) {
-    var order_code = scandinavian_order_code(row);
-    var length_per_roll = String(row.custom_produced_length_mtrs || "").trim();
-    var width_mm_disp = scandinavian_width_mm_display(row);
-    var m2_calc = compute_scandinavian_m2(row, length_per_roll);
-    var fallbacks = {
-        article_no: "",
-        article_name: "",
-        tracking_no: String(row.po_no || "").trim(),
-        basis_weight: String(base_data.gsm || "").trim(),
-        rolls_in_package: "1",
-        length_per_roll: length_per_roll,
-        width_mm: width_mm_disp,
-        m2_in_package: m2_calc,
-        kg_per_package: String(base_data.nw || "").trim(),
-        treatment: String(base_data.quality || "").trim(),
-        customer_company: "Scandinavian Nonwoven AB",
-        customer_address: "Alevagen 1 - S-291 62 Kristianstad - Sweden",
-        customer_contact: "Tel: +46 44 203960 - info@nonwoven.se - www.nonwoven.se"
-    };
-
-    if (!order_code) {
-        callback(fallbacks);
-        return;
-    }
-
-    resolve_sales_order_docname(order_code, function (so_name) {
-        if (!so_name) {
-            callback(fallbacks);
-            return;
-        }
-
-        function finish_from_list(so_items) {
-            var match = null;
-            var list = so_items || [];
-            for (var i = 0; i < list.length; i++) {
-                if (String(list[i].item_code || "") === String(row.item_code || "")) {
-                    match = list[i];
-                    break;
-                }
-            }
-            if (!match && list.length > 0) {
-                match = list[0];
-            }
-            frappe.call({
-                method: 'frappe.client.get_value',
-                args: { doctype: 'Sales Order', filters: { name: so_name }, fieldname: 'po_no' },
-                callback: function (gv) {
-                    var pseudoSo = { po_no: (gv && gv.message && gv.message.po_no) || '' };
-                    callback(scandinavian_from_so_line(match, pseudoSo, fallbacks));
-                },
-                error: function () {
-                    callback(scandinavian_from_so_line(match, null, fallbacks));
-                }
-            });
-        }
-
-        frappe.call({
-            method: 'frappe.client.get',
-            args: { doctype: 'Sales Order', name: so_name },
-            callback: function (r) {
-                var so = r && r.message;
-                if (!so) {
-                    frappe.call({
-                        method: 'frappe.client.get_list',
-                        args: {
-                            doctype: 'Sales Order Item',
-                            filters: { parent: so_name },
-                            fields: [
-                                'item_code', 'item_name', 'description',
-                                'custom_purchase_no', 'custom_purchase_quality_name'
-                            ],
-                            limit_page_length: 200
-                        },
-                        callback: function (r2) {
-                            finish_from_list((r2 && r2.message) || []);
-                        },
-                        error: function () {
-                            callback(fallbacks);
-                        }
-                    });
-                    return;
-                }
-                var items = so.items || [];
-                var match = null;
-                for (var j = 0; j < items.length; j++) {
-                    if (String(items[j].item_code || "") === String(row.item_code || "")) {
-                        match = items[j];
-                        break;
-                    }
-                }
-                if (!match && items.length > 0) {
-                    match = items[0];
-                }
-                callback(scandinavian_from_so_line(match, so, fallbacks));
-            },
-            error: function () {
-                frappe.call({
-                    method: 'frappe.client.get_list',
-                    args: {
-                        doctype: 'Sales Order Item',
-                        filters: { parent: so_name },
-                        fields: [
-                            'item_code', 'item_name', 'description',
-                            'custom_purchase_no', 'custom_purchase_quality_name'
-                        ],
-                        limit_page_length: 200
-                    },
-                    callback: function (r2) {
-                        finish_from_list((r2 && r2.message) || []);
-                    },
-                    error: function () {
-                        callback(fallbacks);
-                    }
-                });
-            }
-        });
-    });
-}
-
-function get_grid_format(d, type, custom_fields) {
-    type = (type || "default").trim().toLowerCase();
-    var isReliance = type.includes("reliance") || type.includes("relience");
-    var isPerfect = type.includes("perfect");
-    var isPlainCC = type.includes("plain cc");
-    var isPlain = type.includes("plain") && !isPlainCC;
-    var isCustom = type.includes("custom");
-    var isDefault = !isReliance && !isPerfect && !isPlainCC && !isPlain && !isCustom;
-
-    var header = "";
-    var sub1 = "";
-    var sub2 = "";
-
-    var fields = custom_fields || {
-        show_company: 1, show_email: 1, show_customer: 1, show_quality: 1, show_order_code: 1,
-        show_gsm: 1, show_width: 1, show_length: 1, show_gw: 1, show_nw: 1,
-        show_batch: 1, show_barcode: 1
-    };
-
-    var qualityText = fields.show_quality ? String(d.quality || "").trim() : "";
-    var orderCodeText = fields.show_order_code ? String(d.party_code || "").trim() : "";
-    var qualityAndOrder = [qualityText, orderCodeText].filter(function (s) { return !!s; }).join(" / ");
-
-    if (isDefault || isCustom) {
-        header = fields.show_company ? "JayaShree Spun Bond" : "";
-        sub1 = fields.show_email ? "enquiry@jayashreespunbond.com" : "";
-        sub2 = qualityAndOrder;
-    } else if (isPlainCC) {
-        header = fields.show_company ? "Non Woven Fabrics" : "";
-        sub1 = qualityAndOrder;
-        sub2 = "";
-    } else {
-        header = fields.show_company ? "Non Woven Fabrics" : "";
-        sub1 = qualityAndOrder;
-        sub2 = "";
-    }
-
-    var rows = [];
-    var customer_header_row = "";
-    if (isCustom && fields.show_customer && d.customer_name) {
-        customer_header_row = '<div class="customer-sub">' + escape_html(d.customer_name) + '</div>';
-    }
-    if (fields.show_gsm) {
-        rows.push('<tr><td><span class="lbl">GSM</span></td><td class="colon">:</td><td><span class="val">' + d.gsm + '</span></td></tr>');
-    }
-
-    var widthUnit = " Inches";
-    var wValLower = String(d.width_val || "").toLowerCase();
-    if (wValLower.includes("inches") || wValLower.includes("inch") || wValLower.includes("cm") || wValLower.includes('"')) {
-        widthUnit = ""; 
-    }
-    if (fields.show_width) {
-        rows.push('<tr><td><span class="lbl">Width</span></td><td class="colon">:</td><td><span class="val">' + d.width_val + widthUnit + '</span></td></tr>');
-    }
-
-    var lengthUnit = " Mtrs";
-    var lValStr = String(d.length || "");
-    if (lValStr.toLowerCase().includes("mtr")) lengthUnit = "";
-    if (fields.show_length) {
-        rows.push('<tr><td><span class="lbl">Length</span></td><td class="colon">:</td><td><span class="val">' + d.length + lengthUnit + '</span></td></tr>');
-    }
-
-    if (fields.show_gw) {
-        rows.push('<tr><td><span class="lbl">Gross Weight</span></td><td class="colon">:</td><td><span class="val">' + d.gw + ' Kgs</span></td></tr>');
-    }
-    if (fields.show_nw) {
-        rows.push('<tr><td><span class="lbl">Net Weight</span></td><td class="colon">:</td><td><span class="val">' + d.nw + ' Kgs</span></td></tr>');
-    }
-
-    var btmRow = "";
-    if (fields.show_batch) {
-        btmRow = '<div class="btm-row"><span class="lbl">BATCH No : <span class="batch-val">' + d.batch_no + '</span></span></div>';
-    }
-
-    var rowCount = rows.length;
-    var isCompact = !isCustom && rowCount > 5;
-    var hasCustomerHeader = !!customer_header_row;
-    var hasHeaderContent = !!(header || sub1 || sub2 || customer_header_row);
-    var hasBatch = !!(fields.show_batch && d.batch_no);
-    var hasBarcode = !!fields.show_barcode;
-
-    var labelStyle, headerSize, tdPad, lblSize, valSize, batchLblSize, batchValSize, barcodeH, barcodeFontSize, barcodeWidth, headerPadBot, subheaderSize, emailSize, innerMargin, innerPad, headerMarginBot, barcodeContPad, btmPadTop, btmMargin, colonSize, customerSubSize, customerSubMarginTop, customerSubMarginBottom, tableMarginY, tableJustify, headerBorderStyle, headerDisplay, btmDisplay, barcodeDisplay, tableHeight;
-
-    if (isCompact) {
-        labelStyle = 'font-size: 0.95em;';
-        headerSize = 'font-size: 22px;';
-        emailSize = '11px';
-        subheaderSize = '15px';
-        headerPadBot = '3px';
-        headerMarginBot = '3px';
-        innerMargin = '5px';
-        innerPad = '5px 8px';
-        tdPad = '3px 0';
-        colonSize = '14px';
-        lblSize = '15px';
-        valSize = '15px';
-        btmPadTop = '4px';
-        btmMargin = '1px 0';
-        batchLblSize = '14px';
-        batchValSize = '16px';
-        barcodeContPad = '2px 0 1px 0';
-        barcodeH = '50px';
-        barcodeFontSize = 11;
-        barcodeWidth = 1.9;
-        customerSubSize = '13px';
-        customerSubMarginTop = '1px';
-        customerSubMarginBottom = '0px';
-        tableMarginY = '1px';
-        tableJustify = rowCount <= 2 ? 'center' : 'flex-start';
-        tableHeight = '100%';
-    } else {
-        labelStyle = 'font-size: 1.05em;';
-        headerSize = 'font-size: 24px;';
-        emailSize = '12px';
-        subheaderSize = (isCustom && hasCustomerHeader) ? '15px' : '17px';
-        headerPadBot = (isCustom && hasCustomerHeader) ? '3px' : '4px';
-        headerMarginBot = (isCustom && hasCustomerHeader) ? '3px' : '4px';
-        innerMargin = '6px';
-        innerPad = (isCustom && hasCustomerHeader) ? '5px 9px' : '6px 10px';
-        tdPad = (isCustom && hasCustomerHeader) ? '4px 0' : '5px 0';
-        colonSize = '15px';
-        lblSize = (isCustom && hasCustomerHeader) ? '15px' : '16px';
-        valSize = (isCustom && hasCustomerHeader) ? '15px' : '16px';
-        btmPadTop = (isCustom && hasCustomerHeader) ? '5px' : '6px';
-        btmMargin = '2px 0';
-        batchLblSize = (isCustom && hasCustomerHeader) ? '15px' : '16px';
-        batchValSize = (isCustom && hasCustomerHeader) ? '17px' : '18px';
-        barcodeContPad = (isCustom && hasCustomerHeader) ? '2px 0 1px 0' : '3px 0 2px 0';
-        barcodeH = (isCustom && hasCustomerHeader) ? '52px' : '55px';
-        barcodeFontSize = 12;
-        barcodeWidth = 2.0;
-        customerSubSize = (isCustom && hasCustomerHeader) ? '14px' : '15px';
-        customerSubMarginTop = '1px';
-        customerSubMarginBottom = '1px';
-        tableMarginY = (isCustom && hasCustomerHeader) ? '1px' : '2px';
-        tableJustify = rowCount <= 2 ? 'center' : 'flex-start';
-        tableHeight = 'auto';
-    }
-    headerBorderStyle = hasHeaderContent ? '2px solid #333' : 'none';
-    headerDisplay = hasHeaderContent ? 'block' : 'none';
-    btmDisplay = hasBatch ? 'flex' : 'none';
-    barcodeDisplay = hasBarcode ? 'flex' : 'none';
-
-    var missingSections = (hasHeaderContent ? 0 : 1) + (hasBatch ? 0 : 1) + (hasBarcode ? 0 : 1);
-    if (missingSections > 0) {
-        tdPad = (parseInt(tdPad, 10) + missingSections) + 'px 0';
-        lblSize = (parseInt(lblSize, 10) + (missingSections > 1 ? 1 : 0)) + 'px';
-        valSize = (parseInt(valSize, 10) + (missingSections > 1 ? 1 : 0)) + 'px';
-        tableJustify = 'center';
-        tableHeight = '100%';
-    }
-
-    return '<html><head><title>Label Preview</title><style>' +
-        '@media print { .btn-panel { display: none !important; } @page { size: 4in 4in; margin: 0; } body { margin: 0; } }' +
-        'body { font-family: "Arial", sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; ' + labelStyle + ' }' +
-        '.btn-panel { padding: 10px; background: #eee; }' +
-        '.sticker { width: 4in; height: 4in; margin: 20px auto; border: 2px solid black; background: white; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
-        '.inner-border { border: 2px solid black; margin: ' + innerMargin + '; padding: ' + innerPad + '; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }' +
-        '.header { text-align: center; display: ' + headerDisplay + '; border-bottom: ' + headerBorderStyle + '; padding-bottom: ' + headerPadBot + '; margin-bottom: ' + headerMarginBot + '; }' +
-        '.company { ' + headerSize + ' font-weight: 900; letter-spacing: 0.5px; margin-bottom: 1px; }' +
-        '.email { font-size: ' + emailSize + '; font-weight: bold; color: #444; margin-bottom: 1px; }' +
-        '.customer-sub { font-size: ' + customerSubSize + '; font-weight: 900; color: #111; letter-spacing: 0.3px; margin-top: ' + customerSubMarginTop + '; margin-bottom: ' + customerSubMarginBottom + '; }' +
-        '.subheader { font-size: ' + subheaderSize + '; font-weight: 900; color: black; letter-spacing: 0.5px; margin-top: 1px; }' +
-        '.table-container { flex-grow: 1; display: flex; flex-direction: column; justify-content: ' + tableJustify + '; margin: ' + tableMarginY + ' 0; }' +
-        'table { width: 100%; height: ' + tableHeight + '; border-collapse: collapse; margin: 0 auto; }' +
-        'td { padding: ' + tdPad + '; vertical-align: middle; border: none; text-align: left; }' +
-        'td:nth-child(1) { width: 44%; padding-left: 8px; }' +
-        'td.colon { width: 5%; text-align: center; font-weight: bold; font-size: ' + colonSize + '; }' +
-        'td:nth-child(3) { width: 51%; padding-left: 4px; }' +
-        '.lbl { font-size: ' + lblSize + '; font-weight: 900; color: #333; }' +
-        '.val { font-size: ' + valSize + '; font-weight: 900; color: #000; }' +
-        '.btm-row { display: ' + btmDisplay + '; justify-content: center; align-items: center; border-top: 2px dashed #666; padding-top: ' + btmPadTop + '; margin: ' + btmMargin + '; }' +
-        '.btm-row .lbl { font-size: ' + batchLblSize + '; }' +
-        '.btm-row .batch-val { font-weight: 900; color: #000; font-size: ' + batchValSize + '; }' +
-        '.barcode-container { display: ' + barcodeDisplay + '; justify-content: center; align-items: center; padding: ' + barcodeContPad + '; }' +
-        '#barcode { max-width: 100%; height: ' + barcodeH + '; }' +
-        '</style></head><body>' +
-        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px; font-weight:bold; cursor:pointer;">PRINT</button><button onclick="window.close()" style="padding:10px 20px; margin-left:10px;">CLOSE</button></div>' +
-        '<div class="sticker"><div class="inner-border">' +
-        '<div class="header">' +
-            (header ? '<div class="company">' + header + '</div>' : '') +
-            (sub1 ? '<div class="email">' + sub1 + '</div>' : '') +
-            customer_header_row +
-            (sub2 ? '<div class="subheader">' + sub2 + '</div>' : '') +
-        '</div>' +
-        '<div class="table-container"><table>' + rows.join('') + '</table></div>' +
-        btmRow +
-        '<div class="barcode-container"><svg id="barcode"><\/svg><\/div>' +
-        '<\/div><\/div>' +
-        '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"><\/script>' +
-        (hasBarcode ? ('<script>JsBarcode("#barcode", "' + d.barcode_data + '", { format: "CODE128", displayValue: true, fontSize: ' + barcodeFontSize + ', textMargin: 1, height: ' + parseInt(barcodeH) + ', width: ' + barcodeWidth + ', margin: 0 });<\/script>') : '') +
-        '<\/body><\/html>';
-}
-
-function get_customer_4x6_format(d) {
-    return '<html><head><title>Customer Label 6x4</title><style>' +
-        '@media print { .btn-panel { display:none !important; } @page { size: 6in 4in; margin: 0; } body { margin: 0; } }' +
-        'html, body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 0; background: #eee; }' +
-        'body { min-height: 100vh; box-sizing: border-box; }' +
-        '.btn-panel { padding: 10px; background: #eee; text-align: center; }' +
-        '.label { width: 6in; height: 4in; min-width: 6in; min-height: 4in; max-width: 6in; max-height: 4in; margin: 14px auto; background: #fff; box-sizing: border-box; border: 2px solid #000; padding: 8px 12px 6px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; flex-shrink: 0; }' +
-        '.top-block { flex: 0 0 auto; }' +
-        '.top-block > p:nth-child(1) { margin: 0 0 2px; }' +
-        '.top-block > p:nth-child(2) { margin: 0 0 6px; }' +
-        '.top-block > p:nth-child(3) { margin: 5px 0 3px; }' +
-        '.top-block > p:nth-child(4) { margin: 0 0 8px; }' +
-        '.line-label { font-size: 14px; font-weight: 400; margin: 0; }' +
-        '.line-value { font-size: 40px; font-weight: 700; margin: 0; line-height: 0.98; letter-spacing: -0.5px; }' +
-        '.line-caption { font-size: 14px; margin: 0; }' +
-        '.line-text { font-size: 18px; font-weight: 700; margin: 0; line-height: 1.1; }' +
-        '.mid-wrap { flex: 1 1 0; min-height: 0; width: 100%; display: flex; flex-direction: column; justify-content: stretch; align-items: stretch; }' +
-        '.row-dual { display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; width: 100%; margin-top: 2px; margin-bottom: 4px; align-items: start; }' +
-        '.row-dual .cell-right .k, .row-dual .cell-right .v { text-align: right; }' +
-        '.grid-spec { flex: 1 1 auto; width: 100%; min-height: 0; display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; column-gap: 16px; row-gap: 2px; align-content: stretch; justify-items: stretch; }' +
-        '.cell { display: flex; flex-direction: column; justify-content: center; padding: 3px 0; min-height: 0; }' +
-        '.cell .k { font-size: 13px; font-weight: 400; margin: 0; line-height: 1.1; }' +
-        '.cell .v { font-size: 23px; font-weight: 700; line-height: 1.05; margin-top: 2px; min-height: 1.05em; }' +
-        '.cell-mid { text-align: center; align-items: center; }' +
-        '.cell-mid .k, .cell-mid .v { text-align: center; }' +
-        '.cell-right { text-align: right; align-items: flex-end; }' +
-        '.cell-right .k, .cell-right .v { text-align: right; }' +
-        '.footer { flex: 0 0 auto; padding-top: 2px; }' +
-        '.cust-name { text-align: center; font-size: 17px; font-weight: 700; margin: 0; }' +
-        '.cust-addr { text-align: center; font-size: 11px; margin-top: 2px; text-decoration: underline; }' +
-        '.cust-contact { text-align: center; font-size: 10px; margin-top: 2px; line-height: 1.2; }' +
-        '</style></head><body>' +
-        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px; font-weight:bold; cursor:pointer;">PRINT</button><button onclick="window.close()" style="padding:10px 20px; margin-left:10px;">CLOSE</button></div>' +
-        '<div class="label">' +
-        '<div class="top-block">' +
-        '<p class="line-label">Article No</p>' +
-        '<p class="line-value">' + escape_html(d.article_no) + '</p>' +
-        '<p class="line-caption">Article</p>' +
-        '<p class="line-text">' + escape_html(d.article_name) + '</p>' +
-        '</div>' +
-        '<div class="mid-wrap">' +
-        '<div class="row-dual">' +
-        '<div class="cell"><div class="k">Tracking No</div><div class="v">' + escape_html(d.tracking_no) + '</div></div>' +
-        '<div class="cell cell-right"><div class="k">Length per roll (m)</div><div class="v">' + escape_html(d.length_per_roll) + '</div></div>' +
-        '</div>' +
-        '<div class="grid-spec">' +
-        '<div class="cell"><div class="k">Basis Weight (g/m²)</div><div class="v">' + escape_html(d.basis_weight) + '</div></div>' +
-        '<div class="cell cell-mid"><div class="k">Rolls in package</div><div class="v">' + escape_html(d.rolls_in_package) + '</div></div>' +
-        '<div class="cell cell-right"><div class="k">Width (mm)</div><div class="v">' + escape_html(d.width_mm) + '</div></div>' +
-        '<div class="cell"><div class="k">m² in package</div><div class="v">' + escape_html(d.m2_in_package) + '</div></div>' +
-        '<div class="cell cell-mid"><div class="k">Kg per package</div><div class="v">' + escape_html(d.kg_per_package) + '</div></div>' +
-        '<div class="cell cell-right"><div class="k">Treatment</div><div class="v">' + escape_html(scandinavian_treatment_display(d.treatment)) + '</div></div>' +
-        '</div>' +
-        '</div>' +
-        '<div class="footer">' +
-        '<div class="cust-name">' + escape_html(d.customer_company) + '</div>' +
-        '<div class="cust-addr">' + escape_html(d.customer_address) + '</div>' +
-        '<div class="cust-contact">' + escape_html(d.customer_contact) + '</div>' +
-        '</div>' +
-        '</div>' +
-        '</body></html>';
-}
-
-function escape_html(s) {
-    if (s === null || s === undefined) return "";
-    return String(s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-}
-
-function normalize_custom_fields(custom_fields) {
-    var defaults = {
-        show_company: 1, show_email: 1, show_customer: 1, show_quality: 1, show_order_code: 1,
-        show_gsm: 1, show_width: 1, show_length: 1, show_gw: 1, show_nw: 1,
-        show_batch: 1, show_barcode: 1
-    };
-    if (!custom_fields) return defaults;
-
-    var as_bool = function(v, default_value) {
-        if (v === undefined || v === null || v === "") return !!default_value;
-        if (typeof v === "boolean") return v;
-        if (typeof v === "number") return v === 1;
-        var s = String(v).trim().toLowerCase();
-        return s === "1" || s === "true" || s === "yes" || s === "on";
-    };
-
-    return {
-        show_company: as_bool(custom_fields.show_company, 1),
-        show_email: as_bool(custom_fields.show_email, 1),
-        show_customer: as_bool(custom_fields.show_customer, 1),
-        show_quality: as_bool(custom_fields.show_quality, 1),
-        show_order_code: as_bool(custom_fields.show_order_code, 1),
-        show_gsm: as_bool(custom_fields.show_gsm, 1),
-        show_width: as_bool(custom_fields.show_width, 1),
-        show_length: as_bool(custom_fields.show_length, 1),
-        show_gw: as_bool(custom_fields.show_gw, 1),
-        show_nw: as_bool(custom_fields.show_nw, 1),
-        show_batch: as_bool(custom_fields.show_batch, 1),
-        show_barcode: as_bool(custom_fields.show_barcode, 1)
-    };
+function spr_sync_total_produced_weight(frm) {
+	console.log('[SPR SYNC] START');
+	
+	if (!frm || !frm.doc) {
+		console.log('[SPR SYNC] ERROR: No frm or doc');
+		return;
+	}
+	
+	console.log('[SPR SYNC] Calling compute function...');
+	const calculated = spr_compute_total_produced_weight(frm);
+	const current = frm.doc.total_produced_weight ? parseFloat(frm.doc.total_produced_weight) : 0;
+	
+	console.log('[SPR SYNC] Current value:', current, '| Calculated value:', calculated);
+	
+	if (Math.abs(current - calculated) > 0.01) {
+		console.log('[SPR SYNC] VALUES DIFFER - Setting total_produced_weight to:', calculated);
+		frm.set_value('total_produced_weight', calculated);
+		console.log('[SPR SYNC] Set_value called');
+	} else {
+		console.log('[SPR SYNC] VALUES MATCH - No change needed');
+	}
+	
+	console.log('[SPR SYNC] END');
 }
