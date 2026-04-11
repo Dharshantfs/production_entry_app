@@ -544,66 +544,42 @@ def _resolve_wos_for_pp_job_row(
 	combination: str | None = None,
 	job_gsm: int | None = None,
 ) -> list:
-	"""Return ONLY ONE WO. Fetch directly from DB, not via helper functions."""
-	
-	wo = None
-	
-	# Try PPI: Query WO directly from DB for this PPI
+	"""Return exactly one WO per Available Jobs row: PPI → optional GSM match → safe fallbacks.
+
+	``combination`` is accepted for API compatibility (e.g. 63\"+63\") but we do **not** allocate
+	one WO per segment here — same-width combo lines share one WO. Multi-GSM combos are handled by
+	filtering WOs on the job row GSM when multiple WOs exist for the same PPI.
+	"""
 	if ppi:
-		try:
-			result = frappe.db.sql(
-				"""
-				SELECT wo.name, wo.production_item
-				FROM `tabWork Order` wo
-				JOIN `tabProduction Plan Item` ppi ON ppi.work_order = wo.name
-				WHERE ppi.name = %(ppi)s AND ppi.parent = %(pp)s
-				LIMIT 1
-				""",
-				{"ppi": _cstr(ppi), "pp": _cstr(pp_name)},
-				as_dict=True,
-			)
-			if result:
-				wo = result[0]
-		except Exception:
-			pass
-	
-	# Try job_id
-	if not wo and job_id:
-		try:
-			result = frappe.db.sql(
-				"""
-				SELECT DISTINCT wo.name, wo.production_item
-				FROM `tabWork Order` wo
-				WHERE wo.production_plan = %(pp)s
-				LIMIT 1
-				""",
-				{"pp": _cstr(pp_name)},
-				as_dict=True,
-			)
-			if result:
-				wo = result[0]
-		except Exception:
-			pass
-	
-	# Fallback: get first WO in PP
-	if not wo:
-		try:
-			result = frappe.db.sql(
-				"""
-				SELECT name, production_item
-				FROM `tabWork Order`
-				WHERE production_plan = %(pp)s AND docstatus != 2
-				ORDER BY creation ASC LIMIT 1
-				""",
-				{"pp": _cstr(pp_name)},
-				as_dict=True,
-			)
-			if result:
-				wo = result[0]
-		except Exception:
-			pass
-	
-	return [wo] if wo else []
+		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
+		if not wos:
+			return []
+		if len(wos) == 1:
+			return wos
+		if job_gsm and job_gsm > 0:
+			for wo in wos:
+				try:
+					prod_item = wo.get("production_item")
+					if prod_item:
+						gsm, _width = parse_item_code(_cstr(prod_item))
+						if gsm == job_gsm:
+							return [wo]
+				except Exception:
+					pass
+		return [wos[0]]
+
+	if job_id:
+		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
+		return [wos[0]] if wos else []
+
+	if row_index is not None:
+		ord_ppi = _ordered_production_plan_items(pp_name)
+		if ord_ppi and 0 <= row_index < len(ord_ppi):
+			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
+			return [wos[0]] if wos else []
+
+	all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	return [all_wos[0]] if all_wos else []
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
@@ -704,7 +680,7 @@ class ShaftProductionRun(Document):
 		self.generate_batch_numbers()
 
 	def sync_shaft_job_work_orders_from_plan(self):
-		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
+		"""Fill Available Jobs.work_orders from Production Plan (one WO per row; GSM disambiguates when several WOs share a PPI)."""
 		meta = frappe.get_meta("Shaft Production Run Job")
 		if not meta.has_field("work_orders"):
 			return

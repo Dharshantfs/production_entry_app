@@ -558,7 +558,7 @@ class ShaftProductionRun(Document):
 		self.ensure_batch_masters_for_roll_lines()
 
 	def sync_shaft_job_work_orders_from_plan(self):
-		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
+		"""Fill Available Jobs.work_orders from Production Plan (one WO per row; GSM disambiguates when several WOs share a PPI)."""
 		meta = frappe.get_meta("Shaft Production Run Job")
 		if not meta.has_field("work_orders"):
 			return

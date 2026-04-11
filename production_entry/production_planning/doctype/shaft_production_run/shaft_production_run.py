@@ -249,12 +249,19 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
 	"""Comma-separated WO names for this shaft row (same rules as _get_work_orders_for_spr_job)."""
+	job_gsm = None
+	try:
+		if m.get("gsm") is not None and m.get("gsm") != "":
+			job_gsm = int(flt(str(m.get("gsm")).strip().split()[0]))
+	except Exception:
+		pass
 	wos = _resolve_wos_for_pp_job_row(
 		production_plan,
 		ppi=m.get("production_plan_item"),
 		job_id=m.get("job_id"),
 		row_index=idx,
 		combination=m.get("combination"),
+		job_gsm=job_gsm,
 	)
 	return ", ".join(w["name"] for w in wos) if wos else ""
 
@@ -395,12 +402,19 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 
 		jn = m.get("job_id")
 		if jn and (not m.get("total_weight")):
+			job_gsm = None
+			if m.get("gsm"):
+				try:
+					job_gsm = int(flt(m.get("gsm")))
+				except Exception:
+					pass
 			wos_tw = _resolve_wos_for_pp_job_row(
 				production_plan,
 				ppi=m.get("production_plan_item"),
 				job_id=_cstr(jn),
 				row_index=idx,
 				combination=m.get("combination"),
+				job_gsm=job_gsm,
 			)
 			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
@@ -473,48 +487,6 @@ def _parse_combination_widths_inches(combination) -> list[float]:
 	return out
 
 
-def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -> list | None:
-	"""
-	For multi-width combinations (e.g. 39\" + 24\"), return one Work Order per segment by matching
-	production_item width (from item code) to each segment width. Distinct WOs only.
-	"""
-	comb = _cstr(combination)
-	if not comb:
-		return None
-	segs = _count_combination_segments(comb)
-	if segs < 2:
-		return None
-	widths = _parse_combination_widths_inches(comb)
-	if len(widths) < segs:
-		return None
-	widths = widths[:segs]
-	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	if not all_wos or len(all_wos) < segs:
-		return None
-	used: set[str] = set()
-	out: list = []
-	tol = 1.25
-	for target_w in widths:
-		best = None
-		best_d = 999.0
-		for wo in all_wos:
-			nm = _cstr(wo.get("name"))
-			if nm in used:
-				continue
-			_, w_in = parse_item_code(_cstr(wo.get("production_item")))
-			if w_in <= 0:
-				continue
-			d = abs(flt(w_in) - flt(target_w))
-			if d < best_d:
-				best_d = d
-				best = wo
-		if best is None or best_d > tol:
-			return None
-		used.add(_cstr(best.get("name")))
-		out.append(best)
-	return out if len(out) == segs else None
-
-
 def _resolve_wos_for_pp_job_row(
 	pp_name: str,
 	*,
@@ -522,45 +494,39 @@ def _resolve_wos_for_pp_job_row(
 	job_id: str | None = None,
 	row_index: int | None = None,
 	combination: str | None = None,
+	job_gsm: int | None = None,
 ) -> list:
-	"""
-	Resolve Work Orders for one shaft job line: PPI link, human job id, ordinal PP lines, shared WO, PP-wide fallback.
-	Used when building SPR jobs from PP and when resolving WOs on saved Shaft Production Run.
-	"""
-	comb = _cstr(combination)
-	if comb:
-		segs = _count_combination_segments(comb)
-		if segs > 1:
-			matched = _match_work_orders_to_combination_segments(pp_name, comb)
-			if matched:
-				return matched
+	"""One WO per shaft job row: PPI + optional GSM match; same combo (e.g. 63\"+63\") shares one WO."""
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos:
+		if not wos:
+			return []
+		if len(wos) == 1:
 			return wos
+		if job_gsm and job_gsm > 0:
+			for wo in wos:
+				try:
+					prod_item = wo.get("production_item")
+					if prod_item:
+						gsm, _width = parse_item_code(_cstr(prod_item))
+						if gsm == job_gsm:
+							return [wo]
+				except Exception:
+					pass
+		return [wos[0]]
+
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
-		if wos:
-			return wos
-	ord_ppi = _ordered_production_plan_items(pp_name)
-	if row_index is not None and ord_ppi:
-		if 0 <= row_index < len(ord_ppi):
-			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
-			if wos:
-				return wos
-		# Several shaft jobs share one Production Plan Item / one WO — reuse that WO for every job row.
-		if len(ord_ppi) == 1:
-			wos = get_work_orders_for_job(pp_name, ord_ppi[0])
-			if wos:
-				return wos
-	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	if not all_wos:
-		return []
-	if len(all_wos) == 1:
-		return all_wos
+		return [wos[0]] if wos else []
+
 	if row_index is not None:
-		return [all_wos[row_index % len(all_wos)]]
-	return [all_wos[0]]
+		ord_ppi = _ordered_production_plan_items(pp_name)
+		if ord_ppi and 0 <= row_index < len(ord_ppi):
+			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
+			return [wos[0]] if wos else []
+
+	all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	return [all_wos[0]] if all_wos else []
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
@@ -572,7 +538,17 @@ def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
 	jid = _spr_job_id(job_row)
 	idx = _spr_job_row_index(spr_doc, job_row)
 	comb = getattr(job_row, "combination", None) if meta.has_field("combination") else None
-	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx, combination=comb)
+	job_gsm = None
+	if meta.has_field("gsm"):
+		try:
+			gsm_val = getattr(job_row, "gsm", None)
+			if gsm_val:
+				job_gsm = int(flt(gsm_val))
+		except Exception:
+			pass
+	return _resolve_wos_for_pp_job_row(
+		pp_name, ppi=ppi, job_id=jid, row_index=idx, combination=comb, job_gsm=job_gsm
+	)
 
 
 def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None:
@@ -621,12 +597,19 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			if fn in r and r[fn] is not None and job_meta.has_field(fn):
 				m[fn] = r[fn]
 		if (not m.get("total_weight")) and jn:
+			job_gsm = None
+			if m.get("gsm"):
+				try:
+					job_gsm = int(flt(m.get("gsm")))
+				except Exception:
+					pass
 			wos_tw = _resolve_wos_for_pp_job_row(
 				production_plan,
 				ppi=m.get("production_plan_item"),
 				job_id=_cstr(jn),
 				row_index=idx,
 				combination=m.get("combination"),
+				job_gsm=job_gsm,
 			)
 			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
@@ -709,7 +692,7 @@ class ShaftProductionRun(Document):
 		)
 
 	def sync_shaft_job_work_orders_from_plan(self):
-		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
+		"""Fill Available Jobs.work_orders from Production Plan (one WO per row; GSM disambiguates when several WOs share a PPI)."""
 		meta = frappe.get_meta("Shaft Production Run Job")
 		if not meta.has_field("work_orders"):
 			return
@@ -722,6 +705,14 @@ class ShaftProductionRun(Document):
 			idx = _spr_job_row_index(self, row)
 			if idx is None:
 				idx = 0
+			job_gsm = None
+			if meta.has_field("gsm"):
+				try:
+					gsm_val = getattr(row, "gsm", None)
+					if gsm_val:
+						job_gsm = int(flt(gsm_val))
+				except Exception:
+					pass
 			m = {
 				"job_id": _spr_job_id(row),
 				"production_plan_item": getattr(row, "production_plan_item", None),
@@ -733,6 +724,7 @@ class ShaftProductionRun(Document):
 				job_id=_cstr(m.get("job_id")),
 				row_index=idx,
 				combination=m.get("combination"),
+				job_gsm=job_gsm,
 			)
 			if wos:
 				row.work_orders = ", ".join(w["name"] for w in wos)
@@ -1565,6 +1557,7 @@ def get_job_rows_for_production_plan(production_plan):
 			job_id=_cstr(m.get("job_id")),
 			row_index=i,
 			combination=m.get("combination"),
+			job_gsm=None,
 		)
 		if job_meta.has_field("work_orders") and wos:
 			row["work_orders"] = ", ".join(w["name"] for w in wos)
