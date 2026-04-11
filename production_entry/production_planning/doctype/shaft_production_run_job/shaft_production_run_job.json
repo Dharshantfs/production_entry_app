@@ -17,6 +17,7 @@
   "total_weight",
   "custom_total_achieved_weight",
   "no_of_shafts",
+  "no_of_rolls",
   "party_code",
   "work_orders",
   "is_manual",
@@ -94,6 +95,12 @@
    "fieldname": "no_of_shafts",
    "fieldtype": "Int",
    "label": "No of Shafts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "no_of_rolls",
+   "fieldtype": "Int",
+   "label": "No of Rolls (per shaft)",
    "read_only": 1
   },
   {

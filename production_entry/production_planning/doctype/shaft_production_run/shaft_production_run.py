@@ -1533,7 +1533,13 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 		no_shafts = 1
 	comb = getattr(job_row, "combination", None) or ""
 	segs = _count_combination_segments(comb)
-	n_rolls = max(1, no_shafts * segs)
+	rolls_per_shaft = cint(getattr(job_row, "no_of_rolls", 0) or 0)
+	if rolls_per_shaft < 1:
+		rolls_per_shaft = 1
+	if segs <= 1:
+		n_rolls = max(1, no_shafts * rolls_per_shaft)
+	else:
+		n_rolls = max(1, no_shafts * segs * rolls_per_shaft)
 
 	shaft_combination = get_shaft_combination(pp_name, job_id)
 	if getattr(job_row, "combination", None) and not shaft_combination:
@@ -2475,14 +2481,18 @@ def spr_create_manual_job(
 
 
 @frappe.whitelist()
-def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
+def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_of_rolls=None):
 	"""
 	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
-	items: list of { item_code, production_plan_item, wo_qty } (wo_qty = manufacturing qty in Kg, e.g. net/shaft × shafts).
+	items: list of { item_code, production_plan_item, wo_qty, meter_roll }.
+	wo_qty is manufacturing Kg = net per roll × rolls_per_shaft × shafts (from the dialog).
 	"""
 	no_of_shafts = cint(no_of_shafts)
 	if no_of_shafts < 1:
 		frappe.throw(_("Number of shafts must be at least 1"))
+	no_of_rolls = cint(no_of_rolls) if no_of_rolls is not None else 1
+	if no_of_rolls < 1:
+		no_of_rolls = 1
 	if isinstance(items, str):
 		items = frappe.parse_json(items)
 	if not items or not isinstance(items, list):
@@ -2568,6 +2578,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		"total_weight": total_qty,
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
+	if meta.has_field("no_of_rolls"):
+		row["no_of_rolls"] = no_of_rolls
 	if meta.has_field("gsm") and gsm:
 		try:
 			row["gsm"] = int(gsm)

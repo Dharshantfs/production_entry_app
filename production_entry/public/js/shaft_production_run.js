@@ -267,18 +267,22 @@ function spr_register_spr_page_buttons_after_save(frm) {
 	});
 }
 
-/** Default WO qty (Kg): one shaft / one roll worth (net/shaft), not × shafts — total is on the job row. */
-function sprManualDefaultWoQty(line, noShafts) {
+/** Default WO qty (Kg): net per roll × rolls per shaft × number of shafts (deck positions). */
+function sprManualDefaultWoQty(line, noShafts, noRolls) {
+	const shafts = cint(noShafts);
+	const rolls = cint(noRolls);
+	const s = shafts > 0 ? shafts : 1;
+	const r = rolls > 0 ? rolls : 1;
 	const nps = line.net_per_shaft_kg != null ? flt(line.net_per_shaft_kg) : null;
 	if (nps != null && nps > 0) {
-		return nps;
+		return nps * r * s;
 	}
 	const fs =
 		line.first_segment_planned_kg != null && line.first_segment_planned_kg !== ''
 			? flt(line.first_segment_planned_kg)
 			: null;
 	if (fs != null && fs > 0) {
-		return fs;
+		return fs * r * s;
 	}
 	const pq = flt(line.planned_qty);
 	return pq > 0 ? pq : 1;
@@ -324,7 +328,14 @@ function spr_open_manual_job_dialog(frm) {
 					{
 						fieldname: 'no_of_shafts',
 						fieldtype: 'Int',
-						label: __('Number of shafts'),
+						label: __('Number of shafts (deck positions)'),
+						reqd: 1,
+						default: 1,
+					},
+					{
+						fieldname: 'no_of_rolls',
+						fieldtype: 'Int',
+						label: __('Number of rolls (per shaft)'),
 						reqd: 1,
 						default: 1,
 					},
@@ -332,7 +343,7 @@ function spr_open_manual_job_dialog(frm) {
 						fieldname: 'line_select_html',
 						fieldtype: 'HTML',
 						label: __(
-							'Select items (WO qty default = net/shaft Kg per roll; job total = qty × shafts)'
+							'Select items (WO qty default = net/roll Kg × rolls × shafts)'
 						),
 						options: '<div class="spr-manual-lines-wrap"></div>',
 					},
@@ -340,8 +351,13 @@ function spr_open_manual_job_dialog(frm) {
 				primary_action_label: __('Create Work Order(s)'),
 				primary_action: function () {
 					const no_of_shafts = cint(d.get_value('no_of_shafts'));
+					const no_of_rolls = cint(d.get_value('no_of_rolls'));
 					if (no_of_shafts < 1) {
 						frappe.msgprint(__('Number of shafts must be at least 1.'));
+						return;
+					}
+					if (no_of_rolls < 1) {
+						frappe.msgprint(__('Number of rolls per shaft must be at least 1.'));
 						return;
 					}
 					const items = [];
@@ -378,6 +394,7 @@ function spr_open_manual_job_dialog(frm) {
 						args: {
 							shaft_production_run: frm.doc.name,
 							no_of_shafts: no_of_shafts,
+							no_of_rolls: cint(d.get_value('no_of_rolls')) || 1,
 							items: items,
 						},
 						freeze: true,
@@ -396,7 +413,8 @@ function spr_open_manual_job_dialog(frm) {
 			});
 
 			function renderManualLinesTable() {
-				const n = cint(d.get_value('no_of_shafts'));
+				const nShafts = cint(d.get_value('no_of_shafts'));
+				const nRolls = cint(d.get_value('no_of_rolls')) || 1;
 				const wrap = d.$wrapper.find('.spr-manual-lines-wrap');
 				if (!wrap.length) {
 					return;
@@ -411,7 +429,7 @@ function spr_open_manual_job_dialog(frm) {
 					'</th><th>' +
 					__('Meter/Roll') +
 					'</th><th>' +
-					__('Net/shaft (Kg)') +
+					__('Net/roll (Kg)') +
 					'</th><th>' +
 					__('WO qty (Kg)') +
 					'</th></tr></thead><tbody>';
@@ -428,7 +446,7 @@ function spr_open_manual_job_dialog(frm) {
 								  ? ' (' + __('job') + ' ' + String(line.matched_job_id) + ')'
 								  : '')
 							: '—';
-					const defQ = sprManualDefaultWoQty(line, n);
+					const defQ = sprManualDefaultWoQty(line, nShafts, nRolls);
 					const label =
 						String(line.item_code || '') +
 						' · ' +
@@ -464,6 +482,12 @@ function spr_open_manual_job_dialog(frm) {
 			const ns = d.fields_dict.no_of_shafts;
 			if (ns && ns.$input) {
 				ns.$input.on('change input', function () {
+					renderManualLinesTable();
+				});
+			}
+			const nr = d.fields_dict.no_of_rolls;
+			if (nr && nr.$input) {
+				nr.$input.on('change input', function () {
 					renderManualLinesTable();
 				});
 			}
