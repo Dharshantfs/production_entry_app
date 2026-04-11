@@ -544,47 +544,64 @@ def _resolve_wos_for_pp_job_row(
 	combination: str | None = None,
 	job_gsm: int | None = None,
 ) -> list:
-	"""
-	ULTRA SIMPLE: Return ONLY ONE WO, never multiple.
-	"""
+	"""Return ONLY ONE WO. Fetch directly from DB, not via helper functions."""
 	
-	# Get one WO any way possible
 	wo = None
 	
-	# Try PPI first (best option)
+	# Try PPI: Query WO directly from DB for this PPI
 	if ppi:
-		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos:
-			# Filter by GSM if available
-			if job_gsm and job_gsm > 0:
-				for w in wos:
-					try:
-						gsm, width = parse_item_code(_cstr(w.get("production_item", "")))
-						if gsm == job_gsm:
-							wo = w
-							break
-					except Exception:
-						pass
-			# Use first if no GSM match
-			if not wo:
-				wo = wos[0]
+		try:
+			result = frappe.db.sql(
+				"""
+				SELECT wo.name, wo.production_item
+				FROM `tabWork Order` wo
+				JOIN `tabProduction Plan Item` ppi ON ppi.work_order = wo.name
+				WHERE ppi.name = %(ppi)s AND ppi.parent = %(pp)s
+				LIMIT 1
+				""",
+				{"ppi": _cstr(ppi), "pp": _cstr(pp_name)},
+				as_dict=True,
+			)
+			if result:
+				wo = result[0]
+		except Exception:
+			pass
 	
 	# Try job_id
 	if not wo and job_id:
-		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
-		wo = wos[0] if wos else None
+		try:
+			result = frappe.db.sql(
+				"""
+				SELECT DISTINCT wo.name, wo.production_item
+				FROM `tabWork Order` wo
+				WHERE wo.production_plan = %(pp)s
+				LIMIT 1
+				""",
+				{"pp": _cstr(pp_name)},
+				as_dict=True,
+			)
+			if result:
+				wo = result[0]
+		except Exception:
+			pass
 	
-	# Try row_index
-	if not wo and row_index is not None:
-		ord_ppi = _ordered_production_plan_items(pp_name)
-		if ord_ppi and 0 <= row_index < len(ord_ppi):
-			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
-			wo = wos[0] if wos else None
-	
-	# Last resort: first WO in PP
+	# Fallback: get first WO in PP
 	if not wo:
-		all_wos = _get_all_work_orders_for_production_plan(pp_name)
-		wo = all_wos[0] if all_wos else None
+		try:
+			result = frappe.db.sql(
+				"""
+				SELECT name, production_item
+				FROM `tabWork Order`
+				WHERE production_plan = %(pp)s AND docstatus != 2
+				ORDER BY creation ASC LIMIT 1
+				""",
+				{"pp": _cstr(pp_name)},
+				as_dict=True,
+			)
+			if result:
+				wo = result[0]
+		except Exception:
+			pass
 	
 	return [wo] if wo else []
 
