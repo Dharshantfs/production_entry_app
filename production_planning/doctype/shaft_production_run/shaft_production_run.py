@@ -514,6 +514,18 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str, j
 	return unique_out if len(unique_out) > 0 else None
 
 
+def _wo_has_gsm(wo: dict, target_gsm: int) -> bool:
+	"""Check if a WO's item has matching GSM."""
+	try:
+		prod_item = wo.get("production_item")
+		if prod_item:
+			gsm, width = parse_item_code(_cstr(prod_item))
+			return gsm == target_gsm
+	except Exception:
+		pass
+	return False
+
+
 def _resolve_wos_for_pp_job_row(
 	pp_name: str,
 	*,
@@ -552,16 +564,32 @@ def _resolve_wos_for_pp_job_row(
 			except Exception as e:
 				frappe.logger().warning(f"[RESOLVE] Error parsing WO {wo.get('name')}: {str(e)}")
 				pass
-		# ✅ IMPORTANT: If job_gsm is set but NO WO found, log error and return empty
-		# DON'T fall back to old logic which returns ALL WOs!
+		# ✅ IMPORTANT: If job_gsm is set but NO WO found, return empty
 		frappe.logger().warning(f"[RESOLVE] job_gsm={job_gsm} set but NO matching WO found in PP {pp_name}!")
 		return []
 	
-	# Fallback to old logic only if job_gsm NOT set
+	# ✅ FALLBACK: If job_gsm NOT set, try to extract it from the FIRST WO's item code
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos:
-			return wos
+		if wos and len(wos) > 0:
+			# Try to extract GSM from first WO and use it for matching
+			try:
+				first_wo = wos[0]
+				prod_item = first_wo.get("production_item")
+				if prod_item:
+					gsm, width = parse_item_code(_cstr(prod_item))
+					if gsm > 0:
+						# Found GSM from WO, now filter to only that GSM
+						frappe.logger().info(f"[RESOLVE] Extracted GSM {gsm} from WO {first_wo['name']}, filtering WOs")
+						filtered = [w for w in wos if _wo_has_gsm(w, gsm)]
+						if filtered:
+							frappe.logger().info(f"[RESOLVE] Filtered WOs by GSM {gsm}: {[w['name'] for w in filtered]}")
+							return filtered
+			except Exception as e:
+				frappe.logger().warning(f"[RESOLVE] Could not extract GSM from first WO: {str(e)}")
+			# If filtering by GSM failed, return first WO only
+			frappe.logger().warning(f"[RESOLVE] Returning first WO only (could not extract GSM)")
+			return [wos[0]]
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
 		if wos:
