@@ -140,6 +140,45 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 	return t.isalnum()
 
 
+def _production_plan_total_planned_qty(production_plan: str) -> float:
+	"""Resolve planned KG from Production Plan fields, then fall back to linked Work Orders sum."""
+	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
+		return 0.0
+
+	try:
+		wo_qty = flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(wo.qty), 0)
+				FROM `tabWork Order` wo
+				WHERE wo.production_plan = %(pp)s
+				  AND wo.docstatus < 2
+				""",
+				{"pp": production_plan},
+			)[0][0]
+		)
+		frappe.logger().info(f"[_production_plan_total_planned_qty] {production_plan}: WO qty sum = {wo_qty}")
+		if wo_qty > 0:
+			return wo_qty
+	except Exception as e:
+		frappe.logger().error(f"[_production_plan_total_planned_qty] Error fetching WO sum for {production_plan}: {e}")
+		pass
+
+	# Final fallback to direct PP fields
+	try:
+		pp = frappe.get_doc("Production Plan", production_plan)
+		pp_meta = frappe.get_meta("Production Plan")
+		for fn in ("custom_total_planned_qty", "total_planned_qty", "planned_qty", "qty"):
+			if pp_meta.has_field(fn):
+				v = flt(pp.get(fn))
+				if v > 0:
+					return v
+	except Exception:
+		pass
+		
+	return 0.0
+
+
 def _effective_weight_kg_for_produced_gsm(row) -> float:
 	"""Prefer net weight; if not entered yet, use gross (same rule as desk JS spr_update_produced_gsm)."""
 	nw = flt(getattr(row, "net_weight", None))
@@ -161,12 +200,22 @@ def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
 
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
 	"""Comma-separated WO names for this shaft row (same rules as _get_work_orders_for_spr_job)."""
+	
+	# Extract GSM if available in job row
+	job_gsm = None
+	try:
+		if m.get("gsm"):
+			job_gsm = int(flt(m.get("gsm")))
+	except Exception:
+		pass
+
 	wos = _resolve_wos_for_pp_job_row(
 		production_plan,
 		ppi=m.get("production_plan_item"),
 		job_id=m.get("job_id"),
 		row_index=idx,
 		combination=m.get("combination"),
+		job_gsm=job_gsm,
 	)
 	return ", ".join(w["name"] for w in wos) if wos else ""
 
@@ -385,10 +434,13 @@ def _parse_combination_widths_inches(combination) -> list[float]:
 	return out
 
 
-def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -> list | None:
+def _match_work_orders_to_combination_segments(pp_name: str, combination: str, ppi: str | None = None, job_gsm: int | None = None) -> list | None:
 	"""
-	For multi-width combinations (e.g. 39\" + 24\"), return one Work Order per segment by matching
-	production_item width (from item code) to each segment width. Distinct WOs only.
+	For multi-width combinations (e.g. "33+63" or "63+63"),
+	match WO by BOTH GSM AND WIDTH (not just width).
+	
+	⚠️ CRITICAL: Get WOs ONLY for the specific PPI, not all WOs in PP!
+	This ensures "25 GSM 63+63" uses only the WO(s) linked to that PPI.
 	"""
 	comb = _cstr(combination)
 	if not comb:
@@ -400,31 +452,87 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 	if len(widths) < segs:
 		return None
 	widths = widths[:segs]
-	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	if not all_wos or len(all_wos) < segs:
+	
+	# ✅ CRITICAL: Get WOs ONLY for this PPI, not all in PP!
+	if ppi:
+		all_wos = get_work_orders_for_job(pp_name, _cstr(ppi))
+	else:
+		all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	
+	if not all_wos:
 		return None
-	used: set[str] = set()
+	
+	# ✅ Build (GSM, WIDTH) → WO map using ITEM CODE parsing
+	gsm_width_to_wo_map = {}
+	for wo in all_wos:
+		wo_name = _cstr(wo.get("name"))
+		try:
+			production_item = wo.get("production_item")
+			if not production_item:
+				continue
+			# Parse item code to extract GSM and WIDTH
+			parsed_gsm, parsed_width = parse_item_code(_cstr(production_item))
+			if parsed_gsm > 0 and parsed_width > 0:
+				key = (parsed_gsm, parsed_width)
+				gsm_width_to_wo_map[key] = wo
+				frappe.logger().info(f"[COMBO] WO {wo_name} = ({parsed_gsm}, {parsed_width}\") (PPI {ppi})")
+		except Exception as e:
+			frappe.logger().warning(f"[COMBO ERROR] Could not parse WO {wo_name}: {str(e)}")
+	
+	if not job_gsm:
+		frappe.logger().warning(f"[COMBO] No job_gsm provided, cannot match")
+		return None
+	
 	out: list = []
 	tol = 1.25
 	for target_w in widths:
-		best = None
-		best_d = 999.0
-		for wo in all_wos:
-			nm = _cstr(wo.get("name"))
-			if nm in used:
-				continue
-			_, w_in = parse_item_code(_cstr(wo.get("production_item")))
-			if w_in <= 0:
-				continue
-			d = abs(flt(w_in) - flt(target_w))
-			if d < best_d:
-				best_d = d
-				best = wo
-		if best is None or best_d > tol:
-			return None
-		used.add(_cstr(best.get("name")))
-		out.append(best)
-	return out if len(out) == segs else None
+		# Match by (GSM, WIDTH) tuple
+		key = (job_gsm, target_w)
+		if key in gsm_width_to_wo_map:
+			best = gsm_width_to_wo_map[key]
+			out.append(best)
+			frappe.logger().info(f"[COMBO] Segment ({job_gsm}, {target_w}\") → WO {best.get('name')}")
+		else:
+			# Fallback: find by width closest to target
+			best = None
+			best_d = 999.0
+			for (w_gsm, w_width), wo in gsm_width_to_wo_map.items():
+				if abs(w_width - target_w) < best_d:
+					best_d = abs(w_width - target_w)
+					best = wo
+			
+			if best and best_d <= tol:
+				out.append(best)
+				frappe.logger().warning(f"[COMBO] No exact match for ({job_gsm}, {target_w}\"), fallback")
+			else:
+				frappe.logger().warning(f"[COMBO] No WO found for ({job_gsm}, {target_w}\")")
+				return None
+	
+	# ✅ DEDUPLICATE: For "63+63", return only UNIQUE WOs
+	seen = set()
+	unique_out = []
+	for wo in out:
+		wo_name = _cstr(wo.get("name"))
+		if wo_name not in seen:
+			seen.add(wo_name)
+			unique_out.append(wo)
+			frappe.logger().info(f"[COMBO DEDUP] Keep WO {wo_name}")
+		else:
+			frappe.logger().info(f"[COMBO DEDUP] Skip duplicate WO {wo_name}")
+	
+	return unique_out if len(unique_out) > 0 else None
+
+
+def _wo_has_gsm(wo: dict, target_gsm: int) -> bool:
+	"""Check if a WO's item has matching GSM."""
+	try:
+		prod_item = wo.get("production_item")
+		if prod_item:
+			gsm, width = parse_item_code(_cstr(prod_item))
+			return gsm == target_gsm
+	except Exception:
+		pass
+	return False
 
 
 def _resolve_wos_for_pp_job_row(
@@ -434,45 +542,44 @@ def _resolve_wos_for_pp_job_row(
 	job_id: str | None = None,
 	row_index: int | None = None,
 	combination: str | None = None,
+	job_gsm: int | None = None,
 ) -> list:
+	"""Return exactly one WO per Available Jobs row: PPI → optional GSM match → safe fallbacks.
+
+	``combination`` is accepted for API compatibility (e.g. 63\"+63\") but we do **not** allocate
+	one WO per segment here — same-width combo lines share one WO. Multi-GSM combos are handled by
+	filtering WOs on the job row GSM when multiple WOs exist for the same PPI.
 	"""
-	Resolve Work Orders for one shaft job line: PPI link, human job id, ordinal PP lines, shared WO, PP-wide fallback.
-	Used when building SPR jobs from PP and when resolving WOs on saved Shaft Production Run.
-	"""
-	comb = _cstr(combination)
-	if comb:
-		segs = _count_combination_segments(comb)
-		if segs > 1:
-			matched = _match_work_orders_to_combination_segments(pp_name, comb)
-			if matched:
-				return matched
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos:
+		if not wos:
+			return []
+		if len(wos) == 1:
 			return wos
+		if job_gsm and job_gsm > 0:
+			for wo in wos:
+				try:
+					prod_item = wo.get("production_item")
+					if prod_item:
+						gsm, _width = parse_item_code(_cstr(prod_item))
+						if gsm == job_gsm:
+							return [wo]
+				except Exception:
+					pass
+		return [wos[0]]
+
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
-		if wos:
-			return wos
-	ord_ppi = _ordered_production_plan_items(pp_name)
-	if row_index is not None and ord_ppi:
-		if 0 <= row_index < len(ord_ppi):
-			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
-			if wos:
-				return wos
-		# Several shaft jobs share one Production Plan Item / one WO — reuse that WO for every job row.
-		if len(ord_ppi) == 1:
-			wos = get_work_orders_for_job(pp_name, ord_ppi[0])
-			if wos:
-				return wos
-	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	if not all_wos:
-		return []
-	if len(all_wos) == 1:
-		return all_wos
+		return [wos[0]] if wos else []
+
 	if row_index is not None:
-		return [all_wos[row_index % len(all_wos)]]
-	return [all_wos[0]]
+		ord_ppi = _ordered_production_plan_items(pp_name)
+		if ord_ppi and 0 <= row_index < len(ord_ppi):
+			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
+			return [wos[0]] if wos else []
+
+	all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	return [all_wos[0]] if all_wos else []
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
@@ -484,7 +591,16 @@ def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
 	jid = _spr_job_id(job_row)
 	idx = _spr_job_row_index(spr_doc, job_row)
 	comb = getattr(job_row, "combination", None) if meta.has_field("combination") else None
-	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx, combination=comb)
+	# ✅ Extract GSM from job_row for (GSM, WIDTH) matching
+	job_gsm = None
+	if meta.has_field("gsm"):
+		try:
+			gsm_val = getattr(job_row, "gsm", None)
+			if gsm_val:
+				job_gsm = int(flt(gsm_val))
+		except Exception:
+			pass
+	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx, combination=comb, job_gsm=job_gsm)
 
 
 def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None:
@@ -533,12 +649,19 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			if fn in r and r[fn] is not None and job_meta.has_field(fn):
 				m[fn] = r[fn]
 		if (not m.get("total_weight")) and jn:
+			job_gsm = None
+			if m.get("gsm"):
+				try:
+					job_gsm = int(flt(m.get("gsm")))
+				except Exception:
+					pass
 			wos_tw = _resolve_wos_for_pp_job_row(
 				production_plan,
 				ppi=m.get("production_plan_item"),
 				job_id=_cstr(jn),
 				row_index=idx,
 				combination=m.get("combination"),
+				job_gsm=job_gsm,
 			)
 			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
@@ -555,7 +678,6 @@ class ShaftProductionRun(Document):
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
-		self.ensure_batch_masters_for_roll_lines()
 
 	def sync_shaft_job_work_orders_from_plan(self):
 		"""Fill Available Jobs.work_orders from Production Plan (one WO per row; GSM disambiguates when several WOs share a PPI)."""
@@ -571,6 +693,15 @@ class ShaftProductionRun(Document):
 			idx = _spr_job_row_index(self, row)
 			if idx is None:
 				idx = 0
+			# ✅ Extract GSM from row for (GSM, WIDTH) matching
+			job_gsm = None
+			if meta.has_field("gsm"):
+				try:
+					gsm_val = getattr(row, "gsm", None)
+					if gsm_val:
+						job_gsm = int(flt(gsm_val))
+				except Exception:
+					pass
 			m = {
 				"job_id": _spr_job_id(row),
 				"production_plan_item": getattr(row, "production_plan_item", None),
@@ -582,6 +713,7 @@ class ShaftProductionRun(Document):
 				job_id=_cstr(m.get("job_id")),
 				row_index=idx,
 				combination=m.get("combination"),
+				job_gsm=job_gsm,
 			)
 			if wos:
 				row.work_orders = ", ".join(w["name"] for w in wos)
@@ -612,7 +744,7 @@ class ShaftProductionRun(Document):
 			return
 		for row in self.items or []:
 			ln = _spr_length_meters(row)
-			if ln is None:
+			if ln is None or ln <= 0:
 				ln = flt(getattr(row, "meter_roll", None))
 			else:
 				ln = flt(ln)
@@ -626,6 +758,42 @@ class ShaftProductionRun(Document):
 
 	def on_cancel(self):
 		self.cancel_manufacturing_stock_entries()
+
+	def on_trash(self):
+		"""Remove stale row links so deleted SPR is not shown as Continue Entry on Production Table."""
+		try:
+			if frappe.db.exists("DocType", "Planning Table") and frappe.db.has_column("Planning Table", "spr_name"):
+				frappe.db.sql(
+					"""
+					UPDATE `tabPlanning Table`
+					SET spr_name = ''
+					WHERE IFNULL(spr_name, '') = %s
+					""",
+					(self.name,),
+				)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Planning Table spr_name")
+
+		# Also remove this SPR from Production Plan link list to avoid stale PP-level references elsewhere.
+		try:
+			if not frappe.db.has_column("Production Plan", "custom_shaft_production_run_id"):
+				return
+			rows = frappe.db.sql(
+				"""
+				SELECT name, custom_shaft_production_run_id
+				FROM `tabProduction Plan`
+				WHERE IFNULL(custom_shaft_production_run_id, '') != ''
+				""",
+				as_dict=True,
+			)
+			for r in rows or []:
+				raw = str(r.get("custom_shaft_production_run_id") or "")
+				parts = [p.strip() for p in raw.split(",") if p and p.strip()]
+				filtered = [p for p in parts if p != self.name]
+				if filtered != parts:
+					frappe.db.set_value("Production Plan", r["name"], "custom_shaft_production_run_id", ", ".join(filtered))
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Production Plan links")
 
 	def _unit_digit(self) -> int:
 		u = (self.get("custom_unit") or "").strip()
@@ -732,74 +900,26 @@ class ShaftProductionRun(Document):
 			return 0
 
 	def _next_roll_starting(self, series_prefix: str) -> int:
-		"""
-		Next roll suffix for ``{series_prefix}/{N}``:
-		1) Max ``N`` from ``tabBatch`` for this series (optionally filtered by manufacturing_date + custom_shift).
-		2) Max ``N`` from Roll lines on **any** SPR with the **same** run_date, shift, and unit (not global/unscoped SPI).
-
-		So the sequence is driven by Batch when present, and aligned with run date + shift until the shift (series prefix) changes.
-		"""
 		mx = 0
-		pat = f"{series_prefix}/%"
-		rd = self.run_date
-		sh = _cstr(self.shift)
-		un = _cstr(self.get("custom_unit"))
-		batch_meta = frappe.get_meta("Batch")
-
-		bconds = ["b.batch_id LIKE %(pat)s"]
-		bparams: dict = {"pat": pat}
-		# Align with this run's date; series_prefix already encodes shift (suffix before "/").
-		if rd and batch_meta.has_field("manufacturing_date"):
-			bconds.append("b.manufacturing_date = %(mfd)s")
-			bparams["mfd"] = rd
-
-		b_sql = "SELECT b.batch_id FROM `tabBatch` b WHERE " + " AND ".join(bconds)
-		for (bid,) in frappe.db.sql(b_sql, bparams) or []:
-			mx = max(mx, self._roll_no_from_batch(_cstr(bid), series_prefix))
-
-		if not rd or not sh or not un:
-			return mx + 1
-
-		spr_sql = """
-			SELECT spi.batch_no
-			FROM `tabShaft Production Run Item` spi
-			INNER JOIN `tabShaft Production Run` spr ON spr.name = spi.parent
-			WHERE spr.run_date = %(rd)s
-			  AND spr.shift = %(sh)s
-			  AND spr.custom_unit = %(un)s
-			  AND IFNULL(spi.batch_no, '') != ''
-			  AND spi.batch_no LIKE %(pat)s
-		"""
-		for (bn,) in frappe.db.sql(
-			spr_sql,
-			{"rd": rd, "sh": sh, "un": un, "pat": pat},
-		) or []:
-			mx = max(mx, self._roll_no_from_batch(_cstr(bn), series_prefix))
-
-		return mx + 1
-
-	def ensure_batch_masters_for_roll_lines(self):
-		"""Create Batch documents for each roll line so ``tabBatch`` exists for sequencing and Stock (draft saves)."""
-		if getattr(frappe.flags, "in_install", None) or getattr(frappe.flags, "in_migrate", None):
-			return
-		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
-			"Global Defaults", "default_company"
+		rows = frappe.db.sql(
+			"""
+			SELECT batch_id FROM `tabBatch`
+			WHERE batch_id LIKE %(pat)s
+			""",
+			{"pat": f"{series_prefix}/%"},
 		)
-		if not company:
-			return
-		for row in self.items or []:
-			bn = _cstr(getattr(row, "batch_no", None))
-			ic = _cstr(getattr(row, "item_code", None))
-			if not bn or not ic:
-				continue
-			if frappe.db.exists("Batch", bn):
-				continue
-			if frappe.db.get_value("Batch", {"batch_id": bn, "item": ic}, "name"):
-				continue
-			try:
-				self._get_batch_link_name_for_stock_entry(bn, ic, company, spr_row=row)
-			except Exception:
-				frappe.log_error(frappe.get_traceback(), "SPR ensure_batch_masters_for_roll_lines")
+		for (bid,) in rows or []:
+			mx = max(mx, self._roll_no_from_batch(bid, series_prefix))
+		rows2 = frappe.db.sql(
+			"""
+			SELECT batch_no FROM `tabShaft Production Run Item`
+			WHERE IFNULL(batch_no,'') != '' AND batch_no LIKE %(pat)s
+			""",
+			{"pat": f"{series_prefix}/%"},
+		)
+		for (bn,) in rows2 or []:
+			mx = max(mx, self._roll_no_from_batch(bn, series_prefix))
+		return mx + 1
 
 	def _roll_no_from_batch(self, batch_id: str, series_prefix: str) -> int:
 		if not batch_id or "/" not in batch_id:
@@ -885,8 +1005,6 @@ class ShaftProductionRun(Document):
 
 		batch_meta = frappe.get_meta("Batch")
 		roll_batch_data = _batch_fields_from_spr_row(batch_meta, spr_row)
-		if spr_row and batch_meta.has_field("custom_shift") and getattr(spr_row, "custom_shift", None):
-			roll_batch_data["custom_shift"] = _cstr(spr_row.custom_shift)
 
 		def _existing_name() -> str | None:
 			if frappe.db.exists("Batch", bid):
@@ -1024,6 +1142,13 @@ class ShaftProductionRun(Document):
 				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)
 				continue
 
+			# 🔒 VALIDATION: Ensure WIP warehouse exists
+			if not wo_doc.wip_warehouse:
+				frappe.throw(
+					_("Work Order {0} has no WIP warehouse set. Raw materials cannot be fetched.").format(wo_id),
+					title=_("Missing WIP Warehouse")
+				)
+
 			se = frappe.new_doc("Stock Entry")
 			se.company = wo_doc.company
 			se.posting_date = self.run_date or today()
@@ -1045,6 +1170,40 @@ class ShaftProductionRun(Document):
 
 			# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
 			se.get_items()
+			
+			# 🔒 ENFORCE: ALL RM items MUST use WIP warehouse ONLY - NO OTHER WAREHOUSE
+			# This prevents double consumption (materials already transferred to WIP)
+			wip_warehouse = wo_doc.wip_warehouse
+			rm_count = 0
+			
+			for item in se.items or []:
+				if item.item_code:
+					# Check if this is a RM item (no t_warehouse means it's a raw material)
+					if not item.get("t_warehouse"):
+						rm_count += 1
+						# 🔒 ENFORCE: Set source warehouse to WIP ONLY
+						item.s_warehouse = wip_warehouse
+						
+						# 🔒 VALIDATE: Ensure warehouse was set correctly
+						if item.s_warehouse != wip_warehouse:
+							frappe.throw(
+								_("Raw material {0} source warehouse is {1}, not {2}. ABORT.").format(
+									item.item_code, item.s_warehouse, wip_warehouse
+								),
+								title=_("Warehouse Mismatch")
+							)
+					else:
+						# This is a finished good item - target warehouse should be FG warehouse
+						if item.t_warehouse != wo_doc.fg_warehouse:
+							item.t_warehouse = wo_doc.fg_warehouse
+			
+			# Log for verification
+			if rm_count > 0:
+				frappe.msgprint(
+					_("Confirmed: {0} RM items set to use WIP warehouse: {1}").format(rm_count, wip_warehouse),
+					alert=False
+				)
+			
 			# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
 			self._strip_finished_goods_from_stock_entry(se)
 			self._append_manufacture_fg_from_spr_rolls(se, wo_doc, rows)
@@ -1147,6 +1306,7 @@ def get_production_plan_details(production_plan):
 	# Calculate custom_total_planned_qty from WO sum
 	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
 	
+	frappe.logger().info(f"[get_production_plan_details] PP {production_plan}: custom_order_code={out.get('custom_order_code')}, custom_label={out.get('custom_label')}, custom_total_planned_qty={out.get('custom_total_planned_qty')}")
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True
@@ -1289,8 +1449,11 @@ def get_next_spr_batch_numbers(
 @frappe.whitelist()
 def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	"""
-	Build Roll Production Result (SPR Item) lines for one job:
-	rows = max(1, no_of_shafts × combination_segments), cycling Work Orders for that job.
+	Build Roll Production Result (SPR Item) lines for one job.
+	
+	✅ CORRECT: Extract GSM and WIDTH from Item Name, then match exactly.
+	Combination "33+63" cycles rolls through widths [33, 63, 33, 63, ...]
+	Each roll matched to correct WO by (GSM, WIDTH) tuple lookup.
 	"""
 	if not job_id:
 		frappe.throw(_("Job ID is required"))
@@ -1302,7 +1465,7 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	job_row = None
 	for j in _spr_job_rows(spr_doc):
-		if _cstr(_spr_job_id(j)) == _cstr(job_id):
+		if _spr_job_keys_match(_spr_job_id(j), job_id):
 			job_row = j
 			break
 	if not job_row:
@@ -1323,20 +1486,98 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	if not wo_list:
 		frappe.throw(_("No Work Orders for job {0} on this Production Plan").format(job_id))
 
+	# Extract job GSM
+	job_gsm = None
+	if getattr(job_row, "gsm", None) not in (None, 0, "0"):
+		try:
+			job_gsm = int(flt(job_row.gsm))
+		except Exception:
+			pass
+	
+	# Parse combination to get individual widths (e.g., "33+63" → [33, 63])
+	individual_widths = []
+	if comb:
+		try:
+			width_parts = comb.split("+")
+			individual_widths = [flt(w.strip()) for w in width_parts if w.strip()]
+		except Exception:
+			frappe.logger().warning(f"[SPR] Could not parse combination '{comb}' for job {job_id}")
+	
+	# ✅ DEDUPLICATE: For "63+63", use only UNIQUE widths → ONE WO per unique width (avoids duplicate WOs)
+	# Map: unique_width → width_index (position of FIRST occurrence)
+	width_to_first_idx = {}
+	for idx, w in enumerate(individual_widths):
+		if w not in width_to_first_idx:
+			width_to_first_idx[w] = idx
+	
+	# ✅ NEW: Build (GSM, WIDTH) → WO map from Item Names (NOT item codes)
+	gsm_width_to_wo = _build_gsm_width_to_wo_map_from_item_names(wo_list)
+	
 	lines = []
 	for idx in range(n_rolls):
-		wo = wo_list[idx % len(wo_list)]
-		planned_qty = _planned_qty_for_roll_line(job_row, idx, segs)
-		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
-		if getattr(job_row, "gsm", None) not in (None, 0, "0"):
-			try:
-				row["gsm"] = int(flt(job_row.gsm))
-			except Exception:
-				pass
+		# Get individual width for this roll
+		individual_width = None
+		if individual_widths:
+			individual_width = individual_widths[idx % len(individual_widths)]
+		
+		# ✅ EXACT MATCH: (GSM, WIDTH) from item name
+		wo = None
+		if job_gsm is not None and individual_width is not None:
+			key = (job_gsm, individual_width)
+			if key in gsm_width_to_wo:
+				wo = gsm_width_to_wo[key]
+				frappe.logger().info(f"[SPR] Roll {idx+1}: GSM {job_gsm} + Width {individual_width}\" → WO {wo['name']}")
+		
+		# Fallback: Use first WO (shouldn't happen with verified PP)
+		if wo is None:
+			wo = wo_list[0]
+			frappe.logger().warning(f"[SPR WARNING] No exact match for GSM {job_gsm}, Width {individual_width}, using {wo['name']}")
+		if job_gsm:
+			row["gsm"] = job_gsm
 		if getattr(job_row, "meter_roll_mtrs", None) not in (None, 0, ""):
 			row["meter_roll"] = flt(job_row.meter_roll_mtrs)
 		lines.append(row)
 	return lines
+
+
+def _build_gsm_width_to_wo_map_from_item_names(wo_list: list) -> dict:
+	"""
+	✅ Extract GSM and WIDTH from Item Code (the source of truth).
+	Item Code format: "1001050010251600"
+	  - Positions [9:12] = GSM (e.g., "025" = 25)
+	  - Positions [12:16] = WIDTH in MM (e.g., "1600" = 1600mm = 63 inches)
+	
+	Returns: {(25, 63.0): WO, (90, 63.0): WO, ...}
+	Keeps FIRST occurrence of each (GSM, WIDTH) pair.
+	"""
+	gsm_width_to_wo = {}
+	
+	for wo in wo_list:
+		try:
+			production_item = frappe.db.get_value("Work Order", wo["name"], "production_item")
+			if not production_item:
+				frappe.logger().warning(f"[WO MAP] No production_item for WO {wo['name']}")
+				continue
+			
+			# ✅ Parse item code to get GSM and WIDTH (SOURCE OF TRUTH)
+			gsm, width = parse_item_code(_cstr(production_item))
+			
+			if gsm > 0 and width > 0:
+				key = (gsm, width)
+				# ✅ KEEP FIRST OCCURRENCE: Don't overwrite if key already exists
+				if key not in gsm_width_to_wo:
+					gsm_width_to_wo[key] = wo
+					frappe.logger().info(f"[WO MAP] {wo['name']} → GSM {gsm} + WIDTH {width}\" (from item code: {production_item})")
+				else:
+					# Duplicate width found - log it but keep first WO
+					frappe.logger().info(f"[WO MAP] Note: {wo['name']} also has GSM {gsm} + WIDTH {width}\", but keeping first WO {gsm_width_to_wo[key]['name']}")
+			else:
+				frappe.logger().warning(f"[WO MAP] Could not parse item code {production_item} (GSM={gsm}, WIDTH={width})")
+		
+		except Exception as e:
+			frappe.logger().warning(f"[WO MAP ERROR] WO {wo.get('name')}: {str(e)}")
+	
+	return gsm_width_to_wo
 
 
 @frappe.whitelist()
@@ -1478,21 +1719,112 @@ def _spr_job_product_code(sj):
 
 def _spr_bundle_job_label(sj):
 	jid = _cstr(_spr_job_id(sj))
+	comb = _cstr(getattr(sj, "combination", None) or "").strip()
+	if comb:
+		return f"Job {jid} — {comb}"
 	prod = _spr_job_product_code(sj) or ""
 	if prod:
 		return f"Job {jid} — {prod}"
 	return f"Job {jid}"
 
 
-def _spr_roll_matches_bundle_width(it, width_inch: float, job_w: float) -> bool:
-	"""Match roll to selected width (tolerant); if roll width_inch is 0, match using job total width."""
+def _spr_bundle_segment_widths_for_job(spr_doc, sj) -> list[float]:
+	"""Per-job width options for Bundle Packaging: combination segments / WO item widths / existing roll widths."""
+	out: list[float] = []
+	if not sj:
+		return out
+	comb = _cstr(getattr(sj, "combination", None) or "")
+	for w in _parse_combination_widths_inches(comb):
+		fw = flt(w)
+		if fw > 0 and fw not in out:
+			out.append(fw)
+	for wo in _get_work_orders_for_spr_job(get_pp_from_spr(spr_doc.name), spr_doc, sj):
+		wo_name = _cstr(wo.get("name"))
+		if not wo_name:
+			continue
+		item_code = frappe.db.get_value("Work Order", wo_name, "production_item")
+		_gsm, width_inch = parse_item_code(item_code)
+		fw = flt(width_inch)
+		if fw > 0 and fw not in out:
+			out.append(fw)
+	jid = _cstr(_spr_job_id(sj))
+	for it in spr_doc.items or []:
+		if not _spr_item_roll_matches_bundle_job(sj, it, jid):
+			continue
+		fw = flt(getattr(it, "width_inch", None))
+		if fw > 0 and fw not in out:
+			out.append(fw)
+	if not out:
+		tw = flt(getattr(sj, "total_width", None))
+		if tw > 0:
+			out.append(tw)
+	return sorted(set(out))
+
+
+def _spr_bundle_job_segments_detail(spr_doc, sj) -> list[dict]:
+	"""Per combination segment: width, net kg/shaft, linked WO item — for Bundle packaging UI."""
+	if not sj:
+		return []
+	pp_name = get_pp_from_spr(spr_doc.name)
+	comb = getattr(sj, "combination", None)
+	segs = max(1, _count_combination_segments(comb))
+	widths = _parse_combination_widths_inches(comb) if comb else []
+	weights = _segment_weights_kg(sj, segs)
+	wos = _get_work_orders_for_spr_job(pp_name, spr_doc, sj)
+	out: list[dict] = []
+	for i in range(segs):
+		w_seg = flt(widths[i]) if i < len(widths) else flt(getattr(sj, "total_width", None))
+		if w_seg <= 0:
+			continue
+		nk = weights[i] if i < len(weights) else None
+		item_code = ""
+		item_name = ""
+		for wo in wos:
+			won = _cstr(wo.get("name"))
+			if not won:
+				continue
+			ic = frappe.db.get_value("Work Order", won, "production_item")
+			if not ic:
+				continue
+			_g, w_item = parse_item_code(ic)
+			if abs(flt(w_item) - w_seg) <= 0.75:
+				item_code = _cstr(ic)
+				item_name = _cstr(frappe.db.get_value("Item", ic, "item_name") or "")
+				break
+		out.append(
+			{
+				"width_inch": round(w_seg, 1),
+				"net_kg_per_shaft": round(flt(nk), 3) if nk is not None else None,
+				"item_code": item_code,
+				"item_name": item_name,
+			}
+		)
+	return out
+
+
+def _spr_roll_effective_width_inch(it) -> float:
+	"""Roll line width: prefer stored width_inch; else derive from item_code (handles total-width on row)."""
 	rw = flt(getattr(it, "width_inch", None))
+	if rw > 0.001:
+		return rw
+	ic = getattr(it, "item_code", None)
+	if ic:
+		_g, w = parse_item_code(ic)
+		if flt(w) > 0.001:
+			return flt(w)
+	return 0.0
+
+
+def _spr_roll_matches_bundle_width(it, width_inch: float, job_w: float) -> bool:
+	"""Match roll to selected segment width; use item_code width when stored width is total or zero."""
+	rw = _spr_roll_effective_width_inch(it)
 	wx = flt(width_inch)
 	jw = flt(job_w)
+	tol = 0.75
 	if rw > 0.001:
-		return abs(rw - wx) <= 0.5
+		return abs(rw - wx) <= tol
 	if jw > 0.001 and wx > 0.001:
-		return abs(jw - wx) <= 0.5
+		return abs(jw - wx) <= tol
 	return False
 
 
@@ -1809,6 +2141,113 @@ def _spr_warehouses_exist():
 			frappe.throw(_("Warehouse {0} not found. Create it or update SPR_MANUAL_* constants.").format(wh))
 
 
+def _spr_is_manual_shaft_job(sj) -> bool:
+	return cint(getattr(sj, "is_manual", 0) or 0) == 1
+
+
+def _spr_net_kg_per_shaft_for_pp_line_width(
+	spr_doc, width_inch: float, production_plan_item: str | None
+) -> tuple[float | None, str | None]:
+	"""
+	Match item width (inch) to a segment in Available Jobs (non-manual): kg per shaft for that segment.
+	Uses combination widths + net_weight split, or total_width for single-segment jobs.
+	"""
+	wx = flt(width_inch)
+	if wx <= 0:
+		return None, None
+	ppi = _cstr(production_plan_item) if production_plan_item else ""
+	rows = list(_spr_job_rows(spr_doc))
+	preferred = [
+		sj
+		for sj in rows
+		if not _spr_is_manual_shaft_job(sj) and ppi and _cstr(getattr(sj, "production_plan_item", None)) == ppi
+	]
+	candidates = preferred if preferred else [sj for sj in rows if not _spr_is_manual_shaft_job(sj)]
+	for sj in candidates:
+		comb = getattr(sj, "combination", None)
+		segs = max(1, _count_combination_segments(comb))
+		widths = _parse_combination_widths_inches(comb) if comb else []
+		weights = _segment_weights_kg(sj, segs)
+		jid = _cstr(_spr_job_id(sj))
+		if segs > 1 and len(widths) >= segs:
+			for i in range(segs):
+				if abs(flt(widths[i]) - wx) <= 0.5:
+					if i < len(weights) and flt(weights[i]) > 0:
+						return flt(weights[i]), jid
+			continue
+		tw = flt(getattr(sj, "total_width", None))
+		if tw > 0 and abs(tw - wx) <= 0.5 and weights:
+			return flt(weights[0]), jid
+	return None, None
+
+
+def _spr_try_submit_manual_work_order(wo_name: str):
+	"""Submit Work Order when possible so manufacturing can start (best-effort)."""
+	try:
+		wo = frappe.get_doc("Work Order", wo_name)
+		if wo.docstatus == 0:
+			wo.submit()
+	except Exception:
+		frappe.log_error(
+			title=f"SPR manual job: could not submit Work Order {wo_name}",
+			message=frappe.get_traceback(),
+		)
+
+
+def _spr_insert_manual_work_order(
+	pp,
+	company: str,
+	item_code: str,
+	production_plan_item: str,
+	ppi_row,
+	qty: float,
+) -> str:
+	"""Always insert a new Work Order for manual job flow (no reuse of existing WO)."""
+	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+		get_default_bom_for_item,
+	)
+
+	bom = get_default_bom_for_item(item_code, company)
+	if not bom:
+		frappe.throw(_("No active BOM for item {0}").format(item_code))
+	pp_name = pp.name
+	wo = frappe.new_doc("Work Order")
+	wo.production_item = item_code
+	wo.bom_no = bom
+	wo.qty = flt(qty)
+	wo.company = company
+	wo.production_plan = pp_name
+	# Leave production_plan_item unset on insert so site "one WO per PP line" Server Scripts
+	# do not block additional SPR manual Work Orders. Production Plan link stays for traceability.
+	wo.production_plan_item = None
+	meta_wo = frappe.get_meta("Work Order")
+	if meta_wo.has_field("description"):
+		wo.description = _("SPR manual job — PP line {0} · Item {1}").format(production_plan_item, item_code)
+	if pp.get("sales_order"):
+		wo.sales_order = pp.sales_order
+	if frappe.get_meta("Work Order").has_field("sales_order_item"):
+		wo.sales_order_item = getattr(ppi_row, "sales_order_item", None) or None
+	wo.source_warehouse = SPR_MANUAL_SOURCE_WH
+	wo.fg_warehouse = SPR_MANUAL_FG_WH
+	if frappe.get_meta("Work Order").has_field("wip_warehouse"):
+		wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+		if wip:
+			wo.wip_warehouse = wip
+	frappe.flags.spr_manual_work_order_insert = True
+	try:
+		wo.insert(ignore_permissions=True)
+	finally:
+		frappe.flags.spr_manual_work_order_insert = False
+	wo_name = wo.name
+	try:
+		wo.reload()
+		wo.add_comment("Comment", _("SPR manual — Production Plan line {0}").format(production_plan_item))
+	except Exception:
+		pass
+	_spr_try_submit_manual_work_order(wo_name)
+	return wo_name
+
+
 @frappe.whitelist()
 def spr_get_manual_job_catalog(shaft_production_run):
 	"""Production Plan po_items + width + existing net on SPR by item_code (reuse hint)."""
@@ -1845,6 +2284,7 @@ def spr_get_manual_job_catalog(shaft_production_run):
 				if segw:
 					first_seg_kg = round(flt(segw[0]), 3)
 				break
+		net_ps, mj = _spr_net_kg_per_shaft_for_pp_line_width(spr, width_inch, row.name)
 		out.append(
 			{
 				"item_code": ic,
@@ -1855,6 +2295,8 @@ def spr_get_manual_job_catalog(shaft_production_run):
 				"width_inch": width_inch,
 				"existing_net_weight_kg": round(net_by_item.get(ic, 0.0), 2),
 				"first_segment_planned_kg": first_seg_kg,
+				"net_per_shaft_kg": round(net_ps, 3) if net_ps is not None else None,
+				"matched_job_id": mj,
 			}
 		)
 	return {"production_plan": pp_name, "company": company, "lines": out}
@@ -1890,47 +2332,11 @@ def spr_create_manual_job(
 	if not ppi_row:
 		frappe.throw(_("Production Plan item line not found for this item"))
 
-	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
-		get_default_bom_for_item,
-	)
-
-	bom = get_default_bom_for_item(item_code, company)
-	if not bom:
-		frappe.throw(_("No active BOM for item {0}").format(item_code))
-
 	qty = flt(wo_qty) if wo_qty is not None and str(wo_qty).strip() != "" else None
 	if qty is None or qty <= 0:
 		qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
 
-	wo_filters = {
-		"production_plan": pp_name,
-		"production_plan_item": production_plan_item,
-		"production_item": item_code,
-		"docstatus": ["!=", 2],
-	}
-	existing_wo = frappe.get_all("Work Order", filters=wo_filters, pluck="name", limit=1)
-	if existing_wo:
-		wo_name = existing_wo[0]
-	else:
-		wo = frappe.new_doc("Work Order")
-		wo.production_item = item_code
-		wo.bom_no = bom
-		wo.qty = qty
-		wo.company = company
-		wo.production_plan = pp_name
-		wo.production_plan_item = production_plan_item
-		if pp.get("sales_order"):
-			wo.sales_order = pp.sales_order
-		if frappe.get_meta("Work Order").has_field("sales_order_item"):
-			wo.sales_order_item = getattr(ppi_row, "sales_order_item", None) or None
-		wo.source_warehouse = SPR_MANUAL_SOURCE_WH
-		wo.fg_warehouse = SPR_MANUAL_FG_WH
-		if frappe.get_meta("Work Order").has_field("wip_warehouse"):
-			wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
-			if wip:
-				wo.wip_warehouse = wip
-		wo.insert(ignore_permissions=True)
-		wo_name = wo.name
+	wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
 
 	spr.reload()
 	for j in _spr_job_rows(spr):
@@ -1989,8 +2395,125 @@ def spr_create_manual_job(
 
 
 @frappe.whitelist()
+def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
+	"""
+	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
+	items: list of { item_code, production_plan_item, wo_qty } (wo_qty = manufacturing qty in Kg, e.g. net/shaft × shafts).
+	"""
+	no_of_shafts = cint(no_of_shafts)
+	if no_of_shafts < 1:
+		frappe.throw(_("Number of shafts must be at least 1"))
+	if isinstance(items, str):
+		items = frappe.parse_json(items)
+	if not items or not isinstance(items, list):
+		frappe.throw(_("Select at least one Production Plan line"))
+
+	_spr_require_saved(shaft_production_run)
+	pp_name, company, spr = _spr_pp_and_company(shaft_production_run)
+	_spr_warehouses_exist()
+	pp = frappe.get_doc("Production Plan", pp_name)
+
+	wo_names: list[str] = []
+	qtys: list[float] = []
+	widths_list: list[float] = []
+	item_codes_list: list[str] = []
+	ppi_rows = []
+
+	for raw in items:
+		if not isinstance(raw, dict):
+			frappe.throw(_("Invalid line payload"))
+		item_code = _cstr(raw.get("item_code"))
+		production_plan_item = _cstr(raw.get("production_plan_item"))
+		qty = flt(raw.get("wo_qty"))
+		if not item_code or not production_plan_item or qty <= 0:
+			frappe.throw(_("Each line needs item, Production Plan row, and Work Order qty greater than zero"))
+		ppi_row = None
+		for r in pp.get("po_items") or []:
+			if _cstr(r.name) == production_plan_item and _cstr(r.item_code) == item_code:
+				ppi_row = r
+				break
+		if not ppi_row:
+			frappe.throw(_("Production Plan item line not found for {0}").format(item_code))
+		wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
+		spr.reload()
+		for j in _spr_job_rows(spr):
+			wos = _cstr(getattr(j, "work_orders", None) or "")
+			for part in wos.replace("\n", ",").split(","):
+				if part.strip() == wo_name:
+					frappe.throw(
+						_("Work Order {0} is already linked to this Shaft Production Run (Job {1}).").format(
+							wo_name,
+							_spr_job_id(j),
+						)
+					)
+		wo_names.append(wo_name)
+		qtys.append(qty)
+		item_codes_list.append(item_code)
+		ppi_rows.append(ppi_row)
+		_gsm, w_in = parse_item_code(item_code)
+		widths_list.append(flt(w_in))
+
+	job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
+	for _attempt in range(20):
+		if not any(_cstr(_spr_job_id(j)) == job_id for j in _spr_job_rows(spr)):
+			break
+		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
+
+	first_ic = item_codes_list[0]
+	gsm, width_inch_one = parse_item_code(first_ic)
+	item_name = frappe.db.get_value("Item", first_ic, "item_name")
+	quality, color = extract_quality_and_color(item_name or "")
+
+	def _fmt_w(w):
+		w = flt(w)
+		return str(int(w)) if w == int(w) else str(w)
+
+	comb_str = ""
+	if len(widths_list) > 1:
+		comb_str = " + ".join([f'{_fmt_w(w)}"' for w in widths_list])
+	total_w = sum(widths_list) if widths_list else width_inch_one
+	total_qty = sum(qtys)
+
+	row = {
+		"job_id": job_id,
+		"production_plan_item": _cstr(getattr(ppi_rows[0], "name", None)) if ppi_rows else None,
+		"is_manual": 1,
+		"no_of_shafts": no_of_shafts,
+		"work_orders": ",".join(wo_names),
+		"total_weight": total_qty,
+	}
+	meta = frappe.get_meta("Shaft Production Run Job")
+	if meta.has_field("gsm") and gsm:
+		try:
+			row["gsm"] = int(gsm)
+		except Exception:
+			row["gsm"] = gsm
+	if meta.has_field("quality") and quality:
+		row["quality"] = quality
+	if meta.has_field("combination"):
+		if len(item_codes_list) > 1 and comb_str:
+			row["combination"] = comb_str
+		elif color:
+			row["combination"] = color
+	if meta.has_field("total_width"):
+		row["total_width"] = total_w
+	if meta.has_field("manual_items"):
+		row["manual_items"] = ",".join(item_codes_list)
+
+	spr.reload()
+	spr.append("shaft_jobs", row)
+	spr.save(ignore_permissions=True)
+
+	return {
+		"work_orders": wo_names,
+		"job_id": job_id,
+		"shaft_production_run": spr.name,
+	}
+
+
+@frappe.whitelist()
 def spr_get_bundle_packaging_catalog(shaft_production_run):
-	"""Jobs from Available Jobs; width options = distinct roll widths per job + job total_width fallback."""
+	"""Jobs from Available Jobs; width options use per-segment widths (combination/WO), then roll widths."""
 	_spr_require_saved(shaft_production_run)
 	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	jobs_out = []
@@ -2005,29 +2528,16 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 				"job_id": jid,
 				"label": _spr_bundle_job_label(sj),
 				"total_width_available": flt(getattr(sj, "total_width", None)),
+				"combination_text": _cstr(getattr(sj, "combination", None) or ""),
+				"segments": _spr_bundle_job_segments_detail(spr, sj),
 			}
 		)
-	widths_by_job: dict[str, list] = {}
-	for j in jobs_out:
-		widths_by_job[j["job_id"]] = []
-	for it in spr.items or []:
-		jid = _spr_resolve_item_job_to_canonical_id(spr, it)
-		w = flt(getattr(it, "width_inch", None))
-		if not jid or w <= 0:
-			continue
-		if jid not in widths_by_job:
-			widths_by_job[jid] = []
-		if w not in widths_by_job[jid]:
-			widths_by_job[jid].append(w)
-	for jid in list(widths_by_job.keys()):
-		widths_by_job[jid] = sorted(set(widths_by_job[jid]))
+	widths_by_job: dict[str, list] = {j["job_id"]: [] for j in jobs_out}
 	for j in jobs_out:
 		jid = j["job_id"]
-		if not widths_by_job.get(jid):
-			sj = _spr_shaft_job_for_roll(spr, jid)
-			tw = flt(getattr(sj, "total_width", None)) if sj else 0.0
-			if tw > 0:
-				widths_by_job[jid] = [tw]
+		sj = _spr_shaft_job_for_roll(spr, jid)
+		if sj:
+			widths_by_job[jid] = _spr_bundle_segment_widths_for_job(spr, sj)
 	return {"jobs": jobs_out, "widths_by_job": widths_by_job}
 
 
@@ -2045,7 +2555,7 @@ def spr_apply_bundle_packaging_for_job_width(
 	no_of_packaging,
 	whole_gross_kg,
 ):
-	"""Apply same single-roll gross to every roll line matching Job + Width; sticker width uses Available Jobs total_width."""
+	"""Apply same single-roll gross to every roll line matching Job + selected width segment."""
 	_spr_require_saved(shaft_production_run)
 	job_id = _cstr(job_id)
 	width_inch = flt(width_inch)
@@ -2065,7 +2575,7 @@ def spr_apply_bundle_packaging_for_job_width(
 	if not sj:
 		frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
 
-	job_w = flt(getattr(sj, "total_width", None)) or width_inch
+	job_w = width_inch
 	matching = []
 	for it in spr.items or []:
 		if not _spr_item_roll_matches_bundle_job(sj, it, job_id):
@@ -2077,31 +2587,38 @@ def spr_apply_bundle_packaging_for_job_width(
 		for it in spr.items or []:
 			if not _spr_item_roll_matches_bundle_job(sj, it, job_id):
 				continue
-			rw = flt(getattr(it, "width_inch", None))
-			if rw <= 0.001 and abs(flt(width_inch) - job_w) <= 0.5:
+			rw = _spr_roll_effective_width_inch(it)
+			if rw > 0.001 and abs(rw - flt(width_inch)) <= 0.75:
 				matching.append(it)
 
 	if not matching:
 		frappe.throw(
-			_("No roll lines for job {0} with width {1} in. Create roll entry or check widths.").format(
-				job_id, width_inch
-			)
+			_(
+				"No roll lines for job {0} with width {1} in. Create roll entry or check widths. "
+				"(If this is a combination job, pick the segment width that matches the roll item, not total width.)"
+			).format(job_id, width_inch)
 		)
 
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
-	total_width_inch = round(job_w * float(no_of_packaging), 4)
+	total_width_inch = round(width_inch * float(no_of_packaging), 4)
 
-	# Only set gross_weight - net_weight and produced_gsm will be calculated by Frappe backend script
 	for it in matching:
 		it.gross_weight = single_gross
+		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
+		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	comb = _cstr(getattr(sj, "combination", None))
+	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
+	bundle_net = round(avg_n * float(no_of_packaging), 2)
+
+	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
+	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
 	bs = {
-		"combination": comb or None,
+		"combination": comb_calculated,
 		"rolls_per_bundle": no_of_packaging,
 		"single_roll_gross_weight_kg": single_gross,
 		"sticker_width": total_width_inch,
 		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
+		"sticker_bundle_weight": bundle_net,
 	}
 	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
 		bs["job_id"] = job_id or None
@@ -2112,6 +2629,7 @@ def spr_apply_bundle_packaging_for_job_width(
 		"updated_rolls": len(matching),
 		"single_roll_gross_kg": single_gross,
 		"total_width_inch": total_width_inch,
+		"sticker_bundle_weight_kg": bundle_net,
 	}
 
 
