@@ -200,7 +200,8 @@ frappe.ui.form.on('Shaft Production Run', {
 	'items.gross_weight': function (frm, cdt, cdn) {
 		console.log('[SPR] Item gross_weight changed:', cdt, cdn);
 		spr_sync_total_produced_weight(frm);
-	},
+	}
+});
 
 function spr_compute_total_produced_weight(frm) {
 	console.log('[SPR COMPUTE] START: frm exists?', !!frm, 'doc exists?', !!(frm && frm.doc));
