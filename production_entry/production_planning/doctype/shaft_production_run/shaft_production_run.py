@@ -1526,48 +1526,52 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 		except Exception:
 			pass
 	
-	# Parse combination to get individual widths (e.g., "33+63" → [33, 63])
-	individual_widths = []
-	if comb:
-		try:
-			width_parts = comb.split("+")
-			individual_widths = [flt(w.strip()) for w in width_parts if w.strip()]
-		except Exception:
-			frappe.logger().warning(f"[SPR] Could not parse combination '{comb}' for job {job_id}")
-	
-	# ✅ DEDUPLICATE: For "63+63", use only UNIQUE widths → ONE WO per unique width (avoids duplicate WOs)
-	# Map: unique_width → width_index (position of FIRST occurrence)
-	width_to_first_idx = {}
-	for idx, w in enumerate(individual_widths):
-		if w not in width_to_first_idx:
-			width_to_first_idx[w] = idx
-	
-	# ✅ NEW: Build (GSM, WIDTH) → WO map from Item Names (NOT item codes)
+	individual_widths = _parse_combination_widths_inches(comb)
+
 	gsm_width_to_wo = _build_gsm_width_to_wo_map_from_item_names(wo_list)
-	
+
+	planned_qty = flt(getattr(job_row, "total_weight", None) or 0)
+	meter_roll_job = None
+	mr_attr = getattr(job_row, "meter_roll_mtrs", None)
+	if mr_attr not in (None, "", 0):
+		meter_roll_job = flt(mr_attr)
+
 	lines = []
 	for idx in range(n_rolls):
-		# Get individual width for this roll
 		individual_width = None
 		if individual_widths:
 			individual_width = individual_widths[idx % len(individual_widths)]
-		
-		# ✅ EXACT MATCH: (GSM, WIDTH) from item name
+
 		wo = None
 		if job_gsm is not None and individual_width is not None:
-			key = (job_gsm, individual_width)
+			iw = round(flt(individual_width), 1)
+			key = (job_gsm, iw)
 			if key in gsm_width_to_wo:
 				wo = gsm_width_to_wo[key]
-				frappe.logger().info(f"[SPR] Roll {idx+1}: GSM {job_gsm} + Width {individual_width}\" → WO {wo['name']}")
-		
-		# Fallback: Use first WO (shouldn't happen with verified PP)
+			else:
+				for (g, w), wobj in gsm_width_to_wo.items():
+					if int(g) == int(job_gsm) and abs(flt(w) - iw) <= 0.75:
+						wo = wobj
+						break
+			if wo:
+				frappe.logger().info(
+					f"[SPR] Roll {idx + 1}: GSM {job_gsm} + Width {iw}\" → WO {wo['name']}"
+				)
+
 		if wo is None:
 			wo = wo_list[0]
-			frappe.logger().warning(f"[SPR WARNING] No exact match for GSM {job_gsm}, Width {individual_width}, using {wo['name']}")
-		if job_gsm:
+			frappe.logger().warning(
+				f"[SPR WARNING] No exact match for GSM {job_gsm}, Width {individual_width}, using {wo['name']}"
+			)
+
+		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
+		if job_gsm is not None:
 			row["gsm"] = job_gsm
-		if getattr(job_row, "meter_roll_mtrs", None) not in (None, 0, ""):
-			row["meter_roll"] = flt(job_row.meter_roll_mtrs)
+		if individual_width is not None and flt(individual_width) > 0:
+			row["width_inch"] = flt(individual_width)
+		if meter_roll_job is not None and meter_roll_job > 0:
+			row["meter_roll"] = meter_roll_job
+		row["roll_no"] = idx + 1
 		lines.append(row)
 	return lines
 
@@ -2469,6 +2473,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 	widths_list: list[float] = []
 	item_codes_list: list[str] = []
 	ppi_rows = []
+	meter_roll_from_popup: float | None = None
 
 	for raw in items:
 		if not isinstance(raw, dict):
@@ -2503,6 +2508,10 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		ppi_rows.append(ppi_row)
 		_gsm, w_in = parse_item_code(item_code)
 		widths_list.append(flt(w_in))
+		if meter_roll_from_popup is None and raw.get("meter_roll") not in (None, ""):
+			mr = flt(raw.get("meter_roll"))
+			if mr > 0:
+				meter_roll_from_popup = mr
 
 	job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
 	for _attempt in range(20):
@@ -2552,6 +2561,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		row["total_width"] = total_w
 	if meta.has_field("manual_items"):
 		row["manual_items"] = ",".join(item_codes_list)
+	if meta.has_field("meter_roll_mtrs") and meter_roll_from_popup is not None and meter_roll_from_popup > 0:
+		row["meter_roll_mtrs"] = flt(meter_roll_from_popup)
 
 	spr.reload()
 	spr.append("shaft_jobs", row)
