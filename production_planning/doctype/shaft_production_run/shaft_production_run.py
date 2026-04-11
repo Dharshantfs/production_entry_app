@@ -732,43 +732,6 @@ def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
 	return out
 
 
-def _spr_mfg_allowed_qty_for_work_order(wo_qty: float) -> float:
-	"""Match ERPNext Stock Entry.validate_finished_goods (Manufacture + WO)."""
-	allowance_pct = flt(
-		frappe.db.get_single_value("Manufacturing Settings", "overproduction_percentage_for_work_order")
-	)
-	return flt(wo_qty) + ((allowance_pct / 100.0) * flt(wo_qty))
-
-
-def _spr_raise_work_order_qty_if_manufacture_exceeds_allowed(wo_id: str, wo_doc, total_qty: float) -> None:
-	"""If roll FG total exceeds WO allowed qty (+ overproduction %), raise WO qty so Manufacture SE can submit.
-
-	ERPNext: For quantity {fg} should not be greater than allowed quantity {allowed}
-	Disable auto-raise: site_config spr_disable_wo_qty_raise_for_manufacture = 1
-	"""
-	if total_qty <= 0:
-		return
-	if frappe.conf.get("spr_disable_wo_qty_raise_for_manufacture"):
-		return
-	allowed = _spr_mfg_allowed_qty_for_work_order(wo_doc.qty)
-	if total_qty <= allowed + 1e-9:
-		return
-	old_q = flt(wo_doc.qty)
-	new_q = max(old_q, flt(total_qty))
-	frappe.db.set_value("Work Order", wo_id, "qty", new_q, update_modified=True)
-	frappe.logger().info(
-		f"[SPR] Raised Work Order {wo_id} qty from {old_q} to {new_q} so manufactured qty {total_qty} "
-		f"does not exceed allowed {allowed} (Manufacturing Settings overproduction % applies)."
-	)
-	frappe.msgprint(
-		_(
-			"Work Order {0} qty updated from {1} to {2} kg so the manufacturing entry matches produced roll weights ({3} kg). "
-			"(ERPNext allows up to WO qty plus Manufacturing Settings overproduction %.)"
-		).format(wo_id, old_q, new_q, flt(total_qty, 3)),
-		alert=True,
-	)
-
-
 class ShaftProductionRun(Document):
 	def validate(self):
 		self.sync_shaft_job_work_orders_from_plan()
@@ -1266,9 +1229,6 @@ class ShaftProductionRun(Document):
 		for wo_id, rows in wo_groups.items():
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			total_qty = sum(self._row_fg_qty(r) for r in rows)
-			_spr_raise_work_order_qty_if_manufacture_exceeds_allowed(wo_id, wo_doc, total_qty)
-
-			wo_doc = frappe.get_doc("Work Order", wo_id)
 
 			# 📊 DEBUG: Log WO and total quantity
 			frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
