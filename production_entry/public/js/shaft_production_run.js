@@ -95,13 +95,21 @@ frappe.ui.form.on('Shaft Production Run', {
 					});
 				});
 				frm.refresh_field('shaft_jobs');
+				const plannedFromJobs = (r.message || []).reduce(function (sum, row) {
+					return sum + spr_parse_planned_weight_from_job_row(row);
+				}, 0);
+				if (plannedFromJobs > 0) {
+					frm.set_value('custom_total_planned_qty', plannedFromJobs);
+				}
 				frm.clear_table('items');
 				frm.refresh_field('items');
+				spr_sync_total_produced_weight(frm);
 				fetch_and_show_pp_wo_summary(frm);
 			},
 			error: function () {
 				frm.clear_table('items');
 				frm.refresh_field('items');
+				spr_sync_total_produced_weight(frm);
 				fetch_and_show_pp_wo_summary(frm);
 			},
 		});
@@ -157,9 +165,21 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_schedule_item_row_styles_after_doc_write(frm);
 	},
 
+	before_submit: function (frm) {
+		spr_validate_submit_tolerance(frm);
+	},
+
 	items: {
 		items_add: function (frm) {
 			console.log('[SPR DEBUG] items_add fired');
+			// Delay GSM calculation to ensure row data is fully loaded
+			setTimeout(function() {
+				(frm.doc.items || []).forEach(function(row) {
+					if ((row.width_inch || 0) > 0) {
+						spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
+					}
+				});
+			}, 100);
 			update_shaft_job_achieved_from_items(frm);
 			console.log('[SPR DEBUG] items_add: calling spr_sync_total_produced_weight with', (frm.doc.items || []).length, 'items');
 			spr_sync_total_produced_weight(frm);
@@ -167,10 +187,116 @@ frappe.ui.form.on('Shaft Production Run', {
 		},
 		items_remove: function (frm) {
 			update_shaft_job_achieved_from_items(frm);
+			spr_sync_total_produced_weight(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 	},
-});
+	
+	// Handle net_weight changes in items grid
+	'items.net_weight': function (frm, cdt, cdn) {
+		console.log('[SPR] Item net_weight changed:', cdt, cdn);
+		spr_sync_total_produced_weight(frm);
+	},
+	'items.gross_weight': function (frm, cdt, cdn) {
+		console.log('[SPR] Item gross_weight changed:', cdt, cdn);
+		spr_sync_total_produced_weight(frm);
+	},
+
+function spr_compute_total_produced_weight(frm) {
+	console.log('[SPR COMPUTE] START: frm exists?', !!frm, 'doc exists?', !!(frm && frm.doc));
+	
+	if (!frm || !frm.doc) {
+		console.log('[SPR COMPUTE] ERROR: No frm or doc');
+		return 0;
+	}
+	
+	const items = frm.doc.items || [];
+	console.log('[SPR COMPUTE] items array length:', items.length);
+	console.log('[SPR COMPUTE] items array:', items);
+	
+	let total = 0;
+	for (let i = 0; i < items.length; i++) {
+		const row = items[i];
+		const nw = row.net_weight ? parseFloat(row.net_weight) : 0;
+		total = total + nw;
+		console.log('[SPR COMPUTE] Item ' + i + ':', row.name, '-> net_weight:', nw, '-> running total:', total);
+	}
+	
+	console.log('[SPR COMPUTE] FINAL TOTAL:', total);
+	return total;
+}
+
+function spr_sum_weight_expression(v) {
+	if (v === undefined || v === null) {
+		return 0;
+	}
+	if (typeof v === 'number') {
+		return flt(v);
+	}
+	const s = String(v || '').trim();
+	if (!s) {
+		return 0;
+	}
+	let total = 0;
+	s.split(/\s*\+\s*/).forEach(function (part) {
+		const m = String(part || '').replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+		if (m && m[1]) {
+			total += flt(m[1]);
+		}
+	});
+	return total;
+}
+
+function spr_parse_planned_weight_from_job_row(row) {
+	if (!row) {
+		return 0;
+	}
+	let w = spr_sum_weight_expression(row.total_weight);
+	if (w <= 0) {
+		w = spr_sum_weight_expression(row.net_weight);
+	}
+	if (w <= 0) {
+		w = spr_sum_weight_expression(row.planned_qty);
+	}
+	return flt(w);
+}
+
+function spr_sync_total_planned_qty_from_jobs(frm) {
+	if (!frm || !frm.doc) {
+		return;
+	}
+	const next = (frm.doc.shaft_jobs || []).reduce(function (sum, row) {
+		return sum + spr_parse_planned_weight_from_job_row(row);
+	}, 0);
+	if (next > 0 && Math.abs(flt(frm.doc.custom_total_planned_qty) - next) > 0.0005) {
+		frm.set_value('custom_total_planned_qty', next);
+	}
+}
+
+function spr_sync_total_produced_weight(frm) {
+	console.log('[SPR SYNC] START');
+	
+	if (!frm || !frm.doc) {
+		console.log('[SPR SYNC] ERROR: No frm or doc');
+		return;
+	}
+	
+	console.log('[SPR SYNC] Calling compute function...');
+	const calculated = spr_compute_total_produced_weight(frm);
+	const current = frm.doc.total_produced_weight ? parseFloat(frm.doc.total_produced_weight) : 0;
+	
+	console.log('[SPR SYNC] Current value:', current, '| Calculated value:', calculated);
+	
+	if (Math.abs(current - calculated) > 0.01) {
+		console.log('[SPR SYNC] VALUES DIFFER - Setting total_produced_weight to:', calculated);
+		frm.set_value('total_produced_weight', calculated);
+		console.log('[SPR SYNC] Set_value called');
+	} else {
+		console.log('[SPR SYNC] VALUES MATCH - No change needed');
+	}
+	
+	console.log('[SPR SYNC] END');
+}
 
 /**
  * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh — remove then re-add
@@ -267,6 +393,45 @@ function spr_register_spr_page_buttons_after_save(frm) {
 	});
 }
 
+function spr_validate_submit_tolerance(frm) {
+	const tolerancePct = 5;
+	const planned = flt(frm.doc.custom_total_planned_qty);
+	if (planned <= 0) {
+		return;
+	}
+
+	let produced = flt(frm.doc.total_produced_weight);
+	if (produced <= 0) {
+		produced = (frm.doc.items || []).reduce(function (sum, row) {
+			const net = flt(row.net_weight);
+			const gross = flt(row.gross_weight);
+			return sum + (net > 0 ? net : gross);
+		}, 0);
+	}
+
+	const variancePct = Math.abs(produced - planned) * 100 / planned;
+	if (variancePct <= tolerancePct) {
+		return;
+	}
+
+	const overrideApproved = cint(frm.doc.tolerance_override_approved) === 1;
+	const reason = (frm.doc.tolerance_override_reason || '').trim();
+	if (overrideApproved && reason) {
+		return;
+	}
+
+	frappe.throw(
+		__(
+			'Weight variance is {0}% (Planned: {1} KG, Produced: {2} KG), above allowed tolerance of {3}%. To submit, enable Tolerance Override Approved and enter Tolerance Override Reason.'
+		).format(
+			variancePct.toFixed(2),
+			planned.toFixed(2),
+			produced.toFixed(2),
+			tolerancePct.toFixed(2)
+		)
+	);
+}
+
 /** Default WO qty (Kg): net/shaft from Available Jobs × shafts, else segment/PP fallbacks. */
 function sprManualDefaultWoQty(line, noShafts) {
 	const n = cint(noShafts);
@@ -350,24 +515,17 @@ function spr_open_manual_job_dialog(frm) {
 							return;
 						}
 						const q = flt(d.$wrapper.find('.spr-manual-qty[data-idx="' + idx + '"]').val());
-						const mr = flt(d.$wrapper.find('.spr-manual-meter-roll[data-idx="' + idx + '"]').val());
 						if (!(q > 0)) {
-							frappe.msgprint(__('Enter valid Work Order qty for selected line.'));
-							return;
-						}
-						if (!(mr > 0)) {
-							frappe.msgprint(__('Enter valid Meter/Roll for selected line.'));
 							return;
 						}
 						items.push({
 							item_code: line.item_code,
 							production_plan_item: line.production_plan_item,
 							wo_qty: q,
-							meter_roll: mr,
 						});
 					});
 					if (!items.length) {
-						frappe.msgprint(__('Select at least one line with valid Meter/Roll and Work Order qty.'));
+						frappe.msgprint(__('Select at least one line and enter Work Order qty greater than zero.'));
 						return;
 					}
 					d.hide();
@@ -408,8 +566,6 @@ function spr_open_manual_job_dialog(frm) {
 					'</th><th>' +
 					__('Width (in)') +
 					'</th><th>' +
-					__('Meter/Roll') +
-					'</th><th>' +
 					__('Net/shaft (Kg)') +
 					'</th><th>' +
 					__('WO qty (Kg)') +
@@ -422,7 +578,7 @@ function spr_open_manual_job_dialog(frm) {
 							: null;
 					const npsLabel =
 						nps != null && nps > 0
-							? nps.toFixed(2) +
+							? nps.toFixed(3) +
 							  (line.matched_job_id
 								  ? ' (' + __('job') + ' ' + String(line.matched_job_id) + ')'
 								  : '')
@@ -441,10 +597,6 @@ function spr_open_manual_job_dialog(frm) {
 						'" checked /></td>';
 					html += '<td style="max-width:220px;word-break:break-all;">' + frappe.utils.escape_html(label) + '</td>';
 					html += '<td>' + wIn.toFixed(1) + '</td>';
-					html +=
-						'<td><input type="number" class="input-with-feedback spr-manual-meter-roll" data-idx="' +
-						idx +
-						'" value="500" step="0.1" style="width:100px" placeholder="500"/></td>';
 					html += '<td>' + frappe.utils.escape_html(npsLabel) + '</td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-qty" data-idx="' +
@@ -496,12 +648,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 			}
 			const jobOpts = jobs
 				.map(function (j) {
-					return j.job_id;
+					return j.label || j.job_id;
 				})
 				.join('\n');
 			const jobByLabel = {};
 			jobs.forEach(function (j) {
-				jobByLabel[j.job_id] = j;
+				jobByLabel[j.label || j.job_id] = j;
 			});
 			const d = new frappe.ui.Dialog({
 				title: __('Bundle packaging'),
@@ -655,24 +807,22 @@ function spr_open_bundle_packaging_dialog(frm) {
 					});
 				},
 			});
-			function refreshWidthOptions() {
-				const jp = jobByLabel[d.get_value('job_pick')];
-				const wf = d.fields_dict.width_inch;
-				const det = d.$wrapper.find('.spr-bundle-job-detail');
-				if (!jp || !wf) {
-					return;
-				}
-				const segs = jp.segments || [];
-				const arr = widthsByJob[jp.job_id] || [];
-				if (segs.length) {
-					let html =
-						'<table class="table table-bordered table-condensed" style="font-size:11px;margin:4px 0;"><thead><tr><th>' +
-						__('Width') +
-						'</th><th>' +
-						__('Net/shaft (Kg)') +
-						'</th><th>' +
-						__('WO item') +
-						'</th></tr></thead><tbody>';
+		}
+		function refreshWidthOptions() {
+			const jp = jobByLabel[d.get_value('job_pick')];
+			const wf = d.fields_dict.width_inch;
+			const det = d.$wrapper.find('.spr-bundle-job-detail');
+			if (!jp) {
+				wf.df.options = '';
+				wf.refresh();
+				det.html('');
+				return;
+			}
+			const segs = jp.segments || [];
+			if (segs && segs.length) {
+				let html =
+					'<table class="table table-condensed" style="font-size:85%;margin-bottom:0;">' +
+					'<thead><tr><th>Width (in)</th><th>Net Kg</th><th>Item / Code</th>'
 					segs.forEach(function (s) {
 						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(3) : '—';
 						const ic = [s.item_code || '', (s.item_name || '').substring(0, 28)].join(' ').trim();
@@ -815,7 +965,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
 				function finishCreateEntry() {
 					(frm.doc.items || []).forEach(function (row) {
-						spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', row.name);
+						spr_update_produced_gsm(frm, 'Shaft Production Run Item', row.name);
 					});
 					update_shaft_job_achieved_from_items(frm);
 					schedule_spr_item_row_styles(frm);
@@ -868,121 +1018,29 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
 frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		spr_update_produced_gsm(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
-		// Refresh grid display and apply row styling to show net_weight instantly
-		frm.refresh_field('items');
-		apply_spr_item_row_styles(frm);
-		schedule_spr_item_row_styles(frm);
-		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
-			setTimeout(function () {
-				apply_spr_item_row_styles(frm);
-			}, ms);
-		});
+		spr_sync_total_produced_weight(frm);
 	},
 	gross_weight: function (frm, cdt, cdn) {
-		// Calculate net_weight instantly when gross_weight changes
-		const row = locals[cdt][cdn];
-		let width = flt(row.width_inch);
-		let gw = flt(row.gross_weight);
-		
-		if (width > 0 && gw > 0) {
-			let width_in_meter = width * 0.0254;
-			let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
-			let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
-			const standard_widths = [63, 85, 90, 118, 126];
-			let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
-			
-			let core_weight = 0;
-			if (is_standard) {
-				let base_weight_of_core = 1.3;
-				if (raw_weight >= 50 && raw_weight <= 100) {
-					base_weight_of_core = 1.8;
-				} else if (raw_weight > 100) {
-					base_weight_of_core = 2.5;
-				}
-				let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
-				core_weight = (base_weight_of_core / 1600) * numeric_core_width;
-			} else {
-				let core_width, prorate;
-				if (width < 63) { core_width = 63; prorate = 1.30; }
-				else if (width < 85) { core_width = 85; prorate = 1.75; }
-				else if (width < 90) { core_width = 90; prorate = 1.86; }
-				else if (width < 118) { core_width = 118; prorate = 2.43; }
-				else { core_width = 126; prorate = 2.60; }
-				core_weight = (width / core_width) * prorate;
-			}
-			
-			let calc_net = gw - core_weight;
-			let net_val = calc_net > 0 ? calc_net : gw;
-			frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
-
-			// Also calculate produced_gsm immediately
-			let mr = sprResolveLengthMeters(row) || 0;
-			let newGsm = 0;
-			if (net_val > 0 && width > 0 && mr > 0) {
-				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
-			}
-			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-			frm.refresh_field('items');
-		}
-
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		spr_update_produced_gsm(frm, cdt, cdn);
+		frm.refresh_field('items');
 		update_shaft_job_achieved_from_items(frm);
+		spr_sync_total_produced_weight(frm);
 	},
 	gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);
 	},
 	width_inch: function (frm, cdt, cdn) {
-		// Recalculate produced_gsm when width changes
-		const row = locals[cdt][cdn];
-		let nw = flt(row.net_weight) || 0;
-		let wi = flt(row.width_inch) || 0;
-		let mr = sprResolveLengthMeters(row) || 0;
-		
-		let newGsm = 0;
-		if (nw > 0 && wi > 0 && mr > 0) {
-			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
-		}
-		
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-		frm.refresh_field('items');
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	meter_roll: function (frm, cdt, cdn) {
-		// Recalculate produced_gsm when meter_roll changes
-		const row = locals[cdt][cdn];
-		let nw = flt(row.net_weight) || 0;
-		let wi = flt(row.width_inch) || 0;
-		let mr = sprResolveLengthMeters(row) || 0;
-		
-		let newGsm = 0;
-		if (nw > 0 && wi > 0 && mr > 0) {
-			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
-		}
-		
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-		frm.refresh_field('items');
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_length_mtrs: function (frm, cdt, cdn) {
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
-	},
-	meter_roll_mtrs: function (frm, cdt, cdn) {
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
-	},
-	ordered_length: function (frm, cdt, cdn) {
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
-	},
-	ordered_length_mtrs: function (frm, cdt, cdn) {
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
-	},
-	custom_ordered_length: function (frm, cdt, cdn) {
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		spr_update_produced_gsm(frm, cdt, cdn);
 	},
 	produced_gsm: function (frm) {
-		// Refresh grid to show the calculated produced_gsm value
-		frm.refresh_field('items');
 		apply_spr_item_row_styles(frm);
 		schedule_spr_item_row_styles(frm);
 		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
@@ -990,68 +1048,6 @@ frappe.ui.form.on('Shaft Production Run Item', {
 				apply_spr_item_row_styles(frm);
 			}, ms);
 		});
-	},
-	
-	/**
-	 * OVERRIDE: Ensure net_weight calculation runs ONLY based on gross_weight & core_weight
-	 * NOT dependent on meter_roll (which may be empty when bundle packaging sets gross_weight)
-	 * This handler runs AFTER any old conflicting scripts to guarantee correct behavior
-	 */
-	custom_net_weight_trigger: function (frm, cdt, cdn) {
-		const row = locals[cdt][cdn];
-		let width = flt(row.width_inch);
-		let gw = flt(row.gross_weight);
-		
-		// Net weight calculation should ONLY depend on gross_weight & width, NOT meter_roll
-		if (width > 0 && gw > 0) {
-			let width_in_meter = width * 0.0254;
-			let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
-			let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
-			const standard_widths = [63, 85, 90, 118, 126];
-			let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
-			
-			let core_weight = 0;
-			if (is_standard) {
-				let base_weight_of_core = 1.3;
-				if (raw_weight >= 50 && raw_weight <= 100) {
-					base_weight_of_core = 1.8;
-				} else if (raw_weight > 100) {
-					base_weight_of_core = 2.5;
-				}
-				let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
-				core_weight = (base_weight_of_core / 1600) * numeric_core_width;
-			} else {
-				let core_width, prorate;
-				if (width < 63) { core_width = 63; prorate = 1.30; }
-				else if (width < 85) { core_width = 85; prorate = 1.75; }
-				else if (width < 90) { core_width = 90; prorate = 1.86; }
-				else if (width < 118) { core_width = 118; prorate = 2.43; }
-				else { core_width = 126; prorate = 2.60; }
-				core_weight = (width / core_width) * prorate;
-			}
-			
-			let calc_net = gw - core_weight;
-			let net_val = calc_net > 0 ? calc_net : gw;
-			row.net_weight = net_val;
-		}
-	},
-	
-	/**
-	 * FINAL: Calculate produced_gsm only when ALL three values are ready
-	 * This runs last to ensure net_weight is already set
-	 */
-	final_produced_gsm_calc: function (frm, cdt, cdn) {
-		const row = locals[cdt][cdn];
-		let nw = flt(row.net_weight) || 0;
-		let wi = flt(row.width_inch) || 0;
-		let mr = sprResolveLengthMeters(row) || 0;
-		
-		if (nw > 0 && wi > 0 && mr > 0) {
-			let newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
-			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-		} else {
-			frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
-		}
 	},
 	/**
 	 * Save this roll line, lock it for editing, and reveal Print Label.
@@ -1138,62 +1134,36 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 		return;
 	}
 	const row = locals[cdt][cdn];
-	
-	// Get weight: prefer net_weight, fallback to gross_weight
-	let nw = flt(row.net_weight);
-	if (nw <= 0) {
-		nw = flt(row.gross_weight);
+	if (sprRollProducedLengthIncomplete(row)) {
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
+		apply_spr_item_row_styles(frm);
+		schedule_spr_item_row_styles(frm);
+		return;
 	}
-	
-	// Get width (required)
-	const wi = flt(row.width_inch);
-	
-	const mr = sprResolveLengthMeters(row);
-	
-	// Calculate GSM only if all required values are present
-	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
-	let pgsm = 0;
-	if (nw > 0 && wi > 0 && mr > 0) {
-		pgsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+	const nw = flt(row.net_weight);
+	const gw = flt(row.gross_weight);
+	const wgt = nw > 0 ? nw : gw;
+	const w = flt(row.width_inch);
+	let ln = flt(row.meter_roll);
+	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
+		const pl = row.produced_length_mtrs;
+		if (flt(pl) > 0) {
+			ln = flt(pl);
+		}
 	}
-	
-	frappe.model.set_value(cdt, cdn, 'produced_gsm', pgsm);
+	if (ln <= 0) {
+		ln = flt(row.ordered_length);
+	}
+	if (ln <= 0) {
+		ln = flt(row.custom_ordered_length);
+	}
+	const den = w * ln * 0.254;
+	const val = den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
+	frappe.model.set_value(cdt, cdn, 'produced_gsm', val);
+	// Refresh grid immediately so produced_gsm value displays
 	frm.refresh_field('items');
 	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
-}
-
-function spr_update_produced_gsm_with_retry(frm, cdt, cdn) {
-	[0, 80, 220].forEach(function (ms) {
-		setTimeout(function () {
-			try {
-				spr_update_produced_gsm(frm, cdt, cdn);
-			} catch (e) {
-				// Ignore transient timing issues while rows are being populated.
-			}
-		}, ms);
-	});
-}
-
-function sprResolveLengthMeters(doc) {
-	const aliases = [
-		'produced_length_mtrs',
-		'meter_roll',
-		'meter_roll_mtrs',
-		'custom_meter_roll_mtrs',
-		'ordered_length',
-		'ordered_length_mtrs',
-		'custom_ordered_length',
-		'roll_mtrs',
-		'roll',
-	];
-	for (let i = 0; i < aliases.length; i++) {
-		const v = flt(doc[aliases[i]]);
-		if (v > 0) {
-			return v;
-		}
-	}
-	return 0;
 }
 
 function fetch_and_show_pp_wo_summary(frm) {
@@ -1205,7 +1175,19 @@ function fetch_and_show_pp_wo_summary(frm) {
 			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_production_plan_wo_summary',
 		args: { production_plan: frm.doc.production_plan },
 		callback: function (r) {
-			show_pp_work_order_summary_dialog(r.message || []);
+			const rows = r.message || [];
+			console.log('[SPR] WO Summary rows:', rows);
+			const woSum = rows.reduce(function (sum, row) {
+				const qty = flt(row.order_qty || 0);
+				console.log('[SPR] Row:', row.work_order, 'qty:', qty);
+				return sum + qty;
+			}, 0);
+			console.log('[SPR] WO Total Sum:', woSum);
+			if (woSum > 0) {
+				console.log('[SPR] Setting custom_total_planned_qty to:', woSum);
+				frm.set_value('custom_total_planned_qty', woSum);
+			}
+			show_pp_work_order_summary_dialog(rows);
 		},
 		error: function () {
 			show_pp_work_order_summary_dialog([]);
@@ -1448,20 +1430,6 @@ function sprStickerGsmFromDoc(doc) {
 
 /** True when produced length is missing or zero — do not infer GSM from ordered meter_roll (legend: incomplete / grey). */
 function sprRollProducedLengthIncomplete(doc) {
-	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
-		return false;
-	}
-	const pl = doc.produced_length_mtrs;
-	if (pl === undefined) {
-		return false;
-	}
-	if (pl === null || pl === '') {
-		return sprResolveLengthMeters(doc) <= 0;
-	}
-	// If produced_length_mtrs is set but <= 0, still allow fallback
-	if (flt(pl) <= 0) {
-		return sprResolveLengthMeters(doc) <= 0;
-	}
 	return false;
 }
 
@@ -1471,23 +1439,28 @@ function sprEffectiveProducedGsm(doc) {
 	if (p > 0) {
 		return p;
 	}
-	
-	// Get weight: prefer net_weight, fallback to gross_weight
-	let nw = flt(doc.net_weight);
-	if (nw <= 0) {
-		nw = flt(doc.gross_weight);
+	if (sprRollProducedLengthIncomplete(doc)) {
+		return 0;
 	}
-	
-	// Get width (required)
-	const wi = flt(doc.width_inch);
-	
-	const mr = sprResolveLengthMeters(doc);
-	
-	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
-	if (nw > 0 && wi > 0 && mr > 0) {
-		return Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+	const nw = flt(doc.net_weight);
+	const gw = flt(doc.gross_weight);
+	const wgt = nw > 0 ? nw : gw;
+	const w = flt(doc.width_inch);
+	let ln = flt(doc.meter_roll);
+	if (frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
+		const pl = doc.produced_length_mtrs;
+		if (flt(pl) > 0) {
+			ln = flt(pl);
+		}
 	}
-	return 0;
+	if (ln <= 0) {
+		ln = flt(doc.ordered_length);
+	}
+	if (ln <= 0) {
+		ln = flt(doc.custom_ordered_length);
+	}
+	const den = w * ln * 0.254;
+	return den > 0 ? Math.round((wgt * 10000) / den * 100) / 100 : 0;
 }
 
 function ensure_spr_item_stylesheet() {
@@ -2068,40 +2041,18 @@ function apply_spr_item_row_styles(frm) {
 	const $wrap = frm.fields_dict.items.$wrapper;
 
 	items.forEach(function (doc, idx) {
-		// Try multiple resolution methods to find row element for DataTable / Frappe grids
-		let $row = null;
-		
-		// Method 1: Try by docname first (works when grid_rows_by_docname is populated)
+		let $row = sprFindItemsRowDomByDocname(frm, doc);
 		if (!$row || !$row.length) {
-			$row = sprFindItemsRowDomByDocname(frm, doc);
+			if ($domRows && $domRows.length > idx) {
+				$row = $($domRows.get(idx));
+			}
 		}
-		
-		
-		// Method 2: Use DOM rows array by index (DataTable body rows in order)
-		if ((!$row || !$row.length) && $domRows && $domRows.length > idx) {
-			$row = $($domRows.get(idx));
-		}
-		
-		// Method 3: Try wrapper resolution by index
 		if (!$row || !$row.length) {
 			$row = sprResolveItemsRowWrapper(frm, doc, grid, idx);
 		}
-		
-		// Method 4: Direct selector search if other methods fail
-		if ((!$row || !$row.length) && $wrap && $wrap.length && doc && doc.name) {
-			$row = $wrap
-				.find('.dt-row, .grid-row, tbody tr')
-				.filter(function (i) {
-					return i === idx || $(this).attr('data-docname') === doc.name || $(this).attr('data-name') === doc.name;
-				})
-				.first();
-		}
-		
 		if (!$row || !$row.length) {
-			console.warn('Could not resolve row for item at index', idx, doc);
 			return;
 		}
-		
 		const $targets = sprCollectItemRowTargets(frm, doc, idx, $row, $wrap);
 		// Roll Production Results: Sticker GSM vs produced (field or computed from net/gross × width × length)
 		const sticker = sprStickerGsmFromDoc(doc);
@@ -2132,56 +2083,4 @@ function apply_spr_item_row_styles(frm) {
 		}
 	});
 	spr_apply_items_row_lock_ui(frm);
-}
-
-
-// ===== TOTAL PRODUCED WEIGHT CALCULATION =====
-
-function spr_compute_total_produced_weight(frm) {
-	console.log('[SPR COMPUTE] START: frm exists?', !!frm, 'doc exists?', !!(frm && frm.doc));
-	
-	if (!frm || !frm.doc) {
-		console.log('[SPR COMPUTE] ERROR: No frm or doc');
-		return 0;
-	}
-	
-	const items = frm.doc.items || [];
-	console.log('[SPR COMPUTE] items array length:', items.length);
-	console.log('[SPR COMPUTE] items array:', items);
-	
-	let total = 0;
-	for (let i = 0; i < items.length; i++) {
-		const row = items[i];
-		const nw = row.net_weight ? parseFloat(row.net_weight) : 0;
-		total = total + nw;
-		console.log('[SPR COMPUTE] Item ' + i + ':', row.name, '-> net_weight:', nw, '-> running total:', total);
-	}
-	
-	console.log('[SPR COMPUTE] FINAL TOTAL:', total);
-	return total;
-}
-
-function spr_sync_total_produced_weight(frm) {
-	console.log('[SPR SYNC] START');
-	
-	if (!frm || !frm.doc) {
-		console.log('[SPR SYNC] ERROR: No frm or doc');
-		return;
-	}
-	
-	console.log('[SPR SYNC] Calling compute function...');
-	const calculated = spr_compute_total_produced_weight(frm);
-	const current = frm.doc.total_produced_weight ? parseFloat(frm.doc.total_produced_weight) : 0;
-	
-	console.log('[SPR SYNC] Current value:', current, '| Calculated value:', calculated);
-	
-	if (Math.abs(current - calculated) > 0.01) {
-		console.log('[SPR SYNC] VALUES DIFFER - Setting total_produced_weight to:', calculated);
-		frm.set_value('total_produced_weight', calculated);
-		console.log('[SPR SYNC] Set_value called');
-	} else {
-		console.log('[SPR SYNC] VALUES MATCH - No change needed');
-	}
-	
-	console.log('[SPR SYNC] END');
 }

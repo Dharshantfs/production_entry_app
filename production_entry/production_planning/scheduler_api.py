@@ -3727,6 +3727,7 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                         so_item_wo_count_map[row.so_item] = cint(row.wo_count)
 
     data = []
+    spr_link_cache = {}
     spr_meta_cache = {}
     spr_pp_gsm_weights_cache = {}
     spr_pp_gsm_index_cache = {}
@@ -4108,11 +4109,29 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 split_so_item_produced_alloc_map[alloc_bucket] = already_alloc + row_alloc
                 item_level_produced = row_alloc
 
-            # STRICT mapping: only use explicit Planning Table row -> SPR link.
-            # Never inherit SPR from SO/PP level; each row must continue only its own SPR.
             spr_name = ""
             if psi_name and psi_name in spr_psi_name_map:
                 spr_name = spr_psi_name_map[psi_name]
+            elif split_group:
+                # Do not attach SO-line or PP-level SPR to sibling rows — only spr_name on this PT row counts.
+                spr_name = ""
+            elif so_item_key and not cint(item.get("is_split")) and so_item_key in spr_so_item_name_map:
+                spr_name = spr_so_item_name_map[so_item_key]
+            elif item_pp and not so_item_key and not cint(item.get("is_split")) and item_pp in spr_pp_name_map:
+                spr_name = spr_pp_name_map[item_pp]
+            
+            # Fallback to direct field on Production Plan if still not found
+            if not spr_name and item_pp and not so_item_key and not cint(item.get("is_split")) and not split_group:
+                if item_pp in spr_link_cache:
+                    spr_name = spr_link_cache[item_pp]
+                else:
+                    raw_spr_link = frappe.db.get_value("Production Plan", item_pp, "custom_shaft_production_run_id") or ""
+                    linked_spr = str(raw_spr_link).split(",")[0].strip() if raw_spr_link else ""
+                    if linked_spr and frappe.db.exists("Shaft Production Run", linked_spr):
+                        spr_name = linked_spr
+                    else:
+                        spr_name = ""
+                    spr_link_cache[item_pp] = spr_name
 
             spr_docstatus = None
             spr_unit = ""
@@ -9141,6 +9160,27 @@ def create_mix_spr(date_key, mix_data):
     # Sync mix name to order code header if available
     if mix_data and len(mix_data) > 0:
         doc.custom_order_code = mix_data[0].get("mixName")
+        
+        # Try to fetch label from Production Plan
+        pp_name = mix_data[0].get("production_plan")
+        if pp_name and frappe.db.exists("Production Plan", pp_name):
+            try:
+                pp = frappe.get_doc("Production Plan", pp_name)
+                pp_meta = frappe.get_meta("Production Plan")
+                # Try custom_label first, then fallback to label
+                label_value = ""
+                if pp_meta.has_field("custom_label"):
+                    label_value = pp.get("custom_label") or ""
+                if not label_value and pp_meta.has_field("label"):
+                    label_value = pp.get("label") or ""
+                if label_value:
+                    doc.custom_label = label_value
+                    frappe.logger().info(f"[create_mix_spr] Set custom_label={label_value} from PP {pp_name}")
+            except Exception as e:
+                frappe.logger().warning(f"[create_mix_spr] Could not fetch label from PP {pp_name}: {e}")
+        # Also try to fetch label from mix data if available
+        elif mix_data[0].get("custom_label"):
+            doc.custom_label = mix_data[0].get("custom_label")
 
     # Map mix data to shaft jobs
     for i, mix in enumerate(mix_data):
@@ -10064,11 +10104,6 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         )
         wo_names_str = ", ".join([wo.name for wo in pp_work_orders]) if pp_work_orders else ""
         wo_total_qty = sum(flt(wo.qty) for wo in pp_work_orders)
-        
-        # Set custom_total_planned_qty from Work Orders (same as manual creation)
-        if wo_total_qty > 0:
-            spr.custom_total_planned_qty = wo_total_qty
-            frappe.logger().info(f"[create_spr_from_psi] Set custom_total_planned_qty={wo_total_qty} from WO sum for PP {pp_id}")
 
         # PP-level fallback values - try all possible field name variations
         # Standard PP fields + custom_ prefix variants

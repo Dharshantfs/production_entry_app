@@ -113,8 +113,7 @@
   {
    "fieldname": "total_produced_weight",
    "fieldtype": "Float",
-   "label": "Total Produced Weight (KG)",
-   "read_only": 1
+   "label": "Total Produced Weight (KG)"
   },
   {
    "fieldname": "custom_quality_summary",

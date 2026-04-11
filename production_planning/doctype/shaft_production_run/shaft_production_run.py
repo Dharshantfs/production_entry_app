@@ -1034,6 +1034,15 @@ class ShaftProductionRun(Document):
 		for wo_id, rows in wo_groups.items():
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			total_qty = sum(self._row_fg_qty(r) for r in rows)
+			
+			# 📊 DEBUG: Log WO and total quantity
+			frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
+			
+			# Show in UI
+			frappe.msgprint(
+				_(f"📊 Creating Manufacturing Entry for WO: {wo_id} | Total Quantity: {total_qty} KG | WO Authorized: {wo_doc.qty} KG"),
+				alert=False
+			)
 
 			if total_qty <= 0:
 				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)

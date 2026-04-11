@@ -1,0 +1,246 @@
+{
+ "actions": [],
+ "creation": "2026-04-01 15:52:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_1",
+  "naming_series",
+  "run_date",
+  "is_mix_roll",
+  "production_plan",
+  "customer",
+  "custom_total_planned_qty",
+  "custom_unit",
+  "shift",
+  "column_break_shift",
+  "column_break_2",
+  "status",
+  "custom_order_code",
+  "column_break_7",
+  "total_produced_weight",
+  "custom_quality_summary",
+  "custom_gsm_summary",
+  "custom_color_summary",
+  "tolerance_override_approved",
+  "tolerance_override_reason",
+  "section_break_9",
+  "shaft_jobs",
+  "section_break_items",
+  "filter_job_id",
+  "items",
+  "custom_label",
+  "custom_batch_width",
+  "bundle_stickers",
+  "section_manufacturing",
+  "manufacturing_entries"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_1",
+   "fieldtype": "Section Break",
+   "label": "Run Configuration"
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "SPR-.YYYY.-.#####"
+  },
+  {
+   "fieldname": "run_date",
+   "fieldtype": "Date",
+   "label": "Run Date"
+  },
+  {
+   "fieldname": "is_mix_roll",
+   "fieldtype": "Check",
+   "label": "Is Mix Roll"
+  },
+  {
+   "fieldname": "production_plan",
+   "fieldtype": "Link",
+   "label": "Production Plan",
+   "options": "Production Plan"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "custom_total_planned_qty",
+   "fieldtype": "Float",
+   "label": "Total Planned Qty (KG)"
+  },
+  {
+   "fieldname": "custom_unit",
+   "fieldtype": "Select",
+   "label": "Unit",
+   "options": "UNIT 1\nUNIT 2\nUNIT 3\nUNIT 4"
+  },
+  {
+   "fieldname": "shift",
+   "fieldtype": "Data",
+   "label": "Shift"
+  },
+  {
+   "fieldname": "column_break_shift",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nCompleted\nCancelled"
+  },
+  {
+   "fieldname": "custom_order_code",
+   "fieldtype": "Small Text",
+   "label": "Order Code"
+  },
+  {
+   "fieldname": "column_break_7",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_produced_weight",
+   "fieldtype": "Float",
+   "label": "Total Produced Weight (KG)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_quality_summary",
+   "fieldtype": "Data",
+   "label": "Quality",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_gsm_summary",
+   "fieldtype": "Data",
+   "label": "GSM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_color_summary",
+   "fieldtype": "Data",
+   "label": "Color",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tolerance_override_approved",
+   "fieldtype": "Check",
+   "label": "Tolerance Override Approved"
+  },
+  {
+   "fieldname": "tolerance_override_reason",
+   "fieldtype": "Text",
+   "label": "Tolerance Override Reason"
+  },
+  {
+   "fieldname": "section_break_9",
+   "fieldtype": "Section Break",
+   "label": "Shaft Details (Select Job)"
+  },
+  {
+   "fieldname": "shaft_jobs",
+   "fieldtype": "Table",
+   "label": "Available Jobs",
+   "options": "Shaft Production Run Job"
+  },
+  {
+   "fieldname": "section_break_items",
+   "fieldtype": "Section Break",
+   "label": "Produced Rolls"
+  },
+  {
+   "fieldname": "filter_job_id",
+   "fieldtype": "Data",
+   "label": "View Rolls for Job"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Roll Production Results",
+   "options": "Shaft Production Run Item"
+  },
+  {
+   "fieldname": "custom_label",
+   "fieldtype": "Select",
+   "label": "Label Type",
+   "options": "Default\nReliance\nPerfect\nPlain CC\nPlain\nCustomized"
+  },
+  {
+   "fieldname": "custom_batch_width",
+   "fieldtype": "Float",
+   "label": "Custom Label Width (CM)"
+  },
+  {
+   "fieldname": "bundle_stickers",
+   "fieldtype": "Table",
+   "label": "Bundle Stickers",
+   "options": "Bundle Stickers"
+  },
+  {
+   "fieldname": "section_manufacturing",
+   "fieldtype": "Section Break",
+   "label": "Manufacturing Stock Entries"
+  },
+  {
+   "fieldname": "manufacturing_entries",
+   "fieldtype": "Small Text",
+   "label": "Manufacturing Entries",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-04-01 15:52:00.000000",
+ "module": "Production Planning",
+ "name": "Shaft Production Run",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "naming_series": "SPR-.YYYY.-.#####"
+}

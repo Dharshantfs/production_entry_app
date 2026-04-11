@@ -1,0 +1,141 @@
+{
+ "actions": [],
+ "creation": "2026-04-01 15:52:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "job_id",
+  "production_plan_item",
+  "gsm",
+  "quality",
+  "combination",
+  "notes",
+  "total_width",
+  "meter_roll_mtrs",
+  "net_weight",
+  "total_weight",
+  "custom_total_achieved_weight",
+  "no_of_shafts",
+  "party_code",
+  "work_orders",
+  "is_manual",
+  "manual_items",
+  "create_roll_entry"
+ ],
+ "fields": [
+  {
+   "fieldname": "job_id",
+   "fieldtype": "Data",
+   "label": "Job ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "production_plan_item",
+   "fieldtype": "Data",
+   "label": "Production Plan Item (WO link)",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "gsm",
+   "fieldtype": "Int",
+   "label": "GSM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quality",
+   "fieldtype": "Data",
+   "label": "Quality",
+   "read_only": 1
+  },
+  {
+   "fieldname": "combination",
+   "fieldtype": "Small Text",
+   "label": "Combination",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_width",
+   "fieldtype": "Float",
+   "label": "Total Width (Inches)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "meter_roll_mtrs",
+   "fieldtype": "Float",
+   "label": "Meter / Roll (Mtrs)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "net_weight",
+   "fieldtype": "Small Text",
+   "label": "Net Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_weight",
+   "fieldtype": "Float",
+   "label": "Total Target Weight (Kgs)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_total_achieved_weight",
+   "fieldtype": "Float",
+   "label": "Total Achieved Weight (Kgs)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "no_of_shafts",
+   "fieldtype": "Int",
+   "label": "No of Shafts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "party_code",
+   "fieldtype": "Data",
+   "label": "Order Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "work_orders",
+   "fieldtype": "Small Text",
+   "label": "Work Orders",
+   "read_only": 1
+  },
+  {
+   "fieldname": "is_manual",
+   "fieldtype": "Check",
+   "label": "Is Manual"
+  },
+  {
+   "fieldname": "manual_items",
+   "fieldtype": "Text",
+   "label": "Manual Items"
+  },
+  {
+   "fieldname": "create_roll_entry",
+   "fieldtype": "Button",
+   "label": "Create Entry"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-04-01 15:52:00.000000",
+ "module": "Production Planning",
+ "name": "Shaft Production Run Job",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "istable": 1
+}
