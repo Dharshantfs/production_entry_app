@@ -1424,6 +1424,31 @@ def _planned_qty_for_roll_line(job_row, roll_index: int, segs: int) -> float:
 	return round(flt(seg_kg), 3)
 
 
+def _planned_kg_for_spr_result_roll(job_row, roll_index: int, n_rolls: int, segs: int) -> float:
+	"""Planned kg for one Produced Rolls line: per physical roll, not full job total on every line.
+
+	When ``net_weight`` lists one value per roll, use that. When it lists one value per combination
+	segment, cycle segments as rolls repeat (multi-shaft). Otherwise split ``total_weight`` evenly
+	across ``n_rolls`` (e.g. 97.08 kg / 2 rolls → 48.54 each).
+	"""
+	if n_rolls < 1:
+		n_rolls = 1
+	if segs < 1:
+		segs = 1
+	tw = flt(getattr(job_row, "total_weight", 0) or 0)
+	parts = _parse_net_weight_kg_parts(getattr(job_row, "net_weight", None))
+
+	if len(parts) == n_rolls:
+		return round(flt(parts[roll_index]), 3)
+
+	if parts and segs > 1 and len(parts) >= segs:
+		return round(flt(parts[roll_index % segs]), 3)
+
+	if tw > 0:
+		return round(tw / n_rolls, 3)
+	return 0.0
+
+
 @frappe.whitelist()
 def get_next_spr_batch_numbers(
 	shaft_production_run,
@@ -1530,7 +1555,6 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 
 	gsm_width_to_wo = _build_gsm_width_to_wo_map_from_item_names(wo_list)
 
-	planned_qty = flt(getattr(job_row, "total_weight", None) or 0)
 	meter_roll_job = None
 	mr_attr = getattr(job_row, "meter_roll_mtrs", None)
 	if mr_attr not in (None, "", 0):
@@ -1564,6 +1588,7 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 				f"[SPR WARNING] No exact match for GSM {job_gsm}, Width {individual_width}, using {wo['name']}"
 			)
 
+		planned_qty = _planned_kg_for_spr_result_roll(job_row, idx, n_rolls, segs)
 		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
 		if job_gsm is not None:
 			row["gsm"] = job_gsm

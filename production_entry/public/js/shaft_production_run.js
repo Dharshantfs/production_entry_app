@@ -267,19 +267,18 @@ function spr_register_spr_page_buttons_after_save(frm) {
 	});
 }
 
-/** Default WO qty (Kg): net/shaft from Available Jobs × shafts, else segment/PP fallbacks. */
+/** Default WO qty (Kg): one shaft / one roll worth (net/shaft), not × shafts — total is on the job row. */
 function sprManualDefaultWoQty(line, noShafts) {
-	const n = cint(noShafts);
 	const nps = line.net_per_shaft_kg != null ? flt(line.net_per_shaft_kg) : null;
 	if (nps != null && nps > 0) {
-		return nps * n;
+		return nps;
 	}
 	const fs =
 		line.first_segment_planned_kg != null && line.first_segment_planned_kg !== ''
 			? flt(line.first_segment_planned_kg)
 			: null;
 	if (fs != null && fs > 0) {
-		return fs * n;
+		return fs;
 	}
 	const pq = flt(line.planned_qty);
 	return pq > 0 ? pq : 1;
@@ -332,7 +331,9 @@ function spr_open_manual_job_dialog(frm) {
 					{
 						fieldname: 'line_select_html',
 						fieldtype: 'HTML',
-						label: __('Select items (manufacturing qty = net/shaft × shafts when Available Jobs match width)'),
+						label: __(
+							'Select items (WO qty default = net/shaft Kg per roll; job total = qty × shafts)'
+						),
 						options: '<div class="spr-manual-lines-wrap"></div>',
 					},
 				],
