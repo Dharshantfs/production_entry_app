@@ -1117,6 +1117,13 @@ class ShaftProductionRun(Document):
 				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)
 				continue
 
+			# 🔒 VALIDATION: Ensure WIP warehouse exists
+			if not wo_doc.wip_warehouse:
+				frappe.throw(
+					_("Work Order {0} has no WIP warehouse set. Raw materials cannot be fetched.").format(wo_id),
+					title=_("Missing WIP Warehouse")
+				)
+
 			se = frappe.new_doc("Stock Entry")
 			se.company = wo_doc.company
 			se.posting_date = self.run_date or today()
@@ -1139,14 +1146,38 @@ class ShaftProductionRun(Document):
 			# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
 			se.get_items()
 			
-			# ✅ FIX: Set RM items source warehouse to WIP (where materials were transferred)
-			# NOT to the default Store warehouse
+			# 🔒 ENFORCE: ALL RM items MUST use WIP warehouse ONLY - NO OTHER WAREHOUSE
+			# This prevents double consumption (materials already transferred to WIP)
+			wip_warehouse = wo_doc.wip_warehouse
+			rm_count = 0
+			
 			for item in se.items or []:
 				if item.item_code:
-					# Raw material items (s_warehouse field) should come from WIP warehouse
-					# Finished good items (t_warehouse field) go to FG warehouse
-					if not item.get("t_warehouse"):  # This is a RM item, not a FG item
-						item.s_warehouse = wo_doc.wip_warehouse
+					# Check if this is a RM item (no t_warehouse means it's a raw material)
+					if not item.get("t_warehouse"):
+						rm_count += 1
+						# 🔒 ENFORCE: Set source warehouse to WIP ONLY
+						item.s_warehouse = wip_warehouse
+						
+						# 🔒 VALIDATE: Ensure warehouse was set correctly
+						if item.s_warehouse != wip_warehouse:
+							frappe.throw(
+								_("Raw material {0} source warehouse is {1}, not {2}. ABORT.").format(
+									item.item_code, item.s_warehouse, wip_warehouse
+								),
+								title=_("Warehouse Mismatch")
+							)
+					else:
+						# This is a finished good item - target warehouse should be FG warehouse
+						if item.t_warehouse != wo_doc.fg_warehouse:
+							item.t_warehouse = wo_doc.fg_warehouse
+			
+			# Log for verification
+			if rm_count > 0:
+				frappe.msgprint(
+					_("Confirmed: {0} RM items set to use WIP warehouse: {1}").format(rm_count, wip_warehouse),
+					alert=False
+				)
 			
 			# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
 			self._strip_finished_goods_from_stock_entry(se)
