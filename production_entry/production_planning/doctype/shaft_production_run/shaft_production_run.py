@@ -76,7 +76,7 @@ def _spr_length_meters(spr_row) -> float | None:
 		return None
 	for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	try:
 		spi_meta = frappe.get_meta("Shaft Production Run Item")
@@ -86,13 +86,13 @@ def _spr_length_meters(spr_row) -> float | None:
 			lab = (df.label or "").lower()
 			if "produced" in lab and "length" in lab:
 				v = _spr_row_get(spr_row, df.fieldname)
-				if v is not None:
+				if v is not None and flt(v) > 0:
 					return flt(v)
 	except Exception:
 		pass
 	for key in ("meter_roll", "ordered_length", "custom_ordered_length"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	return None
 
@@ -138,6 +138,45 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 	if len(t) < 9:
 		return False
 	return t.isalnum()
+
+
+def _production_plan_total_planned_qty(production_plan: str) -> float:
+	"""Resolve planned KG from Production Plan fields, then fall back to linked Work Orders sum."""
+	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
+		return 0.0
+
+	try:
+		wo_qty = flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(wo.qty), 0)
+				FROM `tabWork Order` wo
+				WHERE wo.production_plan = %(pp)s
+				  AND wo.docstatus < 2
+				""",
+				{"pp": production_plan},
+			)[0][0]
+		)
+		frappe.logger().info(f"[_production_plan_total_planned_qty] {production_plan}: WO qty sum = {wo_qty}")
+		if wo_qty > 0:
+			return wo_qty
+	except Exception as e:
+		frappe.logger().error(f"[_production_plan_total_planned_qty] Error fetching WO sum for {production_plan}: {e}")
+		pass
+
+	# Final fallback to direct PP fields
+	try:
+		pp = frappe.get_doc("Production Plan", production_plan)
+		pp_meta = frappe.get_meta("Production Plan")
+		for fn in ("custom_total_planned_qty", "total_planned_qty", "planned_qty", "qty"):
+			if pp_meta.has_field(fn):
+				v = flt(pp.get(fn))
+				if v > 0:
+					return v
+	except Exception:
+		pass
+		
+	return 0.0
 
 
 def _effective_weight_kg_for_produced_gsm(row) -> float:
@@ -611,7 +650,7 @@ class ShaftProductionRun(Document):
 			return
 		for row in self.items or []:
 			ln = _spr_length_meters(row)
-			if ln is None:
+			if ln is None or ln <= 0:
 				ln = flt(getattr(row, "meter_roll", None))
 			else:
 				ln = flt(ln)
@@ -625,6 +664,42 @@ class ShaftProductionRun(Document):
 
 	def on_cancel(self):
 		self.cancel_manufacturing_stock_entries()
+
+	def on_trash(self):
+		"""Remove stale row links so deleted SPR is not shown as Continue Entry on Production Table."""
+		try:
+			if frappe.db.exists("DocType", "Planning Table") and frappe.db.has_column("Planning Table", "spr_name"):
+				frappe.db.sql(
+					"""
+					UPDATE `tabPlanning Table`
+					SET spr_name = ''
+					WHERE IFNULL(spr_name, '') = %s
+					""",
+					(self.name,),
+				)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Planning Table spr_name")
+
+		# Also remove this SPR from Production Plan link list to avoid stale PP-level references elsewhere.
+		try:
+			if not frappe.db.has_column("Production Plan", "custom_shaft_production_run_id"):
+				return
+			rows = frappe.db.sql(
+				"""
+				SELECT name, custom_shaft_production_run_id
+				FROM `tabProduction Plan`
+				WHERE IFNULL(custom_shaft_production_run_id, '') != ''
+				""",
+				as_dict=True,
+			)
+			for r in rows or []:
+				raw = str(r.get("custom_shaft_production_run_id") or "")
+				parts = [p.strip() for p in raw.split(",") if p and p.strip()]
+				filtered = [p for p in parts if p != self.name]
+				if filtered != parts:
+					frappe.db.set_value("Production Plan", r["name"], "custom_shaft_production_run_id", ", ".join(filtered))
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Production Plan links")
 
 	def _unit_digit(self) -> int:
 		u = (self.get("custom_unit") or "").strip()
@@ -1071,10 +1146,23 @@ def get_production_plan_details(production_plan):
 		"customer": pp.get("customer"),
 		"custom_unit": pp.get("custom_unit"),
 	}
-	if pp_meta.has_field("custom_order_code") and pp.get("custom_order_code") is not None:
-		out["custom_order_code"] = pp.get("custom_order_code")
-	if pp_meta.has_field("custom_party_code") and pp.get("custom_party_code") not in (None, ""):
-		out["custom_party_code"] = pp.get("custom_party_code")
+	# custom_order_code comes from PP's custom_party_code
+	if pp_meta.has_field("custom_party_code"):
+		out["custom_order_code"] = pp.get("custom_party_code") or ""
+	
+	# Try both custom_label and label fields
+	label_value = ""
+	if pp_meta.has_field("custom_label"):
+		label_value = pp.get("custom_label") or ""
+	if not label_value and pp_meta.has_field("label"):
+		label_value = pp.get("label") or ""
+	if label_value:
+		out["custom_label"] = label_value
+	
+	# Calculate custom_total_planned_qty from WO sum
+	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
+	
+	frappe.logger().info(f"[get_production_plan_details] PP {production_plan}: custom_order_code={out.get('custom_order_code')}, custom_label={out.get('custom_label')}, custom_total_planned_qty={out.get('custom_total_planned_qty')}")
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True
@@ -2297,9 +2385,10 @@ def spr_apply_bundle_packaging_for_job_width(
 	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
 	bundle_net = round(avg_n * float(no_of_packaging), 2)
 
-	comb = _cstr(getattr(sj, "combination", None))
+	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
+	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
 	bs = {
-		"combination": comb or None,
+		"combination": comb_calculated,
 		"rolls_per_bundle": no_of_packaging,
 		"single_roll_gross_weight_kg": single_gross,
 		"sticker_width": total_width_inch,

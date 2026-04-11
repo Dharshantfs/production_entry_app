@@ -9160,6 +9160,27 @@ def create_mix_spr(date_key, mix_data):
     # Sync mix name to order code header if available
     if mix_data and len(mix_data) > 0:
         doc.custom_order_code = mix_data[0].get("mixName")
+        
+        # Try to fetch label from Production Plan
+        pp_name = mix_data[0].get("production_plan")
+        if pp_name and frappe.db.exists("Production Plan", pp_name):
+            try:
+                pp = frappe.get_doc("Production Plan", pp_name)
+                pp_meta = frappe.get_meta("Production Plan")
+                # Try custom_label first, then fallback to label
+                label_value = ""
+                if pp_meta.has_field("custom_label"):
+                    label_value = pp.get("custom_label") or ""
+                if not label_value and pp_meta.has_field("label"):
+                    label_value = pp.get("label") or ""
+                if label_value:
+                    doc.custom_label = label_value
+                    frappe.logger().info(f"[create_mix_spr] Set custom_label={label_value} from PP {pp_name}")
+            except Exception as e:
+                frappe.logger().warning(f"[create_mix_spr] Could not fetch label from PP {pp_name}: {e}")
+        # Also try to fetch label from mix data if available
+        elif mix_data[0].get("custom_label"):
+            doc.custom_label = mix_data[0].get("custom_label")
 
     # Map mix data to shaft jobs
     for i, mix in enumerate(mix_data):
@@ -10052,6 +10073,17 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         
         spr.custom_order_code = parent_sheet.party_code or ""
         spr.customer = pp.customer or parent_sheet.customer or ""
+        
+        # Fetch label from Production Plan (with fallback logic)
+        pp_meta = frappe.get_meta("Production Plan")
+        label_value = ""
+        if pp_meta.has_field("custom_label"):
+            label_value = pp.get("custom_label") or ""
+        if not label_value and pp_meta.has_field("label"):
+            label_value = pp.get("label") or ""
+        if label_value:
+            spr.custom_label = label_value
+            frappe.logger().info(f"[create_spr_from_psi] Set custom_label={label_value} from PP {pp_id}")
         
         def pick_value(source, keys, default=None):
             for k in keys:

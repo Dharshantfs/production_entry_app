@@ -76,7 +76,7 @@ def _spr_length_meters(spr_row) -> float | None:
 		return None
 	for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	try:
 		spi_meta = frappe.get_meta("Shaft Production Run Item")
@@ -86,13 +86,13 @@ def _spr_length_meters(spr_row) -> float | None:
 			lab = (df.label or "").lower()
 			if "produced" in lab and "length" in lab:
 				v = _spr_row_get(spr_row, df.fieldname)
-				if v is not None:
+				if v is not None and flt(v) > 0:
 					return flt(v)
 	except Exception:
 		pass
 	for key in ("meter_roll", "ordered_length", "custom_ordered_length"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	return None
 
@@ -141,11 +141,44 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 
 
 def _effective_weight_kg_for_produced_gsm(row) -> float:
-	"""Prefer net weight; if not entered yet, use gross (same rule as desk JS spr_update_produced_gsm)."""
-	nw = flt(getattr(row, "net_weight", None))
-	if nw > 0:
-		return nw
-	return flt(getattr(row, "gross_weight", None))
+	"""Strictly use net weight for totals per request."""
+	return flt(getattr(row, "net_weight", None))
+
+
+def _sum_weight_expression(v) -> float:
+	"""Parse numeric or '+' separated string weights such as '89.61 + 6.2'."""
+	if v is None:
+		return 0.0
+	if isinstance(v, (int, float)):
+		return flt(v)
+	s = _cstr(v)
+	if not s:
+		return 0.0
+	total = 0.0
+	for part in re.split(r"\s*\+\s*", s):
+		part = part.strip()
+		if not part:
+			continue
+		m = re.search(r"(\d+(?:\.\d+)?)", part.replace(",", ""))
+		if m:
+			total += flt(m.group(1))
+	return total
+
+
+def _planned_qty_from_job_rows(rows: list[dict] | None) -> float:
+	if not rows:
+		return 0.0
+	total = 0.0
+	for r in rows:
+		if not isinstance(r, dict):
+			continue
+		w = _sum_weight_expression(r.get("total_weight"))
+		if w <= 0:
+			w = _sum_weight_expression(r.get("net_weight"))
+		if w <= 0:
+			w = _sum_weight_expression(r.get("planned_qty"))
+		total += flt(w)
+	return flt(total)
 
 
 def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
@@ -157,6 +190,61 @@ def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
 	if den <= 0:
 		return 0.0
 	return round((wgt * 10000.0) / den, 2)
+
+
+def _production_plan_total_planned_qty(production_plan: str) -> float:
+	"""Resolve planned KG from Production Plan fields, then fall back to linked Work Orders sum."""
+	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
+		return 0.0
+
+	try:
+		wo_qty = flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(wo.qty), 0)
+				FROM `tabWork Order` wo
+				WHERE wo.production_plan = %(pp)s
+				  AND wo.docstatus < 2
+				""",
+				{"pp": production_plan},
+			)[0][0]
+		)
+		frappe.logger().info(f"[_production_plan_total_planned_qty] {production_plan}: WO qty sum = {wo_qty}")
+		if wo_qty > 0:
+			return wo_qty
+	except Exception as e:
+		frappe.logger().error(f"[_production_plan_total_planned_qty] Error fetching WO sum for {production_plan}: {e}")
+		pass
+
+	try:
+		custom_sd = _build_shaft_jobs_from_custom_shaft_details(production_plan)
+		planned = _planned_qty_from_job_rows(custom_sd)
+		if planned > 0:
+			return planned
+	except Exception:
+		pass
+
+	try:
+		detailed = _build_shaft_jobs_from_pp_details(production_plan)
+		planned = _planned_qty_from_job_rows(detailed)
+		if planned > 0:
+			return planned
+	except Exception:
+		pass
+
+	# Final fallback to direct PP fields
+	try:
+		pp = frappe.get_doc("Production Plan", production_plan)
+		pp_meta = frappe.get_meta("Production Plan")
+		for fn in ("custom_total_planned_qty", "total_planned_qty", "planned_qty", "qty"):
+			if pp_meta.has_field(fn):
+				v = flt(pp.get(fn))
+				if v > 0:
+					return v
+	except Exception:
+		pass
+		
+	return 0.0
 
 
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
@@ -550,11 +638,75 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 
 
 class ShaftProductionRun(Document):
+	TOLERANCE_PERCENT = 5.0
+
 	def validate(self):
+		self.sync_planned_qty_from_production_plan()
+		self.recalculate_total_produced_weight()
 		self.sync_shaft_job_work_orders_from_plan()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+
+	def sync_planned_qty_from_production_plan(self):
+		pp = _cstr(self.get("production_plan"))
+		if not pp:
+			return
+		planned = _production_plan_total_planned_qty(pp)
+		if planned > 0:
+			self.custom_total_planned_qty = planned
+
+	def recalculate_total_produced_weight(self):
+		self.total_produced_weight = sum(
+			_effective_weight_kg_for_produced_gsm(row) for row in (self.items or [])
+		)
+
+	def _planned_weight_for_tolerance(self) -> float:
+		return flt(self.get("custom_total_planned_qty"))
+
+	def _produced_weight_for_tolerance(self) -> float:
+		# Prefer document summary total; fallback to roll-wise effective weight.
+		total = flt(self.get("total_produced_weight"))
+		if total > 0:
+			return total
+		return sum(_effective_weight_kg_for_produced_gsm(row) for row in (self.items or []))
+
+	def _weight_variance_percent(self) -> float:
+		planned = self._planned_weight_for_tolerance()
+		if planned <= 0:
+			return 0.0
+		produced = self._produced_weight_for_tolerance()
+		return abs(produced - planned) * 100.0 / planned
+
+	def validate_submit_tolerance(self):
+		planned = self._planned_weight_for_tolerance()
+		if planned <= 0:
+			return
+
+		produced = self._produced_weight_for_tolerance()
+		variance_pct = self._weight_variance_percent()
+		tolerance_pct = flt(self.TOLERANCE_PERCENT)
+
+		if variance_pct <= tolerance_pct:
+			return
+
+		override_ok = cint(self.get("tolerance_override_approved")) == 1
+		reason = _cstr(self.get("tolerance_override_reason"))
+		if override_ok and reason:
+			return
+
+		frappe.throw(
+			_(
+				"Weight variance is {0}% (Planned: {1} KG, Produced: {2} KG), above allowed tolerance of {3}%. "
+				"To submit, enable Tolerance Override Approved and enter Tolerance Override Reason."
+			).format(
+				flt(variance_pct).__round__(2),
+				flt(planned).__round__(2),
+				flt(produced).__round__(2),
+				flt(tolerance_pct).__round__(2),
+			),
+			title=_("Tolerance Check"),
+		)
 
 	def sync_shaft_job_work_orders_from_plan(self):
 		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
@@ -619,6 +771,7 @@ class ShaftProductionRun(Document):
 			row.produced_gsm = compute_produced_gsm(wgt, row.width_inch, ln)
 
 	def on_submit(self):
+		self.validate_submit_tolerance()
 		self.sync_batch_custom_fields()
 		self.create_manufacturing_stock_entries()
 		self.update_work_order_statuses()
@@ -1071,10 +1224,23 @@ def get_production_plan_details(production_plan):
 		"customer": pp.get("customer"),
 		"custom_unit": pp.get("custom_unit"),
 	}
-	if pp_meta.has_field("custom_order_code") and pp.get("custom_order_code") is not None:
-		out["custom_order_code"] = pp.get("custom_order_code")
-	if pp_meta.has_field("custom_party_code") and pp.get("custom_party_code") not in (None, ""):
-		out["custom_party_code"] = pp.get("custom_party_code")
+	# custom_order_code comes from PP's custom_party_code
+	if pp_meta.has_field("custom_party_code"):
+		out["custom_order_code"] = pp.get("custom_party_code") or ""
+	
+	# Try both custom_label and label fields
+	label_value = ""
+	if pp_meta.has_field("custom_label"):
+		label_value = pp.get("custom_label") or ""
+	if not label_value and pp_meta.has_field("label"):
+		label_value = pp.get("label") or ""
+	if label_value:
+		out["custom_label"] = label_value
+	
+	# Calculate custom_total_planned_qty from WO sum
+	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
+	
+	frappe.logger().info(f"[get_production_plan_details] PP {production_plan}: custom_order_code={out.get('custom_order_code')}, custom_label={out.get('custom_label')}, custom_total_planned_qty={out.get('custom_total_planned_qty')}")
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True
@@ -1089,7 +1255,7 @@ def get_production_plan_wo_summary(production_plan):
 	"""Work Orders linked to this PP: status, order qty, pending qty — for desk popup after PP is set."""
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
 		return []
-	return frappe.db.sql(
+	result = frappe.db.sql(
 		"""
 		SELECT
 			wo.name AS work_order,
@@ -1104,6 +1270,10 @@ def get_production_plan_wo_summary(production_plan):
 		{"pp": production_plan},
 		as_dict=True,
 	)
+	frappe.logger().info(f"[WO SUMMARY] Production Plan: {production_plan}, Found {len(result)} WOs")
+	for row in result:
+		frappe.logger().info(f"  WO: {row.get('work_order')}, order_qty: {row.get('order_qty')}, pending_qty: {row.get('pending_qty')}")
+	return result
 
 
 def _count_combination_segments(combination) -> int:
@@ -1314,6 +1484,15 @@ def get_job_rows_for_production_plan(production_plan):
 		if job_meta.has_field("work_orders") and wos:
 			row["work_orders"] = ", ".join(w["name"] for w in wos)
 		out.append(row)
+		
+	# Fallback: fill in party_code from Production Plan's custom_party_code if missing in jobs
+	if out:
+		pp_party_code = frappe.db.get_value("Production Plan", production_plan, "custom_party_code")
+		if pp_party_code and job_meta.has_field("party_code"):
+			for row in out:
+				if not row.get("party_code"):
+					row["party_code"] = pp_party_code
+					
 	return out
 
 

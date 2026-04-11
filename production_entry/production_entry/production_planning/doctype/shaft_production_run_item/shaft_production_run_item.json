@@ -109,8 +109,7 @@
   {
    "fieldname": "net_weight",
    "fieldtype": "Float",
-   "label": "Net Weight",
-   "read_only": 1
+   "label": "Net Weight"
   },
   {
    "fieldname": "produced_gsm",

@@ -76,7 +76,7 @@ def _spr_length_meters(spr_row) -> float | None:
 		return None
 	for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	try:
 		spi_meta = frappe.get_meta("Shaft Production Run Item")
@@ -86,13 +86,13 @@ def _spr_length_meters(spr_row) -> float | None:
 			lab = (df.label or "").lower()
 			if "produced" in lab and "length" in lab:
 				v = _spr_row_get(spr_row, df.fieldname)
-				if v is not None:
+				if v is not None and flt(v) > 0:
 					return flt(v)
 	except Exception:
 		pass
 	for key in ("meter_roll", "ordered_length", "custom_ordered_length"):
 		v = _spr_row_get(spr_row, key)
-		if v is not None:
+		if v is not None and flt(v) > 0:
 			return flt(v)
 	return None
 
@@ -1122,10 +1122,22 @@ def get_production_plan_details(production_plan):
 		"customer": pp.get("customer"),
 		"custom_unit": pp.get("custom_unit"),
 	}
-	if pp_meta.has_field("custom_order_code") and pp.get("custom_order_code") is not None:
-		out["custom_order_code"] = pp.get("custom_order_code")
-	if pp_meta.has_field("custom_party_code") and pp.get("custom_party_code") not in (None, ""):
-		out["custom_party_code"] = pp.get("custom_party_code")
+	# custom_order_code comes from PP's custom_party_code
+	if pp_meta.has_field("custom_party_code"):
+		out["custom_order_code"] = pp.get("custom_party_code") or ""
+	
+	# Try both custom_label and label fields
+	label_value = ""
+	if pp_meta.has_field("custom_label"):
+		label_value = pp.get("custom_label") or ""
+	if not label_value and pp_meta.has_field("label"):
+		label_value = pp.get("label") or ""
+	if label_value:
+		out["custom_label"] = label_value
+	
+	# Calculate custom_total_planned_qty from WO sum
+	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
+	
 	if pp.get("sales_order"):
 		so = frappe.db.get_value(
 			"Sales Order", pp.sales_order, ["customer", "transaction_date"], as_dict=True
