@@ -200,12 +200,22 @@ def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
 
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
 	"""Comma-separated WO names for this shaft row (same rules as _get_work_orders_for_spr_job)."""
+	
+	# Extract GSM if available
+	job_gsm = None
+	try:
+		if m.get("gsm"):
+			job_gsm = int(flt(m.get("gsm")))
+	except Exception:
+		pass
+
 	wos = _resolve_wos_for_pp_job_row(
 		production_plan,
 		ppi=m.get("production_plan_item"),
 		job_id=m.get("job_id"),
 		row_index=idx,
 		combination=m.get("combination"),
+		job_gsm=job_gsm,
 	)
 	return ", ".join(w["name"] for w in wos) if wos else ""
 
