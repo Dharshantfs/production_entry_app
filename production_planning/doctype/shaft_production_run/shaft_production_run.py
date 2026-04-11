@@ -543,8 +543,27 @@ def _resolve_wos_for_pp_job_row(
 	         OR to filter WOs when one PPI has multiple WOs for different GSMs.
 	"""
 	
-	# ✅ PRIORITY: If job_gsm provided, ALWAYS use it (skip combination logic!)
-	# One job with explicit GSM = ONE WO with that GSM
+	# ✅ BEST: If we have PPI (Production Plan Item), use it directly to fetch the correct WO!
+	if ppi:
+		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
+		if wos and len(wos) > 0:
+			# Filter by job_gsm if provided
+			if job_gsm and job_gsm > 0:
+				for wo in wos:
+					try:
+						prod_item = wo.get("production_item")
+						if prod_item:
+							gsm, width = parse_item_code(_cstr(prod_item))
+							if gsm == job_gsm:
+								frappe.logger().info(f"[RESOLVE] ✅ PPI {ppi} + job_gsm {job_gsm} = WO {wo['name']}")
+								return [wo]
+					except Exception:
+						pass
+			# No job_gsm filtering needed, just return first WO
+			frappe.logger().info(f"[RESOLVE] ✅ PPI {ppi} = WO {wos[0]['name']}")
+			return [wos[0]]
+	
+	# ✅ FALLBACK: If no PPI, try job_gsm matching across all WOs
 	if job_gsm and job_gsm > 0:
 		all_wos = _get_all_work_orders_for_production_plan(pp_name)
 		for wo in all_wos:
@@ -554,11 +573,10 @@ def _resolve_wos_for_pp_job_row(
 					gsm, width = parse_item_code(_cstr(prod_item))
 					if gsm == job_gsm:
 						frappe.logger().info(f"[RESOLVE] ✅ job_gsm={job_gsm} FOUND WO {wo['name']}")
-						return [wo]  # ✅ RETURN SINGLE WO, DONE!
+						return [wo]
 			except Exception:
 				pass
-		# No match found
-		frappe.logger().warning(f"[RESOLVE] ❌ job_gsm={job_gsm} NOT FOUND in any WO!")
+		frappe.logger().warning(f"[RESOLVE] ❌ job_gsm={job_gsm} NOT FOUND!")
 		return []
 	
 	# ✅ SECONDARY: If job_gsm NOT provided, try combination logic
@@ -570,39 +588,21 @@ def _resolve_wos_for_pp_job_row(
 			if matched:
 				return matched
 	
-	# ✅ FALLBACK: If job_gsm NOT set, extract it from first WO and return THAT ONE
-	if ppi:
-		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos and len(wos) > 0:
-			try:
-				# Extract GSM from first WO - use it as THE GSM for this job
-				first_wo = wos[0]
-				prod_item = first_wo.get("production_item")
-				if prod_item:
-					gsm, width = parse_item_code(_cstr(prod_item))
-					if gsm > 0:
-						frappe.logger().info(f"[RESOLVE] Extracted GSM={gsm} from WO {first_wo['name']}")
-						return [first_wo]  # ✅ RETURN FIRST WO ONLY!
-			except Exception:
-				pass
-			# Fallback to first WO
-			frappe.logger().warning(f"[RESOLVE] Returning first WO {wos[0].get('name')} only")
-			return [wos[0]]
+	# ✅ FALLBACK: Last resort - use other methods
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
 		if wos:
-			return [wos[0]]  # ✅ Return FIRST WO ONLY
+			return [wos[0]]
 	ord_ppi = _ordered_production_plan_items(pp_name)
 	if row_index is not None and ord_ppi:
 		if 0 <= row_index < len(ord_ppi):
 			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
 			if wos:
-				return [wos[0]]  # ✅ Return FIRST WO ONLY
-		# Several shaft jobs share one Production Plan Item / one WO — reuse that WO for every job row.
+				return [wos[0]]
 		if len(ord_ppi) == 1:
 			wos = get_work_orders_for_job(pp_name, ord_ppi[0])
 			if wos:
-				return [wos[0]]  # ✅ Return FIRST WO ONLY
+				return [wos[0]]
 	all_wos = _get_all_work_orders_for_production_plan(pp_name)
 	if not all_wos:
 		return []
