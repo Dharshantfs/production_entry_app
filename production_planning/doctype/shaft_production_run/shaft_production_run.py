@@ -140,58 +140,6 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 	return t.isalnum()
 
 
-def _effective_weight_kg_for_produced_gsm(row) -> float:
-	"""Strictly use net weight for totals per request."""
-	return flt(getattr(row, "net_weight", None))
-
-
-def _sum_weight_expression(v) -> float:
-	"""Parse numeric or '+' separated string weights such as '89.61 + 6.2'."""
-	if v is None:
-		return 0.0
-	if isinstance(v, (int, float)):
-		return flt(v)
-	s = _cstr(v)
-	if not s:
-		return 0.0
-	total = 0.0
-	for part in re.split(r"\s*\+\s*", s):
-		part = part.strip()
-		if not part:
-			continue
-		m = re.search(r"(\d+(?:\.\d+)?)", part.replace(",", ""))
-		if m:
-			total += flt(m.group(1))
-	return total
-
-
-def _planned_qty_from_job_rows(rows: list[dict] | None) -> float:
-	if not rows:
-		return 0.0
-	total = 0.0
-	for r in rows:
-		if not isinstance(r, dict):
-			continue
-		w = _sum_weight_expression(r.get("total_weight"))
-		if w <= 0:
-			w = _sum_weight_expression(r.get("net_weight"))
-		if w <= 0:
-			w = _sum_weight_expression(r.get("planned_qty"))
-		total += flt(w)
-	return flt(total)
-
-
-def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
-	"""Roll line GSM from actuals: (weight_kg * 10000) / (width_inch * length_m * 0.254)."""
-	wgt = flt(weight_kg)
-	w = flt(width_inch)
-	ln = flt(length_m)
-	den = w * ln * 0.254
-	if den <= 0:
-		return 0.0
-	return round((wgt * 10000.0) / den, 2)
-
-
 def _production_plan_total_planned_qty(production_plan: str) -> float:
 	"""Resolve planned KG from Production Plan fields, then fall back to linked Work Orders sum."""
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
@@ -216,22 +164,6 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 		frappe.logger().error(f"[_production_plan_total_planned_qty] Error fetching WO sum for {production_plan}: {e}")
 		pass
 
-	try:
-		custom_sd = _build_shaft_jobs_from_custom_shaft_details(production_plan)
-		planned = _planned_qty_from_job_rows(custom_sd)
-		if planned > 0:
-			return planned
-	except Exception:
-		pass
-
-	try:
-		detailed = _build_shaft_jobs_from_pp_details(production_plan)
-		planned = _planned_qty_from_job_rows(detailed)
-		if planned > 0:
-			return planned
-	except Exception:
-		pass
-
 	# Final fallback to direct PP fields
 	try:
 		pp = frappe.get_doc("Production Plan", production_plan)
@@ -245,6 +177,25 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 		pass
 		
 	return 0.0
+
+
+def _effective_weight_kg_for_produced_gsm(row) -> float:
+	"""Prefer net weight; if not entered yet, use gross (same rule as desk JS spr_update_produced_gsm)."""
+	nw = flt(getattr(row, "net_weight", None))
+	if nw > 0:
+		return nw
+	return flt(getattr(row, "gross_weight", None))
+
+
+def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
+	"""Roll line GSM from actuals: (weight_kg * 10000) / (width_inch * length_m * 0.254)."""
+	wgt = flt(weight_kg)
+	w = flt(width_inch)
+	ln = flt(length_m)
+	den = w * ln * 0.254
+	if den <= 0:
+		return 0.0
+	return round((wgt * 10000.0) / den, 2)
 
 
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
@@ -638,75 +589,11 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 
 
 class ShaftProductionRun(Document):
-	TOLERANCE_PERCENT = 5.0
-
 	def validate(self):
-		self.sync_planned_qty_from_production_plan()
-		self.recalculate_total_produced_weight()
 		self.sync_shaft_job_work_orders_from_plan()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
-
-	def sync_planned_qty_from_production_plan(self):
-		pp = _cstr(self.get("production_plan"))
-		if not pp:
-			return
-		planned = _production_plan_total_planned_qty(pp)
-		if planned > 0:
-			self.custom_total_planned_qty = planned
-
-	def recalculate_total_produced_weight(self):
-		self.total_produced_weight = sum(
-			_effective_weight_kg_for_produced_gsm(row) for row in (self.items or [])
-		)
-
-	def _planned_weight_for_tolerance(self) -> float:
-		return flt(self.get("custom_total_planned_qty"))
-
-	def _produced_weight_for_tolerance(self) -> float:
-		# Prefer document summary total; fallback to roll-wise effective weight.
-		total = flt(self.get("total_produced_weight"))
-		if total > 0:
-			return total
-		return sum(_effective_weight_kg_for_produced_gsm(row) for row in (self.items or []))
-
-	def _weight_variance_percent(self) -> float:
-		planned = self._planned_weight_for_tolerance()
-		if planned <= 0:
-			return 0.0
-		produced = self._produced_weight_for_tolerance()
-		return abs(produced - planned) * 100.0 / planned
-
-	def validate_submit_tolerance(self):
-		planned = self._planned_weight_for_tolerance()
-		if planned <= 0:
-			return
-
-		produced = self._produced_weight_for_tolerance()
-		variance_pct = self._weight_variance_percent()
-		tolerance_pct = flt(self.TOLERANCE_PERCENT)
-
-		if variance_pct <= tolerance_pct:
-			return
-
-		override_ok = cint(self.get("tolerance_override_approved")) == 1
-		reason = _cstr(self.get("tolerance_override_reason"))
-		if override_ok and reason:
-			return
-
-		frappe.throw(
-			_(
-				"Weight variance is {0}% (Planned: {1} KG, Produced: {2} KG), above allowed tolerance of {3}%. "
-				"To submit, enable Tolerance Override Approved and enter Tolerance Override Reason."
-			).format(
-				flt(variance_pct).__round__(2),
-				flt(planned).__round__(2),
-				flt(produced).__round__(2),
-				flt(tolerance_pct).__round__(2),
-			),
-			title=_("Tolerance Check"),
-		)
 
 	def sync_shaft_job_work_orders_from_plan(self):
 		"""Fill Available Jobs.work_orders from Production Plan (comma-separated WOs per combination segment)."""
@@ -763,7 +650,7 @@ class ShaftProductionRun(Document):
 			return
 		for row in self.items or []:
 			ln = _spr_length_meters(row)
-			if ln is None:
+			if ln is None or ln <= 0:
 				ln = flt(getattr(row, "meter_roll", None))
 			else:
 				ln = flt(ln)
@@ -771,13 +658,48 @@ class ShaftProductionRun(Document):
 			row.produced_gsm = compute_produced_gsm(wgt, row.width_inch, ln)
 
 	def on_submit(self):
-		self.validate_submit_tolerance()
 		self.sync_batch_custom_fields()
 		self.create_manufacturing_stock_entries()
 		self.update_work_order_statuses()
 
 	def on_cancel(self):
 		self.cancel_manufacturing_stock_entries()
+
+	def on_trash(self):
+		"""Remove stale row links so deleted SPR is not shown as Continue Entry on Production Table."""
+		try:
+			if frappe.db.exists("DocType", "Planning Table") and frappe.db.has_column("Planning Table", "spr_name"):
+				frappe.db.sql(
+					"""
+					UPDATE `tabPlanning Table`
+					SET spr_name = ''
+					WHERE IFNULL(spr_name, '') = %s
+					""",
+					(self.name,),
+				)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Planning Table spr_name")
+
+		# Also remove this SPR from Production Plan link list to avoid stale PP-level references elsewhere.
+		try:
+			if not frappe.db.has_column("Production Plan", "custom_shaft_production_run_id"):
+				return
+			rows = frappe.db.sql(
+				"""
+				SELECT name, custom_shaft_production_run_id
+				FROM `tabProduction Plan`
+				WHERE IFNULL(custom_shaft_production_run_id, '') != ''
+				""",
+				as_dict=True,
+			)
+			for r in rows or []:
+				raw = str(r.get("custom_shaft_production_run_id") or "")
+				parts = [p.strip() for p in raw.split(",") if p and p.strip()]
+				filtered = [p for p in parts if p != self.name]
+				if filtered != parts:
+					frappe.db.set_value("Production Plan", r["name"], "custom_shaft_production_run_id", ", ".join(filtered))
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Production Plan links")
 
 	def _unit_digit(self) -> int:
 		u = (self.get("custom_unit") or "").strip()
@@ -1265,7 +1187,7 @@ def get_production_plan_wo_summary(production_plan):
 	"""Work Orders linked to this PP: status, order qty, pending qty — for desk popup after PP is set."""
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
 		return []
-	result = frappe.db.sql(
+	return frappe.db.sql(
 		"""
 		SELECT
 			wo.name AS work_order,
@@ -1280,10 +1202,6 @@ def get_production_plan_wo_summary(production_plan):
 		{"pp": production_plan},
 		as_dict=True,
 	)
-	frappe.logger().info(f"[WO SUMMARY] Production Plan: {production_plan}, Found {len(result)} WOs")
-	for row in result:
-		frappe.logger().info(f"  WO: {row.get('work_order')}, order_qty: {row.get('order_qty')}, pending_qty: {row.get('pending_qty')}")
-	return result
 
 
 def _count_combination_segments(combination) -> int:
@@ -1494,15 +1412,6 @@ def get_job_rows_for_production_plan(production_plan):
 		if job_meta.has_field("work_orders") and wos:
 			row["work_orders"] = ", ".join(w["name"] for w in wos)
 		out.append(row)
-		
-	# Fallback: fill in party_code from Production Plan's custom_party_code if missing in jobs
-	if out:
-		pp_party_code = frappe.db.get_value("Production Plan", production_plan, "custom_party_code")
-		if pp_party_code and job_meta.has_field("party_code"):
-			for row in out:
-				if not row.get("party_code"):
-					row["party_code"] = pp_party_code
-					
 	return out
 
 
@@ -2274,7 +2183,7 @@ def spr_create_manual_job(
 def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 	"""
 	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
-	items: list of { item_code, production_plan_item, wo_qty, meter_roll } (wo_qty in Kg, meter_roll in meters).
+	items: list of { item_code, production_plan_item, wo_qty } (wo_qty = manufacturing qty in Kg, e.g. net/shaft × shafts).
 	"""
 	no_of_shafts = cint(no_of_shafts)
 	if no_of_shafts < 1:
@@ -2293,7 +2202,6 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 	qtys: list[float] = []
 	widths_list: list[float] = []
 	item_codes_list: list[str] = []
-	meter_rolls: list[float] = []
 	ppi_rows = []
 
 	for raw in items:
@@ -2302,11 +2210,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		item_code = _cstr(raw.get("item_code"))
 		production_plan_item = _cstr(raw.get("production_plan_item"))
 		qty = flt(raw.get("wo_qty"))
-		meter_roll = flt(raw.get("meter_roll"))
 		if not item_code or not production_plan_item or qty <= 0:
 			frappe.throw(_("Each line needs item, Production Plan row, and Work Order qty greater than zero"))
-		if meter_roll <= 0:
-			frappe.throw(_("Meter/Roll must be greater than zero for {0}").format(item_code))
 		ppi_row = None
 		for r in pp.get("po_items") or []:
 			if _cstr(r.name) == production_plan_item and _cstr(r.item_code) == item_code:
@@ -2328,7 +2233,6 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 					)
 		wo_names.append(wo_name)
 		qtys.append(qty)
-		meter_rolls.append(meter_roll)
 		item_codes_list.append(item_code)
 		ppi_rows.append(ppi_row)
 		_gsm, w_in = parse_item_code(item_code)
@@ -2362,7 +2266,6 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 		"no_of_shafts": no_of_shafts,
 		"work_orders": ",".join(wo_names),
 		"total_weight": total_qty,
-		"meter_roll_mtrs": sum(meter_rolls) / len(meter_rolls) if meter_rolls else 500,
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
 	if meta.has_field("gsm") and gsm:
@@ -2484,81 +2387,18 @@ def spr_apply_bundle_packaging_for_job_width(
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(width_inch * float(no_of_packaging), 4)
 
-	# Pre-calculate net_weight for all matching rolls (since they all get same gross_weight)
-	# This ensures net_weight displays immediately after reload
-	first_roll = matching[0] if matching else None
-	single_net = single_gross  # Default
-	
-	# Calculate single_net using core weight logic
-	if first_roll:
-		width = flt(first_roll.width_inch)
-		gw = single_gross
-		
-		if width > 0 and gw > 0:
-			# Calculate raw weight using GSM
-			gsm_val = flt(getattr(first_roll, 'gsm', None)) or flt(getattr(first_roll, 'sticker_gsm', None)) or 90
-			width_in_meter = width * 0.0254
-			raw_weight = (gsm_val * width_in_meter * gw) / 1000.0
-			
-			# Standard widths: [63, 85, 90, 118, 126]
-			standard_widths = [63, 85, 90, 118, 126]
-			is_standard = any(abs(width - w) < 0.01 for w in standard_widths)
-			
-			core_weight = 0
-			if is_standard:
-				base_weight_of_core = 1.3
-				if 50 <= raw_weight <= 100:
-					base_weight_of_core = 1.8
-				elif raw_weight > 100:
-					base_weight_of_core = 2.5
-				numeric_core_width = float(getattr(first_roll, 'custom_core_width_mm', None)) or 1600
-				core_weight = (base_weight_of_core / 1600.0) * numeric_core_width
-			else:
-				# Non-standard width proration
-				if width < 63:
-					core_width, prorate = 63, 1.30
-				elif width < 85:
-					core_width, prorate = 85, 1.75
-				elif width < 90:
-					core_width, prorate = 90, 1.86
-				elif width < 118:
-					core_width, prorate = 118, 2.43
-				else:
-					core_width, prorate = 126, 2.60
-				core_weight = (width / float(core_width)) * prorate
-			
-			# Calculate net_weight for single roll
-			calc_net = gw - core_weight
-			single_net = calc_net if calc_net > 0 else gw
-	
-	bundle_net = round(single_net * float(no_of_packaging), 2)
-	
-	# Set both gross_weight AND net_weight on all matching rolls
 	for it in matching:
 		it.gross_weight = single_gross
-		it.net_weight = single_net  # Set net_weight so it displays immediately after reload
-		
-		# Also calculate produced_gsm if meter_roll is present
-		if single_net > 0 and width_inch > 0 and flt(getattr(it, 'meter_roll', None)) > 0:
-			mr = flt(it.meter_roll)
-			produced_gsm = (single_net * 1000) / (width_inch * mr * 0.0254)
-			it.produced_gsm = round(produced_gsm, 2)
+		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
+		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	# Format combination: "39" x 4 (width x packaging_count)
-	width_str = str(int(width_inch)) if width_inch == int(width_inch) else str(width_inch)
-	comb_str = '"{0}" x {1}'.format(width_str, int(no_of_packaging))
-	
-	# Clear old bundle stickers for this job+width combination BEFORE adding new ones
-	spr.bundle_stickers = [bs for bs in (spr.bundle_stickers or [])
-		if not (
-			frappe.get_meta("Bundle Stickers").has_field("job_id") and 
-			getattr(bs, "job_id", None) == job_id and
-			getattr(bs, "sticker_width", None) == total_width_inch
-		)
-	]
-	
+	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
+	bundle_net = round(avg_n * float(no_of_packaging), 2)
+
+	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
+	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
 	bs = {
-		"combination": comb_str,
+		"combination": comb_calculated,
 		"rolls_per_bundle": no_of_packaging,
 		"single_roll_gross_weight_kg": single_gross,
 		"sticker_width": total_width_inch,
@@ -2569,20 +2409,6 @@ def spr_apply_bundle_packaging_for_job_width(
 		bs["job_id"] = job_id or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
-	
-	# FORCE UPDATE: Use db_set to explicitly update each matching row's values in database
-	# This bypasses Frappe's child table modification detection
-	for it in matching:
-		frappe.db.set_value(
-			"Shaft Production Run Item",
-			it.name,
-			{
-				"gross_weight": single_gross,
-				"net_weight": single_net,
-				"produced_gsm": it.produced_gsm or 0,
-			},
-			update_modified=False
-		)
 
 	return {
 		"updated_rolls": len(matching),
