@@ -427,8 +427,9 @@ def _parse_combination_widths_inches(combination) -> list[float]:
 def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -> list | None:
 	"""
 	For multi-width combinations (e.g. 39\" + 24\"), return one Work Order per segment by matching
-	production_item width (from item code) to each segment width. Distinct WOs only.
+	production_item width (from ITEM NAME, NOT item code) to each segment width. Distinct WOs only.
 	"""
+	import re
 	comb = _cstr(combination)
 	if not comb:
 		return None
@@ -442,6 +443,25 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 	all_wos = _get_all_work_orders_for_production_plan(pp_name)
 	if not all_wos or len(all_wos) < segs:
 		return None
+	
+	# ✅ Build WO → WIDTH map using ITEM NAME (not broken item code parsing)
+	wo_width_map = {}
+	for wo in all_wos:
+		wo_name = _cstr(wo.get("name"))
+		try:
+			production_item = wo.get("production_item")
+			if not production_item:
+				continue
+			item_name = frappe.db.get_value("Item", production_item, "item_name") or ""
+			# Extract WIDTH from Item Name: "...63.0" or "...63.5"
+			width_match = re.search(r'-\s*([\d.]+)', str(item_name))
+			if width_match:
+				w_in = flt(width_match.group(1))
+				wo_width_map[wo_name] = w_in
+				frappe.logger().info(f"[COMBO] WO {wo_name} = width {w_in}\" (from item name)")
+		except Exception as e:
+			frappe.logger().warning(f"[COMBO ERROR] Could not get width for WO {wo_name}: {str(e)}")
+	
 	used: set[str] = set()
 	out: list = []
 	tol = 1.25
@@ -450,9 +470,12 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 		best_d = 999.0
 		for wo in all_wos:
 			nm = _cstr(wo.get("name"))
-			if nm in used:
-				continue
-			_, w_in = parse_item_code(_cstr(wo.get("production_item")))
+			# ✅ ALLOW REUSE: Don't skip already-used WOs for same-width segments (e.g., 63+63)
+			# if nm in used:
+			#	continue
+			
+			# ✅ Use Item Name-extracted width, not item code parsing
+			w_in = wo_width_map.get(nm, 0)
 			if w_in <= 0:
 				continue
 			d = abs(flt(w_in) - flt(target_w))
@@ -460,9 +483,12 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 				best_d = d
 				best = wo
 		if best is None or best_d > tol:
+			frappe.logger().info(f"[COMBO] No WO found for target width {target_w}\" (tol={tol}, best_d={best_d})")
 			return None
-		used.add(_cstr(best.get("name")))
+		# ✅ ALLOW REUSE: Don't mark as used - same WO can be reused for same-width segments
+		# used.add(_cstr(best.get("name")))
 		out.append(best)
+		frappe.logger().info(f"[COMBO] Segment width {target_w}\" → WO {best.get('name')}")
 	return out if len(out) == segs else None
 
 
