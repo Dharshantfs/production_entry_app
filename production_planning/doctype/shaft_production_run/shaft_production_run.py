@@ -542,15 +542,9 @@ def _resolve_wos_for_pp_job_row(
 	job_gsm: Extract from job row to match WOs by (GSM, WIDTH) tuple for multi-width combinations,
 	         OR to filter WOs when one PPI has multiple WOs for different GSMs.
 	"""
-	comb = _cstr(combination)
-	if comb:
-		segs = _count_combination_segments(comb)
-		if segs > 1:
-			matched = _match_work_orders_to_combination_segments(pp_name, comb, job_gsm=job_gsm)
-			if matched:
-				return matched
 	
-	# ✅ SIMPLE: For single-width jobs, find WO by matching (GSM from job)
+	# ✅ PRIORITY: If job_gsm provided, ALWAYS use it (skip combination logic!)
+	# One job with explicit GSM = ONE WO with that GSM
 	if job_gsm and job_gsm > 0:
 		all_wos = _get_all_work_orders_for_production_plan(pp_name)
 		for wo in all_wos:
@@ -559,52 +553,56 @@ def _resolve_wos_for_pp_job_row(
 				if prod_item:
 					gsm, width = parse_item_code(_cstr(prod_item))
 					if gsm == job_gsm:
-						frappe.logger().info(f"[RESOLVE] Found WO {wo['name']} for job_gsm {job_gsm}")
-						return [wo]  # ✅ RETURN IMMEDIATELY when found
-			except Exception as e:
-				frappe.logger().warning(f"[RESOLVE] Error parsing WO {wo.get('name')}: {str(e)}")
+						frappe.logger().info(f"[RESOLVE] ✅ job_gsm={job_gsm} FOUND WO {wo['name']}")
+						return [wo]  # ✅ RETURN SINGLE WO, DONE!
+			except Exception:
 				pass
-		# ✅ IMPORTANT: If job_gsm is set but NO WO found, return empty
-		frappe.logger().warning(f"[RESOLVE] job_gsm={job_gsm} set but NO matching WO found in PP {pp_name}!")
+		# No match found
+		frappe.logger().warning(f"[RESOLVE] ❌ job_gsm={job_gsm} NOT FOUND in any WO!")
 		return []
 	
-	# ✅ FALLBACK: If job_gsm NOT set, try to extract it from the FIRST WO's item code
+	# ✅ SECONDARY: If job_gsm NOT provided, try combination logic
+	comb = _cstr(combination)
+	if comb:
+		segs = _count_combination_segments(comb)
+		if segs > 1:
+			matched = _match_work_orders_to_combination_segments(pp_name, comb, job_gsm=job_gsm)
+			if matched:
+				return matched
+	
+	# ✅ FALLBACK: If job_gsm NOT set, extract it from first WO and return THAT ONE
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
 		if wos and len(wos) > 0:
-			# Try to extract GSM from first WO and use it for matching
 			try:
+				# Extract GSM from first WO - use it as THE GSM for this job
 				first_wo = wos[0]
 				prod_item = first_wo.get("production_item")
 				if prod_item:
 					gsm, width = parse_item_code(_cstr(prod_item))
 					if gsm > 0:
-						# Found GSM from WO, now filter to only that GSM
-						frappe.logger().info(f"[RESOLVE] Extracted GSM {gsm} from WO {first_wo['name']}, filtering WOs")
-						filtered = [w for w in wos if _wo_has_gsm(w, gsm)]
-						if filtered:
-							frappe.logger().info(f"[RESOLVE] Filtered WOs by GSM {gsm}: {[w['name'] for w in filtered]}")
-							return filtered
-			except Exception as e:
-				frappe.logger().warning(f"[RESOLVE] Could not extract GSM from first WO: {str(e)}")
-			# If filtering by GSM failed, return first WO only
-			frappe.logger().warning(f"[RESOLVE] Returning first WO only (could not extract GSM)")
+						frappe.logger().info(f"[RESOLVE] Extracted GSM={gsm} from WO {first_wo['name']}")
+						return [first_wo]  # ✅ RETURN FIRST WO ONLY!
+			except Exception:
+				pass
+			# Fallback to first WO
+			frappe.logger().warning(f"[RESOLVE] Returning first WO {wos[0].get('name')} only")
 			return [wos[0]]
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
 		if wos:
-			return wos
+			return [wos[0]]  # ✅ Return FIRST WO ONLY
 	ord_ppi = _ordered_production_plan_items(pp_name)
 	if row_index is not None and ord_ppi:
 		if 0 <= row_index < len(ord_ppi):
 			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
 			if wos:
-				return wos
+				return [wos[0]]  # ✅ Return FIRST WO ONLY
 		# Several shaft jobs share one Production Plan Item / one WO — reuse that WO for every job row.
 		if len(ord_ppi) == 1:
 			wos = get_work_orders_for_job(pp_name, ord_ppi[0])
 			if wos:
-				return wos
+				return [wos[0]]  # ✅ Return FIRST WO ONLY
 	all_wos = _get_all_work_orders_for_production_plan(pp_name)
 	if not all_wos:
 		return []
