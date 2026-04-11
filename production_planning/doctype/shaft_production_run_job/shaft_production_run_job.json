@@ -70,8 +70,7 @@
   {
    "fieldname": "meter_roll_mtrs",
    "fieldtype": "Float",
-   "label": "Meter / Roll (Mtrs)",
-   "read_only": 1
+   "label": "Meter / Roll (Mtrs)"
   },
   {
    "fieldname": "net_weight",
@@ -100,8 +99,7 @@
   {
    "fieldname": "party_code",
    "fieldtype": "Data",
-   "label": "Order Code",
-   "read_only": 1
+   "label": "Order Code"
   },
   {
    "fieldname": "work_orders",

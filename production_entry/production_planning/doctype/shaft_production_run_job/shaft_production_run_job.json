@@ -99,8 +99,7 @@
   {
    "fieldname": "party_code",
    "fieldtype": "Data",
-   "label": "Order Code",
-   "read_only": 1
+   "label": "Order Code"
   },
   {
    "fieldname": "work_orders",

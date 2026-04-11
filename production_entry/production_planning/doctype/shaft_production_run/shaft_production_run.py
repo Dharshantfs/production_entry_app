@@ -2342,6 +2342,15 @@ def spr_get_manual_job_catalog(shaft_production_run):
 	return {"production_plan": pp_name, "company": company, "lines": out}
 
 
+def _format_shaft_combination_inches(width_inch) -> str:
+	"""Combination column text: width in inches (e.g. 78\"). Not item color — used for manual jobs."""
+	w = flt(width_inch)
+	if w <= 0:
+		return ""
+	s = str(int(w)) if w == int(w) else str(w)
+	return f'{s}"'
+
+
 @frappe.whitelist()
 def spr_create_manual_job(
 	shaft_production_run,
@@ -2416,8 +2425,10 @@ def spr_create_manual_job(
 			row["gsm"] = gsm
 	if meta.has_field("quality") and quality:
 		row["quality"] = quality
-	if meta.has_field("combination") and color:
-		row["combination"] = color
+	if meta.has_field("combination"):
+		cb = _format_shaft_combination_inches(width_inch)
+		if cb:
+			row["combination"] = cb
 	if meta.has_field("total_width"):
 		row["total_width"] = width_inch
 	if meta.has_field("manual_items"):
@@ -2531,10 +2542,12 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items):
 	if meta.has_field("quality") and quality:
 		row["quality"] = quality
 	if meta.has_field("combination"):
-		if len(item_codes_list) > 1 and comb_str:
+		if len(widths_list) > 1 and comb_str:
 			row["combination"] = comb_str
-		elif color:
-			row["combination"] = color
+		else:
+			cb = _format_shaft_combination_inches(width_inch_one)
+			if cb:
+				row["combination"] = cb
 	if meta.has_field("total_width"):
 		row["total_width"] = total_w
 	if meta.has_field("manual_items"):
