@@ -426,10 +426,15 @@ def _parse_combination_widths_inches(combination) -> list[float]:
 
 def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -> list | None:
 	"""
-	For multi-width combinations (e.g. 39\" + 24\"), return one Work Order per segment by matching
-	production_item width (from ITEM NAME, NOT item code) to each segment width. Distinct WOs only.
+	For multi-width combinations (e.g. 33\" + 63\" = "33+63" or 63\" + 63\" = "63+63"),
+	match WO by parsing ITEM CODE (source of truth).
+	
+	Item Code format: "1001050010251600"
+	  - Positions [9:12] = GSM (e.g., "025" = 25)
+	  - Positions [12:16] = WIDTH in MM (e.g., "1600" = 1600mm = 63 inches)
+	
+	For "63+63", both segments have same width, so SAME WO is used twice!
 	"""
-	import re
 	comb = _cstr(combination)
 	if not comb:
 		return None
@@ -441,10 +446,10 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 		return None
 	widths = widths[:segs]
 	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	if not all_wos or len(all_wos) < segs:
+	if not all_wos:
 		return None
 	
-	# ✅ Build WO → WIDTH map using ITEM NAME (not broken item code parsing)
+	# ✅ Build WO → WIDTH map using ITEM CODE parsing (SOURCE OF TRUTH)
 	wo_width_map = {}
 	for wo in all_wos:
 		wo_name = _cstr(wo.get("name"))
@@ -452,17 +457,14 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 			production_item = wo.get("production_item")
 			if not production_item:
 				continue
-			item_name = frappe.db.get_value("Item", production_item, "item_name") or ""
-			# Extract WIDTH from Item Name: "...63.0" or "...63.5"
-			width_match = re.search(r'-\s*([\d.]+)', str(item_name))
-			if width_match:
-				w_in = flt(width_match.group(1))
-				wo_width_map[wo_name] = w_in
-				frappe.logger().info(f"[COMBO] WO {wo_name} = width {w_in}\" (from item name)")
+			# ✅ Parse item code (source of truth) to extract GSM and WIDTH
+			gsm, width = parse_item_code(_cstr(production_item))
+			if width > 0:
+				wo_width_map[wo_name] = width
+				frappe.logger().info(f"[COMBO] WO {wo_name} = GSM {gsm}, WIDTH {width}\" (from item code: {production_item})")
 		except Exception as e:
-			frappe.logger().warning(f"[COMBO ERROR] Could not get width for WO {wo_name}: {str(e)}")
+			frappe.logger().warning(f"[COMBO ERROR] Could not parse WO {wo_name}: {str(e)}")
 	
-	used: set[str] = set()
 	out: list = []
 	tol = 1.25
 	for target_w in widths:
@@ -470,11 +472,7 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 		best_d = 999.0
 		for wo in all_wos:
 			nm = _cstr(wo.get("name"))
-			# ✅ ALLOW REUSE: Don't skip already-used WOs for same-width segments (e.g., 63+63)
-			# if nm in used:
-			#	continue
-			
-			# ✅ Use Item Name-extracted width, not item code parsing
+			# ✅ ALLOW REUSE: Same WO can match multiple same-width segments (e.g., 63+63)
 			w_in = wo_width_map.get(nm, 0)
 			if w_in <= 0:
 				continue
@@ -483,12 +481,10 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 				best_d = d
 				best = wo
 		if best is None or best_d > tol:
-			frappe.logger().info(f"[COMBO] No WO found for target width {target_w}\" (tol={tol}, best_d={best_d})")
+			frappe.logger().warning(f"[COMBO] No WO found for width {target_w}\" (tolerance {tol}, best_d {best_d})")
 			return None
-		# ✅ ALLOW REUSE: Don't mark as used - same WO can be reused for same-width segments
-		# used.add(_cstr(best.get("name")))
 		out.append(best)
-		frappe.logger().info(f"[COMBO] Segment width {target_w}\" → WO {best.get('name')}")
+		frappe.logger().info(f"[COMBO] Segment {target_w}\" → WO {best.get('name')}")
 	return out if len(out) == segs else None
 
 
@@ -1474,15 +1470,14 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 
 def _build_gsm_width_to_wo_map_from_item_names(wo_list: list) -> dict:
 	"""
-	✅ Extract GSM and WIDTH from Item Name (HUMAN-READABLE text).
-	NOT from item code (which has width = 0).
+	✅ Extract GSM and WIDTH from Item Code (the source of truth).
+	Item Code format: "1001050010251600"
+	  - Positions [9:12] = GSM (e.g., "025" = 25)
+	  - Positions [12:16] = WIDTH in MM (e.g., "1600" = 1600mm = 63 inches)
 	
-	Item Name format: "FABRIC BRONZE BRIGHT WHITE 90 GSM W - 63.0" ( 1600 MM )"
-	Extract: GSM = 90, WIDTH = 63.0
-	
-	Returns: {(90, 63.0): WO, (90, 63.5): WO, ...}
+	Returns: {(25, 63.0): WO, (90, 63.0): WO, ...}
+	Keeps FIRST occurrence of each (GSM, WIDTH) pair.
 	"""
-	import re
 	gsm_width_to_wo = {}
 	
 	for wo in wo_list:
@@ -1492,38 +1487,20 @@ def _build_gsm_width_to_wo_map_from_item_names(wo_list: list) -> dict:
 				frappe.logger().warning(f"[WO MAP] No production_item for WO {wo['name']}")
 				continue
 			
-			# ✅ Get Item Name (the human-readable text)
-			item_name = frappe.db.get_value("Item", production_item, "item_name")
-			if not item_name:
-				frappe.logger().warning(f"[WO MAP] No item_name for item {production_item}")
-				continue
+			# ✅ Parse item code to get GSM and WIDTH (SOURCE OF TRUTH)
+			gsm, width = parse_item_code(_cstr(production_item))
 			
-			# Example: "FABRIC BRONZE BRIGHT WHITE 90 GSM W - 63.0" ( 1600 MM )"
-			
-			gsm = None
-			width = None
-			
-			# Extract GSM: look for "NN GSM" pattern
-			gsm_match = re.search(r'(\d+)\s*GSM', str(item_name), re.IGNORECASE)
-			if gsm_match:
-				gsm = int(gsm_match.group(1))
-			
-			# Extract WIDTH: look for "- NN.N" pattern after GSM
-			width_match = re.search(r'-\s*([\d.]+)', str(item_name))
-			if width_match:
-				width = flt(width_match.group(1))
-			
-			if gsm and width:
+			if gsm > 0 and width > 0:
 				key = (gsm, width)
-				# ✅ KEEP FIRST OCCURRENCE: Don't overwrite if key already exists (for duplicate widths)
+				# ✅ KEEP FIRST OCCURRENCE: Don't overwrite if key already exists
 				if key not in gsm_width_to_wo:
 					gsm_width_to_wo[key] = wo
-					frappe.logger().info(f"[WO MAP] {wo['name']} → GSM {gsm} + WIDTH {width}\" (from: {item_name[:50]}...)")
+					frappe.logger().info(f"[WO MAP] {wo['name']} → GSM {gsm} + WIDTH {width}\" (from item code: {production_item})")
 				else:
-					# Duplicate width found, logging it
-					frappe.logger().info(f"[WO MAP] Duplicate: {wo['name']} also has GSM {gsm} + WIDTH {width}\", but keeping first WO {gsm_width_to_wo[key]['name']}")
+					# Duplicate width found - log it but keep first WO
+					frappe.logger().info(f"[WO MAP] Note: {wo['name']} also has GSM {gsm} + WIDTH {width}\", but keeping first WO {gsm_width_to_wo[key]['name']}")
 			else:
-				frappe.logger().warning(f"[WO MAP] Could not extract GSM/WIDTH from {item_name}")
+				frappe.logger().warning(f"[WO MAP] Could not parse item code {production_item} (GSM={gsm}, WIDTH={width})")
 		
 		except Exception as e:
 			frappe.logger().warning(f"[WO MAP ERROR] WO {wo.get('name')}: {str(e)}")
