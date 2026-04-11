@@ -434,20 +434,13 @@ def _parse_combination_widths_inches(combination) -> list[float]:
 	return out
 
 
-def _match_work_orders_to_combination_segments(pp_name: str, combination: str, job_gsm: int | None = None) -> list | None:
+def _match_work_orders_to_combination_segments(pp_name: str, combination: str, ppi: str | None = None, job_gsm: int | None = None) -> list | None:
 	"""
 	For multi-width combinations (e.g. "33+63" or "63+63"),
 	match WO by BOTH GSM AND WIDTH (not just width).
 	
-	Item Code format: "1001050010251600"
-	  - Positions [9:12] = GSM (e.g., "025" = 25)
-	  - Positions [12:16] = WIDTH in MM (e.g., "1600" = 1600mm = 63 inches)
-	
-	⚠️ IMPORTANT: In PP, same WIDTH can have multiple WOs with different GSMs!
-	E.g., 25 GSM 63" → WO-00406
-	      70 GSM 63" → WO-XXXX
-	
-	Must match by (GSM, WIDTH) tuple, not just WIDTH!
+	⚠️ CRITICAL: Get WOs ONLY for the specific PPI, not all WOs in PP!
+	This ensures "25 GSM 63+63" uses only the WO(s) linked to that PPI.
 	"""
 	comb = _cstr(combination)
 	if not comb:
@@ -459,11 +452,17 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str, j
 	if len(widths) < segs:
 		return None
 	widths = widths[:segs]
-	all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	
+	# ✅ CRITICAL: Get WOs ONLY for this PPI, not all in PP!
+	if ppi:
+		all_wos = get_work_orders_for_job(pp_name, _cstr(ppi))
+	else:
+		all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	
 	if not all_wos:
 		return None
 	
-	# ✅ Build (GSM, WIDTH) → WO map using ITEM CODE parsing (SOURC OF TRUTH)
+	# ✅ Build (GSM, WIDTH) → WO map using ITEM CODE parsing
 	gsm_width_to_wo_map = {}
 	for wo in all_wos:
 		wo_name = _cstr(wo.get("name"))
@@ -471,30 +470,30 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str, j
 			production_item = wo.get("production_item")
 			if not production_item:
 				continue
-			# ✅ Parse item code to extract GSM and WIDTH
+			# Parse item code to extract GSM and WIDTH
 			parsed_gsm, parsed_width = parse_item_code(_cstr(production_item))
 			if parsed_gsm > 0 and parsed_width > 0:
 				key = (parsed_gsm, parsed_width)
 				gsm_width_to_wo_map[key] = wo
-				frappe.logger().info(f"[COMBO] WO {wo_name} = ({parsed_gsm}, {parsed_width}\") (from item code)")
+				frappe.logger().info(f"[COMBO] WO {wo_name} = ({parsed_gsm}, {parsed_width}\") (PPI {ppi})")
 		except Exception as e:
 			frappe.logger().warning(f"[COMBO ERROR] Could not parse WO {wo_name}: {str(e)}")
 	
 	if not job_gsm:
-		frappe.logger().warning(f"[COMBO] No job_gsm provided, cannot match by (GSM, WIDTH)")
+		frappe.logger().warning(f"[COMBO] No job_gsm provided, cannot match")
 		return None
 	
 	out: list = []
 	tol = 1.25
 	for target_w in widths:
-		# ✅ Match by (GSM, WIDTH) tuple, not just WIDTH!
+		# Match by (GSM, WIDTH) tuple
 		key = (job_gsm, target_w)
 		if key in gsm_width_to_wo_map:
 			best = gsm_width_to_wo_map[key]
 			out.append(best)
 			frappe.logger().info(f"[COMBO] Segment ({job_gsm}, {target_w}\") → WO {best.get('name')}")
 		else:
-			# Fallback: find by width closest to target (only if exact GSM match fails)
+			# Fallback: find by width closest to target
 			best = None
 			best_d = 999.0
 			for (w_gsm, w_width), wo in gsm_width_to_wo_map.items():
@@ -504,12 +503,12 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str, j
 			
 			if best and best_d <= tol:
 				out.append(best)
-				frappe.logger().warning(f"[COMBO] No exact match for ({job_gsm}, {target_w}\"), using fallback WO {best.get('name')} (diff={best_d})")
+				frappe.logger().warning(f"[COMBO] No exact match for ({job_gsm}, {target_w}\"), fallback")
 			else:
 				frappe.logger().warning(f"[COMBO] No WO found for ({job_gsm}, {target_w}\")")
 				return None
 	
-	# ✅ DEDUPLICATE: For "63+63", out=[WO-00406, WO-00406] → display as single WO only
+	# ✅ DEDUPLICATE: For "63+63", return only UNIQUE WOs
 	seen = set()
 	unique_out = []
 	for wo in out:
@@ -517,7 +516,7 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str, j
 		if wo_name not in seen:
 			seen.add(wo_name)
 			unique_out.append(wo)
-			frappe.logger().info(f"[COMBO DEDUP] Keep unique WO {wo_name}")
+			frappe.logger().info(f"[COMBO DEDUP] Keep WO {wo_name}")
 		else:
 			frappe.logger().info(f"[COMBO DEDUP] Skip duplicate WO {wo_name}")
 	
@@ -594,7 +593,7 @@ def _resolve_wos_for_pp_job_row(
 	if comb:
 		segs = _count_combination_segments(comb)
 		if segs > 1:
-			matched = _match_work_orders_to_combination_segments(pp_name, comb, job_gsm=job_gsm)
+			matched = _match_work_orders_to_combination_segments(pp_name, comb, ppi=ppi, job_gsm=job_gsm)
 			if matched:
 				return matched
 	
