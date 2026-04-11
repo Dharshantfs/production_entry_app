@@ -201,7 +201,7 @@ def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
 	"""Comma-separated WO names for this shaft row (same rules as _get_work_orders_for_spr_job)."""
 	
-	# Extract GSM if available
+	# Extract GSM if available in job row
 	job_gsm = None
 	try:
 		if m.get("gsm"):
@@ -545,52 +545,48 @@ def _resolve_wos_for_pp_job_row(
 	job_gsm: int | None = None,
 ) -> list:
 	"""
-	SIMPLE: Get ONE WO per job.
-	1. Use PPI's linked WO(s)
-	2. If multiple WOs, filter by job_gsm
-	3. Return FIRST match only
+	ULTRA SIMPLE: Return ONLY ONE WO, never multiple.
 	"""
 	
-	# ✅ PRIMARY: PPI links to specific WO(s) for that production item
+	# Get one WO any way possible
+	wo = None
+	
+	# Try PPI first (best option)
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if not wos:
-			return []
-		
-		# If only ONE WO linked to this PPI, use it!
-		if len(wos) == 1:
-			return wos
-		
-		# If MULTIPLE WOs linked to this PPI, filter by job_gsm
-		if job_gsm and job_gsm > 0:
-			for wo in wos:
-				try:
-					prod_item = wo.get("production_item")
-					if prod_item:
-						gsm, width = parse_item_code(_cstr(prod_item))
+		if wos:
+			# Filter by GSM if available
+			if job_gsm and job_gsm > 0:
+				for w in wos:
+					try:
+						gsm, width = parse_item_code(_cstr(w.get("production_item", "")))
 						if gsm == job_gsm:
-							frappe.logger().info(f"[RESOLVE] PPI {ppi} (GSM {job_gsm}) → WO {wo['name']}")
-							return [wo]
-				except Exception:
-					pass
-		
-		# Fallback: return FIRST WO only, never multiple
-		frappe.logger().warning(f"[RESOLVE] PPI {ppi} returned first WO: {wos[0]['name']}")
-		return [wos[0]]
+							wo = w
+							break
+					except Exception:
+						pass
+			# Use first if no GSM match
+			if not wo:
+				wo = wos[0]
 	
-	# ✅ FALLBACK: If no PPI, try other methods
-	if job_id:
+	# Try job_id
+	if not wo and job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
-		return [wos[0]] if wos else []
+		wo = wos[0] if wos else None
 	
-	if row_index is not None:
+	# Try row_index
+	if not wo and row_index is not None:
 		ord_ppi = _ordered_production_plan_items(pp_name)
 		if ord_ppi and 0 <= row_index < len(ord_ppi):
 			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
-			return [wos[0]] if wos else []
+			wo = wos[0] if wos else None
 	
-	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	return [all_wos[0]] if all_wos else []
+	# Last resort: first WO in PP
+	if not wo:
+		all_wos = _get_all_work_orders_for_production_plan(pp_name)
+		wo = all_wos[0] if all_wos else None
+	
+	return [wo] if wo else []
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
