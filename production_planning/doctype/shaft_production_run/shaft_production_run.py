@@ -534,33 +534,27 @@ def _resolve_wos_for_pp_job_row(
 	if comb:
 		segs = _count_combination_segments(comb)
 		if segs > 1:
-			# ✅ Pass job_gsm for (GSM, WIDTH) matching
 			matched = _match_work_orders_to_combination_segments(pp_name, comb, job_gsm=job_gsm)
 			if matched:
 				return matched
+	
+	# ✅ SIMPLE: For single-width jobs, find WO by matching (GSM from job)
+	if job_gsm and job_gsm > 0:
+		all_wos = _get_all_work_orders_for_production_plan(pp_name)
+		for wo in all_wos:
+			try:
+				prod_item = wo.get("production_item")
+				if prod_item:
+					gsm, width = parse_item_code(_cstr(prod_item))
+					if gsm == job_gsm:
+						frappe.logger().info(f"[RESOLVE] Found WO {wo['name']} for job_gsm {job_gsm}")
+						return [wo]
+			except Exception:
+				pass
+	
+	# Fallback to old logic if no GSM match
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos:
-			# ✅ Filter by job_gsm if provided (one PPI may link multiple WOs for different GSMs)
-			if job_gsm and job_gsm > 0:
-				filtered_wos = []
-				for wo in wos:
-					try:
-						prod_item = wo.get("production_item")
-						if prod_item:
-							gsm, width = parse_item_code(_cstr(prod_item))
-							if gsm == job_gsm:
-								filtered_wos.append(wo)
-					except Exception:
-						pass
-				if filtered_wos:
-					frappe.logger().info(f"[RESOLVE] PPI {ppi} with job_gsm {job_gsm}: filtered {len(wos)} WOs → {len(filtered_wos)}")
-					return filtered_wos
-				else:
-					frappe.logger().warning(f"[RESOLVE] PPI {ppi} has no WO for job_gsm {job_gsm}, returning all")
-			return wos
-	if job_id:
-		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
 		if wos:
 			return wos
 	if job_id:
