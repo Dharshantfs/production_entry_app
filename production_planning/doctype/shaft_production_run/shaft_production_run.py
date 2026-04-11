@@ -1409,6 +1409,13 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 		except Exception:
 			frappe.logger().warning(f"[SPR] Could not parse combination '{comb}' for job {job_id}")
 	
+	# ✅ DEDUPLICATE: For "63+63", use only UNIQUE widths → ONE WO per unique width (avoids duplicate WOs)
+	# Map: unique_width → width_index (position of FIRST occurrence)
+	width_to_first_idx = {}
+	for idx, w in enumerate(individual_widths):
+		if w not in width_to_first_idx:
+			width_to_first_idx[w] = idx
+	
 	# ✅ NEW: Build (GSM, WIDTH) → WO map from Item Names (NOT item codes)
 	gsm_width_to_wo = _build_gsm_width_to_wo_map_from_item_names(wo_list)
 	
@@ -1482,8 +1489,13 @@ def _build_gsm_width_to_wo_map_from_item_names(wo_list: list) -> dict:
 			
 			if gsm and width:
 				key = (gsm, width)
-				gsm_width_to_wo[key] = wo
-				frappe.logger().info(f"[WO MAP] {wo['name']} → GSM {gsm} + WIDTH {width}\" (from: {item_name[:50]}...)")
+				# ✅ KEEP FIRST OCCURRENCE: Don't overwrite if key already exists (for duplicate widths)
+				if key not in gsm_width_to_wo:
+					gsm_width_to_wo[key] = wo
+					frappe.logger().info(f"[WO MAP] {wo['name']} → GSM {gsm} + WIDTH {width}\" (from: {item_name[:50]}...)")
+				else:
+					# Duplicate width found, logging it
+					frappe.logger().info(f"[WO MAP] Duplicate: {wo['name']} also has GSM {gsm} + WIDTH {width}\", but keeping first WO {gsm_width_to_wo[key]['name']}")
 			else:
 				frappe.logger().warning(f"[WO MAP] Could not extract GSM/WIDTH from {item_name}")
 		
