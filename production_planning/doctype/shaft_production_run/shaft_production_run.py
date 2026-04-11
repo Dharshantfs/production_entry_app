@@ -499,7 +499,19 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str, j
 				frappe.logger().warning(f"[COMBO] No WO found for ({job_gsm}, {target_w}\")")
 				return None
 	
-	return out if len(out) == segs else None
+	# ✅ DEDUPLICATE: For "63+63", out=[WO-00406, WO-00406] → display as single WO only
+	seen = set()
+	unique_out = []
+	for wo in out:
+		wo_name = _cstr(wo.get("name"))
+		if wo_name not in seen:
+			seen.add(wo_name)
+			unique_out.append(wo)
+			frappe.logger().info(f"[COMBO DEDUP] Keep unique WO {wo_name}")
+		else:
+			frappe.logger().info(f"[COMBO DEDUP] Skip duplicate WO {wo_name}")
+	
+	return unique_out if len(unique_out) > 0 else None
 
 
 def _resolve_wos_for_pp_job_row(
