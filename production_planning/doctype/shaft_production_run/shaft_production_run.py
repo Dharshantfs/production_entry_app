@@ -732,40 +732,6 @@ def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
 	return out
 
 
-def _spr_mfg_allowed_qty_for_work_order(wo_qty: float) -> float:
-	"""Upper bound for one Manufacture Stock Entry FG qty vs Work Order (ERPNext validate_finished_goods)."""
-	allowance_pct = flt(
-		frappe.db.get_single_value("Manufacturing Settings", "overproduction_percentage_for_work_order")
-	)
-	return flt(wo_qty) + ((allowance_pct / 100.0) * flt(wo_qty))
-
-
-def _spr_raise_work_order_qty_if_manufacture_exceeds_allowed(wo_id: str, wo_doc, total_qty: float) -> None:
-	"""Raise WO qty when SPR roll FG total exceeds allowed Manufacture qty so Stock Entry can submit.
-
-	Disable: site_config spr_disable_wo_qty_raise_for_manufacture = 1
-	"""
-	if total_qty <= 0:
-		return
-	if frappe.conf.get("spr_disable_wo_qty_raise_for_manufacture"):
-		return
-	allowed = _spr_mfg_allowed_qty_for_work_order(wo_doc.qty)
-	if total_qty <= allowed + 1e-9:
-		return
-	old_q = flt(wo_doc.qty)
-	new_q = max(old_q, flt(total_qty))
-	frappe.db.set_value("Work Order", wo_id, "qty", new_q, update_modified=True)
-	frappe.logger().info(
-		f"[SPR] Raised Work Order {wo_id} qty from {old_q} to {new_q} (manufactured {total_qty} vs allowed {allowed})."
-	)
-	frappe.msgprint(
-		_(
-			"Work Order {0} qty updated from {1} to {2} kg so manufacturing matches produced roll weights ({3} kg)."
-		).format(wo_id, old_q, new_q, flt(total_qty, 3)),
-		alert=True,
-	)
-
-
 class ShaftProductionRun(Document):
 	def validate(self):
 		self.sync_shaft_job_work_orders_from_plan()
@@ -1250,7 +1216,12 @@ class ShaftProductionRun(Document):
 			se.append("items", row)
 
 	def create_manufacturing_stock_entries(self):
-		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry."""
+		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
+
+		Does not change Work Order ``qty`` (Qty To Manufacture). ERPNext caps Manufacture FG by
+		WO qty plus Manufacturing Settings overproduction; ``produced_qty`` updates when Stock
+		Entries submit. If roll totals exceed that cap, raise overproduction percent or WO qty in ERPNext.
+		"""
 		wo_groups = {}
 		for row in self.items or []:
 			wo_name = row.get("work_order") or row.get("wo_id")
@@ -1263,8 +1234,6 @@ class ShaftProductionRun(Document):
 		for wo_id, rows in wo_groups.items():
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			total_qty = sum(self._row_fg_qty(r) for r in rows)
-			_spr_raise_work_order_qty_if_manufacture_exceeds_allowed(wo_id, wo_doc, total_qty)
-			wo_doc = frappe.get_doc("Work Order", wo_id)
 
 			# 📊 DEBUG: Log WO and total quantity
 			frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
