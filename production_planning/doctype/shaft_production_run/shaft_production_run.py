@@ -545,81 +545,52 @@ def _resolve_wos_for_pp_job_row(
 	job_gsm: int | None = None,
 ) -> list:
 	"""
-	Resolve Work Orders for one shaft job line: PPI link, human job id, ordinal PP lines, shared WO, PP-wide fallback.
-	Used when building SPR jobs from PP and when resolving WOs on saved Shaft Production Run.
-	
-	job_gsm: Extract from job row to match WOs by (GSM, WIDTH) tuple for multi-width combinations,
-	         OR to filter WOs when one PPI has multiple WOs for different GSMs.
+	SIMPLE: Get ONE WO per job.
+	1. Use PPI's linked WO(s)
+	2. If multiple WOs, filter by job_gsm
+	3. Return FIRST match only
 	"""
 	
-	# ✅ BEST: If we have PPI (Production Plan Item), use it directly to fetch the correct WO!
+	# ✅ PRIMARY: PPI links to specific WO(s) for that production item
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-		if wos and len(wos) > 0:
-			# Filter by job_gsm if provided
-			if job_gsm and job_gsm > 0:
-				for wo in wos:
-					try:
-						prod_item = wo.get("production_item")
-						if prod_item:
-							gsm, width = parse_item_code(_cstr(prod_item))
-							if gsm == job_gsm:
-								frappe.logger().info(f"[RESOLVE] ✅ PPI {ppi} + job_gsm {job_gsm} = WO {wo['name']}")
-								return [wo]
-					except Exception:
-						pass
-			# No job_gsm filtering needed, just return first WO
-			frappe.logger().info(f"[RESOLVE] ✅ PPI {ppi} = WO {wos[0]['name']}")
-			return [wos[0]]
+		if not wos:
+			return []
+		
+		# If only ONE WO linked to this PPI, use it!
+		if len(wos) == 1:
+			return wos
+		
+		# If MULTIPLE WOs linked to this PPI, filter by job_gsm
+		if job_gsm and job_gsm > 0:
+			for wo in wos:
+				try:
+					prod_item = wo.get("production_item")
+					if prod_item:
+						gsm, width = parse_item_code(_cstr(prod_item))
+						if gsm == job_gsm:
+							frappe.logger().info(f"[RESOLVE] PPI {ppi} (GSM {job_gsm}) → WO {wo['name']}")
+							return [wo]
+				except Exception:
+					pass
+		
+		# Fallback: return FIRST WO only, never multiple
+		frappe.logger().warning(f"[RESOLVE] PPI {ppi} returned first WO: {wos[0]['name']}")
+		return [wos[0]]
 	
-	# ✅ FALLBACK: If no PPI, try job_gsm matching across all WOs
-	if job_gsm and job_gsm > 0:
-		all_wos = _get_all_work_orders_for_production_plan(pp_name)
-		for wo in all_wos:
-			try:
-				prod_item = wo.get("production_item")
-				if prod_item:
-					gsm, width = parse_item_code(_cstr(prod_item))
-					if gsm == job_gsm:
-						frappe.logger().info(f"[RESOLVE] ✅ job_gsm={job_gsm} FOUND WO {wo['name']}")
-						return [wo]
-			except Exception:
-				pass
-		frappe.logger().warning(f"[RESOLVE] ❌ job_gsm={job_gsm} NOT FOUND!")
-		return []
-	
-	# ✅ SECONDARY: If job_gsm NOT provided, try combination logic
-	comb = _cstr(combination)
-	if comb:
-		segs = _count_combination_segments(comb)
-		if segs > 1:
-			matched = _match_work_orders_to_combination_segments(pp_name, comb, ppi=ppi, job_gsm=job_gsm)
-			if matched:
-				return matched
-	
-	# ✅ FALLBACK: Last resort - use other methods
+	# ✅ FALLBACK: If no PPI, try other methods
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
-		if wos:
-			return [wos[0]]
-	ord_ppi = _ordered_production_plan_items(pp_name)
-	if row_index is not None and ord_ppi:
-		if 0 <= row_index < len(ord_ppi):
-			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
-			if wos:
-				return [wos[0]]
-		if len(ord_ppi) == 1:
-			wos = get_work_orders_for_job(pp_name, ord_ppi[0])
-			if wos:
-				return [wos[0]]
-	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	if not all_wos:
-		return []
-	if len(all_wos) == 1:
-		return all_wos
+		return [wos[0]] if wos else []
+	
 	if row_index is not None:
-		return [all_wos[row_index % len(all_wos)]]
-	return [all_wos[0]]
+		ord_ppi = _ordered_production_plan_items(pp_name)
+		if ord_ppi and 0 <= row_index < len(ord_ppi):
+			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
+			return [wos[0]] if wos else []
+	
+	all_wos = _get_all_work_orders_for_production_plan(pp_name)
+	return [all_wos[0]] if all_wos else []
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
