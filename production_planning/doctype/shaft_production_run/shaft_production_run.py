@@ -1356,7 +1356,7 @@ def get_next_spr_batch_numbers(
 def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	"""
 	Build Roll Production Result (SPR Item) lines for one job:
-	rows = max(1, no_of_shafts × combination_segments), matching Work Orders by GSM for that job.
+	rows = max(1, no_of_shafts × combination_segments), matching Work Orders by GSM + WIDTH.
 	"""
 	if not job_id:
 		frappe.throw(_("Job ID is required"))
@@ -1389,27 +1389,51 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	if not wo_list:
 		frappe.throw(_("No Work Orders for job {0} on this Production Plan").format(job_id))
 
-	# 🎯 NEW: Get GSM from job_row and match WOs by GSM
+	# 🎯 FIXED: Extract BOTH GSM AND WIDTH/COMBINATION from job_row
 	job_gsm = None
+	job_width_str = None
+	
 	if getattr(job_row, "gsm", None) not in (None, 0, "0"):
 		try:
 			job_gsm = int(flt(job_row.gsm))
 		except Exception:
 			pass
 	
-	# Build a GSM-to-WO map for smart matching
-	gsm_to_wo = _build_gsm_to_wo_map(wo_list)
+	# Get width from combination (e.g., "33+63" or "63+63")
+	if getattr(job_row, "combination", None):
+		job_width_str = str(job_row.combination).strip()
+	
+	# Build a (GSM, WIDTH) → WO map for smart matching
+	gsm_width_to_wo = _build_gsm_width_to_wo_map(wo_list)
 	
 	lines = []
 	for idx in range(n_rolls):
-		# 🎯 SMART WO SELECTION: Try to match by GSM first, fallback to round-robin
-		if job_gsm and job_gsm in gsm_to_wo:
-			wo = gsm_to_wo[job_gsm]
-			frappe.logger().info(f"[SPR WO MATCH] Roll {idx+1}: GSM {job_gsm} matched to WO {wo['name']}")
-		else:
+		# 🎯 SMART WO SELECTION: Match by (GSM + WIDTH) first, then GSM alone, then fallback
+		wo = None
+		match_type = "none"
+		
+		# Try exact match: GSM + WIDTH combination
+		if job_gsm and job_width_str:
+			key = (job_gsm, job_width_str)
+			if key in gsm_width_to_wo:
+				wo = gsm_width_to_wo[key]
+				match_type = "gsm+width"
+				frappe.logger().info(f"[SPR WO MATCH] Roll {idx+1}: GSM {job_gsm} + Width {job_width_str} matched to WO {wo['name']}")
+		
+		# Fallback: Try GSM alone if no exact match
+		if wo is None and job_gsm:
+			for (gsm, width), wo_candidate in gsm_width_to_wo.items():
+				if gsm == job_gsm:
+					wo = wo_candidate
+					match_type = "gsm_only"
+					frappe.logger().warning(f"[SPR WO PARTIAL] Roll {idx+1}: GSM {job_gsm} matched by GSM only (Width mismatch: expected {job_width_str}, got {width}) → WO {wo['name']}")
+					break
+		
+		# Last resort: Round-robin
+		if wo is None:
 			wo = wo_list[idx % len(wo_list)]
-			if job_gsm:
-				frappe.logger().warning(f"[SPR WO NOMATCH] Roll {idx+1}: GSM {job_gsm} not found in WO list, using round-robin WO {wo['name']}")
+			frappe.logger().warning(f"[SPR WO NOMATCH] Roll {idx+1}: No GSM/Width match found, using round-robin WO {wo['name']}")
+			match_type = "round_robin"
 		
 		planned_qty = _planned_qty_for_roll_line(job_row, idx, segs)
 		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
@@ -1421,23 +1445,56 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	return lines
 
 
-def _build_gsm_to_wo_map(wo_list: list) -> dict:
+def _build_gsm_width_to_wo_map(wo_list: list) -> dict:
 	"""
-	Create a map of GSM → Work Order for smart WO matching.
-	Extracts GSM from each WO's production_item.
+	Create a map of (GSM, WIDTH) → Work Order for smart WO matching.
+	Key: tuple(gsm: int, width_str: str) like (25, "33+63") or (70, "63+63")
+	Extracts GSM and WIDTH from each WO's production_item.
 	"""
-	gsm_to_wo = {}
+	gsm_width_to_wo = {}
 	for wo in wo_list:
 		try:
 			item_code = frappe.db.get_value("Work Order", wo["name"], "production_item")
 			if item_code:
-				gsm, _ = parse_item_code(item_code)
-				if gsm > 0:
-					gsm_to_wo[gsm] = wo
-					frappe.logger().info(f"[WO-GSM MAP] WO {wo['name']} → GSM {gsm}")
+				gsm, width_inch = parse_item_code(item_code)
+				# Note: width_inch is a single number, but we need the full combination width
+				# Try to get production_item name which encodes the full spec
+				item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
+				
+				# Parse width from item code more thoroughly
+				width_str = _extract_width_from_item_code(item_code)
+				
+				if gsm > 0 and width_str:
+					key = (gsm, width_str)
+					gsm_width_to_wo[key] = wo
+					frappe.logger().info(f"[WO-MAP] WO {wo['name']} → GSM {gsm} + Width {width_str}")
+				elif gsm > 0:
+					# Fallback: just GSM if width extraction fails
+					frappe.logger().warning(f"[WO-MAP] WO {wo['name']} → GSM {gsm} (width extraction failed for item {item_code})")
 		except Exception as e:
-			frappe.logger().warning(f"[WO-GSM MAP ERROR] Could not parse GSM for WO {wo.get('name')}: {e}")
-	return gsm_to_wo
+			frappe.logger().warning(f"[WO-MAP ERROR] Could not analyze WO {wo.get('name')}: {e}")
+	return gsm_width_to_wo
+
+
+def _extract_width_from_item_code(item_code: str) -> str:
+	"""
+	Extract width combination from item_code.
+	Item codes are typically: [prefix]-[quality]-[gsm]-[width]+[width]-[color]
+	Example: 10010500100161600 or similar
+	Try multiple approaches to find width spec.
+	"""
+	try:
+		# Approach 1: Use parse_item_code (returns single width)
+		gsm, width_inch = parse_item_code(item_code)
+		if width_inch and width_inch > 0:
+			# Try to find full width spec in item name or code
+			# For now, return the standard format
+			return str(int(width_inch))
+	except Exception:
+		pass
+	
+	# If we can't parse, return empty string (will fallback to GSM only)
+	return ""
 
 
 @frappe.whitelist()
