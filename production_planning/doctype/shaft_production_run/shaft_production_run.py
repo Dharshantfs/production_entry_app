@@ -548,11 +548,16 @@ def _resolve_wos_for_pp_job_row(
 					gsm, width = parse_item_code(_cstr(prod_item))
 					if gsm == job_gsm:
 						frappe.logger().info(f"[RESOLVE] Found WO {wo['name']} for job_gsm {job_gsm}")
-						return [wo]
-			except Exception:
+						return [wo]  # ✅ RETURN IMMEDIATELY when found
+			except Exception as e:
+				frappe.logger().warning(f"[RESOLVE] Error parsing WO {wo.get('name')}: {str(e)}")
 				pass
+		# ✅ IMPORTANT: If job_gsm is set but NO WO found, log error and return empty
+		# DON'T fall back to old logic which returns ALL WOs!
+		frappe.logger().warning(f"[RESOLVE] job_gsm={job_gsm} set but NO matching WO found in PP {pp_name}!")
+		return []
 	
-	# Fallback to old logic if no GSM match
+	# Fallback to old logic only if job_gsm NOT set
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
 		if wos:
