@@ -424,16 +424,20 @@ def _parse_combination_widths_inches(combination) -> list[float]:
 	return out
 
 
-def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -> list | None:
+def _match_work_orders_to_combination_segments(pp_name: str, combination: str, job_gsm: int | None = None) -> list | None:
 	"""
-	For multi-width combinations (e.g. 33\" + 63\" = "33+63" or 63\" + 63\" = "63+63"),
-	match WO by parsing ITEM CODE (source of truth).
+	For multi-width combinations (e.g. "33+63" or "63+63"),
+	match WO by BOTH GSM AND WIDTH (not just width).
 	
 	Item Code format: "1001050010251600"
 	  - Positions [9:12] = GSM (e.g., "025" = 25)
 	  - Positions [12:16] = WIDTH in MM (e.g., "1600" = 1600mm = 63 inches)
 	
-	For "63+63", both segments have same width, so SAME WO is used twice!
+	⚠️ IMPORTANT: In PP, same WIDTH can have multiple WOs with different GSMs!
+	E.g., 25 GSM 63" → WO-00406
+	      70 GSM 63" → WO-XXXX
+	
+	Must match by (GSM, WIDTH) tuple, not just WIDTH!
 	"""
 	comb = _cstr(combination)
 	if not comb:
@@ -449,42 +453,52 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str) -
 	if not all_wos:
 		return None
 	
-	# ✅ Build WO → WIDTH map using ITEM CODE parsing (SOURCE OF TRUTH)
-	wo_width_map = {}
+	# ✅ Build (GSM, WIDTH) → WO map using ITEM CODE parsing (SOURC OF TRUTH)
+	gsm_width_to_wo_map = {}
 	for wo in all_wos:
 		wo_name = _cstr(wo.get("name"))
 		try:
 			production_item = wo.get("production_item")
 			if not production_item:
 				continue
-			# ✅ Parse item code (source of truth) to extract GSM and WIDTH
-			gsm, width = parse_item_code(_cstr(production_item))
-			if width > 0:
-				wo_width_map[wo_name] = width
-				frappe.logger().info(f"[COMBO] WO {wo_name} = GSM {gsm}, WIDTH {width}\" (from item code: {production_item})")
+			# ✅ Parse item code to extract GSM and WIDTH
+			parsed_gsm, parsed_width = parse_item_code(_cstr(production_item))
+			if parsed_gsm > 0 and parsed_width > 0:
+				key = (parsed_gsm, parsed_width)
+				gsm_width_to_wo_map[key] = wo
+				frappe.logger().info(f"[COMBO] WO {wo_name} = ({parsed_gsm}, {parsed_width}\") (from item code)")
 		except Exception as e:
 			frappe.logger().warning(f"[COMBO ERROR] Could not parse WO {wo_name}: {str(e)}")
+	
+	if not job_gsm:
+		frappe.logger().warning(f"[COMBO] No job_gsm provided, cannot match by (GSM, WIDTH)")
+		return None
 	
 	out: list = []
 	tol = 1.25
 	for target_w in widths:
-		best = None
-		best_d = 999.0
-		for wo in all_wos:
-			nm = _cstr(wo.get("name"))
-			# ✅ ALLOW REUSE: Same WO can match multiple same-width segments (e.g., 63+63)
-			w_in = wo_width_map.get(nm, 0)
-			if w_in <= 0:
-				continue
-			d = abs(flt(w_in) - flt(target_w))
-			if d < best_d:
-				best_d = d
-				best = wo
-		if best is None or best_d > tol:
-			frappe.logger().warning(f"[COMBO] No WO found for width {target_w}\" (tolerance {tol}, best_d {best_d})")
-			return None
-		out.append(best)
-		frappe.logger().info(f"[COMBO] Segment {target_w}\" → WO {best.get('name')}")
+		# ✅ Match by (GSM, WIDTH) tuple, not just WIDTH!
+		key = (job_gsm, target_w)
+		if key in gsm_width_to_wo_map:
+			best = gsm_width_to_wo_map[key]
+			out.append(best)
+			frappe.logger().info(f"[COMBO] Segment ({job_gsm}, {target_w}\") → WO {best.get('name')}")
+		else:
+			# Fallback: find by width closest to target (only if exact GSM match fails)
+			best = None
+			best_d = 999.0
+			for (w_gsm, w_width), wo in gsm_width_to_wo_map.items():
+				if abs(w_width - target_w) < best_d:
+					best_d = abs(w_width - target_w)
+					best = wo
+			
+			if best and best_d <= tol:
+				out.append(best)
+				frappe.logger().warning(f"[COMBO] No exact match for ({job_gsm}, {target_w}\"), using fallback WO {best.get('name')} (diff={best_d})")
+			else:
+				frappe.logger().warning(f"[COMBO] No WO found for ({job_gsm}, {target_w}\")")
+				return None
+	
 	return out if len(out) == segs else None
 
 
@@ -495,16 +509,20 @@ def _resolve_wos_for_pp_job_row(
 	job_id: str | None = None,
 	row_index: int | None = None,
 	combination: str | None = None,
+	job_gsm: int | None = None,
 ) -> list:
 	"""
 	Resolve Work Orders for one shaft job line: PPI link, human job id, ordinal PP lines, shared WO, PP-wide fallback.
 	Used when building SPR jobs from PP and when resolving WOs on saved Shaft Production Run.
+	
+	job_gsm: Extract from job row to match WOs by (GSM, WIDTH) tuple for multi-width combinations.
 	"""
 	comb = _cstr(combination)
 	if comb:
 		segs = _count_combination_segments(comb)
 		if segs > 1:
-			matched = _match_work_orders_to_combination_segments(pp_name, comb)
+			# ✅ Pass job_gsm for (GSM, WIDTH) matching
+			matched = _match_work_orders_to_combination_segments(pp_name, comb, job_gsm=job_gsm)
 			if matched:
 				return matched
 	if ppi:
@@ -545,7 +563,16 @@ def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
 	jid = _spr_job_id(job_row)
 	idx = _spr_job_row_index(spr_doc, job_row)
 	comb = getattr(job_row, "combination", None) if meta.has_field("combination") else None
-	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx, combination=comb)
+	# ✅ Extract GSM from job_row for (GSM, WIDTH) matching
+	job_gsm = None
+	if meta.has_field("gsm"):
+		try:
+			gsm_val = getattr(job_row, "gsm", None)
+			if gsm_val:
+				job_gsm = int(flt(gsm_val))
+		except Exception:
+			pass
+	return _resolve_wos_for_pp_job_row(pp_name, ppi=ppi, job_id=jid, row_index=idx, combination=comb, job_gsm=job_gsm)
 
 
 def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None:
@@ -594,12 +621,19 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			if fn in r and r[fn] is not None and job_meta.has_field(fn):
 				m[fn] = r[fn]
 		if (not m.get("total_weight")) and jn:
+			job_gsm = None
+			if m.get("gsm"):
+				try:
+					job_gsm = int(flt(m.get("gsm")))
+				except Exception:
+					pass
 			wos_tw = _resolve_wos_for_pp_job_row(
 				production_plan,
 				ppi=m.get("production_plan_item"),
 				job_id=_cstr(jn),
 				row_index=idx,
 				combination=m.get("combination"),
+				job_gsm=job_gsm,
 			)
 			tw = sum(flt(w.get("planned_qty")) for w in wos_tw) if wos_tw else 0.0
 			if flt(tw) > 0:
@@ -631,6 +665,15 @@ class ShaftProductionRun(Document):
 			idx = _spr_job_row_index(self, row)
 			if idx is None:
 				idx = 0
+			# ✅ Extract GSM from row for (GSM, WIDTH) matching
+			job_gsm = None
+			if meta.has_field("gsm"):
+				try:
+					gsm_val = getattr(row, "gsm", None)
+					if gsm_val:
+						job_gsm = int(flt(gsm_val))
+				except Exception:
+					pass
 			m = {
 				"job_id": _spr_job_id(row),
 				"production_plan_item": getattr(row, "production_plan_item", None),
@@ -642,6 +685,7 @@ class ShaftProductionRun(Document):
 				job_id=_cstr(m.get("job_id")),
 				row_index=idx,
 				combination=m.get("combination"),
+				job_gsm=job_gsm,
 			)
 			if wos:
 				row.work_orders = ", ".join(w["name"] for w in wos)
