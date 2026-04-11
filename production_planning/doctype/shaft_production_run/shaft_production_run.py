@@ -527,7 +527,8 @@ def _resolve_wos_for_pp_job_row(
 	Resolve Work Orders for one shaft job line: PPI link, human job id, ordinal PP lines, shared WO, PP-wide fallback.
 	Used when building SPR jobs from PP and when resolving WOs on saved Shaft Production Run.
 	
-	job_gsm: Extract from job row to match WOs by (GSM, WIDTH) tuple for multi-width combinations.
+	job_gsm: Extract from job row to match WOs by (GSM, WIDTH) tuple for multi-width combinations,
+	         OR to filter WOs when one PPI has multiple WOs for different GSMs.
 	"""
 	comb = _cstr(combination)
 	if comb:
@@ -539,6 +540,27 @@ def _resolve_wos_for_pp_job_row(
 				return matched
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
+		if wos:
+			# ✅ Filter by job_gsm if provided (one PPI may link multiple WOs for different GSMs)
+			if job_gsm and job_gsm > 0:
+				filtered_wos = []
+				for wo in wos:
+					try:
+						prod_item = wo.get("production_item")
+						if prod_item:
+							gsm, width = parse_item_code(_cstr(prod_item))
+							if gsm == job_gsm:
+								filtered_wos.append(wo)
+					except Exception:
+						pass
+				if filtered_wos:
+					frappe.logger().info(f"[RESOLVE] PPI {ppi} with job_gsm {job_gsm}: filtered {len(wos)} WOs → {len(filtered_wos)}")
+					return filtered_wos
+				else:
+					frappe.logger().warning(f"[RESOLVE] PPI {ppi} has no WO for job_gsm {job_gsm}, returning all")
+			return wos
+	if job_id:
+		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
 		if wos:
 			return wos
 	if job_id:
@@ -2061,31 +2083,7 @@ def get_work_orders_for_job(pp_name, job_no):
 		as_dict=True,
 	)
 	if wos:
-		# ✅ DEDUPLICATE by (GSM, WIDTH) - if one PPI has multiple WOs for different GSMs, keep only first of each GSM
-		# This handles cases like: "25 GSM 63"" with WO-A and "70 GSM 63"" with WO-B
-		seen_gsm_widths = {}
-		dedup_wos = []
-		for wo in wos:
-			try:
-				prod_item = wo.get("production_item")
-				if prod_item:
-					gsm, width = parse_item_code(_cstr(prod_item))
-					if gsm > 0 and width > 0:
-						key = (gsm, width)
-						if key not in seen_gsm_widths:
-							seen_gsm_widths[key] = True
-							dedup_wos.append(wo)
-						# else: skip duplicate GSM/width combo
-					else:
-						# Can't parse, keep it
-						dedup_wos.append(wo)
-				else:
-					# No production_item, keep it
-					dedup_wos.append(wo)
-			except Exception:
-				# Error parsing, keep it  
-				dedup_wos.append(wo)
-		return dedup_wos if dedup_wos else wos
+		return wos
 	pi = _resolve_job_ref_to_production_plan_item(pp_name, jn)
 	if pi and pi != jn:
 		return get_work_orders_for_job(pp_name, pi)
