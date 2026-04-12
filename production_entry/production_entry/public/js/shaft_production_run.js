@@ -146,7 +146,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		console.log('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 
-	validate: function (frm) {
+	before_submit: function (frm) {
 		if (!frm || !frm.doc) {
 			return;
 		}
@@ -164,11 +164,10 @@ frappe.ui.form.on('Shaft Production Run', {
 			return;
 		}
 		frappe.validated = false;
-		// Avoid double dialog if another client script (e.g. production_scheduler) also registers validate
 		if (window.sprTolDialogOpen) {
 			return;
 		}
-		spr_show_tolerance_override_dialog(frm, violations);
+		spr_show_tolerance_override_dialog(frm, violations, { forSubmit: true });
 	},
 
 	after_save: function (frm) {
@@ -253,7 +252,9 @@ function spr_escape_html(s) {
 		.replace(/"/g, '&quot;');
 }
 
-function spr_show_tolerance_override_dialog(frm, violations) {
+function spr_show_tolerance_override_dialog(frm, violations, opts) {
+	opts = opts || {};
+	const forSubmit = !!opts.forSubmit;
 	window.sprTolDialogOpen = true;
 	const tol = spr_net_weight_tolerance_percent();
 	const rows = violations
@@ -276,7 +277,9 @@ function spr_show_tolerance_override_dialog(frm, violations) {
 	const html =
 		'<p class="text-muted">' +
 		__(
-			'Allowed deviation: ±{0}%. Enter a reason and confirm approval to save, or adjust roll weights.',
+			forSubmit
+				? 'Allowed deviation: ±{0}%. Enter a reason and confirm approval to submit, or adjust roll weights.'
+				: 'Allowed deviation: ±{0}%. Enter a reason and confirm approval to save, or adjust roll weights.',
 			[tol]
 		) +
 		'</p><table class="table table-bordered table-condensed" style="font-size:12px;"><thead><tr><th>' +
@@ -313,7 +316,7 @@ function spr_show_tolerance_override_dialog(frm, violations) {
 				default: 0,
 			},
 		],
-		primary_action_label: __('Save with approval'),
+		primary_action_label: forSubmit ? __('Submit with approval') : __('Save with approval'),
 		primary_action: function () {
 			const reason = (d.get_value('reason') || '').trim();
 			if (!reason) {
@@ -327,7 +330,11 @@ function spr_show_tolerance_override_dialog(frm, violations) {
 			d.hide();
 			frm.set_value('tolerance_override_reason', reason);
 			frm.set_value('tolerance_override_approved', 1);
-			frm.save();
+			if (forSubmit) {
+				frm.save('Submit');
+			} else {
+				frm.save();
+			}
 		},
 	});
 	d.show();

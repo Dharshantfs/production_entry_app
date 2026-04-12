@@ -444,13 +444,23 @@ def _parse_combination_widths_inches(combination) -> list[float]:
 	return out
 
 
-def _match_work_orders_to_combination_segments(pp_name: str, combination: str, ppi: str | None = None, job_gsm: int | None = None) -> list | None:
+def _match_work_orders_to_combination_segments(
+	pp_name: str,
+	combination: str,
+	ppi: str | None = None,
+	job_gsm: int | None = None,
+	job_id: str | None = None,
+) -> list | None:
 	"""
-	For multi-width combinations (e.g. "33+63" or "63+63"),
-	match WO by BOTH GSM AND WIDTH (not just width).
-	
-	⚠️ CRITICAL: Get WOs ONLY for the specific PPI, not all WOs in PP!
-	This ensures "25 GSM 63+63" uses only the WO(s) linked to that PPI.
+	For multi-width combinations (e.g. ``46\"+42\"+38\"`` or ``63\"+63\"``),
+	match each segment to a Work Order using ``(GSM, width)`` from the WO's item code.
+
+	PPI-scoped queries often return only **one** WO per ``production_plan_item``, while a
+	single shaft job row lists **several different widths** — each width is usually its own
+	WO on the plan. When ``distinct_widths >= 2`` and we have fewer WOs than combination
+	segments, we load **all** work orders on the Production Plan so each width can match.
+
+	Same-width repeats (e.g. ``42+42+42``) deduplicate to one WO.
 	"""
 	comb = _cstr(combination)
 	if not comb:
@@ -462,13 +472,20 @@ def _match_work_orders_to_combination_segments(pp_name: str, combination: str, p
 	if len(widths) < segs:
 		return None
 	widths = widths[:segs]
-	
-	# ✅ CRITICAL: Get WOs ONLY for this PPI, not all in PP!
+	distinct_w = len({round(w, 3) for w in widths})
+
+	all_wos: list = []
 	if ppi:
-		all_wos = get_work_orders_for_job(pp_name, _cstr(ppi))
-	else:
-		all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	
+		all_wos = list(get_work_orders_for_job(pp_name, _cstr(ppi)) or [])
+	if not all_wos and job_id:
+		all_wos = list(get_work_orders_for_job(pp_name, _cstr(job_id)) or [])
+
+	# One WO per PPI row but multiple different widths in the combination → need full plan list.
+	if distinct_w >= 2 and len(all_wos) < segs:
+		all_wos = list(_get_all_work_orders_for_production_plan(pp_name) or [])
+	elif not all_wos:
+		all_wos = list(_get_all_work_orders_for_production_plan(pp_name) or [])
+
 	if not all_wos:
 		return None
 	
@@ -573,15 +590,41 @@ def _resolve_wos_for_pp_job_row(
 	combination: str | None = None,
 	job_gsm: int | None = None,
 ) -> list:
-	"""Return exactly one WO per Available Jobs row: PPI → optional GSM match → safe fallbacks.
+	"""Resolve Work Orders for one Available Jobs row.
 
-	``combination`` is accepted for API compatibility (e.g. 63\"+63\") but we do **not** allocate
-	one WO per segment here — same-width combo lines share one WO. Multi-GSM combos are handled by
-	filtering WOs on the job row GSM when multiple WOs exist for the same PPI.
+	Multi-segment combinations (e.g. ``46\"+42\"+38\"``) return one WO per segment via
+	``(GSM, width)`` on the WO item code when possible. Same-width segments share one WO.
 
 	If ``production_plan_item`` does not match any Work Order link, we fall back to ``job_id``,
 	then row order, then any WO on the plan (so the grid does not stay blank when PPI is stale).
 	"""
+	comb = _cstr(combination).strip() if combination else ""
+	if comb and _count_combination_segments(comb) >= 2:
+		jg = job_gsm
+		if not jg:
+			for ref in (ppi, job_id):
+				if not ref:
+					continue
+				wl = get_work_orders_for_job(pp_name, _cstr(ref))
+				if wl and wl[0].get("production_item"):
+					try:
+						g, _w = parse_item_code(_cstr(wl[0].get("production_item")))
+						if g > 0:
+							jg = int(g)
+							break
+					except Exception:
+						pass
+		if jg:
+			matched = _match_work_orders_to_combination_segments(
+				pp_name,
+				comb,
+				ppi=_cstr(ppi) if ppi else None,
+				job_gsm=int(jg),
+				job_id=_cstr(job_id) if job_id else None,
+			)
+			if matched:
+				return matched
+
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
 		if wos:
@@ -738,10 +781,12 @@ class ShaftProductionRun(Document):
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+
+	def before_submit(self):
 		self._validate_roll_weight_tolerance()
 
 	def sync_shaft_job_work_orders_from_plan(self):
-		"""Fill Available Jobs.work_orders from Production Plan (one WO per row; GSM disambiguates when several WOs share a PPI)."""
+		"""Fill Available Jobs.work_orders from Production Plan (comma-separated; multi-width combos get one WO per width)."""
 		meta = frappe.get_meta("Shaft Production Run Job")
 		if not meta.has_field("work_orders"):
 			return
@@ -818,7 +863,7 @@ class ShaftProductionRun(Document):
 		frappe.throw(
 			_(
 				"Net/gross weight differs from planned qty by more than {0}%. {1} "
-				"Use Save from desk to open the approval dialog, or set Tolerance override with a reason."
+				"Use Submit from desk to open the approval dialog, or set Tolerance override with a reason."
 			).format(tol, detail),
 			title=_("Tolerance approval required"),
 		)

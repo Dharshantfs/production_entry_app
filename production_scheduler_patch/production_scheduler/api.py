@@ -9849,6 +9849,41 @@ def get_spr_shaft_jobs_from_pp(pp_id):
             if not flt(jobs[-1]["total_weight_kgs"]) and wo_total_qty:
                 jobs[-1]["total_weight_kgs"] = flt(wo_total_qty)
 
+            # Resolve work_orders from combination + GSM (e.g. 46"+42"+38" → three WOs on the PP)
+            try:
+                from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+                    _resolve_wos_for_pp_job_row,
+                )
+
+                jrow = jobs[-1]
+                jid = jrow.get("job_id")
+                comb = jrow.get("combination") or ""
+                ppi = pick_value(pp_shaft, ["production_plan_item", "pp_item"], None) or jid
+                job_gsm = None
+                gsm_raw = jrow.get("gsm")
+                if gsm_raw not in (None, ""):
+                    try:
+                        job_gsm = int(flt(str(gsm_raw).strip().split()[0]))
+                    except Exception:
+                        try:
+                            job_gsm = int(flt(gsm_raw))
+                        except Exception:
+                            pass
+                ppi_s = str(ppi).strip() if ppi not in (None, "") else None
+                jid_s = str(jid).strip() if jid not in (None, "") else None
+                ww = _resolve_wos_for_pp_job_row(
+                    pp_id,
+                    ppi=ppi_s,
+                    job_id=jid_s,
+                    row_index=idx - 1,
+                    combination=comb if comb else None,
+                    job_gsm=job_gsm,
+                )
+                if ww:
+                    jrow["work_orders"] = ", ".join(w["name"] for w in ww)
+            except Exception:
+                pass
+
         # Build debug info to discover actual field names
         _debug = {
             "shaft_count": len(shafts),
