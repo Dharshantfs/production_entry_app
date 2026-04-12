@@ -1123,10 +1123,32 @@ const autoMergeSuggestions = computed(() => {
     .sort((a, b) => b.items.length - a.items.length);
 });
 
+/**
+ * Merged board rows often point at the same Shaft Production Run; each row then carries the
+ * full SPR produced kg. Sum once per distinct spr_name instead of multiplying by merge width.
+ */
+function dedupeMergedActualProductionKg(items) {
+  if (!items || !items.length) return 0;
+  const bySpr = new Map();
+  let noSprSum = 0;
+  for (const it of items) {
+    const w = parseFloat(it.actual_production_weight_kgs) || 0;
+    const spr = String(it.spr_name || "").trim();
+    if (spr) {
+      bySpr.set(spr, Math.max(bySpr.get(spr) || 0, w));
+    } else {
+      noSprSum += w;
+    }
+  }
+  let total = noSprSum;
+  for (const v of bySpr.values()) total += v;
+  return total;
+}
+
 const selectedMergeSummary = computed(() => {
   const selectedItems = (mergeDialogItems.value || []).filter((it) => selectedMergeItems.value.has(it.itemName));
   const targetWeight = selectedItems.reduce((sum, it) => sum + (parseFloat(it.qty) || 0), 0);
-  const actualWeight = selectedItems.reduce((sum, it) => sum + (parseFloat(it.actual_production_weight_kgs) || 0), 0);
+  const actualWeight = dedupeMergedActualProductionKg(selectedItems);
   return {
     count: selectedItems.length,
     targetWeight,
@@ -1172,7 +1194,17 @@ const tableData = computed(() => {
         // Sort each date group individually using Board's exact queuing for that day
         dates.forEach(group => {
             group.items = sortItems(unit, group.items, group.date);
-            group.dailyActualTotal = group.items.reduce((sum, item) => sum + (parseFloat(item.actual_production_weight_kgs) || 0), 0);
+            const mergeSeenForDaily = new Set();
+            group.dailyActualTotal = group.items.reduce((sum, item) => {
+              const mergeId = mergedItemsMap.value[item.itemName];
+              if (!mergeId) {
+                return sum + (parseFloat(item.actual_production_weight_kgs) || 0);
+              }
+              if (mergeSeenForDaily.has(mergeId)) return sum;
+              mergeSeenForDaily.add(mergeId);
+              const mergeItems = (group.items || []).filter((it) => mergedItemsMap.value[it.itemName] === mergeId);
+              return sum + dedupeMergedActualProductionKg(mergeItems);
+            }, 0);
 
             const seenMerges = new Set();
             const rows = [];
@@ -1188,7 +1220,7 @@ const tableData = computed(() => {
               const merge = getMergeById(mergeId);
               const mergeItems = (group.items || []).filter((it) => mergedItemsMap.value[it.itemName] === mergeId);
               const totalTargetWeight = mergeItems.reduce((s, it) => s + (parseFloat(it.qty) || 0), 0);
-              const totalActualWeight = mergeItems.reduce((s, it) => s + (parseFloat(it.actual_production_weight_kgs) || 0), 0);
+              const totalActualWeight = dedupeMergedActualProductionKg(mergeItems);
               const hasDispatchLock = mergeItems.some((it) => ["Partly Delivered", "Fully Delivered"].includes(String(it.delivery_status || "")));
               const statuses = mergeItems.map((it) => String(it.delivery_status || "Not Delivered"));
               const mergeDispatchStatus = statuses.every((s) => s === "Fully Delivered")

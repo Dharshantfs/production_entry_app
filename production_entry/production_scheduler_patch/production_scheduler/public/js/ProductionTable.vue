@@ -344,7 +344,7 @@ const maintenanceData = ref({});
 async function fetchMaintenanceRecords() {
 	try {
 		const res = await frappe.call({
-			method: "production_scheduler.api.get_all_equipment_maintenance"
+			method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance"
 		});
 		if (res.message) {
 			maintenanceRecords.value = res.message;
@@ -376,7 +376,7 @@ async function deleteMaintenanceRecord(recordName) {
   if (!confirm('Remove this maintenance record?')) return;
 	try {
 		const res = await frappe.call({
-			method: "production_scheduler.api.delete_maintenance_and_cascade",
+			method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
 			args: { maintenance_record_name: recordName }
 		});
 		if (res.message && res.message.status === 'success') {
@@ -511,7 +511,7 @@ async function openMaintenanceDialog() {
 			}
 			try {
 				const res = await frappe.call({
-					method: "production_scheduler.api.add_equipment_maintenance",
+					method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
 					args: {
 						unit: vals.new_unit,
 						maintenance_type: vals.maint_type,
@@ -830,7 +830,7 @@ async function saveArrangement() {
 
       // Save to backend
       await frappe.call({
-        method: "production_scheduler.api.save_color_sequence",
+        method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date,
           unit,
@@ -887,7 +887,7 @@ async function restoreLastArrangement() {
     let restored = 0;
     for (const p of pairs) {
       const res = await frappe.call({
-        method: "production_scheduler.api.restore_last_color_sequence",
+        method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
         args: { date: p.date, unit: p.unit, plan_name: "Default" },
       });
       if (res?.message?.status === "success") restored += 1;
@@ -1123,10 +1123,32 @@ const autoMergeSuggestions = computed(() => {
     .sort((a, b) => b.items.length - a.items.length);
 });
 
+/**
+ * Merged board rows often point at the same Shaft Production Run; each row then carries the
+ * full SPR produced kg. Sum once per distinct spr_name instead of multiplying by merge width.
+ */
+function dedupeMergedActualProductionKg(items) {
+  if (!items || !items.length) return 0;
+  const bySpr = new Map();
+  let noSprSum = 0;
+  for (const it of items) {
+    const w = parseFloat(it.actual_production_weight_kgs) || 0;
+    const spr = String(it.spr_name || "").trim();
+    if (spr) {
+      bySpr.set(spr, Math.max(bySpr.get(spr) || 0, w));
+    } else {
+      noSprSum += w;
+    }
+  }
+  let total = noSprSum;
+  for (const v of bySpr.values()) total += v;
+  return total;
+}
+
 const selectedMergeSummary = computed(() => {
   const selectedItems = (mergeDialogItems.value || []).filter((it) => selectedMergeItems.value.has(it.itemName));
   const targetWeight = selectedItems.reduce((sum, it) => sum + (parseFloat(it.qty) || 0), 0);
-  const actualWeight = selectedItems.reduce((sum, it) => sum + (parseFloat(it.actual_production_weight_kgs) || 0), 0);
+  const actualWeight = dedupeMergedActualProductionKg(selectedItems);
   return {
     count: selectedItems.length,
     targetWeight,
@@ -1172,7 +1194,17 @@ const tableData = computed(() => {
         // Sort each date group individually using Board's exact queuing for that day
         dates.forEach(group => {
             group.items = sortItems(unit, group.items, group.date);
-            group.dailyActualTotal = group.items.reduce((sum, item) => sum + (parseFloat(item.actual_production_weight_kgs) || 0), 0);
+            const mergeSeenForDaily = new Set();
+            group.dailyActualTotal = group.items.reduce((sum, item) => {
+              const mergeId = mergedItemsMap.value[item.itemName];
+              if (!mergeId) {
+                return sum + (parseFloat(item.actual_production_weight_kgs) || 0);
+              }
+              if (mergeSeenForDaily.has(mergeId)) return sum;
+              mergeSeenForDaily.add(mergeId);
+              const mergeItems = (group.items || []).filter((it) => mergedItemsMap.value[it.itemName] === mergeId);
+              return sum + dedupeMergedActualProductionKg(mergeItems);
+            }, 0);
 
             const seenMerges = new Set();
             const rows = [];
@@ -1188,7 +1220,7 @@ const tableData = computed(() => {
               const merge = getMergeById(mergeId);
               const mergeItems = (group.items || []).filter((it) => mergedItemsMap.value[it.itemName] === mergeId);
               const totalTargetWeight = mergeItems.reduce((s, it) => s + (parseFloat(it.qty) || 0), 0);
-              const totalActualWeight = mergeItems.reduce((s, it) => s + (parseFloat(it.actual_production_weight_kgs) || 0), 0);
+              const totalActualWeight = dedupeMergedActualProductionKg(mergeItems);
               const hasDispatchLock = mergeItems.some((it) => ["Partly Delivered", "Fully Delivered"].includes(String(it.delivery_status || "")));
               const statuses = mergeItems.map((it) => String(it.delivery_status || "Not Delivered"));
               const mergeDispatchStatus = statuses.every((s) => s === "Fully Delivered")
@@ -1348,7 +1380,7 @@ async function loadMergesForCurrentData() {
   for (const date of dates) {
     try {
       const res = await frappe.call({
-        method: "production_scheduler.api.get_merges_for_date",
+        method: "production_entry.production_planning.scheduler_api.get_merges_for_date",
         args: {
           date,
           unit: filterUnit.value || null,
@@ -1475,7 +1507,7 @@ async function createMergeForItems(selectedItems, label) {
 
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.create_merge",
+      method: "production_entry.production_planning.scheduler_api.create_merge",
       args: {
         date: first.plannedDate,
         unit: first.unit,
@@ -1526,7 +1558,7 @@ async function deleteMerge(mergeId) {
   if (!window.confirm("Remove this merge and restore individual rows?")) return;
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.delete_merge",
+      method: "production_entry.production_planning.scheduler_api.delete_merge",
       args: { merge_id: mergeId },
     });
     if (res.message && res.message.status === "success") {
@@ -1568,7 +1600,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     // Only if NO item-level PP provided, fallback to API resolution (sheet-level or SO-level)
     console.warn("No item-level PP provided. Using API fallback for sheet:", planningSheetName);
     const res = await frappe.call({
-      method: "production_scheduler.api.get_planning_sheet_pp_id",
+      method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
       args: {
         planning_sheet_name: planningSheetName,
         sales_order_item: salesOrderItem,
@@ -1669,7 +1701,7 @@ async function createItemStockEntry(item) {
   if (!item.pp_id && item.planningSheet) {
     try {
       const ppRes = await frappe.call({
-        method: "production_scheduler.api.get_planning_sheet_pp_id",
+        method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
         args: {
           planning_sheet_name: item.planningSheet,
           sales_order_item: item.salesOrderItem || null,
@@ -1748,7 +1780,7 @@ async function createItemStockEntry(item) {
         });
         
         const res = await frappe.call({
-          method: "production_scheduler.api.create_item_spr",
+          method: "production_entry.production_planning.scheduler_api.create_item_spr",
           args: {
             pp_id: item.pp_id,
             planning_sheet_item_names: JSON.stringify([item.itemName])
@@ -1820,7 +1852,7 @@ async function createMergedStockEntry(mergedRow) {
     if (!item.pp_id && item.planningSheet) {
       try {
         const res = await frappe.call({
-          method: "production_scheduler.api.get_planning_sheet_pp_id",
+          method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
           args: {
             planning_sheet_name: item.planningSheet,
             sales_order_item: item.salesOrderItem || null,
@@ -1905,7 +1937,7 @@ async function createSingleMergedSPR(ppId, mergedItems, mergedRow) {
             try {
               const itemNames = mergedItems.map(it => it.itemName);
               const res = await frappe.call({
-                method: "production_scheduler.api.create_item_spr",
+                method: "production_entry.production_planning.scheduler_api.create_item_spr",
                 args: {
                   pp_id: ppId,
                   planning_sheet_item_names: JSON.stringify(itemNames)
@@ -2141,7 +2173,7 @@ async function fetchData() {
         args.planned_only = 1;
 
     const r = await frappe.call({
-      method: "production_scheduler.api.get_color_chart_data",
+      method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
       args: args,
     });
     rawData.value = (r.message || []).map(d => ({
@@ -2172,7 +2204,7 @@ async function fetchData() {
     if (seqStart && seqEnd) {
         try {
             const seqRes = await frappe.call({
-                method: "production_scheduler.api.get_color_sequences_range",
+                method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
                 args: { 
                     start_date: seqStart, 
                     end_date: seqEnd, 
