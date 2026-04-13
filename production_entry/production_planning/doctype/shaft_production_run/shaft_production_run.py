@@ -1184,6 +1184,43 @@ class ShaftProductionRun(Document):
 		if meta.has_field("shaft_production_run"):
 			se.shaft_production_run = self.name
 
+	def _resolve_spr_unit_value(self, wo_doc=None) -> str:
+		"""Pick unit for Stock Entry: SPR header first, then WO."""
+		for v in (
+			self.get("custom_unit"),
+			self.get("unit"),
+			getattr(wo_doc, "custom_unit", None) if wo_doc else None,
+			getattr(wo_doc, "unit", None) if wo_doc else None,
+		):
+			s = _cstr(v)
+			if s:
+				return s
+		return ""
+
+	def _set_stock_entry_unit(self, se, wo_doc=None):
+		meta = frappe.get_meta("Stock Entry")
+		if not meta.has_field("unit"):
+			return
+		unit_value = self._resolve_spr_unit_value(wo_doc)
+		if unit_value:
+			se.unit = unit_value
+
+	def _rm_shortages_for_se(self, se) -> list[tuple[str, str, float, float, float]]:
+		"""Return RM shortages as (item_code, s_warehouse, required, available, shortage)."""
+		out = []
+		for d in se.items or []:
+			if not d.item_code or d.get("t_warehouse"):
+				continue
+			required = flt(d.get("transfer_qty") or d.get("qty"))
+			if required <= 0:
+				continue
+			wh = _cstr(d.get("s_warehouse"))
+			available = flt(frappe.db.get_value("Bin", {"item_code": d.item_code, "warehouse": wh}, "actual_qty") or 0)
+			shortage = required - available
+			if shortage > 1e-9:
+				out.append((_cstr(d.item_code), wh, required, available, shortage))
+		return out
+
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
 		# Prefer exact standard type label only when its mapped purpose is truly Manufacture.
@@ -1619,6 +1656,7 @@ class ShaftProductionRun(Document):
 				se.to_warehouse = wo_doc.fg_warehouse
 
 				self._set_stock_entry_spr_link(se)
+				self._set_stock_entry_unit(se, wo_doc)
 
 				# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
 				se.get_items()
@@ -1677,6 +1715,9 @@ class ShaftProductionRun(Document):
 					)
 				# If entry type remaps purpose during validate hooks, block before submit.
 				se.reload()
+				self._set_stock_entry_unit(se, wo_doc)
+				if _cstr(self._resolve_spr_unit_value(wo_doc)) and _cstr(se.get("unit")) != _cstr(self._resolve_spr_unit_value(wo_doc)):
+					frappe.db.set_value("Stock Entry", se.name, "unit", self._resolve_spr_unit_value(wo_doc), update_modified=False)
 				if _cstr(se.purpose) != "Manufacture":
 					frappe.throw(
 						_(
@@ -1685,7 +1726,26 @@ class ShaftProductionRun(Document):
 						).format(se.name, _cstr(se.purpose) or "—"),
 						title=_("Invalid Stock Entry purpose"),
 					)
-				se.submit()
+				try:
+					se.submit()
+				except Exception:
+					shortages = self._rm_shortages_for_se(se)
+					if shortages:
+						lines = "\n".join(
+							[
+								_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
+									it, wh or "—", flt(req, 3), flt(avl, 3), flt(sh, 3)
+								)
+								for it, wh, req, avl, sh in shortages[:20]
+							]
+						)
+						frappe.throw(
+							_(
+								"Insufficient WIP stock for WO {0}. Transfer only the shortage items to WIP and retry submit.\n\n{1}"
+							).format(wo_id, lines),
+							title=_("Insufficient stock"),
+						)
+					raise
 				# Link back to WO after successful submit, then sync WO produced qty.
 				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
 				self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
