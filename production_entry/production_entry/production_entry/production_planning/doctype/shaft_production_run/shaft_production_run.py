@@ -1565,7 +1565,8 @@ class ShaftProductionRun(Document):
 				se.posting_date = self.run_date or today()
 				se.posting_time = nowtime()
 				se.set_posting_time = 1
-				se.stock_entry_type = "Manufacture"
+				# Use purpose directly; avoid Stock Entry Type remapping to transfer on customized sites.
+				se.stock_entry_type = ""
 				# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
 				se.purpose = "Manufacture"
 				se.work_order = wo_id
@@ -1621,12 +1622,15 @@ class ShaftProductionRun(Document):
 				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows)
 
 				# Hard guard: submit path must always be Manufacture (never Material Transfer).
-				se.stock_entry_type = "Manufacture"
+				se.stock_entry_type = ""
 				se.purpose = "Manufacture"
 				se.insert()
 				if _cstr(se.purpose) != "Manufacture":
 					frappe.throw(
-						_("Stock Entry {0} resolved to purpose {1}; expected Manufacture. Aborting SPR submit.").format(
+						_(
+							"Stock Entry {0} resolved to purpose {1}; expected Manufacture. "
+							"Check Stock Entry Type/site customization remapping and retry."
+						).format(
 							se.name, _cstr(se.purpose) or "—"
 						),
 						title=_("Invalid Stock Entry purpose"),
