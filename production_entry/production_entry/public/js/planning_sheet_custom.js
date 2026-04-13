@@ -18,6 +18,22 @@ frappe.ui.form.on('Planning sheet', {
                 }
             });
         }, __('Actions'));
+        frm.add_custom_button(__('Update SPR + Order Sheet'), function() {
+            frappe.call({
+                method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_spr_and_order_sheet',
+                args: { planning_sheet: frm.doc.name },
+                freeze: true,
+                freeze_message: __('Updating SPR and Order Sheet links...'),
+                callback: function(r) {
+                    const m = r.message || {};
+                    frappe.show_alert({
+                        message: __(m.message || 'SPR/Order Sheet update completed.'),
+                        indicator: 'green'
+                    });
+                    frm.reload_doc();
+                }
+            });
+        }, __('Actions'));
     },
 
     after_load: function(frm) {

@@ -889,6 +889,80 @@ def refresh_planning_sheet_colors(planning_sheet: str):
 
     return {"status": "ok", "updated": updated, "message": f"Updated color on {updated} row(s)."}
 
+
+@frappe.whitelist()
+def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
+    """Backfill Planning Table `order_sheet` and `spr_name` for a sheet even after submit."""
+    if not planning_sheet or not frappe.db.exists("Planning sheet", planning_sheet):
+        return {"status": "error", "message": "Planning sheet not found", "updated_order_sheet": 0, "updated_spr": 0}
+
+    sheet_pp = (
+        frappe.db.get_value("Planning sheet", planning_sheet, "custom_production_plan")
+        if frappe.db.has_column("Planning sheet", "custom_production_plan")
+        else ""
+    ) or (
+        frappe.db.get_value("Planning sheet", planning_sheet, "production_plan")
+        if frappe.db.has_column("Planning sheet", "production_plan")
+        else ""
+    ) or (frappe.db.get_value("Planning sheet", planning_sheet, "order_sheet") or "")
+    sheet_pp = (sheet_pp or "").strip()
+
+    rows = frappe.get_all(
+        "Planning Table",
+        filters={"parent": planning_sheet, "parenttype": "Planning sheet"},
+        fields=["name", "spr_name", "order_sheet"],
+        order_by="idx asc",
+    ) or []
+
+    pp_to_spr = {}
+    updated_order_sheet = 0
+    updated_spr = 0
+
+    def _pick_spr_for_pp(pp_id: str) -> str:
+        pp_id = (pp_id or "").strip()
+        if not pp_id:
+            return ""
+        if pp_id in pp_to_spr:
+            return pp_to_spr[pp_id]
+
+        spr_name = ""
+        raw = str(frappe.db.get_value("Production Plan", pp_id, "custom_shaft_production_run_id") or "").strip()
+        if raw:
+            for p in [x.strip() for x in raw.split(",") if x and x.strip()]:
+                if frappe.db.exists("Shaft Production Run", p):
+                    spr_name = p
+                    break
+        if not spr_name:
+            spr_name = (
+                frappe.db.get_value(
+                    "Shaft Production Run",
+                    {"production_plan": pp_id, "docstatus": ["<", 2]},
+                    "name",
+                    order_by="modified desc",
+                )
+                or ""
+            )
+        pp_to_spr[pp_id] = spr_name
+        return spr_name
+
+    for r in rows:
+        row_pp = (_get_item_level_production_plan(r.name) or "").strip() or (r.get("order_sheet") or "").strip() or sheet_pp
+        if row_pp and (r.get("order_sheet") or "").strip() != row_pp:
+            frappe.db.set_value("Planning Table", r["name"], "order_sheet", row_pp, update_modified=False)
+            updated_order_sheet += 1
+
+        row_spr = _pick_spr_for_pp(row_pp) if row_pp else ""
+        if row_spr and (r.get("spr_name") or "").strip() != row_spr:
+            frappe.db.set_value("Planning Table", r["name"], "spr_name", row_spr, update_modified=False)
+            updated_spr += 1
+
+    return {
+        "status": "ok",
+        "updated_order_sheet": updated_order_sheet,
+        "updated_spr": updated_spr,
+        "message": f"Updated Order Sheet on {updated_order_sheet} row(s), SPR on {updated_spr} row(s).",
+    }
+
 # White colors that are auto-planned on the Production Board and excluded from Color Chart sequencing
 WHITE_COLORS = {
     "WHITE", "BRIGHT WHITE", "SUNSHINE WHITE", "MILKY WHITE", 
