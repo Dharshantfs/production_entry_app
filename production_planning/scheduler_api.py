@@ -3417,6 +3417,8 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
     so_item_code_order_wo_count_map = {}
     order_code_item_produced_map = {}
     order_code_item_wo_count_map = {}
+    so_item_delivered_qty_map = {}
+    order_item_delivered_qty_map = {}
     
     valid_pps = set()
     
@@ -3451,6 +3453,44 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
         """, tuple(so_names), as_dict=True)
         for row in wo_data_so:
             so_wo_map[row.sales_order] = row.name
+
+        # Delivery qty by Sales Order + Item Code from submitted Delivery Notes.
+        dn_rows = frappe.db.sql(f"""
+            SELECT dni.against_sales_order as sales_order, dni.item_code, IFNULL(SUM(dni.qty), 0) as delivered_qty
+            FROM `tabDelivery Note Item` dni
+            INNER JOIN `tabDelivery Note` dn ON dn.name = dni.parent
+            WHERE dn.docstatus = 1
+              AND dni.against_sales_order IN ({format_string_so})
+            GROUP BY dni.against_sales_order, dni.item_code
+        """, tuple(so_names), as_dict=True) or []
+        for r in dn_rows:
+            k = ((r.get("sales_order") or "").strip(), (r.get("item_code") or "").strip())
+            if k[0] and k[1]:
+                so_item_delivered_qty_map[k] = flt(r.get("delivered_qty") or 0)
+
+    # Delivery qty by Order Code + Item Code from Batch link (for scanner-driven DN flows).
+    party_codes = list({str(s.party_code).strip() for s in planning_sheets if s.get("party_code")})
+    if party_codes and frappe.db.exists("DocType", "Batch"):
+        batch_order_col = None
+        for c in ["custom_party_code_text", "custom_order_code", "order_code", "party_code"]:
+            if frappe.db.has_column("Batch", c):
+                batch_order_col = c
+                break
+        if batch_order_col:
+            fmt_party = ",".join(["%s"] * len(party_codes))
+            dn_order_rows = frappe.db.sql(f"""
+                SELECT b.{batch_order_col} as order_code, dni.item_code, IFNULL(SUM(dni.qty), 0) as delivered_qty
+                FROM `tabDelivery Note Item` dni
+                INNER JOIN `tabDelivery Note` dn ON dn.name = dni.parent
+                INNER JOIN `tabBatch` b ON b.name = dni.batch_no
+                WHERE dn.docstatus = 1
+                  AND IFNULL(b.{batch_order_col}, '') IN ({fmt_party})
+                GROUP BY b.{batch_order_col}, dni.item_code
+            """, tuple(party_codes), as_dict=True) or []
+            for r in dn_order_rows:
+                k = ((r.get("order_code") or "").strip(), (r.get("item_code") or "").strip())
+                if k[0] and k[1]:
+                    order_item_delivered_qty_map[k] = flt(r.get("delivered_qty") or 0)
 
         # Effective produced qty by Sales Order (WO produced_qty + submitted FG Stock Entry)
         so_prod_rows = frappe.db.sql(f"""
@@ -4433,6 +4473,18 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 if not has_psi_spr_weight:
                     total_achieved_weight_kgs = flt(item_level_produced)
             
+            delivered_qty = max(
+                flt(so_item_delivered_qty_map.get(((sheet.sales_order or "").strip(), (item.get("item_code") or "").strip()), 0)),
+                flt(order_item_delivered_qty_map.get(((sheet.party_code or "").strip(), (item.get("item_code") or "").strip()), 0)),
+            )
+            if delivered_qty > 0:
+                if delivered_qty + 1e-9 >= flt(item.get("qty", 0)):
+                    row_delivery_status = "Fully Delivered"
+                else:
+                    row_delivery_status = "Partly Delivered"
+            else:
+                row_delivery_status = so_status_map.get(sheet.sales_order) or "Not Delivered"
+
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),
                 "itemName": item.name,
@@ -4459,7 +4511,7 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 "planned_date": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
                 "plannedDate": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
                 "dod": str(sheet.dod) if sheet.dod else "",
-                "delivery_status": so_status_map.get(sheet.sales_order) or "Not Delivered",
+                "delivery_status": row_delivery_status,
                 "has_pp": bool(item_pp or sheet_has_pp),
                 "has_wo": bool(item_level_wo_count),
                 "produced_qty": flt(item_level_produced),
