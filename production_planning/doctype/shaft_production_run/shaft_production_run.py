@@ -581,6 +581,53 @@ def _pick_one_wo_by_gsm(wos: list, job_gsm: int | None) -> list:
 	return [wos[0]]
 
 
+def _pick_wos_by_gsm_and_width(wos: list, job_gsm: int | None, combination: str | None = None) -> list:
+	"""Pick WO(s) by width (+ GSM when available). Supports single-width and multi-width combinations."""
+	if not wos:
+		return []
+	widths = _parse_combination_widths_inches(combination) if combination else []
+	if widths:
+		tol = 0.75
+		out: list = []
+		seen = set()
+		for tw in widths:
+			best = None
+			# 1) Prefer exact GSM + width
+			if job_gsm and job_gsm > 0:
+				for wo in wos:
+					try:
+						prod_item = wo.get("production_item")
+						if not prod_item:
+							continue
+						gsm, ww = parse_item_code(_cstr(prod_item))
+						if gsm == int(job_gsm) and abs(flt(ww) - flt(tw)) <= tol:
+							best = wo
+							break
+					except Exception:
+						pass
+			# 2) Width-only fallback (if no GSM or no exact GSM+width)
+			if best is None:
+				for wo in wos:
+					try:
+						prod_item = wo.get("production_item")
+						if not prod_item:
+							continue
+						_gsm, ww = parse_item_code(_cstr(prod_item))
+						if abs(flt(ww) - flt(tw)) <= tol:
+							best = wo
+							break
+					except Exception:
+						pass
+			if best:
+				nm = _cstr(best.get("name"))
+				if nm and nm not in seen:
+					seen.add(nm)
+					out.append(best)
+		if out:
+			return out
+	return _pick_one_wo_by_gsm(wos, job_gsm)
+
+
 def _resolve_wos_for_pp_job_row(
 	pp_name: str,
 	*,
@@ -628,22 +675,22 @@ def _resolve_wos_for_pp_job_row(
 	if ppi:
 		wos = get_work_orders_for_job(pp_name, _cstr(ppi))
 		if wos:
-			return _pick_one_wo_by_gsm(wos, job_gsm)
+			return _pick_wos_by_gsm_and_width(wos, job_gsm, comb)
 
 	if job_id:
 		wos = get_work_orders_for_job(pp_name, _cstr(job_id))
 		if wos:
-			return _pick_one_wo_by_gsm(wos, job_gsm)
+			return _pick_wos_by_gsm_and_width(wos, job_gsm, comb)
 
 	if row_index is not None:
 		ord_ppi = _ordered_production_plan_items(pp_name)
 		if ord_ppi and 0 <= row_index < len(ord_ppi):
 			wos = get_work_orders_for_job(pp_name, ord_ppi[row_index])
 			if wos:
-				return _pick_one_wo_by_gsm(wos, job_gsm)
+				return _pick_wos_by_gsm_and_width(wos, job_gsm, comb)
 
 	all_wos = _get_all_work_orders_for_production_plan(pp_name)
-	return _pick_one_wo_by_gsm(all_wos, job_gsm) if all_wos else []
+	return _pick_wos_by_gsm_and_width(all_wos, job_gsm, comb) if all_wos else []
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
@@ -693,7 +740,10 @@ def _build_shaft_jobs_from_pp_details(production_plan: str) -> list[dict] | None
 			continue
 		m["job_id"] = _cstr(jn)
 		if job_meta.has_field("production_plan_item"):
-			m["production_plan_item"] = _cstr(jn)
+			# Use explicit PP-item link only when row already carries a real child-row name.
+			ppi = _cstr(r.get("production_plan_item") or r.get("against_production_plan_item"))
+			if ppi and frappe.db.exists("Production Plan Item", ppi):
+				m["production_plan_item"] = ppi
 		if r.get("shaft_combination") is not None and job_meta.has_field("combination"):
 			m["combination"] = r.get("shaft_combination")
 		for fn in (
@@ -2241,14 +2291,8 @@ def _resolve_job_ref_to_production_plan_item(pp_name: str, job_ref: str) -> str 
 		return None
 	if t in names:
 		return t
-	if len(names) == 1:
-		if t.isdigit():
-			return names[0]
-		return None
-	if t.isdigit():
-		n = int(t)
-		if 1 <= n <= len(names):
-			return names[n - 1]
+	if len(names) == 1 and t.isdigit():
+		return names[0]
 	return None
 
 
