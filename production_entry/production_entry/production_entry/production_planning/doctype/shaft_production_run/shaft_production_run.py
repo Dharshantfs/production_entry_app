@@ -1479,6 +1479,24 @@ class ShaftProductionRun(Document):
 			title=_("RM split variance"),
 		)
 
+	def _sync_work_order_produced_qty_from_submitted_manufacture(self, wo_id: str):
+		"""Recompute WO produced_qty from submitted Manufacture entries."""
+		if not wo_id:
+			return
+		total = flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(fg_completed_qty), 0)
+				FROM `tabStock Entry`
+				WHERE work_order = %s
+				  AND IFNULL(purpose, '') = 'Manufacture'
+				  AND docstatus = 1
+				""",
+				wo_id,
+			)[0][0]
+		)
+		frappe.db.set_value("Work Order", wo_id, "produced_qty", total, update_modified=False)
+
 	def create_manufacturing_stock_entries(self):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
 
@@ -1589,7 +1607,9 @@ class ShaftProductionRun(Document):
 				se.stock_entry_type = self._manufacture_stock_entry_type_name()
 				# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
 				se.purpose = "Manufacture"
-				se.work_order = wo_id
+				# Keep empty while inserting/submitting to avoid transfer-duplicate blocker (MAT-STE).
+				# We link back to WO immediately after submit.
+				se.work_order = None
 				se.production_item = wo_doc.production_item
 				se.fg_completed_qty = chunk_total_qty
 				se.from_bom = 1
@@ -1666,6 +1686,9 @@ class ShaftProductionRun(Document):
 						title=_("Invalid Stock Entry purpose"),
 					)
 				se.submit()
+				# Link back to WO after successful submit, then sync WO produced qty.
+				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
+				self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
 				created_entries.append(se.name)
 
 				frappe.msgprint(
