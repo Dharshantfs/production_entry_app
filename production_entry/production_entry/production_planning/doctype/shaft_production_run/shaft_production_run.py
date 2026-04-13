@@ -1474,7 +1474,9 @@ class ShaftProductionRun(Document):
 			wo_groups.setdefault(wo_name, []).append(row)
 
 		created_entries = []
+		planned_wo_posts = []
 
+		# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
 		for wo_id, rows in wo_groups.items():
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			total_qty = sum(self._row_fg_qty(r) for r in rows)
@@ -1513,7 +1515,6 @@ class ShaftProductionRun(Document):
 			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
 			row_chunks = self._split_rows_by_qty_limit(rows, allowed_entry_qty)
 			expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
-			actual_rm_map = {}
 			if len(row_chunks) > 1:
 				frappe.msgprint(
 					_(
@@ -1536,6 +1537,25 @@ class ShaftProductionRun(Document):
 					title=_("Missing WIP Warehouse")
 				)
 
+			planned_wo_posts.append(
+				{
+					"wo_id": wo_id,
+					"wo_doc": wo_doc,
+					"rows": rows,
+					"total_qty": total_qty,
+					"row_chunks": row_chunks,
+					"expected_rm_map": expected_rm_map,
+				}
+			)
+
+		# Phase 2: after all WO groups are valid, create/submit Manufacture entries.
+		for plan in planned_wo_posts:
+			wo_id = plan["wo_id"]
+			wo_doc = plan["wo_doc"]
+			row_chunks = plan["row_chunks"]
+			total_qty = plan["total_qty"]
+			expected_rm_map = plan["expected_rm_map"]
+			actual_rm_map = {}
 			for idx, chunk_rows in enumerate(row_chunks, start=1):
 				chunk_total_qty = sum(self._row_fg_qty(r) for r in chunk_rows)
 				if chunk_total_qty <= 0:
@@ -1600,7 +1620,17 @@ class ShaftProductionRun(Document):
 				self._strip_finished_goods_from_stock_entry(se)
 				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows)
 
+				# Hard guard: submit path must always be Manufacture (never Material Transfer).
+				se.stock_entry_type = "Manufacture"
+				se.purpose = "Manufacture"
 				se.insert()
+				if _cstr(se.purpose) != "Manufacture":
+					frappe.throw(
+						_("Stock Entry {0} resolved to purpose {1}; expected Manufacture. Aborting SPR submit.").format(
+							se.name, _cstr(se.purpose) or "—"
+						),
+						title=_("Invalid Stock Entry purpose"),
+					)
 				se.submit()
 				created_entries.append(se.name)
 
