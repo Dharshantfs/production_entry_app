@@ -1018,6 +1018,70 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
         "message": f"Updated Order Sheet on {updated_order_sheet} row(s), SPR on {updated_spr} row(s).",
     }
 
+
+@frappe.whitelist()
+def manual_update_planning_sheet_links(planning_sheet: str, mappings):
+    """
+    Manual safe updater for Planning Table links.
+    mappings: JSON array of objects -> {row_name, order_sheet, spr_name}
+    """
+    if not planning_sheet or not frappe.db.exists("Planning sheet", planning_sheet):
+        return {"status": "error", "message": "Planning sheet not found", "updated": 0, "errors": []}
+
+    if isinstance(mappings, str):
+        try:
+            mappings = json.loads(mappings)
+        except Exception:
+            return {"status": "error", "message": "Invalid mappings JSON", "updated": 0, "errors": ["Invalid JSON"]}
+    mappings = mappings or []
+    if not isinstance(mappings, list):
+        return {"status": "error", "message": "Mappings must be a list", "updated": 0, "errors": ["Mappings must be list"]}
+
+    rows = frappe.get_all(
+        "Planning Table",
+        filters={"parent": planning_sheet, "parenttype": "Planning sheet"},
+        fields=["name"],
+        pluck="name",
+    ) or []
+    valid_rows = set(rows)
+    updated = 0
+    errors = []
+
+    for i, m in enumerate(mappings, start=1):
+        row_name = (m.get("row_name") or "").strip()
+        pp = (m.get("order_sheet") or "").strip()
+        spr = (m.get("spr_name") or "").strip()
+        if not row_name:
+            errors.append(f"Line {i}: row_name is required")
+            continue
+        if row_name not in valid_rows:
+            errors.append(f"Line {i}: row {row_name} is not part of {planning_sheet}")
+            continue
+        if pp and not frappe.db.exists("Production Plan", pp):
+            errors.append(f"Line {i}: Production Plan {pp} not found")
+            continue
+        if spr and not frappe.db.exists("Shaft Production Run", spr):
+            errors.append(f"Line {i}: SPR {spr} not found")
+            continue
+        if pp and spr:
+            spr_pp = (frappe.db.get_value("Shaft Production Run", spr, "production_plan") or "").strip()
+            if spr_pp and spr_pp != pp:
+                errors.append(f"Line {i}: SPR {spr} belongs to {spr_pp}, not {pp}")
+                continue
+
+        if pp:
+            frappe.db.set_value("Planning Table", row_name, "order_sheet", pp, update_modified=False)
+        if spr:
+            frappe.db.set_value("Planning Table", row_name, "spr_name", spr, update_modified=False)
+        updated += 1
+
+    return {
+        "status": "ok",
+        "updated": updated,
+        "errors": errors,
+        "message": f"Updated {updated} row(s)." + (f" Errors: {len(errors)}" if errors else ""),
+    }
+
 # White colors that are auto-planned on the Production Board and excluded from Color Chart sequencing
 WHITE_COLORS = {
     "WHITE", "BRIGHT WHITE", "SUNSHINE WHITE", "MILKY WHITE", 

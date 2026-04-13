@@ -34,6 +34,57 @@ frappe.ui.form.on('Planning sheet', {
                 }
             });
         }, __('Actions'));
+        frm.add_custom_button(__('Manual Update SPR/Order Sheet'), function() {
+            const d = new frappe.ui.Dialog({
+                title: __('Manual Update SPR / Order Sheet'),
+                fields: [
+                    {
+                        fieldname: 'help',
+                        fieldtype: 'HTML',
+                        options:
+                            '<p class="text-muted small">' +
+                            __('Paste one line per row: row_name,order_sheet,spr_name') +
+                            '<br>' +
+                            __('Example: PT-ROW-0001,MFG-PP-2026-00354,SPR-2026-00180') +
+                            '</p>',
+                    },
+                    { fieldname: 'lines', fieldtype: 'Long Text', reqd: 1, label: __('Mappings') },
+                ],
+                primary_action_label: __('Apply'),
+                primary_action: function(vals) {
+                    const text = (vals.lines || '').trim();
+                    if (!text) return;
+                    const mappings = text
+                        .split(/\r?\n/)
+                        .map((ln) => ln.trim())
+                        .filter(Boolean)
+                        .map((ln) => {
+                            const p = ln.split(',').map((x) => (x || '').trim());
+                            return { row_name: p[0] || '', order_sheet: p[1] || '', spr_name: p[2] || '' };
+                        });
+                    frappe.call({
+                        method: 'production_entry.production_planning.scheduler_api.manual_update_planning_sheet_links',
+                        args: { planning_sheet: frm.doc.name, mappings: JSON.stringify(mappings) },
+                        freeze: true,
+                        freeze_message: __('Applying manual mapping...'),
+                        callback: function(r) {
+                            const m = r.message || {};
+                            d.hide();
+                            if (m.errors && m.errors.length) {
+                                frappe.msgprint({
+                                    title: __('Manual Update Completed with Errors'),
+                                    message: (m.message || '') + '<br><br>' + m.errors.map((e) => frappe.utils.escape_html(e)).join('<br>'),
+                                });
+                            } else {
+                                frappe.show_alert({ message: __(m.message || 'Updated successfully'), indicator: 'green' });
+                            }
+                            frm.reload_doc();
+                        },
+                    });
+                },
+            });
+            d.show();
+        }, __('Actions'));
     },
 
     after_load: function(frm) {
