@@ -115,6 +115,45 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 		out[fn_l] = flt(ln)
 	if batch_meta.has_field("custom_cbm") and _spr_row_get(spr_row, "custom_cbm") is not None:
 		out["custom_cbm"] = flt(_spr_row_get(spr_row, "custom_cbm"))
+
+	def _set_first_batch_field(candidates: tuple[str, ...], value, label_tokens: tuple[str, ...] = ()):
+		if value in (None, ""):
+			return
+		for fn in candidates:
+			if batch_meta.has_field(fn):
+				out[fn] = value
+				return
+		if label_tokens:
+			for df in (batch_meta.fields or []):
+				lab = (df.label or "").lower()
+				if all(t in lab for t in label_tokens):
+					out[df.fieldname] = value
+					return
+
+	order_code = (
+		_cstr(_spr_row_get(spr_row, "custom_party_code_text"))
+		or _cstr(_spr_row_get(spr_row, "party_code"))
+		or _cstr(_spr_row_get(spr_row, "custom_order_code"))
+		or _cstr(_spr_row_get(spr_row, "order_code"))
+	)
+	work_order = _cstr(_spr_row_get(spr_row, "work_order") or _spr_row_get(spr_row, "wo_id"))
+	roll_no = _spr_row_get(spr_row, "roll_no")
+
+	_set_first_batch_field(
+		("custom_party_code_text", "custom_order_code", "order_code", "party_code"),
+		order_code,
+		("order", "code"),
+	)
+	_set_first_batch_field(
+		("work_order", "custom_work_order", "wo_no", "custom_wo_no"),
+		work_order,
+		("work", "order"),
+	)
+	_set_first_batch_field(
+		("roll_no", "custom_roll_no", "roll_number", "custom_roll_number"),
+		roll_no,
+		("roll",),
+	)
 	return out
 
 
