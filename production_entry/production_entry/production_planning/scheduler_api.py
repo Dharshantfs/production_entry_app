@@ -829,6 +829,66 @@ def _get_color_by_code(color_code):
     
     return None
 
+
+def _normalize_color_text(v) -> str:
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    su = s.upper()
+    if su in {"UNKNOWN", "UNKNOWN COLOR", "NO COLOR", "N/A", "NA", "-"}:
+        return ""
+    return s
+
+
+def _extract_color_from_sales_order_item(so_item_name: str) -> str:
+    if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
+        return ""
+    cols = set(frappe.db.get_table_columns("Sales Order Item") or [])
+    candidates = []
+    for c in ("color", "custom_color", "colour", "custom_colour"):
+        if c in cols:
+            candidates.append(c)
+    if not candidates:
+        return ""
+    row = frappe.db.get_value("Sales Order Item", so_item_name, candidates, as_dict=True) or {}
+    for c in candidates:
+        v = _normalize_color_text(row.get(c))
+        if v:
+            return v.upper().strip()
+    return ""
+
+
+@frappe.whitelist()
+def refresh_planning_sheet_colors(planning_sheet: str):
+    """Re-sync Planning sheet item colors from Sales Order Item / Item code parsing even after submit."""
+    if not planning_sheet or not frappe.db.exists("Planning sheet", planning_sheet):
+        return {"status": "error", "message": "Planning sheet not found", "updated": 0}
+
+    rows = frappe.get_all(
+        "Planning Table",
+        filters={"parent": planning_sheet, "parenttype": "Planning sheet"},
+        fields=["name", "sales_order_item", "item_code", "item_name", "color"],
+        order_by="idx asc",
+    ) or []
+
+    updated = 0
+    for r in rows:
+        existing = _normalize_color_text(r.get("color"))
+        from_so = _extract_color_from_sales_order_item(r.get("sales_order_item"))
+        parsed = resolve_color_name_for_planning_row(
+            r.get("item_code"), r.get("item_name"), existing_color=""
+        )
+        parsed = _normalize_color_text(parsed)
+        next_color = (from_so or parsed or "").upper().strip()
+        if next_color and next_color != str(r.get("color") or "").strip().upper():
+            frappe.db.set_value("Planning Table", r["name"], "color", next_color, update_modified=False)
+            updated += 1
+
+    if updated:
+        frappe.db.set_value("Planning sheet", planning_sheet, "modified", frappe.utils.now(), update_modified=False)
+
+    return {"status": "ok", "updated": updated, "message": f"Updated color on {updated} row(s)."}
+
 # White colors that are auto-planned on the Production Board and excluded from Color Chart sequencing
 WHITE_COLORS = {
     "WHITE", "BRIGHT WHITE", "SUNSHINE WHITE", "MILKY WHITE", 
