@@ -90,9 +90,9 @@ after_migrate = ["production_entry.install.after_migrate"]
 # ---------------
 # Override standard doctype classes
 
-# override_doctype_class = {
-# 	"ToDo": "custom_app.overrides.CustomToDo"
-# }
+override_doctype_class = {
+	"Stock Entry": "production_entry.stock_entry_override.SPRStockEntryOverride",
+}
 
 # Document Events
 # ---------------
