@@ -1186,14 +1186,23 @@ class ShaftProductionRun(Document):
 
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
-		# Prefer exact standard type label when present on site.
+		# Prefer exact standard type label only when its mapped purpose is truly Manufacture.
 		if frappe.db.exists("Stock Entry Type", "Manufacture"):
-			return "Manufacture"
+			p = _cstr(frappe.db.get_value("Stock Entry Type", "Manufacture", "purpose"))
+			if p == "Manufacture":
+				return "Manufacture"
 		name = frappe.db.get_value("Stock Entry Type", {"purpose": "Manufacture"}, "name")
 		if name:
 			return _cstr(name)
-		# Fallback used in many ERPNext sites.
-		return "Manufacture"
+		# Mandatory field on this site: fail fast with explicit setup message.
+		frappe.throw(
+			_(
+				"Cannot create SPR Manufacture entry because no Stock Entry Type is mapped to purpose "
+				"'Manufacture'. Please configure one in Stock Entry Type master."
+			),
+			title=_("Missing Manufacture Stock Entry Type"),
+		)
+		return ""
 
 	def _strip_finished_goods_from_stock_entry(self, se):
 		"""Remove FG rows from BOM-generated Stock Entry (we re-add per roll with batch_no)."""
@@ -1644,6 +1653,16 @@ class ShaftProductionRun(Document):
 						).format(
 							se.name, _cstr(se.purpose) or "—"
 						),
+						title=_("Invalid Stock Entry purpose"),
+					)
+				# If entry type remaps purpose during validate hooks, block before submit.
+				se.reload()
+				if _cstr(se.purpose) != "Manufacture":
+					frappe.throw(
+						_(
+							"Stock Entry {0} changed to purpose {1} after insert; expected Manufacture. "
+							"Fix Stock Entry Type mapping/custom script and retry."
+						).format(se.name, _cstr(se.purpose) or "—"),
 						title=_("Invalid Stock Entry purpose"),
 					)
 				se.submit()
