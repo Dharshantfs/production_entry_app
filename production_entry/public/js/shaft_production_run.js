@@ -1,3 +1,20 @@
+const SPR_DEBUG_LOGS = false;
+function sprLog() {
+	if (!SPR_DEBUG_LOGS || !window.console || !console.log) return;
+	console.log.apply(console, arguments);
+}
+
+function sprScheduleTotalProducedSync(frm) {
+	if (!frm) return;
+	if (frm.__spr_total_sync_timer) {
+		clearTimeout(frm.__spr_total_sync_timer);
+	}
+	frm.__spr_total_sync_timer = setTimeout(function () {
+		spr_sync_total_produced_weight(frm);
+		frm.__spr_total_sync_timer = null;
+	}, 120);
+}
+
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
 		// Buttons registered in refresh — see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
@@ -50,28 +67,28 @@ frappe.ui.form.on('Shaft Production Run', {
 			args: { production_plan: frm.doc.production_plan },
 			callback: function (r) {
 				const d = r.message || {};
-				console.log('[SPR] get_production_plan_details response:', d);
-				console.log('[SPR] response keys:', Object.keys(d));
+				sprLog('[SPR] get_production_plan_details response:', d);
+				sprLog('[SPR] response keys:', Object.keys(d));
 				
 				// Set all returned fields that exist on the form
 				if (d.customer) {
-					console.log('[SPR] Setting customer:', d.customer);
+					sprLog('[SPR] Setting customer:', d.customer);
 					frm.set_value('customer', d.customer);
 				}
 				if (d.custom_unit) {
-					console.log('[SPR] Setting custom_unit:', d.custom_unit);
+					sprLog('[SPR] Setting custom_unit:', d.custom_unit);
 					frm.set_value('custom_unit', d.custom_unit);
 				}
 				if ('custom_order_code' in d) {
-					console.log('[SPR] Setting custom_order_code:', d.custom_order_code);
+					sprLog('[SPR] Setting custom_order_code:', d.custom_order_code);
 					frm.set_value('custom_order_code', d.custom_order_code || '');
 				}
 				if ('custom_label' in d) {
-					console.log('[SPR] Setting custom_label:', d.custom_label);
+					sprLog('[SPR] Setting custom_label:', d.custom_label);
 					frm.set_value('custom_label', d.custom_label || '');
 				}
 				if ('custom_total_planned_qty' in d) {
-					console.log('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
+					sprLog('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
 					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty || 0));
 				}
 				// Note: custom_party_code is only in the child table, not the header, so don't set it here
@@ -111,25 +128,22 @@ frappe.ui.form.on('Shaft Production Run', {
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
 		frm.set_df_property('total_produced_weight', 'read_only', 1);
 
-		console.log('[SPR REFRESH] === REFRESH HOOK START ===');
+		sprLog('[SPR REFRESH] === REFRESH HOOK START ===');
 		
 		spr_sync_total_planned_qty_from_jobs(frm);
-		console.log('[SPR REFRESH] After total_planned_qty sync');
+		sprLog('[SPR REFRESH] After total_planned_qty sync');
 		
-		spr_sync_total_produced_weight(frm);
-		console.log('[SPR REFRESH] After total_produced_weight sync (immediate)');
+		sprScheduleTotalProducedSync(frm);
+		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
 		
 		spr_patch_items_grid_refresh(frm);
 		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
 		
-		// Delayed retries for total_produced_weight
-		[200, 500, 1000, 2000].forEach(function (ms) {
-			setTimeout(function () {
-				console.log('[SPR REFRESH] Delayed sync at ' + ms + 'ms');
-				spr_sync_total_produced_weight(frm);
-			}, ms);
-		});
+		// Keep one lightweight retry only (old code had 4 retries, causing UI lag on large grids).
+		setTimeout(function () {
+			sprScheduleTotalProducedSync(frm);
+		}, 400);
 		
 		[400, 800, 1500, 3000].forEach(function (ms) {
 			setTimeout(function () {
@@ -143,7 +157,7 @@ frappe.ui.form.on('Shaft Production Run', {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
 		
-		console.log('[SPR REFRESH] === REFRESH HOOK END ===');
+		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 
 	before_submit: function (frm) {
@@ -183,10 +197,10 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	items: {
 		items_add: function (frm) {
-			console.log('[SPR DEBUG] items_add fired');
+			sprLog('[SPR DEBUG] items_add fired');
 			update_shaft_job_achieved_from_items(frm);
-			console.log('[SPR DEBUG] items_add: calling spr_sync_total_produced_weight with', (frm.doc.items || []).length, 'items');
-			spr_sync_total_produced_weight(frm);
+			sprLog('[SPR DEBUG] items_add: schedule total_produced_weight sync with', (frm.doc.items || []).length, 'items');
+			sprScheduleTotalProducedSync(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 		items_remove: function (frm) {
@@ -2291,7 +2305,7 @@ function apply_spr_item_row_styles(frm) {
 		}
 		
 		if (!$row || !$row.length) {
-			console.warn('Could not resolve row for item at index', idx, doc);
+			sprLog('Could not resolve row for item at index', idx, doc);
 			return;
 		}
 		
@@ -2331,50 +2345,27 @@ function apply_spr_item_row_styles(frm) {
 // ===== TOTAL PRODUCED WEIGHT CALCULATION =====
 
 function spr_compute_total_produced_weight(frm) {
-	console.log('[SPR COMPUTE] START: frm exists?', !!frm, 'doc exists?', !!(frm && frm.doc));
-	
 	if (!frm || !frm.doc) {
-		console.log('[SPR COMPUTE] ERROR: No frm or doc');
 		return 0;
 	}
-	
 	const items = frm.doc.items || [];
-	console.log('[SPR COMPUTE] items array length:', items.length);
-	console.log('[SPR COMPUTE] items array:', items);
-	
 	let total = 0;
 	for (let i = 0; i < items.length; i++) {
 		const row = items[i];
 		const nw = row.net_weight ? parseFloat(row.net_weight) : 0;
 		total = total + nw;
-		console.log('[SPR COMPUTE] Item ' + i + ':', row.name, '-> net_weight:', nw, '-> running total:', total);
 	}
-	
-	console.log('[SPR COMPUTE] FINAL TOTAL:', total);
 	return total;
 }
 
 function spr_sync_total_produced_weight(frm) {
-	console.log('[SPR SYNC] START');
-	
 	if (!frm || !frm.doc) {
-		console.log('[SPR SYNC] ERROR: No frm or doc');
 		return;
 	}
-	
-	console.log('[SPR SYNC] Calling compute function...');
 	const calculated = spr_compute_total_produced_weight(frm);
 	const current = frm.doc.total_produced_weight ? parseFloat(frm.doc.total_produced_weight) : 0;
-	
-	console.log('[SPR SYNC] Current value:', current, '| Calculated value:', calculated);
-	
+
 	if (Math.abs(current - calculated) > 0.01) {
-		console.log('[SPR SYNC] VALUES DIFFER - Setting total_produced_weight to:', calculated);
 		frm.set_value('total_produced_weight', calculated);
-		console.log('[SPR SYNC] Set_value called');
-	} else {
-		console.log('[SPR SYNC] VALUES MATCH - No change needed');
 	}
-	
-	console.log('[SPR SYNC] END');
 }
