@@ -1186,6 +1186,9 @@ class ShaftProductionRun(Document):
 
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
+		# Prefer exact standard type label when present on site.
+		if frappe.db.exists("Stock Entry Type", "Manufacture"):
+			return "Manufacture"
 		name = frappe.db.get_value("Stock Entry Type", {"purpose": "Manufacture"}, "name")
 		if name:
 			return _cstr(name)
