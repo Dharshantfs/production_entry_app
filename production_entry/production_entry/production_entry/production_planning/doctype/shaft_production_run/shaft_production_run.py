@@ -1352,6 +1352,44 @@ class ShaftProductionRun(Document):
 		remaining = max(allowed_total - already, 0.0)
 		return remaining, allowed_total, already, over_pct
 
+	def _wo_allowed_entry_qty(self, wo_doc) -> tuple[float, float]:
+		"""Per-entry allowed FG qty from WO qty + Manufacturing Settings overproduction %."""
+		base_qty = flt(getattr(wo_doc, "qty", 0))
+		over_pct = self._wo_overproduction_percent()
+		allowed = base_qty * (1.0 + (over_pct / 100.0))
+		return flt(allowed), flt(over_pct)
+
+	def _split_rows_by_qty_limit(self, rows: list, qty_limit: float) -> list[list]:
+		"""Split SPR rows into chunks where sum(_row_fg_qty) <= qty_limit."""
+		if qty_limit <= 0:
+			return [rows]
+		chunks: list[list] = []
+		cur: list = []
+		cur_total = 0.0
+		for r in rows:
+			q = flt(self._row_fg_qty(r))
+			if q <= 0:
+				continue
+			# Single row bigger than per-entry limit cannot be split safely.
+			if q > qty_limit + 1e-9:
+				wo_id = _cstr(r.get("work_order") or r.get("wo_id"))
+				frappe.throw(
+					_(
+						"Single roll row for WO {0} has qty {1} Kg, above per-entry allowed {2} Kg. "
+						"Adjust roll qty/WO qty or overproduction %."
+					).format(wo_id or "—", flt(q, 3), flt(qty_limit, 3)),
+					title=_("WO quantity exceeded"),
+				)
+			if cur and (cur_total + q) > qty_limit + 1e-9:
+				chunks.append(cur)
+				cur = []
+				cur_total = 0.0
+			cur.append(r)
+			cur_total += q
+		if cur:
+			chunks.append(cur)
+		return chunks
+
 	def create_manufacturing_stock_entries(self):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
 
@@ -1403,25 +1441,21 @@ class ShaftProductionRun(Document):
 				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)
 				continue
 
-			remaining_allowed, allowed_total, already_done, over_pct = self._wo_allowed_remaining_qty(wo_doc)
-			if total_qty > remaining_allowed + 1e-9:
-				excess = total_qty - remaining_allowed
-				frappe.throw(
+			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
+			row_chunks = self._split_rows_by_qty_limit(rows, allowed_entry_qty)
+			if len(row_chunks) > 1:
+				frappe.msgprint(
 					_(
-						"WO {0} allows only {1} Kg remaining (Base Qty {2} + Overproduction {3}% => Allowed Total {4}, "
-						"Already Produced {5}). Current SPR tries to post {6} Kg (excess {7} Kg). "
-						"Fix WO mapping/quantities, or increase allowed overproduction/WO qty."
+						"WO {0}: SPR quantity {1} Kg exceeds per-entry limit {2} Kg "
+						"(overproduction {3}%). Creating {4} Manufacture entries."
 					).format(
 						wo_id,
-						flt(remaining_allowed, 3),
-						flt(wo_doc.qty, 3),
-						flt(over_pct, 3),
-						flt(allowed_total, 3),
-						flt(already_done, 3),
 						flt(total_qty, 3),
-						flt(excess, 3),
+						flt(allowed_entry_qty, 3),
+						flt(over_pct, 3),
+						len(row_chunks),
 					),
-					title=_("WO quantity exceeded"),
+					alert=False,
 				)
 
 			# 🔒 VALIDATION: Ensure WIP warehouse exists
@@ -1431,73 +1465,77 @@ class ShaftProductionRun(Document):
 					title=_("Missing WIP Warehouse")
 				)
 
-			se = frappe.new_doc("Stock Entry")
-			se.company = wo_doc.company
-			se.posting_date = self.run_date or today()
-			se.posting_time = nowtime()
-			se.set_posting_time = 1
-			se.stock_entry_type = "Manufacture"
-			# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
-			se.purpose = "Manufacture"
-			se.work_order = wo_id
-			se.production_item = wo_doc.production_item
-			se.fg_completed_qty = total_qty
-			se.from_bom = 1
-			se.bom_no = wo_doc.bom_no
-			se.use_multi_level_bom = wo_doc.use_multi_level_bom
-			se.wip_warehouse = wo_doc.wip_warehouse
-			se.to_warehouse = wo_doc.fg_warehouse
+			for chunk_rows in row_chunks:
+				chunk_total_qty = sum(self._row_fg_qty(r) for r in chunk_rows)
+				if chunk_total_qty <= 0:
+					continue
+				se = frappe.new_doc("Stock Entry")
+				se.company = wo_doc.company
+				se.posting_date = self.run_date or today()
+				se.posting_time = nowtime()
+				se.set_posting_time = 1
+				se.stock_entry_type = "Manufacture"
+				# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
+				se.purpose = "Manufacture"
+				se.work_order = wo_id
+				se.production_item = wo_doc.production_item
+				se.fg_completed_qty = chunk_total_qty
+				se.from_bom = 1
+				se.bom_no = wo_doc.bom_no
+				se.use_multi_level_bom = wo_doc.use_multi_level_bom
+				se.wip_warehouse = wo_doc.wip_warehouse
+				se.to_warehouse = wo_doc.fg_warehouse
 
-			self._set_stock_entry_spr_link(se)
+				self._set_stock_entry_spr_link(se)
 
-			# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
-			se.get_items()
-			
-			# 🔒 ENFORCE: ALL RM items MUST use WIP warehouse ONLY - NO OTHER WAREHOUSE
-			# This prevents double consumption (materials already transferred to WIP)
-			wip_warehouse = wo_doc.wip_warehouse
-			rm_count = 0
-			
-			for item in se.items or []:
-				if item.item_code:
-					# Check if this is a RM item (no t_warehouse means it's a raw material)
-					if not item.get("t_warehouse"):
-						rm_count += 1
-						# 🔒 ENFORCE: Set source warehouse to WIP ONLY
-						item.s_warehouse = wip_warehouse
-						
-						# 🔒 VALIDATE: Ensure warehouse was set correctly
-						if item.s_warehouse != wip_warehouse:
-							frappe.throw(
-								_("Raw material {0} source warehouse is {1}, not {2}. ABORT.").format(
-									item.item_code, item.s_warehouse, wip_warehouse
-								),
-								title=_("Warehouse Mismatch")
-							)
-					else:
-						# This is a finished good item - target warehouse should be FG warehouse
-						if item.t_warehouse != wo_doc.fg_warehouse:
-							item.t_warehouse = wo_doc.fg_warehouse
-			
-			# Log for verification
-			if rm_count > 0:
+				# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
+				se.get_items()
+
+				# 🔒 ENFORCE: ALL RM items MUST use WIP warehouse ONLY - NO OTHER WAREHOUSE
+				# This prevents double consumption (materials already transferred to WIP)
+				wip_warehouse = wo_doc.wip_warehouse
+				rm_count = 0
+
+				for item in se.items or []:
+					if item.item_code:
+						# Check if this is a RM item (no t_warehouse means it's a raw material)
+						if not item.get("t_warehouse"):
+							rm_count += 1
+							# 🔒 ENFORCE: Set source warehouse to WIP ONLY
+							item.s_warehouse = wip_warehouse
+
+							# 🔒 VALIDATE: Ensure warehouse was set correctly
+							if item.s_warehouse != wip_warehouse:
+								frappe.throw(
+									_("Raw material {0} source warehouse is {1}, not {2}. ABORT.").format(
+										item.item_code, item.s_warehouse, wip_warehouse
+									),
+									title=_("Warehouse Mismatch")
+								)
+						else:
+							# This is a finished good item - target warehouse should be FG warehouse
+							if item.t_warehouse != wo_doc.fg_warehouse:
+								item.t_warehouse = wo_doc.fg_warehouse
+
+				# Log for verification
+				if rm_count > 0:
+					frappe.msgprint(
+						_("Confirmed: {0} RM items set to use WIP warehouse: {1}").format(rm_count, wip_warehouse),
+						alert=False
+					)
+
+				# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
+				self._strip_finished_goods_from_stock_entry(se)
+				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows)
+
+				se.insert()
+				se.submit()
+				created_entries.append(se.name)
+
 				frappe.msgprint(
-					_("Confirmed: {0} RM items set to use WIP warehouse: {1}").format(rm_count, wip_warehouse),
-					alert=False
+					_("Manufacturing Entry {0} created for WO {1}").format(se.name, wo_id),
+					alert=True,
 				)
-			
-			# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
-			self._strip_finished_goods_from_stock_entry(se)
-			self._append_manufacture_fg_from_spr_rolls(se, wo_doc, rows)
-
-			se.insert()
-			se.submit()
-			created_entries.append(se.name)
-
-			frappe.msgprint(
-				_("Manufacturing Entry {0} created for WO {1}").format(se.name, wo_id),
-				alert=True,
-			)
 
 		if created_entries:
 			self.db_set("manufacturing_entries", ", ".join(created_entries))
