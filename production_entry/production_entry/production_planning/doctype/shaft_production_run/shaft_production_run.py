@@ -1184,6 +1184,14 @@ class ShaftProductionRun(Document):
 		if meta.has_field("shaft_production_run"):
 			se.shaft_production_run = self.name
 
+	def _manufacture_stock_entry_type_name(self) -> str:
+		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
+		name = frappe.db.get_value("Stock Entry Type", {"purpose": "Manufacture"}, "name")
+		if name:
+			return _cstr(name)
+		# Fallback used in many ERPNext sites.
+		return "Manufacture"
+
 	def _strip_finished_goods_from_stock_entry(self, se):
 		"""Remove FG rows from BOM-generated Stock Entry (we re-add per roll with batch_no)."""
 		items = se.get("items") or []
@@ -1565,8 +1573,8 @@ class ShaftProductionRun(Document):
 				se.posting_date = self.run_date or today()
 				se.posting_time = nowtime()
 				se.set_posting_time = 1
-				# Use purpose directly; avoid Stock Entry Type remapping to transfer on customized sites.
-				se.stock_entry_type = ""
+				# Keep explicit type + purpose for sites where Stock Entry Type is mandatory.
+				se.stock_entry_type = self._manufacture_stock_entry_type_name()
 				# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
 				se.purpose = "Manufacture"
 				se.work_order = wo_id
@@ -1622,7 +1630,7 @@ class ShaftProductionRun(Document):
 				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows)
 
 				# Hard guard: submit path must always be Manufacture (never Material Transfer).
-				se.stock_entry_type = ""
+				se.stock_entry_type = self._manufacture_stock_entry_type_name()
 				se.purpose = "Manufacture"
 				se.insert()
 				if _cstr(se.purpose) != "Manufacture":
