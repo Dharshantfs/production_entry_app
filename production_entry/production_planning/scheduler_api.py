@@ -896,6 +896,15 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
     if not planning_sheet or not frappe.db.exists("Planning sheet", planning_sheet):
         return {"status": "error", "message": "Planning sheet not found", "updated_order_sheet": 0, "updated_spr": 0}
 
+    def _pick_valid_pp(raw) -> str:
+        txt = str(raw or "").strip()
+        if not txt:
+            return ""
+        for token in [x.strip() for x in txt.split(",") if x and x.strip()]:
+            if frappe.db.exists("Production Plan", token):
+                return token
+        return ""
+
     sheet_pp = (
         frappe.db.get_value("Planning sheet", planning_sheet, "custom_production_plan")
         if frappe.db.has_column("Planning sheet", "custom_production_plan")
@@ -905,7 +914,7 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
         if frappe.db.has_column("Planning sheet", "production_plan")
         else ""
     ) or (frappe.db.get_value("Planning sheet", planning_sheet, "order_sheet") or "")
-    sheet_pp = (sheet_pp or "").strip()
+    sheet_pp = _pick_valid_pp(sheet_pp)
 
     rows = frappe.get_all(
         "Planning Table",
@@ -946,7 +955,11 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
         return spr_name
 
     for r in rows:
-        row_pp = (_get_item_level_production_plan(r.name) or "").strip() or (r.get("order_sheet") or "").strip() or sheet_pp
+        row_pp = _pick_valid_pp(_get_item_level_production_plan(r.name))
+        if not row_pp:
+            row_pp = _pick_valid_pp(r.get("order_sheet"))
+        if not row_pp:
+            row_pp = sheet_pp
         if row_pp and (r.get("order_sheet") or "").strip() != row_pp:
             frappe.db.set_value("Planning Table", r["name"], "order_sheet", row_pp, update_modified=False)
             updated_order_sheet += 1
