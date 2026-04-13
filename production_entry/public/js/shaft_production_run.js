@@ -1077,15 +1077,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
-		// Refresh grid display and apply row styling to show net_weight instantly
-		frm.refresh_field('items');
-		apply_spr_item_row_styles(frm);
+		// Avoid hard grid refresh while typing; it can reset in-cell editor values.
 		schedule_spr_item_row_styles(frm);
-		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
-			setTimeout(function () {
-				apply_spr_item_row_styles(frm);
-			}, ms);
-		});
+		sprScheduleTotalProducedSync(frm);
 	},
 	gross_weight: function (frm, cdt, cdn) {
 		// Calculate net_weight instantly when gross_weight changes
@@ -1131,11 +1125,11 @@ frappe.ui.form.on('Shaft Production Run Item', {
 				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
 			}
 			frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-			frm.refresh_field('items');
 		}
 
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
+		sprScheduleTotalProducedSync(frm);
 	},
 	gsm: function (frm) {
 		schedule_spr_item_row_styles(frm);
@@ -1153,7 +1147,6 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		}
 		
 		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-		frm.refresh_field('items');
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	meter_roll: function (frm, cdt, cdn) {
@@ -1169,7 +1162,6 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		}
 		
 		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-		frm.refresh_field('items');
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	produced_length_mtrs: function (frm, cdt, cdn) {
@@ -1188,15 +1180,8 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	produced_gsm: function (frm) {
-		// Refresh grid to show the calculated produced_gsm value
-		frm.refresh_field('items');
-		apply_spr_item_row_styles(frm);
+		// Keep this lightweight to avoid typing lag in grid editors.
 		schedule_spr_item_row_styles(frm);
-		[0, 50, 120, 250, 500, 900].forEach(function (ms) {
-			setTimeout(function () {
-				apply_spr_item_row_styles(frm);
-			}, ms);
-		});
 	},
 	
 	/**
