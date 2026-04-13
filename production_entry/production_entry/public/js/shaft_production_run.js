@@ -15,6 +15,25 @@ function sprScheduleTotalProducedSync(frm) {
 	}, 120);
 }
 
+function sprAutoSaveAfterCreateEntry(frm) {
+	if (!frm || frm.is_new() || frm.doc.docstatus !== 0) return;
+	if (!frm.is_dirty || !frm.is_dirty()) return;
+	if (frm.__spr_auto_save_in_progress) return;
+	frm.__spr_auto_save_in_progress = true;
+	setTimeout(function () {
+		const p = frm.save();
+		if (p && typeof p.then === 'function') {
+			p.then(function () {
+				frm.__spr_auto_save_in_progress = false;
+			}).catch(function () {
+				frm.__spr_auto_save_in_progress = false;
+			});
+		} else {
+			frm.__spr_auto_save_in_progress = false;
+		}
+	}, 120);
+}
+
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
 		// Buttons registered in refresh — see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
@@ -1025,7 +1044,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', row.name);
 					});
 					update_shaft_job_achieved_from_items(frm);
+					sprScheduleTotalProducedSync(frm);
 					schedule_spr_item_row_styles(frm);
+					sprAutoSaveAfterCreateEntry(frm);
 					frappe.show_alert({
 						message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
 						indicator: 'green',
