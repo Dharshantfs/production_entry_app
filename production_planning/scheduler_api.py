@@ -919,13 +919,47 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
     rows = frappe.get_all(
         "Planning Table",
         filters={"parent": planning_sheet, "parenttype": "Planning sheet"},
-        fields=["name", "spr_name", "order_sheet"],
+        fields=["name", "spr_name", "order_sheet", "item_code"],
         order_by="idx asc",
     ) or []
 
     pp_to_spr = {}
     updated_order_sheet = 0
     updated_spr = 0
+
+    candidate_pps = set()
+    if sheet_pp:
+        candidate_pps.add(sheet_pp)
+    for col in ("custom_planning_sheet", "planning_sheet"):
+        if frappe.db.has_column("Production Plan", col):
+            for ppn in frappe.db.get_all("Production Plan", filters={col: planning_sheet, "docstatus": ["<", 2]}, pluck="name"):
+                if ppn:
+                    candidate_pps.add(ppn)
+    for row in rows:
+        item_pp = _pick_valid_pp(_get_item_level_production_plan(row.get("name")))
+        if item_pp:
+            candidate_pps.add(item_pp)
+
+    pp_by_item_code = {}
+    if candidate_pps:
+        fmt = ", ".join(["%s"] * len(candidate_pps))
+        q = frappe.db.sql(
+            f"""
+            SELECT ppi.item_code, ppi.parent as production_plan
+            FROM `tabProduction Plan Item` ppi
+            WHERE ppi.parent IN ({fmt})
+              AND IFNULL(ppi.item_code, '') != ''
+            """,
+            tuple(candidate_pps),
+            as_dict=True,
+        ) or []
+        for r in q:
+            it = (r.get("item_code") or "").strip()
+            ppn = (r.get("production_plan") or "").strip()
+            if it and ppn:
+                pp_by_item_code.setdefault(it, [])
+                if ppn not in pp_by_item_code[it]:
+                    pp_by_item_code[it].append(ppn)
 
     def _pick_spr_for_pp(pp_id: str) -> str:
         pp_id = (pp_id or "").strip()
@@ -956,6 +990,14 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
 
     for r in rows:
         row_pp = _pick_valid_pp(_get_item_level_production_plan(r.name))
+        if not row_pp:
+            item_code = (r.get("item_code") or "").strip()
+            choices = pp_by_item_code.get(item_code) or []
+            if len(choices) == 1:
+                row_pp = choices[0]
+            elif len(choices) > 1:
+                existing = _pick_valid_pp(r.get("order_sheet"))
+                row_pp = existing if existing in choices else choices[0]
         if not row_pp:
             row_pp = _pick_valid_pp(r.get("order_sheet"))
         if not row_pp:
