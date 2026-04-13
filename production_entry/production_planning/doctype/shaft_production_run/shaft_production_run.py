@@ -472,16 +472,14 @@ def _match_work_orders_to_combination_segments(
 	if len(widths) < segs:
 		return None
 	widths = widths[:segs]
-	distinct_w = len({round(w, 3) for w in widths})
-
 	all_wos: list = []
 	if ppi:
 		all_wos = list(get_work_orders_for_job(pp_name, _cstr(ppi)) or [])
 	if not all_wos and job_id:
 		all_wos = list(get_work_orders_for_job(pp_name, _cstr(job_id)) or [])
 
-	# One WO per PPI row but multiple different widths in the combination → need full plan list.
-	if distinct_w >= 2 and len(all_wos) < segs:
+	# If we have fewer WOs than segments, expand to PP-wide candidates for width matching.
+	if len(all_wos) < segs:
 		all_wos = list(_get_all_work_orders_for_production_plan(pp_name) or [])
 	elif not all_wos:
 		all_wos = list(_get_all_work_orders_for_production_plan(pp_name) or [])
@@ -646,6 +644,16 @@ def _resolve_wos_for_pp_job_row(
 	then row order, then any WO on the plan (so the grid does not stay blank when PPI is stale).
 	"""
 	comb = _cstr(combination).strip() if combination else ""
+	widths = _parse_combination_widths_inches(comb) if comb else []
+	# Width-aware resolver for both single-width and multi-width rows.
+	# This prevents picking same WO for different widths (e.g. 120" vs 63"+63").
+	if comb and widths and job_gsm:
+		candidates = _get_all_work_orders_for_production_plan(pp_name)
+		if candidates:
+			picked = _pick_wos_by_gsm_and_width(candidates, job_gsm, comb)
+			if picked:
+				return picked
+
 	if comb and _count_combination_segments(comb) >= 2:
 		jg = job_gsm
 		if not jg:

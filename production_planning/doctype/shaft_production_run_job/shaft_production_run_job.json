@@ -111,8 +111,7 @@
   {
    "fieldname": "work_orders",
    "fieldtype": "Small Text",
-   "label": "Work Orders",
-   "read_only": 1
+   "label": "Work Orders"
   },
   {
    "fieldname": "is_manual",
