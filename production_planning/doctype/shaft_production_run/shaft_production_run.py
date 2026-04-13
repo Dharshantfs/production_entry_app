@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 
 import frappe
 from frappe import _
@@ -1390,6 +1391,74 @@ class ShaftProductionRun(Document):
 			chunks.append(cur)
 		return chunks
 
+	def _build_expected_rm_map_for_qty(self, wo_doc, fg_qty: float) -> dict[str, float]:
+		"""Expected RM consumption map for a WO at given FG qty (item_code -> transfer_qty)."""
+		fg_qty = flt(fg_qty)
+		if fg_qty <= 0:
+			return {}
+		se = frappe.new_doc("Stock Entry")
+		se.company = wo_doc.company
+		se.posting_date = self.run_date or today()
+		se.posting_time = nowtime()
+		se.set_posting_time = 1
+		se.stock_entry_type = "Manufacture"
+		se.purpose = "Manufacture"
+		se.work_order = wo_doc.name
+		se.production_item = wo_doc.production_item
+		se.fg_completed_qty = fg_qty
+		se.from_bom = 1
+		se.bom_no = wo_doc.bom_no
+		se.use_multi_level_bom = wo_doc.use_multi_level_bom
+		se.wip_warehouse = wo_doc.wip_warehouse
+		se.to_warehouse = wo_doc.fg_warehouse
+		se.get_items()
+		rm = defaultdict(float)
+		for d in se.items or []:
+			if d.item_code and not d.get("t_warehouse"):
+				rm[d.item_code] += flt(d.get("transfer_qty") or d.get("qty"))
+		return dict(rm)
+
+	def _collect_rm_map_from_se(self, se) -> dict[str, float]:
+		"""Actual RM map from generated Stock Entry items (item_code -> transfer_qty)."""
+		rm = defaultdict(float)
+		for d in se.items or []:
+			if d.item_code and not d.get("t_warehouse"):
+				rm[d.item_code] += flt(d.get("transfer_qty") or d.get("qty"))
+		return dict(rm)
+
+	def _merge_rm_maps(self, target: dict[str, float], delta: dict[str, float]) -> dict[str, float]:
+		for item_code, qty in (delta or {}).items():
+			target[item_code] = flt(target.get(item_code)) + flt(qty)
+		return target
+
+	def _validate_rm_split_variance(self, wo_id: str, fg_total_qty: float, expected_rm: dict[str, float], actual_rm: dict[str, float]):
+		"""Ensure split-entry RM consumption matches expected BOM RM within tiny tolerance."""
+		issues = []
+		for item_code in sorted(set(expected_rm or {}) | set(actual_rm or {})):
+			exp = flt((expected_rm or {}).get(item_code))
+			act = flt((actual_rm or {}).get(item_code))
+			diff = abs(act - exp)
+			threshold = max(0.01, abs(exp) * 0.001)  # 0.1% or 0.01 qty floor
+			if diff > threshold + 1e-9:
+				issues.append((item_code, exp, act, act - exp, threshold))
+		if not issues:
+			return
+		details = "\n".join(
+			[
+				_("{0}: expected {1}, actual {2}, delta {3}, tolerance {4}").format(
+					it, flt(exp, 6), flt(act, 6), flt(delta, 6), flt(tol, 6)
+				)
+				for it, exp, act, delta, tol in issues[:20]
+			]
+		)
+		frappe.throw(
+			_(
+				"RM consumption mismatch for WO {0} (FG qty {1}) after split Manufacture entries. "
+				"Submission aborted for safety.\n\n{2}"
+			).format(wo_id, flt(fg_total_qty, 3), details),
+			title=_("RM split variance"),
+		)
+
 	def create_manufacturing_stock_entries(self):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
 
@@ -1443,6 +1512,8 @@ class ShaftProductionRun(Document):
 
 			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
 			row_chunks = self._split_rows_by_qty_limit(rows, allowed_entry_qty)
+			expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
+			actual_rm_map = {}
 			if len(row_chunks) > 1:
 				frappe.msgprint(
 					_(
@@ -1465,7 +1536,7 @@ class ShaftProductionRun(Document):
 					title=_("Missing WIP Warehouse")
 				)
 
-			for chunk_rows in row_chunks:
+			for idx, chunk_rows in enumerate(row_chunks, start=1):
 				chunk_total_qty = sum(self._row_fg_qty(r) for r in chunk_rows)
 				if chunk_total_qty <= 0:
 					continue
@@ -1523,6 +1594,7 @@ class ShaftProductionRun(Document):
 						_("Confirmed: {0} RM items set to use WIP warehouse: {1}").format(rm_count, wip_warehouse),
 						alert=False
 					)
+				actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
 
 				# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
 				self._strip_finished_goods_from_stock_entry(se)
@@ -1533,9 +1605,12 @@ class ShaftProductionRun(Document):
 				created_entries.append(se.name)
 
 				frappe.msgprint(
-					_("Manufacturing Entry {0} created for WO {1}").format(se.name, wo_id),
+					_("WO {0}: Created {1}/{2} Manufacture entry {3} ({4} Kg).").format(
+						wo_id, idx, len(row_chunks), se.name, flt(chunk_total_qty, 3)
+					),
 					alert=True,
 				)
+			self._validate_rm_split_variance(wo_id, total_qty, expected_rm_map, actual_rm_map)
 
 		if created_entries:
 			self.db_set("manufacturing_entries", ", ".join(created_entries))
