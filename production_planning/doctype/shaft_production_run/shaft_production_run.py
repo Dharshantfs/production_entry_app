@@ -1318,6 +1318,40 @@ class ShaftProductionRun(Document):
 				row["batch_no"] = se_batch
 			se.append("items", row)
 
+	def _wo_submitted_manufacture_fg_qty(self, wo_id: str) -> float:
+		"""Submitted Manufacture FG qty already posted against this WO."""
+		if not wo_id:
+			return 0.0
+		return flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(fg_completed_qty), 0)
+				FROM `tabStock Entry`
+				WHERE work_order = %s
+				  AND IFNULL(purpose, '') = 'Manufacture'
+				  AND docstatus = 1
+				""",
+				wo_id,
+			)[0][0]
+		)
+
+	def _wo_overproduction_percent(self) -> float:
+		"""Work Order overproduction allowance from Manufacturing Settings (safe fallback = 0)."""
+		try:
+			p = frappe.db.get_single_value("Manufacturing Settings", "overproduction_percentage_for_work_order")
+			return max(flt(p), 0.0)
+		except Exception:
+			return 0.0
+
+	def _wo_allowed_remaining_qty(self, wo_doc) -> tuple[float, float, float, float]:
+		"""Return remaining allowed qty, allowed total, produced so far, overproduction %."""
+		base_qty = flt(getattr(wo_doc, "qty", 0))
+		over_pct = self._wo_overproduction_percent()
+		allowed_total = base_qty * (1.0 + (over_pct / 100.0))
+		already = max(flt(getattr(wo_doc, "produced_qty", 0)), self._wo_submitted_manufacture_fg_qty(wo_doc.name))
+		remaining = max(allowed_total - already, 0.0)
+		return remaining, allowed_total, already, over_pct
+
 	def create_manufacturing_stock_entries(self):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
 
@@ -1337,6 +1371,24 @@ class ShaftProductionRun(Document):
 		for wo_id, rows in wo_groups.items():
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			total_qty = sum(self._row_fg_qty(r) for r in rows)
+			wo_item = _cstr(getattr(wo_doc, "production_item", None))
+
+			# Hard safety: one WO must not receive rows of other finished items.
+			mismatch_items = sorted(
+				{
+					_cstr(r.get("item_code"))
+					for r in rows
+					if _cstr(r.get("item_code")) and _cstr(r.get("item_code")) != wo_item
+				}
+			)
+			if mismatch_items:
+				frappe.throw(
+					_(
+						"Work Order {0} produces item {1}, but this SPR has roll lines mapped to this WO with "
+						"different item(s): {2}. Correct Available Jobs → Work Orders mapping before submit."
+					).format(wo_id, wo_item or "—", ", ".join(mismatch_items)),
+					title=_("Wrong WO mapping"),
+				)
 
 			# 📊 DEBUG: Log WO and total quantity
 			frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
@@ -1350,6 +1402,27 @@ class ShaftProductionRun(Document):
 			if total_qty <= 0:
 				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)
 				continue
+
+			remaining_allowed, allowed_total, already_done, over_pct = self._wo_allowed_remaining_qty(wo_doc)
+			if total_qty > remaining_allowed + 1e-9:
+				excess = total_qty - remaining_allowed
+				frappe.throw(
+					_(
+						"WO {0} allows only {1} Kg remaining (Base Qty {2} + Overproduction {3}% => Allowed Total {4}, "
+						"Already Produced {5}). Current SPR tries to post {6} Kg (excess {7} Kg). "
+						"Fix WO mapping/quantities, or increase allowed overproduction/WO qty."
+					).format(
+						wo_id,
+						flt(remaining_allowed, 3),
+						flt(wo_doc.qty, 3),
+						flt(over_pct, 3),
+						flt(allowed_total, 3),
+						flt(already_done, 3),
+						flt(total_qty, 3),
+						flt(excess, 3),
+					),
+					title=_("WO quantity exceeded"),
+				)
 
 			# 🔒 VALIDATION: Ensure WIP warehouse exists
 			if not wo_doc.wip_warehouse:
