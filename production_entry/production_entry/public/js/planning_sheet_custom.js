@@ -43,9 +43,9 @@ frappe.ui.form.on('Planning sheet', {
                         fieldtype: 'HTML',
                         options:
                             '<p class="text-muted small">' +
-                            __('Paste one line per row: row_name,order_sheet,spr_name') +
+                            __('Paste one line: row_name OR item_code,order_sheet,spr_name') +
                             '<br>' +
-                            __('Example: PT-ROW-0001,MFG-PP-2026-00354,SPR-2026-00180') +
+                            __('Example: 1001001...,MFG-PP-2026-00354,SPR-2026-00180') +
                             '</p>',
                     },
                     { fieldname: 'lines', fieldtype: 'Long Text', reqd: 1, label: __('Mappings') },
@@ -60,7 +60,14 @@ frappe.ui.form.on('Planning sheet', {
                         .filter(Boolean)
                         .map((ln) => {
                             const p = ln.split(',').map((x) => (x || '').trim());
-                            return { row_name: p[0] || '', order_sheet: p[1] || '', spr_name: p[2] || '' };
+                            const first = p[0] || '';
+                            const looksLikeRow = /^PT-|^new-|^ROW-|^PTROW/i.test(first);
+                            return {
+                                row_name: looksLikeRow ? first : '',
+                                item_code: looksLikeRow ? '' : first,
+                                order_sheet: p[1] || '',
+                                spr_name: p[2] || '',
+                            };
                         });
                     frappe.call({
                         method: 'production_entry.production_planning.scheduler_api.manual_update_planning_sheet_links',

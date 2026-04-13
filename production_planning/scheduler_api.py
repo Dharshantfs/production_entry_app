@@ -1023,7 +1023,7 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
 def manual_update_planning_sheet_links(planning_sheet: str, mappings):
     """
     Manual safe updater for Planning Table links.
-    mappings: JSON array of objects -> {row_name, order_sheet, spr_name}
+    mappings: JSON array of objects -> {row_name?, item_code?, order_sheet, spr_name}
     """
     if not planning_sheet or not frappe.db.exists("Planning sheet", planning_sheet):
         return {"status": "error", "message": "Planning sheet not found", "updated": 0, "errors": []}
@@ -1040,19 +1040,35 @@ def manual_update_planning_sheet_links(planning_sheet: str, mappings):
     rows = frappe.get_all(
         "Planning Table",
         filters={"parent": planning_sheet, "parenttype": "Planning sheet"},
-        fields=["name"],
-        pluck="name",
+        fields=["name", "item_code"],
     ) or []
-    valid_rows = set(rows)
+    valid_rows = {r.get("name") for r in rows}
+    rows_by_item_code = {}
+    for r in rows:
+        ic = (r.get("item_code") or "").strip()
+        if ic:
+            rows_by_item_code.setdefault(ic, [])
+            rows_by_item_code[ic].append(r.get("name"))
     updated = 0
     errors = []
 
     for i, m in enumerate(mappings, start=1):
         row_name = (m.get("row_name") or "").strip()
+        item_code = (m.get("item_code") or "").strip()
         pp = (m.get("order_sheet") or "").strip()
         spr = (m.get("spr_name") or "").strip()
+        if not row_name and item_code:
+            candidates = rows_by_item_code.get(item_code) or []
+            if len(candidates) == 1:
+                row_name = candidates[0]
+            elif len(candidates) > 1:
+                errors.append(f"Line {i}: item_code {item_code} matches multiple rows; use row_name")
+                continue
+            else:
+                errors.append(f"Line {i}: item_code {item_code} not found in this sheet")
+                continue
         if not row_name:
-            errors.append(f"Line {i}: row_name is required")
+            errors.append(f"Line {i}: row_name or item_code is required")
             continue
         if row_name not in valid_rows:
             errors.append(f"Line {i}: row {row_name} is not part of {planning_sheet}")
