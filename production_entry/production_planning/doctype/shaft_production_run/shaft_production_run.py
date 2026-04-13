@@ -1716,7 +1716,12 @@ class ShaftProductionRun(Document):
 				# If entry type remaps purpose during validate hooks, block before submit.
 				se.reload()
 				self._set_stock_entry_unit(se, wo_doc)
-				if _cstr(self._resolve_spr_unit_value(wo_doc)) and _cstr(se.get("unit")) != _cstr(self._resolve_spr_unit_value(wo_doc)):
+				se_meta = frappe.get_meta("Stock Entry")
+				if (
+					se_meta.has_field("unit")
+					and _cstr(self._resolve_spr_unit_value(wo_doc))
+					and _cstr(se.get("unit")) != _cstr(self._resolve_spr_unit_value(wo_doc))
+				):
 					frappe.db.set_value("Stock Entry", se.name, "unit", self._resolve_spr_unit_value(wo_doc), update_modified=False)
 				if _cstr(se.purpose) != "Manufacture":
 					frappe.throw(
