@@ -3786,6 +3786,106 @@ def spr_resync_production_plan_progress(production_plan: str):
 
 
 @frappe.whitelist()
+def spr_force_relink_and_resync(production_plan: str, shaft_production_run: str | None = None):
+	"""
+	Recovery utility for old partial data:
+	1) Relink submitted Manufacture Stock Entries with blank work_order (DB-level update).
+	2) Resync WO produced/consumption progress.
+	3) Resync Production Plan produced progress.
+	"""
+	pp = _cstr(production_plan)
+	if not pp:
+		frappe.throw(_("Production Plan is required"))
+	if not frappe.db.exists("Production Plan", pp):
+		frappe.throw(_("Production Plan {0} not found").format(pp))
+
+	spr_name = _cstr(shaft_production_run)
+	spr_doc = None
+	if spr_name:
+		if not frappe.db.exists("Shaft Production Run", spr_name):
+			frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
+		spr_doc = frappe.get_doc("Shaft Production Run", spr_name)
+
+	wo_rows = frappe.get_all(
+		"Work Order",
+		filters={"production_plan": pp, "docstatus": ["<", 2]},
+		fields=["name", "production_item"],
+	) or []
+	wo_by_item = defaultdict(list)
+	for w in wo_rows:
+		ic = _cstr(w.get("production_item"))
+		if ic:
+			wo_by_item[ic].append(_cstr(w.get("name")))
+
+	se_names = []
+	if spr_doc and _cstr(getattr(spr_doc, "manufacturing_entries", "")):
+		se_names = [x.strip() for x in _cstr(getattr(spr_doc, "manufacturing_entries", "")).split(",") if x and x.strip()]
+	if not se_names and spr_doc:
+		filters = {
+			"purpose": "Manufacture",
+			"docstatus": 1,
+			"company": spr_doc.company,
+			"posting_date": spr_doc.run_date,
+		}
+		se_names = frappe.get_all("Stock Entry", filters=filters, pluck="name") or []
+	else:
+		# Fallback without SPR: all submitted Manufacture entries whose WO belongs to this PP plus blanks.
+		se_names = frappe.get_all(
+			"Stock Entry",
+			filters={"purpose": "Manufacture", "docstatus": 1},
+			pluck="name",
+		) or []
+
+	linked = []
+	skipped = []
+	for se_name in se_names:
+		se = frappe.get_doc("Stock Entry", se_name)
+		if _cstr(getattr(se, "purpose", "")) != "Manufacture" or cint(getattr(se, "docstatus", 0)) != 1:
+			continue
+		if _cstr(getattr(se, "work_order", "")):
+			continue
+		fg_items = sorted(
+			{
+				_cstr(getattr(d, "item_code", ""))
+				for d in (se.items or [])
+				if cint(getattr(d, "is_finished_item", 0)) == 1 and _cstr(getattr(d, "item_code", ""))
+			}
+		)
+		if len(fg_items) != 1:
+			skipped.append({"stock_entry": se_name, "reason": "ambiguous_fg_items", "fg_items": fg_items})
+			continue
+		candidates = wo_by_item.get(fg_items[0], [])
+		if len(candidates) != 1:
+			skipped.append({"stock_entry": se_name, "reason": "ambiguous_wo_candidates", "item_code": fg_items[0], "candidates": candidates})
+			continue
+		wo_id = candidates[0]
+		frappe.db.set_value("Stock Entry", se_name, "work_order", wo_id, update_modified=False)
+		linked.append({"stock_entry": se_name, "work_order": wo_id, "item_code": fg_items[0]})
+
+	dummy = frappe.new_doc("Shaft Production Run")
+	out = []
+	for wo in [w.get("name") for w in wo_rows]:
+		dummy._sync_work_order_produced_qty_from_submitted_manufacture(wo)
+		dummy._sync_work_order_required_item_progress(wo)
+		wo_doc = frappe.get_doc("Work Order", wo)
+		produced = flt(getattr(wo_doc, "produced_qty", 0))
+		target = flt(getattr(wo_doc, "qty", 0))
+		out.append({"work_order": wo, "produced_qty": produced, "qty": target, "status": _cstr(getattr(wo_doc, "status", ""))})
+	dummy._sync_production_plan_progress_from_work_orders(pp)
+
+	return {
+		"status": "ok",
+		"production_plan": pp,
+		"shaft_production_run": spr_name or None,
+		"linked_count": len(linked),
+		"linked": linked,
+		"skipped_count": len(skipped),
+		"skipped": skipped[:50],
+		"work_orders": out,
+	}
+
+
+@frappe.whitelist()
 def spr_get_bundle_packaging_catalog(shaft_production_run):
 	"""Jobs from Available Jobs; width options use per-segment widths (combination/WO), then roll widths."""
 	_spr_require_saved(shaft_production_run)
