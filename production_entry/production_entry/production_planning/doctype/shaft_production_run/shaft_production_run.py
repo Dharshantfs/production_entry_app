@@ -1747,6 +1747,74 @@ class ShaftProductionRun(Document):
 		)
 		frappe.db.set_value("Work Order", wo_id, "produced_qty", total, update_modified=False)
 
+	def _sync_work_order_required_item_progress(self, wo_id: str):
+		"""Recompute WO required-items consumed/transferred qty from submitted Stock Entries."""
+		if not wo_id or not frappe.db.exists("Work Order", wo_id):
+			return
+		wo_meta = frappe.get_meta("Work Order")
+		if not wo_meta.has_field("required_items"):
+			return
+		req_df = wo_meta.get_field("required_items")
+		req_dt = _cstr(getattr(req_df, "options", None))
+		if not req_dt:
+			return
+		req_meta = frappe.get_meta(req_dt)
+		if not req_meta.has_field("item_code"):
+			return
+
+		consumed_map = {}
+		try:
+			rows = frappe.db.sql(
+				"""
+				SELECT sed.item_code, IFNULL(SUM(IFNULL(sed.transfer_qty, sed.qty)), 0) AS qty
+				FROM `tabStock Entry` se
+				INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+				WHERE se.work_order = %(wo)s
+				  AND se.docstatus = 1
+				  AND IFNULL(se.purpose, '') IN ('Manufacture', 'Material Consumption for Manufacture')
+				  AND IFNULL(sed.s_warehouse, '') != ''
+				  AND IFNULL(sed.t_warehouse, '') = ''
+				GROUP BY sed.item_code
+				""",
+				{"wo": wo_id},
+				as_dict=True,
+			) or []
+			consumed_map = {_cstr(r.item_code): flt(r.qty) for r in rows if _cstr(r.item_code)}
+		except Exception:
+			consumed_map = {}
+
+		transferred_map = {}
+		try:
+			rows = frappe.db.sql(
+				"""
+				SELECT sed.item_code, IFNULL(SUM(IFNULL(sed.transfer_qty, sed.qty)), 0) AS qty
+				FROM `tabStock Entry` se
+				INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+				WHERE se.work_order = %(wo)s
+				  AND se.docstatus = 1
+				  AND IFNULL(se.purpose, '') = 'Material Transfer for Manufacture'
+				  AND IFNULL(sed.s_warehouse, '') != ''
+				  AND IFNULL(sed.t_warehouse, '') != ''
+				GROUP BY sed.item_code
+				""",
+				{"wo": wo_id},
+				as_dict=True,
+			) or []
+			transferred_map = {_cstr(r.item_code): flt(r.qty) for r in rows if _cstr(r.item_code)}
+		except Exception:
+			transferred_map = {}
+
+		wo_doc = frappe.get_doc("Work Order", wo_id)
+		for row in wo_doc.get("required_items") or []:
+			item_code = _cstr(getattr(row, "item_code", None))
+			if not item_code:
+				continue
+			if req_meta.has_field("consumed_qty"):
+				row.consumed_qty = flt(consumed_map.get(item_code, 0), 2)
+			if req_meta.has_field("transferred_qty"):
+				row.transferred_qty = flt(transferred_map.get(item_code, 0), 2)
+		wo_doc.save(ignore_permissions=True)
+
 	def create_manufacturing_stock_entries(self):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
 
@@ -2007,6 +2075,7 @@ class ShaftProductionRun(Document):
 				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
 				self._apply_order_code_to_submitted_stock_entry(se.name)
 				self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
+				self._sync_work_order_required_item_progress(wo_id)
 				created_entries.append(se.name)
 
 				frappe.msgprint(
@@ -3375,6 +3444,68 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		"job_id": job_id,
 		"shaft_production_run": spr.name,
 	}
+
+
+@frappe.whitelist()
+def spr_resync_work_order_consumption(work_order: str):
+	"""Manual utility: recompute consumed/transferred qty on WO required items from submitted Stock Entries."""
+	wo = _cstr(work_order)
+	if not wo:
+		frappe.throw(_("Work Order is required"))
+	if not frappe.db.exists("Work Order", wo):
+		frappe.throw(_("Work Order {0} not found").format(wo))
+	dummy = ShaftProductionRun()
+	dummy._sync_work_order_required_item_progress(wo)
+	return {"status": "ok", "work_order": wo}
+
+
+@frappe.whitelist()
+def spr_resync_work_order_progress(work_order: str):
+	"""Manual utility: recompute WO produced + required-item progress from submitted Stock Entries."""
+	wo = _cstr(work_order)
+	if not wo:
+		frappe.throw(_("Work Order is required"))
+	if not frappe.db.exists("Work Order", wo):
+		frappe.throw(_("Work Order {0} not found").format(wo))
+
+	dummy = ShaftProductionRun()
+	dummy._sync_work_order_produced_qty_from_submitted_manufacture(wo)
+	dummy._sync_work_order_required_item_progress(wo)
+
+	wo_doc = frappe.get_doc("Work Order", wo)
+	produced = flt(getattr(wo_doc, "produced_qty", 0))
+	target = flt(getattr(wo_doc, "qty", 0))
+	if target > 0 and produced + 1e-9 >= target and _cstr(getattr(wo_doc, "status", "")) not in ("Completed", "Stopped", "Cancelled"):
+		wo_doc.db_set("status", "Completed")
+	return {"status": "ok", "work_order": wo, "produced_qty": produced}
+
+
+@frappe.whitelist()
+def spr_resync_production_plan_progress(production_plan: str):
+	"""Manual utility: recompute all Work Orders progress under a Production Plan for existing data."""
+	pp = _cstr(production_plan)
+	if not pp:
+		frappe.throw(_("Production Plan is required"))
+	if not frappe.db.exists("Production Plan", pp):
+		frappe.throw(_("Production Plan {0} not found").format(pp))
+
+	wo_names = frappe.get_all(
+		"Work Order",
+		filters={"production_plan": pp, "docstatus": ["<", 2]},
+		pluck="name",
+	) or []
+	dummy = ShaftProductionRun()
+	out = []
+	for wo in wo_names:
+		dummy._sync_work_order_produced_qty_from_submitted_manufacture(wo)
+		dummy._sync_work_order_required_item_progress(wo)
+		wo_doc = frappe.get_doc("Work Order", wo)
+		produced = flt(getattr(wo_doc, "produced_qty", 0))
+		target = flt(getattr(wo_doc, "qty", 0))
+		if target > 0 and produced + 1e-9 >= target and _cstr(getattr(wo_doc, "status", "")) not in ("Completed", "Stopped", "Cancelled"):
+			wo_doc.db_set("status", "Completed")
+		out.append({"work_order": wo, "produced_qty": produced, "qty": target, "status": _cstr(getattr(wo_doc, "status", ""))})
+	return {"status": "ok", "production_plan": pp, "work_orders": out}
 
 
 @frappe.whitelist()
