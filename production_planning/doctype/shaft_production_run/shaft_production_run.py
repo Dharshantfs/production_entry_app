@@ -1884,6 +1884,75 @@ class ShaftProductionRun(Document):
 			title=_("RM split variance"),
 		)
 
+	def _validate_fg_roll_coverage_for_wo(self, wo_doc, spr_rows: list, se_names: list[str]):
+		"""Hard guard: every produced SPR FG roll must be represented in submitted Manufacture entries."""
+		if not wo_doc or not se_names:
+			return
+		item_code = _cstr(getattr(wo_doc, "production_item", None))
+		if not item_code:
+			return
+		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
+		expected_total = 0.0
+		expected_by_batch = defaultdict(float)
+		for spr in spr_rows or []:
+			qty = flt(self._row_fg_qty(spr))
+			if qty <= 0:
+				continue
+			expected_total += qty
+			if has_batch:
+				bn_raw = _cstr(spr.get("batch_no"))
+				if not bn_raw:
+					continue
+				se_batch = self._get_batch_link_name_for_stock_entry(bn_raw, item_code, wo_doc.company, spr)
+				if se_batch:
+					expected_by_batch[_cstr(se_batch)] += qty
+		rows = frappe.db.sql(
+			"""
+			SELECT IFNULL(sed.batch_no, '') AS batch_no, IFNULL(sed.qty, 0) AS qty
+			FROM `tabStock Entry Detail` sed
+			INNER JOIN `tabStock Entry` se ON se.name = sed.parent
+			WHERE sed.parent IN %(parents)s
+			  AND IFNULL(se.docstatus, 0) = 1
+			  AND IFNULL(se.purpose, '') = 'Manufacture'
+			  AND IFNULL(sed.is_finished_item, 0) = 1
+			  AND sed.item_code = %(item_code)s
+			""",
+			{"parents": tuple(se_names), "item_code": item_code},
+			as_dict=True,
+		) or []
+		actual_total = 0.0
+		actual_by_batch = defaultdict(float)
+		for r in rows:
+			q = flt(r.get("qty"))
+			actual_total += q
+			b = _cstr(r.get("batch_no"))
+			if b:
+				actual_by_batch[b] += q
+		if abs(expected_total - actual_total) > 1e-6:
+			frappe.throw(
+				_(
+					"WO {0}: SPR roll total {1} Kg but submitted Manufacture entries total {2} Kg. "
+					"Rollback to prevent missed roll posting."
+				).format(wo_doc.name, flt(expected_total, 3), flt(actual_total, 3)),
+				title=_("FG roll coverage mismatch"),
+			)
+		if has_batch:
+			missing_batches = []
+			for b, exp in expected_by_batch.items():
+				act = flt(actual_by_batch.get(b))
+				if abs(exp - act) > 1e-6:
+					missing_batches.append((b, exp, act))
+			if missing_batches:
+				details = "\n".join(
+					[_("Batch {0}: expected {1} Kg, posted {2} Kg").format(b, flt(e, 3), flt(a, 3)) for b, e, a in missing_batches[:20]]
+				)
+				frappe.throw(
+					_(
+						"WO {0}: some produced roll batches were not fully posted to Manufacture entries.\n\n{1}"
+					).format(wo_doc.name, details),
+					title=_("Missing FG roll batches"),
+				)
+
 	def _sync_work_order_produced_qty_from_submitted_manufacture(self, wo_id: str):
 		"""Recompute WO produced_qty from submitted Manufacture entries."""
 		if not wo_id:
@@ -2062,6 +2131,7 @@ class ShaftProductionRun(Document):
 			)
 
 		created_entries = []
+		created_entries_by_wo = defaultdict(list)
 		planned_wo_posts = []
 
 		# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
@@ -2280,6 +2350,7 @@ class ShaftProductionRun(Document):
 				self._sync_work_order_required_item_progress(wo_id)
 				self._sync_production_plan_progress_from_work_orders(_cstr(getattr(wo_doc, "production_plan", None)))
 				created_entries.append(se.name)
+				created_entries_by_wo[wo_id].append(se.name)
 
 				frappe.msgprint(
 					_("WO {0}: Created {1}/{2} Manufacture entry {3} ({4} Kg).").format(
@@ -2288,6 +2359,7 @@ class ShaftProductionRun(Document):
 					alert=True,
 				)
 			self._validate_rm_split_variance(wo_id, total_qty, expected_rm_map, actual_rm_map)
+			self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
 
 		if created_entries:
 			self.db_set("manufacturing_entries", ", ".join(created_entries))
@@ -3658,7 +3730,7 @@ def spr_resync_work_order_consumption(work_order: str):
 		frappe.throw(_("Work Order is required"))
 	if not frappe.db.exists("Work Order", wo):
 		frappe.throw(_("Work Order {0} not found").format(wo))
-	dummy = ShaftProductionRun()
+	dummy = frappe.new_doc("Shaft Production Run")
 	dummy._sync_work_order_required_item_progress(wo)
 	return {"status": "ok", "work_order": wo}
 
@@ -3672,7 +3744,7 @@ def spr_resync_work_order_progress(work_order: str):
 	if not frappe.db.exists("Work Order", wo):
 		frappe.throw(_("Work Order {0} not found").format(wo))
 
-	dummy = ShaftProductionRun()
+	dummy = frappe.new_doc("Shaft Production Run")
 	dummy._sync_work_order_produced_qty_from_submitted_manufacture(wo)
 	dummy._sync_work_order_required_item_progress(wo)
 
@@ -3698,7 +3770,7 @@ def spr_resync_production_plan_progress(production_plan: str):
 		filters={"production_plan": pp, "docstatus": ["<", 2]},
 		pluck="name",
 	) or []
-	dummy = ShaftProductionRun()
+	dummy = frappe.new_doc("Shaft Production Run")
 	out = []
 	for wo in wo_names:
 		dummy._sync_work_order_produced_qty_from_submitted_manufacture(wo)
