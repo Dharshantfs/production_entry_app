@@ -2088,6 +2088,9 @@ class ShaftProductionRun(Document):
 						transfer_err = ""
 						try:
 							transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
+							if transfer_name:
+								# Keep draft transfer even though we throw after this for SPR submit-stop.
+								frappe.db.commit()
 						except Exception:
 							transfer_err = _cstr(frappe.get_traceback())
 							transfer_name = ""
@@ -2102,7 +2105,8 @@ class ShaftProductionRun(Document):
 						next_steps = _("1) Open draft transfer, verify rows, submit.\n2) Return to SPR and submit again.")
 						if transfer_name:
 							next_steps = _(
-								'1) Open draft transfer: <a href="/app/stock-entry/{0}" target="_blank">{0}</a>\n'
+								'1) Open draft transfer: <a href="/app/stock-entry/{0}" target="_blank">{0}</a> '
+								'(/app/stock-entry/{0})\n'
 								"2) Verify and submit transfer.\n"
 								'3) Return to SPR: <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
 							).format(transfer_name, self.name)
