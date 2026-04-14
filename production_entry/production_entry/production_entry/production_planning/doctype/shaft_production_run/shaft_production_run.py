@@ -1870,6 +1870,9 @@ class ShaftProductionRun(Document):
 					)
 				# If entry type remaps purpose during validate hooks, block before submit.
 				se.reload()
+				# reload() drops in-memory flags; submit() must see this again or ERPNext duplicate-WO check runs.
+				se.flags.ignore_duplicate_for_work_order = True
+				self._set_stock_entry_spr_link(se)
 				self._set_stock_entry_unit(se, wo_doc)
 				se_meta = frappe.get_meta("Stock Entry")
 				if (
@@ -1887,6 +1890,7 @@ class ShaftProductionRun(Document):
 						title=_("Invalid Stock Entry purpose"),
 					)
 				try:
+					se.flags.ignore_duplicate_for_work_order = True
 					se.submit()
 				except Exception:
 					shortages = self._rm_shortages_for_se(se)
