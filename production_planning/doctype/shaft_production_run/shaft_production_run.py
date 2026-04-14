@@ -3890,6 +3890,165 @@ def spr_force_relink_and_resync(production_plan: str, shaft_production_run: str 
 
 
 @frappe.whitelist()
+def spr_backfill_missing_manufacture_from_spr(shaft_production_run: str, submit_entries: int = 0):
+	"""
+	Create missing Manufacture entries from SPR roll rows (batch-wise), not whole WO qty.
+	Useful for legacy partial cases where some WO/rolls were skipped earlier.
+	"""
+	spr_name = _cstr(shaft_production_run)
+	if not spr_name:
+		frappe.throw(_("Shaft Production Run is required"))
+	if not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if not spr.get("production_plan"):
+		frappe.throw(_("SPR {0} has no Production Plan").format(spr_name))
+
+	# Group positive roll rows by WO
+	wo_rows = defaultdict(list)
+	for r in spr.items or []:
+		q = flt(spr._row_fg_qty(r))
+		wo = _cstr(r.get("work_order") or r.get("wo_id"))
+		if q > 0 and wo:
+			wo_rows[wo].append(r)
+	if not wo_rows:
+		return {"status": "ok", "created": [], "skipped": [{"reason": "no_wo_roll_rows"}]}
+
+	created = []
+	skipped = []
+	do_submit = cint(submit_entries) == 1
+
+	for wo_id, rows in wo_rows.items():
+		if not frappe.db.exists("Work Order", wo_id):
+			skipped.append({"work_order": wo_id, "reason": "wo_not_found"})
+			continue
+		wo_doc = frappe.get_doc("Work Order", wo_id)
+		item_code = _cstr(getattr(wo_doc, "production_item", None))
+		if not item_code:
+			skipped.append({"work_order": wo_id, "reason": "wo_missing_production_item"})
+			continue
+
+		# Existing posted qty per batch in this SPR+WO (submitted and draft to avoid duplicates).
+		existing_batch_qty = defaultdict(float)
+		existing_total = 0.0
+		existing = frappe.db.sql(
+			"""
+			SELECT IFNULL(sed.batch_no, '') AS batch_no, IFNULL(SUM(IFNULL(sed.qty, 0)), 0) AS qty
+			FROM `tabStock Entry` se
+			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+			WHERE IFNULL(se.custom_spr_reference, '') = %(spr)s
+			  AND IFNULL(se.purpose, '') = 'Manufacture'
+			  AND IFNULL(se.docstatus, 0) < 2
+			  AND IFNULL(se.work_order, '') = %(wo)s
+			  AND IFNULL(sed.is_finished_item, 0) = 1
+			  AND IFNULL(sed.item_code, '') = %(item)s
+			GROUP BY IFNULL(sed.batch_no, '')
+			""",
+			{"spr": spr.name, "wo": wo_id, "item": item_code},
+			as_dict=True,
+		) or []
+		for e in existing:
+			b = _cstr(e.get("batch_no"))
+			q = flt(e.get("qty"))
+			existing_total += q
+			if b:
+				existing_batch_qty[b] += q
+
+		# Pick only truly missing roll rows (batch-wise when possible).
+		missing_rows = []
+		expected_total = 0.0
+		for r in rows:
+			rq = flt(spr._row_fg_qty(r))
+			if rq <= 0:
+				continue
+			expected_total += rq
+			bn_raw = _cstr(r.get("batch_no"))
+			b_link = ""
+			if bn_raw:
+				try:
+					b_link = _cstr(spr._get_batch_link_name_for_stock_entry(bn_raw, item_code, wo_doc.company, r))
+				except Exception:
+					b_link = ""
+			if b_link:
+				posted = flt(existing_batch_qty.get(b_link, 0))
+				if posted + 1e-9 >= rq:
+					continue
+			missing_rows.append(r)
+
+		missing_total = flt(sum(spr._row_fg_qty(x) for x in missing_rows))
+		if missing_total <= 0:
+			skipped.append(
+				{
+					"work_order": wo_id,
+					"reason": "no_missing_rows",
+					"expected_total": flt(expected_total, 3),
+					"already_created_total": flt(existing_total, 3),
+				}
+			)
+			continue
+
+		# Build Manufacture entry exactly like SPR flow, but only for missing rows.
+		se = frappe.new_doc("Stock Entry")
+		se.flags.ignore_duplicate_for_work_order = True
+		se.company = wo_doc.company
+		se.posting_date = spr.run_date or today()
+		se.posting_time = nowtime()
+		se.set_posting_time = 1
+		se.stock_entry_type = spr._manufacture_stock_entry_type_name()
+		se.purpose = "Manufacture"
+		se.work_order = None
+		se.production_item = wo_doc.production_item
+		se.fg_completed_qty = missing_total
+		se.from_bom = 1
+		se.bom_no = wo_doc.bom_no
+		se.use_multi_level_bom = wo_doc.use_multi_level_bom
+		se.wip_warehouse = wo_doc.wip_warehouse
+		se.to_warehouse = wo_doc.fg_warehouse
+		spr._set_stock_entry_spr_link(se)
+		spr._set_stock_entry_unit(se, wo_doc)
+		se.get_items()
+		for d in se.items or []:
+			if d.item_code and not d.get("t_warehouse"):
+				d.s_warehouse = wo_doc.wip_warehouse
+		spr._strip_finished_goods_from_stock_entry(se)
+		spr._append_manufacture_fg_from_spr_rolls(se, wo_doc, missing_rows)
+		se.insert()
+		frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
+		spr._apply_order_code_to_submitted_stock_entry(se.name)
+		if do_submit:
+			se.reload()
+			se.flags.ignore_duplicate_for_work_order = True
+			se.submit()
+		created.append(
+			{
+				"work_order": wo_id,
+				"stock_entry": se.name,
+				"rows_added": len(missing_rows),
+				"qty": flt(missing_total, 3),
+				"docstatus": 1 if do_submit else 0,
+			}
+		)
+
+	# Final sync
+	dummy = frappe.new_doc("Shaft Production Run")
+	for wo_id in wo_rows.keys():
+		if frappe.db.exists("Work Order", wo_id):
+			dummy._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
+			dummy._sync_work_order_required_item_progress(wo_id)
+	dummy._sync_production_plan_progress_from_work_orders(_cstr(spr.get("production_plan")))
+
+	return {
+		"status": "ok",
+		"shaft_production_run": spr.name,
+		"production_plan": _cstr(spr.get("production_plan")),
+		"created_count": len(created),
+		"created": created,
+		"skipped_count": len(skipped),
+		"skipped": skipped[:100],
+	}
+
+
+@frappe.whitelist()
 def spr_get_bundle_packaging_catalog(shaft_production_run):
 	"""Jobs from Available Jobs; width options use per-segment widths (combination/WO), then roll widths."""
 	_spr_require_saved(shaft_production_run)
