@@ -1392,6 +1392,44 @@ class ShaftProductionRun(Document):
 		if not short_by_item:
 			return ""
 
+		# Path A: BOM-driven draft (best when site config supports it)
+		try:
+			se = frappe.new_doc("Stock Entry")
+			se.company = wo_doc.company
+			se.posting_date = self.run_date or today()
+			se.posting_time = nowtime()
+			se.set_posting_time = 1
+			se.purpose = "Material Transfer for Manufacture"
+			se.stock_entry_type = self._transfer_for_manufacture_type_name()
+			se.work_order = wo_doc.name
+			se.from_bom = 1
+			se.bom_no = wo_doc.bom_no
+			se.use_multi_level_bom = wo_doc.use_multi_level_bom
+			se.wip_warehouse = wo_doc.wip_warehouse
+			se.to_warehouse = wo_doc.wip_warehouse
+			se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
+			se.get_items()
+
+			for i in range(len(se.items or []) - 1, -1, -1):
+				d = se.items[i]
+				if not d.item_code or d.get("t_warehouse"):
+					continue
+				short_qty = flt(short_by_item.get(_cstr(d.item_code)))
+				if short_qty <= 0:
+					se.items.pop(i)
+					continue
+				cf = flt(d.get("conversion_factor") or 1.0) or 1.0
+				d.transfer_qty = flt(short_qty)
+				d.qty = flt(short_qty / cf)
+				if not d.t_warehouse:
+					d.t_warehouse = wo_doc.wip_warehouse
+			if any(d.item_code and d.get("t_warehouse") for d in (se.items or [])):
+				se.insert()
+				return se.name
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (BOM path) failed")
+
+		# Path B (fallback): manual rows directly from shortage map
 		se = frappe.new_doc("Stock Entry")
 		se.company = wo_doc.company
 		se.posting_date = self.run_date or today()
@@ -1400,29 +1438,28 @@ class ShaftProductionRun(Document):
 		se.purpose = "Material Transfer for Manufacture"
 		se.stock_entry_type = self._transfer_for_manufacture_type_name()
 		se.work_order = wo_doc.name
-		se.from_bom = 1
-		se.bom_no = wo_doc.bom_no
-		se.use_multi_level_bom = wo_doc.use_multi_level_bom
+		se.from_bom = 0
 		se.wip_warehouse = wo_doc.wip_warehouse
 		se.to_warehouse = wo_doc.wip_warehouse
-		se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
-		se.get_items()
-
-		for i in range(len(se.items or []) - 1, -1, -1):
-			d = se.items[i]
-			if not d.item_code or d.get("t_warehouse"):
+		for item_code, wh, _req, _avl, short_qty in shortages:
+			qty = flt(short_qty)
+			if not item_code or qty <= 0:
 				continue
-			short_qty = flt(short_by_item.get(_cstr(d.item_code)))
-			if short_qty <= 0:
-				se.items.pop(i)
-				continue
-			cf = flt(d.get("conversion_factor") or 1.0) or 1.0
-			d.transfer_qty = flt(short_qty, 2)
-			d.qty = flt(short_qty / cf, 2)
-			if not d.t_warehouse:
-				d.t_warehouse = wo_doc.wip_warehouse
-
-		if not any(d.item_code and d.get("t_warehouse") for d in (se.items or [])):
+			stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
+			se.append(
+				"items",
+				{
+					"item_code": item_code,
+					"s_warehouse": wh or wo_doc.wip_warehouse,
+					"t_warehouse": wo_doc.wip_warehouse,
+					"uom": stock_uom,
+					"stock_uom": stock_uom,
+					"conversion_factor": 1.0,
+					"qty": qty,
+					"transfer_qty": qty,
+				},
+			)
+		if not se.items:
 			return ""
 		se.insert()
 		return se.name
@@ -2048,9 +2085,11 @@ class ShaftProductionRun(Document):
 					shortages = self._rm_shortages_for_se(se)
 					if shortages:
 						transfer_name = ""
+						transfer_err = ""
 						try:
 							transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
 						except Exception:
+							transfer_err = _cstr(frappe.get_traceback())
 							transfer_name = ""
 						lines = "\n".join(
 							[
@@ -2067,6 +2106,11 @@ class ShaftProductionRun(Document):
 								"2) Verify and submit transfer.\n"
 								'3) Return to SPR: <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
 							).format(transfer_name, self.name)
+						elif transfer_err:
+							next_steps = _(
+								"Could not auto-create draft transfer on this site. "
+								"Create a 'Material Transfer for Manufacture' manually for the shortage rows, submit it, then submit SPR again."
+							)
 						frappe.throw(
 							_(
 								"Insufficient WIP stock for WO {0}.\n\n{1}\n\n{2}"
