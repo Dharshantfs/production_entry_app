@@ -1619,6 +1619,9 @@ class ShaftProductionRun(Document):
 		se.use_multi_level_bom = wo_doc.use_multi_level_bom
 		se.wip_warehouse = wo_doc.wip_warehouse
 		se.to_warehouse = wo_doc.fg_warehouse
+		# Phantom SE for BOM math only (not saved). get_items() validates WO and would hit duplicate check
+		# when another Manufacture/MAT-STE already exists for this WO (e.g. prior SPR on another day).
+		se.flags.ignore_duplicate_for_work_order = True
 		se.get_items()
 		rm = defaultdict(float)
 		for d in se.items or []:
