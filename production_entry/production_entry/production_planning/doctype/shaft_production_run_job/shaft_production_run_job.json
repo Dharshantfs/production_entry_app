@@ -66,12 +66,14 @@
    "fieldname": "total_width",
    "fieldtype": "Float",
    "label": "Total Width (Inches)",
+   "precision": "2",
    "read_only": 1
   },
   {
    "fieldname": "meter_roll_mtrs",
    "fieldtype": "Float",
-   "label": "Meter / Roll (Mtrs)"
+   "label": "Meter / Roll (Mtrs)",
+   "precision": "2"
   },
   {
    "fieldname": "net_weight",
@@ -83,12 +85,14 @@
    "fieldname": "total_weight",
    "fieldtype": "Float",
    "label": "Total Target Weight (Kgs)",
+   "precision": "2",
    "read_only": 1
   },
   {
    "fieldname": "custom_total_achieved_weight",
    "fieldtype": "Float",
    "label": "Total Achieved Weight (Kgs)",
+   "precision": "2",
    "read_only": 1
   },
   {

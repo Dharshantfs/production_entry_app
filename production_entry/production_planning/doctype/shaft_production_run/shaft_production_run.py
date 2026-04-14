@@ -1372,6 +1372,61 @@ class ShaftProductionRun(Document):
 				out.append((_cstr(d.item_code), wh, required, available, shortage))
 		return out
 
+	def _transfer_for_manufacture_type_name(self) -> str:
+		"""Resolve a valid Stock Entry Type for 'Material Transfer for Manufacture' purpose."""
+		if frappe.db.exists("Stock Entry Type", "Material Transfer for Manufacture"):
+			p = _cstr(frappe.db.get_value("Stock Entry Type", "Material Transfer for Manufacture", "purpose"))
+			if p == "Material Transfer for Manufacture":
+				return "Material Transfer for Manufacture"
+		name = frappe.db.get_value("Stock Entry Type", {"purpose": "Material Transfer for Manufacture"}, "name")
+		return _cstr(name) if name else "Material Transfer for Manufacture"
+
+	def _create_wip_shortage_transfer_draft(self, wo_doc, chunk_total_qty: float, shortages: list[tuple[str, str, float, float, float]]) -> str:
+		"""Create a draft Material Transfer for Manufacture for shortage items only."""
+		if not wo_doc or not shortages:
+			return ""
+		short_by_item = defaultdict(float)
+		for item_code, _wh, _req, _avl, short_qty in shortages:
+			if item_code and flt(short_qty) > 0:
+				short_by_item[_cstr(item_code)] += flt(short_qty)
+		if not short_by_item:
+			return ""
+
+		se = frappe.new_doc("Stock Entry")
+		se.company = wo_doc.company
+		se.posting_date = self.run_date or today()
+		se.posting_time = nowtime()
+		se.set_posting_time = 1
+		se.purpose = "Material Transfer for Manufacture"
+		se.stock_entry_type = self._transfer_for_manufacture_type_name()
+		se.work_order = wo_doc.name
+		se.from_bom = 1
+		se.bom_no = wo_doc.bom_no
+		se.use_multi_level_bom = wo_doc.use_multi_level_bom
+		se.wip_warehouse = wo_doc.wip_warehouse
+		se.to_warehouse = wo_doc.wip_warehouse
+		se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
+		se.get_items()
+
+		for i in range(len(se.items or []) - 1, -1, -1):
+			d = se.items[i]
+			if not d.item_code or d.get("t_warehouse"):
+				continue
+			short_qty = flt(short_by_item.get(_cstr(d.item_code)))
+			if short_qty <= 0:
+				se.items.pop(i)
+				continue
+			cf = flt(d.get("conversion_factor") or 1.0) or 1.0
+			d.transfer_qty = flt(short_qty, 2)
+			d.qty = flt(short_qty / cf, 2)
+			if not d.t_warehouse:
+				d.t_warehouse = wo_doc.wip_warehouse
+
+		if not any(d.item_code and d.get("t_warehouse") for d in (se.items or [])):
+			return ""
+		se.insert()
+		return se.name
+
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
 		# Prefer exact standard type label only when its mapped purpose is truly Manufacture.
@@ -1902,18 +1957,30 @@ class ShaftProductionRun(Document):
 				except Exception:
 					shortages = self._rm_shortages_for_se(se)
 					if shortages:
+						transfer_name = ""
+						try:
+							transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
+						except Exception:
+							transfer_name = ""
 						lines = "\n".join(
 							[
 								_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
-									it, wh or "—", flt(req, 3), flt(avl, 3), flt(sh, 3)
+									it, wh or "—", flt(req, 2), flt(avl, 2), flt(sh, 2)
 								)
 								for it, wh, req, avl, sh in shortages[:20]
 							]
 						)
+						next_steps = _("1) Open draft transfer, verify rows, submit.\n2) Return to SPR and submit again.")
+						if transfer_name:
+							next_steps = _(
+								'1) Open draft transfer: <a href="/app/stock-entry/{0}" target="_blank">{0}</a>\n'
+								"2) Verify and submit transfer.\n"
+								'3) Return to SPR: <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
+							).format(transfer_name, self.name)
 						frappe.throw(
 							_(
-								"Insufficient WIP stock for WO {0}. Transfer only the shortage items to WIP and retry submit.\n\n{1}"
-							).format(wo_id, lines),
+								"Insufficient WIP stock for WO {0}.\n\n{1}\n\n{2}"
+							).format(wo_id, lines, next_steps),
 							title=_("Insufficient stock"),
 						)
 					raise

@@ -68,7 +68,8 @@
   {
    "fieldname": "planned_qty",
    "fieldtype": "Float",
-   "label": "Planned Qty"
+   "label": "Planned Qty",
+   "precision": "2"
   },
   {
    "fieldname": "job",
@@ -99,28 +100,34 @@
   {
    "fieldname": "meter_roll",
    "fieldtype": "Float",
-   "label": "Meter/Roll"
+   "label": "Meter/Roll",
+   "precision": "2"
   },
   {
    "fieldname": "produced_length_mtrs",
    "fieldtype": "Float",
-   "label": "Produced Length (Mtrs)"
+   "label": "Produced Length (Mtrs)",
+   "precision": "2"
   },
   {
    "fieldname": "net_weight",
    "fieldtype": "Float",
-   "label": "Net Weight"
+   "label": "Net Weight",
+   "precision": "2",
+   "read_only": 1
   },
   {
    "fieldname": "produced_gsm",
    "fieldtype": "Float",
    "label": "Produced GSM",
+   "read_only": 1,
    "precision": "2"
   },
   {
    "fieldname": "gross_weight",
    "fieldtype": "Float",
-   "label": "Gross Weight"
+   "label": "Gross Weight",
+   "precision": "2"
   },
   {
    "fieldname": "save_row",

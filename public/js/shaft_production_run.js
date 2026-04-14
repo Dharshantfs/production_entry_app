@@ -55,9 +55,10 @@ function spr_sync_total_planned_qty_from_jobs(frm) {
 	if (!any) {
 		return;
 	}
+	const rounded = Math.round(sum * 100) / 100;
 	const cur = flt(frm.doc.custom_total_planned_qty);
-	if (Math.abs(cur - sum) > 1e-6) {
-		frm.set_value('custom_total_planned_qty', sum);
+	if (Math.abs(cur - rounded) > 1e-6) {
+		frm.set_value('custom_total_planned_qty', rounded);
 	}
 }
 
@@ -325,9 +326,9 @@ function spr_show_tolerance_override_dialog(frm, violations, opts) {
 				'</td><td>' +
 				spr_escape_html(v.roll_no != null && v.roll_no !== '' ? v.roll_no : '—') +
 				'</td><td class="text-right">' +
-				flt(v.planned).toFixed(3) +
+				flt(v.planned).toFixed(2) +
 				'</td><td class="text-right">' +
-				flt(v.actual).toFixed(3) +
+				flt(v.actual).toFixed(2) +
 				'</td><td class="text-right">' +
 				flt(v.dev_pct).toFixed(2) +
 				'%</td></tr>'
@@ -697,7 +698,7 @@ function spr_open_manual_job_dialog(frm) {
 						'<td><input type="number" class="input-with-feedback spr-manual-qty" data-idx="' +
 						idx +
 						'" value="' +
-						defQ.toFixed(3) +
+						defQ.toFixed(2) +
 						'" step="0.001" style="width:100px"/></td>';
 					html += '</tr>';
 				});
@@ -868,7 +869,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 											if (width > 0) {
 												let core_weight = width * (1.3 / 63);
 												net_val = flt(item.gross_weight) - core_weight;
-												net_val = flt(net_val, 3);
+												net_val = flt(net_val, 2);
 											}
 											
 											if (Math.abs(current_net - net_val) > 0.01 && net_val > 0) {
@@ -927,7 +928,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 						__('WO item') +
 						'</th></tr></thead><tbody>';
 					segs.forEach(function (s) {
-						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(3) : '—';
+						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(2) : '—';
 						const ic = [s.item_code || '', (s.item_name || '').substring(0, 28)].join(' ').trim();
 						html +=
 							'<tr><td>' +
@@ -984,7 +985,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 				el.html(
 					__('Single gross: {0} Kg · Sticker width (selected width × pkg): {1} in', [
 						single.toFixed(2),
-						tw.toFixed(4),
+						tw.toFixed(2),
 					])
 				);
 			}
@@ -2388,7 +2389,7 @@ function spr_compute_total_produced_weight(frm) {
 		const nw = row.net_weight ? parseFloat(row.net_weight) : 0;
 		total = total + nw;
 	}
-	return total;
+	return Math.round(total * 100) / 100;
 }
 
 function spr_sync_total_produced_weight(frm) {

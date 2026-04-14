@@ -74,7 +74,8 @@
   {
    "fieldname": "custom_total_planned_qty",
    "fieldtype": "Float",
-   "label": "Total Planned Qty (KG)"
+   "label": "Total Planned Qty (KG)",
+   "precision": "2"
   },
   {
    "fieldname": "custom_unit",
@@ -114,6 +115,7 @@
    "fieldname": "total_produced_weight",
    "fieldtype": "Float",
    "label": "Total Produced Weight (KG)",
+   "precision": "2",
    "read_only": 1
   },
   {
@@ -180,7 +182,8 @@
   {
    "fieldname": "custom_batch_width",
    "fieldtype": "Float",
-   "label": "Custom Label Width (CM)"
+   "label": "Custom Label Width (CM)",
+   "precision": "2"
   },
   {
    "fieldname": "bundle_stickers",
