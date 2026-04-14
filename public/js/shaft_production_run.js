@@ -18,9 +18,13 @@ function sprScheduleTotalProducedSync(frm) {
 function sprAutoSaveAfterCreateEntry(frm) {
 	if (!frm || frm.is_new() || frm.doc.docstatus !== 0) return;
 	if (!frm.is_dirty || !frm.is_dirty()) return;
-	if (frm.__spr_auto_save_in_progress) return;
-	frm.__spr_auto_save_in_progress = true;
-	setTimeout(function () {
+	// Debounce auto-save bursts when Create Entry appends many rows.
+	if (frm.__spr_auto_save_timer) {
+		clearTimeout(frm.__spr_auto_save_timer);
+	}
+	frm.__spr_auto_save_timer = setTimeout(function () {
+		if (frm.__spr_auto_save_in_progress) return;
+		frm.__spr_auto_save_in_progress = true;
 		const p = frm.save();
 		if (p && typeof p.then === 'function') {
 			p.then(function () {
@@ -31,7 +35,8 @@ function sprAutoSaveAfterCreateEntry(frm) {
 		} else {
 			frm.__spr_auto_save_in_progress = false;
 		}
-	}, 120);
+		frm.__spr_auto_save_timer = null;
+	}, 700);
 }
 
 /** Sum job-level planned weights into header when shaft rows have explicit totals; keep PP/WO value when jobs are blank. */
@@ -1135,6 +1140,15 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const row = locals[cdt][cdn];
 		let width = flt(row.width_inch);
 		let gw = flt(row.gross_weight);
+		if (gw <= 0) {
+			// Operator cleared gross weight: clear dependent computed values immediately.
+			frappe.model.set_value(cdt, cdn, 'net_weight', 0);
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
+			update_shaft_job_achieved_from_items(frm);
+			sprScheduleTotalProducedSync(frm);
+			schedule_spr_item_row_styles(frm);
+			return;
+		}
 		
 		if (width > 0 && gw > 0) {
 			let width_in_meter = width * 0.0254;
@@ -1399,7 +1413,7 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	}
 	
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', pgsm);
-	frm.refresh_field('items');
+	// Avoid full grid refresh on every keypress (causes lag and cursor jumps).
 	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
 }
