@@ -1760,6 +1760,25 @@ class ShaftProductionRun(Document):
 			if not wo_name:
 				continue
 			wo_groups.setdefault(wo_name, []).append(row)
+		if not wo_groups:
+			positive_rows = [
+				r for r in (self.items or []) if flt(r.get("net_weight") or r.get("gross_weight") or 0) > 0
+			]
+			if positive_rows:
+				frappe.throw(
+					_(
+						"SPR has produced rows, but none are linked to a Work Order. "
+						"Map Work Order in Roll Production Results and submit again."
+					),
+					title=_("Missing Work Order mapping"),
+				)
+			frappe.throw(
+				_(
+					"Cannot submit SPR without any Work Order-linked production rows. "
+					"Create Entry and ensure each row has Work Order + produced weight."
+				),
+				title=_("No manufacturing rows"),
+			)
 
 		created_entries = []
 		planned_wo_posts = []
@@ -2004,6 +2023,14 @@ class ShaftProductionRun(Document):
 				_("Created {0} Manufacturing Entries: {1}").format(
 					len(created_entries), ", ".join(created_entries)
 				)
+			)
+		else:
+			frappe.throw(
+				_(
+					"SPR submit blocked: no Manufacture Stock Entry was created. "
+					"Check Work Order mapping and produced weights, then retry."
+				),
+				title=_("No stock entry created"),
 			)
 
 	def update_work_order_statuses(self):
