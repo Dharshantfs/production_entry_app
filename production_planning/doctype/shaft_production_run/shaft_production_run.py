@@ -130,17 +130,23 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 					out[df.fieldname] = value
 					return
 
+	# Batch.custom_party_code_text ← Roll Production line.party_code (explicit; fallback legacy line text)
+	party_for_batch_party_field = _cstr(_spr_row_get(spr_row, "party_code")) or _cstr(
+		_spr_row_get(spr_row, "custom_party_code_text")
+	)
+	_set_first_batch_field(("custom_party_code_text",), party_for_batch_party_field, ("party", "code"))
+
 	order_code = (
-		_cstr(_spr_row_get(spr_row, "custom_party_code_text"))
-		or _cstr(_spr_row_get(spr_row, "party_code"))
-		or _cstr(_spr_row_get(spr_row, "custom_order_code"))
+		_cstr(_spr_row_get(spr_row, "custom_order_code"))
 		or _cstr(_spr_row_get(spr_row, "order_code"))
+		or _cstr(_spr_row_get(spr_row, "custom_party_code_text"))
+		or _cstr(_spr_row_get(spr_row, "party_code"))
 	)
 	work_order = _cstr(_spr_row_get(spr_row, "work_order") or _spr_row_get(spr_row, "wo_id"))
 	roll_no = _spr_row_get(spr_row, "roll_no")
 
 	_set_first_batch_field(
-		("custom_party_code_text", "custom_order_code", "order_code", "party_code"),
+		("custom_order_code", "order_code", "party_code"),
 		order_code,
 		("order", "code"),
 	)
