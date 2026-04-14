@@ -3931,22 +3931,48 @@ def spr_backfill_missing_manufacture_from_spr(shaft_production_run: str, submit_
 		# Existing posted qty per batch in this SPR+WO (submitted and draft to avoid duplicates).
 		existing_batch_qty = defaultdict(float)
 		existing_total = 0.0
-		existing = frappe.db.sql(
-			"""
-			SELECT IFNULL(sed.batch_no, '') AS batch_no, IFNULL(SUM(IFNULL(sed.qty, 0)), 0) AS qty
-			FROM `tabStock Entry` se
-			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-			WHERE IFNULL(se.custom_spr_reference, '') = %(spr)s
-			  AND IFNULL(se.purpose, '') = 'Manufacture'
-			  AND IFNULL(se.docstatus, 0) < 2
-			  AND IFNULL(se.work_order, '') = %(wo)s
-			  AND IFNULL(sed.is_finished_item, 0) = 1
-			  AND IFNULL(sed.item_code, '') = %(item)s
-			GROUP BY IFNULL(sed.batch_no, '')
-			""",
-			{"spr": spr.name, "wo": wo_id, "item": item_code},
-			as_dict=True,
-		) or []
+		se_has_spr_ref = frappe.db.has_column("Stock Entry", "custom_spr_reference")
+		if se_has_spr_ref:
+			existing = frappe.db.sql(
+				"""
+				SELECT IFNULL(sed.batch_no, '') AS batch_no, IFNULL(SUM(IFNULL(sed.qty, 0)), 0) AS qty
+				FROM `tabStock Entry` se
+				INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+				WHERE IFNULL(se.custom_spr_reference, '') = %(spr)s
+				  AND IFNULL(se.purpose, '') = 'Manufacture'
+				  AND IFNULL(se.docstatus, 0) < 2
+				  AND IFNULL(se.work_order, '') = %(wo)s
+				  AND IFNULL(sed.is_finished_item, 0) = 1
+				  AND IFNULL(sed.item_code, '') = %(item)s
+				GROUP BY IFNULL(sed.batch_no, '')
+				""",
+				{"spr": spr.name, "wo": wo_id, "item": item_code},
+				as_dict=True,
+			) or []
+		else:
+			# Site schema fallback: derive scope by WO + date (+ company) when custom_spr_reference is unavailable.
+			existing = frappe.db.sql(
+				"""
+				SELECT IFNULL(sed.batch_no, '') AS batch_no, IFNULL(SUM(IFNULL(sed.qty, 0)), 0) AS qty
+				FROM `tabStock Entry` se
+				INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+				WHERE IFNULL(se.purpose, '') = 'Manufacture'
+				  AND IFNULL(se.docstatus, 0) < 2
+				  AND IFNULL(se.work_order, '') = %(wo)s
+				  AND IFNULL(se.posting_date, '') = %(posting_date)s
+				  AND IFNULL(se.company, '') = %(company)s
+				  AND IFNULL(sed.is_finished_item, 0) = 1
+				  AND IFNULL(sed.item_code, '') = %(item)s
+				GROUP BY IFNULL(sed.batch_no, '')
+				""",
+				{
+					"wo": wo_id,
+					"posting_date": spr.run_date,
+					"company": wo_doc.company,
+					"item": item_code,
+				},
+				as_dict=True,
+			) or []
 		for e in existing:
 			b = _cstr(e.get("batch_no"))
 			q = flt(e.get("qty"))
