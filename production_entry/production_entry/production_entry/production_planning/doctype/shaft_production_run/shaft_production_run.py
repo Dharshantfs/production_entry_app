@@ -186,6 +186,69 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 	return t.isalnum()
 
 
+def resolve_label_from_pp_doc(pp_doc) -> str:
+	"""Label / label type from Production Plan header or first shaft detail row (sites use different field names)."""
+	if not pp_doc:
+		return ""
+	try:
+		meta = frappe.get_meta("Production Plan")
+		for fn in (
+			"custom_label",
+			"label",
+			"label_type",
+			"custom_label_type",
+			"type_of_label",
+			"custom_type_of_label",
+			"custom_print_type",
+			"print_type",
+		):
+			if meta.has_field(fn):
+				v = _cstr(pp_doc.get(fn))
+				if v:
+					return v
+		for tbl in ("custom_shaft_details", "shaft_details"):
+			if not meta.has_field(tbl):
+				continue
+			rows = pp_doc.get(tbl) or []
+			if not rows:
+				continue
+			r0 = rows[0]
+			for fn in ("custom_label", "label", "label_type", "type_of_label", "custom_label_type"):
+				try:
+					raw = r0.get(fn) if isinstance(r0, dict) else getattr(r0, fn, None)
+				except Exception:
+					raw = None
+				v = _cstr(raw)
+				if v:
+					return v
+	except Exception:
+		pass
+	return ""
+
+
+def resolve_label_from_planning_sheet_doc(sheet_doc) -> str:
+	"""Fallback label when PP header has no label field populated."""
+	if not sheet_doc:
+		return ""
+	try:
+		meta = frappe.get_meta("Planning sheet")
+		for fn in (
+			"custom_label",
+			"label",
+			"label_type",
+			"custom_label_type",
+			"type_of_label",
+			"custom_type_of_label",
+		):
+			if meta.has_field(fn):
+				v = _cstr(sheet_doc.get(fn))
+				if v:
+					return v
+	except Exception:
+		pass
+	return ""
+
+
 def _production_plan_total_planned_qty(production_plan: str) -> float:
 	"""Resolve planned KG from Production Plan fields, then fall back to linked Work Orders sum."""
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
@@ -210,18 +273,45 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 		frappe.logger().error(f"[_production_plan_total_planned_qty] Error fetching WO sum for {production_plan}: {e}")
 		pass
 
-	# Final fallback to direct PP fields
+	# Sum Production Plan Item rows (ERPNext / custom PPs)
 	try:
 		pp = frappe.get_doc("Production Plan", production_plan)
 		pp_meta = frappe.get_meta("Production Plan")
-		for fn in ("custom_total_planned_qty", "total_planned_qty", "planned_qty", "qty"):
+		for tbl in ("po_items", "prod_order_items", "items", "production_plan_item", "custom_production_plan_items"):
+			if not pp_meta.has_field(tbl):
+				continue
+			s = 0.0
+			for row in pp.get(tbl) or []:
+				if isinstance(row, dict):
+					pq = row.get("planned_qty") or row.get("qty")
+				else:
+					pq = getattr(row, "planned_qty", None) or getattr(row, "qty", None)
+				s += flt(pq)
+			if s > 0:
+				frappe.logger().info(f"[_production_plan_total_planned_qty] {production_plan}: sum {tbl} = {s}")
+				return s
+	except Exception as e:
+		frappe.logger().error(f"[_production_plan_total_planned_qty] PP item sum error {production_plan}: {e}")
+
+	# Final fallback to direct PP scalar fields
+	try:
+		pp = frappe.get_doc("Production Plan", production_plan)
+		pp_meta = frappe.get_meta("Production Plan")
+		for fn in (
+			"custom_total_planned_qty",
+			"total_planned_qty",
+			"custom_total_weight_kgs",
+			"total_weight_kgs",
+			"planned_qty",
+			"qty",
+		):
 			if pp_meta.has_field(fn):
 				v = flt(pp.get(fn))
 				if v > 0:
 					return v
 	except Exception:
 		pass
-		
+
 	return 0.0
 
 
@@ -1229,6 +1319,22 @@ class ShaftProductionRun(Document):
 		if meta.has_field("shaft_production_run"):
 			se.shaft_production_run = self.name
 
+	def _apply_order_code_to_submitted_stock_entry(self, se_name: str):
+		"""Copy SPR header order code onto Stock Entry when the site has a matching custom field."""
+		if not se_name:
+			return
+		oc = _cstr(self.get("custom_order_code") or "")
+		if not oc:
+			return
+		meta = frappe.get_meta("Stock Entry")
+		for fn in ("order_code", "custom_order_code", "custom_party_code", "party_code"):
+			if meta.has_field(fn):
+				try:
+					frappe.db.set_value("Stock Entry", se_name, fn, oc, update_modified=False)
+				except Exception:
+					pass
+				return
+
 	def _resolve_spr_unit_value(self, wo_doc=None) -> str:
 		"""Pick unit for Stock Entry: SPR header first, then WO."""
 		for v in (
@@ -1681,6 +1787,10 @@ class ShaftProductionRun(Document):
 				if chunk_total_qty <= 0:
 					continue
 				se = frappe.new_doc("Stock Entry")
+				# ERPNext blocks a second Manufacture against the same WO once cumulative FG >= WO qty.
+				# We submit with work_order blank then link after submit; still set flag so validation
+				# never blocks partial multi-day / multi-SPR manufacture for the same WO.
+				se.flags.ignore_duplicate_for_work_order = True
 				se.company = wo_doc.company
 				se.posting_date = self.run_date or today()
 				se.posting_time = nowtime()
@@ -1798,6 +1908,7 @@ class ShaftProductionRun(Document):
 					raise
 				# Link back to WO after successful submit, then sync WO produced qty.
 				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
+				self._apply_order_code_to_submitted_stock_entry(se.name)
 				self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
 				created_entries.append(se.name)
 
@@ -1886,12 +1997,7 @@ def get_production_plan_details(production_plan):
 	if pp_meta.has_field("custom_party_code"):
 		out["custom_order_code"] = pp.get("custom_party_code") or ""
 	
-	# Try both custom_label and label fields
-	label_value = ""
-	if pp_meta.has_field("custom_label"):
-		label_value = pp.get("custom_label") or ""
-	if not label_value and pp_meta.has_field("label"):
-		label_value = pp.get("label") or ""
+	label_value = resolve_label_from_pp_doc(pp)
 	if label_value:
 		out["custom_label"] = label_value
 	

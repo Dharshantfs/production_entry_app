@@ -35,6 +35,10 @@ class SPRStockEntryOverride(StockEntry):
 		super().validate()
 
 	def check_duplicate_entry_for_work_order(self):
+		# SPR submits Manufacture with work_order linked after submit; also allow repeated partial
+		# manufacture for the same WO across multiple SPRs until cumulative FG reaches the limit.
+		if getattr(self.flags, "ignore_duplicate_for_work_order", False):
+			return
 		# SPR can have prior MAT-STE transfers on WO; do not block Manufacture submit on this check.
 		if self._is_spr_generated_entry():
 			return

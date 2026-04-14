@@ -4506,7 +4506,7 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 "unit": unit,
                 "planName": sheet.get("planName") or sheet.get("custom_plan_name") or "Default",
                 "pbPlanName": sheet.get("custom_pb_plan_name") or "",
-                "planCode": item.get("plan_name") or "",
+                "planCode": (item.get("custom_plan_code") or item.get("plan_name") or ""),
                 "ordered_date": str(sheet.ordered_date) if sheet.ordered_date else "",
                 "planned_date": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
                 "plannedDate": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
@@ -10355,22 +10355,17 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         spr.custom_order_code = parent_sheet.party_code or ""
         spr.customer = pp.customer or parent_sheet.customer or ""
 
-        # Prefer PP custom_label, then PP label, then planning sheet label fields.
-        pp_meta = frappe.get_meta("Production Plan")
-        ps_meta = frappe.get_meta("Planning sheet")
-        label_value = ""
-        if pp_meta.has_field("custom_label"):
-            label_value = pp.get("custom_label") or ""
-        if not label_value and pp_meta.has_field("label"):
-            label_value = pp.get("label") or ""
-        if not label_value and ps_meta.has_field("custom_label"):
-            label_value = parent_sheet.get("custom_label") or ""
-        if not label_value and ps_meta.has_field("label"):
-            label_value = parent_sheet.get("label") or ""
+        from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+            _production_plan_total_planned_qty,
+            resolve_label_from_planning_sheet_doc,
+            resolve_label_from_pp_doc,
+        )
+
+        label_value = resolve_label_from_pp_doc(pp) or resolve_label_from_planning_sheet_doc(parent_sheet)
         if label_value:
             spr.custom_label = label_value
-        
-        frappe.logger().info(f"[create_spr_from_psi] Set custom_label={label_value or ''} for PP {pp_id}")
+
+        frappe.logger().info(f"[create_item_spr] Set custom_label={label_value or ''} for PP {pp_id}")
         
         def pick_value(source, keys, default=None):
             for k in keys:
@@ -10391,11 +10386,16 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         )
         wo_names_str = ", ".join([wo.name for wo in pp_work_orders]) if pp_work_orders else ""
         wo_total_qty = sum(flt(wo.qty) for wo in pp_work_orders)
-        
-        # Set custom_total_planned_qty from Work Orders (same as manual creation)
+
+        # Set custom_total_planned_qty from Work Orders; if WOs are missing/zero, use PP / PP-items (same as desk).
         if wo_total_qty > 0:
             spr.custom_total_planned_qty = wo_total_qty
-            frappe.logger().info(f"[create_spr_from_psi] Set custom_total_planned_qty={wo_total_qty} from WO sum for PP {pp_id}")
+            frappe.logger().info(f"[create_item_spr] Set custom_total_planned_qty={wo_total_qty} from WO sum for PP {pp_id}")
+        else:
+            pq = _production_plan_total_planned_qty(pp_id)
+            if pq > 0:
+                spr.custom_total_planned_qty = pq
+                frappe.logger().info(f"[create_item_spr] Set custom_total_planned_qty={pq} from PP fallback for {pp_id}")
 
         # PP-level fallback values - try all possible field name variations
         # Standard PP fields + custom_ prefix variants

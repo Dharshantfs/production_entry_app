@@ -2340,7 +2340,7 @@ async function fetchData() {
       customer_name: d.customer_name || d.party_name || d.customer || d.party_code || "",
       itemName: d.itemName || d.item_name || "",
       orderDate: d.orderDate || d.ordered_date || "",
-      planCode: d.custom_plan_code || "",
+      planCode: d.planCode || d.custom_plan_code || "",
       // Actual production weight must come only from SPR achieved fields.
       actual_production_weight_kgs: parseFloat(
         d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? 0

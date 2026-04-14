@@ -34,6 +34,33 @@ function sprAutoSaveAfterCreateEntry(frm) {
 	}, 120);
 }
 
+/** Sum job-level planned weights into header when shaft rows have explicit totals; keep PP/WO value when jobs are blank. */
+function spr_sync_total_planned_qty_from_jobs(frm) {
+	if (!frm || !frm.doc) {
+		return;
+	}
+	if (!frappe.meta.get_docfield('Shaft Production Run', 'custom_total_planned_qty')) {
+		return;
+	}
+	const jobs = frm.doc.shaft_jobs || [];
+	let sum = 0;
+	let any = false;
+	jobs.forEach(function (r) {
+		const tw = flt(r.total_weight || r.total_weight_kgs || 0);
+		if (tw > 0) {
+			sum += tw;
+			any = true;
+		}
+	});
+	if (!any) {
+		return;
+	}
+	const cur = flt(frm.doc.custom_total_planned_qty);
+	if (Math.abs(cur - sum) > 1e-6) {
+		frm.set_value('custom_total_planned_qty', sum);
+	}
+}
+
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
 		// Buttons registered in refresh — see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
