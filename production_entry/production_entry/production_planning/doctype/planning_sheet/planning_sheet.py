@@ -621,8 +621,43 @@ class Planningsheet(Document):
 
 # Utility Functions
 
-def extract_quality_and_color(item_name):
-    """Extract quality and color from item name"""
+def _quality_name_by_code(q_code: str) -> str:
+    """Resolve quality name by code from Quality Master."""
+    if not q_code:
+        return ""
+    q_code = str(q_code).strip()
+    for fn in ("custom_quality_code", "quality_code", "short_code", "code"):
+        try:
+            v = frappe.db.get_value("Quality Master", {fn: q_code}, "name")
+            if v:
+                return str(v).strip().upper()
+        except Exception:
+            continue
+    return ""
+
+
+def _color_name_by_code(c_code: str) -> str:
+    """Resolve color name by code from Colour Master."""
+    if not c_code:
+        return ""
+    c_code = str(c_code).strip()
+    for fn in ("custom_color_code", "colour_code", "color_code", "short_code", "code"):
+        try:
+            row = frappe.db.get_value(
+                "Colour Master",
+                {fn: c_code},
+                ["name", "colour_name", "color_name"],
+                as_dict=True,
+            )
+            if row:
+                return str(row.get("name") or row.get("colour_name") or row.get("color_name") or "").strip().upper()
+        except Exception:
+            continue
+    return ""
+
+
+def extract_quality_and_color(item_name, item_code=None):
+    """Extract quality and color (prefer item-code index + masters, fallback item-name parse)."""
     QUAL_LIST = ["SUPER PLATINUM", "SUPER CLASSIC", "SUPER ECO", "ECO SPECIAL", 
                  "ECO GREEN", "ECO SPL", "LIFE STYLE", "LIFESTYLE", "PREMIUM", 
                  "PLATINUM", "CLASSIC", "DELUXE", "BRONZE", "SILVER", "ULTRA", 
@@ -635,13 +670,22 @@ def extract_quality_and_color(item_name):
                 "DARK PINK", "CRIMSON RED", "LIGHT MAROON", "DARK MAROON", 
                 "MEDICAL BLUE", "PEACOCK BLUE", "RELIANCE GREEN", "PARROT GREEN", 
                 "ROYAL BLUE", "NAVY BLUE", "LIGHT GREY", "DARK GREY", 
-                "CHOCOLATE BROWN", "LIGHT BEIGE", "DARK BEIGE", "WHITE MIX", 
+                "CHOCOLATE BROWN", "LIGHT BEIGE", "DARK BEIGE", "PURPLE", "WHITE MIX", 
                 "BLACK MIX", "COLOR MIX", "BEIGE MIX", "WHITE"]
     COL_LIST.sort(key=len, reverse=True)
     
     quality = ""
     color = ""
-    item_upper = item_name.upper()
+    item_upper = (item_name or "").upper()
+
+    # 1) Prefer item_code index decoding for 100******** pattern:
+    #    quality code -> [3:6], color code -> [6:9]
+    ic = str(item_code or "").strip()
+    if len(ic) >= 9 and ic.startswith("100"):
+        q_code = ic[3:6]
+        c_code = ic[6:9]
+        quality = _quality_name_by_code(q_code) or quality
+        color = _color_name_by_code(c_code) or color
     
     # Extract quality
     for qual in QUAL_LIST:
@@ -655,7 +699,7 @@ def extract_quality_and_color(item_name):
             color = col
             break
     
-    return quality, color
+    return (quality or "").strip().upper(), (color or "").strip().upper()
 
 
 def get_unit_daily_capacity(unit_name):

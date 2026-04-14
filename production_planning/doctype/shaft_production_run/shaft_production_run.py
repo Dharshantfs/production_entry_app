@@ -2585,7 +2585,7 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	item_code = wo_doc.production_item
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
 	gsm, width_inch = parse_item_code(item_code)
-	quality, color = extract_quality_and_color(item_name or "")
+	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 	return {
 		"work_order": wo["name"],
 		"item_code": item_code,
@@ -3113,7 +3113,7 @@ def spr_create_manual_job(
 
 	gsm, width_inch = parse_item_code(item_code)
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
-	quality, color = extract_quality_and_color(item_name or "")
+	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 
 	row = {
 		"job_id": job_id,
@@ -3228,7 +3228,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	first_ic = item_codes_list[0]
 	gsm, width_inch_one = parse_item_code(first_ic)
 	item_name = frappe.db.get_value("Item", first_ic, "item_name")
-	quality, color = extract_quality_and_color(item_name or "")
+	quality, color = extract_quality_and_color(item_name or "", item_code=first_ic)
 
 	def _fmt_w(w):
 		w = flt(w)
