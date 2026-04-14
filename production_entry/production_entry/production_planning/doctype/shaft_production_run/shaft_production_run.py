@@ -1600,7 +1600,13 @@ class ShaftProductionRun(Document):
 		return chunks
 
 	def _build_expected_rm_map_for_qty(self, wo_doc, fg_qty: float) -> dict[str, float]:
-		"""Expected RM consumption map for a WO at given FG qty (item_code -> transfer_qty)."""
+		"""Expected RM consumption map for a WO at given FG qty (item_code -> transfer_qty).
+
+		Must use the **same** Stock Entry inputs as ``create_manufacturing_stock_entries`` before
+		``get_items()``: ``work_order`` is left blank so ERPNext builds RM from BOM × ``fg_completed_qty``
+		identically to submitted Manufacture entries. Setting ``work_order`` here would use a different
+		validation/backflush path and skew split-entry variance checks. This doc is never inserted.
+		"""
 		fg_qty = flt(fg_qty)
 		if fg_qty <= 0:
 			return {}
@@ -1609,9 +1615,10 @@ class ShaftProductionRun(Document):
 		se.posting_date = self.run_date or today()
 		se.posting_time = nowtime()
 		se.set_posting_time = 1
-		se.stock_entry_type = "Manufacture"
+		se.stock_entry_type = self._manufacture_stock_entry_type_name()
 		se.purpose = "Manufacture"
-		se.work_order = wo_doc.name
+		# Match submitted SPR Manufacture entries: WO linked only after submit, not during get_items().
+		se.work_order = None
 		se.production_item = wo_doc.production_item
 		se.fg_completed_qty = fg_qty
 		se.from_bom = 1
@@ -1619,9 +1626,6 @@ class ShaftProductionRun(Document):
 		se.use_multi_level_bom = wo_doc.use_multi_level_bom
 		se.wip_warehouse = wo_doc.wip_warehouse
 		se.to_warehouse = wo_doc.fg_warehouse
-		# Phantom SE for BOM math only (not saved). get_items() validates WO and would hit duplicate check
-		# when another Manufacture/MAT-STE already exists for this WO (e.g. prior SPR on another day).
-		se.flags.ignore_duplicate_for_work_order = True
 		se.get_items()
 		rm = defaultdict(float)
 		for d in se.items or []:
@@ -1643,7 +1647,7 @@ class ShaftProductionRun(Document):
 		return target
 
 	def _validate_rm_split_variance(self, wo_id: str, fg_total_qty: float, expected_rm: dict[str, float], actual_rm: dict[str, float]):
-		"""Ensure split-entry RM consumption matches expected BOM RM within tiny tolerance."""
+		"""Ensure split-entry RM consumption matches BOM-expected RM for this FG qty (same path as phantom SE)."""
 		issues = []
 		for item_code in sorted(set(expected_rm or {}) | set(actual_rm or {})):
 			exp = flt((expected_rm or {}).get(item_code))
