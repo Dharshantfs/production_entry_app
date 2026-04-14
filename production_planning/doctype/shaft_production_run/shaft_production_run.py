@@ -3821,12 +3821,16 @@ def spr_force_relink_and_resync(production_plan: str, shaft_production_run: str 
 	if spr_doc and _cstr(getattr(spr_doc, "manufacturing_entries", "")):
 		se_names = [x.strip() for x in _cstr(getattr(spr_doc, "manufacturing_entries", "")).split(",") if x and x.strip()]
 	if not se_names and spr_doc:
+		spr_company = _cstr(getattr(spr_doc, "company", None) or spr_doc.get("company"))
+		spr_posting_date = getattr(spr_doc, "run_date", None) or spr_doc.get("run_date")
 		filters = {
 			"purpose": "Manufacture",
 			"docstatus": 1,
-			"company": spr_doc.company,
-			"posting_date": spr_doc.run_date,
 		}
+		if spr_company:
+			filters["company"] = spr_company
+		if spr_posting_date:
+			filters["posting_date"] = spr_posting_date
 		se_names = frappe.get_all("Stock Entry", filters=filters, pluck="name") or []
 	else:
 		# Fallback without SPR: all submitted Manufacture entries whose WO belongs to this PP plus blanks.
