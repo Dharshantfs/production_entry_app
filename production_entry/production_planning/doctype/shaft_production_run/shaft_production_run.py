@@ -1810,10 +1810,13 @@ class ShaftProductionRun(Document):
 			if not item_code:
 				continue
 			if req_meta.has_field("consumed_qty"):
-				row.consumed_qty = flt(consumed_map.get(item_code, 0), 2)
+				next_consumed = flt(consumed_map.get(item_code, 0))
+				if abs(flt(getattr(row, "consumed_qty", 0)) - next_consumed) > 1e-9:
+					frappe.db.set_value(req_dt, row.name, "consumed_qty", next_consumed, update_modified=False)
 			if req_meta.has_field("transferred_qty"):
-				row.transferred_qty = flt(transferred_map.get(item_code, 0), 2)
-		wo_doc.save(ignore_permissions=True)
+				next_transferred = flt(transferred_map.get(item_code, 0))
+				if abs(flt(getattr(row, "transferred_qty", 0)) - next_transferred) > 1e-9:
+					frappe.db.set_value(req_dt, row.name, "transferred_qty", next_transferred, update_modified=False)
 
 	def create_manufacturing_stock_entries(self):
 		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
