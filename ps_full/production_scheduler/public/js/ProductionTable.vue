@@ -211,9 +211,10 @@
                               </span>
                             </td>
                             <td class="cell-center" style="position: sticky; right: 100px; background: white; z-index: 9;">
-                              <button @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="`View PP: ${row.item.pp_id || 'resolve from sheet'}`">
+                              <button v-if="row.item.pp_id" @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="`View PP: ${row.item.pp_id || 'resolve from sheet'}`">
                                 📋 View
                               </button>
+                              <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
                             <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9;">
                               <div class="pt-stock-cell">
@@ -253,6 +254,11 @@
                                 :title="itemSprPrimaryButtonTitle(row.item)">
                                 {{ itemSprPrimaryButtonLabel(row.item) }}
                               </button>
+                              <span
+                                v-else-if="row.item.pp_id && Number(row.item.pp_docstatus) !== 1"
+                                class="pt-wo-closed-hint"
+                                title="Production Plan exists but is still Draft. Submit the Production Plan to enable SPR creation from this table."
+                              >PP Draft</span>
                               <span
                                 v-else-if="row.item.pp_id && row.item.wo_terminal"
                                 class="pt-wo-closed-hint"
@@ -321,9 +327,10 @@
                               </span>
                             </td>
                             <td class="cell-center" style="position: sticky; right: 100px; background: white; z-index: 9;">
-                              <button @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="`View PP for merged row`">
+                              <button v-if="row.pp_id" @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="`View PP for merged row`">
                                 📋 View
                               </button>
+                              <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
                             <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9;">
                               <div class="pt-stock-cell">
@@ -349,20 +356,26 @@
                                   {{ mergeProductionStatusLine(row) }}
                                 </div>
                               <button 
-                                v-if="!row.spr_name" 
+                                v-if="!row.spr_name && Number(row.pp_docstatus) === 1" 
                                 @click="createMergedStockEntry(row)" 
                                 class="cc-pp-btn pt-btn-entry" 
                                 :title="mergedStockPrimaryTitle(row)">
                                 {{ mergedStockPrimaryLabel(row) }}
                               </button>
                               <button 
-                                v-else 
+                                v-else-if="row.spr_name" 
                                 @click="openMergedSPR(row.spr_name, row)" 
                                 class="cc-pp-btn pt-btn-entry"
                                 :class="Number(row.spr_docstatus) === 1 && row.mergeAllWoTerminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                                 :title="mergedSprPrimaryButtonTitle(row)">
                                 {{ mergedSprPrimaryButtonLabel(row) }}
                               </button>
+                              <span
+                                v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1"
+                                class="pt-wo-closed-hint"
+                                title="Production Plan is Draft. Submit PP to enable SPR for this merged row."
+                              >PP Draft</span>
+                              <span v-else class="pt-no-pp-hint">No PP created</span>
                               </div>
                             </td>
                           </tr>
@@ -1317,6 +1330,7 @@ const tableData = computed(() => {
                 hasDispatchLock,
                 mergeDispatchStatus,
                 pp_id: first.pp_id || "",
+                pp_docstatus: first.pp_docstatus,
                 spr_name,
                 spr_docstatus,
                 mergeAnyWoOpen,
@@ -1881,6 +1895,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
 
 function canShowStockEntry(item) {
   if (!item || !item.pp_id) return false;
+  if (Number(item.pp_docstatus) !== 1) return false;
 
   const pendingQty = Number(item.pending_qty || item.pp_pending_qty || 0);
   if (!(pendingQty > 0)) return false;
@@ -1908,7 +1923,7 @@ function getStockEntryTitle(item) {
   if (isDraftSpr) {
     return `Open the draft SPR and continue recording rolls. Pending (PP): ${pendingQty.toFixed(0)} Kg.`;
   }
-  return `Start a new Shaft Production Run for this Production Plan. Pending (PP): ${pendingQty.toFixed(0)} Kg.`;
+  return `Start a new Shaft Production Run for this submitted Production Plan. Pending (PP): ${pendingQty.toFixed(0)} Kg.`;
 }
 
 function handleStockEntryAction(item) {
@@ -2867,6 +2882,13 @@ onBeforeUnmount(() => {
   text-align: center;
   max-width: 108px;
   line-height: 1.2;
+}
+.pt-no-pp-hint {
+  font-size: 10px;
+  font-weight: 700;
+  color: #991b1b;
+  white-space: nowrap;
+  text-align: center;
 }
 
 .pt-merge-overlay {

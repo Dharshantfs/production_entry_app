@@ -4037,6 +4037,7 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
 
     data = []
     spr_meta_cache = {}
+    pp_docstatus_cache = {}
     spr_pp_gsm_weights_cache = {}
     spr_pp_gsm_index_cache = {}
     spr_pp_gsm_achieved_cache = {}
@@ -4438,6 +4439,14 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
 
             item_pending_qty = max(flt(item.get("qty", 0)) - flt(item_level_produced), 0)
 
+            pp_docstatus = None
+            if item_pp:
+                if item_pp in pp_docstatus_cache:
+                    pp_docstatus = pp_docstatus_cache[item_pp]
+                else:
+                    pp_docstatus = cint(frappe.db.get_value("Production Plan", item_pp, "docstatus") or 0)
+                    pp_docstatus_cache[item_pp] = pp_docstatus
+
             pp_target_qty = flt(pp_wo_target_qty_map.get(item_pp, 0)) if item_pp else 0
             pp_produced_qty = flt(pp_wo_produced_qty_map.get(item_pp, 0)) if item_pp else 0
             pp_pending_qty = max(pp_target_qty - pp_produced_qty, 0) if item_pp else 0
@@ -4529,6 +4538,7 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 "wo_terminal": wo_terminal,
                 "isSplit": item.get("is_split"),
                 "pp_id": item_pp or "",  # Item-level production plan ID for direct PP view routing
+                "pp_docstatus": pp_docstatus,
                 "spr_name": spr_name,  # SPR linked to PP (validated)
                 "spr_docstatus": spr_docstatus,
                 "spr_unit": spr_unit,
