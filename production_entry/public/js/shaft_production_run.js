@@ -601,10 +601,12 @@ function spr_open_manual_job_dialog(frm) {
 					{
 						fieldname: 'line_select_html',
 						fieldtype: 'HTML',
-						label: __(
-							'Select items (WO qty default = net/roll Kg × rolls × shafts)'
-						),
-						options: '<div class="spr-manual-lines-wrap"></div>',
+						label: __('Select items'),
+						options:
+							'<div class="spr-manual-lines-wrap"></div>' +
+							'<p class="text-muted small" style="margin-top:6px;">' +
+							__('WO qty default = net/roll Kg × rolls × shafts') +
+							'</p>',
 					},
 				],
 				primary_action_label: __('Create Work Order(s)'),
@@ -707,19 +709,20 @@ function spr_open_manual_job_dialog(frm) {
 					return;
 				}
 				let html =
-					'<table class="table table-bordered table-condensed" style="font-size:12px;margin-bottom:0;">';
+					'<div style="overflow-x:auto;">' +
+					'<table class="table table-bordered table-condensed" style="font-size:12px;margin-bottom:0;min-width:980px;table-layout:fixed;">';
 				html +=
 					'<thead><tr><th style="width:36px;"></th><th>' +
 					__('Item / PP row') +
-					'</th><th>' +
+					'</th><th style="width:70px;">' +
 					__('Width (in)') +
-					'</th><th>' +
+					'</th><th style="width:110px;">' +
 					__('Meter/Roll') +
-					'</th><th>' +
+					'</th><th style="width:95px;">' +
 					__('Net/roll (Kg)') +
-					'</th><th>' +
+					'</th><th style="width:190px;">' +
 					__('Reuse WO') +
-					'</th><th>' +
+					'</th><th style="width:110px;">' +
 					__('WO qty (Kg)') +
 					'</th></tr></thead><tbody>';
 				lines.forEach(function (line, idx) {
@@ -747,7 +750,10 @@ function spr_open_manual_job_dialog(frm) {
 						'<td style="text-align:center;"><input type="checkbox" class="spr-manual-inc" data-idx="' +
 						idx +
 						'" checked /></td>';
-					html += '<td style="max-width:220px;word-break:break-all;">' + frappe.utils.escape_html(label) + '</td>';
+					html +=
+						'<td style="max-width:360px;white-space:normal;word-break:break-word;">' +
+						frappe.utils.escape_html(label) +
+						'</td>';
 					html += '<td>' + wIn.toFixed(1) + '</td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-meter-roll" data-idx="' +
@@ -770,7 +776,7 @@ function spr_open_manual_job_dialog(frm) {
 							'</option>';
 					});
 					woSelect += '</select>';
-					html += '<td>' + woSelect + '</td>';
+					html += '<td style="white-space:nowrap;">' + woSelect + '</td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-qty" data-idx="' +
 						idx +
@@ -779,11 +785,14 @@ function spr_open_manual_job_dialog(frm) {
 						'" step="0.001" style="width:100px"/></td>';
 					html += '</tr>';
 				});
-				html += '</tbody></table>';
+				html += '</tbody></table></div>';
 				wrap.html(html);
 			}
 
 			d.show();
+			try {
+				d.$wrapper.find('.modal-dialog').css('max-width', '1100px');
+			} catch (e) {}
 			renderManualLinesTable();
 			const ns = d.fields_dict.no_of_shafts;
 			if (ns && ns.$input) {
