@@ -3068,13 +3068,9 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                                 spr_so_item_produced_map[so_item_key] = spr_so_item_produced_map.get(so_item_key, 0) + qty
                                 spr_so_item_count_map[so_item_key] = spr_so_item_count_map.get(so_item_key, 0) + 1
 
-                        psi_key = (r.get("psi_key") or "").strip()
-                        if psi_key:
-                            if psi_key not in spr_psi_name_map:
-                                spr_psi_name_map[psi_key] = spr_name
-                            if is_submitted:
-                                spr_psi_produced_map[psi_key] = spr_psi_produced_map.get(psi_key, 0) + qty
-                                spr_psi_count_map[psi_key] = spr_psi_count_map.get(psi_key, 0) + 1
+                        # Do not map planning_sheet_item from SPR alone into spr_psi_* — it leaks one SPR
+                        # onto Planning rows that never set Planning Table `spr_name` (same WO/PP, different SPR).
+                        # Per-row weight comes from the Planning Table ↔ SPR join (psi_spr_data) below.
 
                         so_key = (r.get("so_key") or "").strip()
                         if so_key:
@@ -3322,7 +3318,6 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                         so_item_wo_count_map[row.so_item] = cint(row.wo_count)
 
     data = []
-    spr_link_cache = {}
     spr_meta_cache = {}
     spr_pp_gsm_weights_cache = {}
     spr_pp_gsm_index_cache = {}
@@ -3704,29 +3699,10 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 split_so_item_produced_alloc_map[alloc_bucket] = already_alloc + row_alloc
                 item_level_produced = row_alloc
 
-            spr_name = ""
-            if psi_name and psi_name in spr_psi_name_map:
-                spr_name = spr_psi_name_map[psi_name]
-            elif split_group:
-                # Do not attach SO-line or PP-level SPR to sibling rows — only spr_name on this PT row counts.
-                spr_name = ""
-            elif so_item_key and not cint(item.get("is_split")) and so_item_key in spr_so_item_name_map:
-                spr_name = spr_so_item_name_map[so_item_key]
-            elif item_pp and not so_item_key and not cint(item.get("is_split")) and item_pp in spr_pp_name_map:
-                spr_name = spr_pp_name_map[item_pp]
-            
-            # Fallback to direct field on Production Plan if still not found
-            if not spr_name and item_pp and not so_item_key and not cint(item.get("is_split")) and not split_group:
-                if item_pp in spr_link_cache:
-                    spr_name = spr_link_cache[item_pp]
-                else:
-                    raw_spr_link = frappe.db.get_value("Production Plan", item_pp, "custom_shaft_production_run_id") or ""
-                    linked_spr = str(raw_spr_link).split(",")[0].strip() if raw_spr_link else ""
-                    if linked_spr and frappe.db.exists("Shaft Production Run", linked_spr):
-                        spr_name = linked_spr
-                    else:
-                        spr_name = ""
-                    spr_link_cache[item_pp] = spr_name
+            # Only the Planning Table row's own `spr_name` identifies which SPR this line belongs to.
+            # Never inherit from SO, PP, or SPR.planning_sheet_item without that field — same order/WO can
+            # have multiple PPs/SPRs; PP-level custom_shaft_production_run_id is not per-row.
+            spr_name = (item.get("spr_name") or "").strip()
 
             spr_docstatus = None
             spr_unit = ""
@@ -3752,25 +3728,31 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
             wo_open = bool(item_pp and pp_has_open_wo_map.get(item_pp))
             wo_terminal = bool(item_pp and pp_has_wo_map.get(item_pp) and not wo_open)
 
-            # Get total achieved weight from SPR if available.
-            # Rule: PSI-linked SPR takes precedence, else produced weight from per-item SPR,
-            # else latest submitted SPR for PP.
+            # Actual production (kg) for the board: only this row's SPR — requires Planning Table `spr_name`.
+            row_spr = (item.get("spr_name") or "").strip()
             total_achieved_weight_kgs = 0
-            if psi_name and psi_name in spr_psi_achieved_weight_map:
+            if row_spr and psi_name and psi_name in spr_psi_achieved_weight_map:
                 total_achieved_weight_kgs = spr_psi_achieved_weight_map[psi_name]
-            elif psi_name and psi_name in spr_psi_produced_map:
+            elif row_spr and psi_name and psi_name in spr_psi_produced_map:
                 total_achieved_weight_kgs = spr_psi_produced_map[psi_name]
-            elif item_pp:
-                spr_row_achieved = _take_next_spr_achieved(item_pp, item.get("gsm"), preferred_spr=spr_name)
+            elif item_pp and row_spr:
+                spr_row_achieved = _take_next_spr_achieved(item_pp, item.get("gsm"), preferred_spr=row_spr)
                 if spr_row_achieved > 0:
                     total_achieved_weight_kgs = spr_row_achieved
                 else:
                     total_achieved_weight_kgs = _take_next_pp_header_achieved(item_pp, item.get("qty"))
 
-            # Production Table shows actual_production_weight_kgs from this field. For split lines, PP-level
-            # SPR achieved fallback above repeats the same total on every row without its own spr_name.
+            # Split / merged siblings: never substitute WO-allocated kg when this line has no SPR link.
             if cint(item.get("is_split")) or split_group:
-                total_achieved_weight_kgs = flt(item_level_produced)
+                has_psi_spr_weight = row_spr and psi_name and (
+                    (psi_name in spr_psi_achieved_weight_map and flt(spr_psi_achieved_weight_map.get(psi_name)) > 0)
+                    or (psi_name in spr_psi_produced_map and flt(spr_psi_produced_map.get(psi_name)) > 0)
+                )
+                if not has_psi_spr_weight:
+                    if row_spr:
+                        total_achieved_weight_kgs = flt(item_level_produced)
+                    else:
+                        total_achieved_weight_kgs = 0
             
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),
