@@ -3659,9 +3659,15 @@ def _spr_insert_manual_work_order(
 		if wip:
 			wo.wip_warehouse = wip
 	frappe.flags.spr_manual_work_order_insert = True
+	prev_server_script_enabled = frappe.conf.get("server_script_enabled", 1)
 	try:
+		# Manual SPR WO creation should not trigger site-level auto-start server scripts.
+		# Those scripts can attempt Stock Entry submission and fail with stock errors,
+		# which blocks WO creation itself.
+		frappe.conf.server_script_enabled = 0
 		wo.insert(ignore_permissions=True)
 	finally:
+		frappe.conf.server_script_enabled = prev_server_script_enabled
 		frappe.flags.spr_manual_work_order_insert = False
 	wo_name = wo.name
 	try:
