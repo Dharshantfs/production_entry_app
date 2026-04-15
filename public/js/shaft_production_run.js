@@ -646,8 +646,9 @@ function spr_open_manual_job_dialog(frm) {
 						frappe.msgprint(__('Select at least one line with valid Meter/Roll and Work Order qty.'));
 						return;
 					}
-					d.hide();
-					frappe.call({
+					const runManualCreate = function () {
+						d.hide();
+						frappe.call({
 						method:
 							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_create_manual_jobs_multi',
 						args: {
@@ -676,6 +677,23 @@ function spr_open_manual_job_dialog(frm) {
 							frm.reload_doc();
 						},
 					});
+					};
+					// Important: server APIs read DB state. Save latest row/job deletions first so
+					// manual WO reuse does not create a new WO from stale pre-delete links.
+					if (frm.is_dirty && frm.is_dirty()) {
+						const p = frm.save();
+						if (p && typeof p.then === 'function') {
+							p.then(function () {
+								runManualCreate();
+							}).catch(function () {
+								frappe.msgprint(__('Could not save latest SPR changes. Please save and try Manual job again.'));
+							});
+						} else {
+							setTimeout(runManualCreate, 250);
+						}
+						return;
+					}
+					runManualCreate();
 				},
 			});
 
