@@ -5068,22 +5068,9 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
                 as_dict=True,
             )
             produced_qty = flt((row[0] or {}).get("produced_qty") if row else 0)
-            if produced_qty > 0:
-                return produced_qty
-
-            spr_name = (item_doc.get("spr_name") or "").strip()
-            if spr_name:
-                row2 = frappe.db.sql(
-                    """
-                    SELECT SUM(IFNULL(net_weight, 0)) AS produced_qty
-                    FROM `tabShaft Production Run Item`
-                    WHERE parent = %s
-                    """,
-                    (spr_name,),
-                    as_dict=True,
-                )
-                return flt((row2[0] or {}).get("produced_qty") if row2 else 0)
-            return 0.0
+            # Do not fallback to doc.spr_name-level totals here.
+            # A stale/borrowed spr_name can incorrectly block moves for repeated same-order rows.
+            return produced_qty
         except Exception:
             return 0.0
 
