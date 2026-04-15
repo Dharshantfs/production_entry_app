@@ -3763,6 +3763,7 @@ def spr_create_manual_job(
 	item_code = _cstr(item_code)
 	production_plan_item = _cstr(production_plan_item)
 	selected_reuse_work_order = _cstr(frappe.form_dict.get("selected_reuse_work_order"))
+	force_new_work_order = selected_reuse_work_order == "__NEW__"
 	no_of_shafts = cint(no_of_shafts)
 	if no_of_shafts < 1:
 		frappe.throw(_("Number of shafts must be at least 1"))
@@ -3788,12 +3789,12 @@ def spr_create_manual_job(
 
 	reused = False
 	wo_name = ""
-	if selected_reuse_work_order:
+	if selected_reuse_work_order and not force_new_work_order:
 		candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
 		if selected_reuse_work_order in candidates:
 			wo_name = selected_reuse_work_order
 			reused = True
-	if not wo_name:
+	if not wo_name and not force_new_work_order:
 		wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
 		if wo_name:
 			reused = True
@@ -3904,6 +3905,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		item_code = _cstr(raw.get("item_code"))
 		production_plan_item = _cstr(raw.get("production_plan_item"))
 		selected_reuse_work_order = _cstr(raw.get("selected_reuse_work_order"))
+		force_new_work_order = selected_reuse_work_order == "__NEW__"
 		qty = flt(raw.get("wo_qty"))
 		if not item_code or not production_plan_item or qty <= 0:
 			frappe.throw(_("Each line needs item, Production Plan row, and Work Order qty greater than zero"))
@@ -3915,11 +3917,11 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		if not ppi_row:
 			frappe.throw(_("Production Plan item line not found for {0}").format(item_code))
 		wo_name = ""
-		if selected_reuse_work_order:
+		if selected_reuse_work_order and not force_new_work_order:
 			candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
 			if selected_reuse_work_order in candidates:
 				wo_name = selected_reuse_work_order
-		if not wo_name:
+		if not wo_name and not force_new_work_order:
 			wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
 		if not wo_name:
 			wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
