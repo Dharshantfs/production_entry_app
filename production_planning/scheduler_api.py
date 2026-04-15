@@ -3957,8 +3957,6 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                 achieved = flt(row.get('total_achieved', 0))
                 eff_kg = max(achieved, produced)
                 if psi_name and spr_name:
-                    if psi_name not in spr_psi_name_map:
-                        spr_psi_name_map[psi_name] = spr_name
                     if eff_kg > 0:
                         spr_psi_achieved_weight_map[psi_name] = max(
                             flt(spr_psi_achieved_weight_map.get(psi_name, 0)), eff_kg
