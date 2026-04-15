@@ -1649,16 +1649,10 @@ class ShaftProductionRun(Document):
 		return se
 
 	def _raise_shortage_with_transfer(self, wo_id: str, wo_doc, chunk_total_qty: float, shortages):
-		"""Create draft transfer, then throw a clear actionable shortage message."""
-		transfer_name = ""
-		transfer_err = ""
-		try:
-			transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
-			if transfer_name:
-				frappe.db.commit()
-		except Exception:
-			transfer_err = _cstr(frappe.get_traceback())
-			transfer_name = ""
+		"""Throw a clear actionable shortage message and keep SPR submission atomic.
+
+		Do NOT commit any partial DB changes in this path; SPR must remain unsubmitted when stock is short.
+		"""
 		lines = "\n".join(
 			[
 				_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
@@ -1668,21 +1662,9 @@ class ShaftProductionRun(Document):
 			]
 		)
 		next_steps = _(
-			"1) Submit shortage transfer (Raw Materials -> WIP).\n"
-			"2) Return to SPR and submit again."
-		)
-		if transfer_name:
-			next_steps = _(
-				'1) Open draft transfer: <a href="/app/stock-entry/{0}" target="_blank">{0}</a> '
-				'(/app/stock-entry/{0})\n'
-				"2) Verify source warehouse = Raw Materials and target warehouse = WIP, then submit.\n"
-				'3) Return to SPR: <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
-			).format(transfer_name, self.name)
-		elif transfer_err:
-			next_steps = _(
-				"Could not auto-create draft transfer on this site. "
-				"Create 'Material Transfer for Manufacture' manually (Raw Materials -> WIP), submit it, then submit SPR again."
-			)
+			"1) Create/submit Material Transfer for Manufacture (Raw Materials -> WIP) for this WO.\n"
+			'2) Return to SPR: <a href="/app/shaft-production-run/{0}" target="_blank">{0}</a> and submit again.'
+		).format(self.name)
 		frappe.throw(
 			_("Insufficient WIP stock for WO {0}.\n\n{1}\n\n{2}").format(wo_id, lines, next_steps),
 			title=_("Insufficient stock"),
