@@ -714,6 +714,8 @@ function spr_open_manual_job_dialog(frm) {
 				html +=
 					'<thead><tr><th style="width:36px;"></th><th>' +
 					__('Item / PP row') +
+					'</th><th style="width:110px;">' +
+					__('Order Code') +
 					'</th><th style="width:70px;">' +
 					__('Width (in)') +
 					'</th><th style="width:110px;">' +
@@ -754,6 +756,7 @@ function spr_open_manual_job_dialog(frm) {
 						'<td style="max-width:360px;white-space:normal;word-break:break-word;">' +
 						frappe.utils.escape_html(label) +
 						'</td>';
+					html += '<td>' + frappe.utils.escape_html(line.order_code || '') + '</td>';
 					html += '<td>' + wIn.toFixed(1) + '</td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-meter-roll" data-idx="' +

@@ -3670,6 +3670,12 @@ def spr_get_manual_job_catalog(shaft_production_run):
 	_spr_require_saved(shaft_production_run)
 	pp_name, company, spr = _spr_pp_and_company(shaft_production_run)
 	pp = frappe.get_doc("Production Plan", pp_name)
+	pp_order_code = _cstr(
+		pp.get("custom_party_code")
+		or pp.get("party_code")
+		or pp.get("custom_order_code")
+		or pp.get("order_code")
+	)
 	out = []
 	net_by_item: dict[str, float] = {}
 	for it in spr.items or []:
@@ -3701,6 +3707,13 @@ def spr_get_manual_job_catalog(shaft_production_run):
 					first_seg_kg = round(flt(segw[0]), 3)
 				break
 		net_ps, mj = _spr_net_kg_per_shaft_for_pp_line_width(spr, width_inch, row.name)
+		row_order_code = _cstr(
+			getattr(row, "custom_party_code", None)
+			or getattr(row, "party_code", None)
+			or getattr(row, "custom_order_code", None)
+			or getattr(row, "order_code", None)
+			or pp_order_code
+		)
 		out.append(
 			{
 				"item_code": ic,
@@ -3713,6 +3726,7 @@ def spr_get_manual_job_catalog(shaft_production_run):
 				"first_segment_planned_kg": first_seg_kg,
 				"net_per_shaft_kg": round(net_ps, 3) if net_ps is not None else None,
 				"matched_job_id": mj,
+				"order_code": row_order_code,
 				"reusable_work_orders": _spr_list_reusable_manual_work_orders(pp_name, ic, row.name),
 			}
 		)
@@ -3798,6 +3812,12 @@ def spr_create_manual_job(
 	gsm, width_inch = parse_item_code(item_code)
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	order_code = ""
+	try:
+		wo_doc = frappe.get_doc("Work Order", wo_name)
+		order_code = _cstr(get_order_code(wo_doc))
+	except Exception:
+		order_code = ""
 
 	row = {
 		"job_id": job_id,
@@ -3823,6 +3843,8 @@ def spr_create_manual_job(
 		row["total_width"] = width_inch
 	if meta.has_field("manual_items"):
 		row["manual_items"] = item_code
+	if meta.has_field("party_code") and order_code:
+		row["party_code"] = order_code
 
 	spr.reload()
 	spr.append("shaft_jobs", row)
@@ -3926,6 +3948,13 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	gsm, width_inch_one = parse_item_code(first_ic)
 	item_name = frappe.db.get_value("Item", first_ic, "item_name")
 	quality, color = extract_quality_and_color(item_name or "", item_code=first_ic)
+	first_order_code = ""
+	try:
+		if wo_names:
+			wo_doc = frappe.get_doc("Work Order", wo_names[0])
+			first_order_code = _cstr(get_order_code(wo_doc))
+	except Exception:
+		first_order_code = ""
 
 	def _fmt_w(w):
 		w = flt(w)
@@ -3966,6 +3995,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		row["total_width"] = total_w
 	if meta.has_field("manual_items"):
 		row["manual_items"] = ",".join(item_codes_list)
+	if meta.has_field("party_code") and first_order_code:
+		row["party_code"] = first_order_code
 	if meta.has_field("meter_roll_mtrs") and meter_roll_from_popup is not None and meter_roll_from_popup > 0:
 		row["meter_roll_mtrs"] = flt(meter_roll_from_popup)
 
