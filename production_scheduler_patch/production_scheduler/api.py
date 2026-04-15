@@ -5050,39 +5050,40 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
     docs_to_move = [] 
 
     def _get_item_wo_produced_qty(item_doc):
-        """Return produced qty for an item based on its resolved PP and item_code."""
+        """Return produced qty for this specific Planning Table row.
+
+        We must scope by planning row / explicit SPR link, not by PP+item aggregate,
+        otherwise same-order rows from other dates wrongly block movement.
+        """
         try:
-            pp_id = _get_item_level_production_plan(item_doc.name)
-            if not pp_id:
-                return 0.0
-
-            conditions = ["wo.production_plan = %(pp)s", "wo.docstatus < 2"]
-            params = {"pp": pp_id}
-
-            item_code = str(item_doc.get("item_code") or "").strip()
-            if item_code:
-                conditions.append("IFNULL(wo.production_item, '') = %(item_code)s")
-                params["item_code"] = item_code
-
             row = frappe.db.sql(
-                f"""
-                SELECT SUM(GREATEST(IFNULL(wo.produced_qty, 0), IFNULL(se_map.se_produced_qty, 0))) as produced_qty
-                FROM `tabWork Order` wo
-                LEFT JOIN (
-                    SELECT se.work_order, SUM(IFNULL(sed.qty, 0)) as se_produced_qty
-                    FROM `tabStock Entry` se
-                    INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-                    WHERE se.docstatus = 1
-                      AND IFNULL(se.work_order, '') != ''
-                      AND IFNULL(sed.is_finished_item, 0) = 1
-                    GROUP BY se.work_order
-                ) se_map ON se_map.work_order = wo.name
-                WHERE {' AND '.join(conditions)}
+                """
+                SELECT SUM(IFNULL(spri.net_weight, 0)) AS produced_qty
+                FROM `tabShaft Production Run Item` spri
+                INNER JOIN `tabShaft Production Run` spr ON spr.name = spri.parent
+                WHERE spr.docstatus < 2
+                  AND IFNULL(spri.planning_sheet_item, '') = %s
                 """,
-                params,
+                (item_doc.name,),
                 as_dict=True,
             )
-            return flt((row[0] or {}).get("produced_qty") if row else 0)
+            produced_qty = flt((row[0] or {}).get("produced_qty") if row else 0)
+            if produced_qty > 0:
+                return produced_qty
+
+            spr_name = (item_doc.get("spr_name") or "").strip()
+            if spr_name:
+                row2 = frappe.db.sql(
+                    """
+                    SELECT SUM(IFNULL(net_weight, 0)) AS produced_qty
+                    FROM `tabShaft Production Run Item`
+                    WHERE parent = %s
+                    """,
+                    (spr_name,),
+                    as_dict=True,
+                )
+                return flt((row2[0] or {}).get("produced_qty") if row2 else 0)
+            return 0.0
         except Exception:
             return 0.0
 
@@ -5131,6 +5132,8 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
                 new_row_doc.qty = flt(req_qty)
                 new_row_doc.is_split = 1
                 new_row_doc.split_from = doc.name
+                if frappe.db.has_column("Planning Table", "spr_name"):
+                    new_row_doc.spr_name = ""
                 new_row_doc.source_item = _resolve_planning_table_source_item_link(
                     new_row_doc.get("source_item"), doc.name
                 )
