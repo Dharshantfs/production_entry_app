@@ -769,6 +769,8 @@ function spr_open_manual_job_dialog(frm) {
 						idx +
 						'" style="width:170px"><option value="">' +
 						frappe.utils.escape_html(__('Auto (reuse latest unused)')) +
+						'</option><option value="__NEW__">' +
+						frappe.utils.escape_html(__('Create New WO')) +
 						'</option>';
 					reuseWos.forEach(function (wo) {
 						woSelect +=
