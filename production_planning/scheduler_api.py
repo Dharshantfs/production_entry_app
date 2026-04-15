@@ -2349,6 +2349,9 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_row_doc.unit = unit
             new_row_doc.is_split = 1
             new_row_doc.split_from = item.name
+            # New split line represents remaining/new queue work; never carry old SPR link.
+            if frappe.db.has_column("Planning Table", "spr_name"):
+                new_row_doc.spr_name = ""
             if new_legacy_name and src_psi and units_differ:
                 new_row_doc.source_item = new_legacy_name
             else:
@@ -2646,6 +2649,11 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     update_fields = {"unit": unit, "source_item": item_doc.source_item}
     if frappe.db.has_column("Planning Table", "planned_date"):
         update_fields["planned_date"] = target_date
+    # Moving to a different production date starts a new run context; old SPR must not flow forward.
+    if frappe.db.has_column("Planning Table", "spr_name"):
+        date_changed = str(source_effective_date) != str(target_date)
+        if date_changed:
+            update_fields["spr_name"] = ""
     set_clause = ", ".join([f"`{k}` = %s" for k in update_fields.keys()])
     frappe.db.sql(
         f"UPDATE `tabPlanning Table` SET {set_clause} WHERE name = %s",
