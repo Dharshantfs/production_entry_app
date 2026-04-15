@@ -1358,9 +1358,21 @@ class ShaftProductionRun(Document):
 		return qty
 
 	def _set_stock_entry_spr_link(self, se):
+		"""Link Manufacture / transfer entries back to this SPR for traceability and recovery tools."""
 		meta = frappe.get_meta("Stock Entry")
 		if meta.has_field("shaft_production_run"):
 			se.shaft_production_run = self.name
+		if frappe.db.has_column("Stock Entry", "custom_spr_reference") and meta.has_field("custom_spr_reference"):
+			se.set("custom_spr_reference", self.name)
+
+	def _persist_stock_entry_spr_reference_db(self, se_name: str | None):
+		"""If DB has custom_spr_reference column, persist link even when not on in-memory doc meta."""
+		if not se_name or not frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+			return
+		try:
+			frappe.db.set_value("Stock Entry", se_name, "custom_spr_reference", self.name, update_modified=False)
+		except Exception:
+			pass
 
 	def _apply_order_code_to_submitted_stock_entry(self, se_name: str):
 		"""Copy SPR header order code onto Stock Entry when the site has a matching custom field."""
@@ -2097,11 +2109,25 @@ class ShaftProductionRun(Document):
 					frappe.db.set_value("Production Plan", pp, f, total_produced, update_modified=False)
 
 	def create_manufacturing_stock_entries(self):
-		"""One Stock Entry (Manufacture) per Work Order, same pattern as Roll Production Entry.
+		"""Create submitted Manufacture Stock Entries from Roll Production Results (per WO / chunk).
 
-		Does not change Work Order ``qty`` (Qty To Manufacture). ERPNext caps Manufacture FG by
-		WO qty plus Manufacturing Settings overproduction; ``produced_qty`` updates when Stock
-		Entries submit. If roll totals exceed that cap, raise overproduction percent or WO qty in ERPNext.
+		Operator flow (enforced in this method):
+
+		1. **Before any Manufacture insert**: for every WO chunk, build a preview Manufacture entry and
+		   check WIP raw-material stock. If anything is short, create a draft *Material Transfer for
+		   Manufacture* (Raw Materials → WIP), ``commit`` it so it survives rollback, then throw with links.
+		   After the operator submits that transfer, SPR submit can proceed.
+
+		2. **Create / submit** Manufacture entries with one FG line per SPR roll (batch), link WO after
+		   submit, then sync each WO ``produced_qty`` and required-items ``consumed_qty`` /
+		   ``transferred_qty`` from submitted Stock Entries, and sync Production Plan produced totals.
+
+		3. **Guards**: no produced row without WO; FG roll coverage vs SPR rows must match so no silent
+		   partial posting.
+
+		Does not change Work Order ``qty`` (Qty To Manufacture). ERPNext caps Manufacture FG by WO qty
+		plus Manufacturing Settings overproduction; if roll totals exceed that cap, raise overproduction
+		percent or WO qty in ERPNext.
 		"""
 		self._validate_no_pending_wo_width_rows()
 		wo_groups = {}
@@ -2304,6 +2330,7 @@ class ShaftProductionRun(Document):
 				se.stock_entry_type = self._manufacture_stock_entry_type_name()
 				se.purpose = "Manufacture"
 				se.insert()
+				self._persist_stock_entry_spr_reference_db(se.name)
 				if _cstr(se.purpose) != "Manufacture":
 					frappe.throw(
 						_(
