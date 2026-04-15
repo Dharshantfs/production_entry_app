@@ -356,7 +356,7 @@
                                   {{ mergeProductionStatusLine(row) }}
                                 </div>
                               <button 
-                                v-if="!row.spr_name && Number(row.pp_docstatus) === 1" 
+                                v-if="canShowMergedStockEntry(row)" 
                                 @click="createMergedStockEntry(row)" 
                                 class="cc-pp-btn pt-btn-entry" 
                                 :title="mergedStockPrimaryTitle(row)">
@@ -1897,13 +1897,31 @@ function canShowStockEntry(item) {
   if (!item || !item.pp_id) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
 
-  const pendingQty = Number(item.pending_qty || item.pp_pending_qty || 0);
+  const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
+
+  // Guard against stale backend pending: if this row is already at/over target, do not allow New SPR.
+  const targetKg = Number(item.qty ?? 0);
+  const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
+  if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
 
   const woTerminal = !!item.wo_terminal;
   if (woTerminal) return false;
 
   // Strict remaining rule: continue entry only while pending qty exists and WO is non-terminal.
+  return true;
+}
+
+function canShowMergedStockEntry(row) {
+  if (!row || row.type !== "merge") return false;
+  if (row.spr_name) return false;
+  if (Number(row.pp_docstatus) !== 1) return false;
+  if (row.mergeAllWoTerminal) return false;
+  const pendingKg = Number(row.mergeMaxPendingKg ?? 0);
+  if (!(pendingKg > 0)) return false;
+  const targetKg = Number(row.totalTargetWeight ?? 0);
+  const actualKg = Number(row.totalActualWeight ?? 0);
+  if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
   return true;
 }
 
