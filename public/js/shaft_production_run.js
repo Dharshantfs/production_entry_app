@@ -640,6 +640,8 @@ function spr_open_manual_job_dialog(frm) {
 							production_plan_item: line.production_plan_item,
 							wo_qty: q,
 							meter_roll: mr,
+							selected_reuse_work_order:
+								d.$wrapper.find('.spr-manual-reuse-wo[data-idx="' + idx + '"]').val() || '',
 						});
 					});
 					if (!items.length) {
@@ -716,6 +718,8 @@ function spr_open_manual_job_dialog(frm) {
 					'</th><th>' +
 					__('Net/roll (Kg)') +
 					'</th><th>' +
+					__('Reuse WO') +
+					'</th><th>' +
 					__('WO qty (Kg)') +
 					'</th></tr></thead><tbody>';
 				lines.forEach(function (line, idx) {
@@ -750,6 +754,23 @@ function spr_open_manual_job_dialog(frm) {
 						idx +
 						'" value="500" step="0.1" style="width:100px" placeholder="500"/></td>';
 					html += '<td>' + frappe.utils.escape_html(npsLabel) + '</td>';
+					const reuseWos = Array.isArray(line.reusable_work_orders) ? line.reusable_work_orders : [];
+					let woSelect =
+						'<select class="input-with-feedback spr-manual-reuse-wo" data-idx="' +
+						idx +
+						'" style="width:170px"><option value="">' +
+						frappe.utils.escape_html(__('Auto (reuse latest unused)')) +
+						'</option>';
+					reuseWos.forEach(function (wo) {
+						woSelect +=
+							'<option value="' +
+							frappe.utils.escape_html(String(wo)) +
+							'">' +
+							frappe.utils.escape_html(String(wo)) +
+							'</option>';
+					});
+					woSelect += '</select>';
+					html += '<td>' + woSelect + '</td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-qty" data-idx="' +
 						idx +

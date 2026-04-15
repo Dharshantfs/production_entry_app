@@ -3573,6 +3573,43 @@ def _spr_find_reusable_manual_work_order(
 	return None
 
 
+def _spr_list_reusable_manual_work_orders(pp_name: str, item_code: str, production_plan_item: str) -> list[str]:
+	"""All reusable manual WOs (newest first) for a PP+item (+optional PP-line tag)."""
+	if not pp_name or not item_code:
+		return []
+	rows = (
+		frappe.get_all(
+			"Work Order",
+			filters={
+				"production_plan": pp_name,
+				"production_item": item_code,
+				"docstatus": ["<", 2],
+				"status": ["not in", ["Completed", "Stopped", "Cancelled"]],
+			},
+			fields=["name", "description", "produced_qty", "modified"],
+			order_by="modified desc",
+		)
+		or []
+	)
+	ppi_tag = _cstr(production_plan_item)
+	out: list[str] = []
+	for r in rows:
+		wo_name = _cstr(r.get("name"))
+		if not wo_name:
+			continue
+		desc = _cstr(r.get("description"))
+		if "SPR manual job" not in desc:
+			continue
+		if ppi_tag and ppi_tag not in desc and "PP line" in desc:
+			continue
+		if flt(r.get("produced_qty")) > 0:
+			continue
+		if _spr_manual_wo_has_submitted_stock_entries(wo_name):
+			continue
+		out.append(wo_name)
+	return out
+
+
 def _spr_insert_manual_work_order(
 	pp,
 	company: str,
@@ -3676,6 +3713,7 @@ def spr_get_manual_job_catalog(shaft_production_run):
 				"first_segment_planned_kg": first_seg_kg,
 				"net_per_shaft_kg": round(net_ps, 3) if net_ps is not None else None,
 				"matched_job_id": mj,
+				"reusable_work_orders": _spr_list_reusable_manual_work_orders(pp_name, ic, row.name),
 			}
 		)
 	return {"production_plan": pp_name, "company": company, "lines": out}
@@ -3701,6 +3739,7 @@ def spr_create_manual_job(
 	"""Create draft Work Order + append manual Shaft Production Run Job row."""
 	item_code = _cstr(item_code)
 	production_plan_item = _cstr(production_plan_item)
+	selected_reuse_work_order = _cstr(frappe.form_dict.get("selected_reuse_work_order"))
 	no_of_shafts = cint(no_of_shafts)
 	if no_of_shafts < 1:
 		frappe.throw(_("Number of shafts must be at least 1"))
@@ -3725,11 +3764,18 @@ def spr_create_manual_job(
 		qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
 
 	reused = False
-	wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
+	wo_name = ""
+	if selected_reuse_work_order:
+		candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
+		if selected_reuse_work_order in candidates:
+			wo_name = selected_reuse_work_order
+			reused = True
+	if not wo_name:
+		wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
+		if wo_name:
+			reused = True
 	if not wo_name:
 		wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
-	else:
-		reused = True
 
 	spr.reload()
 	for j in _spr_job_rows(spr):
@@ -3826,6 +3872,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 			frappe.throw(_("Invalid line payload"))
 		item_code = _cstr(raw.get("item_code"))
 		production_plan_item = _cstr(raw.get("production_plan_item"))
+		selected_reuse_work_order = _cstr(raw.get("selected_reuse_work_order"))
 		qty = flt(raw.get("wo_qty"))
 		if not item_code or not production_plan_item or qty <= 0:
 			frappe.throw(_("Each line needs item, Production Plan row, and Work Order qty greater than zero"))
@@ -3836,7 +3883,13 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 				break
 		if not ppi_row:
 			frappe.throw(_("Production Plan item line not found for {0}").format(item_code))
-		wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
+		wo_name = ""
+		if selected_reuse_work_order:
+			candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
+			if selected_reuse_work_order in candidates:
+				wo_name = selected_reuse_work_order
+		if not wo_name:
+			wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
 		if not wo_name:
 			wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
 		else:
