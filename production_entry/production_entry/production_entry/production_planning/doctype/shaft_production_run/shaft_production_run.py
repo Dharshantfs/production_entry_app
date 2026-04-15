@@ -3534,8 +3534,10 @@ def _spr_find_reusable_manual_work_order(
 	spr_doc=None,
 ) -> str | None:
 	"""
-	Find previously created SPR-manual WO that was not used yet, so we can fetch/relink instead
-	of creating another WO and re-triggering consumption flow.
+	Find reusable open WO for this PP+item so manual job flow prefers reusing over creating duplicates.
+	Priority:
+	1) WOs tagged by SPR manual description for the same PP line
+	2) Any open WO for same PP+item (fallback)
 	"""
 	if not pp_name or not item_code:
 		return None
@@ -3554,27 +3556,27 @@ def _spr_find_reusable_manual_work_order(
 		or []
 	)
 	ppi_tag = _cstr(production_plan_item)
+	fallback: list[str] = []
 	for r in rows:
 		wo_name = _cstr(r.get("name"))
 		if not wo_name:
 			continue
 		desc = _cstr(r.get("description"))
-		# Reuse only WOs clearly created by this SPR manual flow.
-		if "SPR manual job" not in desc:
+		# Prefer explicit SPR-manual WO with matching PP-line tag when available.
+		if "SPR manual job" in desc:
+			if ppi_tag and ppi_tag in desc:
+				return wo_name
+			fallback.append(wo_name)
 			continue
-		# Prefer same PP line; allow fallback reuse when old rows did not carry PP-line tag in description.
-		if ppi_tag and ppi_tag not in desc and "PP line" in desc:
-			continue
-		if flt(r.get("produced_qty")) > 0:
-			continue
-		if _spr_manual_wo_has_submitted_stock_entries(wo_name):
-			continue
-		return wo_name
+		# Generic fallback: still allow reusing open WO for same PP+item to avoid duplicate WO creation.
+		fallback.append(wo_name)
+	if fallback:
+		return fallback[0]
 	return None
 
 
 def _spr_list_reusable_manual_work_orders(pp_name: str, item_code: str, production_plan_item: str) -> list[str]:
-	"""All reusable manual WOs (newest first) for a PP+item (+optional PP-line tag)."""
+	"""All reusable open WOs (newest first) for a PP+item, manual-tagged first."""
 	if not pp_name or not item_code:
 		return []
 	rows = (
@@ -3592,21 +3594,28 @@ def _spr_list_reusable_manual_work_orders(pp_name: str, item_code: str, producti
 		or []
 	)
 	ppi_tag = _cstr(production_plan_item)
-	out: list[str] = []
+	manual_pref: list[str] = []
+	fallback: list[str] = []
 	for r in rows:
 		wo_name = _cstr(r.get("name"))
 		if not wo_name:
 			continue
 		desc = _cstr(r.get("description"))
-		if "SPR manual job" not in desc:
-			continue
-		if ppi_tag and ppi_tag not in desc and "PP line" in desc:
-			continue
-		if flt(r.get("produced_qty")) > 0:
-			continue
-		if _spr_manual_wo_has_submitted_stock_entries(wo_name):
-			continue
-		out.append(wo_name)
+		if "SPR manual job" in desc:
+			if ppi_tag and ppi_tag in desc:
+				manual_pref.append(wo_name)
+			else:
+				fallback.append(wo_name)
+		else:
+			fallback.append(wo_name)
+	seen = set()
+	out: list[str] = []
+	for arr in (manual_pref, fallback):
+		for wo in arr:
+			if wo in seen:
+				continue
+			seen.add(wo)
+			out.append(wo)
 	return out
 
 
