@@ -2241,7 +2241,8 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     
     # Moving within same date (even to different unit): subtract item's own weight
     # to avoid double-counting it and causing false overflow / duplicate creation
-    is_same_date = (str(parent_sheet.get("custom_planned_date") or parent_sheet.ordered_date) == str(target_date))
+    current_effective_date = getdate(item.get("planned_date") or parent_sheet.get("custom_planned_date") or parent_sheet.ordered_date)
+    is_same_date = (str(current_effective_date) == str(target_date))
     if is_same_date and item.unit == unit:
         # Same date + same unit: pure reorder, load stays same
         load_for_check = current_load
@@ -2349,6 +2350,15 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
             new_row_doc.unit = unit
             new_row_doc.is_split = 1
             new_row_doc.split_from = item.name
+            split_code = generate_plan_code(
+                target_date,
+                normalize_planning_unit_for_select(unit),
+                (parent_sheet.get("custom_plan_name") or "Default"),
+            )
+            if frappe.db.has_column("Planning Table", "plan_name"):
+                new_row_doc.plan_name = split_code
+            if frappe.db.has_column("Planning Table", "custom_plan_code"):
+                new_row_doc.custom_plan_code = split_code
             # New split line represents remaining/new queue work; never carry old SPR link.
             if frappe.db.has_column("Planning Table", "spr_name"):
                 new_row_doc.spr_name = ""
@@ -2649,6 +2659,15 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     update_fields = {"unit": unit, "source_item": item_doc.source_item}
     if frappe.db.has_column("Planning Table", "planned_date"):
         update_fields["planned_date"] = target_date
+    move_code = generate_plan_code(
+        target_date,
+        normalize_planning_unit_for_select(unit),
+        (source_parent.get("custom_plan_name") or "Default"),
+    )
+    if frappe.db.has_column("Planning Table", "plan_name"):
+        update_fields["plan_name"] = move_code
+    if frappe.db.has_column("Planning Table", "custom_plan_code"):
+        update_fields["custom_plan_code"] = move_code
     # Moving to a different production date starts a new run context; old SPR must not flow forward.
     if frappe.db.has_column("Planning Table", "spr_name"):
         date_changed = str(source_effective_date) != str(target_date)
@@ -4676,7 +4695,7 @@ def update_items_bulk(items, plan_name=None):
         current = frappe.db.get_value(
             "Planning Table",
             name,
-            ["unit", "parent"],
+            ["unit", "parent", "planned_date"],
             as_dict=True,
         )
         if not current:
@@ -4684,8 +4703,10 @@ def update_items_bulk(items, plan_name=None):
 
         target_unit = row.get("unit") or current.unit
 
-        # Resolve effective date via parent sheet if not explicitly provided
+        # Resolve effective date using item-level date first; fallback to parent dates.
         target_date = row.get("date")
+        if not target_date:
+            target_date = current.get("planned_date")
         if not target_date:
             parent_sheet = frappe.db.get_value(
                 "Planning sheet",
