@@ -3527,20 +3527,6 @@ def _spr_manual_wo_has_submitted_stock_entries(wo_name: str) -> bool:
 		return False
 
 
-def _spr_linked_work_orders_on_doc(spr_doc) -> set[str]:
-	"""All WOs already linked in Available Jobs on the current SPR document."""
-	linked: set[str] = set()
-	if not spr_doc:
-		return linked
-	for sj in _spr_job_rows(spr_doc):
-		wos = _cstr(getattr(sj, "work_orders", None) or "")
-		for raw in wos.replace("\n", ",").split(","):
-			wo = _cstr(raw).strip()
-			if wo:
-				linked.add(wo)
-	return linked
-
-
 def _spr_find_reusable_manual_work_order(
 	pp_name: str,
 	item_code: str,
@@ -3553,7 +3539,6 @@ def _spr_find_reusable_manual_work_order(
 	"""
 	if not pp_name or not item_code:
 		return None
-	excluded = _spr_linked_work_orders_on_doc(spr_doc)
 	rows = (
 		frappe.get_all(
 			"Work Order",
@@ -3571,13 +3556,14 @@ def _spr_find_reusable_manual_work_order(
 	ppi_tag = _cstr(production_plan_item)
 	for r in rows:
 		wo_name = _cstr(r.get("name"))
-		if not wo_name or wo_name in excluded:
+		if not wo_name:
 			continue
 		desc = _cstr(r.get("description"))
 		# Reuse only WOs clearly created by this SPR manual flow.
 		if "SPR manual job" not in desc:
 			continue
-		if ppi_tag and ppi_tag not in desc:
+		# Prefer same PP line; allow fallback reuse when old rows did not carry PP-line tag in description.
+		if ppi_tag and ppi_tag not in desc and "PP line" in desc:
 			continue
 		if flt(r.get("produced_qty")) > 0:
 			continue
