@@ -838,7 +838,51 @@ def _resolve_wos_for_pp_job_row(
 
 
 def _get_work_orders_for_spr_job(pp_name: str, spr_doc, job_row):
-	"""Resolve Work Orders using production_plan_item, job_id, or ordinal row index."""
+	"""Resolve Work Orders for a job row.
+
+	Priority:
+	1) Explicit Available Jobs.work_orders (manual jobs must stay pinned to these WOs)
+	2) production_plan_item / job_id / row index heuristics for auto jobs
+	"""
+	# Manual jobs can coexist with auto jobs on same PP/WO dimensions; never re-resolve away
+	# from explicitly selected WO(s) in the row.
+	explicit_wos = _cstr(getattr(job_row, "work_orders", None) or "")
+	if explicit_wos:
+		names: list[str] = []
+		seen = set()
+		for raw in explicit_wos.replace("\n", ",").split(","):
+			wo_name = _cstr(raw).strip()
+			if not wo_name or wo_name in seen:
+				continue
+			if frappe.db.exists("Work Order", wo_name):
+				names.append(wo_name)
+				seen.add(wo_name)
+		if names:
+			wo_rows = (
+				frappe.get_all(
+					"Work Order",
+					filters={"name": ["in", names], "docstatus": ["!=", 2]},
+					fields=["name", "production_item", "qty", "produced_qty", "status"],
+				)
+				or []
+			)
+			by_name = {_cstr(r.get("name")): r for r in wo_rows}
+			ordered = []
+			for nm in names:
+				row = by_name.get(nm)
+				if not row:
+					continue
+				ordered.append(
+					{
+						"name": row.get("name"),
+						"production_item": row.get("production_item"),
+						"planned_qty": flt(row.get("qty")),
+						"produced_qty": flt(row.get("produced_qty")),
+						"status": row.get("status"),
+					}
+				)
+			if ordered:
+				return ordered
 	meta = frappe.get_meta("Shaft Production Run Job")
 	ppi = None
 	if meta.has_field("production_plan_item"):
@@ -3459,6 +3503,90 @@ def _spr_try_submit_manual_work_order(wo_name: str):
 		)
 
 
+def _spr_manual_wo_has_submitted_stock_entries(wo_name: str) -> bool:
+	"""True when this WO already has submitted Stock Entries (manufacture/transfer)."""
+	if not wo_name:
+		return False
+	cnt = frappe.db.sql(
+		"""
+		SELECT COUNT(*)
+		FROM `tabStock Entry` se
+		WHERE se.work_order = %(wo)s
+		  AND se.docstatus = 1
+		  AND IFNULL(se.purpose, '') IN (
+			'Manufacture',
+			'Material Transfer for Manufacture',
+			'Material Consumption for Manufacture'
+		  )
+		""",
+		{"wo": wo_name},
+	)
+	try:
+		return cint((cnt or [[0]])[0][0]) > 0
+	except Exception:
+		return False
+
+
+def _spr_linked_work_orders_on_doc(spr_doc) -> set[str]:
+	"""All WOs already linked in Available Jobs on the current SPR document."""
+	linked: set[str] = set()
+	if not spr_doc:
+		return linked
+	for sj in _spr_job_rows(spr_doc):
+		wos = _cstr(getattr(sj, "work_orders", None) or "")
+		for raw in wos.replace("\n", ",").split(","):
+			wo = _cstr(raw).strip()
+			if wo:
+				linked.add(wo)
+	return linked
+
+
+def _spr_find_reusable_manual_work_order(
+	pp_name: str,
+	item_code: str,
+	production_plan_item: str,
+	spr_doc=None,
+) -> str | None:
+	"""
+	Find previously created SPR-manual WO that was not used yet, so we can fetch/relink instead
+	of creating another WO and re-triggering consumption flow.
+	"""
+	if not pp_name or not item_code:
+		return None
+	excluded = _spr_linked_work_orders_on_doc(spr_doc)
+	rows = (
+		frappe.get_all(
+			"Work Order",
+			filters={
+				"production_plan": pp_name,
+				"production_item": item_code,
+				"docstatus": ["<", 2],
+				"status": ["not in", ["Completed", "Stopped", "Cancelled"]],
+			},
+			fields=["name", "description", "produced_qty", "creation", "modified"],
+			order_by="modified desc",
+		)
+		or []
+	)
+	ppi_tag = _cstr(production_plan_item)
+	for r in rows:
+		wo_name = _cstr(r.get("name"))
+		if not wo_name or wo_name in excluded:
+			continue
+		desc = _cstr(r.get("description"))
+		# Reuse only WOs clearly created by this SPR manual flow.
+		if "SPR manual job" not in desc:
+			continue
+		if ppi_tag and ppi_tag not in desc:
+			continue
+		if flt(r.get("produced_qty")) > 0:
+			continue
+		if _spr_manual_wo_has_submitted_stock_entries(wo_name):
+			continue
+		return wo_name
+	return None
+
+
 def _spr_insert_manual_work_order(
 	pp,
 	company: str,
@@ -3467,7 +3595,7 @@ def _spr_insert_manual_work_order(
 	ppi_row,
 	qty: float,
 ) -> str:
-	"""Always insert a new Work Order for manual job flow (no reuse of existing WO)."""
+	"""Insert a new Work Order for manual job flow."""
 	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 		get_default_bom_for_item,
 	)
@@ -3610,7 +3738,12 @@ def spr_create_manual_job(
 	if qty is None or qty <= 0:
 		qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
 
-	wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
+	reused = False
+	wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
+	if not wo_name:
+		wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
+	else:
+		reused = True
 
 	spr.reload()
 	for j in _spr_job_rows(spr):
@@ -3667,6 +3800,7 @@ def spr_create_manual_job(
 		"work_order": wo_name,
 		"job_id": job_id,
 		"shaft_production_run": spr.name,
+		"reused_work_order": wo_name if reused else "",
 	}
 
 
@@ -3694,6 +3828,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	pp = frappe.get_doc("Production Plan", pp_name)
 
 	wo_names: list[str] = []
+	reused_wo_names: list[str] = []
 	qtys: list[float] = []
 	widths_list: list[float] = []
 	item_codes_list: list[str] = []
@@ -3715,7 +3850,11 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 				break
 		if not ppi_row:
 			frappe.throw(_("Production Plan item line not found for {0}").format(item_code))
-		wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
+		wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
+		if not wo_name:
+			wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
+		else:
+			reused_wo_names.append(wo_name)
 		spr.reload()
 		for j in _spr_job_rows(spr):
 			wos = _cstr(getattr(j, "work_orders", None) or "")
@@ -3797,6 +3936,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 
 	return {
 		"work_orders": wo_names,
+		"reused_work_orders": reused_wo_names,
 		"job_id": job_id,
 		"shaft_production_run": spr.name,
 	}

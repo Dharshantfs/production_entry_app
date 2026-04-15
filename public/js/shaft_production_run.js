@@ -9,13 +9,13 @@ function spr_round_net_weight_kg(v) {
 	return Math.round(flt(v) * 100) / 100;
 }
 
-function sprScheduleTotalProducedSync(frm) {
+function sprScheduleTotalProducedSync(frm, opts) {
 	if (!frm) return;
 	if (frm.__spr_total_sync_timer) {
 		clearTimeout(frm.__spr_total_sync_timer);
 	}
 	frm.__spr_total_sync_timer = setTimeout(function () {
-		spr_sync_total_produced_weight(frm);
+		spr_sync_total_produced_weight(frm, opts || {});
 		frm.__spr_total_sync_timer = null;
 	}, 120);
 }
@@ -29,6 +29,7 @@ function sprAutoSaveAfterCreateEntry(frm) {
 	}
 	frm.__spr_auto_save_timer = setTimeout(function () {
 		if (frm.__spr_auto_save_in_progress) return;
+		if (!frm.is_dirty || !frm.is_dirty()) return;
 		frm.__spr_auto_save_in_progress = true;
 		const p = frm.save();
 		if (p && typeof p.then === 'function') {
@@ -41,17 +42,21 @@ function sprAutoSaveAfterCreateEntry(frm) {
 			frm.__spr_auto_save_in_progress = false;
 		}
 		frm.__spr_auto_save_timer = null;
-	}, 700);
+	}, 1200);
 }
 
 /** Sum job-level planned weights into header when shaft rows have explicit totals; keep PP/WO value when jobs are blank. */
-function spr_sync_total_planned_qty_from_jobs(frm) {
+function spr_sync_total_planned_qty_from_jobs(frm, opts) {
 	if (!frm || !frm.doc) {
+		return;
+	}
+	if (cint(frm.doc.docstatus) !== 0) {
 		return;
 	}
 	if (!frappe.meta.get_docfield('Shaft Production Run', 'custom_total_planned_qty')) {
 		return;
 	}
+	const settings = opts || {};
 	const jobs = frm.doc.shaft_jobs || [];
 	let sum = 0;
 	let any = false;
@@ -68,7 +73,12 @@ function spr_sync_total_planned_qty_from_jobs(frm) {
 	const rounded = Math.round(sum * 100) / 100;
 	const cur = flt(frm.doc.custom_total_planned_qty);
 	if (Math.abs(cur - rounded) > 1e-6) {
-		frm.set_value('custom_total_planned_qty', rounded);
+		if (settings.silent) {
+			frm.doc.custom_total_planned_qty = rounded;
+			frm.refresh_field('custom_total_planned_qty');
+		} else {
+			frm.set_value('custom_total_planned_qty', rounded);
+		}
 	}
 }
 
@@ -192,19 +202,18 @@ frappe.ui.form.on('Shaft Production Run', {
 
 		sprLog('[SPR REFRESH] === REFRESH HOOK START ===');
 		
-		spr_sync_total_planned_qty_from_jobs(frm);
+		spr_sync_total_planned_qty_from_jobs(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_planned_qty sync');
 		
-		sprScheduleTotalProducedSync(frm);
+		sprScheduleTotalProducedSync(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
 		
 		spr_patch_items_grid_refresh(frm);
-		update_shaft_job_achieved_from_items(frm);
 		spr_register_spr_page_buttons(frm);
 		
 		// Keep one lightweight retry only (old code had 4 retries, causing UI lag on large grids).
 		setTimeout(function () {
-			sprScheduleTotalProducedSync(frm);
+			sprScheduleTotalProducedSync(frm, { silent: true });
 		}, 400);
 		
 		setTimeout(function () {
@@ -253,6 +262,14 @@ frappe.ui.form.on('Shaft Production Run', {
 	on_submit: function (frm) {
 		schedule_spr_item_row_styles(frm);
 		spr_schedule_item_row_styles_after_doc_write(frm);
+		if (frm.doc && frm.doc.production_plan) {
+			frappe.call({
+				method:
+					'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_resync_production_plan_progress',
+				args: { production_plan: frm.doc.production_plan },
+				freeze: false,
+			});
+		}
 	},
 
 	items: {
@@ -640,12 +657,20 @@ function spr_open_manual_job_dialog(frm) {
 							items: items,
 						},
 						freeze: true,
-						freeze_message: __('Creating Work Order(s)...'),
+						freeze_message: __('Creating / fetching Work Order(s)...'),
 						callback: function (r2) {
 							const m = r2.message || {};
 							const wos = (m.work_orders || []).join(', ');
+							const reused = (m.reused_work_orders || []).join(', ');
+							const msg = reused
+								? __('Work Order(s) {0} (job {1}). Reused unused manual WO(s): {2}.', [
+										wos || '',
+										m.job_id || '',
+										reused,
+								  ])
+								: __('Work Order(s) {0} (job {1}).', [wos || '', m.job_id || '']);
 							frappe.show_alert({
-								message: __('Work Order(s) {0} (job {1}).', [wos || '', m.job_id || '']),
+								message: msg,
 								indicator: 'green',
 							});
 							frm.reload_doc();
@@ -1594,6 +1619,9 @@ function sprShaftJobRowKey(sj) {
 }
 
 function update_shaft_job_achieved_from_items(frm) {
+	if (frm && frm.doc && cint(frm.doc.docstatus) !== 0) {
+		return;
+	}
 	if (!frappe.meta.get_docfield('Shaft Production Run Job', 'custom_total_achieved_weight')) {
 		return;
 	}
@@ -2418,14 +2446,23 @@ function spr_compute_total_produced_weight(frm) {
 	return spr_round_net_weight_kg(total);
 }
 
-function spr_sync_total_produced_weight(frm) {
+function spr_sync_total_produced_weight(frm, opts) {
 	if (!frm || !frm.doc) {
 		return;
 	}
+	if (cint(frm.doc.docstatus) !== 0) {
+		return;
+	}
+	const settings = opts || {};
 	const calculated = spr_compute_total_produced_weight(frm);
 	const current = spr_round_net_weight_kg(frm.doc.total_produced_weight);
 
 	if (Math.abs(current - calculated) > 0.001) {
-		frm.set_value('total_produced_weight', calculated);
+		if (settings.silent) {
+			frm.doc.total_produced_weight = calculated;
+			frm.refresh_field('total_produced_weight');
+		} else {
+			frm.set_value('total_produced_weight', calculated);
+		}
 	}
 }
