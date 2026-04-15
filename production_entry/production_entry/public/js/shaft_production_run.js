@@ -4,6 +4,11 @@ function sprLog() {
 	console.log.apply(console, arguments);
 }
 
+/** Net weight (kg) to 2 decimals — matches roll line precision, manual sums, and Total Produced Weight. */
+function spr_round_net_weight_kg(v) {
+	return Math.round(flt(v) * 100) / 100;
+}
+
 function sprScheduleTotalProducedSync(frm) {
 	if (!frm) return;
 	if (frm.__spr_total_sync_timer) {
@@ -18,9 +23,13 @@ function sprScheduleTotalProducedSync(frm) {
 function sprAutoSaveAfterCreateEntry(frm) {
 	if (!frm || frm.is_new() || frm.doc.docstatus !== 0) return;
 	if (!frm.is_dirty || !frm.is_dirty()) return;
-	if (frm.__spr_auto_save_in_progress) return;
-	frm.__spr_auto_save_in_progress = true;
-	setTimeout(function () {
+	// Debounce auto-save bursts when Create Entry appends many rows.
+	if (frm.__spr_auto_save_timer) {
+		clearTimeout(frm.__spr_auto_save_timer);
+	}
+	frm.__spr_auto_save_timer = setTimeout(function () {
+		if (frm.__spr_auto_save_in_progress) return;
+		frm.__spr_auto_save_in_progress = true;
 		const p = frm.save();
 		if (p && typeof p.then === 'function') {
 			p.then(function () {
@@ -31,7 +40,8 @@ function sprAutoSaveAfterCreateEntry(frm) {
 		} else {
 			frm.__spr_auto_save_in_progress = false;
 		}
-	}, 120);
+		frm.__spr_auto_save_timer = null;
+	}, 700);
 }
 
 /** Sum job-level planned weights into header when shaft rows have explicit totals; keep PP/WO value when jobs are blank. */
@@ -79,8 +89,8 @@ frappe.ui.form.on('Shaft Production Run', {
 		}, 0);
 		setTimeout(function () {
 			spr_register_spr_page_buttons(frm);
-		}, 600);
-		[0, 200, 600, 1200].forEach(function (ms) {
+		}, 500);
+		[0, 400].forEach(function (ms) {
 			setTimeout(function () {
 				spr_inject_gsm_legend(frm);
 				schedule_spr_item_row_styles(frm);
@@ -174,6 +184,11 @@ frappe.ui.form.on('Shaft Production Run', {
 	refresh: function (frm) {
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
 		frm.set_df_property('total_produced_weight', 'read_only', 1);
+		try {
+			frm.set_df_property('net_weight', 'precision', 2, null, 'items');
+		} catch (e) {
+			/* ignore desk variants */
+		}
 
 		sprLog('[SPR REFRESH] === REFRESH HOOK START ===');
 		
@@ -192,11 +207,9 @@ frappe.ui.form.on('Shaft Production Run', {
 			sprScheduleTotalProducedSync(frm);
 		}, 400);
 		
-		[400, 800, 1500, 3000].forEach(function (ms) {
-			setTimeout(function () {
-				spr_register_spr_page_buttons(frm);
-			}, ms);
-		});
+		setTimeout(function () {
+			spr_register_spr_page_buttons(frm);
+		}, 700);
 		
 		spr_inject_gsm_legend(frm);
 		schedule_spr_item_row_styles(frm);
@@ -868,8 +881,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 											let net_val = 0;
 											if (width > 0) {
 												let core_weight = width * (1.3 / 63);
-												net_val = flt(item.gross_weight) - core_weight;
-												net_val = flt(net_val, 2);
+												net_val = spr_round_net_weight_kg(flt(item.gross_weight) - core_weight);
 											}
 											
 											if (Math.abs(current_net - net_val) > 0.01 && net_val > 0) {
@@ -1124,6 +1136,12 @@ frappe.ui.form.on('Shaft Production Run Job', {
 
 frappe.ui.form.on('Shaft Production Run Item', {
 	net_weight: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		const rounded = spr_round_net_weight_kg(row.net_weight);
+		if (Math.abs(flt(row.net_weight) - rounded) > 1e-6) {
+			frappe.model.set_value(cdt, cdn, 'net_weight', rounded);
+			return;
+		}
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
 		// Avoid hard grid refresh while typing; it can reset in-cell editor values.
@@ -1135,6 +1153,15 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const row = locals[cdt][cdn];
 		let width = flt(row.width_inch);
 		let gw = flt(row.gross_weight);
+		if (gw <= 0) {
+			// Operator cleared gross weight: clear dependent computed values immediately.
+			frappe.model.set_value(cdt, cdn, 'net_weight', 0);
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
+			update_shaft_job_achieved_from_items(frm);
+			sprScheduleTotalProducedSync(frm);
+			schedule_spr_item_row_styles(frm);
+			return;
+		}
 		
 		if (width > 0 && gw > 0) {
 			let width_in_meter = width * 0.0254;
@@ -1165,6 +1192,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			
 			let calc_net = gw - core_weight;
 			let net_val = calc_net > 0 ? calc_net : gw;
+			net_val = spr_round_net_weight_kg(net_val);
 			frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
 
 			// Also calculate produced_gsm immediately
@@ -1273,7 +1301,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			
 			let calc_net = gw - core_weight;
 			let net_val = calc_net > 0 ? calc_net : gw;
-			row.net_weight = net_val;
+			row.net_weight = spr_round_net_weight_kg(net_val);
 		}
 	},
 	
@@ -1399,7 +1427,7 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	}
 	
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', pgsm);
-	frm.refresh_field('items');
+	// Avoid full grid refresh on every keypress (causes lag and cursor jumps).
 	apply_spr_item_row_styles(frm);
 	schedule_spr_item_row_styles(frm);
 }
@@ -1575,12 +1603,12 @@ function update_shaft_job_achieved_from_items(frm) {
 		if (!k) {
 			return;
 		}
-		sums[k] = (sums[k] || 0) + flt(it.net_weight);
+		sums[k] = (sums[k] || 0) + spr_round_net_weight_kg(it.net_weight);
 	});
 	(frm.doc.shaft_jobs || []).forEach(function (sj) {
 		const jid = sprShaftJobRowKey(sj);
 		const v = jid && sums[jid] !== undefined ? sums[jid] : 0;
-		const next = flt(v);
+		const next = spr_round_net_weight_kg(v);
 		const cur = flt(sj.custom_total_achieved_weight);
 		// Avoid set_value when unchanged — set_value marks the form dirty and causes "Not Saved" after a successful save.
 		if (Math.abs(cur - next) > 0.005) {
@@ -2385,11 +2413,9 @@ function spr_compute_total_produced_weight(frm) {
 	const items = frm.doc.items || [];
 	let total = 0;
 	for (let i = 0; i < items.length; i++) {
-		const row = items[i];
-		const nw = row.net_weight ? parseFloat(row.net_weight) : 0;
-		total = total + nw;
+		total += spr_round_net_weight_kg(items[i].net_weight);
 	}
-	return Math.round(total * 100) / 100;
+	return spr_round_net_weight_kg(total);
 }
 
 function spr_sync_total_produced_weight(frm) {
@@ -2397,9 +2423,9 @@ function spr_sync_total_produced_weight(frm) {
 		return;
 	}
 	const calculated = spr_compute_total_produced_weight(frm);
-	const current = frm.doc.total_produced_weight ? parseFloat(frm.doc.total_produced_weight) : 0;
+	const current = spr_round_net_weight_kg(frm.doc.total_produced_weight);
 
-	if (Math.abs(current - calculated) > 0.01) {
+	if (Math.abs(current - calculated) > 0.001) {
 		frm.set_value('total_produced_weight', calculated);
 	}
 }

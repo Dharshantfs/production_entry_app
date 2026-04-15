@@ -4423,6 +4423,8 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
             spr_name = ""
             if psi_name and psi_name in spr_psi_name_map:
                 spr_name = spr_psi_name_map[psi_name]
+            elif psi_name and (item.get("spr_name") or "").strip():
+                spr_name = (item.get("spr_name") or "").strip()
 
             spr_docstatus = None
             spr_unit = ""
@@ -4457,14 +4459,15 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
             wo_terminal = bool(item_pp and pp_has_wo_map.get(item_pp) and not wo_open)
 
             # Get total achieved weight from SPR if available.
-            # Rule: PSI-linked SPR takes precedence, else produced weight from per-item SPR,
-            # else latest submitted SPR for PP.
+            # Rule: PSI-linked SPR takes precedence, else produced weight from per-item SPR.
+            # Only use PP/GSM bucket fallbacks when this Planning Table row has an explicit spr_name.
+            # Otherwise rows that share the same WO/PP would show another line's SPR total.
             total_achieved_weight_kgs = 0
             if psi_name and psi_name in spr_psi_achieved_weight_map:
                 total_achieved_weight_kgs = spr_psi_achieved_weight_map[psi_name]
             elif psi_name and psi_name in spr_psi_produced_map:
                 total_achieved_weight_kgs = spr_psi_produced_map[psi_name]
-            elif item_pp:
+            elif item_pp and spr_name:
                 spr_row_achieved = _take_next_spr_achieved(item_pp, item.get("gsm"), preferred_spr=spr_name)
                 if spr_row_achieved > 0:
                     total_achieved_weight_kgs = spr_row_achieved
@@ -4480,7 +4483,10 @@ def _get_color_chart_data_impl(date=None, start_date=None, end_date=None, plan_n
                     or (psi_name in spr_psi_produced_map and flt(spr_psi_produced_map.get(psi_name)) > 0)
                 )
                 if not has_psi_spr_weight:
-                    total_achieved_weight_kgs = flt(item_level_produced)
+                    if spr_name:
+                        total_achieved_weight_kgs = flt(item_level_produced)
+                    else:
+                        total_achieved_weight_kgs = 0
             
             delivered_qty = max(
                 flt(so_item_delivered_qty_map.get(((sheet.sales_order or "").strip(), (item.get("item_code") or "").strip()), 0)),

@@ -972,9 +972,54 @@ def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
 class ShaftProductionRun(Document):
 	def validate(self):
 		self.sync_shaft_job_work_orders_from_plan()
+		self._spr_round_item_net_weights()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.generate_batch_numbers()
+		self._spr_recalc_total_produced_weight_header()
+
+	def _spr_round_item_net_weights(self):
+		"""Keep roll net weight at 2 decimal kg (matches child DocType precision and manual totals)."""
+		item_meta = frappe.get_meta("Shaft Production Run Item")
+		if not item_meta.has_field("net_weight"):
+			return
+		for row in self.items or []:
+			raw = getattr(row, "net_weight", None)
+			if raw in (None, ""):
+				continue
+			cur = flt(raw)
+			rnd = flt(cur, 2)
+			if abs(cur - rnd) > 1e-9:
+				row.net_weight = rnd
+
+	def _spr_recalc_total_produced_weight_header(self):
+		"""Header = sum of net_weight on every roll line (no job filter — matches operator spreadsheet total)."""
+		meta = frappe.get_meta("Shaft Production Run")
+		if not meta.has_field("total_produced_weight"):
+			return
+		total = sum(flt(getattr(r, "net_weight", None), 2) for r in (self.items or []))
+		self.total_produced_weight = flt(total, 2)
+		if meta.has_field("custom_total_produced_weight"):
+			self.custom_total_produced_weight = flt(total, 2)
+
+	def _spr_needs_job_work_order_resync(self) -> bool:
+		"""True when PP-driven WO list on jobs should be recomputed (saves DB work on routine saves)."""
+		if self.is_new():
+			return True
+		try:
+			if self.has_value_changed("production_plan"):
+				return True
+		except Exception:
+			pass
+		meta = frappe.get_meta("Shaft Production Run Job")
+		if not meta.has_field("work_orders"):
+			return False
+		for row in self.shaft_jobs or []:
+			if cint(getattr(row, "is_manual", 0)):
+				continue
+			if not (getattr(row, "work_orders", None) or "").strip():
+				return True
+		return False
 
 	def before_submit(self):
 		self._validate_roll_weight_tolerance()
@@ -1029,6 +1074,8 @@ class ShaftProductionRun(Document):
 			return
 		pp = self.get("production_plan")
 		if not pp:
+			return
+		if not self._spr_needs_job_work_order_resync():
 			return
 		for row in self.shaft_jobs or []:
 			if cint(getattr(row, "is_manual", 0)):
@@ -1115,10 +1162,10 @@ class ShaftProductionRun(Document):
 			jid = _cstr(getattr(it, "job", None))
 			if not jid:
 				continue
-			sums[jid] = sums.get(jid, 0.0) + flt(it.net_weight)
+			sums[jid] = sums.get(jid, 0.0) + flt(it.net_weight, 2)
 		for row in self.shaft_jobs or []:
 			jid = _cstr(_spr_job_id(row))
-			row.custom_total_achieved_weight = flt(sums.get(jid, 0.0))
+			row.custom_total_achieved_weight = flt(sums.get(jid, 0.0), 2)
 
 	def calculate_produced_gsm(self):
 		"""Set produced_gsm on each roll line from effective weight (net, else gross), width, length (m)."""
@@ -1195,6 +1242,9 @@ class ShaftProductionRun(Document):
 			return
 		rows = [r for r in (self.items or []) if r.item_code]
 		if not rows:
+			return
+		# Heavy series queries only when at least one line still needs batch_no (routine saves with full grid skip this).
+		if not any(not getattr(r, "batch_no", None) for r in rows):
 			return
 		rd = getdate(self.run_date)
 		unit_d = self._unit_digit()
