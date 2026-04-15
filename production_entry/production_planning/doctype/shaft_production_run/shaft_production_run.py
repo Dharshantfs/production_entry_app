@@ -1821,6 +1821,38 @@ class ShaftProductionRun(Document):
 			chunks.append(cur)
 		return chunks
 
+	def _split_rows_for_manufacture_entries(
+		self, wo_doc, rows: list, allowed_entry_qty: float, over_pct: float
+	) -> tuple[list[list], bool]:
+		"""Return (row_chunks, batch_wise).
+
+		- **Batch-tracked FG item**: one Manufacture Stock Entry per roll line (one batch per document).
+		- **Non-batch FG**: chunk by ``allowed_entry_qty`` (overproduction cap per entry), previous behaviour.
+		"""
+		wo_item = _cstr(getattr(wo_doc, "production_item", None))
+		has_batch = 0
+		if wo_item and frappe.db.exists("Item", wo_item):
+			has_batch = cint(frappe.db.get_value("Item", wo_item, "has_batch_no"))
+		if not has_batch:
+			return self._split_rows_by_qty_limit(rows, allowed_entry_qty), False
+
+		chunks: list[list] = []
+		for r in rows:
+			q = flt(self._row_fg_qty(r))
+			if q <= 0:
+				continue
+			if q > allowed_entry_qty + 1e-9:
+				wo_id = _cstr(r.get("work_order") or r.get("wo_id"))
+				frappe.throw(
+					_(
+						"Single roll/batch for WO {0} has qty {1} Kg, above per-entry allowed {2} Kg "
+						"(overproduction {3}%). Adjust roll qty, WO qty, or Manufacturing Settings."
+					).format(wo_id or "—", flt(q, 3), flt(allowed_entry_qty, 3), flt(over_pct, 3)),
+					title=_("WO quantity exceeded"),
+				)
+			chunks.append([r])
+		return (chunks if chunks else [[]]), True
+
 	def _build_expected_rm_map_for_qty(self, wo_doc, fg_qty: float) -> dict[str, float]:
 		"""Expected RM consumption map for a WO at given FG qty (item_code -> transfer_qty).
 
@@ -2118,8 +2150,10 @@ class ShaftProductionRun(Document):
 		   Manufacture* (Raw Materials → WIP), ``commit`` it so it survives rollback, then throw with links.
 		   After the operator submits that transfer, SPR submit can proceed.
 
-		2. **Create / submit** Manufacture entries with one FG line per SPR roll (batch), link WO after
-		   submit, then sync each WO ``produced_qty`` and required-items ``consumed_qty`` /
+		2. **Create / submit** Manufacture entries with one FG line per SPR roll. For **batch-tracked**
+		   finished items, each roll gets its **own submitted Manufacture Stock Entry** (one document per
+		   batch/roll). For non-batch FG, rows may be chunked by overproduction per-entry limit. Link WO
+		   after submit, then sync each WO ``produced_qty`` and required-items ``consumed_qty`` /
 		   ``transferred_qty`` from submitted Stock Entries, and sync Production Plan produced totals.
 
 		3. **Guards**: no produced row without WO; FG roll coverage vs SPR rows must match so no silent
@@ -2197,22 +2231,34 @@ class ShaftProductionRun(Document):
 				continue
 
 			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
-			row_chunks = self._split_rows_by_qty_limit(rows, allowed_entry_qty)
+			row_chunks, batch_wise_entries = self._split_rows_for_manufacture_entries(
+				wo_doc, rows, allowed_entry_qty, over_pct
+			)
 			expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
-			if len(row_chunks) > 1:
-				frappe.msgprint(
-					_(
-						"WO {0}: SPR quantity {1} Kg exceeds per-entry limit {2} Kg "
-						"(overproduction {3}%). Creating {4} Manufacture entries."
-					).format(
-						wo_id,
-						flt(total_qty, 3),
-						flt(allowed_entry_qty, 3),
-						flt(over_pct, 3),
-						len(row_chunks),
-					),
-					alert=False,
-				)
+			n_chunks = len([c for c in row_chunks if c and sum(self._row_fg_qty(r) for r in c) > 0])
+			if n_chunks > 1:
+				if batch_wise_entries:
+					frappe.msgprint(
+						_(
+							"WO {0}: batch-tracked FG — creating {1} Manufacture entries "
+							"(one Stock Entry per roll/batch)."
+						).format(wo_id, n_chunks),
+						alert=False,
+					)
+				else:
+					frappe.msgprint(
+						_(
+							"WO {0}: SPR quantity {1} Kg exceeds per-entry limit {2} Kg "
+							"(overproduction {3}%). Creating {4} Manufacture entries."
+						).format(
+							wo_id,
+							flt(total_qty, 3),
+							flt(allowed_entry_qty, 3),
+							flt(over_pct, 3),
+							n_chunks,
+						),
+						alert=False,
+					)
 
 			# 🔒 VALIDATION: Ensure WIP warehouse exists
 			if not wo_doc.wip_warehouse:
