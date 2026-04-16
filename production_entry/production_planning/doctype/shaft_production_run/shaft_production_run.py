@@ -1525,6 +1525,31 @@ class ShaftProductionRun(Document):
 				out.append((_cstr(d.item_code), wh, required, available, shortage))
 		return out
 
+	def _rm_shortages_from_exception(self, exc) -> list[tuple[str, str, float, float, float]]:
+		"""Best-effort parse of ERPNext insufficient-stock message into shortage tuples."""
+		msg = _cstr(exc)
+		if not msg:
+			return []
+		# Example:
+		# "0.994 units of Item MB - 1001222: ... needed in Warehouse Work In Progress - ... to complete this transaction."
+		# or HTML-rich equivalent with <strong> / links.
+		msg_plain = re.sub(r"<[^>]+>", " ", msg)
+		msg_plain = re.sub(r"\s+", " ", msg_plain).strip()
+		m = re.search(
+			r"([0-9]+(?:\.[0-9]+)?)\s+units?\s+of\s+Item\s+([^:]+):.*?Warehouse\s+(.+?)\s+to\s+complete",
+			msg_plain,
+			flags=re.IGNORECASE,
+		)
+		if not m:
+			return []
+		short_qty = flt(m.group(1))
+		item_code = _cstr(m.group(2)).strip()
+		wh = _cstr(m.group(3)).strip()
+		if not item_code or not wh or short_qty <= 0:
+			return []
+		# required/available unknown from exception text; provide safe fallback for draft transfer creation path.
+		return [(item_code, wh, short_qty, 0.0, short_qty)]
+
 	def _transfer_for_manufacture_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type for 'Material Transfer for Manufacture' purpose."""
 		if frappe.db.exists("Stock Entry Type", "Material Transfer for Manufacture"):
@@ -2470,8 +2495,10 @@ class ShaftProductionRun(Document):
 				try:
 					se.flags.ignore_duplicate_for_work_order = True
 					se.submit()
-				except Exception:
+				except Exception as e:
 					shortages = self._rm_shortages_for_se(se)
+					if not shortages:
+						shortages = self._rm_shortages_from_exception(e)
 					if shortages:
 						self._raise_shortage_with_transfer(wo_id, wo_doc, chunk_total_qty, shortages)
 					raise
