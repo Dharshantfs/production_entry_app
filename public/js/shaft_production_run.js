@@ -547,6 +547,26 @@ function sprManualDefaultWoQty(line, noShafts, noRolls) {
 	return pq > 0 ? pq : 1;
 }
 
+function sprManualNormalizeWidthToken(token) {
+	const raw = String(token || '')
+		.replace(/inch|inches|in/gi, '')
+		.replace(/["']/g, '')
+		.trim();
+	if (!raw) return 0;
+	return flt(raw);
+}
+
+function sprManualParseCombination(text) {
+	return String(text || '')
+		.split('+')
+		.map(function (part) {
+			return sprManualNormalizeWidthToken(part);
+		})
+		.filter(function (w) {
+			return w > 0;
+		});
+}
+
 /** Actions → Manual job: multi-select PP lines; WO qty defaults to net/shaft × shafts from Available Jobs. */
 function spr_open_manual_job_dialog(frm) {
 	if (frm.is_new() || !frm.doc.name) {
@@ -599,6 +619,22 @@ function spr_open_manual_job_dialog(frm) {
 						default: 1,
 					},
 					{
+						fieldname: 'combination_gsm',
+						fieldtype: 'Int',
+						label: __('Combination GSM'),
+					},
+					{
+						fieldname: 'combination_input',
+						fieldtype: 'Data',
+						label: __('Combination widths (in)'),
+						description: __('Example: 34+34+42. Same GSM only. One segment = one roll per shaft.'),
+					},
+					{
+						fieldname: 'combination_status_html',
+						fieldtype: 'HTML',
+						options: '<div class="text-muted small spr-manual-combination-status"></div>',
+					},
+					{
 						fieldname: 'line_select_html',
 						fieldtype: 'HTML',
 						label: __('Select items'),
@@ -622,6 +658,8 @@ function spr_open_manual_job_dialog(frm) {
 						return;
 					}
 					const items = [];
+					const comboRaw = String(d.get_value('combination_input') || '').trim();
+					const comboMode = !!comboRaw;
 					lines.forEach(function (line, idx) {
 						const cb = d.$wrapper.find('.spr-manual-inc[data-idx="' + idx + '"]');
 						if (!cb.length || !cb.is(':checked')) {
@@ -642,6 +680,7 @@ function spr_open_manual_job_dialog(frm) {
 							production_plan_item: line.production_plan_item,
 							wo_qty: q,
 							meter_roll: mr,
+							roll_count_per_shaft: comboMode ? cint(line.__combo_roll_count_per_shaft || 1) : cint(d.get_value('no_of_rolls')) || 1,
 							selected_reuse_work_order:
 								d.$wrapper.find('.spr-manual-reuse-wo[data-idx="' + idx + '"]').val() || '',
 						});
@@ -649,6 +688,34 @@ function spr_open_manual_job_dialog(frm) {
 					if (!items.length) {
 						frappe.msgprint(__('Select at least one line with valid Meter/Roll and Work Order qty.'));
 						return;
+					}
+					const finalItems = [];
+					if (comboMode) {
+						const byItem = new Map();
+						items.forEach(function (it) {
+							const key = [
+								it.item_code || '',
+								it.selected_reuse_work_order || '',
+							].join('::');
+							if (!byItem.has(key)) {
+								byItem.set(key, {
+									item_code: it.item_code,
+									production_plan_item: it.production_plan_item,
+									wo_qty: 0,
+									meter_roll: it.meter_roll,
+									roll_count_per_shaft: 0,
+									selected_reuse_work_order: it.selected_reuse_work_order || '',
+								});
+							}
+							const agg = byItem.get(key);
+							agg.wo_qty += flt(it.wo_qty);
+							agg.roll_count_per_shaft += cint(it.roll_count_per_shaft || 1);
+						});
+						byItem.forEach(function (v) {
+							finalItems.push(v);
+						});
+					} else {
+						Array.prototype.push.apply(finalItems, items);
 					}
 					const runManualCreate = function () {
 						d.hide();
@@ -659,7 +726,8 @@ function spr_open_manual_job_dialog(frm) {
 							shaft_production_run: frm.doc.name,
 							no_of_shafts: no_of_shafts,
 							no_of_rolls: cint(d.get_value('no_of_rolls')) || 1,
-							items: items,
+							items: finalItems,
+							combination_input: comboRaw,
 						},
 						freeze: true,
 						freeze_message: __('Creating / fetching Work Order(s)...'),
@@ -792,6 +860,94 @@ function spr_open_manual_job_dialog(frm) {
 				});
 				html += '</tbody></table></div>';
 				wrap.html(html);
+				applyManualCombinationSelection();
+			}
+
+			function setManualCombinationStatus(message, colorClass) {
+				const wrap = d.$wrapper.find('.spr-manual-combination-status');
+				if (!wrap.length) return;
+				const cls = colorClass || 'text-muted';
+				wrap.html(
+					message
+						? '<span class="' + cls + '">' + frappe.utils.escape_html(message) + '</span>'
+						: ''
+				);
+			}
+
+			function syncManualCombinationMode() {
+				const comboRaw = String(d.get_value('combination_input') || '').trim();
+				const hasCombo = !!comboRaw;
+				const nr = d.fields_dict.no_of_rolls;
+				if (nr && nr.$input) {
+					nr.$input.prop('disabled', hasCombo);
+				}
+				if (hasCombo && cint(d.get_value('no_of_rolls')) !== 1) {
+					d.set_value('no_of_rolls', 1);
+					return true;
+				}
+				return false;
+			}
+
+			function applyManualCombinationSelection() {
+				const comboRaw = String(d.get_value('combination_input') || '').trim();
+				if (!comboRaw) {
+					setManualCombinationStatus('');
+					return;
+				}
+				const comboGsm = cint(d.get_value('combination_gsm'));
+				if (comboGsm < 1) {
+					setManualCombinationStatus(__('Enter Combination GSM to auto-select widths.'), 'text-warning');
+					return;
+				}
+				const widths = sprManualParseCombination(comboRaw);
+				if (!widths.length) {
+					setManualCombinationStatus(__('Enter widths like 34+34+42.'), 'text-warning');
+					return;
+				}
+				const picks = [];
+				const countsByIdx = {};
+				for (let i = 0; i < widths.length; i++) {
+					const targetWidth = flt(widths[i]);
+					let matchIdx = -1;
+					for (let j = 0; j < lines.length; j++) {
+						const line = lines[j];
+						if (cint(line.gsm) !== comboGsm) continue;
+						if (Math.abs(flt(line.width_inch) - targetWidth) > 0.05) continue;
+						matchIdx = j;
+						break;
+					}
+					if (matchIdx === -1) {
+						setManualCombinationStatus(
+							__('No unused PP line found for GSM {0} width {1} in.', [comboGsm, targetWidth]),
+							'text-danger'
+						);
+						return;
+					}
+					picks.push(matchIdx);
+					countsByIdx[matchIdx] = (countsByIdx[matchIdx] || 0) + 1;
+				}
+
+				d.$wrapper.find('.spr-manual-inc').prop('checked', false);
+				lines.forEach(function (line) {
+					delete line.__combo_roll_count_per_shaft;
+				});
+				Object.keys(countsByIdx).forEach(function (idxStr) {
+					const idx = cint(idxStr);
+					const rollCount = cint(countsByIdx[idx] || 1);
+					lines[idx].__combo_roll_count_per_shaft = rollCount;
+					d.$wrapper.find('.spr-manual-inc[data-idx="' + idx + '"]').prop('checked', true);
+					d.$wrapper
+						.find('.spr-manual-qty[data-idx="' + idx + '"]')
+						.val(sprManualDefaultWoQty(lines[idx], cint(d.get_value('no_of_shafts')) || 1, rollCount).toFixed(2));
+				});
+				setManualCombinationStatus(
+					__('Selected {0} segment(s) for GSM {1}: {2}', [
+						picks.length,
+						comboGsm,
+						widths.join(' + '),
+					]),
+					'text-success'
+				);
 			}
 
 			d.show();
@@ -802,12 +958,28 @@ function spr_open_manual_job_dialog(frm) {
 			const ns = d.fields_dict.no_of_shafts;
 			if (ns && ns.$input) {
 				ns.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
 					renderManualLinesTable();
 				});
 			}
 			const nr = d.fields_dict.no_of_rolls;
 			if (nr && nr.$input) {
 				nr.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
+					renderManualLinesTable();
+				});
+			}
+			const cg = d.fields_dict.combination_gsm;
+			if (cg && cg.$input) {
+				cg.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
+					renderManualLinesTable();
+				});
+			}
+			const ci = d.fields_dict.combination_input;
+			if (ci && ci.$input) {
+				ci.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
 					renderManualLinesTable();
 				});
 			}

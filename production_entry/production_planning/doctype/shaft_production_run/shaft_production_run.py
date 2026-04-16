@@ -4317,7 +4317,7 @@ def spr_create_manual_job(
 
 
 @frappe.whitelist()
-def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_of_rolls=None):
+def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_of_rolls=None, combination_input=None):
 	"""
 	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
 	items: list of { item_code, production_plan_item, wo_qty, meter_roll }.
@@ -4347,6 +4347,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	ppi_rows = []
 	meter_roll_from_popup: float | None = None
 
+	total_rolls_per_shaft = 0
 	for raw in items:
 		if not isinstance(raw, dict):
 			frappe.throw(_("Invalid line payload"))
@@ -4355,6 +4356,9 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		selected_reuse_work_order = _cstr(raw.get("selected_reuse_work_order"))
 		force_new_work_order = selected_reuse_work_order == "__NEW__"
 		qty = flt(raw.get("wo_qty"))
+		roll_count_per_shaft = cint(raw.get("roll_count_per_shaft")) or no_of_rolls or 1
+		if roll_count_per_shaft < 1:
+			roll_count_per_shaft = 1
 		if not item_code or not production_plan_item or qty <= 0:
 			frappe.throw(_("Each line needs item, Production Plan row, and Work Order qty greater than zero"))
 		ppi_row = None
@@ -4393,7 +4397,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		item_name_for_width = frappe.db.get_value("Item", item_code, "item_name")
 		_gsm, _w_in = parse_item_code(item_code)
 		w_in = _manual_catalog_width_inch(ppi_row, item_code, item_name_for_width or "")
-		widths_list.append(flt(w_in))
+		widths_list.extend([flt(w_in)] * roll_count_per_shaft)
+		total_rolls_per_shaft += roll_count_per_shaft
 		if meter_roll_from_popup is None and raw.get("meter_roll") not in (None, ""):
 			mr = flt(raw.get("meter_roll"))
 			if mr > 0:
@@ -4439,7 +4444,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
 	if meta.has_field("no_of_rolls"):
-		row["no_of_rolls"] = no_of_rolls
+		row["no_of_rolls"] = total_rolls_per_shaft or no_of_rolls
 	if meta.has_field("gsm") and gsm:
 		try:
 			row["gsm"] = int(gsm)
@@ -4448,7 +4453,10 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	if meta.has_field("quality") and quality:
 		row["quality"] = quality
 	if meta.has_field("combination"):
-		if len(widths_list) > 1 and comb_str:
+		typed_combination = _cstr(combination_input)
+		if typed_combination:
+			row["combination"] = typed_combination.replace("+", ' + ')
+		elif len(widths_list) > 1 and comb_str:
 			row["combination"] = comb_str
 		else:
 			cb = _format_shaft_combination_inches(width_inch_one)
