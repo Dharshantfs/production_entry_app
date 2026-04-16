@@ -2455,6 +2455,9 @@ class ShaftProductionRun(Document):
 			self._raise_shortage_with_transfer_batch(shortage_events)
 
 		# Phase 2: create/submit Manufacture entries after preflight passes for all WO chunks.
+		# Savepoint ensures we can roll back partial Manufacture submits if any later WO fails.
+		mfg_submit_savepoint = "spr_mfg_submit"
+		frappe.db.savepoint(mfg_submit_savepoint)
 		for plan in planned_wo_posts:
 			wo_id = plan["wo_id"]
 			wo_doc = plan["wo_doc"]
@@ -2574,6 +2577,11 @@ class ShaftProductionRun(Document):
 					se.flags.ignore_duplicate_for_work_order = True
 					se.submit()
 				except Exception as e:
+					# Prevent partial Manufacture commits when shortage/submit failure happens mid-run.
+					try:
+						frappe.db.rollback(save_point=mfg_submit_savepoint)
+					except Exception:
+						pass
 					shortages = self._rm_shortages_for_se(se)
 					if not shortages:
 						shortages = self._rm_shortages_from_exception(e)
