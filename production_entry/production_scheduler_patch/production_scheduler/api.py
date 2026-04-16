@@ -865,6 +865,9 @@ def _populate_planning_sheet_items(ps, doc):
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
         unit = compute_default_production_unit(col, width)
+        # Process 104 = laminated FG → Lamination Unit. Fabric (100*) uses compute_default only (white→UNASSIGNED, else width rule).
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            unit = "Lamination Unit"
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
 

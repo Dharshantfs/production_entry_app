@@ -146,8 +146,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 
 		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row)
-		# Same rules as _populate_planning_sheet_items / SO lines: unit + planned_date from color/width,
-		# not copied from the 104 row (avoids skipping Color Chart / board assignment for fabric).
+		# Fabric (100*): same as other SO lines — white → UNASSIGNED, other colours → unit by width (not Lamination Unit).
 		fab_color = specs.get("color") or ""
 		fab_width = flt(specs.get("width_inch"))
 		fabric_unit = compute_default_production_unit(fab_color, fab_width)
@@ -1041,6 +1040,9 @@ def _populate_planning_sheet_items(ps, doc):
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
         unit = compute_default_production_unit(col, width)
+        # Process 104 = laminated FG → Lamination Unit. Fabric (100*) uses compute_default only (white→UNASSIGNED, else width rule).
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            unit = "Lamination Unit"
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
 

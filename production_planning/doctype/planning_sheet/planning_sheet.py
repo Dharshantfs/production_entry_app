@@ -94,6 +94,8 @@ class Planningsheet(Document):
         if cint(self.docstatus) != 0:
             return
         from production_entry.production_planning.scheduler_api import (
+            LAMINATION_FLOW_ENABLED,
+            _item_process_prefix,
             compute_default_production_unit,
             resolve_color_name_for_planning_row,
         )
@@ -124,6 +126,10 @@ class Planningsheet(Document):
                     color = resolved
                 elif not color:
                     color = resolved or ""
+                ic = str(getattr(row, "item_code", None) or "")
+                if LAMINATION_FLOW_ENABLED and _item_process_prefix(ic) == "104":
+                    row.unit = normalize_planning_unit_for_select("Lamination Unit")
+                    continue
                 width = flt(getattr(row, "width_inch", None))
                 row.unit = compute_default_production_unit(color, width)
 
