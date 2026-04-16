@@ -169,6 +169,12 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			"planning_sheet": ps.name,
 			"so_item": so_it.name,
 		}
+		# Match main populate flow: unit + planned_date from color/width, not copied from 104 row.
+		fab_color = row.get("color") or ""
+		fab_width = flt(row.get("width_inch"))
+		row["unit"] = compute_default_production_unit(fab_color, fab_width)
+		row["planned_date"] = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
+		row["plan_name"] = ps.get("custom_plan_name")
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
 

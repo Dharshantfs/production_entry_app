@@ -146,6 +146,12 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 
 		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row)
+		# Same rules as _populate_planning_sheet_items / SO lines: unit + planned_date from color/width,
+		# not copied from the 104 row (avoids skipping Color Chart / board assignment for fabric).
+		fab_color = specs.get("color") or ""
+		fab_width = flt(specs.get("width_inch"))
+		fabric_unit = compute_default_production_unit(fab_color, fab_width)
+		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
 		row = {
 			"sales_order_item": "",
 			"item_code": fabric_ic,
@@ -157,13 +163,13 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			"color": specs["color"],
 			"quality": specs["quality"],
 			"custom_quality": specs["custom_quality"],
-			"unit": "UNASSIGNED",
+			"unit": fabric_unit,
 			"meter": specs["meter"],
 			"meter_per_roll": specs["meter_per_roll"],
 			"no_of_rolls": specs["no_of_rolls"],
 			"weight_per_roll": specs["weight_per_roll"],
-			"planned_date": lam_row.get("planned_date") if lam_row else None,
-			"plan_name": lam_row.get("plan_name") if lam_row else ps.get("custom_plan_name"),
+			"planned_date": fabric_planned_date,
+			"plan_name": ps.get("custom_plan_name"),
 			"party_code": ps.party_code,
 			"planning_sheet": ps.name,
 			"so_item": so_it.name,
