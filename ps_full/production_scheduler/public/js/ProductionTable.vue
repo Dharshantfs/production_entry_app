@@ -2,6 +2,9 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
+      <div v-if="isLaminationBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        Lamination Board — {{ LAMINATION_UNIT }}
+      </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
         <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #4f46e5;" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
@@ -35,7 +38,7 @@
         <label>Unit</label>
         <select v-model="filterUnit" @change="fetchData">
           <option value="">All Units</option>
-          <option v-for="u in units" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in boardUnits" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
       <button class="cc-clear-btn" @click="fetchData">🔄 Refresh</button>
@@ -391,7 +394,7 @@
                 </tbody>
                 <tbody>
                     <tr v-if="unitGroup.dates.length === 0">
-                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
+                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">{{ isLaminationBoard ? "No lamination production for this view — adjust date or filters." : "No production planned for this unit" }}</td>
                     </tr>
                 </tbody>
             </table>
@@ -785,6 +788,9 @@ function sortItems(unit, items, date) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
+const LAMINATION_UNIT = "Lamination Unit";
+/** True when opened from Lamination Board (production-table?board=lamination). */
+const isLaminationBoard = ref(false);
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
@@ -810,7 +816,7 @@ const mergeFilterOrderCode = ref("");
 const mergeFilterCustomer = ref("");
 const mergeFilterQuality = ref("");
 const mergeFilterColor = ref("");
-const UNIT_TONNAGE_LIMITS = { "Unit 1": 4.4, "Unit 2": 12, "Unit 3": 9, "Unit 4": 5.5, "Mixed": 999 };
+const UNIT_TONNAGE_LIMITS = { "Unit 1": 4.4, "Unit 2": 12, "Unit 3": 9, "Unit 4": 5.5, "Mixed": 999, [LAMINATION_UNIT]: 999 };
 
 function getArrangementKey(unit, date) {
   return `${unit}||${date}`;
@@ -819,6 +825,7 @@ function getArrangementKey(unit, date) {
 // Removed duplicate normalizeUnit definition
 function normalizeUnit(raw) {
   const r = String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+  if (r.includes("LAMINATIONUNIT") || String(raw || "").trim().toLowerCase() === "lamination unit") return LAMINATION_UNIT;
   if (r.includes("UNIT1")) return "Unit 1";
   if (r.includes("UNIT2")) return "Unit 2";
   if (r.includes("UNIT3")) return "Unit 3";
@@ -1088,27 +1095,41 @@ const canExpandMergedRows = computed(() => {
   return MERGE_EXPAND_ALLOWED_ROLES.some((role) => roles.includes(role.toLowerCase()));
 });
 
+const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
+
 const visibleUnits = computed(() => {
-  if (!filterUnit.value) return units;
-  return units.filter((u) => u === filterUnit.value);
+  const bu = boardUnits.value;
+  if (!filterUnit.value) return bu;
+  const match = bu.filter((u) => u === filterUnit.value);
+  return match.length ? match : bu;
 });
 
 const filteredData = computed(() => {
   let data = rawData.value || [];
-  
-  // Only show items that have been pushed to Production Board
-  data = data.filter(d => !!d.plannedDate);
 
-  // Exclude missing parameters and NO COLOR
-  data = data.filter(d => {
+  data = data.map((d) => ({ ...d, unit: normalizeUnit(d.unit) }));
 
-      if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
-      const colorUpper = d.color.toUpperCase().trim();
+  data = data.filter((d) => {
+    if (d.plannedDate) return true;
+    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+      return !!(d.orderDate || d.order_date);
+    }
+    return false;
+  });
+
+  // Exclude invalid rows; lamination fabric may omit quality on some payloads
+  data = data.filter((d) => {
+    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+      if (!d.unit || d.unit === "Mixed") return false;
+      const colorUpper = (d.color || "").toUpperCase().trim();
       if (colorUpper === "NO COLOR") return false;
       return true;
+    }
+    if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
+    const colorUpper = d.color.toUpperCase().trim();
+    if (colorUpper === "NO COLOR") return false;
+    return true;
   });
-  
-  data = data.map(d => ({ ...d, unit: d.unit || "Mixed" }));
 
   if (filterPartyCode.value) {
     const search = filterPartyCode.value.toLowerCase();
@@ -2390,7 +2411,7 @@ function showLinkedWorkOrdersPopup(ppId) {
 }
 
 function goToBoard() {
-    frappe.set_route("production-board");
+    frappe.set_route(isLaminationBoard.value ? "lamination-board" : "production-board");
 }
 
 function toggleViewScope() {
@@ -2455,17 +2476,20 @@ async function fetchData() {
 
         args.plan_name = "__all__";
         args.planned_only = 1;
-        // Main board hides 104 (laminated); ?board=lamination shows only 104. Omit param for legacy API behaviour.
-        try {
-          const sp = new URLSearchParams(window.location.search || "");
-          const b = (sp.get("board") || "").toLowerCase();
-          if (b === "lamination") {
-            args.board_process_scope = "lamination_only";
-          } else {
+        if (isLaminationBoard.value) {
+          args.board_process_scope = "lamination_only";
+        } else {
+          try {
+            const sp = new URLSearchParams(window.location.search || "");
+            const b = (sp.get("board") || "").toLowerCase();
+            if (b === "lamination") {
+              args.board_process_scope = "lamination_only";
+            } else {
+              args.board_process_scope = "exclude_104";
+            }
+          } catch (e) {
             args.board_process_scope = "exclude_104";
           }
-        } catch (e) {
-          args.board_process_scope = "exclude_104";
         }
 
     const r = await frappe.call({
@@ -2587,6 +2611,7 @@ onMounted(async () => {
   }
   
   const params = new URLSearchParams(window.location.search);
+  isLaminationBoard.value = (params.get("board") || "").toLowerCase() === "lamination";
   const scopeParam = params.get('scope');
   const dateParam = params.get('date');
   const weekParam = params.get('week');
@@ -2604,6 +2629,12 @@ onMounted(async () => {
     if (monthParam) filterMonth.value = monthParam;
   }
   
+  const uParam = params.get("unit");
+  if (uParam) filterUnit.value = uParam;
+  if (isLaminationBoard.value && filterUnit.value && filterUnit.value !== LAMINATION_UNIT) {
+    filterUnit.value = "";
+  }
+
   await fetchMaintenanceRecords();
   await fetchData();
 });

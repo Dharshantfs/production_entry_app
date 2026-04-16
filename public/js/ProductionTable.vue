@@ -394,7 +394,7 @@
                 </tbody>
                 <tbody>
                     <tr v-if="unitGroup.dates.length === 0">
-                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
+                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">{{ isLaminationBoard ? "No lamination production for this view — adjust date or filters." : "No production planned for this unit" }}</td>
                     </tr>
                 </tbody>
             </table>
@@ -1098,26 +1098,38 @@ const canExpandMergedRows = computed(() => {
 const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
 
 const visibleUnits = computed(() => {
-  if (!filterUnit.value) return boardUnits.value;
-  return boardUnits.value.filter((u) => u === filterUnit.value);
+  const bu = boardUnits.value;
+  if (!filterUnit.value) return bu;
+  const match = bu.filter((u) => u === filterUnit.value);
+  return match.length ? match : bu;
 });
 
 const filteredData = computed(() => {
   let data = rawData.value || [];
-  
-  // Only show items that have been pushed to Production Board
-  data = data.filter(d => !!d.plannedDate);
 
-  // Exclude missing parameters and NO COLOR
-  data = data.filter(d => {
+  data = data.map((d) => ({ ...d, unit: normalizeUnit(d.unit) }));
 
-      if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
-      const colorUpper = d.color.toUpperCase().trim();
+  data = data.filter((d) => {
+    if (d.plannedDate) return true;
+    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+      return !!(d.orderDate || d.order_date);
+    }
+    return false;
+  });
+
+  // Exclude invalid rows; lamination fabric may omit quality on some payloads
+  data = data.filter((d) => {
+    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+      if (!d.unit || d.unit === "Mixed") return false;
+      const colorUpper = (d.color || "").toUpperCase().trim();
       if (colorUpper === "NO COLOR") return false;
       return true;
+    }
+    if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
+    const colorUpper = d.color.toUpperCase().trim();
+    if (colorUpper === "NO COLOR") return false;
+    return true;
   });
-  
-  data = data.map(d => ({ ...d, unit: d.unit || "Mixed" }));
 
   if (filterPartyCode.value) {
     const search = filterPartyCode.value.toLowerCase();
@@ -2617,6 +2629,12 @@ onMounted(async () => {
     if (monthParam) filterMonth.value = monthParam;
   }
   
+  const uParam = params.get("unit");
+  if (uParam) filterUnit.value = uParam;
+  if (isLaminationBoard.value && filterUnit.value && filterUnit.value !== LAMINATION_UNIT) {
+    filterUnit.value = "";
+  }
+
   await fetchMaintenanceRecords();
   await fetchData();
 });

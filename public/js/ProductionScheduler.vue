@@ -226,7 +226,7 @@
           </template>
 
           <div v-if="!getUnitEntries(unit).length" class="cc-empty">
-            No orders
+            {{ isLaminationBoard ? "No lamination orders for this view — use Refresh or pick another date." : "No orders" }}
           </div>
         </div>
 
@@ -575,8 +575,11 @@ function toggleViewScope() {
 const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
 
 const visibleUnits = computed(() => {
-  if (!filterUnit.value) return boardUnits.value;
-  return boardUnits.value.filter((u) => u === filterUnit.value);
+  const bu = boardUnits.value;
+  if (!filterUnit.value) return bu;
+  const match = bu.filter((u) => u === filterUnit.value);
+  // Stale filter (e.g. Unit 1 from Production Board) would hide all Lamination columns — show all board units instead
+  return match.length ? match : bu;
 });
 
 const NO_RULE_WHITES = ["BRIGHT WHITE", "MILKY WHITE", "SUPER WHITE", "SUNSHINE WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"];
@@ -594,10 +597,14 @@ const filteredData = computed(() => {
       unit: normalizeUnitName(d.unit)
   }));
 
-  // For Production Board ONLY: Show pushed items.
-  // Items are considered "pushed" to the board if they have a plannedDate set.
-  // Note: White orders have plannedDate auto-set on creation.
-  data = data.filter(d => !!d.plannedDate);
+  // Production Board: show pushed items (plannedDate). Lamination: also allow rows on this unit with order date but not yet scheduled.
+  data = data.filter((d) => {
+    if (d.plannedDate) return true;
+    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+      return !!(d.orderDate || d.order_date);
+    }
+    return false;
+  });
 
   if (filterPartyCode.value) {
     const search = filterPartyCode.value.toLowerCase();
@@ -2147,6 +2154,12 @@ onMounted(() => {
         }
     }
 
+    const unitParam = qParams.get("unit");
+    if (unitParam) filterUnit.value = unitParam;
+    if (isLaminationBoard.value && filterUnit.value && filterUnit.value !== LAMINATION_UNIT) {
+      filterUnit.value = "";
+    }
+
     if (viewScope.value === 'daily' && !filterOrderDate.value) {
          filterOrderDate.value = frappe.datetime.get_today();
     } else if (viewScope.value === 'monthly' && !filterMonth.value) {
@@ -2341,6 +2354,7 @@ async function restoreWhiteOrders() {
 .cc-container {
   display: flex;
   flex-direction: column;
+  min-height: 100vh;
   height: 100%;
   background-color: #f3f4f6;
   font-family: 'Inter', sans-serif;
@@ -2389,6 +2403,7 @@ async function restoreWhiteOrders() {
   overflow-x: auto;
   padding: 16px;
   gap: 16px;
+  min-height: 360px;
 }
 
 /* Columns */
