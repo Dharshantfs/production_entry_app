@@ -1563,6 +1563,10 @@ class ShaftProductionRun(Document):
 		"""Create a draft Material Transfer for Manufacture for shortage items only."""
 		if not wo_doc or not shortages:
 			return ""
+		# Reuse existing draft for same WO + SPR to avoid duplicate drafts on retry.
+		existing = self._find_open_wip_shortage_transfer_draft(_cstr(getattr(wo_doc, "name", None)))
+		if existing:
+			return existing
 		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)) or ""
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
 		if not wip_wh:
@@ -1591,6 +1595,7 @@ class ShaftProductionRun(Document):
 			se.wip_warehouse = wip_wh
 			se.to_warehouse = wip_wh
 			se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
+			self._set_stock_entry_spr_link(se)
 			se.get_items()
 
 			for i in range(len(se.items or []) - 1, -1, -1):
@@ -1627,6 +1632,7 @@ class ShaftProductionRun(Document):
 		se.from_warehouse = raw_source_wh or None
 		se.wip_warehouse = wip_wh
 		se.to_warehouse = wip_wh
+		self._set_stock_entry_spr_link(se)
 		for item_code, wh, _req, _avl, short_qty in shortages:
 			qty = flt(short_qty)
 			if not item_code or qty <= 0:
@@ -1649,6 +1655,24 @@ class ShaftProductionRun(Document):
 			return ""
 		se.insert()
 		return se.name
+
+	def _find_open_wip_shortage_transfer_draft(self, wo_name: str) -> str:
+		"""Find latest draft transfer-for-manufacture for this WO and SPR."""
+		wo_name = _cstr(wo_name)
+		if not wo_name:
+			return ""
+		filters = {
+			"docstatus": 0,
+			"work_order": wo_name,
+			"purpose": "Material Transfer for Manufacture",
+		}
+		meta = frappe.get_meta("Stock Entry")
+		if meta.has_field("shaft_production_run"):
+			filters["shaft_production_run"] = self.name
+		elif frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+			filters["custom_spr_reference"] = self.name
+		names = frappe.get_all("Stock Entry", filters=filters, pluck="name", order_by="modified desc", limit=1)
+		return _cstr(names[0]) if names else ""
 
 	def _build_shortage_preview_for_chunk(self, wo_doc, chunk_total_qty: float):
 		"""Build a transient Manufacture entry for shortage pre-check without insert/submit."""
@@ -1718,6 +1742,50 @@ class ShaftProductionRun(Document):
 			)
 		frappe.throw(
 			_("Insufficient WIP stock for WO {0}.\n\n{1}\n\n{2}").format(wo_id, lines, next_steps),
+			title=_("Insufficient stock"),
+		)
+
+	def _raise_shortage_with_transfer_batch(self, shortage_events):
+		"""Create/reuse drafts for all shortage WOs and raise one combined message."""
+		if not shortage_events:
+			return
+		sections = []
+		did_create_or_reuse = False
+		for event in shortage_events:
+			wo_id = _cstr(event.get("wo_id"))
+			wo_doc = event.get("wo_doc")
+			chunk_total_qty = flt(event.get("chunk_total_qty"))
+			shortages = event.get("shortages") or []
+			transfer_name = ""
+			try:
+				transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
+				if transfer_name:
+					did_create_or_reuse = True
+			except Exception:
+				transfer_name = ""
+			lines = "\n".join(
+				[
+					_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
+						it, wh or "—", flt(req, 2), flt(avl, 2), flt(sh, 2)
+					)
+					for it, wh, req, avl, sh in shortages[:10]
+				]
+			)
+			if transfer_name:
+				sections.append(
+					_("WO {0}\n{1}\nDraft Transfer: <a href=\"/app/stock-entry/{2}\" target=\"_blank\">{2}</a>").format(
+						wo_id, lines, transfer_name
+					)
+				)
+			else:
+				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
+		if did_create_or_reuse:
+			frappe.db.commit()
+		frappe.throw(
+			_(
+				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
+				"Submit all listed draft transfer(s), then return to SPR {2} and submit once."
+			).format(len(shortage_events), "\n\n".join(sections), self.name),
 			title=_("Insufficient stock"),
 		)
 
@@ -2364,6 +2432,7 @@ class ShaftProductionRun(Document):
 
 		# Phase 2: after all WO groups are valid, create/submit Manufacture entries.
 		# Preflight shortage check first so submit cannot partially create entries for only some WOs.
+		shortage_events = []
 		for plan in planned_wo_posts:
 			wo_id = plan["wo_id"]
 			wo_doc = plan["wo_doc"]
@@ -2374,7 +2443,16 @@ class ShaftProductionRun(Document):
 				preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
 				shortages = self._rm_shortages_for_se(preview_se)
 				if shortages:
-					self._raise_shortage_with_transfer(wo_id, wo_doc, chunk_total_qty, shortages)
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": shortages,
+						}
+					)
+		if shortage_events:
+			self._raise_shortage_with_transfer_batch(shortage_events)
 
 		# Phase 2: create/submit Manufacture entries after preflight passes for all WO chunks.
 		for plan in planned_wo_posts:
