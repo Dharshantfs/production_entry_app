@@ -1772,8 +1772,7 @@ class ShaftProductionRun(Document):
 		transfer_err = ""
 		try:
 			transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
-			if transfer_name:
-				frappe.db.commit()
+			# Keep draft + submit atomic inside one request transaction.
 		except Exception:
 			transfer_err = _cstr(frappe.get_traceback())
 			transfer_name = ""
@@ -1840,8 +1839,7 @@ class ShaftProductionRun(Document):
 				)
 			else:
 				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
-		if did_create_or_reuse:
-			frappe.db.commit()
+		# Never force commit here; let the request-level transaction commit or rollback.
 		frappe.throw(
 			_(
 				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"

@@ -1783,15 +1783,14 @@ class ShaftProductionRun(Document):
 	def _raise_shortage_with_transfer(self, wo_id: str, wo_doc, chunk_total_qty: float, shortages):
 		"""Create draft transfer, then throw actionable shortage message.
 
-		Called from before_submit flow, so commit here persists the transfer draft while
-		the submit itself is still blocked.
+		Called from before_submit flow. Do not force DB commit here, otherwise partially
+		created Manufacture entries can persist even when SPR submit is blocked.
 		"""
 		transfer_name = ""
 		transfer_err = ""
 		try:
 			transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
-			if transfer_name:
-				frappe.db.commit()
+			# Keep draft + submit atomic inside one request transaction.
 		except Exception:
 			transfer_err = _cstr(frappe.get_traceback())
 			transfer_name = ""
@@ -1891,8 +1890,7 @@ class ShaftProductionRun(Document):
 			else:
 				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
 
-		if did_any:
-			frappe.db.commit()
+		# Never force commit here; let the request-level transaction commit or rollback.
 		frappe.throw(
 			_(
 				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
