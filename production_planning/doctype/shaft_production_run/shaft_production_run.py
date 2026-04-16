@@ -1543,6 +1543,34 @@ class ShaftProductionRun(Document):
 				except Exception:
 					pass
 
+	def _get_existing_submitted_manufacture_entries_for_spr(self) -> list[str]:
+		"""Submitted Manufacture entries already linked to this SPR."""
+		names = [x.strip() for x in _cstr(self.get("manufacturing_entries")).split(",") if x and x.strip()]
+		meta_se = frappe.get_meta("Stock Entry")
+		if not names and meta_se.has_field("shaft_production_run"):
+			names = frappe.db.sql_list(
+				"""
+				SELECT name
+				FROM `tabStock Entry`
+				WHERE IFNULL(shaft_production_run, '') = %s
+				  AND IFNULL(purpose, '') = 'Manufacture'
+				  AND docstatus = 1
+				""",
+				(self.name,),
+			)
+		if not names and frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+			names = frappe.db.sql_list(
+				"""
+				SELECT name
+				FROM `tabStock Entry`
+				WHERE IFNULL(custom_spr_reference, '') = %s
+				  AND IFNULL(purpose, '') = 'Manufacture'
+				  AND docstatus = 1
+				""",
+				(self.name,),
+			)
+		return sorted({_cstr(x).strip() for x in (names or []) if _cstr(x).strip()})
+
 	def _rm_shortages_for_se(self, se) -> list[tuple[str, str, float, float, float]]:
 		"""Return RM shortages as (item_code, s_warehouse, required, available, shortage)."""
 		out = []
@@ -2658,13 +2686,26 @@ class ShaftProductionRun(Document):
 				)
 			)
 		else:
-			frappe.throw(
-				_(
-					"SPR submit blocked: no Manufacture Stock Entry was created. "
-					"Check Work Order mapping and produced weights, then retry."
-				),
-				title=_("No stock entry created"),
-			)
+			# Recovery-safe path: if old bug already posted Manufacture entries for this SPR, reuse them.
+			existing_submitted = self._get_existing_submitted_manufacture_entries_for_spr()
+			if existing_submitted:
+				self.db_set("manufacturing_entries", ", ".join(existing_submitted))
+				self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
+				self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
+				frappe.msgprint(
+					_("No new Manufacture entry needed; reusing existing submitted entries: {0}").format(
+						", ".join(existing_submitted[:20])
+					),
+					alert=True,
+				)
+			else:
+				frappe.throw(
+					_(
+						"SPR submit blocked: no Manufacture Stock Entry was created. "
+						"Check Work Order mapping and produced weights, then retry."
+					),
+					title=_("No stock entry created"),
+				)
 
 	def update_work_order_statuses(self):
 		wo_ids = list(
