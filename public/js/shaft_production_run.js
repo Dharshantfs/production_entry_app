@@ -597,12 +597,36 @@ function spr_open_manual_job_dialog(frm) {
 				title: __('Manual job'),
 				fields: [
 					{
+						fieldname: 'spr_manual_ui_style',
+						fieldtype: 'HTML',
+						options:
+							'<style>' +
+							'.spr-manual-shell{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px;margin-bottom:10px;}' +
+							'.spr-manual-shell b{font-weight:600;color:#0f172a;}' +
+							'.spr-manual-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 10px;}' +
+							'.spr-manual-summary{margin-left:auto;font-size:12px;color:#334155;background:#eef2ff;border:1px solid #c7d2fe;border-radius:999px;padding:4px 10px;}' +
+							'.spr-manual-table-wrap{overflow:auto;border:1px solid #dbe2ea;border-radius:12px;background:#fff;max-height:360px;}' +
+							'.spr-manual-table{font-size:12px;margin:0;min-width:1020px;table-layout:fixed;}' +
+							'.spr-manual-table thead th{position:sticky;top:0;background:#f1f5f9;z-index:1;border-bottom:1px solid #cbd5e1;color:#334155;}' +
+							'.spr-manual-table tbody tr:hover{background:#f8fafc;}' +
+							'.spr-manual-row-selected{background:#ecfeff !important;}' +
+							'.spr-manual-table input[type=number],.spr-manual-table select{height:28px;font-size:12px;}' +
+							'</style>',
+					},
+					{
 						fieldname: 'spr_manual_pp_hint',
 						fieldtype: 'HTML',
 						options:
-							'<p class="text-muted small" style="margin-bottom:8px;">' +
+							'<div class="spr-manual-shell">' +
+							'<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">' +
+							'<div><b>' +
+							__('Manual Work Order Planner') +
+							'</b><div class="text-muted small">' +
+							__('Choose shafts/roll logic, then confirm rows below.') +
+							'</div></div>' +
+							'<div class="text-muted small">' +
 							__('Production Plan: {0}', [ppName || '—']) +
-							'</p>',
+							'</div></div></div>',
 					},
 					{
 						fieldname: 'no_of_shafts',
@@ -639,6 +663,15 @@ function spr_open_manual_job_dialog(frm) {
 						fieldtype: 'HTML',
 						label: __('Select items'),
 						options:
+							'<div class="spr-manual-toolbar">' +
+							'<button type="button" class="btn btn-xs btn-default spr-manual-select-all">' +
+							__('Select all') +
+							'</button>' +
+							'<button type="button" class="btn btn-xs btn-default spr-manual-select-none">' +
+							__('Clear') +
+							'</button>' +
+							'<span class="spr-manual-summary spr-manual-selection-summary">—</span>' +
+							'</div>' +
 							'<div class="spr-manual-lines-wrap"></div>' +
 							'<p class="text-muted small" style="margin-top:6px;">' +
 							__('WO qty default = net/roll Kg × rolls × shafts') +
@@ -777,8 +810,8 @@ function spr_open_manual_job_dialog(frm) {
 					return;
 				}
 				let html =
-					'<div style="overflow-x:auto;">' +
-					'<table class="table table-bordered table-condensed" style="font-size:12px;margin-bottom:0;min-width:980px;table-layout:fixed;">';
+					'<div class="spr-manual-table-wrap">' +
+					'<table class="table table-bordered table-condensed spr-manual-table">';
 				html +=
 					'<thead><tr><th style="width:36px;"></th><th>' +
 					__('Item / PP row') +
@@ -861,6 +894,22 @@ function spr_open_manual_job_dialog(frm) {
 				html += '</tbody></table></div>';
 				wrap.html(html);
 				applyManualCombinationSelection();
+				updateManualSelectionSummary();
+			}
+
+			function updateManualSelectionSummary() {
+				const checked = d.$wrapper.find('.spr-manual-inc:checked');
+				let totalQty = 0;
+				d.$wrapper.find('.spr-manual-table tbody tr').removeClass('spr-manual-row-selected');
+				checked.each(function () {
+					const idx = cint($(this).attr('data-idx'));
+					const q = flt(d.$wrapper.find('.spr-manual-qty[data-idx="' + idx + '"]').val());
+					totalQty += q > 0 ? q : 0;
+					$(this).closest('tr').addClass('spr-manual-row-selected');
+				});
+				d.$wrapper.find('.spr-manual-selection-summary').text(
+					__('Selected: {0} row(s) | WO Qty: {1} Kg', [checked.length, totalQty.toFixed(2)])
+				);
 			}
 
 			function setManualCombinationStatus(message, colorClass) {
@@ -955,6 +1004,17 @@ function spr_open_manual_job_dialog(frm) {
 				d.$wrapper.find('.modal-dialog').css('max-width', '1100px');
 			} catch (e) {}
 			renderManualLinesTable();
+			d.$wrapper.on('click', '.spr-manual-select-all', function () {
+				d.$wrapper.find('.spr-manual-inc').prop('checked', true);
+				updateManualSelectionSummary();
+			});
+			d.$wrapper.on('click', '.spr-manual-select-none', function () {
+				d.$wrapper.find('.spr-manual-inc').prop('checked', false);
+				updateManualSelectionSummary();
+			});
+			d.$wrapper.on('change input', '.spr-manual-inc, .spr-manual-qty', function () {
+				updateManualSelectionSummary();
+			});
 			const ns = d.fields_dict.no_of_shafts;
 			if (ns && ns.$input) {
 				ns.$input.on('change input', function () {
