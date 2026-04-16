@@ -2455,6 +2455,18 @@ async function fetchData() {
 
         args.plan_name = "__all__";
         args.planned_only = 1;
+        // Main board hides 104 (laminated); ?board=lamination shows only 104. Omit param for legacy API behaviour.
+        try {
+          const sp = new URLSearchParams(window.location.search || "");
+          const b = (sp.get("board") || "").toLowerCase();
+          if (b === "lamination") {
+            args.board_process_scope = "lamination_only";
+          } else {
+            args.board_process_scope = "exclude_104";
+          }
+        } catch (e) {
+          args.board_process_scope = "exclude_104";
+        }
 
     const r = await frappe.call({
       method: "production_scheduler.api.get_color_chart_data",

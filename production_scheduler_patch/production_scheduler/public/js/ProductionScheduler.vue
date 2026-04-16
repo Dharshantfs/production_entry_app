@@ -1933,6 +1933,17 @@ async function fetchData() {
         // Production Board: fetch ALL plans but ONLY pushed items (custom_planned_date set)
         args.plan_name = "__all__";
         args.planned_only = 1;
+        try {
+          const sp = new URLSearchParams(window.location.search || "");
+          const b = (sp.get("board") || "").toLowerCase();
+          if (b === "lamination") {
+            args.board_process_scope = "lamination_only";
+          } else {
+            args.board_process_scope = "exclude_104";
+          }
+        } catch (e) {
+          args.board_process_scope = "exclude_104";
+        }
 
         const r = await frappe.call({
           method: "production_scheduler.api.get_color_chart_data",
