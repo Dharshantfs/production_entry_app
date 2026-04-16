@@ -95,7 +95,7 @@ def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty):
 
 
 def _sync_lamination_fabric_planning_rows(planning_sheet_name):
-	"""For each SO line with item 104, append one fabric (100) Planning Table row on the same sheet. Idempotent."""
+	"""For each SO line with item 104, append one fabric (100) row to legacy items + board table. Idempotent."""
 	if not LAMINATION_FLOW_ENABLED or not planning_sheet_name:
 		return
 	if not frappe.db.exists("Planning sheet", planning_sheet_name):
@@ -145,24 +145,23 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		lam_row = frappe.get_doc("Planning Table", lam_pt_name) if lam_pt_name else None
 
 		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
+		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row)
 		row = {
 			"sales_order_item": "",
 			"item_code": fabric_ic,
 			"item_name": fabric_item_name,
 			"qty": fabric_qty,
 			"uom": so_it.uom,
-			"gsm": cint(lam_row.gsm) if lam_row else 0,
-			"width_inch": flt(lam_row.width_inch) if lam_row else 0,
-			"color": (lam_row.color if lam_row else "") or "Unknown Color",
-			"quality": (lam_row.quality if lam_row else "") or "GENERIC",
-			"custom_quality": (lam_row.custom_quality if lam_row else "")
-			or (lam_row.quality if lam_row else "")
-			or "GENERIC",
+			"gsm": specs["gsm"],
+			"width_inch": specs["width_inch"],
+			"color": specs["color"],
+			"quality": specs["quality"],
+			"custom_quality": specs["custom_quality"],
 			"unit": "Lamination Unit",
-			"meter": cint(lam_row.meter) if lam_row else 0,
-			"meter_per_roll": cint(lam_row.meter_per_roll) if lam_row else cint(getattr(so_it, "custom_meter_per_roll", 0) or 0),
-			"no_of_rolls": cint(lam_row.no_of_rolls) if lam_row else cint(getattr(so_it, "custom_no_of_rolls", 0) or 0),
-			"weight_per_roll": flt(lam_row.weight_per_roll) if lam_row else 0,
+			"meter": specs["meter"],
+			"meter_per_roll": specs["meter_per_roll"],
+			"no_of_rolls": specs["no_of_rolls"],
+			"weight_per_roll": specs["weight_per_roll"],
 			"planned_date": lam_row.get("planned_date") if lam_row else None,
 			"plan_name": lam_row.get("plan_name") if lam_row else ps.get("custom_plan_name"),
 			"party_code": ps.party_code,
@@ -172,7 +171,10 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
 
-		ps.append(parent_field, row)
+		row_b = dict(row)
+		if hasattr(ps, "items") or ps.meta.has_field("items"):
+			ps.append("items", row_b)
+		ps.append(parent_field, dict(row))
 		changed = True
 
 	if changed:
@@ -722,6 +724,156 @@ def _normalize_quality_key(text):
 
 COL_LIST = ["BRIGHT WHITE", "SUPER WHITE", "MILKY WHITE", "SUNSHINE WHITE", "BLEACH WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0", "WHITE MIX", "WHITE","BRIGHT IVORY","CREAM 2.0", "CREAM 3.0", "CREAM 4.0", "CREAM 5.0", "GOLDEN YELLOW 4.0 SPL", "GOLDEN YELLOW 1.0", "GOLDEN YELLOW 2.0", "GOLDEN YELLOW 3.0", "GOLDEN YELLOW", "LEMON YELLOW 1.0", "LEMON YELLOW 3.0", "LEMON YELLOW", "BRIGHT ORANGE", "DARK ORANGE", "ORANGE 2.0", "PINK 7.0 DARK", "PINK 6.0 DARK", "DARK PINK", "BABY PINK", "PINK 1.0", "PINK 2.0", "PINK 3.0", "PINK 5.0", "CRIMSON RED", "RED", "LIGHT MAROON", "DARK MAROON", "MAROON 1.0", "MAROON 2.0", "BLUE 13.0 INK BLUE", "BLUE 12.0 SPL NAVY BLUE", "BLUE 11.0 NAVY BLUE", "BLUE 8.0 DARK ROYAL BLUE", "BLUE 7.0 DARK BLUE", "BLUE 6.0 ROYAL BLUE", "LIGHT PEACOCK BLUE", "PEACOCK BLUE", "LIGHT MEDICAL BLUE", "MEDICAL BLUE", "ROYAL BLUE", "NAVY BLUE", "SKY BLUE", "LIGHT BLUE", "BLUE 9.0", "BLUE 4.0", "BLUE 2.0", "BLUE 1.0", "BLUE", "PURPLE 4.0 BLACKBERRY", "PURPLE 1.0", "PURPLE 2.0", "PURPLE 3.0", "VIOLET", "VOILET", "GREEN 13.0 ARMY GREEN", "GREEN 12.0 OLIVE GREEN", "GREEN 11.0 DARK GREEN", "GREEN 10.0", "GREEN 9.0 BOTTLE GREEN", "GREEN 8.0 APPLE GREEN", "GREEN 7.0", "GREEN 6.0", "GREEN 5.0 GRASS GREEN", "GREEN 4.0", "GREEN 3.0 RELIANCE GREEN", "GREEN 2.0 TORQUISE GREEN", "GREEN 1.0 MINT", "MEDICAL GREEN", "RELIANCE GREEN", "PARROT GREEN", "GREEN", "SILVER 1.0", "SILVER 2.0", "LIGHT GREY", "DARK GREY", "GREY 1.0", "CHOCOLATE BROWN 2.0", "CHOCOLATE BROWN", "CHOCOLATE BLACK", "BROWN 3.0 DARK COFFEE", "BROWN 2.0 DARK", "BROWN 1.0", "CHIKOO 1.0", "CHIKOO 2.0", "BEIGE 1.0", "BEIGE 2.0", "BEIGE 3.0", "BEIGE 4.0", "BEIGE 5.0", "LIGHT BEIGE", "DARK BEIGE", "BEIGE MIX", "BLACK MIX", "COLOR MIX", "BLACK"]
 COL_LIST.sort(key=len, reverse=True)
+
+
+def _parse_gsm_width_from_item_text(raw_text):
+	"""Parse GSM and width (inch) from item code + item name (same token rules as SO line populate)."""
+	if not raw_text:
+		return 0, 0.0
+	clean_txt = raw_text.upper().replace("-", " ").replace("_", " ").replace("(", " ").replace(")", " ")
+	clean_txt = clean_txt.replace("''", " INCH ").replace('"', " INCH ")
+	words = clean_txt.split()
+	gsm = 0
+	for i, w in enumerate(words):
+		if w == "GSM" and i > 0 and words[i - 1].isdigit():
+			gsm = int(words[i - 1])
+			break
+		elif w.endswith("GSM") and len(w) > 3 and w[:-3].isdigit():
+			gsm = int(w[:-3])
+			break
+	width = 0.0
+	for i, w in enumerate(words):
+		if w == "W" and i < len(words) - 1 and words[i + 1].replace(".", "", 1).isdigit():
+			width = float(words[i + 1])
+			break
+		elif w.startswith("W") and len(w) > 1 and w[1:].replace(".", "", 1).isdigit():
+			width = float(w[1:])
+			break
+		elif w == "INCH" and i > 0 and words[i - 1].replace(".", "", 1).isdigit():
+			width = float(words[i - 1])
+			break
+		elif w.endswith("INCH") and len(w) > 4 and w[:-4].replace(".", "", 1).isdigit():
+			width = float(w[:-4])
+			break
+	return gsm, width
+
+
+def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
+	"""
+	GSM, width, colour, quality for the fabric line — from fabric Item only (never lamination row).
+	Reuses the same extraction rules as _populate_planning_sheet_items for 100* items.
+	"""
+	quality_lookup = list(QUAL_LIST)
+	try:
+		qm_names = frappe.get_all("Quality Master", pluck="name") or []
+		for qn in qm_names:
+			qn_up = str(qn or "").upper().strip()
+			if qn_up and qn_up not in quality_lookup:
+				quality_lookup.append(qn_up)
+	except Exception:
+		pass
+	quality_lookup.sort(key=len, reverse=True)
+
+	item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
+	raw_txt = f"{fabric_ic} {item_name}"
+	gsm, width = _parse_gsm_width_from_item_text(raw_txt)
+	for col in ("custom_gsm", "gsm"):
+		if frappe.db.has_column("Item", col):
+			try:
+				v = frappe.db.get_value("Item", fabric_ic, col)
+				if v is not None and flt(v) > 0:
+					gsm = cint(v)
+					break
+			except Exception:
+				pass
+	for col in ("custom_width_inch", "width_inch", "custom_width"):
+		if frappe.db.has_column("Item", col):
+			try:
+				v = frappe.db.get_value("Item", fabric_ic, col)
+				if v is not None and flt(v) > 0:
+					width = flt(v)
+					break
+			except Exception:
+				pass
+	if gsm <= 0:
+		gsm, _ = _parse_gsm_width_from_item_text(raw_txt)
+	if width <= 0:
+		_, width = _parse_gsm_width_from_item_text(raw_txt)
+
+	clean_txt = raw_txt.upper().replace("-", " ").replace("_", " ").replace("(", " ").replace(")", " ")
+	clean_txt = clean_txt.replace("''", " INCH ").replace('"', " INCH ")
+	words = clean_txt.split()
+	qual = ""
+	col = ""
+	item_code_str = str(fabric_ic).strip()
+	if len(item_code_str) >= 9 and item_code_str.startswith("100"):
+		q_code = item_code_str[3:6]
+		c_code = item_code_str[6:9]
+		try:
+			qual_name = (
+				frappe.db.get_value("Quality Master", {"short_code": q_code}, "name")
+				or frappe.db.get_value("Quality Master", {"code": q_code}, "name")
+				or frappe.db.get_value("Quality Master", {"quality_code": q_code}, "name")
+			)
+			if qual_name:
+				qual = qual_name
+		except Exception:
+			pass
+		try:
+			color_result = _get_color_by_code(c_code)
+			if color_result:
+				col = color_result
+		except Exception:
+			pass
+
+	search_text = " " + " ".join(words) + " "
+	search_norm = _normalize_quality_key(search_text)
+	if not qual:
+		for q in quality_lookup:
+			if _normalize_quality_key(q) and _normalize_quality_key(q) in search_norm:
+				qual = q
+				break
+	if not col:
+		for c in COL_LIST:
+			if (" " + c + " ") in search_text:
+				col = c
+				break
+	if not col:
+		su = search_text.upper()
+		for c in COL_LIST:
+			if c in su:
+				col = c
+				break
+
+	line_quality = (qual or "").strip()
+	if not line_quality:
+		line_quality = (
+			str(frappe.db.get_value("Item", fabric_ic, "custom_quality") or frappe.db.get_value("Item", fabric_ic, "quality") or "")
+		).strip()
+	if not line_quality:
+		line_quality = "GENERIC"
+
+	m_roll = flt(getattr(so_it, "custom_meter_per_roll", 0) or 0)
+	wt = 0.0
+	if gsm > 0 and width > 0 and m_roll > 0:
+		wt = flt(gsm * width * m_roll * 0.0254) / 1000
+
+	meter = cint(lam_row.meter) if lam_row else 0
+	meter_per_roll = cint(lam_row.meter_per_roll) if lam_row else cint(m_roll)
+	no_of_rolls = cint(lam_row.no_of_rolls) if lam_row else cint(getattr(so_it, "custom_no_of_rolls", 0) or 0)
+
+	return {
+		"gsm": cint(gsm) if gsm else 0,
+		"width_inch": flt(width),
+		"color": (col or "").strip() or "Unknown Color",
+		"quality": line_quality,
+		"custom_quality": (qual or line_quality),
+		"weight_per_roll": wt,
+		"meter": meter,
+		"meter_per_roll": meter_per_roll,
+		"no_of_rolls": no_of_rolls,
+	}
+
 
 # ... Limits ...
 # --------------------------------------------------------------------------------
