@@ -1,7 +1,7 @@
 {
 	"app": "production_entry",
 	"charts": [],
-	"content": "[{\"id\":\"confirmed_order_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Confirmed Order\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"confirmed-order\",\"label\":\"Confirmed Order\"}},{\"id\":\"production_board_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Production Board\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"production-board\",\"label\":\"Production Board\"}},{\"id\":\"color_chart_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Color Chart\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"color-chart\",\"label\":\"Color Chart\"}}]",
+	"content": "[{\"id\":\"confirmed_order_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Confirmed Order\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"confirmed-order\",\"label\":\"Confirmed Order\"}},{\"id\":\"production_board_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Production Board\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"production-board\",\"label\":\"Production Board\"}},{\"id\":\"lamination_board_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Lamination Board\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"lamination-board\",\"label\":\"Lamination Board\"}},{\"id\":\"color_chart_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Color Chart\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"color-chart\",\"label\":\"Color Chart\"}}]",
 	"creation": "2026-02-13 12:00:00.000000",
 	"custom_blocks": [],
 	"docstatus": 0,
@@ -27,6 +27,15 @@
 			"icon": "gantt",
 			"label": "Production Board",
 			"link_to": "production-board",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"description": "Lamination Board",
+			"icon": "organization",
+			"label": "Lamination Board",
+			"link_to": "lamination-board",
 			"link_type": "Page",
 			"onboard": 1,
 			"type": "Link"
@@ -80,6 +89,11 @@
 		{
 			"label": "Production Board",
 			"link_to": "production-board",
+			"type": "Page"
+		},
+		{
+			"label": "Lamination Board",
+			"link_to": "lamination-board",
 			"type": "Page"
 		},
 		{

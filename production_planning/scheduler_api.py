@@ -158,7 +158,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			"custom_quality": (lam_row.custom_quality if lam_row else "")
 			or (lam_row.quality if lam_row else "")
 			or "GENERIC",
-			"unit": (lam_row.unit if lam_row and lam_row.unit else "") or "UNASSIGNED",
+			"unit": "Lamination Unit",
 			"meter": cint(lam_row.meter) if lam_row else 0,
 			"meter_per_roll": cint(lam_row.meter_per_roll) if lam_row else cint(getattr(so_it, "custom_meter_per_roll", 0) or 0),
 			"no_of_rolls": cint(lam_row.no_of_rolls) if lam_row else cint(getattr(so_it, "custom_no_of_rolls", 0) or 0),
@@ -859,6 +859,8 @@ def _populate_planning_sheet_items(ps, doc):
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
         unit = compute_default_production_unit(col, width)
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            unit = "Lamination Unit"
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
 
