@@ -1920,11 +1920,18 @@ class ShaftProductionRun(Document):
 		return ""
 
 	def _strip_finished_goods_from_stock_entry(self, se):
-		"""Remove FG rows from BOM-generated Stock Entry (we re-add per roll with batch_no)."""
+		"""Remove FG rows from BOM-generated Stock Entry and return them as templates."""
 		items = se.get("items") or []
+		fg_templates = []
 		for i in range(len(items) - 1, -1, -1):
 			if getattr(items[i], "is_finished_item", 0):
+				try:
+					fg_templates.append(items[i].as_dict(no_default_fields=False))
+				except Exception:
+					fg_templates.append(dict(items[i].as_dict()))
 				se.items.pop(i)
+		fg_templates.reverse()
+		return fg_templates
 
 	def _get_batch_link_name_for_stock_entry(
 		self,
@@ -2010,12 +2017,20 @@ class ShaftProductionRun(Document):
 				return found
 			raise
 
-	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list):
-		"""One finished-good Stock Entry line per SPR roll (no merging qty by batch)."""
+	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list, fg_templates=None):
+		"""One finished-good Stock Entry line per SPR roll, cloned from ERPNext FG template rows."""
 		item_code = wo_doc.production_item
 		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
 		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
 		item_name = frappe.db.get_value("Item", item_code, "item_name")
+		fg_templates = list(fg_templates or [])
+		base_template = None
+		for tpl in fg_templates:
+			if _cstr(tpl.get("item_code")) == _cstr(item_code):
+				base_template = tpl
+				break
+		if base_template is None and fg_templates:
+			base_template = fg_templates[0]
 
 		for spr in spr_rows:
 			qty = self._row_fg_qty(spr)
@@ -2042,16 +2057,45 @@ class ShaftProductionRun(Document):
 			else:
 				se_batch = ""
 
-			row = {
-				"item_code": item_code,
-				"item_name": item_name,
-				"qty": qty,
-				"uom": stock_uom,
-				"t_warehouse": wo_doc.fg_warehouse,
-				"is_finished_item": 1,
-			}
+			row = {}
+			if base_template:
+				row.update(
+					{
+						k: v
+						for k, v in base_template.items()
+						if k
+						not in {
+							"name",
+							"parent",
+							"parenttype",
+							"parentfield",
+							"idx",
+							"owner",
+							"creation",
+							"modified",
+							"modified_by",
+							"docstatus",
+						}
+					}
+				)
+			row.update(
+				{
+					"item_code": item_code,
+					"item_name": item_name,
+					"qty": qty,
+					"transfer_qty": qty,
+					"uom": row.get("uom") or stock_uom,
+					"stock_uom": row.get("stock_uom") or stock_uom,
+					"conversion_factor": flt(row.get("conversion_factor") or 1),
+					"t_warehouse": wo_doc.fg_warehouse,
+					"s_warehouse": "",
+					"is_finished_item": 1,
+				}
+			)
 			if has_batch and se_batch:
 				row["batch_no"] = se_batch
+			elif "batch_no" in row:
+				row["batch_no"] = ""
 			se.append("items", row)
 
 	def _wo_submitted_manufacture_fg_qty(self, wo_id: str) -> float:
@@ -2652,8 +2696,8 @@ class ShaftProductionRun(Document):
 				actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
 
 				# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
-				self._strip_finished_goods_from_stock_entry(se)
-				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows)
+				fg_templates = self._strip_finished_goods_from_stock_entry(se)
+				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows, fg_templates)
 
 				# Hard guard: submit path must always be Manufacture (never Material Transfer).
 				se.stock_entry_type = self._manufacture_stock_entry_type_name()
