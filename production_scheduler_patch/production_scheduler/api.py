@@ -183,6 +183,30 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		frappe.db.commit()
 
 
+def _link_board_planned_rows_to_legacy_items(planning_sheet_name):
+	"""Set Planning Table `source_item` from legacy Planning sheet Item rows (1:1 by idx)."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return
+	final_doc = frappe.get_doc("Planning sheet", planning_sheet_name)
+	legacy_rows = sorted((final_doc.get("items") or []), key=lambda x: x.idx)
+	board_rows = []
+	for field in (
+		"planned_items",
+		"planning_table",
+		"custom_planned_items",
+		"custom_planning_table",
+		"table",
+	):
+		br = final_doc.get(field) or []
+		if br:
+			board_rows = sorted(br, key=lambda x: x.idx)
+			break
+	if legacy_rows and board_rows and len(legacy_rows) == len(board_rows):
+		for i in range(len(legacy_rows)):
+			board_rows[i].source_item = legacy_rows[i].name
+			board_rows[i].db_update()
+
+
 def _resolve_customer_link(raw_customer, party_code=None):
     """Return a valid Customer docname for link-field assignments."""
     if not raw_customer:
@@ -6707,6 +6731,10 @@ def create_planning_sheet_from_so(doc):
         ps.flags.ignore_permissions = True
         ps.insert()
         frappe.db.commit()
+        _link_board_planned_rows_to_legacy_items(ps.name)
+        _sync_lamination_fabric_planning_rows(ps.name)
+        final_doc = frappe.get_doc("Planning sheet", ps.name)
+        update_sheet_plan_codes(final_doc, include_legacy=True)
         frappe.msgprint(f"Γ£à Planning Sheet <b>{ps.name}</b> Created!")
 
     except Exception as e:
@@ -6973,6 +7001,11 @@ def create_planning_sheets_bulk(sales_orders):
             if not ps.get("quality"):
                 ps.quality = "Standard"
             ps.insert(ignore_permissions=True)
+            frappe.db.commit()
+            _link_board_planned_rows_to_legacy_items(ps.name)
+            _sync_lamination_fabric_planning_rows(ps.name)
+            final_doc = frappe.get_doc("Planning sheet", ps.name)
+            update_sheet_plan_codes(final_doc, include_legacy=True)
             created.append(ps.name)
             
         except Exception as e:
@@ -9008,31 +9041,9 @@ def auto_create_planning_sheet(doc, method=None):
     ps.flags.ignore_permissions = True
     ps.insert()
     frappe.db.commit()
-    
-    # 4. LINK BOARD ROWS TO LEGACY ROWS (source_item)
-    # We re-fetch to get valid names for all children.
-    # Rows were appended in the same order, so idx should match 1:1.
-    final_doc = frappe.get_doc("Planning sheet", ps.name)
-    
-    legacy_rows = sorted((final_doc.get("items") or []), key=lambda x: x.idx)
-    board_rows = []
-    for field in [
-        "planned_items",
-        "planning_table",
-        "custom_planned_items",
-        "custom_planning_table",
-        "table",
-    ]:
-        br = final_doc.get(field) or []
-        if br:
-            board_rows = sorted(br, key=lambda x: x.idx)
-            break
-            
-    if legacy_rows and board_rows and len(legacy_rows) == len(board_rows):
-        for i in range(len(legacy_rows)):
-            board_rows[i].source_item = legacy_rows[i].name
-            board_rows[i].db_update()
 
+    # 4. Link board rows to legacy rows (source_item), then lamination fabric rows
+    _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
             
     frappe.msgprint(f"✅ Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
@@ -9098,27 +9109,7 @@ def regenerate_planning_sheet(so_name):
     ps.insert()
     frappe.db.commit()
 
-    # LINK BOARD ROWS TO LEGACY ROWS (source_item)
-    final_doc = frappe.get_doc("Planning sheet", ps.name)
-    legacy_rows = sorted((final_doc.get("items") or []), key=lambda x: x.idx)
-    board_rows = []
-    for field in [
-        "planned_items",
-        "planning_table",
-        "custom_planned_items",
-        "custom_planning_table",
-        "table",
-    ]:
-        br = final_doc.get(field) or []
-        if br:
-            board_rows = sorted(br, key=lambda x: x.idx)
-            break
-
-    if legacy_rows and board_rows and len(legacy_rows) == len(board_rows):
-        for i in range(len(legacy_rows)):
-            board_rows[i].source_item = legacy_rows[i].name
-            board_rows[i].db_update()
-
+    _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
 
     frappe.msgprint(f"✅ Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
