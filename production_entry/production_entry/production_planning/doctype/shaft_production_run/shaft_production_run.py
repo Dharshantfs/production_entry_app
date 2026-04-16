@@ -1529,6 +1529,51 @@ class ShaftProductionRun(Document):
 					)[0][0]
 					or 0
 				)
+				if abs(qty) <= 1e-9 and frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+					try:
+						sb_bundle_dt = "Serial and Batch Bundle"
+						sb_entry_dt = "Serial and Batch Entry"
+						if frappe.db.exists("DocType", sb_bundle_dt) and frappe.db.exists("DocType", sb_entry_dt):
+							sb_entry_meta = frappe.get_meta(sb_entry_dt)
+							batch_field = next(
+								(
+									fn
+									for fn in ("batch_no", "batch", "batch_id")
+									if sb_entry_meta.has_field(fn)
+								),
+								"",
+							)
+							qty_field = next(
+								(
+									fn
+									for fn in ("qty", "quantity")
+									if sb_entry_meta.has_field(fn)
+								),
+								"",
+							)
+							if batch_field and qty_field:
+								qty = flt(
+									frappe.db.sql(
+										f"""
+										SELECT IFNULL(SUM(
+											CASE
+												WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+												ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+											END
+										), 0)
+										FROM `tabStock Ledger Entry` sle
+										INNER JOIN `tabSerial and Batch Entry` sbe
+											ON sbe.parent = sle.serial_and_batch_bundle
+										WHERE IFNULL(sle.is_cancelled, 0) = 0
+										  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+										  AND IFNULL(sbe.`{batch_field}`, '') = %s
+										""",
+										(bn,),
+									)[0][0]
+									or 0
+								)
+					except Exception:
+						pass
 				if frappe.db.has_column("Batch", "batch_qty"):
 					frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
 				if frappe.db.has_column("Batch", "status"):
