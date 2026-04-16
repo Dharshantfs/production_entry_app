@@ -1625,6 +1625,9 @@ class ShaftProductionRun(Document):
 		"""Create a draft Material Transfer for Manufacture for shortage items only."""
 		if not wo_doc or not shortages:
 			return ""
+		# Use current day/time for shortage transfers to avoid backdated ledger insufficiency on old run dates.
+		transfer_posting_date = today()
+		transfer_posting_time = nowtime()
 		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)) or ""
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
 		if not wip_wh:
@@ -1713,8 +1716,8 @@ class ShaftProductionRun(Document):
 		try:
 			se = frappe.new_doc("Stock Entry")
 			se.company = wo_doc.company
-			se.posting_date = self.run_date or today()
-			se.posting_time = nowtime()
+			se.posting_date = transfer_posting_date
+			se.posting_time = transfer_posting_time
 			se.set_posting_time = 1
 			se.purpose = "Material Transfer for Manufacture"
 			se.stock_entry_type = self._transfer_for_manufacture_type_name()
@@ -1759,8 +1762,8 @@ class ShaftProductionRun(Document):
 		# Path B (fallback): manual rows directly from shortage map
 		se = frappe.new_doc("Stock Entry")
 		se.company = wo_doc.company
-		se.posting_date = self.run_date or today()
-		se.posting_time = nowtime()
+		se.posting_date = transfer_posting_date
+		se.posting_time = transfer_posting_time
 		se.set_posting_time = 1
 		se.purpose = "Material Transfer for Manufacture"
 		se.stock_entry_type = self._transfer_for_manufacture_type_name()
