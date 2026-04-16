@@ -2734,6 +2734,43 @@ class ShaftProductionRun(Document):
 										"shortages": shortages2,
 									}
 								)
+						# Fallback for ERPNext future-SLE shortages: propagate same RM item shortages to all WO plans.
+						# This avoids one-WO-at-a-time draft generation loops for the same missing RM item.
+						short_item_codes = sorted({_cstr(it) for it, _wh, _req, _avl, _sh in shortages if _cstr(it)})
+						if short_item_codes:
+							for p2 in planned_wo_posts:
+								wo_id2 = p2["wo_id"]
+								wo_doc2 = p2["wo_doc"]
+								expected_rm2 = p2.get("expected_rm_map") or {}
+								wip_wh2 = _cstr(getattr(wo_doc2, "wip_warehouse", None))
+								extra_shortages = []
+								for ic in short_item_codes:
+									req2 = flt(expected_rm2.get(ic, 0))
+									if req2 <= 0:
+										continue
+									avl2 = flt(
+										frappe.db.get_value(
+											"Bin",
+											{"item_code": ic, "warehouse": wip_wh2},
+											"actual_qty",
+										)
+										or 0
+									)
+									sh2 = req2 - avl2
+									if sh2 <= 0:
+										# future-SLE path may still fail even when current bin is positive;
+										# keep WO in draft list when the triggering RM is common.
+										sh2 = req2
+									extra_shortages.append((ic, wip_wh2, req2, avl2, sh2))
+								if extra_shortages:
+									submit_shortage_events.append(
+										{
+											"wo_id": wo_id2,
+											"wo_doc": wo_doc2,
+											"chunk_total_qty": flt(p2.get("total_qty") or 0),
+											"shortages": extra_shortages,
+										}
+									)
 						self._raise_shortage_with_transfer_batch(submit_shortage_events)
 					raise
 				# Link back to WO after successful submit, then sync WO produced qty.
