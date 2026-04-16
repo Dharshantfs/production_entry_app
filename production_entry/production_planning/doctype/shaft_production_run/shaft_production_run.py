@@ -2706,7 +2706,35 @@ class ShaftProductionRun(Document):
 					if not shortages:
 						shortages = self._rm_shortages_from_exception(e)
 					if shortages:
-						self._raise_shortage_with_transfer(wo_id, wo_doc, chunk_total_qty, shortages)
+						# Build one combined shortage response for all WO chunks in this submit attempt.
+						submit_shortage_events = [
+							{
+								"wo_id": wo_id,
+								"wo_doc": wo_doc,
+								"chunk_total_qty": chunk_total_qty,
+								"shortages": shortages,
+							}
+						]
+						for p2 in planned_wo_posts:
+							wo_id2 = p2["wo_id"]
+							wo_doc2 = p2["wo_doc"]
+							for chunk_rows2 in p2["row_chunks"]:
+								chunk_total_qty2 = sum(self._row_fg_qty(r2) for r2 in chunk_rows2)
+								if chunk_total_qty2 <= 0:
+									continue
+								preview_se2 = self._build_shortage_preview_for_chunk(wo_doc2, chunk_total_qty2)
+								shortages2 = self._rm_shortages_for_se(preview_se2)
+								if not shortages2:
+									continue
+								submit_shortage_events.append(
+									{
+										"wo_id": wo_id2,
+										"wo_doc": wo_doc2,
+										"chunk_total_qty": chunk_total_qty2,
+										"shortages": shortages2,
+									}
+								)
+						self._raise_shortage_with_transfer_batch(submit_shortage_events)
 					raise
 				# Link back to WO after successful submit, then sync WO produced qty.
 				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
