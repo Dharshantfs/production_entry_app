@@ -127,17 +127,51 @@ class Planningsheet(Document):
                 width = flt(getattr(row, "width_inch", None))
                 row.unit = compute_default_production_unit(color, width)
 
-    def _sync_planned_board_units_to_legacy_items(self):
-        """Mirror `planned_items.unit` onto the linked `Planning sheet Item` row (`source_item` = PSI name)."""
+    def _sync_linked_planning_units(self):
+        """Keep legacy `items` and board `planned_items` units aligned when linked by `source_item`.
+
+        Desk often POSTs a stale value for the grid the user did not edit. Compare to DB so we detect
+        which side changed: only board changed → copy to legacy; only legacy changed → copy to board;
+        both changed → prefer legacy (same as user editing the snapshot grid first).
+        """
         if cint(self.docstatus) != 0:
             return
-        items_by_name = {((getattr(r, "name", None) or "").strip()): r for r in (self.get("items") or [])}
+        items_by_name = {((getattr(r, "name", None) or "").strip()): r for r in (self.get("items") or []) if getattr(r, "name", None)}
         for pr in self.get("planned_items") or []:
             si = (getattr(pr, "source_item", None) or "").strip()
             if not si or si not in items_by_name:
                 continue
+            leg = items_by_name[si]
+            nu = normalize_planning_unit_for_select(getattr(leg, "unit", None))
             bu = normalize_planning_unit_for_select(getattr(pr, "unit", None))
-            items_by_name[si].unit = bu
+            if nu == bu:
+                continue
+
+            pr_name = (getattr(pr, "name", None) or "").strip()
+            leg_db_n = None
+            pr_db_n = None
+            if frappe.db.exists("Planning sheet Item", si):
+                leg_db_n = normalize_planning_unit_for_select(
+                    frappe.db.get_value("Planning sheet Item", si, "unit")
+                )
+            if pr_name and frappe.db.exists("Planning Table", pr_name):
+                pr_db_n = normalize_planning_unit_for_select(
+                    frappe.db.get_value("Planning Table", pr_name, "unit")
+                )
+
+            leg_changed = leg_db_n is None or nu != leg_db_n
+            board_changed = pr_db_n is None or bu != pr_db_n
+
+            if leg_changed and not board_changed:
+                pr.unit = nu
+            elif board_changed and not leg_changed:
+                leg.unit = bu
+            elif leg_changed and board_changed:
+                pr.unit = nu
+                leg.unit = nu
+            else:
+                pr.unit = nu
+                leg.unit = nu
 
     def _normalize_child_table_units(self):
         for row in self.get("planned_items") or []:
@@ -147,7 +181,7 @@ class Planningsheet(Document):
 
     def validate(self):
         """Validate planning sheet before saving"""
-        self._sync_planned_board_units_to_legacy_items()
+        self._sync_linked_planning_units()
         self.validate_items()
         self.calculate_totals()
         self.parse_item_details()
