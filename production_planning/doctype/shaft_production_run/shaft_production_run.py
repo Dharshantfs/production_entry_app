@@ -3871,8 +3871,9 @@ def spr_create_manual_job(
 			break
 		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
 
-	gsm, width_inch = parse_item_code(item_code)
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
+	gsm, _width_inch = parse_item_code(item_code)
+	width_inch = _manual_catalog_width_inch(ppi_row, item_code, item_name or "")
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 	order_code = ""
 	try:
@@ -3994,7 +3995,9 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		qtys.append(qty)
 		item_codes_list.append(item_code)
 		ppi_rows.append(ppi_row)
-		_gsm, w_in = parse_item_code(item_code)
+		item_name_for_width = frappe.db.get_value("Item", item_code, "item_name")
+		_gsm, _w_in = parse_item_code(item_code)
+		w_in = _manual_catalog_width_inch(ppi_row, item_code, item_name_for_width or "")
 		widths_list.append(flt(w_in))
 		if meter_roll_from_popup is None and raw.get("meter_roll") not in (None, ""):
 			mr = flt(raw.get("meter_roll"))
@@ -4008,8 +4011,10 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
 
 	first_ic = item_codes_list[0]
-	gsm, width_inch_one = parse_item_code(first_ic)
 	item_name = frappe.db.get_value("Item", first_ic, "item_name")
+	gsm, _width_inch_one = parse_item_code(first_ic)
+	first_pp_row = ppi_rows[0] if ppi_rows else None
+	width_inch_one = _manual_catalog_width_inch(first_pp_row, first_ic, item_name or "")
 	quality, color = extract_quality_and_color(item_name or "", item_code=first_ic)
 	first_order_code = ""
 	try:
