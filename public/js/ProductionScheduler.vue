@@ -440,7 +440,7 @@ function handleRealtimeBoardUpdate(payload) {
 async function fetchMaintenanceRecords() {
   try {
     const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance"
+      method: "production_scheduler.api.get_all_equipment_maintenance"
     });
 
     maintenanceRecords.value = res.message || [];
@@ -480,7 +480,7 @@ async function deleteMaintenanceRecordFromBoard(recordName) {
 
   try {
     const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
+      method: "production_scheduler.api.delete_maintenance_and_cascade",
       args: { maintenance_record_name: recordName }
     });
 
@@ -582,6 +582,12 @@ const visibleUnits = computed(() => {
   return match.length ? match : bu;
 });
 
+/** Lamination Board lists 104 rows from API (lamination_only); unit on rows is UNASSIGNED until assigned — match all rows to the lamination column. */
+function rowMatchesBoardUnitColumn(unit, d) {
+  if (isLaminationBoard.value && unit === LAMINATION_UNIT) return true;
+  return (d.unit || "Mixed") === unit;
+}
+
 const NO_RULE_WHITES = ["BRIGHT WHITE", "MILKY WHITE", "SUPER WHITE", "SUNSHINE WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"];
 const EXCLUDED_WHITES = [
   "WHITE", "BRIGHT WHITE", "P. WHITE", "P.WHITE", "R.F.D", "RFD", "BLEACHED", "B.WHITE", "SNOW WHITE"
@@ -600,7 +606,7 @@ const filteredData = computed(() => {
   // Production Board: show pushed items (plannedDate). Lamination: also allow rows on this unit with order date but not yet scheduled.
   data = data.filter((d) => {
     if (d.plannedDate) return true;
-    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+    if (isLaminationBoard.value) {
       return !!(d.orderDate || d.order_date);
     }
     return false;
@@ -752,7 +758,7 @@ function getCapacityLabel() {
 const unitStatsCache = computed(() => {
   const stats = {};
   for (const unit of boardUnits.value) {
-    const allUnitData = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
+    const allUnitData = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
     
     // Separation for display purposes only, capacity counts EVERYTHING
     const whiteOrders = allUnitData.filter(d => {
@@ -851,7 +857,7 @@ async function initSortable() {
                     }));
                     
                     const res = await frappe.call({
-                        method: "production_entry.production_planning.scheduler_api.update_items_bulk",
+                        method: "production_scheduler.api.update_items_bulk",
                         args: { items: JSON.stringify(bulkItems) },
                         freeze: true,
                         freeze_message: `Moving ${itemsToMove.length} orders...`
@@ -876,7 +882,7 @@ async function initSortable() {
                 
                 const performMove = async (force=0, split=0) => {
                     const res = await frappe.call({
-                        method: "production_entry.production_planning.scheduler_api.update_schedule",
+                        method: "production_scheduler.api.update_schedule",
                         args: {
                             item_name: itemName, 
                             unit: newUnit,
@@ -917,7 +923,7 @@ async function initSortable() {
                             primary_action: async () => {
                                 d.hide();
                                 const res2 = await frappe.call({
-                                    method: "production_entry.production_planning.scheduler_api.update_schedule",
+                                    method: "production_scheduler.api.update_schedule",
                                     args: { item_name: itemName, unit: moveUnit, date: moveDate, index: newIndex, force_move: 1 }
                                 });
                                 if (res2.message && res2.message.status === 'success') {
@@ -934,7 +940,7 @@ async function initSortable() {
                          d.add_custom_action('📅 Next Day', async () => {
                              d.hide();
                              const res3 = await frappe.call({
-                                 method: "production_entry.production_planning.scheduler_api.update_schedule",
+                                 method: "production_scheduler.api.update_schedule",
                                  args: { item_name: itemName, unit: moveUnit, date: moveDate, index: 0, strict_next_day: 1 }
                              });
                              if (res3.message && res3.message.status === 'overflow') {
@@ -1063,7 +1069,7 @@ const unitEntriesCache = computed(() => {
 
   const cache = {};
   for (const unit of boardUnits.value) {
-    let unitItems = filteredData.value.filter((d) => (d.unit || "Mixed") === unit);
+    let unitItems = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
     unitItems = sortItems(unit, unitItems); 
     const entries = [];
     for (let i = 0; i < unitItems.length; i++) {
@@ -1103,7 +1109,7 @@ function getUnitEntries(unit) {
 
 function getUnitProductionTotal(unit) {
   const production = filteredData.value
-    .filter((d) => d.unit === unit)
+    .filter((d) => rowMatchesBoardUnitColumn(unit, d))
     .reduce((sum, d) => sum + d.qty, 0);
   const mixWeight = getMixRollTotalWeight(unit);
   return (production + mixWeight) / 1000;
@@ -1132,7 +1138,7 @@ async function revertOrder(entry) {
             try {
                 isLoading.value = true;
                 const r = await frappe.call({
-                    method: "production_entry.production_planning.scheduler_api.revert_items_from_pb",
+                    method: "production_scheduler.api.revert_items_from_pb",
                     args: { item_names: [entry.itemName] }
                 });
                 if (r.message && r.message.status === 'success') {
@@ -1158,13 +1164,13 @@ async function analyzePreviousFlow() {
   if (!filterOrderDate.value) return;
   try {
     const prevDateArgs = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_previous_production_date",
+      method: "production_scheduler.api.get_previous_production_date",
       args: { date: filterOrderDate.value }
     });
     const prevDate = prevDateArgs.message;
     if (prevDate) {
       const r = await frappe.call({
-        method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
+        method: "production_scheduler.api.get_color_chart_data",
         args: { date: prevDate }
       });
       const prevData = r.message || [];
@@ -1205,7 +1211,7 @@ async function handleMoveOrders(items, date, unit, dialog) {
         const isAggregateView = viewScope.value === 'monthly' || viewScope.value === 'weekly';
 
         const r = await frappe.call({
-            method: "production_entry.production_planning.scheduler_api.move_orders_to_date",
+            method: "production_scheduler.api.move_orders_to_date",
             args: {
                 item_names: items,
                 target_date: date,
@@ -1300,7 +1306,7 @@ async function loadOrders(d) {
     try {
         // Production Board Pull = orders already ON the board for this date (move to today).
         const r = await frappe.call({
-            method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
+            method: "production_scheduler.api.get_color_chart_data",
             args: { date: date, mode: 'pull_board' }
         });
         
@@ -1568,7 +1574,7 @@ async function loadRescueItems(d) {
     
     try {
         const r = await frappe.call({
-            method: "production_entry.production_planning.scheduler_api.get_items_by_sheet",
+            method: "production_scheduler.api.get_items_by_sheet",
             args: { sheet_name: sheet }
         });
         
@@ -1845,7 +1851,7 @@ function openMovePlanDialog() {
 
             try {
                 const r = await frappe.call({
-                    method: "production_entry.production_planning.scheduler_api.move_orders_to_date",
+                    method: "production_scheduler.api.move_orders_to_date",
                     args: {
                         item_names: selectedItems,
                         target_date: targetDate,
@@ -1982,7 +1988,7 @@ async function fetchData() {
         }
 
         const r = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
+          method: "production_scheduler.api.get_color_chart_data",
           args: args,
         });
         rawData.value = (r.message || []).map(d => ({
@@ -1999,7 +2005,7 @@ async function fetchData() {
         
         // Load Custom Color Order
         try {
-            const orderRes = await frappe.call("production_entry.production_planning.scheduler_api.get_color_order");
+            const orderRes = await frappe.call("production_scheduler.api.get_color_order");
             customRowOrder.value = orderRes.message || [];
         } catch(e) { console.error("Failed to load color order", e); }
         
@@ -2253,7 +2259,7 @@ async function openBulkMoveDialog() {
         });
 
         await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.update_items_bulk",
+          method: "production_scheduler.api.update_items_bulk",
           args: { items: updates },
           freeze: true,
         });
@@ -2289,7 +2295,7 @@ async function bulkConfirm() {
       try {
         isLoading.value = true;
         const r = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.bulk_confirm_orders",
+          method: "production_scheduler.api.bulk_confirm_orders",
           args: { items: selectedItems.value },
           freeze: true,
           freeze_message: "Confirming Orders..."
@@ -2319,7 +2325,7 @@ async function syncAllPlanCodes() {
         isLoading.value = true;
         try {
             const res = await frappe.call({
-                method: "production_entry.production_planning.scheduler_api.recalculate_all_plan_codes",
+                method: "production_scheduler.api.recalculate_all_plan_codes",
                 freeze: true,
                 freeze_message: "Updating Plan Codes..."
             });
@@ -2338,7 +2344,7 @@ async function syncAllPlanCodes() {
 
 async function restoreWhiteOrders() {
     try {
-        const r = await frappe.call("production_entry.production_planning.scheduler_api.fix_recently_cleared_whites");
+        const r = await frappe.call("production_scheduler.api.fix_recently_cleared_whites");
         if (r.message && r.message.status === 'success') {
             frappe.show_alert({ message: `✅ Restored ${r.message.restored_count} white orders to the Board.`, indicator: 'green' });
             await fetchData();

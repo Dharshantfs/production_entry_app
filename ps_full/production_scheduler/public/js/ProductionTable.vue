@@ -1104,6 +1104,11 @@ const visibleUnits = computed(() => {
   return match.length ? match : bu;
 });
 
+function rowMatchesBoardUnitColumn(unit, d) {
+  if (isLaminationBoard.value && unit === LAMINATION_UNIT) return true;
+  return (d.unit || "Mixed") === unit;
+}
+
 const filteredData = computed(() => {
   let data = rawData.value || [];
 
@@ -1111,16 +1116,15 @@ const filteredData = computed(() => {
 
   data = data.filter((d) => {
     if (d.plannedDate) return true;
-    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+    if (isLaminationBoard.value) {
       return !!(d.orderDate || d.order_date);
     }
     return false;
   });
 
-  // Exclude invalid rows; lamination fabric may omit quality on some payloads
+  // Exclude invalid rows; lamination board (104 scope) — rows are often UNASSIGNED → Mixed after normalize
   data = data.filter((d) => {
-    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
-      if (!d.unit || d.unit === "Mixed") return false;
+    if (isLaminationBoard.value) {
       const colorUpper = (d.color || "").toUpperCase().trim();
       if (colorUpper === "NO COLOR") return false;
       return true;
@@ -1260,7 +1264,7 @@ function toggleMergeExpanded(mergeId) {
 
 const tableData = computed(() => {
     return visibleUnits.value.map(unit => {
-        let items = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
+        let items = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
         
         const dateGroupsObj = {};
         items.forEach(item => {

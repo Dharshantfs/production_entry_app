@@ -157,7 +157,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			"color": specs["color"],
 			"quality": specs["quality"],
 			"custom_quality": specs["custom_quality"],
-			"unit": "Lamination Unit",
+			"unit": "UNASSIGNED",
 			"meter": specs["meter"],
 			"meter_per_roll": specs["meter_per_roll"],
 			"no_of_rolls": specs["no_of_rolls"],
@@ -1035,8 +1035,6 @@ def _populate_planning_sheet_items(ps, doc):
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
         unit = compute_default_production_unit(col, width)
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-            unit = "Lamination Unit"
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
 

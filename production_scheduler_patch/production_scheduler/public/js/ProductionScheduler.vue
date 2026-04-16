@@ -582,6 +582,12 @@ const visibleUnits = computed(() => {
   return match.length ? match : bu;
 });
 
+/** Lamination Board lists 104 rows from API (lamination_only); unit on rows is UNASSIGNED until assigned — match all rows to the lamination column. */
+function rowMatchesBoardUnitColumn(unit, d) {
+  if (isLaminationBoard.value && unit === LAMINATION_UNIT) return true;
+  return (d.unit || "Mixed") === unit;
+}
+
 const NO_RULE_WHITES = ["BRIGHT WHITE", "MILKY WHITE", "SUPER WHITE", "SUNSHINE WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"];
 const EXCLUDED_WHITES = [
   "WHITE", "BRIGHT WHITE", "P. WHITE", "P.WHITE", "R.F.D", "RFD", "BLEACHED", "B.WHITE", "SNOW WHITE"
@@ -600,7 +606,7 @@ const filteredData = computed(() => {
   // Production Board: show pushed items (plannedDate). Lamination: also allow rows on this unit with order date but not yet scheduled.
   data = data.filter((d) => {
     if (d.plannedDate) return true;
-    if (isLaminationBoard.value && d.unit === LAMINATION_UNIT) {
+    if (isLaminationBoard.value) {
       return !!(d.orderDate || d.order_date);
     }
     return false;
@@ -752,7 +758,7 @@ function getCapacityLabel() {
 const unitStatsCache = computed(() => {
   const stats = {};
   for (const unit of boardUnits.value) {
-    const allUnitData = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
+    const allUnitData = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
     
     // Separation for display purposes only, capacity counts EVERYTHING
     const whiteOrders = allUnitData.filter(d => {
@@ -1063,7 +1069,7 @@ const unitEntriesCache = computed(() => {
 
   const cache = {};
   for (const unit of boardUnits.value) {
-    let unitItems = filteredData.value.filter((d) => (d.unit || "Mixed") === unit);
+    let unitItems = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
     unitItems = sortItems(unit, unitItems); 
     const entries = [];
     for (let i = 0; i < unitItems.length; i++) {
@@ -1103,7 +1109,7 @@ function getUnitEntries(unit) {
 
 function getUnitProductionTotal(unit) {
   const production = filteredData.value
-    .filter((d) => d.unit === unit)
+    .filter((d) => rowMatchesBoardUnitColumn(unit, d))
     .reduce((sum, d) => sum + d.qty, 0);
   const mixWeight = getMixRollTotalWeight(unit);
   return (production + mixWeight) / 1000;
