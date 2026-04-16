@@ -3413,6 +3413,43 @@ def parse_item_code(item_code):
 	return 0, 0
 
 
+def _extract_width_inch_from_text(text: str) -> float:
+	"""Extract explicit inch width from text like `... 42.0'' ...` or `... 42.0\" ...`."""
+	s = _cstr(text)
+	if not s:
+		return 0.0
+	# 42.0'' or 42.0"
+	m = re.search(r"(\d+(?:\.\d+)?)\s*(?:''|\")", s)
+	if m:
+		return flt(m.group(1))
+	return 0.0
+
+
+def _manual_catalog_width_inch(pp_row, item_code: str, item_name: str) -> float:
+	"""Prefer business/display width for Manual Job dialog; fallback to item-code conversion."""
+	for fn in (
+		"width_inch",
+		"width_inches",
+		"custom_width_inch",
+		"custom_width_inches",
+		"width",
+		"custom_width",
+	):
+		try:
+			w = flt(getattr(pp_row, fn, None))
+		except Exception:
+			w = 0.0
+		if w > 0:
+			return round(w, 1)
+
+	w_from_name = _extract_width_inch_from_text(item_name)
+	if w_from_name > 0:
+		return round(w_from_name, 1)
+
+	_, w_from_code = parse_item_code(item_code)
+	return round(flt(w_from_code), 1) if w_from_code else 0.0
+
+
 def _item_stock_uom_for_spr(item_code: str) -> str:
 	"""Resolve a valid UOM Link for Shaft Production Run Item (prefer Item.stock_uom, usually Kg)."""
 	if not item_code:
@@ -3711,7 +3748,8 @@ def spr_get_manual_job_catalog(shaft_production_run):
 		if not ic:
 			continue
 		item_name = frappe.db.get_value("Item", ic, "item_name")
-		gsm, width_inch = parse_item_code(ic)
+		gsm, _width_inch = parse_item_code(ic)
+		width_inch = _manual_catalog_width_inch(row, ic, item_name or "")
 		first_seg_kg = None
 		for sj in _spr_job_rows(spr):
 			if _cstr(getattr(sj, "production_plan_item", None)) == _cstr(row.name):
