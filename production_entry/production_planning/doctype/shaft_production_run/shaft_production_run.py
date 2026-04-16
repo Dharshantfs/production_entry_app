@@ -1513,6 +1513,36 @@ class ShaftProductionRun(Document):
 		if unit_value:
 			se.unit = unit_value
 
+	def _refresh_batch_qty_for_codes(self, batch_codes: list[str]):
+		"""Force-refresh Batch.batch_qty for given batch ids to avoid stale zero-qty UI."""
+		for bn in {_cstr(x).strip() for x in (batch_codes or []) if _cstr(x).strip()}:
+			if not frappe.db.exists("Batch", bn):
+				continue
+			try:
+				b = frappe.get_doc("Batch", bn)
+				if hasattr(b, "set_batch_qty"):
+					b.set_batch_qty()
+				else:
+					raise Exception("Batch.set_batch_qty missing")
+			except Exception:
+				try:
+					qty = flt(
+						frappe.db.sql(
+							"""
+							SELECT IFNULL(SUM(actual_qty), 0)
+							FROM `tabStock Ledger Entry`
+							WHERE IFNULL(is_cancelled, 0) = 0
+							  AND IFNULL(batch_no, '') = %s
+							""",
+							(bn,),
+						)[0][0]
+						or 0
+					)
+					if frappe.db.has_column("Batch", "batch_qty"):
+						frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
+				except Exception:
+					pass
+
 	def _rm_shortages_for_se(self, se) -> list[tuple[str, str, float, float, float]]:
 		"""Return RM shortages as (item_code, s_warehouse, required, available, shortage)."""
 		out = []
@@ -2621,6 +2651,7 @@ class ShaftProductionRun(Document):
 		if created_entries:
 			self.db_set("manufacturing_entries", ", ".join(created_entries))
 			self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
+			self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
 			frappe.msgprint(
 				_("Created {0} Manufacturing Entries: {1}").format(
 					len(created_entries), ", ".join(created_entries)
