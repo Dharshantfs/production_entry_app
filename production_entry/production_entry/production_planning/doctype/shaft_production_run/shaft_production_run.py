@@ -1067,6 +1067,13 @@ class ShaftProductionRun(Document):
 
 	def before_submit(self):
 		self._validate_roll_weight_tolerance()
+		# Create/submit Manufacture entries before final submit so shortage handling can block
+		# submission and still persist a draft transfer link for operators.
+		self.flags._spr_allow_manufacture_posting = True
+		try:
+			self.create_manufacturing_stock_entries()
+		finally:
+			self.flags._spr_allow_manufacture_posting = False
 
 	def _fg_rows_missing_work_order(self) -> list[dict]:
 		"""Produced rows that still do not have WO mapping (causes partial submit)."""
@@ -1227,7 +1234,6 @@ class ShaftProductionRun(Document):
 
 	def on_submit(self):
 		self.sync_batch_custom_fields()
-		self.create_manufacturing_stock_entries()
 		self.update_work_order_statuses()
 
 	def on_cancel(self):
@@ -2319,6 +2325,14 @@ class ShaftProductionRun(Document):
 		plus Manufacturing Settings overproduction; if roll totals exceed that cap, raise overproduction
 		percent or WO qty in ERPNext.
 		"""
+		if not cint(getattr(self.flags, "_spr_allow_manufacture_posting", 0)):
+			frappe.throw(
+				_(
+					"Manufacture entries are allowed only during SPR submit. "
+					"Click Submit on SPR after resolving any shortage transfer(s)."
+				),
+				title=_("Submit required"),
+			)
 		self._validate_no_pending_wo_width_rows()
 		wo_groups = {}
 		for row in self.items or []:
