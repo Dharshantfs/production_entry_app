@@ -1739,11 +1739,13 @@ class ShaftProductionRun(Document):
 
 	def _build_shortage_preview_for_chunk(self, wo_doc, chunk_total_qty: float):
 		"""Build a transient Manufacture entry for shortage pre-check without insert/submit."""
+		posting_date = today()
+		posting_time = nowtime()
 		se = frappe.new_doc("Stock Entry")
 		se.flags.ignore_duplicate_for_work_order = True
 		se.company = wo_doc.company
-		se.posting_date = self.run_date or today()
-		se.posting_time = nowtime()
+		se.posting_date = posting_date
+		se.posting_time = posting_time
 		se.set_posting_time = 1
 		se.stock_entry_type = self._manufacture_stock_entry_type_name()
 		se.purpose = "Manufacture"
@@ -2088,7 +2090,7 @@ class ShaftProductionRun(Document):
 			return {}
 		se = frappe.new_doc("Stock Entry")
 		se.company = wo_doc.company
-		se.posting_date = self.run_date or today()
+		se.posting_date = today()
 		se.posting_time = nowtime()
 		se.set_posting_time = 1
 		se.stock_entry_type = self._manufacture_stock_entry_type_name()
@@ -2542,7 +2544,7 @@ class ShaftProductionRun(Document):
 				# never blocks partial multi-day / multi-SPR manufacture for the same WO.
 				se.flags.ignore_duplicate_for_work_order = True
 				se.company = wo_doc.company
-				se.posting_date = self.run_date or today()
+				se.posting_date = today()
 				se.posting_time = nowtime()
 				se.set_posting_time = 1
 				# Keep explicit type + purpose for sites where Stock Entry Type is mandatory.
