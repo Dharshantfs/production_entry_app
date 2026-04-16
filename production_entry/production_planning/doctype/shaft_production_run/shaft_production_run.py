@@ -1514,34 +1514,30 @@ class ShaftProductionRun(Document):
 			se.unit = unit_value
 
 	def _refresh_batch_qty_for_codes(self, batch_codes: list[str]):
-		"""Force-refresh Batch.batch_qty for given batch ids to avoid stale zero-qty UI."""
+		"""Force-refresh Batch.batch_qty for given batch ids from stock ledger."""
 		for bn in {_cstr(x).strip() for x in (batch_codes or []) if _cstr(x).strip()}:
 			if not frappe.db.exists("Batch", bn):
 				continue
 			try:
-				b = frappe.get_doc("Batch", bn)
-				if hasattr(b, "set_batch_qty"):
-					b.set_batch_qty()
-				else:
-					raise Exception("Batch.set_batch_qty missing")
+				qty = flt(
+					frappe.db.sql(
+						"""
+						SELECT IFNULL(SUM(actual_qty), 0)
+						FROM `tabStock Ledger Entry`
+						WHERE IFNULL(is_cancelled, 0) = 0
+						  AND IFNULL(batch_no, '') = %s
+						""",
+						(bn,),
+					)[0][0]
+					or 0
+				)
+				if frappe.db.has_column("Batch", "batch_qty"):
+					frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
+				if frappe.db.has_column("Batch", "status"):
+					status = "Empty" if abs(qty) <= 1e-9 else "Active"
+					frappe.db.set_value("Batch", bn, "status", status, update_modified=False)
 			except Exception:
-				try:
-					qty = flt(
-						frappe.db.sql(
-							"""
-							SELECT IFNULL(SUM(actual_qty), 0)
-							FROM `tabStock Ledger Entry`
-							WHERE IFNULL(is_cancelled, 0) = 0
-							  AND IFNULL(batch_no, '') = %s
-							""",
-							(bn,),
-						)[0][0]
-						or 0
-					)
-					if frappe.db.has_column("Batch", "batch_qty"):
-						frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
-				except Exception:
-					pass
+				pass
 
 	def _get_existing_submitted_manufacture_entries_for_spr(self) -> list[str]:
 		"""Submitted Manufacture entries already linked to this SPR."""
@@ -4784,6 +4780,35 @@ def spr_backfill_missing_manufacture_from_spr(shaft_production_run: str, submit_
 		"skipped_count": len(skipped),
 		"skipped": skipped[:100],
 	}
+
+
+@frappe.whitelist()
+def spr_refresh_batch_status_from_ledger(shaft_production_run: str):
+	"""Recompute Batch.batch_qty/status from stock ledger for all batch numbers on an SPR."""
+	spr_name = _cstr(shaft_production_run)
+	if not spr_name:
+		frappe.throw(_("Shaft Production Run is required"))
+	if not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
+
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	batch_codes = sorted(
+		{
+			_cstr(r.get("batch_no")).strip()
+			for r in (spr.items or [])
+			if _cstr(r.get("batch_no")).strip()
+		}
+	)
+	spr._refresh_batch_qty_for_codes(batch_codes)
+	out = []
+	for bn in batch_codes:
+		row = {"batch_no": bn}
+		if frappe.db.has_column("Batch", "batch_qty"):
+			row["batch_qty"] = flt(frappe.db.get_value("Batch", bn, "batch_qty") or 0)
+		if frappe.db.has_column("Batch", "status"):
+			row["status"] = _cstr(frappe.db.get_value("Batch", bn, "status") or "")
+		out.append(row)
+	return {"status": "ok", "shaft_production_run": spr.name, "updated_count": len(out), "batches": out}
 
 
 @frappe.whitelist()

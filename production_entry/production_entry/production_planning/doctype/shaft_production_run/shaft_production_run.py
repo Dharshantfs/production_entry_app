@@ -1512,34 +1512,30 @@ class ShaftProductionRun(Document):
 			se.unit = unit_value
 
 	def _refresh_batch_qty_for_codes(self, batch_codes: list[str]):
-		"""Force-refresh Batch.batch_qty for given batch ids to avoid stale zero-qty UI."""
+		"""Force-refresh Batch.batch_qty for given batch ids from stock ledger."""
 		for bn in {_cstr(x).strip() for x in (batch_codes or []) if _cstr(x).strip()}:
 			if not frappe.db.exists("Batch", bn):
 				continue
 			try:
-				b = frappe.get_doc("Batch", bn)
-				if hasattr(b, "set_batch_qty"):
-					b.set_batch_qty()
-				else:
-					raise Exception("Batch.set_batch_qty missing")
+				qty = flt(
+					frappe.db.sql(
+						"""
+						SELECT IFNULL(SUM(actual_qty), 0)
+						FROM `tabStock Ledger Entry`
+						WHERE IFNULL(is_cancelled, 0) = 0
+						  AND IFNULL(batch_no, '') = %s
+						""",
+						(bn,),
+					)[0][0]
+					or 0
+				)
+				if frappe.db.has_column("Batch", "batch_qty"):
+					frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
+				if frappe.db.has_column("Batch", "status"):
+					status = "Empty" if abs(qty) <= 1e-9 else "Active"
+					frappe.db.set_value("Batch", bn, "status", status, update_modified=False)
 			except Exception:
-				try:
-					qty = flt(
-						frappe.db.sql(
-							"""
-							SELECT IFNULL(SUM(actual_qty), 0)
-							FROM `tabStock Ledger Entry`
-							WHERE IFNULL(is_cancelled, 0) = 0
-							  AND IFNULL(batch_no, '') = %s
-							""",
-							(bn,),
-						)[0][0]
-						or 0
-					)
-					if frappe.db.has_column("Batch", "batch_qty"):
-						frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
-				except Exception:
-					pass
+				pass
 
 	def _get_existing_submitted_manufacture_entries_for_spr(self) -> list[str]:
 		"""Submitted Manufacture entries already linked to this SPR."""
@@ -1865,6 +1861,27 @@ class ShaftProductionRun(Document):
 				"'Manufacture'. Please configure one in Stock Entry Type master."
 			),
 			title=_("Missing Manufacture Stock Entry Type"),
+		)
+		return ""
+
+	def _stock_entry_type_name_for_purpose(self, purpose: str) -> str:
+		"""Resolve a valid Stock Entry Type name for the given purpose."""
+		purpose = _cstr(purpose)
+		if not purpose:
+			return ""
+		if frappe.db.exists("Stock Entry Type", purpose):
+			p = _cstr(frappe.db.get_value("Stock Entry Type", purpose, "purpose"))
+			if p == purpose:
+				return purpose
+		name = frappe.db.get_value("Stock Entry Type", {"purpose": purpose}, "name")
+		if name:
+			return _cstr(name)
+		frappe.throw(
+			_(
+				"Cannot create Stock Entry because no Stock Entry Type is mapped to purpose '{0}'. "
+				"Please configure one in Stock Entry Type master."
+			).format(purpose),
+			title=_("Missing Stock Entry Type"),
 		)
 		return ""
 
@@ -4681,6 +4698,146 @@ def spr_backfill_missing_manufacture_from_spr(shaft_production_run: str, submit_
 		"created": created,
 		"skipped_count": len(skipped),
 		"skipped": skipped[:100],
+	}
+
+
+@frappe.whitelist()
+def spr_repair_broken_fg_batch_stock(shaft_production_run: str, submit_entry: int = 1):
+	"""
+	Repair legacy SPR Manufacture entries whose FG batch rows exist but never posted positive stock ledger.
+
+	Creates a corrective Material Receipt for only the missing FG batch quantities, without consuming RM again.
+	"""
+	spr_name = _cstr(shaft_production_run)
+	if not spr_name:
+		frappe.throw(_("Shaft Production Run is required"))
+	if not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
+
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	se_names = [
+		x.strip() for x in _cstr(getattr(spr, "manufacturing_entries", "")).split(",") if x and x.strip()
+	]
+	if not se_names:
+		se_names = spr._get_existing_submitted_manufacture_entries_for_spr()
+	if not se_names:
+		return {"status": "ok", "shaft_production_run": spr.name, "created": [], "skipped": [{"reason": "no_manufacture_entries"}]}
+
+	repair_rows = []
+	skipped = []
+	for se_name in se_names:
+		if not frappe.db.exists("Stock Entry", se_name):
+			skipped.append({"stock_entry": se_name, "reason": "stock_entry_not_found"})
+			continue
+		se = frappe.get_doc("Stock Entry", se_name)
+		if _cstr(se.get("purpose")) != "Manufacture" or cint(se.get("docstatus")) != 1:
+			skipped.append({"stock_entry": se_name, "reason": "not_submitted_manufacture"})
+			continue
+		for row in se.items or []:
+			if cint(row.get("is_finished_item")) != 1:
+				continue
+			batch_no = _cstr(row.get("batch_no"))
+			item_code = _cstr(row.get("item_code"))
+			target_wh = _cstr(row.get("t_warehouse") or getattr(se, "to_warehouse", None))
+			qty = flt(row.get("qty"))
+			if not batch_no or not item_code or qty <= 0 or not target_wh:
+				continue
+			posted_qty = flt(
+				frappe.db.sql(
+					"""
+					SELECT IFNULL(SUM(actual_qty), 0)
+					FROM `tabStock Ledger Entry`
+					WHERE IFNULL(is_cancelled, 0) = 0
+					  AND voucher_type = 'Stock Entry'
+					  AND voucher_no = %(voucher_no)s
+					  AND IFNULL(batch_no, '') = %(batch_no)s
+					  AND IFNULL(item_code, '') = %(item_code)s
+					  AND IFNULL(warehouse, '') = %(warehouse)s
+					  AND actual_qty > 0
+					""",
+					{
+						"voucher_no": se.name,
+						"batch_no": batch_no,
+						"item_code": item_code,
+						"warehouse": target_wh,
+					},
+				)[0][0]
+				or 0
+			)
+			missing_qty = flt(qty - posted_qty, 6)
+			if missing_qty <= 1e-6:
+				skipped.append({"stock_entry": se.name, "batch_no": batch_no, "reason": "already_has_fg_sle"})
+				continue
+			repair_rows.append(
+				{
+					"source_manufacture": se.name,
+					"work_order": _cstr(se.get("work_order")),
+					"item_code": item_code,
+					"item_name": row.get("item_name"),
+					"batch_no": batch_no,
+					"qty": missing_qty,
+					"uom": row.get("uom") or frappe.db.get_value("Item", item_code, "stock_uom") or "Kg",
+					"stock_uom": row.get("stock_uom") or row.get("uom") or frappe.db.get_value("Item", item_code, "stock_uom") or "Kg",
+					"conversion_factor": flt(row.get("conversion_factor") or 1),
+					"basic_rate": flt(row.get("basic_rate") or row.get("valuation_rate") or 0),
+					"t_warehouse": target_wh,
+				}
+			)
+
+	if not repair_rows:
+		return {
+			"status": "ok",
+			"shaft_production_run": spr.name,
+			"created": [],
+			"skipped_count": len(skipped),
+			"skipped": skipped[:200],
+		}
+
+	receipt = frappe.new_doc("Stock Entry")
+	receipt.company = repair_rows[0]["t_warehouse"] and frappe.db.get_value("Warehouse", repair_rows[0]["t_warehouse"], "company")
+	receipt.posting_date = today()
+	receipt.posting_time = nowtime()
+	receipt.set_posting_time = 1
+	receipt.stock_entry_type = spr._stock_entry_type_name_for_purpose("Material Receipt")
+	receipt.purpose = "Material Receipt"
+	receipt.remarks = _("SPR FG batch repair for {0}").format(spr.name)
+	spr._set_stock_entry_spr_link(receipt)
+	spr._set_stock_entry_unit(receipt)
+
+	for r in repair_rows:
+		row = {
+			"item_code": r["item_code"],
+			"item_name": r.get("item_name"),
+			"qty": r["qty"],
+			"transfer_qty": r["qty"],
+			"uom": r["uom"],
+			"stock_uom": r["stock_uom"],
+			"conversion_factor": r["conversion_factor"],
+			"t_warehouse": r["t_warehouse"],
+			"batch_no": r["batch_no"],
+			"basic_rate": r["basic_rate"],
+		}
+		if flt(r["basic_rate"]) <= 0:
+			row["allow_zero_valuation_rate"] = 1
+		receipt.append("items", row)
+
+	receipt.insert()
+	spr._persist_stock_entry_spr_reference_db(receipt.name)
+	spr._apply_order_code_to_submitted_stock_entry(receipt.name)
+	if cint(submit_entry) == 1:
+		receipt.submit()
+
+	spr._refresh_batch_qty_for_codes([r["batch_no"] for r in repair_rows])
+
+	return {
+		"status": "ok",
+		"shaft_production_run": spr.name,
+		"repair_stock_entry": receipt.name,
+		"repair_docstatus": cint(receipt.docstatus),
+		"repaired_batch_count": len(repair_rows),
+		"repaired_batches": repair_rows[:200],
+		"skipped_count": len(skipped),
+		"skipped": skipped[:200],
 	}
 
 
