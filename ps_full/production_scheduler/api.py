@@ -3169,6 +3169,10 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     frappe.db.commit()
     try:
         frappe.publish_realtime("production_board_update", {"date": str(final_date)})
+        frappe.publish_realtime(
+            "planning_sheet_row_sync",
+            {"planning_sheet": item.parent, "row": item_name, "unit": final_unit, "date": str(final_date)},
+        )
     except Exception:
         pass
     return {
@@ -3349,6 +3353,15 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     # When split rows share one legacy PSI and move to different units, clone the legacy row.
     # When two legacy rows for the same SO line end up on the same unit again, merge them.
     legacy_table = "Planning sheet Item"
+    # Repair stale/missing source_item link so unit sync reaches legacy PSI immediately.
+    resolved_source = _resolve_planning_table_source_item_link(item_doc.get("source_item"), item_doc.name)
+    if resolved_source and resolved_source != (item_doc.get("source_item") or ""):
+        item_doc.source_item = resolved_source
+        frappe.db.sql(
+            "UPDATE `tabPlanning Table` SET source_item = %s WHERE name = %s",
+            (resolved_source, item_doc.name),
+        )
+        frappe.db.commit()
     if item_doc.get("source_item") and frappe.db.exists(legacy_table, item_doc.source_item):
         siblings = frappe.get_all(
             "Planning Table",

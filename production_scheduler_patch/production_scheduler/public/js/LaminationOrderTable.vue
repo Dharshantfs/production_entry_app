@@ -40,6 +40,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
@@ -48,7 +49,7 @@
       </div>
     </div>
 
-    <div class="cc-shift-board">
+    <div class="cc-shift-board" v-if="showShiftPlanner">
       <div class="cc-shift-board-head">
         <div class="cc-shift-board-title">Shift Planner (drag between Day/Night)</div>
         <div class="cc-shift-board-date">
@@ -97,7 +98,17 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, idx) in filteredRows" :key="row.itemName || idx">
+          <tr
+            v-for="(row, idx) in filteredRows"
+            :key="row.itemName || idx"
+            :draggable="arrangementUnlocked"
+            @dragstart="onOrderDragStart(row, $event)"
+            @dragover.prevent="onOrderDragOver(row)"
+            @dragleave="onOrderDragLeave(row)"
+            @drop.prevent="onOrderDrop(row)"
+            @dragend="onOrderDragEnd"
+            :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }"
+          >
             <td class="cell-center">{{ idx + 1 }}</td>
             <td class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
@@ -148,10 +159,8 @@
               </div>
             </td>
             <td class="cell-center">
-              <div class="cc-order-btns">
-                <button type="button" class="cc-row-order-btn" @click="moveRow(row, -1)">↑</button>
-                <button type="button" class="cc-row-order-btn" @click="moveRow(row, 1)">↓</button>
-              </div>
+              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">⋮⋮</span>
+              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">🔒</span>
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
@@ -185,7 +194,12 @@ const laminationSequenceStore = ref({});
 const pendingArrangementUpdates = ref({});
 const arrangementDirty = ref(false);
 const arrangementSaving = ref(false);
+const arrangementLocked = ref(true);
+const dragOrderRow = ref(null);
+const dragOverItemName = ref("");
 let fetchTimer = null;
+const showShiftPlanner = computed(() => viewScope.value !== "monthly");
+const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
 const filteredRows = computed(() => {
   let d = rawData.value || [];
@@ -339,26 +353,46 @@ async function fetchLaminationSequences() {
       args: {
         start_date,
         end_date,
-        units: JSON.stringify(["Lamination Unit"]),
+        unit: "Lamination Unit",
         plan_name: "Default",
       },
     });
     const store = {};
-    (res?.message || []).forEach((rec) => {
-      const d = toDateKey(rec?.date);
-      if (!d) return;
-      let seq = rec?.sequence_data || rec?.sequence || [];
-      if (typeof seq === "string") {
-        try {
-          seq = JSON.parse(seq);
-        } catch (e) {
-          seq = [];
+    const payload = res?.message || {};
+    if (Array.isArray(payload)) {
+      payload.forEach((rec) => {
+        const d = toDateKey(rec?.date);
+        if (!d) return;
+        let seq = rec?.sequence_data || rec?.sequence || [];
+        if (typeof seq === "string") {
+          try {
+            seq = JSON.parse(seq);
+          } catch (e) {
+            seq = [];
+          }
         }
-      }
-      if (Array.isArray(seq) && seq.length) {
-        store[d] = seq.map((x) => String(x || "").trim()).filter(Boolean);
-      }
-    });
+        if (Array.isArray(seq) && seq.length) {
+          store[d] = seq.map((x) => String(x || "").trim()).filter(Boolean);
+        }
+      });
+    } else if (payload && typeof payload === "object") {
+      Object.entries(payload).forEach(([key, rec]) => {
+        const parts = String(key || "").split("-");
+        const d = parts.length >= 4 ? parts.slice(-3).join("-") : toDateKey(rec?.date);
+        if (!d) return;
+        let seq = rec?.sequence_data || rec?.sequence || [];
+        if (typeof seq === "string") {
+          try {
+            seq = JSON.parse(seq);
+          } catch (e) {
+            seq = [];
+          }
+        }
+        if (Array.isArray(seq) && seq.length) {
+          store[d] = seq.map((x) => String(x || "").trim()).filter(Boolean);
+        }
+      });
+    }
     laminationSequenceStore.value = store;
   } catch (e) {
     console.error("Failed to fetch lamination sequence", e);
@@ -366,24 +400,73 @@ async function fetchLaminationSequences() {
   }
 }
 
-function moveRow(row, direction) {
-  const dateKey = getRowDateKey(row);
-  if (!dateKey || !row?.itemName) return;
-  const dayRows = filteredRows.value.filter((r) => getRowDateKey(r) === dateKey);
+function toggleArrangementLock() {
+  arrangementLocked.value = !arrangementLocked.value;
+  frappe.show_alert(
+    { message: arrangementLocked.value ? "Arrangement locked" : "Arrangement unlocked. Drag rows to reorder.", indicator: "blue" },
+    2
+  );
+}
+
+function reorderRowsInDate(sourceRow, targetRow) {
+  const sourceDate = getRowDateKey(sourceRow);
+  const targetDate = getRowDateKey(targetRow);
+  if (!sourceDate || !targetDate || sourceDate !== targetDate) {
+    frappe.show_alert({ message: "Reorder allowed only inside same date", indicator: "orange" }, 3);
+    return;
+  }
+  const dayRows = filteredRows.value.filter((r) => getRowDateKey(r) === sourceDate);
   const seq = dayRows.map((r) => String(r.itemName || "").trim()).filter(Boolean);
-  const idx = seq.indexOf(String(row.itemName || "").trim());
-  if (idx < 0) return;
-  const target = idx + Number(direction || 0);
-  if (target < 0 || target >= seq.length) return;
-  const [mv] = seq.splice(idx, 1);
-  seq.splice(target, 0, mv);
-  laminationSequenceStore.value = { ...laminationSequenceStore.value, [dateKey]: seq };
-  pendingArrangementUpdates.value[dateKey] = seq;
+  const sourceName = String(sourceRow?.itemName || "").trim();
+  const targetName = String(targetRow?.itemName || "").trim();
+  const fromIdx = seq.indexOf(sourceName);
+  const toIdx = seq.indexOf(targetName);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+  const [mv] = seq.splice(fromIdx, 1);
+  seq.splice(toIdx, 0, mv);
+  laminationSequenceStore.value = { ...laminationSequenceStore.value, [sourceDate]: seq };
+  pendingArrangementUpdates.value[sourceDate] = seq;
   arrangementDirty.value = true;
 }
 
+function onOrderDragStart(row, ev) {
+  if (!arrangementUnlocked.value) return;
+  dragOrderRow.value = row;
+  dragOverItemName.value = String(row?.itemName || "");
+  try {
+    if (ev?.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+  } catch (e) {}
+}
+
+function onOrderDragOver(row) {
+  if (!arrangementUnlocked.value) return;
+  dragOverItemName.value = String(row?.itemName || "");
+}
+
+function onOrderDragLeave(row) {
+  if (dragOverItemName.value === String(row?.itemName || "")) {
+    dragOverItemName.value = "";
+  }
+}
+
+function onOrderDrop(row) {
+  if (!arrangementUnlocked.value || !dragOrderRow.value) return;
+  reorderRowsInDate(dragOrderRow.value, row);
+  dragOrderRow.value = null;
+  dragOverItemName.value = "";
+}
+
+function onOrderDragEnd() {
+  dragOrderRow.value = null;
+  dragOverItemName.value = "";
+}
+
 async function saveLaminationArrangement() {
-  if (!arrangementDirty.value || arrangementSaving.value) return;
+  if (arrangementSaving.value) return;
+  if (!arrangementDirty.value) {
+    frappe.show_alert({ message: "No arrangement changes to save", indicator: "orange" }, 2);
+    return;
+  }
   arrangementSaving.value = true;
   try {
     for (const [dateKey, seq] of Object.entries(pendingArrangementUpdates.value || {})) {
@@ -1075,6 +1158,14 @@ onMounted(async () => {
   padding: 8px 6px;
   vertical-align: middle;
 }
+.cc-row-draggable {
+  cursor: move;
+}
+.cc-row-drag-over {
+  outline: 2px dashed #0ea5e9;
+  outline-offset: -2px;
+  background: #f0f9ff;
+}
 .th-n {
   width: 48px;
   text-align: center;
@@ -1096,6 +1187,19 @@ onMounted(async () => {
 .cc-order-btns {
   display: inline-flex;
   gap: 4px;
+}
+.cc-drag-handle {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  color: #334155;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.cc-lock-hint {
+  color: #94a3b8;
 }
 .cc-row-order-btn {
   border: 1px solid #cbd5e1;

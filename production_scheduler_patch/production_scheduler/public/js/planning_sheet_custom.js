@@ -33,6 +33,14 @@ frappe.ui.form.on('Planning Table', {
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
+        if (!frm.__board_sync_listener_bound) {
+            frm.__board_sync_listener_bound = true;
+            frappe.realtime.on('planning_sheet_row_sync', (payload) => {
+                if (!payload || payload.planning_sheet !== frm.doc.name) return;
+                // Board drag/drop changed this sheet row; refresh quickly to keep both grids aligned.
+                frm.reload_doc();
+            });
+        }
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',
