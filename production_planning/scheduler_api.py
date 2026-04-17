@@ -772,14 +772,14 @@ def get_lamination_order_table_data(
         )
         bucket = fabric_progress.setdefault(
             key,
-            {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_done": True, "count": 0},
+            {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": True, "count": 0},
         )
         bucket["required"] += flt(base_row.get("qty") or 0)
         bucket["achieved"] += flt(base_row.get("actual_production_weight_kgs") or base_row.get("produced_qty") or 0)
         bucket["count"] += 1
         child_name = str(base_row.get("itemName") or base_row.get("item_name") or "").strip()
         child_pp = _get_item_level_production_plan(child_name) if child_name else ""
-        child_wo = {"produced": 0.0, "terminal": False}
+        child_wo = {"produced": 0.0, "created": False, "terminal": False}
         if child_pp:
             if child_pp not in pp_child_wo_cache:
                 wo_rows = frappe.get_all(
@@ -792,9 +792,11 @@ def get_lamination_order_table_data(
                     str(w.get("status") or "").strip().lower() in {"completed", "stopped", "cancelled", "closed"}
                     for w in (wo_rows or [])
                 )
-                pp_child_wo_cache[child_pp] = {"produced": produced, "terminal": terminal}
-            child_wo = pp_child_wo_cache.get(child_pp) or {"produced": 0.0, "terminal": False}
+                pp_child_wo_cache[child_pp] = {"produced": produced, "created": bool(wo_rows), "terminal": terminal}
+            child_wo = pp_child_wo_cache.get(child_pp) or {"produced": 0.0, "created": False, "terminal": False}
         bucket["child_wo_produced_kg"] += flt(child_wo.get("produced") or 0)
+        if cint(child_wo.get("created") or 0):
+            bucket["child_wo_created"] = True
         if not cint(base_row.get("wo_terminal") or 0) or not cint(child_wo.get("terminal") or 0):
             bucket["child_wo_done"] = False
 
@@ -820,13 +822,14 @@ def get_lamination_order_table_data(
             str(row.get("planningSheet") or "").strip(),
             str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip(),
         )
-        progress = fabric_progress.get(key, {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0})
+        progress = fabric_progress.get(key, {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False})
         row["fabric_required_kg"] = flt(progress.get("required") or 0)
         row["fabric_achieved_kg"] = flt(progress.get("achieved") or 0)
         row["child_wo_produced_kg"] = flt(progress.get("child_wo_produced_kg") or 0)
+        row["child_wo_created"] = 1 if cint(progress.get("count") or 0) > 0 and cint(progress.get("child_wo_created") or 0) else 0
         row["child_wo_done"] = 1 if cint(progress.get("count") or 0) > 0 and cint(progress.get("child_wo_done") or 0) else 0
         row["is_lamination_parent"] = 1 if is_parent_lamination else 0
-        row["parent_ready_for_wo"] = 1 if (is_parent_lamination and row["child_wo_done"]) else 0
+        row["parent_ready_for_wo"] = 1 if (is_parent_lamination and row["child_wo_created"]) else 0
         row["parent_wo_started"] = 0
         row["parent_wo_open"] = 0
         row["parent_wo_terminal"] = 0
