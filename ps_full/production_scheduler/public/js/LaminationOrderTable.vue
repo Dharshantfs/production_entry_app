@@ -145,7 +145,7 @@
                   type="button"
                   @click="startParentWO(row)"
                   class="cc-pp-btn pt-btn-entry"
-                >Start WO</button>
+                >{{ woActionLabel(row) }}</button>
                 <button
                   v-if="canShowStockEntry(row)"
                   type="button"
@@ -593,6 +593,8 @@ function itemSprPrimaryButtonTitle(item) {
 
 function canShowStockEntry(item) {
   if (!item || !item.pp_id) return false;
+  if (item.is_lamination_parent && !item.parent_wo_started) return false;
+  if (item.is_lamination_parent && !item.parent_wo_open) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
   if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
@@ -609,8 +611,12 @@ function canStartWO(item) {
   if (!item || !item.pp_id) return false;
   if (!item.is_lamination_parent) return false;
   if (!item.parent_ready_for_wo) return false;
-  if (item.wo_open || item.wo_terminal) return false;
+  if (item.parent_wo_terminal) return false;
   return true;
+}
+
+function woActionLabel(item) {
+  return item?.parent_wo_started ? "Open WO" : "Start WO";
 }
 
 async function startParentWO(item) {

@@ -774,6 +774,7 @@ def get_lamination_order_table_data(
         if not cint(base_row.get("wo_terminal") or 0):
             bucket["child_wo_done"] = False
 
+    parent_wo_cache = {}
     out = []
     for r in rows:
         nm = r.get("itemName") or r.get("item_name")
@@ -801,6 +802,40 @@ def get_lamination_order_table_data(
         row["child_wo_done"] = 1 if cint(progress.get("count") or 0) > 0 and cint(progress.get("child_wo_done") or 0) else 0
         row["is_lamination_parent"] = 1 if is_parent_lamination else 0
         row["parent_ready_for_wo"] = 1 if (is_parent_lamination and row["child_wo_done"]) else 0
+        row["parent_wo_started"] = 0
+        row["parent_wo_open"] = 0
+        row["parent_wo_terminal"] = 0
+        row["parent_wo_name"] = ""
+        if is_parent_lamination:
+            pp_id = str(row.get("pp_id") or "").strip()
+            cache_key = f"{pp_id}::{item_code}"
+            if cache_key not in parent_wo_cache:
+                wo_info = {"started": 0, "open": 0, "terminal": 0, "name": ""}
+                if pp_id:
+                    wo_rows = frappe.get_all(
+                        "Work Order",
+                        filters={"production_plan": pp_id, "production_item": item_code, "docstatus": ["<", 2]},
+                        fields=["name", "status", "docstatus"],
+                        order_by="creation desc",
+                        limit=1,
+                    )
+                    if wo_rows:
+                        w = wo_rows[0]
+                        st = str(w.get("status") or "").strip().lower()
+                        terminal = st in {"completed", "stopped", "cancelled", "closed"}
+                        open_state = (not terminal) and cint(w.get("docstatus")) < 2
+                        wo_info = {
+                            "started": 1,
+                            "open": 1 if open_state else 0,
+                            "terminal": 1 if terminal else 0,
+                            "name": str(w.get("name") or "").strip(),
+                        }
+                parent_wo_cache[cache_key] = wo_info
+            wo_info = parent_wo_cache.get(cache_key) or {}
+            row["parent_wo_started"] = cint(wo_info.get("started") or 0)
+            row["parent_wo_open"] = cint(wo_info.get("open") or 0)
+            row["parent_wo_terminal"] = cint(wo_info.get("terminal") or 0)
+            row["parent_wo_name"] = str(wo_info.get("name") or "")
         out.append(row)
     return out
 
