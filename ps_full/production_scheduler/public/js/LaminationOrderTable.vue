@@ -594,7 +594,7 @@ function itemSprPrimaryButtonTitle(item) {
 function canShowStockEntry(item) {
   if (!item || !item.pp_id) return false;
   if (item.is_lamination_parent && !item.parent_wo_started) return false;
-  if (item.is_lamination_parent && !item.parent_wo_open) return false;
+  if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
   if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
@@ -612,10 +612,12 @@ function canStartWO(item) {
   if (!item.is_lamination_parent) return false;
   if (!item.parent_ready_for_wo) return false;
   if (item.parent_wo_terminal) return false;
+  if (item.parent_wo_started && Number(item.parent_wo_docstatus || 0) === 1) return false;
   return true;
 }
 
 function woActionLabel(item) {
+  if (item?.parent_wo_started && Number(item?.parent_wo_docstatus || 0) === 0) return "Start WO";
   return item?.parent_wo_started ? "Open WO" : "Start WO";
 }
 
@@ -628,17 +630,18 @@ async function startParentWO(item) {
       );
       return;
     }
+    const submitExisting = Number(item.parent_wo_started || 0) === 1 && Number(item.parent_wo_docstatus || 0) === 0;
     const res = await frappe.call({
       method: "production_scheduler.api.start_lamination_parent_wo",
-      args: { item_name: item.itemName },
+      args: { item_name: item.itemName, submit_existing: submitExisting ? 1 : 0 },
     });
     const msg = res?.message || {};
     if (msg.status === "ok") {
       frappe.show_alert(
-        { message: msg.created ? `WO draft created: ${msg.wo_name}` : `WO found: ${msg.wo_name}`, indicator: "green" },
+        { message: msg.created ? `WO draft created: ${msg.wo_name}` : (msg.started ? `WO started: ${msg.wo_name}` : `WO found: ${msg.wo_name}`), indicator: "green" },
         4
       );
-      if (msg.wo_name) {
+      if (msg.wo_name && !msg.started) {
         frappe.set_route("Form", "Work Order", msg.wo_name);
       }
       await fetchData();

@@ -812,7 +812,7 @@ def get_lamination_order_table_data(
             pp_id = str(row.get("pp_id") or "").strip()
             cache_key = f"{pp_id}::{item_code}"
             if cache_key not in parent_wo_cache:
-                wo_info = {"started": 0, "open": 0, "terminal": 0, "name": ""}
+                wo_info = {"started": 0, "open": 0, "terminal": 0, "name": "", "status": "", "docstatus": 0}
                 if pp_id:
                     wo_rows = frappe.get_all(
                         "Work Order",
@@ -831,6 +831,8 @@ def get_lamination_order_table_data(
                             "open": 1 if open_state else 0,
                             "terminal": 1 if terminal else 0,
                             "name": str(w.get("name") or "").strip(),
+                            "status": str(w.get("status") or "").strip(),
+                            "docstatus": cint(w.get("docstatus") or 0),
                         }
                 parent_wo_cache[cache_key] = wo_info
             wo_info = parent_wo_cache.get(cache_key) or {}
@@ -838,12 +840,14 @@ def get_lamination_order_table_data(
             row["parent_wo_open"] = cint(wo_info.get("open") or 0)
             row["parent_wo_terminal"] = cint(wo_info.get("terminal") or 0)
             row["parent_wo_name"] = str(wo_info.get("name") or "")
+            row["parent_wo_status"] = str(wo_info.get("status") or "")
+            row["parent_wo_docstatus"] = cint(wo_info.get("docstatus") or 0)
         out.append(row)
     return out
 
 
 @frappe.whitelist()
-def start_lamination_parent_wo(item_name):
+def start_lamination_parent_wo(item_name, submit_existing=0):
     """Create parent lamination WO in Draft once child fabric WO is terminal; user edits source warehouse then starts."""
     item_name = str(item_name or "").strip()
     if not item_name or not frappe.db.exists("Planning Table", item_name):
@@ -912,6 +916,11 @@ def start_lamination_parent_wo(item_name):
     )
     if existing:
         wo_name = existing[0].name
+        if cint(existing[0].docstatus) == 0 and cint(submit_existing):
+            wo_doc = frappe.get_doc("Work Order", wo_name)
+            wo_doc.submit()
+            frappe.db.commit()
+            return {"status": "ok", "wo_name": wo_name, "created": 0, "draft": 0, "started": 1}
         return {"status": "ok", "wo_name": wo_name, "created": 0, "draft": 1 if cint(existing[0].docstatus) == 0 else 0}
 
     bom_no = str(item.get("bom_no") or "").strip() or frappe.db.get_value(
