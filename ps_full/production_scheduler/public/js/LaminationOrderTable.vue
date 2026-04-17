@@ -76,7 +76,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit — Planned orders (104)</div>
+      <div class="cc-table-unit-header lot-header">Lamination Unit â€” Planned orders (104)</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -93,6 +93,7 @@
             <th>ACHIEVED MTR</th>
             <th>KGS</th>
             <th>FABRIC QTY (KG)</th>
+            <th>CHILD WO PROD (KG)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
             <th style="min-width:84px;">ORDER</th>
@@ -118,25 +119,26 @@
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "—" }}</td>
+            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "â€”" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality }}</td>
             <td class="cell-center font-bold">{{ row.color }}</td>
-            <td class="cell-center">{{ row.fabric_gsm || "—" }}</td>
+            <td class="cell-center">{{ row.fabric_gsm || "â€”" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
-            <td class="cell-right">{{ row.planned_meter ?? "—" }}</td>
+            <td class="cell-right">{{ row.planned_meter ?? "â€”" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
             <td class="cell-right">{{ formatKg2(row.fabric_achieved_kg) }} / {{ formatKg2(row.fabric_required_kg) }}</td>
+            <td class="cell-right">{{ formatKg2(row.child_wo_produced_kg) }}</td>
             <td class="cell-center">
-              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">📋 View</button>
+              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">ðŸ“‹ View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
             <td class="cell-center">
               <div class="pt-stock-cell">
                 <div v-if="row.pp_id" class="pt-pill-row">
                   <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
-                  <span v-else class="pt-pill pt-pill-muted">SPR: —</span>
+                  <span v-else class="pt-pill pt-pill-muted">SPR: â€”</span>
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
@@ -162,18 +164,18 @@
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">✅ WO closed</span>
+                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">âœ… WO closed</span>
                 <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Complete child WO first</span>
                 <span v-else style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
             <td class="cell-center">
-              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">⋮⋮</span>
-              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">🔒</span>
+              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">â‹®â‹®</span>
+              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">ðŸ”’</span>
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
-            <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -269,7 +271,7 @@ function debouncedFetch() {
 }
 
 function formatDate(d) {
-  if (!d) return "—";
+  if (!d) return "â€”";
   try {
     if (frappe.datetime && frappe.datetime.format_date) {
       return frappe.datetime.format_date(d);
@@ -586,8 +588,8 @@ function itemSprPrimaryButtonLabel(item) {
 }
 function itemSprPrimaryButtonTitle(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Draft SPR — continue recording rolls.";
-  if (item.wo_terminal) return "WO terminal — review only.";
+  if (Number(item.spr_docstatus) === 0) return "Draft SPR â€” continue recording rolls.";
+  if (item.wo_terminal) return "WO terminal â€” review only.";
   return "Open submitted SPR.";
 }
 
@@ -612,7 +614,6 @@ function canStartWO(item) {
   if (!item.is_lamination_parent) return false;
   if (!item.parent_ready_for_wo) return false;
   if (item.parent_wo_terminal) return false;
-  if (item.parent_wo_started && Number(item.parent_wo_docstatus || 0) === 1) return false;
   return true;
 }
 
