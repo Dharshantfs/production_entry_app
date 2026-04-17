@@ -92,6 +92,7 @@
             <th>PLANNED MTR</th>
             <th>ACHIEVED MTR</th>
             <th>KGS</th>
+            <th>FABRIC QTY (KG)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
             <th style="min-width:84px;">ORDER</th>
@@ -126,6 +127,7 @@
             <td class="cell-right">{{ row.planned_meter ?? "—" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
+            <td class="cell-right">{{ formatKg2(row.fabric_achieved_kg) }} / {{ formatKg2(row.fabric_required_kg) }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">📋 View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
@@ -138,6 +140,12 @@
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
+                <button
+                  v-if="canStartWO(row)"
+                  type="button"
+                  @click="startParentWO(row)"
+                  class="cc-pp-btn pt-btn-entry"
+                >Start WO</button>
                 <button
                   v-if="canShowStockEntry(row)"
                   type="button"
@@ -155,6 +163,7 @@
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
                 <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">✅ WO closed</span>
+                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Child not ready</span>
                 <span v-else style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
@@ -164,7 +173,7 @@
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
-            <td colspan="15" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -198,6 +207,7 @@ const arrangementLocked = ref(true);
 const dragOrderRow = ref(null);
 const dragOverItemName = ref("");
 let fetchTimer = null;
+let initialFetchRetried = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
@@ -583,6 +593,8 @@ function itemSprPrimaryButtonTitle(item) {
 
 function canShowStockEntry(item) {
   if (!item || !item.pp_id) return false;
+  if (!item.wo_open && !item.wo_terminal) return false;
+  if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
   const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
@@ -591,6 +603,42 @@ function canShowStockEntry(item) {
   if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
   if (item.wo_terminal) return false;
   return true;
+}
+
+function canStartWO(item) {
+  if (!item || !item.pp_id) return false;
+  if (!item.is_lamination_parent) return false;
+  if (!item.parent_ready_for_wo) return false;
+  if (item.wo_open || item.wo_terminal) return false;
+  return true;
+}
+
+async function startParentWO(item) {
+  if (!item?.itemName) return;
+  try {
+    if (!item.parent_ready_for_wo) {
+      frappe.msgprint(
+        `Child fabric not ready. Achieved ${formatKg2(item.fabric_achieved_kg)} / Required ${formatKg2(item.fabric_required_kg)} Kg`
+      );
+      return;
+    }
+    const res = await frappe.call({
+      method: "production_scheduler.api.start_lamination_parent_wo",
+      args: { item_name: item.itemName },
+    });
+    const msg = res?.message || {};
+    if (msg.status === "ok") {
+      frappe.show_alert(
+        { message: msg.created ? `WO started: ${msg.wo_name}` : `WO already present: ${msg.wo_name}`, indicator: "green" },
+        4
+      );
+      await fetchData();
+      return;
+    }
+    frappe.msgprint(msg.message || "Unable to start WO");
+  } catch (e) {
+    frappe.msgprint(`Failed to start WO: ${e?.message || e}`);
+  }
 }
 
 function getStockEntryLabel(item) {
@@ -934,6 +982,10 @@ async function fetchData() {
       ...d,
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
     }));
+    if (!initialFetchRetried && (!rawData.value || rawData.value.length === 0)) {
+      initialFetchRetried = true;
+      setTimeout(() => fetchData(), 450);
+    }
     await fetchLaminationSequences();
     await fetchMaintenanceRecords();
   } catch (e) {

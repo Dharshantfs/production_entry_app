@@ -758,6 +758,19 @@ def get_lamination_order_table_data(
             ):
                 spr_meters[r["parent"]] = flt(r.get("mtrs"))
 
+    fabric_progress = {}
+    for base_row in rows:
+        item_code = str(base_row.get("itemCode") or base_row.get("item_code") or "").strip()
+        if not item_code.startswith("100"):
+            continue
+        key = (
+            str(base_row.get("planningSheet") or "").strip(),
+            str(base_row.get("salesOrderItem") or base_row.get("sales_order_item") or "").strip(),
+        )
+        bucket = fabric_progress.setdefault(key, {"required": 0.0, "achieved": 0.0})
+        bucket["required"] += flt(base_row.get("qty") or 0)
+        bucket["achieved"] += flt(base_row.get("actual_production_weight_kgs") or base_row.get("produced_qty") or 0)
+
     out = []
     for r in rows:
         nm = r.get("itemName") or r.get("item_name")
@@ -773,8 +786,102 @@ def get_lamination_order_table_data(
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["achieved_meter"] = achieved_m
         row["shift_label"] = ((ex.get("shift_label") if ex else "") or "DAY").upper()
+        item_code = str(row.get("itemCode") or row.get("item_code") or "").strip()
+        is_parent_lamination = item_code.startswith("104")
+        key = (
+            str(row.get("planningSheet") or "").strip(),
+            str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip(),
+        )
+        progress = fabric_progress.get(key, {"required": 0.0, "achieved": 0.0})
+        row["fabric_required_kg"] = flt(progress.get("required") or 0)
+        row["fabric_achieved_kg"] = flt(progress.get("achieved") or 0)
+        row["is_lamination_parent"] = 1 if is_parent_lamination else 0
+        row["parent_ready_for_wo"] = 1 if (is_parent_lamination and row["fabric_achieved_kg"] + 1e-9 >= row["fabric_required_kg"]) else 0
         out.append(row)
     return out
+
+
+@frappe.whitelist()
+def start_lamination_parent_wo(item_name):
+    """Create/submit a parent lamination WO once child fabric achieved qty is sufficient."""
+    item_name = str(item_name or "").strip()
+    if not item_name or not frappe.db.exists("Planning Table", item_name):
+        frappe.throw(_("Planning row not found."))
+
+    pt_cols = frappe.db.get_table_columns("Planning Table") or []
+    so_col = "sales_order_item" if "sales_order_item" in pt_cols else ("custom_sales_order_item" if "custom_sales_order_item" in pt_cols else None)
+    fields = ["name", "parent", "item_code", "qty", "bom_no"]
+    if so_col:
+        fields.append(so_col)
+    item = frappe.db.get_value("Planning Table", item_name, fields, as_dict=True) or {}
+
+    item_code = str(item.get("item_code") or "").strip()
+    if not item_code.startswith("104"):
+        frappe.throw(_("Start WO is allowed only for parent lamination rows (104)."))
+
+    so_item = str(item.get(so_col) or "").strip() if so_col else ""
+    fabric_rows = frappe.db.sql(
+        f"""
+        SELECT name, qty
+        FROM `tabPlanning Table`
+        WHERE parent = %s
+          AND item_code LIKE '100%%'
+          {"AND IFNULL(" + so_col + ", '') = %s" if so_col else ""}
+        """,
+        (item.get("parent"), so_item) if so_col else (item.get("parent"),),
+        as_dict=True,
+    )
+    req_kg = sum(flt(r.get("qty") or 0) for r in (fabric_rows or []))
+    ach_kg = 0.0
+    has_actual_col = frappe.db.has_column("Planning Table", "actual_production_weight_kgs")
+    for fr in fabric_rows or []:
+        if has_actual_col:
+            ach_kg += flt(frappe.db.get_value("Planning Table", fr.get("name"), "actual_production_weight_kgs") or 0)
+    if req_kg > 0 and ach_kg + 1e-9 < req_kg:
+        frappe.throw(_("Child fabric not ready. Achieved {0} / Required {1} Kg.").format(flt(ach_kg), flt(req_kg)))
+
+    pp_id = _get_item_level_production_plan(item_name)
+    if not pp_id:
+        frappe.throw(_("No Production Plan linked for this row."))
+
+    existing = frappe.get_all(
+        "Work Order",
+        filters={"production_plan": pp_id, "production_item": item_code, "docstatus": ["<", 2]},
+        fields=["name", "docstatus", "status"],
+        order_by="creation desc",
+        limit=1,
+    )
+    if existing:
+        wo_name = existing[0].name
+        if cint(existing[0].docstatus) == 0:
+            wo_doc = frappe.get_doc("Work Order", wo_name)
+            wo_doc.submit()
+            frappe.db.commit()
+        return {"status": "ok", "wo_name": wo_name, "created": 0}
+
+    bom_no = str(item.get("bom_no") or "").strip() or frappe.db.get_value(
+        "BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name"
+    ) or frappe.db.get_value("BOM", {"item": item_code, "is_active": 1}, "name")
+    if not bom_no:
+        frappe.throw(_("No active BOM found for {0}.").format(item_code))
+
+    wo = frappe.new_doc("Work Order")
+    wo.production_item = item_code
+    wo.bom_no = bom_no
+    wo.qty = flt(item.get("qty") or 0) or 1
+    wo.company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value("Global Defaults", "default_company")
+    wo.production_plan = pp_id
+    ps_sales_order = frappe.db.get_value("Planning sheet", item.get("parent"), "sales_order")
+    if ps_sales_order:
+        wo.sales_order = ps_sales_order
+    wo.wip_warehouse = frappe.db.get_single_value("Stock Settings", "default_wip_warehouse")
+    wo.fg_warehouse = frappe.db.get_single_value("Stock Settings", "default_fg_warehouse")
+    wo.source_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+    wo.flags.ignore_mandatory = True
+    wo.insert(ignore_permissions=True)
+    wo.submit()
+    frappe.db.commit()
+    return {"status": "ok", "wo_name": wo.name, "created": 1}
 
 
 @frappe.whitelist()

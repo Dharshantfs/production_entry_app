@@ -411,6 +411,7 @@ const filterCustomer = ref("");
 const filterUnit = ref("");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
 const isLaminationBoard = ref(false);
+let laminationFirstLoadRetried = false;
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -2009,6 +2010,10 @@ async function fetchData() {
           actual_production_weight_kgs: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? 0) || 0,
           produced_qty: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? d.produced_qty ?? 0) || 0,
         }));
+        if (isLaminationBoard.value && !laminationFirstLoadRetried && rawData.value.length === 0) {
+          laminationFirstLoadRetried = true;
+          setTimeout(() => fetchData(), 450);
+        }
         
         // Load Custom Color Order
         try {
