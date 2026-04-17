@@ -163,7 +163,7 @@
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
                 <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">✅ WO closed</span>
-                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Child not ready</span>
+                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Complete child WO first</span>
                 <span v-else style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
@@ -618,7 +618,7 @@ async function startParentWO(item) {
   try {
     if (!item.parent_ready_for_wo) {
       frappe.msgprint(
-        `Child fabric not ready. Achieved ${formatKg2(item.fabric_achieved_kg)} / Required ${formatKg2(item.fabric_required_kg)} Kg`
+        `Child WO not completed. Complete child WO first. Current fabric: ${formatKg2(item.fabric_achieved_kg)} / ${formatKg2(item.fabric_required_kg)} Kg`
       );
       return;
     }
@@ -629,9 +629,12 @@ async function startParentWO(item) {
     const msg = res?.message || {};
     if (msg.status === "ok") {
       frappe.show_alert(
-        { message: msg.created ? `WO started: ${msg.wo_name}` : `WO already present: ${msg.wo_name}`, indicator: "green" },
+        { message: msg.created ? `WO draft created: ${msg.wo_name}` : `WO found: ${msg.wo_name}`, indicator: "green" },
         4
       );
+      if (msg.wo_name) {
+        frappe.set_route("Form", "Work Order", msg.wo_name);
+      }
       await fetchData();
       return;
     }

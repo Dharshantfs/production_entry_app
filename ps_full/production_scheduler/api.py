@@ -767,9 +767,12 @@ def get_lamination_order_table_data(
             str(base_row.get("planningSheet") or "").strip(),
             str(base_row.get("salesOrderItem") or base_row.get("sales_order_item") or "").strip(),
         )
-        bucket = fabric_progress.setdefault(key, {"required": 0.0, "achieved": 0.0})
+        bucket = fabric_progress.setdefault(key, {"required": 0.0, "achieved": 0.0, "child_wo_done": True, "count": 0})
         bucket["required"] += flt(base_row.get("qty") or 0)
         bucket["achieved"] += flt(base_row.get("actual_production_weight_kgs") or base_row.get("produced_qty") or 0)
+        bucket["count"] += 1
+        if not cint(base_row.get("wo_terminal") or 0):
+            bucket["child_wo_done"] = False
 
     out = []
     for r in rows:
@@ -795,15 +798,16 @@ def get_lamination_order_table_data(
         progress = fabric_progress.get(key, {"required": 0.0, "achieved": 0.0})
         row["fabric_required_kg"] = flt(progress.get("required") or 0)
         row["fabric_achieved_kg"] = flt(progress.get("achieved") or 0)
+        row["child_wo_done"] = 1 if cint(progress.get("count") or 0) > 0 and cint(progress.get("child_wo_done") or 0) else 0
         row["is_lamination_parent"] = 1 if is_parent_lamination else 0
-        row["parent_ready_for_wo"] = 1 if (is_parent_lamination and row["fabric_achieved_kg"] + 1e-9 >= row["fabric_required_kg"]) else 0
+        row["parent_ready_for_wo"] = 1 if (is_parent_lamination and row["child_wo_done"]) else 0
         out.append(row)
     return out
 
 
 @frappe.whitelist()
 def start_lamination_parent_wo(item_name):
-    """Create/submit a parent lamination WO once child fabric achieved qty is sufficient."""
+    """Create parent lamination WO in Draft once child fabric WO is terminal; user edits source warehouse then starts."""
     item_name = str(item_name or "").strip()
     if not item_name or not frappe.db.exists("Planning Table", item_name):
         frappe.throw(_("Planning row not found."))
@@ -834,11 +838,29 @@ def start_lamination_parent_wo(item_name):
     req_kg = sum(flt(r.get("qty") or 0) for r in (fabric_rows or []))
     ach_kg = 0.0
     has_actual_col = frappe.db.has_column("Planning Table", "actual_production_weight_kgs")
+    child_done = True if fabric_rows else False
     for fr in fabric_rows or []:
         if has_actual_col:
             ach_kg += flt(frappe.db.get_value("Planning Table", fr.get("name"), "actual_production_weight_kgs") or 0)
-    if req_kg > 0 and ach_kg + 1e-9 < req_kg:
-        frappe.throw(_("Child fabric not ready. Achieved {0} / Required {1} Kg.").format(flt(ach_kg), flt(req_kg)))
+        fr_pp = _get_item_level_production_plan(fr.get("name"))
+        if fr_pp:
+            wo_rows = frappe.get_all(
+                "Work Order",
+                filters={"production_plan": fr_pp, "docstatus": ["<", 2]},
+                fields=["status", "docstatus"],
+            )
+            if not wo_rows:
+                child_done = False
+            else:
+                for w in wo_rows:
+                    st = str(w.get("status") or "").strip()
+                    if st not in ("Completed", "Stopped", "Cancelled"):
+                        child_done = False
+                        break
+        else:
+            child_done = False
+    if not child_done:
+        frappe.throw(_("Child WO not completed yet. Complete child WO first."))
 
     pp_id = _get_item_level_production_plan(item_name)
     if not pp_id:
@@ -853,11 +875,7 @@ def start_lamination_parent_wo(item_name):
     )
     if existing:
         wo_name = existing[0].name
-        if cint(existing[0].docstatus) == 0:
-            wo_doc = frappe.get_doc("Work Order", wo_name)
-            wo_doc.submit()
-            frappe.db.commit()
-        return {"status": "ok", "wo_name": wo_name, "created": 0}
+        return {"status": "ok", "wo_name": wo_name, "created": 0, "draft": 1 if cint(existing[0].docstatus) == 0 else 0}
 
     bom_no = str(item.get("bom_no") or "").strip() or frappe.db.get_value(
         "BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name"
@@ -879,9 +897,14 @@ def start_lamination_parent_wo(item_name):
     wo.source_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
     wo.flags.ignore_mandatory = True
     wo.insert(ignore_permissions=True)
-    wo.submit()
     frappe.db.commit()
-    return {"status": "ok", "wo_name": wo.name, "created": 1}
+    return {
+        "status": "ok",
+        "wo_name": wo.name,
+        "created": 1,
+        "draft": 1,
+        "message": _("WO created in Draft. Open WO, set source warehouse in Required Items, then Start/Submit."),
+    }
 
 
 @frappe.whitelist()
