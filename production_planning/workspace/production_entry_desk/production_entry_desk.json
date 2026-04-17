@@ -40,6 +40,18 @@
   {
    "dependencies": "",
    "hidden": 0,
+   "icon": "organization",
+   "is_query_report": 0,
+   "label": "Lamination Board",
+   "link_count": 0,
+   "link_to": "lamination-board",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
    "icon": "color",
    "is_query_report": 0,
    "label": "Color Chart",
@@ -57,6 +69,18 @@
    "label": "Production Table",
    "link_count": 0,
    "link_to": "production-table",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "table",
+   "is_query_report": 0,
+   "label": "Lamination Order Table",
+   "link_count": 0,
+   "link_to": "lamination-order-table",
    "link_type": "Page",
    "onboard": 1,
    "type": "Link"
@@ -156,6 +180,11 @@
    "type": "Page"
   },
   {
+   "label": "Lamination Board",
+   "link_to": "lamination-board",
+   "type": "Page"
+  },
+  {
    "label": "Color Chart",
    "link_to": "color-chart",
    "type": "Page"
@@ -163,6 +192,11 @@
   {
    "label": "Production Table",
    "link_to": "production-table",
+   "type": "Page"
+  },
+  {
+   "label": "Lamination Order Table",
+   "link_to": "lamination-order-table",
    "type": "Page"
   },
   {

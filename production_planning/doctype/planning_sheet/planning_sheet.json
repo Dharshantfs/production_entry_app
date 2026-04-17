@@ -28,6 +28,7 @@
   "custom_planned_date",
   "custom_pb_plan_name",
   "custom_plan_code",
+  "custom_lamination_booking_id",
   "section_break_9",
   "allocated_unit",
   "unit_capacity_day",
@@ -170,6 +171,12 @@
    "fieldname": "custom_plan_code",
    "fieldtype": "Data",
    "label": "Plan Code"
+  },
+  {
+   "fieldname": "custom_lamination_booking_id",
+   "fieldtype": "Data",
+   "label": "Lamination Booking ID",
+   "read_only": 1
   },
   {
    "fieldname": "section_break_9",

@@ -542,7 +542,10 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    if (isLaminationBoard.value) query.board = "lamination";
+    if (isLaminationBoard.value) {
+        frappe.set_route("lamination-order-table", query);
+        return;
+    }
     frappe.set_route("production-table", query);
 }
 
@@ -1305,9 +1308,13 @@ async function loadOrders(d) {
     
     try {
         // Production Board Pull = orders already ON the board for this date (move to today).
+        const pullArgs = { date: date, mode: 'pull_board' };
+        if (isLaminationBoard.value) {
+            pullArgs.board_process_scope = 'lamination_only';
+        }
         const r = await frappe.call({
             method: "production_scheduler.api.get_color_chart_data",
-            args: { date: date, mode: 'pull_board' }
+            args: pullArgs
         });
         
         let items = r.message || [];

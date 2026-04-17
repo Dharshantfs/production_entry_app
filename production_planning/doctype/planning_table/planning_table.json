@@ -33,6 +33,7 @@
   "plan_name",
   "custom_item_planned_date",
   "custom_plan_code",
+  "custom_lamination_booking_id",
   "order_sheet",
   "custom_split_metadata",
   "section_split",
@@ -199,6 +200,12 @@
    "fieldname": "custom_plan_code",
    "fieldtype": "Data",
    "label": "Plan Code"
+  },
+  {
+   "fieldname": "custom_lamination_booking_id",
+   "fieldtype": "Data",
+   "label": "Lamination Booking ID",
+   "read_only": 1
   },
   {
    "fieldname": "order_sheet",

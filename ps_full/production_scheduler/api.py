@@ -3616,6 +3616,10 @@ def _get_color_chart_data_impl(
                 except Exception:
                     pass
             items = [it for it in items if it.planningSheet not in wo_sheets]
+        if items and LAMINATION_FLOW_ENABLED and bps == "lamination_only":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "104"]
+        elif items and LAMINATION_FLOW_ENABLED and bps == "exclude_104":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") != "104"]
         return _deduplicate_items(items) if items else []
 
     # Support both single date and range
@@ -11445,3 +11449,6 @@ def sync_merge_planned_date(merge_id, new_date):
             updated_count += 1
     
     return {"status": "success", "updated": updated_count}
+
+
+from production_entry.production_planning.scheduler_api import get_lamination_order_table_data  # noqa: E402,F401
