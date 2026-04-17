@@ -760,43 +760,59 @@ def get_lamination_order_table_data(
 
     pp_child_wo_cache = {}
     fabric_progress = {}
-    for base_row in rows:
-        item_code = str(base_row.get("itemCode") or base_row.get("item_code") or "").strip()
-        if not item_code.startswith("100"):
-            continue
-        key = (
-            str(base_row.get("planningSheet") or "").strip(),
-            str(base_row.get("salesOrderItem") or base_row.get("sales_order_item") or "").strip(),
+
+    def _get_child_progress(sheet_name, so_item):
+        key = (str(sheet_name or "").strip(), str(so_item or "").strip())
+        if key in fabric_progress:
+            return fabric_progress[key]
+        if not key[0]:
+            fabric_progress[key] = {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": False, "count": 0}
+            return fabric_progress[key]
+        where_so = "AND IFNULL(sales_order_item, '') = %s" if frappe.db.has_column("Planning Table", "sales_order_item") else ""
+        params = [key[0]]
+        if where_so:
+            params.append(key[1])
+        child_rows = frappe.db.sql(
+            f"""
+            SELECT name, qty, IFNULL(actual_production_weight_kgs, 0) as achieved
+            FROM `tabPlanning Table`
+            WHERE parent = %s
+              AND item_code LIKE '100%%'
+              {where_so}
+            """,
+            tuple(params),
+            as_dict=True,
         )
-        bucket = fabric_progress.setdefault(
-            key,
-            {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": True, "count": 0},
-        )
-        bucket["required"] += flt(base_row.get("qty") or 0)
-        bucket["achieved"] += flt(base_row.get("actual_production_weight_kgs") or base_row.get("produced_qty") or 0)
-        bucket["count"] += 1
-        child_name = str(base_row.get("itemName") or base_row.get("item_name") or "").strip()
-        child_pp = _get_item_level_production_plan(child_name) if child_name else ""
-        child_wo = {"produced": 0.0, "created": False, "terminal": False}
-        if child_pp:
-            if child_pp not in pp_child_wo_cache:
-                wo_rows = frappe.get_all(
-                    "Work Order",
-                    filters={"production_plan": child_pp, "docstatus": ["<", 2]},
-                    fields=["status", "produced_qty"],
-                )
-                produced = sum(flt(w.get("produced_qty") or 0) for w in (wo_rows or []))
-                terminal = bool(wo_rows) and all(
-                    str(w.get("status") or "").strip().lower() in {"completed", "stopped", "cancelled", "closed"}
-                    for w in (wo_rows or [])
-                )
-                pp_child_wo_cache[child_pp] = {"produced": produced, "created": bool(wo_rows), "terminal": terminal}
-            child_wo = pp_child_wo_cache.get(child_pp) or {"produced": 0.0, "created": False, "terminal": False}
-        bucket["child_wo_produced_kg"] += flt(child_wo.get("produced") or 0)
-        if cint(child_wo.get("created") or 0):
-            bucket["child_wo_created"] = True
-        if not cint(base_row.get("wo_terminal") or 0) or not cint(child_wo.get("terminal") or 0):
+        bucket = {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": True, "count": 0}
+        for ch in child_rows or []:
+            bucket["count"] += 1
+            bucket["required"] += flt(ch.get("qty") or 0)
+            bucket["achieved"] += flt(ch.get("achieved") or 0)
+            child_pp = _get_item_level_production_plan(ch.get("name"))
+            child_wo = {"produced": 0.0, "created": False, "terminal": False}
+            if child_pp:
+                if child_pp not in pp_child_wo_cache:
+                    wo_rows = frappe.get_all(
+                        "Work Order",
+                        filters={"production_plan": child_pp, "docstatus": ["<", 2]},
+                        fields=["status", "produced_qty"],
+                    )
+                    produced = sum(flt(w.get("produced_qty") or 0) for w in (wo_rows or []))
+                    terminal = bool(wo_rows) and all(
+                        str(w.get("status") or "").strip().lower() in {"completed", "stopped", "cancelled", "closed"}
+                        for w in (wo_rows or [])
+                    )
+                    pp_child_wo_cache[child_pp] = {"produced": produced, "created": bool(wo_rows), "terminal": terminal}
+                child_wo = pp_child_wo_cache.get(child_pp) or {"produced": 0.0, "created": False, "terminal": False}
+            bucket["child_wo_produced_kg"] += flt(child_wo.get("produced") or 0)
+            if cint(child_wo.get("created") or 0):
+                bucket["child_wo_created"] = True
+            if not cint(child_wo.get("terminal") or 0):
+                bucket["child_wo_done"] = False
+        if bucket["count"] == 0:
             bucket["child_wo_done"] = False
+        fabric_progress[key] = bucket
+        return bucket
 
     parent_wo_cache = {}
     out = []
@@ -820,7 +836,7 @@ def get_lamination_order_table_data(
             str(row.get("planningSheet") or "").strip(),
             str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip(),
         )
-        progress = fabric_progress.get(key, {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False})
+        progress = _get_child_progress(key[0], key[1])
         row["fabric_required_kg"] = flt(progress.get("required") or 0)
         row["fabric_achieved_kg"] = flt(progress.get("achieved") or 0)
         row["child_wo_produced_kg"] = flt(progress.get("child_wo_produced_kg") or 0)
