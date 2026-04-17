@@ -21,10 +21,19 @@ def _item_process_prefix(item_code):
 	return ic[:3] if len(ic) >= 3 else ""
 
 
+def _month_letter_from_date(dt):
+	"""January=A … December=L (single letter month code)."""
+	m = int(getattr(dt, "month", 1) or 1)
+	m = max(1, min(12, m))
+	return chr(ord("A") + m - 1)
+
+
 def _next_lamination_booking_id():
-	"""Next U + YY + 3-digit series (e.g. U26001). Global per calendar year."""
-	yy = str(frappe.utils.now_datetime().year)[-2:]
-	prefix = f"U{yy}"
+	"""U + YY + month letter (A–L) + 3-digit series, e.g. U26D001 (April 2026). Series is per month."""
+	now = frappe.utils.now_datetime()
+	yy = str(now.year)[-2:]
+	ml = _month_letter_from_date(now)
+	prefix = f"U{yy}{ml}"
 	rows = frappe.db.sql(
 		"""
 		SELECT custom_lamination_booking_id FROM `tabPlanning sheet`
@@ -43,7 +52,7 @@ def _next_lamination_booking_id():
 		except Exception:
 			n = 1
 	if n > 999:
-		frappe.throw(_("Lamination booking series exhausted for year U%s (max 999).") % yy)
+		frappe.throw(_("Lamination booking series exhausted for prefix %s (max 999).") % prefix)
 	return prefix + str(n).zfill(3)
 
 

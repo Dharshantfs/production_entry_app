@@ -540,15 +540,30 @@ class Planningsheet(Document):
         """Calculate total quantity and weight"""
         total_qty = 0
         total_weight = 0
-        
-        for item in self.planned_items:
-            # Calculate weight per item if not already set
-            if not item.total_weight and item.weight_per_roll and item.no_of_rolls:
-                item.total_weight = flt(item.weight_per_roll) * flt(item.no_of_rolls)
-            
+
+        def _fill_line_weight(row):
+            if not flt(row.total_weight):
+                if row.weight_per_roll and row.no_of_rolls:
+                    row.total_weight = flt(row.weight_per_roll) * flt(row.no_of_rolls)
+                elif flt(row.qty):
+                    row.total_weight = flt(row.qty)
+
+        planned = self.get("planned_items") or []
+        legacy = self.get("items") or []
+
+        for item in planned:
+            _fill_line_weight(item)
             total_qty += flt(item.qty)
             total_weight += flt(item.total_weight)
-        
+
+        for item in legacy:
+            _fill_line_weight(item)
+
+        if not planned and legacy:
+            for item in legacy:
+                total_qty += flt(item.qty)
+                total_weight += flt(item.total_weight)
+
         self.total_quantity = total_qty
         self.total_weight = total_weight
         

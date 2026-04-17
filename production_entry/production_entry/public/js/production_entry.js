@@ -4,6 +4,9 @@
 
 frappe.ui.form.on('Planning sheet', {
     refresh: function (frm) {
+        if (frm.doc && frm.doc.docstatus === 0) {
+            frm.set_df_property('custom_planned_date', 'read_only', 0);
+        }
         // Add custom buttons
         if (frm.doc.docstatus === 1 && frm.doc.planning_status === "Finalized") {
             frm.add_custom_button(__('Start Production'), function () {
@@ -170,10 +173,28 @@ function calculate_totals(frm) {
     let total_qty = 0;
     let total_weight = 0;
 
-    frm.doc.items.forEach(function (item) {
-        total_qty += flt(item.qty);
-        total_weight += flt(item.total_weight);
-    });
+    function lineWeight(item) {
+        let w = flt(item.total_weight);
+        if (!w && item.weight_per_roll && item.no_of_rolls) {
+            w = flt(item.weight_per_roll) * flt(item.no_of_rolls);
+        }
+        return w;
+    }
+
+    const planned = frm.doc.planned_items || [];
+    const legacy = frm.doc.items || [];
+
+    if (planned.length) {
+        planned.forEach(function (item) {
+            total_qty += flt(item.qty);
+            total_weight += lineWeight(item);
+        });
+    } else {
+        legacy.forEach(function (item) {
+            total_qty += flt(item.qty);
+            total_weight += lineWeight(item);
+        });
+    }
 
     frm.set_value('total_quantity', total_qty);
     frm.set_value('total_weight', total_weight);

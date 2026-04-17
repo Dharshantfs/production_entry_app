@@ -202,9 +202,10 @@
    "label": "Plan Code"
   },
   {
+   "description": "Same as sheet Lamination Order Code for 104 rows (auto-filled).",
    "fieldname": "custom_lamination_booking_id",
    "fieldtype": "Data",
-   "label": "Lamination Booking ID",
+   "label": "Lamination Order Code",
    "read_only": 1
   },
   {

@@ -1,12 +1,10 @@
 <template>
   <div class="cc-container">
     <div class="cc-filters">
-      <div class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        Lamination Order Table
-      </div>
+      <div class="cc-filter-title">Lamination Order Table</div>
       <div class="cc-filter-item">
         <label>View Scope</label>
-        <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #047857;">
+        <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" class="cc-select-scope">
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
@@ -14,15 +12,23 @@
       </div>
       <div class="cc-filter-item" v-if="viewScope === 'daily'">
         <label>Planned Date</label>
-        <input type="date" v-model="filterOrderDate" @change="fetchData" :disabled="isManufactureUser" />
+        <input type="date" v-model="filterOrderDate" :disabled="isManufactureUser" />
       </div>
       <div class="cc-filter-item" v-else-if="viewScope === 'weekly'">
         <label>Select Week</label>
-        <input type="week" v-model="filterWeek" @change="fetchData" />
+        <input type="week" v-model="filterWeek" />
       </div>
       <div class="cc-filter-item" v-else-if="viewScope === 'monthly'">
         <label>Select Month</label>
-        <input type="month" v-model="filterMonth" @change="fetchData" />
+        <input type="month" v-model="filterMonth" />
+      </div>
+      <div class="cc-filter-item cc-shift-filter">
+        <label>Shift</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: filterShift === 'all' }" @click="filterShift = 'all'">All</button>
+          <button type="button" :class="{ active: filterShift === 'day' }" @click="filterShift = 'day'">Day</button>
+          <button type="button" :class="{ active: filterShift === 'night' }" @click="filterShift = 'night'">Night</button>
+        </div>
       </div>
       <div class="cc-filter-item">
         <label>Order Code</label>
@@ -32,9 +38,9 @@
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
-      <button class="cc-clear-btn" @click="fetchData">🔄 Refresh</button>
-      <div class="cc-filter-item" style="margin-left: auto;">
-        <button class="cc-view-btn" @click="goToBoard">📊 Back to Lamination Board</button>
+      <div class="cc-filter-actions">
+        <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
+        <button type="button" class="cc-view-btn" @click="goToBoard">Back to Lamination Board</button>
       </div>
     </div>
 
@@ -124,8 +130,11 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+/** Client-side filter: server rows use shift_label DAY/NIGHT when available */
+const filterShift = ref("all");
 const rawData = ref([]);
 const isManufactureUser = ref(false);
+const filtersReady = ref(false);
 let fetchTimer = null;
 
 function detectRestrictedUser() {
@@ -147,6 +156,12 @@ const filteredRows = computed(() => {
   }
   if (cu) {
     d = d.filter((r) => String(r.customer_name || r.customer || "").toLowerCase().includes(cu));
+  }
+  const sh = (filterShift.value || "all").toLowerCase();
+  if (sh === "day") {
+    d = d.filter((r) => String(r.shift_label || "DAY").toUpperCase() === "DAY");
+  } else if (sh === "night") {
+    d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
   }
   return d;
 });
@@ -424,6 +439,7 @@ function toggleViewScope() {
     const weekNum = Math.ceil(days / 7);
     filterWeek.value = `${d.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
   }
+  updateUrlParams();
   fetchData();
 }
 
@@ -479,7 +495,11 @@ function updateUrlParams() {
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
 
-watch([viewScope, filterOrderDate, filterWeek, filterMonth], updateUrlParams);
+watch([filterOrderDate, filterWeek, filterMonth], () => {
+  if (!filtersReady.value) return;
+  updateUrlParams();
+  fetchData();
+});
 
 onMounted(async () => {
   isManufactureUser.value = detectRestrictedUser();
@@ -495,6 +515,7 @@ onMounted(async () => {
   }
   await fetchData();
   updateUrlParams();
+  filtersReady.value = true;
 });
 </script>
 
@@ -507,11 +528,55 @@ onMounted(async () => {
   min-height: 100vh;
 }
 .cc-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+}
+.cc-filter-title {
+  grid-column: 1 / -1;
+  padding: 8px 0 4px;
+  font-weight: 700;
+  color: #047857;
+  font-size: 15px;
+}
+.cc-select-scope {
+  font-weight: 700;
+  color: #047857;
+  min-height: 34px;
+}
+.cc-shift-btns {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cc-shift-btns button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+.cc-shift-btns button.active {
+  background: #047857;
+  color: #fff;
+  border-color: #047857;
+}
+.cc-filter-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-end;
-  margin-bottom: 12px;
+  justify-content: flex-end;
+  grid-column: 1 / -1;
 }
 .cc-filter-item {
   display: flex;
