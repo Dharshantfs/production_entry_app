@@ -9483,10 +9483,14 @@ def auto_create_planning_sheet(doc, method=None):
                 generate_party_code(sheet)
 
             _populate_planning_sheet_items(sheet, doc)
+            ensure_lamination_booking_for_planning_sheet(sheet)
             update_sheet_plan_codes(sheet, include_legacy=True)
             sheet.save(ignore_permissions=True)
             frappe.db.commit()
             _sync_lamination_fabric_planning_rows(sheet.name)
+            sheet.reload()
+            ensure_lamination_booking_for_planning_sheet(sheet)
+            sheet.save(ignore_permissions=True)
 
         frappe.msgprint(f"Planning Sheet <b>{sheet.name}</b> already exists for Sales Order <b>{doc.name}</b>. Reusing existing sheet.")
         return sheet
@@ -9507,6 +9511,7 @@ def auto_create_planning_sheet(doc, method=None):
     # _populate_planning_sheet_items, and the SQL filter finds them via EXISTS.
 
     _populate_planning_sheet_items(ps, doc)
+    ensure_lamination_booking_for_planning_sheet(ps)
     
     update_sheet_plan_codes(ps, include_legacy=True)
 
@@ -9525,7 +9530,9 @@ def auto_create_planning_sheet(doc, method=None):
     
     # RE-FETCH TO UPDATE HEADER PLAN CODES ΓÇö ONLY ITEMS ENABLED, HEADER DISABLED PER USER REQUEST
     final_doc = frappe.get_doc("Planning sheet", ps.name)
+    ensure_lamination_booking_for_planning_sheet(final_doc)
     update_sheet_plan_codes(final_doc, include_legacy=True)
+    final_doc.save(ignore_permissions=True)
     # frappe.db.set_value("Planning sheet", ps.name, "custom_plan_code", final_doc.custom_plan_code)
     
     return final_doc
@@ -9574,6 +9581,7 @@ def regenerate_planning_sheet(so_name):
     ps.custom_pb_plan_name = ""
 
     _populate_planning_sheet_items(ps, doc)
+    ensure_lamination_booking_for_planning_sheet(ps)
     
     update_sheet_plan_codes(ps, include_legacy=True)
 
@@ -9586,6 +9594,9 @@ def regenerate_planning_sheet(so_name):
 
     _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
+    ps.reload()
+    ensure_lamination_booking_for_planning_sheet(ps)
+    ps.save(ignore_permissions=True)
 
     frappe.msgprint(f"✅ Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
     return ps

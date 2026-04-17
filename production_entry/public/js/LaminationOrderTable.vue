@@ -40,6 +40,8 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
+        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Lamination Board</button>
@@ -91,6 +93,7 @@
             <th>KGS</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
+            <th style="min-width:84px;">ORDER</th>
           </tr>
         </thead>
         <tbody>
@@ -144,9 +147,15 @@
                 <span v-else style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
+            <td class="cell-center">
+              <div class="cc-order-btns">
+                <button type="button" class="cc-row-order-btn" @click="moveRow(row, -1)">↑</button>
+                <button type="button" class="cc-row-order-btn" @click="moveRow(row, 1)">↓</button>
+              </div>
+            </td>
           </tr>
           <tr v-if="!filteredRows.length">
-            <td colspan="14" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td colspan="15" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -172,6 +181,10 @@ const maintenanceRecords = ref([]);
 const moveTargetDate = ref(frappe.datetime.get_today());
 const dragRow = ref(null);
 const dragOverShift = ref("");
+const laminationSequenceStore = ref({});
+const pendingArrangementUpdates = ref({});
+const arrangementDirty = ref(false);
+const arrangementSaving = ref(false);
 let fetchTimer = null;
 
 const filteredRows = computed(() => {
@@ -190,8 +203,41 @@ const filteredRows = computed(() => {
   } else if (sh === "night") {
     d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
   }
-  return d;
+  return sortRowsBySavedSequence(d);
 });
+
+function getRowDateKey(row) {
+  return toDateKey(row?.plannedDate || row?.planned_date);
+}
+
+function sortRowsBySavedSequence(rows) {
+  const groups = {};
+  (rows || []).forEach((row) => {
+    const k = getRowDateKey(row) || "no-date";
+    if (!groups[k]) groups[k] = [];
+    groups[k].push(row);
+  });
+  const out = [];
+  Object.keys(groups)
+    .sort()
+    .forEach((dateKey) => {
+      const seq = laminationSequenceStore.value[dateKey] || [];
+      const map = {};
+      seq.forEach((name, idx) => {
+        map[String(name || "").trim()] = idx;
+      });
+      const sorted = groups[dateKey].slice().sort((a, b) => {
+        const aKey = String(a.itemName || "").trim();
+        const bKey = String(b.itemName || "").trim();
+        const ai = map[aKey] !== undefined ? map[aKey] : 999999;
+        const bi = map[bKey] !== undefined ? map[bKey] : 999999;
+        if (ai !== bi) return ai - bi;
+        return Number(a.idx || 0) - Number(b.idx || 0);
+      });
+      out.push(...sorted);
+    });
+  return out;
+}
 
 function debouncedFetch() {
   if (fetchTimer) clearTimeout(fetchTimer);
@@ -283,6 +329,104 @@ function scheduleRowsByShift(shift) {
     const sh = String(r.shift_label || "DAY").toUpperCase();
     return rk === dateKey && sh === String(shift || "").toUpperCase();
   });
+}
+
+async function fetchLaminationSequences() {
+  try {
+    const { start_date, end_date } = getScopeDateRange();
+    const res = await frappe.call({
+      method: "production_scheduler.api.get_color_sequences_range",
+      args: {
+        start_date,
+        end_date,
+        units: JSON.stringify(["Lamination Unit"]),
+        plan_name: "Default",
+      },
+    });
+    const store = {};
+    (res?.message || []).forEach((rec) => {
+      const d = toDateKey(rec?.date);
+      if (!d) return;
+      let seq = rec?.sequence_data || rec?.sequence || [];
+      if (typeof seq === "string") {
+        try {
+          seq = JSON.parse(seq);
+        } catch (e) {
+          seq = [];
+        }
+      }
+      if (Array.isArray(seq) && seq.length) {
+        store[d] = seq.map((x) => String(x || "").trim()).filter(Boolean);
+      }
+    });
+    laminationSequenceStore.value = store;
+  } catch (e) {
+    console.error("Failed to fetch lamination sequence", e);
+    laminationSequenceStore.value = {};
+  }
+}
+
+function moveRow(row, direction) {
+  const dateKey = getRowDateKey(row);
+  if (!dateKey || !row?.itemName) return;
+  const dayRows = filteredRows.value.filter((r) => getRowDateKey(r) === dateKey);
+  const seq = dayRows.map((r) => String(r.itemName || "").trim()).filter(Boolean);
+  const idx = seq.indexOf(String(row.itemName || "").trim());
+  if (idx < 0) return;
+  const target = idx + Number(direction || 0);
+  if (target < 0 || target >= seq.length) return;
+  const [mv] = seq.splice(idx, 1);
+  seq.splice(target, 0, mv);
+  laminationSequenceStore.value = { ...laminationSequenceStore.value, [dateKey]: seq };
+  pendingArrangementUpdates.value[dateKey] = seq;
+  arrangementDirty.value = true;
+}
+
+async function saveLaminationArrangement() {
+  if (!arrangementDirty.value || arrangementSaving.value) return;
+  arrangementSaving.value = true;
+  try {
+    for (const [dateKey, seq] of Object.entries(pendingArrangementUpdates.value || {})) {
+      if (!Array.isArray(seq) || !seq.length) continue;
+      await frappe.call({
+        method: "production_scheduler.api.save_color_sequence",
+        args: {
+          date: dateKey,
+          unit: "Lamination Unit",
+          sequence_data: JSON.stringify(seq),
+          plan_name: "Default",
+        },
+      });
+    }
+    pendingArrangementUpdates.value = {};
+    arrangementDirty.value = false;
+    frappe.show_alert({ message: "Lamination arrangement saved", indicator: "green" }, 3);
+  } catch (e) {
+    frappe.msgprint(`Failed to save arrangement: ${e?.message || e}`);
+  } finally {
+    arrangementSaving.value = false;
+  }
+}
+
+async function restoreLaminationArrangement() {
+  try {
+    const { start_date, end_date } = getScopeDateRange();
+    const start = new Date(start_date);
+    const end = new Date(end_date);
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      await frappe.call({
+        method: "production_scheduler.api.restore_last_color_sequence",
+        args: { date: dateKey, unit: "Lamination Unit", plan_name: "Default" },
+      });
+    }
+    pendingArrangementUpdates.value = {};
+    arrangementDirty.value = false;
+    await fetchData();
+    frappe.show_alert({ message: "Lamination arrangement restored", indicator: "green" }, 3);
+  } catch (e) {
+    frappe.msgprint(`Failed to restore arrangement: ${e?.message || e}`);
+  }
 }
 
 function formatKg2(value) {
@@ -707,6 +851,7 @@ async function fetchData() {
       ...d,
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
     }));
+    await fetchLaminationSequences();
     await fetchMaintenanceRecords();
   } catch (e) {
     console.error(e);
@@ -947,6 +1092,23 @@ onMounted(async () => {
   color: #b91c1c;
   background: #fee2e2;
   border: 1px solid #fecaca;
+}
+.cc-order-btns {
+  display: inline-flex;
+  gap: 4px;
+}
+.cc-row-order-btn {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  border-radius: 4px;
+  width: 24px;
+  height: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cc-row-order-btn:hover {
+  background: #e2e8f0;
 }
 .cell-right {
   text-align: right;
