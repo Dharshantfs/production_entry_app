@@ -19,7 +19,7 @@
       "fieldtype": "Select",
       "in_list_view": 1,
       "label": "Unit",
-      "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4",
+      "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit",
       "reqd": 1
     },
     {

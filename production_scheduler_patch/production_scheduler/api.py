@@ -21,6 +21,98 @@ def _item_process_prefix(item_code):
 	return ic[:3] if len(ic) >= 3 else ""
 
 
+def _month_letter_from_date(dt):
+	"""January=A … December=L (single letter month code)."""
+	m = int(getattr(dt, "month", 1) or 1)
+	m = max(1, min(12, m))
+	return chr(ord("A") + m - 1)
+
+
+def _next_lamination_order_code():
+	"""U + YY + month letter (A–L) + 3-digit series, e.g. U26D001 (April 2026). Series is per month."""
+	now = frappe.utils.now_datetime()
+	yy = str(now.year)[-2:]
+	ml = _month_letter_from_date(now)
+	prefix = f"U{yy}{ml}"
+	rows = frappe.db.sql(
+		"""
+		SELECT custom_lamination_order_code FROM `tabPlanning sheet`
+		WHERE IFNULL(custom_lamination_order_code, '') != ''
+		  AND custom_lamination_order_code LIKE %s
+		ORDER BY custom_lamination_order_code DESC
+		LIMIT 1
+		""",
+		(prefix + "%",),
+	)
+	n = 1
+	if rows and rows[0][0]:
+		tail = str(rows[0][0])[len(prefix) :]
+		try:
+			n = int(tail) + 1
+		except Exception:
+			n = 1
+	if n > 999:
+		frappe.throw(_("Lamination order code series exhausted for prefix %s (max 999).") % prefix)
+	return prefix + str(n).zfill(3)
+
+
+def ensure_lamination_booking_for_planning_sheet(doc):
+	"""One lamination order code per Planning sheet when any 104 row exists; copy to row tables + SO."""
+	if not LAMINATION_FLOW_ENABLED:
+		return
+	try:
+		meta = frappe.get_meta("Planning sheet")
+	except Exception:
+		return
+	if not meta.has_field("custom_lamination_order_code"):
+		return
+	has_pt_booking_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
+	has_pt_booking_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
+	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
+
+	has_104 = False
+	for fn in ("planned_items", "items", "custom_planned_items"):
+		if not meta.has_field(fn):
+			continue
+		for row in doc.get(fn) or []:
+			ic = (getattr(row, "item_code", None) or "").strip()
+			if _item_process_prefix(ic) == "104":
+				has_104 = True
+				break
+		if has_104:
+			break
+	if not has_104:
+		return
+
+	code = (getattr(doc, "custom_lamination_order_code", None) or "").strip()
+	if not code:
+		code = _next_lamination_order_code()
+		doc.custom_lamination_order_code = code
+
+	for fn in ("planned_items", "items", "custom_planned_items"):
+		if not meta.has_field(fn):
+			continue
+		for row in doc.get(fn) or []:
+			ic = (getattr(row, "item_code", None) or "").strip()
+			if _item_process_prefix(ic) != "104":
+				continue
+			if fn in ("planned_items", "custom_planned_items"):
+				if has_pt_booking_new:
+					row.custom_lamination_order_code_ = code
+				elif has_pt_booking_old:
+					row.custom_lamination_booking_id = code
+			else:
+				if has_psi_booking:
+					row.custom_lamination_order_code = code
+
+	sales_order = (getattr(doc, "sales_order", None) or "").strip()
+	if sales_order and frappe.db.has_column("Sales Order", "custom_lamination_order_code"):
+		try:
+			frappe.db.set_value("Sales Order", sales_order, "custom_lamination_order_code", code, update_modified=False)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "sync_lamination_order_code_sales_order")
+
+
 @frappe.whitelist()
 def get_fabric_item_from_laminated_item(lam_item_code):
 	"""
@@ -465,6 +557,178 @@ def get_color_chart_data(
     except Exception:
         frappe.log_error(frappe.get_traceback(), "get_color_chart_data_error")
         return []
+
+
+@frappe.whitelist()
+def get_lamination_order_table_data(
+    date=None,
+    start_date=None,
+    end_date=None,
+    planned_only=1,
+):
+    """104-only board rows for Lamination Order Table: booking id, fabric GSM, planned meters, SPR achieved m/kg."""
+    try:
+        rows = _get_color_chart_data_impl(
+            date=date,
+            start_date=start_date,
+            end_date=end_date,
+            plan_name="__all__",
+            planned_only=cint(planned_only),
+            board_process_scope="lamination_only",
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_lamination_order_table_data")
+        return []
+    if not rows:
+        return []
+
+    psi_names = []
+    for r in rows:
+        nm = r.get("itemName") or r.get("item_name")
+        if nm:
+            psi_names.append(nm)
+    psi_names = list({x for x in psi_names if x})
+    if not psi_names:
+        return rows
+
+    fmt = ",".join(["%s"] * len(psi_names))
+    has_spr_col = frappe.db.has_column("Planning Table", "spr_name")
+    spr_for_meter_sql = "pt.spr_name as spr_for_meter" if has_spr_col else "'' as spr_for_meter"
+    has_ps_book_new = frappe.db.has_column("Planning sheet", "custom_lamination_order_code")
+    has_ps_book_old = frappe.db.has_column("Planning sheet", "custom_lamination_booking_id")
+    has_pt_book_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
+    has_pt_book_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
+    has_shift_col = frappe.db.has_column("Planning Table", "custom_lamination_shift")
+    booking_expr = "''"
+    if has_ps_book_new and has_pt_book_new:
+        booking_expr = "IFNULL(ps.custom_lamination_order_code, IFNULL(pt.custom_lamination_order_code_, ''))"
+    elif has_ps_book_new:
+        booking_expr = "IFNULL(ps.custom_lamination_order_code, '')"
+    elif has_pt_book_new:
+        booking_expr = "IFNULL(pt.custom_lamination_order_code_, '')"
+    elif has_ps_book_old and has_pt_book_old:
+        booking_expr = "IFNULL(ps.custom_lamination_booking_id, IFNULL(pt.custom_lamination_booking_id, ''))"
+    elif has_ps_book_old:
+        booking_expr = "IFNULL(ps.custom_lamination_booking_id, '')"
+    elif has_pt_book_old:
+        booking_expr = "IFNULL(pt.custom_lamination_booking_id, '')"
+    shift_expr = "IFNULL(pt.custom_lamination_shift, 'DAY')" if has_shift_col else "'DAY'"
+
+    extra = frappe.db.sql(
+        f"""
+        SELECT
+            pt.name as psi_name,
+            IFNULL(pt.meter, 0) as planned_meter,
+            {booking_expr} as lamination_booking_id,
+            IFNULL(fab.gsm, 0) as fabric_gsm,
+            {spr_for_meter_sql},
+            {shift_expr} as shift_label
+        FROM `tabPlanning Table` pt
+        INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+        LEFT JOIN `tabPlanning Table` fab ON fab.parent = pt.parent
+            AND IFNULL(fab.so_item, '') = IFNULL(pt.sales_order_item, '')
+            AND fab.item_code LIKE '100%%'
+        WHERE pt.name IN ({fmt})
+        """,
+        tuple(psi_names),
+        as_dict=True,
+    )
+    by_psi = {e["psi_name"]: e for e in (extra or [])}
+
+    spr_names = list(
+        {
+            (e.get("spr_for_meter") or "").strip()
+            for e in (extra or [])
+            if (e.get("spr_for_meter") or "").strip()
+        }
+    )
+    spr_meters = {}
+    if spr_names and frappe.db.exists("DocType", "Shaft Production Run Item"):
+        spr_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
+        if "produced_length_mtrs" in spr_cols:
+            sf = ",".join(["%s"] * len(spr_names))
+            for r in frappe.db.sql(
+                f"""
+                SELECT parent, SUM(IFNULL(produced_length_mtrs, 0)) as mtrs
+                FROM `tabShaft Production Run Item`
+                WHERE parent IN ({sf})
+                GROUP BY parent
+                """,
+                tuple(spr_names),
+                as_dict=True,
+            ):
+                spr_meters[r["parent"]] = flt(r.get("mtrs"))
+
+    out = []
+    for r in rows:
+        nm = r.get("itemName") or r.get("item_name")
+        ex = by_psi.get(nm) if nm else None
+        spr_nm = (ex.get("spr_for_meter") if ex else "") or ""
+        achieved_m = flt(spr_meters.get(spr_nm)) if spr_nm else 0.0
+        row = dict(r)
+        row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
+        row["fabric_gsm"] = int(ex.get("fabric_gsm") or 0) if ex else 0
+        row["lamination_gsm"] = int(row.get("gsm") or 0) or 0
+        row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
+        row["achieved_meter"] = achieved_m
+        row["shift_label"] = ((ex.get("shift_label") if ex else "") or "DAY").upper()
+        out.append(row)
+    return out
+
+
+@frappe.whitelist()
+def assign_lamination_shift(shift_date=None, shift_label="DAY"):
+    """Assign DAY/NIGHT shift for lamination (104) rows on a specific effective planned date."""
+    target_date = getdate(shift_date or frappe.utils.nowdate())
+    shift_label = (shift_label or "DAY").strip().upper()
+    if shift_label not in ("DAY", "NIGHT"):
+        frappe.throw(_("Shift must be DAY or NIGHT."))
+    if not frappe.db.has_column("Planning Table", "custom_lamination_shift"):
+        frappe.throw(_("Field custom_lamination_shift is missing on Planning Table. Please migrate."))
+    if is_date_under_maintenance("Lamination Unit", str(target_date)):
+        info = get_maintenance_info_on_date("Lamination Unit", str(target_date)) or {}
+        frappe.throw(
+            _("Cannot place lamination orders on {0}. Machine is off ({1}) from {2} to {3}.").format(
+                target_date,
+                info.get("type") or "Maintenance",
+                info.get("start_date") or target_date,
+                info.get("end_date") or target_date,
+            )
+        )
+
+    has_sheet_planned = frappe.db.has_column("Planning sheet", "custom_planned_date")
+    eff_date = "COALESCE(NULLIF(pt.planned_date, ''), NULLIF(ps.custom_planned_date, ''), ps.ordered_date)" if has_sheet_planned else "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
+
+    frappe.db.sql(
+        f"""
+        UPDATE `tabPlanning Table` pt
+        INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+        SET pt.custom_lamination_shift = %s
+        WHERE ps.docstatus < 2
+          AND pt.item_code LIKE '104%%'
+          AND DATE({eff_date}) = DATE(%s)
+        """,
+        (shift_label, target_date),
+    )
+    updated = frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0].get("c") or 0
+    frappe.db.commit()
+    return {"status": "ok", "updated_count": int(updated), "date": str(target_date), "shift": shift_label}
+
+
+@frappe.whitelist()
+def add_lamination_machine_off(start_date=None, end_date=None, maintenance_type="Machine Off", notes=None):
+    """Create Lamination Unit maintenance window (Machine Off by default)."""
+    start_dt = getdate(start_date or frappe.utils.nowdate())
+    end_dt = getdate(end_date or start_dt)
+    if end_dt < start_dt:
+        frappe.throw(_("End Date must be on or after Start Date."))
+    return add_equipment_maintenance(
+        unit="Lamination Unit",
+        maintenance_type=maintenance_type or "Machine Off",
+        start_date=str(start_dt),
+        end_date=str(end_dt),
+        notes=notes or "",
+    )
 
 
 def _find_existing_sheet_for_sales_order(sales_order, exclude_name=None):
@@ -5541,6 +5805,69 @@ def create_plan_name_field():
             "insert_after": "planning_status"
         })
         cf6.insert(ignore_permissions=True)
+
+    if not frappe.db.exists("Custom Field", {"dt": "Planning sheet", "fieldname": "custom_lamination_order_code"}):
+        cf_lam_sheet = frappe.get_doc({
+            "doctype": "Custom Field",
+            "dt": "Planning sheet",
+            "fieldname": "custom_lamination_order_code",
+            "label": "Lamination Order Code",
+            "fieldtype": "Data",
+            "insert_after": "party_code",
+            "read_only": 1,
+        })
+        cf_lam_sheet.insert(ignore_permissions=True)
+
+    if not frappe.db.exists("Custom Field", {"dt": "Planning sheet Item", "fieldname": "custom_lamination_order_code"}):
+        cf_lam_psi = frappe.get_doc({
+            "doctype": "Custom Field",
+            "dt": "Planning sheet Item",
+            "fieldname": "custom_lamination_order_code",
+            "label": "Lamination Order Code",
+            "fieldtype": "Data",
+            "insert_after": "custom_plan_code",
+            "read_only": 1,
+        })
+        cf_lam_psi.insert(ignore_permissions=True)
+
+    if not frappe.db.exists("Custom Field", {"dt": "Planning Table", "fieldname": "custom_lamination_order_code_"}):
+        cf_lam_pt = frappe.get_doc({
+            "doctype": "Custom Field",
+            "dt": "Planning Table",
+            "fieldname": "custom_lamination_order_code_",
+            "label": "Lamination Order Code",
+            "fieldtype": "Data",
+            "insert_after": "custom_plan_code",
+            "read_only": 1,
+            "in_list_view": 1,
+        })
+        cf_lam_pt.insert(ignore_permissions=True)
+
+    if not frappe.db.exists("Custom Field", {"dt": "Planning Table", "fieldname": "custom_lamination_shift"}):
+        cf_lam_shift = frappe.get_doc({
+            "doctype": "Custom Field",
+            "dt": "Planning Table",
+            "fieldname": "custom_lamination_shift",
+            "label": "Shift",
+            "fieldtype": "Select",
+            "options": "DAY\nNIGHT",
+            "default": "DAY",
+            "insert_after": "custom_lamination_order_code_",
+            "in_list_view": 1,
+        })
+        cf_lam_shift.insert(ignore_permissions=True)
+
+    if not frappe.db.exists("Custom Field", {"dt": "Sales Order", "fieldname": "custom_lamination_order_code"}):
+        cf_lam_so = frappe.get_doc({
+            "doctype": "Custom Field",
+            "dt": "Sales Order",
+            "fieldname": "custom_lamination_order_code",
+            "label": "Lamination Order Code",
+            "fieldtype": "Data",
+            "insert_after": "delivery_date",
+            "read_only": 1,
+        })
+        cf_lam_so.insert(ignore_permissions=True)
     
     frappe.db.commit()
     
@@ -11449,6 +11776,3 @@ def sync_merge_planned_date(merge_id, new_date):
             updated_count += 1
     
     return {"status": "success", "updated": updated_count}
-
-
-from production_entry.production_planning.scheduler_api import get_lamination_order_table_data  # noqa: E402,F401

@@ -33,6 +33,8 @@
   "plan_name",
   "custom_item_planned_date",
   "custom_plan_code",
+  "custom_lamination_order_code_",
+  "custom_lamination_shift",
   "order_sheet",
   "custom_split_metadata",
   "section_split",
@@ -199,6 +201,21 @@
    "fieldname": "custom_plan_code",
    "fieldtype": "Data",
    "label": "Plan Code"
+  },
+  {
+   "description": "Same as sheet Lamination Order Code for 104 rows (auto-filled).",
+   "fieldname": "custom_lamination_order_code_",
+   "fieldtype": "Data",
+   "label": "Lamination Order Code",
+   "read_only": 1
+  },
+  {
+   "default": "DAY",
+   "fieldname": "custom_lamination_shift",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Shift",
+   "options": "DAY\nNIGHT"
   },
   {
    "fieldname": "order_sheet",

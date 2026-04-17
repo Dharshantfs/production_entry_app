@@ -30,6 +30,7 @@
         "column_break_15",
         "custom_item_planned_date",
         "custom_plan_code",
+        "custom_lamination_order_code",
         "order_sheet",
         "custom_split_metadata",
         "total_weight",
@@ -176,6 +177,12 @@
             "fieldname": "custom_plan_code",
             "fieldtype": "Data",
             "label": "Plan Code"
+        },
+        {
+            "fieldname": "custom_lamination_order_code",
+            "fieldtype": "Data",
+            "label": "Lamination Order Code",
+            "read_only": 1
         },
         {
             "fieldname": "order_sheet",

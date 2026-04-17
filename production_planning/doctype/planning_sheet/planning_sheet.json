@@ -15,7 +15,7 @@
   "sales_order",
   "section_break_5",
   "party_code",
-  "custom_lamination_booking_id",
+  "custom_lamination_order_code",
   "customer",
   "column_break_7",
   "dod",
@@ -174,7 +174,7 @@
   },
   {
    "description": "Auto-assigned when the sheet has lamination (104) lines. Format: U + year + month letter (A\u2013L) + 3 digits, e.g. U26D001 for April 2026.",
-   "fieldname": "custom_lamination_booking_id",
+   "fieldname": "custom_lamination_order_code",
    "fieldtype": "Data",
    "label": "Lamination Order Code",
    "read_only": 1

@@ -4,7 +4,7 @@
       <div class="cc-filter-title">Lamination Order Table</div>
       <div class="cc-filter-item">
         <label>View Scope</label>
-        <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" class="cc-select-scope">
+        <select v-model="viewScope" @change="toggleViewScope" class="cc-select-scope">
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
@@ -12,7 +12,7 @@
       </div>
       <div class="cc-filter-item" v-if="viewScope === 'daily'">
         <label>Planned Date</label>
-        <input type="date" v-model="filterOrderDate" :disabled="isManufactureUser" />
+        <input type="date" v-model="filterOrderDate" />
       </div>
       <div class="cc-filter-item" v-else-if="viewScope === 'weekly'">
         <label>Select Week</label>
@@ -39,6 +39,8 @@
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
       <div class="cc-filter-actions">
+        <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Lamination Board</button>
       </div>
@@ -68,7 +70,12 @@
         <tbody>
           <tr v-for="(row, idx) in filteredRows" :key="row.itemName || idx">
             <td class="cell-center">{{ idx + 1 }}</td>
-            <td class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
+            <td class="cell-center">
+              {{ formatDate(row.plannedDate || row.planned_date) }}
+              <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date)" class="cc-maint-chip">
+                OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date) }}
+              </span>
+            </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "—" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
@@ -133,19 +140,10 @@ const filterCustomer = ref("");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 const rawData = ref([]);
-const isManufactureUser = ref(false);
 const filtersReady = ref(false);
+const maintenanceByDate = ref({});
+const maintenanceRecords = ref([]);
 let fetchTimer = null;
-
-function detectRestrictedUser() {
-  try {
-    const RESTRICTED = ["Manufacture User", "Manufacturing User"];
-    if (frappe?.user_roles) {
-      return RESTRICTED.some((r) => (frappe.user_roles || []).includes(r));
-    }
-  } catch (e) {}
-  return false;
-}
 
 const filteredRows = computed(() => {
   let d = rawData.value || [];
@@ -179,6 +177,73 @@ function formatDate(d) {
     }
   } catch (e) {}
   return d;
+}
+
+function toDateKey(d) {
+  if (!d) return "";
+  const s = String(d).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dt = new Date(s);
+  if (Number.isNaN(dt.getTime())) return "";
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function getScopeDateRange() {
+  if (viewScope.value === "monthly" && filterMonth.value) {
+    const [year, month] = filterMonth.value.split("-");
+    const lastDay = new Date(year, month, 0).getDate();
+    return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` };
+  }
+  if (viewScope.value === "weekly" && filterWeek.value) {
+    const [yearStr, weekStr] = filterWeek.value.split("-W");
+    const y = parseInt(yearStr, 10);
+    const w = parseInt(weekStr, 10);
+    const simple = new Date(y, 0, 1 + (w - 1) * 7);
+    const dow = simple.getDay();
+    const weekStart = new Date(simple);
+    if (dow <= 4) weekStart.setDate(simple.getDate() - simple.getDay() + 1);
+    else weekStart.setDate(simple.getDate() + 8 - simple.getDay());
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    const fmt = (d) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return { start_date: fmt(weekStart), end_date: fmt(weekEnd) };
+  }
+  const day = filterOrderDate.value || frappe.datetime.get_today();
+  return { start_date: day, end_date: day };
+}
+
+async function fetchMaintenanceRecords() {
+  try {
+    const { start_date, end_date } = getScopeDateRange();
+    const res = await frappe.call({
+      method: "production_scheduler.api.get_all_equipment_maintenance",
+      args: { start_date, end_date },
+    });
+    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === "Lamination Unit");
+    maintenanceRecords.value = rows;
+    const mapped = {};
+    rows.forEach((rec) => {
+      const start = new Date(rec.start_date);
+      const end = new Date(rec.end_date);
+      for (let cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) {
+        const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
+        mapped[key] = rec.maintenance_type || "Machine Off";
+      }
+    });
+    maintenanceByDate.value = mapped;
+  } catch (e) {
+    console.error("Failed to load lamination maintenance", e);
+    maintenanceByDate.value = {};
+  }
+}
+
+function maintenanceTypeForDate(dateValue) {
+  const k = toDateKey(dateValue);
+  return k ? maintenanceByDate.value[k] : "";
 }
 
 function formatKg2(value) {
@@ -424,12 +489,103 @@ function goToBoard() {
   frappe.set_route("lamination-board");
 }
 
-function toggleViewScope() {
-  if (isManufactureUser.value) {
-    viewScope.value = "daily";
-    filterOrderDate.value = frappe.datetime.get_today();
-    return;
+function currentShiftDateForDialog() {
+  if (viewScope.value === "daily" && filterOrderDate.value) return filterOrderDate.value;
+  return frappe.datetime.get_today();
+}
+
+function openAssignShiftDialog() {
+  const d = new frappe.ui.Dialog({
+    title: "Assign Lamination Shift",
+    fields: [
+      { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
+      { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
+    ],
+    primary_action_label: "Apply",
+    primary_action: async (vals) => {
+      try {
+        if (maintenanceTypeForDate(vals.shift_date)) {
+          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date)}).`);
+          return;
+        }
+        const res = await frappe.call({
+          method: "production_scheduler.api.assign_lamination_shift",
+          args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
+        });
+        const msg = res?.message || {};
+        frappe.show_alert(
+          { message: `Shift ${msg.shift || vals.shift_label} applied to ${msg.updated_count || 0} order(s)`, indicator: "green" },
+          5
+        );
+        d.hide();
+        if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date;
+        await fetchData();
+      } catch (e) {
+        frappe.msgprint(`Failed to assign shift: ${e?.message || e}`);
+      }
+    },
+  });
+  d.show();
+}
+
+function getMaintenanceRecordsHTML() {
+  if (!maintenanceRecords.value.length) {
+    return '<p style="color:#64748b;text-align:center;padding:6px 0;">No Lamination maintenance records in this scope.</p>';
   }
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
+  maintenanceRecords.value.forEach((rec) => {
+    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
+  });
+  html += "</table>";
+  return html;
+}
+
+function openMachineOffDialog() {
+  const d = new frappe.ui.Dialog({
+    title: "Lamination Machine Off",
+    fields: [
+      { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
+      { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
+      {
+        fieldtype: "Select",
+        fieldname: "maintenance_type",
+        label: "Type",
+        options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change",
+        default: "Machine Off",
+        reqd: 1,
+      },
+      { fieldtype: "Small Text", fieldname: "notes", label: "Notes" },
+      { fieldtype: "HTML", fieldname: "records", options: getMaintenanceRecordsHTML() },
+    ],
+    primary_action_label: "Save",
+    primary_action: async (vals) => {
+      try {
+        const res = await frappe.call({
+          method: "production_scheduler.api.add_lamination_machine_off",
+          args: {
+            start_date: vals.start_date,
+            end_date: vals.end_date,
+            maintenance_type: vals.maintenance_type,
+            notes: vals.notes || "",
+          },
+        });
+        if (res?.message?.status === "success") {
+          frappe.show_alert({ message: res.message.message || "Lamination maintenance saved", indicator: "green" }, 4);
+          d.hide();
+          await fetchMaintenanceRecords();
+          await fetchData();
+        } else {
+          frappe.msgprint(res?.message?.message || "Failed to save maintenance.");
+        }
+      } catch (e) {
+        frappe.msgprint(`Error saving maintenance: ${e?.message || e}`);
+      }
+    },
+  });
+  d.show();
+}
+
+function toggleViewScope() {
   if (viewScope.value === "monthly" && !filterMonth.value) {
     filterMonth.value = frappe.datetime.get_today().substring(0, 7);
   } else if (viewScope.value === "weekly" && !filterWeek.value) {
@@ -480,6 +636,7 @@ async function fetchData() {
       ...d,
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
     }));
+    await fetchMaintenanceRecords();
   } catch (e) {
     console.error(e);
     frappe.msgprint("Error loading lamination order table");
@@ -502,17 +659,11 @@ watch([filterOrderDate, filterWeek, filterMonth], () => {
 });
 
 onMounted(async () => {
-  isManufactureUser.value = detectRestrictedUser();
-  if (isManufactureUser.value) {
-    viewScope.value = "daily";
-    filterOrderDate.value = frappe.datetime.get_today();
-  } else {
-    const p = new URLSearchParams(window.location.search);
-    if (p.get("scope")) viewScope.value = p.get("scope");
-    if (p.get("date")) filterOrderDate.value = p.get("date");
-    if (p.get("week")) filterWeek.value = p.get("week");
-    if (p.get("month")) filterMonth.value = p.get("month");
-  }
+  const p = new URLSearchParams(window.location.search);
+  if (p.get("scope")) viewScope.value = p.get("scope");
+  if (p.get("date")) filterOrderDate.value = p.get("date");
+  if (p.get("week")) filterWeek.value = p.get("week");
+  if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
   updateUrlParams();
   filtersReady.value = true;
@@ -589,6 +740,7 @@ onMounted(async () => {
   color: #64748b;
 }
 .cc-clear-btn,
+.cc-maint-btn,
 .cc-view-btn {
   padding: 8px 12px;
   border-radius: 8px;
@@ -596,6 +748,12 @@ onMounted(async () => {
   background: #fff;
   cursor: pointer;
   font-size: 12px;
+}
+.cc-maint-btn {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
+  font-weight: 700;
 }
 .cc-view-btn {
   background: #3b82f6;
@@ -639,6 +797,17 @@ onMounted(async () => {
 }
 .cell-center {
   text-align: center;
+}
+.cc-maint-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #b91c1c;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
 }
 .cell-right {
   text-align: right;
