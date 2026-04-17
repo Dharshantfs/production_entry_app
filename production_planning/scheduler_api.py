@@ -3189,18 +3189,65 @@ def _planning_sheet_item_so_line_column():
     return None
 
 
-def _sync_legacy_planning_sheet_item_unit(source_item, unit):
-    """After a board move, mirror only `unit` onto Planning sheet Item (SO snapshot grid)."""
+def _planning_table_so_line_column():
+    """Column on Planning Table that links to the Sales Order line."""
+    if frappe.db.has_column("Planning Table", "sales_order_item"):
+        return "sales_order_item"
+    if frappe.db.has_column("Planning Table", "custom_sales_order_item"):
+        return "custom_sales_order_item"
+    return None
+
+
+def _resolve_legacy_source_item_from_board_row(item_doc):
+    """Fallback legacy-row resolver when Planning Table.source_item is stale/missing."""
+    if not item_doc or not item_doc.parent:
+        return None
+    so_col_pt = _planning_table_so_line_column()
+    so_col_psi = _planning_sheet_item_so_line_column()
+    if so_col_pt and so_col_psi:
+        so_val = str(item_doc.get(so_col_pt) or "").strip()
+        if so_val:
+            hit = frappe.db.sql(
+                f"""
+                SELECT name
+                FROM `tabPlanning sheet Item`
+                WHERE parent = %s AND `{so_col_psi}` = %s
+                ORDER BY idx ASC
+                LIMIT 1
+                """,
+                (item_doc.parent, so_val),
+            )
+            if hit:
+                return hit[0][0]
+    item_code = str(item_doc.get("item_code") or "").strip()
+    if item_code:
+        rows = frappe.db.sql(
+            """
+            SELECT name FROM `tabPlanning sheet Item`
+            WHERE parent = %s AND item_code = %s
+            ORDER BY idx ASC
+            """,
+            (item_doc.parent, item_code),
+        )
+        if len(rows) == 1:
+            return rows[0][0]
+    return None
+
+
+def _sync_legacy_planning_sheet_item_unit(source_item, unit, plan_code=None):
+    """After a board move, mirror `unit` (+ plan code when available) onto Planning sheet Item."""
     name = (source_item or "").strip()
     if not name or not frappe.db.exists("Planning sheet Item", name):
         return
-    if not frappe.db.has_column("Planning sheet Item", "unit"):
+    updates = {}
+    if frappe.db.has_column("Planning sheet Item", "unit"):
+        updates["unit"] = normalize_planning_unit_for_select(unit)
+    if plan_code and frappe.db.has_column("Planning sheet Item", "custom_plan_code"):
+        updates["custom_plan_code"] = plan_code
+    if not updates:
         return
-    unit = normalize_planning_unit_for_select(unit)
-    frappe.db.sql(
-        "UPDATE `tabPlanning sheet Item` SET unit = %s WHERE name = %s",
-        (unit, name),
-    )
+    set_clause = ", ".join([f"`{k}` = %s" for k in updates.keys()])
+    frappe.db.sql(f"UPDATE `tabPlanning sheet Item` SET {set_clause} WHERE name = %s", list(updates.values()) + [name])
 
 
 def _legacy_psi_has_board_on_unit(sheet_parent, psi_name, target_unit):
@@ -3343,6 +3390,11 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     source_parent = frappe.get_doc("Planning sheet", item_doc.parent)
     
     source_effective_date = getdate(source_parent.get("custom_planned_date") or source_parent.ordered_date)
+    move_code = generate_plan_code(
+        target_date,
+        normalize_planning_unit_for_select(unit),
+        (source_parent.get("custom_plan_name") or "Default"),
+    )
     
     # 1. Date Reparenting (Disabled Per User Request)
     # The user explicitly requested "NEVER ALLOW NEW PLANNING SHEET" and "ALWASY USE EXISTING PLANNING SHEET".
@@ -3355,6 +3407,8 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     legacy_table = "Planning sheet Item"
     # Repair stale/missing source_item link so unit sync reaches legacy PSI immediately.
     resolved_source = _resolve_planning_table_source_item_link(item_doc.get("source_item"), item_doc.name)
+    if not resolved_source:
+        resolved_source = _resolve_legacy_source_item_from_board_row(item_doc)
     if resolved_source and resolved_source != (item_doc.get("source_item") or ""):
         item_doc.source_item = resolved_source
         frappe.db.sql(
@@ -3382,9 +3436,9 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
                 frappe.db.set_value(legacy_table, old_legacy_doc.name, "qty", new_orig_qty)
                 item_doc.source_item = new_legacy_doc.name
             else:
-                _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit)
+                _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit, move_code)
         else:
-            _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit)
+            _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit, move_code)
 
         try:
             cur_legacy = frappe.get_doc(legacy_table, item_doc.source_item)
@@ -3435,11 +3489,6 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     update_fields = {"unit": unit, "source_item": item_doc.source_item}
     if frappe.db.has_column("Planning Table", "planned_date"):
         update_fields["planned_date"] = target_date
-    move_code = generate_plan_code(
-        target_date,
-        normalize_planning_unit_for_select(unit),
-        (source_parent.get("custom_plan_name") or "Default"),
-    )
     if frappe.db.has_column("Planning Table", "plan_name"):
         update_fields["plan_name"] = move_code
     if frappe.db.has_column("Planning Table", "custom_plan_code"):
@@ -3509,7 +3558,7 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     for sheet_name in set([source_parent.name, item_doc.parent]):
         if frappe.db.exists("Planning sheet", sheet_name):
             doc_sheet = frappe.get_doc("Planning sheet", sheet_name, ignore_cache=True)
-            update_sheet_plan_codes(doc_sheet)
+            update_sheet_plan_codes(doc_sheet, include_legacy=True)
             frappe.db.sql("UPDATE `tabPlanning sheet` SET custom_plan_code = %s WHERE name = %s", (doc_sheet.custom_plan_code, doc_sheet.name))
 
             for tf in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:
