@@ -40,6 +40,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
@@ -48,7 +49,7 @@
       </div>
     </div>
 
-    <div class="cc-shift-board">
+    <div class="cc-shift-board" v-if="showShiftPlanner">
       <div class="cc-shift-board-head">
         <div class="cc-shift-board-title">Shift Planner (drag between Day/Night)</div>
         <div class="cc-shift-board-date">
@@ -75,7 +76,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit — Planned orders (104)</div>
+      <div class="cc-table-unit-header lot-header">Lamination Unit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Planned orders (104)</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -91,13 +92,25 @@
             <th>PLANNED MTR</th>
             <th>ACHIEVED MTR</th>
             <th>KGS</th>
+            <th>FABRIC QTY (KG)</th>
+            <th>CHILD WO PROD (KG)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
             <th style="min-width:84px;">ORDER</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, idx) in filteredRows" :key="row.itemName || idx">
+          <tr
+            v-for="(row, idx) in filteredRows"
+            :key="row.itemName || idx"
+            :draggable="arrangementUnlocked"
+            @dragstart="onOrderDragStart(row, $event)"
+            @dragover.prevent="onOrderDragOver(row)"
+            @dragleave="onOrderDragLeave(row)"
+            @drop.prevent="onOrderDrop(row)"
+            @dragend="onOrderDragEnd"
+            :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }"
+          >
             <td class="cell-center">{{ idx + 1 }}</td>
             <td class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
@@ -106,27 +119,60 @@
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "—" }}</td>
+            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality }}</td>
             <td class="cell-center font-bold">{{ row.color }}</td>
-            <td class="cell-center">{{ row.fabric_gsm || "—" }}</td>
+            <td class="cell-center">{{ row.fabric_gsm || "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
-            <td class="cell-right">{{ row.planned_meter ?? "—" }}</td>
+            <td class="cell-right">{{ row.planned_meter ?? "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
+            <td class="cell-right">{{ formatKg2(row.fabric_achieved_kg) }} / {{ formatKg2(row.fabric_required_kg) }}</td>
+            <td class="cell-right">{{ formatKg2(row.child_wo_produced_kg) }}</td>
             <td class="cell-center">
-              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">📋 View</button>
+              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã¢â‚¬Â¹ View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
             <td class="cell-center">
               <div class="pt-stock-cell">
                 <div v-if="row.pp_id" class="pt-pill-row">
                   <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
-                  <span v-else class="pt-pill pt-pill-muted">SPR: —</span>
+                  <span v-else class="pt-pill pt-pill-muted">SPR: ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â</span>
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
+                <button
+                  v-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
+                  type="button"
+                  disabled
+                  class="cc-pp-btn pt-btn-entry"
+                  style="opacity:0.45;cursor:not-allowed;"
+                  title="No Production Plan yet"
+                >Start WO</button>
+                <template v-else-if="row.is_lamination_parent && row.pp_id && !row.parent_wo_terminal">
+                  <button
+                    v-if="!row.parent_wo_name"
+                    type="button"
+                    @click="startParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Create Work Order draft"
+                  >Start WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && !row.parent_wo_warehouse_set"
+                    type="button"
+                    @click="openParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Open WO and set source warehouse, then save"
+                  >Open WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && row.parent_wo_warehouse_set"
+                    type="button"
+                    @click="startParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Submit Work Order to start production"
+                  >Start WO</button>
+                </template>
                 <button
                   v-if="canShowStockEntry(row)"
                   type="button"
@@ -143,19 +189,18 @@
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">✅ WO closed</span>
+                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ WO closed</span>
+                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Complete child WO first</span>
                 <span v-else style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
             <td class="cell-center">
-              <div class="cc-order-btns">
-                <button type="button" class="cc-row-order-btn" @click="moveRow(row, -1)">↑</button>
-                <button type="button" class="cc-row-order-btn" @click="moveRow(row, 1)">↓</button>
-              </div>
+              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">ÃƒÂ¢Ã¢â‚¬Â¹Ã‚Â®ÃƒÂ¢Ã¢â‚¬Â¹Ã‚Â®</span>
+              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬â„¢</span>
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
-            <td colspan="15" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -185,7 +230,13 @@ const laminationSequenceStore = ref({});
 const pendingArrangementUpdates = ref({});
 const arrangementDirty = ref(false);
 const arrangementSaving = ref(false);
+const arrangementLocked = ref(true);
+const dragOrderRow = ref(null);
+const dragOverItemName = ref("");
 let fetchTimer = null;
+let initialFetchRetried = false;
+const showShiftPlanner = computed(() => viewScope.value !== "monthly");
+const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
 const filteredRows = computed(() => {
   let d = rawData.value || [];
@@ -245,7 +296,7 @@ function debouncedFetch() {
 }
 
 function formatDate(d) {
-  if (!d) return "—";
+  if (!d) return "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â";
   try {
     if (frappe.datetime && frappe.datetime.format_date) {
       return frappe.datetime.format_date(d);
@@ -339,7 +390,7 @@ async function fetchLaminationSequences() {
       args: {
         start_date,
         end_date,
-        units: JSON.stringify(["Lamination Unit"]),
+        unit: "Lamination Unit",
         plan_name: "Default",
       },
     });
@@ -386,24 +437,73 @@ async function fetchLaminationSequences() {
   }
 }
 
-function moveRow(row, direction) {
-  const dateKey = getRowDateKey(row);
-  if (!dateKey || !row?.itemName) return;
-  const dayRows = filteredRows.value.filter((r) => getRowDateKey(r) === dateKey);
+function toggleArrangementLock() {
+  arrangementLocked.value = !arrangementLocked.value;
+  frappe.show_alert(
+    { message: arrangementLocked.value ? "Arrangement locked" : "Arrangement unlocked. Drag rows to reorder.", indicator: "blue" },
+    2
+  );
+}
+
+function reorderRowsInDate(sourceRow, targetRow) {
+  const sourceDate = getRowDateKey(sourceRow);
+  const targetDate = getRowDateKey(targetRow);
+  if (!sourceDate || !targetDate || sourceDate !== targetDate) {
+    frappe.show_alert({ message: "Reorder allowed only inside same date", indicator: "orange" }, 3);
+    return;
+  }
+  const dayRows = filteredRows.value.filter((r) => getRowDateKey(r) === sourceDate);
   const seq = dayRows.map((r) => String(r.itemName || "").trim()).filter(Boolean);
-  const idx = seq.indexOf(String(row.itemName || "").trim());
-  if (idx < 0) return;
-  const target = idx + Number(direction || 0);
-  if (target < 0 || target >= seq.length) return;
-  const [mv] = seq.splice(idx, 1);
-  seq.splice(target, 0, mv);
-  laminationSequenceStore.value = { ...laminationSequenceStore.value, [dateKey]: seq };
-  pendingArrangementUpdates.value[dateKey] = seq;
+  const sourceName = String(sourceRow?.itemName || "").trim();
+  const targetName = String(targetRow?.itemName || "").trim();
+  const fromIdx = seq.indexOf(sourceName);
+  const toIdx = seq.indexOf(targetName);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+  const [mv] = seq.splice(fromIdx, 1);
+  seq.splice(toIdx, 0, mv);
+  laminationSequenceStore.value = { ...laminationSequenceStore.value, [sourceDate]: seq };
+  pendingArrangementUpdates.value[sourceDate] = seq;
   arrangementDirty.value = true;
 }
 
+function onOrderDragStart(row, ev) {
+  if (!arrangementUnlocked.value) return;
+  dragOrderRow.value = row;
+  dragOverItemName.value = String(row?.itemName || "");
+  try {
+    if (ev?.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+  } catch (e) {}
+}
+
+function onOrderDragOver(row) {
+  if (!arrangementUnlocked.value) return;
+  dragOverItemName.value = String(row?.itemName || "");
+}
+
+function onOrderDragLeave(row) {
+  if (dragOverItemName.value === String(row?.itemName || "")) {
+    dragOverItemName.value = "";
+  }
+}
+
+function onOrderDrop(row) {
+  if (!arrangementUnlocked.value || !dragOrderRow.value) return;
+  reorderRowsInDate(dragOrderRow.value, row);
+  dragOrderRow.value = null;
+  dragOverItemName.value = "";
+}
+
+function onOrderDragEnd() {
+  dragOrderRow.value = null;
+  dragOverItemName.value = "";
+}
+
 async function saveLaminationArrangement() {
-  if (!arrangementDirty.value || arrangementSaving.value) return;
+  if (arrangementSaving.value) return;
+  if (!arrangementDirty.value) {
+    frappe.show_alert({ message: "No arrangement changes to save", indicator: "orange" }, 2);
+    return;
+  }
   arrangementSaving.value = true;
   try {
     for (const [dateKey, seq] of Object.entries(pendingArrangementUpdates.value || {})) {
@@ -513,13 +613,17 @@ function itemSprPrimaryButtonLabel(item) {
 }
 function itemSprPrimaryButtonTitle(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Draft SPR — continue recording rolls.";
-  if (item.wo_terminal) return "WO terminal — review only.";
+  if (Number(item.spr_docstatus) === 0) return "Draft SPR ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â continue recording rolls.";
+  if (item.wo_terminal) return "WO terminal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â review only.";
   return "Open submitted SPR.";
 }
 
 function canShowStockEntry(item) {
   if (!item || !item.pp_id) return false;
+  if (item.is_lamination_parent && !item.parent_wo_started) return false;
+  if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
+  if (!item.wo_open && !item.wo_terminal) return false;
+  if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
   const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
@@ -528,6 +632,39 @@ function canShowStockEntry(item) {
   if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
   if (item.wo_terminal) return false;
   return true;
+}
+
+function openParentWO(item) {
+  const woName = String(item?.parent_wo_name || "").trim();
+  if (!woName) return;
+  frappe.set_route("Form", "Work Order", woName);
+}
+
+async function startParentWO(item) {
+  if (!item?.itemName) return;
+  try {
+    const submitExisting = item.parent_wo_name && Number(item.parent_wo_docstatus || 0) === 0 && item.parent_wo_warehouse_set;
+    const res = await frappe.call({
+      method: "production_scheduler.api.start_lamination_parent_wo",
+      args: { item_name: item.itemName, submit_existing: submitExisting ? 1 : 0 },
+    });
+    const msg = res?.message || {};
+    if (msg.status === "ok") {
+      if (msg.draft && msg.wo_name && !submitExisting) {
+        frappe.show_alert({ message: `WO draft created: ${msg.wo_name}. Set source warehouse then come back to Start WO.`, indicator: "blue" }, 6);
+        frappe.set_route("Form", "Work Order", msg.wo_name);
+      } else if (msg.started) {
+        frappe.show_alert({ message: `WO started: ${msg.wo_name}`, indicator: "green" }, 4);
+      } else if (msg.wo_name) {
+        frappe.show_alert({ message: `WO: ${msg.wo_name}`, indicator: "green" }, 4);
+      }
+      await fetchData();
+      return;
+    }
+    frappe.msgprint(msg.message || "Unable to start WO");
+  } catch (e) {
+    frappe.msgprint(`Failed to start WO: ${e?.message || e}`);
+  }
 }
 
 function getStockEntryLabel(item) {
@@ -871,6 +1008,10 @@ async function fetchData() {
       ...d,
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
     }));
+    if (!initialFetchRetried && (!rawData.value || rawData.value.length === 0)) {
+      initialFetchRetried = true;
+      setTimeout(() => fetchData(), 450);
+    }
     await fetchLaminationSequences();
     await fetchMaintenanceRecords();
   } catch (e) {
@@ -1095,6 +1236,14 @@ onMounted(async () => {
   padding: 8px 6px;
   vertical-align: middle;
 }
+.cc-row-draggable {
+  cursor: move;
+}
+.cc-row-drag-over {
+  outline: 2px dashed #0ea5e9;
+  outline-offset: -2px;
+  background: #f0f9ff;
+}
 .th-n {
   width: 48px;
   text-align: center;
@@ -1116,6 +1265,19 @@ onMounted(async () => {
 .cc-order-btns {
   display: inline-flex;
   gap: 4px;
+}
+.cc-drag-handle {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  color: #334155;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.cc-lock-hint {
+  color: #94a3b8;
 }
 .cc-row-order-btn {
   border: 1px solid #cbd5e1;

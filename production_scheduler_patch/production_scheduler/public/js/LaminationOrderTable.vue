@@ -143,19 +143,36 @@
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
                 <button
-                  v-if="canStartWO(row)"
+                  v-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
                   type="button"
-                  @click="startParentWO(row)"
+                  disabled
                   class="cc-pp-btn pt-btn-entry"
-                  :title="startWoTitle(row)"
-                >{{ woActionLabel(row) }}</button>
-                <button
-                  v-else-if="canOpenWO(row)"
-                  type="button"
-                  @click="openParentWO(row)"
-                  class="cc-pp-btn pt-btn-entry"
-                  title="Open parent Work Order"
-                >Open WO</button>
+                  style="opacity:0.45;cursor:not-allowed;"
+                  title="No Production Plan yet"
+                >Start WO</button>
+                <template v-else-if="row.is_lamination_parent && row.pp_id && !row.parent_wo_terminal">
+                  <button
+                    v-if="!row.parent_wo_name"
+                    type="button"
+                    @click="startParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Create Work Order draft"
+                  >Start WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && !row.parent_wo_warehouse_set"
+                    type="button"
+                    @click="openParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Open WO and set source warehouse, then save"
+                  >Open WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && row.parent_wo_warehouse_set"
+                    type="button"
+                    @click="startParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Submit Work Order to start production"
+                  >Start WO</button>
+                </template>
                 <button
                   v-if="canShowStockEntry(row)"
                   type="button"
@@ -617,62 +634,29 @@ function canShowStockEntry(item) {
   return true;
 }
 
-function canStartWO(item) {
-  if (!item || !item.pp_id) return false;
-  if (!item.is_lamination_parent) return false;
-  if (item.parent_wo_terminal) return false;
-  if (Number(item.parent_wo_docstatus || 0) === 1) return false;
-  return true;
-}
-
-function canOpenWO(item) {
-  if (!item || !item.is_lamination_parent) return false;
-  if (!item.parent_wo_name) return false;
-  return Number(item.parent_wo_docstatus || 0) === 1;
-}
-
 function openParentWO(item) {
   const woName = String(item?.parent_wo_name || "").trim();
   if (!woName) return;
   frappe.set_route("Form", "Work Order", woName);
 }
 
-function woActionLabel(item) {
-  const docstatus = Number(item?.parent_wo_docstatus || 0);
-  if (item?.parent_wo_name && docstatus === 0) return "Submit WO";
-  return "Start WO";
-}
-
-function startWoTitle(item) {
-  if (!item) return "";
-  if (!item.parent_ready_for_wo) return "Complete child WO first to start this Work Order";
-  const docstatus = Number(item?.parent_wo_docstatus || 0);
-  if (item?.parent_wo_name && docstatus === 0) return "Submit draft WO";
-  return "Create draft WO";
-}
-
 async function startParentWO(item) {
   if (!item?.itemName) return;
   try {
-    if (!item.parent_ready_for_wo) {
-      frappe.msgprint(
-        `Child WO not completed. Complete child WO first. Current fabric: ${formatKg2(item.fabric_achieved_kg)} / ${formatKg2(item.fabric_required_kg)} Kg`
-      );
-      return;
-    }
-    const submitExisting = Number(item.parent_wo_started || 0) === 1 && Number(item.parent_wo_docstatus || 0) === 0;
+    const submitExisting = item.parent_wo_name && Number(item.parent_wo_docstatus || 0) === 0 && item.parent_wo_warehouse_set;
     const res = await frappe.call({
       method: "production_scheduler.api.start_lamination_parent_wo",
       args: { item_name: item.itemName, submit_existing: submitExisting ? 1 : 0 },
     });
     const msg = res?.message || {};
     if (msg.status === "ok") {
-      frappe.show_alert(
-        { message: msg.created ? `WO draft created: ${msg.wo_name}` : (msg.started ? `WO started: ${msg.wo_name}` : `WO found: ${msg.wo_name}`), indicator: "green" },
-        4
-      );
-      if (msg.wo_name && !msg.started) {
+      if (msg.draft && msg.wo_name && !submitExisting) {
+        frappe.show_alert({ message: `WO draft created: ${msg.wo_name}. Set source warehouse then come back to Start WO.`, indicator: "blue" }, 6);
         frappe.set_route("Form", "Work Order", msg.wo_name);
+      } else if (msg.started) {
+        frappe.show_alert({ message: `WO started: ${msg.wo_name}`, indicator: "green" }, 4);
+      } else if (msg.wo_name) {
+        frappe.show_alert({ message: `WO: ${msg.wo_name}`, indicator: "green" }, 4);
       }
       await fetchData();
       return;

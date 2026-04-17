@@ -851,6 +851,7 @@ def get_lamination_order_table_data(
         row["parent_wo_open"] = 0
         row["parent_wo_terminal"] = 0
         row["parent_wo_name"] = ""
+        row["parent_wo_warehouse_set"] = 0
         if is_parent_lamination:
             pp_id = str(row.get("pp_id") or "").strip()
             cache_key = f"{pp_id}::{item_code}"
@@ -860,7 +861,7 @@ def get_lamination_order_table_data(
                     wo_rows = frappe.get_all(
                         "Work Order",
                         filters={"production_plan": pp_id, "production_item": item_code, "docstatus": ["<", 2]},
-                        fields=["name", "status", "docstatus"],
+                        fields=["name", "status", "docstatus", "source_warehouse"],
                         order_by="creation desc",
                         limit=1,
                     )
@@ -876,6 +877,7 @@ def get_lamination_order_table_data(
                             "name": str(w.get("name") or "").strip(),
                             "status": str(w.get("status") or "").strip(),
                             "docstatus": cint(w.get("docstatus") or 0),
+                            "source_warehouse": str(w.get("source_warehouse") or "").strip(),
                         }
                 parent_wo_cache[cache_key] = wo_info
             wo_info = parent_wo_cache.get(cache_key) or {}
@@ -885,6 +887,7 @@ def get_lamination_order_table_data(
             row["parent_wo_name"] = str(wo_info.get("name") or "")
             row["parent_wo_status"] = str(wo_info.get("status") or "")
             row["parent_wo_docstatus"] = cint(wo_info.get("docstatus") or 0)
+            row["parent_wo_warehouse_set"] = 1 if wo_info.get("source_warehouse") else 0
         out.append(row)
     return out
 
