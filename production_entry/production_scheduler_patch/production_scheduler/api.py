@@ -126,6 +126,91 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 			frappe.log_error(frappe.get_traceback(), "sync_lamination_order_code_sales_order")
 
 
+def _ensure_sheet_lamination_order_code(sheet_name):
+	"""Backfill lamination order code for a sheet if missing (supports old/new field names)."""
+	sheet_name = (sheet_name or "").strip()
+	if not sheet_name or not frappe.db.exists("Planning sheet", sheet_name):
+		return ""
+
+	has_sheet_new = frappe.db.has_column("Planning sheet", "custom_lamination_order_code")
+	has_sheet_old = frappe.db.has_column("Planning sheet", "custom_lamination_booking_id")
+	if not (has_sheet_new or has_sheet_old):
+		return ""
+
+	fields = ["name", "sales_order"]
+	if has_sheet_new:
+		fields.append("custom_lamination_order_code")
+	if has_sheet_old:
+		fields.append("custom_lamination_booking_id")
+	sheet = frappe.db.get_value("Planning sheet", sheet_name, fields, as_dict=True) or {}
+
+	code = (sheet.get("custom_lamination_order_code") or sheet.get("custom_lamination_booking_id") or "").strip()
+	if code:
+		return code
+
+	has_104 = frappe.db.sql(
+		"""
+		SELECT 1
+		FROM `tabPlanning Table`
+		WHERE parent=%s AND item_code LIKE '104%%'
+		LIMIT 1
+		""",
+		(sheet_name,),
+		as_list=True,
+	)
+	if not has_104:
+		return ""
+
+	code = _next_lamination_order_code()
+	updates = []
+	if has_sheet_new:
+		updates.append("custom_lamination_order_code = %s")
+	if has_sheet_old:
+		updates.append("custom_lamination_booking_id = %s")
+	if updates:
+		frappe.db.sql(
+			f"UPDATE `tabPlanning sheet` SET {', '.join(updates)} WHERE name = %s",
+			tuple(([code] * len(updates)) + [sheet_name]),
+		)
+
+	if frappe.db.has_column("Planning Table", "custom_lamination_order_code_"):
+		frappe.db.sql(
+			"""
+			UPDATE `tabPlanning Table`
+			SET custom_lamination_order_code_ = %s
+			WHERE parent = %s AND item_code LIKE '104%%'
+			""",
+			(code, sheet_name),
+		)
+	if frappe.db.has_column("Planning Table", "custom_lamination_booking_id"):
+		frappe.db.sql(
+			"""
+			UPDATE `tabPlanning Table`
+			SET custom_lamination_booking_id = %s
+			WHERE parent = %s AND item_code LIKE '104%%'
+			""",
+			(code, sheet_name),
+		)
+	if frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code"):
+		frappe.db.sql(
+			"""
+			UPDATE `tabPlanning sheet Item`
+			SET custom_lamination_order_code = %s
+			WHERE parent = %s AND item_code LIKE '104%%'
+			""",
+			(code, sheet_name),
+		)
+
+	so = (sheet.get("sales_order") or "").strip()
+	if so:
+		if frappe.db.has_column("Sales Order", "custom_lamination_order_code"):
+			frappe.db.set_value("Sales Order", so, "custom_lamination_order_code", code, update_modified=False)
+		elif frappe.db.has_column("Sales Order", "custom_lamination_booking_id"):
+			frappe.db.set_value("Sales Order", so, "custom_lamination_booking_id", code, update_modified=False)
+
+	return code
+
+
 @frappe.whitelist()
 def get_fabric_item_from_laminated_item(lam_item_code):
 	"""
@@ -631,6 +716,7 @@ def get_lamination_order_table_data(
         f"""
         SELECT
             pt.name as psi_name,
+            pt.parent as ps_name,
             IFNULL(pt.meter, 0) as planned_meter,
             {booking_expr} as lamination_booking_id,
             IFNULL(fab.gsm, 0) as fabric_gsm,
@@ -680,6 +766,8 @@ def get_lamination_order_table_data(
         achieved_m = flt(spr_meters.get(spr_nm)) if spr_nm else 0.0
         row = dict(r)
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
+        if not row["lamination_booking_id"] and ex and ex.get("ps_name"):
+            row["lamination_booking_id"] = _ensure_sheet_lamination_order_code(ex.get("ps_name")) or ""
         row["fabric_gsm"] = int(ex.get("fabric_gsm") or 0) if ex else 0
         row["lamination_gsm"] = int(row.get("gsm") or 0) or 0
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
@@ -1950,6 +2038,15 @@ def _effective_date_expr(alias="p"):
         return f"COALESCE({alias}.custom_planned_date, {alias}.ordered_date)"
     return f"{alias}.ordered_date"
 
+
+def _pt_item_planned_date_column():
+    """Return physical planned-date column on Planning Table (new or legacy), else None."""
+    if frappe.db.has_column("Planning Table", "planned_date"):
+        return "planned_date"
+    if frappe.db.has_column("Planning Table", "custom_item_planned_date"):
+        return "custom_item_planned_date"
+    return None
+
 def get_unit_load(date, unit, plan_name=None, pb_only=0):
     """Calculates current load (in Tons) for a unit on a given date.
     Filtered per-plan so each plan has its own independent capacity.
@@ -2216,7 +2313,8 @@ def cascade_orders_after_maintenance_removal(unit, maint_start_date, maint_end_d
     if not items:
         return {"status": "success", "message": "No items to cascade", "cascaded_count": 0}
     
-    has_item_planned_col = frappe.db.has_column("Planning Table", "planned_date")
+    pt_item_pdate_col = _pt_item_planned_date_column()
+    has_item_planned_col = bool(pt_item_pdate_col)
     cascaded_count = 0
     local_loads = {}
     movement_log = []
@@ -3924,13 +4022,14 @@ def _get_color_chart_data_impl(
     
     plan_condition = ""
     params = []
-    has_item_planned_col = frappe.db.has_column("Planning Table", "planned_date")
+    pt_item_pdate_col = _pt_item_planned_date_column()
+    has_item_planned_col = bool(pt_item_pdate_col)
     
     if start_date and end_date:
         date_condition = f"({eff_ordered} BETWEEN %s AND %s OR {eff_pushed} BETWEEN %s AND %s)"
         params.extend([query_start, query_end, query_start, query_end])
         if has_item_planned_col:
-            date_condition = f"({date_condition} OR EXISTS (SELECT 1 FROM `tabPlanning Table` psi WHERE psi.parent = p.name AND psi.planned_date BETWEEN %s AND %s))"
+            date_condition = f"({date_condition} OR EXISTS (SELECT 1 FROM `tabPlanning Table` psi WHERE psi.parent = p.name AND psi.{pt_item_pdate_col} BETWEEN %s AND %s))"
             params.extend([query_start, query_end])
     else:
         if len(target_dates) > 1:
@@ -3939,14 +4038,14 @@ def _get_color_chart_data_impl(
             params.extend(target_dates)
             params.extend(target_dates)
             if has_item_planned_col:
-                date_condition = f"({date_condition} OR EXISTS (SELECT 1 FROM `tabPlanning Table` psi WHERE psi.parent = p.name AND psi.planned_date IN ({fmt})))"
+                date_condition = f"({date_condition} OR EXISTS (SELECT 1 FROM `tabPlanning Table` psi WHERE psi.parent = p.name AND psi.{pt_item_pdate_col} IN ({fmt})))"
                 params.extend(target_dates)
         else:
             date_condition = f"({eff_ordered} = %s OR {eff_pushed} = %s)"
             params.append(target_dates[0])
             params.append(target_dates[0])
             if has_item_planned_col:
-                date_condition = f"({date_condition} OR EXISTS (SELECT 1 FROM `tabPlanning Table` psi WHERE psi.parent = p.name AND DATE(psi.planned_date) = DATE(%s)))"
+                date_condition = f"({date_condition} OR EXISTS (SELECT 1 FROM `tabPlanning Table` psi WHERE psi.parent = p.name AND DATE(psi.{pt_item_pdate_col}) = DATE(%s)))"
                 params.append(target_dates[0])
     
     if plan_name == "__all__":
@@ -3979,14 +4078,13 @@ def _get_color_chart_data_impl(
     # Non-white items are filtered per-item later unless they belong to a PB plan.
     if cint(planned_only) and _has_planned_date_column():
         # Allow sheets where EITHER the sheet has custom_planned_date OR items have planned_date
-        has_item_planned = frappe.db.has_column("Planning Table", "planned_date")
+        has_item_planned = bool(pt_item_pdate_col)
         if has_item_planned:
-            plan_condition += """ AND (
+            plan_condition += f""" AND (
                 (p.custom_planned_date IS NOT NULL AND p.custom_planned_date != '')
                 OR EXISTS (SELECT 1 FROM `tabPlanning Table` psi 
                            WHERE psi.parent = p.name 
-                           AND psi.planned_date IS NOT NULL 
-                           AND psi.planned_date != '')
+                           AND psi.{pt_item_pdate_col} IS NOT NULL)
             )"""
         else:
             plan_condition += " AND p.custom_planned_date IS NOT NULL AND p.custom_planned_date != ''"
@@ -4008,7 +4106,6 @@ def _get_color_chart_data_impl(
         
     fields_str = ", ".join(fields)
     
-    has_item_planned_col = frappe.db.has_column("Planning Table", "planned_date")
     eff = _effective_date_expr("p")
 
     if cint(planned_only) and has_item_planned_col and not (start_date and end_date):
@@ -4030,7 +4127,7 @@ def _get_color_chart_data_impl(
                     OR EXISTS (
                         SELECT 1 FROM `tabPlanning Table` psi
                         WHERE psi.parent = p.name
-                        AND DATE(psi.planned_date) = DATE(%s)
+                        AND DATE(psi.{pt_item_pdate_col}) = DATE(%s)
                     )
                 )
                 AND p.docstatus < 2
@@ -4993,7 +5090,7 @@ def _get_color_chart_data_impl(
             effective_date_str = str(item.get("ordered_date") or sheet.get("ordered_date") or "")
             
             # ΓöÇΓöÇ Granular filtering: determine if item belongs to the current date view ΓöÇΓöÇ
-            item_pdate = item.get("planned_date")
+            item_pdate = item.get("planned_date") or item.get("custom_item_planned_date")
             is_white = _is_white_color(color)
             
             # Effective item date for filtering: 
@@ -5017,8 +5114,10 @@ def _get_color_chart_data_impl(
 
             # Production Board special filtering: only show scheduled items if planned_only is requested
             if cint(planned_only):
+                if bps == "lamination_only":
+                    pass
                 # NON-WHITE items MUST be explicitly pushed (have a planned date)
-                if not is_white and not item_pdate:
+                elif not is_white and not item_pdate:
                     continue
 
             psi_name = item.get("name")
