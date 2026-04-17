@@ -778,8 +778,8 @@ def get_lamination_order_table_data(
 
 
 @frappe.whitelist()
-def assign_lamination_shift(shift_date=None, shift_label="DAY"):
-    """Assign DAY/NIGHT shift for lamination (104) rows on a specific effective planned date."""
+def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
+    """Assign DAY/NIGHT shift for lamination rows. If item_name is set, moves only that row (date + shift)."""
     target_date = getdate(shift_date or frappe.utils.nowdate())
     shift_label = (shift_label or "DAY").strip().upper()
     if shift_label not in ("DAY", "NIGHT"):
@@ -797,24 +797,46 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY"):
             )
         )
 
+    pt_date_col = "planned_date" if frappe.db.has_column("Planning Table", "planned_date") else (
+        "custom_item_planned_date" if frappe.db.has_column("Planning Table", "custom_item_planned_date") else None
+    )
     has_sheet_planned = frappe.db.has_column("Planning sheet", "custom_planned_date")
     eff_date = (
-        "CASE WHEN pt.planned_date IS NOT NULL THEN pt.planned_date ELSE COALESCE(ps.custom_planned_date, ps.ordered_date) END"
-        if has_sheet_planned
-        else "COALESCE(pt.planned_date, ps.ordered_date)"
+        f"CASE WHEN pt.{pt_date_col} IS NOT NULL THEN pt.{pt_date_col} ELSE COALESCE(ps.custom_planned_date, ps.ordered_date) END"
+        if (has_sheet_planned and pt_date_col)
+        else (f"COALESCE(pt.{pt_date_col}, ps.ordered_date)" if pt_date_col else "COALESCE(ps.custom_planned_date, ps.ordered_date)")
     )
 
-    frappe.db.sql(
-        f"""
-        UPDATE `tabPlanning Table` pt
-        INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
-        SET pt.custom_lamination_shift = %s
-        WHERE ps.docstatus < 2
-          AND pt.item_code LIKE '104%%'
-          AND DATE({eff_date}) = DATE(%s)
-        """,
-        (shift_label, target_date),
-    )
+    if item_name:
+        set_parts = ["pt.custom_lamination_shift = %s"]
+        values = [shift_label]
+        if pt_date_col:
+            set_parts.append(f"pt.{pt_date_col} = %s")
+            values.append(target_date)
+        values.append(str(item_name).strip())
+        frappe.db.sql(
+            f"""
+            UPDATE `tabPlanning Table` pt
+            INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+            SET {", ".join(set_parts)}
+            WHERE ps.docstatus < 2
+              AND pt.item_code LIKE '104%%'
+              AND pt.name = %s
+            """,
+            tuple(values),
+        )
+    else:
+        frappe.db.sql(
+            f"""
+            UPDATE `tabPlanning Table` pt
+            INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+            SET pt.custom_lamination_shift = %s
+            WHERE ps.docstatus < 2
+              AND pt.item_code LIKE '104%%'
+              AND DATE({eff_date}) = DATE(%s)
+            """,
+            (shift_label, target_date),
+        )
     updated = frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0].get("c") or 0
     frappe.db.commit()
     return {"status": "ok", "updated_count": int(updated), "date": str(target_date), "shift": shift_label}

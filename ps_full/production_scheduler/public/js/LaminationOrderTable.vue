@@ -46,6 +46,32 @@
       </div>
     </div>
 
+    <div class="cc-shift-board">
+      <div class="cc-shift-board-head">
+        <div class="cc-shift-board-title">Shift Planner (drag between Day/Night)</div>
+        <div class="cc-shift-board-date">
+          <label>Shift Date</label>
+          <input type="date" v-model="moveTargetDate" />
+        </div>
+      </div>
+      <div class="cc-shift-lanes">
+        <div class="cc-shift-lane" :class="{ over: dragOverShift === 'DAY' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'DAY'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('DAY')">
+          <div class="cc-shift-lane-title">DAY</div>
+          <div v-for="row in scheduleRowsByShift('DAY')" :key="`${row.itemName}-day`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
+            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
+          </div>
+        </div>
+        <div class="cc-shift-lane" :class="{ over: dragOverShift === 'NIGHT' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'NIGHT'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('NIGHT')">
+          <div class="cc-shift-lane-title">NIGHT</div>
+          <div v-for="row in scheduleRowsByShift('NIGHT')" :key="`${row.itemName}-night`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
+            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">Lamination Unit — Planned orders (104)</div>
       <table class="cc-prod-table lot-table">
@@ -143,6 +169,9 @@ const rawData = ref([]);
 const filtersReady = ref(false);
 const maintenanceByDate = ref({});
 const maintenanceRecords = ref([]);
+const moveTargetDate = ref(frappe.datetime.get_today());
+const dragRow = ref(null);
+const dragOverShift = ref("");
 let fetchTimer = null;
 
 const filteredRows = computed(() => {
@@ -244,6 +273,16 @@ async function fetchMaintenanceRecords() {
 function maintenanceTypeForDate(dateValue) {
   const k = toDateKey(dateValue);
   return k ? maintenanceByDate.value[k] : "";
+}
+
+function scheduleRowsByShift(shift) {
+  const dateKey = toDateKey(moveTargetDate.value);
+  if (!dateKey) return [];
+  return (rawData.value || []).filter((r) => {
+    const rk = toDateKey(r.plannedDate || r.planned_date);
+    const sh = String(r.shift_label || "DAY").toUpperCase();
+    return rk === dateKey && sh === String(shift || "").toUpperCase();
+  });
 }
 
 function formatKg2(value) {
@@ -489,6 +528,38 @@ function goToBoard() {
   frappe.set_route("lamination-board");
 }
 
+function onRowDragStart(row) {
+  dragRow.value = row;
+}
+
+function onRowDragEnd() {
+  dragOverShift.value = "";
+}
+
+async function handleShiftDrop(targetShift) {
+  const row = dragRow.value;
+  dragOverShift.value = "";
+  if (!row || !row.itemName) return;
+  const dateKey = toDateKey(moveTargetDate.value);
+  if (!dateKey) {
+    frappe.msgprint("Please choose a valid shift date.");
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_scheduler.api.assign_lamination_shift",
+      args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName },
+    });
+    const msg = res?.message || {};
+    frappe.show_alert({ message: `Moved to ${targetShift} on ${dateKey} (${msg.updated_count || 0})`, indicator: "green" }, 3);
+    await fetchData();
+  } catch (e) {
+    frappe.msgprint(`Failed to move row: ${e?.message || e}`);
+  } finally {
+    dragRow.value = null;
+  }
+}
+
 function currentShiftDateForDialog() {
   if (viewScope.value === "daily" && filterOrderDate.value) return filterOrderDate.value;
   return frappe.datetime.get_today();
@@ -654,6 +725,9 @@ function updateUrlParams() {
 
 watch([filterOrderDate, filterWeek, filterMonth], () => {
   if (!filtersReady.value) return;
+  if (viewScope.value === "daily" && filterOrderDate.value) {
+    moveTargetDate.value = toDateKey(filterOrderDate.value) || moveTargetDate.value;
+  }
   updateUrlParams();
   fetchData();
 });
@@ -665,6 +739,7 @@ onMounted(async () => {
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
+  moveTargetDate.value = toDateKey(filterOrderDate.value) || frappe.datetime.get_today();
   updateUrlParams();
   filtersReady.value = true;
 });
@@ -765,6 +840,70 @@ onMounted(async () => {
   border-radius: 8px;
   overflow: auto;
   border: 1px solid #e5e7eb;
+}
+.cc-shift-board {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+.cc-shift-board-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.cc-shift-board-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f766e;
+}
+.cc-shift-board-date label {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+.cc-shift-lanes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.cc-shift-lane {
+  min-height: 88px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 8px;
+  background: #f8fafc;
+}
+.cc-shift-lane.over {
+  border-color: #0ea5e9;
+  background: #eff6ff;
+}
+.cc-shift-lane-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 6px;
+}
+.cc-shift-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px;
+  margin-bottom: 6px;
+  cursor: grab;
+}
+.cc-shift-card-code {
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.cc-shift-card-meta {
+  font-size: 10px;
+  color: #64748b;
 }
 .lot-header {
   padding: 10px 12px;
