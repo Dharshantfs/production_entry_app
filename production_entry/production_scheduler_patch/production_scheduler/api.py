@@ -34,14 +34,15 @@ def _next_lamination_order_code():
 	yy = str(now.year)[-2:]
 	ml = _month_letter_from_date(now)
 	prefix = f"U{yy}{ml}"
+	sheet_code_field = "custom_lamination_order_code" if frappe.db.has_column("Planning sheet", "custom_lamination_order_code") else "custom_lamination_booking_id"
 	rows = frappe.db.sql(
 		"""
-		SELECT custom_lamination_order_code FROM `tabPlanning sheet`
-		WHERE IFNULL(custom_lamination_order_code, '') != ''
-		  AND custom_lamination_order_code LIKE %s
-		ORDER BY custom_lamination_order_code DESC
+		SELECT {field} FROM `tabPlanning sheet`
+		WHERE IFNULL({field}, '') != ''
+		  AND {field} LIKE %s
+		ORDER BY {field} DESC
 		LIMIT 1
-		""",
+		""".format(field=sheet_code_field),
 		(prefix + "%",),
 	)
 	n = 1
@@ -64,7 +65,9 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 		meta = frappe.get_meta("Planning sheet")
 	except Exception:
 		return
-	if not meta.has_field("custom_lamination_order_code"):
+	has_sheet_code_new = meta.has_field("custom_lamination_order_code") or frappe.db.has_column("Planning sheet", "custom_lamination_order_code")
+	has_sheet_code_old = meta.has_field("custom_lamination_booking_id") or frappe.db.has_column("Planning sheet", "custom_lamination_booking_id")
+	if not (has_sheet_code_new or has_sheet_code_old):
 		return
 	has_pt_booking_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
 	has_pt_booking_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
@@ -84,10 +87,17 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	if not has_104:
 		return
 
-	code = (getattr(doc, "custom_lamination_order_code", None) or "").strip()
+	code = ""
+	if has_sheet_code_new:
+		code = (getattr(doc, "custom_lamination_order_code", None) or "").strip()
+	if not code and has_sheet_code_old:
+		code = (getattr(doc, "custom_lamination_booking_id", None) or "").strip()
 	if not code:
 		code = _next_lamination_order_code()
+	if has_sheet_code_new:
 		doc.custom_lamination_order_code = code
+	if has_sheet_code_old:
+		doc.custom_lamination_booking_id = code
 
 	for fn in ("planned_items", "items", "custom_planned_items"):
 		if not meta.has_field(fn):
@@ -106,9 +116,12 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_order_code = code
 
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
-	if sales_order and frappe.db.has_column("Sales Order", "custom_lamination_order_code"):
+	if sales_order:
 		try:
-			frappe.db.set_value("Sales Order", sales_order, "custom_lamination_order_code", code, update_modified=False)
+			if frappe.db.has_column("Sales Order", "custom_lamination_order_code"):
+				frappe.db.set_value("Sales Order", sales_order, "custom_lamination_order_code", code, update_modified=False)
+			elif frappe.db.has_column("Sales Order", "custom_lamination_booking_id"):
+				frappe.db.set_value("Sales Order", sales_order, "custom_lamination_booking_id", code, update_modified=False)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "sync_lamination_order_code_sales_order")
 
@@ -697,7 +710,11 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY"):
         )
 
     has_sheet_planned = frappe.db.has_column("Planning sheet", "custom_planned_date")
-    eff_date = "COALESCE(NULLIF(pt.planned_date, ''), NULLIF(ps.custom_planned_date, ''), ps.ordered_date)" if has_sheet_planned else "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
+    eff_date = (
+        "CASE WHEN pt.planned_date IS NOT NULL THEN pt.planned_date ELSE COALESCE(ps.custom_planned_date, ps.ordered_date) END"
+        if has_sheet_planned
+        else "COALESCE(pt.planned_date, ps.ordered_date)"
+    )
 
     frappe.db.sql(
         f"""
