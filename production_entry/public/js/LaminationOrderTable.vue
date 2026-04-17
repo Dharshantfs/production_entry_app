@@ -344,21 +344,41 @@ async function fetchLaminationSequences() {
       },
     });
     const store = {};
-    (res?.message || []).forEach((rec) => {
-      const d = toDateKey(rec?.date);
-      if (!d) return;
-      let seq = rec?.sequence_data || rec?.sequence || [];
-      if (typeof seq === "string") {
-        try {
-          seq = JSON.parse(seq);
-        } catch (e) {
-          seq = [];
+    const payload = res?.message || {};
+    if (Array.isArray(payload)) {
+      payload.forEach((rec) => {
+        const d = toDateKey(rec?.date);
+        if (!d) return;
+        let seq = rec?.sequence_data || rec?.sequence || [];
+        if (typeof seq === "string") {
+          try {
+            seq = JSON.parse(seq);
+          } catch (e) {
+            seq = [];
+          }
         }
-      }
-      if (Array.isArray(seq) && seq.length) {
-        store[d] = seq.map((x) => String(x || "").trim()).filter(Boolean);
-      }
-    });
+        if (Array.isArray(seq) && seq.length) {
+          store[d] = seq.map((x) => String(x || "").trim()).filter(Boolean);
+        }
+      });
+    } else if (payload && typeof payload === "object") {
+      Object.entries(payload).forEach(([key, rec]) => {
+        const parts = String(key || "").split("-");
+        const d = parts.length >= 4 ? parts.slice(-3).join("-") : toDateKey(rec?.date);
+        if (!d) return;
+        let seq = rec?.sequence_data || rec?.sequence || [];
+        if (typeof seq === "string") {
+          try {
+            seq = JSON.parse(seq);
+          } catch (e) {
+            seq = [];
+          }
+        }
+        if (Array.isArray(seq) && seq.length) {
+          store[d] = seq.map((x) => String(x || "").trim()).filter(Boolean);
+        }
+      });
+    }
     laminationSequenceStore.value = store;
   } catch (e) {
     console.error("Failed to fetch lamination sequence", e);
