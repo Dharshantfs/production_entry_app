@@ -245,6 +245,7 @@ let fetchTimer = null;
 let initialFetchRetried = false;
 let autoRefreshTimer = null;
 let fetchInProgress = false;
+let visibilityRefreshTimer = null;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
@@ -323,6 +324,15 @@ function sortRowsBySavedSequence(rows) {
 function debouncedFetch() {
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = setTimeout(() => fetchData(), 200);
+}
+
+function onVisibilityRefresh() {
+  if (document.visibilityState !== "visible") return;
+  if (visibilityRefreshTimer) clearTimeout(visibilityRefreshTimer);
+  visibilityRefreshTimer = setTimeout(() => {
+    visibilityRefreshTimer = null;
+    fetchData();
+  }, 400);
 }
 
 function formatDate(d) {
@@ -1100,12 +1110,18 @@ onMounted(async () => {
   if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
   startAutoRefresh();
+  document.addEventListener("visibilitychange", onVisibilityRefresh);
   moveTargetDate.value = toDateKey(filterOrderDate.value) || frappe.datetime.get_today();
   updateUrlParams();
   filtersReady.value = true;
 });
 
 onUnmounted(() => {
+  document.removeEventListener("visibilitychange", onVisibilityRefresh);
+  if (visibilityRefreshTimer) {
+    clearTimeout(visibilityRefreshTimer);
+    visibilityRefreshTimer = null;
+  }
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
     autoRefreshTimer = null;

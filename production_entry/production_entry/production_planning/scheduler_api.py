@@ -776,21 +776,31 @@ def get_lamination_order_table_data(
     )
     by_psi = {e["psi_name"]: e for e in (extra or [])}
 
-    spr_names = list(
-        {
-            (e.get("spr_for_meter") or "").strip()
-            for e in (extra or [])
-            if (e.get("spr_for_meter") or "").strip()
-        }
-    )
+    spr_name_set = set()
+    for e in extra or []:
+        v = (e.get("spr_for_meter") or "").strip()
+        if v:
+            spr_name_set.add(v)
+    for r in rows:
+        v = (r.get("spr_name") or "").strip()
+        if v:
+            spr_name_set.add(v)
+    spr_names = list(spr_name_set)
+
     spr_meters = {}
     if spr_names and frappe.db.exists("DocType", "Shaft Production Run Item"):
         spr_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
-        if "produced_length_mtrs" in spr_cols:
+        if "produced_length_mtrs" in spr_cols or "meter_roll" in spr_cols:
+            if "produced_length_mtrs" in spr_cols and "meter_roll" in spr_cols:
+                length_expr = "COALESCE(NULLIF(IFNULL(produced_length_mtrs, 0), 0), IFNULL(meter_roll, 0), 0)"
+            elif "produced_length_mtrs" in spr_cols:
+                length_expr = "IFNULL(produced_length_mtrs, 0)"
+            else:
+                length_expr = "IFNULL(meter_roll, 0)"
             sf = ",".join(["%s"] * len(spr_names))
-            for r in frappe.db.sql(
+            for row_m in frappe.db.sql(
                 f"""
-                SELECT parent, SUM(IFNULL(produced_length_mtrs, 0)) as mtrs
+                SELECT parent, SUM({length_expr}) as mtrs
                 FROM `tabShaft Production Run Item`
                 WHERE parent IN ({sf})
                 GROUP BY parent
@@ -798,7 +808,7 @@ def get_lamination_order_table_data(
                 tuple(spr_names),
                 as_dict=True,
             ):
-                spr_meters[r["parent"]] = flt(r.get("mtrs"))
+                spr_meters[str(row_m.get("parent") or "").strip()] = flt(row_m.get("mtrs"))
 
     # Also sum meter_per_roll from Roll Production Entry Item keyed by wo_id,
     # so achieved_meter shows live progress even before SPR is linked to Planning Table.
@@ -962,7 +972,7 @@ def get_lamination_order_table_data(
     for r in rows:
         nm = r.get("itemName") or r.get("item_name")
         ex = by_psi.get(nm) if nm else None
-        spr_nm = (ex.get("spr_for_meter") if ex else "") or ""
+        spr_nm = ((ex.get("spr_for_meter") if ex else "") or (r.get("spr_name") or "") or "").strip()
         achieved_m = flt(spr_meters.get(spr_nm)) if spr_nm else 0.0
         row = dict(r)
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
