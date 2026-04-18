@@ -901,7 +901,9 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
 
     pt_cols = frappe.db.get_table_columns("Planning Table") or []
     so_col = "sales_order_item" if "sales_order_item" in pt_cols else ("custom_sales_order_item" if "custom_sales_order_item" in pt_cols else None)
-    fields = ["name", "parent", "item_code", "qty", "bom_no"]
+    fields = ["name", "parent", "item_code", "qty"]
+    if "bom_no" in pt_cols:
+        fields.append("bom_no")
     if so_col:
         fields.append(so_col)
     item = frappe.db.get_value("Planning Table", item_name, fields, as_dict=True) or {}

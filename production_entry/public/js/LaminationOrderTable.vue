@@ -76,7 +76,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Planned orders (104)</div>
+      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders (104)</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -119,26 +119,26 @@
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â" }}</td>
+            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality }}</td>
             <td class="cell-center font-bold">{{ row.color }}</td>
-            <td class="cell-center">{{ row.fabric_gsm || "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â" }}</td>
+            <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
-            <td class="cell-right">{{ row.planned_meter ?? "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â" }}</td>
+            <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
             <td class="cell-right">{{ formatKg2(row.fabric_achieved_kg) }} / {{ formatKg2(row.fabric_required_kg) }}</td>
             <td class="cell-right">{{ formatKg2(row.child_wo_produced_kg) }}</td>
             <td class="cell-center">
-              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã¢â‚¬Â¹ View</button>
+              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
             <td class="cell-center">
               <div class="pt-stock-cell">
                 <div v-if="row.pp_id" class="pt-pill-row">
                   <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
-                  <span v-else class="pt-pill pt-pill-muted">SPR: ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â</span>
+                  <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
@@ -189,14 +189,14 @@
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ WO closed</span>
+                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
                 <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Complete child WO first</span>
                 <span v-else style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
             <td class="cell-center">
-              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">ÃƒÂ¢Ã¢â‚¬Â¹Ã‚Â®ÃƒÂ¢Ã¢â‚¬Â¹Ã‚Â®</span>
-              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬â„¢</span>
+              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">Drag</span>
+              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">Locked</span>
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
@@ -296,7 +296,7 @@ function debouncedFetch() {
 }
 
 function formatDate(d) {
-  if (!d) return "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â";
+  if (!d) return "-";
   try {
     if (frappe.datetime && frappe.datetime.format_date) {
       return frappe.datetime.format_date(d);
@@ -613,8 +613,8 @@ function itemSprPrimaryButtonLabel(item) {
 }
 function itemSprPrimaryButtonTitle(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Draft SPR ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â continue recording rolls.";
-  if (item.wo_terminal) return "WO terminal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â review only.";
+  if (Number(item.spr_docstatus) === 0) return "Draft SPR - continue recording rolls.";
+  if (item.wo_terminal) return "WO terminal - review only.";
   return "Open submitted SPR.";
 }
 
@@ -1221,42 +1221,55 @@ onMounted(async () => {
 .cc-prod-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .cc-prod-table th {
   background: #047857;
   color: #fff;
-  padding: 8px 6px;
+  padding: 14px 12px;
   text-align: left;
   font-weight: 700;
-  white-space: nowrap;
+  white-space: normal;
+  min-width: 100px;
+  word-wrap: break-word;
 }
 .cc-prod-table td {
-  border-bottom: 1px solid #e5e7eb;
-  padding: 8px 6px;
+  border-bottom: 1px solid #d1d5db;
+  padding: 12px 12px;
   vertical-align: middle;
+  line-height: 1.5;
 }
 .cc-row-draggable {
   cursor: move;
+  transition: background-color 0.15s ease;
 }
 .cc-row-drag-over {
   outline: 2px dashed #0ea5e9;
   outline-offset: -2px;
   background: #f0f9ff;
 }
+.cc-prod-table tbody tr {
+  height: auto;
+  transition: background-color 0.2s ease;
+}
+.cc-prod-table tbody tr:hover {
+  background-color: #f9fafb;
+}
 .th-n {
-  width: 48px;
+  width: 60px;
   text-align: center;
 }
 .cell-center {
   text-align: center;
+  min-width: 80px;
 }
 .cc-maint-chip {
   display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: #b91c1c;
   background: #fee2e2;
@@ -1294,15 +1307,25 @@ onMounted(async () => {
 }
 .cell-right {
   text-align: right;
+  padding-right: 16px;
+}
+.cc-table-container {
+  font-size: 14px;
 }
 .cc-pp-btn {
-  padding: 4px 8px;
-  font-size: 11px;
+  padding: 6px 10px;
+  font-size: 12px;
   border-radius: 6px;
   border: 1px solid #6366f1;
   background: #eef2ff;
   color: #3730a3;
   cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+.cc-pp-btn:hover {
+  background: #c7d2fe;
+  border-color: #4f46e5;
 }
 .pt-no-pp-hint {
   font-size: 10px;
@@ -1321,10 +1344,12 @@ onMounted(async () => {
   justify-content: center;
 }
 .pt-pill {
-  font-size: 9px;
-  padding: 2px 6px;
+  font-size: 10px;
+  padding: 4px 8px;
   border-radius: 999px;
-  font-weight: 700;
+  font-weight: 600;
+  display: inline-block;
+  white-space: nowrap;
 }
 .pt-pill-muted {
   background: #f1f5f9;
