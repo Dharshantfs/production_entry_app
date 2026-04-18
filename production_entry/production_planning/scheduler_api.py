@@ -770,7 +770,13 @@ def get_lamination_order_table_data(
         if not key[0]:
             fabric_progress[key] = {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": False, "count": 0}
             return fabric_progress[key]
-        where_so = "AND IFNULL(sales_order_item, '') = %s" if frappe.db.has_column("Planning Table", "sales_order_item") else ""
+        so_field = None
+        if frappe.db.has_column("Planning Table", "sales_order_item"):
+            so_field = "sales_order_item"
+        elif frappe.db.has_column("Planning Table", "custom_sales_order_item"):
+            so_field = "custom_sales_order_item"
+
+        where_so = f"AND IFNULL({so_field}, '') = %s" if so_field and key[1] else ""
         params = [key[0]]
         if where_so:
             params.append(key[1])
@@ -790,7 +796,6 @@ def get_lamination_order_table_data(
         for ch in child_rows or []:
             bucket["count"] += 1
             bucket["required"] += flt(ch.get("qty") or 0)
-            bucket["achieved"] += flt(ch.get("achieved") or 0)
             child_pp = _get_item_level_production_plan(ch.get("name"))
             child_wo = {"produced": 0.0, "created": False, "terminal": False}
             if child_pp:
@@ -807,7 +812,14 @@ def get_lamination_order_table_data(
                     )
                     pp_child_wo_cache[child_pp] = {"produced": produced, "created": bool(wo_rows), "terminal": terminal}
                 child_wo = pp_child_wo_cache.get(child_pp) or {"produced": 0.0, "created": False, "terminal": False}
-            bucket["child_wo_produced_kg"] += flt(ch.get("achieved") or 0)
+
+            # Prefer live WO manufactured qty so In Progress/Completed/Stopped rows show real-time progress.
+            # Fall back to stored Planning Table achieved when WO qty is not yet available.
+            wo_produced = flt(child_wo.get("produced") or 0)
+            row_achieved = wo_produced if wo_produced > 0 else flt(ch.get("achieved") or 0)
+            bucket["achieved"] += row_achieved
+            bucket["child_wo_produced_kg"] += row_achieved
+
             if cint(child_wo.get("created") or 0):
                 bucket["child_wo_created"] = True
             if not cint(child_wo.get("terminal") or 0):
