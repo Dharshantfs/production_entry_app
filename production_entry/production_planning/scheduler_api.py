@@ -23,38 +23,38 @@ def _item_process_prefix(item_code):
 
 def _month_letter_from_date(dt):
     """January=A and December=L (single letter month code)."""
-	m = int(getattr(dt, "month", 1) or 1)
-	m = max(1, min(12, m))
-	return chr(ord("A") + m - 1)
+    m = int(getattr(dt, "month", 1) or 1)
+    m = max(1, min(12, m))
+    return chr(ord("A") + m - 1)
 
 
 def _next_lamination_order_code():
     """U + YY + month letter (A-L) + 3-digit series, for example U26D001."""
-	now = frappe.utils.now_datetime()
-	yy = str(now.year)[-2:]
-	ml = _month_letter_from_date(now)
-	prefix = f"U{yy}{ml}"
-	sheet_code_field = "custom_lamination_order_code" if frappe.db.has_column("Planning sheet", "custom_lamination_order_code") else "custom_lamination_booking_id"
-	rows = frappe.db.sql(
-		"""
-		SELECT {field} FROM `tabPlanning sheet`
-		WHERE IFNULL({field}, '') != ''
-		  AND {field} LIKE %s
-		ORDER BY {field} DESC
-		LIMIT 1
-		""".format(field=sheet_code_field),
-		(prefix + "%",),
-	)
-	n = 1
-	if rows and rows[0][0]:
-		tail = str(rows[0][0])[len(prefix) :]
-		try:
-			n = int(tail) + 1
-		except Exception:
-			n = 1
-	if n > 999:
-		frappe.throw(_("Lamination order code series exhausted for prefix %s (max 999).") % prefix)
-	return prefix + str(n).zfill(3)
+    now = frappe.utils.now_datetime()
+    yy = str(now.year)[-2:]
+    ml = _month_letter_from_date(now)
+    prefix = f"U{yy}{ml}"
+    sheet_code_field = "custom_lamination_order_code" if frappe.db.has_column("Planning sheet", "custom_lamination_order_code") else "custom_lamination_booking_id"
+    rows = frappe.db.sql(
+        """
+        SELECT {field} FROM `tabPlanning sheet`
+        WHERE IFNULL({field}, '') != ''
+          AND {field} LIKE %s
+        ORDER BY {field} DESC
+        LIMIT 1
+        """.format(field=sheet_code_field),
+        (prefix + "%",),
+    )
+    n = 1
+    if rows and rows[0][0]:
+        tail = str(rows[0][0])[len(prefix) :]
+        try:
+            n = int(tail) + 1
+        except Exception:
+            n = 1
+    if n > 999:
+        frappe.throw(_("Lamination order code series exhausted for prefix %s (max 999).") % prefix)
+    return prefix + str(n).zfill(3)
 
 
 def ensure_lamination_booking_for_planning_sheet(doc):
