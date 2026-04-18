@@ -1033,7 +1033,7 @@ function updateUrlParams() {
 async function syncSprWeightToTable() {
   try {
     const r = await frappe.call({
-      method: "production_scheduler.api.sync_spr_weight_to_lamination_table",
+      method: "production_entry.production_planning.scheduler_api.sync_spr_weight_to_lamination_table",
       args: {},
     });
     const msg = r?.message || {};
