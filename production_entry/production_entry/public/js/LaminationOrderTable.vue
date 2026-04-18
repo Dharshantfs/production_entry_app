@@ -194,7 +194,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
@@ -219,6 +219,8 @@ const dragOrderRow = ref(null);
 const dragOverItemName = ref("");
 let fetchTimer = null;
 let initialFetchRetried = false;
+let autoRefreshTimer = null;
+let fetchInProgress = false;
 
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
@@ -903,6 +905,8 @@ function getStockEntryTitle(item) {
 }
 
 async function fetchData() {
+  if (fetchInProgress) return;
+  fetchInProgress = true;
   try {
     let args = { party_code: filterPartyCode.value, planned_only: 1 };
     if (viewScope.value === "monthly") {
@@ -949,7 +953,17 @@ async function fetchData() {
   } catch (e) {
     console.error(e);
     frappe.msgprint(`Error loading lamination order table: ${getErrorText(e)}`);
+  } finally {
+    fetchInProgress = false;
   }
+}
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    fetchData();
+  }, 15000);
 }
 
 function updateUrlParams() {
@@ -1073,9 +1087,17 @@ onMounted(async () => {
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
+  startAutoRefresh();
   moveTargetDate.value = toDateKey(filterOrderDate.value) || frappe.datetime.get_today();
   updateUrlParams();
   filtersReady.value = true;
+});
+
+onUnmounted(() => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
 });
 </script>
 
