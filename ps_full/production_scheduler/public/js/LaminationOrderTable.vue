@@ -90,9 +90,9 @@
             <th>DESIGN</th>
             <th>FABRIC GSM</th>
             <th>LAM GSM</th>
-            <th>PLANNED MTR</th>
-            <th>ACHIEVED MTR</th>
-            <th>KGS</th>
+            <th>PLANNED LENGTH (MTR)</th>
+            <th>ACHIEVED LENGTH (MTR)</th>
+            <th>PRODUCED LAMINATION WEIGHT (KGS)</th>
             <th>PRODUCED FABRIC WT (KG)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
