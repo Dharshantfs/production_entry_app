@@ -844,7 +844,7 @@ def auto_create_planning_sheet(doc, method=None):
         ps.insert()
         frappe.db.commit()
         
-        frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created and synced from Sales Order.")
+        frappe.msgprint(f"âœ… Planning Sheet <b>{ps.name}</b> created and synced from Sales Order for April 1st Alignment.")
     except Exception as e:
         frappe.log_error(frappe.get_traceback(), "Auto Create Planning Sheet Failed")
 

@@ -1,0 +1,66 @@
+<div id="production-queue-board" style="display: flex; gap: 20px; padding: 20px; overflow-x: auto; background: #f8f9fa; min-height: 600px; border-radius: 10px;"></div>
+
+<script>
+frappe.ready(() => {
+    const units = ['Unit 1', 'Unit 2', 'Unit 3', 'Unit 4'];
+    const board = $('#production-queue-board');
+    board.empty();
+
+    // Create columns
+    units.forEach(u => {
+        board.append(`
+            <div style="flex: 0 0 300px; background: #dfe3e8; border-radius: 8px; padding: 15px;">
+                <h5 style="text-align: center; margin-bottom: 15px; font-weight: bold;">${u}</h5>
+                <div id="${u.replace(' ', '')}" class="drop-target" style="min-height: 500px;"></div>
+            </div>`);
+    });
+
+    // Child doctype: Planning sheet Item (matches tabPlanning sheet Item / Frappe DocType name)
+    frappe.call({
+        method: "frappe.client.get_list",
+        args: {
+            doctype: "Planning sheet Item",
+            fields: ["name", "parent", "unit", "color", "custom_quality"],
+            filters: {"docstatus": ["<", 2]}
+        },
+        callback: function(r) {
+            if (r.message) {
+                r.message.forEach(item => {
+                    const targetId = (item.unit || 'Unit 1').replace(' ', '');
+                    $(`#${targetId}`).append(`
+                        <div class="q-card" draggable="true" data-name="${item.name}" data-parent="${(item.parent || '').replace(/"/g, '&quot;')}"
+                             style="background: white; padding: 12px; margin-bottom: 12px; border-radius: 6px; border-left: 6px solid #2490ef; cursor: grab; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                            <strong>${item.parent}</strong><br>
+                            <small><b>${item.color || 'No Color'}</b> | ${item.custom_quality || 'No Quality'}</small>
+                        </div>`);
+                });
+                setupDrag();
+            }
+        }
+    });
+
+    function setupDrag() {
+        $('.q-card').on('dragstart', function(e) { e.originalEvent.dataTransfer.setData("text", $(this).data('name')); });
+        $('.drop-target').on('dragover', function(e) { e.preventDefault(); }).on('drop', function(e) {
+            e.preventDefault();
+            const rowName = e.originalEvent.dataTransfer.getData("text");
+            const newUnit = $(this).parent().find('h5').text();
+            const parentLabel = $(`.q-card[data-name="${rowName}"]`).data('parent') || rowName;
+
+            frappe.call({
+                method: "frappe.client.set_value",
+                args: {
+                    doctype: "Planning sheet Item",
+                    name: rowName,
+                    fieldname: "unit",
+                    value: newUnit
+                },
+                callback: () => {
+                    frappe.show_alert({message: `Updated ${parentLabel} → ${newUnit}`, indicator: 'green'});
+                    location.reload();
+                }
+            });
+        });
+    }
+});
+</script>

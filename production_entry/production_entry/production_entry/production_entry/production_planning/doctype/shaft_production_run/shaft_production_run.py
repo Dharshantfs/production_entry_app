@@ -1235,8 +1235,6 @@ class ShaftProductionRun(Document):
 	def on_submit(self):
 		self.sync_batch_custom_fields()
 		self.update_work_order_statuses()
-		# Keep PP produced/pending in sync even when WO state was updated outside this flow.
-		self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
 
 	def on_cancel(self):
 		self.cancel_manufacturing_stock_entries()
@@ -1514,75 +1512,34 @@ class ShaftProductionRun(Document):
 			se.unit = unit_value
 
 	def _refresh_batch_qty_for_codes(self, batch_codes: list[str]):
-		"""Force-refresh Batch.batch_qty for given batch ids from stock ledger."""
+		"""Force-refresh Batch.batch_qty for given batch ids to avoid stale zero-qty UI."""
 		for bn in {_cstr(x).strip() for x in (batch_codes or []) if _cstr(x).strip()}:
 			if not frappe.db.exists("Batch", bn):
 				continue
 			try:
-				qty = flt(
-					frappe.db.sql(
-						"""
-						SELECT IFNULL(SUM(actual_qty), 0)
-						FROM `tabStock Ledger Entry`
-						WHERE IFNULL(is_cancelled, 0) = 0
-						  AND IFNULL(batch_no, '') = %s
-						""",
-						(bn,),
-					)[0][0]
-					or 0
-				)
-				if abs(qty) <= 1e-9 and frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
-					try:
-						sb_bundle_dt = "Serial and Batch Bundle"
-						sb_entry_dt = "Serial and Batch Entry"
-						if frappe.db.exists("DocType", sb_bundle_dt) and frappe.db.exists("DocType", sb_entry_dt):
-							sb_entry_meta = frappe.get_meta(sb_entry_dt)
-							batch_field = next(
-								(
-									fn
-									for fn in ("batch_no", "batch", "batch_id")
-									if sb_entry_meta.has_field(fn)
-								),
-								"",
-							)
-							qty_field = next(
-								(
-									fn
-									for fn in ("qty", "quantity")
-									if sb_entry_meta.has_field(fn)
-								),
-								"",
-							)
-							if batch_field and qty_field:
-								qty = flt(
-									frappe.db.sql(
-										f"""
-										SELECT IFNULL(SUM(
-											CASE
-												WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
-												ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
-											END
-										), 0)
-										FROM `tabStock Ledger Entry` sle
-										INNER JOIN `tabSerial and Batch Entry` sbe
-											ON sbe.parent = sle.serial_and_batch_bundle
-										WHERE IFNULL(sle.is_cancelled, 0) = 0
-										  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
-										  AND IFNULL(sbe.`{batch_field}`, '') = %s
-										""",
-										(bn,),
-									)[0][0]
-									or 0
-								)
-					except Exception:
-						pass
-				if frappe.db.has_column("Batch", "batch_qty"):
-					frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
-				if frappe.db.has_column("Batch", "status"):
-					status = "Empty" if abs(qty) <= 1e-9 else "Active"
-					frappe.db.set_value("Batch", bn, "status", status, update_modified=False)
+				b = frappe.get_doc("Batch", bn)
+				if hasattr(b, "set_batch_qty"):
+					b.set_batch_qty()
+				else:
+					raise Exception("Batch.set_batch_qty missing")
 			except Exception:
-				pass
+				try:
+					qty = flt(
+						frappe.db.sql(
+							"""
+							SELECT IFNULL(SUM(actual_qty), 0)
+							FROM `tabStock Ledger Entry`
+							WHERE IFNULL(is_cancelled, 0) = 0
+							  AND IFNULL(batch_no, '') = %s
+							""",
+							(bn,),
+						)[0][0]
+						or 0
+					)
+					if frappe.db.has_column("Batch", "batch_qty"):
+						frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
+				except Exception:
+					pass
 
 	def _get_existing_submitted_manufacture_entries_for_spr(self) -> list[str]:
 		"""Submitted Manufacture entries already linked to this SPR."""
@@ -1721,12 +1678,6 @@ class ShaftProductionRun(Document):
 					d.t_warehouse = wip_wh
 			if any(d.item_code and d.get("t_warehouse") for d in (se.items or [])):
 				se.insert()
-				try:
-					self._persist_stock_entry_spr_reference_db(se.name)
-					if frappe.db.has_column("Stock Entry", "shaft_production_run"):
-						frappe.db.set_value("Stock Entry", se.name, "shaft_production_run", self.name, update_modified=False)
-				except Exception:
-					pass
 				return se.name
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (BOM path) failed")
@@ -1766,12 +1717,6 @@ class ShaftProductionRun(Document):
 		if not se.items:
 			return ""
 		se.insert()
-		try:
-			self._persist_stock_entry_spr_reference_db(se.name)
-			if frappe.db.has_column("Stock Entry", "shaft_production_run"):
-				frappe.db.set_value("Stock Entry", se.name, "shaft_production_run", self.name, update_modified=False)
-		except Exception:
-			pass
 		return se.name
 
 	def _find_open_wip_shortage_transfer_draft(self, wo_name: str) -> str:
@@ -1822,11 +1767,7 @@ class ShaftProductionRun(Document):
 		return se
 
 	def _raise_shortage_with_transfer(self, wo_id: str, wo_doc, chunk_total_qty: float, shortages):
-		"""Create draft transfer, then throw actionable shortage message.
-
-		Called from before_submit flow. Do not force DB commit here, otherwise partially
-		created Manufacture entries can persist even when SPR submit is blocked.
-		"""
+		"""Create draft transfer, then throw a clear actionable shortage message."""
 		transfer_name = ""
 		transfer_err = ""
 		try:
@@ -1868,58 +1809,26 @@ class ShaftProductionRun(Document):
 		"""Create/reuse drafts for all shortage WOs and raise one combined message."""
 		if not shortage_events:
 			return
-		# Aggregate by WO to avoid chunk-wise under-transfer.
-		by_wo = {}
+		sections = []
+		did_create_or_reuse = False
 		for event in shortage_events:
 			wo_id = _cstr(event.get("wo_id"))
-			if not wo_id:
-				continue
 			wo_doc = event.get("wo_doc")
 			chunk_total_qty = flt(event.get("chunk_total_qty"))
 			shortages = event.get("shortages") or []
-			st = by_wo.setdefault(
-				wo_id,
-				{
-					"wo_doc": wo_doc,
-					"chunk_total_qty": 0.0,
-					# key: (item_code, s_warehouse) -> [required_sum, available_first, shortage_sum]
-					"shortage_map": {},
-				},
-			)
-			st["chunk_total_qty"] = flt(st.get("chunk_total_qty")) + chunk_total_qty
-			for it, wh, req, avl, sh in shortages:
-				if not it or flt(sh) <= 0:
-					continue
-				key = (_cstr(it), _cstr(wh or ""))
-				meta = st["shortage_map"].setdefault(key, [0.0, None, 0.0])
-				meta[0] = flt(meta[0]) + flt(req)
-				if meta[1] is None:
-					meta[1] = flt(avl)
-				meta[2] = flt(meta[2]) + flt(sh)
-
-		sections = []
-		did_any = False
-		for wo_id, st in by_wo.items():
-			wo_doc = st.get("wo_doc")
-			chunk_total_qty = flt(st.get("chunk_total_qty"))
-			shortages_agg = []
-			for (it, wh), meta in (st.get("shortage_map") or {}).items():
-				required_sum, available_first, shortage_sum = meta
-				shortages_agg.append((it, wh, flt(required_sum), flt(available_first or 0.0), flt(shortage_sum)))
-			shortages_agg.sort(key=lambda x: flt(x[-1]), reverse=True)
 			transfer_name = ""
 			try:
-				transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages_agg)
-				did_any = did_any or bool(transfer_name)
+				transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
+				if transfer_name:
+					did_create_or_reuse = True
 			except Exception:
 				transfer_name = ""
-
 			lines = "\n".join(
 				[
 					_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
 						it, wh or "—", flt(req, 2), flt(avl, 2), flt(sh, 2)
 					)
-					for it, wh, req, avl, sh in shortages_agg[:10]
+					for it, wh, req, avl, sh in shortages[:10]
 				]
 			)
 			if transfer_name:
@@ -1930,13 +1839,12 @@ class ShaftProductionRun(Document):
 				)
 			else:
 				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
-
 		# Never force commit here; let the request-level transaction commit or rollback.
 		frappe.throw(
 			_(
 				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
 				"Submit all listed draft transfer(s), then return to SPR {2} and submit once."
-			).format(len(by_wo), "\n\n".join(sections), self.name),
+			).format(len(shortage_events), "\n\n".join(sections), self.name),
 			title=_("Insufficient stock"),
 		)
 
@@ -1961,18 +1869,11 @@ class ShaftProductionRun(Document):
 		return ""
 
 	def _strip_finished_goods_from_stock_entry(self, se):
-		"""Remove FG rows from BOM-generated Stock Entry and return them as templates."""
+		"""Remove FG rows from BOM-generated Stock Entry (we re-add per roll with batch_no)."""
 		items = se.get("items") or []
-		fg_templates = []
 		for i in range(len(items) - 1, -1, -1):
 			if getattr(items[i], "is_finished_item", 0):
-				try:
-					fg_templates.append(items[i].as_dict(no_default_fields=False))
-				except Exception:
-					fg_templates.append(dict(items[i].as_dict()))
 				se.items.pop(i)
-		fg_templates.reverse()
-		return fg_templates
 
 	def _get_batch_link_name_for_stock_entry(
 		self,
@@ -2058,20 +1959,12 @@ class ShaftProductionRun(Document):
 				return found
 			raise
 
-	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list, fg_templates=None):
-		"""One finished-good Stock Entry line per SPR roll, cloned from ERPNext FG template rows."""
+	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list):
+		"""One finished-good Stock Entry line per SPR roll (no merging qty by batch)."""
 		item_code = wo_doc.production_item
 		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
 		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
 		item_name = frappe.db.get_value("Item", item_code, "item_name")
-		fg_templates = list(fg_templates or [])
-		base_template = None
-		for tpl in fg_templates:
-			if _cstr(tpl.get("item_code")) == _cstr(item_code):
-				base_template = tpl
-				break
-		if base_template is None and fg_templates:
-			base_template = fg_templates[0]
 
 		for spr in spr_rows:
 			qty = self._row_fg_qty(spr)
@@ -2098,45 +1991,16 @@ class ShaftProductionRun(Document):
 			else:
 				se_batch = ""
 
-			row = {}
-			if base_template:
-				row.update(
-					{
-						k: v
-						for k, v in base_template.items()
-						if k
-						not in {
-							"name",
-							"parent",
-							"parenttype",
-							"parentfield",
-							"idx",
-							"owner",
-							"creation",
-							"modified",
-							"modified_by",
-							"docstatus",
-						}
-					}
-				)
-			row.update(
-				{
-					"item_code": item_code,
-					"item_name": item_name,
-					"qty": qty,
-					"transfer_qty": qty,
-					"uom": row.get("uom") or stock_uom,
-					"stock_uom": row.get("stock_uom") or stock_uom,
-					"conversion_factor": flt(row.get("conversion_factor") or 1),
-					"t_warehouse": wo_doc.fg_warehouse,
-					"s_warehouse": "",
-					"is_finished_item": 1,
-				}
-			)
+			row = {
+				"item_code": item_code,
+				"item_name": item_name,
+				"qty": qty,
+				"uom": stock_uom,
+				"t_warehouse": wo_doc.fg_warehouse,
+				"is_finished_item": 1,
+			}
 			if has_batch and se_batch:
 				row["batch_no"] = se_batch
-			elif "batch_no" in row:
-				row["batch_no"] = ""
 			se.append("items", row)
 
 	def _wo_submitted_manufacture_fg_qty(self, wo_id: str) -> float:
@@ -2737,8 +2601,8 @@ class ShaftProductionRun(Document):
 				actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
 
 				# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
-				fg_templates = self._strip_finished_goods_from_stock_entry(se)
-				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows, fg_templates)
+				self._strip_finished_goods_from_stock_entry(se)
+				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows)
 
 				# Hard guard: submit path must always be Manufacture (never Material Transfer).
 				se.stock_entry_type = self._manufacture_stock_entry_type_name()
@@ -2789,72 +2653,7 @@ class ShaftProductionRun(Document):
 					if not shortages:
 						shortages = self._rm_shortages_from_exception(e)
 					if shortages:
-						# Build one combined shortage response for all WO chunks in this submit attempt.
-						submit_shortage_events = [
-							{
-								"wo_id": wo_id,
-								"wo_doc": wo_doc,
-								"chunk_total_qty": chunk_total_qty,
-								"shortages": shortages,
-							}
-						]
-						for p2 in planned_wo_posts:
-							wo_id2 = p2["wo_id"]
-							wo_doc2 = p2["wo_doc"]
-							for chunk_rows2 in p2["row_chunks"]:
-								chunk_total_qty2 = sum(self._row_fg_qty(r2) for r2 in chunk_rows2)
-								if chunk_total_qty2 <= 0:
-									continue
-								preview_se2 = self._build_shortage_preview_for_chunk(wo_doc2, chunk_total_qty2)
-								shortages2 = self._rm_shortages_for_se(preview_se2)
-								if not shortages2:
-									continue
-								submit_shortage_events.append(
-									{
-										"wo_id": wo_id2,
-										"wo_doc": wo_doc2,
-										"chunk_total_qty": chunk_total_qty2,
-										"shortages": shortages2,
-									}
-								)
-						# Fallback for ERPNext future-SLE shortages: propagate same RM item shortages to all WO plans.
-						# This avoids one-WO-at-a-time draft generation loops for the same missing RM item.
-						short_item_codes = sorted({_cstr(it) for it, _wh, _req, _avl, _sh in shortages if _cstr(it)})
-						if short_item_codes:
-							for p2 in planned_wo_posts:
-								wo_id2 = p2["wo_id"]
-								wo_doc2 = p2["wo_doc"]
-								expected_rm2 = p2.get("expected_rm_map") or {}
-								wip_wh2 = _cstr(getattr(wo_doc2, "wip_warehouse", None))
-								extra_shortages = []
-								for ic in short_item_codes:
-									req2 = flt(expected_rm2.get(ic, 0))
-									if req2 <= 0:
-										continue
-									avl2 = flt(
-										frappe.db.get_value(
-											"Bin",
-											{"item_code": ic, "warehouse": wip_wh2},
-											"actual_qty",
-										)
-										or 0
-									)
-									sh2 = req2 - avl2
-									if sh2 <= 0:
-										# future-SLE path may still fail even when current bin is positive;
-										# keep WO in draft list when the triggering RM is common.
-										sh2 = req2
-									extra_shortages.append((ic, wip_wh2, req2, avl2, sh2))
-								if extra_shortages:
-									submit_shortage_events.append(
-										{
-											"wo_id": wo_id2,
-											"wo_doc": wo_doc2,
-											"chunk_total_qty": flt(p2.get("total_qty") or 0),
-											"shortages": extra_shortages,
-										}
-									)
-						self._raise_shortage_with_transfer_batch(submit_shortage_events)
+						self._raise_shortage_with_transfer(wo_id, wo_doc, chunk_total_qty, shortages)
 					raise
 				# Link back to WO after successful submit, then sync WO produced qty.
 				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
@@ -2929,32 +2728,6 @@ class ShaftProductionRun(Document):
 			if flt(total_produced) >= flt(wo_doc.qty):
 				wo_doc.db_set("status", "Completed")
 				frappe.msgprint(_("Work Order {0} marked as Completed").format(wo_id), alert=True)
-
-	def sync_produced_weight_to_planning_table(self):
-		"""Sync SPR total_produced_weight to Planning Table child rows for Lamination Fabric Qty column.
-		
-		When SPR is submitted, this updates actual_production_weight_kgs on child Planning Table rows
-		so that Lamination Order Table queries will find the fabric weight and display it in
-		FABRIC QTY (KG) and CHILD WO PROD (KG) columns.
-		"""
-		try:
-			if not frappe.db.has_column("Planning Table", "actual_production_weight_kgs"):
-				return
-			if not frappe.db.has_column("Planning Table", "spr_name"):
-				return
-			
-			# Update all child Planning Table rows that reference this SPR
-			frappe.db.sql(
-				"""
-				UPDATE `tabPlanning Table`
-				SET actual_production_weight_kgs = %s
-				WHERE spr_name = %s
-			""",
-				(self.total_produced_weight, self.name),
-			)
-			frappe.msgprint(_("Fabric quantity synced to Lamination table"), alert=True)
-		except Exception as e:
-			frappe.log_error(f"SPR {self.name}: Failed to sync weight to Planning Table - {str(e)}", "SPR Weight Sync")
 
 	def cancel_manufacturing_stock_entries(self):
 		names = []
@@ -3834,43 +3607,6 @@ def parse_item_code(item_code):
 	return 0, 0
 
 
-def _extract_width_inch_from_text(text: str) -> float:
-	"""Extract explicit inch width from text like `... 42.0'' ...` or `... 42.0\" ...`."""
-	s = _cstr(text)
-	if not s:
-		return 0.0
-	# 42.0'' or 42.0"
-	m = re.search(r"(\d+(?:\.\d+)?)\s*(?:''|\")", s)
-	if m:
-		return flt(m.group(1))
-	return 0.0
-
-
-def _manual_catalog_width_inch(pp_row, item_code: str, item_name: str) -> float:
-	"""Prefer business/display width for Manual Job dialog; fallback to item-code conversion."""
-	for fn in (
-		"width_inch",
-		"width_inches",
-		"custom_width_inch",
-		"custom_width_inches",
-		"width",
-		"custom_width",
-	):
-		try:
-			w = flt(getattr(pp_row, fn, None))
-		except Exception:
-			w = 0.0
-		if w > 0:
-			return round(w, 1)
-
-	w_from_name = _extract_width_inch_from_text(item_name)
-	if w_from_name > 0:
-		return round(w_from_name, 1)
-
-	_, w_from_code = parse_item_code(item_code)
-	return round(flt(w_from_code), 1) if w_from_code else 0.0
-
-
 def _item_stock_uom_for_spr(item_code: str) -> str:
 	"""Resolve a valid UOM Link for Shaft Production Run Item (prefer Item.stock_uom, usually Kg)."""
 	if not item_code:
@@ -4125,15 +3861,9 @@ def _spr_insert_manual_work_order(
 		if wip:
 			wo.wip_warehouse = wip
 	frappe.flags.spr_manual_work_order_insert = True
-	prev_server_script_enabled = frappe.conf.get("server_script_enabled", 1)
 	try:
-		# Manual SPR WO creation should not trigger site-level auto-start server scripts.
-		# Those scripts can attempt Stock Entry submission and fail with stock errors,
-		# which blocks WO creation itself.
-		frappe.conf.server_script_enabled = 0
 		wo.insert(ignore_permissions=True)
 	finally:
-		frappe.conf.server_script_enabled = prev_server_script_enabled
 		frappe.flags.spr_manual_work_order_insert = False
 	wo_name = wo.name
 	try:
@@ -4169,8 +3899,7 @@ def spr_get_manual_job_catalog(shaft_production_run):
 		if not ic:
 			continue
 		item_name = frappe.db.get_value("Item", ic, "item_name")
-		gsm, _width_inch = parse_item_code(ic)
-		width_inch = _manual_catalog_width_inch(row, ic, item_name or "")
+		gsm, width_inch = parse_item_code(ic)
 		first_seg_kg = None
 		for sj in _spr_job_rows(spr):
 			if _cstr(getattr(sj, "production_plan_item", None)) == _cstr(row.name):
@@ -4236,7 +3965,6 @@ def spr_create_manual_job(
 	item_code = _cstr(item_code)
 	production_plan_item = _cstr(production_plan_item)
 	selected_reuse_work_order = _cstr(frappe.form_dict.get("selected_reuse_work_order"))
-	force_new_work_order = selected_reuse_work_order == "__NEW__"
 	no_of_shafts = cint(no_of_shafts)
 	if no_of_shafts < 1:
 		frappe.throw(_("Number of shafts must be at least 1"))
@@ -4262,12 +3990,12 @@ def spr_create_manual_job(
 
 	reused = False
 	wo_name = ""
-	if selected_reuse_work_order and not force_new_work_order:
+	if selected_reuse_work_order:
 		candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
 		if selected_reuse_work_order in candidates:
 			wo_name = selected_reuse_work_order
 			reused = True
-	if not wo_name and not force_new_work_order:
+	if not wo_name:
 		wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
 		if wo_name:
 			reused = True
@@ -4292,9 +4020,8 @@ def spr_create_manual_job(
 			break
 		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
 
+	gsm, width_inch = parse_item_code(item_code)
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
-	gsm, _width_inch = parse_item_code(item_code)
-	width_inch = _manual_catalog_width_inch(ppi_row, item_code, item_name or "")
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 	order_code = ""
 	try:
@@ -4343,7 +4070,7 @@ def spr_create_manual_job(
 
 
 @frappe.whitelist()
-def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_of_rolls=None, combination_input=None):
+def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_of_rolls=None):
 	"""
 	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
 	items: list of { item_code, production_plan_item, wo_qty, meter_roll }.
@@ -4373,18 +4100,13 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	ppi_rows = []
 	meter_roll_from_popup: float | None = None
 
-	total_rolls_per_shaft = 0
 	for raw in items:
 		if not isinstance(raw, dict):
 			frappe.throw(_("Invalid line payload"))
 		item_code = _cstr(raw.get("item_code"))
 		production_plan_item = _cstr(raw.get("production_plan_item"))
 		selected_reuse_work_order = _cstr(raw.get("selected_reuse_work_order"))
-		force_new_work_order = selected_reuse_work_order == "__NEW__"
 		qty = flt(raw.get("wo_qty"))
-		roll_count_per_shaft = cint(raw.get("roll_count_per_shaft")) or no_of_rolls or 1
-		if roll_count_per_shaft < 1:
-			roll_count_per_shaft = 1
 		if not item_code or not production_plan_item or qty <= 0:
 			frappe.throw(_("Each line needs item, Production Plan row, and Work Order qty greater than zero"))
 		ppi_row = None
@@ -4395,11 +4117,11 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		if not ppi_row:
 			frappe.throw(_("Production Plan item line not found for {0}").format(item_code))
 		wo_name = ""
-		if selected_reuse_work_order and not force_new_work_order:
+		if selected_reuse_work_order:
 			candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
 			if selected_reuse_work_order in candidates:
 				wo_name = selected_reuse_work_order
-		if not wo_name and not force_new_work_order:
+		if not wo_name:
 			wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
 		if not wo_name:
 			wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
@@ -4420,11 +4142,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		qtys.append(qty)
 		item_codes_list.append(item_code)
 		ppi_rows.append(ppi_row)
-		item_name_for_width = frappe.db.get_value("Item", item_code, "item_name")
-		_gsm, _w_in = parse_item_code(item_code)
-		w_in = _manual_catalog_width_inch(ppi_row, item_code, item_name_for_width or "")
-		widths_list.extend([flt(w_in)] * roll_count_per_shaft)
-		total_rolls_per_shaft += roll_count_per_shaft
+		_gsm, w_in = parse_item_code(item_code)
+		widths_list.append(flt(w_in))
 		if meter_roll_from_popup is None and raw.get("meter_roll") not in (None, ""):
 			mr = flt(raw.get("meter_roll"))
 			if mr > 0:
@@ -4437,10 +4156,8 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
 
 	first_ic = item_codes_list[0]
+	gsm, width_inch_one = parse_item_code(first_ic)
 	item_name = frappe.db.get_value("Item", first_ic, "item_name")
-	gsm, _width_inch_one = parse_item_code(first_ic)
-	first_pp_row = ppi_rows[0] if ppi_rows else None
-	width_inch_one = _manual_catalog_width_inch(first_pp_row, first_ic, item_name or "")
 	quality, color = extract_quality_and_color(item_name or "", item_code=first_ic)
 	first_order_code = ""
 	try:
@@ -4470,7 +4187,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
 	if meta.has_field("no_of_rolls"):
-		row["no_of_rolls"] = total_rolls_per_shaft or no_of_rolls
+		row["no_of_rolls"] = no_of_rolls
 	if meta.has_field("gsm") and gsm:
 		try:
 			row["gsm"] = int(gsm)
@@ -4479,10 +4196,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	if meta.has_field("quality") and quality:
 		row["quality"] = quality
 	if meta.has_field("combination"):
-		typed_combination = _cstr(combination_input)
-		if typed_combination:
-			row["combination"] = typed_combination.replace("+", ' + ')
-		elif len(widths_list) > 1 and comb_str:
+		if len(widths_list) > 1 and comb_str:
 			row["combination"] = comb_str
 		else:
 			cb = _format_shaft_combination_inches(width_inch_one)
@@ -4859,35 +4573,6 @@ def spr_backfill_missing_manufacture_from_spr(shaft_production_run: str, submit_
 		"skipped_count": len(skipped),
 		"skipped": skipped[:100],
 	}
-
-
-@frappe.whitelist()
-def spr_refresh_batch_status_from_ledger(shaft_production_run: str):
-	"""Recompute Batch.batch_qty/status from stock ledger for all batch numbers on an SPR."""
-	spr_name = _cstr(shaft_production_run)
-	if not spr_name:
-		frappe.throw(_("Shaft Production Run is required"))
-	if not frappe.db.exists("Shaft Production Run", spr_name):
-		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
-
-	spr = frappe.get_doc("Shaft Production Run", spr_name)
-	batch_codes = sorted(
-		{
-			_cstr(r.get("batch_no")).strip()
-			for r in (spr.items or [])
-			if _cstr(r.get("batch_no")).strip()
-		}
-	)
-	spr._refresh_batch_qty_for_codes(batch_codes)
-	out = []
-	for bn in batch_codes:
-		row = {"batch_no": bn}
-		if frappe.db.has_column("Batch", "batch_qty"):
-			row["batch_qty"] = flt(frappe.db.get_value("Batch", bn, "batch_qty") or 0)
-		if frappe.db.has_column("Batch", "status"):
-			row["status"] = _cstr(frappe.db.get_value("Batch", bn, "status") or "")
-		out.append(row)
-	return {"status": "ok", "shaft_production_run": spr.name, "updated_count": len(out), "batches": out}
 
 
 @frappe.whitelist()
