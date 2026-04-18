@@ -3002,6 +3002,32 @@ class ShaftProductionRun(Document):
 				wo_doc.db_set("status", "Completed")
 				frappe.msgprint(_("Work Order {0} marked as Completed").format(wo_id), alert=True)
 
+	def sync_produced_weight_to_planning_table(self):
+		"""Sync SPR total_produced_weight to Planning Table child rows for Lamination Fabric Qty column.
+		
+		When SPR is submitted, this updates actual_production_weight_kgs on child Planning Table rows
+		so that Lamination Order Table queries will find the fabric weight and display it in
+		FABRIC QTY (KG) and CHILD WO PROD (KG) columns.
+		"""
+		try:
+			if not frappe.db.has_column("Planning Table", "actual_production_weight_kgs"):
+				return
+			if not frappe.db.has_column("Planning Table", "spr_name"):
+				return
+			
+			# Update all child Planning Table rows that reference this SPR
+			frappe.db.sql(
+				"""
+				UPDATE `tabPlanning Table`
+				SET actual_production_weight_kgs = %s
+				WHERE spr_name = %s
+			""",
+				(self.total_produced_weight, self.name),
+			)
+			frappe.msgprint(_("Fabric quantity synced to Lamination table"), alert=True)
+		except Exception as e:
+			frappe.log_error(f"SPR {self.name}: Failed to sync weight to Planning Table - {str(e)}", "SPR Weight Sync")
+
 	def cancel_manufacturing_stock_entries(self):
 		names = []
 		if self.manufacturing_entries:
