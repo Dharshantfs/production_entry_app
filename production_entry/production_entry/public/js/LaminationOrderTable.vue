@@ -977,16 +977,10 @@ function updateUrlParams() {
 
 async function syncSprWeightToTable() {
   try {
-    const r = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.sync_spr_weight_to_lamination_table",
-      args: {},
-    });
-    if (r?.message?.status === "success") {
-      frappe.show_alert({ message: r.message.message || "SPR data synced", indicator: "green" }, 4);
-      await fetchData();
-      return;
-    }
-    frappe.msgprint(r?.message?.message || "Sync finished with no updates.");
+    // Fabric qty / child WO qty now comes from live WO+PP data path in get_lamination_order_table_data.
+    // Keep this button as a manual refresh action without heavy backend sync.
+    await fetchData();
+    frappe.show_alert({ message: "Lamination table refreshed from live WO data", indicator: "green" }, 4);
   } catch (e) {
     console.error(e);
     frappe.msgprint(`Failed to sync SPR data: ${getErrorText(e)}`);
