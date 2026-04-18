@@ -40,7 +40,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
-        <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">💾 Sync SPR Data</button>
+        <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
@@ -50,8 +50,34 @@
       </div>
     </div>
 
+    <div class="cc-shift-board" v-if="showShiftPlanner">
+      <div class="cc-shift-board-head">
+        <div class="cc-shift-board-title">Shift Planner (drag between Day/Night)</div>
+        <div class="cc-shift-board-date">
+          <label>Shift Date</label>
+          <input type="date" v-model="moveTargetDate" />
+        </div>
+      </div>
+      <div class="cc-shift-lanes">
+        <div class="cc-shift-lane" :class="{ over: dragOverShift === 'DAY' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'DAY'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('DAY')">
+          <div class="cc-shift-lane-title">DAY</div>
+          <div v-for="row in scheduleRowsByShift('DAY')" :key="`${row.itemName}-day`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
+            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
+          </div>
+        </div>
+        <div class="cc-shift-lane" :class="{ over: dragOverShift === 'NIGHT' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'NIGHT'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('NIGHT')">
+          <div class="cc-shift-lane-title">NIGHT</div>
+          <div v-for="row in scheduleRowsByShift('NIGHT')" :key="`${row.itemName}-night`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
+            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders ({{ filteredRows.length }})</div>
+      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders (104)</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -67,10 +93,9 @@
             <th>PLANNED MTR</th>
             <th>ACHIEVED MTR</th>
             <th>KGS</th>
-            <th>FABRIC QTY (KG)</th>
             <th>PRODUCED FABRIC WT (KG)</th>
-            <th>PRODUCTION PLAN</th>
-            <th>ACTIONS</th>
+            <th style="min-width:90px;">PRODUCTION PLAN</th>
+            <th style="min-width:128px;">SPR / WO</th>
             <th style="min-width:84px;">ORDER</th>
           </tr>
         </thead>
@@ -103,65 +128,59 @@
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
-            <td class="cell-right">{{ formatKg2(row.fabric_achieved_kg) }} / {{ formatKg2(row.fabric_required_kg) }}</td>
-            <td class="cell-right" style="background:#fff9e6;">
-              <input 
-                type="number" 
-                v-model.number="row.produced_fabric_weight_kg" 
-                @change="saveProducedWeight(row)"
-                step="0.01"
-                min="0"
-                style="width:100%;padding:2px;border:1px solid #fcd34d;border-radius:4px;"
-                title="Actual production weight of fabric for this item"
-              />
+            <td class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
+              {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
             </td>
             <td class="cell-center">
-              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">📋 View</button>
+              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
-            <td class="cell-center" style="min-width:180px;">
-              <div class="pt-action-cell">
-                <!-- Open WO Button: Show if parent WO exists in draft state -->
+            <td class="cell-center">
+              <div class="pt-stock-cell">
+                <div v-if="row.pp_id" class="pt-pill-row">
+                  <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
+                  <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
+                  <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
+                </div>
+                <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
                 <button
-                  v-if="row.parent_wo_name && Number(row.parent_wo_docstatus || 0) === 0"
-                  type="button"
-                  @click="openParentWO(row)"
-                  class="cc-pp-btn"
-                  style="font-size:11px;padding:4px 8px;background:#e0f2fe;color:#0369a1;border-color:#0284c7;"
-                  title="Open Work Order and set source warehouse if needed"
-                >📂 Open WO</button>
-
-                <!-- Start WO Button: Show if conditions are met -->
-                <button
-                  v-if="row.is_lamination_parent && canStartWO(row)"
-                  type="button"
-                  @click="startParentWO(row)"
-                  class="cc-pp-btn pt-btn-entry"
-                  :title="getStartWOTitle(row)"
-                  style="font-size:11px;padding:4px 8px;"
-                >▶ Start WO</button>
-
-                <!-- Disabled Start WO: Show why it can't start -->
-                <button
-                  v-if="row.is_lamination_parent && !canStartWO(row) && row.pp_id"
+                  v-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
                   type="button"
                   disabled
                   class="cc-pp-btn pt-btn-entry"
-                  style="font-size:11px;padding:4px 8px;opacity:0.5;cursor:not-allowed;"
-                  :title="getStartWOBlockedReason(row)"
-                >⛔ {{ getStartWOBlockedReason(row) }}</button>
-
-                <!-- Stock Entry (SPR) Button -->
+                  style="opacity:0.45;cursor:not-allowed;"
+                  title="No Production Plan yet"
+                >Start WO</button>
+                <template v-else-if="row.is_lamination_parent && row.pp_id && !row.parent_wo_terminal">
+                  <button
+                    v-if="!row.parent_wo_name"
+                    type="button"
+                    @click="startParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Create Work Order draft"
+                  >Start WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && !row.parent_wo_warehouse_set"
+                    type="button"
+                    @click="openParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Open WO and set source warehouse, then save"
+                  >Open WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && row.parent_wo_warehouse_set"
+                    type="button"
+                    @click="startParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    title="Submit Work Order to start production"
+                  >Start WO</button>
+                </template>
                 <button
                   v-if="canShowStockEntry(row)"
                   type="button"
                   @click="handleStockEntryAction(row)"
                   class="cc-pp-btn pt-btn-entry"
                   :title="getStockEntryTitle(row)"
-                  style="font-size:11px;padding:4px 8px;"
                 >{{ getStockEntryLabel(row) }}</button>
-
-                <!-- View SPR Button -->
                 <button
                   v-else-if="row.spr_name"
                   type="button"
@@ -169,23 +188,20 @@
                   class="cc-pp-btn pt-btn-entry"
                   :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                   :title="itemSprPrimaryButtonTitle(row)"
-                  style="font-size:11px;padding:4px 8px;"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
-
-                <!-- Status Messages -->
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">✓ WO closed</span>
-                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint" style="color:#d97706;">⚠ Complete child WO first</span>
+                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
+                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Complete child WO first</span>
                 <span v-else style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
             <td class="cell-center">
-              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">≡≡</span>
-              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">🔒</span>
+              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">Drag</span>
+              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">Locked</span>
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
-            <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -202,6 +218,7 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+/** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 const rawData = ref([]);
 const filtersReady = ref(false);
@@ -221,7 +238,6 @@ let fetchTimer = null;
 let initialFetchRetried = false;
 let autoRefreshTimer = null;
 let fetchInProgress = false;
-
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
@@ -377,6 +393,16 @@ async function fetchMaintenanceRecords() {
 function maintenanceTypeForDate(dateValue) {
   const k = toDateKey(dateValue);
   return k ? maintenanceByDate.value[k] : "";
+}
+
+function scheduleRowsByShift(shift) {
+  const dateKey = toDateKey(moveTargetDate.value);
+  if (!dateKey) return [];
+  return (rawData.value || []).filter((r) => {
+    const rk = toDateKey(r.plannedDate || r.planned_date);
+    const sh = String(r.shift_label || "DAY").toUpperCase();
+    return rk === dateKey && sh === String(shift || "").toUpperCase();
+  });
 }
 
 async function fetchLaminationSequences() {
@@ -564,14 +590,12 @@ function sprPillLabel(item) {
   if (Number(item.spr_docstatus) === 1) return "Submitted";
   return "SPR";
 }
-
 function sprPillClass(item) {
   if (!item?.spr_name) return "pt-pill-muted";
   if (Number(item.spr_docstatus) === 0) return "pt-pill-draft";
   if (Number(item.spr_docstatus) === 1) return "pt-pill-submitted";
   return "pt-pill-muted";
 }
-
 function sprPillTitle(item) {
   if (!item?.spr_name) return "";
   const id = item.spr_name || "";
@@ -579,27 +603,23 @@ function sprPillTitle(item) {
   if (Number(item.spr_docstatus) === 1) return `Submitted SPR ${id}`;
   return id;
 }
-
 function woPillLabelItem(item) {
   if (!item) return "";
   if (item.wo_terminal) return "WO done";
   if (item.wo_open) return "WO open";
   return "WO";
 }
-
 function woPillClassItem(item) {
   if (item.wo_terminal) return "pt-pill-wo-done";
   if (item.wo_open) return "pt-pill-wo-open";
   return "pt-pill-wo-unknown";
 }
-
 function woPillTitleItem(item) {
   if (!item) return "";
   if (item.wo_terminal) return "All work orders closed or terminal.";
   if (item.wo_open) return "At least one WO open.";
   return "WO status";
 }
-
 function itemProductionStatusLine(item) {
   if (!item) return "";
   const t = parseFloat(item.qty) || 0;
@@ -608,19 +628,80 @@ function itemProductionStatusLine(item) {
   if (Math.abs(gap) <= 0.5) return "";
   return gap > 0 ? `${formatKg2(gap)} kg below target` : `${formatKg2(-gap)} kg over target`;
 }
-
 function itemSprPrimaryButtonLabel(item) {
   if (!item?.spr_name) return "";
   if (Number(item.spr_docstatus) === 0) return "Open draft SPR";
   if (item.wo_terminal) return "View SPR (done)";
   return "View SPR";
 }
-
 function itemSprPrimaryButtonTitle(item) {
   if (!item?.spr_name) return "";
   if (Number(item.spr_docstatus) === 0) return "Draft SPR - continue recording rolls.";
   if (item.wo_terminal) return "WO terminal - review only.";
   return "Open submitted SPR.";
+}
+
+function canShowStockEntry(item) {
+  if (!item || !item.pp_id) return false;
+  if (item.is_lamination_parent && !item.parent_wo_started) return false;
+  if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
+  if (!item.wo_open && !item.wo_terminal) return false;
+  if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
+  if (Number(item.pp_docstatus) !== 1) return false;
+  const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
+  if (!(pendingQty > 0)) return false;
+  const targetKg = Number(item.qty ?? 0);
+  const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
+  if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
+  if (item.wo_terminal) return false;
+  return true;
+}
+
+function openParentWO(item) {
+  const woName = String(item?.parent_wo_name || "").trim();
+  if (!woName) return;
+  frappe.set_route("Form", "Work Order", woName);
+}
+
+async function startParentWO(item) {
+  if (!item?.itemName) return;
+  try {
+    const submitExisting = item.parent_wo_name && Number(item.parent_wo_docstatus || 0) === 0 && item.parent_wo_warehouse_set;
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.start_lamination_parent_wo",
+      args: { item_name: item.itemName, submit_existing: submitExisting ? 1 : 0 },
+    });
+    const msg = res?.message || {};
+    if (msg.status === "ok") {
+      if (msg.draft && msg.wo_name && !submitExisting) {
+        frappe.show_alert({ message: `WO draft created: ${msg.wo_name}. Set source warehouse then come back to Start WO.`, indicator: "blue" }, 6);
+        frappe.set_route("Form", "Work Order", msg.wo_name);
+      } else if (msg.started) {
+        frappe.show_alert({ message: `WO started: ${msg.wo_name}`, indicator: "green" }, 4);
+      } else if (msg.wo_name) {
+        frappe.show_alert({ message: `WO: ${msg.wo_name}`, indicator: "green" }, 4);
+      }
+      await fetchData();
+      return;
+    }
+    frappe.msgprint(msg.message || "Unable to start WO");
+  } catch (e) {
+    frappe.msgprint(`Failed to start WO: ${e?.message || e}`);
+  }
+}
+
+function getStockEntryLabel(item) {
+  if (!item) return "New SPR";
+  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  return isDraftSpr ? "Continue SPR" : "New SPR";
+}
+
+function getStockEntryTitle(item) {
+  if (!item) return "Create Shaft Production Run";
+  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  const pendingQty = Number(item.pending_qty || 0);
+  if (isDraftSpr) return `Continue draft SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
+  return `New SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
 }
 
 function getItemDisplayName(item) {
@@ -771,6 +852,134 @@ function goToBoard() {
   frappe.set_route("lamination-board");
 }
 
+function onRowDragStart(row) {
+  dragRow.value = row;
+}
+
+function onRowDragEnd() {
+  dragOverShift.value = "";
+}
+
+async function handleShiftDrop(targetShift) {
+  const row = dragRow.value;
+  dragOverShift.value = "";
+  if (!row || !row.itemName) return;
+  const dateKey = toDateKey(moveTargetDate.value);
+  if (!dateKey) {
+    frappe.msgprint("Please choose a valid shift date.");
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
+      args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName },
+    });
+    const msg = res?.message || {};
+    frappe.show_alert({ message: `Moved to ${targetShift} on ${dateKey} (${msg.updated_count || 0})`, indicator: "green" }, 3);
+    await fetchData();
+  } catch (e) {
+    frappe.msgprint(`Failed to move row: ${e?.message || e}`);
+  } finally {
+    dragRow.value = null;
+  }
+}
+
+function currentShiftDateForDialog() {
+  if (viewScope.value === "daily" && filterOrderDate.value) return filterOrderDate.value;
+  return frappe.datetime.get_today();
+}
+
+function openAssignShiftDialog() {
+  const d = new frappe.ui.Dialog({
+    title: "Assign Lamination Shift",
+    fields: [
+      { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
+      { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
+    ],
+    primary_action_label: "Apply",
+    primary_action: async (vals) => {
+      try {
+        if (maintenanceTypeForDate(vals.shift_date)) {
+          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date)}).`);
+          return;
+        }
+        const res = await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
+          args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
+        });
+        const msg = res?.message || {};
+        frappe.show_alert(
+          { message: `Shift ${msg.shift || vals.shift_label} applied to ${msg.updated_count || 0} order(s)`, indicator: "green" },
+          5
+        );
+        d.hide();
+        if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date;
+        await fetchData();
+      } catch (e) {
+        frappe.msgprint(`Failed to assign shift: ${e?.message || e}`);
+      }
+    },
+  });
+  d.show();
+}
+
+function getMaintenanceRecordsHTML() {
+  if (!maintenanceRecords.value.length) {
+    return '<p style="color:#64748b;text-align:center;padding:6px 0;">No Lamination maintenance records in this scope.</p>';
+  }
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
+  maintenanceRecords.value.forEach((rec) => {
+    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
+  });
+  html += "</table>";
+  return html;
+}
+
+function openMachineOffDialog() {
+  const d = new frappe.ui.Dialog({
+    title: "Lamination Machine Off",
+    fields: [
+      { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
+      { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
+      {
+        fieldtype: "Select",
+        fieldname: "maintenance_type",
+        label: "Type",
+        options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change",
+        default: "Machine Off",
+        reqd: 1,
+      },
+      { fieldtype: "Small Text", fieldname: "notes", label: "Notes" },
+      { fieldtype: "HTML", fieldname: "records", options: getMaintenanceRecordsHTML() },
+    ],
+    primary_action_label: "Save",
+    primary_action: async (vals) => {
+      try {
+        const res = await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.add_lamination_machine_off",
+          args: {
+            start_date: vals.start_date,
+            end_date: vals.end_date,
+            maintenance_type: vals.maintenance_type,
+            notes: vals.notes || "",
+          },
+        });
+        if (res?.message?.status === "success") {
+          frappe.show_alert({ message: res.message.message || "Lamination maintenance saved", indicator: "green" }, 4);
+          d.hide();
+          await fetchMaintenanceRecords();
+          await fetchData();
+        } else {
+          frappe.msgprint(res?.message?.message || "Failed to save maintenance.");
+        }
+      } catch (e) {
+        frappe.msgprint(`Error saving maintenance: ${e?.message || e}`);
+      }
+    },
+  });
+  d.show();
+}
+
 function toggleViewScope() {
   if (viewScope.value === "monthly" && !filterMonth.value) {
     filterMonth.value = frappe.datetime.get_today().substring(0, 7);
@@ -783,125 +992,6 @@ function toggleViewScope() {
   }
   updateUrlParams();
   fetchData();
-}
-
-/** VALIDATION: Check if parent WO can be started */
-function canStartWO(item) {
-  if (!item) return false;
-  if (!item.is_lamination_parent) return false;
-  if (!item.pp_id) return false;
-  if (Number(item.pp_docstatus) !== 1) return false;
-  if (item.parent_wo_terminal) return false;
-
-  // CRITICAL: Child items must have completed WO and submitted SPR
-  if (!item.parent_ready_for_wo) return false;
-
-  return true;
-}
-
-/** Get reason why Start WO is blocked */
-function getStartWOBlockedReason(item) {
-  if (!item) return "No data";
-  if (!item.is_lamination_parent) return "Not parent";
-  if (!item.pp_id) return "No PP";
-  if (Number(item.pp_docstatus) !== 1) return "PP Draft";
-  if (item.parent_wo_terminal) return "WO closed";
-  if (!item.parent_ready_for_wo) return "Complete child WO";
-  return "Cannot start";
-}
-
-/** Get title for Start WO button */
-function getStartWOTitle(item) {
-  if (!item.parent_wo_name && Number(item.parent_wo_docstatus || 0) === 0 && !item.parent_wo_warehouse_set) {
-    return "Create Work Order draft and set source warehouse";
-  }
-  if (Number(item.parent_wo_docstatus || 0) === 0 && item.parent_wo_warehouse_set) {
-    return "Submit Work Order to start production";
-  }
-  return "Start Work Order";
-}
-
-function canShowStockEntry(item) {
-  if (!item || !item.pp_id) return false;
-  if (item.is_lamination_parent && !item.parent_wo_started) return false;
-  if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
-  if (!item.wo_open && !item.wo_terminal) return false;
-  if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
-  if (Number(item.pp_docstatus) !== 1) return false;
-  const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
-  if (!(pendingQty > 0)) return false;
-  const targetKg = Number(item.qty ?? 0);
-  const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
-  if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
-  if (item.wo_terminal) return false;
-  return true;
-}
-
-/** Open existing Work Order for editing */
-function openParentWO(item) {
-  const woName = String(item?.parent_wo_name || "").trim();
-  if (!woName) return;
-  frappe.set_route("Form", "Work Order", woName);
-}
-
-/** Start or submit Work Order */
-async function startParentWO(item) {
-  if (!item?.itemName) return;
-  try {
-    const submitExisting = item.parent_wo_name && Number(item.parent_wo_docstatus || 0) === 0 && item.parent_wo_warehouse_set;
-    const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.start_lamination_parent_wo",
-      args: { item_name: item.itemName, submit_existing: submitExisting ? 1 : 0 },
-    });
-    const msg = res?.message || {};
-    if (msg.status === "ok") {
-      if (msg.draft && msg.wo_name && !submitExisting) {
-        frappe.show_alert({ message: `WO draft created: ${msg.wo_name}. Set source warehouse then come back to Start WO.`, indicator: "blue" }, 6);
-        frappe.set_route("Form", "Work Order", msg.wo_name);
-      } else if (msg.started) {
-        frappe.show_alert({ message: `WO started: ${msg.wo_name}`, indicator: "green" }, 4);
-      } else if (msg.wo_name) {
-        frappe.show_alert({ message: `WO: ${msg.wo_name}`, indicator: "green" }, 4);
-      }
-      await fetchData();
-      return;
-    }
-    frappe.msgprint(msg.message || "Unable to start WO");
-  } catch (e) {
-    frappe.msgprint(`Failed to start WO: ${e?.message || e}`);
-  }
-}
-
-/** Save produced fabric weight */
-async function saveProducedWeight(row) {
-  if (!row.itemName) return;
-  try {
-    await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.update_lamination_produced_weight",
-      args: {
-        item_name: row.itemName,
-        produced_fabric_weight_kg: Number(row.produced_fabric_weight_kg || 0),
-      },
-    });
-    frappe.show_alert({ message: "Produced weight saved", indicator: "green" }, 2);
-  } catch (e) {
-    frappe.msgprint(`Failed to save weight: ${e?.message || e}`);
-    row.produced_fabric_weight_kg = 0;
-  }
-}
-
-function getStockEntryLabel(item) {
-  if (!item) return "New SPR";
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
-  return isDraftSpr ? "Continue SPR" : "New SPR";
-}
-
-function getStockEntryTitle(item) {
-  if (!item) return "Create Shaft Production Run";
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
-  const pendingQty = Number(item.pending_qty || 0);
-  if (isDraftSpr) return `Continue draft SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
-  return `New SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
 }
 
 async function fetchData() {
@@ -942,7 +1032,6 @@ async function fetchData() {
     rawData.value = (r.message || []).map((d) => ({
       ...d,
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
-      produced_fabric_weight_kg: d.produced_fabric_weight_kg || 0,
     }));
     if (!initialFetchRetried && (!rawData.value || rawData.value.length === 0)) {
       initialFetchRetried = true;
@@ -985,84 +1074,6 @@ async function syncSprWeightToTable() {
     console.error(e);
     frappe.msgprint(`Failed to sync SPR data: ${getErrorText(e)}`);
   }
-}
-
-function openMachineOffDialog() {
-  const d = new frappe.ui.Dialog({
-    title: "Lamination Machine Off",
-    fields: [
-      { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
-      { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
-      {
-        fieldtype: "Select",
-        fieldname: "maintenance_type",
-        label: "Type",
-        options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change",
-        default: "Machine Off",
-        reqd: 1,
-      },
-      { fieldtype: "Small Text", fieldname: "notes", label: "Notes" },
-    ],
-    primary_action_label: "Save",
-    primary_action: async (vals) => {
-      try {
-        const res = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.add_lamination_machine_off",
-          args: {
-            start_date: vals.start_date,
-            end_date: vals.end_date,
-            maintenance_type: vals.maintenance_type,
-            notes: vals.notes || "",
-          },
-        });
-        if (res?.message?.status === "success") {
-          frappe.show_alert({ message: res.message.message || "Lamination maintenance saved", indicator: "green" }, 4);
-          d.hide();
-          await fetchMaintenanceRecords();
-          await fetchData();
-        } else {
-          frappe.msgprint(res?.message?.message || "Failed to save maintenance.");
-        }
-      } catch (e) {
-        frappe.msgprint(`Error saving maintenance: ${e?.message || e}`);
-      }
-    },
-  });
-  d.show();
-}
-
-function openAssignShiftDialog() {
-  const d = new frappe.ui.Dialog({
-    title: "Assign Lamination Shift",
-    fields: [
-      { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
-      { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
-    ],
-    primary_action_label: "Apply",
-    primary_action: async (vals) => {
-      try {
-        if (maintenanceTypeForDate(vals.shift_date)) {
-          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF.`);
-          return;
-        }
-        const res = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
-          args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
-        });
-        const msg = res?.message || {};
-        frappe.show_alert(
-          { message: `Shift ${msg.shift || vals.shift_label} applied to ${msg.updated_count || 0} order(s)`, indicator: "green" },
-          5
-        );
-        d.hide();
-        if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date;
-        await fetchData();
-      } catch (e) {
-        frappe.msgprint(`Failed to assign shift: ${e?.message || e}`);
-      }
-    },
-  });
-  d.show();
 }
 
 watch([filterOrderDate, filterWeek, filterMonth], () => {
@@ -1191,144 +1202,262 @@ onUnmounted(() => {
   overflow: auto;
   border: 1px solid #e5e7eb;
 }
-.cc-table-unit-header {
-  padding: 12px 16px;
-  background: #fcd34d;
+.cc-shift-board {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+.cc-shift-board-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.cc-shift-board-title {
+  font-size: 13px;
   font-weight: 700;
-  color: #78350f;
+  color: #0f766e;
+}
+.cc-shift-board-date label {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+.cc-shift-lanes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.cc-shift-lane {
+  min-height: 88px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 8px;
+  background: #f8fafc;
+}
+.cc-shift-lane.over {
+  border-color: #0ea5e9;
+  background: #eff6ff;
+}
+.cc-shift-lane-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 6px;
+}
+.cc-shift-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px;
+  margin-bottom: 6px;
+  cursor: grab;
+}
+.cc-shift-card-code {
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.cc-shift-card-meta {
+  font-size: 10px;
+  color: #64748b;
 }
 .lot-header {
-  font-size: 14px;
+  padding: 10px 12px;
+  font-weight: 700;
+  background: #d1fae5;
+  color: #065f46;
+  border-bottom: 1px solid #6ee7b7;
 }
 .cc-prod-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  line-height: 1.6;
 }
-.lot-table thead tr {
-  background: #065f46;
+.cc-prod-table th {
+  background: #047857;
   color: #fff;
-  font-weight: 700;
-  font-size: 11px;
-  text-transform: uppercase;
-}
-.lot-table th {
-  padding: 8px;
+  padding: 14px 12px;
   text-align: left;
-  white-space: nowrap;
-}
-.th-n {
-  width: 40px;
-  text-align: center;
-}
-.lot-table td {
-  padding: 8px;
-  border-bottom: 1px solid #f3f4f6;
-}
-.lot-table tbody tr:hover {
-  background: #f8fafc;
-}
-.cell-center {
-  text-align: center;
-}
-.cell-right {
-  text-align: right;
-}
-.font-bold {
   font-weight: 700;
+  white-space: normal;
+  min-width: 100px;
+  word-wrap: break-word;
 }
-.font-mono {
-  font-family: monospace;
-}
-.cc-drag-handle {
-  display: inline-block;
-  cursor: grab;
-  color: #cbd5e1;
-  font-weight: 700;
-}
-.cc-lock-hint {
-  color: #cbd5e1;
-  font-size: 14px;
-}
-.cc-maint-chip {
-  display: inline-block;
-  background: #fee2e2;
-  color: #991b1b;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  margin-left: 4px;
-}
-.cc-pp-btn {
-  padding: 4px 8px;
-  border-radius: 6px;
-  border: 1px solid #cbd5e1;
-  background: #f0f9ff;
-  color: #0369a1;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-  transition: all 0.2s;
-  margin: 2px;
-}
-.cc-pp-btn:hover {
-  background: #e0f2fe;
-  border-color: #0284c7;
-}
-.pt-btn-entry {
-  background: #dcfce7;
-  color: #166534;
-  border-color: #86efac;
-}
-.pt-btn-entry:hover {
-  background: #bbf7d0;
-  border-color: #34d399;
-}
-.pt-spr-btn-draft {
-  background: #f3f4f6;
-  color: #475569;
-}
-.pt-spr-btn-submitted {
-  background: #fef3c7;
-  color: #92400e;
-}
-.pt-spr-btn-done {
-  background: #d1fae5;
-  color: #065f46;
-}
-.pt-pill-wo-done {
-  background: #d1fae5;
-  color: #065f46;
-}
-.pt-pill-wo-open {
-  background: #fef3c7;
-  color: #92400e;
-}
-.pt-pill-wo-unknown {
-  background: #f3f4f6;
-  color: #475569;
-}
-.pt-no-pp-hint {
-  color: #999;
-  font-size: 11px;
-}
-.pt-wo-closed-hint {
-  color: #666;
-  font-size: 11px;
-  font-weight: 500;
+.cc-prod-table td {
+  border-bottom: 1px solid #d1d5db;
+  padding: 12px 12px;
+  vertical-align: middle;
+  line-height: 1.5;
 }
 .cc-row-draggable {
   cursor: move;
+  transition: background-color 0.15s ease;
 }
 .cc-row-drag-over {
-  background: #e0f2fe !important;
-  border-top: 2px solid #0284c7;
+  outline: 2px dashed #0ea5e9;
+  outline-offset: -2px;
+  background: #f0f9ff;
 }
-.pt-action-cell {
+.cc-prod-table tbody tr {
+  height: auto;
+  transition: background-color 0.2s ease;
+}
+.cc-prod-table tbody tr:hover {
+  background-color: #f9fafb;
+}
+.th-n {
+  width: 60px;
+  text-align: center;
+}
+.cell-center {
+  text-align: center;
+  min-width: 80px;
+}
+.cc-maint-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #b91c1c;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+}
+.cc-order-btns {
+  display: inline-flex;
+  gap: 4px;
+}
+.cc-drag-handle {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  color: #334155;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.cc-lock-hint {
+  color: #94a3b8;
+}
+.cc-row-order-btn {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  border-radius: 4px;
+  width: 24px;
+  height: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cc-row-order-btn:hover {
+  background: #e2e8f0;
+}
+.cell-right {
+  text-align: right;
+  padding-right: 16px;
+}
+.cc-table-container {
+  font-size: 14px;
+}
+.cc-pp-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid #6366f1;
+  background: #eef2ff;
+  color: #3730a3;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+.cc-pp-btn:hover {
+  background: #c7d2fe;
+  border-color: #4f46e5;
+}
+.pt-no-pp-hint {
+  font-size: 10px;
+  color: #94a3b8;
+}
+.pt-stock-cell {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   align-items: center;
+}
+.pt-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+}
+.pt-pill {
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  display: inline-block;
+  white-space: nowrap;
+}
+.pt-pill-muted {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.pt-pill-draft {
+  background: #fef3c7;
+  color: #92400e;
+}
+.pt-pill-submitted {
+  background: #d1fae5;
+  color: #065f46;
+}
+.pt-pill-wo {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+.pt-pill-wo-done {
+  background: #dcfce7;
+  color: #166534;
+}
+.pt-pill-wo-open {
+  background: #ffedd5;
+  color: #9a3412;
+}
+.pt-pill-wo-unknown {
+  background: #f1f5f9;
+  color: #475569;
+}
+.pt-prod-status-line {
+  font-size: 9px;
+  color: #64748b;
+}
+.pt-btn-entry {
+  margin-top: 4px;
+}
+.pt-wo-closed-hint {
+  font-size: 10px;
+  color: #94a3b8;
+}
+.pt-spr-btn-draft {
+  border-color: #f59e0b !important;
+  background: #fffbeb !important;
+}
+.pt-spr-btn-submitted {
+  border-color: #10b981 !important;
+  background: #ecfdf5 !important;
+}
+.pt-spr-btn-done {
+  border-color: #94a3b8 !important;
+  background: #f8fafc !important;
+}
+.font-mono {
+  font-family: ui-monospace, monospace;
 }
 </style>
