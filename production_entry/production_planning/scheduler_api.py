@@ -896,6 +896,9 @@ def get_lamination_order_table_data(
 def sync_spr_weight_to_lamination_table(spr_name=None):
     """Force-refresh Planning Table fabric weights from submitted SPRs."""
     try:
+        if not frappe.db.exists("DocType", "Shaft Production Run"):
+            return {"status": "error", "message": "Shaft Production Run DocType not found"}
+
         if not frappe.db.has_column("Planning Table", "spr_name"):
             return {"status": "error", "message": "Planning Table missing spr_name"}
 
@@ -911,10 +914,18 @@ def sync_spr_weight_to_lamination_table(spr_name=None):
                 "message": "Planning Table does not have actual_production_weight_kgs. Refreshed Planning Table links so Lamination can fall back to Production Plan.",
             }
 
+        spr_cols = frappe.db.get_table_columns("Shaft Production Run") or []
+        produced_col = next(
+            (c for c in ["total_produced_weight", "custom_total_produced_weight", "produced_qty"] if c in spr_cols),
+            None,
+        )
+        if not produced_col:
+            return {"status": "error", "message": "Shaft Production Run missing produced-weight field"}
+
         if spr_name:
             spr_rows = frappe.db.sql(
-                """
-                SELECT name, total_produced_weight
+                f"""
+                SELECT name, IFNULL({produced_col}, 0) as produced_weight
                 FROM `tabShaft Production Run`
                 WHERE name = %s AND docstatus = 1
                 """,
@@ -923,11 +934,11 @@ def sync_spr_weight_to_lamination_table(spr_name=None):
             )
         else:
             spr_rows = frappe.db.sql(
-                """
-                SELECT name, total_produced_weight
+                f"""
+                SELECT name, IFNULL({produced_col}, 0) as produced_weight
                 FROM `tabShaft Production Run`
                 WHERE docstatus = 1
-                  AND IFNULL(total_produced_weight, 0) > 0
+                  AND IFNULL({produced_col}, 0) > 0
                 """,
                 as_dict=True,
             )
@@ -935,7 +946,7 @@ def sync_spr_weight_to_lamination_table(spr_name=None):
         updated = 0
         for spr in spr_rows or []:
             spr_id = str(spr.get("name") or "").strip()
-            weight = flt(spr.get("total_produced_weight") or 0)
+            weight = flt(spr.get("produced_weight") or 0)
             if not spr_id or weight <= 0:
                 continue
             frappe.db.sql(
@@ -949,9 +960,9 @@ def sync_spr_weight_to_lamination_table(spr_name=None):
             updated += 1
 
         return {"status": "success", "updated": updated, "message": f"Synced {updated} SPR(s)"}
-    except Exception:
+    except Exception as e:
         frappe.log_error(frappe.get_traceback(), "sync_spr_weight_to_lamination_table")
-        return {"status": "error", "message": "Sync failed"}
+        return {"status": "error", "message": f"Sync failed: {str(e)}"}
 
 
 @frappe.whitelist()
