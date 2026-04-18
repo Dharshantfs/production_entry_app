@@ -898,6 +898,60 @@ def get_lamination_order_table_data(
 
 
 @frappe.whitelist()
+def sync_spr_weight_to_lamination_table(spr_name=None):
+	"""Manually sync SPR produced weight to Planning Table rows.
+	
+	If spr_name provided: sync only that SPR
+	If not provided: sync all submitted SPRs linked to Planning Table
+	
+	This updates actual_production_weight_kgs on child rows so Lamination Order Table
+	shows FABRIC QTY (KG) and CHILD WO PROD (KG) columns populated.
+	"""
+	try:
+		if not frappe.db.has_column("Planning Table", "actual_production_weight_kgs"):
+			return {"status": "error", "message": "Planning Table missing actual_production_weight_kgs column"}
+		if not frappe.db.has_column("Planning Table", "spr_name"):
+			return {"status": "error", "message": "Planning Table missing spr_name column"}
+		
+		# Get all submitted SPRs with their total_produced_weight
+		if spr_name:
+			spr_doc = frappe.get_doc("Shaft Production Run", spr_name)
+			sprs = [(spr_doc.name, flt(spr_doc.total_produced_weight))]
+		else:
+			spr_rows = frappe.db.sql(
+				"""
+				SELECT name, total_produced_weight
+				FROM `tabShaft Production Run`
+				WHERE docstatus = 1
+				  AND total_produced_weight > 0
+				""",
+				as_dict=True,
+			)
+			sprs = [(r["name"], flt(r["total_produced_weight"])) for r in (spr_rows or [])]
+		
+		updated_count = 0
+		for spr_id, weight in sprs:
+			# Find all Planning Table rows linked to this SPR
+			result = frappe.db.sql(
+				"""
+				UPDATE `tabPlanning Table`
+				SET actual_production_weight_kgs = %s
+				WHERE spr_name = %s
+				  AND actual_production_weight_kgs != %s
+				""",
+				(weight, spr_id, weight),
+			)
+			updated_count += 1
+		
+		frappe.msgprint(_(f"✅ Synced {updated_count} SPR(s) to Lamination table. Refresh page to see updated FABRIC QTY and CHILD WO PROD columns!"), alert=True)
+		return {"status": "success", "synced_sprs": updated_count, "message": "Refresh page now"}
+	
+	except Exception as e:
+		frappe.log_error(f"Manual SPR sync failed: {str(e)}", "SPR Sync Error")
+		return {"status": "error", "message": str(e)}
+
+
+@frappe.whitelist()
 def start_lamination_parent_wo(item_name, submit_existing=0):
     """Create parent lamination WO in Draft once child fabric WO is terminal; user edits source warehouse then starts."""
     item_name = str(item_name or "").strip()

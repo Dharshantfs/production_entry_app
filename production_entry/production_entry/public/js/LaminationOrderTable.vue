@@ -40,6 +40,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">💾 Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
@@ -938,6 +939,35 @@ function updateUrlParams() {
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
+}
+
+async function syncSprWeightToTable() {
+  try {
+    frappe.call({
+      method: "production_entry.production_planning.scheduler_api.sync_spr_weight_to_lamination_table",
+      args: {},
+      callback: (r) => {
+        if (r.message && r.message.status === "success") {
+          frappe.show_alert({ message: "✅ SPR data synced! Refresh the table...", indicator: "green" }, 3);
+          setTimeout(() => {
+            fetchData();
+          }, 500);
+        } else {
+          frappe.msgprint({
+            title: "Sync Result",
+            indicator: "orange",
+            message: r.message?.message || "Sync completed",
+          });
+        }
+      },
+      error: (err) => {
+        frappe.msgprint("Error syncing SPR data: " + (err?.message || err));
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint("Sync failed: " + e.message);
+  }
 }
 
 function openMachineOffDialog() {
