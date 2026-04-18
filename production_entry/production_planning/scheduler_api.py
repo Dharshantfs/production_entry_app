@@ -761,6 +761,7 @@ def get_lamination_order_table_data(
 
     # Build child fabric progress map per parent key so lamination rows can gate WO start.
     pp_child_wo_cache = {}
+    child_so_pp_cache = {}
     fabric_progress = {}
 
     def _get_child_progress(sheet_name, so_item):
@@ -770,20 +771,25 @@ def get_lamination_order_table_data(
         if not key[0]:
             fabric_progress[key] = {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": False, "count": 0}
             return fabric_progress[key]
-        so_field = None
-        if frappe.db.has_column("Planning Table", "sales_order_item"):
-            so_field = "sales_order_item"
-        elif frappe.db.has_column("Planning Table", "custom_sales_order_item"):
-            so_field = "custom_sales_order_item"
+        has_so_item = frappe.db.has_column("Planning Table", "sales_order_item")
+        has_custom_so_item = frappe.db.has_column("Planning Table", "custom_sales_order_item")
 
-        where_so = f"AND IFNULL({so_field}, '') = %s" if so_field and key[1] else ""
+        where_so = ""
         params = [key[0]]
-        if where_so:
+        if key[1] and has_so_item and has_custom_so_item:
+            where_so = "AND (IFNULL(sales_order_item, '') = %s OR IFNULL(custom_sales_order_item, '') = %s)"
+            params.extend([key[1], key[1]])
+        elif key[1] and has_so_item:
+            where_so = "AND IFNULL(sales_order_item, '') = %s"
             params.append(key[1])
+        elif key[1] and has_custom_so_item:
+            where_so = "AND IFNULL(custom_sales_order_item, '') = %s"
+            params.append(key[1])
+
         achieved_expr = "IFNULL(actual_production_weight_kgs, 0)" if frappe.db.has_column("Planning Table", "actual_production_weight_kgs") else "0"
         child_rows = frappe.db.sql(
             f"""
-            SELECT name, qty, {achieved_expr} as achieved
+            SELECT name, qty, item_code, {achieved_expr} as achieved
             FROM `tabPlanning Table`
             WHERE parent = %s
               AND item_code LIKE '100%%'
@@ -797,6 +803,10 @@ def get_lamination_order_table_data(
             bucket["count"] += 1
             bucket["required"] += flt(ch.get("qty") or 0)
             child_pp = _get_item_level_production_plan(ch.get("name"))
+            if not child_pp and key[1]:
+                if key[1] not in child_so_pp_cache:
+                    child_so_pp_cache[key[1]] = _resolve_pp_by_sales_order_item(key[1])
+                child_pp = child_so_pp_cache.get(key[1])
             child_wo = {"produced": 0.0, "created": False, "terminal": False}
             if child_pp:
                 if child_pp not in pp_child_wo_cache:
