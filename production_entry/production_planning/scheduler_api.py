@@ -22,14 +22,14 @@ def _item_process_prefix(item_code):
 
 
 def _month_letter_from_date(dt):
-	"""January=A ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ December=L (single letter month code)."""
+	"""January=A +��+�G��+�G��+�G�G��+��+�G�+�+�G��+�-�+��+�G��+�G��+�-�+��+�-�+�-�+�G�+�+�-�+�GǪ+�-�+��+�G�+�+�G��+�-�+��+�G��+�-�+�G��-�+�-�+��+�G�+�+�G��+�-� December=L (single letter month code)."""
 	m = int(getattr(dt, "month", 1) or 1)
 	m = max(1, min(12, m))
 	return chr(ord("A") + m - 1)
 
 
 def _next_lamination_order_code():
-	"""U + YY + month letter (AÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“L) + 3-digit series, e.g. U26D001 (April 2026). Series is per month."""
+	"""U + YY + month letter (A+��+�G��+�G��+�G�G��+��+�G�+�+�G��+�-�+��+�G��+�G��+�-�+��+�-�+�-�+�G�+�+�-�+�GǪ+�-�+��+�G�+�+�G��+�-�+��+�G��+�G��+�-�+��+�-�+�-�+�G��-�+�-�+�G��+�-�+��+�G�-�+�-�+�G��-�+�GǣL) + 3-digit series, e.g. U26D001 (April 2026). Series is per month."""
 	now = frappe.utils.now_datetime()
 	yy = str(now.year)[-2:]
 	ml = _month_letter_from_date(now)
@@ -896,10 +896,20 @@ def get_lamination_order_table_data(
 def sync_spr_weight_to_lamination_table(spr_name=None):
     """Force-refresh Planning Table fabric weights from submitted SPRs."""
     try:
-        if not frappe.db.has_column("Planning Table", "actual_production_weight_kgs"):
-            return {"status": "error", "message": "Planning Table missing actual_production_weight_kgs"}
         if not frappe.db.has_column("Planning Table", "spr_name"):
             return {"status": "error", "message": "Planning Table missing spr_name"}
+
+        if not frappe.db.has_column("Planning Table", "actual_production_weight_kgs"):
+            for planning_sheet in frappe.get_all("Planning sheet", pluck="name") or []:
+                try:
+                    refresh_planning_sheet_spr_and_order_sheet(planning_sheet)
+                except Exception:
+                    continue
+            return {
+                "status": "success",
+                "updated": 0,
+                "message": "Planning Table does not have actual_production_weight_kgs. Refreshed Planning Table links so Lamination can fall back to Production Plan.",
+            }
 
         if spr_name:
             spr_rows = frappe.db.sql(
@@ -5586,7 +5596,8 @@ def _get_color_chart_data_impl(
                 split_so_item_produced_alloc_map[alloc_bucket] = already_alloc + row_alloc
                 item_level_produced = row_alloc
 
-            # Only Planning Table `spr_name` ties this row to an SPR (never SO/PP/SPR field alone).
+            # Prefer `spr_name`, but allow Production Plan fallback so rows still show values
+            # when the SPR link has not been backfilled yet.
             spr_name = (item.get("spr_name") or "").strip()
 
             spr_docstatus = None
@@ -5621,14 +5632,13 @@ def _get_color_chart_data_impl(
             wo_open = bool(item_pp and pp_has_open_wo_map.get(item_pp))
             wo_terminal = bool(item_pp and pp_has_wo_map.get(item_pp) and not wo_open)
 
-            # Actual kg: only when this Planning row has `spr_name` (maps are keyed by PT name from join).
             row_spr = (item.get("spr_name") or "").strip()
             total_achieved_weight_kgs = 0
             if row_spr and psi_name and psi_name in spr_psi_achieved_weight_map:
                 total_achieved_weight_kgs = spr_psi_achieved_weight_map[psi_name]
             elif row_spr and psi_name and psi_name in spr_psi_produced_map:
                 total_achieved_weight_kgs = spr_psi_produced_map[psi_name]
-            elif item_pp and row_spr:
+            elif item_pp:
                 spr_row_achieved = _take_next_spr_achieved(item_pp, item.get("gsm"), preferred_spr=row_spr)
                 if spr_row_achieved > 0:
                     total_achieved_weight_kgs = spr_row_achieved
@@ -9795,7 +9805,7 @@ def auto_create_planning_sheet(doc, method=None):
     if not cc_plan:
         # All plans are locked - do not create a sheet
         plan_summary = ", ".join([f"{p.get('name')}(L:{p.get('locked')})" for p in parsed if isinstance(p, dict)])
-        frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â All Color Chart plans are locked - Planning Sheet not created. Plans found: {plan_summary}", indicator="orange", alert=True)
+        frappe.msgprint(f"All Color Chart plans are locked - Planning Sheet not created. Plans found: {plan_summary}", indicator="orange", alert=True)
         return None
 
     # 2. STRICT SINGLETON RULE:
@@ -9859,7 +9869,7 @@ def auto_create_planning_sheet(doc, method=None):
     _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
             
-    frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
+    frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
     
     # RE-FETCH TO UPDATE HEADER PLAN CODES ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ ONLY ITEMS ENABLED, HEADER DISABLED PER USER REQUEST
     final_doc = frappe.get_doc("Planning sheet", ps.name)
@@ -9899,7 +9909,7 @@ def regenerate_planning_sheet(so_name):
 
     if not cc_plan:
         plan_summary = ", ".join([f"{p.get('name')}(L:{p.get('locked')})" for p in parsed if isinstance(p, dict)])
-        frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â All Color Chart plans are locked - cannot regenerate Planning Sheet. Plans found: {plan_summary}", indicator="orange", alert=True)
+        frappe.msgprint(f"All Color Chart plans are locked - cannot regenerate Planning Sheet. Plans found: {plan_summary}", indicator="orange", alert=True)
         return None
 
     # 2. CREATE PLANNING SHEET (order code generation + SO writeback)
@@ -9931,7 +9941,7 @@ def regenerate_planning_sheet(so_name):
     ensure_lamination_booking_for_planning_sheet(ps)
     ps.save(ignore_permissions=True)
 
-    frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
+    frappe.msgprint(f"Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
     return ps
 
 
