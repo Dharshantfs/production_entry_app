@@ -33,7 +33,6 @@ production_scheduler.ColorChartController = class {
 
 import ConfirmedOrder from "./ConfirmedOrder.vue";
 import ProductionTable from "./ProductionTable.vue";
-import LaminationOrderTable from "./LaminationOrderTable.vue";
 import SequenceApproval from "./SequenceApproval.vue";
 
 production_scheduler.ConfirmedOrderController = class {
@@ -45,12 +44,6 @@ production_scheduler.ConfirmedOrderController = class {
 production_scheduler.ProductionTableController = class {
     constructor(wrapper) {
         safeMount(ProductionTable, wrapper, "Production Table");
-    }
-};
-
-production_scheduler.LaminationOrderTableController = class {
-    constructor(wrapper) {
-        safeMount(LaminationOrderTable, wrapper, "Lamination Order Table");
     }
 };
 

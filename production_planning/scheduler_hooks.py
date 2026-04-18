@@ -8,7 +8,6 @@ from production_entry.production_planning.doctype.planning_sheet.planning_sheet 
 )
 from production_entry.production_planning.scheduler_api import (
 	ensure_child_table_schema_for_planning_cancel,
-	ensure_lamination_booking_for_planning_sheet,
 	normalize_planning_sheet_customer_link,
 	validate_planning_sheet_duplicates,
 )
@@ -20,7 +19,6 @@ def planning_sheet_before_validate(doc, method=None):
 
 def planning_sheet_validate_combined(doc, method=None):
 	validate_planning_sheet_duplicates(doc, method)
-	ensure_lamination_booking_for_planning_sheet(doc)
 	validate_planning_sheet(doc, method)
 
 

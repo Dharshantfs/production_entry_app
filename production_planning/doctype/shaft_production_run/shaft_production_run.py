@@ -1669,83 +1669,14 @@ class ShaftProductionRun(Document):
 		# Use current day/time for shortage transfers to avoid backdated ledger insufficiency on old run dates.
 		transfer_posting_date = today()
 		transfer_posting_time = nowtime()
+		# Reuse existing draft for same WO + SPR to avoid duplicate drafts on retry.
+		existing = self._find_open_wip_shortage_transfer_draft(_cstr(getattr(wo_doc, "name", None)))
+		if existing:
+			return existing
 		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)) or ""
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
 		if not wip_wh:
 			return ""
-		# Compute shortage totals by item_code for safe update/reuse.
-		short_by_item_code = defaultdict(float)
-		item_to_source_wh = {}
-		for item_code, wh, _req, _avl, short_qty in shortages:
-			if not item_code or flt(short_qty) <= 0:
-				continue
-			k = _cstr(item_code)
-			short_by_item_code[k] += flt(short_qty)
-			if not item_to_source_wh.get(k):
-				item_to_source_wh[k] = _cstr(wh)
-
-		# Reuse existing draft for same WO + SPR (but update quantities, do not return early).
-		existing = self._find_open_wip_shortage_transfer_draft(_cstr(getattr(wo_doc, "name", None)))
-		if existing:
-			try:
-				se = frappe.get_doc("Stock Entry", existing)
-				if int(getattr(se, "docstatus", 0)) != 0:
-					return existing
-				se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else flt(getattr(se, "fg_completed_qty", 1.0)) or 1.0
-
-				# Update / remove existing RM item rows to match shortage totals.
-				for i in range(len(se.items or []) - 1, -1, -1):
-					d = se.items[i]
-					ic = _cstr(getattr(d, "item_code", None))
-					if not ic:
-						se.items.pop(i)
-						continue
-					if ic not in short_by_item_code:
-						se.items.pop(i)
-						continue
-					short_qty = flt(short_by_item_code.get(ic))
-					cf = flt(getattr(d, "conversion_factor", None) or 1.0) or 1.0
-					d.transfer_qty = short_qty
-					d.qty = flt(short_qty / cf)
-					d.s_warehouse = _cstr(getattr(d, "s_warehouse", None)) or item_to_source_wh.get(ic) or raw_source_wh or getattr(d, "s_warehouse", None)
-					d.t_warehouse = d.t_warehouse or wip_wh
-					# Ensure warehouses stay consistent
-					if raw_source_wh:
-						d.s_warehouse = d.s_warehouse or raw_source_wh
-				# Append any missing shortage items.
-				existing_item_codes = {_cstr(getattr(d, "item_code", None)) for d in (se.items or [])}
-				for ic, short_qty in short_by_item_code.items():
-					if ic in existing_item_codes:
-						continue
-					stock_uom = frappe.db.get_value("Item", ic, "stock_uom") or "Nos"
-					se.append(
-						"items",
-						{
-							"item_code": ic,
-							"s_warehouse": item_to_source_wh.get(ic) or raw_source_wh or wip_wh,
-							"t_warehouse": wip_wh,
-							"uom": stock_uom,
-							"stock_uom": stock_uom,
-							"conversion_factor": 1.0,
-							"qty": flt(short_qty),
-							"transfer_qty": flt(short_qty),
-						},
-					)
-
-				# Persist SPR link fields for reliable reuse later.
-				try:
-					self._persist_stock_entry_spr_reference_db(se.name)
-					if frappe.db.has_column("Stock Entry", "shaft_production_run"):
-						frappe.db.set_value("Stock Entry", se.name, "shaft_production_run", self.name, update_modified=False)
-				except Exception:
-					pass
-
-				se.save(ignore_permissions=True)
-				return se.name
-			except Exception:
-				# If update fails, fall through to re-create a fresh draft.
-				frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (reuse update) failed")
-
 		short_by_item = defaultdict(float)
 		for item_code, _wh, _req, _avl, short_qty in shortages:
 			if item_code and flt(short_qty) > 0:
@@ -1937,8 +1868,7 @@ class ShaftProductionRun(Document):
 		"""Create/reuse drafts for all shortage WOs and raise one combined message."""
 		if not shortage_events:
 			return
-
-		# Aggregate by WO to avoid “chunk-wise reuse” under-transferring the draft.
+		# Aggregate by WO to avoid chunk-wise under-transfer.
 		by_wo = {}
 		for event in shortage_events:
 			wo_id = _cstr(event.get("wo_id"))
@@ -1952,22 +1882,20 @@ class ShaftProductionRun(Document):
 				{
 					"wo_doc": wo_doc,
 					"chunk_total_qty": 0.0,
-					"shortage_meta": {},  # (item_code, s_warehouse) -> [required_sum, available_first, shortage_sum]
+					# key: (item_code, s_warehouse) -> [required_sum, available_first, shortage_sum]
+					"shortage_map": {},
 				},
 			)
 			st["chunk_total_qty"] = flt(st.get("chunk_total_qty")) + chunk_total_qty
 			for it, wh, req, avl, sh in shortages:
-				if not it:
-					continue
-				sh = flt(sh)
-				if sh <= 0:
+				if not it or flt(sh) <= 0:
 					continue
 				key = (_cstr(it), _cstr(wh or ""))
-				meta = st["shortage_meta"].setdefault(key, [0.0, None, 0.0])
+				meta = st["shortage_map"].setdefault(key, [0.0, None, 0.0])
 				meta[0] = flt(meta[0]) + flt(req)
 				if meta[1] is None:
 					meta[1] = flt(avl)
-				meta[2] = flt(meta[2]) + sh
+				meta[2] = flt(meta[2]) + flt(sh)
 
 		sections = []
 		did_any = False
@@ -1975,9 +1903,9 @@ class ShaftProductionRun(Document):
 			wo_doc = st.get("wo_doc")
 			chunk_total_qty = flt(st.get("chunk_total_qty"))
 			shortages_agg = []
-			for (it, wh), meta in (st.get("shortage_meta") or {}).items():
-				req_sum, avl_first, sh_sum = meta
-				shortages_agg.append((it, wh, req_sum, avl_first or 0.0, sh_sum))
+			for (it, wh), meta in (st.get("shortage_map") or {}).items():
+				required_sum, available_first, shortage_sum = meta
+				shortages_agg.append((it, wh, flt(required_sum), flt(available_first or 0.0), flt(shortage_sum)))
 			shortages_agg.sort(key=lambda x: flt(x[-1]), reverse=True)
 			transfer_name = ""
 			try:
@@ -1985,6 +1913,7 @@ class ShaftProductionRun(Document):
 				did_any = did_any or bool(transfer_name)
 			except Exception:
 				transfer_name = ""
+
 			lines = "\n".join(
 				[
 					_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
@@ -2003,12 +1932,11 @@ class ShaftProductionRun(Document):
 				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
 
 		# Never force commit here; let the request-level transaction commit or rollback.
-
 		frappe.throw(
 			_(
 				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
 				"Submit all listed draft transfer(s), then return to SPR {2} and submit once."
-			).format(len(shortage_events), "\n\n".join(sections), self.name),
+			).format(len(by_wo), "\n\n".join(sections), self.name),
 			title=_("Insufficient stock"),
 		)
 

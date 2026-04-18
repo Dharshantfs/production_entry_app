@@ -394,7 +394,7 @@
                 </tbody>
                 <tbody>
                     <tr v-if="unitGroup.dates.length === 0">
-                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">{{ isLaminationBoard ? "No lamination production for this view — adjust date or filters." : "No production planned for this unit" }}</td>
+                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
                     </tr>
                 </tbody>
             </table>
@@ -1098,42 +1098,26 @@ const canExpandMergedRows = computed(() => {
 const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
 
 const visibleUnits = computed(() => {
-  const bu = boardUnits.value;
-  if (!filterUnit.value) return bu;
-  const match = bu.filter((u) => u === filterUnit.value);
-  return match.length ? match : bu;
+  if (!filterUnit.value) return boardUnits.value;
+  return boardUnits.value.filter((u) => u === filterUnit.value);
 });
-
-function rowMatchesBoardUnitColumn(unit, d) {
-  if (isLaminationBoard.value && unit === LAMINATION_UNIT) return true;
-  return (d.unit || "Mixed") === unit;
-}
 
 const filteredData = computed(() => {
   let data = rawData.value || [];
+  
+  // Only show items that have been pushed to Production Board
+  data = data.filter(d => !!d.plannedDate);
 
-  data = data.map((d) => ({ ...d, unit: normalizeUnit(d.unit) }));
+  // Exclude missing parameters and NO COLOR
+  data = data.filter(d => {
 
-  data = data.filter((d) => {
-    if (d.plannedDate) return true;
-    if (isLaminationBoard.value) {
-      return !!(d.orderDate || d.order_date);
-    }
-    return false;
-  });
-
-  // Exclude invalid rows; lamination board (104 scope) — rows are often UNASSIGNED → Mixed after normalize
-  data = data.filter((d) => {
-    if (isLaminationBoard.value) {
-      const colorUpper = (d.color || "").toUpperCase().trim();
+      if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
+      const colorUpper = d.color.toUpperCase().trim();
       if (colorUpper === "NO COLOR") return false;
       return true;
-    }
-    if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
-    const colorUpper = d.color.toUpperCase().trim();
-    if (colorUpper === "NO COLOR") return false;
-    return true;
   });
+  
+  data = data.map(d => ({ ...d, unit: d.unit || "Mixed" }));
 
   if (filterPartyCode.value) {
     const search = filterPartyCode.value.toLowerCase();
@@ -1264,7 +1248,7 @@ function toggleMergeExpanded(mergeId) {
 
 const tableData = computed(() => {
     return visibleUnits.value.map(unit => {
-        let items = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
+        let items = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
         
         const dateGroupsObj = {};
         items.forEach(item => {
@@ -2497,7 +2481,7 @@ async function fetchData() {
         }
 
     const r = await frappe.call({
-      method: "production_scheduler.api.get_color_chart_data",
+      method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
       args: args,
     });
     rawData.value = (r.message || []).map(d => ({
@@ -2633,12 +2617,6 @@ onMounted(async () => {
     if (monthParam) filterMonth.value = monthParam;
   }
   
-  const uParam = params.get("unit");
-  if (uParam) filterUnit.value = uParam;
-  if (isLaminationBoard.value && filterUnit.value && filterUnit.value !== LAMINATION_UNIT) {
-    filterUnit.value = "";
-  }
-
   await fetchMaintenanceRecords();
   await fetchData();
 });

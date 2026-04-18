@@ -94,8 +94,6 @@ class Planningsheet(Document):
         if cint(self.docstatus) != 0:
             return
         from production_entry.production_planning.scheduler_api import (
-            LAMINATION_FLOW_ENABLED,
-            _item_process_prefix,
             compute_default_production_unit,
             resolve_color_name_for_planning_row,
         )
@@ -126,10 +124,6 @@ class Planningsheet(Document):
                     color = resolved
                 elif not color:
                     color = resolved or ""
-                ic = str(getattr(row, "item_code", None) or "")
-                if LAMINATION_FLOW_ENABLED and _item_process_prefix(ic) == "104":
-                    row.unit = normalize_planning_unit_for_select("Lamination Unit")
-                    continue
                 width = flt(getattr(row, "width_inch", None))
                 row.unit = compute_default_production_unit(color, width)
 
@@ -540,30 +534,15 @@ class Planningsheet(Document):
         """Calculate total quantity and weight"""
         total_qty = 0
         total_weight = 0
-
-        def _fill_line_weight(row):
-            if not flt(row.total_weight):
-                if row.weight_per_roll and row.no_of_rolls:
-                    row.total_weight = flt(row.weight_per_roll) * flt(row.no_of_rolls)
-                elif flt(row.qty):
-                    row.total_weight = flt(row.qty)
-
-        planned = self.get("planned_items") or []
-        legacy = self.get("items") or []
-
-        for item in planned:
-            _fill_line_weight(item)
+        
+        for item in self.planned_items:
+            # Calculate weight per item if not already set
+            if not item.total_weight and item.weight_per_roll and item.no_of_rolls:
+                item.total_weight = flt(item.weight_per_roll) * flt(item.no_of_rolls)
+            
             total_qty += flt(item.qty)
             total_weight += flt(item.total_weight)
-
-        for item in legacy:
-            _fill_line_weight(item)
-
-        if not planned and legacy:
-            for item in legacy:
-                total_qty += flt(item.qty)
-                total_weight += flt(item.total_weight)
-
+        
         self.total_quantity = total_qty
         self.total_weight = total_weight
         
@@ -865,7 +844,7 @@ def auto_create_planning_sheet(doc, method=None):
         ps.insert()
         frappe.db.commit()
         
-        frappe.msgprint(f"âœ… Planning Sheet <b>{ps.name}</b> created and synced from Sales Order for April 1st Alignment.")
+        frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created and synced from Sales Order.")
     except Exception as e:
         frappe.log_error(frappe.get_traceback(), "Auto Create Planning Sheet Failed")
 
