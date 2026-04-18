@@ -786,6 +786,11 @@ def get_lamination_order_table_data(
             tuple(params),
             as_dict=True,
         )
+        # FABRIC QTY & CHILD WO PROD columns depend on child SPR submission:
+        # - Column populates ONLY after child SPR is submitted (actual_production_weight_kgs syncs from SPR to Planning Table)
+        # - While SPR is draft: columns show 0.00 (no value in database yet)
+        # - After SPR submit: Refresh page to see the achieved weight
+        # - WO completion is independent (just marks status, doesn't affect kg values)
         bucket = {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": True, "count": 0}
         for ch in child_rows or []:
             bucket["count"] += 1
