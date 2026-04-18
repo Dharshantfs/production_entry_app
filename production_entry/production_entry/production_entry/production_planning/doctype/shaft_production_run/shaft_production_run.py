@@ -1342,7 +1342,8 @@ class ShaftProductionRun(Document):
 		meta = frappe.get_meta("Shaft Production Run Item")
 		if not meta.has_field("produced_gsm"):
 			return
-		lam = spr_doc_is_lamination(self)
+		unit_lam = _cstr(getattr(self, "custom_unit", None)).strip() == "Lamination Unit"
+		lam = spr_doc_is_lamination(self) or unit_lam
 		for row in self.items or []:
 			if lam:
 				ln = 0.0
