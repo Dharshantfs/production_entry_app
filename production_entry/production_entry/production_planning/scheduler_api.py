@@ -759,6 +759,23 @@ def get_lamination_order_table_data(
             ):
                 spr_meters[r["parent"]] = flt(r.get("mtrs"))
 
+    # Also sum meter_per_roll from Roll Production Entry Item keyed by wo_id,
+    # so achieved_meter shows live progress even before SPR is linked to Planning Table.
+    rpe_meters_by_wo = {}
+    if frappe.db.exists("DocType", "Roll Production Entry Item"):
+        rpe_cols = frappe.db.get_table_columns("Roll Production Entry Item") or []
+        if "meter_per_roll" in rpe_cols and "wo_id" in rpe_cols:
+            for r in frappe.db.sql(
+                """
+                SELECT wo_id, SUM(IFNULL(meter_per_roll, 0)) as mtrs
+                FROM `tabRoll Production Entry Item`
+                WHERE IFNULL(wo_id, '') != ''
+                GROUP BY wo_id
+                """,
+                as_dict=True,
+            ):
+                rpe_meters_by_wo[str(r.get("wo_id") or "").strip()] = flt(r.get("mtrs"))
+
     # Build child fabric progress map per parent key so lamination rows can gate WO start.
     pp_child_wo_cache = {}
     child_so_pp_cache = {}
@@ -924,6 +941,7 @@ def get_lamination_order_table_data(
         row["fabric_gsm"] = int(ex.get("fabric_gsm") or 0) if ex else 0
         row["lamination_gsm"] = int(row.get("gsm") or 0) or 0
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
+        row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known
         row["achieved_meter"] = achieved_m
         row["shift_label"] = ((ex.get("shift_label") if ex else "") or "DAY").upper()
         item_code = str(row.get("itemCode") or row.get("item_code") or "").strip()
@@ -981,6 +999,12 @@ def get_lamination_order_table_data(
             row["parent_wo_status"] = str(wo_info.get("status") or "")
             row["parent_wo_docstatus"] = cint(wo_info.get("docstatus") or 0)
             row["parent_wo_warehouse_set"] = 1 if wo_info.get("source_warehouse") else 0
+        # Fallback: if SPR has no produced meters yet, use Roll Production Entry meter_per_roll
+        if row.get("_achieved_m_spr", 0) <= 0:
+            _pwo = str(row.get("parent_wo_name") or "").strip()
+            if _pwo and rpe_meters_by_wo.get(_pwo):
+                row["achieved_meter"] = flt(rpe_meters_by_wo[_pwo])
+        row.pop("_achieved_m_spr", None)
         out.append(row)
     return out
 
