@@ -22,14 +22,14 @@ def _item_process_prefix(item_code):
 
 
 def _month_letter_from_date(dt):
-	"""January=A +â¦Æ+åGÇÖ+âGÇá+óGé¼Gäó+â¦Æ+óGé¼+í+âGÇÜ+é-ó+â¦Æ+åGÇÖ+âGÇÜ+é-ó+â¦Æ+é-ó+â-ó+óGé¼+í+é-¼+âGÇª+é-í+â¦Æ+óGé¼+í+âGÇÜ+é-¼+â¦Æ+åGÇÖ+â-ó+óGÇÜ-¼+à-í+â¦Æ+óGé¼+í+âGÇÜ+é-ª December=L (single letter month code)."""
+    """January=A and December=L (single letter month code)."""
 	m = int(getattr(dt, "month", 1) or 1)
 	m = max(1, min(12, m))
 	return chr(ord("A") + m - 1)
 
 
 def _next_lamination_order_code():
-	"""U + YY + month letter (A+â¦Æ+åGÇÖ+âGÇá+óGé¼Gäó+â¦Æ+óGé¼+í+âGÇÜ+é-ó+â¦Æ+åGÇÖ+âGÇÜ+é-ó+â¦Æ+é-ó+â-ó+óGé¼+í+é-¼+âGÇª+é-í+â¦Æ+óGé¼+í+âGÇÜ+é-¼+â¦Æ+åGÇÖ+âGÇÜ+é-ó+â¦Æ+é-ó+â-ó+óGÇÜ-¼+à-í+âGÇÜ+é-¼+â¦Æ+óGé¼-ª+â-ó+óGÇÜ-¼+àGÇ£L) + 3-digit series, e.g. U26D001 (April 2026). Series is per month."""
+    """U + YY + month letter (A-L) + 3-digit series, for example U26D001."""
 	now = frappe.utils.now_datetime()
 	yy = str(now.year)[-2:]
 	ml = _month_letter_from_date(now)
@@ -4538,6 +4538,8 @@ def _get_color_chart_data_impl(
     item_pp_map = {}
     pp_produced_map = {}
     pp_wo_count_map = {}
+    pp_item_code_produced_map = {}
+    pp_item_code_wo_count_map = {}
     pp_has_open_wo_map = {}
     pp_has_wo_map = {}
     pp_wo_target_qty_map = {}
@@ -4826,6 +4828,7 @@ def _get_color_chart_data_impl(
         wo_data_pp = frappe.db.sql(f"""
             SELECT wo.production_plan,
                    wo.name,
+                                     wo.production_item as item_code,
                    GREATEST(IFNULL(wo.produced_qty, 0), IFNULL(se_map.se_produced_qty, 0)) as produced_qty,
                  wo.qty,
                  IFNULL(wo.status, '') as status
@@ -4857,6 +4860,12 @@ def _get_color_chart_data_impl(
                 "qty": flt(row.qty),
                 "status": row.get("status")
             })
+
+            item_code_key = (row.get("item_code") or "").strip()
+            if row.production_plan and item_code_key:
+                pp_item_key = f"{row.production_plan}::{item_code_key}"
+                pp_item_code_produced_map[pp_item_key] = pp_item_code_produced_map.get(pp_item_key, 0) + flt(row.produced_qty)
+                pp_item_code_wo_count_map[pp_item_key] = pp_item_code_wo_count_map.get(pp_item_key, 0) + 1
 
             pp_wo_target_qty_map[row.production_plan] = pp_wo_target_qty_map.get(row.production_plan, 0) + flt(row.qty)
             pp_wo_produced_qty_map[row.production_plan] = pp_wo_produced_qty_map.get(row.production_plan, 0) + flt(row.produced_qty)
@@ -5633,8 +5642,18 @@ def _get_color_chart_data_impl(
             wo_terminal = bool(item_pp and pp_has_wo_map.get(item_pp) and not wo_open)
 
             row_spr = (item.get("spr_name") or "").strip()
+            row_item_code = (item.get("item_code") or "").strip()
+            wo_item_level_produced = None
+            if item_pp and row_item_code:
+                pp_item_key = f"{item_pp}::{row_item_code}"
+                if pp_item_key in pp_item_code_produced_map:
+                    wo_item_level_produced = flt(pp_item_code_produced_map.get(pp_item_key, 0))
+                    item_level_wo_count = max(item_level_wo_count, cint(pp_item_code_wo_count_map.get(pp_item_key, 0)))
+
             total_achieved_weight_kgs = 0
-            if row_spr and psi_name and psi_name in spr_psi_achieved_weight_map:
+            if wo_item_level_produced is not None:
+                total_achieved_weight_kgs = wo_item_level_produced
+            elif row_spr and psi_name and psi_name in spr_psi_achieved_weight_map:
                 total_achieved_weight_kgs = spr_psi_achieved_weight_map[psi_name]
             elif row_spr and psi_name and psi_name in spr_psi_produced_map:
                 total_achieved_weight_kgs = spr_psi_produced_map[psi_name]
@@ -5654,10 +5673,7 @@ def _get_color_chart_data_impl(
                     or (psi_name in spr_psi_produced_map and flt(spr_psi_produced_map.get(psi_name)) > 0)
                 )
                 if not has_psi_spr_weight:
-                    if row_spr:
-                        total_achieved_weight_kgs = flt(item_level_produced)
-                    else:
-                        total_achieved_weight_kgs = 0
+                    total_achieved_weight_kgs = flt(item_level_produced)
             
             delivered_qty = max(
                 flt(so_item_delivered_qty_map.get(((sheet.sales_order or "").strip(), (item.get("item_code") or "").strip()), 0)),
