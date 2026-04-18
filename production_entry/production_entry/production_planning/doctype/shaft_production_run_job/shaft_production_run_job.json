@@ -16,6 +16,7 @@
   "net_weight",
   "total_weight",
   "custom_total_achieved_weight",
+  "custom_total_achieved_meter",
   "no_of_shafts",
   "no_of_rolls",
   "party_code",
@@ -92,6 +93,13 @@
    "fieldname": "custom_total_achieved_weight",
    "fieldtype": "Float",
    "label": "Total Achieved Weight (Kgs)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_total_achieved_meter",
+   "fieldtype": "Float",
+   "label": "Total Achieved Meter (Mtr)",
    "precision": "2",
    "read_only": 1
   },

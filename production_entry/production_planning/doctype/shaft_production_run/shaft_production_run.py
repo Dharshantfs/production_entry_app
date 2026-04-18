@@ -1103,6 +1103,7 @@ class ShaftProductionRun(Document):
 		self._spr_round_item_net_weights()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
+		self.recalculate_job_achieved_meters()
 		self.generate_batch_numbers()
 		self._spr_recalc_total_produced_weight_header()
 
@@ -1295,39 +1296,69 @@ class ShaftProductionRun(Document):
 		)
 
 	def recalculate_job_achieved_weights(self):
-		"""Per job: sum net_weight (fabric shaft runs) or produced length meters (104 lamination)."""
+		"""Per job: sum net_weight on roll lines (kg only — never ordered/planned meters)."""
 		meta = frappe.get_meta("Shaft Production Run Job")
 		if not meta.has_field("custom_total_achieved_weight"):
 			return
 		sums: dict[str, float] = {}
-		use_meters = spr_doc_is_lamination(self)
 		for it in self.items or []:
 			jid = _cstr(getattr(it, "job", None))
 			if not jid:
 				continue
-			if use_meters:
-				ln = _spr_length_meters(it)
-				add = flt(ln) if ln is not None else 0.0
-				sums[jid] = sums.get(jid, 0.0) + add
-			else:
-				sums[jid] = sums.get(jid, 0.0) + flt(it.net_weight, 2)
+			sums[jid] = sums.get(jid, 0.0) + flt(it.net_weight, 2)
 		for row in self.shaft_jobs or []:
 			jid = _cstr(_spr_job_id(row))
 			row.custom_total_achieved_weight = flt(sums.get(jid, 0.0), 2)
+
+	def recalculate_job_achieved_meters(self):
+		"""Per job + SPR header: sum produced_length_mtrs only (no meter_roll / ordered length)."""
+		meta_job = frappe.get_meta("Shaft Production Run Job")
+		meta_spr = frappe.get_meta("Shaft Production Run")
+		has_job_m = meta_job.has_field("custom_total_achieved_meter")
+		has_hdr_m = meta_spr.has_field("custom_total_achieved_meter")
+		if not has_job_m and not has_hdr_m:
+			return
+		spi = frappe.get_meta("Shaft Production Run Item")
+		has_pl = spi.has_field("produced_length_mtrs")
+		per_job: dict[str, float] = {}
+		total_all = 0.0
+		for it in self.items or []:
+			m = 0.0
+			if has_pl:
+				m = flt(getattr(it, "produced_length_mtrs", None) or 0)
+			total_all += m
+			jid = _cstr(getattr(it, "job", None))
+			if jid and has_job_m:
+				per_job[jid] = per_job.get(jid, 0.0) + m
+		if has_job_m:
+			for row in self.shaft_jobs or []:
+				jid = _cstr(_spr_job_id(row))
+				row.custom_total_achieved_meter = flt(per_job.get(jid, 0.0), 2)
+		if has_hdr_m:
+			self.custom_total_achieved_meter = flt(total_all, 2)
 
 	def calculate_produced_gsm(self):
 		"""Set produced_gsm on each roll line from effective weight (net, else gross), width, length (m)."""
 		meta = frappe.get_meta("Shaft Production Run Item")
 		if not meta.has_field("produced_gsm"):
 			return
+		lam = spr_doc_is_lamination(self)
 		for row in self.items or []:
-			ln = _spr_length_meters(row)
-			if ln is None or ln <= 0:
-				ln = flt(getattr(row, "meter_roll", None))
+			if lam:
+				ln = 0.0
+				for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
+					v = _spr_row_get(row, key)
+					if v is not None and flt(v) > 0:
+						ln = flt(v)
+						break
 			else:
-				ln = flt(ln)
+				ln_m = _spr_length_meters(row)
+				if ln_m is None or flt(ln_m) <= 0:
+					ln = flt(getattr(row, "meter_roll", None))
+				else:
+					ln = flt(ln_m)
 			wgt = _effective_weight_kg_for_produced_gsm(row)
-			row.produced_gsm = compute_produced_gsm(wgt, row.width_inch, ln)
+			row.produced_gsm = compute_produced_gsm(wgt, row.width_inch, flt(ln))
 
 	def on_submit(self):
 		self.sync_batch_custom_fields()

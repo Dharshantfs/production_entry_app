@@ -790,15 +790,13 @@ def get_lamination_order_table_data(
     spr_meters = {}
     if spr_names and frappe.db.exists("DocType", "Shaft Production Run Item"):
         spr_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
-        if "produced_length_mtrs" in spr_cols or "meter_roll" in spr_cols:
-            if "produced_length_mtrs" in spr_cols and "meter_roll" in spr_cols:
-                length_expr = "COALESCE(NULLIF(IFNULL(produced_length_mtrs, 0), 0), IFNULL(meter_roll, 0), 0)"
-            elif "produced_length_mtrs" in spr_cols:
-                length_expr = "IFNULL(produced_length_mtrs, 0)"
-            else:
-                length_expr = "IFNULL(meter_roll, 0)"
-            sf = ",".join(["%s"] * len(spr_names))
-            for row_m in frappe.db.sql(
+        # Lamination achieved length: sum produced meters only (not meter_roll / ordered length).
+        if "produced_length_mtrs" in spr_cols:
+            length_expr = "IFNULL(produced_length_mtrs, 0)"
+        else:
+            length_expr = "0"
+        sf = ",".join(["%s"] * len(spr_names))
+        for row_m in frappe.db.sql(
                 f"""
                 SELECT parent, SUM({length_expr}) as mtrs
                 FROM `tabShaft Production Run Item`
@@ -1039,8 +1037,8 @@ def get_lamination_order_table_data(
             row["parent_wo_status"] = str(wo_info.get("status") or "")
             row["parent_wo_docstatus"] = cint(wo_info.get("docstatus") or 0)
             row["parent_wo_warehouse_set"] = 1 if wo_info.get("source_warehouse") else 0
-        # Fallback: if SPR has no produced meters yet, use Roll Production Entry meter_per_roll
-        if row.get("_achieved_m_spr", 0) <= 0:
+        # Fallback: RPE ordered-style meters — not used for 104 lamination parent (achieved = produced length only).
+        if row.get("_achieved_m_spr", 0) <= 0 and not is_parent_lamination:
             _pwo = str(row.get("parent_wo_name") or "").strip()
             if _pwo and rpe_meters_by_wo.get(_pwo):
                 row["achieved_meter"] = flt(rpe_meters_by_wo[_pwo])

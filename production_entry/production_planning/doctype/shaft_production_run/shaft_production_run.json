@@ -21,6 +21,7 @@
   "custom_order_code",
   "column_break_7",
   "total_produced_weight",
+  "custom_total_achieved_meter",
   "custom_quality_summary",
   "custom_gsm_summary",
   "custom_color_summary",
@@ -121,6 +122,13 @@
    "fieldname": "total_produced_weight",
    "fieldtype": "Float",
    "label": "Total Produced Weight (KG)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_total_achieved_meter",
+   "fieldtype": "Float",
+   "label": "Total Achieved Meter (Mtr)",
    "precision": "2",
    "read_only": 1
   },

@@ -9,6 +9,27 @@ function spr_round_net_weight_kg(v) {
 	return Math.round(flt(v) * 100) / 100;
 }
 
+/** When PP / operator selects Lamination Unit, default Is Lamination on (still user-clearable). */
+function sprApplyLaminationUnitDefaults(frm, unitVal) {
+	if (!frm || !frm.doc) {
+		return;
+	}
+	const u = (unitVal != null ? String(unitVal) : String(frm.doc.custom_unit || '')).trim();
+	if (u !== 'Lamination Unit') {
+		return;
+	}
+	if (frappe.meta.get_docfield('Shaft Production Run', 'custom_is_lamination') && !cint(frm.doc.custom_is_lamination)) {
+		frm.set_value('custom_is_lamination', 1);
+	}
+}
+
+function sprSumProducedLengthMeters(it) {
+	if (!it || !frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
+		return 0;
+	}
+	return flt(it.produced_length_mtrs || 0);
+}
+
 function sprScheduleTotalProducedSync(frm, opts) {
 	if (!frm) return;
 	if (frm.__spr_total_sync_timer) {
@@ -145,6 +166,7 @@ frappe.ui.form.on('Shaft Production Run', {
 				if (d.custom_unit) {
 					sprLog('[SPR] Setting custom_unit:', d.custom_unit);
 					frm.set_value('custom_unit', d.custom_unit);
+					sprApplyLaminationUnitDefaults(frm, d.custom_unit);
 				}
 				if ('custom_order_code' in d) {
 					sprLog('[SPR] Setting custom_order_code:', d.custom_order_code);
@@ -191,9 +213,18 @@ frappe.ui.form.on('Shaft Production Run', {
 		});
 	},
 
+	custom_unit: function (frm) {
+		sprApplyLaminationUnitDefaults(frm);
+	},
+
 	refresh: function (frm) {
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
 		frm.set_df_property('total_produced_weight', 'read_only', 1);
+		try {
+			frm.set_df_property('custom_total_achieved_meter', 'read_only', 1);
+		} catch (e) {
+			/* field may not exist until migrate */
+		}
 		try {
 			frm.set_df_property('net_weight', 'precision', 2, null, 'items');
 		} catch (e) {
@@ -207,7 +238,12 @@ frappe.ui.form.on('Shaft Production Run', {
 		
 		sprScheduleTotalProducedSync(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
-		
+		try {
+			update_shaft_job_achieved_from_items(frm);
+		} catch (e) {
+			/* ignore */
+		}
+
 		spr_patch_items_grid_refresh(frm);
 		spr_register_spr_page_buttons(frm);
 		
@@ -1955,33 +1991,56 @@ function update_shaft_job_achieved_from_items(frm) {
 	if (frm && frm.doc && cint(frm.doc.docstatus) !== 0) {
 		return;
 	}
-	if (!frappe.meta.get_docfield('Shaft Production Run Job', 'custom_total_achieved_weight')) {
+	const hasW = frappe.meta.get_docfield('Shaft Production Run Job', 'custom_total_achieved_weight');
+	const hasM = frappe.meta.get_docfield('Shaft Production Run Job', 'custom_total_achieved_meter');
+	const hasHdrM = frappe.meta.get_docfield('Shaft Production Run', 'custom_total_achieved_meter');
+	if (!hasW && !hasM && !hasHdrM) {
 		return;
 	}
-	const useMeters = sprUsesLaminationRollPrompt(frm);
-	const sums = {};
+	const weightByJob = {};
+	const meterByJob = {};
+	let meterTotal = 0;
 	(frm.doc.items || []).forEach(function (it) {
 		const k = sprNormalizeJobKey(it.job);
 		if (!k) {
 			return;
 		}
-		if (useMeters) {
-			const m = flt(sprResolveLengthMeters(it));
-			sums[k] = (sums[k] || 0) + m;
-		} else {
-			sums[k] = (sums[k] || 0) + spr_round_net_weight_kg(it.net_weight);
+		if (hasW) {
+			weightByJob[k] = (weightByJob[k] || 0) + spr_round_net_weight_kg(it.net_weight);
+		}
+		const pm = sprSumProducedLengthMeters(it);
+		meterTotal += pm;
+		if (hasM) {
+			meterByJob[k] = (meterByJob[k] || 0) + pm;
 		}
 	});
-	(frm.doc.shaft_jobs || []).forEach(function (sj) {
-		const jid = sprShaftJobRowKey(sj);
-		const v = jid && sums[jid] !== undefined ? sums[jid] : 0;
-		const next = useMeters ? flt(v, 2) : spr_round_net_weight_kg(v);
-		const cur = flt(sj.custom_total_achieved_weight);
-		// Avoid set_value when unchanged — set_value marks the form dirty and causes "Not Saved" after a successful save.
-		if (Math.abs(cur - next) > 0.005) {
-			frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', next);
+	if (hasW) {
+		(frm.doc.shaft_jobs || []).forEach(function (sj) {
+			const jid = sprShaftJobRowKey(sj);
+			const next = spr_round_net_weight_kg(jid && weightByJob[jid] !== undefined ? weightByJob[jid] : 0);
+			const cur = flt(sj.custom_total_achieved_weight);
+			if (Math.abs(cur - next) > 0.005) {
+				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', next);
+			}
+		});
+	}
+	if (hasM) {
+		(frm.doc.shaft_jobs || []).forEach(function (sj) {
+			const jid = sprShaftJobRowKey(sj);
+			const next = flt(jid && meterByJob[jid] !== undefined ? meterByJob[jid] : 0, 2);
+			const cur = flt(sj.custom_total_achieved_meter);
+			if (Math.abs(cur - next) > 0.005) {
+				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_meter', next);
+			}
+		});
+	}
+	if (hasHdrM) {
+		const curH = flt(frm.doc.custom_total_achieved_meter);
+		const nextH = flt(meterTotal, 2);
+		if (Math.abs(curH - nextH) > 0.005) {
+			frm.set_value('custom_total_achieved_meter', nextH);
 		}
-	});
+	}
 }
 
 function spr_patch_items_grid_refresh(frm) {
