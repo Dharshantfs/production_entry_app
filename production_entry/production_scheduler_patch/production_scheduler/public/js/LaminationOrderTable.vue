@@ -40,6 +40,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
@@ -89,11 +90,10 @@
             <th>DESIGN</th>
             <th>FABRIC GSM</th>
             <th>LAM GSM</th>
-            <th>PLANNED MTR</th>
-            <th>ACHIEVED MTR</th>
-            <th>KGS</th>
-            <th>FABRIC QTY (KG)</th>
-            <th>CHILD WO PROD (KG)</th>
+            <th>PLANNED LENGTH (MTR)</th>
+            <th>ACHIEVED LENGTH (MTR)</th>
+            <th>PRODUCED LAMINATION WEIGHT (KGS)</th>
+            <th>PRODUCED FABRIC WT (KG)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
             <th style="min-width:84px;">ORDER</th>
@@ -128,8 +128,9 @@
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
-            <td class="cell-right">{{ formatKg2(row.fabric_achieved_kg) }} / {{ formatKg2(row.fabric_required_kg) }}</td>
-            <td class="cell-right">{{ formatKg2(row.child_wo_produced_kg) }}</td>
+            <td class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
+              {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
+            </td>
             <td class="cell-center">
               <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
@@ -142,17 +143,17 @@
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
-                <button
-                  v-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
-                  type="button"
-                  disabled
-                  class="cc-pp-btn pt-btn-entry"
-                  style="opacity:0.45;cursor:not-allowed;"
-                  title="No Production Plan yet"
-                >Start WO</button>
-                <template v-else-if="row.is_lamination_parent && row.pp_id && !row.parent_wo_terminal">
+                <template v-if="row.is_lamination_parent && !row.parent_wo_terminal">
                   <button
-                    v-if="!row.parent_wo_name"
+                    v-if="!row.pp_id"
+                    type="button"
+                    disabled
+                    class="cc-pp-btn pt-btn-entry"
+                    style="opacity:0.45;cursor:not-allowed;"
+                    title="No Production Plan yet"
+                  >Start WO</button>
+                  <button
+                    v-else-if="!row.parent_wo_name"
                     type="button"
                     @click="startParentWO(row)"
                     class="cc-pp-btn pt-btn-entry"
@@ -172,6 +173,14 @@
                     class="cc-pp-btn pt-btn-entry"
                     title="Submit Work Order to start production"
                   >Start WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 1"
+                    type="button"
+                    @click="openParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    :title="`Open WO: ${row.parent_wo_name} (${row.parent_wo_status || 'In Process'})`"
+                  >Open WO</button>
+                  <div v-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Complete child WO first</div>
                 </template>
                 <button
                   v-if="canShowStockEntry(row)"
@@ -189,9 +198,8 @@
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
-                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Complete child WO first</span>
-                <span v-else style="color:#999;font-size:10px;">No PP</span>
+                <span v-else-if="!row.is_lamination_parent && row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
+                <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
             <td class="cell-center">
@@ -200,7 +208,7 @@
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
-            <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -209,7 +217,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
@@ -235,8 +243,31 @@ const dragOrderRow = ref(null);
 const dragOverItemName = ref("");
 let fetchTimer = null;
 let initialFetchRetried = false;
+let autoRefreshTimer = null;
+let fetchInProgress = false;
+let sprRealtimeHandlerRegistered = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
+
+function getErrorText(err, fallback = "Request failed") {
+  try {
+    const serverMsgs = err?._server_messages;
+    if (typeof serverMsgs === "string" && serverMsgs) {
+      const parsed = JSON.parse(serverMsgs);
+      if (Array.isArray(parsed) && parsed.length) {
+        const first = parsed[0];
+        if (typeof first === "string") return first;
+        if (first?.message) return first.message;
+      }
+    }
+  } catch (_) {}
+
+  if (typeof err === "string" && err.trim()) return err;
+  if (typeof err?.message === "string" && err.message.trim()) return err.message;
+  if (typeof err?.exception === "string" && err.exception.trim()) return err.exception;
+  if (typeof err?.exc === "string" && err.exc.trim()) return err.exc;
+  return fallback;
+}
 
 const filteredRows = computed(() => {
   let d = rawData.value || [];
@@ -295,6 +326,10 @@ function debouncedFetch() {
   fetchTimer = setTimeout(() => fetchData(), 200);
 }
 
+function handleSprRealtimeUpdate() {
+  debouncedFetch();
+}
+
 function formatDate(d) {
   if (!d) return "-";
   try {
@@ -346,7 +381,7 @@ async function fetchMaintenanceRecords() {
   try {
     const { start_date, end_date } = getScopeDateRange();
     const res = await frappe.call({
-      method: "production_scheduler.api.get_all_equipment_maintenance",
+      method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
     const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === "Lamination Unit");
@@ -386,7 +421,7 @@ async function fetchLaminationSequences() {
   try {
     const { start_date, end_date } = getScopeDateRange();
     const res = await frappe.call({
-      method: "production_scheduler.api.get_color_sequences_range",
+      method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
       args: {
         start_date,
         end_date,
@@ -509,7 +544,7 @@ async function saveLaminationArrangement() {
     for (const [dateKey, seq] of Object.entries(pendingArrangementUpdates.value || {})) {
       if (!Array.isArray(seq) || !seq.length) continue;
       await frappe.call({
-        method: "production_scheduler.api.save_color_sequence",
+        method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date: dateKey,
           unit: "Lamination Unit",
@@ -536,7 +571,7 @@ async function restoreLaminationArrangement() {
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
-        method: "production_scheduler.api.restore_last_color_sequence",
+        method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
         args: { date: dateKey, unit: "Lamination Unit", plan_name: "Default" },
       });
     }
@@ -645,7 +680,7 @@ async function startParentWO(item) {
   try {
     const submitExisting = item.parent_wo_name && Number(item.parent_wo_docstatus || 0) === 0 && item.parent_wo_warehouse_set;
     const res = await frappe.call({
-      method: "production_scheduler.api.start_lamination_parent_wo",
+      method: "production_entry.production_planning.scheduler_api.start_lamination_parent_wo",
       args: { item_name: item.itemName, submit_existing: submitExisting ? 1 : 0 },
     });
     const msg = res?.message || {};
@@ -713,7 +748,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
   }
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.get_planning_sheet_pp_id",
+      method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
       args: {
         planning_sheet_name: planningSheetName,
         sales_order_item: salesOrderItem,
@@ -773,7 +808,7 @@ async function createItemStockEntry(item) {
   if (!item.pp_id && item.planningSheet) {
     try {
       const ppRes = await frappe.call({
-        method: "production_scheduler.api.get_planning_sheet_pp_id",
+        method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
         args: {
           planning_sheet_name: item.planningSheet,
           sales_order_item: item.salesOrderItem || null,
@@ -800,7 +835,7 @@ async function createItemStockEntry(item) {
       item.__creating_spr = true;
       try {
         const res = await frappe.call({
-          method: "production_scheduler.api.create_item_spr",
+          method: "production_entry.production_planning.scheduler_api.create_item_spr",
           args: {
             pp_id: item.pp_id,
             planning_sheet_item_names: JSON.stringify([item.itemName]),
@@ -848,7 +883,7 @@ async function handleShiftDrop(targetShift) {
   }
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.assign_lamination_shift",
+      method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
       args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName },
     });
     const msg = res?.message || {};
@@ -881,7 +916,7 @@ function openAssignShiftDialog() {
           return;
         }
         const res = await frappe.call({
-          method: "production_scheduler.api.assign_lamination_shift",
+          method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
           args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
         });
         const msg = res?.message || {};
@@ -933,7 +968,7 @@ function openMachineOffDialog() {
     primary_action: async (vals) => {
       try {
         const res = await frappe.call({
-          method: "production_scheduler.api.add_lamination_machine_off",
+          method: "production_entry.production_planning.scheduler_api.add_lamination_machine_off",
           args: {
             start_date: vals.start_date,
             end_date: vals.end_date,
@@ -972,6 +1007,8 @@ function toggleViewScope() {
 }
 
 async function fetchData() {
+  if (fetchInProgress) return;
+  fetchInProgress = true;
   try {
     let args = { party_code: filterPartyCode.value, planned_only: 1 };
     if (viewScope.value === "monthly") {
@@ -1001,7 +1038,7 @@ async function fetchData() {
     }
 
     const r = await frappe.call({
-      method: "production_scheduler.api.get_lamination_order_table_data",
+      method: "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
       args,
     });
     rawData.value = (r.message || []).map((d) => ({
@@ -1016,8 +1053,18 @@ async function fetchData() {
     await fetchMaintenanceRecords();
   } catch (e) {
     console.error(e);
-    frappe.msgprint("Error loading lamination order table");
+    frappe.msgprint(`Error loading lamination order table: ${getErrorText(e)}`);
+  } finally {
+    fetchInProgress = false;
   }
+}
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    fetchData();
+  }, 15000);
 }
 
 function updateUrlParams() {
@@ -1027,6 +1074,18 @@ function updateUrlParams() {
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
+}
+
+async function syncSprWeightToTable() {
+  try {
+    // Fabric qty / child WO qty now comes from live WO+PP data path in get_lamination_order_table_data.
+    // Keep this button as a manual refresh action without heavy backend sync.
+    await fetchData();
+    frappe.show_alert({ message: "Lamination table refreshed from live WO data", indicator: "green" }, 4);
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint(`Failed to sync SPR data: ${getErrorText(e)}`);
+  }
 }
 
 watch([filterOrderDate, filterWeek, filterMonth], () => {
@@ -1045,9 +1104,25 @@ onMounted(async () => {
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
+  startAutoRefresh();
+  if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
+    frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
+    sprRealtimeHandlerRegistered = true;
+  }
   moveTargetDate.value = toDateKey(filterOrderDate.value) || frappe.datetime.get_today();
   updateUrlParams();
   filtersReady.value = true;
+});
+
+onUnmounted(() => {
+  if (sprRealtimeHandlerRegistered && frappe.realtime && frappe.realtime.off) {
+    frappe.realtime.off("shaft_production_run_updated", handleSprRealtimeUpdate);
+    sprRealtimeHandlerRegistered = false;
+  }
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
 });
 </script>
 
@@ -1221,42 +1296,55 @@ onMounted(async () => {
 .cc-prod-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .cc-prod-table th {
   background: #047857;
   color: #fff;
-  padding: 8px 6px;
+  padding: 14px 12px;
   text-align: left;
   font-weight: 700;
-  white-space: nowrap;
+  white-space: normal;
+  min-width: 100px;
+  word-wrap: break-word;
 }
 .cc-prod-table td {
-  border-bottom: 1px solid #e5e7eb;
-  padding: 8px 6px;
+  border-bottom: 1px solid #d1d5db;
+  padding: 12px 12px;
   vertical-align: middle;
+  line-height: 1.5;
 }
 .cc-row-draggable {
   cursor: move;
+  transition: background-color 0.15s ease;
 }
 .cc-row-drag-over {
   outline: 2px dashed #0ea5e9;
   outline-offset: -2px;
   background: #f0f9ff;
 }
+.cc-prod-table tbody tr {
+  height: auto;
+  transition: background-color 0.2s ease;
+}
+.cc-prod-table tbody tr:hover {
+  background-color: #f9fafb;
+}
 .th-n {
-  width: 48px;
+  width: 60px;
   text-align: center;
 }
 .cell-center {
   text-align: center;
+  min-width: 80px;
 }
 .cc-maint-chip {
   display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: #b91c1c;
   background: #fee2e2;
@@ -1294,15 +1382,25 @@ onMounted(async () => {
 }
 .cell-right {
   text-align: right;
+  padding-right: 16px;
+}
+.cc-table-container {
+  font-size: 14px;
 }
 .cc-pp-btn {
-  padding: 4px 8px;
-  font-size: 11px;
+  padding: 6px 10px;
+  font-size: 12px;
   border-radius: 6px;
   border: 1px solid #6366f1;
   background: #eef2ff;
   color: #3730a3;
   cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+.cc-pp-btn:hover {
+  background: #c7d2fe;
+  border-color: #4f46e5;
 }
 .pt-no-pp-hint {
   font-size: 10px;
@@ -1321,10 +1419,12 @@ onMounted(async () => {
   justify-content: center;
 }
 .pt-pill {
-  font-size: 9px;
-  padding: 2px 6px;
+  font-size: 10px;
+  padding: 4px 8px;
   border-radius: 999px;
-  font-weight: 700;
+  font-weight: 600;
+  display: inline-block;
+  white-space: nowrap;
 }
 .pt-pill-muted {
   background: #f1f5f9;

@@ -98,6 +98,90 @@ def _spr_length_meters(spr_row) -> float | None:
 	return None
 
 
+def _spr_first_roll_item_code(doc) -> str:
+	for it in doc.get("items") or []:
+		ic = _cstr(getattr(it, "item_code", None) or "")
+		if ic:
+			return ic
+	return ""
+
+
+def _pp_has_104_work_order(pp_name: str) -> bool:
+	if not pp_name or not frappe.db.exists("Production Plan", pp_name):
+		return False
+	try:
+		for w in frappe.get_all(
+			"Work Order",
+			filters={"production_plan": pp_name, "docstatus": ["!=", 2]},
+			fields=["production_item"],
+			limit=30,
+		):
+			pi = _cstr((w or {}).get("production_item") or "")
+			if pi.upper().startswith("104"):
+				return True
+	except Exception:
+		pass
+	return False
+
+
+def spr_doc_is_lamination(doc) -> bool:
+	"""104 lamination flow: operator checks Is Lamination and plan / roll item is 104…"""
+	if not doc or not cint(getattr(doc, "custom_is_lamination", 0) or 0):
+		return False
+	ic = _spr_first_roll_item_code(doc)
+	if ic and ic.upper().startswith("104"):
+		return True
+	pp = _cstr(getattr(doc, "production_plan", None) or "")
+	return _pp_has_104_work_order(pp)
+
+
+def _fabric_gsm_from_planning_for_pp(pp_name: str) -> int:
+	"""Fabric (100…) GSM from Planning Table child row on same sheet as 104 lamination line."""
+	if not pp_name or not frappe.db.exists("DocType", "Planning Table"):
+		return 0
+	pt_cols = set(frappe.db.get_table_columns("Planning Table") or [])
+	if "custom_production_plan" not in pt_cols:
+		return 0
+	so_l = "sales_order_item" if "sales_order_item" in pt_cols else None
+	so_cust = "custom_sales_order_item" if "custom_sales_order_item" in pt_cols else None
+	fab_so = "so_item" if "so_item" in pt_cols else None
+	if not fab_so:
+		return 0
+	params: list = [pp_name]
+	if so_l and so_cust:
+		join_sql = (
+			f"(IFNULL(fab.{fab_so},'') = IFNULL(lam.{so_l},'') OR IFNULL(fab.{fab_so},'') = IFNULL(lam.{so_cust},''))"
+		)
+	elif so_l:
+		join_sql = f"IFNULL(fab.{fab_so},'') = IFNULL(lam.{so_l},'')"
+	elif so_cust:
+		join_sql = f"IFNULL(fab.{fab_so},'') = IFNULL(lam.{so_cust},'')"
+	else:
+		return 0
+	gcol = "gsm" if "gsm" in pt_cols else None
+	if not gcol:
+		return 0
+	row = frappe.db.sql(
+		f"""
+		SELECT IFNULL(fab.{gcol}, 0) AS g
+		FROM `tabPlanning Table` lam
+		INNER JOIN `tabPlanning sheet` ps ON ps.name = lam.parent
+		LEFT JOIN `tabPlanning Table` fab ON fab.parent = lam.parent
+			AND fab.item_code LIKE '100%%'
+			AND ({join_sql})
+		WHERE IFNULL(lam.custom_production_plan, '') = %s
+		  AND lam.item_code LIKE '104%%'
+		ORDER BY lam.idx ASC, fab.idx ASC
+		LIMIT 1
+		""",
+		tuple(params),
+		as_dict=True,
+	)
+	if row and row[0].get("g") is not None:
+		return int(flt(row[0].get("g")))
+	return 0
+
+
 def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 	"""Map Roll Production Result line to Batch fields (Net/Gross Weight Kgs, Length Mtrs, CBM)."""
 	if not spr_row:
@@ -1022,6 +1106,12 @@ class ShaftProductionRun(Document):
 		self.generate_batch_numbers()
 		self._spr_recalc_total_produced_weight_header()
 
+	def on_update(self):
+		try:
+			frappe.publish_realtime("shaft_production_run_updated", {"name": self.name})
+		except Exception:
+			pass
+
 	def _spr_round_item_net_weights(self):
 		"""Keep roll net weight at 2 decimal kg (matches child DocType precision and manual totals)."""
 		item_meta = frappe.get_meta("Shaft Production Run Item")
@@ -1066,7 +1156,8 @@ class ShaftProductionRun(Document):
 		return False
 
 	def before_submit(self):
-		self._validate_roll_weight_tolerance()
+		if not spr_doc_is_lamination(self):
+			self._validate_roll_weight_tolerance()
 		# Create/submit Manufacture entries before final submit so shortage handling can block
 		# submission and still persist a draft transfer link for operators.
 		self.flags._spr_allow_manufacture_posting = True
@@ -1204,16 +1295,22 @@ class ShaftProductionRun(Document):
 		)
 
 	def recalculate_job_achieved_weights(self):
-		"""Total Achieved Weight on each Available Jobs row = sum of net_weight in Roll Results for that job."""
+		"""Per job: sum net_weight (fabric shaft runs) or produced length meters (104 lamination)."""
 		meta = frappe.get_meta("Shaft Production Run Job")
 		if not meta.has_field("custom_total_achieved_weight"):
 			return
 		sums: dict[str, float] = {}
+		use_meters = spr_doc_is_lamination(self)
 		for it in self.items or []:
 			jid = _cstr(getattr(it, "job", None))
 			if not jid:
 				continue
-			sums[jid] = sums.get(jid, 0.0) + flt(it.net_weight, 2)
+			if use_meters:
+				ln = _spr_length_meters(it)
+				add = flt(ln) if ln is not None else 0.0
+				sums[jid] = sums.get(jid, 0.0) + add
+			else:
+				sums[jid] = sums.get(jid, 0.0) + flt(it.net_weight, 2)
 		for row in self.shaft_jobs or []:
 			jid = _cstr(_spr_job_id(row))
 			row.custom_total_achieved_weight = flt(sums.get(jid, 0.0), 2)
@@ -1276,10 +1373,13 @@ class ShaftProductionRun(Document):
 			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Production Plan links")
 
 	def _unit_digit(self) -> int:
-		u = (self.get("custom_unit") or "").strip()
-		if not u:
+		u_raw = (self.get("custom_unit") or "").strip()
+		if not u_raw:
 			return 0
-		m = re.search(r"(\d+)", u)
+		ul = u_raw.lower()
+		if "lamination" in ul:
+			return 5
+		m = re.search(r"(\d+)", u_raw)
 		return int(m.group(1)) if m else 0
 
 	def generate_batch_numbers(self):
@@ -3117,13 +3217,16 @@ def get_next_spr_batch_numbers(
 
 
 @frappe.whitelist()
-def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
+def build_spr_roll_result_lines_for_job(shaft_production_run, job_id, lamination_rolls_per_combination=None):
 	"""
 	Build Roll Production Result (SPR Item) lines for one job.
 	
 	✅ CORRECT: Extract GSM and WIDTH from Item Name, then match exactly.
 	Combination "33+63" cycles rolls through widths [33, 63, 33, 63, ...]
 	Each roll matched to correct WO by (GSM, WIDTH) tuple lookup.
+
+	Lamination (104 + Is Lamination): pass ``lamination_rolls_per_combination`` = rolls per combination
+	segment; total lines = segments × that number (shaft × roll formula is not used).
 	"""
 	if not job_id:
 		frappe.throw(_("Job ID is required"))
@@ -3149,7 +3252,19 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	rolls_per_shaft = cint(getattr(job_row, "no_of_rolls", 0) or 0)
 	if rolls_per_shaft < 1:
 		rolls_per_shaft = 1
-	if segs <= 1:
+
+	lam_n = cint(lamination_rolls_per_combination or 0)
+	if lam_n > 0:
+		if not spr_doc_is_lamination(spr_doc):
+			frappe.throw(
+				_("Rolls-per-combination mode is only for lamination: tick Is Lamination and use a 104 production plan.")
+			)
+		n_rolls = max(1, segs * lam_n)
+	elif spr_doc_is_lamination(spr_doc):
+		frappe.throw(
+			_("For lamination runs, enter **Number of rolls per combination** when clicking Create Entry (e.g. 10 rolls × 2 combinations = 20 lines).")
+		)
+	elif segs <= 1:
 		n_rolls = max(1, no_shafts * rolls_per_shaft)
 	else:
 		n_rolls = max(1, no_shafts * segs * rolls_per_shaft)
@@ -3179,6 +3294,9 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 	if mr_attr not in (None, "", 0):
 		meter_roll_job = flt(mr_attr)
 
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	fabric_gsm = _fabric_gsm_from_planning_for_pp(pp_name) if spr_doc_is_lamination(spr_doc) else 0
+
 	lines = []
 	for idx in range(n_rolls):
 		individual_width = None
@@ -3207,7 +3325,10 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 				f"[SPR WARNING] No exact match for GSM {job_gsm}, Width {individual_width}, using {wo['name']}"
 			)
 
-		planned_qty = _planned_kg_for_spr_result_roll(job_row, idx, n_rolls, segs)
+		if spr_doc_is_lamination(spr_doc):
+			planned_qty = 0.0
+		else:
+			planned_qty = _planned_kg_for_spr_result_roll(job_row, idx, n_rolls, segs)
 		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
 		if job_gsm is not None:
 			row["gsm"] = job_gsm
@@ -3215,6 +3336,8 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id):
 			row["width_inch"] = flt(individual_width)
 		if meter_roll_job is not None and meter_roll_job > 0:
 			row["meter_roll"] = meter_roll_job
+		if fabric_gsm > 0 and spi_meta.has_field("custom_fabric_gsm"):
+			row["custom_fabric_gsm"] = int(fabric_gsm)
 		row["roll_no"] = idx + 1
 		lines.append(row)
 	return lines

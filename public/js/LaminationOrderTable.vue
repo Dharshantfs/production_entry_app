@@ -246,6 +246,7 @@ let initialFetchRetried = false;
 let autoRefreshTimer = null;
 let fetchInProgress = false;
 let visibilityRefreshTimer = null;
+let sprRealtimeHandlerRegistered = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
@@ -333,6 +334,10 @@ function onVisibilityRefresh() {
     visibilityRefreshTimer = null;
     fetchData();
   }, 400);
+}
+
+function handleSprRealtimeUpdate() {
+  debouncedFetch();
 }
 
 function formatDate(d) {
@@ -1111,6 +1116,10 @@ onMounted(async () => {
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);
+  if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
+    frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
+    sprRealtimeHandlerRegistered = true;
+  }
   moveTargetDate.value = toDateKey(filterOrderDate.value) || frappe.datetime.get_today();
   updateUrlParams();
   filtersReady.value = true;
@@ -1118,6 +1127,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener("visibilitychange", onVisibilityRefresh);
+  if (sprRealtimeHandlerRegistered && frappe.realtime && frappe.realtime.off) {
+    frappe.realtime.off("shaft_production_run_updated", handleSprRealtimeUpdate);
+    sprRealtimeHandlerRegistered = false;
+  }
   if (visibilityRefreshTimer) {
     clearTimeout(visibilityRefreshTimer);
     visibilityRefreshTimer = null;

@@ -143,17 +143,17 @@
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
-                <button
-                  v-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
-                  type="button"
-                  disabled
-                  class="cc-pp-btn pt-btn-entry"
-                  style="opacity:0.45;cursor:not-allowed;"
-                  title="No Production Plan yet"
-                >Start WO</button>
-                <template v-else-if="row.is_lamination_parent && row.pp_id && !row.parent_wo_terminal">
+                <template v-if="row.is_lamination_parent && !row.parent_wo_terminal">
                   <button
-                    v-if="!row.parent_wo_name"
+                    v-if="!row.pp_id"
+                    type="button"
+                    disabled
+                    class="cc-pp-btn pt-btn-entry"
+                    style="opacity:0.45;cursor:not-allowed;"
+                    title="No Production Plan yet"
+                  >Start WO</button>
+                  <button
+                    v-else-if="!row.parent_wo_name"
                     type="button"
                     @click="startParentWO(row)"
                     class="cc-pp-btn pt-btn-entry"
@@ -173,6 +173,14 @@
                     class="cc-pp-btn pt-btn-entry"
                     title="Submit Work Order to start production"
                   >Start WO</button>
+                  <button
+                    v-else-if="Number(row.parent_wo_docstatus || 0) === 1"
+                    type="button"
+                    @click="openParentWO(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    :title="`Open WO: ${row.parent_wo_name} (${row.parent_wo_status || 'In Process'})`"
+                  >Open WO</button>
+                  <div v-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Complete child WO first</div>
                 </template>
                 <button
                   v-if="canShowStockEntry(row)"
@@ -190,9 +198,8 @@
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
-                <span v-else-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint">Complete child WO first</span>
-                <span v-else style="color:#999;font-size:10px;">No PP</span>
+                <span v-else-if="!row.is_lamination_parent && row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
+                <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
             <td class="cell-center">
@@ -238,6 +245,7 @@ let fetchTimer = null;
 let initialFetchRetried = false;
 let autoRefreshTimer = null;
 let fetchInProgress = false;
+let sprRealtimeHandlerRegistered = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
@@ -316,6 +324,10 @@ function sortRowsBySavedSequence(rows) {
 function debouncedFetch() {
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = setTimeout(() => fetchData(), 200);
+}
+
+function handleSprRealtimeUpdate() {
+  debouncedFetch();
 }
 
 function formatDate(d) {
@@ -1093,12 +1105,20 @@ onMounted(async () => {
   if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
   startAutoRefresh();
+  if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
+    frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
+    sprRealtimeHandlerRegistered = true;
+  }
   moveTargetDate.value = toDateKey(filterOrderDate.value) || frappe.datetime.get_today();
   updateUrlParams();
   filtersReady.value = true;
 });
 
 onUnmounted(() => {
+  if (sprRealtimeHandlerRegistered && frappe.realtime && frappe.realtime.off) {
+    frappe.realtime.off("shaft_production_run_updated", handleSprRealtimeUpdate);
+    sprRealtimeHandlerRegistered = false;
+  }
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
     autoRefreshTimer = null;

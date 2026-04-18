@@ -1108,13 +1108,19 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
 			return;
 		}
-		frappe.call({
-			method:
-				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.build_spr_roll_result_lines_for_job',
-			args: {
+		function invokeBuildRollLines(laminationRollsPerCombo) {
+			const args = {
 				shaft_production_run: frm.doc.name,
 				job_id: String(job_id),
-			},
+			};
+			const lrc = cint(laminationRollsPerCombo);
+			if (lrc > 0) {
+				args.lamination_rolls_per_combination = lrc;
+			}
+			frappe.call({
+			method:
+				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.build_spr_roll_result_lines_for_job',
+			args: args,
 			freeze: true,
 			freeze_message: __('Creating roll lines for this job...'),
 			callback: function (r) {
@@ -1207,6 +1213,35 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				}
 			},
 		});
+		}
+
+		if (sprUsesLaminationRollPrompt(frm)) {
+			frappe.prompt(
+				[
+					{
+						fieldname: 'rolls_per_combination',
+						fieldtype: 'Int',
+						label: __('Rolls per combination segment'),
+						reqd: 1,
+						description: __(
+							'Example: 2 combination widths × 10 rolls = 20 lines. (Lamination / 104 flow — Is Lamination is ticked.)'
+						),
+					},
+				],
+				function (values) {
+					const n = cint(values.rolls_per_combination);
+					if (n < 1) {
+						frappe.msgprint(__('Enter at least 1 roll per combination.'));
+						return;
+					}
+					invokeBuildRollLines(n);
+				},
+				__('Lamination — create roll lines'),
+				__('Create')
+			);
+			return;
+		}
+		invokeBuildRollLines(0);
 	},
 });
 
@@ -1316,12 +1351,21 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		
 		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		try {
+			update_shaft_job_achieved_from_items(frm);
+		} catch (e) {}
 	},
 	produced_length_mtrs: function (frm, cdt, cdn) {
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		try {
+			update_shaft_job_achieved_from_items(frm);
+		} catch (e) {}
 	},
 	meter_roll_mtrs: function (frm, cdt, cdn) {
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
+		try {
+			update_shaft_job_achieved_from_items(frm);
+		} catch (e) {}
 	},
 	ordered_length: function (frm, cdt, cdn) {
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
@@ -1669,6 +1713,10 @@ function sprShaftJobRowKey(sj) {
 	return sprNormalizeJobKey(sj.job_no);
 }
 
+function sprUsesLaminationRollPrompt(frm) {
+	return frm && frm.doc && cint(frm.doc.custom_is_lamination);
+}
+
 function update_shaft_job_achieved_from_items(frm) {
 	if (frm && frm.doc && cint(frm.doc.docstatus) !== 0) {
 		return;
@@ -1676,18 +1724,24 @@ function update_shaft_job_achieved_from_items(frm) {
 	if (!frappe.meta.get_docfield('Shaft Production Run Job', 'custom_total_achieved_weight')) {
 		return;
 	}
+	const useMeters = sprUsesLaminationRollPrompt(frm);
 	const sums = {};
 	(frm.doc.items || []).forEach(function (it) {
 		const k = sprNormalizeJobKey(it.job);
 		if (!k) {
 			return;
 		}
-		sums[k] = (sums[k] || 0) + spr_round_net_weight_kg(it.net_weight);
+		if (useMeters) {
+			const m = flt(sprResolveLengthMeters(it));
+			sums[k] = (sums[k] || 0) + m;
+		} else {
+			sums[k] = (sums[k] || 0) + spr_round_net_weight_kg(it.net_weight);
+		}
 	});
 	(frm.doc.shaft_jobs || []).forEach(function (sj) {
 		const jid = sprShaftJobRowKey(sj);
 		const v = jid && sums[jid] !== undefined ? sums[jid] : 0;
-		const next = spr_round_net_weight_kg(v);
+		const next = useMeters ? flt(v, 2) : spr_round_net_weight_kg(v);
 		const cur = flt(sj.custom_total_achieved_weight);
 		// Avoid set_value when unchanged — set_value marks the form dirty and causes "Not Saved" after a successful save.
 		if (Math.abs(cur - next) > 0.005) {
