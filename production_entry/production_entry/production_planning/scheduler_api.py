@@ -658,6 +658,47 @@ def get_color_chart_data(
         return []
 
 
+_CHILD_FABRIC_WO_TERMINAL_STATUSES = frozenset(
+    {"completed", "stopped", "cancelled", "canceled", "closed", "close"}
+)
+
+
+def _child_fabric_wo_status_terminal(status_val):
+    return str(status_val or "").strip().lower() in _CHILD_FABRIC_WO_TERMINAL_STATUSES
+
+
+def _child_fabric_wo_rows_aggregate(wo_rows):
+    """
+    Summarise Work Orders for a fabric Production Plan (child 100… PP).
+
+    - Cancelled documents (docstatus=2) count as terminal so parent lamination SPR can proceed.
+    - Draft child WOs (docstatus=0) block terminal until submitted or removed.
+    """
+    if not wo_rows:
+        return {"produced": 0.0, "planned": 0.0, "created": False, "terminal": False}
+    produced = 0.0
+    planned = 0.0
+    for w in wo_rows:
+        ds = cint(w.get("docstatus") or 0)
+        if ds == 2:
+            continue
+        produced += flt(w.get("produced_qty") or 0)
+        planned += flt(w.get("qty") or 0)
+    created = bool(wo_rows)
+    terminal = True
+    for w in wo_rows:
+        ds = cint(w.get("docstatus") or 0)
+        if ds == 0:
+            terminal = False
+            break
+        if ds == 2:
+            continue
+        if not _child_fabric_wo_status_terminal(w.get("status")):
+            terminal = False
+            break
+    return {"produced": produced, "planned": planned, "created": created, "terminal": terminal}
+
+
 @frappe.whitelist()
 def get_lamination_order_table_data(
     date=None,
@@ -857,16 +898,10 @@ def get_lamination_order_table_data(
                 if fabric_pp not in pp_child_wo_cache:
                     wo_rows = frappe.get_all(
                         "Work Order",
-                        filters={"production_plan": fabric_pp, "docstatus": ["<", 2]},
-                        fields=["name", "status", "produced_qty", "qty"],
+                        filters={"production_plan": fabric_pp},
+                        fields=["name", "status", "docstatus", "produced_qty", "qty"],
                     )
-                    produced = sum(flt(w.get("produced_qty") or 0) for w in (wo_rows or []))
-                    planned = sum(flt(w.get("qty") or 0) for w in (wo_rows or []))
-                    terminal = bool(wo_rows) and all(
-                        str(w.get("status") or "").strip().lower() in {"completed", "stopped", "cancelled", "closed"}
-                        for w in (wo_rows or [])
-                    )
-                    pp_child_wo_cache[fabric_pp] = {"produced": produced, "planned": planned, "created": bool(wo_rows), "terminal": terminal}
+                    pp_child_wo_cache[fabric_pp] = _child_fabric_wo_rows_aggregate(wo_rows)
                 cached = pp_child_wo_cache.get(fabric_pp) or {}
                 bucket = {
                     "required": flt(cached.get("planned") or 0),
@@ -900,15 +935,10 @@ def get_lamination_order_table_data(
                 if child_pp not in pp_child_wo_cache:
                     wo_rows = frappe.get_all(
                         "Work Order",
-                        filters={"production_plan": child_pp, "docstatus": ["<", 2]},
-                        fields=["status", "produced_qty", "qty"],
+                        filters={"production_plan": child_pp},
+                        fields=["status", "docstatus", "produced_qty", "qty"],
                     )
-                    produced = sum(flt(w.get("produced_qty") or 0) for w in (wo_rows or []))
-                    terminal = bool(wo_rows) and all(
-                        str(w.get("status") or "").strip().lower() in {"completed", "stopped", "cancelled", "closed"}
-                        for w in (wo_rows or [])
-                    )
-                    pp_child_wo_cache[child_pp] = {"produced": produced, "created": bool(wo_rows), "terminal": terminal}
+                    pp_child_wo_cache[child_pp] = _child_fabric_wo_rows_aggregate(wo_rows)
                 child_wo = pp_child_wo_cache.get(child_pp) or {"produced": 0.0, "created": False, "terminal": False}
 
             # Use live WO produced_qty (manufactured_qty) — updates in real-time as WO progresses.
@@ -1102,16 +1132,14 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
     if not item_code.startswith("104"):
         frappe.throw(_("Start WO is allowed only for parent lamination rows (104)."))
 
-    so_item = str(item.get(so_col) or "").strip() if so_col else ""
     fabric_rows = frappe.db.sql(
-        f"""
+        """
         SELECT name, qty
         FROM `tabPlanning Table`
         WHERE parent = %s
           AND item_code LIKE '100%%'
-          {"AND IFNULL(" + so_col + ", '') = %s" if so_col else ""}
         """,
-        (item.get("parent"), so_item) if so_col else (item.get("parent"),),
+        (item.get("parent"),),
         as_dict=True,
     )
     req_kg = sum(flt(r.get("qty") or 0) for r in (fabric_rows or []))
@@ -1125,17 +1153,13 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
         if fr_pp:
             wo_rows = frappe.get_all(
                 "Work Order",
-                filters={"production_plan": fr_pp, "docstatus": ["<", 2]},
+                filters={"production_plan": fr_pp},
                 fields=["status", "docstatus"],
             )
-            if not wo_rows:
+            agg = _child_fabric_wo_rows_aggregate(wo_rows)
+            if not agg.get("terminal"):
                 child_done = False
-            else:
-                for w in wo_rows:
-                    st = str(w.get("status") or "").strip()
-                    if st not in ("Completed", "Stopped", "Cancelled"):
-                        child_done = False
-                        break
+                break
         else:
             child_done = False
     if not child_done:
@@ -4978,8 +5002,7 @@ def _get_color_chart_data_impl(
             pp_has_wo_map[row.production_plan] = True
 
             wo_status = str(row.get("status") or "").strip().lower()
-            terminal_statuses = {"completed", "stopped", "cancelled", "closed"}
-            if wo_status and wo_status not in terminal_statuses:
+            if wo_status and wo_status not in _CHILD_FABRIC_WO_TERMINAL_STATUSES:
                 pp_has_open_wo_map[row.production_plan] = True
 
             pp_wo_map[row.production_plan].append({
