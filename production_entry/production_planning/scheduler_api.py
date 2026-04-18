@@ -762,57 +762,7 @@ def get_lamination_order_table_data(
     # Build child fabric progress map per parent key so lamination rows can gate WO start.
     pp_child_wo_cache = {}
     child_so_pp_cache = {}
-    parent_pp_progress_cache = {}
     fabric_progress = {}
-
-    def _get_pp_child_progress(pp_id):
-        pp_id = str(pp_id or "").strip()
-        if not pp_id:
-            return {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": False, "count": 0}
-        if pp_id in parent_pp_progress_cache:
-            return parent_pp_progress_cache[pp_id]
-
-        rows = frappe.db.sql(
-            """
-            SELECT
-                wo.name,
-                IFNULL(wo.qty, 0) as qty,
-                GREATEST(IFNULL(wo.produced_qty, 0), IFNULL(se_map.se_produced_qty, 0)) as produced_qty,
-                IFNULL(wo.status, '') as status
-            FROM `tabWork Order` wo
-            LEFT JOIN (
-                SELECT se.work_order, SUM(IFNULL(sed.qty, 0)) as se_produced_qty
-                FROM `tabStock Entry` se
-                INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-                WHERE se.docstatus = 1
-                  AND IFNULL(se.work_order, '') != ''
-                  AND IFNULL(sed.is_finished_item, 0) = 1
-                GROUP BY se.work_order
-            ) se_map ON se_map.work_order = wo.name
-            WHERE wo.production_plan = %s
-              AND wo.docstatus < 2
-              AND IFNULL(wo.production_item, '') LIKE '100%%'
-            """,
-            (pp_id,),
-            as_dict=True,
-        ) or []
-
-        required = sum(flt(r.get("qty") or 0) for r in rows)
-        achieved = sum(flt(r.get("produced_qty") or 0) for r in rows)
-        done = bool(rows) and all(
-            str(r.get("status") or "").strip().lower() in {"completed", "stopped", "cancelled", "closed"}
-            for r in rows
-        )
-        out = {
-            "required": required,
-            "achieved": achieved,
-            "child_wo_produced_kg": achieved,
-            "child_wo_created": bool(rows),
-            "child_wo_done": done,
-            "count": len(rows),
-        }
-        parent_pp_progress_cache[pp_id] = out
-        return out
 
     def _get_child_progress(sheet_name, so_item, parent_pp_id=None):
         key = (str(sheet_name or "").strip(), str(so_item or "").strip(), str(parent_pp_id or "").strip())
@@ -837,9 +787,15 @@ def get_lamination_order_table_data(
             params.append(key[1])
 
         achieved_expr = "IFNULL(actual_production_weight_kgs, 0)" if frappe.db.has_column("Planning Table", "actual_production_weight_kgs") else "0"
+        child_pp_fields = _psi_production_plan_fields()
+        child_pp_select = (
+            ", " + ", ".join([f"IFNULL({f}, '') as {f}" for f in child_pp_fields])
+            if child_pp_fields
+            else ""
+        )
         child_rows = frappe.db.sql(
             f"""
-            SELECT name, qty, item_code, {achieved_expr} as achieved
+            SELECT name, qty, item_code, {achieved_expr} as achieved{child_pp_select}
             FROM `tabPlanning Table`
             WHERE parent = %s
               AND item_code LIKE '100%%'
@@ -852,7 +808,14 @@ def get_lamination_order_table_data(
         for ch in child_rows or []:
             bucket["count"] += 1
             bucket["required"] += flt(ch.get("qty") or 0)
-            child_pp = _get_item_level_production_plan(ch.get("name"))
+            child_pp = ""
+            for _ppf in child_pp_fields:
+                _v = str(ch.get(_ppf) or "").strip()
+                if _v:
+                    child_pp = _v
+                    break
+            if not child_pp:
+                child_pp = _get_item_level_production_plan(ch.get("name"))
             if not child_pp and key[1]:
                 if key[1] not in child_so_pp_cache:
                     child_so_pp_cache[key[1]] = _resolve_pp_by_sales_order_item(key[1])
@@ -884,20 +847,6 @@ def get_lamination_order_table_data(
                 bucket["child_wo_created"] = True
             if not cint(child_wo.get("terminal") or 0):
                 bucket["child_wo_done"] = False
-
-        # Fallback: if child planning rows are missing or unresolved, use PP-linked child WOs directly.
-        # This ensures lamination table shows live manufactured qty even when PT child links are incomplete.
-        pp_fallback = _get_pp_child_progress(parent_pp_id)
-        if cint(bucket.get("count") or 0) == 0 and cint(pp_fallback.get("count") or 0) > 0:
-            bucket = dict(pp_fallback)
-        elif cint(pp_fallback.get("count") or 0) > 0:
-            bucket["required"] = max(flt(bucket.get("required") or 0), flt(pp_fallback.get("required") or 0))
-            bucket["achieved"] = max(flt(bucket.get("achieved") or 0), flt(pp_fallback.get("achieved") or 0))
-            bucket["child_wo_produced_kg"] = max(flt(bucket.get("child_wo_produced_kg") or 0), flt(pp_fallback.get("child_wo_produced_kg") or 0))
-            bucket["child_wo_created"] = bool(bucket.get("child_wo_created") or pp_fallback.get("child_wo_created"))
-            if not cint(bucket.get("count") or 0):
-                bucket["count"] = cint(pp_fallback.get("count") or 0)
-                bucket["child_wo_done"] = bool(pp_fallback.get("child_wo_done"))
 
         if bucket["count"] == 0:
             bucket["child_wo_done"] = False
