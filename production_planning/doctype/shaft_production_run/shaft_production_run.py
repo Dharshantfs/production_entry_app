@@ -213,6 +213,10 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 	ln = _spr_length_meters(spr_row)
 	if fn_l is not None and ln is not None:
 		out[fn_l] = flt(ln)
+	# Explicit mapping required: SPR produced_length_mtrs -> Batch custom_meter.
+	meter_from_spr = _spr_row_get(spr_row, "produced_length_mtrs")
+	if batch_meta.has_field("custom_meter") and meter_from_spr not in (None, ""):
+		out["custom_meter"] = flt(meter_from_spr)
 	if batch_meta.has_field("custom_cbm") and _spr_row_get(spr_row, "custom_cbm") is not None:
 		out["custom_cbm"] = flt(_spr_row_get(spr_row, "custom_cbm"))
 

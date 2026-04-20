@@ -245,6 +245,7 @@ let fetchTimer = null;
 let initialFetchRetried = false;
 let autoRefreshTimer = null;
 let fetchInProgress = false;
+let visibilityRefreshTimer = null;
 let sprRealtimeHandlerRegistered = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
@@ -324,6 +325,15 @@ function sortRowsBySavedSequence(rows) {
 function debouncedFetch() {
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = setTimeout(() => fetchData(), 200);
+}
+
+function onVisibilityRefresh() {
+  if (document.visibilityState !== "visible") return;
+  if (visibilityRefreshTimer) clearTimeout(visibilityRefreshTimer);
+  visibilityRefreshTimer = setTimeout(() => {
+    visibilityRefreshTimer = null;
+    fetchData();
+  }, 400);
 }
 
 function handleSprRealtimeUpdate() {
@@ -1105,6 +1115,7 @@ onMounted(async () => {
   if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
   startAutoRefresh();
+  document.addEventListener("visibilitychange", onVisibilityRefresh);
   if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
     frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
     sprRealtimeHandlerRegistered = true;
@@ -1115,9 +1126,14 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("visibilitychange", onVisibilityRefresh);
   if (sprRealtimeHandlerRegistered && frappe.realtime && frappe.realtime.off) {
     frappe.realtime.off("shaft_production_run_updated", handleSprRealtimeUpdate);
     sprRealtimeHandlerRegistered = false;
+  }
+  if (visibilityRefreshTimer) {
+    clearTimeout(visibilityRefreshTimer);
+    visibilityRefreshTimer = null;
   }
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
