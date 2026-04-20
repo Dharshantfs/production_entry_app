@@ -3324,7 +3324,12 @@ def get_next_spr_batch_numbers(
 
 
 @frappe.whitelist()
-def build_spr_roll_result_lines_for_job(shaft_production_run, job_id, lamination_rolls_per_combination=None):
+def build_spr_roll_result_lines_for_job(
+	shaft_production_run,
+	job_id,
+	lamination_rolls_per_combination=None,
+	lamination_exact_roll_lines=None,
+):
 	"""
 	Build Roll Production Result (SPR Item) lines for one job.
 	
@@ -3360,8 +3365,15 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id, lamination
 	if rolls_per_shaft < 1:
 		rolls_per_shaft = 1
 
+	lam_exact_n = cint(lamination_exact_roll_lines or 0)
 	lam_n = cint(lamination_rolls_per_combination or 0)
-	if lam_n > 0:
+	if lam_exact_n > 0:
+		if not spr_doc_is_lamination(spr_doc):
+			frappe.throw(
+				_("Exact roll-line add mode is only for lamination: tick Is Lamination and use a 104 production plan.")
+			)
+		n_rolls = max(1, lam_exact_n)
+	elif lam_n > 0:
 		if not spr_doc_is_lamination(spr_doc):
 			frappe.throw(
 				_("Rolls-per-combination mode is only for lamination: tick Is Lamination and use a 104 production plan.")
@@ -3443,6 +3455,10 @@ def build_spr_roll_result_lines_for_job(shaft_production_run, job_id, lamination
 			row["width_inch"] = flt(individual_width)
 		if meter_roll_job is not None and meter_roll_job > 0:
 			row["meter_roll"] = meter_roll_job
+			# Lamination add-flow: initialize produced length from entered meter/roll,
+			# so achieved meter/weight can reflect draft rows immediately.
+			if spr_doc_is_lamination(spr_doc):
+				row["produced_length_mtrs"] = meter_roll_job
 		if fabric_gsm > 0 and spi_meta.has_field("custom_fabric_gsm"):
 			row["custom_fabric_gsm"] = int(fabric_gsm)
 		row["roll_no"] = idx + 1

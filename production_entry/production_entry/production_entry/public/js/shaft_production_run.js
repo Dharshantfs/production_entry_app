@@ -1396,7 +1396,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
 			return;
 		}
-		function invokeBuildRollLines(laminationRollsPerCombo) {
+		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode) {
 			const args = {
 				shaft_production_run: frm.doc.name,
 				job_id: String(job_id),
@@ -1404,6 +1404,10 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			const lrc = cint(laminationRollsPerCombo);
 			if (lrc > 0) {
 				args.lamination_rolls_per_combination = lrc;
+			}
+			const lex = cint(laminationExactRollLines);
+			if (lex > 0) {
+				args.lamination_exact_roll_lines = lex;
 			}
 			frappe.call({
 			method:
@@ -1413,7 +1417,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			freeze_message: __('Creating roll lines for this job...'),
 			callback: function (r) {
 				const lines = r.message || [];
-				remove_spr_items_for_job(frm, job_id);
+				if (!appendMode) {
+					remove_spr_items_for_job(frm, job_id);
+				}
 				lines.forEach(function (line) {
 					let it = frm.add_child('items');
 					Object.keys(line).forEach(function (k) {
@@ -1507,29 +1513,29 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			frappe.prompt(
 				[
 					{
-						fieldname: 'rolls_per_combination',
+						fieldname: 'roll_lines_to_add',
 						fieldtype: 'Int',
-						label: __('Rolls per combination segment'),
+						label: __('Roll lines to add'),
 						reqd: 1,
 						description: __(
-							'Example: 2 combination widths × 10 rolls = 20 lines. (Lamination / 104 flow — Is Lamination is ticked.)'
+							'Adds exactly this many new roll lines for the selected job.'
 						),
 					},
 				],
 				function (values) {
-					const n = cint(values.rolls_per_combination);
+					const n = cint(values.roll_lines_to_add);
 					if (n < 1) {
-						frappe.msgprint(__('Enter at least 1 roll per combination.'));
+						frappe.msgprint(__('Enter at least 1 roll line.'));
 						return;
 					}
-					invokeBuildRollLines(n);
+					invokeBuildRollLines(0, n, true);
 				},
-				__('Lamination — create roll lines'),
-				__('Create')
+				__('Lamination — add roll lines'),
+				__('Add')
 			);
 			return;
 		}
-		invokeBuildRollLines(0);
+		invokeBuildRollLines(0, 0, false);
 	},
 });
 

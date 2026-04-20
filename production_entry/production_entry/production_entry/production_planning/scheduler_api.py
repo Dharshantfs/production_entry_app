@@ -790,6 +790,7 @@ def get_lamination_order_table_data(
     spr_names = list(spr_name_set)
 
     spr_meters = {}
+    spr_weights = {}
     if spr_names and frappe.db.exists("DocType", "Shaft Production Run Item"):
         spr_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
         # Lamination achieved length: sum produced meters only (not meter_roll / ordered length).
@@ -809,6 +810,18 @@ def get_lamination_order_table_data(
                 as_dict=True,
             ):
                 spr_meters[str(r.get("parent") or "").strip()] = flt(r.get("mtrs"))
+        weight_expr = "IFNULL(net_weight, 0)" if "net_weight" in spr_cols else "0"
+        for rw in frappe.db.sql(
+                f"""
+                SELECT parent, SUM({weight_expr}) as kgs
+                FROM `tabShaft Production Run Item`
+                WHERE parent IN ({sf})
+                GROUP BY parent
+                """,
+                tuple(spr_names),
+                as_dict=True,
+            ):
+                spr_weights[str(rw.get("parent") or "").strip()] = flt(rw.get("kgs"))
 
     # Also sum meter_per_roll from Roll Production Entry Item keyed by wo_id,
     # so achieved_meter shows live progress even before SPR is linked to Planning Table.
@@ -974,6 +987,7 @@ def get_lamination_order_table_data(
         ex = by_psi.get(nm) if nm else None
         spr_nm = ((ex.get("spr_for_meter") if ex else "") or (r.get("spr_name") or "") or "").strip()
         achieved_m = flt(spr_meters.get(spr_nm)) if spr_nm else 0.0
+        achieved_w = flt(spr_weights.get(spr_nm)) if spr_nm else 0.0
         row = dict(r)
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
         if not row["lamination_booking_id"] and ex and ex.get("ps_name"):
@@ -983,6 +997,9 @@ def get_lamination_order_table_data(
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known
         row["achieved_meter"] = achieved_m
+        if achieved_w > 0:
+            row["actual_production_weight_kgs"] = achieved_w
+            row["total_achieved_weight_kgs"] = achieved_w
         row["shift_label"] = ((ex.get("shift_label") if ex else "") or "DAY").upper()
         item_code = str(row.get("itemCode") or row.get("item_code") or "").strip()
         is_parent_lamination = item_code.startswith("104")
