@@ -2060,6 +2060,7 @@ function update_shaft_job_achieved_from_items(frm) {
 			meterByJob[k] = (meterByJob[k] || 0) + pm;
 		}
 	});
+	let jobGridDirty = false;
 	if (hasW) {
 		(frm.doc.shaft_jobs || []).forEach(function (sj) {
 			const jid = sprShaftJobRowKey(sj);
@@ -2067,6 +2068,7 @@ function update_shaft_job_achieved_from_items(frm) {
 			const cur = flt(sj.custom_total_achieved_weight);
 			if (Math.abs(cur - next) > 0.005) {
 				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', next);
+				jobGridDirty = true;
 			}
 		});
 	}
@@ -2077,8 +2079,12 @@ function update_shaft_job_achieved_from_items(frm) {
 			const cur = flt(sj.custom_total_achieved_meter);
 			if (Math.abs(cur - next) > 0.005) {
 				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_meter', next);
+				jobGridDirty = true;
 			}
 		});
+	}
+	if (jobGridDirty) {
+		try { frm.refresh_field('shaft_jobs'); } catch (e) {}
 	}
 	if (hasHdrM) {
 		const curH = flt(frm.doc.custom_total_achieved_meter);

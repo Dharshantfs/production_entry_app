@@ -127,6 +127,19 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 			frappe.log_error(frappe.get_traceback(), "sync_lamination_order_code_sales_order")
 
 
+def _fabric_gsm_from_item_name(item_name: str) -> int:
+    """Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' → 60)."""
+    if not item_name:
+        return 0
+    m = re.search(r'\bF-(\d+)\b', item_name, re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+    return 0
+
+
 def _ensure_sheet_lamination_order_code(sheet_name):
 	"""Backfill lamination order code for a sheet if missing (supports old/new field names)."""
 	sheet_name = (sheet_name or "").strip()
@@ -992,7 +1005,11 @@ def get_lamination_order_table_data(
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
         if not row["lamination_booking_id"] and ex and ex.get("ps_name"):
             row["lamination_booking_id"] = _ensure_sheet_lamination_order_code(ex.get("ps_name")) or ""
-        row["fabric_gsm"] = int(ex.get("fabric_gsm") or 0) if ex else 0
+        _fab_gsm = int(ex.get("fabric_gsm") or 0) if ex else 0
+        if _fab_gsm <= 0:
+            _row_item_name = str(row.get("item_name") or row.get("itemName") or "")
+            _fab_gsm = _fabric_gsm_from_item_name(_row_item_name)
+        row["fabric_gsm"] = _fab_gsm
         row["lamination_gsm"] = int(row.get("gsm") or 0) or 0
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known

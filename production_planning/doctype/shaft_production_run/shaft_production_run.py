@@ -151,6 +151,23 @@ def spr_doc_is_lamination(doc) -> bool:
 	return _pp_has_104_work_order(pp)
 
 
+def _fabric_gsm_from_item_name(item_name: str) -> int:
+	"""Parse Fabric GSM from item name or item code.
+
+	Looks for pattern F-<number> (e.g. 'F-60' → 60, 'F-75' → 75).
+	Returns 0 if not found.
+	"""
+	if not item_name:
+		return 0
+	m = re.search(r'\bF-(\d+)\b', item_name, re.IGNORECASE)
+	if m:
+		try:
+			return int(m.group(1))
+		except Exception:
+			pass
+	return 0
+
+
 def _fabric_gsm_from_planning_for_pp(pp_name: str) -> int:
 	"""Fabric (100…) GSM from Planning Table child row on same sheet as 104 lamination line."""
 	if not pp_name or not frappe.db.exists("DocType", "Planning Table"):
@@ -3463,8 +3480,16 @@ def build_spr_roll_result_lines_for_job(
 			# so achieved meter/weight can reflect draft rows immediately.
 			if spr_doc_is_lamination(spr_doc):
 				row["produced_length_mtrs"] = meter_roll_job
-		if fabric_gsm > 0 and spi_meta.has_field("custom_fabric_gsm"):
-			row["custom_fabric_gsm"] = int(fabric_gsm)
+
+		# Fabric GSM: prefer Planning Table join result; fallback to parsing F-<N> from item name.
+		eff_fabric_gsm = fabric_gsm
+		if eff_fabric_gsm <= 0 and spr_doc_is_lamination(spr_doc):
+			item_nm = row.get("item_name") or ""
+			item_cd = row.get("item_code") or ""
+			eff_fabric_gsm = _fabric_gsm_from_item_name(item_nm) or _fabric_gsm_from_item_name(item_cd)
+		if eff_fabric_gsm > 0 and spi_meta.has_field("custom_fabric_gsm"):
+			row["custom_fabric_gsm"] = int(eff_fabric_gsm)
+
 		row["roll_no"] = idx + 1
 		lines.append(row)
 	return lines
