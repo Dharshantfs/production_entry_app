@@ -1835,7 +1835,11 @@ class ShaftProductionRun(Document):
 		return _cstr(rows[0].get("batch_no"))
 
 	def _assign_rm_batches_for_stock_entry(self, se):
-		"""Assign batch_no for batch-tracked RM lines before submit."""
+		"""Assign batch_no for batch-tracked RM lines before submit.
+
+		-DUMMY items are silently skipped (placeholder materials with no real stock).
+		If no batch is found anywhere, a warning is shown but submission is not blocked.
+		"""
 		for d in se.items or []:
 			if not d.item_code or d.get("t_warehouse"):
 				continue
@@ -1843,11 +1847,15 @@ class ShaftProductionRun(Document):
 				continue
 			if not cint(frappe.db.get_value("Item", d.item_code, "has_batch_no") or 0):
 				continue
+			if "-DUMMY" in _cstr(d.item_code).upper():
+				frappe.logger().info(
+					f"[SPR] _assign_rm_batches: skipping DUMMY item {d.item_code} (no real stock)"
+				)
+				continue
 			wh = _cstr(d.get("s_warehouse"))
 			required = flt(d.get("transfer_qty") or d.get("qty") or 0)
 			pick = self._best_available_batch_for_rm(_cstr(d.item_code), wh, required)
 			if not pick:
-				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with a valid batch.
 				fallback_wh = _cstr(se.get("from_warehouse"))
 				if fallback_wh and fallback_wh != wh:
 					fallback_pick = self._best_available_batch_for_rm(_cstr(d.item_code), fallback_wh, required)
@@ -1857,11 +1865,18 @@ class ShaftProductionRun(Document):
 			if pick:
 				d.batch_no = pick
 				continue
-			frappe.throw(
-				_("Batch is mandatory for raw material {0} in {1}, but no available batch was found.").format(
+			frappe.log_error(
+				f"[SPR] No batch found for RM {d.item_code} in {wh or '—'} "
+				f"(SPR: {self.name}). Submission will proceed without batch assignment.",
+				"Missing RM Batch (non-blocking)"
+			)
+			frappe.msgprint(
+				_("Warning: No batch found for raw material {0} in {1}. "
+				  "Check that stock has been transferred to WIP before submitting.").format(
 					_cstr(d.item_code), wh or "—"
 				),
-				title=_("Missing RM Batch"),
+				indicator="orange",
+				alert=True,
 			)
 
 	def _rm_shortages_from_exception(self, exc) -> list[tuple[str, str, float, float, float]]:
