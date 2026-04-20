@@ -1828,7 +1828,10 @@ class ShaftProductionRun(Document):
 		return out
 
 	def _best_available_batch_for_rm(self, item_code: str, warehouse: str, required_qty: float) -> str:
-		"""Pick a batch with available qty in source warehouse for RM consumption."""
+		"""Pick a batch with available qty in source warehouse for RM consumption.
+
+		Covers both classic SLE.batch_no and v15 Serial-and-Batch-Bundle based entries.
+		"""
 		if not item_code or not warehouse:
 			return ""
 		rows = frappe.db.sql(
@@ -1846,6 +1849,53 @@ class ShaftProductionRun(Document):
 			(item_code, warehouse),
 			as_dict=True,
 		)
+		# v15 path: batch may live in Serial and Batch Entry (bundle), with empty SLE.batch_no.
+		if (not rows) and frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+			try:
+				sb_entry_dt = "Serial and Batch Entry"
+				if frappe.db.exists("DocType", sb_entry_dt):
+					sb_entry_meta = frappe.get_meta(sb_entry_dt)
+					batch_field = next(
+						(fn for fn in ("batch_no", "batch", "batch_id") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					qty_field = next(
+						(fn for fn in ("qty", "quantity") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					if batch_field and qty_field:
+						rows = frappe.db.sql(
+							f"""
+							SELECT
+								sbe.`{batch_field}` AS batch_no,
+								SUM(
+									CASE
+										WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+										ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+									END
+								) AS qty
+							FROM `tabStock Ledger Entry` sle
+							INNER JOIN `tabSerial and Batch Entry` sbe
+								ON sbe.parent = sle.serial_and_batch_bundle
+							WHERE IFNULL(sle.is_cancelled, 0) = 0
+							  AND IFNULL(sle.item_code, '') = %s
+							  AND IFNULL(sle.warehouse, '') = %s
+							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+							  AND IFNULL(sbe.`{batch_field}`, '') != ''
+							GROUP BY sbe.`{batch_field}`
+							HAVING SUM(
+								CASE
+									WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+								END
+							) > 0
+							ORDER BY qty DESC
+							""",
+							(item_code, warehouse),
+							as_dict=True,
+						)
+			except Exception:
+				rows = rows or []
 		if not rows:
 			return ""
 		need = flt(required_qty or 0)
@@ -1855,13 +1905,7 @@ class ShaftProductionRun(Document):
 		return _cstr(rows[0].get("batch_no"))
 
 	def _assign_rm_batches_for_stock_entry(self, se):
-		"""Assign batch_no for batch-tracked RM lines before submit.
-
-		-DUMMY items (placeholder raw materials with no real stock) are silently skipped.
-		If no batch is found in the source warehouse or any fallback, the line is skipped
-		rather than blocking submission — the stock entry will be submitted without a batch
-		and ERPNext will validate further downstream.
-		"""
+		"""Assign batch_no for batch-tracked RM lines before submit."""
 		for d in se.items or []:
 			if not d.item_code or d.get("t_warehouse"):
 				continue
@@ -1869,17 +1913,11 @@ class ShaftProductionRun(Document):
 				continue
 			if not cint(frappe.db.get_value("Item", d.item_code, "has_batch_no") or 0):
 				continue
-			# Skip placeholder/dummy raw materials — they carry no real stock or batches.
-			if "-DUMMY" in _cstr(d.item_code).upper():
-				frappe.logger().info(
-					f"[SPR] _assign_rm_batches: skipping DUMMY item {d.item_code} (no real stock)"
-				)
-				continue
 			wh = _cstr(d.get("s_warehouse"))
 			required = flt(d.get("transfer_qty") or d.get("qty") or 0)
 			pick = self._best_available_batch_for_rm(_cstr(d.item_code), wh, required)
 			if not pick:
-				# Fallback: if WIP has no batches yet, try from_warehouse.
+				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with a valid batch.
 				fallback_wh = _cstr(se.get("from_warehouse"))
 				if fallback_wh and fallback_wh != wh:
 					fallback_pick = self._best_available_batch_for_rm(_cstr(d.item_code), fallback_wh, required)
@@ -1889,20 +1927,11 @@ class ShaftProductionRun(Document):
 			if pick:
 				d.batch_no = pick
 				continue
-			# No batch found in any warehouse — warn but do not block submission.
-			# This handles items that exist on the BOM but have not yet been transferred to WIP.
-			frappe.log_error(
-				f"[SPR] No batch found for RM {d.item_code} in {wh or '—'} "
-				f"(SPR: {self.name}). Submission will proceed without batch assignment.",
-				"Missing RM Batch (non-blocking)"
-			)
-			frappe.msgprint(
-				_("Warning: No batch found for raw material {0} in {1}. "
-				  "Check that stock has been transferred to WIP before submitting.").format(
+			frappe.throw(
+				_("Batch is mandatory for raw material {0} in {1}, but no available batch was found.").format(
 					_cstr(d.item_code), wh or "—"
 				),
-				indicator="orange",
-				alert=True,
+				title=_("Missing RM Batch"),
 			)
 
 	def _rm_shortages_from_exception(self, exc) -> list[tuple[str, str, float, float, float]]:

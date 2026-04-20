@@ -164,14 +164,29 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 	return 0
 
 
+# Lamination GSM suffix map: item code ending e.g. '1041030010750890-C' → suffix 'C' → 15 gsm
 _LAM_GSM_SUFFIX_MAP: dict[str, int] = {
-	"A": 10, "B": 12, "C": 15, "D": 17, "E": 20,
-	"F": 22, "G": 25, "H": 28, "I": 30, "J": 35, "K": 40,
+	"A": 10,
+	"B": 12,
+	"C": 15,
+	"D": 17,
+	"E": 20,
+	"F": 22,
+	"G": 25,
+	"H": 28,
+	"I": 30,
+	"J": 35,
+	"K": 40,
 }
 
 
 def _lam_gsm_from_item(item_name: str, item_code: str) -> int:
-	"""Parse Lamination GSM from item name 'L-15 GSM' pattern, with -C suffix fallback."""
+	"""Parse Lamination GSM from item name 'L-15 GSM' pattern, with -C suffix fallback.
+
+	Item name pattern: 'L- 15 GSM' or 'L-15GSM'  → 15
+	Item code suffix:  '1041030010750890-C' → suffix 'C' → 15 via _LAM_GSM_SUFFIX_MAP
+	"""
+	# Primary: parse 'L-<N> GSM' or 'L- <N> GSM' from item name
 	if item_name:
 		m = re.search(r'\bL-\s*(\d+)\s*GSM\b', item_name, re.IGNORECASE)
 		if m:
@@ -179,6 +194,7 @@ def _lam_gsm_from_item(item_name: str, item_code: str) -> int:
 				return int(m.group(1))
 			except Exception:
 				pass
+	# Fallback: suffix after last '-' in item code (e.g. '-C' → 'C' → 15)
 	if item_code:
 		parts = str(item_code).strip().upper().split('-')
 		if len(parts) >= 2:
@@ -250,6 +266,10 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 	ln = _spr_length_meters(spr_row)
 	if fn_l is not None and ln is not None:
 		out[fn_l] = flt(ln)
+	# Explicit mapping required: SPR produced_length_mtrs -> Batch custom_meter.
+	meter_from_spr = _spr_row_get(spr_row, "produced_length_mtrs")
+	if batch_meta.has_field("custom_meter") and meter_from_spr not in (None, ""):
+		out["custom_meter"] = flt(meter_from_spr)
 	if batch_meta.has_field("custom_cbm") and _spr_row_get(spr_row, "custom_cbm") is not None:
 		out["custom_cbm"] = flt(_spr_row_get(spr_row, "custom_cbm"))
 
@@ -1808,7 +1828,10 @@ class ShaftProductionRun(Document):
 		return out
 
 	def _best_available_batch_for_rm(self, item_code: str, warehouse: str, required_qty: float) -> str:
-		"""Pick a batch with available qty in source warehouse for RM consumption."""
+		"""Pick a batch with available qty in source warehouse for RM consumption.
+
+		Covers both classic SLE.batch_no and v15 Serial-and-Batch-Bundle based entries.
+		"""
 		if not item_code or not warehouse:
 			return ""
 		rows = frappe.db.sql(
@@ -1826,6 +1849,53 @@ class ShaftProductionRun(Document):
 			(item_code, warehouse),
 			as_dict=True,
 		)
+		# v15 path: batch may live in Serial and Batch Entry (bundle), with empty SLE.batch_no.
+		if (not rows) and frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+			try:
+				sb_entry_dt = "Serial and Batch Entry"
+				if frappe.db.exists("DocType", sb_entry_dt):
+					sb_entry_meta = frappe.get_meta(sb_entry_dt)
+					batch_field = next(
+						(fn for fn in ("batch_no", "batch", "batch_id") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					qty_field = next(
+						(fn for fn in ("qty", "quantity") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					if batch_field and qty_field:
+						rows = frappe.db.sql(
+							f"""
+							SELECT
+								sbe.`{batch_field}` AS batch_no,
+								SUM(
+									CASE
+										WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+										ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+									END
+								) AS qty
+							FROM `tabStock Ledger Entry` sle
+							INNER JOIN `tabSerial and Batch Entry` sbe
+								ON sbe.parent = sle.serial_and_batch_bundle
+							WHERE IFNULL(sle.is_cancelled, 0) = 0
+							  AND IFNULL(sle.item_code, '') = %s
+							  AND IFNULL(sle.warehouse, '') = %s
+							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+							  AND IFNULL(sbe.`{batch_field}`, '') != ''
+							GROUP BY sbe.`{batch_field}`
+							HAVING SUM(
+								CASE
+									WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+								END
+							) > 0
+							ORDER BY qty DESC
+							""",
+							(item_code, warehouse),
+							as_dict=True,
+						)
+			except Exception:
+				rows = rows or []
 		if not rows:
 			return ""
 		need = flt(required_qty or 0)
@@ -1835,11 +1905,7 @@ class ShaftProductionRun(Document):
 		return _cstr(rows[0].get("batch_no"))
 
 	def _assign_rm_batches_for_stock_entry(self, se):
-		"""Assign batch_no for batch-tracked RM lines before submit.
-
-		-DUMMY items are silently skipped (placeholder materials with no real stock).
-		If no batch is found anywhere, a warning is shown but submission is not blocked.
-		"""
+		"""Assign batch_no for batch-tracked RM lines before submit."""
 		for d in se.items or []:
 			if not d.item_code or d.get("t_warehouse"):
 				continue
@@ -1847,15 +1913,11 @@ class ShaftProductionRun(Document):
 				continue
 			if not cint(frappe.db.get_value("Item", d.item_code, "has_batch_no") or 0):
 				continue
-			if "-DUMMY" in _cstr(d.item_code).upper():
-				frappe.logger().info(
-					f"[SPR] _assign_rm_batches: skipping DUMMY item {d.item_code} (no real stock)"
-				)
-				continue
 			wh = _cstr(d.get("s_warehouse"))
 			required = flt(d.get("transfer_qty") or d.get("qty") or 0)
 			pick = self._best_available_batch_for_rm(_cstr(d.item_code), wh, required)
 			if not pick:
+				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with a valid batch.
 				fallback_wh = _cstr(se.get("from_warehouse"))
 				if fallback_wh and fallback_wh != wh:
 					fallback_pick = self._best_available_batch_for_rm(_cstr(d.item_code), fallback_wh, required)
@@ -1865,18 +1927,11 @@ class ShaftProductionRun(Document):
 			if pick:
 				d.batch_no = pick
 				continue
-			frappe.log_error(
-				f"[SPR] No batch found for RM {d.item_code} in {wh or '—'} "
-				f"(SPR: {self.name}). Submission will proceed without batch assignment.",
-				"Missing RM Batch (non-blocking)"
-			)
-			frappe.msgprint(
-				_("Warning: No batch found for raw material {0} in {1}. "
-				  "Check that stock has been transferred to WIP before submitting.").format(
+			frappe.throw(
+				_("Batch is mandatory for raw material {0} in {1}, but no available batch was found.").format(
 					_cstr(d.item_code), wh or "—"
 				),
-				indicator="orange",
-				alert=True,
+				title=_("Missing RM Batch"),
 			)
 
 	def _rm_shortages_from_exception(self, exc) -> list[tuple[str, str, float, float, float]]:
@@ -3847,6 +3902,7 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		"width_inch": width_inch,
 		"color": color or None,
 	}
+	# Fabric GSM (F-60 in item name) and Lamination GSM (L-15 GSM in item name or -C suffix)
 	if spi_meta.has_field("custom_fabric_gsm"):
 		fab_gsm = _fabric_gsm_from_item_name(item_name) or _fabric_gsm_from_item_name(item_code)
 		if fab_gsm > 0:
