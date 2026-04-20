@@ -152,11 +152,7 @@ def spr_doc_is_lamination(doc) -> bool:
 
 
 def _fabric_gsm_from_item_name(item_name: str) -> int:
-	"""Parse Fabric GSM from item name or item code.
-
-	Looks for pattern F-<number> (e.g. 'F-60' → 60, 'F-75' → 75).
-	Returns 0 if not found.
-	"""
+	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' → 60)."""
 	if not item_name:
 		return 0
 	m = re.search(r'\bF-(\d+)\b', item_name, re.IGNORECASE)
@@ -165,6 +161,46 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 			return int(m.group(1))
 		except Exception:
 			pass
+	return 0
+
+
+# Lamination GSM suffix map: item code ending e.g. '1041030010750890-C' → suffix 'C' → 15 gsm
+_LAM_GSM_SUFFIX_MAP: dict[str, int] = {
+	"A": 10,
+	"B": 12,
+	"C": 15,
+	"D": 17,
+	"E": 20,
+	"F": 22,
+	"G": 25,
+	"H": 28,
+	"I": 30,
+	"J": 35,
+	"K": 40,
+}
+
+
+def _lam_gsm_from_item(item_name: str, item_code: str) -> int:
+	"""Parse Lamination GSM from item name 'L-15 GSM' pattern, with -C suffix fallback.
+
+	Item name pattern: 'L- 15 GSM' or 'L-15GSM'  → 15
+	Item code suffix:  '1041030010750890-C' → suffix 'C' → 15 via _LAM_GSM_SUFFIX_MAP
+	"""
+	# Primary: parse 'L-<N> GSM' or 'L- <N> GSM' from item name
+	if item_name:
+		m = re.search(r'\bL-\s*(\d+)\s*GSM\b', item_name, re.IGNORECASE)
+		if m:
+			try:
+				return int(m.group(1))
+			except Exception:
+				pass
+	# Fallback: suffix after last '-' in item code (e.g. '-C' → 'C' → 15)
+	if item_code:
+		parts = str(item_code).strip().upper().split('-')
+		if len(parts) >= 2:
+			suffix = parts[-1].strip()
+			if suffix in _LAM_GSM_SUFFIX_MAP:
+				return _LAM_GSM_SUFFIX_MAP[suffix]
 	return 0
 
 
@@ -3794,10 +3830,11 @@ def _spr_roll_matches_bundle_width(it, width_inch: float, job_w: float) -> bool:
 def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	wo_doc = frappe.get_doc("Work Order", wo["name"])
 	item_code = wo_doc.production_item
-	item_name = frappe.db.get_value("Item", item_code, "item_name")
+	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
 	gsm, width_inch = parse_item_code(item_code)
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
-	return {
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	row: dict = {
 		"work_order": wo["name"],
 		"item_code": item_code,
 		"item_name": item_name,
@@ -3815,6 +3852,16 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		"width_inch": width_inch,
 		"color": color or None,
 	}
+	# Fabric GSM (F-60 in item name) and Lamination GSM (L-15 GSM in item name or -C suffix)
+	if spi_meta.has_field("custom_fabric_gsm"):
+		fab_gsm = _fabric_gsm_from_item_name(item_name) or _fabric_gsm_from_item_name(item_code)
+		if fab_gsm > 0:
+			row["custom_fabric_gsm"] = fab_gsm
+	if spi_meta.has_field("custom_lam_gsm"):
+		lam_gsm = _lam_gsm_from_item(item_name, item_code)
+		if lam_gsm > 0:
+			row["custom_lam_gsm"] = lam_gsm
+	return row
 
 
 def _build_spr_items_from_pp(spr_doc, pp_name):
