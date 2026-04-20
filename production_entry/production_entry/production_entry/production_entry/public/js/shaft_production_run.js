@@ -215,6 +215,11 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	custom_unit: function (frm) {
 		sprApplyLaminationUnitDefaults(frm);
+		sprToggleLaminationRollUi(frm);
+	},
+	custom_is_lamination: function (frm) {
+		sprToggleLaminationRollUi(frm);
+		schedule_spr_item_row_styles(frm);
 	},
 
 	refresh: function (frm) {
@@ -243,6 +248,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		} catch (e) {
 			/* ignore */
 		}
+		sprToggleLaminationRollUi(frm);
 
 		spr_patch_items_grid_refresh(frm);
 		spr_register_spr_page_buttons(frm);
@@ -583,6 +589,26 @@ function sprManualDefaultWoQty(line, noShafts, noRolls) {
 	return pq > 0 ? pq : 1;
 }
 
+function sprManualNormalizeWidthToken(token) {
+	const raw = String(token || '')
+		.replace(/inch|inches|in/gi, '')
+		.replace(/["']/g, '')
+		.trim();
+	if (!raw) return 0;
+	return flt(raw);
+}
+
+function sprManualParseCombination(text) {
+	return String(text || '')
+		.split('+')
+		.map(function (part) {
+			return sprManualNormalizeWidthToken(part);
+		})
+		.filter(function (w) {
+			return w > 0;
+		});
+}
+
 /** Actions → Manual job: multi-select PP lines; WO qty defaults to net/shaft × shafts from Available Jobs. */
 function spr_open_manual_job_dialog(frm) {
 	if (frm.is_new() || !frm.doc.name) {
@@ -613,12 +639,36 @@ function spr_open_manual_job_dialog(frm) {
 				title: __('Manual job'),
 				fields: [
 					{
+						fieldname: 'spr_manual_ui_style',
+						fieldtype: 'HTML',
+						options:
+							'<style>' +
+							'.spr-manual-shell{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px;margin-bottom:10px;}' +
+							'.spr-manual-shell b{font-weight:600;color:#0f172a;}' +
+							'.spr-manual-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 10px;}' +
+							'.spr-manual-summary{margin-left:auto;font-size:12px;color:#334155;background:#eef2ff;border:1px solid #c7d2fe;border-radius:999px;padding:4px 10px;}' +
+							'.spr-manual-table-wrap{overflow:auto;border:1px solid #dbe2ea;border-radius:12px;background:#fff;max-height:360px;}' +
+							'.spr-manual-table{font-size:12px;margin:0;min-width:1020px;table-layout:fixed;}' +
+							'.spr-manual-table thead th{position:sticky;top:0;background:#f1f5f9;z-index:1;border-bottom:1px solid #cbd5e1;color:#334155;}' +
+							'.spr-manual-table tbody tr:hover{background:#f8fafc;}' +
+							'.spr-manual-row-selected{background:#ecfeff !important;}' +
+							'.spr-manual-table input[type=number],.spr-manual-table select{height:28px;font-size:12px;}' +
+							'</style>',
+					},
+					{
 						fieldname: 'spr_manual_pp_hint',
 						fieldtype: 'HTML',
 						options:
-							'<p class="text-muted small" style="margin-bottom:8px;">' +
+							'<div class="spr-manual-shell">' +
+							'<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">' +
+							'<div><b>' +
+							__('Manual Work Order Planner') +
+							'</b><div class="text-muted small">' +
+							__('Choose shafts/roll logic, then confirm rows below.') +
+							'</div></div>' +
+							'<div class="text-muted small">' +
 							__('Production Plan: {0}', [ppName || '—']) +
-							'</p>',
+							'</div></div></div>',
 					},
 					{
 						fieldname: 'no_of_shafts',
@@ -635,10 +685,35 @@ function spr_open_manual_job_dialog(frm) {
 						default: 1,
 					},
 					{
+						fieldname: 'combination_gsm',
+						fieldtype: 'Int',
+						label: __('Combination GSM'),
+					},
+					{
+						fieldname: 'combination_input',
+						fieldtype: 'Data',
+						label: __('Combination widths (in)'),
+						description: __('Example: 34+34+42. Same GSM only. One segment = one roll per shaft.'),
+					},
+					{
+						fieldname: 'combination_status_html',
+						fieldtype: 'HTML',
+						options: '<div class="text-muted small spr-manual-combination-status"></div>',
+					},
+					{
 						fieldname: 'line_select_html',
 						fieldtype: 'HTML',
 						label: __('Select items'),
 						options:
+							'<div class="spr-manual-toolbar">' +
+							'<button type="button" class="btn btn-xs btn-default spr-manual-select-all">' +
+							__('Select all') +
+							'</button>' +
+							'<button type="button" class="btn btn-xs btn-default spr-manual-select-none">' +
+							__('Clear') +
+							'</button>' +
+							'<span class="spr-manual-summary spr-manual-selection-summary">—</span>' +
+							'</div>' +
 							'<div class="spr-manual-lines-wrap"></div>' +
 							'<p class="text-muted small" style="margin-top:6px;">' +
 							__('WO qty default = net/roll Kg × rolls × shafts') +
@@ -658,6 +733,8 @@ function spr_open_manual_job_dialog(frm) {
 						return;
 					}
 					const items = [];
+					const comboRaw = String(d.get_value('combination_input') || '').trim();
+					const comboMode = !!comboRaw;
 					lines.forEach(function (line, idx) {
 						const cb = d.$wrapper.find('.spr-manual-inc[data-idx="' + idx + '"]');
 						if (!cb.length || !cb.is(':checked')) {
@@ -678,6 +755,7 @@ function spr_open_manual_job_dialog(frm) {
 							production_plan_item: line.production_plan_item,
 							wo_qty: q,
 							meter_roll: mr,
+							roll_count_per_shaft: comboMode ? cint(line.__combo_roll_count_per_shaft || 1) : cint(d.get_value('no_of_rolls')) || 1,
 							selected_reuse_work_order:
 								d.$wrapper.find('.spr-manual-reuse-wo[data-idx="' + idx + '"]').val() || '',
 						});
@@ -685,6 +763,34 @@ function spr_open_manual_job_dialog(frm) {
 					if (!items.length) {
 						frappe.msgprint(__('Select at least one line with valid Meter/Roll and Work Order qty.'));
 						return;
+					}
+					const finalItems = [];
+					if (comboMode) {
+						const byItem = new Map();
+						items.forEach(function (it) {
+							const key = [
+								it.item_code || '',
+								it.selected_reuse_work_order || '',
+							].join('::');
+							if (!byItem.has(key)) {
+								byItem.set(key, {
+									item_code: it.item_code,
+									production_plan_item: it.production_plan_item,
+									wo_qty: 0,
+									meter_roll: it.meter_roll,
+									roll_count_per_shaft: 0,
+									selected_reuse_work_order: it.selected_reuse_work_order || '',
+								});
+							}
+							const agg = byItem.get(key);
+							agg.wo_qty += flt(it.wo_qty);
+							agg.roll_count_per_shaft += cint(it.roll_count_per_shaft || 1);
+						});
+						byItem.forEach(function (v) {
+							finalItems.push(v);
+						});
+					} else {
+						Array.prototype.push.apply(finalItems, items);
 					}
 					const runManualCreate = function () {
 						d.hide();
@@ -695,7 +801,8 @@ function spr_open_manual_job_dialog(frm) {
 							shaft_production_run: frm.doc.name,
 							no_of_shafts: no_of_shafts,
 							no_of_rolls: cint(d.get_value('no_of_rolls')) || 1,
-							items: items,
+							items: finalItems,
+							combination_input: comboRaw,
 						},
 						freeze: true,
 						freeze_message: __('Creating / fetching Work Order(s)...'),
@@ -745,8 +852,8 @@ function spr_open_manual_job_dialog(frm) {
 					return;
 				}
 				let html =
-					'<div style="overflow-x:auto;">' +
-					'<table class="table table-bordered table-condensed" style="font-size:12px;margin-bottom:0;min-width:980px;table-layout:fixed;">';
+					'<div class="spr-manual-table-wrap">' +
+					'<table class="table table-bordered table-condensed spr-manual-table">';
 				html +=
 					'<thead><tr><th style="width:36px;"></th><th>' +
 					__('Item / PP row') +
@@ -805,6 +912,8 @@ function spr_open_manual_job_dialog(frm) {
 						idx +
 						'" style="width:170px"><option value="">' +
 						frappe.utils.escape_html(__('Auto (reuse latest unused)')) +
+						'</option><option value="__NEW__">' +
+						frappe.utils.escape_html(__('Create New WO')) +
 						'</option>';
 					reuseWos.forEach(function (wo) {
 						woSelect +=
@@ -826,6 +935,110 @@ function spr_open_manual_job_dialog(frm) {
 				});
 				html += '</tbody></table></div>';
 				wrap.html(html);
+				applyManualCombinationSelection();
+				updateManualSelectionSummary();
+			}
+
+			function updateManualSelectionSummary() {
+				const checked = d.$wrapper.find('.spr-manual-inc:checked');
+				let totalQty = 0;
+				d.$wrapper.find('.spr-manual-table tbody tr').removeClass('spr-manual-row-selected');
+				checked.each(function () {
+					const idx = cint($(this).attr('data-idx'));
+					const q = flt(d.$wrapper.find('.spr-manual-qty[data-idx="' + idx + '"]').val());
+					totalQty += q > 0 ? q : 0;
+					$(this).closest('tr').addClass('spr-manual-row-selected');
+				});
+				d.$wrapper.find('.spr-manual-selection-summary').text(
+					__('Selected: {0} row(s) | WO Qty: {1} Kg', [checked.length, totalQty.toFixed(2)])
+				);
+			}
+
+			function setManualCombinationStatus(message, colorClass) {
+				const wrap = d.$wrapper.find('.spr-manual-combination-status');
+				if (!wrap.length) return;
+				const cls = colorClass || 'text-muted';
+				wrap.html(
+					message
+						? '<span class="' + cls + '">' + frappe.utils.escape_html(message) + '</span>'
+						: ''
+				);
+			}
+
+			function syncManualCombinationMode() {
+				const comboRaw = String(d.get_value('combination_input') || '').trim();
+				const hasCombo = !!comboRaw;
+				const nr = d.fields_dict.no_of_rolls;
+				if (nr && nr.$input) {
+					nr.$input.prop('disabled', hasCombo);
+				}
+				if (hasCombo && cint(d.get_value('no_of_rolls')) !== 1) {
+					d.set_value('no_of_rolls', 1);
+					return true;
+				}
+				return false;
+			}
+
+			function applyManualCombinationSelection() {
+				const comboRaw = String(d.get_value('combination_input') || '').trim();
+				if (!comboRaw) {
+					setManualCombinationStatus('');
+					return;
+				}
+				const comboGsm = cint(d.get_value('combination_gsm'));
+				if (comboGsm < 1) {
+					setManualCombinationStatus(__('Enter Combination GSM to auto-select widths.'), 'text-warning');
+					return;
+				}
+				const widths = sprManualParseCombination(comboRaw);
+				if (!widths.length) {
+					setManualCombinationStatus(__('Enter widths like 34+34+42.'), 'text-warning');
+					return;
+				}
+				const picks = [];
+				const countsByIdx = {};
+				for (let i = 0; i < widths.length; i++) {
+					const targetWidth = flt(widths[i]);
+					let matchIdx = -1;
+					for (let j = 0; j < lines.length; j++) {
+						const line = lines[j];
+						if (cint(line.gsm) !== comboGsm) continue;
+						if (Math.abs(flt(line.width_inch) - targetWidth) > 0.05) continue;
+						matchIdx = j;
+						break;
+					}
+					if (matchIdx === -1) {
+						setManualCombinationStatus(
+							__('No unused PP line found for GSM {0} width {1} in.', [comboGsm, targetWidth]),
+							'text-danger'
+						);
+						return;
+					}
+					picks.push(matchIdx);
+					countsByIdx[matchIdx] = (countsByIdx[matchIdx] || 0) + 1;
+				}
+
+				d.$wrapper.find('.spr-manual-inc').prop('checked', false);
+				lines.forEach(function (line) {
+					delete line.__combo_roll_count_per_shaft;
+				});
+				Object.keys(countsByIdx).forEach(function (idxStr) {
+					const idx = cint(idxStr);
+					const rollCount = cint(countsByIdx[idx] || 1);
+					lines[idx].__combo_roll_count_per_shaft = rollCount;
+					d.$wrapper.find('.spr-manual-inc[data-idx="' + idx + '"]').prop('checked', true);
+					d.$wrapper
+						.find('.spr-manual-qty[data-idx="' + idx + '"]')
+						.val(sprManualDefaultWoQty(lines[idx], cint(d.get_value('no_of_shafts')) || 1, rollCount).toFixed(2));
+				});
+				setManualCombinationStatus(
+					__('Selected {0} segment(s) for GSM {1}: {2}', [
+						picks.length,
+						comboGsm,
+						widths.join(' + '),
+					]),
+					'text-success'
+				);
 			}
 
 			d.show();
@@ -833,15 +1046,42 @@ function spr_open_manual_job_dialog(frm) {
 				d.$wrapper.find('.modal-dialog').css('max-width', '1100px');
 			} catch (e) {}
 			renderManualLinesTable();
+			d.$wrapper.on('click', '.spr-manual-select-all', function () {
+				d.$wrapper.find('.spr-manual-inc').prop('checked', true);
+				updateManualSelectionSummary();
+			});
+			d.$wrapper.on('click', '.spr-manual-select-none', function () {
+				d.$wrapper.find('.spr-manual-inc').prop('checked', false);
+				updateManualSelectionSummary();
+			});
+			d.$wrapper.on('change input', '.spr-manual-inc, .spr-manual-qty', function () {
+				updateManualSelectionSummary();
+			});
 			const ns = d.fields_dict.no_of_shafts;
 			if (ns && ns.$input) {
 				ns.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
 					renderManualLinesTable();
 				});
 			}
 			const nr = d.fields_dict.no_of_rolls;
 			if (nr && nr.$input) {
 				nr.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
+					renderManualLinesTable();
+				});
+			}
+			const cg = d.fields_dict.combination_gsm;
+			if (cg && cg.$input) {
+				cg.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
+					renderManualLinesTable();
+				});
+			}
+			const ci = d.fields_dict.combination_input;
+			if (ci && ci.$input) {
+				ci.$input.on('change input', function () {
+					if (syncManualCombinationMode()) return;
 					renderManualLinesTable();
 				});
 			}
@@ -1753,6 +1993,28 @@ function sprUsesLaminationRollPrompt(frm) {
 	return frm && frm.doc && cint(frm.doc.custom_is_lamination);
 }
 
+function sprToggleLaminationRollUi(frm) {
+	const hidePlanned = sprUsesLaminationRollPrompt(frm);
+	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
+	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
+		['planned_qty'].forEach(function (f) {
+			try {
+				fd.grid.update_docfield_property(f, 'hidden', hidePlanned ? 1 : 0);
+			} catch (e) {
+				/* ignore if field not present on this site */
+			}
+		});
+		if (frm && frm.__spr_planned_hidden_state !== hidePlanned) {
+			frm.__spr_planned_hidden_state = hidePlanned;
+			frm.refresh_field('items');
+		}
+	}
+	const $legend = fd && fd.$wrapper ? fd.$wrapper.prev('.spr-gsm-legend') : null;
+	if ($legend && $legend.length) {
+		$legend.toggle(!hidePlanned);
+	}
+}
+
 function update_shaft_job_achieved_from_items(frm) {
 	if (frm && frm.doc && cint(frm.doc.docstatus) !== 0) {
 		return;
@@ -1767,6 +2029,8 @@ function update_shaft_job_achieved_from_items(frm) {
 	const meterByJob = {};
 	let meterTotal = 0;
 	(frm.doc.items || []).forEach(function (it) {
+		const pm = sprSumProducedLengthMeters(it);
+		meterTotal += pm;
 		const k = sprNormalizeJobKey(it.job);
 		if (!k) {
 			return;
@@ -1774,8 +2038,6 @@ function update_shaft_job_achieved_from_items(frm) {
 		if (hasW) {
 			weightByJob[k] = (weightByJob[k] || 0) + spr_round_net_weight_kg(it.net_weight);
 		}
-		const pm = sprSumProducedLengthMeters(it);
-		meterTotal += pm;
 		if (hasM) {
 			meterByJob[k] = (meterByJob[k] || 0) + pm;
 		}
@@ -1889,6 +2151,7 @@ function spr_inject_gsm_legend(frm) {
 		'</span>' +
 		'</div>';
 	fd.$wrapper.before(html);
+	sprToggleLaminationRollUi(frm);
 }
 
 /** Sticker / planned GSM: field or parsed from item_code (same rule as server parse_item_code). */
@@ -2527,6 +2790,14 @@ function apply_spr_item_row_styles(frm) {
 	const items = frm.doc.items || [];
 	const $domRows = sprGetItemsDatatableBodyRows(frm);
 	const $wrap = frm.fields_dict.items.$wrapper;
+	if (sprUsesLaminationRollPrompt(frm)) {
+		const $targets = ($wrap && $wrap.length) ? $wrap.find('.dt-row, .grid-row, tbody tr, .grid-form-row') : $();
+		$targets.removeClass(baseClasses).each(function () {
+			sprClearRowBg($(this));
+		});
+		spr_apply_items_row_lock_ui(frm);
+		return;
+	}
 
 	items.forEach(function (doc, idx) {
 		// Try multiple resolution methods to find row element for DataTable / Frappe grids

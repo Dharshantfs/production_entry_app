@@ -11751,6 +11751,10 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         spr.is_mix_roll = 0
         spr.status = "Draft"
         spr.production_plan = pp_id
+        # SPR created from Lamination Order Table (104 rows) must open with Is Lamination checked.
+        is_lamination_from_rows = any(str((psi.get("item_code") or "")).strip().startswith("104") for psi in (psi_list or []))
+        if is_lamination_from_rows and frappe.get_meta("Shaft Production Run").has_field("custom_is_lamination"):
+            spr.custom_is_lamination = 1
         
         # Extract order code and customer from first item's parent sheet and PP
         first_psi = psi_list[0]

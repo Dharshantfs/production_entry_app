@@ -215,6 +215,11 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	custom_unit: function (frm) {
 		sprApplyLaminationUnitDefaults(frm);
+		sprToggleLaminationRollUi(frm);
+	},
+	custom_is_lamination: function (frm) {
+		sprToggleLaminationRollUi(frm);
+		schedule_spr_item_row_styles(frm);
 	},
 
 	refresh: function (frm) {
@@ -243,6 +248,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		} catch (e) {
 			/* ignore */
 		}
+		sprToggleLaminationRollUi(frm);
 
 		spr_patch_items_grid_refresh(frm);
 		spr_register_spr_page_buttons(frm);
@@ -1987,6 +1993,28 @@ function sprUsesLaminationRollPrompt(frm) {
 	return frm && frm.doc && cint(frm.doc.custom_is_lamination);
 }
 
+function sprToggleLaminationRollUi(frm) {
+	const hidePlanned = sprUsesLaminationRollPrompt(frm);
+	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
+	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
+		['planned_qty'].forEach(function (f) {
+			try {
+				fd.grid.update_docfield_property(f, 'hidden', hidePlanned ? 1 : 0);
+			} catch (e) {
+				/* ignore if field not present on this site */
+			}
+		});
+		if (frm && frm.__spr_planned_hidden_state !== hidePlanned) {
+			frm.__spr_planned_hidden_state = hidePlanned;
+			frm.refresh_field('items');
+		}
+	}
+	const $legend = fd && fd.$wrapper ? fd.$wrapper.prev('.spr-gsm-legend') : null;
+	if ($legend && $legend.length) {
+		$legend.toggle(!hidePlanned);
+	}
+}
+
 function update_shaft_job_achieved_from_items(frm) {
 	if (frm && frm.doc && cint(frm.doc.docstatus) !== 0) {
 		return;
@@ -2001,6 +2029,8 @@ function update_shaft_job_achieved_from_items(frm) {
 	const meterByJob = {};
 	let meterTotal = 0;
 	(frm.doc.items || []).forEach(function (it) {
+		const pm = sprSumProducedLengthMeters(it);
+		meterTotal += pm;
 		const k = sprNormalizeJobKey(it.job);
 		if (!k) {
 			return;
@@ -2008,8 +2038,6 @@ function update_shaft_job_achieved_from_items(frm) {
 		if (hasW) {
 			weightByJob[k] = (weightByJob[k] || 0) + spr_round_net_weight_kg(it.net_weight);
 		}
-		const pm = sprSumProducedLengthMeters(it);
-		meterTotal += pm;
 		if (hasM) {
 			meterByJob[k] = (meterByJob[k] || 0) + pm;
 		}
@@ -2123,6 +2151,7 @@ function spr_inject_gsm_legend(frm) {
 		'</span>' +
 		'</div>';
 	fd.$wrapper.before(html);
+	sprToggleLaminationRollUi(frm);
 }
 
 /** Sticker / planned GSM: field or parsed from item_code (same rule as server parse_item_code). */
@@ -2761,6 +2790,14 @@ function apply_spr_item_row_styles(frm) {
 	const items = frm.doc.items || [];
 	const $domRows = sprGetItemsDatatableBodyRows(frm);
 	const $wrap = frm.fields_dict.items.$wrapper;
+	if (sprUsesLaminationRollPrompt(frm)) {
+		const $targets = ($wrap && $wrap.length) ? $wrap.find('.dt-row, .grid-row, tbody tr, .grid-form-row') : $();
+		$targets.removeClass(baseClasses).each(function () {
+			sprClearRowBg($(this));
+		});
+		spr_apply_items_row_lock_ui(frm);
+		return;
+	}
 
 	items.forEach(function (doc, idx) {
 		// Try multiple resolution methods to find row element for DataTable / Frappe grids

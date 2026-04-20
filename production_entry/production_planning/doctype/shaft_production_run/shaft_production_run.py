@@ -1758,6 +1758,55 @@ class ShaftProductionRun(Document):
 				out.append((_cstr(d.item_code), wh, required, available, shortage))
 		return out
 
+	def _best_available_batch_for_rm(self, item_code: str, warehouse: str, required_qty: float) -> str:
+		"""Pick a batch with available qty in source warehouse for RM consumption."""
+		if not item_code or not warehouse:
+			return ""
+		rows = frappe.db.sql(
+			"""
+			SELECT batch_no, SUM(actual_qty) as qty
+			FROM `tabStock Ledger Entry`
+			WHERE IFNULL(is_cancelled, 0) = 0
+			  AND IFNULL(item_code, '') = %s
+			  AND IFNULL(warehouse, '') = %s
+			  AND IFNULL(batch_no, '') != ''
+			GROUP BY batch_no
+			HAVING SUM(actual_qty) > 0
+			ORDER BY SUM(actual_qty) DESC, MAX(posting_date) DESC, MAX(posting_time) DESC
+			""",
+			(item_code, warehouse),
+			as_dict=True,
+		)
+		if not rows:
+			return ""
+		need = flt(required_qty or 0)
+		for r in rows:
+			if flt(r.get("qty") or 0) + 1e-9 >= need:
+				return _cstr(r.get("batch_no"))
+		return _cstr(rows[0].get("batch_no"))
+
+	def _assign_rm_batches_for_stock_entry(self, se):
+		"""Assign batch_no for batch-tracked RM lines before submit."""
+		for d in se.items or []:
+			if not d.item_code or d.get("t_warehouse"):
+				continue
+			if _cstr(d.get("batch_no")):
+				continue
+			if not cint(frappe.db.get_value("Item", d.item_code, "has_batch_no") or 0):
+				continue
+			wh = _cstr(d.get("s_warehouse"))
+			required = flt(d.get("transfer_qty") or d.get("qty") or 0)
+			pick = self._best_available_batch_for_rm(_cstr(d.item_code), wh, required)
+			if pick:
+				d.batch_no = pick
+				continue
+			frappe.throw(
+				_("Batch is mandatory for raw material {0} in {1}, but no available batch was found.").format(
+					_cstr(d.item_code), wh or "—"
+				),
+				title=_("Missing RM Batch"),
+			)
+
 	def _rm_shortages_from_exception(self, exc) -> list[tuple[str, str, float, float, float]]:
 		"""Best-effort parse of ERPNext insufficient-stock message into shortage tuples."""
 		msg = _cstr(exc)
@@ -2012,7 +2061,12 @@ class ShaftProductionRun(Document):
 				)
 			else:
 				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
-		# Never force commit here; let the request-level transaction commit or rollback.
+		# Persist auto-created draft transfers before throwing, else request rollback can hide them.
+		if did_create_or_reuse:
+			try:
+				frappe.db.commit()
+			except Exception:
+				pass
 		frappe.throw(
 			_(
 				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
@@ -2841,6 +2895,7 @@ class ShaftProductionRun(Document):
 				# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
 				fg_templates = self._strip_finished_goods_from_stock_entry(se)
 				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows, fg_templates)
+				self._assign_rm_batches_for_stock_entry(se)
 
 				# Hard guard: submit path must always be Manufacture (never Material Transfer).
 				se.stock_entry_type = self._manufacture_stock_entry_type_name()

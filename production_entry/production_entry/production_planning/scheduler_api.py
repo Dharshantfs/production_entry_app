@@ -776,6 +776,8 @@ def get_lamination_order_table_data(
     )
     by_psi = {e["psi_name"]: e for e in (extra or [])}
 
+    # SPR names: from Planning Table join (extra) AND from color-chart rows (spr_name on each row),
+    # so draft SPR links still aggregate meters even if the join row is missing a match.
     spr_name_set = set()
     for e in extra or []:
         v = (e.get("spr_for_meter") or "").strip()
@@ -796,7 +798,7 @@ def get_lamination_order_table_data(
         else:
             length_expr = "0"
         sf = ",".join(["%s"] * len(spr_names))
-        for row_m in frappe.db.sql(
+        for r in frappe.db.sql(
                 f"""
                 SELECT parent, SUM({length_expr}) as mtrs
                 FROM `tabShaft Production Run Item`
@@ -806,7 +808,7 @@ def get_lamination_order_table_data(
                 tuple(spr_names),
                 as_dict=True,
             ):
-                spr_meters[str(row_m.get("parent") or "").strip()] = flt(row_m.get("mtrs"))
+                spr_meters[str(r.get("parent") or "").strip()] = flt(r.get("mtrs"))
 
     # Also sum meter_per_roll from Roll Production Entry Item keyed by wo_id,
     # so achieved_meter shows live progress even before SPR is linked to Planning Table.
@@ -11749,6 +11751,10 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         spr.is_mix_roll = 0
         spr.status = "Draft"
         spr.production_plan = pp_id
+        # SPR created from Lamination Order Table (104 rows) must open with Is Lamination checked.
+        is_lamination_from_rows = any(str((psi.get("item_code") or "")).strip().startswith("104") for psi in (psi_list or []))
+        if is_lamination_from_rows and frappe.get_meta("Shaft Production Run").has_field("custom_is_lamination"):
+            spr.custom_is_lamination = 1
         
         # Extract order code and customer from first item's parent sheet and PP
         first_psi = psi_list[0]
