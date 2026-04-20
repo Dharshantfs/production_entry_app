@@ -1902,11 +1902,97 @@ class ShaftProductionRun(Document):
 		for r in rows:
 			if flt(r.get("qty") or 0) + 1e-9 >= need:
 				return _cstr(r.get("batch_no"))
-		return _cstr(rows[0].get("batch_no"))
+		# Important: do NOT pick a partial batch for a full-consumption row.
+		# Picking an under-qty batch causes negative stock on submit.
+		return ""
+
+	def _available_batches_for_rm(self, item_code: str, warehouse: str) -> list[dict]:
+		"""Return available batches with qty for RM consumption, sorted by qty desc.
+
+		Covers both classic SLE.batch_no and bundle-based batch entries.
+		"""
+		if not item_code or not warehouse:
+			return []
+		acc: dict[str, float] = {}
+		# Path 1: classic batch_no on SLE
+		for r in frappe.db.sql(
+			"""
+			SELECT batch_no, SUM(actual_qty) as qty
+			FROM `tabStock Ledger Entry`
+			WHERE IFNULL(is_cancelled, 0) = 0
+			  AND IFNULL(item_code, '') = %s
+			  AND IFNULL(warehouse, '') = %s
+			  AND IFNULL(batch_no, '') != ''
+			GROUP BY batch_no
+			HAVING SUM(actual_qty) > 0
+			""",
+			(item_code, warehouse),
+			as_dict=True,
+		):
+			bn = _cstr(r.get("batch_no"))
+			q = flt(r.get("qty") or 0)
+			if bn and q > 0:
+				acc[bn] = acc.get(bn, 0.0) + q
+
+		# Path 2: serial-and-batch bundle (v15)
+		if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+			try:
+				sb_entry_dt = "Serial and Batch Entry"
+				if frappe.db.exists("DocType", sb_entry_dt):
+					sb_entry_meta = frappe.get_meta(sb_entry_dt)
+					batch_field = next(
+						(fn for fn in ("batch_no", "batch", "batch_id") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					qty_field = next(
+						(fn for fn in ("qty", "quantity") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					if batch_field and qty_field:
+						rows = frappe.db.sql(
+							f"""
+							SELECT
+								sbe.`{batch_field}` AS batch_no,
+								SUM(
+									CASE
+										WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+										ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+									END
+								) AS qty
+							FROM `tabStock Ledger Entry` sle
+							INNER JOIN `tabSerial and Batch Entry` sbe
+								ON sbe.parent = sle.serial_and_batch_bundle
+							WHERE IFNULL(sle.is_cancelled, 0) = 0
+							  AND IFNULL(sle.item_code, '') = %s
+							  AND IFNULL(sle.warehouse, '') = %s
+							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+							  AND IFNULL(sbe.`{batch_field}`, '') != ''
+							GROUP BY sbe.`{batch_field}`
+							HAVING SUM(
+								CASE
+									WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+								END
+							) > 0
+							""",
+							(item_code, warehouse),
+							as_dict=True,
+						)
+						for r in rows or []:
+							bn = _cstr(r.get("batch_no"))
+							q = flt(r.get("qty") or 0)
+							if bn and q > 0:
+								acc[bn] = max(acc.get(bn, 0.0), q)
+			except Exception:
+				pass
+
+		out = [{"batch_no": bn, "qty": flt(q)} for bn, q in acc.items() if bn and flt(q) > 0]
+		out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
+		return out
 
 	def _assign_rm_batches_for_stock_entry(self, se):
 		"""Assign batch_no for batch-tracked RM lines before submit."""
-		for d in se.items or []:
+		for d in list(se.items or []):
 			if not d.item_code or d.get("t_warehouse"):
 				continue
 			if _cstr(d.get("batch_no")):
@@ -1915,21 +2001,70 @@ class ShaftProductionRun(Document):
 				continue
 			wh = _cstr(d.get("s_warehouse"))
 			required = flt(d.get("transfer_qty") or d.get("qty") or 0)
-			pick = self._best_available_batch_for_rm(_cstr(d.item_code), wh, required)
-			if not pick:
-				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with a valid batch.
+			candidates = self._available_batches_for_rm(_cstr(d.item_code), wh)
+			source_wh = wh
+			if not candidates:
+				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with valid batches.
 				fallback_wh = _cstr(se.get("from_warehouse"))
 				if fallback_wh and fallback_wh != wh:
-					fallback_pick = self._best_available_batch_for_rm(_cstr(d.item_code), fallback_wh, required)
-					if fallback_pick:
-						d.s_warehouse = fallback_wh
-						pick = fallback_pick
-			if pick:
-				d.batch_no = pick
+					candidates = self._available_batches_for_rm(_cstr(d.item_code), fallback_wh)
+					if candidates:
+						source_wh = fallback_wh
+
+			remaining = flt(required)
+			allocs: list[tuple[str, float]] = []
+			for c in candidates:
+				if remaining <= 1e-9:
+					break
+				q = flt(c.get("qty") or 0)
+				if q <= 1e-9:
+					continue
+				take = min(q, remaining)
+				if take > 1e-9:
+					allocs.append((_cstr(c.get("batch_no")), flt(take)))
+					remaining = flt(remaining - take)
+
+			if allocs and remaining <= 1e-6:
+				# Split one RM row across many batches when needed.
+				cf = flt(d.get("conversion_factor") or 1) or 1
+				first_bn, first_qty = allocs[0]
+				d.batch_no = first_bn
+				d.s_warehouse = source_wh
+				d.transfer_qty = flt(first_qty, 6)
+				d.qty = flt(first_qty / cf, 6)
+				for bn, tq in allocs[1:]:
+					new_row = se.append("items", {})
+					base = d.as_dict()
+					for k, v in base.items():
+						if k in {"name", "parent", "parenttype", "parentfield", "idx", "owner", "creation", "modified", "modified_by", "docstatus"}:
+							continue
+						new_row.set(k, v)
+					new_row.batch_no = bn
+					new_row.s_warehouse = source_wh
+					new_row.transfer_qty = flt(tq, 6)
+					new_row.qty = flt(tq / cf, 6)
 				continue
+
+			avail_wh = flt(
+				frappe.db.sql(
+					"""
+					SELECT IFNULL(SUM(actual_qty), 0)
+					FROM `tabStock Ledger Entry`
+					WHERE IFNULL(is_cancelled, 0) = 0
+					  AND IFNULL(item_code, '') = %s
+					  AND IFNULL(warehouse, '') = %s
+					  AND IFNULL(batch_no, '') != ''
+					""",
+					(_cstr(d.item_code), wh),
+				)[0][0]
+				or 0
+			)
 			frappe.throw(
-				_("Batch is mandatory for raw material {0} in {1}, but no available batch was found.").format(
-					_cstr(d.item_code), wh or "—"
+				_(
+					"Batch is mandatory for raw material {0} in {1}, but no batch has enough quantity "
+					"(required: {2}, available in batches: {3}). Transfer more stock or split issue batches."
+				).format(
+					_cstr(d.item_code), wh or "—", flt(required, 3), flt(avail_wh, 3)
 				),
 				title=_("Missing RM Batch"),
 			)
