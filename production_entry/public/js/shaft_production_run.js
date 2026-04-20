@@ -24,10 +24,22 @@ function sprApplyLaminationUnitDefaults(frm, unitVal) {
 }
 
 function sprSumProducedLengthMeters(it) {
-	if (!it || !frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
+	if (!it) {
 		return 0;
 	}
-	return flt(it.produced_length_mtrs || 0);
+	const aliases = [
+		'produced_length_mtrs',
+		'custom_produced_length_mtrs',
+		'produced_length',
+		'custom_produced_length',
+	];
+	for (let i = 0; i < aliases.length; i++) {
+		const v = flt(it[aliases[i]]);
+		if (v > 0) {
+			return v;
+		}
+	}
+	return 0;
 }
 
 function sprScheduleTotalProducedSync(frm, opts) {

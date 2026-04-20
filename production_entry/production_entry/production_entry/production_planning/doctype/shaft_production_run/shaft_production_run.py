@@ -98,6 +98,22 @@ def _spr_length_meters(spr_row) -> float | None:
 	return None
 
 
+def _spr_produced_length_meters(spr_row) -> float:
+	"""Produced-only length in meters (no ordered/meter_roll fallback)."""
+	if spr_row is None:
+		return 0.0
+	for key in (
+		"produced_length_mtrs",
+		"custom_produced_length_mtrs",
+		"produced_length",
+		"custom_produced_length",
+	):
+		v = _spr_row_get(spr_row, key)
+		if v is not None and flt(v) > 0:
+			return flt(v)
+	return 0.0
+
+
 def _spr_first_roll_item_code(doc) -> str:
 	for it in doc.get("items") or []:
 		ic = _cstr(getattr(it, "item_code", None) or "")
@@ -1318,14 +1334,10 @@ class ShaftProductionRun(Document):
 		has_hdr_m = meta_spr.has_field("custom_total_achieved_meter")
 		if not has_job_m and not has_hdr_m:
 			return
-		spi = frappe.get_meta("Shaft Production Run Item")
-		has_pl = spi.has_field("produced_length_mtrs")
 		per_job: dict[str, float] = {}
 		total_all = 0.0
 		for it in self.items or []:
-			m = 0.0
-			if has_pl:
-				m = flt(getattr(it, "produced_length_mtrs", None) or 0)
+			m = _spr_produced_length_meters(it)
 			total_all += m
 			jid = _cstr(getattr(it, "job", None))
 			if jid and has_job_m:
@@ -1797,6 +1809,14 @@ class ShaftProductionRun(Document):
 			wh = _cstr(d.get("s_warehouse"))
 			required = flt(d.get("transfer_qty") or d.get("qty") or 0)
 			pick = self._best_available_batch_for_rm(_cstr(d.item_code), wh, required)
+			if not pick:
+				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with a valid batch.
+				fallback_wh = _cstr(se.get("from_warehouse"))
+				if fallback_wh and fallback_wh != wh:
+					fallback_pick = self._best_available_batch_for_rm(_cstr(d.item_code), fallback_wh, required)
+					if fallback_pick:
+						d.s_warehouse = fallback_wh
+						pick = fallback_pick
 			if pick:
 				d.batch_no = pick
 				continue
