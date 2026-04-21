@@ -41,9 +41,9 @@
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
-        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
-        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
-        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
+        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
+        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
+        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Lamination Board</button>
@@ -82,6 +82,7 @@
         <thead>
           <tr>
             <th class="th-n">S.NO</th>
+            <th style="min-width:84px;">ARRANGMENT</th>
             <th>DATE</th>
             <th>SHIFT</th>
             <th>BOOKING ID</th>
@@ -96,7 +97,6 @@
             <th>PRODUCED FABRIC WT (KG)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
-            <th style="min-width:84px;">ORDER</th>
           </tr>
         </thead>
         <tbody>
@@ -112,6 +112,10 @@
             :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }"
           >
             <td class="cell-center">{{ idx + 1 }}</td>
+            <td class="cell-center">
+              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">Drag</span>
+              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">Locked</span>
+            </td>
             <td class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
               <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date)" class="cc-maint-chip">
@@ -201,10 +205,6 @@
                 <span v-else-if="!row.is_lamination_parent && row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
                 <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
               </div>
-            </td>
-            <td class="cell-center">
-              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">Drag</span>
-              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">Locked</span>
             </td>
           </tr>
           <tr v-if="!filteredRows.length">
