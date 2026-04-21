@@ -41,9 +41,9 @@
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
-        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
-        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangement</button>
-        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangement</button>
+        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
+        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
+        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Lamination Board</button>
@@ -82,6 +82,7 @@
         <thead>
           <tr>
             <th class="th-n">S.NO</th>
+            <th style="min-width:84px;">ARRANGMENT</th>
             <th>DATE</th>
             <th>SHIFT</th>
             <th>BOOKING ID</th>
@@ -96,7 +97,6 @@
             <th>PRODUCED FABRIC WT (KG)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
-            <th style="min-width:84px;">ORDER</th>
           </tr>
         </thead>
         <tbody>
@@ -112,6 +112,10 @@
             :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }"
           >
             <td class="cell-center">{{ idx + 1 }}</td>
+            <td class="cell-center">
+              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">Drag</span>
+              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">Locked</span>
+            </td>
             <td class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
               <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date)" class="cc-maint-chip">
@@ -202,10 +206,6 @@
                 <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
-            <td class="cell-center">
-              <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">Drag</span>
-              <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">Locked</span>
-            </td>
           </tr>
           <tr v-if="!filteredRows.length">
             <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
@@ -245,6 +245,7 @@ let fetchTimer = null;
 let initialFetchRetried = false;
 let autoRefreshTimer = null;
 let fetchInProgress = false;
+let visibilityRefreshTimer = null;
 let sprRealtimeHandlerRegistered = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
@@ -324,6 +325,15 @@ function sortRowsBySavedSequence(rows) {
 function debouncedFetch() {
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = setTimeout(() => fetchData(), 200);
+}
+
+function onVisibilityRefresh() {
+  if (document.visibilityState !== "visible") return;
+  if (visibilityRefreshTimer) clearTimeout(visibilityRefreshTimer);
+  visibilityRefreshTimer = setTimeout(() => {
+    visibilityRefreshTimer = null;
+    fetchData();
+  }, 400);
 }
 
 function handleSprRealtimeUpdate() {
@@ -1105,6 +1115,7 @@ onMounted(async () => {
   if (p.get("month")) filterMonth.value = p.get("month");
   await fetchData();
   startAutoRefresh();
+  document.addEventListener("visibilitychange", onVisibilityRefresh);
   if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
     frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
     sprRealtimeHandlerRegistered = true;
@@ -1115,9 +1126,14 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("visibilitychange", onVisibilityRefresh);
   if (sprRealtimeHandlerRegistered && frappe.realtime && frappe.realtime.off) {
     frappe.realtime.off("shaft_production_run_updated", handleSprRealtimeUpdate);
     sprRealtimeHandlerRegistered = false;
+  }
+  if (visibilityRefreshTimer) {
+    clearTimeout(visibilityRefreshTimer);
+    visibilityRefreshTimer = null;
   }
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
