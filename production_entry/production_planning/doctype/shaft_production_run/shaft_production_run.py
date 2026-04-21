@@ -5489,7 +5489,28 @@ def spr_apply_bundle_packaging_for_job_width(
 		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
 		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in matching), 2)
+	net_vals = [flt(getattr(it, "net_weight", None)) for it in matching if flt(getattr(it, "net_weight", None)) > 0]
+	if net_vals:
+		bundle_net = round(sum(net_vals), 2)
+	else:
+		# Fallback when roll net_weight is empty: use segment/planned net per roll for sticker bundle net.
+		segs = max(1, _count_combination_segments(getattr(sj, "combination", None)))
+		seg_weights = _segment_weights_kg(sj, segs)
+		seg_widths = _parse_combination_widths_inches(getattr(sj, "combination", None) or "")
+		net_one = 0.0
+		if seg_widths and seg_weights:
+			for idx, wseg in enumerate(seg_widths):
+				if abs(flt(wseg) - flt(width_inch)) <= 0.75:
+					net_one = flt(seg_weights[idx]) if idx < len(seg_weights) else 0.0
+					break
+		if net_one <= 0 and matching:
+			net_one = (
+				flt(getattr(matching[0], "planned_qty", None))
+				or flt(getattr(matching[0], "net_weight", None))
+				or flt(getattr(matching[0], "gross_weight", None))
+				or flt(single_gross)
+			)
+		bundle_net = round(flt(net_one) * float(no_of_packaging), 2)
 
 	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
 	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
@@ -5548,7 +5569,12 @@ def spr_apply_bundle_packaging(
 		sel_w = flt(getattr(target, "width_inch", None))
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(sel_w * float(no_of_packaging), 4)
-	net_one = flt(getattr(target, "net_weight", None))
+	net_one = (
+		flt(getattr(target, "net_weight", None))
+		or flt(getattr(target, "planned_qty", None))
+		or flt(getattr(target, "gross_weight", None))
+		or flt(single_gross)
+	)
 	bundle_net = round(net_one * float(no_of_packaging), 2)
 
 	target.gross_weight = single_gross
