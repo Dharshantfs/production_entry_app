@@ -140,6 +140,19 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
     return 0
 
 
+def _gsm_from_lamination_item_code(item_code: str) -> int:
+    """Read laminated GSM from item-code index 9:12 (digits-only code), e.g. ...070... -> 70."""
+    if not item_code:
+        return 0
+    digits = "".join(ch for ch in str(item_code).strip() if ch.isdigit())
+    if len(digits) < 12:
+        return 0
+    try:
+        return cint(digits[9:12])
+    except Exception:
+        return 0
+
+
 def _ensure_sheet_lamination_order_code(sheet_name):
 	"""Backfill lamination order code for a sheet if missing (supports old/new field names)."""
 	sheet_name = (sheet_name or "").strip()
@@ -1909,6 +1922,11 @@ def _populate_planning_sheet_items(ps, doc):
             line_quality = "GENERIC"
 
         m_roll = flt(it.custom_meter_per_roll)
+		# For laminated FG (process 104), GSM must come from item-code index 9:12.
+		if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+			gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
+			if gsm_from_code > 0:
+				gsm = gsm_from_code
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
