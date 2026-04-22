@@ -1922,11 +1922,11 @@ def _populate_planning_sheet_items(ps, doc):
             line_quality = "GENERIC"
 
         m_roll = flt(it.custom_meter_per_roll)
-		# For laminated FG (process 104), GSM must come from item-code index 9:12.
-		if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-			gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
-			if gsm_from_code > 0:
-				gsm = gsm_from_code
+        # For laminated FG (process 104), GSM must come from item-code index 9:12.
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
+            if gsm_from_code > 0:
+                gsm = gsm_from_code
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
