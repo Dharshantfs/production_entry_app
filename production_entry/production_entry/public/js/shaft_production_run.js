@@ -30,8 +30,6 @@ function sprSumProducedLengthMeters(it) {
 	const aliases = [
 		'produced_length_mtrs',
 		'custom_produced_length_mtrs',
-		'produced_length',
-		'custom_produced_length',
 	];
 	for (let i = 0; i < aliases.length; i++) {
 		const v = flt(it[aliases[i]]);
@@ -40,6 +38,50 @@ function sprSumProducedLengthMeters(it) {
 		}
 	}
 	return 0;
+}
+
+const SPR_LAM_GSM_SUFFIX_MAP = {
+	A: 10,
+	B: 12,
+	B1: 13,
+	C: 15,
+	D: 30,
+	E: 20,
+};
+
+function sprRollProcessPrefix(frm) {
+	if (!frm || !frm.doc) {
+		return '';
+	}
+	const rows = frm.doc.items || [];
+	for (let i = 0; i < rows.length; i++) {
+		const code = String((rows[i] && rows[i].item_code) || '').trim();
+		if (code.length >= 3) {
+			const prefix = code.substring(0, 3);
+			if (prefix === '100' || prefix === '104') {
+				return prefix;
+			}
+		}
+	}
+	return '';
+}
+
+function sprStickerGsmFromItemCode(itemCode) {
+	const code = ((itemCode || '') + '').trim();
+	if (code.length < 12) {
+		return 0;
+	}
+	const n = parseInt(code.substring(9, 12), 10);
+	return !isNaN(n) && n > 0 ? n : 0;
+}
+
+function sprLaminationGsmFromItemCode(itemCode) {
+	const code = ((itemCode || '') + '').trim().toUpperCase();
+	if (!code || code.indexOf('-') === -1) {
+		return 0;
+	}
+	const suffix = code.split('-').pop().trim();
+	return SPR_LAM_GSM_SUFFIX_MAP[suffix] || 0;
 }
 
 function sprScheduleTotalProducedSync(frm, opts) {
@@ -1821,6 +1863,25 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 		return;
 	}
 	const row = locals[cdt][cdn];
+
+	// Keep sticker GSM aligned to item-code rule: positions 9..11.
+	const stickerGsm = sprStickerGsmFromItemCode(row.item_code);
+	if (stickerGsm > 0) {
+		if (flt(row.gsm) !== stickerGsm) {
+			frappe.model.set_value(cdt, cdn, 'gsm', stickerGsm);
+		}
+		if (frappe.meta.get_docfield('Shaft Production Run Item', 'custom_sticker_gsm') && flt(row.custom_sticker_gsm) !== stickerGsm) {
+			frappe.model.set_value(cdt, cdn, 'custom_sticker_gsm', stickerGsm);
+		}
+	}
+
+	// Keep lamination GSM aligned to item-code suffix map (e.g. "-C" => 15).
+	if (frappe.meta.get_docfield('Shaft Production Run Item', 'custom_lam_gsm')) {
+		const lamGsm = sprLaminationGsmFromItemCode(row.item_code);
+		if (lamGsm > 0 && flt(row.custom_lam_gsm) !== lamGsm) {
+			frappe.model.set_value(cdt, cdn, 'custom_lam_gsm', lamGsm);
+		}
+	}
 	
 	// Get weight: prefer net_weight, fallback to gross_weight
 	let nw = flt(row.net_weight);
@@ -2012,24 +2073,34 @@ function sprUsesLaminationRollPrompt(frm) {
 }
 
 function sprToggleLaminationRollUi(frm) {
-	const hidePlanned = sprUsesLaminationRollPrompt(frm);
+	const processPrefix = sprRollProcessPrefix(frm);
+	const isProcess104 = processPrefix === '104';
+	const isProcess100 = processPrefix === '100';
+	const showLamCols = isProcess104 || (!isProcess100 && sprUsesLaminationRollPrompt(frm));
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
 		['planned_qty'].forEach(function (f) {
 			try {
-				fd.grid.update_docfield_property(f, 'hidden', hidePlanned ? 1 : 0);
+				fd.grid.update_docfield_property(f, 'hidden', 0);
 			} catch (e) {
 				/* ignore if field not present on this site */
 			}
 		});
-		if (frm && frm.__spr_planned_hidden_state !== hidePlanned) {
-			frm.__spr_planned_hidden_state = hidePlanned;
+		['custom_fabric_gsm', 'custom_lam_gsm'].forEach(function (f) {
+			try {
+				fd.grid.update_docfield_property(f, 'hidden', showLamCols ? 0 : 1);
+			} catch (e) {
+				/* ignore if field not present on this site */
+			}
+		});
+		if (frm && frm.__spr_lam_cols_visible_state !== showLamCols) {
+			frm.__spr_lam_cols_visible_state = showLamCols;
 			frm.refresh_field('items');
 		}
 	}
 	const $legend = fd && fd.$wrapper ? fd.$wrapper.prev('.spr-gsm-legend') : null;
 	if ($legend && $legend.length) {
-		$legend.toggle(!hidePlanned);
+		$legend.toggle(showLamCols);
 	}
 }
 
@@ -2060,6 +2131,7 @@ function update_shaft_job_achieved_from_items(frm) {
 			meterByJob[k] = (meterByJob[k] || 0) + pm;
 		}
 	});
+	let jobGridDirty = false;
 	if (hasW) {
 		(frm.doc.shaft_jobs || []).forEach(function (sj) {
 			const jid = sprShaftJobRowKey(sj);
@@ -2067,6 +2139,7 @@ function update_shaft_job_achieved_from_items(frm) {
 			const cur = flt(sj.custom_total_achieved_weight);
 			if (Math.abs(cur - next) > 0.005) {
 				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', next);
+				jobGridDirty = true;
 			}
 		});
 	}
@@ -2077,8 +2150,12 @@ function update_shaft_job_achieved_from_items(frm) {
 			const cur = flt(sj.custom_total_achieved_meter);
 			if (Math.abs(cur - next) > 0.005) {
 				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_meter', next);
+				jobGridDirty = true;
 			}
 		});
+	}
+	if (jobGridDirty) {
+		try { frm.refresh_field('shaft_jobs'); } catch (e) {}
 	}
 	if (hasHdrM) {
 		const curH = flt(frm.doc.custom_total_achieved_meter);
@@ -2174,18 +2251,12 @@ function spr_inject_gsm_legend(frm) {
 
 /** Sticker / planned GSM: field or parsed from item_code (same rule as server parse_item_code). */
 function sprStickerGsmFromDoc(doc) {
-	let g = flt(doc.gsm);
-	if (g > 0) {
-		return g;
+	const fromCode = sprStickerGsmFromItemCode(doc && doc.item_code);
+	if (fromCode > 0) {
+		return fromCode;
 	}
-	const ic = (doc.item_code || '') + '';
-	if (ic.length >= 16) {
-		const n = parseInt(ic.substring(9, 12), 10);
-		if (!isNaN(n) && n > 0) {
-			return n;
-		}
-	}
-	return 0;
+	const g = flt(doc && doc.gsm);
+	return g > 0 ? g : 0;
 }
 
 /** True when produced length is missing or zero — do not infer GSM from ordered meter_roll (legend: incomplete / grey). */

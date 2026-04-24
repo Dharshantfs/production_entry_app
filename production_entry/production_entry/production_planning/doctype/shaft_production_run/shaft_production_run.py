@@ -168,15 +168,10 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 _LAM_GSM_SUFFIX_MAP: dict[str, int] = {
 	"A": 10,
 	"B": 12,
+	"B1": 13,
 	"C": 15,
-	"D": 17,
+	"D": 30,
 	"E": 20,
-	"F": 22,
-	"G": 25,
-	"H": 28,
-	"I": 30,
-	"J": 35,
-	"K": 40,
 }
 
 
