@@ -72,8 +72,8 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	has_pt_booking_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
 	has_pt_booking_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
 	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
-    has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
-    has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
+	has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
+	has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
 
 	has_104 = False
 	for fn in ("planned_items", "items", "custom_planned_items"):
@@ -113,13 +113,13 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_order_code_ = code
 				elif has_pt_booking_old:
 					row.custom_lamination_booking_id = code
-                if has_pt_lam_gsm:
-                    row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
+				if has_pt_lam_gsm:
+					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
 			else:
 				if has_psi_booking:
 					row.custom_lamination_order_code = code
-                if has_psi_lam_gsm:
-                    row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
+				if has_psi_lam_gsm:
+					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
 
 	# Mirror code to Sales Order header when available
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
@@ -12173,13 +12173,21 @@ def get_spr_shaft_jobs_from_pp(pp_id):
             if not flt(raw_width) and matching_poi:
                 raw_width = flt(pick_value(matching_poi, ["total_width", "width", "width_inches"], 0) or 0)
 
+            # For meter_roll_mtrs
+            meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
+            raw_meter = flt(pick_value(pp_shaft, meter_keys, 0))
+            if not raw_meter and matching_poi:
+                raw_meter = flt(pick_value(matching_poi, meter_keys, 0))
+            if not raw_meter:
+                raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+
             jobs.append(
                 {
                     "job_id": pick_value(pp_shaft, ["job_id", "job", "job_no"], str(idx)),
                     "gsm": pick_value(pp_shaft, ["gsm"], ""),
                     "combination": pick_value(pp_shaft, ["combination", "combined_width", "shaft", "shaft_details"], "") or pp_combined_width,
                     "total_width": raw_width,
-                    "meter_roll_mtrs": flt(pick_value(pp_shaft, ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "meter_per_roll_mtrs", "roll", "meter"], 0) or flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or 500)),
+                    "meter_roll_mtrs": raw_meter,
                     "no_of_shafts": cint(pick_value(pp_shaft, ["no_of_shafts", "no_of_shaft", "no_of_sh", "no_of_sf"], 0) or 0) or pp_no_of_shaft or 1,
                     "net_weight": raw_net_weight,
                     "net_weight_shaft_kgs": raw_net_weight,
