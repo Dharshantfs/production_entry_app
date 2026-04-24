@@ -152,10 +152,10 @@ def spr_doc_is_lamination(doc) -> bool:
 
 
 def _fabric_gsm_from_item_name(item_name: str) -> int:
-	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' → 60)."""
+	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' or 'F - 60' → 60)."""
 	if not item_name:
 		return 0
-	m = re.search(r'\bF-(\d+)\b', item_name, re.IGNORECASE)
+	m = re.search(r'\bF\s*-\s*(\d+)\b', item_name, re.IGNORECASE)
 	if m:
 		try:
 			return int(m.group(1))
