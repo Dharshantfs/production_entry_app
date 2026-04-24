@@ -72,6 +72,8 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	has_pt_booking_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
 	has_pt_booking_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
 	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
+    has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
+    has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
 
 	has_104 = False
 	for fn in ("planned_items", "items", "custom_planned_items"):
@@ -111,9 +113,13 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_order_code_ = code
 				elif has_pt_booking_old:
 					row.custom_lamination_booking_id = code
+                if has_pt_lam_gsm:
+                    row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
 			else:
 				if has_psi_booking:
 					row.custom_lamination_order_code = code
+                if has_psi_lam_gsm:
+                    row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
 
 	# Mirror code to Sales Order header when available
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
@@ -1996,6 +2002,8 @@ def _populate_planning_sheet_items(ps, doc):
         }
         if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
+        if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+            psi_data["custom_lam_gsm"] = lam_gsm
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
         if is_existing:
@@ -2008,6 +2016,8 @@ def _populate_planning_sheet_items(ps, doc):
                 existing_psi.color = col
                 if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
                     existing_psi.custom_lam_gsm = lam_gsm
+                if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+                    existing_psi.custom_lam_gsm = lam_gsm
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
                 # Only update unit if it was not already assigned (Board assignment takes precedence)
@@ -2019,6 +2029,8 @@ def _populate_planning_sheet_items(ps, doc):
             pt_data["planned_date"] = p_date
             pt_data["plan_name"] = ps.get("custom_plan_name")
             pt_data["planning_sheet"] = ps.name # For redundancy
+            if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+                pt_data["custom_lam_gsm"] = lam_gsm
             
             # Plan 1: Always fill the legacy 'items' table if it exists
             if hasattr(ps, "items") or ps.meta.has_field("items"):
