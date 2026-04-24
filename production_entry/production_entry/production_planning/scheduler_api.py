@@ -153,6 +153,29 @@ def _gsm_from_lamination_item_code(item_code: str) -> int:
         return 0
 
 
+# Lamination GSM from suffix after '-':
+# 10-A, 12-B, 13-B1, 15-C, 30-D, 20-E
+_LAM_GSM_SUFFIX_MAP = {
+    "A": 10,
+    "B": 12,
+    "B1": 13,
+    "C": 15,
+    "D": 30,
+    "E": 20,
+}
+
+
+def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
+    """Read lamination GSM from item-code suffix after last '-', for 104 items only."""
+    code = str(item_code or "").strip().upper()
+    if not code or "-" not in code:
+        return 0
+    left, suffix = code.rsplit("-", 1)
+    if _item_process_prefix(left.strip()) != "104":
+        return 0
+    return cint(_LAM_GSM_SUFFIX_MAP.get(suffix.strip(), 0) or 0)
+
+
 def _ensure_sheet_lamination_order_code(sheet_name):
 	"""Backfill lamination order code for a sheet if missing (supports old/new field names)."""
 	sheet_name = (sheet_name or "").strip()
@@ -779,6 +802,8 @@ def get_lamination_order_table_data(
     elif has_pt_book_old:
         booking_expr = "IFNULL(pt.custom_lamination_booking_id, '')"
     shift_expr = "IFNULL(pt.custom_lamination_shift, 'DAY')" if has_shift_col else "'DAY'"
+    has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
+    lam_gsm_expr = "IFNULL(pt.custom_lam_gsm, 0)" if has_pt_lam_gsm else "0"
 
     extra = frappe.db.sql(
         f"""
@@ -787,6 +812,7 @@ def get_lamination_order_table_data(
             pt.parent as ps_name,
             IFNULL(pt.meter, 0) as planned_meter,
             {booking_expr} as lamination_booking_id,
+            {lam_gsm_expr} as lamination_gsm_value,
             IFNULL(fab.gsm, 0) as fabric_gsm,
             {spr_for_meter_sql},
             {shift_expr} as shift_label
@@ -1020,10 +1046,16 @@ def get_lamination_order_table_data(
             row["lamination_booking_id"] = _ensure_sheet_lamination_order_code(ex.get("ps_name")) or ""
         _fab_gsm = int(ex.get("fabric_gsm") or 0) if ex else 0
         if _fab_gsm <= 0:
+            # Fallback: parse F-<N> from the 104 lamination item's name (e.g. "F-60" → 60)
             _row_item_name = str(row.get("item_name") or row.get("itemName") or "")
             _fab_gsm = _fabric_gsm_from_item_name(_row_item_name)
         row["fabric_gsm"] = _fab_gsm
-        row["lamination_gsm"] = int(row.get("gsm") or 0) or 0
+        lam_gsm = int(ex.get("lamination_gsm_value") or 0) if ex else 0
+        if lam_gsm <= 0:
+            lam_gsm = _lam_gsm_from_item_code_suffix(row.get("item_code") or row.get("itemCode"))
+        if lam_gsm <= 0:
+            lam_gsm = int(row.get("gsm") or 0) or 0
+        row["lamination_gsm"] = lam_gsm
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known
         row["achieved_meter"] = achieved_m
@@ -1930,6 +1962,10 @@ def _populate_planning_sheet_items(ps, doc):
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
+        lam_gsm = 0
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
+
         unit = compute_default_production_unit(col, width)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
@@ -1958,6 +1994,8 @@ def _populate_planning_sheet_items(ps, doc):
             "planned_date": p_date,
             "planning_sheet": ps.name # Explicitly link for grid visibility
         }
+        if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+            psi_data["custom_lam_gsm"] = lam_gsm
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
         if is_existing:
@@ -1968,6 +2006,8 @@ def _populate_planning_sheet_items(ps, doc):
                 existing_psi.quality = line_quality
                 existing_psi.custom_quality = qual or line_quality
                 existing_psi.color = col
+                if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+                    existing_psi.custom_lam_gsm = lam_gsm
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
                 # Only update unit if it was not already assigned (Board assignment takes precedence)
