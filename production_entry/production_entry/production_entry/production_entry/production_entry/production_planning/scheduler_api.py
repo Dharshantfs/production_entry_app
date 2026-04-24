@@ -12014,16 +12014,19 @@ def create_item_spr(pp_id, planning_sheet_item_names):
                     row.total_width = 0
                 
                 row.no_of_shafts = 1
-                row.meter_roll_mtrs = flt(
-                    pp.get("meter__roll")
-                    or pp.get("custom_meter_roll_mtrs")
-                    or pp.get("meter_roll_mtrs")
-                    or pp.get("custom_meter_per_roll")
-                    or pp.get("meter_per_roll")
-                    or pp.get("custom_meter")
-                    or pp.get("meter")
-                    or 500
-                )
+                meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "custom_meterperroll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length", "planned_length"]
+                raw_meter = flt(pick_value(psi, meter_keys, 0))
+                if not raw_meter and pp_po_items:
+                    for poi in pp_po_items:
+                        if poi.get("item_code") == psi.get("item_code"):
+                            raw_meter = flt(pick_value(poi, meter_keys, 0))
+                            break
+                if not raw_meter and pp_po_items:
+                    raw_meter = flt(pick_value(pp_po_items[0], meter_keys, 0))
+                if not raw_meter:
+                    raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("custom_meterperroll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+                
+                row.meter_roll_mtrs = raw_meter
         
         # Store selected Planning Sheet Item names for reference
         if psi_list:
