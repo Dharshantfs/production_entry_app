@@ -11960,12 +11960,12 @@ def create_item_spr(pp_id, planning_sheet_item_names):
                 row.total_width = raw_width
 
                 # Prefer PP shaft meter__roll; fall back to matching po_item, then PP-level fields before defaulting
-                meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
+                meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "custom_meterperroll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
                 raw_meter = flt(pick_value(pp_shaft, meter_keys, 0))
                 if not raw_meter and matching_poi:
                     raw_meter = flt(pick_value(matching_poi, meter_keys, 0))
                 if not raw_meter:
-                    raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+                    raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("custom_meterperroll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
                 row.meter_roll_mtrs = raw_meter
                 row.no_of_shafts = cint(pick_value(pp_shaft, ["no_of_shafts", "no_of_shaft", "no_of_sh", "no_of_sf"], 0) or 0) or pp_no_of_shaft or 1
                 
@@ -12168,12 +12168,12 @@ def get_spr_shaft_jobs_from_pp(pp_id):
                 raw_width = flt(pick_value(matching_poi, ["total_width", "width", "width_inches"], 0) or 0)
 
             # For meter_roll_mtrs
-            meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
+            meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "custom_meterperroll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
             raw_meter = flt(pick_value(pp_shaft, meter_keys, 0))
             if not raw_meter and matching_poi:
                 raw_meter = flt(pick_value(matching_poi, meter_keys, 0))
             if not raw_meter:
-                raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+                raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("custom_meterperroll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
 
             jobs.append(
                 {
