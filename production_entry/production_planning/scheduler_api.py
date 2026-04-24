@@ -11936,43 +11936,37 @@ def create_item_spr(pp_id, planning_sheet_item_names):
             f"no_of_shaft={pp_no_of_shaft}, combined_width={pp_combined_width}",
             "SPR_DEBUG_PP_LEVEL"
         )
+        # Also try standard PP FINISHED GOODS table (po_items) for enrichment
+        pp_po_items = pp.get("po_items") or []
+        po_item_data = {}
+        for poi in pp_po_items:
+            # Build a lookup by index for width/weight enrichment
+            idx = cint(poi.get("idx") or 0)
+            po_item_data[idx] = poi
 
         if pp_shafts:
-            for pp_shaft in pp_shafts:
+            for idx, pp_shaft in enumerate(pp_shafts, start=1):
+                matching_poi = po_item_data.get(idx, {})
                 row = spr.append("shaft_jobs", {})
                 row.job_id = pick_value(pp_shaft, ["job_id", "job", "job_no"], str(len(spr.shaft_jobs)))
                 row.gsm = pick_value(pp_shaft, ["gsm"], "")
                 row.combination = pick_value(pp_shaft, ["combination", "combined_width", "shaft", "shaft_details"], "") or pp_combined_width
-                row.total_width = flt(pick_value(pp_shaft, ["total_width", "combined_width", "width", "total_width_inches"], 0) or 0) or flt(pp_combined_width or 0)
-                # Prefer PP shaft meter__roll; fall back to PP-level fields before defaulting
-                row.meter_roll_mtrs = flt(
-                    pick_value(
-                        pp_shaft,
-                        [
-                            "meter__roll",
-                            "meter_roll_mtrs",
-                            "meter_per_roll",
-                            "meter_roll",
-                            "roll_mtrs",
-                            "custom_meter_roll_mtrs",
-                            "custom_meter_per_roll",
-                            "meter_per_roll_mtrs",
-                            "roll",
-                            "meter",
-                        ],
-                        0,
-                    )
-                    or flt(
-                        pp.get("meter__roll")
-                        or pp.get("custom_meter_roll_mtrs")
-                        or pp.get("meter_roll_mtrs")
-                        or pp.get("custom_meter_per_roll")
-                        or pp.get("meter_per_roll")
-                        or pp.get("custom_meter")
-                        or pp.get("meter")
-                        or 500
-                    )
-                )
+                
+                raw_width = flt(pick_value(pp_shaft, ["total_width", "combined_width", "width", "total_width_inches"], 0) or 0)
+                if not raw_width and matching_poi:
+                    raw_width = flt(pick_value(matching_poi, ["total_width", "width", "width_inches"], 0) or 0)
+                if not raw_width:
+                    raw_width = flt(pp_combined_width or 0)
+                row.total_width = raw_width
+
+                # Prefer PP shaft meter__roll; fall back to matching po_item, then PP-level fields before defaulting
+                meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
+                raw_meter = flt(pick_value(pp_shaft, meter_keys, 0))
+                if not raw_meter and matching_poi:
+                    raw_meter = flt(pick_value(matching_poi, meter_keys, 0))
+                if not raw_meter:
+                    raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+                row.meter_roll_mtrs = raw_meter
                 row.no_of_shafts = cint(pick_value(pp_shaft, ["no_of_shafts", "no_of_shaft", "no_of_sh", "no_of_sf"], 0) or 0) or pp_no_of_shaft or 1
                 
                 # Field names confirmed by user: net_weight, total_width (SPR)
