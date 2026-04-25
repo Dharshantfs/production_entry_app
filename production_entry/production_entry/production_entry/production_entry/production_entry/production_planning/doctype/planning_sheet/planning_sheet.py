@@ -125,7 +125,7 @@ class Planningsheet(Document):
                 elif not color:
                     color = resolved or ""
                 width = flt(getattr(row, "width_inch", None))
-                row.unit = compute_default_production_unit(color, width)
+                row.unit = compute_default_production_unit(color, width, getattr(row, "item_code", None))
 
     def _sync_linked_planning_units(self):
         """Keep legacy `items` and board `planned_items` units aligned when linked by `source_item`.
@@ -844,7 +844,7 @@ def auto_create_planning_sheet(doc, method=None):
         ps.insert()
         frappe.db.commit()
         
-        frappe.msgprint(f"âœ… Planning Sheet <b>{ps.name}</b> created and synced from Sales Order for April 1st Alignment.")
+        frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created and synced from Sales Order.")
     except Exception as e:
         frappe.log_error(frappe.get_traceback(), "Auto Create Planning Sheet Failed")
 

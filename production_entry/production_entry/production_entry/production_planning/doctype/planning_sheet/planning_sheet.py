@@ -125,7 +125,7 @@ class Planningsheet(Document):
                 elif not color:
                     color = resolved or ""
                 width = flt(getattr(row, "width_inch", None))
-                row.unit = compute_default_production_unit(color, width)
+                row.unit = compute_default_production_unit(color, width, getattr(row, "item_code", None))
 
     def _sync_linked_planning_units(self):
         """Keep legacy `items` and board `planned_items` units aligned when linked by `source_item`.
