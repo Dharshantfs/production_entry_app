@@ -2079,6 +2079,7 @@ function sprToggleLaminationRollUi(frm) {
 	const showLamCols = isProcess104 || (!isProcess100 && sprUsesLaminationRollPrompt(frm));
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
+		// Set all visibility properties first
 		['planned_qty'].forEach(function (f) {
 			try {
 				fd.grid.update_docfield_property(f, 'hidden', showLamCols ? 1 : 0);
@@ -2093,8 +2094,17 @@ function sprToggleLaminationRollUi(frm) {
 				/* ignore if field not present on this site */
 			}
 		});
+		
+		// Force grid rebuild if state changed
 		if (frm && frm.__spr_lam_cols_visible_state !== showLamCols) {
 			frm.__spr_lam_cols_visible_state = showLamCols;
+			// Clear grid wrapper to force full rebuild
+			if (fd.grid && typeof fd.grid.refresh === 'function') {
+				try {
+					fd.grid.refresh();
+				} catch (e) {}
+			}
+			// Then refresh the field to update UI
 			frm.refresh_field('items');
 		}
 	}
