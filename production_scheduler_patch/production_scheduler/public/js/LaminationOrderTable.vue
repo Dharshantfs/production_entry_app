@@ -1235,7 +1235,7 @@ onUnmounted(() => {
 .cc-table-container {
   background: #fff;
   border-radius: 8px;
-  overflow: auto;
+  /* overflow: auto; */
   border: 1px solid #e5e7eb;
 }
 .cc-shift-board {
@@ -1500,4 +1500,5 @@ onUnmounted(() => {
   font-family: ui-monospace, monospace;
 }
 </style>
+
 
