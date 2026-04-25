@@ -74,6 +74,9 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
 	has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
 	has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
+	has_psi_lam_side = frappe.db.has_column("Planning sheet Item", "custom_lam_side")
+	has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side")
+	has_ps_lam_side = frappe.db.has_column("Planning sheet", "custom_lam_side")
 
 	has_104 = False
 	for fn in ("planned_items", "items", "custom_planned_items"):
@@ -101,6 +104,29 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	if has_sheet_code_old:
 		doc.custom_lamination_booking_id = code
 
+	# Build a map of SO item -> custom_lamination_side for 104 rows
+	so_lam_side_map = {}
+	so_name = (getattr(doc, "sales_order", None) or "").strip()
+	if so_name:
+		try:
+			so_items_data = frappe.get_all(
+				"Sales Order Item",
+				filters={"parent": so_name},
+				fields=["name", "item_code", "custom_lamination_side"],
+			) if frappe.db.has_column("Sales Order Item", "custom_lamination_side") else []
+			for soi in so_items_data:
+				if soi.get("custom_lamination_side"):
+					so_lam_side_map[soi["name"]] = soi["custom_lamination_side"]
+					so_lam_side_map[soi["item_code"]] = soi["custom_lamination_side"]
+		except Exception:
+			pass
+
+	# Stamp header-level lam side (from first 104 SO item that has a value)
+	if has_ps_lam_side and so_lam_side_map:
+		first_lam_side = next(iter(so_lam_side_map.values()), "")
+		if first_lam_side:
+			doc.custom_lam_side = first_lam_side
+
 	for fn in ("planned_items", "items", "custom_planned_items"):
 		if not meta.has_field(fn):
 			continue
@@ -115,11 +141,19 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_booking_id = code
 				if has_pt_lam_gsm:
 					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
+				if has_pt_lam_side:
+					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
+					if lam_side_val:
+						row.custom_lam_side = lam_side_val
 			else:
 				if has_psi_booking:
 					row.custom_lamination_order_code = code
 				if has_psi_lam_gsm:
 					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
+				if has_psi_lam_side:
+					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
+					if lam_side_val:
+						row.custom_lam_side = lam_side_val
 
 	# Mirror code to Sales Order header when available
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
@@ -392,11 +426,17 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 
 		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row)
-		# Fabric (100*): same as other SO lines ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â white ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ UNASSIGNED, other colours ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ unit by width (not Lamination Unit).
+		# Fabric (100*): same as other SO lines ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â  white ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ UNASSIGNED, other colours ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ unit by width (not Lamination Unit).
 		fab_color = specs.get("color") or ""
 		fab_width = flt(specs.get("width_inch"))
 		fabric_unit = compute_default_production_unit(fab_color, fab_width)
 		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
+
+		# Pull lam side from SO item
+		so_item_lam_side = ""
+		if frappe.db.has_column("Sales Order Item", "custom_lamination_side"):
+			so_item_lam_side = (getattr(so_it, "custom_lamination_side", None) or "").strip()
+
 		row = {
 			"sales_order_item": "",
 			"item_code": fabric_ic,
@@ -421,6 +461,8 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		}
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
+		if so_item_lam_side:
+			row["custom_lam_side"] = so_item_lam_side
 
 		row_b = dict(row)
 		if hasattr(ps, "items") or ps.meta.has_field("items"):
