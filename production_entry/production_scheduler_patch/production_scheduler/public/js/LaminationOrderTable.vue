@@ -1316,6 +1316,9 @@ onUnmounted(() => {
   line-height: 1.6;
 }
 .cc-prod-table th {
+  position: sticky;
+  top: 0;
+  z-index: 14;
   background: #047857;
   color: #fff;
   padding: 14px 12px;
@@ -1497,3 +1500,4 @@ onUnmounted(() => {
   font-family: ui-monospace, monospace;
 }
 </style>
+
