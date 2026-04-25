@@ -543,10 +543,10 @@ function goToPlan() {
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
     if (isLaminationBoard.value) {
-        frappe.set_route("lamination-order-table", query);
+        frappe.set_route("Lamination Order Table", query);
         return;
     }
-    frappe.set_route("production-table", query);
+    frappe.set_route("Production Table", query);
 }
 
 function goToConfirmedOrders() {
@@ -2116,7 +2116,7 @@ function initFlatpickr() {
 onMounted(() => {
     try {
       const r = frappe.get_route && frappe.get_route();
-      isLaminationBoard.value = Boolean(r && r[0] === "lamination-board");
+      isLaminationBoard.value = Boolean(r && r[0] && r[0].toLowerCase().replace(/-/g, " ") === "lamination board");
     } catch (e) {
       isLaminationBoard.value = false;
     }
