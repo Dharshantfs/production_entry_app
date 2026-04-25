@@ -2081,7 +2081,7 @@ function sprToggleLaminationRollUi(frm) {
 	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
 		['planned_qty'].forEach(function (f) {
 			try {
-				fd.grid.update_docfield_property(f, 'hidden', 0);
+				fd.grid.update_docfield_property(f, 'hidden', showLamCols ? 1 : 0);
 			} catch (e) {
 				/* ignore if field not present on this site */
 			}

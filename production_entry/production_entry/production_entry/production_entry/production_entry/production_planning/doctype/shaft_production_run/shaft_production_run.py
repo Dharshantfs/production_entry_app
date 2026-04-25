@@ -3692,10 +3692,6 @@ def build_spr_roll_result_lines_for_job(
 			row["width_inch"] = flt(individual_width)
 		if meter_roll_job is not None and meter_roll_job > 0:
 			row["meter_roll"] = meter_roll_job
-			# Lamination add-flow: initialize produced length from entered meter/roll,
-			# so achieved meter/weight can reflect draft rows immediately.
-			if spr_doc_is_lamination(spr_doc):
-				row["produced_length_mtrs"] = meter_roll_job
 
 		# Fabric GSM: prefer Planning Table join result; fallback to parsing F-<N> from item name.
 		eff_fabric_gsm = fabric_gsm
