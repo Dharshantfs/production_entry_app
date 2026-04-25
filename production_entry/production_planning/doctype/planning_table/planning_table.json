@@ -34,6 +34,7 @@
   "custom_item_planned_date",
   "custom_plan_code",
   "custom_lamination_order_code_",
+  "custom_lam_side",
   "custom_lamination_shift",
   "order_sheet",
   "custom_split_metadata",
@@ -210,6 +211,12 @@
    "read_only": 1
   },
   {
+   "fieldname": "custom_lam_side",
+   "fieldtype": "Data",
+   "label": "Lam Side",
+   "read_only": 1
+  },
+  {
    "default": "DAY",
    "fieldname": "custom_lamination_shift",
    "fieldtype": "Select",
@@ -286,7 +293,7 @@
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-04-03 00:00:00.000000",
+ "modified": "2026-04-25 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Production Planning",
  "name": "Planning Table",
