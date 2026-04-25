@@ -194,14 +194,14 @@ def _gsm_from_lamination_item_code(item_code: str) -> int:
 
 
 # Lamination GSM from suffix after '-':
-# 10-A, 12-B, 13-B1, 15-C, 30-D, 20-E
+# 10-A, 12-B, 13-C, 15-D, 20-E, 30-F
 _LAM_GSM_SUFFIX_MAP = {
     "A": 10,
     "B": 12,
-    "B1": 13,
-    "C": 15,
-    "D": 30,
+    "C": 13,
+    "D": 15,
     "E": 20,
+    "F": 30,
 }
 
 
@@ -2014,6 +2014,11 @@ def _populate_planning_sheet_items(ps, doc):
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
 
+        # Pull lam_side from SO item's custom_lamination_side for 104 rows
+        lam_side = ""
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            lam_side = (getattr(it, "custom_lamination_side", None) or "").strip()
+
         unit = compute_default_production_unit(col, width)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
@@ -2046,6 +2051,16 @@ def _populate_planning_sheet_items(ps, doc):
             psi_data["custom_lam_gsm"] = lam_gsm
         if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
+        if lam_side:
+            if frappe.db.has_column("Planning Table", "custom_lam_side"):
+                psi_data["custom_lam_side"] = lam_side
+            if frappe.db.has_column("Planning Table", "custom_lam_side_"):
+                psi_data["custom_lam_side_"] = lam_side
+            if frappe.db.has_column("Planning sheet Item", "custom_lam_side"):
+                psi_data["custom_lam_side"] = lam_side
+            # Also stamp header
+            if frappe.db.has_column("Planning sheet", "custom_lam_side"):
+                ps.custom_lam_side = lam_side
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
         if is_existing:
@@ -2060,6 +2075,13 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.custom_lam_gsm = lam_gsm
                 if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
                     existing_psi.custom_lam_gsm = lam_gsm
+                if lam_side:
+                    if frappe.db.has_column("Planning Table", "custom_lam_side"):
+                        existing_psi.custom_lam_side = lam_side
+                    if frappe.db.has_column("Planning Table", "custom_lam_side_"):
+                        existing_psi.custom_lam_side_ = lam_side
+                    if frappe.db.has_column("Planning sheet Item", "custom_lam_side"):
+                        existing_psi.custom_lam_side = lam_side
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
                 # Only update unit if it was not already assigned (Board assignment takes precedence)
