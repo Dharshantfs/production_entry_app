@@ -2399,7 +2399,7 @@ function showLinkedWorkOrdersPopup(ppId) {
 }
 
 function goToBoard() {
-    frappe.set_route(isLaminationBoard.value ? "lamination-board" : "production-board");
+    frappe.set_route(isLaminationBoard.value ? "Lamination Board" : "Production Board");
 }
 
 function toggleViewScope() {
