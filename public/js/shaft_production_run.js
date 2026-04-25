@@ -2077,9 +2077,37 @@ function sprToggleLaminationRollUi(frm) {
 	const isProcess104 = processPrefix === '104';
 	const isProcess100 = processPrefix === '100';
 	const showLamCols = isProcess104 || (!isProcess100 && sprUsesLaminationRollPrompt(frm));
+	
+	sprLog('[SPR] sprToggleLaminationRollUi: processPrefix=' + processPrefix + 
+		', isProcess100=' + isProcess100 + 
+		', isProcess104=' + isProcess104 + 
+		', showLamCols=' + showLamCols);
+	
+	// Update form-level field definitions (most reliable)
+	try {
+		const plannedQtyField = frappe.meta.get_docfield('Shaft Production Run Item', 'planned_qty');
+		const fabricGsmField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_fabric_gsm');
+		const lamGsmField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_lam_gsm');
+		
+		if (plannedQtyField) {
+			plannedQtyField.hidden = showLamCols ? 1 : 0;
+			sprLog('[SPR] Set planned_qty.hidden=' + plannedQtyField.hidden);
+		}
+		if (fabricGsmField) {
+			fabricGsmField.hidden = showLamCols ? 0 : 1;
+			sprLog('[SPR] Set custom_fabric_gsm.hidden=' + fabricGsmField.hidden);
+		}
+		if (lamGsmField) {
+			lamGsmField.hidden = showLamCols ? 0 : 1;
+			sprLog('[SPR] Set custom_lam_gsm.hidden=' + lamGsmField.hidden);
+		}
+	} catch (e) {
+		sprLog('[SPR] Error updating meta fields:', e);
+	}
+	
+	// Also update grid property
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
-		// Set all visibility properties first
 		['planned_qty'].forEach(function (f) {
 			try {
 				fd.grid.update_docfield_property(f, 'hidden', showLamCols ? 1 : 0);
