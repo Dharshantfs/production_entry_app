@@ -216,6 +216,20 @@ def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
     return cint(_LAM_GSM_SUFFIX_MAP.get(suffix.strip(), 0) or 0)
 
 
+def _lam_side_from_sales_order_item(so_item_name: str) -> str:
+    """Fetch lamination side directly from Sales Order Item row."""
+    if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
+        return ""
+    cols = set(frappe.db.get_table_columns("Sales Order Item") or [])
+    for fn in ("custom_lamination_side", "custom_lam_side", "lamination_side"):
+        if fn in cols:
+            try:
+                return str(frappe.db.get_value("Sales Order Item", so_item_name, fn) or "").strip()
+            except Exception:
+                return ""
+    return ""
+
+
 def _ensure_sheet_lamination_order_code(sheet_name):
 	"""Backfill lamination order code for a sheet if missing (supports old/new field names)."""
 	sheet_name = (sheet_name or "").strip()
@@ -2013,18 +2027,20 @@ def _populate_planning_sheet_items(ps, doc):
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
 
-        # Pull lam_side from SO item's custom_lamination_side for 104 rows
+        # Pull lam_side strictly from Sales Order Item table for 104 rows
         lam_side = ""
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-            lam_side = (getattr(it, "custom_lamination_side", None) or "").strip()
+            lam_side = _lam_side_from_sales_order_item(getattr(it, "name", None))
+            if not lam_side:
+                lam_side = (getattr(it, "custom_lamination_side", None) or "").strip()
 
         unit = compute_default_production_unit(col, width, it.item_code)
         
-        # Planned date for Lamination (104) is row specific based on sheet logic, 
-        # for Fabric (100) it follows white color logic.
+        # Planned date for Lamination (104) must be order date.
+        # For Fabric (100), white-color logic remains unchanged.
         p_date = None
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-             p_date = getdate(ps.planned_date or ps.ordered_date)
+             p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif _is_white_color(col):
              p_date = getdate(ps.ordered_date)
 
@@ -2082,8 +2098,12 @@ def _populate_planning_sheet_items(ps, doc):
                         existing_psi.custom_lam_side = lam_side
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
-                # Only update unit if it was not already assigned (Board assignment takes precedence)
-                if not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
+                # 104 rows are always Lamination Unit (ignore existing unit/color).
+                # Non-104 rows: keep prior behavior (only set if unassigned).
+                if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+                    existing_psi.unit = "Lamination Unit"
+                    existing_psi.planned_date = p_date
+                elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
         else:
