@@ -75,7 +75,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
 	has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
 	has_psi_lam_side = frappe.db.has_column("Planning sheet Item", "custom_lam_side")
-	has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side")
+	has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side_")
 	has_ps_lam_side = frappe.db.has_column("Planning sheet", "custom_lam_side")
 
 	has_104 = False
@@ -144,7 +144,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 				if has_pt_lam_side:
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
 					if lam_side_val:
-						row.custom_lam_side = lam_side_val
+						row.custom_lam_side_ = lam_side_val
 			else:
 				if has_psi_booking:
 					row.custom_lamination_order_code = code
@@ -462,7 +462,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
 		if so_item_lam_side:
-			row["custom_lam_side"] = so_item_lam_side
+			row["custom_lam_side_"] = so_item_lam_side
 
 		row_b = dict(row)
 		if hasattr(ps, "items") or ps.meta.has_field("items"):
@@ -2052,8 +2052,6 @@ def _populate_planning_sheet_items(ps, doc):
         if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
         if lam_side:
-            if frappe.db.has_column("Planning Table", "custom_lam_side"):
-                psi_data["custom_lam_side"] = lam_side
             if frappe.db.has_column("Planning Table", "custom_lam_side_"):
                 psi_data["custom_lam_side_"] = lam_side
             if frappe.db.has_column("Planning sheet Item", "custom_lam_side"):
@@ -2076,8 +2074,6 @@ def _populate_planning_sheet_items(ps, doc):
                 if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
                     existing_psi.custom_lam_gsm = lam_gsm
                 if lam_side:
-                    if frappe.db.has_column("Planning Table", "custom_lam_side"):
-                        existing_psi.custom_lam_side = lam_side
                     if frappe.db.has_column("Planning Table", "custom_lam_side_"):
                         existing_psi.custom_lam_side_ = lam_side
                     if frappe.db.has_column("Planning sheet Item", "custom_lam_side"):

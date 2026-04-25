@@ -34,7 +34,6 @@
   "custom_item_planned_date",
   "custom_plan_code",
   "custom_lamination_order_code_",
-  "custom_lam_side",
   "custom_lamination_shift",
   "order_sheet",
   "custom_split_metadata",
@@ -210,12 +209,7 @@
    "label": "Lamination Order Code",
    "read_only": 1
   },
-  {
-   "fieldname": "custom_lam_side",
-   "fieldtype": "Data",
-   "label": "Lam Side",
-   "read_only": 1
-  },
+
   {
    "default": "DAY",
    "fieldname": "custom_lamination_shift",
