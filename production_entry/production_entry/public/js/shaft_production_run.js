@@ -2075,20 +2075,21 @@ function sprUsesLaminationRollPrompt(frm) {
 function sprToggleLaminationRollUi(frm) {
 	const processPrefix = sprRollProcessPrefix(frm);
 	const isProcess104 = processPrefix === '104';
-	const isProcess100 = processPrefix === '100';
-	const showLamCols = isProcess104 || (!isProcess100 && sprUsesLaminationRollPrompt(frm));
+	const showLamCols = isProcess104 || sprUsesLaminationRollPrompt(frm);
+	const hidePlanned = showLamCols ? 1 : 0;
+	const hideLamCols = showLamCols ? 0 : 1;
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
 		['planned_qty'].forEach(function (f) {
 			try {
-				fd.grid.update_docfield_property(f, 'hidden', 0);
+				fd.grid.update_docfield_property(f, 'hidden', hidePlanned);
 			} catch (e) {
 				/* ignore if field not present on this site */
 			}
 		});
 		['custom_fabric_gsm', 'custom_lam_gsm'].forEach(function (f) {
 			try {
-				fd.grid.update_docfield_property(f, 'hidden', showLamCols ? 0 : 1);
+				fd.grid.update_docfield_property(f, 'hidden', hideLamCols);
 			} catch (e) {
 				/* ignore if field not present on this site */
 			}
