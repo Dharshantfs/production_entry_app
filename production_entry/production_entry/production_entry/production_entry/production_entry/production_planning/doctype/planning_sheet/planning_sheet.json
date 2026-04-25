@@ -1,0 +1,359 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-02-11 14:30:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_1",
+  "naming_series",
+  "planning_status",
+  "column_break_2",
+  "amended_from",
+  "sales_order",
+  "section_break_5",
+  "party_code",
+  "custom_lamination_order_code",
+  "customer",
+  "column_break_7",
+  "dod",
+  "ordered_date",
+  "section_break_meta",
+  "unit",
+  "dot_spec",
+  "plan_name",
+  "order_sheet",
+  "custom_plan_name",
+  "custom_planned_date",
+  "custom_pb_plan_name",
+  "custom_plan_code",
+  "section_break_9",
+  "allocated_unit",
+  "unit_capacity_day",
+  "unit_capacity_night",
+  "column_break_11",
+  "work_order_created",
+  "work_order_created_on",
+  "section_break_13",
+  "items",
+  "section_planned_board",
+  "planned_items",
+  "section_break_15",
+  "total_quantity",
+  "total_weight",
+  "column_break_17",
+  "estimated_production_days",
+  "queue_position",
+  "section_break_approval",
+  "custom_approval_status",
+  "custom_draft_planned_date",
+  "custom_draft_idx"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_1",
+   "fieldtype": "Section Break",
+   "label": "Basic Information"
+  },
+  {
+   "default": "PLAN-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Naming Series",
+   "options": "PLAN-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "planning_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Planning Status",
+   "options": "Draft\nFinalized\nIn Production\nCompleted\nCancelled",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Planning sheet",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Sales Order",
+   "options": "Sales Order"
+  },
+  {
+   "fieldname": "section_break_5",
+   "fieldtype": "Section Break",
+   "label": "Customer / Order"
+  },
+  {
+   "fieldname": "party_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Party Code"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "column_break_7",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "dod",
+   "fieldtype": "Date",
+   "label": "Delivery Date (DOD)"
+  },
+  {
+   "fieldname": "ordered_date",
+   "fieldtype": "Date",
+   "label": "Ordered Date"
+  },
+  {
+   "fieldname": "section_break_meta",
+   "fieldtype": "Section Break",
+   "label": "Plan identifiers"
+  },
+  {
+   "fieldname": "unit",
+   "fieldtype": "Data",
+   "label": "Unit"
+  },
+  {
+   "fieldname": "dot_spec",
+   "fieldtype": "Data",
+   "label": "Dot Spec"
+  },
+  {
+   "fieldname": "plan_name",
+   "fieldtype": "Data",
+   "label": "Plan Name"
+  },
+  {
+   "fieldname": "order_sheet",
+   "fieldtype": "Data",
+   "label": "Order Sheet"
+  },
+  {
+   "fieldname": "custom_plan_name",
+   "fieldtype": "Data",
+   "label": "Custom Plan Name"
+  },
+  {
+   "fieldname": "custom_planned_date",
+   "fieldtype": "Date",
+   "label": "Planned Date"
+  },
+  {
+   "fieldname": "custom_pb_plan_name",
+   "fieldtype": "Data",
+   "label": "PB Plan Name"
+  },
+  {
+   "fieldname": "custom_plan_code",
+   "fieldtype": "Data",
+   "label": "Plan Code"
+  },
+  {
+   "description": "Auto-assigned when the sheet has lamination (104) lines. Format: U + year + month letter (A\u2013L) + 3 digits, e.g. U26D001 for April 2026.",
+   "fieldname": "custom_lamination_order_code",
+   "fieldtype": "Data",
+   "label": "Lamination Order Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_9",
+   "fieldtype": "Section Break",
+   "label": "Unit Allocation"
+  },
+  {
+   "fieldname": "allocated_unit",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Allocated Unit",
+   "options": "\nUnit 1\nUnit 2\nUnit 3\nUnit 4",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unit_capacity_day",
+   "fieldtype": "Float",
+   "label": "Unit Capacity (Day) - KG",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unit_capacity_night",
+   "fieldtype": "Float",
+   "label": "Unit Capacity (Night) - KG",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_11",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "work_order_created",
+   "fieldtype": "Check",
+   "label": "Work Order Created",
+   "read_only": 1
+  },
+  {
+   "fieldname": "work_order_created_on",
+   "fieldtype": "Datetime",
+   "label": "Work Order Created On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_13",
+   "fieldtype": "Section Break",
+   "label": "Items"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Planning Sheet Items",
+   "options": "Planning sheet Item"
+  },
+  {
+   "fieldname": "section_planned_board",
+   "fieldtype": "Section Break",
+   "label": "Production board"
+  },
+  {
+   "fieldname": "planned_items",
+   "fieldtype": "Table",
+   "label": "Planned items (board)",
+   "options": "Planning Table"
+  },
+  {
+   "fieldname": "section_break_15",
+   "fieldtype": "Section Break",
+   "label": "Summary"
+  },
+  {
+   "fieldname": "total_quantity",
+   "fieldtype": "Float",
+   "label": "Total Quantity",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_weight",
+   "fieldtype": "Float",
+   "label": "Total Weight (KG)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_17",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "estimated_production_days",
+   "fieldtype": "Float",
+   "label": "Estimated Production Days",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "queue_position",
+   "fieldtype": "Int",
+   "label": "Queue Position",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_approval",
+   "fieldtype": "Section Break",
+   "label": "Approval Workflow"
+  },
+  {
+   "fieldname": "custom_approval_status",
+   "fieldtype": "Select",
+   "label": "Approval Status",
+   "options": "Draft\nPending Approval\nApproved",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_draft_planned_date",
+   "fieldtype": "Date",
+   "label": "Draft Planned Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_draft_idx",
+   "fieldtype": "Int",
+   "label": "Draft Index",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-04-03 20:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Production Planning",
+ "name": "Planning sheet",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "import": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
