@@ -2760,6 +2760,12 @@ onBeforeUnmount(() => {
     text-align: center;
     font-weight: 700;
 }
+.cc-prod-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 14;
+    background: #f8fafc;
+}
 .pt-sortable-body .pt-draggable-row {
   transition: background-color 0.2s;
 }
