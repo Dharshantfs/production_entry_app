@@ -151,6 +151,54 @@ def spr_doc_is_lamination(doc) -> bool:
 	return _pp_has_104_work_order(pp)
 
 
+def _fabric_gsm_from_item_name(item_name: str) -> int:
+	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' or 'F - 60' → 60)."""
+	if not item_name:
+		return 0
+	m = re.search(r'\bF\s*-\s*(\d+)\b', item_name, re.IGNORECASE)
+	if m:
+		try:
+			return int(m.group(1))
+		except Exception:
+			pass
+	return 0
+
+
+# Lamination GSM suffix map: item code ending e.g. '1041030010750890-C' → suffix 'C' → 15 gsm
+_LAM_GSM_SUFFIX_MAP: dict[str, int] = {
+	"A": 10,
+	"B": 12,
+	"B1": 13,
+	"C": 15,
+	"D": 30,
+	"E": 20,
+}
+
+
+def _lam_gsm_from_item(item_name: str, item_code: str) -> int:
+	"""Parse Lamination GSM from item name 'L-15 GSM' pattern, with -C suffix fallback.
+
+	Item name pattern: 'L- 15 GSM' or 'L-15GSM'  → 15
+	Item code suffix:  '1041030010750890-C' → suffix 'C' → 15 via _LAM_GSM_SUFFIX_MAP
+	"""
+	# Primary: parse 'L-<N> GSM' or 'L- <N> GSM' from item name
+	if item_name:
+		m = re.search(r'\bL-\s*(\d+)\s*GSM\b', item_name, re.IGNORECASE)
+		if m:
+			try:
+				return int(m.group(1))
+			except Exception:
+				pass
+	# Fallback: suffix after last '-' in item code (e.g. '-C' → 'C' → 15)
+	if item_code:
+		parts = str(item_code).strip().upper().split('-')
+		if len(parts) >= 2:
+			suffix = parts[-1].strip()
+			if suffix in _LAM_GSM_SUFFIX_MAP:
+				return _LAM_GSM_SUFFIX_MAP[suffix]
+	return 0
+
+
 def _fabric_gsm_from_planning_for_pp(pp_name: str) -> int:
 	"""Fabric (100…) GSM from Planning Table child row on same sheet as 104 lamination line."""
 	if not pp_name or not frappe.db.exists("DocType", "Planning Table"):
@@ -213,6 +261,10 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 	ln = _spr_length_meters(spr_row)
 	if fn_l is not None and ln is not None:
 		out[fn_l] = flt(ln)
+	# Explicit mapping required: SPR produced_length_mtrs -> Batch custom_meter.
+	meter_from_spr = _spr_row_get(spr_row, "produced_length_mtrs")
+	if batch_meta.has_field("custom_meter") and meter_from_spr not in (None, ""):
+		out["custom_meter"] = flt(meter_from_spr)
 	if batch_meta.has_field("custom_cbm") and _spr_row_get(spr_row, "custom_cbm") is not None:
 		out["custom_cbm"] = flt(_spr_row_get(spr_row, "custom_cbm"))
 
@@ -1771,7 +1823,10 @@ class ShaftProductionRun(Document):
 		return out
 
 	def _best_available_batch_for_rm(self, item_code: str, warehouse: str, required_qty: float) -> str:
-		"""Pick a batch with available qty in source warehouse for RM consumption."""
+		"""Pick a batch with available qty in source warehouse for RM consumption.
+
+		Covers both classic SLE.batch_no and v15 Serial-and-Batch-Bundle based entries.
+		"""
 		if not item_code or not warehouse:
 			return ""
 		rows = frappe.db.sql(
@@ -1789,17 +1844,150 @@ class ShaftProductionRun(Document):
 			(item_code, warehouse),
 			as_dict=True,
 		)
+		# v15 path: batch may live in Serial and Batch Entry (bundle), with empty SLE.batch_no.
+		if (not rows) and frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+			try:
+				sb_entry_dt = "Serial and Batch Entry"
+				if frappe.db.exists("DocType", sb_entry_dt):
+					sb_entry_meta = frappe.get_meta(sb_entry_dt)
+					batch_field = next(
+						(fn for fn in ("batch_no", "batch", "batch_id") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					qty_field = next(
+						(fn for fn in ("qty", "quantity") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					if batch_field and qty_field:
+						rows = frappe.db.sql(
+							f"""
+							SELECT
+								sbe.`{batch_field}` AS batch_no,
+								SUM(
+									CASE
+										WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+										ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+									END
+								) AS qty
+							FROM `tabStock Ledger Entry` sle
+							INNER JOIN `tabSerial and Batch Entry` sbe
+								ON sbe.parent = sle.serial_and_batch_bundle
+							WHERE IFNULL(sle.is_cancelled, 0) = 0
+							  AND IFNULL(sle.item_code, '') = %s
+							  AND IFNULL(sle.warehouse, '') = %s
+							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+							  AND IFNULL(sbe.`{batch_field}`, '') != ''
+							GROUP BY sbe.`{batch_field}`
+							HAVING SUM(
+								CASE
+									WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+								END
+							) > 0
+							ORDER BY qty DESC
+							""",
+							(item_code, warehouse),
+							as_dict=True,
+						)
+			except Exception:
+				rows = rows or []
 		if not rows:
 			return ""
 		need = flt(required_qty or 0)
 		for r in rows:
 			if flt(r.get("qty") or 0) + 1e-9 >= need:
 				return _cstr(r.get("batch_no"))
-		return _cstr(rows[0].get("batch_no"))
+		# Important: do NOT pick a partial batch for a full-consumption row.
+		# Picking an under-qty batch causes negative stock on submit.
+		return ""
+
+	def _available_batches_for_rm(self, item_code: str, warehouse: str) -> list[dict]:
+		"""Return available batches with qty for RM consumption, sorted by qty desc.
+
+		Covers both classic SLE.batch_no and bundle-based batch entries.
+		"""
+		if not item_code or not warehouse:
+			return []
+		acc: dict[str, float] = {}
+		# Path 1: classic batch_no on SLE
+		for r in frappe.db.sql(
+			"""
+			SELECT batch_no, SUM(actual_qty) as qty
+			FROM `tabStock Ledger Entry`
+			WHERE IFNULL(is_cancelled, 0) = 0
+			  AND IFNULL(item_code, '') = %s
+			  AND IFNULL(warehouse, '') = %s
+			  AND IFNULL(batch_no, '') != ''
+			GROUP BY batch_no
+			HAVING SUM(actual_qty) > 0
+			""",
+			(item_code, warehouse),
+			as_dict=True,
+		):
+			bn = _cstr(r.get("batch_no"))
+			q = flt(r.get("qty") or 0)
+			if bn and q > 0:
+				acc[bn] = acc.get(bn, 0.0) + q
+
+		# Path 2: serial-and-batch bundle (v15)
+		if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+			try:
+				sb_entry_dt = "Serial and Batch Entry"
+				if frappe.db.exists("DocType", sb_entry_dt):
+					sb_entry_meta = frappe.get_meta(sb_entry_dt)
+					batch_field = next(
+						(fn for fn in ("batch_no", "batch", "batch_id") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					qty_field = next(
+						(fn for fn in ("qty", "quantity") if sb_entry_meta.has_field(fn)),
+						"",
+					)
+					if batch_field and qty_field:
+						rows = frappe.db.sql(
+							f"""
+							SELECT
+								sbe.`{batch_field}` AS batch_no,
+								SUM(
+									CASE
+										WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+										ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+									END
+								) AS qty
+							FROM `tabStock Ledger Entry` sle
+							INNER JOIN `tabSerial and Batch Entry` sbe
+								ON sbe.parent = sle.serial_and_batch_bundle
+							WHERE IFNULL(sle.is_cancelled, 0) = 0
+							  AND IFNULL(sle.item_code, '') = %s
+							  AND IFNULL(sle.warehouse, '') = %s
+							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+							  AND IFNULL(sbe.`{batch_field}`, '') != ''
+							GROUP BY sbe.`{batch_field}`
+							HAVING SUM(
+								CASE
+									WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+								END
+							) > 0
+							""",
+							(item_code, warehouse),
+							as_dict=True,
+						)
+						for r in rows or []:
+							bn = _cstr(r.get("batch_no"))
+							q = flt(r.get("qty") or 0)
+							if bn and q > 0:
+								acc[bn] = max(acc.get(bn, 0.0), q)
+			except Exception:
+				pass
+
+		out = [{"batch_no": bn, "qty": flt(q)} for bn, q in acc.items() if bn and flt(q) > 0]
+		out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
+		return out
 
 	def _assign_rm_batches_for_stock_entry(self, se):
 		"""Assign batch_no for batch-tracked RM lines before submit."""
-		for d in se.items or []:
+		for d in list(se.items or []):
 			if not d.item_code or d.get("t_warehouse"):
 				continue
 			if _cstr(d.get("batch_no")):
@@ -1808,21 +1996,70 @@ class ShaftProductionRun(Document):
 				continue
 			wh = _cstr(d.get("s_warehouse"))
 			required = flt(d.get("transfer_qty") or d.get("qty") or 0)
-			pick = self._best_available_batch_for_rm(_cstr(d.item_code), wh, required)
-			if not pick:
-				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with a valid batch.
+			candidates = self._available_batches_for_rm(_cstr(d.item_code), wh)
+			source_wh = wh
+			if not candidates:
+				# Fallback: if WIP has no batches yet, consume directly from from_warehouse with valid batches.
 				fallback_wh = _cstr(se.get("from_warehouse"))
 				if fallback_wh and fallback_wh != wh:
-					fallback_pick = self._best_available_batch_for_rm(_cstr(d.item_code), fallback_wh, required)
-					if fallback_pick:
-						d.s_warehouse = fallback_wh
-						pick = fallback_pick
-			if pick:
-				d.batch_no = pick
+					candidates = self._available_batches_for_rm(_cstr(d.item_code), fallback_wh)
+					if candidates:
+						source_wh = fallback_wh
+
+			remaining = flt(required)
+			allocs: list[tuple[str, float]] = []
+			for c in candidates:
+				if remaining <= 1e-9:
+					break
+				q = flt(c.get("qty") or 0)
+				if q <= 1e-9:
+					continue
+				take = min(q, remaining)
+				if take > 1e-9:
+					allocs.append((_cstr(c.get("batch_no")), flt(take)))
+					remaining = flt(remaining - take)
+
+			if allocs and remaining <= 1e-6:
+				# Split one RM row across many batches when needed.
+				cf = flt(d.get("conversion_factor") or 1) or 1
+				first_bn, first_qty = allocs[0]
+				d.batch_no = first_bn
+				d.s_warehouse = source_wh
+				d.transfer_qty = flt(first_qty, 6)
+				d.qty = flt(first_qty / cf, 6)
+				for bn, tq in allocs[1:]:
+					new_row = se.append("items", {})
+					base = d.as_dict()
+					for k, v in base.items():
+						if k in {"name", "parent", "parenttype", "parentfield", "idx", "owner", "creation", "modified", "modified_by", "docstatus"}:
+							continue
+						new_row.set(k, v)
+					new_row.batch_no = bn
+					new_row.s_warehouse = source_wh
+					new_row.transfer_qty = flt(tq, 6)
+					new_row.qty = flt(tq / cf, 6)
 				continue
+
+			avail_wh = flt(
+				frappe.db.sql(
+					"""
+					SELECT IFNULL(SUM(actual_qty), 0)
+					FROM `tabStock Ledger Entry`
+					WHERE IFNULL(is_cancelled, 0) = 0
+					  AND IFNULL(item_code, '') = %s
+					  AND IFNULL(warehouse, '') = %s
+					  AND IFNULL(batch_no, '') != ''
+					""",
+					(_cstr(d.item_code), wh),
+				)[0][0]
+				or 0
+			)
 			frappe.throw(
-				_("Batch is mandatory for raw material {0} in {1}, but no available batch was found.").format(
-					_cstr(d.item_code), wh or "—"
+				_(
+					"Batch is mandatory for raw material {0} in {1}, but no batch has enough quantity "
+					"(required: {2}, available in batches: {3}). Transfer more stock or split issue batches."
+				).format(
+					_cstr(d.item_code), wh or "—", flt(required, 3), flt(avail_wh, 3)
 				),
 				title=_("Missing RM Batch"),
 			)
@@ -3455,12 +3692,16 @@ def build_spr_roll_result_lines_for_job(
 			row["width_inch"] = flt(individual_width)
 		if meter_roll_job is not None and meter_roll_job > 0:
 			row["meter_roll"] = meter_roll_job
-			# Lamination add-flow: initialize produced length from entered meter/roll,
-			# so achieved meter/weight can reflect draft rows immediately.
-			if spr_doc_is_lamination(spr_doc):
-				row["produced_length_mtrs"] = meter_roll_job
-		if fabric_gsm > 0 and spi_meta.has_field("custom_fabric_gsm"):
-			row["custom_fabric_gsm"] = int(fabric_gsm)
+
+		# Fabric GSM: prefer Planning Table join result; fallback to parsing F-<N> from item name.
+		eff_fabric_gsm = fabric_gsm
+		if eff_fabric_gsm <= 0 and spr_doc_is_lamination(spr_doc):
+			item_nm = row.get("item_name") or ""
+			item_cd = row.get("item_code") or ""
+			eff_fabric_gsm = _fabric_gsm_from_item_name(item_nm) or _fabric_gsm_from_item_name(item_cd)
+		if eff_fabric_gsm > 0 and spi_meta.has_field("custom_fabric_gsm"):
+			row["custom_fabric_gsm"] = int(eff_fabric_gsm)
+
 		row["roll_no"] = idx + 1
 		lines.append(row)
 	return lines
@@ -3765,10 +4006,11 @@ def _spr_roll_matches_bundle_width(it, width_inch: float, job_w: float) -> bool:
 def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	wo_doc = frappe.get_doc("Work Order", wo["name"])
 	item_code = wo_doc.production_item
-	item_name = frappe.db.get_value("Item", item_code, "item_name")
+	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
 	gsm, width_inch = parse_item_code(item_code)
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
-	return {
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	row: dict = {
 		"work_order": wo["name"],
 		"item_code": item_code,
 		"item_name": item_name,
@@ -3786,6 +4028,16 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		"width_inch": width_inch,
 		"color": color or None,
 	}
+	# Fabric GSM (F-60 in item name) and Lamination GSM (L-15 GSM in item name or -C suffix)
+	if spi_meta.has_field("custom_fabric_gsm"):
+		fab_gsm = _fabric_gsm_from_item_name(item_name) or _fabric_gsm_from_item_name(item_code)
+		if fab_gsm > 0:
+			row["custom_fabric_gsm"] = fab_gsm
+	if spi_meta.has_field("custom_lam_gsm"):
+		lam_gsm = _lam_gsm_from_item(item_name, item_code)
+		if lam_gsm > 0:
+			row["custom_lam_gsm"] = lam_gsm
+	return row
 
 
 def _build_spr_items_from_pp(spr_doc, pp_name):
@@ -5228,8 +5480,7 @@ def spr_apply_bundle_packaging_for_job_width(
 		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
 		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
-	bundle_net = round(avg_n * float(no_of_packaging), 2)
+	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in matching), 2)
 
 	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
 	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"

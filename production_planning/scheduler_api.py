@@ -72,6 +72,8 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	has_pt_booking_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
 	has_pt_booking_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
 	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
+	has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
+	has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
 
 	has_104 = False
 	for fn in ("planned_items", "items", "custom_planned_items"):
@@ -111,9 +113,13 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_order_code_ = code
 				elif has_pt_booking_old:
 					row.custom_lamination_booking_id = code
+				if has_pt_lam_gsm:
+					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
 			else:
 				if has_psi_booking:
 					row.custom_lamination_order_code = code
+				if has_psi_lam_gsm:
+					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
 
 	# Mirror code to Sales Order header when available
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
@@ -128,16 +134,52 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 
 
 def _fabric_gsm_from_item_name(item_name: str) -> int:
-    """Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' → 60)."""
+    """Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' or 'F - 60' → 60)."""
     if not item_name:
         return 0
-    m = re.search(r'\bF-(\d+)\b', item_name, re.IGNORECASE)
+    m = re.search(r'\bF\s*-\s*(\d+)\b', item_name, re.IGNORECASE)
     if m:
         try:
             return int(m.group(1))
         except Exception:
             pass
     return 0
+
+
+def _gsm_from_lamination_item_code(item_code: str) -> int:
+    """Read laminated GSM from item-code index 9:12 (digits-only code), e.g. ...070... -> 70."""
+    if not item_code:
+        return 0
+    digits = "".join(ch for ch in str(item_code).strip() if ch.isdigit())
+    if len(digits) < 12:
+        return 0
+    try:
+        return cint(digits[9:12])
+    except Exception:
+        return 0
+
+
+# Lamination GSM from suffix after '-':
+# 10-A, 12-B, 13-B1, 15-C, 30-D, 20-E
+_LAM_GSM_SUFFIX_MAP = {
+    "A": 10,
+    "B": 12,
+    "B1": 13,
+    "C": 15,
+    "D": 30,
+    "E": 20,
+}
+
+
+def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
+    """Read lamination GSM from item-code suffix after last '-', for 104 items only."""
+    code = str(item_code or "").strip().upper()
+    if not code or "-" not in code:
+        return 0
+    left, suffix = code.rsplit("-", 1)
+    if _item_process_prefix(left.strip()) != "104":
+        return 0
+    return cint(_LAM_GSM_SUFFIX_MAP.get(suffix.strip(), 0) or 0)
 
 
 def _ensure_sheet_lamination_order_code(sheet_name):
@@ -766,6 +808,8 @@ def get_lamination_order_table_data(
     elif has_pt_book_old:
         booking_expr = "IFNULL(pt.custom_lamination_booking_id, '')"
     shift_expr = "IFNULL(pt.custom_lamination_shift, 'DAY')" if has_shift_col else "'DAY'"
+    has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
+    lam_gsm_expr = "IFNULL(pt.custom_lam_gsm, 0)" if has_pt_lam_gsm else "0"
 
     extra = frappe.db.sql(
         f"""
@@ -774,6 +818,7 @@ def get_lamination_order_table_data(
             pt.parent as ps_name,
             IFNULL(pt.meter, 0) as planned_meter,
             {booking_expr} as lamination_booking_id,
+            {lam_gsm_expr} as lamination_gsm_value,
             IFNULL(fab.gsm, 0) as fabric_gsm,
             {spr_for_meter_sql},
             {shift_expr} as shift_label
@@ -1011,7 +1056,12 @@ def get_lamination_order_table_data(
             _row_item_name = str(row.get("item_name") or row.get("itemName") or "")
             _fab_gsm = _fabric_gsm_from_item_name(_row_item_name)
         row["fabric_gsm"] = _fab_gsm
-        row["lamination_gsm"] = int(row.get("gsm") or 0) or 0
+        lam_gsm = int(ex.get("lamination_gsm_value") or 0) if ex else 0
+        if lam_gsm <= 0:
+            lam_gsm = _lam_gsm_from_item_code_suffix(row.get("item_code") or row.get("itemCode"))
+        if lam_gsm <= 0:
+            lam_gsm = int(row.get("gsm") or 0) or 0
+        row["lamination_gsm"] = lam_gsm
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known
         row["achieved_meter"] = achieved_m
@@ -1909,9 +1959,18 @@ def _populate_planning_sheet_items(ps, doc):
             line_quality = "GENERIC"
 
         m_roll = flt(it.custom_meter_per_roll)
+        # For laminated FG (process 104), GSM must come from item-code index 9:12.
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
+            if gsm_from_code > 0:
+                gsm = gsm_from_code
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
+
+        lam_gsm = 0
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+            lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
 
         unit = compute_default_production_unit(col, width)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
@@ -1941,6 +2000,10 @@ def _populate_planning_sheet_items(ps, doc):
             "planned_date": p_date,
             "planning_sheet": ps.name # Explicitly link for grid visibility
         }
+        if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+            psi_data["custom_lam_gsm"] = lam_gsm
+        if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+            psi_data["custom_lam_gsm"] = lam_gsm
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
         if is_existing:
@@ -1951,6 +2014,10 @@ def _populate_planning_sheet_items(ps, doc):
                 existing_psi.quality = line_quality
                 existing_psi.custom_quality = qual or line_quality
                 existing_psi.color = col
+                if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+                    existing_psi.custom_lam_gsm = lam_gsm
+                if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+                    existing_psi.custom_lam_gsm = lam_gsm
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
                 # Only update unit if it was not already assigned (Board assignment takes precedence)
@@ -1962,6 +2029,8 @@ def _populate_planning_sheet_items(ps, doc):
             pt_data["planned_date"] = p_date
             pt_data["plan_name"] = ps.get("custom_plan_name")
             pt_data["planning_sheet"] = ps.name # For redundancy
+            if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+                pt_data["custom_lam_gsm"] = lam_gsm
             
             # Plan 1: Always fill the legacy 'items' table if it exists
             if hasattr(ps, "items") or ps.meta.has_field("items"):
@@ -11867,43 +11936,37 @@ def create_item_spr(pp_id, planning_sheet_item_names):
             f"no_of_shaft={pp_no_of_shaft}, combined_width={pp_combined_width}",
             "SPR_DEBUG_PP_LEVEL"
         )
+        # Also try standard PP FINISHED GOODS table (po_items) for enrichment
+        pp_po_items = pp.get("po_items") or []
+        po_item_data = {}
+        for poi in pp_po_items:
+            # Build a lookup by index for width/weight enrichment
+            idx = cint(poi.get("idx") or 0)
+            po_item_data[idx] = poi
 
         if pp_shafts:
-            for pp_shaft in pp_shafts:
+            for idx, pp_shaft in enumerate(pp_shafts, start=1):
+                matching_poi = po_item_data.get(idx, {})
                 row = spr.append("shaft_jobs", {})
                 row.job_id = pick_value(pp_shaft, ["job_id", "job", "job_no"], str(len(spr.shaft_jobs)))
                 row.gsm = pick_value(pp_shaft, ["gsm"], "")
                 row.combination = pick_value(pp_shaft, ["combination", "combined_width", "shaft", "shaft_details"], "") or pp_combined_width
-                row.total_width = flt(pick_value(pp_shaft, ["total_width", "combined_width", "width", "total_width_inches"], 0) or 0) or flt(pp_combined_width or 0)
-                # Prefer PP shaft meter__roll; fall back to PP-level fields before defaulting
-                row.meter_roll_mtrs = flt(
-                    pick_value(
-                        pp_shaft,
-                        [
-                            "meter__roll",
-                            "meter_roll_mtrs",
-                            "meter_per_roll",
-                            "meter_roll",
-                            "roll_mtrs",
-                            "custom_meter_roll_mtrs",
-                            "custom_meter_per_roll",
-                            "meter_per_roll_mtrs",
-                            "roll",
-                            "meter",
-                        ],
-                        0,
-                    )
-                    or flt(
-                        pp.get("meter__roll")
-                        or pp.get("custom_meter_roll_mtrs")
-                        or pp.get("meter_roll_mtrs")
-                        or pp.get("custom_meter_per_roll")
-                        or pp.get("meter_per_roll")
-                        or pp.get("custom_meter")
-                        or pp.get("meter")
-                        or 500
-                    )
-                )
+                
+                raw_width = flt(pick_value(pp_shaft, ["total_width", "combined_width", "width", "total_width_inches"], 0) or 0)
+                if not raw_width and matching_poi:
+                    raw_width = flt(pick_value(matching_poi, ["total_width", "width", "width_inches"], 0) or 0)
+                if not raw_width:
+                    raw_width = flt(pp_combined_width or 0)
+                row.total_width = raw_width
+
+                # Prefer PP shaft meter__roll; fall back to matching po_item, then PP-level fields before defaulting
+                meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "custom_meterperroll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
+                raw_meter = flt(pick_value(pp_shaft, meter_keys, 0))
+                if not raw_meter and matching_poi:
+                    raw_meter = flt(pick_value(matching_poi, meter_keys, 0))
+                if not raw_meter:
+                    raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("custom_meterperroll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+                row.meter_roll_mtrs = raw_meter
                 row.no_of_shafts = cint(pick_value(pp_shaft, ["no_of_shafts", "no_of_shaft", "no_of_sh", "no_of_sf"], 0) or 0) or pp_no_of_shaft or 1
                 
                 # Field names confirmed by user: net_weight, total_width (SPR)
@@ -11951,16 +12014,19 @@ def create_item_spr(pp_id, planning_sheet_item_names):
                     row.total_width = 0
                 
                 row.no_of_shafts = 1
-                row.meter_roll_mtrs = flt(
-                    pp.get("meter__roll")
-                    or pp.get("custom_meter_roll_mtrs")
-                    or pp.get("meter_roll_mtrs")
-                    or pp.get("custom_meter_per_roll")
-                    or pp.get("meter_per_roll")
-                    or pp.get("custom_meter")
-                    or pp.get("meter")
-                    or 500
-                )
+                meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "custom_meterperroll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length", "planned_length"]
+                raw_meter = flt(pick_value(psi, meter_keys, 0))
+                if not raw_meter and pp_po_items:
+                    for poi in pp_po_items:
+                        if poi.get("item_code") == psi.get("item_code"):
+                            raw_meter = flt(pick_value(poi, meter_keys, 0))
+                            break
+                if not raw_meter and pp_po_items:
+                    raw_meter = flt(pick_value(pp_po_items[0], meter_keys, 0))
+                if not raw_meter:
+                    raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("custom_meterperroll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+                
+                row.meter_roll_mtrs = raw_meter
         
         # Store selected Planning Sheet Item names for reference
         if psi_list:
@@ -12104,13 +12170,21 @@ def get_spr_shaft_jobs_from_pp(pp_id):
             if not flt(raw_width) and matching_poi:
                 raw_width = flt(pick_value(matching_poi, ["total_width", "width", "width_inches"], 0) or 0)
 
+            # For meter_roll_mtrs
+            meter_keys = ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "custom_meterperroll", "meter_per_roll_mtrs", "roll", "meter", "length_per_roll", "length_roll", "length"]
+            raw_meter = flt(pick_value(pp_shaft, meter_keys, 0))
+            if not raw_meter and matching_poi:
+                raw_meter = flt(pick_value(matching_poi, meter_keys, 0))
+            if not raw_meter:
+                raw_meter = flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("custom_meterperroll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or pp.get("length_per_roll") or pp.get("length_roll") or pp.get("length") or 500)
+
             jobs.append(
                 {
                     "job_id": pick_value(pp_shaft, ["job_id", "job", "job_no"], str(idx)),
                     "gsm": pick_value(pp_shaft, ["gsm"], ""),
                     "combination": pick_value(pp_shaft, ["combination", "combined_width", "shaft", "shaft_details"], "") or pp_combined_width,
                     "total_width": raw_width,
-                    "meter_roll_mtrs": flt(pick_value(pp_shaft, ["meter__roll", "meter_roll_mtrs", "meter_per_roll", "meter_roll", "roll_mtrs", "custom_meter_roll_mtrs", "custom_meter_per_roll", "meter_per_roll_mtrs", "roll", "meter"], 0) or flt(pp.get("meter__roll") or pp.get("custom_meter_roll_mtrs") or pp.get("meter_roll_mtrs") or pp.get("custom_meter_per_roll") or pp.get("meter_per_roll") or pp.get("custom_meter") or pp.get("meter") or 500)),
+                    "meter_roll_mtrs": raw_meter,
                     "no_of_shafts": cint(pick_value(pp_shaft, ["no_of_shafts", "no_of_shaft", "no_of_sh", "no_of_sf"], 0) or 0) or pp_no_of_shaft or 1,
                     "net_weight": raw_net_weight,
                     "net_weight_shaft_kgs": raw_net_weight,

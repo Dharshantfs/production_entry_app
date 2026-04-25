@@ -520,7 +520,7 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    frappe.set_route("production-table", query);
+    frappe.set_route("Production Table", query);
 }
 
 function goToConfirmedOrders() {

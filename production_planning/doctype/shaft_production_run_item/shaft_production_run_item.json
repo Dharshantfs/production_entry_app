@@ -82,6 +82,7 @@
   {
    "fieldname": "planned_qty",
    "fieldtype": "Float",
+   "in_list_view": 1,
    "label": "Planned Qty",
    "precision": "2"
   },

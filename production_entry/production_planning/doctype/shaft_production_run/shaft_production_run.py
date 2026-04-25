@@ -152,10 +152,10 @@ def spr_doc_is_lamination(doc) -> bool:
 
 
 def _fabric_gsm_from_item_name(item_name: str) -> int:
-	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' → 60)."""
+	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' or 'F - 60' → 60)."""
 	if not item_name:
 		return 0
-	m = re.search(r'\bF-(\d+)\b', item_name, re.IGNORECASE)
+	m = re.search(r'\bF\s*-\s*(\d+)\b', item_name, re.IGNORECASE)
 	if m:
 		try:
 			return int(m.group(1))
@@ -168,15 +168,10 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 _LAM_GSM_SUFFIX_MAP: dict[str, int] = {
 	"A": 10,
 	"B": 12,
+	"B1": 13,
 	"C": 15,
-	"D": 17,
+	"D": 30,
 	"E": 20,
-	"F": 22,
-	"G": 25,
-	"H": 28,
-	"I": 30,
-	"J": 35,
-	"K": 40,
 }
 
 
@@ -5489,8 +5484,7 @@ def spr_apply_bundle_packaging_for_job_width(
 		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
 		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
-	bundle_net = round(avg_n * float(no_of_packaging), 2)
+	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in matching), 2)
 
 	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
 	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"

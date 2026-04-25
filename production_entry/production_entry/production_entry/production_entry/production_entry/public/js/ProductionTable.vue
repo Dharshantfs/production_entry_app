@@ -2399,7 +2399,7 @@ function showLinkedWorkOrdersPopup(ppId) {
 }
 
 function goToBoard() {
-    frappe.set_route(isLaminationBoard.value ? "lamination-board" : "production-board");
+    frappe.set_route(isLaminationBoard.value ? "Lamination Board" : "Production Board");
 }
 
 function toggleViewScope() {
@@ -2772,6 +2772,12 @@ onBeforeUnmount(() => {
     border: 1px solid #e5e7eb;
     text-align: center;
     font-weight: 700;
+}
+.cc-prod-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 14;
+    background: #f8fafc;
 }
 .pt-sortable-body .pt-draggable-row {
   transition: background-color 0.2s;

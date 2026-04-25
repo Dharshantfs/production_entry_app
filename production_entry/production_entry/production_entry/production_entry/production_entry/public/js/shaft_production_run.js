@@ -2012,24 +2012,51 @@ function sprUsesLaminationRollPrompt(frm) {
 }
 
 function sprToggleLaminationRollUi(frm) {
-	const hidePlanned = sprUsesLaminationRollPrompt(frm);
+	const processPrefix = sprRollProcessPrefix(frm);
+	const isProcess104 = processPrefix === '104';
+	const showLamCols = isProcess104 || sprUsesLaminationRollPrompt(frm);
+	const hidePlanned = showLamCols ? 1 : 0;
+	const hideLamCols = showLamCols ? 0 : 1;
+
+	try {
+		const plannedQtyField = frappe.meta.get_docfield('Shaft Production Run Item', 'planned_qty');
+		const fabricGsmField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_fabric_gsm');
+		const lamGsmField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_lam_gsm');
+		if (plannedQtyField) plannedQtyField.hidden = hidePlanned;
+		if (fabricGsmField) fabricGsmField.hidden = hideLamCols;
+		if (lamGsmField) lamGsmField.hidden = hideLamCols;
+	} catch (e) {}
+
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
-		['planned_qty'].forEach(function (f) {
-			try {
-				fd.grid.update_docfield_property(f, 'hidden', hidePlanned ? 1 : 0);
-			} catch (e) {
-				/* ignore if field not present on this site */
-			}
-		});
-		if (frm && frm.__spr_planned_hidden_state !== hidePlanned) {
-			frm.__spr_planned_hidden_state = hidePlanned;
-			frm.refresh_field('items');
+		try { fd.grid.update_docfield_property('planned_qty', 'hidden', hidePlanned); } catch (e) {}
+		try { fd.grid.update_docfield_property('custom_fabric_gsm', 'hidden', hideLamCols); } catch (e) {}
+		try { fd.grid.update_docfield_property('custom_lam_gsm', 'hidden', hideLamCols); } catch (e) {}
+
+		if (typeof fd.grid.toggle_display === 'function') {
+			try { fd.grid.toggle_display('planned_qty', !showLamCols); } catch (e) {}
+			try { fd.grid.toggle_display('custom_fabric_gsm', showLamCols); } catch (e) {}
+			try { fd.grid.toggle_display('custom_lam_gsm', showLamCols); } catch (e) {}
 		}
+
+		if (fd.grid && typeof fd.grid.setup_visible_columns === 'function') {
+			try {
+				fd.grid.visible_columns = null;
+				fd.grid.setup_visible_columns();
+			} catch (e) {}
+		}
+
+		if (frm && frm.__spr_lam_cols_visible_state !== showLamCols) {
+			frm.__spr_lam_cols_visible_state = showLamCols;
+		}
+		if (fd.grid && typeof fd.grid.refresh === 'function') {
+			try { fd.grid.refresh(); } catch (e) {}
+		}
+		frm.refresh_field('items');
 	}
 	const $legend = fd && fd.$wrapper ? fd.$wrapper.prev('.spr-gsm-legend') : null;
 	if ($legend && $legend.length) {
-		$legend.toggle(!hidePlanned);
+		$legend.toggle(showLamCols);
 	}
 }
 

@@ -152,10 +152,10 @@ def spr_doc_is_lamination(doc) -> bool:
 
 
 def _fabric_gsm_from_item_name(item_name: str) -> int:
-	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' → 60)."""
+	"""Parse Fabric GSM from item name by finding the F-<number> pattern (e.g. 'F-60' or 'F - 60' → 60)."""
 	if not item_name:
 		return 0
-	m = re.search(r'\bF-(\d+)\b', item_name, re.IGNORECASE)
+	m = re.search(r'\bF\s*-\s*(\d+)\b', item_name, re.IGNORECASE)
 	if m:
 		try:
 			return int(m.group(1))
@@ -168,15 +168,10 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 _LAM_GSM_SUFFIX_MAP: dict[str, int] = {
 	"A": 10,
 	"B": 12,
+	"B1": 13,
 	"C": 15,
-	"D": 17,
+	"D": 30,
 	"E": 20,
-	"F": 22,
-	"G": 25,
-	"H": 28,
-	"I": 30,
-	"J": 35,
-	"K": 40,
 }
 
 
@@ -3697,10 +3692,7 @@ def build_spr_roll_result_lines_for_job(
 			row["width_inch"] = flt(individual_width)
 		if meter_roll_job is not None and meter_roll_job > 0:
 			row["meter_roll"] = meter_roll_job
-			# Lamination add-flow: initialize produced length from entered meter/roll,
-			# so achieved meter/weight can reflect draft rows immediately.
-			if spr_doc_is_lamination(spr_doc):
-				row["produced_length_mtrs"] = meter_roll_job
+			# Lamination add-flow: removed auto-fill of produced_length_mtrs based on user request
 
 		# Fabric GSM: prefer Planning Table join result; fallback to parsing F-<N> from item name.
 		eff_fabric_gsm = fabric_gsm
@@ -5489,8 +5481,7 @@ def spr_apply_bundle_packaging_for_job_width(
 		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
 		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
 
-	avg_n = sum(flt(getattr(it, "net_weight", None)) for it in matching) / len(matching)
-	bundle_net = round(avg_n * float(no_of_packaging), 2)
+	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in matching), 2)
 
 	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
 	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
