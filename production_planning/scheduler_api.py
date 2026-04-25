@@ -104,20 +104,28 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	if has_sheet_code_old:
 		doc.custom_lamination_booking_id = code
 
-	# Build a map of SO item -> custom_lamination_side for 104 rows
+	# Build a map of SO item -> lamination side for 104 rows.
+	# Support multiple possible field names on Sales Order Item.
 	so_lam_side_map = {}
 	so_name = (getattr(doc, "sales_order", None) or "").strip()
 	if so_name:
 		try:
+			soi_cols = set(frappe.db.get_table_columns("Sales Order Item") or [])
+			side_field = ""
+			for fn in ("custom_lamination_side", "custom_lam_side", "lamination_side"):
+				if fn in soi_cols:
+					side_field = fn
+					break
 			so_items_data = frappe.get_all(
 				"Sales Order Item",
 				filters={"parent": so_name},
-				fields=["name", "item_code", "custom_lamination_side"],
-			) if frappe.db.has_column("Sales Order Item", "custom_lamination_side") else []
+				fields=["name", "item_code", side_field] if side_field else ["name", "item_code"],
+			) if side_field else []
 			for soi in so_items_data:
-				if soi.get("custom_lamination_side"):
-					so_lam_side_map[soi["name"]] = soi["custom_lamination_side"]
-					so_lam_side_map[soi["item_code"]] = soi["custom_lamination_side"]
+				side_val = (soi.get(side_field) or "").strip() if side_field else ""
+				if side_val:
+					so_lam_side_map[soi["name"]] = side_val
+					so_lam_side_map[soi["item_code"]] = side_val
 		except Exception:
 			pass
 
@@ -154,6 +162,25 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
 					if lam_side_val:
 						row.custom_lam_side = lam_side_val
+
+	# Header fallback: if map was empty, derive from first 104 row lam side value.
+	if has_ps_lam_side and not (getattr(doc, "custom_lam_side", None) or "").strip():
+		for fn in ("planned_items", "items", "custom_planned_items"):
+			if not meta.has_field(fn):
+				continue
+			for row in doc.get(fn) or []:
+				ic = (getattr(row, "item_code", None) or "").strip()
+				if _item_process_prefix(ic) != "104":
+					continue
+				row_side = (
+					(getattr(row, "custom_lam_side_", None) or "").strip()
+					or (getattr(row, "custom_lam_side", None) or "").strip()
+				)
+				if row_side:
+					doc.custom_lam_side = row_side
+					break
+			if (getattr(doc, "custom_lam_side", None) or "").strip():
+				break
 
 	# Mirror code to Sales Order header when available
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
