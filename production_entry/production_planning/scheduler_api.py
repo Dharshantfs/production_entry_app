@@ -2674,8 +2674,9 @@ def _get_color_by_code(color_code):
         if c and c not in candidates:
             candidates.append(c)
     
-    # Try multiple field names  in order of preference
-    fields_to_try = ["custom_color_code", "colour_code", "color_code", "short_code", "code"]
+    # Try multiple field names in order of preference. Colour Master commonly stores
+    # the business code in `colour_code`; keep aliases for older/custom sites.
+    fields_to_try = ["colour_code", "custom_color_code", "color_code", "short_code", "code"]
     
     for field in fields_to_try:
         for code in candidates:
@@ -2687,7 +2688,7 @@ def _get_color_by_code(color_code):
                     as_dict=True
                 )
                 if result:
-                    color_name = result.get("name") or result.get("colour_name") or result.get("color_name")
+                    color_name = result.get("colour_name") or result.get("color_name") or result.get("name")
                     if color_name:
                         return color_name.upper().strip()
             except Exception:
