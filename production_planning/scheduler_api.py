@@ -1646,6 +1646,10 @@ def get_slitting_order_table_data(
     out = []
     for r in rows:
         row = dict(r)
+        if _item_process_prefix(str(row.get("item_code") or row.get("itemCode") or "")) == "103":
+            strict_color = _color_from_item_code_6_to_8(row.get("item_code") or row.get("itemCode"))
+            if strict_color:
+                row["color"] = strict_color
         nm = row.get("itemName") or row.get("item_name")
         ex = by_psi.get(nm) if nm else {}
         row["shift_label"] = str((ex or {}).get("shift_label") or "DAY").upper()
