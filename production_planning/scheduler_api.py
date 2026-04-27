@@ -680,6 +680,36 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 		frappe.db.commit()
 
 
+def _force_slitting_unit_on_sheet(planning_sheet_name):
+	"""Force process 103 rows to Slitting Unit in both Planning Table and Planning sheet Item."""
+	if not planning_sheet_name:
+		return 0
+	updated = 0
+	if frappe.db.has_column("Planning Table", "unit"):
+		frappe.db.sql(
+			"""
+			UPDATE `tabPlanning Table`
+			SET unit = 'Slitting Unit'
+			WHERE parent = %s
+			  AND item_code LIKE '103%%'
+			""",
+			(planning_sheet_name,),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "unit"):
+		frappe.db.sql(
+			"""
+			UPDATE `tabPlanning sheet Item`
+			SET unit = 'Slitting Unit'
+			WHERE parent = %s
+			  AND item_code LIKE '103%%'
+			""",
+			(planning_sheet_name,),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	return updated
+
+
 @frappe.whitelist()
 def backfill_parent_child_trace_ids(planning_sheet_name=None):
 	"""Backfill custom_parent_child_trace_id on parent(103/104) and child(100) rows + legacy table."""
@@ -734,6 +764,39 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 					""",
 					(trace_id, p.get("parent"), so_item),
 				)
+	frappe.db.commit()
+	return {"status": "success", "updated": int(updated)}
+
+
+@frappe.whitelist()
+def backfill_slitting_units(planning_sheet_name=None):
+	"""Backfill all 103 rows to Slitting Unit in both table rows."""
+	params = []
+	sheet_filter = ""
+	if planning_sheet_name:
+		sheet_filter = " AND parent = %s "
+		params.append(planning_sheet_name)
+	updated = 0
+	if frappe.db.has_column("Planning Table", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning Table`
+			SET unit = 'Slitting Unit'
+			WHERE item_code LIKE '103%%' {sheet_filter}
+			""",
+			tuple(params),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning sheet Item`
+			SET unit = 'Slitting Unit'
+			WHERE item_code LIKE '103%%' {sheet_filter}
+			""",
+			tuple(params),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	frappe.db.commit()
 	return {"status": "success", "updated": int(updated)}
 
@@ -1463,6 +1526,19 @@ def get_slitting_order_table_data(
         return []
     if not rows:
         return []
+    # Hard safety: keep 103 rows pinned to Slitting Unit on every table load.
+    try:
+        sheet_names = list({
+            str(r.get("planningSheet") or r.get("planning_sheet") or "").strip()
+            for r in rows
+            if str(r.get("planningSheet") or r.get("planning_sheet") or "").strip()
+        })
+        for sn in sheet_names:
+            _force_slitting_unit_on_sheet(sn)
+        if sheet_names:
+            frappe.db.commit()
+    except Exception:
+        pass
 
     psi_names = [r.get("itemName") or r.get("item_name") for r in rows if (r.get("itemName") or r.get("item_name"))]
     if not psi_names:
@@ -8397,6 +8473,7 @@ def create_planning_sheet_from_so(doc):
         _link_board_planned_rows_to_legacy_items(ps.name)
         _sync_lamination_fabric_planning_rows(ps.name)
         _sync_slitting_fabric_planning_rows(ps.name)
+        _force_slitting_unit_on_sheet(ps.name)
         final_doc = frappe.get_doc("Planning sheet", ps.name)
         update_sheet_plan_codes(final_doc, include_legacy=True)
         frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â£ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  Planning Sheet <b>{ps.name}</b> Created!")
@@ -8669,6 +8746,7 @@ def create_planning_sheets_bulk(sales_orders):
             _link_board_planned_rows_to_legacy_items(ps.name)
             _sync_lamination_fabric_planning_rows(ps.name)
             _sync_slitting_fabric_planning_rows(ps.name)
+            _force_slitting_unit_on_sheet(ps.name)
             final_doc = frappe.get_doc("Planning sheet", ps.name)
             update_sheet_plan_codes(final_doc, include_legacy=True)
             created.append(ps.name)
@@ -10679,6 +10757,7 @@ def auto_create_planning_sheet(doc, method=None):
             frappe.db.commit()
             _sync_lamination_fabric_planning_rows(sheet.name)
             _sync_slitting_fabric_planning_rows(sheet.name)
+            _force_slitting_unit_on_sheet(sheet.name)
             sheet.reload()
             ensure_lamination_booking_for_planning_sheet(sheet)
             sheet.save(ignore_permissions=True)
@@ -10717,6 +10796,7 @@ def auto_create_planning_sheet(doc, method=None):
     _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
     _sync_slitting_fabric_planning_rows(ps.name)
+    _force_slitting_unit_on_sheet(ps.name)
             
     frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
     
@@ -10787,6 +10867,7 @@ def regenerate_planning_sheet(so_name):
     _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
     _sync_slitting_fabric_planning_rows(ps.name)
+    _force_slitting_unit_on_sheet(ps.name)
     ps.reload()
     ensure_lamination_booking_for_planning_sheet(ps)
     ps.save(ignore_permissions=True)
