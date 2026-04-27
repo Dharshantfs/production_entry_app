@@ -350,6 +350,11 @@ function normalizeUnitName(rawUnit) {
   return String(rawUnit || "Mixed").trim() || "Mixed";
 }
 
+function itemProcessPrefix(itemCode) {
+  const ic = String(itemCode || "").trim();
+  return ic.length >= 3 ? ic.slice(0, 3) : "";
+}
+
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
@@ -612,6 +617,17 @@ const filteredData = computed(() => {
       ...d,
       unit: normalizeUnitName(d.unit)
   }));
+
+  // Backward compatibility: old 103 rows may still carry Mixed/UNASSIGNED in DB.
+  // Force them into Slitting Unit while viewing dedicated Slitting Board.
+  if (isSlittingBoard.value) {
+    data = data.map((d) => {
+      if (itemProcessPrefix(d.item_code || d.itemCode) === "103") {
+        return { ...d, unit: SLITTING_UNIT };
+      }
+      return d;
+    });
+  }
 
   // For Production Board ONLY: Show pushed items.
   // Items are considered "pushed" to the board if they have a plannedDate set.
@@ -1075,7 +1091,12 @@ const unitEntriesCache = computed(() => {
 
   const cache = {};
   for (const unit of boardUnits.value) {
-    let unitItems = filteredData.value.filter((d) => (d.unit || "Mixed") === unit);
+    let unitItems = filteredData.value.filter((d) => {
+      if (isSlittingBoard.value && unit === SLITTING_UNIT) {
+        return itemProcessPrefix(d.item_code || d.itemCode) === "103" || (d.unit || "Mixed") === unit;
+      }
+      return (d.unit || "Mixed") === unit;
+    });
     unitItems = sortItems(unit, unitItems); 
     const entries = [];
     for (let i = 0; i < unitItems.length; i++) {
