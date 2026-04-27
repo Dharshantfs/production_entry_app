@@ -2419,9 +2419,10 @@ def _populate_planning_sheet_items(ps, doc):
         qual = ""
         col = ""
         item_code_str = str(it.item_code or "").strip()
-        if len(item_code_str) >= 9 and _item_process_prefix(item_code_str) in ("100", "103", "104"):
-            q_code = item_code_str[3:6]
-            c_code = item_code_str[6:9]
+        digits = "".join(ch for ch in item_code_str if ch.isdigit())
+        if len(digits) >= 9:
+            q_code = digits[3:6]
+            c_code = digits[6:9]
             try:
                 qual_name = frappe.db.get_value("Quality Master", {"short_code": q_code}, "name") or \
                            frappe.db.get_value("Quality Master", {"code": q_code}, "name") or \
@@ -2432,10 +2433,9 @@ def _populate_planning_sheet_items(ps, doc):
                 color_result = _get_color_by_code(c_code)
                 if color_result: col = color_result
             except Exception: pass
-        if _item_process_prefix(item_code_str) == "103":
-            strict_col = _color_from_item_code_6_to_8(item_code_str)
-            if strict_col:
-                col = strict_col
+        strict_col = _color_from_item_code_6_to_8(item_code_str)
+        if strict_col:
+            col = strict_col
 
         search_text = " " + " ".join(words) + " "
         search_norm = _normalize_quality_key(search_text)
@@ -2444,13 +2444,13 @@ def _populate_planning_sheet_items(ps, doc):
                 if _normalize_quality_key(q) and _normalize_quality_key(q) in search_norm:
                     qual = q
                     break
-        if not col and _item_process_prefix(item_code_str) != "103":
+        if not col:
             for c in COL_LIST:
                 if (" " + c + " ") in search_text:
                     col = c
                     break
         # Fallback: substring match (longest-first COL_LIST) when spacing breaks " GOLDEN YELLOW " style match
-        if not col and _item_process_prefix(item_code_str) != "103":
+        if not col:
             su = search_text.upper()
             for c in COL_LIST:
                 if c in su:
@@ -2644,14 +2644,9 @@ def resolve_color_name_for_planning_row(item_code, item_name, existing_color=Non
     search_text = " " + " ".join(words) + " "
     col = ""
     item_code_str = str(item_code or "").strip()
-    if len(item_code_str) >= 9 and _item_process_prefix(item_code_str) in ("100", "103", "104"):
-        c_code = item_code_str[6:9]
-        try:
-            color_result = _get_color_by_code(c_code)
-            if color_result:
-                return color_result.upper().strip()
-        except Exception:
-            pass
+    color_from_code = _color_from_item_code_6_to_8(item_code_str)
+    if color_from_code:
+        return color_from_code
     for c in COL_LIST:
         if (" " + c + " ") in search_text:
             return c
@@ -2678,8 +2673,9 @@ def _get_color_by_code(color_code):
         if c and c not in candidates:
             candidates.append(c)
     
-    # Try multiple field names  in order of preference
-    fields_to_try = ["custom_color_code", "colour_code", "color_code", "short_code", "code"]
+    # Try multiple field names in order of preference. Colour Master commonly stores
+    # the business code in `colour_code`; keep aliases for older/custom sites.
+    fields_to_try = ["colour_code", "custom_color_code", "color_code", "short_code", "code"]
     
     for field in fields_to_try:
         for code in candidates:
@@ -2691,7 +2687,7 @@ def _get_color_by_code(color_code):
                     as_dict=True
                 )
                 if result:
-                    color_name = result.get("name") or result.get("colour_name") or result.get("color_name")
+                    color_name = result.get("colour_name") or result.get("color_name") or result.get("name")
                     if color_name:
                         return color_name.upper().strip()
             except Exception:
