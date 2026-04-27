@@ -2,8 +2,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        Lamination Board — {{ LAMINATION_UNIT }}
+      <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -394,7 +394,7 @@
                 </tbody>
                 <tbody>
                     <tr v-if="unitGroup.dates.length === 0">
-                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">{{ isLaminationBoard ? "No lamination production for this view — adjust date or filters." : "No production planned for this unit" }}</td>
+                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
                     </tr>
                 </tbody>
             </table>
@@ -789,8 +789,10 @@ function sortItems(unit, items, date) {
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "Lamination Unit";
+const SLITTING_UNIT = "Slitting Unit";
 /** True when opened from Lamination Board (production-table?board=lamination). */
 const isLaminationBoard = ref(false);
+const isSlittingBoard = ref(false);
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
@@ -1095,45 +1097,29 @@ const canExpandMergedRows = computed(() => {
   return MERGE_EXPAND_ALLOWED_ROLES.some((role) => roles.includes(role.toLowerCase()));
 });
 
-const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
+const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : isSlittingBoard.value ? [SLITTING_UNIT] : units));
 
 const visibleUnits = computed(() => {
-  const bu = boardUnits.value;
-  if (!filterUnit.value) return bu;
-  const match = bu.filter((u) => u === filterUnit.value);
-  return match.length ? match : bu;
+  if (!filterUnit.value) return boardUnits.value;
+  return boardUnits.value.filter((u) => u === filterUnit.value);
 });
-
-function rowMatchesBoardUnitColumn(unit, d) {
-  if (isLaminationBoard.value && unit === LAMINATION_UNIT) return true;
-  return (d.unit || "Mixed") === unit;
-}
 
 const filteredData = computed(() => {
   let data = rawData.value || [];
+  
+  // Only show items that have been pushed to Production Board
+  data = data.filter(d => !!d.plannedDate);
 
-  data = data.map((d) => ({ ...d, unit: normalizeUnit(d.unit) }));
+  // Exclude missing parameters and NO COLOR
+  data = data.filter(d => {
 
-  data = data.filter((d) => {
-    if (d.plannedDate) return true;
-    if (isLaminationBoard.value) {
-      return !!(d.orderDate || d.order_date);
-    }
-    return false;
-  });
-
-  // Exclude invalid rows; lamination board (104 scope) — rows are often UNASSIGNED → Mixed after normalize
-  data = data.filter((d) => {
-    if (isLaminationBoard.value) {
-      const colorUpper = (d.color || "").toUpperCase().trim();
+      if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
+      const colorUpper = d.color.toUpperCase().trim();
       if (colorUpper === "NO COLOR") return false;
       return true;
-    }
-    if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
-    const colorUpper = d.color.toUpperCase().trim();
-    if (colorUpper === "NO COLOR") return false;
-    return true;
   });
+  
+  data = data.map(d => ({ ...d, unit: d.unit || "Mixed" }));
 
   if (filterPartyCode.value) {
     const search = filterPartyCode.value.toLowerCase();
@@ -1264,7 +1250,7 @@ function toggleMergeExpanded(mergeId) {
 
 const tableData = computed(() => {
     return visibleUnits.value.map(unit => {
-        let items = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
+        let items = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
         
         const dateGroupsObj = {};
         items.forEach(item => {
@@ -2421,8 +2407,9 @@ function goToBoard() {
     if (viewScope.value === "monthly") query.month = filterMonth.value;
     query.scope = viewScope.value;
     if (isLaminationBoard.value) query.board = "lamination";
+    if (isSlittingBoard.value) query.board = "slitting";
     frappe.set_route(
-        isLaminationBoard.value ? "lamination-board" : "production-board",
+        isLaminationBoard.value ? "lamination-board" : isSlittingBoard.value ? "slitting-board" : "production-board",
         query
     );
 }
@@ -2489,7 +2476,9 @@ async function fetchData() {
 
         args.plan_name = "__all__";
         args.planned_only = 1;
-        if (isLaminationBoard.value) {
+        if (isSlittingBoard.value) {
+          args.board_process_scope = "slitting_only";
+        } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
         } else {
           try {
@@ -2497,11 +2486,13 @@ async function fetchData() {
             const b = (sp.get("board") || "").toLowerCase();
             if (b === "lamination") {
               args.board_process_scope = "lamination_only";
+            } else if (b === "slitting") {
+              args.board_process_scope = "slitting_only";
             } else {
-              args.board_process_scope = "exclude_104";
+              args.board_process_scope = "exclude_special";
             }
           } catch (e) {
-            args.board_process_scope = "exclude_104";
+            args.board_process_scope = "exclude_special";
           }
         }
 
@@ -2625,6 +2616,7 @@ onMounted(async () => {
   
   const params = new URLSearchParams(window.location.search);
   isLaminationBoard.value = (params.get("board") || "").toLowerCase() === "lamination";
+  isSlittingBoard.value = (params.get("board") || "").toLowerCase() === "slitting";
   const scopeParam = params.get('scope');
   const dateParam = params.get('date');
   const weekParam = params.get('week');
@@ -2642,12 +2634,6 @@ onMounted(async () => {
     if (monthParam) filterMonth.value = monthParam;
   }
   
-  const uParam = params.get("unit");
-  if (uParam) filterUnit.value = uParam;
-  if (isLaminationBoard.value && filterUnit.value && filterUnit.value !== LAMINATION_UNIT) {
-    filterUnit.value = "";
-  }
-
   await fetchMaintenanceRecords();
   await fetchData();
 });
@@ -2803,6 +2789,12 @@ onBeforeUnmount(() => {
     border: 1px solid #e5e7eb;
     text-align: center;
     font-weight: 700;
+}
+.cc-prod-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 14;
+    background: #f8fafc;
 }
 .pt-sortable-body .pt-draggable-row {
   transition: background-color 0.2s;
