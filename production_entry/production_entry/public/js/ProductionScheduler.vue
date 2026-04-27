@@ -2148,6 +2148,13 @@ onMounted(() => {
       isSlittingBoard.value = false;
     }
 
+    // Fallback route detection for first-load race (route may not be ready on first mount).
+    try {
+      const path = String(window.location.pathname || "").toLowerCase();
+      if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
+      if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
+    } catch (e) {}
+
     // 1. Load CSS
     if (!document.getElementById('flatpickr-css')) {
         const link = document.createElement('link');

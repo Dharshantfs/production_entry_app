@@ -137,7 +137,7 @@
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.trace_id || row.partyCode || "-" }}</td>
+            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
