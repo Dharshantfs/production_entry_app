@@ -685,10 +685,26 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 
 
 def _force_slitting_unit_on_sheet(planning_sheet_name):
-	"""Force process 103 rows to Slitting Unit in both Planning Table and Planning sheet Item."""
+	"""Force process 103 rows to Slitting Unit and strict color-from-code."""
 	if not planning_sheet_name:
 		return 0
 	updated = 0
+	slitting_rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name, "item_code": ["like", "103%"]},
+		fields=["name", "item_code", "source_item"],
+		limit_page_length=1000,
+	) or []
+	for rr in slitting_rows:
+		row_name = str(rr.get("name") or "").strip()
+		if not row_name:
+			continue
+		color_name = _color_from_item_code_6_to_8(rr.get("item_code"))
+		if color_name:
+			frappe.db.set_value("Planning Table", row_name, "color", color_name, update_modified=False)
+			legacy = str(rr.get("source_item") or "").strip()
+			if legacy and frappe.db.exists("Planning sheet Item", legacy):
+				frappe.db.set_value("Planning sheet Item", legacy, "color", color_name, update_modified=False)
 	if frappe.db.has_column("Planning Table", "unit"):
 		frappe.db.sql(
 			"""
@@ -2508,6 +2524,11 @@ def _populate_planning_sheet_items(ps, doc):
                 color_result = _get_color_by_code(c_code)
                 if color_result: col = color_result
             except Exception: pass
+        if _item_process_prefix(item_code_str) == "103":
+            # Strict rule from operations: use colour code from item digits index 6:9 only.
+            strict_col = _color_from_item_code_6_to_8(item_code_str)
+            if strict_col:
+                col = strict_col
 
         search_text = " " + " ".join(words) + " "
         search_norm = _normalize_quality_key(search_text)
@@ -2516,13 +2537,13 @@ def _populate_planning_sheet_items(ps, doc):
                 if _normalize_quality_key(q) and _normalize_quality_key(q) in search_norm:
                     qual = q
                     break
-        if not col:
+        if not col and _item_process_prefix(item_code_str) != "103":
             for c in COL_LIST:
                 if (" " + c + " ") in search_text:
                     col = c
                     break
         # Fallback: substring match (longest-first COL_LIST) when spacing breaks " GOLDEN YELLOW " style match
-        if not col:
+        if not col and _item_process_prefix(item_code_str) != "103":
             su = search_text.upper()
             for c in COL_LIST:
                 if c in su:
@@ -2763,13 +2784,22 @@ def _get_color_by_code(color_code):
                     as_dict=True
                 )
                 if result:
-                    color_name = result.get("name") or result.get("colour_name") or result.get("color_name")
+                    color_name = result.get("colour_name") or result.get("color_name") or result.get("name")
                     if color_name:
                         return color_name.upper().strip()
             except Exception:
                 pass
     
     return None
+
+
+def _color_from_item_code_6_to_8(item_code):
+    """Strict color resolution from item-code digits index 6:9 via Colour Master."""
+    digits = "".join(ch for ch in str(item_code or "") if ch.isdigit())
+    if len(digits) < 9:
+        return ""
+    c_code = digits[6:9]
+    return str(_get_color_by_code(c_code) or "").strip().upper()
 
 
 def _normalize_color_text(v) -> str:
