@@ -2491,7 +2491,7 @@ def _populate_planning_sheet_items(ps, doc):
         qual = ""
         col = ""
         item_code_str = str(it.item_code or "").strip()
-        if len(item_code_str) >= 9 and item_code_str.startswith("100"):
+        if len(item_code_str) >= 9 and _item_process_prefix(item_code_str) in ("100", "103", "104"):
             q_code = item_code_str[3:6]
             c_code = item_code_str[6:9]
             try:
@@ -2712,7 +2712,7 @@ def resolve_color_name_for_planning_row(item_code, item_name, existing_color=Non
     search_text = " " + " ".join(words) + " "
     col = ""
     item_code_str = str(item_code or "").strip()
-    if len(item_code_str) >= 9 and item_code_str.startswith("100"):
+    if len(item_code_str) >= 9 and _item_process_prefix(item_code_str) in ("100", "103", "104"):
         c_code = item_code_str[6:9]
         try:
             color_result = _get_color_by_code(c_code)
@@ -3046,6 +3046,10 @@ def _normalize_unit(raw):
         return "Unit 3"
     if "UNIT4" in r:
         return "Unit 4"
+    if "LAMINATIONUNIT" in r:
+        return "Lamination Unit"
+    if "SLITTINGUNIT" in r:
+        return "Slitting Unit"
     return "UNASSIGNED"
 
 def _get_standard_month_name(month_index):
