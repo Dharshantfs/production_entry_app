@@ -95,6 +95,8 @@ class Planningsheet(Document):
             return
         from production_entry.production_planning.scheduler_api import (
             compute_default_production_unit,
+            _get_color_by_code,
+            _item_process_prefix,
             resolve_color_name_for_planning_row,
         )
 
@@ -125,6 +127,18 @@ class Planningsheet(Document):
                 elif not color:
                     color = resolved or ""
                 width = flt(getattr(row, "width_inch", None))
+                # Hard rule: process 103 always belongs to Slitting Unit and color from Colour Master code.
+                item_code = str(getattr(row, "item_code", None) or "").strip()
+                process_prefix = _item_process_prefix(item_code)
+                if process_prefix == "103":
+                    digits = "".join(ch for ch in item_code if ch.isdigit())
+                    code = digits[6:9] if len(digits) >= 9 else ""
+                    mapped = _get_color_by_code(code) if code else ""
+                    if mapped:
+                        row.color = mapped
+                        color = mapped
+                    row.unit = "Slitting Unit"
+                    continue
                 row.unit = compute_default_production_unit(color, width, getattr(row, "item_code", None))
 
     def _sync_linked_planning_units(self):
@@ -142,6 +156,19 @@ class Planningsheet(Document):
             if not si or si not in items_by_name:
                 continue
             leg = items_by_name[si]
+            # Hard lock for process 103 across linked rows.
+            item_code = str(getattr(pr, "item_code", None) or getattr(leg, "item_code", None) or "").strip()
+            from production_entry.production_planning.scheduler_api import _get_color_by_code, _item_process_prefix
+            if _item_process_prefix(item_code) == "103":
+                digits = "".join(ch for ch in item_code if ch.isdigit())
+                code = digits[6:9] if len(digits) >= 9 else ""
+                mapped = _get_color_by_code(code) if code else ""
+                if mapped:
+                    pr.color = mapped
+                    leg.color = mapped
+                pr.unit = "Slitting Unit"
+                leg.unit = "Slitting Unit"
+                continue
             nu = normalize_planning_unit_for_select(getattr(leg, "unit", None))
             bu = normalize_planning_unit_for_select(getattr(pr, "unit", None))
             if nu == bu:
