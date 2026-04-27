@@ -2388,6 +2388,10 @@ def _populate_planning_sheet_items(ps, doc):
                 color_result = _get_color_by_code(c_code)
                 if color_result: col = color_result
             except Exception: pass
+        if _item_process_prefix(item_code_str) == "103":
+            strict_col = _color_from_item_code_6_to_8(item_code_str)
+            if strict_col:
+                col = strict_col
 
         search_text = " " + " ".join(words) + " "
         search_norm = _normalize_quality_key(search_text)
@@ -2396,13 +2400,13 @@ def _populate_planning_sheet_items(ps, doc):
                 if _normalize_quality_key(q) and _normalize_quality_key(q) in search_norm:
                     qual = q
                     break
-        if not col:
+        if not col and _item_process_prefix(item_code_str) != "103":
             for c in COL_LIST:
                 if (" " + c + " ") in search_text:
                     col = c
                     break
         # Fallback: substring match (longest-first COL_LIST) when spacing breaks " GOLDEN YELLOW " style match
-        if not col:
+        if not col and _item_process_prefix(item_code_str) != "103":
             su = search_text.upper()
             for c in COL_LIST:
                 if c in su:
@@ -2650,6 +2654,15 @@ def _get_color_by_code(color_code):
                 pass
     
     return None
+
+
+def _color_from_item_code_6_to_8(item_code):
+    """Strict color resolution from item-code digits index 6:9 via Colour Master."""
+    digits = "".join(ch for ch in str(item_code or "") if ch.isdigit())
+    if len(digits) < 9:
+        return ""
+    c_code = digits[6:9]
+    return str(_get_color_by_code(c_code) or "").strip().upper()
 
 
 def _normalize_color_text(v) -> str:
