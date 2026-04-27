@@ -2399,7 +2399,16 @@ function showLinkedWorkOrdersPopup(ppId) {
 }
 
 function goToBoard() {
-    frappe.set_route(isLaminationBoard.value ? "Lamination Board" : "Production Board");
+    let query = {};
+    if (viewScope.value === "daily") query.date = filterOrderDate.value;
+    if (viewScope.value === "weekly") query.week = filterWeek.value;
+    if (viewScope.value === "monthly") query.month = filterMonth.value;
+    query.scope = viewScope.value;
+    if (isLaminationBoard.value) query.board = "lamination";
+    frappe.set_route(
+        isLaminationBoard.value ? "lamination-board" : "production-board",
+        query
+    );
 }
 
 function toggleViewScope() {

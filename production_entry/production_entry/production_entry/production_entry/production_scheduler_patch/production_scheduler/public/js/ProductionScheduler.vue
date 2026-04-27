@@ -3,6 +3,9 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
+      <div v-if="isLaminationBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        Lamination Board — {{ LAMINATION_UNIT }}
+      </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
         <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #4f46e5;" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
@@ -46,7 +49,7 @@
         <label>Unit</label>
         <select v-model="filterUnit">
           <option value="">All Units</option>
-          <option v-for="u in units" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in boardUnits" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
       <div class="cc-filter-item">
@@ -223,7 +226,7 @@
           </template>
 
           <div v-if="!getUnitEntries(unit).length" class="cc-empty">
-            No orders
+            {{ isLaminationBoard ? "No lamination orders for this view — use Refresh or pick another date." : "No orders" }}
           </div>
         </div>
 
@@ -314,12 +317,28 @@ const COLOR_GROUPS = [
 ];
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
-const UNIT_TONNAGE_LIMITS = { "Unit 1": 4.4, "Unit 2": 12, "Unit 3": 9, "Unit 4": 5.5, "Mixed": 999 };
-const headerColors = { "Unit 1": "#3b82f6", "Unit 2": "#10b981", "Unit 3": "#f59e0b", "Unit 4": "#8b5cf6", "Mixed": "#64748b" };
+const LAMINATION_UNIT = "Lamination Unit";
+const UNIT_TONNAGE_LIMITS = {
+  "Unit 1": 4.4,
+  "Unit 2": 12,
+  "Unit 3": 9,
+  "Unit 4": 5.5,
+  "Mixed": 999,
+  [LAMINATION_UNIT]: 999,
+};
+const headerColors = {
+  "Unit 1": "#3b82f6",
+  "Unit 2": "#10b981",
+  "Unit 3": "#f59e0b",
+  "Unit 4": "#8b5cf6",
+  "Mixed": "#64748b",
+  [LAMINATION_UNIT]: "#0d9488",
+};
 
 function normalizeUnitName(rawUnit) {
   const txt = String(rawUnit || "").trim().toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === "unit1" || txt === "unit 1") return "Unit 1";
   if (txt === "unit2" || txt === "unit 2") return "Unit 2";
   if (txt === "unit3" || txt === "unit 3") return "Unit 3";
@@ -390,12 +409,16 @@ function detectRestrictedUser() {
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
+/** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
+const isLaminationBoard = ref(false);
+let laminationFirstLoadRetried = false;
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
 units.forEach(u => {
     unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 });
+unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -520,7 +543,12 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    frappe.set_route("Production Table", query);
+    if (isLaminationBoard.value) {
+        query.board = "lamination";
+        frappe.set_route("lamination-order-table", query);
+        return;
+    }
+    frappe.set_route("production-table", query);
 }
 
 function goToConfirmedOrders() {
@@ -549,10 +577,21 @@ function toggleViewScope() {
     fetchData();
 }
 
+const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
+
 const visibleUnits = computed(() => {
-  if (!filterUnit.value) return units;
-  return units.filter((u) => u === filterUnit.value);
+  const bu = boardUnits.value;
+  if (!filterUnit.value) return bu;
+  const match = bu.filter((u) => u === filterUnit.value);
+  // Stale filter (e.g. Unit 1 from Production Board) would hide all Lamination columns — show all board units instead
+  return match.length ? match : bu;
 });
+
+/** Lamination Board lists 104 rows from API (lamination_only); unit on rows is UNASSIGNED until assigned — match all rows to the lamination column. */
+function rowMatchesBoardUnitColumn(unit, d) {
+  if (isLaminationBoard.value && unit === LAMINATION_UNIT) return true;
+  return (d.unit || "Mixed") === unit;
+}
 
 const NO_RULE_WHITES = ["BRIGHT WHITE", "MILKY WHITE", "SUPER WHITE", "SUNSHINE WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"];
 const EXCLUDED_WHITES = [
@@ -569,10 +608,14 @@ const filteredData = computed(() => {
       unit: normalizeUnitName(d.unit)
   }));
 
-  // For Production Board ONLY: Show pushed items.
-  // Items are considered "pushed" to the board if they have a plannedDate set.
-  // Note: White orders have plannedDate auto-set on creation.
-  data = data.filter(d => !!d.plannedDate);
+  // Production Board: show pushed items (plannedDate). Lamination: also allow rows on this unit with order date but not yet scheduled.
+  data = data.filter((d) => {
+    if (d.plannedDate) return true;
+    if (isLaminationBoard.value) {
+      return !!(d.orderDate || d.order_date);
+    }
+    return false;
+  });
 
   if (filterPartyCode.value) {
     const search = filterPartyCode.value.toLowerCase();
@@ -719,8 +762,8 @@ function getCapacityLabel() {
 // Uses filteredData so stats match visible cards (not all raw data)
 const unitStatsCache = computed(() => {
   const stats = {};
-  for (const unit of units) {
-    const allUnitData = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
+  for (const unit of boardUnits.value) {
+    const allUnitData = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
     
     // Separation for display purposes only, capacity counts EVERYTHING
     const whiteOrders = allUnitData.filter(d => {
@@ -1024,14 +1067,14 @@ function sortItems(unit, items) {
 const unitEntriesCache = computed(() => {
   // Explicitly read renderKey + all sort configs so Vue tracks them as reactive deps
   void renderKey.value;
-  units.forEach(u => {
+  boardUnits.value.forEach(u => {
     const cfg = unitSortConfig.value[u];
     if (cfg) { void cfg.color; void cfg.gsm; void cfg.priority; void cfg.mode; }
   });
 
   const cache = {};
-  for (const unit of units) {
-    let unitItems = filteredData.value.filter((d) => (d.unit || "Mixed") === unit);
+  for (const unit of boardUnits.value) {
+    let unitItems = filteredData.value.filter((d) => rowMatchesBoardUnitColumn(unit, d));
     unitItems = sortItems(unit, unitItems); 
     const entries = [];
     for (let i = 0; i < unitItems.length; i++) {
@@ -1071,7 +1114,7 @@ function getUnitEntries(unit) {
 
 function getUnitProductionTotal(unit) {
   const production = filteredData.value
-    .filter((d) => d.unit === unit)
+    .filter((d) => rowMatchesBoardUnitColumn(unit, d))
     .reduce((sum, d) => sum + d.qty, 0);
   const mixWeight = getMixRollTotalWeight(unit);
   return (production + mixWeight) / 1000;
@@ -1230,7 +1273,7 @@ function openPullOrdersDialog() {
                 fieldtype: 'Select',
                 options: [
                     { label: 'Keep Original Unit', value: '' },
-                  ...units.filter(u => u !== 'Mixed').map(u => ({ label: `Move to ${u}`, value: u })),
+                  ...boardUnits.value.filter(u => u !== 'Mixed').map(u => ({ label: `Move to ${u}`, value: u })),
                   { label: 'Move to Unassigned', value: 'Mixed' }
                 ],
                 default: '',
@@ -1267,9 +1310,13 @@ async function loadOrders(d) {
     
     try {
         // Production Board Pull = orders already ON the board for this date (move to today).
+        const pullArgs = { date: date, mode: 'pull_board' };
+        if (isLaminationBoard.value) {
+            pullArgs.board_process_scope = 'lamination_only';
+        }
         const r = await frappe.call({
             method: "production_scheduler.api.get_color_chart_data",
-            args: { date: date, mode: 'pull_board' }
+            args: pullArgs
         });
         
         let items = r.message || [];
@@ -1281,7 +1328,7 @@ async function loadOrders(d) {
         }
 
         // --- FE FILTERS ---
-        const pullFilterUnits = [...units.filter(u => u !== 'Mixed'), 'Mixed'];
+        const pullFilterUnits = [...boardUnits.value.filter(u => u !== 'Mixed'), 'Mixed'];
         const uniqueQualities = [...new Set(items.map(i => i.quality || 'STD'))].sort();
         const uniqueParties = [...new Set(items.map(i => i.partyCode || i.customer || ''))].filter(Boolean).sort();
         
@@ -1504,7 +1551,7 @@ function openRescueDialog() {
                 fieldtype: 'Select',
                 options: [
                     { label: 'Keep Original Unit', value: '' },
-                    ...units.map(u => ({ label: `Move to ${u}`, value: u }))
+                    ...boardUnits.value.map(u => ({ label: `Move to ${u}`, value: u }))
                 ],
                 default: '',
                 description: 'If selected, all rescued orders will be assigned to this unit.'
@@ -1782,7 +1829,7 @@ function openMovePlanDialog() {
                 label: 'Target Unit (Optional)',
                 fieldname: 'target_unit',
                 fieldtype: 'Select',
-                options: ['', ...units],
+                options: ['', ...boardUnits.value],
                 description: 'Leave empty to keep each order\'s current unit.'
             },
             {
@@ -1933,16 +1980,20 @@ async function fetchData() {
         // Production Board: fetch ALL plans but ONLY pushed items (custom_planned_date set)
         args.plan_name = "__all__";
         args.planned_only = 1;
-        try {
-          const sp = new URLSearchParams(window.location.search || "");
-          const b = (sp.get("board") || "").toLowerCase();
-          if (b === "lamination") {
-            args.board_process_scope = "lamination_only";
-          } else {
+        if (isLaminationBoard.value) {
+          args.board_process_scope = "lamination_only";
+        } else {
+          try {
+            const sp = new URLSearchParams(window.location.search || "");
+            const b = (sp.get("board") || "").toLowerCase();
+            if (b === "lamination") {
+              args.board_process_scope = "lamination_only";
+            } else {
+              args.board_process_scope = "exclude_104";
+            }
+          } catch (e) {
             args.board_process_scope = "exclude_104";
           }
-        } catch (e) {
-          args.board_process_scope = "exclude_104";
         }
 
         const r = await frappe.call({
@@ -1960,6 +2011,10 @@ async function fetchData() {
           actual_production_weight_kgs: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? 0) || 0,
           produced_qty: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? d.produced_qty ?? 0) || 0,
         }));
+        if (isLaminationBoard.value && !laminationFirstLoadRetried && rawData.value.length === 0) {
+          laminationFirstLoadRetried = true;
+          setTimeout(() => fetchData(), 450);
+        }
         
         // Load Custom Color Order
         try {
@@ -2065,6 +2120,13 @@ function initFlatpickr() {
 }
 
 onMounted(() => {
+    try {
+      const r = frappe.get_route && frappe.get_route();
+      isLaminationBoard.value = Boolean(r && r[0] === "lamination-board");
+    } catch (e) {
+      isLaminationBoard.value = false;
+    }
+
     // 1. Load CSS
     if (!document.getElementById('flatpickr-css')) {
         const link = document.createElement('link');
@@ -2109,6 +2171,12 @@ onMounted(() => {
         } else {
             viewScope.value = 'daily';
         }
+    }
+
+    const unitParam = qParams.get("unit");
+    if (unitParam) filterUnit.value = unitParam;
+    if (isLaminationBoard.value && filterUnit.value && filterUnit.value !== LAMINATION_UNIT) {
+      filterUnit.value = "";
     }
 
     if (viewScope.value === 'daily' && !filterOrderDate.value) {
@@ -2167,7 +2235,7 @@ async function openBulkMoveDialog() {
         label: "Target Unit (optional)",
         fieldname: "target_unit",
         fieldtype: "Select",
-        options: ["", ...units],
+        options: ["", ...boardUnits.value],
         description: "Leave empty to keep each order's current unit.",
       },
       {
@@ -2305,6 +2373,7 @@ async function restoreWhiteOrders() {
 .cc-container {
   display: flex;
   flex-direction: column;
+  min-height: 100vh;
   height: 100%;
   background-color: #f3f4f6;
   font-family: 'Inter', sans-serif;
@@ -2353,6 +2422,7 @@ async function restoreWhiteOrders() {
   overflow-x: auto;
   padding: 16px;
   gap: 16px;
+  min-height: 360px;
 }
 
 /* Columns */
