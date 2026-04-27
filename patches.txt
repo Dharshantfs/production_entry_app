@@ -1,1 +1,2 @@
 production_entry.patches.repair_istable_schema_columns
+production_entry.patches.ensure_parent_child_trace_fields
