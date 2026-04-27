@@ -18,8 +18,12 @@ SLITTING_FLOW_ENABLED = True
 
 
 def _item_process_prefix(item_code):
-	ic = (item_code or "").strip()
-	return ic[:3] if len(ic) >= 3 else ""
+	ic = str(item_code or "").strip()
+	if not ic:
+		return ""
+	# Accept prefixed codes like HB-103... by using the leading numeric stream.
+	digits = "".join(ch for ch in ic if ch.isdigit())
+	return digits[:3] if len(digits) >= 3 else ""
 
 
 def _parent_child_trace_id_from_item_code(item_code):
@@ -2739,24 +2743,31 @@ def _get_color_by_code(color_code):
         return None
     
     color_code = str(color_code).strip()
+    color_code_num = "".join(ch for ch in color_code if ch.isdigit())
+    candidates = []
+    for c in [color_code, color_code_num, color_code_num.lstrip("0")]:
+        c = str(c or "").strip()
+        if c and c not in candidates:
+            candidates.append(c)
     
     # Try multiple field names  in order of preference
     fields_to_try = ["custom_color_code", "colour_code", "color_code", "short_code", "code"]
     
     for field in fields_to_try:
-        try:
-            result = frappe.db.get_value(
-                "Colour Master",
-                {field: color_code},
-                ["name", "colour_name", "color_name"],
-                as_dict=True
-            )
-            if result:
-                color_name = result.get("name") or result.get("colour_name") or result.get("color_name")
-                if color_name:
-                    return color_name.upper().strip()
-        except Exception:
-            pass
+        for code in candidates:
+            try:
+                result = frappe.db.get_value(
+                    "Colour Master",
+                    {field: code},
+                    ["name", "colour_name", "color_name"],
+                    as_dict=True
+                )
+                if result:
+                    color_name = result.get("name") or result.get("colour_name") or result.get("color_name")
+                    if color_name:
+                        return color_name.upper().strip()
+            except Exception:
+                pass
     
     return None
 
