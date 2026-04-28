@@ -4230,7 +4230,11 @@ def generate_plan_code(date_str, unit, plan_name):
     try:
         # Robust unit normalization for code generation
         u_clean = str(unit).upper().replace(" ", "")
-        if "UNIT1" in u_clean:
+        if "LAMINATIONUNIT" in u_clean:
+            u_code = "GL1"
+        elif "SLITTINGUNIT" in u_clean:
+            u_code = "GSL1"
+        elif "UNIT1" in u_clean:
             u_code = "U1"
         elif "UNIT2" in u_clean:
             u_code = "U2"
@@ -4269,9 +4273,14 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
 
     def _row_unit(raw):
         item_unit = raw
+        raw_upper = str(raw or "").upper().replace(" ", "")
         if item_unit:
-            iu_upper = str(item_unit).upper().replace(" ", "")
-            if "UNIT1" in iu_upper:
+            iu_upper = raw_upper
+            if "LAMINATIONUNIT" in iu_upper:
+                item_unit = "Lamination Unit"
+            elif "SLITTINGUNIT" in iu_upper:
+                item_unit = "Slitting Unit"
+            elif "UNIT1" in iu_upper:
                 item_unit = "Unit 1"
             elif "UNIT2" in iu_upper:
                 item_unit = "Unit 2"
@@ -4279,7 +4288,14 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
                 item_unit = "Unit 3"
             elif "UNIT4" in iu_upper:
                 item_unit = "Unit 4"
-        return normalize_planning_unit_for_select(item_unit)
+        normalized = normalize_planning_unit_for_select(item_unit)
+        # Preserve dedicated process units even if older normalizer maps them to UNASSIGNED.
+        if normalized == "UNASSIGNED":
+            if "LAMINATIONUNIT" in raw_upper:
+                return "Lamination Unit"
+            if "SLITTINGUNIT" in raw_upper:
+                return "Slitting Unit"
+        return normalized
 
     def _row_planned_date(item):
         if isinstance(item, dict):
