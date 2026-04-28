@@ -624,6 +624,25 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			limit=1,
 		)
 		if existing:
+			# Keep existing child-100 row linked to its parent SO line for board visibility.
+			updates = {}
+			if frappe.db.has_column("Planning Table", "sales_order_item"):
+				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+				if not cur_soi:
+					updates["sales_order_item"] = so_it.name
+			lam_match_existing = frappe.get_all(
+				"Planning Table",
+				filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": lam_ic},
+				fields=["name"],
+				limit=1,
+			)
+			lam_pt_existing = lam_match_existing[0].get("name") if lam_match_existing else None
+			if lam_pt_existing and frappe.db.has_column("Planning Table", "source_item"):
+				cur_src = frappe.db.get_value("Planning Table", existing[0], "source_item")
+				if not cur_src:
+					updates["source_item"] = lam_pt_existing
+			if updates:
+				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
 			continue
 
 		lam_match = frappe.get_all(
@@ -650,7 +669,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			so_item_lam_side = (getattr(so_it, "custom_lamination_side", None) or "").strip()
 
 		row = {
-			"sales_order_item": "",
+			"sales_order_item": so_it.name,
 			"item_code": fabric_ic,
 			"item_name": fabric_item_name,
 			"qty": fabric_qty,
@@ -674,6 +693,8 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		_set_trace_id_if_supported(row, trace_id)
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
+		if lam_pt_name and frappe.db.has_column("Planning Table", "source_item"):
+			row["source_item"] = lam_pt_name
 		if so_item_lam_side:
 			row["custom_lam_side_"] = so_item_lam_side
 
@@ -730,6 +751,25 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 			limit=1,
 		)
 		if existing:
+			# Keep existing child-100 row linked to its parent SO line for board visibility.
+			updates = {}
+			if frappe.db.has_column("Planning Table", "sales_order_item"):
+				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+				if not cur_soi:
+					updates["sales_order_item"] = so_it.name
+			sl_match_existing = frappe.get_all(
+				"Planning Table",
+				filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": sl_ic},
+				fields=["name"],
+				limit=1,
+			)
+			sl_pt_existing = sl_match_existing[0].get("name") if sl_match_existing else None
+			if sl_pt_existing and frappe.db.has_column("Planning Table", "source_item"):
+				cur_src = frappe.db.get_value("Planning Table", existing[0], "source_item")
+				if not cur_src:
+					updates["source_item"] = sl_pt_existing
+			if updates:
+				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
 			continue
 
 		sl_match = frappe.get_all(
@@ -751,7 +791,7 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
 
 		row = {
-			"sales_order_item": "",
+			"sales_order_item": so_it.name,
 			"item_code": fabric_ic,
 			"item_name": fabric_item_name,
 			"qty": fabric_qty,
@@ -775,6 +815,8 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 		_set_trace_id_if_supported(row, trace_id)
 		if sl_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = sl_pt_name
+		if sl_pt_name and frappe.db.has_column("Planning Table", "source_item"):
+			row["source_item"] = sl_pt_name
 
 		row_b = dict(row)
 		if hasattr(ps, "items") or ps.meta.has_field("items"):
