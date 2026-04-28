@@ -840,9 +840,8 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		row_name = str(rr.get("name") or "").strip()
 		if not row_name:
 			continue
+		# For process 103, use only strict color code extraction (item-code digits 6:9).
 		color_name = _color_from_item_code_6_to_8(rr.get("item_code"))
-		if not color_name:
-			color_name = resolve_color_name_for_planning_row(rr.get("item_code"), rr.get("item_name"), rr.get("color"))
 		if color_name:
 			frappe.db.set_value("Planning Table", row_name, "color", color_name, update_modified=False)
 			legacy = str(rr.get("source_item") or "").strip()
@@ -2695,8 +2694,7 @@ def _populate_planning_sheet_items(ps, doc):
         if _item_process_prefix(item_code_str) == "103":
             # Strict rule from operations: use colour code from item digits index 6:9 only.
             strict_col = _color_from_item_code_6_to_8(item_code_str)
-            if strict_col:
-                col = strict_col
+            col = strict_col or ""
 
         search_text = " " + " ".join(words) + " "
         search_norm = _normalize_quality_key(search_text)

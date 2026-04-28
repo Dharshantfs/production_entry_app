@@ -840,9 +840,8 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		row_name = str(rr.get("name") or "").strip()
 		if not row_name:
 			continue
+		# For process 103, use only strict color code extraction (item-code digits 6:9).
 		color_name = _color_from_item_code_6_to_8(rr.get("item_code"))
-		if not color_name:
-			color_name = resolve_color_name_for_planning_row(rr.get("item_code"), rr.get("item_name"), rr.get("color"))
 		if color_name:
 			frappe.db.set_value("Planning Table", row_name, "color", color_name, update_modified=False)
 			legacy = str(rr.get("source_item") or "").strip()
@@ -2694,7 +2693,11 @@ def _populate_planning_sheet_items(ps, doc):
                 if color_result: col = color_result
             except Exception: pass
         strict_col = _color_from_item_code_6_to_8(item_code_str)
-        if strict_col:
+        process_prefix = _item_process_prefix(item_code_str)
+        if process_prefix == "103":
+            # Slitting must use code-based color only (digits 6:9); never infer from item text.
+            col = strict_col or ""
+        elif strict_col:
             col = strict_col
 
         search_text = " " + " ".join(words) + " "
@@ -2704,13 +2707,13 @@ def _populate_planning_sheet_items(ps, doc):
                 if _normalize_quality_key(q) and _normalize_quality_key(q) in search_norm:
                     qual = q
                     break
-        if not col:
+        if not col and process_prefix != "103":
             for c in COL_LIST:
                 if (" " + c + " ") in search_text:
                     col = c
                     break
         # Fallback: substring match (longest-first COL_LIST) when spacing breaks " GOLDEN YELLOW " style match
-        if not col:
+        if not col and process_prefix != "103":
             su = search_text.upper()
             for c in COL_LIST:
                 if c in su:
