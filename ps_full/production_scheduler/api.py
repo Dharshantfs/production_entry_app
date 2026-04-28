@@ -2987,12 +2987,21 @@ def _get_color_by_code(color_code):
 
 
 def _color_from_item_code_6_to_8(item_code):
-    """Strict color resolution from item-code digits index 6:9 via Colour Master."""
+    """Color resolution from item-code numeric stream via Colour Master."""
     digits = "".join(ch for ch in str(item_code or "") if ch.isdigit())
     if len(digits) < 9:
         return ""
-    c_code = digits[6:9]
-    return str(_get_color_by_code(c_code) or "").strip().upper()
+    candidates = []
+    for start in (6, 5, 7):
+        if len(digits) >= start + 3:
+            cc = digits[start:start + 3]
+            if cc and cc not in candidates:
+                candidates.append(cc)
+    for cc in candidates:
+        c_name = str(_get_color_by_code(cc) or "").strip().upper()
+        if c_name:
+            return c_name
+    return ""
 
 
 def _normalize_color_text(v) -> str:
