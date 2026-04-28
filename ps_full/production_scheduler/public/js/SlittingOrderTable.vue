@@ -729,13 +729,13 @@ function canShowStockEntry(item) {
   if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
   if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
+  if (!item.is_lamination_parent && !item.wo_terminal) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
   const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
   const targetKg = Number(item.qty ?? 0);
   const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
   if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
-  if (item.wo_terminal) return false;
   return true;
 }
 
@@ -782,6 +782,9 @@ function getStockEntryTitle(item) {
   if (!item) return "Create Shaft Production Run";
   const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
   const pendingQty = Number(item.pending_qty || 0);
+  if (!item.is_lamination_parent && !item.wo_terminal) {
+    return "Locked: child WO must be Completed/Stopped/Closed before parent SPR.";
+  }
   if (isDraftSpr) return `Continue draft SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
   return `New SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
 }

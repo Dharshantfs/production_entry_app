@@ -1609,7 +1609,7 @@ def get_slitting_order_table_data(
         if run_col:
             sf = ",".join(["%s"] * len(child_spr_names))
             for rr in frappe.db.sql(
-                f"SELECT name, {run_col} as run_date FROM `tabShaft Production Run` WHERE name IN ({sf})",
+                f"SELECT name, {run_col} as run_date FROM `tabShaft Production Run` WHERE docstatus = 1 AND name IN ({sf})",
                 tuple(child_spr_names),
                 as_dict=True,
             ):
@@ -12524,6 +12524,32 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         if not psi_list:
             return {"status": "error", "message": "No valid Planning Sheet Items found"}
 
+        is_slitting_from_rows = any(_item_process_prefix(str((psi.get("item_code") or "")).strip()) == "103" for psi in (psi_list or []))
+
+        # Hard lock for slitting parent SPR: allow only after WO reaches terminal state.
+        if is_slitting_from_rows:
+            wo_rows = frappe.get_all(
+                "Work Order",
+                filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+                fields=["name", "status", "docstatus"],
+                order_by="creation asc",
+            )
+            terminal_statuses = {"completed", "stopped", "closed"}
+            wo_open = False
+            for wo in wo_rows or []:
+                st = str((wo.get("status") or "")).strip().lower()
+                ds = cint(wo.get("docstatus") or 0)
+                if ds == 2:
+                    continue
+                if st not in terminal_statuses:
+                    wo_open = True
+                    break
+            if wo_rows and wo_open:
+                return {
+                    "status": "error",
+                    "message": "Cannot create Slitting SPR until child WO is Completed/Stopped/Closed.",
+                }
+
         if len(existing_links) > 1:
             return {
                 "status": "error",
@@ -12550,9 +12576,11 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         spr.status = "Draft"
         spr.production_plan = pp_id
         # SPR created from Lamination Order Table (104 rows) must open with Is Lamination checked.
-        is_lamination_from_rows = any(str((psi.get("item_code") or "")).strip().startswith("104") for psi in (psi_list or []))
+        is_lamination_from_rows = any(_item_process_prefix(str((psi.get("item_code") or "")).strip()) == "104" for psi in (psi_list or []))
         if is_lamination_from_rows and frappe.get_meta("Shaft Production Run").has_field("custom_is_lamination"):
             spr.custom_is_lamination = 1
+        if is_slitting_from_rows and frappe.get_meta("Shaft Production Run").has_field("custom_is_slitting"):
+            spr.custom_is_slitting = 1
         
         # Extract order code and customer from first item's parent sheet and PP
         first_psi = psi_list[0]
