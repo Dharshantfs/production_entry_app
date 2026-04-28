@@ -630,6 +630,11 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
 				if not cur_soi:
 					updates["sales_order_item"] = so_it.name
+			# Child 100 rows must keep independent placement; do not inherit parent source/split lineage.
+			if frappe.db.has_column("Planning Table", "split_from"):
+				cur_sf = str(frappe.db.get_value("Planning Table", existing[0], "split_from") or "").strip()
+				if cur_sf:
+					updates["split_from"] = ""
 			if frappe.db.has_column("Planning Table", "source_item"):
 				cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
 				# source_item must point to Planning sheet Item; clear stale board-row links.
@@ -685,8 +690,8 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			"so_item": so_it.name,
 		}
 		_set_trace_id_if_supported(row, trace_id)
-		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
-			row["split_from"] = lam_pt_name
+		if frappe.db.has_column("Planning Table", "split_from"):
+			row["split_from"] = ""
 		if so_item_lam_side:
 			row["custom_lam_side_"] = so_item_lam_side
 
@@ -749,6 +754,11 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
 				if not cur_soi:
 					updates["sales_order_item"] = so_it.name
+			# Child 100 rows must keep independent placement; do not inherit parent source/split lineage.
+			if frappe.db.has_column("Planning Table", "split_from"):
+				cur_sf = str(frappe.db.get_value("Planning Table", existing[0], "split_from") or "").strip()
+				if cur_sf:
+					updates["split_from"] = ""
 			if frappe.db.has_column("Planning Table", "source_item"):
 				cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
 				# source_item must point to Planning sheet Item; clear stale board-row links.
@@ -799,8 +809,8 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 			"so_item": so_it.name,
 		}
 		_set_trace_id_if_supported(row, trace_id)
-		if sl_pt_name and frappe.db.has_column("Planning Table", "split_from"):
-			row["split_from"] = sl_pt_name
+		if frappe.db.has_column("Planning Table", "split_from"):
+			row["split_from"] = ""
 
 		row_b = dict(row)
 		if hasattr(ps, "items") or ps.meta.has_field("items"):
