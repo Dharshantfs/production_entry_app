@@ -4231,9 +4231,9 @@ def generate_plan_code(date_str, unit, plan_name):
         # Robust unit normalization for code generation
         u_clean = str(unit).upper().replace(" ", "")
         if "LAMINATIONUNIT" in u_clean:
-            u_code = "GL1"
+            u_code = "L1"
         elif "SLITTINGUNIT" in u_clean:
-            u_code = "GSL1"
+            u_code = "SL1"
         elif "UNIT1" in u_clean:
             u_code = "U1"
         elif "UNIT2" in u_clean:
@@ -12711,16 +12711,73 @@ def create_item_spr(pp_id, planning_sheet_item_names):
 
         is_slitting_from_rows = any(_item_process_prefix(str((psi.get("item_code") or "")).strip()) == "103" for psi in (psi_list or []))
 
-        # Hard lock for slitting parent SPR: allow only after WO reaches terminal state.
+        def _collect_child_pp_ids_for_slitting(rows):
+            """Resolve child fabric PP IDs using trace-id first, then SO-item fallback."""
+            pp_ids = set()
+            pp_fields = _psi_production_plan_fields()
+            has_trace_col = frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
+            has_so_item_col = frappe.db.has_column("Planning Table", "sales_order_item")
+            has_custom_so_item_col = frappe.db.has_column("Planning Table", "custom_sales_order_item")
+            for row in rows or []:
+                parent_sheet = str(row.get("parent") or "").strip()
+                if not parent_sheet:
+                    continue
+                parent_trace = str(row.get("custom_parent_child_trace_id") or "").strip()
+                if not parent_trace:
+                    parent_trace = _parent_child_trace_id_from_item_code(row.get("item_code"))
+                so_item = str(row.get("sales_order_item") or row.get("custom_sales_order_item") or "").strip()
+
+                where_parts = ["parent = %s", "item_code LIKE '100%%'"]
+                params = [parent_sheet]
+                if parent_trace and has_trace_col:
+                    where_parts.append("IFNULL(custom_parent_child_trace_id, '') = %s")
+                    params.append(parent_trace)
+                elif so_item and (has_so_item_col or has_custom_so_item_col):
+                    so_parts = []
+                    if has_so_item_col:
+                        so_parts.append("IFNULL(sales_order_item, '') = %s")
+                        params.append(so_item)
+                    if has_custom_so_item_col:
+                        so_parts.append("IFNULL(custom_sales_order_item, '') = %s")
+                        params.append(so_item)
+                    where_parts.append("(" + " OR ".join(so_parts) + ")")
+
+                select_cols = ["name"] + pp_fields
+                child_rows = frappe.db.sql(
+                    f"SELECT {', '.join(select_cols)} FROM `tabPlanning Table` WHERE " + " AND ".join(where_parts),
+                    tuple(params),
+                    as_dict=True,
+                )
+                for ch in child_rows or []:
+                    child_pp = ""
+                    for pf in pp_fields:
+                        v = str(ch.get(pf) or "").strip()
+                        if v:
+                            child_pp = v
+                            break
+                    if not child_pp:
+                        child_pp = str(_get_item_level_production_plan(ch.get("name")) or "").strip()
+                    if not child_pp and so_item:
+                        child_pp = str(_resolve_pp_by_sales_order_item(so_item) or "").strip()
+                    if child_pp:
+                        pp_ids.add(child_pp)
+            return pp_ids
+
+        # Hard lock for slitting parent SPR: allow only after child WO reaches terminal state.
         if is_slitting_from_rows:
-            wo_rows = frappe.get_all(
-                "Work Order",
-                filters={"production_plan": pp_id, "docstatus": ["<", 2]},
-                fields=["name", "status", "docstatus"],
-                order_by="creation asc",
-            )
+            candidate_pps = set([str(pp_id or "").strip()]) if str(pp_id or "").strip() else set()
+            candidate_pps.update(_collect_child_pp_ids_for_slitting(psi_list))
+            wo_rows = []
+            if candidate_pps:
+                wo_rows = frappe.get_all(
+                    "Work Order",
+                    filters={"production_plan": ["in", list(candidate_pps)], "docstatus": ["<", 2]},
+                    fields=["name", "status", "docstatus", "production_plan"],
+                    order_by="creation asc",
+                )
             terminal_statuses = {"completed", "stopped", "closed"}
             wo_open = False
+            open_wo = ""
             for wo in wo_rows or []:
                 st = str((wo.get("status") or "")).strip().lower()
                 ds = cint(wo.get("docstatus") or 0)
@@ -12728,11 +12785,12 @@ def create_item_spr(pp_id, planning_sheet_item_names):
                     continue
                 if st not in terminal_statuses:
                     wo_open = True
+                    open_wo = str(wo.get("name") or "").strip()
                     break
             if wo_rows and wo_open:
                 return {
                     "status": "error",
-                    "message": "Cannot create Slitting SPR until child WO is Completed/Stopped/Closed.",
+                    "message": f"Cannot create Slitting SPR until child WO is Completed/Stopped/Closed. Open WO: {open_wo}",
                 }
 
         if len(existing_links) > 1:
