@@ -1226,6 +1226,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 						label: __('Whole gross (Kg)'),
 						reqd: 1,
 					},
+					{
+						fieldname: 'produced_length_mtrs',
+						fieldtype: 'Float',
+						label: __('Produced length (Mtrs)'),
+						reqd: 1,
+					},
 				],
 				primary_action_label: __('Apply'),
 				primary_action: function (values) {
@@ -1233,6 +1239,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 					const w = flt(values.width_inch);
 					const n = cint(values.no_of_packaging);
 					const whole = flt(values.whole_gross_kg);
+					const producedLength = flt(values.produced_length_mtrs);
 					if (!jp || !jp.job_id) {
 						frappe.msgprint(__('Select a job.'));
 						return;
@@ -1245,6 +1252,10 @@ function spr_open_bundle_packaging_dialog(frm) {
 						frappe.msgprint(__('Enter a valid packaging count and whole gross weight.'));
 						return;
 					}
+					if (producedLength <= 0) {
+						frappe.msgprint(__('Enter valid produced length.'));
+						return;
+					}
 					d.hide();
 					frappe.call({
 						method:
@@ -1255,6 +1266,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 							width_inch: w,
 							no_of_packaging: n,
 							whole_gross_kg: whole,
+							produced_length_mtrs: producedLength,
 						},
 						freeze: true,
 						freeze_message: __('Applying bundle packaging...'),
@@ -1262,67 +1274,19 @@ function spr_open_bundle_packaging_dialog(frm) {
 							const m = r2.message || {};
 							frappe.show_alert({
 								message: __(
-									'Updated {0} roll(s). Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
+									'Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
 									[
 										String(m.updated_rolls != null ? m.updated_rolls : ''),
 										String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
 										String(m.total_width_inch != null ? m.total_width_inch : ''),
 										String(m.sticker_bundle_weight_kg != null ? m.sticker_bundle_weight_kg : ''),
+										String(m.remaining_unpacked_rolls != null ? m.remaining_unpacked_rolls : ''),
 									]
 								),
 								indicator: 'green',
 							});
-							
-							// Reload document and trigger calculations for all items
-							const reloadPromise = frm.reload_doc();
-							function triggerCalculationsAfterReload() {
-								// Trigger net_weight and produced_gsm calculation for all affected items
-								if (frm.doc.items) {
-									let has_changes = false;
-									frm.doc.items.forEach(function (item) {
-										if (item.gross_weight > 0) {
-											let width = flt(item.width_inch);
-											let current_net = item.net_weight || 0;
-											
-											let net_val = 0;
-											if (width > 0) {
-												let core_weight = width * (1.3 / 63);
-												net_val = spr_round_net_weight_kg(flt(item.gross_weight) - core_weight);
-											}
-											
-											if (Math.abs(current_net - net_val) > 0.01 && net_val > 0) {
-												frappe.model.set_value(item.doctype, item.name, 'net_weight', net_val);
-												has_changes = true;
-											}
-										}
-										try {
-											if (typeof spr_update_produced_gsm === 'function') {
-												spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
-											}
-										} catch(e) {}
-									});
-									if (has_changes) {
-										try { update_shaft_job_achieved_from_items(frm); } catch(e) {}
-										setTimeout(function() { frm.save(); }, 500);
-									}
-								}
-								frm.refresh_field('items');
-								// Sync total_produced_weight from items net_weight sum (real-time calculation)
-								spr_sync_total_produced_weight(frm);
-								try { schedule_spr_item_row_styles(frm); } catch(e) {}
-								[0, 100, 300, 600].forEach(function (ms) {
-									setTimeout(function () {
-										try { apply_spr_item_row_styles(frm); } catch(e) {}
-									}, ms);
-								});
-							}
-							
-							// Wait for reload to complete if it's a promise, otherwise trigger immediately
-							if (reloadPromise && typeof reloadPromise.then === 'function') {
-								reloadPromise.then(triggerCalculationsAfterReload);
-							} else {
-								setTimeout(triggerCalculationsAfterReload, 300);
-							}
+							// Keep UI stable: single reload only (avoid heavy loops that cause hanging).
+							frm.reload_doc();
 						},
 					});
 				},
