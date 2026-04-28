@@ -580,6 +580,7 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 				"custom_meter_roll_mtrs",
 			),
 			"no_of_shafts": ("no_of_shafts", "no_of_shaft", "custom_no_of_shafts"),
+			"no_of_rolls": ("no_of_rolls", "roll_count_per_shaft", "custom_no_of_rolls"),
 			"net_weight": ("net_weight", "net_weight_per_shaft", "custom_net_weight_per_shaft"),
 			"total_weight": ("total_weight_kgs", "total_weight", "custom_total_weight"),
 			"custom_total_achieved_weight": ("custom_total_achieved_weight",),
@@ -3568,6 +3569,7 @@ def build_spr_roll_result_lines_for_job(
 	job_id,
 	lamination_rolls_per_combination=None,
 	lamination_exact_roll_lines=None,
+	exact_roll_lines=None,
 ):
 	"""
 	Build Roll Production Result (SPR Item) lines for one job.
@@ -3606,7 +3608,10 @@ def build_spr_roll_result_lines_for_job(
 
 	lam_exact_n = cint(lamination_exact_roll_lines or 0)
 	lam_n = cint(lamination_rolls_per_combination or 0)
-	if lam_exact_n > 0:
+	exact_n = cint(exact_roll_lines or 0)
+	if exact_n > 0:
+		n_rolls = max(1, exact_n)
+	elif lam_exact_n > 0:
 		if not spr_doc_is_lamination(spr_doc):
 			frappe.throw(
 				_("Exact roll-line add mode is only for lamination: tick Is Lamination and use a 104 production plan.")

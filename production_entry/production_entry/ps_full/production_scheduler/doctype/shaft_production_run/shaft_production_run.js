@@ -1438,7 +1438,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
 			return;
 		}
-		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode) {
+		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode, exactRollLines) {
 			const args = {
 				shaft_production_run: frm.doc.name,
 				job_id: String(job_id),
@@ -1450,6 +1450,10 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			const lex = cint(laminationExactRollLines);
 			if (lex > 0) {
 				args.lamination_exact_roll_lines = lex;
+			}
+			const ex = cint(exactRollLines);
+			if (ex > 0) {
+				args.exact_roll_lines = ex;
 			}
 			frappe.call({
 			method:
@@ -1570,7 +1574,13 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						frappe.msgprint(__('Enter at least 1 roll line.'));
 						return;
 					}
-					invokeBuildRollLines(0, n, true);
+					if (sprUsesLaminationRollPrompt(frm)) {
+						invokeBuildRollLines(0, n, true, 0);
+					} else if (sprUsesSlittingRollPrompt(frm)) {
+						invokeBuildRollLines(0, 0, true, n);
+					} else {
+						invokeBuildRollLines(0, 0, true, n);
+					}
 				},
 				rollPromptMeta.title,
 				__('Add')
