@@ -2903,14 +2903,10 @@ def resolve_color_name_for_planning_row(item_code, item_name, existing_color=Non
     search_text = " " + " ".join(words) + " "
     col = ""
     item_code_str = str(item_code or "").strip()
-    if len(item_code_str) >= 9 and _item_process_prefix(item_code_str) in ("100", "103", "104"):
-        c_code = item_code_str[6:9]
-        try:
-            color_result = _get_color_by_code(c_code)
-            if color_result:
-                return color_result.upper().strip()
-        except Exception:
-            pass
+    # Always prioritize code-driven color (digits 6:9) for every process code.
+    color_from_code = _color_from_item_code_6_to_8(item_code_str)
+    if color_from_code:
+        return color_from_code
     for c in COL_LIST:
         if (" " + c + " ") in search_text:
             return c
@@ -3111,7 +3107,8 @@ def refresh_planning_sheet_colors(planning_sheet: str):
             r.get("item_code"), r.get("item_name"), existing_color=""
         )
         parsed = _normalize_color_text(parsed)
-        next_color = (from_so or parsed or "").upper().strip()
+        # Keep color deterministic from item code across all processes.
+        next_color = (parsed or from_so or "").upper().strip()
         if next_color and next_color != str(r.get("color") or "").strip().upper():
             frappe.db.set_value("Planning Table", r["name"], "color", next_color, update_modified=False)
             updated += 1

@@ -782,12 +782,13 @@ def extract_quality_and_color(item_name, item_code=None):
     color = ""
     item_upper = (item_name or "").upper()
 
-    # 1) Prefer item_code index decoding for 100******** pattern:
+    # 1) Prefer item_code index decoding for all process codes:
     #    quality code -> [3:6], color code -> [6:9]
     ic = str(item_code or "").strip()
-    if len(ic) >= 9 and ic.startswith("100"):
-        q_code = ic[3:6]
-        c_code = ic[6:9]
+    digits = "".join(ch for ch in ic if ch.isdigit())
+    if len(digits) >= 9:
+        q_code = digits[3:6]
+        c_code = digits[6:9]
         quality = _quality_name_by_code(q_code) or quality
         color = _color_name_by_code(c_code) or color
     
