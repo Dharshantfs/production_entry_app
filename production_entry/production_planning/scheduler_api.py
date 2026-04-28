@@ -630,17 +630,11 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
 				if not cur_soi:
 					updates["sales_order_item"] = so_it.name
-			lam_match_existing = frappe.get_all(
-				"Planning Table",
-				filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": lam_ic},
-				fields=["name"],
-				limit=1,
-			)
-			lam_pt_existing = lam_match_existing[0].get("name") if lam_match_existing else None
-			if lam_pt_existing and frappe.db.has_column("Planning Table", "source_item"):
-				cur_src = frappe.db.get_value("Planning Table", existing[0], "source_item")
-				if not cur_src:
-					updates["source_item"] = lam_pt_existing
+			if frappe.db.has_column("Planning Table", "source_item"):
+				cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
+				# source_item must point to Planning sheet Item; clear stale board-row links.
+				if cur_src and frappe.db.exists("Planning Table", cur_src) and not frappe.db.exists("Planning sheet Item", cur_src):
+					updates["source_item"] = ""
 			if updates:
 				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
 			continue
@@ -693,8 +687,6 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		_set_trace_id_if_supported(row, trace_id)
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
-		if lam_pt_name and frappe.db.has_column("Planning Table", "source_item"):
-			row["source_item"] = lam_pt_name
 		if so_item_lam_side:
 			row["custom_lam_side_"] = so_item_lam_side
 
@@ -757,17 +749,11 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
 				if not cur_soi:
 					updates["sales_order_item"] = so_it.name
-			sl_match_existing = frappe.get_all(
-				"Planning Table",
-				filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": sl_ic},
-				fields=["name"],
-				limit=1,
-			)
-			sl_pt_existing = sl_match_existing[0].get("name") if sl_match_existing else None
-			if sl_pt_existing and frappe.db.has_column("Planning Table", "source_item"):
-				cur_src = frappe.db.get_value("Planning Table", existing[0], "source_item")
-				if not cur_src:
-					updates["source_item"] = sl_pt_existing
+			if frappe.db.has_column("Planning Table", "source_item"):
+				cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
+				# source_item must point to Planning sheet Item; clear stale board-row links.
+				if cur_src and frappe.db.exists("Planning Table", cur_src) and not frappe.db.exists("Planning sheet Item", cur_src):
+					updates["source_item"] = ""
 			if updates:
 				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
 			continue
@@ -815,8 +801,6 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 		_set_trace_id_if_supported(row, trace_id)
 		if sl_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = sl_pt_name
-		if sl_pt_name and frappe.db.has_column("Planning Table", "source_item"):
-			row["source_item"] = sl_pt_name
 
 		row_b = dict(row)
 		if hasattr(ps, "items") or ps.meta.has_field("items"):
@@ -835,10 +819,11 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 	if not planning_sheet_name:
 		return 0
 	updated = 0
+	has_psi_so = frappe.db.has_column("Planning sheet Item", "sales_order_item")
 	slitting_rows = frappe.get_all(
 		"Planning Table",
 		filters={"parent": planning_sheet_name, "item_code": ["like", "103%"]},
-		fields=["name", "item_code", "source_item"],
+		fields=["name", "item_code", "item_name", "color", "sales_order_item", "source_item"],
 		limit_page_length=1000,
 	) or []
 	for rr in slitting_rows:
@@ -846,11 +831,24 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		if not row_name:
 			continue
 		color_name = _color_from_item_code_6_to_8(rr.get("item_code"))
+		if not color_name:
+			color_name = resolve_color_name_for_planning_row(rr.get("item_code"), rr.get("item_name"), rr.get("color"))
 		if color_name:
 			frappe.db.set_value("Planning Table", row_name, "color", color_name, update_modified=False)
 			legacy = str(rr.get("source_item") or "").strip()
 			if legacy and frappe.db.exists("Planning sheet Item", legacy):
 				frappe.db.set_value("Planning sheet Item", legacy, "color", color_name, update_modified=False)
+			elif has_psi_so and str(rr.get("sales_order_item") or "").strip():
+				frappe.db.sql(
+					"""
+					UPDATE `tabPlanning sheet Item`
+					SET color = %s
+					WHERE parent = %s
+					  AND item_code LIKE '103%%'
+					  AND IFNULL(sales_order_item, '') = %s
+					""",
+					(color_name, planning_sheet_name, str(rr.get("sales_order_item") or "").strip()),
+				)
 	if frappe.db.has_column("Planning Table", "unit"):
 		frappe.db.sql(
 			"""
