@@ -2946,6 +2946,24 @@ def _get_color_by_code(color_code):
     cm_cols = set(frappe.db.get_table_columns("Colour Master") or [])
     fields_to_try = [f for f in fields_to_try if f in cm_cols]
     
+    def _normalized_code_tokens(v):
+        s = str(v or "").strip()
+        if not s:
+            return set()
+        d = "".join(ch for ch in s if ch.isdigit())
+        out = {s}
+        if d:
+            out.add(d)
+            out.add(d.lstrip("0") or "0")
+            out.add((d.lstrip("0") or "0").zfill(3))
+            if len(d) >= 3:
+                out.add(d[-3:])
+        return {x.strip() for x in out if str(x or "").strip()}
+
+    wanted_tokens = set()
+    for c in candidates:
+        wanted_tokens |= _normalized_code_tokens(c)
+
     for field in fields_to_try:
         for code in candidates:
             try:
@@ -2996,7 +3014,33 @@ def _get_color_by_code(color_code):
                     return str(color_name).upper().strip()
         except Exception:
             pass
-    
+
+    # Last-resort Python fallback for messy code formats in Colour Master.
+    try:
+        cols = set(frappe.db.get_table_columns("Colour Master") or [])
+        code_cols = [c for c in ("colour_code", "custom_colour_code", "custom_color_code", "color_code", "short_code", "code") if c in cols]
+        name_cols = [c for c in ("colour_name", "custom_colour_name", "color_name", "colour", "color") if c in cols]
+        if code_cols:
+            select_cols = list(dict.fromkeys(["name"] + code_cols + name_cols))
+            rows = frappe.get_all("Colour Master", fields=select_cols, limit_page_length=0) or []
+            for rr in rows:
+                row_tokens = set()
+                for c in code_cols:
+                    row_tokens |= _normalized_code_tokens(rr.get(c))
+                if not row_tokens.intersection(wanted_tokens):
+                    continue
+                color_name = ""
+                for ncol in ("colour_name", "custom_colour_name", "color_name", "colour", "color"):
+                    if ncol in rr and str(rr.get(ncol) or "").strip():
+                        color_name = str(rr.get(ncol)).strip()
+                        break
+                if not color_name:
+                    color_name = str(rr.get("name") or "").strip()
+                if color_name:
+                    return color_name.upper()
+    except Exception:
+        pass
+
     return None
 
 

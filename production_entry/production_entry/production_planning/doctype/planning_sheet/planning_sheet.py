@@ -702,18 +702,61 @@ def _color_name_by_code(c_code: str) -> str:
     if not c_code:
         return ""
     c_code = str(c_code).strip()
-    for fn in ("custom_color_code", "colour_code", "color_code", "short_code", "code"):
+
+    def _norm_tokens(v: str):
+        s = str(v or "").strip()
+        if not s:
+            return set()
+        d = "".join(ch for ch in s if ch.isdigit())
+        out = {s}
+        if d:
+            out.add(d)
+            out.add(d.lstrip("0") or "0")
+            out.add((d.lstrip("0") or "0").zfill(3))
+            if len(d) >= 3:
+                out.add(d[-3:])
+        return {x.strip() for x in out if str(x or "").strip()}
+
+    wanted = _norm_tokens(c_code)
+    for fn in ("colour_code", "custom_colour_code", "custom_color_code", "color_code", "short_code", "code"):
         try:
             row = frappe.db.get_value(
                 "Colour Master",
                 {fn: c_code},
-                ["name", "colour_name", "color_name"],
+                ["name", "colour_name", "custom_colour_name", "color_name", "colour", "color"],
                 as_dict=True,
             )
             if row:
-                return str(row.get("name") or row.get("colour_name") or row.get("color_name") or "").strip().upper()
+                return str(
+                    row.get("colour_name")
+                    or row.get("custom_colour_name")
+                    or row.get("color_name")
+                    or row.get("colour")
+                    or row.get("color")
+                    or row.get("name")
+                    or ""
+                ).strip().upper()
         except Exception:
             continue
+    # Fallback: compare normalized tokens to support messy code formats.
+    try:
+        cols = set(frappe.db.get_table_columns("Colour Master") or [])
+        code_cols = [c for c in ("colour_code", "custom_colour_code", "custom_color_code", "color_code", "short_code", "code") if c in cols]
+        name_cols = [c for c in ("colour_name", "custom_colour_name", "color_name", "colour", "color") if c in cols]
+        if code_cols:
+            rows = frappe.get_all("Colour Master", fields=list(dict.fromkeys(["name"] + code_cols + name_cols)), limit_page_length=0) or []
+            for rr in rows:
+                row_tokens = set()
+                for c in code_cols:
+                    row_tokens |= _norm_tokens(rr.get(c))
+                if not row_tokens.intersection(wanted):
+                    continue
+                for ncol in ("colour_name", "custom_colour_name", "color_name", "colour", "color", "name"):
+                    v = str(rr.get(ncol) or "").strip()
+                    if v:
+                        return v.upper()
+    except Exception:
+        pass
     return ""
 
 
