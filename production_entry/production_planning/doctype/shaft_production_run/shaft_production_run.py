@@ -1475,6 +1475,8 @@ class ShaftProductionRun(Document):
 		ul = u_raw.lower()
 		if "lamination" in ul:
 			return 5
+		if "slitting" in ul:
+			return 6
 		m = re.search(r"(\d+)", u_raw)
 		return int(m.group(1)) if m else 0
 

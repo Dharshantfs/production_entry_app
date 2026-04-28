@@ -1551,7 +1551,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 		});
 		}
 
-		if (sprUsesLaminationRollPrompt(frm)) {
+		const rollPromptMeta = sprRollPromptMeta(frm, row);
+		if (rollPromptMeta) {
 			frappe.prompt(
 				[
 					{
@@ -1559,9 +1560,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						fieldtype: 'Int',
 						label: __('Roll lines to add'),
 						reqd: 1,
-						description: __(
-							'Adds exactly this many new roll lines for the selected job.'
-						),
+						default: cint(rollPromptMeta.defaultLines) || 1,
+						description: rollPromptMeta.description,
 					},
 				],
 				function (values) {
@@ -1572,7 +1572,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					}
 					invokeBuildRollLines(0, n, true);
 				},
-				__('Lamination — add roll lines'),
+				rollPromptMeta.title,
 				__('Add')
 			);
 			return;
@@ -2070,6 +2070,30 @@ function sprShaftJobRowKey(sj) {
 
 function sprUsesLaminationRollPrompt(frm) {
 	return frm && frm.doc && cint(frm.doc.custom_is_lamination);
+}
+
+function sprUsesSlittingRollPrompt(frm) {
+	return frm && frm.doc && cint(frm.doc.custom_is_slitting);
+}
+
+function sprRollPromptMeta(frm, row) {
+	const fromPp = cint((row && row.no_of_rolls) || 0);
+	const defaultLines = fromPp > 0 ? fromPp : 1;
+	if (sprUsesSlittingRollPrompt(frm)) {
+		return {
+			title: __('Slitting — add roll lines'),
+			description: __('Defaults to No. of Rolls from Production Plan for this job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	if (sprUsesLaminationRollPrompt(frm)) {
+		return {
+			title: __('Lamination — add roll lines'),
+			description: __('Adds exactly this many new roll lines for the selected job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	return null;
 }
 
 function sprToggleLaminationRollUi(frm) {
