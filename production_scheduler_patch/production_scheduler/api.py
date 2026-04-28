@@ -2936,9 +2936,15 @@ def _get_color_by_code(color_code):
         c = str(c or "").strip()
         if c and c not in candidates:
             candidates.append(c)
+    if color_code_num:
+        z3 = color_code_num.zfill(3)
+        if z3 not in candidates:
+            candidates.append(z3)
     
-    # Try multiple field names  in order of preference
+    # Try multiple field names in order of preference
     fields_to_try = ["custom_color_code", "colour_code", "color_code", "short_code", "code"]
+    cm_cols = set(frappe.db.get_table_columns("Colour Master") or [])
+    fields_to_try = [f for f in fields_to_try if f in cm_cols]
     
     for field in fields_to_try:
         for code in candidates:
@@ -2955,6 +2961,27 @@ def _get_color_by_code(color_code):
                         return color_name.upper().strip()
             except Exception:
                 pass
+        try:
+            ph = ", ".join(["%s"] * len(candidates))
+            rows = frappe.db.sql(
+                f"""
+                SELECT name, colour_name, color_name
+                FROM `tabColour Master`
+                WHERE IFNULL(TRIM(CAST({field} AS CHAR)), '') IN ({ph})
+                   OR IFNULL(TRIM(LEADING '0' FROM TRIM(CAST({field} AS CHAR))), '') IN ({ph})
+                ORDER BY modified DESC
+                LIMIT 1
+                """,
+                tuple(candidates + candidates),
+                as_dict=True,
+            )
+            if rows:
+                rr = rows[0] or {}
+                color_name = rr.get("colour_name") or rr.get("color_name") or rr.get("name")
+                if color_name:
+                    return str(color_name).upper().strip()
+        except Exception:
+            pass
     
     return None
 
