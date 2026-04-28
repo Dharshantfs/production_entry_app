@@ -95,6 +95,7 @@
             <th>ACHIEVED LENGTH (MTR)</th>
             <th>PRODUCED LAMINATION WEIGHT (KGS)</th>
             <th>PRODUCED FABRIC WT (KG)</th>
+            <th>FABRIC READY DATE</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
           </tr>
@@ -102,7 +103,7 @@
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-              <td colspan="16" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+              <td colspan="17" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                   <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -115,7 +116,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td colspan="13" style="text-align:center; color:#94a3b8; font-style:italic;">No lamination orders (maintenance day)</td>
+              <td colspan="14" style="text-align:center; color:#94a3b8; font-style:italic;">No lamination orders (maintenance day)</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -150,6 +151,7 @@
             <td class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
               {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
             </td>
+            <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
