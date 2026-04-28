@@ -5407,6 +5407,8 @@ def _get_color_chart_data_impl(
             items = [it for it in items if it.planningSheet not in wo_sheets]
         
         # Deduplicate if mode is pull or board
+        if items and bps == "only_100":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "100"]
         return _deduplicate_items(items)
 
     # PULL_BOARD MODE (Production Board only): items already ON the board for this date
@@ -5495,6 +5497,8 @@ def _get_color_chart_data_impl(
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") != "103"]
         elif items and bps == "exclude_special":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") not in ("103", "104")]
+        elif items and bps == "only_100":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "100"]
         return _deduplicate_items(items) if items else []
 
     # Support both single date and range
@@ -6572,6 +6576,8 @@ def _get_color_chart_data_impl(
                 if bps == "exclude_103" and icp == "103":
                     continue
                 if bps == "exclude_special" and icp in ("103", "104"):
+                    continue
+                if bps == "only_100" and icp != "100":
                     continue
                 if bps == "lamination_only" and icp != "104":
                     continue
