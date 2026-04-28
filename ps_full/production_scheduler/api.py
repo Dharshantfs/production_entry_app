@@ -2942,7 +2942,7 @@ def _get_color_by_code(color_code):
             candidates.append(z3)
     
     # Try multiple field names in order of preference
-    fields_to_try = ["custom_color_code", "colour_code", "color_code", "short_code", "code"]
+    fields_to_try = ["custom_color_code", "custom_colour_code", "colour_code", "color_code", "short_code", "code"]
     cm_cols = set(frappe.db.get_table_columns("Colour Master") or [])
     fields_to_try = [f for f in fields_to_try if f in cm_cols]
     
@@ -2952,11 +2952,18 @@ def _get_color_by_code(color_code):
                 result = frappe.db.get_value(
                     "Colour Master",
                     {field: code},
-                    ["name", "colour_name", "color_name"],
+                    ["name", "colour_name", "custom_colour_name", "color_name", "colour", "color"],
                     as_dict=True
                 )
                 if result:
-                    color_name = result.get("colour_name") or result.get("color_name") or result.get("name")
+                    color_name = (
+                        result.get("colour_name")
+                        or result.get("custom_colour_name")
+                        or result.get("color_name")
+                        or result.get("colour")
+                        or result.get("color")
+                        or result.get("name")
+                    )
                     if color_name:
                         return color_name.upper().strip()
             except Exception:
@@ -2965,7 +2972,7 @@ def _get_color_by_code(color_code):
             ph = ", ".join(["%s"] * len(candidates))
             rows = frappe.db.sql(
                 f"""
-                SELECT name, colour_name, color_name
+                SELECT name, colour_name, custom_colour_name, color_name, colour, color
                 FROM `tabColour Master`
                 WHERE IFNULL(TRIM(CAST({field} AS CHAR)), '') IN ({ph})
                    OR IFNULL(TRIM(LEADING '0' FROM TRIM(CAST({field} AS CHAR))), '') IN ({ph})
@@ -2977,7 +2984,14 @@ def _get_color_by_code(color_code):
             )
             if rows:
                 rr = rows[0] or {}
-                color_name = rr.get("colour_name") or rr.get("color_name") or rr.get("name")
+                color_name = (
+                    rr.get("colour_name")
+                    or rr.get("custom_colour_name")
+                    or rr.get("color_name")
+                    or rr.get("colour")
+                    or rr.get("color")
+                    or rr.get("name")
+                )
                 if color_name:
                     return str(color_name).upper().strip()
         except Exception:
