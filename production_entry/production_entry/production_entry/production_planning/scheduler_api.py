@@ -12769,8 +12769,8 @@ def create_item_spr(pp_id, planning_sheet_item_names):
 
         # Hard lock for slitting parent SPR: allow only after child WO reaches terminal state.
         if is_slitting_from_rows:
-            candidate_pps = set([str(pp_id or "").strip()]) if str(pp_id or "").strip() else set()
-            candidate_pps.update(_collect_child_pp_ids_for_slitting(psi_list))
+            # IMPORTANT: lock must be based on child fabric WOs only (not parent PP WOs).
+            candidate_pps = _collect_child_pp_ids_for_slitting(psi_list)
             wo_rows = []
             if candidate_pps:
                 wo_rows = frappe.get_all(
@@ -12779,7 +12779,7 @@ def create_item_spr(pp_id, planning_sheet_item_names):
                     fields=["name", "status", "docstatus", "production_plan"],
                     order_by="creation asc",
                 )
-            terminal_statuses = {"completed", "stopped", "closed"}
+            terminal_statuses = {"completed", "stopped", "stoped", "closed"}
             wo_open = False
             open_wo = ""
             for wo in wo_rows or []:
