@@ -33,7 +33,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Unit",
-   "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4\nMixed",
+   "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4\nUNASSIGNED\nLamination Unit\nSlitting Unit",
    "reqd": 1
   },
   {
