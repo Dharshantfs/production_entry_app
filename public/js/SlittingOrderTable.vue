@@ -813,9 +813,10 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     frappe.msgprint("Planning Sheet not found");
     return;
   }
+  const printFormat = "Assembly Item - Raw Material";
   let ppId = String(directPpId || "").trim();
   if (ppId) {
-    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(printFormat)}&trigger_print=0`;
     window.open(printUrl, "_blank");
     return;
   }
@@ -831,7 +832,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     if (res.message && res.message.status === "ok") {
       ppId = String(res.message.pp_id || "").trim();
       if (ppId) {
-        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(printFormat)}&trigger_print=0`;
         window.open(printUrl, "_blank");
       } else {
         frappe.msgprint("No Production Plan found");

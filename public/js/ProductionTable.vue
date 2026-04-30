@@ -1849,6 +1849,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     frappe.msgprint("Planning Sheet not found for this order");
     return;
   }
+  const printFormat = "Assembly Item - Raw Material";
   
   try {
     // STRICT PRIORITY: Item-level PP ID overrides everything. NO fallback allowed.
@@ -1866,7 +1867,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     // WITHOUT calling API fallback, which might return different PP from Planning Sheet level
     if (ppId) {
       console.log("✅ Using ITEM-LEVEL PP ID directly (NO API fallback):", ppId);
-      const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+      const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(printFormat)}&trigger_print=0`;
       window.open(printUrl, '_blank');
       return;
     }
@@ -1887,7 +1888,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
       console.log("📌 API resolved PP (fallback):", ppId);
       
       if (ppId) {
-        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(printFormat)}&trigger_print=0`;
         window.open(printUrl, '_blank');
       } else {
         frappe.msgprint("No Production Plan found for this item");
