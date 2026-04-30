@@ -5897,6 +5897,11 @@ def _get_color_chart_data_impl(
                         except Exception:
                             pass
 
+            # Legacy rows may only have a sheet-level or SO-level PP. Resolve it here so UI buttons
+            # appear for existing records even when the item-level link was never written.
+            if not item_pp:
+                item_pp = sheet_pp_map.get(sheet.name) or (sheet.sales_order and so_pp_map.get(sheet.sales_order)) or ""
+
             # Strict per-item production mapping (no header/plan total fallback).
             item_level_produced = None
             item_level_wo_count = 0
@@ -6109,7 +6114,7 @@ def _get_color_chart_data_impl(
                 "wo_open": wo_open,
                 "wo_terminal": wo_terminal,
                 "isSplit": item.get("is_split"),
-                "pp_id": item_pp or "",  # Item-level production plan ID for direct PP view routing
+                "pp_id": item_pp or sheet_pp_map.get(sheet.name) or (sheet.sales_order and so_pp_map.get(sheet.sales_order)) or "",
                 "pp_docstatus": pp_docstatus,
                 "spr_name": spr_name,  # SPR linked to PP (validated)
                 "spr_docstatus": spr_docstatus,

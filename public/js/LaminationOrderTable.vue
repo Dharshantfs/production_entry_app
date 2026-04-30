@@ -153,13 +153,12 @@
             </td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">
-              <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
-              <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>
+              <button v-if="row.pp_id || row.has_pp" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
             <td class="cell-center">
               <div class="pt-stock-cell">
-                <div v-if="row.pp_id" class="pt-pill-row">
+                <div v-if="row.pp_id || row.has_pp" class="pt-pill-row">
                   <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
                   <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
@@ -167,7 +166,7 @@
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
                 <template v-if="row.is_lamination_parent && !row.parent_wo_terminal && Number(row.pp_docstatus) === 1 && row.child_wo_created">
                   <button
-                    v-if="!row.parent_wo_name"
+                    v-if="!row.parent_wo_name && (row.pp_id || row.has_pp)"
                     type="button"
                     @click="startParentWO(row)"
                     class="cc-pp-btn pt-btn-entry"
@@ -196,9 +195,9 @@
                   >Open WO</button>
                   <div v-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Complete child WO first</div>
                 </template>
-                <div v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && row.pp_id && Number(row.pp_docstatus) === 1 && !row.child_wo_created" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Start fabric WO first</div>
+                <div v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && (row.pp_id || row.has_pp) && Number(row.pp_docstatus) === 1 && !row.child_wo_created" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Start fabric WO first</div>
                 <button
-                  v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
+                  v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && !(row.pp_id || row.has_pp)"
                   type="button"
                   disabled
                   class="cc-pp-btn pt-btn-entry"
@@ -220,9 +219,9 @@
                   :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
-                <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="!row.is_lamination_parent && row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
-                <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
+                <span v-else-if="(row.pp_id || row.has_pp) && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
+                <span v-else-if="!row.is_lamination_parent && (row.pp_id || row.has_pp) && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
+                <span v-else-if="!row.is_lamination_parent && !(row.pp_id || row.has_pp)" style="color:#999;font-size:10px;">No PP</span>
               </div>
             </td>
           </tr>
@@ -768,7 +767,7 @@ function itemSprPrimaryButtonTitle(item) {
 }
 
 function canShowStockEntry(item) {
-  if (!item || !item.pp_id) return false;
+  if (!item || !(item.pp_id || item.has_pp)) return false;
   if (item.is_lamination_parent && !item.parent_wo_started) return false;
   if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
