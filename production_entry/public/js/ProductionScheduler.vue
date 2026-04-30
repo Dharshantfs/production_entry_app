@@ -1964,6 +1964,15 @@ async function fetchData() {
     fetchTimeout = setTimeout(async () => {
       isLoading.value = true;
       try {
+        try {
+          const path = String(window.location.pathname || "").toLowerCase();
+          if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
+          if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
+        } catch (e) {}
+        if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
+          filterOrderDate.value = frappe.datetime.get_today();
+        }
+
         let args = { party_code: filterPartyCode.value };
         
         if (viewScope.value === 'monthly') {
@@ -2138,21 +2147,17 @@ function initFlatpickr() {
 }
 
 onMounted(() => {
-    try {
-      const r = frappe.get_route && frappe.get_route();
-      const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
-      isLaminationBoard.value = routeName === "lamination board";
-      isSlittingBoard.value = routeName === "slitting board";
-    } catch (e) {
-      isLaminationBoard.value = false;
-      isSlittingBoard.value = false;
-    }
-
-    // Fallback route detection for first-load race (route may not be ready on first mount).
+    // Path-first: frappe.get_route can be unset on first mount; wrong board filters -> empty grid.
     try {
       const path = String(window.location.pathname || "").toLowerCase();
       if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
       if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
+    } catch (e) {}
+    try {
+      const r = frappe.get_route && frappe.get_route();
+      const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
+      if (routeName === "lamination board") isLaminationBoard.value = true;
+      if (routeName === "slitting board") isSlittingBoard.value = true;
     } catch (e) {}
 
     // 1. Load CSS

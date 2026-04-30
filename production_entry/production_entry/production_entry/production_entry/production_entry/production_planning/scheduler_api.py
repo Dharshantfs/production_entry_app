@@ -5352,13 +5352,25 @@ def reject_sequence(date, unit, plan_name="Default"):
     return {"status": "success"}
 
 @frappe.whitelist()
-def get_pending_approvals():
-    """Returns color sequence arrangements for history and approval dashboard."""
-    return frappe.get_all("Color Sequence Approval", 
-        filters={"status": ["!=", "Approved"]},
+def get_pending_approvals(limit=200):
+    """
+    Colour / arrangement dashboard list (historical).
+
+    Previously this hid Approved sequences, which removed rows right after approve.
+    Include all statuses so Approved/Rejected stay visible until pruned by limit.
+    """
+    lim = None
+    try:
+        lim = min(max(int(limit), 10), 500)
+    except Exception:
+        lim = 200
+
+    return frappe.get_all(
+        "Color Sequence Approval",
+        filters={},
         fields=["name", "date", "unit", "status", "plan_name", "sequence_data", "modified", "owner"],
         order_by="modified desc",
-        limit=100
+        limit=lim,
     )
 
 @frappe.whitelist()
