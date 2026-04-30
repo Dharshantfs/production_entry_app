@@ -18,7 +18,46 @@ LAMINATION_FLOW_ENABLED = True
 
 def _item_process_prefix(item_code):
 	ic = (item_code or "").strip()
-	return ic[:3] if len(ic) >= 3 else ""
+	if not ic:
+		return ""
+	if "-" in ic:
+		parts = ic.split("-", 1)
+		if len(parts) == 2:
+			rest = str(parts[1] or "").strip()
+			m = re.search(r"(\d{3})", rest)
+			if m:
+				return m.group(1)
+	digits = "".join(ch for ch in ic if ch.isdigit())
+	return digits[:3] if len(digits) >= 3 else ""
+
+
+def _parent_child_trace_id_from_item_code(item_code):
+	"""Create readable parent-child trace id for legacy and revised 107 item codes."""
+	ic = str(item_code or "").strip().upper()
+	if not ic:
+		return ""
+	decoded_107 = _decode_process_107_item_code(ic)
+	if decoded_107:
+		design = str(decoded_107.get("design") or "").strip()
+		gsm = str(cint(decoded_107.get("gsm") or 0)).zfill(3)
+		width = str(decoded_107.get("width_code") or "").zfill(4)
+		if design and width:
+			return f"{design}-107-{gsm}-{width}"
+		return f"107-{decoded_107.get('colour_code')}-{gsm}-{width}"
+
+	left = ic.rsplit("-", 1)[0] if "-" in ic else ic
+	digits = "".join(ch for ch in left if ch.isdigit())
+	if len(digits) < 16:
+		return ""
+	process = _item_process_prefix(ic)
+	if process not in ("103", "104"):
+		return ""
+	colour = digits[6:9]
+	gsm = digits[9:12]
+	width = digits[12:16]
+	if not colour or not gsm or not width:
+		return ""
+	return f"{process}-{colour}-{gsm}-{width}"
 
 
 
@@ -471,6 +510,184 @@ def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty):
 		if (row.item_code or "").strip() == fabric_item_code:
 			return flt(lamination_so_qty) * flt(row.qty) / fg_qty
 	return lamination_so_qty
+
+
+def _child_qty_from_bom(bom_name, child_item_code, parent_so_qty):
+	"""Generic BOM child quantity from parent quantity."""
+	bom = frappe.get_doc("BOM", bom_name)
+	fg_qty = flt(bom.quantity) or 1.0
+	if fg_qty <= 0:
+		fg_qty = 1.0
+	parent_so_qty = flt(parent_so_qty) or 0
+	for row in bom.items or []:
+		if (row.item_code or "").strip() == (child_item_code or "").strip():
+			return flt(parent_so_qty) * flt(row.qty) / fg_qty
+	return parent_so_qty
+
+
+def _get_bopp_child_items_from_parent_item(parent_item_code):
+	"""Resolve 107-parent BOM children: one 100* + one PB-*."""
+	item_code = (parent_item_code or "").strip()
+	if _item_process_prefix(item_code) != "107":
+		frappe.throw(_("BOPP parent item must have process code 107."))
+	if not frappe.db.exists("Item", item_code):
+		frappe.throw(_("Item {0} does not exist.").format(item_code))
+
+	bom_name = frappe.db.get_value(
+		"BOM",
+		{"item": item_code, "docstatus": 1, "is_active": 1, "is_default": 1},
+		"name",
+		order_by="modified desc",
+	) or frappe.db.get_value(
+		"BOM",
+		{"item": item_code, "docstatus": 1, "is_active": 1},
+		"name",
+		order_by="is_default desc, modified desc",
+	)
+	if not bom_name:
+		frappe.throw(_("No active submitted BOM for BOPP item {0}.").format(item_code))
+
+	bom = frappe.get_doc("BOM", bom_name)
+	fabric_codes = []
+	pb_codes = []
+	for row in bom.items or []:
+		ic = str(row.item_code or "").strip()
+		if ic.startswith("100"):
+			fabric_codes.append(ic)
+		if ic.upper().startswith("PB-"):
+			pb_codes.append(ic)
+	if not fabric_codes:
+		frappe.throw(_("BOM {0} has no 100* child for {1}.").format(bom_name, item_code))
+	if not pb_codes:
+		frappe.throw(_("BOM {0} has no PB-* child for {1}.").format(bom_name, item_code))
+
+	return {"bom_no": bom_name, "fabric_item_code": fabric_codes[0], "pb_item_code": pb_codes[0]}
+
+
+def _specs_from_nonfabric_child_item(child_ic, so_it, parent_row):
+	"""Specs for PB child rows (non-100)."""
+	item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
+	raw_txt = f"{child_ic} {item_name}"
+	gsm, width = _parse_gsm_width_from_item_text(raw_txt)
+	qual = str(
+		frappe.db.get_value("Item", child_ic, "custom_quality")
+		or frappe.db.get_value("Item", child_ic, "quality")
+		or "GENERIC"
+	).strip() or "GENERIC"
+	col = resolve_color_name_for_planning_row(child_ic, item_name, existing_color="")
+	m_roll = flt(getattr(so_it, "custom_meter_per_roll", 0) or 0)
+	wt = 0.0
+	if gsm > 0 and width > 0 and m_roll > 0:
+		wt = flt(gsm * width * m_roll * 0.0254) / 1000
+	meter = cint(parent_row.meter) if parent_row else 0
+	meter_per_roll = cint(parent_row.meter_per_roll) if parent_row else cint(m_roll)
+	no_of_rolls = cint(parent_row.no_of_rolls) if parent_row else cint(getattr(so_it, "custom_no_of_rolls", 0) or 0)
+	return {
+		"gsm": cint(gsm) if gsm else 0,
+		"width_inch": flt(width),
+		"color": (col or "").strip() or "Unknown Color",
+		"quality": qual,
+		"custom_quality": qual,
+		"weight_per_roll": wt,
+		"meter": meter,
+		"meter_per_roll": meter_per_roll,
+		"no_of_rolls": no_of_rolls,
+	}
+
+
+def _sync_bopp_child_planning_rows(planning_sheet_name):
+	"""For each 107 parent SO line, append child 100 + PB rows to legacy+board tables."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	if not ps.get("sales_order"):
+		return
+	so = frappe.get_doc("Sales Order", ps.sales_order)
+	parent_field = _get_pt_parentfield()
+	changed = False
+
+	for so_it in so.items or []:
+		parent_ic = str(so_it.item_code or "").strip()
+		if _item_process_prefix(parent_ic) != "107":
+			continue
+		trace_id = _parent_child_trace_id_from_item_code(parent_ic)
+		try:
+			res = _get_bopp_child_items_from_parent_item(parent_ic)
+		except Exception:
+			continue
+
+		parent_match = frappe.get_all(
+			"Planning Table",
+			filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": parent_ic},
+			fields=["name"],
+			limit=1,
+		)
+		parent_pt_name = parent_match[0].get("name") if parent_match else None
+		parent_row = frappe.get_doc("Planning Table", parent_pt_name) if parent_pt_name else None
+
+		for child_ic in [res.get("fabric_item_code"), res.get("pb_item_code")]:
+			child_ic = str(child_ic or "").strip()
+			if not child_ic:
+				continue
+			existing = frappe.get_all(
+				"Planning Table",
+				filters={"parent": ps.name, "item_code": child_ic, "so_item": so_it.name},
+				pluck="name",
+				limit=1,
+			)
+			if existing:
+				if trace_id and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+					frappe.db.set_value("Planning Table", existing[0], "custom_parent_child_trace_id", trace_id, update_modified=False)
+				continue
+
+			child_qty = _child_qty_from_bom(res["bom_no"], child_ic, flt(so_it.qty))
+			if child_ic.startswith("100"):
+				specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_row)
+			else:
+				specs = _specs_from_nonfabric_child_item(child_ic, so_it, parent_row)
+			child_item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
+			child_unit = compute_default_production_unit(specs.get("color") or "", flt(specs.get("width_inch") or 0), child_ic)
+			child_planned_date = getdate(ps.ordered_date) if _is_white_color(specs.get("color") or "") else None
+			row = {
+				"sales_order_item": so_it.name,
+				"item_code": child_ic,
+				"item_name": child_item_name,
+				"qty": child_qty,
+				"uom": so_it.uom,
+				"gsm": specs["gsm"],
+				"width_inch": specs["width_inch"],
+				"color": specs["color"],
+				"quality": specs["quality"],
+				"custom_quality": specs["custom_quality"],
+				"unit": child_unit,
+				"meter": specs["meter"],
+				"meter_per_roll": specs["meter_per_roll"],
+				"no_of_rolls": specs["no_of_rolls"],
+				"weight_per_roll": specs["weight_per_roll"],
+				"planned_date": child_planned_date,
+				"plan_name": ps.get("custom_plan_name"),
+				"party_code": ps.party_code,
+				"planning_sheet": ps.name,
+				"so_item": so_it.name,
+			}
+			if trace_id and (
+				frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
+				or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")
+			):
+				row["custom_parent_child_trace_id"] = trace_id
+			if frappe.db.has_column("Planning Table", "split_from"):
+				row["split_from"] = ""
+
+			row_b = dict(row)
+			if hasattr(ps, "items") or ps.meta.has_field("items"):
+				ps.append("items", row_b)
+			ps.append(parent_field, dict(row))
+			changed = True
+
+	if changed:
+		ps.flags.ignore_permissions = True
+		ps.save()
+		frappe.db.commit()
 
 
 def _sync_lamination_fabric_planning_rows(planning_sheet_name):
@@ -1217,14 +1434,9 @@ def get_lamination_order_table_data(
     for r in rows:
         nm = r.get("itemName") or r.get("item_name")
         ex = by_psi.get(nm) if nm else None
-        # Distinguish parent (lamination) SPR vs child (fabric) SPR explicitly
-        parent_spr = ((ex.get("spr_for_meter") if ex else "") or (r.get("spr_name") or "") or "").strip()
-        child_spr = (ex.get("child_fabric_spr_name") or "") if ex else ""
-        # Parent SPR meters/weights
-        achieved_m = flt(spr_meters.get(parent_spr)) if parent_spr else 0.0
-        lamination_weight = flt(spr_weights.get(parent_spr)) if parent_spr else 0.0
-        # Child fabric SPR weight (do not apply to parent unless explicitly linked)
-        child_fabric_weight = flt(spr_weights.get(child_spr)) if child_spr else 0.0
+        spr_nm = ((ex.get("spr_for_meter") if ex else "") or (r.get("spr_name") or "") or "").strip()
+        achieved_m = flt(spr_meters.get(spr_nm)) if spr_nm else 0.0
+        achieved_w = flt(spr_weights.get(spr_nm)) if spr_nm else 0.0
         row = dict(r)
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
         if not row["lamination_booking_id"] and ex and ex.get("ps_name"):
@@ -1244,14 +1456,9 @@ def get_lamination_order_table_data(
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known
         row["achieved_meter"] = achieved_m
-        # Set lamination produced weight only from the parent SPR (do not mix with child SPR)
-        if lamination_weight > 0:
-            row["actual_production_weight_kgs"] = lamination_weight
-            row["total_achieved_weight_kgs"] = lamination_weight
-        # For robustness: if there is a child fabric SPR but no child WO entries, expose the child SPR weight
-        # via the child_wo_produced_kg field as a fallback so the UI shows correct fabric produced kilos.
-        if not row.get("child_wo_produced_kg") and child_fabric_weight > 0:
-            row["child_wo_produced_kg"] = child_fabric_weight
+        if achieved_w > 0:
+            row["actual_production_weight_kgs"] = achieved_w
+            row["total_achieved_weight_kgs"] = achieved_w
         row["shift_label"] = ((ex.get("shift_label") if ex else "") or "DAY").upper()
         item_code = str(row.get("itemCode") or row.get("item_code") or "").strip()
         is_parent_lamination = item_code.startswith("104")
@@ -8078,6 +8285,7 @@ def create_planning_sheet_from_so(doc):
         frappe.db.commit()
         _link_board_planned_rows_to_legacy_items(ps.name)
         _sync_lamination_fabric_planning_rows(ps.name)
+        _sync_bopp_child_planning_rows(ps.name)
         final_doc = frappe.get_doc("Planning sheet", ps.name)
         update_sheet_plan_codes(final_doc, include_legacy=True)
         frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â£ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  Planning Sheet <b>{ps.name}</b> Created!")
@@ -8349,6 +8557,7 @@ def create_planning_sheets_bulk(sales_orders):
             frappe.db.commit()
             _link_board_planned_rows_to_legacy_items(ps.name)
             _sync_lamination_fabric_planning_rows(ps.name)
+            _sync_bopp_child_planning_rows(ps.name)
             final_doc = frappe.get_doc("Planning sheet", ps.name)
             update_sheet_plan_codes(final_doc, include_legacy=True)
             created.append(ps.name)
@@ -10358,6 +10567,7 @@ def auto_create_planning_sheet(doc, method=None):
             sheet.save(ignore_permissions=True)
             frappe.db.commit()
             _sync_lamination_fabric_planning_rows(sheet.name)
+            _sync_bopp_child_planning_rows(sheet.name)
             sheet.reload()
             ensure_lamination_booking_for_planning_sheet(sheet)
             sheet.save(ignore_permissions=True)
@@ -10395,6 +10605,7 @@ def auto_create_planning_sheet(doc, method=None):
     # 4. Link board rows to legacy rows (source_item), then lamination fabric rows
     _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
+    _sync_bopp_child_planning_rows(ps.name)
             
     frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
     
@@ -10464,6 +10675,7 @@ def regenerate_planning_sheet(so_name):
 
     _link_board_planned_rows_to_legacy_items(ps.name)
     _sync_lamination_fabric_planning_rows(ps.name)
+    _sync_bopp_child_planning_rows(ps.name)
     ps.reload()
     ensure_lamination_booking_for_planning_sheet(ps)
     ps.save(ignore_permissions=True)
