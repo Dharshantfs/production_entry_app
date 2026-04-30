@@ -17,25 +17,54 @@ LAMINATION_FLOW_ENABLED = True
 
 
 def _item_process_prefix(item_code):
+	\"\"\"Extract process code from item code. Handles both formats:
+	   1. BOPP: DESIGN-PROCESSGSMWIDTH (e.g., 7436-1071101270 -> 107)
+	   2. Legacy: PROCESSCODEDATA (e.g., 1031052210500050 -> 103)
+	\"\"\"
 	ic = (item_code or "").strip()
+	if not ic:
+		return ""
+	# Try BOPP format first: DESIGN-PROCESS...
+	if "-" in ic:
+		parts = ic.split("-")
+		if len(parts) >= 2:
+			rest = parts[1].strip()
+			if rest.isdigit() and len(rest) >= 3:
+				return rest[0:3]  # Extract first 3 digits of process
+	# Fallback to legacy format
 	return ic[:3] if len(ic) >= 3 else ""
 
 
 def _parent_child_trace_id_from_item_code(item_code):
     """
-    Trace ID format: <process>-<colour>-<gsm>-<width>[-suffix]
-    Item code structure: PPP|QQQ|CCC|GGG|WWWW
-    - PPP: Process (103/104)
-    - QQQ: Quality (skipped)
-    - CCC: Colour Code (positions 6-8)
-    - GGG: GSM (positions 9-11)
-    - WWWW: Width in mm (positions 12-15)
-    Examples:
-    - 1031052210500050 -> 103-221-050-0050
-    - 1031035210500050 -> 103-521-050-0050
-    - 1041030010231475-B1 -> 104-023-147-5-B1
+    Trace ID format: <design>-<process>-<gsm>-<width>[-suffix] (BOPP new format)
+                     or <process>-<colour>-<gsm>-<width>[-suffix] (legacy format)
+    Supports both formats:
+    1. BOPP (107): DESIGN-PROCESS-GSM-WIDTH (e.g., 7436-1071101270 -> 7436-107-110-1270)
+    2. Legacy (103/104): PPP|QQQ|CCC|GGG|WWWW structure
     """
     ic = str(item_code or "").strip()
+    if not ic:
+        return ""
+    
+    # Try BOPP format first: DESIGN-PROCESS-GSM-WIDTH (e.g., 7436-1071101270)
+    if "-" in ic:
+        parts = ic.split("-")
+        if len(parts) >= 2:
+            design = parts[0].strip()
+            rest = parts[1].strip()
+            # Check if rest matches PROCESS-GSM-WIDTH pattern (all digits)
+            if rest.isdigit() and len(rest) >= 10:  # e.g., 1071101270
+                process = rest[0:3]  # 107
+                gsm = rest[3:6]      # 110
+                width = rest[6:10]   # 1270
+                if process in ("100", "103", "104", "107") and gsm and width:
+                    suffix = "-".join(parts[2:]).upper() if len(parts) > 2 else ""
+                    if suffix:
+                        return f"{design}-{process}-{gsm}-{width}-{suffix}"
+                    return f"{design}-{process}-{gsm}-{width}"
+    
+    # Try legacy format: PPP|QQQ|CCC|GGG|WWWW (103/104 items)
     if len(ic) < 16:
         return ""
     process = _item_process_prefix(ic)
@@ -2133,7 +2162,7 @@ def _populate_planning_sheet_items(ps, doc):
 
         unit = compute_default_production_unit(col, width)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("104", "107"):
             unit = "Lamination Unit"
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
