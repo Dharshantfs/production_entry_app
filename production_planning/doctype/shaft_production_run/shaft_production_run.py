@@ -26,6 +26,44 @@ def _cstr(v) -> str:
 	return str(v).strip() if v is not None else ""
 
 
+def _spr_color_from_item_code_or_master(item_code: str, existing_color: str = "") -> str:
+	"""Resolve color reliably for SPR rows (prefers item-code colour segment for 100*)."""
+	color = _cstr(existing_color)
+	if color:
+		return color
+	ic = _cstr(item_code)
+	if len(ic) >= 9 and ic.startswith("100"):
+		c_code = ic[6:9]
+		for fn in ("colour_code", "color_code", "custom_colour_code", "name"):
+			if not frappe.db.has_column("Colour Master", fn):
+				continue
+			try:
+				row = frappe.db.get_value(
+					"Colour Master",
+					{fn: c_code},
+					["colour_name", "color_name", "name"],
+					as_dict=True,
+				)
+				if row:
+					val = _cstr(row.get("colour_name") or row.get("color_name") or row.get("name"))
+					if val:
+						return val.upper()
+			except Exception:
+				continue
+	# final fallback from Item
+	try:
+		val = _cstr(
+			frappe.db.get_value("Item", ic, "custom_color")
+			or frappe.db.get_value("Item", ic, "color")
+			or frappe.db.get_value("Item", ic, "custom_colour")
+		)
+		if val:
+			return val.upper()
+	except Exception:
+		pass
+	return ""
+
+
 def _spr_row_get(spr_row, key: str):
 	if spr_row is None:
 		return None
@@ -1932,11 +1970,12 @@ class ShaftProductionRun(Document):
 			if bn and q > 0:
 				acc[bn] = acc.get(bn, 0.0) + q
 
-		# Path 2: serial-and-batch bundle (v15)
+		# Path 2: serial-and-batch bundle (v15/v16)
 		if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
 			try:
-				sb_entry_dt = "Serial and Batch Entry"
-				if frappe.db.exists("DocType", sb_entry_dt):
+				for sb_entry_dt in ("Serial and Batch Entry", "Serial and Batch Bundle Entry"):
+					if not frappe.db.exists("DocType", sb_entry_dt):
+						continue
 					sb_entry_meta = frappe.get_meta(sb_entry_dt)
 					batch_field = next(
 						(fn for fn in ("batch_no", "batch", "batch_id") if sb_entry_meta.has_field(fn)),
@@ -1946,41 +1985,42 @@ class ShaftProductionRun(Document):
 						(fn for fn in ("qty", "quantity") if sb_entry_meta.has_field(fn)),
 						"",
 					)
-					if batch_field and qty_field:
-						rows = frappe.db.sql(
-							f"""
-							SELECT
-								sbe.`{batch_field}` AS batch_no,
-								SUM(
-									CASE
-										WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
-										ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
-									END
-								) AS qty
-							FROM `tabStock Ledger Entry` sle
-							INNER JOIN `tabSerial and Batch Entry` sbe
-								ON sbe.parent = sle.serial_and_batch_bundle
-							WHERE IFNULL(sle.is_cancelled, 0) = 0
-							  AND IFNULL(sle.item_code, '') = %s
-							  AND IFNULL(sle.warehouse, '') = %s
-							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
-							  AND IFNULL(sbe.`{batch_field}`, '') != ''
-							GROUP BY sbe.`{batch_field}`
-							HAVING SUM(
+					if not (batch_field and qty_field):
+						continue
+					rows = frappe.db.sql(
+						f"""
+						SELECT
+							sbe.`{batch_field}` AS batch_no,
+							SUM(
 								CASE
 									WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
 									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
 								END
-							) > 0
-							""",
-							(item_code, warehouse),
-							as_dict=True,
-						)
-						for r in rows or []:
-							bn = _cstr(r.get("batch_no"))
-							q = flt(r.get("qty") or 0)
-							if bn and q > 0:
-								acc[bn] = max(acc.get(bn, 0.0), q)
+							) AS qty
+						FROM `tabStock Ledger Entry` sle
+						INNER JOIN `tab{sb_entry_dt}` sbe
+							ON sbe.parent = sle.serial_and_batch_bundle
+						WHERE IFNULL(sle.is_cancelled, 0) = 0
+						  AND IFNULL(sle.item_code, '') = %s
+						  AND IFNULL(sle.warehouse, '') = %s
+						  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+						  AND IFNULL(sbe.`{batch_field}`, '') != ''
+						GROUP BY sbe.`{batch_field}`
+						HAVING SUM(
+							CASE
+								WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+								ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+							END
+						) > 0
+						""",
+						(item_code, warehouse),
+						as_dict=True,
+					)
+					for r in rows or []:
+						bn = _cstr(r.get("batch_no"))
+						q = flt(r.get("qty") or 0)
+						if bn and q > 0:
+							acc[bn] = max(acc.get(bn, 0.0), q)
 			except Exception:
 				pass
 
@@ -4017,6 +4057,7 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
 	gsm, width_inch = parse_item_code(item_code)
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	color = _spr_color_from_item_code_or_master(item_code, color)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row: dict = {
 		"work_order": wo["name"],
@@ -4700,6 +4741,7 @@ def spr_create_manual_job(
 	gsm, width_inch = parse_item_code(item_code)
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	color = _spr_color_from_item_code_or_master(item_code, color)
 	order_code = ""
 	try:
 		wo_doc = frappe.get_doc("Work Order", wo_name)
@@ -4836,6 +4878,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	gsm, width_inch_one = parse_item_code(first_ic)
 	item_name = frappe.db.get_value("Item", first_ic, "item_name")
 	quality, color = extract_quality_and_color(item_name or "", item_code=first_ic)
+	color = _spr_color_from_item_code_or_master(first_ic, color)
 	first_order_code = ""
 	try:
 		if wo_names:

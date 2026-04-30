@@ -26,6 +26,44 @@ def _cstr(v) -> str:
 	return str(v).strip() if v is not None else ""
 
 
+def _spr_color_from_item_code_or_master(item_code: str, existing_color: str = "") -> str:
+	"""Resolve color reliably for SPR rows (prefers item-code colour segment for 100*)."""
+	color = _cstr(existing_color)
+	if color:
+		return color
+	ic = _cstr(item_code)
+	if len(ic) >= 9 and ic.startswith("100"):
+		c_code = ic[6:9]
+		for fn in ("colour_code", "color_code", "custom_colour_code", "name"):
+			if not frappe.db.has_column("Colour Master", fn):
+				continue
+			try:
+				row = frappe.db.get_value(
+					"Colour Master",
+					{fn: c_code},
+					["colour_name", "color_name", "name"],
+					as_dict=True,
+				)
+				if row:
+					val = _cstr(row.get("colour_name") or row.get("color_name") or row.get("name"))
+					if val:
+						return val.upper()
+			except Exception:
+				continue
+	# final fallback from Item
+	try:
+		val = _cstr(
+			frappe.db.get_value("Item", ic, "custom_color")
+			or frappe.db.get_value("Item", ic, "color")
+			or frappe.db.get_value("Item", ic, "custom_colour")
+		)
+		if val:
+			return val.upper()
+	except Exception:
+		pass
+	return ""
+
+
 def _spr_row_get(spr_row, key: str):
 	if spr_row is None:
 		return None
@@ -580,6 +618,7 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 				"custom_meter_roll_mtrs",
 			),
 			"no_of_shafts": ("no_of_shafts", "no_of_shaft", "custom_no_of_shafts"),
+			"no_of_rolls": ("no_of_rolls", "roll_count_per_shaft", "custom_no_of_rolls"),
 			"net_weight": ("net_weight", "net_weight_per_shaft", "custom_net_weight_per_shaft"),
 			"total_weight": ("total_weight_kgs", "total_weight", "custom_total_weight"),
 			"custom_total_achieved_weight": ("custom_total_achieved_weight",),
@@ -1475,6 +1514,8 @@ class ShaftProductionRun(Document):
 		ul = u_raw.lower()
 		if "lamination" in ul:
 			return 5
+		if "slitting" in ul:
+			return 6
 		m = re.search(r"(\d+)", u_raw)
 		return int(m.group(1)) if m else 0
 
@@ -1929,11 +1970,12 @@ class ShaftProductionRun(Document):
 			if bn and q > 0:
 				acc[bn] = acc.get(bn, 0.0) + q
 
-		# Path 2: serial-and-batch bundle (v15)
+		# Path 2: serial-and-batch bundle (v15/v16)
 		if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
 			try:
-				sb_entry_dt = "Serial and Batch Entry"
-				if frappe.db.exists("DocType", sb_entry_dt):
+				for sb_entry_dt in ("Serial and Batch Entry", "Serial and Batch Bundle Entry"):
+					if not frappe.db.exists("DocType", sb_entry_dt):
+						continue
 					sb_entry_meta = frappe.get_meta(sb_entry_dt)
 					batch_field = next(
 						(fn for fn in ("batch_no", "batch", "batch_id") if sb_entry_meta.has_field(fn)),
@@ -1943,41 +1985,42 @@ class ShaftProductionRun(Document):
 						(fn for fn in ("qty", "quantity") if sb_entry_meta.has_field(fn)),
 						"",
 					)
-					if batch_field and qty_field:
-						rows = frappe.db.sql(
-							f"""
-							SELECT
-								sbe.`{batch_field}` AS batch_no,
-								SUM(
-									CASE
-										WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
-										ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
-									END
-								) AS qty
-							FROM `tabStock Ledger Entry` sle
-							INNER JOIN `tabSerial and Batch Entry` sbe
-								ON sbe.parent = sle.serial_and_batch_bundle
-							WHERE IFNULL(sle.is_cancelled, 0) = 0
-							  AND IFNULL(sle.item_code, '') = %s
-							  AND IFNULL(sle.warehouse, '') = %s
-							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
-							  AND IFNULL(sbe.`{batch_field}`, '') != ''
-							GROUP BY sbe.`{batch_field}`
-							HAVING SUM(
+					if not (batch_field and qty_field):
+						continue
+					rows = frappe.db.sql(
+						f"""
+						SELECT
+							sbe.`{batch_field}` AS batch_no,
+							SUM(
 								CASE
 									WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
 									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
 								END
-							) > 0
-							""",
-							(item_code, warehouse),
-							as_dict=True,
-						)
-						for r in rows or []:
-							bn = _cstr(r.get("batch_no"))
-							q = flt(r.get("qty") or 0)
-							if bn and q > 0:
-								acc[bn] = max(acc.get(bn, 0.0), q)
+							) AS qty
+						FROM `tabStock Ledger Entry` sle
+						INNER JOIN `tab{sb_entry_dt}` sbe
+							ON sbe.parent = sle.serial_and_batch_bundle
+						WHERE IFNULL(sle.is_cancelled, 0) = 0
+						  AND IFNULL(sle.item_code, '') = %s
+						  AND IFNULL(sle.warehouse, '') = %s
+						  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+						  AND IFNULL(sbe.`{batch_field}`, '') != ''
+						GROUP BY sbe.`{batch_field}`
+						HAVING SUM(
+							CASE
+								WHEN IFNULL(sle.actual_qty, 0) < 0 THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+								ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+							END
+						) > 0
+						""",
+						(item_code, warehouse),
+						as_dict=True,
+					)
+					for r in rows or []:
+						bn = _cstr(r.get("batch_no"))
+						q = flt(r.get("qty") or 0)
+						if bn and q > 0:
+							acc[bn] = max(acc.get(bn, 0.0), q)
 			except Exception:
 				pass
 
@@ -3566,6 +3609,7 @@ def build_spr_roll_result_lines_for_job(
 	job_id,
 	lamination_rolls_per_combination=None,
 	lamination_exact_roll_lines=None,
+	exact_roll_lines=None,
 ):
 	"""
 	Build Roll Production Result (SPR Item) lines for one job.
@@ -3604,7 +3648,10 @@ def build_spr_roll_result_lines_for_job(
 
 	lam_exact_n = cint(lamination_exact_roll_lines or 0)
 	lam_n = cint(lamination_rolls_per_combination or 0)
-	if lam_exact_n > 0:
+	exact_n = cint(exact_roll_lines or 0)
+	if exact_n > 0:
+		n_rolls = max(1, exact_n)
+	elif lam_exact_n > 0:
 		if not spr_doc_is_lamination(spr_doc):
 			frappe.throw(
 				_("Exact roll-line add mode is only for lamination: tick Is Lamination and use a 104 production plan.")
@@ -3692,6 +3739,7 @@ def build_spr_roll_result_lines_for_job(
 			row["width_inch"] = flt(individual_width)
 		if meter_roll_job is not None and meter_roll_job > 0:
 			row["meter_roll"] = meter_roll_job
+			# Lamination add-flow: removed auto-fill of produced_length_mtrs based on user request
 
 		# Fabric GSM: prefer Planning Table join result; fallback to parsing F-<N> from item name.
 		eff_fabric_gsm = fabric_gsm
@@ -4009,6 +4057,7 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
 	gsm, width_inch = parse_item_code(item_code)
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	color = _spr_color_from_item_code_or_master(item_code, color)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row: dict = {
 		"work_order": wo["name"],
@@ -4692,6 +4741,7 @@ def spr_create_manual_job(
 	gsm, width_inch = parse_item_code(item_code)
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	color = _spr_color_from_item_code_or_master(item_code, color)
 	order_code = ""
 	try:
 		wo_doc = frappe.get_doc("Work Order", wo_name)
@@ -4828,6 +4878,7 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	gsm, width_inch_one = parse_item_code(first_ic)
 	item_name = frappe.db.get_value("Item", first_ic, "item_name")
 	quality, color = extract_quality_and_color(item_name or "", item_code=first_ic)
+	color = _spr_color_from_item_code_or_master(first_ic, color)
 	first_order_code = ""
 	try:
 		if wo_names:
@@ -5427,17 +5478,21 @@ def spr_apply_bundle_packaging_for_job_width(
 	width_inch,
 	no_of_packaging,
 	whole_gross_kg,
+	produced_length_mtrs=None,
 ):
-	"""Apply same single-roll gross to every roll line matching Job + selected width segment."""
+	"""Apply packaging to first-unpacked N roll lines for Job + selected width segment."""
 	_spr_require_saved(shaft_production_run)
 	job_id = _cstr(job_id)
 	width_inch = flt(width_inch)
 	no_of_packaging = cint(no_of_packaging)
 	whole_gross_kg = flt(whole_gross_kg)
+	produced_length_mtrs = flt(produced_length_mtrs)
 	if no_of_packaging < 1:
 		frappe.throw(_("Number of packaging must be at least 1"))
 	if whole_gross_kg <= 0:
 		frappe.throw(_("Whole gross weight must be greater than zero"))
+	if produced_length_mtrs <= 0:
+		frappe.throw(_("Produced length must be greater than zero"))
 	if not job_id:
 		frappe.throw(_("Select a job from Available Jobs"))
 	if width_inch <= 0:
@@ -5472,36 +5527,64 @@ def spr_apply_bundle_packaging_for_job_width(
 			).format(job_id, width_inch)
 		)
 
+	# Sequential real-world packing: always use first N unpacked rolls by roll_no/index.
+	def _sort_key(it):
+		rn = cint(getattr(it, "roll_no", 0) or 0)
+		idx = cint(getattr(it, "idx", 0) or 0)
+		return (rn if rn > 0 else 999999, idx if idx > 0 else 999999, _cstr(getattr(it, "name", "")))
+
+	matching = sorted(matching, key=_sort_key)
+	unpacked = []
+	for it in matching:
+		if flt(getattr(it, "gross_weight", 0) or 0) > 0:
+			continue
+		if flt(getattr(it, "produced_length_mtrs", 0) or 0) > 0:
+			continue
+		unpacked.append(it)
+
+	if len(unpacked) < no_of_packaging:
+		frappe.throw(
+			_("Only {0} unpacked rolls available for job {1} width {2} in, but {3} requested.")
+			.format(len(unpacked), job_id, width_inch, no_of_packaging)
+		)
+
+	selected = unpacked[:no_of_packaging]
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(width_inch * float(no_of_packaging), 4)
 
-	for it in matching:
+	for it in selected:
 		it.gross_weight = single_gross
-		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
-		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
+		it.produced_length_mtrs = produced_length_mtrs
 
-	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in matching), 2)
+	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in selected), 2)
 
 	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
 	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
 	bs = {
 		"combination": comb_calculated,
 		"rolls_per_bundle": no_of_packaging,
+		"produced_length_mtrs": produced_length_mtrs,
 		"single_roll_gross_weight_kg": single_gross,
 		"sticker_width": total_width_inch,
 		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
 		"sticker_bundle_weight": bundle_net,
 	}
-	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
+	bs_meta = frappe.get_meta("Bundle Stickers")
+	if not bs_meta.has_field("produced_length_mtrs"):
+		bs.pop("produced_length_mtrs", None)
+	if bs_meta.has_field("job_id"):
 		bs["job_id"] = job_id or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
+	remaining_unpacked = max(len(unpacked) - no_of_packaging, 0)
 
 	return {
-		"updated_rolls": len(matching),
+		"updated_rolls": len(selected),
 		"single_roll_gross_kg": single_gross,
 		"total_width_inch": total_width_inch,
 		"sticker_bundle_weight_kg": bundle_net,
+		"remaining_unpacked_rolls": remaining_unpacked,
+		"applied_produced_length": produced_length_mtrs,
 	}
 
 
