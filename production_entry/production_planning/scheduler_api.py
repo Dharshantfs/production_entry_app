@@ -22,43 +22,46 @@ def _item_process_prefix(item_code):
 
 
 def _parent_child_trace_id_from_item_code(item_code):
-	"""
-	Trace ID format for parent-child relationship: <design>-<process>
-	Supports both formats:
-	1) Hyphen-separated: design-processXXXXXX (e.g., 7436-1071101270 -> 7436-107)
-	2) All-digit format: PPPXXXXX (e.g., 1031052210500050 -> extract process from first 3 digits)
+    """
+    Trace ID format: <process>-<colour>-<gsm>-<width>[-suffix]
+    Item code structure: PPP|QQQ|CCC|GGG|WWWW
+    - PPP: Process (103/104)
+    - QQQ: Quality (skipped)
+    - CCC: Colour Code (positions 6-8)
+    - GGG: GSM (positions 9-11)
+    - WWWW: Width in mm (positions 12-15)
+    Examples:
+    - 1031052210500050 -> 103-221-050-0050
+    - 1031035210500050 -> 103-521-050-0050
+    - 1041030010231475-B1 -> 104-023-147-5-B1
+    """
+    ic = str(item_code or "").strip()
+    if len(ic) < 16:
+        return ""
+    process = _item_process_prefix(ic)
+    if process not in ("103", "104"):
+        return ""
+
+    left = ic
+    suffix = ""
+    if "-" in ic:
+        left, right = ic.rsplit("-", 1)
+        suffix = str(right or "").strip().upper()
+
+    digits = "".join(ch for ch in left if ch.isdigit())
+    if len(digits) < 16:
+        return ""
 	
-	Returns trace ID as design-process format, or empty string if format not recognized.
-	"""
-	ic = str(item_code or "").strip()
-	if not ic:
-		return ""
+    colour = digits[6:9]      # positions 6-8: colour code
+    gsm = digits[9:12]        # positions 9-11: gsm
+    width = digits[12:16]     # positions 12-15: width
 	
-	# Format 1: Hyphen-separated (e.g., 7436-1071101270)
-	if "-" in ic:
-		parts = ic.split("-")
-		if len(parts) >= 2:
-			design = (parts[0] or "").strip()
-			process_full = (parts[1] or "").strip()
-			# Extract process code (first 3 digits from process part)
-			process = ""
-			for ch in process_full:
-				if ch.isdigit():
-					process += ch
-					if len(process) == 3:
-						break
-			if design and process:
-				return f"{design}-{process}"
+    if not colour or not gsm or not width:
+        return ""
 	
-	# Format 2: All-digit (e.g., 1031052210500050)
-	# Process code is in first 3 positions
-	process = _item_process_prefix(ic)
-	if process in ("103", "104", "107"):
-		# For digit-only format, use process-only since there's no design code
-		# This is a fallback; ideally parent items should use hyphen format
-		return process
-	
-	return ""
+    if suffix:
+        return f"{process}-{colour}-{gsm}-{width}-{suffix}"
+    return f"{process}-{colour}-{gsm}-{width}"
 
 
 def _month_letter_from_date(dt):
