@@ -8,6 +8,7 @@
         "so_item",
         "item_code",
         "item_name",
+        "custom_design_name",
         "column_break_2",
         "qty",
         "uom",
@@ -31,7 +32,6 @@
         "custom_item_planned_date",
         "custom_plan_code",
         "custom_lamination_order_code",
-        "custom_parent_child_trace_id",
         "custom_lam_side",
         "order_sheet",
         "custom_split_metadata",
@@ -64,6 +64,13 @@
             "read_only": 1
         },
         {
+            "fieldname": "custom_design_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Design Name",
+            "read_only": 1
+        },
+        {
             "fieldname": "column_break_2",
             "fieldtype": "Column Break"
         },
@@ -90,7 +97,7 @@
             "fieldname": "unit",
             "fieldtype": "Select",
             "label": "Unit",
-            "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit\nSlitting Unit"
+            "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit"
         },
         {
             "fieldname": "dot_spec",
@@ -184,12 +191,6 @@
             "fieldname": "custom_lamination_order_code",
             "fieldtype": "Data",
             "label": "Lamination Order Code",
-            "read_only": 1
-        },
-        {
-            "fieldname": "custom_parent_child_trace_id",
-            "fieldtype": "Data",
-            "label": "Parent Child Trace ID",
             "read_only": 1
         },
         {
