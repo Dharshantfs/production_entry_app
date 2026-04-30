@@ -3,8 +3,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
+      <div v-if="isLaminationBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        Lamination Board — {{ LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -318,7 +318,6 @@ const COLOR_GROUPS = [
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "Lamination Unit";
-const SLITTING_UNIT = "Slitting Unit";
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
   "Unit 2": 12,
@@ -326,7 +325,6 @@ const UNIT_TONNAGE_LIMITS = {
   "Unit 4": 5.5,
   "Mixed": 999,
   [LAMINATION_UNIT]: 999,
-  [SLITTING_UNIT]: 999,
 };
 const headerColors = {
   "Unit 1": "#3b82f6",
@@ -335,24 +333,17 @@ const headerColors = {
   "Unit 4": "#8b5cf6",
   "Mixed": "#64748b",
   [LAMINATION_UNIT]: "#0d9488",
-  [SLITTING_UNIT]: "#0f766e",
 };
 
 function normalizeUnitName(rawUnit) {
   const txt = String(rawUnit || "").trim().toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
-  if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
   if (txt === "unit1" || txt === "unit 1") return "Unit 1";
   if (txt === "unit2" || txt === "unit 2") return "Unit 2";
   if (txt === "unit3" || txt === "unit 3") return "Unit 3";
   if (txt === "unit4" || txt === "unit 4") return "Unit 4";
   return String(rawUnit || "Mixed").trim() || "Mixed";
-}
-
-function itemProcessPrefix(itemCode) {
-  const ic = String(itemCode || "").trim();
-  return ic.length >= 3 ? ic.slice(0, 3) : "";
 }
 
 const filterOrderDate = ref(frappe.datetime.get_today());
@@ -420,7 +411,6 @@ const filterCustomer = ref("");
 const filterUnit = ref("");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
 const isLaminationBoard = ref(false);
-const isSlittingBoard = ref(false);
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -428,7 +418,6 @@ units.forEach(u => {
     unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 });
 unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
-unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -553,17 +542,8 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    if (isSlittingBoard.value) {
-        query.board = "slitting";
-        frappe.set_route("slitting-order-table", query);
-        return;
-    }
-    if (isLaminationBoard.value) {
-        query.board = "lamination";
-        frappe.set_route("lamination-order-table", query);
-    } else {
-        frappe.set_route("production-table", query);
-    }
+    if (isLaminationBoard.value) query.board = "lamination";
+    frappe.set_route("Production Table", query);
 }
 
 function goToConfirmedOrders() {
@@ -592,11 +572,7 @@ function toggleViewScope() {
     fetchData();
 }
 
-const boardUnits = computed(() => {
-  if (isSlittingBoard.value) return [SLITTING_UNIT];
-  if (isLaminationBoard.value) return [LAMINATION_UNIT];
-  return units;
-});
+const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
 
 const visibleUnits = computed(() => {
   if (!filterUnit.value) return boardUnits.value;
@@ -617,17 +593,6 @@ const filteredData = computed(() => {
       ...d,
       unit: normalizeUnitName(d.unit)
   }));
-
-  // Backward compatibility: old 103 rows may still carry Mixed/UNASSIGNED in DB.
-  // Force them into Slitting Unit while viewing dedicated Slitting Board.
-  if (isSlittingBoard.value) {
-    data = data.map((d) => {
-      if (itemProcessPrefix(d.item_code || d.itemCode) === "103") {
-        return { ...d, unit: SLITTING_UNIT };
-      }
-      return d;
-    });
-  }
 
   // For Production Board ONLY: Show pushed items.
   // Items are considered "pushed" to the board if they have a plannedDate set.
@@ -1091,12 +1056,7 @@ const unitEntriesCache = computed(() => {
 
   const cache = {};
   for (const unit of boardUnits.value) {
-    let unitItems = filteredData.value.filter((d) => {
-      if (isSlittingBoard.value && unit === SLITTING_UNIT) {
-        return itemProcessPrefix(d.item_code || d.itemCode) === "103" || (d.unit || "Mixed") === unit;
-      }
-      return (d.unit || "Mixed") === unit;
-    });
+    let unitItems = filteredData.value.filter((d) => (d.unit || "Mixed") === unit);
     unitItems = sortItems(unit, unitItems); 
     const entries = [];
     for (let i = 0; i < unitItems.length; i++) {
@@ -1964,15 +1924,6 @@ async function fetchData() {
     fetchTimeout = setTimeout(async () => {
       isLoading.value = true;
       try {
-        try {
-          const path = String(window.location.pathname || "").toLowerCase();
-          if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
-          if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
-        } catch (e) {}
-        if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
-          filterOrderDate.value = frappe.datetime.get_today();
-        }
-
         let args = { party_code: filterPartyCode.value };
         
         if (viewScope.value === 'monthly') {
@@ -2007,9 +1958,7 @@ async function fetchData() {
         // Production Board: fetch ALL plans but ONLY pushed items (custom_planned_date set)
         args.plan_name = "__all__";
         args.planned_only = 1;
-        if (isSlittingBoard.value) {
-          args.board_process_scope = "slitting_only";
-        } else if (isLaminationBoard.value) {
+        if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
         } else {
           try {
@@ -2017,13 +1966,11 @@ async function fetchData() {
             const b = (sp.get("board") || "").toLowerCase();
             if (b === "lamination") {
               args.board_process_scope = "lamination_only";
-            } else if (b === "slitting") {
-              args.board_process_scope = "slitting_only";
             } else {
-              args.board_process_scope = "exclude_special";
+              args.board_process_scope = "exclude_104";
             }
           } catch (e) {
-            args.board_process_scope = "exclude_special";
+            args.board_process_scope = "exclude_104";
           }
         }
 
@@ -2147,18 +2094,12 @@ function initFlatpickr() {
 }
 
 onMounted(() => {
-    // Path-first: frappe.get_route can be unset on first mount; wrong board filters -> empty grid.
-    try {
-      const path = String(window.location.pathname || "").toLowerCase();
-      if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
-      if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
-    } catch (e) {}
     try {
       const r = frappe.get_route && frappe.get_route();
-      const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
-      if (routeName === "lamination board") isLaminationBoard.value = true;
-      if (routeName === "slitting board") isSlittingBoard.value = true;
-    } catch (e) {}
+      isLaminationBoard.value = Boolean(r && r[0] && r[0].toLowerCase().replace(/-/g, " ") === "lamination board");
+    } catch (e) {
+      isLaminationBoard.value = false;
+    }
 
     // 1. Load CSS
     if (!document.getElementById('flatpickr-css')) {

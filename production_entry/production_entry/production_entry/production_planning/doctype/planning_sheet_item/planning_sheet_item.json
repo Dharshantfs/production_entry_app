@@ -31,7 +31,6 @@
         "custom_item_planned_date",
         "custom_plan_code",
         "custom_lamination_order_code",
-        "custom_lam_side",
         "order_sheet",
         "custom_split_metadata",
         "total_weight",
@@ -186,12 +185,6 @@
             "read_only": 1
         },
         {
-            "fieldname": "custom_lam_side",
-            "fieldtype": "Data",
-            "label": "Lam Side",
-            "read_only": 1
-        },
-        {
             "fieldname": "order_sheet",
             "fieldtype": "Data",
             "label": "Order Sheet"
@@ -232,7 +225,7 @@
     "index_web_pages_for_search": 1,
     "istable": 1,
     "links": [],
-    "modified": "2026-04-25 12:00:00.000000",
+    "modified": "2026-04-17 12:00:00.000000",
     "modified_by": "Administrator",
     "module": "Production Planning",
     "name": "Planning sheet Item",

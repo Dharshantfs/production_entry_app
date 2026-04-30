@@ -2924,7 +2924,7 @@ async function analyzePreviousFlow() {
     if (prevDate) {
       const r = await frappe.call({
         method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-        args: { date: prevDate, board_process_scope: "only_100" }
+        args: { date: prevDate }
       });
       const prevData = r.message || [];
       if (prevData.length > 0) {
@@ -3512,7 +3512,7 @@ async function pushToProductionBoard() {
             // Capacity preview is target-day only.
             const rData = await frappe.call({
                 method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-                args: { date: targetDate, plan_name: '__all__', planned_only: 1, board_process_scope: "only_100" }
+                args: { date: targetDate, plan_name: '__all__', planned_only: 1 }
             });
             const allItems = rData.message || [];
             
@@ -4637,7 +4637,6 @@ async function fetchData() {
   args.plan_name = "__all__"; 
 
   try {
-    args.board_process_scope = "only_100";
     const r = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
       args: args,
@@ -5709,7 +5708,7 @@ async function loadOrders(d) {
     try {
         const r = await frappe.call({
             method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-            args: { date: date, mode: 'pull_board', board_process_scope: "only_100" }
+            args: { date: date, mode: 'pull_board' }
         });
         
         const items = r.message || [];

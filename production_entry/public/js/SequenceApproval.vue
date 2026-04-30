@@ -5,14 +5,7 @@
         <h2>Arrangement Approvals Dashboard</h2>
         <p class="text-muted">Review, reorder, and approve color sequences by unit and plan.</p>
       </div>
-      <div class="header-right" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;">
-        <div class="status-filter-row" aria-label="Filter by status">
-          <button type="button" class="pill" :class="{ active: statusFilter === 'all' }" @click="statusFilter = 'all'">All</button>
-          <button type="button" class="pill" :class="{ active: statusFilter === 'pending' }" @click="statusFilter = 'pending'">Pending</button>
-          <button type="button" class="pill" :class="{ active: statusFilter === 'draft' }" @click="statusFilter = 'draft'">Draft</button>
-          <button type="button" class="pill" :class="{ active: statusFilter === 'approved' }" @click="statusFilter = 'approved'">Approved</button>
-          <button type="button" class="pill" :class="{ active: statusFilter === 'rejected' }" @click="statusFilter = 'rejected'">Rejected</button>
-        </div>
+      <div class="header-right">
         <button class="btn btn-primary btn-sm" @click="fetchApprovals">
           <i class="fa fa-refresh"></i> Refresh
         </button>
@@ -21,31 +14,23 @@
 
     <div v-if="loading" class="loading-state">
       <div class="spinner-border text-primary" role="status"></div>
-      <p class="mt-3">Loading arrangements...</p>
+      <p class="mt-3">Fetching pending approvals...</p>
     </div>
 
-    <div v-else-if="filteredApprovals.length === 0" class="empty-state">
+    <div v-else-if="approvals.length === 0" class="empty-state">
       <div class="empty-icon">📂</div>
-      <template v-if="approvals.length === 0">
-        <h3>No arrangements yet</h3>
-        <p>Save sequences from Color Chart first, then approvals will appear here.</p>
-      </template>
-      <template v-else>
-        <h3>No arrangements match this filter</h3>
-        <p>Try <strong>All</strong> or switch to Approved / Rejected.</p>
-      </template>
+      <h3>No Pending Approvals</h3>
+      <p>All arrangements are currently up to date.</p>
     </div>
 
     <div v-else class="approval-layout">
       <!-- Sidebar: List of pending items -->
       <div class="approval-sidebar">
         <div class="sidebar-header">
-          <span class="badge badge-pill badge-info" style="background:#f1f5f9; color:#475569;">
-            {{ filteredApprovals.length }} shown · {{ approvals.length }} total
-          </span>
+          <span class="badge badge-pill badge-info" style="background:#f1f5f9; color:#475569;">{{ approvals.length }} Total</span>
         </div>
         <div 
-          v-for="app in filteredApprovals" 
+          v-for="app in approvals" 
           :key="app.name" 
           :class="['approval-card', { active: selectedApproval?.name === app.name }]"
           @click="selectApproval(app)"
@@ -57,7 +42,7 @@
           <div class="card-details">
             <span class="date">{{ formatDate(app.date) }}</span>
             <span class="requester-mini"><i class="fa fa-user mr-1"></i>{{ app.owner }}</span>
-            <span :class="['status-badge', statusSlug(app.status)]">
+            <span :class="['status-badge', app.status.toLowerCase().replace(' ', '-')]">
               {{ app.status }}
             </span>
           </div>
@@ -103,13 +88,13 @@
 
         <div class="editor-info">
           <i class="fa fa-info-circle mr-2"></i>
-          <span>Drag rows to change run order; the Slot column stays fixed per line (stable while you move).</span>
+          <span>Drag items below to finalize the production sequence before approving.</span>
         </div>
 
         <div class="sequence-list">
           <div class="list-header">
             <div class="col-drag"></div>
-            <div class="col-idx" title="Stable slot id from sequence">Slot</div>
+            <div class="col-idx">#</div>
             <div class="col-party">Party Code</div>
             <div class="col-color">Color</div>
             <div class="col-quality">Quality</div>
@@ -120,7 +105,7 @@
                  class="sequence-item" :class="{ 'is-pushed': isItemPushed(item) }"
                  :data-id="item.name">
               <div class="col-drag draggable-handle">⠿</div>
-              <div class="col-idx">{{ item.arrangementSlotNo }}</div>
+              <div class="col-idx">{{ index + 1 }}</div>
               <div class="col-party">
                 <b>{{ item.party_code }}</b>
                 <div class="sub-text text-muted">{{ item.sales_order || '' }}</div>
@@ -159,28 +144,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue';
 
 const approvals = ref([]);
-const statusFilter = ref('all');
-const pendingReselectName = ref(null);
 const loading = ref(false);
-
-function statusSlug(s) {
-  return String(s || '').trim().toLowerCase().replace(/\s+/g, '-');
-}
-
-function matchesStatusFilter(app) {
-  const f = statusFilter.value || 'all';
-  if (f === 'all') return true;
-  const st = String(app.status || '').trim().toUpperCase();
-  if (f === 'pending') return st === 'PENDING APPROVAL';
-  if (f === 'draft') return st === 'DRAFT';
-  if (f === 'approved') return st === 'APPROVED';
-  if (f === 'rejected') return st === 'REJECTED';
-  return true;
-}
-
-const filteredApprovals = computed(() =>
-  (approvals.value || []).filter((a) => matchesStatusFilter(a))
-);
 const isSaving = ref(false);
 const selectedApproval = ref(null);
 const editableDate = ref('');
@@ -218,22 +182,16 @@ async function fetchApprovals() {
       method: "production_entry.production_planning.scheduler_api.get_pending_approvals"
     });
     approvals.value = r.message || [];
-    let pickName = pendingReselectName.value;
-    pendingReselectName.value = null;
-    let next = pickName ? approvals.value.find(a => a.name === pickName) : null;
-    if (!next && selectedApproval.value) {
-      next = approvals.value.find(a => a.name === selectedApproval.value.name);
-    }
-    if (!next && filteredApprovals.value.length > 0) {
-      next = filteredApprovals.value[0];
-    } else if (!next && approvals.value.length > 0) {
-      next = approvals.value[0];
-    }
-    if (next) {
-      await selectApproval(next);
+    if (approvals.value.length > 0) {
+      // Keep selection if it still exists in results, otherwise pick first
+      const stillPending = selectedApproval.value ? approvals.value.find(a => a.name === selectedApproval.value.name) : null;
+      if (stillPending) {
+        selectApproval(stillPending);
+      } else {
+        selectApproval(approvals.value[0]);
+      }
     } else {
       selectedApproval.value = null;
-      items.value = [];
     }
   } finally {
     loading.value = false;
@@ -261,17 +219,11 @@ async function selectApproval(app) {
       }
     });
     const fetchedItems = r.message || [];
-    const byName = {};
-    fetchedItems.forEach((row) => {
-      if (row && row.name) byName[row.name] = row;
-    });
-    // Preserve saved order; stable Slot = original index (does not jump when reordering drag)
-    const sortedItems = itemNames.map((nm, seqIdx) => {
-      const found = byName[nm];
-      if (!found) return null;
-      return { ...found, arrangementSlotNo: seqIdx + 1 };
-    }).filter(Boolean);
-    items.value = sortedItems.filter((i) => !isItemPushed(i));
+    // Sort items according to the saved sequence
+    const sortedItems = itemNames.map(name => fetchedItems.find(i => i.name === name)).filter(Boolean);
+    
+    // Filter out pushed items from approval view as per user request
+    items.value = sortedItems.filter(i => !isItemPushed(i));
 
     // Initialize Sortable after DOM update
     nextTick(() => {
@@ -336,7 +288,7 @@ function initSortable() {
                 // Update local items array based on new DOM order
                 const newOrder = Array.from(dragContainer.value.querySelectorAll('.sequence-item'))
                                      .map(el => el.dataset.id);
-                const reorderedItems = newOrder.map((name) => items.value.find((i) => i.name === name)).filter(Boolean);
+                const reorderedItems = newOrder.map(name => items.value.find(i => i.name === name));
                 items.value = reorderedItems;
                 isDirty.value = true;
             }
@@ -378,9 +330,7 @@ async function saveAndApprove() {
       });
 
       frappe.show_alert({ message: 'Arrangement Approved & Saved', indicator: 'green' });
-      statusFilter.value = 'all';
-      pendingReselectName.value =
-        (rSave.message && rSave.message.name) || finalName || selectedApproval.value.name || null;
+      selectedApproval.value = null;
       await fetchApprovals();
     } catch (e) {
       console.error(e);
@@ -406,10 +356,8 @@ async function rejectSequence() {
         }
       });
       frappe.show_alert({ message: 'Arrangement Rejected', indicator: 'red' });
-      statusFilter.value = 'all';
-      const rejName =
-        selectedApproval.value && selectedApproval.value.name ? selectedApproval.value.name : '';
-      pendingReselectName.value = rejName || null;
+      selectedApproval.value = null;
+      items.value = [];
       await fetchApprovals();
     } catch (e) {
       console.error(e);
@@ -452,22 +400,6 @@ onMounted(fetchApprovals);
   justify-content: space-between;
   align-items: center;
   margin-bottom: 24px;
-}
-
-.status-filter-row .pill {
-  border: 1px solid #e2e8f0;
-  background: white;
-  color: #475569;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 4px 10px;
-  border-radius: 999px;
-  cursor: pointer;
-}
-.status-filter-row .pill.active {
-  background: #1e293b;
-  color: white;
-  border-color: #1e293b;
 }
 
 .dashboard-header h2 {

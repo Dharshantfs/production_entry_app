@@ -95,8 +95,6 @@ class Planningsheet(Document):
             return
         from production_entry.production_planning.scheduler_api import (
             compute_default_production_unit,
-            _get_color_by_code,
-            _item_process_prefix,
             resolve_color_name_for_planning_row,
         )
 
@@ -127,19 +125,7 @@ class Planningsheet(Document):
                 elif not color:
                     color = resolved or ""
                 width = flt(getattr(row, "width_inch", None))
-                # Hard rule: process 103 always belongs to Slitting Unit and color from Colour Master code.
-                item_code = str(getattr(row, "item_code", None) or "").strip()
-                process_prefix = _item_process_prefix(item_code)
-                if process_prefix == "103":
-                    digits = "".join(ch for ch in item_code if ch.isdigit())
-                    code = digits[6:9] if len(digits) >= 9 else ""
-                    mapped = _get_color_by_code(code) if code else ""
-                    if mapped:
-                        row.color = mapped
-                        color = mapped
-                    row.unit = "Slitting Unit"
-                    continue
-                row.unit = compute_default_production_unit(color, width, getattr(row, "item_code", None))
+                row.unit = compute_default_production_unit(color, width)
 
     def _sync_linked_planning_units(self):
         """Keep legacy `items` and board `planned_items` units aligned when linked by `source_item`.
@@ -156,19 +142,6 @@ class Planningsheet(Document):
             if not si or si not in items_by_name:
                 continue
             leg = items_by_name[si]
-            # Hard lock for process 103 across linked rows.
-            item_code = str(getattr(pr, "item_code", None) or getattr(leg, "item_code", None) or "").strip()
-            from production_entry.production_planning.scheduler_api import _get_color_by_code, _item_process_prefix
-            if _item_process_prefix(item_code) == "103":
-                digits = "".join(ch for ch in item_code if ch.isdigit())
-                code = digits[6:9] if len(digits) >= 9 else ""
-                mapped = _get_color_by_code(code) if code else ""
-                if mapped:
-                    pr.color = mapped
-                    leg.color = mapped
-                pr.unit = "Slitting Unit"
-                leg.unit = "Slitting Unit"
-                continue
             nu = normalize_planning_unit_for_select(getattr(leg, "unit", None))
             bu = normalize_planning_unit_for_select(getattr(pr, "unit", None))
             if nu == bu:
@@ -702,61 +675,18 @@ def _color_name_by_code(c_code: str) -> str:
     if not c_code:
         return ""
     c_code = str(c_code).strip()
-
-    def _norm_tokens(v: str):
-        s = str(v or "").strip()
-        if not s:
-            return set()
-        d = "".join(ch for ch in s if ch.isdigit())
-        out = {s}
-        if d:
-            out.add(d)
-            out.add(d.lstrip("0") or "0")
-            out.add((d.lstrip("0") or "0").zfill(3))
-            if len(d) >= 3:
-                out.add(d[-3:])
-        return {x.strip() for x in out if str(x or "").strip()}
-
-    wanted = _norm_tokens(c_code)
-    for fn in ("colour_code", "custom_colour_code", "custom_color_code", "color_code", "short_code", "code"):
+    for fn in ("custom_color_code", "colour_code", "color_code", "short_code", "code"):
         try:
             row = frappe.db.get_value(
                 "Colour Master",
                 {fn: c_code},
-                ["name", "colour_name", "custom_colour_name", "color_name", "colour", "color"],
+                ["name", "colour_name", "color_name"],
                 as_dict=True,
             )
             if row:
-                return str(
-                    row.get("colour_name")
-                    or row.get("custom_colour_name")
-                    or row.get("color_name")
-                    or row.get("colour")
-                    or row.get("color")
-                    or row.get("name")
-                    or ""
-                ).strip().upper()
+                return str(row.get("name") or row.get("colour_name") or row.get("color_name") or "").strip().upper()
         except Exception:
             continue
-    # Fallback: compare normalized tokens to support messy code formats.
-    try:
-        cols = set(frappe.db.get_table_columns("Colour Master") or [])
-        code_cols = [c for c in ("colour_code", "custom_colour_code", "custom_color_code", "color_code", "short_code", "code") if c in cols]
-        name_cols = [c for c in ("colour_name", "custom_colour_name", "color_name", "colour", "color") if c in cols]
-        if code_cols:
-            rows = frappe.get_all("Colour Master", fields=list(dict.fromkeys(["name"] + code_cols + name_cols)), limit_page_length=0) or []
-            for rr in rows:
-                row_tokens = set()
-                for c in code_cols:
-                    row_tokens |= _norm_tokens(rr.get(c))
-                if not row_tokens.intersection(wanted):
-                    continue
-                for ncol in ("colour_name", "custom_colour_name", "color_name", "colour", "color", "name"):
-                    v = str(rr.get(ncol) or "").strip()
-                    if v:
-                        return v.upper()
-    except Exception:
-        pass
     return ""
 
 
@@ -782,13 +712,12 @@ def extract_quality_and_color(item_name, item_code=None):
     color = ""
     item_upper = (item_name or "").upper()
 
-    # 1) Prefer item_code index decoding for all process codes:
+    # 1) Prefer item_code index decoding for 100******** pattern:
     #    quality code -> [3:6], color code -> [6:9]
     ic = str(item_code or "").strip()
-    digits = "".join(ch for ch in ic if ch.isdigit())
-    if len(digits) >= 9:
-        q_code = digits[3:6]
-        c_code = digits[6:9]
+    if len(ic) >= 9 and ic.startswith("100"):
+        q_code = ic[3:6]
+        c_code = ic[6:9]
         quality = _quality_name_by_code(q_code) or quality
         color = _color_name_by_code(c_code) or color
     

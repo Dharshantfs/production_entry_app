@@ -74,9 +74,6 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
 	has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
 	has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
-	has_psi_lam_side = frappe.db.has_column("Planning sheet Item", "custom_lam_side")
-	has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side_")
-	has_ps_lam_side = frappe.db.has_column("Planning sheet", "custom_lam_side")
 
 	has_104 = False
 	for fn in ("planned_items", "items", "custom_planned_items"):
@@ -104,37 +101,6 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	if has_sheet_code_old:
 		doc.custom_lamination_booking_id = code
 
-	# Build a map of SO item -> lamination side for 104 rows.
-	# Support multiple possible field names on Sales Order Item.
-	so_lam_side_map = {}
-	so_name = (getattr(doc, "sales_order", None) or "").strip()
-	if so_name:
-		try:
-			soi_cols = set(frappe.db.get_table_columns("Sales Order Item") or [])
-			side_field = ""
-			for fn in ("custom_lamination_side", "custom_lam_side", "lamination_side"):
-				if fn in soi_cols:
-					side_field = fn
-					break
-			so_items_data = frappe.get_all(
-				"Sales Order Item",
-				filters={"parent": so_name},
-				fields=["name", "item_code", side_field] if side_field else ["name", "item_code"],
-			) if side_field else []
-			for soi in so_items_data:
-				side_val = (soi.get(side_field) or "").strip() if side_field else ""
-				if side_val:
-					so_lam_side_map[soi["name"]] = side_val
-					so_lam_side_map[soi["item_code"]] = side_val
-		except Exception:
-			pass
-
-	# Stamp header-level lam side (from first 104 SO item that has a value)
-	if has_ps_lam_side and so_lam_side_map:
-		first_lam_side = next(iter(so_lam_side_map.values()), "")
-		if first_lam_side:
-			doc.custom_lam_side = first_lam_side
-
 	for fn in ("planned_items", "items", "custom_planned_items"):
 		if not meta.has_field(fn):
 			continue
@@ -149,38 +115,11 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_booking_id = code
 				if has_pt_lam_gsm:
 					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
-				if has_pt_lam_side:
-					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val:
-						row.custom_lam_side_ = lam_side_val
 			else:
 				if has_psi_booking:
 					row.custom_lamination_order_code = code
 				if has_psi_lam_gsm:
 					row.custom_lam_gsm = _lam_gsm_from_item_code_suffix(ic)
-				if has_psi_lam_side:
-					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val:
-						row.custom_lam_side = lam_side_val
-
-	# Header fallback: if map was empty, derive from first 104 row lam side value.
-	if has_ps_lam_side and not (getattr(doc, "custom_lam_side", None) or "").strip():
-		for fn in ("planned_items", "items", "custom_planned_items"):
-			if not meta.has_field(fn):
-				continue
-			for row in doc.get(fn) or []:
-				ic = (getattr(row, "item_code", None) or "").strip()
-				if _item_process_prefix(ic) != "104":
-					continue
-				row_side = (
-					(getattr(row, "custom_lam_side_", None) or "").strip()
-					or (getattr(row, "custom_lam_side", None) or "").strip()
-				)
-				if row_side:
-					doc.custom_lam_side = row_side
-					break
-			if (getattr(doc, "custom_lam_side", None) or "").strip():
-				break
 
 	# Mirror code to Sales Order header when available
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
@@ -221,14 +160,14 @@ def _gsm_from_lamination_item_code(item_code: str) -> int:
 
 
 # Lamination GSM from suffix after '-':
-# 10-A, 12-B, 13-C, 15-D, 20-E, 30-F
+# 10-A, 12-B, 13-B1, 15-C, 30-D, 20-E
 _LAM_GSM_SUFFIX_MAP = {
     "A": 10,
     "B": 12,
-    "C": 13,
-    "D": 15,
+    "B1": 13,
+    "C": 15,
+    "D": 30,
     "E": 20,
-    "F": 30,
 }
 
 
@@ -241,20 +180,6 @@ def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
     if _item_process_prefix(left.strip()) != "104":
         return 0
     return cint(_LAM_GSM_SUFFIX_MAP.get(suffix.strip(), 0) or 0)
-
-
-def _lam_side_from_sales_order_item(so_item_name: str) -> str:
-    """Fetch lamination side directly from Sales Order Item row."""
-    if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
-        return ""
-    cols = set(frappe.db.get_table_columns("Sales Order Item") or [])
-    for fn in ("custom_lamination_side", "custom_lam_side", "lamination_side"):
-        if fn in cols:
-            try:
-                return str(frappe.db.get_value("Sales Order Item", so_item_name, fn) or "").strip()
-            except Exception:
-                return ""
-    return ""
 
 
 def _ensure_sheet_lamination_order_code(sheet_name):
@@ -354,7 +279,7 @@ def get_fabric_item_from_laminated_item(lam_item_code):
 	if _item_process_prefix(lam_item_code) != "104":
 		frappe.throw(
 			_("Lamination item must have process code 104 in item code (first 3 digits). Got: {0}").format(
-				_item_process_prefix(lam_item_code) or ""
+				_item_process_prefix(lam_item_code) or "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â"
 			)
 		)
 	if not frappe.db.exists("Item", lam_item_code):
@@ -467,16 +392,11 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 
 		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row)
+		# Fabric (100*): same as other SO lines ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â white ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ UNASSIGNED, other colours ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ unit by width (not Lamination Unit).
 		fab_color = specs.get("color") or ""
 		fab_width = flt(specs.get("width_inch"))
 		fabric_unit = compute_default_production_unit(fab_color, fab_width)
 		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
-
-		# Pull lam side from SO item
-		so_item_lam_side = ""
-		if frappe.db.has_column("Sales Order Item", "custom_lamination_side"):
-			so_item_lam_side = (getattr(so_it, "custom_lamination_side", None) or "").strip()
-
 		row = {
 			"sales_order_item": "",
 			"item_code": fabric_ic,
@@ -501,8 +421,6 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		}
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
-		if so_item_lam_side:
-			row["custom_lam_side_"] = so_item_lam_side
 
 		row_b = dict(row)
 		if hasattr(ps, "items") or ps.meta.has_field("items"):
@@ -719,10 +637,10 @@ def reset_party_code_series(clear_sales_order_mirror_fields=0):
     System Manager only: clear stored party_code on active Planning sheets so the numeric
     series restarts at 001 for the current month prefix when PARTY_CODE_GENERATION_ENABLED is True again.
 
-    Does not enable generation  set PARTY_CODE_GENERATION_ENABLED = True in code after reset.
+    Does not enable generation ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â set PARTY_CODE_GENERATION_ENABLED = True in code after reset.
 
     If clear_sales_order_mirror_fields=1, also clears custom_party_code / party_code / custom_order_code
-    on Sales Order (destructive  use only if mirrors were filled by auto-generation).
+    on Sales Order (destructive ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â use only if mirrors were filled by auto-generation).
     """
     frappe.only_for("System Manager")
     clear_sales_order_mirror_fields = cint(clear_sales_order_mirror_fields)
@@ -1509,7 +1427,7 @@ def _resolve_existing_production_plan_for_planning_sheet(sheet_name):
     """
     If this Planning sheet already has a Production Plan, return its name so callers
     do not create duplicate PP rows for the same sheet (repeated "Create Plan" clicks).
-    Order: header link  first item-level link  PP.custom_planning_sheet / planning_sheet.
+    Order: header link ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ first item-level link ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ PP.custom_planning_sheet / planning_sheet.
     """
     if not sheet_name or not frappe.db.exists("Planning sheet", sheet_name):
         return None
@@ -1546,7 +1464,7 @@ def _resolve_existing_production_plan_for_planning_sheet(sheet_name):
             return rows[0].name
 
     # Last resort: exactly one submitted PP for this sheet's Sales Order (e.g. PP created/submitted
-    # from Manufacturing before Planning sheet stored custom_production_plan  avoids a second PP on finalize).
+    # from Manufacturing before Planning sheet stored custom_production_plan ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â avoids a second PP on finalize).
     so = frappe.db.get_value("Planning sheet", sheet_name, "sales_order")
     if so:
         pp_so = _single_submitted_production_plan_for_sales_order_when_unique(so)
@@ -1795,7 +1713,7 @@ def _parse_gsm_width_from_item_text(raw_text):
 
 def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 	"""
-	GSM, width, colour, quality for the fabric line  from fabric Item only (never lamination row).
+	GSM, width, colour, quality for the fabric line ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â from fabric Item only (never lamination row).
 	Reuses the same extraction rules as _populate_planning_sheet_items for 100* items.
 	"""
 	quality_lookup = list(QUAL_LIST)
@@ -2054,22 +1972,12 @@ def _populate_planning_sheet_items(ps, doc):
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
 
-        # Pull lam_side strictly from Sales Order Item table for 104 rows
-        lam_side = ""
+        unit = compute_default_production_unit(col, width)
+        # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-            lam_side = _lam_side_from_sales_order_item(getattr(it, "name", None))
-            if not lam_side:
-                lam_side = (getattr(it, "custom_lamination_side", None) or "").strip()
+            unit = "Lamination Unit"
 
-        unit = compute_default_production_unit(col, width, it.item_code)
-        
-        # Planned date for Lamination (104) must be order date.
-        # For Fabric (100), white-color logic remains unchanged.
-        p_date = None
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-             p_date = getdate(doc.transaction_date or ps.ordered_date)
-        elif _is_white_color(col):
-             p_date = getdate(ps.ordered_date)
+        p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
 
         # Prepare PSI record data for syncing/creation
         psi_data = {
@@ -2096,14 +2004,6 @@ def _populate_planning_sheet_items(ps, doc):
             psi_data["custom_lam_gsm"] = lam_gsm
         if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
-        if lam_side:
-            if frappe.db.has_column("Planning Table", "custom_lam_side_"):
-                psi_data["custom_lam_side_"] = lam_side
-            if frappe.db.has_column("Planning sheet Item", "custom_lam_side"):
-                psi_data["custom_lam_side"] = lam_side
-            # Also stamp header
-            if frappe.db.has_column("Planning sheet", "custom_lam_side"):
-                ps.custom_lam_side = lam_side
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
         if is_existing:
@@ -2118,19 +2018,10 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.custom_lam_gsm = lam_gsm
                 if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
                     existing_psi.custom_lam_gsm = lam_gsm
-                if lam_side:
-                    if frappe.db.has_column("Planning Table", "custom_lam_side_"):
-                        existing_psi.custom_lam_side_ = lam_side
-                    if frappe.db.has_column("Planning sheet Item", "custom_lam_side"):
-                        existing_psi.custom_lam_side = lam_side
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
-                # 104 rows are always Lamination Unit (ignore existing unit/color).
-                # Non-104 rows: keep prior behavior (only set if unassigned).
-                if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-                    existing_psi.unit = "Lamination Unit"
-                    existing_psi.planned_date = p_date
-                elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
+                # Only update unit if it was not already assigned (Board assignment takes precedence)
+                if not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
         else:
@@ -2164,14 +2055,11 @@ def _is_white_color(color):
     return any(w == c for w in WHITE_COLORS)
 
 
-def compute_default_production_unit(color, width_inch, item_code=None):
+def compute_default_production_unit(color, width_inch):
     """
     Only white-family colors use UNASSIGNED (pool for that order date).
-    Lamination (104) orders ALWAYS use Lamination Unit.
-    All other colors: pick one of Unit 1-4 by minimum width waste.
+    All other colors: pick one of Unit 1ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“4 by minimum width waste (same rule as SO populate).
     """
-    if LAMINATION_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "104":
-        return "Lamination Unit"
     w = flt(width_inch)
     if _is_white_color(color):
         return "UNASSIGNED"

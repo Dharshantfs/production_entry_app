@@ -1226,12 +1226,6 @@ function spr_open_bundle_packaging_dialog(frm) {
 						label: __('Whole gross (Kg)'),
 						reqd: 1,
 					},
-					{
-						fieldname: 'produced_length_mtrs',
-						fieldtype: 'Float',
-						label: __('Produced length (Mtrs)'),
-						reqd: 1,
-					},
 				],
 				primary_action_label: __('Apply'),
 				primary_action: function (values) {
@@ -1239,7 +1233,6 @@ function spr_open_bundle_packaging_dialog(frm) {
 					const w = flt(values.width_inch);
 					const n = cint(values.no_of_packaging);
 					const whole = flt(values.whole_gross_kg);
-					const producedLength = flt(values.produced_length_mtrs);
 					if (!jp || !jp.job_id) {
 						frappe.msgprint(__('Select a job.'));
 						return;
@@ -1252,10 +1245,6 @@ function spr_open_bundle_packaging_dialog(frm) {
 						frappe.msgprint(__('Enter a valid packaging count and whole gross weight.'));
 						return;
 					}
-					if (producedLength <= 0) {
-						frappe.msgprint(__('Enter valid produced length.'));
-						return;
-					}
 					d.hide();
 					frappe.call({
 						method:
@@ -1266,7 +1255,6 @@ function spr_open_bundle_packaging_dialog(frm) {
 							width_inch: w,
 							no_of_packaging: n,
 							whole_gross_kg: whole,
-							produced_length_mtrs: producedLength,
 						},
 						freeze: true,
 						freeze_message: __('Applying bundle packaging...'),
@@ -1274,19 +1262,67 @@ function spr_open_bundle_packaging_dialog(frm) {
 							const m = r2.message || {};
 							frappe.show_alert({
 								message: __(
-									'Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
+									'Updated {0} roll(s). Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
 									[
 										String(m.updated_rolls != null ? m.updated_rolls : ''),
 										String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
 										String(m.total_width_inch != null ? m.total_width_inch : ''),
 										String(m.sticker_bundle_weight_kg != null ? m.sticker_bundle_weight_kg : ''),
-										String(m.remaining_unpacked_rolls != null ? m.remaining_unpacked_rolls : ''),
 									]
 								),
 								indicator: 'green',
 							});
-							// Keep UI stable: single reload only (avoid heavy loops that cause hanging).
-							frm.reload_doc();
+							
+							// Reload document and trigger calculations for all items
+							const reloadPromise = frm.reload_doc();
+							function triggerCalculationsAfterReload() {
+								// Trigger net_weight and produced_gsm calculation for all affected items
+								if (frm.doc.items) {
+									let has_changes = false;
+									frm.doc.items.forEach(function (item) {
+										if (item.gross_weight > 0) {
+											let width = flt(item.width_inch);
+											let current_net = item.net_weight || 0;
+											
+											let net_val = 0;
+											if (width > 0) {
+												let core_weight = width * (1.3 / 63);
+												net_val = spr_round_net_weight_kg(flt(item.gross_weight) - core_weight);
+											}
+											
+											if (Math.abs(current_net - net_val) > 0.01 && net_val > 0) {
+												frappe.model.set_value(item.doctype, item.name, 'net_weight', net_val);
+												has_changes = true;
+											}
+										}
+										try {
+											if (typeof spr_update_produced_gsm === 'function') {
+												spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
+											}
+										} catch(e) {}
+									});
+									if (has_changes) {
+										try { update_shaft_job_achieved_from_items(frm); } catch(e) {}
+										setTimeout(function() { frm.save(); }, 500);
+									}
+								}
+								frm.refresh_field('items');
+								// Sync total_produced_weight from items net_weight sum (real-time calculation)
+								spr_sync_total_produced_weight(frm);
+								try { schedule_spr_item_row_styles(frm); } catch(e) {}
+								[0, 100, 300, 600].forEach(function (ms) {
+									setTimeout(function () {
+										try { apply_spr_item_row_styles(frm); } catch(e) {}
+									}, ms);
+								});
+							}
+							
+							// Wait for reload to complete if it's a promise, otherwise trigger immediately
+							if (reloadPromise && typeof reloadPromise.then === 'function') {
+								reloadPromise.then(triggerCalculationsAfterReload);
+							} else {
+								setTimeout(triggerCalculationsAfterReload, 300);
+							}
 						},
 					});
 				},
@@ -1402,7 +1438,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
 			return;
 		}
-		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode, exactRollLines) {
+		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode) {
 			const args = {
 				shaft_production_run: frm.doc.name,
 				job_id: String(job_id),
@@ -1414,10 +1450,6 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			const lex = cint(laminationExactRollLines);
 			if (lex > 0) {
 				args.lamination_exact_roll_lines = lex;
-			}
-			const ex = cint(exactRollLines);
-			if (ex > 0) {
-				args.exact_roll_lines = ex;
 			}
 			frappe.call({
 			method:
@@ -1519,8 +1551,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 		});
 		}
 
-		const rollPromptMeta = sprRollPromptMeta(frm, row);
-		if (rollPromptMeta) {
+		if (sprUsesLaminationRollPrompt(frm)) {
 			frappe.prompt(
 				[
 					{
@@ -1528,8 +1559,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						fieldtype: 'Int',
 						label: __('Roll lines to add'),
 						reqd: 1,
-						default: cint(rollPromptMeta.defaultLines) || 1,
-						description: rollPromptMeta.description,
+						description: __(
+							'Adds exactly this many new roll lines for the selected job.'
+						),
 					},
 				],
 				function (values) {
@@ -1538,15 +1570,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						frappe.msgprint(__('Enter at least 1 roll line.'));
 						return;
 					}
-					if (sprUsesLaminationRollPrompt(frm)) {
-						invokeBuildRollLines(0, n, true, 0);
-					} else if (sprUsesSlittingRollPrompt(frm)) {
-						invokeBuildRollLines(0, 0, true, n);
-					} else {
-						invokeBuildRollLines(0, 0, true, n);
-					}
+					invokeBuildRollLines(0, n, true);
 				},
-				rollPromptMeta.title,
+				__('Lamination — add roll lines'),
 				__('Add')
 			);
 			return;
@@ -2044,30 +2070,6 @@ function sprShaftJobRowKey(sj) {
 
 function sprUsesLaminationRollPrompt(frm) {
 	return frm && frm.doc && cint(frm.doc.custom_is_lamination);
-}
-
-function sprUsesSlittingRollPrompt(frm) {
-	return frm && frm.doc && cint(frm.doc.custom_is_slitting);
-}
-
-function sprRollPromptMeta(frm, row) {
-	const fromPp = cint((row && row.no_of_rolls) || 0);
-	const defaultLines = fromPp > 0 ? fromPp : 1;
-	if (sprUsesSlittingRollPrompt(frm)) {
-		return {
-			title: __('Slitting — add roll lines'),
-			description: __('Defaults to No. of Rolls from Production Plan for this job.'),
-			defaultLines: defaultLines,
-		};
-	}
-	if (sprUsesLaminationRollPrompt(frm)) {
-		return {
-			title: __('Lamination — add roll lines'),
-			description: __('Adds exactly this many new roll lines for the selected job.'),
-			defaultLines: defaultLines,
-		};
-	}
-	return null;
 }
 
 function sprToggleLaminationRollUi(frm) {

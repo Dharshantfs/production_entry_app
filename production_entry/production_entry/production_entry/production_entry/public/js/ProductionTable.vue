@@ -2,8 +2,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
+      <div v-if="isLaminationBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        Lamination Board — {{ LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -789,10 +789,8 @@ function sortItems(unit, items, date) {
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "Lamination Unit";
-const SLITTING_UNIT = "Slitting Unit";
 /** True when opened from Lamination Board (production-table?board=lamination). */
 const isLaminationBoard = ref(false);
-const isSlittingBoard = ref(false);
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
@@ -1097,7 +1095,7 @@ const canExpandMergedRows = computed(() => {
   return MERGE_EXPAND_ALLOWED_ROLES.some((role) => roles.includes(role.toLowerCase()));
 });
 
-const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : isSlittingBoard.value ? [SLITTING_UNIT] : units));
+const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : units));
 
 const visibleUnits = computed(() => {
   if (!filterUnit.value) return boardUnits.value;
@@ -2401,17 +2399,7 @@ function showLinkedWorkOrdersPopup(ppId) {
 }
 
 function goToBoard() {
-    let query = {};
-    if (viewScope.value === "daily") query.date = filterOrderDate.value;
-    if (viewScope.value === "weekly") query.week = filterWeek.value;
-    if (viewScope.value === "monthly") query.month = filterMonth.value;
-    query.scope = viewScope.value;
-    if (isLaminationBoard.value) query.board = "lamination";
-    if (isSlittingBoard.value) query.board = "slitting";
-    frappe.set_route(
-        isLaminationBoard.value ? "lamination-board" : isSlittingBoard.value ? "slitting-board" : "production-board",
-        query
-    );
+    frappe.set_route(isLaminationBoard.value ? "Lamination Board" : "Production Board");
 }
 
 function toggleViewScope() {
@@ -2476,9 +2464,7 @@ async function fetchData() {
 
         args.plan_name = "__all__";
         args.planned_only = 1;
-        if (isSlittingBoard.value) {
-          args.board_process_scope = "slitting_only";
-        } else if (isLaminationBoard.value) {
+        if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
         } else {
           try {
@@ -2486,13 +2472,11 @@ async function fetchData() {
             const b = (sp.get("board") || "").toLowerCase();
             if (b === "lamination") {
               args.board_process_scope = "lamination_only";
-            } else if (b === "slitting") {
-              args.board_process_scope = "slitting_only";
             } else {
-              args.board_process_scope = "exclude_special";
+              args.board_process_scope = "exclude_104";
             }
           } catch (e) {
-            args.board_process_scope = "exclude_special";
+            args.board_process_scope = "exclude_104";
           }
         }
 
@@ -2616,7 +2600,6 @@ onMounted(async () => {
   
   const params = new URLSearchParams(window.location.search);
   isLaminationBoard.value = (params.get("board") || "").toLowerCase() === "lamination";
-  isSlittingBoard.value = (params.get("board") || "").toLowerCase() === "slitting";
   const scopeParam = params.get('scope');
   const dateParam = params.get('date');
   const weekParam = params.get('week');

@@ -10,7 +10,6 @@
   "run_date",
   "is_mix_roll",
   "custom_is_lamination",
-  "custom_is_slitting",
   "production_plan",
   "customer",
   "custom_total_planned_qty",
@@ -65,11 +64,6 @@
    "fieldname": "custom_is_lamination",
    "fieldtype": "Check",
    "label": "Is Lamination"
-  },
-  {
-   "fieldname": "custom_is_slitting",
-   "fieldtype": "Check",
-   "label": "Is Slitting"
   },
   {
    "fieldname": "production_plan",

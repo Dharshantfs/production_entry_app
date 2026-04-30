@@ -11,7 +11,6 @@
   "quality",
   "gsm",
   "custom_fabric_gsm",
-  "custom_lam_gsm",
   "planned_qty",
   "job",
   "batch_no",
@@ -71,12 +70,6 @@
    "fieldname": "custom_fabric_gsm",
    "fieldtype": "Int",
    "label": "Fabric GSM",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_lam_gsm",
-   "fieldtype": "Int",
-   "label": "Lam GSM",
    "read_only": 1
   },
   {
