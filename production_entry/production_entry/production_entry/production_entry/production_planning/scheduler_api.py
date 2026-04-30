@@ -37,6 +37,17 @@ def _parent_child_pair_key_from_item_code(item_code):
     if not colour or not gsm or not width:
         return ""
     return f"{colour}-{gsm}-{width}"
+
+
+def _process_unit_from_item_code(item_code):
+    process = _item_process_prefix(str(item_code or ""))
+    if process == "103":
+        return "Slitting Unit"
+    if process in ("104", "107"):
+        return "Lamination Unit"
+    return ""
+
+
 def _month_letter_from_date(dt):
     """January=A and December=L (single letter month code)."""
     m = int(getattr(dt, "month", 1) or 1)
@@ -396,6 +407,15 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			limit=1,
 		)
 		if existing:
+			lam_trace = _parent_child_trace_id_from_item_code(lam_ic)
+			if lam_trace and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+				frappe.db.set_value(
+					"Planning Table",
+					existing[0],
+					"custom_parent_child_trace_id",
+					lam_trace,
+					update_modified=False,
+				)
 			continue
 
 		lam_match = frappe.get_all(
@@ -406,6 +426,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		)
 		lam_pt_name = lam_match[0].get("name") if lam_match else None
 		lam_row = frappe.get_doc("Planning Table", lam_pt_name) if lam_pt_name else None
+		lam_trace = _parent_child_trace_id_from_item_code(lam_ic)
 
 		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row)
@@ -436,6 +457,11 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			"planning_sheet": ps.name,
 			"so_item": so_it.name,
 		}
+		if lam_trace and (
+			frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
+			or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")
+		):
+			row["custom_parent_child_trace_id"] = lam_trace
 		if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = lam_pt_name
 
@@ -2046,12 +2072,7 @@ def _populate_planning_sheet_items(ps, doc):
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
 
-        unit = compute_default_production_unit(col, width, it.item_code)
-        # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
-        if _item_process_prefix(str(it.item_code or "")) == "103":
-            unit = "Slitting Unit"
-        elif LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("104", "107"):
-            unit = "Lamination Unit"
+        unit = _process_unit_from_item_code(it.item_code) or compute_default_production_unit(col, width, it.item_code)
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
 
@@ -2096,8 +2117,12 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.custom_lam_gsm = lam_gsm
                 # Ensure the link to parent is set
                 existing_psi.planning_sheet = ps.name
-                # Only update unit if it was not already assigned (Board assignment takes precedence)
-                if not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
+                # Process parent rows must not keep stale width-routed units like Unit 1.
+                process_unit = _process_unit_from_item_code(it.item_code)
+                if process_unit:
+                    existing_psi.unit = process_unit
+                    existing_psi.planned_date = p_date
+                elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
         else:
@@ -3513,8 +3538,16 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
 
     unique_codes = set()
 
-    def _row_unit(raw):
-        item_unit = raw
+    def _row_item_code(item):
+        if isinstance(item, dict):
+            return item.get("item_code")
+        return getattr(item, "item_code", None)
+
+    def _row_unit(item):
+        process_unit = _process_unit_from_item_code(_row_item_code(item))
+        if process_unit:
+            return process_unit
+        item_unit = _item_unit_raw(item)
         if item_unit:
             iu_upper = str(item_unit).upper().replace(" ", "")
             if "UNIT1" in iu_upper:
@@ -3546,7 +3579,7 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
         return getattr(item, "unit", None)
 
     def _calc_code_for_item(item):
-        item_unit = _row_unit(_item_unit_raw(item))
+        item_unit = _row_unit(item)
         item_date = _row_planned_date(item)
         return generate_plan_code(item_date, item_unit, active_plan)
 
@@ -3560,6 +3593,9 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
             item.custom_plan_code = code
         if meta.has_field("plan_name"):
             item.plan_name = code
+        process_unit = _process_unit_from_item_code(getattr(item, "item_code", None))
+        if process_unit and meta.has_field("unit"):
+            item.unit = process_unit
 
     if include_legacy:
         for item in sheet_doc.get("items", []):
