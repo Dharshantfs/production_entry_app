@@ -30,8 +30,6 @@ function sprSumProducedLengthMeters(it) {
 	const aliases = [
 		'produced_length_mtrs',
 		'custom_produced_length_mtrs',
-		'produced_length',
-		'custom_produced_length',
 	];
 	for (let i = 0; i < aliases.length; i++) {
 		const v = flt(it[aliases[i]]);
@@ -40,6 +38,50 @@ function sprSumProducedLengthMeters(it) {
 		}
 	}
 	return 0;
+}
+
+const SPR_LAM_GSM_SUFFIX_MAP = {
+	A: 10,
+	B: 12,
+	B1: 13,
+	C: 15,
+	D: 30,
+	E: 20,
+};
+
+function sprRollProcessPrefix(frm) {
+	if (!frm || !frm.doc) {
+		return '';
+	}
+	const rows = frm.doc.items || [];
+	for (let i = 0; i < rows.length; i++) {
+		const code = String((rows[i] && rows[i].item_code) || '').trim();
+		if (code.length >= 3) {
+			const prefix = code.substring(0, 3);
+			if (prefix === '100' || prefix === '104') {
+				return prefix;
+			}
+		}
+	}
+	return '';
+}
+
+function sprStickerGsmFromItemCode(itemCode) {
+	const code = ((itemCode || '') + '').trim();
+	if (code.length < 12) {
+		return 0;
+	}
+	const n = parseInt(code.substring(9, 12), 10);
+	return !isNaN(n) && n > 0 ? n : 0;
+}
+
+function sprLaminationGsmFromItemCode(itemCode) {
+	const code = ((itemCode || '') + '').trim().toUpperCase();
+	if (!code || code.indexOf('-') === -1) {
+		return 0;
+	}
+	const suffix = code.split('-').pop().trim();
+	return SPR_LAM_GSM_SUFFIX_MAP[suffix] || 0;
 }
 
 function sprScheduleTotalProducedSync(frm, opts) {
@@ -1184,6 +1226,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 						label: __('Whole gross (Kg)'),
 						reqd: 1,
 					},
+					{
+						fieldname: 'produced_length_mtrs',
+						fieldtype: 'Float',
+						label: __('Produced length (Mtrs)'),
+						reqd: 1,
+					},
 				],
 				primary_action_label: __('Apply'),
 				primary_action: function (values) {
@@ -1191,6 +1239,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 					const w = flt(values.width_inch);
 					const n = cint(values.no_of_packaging);
 					const whole = flt(values.whole_gross_kg);
+					const producedLength = flt(values.produced_length_mtrs);
 					if (!jp || !jp.job_id) {
 						frappe.msgprint(__('Select a job.'));
 						return;
@@ -1203,6 +1252,10 @@ function spr_open_bundle_packaging_dialog(frm) {
 						frappe.msgprint(__('Enter a valid packaging count and whole gross weight.'));
 						return;
 					}
+					if (producedLength <= 0) {
+						frappe.msgprint(__('Enter valid produced length.'));
+						return;
+					}
 					d.hide();
 					frappe.call({
 						method:
@@ -1213,6 +1266,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 							width_inch: w,
 							no_of_packaging: n,
 							whole_gross_kg: whole,
+							produced_length_mtrs: producedLength,
 						},
 						freeze: true,
 						freeze_message: __('Applying bundle packaging...'),
@@ -1220,67 +1274,19 @@ function spr_open_bundle_packaging_dialog(frm) {
 							const m = r2.message || {};
 							frappe.show_alert({
 								message: __(
-									'Updated {0} roll(s). Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
+									'Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
 									[
 										String(m.updated_rolls != null ? m.updated_rolls : ''),
 										String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
 										String(m.total_width_inch != null ? m.total_width_inch : ''),
 										String(m.sticker_bundle_weight_kg != null ? m.sticker_bundle_weight_kg : ''),
+										String(m.remaining_unpacked_rolls != null ? m.remaining_unpacked_rolls : ''),
 									]
 								),
 								indicator: 'green',
 							});
-							
-							// Reload document and trigger calculations for all items
-							const reloadPromise = frm.reload_doc();
-							function triggerCalculationsAfterReload() {
-								// Trigger net_weight and produced_gsm calculation for all affected items
-								if (frm.doc.items) {
-									let has_changes = false;
-									frm.doc.items.forEach(function (item) {
-										if (item.gross_weight > 0) {
-											let width = flt(item.width_inch);
-											let current_net = item.net_weight || 0;
-											
-											let net_val = 0;
-											if (width > 0) {
-												let core_weight = width * (1.3 / 63);
-												net_val = spr_round_net_weight_kg(flt(item.gross_weight) - core_weight);
-											}
-											
-											if (Math.abs(current_net - net_val) > 0.01 && net_val > 0) {
-												frappe.model.set_value(item.doctype, item.name, 'net_weight', net_val);
-												has_changes = true;
-											}
-										}
-										try {
-											if (typeof spr_update_produced_gsm === 'function') {
-												spr_update_produced_gsm(frm, 'Shaft Production Run Item', item.name);
-											}
-										} catch(e) {}
-									});
-									if (has_changes) {
-										try { update_shaft_job_achieved_from_items(frm); } catch(e) {}
-										setTimeout(function() { frm.save(); }, 500);
-									}
-								}
-								frm.refresh_field('items');
-								// Sync total_produced_weight from items net_weight sum (real-time calculation)
-								spr_sync_total_produced_weight(frm);
-								try { schedule_spr_item_row_styles(frm); } catch(e) {}
-								[0, 100, 300, 600].forEach(function (ms) {
-									setTimeout(function () {
-										try { apply_spr_item_row_styles(frm); } catch(e) {}
-									}, ms);
-								});
-							}
-							
-							// Wait for reload to complete if it's a promise, otherwise trigger immediately
-							if (reloadPromise && typeof reloadPromise.then === 'function') {
-								reloadPromise.then(triggerCalculationsAfterReload);
-							} else {
-								setTimeout(triggerCalculationsAfterReload, 300);
-							}
+							// Keep UI stable: single reload only (avoid heavy loops that cause hanging).
+							frm.reload_doc();
 						},
 					});
 				},
@@ -1396,7 +1402,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
 			return;
 		}
-		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode) {
+		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode, exactRollLines) {
 			const args = {
 				shaft_production_run: frm.doc.name,
 				job_id: String(job_id),
@@ -1408,6 +1414,10 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			const lex = cint(laminationExactRollLines);
 			if (lex > 0) {
 				args.lamination_exact_roll_lines = lex;
+			}
+			const ex = cint(exactRollLines);
+			if (ex > 0) {
+				args.exact_roll_lines = ex;
 			}
 			frappe.call({
 			method:
@@ -1509,7 +1519,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 		});
 		}
 
-		if (sprUsesLaminationRollPrompt(frm)) {
+		const rollPromptMeta = sprRollPromptMeta(frm, row);
+		if (rollPromptMeta) {
 			frappe.prompt(
 				[
 					{
@@ -1517,9 +1528,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						fieldtype: 'Int',
 						label: __('Roll lines to add'),
 						reqd: 1,
-						description: __(
-							'Adds exactly this many new roll lines for the selected job.'
-						),
+						default: cint(rollPromptMeta.defaultLines) || 1,
+						description: rollPromptMeta.description,
 					},
 				],
 				function (values) {
@@ -1528,9 +1538,15 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						frappe.msgprint(__('Enter at least 1 roll line.'));
 						return;
 					}
-					invokeBuildRollLines(0, n, true);
+					if (sprUsesLaminationRollPrompt(frm)) {
+						invokeBuildRollLines(0, n, true, 0);
+					} else if (sprUsesSlittingRollPrompt(frm)) {
+						invokeBuildRollLines(0, 0, true, n);
+					} else {
+						invokeBuildRollLines(0, 0, true, n);
+					}
 				},
-				__('Lamination — add roll lines'),
+				rollPromptMeta.title,
 				__('Add')
 			);
 			return;
@@ -1821,6 +1837,25 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 		return;
 	}
 	const row = locals[cdt][cdn];
+
+	// Keep sticker GSM aligned to item-code rule: positions 9..11.
+	const stickerGsm = sprStickerGsmFromItemCode(row.item_code);
+	if (stickerGsm > 0) {
+		if (flt(row.gsm) !== stickerGsm) {
+			frappe.model.set_value(cdt, cdn, 'gsm', stickerGsm);
+		}
+		if (frappe.meta.get_docfield('Shaft Production Run Item', 'custom_sticker_gsm') && flt(row.custom_sticker_gsm) !== stickerGsm) {
+			frappe.model.set_value(cdt, cdn, 'custom_sticker_gsm', stickerGsm);
+		}
+	}
+
+	// Keep lamination GSM aligned to item-code suffix map (e.g. "-C" => 15).
+	if (frappe.meta.get_docfield('Shaft Production Run Item', 'custom_lam_gsm')) {
+		const lamGsm = sprLaminationGsmFromItemCode(row.item_code);
+		if (lamGsm > 0 && flt(row.custom_lam_gsm) !== lamGsm) {
+			frappe.model.set_value(cdt, cdn, 'custom_lam_gsm', lamGsm);
+		}
+	}
 	
 	// Get weight: prefer net_weight, fallback to gross_weight
 	let nw = flt(row.net_weight);
@@ -2011,6 +2046,30 @@ function sprUsesLaminationRollPrompt(frm) {
 	return frm && frm.doc && cint(frm.doc.custom_is_lamination);
 }
 
+function sprUsesSlittingRollPrompt(frm) {
+	return frm && frm.doc && cint(frm.doc.custom_is_slitting);
+}
+
+function sprRollPromptMeta(frm, row) {
+	const fromPp = cint((row && row.no_of_rolls) || 0);
+	const defaultLines = fromPp > 0 ? fromPp : 1;
+	if (sprUsesSlittingRollPrompt(frm)) {
+		return {
+			title: __('Slitting — add roll lines'),
+			description: __('Defaults to No. of Rolls from Production Plan for this job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	if (sprUsesLaminationRollPrompt(frm)) {
+		return {
+			title: __('Lamination — add roll lines'),
+			description: __('Adds exactly this many new roll lines for the selected job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	return null;
+}
+
 function sprToggleLaminationRollUi(frm) {
 	const processPrefix = sprRollProcessPrefix(frm);
 	const isProcess104 = processPrefix === '104';
@@ -2026,7 +2085,6 @@ function sprToggleLaminationRollUi(frm) {
 		if (fabricGsmField) fabricGsmField.hidden = hideLamCols;
 		if (lamGsmField) lamGsmField.hidden = hideLamCols;
 	} catch (e) {}
-
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
 		try { fd.grid.update_docfield_property('planned_qty', 'hidden', hidePlanned); } catch (e) {}
@@ -2045,7 +2103,6 @@ function sprToggleLaminationRollUi(frm) {
 				fd.grid.setup_visible_columns();
 			} catch (e) {}
 		}
-
 		if (frm && frm.__spr_lam_cols_visible_state !== showLamCols) {
 			frm.__spr_lam_cols_visible_state = showLamCols;
 		}
@@ -2087,6 +2144,7 @@ function update_shaft_job_achieved_from_items(frm) {
 			meterByJob[k] = (meterByJob[k] || 0) + pm;
 		}
 	});
+	let jobGridDirty = false;
 	if (hasW) {
 		(frm.doc.shaft_jobs || []).forEach(function (sj) {
 			const jid = sprShaftJobRowKey(sj);
@@ -2094,6 +2152,7 @@ function update_shaft_job_achieved_from_items(frm) {
 			const cur = flt(sj.custom_total_achieved_weight);
 			if (Math.abs(cur - next) > 0.005) {
 				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_weight', next);
+				jobGridDirty = true;
 			}
 		});
 	}
@@ -2104,8 +2163,12 @@ function update_shaft_job_achieved_from_items(frm) {
 			const cur = flt(sj.custom_total_achieved_meter);
 			if (Math.abs(cur - next) > 0.005) {
 				frappe.model.set_value(sj.doctype, sj.name, 'custom_total_achieved_meter', next);
+				jobGridDirty = true;
 			}
 		});
+	}
+	if (jobGridDirty) {
+		try { frm.refresh_field('shaft_jobs'); } catch (e) {}
 	}
 	if (hasHdrM) {
 		const curH = flt(frm.doc.custom_total_achieved_meter);
@@ -2201,18 +2264,12 @@ function spr_inject_gsm_legend(frm) {
 
 /** Sticker / planned GSM: field or parsed from item_code (same rule as server parse_item_code). */
 function sprStickerGsmFromDoc(doc) {
-	let g = flt(doc.gsm);
-	if (g > 0) {
-		return g;
+	const fromCode = sprStickerGsmFromItemCode(doc && doc.item_code);
+	if (fromCode > 0) {
+		return fromCode;
 	}
-	const ic = (doc.item_code || '') + '';
-	if (ic.length >= 16) {
-		const n = parseInt(ic.substring(9, 12), 10);
-		if (!isNaN(n) && n > 0) {
-			return n;
-		}
-	}
-	return 0;
+	const g = flt(doc && doc.gsm);
+	return g > 0 ? g : 0;
 }
 
 /** True when produced length is missing or zero — do not infer GSM from ordered meter_roll (legend: incomplete / grey). */

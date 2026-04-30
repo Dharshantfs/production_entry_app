@@ -580,6 +580,7 @@ def _build_shaft_jobs_from_custom_shaft_details(production_plan: str) -> list[di
 				"custom_meter_roll_mtrs",
 			),
 			"no_of_shafts": ("no_of_shafts", "no_of_shaft", "custom_no_of_shafts"),
+			"no_of_rolls": ("no_of_rolls", "roll_count_per_shaft", "custom_no_of_rolls"),
 			"net_weight": ("net_weight", "net_weight_per_shaft", "custom_net_weight_per_shaft"),
 			"total_weight": ("total_weight_kgs", "total_weight", "custom_total_weight"),
 			"custom_total_achieved_weight": ("custom_total_achieved_weight",),
@@ -1475,6 +1476,8 @@ class ShaftProductionRun(Document):
 		ul = u_raw.lower()
 		if "lamination" in ul:
 			return 5
+		if "slitting" in ul:
+			return 6
 		m = re.search(r"(\d+)", u_raw)
 		return int(m.group(1)) if m else 0
 
@@ -3566,6 +3569,7 @@ def build_spr_roll_result_lines_for_job(
 	job_id,
 	lamination_rolls_per_combination=None,
 	lamination_exact_roll_lines=None,
+	exact_roll_lines=None,
 ):
 	"""
 	Build Roll Production Result (SPR Item) lines for one job.
@@ -3604,7 +3608,10 @@ def build_spr_roll_result_lines_for_job(
 
 	lam_exact_n = cint(lamination_exact_roll_lines or 0)
 	lam_n = cint(lamination_rolls_per_combination or 0)
-	if lam_exact_n > 0:
+	exact_n = cint(exact_roll_lines or 0)
+	if exact_n > 0:
+		n_rolls = max(1, exact_n)
+	elif lam_exact_n > 0:
 		if not spr_doc_is_lamination(spr_doc):
 			frappe.throw(
 				_("Exact roll-line add mode is only for lamination: tick Is Lamination and use a 104 production plan.")
@@ -3692,10 +3699,7 @@ def build_spr_roll_result_lines_for_job(
 			row["width_inch"] = flt(individual_width)
 		if meter_roll_job is not None and meter_roll_job > 0:
 			row["meter_roll"] = meter_roll_job
-			# Lamination add-flow: initialize produced length from entered meter/roll,
-			# so achieved meter/weight can reflect draft rows immediately.
-			if spr_doc_is_lamination(spr_doc):
-				row["produced_length_mtrs"] = meter_roll_job
+			# Lamination add-flow: removed auto-fill of produced_length_mtrs based on user request
 
 		# Fabric GSM: prefer Planning Table join result; fallback to parsing F-<N> from item name.
 		eff_fabric_gsm = fabric_gsm
@@ -5431,17 +5435,21 @@ def spr_apply_bundle_packaging_for_job_width(
 	width_inch,
 	no_of_packaging,
 	whole_gross_kg,
+	produced_length_mtrs=None,
 ):
-	"""Apply same single-roll gross to every roll line matching Job + selected width segment."""
+	"""Apply packaging to first-unpacked N roll lines for Job + selected width segment."""
 	_spr_require_saved(shaft_production_run)
 	job_id = _cstr(job_id)
 	width_inch = flt(width_inch)
 	no_of_packaging = cint(no_of_packaging)
 	whole_gross_kg = flt(whole_gross_kg)
+	produced_length_mtrs = flt(produced_length_mtrs)
 	if no_of_packaging < 1:
 		frappe.throw(_("Number of packaging must be at least 1"))
 	if whole_gross_kg <= 0:
 		frappe.throw(_("Whole gross weight must be greater than zero"))
+	if produced_length_mtrs <= 0:
+		frappe.throw(_("Produced length must be greater than zero"))
 	if not job_id:
 		frappe.throw(_("Select a job from Available Jobs"))
 	if width_inch <= 0:
@@ -5476,36 +5484,64 @@ def spr_apply_bundle_packaging_for_job_width(
 			).format(job_id, width_inch)
 		)
 
+	# Sequential real-world packing: always use first N unpacked rolls by roll_no/index.
+	def _sort_key(it):
+		rn = cint(getattr(it, "roll_no", 0) or 0)
+		idx = cint(getattr(it, "idx", 0) or 0)
+		return (rn if rn > 0 else 999999, idx if idx > 0 else 999999, _cstr(getattr(it, "name", "")))
+
+	matching = sorted(matching, key=_sort_key)
+	unpacked = []
+	for it in matching:
+		if flt(getattr(it, "gross_weight", 0) or 0) > 0:
+			continue
+		if flt(getattr(it, "produced_length_mtrs", 0) or 0) > 0:
+			continue
+		unpacked.append(it)
+
+	if len(unpacked) < no_of_packaging:
+		frappe.throw(
+			_("Only {0} unpacked rolls available for job {1} width {2} in, but {3} requested.")
+			.format(len(unpacked), job_id, width_inch, no_of_packaging)
+		)
+
+	selected = unpacked[:no_of_packaging]
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(width_inch * float(no_of_packaging), 4)
 
-	for it in matching:
+	for it in selected:
 		it.gross_weight = single_gross
-		# Only set gross_weight. Net weight auto-calculates via other functions when operator enters it.
-		# Do NOT force net_weight here — let Frappe field handlers and auto-calculation manage it.
+		it.produced_length_mtrs = produced_length_mtrs
 
-	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in matching), 2)
+	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in selected), 2)
 
 	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
 	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
 	bs = {
 		"combination": comb_calculated,
 		"rolls_per_bundle": no_of_packaging,
+		"produced_length_mtrs": produced_length_mtrs,
 		"single_roll_gross_weight_kg": single_gross,
 		"sticker_width": total_width_inch,
 		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
 		"sticker_bundle_weight": bundle_net,
 	}
-	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
+	bs_meta = frappe.get_meta("Bundle Stickers")
+	if not bs_meta.has_field("produced_length_mtrs"):
+		bs.pop("produced_length_mtrs", None)
+	if bs_meta.has_field("job_id"):
 		bs["job_id"] = job_id or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
+	remaining_unpacked = max(len(unpacked) - no_of_packaging, 0)
 
 	return {
-		"updated_rolls": len(matching),
+		"updated_rolls": len(selected),
 		"single_roll_gross_kg": single_gross,
 		"total_width_inch": total_width_inch,
 		"sticker_bundle_weight_kg": bundle_net,
+		"remaining_unpacked_rolls": remaining_unpacked,
+		"applied_produced_length": produced_length_mtrs,
 	}
 
 

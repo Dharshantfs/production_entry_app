@@ -2,6 +2,9 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
+      <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
+      </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
         <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #4f46e5;" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
@@ -35,7 +38,7 @@
         <label>Unit</label>
         <select v-model="filterUnit" @change="fetchData">
           <option value="">All Units</option>
-          <option v-for="u in units" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in boardUnits" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
       <button class="cc-clear-btn" @click="fetchData">🔄 Refresh</button>
@@ -785,6 +788,11 @@ function sortItems(unit, items, date) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
+const LAMINATION_UNIT = "Lamination Unit";
+const SLITTING_UNIT = "Slitting Unit";
+/** True when opened from Lamination Board (production-table?board=lamination). */
+const isLaminationBoard = ref(false);
+const isSlittingBoard = ref(false);
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
@@ -810,7 +818,7 @@ const mergeFilterOrderCode = ref("");
 const mergeFilterCustomer = ref("");
 const mergeFilterQuality = ref("");
 const mergeFilterColor = ref("");
-const UNIT_TONNAGE_LIMITS = { "Unit 1": 4.4, "Unit 2": 12, "Unit 3": 9, "Unit 4": 5.5, "Mixed": 999 };
+const UNIT_TONNAGE_LIMITS = { "Unit 1": 4.4, "Unit 2": 12, "Unit 3": 9, "Unit 4": 5.5, "Mixed": 999, [LAMINATION_UNIT]: 999 };
 
 function getArrangementKey(unit, date) {
   return `${unit}||${date}`;
@@ -819,6 +827,7 @@ function getArrangementKey(unit, date) {
 // Removed duplicate normalizeUnit definition
 function normalizeUnit(raw) {
   const r = String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+  if (r.includes("LAMINATIONUNIT") || String(raw || "").trim().toLowerCase() === "lamination unit") return LAMINATION_UNIT;
   if (r.includes("UNIT1")) return "Unit 1";
   if (r.includes("UNIT2")) return "Unit 2";
   if (r.includes("UNIT3")) return "Unit 3";
@@ -1088,9 +1097,11 @@ const canExpandMergedRows = computed(() => {
   return MERGE_EXPAND_ALLOWED_ROLES.some((role) => roles.includes(role.toLowerCase()));
 });
 
+const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : isSlittingBoard.value ? [SLITTING_UNIT] : units));
+
 const visibleUnits = computed(() => {
-  if (!filterUnit.value) return units;
-  return units.filter((u) => u === filterUnit.value);
+  if (!filterUnit.value) return boardUnits.value;
+  return boardUnits.value.filter((u) => u === filterUnit.value);
 });
 
 const filteredData = computed(() => {
@@ -2390,7 +2401,17 @@ function showLinkedWorkOrdersPopup(ppId) {
 }
 
 function goToBoard() {
-    frappe.set_route("production-board");
+    let query = {};
+    if (viewScope.value === "daily") query.date = filterOrderDate.value;
+    if (viewScope.value === "weekly") query.week = filterWeek.value;
+    if (viewScope.value === "monthly") query.month = filterMonth.value;
+    query.scope = viewScope.value;
+    if (isLaminationBoard.value) query.board = "lamination";
+    if (isSlittingBoard.value) query.board = "slitting";
+    frappe.set_route(
+        isLaminationBoard.value ? "lamination-board" : isSlittingBoard.value ? "slitting-board" : "production-board",
+        query
+    );
 }
 
 function toggleViewScope() {
@@ -2455,17 +2476,24 @@ async function fetchData() {
 
         args.plan_name = "__all__";
         args.planned_only = 1;
-        // Main board hides 104 (laminated); ?board=lamination shows only 104. Omit param for legacy API behaviour.
-        try {
-          const sp = new URLSearchParams(window.location.search || "");
-          const b = (sp.get("board") || "").toLowerCase();
-          if (b === "lamination") {
-            args.board_process_scope = "lamination_only";
-          } else {
-            args.board_process_scope = "exclude_104";
+        if (isSlittingBoard.value) {
+          args.board_process_scope = "slitting_only";
+        } else if (isLaminationBoard.value) {
+          args.board_process_scope = "lamination_only";
+        } else {
+          try {
+            const sp = new URLSearchParams(window.location.search || "");
+            const b = (sp.get("board") || "").toLowerCase();
+            if (b === "lamination") {
+              args.board_process_scope = "lamination_only";
+            } else if (b === "slitting") {
+              args.board_process_scope = "slitting_only";
+            } else {
+              args.board_process_scope = "exclude_special";
+            }
+          } catch (e) {
+            args.board_process_scope = "exclude_special";
           }
-        } catch (e) {
-          args.board_process_scope = "exclude_104";
         }
 
     const r = await frappe.call({
@@ -2587,6 +2615,8 @@ onMounted(async () => {
   }
   
   const params = new URLSearchParams(window.location.search);
+  isLaminationBoard.value = (params.get("board") || "").toLowerCase() === "lamination";
+  isSlittingBoard.value = (params.get("board") || "").toLowerCase() === "slitting";
   const scopeParam = params.get('scope');
   const dateParam = params.get('date');
   const weekParam = params.get('week');

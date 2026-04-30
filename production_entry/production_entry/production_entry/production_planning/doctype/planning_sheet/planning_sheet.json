@@ -16,6 +16,7 @@
   "section_break_5",
   "party_code",
   "custom_lamination_order_code",
+  "custom_lam_side",
   "customer",
   "column_break_7",
   "dod",
@@ -107,6 +108,18 @@
    "label": "Party Code"
   },
   {
+   "fieldname": "custom_lamination_order_code",
+   "fieldtype": "Data",
+   "label": "Lamination Order Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_lam_side",
+   "fieldtype": "Data",
+   "label": "Lam Side",
+   "read_only": 1
+  },
+  {
    "fieldname": "customer",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -171,13 +184,6 @@
    "fieldname": "custom_plan_code",
    "fieldtype": "Data",
    "label": "Plan Code"
-  },
-  {
-   "description": "Auto-assigned when the sheet has lamination (104) lines. Format: U + year + month letter (A\u2013L) + 3 digits, e.g. U26D001 for April 2026.",
-   "fieldname": "custom_lamination_order_code",
-   "fieldtype": "Data",
-   "label": "Lamination Order Code",
-   "read_only": 1
   },
   {
    "fieldname": "section_break_9",
@@ -306,7 +312,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-04-03 20:00:00.000000",
+ "modified": "2026-04-25 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Production Planning",
  "name": "Planning sheet",

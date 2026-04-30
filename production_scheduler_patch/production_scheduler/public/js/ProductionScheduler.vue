@@ -3,6 +3,9 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
+      <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
+      </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
         <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #4f46e5;" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
@@ -46,7 +49,7 @@
         <label>Unit</label>
         <select v-model="filterUnit">
           <option value="">All Units</option>
-          <option v-for="u in units" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in boardUnits" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
       <div class="cc-filter-item">
@@ -314,17 +317,42 @@ const COLOR_GROUPS = [
 ];
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
-const UNIT_TONNAGE_LIMITS = { "Unit 1": 4.4, "Unit 2": 12, "Unit 3": 9, "Unit 4": 5.5, "Mixed": 999 };
-const headerColors = { "Unit 1": "#3b82f6", "Unit 2": "#10b981", "Unit 3": "#f59e0b", "Unit 4": "#8b5cf6", "Mixed": "#64748b" };
+const LAMINATION_UNIT = "Lamination Unit";
+const SLITTING_UNIT = "Slitting Unit";
+const UNIT_TONNAGE_LIMITS = {
+  "Unit 1": 4.4,
+  "Unit 2": 12,
+  "Unit 3": 9,
+  "Unit 4": 5.5,
+  "Mixed": 999,
+  [LAMINATION_UNIT]: 999,
+  [SLITTING_UNIT]: 999,
+};
+const headerColors = {
+  "Unit 1": "#3b82f6",
+  "Unit 2": "#10b981",
+  "Unit 3": "#f59e0b",
+  "Unit 4": "#8b5cf6",
+  "Mixed": "#64748b",
+  [LAMINATION_UNIT]: "#0d9488",
+  [SLITTING_UNIT]: "#0f766e",
+};
 
 function normalizeUnitName(rawUnit) {
   const txt = String(rawUnit || "").trim().toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
+  if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
   if (txt === "unit1" || txt === "unit 1") return "Unit 1";
   if (txt === "unit2" || txt === "unit 2") return "Unit 2";
   if (txt === "unit3" || txt === "unit 3") return "Unit 3";
   if (txt === "unit4" || txt === "unit 4") return "Unit 4";
   return String(rawUnit || "Mixed").trim() || "Mixed";
+}
+
+function itemProcessPrefix(itemCode) {
+  const ic = String(itemCode || "").trim();
+  return ic.length >= 3 ? ic.slice(0, 3) : "";
 }
 
 const filterOrderDate = ref(frappe.datetime.get_today());
@@ -390,12 +418,17 @@ function detectRestrictedUser() {
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
+/** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
+const isLaminationBoard = ref(false);
+const isSlittingBoard = ref(false);
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
 units.forEach(u => {
     unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 });
+unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -418,7 +451,7 @@ function handleRealtimeBoardUpdate(payload) {
 async function fetchMaintenanceRecords() {
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.get_all_equipment_maintenance"
+      method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance"
     });
 
     maintenanceRecords.value = res.message || [];
@@ -458,7 +491,7 @@ async function deleteMaintenanceRecordFromBoard(recordName) {
 
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.delete_maintenance_and_cascade",
+      method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
       args: { maintenance_record_name: recordName }
     });
 
@@ -520,7 +553,17 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    frappe.set_route("Production Table", query);
+    if (isSlittingBoard.value) {
+        query.board = "slitting";
+        frappe.set_route("slitting-order-table", query);
+        return;
+    }
+    if (isLaminationBoard.value) {
+        query.board = "lamination";
+        frappe.set_route("lamination-order-table", query);
+    } else {
+        frappe.set_route("production-table", query);
+    }
 }
 
 function goToConfirmedOrders() {
@@ -549,9 +592,15 @@ function toggleViewScope() {
     fetchData();
 }
 
+const boardUnits = computed(() => {
+  if (isSlittingBoard.value) return [SLITTING_UNIT];
+  if (isLaminationBoard.value) return [LAMINATION_UNIT];
+  return units;
+});
+
 const visibleUnits = computed(() => {
-  if (!filterUnit.value) return units;
-  return units.filter((u) => u === filterUnit.value);
+  if (!filterUnit.value) return boardUnits.value;
+  return boardUnits.value.filter((u) => u === filterUnit.value);
 });
 
 const NO_RULE_WHITES = ["BRIGHT WHITE", "MILKY WHITE", "SUPER WHITE", "SUNSHINE WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"];
@@ -568,6 +617,17 @@ const filteredData = computed(() => {
       ...d,
       unit: normalizeUnitName(d.unit)
   }));
+
+  // Backward compatibility: old 103 rows may still carry Mixed/UNASSIGNED in DB.
+  // Force them into Slitting Unit while viewing dedicated Slitting Board.
+  if (isSlittingBoard.value) {
+    data = data.map((d) => {
+      if (itemProcessPrefix(d.item_code || d.itemCode) === "103") {
+        return { ...d, unit: SLITTING_UNIT };
+      }
+      return d;
+    });
+  }
 
   // For Production Board ONLY: Show pushed items.
   // Items are considered "pushed" to the board if they have a plannedDate set.
@@ -719,7 +779,7 @@ function getCapacityLabel() {
 // Uses filteredData so stats match visible cards (not all raw data)
 const unitStatsCache = computed(() => {
   const stats = {};
-  for (const unit of units) {
+  for (const unit of boardUnits.value) {
     const allUnitData = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
     
     // Separation for display purposes only, capacity counts EVERYTHING
@@ -819,7 +879,7 @@ async function initSortable() {
                     }));
                     
                     const res = await frappe.call({
-                        method: "production_scheduler.api.update_items_bulk",
+                        method: "production_entry.production_planning.scheduler_api.update_items_bulk",
                         args: { items: JSON.stringify(bulkItems) },
                         freeze: true,
                         freeze_message: `Moving ${itemsToMove.length} orders...`
@@ -844,7 +904,7 @@ async function initSortable() {
                 
                 const performMove = async (force=0, split=0) => {
                     const res = await frappe.call({
-                        method: "production_scheduler.api.update_schedule",
+                        method: "production_entry.production_planning.scheduler_api.update_schedule",
                         args: {
                             item_name: itemName, 
                             unit: newUnit,
@@ -885,7 +945,7 @@ async function initSortable() {
                             primary_action: async () => {
                                 d.hide();
                                 const res2 = await frappe.call({
-                                    method: "production_scheduler.api.update_schedule",
+                                    method: "production_entry.production_planning.scheduler_api.update_schedule",
                                     args: { item_name: itemName, unit: moveUnit, date: moveDate, index: newIndex, force_move: 1 }
                                 });
                                 if (res2.message && res2.message.status === 'success') {
@@ -902,7 +962,7 @@ async function initSortable() {
                          d.add_custom_action('📅 Next Day', async () => {
                              d.hide();
                              const res3 = await frappe.call({
-                                 method: "production_scheduler.api.update_schedule",
+                                 method: "production_entry.production_planning.scheduler_api.update_schedule",
                                  args: { item_name: itemName, unit: moveUnit, date: moveDate, index: 0, strict_next_day: 1 }
                              });
                              if (res3.message && res3.message.status === 'overflow') {
@@ -1024,14 +1084,19 @@ function sortItems(unit, items) {
 const unitEntriesCache = computed(() => {
   // Explicitly read renderKey + all sort configs so Vue tracks them as reactive deps
   void renderKey.value;
-  units.forEach(u => {
+  boardUnits.value.forEach(u => {
     const cfg = unitSortConfig.value[u];
     if (cfg) { void cfg.color; void cfg.gsm; void cfg.priority; void cfg.mode; }
   });
 
   const cache = {};
-  for (const unit of units) {
-    let unitItems = filteredData.value.filter((d) => (d.unit || "Mixed") === unit);
+  for (const unit of boardUnits.value) {
+    let unitItems = filteredData.value.filter((d) => {
+      if (isSlittingBoard.value && unit === SLITTING_UNIT) {
+        return itemProcessPrefix(d.item_code || d.itemCode) === "103" || (d.unit || "Mixed") === unit;
+      }
+      return (d.unit || "Mixed") === unit;
+    });
     unitItems = sortItems(unit, unitItems); 
     const entries = [];
     for (let i = 0; i < unitItems.length; i++) {
@@ -1100,7 +1165,7 @@ async function revertOrder(entry) {
             try {
                 isLoading.value = true;
                 const r = await frappe.call({
-                    method: "production_scheduler.api.revert_items_from_pb",
+                    method: "production_entry.production_planning.scheduler_api.revert_items_from_pb",
                     args: { item_names: [entry.itemName] }
                 });
                 if (r.message && r.message.status === 'success') {
@@ -1126,13 +1191,13 @@ async function analyzePreviousFlow() {
   if (!filterOrderDate.value) return;
   try {
     const prevDateArgs = await frappe.call({
-      method: "production_scheduler.api.get_previous_production_date",
+      method: "production_entry.production_planning.scheduler_api.get_previous_production_date",
       args: { date: filterOrderDate.value }
     });
     const prevDate = prevDateArgs.message;
     if (prevDate) {
       const r = await frappe.call({
-        method: "production_scheduler.api.get_color_chart_data",
+        method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
         args: { date: prevDate }
       });
       const prevData = r.message || [];
@@ -1173,7 +1238,7 @@ async function handleMoveOrders(items, date, unit, dialog) {
         const isAggregateView = viewScope.value === 'monthly' || viewScope.value === 'weekly';
 
         const r = await frappe.call({
-            method: "production_scheduler.api.move_orders_to_date",
+            method: "production_entry.production_planning.scheduler_api.move_orders_to_date",
             args: {
                 item_names: items,
                 target_date: date,
@@ -1230,7 +1295,7 @@ function openPullOrdersDialog() {
                 fieldtype: 'Select',
                 options: [
                     { label: 'Keep Original Unit', value: '' },
-                  ...units.filter(u => u !== 'Mixed').map(u => ({ label: `Move to ${u}`, value: u })),
+                  ...boardUnits.value.filter(u => u !== 'Mixed').map(u => ({ label: `Move to ${u}`, value: u })),
                   { label: 'Move to Unassigned', value: 'Mixed' }
                 ],
                 default: '',
@@ -1268,7 +1333,7 @@ async function loadOrders(d) {
     try {
         // Production Board Pull = orders already ON the board for this date (move to today).
         const r = await frappe.call({
-            method: "production_scheduler.api.get_color_chart_data",
+            method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
             args: { date: date, mode: 'pull_board' }
         });
         
@@ -1281,7 +1346,7 @@ async function loadOrders(d) {
         }
 
         // --- FE FILTERS ---
-        const pullFilterUnits = [...units.filter(u => u !== 'Mixed'), 'Mixed'];
+        const pullFilterUnits = [...boardUnits.value.filter(u => u !== 'Mixed'), 'Mixed'];
         const uniqueQualities = [...new Set(items.map(i => i.quality || 'STD'))].sort();
         const uniqueParties = [...new Set(items.map(i => i.partyCode || i.customer || ''))].filter(Boolean).sort();
         
@@ -1504,7 +1569,7 @@ function openRescueDialog() {
                 fieldtype: 'Select',
                 options: [
                     { label: 'Keep Original Unit', value: '' },
-                    ...units.map(u => ({ label: `Move to ${u}`, value: u }))
+                    ...boardUnits.value.map(u => ({ label: `Move to ${u}`, value: u }))
                 ],
                 default: '',
                 description: 'If selected, all rescued orders will be assigned to this unit.'
@@ -1536,7 +1601,7 @@ async function loadRescueItems(d) {
     
     try {
         const r = await frappe.call({
-            method: "production_scheduler.api.get_items_by_sheet",
+            method: "production_entry.production_planning.scheduler_api.get_items_by_sheet",
             args: { sheet_name: sheet }
         });
         
@@ -1782,7 +1847,7 @@ function openMovePlanDialog() {
                 label: 'Target Unit (Optional)',
                 fieldname: 'target_unit',
                 fieldtype: 'Select',
-                options: ['', ...units],
+                options: ['', ...boardUnits.value],
                 description: 'Leave empty to keep each order\'s current unit.'
             },
             {
@@ -1813,7 +1878,7 @@ function openMovePlanDialog() {
 
             try {
                 const r = await frappe.call({
-                    method: "production_scheduler.api.move_orders_to_date",
+                    method: "production_entry.production_planning.scheduler_api.move_orders_to_date",
                     args: {
                         item_names: selectedItems,
                         target_date: targetDate,
@@ -1933,20 +1998,28 @@ async function fetchData() {
         // Production Board: fetch ALL plans but ONLY pushed items (custom_planned_date set)
         args.plan_name = "__all__";
         args.planned_only = 1;
-        try {
-          const sp = new URLSearchParams(window.location.search || "");
-          const b = (sp.get("board") || "").toLowerCase();
-          if (b === "lamination") {
-            args.board_process_scope = "lamination_only";
-          } else {
-            args.board_process_scope = "exclude_104";
+        if (isSlittingBoard.value) {
+          args.board_process_scope = "slitting_only";
+        } else if (isLaminationBoard.value) {
+          args.board_process_scope = "lamination_only";
+        } else {
+          try {
+            const sp = new URLSearchParams(window.location.search || "");
+            const b = (sp.get("board") || "").toLowerCase();
+            if (b === "lamination") {
+              args.board_process_scope = "lamination_only";
+            } else if (b === "slitting") {
+              args.board_process_scope = "slitting_only";
+            } else {
+              args.board_process_scope = "exclude_special";
+            }
+          } catch (e) {
+            args.board_process_scope = "exclude_special";
           }
-        } catch (e) {
-          args.board_process_scope = "exclude_104";
         }
 
         const r = await frappe.call({
-          method: "production_scheduler.api.get_color_chart_data",
+          method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
           args: args,
         });
         rawData.value = (r.message || []).map(d => ({
@@ -1963,7 +2036,7 @@ async function fetchData() {
         
         // Load Custom Color Order
         try {
-            const orderRes = await frappe.call("production_scheduler.api.get_color_order");
+            const orderRes = await frappe.call("production_entry.production_planning.scheduler_api.get_color_order");
             customRowOrder.value = orderRes.message || [];
         } catch(e) { console.error("Failed to load color order", e); }
         
@@ -2065,6 +2138,16 @@ function initFlatpickr() {
 }
 
 onMounted(() => {
+    try {
+      const r = frappe.get_route && frappe.get_route();
+      const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
+      isLaminationBoard.value = routeName === "lamination board";
+      isSlittingBoard.value = routeName === "slitting board";
+    } catch (e) {
+      isLaminationBoard.value = false;
+      isSlittingBoard.value = false;
+    }
+
     // 1. Load CSS
     if (!document.getElementById('flatpickr-css')) {
         const link = document.createElement('link');
@@ -2167,7 +2250,7 @@ async function openBulkMoveDialog() {
         label: "Target Unit (optional)",
         fieldname: "target_unit",
         fieldtype: "Select",
-        options: ["", ...units],
+        options: ["", ...boardUnits.value],
         description: "Leave empty to keep each order's current unit.",
       },
       {
@@ -2204,7 +2287,7 @@ async function openBulkMoveDialog() {
         });
 
         await frappe.call({
-          method: "production_scheduler.api.update_items_bulk",
+          method: "production_entry.production_planning.scheduler_api.update_items_bulk",
           args: { items: updates },
           freeze: true,
         });
@@ -2240,7 +2323,7 @@ async function bulkConfirm() {
       try {
         isLoading.value = true;
         const r = await frappe.call({
-          method: "production_scheduler.api.bulk_confirm_orders",
+          method: "production_entry.production_planning.scheduler_api.bulk_confirm_orders",
           args: { items: selectedItems.value },
           freeze: true,
           freeze_message: "Confirming Orders..."
@@ -2270,7 +2353,7 @@ async function syncAllPlanCodes() {
         isLoading.value = true;
         try {
             const res = await frappe.call({
-                method: "production_scheduler.api.recalculate_all_plan_codes",
+                method: "production_entry.production_planning.scheduler_api.recalculate_all_plan_codes",
                 freeze: true,
                 freeze_message: "Updating Plan Codes..."
             });
@@ -2289,7 +2372,7 @@ async function syncAllPlanCodes() {
 
 async function restoreWhiteOrders() {
     try {
-        const r = await frappe.call("production_scheduler.api.fix_recently_cleared_whites");
+        const r = await frappe.call("production_entry.production_planning.scheduler_api.fix_recently_cleared_whites");
         if (r.message && r.message.status === 'success') {
             frappe.show_alert({ message: `✅ Restored ${r.message.restored_count} white orders to the Board.`, indicator: 'green' });
             await fetchData();

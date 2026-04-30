@@ -209,6 +209,7 @@
    "label": "Lamination Order Code",
    "read_only": 1
   },
+
   {
    "default": "DAY",
    "fieldname": "custom_lamination_shift",
@@ -286,7 +287,7 @@
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-04-03 00:00:00.000000",
+ "modified": "2026-04-25 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Production Planning",
  "name": "Planning Table",
