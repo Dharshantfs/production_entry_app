@@ -17,10 +17,10 @@ LAMINATION_FLOW_ENABLED = True
 
 
 def _item_process_prefix(item_code):
-	\"\"\"Extract process code from item code. Handles both formats:
+	"""Extract process code from item code. Handles both formats:
 	   1. BOPP: DESIGN-PROCESSGSMWIDTH (e.g., 7436-1071101270 -> 107)
 	   2. Legacy: PROCESSCODEDATA (e.g., 1031052210500050 -> 103)
-	\"\"\"
+	"""
 	ic = (item_code or "").strip()
 	if not ic:
 		return ""
