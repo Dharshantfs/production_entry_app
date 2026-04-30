@@ -2038,7 +2038,9 @@ def _populate_planning_sheet_items(ps, doc):
 
         unit = compute_default_production_unit(col, width, it.item_code)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+        if _item_process_prefix(str(it.item_code or "")) == "103":
+            unit = "Slitting Unit"
+        elif LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("104", "107"):
             unit = "Lamination Unit"
 
         p_date = getdate(ps.ordered_date) if _is_white_color(col) else None
@@ -2124,7 +2126,10 @@ def compute_default_production_unit(color, width_inch, item_code=None):
     Only white-family colors use UNASSIGNED (pool for that order date).
     All other colors: pick one of Unit 1ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“4 by minimum width waste (same rule as SO populate).
     """
-    if _item_process_prefix(str(item_code or "")) in ("104", "107"):
+    process = _item_process_prefix(str(item_code or ""))
+    if process == "103":
+        return "Slitting Unit"
+    if process in ("104", "107"):
         return "Lamination Unit"
     w = flt(width_inch)
     if _is_white_color(color):
@@ -3447,9 +3452,9 @@ def get_preferred_unit(quality):
 
 def generate_plan_code(date_str, unit, plan_name):
     """
-    Generates a readable plan code: {YY}{MonthLetter}{Unit}-{PlanName}
+    Generates a readable plan code: {YY}{MonthLetter}{UnitCode}-{PlanName}
     e.g. 26CU1-PLAN 1
-    UNASSIGNED uses segment UA. Legacy Mixed normalizes to UNASSIGNED before this runs.
+    Unit codes: U1-U4, UA, LU (Lamination Unit), SU (Slitting Unit).
     """
     if not str(date_str) or not plan_name or not unit:
         return ""
@@ -3465,6 +3470,10 @@ def generate_plan_code(date_str, unit, plan_name):
             u_code = "U3"
         elif "UNIT4" in u_clean:
             u_code = "U4"
+        elif u_clean == "LAMINATIONUNIT":
+            u_code = "LU"
+        elif u_clean == "SLITTINGUNIT":
+            u_code = "SU"
         elif u_clean in ("UNASSIGNED", "NONE", "NA") or "MIXED" in u_clean:
             u_code = "UA"
         else:
