@@ -1459,8 +1459,17 @@ def get_lamination_order_table_data(
     child_so_pp_cache = {}
     fabric_progress = {}
 
-    def _get_child_progress(sheet_name, so_item, parent_pp_id=None):
-        key = (str(sheet_name or "").strip(), str(so_item or "").strip(), str(parent_pp_id or "").strip())
+    def _get_child_progress(sheet_name, so_item, parent_pp_id=None, parent_trace_id=None):
+        """
+        Per-(104-parent) fabric progress: restrict same-sheet 100-rows by trace when present.
+        """
+        ptrace = str(parent_trace_id or "").strip()
+        key = (
+            str(sheet_name or "").strip(),
+            str(so_item or "").strip(),
+            str(parent_pp_id or "").strip(),
+            ptrace,
+        )
         if key in fabric_progress:
             return fabric_progress[key]
         empty = {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": False, "count": 0}
@@ -1470,6 +1479,7 @@ def get_lamination_order_table_data(
 
         has_so_item = frappe.db.has_column("Planning Table", "sales_order_item")
         has_custom_so_item = frappe.db.has_column("Planning Table", "custom_sales_order_item")
+        has_pt_trace_col = frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
         achieved_expr = "IFNULL(actual_production_weight_kgs, 0)" if frappe.db.has_column("Planning Table", "actual_production_weight_kgs") else "0"
         child_pp_fields = _psi_production_plan_fields()
         child_pp_select = (
@@ -1484,14 +1494,20 @@ def get_lamination_order_table_data(
         # SO items (separate SO lines) but live on the same Planning Sheet. Filtering by SO item
         # would exclude the child row entirely, returning zero results.
         if key[0]:
+            trace_clause = ""
+            sql_params = [key[0]]
+            if ptrace and has_pt_trace_col:
+                trace_clause = " AND TRIM(IFNULL(custom_parent_child_trace_id, '')) = %s "
+                sql_params.append(ptrace)
             same_sheet_rows = frappe.db.sql(
                 f"""
                 SELECT name, qty, item_code, {achieved_expr} as achieved{child_pp_select}
                 FROM `tabPlanning Table`
                 WHERE parent = %s
                   AND item_code LIKE '100%%'
+                  {trace_clause}
                 """,
-                (key[0],),
+                tuple(sql_params),
                 as_dict=True,
             )
             child_rows.extend(same_sheet_rows or [])
@@ -1512,6 +1528,11 @@ def get_lamination_order_table_data(
                 if key[0]:
                     exclude_parent = "AND parent != %s"
                     exclude_params.append(key[0])
+                trace_clause2 = ""
+                cross_params_final = list(cross_params + exclude_params)
+                if ptrace and has_pt_trace_col:
+                    trace_clause2 = " AND TRIM(IFNULL(custom_parent_child_trace_id, '')) = %s "
+                    cross_params_final.append(ptrace)
                 cross_rows = frappe.db.sql(
                     f"""
                     SELECT name, qty, item_code, {achieved_expr} as achieved{child_pp_select}
@@ -1519,8 +1540,9 @@ def get_lamination_order_table_data(
                     WHERE item_code LIKE '100%%'
                       AND ({where_cross})
                       {exclude_parent}
+                      {trace_clause2}
                     """,
-                    tuple(cross_params + exclude_params),
+                    tuple(cross_params_final),
                     as_dict=True,
                 )
                 child_rows.extend(cross_rows or [])
@@ -1639,7 +1661,12 @@ def get_lamination_order_table_data(
             str(row.get("planningSheet") or "").strip(),
             str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip(),
         )
-        progress = _get_child_progress(key[0], key[1], row.get("pp_id"))
+        parent_trace = str(
+            (ex.get("parent_trace_id") if ex else "")
+            or row.get("trace_id")
+            or ""
+        ).strip()
+        progress = _get_child_progress(key[0], key[1], row.get("pp_id"), parent_trace)
         row["fabric_required_kg"] = flt(progress.get("required") or 0)
         row["fabric_achieved_kg"] = flt(progress.get("achieved") or 0)
         row["child_wo_produced_kg"] = flt(progress.get("child_wo_produced_kg") or 0)
@@ -1934,14 +1961,22 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
     if not item_code.startswith("104"):
         frappe.throw(_("Start WO is allowed only for parent lamination rows (104)."))
 
+    trace_f = ""
+    qparams = [item.get("parent")]
+    if frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+        ptr = str(frappe.db.get_value("Planning Table", item_name, "custom_parent_child_trace_id") or "").strip()
+        if ptr:
+            trace_f = " AND TRIM(IFNULL(custom_parent_child_trace_id, '')) = %s "
+            qparams.append(ptr)
     fabric_rows = frappe.db.sql(
-        """
+        f"""
         SELECT name, qty
         FROM `tabPlanning Table`
         WHERE parent = %s
           AND item_code LIKE '100%%'
+          {trace_f}
         """,
-        (item.get("parent"),),
+        tuple(qparams),
         as_dict=True,
     )
     req_kg = sum(flt(r.get("qty") or 0) for r in (fabric_rows or []))

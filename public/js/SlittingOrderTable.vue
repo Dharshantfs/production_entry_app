@@ -151,6 +151,7 @@
             <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
+              <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan first">PP Draft</span>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
             <td class="cell-center">

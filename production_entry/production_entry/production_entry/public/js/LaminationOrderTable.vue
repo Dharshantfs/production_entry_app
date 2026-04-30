@@ -153,7 +153,8 @@
             </td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">
-              <button v-if="row.pp_id" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
+              <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
+              <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
             <td class="cell-center">
@@ -164,17 +165,9 @@
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
                 <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
-                <template v-if="row.is_lamination_parent && !row.parent_wo_terminal">
+                <template v-if="row.is_lamination_parent && !row.parent_wo_terminal && Number(row.pp_docstatus) === 1 && row.child_wo_created">
                   <button
-                    v-if="!row.pp_id"
-                    type="button"
-                    disabled
-                    class="cc-pp-btn pt-btn-entry"
-                    style="opacity:0.45;cursor:not-allowed;"
-                    title="No Production Plan yet"
-                  >Start WO</button>
-                  <button
-                    v-else-if="!row.parent_wo_name"
+                    v-if="!row.parent_wo_name"
                     type="button"
                     @click="startParentWO(row)"
                     class="cc-pp-btn pt-btn-entry"
@@ -203,6 +196,15 @@
                   >Open WO</button>
                   <div v-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Complete child WO first</div>
                 </template>
+                <div v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && row.pp_id && Number(row.pp_docstatus) === 1 && !row.child_wo_created" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Start fabric WO first</div>
+                <button
+                  v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
+                  type="button"
+                  disabled
+                  class="cc-pp-btn pt-btn-entry"
+                  style="opacity:0.45;cursor:not-allowed;"
+                  title="No Production Plan yet"
+                >Start WO</button>
                 <button
                   v-if="canShowStockEntry(row)"
                   type="button"

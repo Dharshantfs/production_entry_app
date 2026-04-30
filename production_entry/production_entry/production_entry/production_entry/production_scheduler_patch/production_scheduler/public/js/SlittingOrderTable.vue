@@ -95,13 +95,15 @@
             <th>ACHIEVED KGS</th>
             <th>FABRIC READY DATE</th>
             <th>ORDER SHEET</th>
+            <th style="min-width:90px;">PRODUCTION PLAN</th>
+            <th style="min-width:128px;">SPR / WO</th>
             <th>STATUS</th>
           </tr>
         </thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-              <td colspan="16" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+              <td colspan="17" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                   <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -114,7 +116,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td colspan="13" style="text-align:center; color:#94a3b8; font-style:italic;">No slitting orders (maintenance day)</td>
+              <td colspan="15" style="text-align:center; color:#94a3b8; font-style:italic;">No slitting orders (maintenance day)</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -147,11 +149,43 @@
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
+            <td class="cell-center">
+              <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
+              <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan first">PP Draft</span>
+              <span v-else class="pt-no-pp-hint">No PP</span>
+            </td>
+            <td class="cell-center">
+              <div class="pt-stock-cell">
+                <div v-if="row.pp_id" class="pt-pill-row">
+                  <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
+                  <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
+                  <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
+                </div>
+                <button
+                  v-if="canShowStockEntry(row)"
+                  type="button"
+                  @click="handleStockEntryAction(row)"
+                  class="cc-pp-btn pt-btn-entry"
+                  :title="getStockEntryTitle(row)"
+                >{{ getStockEntryLabel(row) }}</button>
+                <button
+                  v-else-if="row.spr_name"
+                  type="button"
+                  @click="openItemSPR(row.spr_name, row)"
+                  class="cc-pp-btn pt-btn-entry"
+                  :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
+                  :title="itemSprPrimaryButtonTitle(row)"
+                >{{ itemSprPrimaryButtonLabel(row) }}</button>
+                <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
+                <span v-else-if="!row.pp_id" style="color:#999;font-size:10px;">No PP</span>
+                <span v-else class="pt-wo-closed-hint">WO closed</span>
+              </div>
+            </td>
             <td class="cell-center">{{ row.dispatch_status || "NOT DESPATCHED" }}</td>
           </tr>
           </template>
           <tr v-if="!displayRows.length">
-            <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No slitting orders for this view.</td>
+            <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No slitting orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -696,13 +730,13 @@ function canShowStockEntry(item) {
   if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
   if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
+  if (!item.is_lamination_parent && !item.wo_terminal) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
   const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
   const targetKg = Number(item.qty ?? 0);
   const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
   if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
-  if (item.wo_terminal) return false;
   return true;
 }
 
@@ -749,6 +783,9 @@ function getStockEntryTitle(item) {
   if (!item) return "Create Shaft Production Run";
   const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
   const pendingQty = Number(item.pending_qty || 0);
+  if (!item.is_lamination_parent && !item.wo_terminal) {
+    return "Locked: child WO must be Completed/Stopped/Closed before parent SPR.";
+  }
   if (isDraftSpr) return `Continue draft SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
   return `New SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
 }
