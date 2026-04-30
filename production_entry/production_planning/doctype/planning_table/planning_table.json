@@ -9,7 +9,6 @@
   "sales_order_item",
   "item_code",
   "item_name",
-    "custom_design_name",
   "column_break_2",
   "qty",
   "uom",
@@ -78,13 +77,6 @@
    "label": "Item Name",
    "read_only": 1
   },
-    {
-     "fieldname": "custom_design_name",
-     "fieldtype": "Data",
-     "in_list_view": 1,
-     "label": "Design Name",
-     "read_only": 1
-    },
   {
    "fieldname": "column_break_2",
    "fieldtype": "Column Break"
