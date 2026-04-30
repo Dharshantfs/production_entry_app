@@ -64,6 +64,49 @@ def _parent_child_trace_id_from_item_code(item_code):
     return f"{process}-{colour}-{gsm}-{width}"
 
 
+@frappe.whitelist()
+def backfill_parent_child_trace_ids(limit=0):
+    """Backfill `custom_parent_child_trace_id` on Planning Table and Planning sheet Item rows.
+
+    - limit: optional number of rows to process (0 = all)
+    """
+    if not (frappe.db.has_column("Planning Table", "custom_parent_child_trace_id") or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")):
+        return {"status": "error", "message": "Target columns not present"}
+
+    where_clause = ""
+    params = []
+    if int(limit or 0) > 0:
+        where_clause = "LIMIT %s"
+        params.append(int(limit))
+
+    # Update Planning Table rows
+    rows = frappe.db.sql(f"SELECT name, item_code FROM `tabPlanning Table` WHERE IFNULL(item_code,'') != '' {where_clause}", tuple(params), as_dict=True)
+    updated = 0
+    for r in rows or []:
+        code = str(r.get("item_code") or "").strip()
+        trace = _parent_child_trace_id_from_item_code(code)
+        try:
+            frappe.db.sql("UPDATE `tabPlanning Table` SET custom_parent_child_trace_id = %s WHERE name = %s", (trace, r.get("name")))
+            updated += 1
+        except Exception:
+            pass
+
+    # Update Planning sheet Item legacy table if it exists
+    if frappe.db.has_column("Planning sheet Item", "item_code") and frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+        rows2 = frappe.db.sql(f"SELECT name, item_code FROM `tabPlanning sheet Item` WHERE IFNULL(item_code,'') != '' {where_clause}", tuple(params), as_dict=True)
+        for r in rows2 or []:
+            code = str(r.get("item_code") or "").strip()
+            trace = _parent_child_trace_id_from_item_code(code)
+            try:
+                frappe.db.sql("UPDATE `tabPlanning sheet Item` SET custom_parent_child_trace_id = %s WHERE name = %s", (trace, r.get("name")))
+                updated += 1
+            except Exception:
+                pass
+
+    frappe.db.commit()
+    return {"status": "ok", "updated": updated}
+
+
 def _month_letter_from_date(dt):
     """January=A and December=L (single letter month code)."""
     m = int(getattr(dt, "month", 1) or 1)
