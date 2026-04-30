@@ -1,7 +1,7 @@
 <template>
   <div class="cc-container">
     <div class="cc-filters">
-      <div class="cc-filter-title">Lamination Order Table</div>
+      <div class="cc-filter-title">Slitting Order Table</div>
       <div class="cc-filter-item">
         <label>View Scope</label>
         <select v-model="viewScope" @change="toggleViewScope" class="cc-select-scope">
@@ -46,7 +46,7 @@
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
-        <button type="button" class="cc-view-btn" @click="goToBoard">Back to Lamination Board</button>
+        <button type="button" class="cc-view-btn" @click="goToBoard">Back to Slitting Board</button>
       </div>
     </div>
 
@@ -62,14 +62,14 @@
         <div class="cc-shift-lane" :class="{ over: dragOverShift === 'DAY' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'DAY'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('DAY')">
           <div class="cc-shift-lane-title">DAY</div>
           <div v-for="row in scheduleRowsByShift('DAY')" :key="`${row.itemName}-day`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
-            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-code">{{ row.trace_id || row.partyCode || row.itemCode }}</div>
             <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
           </div>
         </div>
         <div class="cc-shift-lane" :class="{ over: dragOverShift === 'NIGHT' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'NIGHT'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('NIGHT')">
           <div class="cc-shift-lane-title">NIGHT</div>
           <div v-for="row in scheduleRowsByShift('NIGHT')" :key="`${row.itemName}-night`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
-            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-code">{{ row.trace_id || row.partyCode || row.itemCode }}</div>
             <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
           </div>
         </div>
@@ -77,7 +77,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders (104)</div>
+      <div class="cc-table-unit-header lot-header">Slitting Unit - Planned orders (103)</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -85,19 +85,19 @@
             <th style="min-width:84px;">ARRANGMENT</th>
             <th>DATE</th>
             <th>SHIFT</th>
-            <th>BOOKING ID</th>
-            <th>CUSTOMER</th>
+            <th>CODE</th>
+            <th>CUSTOMER NAME</th>
             <th>QUALITY</th>
-            <th>DESIGN</th>
-            <th>FABRIC GSM</th>
-            <th>LAM GSM</th>
-            <th>PLANNED LENGTH (MTR)</th>
-            <th>ACHIEVED LENGTH (MTR)</th>
-            <th>PRODUCED LAMINATION WEIGHT (KGS)</th>
-            <th>PRODUCED FABRIC WT (KG)</th>
+            <th>COLOUR</th>
+            <th>ROLL SIZE</th>
+            <th>SLITTING SIZE</th>
+            <th>PLANNED KGS</th>
+            <th>ACHIEVED KGS</th>
             <th>FABRIC READY DATE</th>
+            <th>ORDER SHEET</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
+            <th>STATUS</th>
           </tr>
         </thead>
         <tbody>
@@ -116,7 +116,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td colspan="14" style="text-align:center; color:#94a3b8; font-style:italic;">No lamination orders (maintenance day)</td>
+              <td colspan="15" style="text-align:center; color:#94a3b8; font-style:italic;">No slitting orders (maintenance day)</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -139,22 +139,19 @@
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
+            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
-            <td class="cell-center">{{ row.quality }}</td>
-            <td class="cell-center font-bold">{{ row.color }}</td>
-            <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
-            <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
-            <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
-            <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
-            <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
-            <td class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
-              {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
-            </td>
+            <td class="cell-center">{{ row.quality || "-" }}</td>
+            <td class="cell-center font-bold">{{ row.color || "-" }}</td>
+            <td class="cell-center">{{ row.roll_size || "-" }}</td>
+            <td class="cell-center">{{ row.slitting_size || "-" }}</td>
+            <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
+            <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
+            <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
-              <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>
+              <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan first">PP Draft</span>
               <span v-else class="pt-no-pp-hint">No PP</span>
             </td>
             <td class="cell-center">
@@ -164,47 +161,6 @@
                   <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
                   <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
                 </div>
-                <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
-                <template v-if="row.is_lamination_parent && !row.parent_wo_terminal && Number(row.pp_docstatus) === 1 && row.child_wo_created">
-                  <button
-                    v-if="!row.parent_wo_name"
-                    type="button"
-                    @click="startParentWO(row)"
-                    class="cc-pp-btn pt-btn-entry"
-                    title="Create Work Order draft"
-                  >Start WO</button>
-                  <button
-                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && !row.parent_wo_warehouse_set"
-                    type="button"
-                    @click="openParentWO(row)"
-                    class="cc-pp-btn pt-btn-entry"
-                    title="Open WO and set source warehouse, then save"
-                  >Open WO</button>
-                  <button
-                    v-else-if="Number(row.parent_wo_docstatus || 0) === 0 && row.parent_wo_warehouse_set"
-                    type="button"
-                    @click="startParentWO(row)"
-                    class="cc-pp-btn pt-btn-entry"
-                    title="Submit Work Order to start production"
-                  >Start WO</button>
-                  <button
-                    v-else-if="Number(row.parent_wo_docstatus || 0) === 1"
-                    type="button"
-                    @click="openParentWO(row)"
-                    class="cc-pp-btn pt-btn-entry"
-                    :title="`Open WO: ${row.parent_wo_name} (${row.parent_wo_status || 'In Process'})`"
-                  >Open WO</button>
-                  <div v-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Complete child WO first</div>
-                </template>
-                <div v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && row.pp_id && Number(row.pp_docstatus) === 1 && !row.child_wo_created" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Start fabric WO first</div>
-                <button
-                  v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
-                  type="button"
-                  disabled
-                  class="cc-pp-btn pt-btn-entry"
-                  style="opacity:0.45;cursor:not-allowed;"
-                  title="No Production Plan yet"
-                >Start WO</button>
                 <button
                   v-if="canShowStockEntry(row)"
                   type="button"
@@ -221,14 +177,15 @@
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="!row.is_lamination_parent && row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
-                <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
+                <span v-else-if="!row.pp_id" style="color:#999;font-size:10px;">No PP</span>
+                <span v-else class="pt-wo-closed-hint">WO closed</span>
               </div>
             </td>
+            <td class="cell-center">{{ row.dispatch_status || "NOT DESPATCHED" }}</td>
           </tr>
           </template>
           <tr v-if="!displayRows.length">
-            <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No slitting orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -498,7 +455,7 @@ async function fetchMaintenanceRecords() {
       method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
-    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === "Lamination Unit");
+    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === "Slitting Unit");
     maintenanceRecords.value = rows;
     const mapped = {};
     rows.forEach((rec) => {
@@ -539,7 +496,7 @@ async function fetchLaminationSequences() {
       args: {
         start_date,
         end_date,
-        unit: "Lamination Unit",
+        unit: "Slitting Unit",
         plan_name: "Default",
       },
     });
@@ -661,7 +618,7 @@ async function saveLaminationArrangement() {
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date: dateKey,
-          unit: "Lamination Unit",
+          unit: "Slitting Unit",
           sequence_data: JSON.stringify(seq),
           plan_name: "Default",
         },
@@ -686,7 +643,7 @@ async function restoreLaminationArrangement() {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: "Lamination Unit", plan_name: "Default" },
+        args: { date: dateKey, unit: "Slitting Unit", plan_name: "Default" },
       });
     }
     pendingArrangementUpdates.value = {};
@@ -773,13 +730,13 @@ function canShowStockEntry(item) {
   if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
   if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
+  if (!item.is_lamination_parent && !item.wo_terminal) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
   const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
   const targetKg = Number(item.qty ?? 0);
   const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
   if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
-  if (item.wo_terminal) return false;
   return true;
 }
 
@@ -826,6 +783,9 @@ function getStockEntryTitle(item) {
   if (!item) return "Create Shaft Production Run";
   const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
   const pendingQty = Number(item.pending_qty || 0);
+  if (!item.is_lamination_parent && !item.wo_terminal) {
+    return "Locked: child WO must be Completed/Stopped/Closed before parent SPR.";
+  }
   if (isDraftSpr) return `Continue draft SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
   return `New SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
 }
@@ -975,7 +935,7 @@ async function createItemStockEntry(item) {
 }
 
 function goToBoard() {
-  frappe.set_route("lamination-board");
+  frappe.set_route("slitting-board");
 }
 
 function onRowDragStart(row) {
@@ -997,7 +957,7 @@ async function handleShiftDrop(targetShift) {
   }
   try {
     const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
+      method: "production_entry.production_planning.scheduler_api.assign_slitting_shift",
       args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName },
     });
     const msg = res?.message || {};
@@ -1017,7 +977,7 @@ function currentShiftDateForDialog() {
 
 function openAssignShiftDialog() {
   const d = new frappe.ui.Dialog({
-    title: "Assign Lamination Shift",
+    title: "Assign Slitting Shift",
     fields: [
       { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
       { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
@@ -1030,7 +990,7 @@ function openAssignShiftDialog() {
           return;
         }
         const res = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
+          method: "production_entry.production_planning.scheduler_api.assign_slitting_shift",
           args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
         });
         const msg = res?.message || {};
@@ -1051,7 +1011,7 @@ function openAssignShiftDialog() {
 
 function getMaintenanceRecordsHTML() {
   if (!maintenanceRecords.value.length) {
-    return '<p style="color:#64748b;text-align:center;padding:6px 0;">No Lamination maintenance records in this scope.</p>';
+    return '<p style="color:#64748b;text-align:center;padding:6px 0;">No Slitting maintenance records in this scope.</p>';
   }
   let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
   maintenanceRecords.value.forEach((rec) => {
@@ -1063,7 +1023,7 @@ function getMaintenanceRecordsHTML() {
 
 function openMachineOffDialog() {
   const d = new frappe.ui.Dialog({
-    title: "Lamination Machine Off",
+    title: "Slitting Machine Off",
     fields: [
       { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
       { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
@@ -1082,8 +1042,9 @@ function openMachineOffDialog() {
     primary_action: async (vals) => {
       try {
         const res = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.add_lamination_machine_off",
+          method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
           args: {
+            unit: "Slitting Unit",
             start_date: vals.start_date,
             end_date: vals.end_date,
             maintenance_type: vals.maintenance_type,
@@ -1091,7 +1052,7 @@ function openMachineOffDialog() {
           },
         });
         if (res?.message?.status === "success") {
-          frappe.show_alert({ message: res.message.message || "Lamination maintenance saved", indicator: "green" }, 4);
+          frappe.show_alert({ message: res.message.message || "Slitting maintenance saved", indicator: "green" }, 4);
           d.hide();
           await fetchMaintenanceRecords();
           await fetchData();
@@ -1152,7 +1113,7 @@ async function fetchData() {
     }
 
     const r = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
+      method: "production_entry.production_planning.scheduler_api.get_slitting_order_table_data",
       args,
     });
     rawData.value = (r.message || []).map((d) => ({
@@ -1167,7 +1128,7 @@ async function fetchData() {
     await fetchMaintenanceRecords();
   } catch (e) {
     console.error(e);
-    frappe.msgprint(`Error loading lamination order table: ${getErrorText(e)}`);
+    frappe.msgprint(`Error loading Slitting Order Table: ${getErrorText(e)}`);
   } finally {
     fetchInProgress = false;
   }
@@ -1192,10 +1153,10 @@ function updateUrlParams() {
 
 async function syncSprWeightToTable() {
   try {
-    // Fabric qty / child WO qty now comes from live WO+PP data path in get_lamination_order_table_data.
+    // Fabric qty / child WO qty now comes from live WO+PP data path in get_slitting_order_table_data.
     // Keep this button as a manual refresh action without heavy backend sync.
     await fetchData();
-    frappe.show_alert({ message: "Lamination table refreshed from live WO data", indicator: "green" }, 4);
+    frappe.show_alert({ message: "Slitting table refreshed from live WO data", indicator: "green" }, 4);
   } catch (e) {
     console.error(e);
     frappe.msgprint(`Failed to sync SPR data: ${getErrorText(e)}`);
@@ -1604,5 +1565,6 @@ onUnmounted(() => {
   font-family: ui-monospace, monospace;
 }
 </style>
+
 
 
