@@ -21,6 +21,22 @@ def _item_process_prefix(item_code):
 	return ic[:3] if len(ic) >= 3 else ""
 
 
+
+def _parent_child_pair_key_from_item_code(item_code):
+    """Pair 104 parent and 100 fabric child rows by colour, fabric GSM, and width."""
+    ic = str(item_code or "").strip()
+    if len(ic) < 16:
+        return ""
+    left = ic.rsplit("-", 1)[0] if "-" in ic else ic
+    digits = "".join(ch for ch in left if ch.isdigit())
+    if len(digits) < 16:
+        return ""
+    colour = digits[6:9]
+    gsm = digits[9:12]
+    width = digits[12:16]
+    if not colour or not gsm or not width:
+        return ""
+    return f"{colour}-{gsm}-{width}"
 def _month_letter_from_date(dt):
     """January=A and December=L (single letter month code)."""
     m = int(getattr(dt, "month", 1) or 1)
@@ -160,14 +176,15 @@ def _gsm_from_lamination_item_code(item_code: str) -> int:
 
 
 # Lamination GSM from suffix after '-':
-# 10-A, 12-B, 13-B1, 15-C, 30-D, 20-E
+# A=10, B=12, C=13, D=15, E=20, F=30.
 _LAM_GSM_SUFFIX_MAP = {
     "A": 10,
     "B": 12,
     "B1": 13,
-    "C": 15,
-    "D": 30,
+    "C": 13,
+    "D": 15,
     "E": 20,
+    "F": 30,
 }
 
 
@@ -395,7 +412,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		# Fabric (100*): same as other SO lines ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â white ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ UNASSIGNED, other colours ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ unit by width (not Lamination Unit).
 		fab_color = specs.get("color") or ""
 		fab_width = flt(specs.get("width_inch"))
-		fabric_unit = compute_default_production_unit(fab_color, fab_width)
+		fabric_unit = compute_default_production_unit(fab_color, fab_width, fabric_ic)
 		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
 		row = {
 			"sales_order_item": "",
@@ -903,8 +920,15 @@ def get_lamination_order_table_data(
     child_so_pp_cache = {}
     fabric_progress = {}
 
-    def _get_child_progress(sheet_name, so_item, parent_pp_id=None):
-        key = (str(sheet_name or "").strip(), str(so_item or "").strip(), str(parent_pp_id or "").strip())
+    def _get_child_progress(sheet_name, so_item, parent_pp_id=None, parent_item_code=None, parent_psi_name=None):
+        parent_pair_key = _parent_child_pair_key_from_item_code(parent_item_code)
+        key = (
+            str(sheet_name or "").strip(),
+            str(so_item or "").strip(),
+            str(parent_pp_id or "").strip(),
+            parent_pair_key,
+            str(parent_psi_name or "").strip(),
+        )
         if key in fabric_progress:
             return fabric_progress[key]
         empty = {"required": 0.0, "achieved": 0.0, "child_wo_produced_kg": 0.0, "child_wo_created": False, "child_wo_done": False, "count": 0}
@@ -921,16 +945,31 @@ def get_lamination_order_table_data(
             if child_pp_fields else ""
         )
 
+        child_link_fields = []
+        if frappe.db.has_column("Planning Table", "so_item"):
+            child_link_fields.append("IFNULL(so_item, '') as so_item")
+        if frappe.db.has_column("Planning Table", "split_from"):
+            child_link_fields.append("IFNULL(split_from, '') as split_from")
+        child_link_select = ", " + ", ".join(child_link_fields) if child_link_fields else ""
+
+        def _child_row_matches_parent(ch):
+            if not ch:
+                return False
+            if key[1] and str(ch.get("so_item") or "").strip() == key[1]:
+                return True
+            if key[4] and str(ch.get("split_from") or "").strip() == key[4]:
+                return True
+            if parent_pair_key and _parent_child_pair_key_from_item_code(ch.get("item_code")) == parent_pair_key:
+                return True
+            return False
         child_rows = []
 
-        # --- Path 1: same planning sheet — find ALL 100% (fabric) rows in the same sheet ---
-        # No sales_order_item filter here: the 104 parent and 100 child items have DIFFERENT
-        # SO items (separate SO lines) but live on the same Planning Sheet. Filtering by SO item
-        # would exclude the child row entirely, returning zero results.
+        # --- Path 1: same planning sheet. Match only the linked 100 fabric row. ---
+        # Rows on one sheet can have different PP/WO/SPR records, so never sum all fabric rows.
         if key[0]:
             same_sheet_rows = frappe.db.sql(
                 f"""
-                SELECT name, qty, item_code, {achieved_expr} as achieved{child_pp_select}
+                SELECT name, qty, item_code, {achieved_expr} as achieved{child_pp_select}{child_link_select}
                 FROM `tabPlanning Table`
                 WHERE parent = %s
                   AND item_code LIKE '100%%'
@@ -938,7 +977,11 @@ def get_lamination_order_table_data(
                 (key[0],),
                 as_dict=True,
             )
-            child_rows.extend(same_sheet_rows or [])
+            matched_rows = [ch for ch in (same_sheet_rows or []) if _child_row_matches_parent(ch)]
+            if matched_rows:
+                child_rows.extend(matched_rows)
+            elif same_sheet_rows and len(same_sheet_rows) == 1:
+                child_rows.extend(same_sheet_rows)
 
         # --- Path 2: different sheet — find 100% rows that share the same sales_order_item across ALL sheets ---
         if not child_rows and key[1]:
@@ -958,7 +1001,7 @@ def get_lamination_order_table_data(
                     exclude_params.append(key[0])
                 cross_rows = frappe.db.sql(
                     f"""
-                    SELECT name, qty, item_code, {achieved_expr} as achieved{child_pp_select}
+                    SELECT name, qty, item_code, {achieved_expr} as achieved{child_pp_select}{child_link_select}
                     FROM `tabPlanning Table`
                     WHERE item_code LIKE '100%%'
                       AND ({where_cross})
@@ -1043,9 +1086,14 @@ def get_lamination_order_table_data(
     for r in rows:
         nm = r.get("itemName") or r.get("item_name")
         ex = by_psi.get(nm) if nm else None
-        spr_nm = ((ex.get("spr_for_meter") if ex else "") or (r.get("spr_name") or "") or "").strip()
-        achieved_m = flt(spr_meters.get(spr_nm)) if spr_nm else 0.0
-        achieved_w = flt(spr_weights.get(spr_nm)) if spr_nm else 0.0
+        # Distinguish parent (lamination) SPR vs child (fabric) SPR explicitly
+        parent_spr = ((ex.get("spr_for_meter") if ex else "") or (r.get("spr_name") or "") or "").strip()
+        child_spr = (ex.get("child_fabric_spr_name") or "") if ex else ""
+        # Parent SPR meters/weights
+        achieved_m = flt(spr_meters.get(parent_spr)) if parent_spr else 0.0
+        lamination_weight = flt(spr_weights.get(parent_spr)) if parent_spr else 0.0
+        # Child fabric SPR weight (do not apply to parent unless explicitly linked)
+        child_fabric_weight = flt(spr_weights.get(child_spr)) if child_spr else 0.0
         row = dict(r)
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
         if not row["lamination_booking_id"] and ex and ex.get("ps_name"):
@@ -1065,9 +1113,14 @@ def get_lamination_order_table_data(
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known
         row["achieved_meter"] = achieved_m
-        if achieved_w > 0:
-            row["actual_production_weight_kgs"] = achieved_w
-            row["total_achieved_weight_kgs"] = achieved_w
+        # Set lamination produced weight only from the parent SPR (do not mix with child SPR)
+        if lamination_weight > 0:
+            row["actual_production_weight_kgs"] = lamination_weight
+            row["total_achieved_weight_kgs"] = lamination_weight
+        # For robustness: if there is a child fabric SPR but no child WO entries, expose the child SPR weight
+        # via the child_wo_produced_kg field as a fallback so the UI shows correct fabric produced kilos.
+        if not row.get("child_wo_produced_kg") and child_fabric_weight > 0:
+            row["child_wo_produced_kg"] = child_fabric_weight
         row["shift_label"] = ((ex.get("shift_label") if ex else "") or "DAY").upper()
         item_code = str(row.get("itemCode") or row.get("item_code") or "").strip()
         is_parent_lamination = item_code.startswith("104")
@@ -1075,7 +1128,7 @@ def get_lamination_order_table_data(
             str(row.get("planningSheet") or "").strip(),
             str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip(),
         )
-        progress = _get_child_progress(key[0], key[1], row.get("pp_id"))
+        progress = _get_child_progress(key[0], key[1], row.get("pp_id"), item_code, row.get("itemName"))
         row["fabric_required_kg"] = flt(progress.get("required") or 0)
         row["fabric_achieved_kg"] = flt(progress.get("achieved") or 0)
         row["child_wo_produced_kg"] = flt(progress.get("child_wo_produced_kg") or 0)
@@ -1227,9 +1280,17 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
     if not item_code.startswith("104"):
         frappe.throw(_("Start WO is allowed only for parent lamination rows (104)."))
 
-    fabric_rows = frappe.db.sql(
-        """
-        SELECT name, qty
+    parent_so_item = str(item.get(so_col) or "").strip() if so_col else ""
+    parent_pair_key = _parent_child_pair_key_from_item_code(item_code)
+    fabric_link_fields = []
+    if "so_item" in pt_cols:
+        fabric_link_fields.append("IFNULL(so_item, '') as so_item")
+    if "split_from" in pt_cols:
+        fabric_link_fields.append("IFNULL(split_from, '') as split_from")
+    fabric_link_select = ", " + ", ".join(fabric_link_fields) if fabric_link_fields else ""
+    fabric_candidates = frappe.db.sql(
+        f"""
+        SELECT name, qty, item_code{fabric_link_select}
         FROM `tabPlanning Table`
         WHERE parent = %s
           AND item_code LIKE '100%%'
@@ -1237,6 +1298,19 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
         (item.get("parent"),),
         as_dict=True,
     )
+    fabric_rows = []
+    for fr in fabric_candidates or []:
+        if parent_so_item and str(fr.get("so_item") or "").strip() == parent_so_item:
+            fabric_rows.append(fr)
+            continue
+        if str(fr.get("split_from") or "").strip() == item_name:
+            fabric_rows.append(fr)
+            continue
+        if parent_pair_key and _parent_child_pair_key_from_item_code(fr.get("item_code")) == parent_pair_key:
+            fabric_rows.append(fr)
+    if not fabric_rows and fabric_candidates and len(fabric_candidates) == 1:
+        fabric_rows = fabric_candidates
+
     req_kg = sum(flt(r.get("qty") or 0) for r in (fabric_rows or []))
     ach_kg = 0.0
     has_actual_col = frappe.db.has_column("Planning Table", "actual_production_weight_kgs")
@@ -1972,7 +2046,7 @@ def _populate_planning_sheet_items(ps, doc):
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
 
-        unit = compute_default_production_unit(col, width)
+        unit = compute_default_production_unit(col, width, it.item_code)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             unit = "Lamination Unit"
@@ -2055,11 +2129,13 @@ def _is_white_color(color):
     return any(w == c for w in WHITE_COLORS)
 
 
-def compute_default_production_unit(color, width_inch):
+def compute_default_production_unit(color, width_inch, item_code=None):
     """
     Only white-family colors use UNASSIGNED (pool for that order date).
     All other colors: pick one of Unit 1ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“4 by minimum width waste (same rule as SO populate).
     """
+    if _item_process_prefix(str(item_code or "")) in ("104", "107"):
+        return "Lamination Unit"
     w = flt(width_inch)
     if _is_white_color(color):
         return "UNASSIGNED"

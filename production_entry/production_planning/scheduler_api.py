@@ -292,14 +292,15 @@ def _gsm_from_lamination_item_code(item_code: str) -> int:
 
 
 # Lamination GSM from suffix after '-':
-# 10-A, 12-B, 13-B1, 15-C, 30-D, 20-E
+# A=10, B=12, C=13, D=15, E=20, F=30.
 _LAM_GSM_SUFFIX_MAP = {
     "A": 10,
     "B": 12,
     "B1": 13,
-    "C": 15,
-    "D": 30,
+    "C": 13,
+    "D": 15,
     "E": 20,
+    "F": 30,
 }
 
 
@@ -527,7 +528,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		# Fabric (100*): same as other SO lines ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â white ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ UNASSIGNED, other colours ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ unit by width (not Lamination Unit).
 		fab_color = specs.get("color") or ""
 		fab_width = flt(specs.get("width_inch"))
-		fabric_unit = compute_default_production_unit(fab_color, fab_width)
+		fabric_unit = compute_default_production_unit(fab_color, fab_width, fabric_ic)
 		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
 		row = {
 			"sales_order_item": "",
@@ -2160,7 +2161,7 @@ def _populate_planning_sheet_items(ps, doc):
         # Extract trace ID from item code (parent-child relationship)
         trace_id = _parent_child_trace_id_from_item_code(it.item_code)
 
-        unit = compute_default_production_unit(col, width)
+        unit = compute_default_production_unit(col, width, it.item_code)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("104", "107"):
             unit = "Lamination Unit"
@@ -2261,11 +2262,13 @@ def _is_white_color(color):
     return any(w == c for w in WHITE_COLORS)
 
 
-def compute_default_production_unit(color, width_inch):
+def compute_default_production_unit(color, width_inch, item_code=None):
     """
     Only white-family colors use UNASSIGNED (pool for that order date).
     All other colors: pick one of Unit 1ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“4 by minimum width waste (same rule as SO populate).
     """
+    if _item_process_prefix(str(item_code or "")) in ("104", "107"):
+        return "Lamination Unit"
     w = flt(width_inch)
     if _is_white_color(color):
         return "UNASSIGNED"
