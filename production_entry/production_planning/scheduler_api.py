@@ -53,6 +53,9 @@ def _parent_child_trace_id_from_item_code(item_code):
         if len(parts) >= 2:
             design = parts[0].strip()
             rest = parts[1].strip()
+            decoded_107 = _decode_process_107_item_code(ic)
+            if decoded_107:
+                return f"{design}-107-{decoded_107.get('gsm')}-{decoded_107.get('width_code')}"
             # Check if rest matches PROCESS-GSM-WIDTH pattern (all digits)
             if rest.isdigit() and len(rest) >= 10:  # e.g., 1071101270
                 process = rest[0:3]  # 107
@@ -323,10 +326,113 @@ _LAM_GSM_SUFFIX_MAP = {
     "F": 30,
 }
 
+_PROCESS_107_QUALITY_CODE_MAP = {
+    "A": "PREMIUM",
+    "B": "PLATINUM",
+    "C": "SUPER PLATINUM",
+    "D": "GOLD",
+    "E": "SILVER",
+    "F": "BRONZE",
+    "G": "CLASSIC",
+    "H": "SUPER CLASSIC",
+    "I": "LIFE STYLE",
+    "J": "ECO SPECIAL",
+    "K": "ECO GREEN",
+    "L": "SUPER ECO",
+    "M": "ULTRA",
+    "N": "DELUXE",
+    "O": "VIRGIN MIX - GOLD MIX",
+    "P": "MID MIX - CLASSIC MIX",
+    "Q": "ECO MIX",
+    "R": "DELUXE MIX",
+}
+
+_PROCESS_107_FABRIC_GSM_CODE_MAP = {
+    "A": 20,
+    "B": 25,
+    "C": 30,
+    "D": 35,
+    "E": 40,
+    "F": 45,
+    "G": 50,
+    "H": 55,
+    "I": 60,
+    "J": 65,
+    "K": 70,
+    "L": 75,
+    "M": 80,
+    "N": 85,
+    "O": 90,
+    "P": 95,
+    "Q": 100,
+    "R": 105,
+    "S": 110,
+    "T": 115,
+    "U": 120,
+}
+
+_PROCESS_107_BOPP_GSM_CODE_MAP = {
+    "A": 10,
+    "B": 12,
+    "C": 15,
+    "D": 30,
+}
+
+
+def _decode_process_107_item_code(item_code):
+    """Decode revised 107 code: DESIGN-107QCCCFLW000."""
+    code = str(item_code or "").strip().upper()
+    if "-" not in code:
+        return {}
+    design, rest = code.split("-", 1)
+    rest = "".join(ch for ch in rest if ch.isalnum())
+    if len(rest) < 15 or rest[:3] != "107":
+        return {}
+
+    quality_code = rest[3:4]
+    colour_code = rest[4:7]
+    fabric_gsm_code = rest[7:8]
+    bopp_gsm_code = rest[8:9]
+    lam_gsm_code = rest[9:10]
+    width_code = rest[10:13]
+
+    fabric_gsm = cint(_PROCESS_107_FABRIC_GSM_CODE_MAP.get(fabric_gsm_code, 0) or 0)
+    bopp_gsm = cint(_PROCESS_107_BOPP_GSM_CODE_MAP.get(bopp_gsm_code, 0) or 0)
+    lam_gsm = cint(_PROCESS_107_BOPP_GSM_CODE_MAP.get(lam_gsm_code, 0) or 0)
+
+    return {
+        "design": design,
+        "quality_code": quality_code,
+        "quality": _PROCESS_107_QUALITY_CODE_MAP.get(quality_code, ""),
+        "colour_code": colour_code,
+        "fabric_gsm": fabric_gsm,
+        "bopp_gsm": bopp_gsm,
+        "lam_gsm": lam_gsm,
+        "gsm": fabric_gsm + bopp_gsm + lam_gsm,
+        "width_code": width_code,
+        "width": flt(width_code),
+        "finish_code": rest[13:14],
+        "metallic_code": rest[14:15],
+    }
+
+
+def _so_line_width_inch(so_item):
+    for field in ("custom_width_inch", "width_inch", "custom_width", "width", "custom_width_inches", "width_inches"):
+        try:
+            value = flt(getattr(so_item, field, 0) or 0)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+    return 0.0
+
 
 def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
     """Read lamination GSM from item-code suffix after last '-', for 104 items only."""
     code = str(item_code or "").strip().upper()
+    decoded_107 = _decode_process_107_item_code(code)
+    if decoded_107:
+        return cint(decoded_107.get("lam_gsm") or 0)
     if not code or "-" not in code:
         return 0
     left, suffix = code.rsplit("-", 1)
@@ -2121,6 +2227,7 @@ def _populate_planning_sheet_items(ps, doc):
         qual = ""
         col = ""
         item_code_str = str(it.item_code or "").strip()
+        decoded_107 = _decode_process_107_item_code(item_code_str)
         if len(item_code_str) >= 9 and item_code_str.startswith("100"):
             q_code = item_code_str[3:6]
             c_code = item_code_str[6:9]
@@ -2134,6 +2241,17 @@ def _populate_planning_sheet_items(ps, doc):
                 color_result = _get_color_by_code(c_code)
                 if color_result: col = color_result
             except Exception: pass
+        elif decoded_107:
+            qual = decoded_107.get("quality") or ""
+            try:
+                color_result = _get_color_by_code(decoded_107.get("colour_code"))
+                if color_result:
+                    col = color_result
+            except Exception:
+                pass
+            if decoded_107.get("gsm"):
+                gsm = cint(decoded_107.get("gsm") or 0)
+            width = _so_line_width_inch(it) or flt(width) or flt(decoded_107.get("width") or 0)
 
         search_text = " " + " ".join(words) + " "
         search_norm = _normalize_quality_key(search_text)
@@ -2179,6 +2297,8 @@ def _populate_planning_sheet_items(ps, doc):
             gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
             if gsm_from_code > 0:
                 gsm = gsm_from_code
+        elif decoded_107 and decoded_107.get("gsm"):
+            gsm = cint(decoded_107.get("gsm") or 0)
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
@@ -2186,6 +2306,8 @@ def _populate_planning_sheet_items(ps, doc):
         lam_gsm = 0
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
+        elif decoded_107:
+            lam_gsm = cint(decoded_107.get("lam_gsm") or 0)
 
         # Extract design name from SO Item's custom_design_name field
         design_name = str(getattr(it, "custom_design_name", None) or "").strip()
@@ -2239,6 +2361,10 @@ def _populate_planning_sheet_items(ps, doc):
                 existing_psi.quality = line_quality
                 existing_psi.custom_quality = qual or line_quality
                 existing_psi.color = col
+                if decoded_107:
+                    existing_psi.gsm = gsm
+                    existing_psi.width_inch = width
+                    existing_psi.weight_per_roll = wt
                 if design_name and frappe.db.has_column("Planning Table", "custom_design_name"):
                     existing_psi.custom_design_name = design_name
                 if design_name and frappe.db.has_column("Planning sheet Item", "custom_design_name"):
