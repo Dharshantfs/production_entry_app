@@ -21,6 +21,46 @@ def _item_process_prefix(item_code):
 	return ic[:3] if len(ic) >= 3 else ""
 
 
+def _parent_child_trace_id_from_item_code(item_code):
+	"""
+	Trace ID format for parent-child relationship: <design>-<process>
+	Supports both formats:
+	1) Hyphen-separated: design-processXXXXXX (e.g., 7436-1071101270 -> 7436-107)
+	2) All-digit format: PPPXXXXX (e.g., 1031052210500050 -> extract process from first 3 digits)
+	
+	Returns trace ID as design-process format, or empty string if format not recognized.
+	"""
+	ic = str(item_code or "").strip()
+	if not ic:
+		return ""
+	
+	# Format 1: Hyphen-separated (e.g., 7436-1071101270)
+	if "-" in ic:
+		parts = ic.split("-")
+		if len(parts) >= 2:
+			design = (parts[0] or "").strip()
+			process_full = (parts[1] or "").strip()
+			# Extract process code (first 3 digits from process part)
+			process = ""
+			for ch in process_full:
+				if ch.isdigit():
+					process += ch
+					if len(process) == 3:
+						break
+			if design and process:
+				return f"{design}-{process}"
+	
+	# Format 2: All-digit (e.g., 1031052210500050)
+	# Process code is in first 3 positions
+	process = _item_process_prefix(ic)
+	if process in ("103", "104", "107"):
+		# For digit-only format, use process-only since there's no design code
+		# This is a fallback; ideally parent items should use hyphen format
+		return process
+	
+	return ""
+
+
 def _month_letter_from_date(dt):
     """January=A and December=L (single letter month code)."""
     m = int(getattr(dt, "month", 1) or 1)
@@ -1972,6 +2012,15 @@ def _populate_planning_sheet_items(ps, doc):
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
 
+        # Extract design name from SO Item's custom_design_name field
+        design_name = str(getattr(it, "custom_design_name", None) or "").strip()
+        
+        # Extract lamination side from SO Item's custom_lamination_side field
+        lam_side = str(getattr(it, "custom_lamination_side", None) or "").strip()
+        
+        # Extract trace ID from item code (parent-child relationship)
+        trace_id = _parent_child_trace_id_from_item_code(it.item_code)
+
         unit = compute_default_production_unit(col, width)
         # Process 104 = laminated FG ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Lamination Unit. Fabric (100*) uses compute_default only (whiteÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢UNASSIGNED, else width rule).
         if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
@@ -1998,8 +2047,12 @@ def _populate_planning_sheet_items(ps, doc):
             "unit": unit,
             "party_code": ps.party_code,
             "planned_date": p_date,
-            "planning_sheet": ps.name # Explicitly link for grid visibility
+            "planning_sheet": ps.name, # Explicitly link for grid visibility
+            "custom_design_name": design_name,
+            "custom_parent_child_trace_id": trace_id if trace_id else ""
         }
+        if lam_side and frappe.db.has_column("Planning sheet Item", "custom_lam_side"):
+            psi_data["custom_lam_side"] = lam_side
         if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
         if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
@@ -2014,6 +2067,18 @@ def _populate_planning_sheet_items(ps, doc):
                 existing_psi.quality = line_quality
                 existing_psi.custom_quality = qual or line_quality
                 existing_psi.color = col
+                if design_name and frappe.db.has_column("Planning Table", "custom_design_name"):
+                    existing_psi.custom_design_name = design_name
+                if design_name and frappe.db.has_column("Planning sheet Item", "custom_design_name"):
+                    existing_psi.custom_design_name = design_name
+                if trace_id and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+                    existing_psi.custom_parent_child_trace_id = trace_id
+                if trace_id and frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+                    existing_psi.custom_parent_child_trace_id = trace_id
+                if lam_side and frappe.db.has_column("Planning Table", "custom_lam_side_"):
+                    existing_psi.custom_lam_side_ = lam_side
+                if lam_side and frappe.db.has_column("Planning sheet Item", "custom_lam_side"):
+                    existing_psi.custom_lam_side = lam_side
                 if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
                     existing_psi.custom_lam_gsm = lam_gsm
                 if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
@@ -2029,6 +2094,8 @@ def _populate_planning_sheet_items(ps, doc):
             pt_data["planned_date"] = p_date
             pt_data["plan_name"] = ps.get("custom_plan_name")
             pt_data["planning_sheet"] = ps.name # For redundancy
+            if lam_side and frappe.db.has_column("Planning Table", "custom_lam_side_"):
+                pt_data["custom_lam_side_"] = lam_side
             if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
                 pt_data["custom_lam_gsm"] = lam_gsm
             

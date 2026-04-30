@@ -29,6 +29,7 @@
   "custom_planned_date",
   "custom_pb_plan_name",
   "custom_plan_code",
+  "custom_lam_side",
   "section_break_9",
   "allocated_unit",
   "unit_capacity_day",
@@ -171,6 +172,12 @@
    "fieldname": "custom_plan_code",
    "fieldtype": "Data",
    "label": "Plan Code"
+  },
+  {
+   "fieldname": "custom_lam_side",
+   "fieldtype": "Data",
+   "label": "Lamination Side",
+   "read_only": 1
   },
   {
    "description": "Auto-assigned when the sheet has lamination (104) lines. Format: U + year + month letter (A\u2013L) + 3 digits, e.g. U26D001 for April 2026.",

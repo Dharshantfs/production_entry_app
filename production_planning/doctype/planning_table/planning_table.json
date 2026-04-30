@@ -35,6 +35,8 @@
   "custom_plan_code",
   "custom_lamination_order_code_",
   "custom_parent_child_trace_id",
+  "custom_design_name",
+  "custom_lam_side_",
   "custom_lamination_shift",
   "custom_slitting_shift",
   "order_sheet",
@@ -216,6 +218,18 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Parent Child Trace ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_design_name",
+   "fieldtype": "Data",
+   "label": "Design Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_lam_side_",
+   "fieldtype": "Data",
+   "label": "Lam Side",
    "read_only": 1
   },
 

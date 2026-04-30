@@ -31,6 +31,8 @@
         "custom_item_planned_date",
         "custom_plan_code",
         "custom_lamination_order_code",
+        "custom_design_name",
+        "custom_lam_side",
         "order_sheet",
         "custom_split_metadata",
         "total_weight",
@@ -182,6 +184,18 @@
             "fieldname": "custom_lamination_order_code",
             "fieldtype": "Data",
             "label": "Lamination Order Code",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_design_name",
+            "fieldtype": "Data",
+            "label": "Design Name",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_lam_side",
+            "fieldtype": "Data",
+            "label": "Lam Side",
             "read_only": 1
         },
         {
