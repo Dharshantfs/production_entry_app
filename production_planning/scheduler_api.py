@@ -500,34 +500,34 @@ def _ensure_sheet_lamination_order_code(sheet_name):
 @frappe.whitelist()
 def get_fabric_item_from_laminated_item(lam_item_code):
 	"""
-    Resolve the fabric FG (item code prefix 100) from the 104/107 laminated item's active BOM.
+	Resolve the fabric FG (item code prefix 100) from the 104/107 laminated item's active BOM.
 	Returns {"fabric_item_code", "bom_no"}. Raises with a clear message if invalid.
 	"""
 	lam_item_code = (lam_item_code or "").strip()
 	if len(lam_item_code) < 3:
 		frappe.throw(_("Item code is too short to read process prefix (need at least 3 characters)."))
-    if not _is_lamination_parent_process(lam_item_code):
+	if not _is_lamination_parent_process(lam_item_code):
 		frappe.throw(
-            _("Lamination item must have process code 104 or 107 in item code (first 3 digits). Got: {0}").format(
+			_("Lamination item must have process code 104 or 107 in item code (first 3 digits). Got: {0}").format(
 				_item_process_prefix(lam_item_code) or ""
 			)
 		)
 	if not frappe.db.exists("Item", lam_item_code):
 		frappe.throw(_("Item {0} does not exist.").format(lam_item_code))
 
-    bom = _resolve_lamination_bom(lam_item_code)
-    if not bom:
+	bom = _resolve_lamination_bom(lam_item_code)
+	if not bom:
 		frappe.throw(_("No active submitted BOM for laminated item {0}.").format(lam_item_code))
-    bom_name = bom.name
-    fabric_row = _pick_first_100_from_bom_items(bom.items, lam_item_code)
-    if not fabric_row:
+	bom_name = bom.name
+	fabric_row = _pick_first_100_from_bom_items(bom.items, lam_item_code)
+	if not fabric_row:
 		frappe.throw(
 			_("BOM {0} has no fabric FG row (item code must start with 100). Fix BOM for {1}.").format(
 				bom_name, lam_item_code
 			)
 		)
 
-    fabric_item_code = fabric_row[0]
+	fabric_item_code = fabric_row[0]
 	if not frappe.db.exists("Item", fabric_item_code):
 		frappe.throw(_("Fabric item {0} from BOM does not exist.").format(fabric_item_code))
 
@@ -575,7 +575,7 @@ def _resolve_107_child_components(lam_item_code):
 
 
 def _sync_lamination_fabric_planning_rows(planning_sheet_name):
-    """For each SO line with item 104/107, append required child rows to legacy items + board table. Idempotent."""
+	"""For each SO line with item 104/107, append required child rows to legacy items + board table. Idempotent."""
 	if not LAMINATION_FLOW_ENABLED or not planning_sheet_name:
 		return
 	if not frappe.db.exists("Planning sheet", planning_sheet_name):
@@ -588,49 +588,49 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 	changed = False
 	for so_it in so.items or []:
 		lam_ic = (so_it.item_code or "").strip()
-        if not _is_lamination_parent_process(lam_ic):
+		if not _is_lamination_parent_process(lam_ic):
 			continue
-        prefix = _item_process_prefix(lam_ic)
-        components = []
-        parsed_107 = {}
-        try:
-            if prefix == "107":
-                res107 = _resolve_107_child_components(lam_ic)
-                parsed_107 = res107.get("parsed") or {}
-                bom_no = res107.get("bom_name")
-                fab = res107.get("fabric")
-                pb = res107.get("pb")
-                if not bom_no or not fab:
-                    frappe.msgprint(
-                        _("Lamination child rows skipped for {0}: missing 100 component in BOM").format(lam_ic),
-                        indicator="orange",
-                    )
-                    continue
-                components.append({"role": "fabric", "item_code": fab[0], "bom_no": bom_no, "bom_row": fab[1]})
-                if pb:
-                    components.append({"role": "pb", "item_code": pb[0], "bom_no": bom_no, "bom_row": pb[1]})
-                else:
-                    design_code = (res107.get("design_code") or "").strip()
-                    if design_code:
-                        frappe.log_error(
-                            title="Lamination PB child missing",
-                            message=f"SO {so.name} line {so_it.name}: expected PB-{design_code} component in BOM for {lam_ic}",
-                        )
-            else:
-                res = get_fabric_item_from_laminated_item(lam_ic)
-                fabric_ic = res["fabric_item_code"]
-                bom_no = res["bom_no"]
-                components.append({"role": "fabric", "item_code": fabric_ic, "bom_no": bom_no, "bom_row": None})
-        except Exception as e:
-            frappe.log_error(
-                title="Lamination fabric BOM",
-                message=f"SO {so.name} line {so_it.name}: {e}\n{frappe.get_traceback()}",
-            )
-            frappe.msgprint(
-                _("Lamination child row skipped for {0}: {1}").format(lam_ic, str(e)),
-                indicator="orange",
-            )
-            continue
+		prefix = _item_process_prefix(lam_ic)
+		components = []
+		parsed_107 = {}
+		try:
+			if prefix == "107":
+				res107 = _resolve_107_child_components(lam_ic)
+				parsed_107 = res107.get("parsed") or {}
+				bom_no = res107.get("bom_name")
+				fab = res107.get("fabric")
+				pb = res107.get("pb")
+				if not bom_no or not fab:
+					frappe.msgprint(
+						_("Lamination child rows skipped for {0}: missing 100 component in BOM").format(lam_ic),
+						indicator="orange",
+					)
+					continue
+				components.append({"role": "fabric", "item_code": fab[0], "bom_no": bom_no, "bom_row": fab[1]})
+				if pb:
+					components.append({"role": "pb", "item_code": pb[0], "bom_no": bom_no, "bom_row": pb[1]})
+				else:
+					design_code = (res107.get("design_code") or "").strip()
+					if design_code:
+						frappe.log_error(
+							title="Lamination PB child missing",
+							message=f"SO {so.name} line {so_it.name}: expected PB-{design_code} component in BOM for {lam_ic}",
+						)
+			else:
+				res = get_fabric_item_from_laminated_item(lam_ic)
+				fabric_ic = res["fabric_item_code"]
+				bom_no = res["bom_no"]
+				components.append({"role": "fabric", "item_code": fabric_ic, "bom_no": bom_no, "bom_row": None})
+		except Exception as e:
+			frappe.log_error(
+				title="Lamination fabric BOM",
+				message=f"SO {so.name} line {so_it.name}: {e}\n{frappe.get_traceback()}",
+			)
+			frappe.msgprint(
+				_("Lamination child row skipped for {0}: {1}").format(lam_ic, str(e)),
+				indicator="orange",
+			)
+			continue
 
 		lam_match = frappe.get_all(
 			"Planning Table",
@@ -646,82 +646,82 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		if frappe.db.has_column("Sales Order Item", "custom_lamination_side"):
 			so_item_lam_side = (getattr(so_it, "custom_lamination_side", None) or "").strip()
 
-        for comp in components:
-            comp_ic = (comp.get("item_code") or "").strip()
-            if not comp_ic:
-                continue
-            existing = frappe.get_all(
-                "Planning Table",
-                filters={"parent": ps.name, "item_code": comp_ic, "so_item": so_it.name},
-                pluck="name",
-                limit=1,
-            )
-            if existing:
-                continue
+		for comp in components:
+			comp_ic = (comp.get("item_code") or "").strip()
+			if not comp_ic:
+				continue
+			existing = frappe.get_all(
+				"Planning Table",
+				filters={"parent": ps.name, "item_code": comp_ic, "so_item": so_it.name},
+				pluck="name",
+				limit=1,
+			)
+			if existing:
+				continue
 
-            bom_no = comp.get("bom_no")
-            bom_row = comp.get("bom_row")
-            if bom_no and bom_row is not None:
-                comp_qty = _scaled_component_qty_from_bom_row(bom_no, bom_row, flt(so_it.qty))
-            else:
-                comp_qty = _fabric_qty_from_bom(bom_no, comp_ic, flt(so_it.qty)) if bom_no else flt(so_it.qty)
+			bom_no = comp.get("bom_no")
+			bom_row = comp.get("bom_row")
+			if bom_no and bom_row is not None:
+				comp_qty = _scaled_component_qty_from_bom_row(bom_no, bom_row, flt(so_it.qty))
+			else:
+				comp_qty = _fabric_qty_from_bom(bom_no, comp_ic, flt(so_it.qty)) if bom_no else flt(so_it.qty)
 
-            comp_item_name = frappe.db.get_value("Item", comp_ic, "item_name") or ""
-            if comp.get("role") == "fabric":
-                specs = _fabric_row_specs_from_fabric_item(comp_ic, so_it, lam_row)
-                row_color = specs.get("color") or ""
-                row_width = flt(specs.get("width_inch"))
-                row_quality = specs.get("quality")
-                row_custom_quality = specs.get("custom_quality")
-                row_gsm = specs.get("gsm")
-            else:
-                decoded_color = _get_color_by_code(parsed_107.get("colour_code") or "") if parsed_107 else ""
-                row_color = decoded_color or (lam_row.color if lam_row else "") or ""
-                row_width = flt(parsed_107.get("width_inch") or (lam_row.width_inch if lam_row else 0) or 0)
-                row_quality = (parsed_107.get("quality_name") or (lam_row.quality if lam_row else "") or "GENERIC")
-                row_custom_quality = row_quality
-                row_gsm = cint(parsed_107.get("bopp_gsm") or 0)
-                specs = {
-                    "meter": cint(lam_row.meter) if lam_row else 0,
-                    "meter_per_roll": cint(lam_row.meter_per_roll) if lam_row else cint(getattr(so_it, "custom_meter_per_roll", 0) or 0),
-                    "no_of_rolls": cint(lam_row.no_of_rolls) if lam_row else cint(getattr(so_it, "custom_no_of_rolls", 0) or 0),
-                    "weight_per_roll": 0,
-                }
+			comp_item_name = frappe.db.get_value("Item", comp_ic, "item_name") or ""
+			if comp.get("role") == "fabric":
+				specs = _fabric_row_specs_from_fabric_item(comp_ic, so_it, lam_row)
+				row_color = specs.get("color") or ""
+				row_width = flt(specs.get("width_inch"))
+				row_quality = specs.get("quality")
+				row_custom_quality = specs.get("custom_quality")
+				row_gsm = specs.get("gsm")
+			else:
+				decoded_color = _get_color_by_code(parsed_107.get("colour_code") or "") if parsed_107 else ""
+				row_color = decoded_color or (lam_row.color if lam_row else "") or ""
+				row_width = flt(parsed_107.get("width_inch") or (lam_row.width_inch if lam_row else 0) or 0)
+				row_quality = (parsed_107.get("quality_name") or (lam_row.quality if lam_row else "") or "GENERIC")
+				row_custom_quality = row_quality
+				row_gsm = cint(parsed_107.get("bopp_gsm") or 0)
+				specs = {
+					"meter": cint(lam_row.meter) if lam_row else 0,
+					"meter_per_roll": cint(lam_row.meter_per_roll) if lam_row else cint(getattr(so_it, "custom_meter_per_roll", 0) or 0),
+					"no_of_rolls": cint(lam_row.no_of_rolls) if lam_row else cint(getattr(so_it, "custom_no_of_rolls", 0) or 0),
+					"weight_per_roll": 0,
+				}
 
-            row_unit = compute_default_production_unit(row_color, row_width, comp_ic)
-            row_planned_date = getdate(ps.ordered_date) if _is_white_color(row_color) else None
-            row = {
-                "sales_order_item": "",
-                "item_code": comp_ic,
-                "item_name": comp_item_name,
-                "qty": comp_qty,
-                "uom": so_it.uom,
-                "gsm": row_gsm,
-                "width_inch": row_width,
-                "color": row_color,
-                "quality": row_quality,
-                "custom_quality": row_custom_quality,
-                "unit": row_unit,
-                "meter": specs["meter"],
-                "meter_per_roll": specs["meter_per_roll"],
-                "no_of_rolls": specs["no_of_rolls"],
-                "weight_per_roll": specs["weight_per_roll"],
-                "planned_date": row_planned_date,
-                "plan_name": ps.get("custom_plan_name"),
-                "party_code": ps.party_code,
-                "planning_sheet": ps.name,
-                "so_item": so_it.name,
-            }
-            if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
-                row["split_from"] = lam_pt_name
-            if so_item_lam_side:
-                row["custom_lam_side_"] = so_item_lam_side
+			row_unit = compute_default_production_unit(row_color, row_width, comp_ic)
+			row_planned_date = getdate(ps.ordered_date) if _is_white_color(row_color) else None
+			row = {
+				"sales_order_item": "",
+				"item_code": comp_ic,
+				"item_name": comp_item_name,
+				"qty": comp_qty,
+				"uom": so_it.uom,
+				"gsm": row_gsm,
+				"width_inch": row_width,
+				"color": row_color,
+				"quality": row_quality,
+				"custom_quality": row_custom_quality,
+				"unit": row_unit,
+				"meter": specs["meter"],
+				"meter_per_roll": specs["meter_per_roll"],
+				"no_of_rolls": specs["no_of_rolls"],
+				"weight_per_roll": specs["weight_per_roll"],
+				"planned_date": row_planned_date,
+				"plan_name": ps.get("custom_plan_name"),
+				"party_code": ps.party_code,
+				"planning_sheet": ps.name,
+				"so_item": so_it.name,
+			}
+			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
+				row["split_from"] = lam_pt_name
+			if so_item_lam_side:
+				row["custom_lam_side_"] = so_item_lam_side
 
-            row_b = dict(row)
-            if hasattr(ps, "items") or ps.meta.has_field("items"):
-                ps.append("items", row_b)
-            ps.append(parent_field, dict(row))
-            changed = True
+			row_b = dict(row)
+			if hasattr(ps, "items") or ps.meta.has_field("items"):
+				ps.append("items", row_b)
+			ps.append(parent_field, dict(row))
+			changed = True
 
 	if changed:
 		ps.flags.ignore_permissions = True
