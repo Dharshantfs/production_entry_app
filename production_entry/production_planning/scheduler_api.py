@@ -1139,6 +1139,35 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 							message=f"SO {so.name} line {so_it.name}: expected PB-{design_code} component in BOM for {lam_ic}",
 						)
 			else:
+				# 104 path: pre-check BOM exists and is active/submitted before calling the thrower
+				_bom_104 = _resolve_lamination_bom(lam_ic)
+				if not _bom_104:
+					_any_bom_104 = frappe.db.get_value("BOM", {"item": lam_ic}, "name", order_by="modified desc")
+					if _any_bom_104:
+						_ds_104, _ia_104 = frappe.db.get_value("BOM", _any_bom_104, ["docstatus", "is_active"]) or (None, None)
+						frappe.msgprint(
+							_(
+								"BOM <b>{0}</b> found for <b>{1}</b> but it is not active/submitted "
+								"(docstatus={2}, is_active={3}). "
+								"Please <b>Submit</b> the BOM and set it as <b>Default</b>, then click Sync BOM Children."
+							).format(_any_bom_104, lam_ic, _ds_104, _ia_104),
+							indicator="red",
+							title=_("BOM Not Active (104)"),
+						)
+					else:
+						frappe.msgprint(
+							_(
+								"No BOM found for <b>{0}</b> (104 lamination item). "
+								"Please create a BOM with one 100* fabric child item, submit it, and set as Default."
+							).format(lam_ic),
+							indicator="red",
+							title=_("BOM Missing (104)"),
+						)
+					frappe.log_error(
+						title="104 BOM missing",
+						message=f"SO {so.name} line {so_it.name}: no active submitted BOM for 104 item {lam_ic}",
+					)
+					continue
 				res = get_fabric_item_from_laminated_item(lam_ic)
 				fabric_ic = res["fabric_item_code"]
 				bom_no = res["bom_no"]
@@ -1150,7 +1179,8 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			)
 			frappe.msgprint(
 				_("Lamination child row skipped for {0}: {1}").format(lam_ic, str(e)),
-				indicator="orange",
+				indicator="red",
+				title=_("BOM Extraction Error"),
 			)
 			continue
 
