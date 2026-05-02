@@ -730,8 +730,13 @@ def _get_bopp_child_items_from_parent_item(parent_item_code):
 	}
 
 
+def _quality_for_bopp_nonfabric_child_item(child_ic):
+	"""PB / printed BOPP child rows: never query Item.custom_quality directly (column may not exist on site)."""
+	return str(_item_quality_from_db(child_ic) or "").strip() or "GENERIC"
+
+
 def _specs_from_nonfabric_child_item(child_ic, so_it, parent_row):
-	"""Basic planning specs for non-100 children like PB-* rows."""
+	"""Basic planning specs for non-100 children like PB-* rows (quality via _item_quality_from_db only)."""
 	item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
 	raw_txt = f"{child_ic} {item_name}"
 	gsm, width = _parse_gsm_width_from_item_text(raw_txt)
@@ -754,7 +759,7 @@ def _specs_from_nonfabric_child_item(child_ic, so_it, parent_row):
 			except Exception:
 				pass
 
-	qual = str(_item_quality_from_db(child_ic) or "").strip() or "GENERIC"
+	qual = _quality_for_bopp_nonfabric_child_item(child_ic)
 	col = resolve_color_name_for_planning_row(child_ic, item_name, existing_color="")
 	m_roll = flt(getattr(so_it, "custom_meter_per_roll", 0) or 0)
 	wt = 0.0
@@ -2805,20 +2810,14 @@ def _item_quality_from_db(item_code):
 	ic = str(item_code or "").strip()
 	if not ic or not frappe.db.exists("Item", ic):
 		return ""
-	try:
-		if frappe.db.has_column("Item", "custom_quality"):
-			v = frappe.db.get_value("Item", ic, "custom_quality")
+	# Try each column in order; catch DB errors so missing columns never break planning/BOPP sync.
+	for col in ("custom_quality", "quality"):
+		try:
+			v = frappe.db.get_value("Item", ic, col)
 			if v is not None and str(v).strip():
 				return str(v).strip()
-	except Exception:
-		pass
-	try:
-		if frappe.db.has_column("Item", "quality"):
-			v = frappe.db.get_value("Item", ic, "quality")
-			if v is not None and str(v).strip():
-				return str(v).strip()
-	except Exception:
-		pass
+		except Exception:
+			continue
 	return ""
 
 

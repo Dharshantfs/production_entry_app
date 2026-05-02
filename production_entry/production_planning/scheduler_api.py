@@ -399,6 +399,47 @@ def _resolve_107_child_components(lam_item_code):
 	}
 
 
+def _planning_row_dict_107_lamination_extras(item_code, parsed107_early):
+	"""
+	Planning Table / Planning sheet Item fields for process-107 parents from code + BOM (PB / printed BOPP).
+	Fabric GSM stays in `gsm`; BOPP film GSM is stored separately in `custom_bopp_gsm`.
+	"""
+	out = {}
+	if not (LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(item_code or "")) == "107"):
+		return out
+	p107r = parsed107_early or (_parse_107_item_code(item_code) or {})
+	mg = (p107r.get("finish_matte_glossy") or "").strip() or "0"
+	mc = (p107r.get("finish_metallic_cooler") or "").strip() or "0"
+	if frappe.db.has_column("Planning Table", "custom_finishing") or frappe.db.has_column(
+		"Planning sheet Item", "custom_finishing"
+	):
+		out["custom_finishing"] = f"{mg}/{mc}"
+	if frappe.db.has_column("Planning Table", "custom_white_tint") or frappe.db.has_column(
+		"Planning sheet Item", "custom_white_tint"
+	):
+		out["custom_white_tint"] = mc
+	bgv = cint(p107r.get("bopp_gsm") or 0)
+	if bgv > 0:
+		if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
+			out["custom_bopp_gsm"] = bgv
+		if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
+			out["custom_bopp_gsm"] = bgv
+	try:
+		comp107 = _resolve_107_child_components(item_code)
+		pb_tup = comp107.get("pb")
+		pb_ic = (pb_tup[0] if pb_tup else "") or ""
+		if pb_ic:
+			cyl_p = _cylinder_type_from_printed_bopp_item_code(pb_ic)
+			if cyl_p and (
+				frappe.db.has_column("Planning Table", "custom_cylinder_type")
+				or frappe.db.has_column("Planning sheet Item", "custom_cylinder_type")
+			):
+				out["custom_cylinder_type"] = cyl_p
+	except Exception:
+		pass
+	return out
+
+
 def _parent_child_trace_id_from_item_code(item_code):
 	"""
 	Trace ID format: <process>-<colour>-<gsm>-<width>[-suffix]
@@ -637,6 +678,8 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
 	has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
 	has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
+	has_psi_bopp_gsm = frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm")
+	has_pt_bopp_gsm = frappe.db.has_column("Planning Table", "custom_bopp_gsm")
 	has_psi_lam_side = frappe.db.has_column("Planning sheet Item", "custom_lam_side")
 	has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side_")
 	has_ps_lam_side = frappe.db.has_column("Planning sheet", "custom_lam_side")
@@ -706,9 +749,12 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 			if not _is_lamination_parent_process(ic):
 				continue
 			lam_gsm_val = _lam_gsm_from_item_code_suffix(ic)
+			p107_book = {}
+			if _lamination_process_from_item_code(ic) == "107":
+				p107_book = _parse_107_item_code(ic) or {}
 			if lam_gsm_val <= 0 and _lamination_process_from_item_code(ic) == "107":
-				p107 = _parse_107_item_code(ic)
-				lam_gsm_val = cint(p107.get("lam_gsm") or 0)
+				lam_gsm_val = cint(p107_book.get("lam_gsm") or 0)
+			bopp_gsm_book = cint(p107_book.get("bopp_gsm") or 0) if p107_book else 0
 			if fn in ("planned_items", "custom_planned_items"):
 				if has_pt_booking_new:
 					row.custom_lamination_order_code_ = code
@@ -716,6 +762,8 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_booking_id = code
 				if has_pt_lam_gsm:
 					row.custom_lam_gsm = lam_gsm_val
+				if has_pt_bopp_gsm and bopp_gsm_book > 0:
+					row.custom_bopp_gsm = bopp_gsm_book
 				if has_pt_lam_side:
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
 					if lam_side_val:
@@ -725,6 +773,8 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_lamination_order_code = code
 				if has_psi_lam_gsm:
 					row.custom_lam_gsm = lam_gsm_val
+				if has_psi_bopp_gsm and bopp_gsm_book > 0:
+					row.custom_bopp_gsm = bopp_gsm_book
 				if has_psi_lam_side:
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
 					if lam_side_val:
@@ -3161,20 +3211,14 @@ def _item_quality_from_db(item_code):
 	ic = str(item_code or "").strip()
 	if not ic or not frappe.db.exists("Item", ic):
 		return ""
-	try:
-		if frappe.db.has_column("Item", "custom_quality"):
-			v = frappe.db.get_value("Item", ic, "custom_quality")
+	# Try each column in order; catch DB errors so missing columns never break planning/BOPP sync.
+	for col in ("custom_quality", "quality"):
+		try:
+			v = frappe.db.get_value("Item", ic, col)
 			if v is not None and str(v).strip():
 				return str(v).strip()
-	except Exception:
-		pass
-	try:
-		if frappe.db.has_column("Item", "quality"):
-			v = frappe.db.get_value("Item", ic, "quality")
-			if v is not None and str(v).strip():
-				return str(v).strip()
-	except Exception:
-		pass
+		except Exception:
+			continue
 	return ""
 
 
@@ -3493,20 +3537,6 @@ def _populate_planning_sheet_items(ps, doc):
             gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
             if gsm_from_code > 0:
                 gsm = gsm_from_code
-        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
-            parsed107 = _parse_107_item_code(it.item_code)
-            if cint(parsed107.get("fabric_gsm") or 0) > 0:
-                gsm = cint(parsed107.get("fabric_gsm") or 0)
-            if not col and parsed107.get("colour_code"):
-                try:
-                    col = _get_color_by_code(parsed107.get("colour_code")) or col
-                except Exception:
-                    pass
-            if parsed107.get("quality_name"):
-                line_quality = parsed107.get("quality_name")
-                qual = parsed107.get("quality_name")
-            if parsed107.get("width_inch") and flt(width) <= 0:
-                width = flt(parsed107.get("width_inch") or 0)
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
@@ -3514,8 +3544,9 @@ def _populate_planning_sheet_items(ps, doc):
         lam_gsm = 0
         if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
-        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
-            lam_gsm = cint((_parse_107_item_code(it.item_code) or {}).get("lam_gsm") or 0)
+        elif LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
+            p107g = parsed107_early or (_parse_107_item_code(it.item_code) or {})
+            lam_gsm = cint(p107g.get("lam_gsm") or 0)
 
         # Pull lam_side strictly from Sales Order Item table for lamination parent rows (104/107)
         lam_side = ""
@@ -3572,19 +3603,8 @@ def _populate_planning_sheet_items(ps, doc):
             if frappe.db.has_column("Planning sheet", "custom_lam_side"):
                 ps.custom_lam_side = lam_side
         if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
-            p107r = _parse_107_item_code(it.item_code) or {}
-            fin_parts = []
-            mg = (p107r.get("finish_matte_glossy") or "").strip()
-            mc = (p107r.get("finish_metallic_cooler") or "").strip()
-            if mg and mg != "0":
-                fin_parts.append(mg)
-            if mc and mc != "0":
-                fin_parts.append(mc)
-            if fin_parts and (
-                frappe.db.has_column("Planning Table", "custom_finishing")
-                or frappe.db.has_column("Planning sheet Item", "custom_finishing")
-            ):
-                psi_data["custom_finishing"] = "/".join(fin_parts)
+            for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early).items():
+                psi_data[k] = v
         _set_trace_id_if_supported(psi_data, trace_id)
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
@@ -3618,6 +3638,9 @@ def _populate_planning_sheet_items(ps, doc):
                 elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
+                if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
+                    for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early).items():
+                        setattr(existing_psi, k, v)
                 _set_trace_id_if_supported(existing_psi, trace_id)
         else:
             pt_data = psi_data.copy()
