@@ -30,6 +30,13 @@
           <button type="button" :class="{ active: filterShift === 'night' }" @click="filterShift = 'night'">Night</button>
         </div>
       </div>
+      <div class="cc-filter-item cc-shift-filter">
+        <label>Lamination process</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: laminationProcess === '104' }" @click="setLaminationProcess('104')">104 Plain</button>
+          <button type="button" :class="{ active: laminationProcess === '107' }" @click="setLaminationProcess('107')">107 BOPP</button>
+        </div>
+      </div>
       <div class="cc-filter-item">
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
@@ -77,7 +84,9 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders (104)</div>
+      <div class="cc-table-unit-header lot-header">
+        Lamination Unit - Planned orders ({{ laminationProcess }}) — {{ laminationProcess === "107" ? "BOPP" : "Plain" }}
+      </div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -88,7 +97,8 @@
             <th>BOOKING ID</th>
             <th>CUSTOMER</th>
             <th>QUALITY</th>
-            <th>DESIGN</th>
+            <th>FABRIC COLOUR</th>
+            <th v-if="laminationProcess === '107'">DESIGN NAME</th>
             <th>FABRIC GSM</th>
             <th>LAM GSM</th>
             <th>PLANNED LENGTH (MTR)</th>
@@ -103,7 +113,7 @@
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-              <td colspan="17" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+              <td :colspan="tableColCount" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                   <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -116,7 +126,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td colspan="14" style="text-align:center; color:#94a3b8; font-style:italic;">No lamination orders (maintenance day)</td>
+              <td :colspan="maintenanceEmptyColspan" style="text-align:center; color:#94a3b8; font-style:italic;">No lamination orders (maintenance day)</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -142,7 +152,8 @@
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality }}</td>
-            <td class="cell-center font-bold">{{ row.color }}</td>
+            <td class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
+            <td v-if="laminationProcess === '107'" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
             <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
@@ -228,7 +239,7 @@
           </tr>
           </template>
           <tr v-if="!displayRows.length">
-            <td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td :colspan="tableColCount" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -245,6 +256,8 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+/** Plain lamination (104) vs BOPP (107); drives API filter and column layout. */
+const laminationProcess = ref("104");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 const rawData = ref([]);
@@ -308,6 +321,17 @@ const filteredRows = computed(() => {
   }
   return sortRowsBySavedSequence(d);
 });
+
+const tableColCount = computed(() => (laminationProcess.value === "107" ? 18 : 17));
+const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
+
+function setLaminationProcess(v) {
+  const next = v === "107" ? "107" : "104";
+  if (laminationProcess.value === next) return;
+  laminationProcess.value = next;
+  updateUrlParams();
+  fetchData();
+}
 
 const displayRows = computed(() => {
   const normalRows = filteredRows.value || [];
@@ -1124,7 +1148,11 @@ async function fetchData() {
   if (fetchInProgress) return;
   fetchInProgress = true;
   try {
-    let args = { party_code: filterPartyCode.value, planned_only: 1 };
+    let args = {
+      party_code: filterPartyCode.value,
+      planned_only: 1,
+      lamination_process: laminationProcess.value,
+    };
     if (viewScope.value === "monthly") {
       if (!filterMonth.value) return;
       const [year, month] = filterMonth.value.split("-");
@@ -1187,6 +1215,7 @@ function updateUrlParams() {
   if (viewScope.value === "weekly") q.set("week", filterWeek.value);
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
+  q.set("lamination_process", laminationProcess.value);
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
 
@@ -1217,6 +1246,8 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
+  const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
+  if (lp === "104" || lp === "107") laminationProcess.value = lp;
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);

@@ -6,6 +6,23 @@
       <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
         {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
       </div>
+      <div v-if="isLaminationBoard" class="cc-filter-item" style="min-width:220px;">
+        <label>Lamination process</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+          <button
+            type="button"
+            class="cc-clear-btn"
+            :style="laminationProcess === '104' ? { background: '#047857', color: '#fff', borderColor: '#047857' } : {}"
+            @click="setLaminationProcess('104')"
+          >104 Plain</button>
+          <button
+            type="button"
+            class="cc-clear-btn"
+            :style="laminationProcess === '107' ? { background: '#047857', color: '#fff', borderColor: '#047857' } : {}"
+            @click="setLaminationProcess('107')"
+          >107 BOPP</button>
+        </div>
+      </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
         <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #4f46e5;" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
@@ -189,7 +206,20 @@
                   :title="entry.color"
                 ></div>
                 <div class="cc-card-info">
-                  <div class="cc-card-color-name">{{ entry.color }}</div>
+                  <div class="cc-card-color-name">
+                    <template v-if="isLaminationBoard && laminationProcess === '107'">
+                      <div style="font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600;">Design name</div>
+                      <div>{{ entry.design_name || entry.design_code || "—" }}</div>
+                      <div style="font-size:11px;color:#475569;margin-top:2px;font-weight:500;">
+                        Fabric: {{ entry.fabric_colour || entry.color }}
+                      </div>
+                    </template>
+                    <template v-else-if="isLaminationBoard && laminationProcess === '104'">
+                      <div style="font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600;">Fabric colour</div>
+                      <div>{{ entry.color }}</div>
+                    </template>
+                    <template v-else>{{ entry.color }}</template>
+                  </div>
                   <div class="cc-card-customer">
                     <span style="font-weight:700; color:#111827;">{{ entry.partyCode }}</span>
                     <span v-if="entry.partyCode !== entry.customer" style="font-weight:400; color:#6b7280;"> · {{ entry.customer }}</span>
@@ -421,6 +451,8 @@ const filterUnit = ref("");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
+/** Plain lamination (104) vs BOPP (107) on lamination board + color-chart API filter. */
+const laminationProcess = ref("104");
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -547,6 +579,14 @@ function clearSelection() {
   selectedItems.value = [];
 }
 
+function setLaminationProcess(v) {
+  const next = v === "107" ? "107" : "104";
+  if (laminationProcess.value === next) return;
+  laminationProcess.value = next;
+  updateUrlParams();
+  fetchData();
+}
+
 function goToPlan() {
     let query = {};
     if (viewScope.value === 'daily') query.date = filterOrderDate.value;
@@ -560,6 +600,7 @@ function goToPlan() {
     }
     if (isLaminationBoard.value) {
         query.board = "lamination";
+        query.lamination_process = laminationProcess.value;
         frappe.set_route("lamination-order-table", query);
     } else {
         frappe.set_route("production-table", query);
@@ -1334,7 +1375,7 @@ async function loadOrders(d) {
         // Production Board Pull = orders already ON the board for this date (move to today).
         const r = await frappe.call({
             method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-            args: { date: date, mode: 'pull_board' }
+            args: { date: date, mode: "pull_board", board_process_scope: "exclude_special" },
         });
         
         let items = r.message || [];
@@ -2011,6 +2052,7 @@ async function fetchData() {
           args.board_process_scope = "slitting_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
+          args.lamination_process = laminationProcess.value;
         } else {
           try {
             const sp = new URLSearchParams(window.location.search || "");
@@ -2039,6 +2081,9 @@ async function fetchData() {
           itemName:    d.itemName    || d.item_name   || d.name || "",
           orderDate:   d.orderDate   || d.ordered_date || "",
           unit: normalizeUnitName(d.unit),
+          design_code: d.design_code || d.designCode || "",
+          design_name: d.design_name || d.designName || "",
+          fabric_colour: d.fabric_colour || d.fabricColour || "",
           actual_production_weight_kgs: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? 0) || 0,
           produced_qty: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? d.produced_qty ?? 0) || 0,
         }));
@@ -2080,6 +2125,13 @@ function updateUrlParams() {
   
   url.searchParams.set('scope', viewScope.value);
   prefs.scope = viewScope.value;
+
+  if (isLaminationBoard.value) {
+    url.searchParams.set('lamination_process', laminationProcess.value);
+    prefs.lamination_process = laminationProcess.value;
+  } else {
+    url.searchParams.delete('lamination_process');
+  }
 
   if (viewScope.value === 'weekly' && filterWeek.value) { url.searchParams.set('week', filterWeek.value); prefs.week = filterWeek.value; }
   else { url.searchParams.delete('week'); }
@@ -2174,6 +2226,10 @@ onMounted(() => {
     const dateParam = qParams.get("date");
     const monthParam = qParams.get("month");
     const weekParam = qParams.get("week");
+    const lamProc = (qParams.get("lamination_process") || qParams.get("lam_proc") || "").trim();
+    if (lamProc === "104" || lamProc === "107") {
+      laminationProcess.value = lamProc;
+    }
     
     // Check user role for visibility control
     try {

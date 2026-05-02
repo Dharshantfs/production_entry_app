@@ -21,11 +21,27 @@ def _item_process_prefix(item_code):
 	return ic[:3] if len(ic) >= 3 else ""
 
 
+def _lamination_process_from_item_code(item_code):
+	"""Return lamination process '104', '107', or legacy digit prefix for other items."""
+	ic = str(item_code or "").strip().upper()
+	if not ic:
+		return ""
+	if ic[:3] in ("104", "107"):
+		return ic[:3]
+	if re.match(r"^[A-Z0-9]+-107(?=[A-Z])", ic):
+		return "107"
+	if re.match(r"^[A-Z0-9]+-104(?=[A-Z0-9])", ic):
+		return "104"
+	return _item_process_prefix(ic)
+
+
 def _is_lamination_parent_process(item_code_or_prefix):
-    val = (item_code_or_prefix or "").strip()
-    if len(val) >= 3 and val[:3].isdigit() and len(val) > 3:
-        val = _item_process_prefix(val)
-    return val in ("104", "107")
+	val = (item_code_or_prefix or "").strip()
+	if not val:
+		return False
+	if len(val) == 3 and val in ("104", "107"):
+		return True
+	return _lamination_process_from_item_code(val) in ("104", "107")
 
 
 QUALITY_CODES = {
@@ -294,7 +310,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
             if not _is_lamination_parent_process(ic):
                 continue
             lam_gsm_val = _lam_gsm_from_item_code_suffix(ic)
-            if lam_gsm_val <= 0 and _item_process_prefix(ic) == "107":
+            if lam_gsm_val <= 0 and _lamination_process_from_item_code(ic) == "107":
                 p107 = _parse_107_item_code(ic)
                 lam_gsm_val = cint(p107.get("lam_gsm") or 0)
             if fn in ("planned_items", "custom_planned_items"):
@@ -388,13 +404,18 @@ _LAM_GSM_SUFFIX_MAP = {
 
 
 def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
-    """Read lamination GSM from item-code suffix after last '-', for 104 items only."""
+    """104: lam GSM from suffix after last '-'. 107: from embedded BOPP lam code via _parse_107_item_code."""
     code = str(item_code or "").strip().upper()
-    if not code or "-" not in code:
+    if not code:
         return 0
-    left, suffix = code.rsplit("-", 1)
-    if _item_process_prefix(left.strip()) != "104":
+    if _lamination_process_from_item_code(code) == "107":
+        p = _parse_107_item_code(code)
+        return cint(p.get("lam_gsm") or 0)
+    if _lamination_process_from_item_code(code) != "104":
         return 0
+    if "-" not in code:
+        return 0
+    _left, suffix = code.rsplit("-", 1)
     return cint(_LAM_GSM_SUFFIX_MAP.get(suffix.strip(), 0) or 0)
 
 
@@ -434,17 +455,18 @@ def _ensure_sheet_lamination_order_code(sheet_name):
 	if code:
 		return code
 
-	has_104 = frappe.db.sql(
+	has_lamination = frappe.db.sql(
 		"""
 		SELECT 1
 		FROM `tabPlanning Table`
-		WHERE parent=%s AND item_code LIKE '104%%'
+		WHERE parent=%s
+		  AND (item_code LIKE '104%%' OR item_code LIKE %s)
 		LIMIT 1
 		""",
-		(sheet_name,),
+		(sheet_name, "%-107%"),
 		as_list=True,
 	)
-	if not has_104:
+	if not has_lamination:
 		return ""
 
 	code = _next_lamination_order_code()
@@ -464,27 +486,27 @@ def _ensure_sheet_lamination_order_code(sheet_name):
 			"""
 			UPDATE `tabPlanning Table`
 			SET custom_lamination_order_code_ = %s
-			WHERE parent = %s AND item_code LIKE '104%%'
+			WHERE parent = %s AND (item_code LIKE '104%%' OR item_code LIKE %s)
 			""",
-			(code, sheet_name),
+			(code, sheet_name, "%-107%"),
 		)
 	if frappe.db.has_column("Planning Table", "custom_lamination_booking_id"):
 		frappe.db.sql(
 			"""
 			UPDATE `tabPlanning Table`
 			SET custom_lamination_booking_id = %s
-			WHERE parent = %s AND item_code LIKE '104%%'
+			WHERE parent = %s AND (item_code LIKE '104%%' OR item_code LIKE %s)
 			""",
-			(code, sheet_name),
+			(code, sheet_name, "%-107%"),
 		)
 	if frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code"):
 		frappe.db.sql(
 			"""
 			UPDATE `tabPlanning sheet Item`
 			SET custom_lamination_order_code = %s
-			WHERE parent = %s AND item_code LIKE '104%%'
+			WHERE parent = %s AND (item_code LIKE '104%%' OR item_code LIKE %s)
 			""",
-			(code, sheet_name),
+			(code, sheet_name, "%-107%"),
 		)
 
 	so = (sheet.get("sales_order") or "").strip()
@@ -508,8 +530,8 @@ def get_fabric_item_from_laminated_item(lam_item_code):
 		frappe.throw(_("Item code is too short to read process prefix (need at least 3 characters)."))
 	if not _is_lamination_parent_process(lam_item_code):
 		frappe.throw(
-			_("Lamination item must have process code 104 or 107 in item code (first 3 digits). Got: {0}").format(
-				_item_process_prefix(lam_item_code) or ""
+			_("Lamination item must be process 104 or 107 (plain or BOPP format). Detected: {0}").format(
+				_lamination_process_from_item_code(lam_item_code) or ""
 			)
 		)
 	if not frappe.db.exists("Item", lam_item_code):
@@ -590,7 +612,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		lam_ic = (so_it.item_code or "").strip()
 		if not _is_lamination_parent_process(lam_ic):
 			continue
-		prefix = _item_process_prefix(lam_ic)
+		prefix = _lamination_process_from_item_code(lam_ic)
 		components = []
 		parsed_107 = {}
 		try:
@@ -994,6 +1016,12 @@ def get_color_chart_data(
     lamination_process="104",
 ):
     """Safe wrapper to avoid UI 502s; logs root cause."""
+    mode_lc = str(mode or "").strip().lower()
+    if (
+        (board_process_scope is None or str(board_process_scope).strip() == "")
+        and mode_lc not in ("pull", "pull_board")
+    ):
+        board_process_scope = "only_100"
     try:
         return _get_color_chart_data_impl(
             date=date,
@@ -1653,6 +1681,7 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
         if pt_date_col:
             set_parts.append(f"pt.{pt_date_col} = %s")
             values.append(target_date)
+        values.append("%-107%")
         values.append(str(item_name).strip())
         frappe.db.sql(
             f"""
@@ -1660,7 +1689,7 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET {", ".join(set_parts)}
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '104%%'
+              AND (pt.item_code LIKE '104%%' OR pt.item_code LIKE %s)
               AND pt.name = %s
             """,
             tuple(values),
@@ -1672,10 +1701,10 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET pt.custom_lamination_shift = %s
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '104%%'
+              AND (pt.item_code LIKE '104%%' OR pt.item_code LIKE %s)
               AND DATE({eff_date}) = DATE(%s)
             """,
-            (shift_label, target_date),
+            (shift_label, "%-107%", target_date),
         )
     updated = frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0].get("c") or 0
     frappe.db.commit()
@@ -2267,11 +2296,11 @@ def _populate_planning_sheet_items(ps, doc):
 
         m_roll = flt(it.custom_meter_per_roll)
         # For laminated FG parent rows, 104 keeps existing GSM extraction from index 9:12.
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "104":
             gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
             if gsm_from_code > 0:
                 gsm = gsm_from_code
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "107":
+        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
             parsed_107 = _parse_107_item_code(it.item_code)
             if parsed_107.get("fabric_gsm"):
                 gsm = cint(parsed_107.get("fabric_gsm") or 0)
@@ -2290,9 +2319,9 @@ def _populate_planning_sheet_items(ps, doc):
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
         lam_gsm = 0
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
+        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "104":
             lam_gsm = _lam_gsm_from_item_code_suffix(it.item_code)
-        if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "107":
+        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
             lam_gsm = cint((_parse_107_item_code(it.item_code) or {}).get("lam_gsm") or 0)
 
         # Pull lam_side strictly from Sales Order Item table for lamination parent rows
@@ -4800,6 +4829,9 @@ def _get_color_chart_data_impl(
     if not lam_process:
         lam_process = "104"
     lam_process = lam_process.lower()
+    _mode_lc = str(mode or "").strip().lower()
+    if bps is None and _mode_lc not in ("pull", "pull_board"):
+        bps = "only_100"
 
     # PULL MODE: Return raw items by ordered_date, exclude items with Work Orders
     if mode == "pull" and date:
@@ -4909,7 +4941,8 @@ def _get_color_chart_data_impl(
             # Filter out items that have WO
             items = [it for it in items if it.planningSheet not in wo_sheets]
         
-        # Deduplicate if mode is pull or board
+        if items and bps == "only_100":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "100"]
         return _deduplicate_items(items)
 
     # PULL_BOARD MODE (Production Board only): items already ON the board for this date
@@ -4988,13 +5021,30 @@ def _get_color_chart_data_impl(
                 except Exception:
                     pass
             items = [it for it in items if it.planningSheet not in wo_sheets]
-        if items and LAMINATION_FLOW_ENABLED and bps == "lamination_only":
+        if items and bps == "lamination_only":
             if lam_process == "all":
-                items = [it for it in items if _is_lamination_parent_process(_item_process_prefix(it.get("item_code") or ""))]
+                items = [it for it in items if _is_lamination_parent_process(it.get("item_code") or "")]
             else:
-                items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == lam_process]
-        elif items and LAMINATION_FLOW_ENABLED and bps == "exclude_104":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") != "104"]
+                items = [
+                    it
+                    for it in items
+                    if _lamination_process_from_item_code(it.get("item_code") or "") == lam_process
+                ]
+        elif items and bps == "slitting_only":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "103"]
+        elif items and bps == "exclude_104":
+            items = [it for it in items if not _is_lamination_parent_process(it.get("item_code") or "")]
+        elif items and bps == "exclude_103":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") != "103"]
+        elif items and bps == "exclude_special":
+            items = [
+                it
+                for it in items
+                if _item_process_prefix(it.get("item_code") or "") != "103"
+                and not _is_lamination_parent_process(it.get("item_code") or "")
+            ]
+        elif items and bps == "only_100":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "100"]
         return _deduplicate_items(items) if items else []
 
     # Support both single date and range
@@ -6066,15 +6116,25 @@ def _get_color_chart_data_impl(
 
         for item in items:
             if LAMINATION_FLOW_ENABLED and bps:
-                icp = _item_process_prefix(item.get("item_code") or "")
-                if bps == "exclude_104" and icp == "104":
+                ic = (item.get("item_code") or "").strip()
+                icp = _item_process_prefix(ic)
+                lam_p = _lamination_process_from_item_code(ic)
+                if bps == "exclude_104" and _is_lamination_parent_process(ic):
+                    continue
+                if bps == "exclude_103" and icp == "103":
+                    continue
+                if bps == "exclude_special" and (icp == "103" or _is_lamination_parent_process(ic)):
+                    continue
+                if bps == "only_100" and icp != "100":
                     continue
                 if bps == "lamination_only":
                     if lam_process == "all":
-                        if not _is_lamination_parent_process(icp):
+                        if not _is_lamination_parent_process(ic):
                             continue
-                    elif icp != lam_process:
+                    elif lam_p != lam_process:
                         continue
+                if bps == "slitting_only" and icp != "103":
+                    continue
 
             color = (item.get("color") or item.get("colour") or "").strip()
             quality = (item.get("custom_quality") or "").strip()
