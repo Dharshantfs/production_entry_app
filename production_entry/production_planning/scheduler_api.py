@@ -882,6 +882,36 @@ def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty):
 	return lamination_so_qty
 
 
+def _ensure_lamination_parent_units_on_sheet(planning_sheet_name):
+	"""104/107 parent rows must use Lamination Unit so Lamination Order Table (107 BOPP / 104) can list them."""
+	if not LAMINATION_FLOW_ENABLED or not planning_sheet_name:
+		return False
+	touched = False
+	for row in frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=["name", "item_code", "unit"],
+	):
+		ic = (row.get("item_code") or "").strip()
+		if not _is_lamination_parent_process(ic):
+			continue
+		if normalize_planning_unit_for_select(row.get("unit")) != "Lamination Unit":
+			frappe.db.set_value("Planning Table", row.name, "unit", "Lamination Unit", update_modified=False)
+			touched = True
+	for row in frappe.get_all(
+		"Planning sheet Item",
+		filters={"parent": planning_sheet_name},
+		fields=["name", "item_code", "unit"],
+	):
+		ic = (row.get("item_code") or "").strip()
+		if not _is_lamination_parent_process(ic):
+			continue
+		if normalize_planning_unit_for_select(row.get("unit")) != "Lamination Unit":
+			frappe.db.set_value("Planning sheet Item", row.name, "unit", "Lamination Unit", update_modified=False)
+			touched = True
+	return touched
+
+
 def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 104/107, append required child rows to legacy items + board table. Idempotent."""
 	if not LAMINATION_FLOW_ENABLED or not planning_sheet_name:
@@ -894,6 +924,8 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 	so = frappe.get_doc("Sales Order", ps.sales_order)
 	parent_field = _get_pt_parentfield()
 	changed = False
+	if _ensure_lamination_parent_units_on_sheet(ps.name):
+		changed = True
 	for so_it in so.items or []:
 		lam_ic = (so_it.item_code or "").strip()
 		if not _is_lamination_parent_process(lam_ic):
@@ -960,22 +992,44 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				pluck="name",
 				limit=1,
 			)
+			if not existing and frappe.db.has_column("Planning Table", "sales_order_item"):
+				existing = frappe.get_all(
+					"Planning Table",
+					filters={"parent": ps.name, "item_code": comp_ic, "sales_order_item": so_it.name},
+					pluck="name",
+					limit=1,
+				)
 			if existing:
+				ex_name = existing[0]
 				updates = {}
 				if frappe.db.has_column("Planning Table", "sales_order_item"):
-					cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+					cur_soi = frappe.db.get_value("Planning Table", ex_name, "sales_order_item")
 					if not cur_soi:
 						updates["sales_order_item"] = so_it.name
 				if frappe.db.has_column("Planning Table", "split_from"):
-					cur_sf = str(frappe.db.get_value("Planning Table", existing[0], "split_from") or "").strip()
+					cur_sf = str(frappe.db.get_value("Planning Table", ex_name, "split_from") or "").strip()
 					if cur_sf:
 						updates["split_from"] = ""
 				if frappe.db.has_column("Planning Table", "source_item"):
-					cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
+					cur_src = str(frappe.db.get_value("Planning Table", ex_name, "source_item") or "").strip()
 					if cur_src and frappe.db.exists("Planning Table", cur_src) and not frappe.db.exists("Planning sheet Item", cur_src):
 						updates["source_item"] = ""
 				if updates:
-					frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
+					frappe.db.set_value("Planning Table", ex_name, updates, update_modified=False)
+				# Re-apply BOM role units on existing child rows (100 → width/white rules; PB-* → VR).
+				try:
+					if comp.get("role") == "pb" and frappe.db.has_column("Planning Table", "unit"):
+						frappe.db.set_value("Planning Table", ex_name, "unit", PRINTED_BOPP_FILM_UNIT, update_modified=False)
+						changed = True
+					elif comp.get("role") == "fabric" and frappe.db.has_column("Planning Table", "unit"):
+						pt_clr = frappe.db.get_value("Planning Table", ex_name, "color") or ""
+						pt_w = flt(frappe.db.get_value("Planning Table", ex_name, "width_inch") or 0)
+						pt_ic = (frappe.db.get_value("Planning Table", ex_name, "item_code") or comp_ic or "").strip()
+						nu = compute_default_production_unit(pt_clr, pt_w, pt_ic)
+						frappe.db.set_value("Planning Table", ex_name, "unit", nu, update_modified=False)
+						changed = True
+				except Exception:
+					pass
 				continue
 
 			bom_no = comp.get("bom_no")
@@ -1048,6 +1102,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 
 	if changed:
 		ps.flags.ignore_permissions = True
+		ps.reload()
 		ps.save()
 		frappe.db.commit()
 
