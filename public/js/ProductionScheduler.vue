@@ -52,6 +52,13 @@
           <option v-for="u in boardUnits" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
+      <div class="cc-filter-item" v-if="isLaminationBoard">
+        <label>Lamination Process</label>
+        <select v-model="laminationProcess" @change="fetchData">
+          <option value="104">Plain (104)</option>
+          <option value="107">BOPP (107)</option>
+        </select>
+      </div>
       <div class="cc-filter-item">
         <label>Status</label>
         <select v-model="filterStatus">
@@ -189,7 +196,13 @@
                   :title="entry.color"
                 ></div>
                 <div class="cc-card-info">
-                  <div class="cc-card-color-name">{{ entry.color }}</div>
+                  <div class="cc-card-color-name">
+                    {{ isLaminationBoard && laminationProcess === '107'
+                        ? ('Design Name: ' + (entry.design_name || entry.design_code || entry.color || '-'))
+                        : (isLaminationBoard
+                            ? ('Fabric Colour: ' + (entry.color || '-'))
+                            : (entry.color || '-')) }}
+                  </div>
                   <div class="cc-card-customer">
                     <span style="font-weight:700; color:#111827;">{{ entry.partyCode }}</span>
                     <span v-if="entry.partyCode !== entry.customer" style="font-weight:400; color:#6b7280;"> · {{ entry.customer }}</span>
@@ -413,6 +426,7 @@ function detectRestrictedUser() {
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
+const laminationProcess = ref("104");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
@@ -555,6 +569,7 @@ function goToPlan() {
     }
     if (isLaminationBoard.value) {
         query.board = "lamination";
+      query.lamination_process = laminationProcess.value;
         frappe.set_route("lamination-order-table", query);
     } else {
         frappe.set_route("production-table", query);
@@ -1981,12 +1996,14 @@ async function fetchData() {
           args.board_process_scope = "slitting_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
+          args.lamination_process = laminationProcess.value;
         } else {
           try {
             const sp = new URLSearchParams(window.location.search || "");
             const b = (sp.get("board") || "").toLowerCase();
             if (b === "lamination") {
               args.board_process_scope = "lamination_only";
+              args.lamination_process = (sp.get("lamination_process") || "104").trim() || "104";
             } else if (b === "slitting") {
               args.board_process_scope = "slitting_only";
             } else {
@@ -2056,6 +2073,13 @@ function updateUrlParams() {
 
   if (viewScope.value === 'monthly' && filterMonth.value) { url.searchParams.set('month', filterMonth.value); prefs.month = filterMonth.value; }
   else { url.searchParams.delete('month'); }
+
+  if (isLaminationBoard.value) {
+    url.searchParams.set('lamination_process', laminationProcess.value || '104');
+    prefs.lamination_process = laminationProcess.value || '104';
+  } else {
+    url.searchParams.delete('lamination_process');
+  }
   
   window.history.replaceState({}, '', url);
   localStorage.setItem('ps_board_prefs', JSON.stringify(prefs));
@@ -2089,6 +2113,11 @@ watch(filterWeek, () => {
 watch(filterMonth, () => {
     updateUrlParams();
     fetchData();
+});
+watch(laminationProcess, () => {
+  if (!isLaminationBoard.value) return;
+  updateUrlParams();
+  fetchData();
 });
 
 const datePickerInput = ref(null);
@@ -2141,6 +2170,10 @@ onMounted(() => {
     const dateParam = qParams.get("date");
     const monthParam = qParams.get("month");
     const weekParam = qParams.get("week");
+    const lamProcParam = (qParams.get("lamination_process") || "").trim();
+    if (isLaminationBoard.value) {
+      laminationProcess.value = lamProcParam === "107" ? "107" : "104";
+    }
     
     // Check user role for visibility control
     try {

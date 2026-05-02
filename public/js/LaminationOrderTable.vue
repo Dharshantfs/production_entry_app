@@ -31,6 +31,13 @@
         </div>
       </div>
       <div class="cc-filter-item">
+        <label>Lamination Process</label>
+        <select v-model="laminationProcess" @change="fetchData">
+          <option value="104">Plain (104)</option>
+          <option value="107">BOPP (107)</option>
+        </select>
+      </div>
+      <div class="cc-filter-item">
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
       </div>
@@ -77,7 +84,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders (104)</div>
+      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders ({{ laminationProcess }})</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -88,7 +95,7 @@
             <th>BOOKING ID</th>
             <th>CUSTOMER</th>
             <th>QUALITY</th>
-            <th>DESIGN</th>
+            <th>{{ laminationProcess === '107' ? 'DESIGN NAME' : 'FABRIC COLOUR' }}</th>
             <th>FABRIC GSM</th>
             <th>LAM GSM</th>
             <th>PLANNED LENGTH (MTR)</th>
@@ -142,7 +149,7 @@
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality }}</td>
-            <td class="cell-center font-bold">{{ row.color }}</td>
+            <td class="cell-center font-bold">{{ laminationProcess === '107' ? (row.design_name || row.design_code || row.color || '-') : row.color }}</td>
             <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
@@ -245,6 +252,7 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+const laminationProcess = ref("104");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 const rawData = ref([]);
@@ -975,7 +983,7 @@ async function createItemStockEntry(item) {
 }
 
 function goToBoard() {
-  frappe.set_route("lamination-board");
+  frappe.set_route("lamination-board", { lamination_process: laminationProcess.value || "104" });
 }
 
 function onRowDragStart(row) {
@@ -1153,7 +1161,10 @@ async function fetchData() {
 
     const r = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
-      args,
+      args: {
+        ...args,
+        lamination_process: laminationProcess.value || "104",
+      },
     });
     rawData.value = (r.message || []).map((d) => ({
       ...d,
@@ -1187,6 +1198,7 @@ function updateUrlParams() {
   if (viewScope.value === "weekly") q.set("week", filterWeek.value);
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
+  q.set("lamination_process", laminationProcess.value || "104");
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
 
@@ -1211,12 +1223,20 @@ watch([filterOrderDate, filterWeek, filterMonth], () => {
   fetchData();
 });
 
+watch(laminationProcess, () => {
+  updateUrlParams();
+  fetchData();
+});
+
 onMounted(async () => {
   const p = new URLSearchParams(window.location.search);
   if (p.get("scope")) viewScope.value = p.get("scope");
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
+  if (p.get("lamination_process")) {
+    laminationProcess.value = p.get("lamination_process") === "107" ? "107" : "104";
+  }
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);
