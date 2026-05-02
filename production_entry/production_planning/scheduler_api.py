@@ -168,19 +168,32 @@ def _parse_107_item_code(item_code):
 
 
 def _resolve_lamination_bom(item_code):
-	bom_name = frappe.db.get_value(
-		"BOM",
-		{"item": item_code, "docstatus": 1, "is_active": 1, "is_default": 1},
-		"name",
-		order_by="modified desc",
-	)
-	if not bom_name:
-		bom_name = frappe.db.get_value(
+	"""Active BOM for the FG item, or for its template item when this line is a variant."""
+	ic = (item_code or "").strip()
+	if not ic:
+		return None
+
+	def _pick_bom_for_item(it_code):
+		bn = frappe.db.get_value(
 			"BOM",
-			{"item": item_code, "docstatus": 1, "is_active": 1},
+			{"item": it_code, "docstatus": 1, "is_active": 1, "is_default": 1},
 			"name",
-			order_by="is_default desc, modified desc",
+			order_by="modified desc",
 		)
+		if not bn:
+			bn = frappe.db.get_value(
+				"BOM",
+				{"item": it_code, "docstatus": 1, "is_active": 1},
+				"name",
+				order_by="is_default desc, modified desc",
+			)
+		return bn
+
+	bom_name = _pick_bom_for_item(ic)
+	if not bom_name and frappe.db.exists("Item", ic):
+		tmpl = frappe.db.get_value("Item", ic, "variant_of")
+		if tmpl:
+			bom_name = _pick_bom_for_item(tmpl)
 	if not bom_name:
 		return None
 	return frappe.get_doc("BOM", bom_name)
@@ -203,7 +216,7 @@ def _pick_first_100_from_bom_items(bom_items, parent_item_code):
 
 
 def _pick_exact_pb_from_bom_items(bom_items, design_code):
-	"""Pick PB row for BOPP BOM: PB-<design>, PB-<design>-…, or any PB-* whose code segment starts with design."""
+	"""Pick PB row for BOPP BOM: PB-<design>, PB-<design>-…, or PRINTED BOPP - <design> - … (cylinder in next segment)."""
 	if not design_code:
 		return None
 	design_u = str(design_code).strip().upper()
@@ -222,7 +235,54 @@ def _pick_exact_pb_from_bom_items(bom_items, design_code):
 		head = (rest.split("-")[0].split("_")[0] if rest else "").strip().upper()
 		if head == design_u or design_u.startswith(head) or head.startswith(design_u):
 			return (raw, row)
+	# Long-form printed BOPP child, e.g. PRINTED BOPP - 7425 - 1C - 15M - 1020 MM
+	for row in bom_items or []:
+		raw = (row.item_code or "").strip()
+		if " - " not in raw:
+			continue
+		parts = [p.strip() for p in raw.split(" - ")]
+		if len(parts) < 2:
+			continue
+		head0 = parts[0].upper().replace(" ", "")
+		if "PRINTEDBOPP" not in head0:
+			continue
+		if (parts[1] or "").strip().upper() == design_u:
+			return (raw, row)
 	return None
+
+
+def _cylinder_type_from_printed_bopp_item_code(ic):
+	"""Cylinder segment from PB / printed BOPP item code (e.g. … - 1C - …)."""
+	s = str(ic or "").strip()
+	if not s:
+		return ""
+	if " - " in s:
+		parts = [p.strip() for p in s.split(" - ")]
+		head0 = (parts[0] or "").upper().replace(" ", "")
+		if "PRINTED" in head0 and "BOPP" in head0 and len(parts) >= 3:
+			return (parts[2] or "").strip()
+	if s.upper().startswith("PB-"):
+		segs = [x.strip() for x in s.split("-") if x.strip()]
+		if len(segs) >= 3:
+			return (segs[2] or "").strip()
+	return ""
+
+
+def _design_code_from_printed_bopp_item_code(ic):
+	"""Design / style code segment for long-form printed BOPP items."""
+	s = str(ic or "").strip()
+	if not s:
+		return ""
+	if " - " in s:
+		parts = [p.strip() for p in s.split(" - ")]
+		head0 = (parts[0] or "").upper().replace(" ", "")
+		if "PRINTED" in head0 and "BOPP" in head0 and len(parts) >= 2:
+			return (parts[1] or "").strip()
+	if s.upper().startswith("PB-"):
+		segs = [x.strip() for x in s.split("-") if x.strip()]
+		if len(segs) >= 2:
+			return (segs[1] or "").strip()
+	return ""
 
 
 def _find_planning_table_lamination_parent_row(planning_sheet_name, lam_item_code, sales_order_item_name):
@@ -247,7 +307,7 @@ def _find_planning_table_lamination_parent_row(planning_sheet_name, lam_item_cod
 
 
 def _matches_printed_bopp_board_row(it):
-	"""Rows for Printed BOPP Film board/table: PB-* items or rows assigned to the VR BOPP printing unit."""
+	"""Rows for Printed BOPP Film board/table: PB-*, long-form PRINTED BOPP - …, or VR BOPP printing unit."""
 	if not it:
 		return False
 	try:
@@ -255,7 +315,13 @@ def _matches_printed_bopp_board_row(it):
 		u = str((it.get("unit") if isinstance(it, dict) else getattr(it, "unit", None)) or "").strip()
 	except Exception:
 		return False
-	return bool(ic.startswith("PB-") or u == PRINTED_BOPP_FILM_UNIT)
+	if u == PRINTED_BOPP_FILM_UNIT:
+		return True
+	if ic.startswith("PB-"):
+		return True
+	if "PRINTED" in ic and "BOPP" in ic:
+		return True
+	return False
 
 
 def _scaled_component_qty_from_bom_row(bom_name, bom_row, parent_so_qty):
@@ -1021,6 +1087,12 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					if comp.get("role") == "pb" and frappe.db.has_column("Planning Table", "unit"):
 						frappe.db.set_value("Planning Table", ex_name, "unit", PRINTED_BOPP_FILM_UNIT, update_modified=False)
 						changed = True
+						cyl_u = _cylinder_type_from_printed_bopp_item_code(comp_ic)
+						if cyl_u and frappe.db.has_column("Planning Table", "custom_cylinder_type"):
+							frappe.db.set_value(
+								"Planning Table", ex_name, "custom_cylinder_type", cyl_u, update_modified=False
+							)
+							changed = True
 					elif comp.get("role") == "fabric" and frappe.db.has_column("Planning Table", "unit"):
 						pt_clr = frappe.db.get_value("Planning Table", ex_name, "color") or ""
 						pt_w = flt(frappe.db.get_value("Planning Table", ex_name, "width_inch") or 0)
@@ -1088,6 +1160,13 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				"planning_sheet": ps.name,
 				"so_item": so_it.name,
 			}
+			if comp.get("role") == "pb":
+				cyl_new = _cylinder_type_from_printed_bopp_item_code(comp_ic)
+				if cyl_new and (
+					frappe.db.has_column("Planning Table", "custom_cylinder_type")
+					or frappe.db.has_column("Planning sheet Item", "custom_cylinder_type")
+				):
+					row["custom_cylinder_type"] = cyl_new
 			_set_trace_id_if_supported(row, trace_id)
 			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 				row["split_from"] = lam_pt_name
@@ -1764,6 +1843,8 @@ def get_lamination_order_table_data(
     shift_expr = "IFNULL(pt.custom_lamination_shift, 'DAY')" if has_shift_col else "'DAY'"
     has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
     lam_gsm_expr = "IFNULL(pt.custom_lam_gsm, 0)" if has_pt_lam_gsm else "0"
+    has_pt_cylinder = frappe.db.has_column("Planning Table", "custom_cylinder_type")
+    cyl_store_expr = "IFNULL(pt.custom_cylinder_type, '')" if has_pt_cylinder else "''"
     has_trace = frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
     trace_expr_l = "IFNULL(pt.custom_parent_child_trace_id, '')" if has_trace else "''"
     child_trace_expr_l = "IFNULL(fab.custom_parent_child_trace_id, '')" if has_trace else "''"
@@ -1780,6 +1861,7 @@ def get_lamination_order_table_data(
             {booking_expr} as lamination_booking_id,
             {lam_gsm_expr} as lamination_gsm_value,
             IFNULL(fab.gsm, 0) as fabric_gsm,
+            {cyl_store_expr} as pb_cylinder_stored,
             {spr_for_meter_sql},
             {shift_expr} as shift_label,
             {trace_expr_l} as parent_trace_id,
@@ -2059,6 +2141,17 @@ def get_lamination_order_table_data(
         if lam_gsm <= 0:
             lam_gsm = int(row.get("gsm") or 0) or 0
         row["lamination_gsm"] = lam_gsm
+        cyl_val = str((ex or {}).get("pb_cylinder_stored") or "").strip() if ex else ""
+        if bps == "printed_bopp_pb_only":
+            if not cyl_val:
+                cyl_val = _cylinder_type_from_printed_bopp_item_code(_ic_row)
+            row["cylinder_type"] = cyl_val
+            dpb = _design_code_from_printed_bopp_item_code(_ic_row)
+            if dpb:
+                row["design_name"] = dpb
+                row["design_code"] = dpb
+        else:
+            row["cylinder_type"] = ""
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
         row["_achieved_m_spr"] = achieved_m  # resolved later after parent_wo_name is known
         row["achieved_meter"] = achieved_m
@@ -2626,9 +2719,11 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
 
 
 def _printed_bopp_film_pt_filter_sql():
-    """SQL fragment: PB-* items or rows on the VR BOPP printing unit (parameterized)."""
+    """SQL fragment: PB-*, PRINTED BOPP… long codes, or rows on the VR BOPP printing unit (parameterized)."""
     return (
-        "(TRIM(IFNULL(pt.unit, '')) = %s OR UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE %s)"
+        "(TRIM(IFNULL(pt.unit, '')) = %s "
+        " OR UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE %s"
+        " OR UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE 'PRINTED BOPP%')"
     )
 
 
@@ -3431,6 +3526,20 @@ def _populate_planning_sheet_items(ps, doc):
             # Also stamp header
             if frappe.db.has_column("Planning sheet", "custom_lam_side"):
                 ps.custom_lam_side = lam_side
+        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
+            p107r = _parse_107_item_code(it.item_code) or {}
+            fin_parts = []
+            mg = (p107r.get("finish_matte_glossy") or "").strip()
+            mc = (p107r.get("finish_metallic_cooler") or "").strip()
+            if mg and mg != "0":
+                fin_parts.append(mg)
+            if mc and mc != "0":
+                fin_parts.append(mc)
+            if fin_parts and (
+                frappe.db.has_column("Planning Table", "custom_finishing")
+                or frappe.db.has_column("Planning sheet Item", "custom_finishing")
+            ):
+                psi_data["custom_finishing"] = "/".join(fin_parts)
         _set_trace_id_if_supported(psi_data, trace_id)
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.

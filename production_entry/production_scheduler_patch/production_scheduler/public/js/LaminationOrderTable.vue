@@ -99,6 +99,7 @@
             <th>QUALITY</th>
             <th>FABRIC COLOUR</th>
             <th v-if="showDesignNameColumn">DESIGN NAME</th>
+            <th v-if="showCylinderTypeColumn">CYLINDER TYPE</th>
             <th>FABRIC GSM</th>
             <th>LAM GSM</th>
             <th>PLANNED LENGTH (MTR)</th>
@@ -154,6 +155,7 @@
             <td class="cell-center">{{ row.quality }}</td>
             <td class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
             <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
+            <td v-if="showCylinderTypeColumn" class="cell-center font-bold">{{ row.cylinder_type || "—" }}</td>
             <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
@@ -266,6 +268,7 @@ const tableUnitHeader = computed(() => {
   return `Lamination Unit - Planned orders (${laminationProcess.value}) — ${laminationProcess.value === "107" ? "BOPP" : "Plain"}`;
 });
 const showDesignNameColumn = computed(() => isPrintedBoppTable.value || laminationProcess.value === "107");
+const showCylinderTypeColumn = computed(() => isPrintedBoppTable.value);
 const backToBoardLabel = computed(() =>
   isPrintedBoppTable.value ? "Back to Printed BOPP Film Board" : "Back to Lamination Board"
 );
@@ -358,7 +361,12 @@ const filteredRows = computed(() => {
   return sortRowsBySavedSequence(d);
 });
 
-const tableColCount = computed(() => (showDesignNameColumn.value ? 18 : 17));
+const tableColCount = computed(() => {
+  let n = 17;
+  if (showDesignNameColumn.value) n += 1;
+  if (showCylinderTypeColumn.value) n += 1;
+  return n;
+});
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
 
 function setLaminationProcess(v) {
