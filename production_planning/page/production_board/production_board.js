@@ -8,8 +8,30 @@ frappe.pages["production-board"].on_page_load = function (wrapper) {
     // Create the mount point for Vue
     $(page.body).html('<div id="production-scheduler-app"></div>');
 
-    // Mount the Vue component
-    new production_scheduler.Controller(
-        document.getElementById("production-scheduler-app")
-    );
+    const mountEl = document.getElementById("production-scheduler-app");
+
+    const mountController = () => {
+        frappe.provide("production_scheduler");
+        const Controller = production_scheduler && production_scheduler.Controller;
+        if (typeof Controller !== "function") {
+            if (mountEl) {
+                mountEl.innerHTML =
+                    '<div style="padding:16px;color:#b91c1c;font-weight:600;">Production Board failed to load. Please refresh this page.</div>';
+            }
+            return;
+        }
+        new Controller(mountEl);
+    };
+
+    if (window.production_scheduler && typeof production_scheduler.Controller === "function") {
+        mountController();
+        return;
+    }
+
+    if (frappe.require) {
+        frappe.require("/assets/production_entry/js/scheduler.bundle.js", mountController);
+        return;
+    }
+
+    mountController();
 };
