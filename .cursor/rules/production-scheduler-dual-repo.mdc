@@ -1,0 +1,37 @@
+---
+description: Production Scheduler changes must land in both GitHub repos (scheduler + production_entry)
+alwaysApply: true
+---
+
+# Production Scheduler: update both apps
+
+Scheduler work is **not** single-repo. Apply the same functional change in **both** places and push **both** remotes.
+
+## 1. Canonical scheduler app
+
+- **Repo:** [Dharshantfs/production_scheduler](https://github.com/Dharshantfs/production_scheduler) — branch `main`
+- **Local clone (this workspace):** `Planning/production_scheduler`
+
+Implement Python/Vue/source changes here first (or here + entry in one session, but do not ship only one side).
+
+## 2. Production Entry app (merged scheduler + desk)
+
+- **Repo:** [Dharshantfs/production_entry_app](https://github.com/Dharshantfs/production_entry_app) — branch `master`
+- **Local clone:** `PRODUCTION ENTRY/production_entry`
+
+After scheduler logic/UI changes, **port** the same behaviour into `production_entry`:
+
+- Bundled desk assets: `production_entry/production_entry/public/js/scheduler.bundle.js`, `public/css/scheduler.css` (rebuild from scheduler frontend when Vue/source changed)
+- Server hooks/API used by the board: `production_entry/production_entry/production_planning/scheduler_api.py`, `scheduler_hooks.py`
+- Vendored scheduler trees under the app root (keep in sync when they mirror the standalone app): `ps_full/production_scheduler/`, `production_scheduler_patch/production_scheduler/`
+
+`production_entry/production_entry/hooks.py` loads `scheduler.bundle.js`; do not leave entry on an old bundle while only pushing `production_scheduler`.
+
+## 3. Git pushes
+
+- Push **production_scheduler** → `origin` on `production_scheduler` repo
+- Push **production_entry** → `origin` on `production_entry_app` repo
+
+## 4. Site note
+
+If both `production_scheduler` and `production_entry` are installed on one site, hooks can overlap — `production_entry.install` logs when both are present. Prefer one installed app per site after validation.
