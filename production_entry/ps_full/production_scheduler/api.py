@@ -609,16 +609,64 @@ def _child_qty_from_bom(bom_name, child_item_code, parent_so_qty):
 	return parent_so_qty
 
 
+def _resolve_lamination_bom(item_code):
+	"""Active BOM for the FG item, or for its template item when this line is a variant."""
+	ic = (item_code or "").strip()
+	if not ic:
+		return None
+
+	def _pick_bom_for_item(it_code):
+		bn = frappe.db.get_value(
+			"BOM",
+			{"item": it_code, "docstatus": 1, "is_active": 1, "is_default": 1},
+			"name",
+			order_by="modified desc",
+		)
+		if not bn:
+			bn = frappe.db.get_value(
+				"BOM",
+				{"item": it_code, "docstatus": 1, "is_active": 1},
+				"name",
+				order_by="is_default desc, modified desc",
+			)
+		return bn
+
+	bom_name = _pick_bom_for_item(ic)
+	if not bom_name and frappe.db.exists("Item", ic):
+		tmpl = frappe.db.get_value("Item", ic, "variant_of")
+		if tmpl:
+			bom_name = _pick_bom_for_item(tmpl)
+	if not bom_name:
+		return None
+	return frappe.get_doc("BOM", bom_name)
+
+
+def _extract_107_design_token(item_code: str) -> str:
+	"""Design segment before literal -107 in hyphenated FG codes (e.g. 7425-107… → 7425)."""
+	ic = str(item_code or "").strip().upper()
+	m = re.match(r"^([A-Z0-9]+)-107", ic)
+	if m:
+		return (m.group(1) or "").strip().upper()
+	return ""
+
+
 def _is_bopp_parent_107(item_code: str) -> bool:
 	"""
-	Support both formats for 107 detection:
-	1) leading numeric process stream (e.g. 107xxxx...)
-	2) hyphen pattern (e.g. 7425-1071000950)
+	107 parent detection:
+	- leading stream 107…
+	- DESIGN-107 + letter (7499-107F101…)
+	- DESIGN-107 + digits (7425-1071000950)
+	- legacy -107- three-digit segment
 	"""
 	ic = str(item_code or "").strip()
 	if not ic:
 		return False
 	if _item_process_prefix(ic) == "107":
+		return True
+	ic_u = ic.upper()
+	if re.match(r"^[A-Z0-9]+-107(?=[A-Z])", ic_u):
+		return True
+	if re.match(r"^[A-Z0-9]+-107\d", ic_u):
 		return True
 	try:
 		m = re.search(r"-(\d{3})", ic)
@@ -633,7 +681,7 @@ def _get_bopp_child_items_from_parent_item(parent_item_code):
 	"""
 	Resolve required 107-parent BOM children:
 	- one fabric child item (100*)
-	- one PB child item (PB-*)
+	- one PB child item (PB-* or PRINTED BOPP - <design> - …)
 	"""
 	item_code = (parent_item_code or "").strip()
 	if not item_code:
@@ -643,37 +691,37 @@ def _get_bopp_child_items_from_parent_item(parent_item_code):
 	if not frappe.db.exists("Item", item_code):
 		frappe.throw(_("Item {0} does not exist.").format(item_code))
 
-	bom_name = frappe.db.get_value(
-		"BOM",
-		{"item": item_code, "docstatus": 1, "is_active": 1, "is_default": 1},
-		"name",
-		order_by="modified desc",
-	)
-	if not bom_name:
-		bom_name = frappe.db.get_value(
-			"BOM",
-			{"item": item_code, "docstatus": 1, "is_active": 1},
-			"name",
-			order_by="is_default desc, modified desc",
-		)
-	if not bom_name:
+	bom = _resolve_lamination_bom(item_code)
+	if not bom:
 		frappe.throw(_("No active submitted BOM for BOPP item {0}.").format(item_code))
-
-	bom = frappe.get_doc("BOM", bom_name)
+	bom_name = bom.name
 	fabric_codes = []
-	pb_codes = []
+	pb_short = []
+	pb_long = []
+	design_u = _extract_107_design_token(item_code)
 	for row in bom.items or []:
 		ic = str(row.item_code or "").strip()
 		ic_u = ic.upper()
 		if len(ic) >= 3 and ic[:3] == "100":
 			fabric_codes.append(ic)
 		if ic_u.startswith("PB-"):
-			pb_codes.append(ic)
+			pb_short.append(ic)
+			continue
+		if " - " in ic:
+			parts = [p.strip() for p in ic.split(" - ")]
+			head0 = (parts[0] or "").upper().replace(" ", "")
+			if "PRINTED" in head0 and "BOPP" in head0 and len(parts) >= 2:
+				if not design_u or (parts[1] or "").strip().upper() == design_u:
+					pb_long.append(ic)
+
+	pb_codes = pb_short if pb_short else pb_long
 
 	if not fabric_codes:
 		frappe.throw(_("BOM {0} has no 100* child item for BOPP parent {1}.").format(bom_name, item_code))
 	if not pb_codes:
-		frappe.throw(_("BOM {0} has no PB-* child item for BOPP parent {1}.").format(bom_name, item_code))
+		frappe.throw(
+			_("BOM {0} has no PB-* or PRINTED BOPP child for BOPP parent {1}.").format(bom_name, item_code)
+		)
 
 	return {
 		"bom_no": bom_name,
@@ -805,7 +853,8 @@ def _sync_bopp_child_planning_rows(planning_sheet_name):
 			else:
 				specs = _specs_from_nonfabric_child_item(child_ic, so_it, parent_row)
 			child_item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
-			if str(child_ic).strip().upper().startswith("PB-"):
+			_ciu = str(child_ic).strip().upper()
+			if _ciu.startswith("PB-") or ("PRINTED" in _ciu and "BOPP" in _ciu):
 				child_unit = PRINTED_BOPP_FILM_UNIT
 			else:
 				child_unit = compute_default_production_unit(specs.get("color") or "", flt(specs.get("width_inch") or 0), child_ic)
@@ -2764,10 +2813,13 @@ def _item_quality_from_db(item_code):
 	except Exception:
 		pass
 	try:
-		v = frappe.db.get_value("Item", ic, "quality")
-		return str(v or "").strip()
+		if frappe.db.has_column("Item", "quality"):
+			v = frappe.db.get_value("Item", ic, "quality")
+			if v is not None and str(v).strip():
+				return str(v).strip()
 	except Exception:
-		return ""
+		pass
+	return ""
 
 
 def _parse_gsm_width_from_item_text(raw_text):

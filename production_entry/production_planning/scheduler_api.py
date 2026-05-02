@@ -3116,10 +3116,13 @@ def _item_quality_from_db(item_code):
 	except Exception:
 		pass
 	try:
-		v = frappe.db.get_value("Item", ic, "quality")
-		return str(v or "").strip()
+		if frappe.db.has_column("Item", "quality"):
+			v = frappe.db.get_value("Item", ic, "quality")
+			if v is not None and str(v).strip():
+				return str(v).strip()
 	except Exception:
-		return ""
+		pass
+	return ""
 
 
 def _parse_gsm_width_from_item_text(raw_text):
