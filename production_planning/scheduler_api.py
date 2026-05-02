@@ -10458,6 +10458,20 @@ def revert_items_to_color_chart(item_names):
 
 
 @frappe.whitelist()
+def get_slitting_order_table_data(date=None, start_date=None, end_date=None, planned_only=1):
+    """
+    Compatibility wrapper: delegate to production_scheduler.api.get_slitting_order_table_data
+    so clients calling the production_entry module path continue to work.
+    """
+    try:
+        from production_scheduler.api import get_slitting_order_table_data as _impl
+        return _impl(date=date, start_date=start_date, end_date=end_date, planned_only=planned_only)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_slitting_order_table_data_wrapper")
+        return []
+
+
+@frappe.whitelist()
 def revert_pb_push(pb_plan_name, date=None):
     """
     Reverts a Production Board push for a specific date.
