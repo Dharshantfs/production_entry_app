@@ -1,0 +1,98 @@
+{
+	"app": "production_entry",
+	"charts": [],
+	"content": "[{\"id\":\"confirmed_order_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Confirmed Order\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"confirmed-order\",\"label\":\"Confirmed Order\"}},{\"id\":\"production_board_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Production Board\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"production-board\",\"label\":\"Production Board\"}},{\"id\":\"color_chart_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Color Chart\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"color-chart\",\"label\":\"Color Chart\"}}]",
+	"creation": "2026-02-13 12:00:00.000000",
+	"custom_blocks": [],
+	"docstatus": 0,
+	"doctype": "Workspace",
+	"for_user": "",
+	"hide_custom": 0,
+	"icon": "setting",
+	"idx": 0,
+	"is_hidden": 0,
+	"label": "Production Scheduler",
+	"links": [
+		{
+			"description": "Confirmed Order",
+			"icon": "tick",
+			"label": "Confirmed Order",
+			"link_to": "confirmed-order",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"description": "Production Board",
+			"icon": "gantt",
+			"label": "Production Board",
+			"link_to": "production-board",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"description": "Color Chart",
+			"icon": "color",
+			"label": "Color Chart",
+			"link_to": "color-chart",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"description": "Sequence Approval",
+			"icon": "list",
+			"label": "Sequence Approval",
+			"link_to": "sequence-approval",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"description": "Planning Sheet List",
+			"icon": "list",
+			"label": "Planning sheet",
+			"link_to": "Planning sheet",
+			"link_type": "DocType",
+			"onboard": 1,
+			"type": "Link"
+		}
+	],
+	"modified": "2026-04-03 12:00:00.000000",
+	"modified_by": "Administrator",
+	"module": "Production Planning",
+	"name": "Production Scheduler",
+	"number_cards": [],
+	"owner": "Administrator",
+	"parent_page": "",
+	"public": 1,
+	"quick_lists": [],
+	"restrict_to_domain": "",
+	"roles": [],
+	"sequence_id": 87,
+	"shortcuts": [
+		{
+			"label": "Confirmed Order",
+			"link_to": "confirmed-order",
+			"type": "Page"
+		},
+		{
+			"label": "Production Board",
+			"link_to": "production-board",
+			"type": "Page"
+		},
+		{
+			"label": "Color Chart",
+			"link_to": "color-chart",
+			"type": "Page"
+		},
+		{
+			"label": "Sequence Approval",
+			"link_to": "sequence-approval",
+			"type": "Page"
+		}
+	],
+	"title": "Production Scheduler",
+	"type": "Workspace"
+}

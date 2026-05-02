@@ -209,6 +209,7 @@
    "label": "Lamination Order Code",
    "read_only": 1
   },
+
   {
    "default": "DAY",
    "fieldname": "custom_lamination_shift",

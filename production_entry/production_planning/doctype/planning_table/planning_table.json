@@ -34,7 +34,11 @@
   "custom_item_planned_date",
   "custom_plan_code",
   "custom_lamination_order_code_",
+  "custom_parent_child_trace_id",
+  "custom_design_name",
+  "custom_lam_side_",
   "custom_lamination_shift",
+  "custom_slitting_shift",
   "order_sheet",
   "custom_split_metadata",
   "section_split",
@@ -102,7 +106,7 @@
    "fieldname": "unit",
    "fieldtype": "Select",
    "label": "Unit",
-   "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit"
+   "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit\nSlitting Unit"
   },
   {
    "fieldname": "dot_spec",
@@ -209,6 +213,25 @@
    "label": "Lamination Order Code",
    "read_only": 1
   },
+  {
+   "fieldname": "custom_parent_child_trace_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Parent Child Trace ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_design_name",
+   "fieldtype": "Data",
+   "label": "Design Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_lam_side_",
+   "fieldtype": "Data",
+   "label": "Lam Side",
+   "read_only": 1
+  },
 
   {
    "default": "DAY",
@@ -216,6 +239,14 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Shift",
+   "options": "DAY\nNIGHT"
+  },
+  {
+   "default": "DAY",
+   "fieldname": "custom_slitting_shift",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Slitting Shift",
    "options": "DAY\nNIGHT"
   },
   {

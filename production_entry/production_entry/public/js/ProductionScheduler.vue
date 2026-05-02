@@ -542,8 +542,12 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    if (isLaminationBoard.value) query.board = "lamination";
-    frappe.set_route("Production Table", query);
+    if (isLaminationBoard.value) {
+        query.board = "lamination";
+        frappe.set_route("lamination-order-table", query);
+    } else {
+        frappe.set_route("production-table", query);
+    }
 }
 
 function goToConfirmedOrders() {

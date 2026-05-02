@@ -1,0 +1,1 @@
+production_entry.patches.repair_istable_schema_columns
