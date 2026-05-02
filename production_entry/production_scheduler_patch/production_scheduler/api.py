@@ -2498,6 +2498,25 @@ COL_LIST = ["BRIGHT WHITE", "SUPER WHITE", "MILKY WHITE", "SUNSHINE WHITE", "BLE
 COL_LIST.sort(key=len, reverse=True)
 
 
+def _item_quality_from_db(item_code):
+	"""Item quality without assuming `custom_quality` exists on Item (site-specific custom fields)."""
+	ic = str(item_code or "").strip()
+	if not ic or not frappe.db.exists("Item", ic):
+		return ""
+	try:
+		if frappe.db.has_column("Item", "custom_quality"):
+			v = frappe.db.get_value("Item", ic, "custom_quality")
+			if v is not None and str(v).strip():
+				return str(v).strip()
+	except Exception:
+		pass
+	try:
+		v = frappe.db.get_value("Item", ic, "quality")
+		return str(v or "").strip()
+	except Exception:
+		return ""
+
+
 def _parse_gsm_width_from_item_text(raw_text):
 	"""Parse GSM and width (inch) from item code + item name (same token rules as SO line populate)."""
 	if not raw_text:
@@ -2619,9 +2638,7 @@ def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 
 	line_quality = (qual or "").strip()
 	if not line_quality:
-		line_quality = (
-			str(frappe.db.get_value("Item", fabric_ic, "custom_quality") or frappe.db.get_value("Item", fabric_ic, "quality") or "")
-		).strip()
+		line_quality = _item_quality_from_db(fabric_ic)
 	if not line_quality:
 		line_quality = "GENERIC"
 
@@ -2770,14 +2787,7 @@ def _populate_planning_sheet_items(ps, doc):
                 str(getattr(it, "custom_quality", None) or getattr(it, "quality", None) or "").strip()
             )
         if not line_quality and it.item_code:
-            try:
-                line_quality = str(
-                    frappe.db.get_value("Item", it.item_code, "custom_quality")
-                    or frappe.db.get_value("Item", it.item_code, "quality")
-                    or ""
-                ).strip()
-            except Exception:
-                line_quality = ""
+            line_quality = _item_quality_from_db(it.item_code)
         if not line_quality:
             line_quality = "GENERIC"
 
