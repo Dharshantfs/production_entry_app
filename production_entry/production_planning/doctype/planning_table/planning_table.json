@@ -36,6 +36,8 @@
   "custom_lamination_order_code_",
   "custom_parent_child_trace_id",
   "custom_lamination_shift",
+  "custom_lam_gsm",
+  "custom_lam_side_",
   "custom_slitting_shift",
   "custom_cylinder_type",
   "custom_finishing",
@@ -230,6 +232,19 @@
    "in_list_view": 1,
    "label": "Shift",
    "options": "DAY\nNIGHT"
+  },
+  {
+   "fieldname": "custom_lam_gsm",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "LAM GSM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_lam_side_",
+   "fieldtype": "Data",
+   "label": "Lam Side",
+   "read_only": 1
   },
   {
    "default": "DAY",

@@ -33,6 +33,7 @@
         "custom_lamination_order_code",
         "custom_parent_child_trace_id",
         "custom_lam_side",
+        "custom_lam_gsm",
         "custom_cylinder_type",
         "custom_finishing",
         "custom_white_tint",
@@ -199,6 +200,13 @@
             "fieldname": "custom_lam_side",
             "fieldtype": "Data",
             "label": "Lam Side",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_lam_gsm",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "LAM GSM",
             "read_only": 1
         },
         {

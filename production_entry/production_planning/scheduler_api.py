@@ -81,6 +81,15 @@ LAMINATION_BOPP_GSM_CODES = {
 _LAMINATION_QUALITY_BY_CODE = {v: k for k, v in LAMINATION_QUALITY_CODES.items()}
 _LAMINATION_FABRIC_GSM_BY_CODE = {v: k for k, v in LAMINATION_FABRIC_GSM_CODES.items()}
 _LAMINATION_BOPP_GSM_BY_CODE = {v: k for k, v in LAMINATION_BOPP_GSM_CODES.items()}
+# Lam GSM letter in 107 codes uses same mapping as 104 lamination suffix after last '-'.
+_LAM_GSM_SUFFIX_MAP = {
+	"A": 10,
+	"B": 12,
+	"C": 13,
+	"D": 15,
+	"E": 20,
+	"F": 30,
+}
 
 
 def _lamination_process_from_item_code(item_code):
@@ -114,57 +123,73 @@ def _is_lamination_parent_process(item_code_or_prefix):
 
 def _parse_107_item_code(item_code):
 	"""Parse BOPP lamination item code, e.g. 7499-107F101MCC91500."""
-	code = str(item_code or "").strip().upper()
+	code = re.sub(r"\s+", "", str(item_code or "").strip().upper())
 	if not code:
 		return {}
+
+	def _row_from_groups(design, gd):
+		width_code = gd.get("width") or ""
+		width_inch = flt(width_code) / 10.0 if width_code.isdigit() else 0.0
+		qc = (gd.get("quality") or "").strip().upper()
+		lam_letter = (gd.get("lam") or "").strip().upper()
+		lam_val = cint(_LAM_GSM_SUFFIX_MAP.get(lam_letter, 0) or 0)
+		return {
+			"design_code": design or "",
+			"process": "107",
+			"quality_code": qc,
+			"quality_name": _LAMINATION_QUALITY_BY_CODE.get(qc, ""),
+			"colour_code": gd.get("colour") or "",
+			"fabric_gsm_code": (gd.get("fabric") or "").strip().upper(),
+			"fabric_gsm": cint(_LAMINATION_FABRIC_GSM_BY_CODE.get((gd.get("fabric") or "").strip().upper(), "") or 0),
+			"bopp_gsm_code": (gd.get("bopp") or "").strip().upper(),
+			"bopp_gsm": cint(_LAMINATION_BOPP_GSM_BY_CODE.get((gd.get("bopp") or "").strip().upper(), "") or 0),
+			"lam_gsm_code": lam_letter,
+			"lam_gsm": lam_val,
+			"width_code": width_code,
+			"width_inch": width_inch,
+			"finish_matte_glossy": gd.get("finish1") or "0",
+			"finish_metallic_cooler": gd.get("finish2") or "0",
+		}
+
 	m = re.match(
 		r"^(?P<design>[A-Z0-9]+)-(?P<process>107)(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>\d)$",
 		code,
 	)
-	if not m:
-		# Alternate encoding: DESIGN-107 + digits only (BOM / routing same as letter-suffix 107).
-		m2 = re.match(r"^(?P<design>[A-Z0-9]+)-(?P<process>107)(?P<body>\d+)$", code)
-		if m2:
-			return {
-				"design_code": m2.group("design") or "",
-				"process": "107",
-				"quality_code": "",
-				"quality_name": "",
-				"colour_code": "",
-				"fabric_gsm_code": "",
-				"fabric_gsm": 0,
-				"bopp_gsm_code": "",
-				"bopp_gsm": 0,
-				"lam_gsm_code": "",
-				"lam_gsm": 0,
-				"width_code": "",
-				"width_inch": 0.0,
-				"finish_matte_glossy": "0",
-				"finish_metallic_cooler": "0",
-			}
-		return {}
-	gd = m.groupdict()
-	width_code = gd.get("width") or ""
-	width_inch = 0.0
-	if width_code.isdigit():
-		width_inch = flt(width_code) / 10.0
-	return {
-		"design_code": gd.get("design") or "",
-		"process": gd.get("process") or "",
-		"quality_code": gd.get("quality") or "",
-		"quality_name": _LAMINATION_QUALITY_BY_CODE.get(gd.get("quality") or "", ""),
-		"colour_code": gd.get("colour") or "",
-		"fabric_gsm_code": gd.get("fabric") or "",
-		"fabric_gsm": cint(_LAMINATION_FABRIC_GSM_BY_CODE.get(gd.get("fabric") or "") or 0),
-		"bopp_gsm_code": gd.get("bopp") or "",
-		"bopp_gsm": cint(_LAMINATION_BOPP_GSM_BY_CODE.get(gd.get("bopp") or "") or 0),
-		"lam_gsm_code": gd.get("lam") or "",
-		"lam_gsm": cint(_LAMINATION_BOPP_GSM_BY_CODE.get(gd.get("lam") or "") or 0),
-		"width_code": width_code,
-		"width_inch": width_inch,
-		"finish_matte_glossy": gd.get("finish1") or "0",
-		"finish_metallic_cooler": gd.get("finish2") or "0",
-	}
+	if m:
+		design = (m.group("design") or "").strip().upper()
+		return _row_from_groups(design, m.groupdict())
+	# Alternate encoding: DESIGN-107 + digits only (BOM / routing same as letter-suffix 107).
+	m2 = re.match(r"^(?P<design>[A-Z0-9]+)-(?P<process>107)(?P<body>\d+)$", code)
+	if m2:
+		return {
+			"design_code": m2.group("design") or "",
+			"process": "107",
+			"quality_code": "",
+			"quality_name": "",
+			"colour_code": "",
+			"fabric_gsm_code": "",
+			"fabric_gsm": 0,
+			"bopp_gsm_code": "",
+			"bopp_gsm": 0,
+			"lam_gsm_code": "",
+			"lam_gsm": 0,
+			"width_code": "",
+			"width_inch": 0.0,
+			"finish_matte_glossy": "0",
+			"finish_metallic_cooler": "0",
+		}
+	# Lenient: allow stray spaces removed above; tail = quality + colour + fabric + bopp + lam + width + 2 finishes
+	pos = code.find("-107")
+	if pos > 0:
+		design = re.sub(r"[^A-Z0-9]", "", code[:pos])
+		tail = code[pos + 4 :]
+		m3 = re.match(
+			r"^(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>\d)$",
+			tail,
+		)
+		if m3 and design:
+			return _row_from_groups(design, m3.groupdict())
+	return {}
 
 
 def _resolve_lamination_bom(item_code):
@@ -366,8 +391,27 @@ def _parent_child_trace_id_from_item_code(item_code):
 	- 1031052210500050 -> 103-221-050-0050
 	- 1031035210500050 -> 103-521-050-0050
 	- 1041030010231475-B1 -> 104-023-147-5-B1
+	107 (design-first): 107-<colour>-<fabric gsm>-<lam gsm>-<width code>
 	"""
 	ic = str(item_code or "").strip()
+	if _lamination_process_from_item_code(ic) == "107":
+		p = _parse_107_item_code(ic) or {}
+		cc = (p.get("colour_code") or "").strip()
+		fg = cint(p.get("fabric_gsm") or 0)
+		lg = cint(p.get("lam_gsm") or 0)
+		wc = (p.get("width_code") or "").strip()
+		segs = ["107"]
+		if cc:
+			segs.append(cc)
+		if fg:
+			segs.append(str(fg))
+		if lg:
+			segs.append(str(lg))
+		if wc:
+			segs.append(wc)
+		if len(segs) > 1:
+			return "-".join(segs)
+		return ""
 	if len(ic) < 16:
 		return ""
 	process = _item_process_prefix(ic)
@@ -720,18 +764,6 @@ def _gsm_from_lamination_item_code(item_code: str) -> int:
         return cint(digits[9:12])
     except Exception:
         return 0
-
-
-# Lamination GSM from suffix after '-':
-# 10-A, 12-B, 13-C, 15-D, 20-E, 30-F
-_LAM_GSM_SUFFIX_MAP = {
-    "A": 10,
-    "B": 12,
-    "C": 13,
-    "D": 15,
-    "E": 20,
-    "F": 30,
-}
 
 
 def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
