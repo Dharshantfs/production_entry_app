@@ -243,80 +243,80 @@ def ensure_lamination_booking_for_planning_sheet(doc):
     if not has_lamination_parent:
         return
 
-	code = ""
-	if has_sheet_code_new:
-		code = (getattr(doc, "custom_lamination_order_code", None) or "").strip()
-	if not code and has_sheet_code_old:
-		code = (getattr(doc, "custom_lamination_booking_id", None) or "").strip()
-	if not code:
-		code = _next_lamination_order_code()
-	if has_sheet_code_new:
-		doc.custom_lamination_order_code = code
-	if has_sheet_code_old:
-		doc.custom_lamination_booking_id = code
+    code = ""
+    if has_sheet_code_new:
+        code = (getattr(doc, "custom_lamination_order_code", None) or "").strip()
+    if not code and has_sheet_code_old:
+        code = (getattr(doc, "custom_lamination_booking_id", None) or "").strip()
+    if not code:
+        code = _next_lamination_order_code()
+    if has_sheet_code_new:
+        doc.custom_lamination_order_code = code
+    if has_sheet_code_old:
+        doc.custom_lamination_booking_id = code
 
     # Build a map of SO item -> lamination side for 104/107 rows.
-	# Support multiple possible field names on Sales Order Item.
-	so_lam_side_map = {}
-	so_name = (getattr(doc, "sales_order", None) or "").strip()
-	if so_name:
-		try:
-			soi_cols = set(frappe.db.get_table_columns("Sales Order Item") or [])
-			side_field = ""
-			for fn in ("custom_lamination_side", "custom_lam_side", "lamination_side"):
-				if fn in soi_cols:
-					side_field = fn
-					break
-			so_items_data = frappe.get_all(
-				"Sales Order Item",
-				filters={"parent": so_name},
-				fields=["name", "item_code", side_field] if side_field else ["name", "item_code"],
-			) if side_field else []
-			for soi in so_items_data:
-				side_val = (soi.get(side_field) or "").strip() if side_field else ""
-				if side_val:
-					so_lam_side_map[soi["name"]] = side_val
-					so_lam_side_map[soi["item_code"]] = side_val
-		except Exception:
-			pass
+    # Support multiple possible field names on Sales Order Item.
+    so_lam_side_map = {}
+    so_name = (getattr(doc, "sales_order", None) or "").strip()
+    if so_name:
+        try:
+            soi_cols = set(frappe.db.get_table_columns("Sales Order Item") or [])
+            side_field = ""
+            for fn in ("custom_lamination_side", "custom_lam_side", "lamination_side"):
+                if fn in soi_cols:
+                    side_field = fn
+                    break
+            so_items_data = frappe.get_all(
+                "Sales Order Item",
+                filters={"parent": so_name},
+                fields=["name", "item_code", side_field] if side_field else ["name", "item_code"],
+            ) if side_field else []
+            for soi in so_items_data:
+                side_val = (soi.get(side_field) or "").strip() if side_field else ""
+                if side_val:
+                    so_lam_side_map[soi["name"]] = side_val
+                    so_lam_side_map[soi["item_code"]] = side_val
+        except Exception:
+            pass
 
     # Stamp header-level lam side (from first lamination SO item that has a value)
-	if has_ps_lam_side and so_lam_side_map:
-		first_lam_side = next(iter(so_lam_side_map.values()), "")
-		if first_lam_side:
-			doc.custom_lam_side = first_lam_side
+    if has_ps_lam_side and so_lam_side_map:
+        first_lam_side = next(iter(so_lam_side_map.values()), "")
+        if first_lam_side:
+            doc.custom_lam_side = first_lam_side
 
-	for fn in ("planned_items", "items", "custom_planned_items"):
-		if not meta.has_field(fn):
-			continue
-		for row in doc.get(fn) or []:
-			ic = (getattr(row, "item_code", None) or "").strip()
+    for fn in ("planned_items", "items", "custom_planned_items"):
+        if not meta.has_field(fn):
+            continue
+        for row in doc.get(fn) or []:
+            ic = (getattr(row, "item_code", None) or "").strip()
             if not _is_lamination_parent_process(ic):
-				continue
+                continue
             lam_gsm_val = _lam_gsm_from_item_code_suffix(ic)
             if lam_gsm_val <= 0 and _item_process_prefix(ic) == "107":
                 p107 = _parse_107_item_code(ic)
                 lam_gsm_val = cint(p107.get("lam_gsm") or 0)
-			if fn in ("planned_items", "custom_planned_items"):
-				if has_pt_booking_new:
-					row.custom_lamination_order_code_ = code
-				elif has_pt_booking_old:
-					row.custom_lamination_booking_id = code
-				if has_pt_lam_gsm:
+            if fn in ("planned_items", "custom_planned_items"):
+                if has_pt_booking_new:
+                    row.custom_lamination_order_code_ = code
+                elif has_pt_booking_old:
+                    row.custom_lamination_booking_id = code
+                if has_pt_lam_gsm:
                     row.custom_lam_gsm = lam_gsm_val
-				if has_pt_lam_side:
-					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val:
-						row.custom_lam_side_ = lam_side_val
-			else:
-				if has_psi_booking:
-					row.custom_lamination_order_code = code
-				if has_psi_lam_gsm:
+                if has_pt_lam_side:
+                    lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
+                    if lam_side_val:
+                        row.custom_lam_side_ = lam_side_val
+            else:
+                if has_psi_booking:
+                    row.custom_lamination_order_code = code
+                if has_psi_lam_gsm:
                     row.custom_lam_gsm = lam_gsm_val
-				if has_psi_lam_side:
-					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val:
-						row.custom_lam_side = lam_side_val
+                if has_psi_lam_side:
+                    lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
+                    if lam_side_val:
+                        row.custom_lam_side = lam_side_val
 
     # Header fallback: if map was empty, derive from first lamination row lam side value.
 	if has_ps_lam_side and not (getattr(doc, "custom_lam_side", None) or "").strip():
