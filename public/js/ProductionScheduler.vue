@@ -2185,14 +2185,16 @@ onMounted(() => {
          filterWeek.value = `${d.getFullYear()}-W${String(weekNum).padStart(2,'0')}`;
     }
 
-    // 3. Load flatpickr JS and init
+    // 3. Fetch data immediately so the board is not blocked by flatpickr loading.
+    fetchMaintenanceRecords();
+    fetchData();
+
+    // 4. Load flatpickr JS and init once available.
     frappe.require('https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.js', () => {
-        initFlatpickr();
-      fetchMaintenanceRecords();
-        fetchData();
+      initFlatpickr();
     });
 
-    // 4. Realtime sync: listen for board updates from backend
+    // 5. Realtime sync: listen for board updates from backend
     if (frappe.realtime && frappe.realtime.on && !realtimeHandlerRegistered) {
         try {
             frappe.realtime.on("production_board_update", handleRealtimeBoardUpdate);
