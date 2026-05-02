@@ -7,6 +7,19 @@ import datetime
 
 from production_entry.production_planning.planning_doctypes import normalize_planning_unit_for_select
 
+
+@frappe.whitelist()
+def get_slitting_order_table_data(date=None, start_date=None, end_date=None, planned_only=1):
+    """Compatibility wrapper: forward to canonical `production_scheduler.api.get_slitting_order_table_data`.
+    Keeps older callers working without changing client code.
+    """
+    try:
+        from production_scheduler.api import get_slitting_order_table_data as _impl
+        return _impl(date=date, start_date=start_date, end_date=end_date, planned_only=planned_only)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "scheduler_api.get_slitting_order_table_data-wrapper")
+        return []
+
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
 # Set True to enable; False disables all calls (no codes generated, no SO writeback from this path).
 PARTY_CODE_GENERATION_ENABLED = False
