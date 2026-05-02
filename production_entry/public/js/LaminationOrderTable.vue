@@ -1,7 +1,7 @@
 <template>
-  <div class="cc-container">
+  <div class="cc-container" :class="{ 'printed-bopp-film-table': isPrintedBoppTable }">
     <div class="cc-filters">
-      <div class="cc-filter-title">Lamination Order Table</div>
+      <div class="cc-filter-title">{{ pageTitle }}</div>
       <div class="cc-filter-item">
         <label>View Scope</label>
         <select v-model="viewScope" @change="toggleViewScope" class="cc-select-scope">
@@ -30,7 +30,7 @@
           <button type="button" :class="{ active: filterShift === 'night' }" @click="filterShift = 'night'">Night</button>
         </div>
       </div>
-      <div class="cc-filter-item cc-shift-filter">
+      <div v-if="!isPrintedBoppTable" class="cc-filter-item cc-shift-filter">
         <label>Lamination process</label>
         <div class="cc-shift-btns">
           <button type="button" :class="{ active: laminationProcess === '104' }" @click="setLaminationProcess('104')">104 Plain</button>
@@ -53,7 +53,7 @@
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
-        <button type="button" class="cc-view-btn" @click="goToBoard">Back to Lamination Board</button>
+        <button type="button" class="cc-view-btn" @click="goToBoard">{{ backToBoardLabel }}</button>
       </div>
     </div>
 
@@ -85,7 +85,7 @@
 
     <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">
-        Lamination Unit - Planned orders ({{ laminationProcess }}) — {{ laminationProcess === "107" ? "BOPP" : "Plain" }}
+        {{ tableUnitHeader }}
       </div>
       <table class="cc-prod-table lot-table">
         <thead>
@@ -98,7 +98,7 @@
             <th>CUSTOMER</th>
             <th>QUALITY</th>
             <th>FABRIC COLOUR</th>
-            <th v-if="laminationProcess === '107'">DESIGN NAME</th>
+            <th v-if="showDesignNameColumn">DESIGN NAME</th>
             <th>FABRIC GSM</th>
             <th>LAM GSM</th>
             <th>PLANNED LENGTH (MTR)</th>
@@ -126,7 +126,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td :colspan="maintenanceEmptyColspan" style="text-align:center; color:#94a3b8; font-style:italic;">No lamination orders (maintenance day)</td>
+              <td :colspan="maintenanceEmptyColspan" style="text-align:center; color:#94a3b8; font-style:italic;">{{ emptyMaintenanceDayLabel }}</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -153,7 +153,7 @@
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality }}</td>
             <td class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
-            <td v-if="laminationProcess === '107'" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
+            <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
             <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
@@ -239,7 +239,7 @@
           </tr>
           </template>
           <tr v-if="!displayRows.length">
-            <td :colspan="tableColCount" class="cell-center" style="padding:24px;color:#64748b;">No lamination orders for this view.</td>
+            <td :colspan="tableColCount" class="cell-center" style="padding:24px;color:#64748b;">{{ emptyTableLabel }}</td>
           </tr>
         </tbody>
       </table>
@@ -249,6 +249,42 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+
+const props = defineProps({
+  /** `lamination` = 104/107 lamination table; `printed_bopp_film` = PB / VR BOPP printing unit (independent scope). */
+  tableBoardKind: { type: String, default: "lamination" },
+});
+
+const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
+const isPrintedBoppTable = computed(() => (props.tableBoardKind || "").trim() === "printed_bopp_film");
+const pageTitle = computed(() => (isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table"));
+const tableMaintenanceUnit = computed(() => (isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : "Lamination Unit"));
+const tableUnitHeader = computed(() => {
+  if (isPrintedBoppTable.value) {
+    return `${PRINTED_BOPP_FILM_UNIT} — Planned orders (Printed BOPP film)`;
+  }
+  return `Lamination Unit - Planned orders (${laminationProcess.value}) — ${laminationProcess.value === "107" ? "BOPP" : "Plain"}`;
+});
+const showDesignNameColumn = computed(() => isPrintedBoppTable.value || laminationProcess.value === "107");
+const backToBoardLabel = computed(() =>
+  isPrintedBoppTable.value ? "Back to Printed BOPP Film Board" : "Back to Lamination Board"
+);
+const emptyMaintenanceDayLabel = computed(() =>
+  isPrintedBoppTable.value ? "No printed BOPP film orders (maintenance day)" : "No lamination orders (maintenance day)"
+);
+const emptyTableLabel = computed(() =>
+  isPrintedBoppTable.value ? "No printed BOPP film orders for this view." : "No lamination orders for this view."
+);
+const assignShiftMethod = computed(() =>
+  isPrintedBoppTable.value
+    ? "production_entry.production_planning.scheduler_api.assign_printed_bopp_film_shift"
+    : "production_entry.production_planning.scheduler_api.assign_lamination_shift"
+);
+const addMachineOffMethod = computed(() =>
+  isPrintedBoppTable.value
+    ? "production_entry.production_planning.scheduler_api.add_printed_bopp_film_machine_off"
+    : "production_entry.production_planning.scheduler_api.add_lamination_machine_off"
+);
 
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
@@ -322,7 +358,7 @@ const filteredRows = computed(() => {
   return sortRowsBySavedSequence(d);
 });
 
-const tableColCount = computed(() => (laminationProcess.value === "107" ? 18 : 17));
+const tableColCount = computed(() => (showDesignNameColumn.value ? 18 : 17));
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
 
 function setLaminationProcess(v) {
@@ -401,8 +437,8 @@ async function deleteMaintenanceRecord(recordName) {
   if (!confirm("Remove this maintenance record?")) return;
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.delete_maintenance_and_cascade",
-      args: { maintenance_record_name: recordName }
+      method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
+      args: { maintenance_record_name: recordName },
     });
     if (res.message && res.message.status === "success") {
       frappe.show_alert({ message: res.message.message, indicator: "green" });
@@ -522,7 +558,7 @@ async function fetchMaintenanceRecords() {
       method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
-    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === "Lamination Unit");
+    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === tableMaintenanceUnit.value);
     maintenanceRecords.value = rows;
     const mapped = {};
     rows.forEach((rec) => {
@@ -563,7 +599,7 @@ async function fetchLaminationSequences() {
       args: {
         start_date,
         end_date,
-        unit: "Lamination Unit",
+        unit: tableMaintenanceUnit.value,
         plan_name: "Default",
       },
     });
@@ -685,7 +721,7 @@ async function saveLaminationArrangement() {
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date: dateKey,
-          unit: "Lamination Unit",
+          unit: tableMaintenanceUnit.value,
           sequence_data: JSON.stringify(seq),
           plan_name: "Default",
         },
@@ -693,7 +729,13 @@ async function saveLaminationArrangement() {
     }
     pendingArrangementUpdates.value = {};
     arrangementDirty.value = false;
-    frappe.show_alert({ message: "Lamination arrangement saved", indicator: "green" }, 3);
+    frappe.show_alert(
+      {
+        message: isPrintedBoppTable.value ? "Printed BOPP film arrangement saved" : "Lamination arrangement saved",
+        indicator: "green",
+      },
+      3
+    );
   } catch (e) {
     frappe.msgprint(`Failed to save arrangement: ${e?.message || e}`);
   } finally {
@@ -710,13 +752,21 @@ async function restoreLaminationArrangement() {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: "Lamination Unit", plan_name: "Default" },
+        args: { date: dateKey, unit: tableMaintenanceUnit.value, plan_name: "Default" },
       });
     }
     pendingArrangementUpdates.value = {};
     arrangementDirty.value = false;
     await fetchData();
-    frappe.show_alert({ message: "Lamination arrangement restored", indicator: "green" }, 3);
+    frappe.show_alert(
+      {
+        message: isPrintedBoppTable.value
+          ? "Printed BOPP film arrangement restored"
+          : "Lamination arrangement restored",
+        indicator: "green",
+      },
+      3
+    );
   } catch (e) {
     frappe.msgprint(`Failed to restore arrangement: ${e?.message || e}`);
   }
@@ -999,7 +1049,7 @@ async function createItemStockEntry(item) {
 }
 
 function goToBoard() {
-  frappe.set_route("lamination-board");
+  frappe.set_route(isPrintedBoppTable.value ? "printed-bopp-film-board" : "lamination-board");
 }
 
 function onRowDragStart(row) {
@@ -1021,7 +1071,7 @@ async function handleShiftDrop(targetShift) {
   }
   try {
     const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
+      method: assignShiftMethod.value,
       args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName },
     });
     const msg = res?.message || {};
@@ -1041,7 +1091,7 @@ function currentShiftDateForDialog() {
 
 function openAssignShiftDialog() {
   const d = new frappe.ui.Dialog({
-    title: "Assign Lamination Shift",
+    title: isPrintedBoppTable.value ? "Assign Printed BOPP film shift" : "Assign Lamination Shift",
     fields: [
       { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
       { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
@@ -1054,7 +1104,7 @@ function openAssignShiftDialog() {
           return;
         }
         const res = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.assign_lamination_shift",
+          method: assignShiftMethod.value,
           args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
         });
         const msg = res?.message || {};
@@ -1075,7 +1125,7 @@ function openAssignShiftDialog() {
 
 function getMaintenanceRecordsHTML() {
   if (!maintenanceRecords.value.length) {
-    return '<p style="color:#64748b;text-align:center;padding:6px 0;">No Lamination maintenance records in this scope.</p>';
+    return `<p style="color:#64748b;text-align:center;padding:6px 0;">No maintenance records for ${isPrintedBoppTable.value ? "Printed BOPP film" : "Lamination"} in this scope.</p>`;
   }
   let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
   maintenanceRecords.value.forEach((rec) => {
@@ -1087,7 +1137,7 @@ function getMaintenanceRecordsHTML() {
 
 function openMachineOffDialog() {
   const d = new frappe.ui.Dialog({
-    title: "Lamination Machine Off",
+    title: isPrintedBoppTable.value ? "Printed BOPP film — Machine Off" : "Lamination Machine Off",
     fields: [
       { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
       { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
@@ -1106,7 +1156,7 @@ function openMachineOffDialog() {
     primary_action: async (vals) => {
       try {
         const res = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.add_lamination_machine_off",
+          method: addMachineOffMethod.value,
           args: {
             start_date: vals.start_date,
             end_date: vals.end_date,
@@ -1115,7 +1165,15 @@ function openMachineOffDialog() {
           },
         });
         if (res?.message?.status === "success") {
-          frappe.show_alert({ message: res.message.message || "Lamination maintenance saved", indicator: "green" }, 4);
+          frappe.show_alert(
+            {
+              message:
+                res.message.message ||
+                (isPrintedBoppTable.value ? "Printed BOPP film maintenance saved" : "Lamination maintenance saved"),
+              indicator: "green",
+            },
+            4
+          );
           d.hide();
           await fetchMaintenanceRecords();
           await fetchData();
@@ -1151,8 +1209,10 @@ async function fetchData() {
     let args = {
       party_code: filterPartyCode.value,
       planned_only: 1,
-      lamination_process: laminationProcess.value,
     };
+    if (!isPrintedBoppTable.value) {
+      args.lamination_process = laminationProcess.value;
+    }
     if (viewScope.value === "monthly") {
       if (!filterMonth.value) return;
       const [year, month] = filterMonth.value.split("-");
@@ -1180,7 +1240,9 @@ async function fetchData() {
     }
 
     const r = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
+      method: isPrintedBoppTable.value
+        ? "production_entry.production_planning.scheduler_api.get_printed_bopp_film_table_data"
+        : "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
       args,
     });
     rawData.value = (r.message || []).map((d) => ({
@@ -1215,7 +1277,9 @@ function updateUrlParams() {
   if (viewScope.value === "weekly") q.set("week", filterWeek.value);
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
-  q.set("lamination_process", laminationProcess.value);
+  if (!isPrintedBoppTable.value) {
+    q.set("lamination_process", laminationProcess.value);
+  }
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
 
@@ -1224,7 +1288,15 @@ async function syncSprWeightToTable() {
     // Fabric qty / child WO qty now comes from live WO+PP data path in get_lamination_order_table_data.
     // Keep this button as a manual refresh action without heavy backend sync.
     await fetchData();
-    frappe.show_alert({ message: "Lamination table refreshed from live WO data", indicator: "green" }, 4);
+    frappe.show_alert(
+      {
+        message: isPrintedBoppTable.value
+          ? "Printed BOPP film table refreshed from live WO data"
+          : "Lamination table refreshed from live WO data",
+        indicator: "green",
+      },
+      4
+    );
   } catch (e) {
     console.error(e);
     frappe.msgprint(`Failed to sync SPR data: ${getErrorText(e)}`);
@@ -1246,8 +1318,10 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
-  const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
-  if (lp === "104" || lp === "107") laminationProcess.value = lp;
+  if (!isPrintedBoppTable.value) {
+    const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
+    if (lp === "104" || lp === "107") laminationProcess.value = lp;
+  }
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);
@@ -1633,6 +1707,32 @@ onUnmounted(() => {
 }
 .font-mono {
   font-family: ui-monospace, monospace;
+}
+
+.printed-bopp-film-table .cc-filter-title {
+  color: #5b21b6;
+}
+.printed-bopp-film-table .cc-select-scope {
+  color: #5b21b6;
+}
+.printed-bopp-film-table .cc-shift-btns button.active {
+  background: #6d28d9;
+  border-color: #5b21b6;
+}
+.printed-bopp-film-table .lot-header {
+  background: linear-gradient(90deg, #ede9fe 0%, #ddd6fe 100%);
+  color: #4c1d95;
+  border-bottom-color: #c4b5fd;
+}
+.printed-bopp-film-table .cc-prod-table th {
+  background: linear-gradient(180deg, #7c3aed 0%, #5b21b6 100%);
+}
+.printed-bopp-film-table .cc-shift-board-title {
+  color: #5b21b6;
+}
+.printed-bopp-film-table .cc-shift-lane.over {
+  border-color: #7c3aed;
+  background: #f5f3ff;
 }
 </style>
 

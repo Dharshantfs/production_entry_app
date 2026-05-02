@@ -3,7 +3,14 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+      <div
+        v-if="isPrintedBoppFilmBoard"
+        class="cc-filter-item"
+        style="align-self:center;padding:10px 14px;background:linear-gradient(135deg,#ede9fe 0%,#ddd6fe 100%);border:1px solid #c4b5fd;border-radius:10px;font-weight:700;color:#5b21b6;"
+      >
+        Printed BOPP Film Board — {{ PRINTED_BOPP_FILM_UNIT }}
+      </div>
+      <div v-else-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
         {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
       </div>
       <div v-if="isLaminationBoard" class="cc-filter-item" style="min-width:220px;">
@@ -207,7 +214,7 @@
                 ></div>
                 <div class="cc-card-info">
                   <div class="cc-card-color-name">
-                    <template v-if="isLaminationBoard && laminationProcess === '107'">
+                    <template v-if="isPrintedBoppFilmBoard || (isLaminationBoard && laminationProcess === '107')">
                       <div style="font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600;">Design name</div>
                       <div>{{ entry.design_name || entry.design_code || "—" }}</div>
                       <div style="font-size:11px;color:#475569;margin-top:2px;font-weight:500;">
@@ -275,6 +282,11 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
+
+const props = defineProps({
+  /** When `printed_bopp_film`, board shows PB / VR BOPP printing unit only (separate from lamination 104/107). */
+  boardKind: { type: String, default: "" },
+});
 
 const isLoading = ref(false);
 
@@ -349,6 +361,8 @@ const COLOR_GROUPS = [
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "Lamination Unit";
 const SLITTING_UNIT = "Slitting Unit";
+const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
+const isPrintedBoppFilmBoard = computed(() => (props.boardKind || "").trim() === "printed_bopp_film");
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
   "Unit 2": 12,
@@ -357,6 +371,7 @@ const UNIT_TONNAGE_LIMITS = {
   "Mixed": 999,
   [LAMINATION_UNIT]: 999,
   [SLITTING_UNIT]: 999,
+  [PRINTED_BOPP_FILM_UNIT]: 999,
 };
 const headerColors = {
   "Unit 1": "#3b82f6",
@@ -366,11 +381,15 @@ const headerColors = {
   "Mixed": "#64748b",
   [LAMINATION_UNIT]: "#0d9488",
   [SLITTING_UNIT]: "#0f766e",
+  [PRINTED_BOPP_FILM_UNIT]: "#6d28d9",
 };
 
 function normalizeUnitName(rawUnit) {
-  const txt = String(rawUnit || "").trim().toLowerCase();
+  const full = String(rawUnit || "").trim();
+  const txt = full.toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (full === PRINTED_BOPP_FILM_UNIT) return PRINTED_BOPP_FILM_UNIT;
+  if (txt.includes("bopp") && txt.includes("printing")) return PRINTED_BOPP_FILM_UNIT;
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
   if (txt === "unit1" || txt === "unit 1") return "Unit 1";
@@ -461,6 +480,7 @@ units.forEach(u => {
 });
 unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+unitSortConfig.value[PRINTED_BOPP_FILM_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -598,6 +618,11 @@ function goToPlan() {
         frappe.set_route("slitting-order-table", query);
         return;
     }
+    if (isPrintedBoppFilmBoard.value) {
+        query.board = "printed_bopp_film";
+        frappe.set_route("printed-bopp-film-table", query);
+        return;
+    }
     if (isLaminationBoard.value) {
         query.board = "lamination";
         query.lamination_process = laminationProcess.value;
@@ -635,6 +660,7 @@ function toggleViewScope() {
 
 const boardUnits = computed(() => {
   if (isSlittingBoard.value) return [SLITTING_UNIT];
+  if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   return units;
 });
@@ -665,6 +691,16 @@ const filteredData = computed(() => {
     data = data.map((d) => {
       if (itemProcessPrefix(d.item_code || d.itemCode) === "103") {
         return { ...d, unit: SLITTING_UNIT };
+      }
+      return d;
+    });
+  }
+
+  if (isPrintedBoppFilmBoard.value) {
+    data = data.map((d) => {
+      const ic = String(d.item_code || d.itemCode || "").toUpperCase();
+      if (ic.startsWith("PB-") || String(d.unit || "").trim() === PRINTED_BOPP_FILM_UNIT) {
+        return { ...d, unit: PRINTED_BOPP_FILM_UNIT };
       }
       return d;
     });
@@ -2050,6 +2086,8 @@ async function fetchData() {
         args.planned_only = 1;
         if (isSlittingBoard.value) {
           args.board_process_scope = "slitting_only";
+        } else if (isPrintedBoppFilmBoard.value) {
+          args.board_process_scope = "printed_bopp_pb_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
           args.lamination_process = laminationProcess.value;
@@ -2126,7 +2164,9 @@ function updateUrlParams() {
   url.searchParams.set('scope', viewScope.value);
   prefs.scope = viewScope.value;
 
-  if (isLaminationBoard.value) {
+  if (isPrintedBoppFilmBoard.value) {
+    url.searchParams.delete('lamination_process');
+  } else if (isLaminationBoard.value) {
     url.searchParams.set('lamination_process', laminationProcess.value);
     prefs.lamination_process = laminationProcess.value;
   } else {

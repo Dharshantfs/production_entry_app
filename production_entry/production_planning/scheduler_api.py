@@ -15,6 +15,8 @@ PARTY_CODE_GENERATION_ENABLED = False
 # board_process_scope filters chart/board rows by item process (see get_color_chart_data; default fabric-only).
 LAMINATION_FLOW_ENABLED = True
 SLITTING_FLOW_ENABLED = True
+# Printed BOPP film (PB-* BOM children of 107 FG): dedicated queue unit + board/table scope.
+PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE"
 
 
 def _item_process_prefix(item_code):
@@ -176,14 +178,59 @@ def _pick_first_100_from_bom_items(bom_items, parent_item_code):
 
 
 def _pick_exact_pb_from_bom_items(bom_items, design_code):
+	"""Pick PB row for BOPP BOM: PB-<design>, PB-<design>-…, or any PB-* whose code segment starts with design."""
 	if not design_code:
 		return None
-	target = f"PB-{str(design_code).strip().upper()}"
+	design_u = str(design_code).strip().upper()
+	target = f"PB-{design_u}"
 	for row in bom_items or []:
-		ic = (row.item_code or "").strip().upper()
-		if ic.startswith(target):
-			return ((row.item_code or "").strip(), row)
+		raw = (row.item_code or "").strip()
+		ic = raw.upper()
+		if ic == target or ic.startswith(target + "-") or ic.startswith(target + "_"):
+			return (raw, row)
+	for row in bom_items or []:
+		raw = (row.item_code or "").strip()
+		ic = raw.upper()
+		if not ic.startswith("PB-"):
+			continue
+		rest = ic[3:].strip("-_ ")
+		head = (rest.split("-")[0].split("_")[0] if rest else "").strip().upper()
+		if head == design_u or design_u.startswith(head) or head.startswith(design_u):
+			return (raw, row)
 	return None
+
+
+def _find_planning_table_lamination_parent_row(planning_sheet_name, lam_item_code, sales_order_item_name):
+	"""Match parent lamination PT row by SO line (Planning Table may use sales_order_item or so_item)."""
+	if not planning_sheet_name or not lam_item_code or not sales_order_item_name:
+		return None
+	rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name, "item_code": lam_item_code},
+		fields=["name", "sales_order_item", "so_item"],
+		limit=30,
+	)
+	soi = (sales_order_item_name or "").strip()
+	for r in rows or []:
+		if (r.get("sales_order_item") or "").strip() == soi:
+			return r.get("name")
+		if (r.get("so_item") or "").strip() == soi:
+			return r.get("name")
+	if rows:
+		return rows[0].get("name")
+	return None
+
+
+def _matches_printed_bopp_board_row(it):
+	"""Rows for Printed BOPP Film board/table: PB-* items or rows assigned to the VR BOPP printing unit."""
+	if not it:
+		return False
+	try:
+		ic = str((it.get("item_code") if isinstance(it, dict) else getattr(it, "item_code", None)) or "").strip().upper()
+		u = str((it.get("unit") if isinstance(it, dict) else getattr(it, "unit", None)) or "").strip()
+	except Exception:
+		return False
+	return bool(ic.startswith("PB-") or u == PRINTED_BOPP_FILM_UNIT)
 
 
 def _scaled_component_qty_from_bom_row(bom_name, bom_row, parent_so_qty):
@@ -865,13 +912,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			continue
 
 		trace_id = _parent_child_trace_id_from_item_code(lam_ic)
-		lam_match = frappe.get_all(
-			"Planning Table",
-			filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": lam_ic},
-			fields=["name"],
-			limit=1,
-		)
-		lam_pt_name = lam_match[0].get("name") if lam_match else None
+		lam_pt_name = _find_planning_table_lamination_parent_row(ps.name, lam_ic, so_it.name)
 		lam_row = frappe.get_doc("Planning Table", lam_pt_name) if lam_pt_name else None
 		if lam_row and trace_id:
 			_set_trace_id_if_supported(lam_row, trace_id)
@@ -937,7 +978,10 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					"weight_per_roll": 0,
 				}
 
-			row_unit = compute_default_production_unit(row_color, row_width, comp_ic)
+			if comp.get("role") == "pb":
+				row_unit = PRINTED_BOPP_FILM_UNIT
+			else:
+				row_unit = compute_default_production_unit(row_color, row_width, comp_ic)
 			row_planned_date = getdate(ps.ordered_date) if _is_white_color(row_color) else None
 			row = {
 				"sales_order_item": "",
@@ -1583,8 +1627,10 @@ def get_lamination_order_table_data(
     end_date=None,
     planned_only=1,
     lamination_process="104",
+    board_process_scope="lamination_only",
 ):
     """104/107 board rows for Lamination Order Table: booking id, fabric GSM, planned meters, SPR achieved m/kg."""
+    bps = (board_process_scope or "lamination_only").strip() or "lamination_only"
     try:
         rows = _get_color_chart_data_impl(
             date=date,
@@ -1592,7 +1638,7 @@ def get_lamination_order_table_data(
             end_date=end_date,
             plan_name="__all__",
             planned_only=cint(planned_only),
-            board_process_scope="lamination_only",
+            board_process_scope=bps,
             lamination_process=lamination_process,
         )
     except Exception:
@@ -1918,6 +1964,10 @@ def get_lamination_order_table_data(
             # Fallback: parse F-<N> from the 104 lamination item's name (e.g. "F-60" → 60)
             _row_item_name = str(row.get("item_name") or row.get("itemName") or "")
             _fab_gsm = _fabric_gsm_from_item_name(_row_item_name)
+        _ic_row = str(row.get("itemCode") or row.get("item_code") or "").strip()
+        if _fab_gsm <= 0 and LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(_ic_row) == "107":
+            _p107f = _parse_107_item_code(_ic_row)
+            _fab_gsm = cint(_p107f.get("fabric_gsm") or 0)
         row["fabric_gsm"] = _fab_gsm
         lam_gsm = int(ex.get("lamination_gsm_value") or 0) if ex else 0
         if lam_gsm <= 0:
@@ -1941,7 +1991,9 @@ def get_lamination_order_table_data(
             str((ex.get("child_fabric_spr_name") if ex else "") or "").strip()
         ) or ""
         item_code = str(row.get("itemCode") or row.get("item_code") or "").strip()
-        is_parent_lamination = item_code.startswith("104")
+        is_parent_lamination = bool(
+            LAMINATION_FLOW_ENABLED and item_code and _is_lamination_parent_process(item_code)
+        )
         key = (
             str(row.get("planningSheet") or "").strip(),
             str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip(),
@@ -2008,6 +2060,27 @@ def get_lamination_order_table_data(
         row.pop("_achieved_m_spr", None)
         out.append(row)
     return out
+
+
+@frappe.whitelist()
+def get_printed_bopp_film_table_data(
+    date=None,
+    start_date=None,
+    end_date=None,
+    planned_only=1,
+):
+    """
+    Printed BOPP film (PB-* / VR BOPP printing unit) rows: same enrichment as lamination order table,
+    scoped to printed_bopp_pb_only (independent from 104/107 lamination process toggle).
+    """
+    return get_lamination_order_table_data(
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+        planned_only=planned_only,
+        lamination_process="104",
+        board_process_scope="printed_bopp_pb_only",
+    )
 
 
 @frappe.whitelist()
@@ -2468,6 +2541,80 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
     return {"status": "ok", "updated_count": int(updated), "date": str(target_date), "shift": shift_label}
 
 
+def _printed_bopp_film_pt_filter_sql():
+    """SQL fragment: PB-* items or rows on the VR BOPP printing unit (parameterized)."""
+    return (
+        "(TRIM(IFNULL(pt.unit, '')) = %s OR UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE %s)"
+    )
+
+
+@frappe.whitelist()
+def assign_printed_bopp_film_shift(shift_date=None, shift_label="DAY", item_name=None):
+    """Assign DAY/NIGHT shift for Printed BOPP film rows (PB-* or VR BOPP printing unit). Uses Planning Table custom_lamination_shift."""
+    target_date = getdate(shift_date or frappe.utils.nowdate())
+    shift_label = (shift_label or "DAY").strip().upper()
+    if shift_label not in ("DAY", "NIGHT"):
+        frappe.throw(_("Shift must be DAY or NIGHT."))
+    if not frappe.db.has_column("Planning Table", "custom_lamination_shift"):
+        frappe.throw(_("Field custom_lamination_shift is missing on Planning Table. Please migrate."))
+    u_pb = PRINTED_BOPP_FILM_UNIT
+    if is_date_under_maintenance(u_pb, str(target_date)):
+        info = get_maintenance_info_on_date(u_pb, str(target_date)) or {}
+        frappe.throw(
+            _("Cannot place orders on {0}. Machine is off ({1}) from {2} to {3}.").format(
+                target_date,
+                info.get("type") or "Maintenance",
+                info.get("start_date") or target_date,
+                info.get("end_date") or target_date,
+            )
+        )
+
+    pt_date_col = "planned_date" if frappe.db.has_column("Planning Table", "planned_date") else (
+        "custom_item_planned_date" if frappe.db.has_column("Planning Table", "custom_item_planned_date") else None
+    )
+    has_sheet_planned = frappe.db.has_column("Planning sheet", "custom_planned_date")
+    eff_date = (
+        f"CASE WHEN pt.{pt_date_col} IS NOT NULL THEN pt.{pt_date_col} ELSE COALESCE(ps.custom_planned_date, ps.ordered_date) END"
+        if (has_sheet_planned and pt_date_col)
+        else (f"COALESCE(pt.{pt_date_col}, ps.ordered_date)" if pt_date_col else "COALESCE(ps.custom_planned_date, ps.ordered_date)")
+    )
+
+    filt = _printed_bopp_film_pt_filter_sql()
+    if item_name:
+        set_parts = ["pt.custom_lamination_shift = %s"]
+        values = [shift_label]
+        if pt_date_col:
+            set_parts.append(f"pt.{pt_date_col} = %s")
+            values.append(target_date)
+        values.extend([u_pb, "PB-%", str(item_name).strip()])
+        frappe.db.sql(
+            f"""
+            UPDATE `tabPlanning Table` pt
+            INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+            SET {", ".join(set_parts)}
+            WHERE ps.docstatus < 2
+              AND {filt}
+              AND pt.name = %s
+            """,
+            tuple(values),
+        )
+    else:
+        frappe.db.sql(
+            f"""
+            UPDATE `tabPlanning Table` pt
+            INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+            SET pt.custom_lamination_shift = %s
+            WHERE ps.docstatus < 2
+              AND {filt}
+              AND DATE({eff_date}) = DATE(%s)
+            """,
+            (shift_label, u_pb, "PB-%", target_date),
+        )
+    updated = frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0].get("c") or 0
+    frappe.db.commit()
+    return {"status": "ok", "updated_count": int(updated), "date": str(target_date), "shift": shift_label}
+
+
 @frappe.whitelist()
 def add_lamination_machine_off(start_date=None, end_date=None, maintenance_type="Machine Off", notes=None):
     """Create Lamination Unit maintenance window (Machine Off by default)."""
@@ -2477,6 +2624,22 @@ def add_lamination_machine_off(start_date=None, end_date=None, maintenance_type=
         frappe.throw(_("End Date must be on or after Start Date."))
     return add_equipment_maintenance(
         unit="Lamination Unit",
+        maintenance_type=maintenance_type or "Machine Off",
+        start_date=str(start_dt),
+        end_date=str(end_dt),
+        notes=notes or "",
+    )
+
+
+@frappe.whitelist()
+def add_printed_bopp_film_machine_off(start_date=None, end_date=None, maintenance_type="Machine Off", notes=None):
+    """Create maintenance window for the VR BOPP printing / Printed BOPP film unit."""
+    start_dt = getdate(start_date or frappe.utils.nowdate())
+    end_dt = getdate(end_date or start_dt)
+    if end_dt < start_dt:
+        frappe.throw(_("End Date must be on or after Start Date."))
+    return add_equipment_maintenance(
+        unit=PRINTED_BOPP_FILM_UNIT,
         maintenance_type=maintenance_type or "Machine Off",
         start_date=str(start_dt),
         end_date=str(end_dt),
@@ -2999,8 +3162,25 @@ def _populate_planning_sheet_items(ps, doc):
         qual = ""
         col = ""
         item_code_str = str(it.item_code or "").strip()
+        parsed107_early = {}
+        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(item_code_str) == "107":
+            parsed107_early = _parse_107_item_code(item_code_str) or {}
+            if parsed107_early.get("quality_name"):
+                qual = str(parsed107_early.get("quality_name") or "").strip()
+            if parsed107_early.get("fabric_gsm"):
+                gsm = cint(parsed107_early.get("fabric_gsm") or 0)
+            if parsed107_early.get("colour_code"):
+                try:
+                    _c107 = _get_color_by_code(parsed107_early.get("colour_code"))
+                    if _c107:
+                        col = _c107
+                except Exception:
+                    pass
+            if parsed107_early.get("width_inch") and flt(width) <= 0:
+                width = flt(parsed107_early.get("width_inch") or 0)
+
         digits = "".join(ch for ch in item_code_str if ch.isdigit())
-        if len(digits) >= 9:
+        if len(digits) >= 9 and _lamination_process_from_item_code(item_code_str) != "107":
             q_code = digits[3:6]
             c_code = digits[6:9]
             try:
@@ -3212,8 +3392,12 @@ def compute_default_production_unit(color, width_inch, item_code=None):
     """
     Only white-family colors use UNASSIGNED (pool for that order date).
     Lamination parent (104/107) orders ALWAYS use Lamination Unit.
+    PB-* printed BOPP BOM lines use the dedicated VR BOPP printing unit.
     All other colors: pick one of Unit 1-4 by minimum width waste.
     """
+    ic = str(item_code or "").strip().upper()
+    if ic.startswith("PB-"):
+        return PRINTED_BOPP_FILM_UNIT
     if LAMINATION_FLOW_ENABLED and item_code and _is_lamination_parent_process(str(item_code)):
         return "Lamination Unit"
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "103":
@@ -5865,6 +6049,8 @@ def _get_color_chart_data_impl(
         # Deduplicate if mode is pull or board
         if items and bps == "only_100":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "100"]
+        elif items and bps == "printed_bopp_pb_only":
+            items = [it for it in items if _matches_printed_bopp_board_row(it)]
         return _deduplicate_items(items)
 
     # PULL_BOARD MODE (Production Board only): items already ON the board for this date
@@ -5967,6 +6153,8 @@ def _get_color_chart_data_impl(
             ]
         elif items and bps == "only_100":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "100"]
+        elif items and bps == "printed_bopp_pb_only":
+            items = [it for it in items if _matches_printed_bopp_board_row(it)]
         return _deduplicate_items(items) if items else []
 
     # Support both single date and range
@@ -7037,7 +7225,9 @@ def _get_color_chart_data_impl(
             produced_weight = frappe.db.get_value("Work Order", wo_name, "produced_qty") or 0
 
         for item in items:
-            if LAMINATION_FLOW_ENABLED and bps:
+            if bps == "printed_bopp_pb_only" and not _matches_printed_bopp_board_row(item):
+                continue
+            if LAMINATION_FLOW_ENABLED and bps and bps != "printed_bopp_pb_only":
                 ic = (item.get("item_code") or "").strip()
                 icp = _item_process_prefix(ic)
                 lam_p = _lamination_process_from_item_code(ic)
@@ -7099,7 +7289,7 @@ def _get_color_chart_data_impl(
 
             # Production Board special filtering: only show scheduled items if planned_only is requested
             if cint(planned_only):
-                if bps in ("lamination_only", "slitting_only"):
+                if bps in ("lamination_only", "slitting_only", "printed_bopp_pb_only"):
                     pass
                 # NON-WHITE items MUST be explicitly pushed (have a planned date)
                 elif not is_white and not item_pdate:
