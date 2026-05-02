@@ -401,8 +401,10 @@ def _resolve_107_child_components(lam_item_code):
 
 def _planning_row_dict_107_lamination_extras(item_code, parsed107_early):
 	"""
-	Planning Table / Planning sheet Item fields for process-107 parents from code + BOM (PB / printed BOPP).
-	Fabric GSM stays in `gsm`; BOPP film GSM is stored separately in `custom_bopp_gsm`.
+	Planning Table / Planning sheet Item fields for the 107 PARENT row.
+	- Finishing (mg/mc), White Tint, BOPP GSM are set on the parent.
+	- Cylinder Type is NOT set here; it belongs only on the PB child row
+	  (appended by _sync_lamination_fabric_planning_rows via _cylinder_type_from_printed_bopp_item_code).
 	"""
 	out = {}
 	if not (LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(item_code or "")) == "107"):
@@ -424,19 +426,6 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early):
 			out["custom_bopp_gsm"] = bgv
 		if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
 			out["custom_bopp_gsm"] = bgv
-	try:
-		comp107 = _resolve_107_child_components(item_code)
-		pb_tup = comp107.get("pb")
-		pb_ic = (pb_tup[0] if pb_tup else "") or ""
-		if pb_ic:
-			cyl_p = _cylinder_type_from_printed_bopp_item_code(pb_ic)
-			if cyl_p and (
-				frappe.db.has_column("Planning Table", "custom_cylinder_type")
-				or frappe.db.has_column("Planning sheet Item", "custom_cylinder_type")
-			):
-				out["custom_cylinder_type"] = cyl_p
-	except Exception:
-		pass
 	return out
 
 
@@ -1934,6 +1923,8 @@ def get_lamination_order_table_data(
     shift_expr = "IFNULL(pt.custom_lamination_shift, 'DAY')" if has_shift_col else "'DAY'"
     has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
     lam_gsm_expr = "IFNULL(pt.custom_lam_gsm, 0)" if has_pt_lam_gsm else "0"
+    has_pt_bopp_gsm = frappe.db.has_column("Planning Table", "custom_bopp_gsm")
+    bopp_gsm_expr = "IFNULL(pt.custom_bopp_gsm, 0)" if has_pt_bopp_gsm else "0"
     has_pt_cylinder = frappe.db.has_column("Planning Table", "custom_cylinder_type")
     cyl_store_expr = "IFNULL(pt.custom_cylinder_type, '')" if has_pt_cylinder else "''"
     has_trace = frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
@@ -1951,6 +1942,7 @@ def get_lamination_order_table_data(
             IFNULL(pt.meter, 0) as planned_meter,
             {booking_expr} as lamination_booking_id,
             {lam_gsm_expr} as lamination_gsm_value,
+            {bopp_gsm_expr} as bopp_gsm_value,
             IFNULL(fab.gsm, 0) as fabric_gsm,
             {cyl_store_expr} as pb_cylinder_stored,
             {spr_for_meter_sql},
@@ -2232,6 +2224,10 @@ def get_lamination_order_table_data(
         if lam_gsm <= 0:
             lam_gsm = int(row.get("gsm") or 0) or 0
         row["lamination_gsm"] = lam_gsm
+        _bopp_gsm = int(ex.get("bopp_gsm_value") or 0) if ex else 0
+        if _bopp_gsm <= 0 and LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(_ic_row) == "107":
+            _bopp_gsm = cint((_parse_107_item_code(_ic_row) or {}).get("bopp_gsm") or 0)
+        row["bopp_gsm"] = _bopp_gsm
         cyl_val = str((ex or {}).get("pb_cylinder_stored") or "").strip() if ex else ""
         if bps == "printed_bopp_pb_only":
             if not cyl_val:
