@@ -887,23 +887,11 @@ def _get_fabric_item_from_process_item(item_code, expected_process, process_labe
 	if not frappe.db.exists("Item", item_code):
 		frappe.throw(_("Item {0} does not exist.").format(item_code))
 
-	bom_name = frappe.db.get_value(
-		"BOM",
-		{"item": item_code, "docstatus": 1, "is_active": 1, "is_default": 1},
-		"name",
-		order_by="modified desc",
-	)
-	if not bom_name:
-		bom_name = frappe.db.get_value(
-			"BOM",
-			{"item": item_code, "docstatus": 1, "is_active": 1},
-			"name",
-			order_by="is_default desc, modified desc",
-		)
-	if not bom_name:
+	# Use same BOM resolution as lamination sync (default/active BOM on FG or on template via variant_of).
+	bom = _resolve_lamination_bom(item_code)
+	if not bom:
 		frappe.throw(_("No active submitted BOM for {0} item {1}.").format(process_label.lower(), item_code))
-
-	bom = frappe.get_doc("BOM", bom_name)
+	bom_name = bom.name
 	fabric_rows = []
 	for row in bom.items or []:
 		ic = (row.item_code or "").strip()
@@ -2557,9 +2545,10 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
             return {"status": "ok", "wo_name": wo_name, "created": 0, "draft": 0, "started": 1}
         return {"status": "ok", "wo_name": wo_name, "created": 0, "draft": 1 if cint(existing[0].docstatus) == 0 else 0}
 
-    bom_no = str(item.get("bom_no") or "").strip() or frappe.db.get_value(
-        "BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name"
-    ) or frappe.db.get_value("BOM", {"item": item_code, "is_active": 1}, "name")
+    bom_no = str(item.get("bom_no") or "").strip()
+    if not bom_no:
+        bdoc = _resolve_lamination_bom(item_code)
+        bom_no = (bdoc.name if bdoc else "") or ""
     if not bom_no:
         frappe.throw(_("No active BOM found for {0}.").format(item_code))
 
