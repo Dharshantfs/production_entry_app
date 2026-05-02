@@ -90,10 +90,15 @@ def _lamination_process_from_item_code(item_code):
 		return ""
 	if ic[:3] in ("104", "107"):
 		return ic[:3]
-	# Design-first BOPP: DESIGN-107<quality letter>…
+	# Design-first BOPP: DESIGN-107<quality letter>… (e.g. 7499-107F101MCC91500)
 	if re.match(r"^[A-Z0-9]+-107(?=[A-Z])", ic):
 		return "107"
+	# Design-first BOPP with numeric tail: e.g. 7425-1071000950 (first 3 digits are design, not process 107)
+	if re.match(r"^[A-Z0-9]+-107\d", ic):
+		return "107"
 	if re.match(r"^[A-Z0-9]+-104(?=[A-Z0-9])", ic):
+		return "104"
+	if re.match(r"^[A-Z0-9]+-104\d", ic):
 		return "104"
 	return _item_process_prefix(item_code)
 
@@ -117,6 +122,26 @@ def _parse_107_item_code(item_code):
 		code,
 	)
 	if not m:
+		# Alternate encoding: DESIGN-107 + digits only (BOM / routing same as letter-suffix 107).
+		m2 = re.match(r"^(?P<design>[A-Z0-9]+)-(?P<process>107)(?P<body>\d+)$", code)
+		if m2:
+			return {
+				"design_code": m2.group("design") or "",
+				"process": "107",
+				"quality_code": "",
+				"quality_name": "",
+				"colour_code": "",
+				"fabric_gsm_code": "",
+				"fabric_gsm": 0,
+				"bopp_gsm_code": "",
+				"bopp_gsm": 0,
+				"lam_gsm_code": "",
+				"lam_gsm": 0,
+				"width_code": "",
+				"width_inch": 0.0,
+				"finish_matte_glossy": "0",
+				"finish_metallic_cooler": "0",
+			}
 		return {}
 	gd = m.groupdict()
 	width_code = gd.get("width") or ""
@@ -244,6 +269,10 @@ def _scaled_component_qty_from_bom_row(bom_name, bom_row, parent_so_qty):
 def _resolve_107_child_components(lam_item_code):
 	parsed = _parse_107_item_code(lam_item_code)
 	design_code = (parsed.get("design_code") or "").strip().upper()
+	if not design_code:
+		m = re.match(r"^([A-Z0-9]+)-107", str(lam_item_code or "").strip().upper())
+		if m:
+			design_code = (m.group(1) or "").strip().upper()
 	bom = _resolve_lamination_bom(lam_item_code)
 	if not bom:
 		return {}

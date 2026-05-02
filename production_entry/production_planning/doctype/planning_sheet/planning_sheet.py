@@ -94,9 +94,11 @@ class Planningsheet(Document):
         if cint(self.docstatus) != 0:
             return
         from production_entry.production_planning.scheduler_api import (
+            LAMINATION_FLOW_ENABLED,
             PRINTED_BOPP_FILM_UNIT,
             compute_default_production_unit,
             _get_color_by_code,
+            _is_lamination_parent_process,
             _item_process_prefix,
             resolve_color_name_for_planning_row,
         )
@@ -112,6 +114,9 @@ class Planningsheet(Document):
                 item_code = str(getattr(row, "item_code", None) or "").strip()
                 if item_code.upper().startswith("PB-"):
                     row.unit = PRINTED_BOPP_FILM_UNIT
+                    continue
+                if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(item_code):
+                    row.unit = "Lamination Unit"
                     continue
                 if getattr(row, "planned_date", None) and str(row.planned_date).strip():
                     continue
@@ -155,8 +160,10 @@ class Planningsheet(Document):
         if cint(self.docstatus) != 0:
             return
         from production_entry.production_planning.scheduler_api import (
+            LAMINATION_FLOW_ENABLED,
             PRINTED_BOPP_FILM_UNIT,
             _get_color_by_code,
+            _is_lamination_parent_process,
             _item_process_prefix,
         )
 
@@ -171,6 +178,12 @@ class Planningsheet(Document):
             if pr_ic.upper().startswith("PB-") or leg_ic.upper().startswith("PB-"):
                 pr.unit = PRINTED_BOPP_FILM_UNIT
                 leg.unit = PRINTED_BOPP_FILM_UNIT
+                continue
+            if LAMINATION_FLOW_ENABLED and (
+                _is_lamination_parent_process(pr_ic) or _is_lamination_parent_process(leg_ic)
+            ):
+                pr.unit = "Lamination Unit"
+                leg.unit = "Lamination Unit"
                 continue
             # Hard lock for process 103 across linked rows.
             item_code = str(getattr(pr, "item_code", None) or getattr(leg, "item_code", None) or "").strip()

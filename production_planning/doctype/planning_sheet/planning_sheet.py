@@ -94,8 +94,10 @@ class Planningsheet(Document):
         if cint(self.docstatus) != 0:
             return
         from production_entry.production_planning.scheduler_api import (
+            LAMINATION_FLOW_ENABLED,
             PRINTED_BOPP_FILM_UNIT,
             compute_default_production_unit,
+            _is_lamination_parent_process,
             resolve_color_name_for_planning_row,
         )
 
@@ -110,6 +112,9 @@ class Planningsheet(Document):
                 item_code = str(getattr(row, "item_code", None) or "").strip()
                 if item_code.upper().startswith("PB-"):
                     row.unit = PRINTED_BOPP_FILM_UNIT
+                    continue
+                if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(item_code):
+                    row.unit = "Lamination Unit"
                     continue
                 if getattr(row, "planned_date", None) and str(row.planned_date).strip():
                     continue
@@ -141,7 +146,11 @@ class Planningsheet(Document):
         """
         if cint(self.docstatus) != 0:
             return
-        from production_entry.production_planning.scheduler_api import PRINTED_BOPP_FILM_UNIT
+        from production_entry.production_planning.scheduler_api import (
+            LAMINATION_FLOW_ENABLED,
+            PRINTED_BOPP_FILM_UNIT,
+            _is_lamination_parent_process,
+        )
 
         items_by_name = {((getattr(r, "name", None) or "").strip()): r for r in (self.get("items") or []) if getattr(r, "name", None)}
         for pr in self.get("planned_items") or []:
@@ -154,6 +163,12 @@ class Planningsheet(Document):
             if pr_ic.upper().startswith("PB-") or leg_ic.upper().startswith("PB-"):
                 pr.unit = PRINTED_BOPP_FILM_UNIT
                 leg.unit = PRINTED_BOPP_FILM_UNIT
+                continue
+            if LAMINATION_FLOW_ENABLED and (
+                _is_lamination_parent_process(pr_ic) or _is_lamination_parent_process(leg_ic)
+            ):
+                pr.unit = "Lamination Unit"
+                leg.unit = "Lamination Unit"
                 continue
             nu = normalize_planning_unit_for_select(getattr(leg, "unit", None))
             bu = normalize_planning_unit_for_select(getattr(pr, "unit", None))
