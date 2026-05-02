@@ -1327,7 +1327,6 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 
 	if changed:
 		ps.flags.ignore_permissions = True
-		ps.reload()
 		ps.save()
 		frappe.db.commit()
 
