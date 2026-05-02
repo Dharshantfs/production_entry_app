@@ -94,6 +94,7 @@ class Planningsheet(Document):
         if cint(self.docstatus) != 0:
             return
         from production_entry.production_planning.scheduler_api import (
+            PRINTED_BOPP_FILM_UNIT,
             compute_default_production_unit,
             resolve_color_name_for_planning_row,
         )
@@ -106,6 +107,10 @@ class Planningsheet(Document):
 
         for table_key in ("items", "planned_items"):
             for row in self.get(table_key) or []:
+                item_code = str(getattr(row, "item_code", None) or "").strip()
+                if item_code.upper().startswith("PB-"):
+                    row.unit = PRINTED_BOPP_FILM_UNIT
+                    continue
                 if getattr(row, "planned_date", None) and str(row.planned_date).strip():
                     continue
                 # Board row drives unit for linked legacy line — do not overwrite Planning sheet Item from width.
@@ -136,12 +141,20 @@ class Planningsheet(Document):
         """
         if cint(self.docstatus) != 0:
             return
+        from production_entry.production_planning.scheduler_api import PRINTED_BOPP_FILM_UNIT
+
         items_by_name = {((getattr(r, "name", None) or "").strip()): r for r in (self.get("items") or []) if getattr(r, "name", None)}
         for pr in self.get("planned_items") or []:
             si = (getattr(pr, "source_item", None) or "").strip()
             if not si or si not in items_by_name:
                 continue
             leg = items_by_name[si]
+            pr_ic = str(getattr(pr, "item_code", None) or "").strip()
+            leg_ic = str(getattr(leg, "item_code", None) or "").strip()
+            if pr_ic.upper().startswith("PB-") or leg_ic.upper().startswith("PB-"):
+                pr.unit = PRINTED_BOPP_FILM_UNIT
+                leg.unit = PRINTED_BOPP_FILM_UNIT
+                continue
             nu = normalize_planning_unit_for_select(getattr(leg, "unit", None))
             bu = normalize_planning_unit_for_select(getattr(pr, "unit", None))
             if nu == bu:

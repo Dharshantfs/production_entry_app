@@ -94,6 +94,7 @@ class Planningsheet(Document):
         if cint(self.docstatus) != 0:
             return
         from production_entry.production_planning.scheduler_api import (
+            PRINTED_BOPP_FILM_UNIT,
             compute_default_production_unit,
             _get_color_by_code,
             _item_process_prefix,
@@ -108,6 +109,10 @@ class Planningsheet(Document):
 
         for table_key in ("items", "planned_items"):
             for row in self.get(table_key) or []:
+                item_code = str(getattr(row, "item_code", None) or "").strip()
+                if item_code.upper().startswith("PB-"):
+                    row.unit = PRINTED_BOPP_FILM_UNIT
+                    continue
                 if getattr(row, "planned_date", None) and str(row.planned_date).strip():
                     continue
                 # Board row drives unit for linked legacy line — do not overwrite Planning sheet Item from width.
@@ -128,7 +133,6 @@ class Planningsheet(Document):
                     color = resolved or ""
                 width = flt(getattr(row, "width_inch", None))
                 # Hard rule: process 103 always belongs to Slitting Unit and color from Colour Master code.
-                item_code = str(getattr(row, "item_code", None) or "").strip()
                 process_prefix = _item_process_prefix(item_code)
                 if process_prefix == "103":
                     digits = "".join(ch for ch in item_code if ch.isdigit())
@@ -150,15 +154,26 @@ class Planningsheet(Document):
         """
         if cint(self.docstatus) != 0:
             return
+        from production_entry.production_planning.scheduler_api import (
+            PRINTED_BOPP_FILM_UNIT,
+            _get_color_by_code,
+            _item_process_prefix,
+        )
+
         items_by_name = {((getattr(r, "name", None) or "").strip()): r for r in (self.get("items") or []) if getattr(r, "name", None)}
         for pr in self.get("planned_items") or []:
             si = (getattr(pr, "source_item", None) or "").strip()
             if not si or si not in items_by_name:
                 continue
             leg = items_by_name[si]
+            pr_ic = str(getattr(pr, "item_code", None) or "").strip()
+            leg_ic = str(getattr(leg, "item_code", None) or "").strip()
+            if pr_ic.upper().startswith("PB-") or leg_ic.upper().startswith("PB-"):
+                pr.unit = PRINTED_BOPP_FILM_UNIT
+                leg.unit = PRINTED_BOPP_FILM_UNIT
+                continue
             # Hard lock for process 103 across linked rows.
             item_code = str(getattr(pr, "item_code", None) or getattr(leg, "item_code", None) or "").strip()
-            from production_entry.production_planning.scheduler_api import _get_color_by_code, _item_process_prefix
             if _item_process_prefix(item_code) == "103":
                 digits = "".join(ch for ch in item_code if ch.isdigit())
                 code = digits[6:9] if len(digits) >= 9 else ""
