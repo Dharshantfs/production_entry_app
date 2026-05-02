@@ -319,34 +319,34 @@ def ensure_lamination_booking_for_planning_sheet(doc):
                         row.custom_lam_side = lam_side_val
 
     # Header fallback: if map was empty, derive from first lamination row lam side value.
-	if has_ps_lam_side and not (getattr(doc, "custom_lam_side", None) or "").strip():
-		for fn in ("planned_items", "items", "custom_planned_items"):
-			if not meta.has_field(fn):
-				continue
-			for row in doc.get(fn) or []:
-				ic = (getattr(row, "item_code", None) or "").strip()
+    if has_ps_lam_side and not (getattr(doc, "custom_lam_side", None) or "").strip():
+        for fn in ("planned_items", "items", "custom_planned_items"):
+            if not meta.has_field(fn):
+                continue
+            for row in doc.get(fn) or []:
+                ic = (getattr(row, "item_code", None) or "").strip()
                 if not _is_lamination_parent_process(ic):
-					continue
-				row_side = (
-					(getattr(row, "custom_lam_side_", None) or "").strip()
-					or (getattr(row, "custom_lam_side", None) or "").strip()
-				)
-				if row_side:
-					doc.custom_lam_side = row_side
-					break
-			if (getattr(doc, "custom_lam_side", None) or "").strip():
-				break
+                    continue
+                row_side = (
+                    (getattr(row, "custom_lam_side_", None) or "").strip()
+                    or (getattr(row, "custom_lam_side", None) or "").strip()
+                )
+                if row_side:
+                    doc.custom_lam_side = row_side
+                    break
+            if (getattr(doc, "custom_lam_side", None) or "").strip():
+                break
 
-	# Mirror code to Sales Order header when available
-	sales_order = (getattr(doc, "sales_order", None) or "").strip()
-	if sales_order:
-		try:
-			if frappe.db.has_column("Sales Order", "custom_lamination_order_code"):
-				frappe.db.set_value("Sales Order", sales_order, "custom_lamination_order_code", code, update_modified=False)
-			elif frappe.db.has_column("Sales Order", "custom_lamination_booking_id"):
-				frappe.db.set_value("Sales Order", sales_order, "custom_lamination_booking_id", code, update_modified=False)
-		except Exception:
-			frappe.log_error(frappe.get_traceback(), "sync_lamination_order_code_sales_order")
+    # Mirror code to Sales Order header when available
+    sales_order = (getattr(doc, "sales_order", None) or "").strip()
+    if sales_order:
+        try:
+            if frappe.db.has_column("Sales Order", "custom_lamination_order_code"):
+                frappe.db.set_value("Sales Order", sales_order, "custom_lamination_order_code", code, update_modified=False)
+            elif frappe.db.has_column("Sales Order", "custom_lamination_booking_id"):
+                frappe.db.set_value("Sales Order", sales_order, "custom_lamination_booking_id", code, update_modified=False)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "sync_lamination_order_code_sales_order")
 
 
 def _fabric_gsm_from_item_name(item_name: str) -> int:
