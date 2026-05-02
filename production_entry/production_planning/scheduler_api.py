@@ -3268,7 +3268,7 @@ def _populate_planning_sheet_items(ps, doc):
             parsed107_early = _parse_107_item_code(item_code_str) or {}
             if parsed107_early.get("quality_name"):
                 qual = str(parsed107_early.get("quality_name") or "").strip()
-            if parsed107_early.get("fabric_gsm"):
+            if cint(parsed107_early.get("fabric_gsm") or 0) > 0:
                 gsm = cint(parsed107_early.get("fabric_gsm") or 0)
             if parsed107_early.get("colour_code"):
                 try:
@@ -3296,9 +3296,23 @@ def _populate_planning_sheet_items(ps, doc):
             except Exception: pass
         strict_col = _color_from_item_code_6_to_8(item_code_str)
         process_prefix = _item_process_prefix(item_code_str)
+        # 107 BOPP letter codes: colour/quality/fabric GSM come from _parse_107_item_code. The
+        # digit-window helper merges all digits in the code and does not match 107 layout, so it
+        # overwrites a resolved colour with a wrong/empty value (table shows UNKNOWN / wrong GSM).
+        bopp107_linespec_ok = bool(
+            LAMINATION_FLOW_ENABLED
+            and _lamination_process_from_item_code(item_code_str) == "107"
+            and (
+                (parsed107_early.get("colour_code") or "").strip()
+                or (parsed107_early.get("quality_code") or "").strip()
+                or (parsed107_early.get("fabric_gsm_code") or "").strip()
+            )
+        )
         if process_prefix == "103":
             # Slitting must use code-based color only (digits 6:9); never infer from item text.
             col = strict_col or ""
+        elif bopp107_linespec_ok:
+            pass
         elif strict_col:
             col = strict_col
 
@@ -3341,7 +3355,7 @@ def _populate_planning_sheet_items(ps, doc):
                 gsm = gsm_from_code
         if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
             parsed107 = _parse_107_item_code(it.item_code)
-            if parsed107.get("fabric_gsm"):
+            if cint(parsed107.get("fabric_gsm") or 0) > 0:
                 gsm = cint(parsed107.get("fabric_gsm") or 0)
             if not col and parsed107.get("colour_code"):
                 try:
@@ -3522,7 +3536,16 @@ def resolve_color_name_for_planning_row(item_code, item_name, existing_color=Non
     search_text = " " + " ".join(words) + " "
     col = ""
     item_code_str = str(item_code or "").strip()
-    # Always prioritize code-driven color (digits 6:9) for every process code.
+    if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(item_code_str) == "107":
+        p107 = _parse_107_item_code(item_code_str) or {}
+        if (p107.get("colour_code") or "").strip():
+            try:
+                c107 = _get_color_by_code(p107.get("colour_code"))
+                if c107:
+                    return str(c107).strip()
+            except Exception:
+                pass
+    # Slitting / 104-style: digit window 6:9 on the merged digit stream.
     color_from_code = _color_from_item_code_6_to_8(item_code_str)
     if color_from_code:
         return color_from_code
