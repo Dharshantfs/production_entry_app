@@ -11515,20 +11515,40 @@ def auto_create_planning_sheet(doc, method=None):
 
 @frappe.whitelist()
 def regenerate_planning_sheet(so_name):
-    """Regenerate a Planning Sheet for a Sales Order.
-    - Fails if an active sheet already exists.
+    """Regenerate (or re-sync) a Planning Sheet for a Sales Order.
+    - If a draft sheet already exists: re-populates items and re-runs all sync steps (BOM children etc.).
+    - If no sheet exists: creates a new one.
     - Uses the first unlocked Color Chart plan; aborts if all locked.
     - Does NOT set `custom_planned_date` on creation.
     """
     if not so_name:
         frappe.throw("Sales Order Name is required")
 
-    existing_sheet = _find_existing_sheet_for_sales_order(so_name)
-    if existing_sheet:
-        frappe.throw(
-            f"Planning Sheet <b>{existing_sheet['name']}</b> already exists for Sales Order <b>{so_name}</b>. "
-            "Delete it first, then regenerate."
-        )
+    existing_meta = _find_existing_sheet_for_sales_order(so_name)
+    if existing_meta:
+        _ps = frappe.get_doc("Planning sheet", existing_meta["name"])
+        if int(_ps.docstatus or 0) != 0:
+            frappe.throw(
+                f"Planning Sheet <b>{_ps.name}</b> is already submitted/cancelled. "
+                "Amend or delete it first before regenerating."
+            )
+        _doc = frappe.get_doc("Sales Order", so_name)
+        _populate_planning_sheet_items(_ps, _doc)
+        ensure_lamination_booking_for_planning_sheet(_ps)
+        update_sheet_plan_codes(_ps, include_legacy=True)
+        _ps.flags.ignore_permissions = True
+        _ps.save(ignore_permissions=True)
+        frappe.db.commit()
+        _link_board_planned_rows_to_legacy_items(_ps.name)
+        _sync_lamination_fabric_planning_rows(_ps.name)
+        _sync_bopp_child_planning_rows(_ps.name)
+        _sync_slitting_fabric_planning_rows(_ps.name)
+        _force_slitting_unit_on_sheet(_ps.name)
+        _ps.reload()
+        ensure_lamination_booking_for_planning_sheet(_ps)
+        _ps.save(ignore_permissions=True)
+        frappe.msgprint(f"Planning Sheet <b>{_ps.name}</b> re-synced (BOM children, lam rows, slitting).")
+        return _ps
 
     doc = frappe.get_doc("Sales Order", so_name)
 
@@ -11575,6 +11595,105 @@ def regenerate_planning_sheet(so_name):
 
     frappe.msgprint(f"Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
     return ps
+
+
+@frappe.whitelist()
+def sync_bom_children_for_planning_sheet(planning_sheet):
+    """
+    Re-run BOM child extraction + all sync steps for an existing Planning Sheet.
+    Safe to call any time (idempotent). Adds 100* fabric + PB rows for 107 items,
+    fabric rows for 104 items, and slitting fabric rows.
+    """
+    ps_name = (planning_sheet or "").strip()
+    if not ps_name or not frappe.db.exists("Planning sheet", ps_name):
+        frappe.throw(f"Planning Sheet {ps_name!r} not found.")
+    ps = frappe.get_doc("Planning sheet", ps_name)
+    if int(ps.docstatus or 0) != 0:
+        frappe.throw("Cannot sync a submitted or cancelled Planning Sheet.")
+
+    doc = frappe.get_doc("Sales Order", ps.sales_order) if ps.get("sales_order") else None
+    if doc:
+        _populate_planning_sheet_items(ps, doc)
+        ensure_lamination_booking_for_planning_sheet(ps)
+        update_sheet_plan_codes(ps, include_legacy=True)
+        ps.flags.ignore_permissions = True
+        ps.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    _link_board_planned_rows_to_legacy_items(ps_name)
+    _sync_lamination_fabric_planning_rows(ps_name)
+    _sync_bopp_child_planning_rows(ps_name)
+    _sync_slitting_fabric_planning_rows(ps_name)
+    _force_slitting_unit_on_sheet(ps_name)
+    ps.reload()
+    ensure_lamination_booking_for_planning_sheet(ps)
+    ps.save(ignore_permissions=True)
+
+    frappe.msgprint(
+        f"Planning Sheet <b>{ps_name}</b> BOM children synced. "
+        "Check for any red/orange messages above for BOM issues.",
+        indicator="green",
+    )
+    return {"status": "ok", "planning_sheet": ps_name}
+
+
+@frappe.whitelist()
+def debug_bopp_bom(item_code):
+    """
+    Diagnostic: return BOM status for a 107 BOPP item so the user can see
+    why BOM children are not being extracted.
+    """
+    ic = (item_code or "").strip()
+    if not ic:
+        return {"error": "item_code required"}
+
+    item_exists = frappe.db.exists("Item", ic)
+    variant_of = frappe.db.get_value("Item", ic, "variant_of") if item_exists else None
+
+    boms_all = frappe.get_all(
+        "BOM",
+        filters={"item": ic},
+        fields=["name", "docstatus", "is_active", "is_default", "modified"],
+        order_by="modified desc",
+    )
+    boms_tmpl = []
+    if variant_of:
+        boms_tmpl = frappe.get_all(
+            "BOM",
+            filters={"item": variant_of},
+            fields=["name", "docstatus", "is_active", "is_default", "modified"],
+            order_by="modified desc",
+        )
+
+    active_bom = frappe.db.get_value(
+        "BOM",
+        {"item": ic, "docstatus": 1, "is_active": 1},
+        "name",
+    )
+    active_bom_children = []
+    if active_bom:
+        bom_doc = frappe.get_doc("BOM", active_bom)
+        active_bom_children = [
+            {"item_code": r.item_code, "qty": r.qty}
+            for r in (bom_doc.items or [])
+        ]
+
+    return {
+        "item_code": ic,
+        "item_exists": bool(item_exists),
+        "variant_of": variant_of,
+        "all_boms_for_item": boms_all,
+        "all_boms_for_template": boms_tmpl,
+        "active_submitted_bom": active_bom,
+        "active_bom_children": active_bom_children,
+        "diagnosis": (
+            "Active BOM found - children listed above" if active_bom
+            else (
+                f"BOM(s) found but NOT active/submitted: {', '.join(b['name'] for b in boms_all)}"
+                if boms_all else "NO BOM found for this item"
+            )
+        ),
+    }
 
 
 @frappe.whitelist()

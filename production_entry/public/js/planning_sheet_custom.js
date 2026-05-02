@@ -33,6 +33,29 @@ frappe.ui.form.on('Planning Table', {
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
+
+        // Sync BOM Children — re-runs 107 fabric+PB extraction, 104 fabric, slitting fabric
+        if (frm.doc.docstatus === 0) {
+            frm.add_custom_button(__('Sync BOM Children'), function() {
+                frappe.call({
+                    method: 'production_entry.production_planning.scheduler_api.sync_bom_children_for_planning_sheet',
+                    args: { planning_sheet: frm.doc.name },
+                    freeze: true,
+                    freeze_message: __('Extracting BOM children (fabric + PB items)...'),
+                    callback: function(r) {
+                        frm.reload_doc();
+                    },
+                    error: function(err) {
+                        frappe.msgprint({
+                            title: __('Sync BOM Children Failed'),
+                            message: (err && err.message) || __('Unknown error'),
+                            indicator: 'red'
+                        });
+                    }
+                });
+            }, __('Actions'));
+        }
+
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',
