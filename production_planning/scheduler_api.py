@@ -207,38 +207,41 @@ def _next_lamination_order_code():
 
 def ensure_lamination_booking_for_planning_sheet(doc):
     """One lamination order code per Planning sheet when any 104/107 parent row exists; copy to row tables + SO."""
-	if not LAMINATION_FLOW_ENABLED:
-		return
-	try:
-		meta = frappe.get_meta("Planning sheet")
-	except Exception:
-		return
-	has_sheet_code_new = meta.has_field("custom_lamination_order_code") or frappe.db.has_column("Planning sheet", "custom_lamination_order_code")
-	has_sheet_code_old = meta.has_field("custom_lamination_booking_id") or frappe.db.has_column("Planning sheet", "custom_lamination_booking_id")
-	if not (has_sheet_code_new or has_sheet_code_old):
-		return
-	has_pt_booking_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
-	has_pt_booking_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
-	has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
-	has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
-	has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
-	has_psi_lam_side = frappe.db.has_column("Planning sheet Item", "custom_lam_side")
-	has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side_")
-	has_ps_lam_side = frappe.db.has_column("Planning sheet", "custom_lam_side")
+
+    if not LAMINATION_FLOW_ENABLED:
+        return
+
+    try:
+        meta = frappe.get_meta("Planning sheet")
+    except Exception:
+        return
+
+    has_sheet_code_new = meta.has_field("custom_lamination_order_code") or frappe.db.has_column("Planning sheet", "custom_lamination_order_code")
+    has_sheet_code_old = meta.has_field("custom_lamination_booking_id") or frappe.db.has_column("Planning sheet", "custom_lamination_booking_id")
+    if not (has_sheet_code_new or has_sheet_code_old):
+        return
+    has_pt_booking_new = frappe.db.has_column("Planning Table", "custom_lamination_order_code_")
+    has_pt_booking_old = frappe.db.has_column("Planning Table", "custom_lamination_booking_id")
+    has_psi_booking = frappe.db.has_column("Planning sheet Item", "custom_lamination_order_code")
+    has_psi_lam_gsm = frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
+    has_pt_lam_gsm = frappe.db.has_column("Planning Table", "custom_lam_gsm")
+    has_psi_lam_side = frappe.db.has_column("Planning sheet Item", "custom_lam_side")
+    has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side_")
+    has_ps_lam_side = frappe.db.has_column("Planning sheet", "custom_lam_side")
 
     has_lamination_parent = False
-	for fn in ("planned_items", "items", "custom_planned_items"):
-		if not meta.has_field(fn):
-			continue
-		for row in doc.get(fn) or []:
-			ic = (getattr(row, "item_code", None) or "").strip()
+    for fn in ("planned_items", "items", "custom_planned_items"):
+        if not meta.has_field(fn):
+            continue
+        for row in doc.get(fn) or []:
+            ic = (getattr(row, "item_code", None) or "").strip()
             if _is_lamination_parent_process(ic):
                 has_lamination_parent = True
-				break
+                break
         if has_lamination_parent:
-			break
+            break
     if not has_lamination_parent:
-		return
+        return
 
 	code = ""
 	if has_sheet_code_new:
