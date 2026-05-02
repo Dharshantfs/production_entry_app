@@ -2,8 +2,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
+      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isRewindingBoard ? "Rewinding Board" : isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -414,7 +414,7 @@ const maintenanceData = ref({});
 async function fetchMaintenanceRecords() {
 	try {
 		const res = await frappe.call({
-			method: "production_scheduler.api.get_all_equipment_maintenance"
+			method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance"
 		});
 		if (res.message) {
 			maintenanceRecords.value = res.message;
@@ -446,7 +446,7 @@ async function deleteMaintenanceRecord(recordName) {
   if (!confirm('Remove this maintenance record?')) return;
 	try {
 		const res = await frappe.call({
-			method: "production_scheduler.api.delete_maintenance_and_cascade",
+			method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
 			args: { maintenance_record_name: recordName }
 		});
 		if (res.message && res.message.status === 'success') {
@@ -581,7 +581,7 @@ async function openMaintenanceDialog() {
 			}
 			try {
 				const res = await frappe.call({
-					method: "production_scheduler.api.add_equipment_maintenance",
+					method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
 					args: {
 						unit: vals.new_unit,
 						maintenance_type: vals.maint_type,
@@ -790,9 +790,16 @@ function sortItems(unit, items, date) {
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "Lamination Unit";
 const SLITTING_UNIT = "Slitting Unit";
+const REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE";
+const REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE";
+const REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE";
+const REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine";
+const REWINDING_BOARD_UNITS = [REWINDING_UNIT_L3, REWINDING_UNIT_L4, REWINDING_UNIT_L5, REWINDING_UNASSIGNED_UNIT];
+const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
 /** True when opened from Lamination Board (production-table?board=lamination). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
+const isRewindingBoard = ref(false);
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
@@ -906,7 +913,7 @@ async function saveArrangement() {
 
       // Save to backend
       await frappe.call({
-        method: "production_scheduler.api.save_color_sequence",
+        method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date,
           unit,
@@ -963,7 +970,7 @@ async function restoreLastArrangement() {
     let restored = 0;
     for (const p of pairs) {
       const res = await frappe.call({
-        method: "production_scheduler.api.restore_last_color_sequence",
+        method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
         args: { date: p.date, unit: p.unit, plan_name: "Default" },
       });
       if (res?.message?.status === "success") restored += 1;
@@ -1097,7 +1104,15 @@ const canExpandMergedRows = computed(() => {
   return MERGE_EXPAND_ALLOWED_ROLES.some((role) => roles.includes(role.toLowerCase()));
 });
 
-const boardUnits = computed(() => (isLaminationBoard.value ? [LAMINATION_UNIT] : isSlittingBoard.value ? [SLITTING_UNIT] : units));
+const boardUnits = computed(() =>
+  isRewindingBoard.value
+    ? [...REWINDING_BOARD_UNITS]
+    : isLaminationBoard.value
+      ? [LAMINATION_UNIT]
+      : isSlittingBoard.value
+        ? [SLITTING_UNIT]
+        : units
+);
 
 const visibleUnits = computed(() => {
   if (!filterUnit.value) return boardUnits.value;
@@ -1656,7 +1671,7 @@ async function loadMergesForCurrentData() {
   for (const date of dates) {
     try {
       const res = await frappe.call({
-        method: "production_scheduler.api.get_merges_for_date",
+        method: "production_entry.production_planning.scheduler_api.get_merges_for_date",
         args: {
           date,
           unit: filterUnit.value || null,
@@ -1783,7 +1798,7 @@ async function createMergeForItems(selectedItems, label) {
 
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.create_merge",
+      method: "production_entry.production_planning.scheduler_api.create_merge",
       args: {
         date: first.plannedDate,
         unit: first.unit,
@@ -1834,7 +1849,7 @@ async function deleteMerge(mergeId) {
   if (!window.confirm("Remove this merge and restore individual rows?")) return;
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.delete_merge",
+      method: "production_entry.production_planning.scheduler_api.delete_merge",
       args: { merge_id: mergeId },
     });
     if (res.message && res.message.status === "success") {
@@ -1876,7 +1891,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     // Only if NO item-level PP provided, fallback to API resolution (sheet-level or SO-level)
     console.warn("No item-level PP provided. Using API fallback for sheet:", planningSheetName);
     const res = await frappe.call({
-      method: "production_scheduler.api.get_planning_sheet_pp_id",
+      method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
       args: {
         planning_sheet_name: planningSheetName,
         sales_order_item: salesOrderItem,
@@ -1996,7 +2011,7 @@ async function createItemStockEntry(item) {
   if (!item.pp_id && item.planningSheet) {
     try {
       const ppRes = await frappe.call({
-        method: "production_scheduler.api.get_planning_sheet_pp_id",
+        method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
         args: {
           planning_sheet_name: item.planningSheet,
           sales_order_item: item.salesOrderItem || null,
@@ -2075,7 +2090,7 @@ async function createItemStockEntry(item) {
         });
         
         const res = await frappe.call({
-          method: "production_scheduler.api.create_item_spr",
+          method: "production_entry.production_planning.scheduler_api.create_item_spr",
           args: {
             pp_id: item.pp_id,
             planning_sheet_item_names: JSON.stringify([item.itemName])
@@ -2147,7 +2162,7 @@ async function createMergedStockEntry(mergedRow) {
     if (!item.pp_id && item.planningSheet) {
       try {
         const res = await frappe.call({
-          method: "production_scheduler.api.get_planning_sheet_pp_id",
+          method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
           args: {
             planning_sheet_name: item.planningSheet,
             sales_order_item: item.salesOrderItem || null,
@@ -2232,7 +2247,7 @@ async function createSingleMergedSPR(ppId, mergedItems, mergedRow) {
             try {
               const itemNames = mergedItems.map(it => it.itemName);
               const res = await frappe.call({
-                method: "production_scheduler.api.create_item_spr",
+                method: "production_entry.production_planning.scheduler_api.create_item_spr",
                 args: {
                   pp_id: ppId,
                   planning_sheet_item_names: JSON.stringify(itemNames)
@@ -2408,8 +2423,15 @@ function goToBoard() {
     query.scope = viewScope.value;
     if (isLaminationBoard.value) query.board = "lamination";
     if (isSlittingBoard.value) query.board = "slitting";
+    if (isRewindingBoard.value) query.board = "rewinding";
     frappe.set_route(
-        isLaminationBoard.value ? "lamination-board" : isSlittingBoard.value ? "slitting-board" : "production-board",
+        isLaminationBoard.value
+          ? "lamination-board"
+          : isSlittingBoard.value
+            ? "slitting-board"
+            : isRewindingBoard.value
+              ? "rewinding-board"
+              : "production-board",
         query
     );
 }
@@ -2476,7 +2498,9 @@ async function fetchData() {
 
         args.plan_name = "__all__";
         args.planned_only = 1;
-        if (isSlittingBoard.value) {
+        if (isRewindingBoard.value) {
+          args.board_process_scope = "rewinding_only";
+        } else if (isSlittingBoard.value) {
           args.board_process_scope = "slitting_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
@@ -2488,6 +2512,8 @@ async function fetchData() {
               args.board_process_scope = "lamination_only";
             } else if (b === "slitting") {
               args.board_process_scope = "slitting_only";
+            } else if (b === "rewinding") {
+              args.board_process_scope = "rewinding_only";
             } else {
               args.board_process_scope = "exclude_special";
             }
@@ -2528,7 +2554,7 @@ async function fetchData() {
     if (seqStart && seqEnd) {
         try {
             const seqRes = await frappe.call({
-                method: "production_scheduler.api.get_color_sequences_range",
+                method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
                 args: { 
                     start_date: seqStart, 
                     end_date: seqEnd, 
@@ -2617,6 +2643,7 @@ onMounted(async () => {
   const params = new URLSearchParams(window.location.search);
   isLaminationBoard.value = (params.get("board") || "").toLowerCase() === "lamination";
   isSlittingBoard.value = (params.get("board") || "").toLowerCase() === "slitting";
+  isRewindingBoard.value = (params.get("board") || "").toLowerCase() === "rewinding";
   const scopeParam = params.get('scope');
   const dateParam = params.get('date');
   const weekParam = params.get('week');

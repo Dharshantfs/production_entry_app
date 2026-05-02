@@ -3,32 +3,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div
-        v-if="isPrintedBoppFilmBoard"
-        class="cc-filter-item"
-        style="align-self:center;padding:10px 14px;background:linear-gradient(135deg,#ede9fe 0%,#ddd6fe 100%);border:1px solid #c4b5fd;border-radius:10px;font-weight:700;color:#5b21b6;"
-      >
-        Printed BOPP Film Board — {{ PRINTED_BOPP_FILM_UNIT }}
-      </div>
-      <div v-else-if="isLaminationBoard || isSlittingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
-      </div>
-      <div v-if="isLaminationBoard" class="cc-filter-item" style="min-width:220px;">
-        <label>Lamination process</label>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-          <button
-            type="button"
-            class="cc-clear-btn"
-            :style="laminationProcess === '104' ? { background: '#047857', color: '#fff', borderColor: '#047857' } : {}"
-            @click="setLaminationProcess('104')"
-          >104 Plain</button>
-          <button
-            type="button"
-            class="cc-clear-btn"
-            :style="laminationProcess === '107' ? { background: '#047857', color: '#fff', borderColor: '#047857' } : {}"
-            @click="setLaminationProcess('107')"
-          >107 BOPP</button>
-        </div>
+      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isRewindingBoard ? "Rewinding Board" : isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -213,20 +189,7 @@
                   :title="entry.color"
                 ></div>
                 <div class="cc-card-info">
-                  <div class="cc-card-color-name">
-                    <template v-if="isPrintedBoppFilmBoard || (isLaminationBoard && laminationProcess === '107')">
-                      <div style="font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600;">Design name</div>
-                      <div>{{ entry.design_name || entry.design_code || "—" }}</div>
-                      <div style="font-size:11px;color:#475569;margin-top:2px;font-weight:500;">
-                        Fabric: {{ entry.fabric_colour || entry.color }}
-                      </div>
-                    </template>
-                    <template v-else-if="isLaminationBoard && laminationProcess === '104'">
-                      <div style="font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600;">Fabric colour</div>
-                      <div>{{ entry.color }}</div>
-                    </template>
-                    <template v-else>{{ entry.color }}</template>
-                  </div>
+                  <div class="cc-card-color-name">{{ entry.color }}</div>
                   <div class="cc-card-customer">
                     <span style="font-weight:700; color:#111827;">{{ entry.partyCode }}</span>
                     <span v-if="entry.partyCode !== entry.customer" style="font-weight:400; color:#6b7280;"> · {{ entry.customer }}</span>
@@ -282,11 +245,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
-
-const props = defineProps({
-  /** When `printed_bopp_film`, board shows PB / VR BOPP printing unit only (separate from lamination 104/107). */
-  boardKind: { type: String, default: "" },
-});
 
 const isLoading = ref(false);
 
@@ -361,8 +319,12 @@ const COLOR_GROUPS = [
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "Lamination Unit";
 const SLITTING_UNIT = "Slitting Unit";
-const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
-const isPrintedBoppFilmBoard = computed(() => (props.boardKind || "").trim() === "printed_bopp_film");
+const REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE";
+const REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE";
+const REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE";
+const REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine";
+const REWINDING_BOARD_UNITS = [REWINDING_UNIT_L3, REWINDING_UNIT_L4, REWINDING_UNIT_L5, REWINDING_UNASSIGNED_UNIT];
+const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
   "Unit 2": 12,
@@ -371,7 +333,10 @@ const UNIT_TONNAGE_LIMITS = {
   "Mixed": 999,
   [LAMINATION_UNIT]: 999,
   [SLITTING_UNIT]: 999,
-  [PRINTED_BOPP_FILM_UNIT]: 999,
+  [REWINDING_UNIT_L3]: 999,
+  [REWINDING_UNIT_L4]: 999,
+  [REWINDING_UNIT_L5]: 999,
+  [REWINDING_UNASSIGNED_UNIT]: 999,
 };
 const headerColors = {
   "Unit 1": "#3b82f6",
@@ -381,22 +346,34 @@ const headerColors = {
   "Mixed": "#64748b",
   [LAMINATION_UNIT]: "#0d9488",
   [SLITTING_UNIT]: "#0f766e",
-  [PRINTED_BOPP_FILM_UNIT]: "#6d28d9",
+  [REWINDING_UNIT_L3]: "#0369a1",
+  [REWINDING_UNIT_L4]: "#0d9488",
+  [REWINDING_UNIT_L5]: "#059669",
+  [REWINDING_UNASSIGNED_UNIT]: "#64748b",
 };
 
 function normalizeUnitName(rawUnit) {
   const full = String(rawUnit || "").trim();
   const txt = full.toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
-  if (full === PRINTED_BOPP_FILM_UNIT) return PRINTED_BOPP_FILM_UNIT;
-  if (txt.includes("bopp") && txt.includes("printing")) return PRINTED_BOPP_FILM_UNIT;
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
+  const ru = String(rawUnit || "").trim();
+  if (ru === REWINDING_UNIT_L3 || ru === REWINDING_UNIT_L4 || ru === REWINDING_UNIT_L5 || ru === REWINDING_UNASSIGNED_UNIT) {
+    return ru;
+  }
+  const rlow = ru.toLowerCase();
+  if (rlow.includes("rewinding")) {
+    if (rlow.includes("l3") && rlow.includes("tsnpl")) return REWINDING_UNIT_L3;
+    if (rlow.includes("l4") && rlow.includes("jsb")) return REWINDING_UNIT_L4;
+    if (rlow.includes("l5") && rlow.includes("jsb")) return REWINDING_UNIT_L5;
+    if (rlow.includes("unassigned")) return REWINDING_UNASSIGNED_UNIT;
+  }
   if (txt === "unit1" || txt === "unit 1") return "Unit 1";
   if (txt === "unit2" || txt === "unit 2") return "Unit 2";
   if (txt === "unit3" || txt === "unit 3") return "Unit 3";
   if (txt === "unit4" || txt === "unit 4") return "Unit 4";
-  return String(rawUnit || "Mixed").trim() || "Mixed";
+  return full || "Mixed";
 }
 
 function itemProcessPrefix(itemCode) {
@@ -470,8 +447,7 @@ const filterUnit = ref("");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
-/** Plain lamination (104) vs BOPP (107) on lamination board + color-chart API filter. */
-const laminationProcess = ref("104");
+const isRewindingBoard = ref(false);
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -480,7 +456,9 @@ units.forEach(u => {
 });
 unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
-unitSortConfig.value[PRINTED_BOPP_FILM_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+REWINDING_BOARD_UNITS.forEach((u) => {
+  unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+});
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -599,33 +577,24 @@ function clearSelection() {
   selectedItems.value = [];
 }
 
-function setLaminationProcess(v) {
-  const next = v === "107" ? "107" : "104";
-  if (laminationProcess.value === next) return;
-  laminationProcess.value = next;
-  updateUrlParams();
-  fetchData();
-}
-
 function goToPlan() {
     let query = {};
     if (viewScope.value === 'daily') query.date = filterOrderDate.value;
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
+    if (isRewindingBoard.value) {
+        query.board = "rewinding";
+        frappe.set_route("rewinding-order-table", query);
+        return;
+    }
     if (isSlittingBoard.value) {
         query.board = "slitting";
         frappe.set_route("slitting-order-table", query);
         return;
     }
-    if (isPrintedBoppFilmBoard.value) {
-        query.board = "printed_bopp_film";
-        frappe.set_route("printed-bopp-film-table", query);
-        return;
-    }
     if (isLaminationBoard.value) {
         query.board = "lamination";
-        query.lamination_process = laminationProcess.value;
         frappe.set_route("lamination-order-table", query);
     } else {
         frappe.set_route("production-table", query);
@@ -659,8 +628,8 @@ function toggleViewScope() {
 }
 
 const boardUnits = computed(() => {
+  if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
   if (isSlittingBoard.value) return [SLITTING_UNIT];
-  if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   return units;
 });
@@ -696,14 +665,13 @@ const filteredData = computed(() => {
     });
   }
 
-  if (isPrintedBoppFilmBoard.value) {
-    data = data.map((d) => {
-      const ic = String(d.item_code || d.itemCode || "").toUpperCase();
-      if (ic.startsWith("PB-") || String(d.unit || "").trim() === PRINTED_BOPP_FILM_UNIT) {
-        return { ...d, unit: PRINTED_BOPP_FILM_UNIT };
-      }
-      return d;
-    });
+  if (isRewindingBoard.value) {
+    data = data
+      .filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === "102")
+      .map((d) => ({
+        ...d,
+        unit: normalizeUnitName(d.unit),
+      }));
   }
 
   // For Production Board ONLY: Show pushed items.
@@ -1169,6 +1137,9 @@ const unitEntriesCache = computed(() => {
   const cache = {};
   for (const unit of boardUnits.value) {
     let unitItems = filteredData.value.filter((d) => {
+      if (isRewindingBoard.value && REWINDING_BOARD_UNITS.includes(unit)) {
+        return itemProcessPrefix(d.item_code || d.itemCode) === "102" && normalizeUnitName(d.unit) === unit;
+      }
       if (isSlittingBoard.value && unit === SLITTING_UNIT) {
         return itemProcessPrefix(d.item_code || d.itemCode) === "103" || (d.unit || "Mixed") === unit;
       }
@@ -1213,7 +1184,7 @@ function getUnitEntries(unit) {
 
 function getUnitProductionTotal(unit) {
   const production = filteredData.value
-    .filter((d) => d.unit === unit)
+    .filter((d) => normalizeUnitName(d.unit) === unit)
     .reduce((sum, d) => sum + d.qty, 0);
   const mixWeight = getMixRollTotalWeight(unit);
   return (production + mixWeight) / 1000;
@@ -1411,7 +1382,7 @@ async function loadOrders(d) {
         // Production Board Pull = orders already ON the board for this date (move to today).
         const r = await frappe.call({
             method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-            args: { date: date, mode: "pull_board", board_process_scope: "exclude_special" },
+            args: { date: date, mode: 'pull_board' }
         });
         
         let items = r.message || [];
@@ -2045,6 +2016,7 @@ async function fetchData() {
           const path = String(window.location.pathname || "").toLowerCase();
           if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
           if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
+          if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
         } catch (e) {}
         if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
           filterOrderDate.value = frappe.datetime.get_today();
@@ -2084,13 +2056,12 @@ async function fetchData() {
         // Production Board: fetch ALL plans but ONLY pushed items (custom_planned_date set)
         args.plan_name = "__all__";
         args.planned_only = 1;
-        if (isSlittingBoard.value) {
+        if (isRewindingBoard.value) {
+          args.board_process_scope = "rewinding_only";
+        } else if (isSlittingBoard.value) {
           args.board_process_scope = "slitting_only";
-        } else if (isPrintedBoppFilmBoard.value) {
-          args.board_process_scope = "printed_bopp_pb_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
-          args.lamination_process = laminationProcess.value;
         } else {
           try {
             const sp = new URLSearchParams(window.location.search || "");
@@ -2099,6 +2070,8 @@ async function fetchData() {
               args.board_process_scope = "lamination_only";
             } else if (b === "slitting") {
               args.board_process_scope = "slitting_only";
+            } else if (b === "rewinding") {
+              args.board_process_scope = "rewinding_only";
             } else {
               args.board_process_scope = "exclude_special";
             }
@@ -2119,9 +2092,6 @@ async function fetchData() {
           itemName:    d.itemName    || d.item_name   || d.name || "",
           orderDate:   d.orderDate   || d.ordered_date || "",
           unit: normalizeUnitName(d.unit),
-          design_code: d.design_code || d.designCode || "",
-          design_name: d.design_name || d.designName || "",
-          fabric_colour: d.fabric_colour || d.fabricColour || "",
           actual_production_weight_kgs: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? 0) || 0,
           produced_qty: Number(d.actual_production_weight_kgs ?? d.total_achieved_weight_kgs ?? d.produced_qty ?? 0) || 0,
         }));
@@ -2163,15 +2133,6 @@ function updateUrlParams() {
   
   url.searchParams.set('scope', viewScope.value);
   prefs.scope = viewScope.value;
-
-  if (isPrintedBoppFilmBoard.value) {
-    url.searchParams.delete('lamination_process');
-  } else if (isLaminationBoard.value) {
-    url.searchParams.set('lamination_process', laminationProcess.value);
-    prefs.lamination_process = laminationProcess.value;
-  } else {
-    url.searchParams.delete('lamination_process');
-  }
 
   if (viewScope.value === 'weekly' && filterWeek.value) { url.searchParams.set('week', filterWeek.value); prefs.week = filterWeek.value; }
   else { url.searchParams.delete('week'); }
@@ -2244,12 +2205,14 @@ onMounted(() => {
       const path = String(window.location.pathname || "").toLowerCase();
       if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
       if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
+      if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
     } catch (e) {}
     try {
       const r = frappe.get_route && frappe.get_route();
       const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
       if (routeName === "lamination board") isLaminationBoard.value = true;
       if (routeName === "slitting board") isSlittingBoard.value = true;
+      if (routeName === "rewinding board") isRewindingBoard.value = true;
     } catch (e) {}
 
     // 1. Load CSS
@@ -2266,10 +2229,6 @@ onMounted(() => {
     const dateParam = qParams.get("date");
     const monthParam = qParams.get("month");
     const weekParam = qParams.get("week");
-    const lamProc = (qParams.get("lamination_process") || qParams.get("lam_proc") || "").trim();
-    if (lamProc === "104" || lamProc === "107") {
-      laminationProcess.value = lamProc;
-    }
     
     // Check user role for visibility control
     try {

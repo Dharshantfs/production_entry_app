@@ -1,6 +1,5 @@
 import { createApp } from "vue";
 import ProductionScheduler from "./ProductionScheduler.vue";
-import PrintedBoppFilmBoard from "./PrintedBoppFilmBoard.vue";
 import ColorChart from "./ColorChart.vue";
 
 frappe.provide("production_scheduler");
@@ -26,12 +25,6 @@ production_scheduler.Controller = class {
     }
 };
 
-production_scheduler.PrintedBoppFilmBoardController = class {
-    constructor(wrapper) {
-        safeMount(PrintedBoppFilmBoard, wrapper, "Printed BOPP Film Board");
-    }
-};
-
 production_scheduler.ColorChartController = class {
     constructor(wrapper) {
         safeMount(ColorChart, wrapper, "Color Chart");
@@ -41,8 +34,8 @@ production_scheduler.ColorChartController = class {
 import ConfirmedOrder from "./ConfirmedOrder.vue";
 import ProductionTable from "./ProductionTable.vue";
 import LaminationOrderTable from "./LaminationOrderTable.vue";
-import PrintedBoppFilmOrderTable from "./PrintedBoppFilmOrderTable.vue";
 import SlittingOrderTable from "./SlittingOrderTable.vue";
+import RewindingOrderTable from "./RewindingOrderTable.vue";
 import SequenceApproval from "./SequenceApproval.vue";
 
 production_scheduler.ConfirmedOrderController = class {
@@ -63,15 +56,15 @@ production_scheduler.LaminationOrderTableController = class {
     }
 };
 
-production_scheduler.PrintedBoppFilmOrderTableController = class {
-    constructor(wrapper) {
-        safeMount(PrintedBoppFilmOrderTable, wrapper, "Printed BOPP Film Table");
-    }
-};
-
 production_scheduler.SlittingOrderTableController = class {
     constructor(wrapper) {
         safeMount(SlittingOrderTable, wrapper, "Slitting Order Table");
+    }
+};
+
+production_scheduler.RewindingOrderTableController = class {
+    constructor(wrapper) {
+        safeMount(RewindingOrderTable, wrapper, "Rewinding Order Table");
     }
 };
 
