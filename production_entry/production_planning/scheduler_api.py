@@ -122,7 +122,28 @@ def _is_lamination_parent_process(item_code_or_prefix):
 
 
 def _parse_107_item_code(item_code):
-	"""Parse BOPP lamination item code, e.g. 7499-107F101MCC91500."""
+	"""
+	Parse BOPP (process 107) design-first item codes. Spaces are ignored; comparison is case-insensitive.
+
+	Canonical pattern (no spaces), e.g. ``7499-107F101MCC91500``::
+
+	    <design>-107<quality><colour><fabric><bopp><lam><width><finish1><finish2>
+
+	Segment meaning (example ``7499-107F101MCC91500``):
+
+	- ``7499`` — design / style code (alphanumeric before ``-107``).
+	- ``107`` — lamination process (BOPP line).
+	- ``F`` — quality (single letter; maps via ``LAMINATION_QUALITY_CODES`` / ``_LAMINATION_QUALITY_BY_CODE``).
+	- ``101`` — colour (3 digits; resolved with ``Colour Master`` via ``_get_color_by_code``).
+	- ``M`` — fabric GSM (single letter; maps via ``LAMINATION_FABRIC_GSM_CODES``).
+	- ``C`` — BOPP film GSM (single letter; maps via ``LAMINATION_BOPP_GSM_CODES``).
+	- ``C`` — lamination GSM (single letter; same numeric map as process **104** lam suffix: ``_LAM_GSM_SUFFIX_MAP``).
+	- ``915`` — width code (3 digits); width (inch) = code / 10 (e.g. 915 → 91.5").
+	- ``0`` — finish 1: matte / glossy / 0 (digit).
+	- ``0`` — finish 2: metallic / cooler / 0 (digit).
+
+	Alternate form: ``<design>-107`` + digits-only tail (no letter segment); BOM routing only, no line-spec decode.
+	"""
 	code = re.sub(r"\s+", "", str(item_code or "").strip().upper())
 	if not code:
 		return {}
