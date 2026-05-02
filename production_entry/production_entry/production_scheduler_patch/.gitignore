@@ -1,9 +1,0 @@
-*.pyc
-*.pyo
-__pycache__
-*.swp
-*.egg-info
-dist/
-build/
-site/
-node_modules/

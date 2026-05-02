@@ -1,7 +1,0 @@
-{
-  "name": "production_entry",
-  "private": true,
-  "dependencies": {
-    "vue": "^3.4.0"
-  }
-}

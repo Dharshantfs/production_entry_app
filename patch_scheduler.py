@@ -1,7 +1,9 @@
 import os
 import re
+from pathlib import Path
 
-file_path = r"c:\Users\Admin\both app\PRODUCTION ENTRY\public\js\ProductionScheduler.vue"
+
+file_path = Path(__file__).resolve().parent / "production_entry" / "public" / "js" / "ProductionScheduler.vue"
 
 with open(file_path, "r", encoding="utf-8") as f:
     content = f.read()

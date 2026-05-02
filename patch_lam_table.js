@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const searchDir = 'c:\\Users\\Admin\\both app\\PRODUCTION ENTRY';
+const searchDir = path.join(__dirname, 'production_entry');
 let filesToPatch = [];
 
 function walkDir(dir) {

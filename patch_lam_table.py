@@ -1,7 +1,10 @@
 import os
 import re
+from pathlib import Path
 
-search_dir = r"c:\Users\Admin\both app\PRODUCTION ENTRY"
+
+search_dir = Path(__file__).resolve().parent / "production_entry"
+search_dir = str(search_dir)
 files_to_patch = []
 
 for root, dirs, files in os.walk(search_dir):
