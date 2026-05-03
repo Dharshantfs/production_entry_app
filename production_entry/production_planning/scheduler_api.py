@@ -5,7 +5,10 @@ import json
 import re
 import datetime
 
-from production_entry.production_planning.planning_doctypes import normalize_planning_unit_for_select
+from production_entry.production_planning.planning_doctypes import (
+	ensure_planning_line_unit_docfield_options,
+	normalize_planning_unit_for_select,
+)
 
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
 # Set True to enable; False disables all calls (no codes generated, no SO writeback from this path).
@@ -3972,6 +3975,8 @@ def _populate_planning_sheet_items(ps, doc):
     For existing items: UPDATE unit if changed (e.g., unassigned white order now assigned to a unit).
     For new items: CREATE new PSI record.
     """
+    # Legacy ``Planning sheet Item`` grid + ``Planning Table`` board must share identical ``unit`` Select metadata in DB.
+    ensure_planning_line_unit_docfield_options()
     # Use confirmed field name
     target_field = "planned_items"
     for field in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:

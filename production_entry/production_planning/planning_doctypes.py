@@ -76,3 +76,69 @@ def normalize_planning_unit_for_select(raw, _depth=0):
 # Old names from earlier app JSON / deploys (for migration helpers only).
 LEGACY_PLANNING_SHEET = "Planning Sheet"
 LEGACY_PLANNING_SHEET_ITEM = "Planning Sheet Item"
+
+# Exact ``unit`` Select options for Planning Table + Planning sheet Item (must match planning_table.json / planning_sheet_item.json).
+CANONICAL_PLANNING_LINE_UNIT_OPTIONS = "\n".join(
+	(
+		"UNASSIGNED",
+		"Unit 1",
+		"Unit 2",
+		"Unit 3",
+		"Unit 4",
+		"Lamination Unit",
+		"Slitting Unit",
+		REWINDING_UNIT_L3,
+		REWINDING_UNIT_L4,
+		REWINDING_UNIT_L5,
+		REWINDING_UNASSIGNED_UNIT,
+		"VR - 1200MM BOPP PRINTING MACHINE",
+	)
+)
+
+
+def ensure_planning_line_unit_docfield_options():
+	"""
+	Sync ``tabDocField.options`` for both child line DocTypes so Desk + validate accept rewinding / VR BOPP units.
+
+	Sites that ran an older ``resync_planning_unit_field_options`` patch can have Planning sheet Item (legacy grid)
+	stuck on a shortened list while Planning Table (board) was updated — inserts then fail on ``Unassigned rewinding machine``.
+	Idempotent: no-op when options already include ``REWINDING_UNASSIGNED_UNIT``.
+	"""
+	import frappe
+
+	for dt in ("Planning Table", PLANNING_SHEET_ITEM):
+		try:
+			opts = frappe.db.get_value(
+				"DocField",
+				{"parent": dt, "fieldname": "unit", "fieldtype": "Select"},
+				"options",
+			)
+		except Exception:
+			continue
+		if opts and REWINDING_UNASSIGNED_UNIT in (opts or ""):
+			continue
+		try:
+			frappe.db.sql(
+				"""
+				UPDATE `tabDocField`
+				SET `options`=%s
+				WHERE `parent`=%s AND `fieldname`=%s AND `fieldtype`='Select'
+				""",
+				(CANONICAL_PLANNING_LINE_UNIT_OPTIONS, dt, "unit"),
+			)
+			for ps in frappe.get_all(
+				"Property Setter",
+				filters={"doc_type": dt, "field_name": "unit", "property": "options"},
+				pluck="name",
+			) or []:
+				try:
+					frappe.delete_doc("Property Setter", ps, force=True, ignore_missing=True)
+				except Exception:
+					pass
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"ensure_planning_line_unit_docfield_options:{dt}")
+	try:
+		frappe.clear_cache(doctype="Planning Table")
+		frappe.clear_cache(doctype=PLANNING_SHEET_ITEM)
+	except Exception:
+		pass
