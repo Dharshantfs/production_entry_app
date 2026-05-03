@@ -31,6 +31,20 @@ def _item_process_prefix(item_code):
 	return digits[:3] if len(digits) >= 3 else ""
 
 
+def _rewinding_width_mm_from_item_code(item_code):
+	"""Last hyphen segment on 102 codes, e.g. 1021035420501600-1600 -> 1600 (mm)."""
+	ic = str(item_code or "").strip()
+	if _item_process_prefix(ic) != "102":
+		return None
+	parts = ic.split("-")
+	if len(parts) < 2:
+		return None
+	tail = parts[-1].strip()
+	if tail.isdigit():
+		return cint(tail)
+	return None
+
+
 def _parent_child_trace_id_from_item_code(item_code):
 	"""
 	Trace ID format: <process>-<colour>-<gsm>-<width>[-suffix]
@@ -1355,48 +1369,55 @@ def _force_rewinding_unit_on_sheet(planning_sheet_name):
 					""",
 					(color_name, planning_sheet_name, str(rr.get("sales_order_item") or "").strip()),
 				)
-	if frappe.db.has_column("Planning Table", "unit"):
-		frappe.db.sql(
-			"""
-			UPDATE `tabPlanning Table`
-			SET unit = %s
-			WHERE parent = %s
-			  AND item_code LIKE '102%%'
-			""",
-			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name),
-		)
-		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
-	if frappe.db.has_column("Planning sheet Item", "unit"):
-		frappe.db.sql(
-			"""
-			UPDATE `tabPlanning sheet Item`
-			SET unit = %s
-			WHERE parent = %s
-			  AND item_code LIKE '102%%'
-			""",
-			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name),
-		)
-		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	_rw_legacy_unit = (
+		" (IFNULL(TRIM(unit), '') = '' OR UPPER(TRIM(unit)) IN ('UNASSIGNED', 'MIXED')) "
+	)
 	if ordered_date and frappe.db.has_column("Planning Table", "planned_date"):
 		frappe.db.sql(
-			"""
+			f"""
 			UPDATE `tabPlanning Table`
 			SET planned_date = %s
 			WHERE parent = %s
 			  AND item_code LIKE '102%%'
+			  AND {_rw_legacy_unit}
 			""",
 			(ordered_date, planning_sheet_name),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	if ordered_date and frappe.db.has_column("Planning sheet Item", "planned_date"):
 		frappe.db.sql(
-			"""
+			f"""
 			UPDATE `tabPlanning sheet Item`
 			SET planned_date = %s
 			WHERE parent = %s
 			  AND item_code LIKE '102%%'
+			  AND {_rw_legacy_unit}
 			""",
 			(ordered_date, planning_sheet_name),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning Table", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning Table`
+			SET unit = %s
+			WHERE parent = %s
+			  AND item_code LIKE '102%%'
+			  AND {_rw_legacy_unit}
+			""",
+			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning sheet Item`
+			SET unit = %s
+			WHERE parent = %s
+			  AND item_code LIKE '102%%'
+			  AND {_rw_legacy_unit}
+			""",
+			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	return updated
@@ -2525,6 +2546,9 @@ def get_rewinding_order_table_data(
             row["dispatch_status"] = "DESPATCHED" if so_st in {"to deliver and bill", "delivered"} else "NOT DESPATCHED"
         else:
             row["dispatch_status"] = "NOT DESPATCHED"
+        ic = row.get("item_code") or row.get("itemCode")
+        rw_mm = _rewinding_width_mm_from_item_code(ic)
+        row["rewinding_length_mm"] = rw_mm if rw_mm is not None else None
         out.append(row)
     return out
 
@@ -3638,6 +3662,8 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return "Lamination Unit"
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "103":
         return "Slitting Unit"
+    if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
+        return REWINDING_UNASSIGNED_UNIT
     w = flt(width_inch)
     if _is_white_color(color):
         return "UNASSIGNED"
@@ -5084,6 +5110,14 @@ def generate_plan_code(date_str, unit, plan_name):
             u_code = "L1"
         elif "SLITTINGUNIT" in u_clean:
             u_code = "SL1"
+        elif "L3" in u_clean and "TSNPL" in u_clean and "REWINDING" in u_clean:
+            u_code = "RW3"
+        elif "L4" in u_clean and "JSB" in u_clean and "REWINDING" in u_clean:
+            u_code = "RW4"
+        elif "L5" in u_clean and "JSB" in u_clean and "REWINDING" in u_clean:
+            u_code = "RW5"
+        elif "REWINDING" in u_clean and "UNASSIGNED" in u_clean:
+            u_code = "RWU"
         elif "UNIT1" in u_clean:
             u_code = "U1"
         elif "UNIT2" in u_clean:
@@ -5145,6 +5179,15 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
                 return "Lamination Unit"
             if "SLITTINGUNIT" in raw_upper:
                 return "Slitting Unit"
+            if "REWINDING" in raw_upper:
+                if "L3" in raw_upper and "TSNPL" in raw_upper:
+                    return REWINDING_UNIT_L3
+                if "L4" in raw_upper and "JSB" in raw_upper:
+                    return REWINDING_UNIT_L4
+                if "L5" in raw_upper and "JSB" in raw_upper:
+                    return REWINDING_UNIT_L5
+                if "UNASSIGNED" in raw_upper:
+                    return REWINDING_UNASSIGNED_UNIT
         return normalized
 
     def _row_planned_date(item):

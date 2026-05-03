@@ -668,10 +668,14 @@ const filteredData = computed(() => {
   if (isRewindingBoard.value) {
     data = data
       .filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === "102")
-      .map((d) => ({
-        ...d,
-        unit: normalizeUnitName(d.unit),
-      }));
+      .map((d) => {
+        const rawU = String(d.unit || "").trim();
+        let u = normalizeUnitName(d.unit);
+        if (itemProcessPrefix(d.item_code || d.itemCode) === "102" && (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED")) {
+          u = REWINDING_UNASSIGNED_UNIT;
+        }
+        return { ...d, unit: u };
+      });
   }
 
   // For Production Board ONLY: Show pushed items.

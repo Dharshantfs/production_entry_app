@@ -90,7 +90,7 @@
             <th>QUALITY</th>
             <th>COLOUR</th>
             <th>ROLL SIZE</th>
-            <th>REWIND WIDTH</th>
+            <th>Rewinding length (mtrs)</th>
             <th>PLANNED KGS</th>
             <th>ACHIEVED KGS</th>
             <th>FABRIC READY DATE</th>
@@ -144,7 +144,7 @@
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
             <td class="cell-center">{{ row.roll_size || "-" }}</td>
-            <td class="cell-center">{{ row.slitting_size || "-" }}</td>
+            <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
             <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
@@ -417,6 +417,13 @@ function formatDate(d) {
     }
   } catch (e) {}
   return d;
+}
+
+/** Suffix after last hyphen on 102 item codes (e.g. …-1600 → 1600 mm). */
+function formatRewindingLengthMm(row) {
+  const v = row?.rewinding_length_mm;
+  if (v == null || v === "" || Number.isNaN(Number(v))) return "-";
+  return `${Number(v)} mm`;
 }
 
 function toDateKey(d) {

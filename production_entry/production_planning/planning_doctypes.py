@@ -12,6 +12,12 @@ PLANNING_SHEET_ITEM = "Planning sheet Item"
 # Set False for legacy behaviour that created one Production Plan per line on sheet submit.
 PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY = True
 
+# Must match `Planning Table` child `unit` Select options (planning_table.json).
+REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE"
+REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE"
+REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE"
+REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine"
+
 
 def normalize_planning_unit_for_select(raw, _depth=0):
     """Map free-text to exact options on Planning Table / Planning sheet Item `unit` (Select)."""
@@ -33,6 +39,10 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         "Unit 4",
         "Lamination Unit",
         "Slitting Unit",
+        REWINDING_UNIT_L3,
+        REWINDING_UNIT_L4,
+        REWINDING_UNIT_L5,
+        REWINDING_UNASSIGNED_UNIT,
         "VR - 1200MM BOPP PRINTING MACHINE",
     )
     if s in allowed:
@@ -46,6 +56,15 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return "Lamination Unit"
     if u == "SLITTINGUNIT" or s.strip().lower() == "slitting unit":
         return "Slitting Unit"
+    if "REWINDING" in u or "REWINDINGMACHINE" in u.replace(" ", ""):
+        if "L3" in u and "TSNPL" in u:
+            return REWINDING_UNIT_L3
+        if "L4" in u and "JSB" in u:
+            return REWINDING_UNIT_L4
+        if "L5" in u and "JSB" in u:
+            return REWINDING_UNIT_L5
+        if "UNASSIGNED" in u:
+            return REWINDING_UNASSIGNED_UNIT
     if "VR1200MMBOPPPRINTINGMACHINE" in u or "1200MMBOPP" in u:
         return "VR - 1200MM BOPP PRINTING MACHINE"
     for i in (1, 2, 3, 4):
