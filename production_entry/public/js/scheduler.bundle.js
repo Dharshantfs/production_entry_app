@@ -4,12 +4,12 @@ import ColorChart from "./ColorChart.vue";
 
 frappe.provide("production_scheduler");
 
-function safeMount(component, wrapper, label) {
+function safeMount(component, wrapper, label, props) {
     // If Vue render throws, we still want the page to show something
     // (instead of leaving the mount div empty).
     try {
         if (!wrapper) return;
-        const app = createApp(component);
+        const app = props ? createApp(component, props) : createApp(component);
         app.mount(wrapper);
     } catch (e) {
         console.error(`${label} mount failed`, e);
@@ -53,6 +53,14 @@ production_scheduler.ProductionTableController = class {
 production_scheduler.LaminationOrderTableController = class {
     constructor(wrapper) {
         safeMount(LaminationOrderTable, wrapper, "Lamination Order Table");
+    }
+};
+
+production_scheduler.PrintedBoppFilmTableController = class {
+    constructor(wrapper) {
+        safeMount(LaminationOrderTable, wrapper, "Printed BOPP Film Table", {
+            tableBoardKind: "printed_bopp_film",
+        });
     }
 };
 

@@ -5,5 +5,5 @@ frappe.pages["printed-bopp-film-table"].on_page_load = function (wrapper) {
 		single_column: true,
 	});
 
-	wrapper.controller = new production_scheduler.PrintedBoppFilmOrderTableController(wrapper);
+	wrapper.controller = new production_scheduler.PrintedBoppFilmTableController(wrapper);
 };

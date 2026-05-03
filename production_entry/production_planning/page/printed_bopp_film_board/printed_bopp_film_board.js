@@ -5,9 +5,7 @@ frappe.pages["printed-bopp-film-board"].on_page_load = function (wrapper) {
 		single_column: true,
 	});
 
-	$(page.body).html('<div id="printed-bopp-film-board-app"></div>');
+	$(page.body).html('<div id="production-scheduler-app"></div>');
 
-	new production_scheduler.PrintedBoppFilmBoardController(
-		document.getElementById("printed-bopp-film-board-app")
-	);
+	new production_scheduler.Controller(document.getElementById("production-scheduler-app"));
 };

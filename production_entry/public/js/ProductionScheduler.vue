@@ -3,8 +3,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isRewindingBoard ? "Rewinding Board" : isSlittingBoard ? "Slitting Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : LAMINATION_UNIT }}
+      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isRewindingBoard ? "Rewinding Board" : isSlittingBoard ? "Slitting Board" : isPrintedBoppFilmBoard ? "Printed BOPP Film Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : isPrintedBoppFilmBoard ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -325,6 +325,8 @@ const REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE";
 const REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine";
 const REWINDING_BOARD_UNITS = [REWINDING_UNIT_L3, REWINDING_UNIT_L4, REWINDING_UNIT_L5, REWINDING_UNASSIGNED_UNIT];
 const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
+/** PB-* / PRINTED BOPP film queue (must match scheduler_api.PRINTED_BOPP_FILM_UNIT). */
+const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
   "Unit 2": 12,
@@ -337,6 +339,7 @@ const UNIT_TONNAGE_LIMITS = {
   [REWINDING_UNIT_L4]: 999,
   [REWINDING_UNIT_L5]: 999,
   [REWINDING_UNASSIGNED_UNIT]: 999,
+  [PRINTED_BOPP_FILM_UNIT]: 999,
 };
 const headerColors = {
   "Unit 1": "#3b82f6",
@@ -350,6 +353,7 @@ const headerColors = {
   [REWINDING_UNIT_L4]: "#0d9488",
   [REWINDING_UNIT_L5]: "#059669",
   [REWINDING_UNASSIGNED_UNIT]: "#64748b",
+  [PRINTED_BOPP_FILM_UNIT]: "#7c3aed",
 };
 
 function normalizeUnitName(rawUnit) {
@@ -368,6 +372,15 @@ function normalizeUnitName(rawUnit) {
     if (rlow.includes("l4") && rlow.includes("jsb")) return REWINDING_UNIT_L4;
     if (rlow.includes("l5") && rlow.includes("jsb")) return REWINDING_UNIT_L5;
     if (rlow.includes("unassigned")) return REWINDING_UNASSIGNED_UNIT;
+  }
+  if (full === PRINTED_BOPP_FILM_UNIT) return PRINTED_BOPP_FILM_UNIT;
+  if (
+    txt.includes("1200mm") &&
+    txt.includes("bopp") &&
+    txt.includes("printing") &&
+    (txt.includes("vr") || txt.includes("bopp printing"))
+  ) {
+    return PRINTED_BOPP_FILM_UNIT;
   }
   if (txt === "unit1" || txt === "unit 1") return "Unit 1";
   if (txt === "unit2" || txt === "unit 2") return "Unit 2";
@@ -461,6 +474,7 @@ unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc
 REWINDING_BOARD_UNITS.forEach((u) => {
   unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 });
+unitSortConfig.value[PRINTED_BOPP_FILM_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -598,9 +612,13 @@ function goToPlan() {
     if (isLaminationBoard.value) {
         query.board = "lamination";
         frappe.set_route("lamination-order-table", query);
-    } else {
-        frappe.set_route("production-table", query);
+        return;
     }
+    if (isPrintedBoppFilmBoard.value) {
+        frappe.set_route("printed-bopp-film-table", query);
+        return;
+    }
+    frappe.set_route("production-table", query);
 }
 
 function goToConfirmedOrders() {
@@ -633,6 +651,7 @@ const boardUnits = computed(() => {
   if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
   if (isSlittingBoard.value) return [SLITTING_UNIT];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
+  if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
   return units;
 });
 
