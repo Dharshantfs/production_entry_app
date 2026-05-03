@@ -96,13 +96,31 @@ CANONICAL_PLANNING_LINE_UNIT_OPTIONS = "\n".join(
 )
 
 
+def _canonical_planning_unit_option_line_set():
+	"""Set of canonical ``unit`` option lines for strict DB sync checks."""
+	return frozenset(
+		line.strip()
+		for line in (CANONICAL_PLANNING_LINE_UNIT_OPTIONS or "").split("\n")
+		if line.strip()
+	)
+
+
+def _stored_unit_select_outdated(opts):
+	"""
+	Some sites have Planning sheet Item stuck at e.g. UNASSIGNED…VR BOPP **without**
+	L3/L4/L5/Unassigned rewinding rows; substring checks on ``Unassigned rewinding machine`` wrongly skip.
+	Use full line-set equality with canonical.
+	"""
+	got = frozenset(line.strip() for line in str(opts or "").split("\n") if line.strip())
+	return got != _canonical_planning_unit_option_line_set()
+
+
 def ensure_planning_line_unit_docfield_options():
 	"""
 	Sync ``tabDocField.options`` for both child line DocTypes so Desk + validate accept rewinding / VR BOPP units.
 
-	Sites that ran an older ``resync_planning_unit_field_options`` patch can have Planning sheet Item (legacy grid)
-	stuck on a shortened list while Planning Table (board) was updated — inserts then fail on ``Unassigned rewinding machine``.
-	Idempotent: no-op when options already include ``REWINDING_UNASSIGNED_UNIT``.
+	Sites can have Planning sheet Item (legacy grid) missing rewinding machines while Planning Table (board) is fine.
+	Idempotent when ``tabDocField`` already matches canonical.
 	"""
 	import frappe
 
@@ -115,7 +133,7 @@ def ensure_planning_line_unit_docfield_options():
 			)
 		except Exception:
 			continue
-		if opts and REWINDING_UNASSIGNED_UNIT in (opts or ""):
+		if not _stored_unit_select_outdated(opts):
 			continue
 		try:
 			frappe.db.sql(

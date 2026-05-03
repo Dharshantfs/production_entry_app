@@ -34,6 +34,16 @@ REWINDING_BOARD_UNITS = (
 PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE"
 
 
+@frappe.whitelist()
+def sync_planning_line_unit_options_meta():
+	"""
+	Desk / maintenance: force ``Planning Table`` + ``Planning sheet Item`` ``unit`` Select options
+	to the full canonical list (including rewinding machines). Idempotent.
+	"""
+	ensure_planning_line_unit_docfield_options()
+	return {"ok": True}
+
+
 def _sql_printed_bopp_row_kind(alias="i"):
 	"""True when Planning row is on the VR BOPP printing unit or uses PB / PRINTED BOPP item codes."""
 	u_esc = (PRINTED_BOPP_FILM_UNIT or "").replace("'", "''")
@@ -4231,6 +4241,13 @@ def _populate_planning_sheet_items(ps, doc):
                 elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "103":
                     existing_psi.unit = "Slitting Unit"
                     existing_psi.planned_date = p_date
+                elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
+                    # 102 rewinding: generic UNASSIGNED is wrong for this process — use rewinding pool machine.
+                    prev = normalize_planning_unit_for_select(getattr(existing_psi, "unit", None))
+                    if prev == "UNASSIGNED" or not getattr(existing_psi, "unit", None):
+                        existing_psi.unit = unit
+                    if p_date:
+                        existing_psi.planned_date = p_date
                 elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
