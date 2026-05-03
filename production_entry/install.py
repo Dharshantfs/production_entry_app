@@ -29,6 +29,7 @@ import frappe
 from production_entry.production_planning.planning_doctypes import (
 	LEGACY_PLANNING_SHEET,
 	PLANNING_SHEET,
+	ensure_planning_line_unit_docfield_options,
 )
 
 WORKSPACE_PRODUCTION_ENTRY_DESK = "Production Entry Desk"
@@ -49,7 +50,21 @@ def after_migrate():
 	_rename_workspace_that_hijacks_planning_sheet_route()
 	_sync_production_queue_custom_block()
 	_ensure_workspace_shows_production_queue()
+	_ensure_planning_line_unit_docfield_meta()
 	_warn_if_duplicate_scheduler_app()
+
+
+def _ensure_planning_line_unit_docfield_meta():
+	"""Legacy ``Planning sheet Item`` grids often lacked rewinding machines in Select options."""
+	if frappe.flags.in_test:
+		return
+	try:
+		ensure_planning_line_unit_docfield_options()
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			"production_entry: ensure_planning_line_unit_docfield_options after migrate",
+		)
 
 
 def _warn_if_duplicate_scheduler_app():

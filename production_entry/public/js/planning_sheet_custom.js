@@ -33,29 +33,6 @@ frappe.ui.form.on('Planning Table', {
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
-
-        // Sync BOM Children — re-runs 107 fabric+PB extraction, 104 fabric, slitting fabric
-        if (frm.doc.docstatus === 0) {
-            frm.add_custom_button(__('Sync BOM Children'), function() {
-                frappe.call({
-                    method: 'production_entry.production_planning.scheduler_api.sync_bom_children_for_planning_sheet',
-                    args: { planning_sheet: frm.doc.name },
-                    freeze: true,
-                    freeze_message: __('Extracting BOM children (fabric + PB items)...'),
-                    callback: function(r) {
-                        frm.reload_doc();
-                    },
-                    error: function(err) {
-                        frappe.msgprint({
-                            title: __('Sync BOM Children Failed'),
-                            message: (err && err.message) || __('Unknown error'),
-                            indicator: 'red'
-                        });
-                    }
-                });
-            }, __('Actions'));
-        }
-
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',
@@ -149,6 +126,28 @@ frappe.ui.form.on('Planning sheet', {
     },
 
     after_load: function(frm) {
+        // Align ``Planning sheet Item`` + ``Planning Table`` DB Select metadata (rewinding lineup)
+        // with board; clears stale client DocType caches so grids show the full unit list.
+        frappe.call({
+            method: 'production_entry.production_planning.scheduler_api.sync_planning_line_unit_options_meta',
+            callback: function () {
+                try {
+                    ['Planning sheet Item', 'Planning Table'].forEach(function (dt) {
+                        if (locals.DocType && locals.DocType[dt]) delete locals.DocType[dt];
+                    });
+                } catch (e) {}
+                frappe.model.with_doctype('Planning sheet Item', function () {
+                    frappe.model.with_doctype('Planning Table', function () {
+                        frm.refresh_field('items');
+                        frm.refresh_field('planned_items');
+                        try {
+                            if (frm.fields_dict.custom_planned_items) frm.refresh_field('custom_planned_items');
+                        } catch (e2) {}
+                    });
+                });
+            },
+        });
+
         // Fetch and display customer name
         if (frm.doc.customer) {
             frappe.call({
