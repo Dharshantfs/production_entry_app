@@ -100,14 +100,16 @@
             <th>FABRIC COLOUR</th>
             <th v-if="showDesignNameColumn">DESIGN NAME</th>
             <th v-if="showCylinderTypeColumn">CYLINDER TYPE</th>
+            <th v-if="isPrintedBoppTable">WHITE TINT</th>
+            <th v-if="isPrintedBoppTable">FINISHING</th>
             <th>FABRIC GSM</th>
             <th v-if="showBoppGsmColumn">BOPP GSM</th>
             <th>LAM GSM</th>
             <th>PLANNED LENGTH (MTR)</th>
             <th>ACHIEVED LENGTH (MTR)</th>
-            <th>PRODUCED LAMINATION WEIGHT (KGS)</th>
-            <th>PRODUCED FABRIC WT (KG)</th>
-            <th>FABRIC READY DATE</th>
+            <th>{{ producedWeightHeader }}</th>
+            <th v-if="!isPrintedBoppTable">PRODUCED FABRIC WT (KG)</th>
+            <th v-if="!isPrintedBoppTable">FABRIC READY DATE</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
           </tr>
@@ -157,16 +159,18 @@
             <td class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
             <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
             <td v-if="showCylinderTypeColumn" class="cell-center font-bold">{{ row.cylinder_type || "—" }}</td>
+            <td v-if="isPrintedBoppTable" class="cell-center">{{ row.white_tint || "—" }}</td>
+            <td v-if="isPrintedBoppTable" class="cell-center">{{ row.finishing || "—" }}</td>
             <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td v-if="showBoppGsmColumn" class="cell-center">{{ row.bopp_gsm || "-" }}</td>
             <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
-            <td class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
+            <td v-if="!isPrintedBoppTable" class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
               {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
             </td>
-            <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>
@@ -272,6 +276,9 @@ const tableUnitHeader = computed(() => {
 const showDesignNameColumn = computed(() => isPrintedBoppTable.value || laminationProcess.value === "107");
 const showCylinderTypeColumn = computed(() => isPrintedBoppTable.value);
 const showBoppGsmColumn = computed(() => !isPrintedBoppTable.value && laminationProcess.value === "107");
+const producedWeightHeader = computed(() =>
+  isPrintedBoppTable.value ? "PRODUCED BOPP WEIGHT (KGS)" : "PRODUCED LAMINATION WEIGHT (KGS)"
+);
 const backToBoardLabel = computed(() =>
   isPrintedBoppTable.value ? "Back to Printed BOPP Film Board" : "Back to Lamination Board"
 );
@@ -320,6 +327,7 @@ let fetchTimer = null;
 let initialFetchRetried = false;
 let autoRefreshTimer = null;
 let fetchInProgress = false;
+let fetchQueued = false;
 let visibilityRefreshTimer = null;
 let sprRealtimeHandlerRegistered = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
@@ -369,6 +377,10 @@ const tableColCount = computed(() => {
   if (showDesignNameColumn.value) n += 1;
   if (showCylinderTypeColumn.value) n += 1;
   if (showBoppGsmColumn.value) n += 1;
+  if (isPrintedBoppTable.value) {
+    n += 2;
+    n -= 2;
+  }
   return n;
 });
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
@@ -500,7 +512,7 @@ function sortRowsBySavedSequence(rows) {
 
 function debouncedFetch() {
   if (fetchTimer) clearTimeout(fetchTimer);
-  fetchTimer = setTimeout(() => fetchData(), 200);
+  fetchTimer = setTimeout(() => fetchData(), 80);
 }
 
 function onVisibilityRefresh() {
@@ -1215,7 +1227,10 @@ function toggleViewScope() {
 }
 
 async function fetchData() {
-  if (fetchInProgress) return;
+  if (fetchInProgress) {
+    fetchQueued = true;
+    return;
+  }
   fetchInProgress = true;
   try {
     let args = {
@@ -1272,6 +1287,10 @@ async function fetchData() {
     frappe.msgprint(`Error loading lamination order table: ${getErrorText(e)}`);
   } finally {
     fetchInProgress = false;
+    if (fetchQueued) {
+      fetchQueued = false;
+      fetchData();
+    }
   }
 }
 

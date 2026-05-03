@@ -448,6 +448,8 @@ const filterUnit = ref("");
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
 const isRewindingBoard = ref(false);
+/** Printed BOPP film Kanban (PB / VR BOPP printing unit); uses dedicated API scope. */
+const isPrintedBoppFilmBoard = ref(false);
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -2021,6 +2023,7 @@ async function fetchData() {
           if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
           if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
           if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
+          if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
         } catch (e) {}
         if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
           filterOrderDate.value = frappe.datetime.get_today();
@@ -2066,6 +2069,8 @@ async function fetchData() {
           args.board_process_scope = "slitting_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
+        } else if (isPrintedBoppFilmBoard.value) {
+          args.board_process_scope = "printed_bopp_pb_only";
         } else {
           try {
             const sp = new URLSearchParams(window.location.search || "");
@@ -2118,7 +2123,7 @@ async function fetchData() {
         isLoading.value = false;
       }
       resolve();
-    }, 150); // 150ms debounce
+    }, 50);
   });
 }
 
@@ -2210,6 +2215,7 @@ onMounted(() => {
       if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
       if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
       if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
+      if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
     } catch (e) {}
     try {
       const r = frappe.get_route && frappe.get_route();
@@ -2217,6 +2223,7 @@ onMounted(() => {
       if (routeName === "lamination board") isLaminationBoard.value = true;
       if (routeName === "slitting board") isSlittingBoard.value = true;
       if (routeName === "rewinding board") isRewindingBoard.value = true;
+      if (routeName.includes("printed bopp film board")) isPrintedBoppFilmBoard.value = true;
     } catch (e) {}
 
     // 1. Load CSS

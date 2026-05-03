@@ -31,6 +31,25 @@ REWINDING_BOARD_UNITS = (
 PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE"
 
 
+def _sql_printed_bopp_row_kind(alias="i"):
+	"""True when Planning row is on the VR BOPP printing unit or uses PB / PRINTED BOPP item codes."""
+	u_esc = (PRINTED_BOPP_FILM_UNIT or "").replace("'", "''")
+	ic = f"{alias}.item_code"
+	un = f"{alias}.unit"
+	return (
+		f"({un} = '{u_esc}' OR UPPER(TRIM(IFNULL({ic},''))) LIKE 'PB-%' OR "
+		f"(LOCATE('PRINTED', UPPER(IFNULL({ic},''))) > 0 AND LOCATE('BOPP', UPPER(IFNULL({ic},''))) > 0))"
+	)
+
+
+def _sql_pull_color_or_printed_bopp_row(alias="i"):
+	"""
+	SQL predicate: normal colour rows OR Printed BOPP film rows (often have no colour filled).
+	Used in pull / pull_board queries that historically required non-empty colour.
+	"""
+	return f"(({alias}.color IS NOT NULL AND {alias}.color != '') OR {_sql_printed_bopp_row_kind(alias)})"
+
+
 def _item_process_prefix(item_code):
 	ic = str(item_code or "").strip()
 	if not ic:
@@ -324,15 +343,19 @@ def _pick_exact_pb_from_bom_items(bom_items, design_code):
 
 
 def _cylinder_type_from_printed_bopp_item_code(ic):
-	"""Cylinder segment from PB / printed BOPP item code (e.g. … - 1C - …)."""
+	"""Cylinder token from long-form printed BOPP codes, e.g. … - TFS - 1C - 15M - … → ``1C`` (after TFS)."""
 	s = str(ic or "").strip()
 	if not s:
 		return ""
 	if " - " in s:
 		parts = [p.strip() for p in s.split(" - ")]
 		head0 = (parts[0] or "").upper().replace(" ", "")
-		if "PRINTED" in head0 and "BOPP" in head0 and len(parts) >= 3:
-			return (parts[2] or "").strip()
+		if "PRINTED" in head0 and "BOPP" in head0:
+			for i, p in enumerate(parts):
+				pu = re.sub(r"\s+", "", (p or "").upper())
+				if pu == "TFS" or pu.startswith("TFS"):
+					if i + 1 < len(parts):
+						return (parts[i + 1] or "").strip()
 	if s.upper().startswith("PB-"):
 		segs = [x.strip() for x in s.split("-") if x.strip()]
 		if len(segs) >= 3:
@@ -376,6 +399,25 @@ def _find_planning_table_lamination_parent_row(planning_sheet_name, lam_item_cod
 	if rows:
 		return rows[0].get("name")
 	return None
+
+
+def _pb_design_name_from_sales_order_item(so_item_name):
+	"""Optional human design name from Sales Order Item custom fields (site-specific)."""
+	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
+		return ""
+	try:
+		meta = frappe.get_meta("Sales Order Item")
+	except Exception:
+		return ""
+	for fn in ("custom_design_name", "custom_pb_design_name", "custom_style_name", "custom_print_design"):
+		try:
+			if meta.has_field(fn):
+				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+				if (v or "").strip():
+					return (v or "").strip()
+		except Exception:
+			continue
+	return ""
 
 
 def _matches_printed_bopp_board_row(it):
@@ -1278,6 +1320,17 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 								"Planning Table", ex_name, "custom_cylinder_type", cyl_u, update_modified=False
 							)
 							changed = True
+						dn_u = _pb_design_name_from_sales_order_item(so_it.name)
+						if dn_u and frappe.db.has_column("Planning Table", "custom_design_name"):
+							frappe.db.set_value("Planning Table", ex_name, "custom_design_name", dn_u, update_modified=False)
+							changed = True
+						if prefix == "107" and parsed_107:
+							for k, v in _planning_row_dict_107_lamination_extras(lam_ic, parsed_107).items():
+								if k in ("custom_finishing", "custom_white_tint") and v and frappe.db.has_column(
+									"Planning Table", k
+								):
+									frappe.db.set_value("Planning Table", ex_name, k, v, update_modified=False)
+									changed = True
 					elif comp.get("role") == "fabric" and frappe.db.has_column("Planning Table", "unit"):
 						pt_clr = frappe.db.get_value("Planning Table", ex_name, "color") or ""
 						pt_w = flt(frappe.db.get_value("Planning Table", ex_name, "width_inch") or 0)
@@ -1352,6 +1405,13 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					or frappe.db.has_column("Planning sheet Item", "custom_cylinder_type")
 				):
 					row["custom_cylinder_type"] = cyl_new
+				dn_new = _pb_design_name_from_sales_order_item(so_it.name)
+				if dn_new and frappe.db.has_column("Planning Table", "custom_design_name"):
+					row["custom_design_name"] = dn_new
+				if prefix == "107" and parsed_107:
+					for k, v in _planning_row_dict_107_lamination_extras(lam_ic, parsed_107).items():
+						if k in ("custom_finishing", "custom_white_tint") and v:
+							row[k] = v
 			_set_trace_id_if_supported(row, trace_id)
 			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 				row["split_from"] = lam_pt_name
@@ -2234,6 +2294,12 @@ def get_lamination_order_table_data(
     bopp_gsm_expr = "IFNULL(pt.custom_bopp_gsm, 0)" if has_pt_bopp_gsm else "0"
     has_pt_cylinder = frappe.db.has_column("Planning Table", "custom_cylinder_type")
     cyl_store_expr = "IFNULL(pt.custom_cylinder_type, '')" if has_pt_cylinder else "''"
+    has_pt_design_name = frappe.db.has_column("Planning Table", "custom_design_name")
+    pb_design_expr = "IFNULL(pt.custom_design_name, '')" if has_pt_design_name else "''"
+    has_pt_white_tint = frappe.db.has_column("Planning Table", "custom_white_tint")
+    pb_white_expr = "IFNULL(pt.custom_white_tint, '')" if has_pt_white_tint else "''"
+    has_pt_finishing = frappe.db.has_column("Planning Table", "custom_finishing")
+    pb_fin_expr = "IFNULL(pt.custom_finishing, '')" if has_pt_finishing else "''"
     has_trace = frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
     trace_expr_l = "IFNULL(pt.custom_parent_child_trace_id, '')" if has_trace else "''"
     child_trace_expr_l = "IFNULL(fab.custom_parent_child_trace_id, '')" if has_trace else "''"
@@ -2252,6 +2318,9 @@ def get_lamination_order_table_data(
             {bopp_gsm_expr} as bopp_gsm_value,
             IFNULL(fab.gsm, 0) as fabric_gsm,
             {cyl_store_expr} as pb_cylinder_stored,
+            {pb_design_expr} as pb_design_stored,
+            {pb_white_expr} as pb_white_tint_stored,
+            {pb_fin_expr} as pb_finishing_stored,
             {spr_for_meter_sql},
             {shift_expr} as shift_label,
             {trace_expr_l} as parent_trace_id,
@@ -2540,10 +2609,12 @@ def get_lamination_order_table_data(
             if not cyl_val:
                 cyl_val = _cylinder_type_from_printed_bopp_item_code(_ic_row)
             row["cylinder_type"] = cyl_val
-            dpb = _design_code_from_printed_bopp_item_code(_ic_row)
-            if dpb:
-                row["design_name"] = dpb
-                row["design_code"] = dpb
+            dcode = _design_code_from_printed_bopp_item_code(_ic_row)
+            dstore = str((ex or {}).get("pb_design_stored") or "").strip() if ex else ""
+            row["design_code"] = dcode or dstore
+            row["design_name"] = dstore or dcode or row.get("design_name") or ""
+            row["white_tint"] = str((ex or {}).get("pb_white_tint_stored") or "").strip() if ex else ""
+            row["finishing"] = str((ex or {}).get("pb_finishing_stored") or "").strip() if ex else ""
         else:
             row["cylinder_type"] = ""
         row["planned_meter"] = int(ex.get("planned_meter") or 0) if ex else 0
@@ -2628,6 +2699,13 @@ def get_lamination_order_table_data(
             _pwo = str(row.get("parent_wo_name") or "").strip()
             if _pwo and rpe_meters_by_wo.get(_pwo):
                 row["achieved_meter"] = flt(rpe_meters_by_wo[_pwo])
+        if bps == "printed_bopp_pb_only":
+            row["fabric_ready_date"] = ""
+            row["fabric_required_kg"] = 0
+            row["fabric_achieved_kg"] = 0
+            row["child_wo_produced_kg"] = 0
+            row["child_wo_created"] = 0
+            row["child_wo_done"] = 0
         row.pop("_achieved_m_spr", None)
         out.append(row)
     return out
@@ -6764,6 +6842,13 @@ def _get_color_chart_data_impl(
     if bps is None and _mode_lc not in ("pull", "pull_board"):
         bps = "only_100"
 
+    _pull_color_sql = (
+        _sql_pull_color_or_printed_bopp_row("i")
+        if bps == "printed_bopp_pb_only"
+        else "i.color IS NOT NULL AND i.color != ''"
+    )
+    _pull_inner_pb_or = f" OR {_sql_printed_bopp_row_kind('i')}" if bps == "printed_bopp_pb_only" else ""
+
     # PULL MODE: Return raw items by ordered_date, exclude items with Work Orders
     if mode == "pull" and date:
         target_date = getdate(date)
@@ -6807,7 +6892,7 @@ def _get_color_chart_data_impl(
                 FROM `tabPlanning Table` i
                 JOIN `tabPlanning sheet` p ON i.parent = p.name
                 LEFT JOIN `tabCustomer` c ON p.customer = c.name
-                WHERE i.color IS NOT NULL AND i.color != ''
+                WHERE {_pull_color_sql}
                   AND p.docstatus < 2
                   AND DATE(COALESCE(NULLIF(i.planned_date, ''), NULLIF(p.custom_planned_date, ''), p.ordered_date)) = DATE(%s)
                   AND (
@@ -6815,6 +6900,7 @@ def _get_color_chart_data_impl(
                         OR COALESCE(NULLIF(i.planned_date, ''), '') != ''
                         OR COALESCE(NULLIF(p.custom_planned_date, ''), '') != ''
                         OR COALESCE(NULLIF(p.custom_pb_plan_name, ''), '') != ''
+                        {_pull_inner_pb_or}
                   )
                 ORDER BY i.unit, i.idx
             """, (target_date,), as_dict=True)
@@ -6832,7 +6918,7 @@ def _get_color_chart_data_impl(
                 FROM `tabPlanning Table` i
                 JOIN `tabPlanning sheet` p ON i.parent = p.name
                 LEFT JOIN `tabCustomer` c ON p.customer = c.name
-                WHERE i.color IS NOT NULL AND i.color != ''
+                WHERE {_pull_color_sql}
                   AND p.docstatus < 2
                   AND DATE({sheet_date_col}) = DATE(%s)
                 ORDER BY i.unit, i.idx
@@ -6921,7 +7007,7 @@ def _get_color_chart_data_impl(
             JOIN `tabPlanning sheet` p ON i.parent = p.name
             LEFT JOIN `tabCustomer` c ON p.customer = c.name
             WHERE {item_date_expr}
-              AND i.color IS NOT NULL AND i.color != ''
+              AND {_pull_color_sql}
               {sheet_pushed}
               AND p.docstatus < 2
             ORDER BY i.unit, i.idx
@@ -6937,6 +7023,7 @@ def _get_color_chart_data_impl(
             or it.get("planned_date")
             or it.get("sheet_planned_date")
             or it.get("pbPlanName")
+            or (bps == "printed_bopp_pb_only" and _matches_printed_bopp_board_row(it))
         ]
 
         if items:
@@ -8322,6 +8409,20 @@ def _get_color_chart_data_impl(
             _ic_row = (item.get("item_code") or "").strip()
             _parsed_107_row = _parse_107_item_code(_ic_row)
             _design_code_row = (_parsed_107_row.get("design_code") if _parsed_107_row else "") or ""
+            _soi_for_dn = (item.get("sales_order_item") or item.get("custom_sales_order_item") or "").strip()
+            _design_name_row = _design_code_row
+            _white_tint_row = ""
+            _finishing_row = ""
+            if bps == "printed_bopp_pb_only":
+                _dn_stored = (item.get("custom_design_name") or "").strip()
+                _design_name_row = (
+                    _dn_stored
+                    or _pb_design_name_from_sales_order_item(_soi_for_dn)
+                    or (_design_code_from_printed_bopp_item_code(_ic_row) or "")
+                    or _design_code_row
+                )
+                _white_tint_row = (item.get("custom_white_tint") or "").strip()
+                _finishing_row = (item.get("custom_finishing") or "").strip()
 
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),
@@ -8339,7 +8440,9 @@ def _get_color_chart_data_impl(
                 "color": color.upper().strip(),
                 "fabric_colour": color.upper().strip(),
                 "design_code": _design_code_row,
-                "design_name": _design_code_row,
+                "design_name": _design_name_row,
+                "white_tint": _white_tint_row,
+                "finishing": _finishing_row,
                 "quality": item.get("custom_quality") or item.get("quality") or "",
                 "gsm": item.get("gsm") or "",
                 "qty": flt(item.get("qty", 0)),
@@ -8428,8 +8531,6 @@ def _deduplicate_items(items):
                 seen[so_item] = item
                 result.append(item)
     return result
-
-    return data
 
 
 @frappe.whitelist()
