@@ -96,15 +96,19 @@
             <th>SHIFT</th>
             <th>BOOKING ID</th>
             <th>CUSTOMER</th>
-            <th>QUALITY</th>
-            <th>FABRIC COLOUR</th>
+            <th v-if="!isPrintedBoppTable">QUALITY</th>
+            <th v-if="!isPrintedBoppTable">FABRIC COLOUR</th>
             <th v-if="showDesignNameColumn">DESIGN NAME</th>
             <th v-if="showCylinderTypeColumn">CYLINDER TYPE</th>
             <th v-if="isPrintedBoppTable">WHITE TINT</th>
             <th v-if="isPrintedBoppTable">FINISHING</th>
-            <th>FABRIC GSM</th>
+            <th v-if="isPrintedBoppTable">BOPP FINISH SIZE (MM)</th>
+            <th v-if="isPrintedBoppTable">NO OF DESIGN COLOURS</th>
+            <th v-if="isPrintedBoppTable">TOTAL NO OF COLOURS</th>
+            <th v-if="isPrintedBoppTable">BOPP BOM KGS</th>
+            <th v-if="!isPrintedBoppTable">FABRIC GSM</th>
             <th v-if="showBoppGsmColumn">BOPP GSM</th>
-            <th>LAM GSM</th>
+            <th v-if="!isPrintedBoppTable">LAM GSM</th>
             <th>PLANNED LENGTH (MTR)</th>
             <th>ACHIEVED LENGTH (MTR)</th>
             <th>{{ producedWeightHeader }}</th>
@@ -155,15 +159,19 @@
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
-            <td class="cell-center">{{ row.quality }}</td>
-            <td class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
             <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
             <td v-if="showCylinderTypeColumn" class="cell-center font-bold">{{ row.cylinder_type || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.white_tint || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.finishing || "—" }}</td>
-            <td class="cell-center">{{ row.fabric_gsm || "-" }}</td>
+            <td v-if="isPrintedBoppTable" class="cell-center font-bold">{{ row.bopp_finish_size_mm || "—" }}</td>
+            <td v-if="isPrintedBoppTable" class="cell-center font-bold">{{ row.no_of_design_colours || "—" }}</td>
+            <td v-if="isPrintedBoppTable" class="cell-center font-bold">{{ row.total_no_of_colours || row.no_of_design_colours || "—" }}</td>
+            <td v-if="isPrintedBoppTable" class="cell-right">{{ formatKg2(row.bopp_bom_kgs) }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td v-if="showBoppGsmColumn" class="cell-center">{{ row.bopp_gsm || "-" }}</td>
-            <td class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
@@ -373,14 +381,13 @@ const filteredRows = computed(() => {
 });
 
 const tableColCount = computed(() => {
+  if (isPrintedBoppTable.value) {
+    return 19;
+  }
   let n = 17;
   if (showDesignNameColumn.value) n += 1;
   if (showCylinderTypeColumn.value) n += 1;
   if (showBoppGsmColumn.value) n += 1;
-  if (isPrintedBoppTable.value) {
-    n += 2;
-    n -= 2;
-  }
   return n;
 });
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));

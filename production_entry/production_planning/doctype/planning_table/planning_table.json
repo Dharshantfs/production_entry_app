@@ -44,6 +44,10 @@
   "custom_design_name",
   "custom_finishing",
   "custom_white_tint",
+  "custom_bopp_finish_size_mm",
+  "custom_no_of_design_colours",
+  "custom_total_no_of_colours",
+  "custom_bopp_bom_kgs",
   "order_sheet",
   "custom_split_metadata",
   "section_split",
@@ -285,6 +289,35 @@
    "fieldname": "custom_white_tint",
    "fieldtype": "Data",
    "label": "White Tint"
+  },
+  {
+   "fieldname": "custom_bopp_finish_size_mm",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "BOPP Finish Size (MM)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_no_of_design_colours",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "No of Design Colours",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_total_no_of_colours",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Total No of Colours",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_bopp_bom_kgs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "BOPP BOM KGS",
+   "precision": "3",
+   "read_only": 1
   },
   {
    "fieldname": "order_sheet",
