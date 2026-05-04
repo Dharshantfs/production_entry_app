@@ -605,46 +605,55 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 				' &nbsp;|&nbsp; W ' +
 				String(flt(rm.width_inch)) +
 				'"</p>';
+		bodyHtml +=
+			'<table class="table table-bordered table-condensed"><thead><tr>' +
+			'<th style="width:2rem">' +
+			__('Use') +
+			'</th><th>' +
+			__('Batch No') +
+			'</th><th>' +
+			__('Warehouse') +
+			'</th><th>' +
+			__('Avail (Kg)') +
+			'</th><th>' +
+			__('Use (Kg)') +
+			'</th></tr></thead><tbody>';
+		const batches = rm.batches || [];
+		batches.forEach(function (b) {
+			const bn = String(b.batch_no || '');
+			const bwh = String(b.warehouse || '');
+			const key = (ln.work_order || '') + '|' + (rm.item_code || '') + '|' + bn;
+			const defq = picksByKey[key] != null ? picksByKey[key] : '';
+			const mx = flt(b.qty);
+			const inWip = bwh === (ln.wip_warehouse || '');
+			const whBadge = inWip
+				? '<span style="color:green;font-size:0.8em">' + spr_escape_html(bwh) + '</span>'
+				: '<span style="color:#888;font-size:0.8em">' + spr_escape_html(bwh) + '</span>';
 			bodyHtml +=
-				'<table class="table table-bordered table-condensed"><thead><tr>' +
-				'<th style="width:2rem">' +
-				__('Use') +
-				'</th><th>' +
-				__('Batch No') +
-				'</th><th>' +
-				__('Avail (Kg)') +
-				'</th><th>' +
-				__('Use (Kg)') +
-				'</th></tr></thead><tbody>';
-			const batches = rm.batches || [];
-			batches.forEach(function (b) {
-				const bn = String(b.batch_no || '');
-				const key = (ln.work_order || '') + '|' + (rm.item_code || '') + '|' + bn;
-				const defq = picksByKey[key] != null ? picksByKey[key] : '';
-				const mx = flt(b.qty);
-				bodyHtml +=
-					'<tr data-wo="' +
-					spr_escape_html(ln.work_order || '') +
-					'" data-item="' +
-					spr_escape_html(rm.item_code || '') +
-					'" data-batch="' +
-					spr_escape_html(bn) +
-					'">' +
-					'<td><input type="checkbox" class="spr-bch-use" /></td>' +
-					'<td>' +
-					spr_escape_html(bn) +
-					'</td><td>' +
-					String(mx) +
-					'</td><td><input type="number" class="input-with-feedback form-control spr-bch-qty" step="0.001" min="0" data-max="' +
-					String(mx) +
-					'" value="' +
-					(defq !== '' && defq > 0 ? String(defq) : '') +
-					'" style="max-width:9rem" /></td></tr>';
-			});
-			if (!batches.length) {
-				bodyHtml +=
-					'<tr><td colspan="4">' + __('No positive batch balance in WIP for this item.') + '</td></tr>';
-			}
+				'<tr data-wo="' +
+				spr_escape_html(ln.work_order || '') +
+				'" data-item="' +
+				spr_escape_html(rm.item_code || '') +
+				'" data-batch="' +
+				spr_escape_html(bn) +
+				'">' +
+				'<td><input type="checkbox" class="spr-bch-use" /></td>' +
+				'<td>' +
+				spr_escape_html(bn) +
+				'</td><td>' +
+				whBadge +
+				'</td><td>' +
+				String(mx) +
+				'</td><td><input type="number" class="input-with-feedback form-control spr-bch-qty" step="0.001" min="0" data-max="' +
+				String(mx) +
+				'" value="' +
+				(defq !== '' && defq > 0 ? String(defq) : '') +
+				'" style="max-width:9rem" /></td></tr>';
+		});
+		if (!batches.length) {
+			bodyHtml +=
+				'<tr><td colspan="5">' + __('No batch stock found for this item.') + '</td></tr>';
+		}
 			bodyHtml += '</tbody></table>';
 		});
 	});

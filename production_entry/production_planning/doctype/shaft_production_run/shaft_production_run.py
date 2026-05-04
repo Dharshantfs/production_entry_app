@@ -2000,6 +2000,94 @@ class ShaftProductionRun(Document):
 		out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
 		return out
 
+	def _available_batches_for_rm_all_wh(self, item_code: str) -> list[dict]:
+		"""Like _available_batches_for_rm but queries ALL warehouses.
+
+		Returns list of dicts with keys: batch_no, qty, warehouse.
+		Used for the fabric-batch pick dialog so the user can see every
+		available batch regardless of whether it is already in WIP.
+		"""
+		if not item_code:
+			return []
+		acc: dict[tuple, float] = {}
+
+		for r in frappe.db.sql(
+			"""
+			SELECT batch_no, warehouse, SUM(actual_qty) AS qty
+			FROM `tabStock Ledger Entry`
+			WHERE IFNULL(is_cancelled, 0) = 0
+			  AND IFNULL(item_code, '') = %s
+			  AND IFNULL(batch_no, '') != ''
+			GROUP BY batch_no, warehouse
+			HAVING SUM(actual_qty) > 0
+			""",
+			(item_code,),
+			as_dict=True,
+		):
+			bn = _cstr(r.get("batch_no"))
+			wh = _cstr(r.get("warehouse"))
+			q = flt(r.get("qty") or 0)
+			if bn and wh and q > 0:
+				key = (bn, wh)
+				acc[key] = acc.get(key, 0.0) + q
+
+		if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+			try:
+				sb_entry_dt = "Serial and Batch Entry"
+				if frappe.db.exists("DocType", sb_entry_dt):
+					sb_meta = frappe.get_meta(sb_entry_dt)
+					batch_field = next(
+						(fn for fn in ("batch_no", "batch", "batch_id") if sb_meta.has_field(fn)), ""
+					)
+					qty_field = next(
+						(fn for fn in ("qty", "quantity") if sb_meta.has_field(fn)), ""
+					)
+					if batch_field and qty_field:
+						rows = frappe.db.sql(
+							f"""
+							SELECT
+								sbe.`{batch_field}` AS batch_no,
+								sle.warehouse,
+								SUM(
+									CASE
+										WHEN IFNULL(sle.actual_qty,0) < 0
+											THEN -ABS(IFNULL(sbe.`{qty_field}`,0))
+										ELSE ABS(IFNULL(sbe.`{qty_field}`,0))
+									END
+								) AS qty
+							FROM `tabStock Ledger Entry` sle
+							INNER JOIN `tabSerial and Batch Entry` sbe
+								ON sbe.parent = sle.serial_and_batch_bundle
+							WHERE IFNULL(sle.is_cancelled, 0) = 0
+							  AND IFNULL(sle.item_code, '') = %s
+							  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+							  AND IFNULL(sbe.`{batch_field}`, '') != ''
+							GROUP BY sbe.`{batch_field}`, sle.warehouse
+							HAVING SUM(
+								CASE
+									WHEN IFNULL(sle.actual_qty,0) < 0
+										THEN -ABS(IFNULL(sbe.`{qty_field}`,0))
+									ELSE ABS(IFNULL(sbe.`{qty_field}`,0))
+								END
+							) > 0
+							""",
+							(item_code,),
+							as_dict=True,
+						)
+						for r in rows or []:
+							bn = _cstr(r.get("batch_no"))
+							wh = _cstr(r.get("warehouse"))
+							q = flt(r.get("qty") or 0)
+							if bn and wh and q > 0:
+								key = (bn, wh)
+								acc[key] = max(acc.get(key, 0.0), q)
+			except Exception:
+				pass
+
+		out = [{"batch_no": bn, "qty": flt(q), "warehouse": wh} for (bn, wh), q in acc.items() if bn and flt(q) > 0]
+		out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
+		return out
+
 	def _spr_fabric_picks_field_exists(self) -> bool:
 		try:
 			return bool(frappe.get_meta("Shaft Production Run").has_field("fabric_batch_picks"))
@@ -2249,7 +2337,7 @@ class ShaftProductionRun(Document):
 					continue
 				if flt(req) <= 1e-9:
 					continue
-				batches = self._available_batches_for_rm(ic_s, wip_wh) if wip_wh else []
+				batches = self._available_batches_for_rm_all_wh(ic_s)
 				item_name = frappe.db.get_value("Item", ic_s, "item_name") or ""
 				qual, col = extract_quality_and_color(item_name, ic_s)
 				try:
