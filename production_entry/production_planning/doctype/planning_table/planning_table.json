@@ -287,8 +287,9 @@
   },
   {
    "fieldname": "custom_white_tint",
-   "fieldtype": "Data",
-   "label": "White Tint"
+   "fieldtype": "Select",
+   "label": "White Tint",
+   "options": "\nYes\nNo"
   },
   {
    "fieldname": "custom_bopp_finish_size_mm",

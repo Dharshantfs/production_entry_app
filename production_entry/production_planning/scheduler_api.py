@@ -183,7 +183,8 @@ def _parse_107_item_code(item_code):
 	"""
 	Parse BOPP (process 107) design-first item codes. Spaces are ignored; comparison is case-insensitive.
 
-	Canonical pattern (no spaces), e.g. ``7499-107F101MCC91500``::
+	Canonical pattern (no spaces), e.g. ``7499-107F101MCC91500`` or width-in-mm tail
+	``7892-107D101MCC1065M0`` (``1065`` = mm → inches)::
 
 	    <design>-107<quality><colour><fabric><bopp><lam><width><finish1><finish2>
 
@@ -208,7 +209,14 @@ def _parse_107_item_code(item_code):
 
 	def _row_from_groups(design, gd):
 		width_code = gd.get("width") or ""
-		width_inch = flt(width_code) / 10.0 if width_code.isdigit() else 0.0
+		width_inch = 0.0
+		if width_code.isdigit():
+			# 3-digit tail (e.g. 915): tenths of an inch. 4-digit tail (e.g. 1065): film width in mm → inches.
+			wl = len(width_code)
+			if wl == 4:
+				width_inch = flt(width_code) / 25.4
+			elif wl == 3:
+				width_inch = flt(width_code) / 10.0
 		qc = (gd.get("quality") or "").strip().upper()
 		lam_letter = (gd.get("lam") or "").strip().upper()
 		lam_val = cint(_LAM_GSM_SUFFIX_MAP.get(lam_letter, 0) or 0)
@@ -237,6 +245,13 @@ def _parse_107_item_code(item_code):
 	if m:
 		design = (m.group("design") or "").strip().upper()
 		return _row_from_groups(design, m.groupdict())
+	mw = re.match(
+		r"^(?P<design>[A-Z0-9]+)-(?P<process>107)(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{4})(?P<finish1>[A-Z0-9])(?P<finish2>[A-Z0-9])$",
+		code,
+	)
+	if mw:
+		design = (mw.group("design") or "").strip().upper()
+		return _row_from_groups(design, mw.groupdict())
 	# Alternate encoding: DESIGN-107 + digits only (BOM / routing same as letter-suffix 107).
 	m2 = re.match(r"^(?P<design>[A-Z0-9]+)-(?P<process>107)(?P<body>\d+)$", code)
 	if m2:
@@ -268,6 +283,12 @@ def _parse_107_item_code(item_code):
 		)
 		if m3 and design:
 			return _row_from_groups(design, m3.groupdict())
+		m4 = re.match(
+			r"^(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{4})(?P<finish1>[A-Z0-9])(?P<finish2>[A-Z0-9])$",
+			tail,
+		)
+		if m4 and design:
+			return _row_from_groups(design, m4.groupdict())
 	return {}
 
 
@@ -478,7 +499,13 @@ def _pb_design_name_from_sales_order_item(so_item_name):
 		meta = frappe.get_meta("Sales Order Item")
 	except Exception:
 		return ""
-	for fn in ("custom_design_name", "custom_pb_design_name", "custom_style_name", "custom_print_design"):
+	for fn in (
+		"custom_design_name",
+		"custom_pb_design_name",
+		"custom_style_name",
+		"custom_print_design",
+		"design_name",
+	):
 		try:
 			if meta.has_field(fn):
 				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
@@ -487,6 +514,76 @@ def _pb_design_name_from_sales_order_item(so_item_name):
 		except Exception:
 			continue
 	return ""
+
+
+def _is_white_tint_yes(val):
+	s = str(val or "").strip().lower()
+	return s in ("yes", "y", "1", "true")
+
+
+def _normalized_white_tint_select(raw):
+	"""Normalize free-text / legacy values to Yes / No / empty for Planning Table Select."""
+	s = str(raw or "").strip()
+	if not s or s == "0":
+		return ""
+	if _is_white_tint_yes(s):
+		return "Yes"
+	if s.lower() in ("no", "n", "false"):
+		return "No"
+	return s
+
+
+def _white_tint_yes_no_from_sales_order_item(so_item_name):
+	"""Yes/No from Sales Order Item custom fields (site-specific)."""
+	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
+		return ""
+	try:
+		meta = frappe.get_meta("Sales Order Item")
+	except Exception:
+		return ""
+	for fn in ("custom_white_tint", "custom_white_tin", "custom_is_white_tint", "white_tint"):
+		try:
+			if not meta.has_field(fn):
+				continue
+			v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+			vs = str(v or "").strip()
+			if not vs:
+				continue
+			n = _normalized_white_tint_select(vs)
+			if n:
+				return n
+		except Exception:
+			continue
+	return ""
+
+
+def _effective_white_tint_for_pb_planning_row(pt_row_name, so_item_name):
+	"""Prefer normalized value on Planning Table; otherwise Sales Order; ignore legacy finish digit ``0``."""
+	cur = ""
+	if pt_row_name:
+		cur = str(frappe.db.get_value("Planning Table", pt_row_name, "custom_white_tint") or "").strip()
+	n_cur = _normalized_white_tint_select(cur)
+	if n_cur:
+		return n_cur
+	return _white_tint_yes_no_from_sales_order_item(so_item_name) or ""
+
+
+def _total_colours_token_for_printed_bopp(ndc_token, white_tint_str):
+	"""
+	Total print colours = design cylinder token (e.g. ``2C``) plus one when white tint is Yes.
+	"""
+	tok = (ndc_token or "").strip()
+	if not tok:
+		return ""
+	m = re.match(r"^(\d+)\s*C\b", tok, re.I)
+	if not m:
+		return tok
+	n = cint(m.group(1))
+	if n <= 0:
+		return tok
+	if _is_white_tint_yes(white_tint_str):
+		n += 1
+	return f"{n}C"
 
 
 def _matches_printed_bopp_board_row(it):
@@ -536,12 +633,13 @@ def _resolve_107_child_components(lam_item_code):
 	}
 
 
-def _planning_row_dict_107_lamination_extras(item_code, parsed107_early):
+def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_order_item_name=None):
 	"""
-	Planning Table / Planning sheet Item fields for the 107 PARENT row.
-	- Finishing (mg/mc), White Tint, BOPP GSM are set on the parent.
-	- Cylinder Type is NOT set here; it belongs only on the PB child row
-	  (appended by _sync_lamination_fabric_planning_rows via _cylinder_type_from_printed_bopp_item_code).
+	Planning Table / Planning sheet Item fields for the 107 PARENT row (and shared finishing on PB child).
+	- Finishing (mg/mc) from parsed item-code finishes.
+	- White tint: Yes/No from Sales Order Item (not the second finish digit).
+	- BOPP / LAM GSM from parsed letter codes.
+	- Cylinder Type is NOT set here; it belongs only on the PB child row.
 	"""
 	out = {}
 	if not (LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(item_code or "")) == "107"):
@@ -553,16 +651,25 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early):
 		"Planning sheet Item", "custom_finishing"
 	):
 		out["custom_finishing"] = f"{mg}/{mc}"
-	if frappe.db.has_column("Planning Table", "custom_white_tint") or frappe.db.has_column(
-		"Planning sheet Item", "custom_white_tint"
-	):
-		out["custom_white_tint"] = mc
+	if sales_order_item_name:
+		wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
+		if wt and (
+			frappe.db.has_column("Planning Table", "custom_white_tint")
+			or frappe.db.has_column("Planning sheet Item", "custom_white_tint")
+		):
+			out["custom_white_tint"] = wt
 	bgv = cint(p107r.get("bopp_gsm") or 0)
 	if bgv > 0:
 		if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
 			out["custom_bopp_gsm"] = bgv
 		if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
 			out["custom_bopp_gsm"] = bgv
+	lgv = cint(p107r.get("lam_gsm") or 0)
+	if lgv > 0:
+		if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+			out["custom_lam_gsm"] = lgv
+		if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+			out["custom_lam_gsm"] = lgv
 	return out
 
 
@@ -1397,15 +1504,22 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 							)
 							changed = True
 						_dct = _printed_bopp_design_colours_token(comp_ic, _pb_nm)
+						_wt_pb = _effective_white_tint_for_pb_planning_row(ex_name, so_it.name)
+						if _wt_pb and frappe.db.has_column("Planning Table", "custom_white_tint"):
+							frappe.db.set_value(
+								"Planning Table", ex_name, "custom_white_tint", _wt_pb, update_modified=False
+							)
+							changed = True
 						if _dct:
 							if frappe.db.has_column("Planning Table", "custom_no_of_design_colours"):
 								frappe.db.set_value(
 									"Planning Table", ex_name, "custom_no_of_design_colours", _dct, update_modified=False
 								)
 								changed = True
-							if frappe.db.has_column("Planning Table", "custom_total_no_of_colours"):
+							_tnc_u = _total_colours_token_for_printed_bopp(_dct, _wt_pb) or _dct
+							if _tnc_u and frappe.db.has_column("Planning Table", "custom_total_no_of_colours"):
 								frappe.db.set_value(
-									"Planning Table", ex_name, "custom_total_no_of_colours", _dct, update_modified=False
+									"Planning Table", ex_name, "custom_total_no_of_colours", _tnc_u, update_modified=False
 								)
 								changed = True
 						_bk = flt(frappe.db.get_value("Planning Table", ex_name, "qty") or 0)
@@ -1419,10 +1533,10 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 							frappe.db.set_value("Planning Table", ex_name, "custom_design_name", dn_u, update_modified=False)
 							changed = True
 						if prefix == "107" and parsed_107:
-							for k, v in _planning_row_dict_107_lamination_extras(lam_ic, parsed_107).items():
-								if k in ("custom_finishing", "custom_white_tint") and v and frappe.db.has_column(
-									"Planning Table", k
-								):
+							for k, v in _planning_row_dict_107_lamination_extras(
+								lam_ic, parsed_107, so_it.name
+							).items():
+								if k.startswith("custom_") and v and frappe.db.has_column("Planning Table", k):
 									frappe.db.set_value("Planning Table", ex_name, k, v, update_modified=False)
 									changed = True
 					elif comp.get("role") == "fabric" and frappe.db.has_column("Planning Table", "unit"):
@@ -1503,19 +1617,24 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				if _bfs_new and frappe.db.has_column("Planning Table", "custom_bopp_finish_size_mm"):
 					row["custom_bopp_finish_size_mm"] = _bfs_new
 				_dct_new = _printed_bopp_design_colours_token(comp_ic, comp_item_name)
+				_wt_new = _white_tint_yes_no_from_sales_order_item(so_it.name)
+				if _wt_new and frappe.db.has_column("Planning Table", "custom_white_tint"):
+					row["custom_white_tint"] = _wt_new
 				if _dct_new:
 					if frappe.db.has_column("Planning Table", "custom_no_of_design_colours"):
 						row["custom_no_of_design_colours"] = _dct_new
 					if frappe.db.has_column("Planning Table", "custom_total_no_of_colours"):
-						row["custom_total_no_of_colours"] = _dct_new
+						row["custom_total_no_of_colours"] = (
+							_total_colours_token_for_printed_bopp(_dct_new, _wt_new) or _dct_new
+						)
 				if frappe.db.has_column("Planning Table", "custom_bopp_bom_kgs"):
 					row["custom_bopp_bom_kgs"] = flt(comp_qty)
 				dn_new = _pb_design_name_from_sales_order_item(so_it.name)
 				if dn_new and frappe.db.has_column("Planning Table", "custom_design_name"):
 					row["custom_design_name"] = dn_new
 				if prefix == "107" and parsed_107:
-					for k, v in _planning_row_dict_107_lamination_extras(lam_ic, parsed_107).items():
-						if k in ("custom_finishing", "custom_white_tint") and v:
+					for k, v in _planning_row_dict_107_lamination_extras(lam_ic, parsed_107, so_it.name).items():
+						if k.startswith("custom_") and v:
 							row[k] = v
 			_set_trace_id_if_supported(row, trace_id)
 			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
@@ -1528,6 +1647,22 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				ps.append("items", row_b)
 			ps.append(parent_field, dict(row))
 			changed = True
+
+		if prefix == "107" and lam_pt_name:
+			try:
+				par_up = {}
+				dn_par = _pb_design_name_from_sales_order_item(so_it.name)
+				if dn_par and frappe.db.has_column("Planning Table", "custom_design_name"):
+					par_up["custom_design_name"] = dn_par
+				p107_sync = parsed_107 or (_parse_107_item_code(lam_ic) or {})
+				for k, v in _planning_row_dict_107_lamination_extras(lam_ic, p107_sync, so_it.name).items():
+					if k.startswith("custom_") and v and frappe.db.has_column("Planning Table", k):
+						par_up[k] = v
+				if par_up:
+					frappe.db.set_value("Planning Table", lam_pt_name, par_up, update_modified=False)
+					changed = True
+			except Exception:
+				pass
 
 	if changed:
 		ps.flags.ignore_permissions = True
@@ -2732,7 +2867,8 @@ def get_lamination_order_table_data(
             dstore = str((ex or {}).get("pb_design_stored") or "").strip() if ex else ""
             row["design_code"] = dcode or dstore
             row["design_name"] = dstore or dcode or row.get("design_name") or ""
-            row["white_tint"] = str((ex or {}).get("pb_white_tint_stored") or "").strip() if ex else ""
+            _wt_raw = str((ex or {}).get("pb_white_tint_stored") or "").strip() if ex else ""
+            row["white_tint"] = _normalized_white_tint_select(_wt_raw) or _wt_raw
             row["finishing"] = str((ex or {}).get("pb_finishing_stored") or "").strip() if ex else ""
             row["bopp_finish_size_mm"] = (
                 str((ex or {}).get("pb_finish_stored") or "").strip()
@@ -2743,7 +2879,8 @@ def get_lamination_order_table_data(
                 _ndc = _printed_bopp_design_colours_token(_ic_row, _pb_inm)
             row["no_of_design_colours"] = _ndc
             _tnc = str((ex or {}).get("pb_total_colours_stored") or "").strip() if ex else ""
-            row["total_no_of_colours"] = _tnc or _ndc
+            _bumped = _total_colours_token_for_printed_bopp(_ndc, row.get("white_tint") or "")
+            row["total_no_of_colours"] = _bumped or _tnc or _ndc
             row["bopp_bom_kgs"] = flt((ex or {}).get("pb_bopp_bom_kgs_stored") or 0) if ex else 0
             if not row["bopp_bom_kgs"]:
                 row["bopp_bom_kgs"] = flt(row.get("qty") or row.get("Qty") or 0)
@@ -4334,8 +4471,14 @@ def _populate_planning_sheet_items(ps, doc):
             if frappe.db.has_column("Planning sheet", "custom_lam_side"):
                 ps.custom_lam_side = lam_side
         if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
-            for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early).items():
+            for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early, it.name).items():
                 psi_data[k] = v
+            _dn_so = _pb_design_name_from_sales_order_item(it.name)
+            if _dn_so:
+                if frappe.db.has_column("Planning Table", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_so
+                if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_so
         _set_trace_id_if_supported(psi_data, trace_id)
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
@@ -4377,8 +4520,11 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
                 if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
-                    for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early).items():
+                    for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early, it.name).items():
                         setattr(existing_psi, k, v)
+                    _dn_so_e = _pb_design_name_from_sales_order_item(it.name)
+                    if _dn_so_e and hasattr(existing_psi, "custom_design_name"):
+                        existing_psi.custom_design_name = _dn_so_e
                 _set_trace_id_if_supported(existing_psi, trace_id)
         else:
             pt_data = psi_data.copy()
@@ -8569,6 +8715,16 @@ def _get_color_chart_data_impl(
                     or _design_code_row
                 )
                 _white_tint_row = (item.get("custom_white_tint") or "").strip()
+                _finishing_row = (item.get("custom_finishing") or "").strip()
+            elif LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(_ic_row) == "107":
+                _dn_stored_p = (item.get("custom_design_name") or "").strip()
+                _design_name_row = (
+                    _dn_stored_p
+                    or _pb_design_name_from_sales_order_item(_soi_for_dn)
+                    or _design_code_row
+                )
+                _wtp = (item.get("custom_white_tint") or "").strip()
+                _white_tint_row = _normalized_white_tint_select(_wtp) or _wtp
                 _finishing_row = (item.get("custom_finishing") or "").strip()
 
             data.append({
