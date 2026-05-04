@@ -178,6 +178,7 @@
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
                 <span v-else-if="!row.pp_id" style="color:#999;font-size:10px;">No PP</span>
+                <span v-else-if="row.wo_open" class="pt-wo-closed-hint" title="Finish fabric (100) work orders for this production plan first.">Fabric WO open</span>
                 <span v-else class="pt-wo-closed-hint">WO closed</span>
               </div>
             </td>

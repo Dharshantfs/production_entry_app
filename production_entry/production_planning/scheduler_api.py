@@ -7845,7 +7845,13 @@ def _get_color_chart_data_impl(
             pp_has_wo_map[row.production_plan] = True
 
             wo_status = str(row.get("status") or "").strip().lower()
-            if wo_status and wo_status not in _CHILD_FABRIC_WO_TERMINAL_STATUSES:
+            prod_item = (row.get("item_code") or "").strip()
+            # Slitting chain: fabric (100*) WOs are prerequisites for SPR on the 103 row. The slitting
+            # FG work order (103*) is often "Not Started" until after fabric manufacture — it must not
+            # keep the whole PP marked "open" or the board never unlocks SPR / shows contradictory WO pills.
+            if _item_process_prefix(prod_item) == "103":
+                pass
+            elif wo_status and wo_status not in _CHILD_FABRIC_WO_TERMINAL_STATUSES:
                 pp_has_open_wo_map[row.production_plan] = True
 
             pp_wo_map[row.production_plan].append({
