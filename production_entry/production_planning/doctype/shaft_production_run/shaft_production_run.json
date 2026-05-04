@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "creation": "2026-04-01 15:52:00.000000",
  "doctype": "DocType",
@@ -10,7 +10,6 @@
   "run_date",
   "is_mix_roll",
   "custom_is_lamination",
-  "custom_is_slitting",
   "production_plan",
   "customer",
   "custom_total_planned_qty",
@@ -36,6 +35,8 @@
   "custom_label",
   "custom_batch_width",
   "bundle_stickers",
+  "section_fabric_batches",
+  "fabric_batch_picks",
   "section_manufacturing",
   "manufacturing_entries"
  ],
@@ -65,11 +66,6 @@
    "fieldname": "custom_is_lamination",
    "fieldtype": "Check",
    "label": "Is Lamination"
-  },
-  {
-   "fieldname": "custom_is_slitting",
-   "fieldtype": "Check",
-   "label": "Is Slitting"
   },
   {
    "fieldname": "production_plan",
@@ -210,6 +206,18 @@
    "fieldtype": "Table",
    "label": "Bundle Stickers",
    "options": "Bundle Stickers"
+  },
+  {
+   "fieldname": "section_fabric_batches",
+   "fieldtype": "Section Break",
+   "label": "Fabric batch consumption (100)"
+  },
+  {
+   "fieldname": "fabric_batch_picks",
+   "fieldtype": "Table",
+   "label": "Manual fabric batches",
+   "options": "SPR Fabric Batch Pick",
+   "description": "For Work Orders on items 104, 107, or 102: pick 100-process fabric batches before Submit. Use the \"Select fabric batches\" button."
   },
   {
    "fieldname": "section_manufacturing",
