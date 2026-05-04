@@ -586,6 +586,37 @@ def _total_colours_token_for_printed_bopp(ndc_token, white_tint_str):
 	return f"{n}C"
 
 
+def _apply_printed_bopp_total_colours_to_row(row):
+	"""
+	Persist ``custom_total_no_of_colours`` on a Planning Table child row from
+	``custom_no_of_design_colours`` (or PB item code) + ``custom_white_tint``.
+	Used on child validate and on Planning sheet save so the desk grid matches the Printed BOPP table API.
+	"""
+	try:
+		if row is None:
+			return False
+		dt = getattr(row, "doctype", None) or ""
+		if not dt or not frappe.db.has_column(dt, "custom_total_no_of_colours"):
+			return False
+		if not _matches_printed_bopp_board_row(row):
+			return False
+		ic = getattr(row, "item_code", None)
+		if not ic:
+			return False
+		ndc = str(getattr(row, "custom_no_of_design_colours", None) or "").strip()
+		if not ndc:
+			pb_nm = frappe.db.get_value("Item", ic, "item_name") or ""
+			ndc = (_printed_bopp_design_colours_token(ic, pb_nm) or "").strip()
+		if not ndc:
+			return False
+		wt = str(getattr(row, "custom_white_tint", None) or "").strip()
+		tnc = _total_colours_token_for_printed_bopp(ndc, wt) or ndc
+		setattr(row, "custom_total_no_of_colours", tnc)
+		return True
+	except Exception:
+		return False
+
+
 def _matches_printed_bopp_board_row(it):
 	"""Rows for Printed BOPP Film board/table: PB-*, long-form PRINTED BOPP - …, or VR BOPP printing unit."""
 	if not it:

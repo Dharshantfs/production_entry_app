@@ -234,6 +234,17 @@ class Planningsheet(Document):
         for row in self.get("items") or []:
             row.unit = normalize_planning_unit_for_select(getattr(row, "unit", None))
 
+    def _recompute_printed_bopp_total_colours_on_child_rows(self):
+        """Board grid: persist total colours when white tint / design token change (matches Printed BOPP table)."""
+        try:
+            from production_entry.production_planning.scheduler_api import _apply_printed_bopp_total_colours_to_row
+
+            for table_key in ("planned_items", "items"):
+                for row in self.get(table_key) or []:
+                    _apply_printed_bopp_total_colours_to_row(row)
+        except Exception:
+            pass
+
     def validate(self):
         """Validate planning sheet before saving"""
         self._sync_linked_planning_units()
@@ -241,6 +252,7 @@ class Planningsheet(Document):
         self.calculate_totals()
         self.parse_item_details()
         self._sync_line_plan_codes()
+        self._recompute_printed_bopp_total_colours_on_child_rows()
 
     def _sync_line_plan_codes(self):
         """Fill Planning sheet Item / board row Plan Code from active plan + date + unit (color chart alignment)."""
