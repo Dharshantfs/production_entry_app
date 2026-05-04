@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "creation": "2026-04-01 15:52:00.000000",
  "doctype": "DocType",
@@ -217,7 +217,7 @@
    "fieldtype": "Table",
    "label": "Manual fabric batches",
    "options": "SPR Fabric Batch Pick",
-   "description": "For Work Orders on items 104, 107, or 102: pick 100-process fabric batches before Submit. Use the \"Select fabric batches\" button."
+   "description": "For Work Orders on items 104, 103 (slitting), 107, or 102: pick 100-process fabric batches before Submit. Use the \"Select fabric batches\" button."
   },
   {
    "fieldname": "section_manufacturing",

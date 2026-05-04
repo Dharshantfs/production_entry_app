@@ -12,11 +12,11 @@ from production_entry.production_planning.doctype.planning_sheet.planning_sheet 
 
 
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
-	"""True when WO produces 104 / 102 lamination-slitting-rewinding parent or 107 BOPP (design-first codes)."""
+	"""True when WO FG is 104 / 103 (slitting) / 102 (rewinding) / 107 BOPP (design-first codes)."""
 	pi = (production_item or "").strip().upper()
 	if not pi:
 		return False
-	if pi.startswith("104") or pi.startswith("102"):
+	if pi.startswith("104") or pi.startswith("103") or pi.startswith("102"):
 		return True
 	if "-107" in pi:
 		return True
@@ -2213,7 +2213,7 @@ class ShaftProductionRun(Document):
 	def _assign_rm_batches_for_stock_entry(self, se, wo_id: str | None = None):
 		"""Assign batch_no for batch-tracked RM lines before submit.
 
-		For Work Orders on 104 / 107 / 102 parents, 100* fabric lines consume batches from operator picks
+		For Work Orders on 104 / 103 / 107 / 102 parents, 100* fabric lines consume batches from operator picks
 		(`fabric_batch_picks`) in order instead of auto FIFO by quantity.
 		"""
 		for d in list(se.items or []):
@@ -2307,7 +2307,7 @@ class ShaftProductionRun(Document):
 			)
 
 	def _spr_build_fabric_batch_pick_context_dict(self) -> dict:
-		"""API payload for the desk fabric-batch dialog (104 / 107 / 102 WOs + 100 RM + WIP batches)."""
+		"""API payload for the desk fabric-batch dialog (104 / 103 / 107 / 102 WOs + 100 RM + WIP batches)."""
 		out: dict = {"needs_picks": False, "lines": [], "current_picks": [], "spr": self.name}
 		if not self._spr_fabric_picks_field_exists():
 			return out
