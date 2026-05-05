@@ -17,6 +17,7 @@ REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE"
 REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE"
 REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE"
 REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine"
+SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE"
 
 
 def normalize_planning_unit_for_select(raw, _depth=0):
@@ -43,6 +44,7 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         REWINDING_UNIT_L4,
         REWINDING_UNIT_L5,
         REWINDING_UNASSIGNED_UNIT,
+        SHEET_CUTTING_UNIT,
         "VR - 1200MM BOPP PRINTING MACHINE",
     )
     if s in allowed:
@@ -65,6 +67,8 @@ def normalize_planning_unit_for_select(raw, _depth=0):
             return REWINDING_UNIT_L5
         if "UNASSIGNED" in u:
             return REWINDING_UNASSIGNED_UNIT
+    if "JVESHEETCUTTINGMACHINE" in u or ("SHEETCUTTING" in u and "JVE" in u):
+        return SHEET_CUTTING_UNIT
     if "VR1200MMBOPPPRINTINGMACHINE" in u or "1200MMBOPP" in u:
         return "VR - 1200MM BOPP PRINTING MACHINE"
     for i in (1, 2, 3, 4):
@@ -91,6 +95,7 @@ CANONICAL_PLANNING_LINE_UNIT_OPTIONS = "\n".join(
 		REWINDING_UNIT_L4,
 		REWINDING_UNIT_L5,
 		REWINDING_UNASSIGNED_UNIT,
+		SHEET_CUTTING_UNIT,
 		"VR - 1200MM BOPP PRINTING MACHINE",
 	)
 )

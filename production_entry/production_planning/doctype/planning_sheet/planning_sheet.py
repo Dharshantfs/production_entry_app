@@ -96,6 +96,7 @@ class Planningsheet(Document):
         from production_entry.production_planning.scheduler_api import (
             LAMINATION_FLOW_ENABLED,
             PRINTED_BOPP_FILM_UNIT,
+            SHEET_CUTTING_UNIT,
             compute_default_production_unit,
             _get_color_by_code,
             _is_lamination_parent_process,
@@ -148,6 +149,9 @@ class Planningsheet(Document):
                         color = mapped
                     row.unit = "Slitting Unit"
                     continue
+                if process_prefix == "251":
+                    row.unit = SHEET_CUTTING_UNIT
+                    continue
                 row.unit = compute_default_production_unit(color, width, getattr(row, "item_code", None))
 
     def _sync_linked_planning_units(self):
@@ -162,6 +166,7 @@ class Planningsheet(Document):
         from production_entry.production_planning.scheduler_api import (
             LAMINATION_FLOW_ENABLED,
             PRINTED_BOPP_FILM_UNIT,
+            SHEET_CUTTING_UNIT,
             _get_color_by_code,
             _is_lamination_parent_process,
             _item_process_prefix,
@@ -196,6 +201,10 @@ class Planningsheet(Document):
                     leg.color = mapped
                 pr.unit = "Slitting Unit"
                 leg.unit = "Slitting Unit"
+                continue
+            if _item_process_prefix(item_code) == "251":
+                pr.unit = SHEET_CUTTING_UNIT
+                leg.unit = SHEET_CUTTING_UNIT
                 continue
             nu = normalize_planning_unit_for_select(getattr(leg, "unit", None))
             bu = normalize_planning_unit_for_select(getattr(pr, "unit", None))

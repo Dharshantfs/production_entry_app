@@ -115,7 +115,7 @@
    "fieldname": "unit",
    "fieldtype": "Select",
    "label": "Unit",
-   "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit\nSlitting Unit\nTSNPL - L3 REWINDING MACHINE\nJSB - L4 REWINDING MACHINE\nJSB - L5 REWINDING MACHINE\nUnassigned rewinding machine\nVR - 1200MM BOPP PRINTING MACHINE"
+   "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit\nSlitting Unit\nTSNPL - L3 REWINDING MACHINE\nJSB - L4 REWINDING MACHINE\nJSB - L5 REWINDING MACHINE\nUnassigned rewinding machine\nJVE - SHEET CUTTING MACHINE\nVR - 1200MM BOPP PRINTING MACHINE"
   },
   {
    "fieldname": "dot_spec",

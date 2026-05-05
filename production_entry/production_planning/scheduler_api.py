@@ -8,6 +8,7 @@ import datetime
 from production_entry.production_planning.planning_doctypes import (
 	ensure_planning_line_unit_docfield_options,
 	normalize_planning_unit_for_select,
+	SHEET_CUTTING_UNIT,
 )
 
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
@@ -84,6 +85,23 @@ def _rewinding_width_mm_from_item_code(item_code):
 	if tail.isdigit():
 		return cint(tail)
 	return None
+
+
+def _parse_sheet_cutting_item_code(item_code):
+	"""Parse 251 sheet-cutting code as PPP|QQQ|CCC|GGG|SSS (series id)."""
+	ic = str(item_code or "").strip()
+	digits = "".join(ch for ch in ic if ch.isdigit())
+	if len(digits) < 15:
+		return {}
+	if digits[:3] != "251":
+		return {}
+	return {
+		"process": "251",
+		"quality_code": digits[3:6],
+		"colour_code": digits[6:9],
+		"gsm": cint(digits[9:12] or 0),
+		"series_id": digits[12:15],
+	}
 
 
 # --- BOPP (107): item codes like 7499-107F101MCC91500 (design-107…); process is NOT the first 3 digits. ---
@@ -738,9 +756,19 @@ def _parent_child_trace_id_from_item_code(item_code):
 		if len(segs) > 1:
 			return "-".join(segs)
 		return ""
+	process = _item_process_prefix(ic)
+	if process == "251":
+		p = _parse_sheet_cutting_item_code(ic)
+		if not p:
+			return ""
+		return "251-{0}-{1}-{2}-{3}".format(
+			_cstr(p.get("quality_code")),
+			_cstr(p.get("colour_code")),
+			_cstr(p.get("gsm")).zfill(3),
+			_cstr(p.get("series_id")),
+		)
 	if len(ic) < 16:
 		return ""
-	process = _item_process_prefix(ic)
 	if process not in ("102", "103", "104"):
 		return ""
 
@@ -1301,6 +1329,14 @@ def get_fabric_item_from_slitting_item(slitting_item_code):
 def get_fabric_item_from_rewinding_item(rewinding_item_code):
 	"""Resolve the single 100* fabric child for a rewinding 102 item."""
 	return _get_fabric_item_from_process_item(rewinding_item_code, expected_process="102", process_label="Rewinding")
+
+
+@frappe.whitelist()
+def get_fabric_item_from_sheet_cutting_item(sheet_cutting_item_code):
+	"""Resolve the single 100* fabric child for a sheet-cutting 251 item."""
+	return _get_fabric_item_from_process_item(
+		sheet_cutting_item_code, expected_process="251", process_label="Sheet cutting"
+	)
 
 
 def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty):
@@ -1932,6 +1968,120 @@ def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
 		frappe.db.commit()
 
 
+def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
+	"""For each SO line with item 251, append one fabric (100) row from BOM. Idempotent."""
+	if not planning_sheet_name:
+		return
+	if not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	if not ps.get("sales_order"):
+		return
+	so = frappe.get_doc("Sales Order", ps.sales_order)
+	parent_field = _get_pt_parentfield()
+	changed = False
+	for so_it in so.items or []:
+		sc_ic = (so_it.item_code or "").strip()
+		if _item_process_prefix(sc_ic) != "251":
+			continue
+		trace_id = _parent_child_trace_id_from_item_code(sc_ic)
+		try:
+			res = get_fabric_item_from_sheet_cutting_item(sc_ic)
+		except Exception as e:
+			frappe.log_error(
+				title="Sheet cutting fabric BOM",
+				message=f"SO {so.name} line {so_it.name}: {e}\n{frappe.get_traceback()}",
+			)
+			frappe.msgprint(
+				_("Sheet cutting fabric row skipped for {0}: {1}").format(sc_ic, str(e)),
+				indicator="orange",
+			)
+			continue
+
+		fabric_ic = res["fabric_item_code"]
+		bom_no = res["bom_no"]
+		fabric_qty = _fabric_qty_from_bom(bom_no, fabric_ic, flt(so_it.qty))
+
+		existing = frappe.get_all(
+			"Planning Table",
+			filters={"parent": ps.name, "item_code": fabric_ic, "so_item": so_it.name},
+			pluck="name",
+			limit=1,
+		)
+		if existing:
+			updates = {}
+			if frappe.db.has_column("Planning Table", "sales_order_item"):
+				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+				if not cur_soi:
+					updates["sales_order_item"] = so_it.name
+			if frappe.db.has_column("Planning Table", "split_from"):
+				cur_sf = str(frappe.db.get_value("Planning Table", existing[0], "split_from") or "").strip()
+				if cur_sf:
+					updates["split_from"] = ""
+			if frappe.db.has_column("Planning Table", "source_item"):
+				cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
+				if cur_src and frappe.db.exists("Planning Table", cur_src) and not frappe.db.exists("Planning sheet Item", cur_src):
+					updates["source_item"] = ""
+			if updates:
+				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
+			continue
+
+		sc_match = frappe.get_all(
+			"Planning Table",
+			filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": sc_ic},
+			fields=["name"],
+			limit=1,
+		)
+		sc_pt_name = sc_match[0].get("name") if sc_match else None
+		sc_row = frappe.get_doc("Planning Table", sc_pt_name) if sc_pt_name else None
+		if sc_row and trace_id:
+			_set_trace_id_if_supported(sc_row, trace_id)
+
+		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
+		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, sc_row)
+		fab_color = specs.get("color") or ""
+		fab_width = flt(specs.get("width_inch"))
+		fabric_unit = compute_default_production_unit(fab_color, fab_width)
+		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
+
+		row = {
+			"sales_order_item": so_it.name,
+			"item_code": fabric_ic,
+			"item_name": fabric_item_name,
+			"qty": fabric_qty,
+			"uom": so_it.uom,
+			"gsm": specs["gsm"],
+			"width_inch": specs["width_inch"],
+			"color": specs["color"],
+			"quality": specs["quality"],
+			"custom_quality": specs["custom_quality"],
+			"unit": fabric_unit,
+			"meter": specs["meter"],
+			"meter_per_roll": specs["meter_per_roll"],
+			"no_of_rolls": specs["no_of_rolls"],
+			"weight_per_roll": specs["weight_per_roll"],
+			"planned_date": fabric_planned_date,
+			"plan_name": ps.get("custom_plan_name"),
+			"party_code": ps.party_code,
+			"planning_sheet": ps.name,
+			"so_item": so_it.name,
+		}
+		_set_trace_id_if_supported(row, trace_id)
+		if frappe.db.has_column("Planning Table", "split_from"):
+			row["split_from"] = ""
+
+		row_b = dict(row)
+		if hasattr(ps, "items") or ps.meta.has_field("items"):
+			ps.append("items", row_b)
+		ps.append(parent_field, dict(row))
+		changed = True
+
+	if changed:
+		ps.flags.ignore_permissions = True
+		ps.save()
+		frappe.db.commit()
+
+
 def _force_slitting_unit_on_sheet(planning_sheet_name):
 	"""Force process 103 rows to Slitting Unit and strict color-from-code."""
 	if not planning_sheet_name:
@@ -1986,6 +2136,36 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 			  AND item_code LIKE '103%%'
 			""",
 			(planning_sheet_name,),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	return updated
+
+
+def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
+	"""Force process 251 rows to JVE sheet-cutting unit on both planning tables."""
+	if not planning_sheet_name:
+		return 0
+	updated = 0
+	if frappe.db.has_column("Planning Table", "unit"):
+		frappe.db.sql(
+			"""
+			UPDATE `tabPlanning Table`
+			SET unit = %s
+			WHERE parent = %s
+			  AND item_code LIKE '251%%'
+			""",
+			(SHEET_CUTTING_UNIT, planning_sheet_name),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "unit"):
+		frappe.db.sql(
+			"""
+			UPDATE `tabPlanning sheet Item`
+			SET unit = %s
+			WHERE parent = %s
+			  AND item_code LIKE '251%%'
+			""",
+			(SHEET_CUTTING_UNIT, planning_sheet_name),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	return updated
@@ -4605,6 +4785,8 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return "Lamination Unit"
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "103":
         return "Slitting Unit"
+    if item_code and _item_process_prefix(str(item_code)) == "251":
+        return SHEET_CUTTING_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
     w = flt(width_inch)
@@ -7382,6 +7564,8 @@ def _get_color_chart_data_impl(
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "103"]
         elif items and bps == "rewinding_only":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "102"]
+        elif items and bps == "sheet_cutting_only":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "251"]
         elif items and bps == "exclude_104":
             items = [it for it in items if not _is_lamination_parent_process(it.get("item_code") or "")]
         elif items and bps == "exclude_103":
@@ -10652,6 +10836,8 @@ def create_planning_sheet_from_so(doc):
         _sync_lamination_fabric_planning_rows(ps.name)
         _sync_slitting_fabric_planning_rows(ps.name)
         _force_slitting_unit_on_sheet(ps.name)
+        _sync_sheet_cutting_fabric_planning_rows(ps.name)
+        _force_sheet_cutting_unit_on_sheet(ps.name)
         _sync_rewinding_fabric_planning_rows(ps.name)
         _force_rewinding_unit_on_sheet(ps.name)
         final_doc = frappe.get_doc("Planning sheet", ps.name)
@@ -10927,6 +11113,8 @@ def create_planning_sheets_bulk(sales_orders):
             _sync_lamination_fabric_planning_rows(ps.name)
             _sync_slitting_fabric_planning_rows(ps.name)
             _force_slitting_unit_on_sheet(ps.name)
+            _sync_sheet_cutting_fabric_planning_rows(ps.name)
+            _force_sheet_cutting_unit_on_sheet(ps.name)
             _sync_rewinding_fabric_planning_rows(ps.name)
             _force_rewinding_unit_on_sheet(ps.name)
             final_doc = frappe.get_doc("Planning sheet", ps.name)
@@ -12940,6 +13128,8 @@ def auto_create_planning_sheet(doc, method=None):
             _sync_lamination_fabric_planning_rows(sheet.name)
             _sync_slitting_fabric_planning_rows(sheet.name)
             _force_slitting_unit_on_sheet(sheet.name)
+            _sync_sheet_cutting_fabric_planning_rows(sheet.name)
+            _force_sheet_cutting_unit_on_sheet(sheet.name)
             _sync_rewinding_fabric_planning_rows(sheet.name)
             _force_rewinding_unit_on_sheet(sheet.name)
             sheet.reload()
@@ -12981,6 +13171,8 @@ def auto_create_planning_sheet(doc, method=None):
     _sync_lamination_fabric_planning_rows(ps.name)
     _sync_slitting_fabric_planning_rows(ps.name)
     _force_slitting_unit_on_sheet(ps.name)
+    _sync_sheet_cutting_fabric_planning_rows(ps.name)
+    _force_sheet_cutting_unit_on_sheet(ps.name)
     _sync_rewinding_fabric_planning_rows(ps.name)
     _force_rewinding_unit_on_sheet(ps.name)
             
@@ -13031,6 +13223,8 @@ def regenerate_planning_sheet(so_name):
         _sync_lamination_fabric_planning_rows(ps.name)
         _sync_slitting_fabric_planning_rows(ps.name)
         _force_slitting_unit_on_sheet(ps.name)
+        _sync_sheet_cutting_fabric_planning_rows(ps.name)
+        _force_sheet_cutting_unit_on_sheet(ps.name)
         _sync_rewinding_fabric_planning_rows(ps.name)
         _force_rewinding_unit_on_sheet(ps.name)
         ps.reload()
@@ -13075,6 +13269,8 @@ def regenerate_planning_sheet(so_name):
     _sync_lamination_fabric_planning_rows(ps.name)
     _sync_slitting_fabric_planning_rows(ps.name)
     _force_slitting_unit_on_sheet(ps.name)
+    _sync_sheet_cutting_fabric_planning_rows(ps.name)
+    _force_sheet_cutting_unit_on_sheet(ps.name)
     _sync_rewinding_fabric_planning_rows(ps.name)
     _force_rewinding_unit_on_sheet(ps.name)
     ps.reload()
@@ -13112,6 +13308,8 @@ def sync_bom_children_for_planning_sheet(planning_sheet):
     _sync_lamination_fabric_planning_rows(ps_name)
     _sync_slitting_fabric_planning_rows(ps_name)
     _force_slitting_unit_on_sheet(ps_name)
+    _sync_sheet_cutting_fabric_planning_rows(ps_name)
+    _force_sheet_cutting_unit_on_sheet(ps_name)
     _sync_rewinding_fabric_planning_rows(ps_name)
     _force_rewinding_unit_on_sheet(ps_name)
     ps.reload()
