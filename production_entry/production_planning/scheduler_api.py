@@ -2262,13 +2262,18 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 			sid = _cstr(p.get("series_id"))
 			info = size_map.get(sid) or {}
 			w = flt(info.get("width_inch") or 0)
+			sz = _cstr(info.get("sheet_size") or "")
 			if w <= 0:
 				continue
 			if frappe.db.has_column("Planning Table", "width_inch"):
 				frappe.db.set_value("Planning Table", rr.get("name"), "width_inch", w, update_modified=False)
+			if sz and frappe.db.has_column("Planning Table", "sheet_size"):
+				frappe.db.set_value("Planning Table", rr.get("name"), "sheet_size", sz, update_modified=False)
 			legacy = _cstr(rr.get("source_item"))
 			if legacy and frappe.db.exists("Planning sheet Item", legacy) and frappe.db.has_column("Planning sheet Item", "width_inch"):
 				frappe.db.set_value("Planning sheet Item", legacy, "width_inch", w, update_modified=False)
+				if sz and frappe.db.has_column("Planning sheet Item", "sheet_size"):
+					frappe.db.set_value("Planning sheet Item", legacy, "sheet_size", sz, update_modified=False)
 			elif has_psi_so and _cstr(rr.get("sales_order_item")) and frappe.db.has_column("Planning sheet Item", "width_inch"):
 				frappe.db.sql(
 					"""
@@ -2280,6 +2285,17 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 					""",
 					(w, planning_sheet_name, _cstr(rr.get("sales_order_item"))),
 				)
+				if sz and frappe.db.has_column("Planning sheet Item", "sheet_size"):
+					frappe.db.sql(
+						"""
+						UPDATE `tabPlanning sheet Item`
+						SET sheet_size = %s
+						WHERE parent = %s
+						  AND item_code LIKE '251%%'
+						  AND IFNULL(sales_order_item, '') = %s
+						""",
+						(sz, planning_sheet_name, _cstr(rr.get("sales_order_item"))),
+					)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_force_sheet_cutting_unit_on_sheet width sync")
 	return updated

@@ -151,6 +151,12 @@
             "precision": "2"
         },
         {
+            "fieldname": "sheet_size",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Sheet Size"
+        },
+        {
             "fieldname": "section_break_13",
             "fieldtype": "Section Break",
             "label": "Quality & Color"
