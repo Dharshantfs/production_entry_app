@@ -4,7 +4,7 @@ function sprLog() {
 	console.log.apply(console, arguments);
 }
 
-/** Net weight (kg) to 2 decimals ΓÇö matches roll line precision, manual sums, and Total Produced Weight. */
+/** Net weight (kg) to 2 decimals — matches roll line precision, manual sums, and Total Produced Weight. */
 function spr_round_net_weight_kg(v) {
 	return Math.round(flt(v) * 100) / 100;
 }
@@ -172,7 +172,7 @@ function spr_sync_total_planned_qty_from_jobs(frm, opts) {
 
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
-		// Buttons registered in refresh ΓÇö see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
+		// Buttons registered in refresh — see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
 	},
 
 	onload: function (frm) {
@@ -463,7 +463,7 @@ function spr_show_tolerance_override_dialog(frm, violations, opts) {
 				'<tr><td>' +
 				spr_escape_html(v.job) +
 				'</td><td>' +
-				spr_escape_html(v.roll_no != null && v.roll_no !== '' ? v.roll_no : 'ΓÇö') +
+				spr_escape_html(v.roll_no != null && v.roll_no !== '' ? v.roll_no : '—') +
 				'</td><td class="text-right">' +
 				flt(v.planned).toFixed(2) +
 				'</td><td class="text-right">' +
@@ -497,7 +497,7 @@ function spr_show_tolerance_override_dialog(frm, violations, opts) {
 		'</tbody></table>';
 
 	const d = new frappe.ui.Dialog({
-		title: __('Tolerance ΓÇö approval required'),
+		title: __('Tolerance — approval required'),
 		onhide: function () {
 			window.sprTolDialogOpen = false;
 		},
@@ -588,9 +588,9 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 		bodyHtml +=
 			'<h4 style="margin-top:0.75rem">' +
 			spr_escape_html(ln.work_order || '') +
-			' ΓÇö FG ' +
+			' — FG ' +
 			spr_escape_html(ln.fg_item || '') +
-			' ΓÇö ' +
+			' — ' +
 			__('SPR total') +
 			' ' +
 			spr_escape_html(String(ln.total_fg_kg || '')) +
@@ -601,7 +601,7 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 			bodyHtml +=
 				'<h5 style="margin-top:0.5rem">' +
 				spr_escape_html(rm.item_code || '') +
-				' ΓÇö ' +
+				' — ' +
 				spr_escape_html(rm.item_name || '') +
 				'</h5>';
 			bodyHtml +=
@@ -737,9 +737,9 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 }
 
 /**
- * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh ΓÇö remove then re-add
+ * Register toolbar + Tools menu. Frappe rebuilds the header on Save/refresh — remove then re-add
  * every time so buttons do not disappear (do not use a one-shot _spr_page_buttons_ok guard).
- * Also registers custom buttons ΓÇö they survive some toolbar rebuilds better than inner_group alone.
+ * Also registers custom buttons — they survive some toolbar rebuilds better than inner_group alone.
  */
 function spr_register_spr_page_buttons(frm) {
 	if (!frm) {
@@ -787,7 +787,7 @@ function spr_register_spr_page_buttons(frm) {
 				rm.call(frm.page, lbl);
 			} catch (e) {}
 		});
-		[__('SPR ΓÇö Manual job'), __('SPR ΓÇö Bundle packaging')].forEach(function (lbl) {
+		[__('SPR — Manual job'), __('SPR — Bundle packaging')].forEach(function (lbl) {
 			try {
 				rm.call(frm.page, lbl, tg);
 			} catch (e) {}
@@ -820,7 +820,7 @@ function spr_register_spr_page_buttons(frm) {
 	});
 	addInner(function () {
 		frm.page.add_inner_button(
-			__('SPR ΓÇö Manual job'),
+			__('SPR — Manual job'),
 			function () {
 				spr_open_manual_job_dialog(frm);
 			},
@@ -829,7 +829,7 @@ function spr_register_spr_page_buttons(frm) {
 	});
 	addInner(function () {
 		frm.page.add_inner_button(
-			__('SPR ΓÇö Bundle packaging'),
+			__('SPR — Bundle packaging'),
 			function () {
 				spr_open_bundle_packaging_dialog(frm);
 			},
@@ -839,7 +839,7 @@ function spr_register_spr_page_buttons(frm) {
 	addInner(function () {
 		if (frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks')) {
 			frm.page.add_inner_button(
-				__('SPR ΓÇö Select fabric batches'),
+				__('SPR — Select fabric batches'),
 				function () {
 					spr_open_fabric_batch_pick_dialog(frm);
 				},
@@ -849,7 +849,7 @@ function spr_register_spr_page_buttons(frm) {
 	});
 }
 
-/** After Save the toolbar is rebuilt asynchronously ΓÇö retry so Manual job / Bundle packaging stay visible. */
+/** After Save the toolbar is rebuilt asynchronously — retry so Manual job / Bundle packaging stay visible. */
 function spr_register_spr_page_buttons_after_save(frm) {
 	spr_register_spr_page_buttons(frm);
 	[120, 300, 600, 1200, 2000, 3500, 5000].forEach(function (ms) {
@@ -859,7 +859,7 @@ function spr_register_spr_page_buttons_after_save(frm) {
 	});
 }
 
-/** Default WO qty (Kg): net per roll ├ù rolls per shaft ├ù number of shafts (deck positions). */
+/** Default WO qty (Kg): net per roll × rolls per shaft × number of shafts (deck positions). */
 function sprManualDefaultWoQty(line, noShafts, noRolls) {
 	const shafts = cint(noShafts);
 	const rolls = cint(noRolls);
@@ -900,7 +900,7 @@ function sprManualParseCombination(text) {
 		});
 }
 
-/** Actions ΓåÆ Manual job: multi-select PP lines; WO qty defaults to net/shaft ├ù shafts from Available Jobs. */
+/** Actions ΓåÆ Manual job: multi-select PP lines; WO qty defaults to net/shaft × shafts from Available Jobs. */
 function spr_open_manual_job_dialog(frm) {
 	if (frm.is_new() || !frm.doc.name) {
 		frappe.msgprint(__('Save the Shaft Production Run first.'));
@@ -958,7 +958,7 @@ function spr_open_manual_job_dialog(frm) {
 							__('Choose shafts/roll logic, then confirm rows below.') +
 							'</div></div>' +
 							'<div class="text-muted small">' +
-							__('Production Plan: {0}', [ppName || 'ΓÇö']) +
+							__('Production Plan: {0}', [ppName || '—']) +
 							'</div></div></div>',
 					},
 					{
@@ -1003,11 +1003,11 @@ function spr_open_manual_job_dialog(frm) {
 							'<button type="button" class="btn btn-xs btn-default spr-manual-select-none">' +
 							__('Clear') +
 							'</button>' +
-							'<span class="spr-manual-summary spr-manual-selection-summary">ΓÇö</span>' +
+							'<span class="spr-manual-summary spr-manual-selection-summary">—</span>' +
 							'</div>' +
 							'<div class="spr-manual-lines-wrap"></div>' +
 							'<p class="text-muted small" style="margin-top:6px;">' +
-							__('WO qty default = net/roll Kg ├ù rolls ├ù shafts') +
+							__('WO qty default = net/roll Kg × rolls × shafts') +
 							'</p>',
 					},
 				],
@@ -1173,7 +1173,7 @@ function spr_open_manual_job_dialog(frm) {
 							  (line.matched_job_id
 								  ? ' (' + __('job') + ' ' + String(line.matched_job_id) + ')'
 								  : '')
-							: 'ΓÇö';
+							: '—';
 					const defQ = sprManualDefaultWoQty(line, nShafts, nRolls);
 					const label =
 						String(line.item_code || '') +
@@ -1422,7 +1422,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 						options:
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
-								'Step 1: pick Job ID. Step 2: pick width for that segment (combination widths and WO items are shown below). Same single-roll gross applies to all roll lines for that job and width. Sticker width = selected width ├ù number of packaging.'
+								'Step 1: pick Job ID. Step 2: pick width for that segment (combination widths and WO items are shown below). Same single-roll gross applies to all roll lines for that job and width. Sticker width = selected width × number of packaging.'
 							) +
 							'</p>',
 					},
@@ -1441,7 +1441,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 					{
 						fieldname: 'width_inch',
 						fieldtype: 'Select',
-						label: __('Width / segment (in) ΓÇö pick one row from the table above'),
+						label: __('Width / segment (in) — pick one row from the table above'),
 						options: '',
 						reqd: 1,
 					},
@@ -1547,7 +1547,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 						__('WO item') +
 						'</th></tr></thead><tbody>';
 					segs.forEach(function (s) {
-						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(2) : 'ΓÇö';
+						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(2) : '—';
 						const ic = [s.item_code || '', (s.item_name || '').substring(0, 28)].join(' ').trim();
 						html +=
 							'<tr><td>' +
@@ -1570,7 +1570,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 					det.html(
 						comb
 							? '<p class="small">' + frappe.utils.escape_html(comb) + '</p>'
-							: '<p class="small text-muted">' + __('No segment breakdown ΓÇö use width list.') + '</p>'
+							: '<p class="small text-muted">' + __('No segment breakdown — use width list.') + '</p>'
 					);
 					if (!arr.length) {
 						wf.df.options = '';
@@ -1602,7 +1602,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 				const single = n > 0 ? whole / n : 0;
 				const tw = flt(wsel) * n;
 				el.html(
-					__('Single gross: {0} Kg ┬╖ Sticker width (selected width ├ù pkg): {1} in', [
+					__('Single gross: {0} Kg ┬╖ Sticker width (selected width × pkg): {1} in', [
 						single.toFixed(2),
 						tw.toFixed(2),
 					])
@@ -1775,13 +1775,12 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						frappe.msgprint(__('Enter at least 1 roll line.'));
 						return;
 					}
-					if (sprUsesLaminationRollPrompt(frm)) {
-						invokeBuildRollLines(0, n, true, 0);
-					} else if (sprUsesSlittingRollPrompt(frm)) {
-						invokeBuildRollLines(0, 0, true, n);
-					} else {
-						invokeBuildRollLines(0, 0, true, n);
-					}
+				if (sprUsesLaminationRollPrompt(frm)) {
+					invokeBuildRollLines(0, n, true, 0);
+				} else {
+					// Slitting, Rewinding, Sheet Cutting, BOPP Film — exact roll lines
+					invokeBuildRollLines(0, 0, true, n);
+				}
 				},
 				rollPromptMeta.title,
 				__('Add')
@@ -2214,7 +2213,7 @@ function show_pp_work_order_summary_dialog(rows) {
 	setTimeout(function () {
 		try {
 			const d = new frappe.ui.Dialog({
-				title: __('Production Plan ΓÇö Work Orders'),
+				title: __('Production Plan — Work Orders'),
 				fields: [{ fieldtype: 'HTML', fieldname: 'wo_table', options: html }],
 				primary_action_label: __('OK'),
 				primary_action: function () {
@@ -2224,7 +2223,7 @@ function show_pp_work_order_summary_dialog(rows) {
 			d.show();
 		} catch (e) {
 			frappe.msgprint({
-				title: __('Production Plan ΓÇö Work Orders'),
+				title: __('Production Plan — Work Orders'),
 				message: html,
 				indicator: 'blue',
 				wide: true,
@@ -2287,20 +2286,54 @@ function sprUsesSlittingRollPrompt(frm) {
 	return frm && frm.doc && cint(frm.doc.custom_is_slitting);
 }
 
+function sprUsesRewindingRollPrompt(frm) {
+	return frm && frm.doc && cint(frm.doc.custom_is_rewinding);
+}
+
+function sprUsesSheetCuttingRollPrompt(frm) {
+	return frm && frm.doc && cint(frm.doc.custom_is_sheet_cutting);
+}
+
+function sprUsesBoppFilmRollPrompt(frm) {
+	return frm && frm.doc && cint(frm.doc.custom_is_bopp_film);
+}
+
 function sprRollPromptMeta(frm, row) {
 	const fromPp = cint((row && row.no_of_rolls) || 0);
-	const defaultLines = fromPp > 0 ? fromPp : 1;
+	const noOfRollsCreated = cint((frm && frm.doc && frm.doc.custom_no_of_rolls_created) || 0);
+	const defaultLines = noOfRollsCreated > 0 ? noOfRollsCreated : (fromPp > 0 ? fromPp : 1);
 	if (sprUsesSlittingRollPrompt(frm)) {
 		return {
-			title: __('Slitting ΓÇö add roll lines'),
+			title: __('Slitting — add roll lines'),
 			description: __('Defaults to No. of Rolls from Production Plan for this job.'),
 			defaultLines: defaultLines,
 		};
 	}
 	if (sprUsesLaminationRollPrompt(frm)) {
 		return {
-			title: __('Lamination ΓÇö add roll lines'),
+			title: __('Lamination — add roll lines'),
 			description: __('Adds exactly this many new roll lines for the selected job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	if (sprUsesRewindingRollPrompt(frm)) {
+		return {
+			title: __('Rewinding — add roll lines'),
+			description: __('Adds exactly this many new roll lines for the selected rewinding job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	if (sprUsesSheetCuttingRollPrompt(frm)) {
+		return {
+			title: __('Sheet Cutting — add roll lines'),
+			description: __('Adds exactly this many new roll lines for the selected sheet cutting job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	if (sprUsesBoppFilmRollPrompt(frm)) {
+		return {
+			title: __('BOPP Film — add roll lines'),
+			description: __('Adds exactly this many new roll lines for the selected BOPP printing job.'),
 			defaultLines: defaultLines,
 		};
 	}
@@ -2485,7 +2518,7 @@ function spr_inject_gsm_legend(frm) {
 	const html =
 		'<div class="spr-gsm-legend alert alert-secondary" style="margin-bottom:8px;font-size:12px;line-height:1.5;">' +
 		'<strong>' +
-		__('Roll lines ΓÇö GSM difference (Sticker GSM vs Produced GSM)') +
+		__('Roll lines — GSM difference (Sticker GSM vs Produced GSM)') +
 		'</strong><br>' +
 		'<span style="display:inline-block;background:#bbf7d0;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">|diff| &lt; 1</span> ' +
 		'<span style="display:inline-block;background:#eab308;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">1 ΓÇô 2</span> ' +
@@ -2509,7 +2542,7 @@ function sprStickerGsmFromDoc(doc) {
 	return g > 0 ? g : 0;
 }
 
-/** True when produced length is missing or zero ΓÇö do not infer GSM from ordered meter_roll (legend: incomplete / grey). */
+/** True when produced length is missing or zero — do not infer GSM from ordered meter_roll (legend: incomplete / grey). */
 function sprRollProducedLengthIncomplete(doc) {
 	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs')) {
 		return false;
@@ -2528,7 +2561,7 @@ function sprRollProducedLengthIncomplete(doc) {
 	return false;
 }
 
-/** Same formula as spr_update_produced_gsm ΓÇö use when produced_gsm not yet written (avoids all-white rows). */
+/** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
 function sprEffectiveProducedGsm(doc) {
 	let p = flt(doc.produced_gsm);
 	if (p > 0) {
@@ -2686,7 +2719,7 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .dt-row.spr-gsm-band-2 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-2 td { background-color: #fb923c !important; }
 		.spr-items-wrap .dt-row.spr-gsm-band-3 .dt-cell, .spr-items-wrap .dt-row.spr-gsm-band-3 td { background-color: #fecaca !important; }
 		.spr-items-wrap .dt-row.spr-gsm-pending .dt-cell, .spr-items-wrap .dt-row.spr-gsm-pending td { background-color: #f3f4f6 !important; }
-		/* Selected / active row (editing) ΓÇö Frappe defaults to white; keep GSM band visible */
+		/* Selected / active row (editing) — Frappe defaults to white; keep GSM band visible */
 		.spr-items-wrap .dt-row.selected.spr-gsm-band-0, .spr-items-wrap .dt-row.active.spr-gsm-band-0,
 		.form-group[data-fieldname="items"] .dt-row.selected.spr-gsm-band-0,
 		.frappe-control[data-fieldname="items"] .dt-row.selected.spr-gsm-band-0,
@@ -2946,7 +2979,7 @@ function sprResolveItemsRowElement(frm, doc, grid, idx) {
 }
 
 /**
- * All visible DataTable body rows in order. Prefer this over grid.grid_rows[idx] ΓÇö Frappe often only
+ * All visible DataTable body rows in order. Prefer this over grid.grid_rows[idx] — Frappe often only
  * wires row 0 there while rows 1+ still exist in the DOM (causes only-first-row coloring).
  */
 function sprGetItemsDatatableBodyRows(frm) {
@@ -3174,7 +3207,7 @@ function apply_spr_item_row_styles(frm) {
 		}
 		
 		const $targets = sprCollectItemRowTargets(frm, doc, idx, $row, $wrap);
-		// Roll Production Results: Sticker GSM vs produced (field or computed from net/gross ├ù width ├ù length)
+		// Roll Production Results: Sticker GSM vs produced (field or computed from net/gross × width × length)
 		const sticker = sprStickerGsmFromDoc(doc);
 		const produced = sprEffectiveProducedGsm(doc);
 		$targets.removeClass(baseClasses);
@@ -3240,3 +3273,5 @@ function spr_sync_total_produced_weight(frm, opts) {
 		}
 	}
 }
+
+
