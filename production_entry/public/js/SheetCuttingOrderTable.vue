@@ -98,6 +98,10 @@
                   <!-- New SPR when WO is open, no existing SPR -->
                   <button v-else-if="canCreateSpr(row)" type="button" @click="createSheetCuttingSpr(row)"
                     class="cc-pp-btn pt-btn-entry" title="Create Shaft Production Run">New SPR</button>
+                  <!-- Open WO directly when WO exists and is open -->
+                  <button v-else-if="row.wo_name && row.wo_open && Number(row.pp_docstatus) === 1"
+                    type="button" @click="openWO(row.wo_name)"
+                    class="cc-pp-btn pt-btn-entry pt-spr-btn-submitted" title="Open Work Order">Open WO</button>
                   <!-- Start WO: open PP form to create WO -->
                   <button v-else-if="row.pp_id && Number(row.pp_docstatus) === 1 && !row.wo_open && !row.wo_terminal"
                     type="button" @click="openPPForm(row.pp_id)"
@@ -139,6 +143,7 @@ function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v
 function goToBoard() { frappe.set_route("sheet-cutting-board"); }
 function openSPR(sprName) { if (sprName) frappe.set_route("Form", "Shaft Production Run", sprName); }
 function openPPForm(ppId) { if (ppId) frappe.set_route("Form", "Production Plan", ppId); }
+function openWO(woName) { if (woName) frappe.set_route("Form", "Work Order", woName); }
 function openProductionPlanView(planningSheetName, salesOrderItem, planningSheetItemName, directPpId) {
   if (directPpId) {
     const url = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(directPpId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;

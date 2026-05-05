@@ -237,6 +237,14 @@
                   :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                   :title="itemSprPrimaryButtonTitle(row)"
                 >{{ itemSprPrimaryButtonLabel(row) }}</button>
+                <!-- Open parent WO when WO is open but SPR not yet created -->
+                <button
+                  v-else-if="row.wo_open && row.wo_name && Number(row.pp_docstatus) === 1"
+                  type="button"
+                  @click="openWO(row.wo_name)"
+                  class="cc-pp-btn pt-btn-entry pt-spr-btn-submitted"
+                  title="Open parent Work Order"
+                >Open WO</button>
                 <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
                 <span v-else-if="!row.pp_id" style="color:#999;font-size:10px;">No PP</span>
                 <span v-else class="pt-wo-closed-hint">WO closed</span>
@@ -830,7 +838,8 @@ function canShowStockEntry(item) {
   if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
   if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
-  if (!item.is_lamination_parent && !item.wo_terminal) return false;
+  // Rewinding / Sheet Cutting: allow SPR when parent WO is open (In Process) OR terminal
+  if (!item.is_lamination_parent && !item.wo_terminal && !item.wo_open) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
   const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
@@ -838,6 +847,11 @@ function canShowStockEntry(item) {
   const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
   if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
   return true;
+}
+
+function openWO(woName) {
+  if (!woName) return;
+  frappe.set_route("Form", "Work Order", woName);
 }
 
 function openParentWO(item) {

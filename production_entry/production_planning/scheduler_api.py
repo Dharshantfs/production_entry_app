@@ -3737,7 +3737,35 @@ def get_rewinding_order_table_data(
         ic = row.get("item_code") or row.get("itemCode")
         rw_mm = _rewinding_width_mm_from_item_code(ic)
         row["rewinding_length_mm"] = rw_mm if rw_mm is not None else None
+        row["wo_name"] = ""
         out.append(row)
+
+    # Populate wo_name for each row so frontend can navigate to WO form
+    pp_ids_rw = list({str(r.get("pp_id") or "").strip() for r in out if str(r.get("pp_id") or "").strip()})
+    if pp_ids_rw:
+        fmt_rw = ",".join(["%s"] * len(pp_ids_rw))
+        wo_name_rows = frappe.db.sql(
+            f"""SELECT production_plan, name, production_item
+                FROM `tabWork Order`
+                WHERE production_plan IN ({fmt_rw}) AND docstatus < 2
+                ORDER BY creation DESC""",
+            tuple(pp_ids_rw),
+            as_dict=True,
+        ) or []
+        pp_to_wo_map = {}
+        for w in wo_name_rows:
+            pp = str(w.get("production_plan") or "").strip()
+            ic_w = str(w.get("production_item") or "").strip()
+            # Prefer the 102* WO (rewinding parent item WO) for the parent table row
+            if pp and pp not in pp_to_wo_map:
+                pp_to_wo_map[pp] = str(w.get("name") or "").strip()
+            elif pp and _item_process_prefix(ic_w) == "102":
+                pp_to_wo_map[pp] = str(w.get("name") or "").strip()
+        for row in out:
+            pp = str(row.get("pp_id") or "").strip()
+            if pp:
+                row["wo_name"] = pp_to_wo_map.get(pp, "")
+
     return out
 
 
@@ -3909,6 +3937,33 @@ def get_sheet_cutting_order_table_data(
     for row in out:
         dkey = _cstr(row.get("plannedDate") or row.get("planned_date"))
         row["per_day_production"] = flt(per_day.get(dkey) or 0)
+        row["wo_name"] = ""
+
+    # Populate wo_name for each sheet cutting row (for "Open WO" button)
+    pp_ids_sc = list({str(r.get("pp_id") or "").strip() for r in out if str(r.get("pp_id") or "").strip()})
+    if pp_ids_sc:
+        fmt_sc = ",".join(["%s"] * len(pp_ids_sc))
+        sc_wo_rows = frappe.db.sql(
+            f"""SELECT production_plan, name, production_item
+                FROM `tabWork Order`
+                WHERE production_plan IN ({fmt_sc}) AND docstatus < 2
+                ORDER BY creation DESC""",
+            tuple(pp_ids_sc),
+            as_dict=True,
+        ) or []
+        pp_to_sc_wo_map = {}
+        for w in sc_wo_rows:
+            pp = str(w.get("production_plan") or "").strip()
+            ic_w = str(w.get("production_item") or "").strip()
+            if pp and pp not in pp_to_sc_wo_map:
+                pp_to_sc_wo_map[pp] = str(w.get("name") or "").strip()
+            elif pp and _item_process_prefix(ic_w) == "251":
+                pp_to_sc_wo_map[pp] = str(w.get("name") or "").strip()
+        for row in out:
+            pp = str(row.get("pp_id") or "").strip()
+            if pp:
+                row["wo_name"] = pp_to_sc_wo_map.get(pp, "")
+
     return out
 
 
@@ -15714,8 +15769,10 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
         is_sheet_cutting_from_rows = any(
             _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "251" for psi in (psi_list or [])
         )
-        is_bopp_film_from_rows = any(
-            _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "107" for psi in (psi_list or [])
+        # BOPP Film = Printed BOPP items with PB- prefix (NOT 107 which is Lamination Unit like 104)
+        is_bopp_film_from_rows = (
+            any(str((psi.get("item_code") or "")).strip().upper().startswith("PB") for psi in (psi_list or []))
+            or str(process_type or "").strip().lower() == "bopp_film"
         )
         if is_lamination_from_rows and spr_meta.has_field("custom_is_lamination"):
             spr.custom_is_lamination = 1
