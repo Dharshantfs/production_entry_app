@@ -38,6 +38,13 @@
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
+      <div class="cc-filter-item">
+        <label>Unit</label>
+        <select v-model="filterUnit" @change="fetchData">
+          <option value="">All Units</option>
+          <option v-for="u in REWINDING_FILTER_UNITS" :key="u" :value="u">{{ u }}</option>
+        </select>
+      </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
@@ -76,7 +83,7 @@
       </div>
     </div>
 
-    <div class="cc-table-container" v-for="grp in rewindingUnitGroups" :key="grp.unit">
+    <div class="cc-table-container" v-if="false" v-for="grp in rewindingUnitGroups" :key="grp.unit">
       <div class="cc-table-unit-header lot-header">{{ grp.unit }} - Planned orders (102)</div>
       <table class="cc-prod-table lot-table">
         <thead>
@@ -89,7 +96,7 @@
             <th>QUALITY</th>
             <th>COLOUR</th>
             <th>ROLL SIZE</th>
-            <th>Rewinding length (mtrs)</th>
+            <th>REWINDING LENGTH (MTRS)</th>
             <th>PLANNED KGS</th>
             <th>ACHIEVED KGS</th>
             <th>FABRIC READY DATE</th>
@@ -130,7 +137,7 @@
       </table>
     </div>
 
-    <div class="cc-table-container" v-if="false">
+    <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">Rewinding (102) — L3 / L4 / L5 + Unassigned</div>
       <table class="cc-prod-table lot-table">
         <thead>
@@ -144,10 +151,10 @@
             <th>QUALITY</th>
             <th>COLOUR</th>
             <th>ROLL SIZE</th>
-            <th>Rewinding length (mtrs)</th>
+            <th>FABRIC READY DATE</th>
+            <th>REWINDING LENGTH (MTRS)</th>
             <th>PLANNED KGS</th>
             <th>ACHIEVED KGS</th>
-            <th>FABRIC READY DATE</th>
             <th>ORDER SHEET</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
@@ -198,10 +205,10 @@
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
             <td class="cell-center">{{ row.roll_size || "-" }}</td>
+            <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
             <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
-            <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
@@ -256,6 +263,7 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+const filterUnit = ref("");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 /** Color-sequence + maintenance APIs key off the primary L3 rewinding line. */
@@ -266,6 +274,11 @@ const REWINDING_MAINT_UNITS = new Set([
   "JSB - L5 REWINDING MACHINE",
   "Unassigned rewinding machine",
 ]);
+const REWINDING_FILTER_UNITS = [
+  "TSNPL - L3 REWINDING MACHINE",
+  "JSB - L4 REWINDING MACHINE",
+  "JSB - L5 REWINDING MACHINE",
+];
 const rawData = ref([]);
 const filtersReady = ref(false);
 const maintenanceByDate = ref({});
@@ -318,6 +331,10 @@ const filteredRows = computed(() => {
   }
   if (cu) {
     d = d.filter((r) => String(r.customer_name || r.customer || "").toLowerCase().includes(cu));
+  }
+  d = d.filter((r) => REWINDING_FILTER_UNITS.includes(String(r.unit || "").trim()));
+  if (filterUnit.value) {
+    d = d.filter((r) => String(r.unit || "").trim() === filterUnit.value);
   }
   const sh = (filterShift.value || "all").toLowerCase();
   if (sh === "day") {
@@ -491,7 +508,7 @@ function formatDate(d) {
 function formatRewindingLengthMm(row) {
   const v = row?.rewinding_length_mm;
   if (v == null || v === "" || Number.isNaN(Number(v))) return "-";
-  return `${Number(v)} mm`;
+  return `${Number(v)} MTRS`;
 }
 
 function toDateKey(d) {
