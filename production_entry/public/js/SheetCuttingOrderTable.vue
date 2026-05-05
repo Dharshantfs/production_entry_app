@@ -60,7 +60,7 @@
     <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders (251)</div>
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:76px;">ROLL SIZE</th><th style="min-width:76px;">MTR</th><th style="min-width:92px;">SHEET SIZE</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:90px;">PRODUCTION PLAN</th><th style="min-width:110px;">SPR</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:76px;">ROLL SIZE</th><th style="min-width:76px;">MTR</th><th style="min-width:92px;">SHEET SIZE</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td colspan="16" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
@@ -75,8 +75,37 @@
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
               <td class="cell-center">{{ formatNum(row.roll_size) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ row.sheet_size || "-" }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.per_day_production) }}</td>
-              <td class="cell-center"><button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" class="cc-view-btn" @click="openProductionPlan(row.pp_id)">View</button><span v-else-if="row.pp_id" class="muted">PP Draft</span><span v-else class="muted">No PP</span></td>
-              <td class="cell-center"><button v-if="row.spr_name" type="button" class="cc-clear-btn" @click="openSPR(row.spr_name)">Open</button><span v-else class="muted">-</span></td>
+              <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
+              <td class="cell-center">
+                <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" class="cc-pp-btn" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id)">View</button>
+                <span v-else-if="row.pp_id" class="pt-wo-closed-hint">PP Draft</span>
+                <span v-else class="muted">No PP</span>
+              </td>
+              <!-- SPR / WO: status pills + action buttons -->
+              <td class="cell-center">
+                <div class="pt-stock-cell">
+                  <div v-if="row.pp_id" class="pt-pill-row">
+                    <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
+                    <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
+                    <span class="pt-pill pt-pill-wo" :class="woPillClass(row)" :title="woPillTitle(row)">{{ woPillLabel(row) }}</span>
+                  </div>
+                  <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
+                  <!-- View SPR button -->
+                  <button v-if="row.spr_name" type="button" @click="openSPR(row.spr_name)"
+                    class="cc-pp-btn pt-btn-entry"
+                    :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
+                    :title="itemSprTitle(row)">{{ itemSprLabel(row) }}</button>
+                  <!-- New SPR when WO is open, no existing SPR -->
+                  <button v-else-if="canCreateSpr(row)" type="button" @click="createSheetCuttingSpr(row)"
+                    class="cc-pp-btn pt-btn-entry" title="Create Shaft Production Run">New SPR</button>
+                  <!-- Start WO: open PP form to create WO -->
+                  <button v-else-if="row.pp_id && Number(row.pp_docstatus) === 1 && !row.wo_open && !row.wo_terminal"
+                    type="button" @click="openPPForm(row.pp_id)"
+                    class="cc-pp-btn pt-btn-entry" title="Open Production Plan to start Work Order">Start WO</button>
+                  <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="muted" style="font-size:11px;">PP Draft</span>
+                  <span v-else-if="!row.pp_id" class="muted" style="font-size:11px;">No PP</span>
+                </div>
+              </td>
             </tr>
           </template>
           <tr v-if="!displayRows.length"><td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No sheet cutting orders for this view.</td></tr>
@@ -107,7 +136,43 @@ function toDateKey(v) { if (!v) return ""; const d = new Date(v); if (Number.isN
 function getRowDateKey(row) { return toDateKey(row?.plannedDate || row?.planned_date || row?.date || ""); }
 function sortRowsBySavedSequence(rows) { const grouped = {}; (rows || []).forEach((r) => { const dk = getRowDateKey(r); grouped[dk] = grouped[dk] || []; grouped[dk].push(r); }); const out = []; Object.keys(grouped).sort().forEach((dk) => { const arr = grouped[dk]; const saved = customOrderByDate.value[dk] || []; const rank = new Map(saved.map((nm, i) => [nm, i])); arr.sort((a, b) => { const ra = rank.has(a.itemName) ? rank.get(a.itemName) : 99999; const rb = rank.has(b.itemName) ? rank.get(b.itemName) : 99999; if (ra !== rb) return ra - rb; return String(a.itemName || "").localeCompare(String(b.itemName || "")); }); out.push(...arr); }); return out; }
 function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v); } function formatNum(v) { const n = Number(v || 0); if (!Number.isFinite(n)) return "-"; return n.toFixed(2).replace(/\.00$/, ""); }
-function goToBoard() { frappe.set_route("sheet-cutting-board"); } function openProductionPlan(ppId) { if (ppId) frappe.set_route("Form", "Production Plan", ppId); } function openSPR(sprName) { if (sprName) frappe.set_route("Form", "Shaft Production Run", sprName); }
+function goToBoard() { frappe.set_route("sheet-cutting-board"); }
+function openSPR(sprName) { if (sprName) frappe.set_route("Form", "Shaft Production Run", sprName); }
+function openPPForm(ppId) { if (ppId) frappe.set_route("Form", "Production Plan", ppId); }
+function openProductionPlanView(planningSheetName, salesOrderItem, planningSheetItemName, directPpId) {
+  if (directPpId) {
+    const url = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(directPpId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+    window.open(url, "_blank");
+    return;
+  }
+  if (planningSheetName) {
+    frappe.call({ method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id", args: { planning_sheet_name: planningSheetName, sales_order_item: salesOrderItem || null, planning_sheet_item: planningSheetItemName || null } }).then(res => {
+      const ppId = res?.message?.pp_id;
+      if (ppId) { const url = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`; window.open(url, "_blank"); }
+      else { frappe.msgprint("No Production Plan found for this item."); }
+    });
+  }
+}
+function sprPillLabel(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Draft"; if (Number(row.spr_docstatus) === 1) return "Submitted"; return "SPR"; }
+function sprPillClass(row) { if (!row?.spr_name) return "pt-pill-muted"; if (Number(row.spr_docstatus) === 0) return "pt-pill-draft"; if (Number(row.spr_docstatus) === 1) return "pt-pill-submitted"; return "pt-pill-muted"; }
+function sprPillTitle(row) { if (!row?.spr_name) return ""; return `SPR: ${row.spr_name}`; }
+function woPillLabel(row) { if (row.wo_terminal) return "WO done"; if (row.wo_open) return "WO open"; return "WO"; }
+function woPillClass(row) { if (row.wo_terminal) return "pt-pill-wo-done"; if (row.wo_open) return "pt-pill-wo-open"; return "pt-pill-wo-unknown"; }
+function woPillTitle(row) { if (row.wo_terminal) return "All work orders complete."; if (row.wo_open) return "Work order in progress."; return "No work order yet."; }
+function itemProductionStatusLine(row) { const t = parseFloat(row.planned_quantity || 0); const a = parseFloat(row.achieved_quantity || 0); const gap = t - a; if (Math.abs(gap) <= 0.5) return ""; return gap > 0 ? `${gap.toFixed(2)} kg below target` : `${(-gap).toFixed(2)} kg over target`; }
+function itemSprLabel(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Open draft SPR"; if (row.wo_terminal) return "View SPR (done)"; return "View SPR"; }
+function itemSprTitle(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Continue recording production in draft SPR"; if (row.wo_terminal) return "WO complete — view final SPR"; return "Open submitted SPR"; }
+function canCreateSpr(row) { if (!row.pp_id || Number(row.pp_docstatus) !== 1) return false; if (!row.wo_open) return false; const planned = parseFloat(row.planned_quantity || 0); const achieved = parseFloat(row.achieved_quantity || 0); if (planned > 0 && achieved >= planned - 0.001) return false; return true; }
+async function createSheetCuttingSpr(item) {
+  if (!item.pp_id) { frappe.msgprint("No Production Plan linked"); return; }
+  if (item.spr_name) { openSPR(item.spr_name); return; }
+  try {
+    const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.create_item_spr", args: { pp_id: item.pp_id, planning_sheet_item_names: JSON.stringify([item.itemName]) } });
+    const msg = r?.message || {};
+    if (msg.spr_name) { item.spr_name = msg.spr_name; frappe.show_alert({ message: `SPR created: ${msg.spr_name}`, indicator: "green" }, 4); openSPR(msg.spr_name); }
+    else { frappe.msgprint(msg.message || "SPR creation failed"); }
+  } catch (e) { frappe.msgprint(`Failed to create SPR: ${e?.message || e}`); }
+}
 function debouncedFetch() { if (fetchTimer) clearTimeout(fetchTimer); fetchTimer = setTimeout(() => fetchData(), 300); }
 function toggleArrangementLock() { arrangementLocked.value = !arrangementLocked.value; }
 function onOrderDragStart(row, e) { if (!arrangementUnlocked.value || row?.is_maintenance_row || row?.is_maintenance_empty) return; dragOrderRow.value = row; e.dataTransfer.effectAllowed = "move"; }
@@ -126,7 +191,7 @@ async function restoreArrangement() { try { const r = await frappe.call({ method
 function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.value) { const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` }; } if (viewScope.value === "weekly" && filterWeek.value) { const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { start_date: fmt(ws), end_date: fmt(we) }; } return { start_date: filterOrderDate.value, end_date: filterOrderDate.value }; }
 async function fetchMaintenanceRecords() { try { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance" }); maintenanceRecords.value = (res?.message || []).filter((r) => String(r.unit || "") === SHEET_CUTTING_UNIT); } catch { maintenanceRecords.value = []; } }
 function toggleViewScope() { if (viewScope.value === "monthly" && !filterMonth.value) filterMonth.value = frappe.datetime.get_today().substring(0, 7); updateUrlParams(); fetchData(); }
-async function fetchData() { if (fetchInProgress) return; fetchInProgress = true; try { let args = { planned_only: 1 }; if (viewScope.value === "monthly") { if (!filterMonth.value) return; const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); args.start_date = `${filterMonth.value}-01`; args.end_date = `${filterMonth.value}-${lastDay}`; } else if (viewScope.value === "weekly") { if (!filterWeek.value) return; const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; args.start_date = fmt(ws); args.end_date = fmt(we); } else args.date = filterOrderDate.value; const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_sheet_cutting_order_table_data", args }); rawData.value = (r.message || []).map((d) => ({ ...d, itemName: d.itemName || d.item_name || "", plannedDate: d.plannedDate || d.planned_date || "" })); await fetchMaintenanceRecords(); } catch (e) { frappe.msgprint(`Error loading Sheet Cutting Order Table: ${e?.message || e}`); } finally { fetchInProgress = false; } }
+async function fetchData() { if (fetchInProgress) return; fetchInProgress = true; try { let args = { planned_only: 1 }; if (viewScope.value === "monthly") { if (!filterMonth.value) return; const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); args.start_date = `${filterMonth.value}-01`; args.end_date = `${filterMonth.value}-${lastDay}`; } else if (viewScope.value === "weekly") { if (!filterWeek.value) return; const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; args.start_date = fmt(ws); args.end_date = fmt(we); } else args.date = filterOrderDate.value; const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_sheet_cutting_order_table_data", args }); rawData.value = (r.message || []).map((d) => ({ ...d, itemName: d.itemName || d.item_name || "", plannedDate: d.plannedDate || d.planned_date || "", planningSheet: d.planningSheet || d.planning_sheet || "", salesOrderItem: d.salesOrderItem || d.sales_order_item || "" })); await fetchMaintenanceRecords(); } catch (e) { frappe.msgprint(`Error loading Sheet Cutting Order Table: ${e?.message || e}`); } finally { fetchInProgress = false; } }
 function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
 function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
@@ -324,4 +389,59 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   color: #94a3b8;
   font-size: 12px;
 }
+.cc-pp-btn {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  background: #ecfeff;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pt-stock-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+.pt-pill-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.pt-pill {
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.pt-pill-draft { background: #fef3c7; color: #92400e; }
+.pt-pill-submitted { background: #dcfce7; color: #166534; }
+.pt-pill-muted { background: #f1f5f9; color: #64748b; }
+.pt-pill-wo {}
+.pt-pill-wo-done { background: #dcfce7; color: #166534; }
+.pt-pill-wo-open { background: #dbeafe; color: #1d4ed8; }
+.pt-pill-wo-unknown { background: #f1f5f9; color: #64748b; }
+.pt-prod-status-line {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+}
+.pt-btn-entry {
+  padding: 3px 8px;
+  font-size: 11px;
+  min-height: 26px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  cursor: pointer;
+  font-weight: 600;
+  background: #f8fafc;
+}
+.pt-spr-btn-done { background: #dcfce7; border-color: #86efac; color: #166534; }
+.pt-spr-btn-submitted { background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; }
+.pt-spr-btn-draft { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+.pt-wo-closed-hint { color: #94a3b8; font-size: 11px; }
 </style>
