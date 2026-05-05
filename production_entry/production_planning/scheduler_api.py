@@ -100,7 +100,11 @@ def _parse_sheet_cutting_item_code(item_code):
 	digits = "".join(ch for ch in ic if ch.isdigit())
 	if len(digits) < 15:
 		return {}
-	if digits[:3] != "251":
+	# Accept prefixed/mixed item codes by taking the rightmost 251 + 12 digits block.
+	matches = re.findall(r"(251\d{12})", digits)
+	if matches:
+		digits = matches[-1]
+	if digits[:3] != "251" or len(digits) < 15:
 		return {}
 	return {
 		"process": "251",
@@ -2234,6 +2238,50 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 			(SHEET_CUTTING_UNIT, planning_sheet_name),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+
+	# Keep width_inch synced from Sheet Cutting Series (251 item code -> series id -> width).
+	try:
+		pt_rows = frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name, "item_code": ["like", "251%"]},
+			fields=["name", "item_code", "sales_order_item", "source_item"],
+			limit_page_length=1000,
+		) or []
+		series_ids = []
+		parsed = {}
+		for rr in pt_rows:
+			p = _parse_sheet_cutting_item_code(rr.get("item_code"))
+			parsed[rr.get("name")] = p
+			sid = _cstr(p.get("series_id"))
+			if sid:
+				series_ids.append(sid)
+		size_map = _sheet_cutting_series_size_map(series_ids)
+		has_psi_so = frappe.db.has_column("Planning sheet Item", "sales_order_item")
+		for rr in pt_rows:
+			p = parsed.get(rr.get("name")) or {}
+			sid = _cstr(p.get("series_id"))
+			info = size_map.get(sid) or {}
+			w = flt(info.get("width_inch") or 0)
+			if w <= 0:
+				continue
+			if frappe.db.has_column("Planning Table", "width_inch"):
+				frappe.db.set_value("Planning Table", rr.get("name"), "width_inch", w, update_modified=False)
+			legacy = _cstr(rr.get("source_item"))
+			if legacy and frappe.db.exists("Planning sheet Item", legacy) and frappe.db.has_column("Planning sheet Item", "width_inch"):
+				frappe.db.set_value("Planning sheet Item", legacy, "width_inch", w, update_modified=False)
+			elif has_psi_so and _cstr(rr.get("sales_order_item")) and frappe.db.has_column("Planning sheet Item", "width_inch"):
+				frappe.db.sql(
+					"""
+					UPDATE `tabPlanning sheet Item`
+					SET width_inch = %s
+					WHERE parent = %s
+					  AND item_code LIKE '251%%'
+					  AND IFNULL(sales_order_item, '') = %s
+					""",
+					(w, planning_sheet_name, _cstr(rr.get("sales_order_item"))),
+				)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_force_sheet_cutting_unit_on_sheet width sync")
 	return updated
 
 
@@ -3597,6 +3645,13 @@ def get_sheet_cutting_order_table_data(
         return []
     if not rows:
         return []
+    # Hard safety: only process 251 rows.
+    rows = [
+        r for r in rows
+        if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == "251"
+    ]
+    if not rows:
+        return []
     try:
         sheet_names = list(
             {
@@ -3651,14 +3706,16 @@ def get_sheet_cutting_order_table_data(
     spr_weights = {}
     if spr_names and frappe.db.exists("DocType", "Shaft Production Run Item"):
         spr_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
-        weight_expr = "IFNULL(net_weight, 0)" if "net_weight" in spr_cols else "0"
+        weight_expr = "IFNULL(sri.net_weight, 0)" if "net_weight" in spr_cols else "0"
         sf = ",".join(["%s"] * len(spr_names))
         for rw in frappe.db.sql(
             f"""
-            SELECT parent, SUM({weight_expr}) as kgs
-            FROM `tabShaft Production Run Item`
-            WHERE parent IN ({sf})
-            GROUP BY parent
+            SELECT sri.parent, SUM({weight_expr}) as kgs
+            FROM `tabShaft Production Run Item` sri
+            INNER JOIN `tabShaft Production Run` spr ON spr.name = sri.parent
+            WHERE sri.parent IN ({sf})
+              AND spr.docstatus = 1
+            GROUP BY sri.parent
             """,
             tuple(spr_names),
             as_dict=True,
@@ -3686,11 +3743,8 @@ def get_sheet_cutting_order_table_data(
         sid = _cstr(p.get("series_id"))
         size_info = size_map.get(sid) or {}
         spr_nm = _cstr((ex.get("parent_spr_name") or row.get("spr_name") or ""))
-        achieved = flt(spr_weights.get(spr_nm)) if spr_nm else flt(
-            row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0
-        )
-        if achieved <= 0:
-            achieved = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
+        # Sheet cutting achieved should come from submitted SPR only.
+        achieved = flt(spr_weights.get(spr_nm)) if spr_nm else 0.0
         row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()
         row["quality_code"] = _cstr(p.get("quality_code"))
         row["colour_code"] = _cstr(p.get("colour_code"))

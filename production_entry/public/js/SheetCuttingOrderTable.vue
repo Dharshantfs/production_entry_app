@@ -47,12 +47,14 @@
             <th>CUSTOMER NAME</th>
             <th>QUALITY</th>
             <th>GSM</th>
-            <th>WIDTH (INCH)</th>
+            <th>ROLL SIZE</th>
             <th>MTR</th>
             <th>SHEET SIZE</th>
             <th>PLANNED QTY</th>
             <th>ACHIEVED QTY</th>
             <th>PER DAY PRODUCTION</th>
+            <th style="min-width:90px;">PRODUCTION PLAN</th>
+            <th style="min-width:110px;">SPR</th>
           </tr>
         </thead>
         <tbody>
@@ -69,9 +71,18 @@
             <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td>
             <td class="cell-right">{{ formatNum(row.per_day_production) }}</td>
+            <td class="cell-center">
+              <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" class="cc-view-btn" @click="openProductionPlan(row.pp_id)">View</button>
+              <span v-else-if="row.pp_id" class="muted">PP Draft</span>
+              <span v-else class="muted">No PP</span>
+            </td>
+            <td class="cell-center">
+              <button v-if="row.spr_name" type="button" class="cc-clear-btn" @click="openSPR(row.spr_name)">Open</button>
+              <span v-else class="muted">-</span>
+            </td>
           </tr>
           <tr v-if="!filteredRows.length">
-            <td colspan="12" class="cell-center" style="padding:24px;color:#64748b;">No sheet cutting orders for this view.</td>
+            <td colspan="14" class="cell-center" style="padding:24px;color:#64748b;">No sheet cutting orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -117,6 +128,16 @@ function formatNum(v) {
 
 function goToBoard() {
   frappe.set_route("sheet-cutting-board");
+}
+
+function openProductionPlan(ppId) {
+  if (!ppId) return;
+  frappe.set_route("Form", "Production Plan", ppId);
+}
+
+function openSPR(sprName) {
+  if (!sprName) return;
+  frappe.set_route("Form", "Shaft Production Run", sprName);
 }
 
 function debouncedFetch() {
@@ -310,5 +331,9 @@ onMounted(async () => {
 }
 .cell-right {
   text-align: right;
+}
+.muted {
+  color: #94a3b8;
+  font-size: 12px;
 }
 </style>
