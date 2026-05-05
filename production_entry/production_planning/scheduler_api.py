@@ -7873,7 +7873,34 @@ def _get_color_chart_data_impl(
         else:
             split_col = "0 as isSplit,"
 
-        if has_col:
+        if bps == "sheet_cutting_only":
+            # Sheet Cutting: show ALL 251 rows for the date regardless of colour.
+            # Use ordered_date (or planned_date if set) so operators always see their orders.
+            sheet_date_col_sc = (
+                "COALESCE(NULLIF(i.planned_date,''), NULLIF(p.custom_planned_date,''), p.ordered_date)"
+                if has_col else
+                ("COALESCE(p.custom_planned_date, p.ordered_date)" if frappe.db.has_column("Planning sheet", "custom_planned_date") else "p.ordered_date")
+            )
+            items = frappe.db.sql(f"""
+                SELECT
+                    i.name as itemName, i.item_code, i.item_name, i.qty, i.uom, i.unit,
+                    i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name,
+                    {so_item_col} {split_col}
+                    p.name as planningSheet, p.party_code as partyCode, p.customer,
+                    COALESCE(c.customer_name, p.customer) as customer_name,
+                    p.ordered_date, p.dod, p.sales_order as salesOrder,
+                    COALESCE(p.custom_planned_date, '') as sheet_planned_date,
+                    COALESCE(p.custom_pb_plan_name, '') as pbPlanName,
+                    {sheet_date_col_sc} as planned_date
+                FROM `tabPlanning Table` i
+                JOIN `tabPlanning sheet` p ON i.parent = p.name
+                LEFT JOIN `tabCustomer` c ON p.customer = c.name
+                WHERE i.item_code LIKE '251%%'
+                  AND p.docstatus < 2
+                  AND DATE({sheet_date_col_sc}) = DATE(%s)
+                ORDER BY i.unit, i.idx
+            """, (target_date,), as_dict=True)
+        elif has_col:
             # All items on board for target_date:
             # 1. Items with explicit planned_date = target_date (colors + manually-moved whites)
             # 2. White items with ordered_date = target_date and no item-level override
@@ -8015,14 +8042,16 @@ def _get_color_chart_data_impl(
         # - White items: always visible if they match the date
         # - Color items: visible if item OR sheet is planned on board
         #   (item-level planned date, sheet-level planned date, or PB plan marker)
-        items = [
-            it for it in (items or [])
-            if _is_white_color(it.get("color"))
-            or it.get("planned_date")
-            or it.get("sheet_planned_date")
-            or it.get("pbPlanName")
-            or (bps == "printed_bopp_pb_only" and _matches_printed_bopp_board_row(it))
-        ]
+        # - Sheet cutting (251): always visible regardless of colour or plan date
+        if bps != "sheet_cutting_only":
+            items = [
+                it for it in (items or [])
+                if _is_white_color(it.get("color"))
+                or it.get("planned_date")
+                or it.get("sheet_planned_date")
+                or it.get("pbPlanName")
+                or (bps == "printed_bopp_pb_only" and _matches_printed_bopp_board_row(it))
+            ]
 
         if items and bps != "sheet_cutting_only":
             sheet_names = list(set(it.planningSheet for it in items))
@@ -8147,7 +8176,8 @@ def _get_color_chart_data_impl(
     # IMPORTANT: We do NOT require custom_pb_plan_name here because "white" orders
     # are allowed to appear directly on the Production Board without being pushed.
     # Non-white items are filtered per-item later unless they belong to a PB plan.
-    if cint(planned_only) and _has_planned_date_column():
+    # Sheet Cutting (251): always show — no planned-date gate needed.
+    if cint(planned_only) and _has_planned_date_column() and bps != "sheet_cutting_only":
         # Allow sheets where EITHER the sheet has custom_planned_date OR items have planned_date
         has_item_planned = frappe.db.has_column("Planning Table", "planned_date")
         if has_item_planned:
@@ -9212,8 +9242,8 @@ def _get_color_chart_data_impl(
 
             # Production Board special filtering: only show scheduled items if planned_only is requested
             if cint(planned_only):
-                if bps in ("lamination_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only"):
-                    pass
+                if bps in ("lamination_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only"):
+                    pass  # These dedicated boards/tables show all their items regardless of planned date
                 # NON-WHITE items MUST be explicitly pushed (have a planned date)
                 elif not is_white and not item_pdate:
                     continue
