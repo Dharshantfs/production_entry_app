@@ -3732,15 +3732,18 @@ def get_sheet_cutting_order_table_data(
         shift_expr = "'DAY'"
     has_pt_spr = frappe.db.has_column("Planning Table", "spr_name")
     spr_parent_expr = "IFNULL(pt.spr_name, '')" if has_pt_spr else "''"
+    fabric_pick_sql_s = _sql_correlated_pick_one_fabric_name("pt")
     extra = frappe.db.sql(
         f"""
         SELECT
             pt.name as psi_name,
             {shift_expr} as shift_label,
             {spr_parent_expr} as parent_spr_name,
+            IFNULL(fab.width_inch, 0) as child_roll_size,
             IFNULL(pt.width_inch, 0) as roll_size,
             IFNULL(pt.meter, 0) as mtr
         FROM `tabPlanning Table` pt
+        LEFT JOIN `tabPlanning Table` fab ON fab.name = {fabric_pick_sql_s}
         WHERE pt.name IN ({fmt})
         """,
         tuple(psi_names),
@@ -3801,8 +3804,14 @@ def get_sheet_cutting_order_table_data(
         row["colour_code"] = _cstr(p.get("colour_code"))
         row["gsm"] = cint(p.get("gsm") or row.get("gsm") or 0)
         row["series_id"] = sid
-        # 251 width must come from Sheet Cutting Series; keep Planning width as fallback only.
-        row["roll_size"] = flt(size_info.get("width_inch") or ex.get("roll_size") or row.get("width_inch") or 0)
+        # Roll size in table should reflect child (100) item width first.
+        row["roll_size"] = flt(
+            ex.get("child_roll_size")
+            or size_info.get("width_inch")
+            or ex.get("roll_size")
+            or row.get("width_inch")
+            or 0
+        )
         row["mtr"] = flt(ex.get("mtr") or row.get("meter") or 0)
         row["sheet_size"] = _cstr(size_info.get("sheet_size"))
         row["planned_quantity"] = flt(row.get("qty") or 0)

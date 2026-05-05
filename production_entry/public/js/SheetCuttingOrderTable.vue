@@ -271,6 +271,7 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   width: 100%;
   border-collapse: collapse;
   min-width: 1280px;
+  table-layout: fixed;
 }
 .cc-prod-table th {
   position: sticky;
