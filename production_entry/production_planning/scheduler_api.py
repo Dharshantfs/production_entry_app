@@ -2046,6 +2046,21 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 		return
 	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
 	if not ps.get("sales_order"):
+		# Surface this so the user knows why 251 BOM children weren't appended.
+		has_251 = frappe.db.sql(
+			"""SELECT 1 FROM `tabPlanning Table`
+			   WHERE parent = %s AND item_code LIKE '251%%' LIMIT 1""",
+			(planning_sheet_name,),
+		)
+		if has_251:
+			frappe.msgprint(
+				_(
+					"Sheet Cutting (251) BOM children NOT extracted for <b>{0}</b>: "
+					"Planning Sheet has no linked Sales Order."
+				).format(planning_sheet_name),
+				title=_("Sheet Cutting BOM skipped"),
+				indicator="red",
+			)
 		return
 	so = frappe.get_doc("Sales Order", ps.sales_order)
 	so_by_name = {str(it.name): it for it in (so.items or [])}
@@ -2088,8 +2103,14 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 				message=f"SO {so.name} line {so_it.name}: {e}\n{frappe.get_traceback()}",
 			)
 			frappe.msgprint(
-				_("Sheet cutting fabric row skipped for {0}: {1}").format(sc_ic, str(e)),
-				indicator="orange",
+				_(
+					"<b>BOM extraction FAILED for Sheet Cutting item {0}</b><br>"
+					"Reason: {1}<br>"
+					"Fix: ensure a submitted active BOM exists for {0} (or its template) "
+					"with exactly one 100* fabric row, then click <b>Sync Production Plan</b> again."
+				).format(sc_ic, str(e)),
+				title=_("Sheet Cutting BOM not extracted"),
+				indicator="red",
 			)
 			continue
 
