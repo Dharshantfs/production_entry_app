@@ -253,6 +253,25 @@ class Planningsheet(Document):
         self.parse_item_details()
         self._sync_line_plan_codes()
         self._recompute_printed_bopp_total_colours_on_child_rows()
+        self._ensure_parent_child_trace_ids_on_rows()
+
+    def _ensure_parent_child_trace_ids_on_rows(self):
+        """Set missing Parent Child Trace ID from item code (102 rewinding, 103 slitting, 104 lamination, etc.)."""
+        try:
+            from production_entry.production_planning.scheduler_api import (
+                _parent_child_trace_id_from_item_code,
+                _set_trace_id_if_supported,
+            )
+        except Exception:
+            return
+        for table_key in ("planned_items", "items"):
+            for row in self.get(table_key) or []:
+                if str(getattr(row, "custom_parent_child_trace_id", None) or "").strip():
+                    continue
+                ic = str(getattr(row, "item_code", None) or "").strip()
+                tid = _parent_child_trace_id_from_item_code(ic)
+                if tid:
+                    _set_trace_id_if_supported(row, tid)
 
     def _sync_line_plan_codes(self):
         """Fill Planning sheet Item / board row Plan Code from active plan + date + unit (color chart alignment)."""

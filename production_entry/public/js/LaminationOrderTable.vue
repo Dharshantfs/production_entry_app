@@ -109,11 +109,11 @@
             <th v-if="!isPrintedBoppTable">FABRIC GSM</th>
             <th v-if="showBoppGsmColumn">BOPP GSM</th>
             <th v-if="!isPrintedBoppTable">LAM GSM</th>
-            <th>PLANNED LENGTH (MTR)</th>
-            <th>ACHIEVED LENGTH (MTR)</th>
-            <th>{{ producedWeightHeader }}</th>
-            <th v-if="!isPrintedBoppTable">PRODUCED FABRIC WT (KG)</th>
             <th v-if="!isPrintedBoppTable">FABRIC READY DATE</th>
+            <th>{{ producedWeightHeader }}</th>
+            <th>PLANNED LENGTH (MTRS)</th>
+            <th>ACHIEVED LENGTH (MTRS)</th>
+            <th v-if="!isPrintedBoppTable">produced fabric wt (kgs)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
           </tr>
@@ -172,13 +172,16 @@
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td v-if="showBoppGsmColumn" class="cell-center">{{ row.bopp_gsm || "-" }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
+            <td class="cell-right" :title="!isPrintedBoppTable ? `Lamination: produced / planned (${formatKg2(row.planned_lamination_weight_kgs)} kg)` : ''">
+              <template v-if="isPrintedBoppTable">{{ formatKg2(row.actual_production_weight_kgs) }}</template>
+              <template v-else>{{ formatKg2(row.actual_production_weight_kgs) }} / {{ formatKg2(row.planned_lamination_weight_kgs) }}</template>
+            </td>
             <td class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
-            <td class="cell-right">{{ formatKg2(row.actual_production_weight_kgs) }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
               {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
             </td>
-            <td v-if="!isPrintedBoppTable" class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>

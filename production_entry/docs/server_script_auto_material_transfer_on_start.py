@@ -9,10 +9,45 @@
 #      Entry (same idea as production_entry SPR). Prevents BatchNegativeStockError
 #      when picks/qty exceed bundle-visible balance.
 #   3) Auto path — only allocates batches with positive merged qty in source_wh.
+#   4) FG 102/103/104/107: skip only when batch-tracked 100* fabric exists on the WO
+#      and no fabric_batch_picks were sent; otherwise run (picks path or auto FIFO).
+#   5) parse_fabric_batch_picks accepts list/dict or JSON strings.
+#   6) Client sends fabric_picks_json + wo_transfer_payload (strings) — Server Script form_dict
+#      often drops nested list args from frappe.call; strings survive.
+#   7) Do not use frappe.db.has_column in Server Script safe_exec — it is not exposed; use Meta.has_field.
 # =============================================================================
 
+
+def sle_has_serial_batch_bundle_link():
+    """True if Stock Ledger Entry links Serial and Batch Bundle (v15+). Safe in Server Script."""
+    try:
+        return bool(frappe.get_meta("Stock Ledger Entry").has_field("serial_and_batch_bundle"))
+    except Exception:
+        return False
+
+
+def wo_has_100_batch_fabric_rm(wo):
+    """True if this WO needs fabric batch picks (100* RM with has_batch_no)."""
+    for row in wo.required_items or []:
+        ic = str(row.item_code or "").strip()
+        if not ic.startswith("100"):
+            continue
+        if frappe.utils.flt(row.required_qty or 0) <= 0:
+            continue
+        try:
+            if frappe.db.get_value("Item", ic, "has_batch_no"):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def fg_needs_manual_fabric_picks(production_item):
-    """True when FG item code contains 102 / 103 / 104 / 107 anywhere (manual start + transfer)."""
+    """True when FG item code contains 102 / 103 / 104 / 107 anywhere.
+
+    For these FGs we do not auto FIFO fabric batches. If the client POSTs
+    ``fabric_batch_picks``, transfer still runs using those picks for 100* RM lines.
+    """
     if not production_item:
         return False
     pi = str(production_item)
@@ -48,7 +83,7 @@ def batch_qty_classic_sle(item_code, batch_no, warehouse):
 
 def batch_qty_bundle_sle(item_code, batch_no, warehouse):
     """Positive outward-safe batch qty from Serial and Batch Bundle child rows."""
-    if not frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+    if not sle_has_serial_batch_bundle_link():
         return 0.0
     sb_dt = "Serial and Batch Entry"
     if not frappe.db.exists("DocType", sb_dt):
@@ -122,7 +157,7 @@ def get_batches_from_ledger(item_code, warehouse):
         if bn and q > 0:
             acc[bn] = acc.get(bn, 0.0) + q
 
-    if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+    if sle_has_serial_batch_bundle_link():
         try:
             sb_dt = "Serial and Batch Entry"
             if frappe.db.exists("DocType", sb_dt):
@@ -181,18 +216,107 @@ def get_batches_from_ledger(item_code, warehouse):
 
 
 def parse_fabric_batch_picks(form_dict):
-    """Read picks from form_dict. Uses only try/except — no blocked builtins."""
-    raw = form_dict.get("fabric_batch_picks") or form_dict.get("fbp") or ""
-    if not raw:
+    """Read picks from form_dict (JSON string, or list/dict from frappe.call)."""
+    raw = form_dict.get("fabric_batch_picks")
+    if raw is None:
+        raw = form_dict.get("fbp")
+    if raw is None:
         return []
+    if isinstance(raw, (list, tuple)):
+        return [p for p in raw if p]
+    if isinstance(raw, dict):
+        return [raw] if raw else []
     s = str(raw).strip()
     if not s:
         return []
     try:
         data = frappe.parse_json(s)
-        return list(data) if data else []
     except Exception:
         return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def extract_fabric_picks_from_request():
+    """Resolve picks from form_dict. Server Scripts often drop nested list args — prefer JSON strings."""
+    fd = frappe.form_dict
+    if fd is None:
+        fd = {}
+    env = fd.get("wo_transfer_payload")
+    if env:
+        try:
+            ed = frappe.parse_json(str(env).strip())
+            if isinstance(ed, dict):
+                pl = ed.get("fabric_batch_picks")
+                if isinstance(pl, list) and pl:
+                    return pl
+                if isinstance(pl, str) and str(pl).strip():
+                    out = parse_fabric_batch_picks({"fabric_batch_picks": str(pl).strip()})
+                    if out:
+                        return out
+        except Exception:
+            pass
+    for key in ("fabric_picks_json", "fabric_batch_picks", "fbp"):
+        blob = fd.get(key)
+        if blob is None:
+            continue
+        if isinstance(blob, (list, tuple)) and blob:
+            out = parse_fabric_batch_picks({"fabric_batch_picks": blob})
+            if out:
+                return out
+        s = str(blob).strip()
+        if len(s) > 1 and s[0] in "[{":
+            out = parse_fabric_batch_picks({"fabric_batch_picks": s})
+            if out:
+                return out
+    out = parse_fabric_batch_picks(fd)
+    if out:
+        return out
+    args_blob = fd.get("args") if fd else None
+    if args_blob:
+        try:
+            ad = frappe.parse_json(args_blob) if isinstance(args_blob, str) else args_blob
+            if isinstance(ad, dict):
+                out = parse_fabric_batch_picks(ad)
+                if out:
+                    return out
+        except Exception:
+            pass
+    if fd:
+        for key, val in fd.items():
+            if val is None or key in ("cmd", "method"):
+                continue
+            sv = str(val).strip()
+            if len(sv) > 2 and sv[0] == "[" and "batch_no" in sv:
+                out = parse_fabric_batch_picks({"fabric_batch_picks": sv})
+                if out:
+                    return out
+    try:
+        req = getattr(frappe.local, "request", None)
+        if req is not None:
+            getd = getattr(req, "get_data", None)
+            if callable(getd):
+                rawb = getd(as_text=True)
+                if rawb and str(rawb).strip().startswith("{"):
+                    jd = frappe.parse_json(rawb)
+                    if isinstance(jd, dict):
+                        out = parse_fabric_batch_picks(jd)
+                        if out:
+                            return out
+                        inner = jd.get("args")
+                        if inner:
+                            if isinstance(inner, str):
+                                inner = frappe.parse_json(inner)
+                            if isinstance(inner, dict):
+                                out = parse_fabric_batch_picks(inner)
+                                if out:
+                                    return out
+    except Exception:
+        pass
+    return []
 
 
 def picks_pool_for_item(picks_list, item_code):
@@ -226,6 +350,15 @@ def auto_material_transfer():
     try:
         wo_id = frappe.form_dict.get("work_order") or frappe.form_dict.get("wo_id")
         if not wo_id:
+            env = (frappe.form_dict or {}).get("wo_transfer_payload")
+            if env:
+                try:
+                    ed = frappe.parse_json(str(env).strip())
+                    if isinstance(ed, dict):
+                        wo_id = ed.get("work_order") or ed.get("wo_id")
+                except Exception:
+                    pass
+        if not wo_id:
             frappe.throw("Work Order Missing")
 
         wo = frappe.get_doc("Work Order", wo_id)
@@ -239,15 +372,14 @@ def auto_material_transfer():
             frappe.response["message"] = {"success": True, "message": "Already Started"}
             return
 
-        if fg_needs_manual_fabric_picks(wo.production_item):
-            frappe.response["message"] = {
-                "success": True,
-                "message": "Skipped: FG item contains 102/103/104/107 — use manual Start Production / batch transfer.",
-            }
-            return
-
-        fg_manual = False
-        fabric_picks = parse_fabric_batch_picks(frappe.form_dict)
+        fabric_picks = extract_fabric_picks_from_request()
+        fg_manual = fg_needs_manual_fabric_picks(wo.production_item)
+        manual_pick_fallback = False
+        # Never hard-stop WO start here. If picks did not arrive, continue with auto FIFO
+        # for this run so production is not blocked.
+        if fg_manual and not fabric_picks:
+            manual_pick_fallback = wo_has_100_batch_fabric_rm(wo)
+            fg_manual = False
 
         se = frappe.new_doc("Stock Entry")
         se.stock_entry_type = "Material Transfer for Manufacture"
@@ -417,10 +549,10 @@ def auto_material_transfer():
         wo.db_set("actual_start_date", frappe.utils.now_datetime())
         wo.reload()
 
-        frappe.response["message"] = {
-            "success": True,
-            "message": "Production Started : " + str(se.name),
-        }
+        done_msg = "Production Started : " + str(se.name)
+        if manual_pick_fallback:
+            done_msg += " (batch picks not received; used auto FIFO allocation)"
+        frappe.response["message"] = {"success": True, "message": done_msg}
 
     except Exception as e:
         frappe.log_error(str(e), "WO Start Error")

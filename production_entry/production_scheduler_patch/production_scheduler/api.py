@@ -63,7 +63,7 @@ def _parent_child_trace_id_from_item_code(item_code):
 	if len(ic) < 16:
 		return ""
 	process = _item_process_prefix(ic)
-	if process not in ("103", "104"):
+	if process not in ("102", "103", "104"):
 		return ""
 
 	left = ic
@@ -1437,7 +1437,7 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		f"""
 		SELECT name, parent, item_code, sales_order_item
 		FROM `tabPlanning Table`
-		WHERE item_code REGEXP '^(103|104)' {sheet_filter}
+		WHERE item_code REGEXP '^(102|103|104)' {sheet_filter}
 		""",
 		tuple(params),
 		as_dict=True,
