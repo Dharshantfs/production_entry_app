@@ -11,6 +11,12 @@ from production_entry.production_planning.planning_doctypes import (
 	SHEET_CUTTING_UNIT,
 )
 
+
+def _cstr(value):
+	"""Safe stripped string conversion used across scheduler helpers."""
+	return str(value or "").strip()
+
+
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
 # Set True to enable; False disables all calls (no codes generated, no SO writeback from this path).
 PARTY_CODE_GENERATION_ENABLED = False
