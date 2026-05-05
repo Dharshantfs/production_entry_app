@@ -16,9 +16,13 @@ def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
 	pi = (production_item or "").strip().upper()
 	if not pi:
 		return False
-	if pi.startswith("104") or pi.startswith("103") or pi.startswith("102"):
+	tail = pi.split(" - ")[-1].strip() if " - " in pi else pi
+	if tail.startswith(("104", "103", "102")):
 		return True
 	if "-107" in pi:
+		return True
+	# Prefixed codes (e.g. MB-1031032210) or titled items where the numeric code is not leftmost.
+	if re.search(r"(?:^|[^0-9])(?:103|104|102)\d", pi):
 		return True
 	return False
 
@@ -2306,6 +2310,34 @@ class ShaftProductionRun(Document):
 				title=_("Missing RM Batch"),
 			)
 
+	def _spr_merge_wos_from_shaft_jobs(self, wo_groups: dict[str, list]) -> None:
+		"""Include WOs from Available Jobs so fabric can be picked before roll rows are linked or weighed."""
+		for job in self.get("shaft_jobs") or []:
+			raw = _cstr(getattr(job, "work_orders", None) or "")
+			if not raw:
+				continue
+			for part in raw.replace("\n", ",").split(","):
+				wo = part.strip()
+				if not wo or not frappe.db.exists("Work Order", wo):
+					continue
+				wo_groups.setdefault(_cstr(wo), [])
+
+	def _spr_fabric_pick_preview_fg_qty(self, rows: list, wo_doc) -> float:
+		"""FG kg for BOM preview: actual roll weights, else planned_qty, else WO remaining / qty (min 1)."""
+		qty = sum(self._row_fg_qty(r) for r in rows)
+		if qty > 1e-9:
+			return qty
+		planned = sum(flt(_spr_row_get(r, "planned_qty")) for r in rows)
+		if planned > 1e-9:
+			return planned
+		remaining, _, _, _ = self._wo_allowed_remaining_qty(wo_doc)
+		if remaining > 1e-9:
+			return remaining
+		base = flt(getattr(wo_doc, "qty", 0))
+		if base > 1e-9:
+			return base
+		return 1.0
+
 	def _spr_build_fabric_batch_pick_context_dict(self) -> dict:
 		"""API payload for the desk fabric-batch dialog (104 / 103 / 107 / 102 WOs + 100 RM + WIP batches)."""
 		out: dict = {"needs_picks": False, "lines": [], "current_picks": [], "spr": self.name}
@@ -2317,6 +2349,7 @@ class ShaftProductionRun(Document):
 			if not wo_name:
 				continue
 			wo_groups.setdefault(_cstr(wo_name), []).append(row)
+		self._spr_merge_wos_from_shaft_jobs(wo_groups)
 		lines = []
 		for wo_id, rows in wo_groups.items():
 			if not frappe.db.exists("Work Order", wo_id):
@@ -2325,7 +2358,7 @@ class ShaftProductionRun(Document):
 			pi = _cstr(getattr(wo_doc, "production_item", None) or "")
 			if not spr_fg_parent_needs_fabric_batch_pick(pi):
 				continue
-			total_qty = sum(self._row_fg_qty(r) for r in rows)
+			total_qty = self._spr_fabric_pick_preview_fg_qty(rows, wo_doc)
 			if total_qty <= 0:
 				continue
 			expected = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
