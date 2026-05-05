@@ -2069,12 +2069,17 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 		so_by_item_code.setdefault(str(it.item_code or "").strip(), it)
 	parent_field = _get_pt_parentfield()
 	changed = False
+	# Flush pending writes so the 251 parent rows are visible to the DB query below.
+	frappe.db.commit()
 	parent_rows = frappe.get_all(
 		"Planning Table",
 		filters={"parent": ps.name, "item_code": ["like", "251%"]},
 		fields=["name", "item_code", "sales_order_item", "qty", "uom"],
 		limit_page_length=2000,
 	) or []
+	if not parent_rows:
+		# No 251 rows in Planning Table at all — nothing to extract BOM for.
+		return
 	for prow in parent_rows:
 		sc_ic = _cstr(prow.get("item_code"))
 		if _item_process_prefix(sc_ic) != "251":
@@ -5063,10 +5068,13 @@ def _populate_planning_sheet_items(ps, doc):
         
         # Planned date for Lamination parent (104/107) must be order date.
         # For Fabric (100), white-color logic remains unchanged.
+        # For Sheet Cutting (251): always set planned_date = order date so board/table always shows them.
         p_date = None
         if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(str(it.item_code or "")):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "103":
+             p_date = getdate(doc.transaction_date or ps.ordered_date)
+        elif _item_process_prefix(str(it.item_code or "")) == "251":
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif _is_white_color(col):
              p_date = getdate(ps.ordered_date)
@@ -13835,11 +13843,39 @@ def sync_bom_children_for_planning_sheet(planning_sheet):
     ensure_lamination_booking_for_planning_sheet(ps)
     ps.save(ignore_permissions=True)
 
-    frappe.msgprint(
-        f"Planning Sheet <b>{ps_name}</b> BOM children synced. "
-        "Check for any red/orange messages above for BOM issues.",
-        indicator="green",
+    # Check if 251 fabric rows were added
+    sc_fabric_count = frappe.db.sql(
+        """SELECT COUNT(*) as cnt FROM `tabPlanning Table`
+           WHERE parent = %s AND item_code LIKE '100%%'
+           AND sales_order_item IN (
+               SELECT sales_order_item FROM `tabPlanning Table`
+               WHERE parent = %s AND item_code LIKE '251%%'
+           )""",
+        (ps_name, ps_name),
+        as_dict=True,
     )
+    sc_parent_count = frappe.db.sql(
+        "SELECT COUNT(*) as cnt FROM `tabPlanning Table` WHERE parent = %s AND item_code LIKE '251%%'",
+        (ps_name,),
+        as_dict=True,
+    )
+    n_parents = cint((sc_parent_count[0] or {}).get("cnt") or 0)
+    n_fabric = cint((sc_fabric_count[0] or {}).get("cnt") or 0)
+    if n_parents > 0 and n_fabric < n_parents:
+        frappe.msgprint(
+            f"Planning Sheet <b>{ps_name}</b> BOM children synced. "
+            f"<br><b style='color:red'>WARNING: {n_parents} Sheet Cutting (251) item(s) found "
+            f"but only {n_fabric} fabric (100*) BOM row(s) extracted.</b>"
+            "<br>Ensure each 251 item has a submitted, active, default BOM with exactly one 100* raw material row, "
+            "then click <b>Sync Production Plan</b> again.",
+            indicator="orange",
+        )
+    else:
+        frappe.msgprint(
+            f"Planning Sheet <b>{ps_name}</b> BOM children synced successfully."
+            + (f" ({n_fabric} Sheet Cutting fabric row(s) confirmed.)" if n_fabric else ""),
+            indicator="green",
+        )
     return {"status": "ok", "planning_sheet": ps_name}
 
 
