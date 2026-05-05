@@ -9203,7 +9203,7 @@ def _get_color_chart_data_impl(
         for item in items:
             if bps == "printed_bopp_pb_only" and not _matches_printed_bopp_board_row(item):
                 continue
-            if LAMINATION_FLOW_ENABLED and bps and bps != "printed_bopp_pb_only":
+            if bps and bps != "printed_bopp_pb_only":
                 ic = (item.get("item_code") or "").strip()
                 icp = _item_process_prefix(ic)
                 lam_p = _lamination_process_from_item_code(ic)
@@ -9225,6 +9225,8 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "rewinding_only" and icp != "102":
                     continue
+                if bps == "sheet_cutting_only" and icp != "251":
+                    continue
 
             color = (item.get("color") or item.get("colour") or "").strip()
             quality = (item.get("custom_quality") or "").strip()
@@ -9245,11 +9247,16 @@ def _get_color_chart_data_impl(
             # ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ Granular filtering: determine if item belongs to the current date view ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡
             item_pdate = item.get("planned_date") or item.get("custom_item_planned_date")
             is_white = _is_white_color(color)
-            
-            # Effective item date for filtering: 
-            # Unpushed non-white items stick to ordered_date.
-            # Pushed items (or auto-pushed whites) stick to their planned/pushed date.
-            i_eff_pdate = item_pdate or (sheet.get("custom_planned_date") if is_white else None) or sheet.get("ordered_date")
+            is_sheet_cutting = bps == "sheet_cutting_only"
+
+            # Effective item date for filtering:
+            # - Sheet Cutting (251): always use planned_date if set, else ordered_date (no colour gate).
+            # - Unpushed non-white items stick to ordered_date.
+            # - Pushed items (or auto-pushed whites) stick to their planned/pushed date.
+            if is_sheet_cutting:
+                i_eff_pdate = item_pdate or sheet.get("ordered_date")
+            else:
+                i_eff_pdate = item_pdate or (sheet.get("custom_planned_date") if is_white else None) or sheet.get("ordered_date")
             
             if date or (start_date and end_date):
                 try:
