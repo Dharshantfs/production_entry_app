@@ -553,7 +553,7 @@ function spr_open_fabric_batch_pick_dialog(frm) {
 		);
 		return;
 	}
-	frappe.dom.freeze(__('Loading batchesΓÇª'));
+	frappe.dom.freeze(__('Loading batches...'));
 	frappe.call({
 		method:
 			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_fabric_batch_pick_context',
@@ -711,7 +711,7 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 					'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_save_fabric_batch_picks',
 				args: { spr_name: frm.doc.name, picks_json: JSON.stringify(out) },
 				freeze: true,
-				freeze_message: __('SavingΓÇª'),
+				freeze_message: __('Saving...'),
 				callback: function () {
 					d.hide();
 					frm.reload_doc();
@@ -2506,7 +2506,7 @@ function spr_patch_items_grid_refresh(frm) {
 	}
 }
 
-/** Legend for |Sticker GSM ΓêÆ Produced GSM| bands (above Roll Production Results grid). */
+/** Legend for |Sticker GSM vs Produced GSM| bands (above Roll Production Results grid). */
 function spr_inject_gsm_legend(frm) {
 	const fd = frm.fields_dict && frm.fields_dict.items;
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
@@ -2521,9 +2521,9 @@ function spr_inject_gsm_legend(frm) {
 		__('Roll lines — GSM difference (Sticker GSM vs Produced GSM)') +
 		'</strong><br>' +
 		'<span style="display:inline-block;background:#bbf7d0;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">|diff| &lt; 1</span> ' +
-		'<span style="display:inline-block;background:#eab308;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">1 ΓÇô 2</span> ' +
-		'<span style="display:inline-block;background:#fb923c;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">2 ΓÇô 3</span> ' +
-		'<span style="display:inline-block;background:#fecaca;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">ΓëÑ 3</span> ' +
+		'<span style="display:inline-block;background:#eab308;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">1 - 2</span> ' +
+		'<span style="display:inline-block;background:#fb923c;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">2 - 3</span> ' +
+		'<span style="display:inline-block;background:#fecaca;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">>= 3</span> ' +
 		'<span style="display:inline-block;background:#f3f4f6;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">' +
 		__('Awaiting produced GSM / incomplete') +
 		'</span>' +
@@ -2636,7 +2636,7 @@ function ensure_spr_item_stylesheet() {
 	window.__sprspr_items_css_ver = sprItemsCssVer;
 	window.__sprspr_style = true;
 	$('head style[data-spr-items]').remove();
-	/* |Sticker GSM (gsm) ΓêÆ Produced GSM (produced_gsm)|: <1 green, 1ΓÇô2 yellow, 2ΓÇô3 orange, 3+ red */
+	/* |Sticker GSM (gsm) vs Produced GSM (produced_gsm)|: <1 green, 1-2 yellow, 2-3 orange, 3+ red */
 	const css = `
 		.spr-items-wrap .spr-gsm-band-0 { background-color: #bbf7d0 !important; }
 		.spr-items-wrap .spr-gsm-band-1 { background-color: #eab308 !important; }
@@ -3273,5 +3273,3 @@ function spr_sync_total_produced_weight(frm, opts) {
 		}
 	}
 }
-
-
