@@ -5848,10 +5848,73 @@ def get_unit_load(date, unit, plan_name=None, pb_only=0):
 # ===========================
 
 NON_BLOCKING_MAINTENANCE_TYPES = {"MESH CHANGE", "DIE CHANGE"}
+MAINTENANCE_UNIT_OPTIONS = (
+    "Unit 1",
+    "Unit 2",
+    "Unit 3",
+    "Unit 4",
+    "Lamination Unit",
+    "Slitting Unit",
+    REWINDING_UNIT_L3,
+    REWINDING_UNIT_L4,
+    REWINDING_UNIT_L5,
+    REWINDING_UNASSIGNED_UNIT,
+    SHEET_CUTTING_UNIT,
+    PRINTED_BOPP_FILM_UNIT,
+)
 
 
 def _is_non_blocking_maintenance_type(maintenance_type):
     return str(maintenance_type or "").strip().upper() in NON_BLOCKING_MAINTENANCE_TYPES
+
+
+def _normalize_maintenance_unit(unit):
+    u = _cstr(unit)
+    lu = u.lower()
+    if lu in {"slitting", "slitting unit"}:
+        return "Slitting Unit"
+    if "rewinding" in lu and "l3" in lu:
+        return REWINDING_UNIT_L3
+    if "rewinding" in lu and "l4" in lu:
+        return REWINDING_UNIT_L4
+    if "rewinding" in lu and "l5" in lu:
+        return REWINDING_UNIT_L5
+    if "unassigned" in lu and "rewinding" in lu:
+        return REWINDING_UNASSIGNED_UNIT
+    if "sheet" in lu and "cutting" in lu:
+        return SHEET_CUTTING_UNIT
+    if "bopp" in lu and "printing" in lu:
+        return PRINTED_BOPP_FILM_UNIT
+    return u
+
+
+def _ensure_equipment_maintenance_unit_options():
+    """Ensure maintenance unit Select supports all production units used by tables/boards."""
+    if not frappe.db.exists("DocType", "Equipment Maintenance"):
+        return
+    desired = "\n".join(MAINTENANCE_UNIT_OPTIONS)
+    # Update Property Setter overrides first (highest precedence in meta).
+    ps_rows = frappe.get_all(
+        "Property Setter",
+        filters={
+            "doc_type": "Equipment Maintenance",
+            "field_name": "unit",
+            "property": "options",
+        },
+        fields=["name"],
+        limit_page_length=50,
+    ) or []
+    for ps in ps_rows:
+        frappe.db.set_value("Property Setter", ps.get("name"), "value", desired, update_modified=False)
+    # Keep DocField options updated as fallback/default source.
+    df_name = frappe.db.get_value(
+        "DocField",
+        {"parent": "Equipment Maintenance", "fieldname": "unit"},
+        "name",
+    )
+    if df_name:
+        frappe.db.set_value("DocField", df_name, "options", desired, update_modified=False)
+    frappe.clear_cache(doctype="Equipment Maintenance")
 
 @frappe.whitelist()
 def get_maintenance_windows(unit, start_date, end_date):
@@ -5990,6 +6053,8 @@ def add_equipment_maintenance(unit, maintenance_type, start_date, end_date, note
 
     if not frappe.db.exists("DocType", "Equipment Maintenance"):
         return {"status": "error", "message": "Equipment Maintenance module not found"}
+    _ensure_equipment_maintenance_unit_options()
+    unit = _normalize_maintenance_unit(unit)
     
     doc = frappe.get_doc({
         "doctype": "Equipment Maintenance",

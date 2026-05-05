@@ -19,7 +19,7 @@
       "fieldtype": "Select",
       "in_list_view": 1,
       "label": "Unit",
-      "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit",
+      "options": "Unit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit\nSlitting Unit\nTSNPL - L3 REWINDING MACHINE\nJSB - L4 REWINDING MACHINE\nJSB - L5 REWINDING MACHINE\nUnassigned rewinding machine\nJVE - SHEET CUTTING MACHINE\nVR - 1200MM BOPP PRINTING MACHINE",
       "reqd": 1
     },
     {
