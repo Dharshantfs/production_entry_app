@@ -47,11 +47,11 @@
             <th>CUSTOMER NAME</th>
             <th>QUALITY</th>
             <th>GSM</th>
-            <th>ROLL SIZE</th>
+            <th>WIDTH (INCH)</th>
             <th>MTR</th>
             <th>SHEET SIZE</th>
-            <th>PLANNED QUANTITY</th>
-            <th>ACHIVED QUANTITY</th>
+            <th>PLANNED QTY</th>
+            <th>ACHIEVED QTY</th>
             <th>PER DAY PRODUCTION</th>
           </tr>
         </thead>
@@ -205,3 +205,110 @@ onMounted(async () => {
   await fetchData();
 });
 </script>
+
+<style scoped>
+.cc-container {
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  background: #f3f4f6;
+  min-height: 100vh;
+  color: #0f172a;
+}
+.cc-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.cc-filter-title {
+  grid-column: 1 / -1;
+  font-weight: 700;
+  color: #065f46;
+}
+.cc-filter-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cc-filter-item label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+.cc-filter-item input,
+.cc-filter-item select {
+  min-height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: #fff;
+}
+.cc-filter-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cc-clear-btn,
+.cc-view-btn {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  background: #f8fafc;
+  font-weight: 600;
+}
+.cc-view-btn {
+  background: #ecfeff;
+  border-color: #99f6e4;
+}
+.cc-table-container {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: auto;
+}
+.cc-table-unit-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  font-weight: 700;
+  color: #065f46;
+  background: #f8fafc;
+}
+.cc-prod-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1280px;
+}
+.cc-prod-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f1f5f9;
+  color: #0f172a;
+  border-bottom: 1px solid #cbd5e1;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .2px;
+}
+.cc-prod-table th,
+.cc-prod-table td {
+  padding: 8px 9px;
+  border-bottom: 1px solid #f1f5f9;
+  white-space: nowrap;
+}
+.cc-prod-table tbody tr:hover {
+  background: #f8fafc;
+}
+.cell-center {
+  text-align: center;
+}
+.cell-right {
+  text-align: right;
+}
+</style>

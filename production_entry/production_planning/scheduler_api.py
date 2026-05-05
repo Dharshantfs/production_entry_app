@@ -132,16 +132,41 @@ def _sheet_cutting_series_size_map(series_ids):
 		if meta.has_field(fn):
 			size_field = fn
 			break
+	series_id_fields = [fn for fn in ("series_id", "custom_series_id", "code", "series_code") if meta.has_field(fn)]
+	read_fields = ["name"] + [f for f in (width_field, height_field, size_field) if f]
+	for sf in series_id_fields:
+		if sf not in read_fields:
+			read_fields.append(sf)
 	out = {}
+	by_sid = {}
+	by_name = {
+		_cstr(r.get("name")): r
+		for r in (frappe.get_all("Sheet Cutting Series", filters={"name": ["in", ids]}, fields=read_fields, limit_page_length=0) or [])
+	}
 	for sid in ids:
-		if not frappe.db.exists("Sheet Cutting Series", sid):
+		row = by_name.get(sid)
+		if not row and series_id_fields:
+			for sf in series_id_fields:
+				got = frappe.get_all(
+					"Sheet Cutting Series",
+					filters={sf: sid},
+					fields=read_fields,
+					limit_page_length=1,
+				)
+				if got:
+					row = got[0]
+					break
+		if not row:
 			continue
-		w = flt(frappe.db.get_value("Sheet Cutting Series", sid, width_field)) if width_field else 0
-		h = flt(frappe.db.get_value("Sheet Cutting Series", sid, height_field)) if height_field else 0
-		sz = _cstr(frappe.db.get_value("Sheet Cutting Series", sid, size_field)) if size_field else ""
+		w = flt(row.get(width_field)) if width_field else 0
+		h = flt(row.get(height_field)) if height_field else 0
+		sz = _cstr(row.get(size_field)) if size_field else ""
 		if not sz and w > 0 and h > 0:
-			sz = f"{int(w) if abs(w-int(w)) < 1e-9 else w}*{int(h) if abs(h-int(h)) < 1e-9 else h}"
-		out[sid] = {"width_inch": w, "height_inch": h, "sheet_size": sz}
+			wv = int(w) if abs(w - int(w)) < 1e-9 else w
+			hv = int(h) if abs(h - int(h)) < 1e-9 else h
+			sz = f"{wv}*{hv}"
+		by_sid[sid] = {"width_inch": w, "height_inch": h, "sheet_size": sz}
+	out.update(by_sid)
 	return out
 
 
@@ -3671,7 +3696,8 @@ def get_sheet_cutting_order_table_data(
         row["colour_code"] = _cstr(p.get("colour_code"))
         row["gsm"] = cint(p.get("gsm") or row.get("gsm") or 0)
         row["series_id"] = sid
-        row["roll_size"] = flt(ex.get("roll_size") or row.get("width_inch") or size_info.get("width_inch") or 0)
+        # 251 width must come from Sheet Cutting Series; keep Planning width as fallback only.
+        row["roll_size"] = flt(size_info.get("width_inch") or ex.get("roll_size") or row.get("width_inch") or 0)
         row["mtr"] = flt(ex.get("mtr") or row.get("meter") or 0)
         row["sheet_size"] = _cstr(size_info.get("sheet_size"))
         row["planned_quantity"] = flt(row.get("qty") or 0)
