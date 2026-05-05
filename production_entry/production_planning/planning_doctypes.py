@@ -19,6 +19,22 @@ REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE"
 REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine"
 SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE"
 
+# Unit number / alpha code embedded in batch/order codes at position 2.
+# Example order code "051263" → digit at index 2 = "1" = Unit 1
+UNIT_NUMBER_MAP = {
+    "Unit 1":                         "1",
+    "Unit 2":                         "2",
+    "Unit 3":                         "3",
+    "Unit 4":                         "4",
+    "Lamination Unit":                "5",
+    "Slitting Unit":                  "6",
+    "TSNPL - L3 REWINDING MACHINE":   "7",
+    "JSB - L4 REWINDING MACHINE":     "8",
+    "JSB - L5 REWINDING MACHINE":     "9",
+    "JVE - SHEET CUTTING MACHINE":    "S",
+    "VR - 1200MM BOPP PRINTING MACHINE": "V",
+}
+
 
 def normalize_planning_unit_for_select(raw, _depth=0):
     """Map free-text to exact options on Planning Table / Planning sheet Item `unit` (Select)."""

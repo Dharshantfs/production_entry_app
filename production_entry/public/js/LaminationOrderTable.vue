@@ -1051,35 +1051,60 @@ async function createItemStockEntry(item) {
     return;
   }
   const itemDisplay = getItemDisplayName(item);
-  frappe.confirm(
-    `Create Stock Entry for <b>${item.partyCode}</b> (${item.color})?<br/>PP: ${item.pp_id}<br/>Item: ${itemDisplay}`,
-    async () => {
-      item.__creating_spr = true;
-      try {
-        const res = await frappe.call({
-          method: "production_entry.production_planning.scheduler_api.create_item_spr",
-          args: {
-            pp_id: item.pp_id,
-            planning_sheet_item_names: JSON.stringify([item.itemName]),
-          },
-        });
-        if (res.message && res.message.status === "ok") {
-          const sprId = res.message.spr_id;
-          item.spr_name = sprId;
-          syncSprNameForSamePP(item.pp_id, sprId, item.itemName);
-          frappe.flags.spr_show_wo_popup = item.pp_id;
-          frappe.show_alert({ message: `SPR: ${sprId}`, indicator: "green" }, 3);
-          setTimeout(() => frappe.set_route("Form", "Shaft Production Run", sprId), 600);
-        } else {
-          frappe.msgprint(res.message?.message || "Failed to create SPR");
-        }
-      } catch (e) {
-        frappe.msgprint(`Error: ${e.message || e}`);
-      } finally {
-        item.__creating_spr = false;
+  const isBoppMode = isPrintedBoppTable.value;
+
+  async function _doCreateSpr(numRolls) {
+    item.__creating_spr = true;
+    try {
+      const res = await frappe.call({
+        method: "production_entry.production_planning.scheduler_api.create_item_spr",
+        args: {
+          pp_id: item.pp_id,
+          planning_sheet_item_names: JSON.stringify([item.itemName]),
+          process_type: isBoppMode ? "bopp_film" : null,
+          num_rolls: numRolls || null,
+        },
+      });
+      if (res.message && res.message.status === "ok") {
+        const sprId = res.message.spr_id || res.message.spr_name;
+        item.spr_name = sprId;
+        syncSprNameForSamePP(item.pp_id, sprId, item.itemName);
+        frappe.flags.spr_show_wo_popup = item.pp_id;
+        frappe.show_alert({ message: `SPR: ${sprId}`, indicator: "green" }, 3);
+        setTimeout(() => frappe.set_route("Form", "Shaft Production Run", sprId), 600);
+      } else {
+        frappe.msgprint(res.message?.message || "Failed to create SPR");
       }
+    } catch (e) {
+      frappe.msgprint(`Error: ${e.message || e}`);
+    } finally {
+      item.__creating_spr = false;
     }
-  );
+  }
+
+  if (isBoppMode) {
+    // BOPP Film: ask for no. of rolls before creating SPR
+    const d = new frappe.ui.Dialog({
+      title: "Create BOPP Film SPR",
+      fields: [
+        { fieldname: "no_of_rolls", fieldtype: "Int", label: "No. of Rolls Created", reqd: 1, default: 1,
+          description: "Enter how many rolls will be produced in this BOPP Printing run." }
+      ],
+      primary_action_label: "Create SPR",
+      primary_action: async function() {
+        const numRolls = cint(d.get_value("no_of_rolls"));
+        if (numRolls < 1) { frappe.msgprint("Please enter a valid number of rolls (≥ 1)."); return; }
+        d.hide();
+        await _doCreateSpr(numRolls);
+      }
+    });
+    d.show();
+  } else {
+    frappe.confirm(
+      `Create Stock Entry for <b>${item.partyCode}</b> (${item.color})?<br/>PP: ${item.pp_id}<br/>Item: ${itemDisplay}`,
+      async () => { await _doCreateSpr(null); }
+    );
+  }
 }
 
 function goToBoard() {

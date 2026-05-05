@@ -163,15 +163,41 @@ function itemProductionStatusLine(row) { const t = parseFloat(row.planned_quanti
 function itemSprLabel(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Open draft SPR"; if (row.wo_terminal) return "View SPR (done)"; return "View SPR"; }
 function itemSprTitle(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Continue recording production in draft SPR"; if (row.wo_terminal) return "WO complete — view final SPR"; return "Open submitted SPR"; }
 function canCreateSpr(row) { if (!row.pp_id || Number(row.pp_docstatus) !== 1) return false; if (!row.wo_open) return false; const planned = parseFloat(row.planned_quantity || 0); const achieved = parseFloat(row.achieved_quantity || 0); if (planned > 0 && achieved >= planned - 0.001) return false; return true; }
-async function createSheetCuttingSpr(item) {
+function createSheetCuttingSpr(item) {
   if (!item.pp_id) { frappe.msgprint("No Production Plan linked"); return; }
   if (item.spr_name) { openSPR(item.spr_name); return; }
-  try {
-    const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.create_item_spr", args: { pp_id: item.pp_id, planning_sheet_item_names: JSON.stringify([item.itemName]) } });
-    const msg = r?.message || {};
-    if (msg.spr_name) { item.spr_name = msg.spr_name; frappe.show_alert({ message: `SPR created: ${msg.spr_name}`, indicator: "green" }, 4); openSPR(msg.spr_name); }
-    else { frappe.msgprint(msg.message || "SPR creation failed"); }
-  } catch (e) { frappe.msgprint(`Failed to create SPR: ${e?.message || e}`); }
+  if (item.__creating_spr) return;
+  // Show "No of Rolls" dialog before creating SPR
+  const d = new frappe.ui.Dialog({
+    title: "Create Sheet Cutting SPR",
+    fields: [
+      { fieldname: "no_of_rolls", fieldtype: "Int", label: "No. of Rolls Created", reqd: 1, default: 1,
+        description: "Enter how many rolls will be produced in this Sheet Cutting run." }
+    ],
+    primary_action_label: "Create SPR",
+    primary_action: async function() {
+      const numRolls = cint(d.get_value("no_of_rolls"));
+      if (numRolls < 1) { frappe.msgprint("Please enter a valid number of rolls (≥ 1)."); return; }
+      d.hide();
+      item.__creating_spr = true;
+      try {
+        const r = await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.create_item_spr",
+          args: { pp_id: item.pp_id, planning_sheet_item_names: JSON.stringify([item.itemName]), process_type: "sheet_cutting", num_rolls: numRolls }
+        });
+        const msg = r?.message || {};
+        const sprName = msg.spr_id || msg.spr_name;
+        if (sprName) {
+          item.spr_name = sprName;
+          frappe.flags.spr_show_wo_popup = item.pp_id;
+          frappe.show_alert({ message: `SPR created: ${sprName}`, indicator: "green" }, 3);
+          setTimeout(() => frappe.set_route("Form", "Shaft Production Run", sprName), 600);
+        } else { frappe.msgprint(msg.message || "SPR creation failed"); }
+      } catch (e) { frappe.msgprint(`Failed to create SPR: ${e?.message || e}`); }
+      finally { item.__creating_spr = false; }
+    }
+  });
+  d.show();
 }
 function debouncedFetch() { if (fetchTimer) clearTimeout(fetchTimer); fetchTimer = setTimeout(() => fetchData(), 300); }
 function toggleArrangementLock() { arrangementLocked.value = !arrangementLocked.value; }

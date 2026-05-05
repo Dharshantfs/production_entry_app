@@ -1002,10 +1002,18 @@ async function createItemStockEntry(item) {
     frappe.msgprint("Planning row name missing");
     return;
   }
-  const itemDisplay = getItemDisplayName(item);
-  frappe.confirm(
-    `Create Stock Entry for <b>${item.partyCode}</b> (${item.color})?<br/>PP: ${item.pp_id}<br/>Item: ${itemDisplay}`,
-    async () => {
+  // Show "No of Rolls" dialog before creating SPR
+  const d = new frappe.ui.Dialog({
+    title: "Create Rewinding SPR",
+    fields: [
+      { fieldname: "no_of_rolls", fieldtype: "Int", label: "No. of Rolls Created", reqd: 1, default: 1,
+        description: "Enter how many rolls will be produced in this Rewinding run." }
+    ],
+    primary_action_label: "Create SPR",
+    primary_action: async function() {
+      const numRolls = cint(d.get_value("no_of_rolls"));
+      if (numRolls < 1) { frappe.msgprint("Please enter a valid number of rolls (≥ 1)."); return; }
+      d.hide();
       item.__creating_spr = true;
       try {
         const res = await frappe.call({
@@ -1013,10 +1021,12 @@ async function createItemStockEntry(item) {
           args: {
             pp_id: item.pp_id,
             planning_sheet_item_names: JSON.stringify([item.itemName]),
+            process_type: "rewinding",
+            num_rolls: numRolls,
           },
         });
         if (res.message && res.message.status === "ok") {
-          const sprId = res.message.spr_id;
+          const sprId = res.message.spr_id || res.message.spr_name;
           item.spr_name = sprId;
           syncSprNameForSamePP(item.pp_id, sprId, item.itemName);
           frappe.flags.spr_show_wo_popup = item.pp_id;
@@ -1031,7 +1041,8 @@ async function createItemStockEntry(item) {
         item.__creating_spr = false;
       }
     }
-  );
+  });
+  d.show();
 }
 
 function goToBoard() {

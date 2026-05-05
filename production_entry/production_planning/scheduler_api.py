@@ -15479,7 +15479,7 @@ def test_quality_extraction():
 
 
 @frappe.whitelist()
-def create_item_spr(pp_id, planning_sheet_item_names):
+def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_type=None):
 
     """
     Create a Shaft Production Run (SPR) for a Production Plan.
@@ -15488,6 +15488,8 @@ def create_item_spr(pp_id, planning_sheet_item_names):
     Args:
         pp_id: Production Plan ID
         planning_sheet_item_names: JSON list of Planning Sheet Item names to include
+        num_rolls: Optional number of rolls created (stored on SPR as custom_no_of_rolls_created)
+        process_type: Optional hint for process type ("sheet_cutting", "rewinding", "bopp_film")
     
     Returns: SPR name or error message
     """
@@ -15701,14 +15703,30 @@ def create_item_spr(pp_id, planning_sheet_item_names):
         spr.is_mix_roll = 0
         spr.status = "Draft"
         spr.production_plan = pp_id
-        # SPR created from Lamination Order Table (104 rows) must open with Is Lamination checked.
+        # Auto-tick process checkboxes based on item codes in PSI rows.
+        spr_meta = frappe.get_meta("Shaft Production Run")
         is_lamination_from_rows = any(
             _is_lamination_parent_process(str((psi.get("item_code") or "")).strip()) for psi in (psi_list or [])
         )
-        if is_lamination_from_rows and frappe.get_meta("Shaft Production Run").has_field("custom_is_lamination"):
+        is_rewinding_from_rows = any(
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "102" for psi in (psi_list or [])
+        )
+        is_sheet_cutting_from_rows = any(
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "251" for psi in (psi_list or [])
+        )
+        is_bopp_film_from_rows = any(
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "107" for psi in (psi_list or [])
+        )
+        if is_lamination_from_rows and spr_meta.has_field("custom_is_lamination"):
             spr.custom_is_lamination = 1
-        if is_slitting_from_rows and frappe.get_meta("Shaft Production Run").has_field("custom_is_slitting"):
+        if is_slitting_from_rows and spr_meta.has_field("custom_is_slitting"):
             spr.custom_is_slitting = 1
+        if is_rewinding_from_rows and spr_meta.has_field("custom_is_rewinding"):
+            spr.custom_is_rewinding = 1
+        if is_sheet_cutting_from_rows and spr_meta.has_field("custom_is_sheet_cutting"):
+            spr.custom_is_sheet_cutting = 1
+        if is_bopp_film_from_rows and spr_meta.has_field("custom_is_bopp_film"):
+            spr.custom_is_bopp_film = 1
         
         # Extract order code and customer from first item's parent sheet and PP
         first_psi = psi_list[0]
@@ -15884,6 +15902,11 @@ def create_item_spr(pp_id, planning_sheet_item_names):
             if spr.shaft_jobs:
                 spr.shaft_jobs[0].manual_items = psi_names_str
         
+        # Store no. of rolls if provided and field exists on SPR
+        if num_rolls and cint(num_rolls) > 0:
+            if frappe.get_meta("Shaft Production Run").has_field("custom_no_of_rolls_created"):
+                spr.custom_no_of_rolls_created = cint(num_rolls)
+
         # Debug log before insert
         frappe.log_error(f"""
         About to insert SPR:

@@ -9,17 +9,30 @@ function spr_round_net_weight_kg(v) {
 	return Math.round(flt(v) * 100) / 100;
 }
 
-/** When PP / operator selects Lamination Unit, default Is Lamination on (still user-clearable). */
+/** When PP / operator selects a unit, default the matching process checkbox on (still user-clearable). */
 function sprApplyLaminationUnitDefaults(frm, unitVal) {
 	if (!frm || !frm.doc) {
 		return;
 	}
 	const u = (unitVal != null ? String(unitVal) : String(frm.doc.custom_unit || '')).trim();
-	if (u !== 'Lamination Unit') {
-		return;
-	}
-	if (frappe.meta.get_docfield('Shaft Production Run', 'custom_is_lamination') && !cint(frm.doc.custom_is_lamination)) {
-		frm.set_value('custom_is_lamination', 1);
+	const meta = frappe.meta;
+	const hasField = (f) => !!meta.get_docfield('Shaft Production Run', f);
+	if (u === 'Lamination Unit') {
+		if (hasField('custom_is_lamination') && !cint(frm.doc.custom_is_lamination)) {
+			frm.set_value('custom_is_lamination', 1);
+		}
+	} else if (u === 'TSNPL - L3 REWINDING MACHINE' || u === 'JSB - L4 REWINDING MACHINE' || u === 'JSB - L5 REWINDING MACHINE') {
+		if (hasField('custom_is_rewinding') && !cint(frm.doc.custom_is_rewinding)) {
+			frm.set_value('custom_is_rewinding', 1);
+		}
+	} else if (u === 'JVE - SHEET CUTTING MACHINE') {
+		if (hasField('custom_is_sheet_cutting') && !cint(frm.doc.custom_is_sheet_cutting)) {
+			frm.set_value('custom_is_sheet_cutting', 1);
+		}
+	} else if (u === 'VR - 1200MM BOPP PRINTING MACHINE') {
+		if (hasField('custom_is_bopp_film') && !cint(frm.doc.custom_is_bopp_film)) {
+			frm.set_value('custom_is_bopp_film', 1);
+		}
 	}
 }
 
