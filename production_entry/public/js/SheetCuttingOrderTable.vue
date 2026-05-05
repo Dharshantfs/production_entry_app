@@ -60,17 +60,18 @@
     <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders (251)</div>
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:76px;">ROLL SIZE</th><th style="min-width:76px;">MTR</th><th style="min-width:92px;">SHEET SIZE</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:90px;">PRODUCTION PLAN</th><th style="min-width:110px;">SPR</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:76px;">ROLL SIZE</th><th style="min-width:76px;">MTR</th><th style="min-width:92px;">SHEET SIZE</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:90px;">PRODUCTION PLAN</th><th style="min-width:110px;">SPR</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
-            <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td colspan="15" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
-            <tr v-else-if="row.is_maintenance_empty"><td class="cell-center">-</td><td class="cell-center"><span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span></td><td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td><td colspan="12" style="text-align:center;color:#94a3b8;font-style:italic;">No sheet cutting orders (maintenance day)</td></tr>
+            <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td colspan="16" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
+            <tr v-else-if="row.is_maintenance_empty"><td class="cell-center">-</td><td class="cell-center"><span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span></td><td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td><td colspan="13" style="text-align:center;color:#94a3b8;font-style:italic;">No sheet cutting orders (maintenance day)</td></tr>
             <tr v-else :draggable="arrangementUnlocked" @dragstart="onOrderDragStart(row, $event)" @dragover.prevent="onOrderDragOver(row)" @dragleave="onOrderDragLeave(row)" @drop.prevent="onOrderDrop(row)" @dragend="onOrderDragEnd" :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }">
               <td class="cell-center">{{ row._sno }}</td>
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-              <td>{{ row.customer_name || row.customer || row.partyCode || row.party_code || "-" }}</td>
+              <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
+              <td>{{ row.customer_name || row.customer || "-" }}</td>
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
               <td class="cell-center">{{ formatNum(row.roll_size) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ row.sheet_size || "-" }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.per_day_production) }}</td>
@@ -78,7 +79,7 @@
               <td class="cell-center"><button v-if="row.spr_name" type="button" class="cc-clear-btn" @click="openSPR(row.spr_name)">Open</button><span v-else class="muted">-</span></td>
             </tr>
           </template>
-          <tr v-if="!displayRows.length"><td colspan="15" class="cell-center" style="padding:24px;color:#64748b;">No sheet cutting orders for this view.</td></tr>
+          <tr v-if="!displayRows.length"><td colspan="16" class="cell-center" style="padding:24px;color:#64748b;">No sheet cutting orders for this view.</td></tr>
         </tbody>
       </table>
     </div>
@@ -270,38 +271,54 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 .cc-prod-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1500px;
   font-size: 13px;
   line-height: 1.6;
 }
 .cc-prod-table th {
   position: sticky;
   top: 0;
-  z-index: 1;
-  background: #f1f5f9;
-  color: #0f172a;
-  border-bottom: 1px solid #cbd5e1;
-  font-size: 12px;
+  z-index: 14;
+  background: #047857;
+  color: #fff;
+  padding: 14px 12px;
+  text-align: left;
   font-weight: 700;
-  letter-spacing: .2px;
-  text-align: center;
-  vertical-align: middle;
+  white-space: normal;
+  min-width: 100px;
+  word-wrap: break-word;
+  border-bottom: 1px solid #065f46;
 }
-.cc-prod-table th,
 .cc-prod-table td {
-  padding: 8px 9px;
-  border-bottom: 1px solid #f1f5f9;
-  white-space: nowrap;
+  border-bottom: 1px solid #d1d5db;
+  padding: 12px 12px;
   vertical-align: middle;
+  line-height: 1.5;
+}
+.cc-prod-table tbody tr {
+  height: auto;
+  transition: background-color 0.2s ease;
 }
 .cc-prod-table tbody tr:hover {
-  background: #f8fafc;
+  background-color: #f9fafb;
+}
+.th-n {
+  width: 60px;
+  text-align: center;
 }
 .cell-center {
   text-align: center;
+  min-width: 80px;
 }
 .cell-right {
   text-align: right;
+}
+.cc-row-draggable {
+  cursor: move;
+}
+.cc-row-drag-over {
+  outline: 2px dashed #0ea5e9;
+  outline-offset: -2px;
+  background: #f0f9ff;
 }
 .muted {
   color: #94a3b8;

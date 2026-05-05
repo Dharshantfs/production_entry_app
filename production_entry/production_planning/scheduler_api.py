@@ -3683,6 +3683,24 @@ def get_sheet_cutting_order_table_data(
 ):
     """251-only rows for Sheet Cutting Order Table."""
     try:
+        sc_sheets = frappe.db.sql(
+            """
+            SELECT DISTINCT parent
+            FROM `tabPlanning Table`
+            WHERE item_code LIKE '251%%'
+            """,
+            as_dict=True,
+        ) or []
+        for r in sc_sheets:
+            try:
+                _force_sheet_cutting_unit_on_sheet(r.get("parent"))
+            except Exception:
+                continue
+        if sc_sheets:
+            frappe.db.commit()
+    except Exception:
+        pass
+    try:
         rows = _get_color_chart_data_impl(
             date=date,
             start_date=start_date,
