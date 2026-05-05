@@ -2084,119 +2084,136 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 		sc_ic = _cstr(prow.get("item_code"))
 		if _item_process_prefix(sc_ic) != "251":
 			continue
-		so_it = None
-		so_it_name = _cstr(prow.get("sales_order_item"))
-		if so_it_name:
-			so_it = so_by_name.get(so_it_name)
-		if not so_it:
-			so_it = so_by_item_code.get(sc_ic)
-		if not so_it:
-			so_it = frappe._dict(
-				{
-					"name": so_it_name or "",
-					"item_code": sc_ic,
-					"qty": flt(prow.get("qty") or 0),
-					"uom": _cstr(prow.get("uom")) or "Kg",
-				}
-			)
-		trace_id = _parent_child_trace_id_from_item_code(sc_ic)
 		try:
-			res = get_fabric_item_from_sheet_cutting_item(sc_ic)
-		except Exception as e:
+			so_it = None
+			so_it_name = _cstr(prow.get("sales_order_item"))
+			if so_it_name:
+				so_it = so_by_name.get(so_it_name)
+			if not so_it:
+				so_it = so_by_item_code.get(sc_ic)
+			if not so_it:
+				so_it = frappe._dict(
+					{
+						"name": so_it_name or "",
+						"item_code": sc_ic,
+						"qty": flt(prow.get("qty") or 0),
+						"uom": _cstr(prow.get("uom")) or "Kg",
+					}
+				)
+			trace_id = _parent_child_trace_id_from_item_code(sc_ic)
+			try:
+				res = get_fabric_item_from_sheet_cutting_item(sc_ic)
+			except Exception as e:
+				frappe.log_error(
+					title="Sheet cutting fabric BOM",
+					message=f"PS {ps.name} / SO {so.name} item {sc_ic}: {e}\n{frappe.get_traceback()}",
+				)
+				frappe.msgprint(
+					_(
+						"<b>BOM extraction FAILED for Sheet Cutting item {0}</b><br>"
+						"Reason: {1}<br><br>"
+						"<b>How to fix:</b><ul>"
+						"<li>Open ERPNext → BOM → create a new BOM where FG item = <b>{0}</b></li>"
+						"<li>Add the 100* raw fabric as a BOM item (item code must start with <b>100</b>)</li>"
+						"<li>Submit the BOM and mark it as <b>Default</b></li>"
+						"<li>Come back and click <b>Sync Production Plan</b> again</li>"
+						"</ul>"
+					).format(sc_ic, str(e)),
+					title=_("Sheet Cutting BOM not extracted — Action Required"),
+					indicator="red",
+				)
+				continue
+
+			fabric_ic = res["fabric_item_code"]
+			bom_no = res["bom_no"]
+			fabric_qty = _fabric_qty_from_bom(bom_no, fabric_ic, flt(so_it.qty))
+			so_item_key = _cstr(getattr(so_it, "name", None) or "")
+
+			# Idempotency: look for existing 100* row by fabric item + so_item key.
+			# Also check without so_item constraint (handles rows saved with empty key).
+			existing = frappe.get_all(
+				"Planning Table",
+				filters={"parent": ps.name, "item_code": fabric_ic},
+				pluck="name",
+				limit=1,
+			)
+			if existing:
+				updates = {}
+				if frappe.db.has_column("Planning Table", "sales_order_item"):
+					cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+					if not cur_soi and so_item_key:
+						updates["sales_order_item"] = so_item_key
+				if frappe.db.has_column("Planning Table", "split_from"):
+					cur_sf = str(frappe.db.get_value("Planning Table", existing[0], "split_from") or "").strip()
+					if cur_sf:
+						updates["split_from"] = ""
+				if frappe.db.has_column("Planning Table", "source_item"):
+					cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
+					if cur_src and frappe.db.exists("Planning Table", cur_src) and not frappe.db.exists("Planning sheet Item", cur_src):
+						updates["source_item"] = ""
+				if updates:
+					frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
+				continue
+
+			sc_match = frappe.get_all(
+				"Planning Table",
+				filters={"parent": ps.name, "name": prow.get("name")},
+				fields=["name"],
+				limit=1,
+			)
+			sc_pt_name = sc_match[0].get("name") if sc_match else None
+			sc_row = frappe.get_doc("Planning Table", sc_pt_name) if sc_pt_name else None
+			if sc_row and trace_id:
+				_set_trace_id_if_supported(sc_row, trace_id)
+
+			fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
+			specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, sc_row)
+			fab_color = specs.get("color") or ""
+			fab_width = flt(specs.get("width_inch"))
+			fabric_unit = compute_default_production_unit(fab_color, fab_width)
+			fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
+
+			row = {
+				"sales_order_item": so_item_key,
+				"item_code": fabric_ic,
+				"item_name": fabric_item_name,
+				"qty": fabric_qty,
+				"uom": so_it.uom,
+				"gsm": specs["gsm"],
+				"width_inch": specs["width_inch"],
+				"color": specs["color"],
+				"quality": specs["quality"],
+				"custom_quality": specs["custom_quality"],
+				"unit": fabric_unit,
+				"meter": specs["meter"],
+				"meter_per_roll": specs["meter_per_roll"],
+				"no_of_rolls": specs["no_of_rolls"],
+				"weight_per_roll": specs["weight_per_roll"],
+				"planned_date": fabric_planned_date,
+				"plan_name": ps.get("custom_plan_name"),
+				"party_code": ps.party_code,
+				"planning_sheet": ps.name,
+				"so_item": so_item_key,
+			}
+			_set_trace_id_if_supported(row, trace_id)
+			if frappe.db.has_column("Planning Table", "split_from"):
+				row["split_from"] = ""
+
+			row_b = dict(row)
+			if hasattr(ps, "items") or ps.meta.has_field("items"):
+				ps.append("items", row_b)
+			ps.append(parent_field, dict(row))
+			changed = True
+		except Exception as _row_err:
 			frappe.log_error(
-				title="Sheet cutting fabric BOM",
-				message=f"SO {so.name} line {so_it.name}: {e}\n{frappe.get_traceback()}",
+				title="Sheet cutting BOM row error",
+				message=f"PS {ps.name} item {sc_ic}: {_row_err}\n{frappe.get_traceback()}",
 			)
 			frappe.msgprint(
-				_(
-					"<b>BOM extraction FAILED for Sheet Cutting item {0}</b><br>"
-					"Reason: {1}<br>"
-					"Fix: ensure a submitted active BOM exists for {0} (or its template) "
-					"with exactly one 100* fabric row, then click <b>Sync Production Plan</b> again."
-				).format(sc_ic, str(e)),
-				title=_("Sheet Cutting BOM not extracted"),
+				_("<b>Unexpected error</b> while adding fabric row for {0}: {1}").format(sc_ic, str(_row_err)),
+				title=_("Sheet Cutting BOM row error"),
 				indicator="red",
 			)
-			continue
-
-		fabric_ic = res["fabric_item_code"]
-		bom_no = res["bom_no"]
-		fabric_qty = _fabric_qty_from_bom(bom_no, fabric_ic, flt(so_it.qty))
-		so_item_key = _cstr(getattr(so_it, "name", None) or "")
-
-		existing = frappe.get_all(
-			"Planning Table",
-			filters={"parent": ps.name, "item_code": fabric_ic, "so_item": so_item_key},
-			pluck="name",
-			limit=1,
-		)
-		if existing:
-			updates = {}
-			if frappe.db.has_column("Planning Table", "sales_order_item"):
-				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
-				if not cur_soi and so_item_key:
-					updates["sales_order_item"] = so_item_key
-			if frappe.db.has_column("Planning Table", "split_from"):
-				cur_sf = str(frappe.db.get_value("Planning Table", existing[0], "split_from") or "").strip()
-				if cur_sf:
-					updates["split_from"] = ""
-			if frappe.db.has_column("Planning Table", "source_item"):
-				cur_src = str(frappe.db.get_value("Planning Table", existing[0], "source_item") or "").strip()
-				if cur_src and frappe.db.exists("Planning Table", cur_src) and not frappe.db.exists("Planning sheet Item", cur_src):
-					updates["source_item"] = ""
-			if updates:
-				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
-			continue
-
-		sc_match = frappe.get_all(
-			"Planning Table",
-			filters={"parent": ps.name, "name": prow.get("name")},
-			fields=["name"],
-			limit=1,
-		)
-		sc_pt_name = sc_match[0].get("name") if sc_match else None
-		sc_row = frappe.get_doc("Planning Table", sc_pt_name) if sc_pt_name else None
-		if sc_row and trace_id:
-			_set_trace_id_if_supported(sc_row, trace_id)
-
-		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
-		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, sc_row)
-		fab_color = specs.get("color") or ""
-		fab_width = flt(specs.get("width_inch"))
-		fabric_unit = compute_default_production_unit(fab_color, fab_width)
-		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
-
-		row = {
-			"sales_order_item": so_item_key,
-			"item_code": fabric_ic,
-			"item_name": fabric_item_name,
-			"qty": fabric_qty,
-			"uom": so_it.uom,
-			"gsm": specs["gsm"],
-			"width_inch": specs["width_inch"],
-			"color": specs["color"],
-			"quality": specs["quality"],
-			"custom_quality": specs["custom_quality"],
-			"unit": fabric_unit,
-			"meter": specs["meter"],
-			"meter_per_roll": specs["meter_per_roll"],
-			"no_of_rolls": specs["no_of_rolls"],
-			"weight_per_roll": specs["weight_per_roll"],
-			"planned_date": fabric_planned_date,
-			"plan_name": ps.get("custom_plan_name"),
-			"party_code": ps.party_code,
-			"planning_sheet": ps.name,
-			"so_item": so_item_key,
-		}
-		_set_trace_id_if_supported(row, trace_id)
-		if frappe.db.has_column("Planning Table", "split_from"):
-			row["split_from"] = ""
-
-		row_b = dict(row)
-		if hasattr(ps, "items") or ps.meta.has_field("items"):
-			ps.append("items", row_b)
-		ps.append(parent_field, dict(row))
-		changed = True
 
 	if changed:
 		ps.flags.ignore_permissions = True
