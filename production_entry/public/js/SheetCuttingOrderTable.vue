@@ -60,7 +60,7 @@
     <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders (251)</div>
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th>DATE</th><th>SHIFT</th><th>CUSTOMER NAME</th><th>QUALITY</th><th>GSM</th><th>ROLL SIZE</th><th>MTR</th><th>SHEET SIZE</th><th>PLANNED QTY</th><th>ACHIEVED QTY</th><th>PER DAY PRODUCTION</th><th style="min-width:90px;">PRODUCTION PLAN</th><th style="min-width:110px;">SPR</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:76px;">ROLL SIZE</th><th style="min-width:76px;">MTR</th><th style="min-width:92px;">SHEET SIZE</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:90px;">PRODUCTION PLAN</th><th style="min-width:110px;">SPR</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td colspan="15" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
@@ -270,8 +270,9 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 .cc-prod-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1280px;
-  table-layout: fixed;
+  min-width: 1500px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .cc-prod-table th {
   position: sticky;
@@ -283,12 +284,15 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   font-size: 12px;
   font-weight: 700;
   letter-spacing: .2px;
+  text-align: center;
+  vertical-align: middle;
 }
 .cc-prod-table th,
 .cc-prod-table td {
   padding: 8px 9px;
   border-bottom: 1px solid #f1f5f9;
   white-space: nowrap;
+  vertical-align: middle;
 }
 .cc-prod-table tbody tr:hover {
   background: #f8fafc;
