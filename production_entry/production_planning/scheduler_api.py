@@ -2065,8 +2065,12 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 	so = frappe.get_doc("Sales Order", ps.sales_order)
 	so_by_name = {str(it.name): it for it in (so.items or [])}
 	so_by_item_code = {}
+	so_has_251 = False
 	for it in so.items or []:
-		so_by_item_code.setdefault(str(it.item_code or "").strip(), it)
+		item_code = str(it.item_code or "").strip()
+		so_by_item_code.setdefault(item_code, it)
+		if _item_process_prefix(item_code) == "251":
+			so_has_251 = True
 	parent_field = _get_pt_parentfield()
 	changed = False
 	# Flush pending writes so the 251 parent rows are visible to the DB query below.
@@ -2087,6 +2091,9 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 		as_dict=True,
 	) or []
 	if not parent_rows:
+		# Normal case for non-sheet-cutting sales orders: do not show noisy warnings.
+		if not so_has_251:
+			return
 		# Check if there are ANY rows in the sheet at all (helps diagnose save failure)
 		total_rows = frappe.db.sql(
 			"SELECT COUNT(*) FROM `tabPlanning Table` WHERE parent = %s",
