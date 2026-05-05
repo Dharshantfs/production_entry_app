@@ -81,11 +81,48 @@ function sprRollProcessPrefix(frm) {
 
 function sprStickerGsmFromItemCode(itemCode) {
 	const code = ((itemCode || '') + '').trim();
+	// Printed BOPP (PB-*) does not carry sticker GSM in numeric process-code slots.
+	// Avoid deriving bogus GSM like "5" from arbitrary substrings.
+	if (!code || code.toUpperCase().startsWith('PB')) {
+		return 0;
+	}
+	// Parse only numeric process-style item codes (e.g. 104xxx..., 102xxx..., 251xxx...).
+	if (!/^\d+$/.test(code)) {
+		return 0;
+	}
 	if (code.length < 12) {
 		return 0;
 	}
 	const n = parseInt(code.substring(9, 12), 10);
 	return !isNaN(n) && n > 0 ? n : 0;
+}
+
+function spr_count_created_roll_lines(frm) {
+	if (!frm || !frm.doc) {
+		return 0;
+	}
+	return (frm.doc.items || []).filter((r) => String((r && r.item_code) || '').trim()).length;
+}
+
+function spr_sync_no_of_rolls_created(frm, opts) {
+	if (!frm || !frm.doc) {
+		return;
+	}
+	if (!frappe.meta.get_docfield('Shaft Production Run', 'custom_no_of_rolls_created')) {
+		return;
+	}
+	const settings = opts || {};
+	const cnt = spr_count_created_roll_lines(frm);
+	const cur = cint(frm.doc.custom_no_of_rolls_created || 0);
+	if (cur === cnt) {
+		return;
+	}
+	if (settings.silent) {
+		frm.doc.custom_no_of_rolls_created = cnt;
+		frm.refresh_field('custom_no_of_rolls_created');
+	} else {
+		frm.set_value('custom_no_of_rolls_created', cnt);
+	}
 }
 
 function sprLaminationGsmFromItemCode(itemCode) {
@@ -307,6 +344,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		
 		spr_sync_total_planned_qty_from_jobs(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_planned_qty sync');
+		spr_sync_no_of_rolls_created(frm, { silent: true });
 		
 		sprScheduleTotalProducedSync(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
@@ -364,6 +402,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	after_save: function (frm) {
 		spr_register_spr_page_buttons_after_save(frm);
+		spr_sync_no_of_rolls_created(frm, { silent: true });
 		schedule_spr_item_row_styles(frm);
 		spr_schedule_item_row_styles_after_doc_write(frm);
 	},
@@ -384,12 +423,14 @@ frappe.ui.form.on('Shaft Production Run', {
 	items: {
 		items_add: function (frm) {
 			sprLog('[SPR DEBUG] items_add fired');
+			spr_sync_no_of_rolls_created(frm);
 			update_shaft_job_achieved_from_items(frm);
 			sprLog('[SPR DEBUG] items_add: schedule total_produced_weight sync with', (frm.doc.items || []).length, 'items');
 			sprScheduleTotalProducedSync(frm);
 			schedule_spr_item_row_styles(frm);
 		},
 		items_remove: function (frm) {
+			spr_sync_no_of_rolls_created(frm);
 			update_shaft_job_achieved_from_items(frm);
 			schedule_spr_item_row_styles(frm);
 		},
@@ -2523,7 +2564,7 @@ function spr_inject_gsm_legend(frm) {
 		'<span style="display:inline-block;background:#bbf7d0;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">|diff| &lt; 1</span> ' +
 		'<span style="display:inline-block;background:#eab308;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">1 - 2</span> ' +
 		'<span style="display:inline-block;background:#fb923c;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">2 - 3</span> ' +
-		'<span style="display:inline-block;background:#fecaca;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">>= 3</span> ' +
+		'<span style="display:inline-block;background:#fecaca;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">&ge; 3</span> ' +
 		'<span style="display:inline-block;background:#f3f4f6;padding:2px 8px;margin:2px 4px 2px 0;border-radius:2px;">' +
 		__('Awaiting produced GSM / incomplete') +
 		'</span>' +
