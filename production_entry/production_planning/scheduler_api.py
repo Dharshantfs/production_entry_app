@@ -4,6 +4,7 @@ from frappe.utils import getdate, flt, cint
 import json
 import re
 import datetime
+from collections import defaultdict
 
 from production_entry.production_planning.planning_doctypes import (
 	ensure_planning_line_unit_docfield_options,
