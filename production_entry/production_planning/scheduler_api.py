@@ -2048,12 +2048,37 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 	if not ps.get("sales_order"):
 		return
 	so = frappe.get_doc("Sales Order", ps.sales_order)
+	so_by_name = {str(it.name): it for it in (so.items or [])}
+	so_by_item_code = {}
+	for it in so.items or []:
+		so_by_item_code.setdefault(str(it.item_code or "").strip(), it)
 	parent_field = _get_pt_parentfield()
 	changed = False
-	for so_it in so.items or []:
-		sc_ic = (so_it.item_code or "").strip()
+	parent_rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": ps.name, "item_code": ["like", "251%"]},
+		fields=["name", "item_code", "sales_order_item", "qty", "uom"],
+		limit_page_length=2000,
+	) or []
+	for prow in parent_rows:
+		sc_ic = _cstr(prow.get("item_code"))
 		if _item_process_prefix(sc_ic) != "251":
 			continue
+		so_it = None
+		so_it_name = _cstr(prow.get("sales_order_item"))
+		if so_it_name:
+			so_it = so_by_name.get(so_it_name)
+		if not so_it:
+			so_it = so_by_item_code.get(sc_ic)
+		if not so_it:
+			so_it = frappe._dict(
+				{
+					"name": so_it_name or "",
+					"item_code": sc_ic,
+					"qty": flt(prow.get("qty") or 0),
+					"uom": _cstr(prow.get("uom")) or "Kg",
+				}
+			)
 		trace_id = _parent_child_trace_id_from_item_code(sc_ic)
 		try:
 			res = get_fabric_item_from_sheet_cutting_item(sc_ic)
@@ -2071,10 +2096,11 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 		fabric_ic = res["fabric_item_code"]
 		bom_no = res["bom_no"]
 		fabric_qty = _fabric_qty_from_bom(bom_no, fabric_ic, flt(so_it.qty))
+		so_item_key = _cstr(getattr(so_it, "name", None) or "")
 
 		existing = frappe.get_all(
 			"Planning Table",
-			filters={"parent": ps.name, "item_code": fabric_ic, "so_item": so_it.name},
+			filters={"parent": ps.name, "item_code": fabric_ic, "so_item": so_item_key},
 			pluck="name",
 			limit=1,
 		)
@@ -2082,8 +2108,8 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 			updates = {}
 			if frappe.db.has_column("Planning Table", "sales_order_item"):
 				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
-				if not cur_soi:
-					updates["sales_order_item"] = so_it.name
+				if not cur_soi and so_item_key:
+					updates["sales_order_item"] = so_item_key
 			if frappe.db.has_column("Planning Table", "split_from"):
 				cur_sf = str(frappe.db.get_value("Planning Table", existing[0], "split_from") or "").strip()
 				if cur_sf:
@@ -2098,7 +2124,7 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 
 		sc_match = frappe.get_all(
 			"Planning Table",
-			filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": sc_ic},
+			filters={"parent": ps.name, "name": prow.get("name")},
 			fields=["name"],
 			limit=1,
 		)
@@ -2115,7 +2141,7 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
 
 		row = {
-			"sales_order_item": so_it.name,
+			"sales_order_item": so_item_key,
 			"item_code": fabric_ic,
 			"item_name": fabric_item_name,
 			"qty": fabric_qty,
@@ -2134,7 +2160,7 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 			"plan_name": ps.get("custom_plan_name"),
 			"party_code": ps.party_code,
 			"planning_sheet": ps.name,
-			"so_item": so_it.name,
+			"so_item": so_item_key,
 		}
 		_set_trace_id_if_supported(row, trace_id)
 		if frappe.db.has_column("Planning Table", "split_from"):
@@ -2263,28 +2289,37 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 			info = size_map.get(sid) or {}
 			w = flt(info.get("width_inch") or 0)
 			sz = _cstr(info.get("sheet_size") or "")
-			if w <= 0:
+			if w <= 0 and sz:
+				try:
+					left = _cstr(sz).replace(" ", "").split("*")[0]
+					w = flt(left or 0)
+				except Exception:
+					w = 0
+			if w <= 0 and not sz:
 				continue
 			if frappe.db.has_column("Planning Table", "width_inch"):
-				frappe.db.set_value("Planning Table", rr.get("name"), "width_inch", w, update_modified=False)
+				if w > 0:
+					frappe.db.set_value("Planning Table", rr.get("name"), "width_inch", w, update_modified=False)
 			if sz and frappe.db.has_column("Planning Table", "sheet_size"):
 				frappe.db.set_value("Planning Table", rr.get("name"), "sheet_size", sz, update_modified=False)
 			legacy = _cstr(rr.get("source_item"))
 			if legacy and frappe.db.exists("Planning sheet Item", legacy) and frappe.db.has_column("Planning sheet Item", "width_inch"):
-				frappe.db.set_value("Planning sheet Item", legacy, "width_inch", w, update_modified=False)
+				if w > 0:
+					frappe.db.set_value("Planning sheet Item", legacy, "width_inch", w, update_modified=False)
 				if sz and frappe.db.has_column("Planning sheet Item", "sheet_size"):
 					frappe.db.set_value("Planning sheet Item", legacy, "sheet_size", sz, update_modified=False)
-			elif has_psi_so and _cstr(rr.get("sales_order_item")) and frappe.db.has_column("Planning sheet Item", "width_inch"):
-				frappe.db.sql(
-					"""
-					UPDATE `tabPlanning sheet Item`
-					SET width_inch = %s
-					WHERE parent = %s
-					  AND item_code LIKE '251%%'
-					  AND IFNULL(sales_order_item, '') = %s
-					""",
-					(w, planning_sheet_name, _cstr(rr.get("sales_order_item"))),
-				)
+			elif has_psi_so and _cstr(rr.get("sales_order_item")):
+				if w > 0 and frappe.db.has_column("Planning sheet Item", "width_inch"):
+					frappe.db.sql(
+						"""
+						UPDATE `tabPlanning sheet Item`
+						SET width_inch = %s
+						WHERE parent = %s
+						  AND item_code LIKE '251%%'
+						  AND IFNULL(sales_order_item, '') = %s
+						""",
+						(w, planning_sheet_name, _cstr(rr.get("sales_order_item"))),
+					)
 				if sz and frappe.db.has_column("Planning sheet Item", "sheet_size"):
 					frappe.db.sql(
 						"""
