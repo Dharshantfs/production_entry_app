@@ -5171,12 +5171,14 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.unit = "Slitting Unit"
                     existing_psi.planned_date = p_date
                 elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
-                    # 102 rewinding: generic UNASSIGNED is wrong for this process — use rewinding pool machine.
                     prev = normalize_planning_unit_for_select(getattr(existing_psi, "unit", None))
                     if prev == "UNASSIGNED" or not getattr(existing_psi, "unit", None):
                         existing_psi.unit = unit
                     if p_date:
                         existing_psi.planned_date = p_date
+                elif _item_process_prefix(str(it.item_code or "")) == "251":
+                    existing_psi.unit = SHEET_CUTTING_UNIT
+                    existing_psi.planned_date = p_date
                 elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
