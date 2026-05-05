@@ -7899,8 +7899,10 @@ def _get_color_chart_data_impl(
                 ORDER BY i.unit, i.idx
             """, (target_date,), as_dict=True)
         
-        # Check which planning sheets have Work Orders (those can't be moved)
-        if items:
+        # Check which planning sheets have Work Orders (those can't be moved).
+        # Sheet Cutting (251) orders must remain visible even after WO/PP/Delivery Note
+        # so operators can keep tracking achieved qty against SPR.
+        if items and bps != "sheet_cutting_only":
             sheet_names = list(set(it.planningSheet for it in items))
             so_names = list(set(it.salesOrder for it in items if it.salesOrder))
             
@@ -8001,7 +8003,7 @@ def _get_color_chart_data_impl(
             or (bps == "printed_bopp_pb_only" and _matches_printed_bopp_board_row(it))
         ]
 
-        if items:
+        if items and bps != "sheet_cutting_only":
             sheet_names = list(set(it.planningSheet for it in items))
             so_names = list(set(it.salesOrder for it in items if it.salesOrder))
             wo_sheets = set()
