@@ -104,6 +104,40 @@ def _parse_sheet_cutting_item_code(item_code):
 	}
 
 
+def _sheet_cutting_series_size_map(series_ids):
+	"""Map series_id -> {'width_inch': float, 'height_inch': float, 'sheet_size': 'W*H'}."""
+	ids = [str(x or "").strip() for x in (series_ids or []) if str(x or "").strip()]
+	if not ids or not frappe.db.exists("DocType", "Sheet Cutting Series"):
+		return {}
+	meta = frappe.get_meta("Sheet Cutting Series")
+	width_field = None
+	height_field = None
+	size_field = None
+	for fn in ("width_in_inches", "custom_width_in_inches", "width", "sheet_width_inch"):
+		if meta.has_field(fn):
+			width_field = fn
+			break
+	for fn in ("height_in_inches", "custom_height_in_inches", "height", "sheet_height_inch"):
+		if meta.has_field(fn):
+			height_field = fn
+			break
+	for fn in ("size_in_inches", "custom_size_in_inches", "size"):
+		if meta.has_field(fn):
+			size_field = fn
+			break
+	out = {}
+	for sid in ids:
+		if not frappe.db.exists("Sheet Cutting Series", sid):
+			continue
+		w = flt(frappe.db.get_value("Sheet Cutting Series", sid, width_field)) if width_field else 0
+		h = flt(frappe.db.get_value("Sheet Cutting Series", sid, height_field)) if height_field else 0
+		sz = _cstr(frappe.db.get_value("Sheet Cutting Series", sid, size_field)) if size_field else ""
+		if not sz and w > 0 and h > 0:
+			sz = f"{int(w) if abs(w-int(w)) < 1e-9 else w}*{int(h) if abs(h-int(h)) < 1e-9 else h}"
+		out[sid] = {"width_inch": w, "height_inch": h, "sheet_size": sz}
+	return out
+
+
 # --- BOPP (107): item codes like 7499-107F101MCC91500 (design-107…); process is NOT the first 3 digits. ---
 LAMINATION_QUALITY_CODES = {
 	"PREMIUM": "A",
@@ -3506,6 +3540,143 @@ def get_rewinding_order_table_data(
         rw_mm = _rewinding_width_mm_from_item_code(ic)
         row["rewinding_length_mm"] = rw_mm if rw_mm is not None else None
         out.append(row)
+    return out
+
+
+@frappe.whitelist()
+def get_sheet_cutting_order_table_data(
+    date=None,
+    start_date=None,
+    end_date=None,
+    planned_only=1,
+):
+    """251-only rows for Sheet Cutting Order Table."""
+    try:
+        rows = _get_color_chart_data_impl(
+            date=date,
+            start_date=start_date,
+            end_date=end_date,
+            plan_name="__all__",
+            planned_only=cint(planned_only),
+            board_process_scope="sheet_cutting_only",
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_sheet_cutting_order_table_data")
+        return []
+    if not rows:
+        return []
+    try:
+        sheet_names = list(
+            {
+                str(r.get("planningSheet") or r.get("planning_sheet") or "").strip()
+                for r in rows
+                if str(r.get("planningSheet") or r.get("planning_sheet") or "").strip()
+            }
+        )
+        for sn in sheet_names:
+            _force_sheet_cutting_unit_on_sheet(sn)
+        if sheet_names:
+            frappe.db.commit()
+    except Exception:
+        pass
+
+    psi_names = [r.get("itemName") or r.get("item_name") for r in rows if (r.get("itemName") or r.get("item_name"))]
+    if not psi_names:
+        return rows
+    fmt = ",".join(["%s"] * len(psi_names))
+    has_shift_sc = frappe.db.has_column("Planning Table", "custom_sheet_cutting_shift")
+    has_shift_sl = frappe.db.has_column("Planning Table", "custom_slitting_shift")
+    if has_shift_sc:
+        shift_expr = "IFNULL(pt.custom_sheet_cutting_shift, 'DAY')"
+    elif has_shift_sl:
+        shift_expr = "IFNULL(pt.custom_slitting_shift, 'DAY')"
+    else:
+        shift_expr = "'DAY'"
+    has_pt_spr = frappe.db.has_column("Planning Table", "spr_name")
+    spr_parent_expr = "IFNULL(pt.spr_name, '')" if has_pt_spr else "''"
+    extra = frappe.db.sql(
+        f"""
+        SELECT
+            pt.name as psi_name,
+            {shift_expr} as shift_label,
+            {spr_parent_expr} as parent_spr_name,
+            IFNULL(pt.width_inch, 0) as roll_size,
+            IFNULL(pt.meter, 0) as mtr
+        FROM `tabPlanning Table` pt
+        WHERE pt.name IN ({fmt})
+        """,
+        tuple(psi_names),
+        as_dict=True,
+    )
+    by_psi = {e.get("psi_name"): e for e in (extra or [])}
+    spr_names = list(
+        {
+            str((e or {}).get("parent_spr_name") or "").strip()
+            for e in (extra or [])
+            if str((e or {}).get("parent_spr_name") or "").strip()
+        }
+    )
+    spr_weights = {}
+    if spr_names and frappe.db.exists("DocType", "Shaft Production Run Item"):
+        spr_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
+        weight_expr = "IFNULL(net_weight, 0)" if "net_weight" in spr_cols else "0"
+        sf = ",".join(["%s"] * len(spr_names))
+        for rw in frappe.db.sql(
+            f"""
+            SELECT parent, SUM({weight_expr}) as kgs
+            FROM `tabShaft Production Run Item`
+            WHERE parent IN ({sf})
+            GROUP BY parent
+            """,
+            tuple(spr_names),
+            as_dict=True,
+        ):
+            spr_weights[str(rw.get("parent") or "").strip()] = flt(rw.get("kgs"))
+
+    parsed = {}
+    series_ids = []
+    for r in rows:
+        ic = str(r.get("item_code") or r.get("itemCode") or "").strip()
+        p = _parse_sheet_cutting_item_code(ic)
+        parsed[str(r.get("itemName") or r.get("item_name") or "")] = p
+        sid = _cstr(p.get("series_id"))
+        if sid:
+            series_ids.append(sid)
+    size_map = _sheet_cutting_series_size_map(series_ids)
+
+    per_day = defaultdict(float)
+    out = []
+    for r in rows:
+        row = dict(r)
+        nm = _cstr(row.get("itemName") or row.get("item_name"))
+        ex = by_psi.get(nm) or {}
+        p = parsed.get(nm) or {}
+        sid = _cstr(p.get("series_id"))
+        size_info = size_map.get(sid) or {}
+        spr_nm = _cstr((ex.get("parent_spr_name") or row.get("spr_name") or ""))
+        achieved = flt(spr_weights.get(spr_nm)) if spr_nm else flt(
+            row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0
+        )
+        if achieved <= 0:
+            achieved = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
+        row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()
+        row["quality_code"] = _cstr(p.get("quality_code"))
+        row["colour_code"] = _cstr(p.get("colour_code"))
+        row["gsm"] = cint(p.get("gsm") or row.get("gsm") or 0)
+        row["series_id"] = sid
+        row["roll_size"] = flt(ex.get("roll_size") or row.get("width_inch") or size_info.get("width_inch") or 0)
+        row["mtr"] = flt(ex.get("mtr") or row.get("meter") or 0)
+        row["sheet_size"] = _cstr(size_info.get("sheet_size"))
+        row["planned_quantity"] = flt(row.get("qty") or 0)
+        row["achieved_quantity"] = flt(achieved)
+        dkey = _cstr(row.get("plannedDate") or row.get("planned_date"))
+        if dkey:
+            per_day[dkey] += flt(achieved)
+        out.append(row)
+
+    for row in out:
+        dkey = _cstr(row.get("plannedDate") or row.get("planned_date"))
+        row["per_day_production"] = flt(per_day.get(dkey) or 0)
     return out
 
 

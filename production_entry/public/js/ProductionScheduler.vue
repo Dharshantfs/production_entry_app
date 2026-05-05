@@ -3,8 +3,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isRewindingBoard ? "Rewinding Board" : isSlittingBoard ? "Slitting Board" : isPrintedBoppFilmBoard ? "Printed BOPP Film Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : isPrintedBoppFilmBoard ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT }}
+      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isRewindingBoard ? "Rewinding Board" : isSlittingBoard ? "Slitting Board" : isSheetCuttingBoard ? "Sheet Cutting Board" : isPrintedBoppFilmBoard ? "Printed BOPP Film Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : isSheetCuttingBoard ? SHEET_CUTTING_UNIT : isPrintedBoppFilmBoard ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -325,6 +325,7 @@ const REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE";
 const REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine";
 const REWINDING_BOARD_UNITS = [REWINDING_UNIT_L3, REWINDING_UNIT_L4, REWINDING_UNIT_L5, REWINDING_UNASSIGNED_UNIT];
 const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
+const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
 /** PB-* / PRINTED BOPP film queue (must match scheduler_api.PRINTED_BOPP_FILM_UNIT). */
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
 const UNIT_TONNAGE_LIMITS = {
@@ -339,6 +340,7 @@ const UNIT_TONNAGE_LIMITS = {
   [REWINDING_UNIT_L4]: 999,
   [REWINDING_UNIT_L5]: 999,
   [REWINDING_UNASSIGNED_UNIT]: 999,
+  [SHEET_CUTTING_UNIT]: 999,
   [PRINTED_BOPP_FILM_UNIT]: 999,
 };
 const headerColors = {
@@ -353,6 +355,7 @@ const headerColors = {
   [REWINDING_UNIT_L4]: "#0d9488",
   [REWINDING_UNIT_L5]: "#059669",
   [REWINDING_UNASSIGNED_UNIT]: "#64748b",
+  [SHEET_CUTTING_UNIT]: "#0f766e",
   [PRINTED_BOPP_FILM_UNIT]: "#7c3aed",
 };
 
@@ -362,6 +365,7 @@ function normalizeUnitName(rawUnit) {
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
+  if (txt.includes("sheetcutting") || (txt.includes("sheet") && txt.includes("cutting") && txt.includes("jve"))) return SHEET_CUTTING_UNIT;
   const ru = String(rawUnit || "").trim();
   if (ru === REWINDING_UNIT_L3 || ru === REWINDING_UNIT_L4 || ru === REWINDING_UNIT_L5 || ru === REWINDING_UNASSIGNED_UNIT) {
     return ru;
@@ -461,6 +465,7 @@ const filterUnit = ref("");
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
 const isRewindingBoard = ref(false);
+const isSheetCuttingBoard = ref(false);
 /** Printed BOPP film Kanban (PB / VR BOPP printing unit); uses dedicated API scope. */
 const isPrintedBoppFilmBoard = ref(false);
 const filterStatus = ref("");
@@ -471,6 +476,7 @@ units.forEach(u => {
 });
 unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+unitSortConfig.value[SHEET_CUTTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 REWINDING_BOARD_UNITS.forEach((u) => {
   unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 });
@@ -609,6 +615,11 @@ function goToPlan() {
         frappe.set_route("slitting-order-table", query);
         return;
     }
+    if (isSheetCuttingBoard.value) {
+        query.board = "sheet_cutting";
+        frappe.set_route("sheet-cutting-order-table", query);
+        return;
+    }
     if (isLaminationBoard.value) {
         query.board = "lamination";
         frappe.set_route("lamination-order-table", query);
@@ -650,6 +661,7 @@ function toggleViewScope() {
 const boardUnits = computed(() => {
   if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
   if (isSlittingBoard.value) return [SLITTING_UNIT];
+  if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
   return units;
@@ -681,6 +693,15 @@ const filteredData = computed(() => {
     data = data.map((d) => {
       if (itemProcessPrefix(d.item_code || d.itemCode) === "103") {
         return { ...d, unit: SLITTING_UNIT };
+      }
+      return d;
+    });
+  }
+
+  if (isSheetCuttingBoard.value) {
+    data = data.map((d) => {
+      if (itemProcessPrefix(d.item_code || d.itemCode) === "251") {
+        return { ...d, unit: SHEET_CUTTING_UNIT };
       }
       return d;
     });
@@ -2042,6 +2063,7 @@ async function fetchData() {
           if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
           if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
           if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
+          if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
           if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
         } catch (e) {}
         if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
@@ -2086,6 +2108,8 @@ async function fetchData() {
           args.board_process_scope = "rewinding_only";
         } else if (isSlittingBoard.value) {
           args.board_process_scope = "slitting_only";
+        } else if (isSheetCuttingBoard.value) {
+          args.board_process_scope = "sheet_cutting_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
         } else if (isPrintedBoppFilmBoard.value) {
@@ -2100,6 +2124,8 @@ async function fetchData() {
               args.board_process_scope = "slitting_only";
             } else if (b === "rewinding") {
               args.board_process_scope = "rewinding_only";
+            } else if (b === "sheet_cutting") {
+              args.board_process_scope = "sheet_cutting_only";
             } else {
               args.board_process_scope = "exclude_special";
             }
@@ -2234,6 +2260,7 @@ onMounted(() => {
       if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
       if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
       if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
+      if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
       if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
     } catch (e) {}
     try {
@@ -2242,6 +2269,7 @@ onMounted(() => {
       if (routeName === "lamination board") isLaminationBoard.value = true;
       if (routeName === "slitting board") isSlittingBoard.value = true;
       if (routeName === "rewinding board") isRewindingBoard.value = true;
+      if (routeName === "sheet cutting board") isSheetCuttingBoard.value = true;
       if (routeName.includes("printed bopp film board")) isPrintedBoppFilmBoard.value = true;
     } catch (e) {}
 
