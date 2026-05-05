@@ -76,7 +76,61 @@
       </div>
     </div>
 
-    <div class="cc-table-container">
+    <div class="cc-table-container" v-for="grp in rewindingUnitGroups" :key="grp.unit">
+      <div class="cc-table-unit-header lot-header">{{ grp.unit }} - Planned orders (102)</div>
+      <table class="cc-prod-table lot-table">
+        <thead>
+          <tr>
+            <th class="th-n">S.NO</th>
+            <th>DATE</th>
+            <th>SHIFT</th>
+            <th>CODE</th>
+            <th>CUSTOMER NAME</th>
+            <th>QUALITY</th>
+            <th>COLOUR</th>
+            <th>ROLL SIZE</th>
+            <th>Rewinding length (mtrs)</th>
+            <th>PLANNED KGS</th>
+            <th>ACHIEVED KGS</th>
+            <th>FABRIC READY DATE</th>
+            <th>ORDER SHEET</th>
+            <th style="min-width:90px;">PRODUCTION PLAN</th>
+            <th style="min-width:128px;">SPR / WO</th>
+            <th>STATUS</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, idx) in grp.rows" :key="row.itemName || row.item_name || idx">
+            <td class="cell-center">{{ idx + 1 }}</td>
+            <td class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
+            <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
+            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
+            <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
+            <td class="cell-center">{{ row.quality || "-" }}</td>
+            <td class="cell-center font-bold">{{ row.color || "-" }}</td>
+            <td class="cell-center">{{ row.roll_size || "-" }}</td>
+            <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
+            <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
+            <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
+            <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
+            <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
+            <td class="cell-center">
+              <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
+              <span v-else-if="row.pp_id" class="pt-wo-closed-hint">PP Draft</span>
+              <span v-else class="pt-no-pp-hint">No PP</span>
+            </td>
+            <td class="cell-center">
+              <button v-if="row.spr_name" type="button" @click="openItemSPR(row.spr_name, row)" class="cc-pp-btn pt-btn-entry">Open</button>
+              <span v-else class="pt-wo-closed-hint">SPR: -</span>
+            </td>
+            <td class="cell-center">{{ row.dispatch_status || "NOT DESPATCHED" }}</td>
+          </tr>
+          <tr v-if="!grp.rows.length"><td colspan="16" class="cell-center" style="padding:12px;color:#94a3b8;">No orders in this unit</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cc-table-container" v-if="false">
       <div class="cc-table-unit-header lot-header">Rewinding (102) — L3 / L4 / L5 + Unassigned</div>
       <table class="cc-prod-table lot-table">
         <thead>
@@ -336,6 +390,20 @@ const displayRows = computed(() => {
   }
   
   return out;
+});
+
+const rewindingUnitGroups = computed(() => {
+  const units = [
+    "TSNPL - L3 REWINDING MACHINE",
+    "JSB - L4 REWINDING MACHINE",
+    "JSB - L5 REWINDING MACHINE",
+    "Unassigned rewinding machine",
+  ];
+  const rows = (filteredRows.value || []).filter((r) => !r.is_maintenance_row && !r.is_maintenance_empty);
+  return units.map((u) => ({
+    unit: u,
+    rows: rows.filter((r) => String(r.unit || "").trim() === u),
+  }));
 });
 
 async function deleteMaintenanceRecord(recordName) {
