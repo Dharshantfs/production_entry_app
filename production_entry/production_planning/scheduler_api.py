@@ -2071,14 +2071,38 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 	changed = False
 	# Flush pending writes so the 251 parent rows are visible to the DB query below.
 	frappe.db.commit()
-	parent_rows = frappe.get_all(
-		"Planning Table",
-		filters={"parent": ps.name, "item_code": ["like", "251%"]},
-		fields=["name", "item_code", "sales_order_item", "qty", "uom"],
-		limit_page_length=2000,
+	# Use raw SQL to bypass ORM cache — ensures freshly committed rows are visible.
+	parent_rows = frappe.db.sql(
+		"""
+		SELECT name, item_code,
+		       IFNULL(sales_order_item, '') AS sales_order_item,
+		       IFNULL(qty, 0)              AS qty,
+		       IFNULL(uom, 'Kg')           AS uom
+		FROM `tabPlanning Table`
+		WHERE parent = %s
+		  AND item_code LIKE '251%%'
+		LIMIT 500
+		""",
+		(ps.name,),
+		as_dict=True,
 	) or []
 	if not parent_rows:
-		# No 251 rows in Planning Table at all — nothing to extract BOM for.
+		# Check if there are ANY rows in the sheet at all (helps diagnose save failure)
+		total_rows = frappe.db.sql(
+			"SELECT COUNT(*) FROM `tabPlanning Table` WHERE parent = %s",
+			(ps.name,),
+		)
+		total = cint((total_rows or [[0]])[0][0])
+		frappe.msgprint(
+			_(
+				"<b>No 251 (Sheet Cutting) rows found</b> in Planning Table for <b>{0}</b>.<br>"
+				"Total rows in sheet: {1}.<br>"
+				"The planning sheet items may not have been saved yet, or the SO has "
+				"no items with item codes starting with <b>251</b>."
+			).format(ps.name, total),
+			title=_("Sheet Cutting BOM — Nothing to Extract"),
+			indicator="orange",
+		)
 		return
 	for prow in parent_rows:
 		sc_ic = _cstr(prow.get("item_code"))
