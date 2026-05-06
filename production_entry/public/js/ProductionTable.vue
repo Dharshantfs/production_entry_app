@@ -2310,6 +2310,12 @@ async function openItemSPR(sprName, item = null) {
       return;
     }
     if (item) {
+      try {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.prune_planning_table_spr_links",
+          args: { planning_table_names: JSON.stringify([item.itemName || ""]) },
+        });
+      } catch (e2) {}
       item.spr_name = "";
       frappe.show_alert({
         message: "SPR was deleted. You can create a new one.",
@@ -2321,6 +2327,12 @@ async function openItemSPR(sprName, item = null) {
     }
   } catch (e) {
     if (item) {
+      try {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.prune_planning_table_spr_links",
+          args: { planning_table_names: JSON.stringify([item.itemName || ""]) },
+        });
+      } catch (e2) {}
       item.spr_name = "";
       frappe.show_alert({
         message: "SPR was deleted. You can create a new one.",

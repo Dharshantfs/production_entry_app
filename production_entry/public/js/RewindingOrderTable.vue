@@ -1009,6 +1009,12 @@ async function openItemSPR(sprName, item = null) {
     if (r.message) {
       frappe.set_route("Form", "Shaft Production Run", target);
     } else if (item) {
+      try {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.prune_planning_table_spr_links",
+          args: { planning_table_names: JSON.stringify([item.itemName || ""]) },
+        });
+      } catch (e2) {}
       item.spr_name = "";
       frappe.show_alert({ message: "SPR was deleted.", indicator: "orange" }, 3);
       createItemStockEntry(item);
@@ -1017,6 +1023,12 @@ async function openItemSPR(sprName, item = null) {
     }
   } catch (e) {
     if (item) {
+      try {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.prune_planning_table_spr_links",
+          args: { planning_table_names: JSON.stringify([item.itemName || ""]) },
+        });
+      } catch (e2) {}
       item.spr_name = "";
       frappe.show_alert({ message: "SPR was deleted.", indicator: "orange" }, 3);
       createItemStockEntry(item);

@@ -1012,6 +1012,45 @@ def _fabric_ready_date_from_child_sprs(run_date_map, raw_child_spr):
 	return best or ""
 
 
+@frappe.whitelist()
+def prune_planning_table_spr_links(planning_table_names=None):
+	"""
+	Remove missing/deleted SPR ids from Planning Table.spr_name (comma-separated).
+	Accepts a JSON list or python list of Planning Table row names.
+	"""
+	import json
+
+	if isinstance(planning_table_names, str):
+		try:
+			planning_table_names = json.loads(planning_table_names)
+		except Exception:
+			planning_table_names = [planning_table_names]
+	planning_table_names = planning_table_names or []
+	if not isinstance(planning_table_names, list):
+		return {"status": "error", "message": "planning_table_names must be a list", "updated": 0}
+	if not frappe.db.has_column("Planning Table", "spr_name") or not frappe.db.exists("DocType", "Shaft Production Run"):
+		return {"status": "ok", "updated": 0}
+
+	updated = 0
+	for nm in [str(x or "").strip() for x in planning_table_names if str(x or "").strip()]:
+		if not frappe.db.exists("Planning Table", nm):
+			continue
+		raw = str(frappe.db.get_value("Planning Table", nm, "spr_name") or "").strip()
+		if not raw:
+			continue
+		kept = []
+		for sid in _expand_spr_name_tokens(raw):
+			if frappe.db.exists("Shaft Production Run", sid):
+				kept.append(sid)
+		new_val = ", ".join(kept)
+		if new_val != raw:
+			frappe.db.set_value("Planning Table", nm, "spr_name", new_val, update_modified=False)
+			updated += 1
+	if updated:
+		frappe.db.commit()
+	return {"status": "ok", "updated": updated}
+
+
 def _month_letter_from_date(dt):
     """January=A and December=L (single letter month code)."""
     m = int(getattr(dt, "month", 1) or 1)
@@ -8729,10 +8768,10 @@ def _get_color_chart_data_impl(
 
             wo_status = str(row.get("status") or "").strip().lower()
             prod_item = (row.get("item_code") or "").strip()
-            # Slitting chain: fabric (100*) WOs are prerequisites for SPR on the 103 row. The slitting
-            # FG work order (103*) is often "Not Started" until after fabric manufacture — it must not
-            # keep the whole PP marked "open" or the board never unlocks SPR / shows contradictory WO pills.
-            if _item_process_prefix(prod_item) == "103":
+            # Slitting chain: on non-slitting boards, ignore the 103 WO when determining whether
+            # the PP is "open" (otherwise parent tables can get stuck). On the slitting board itself,
+            # we must reflect the true WO state (In Process => open).
+            if _item_process_prefix(prod_item) == "103" and (board_process_scope or "") != "slitting_only":
                 pass
             elif wo_status and wo_status not in _CHILD_FABRIC_WO_TERMINAL_STATUSES:
                 pp_has_open_wo_map[row.production_plan] = True
