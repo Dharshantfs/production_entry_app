@@ -94,7 +94,8 @@
             <th style="min-width:84px;">ARRANGMENT</th>
             <th>DATE</th>
             <th>SHIFT</th>
-            <th>BOOKING ID</th>
+            <th v-if="!isPrintedBoppTable">BOOKING ID</th>
+            <th v-else>ORDER CODE</th>
             <th>CUSTOMER</th>
             <th v-if="!isPrintedBoppTable">QUALITY</th>
             <th v-if="!isPrintedBoppTable">FABRIC COLOUR</th>
@@ -159,7 +160,8 @@
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
+            <td v-else class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.partyCode || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
