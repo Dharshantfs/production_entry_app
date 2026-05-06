@@ -1676,6 +1676,11 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					cur_soi = frappe.db.get_value("Planning Table", ex_name, "sales_order_item")
 					if not cur_soi:
 						updates["sales_order_item"] = so_it.name
+				# Ensure trace id is always stamped on existing BOM child rows (fabric + PB).
+				if trace_id and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+					cur_tr = str(frappe.db.get_value("Planning Table", ex_name, "custom_parent_child_trace_id") or "").strip()
+					if not cur_tr:
+						updates["custom_parent_child_trace_id"] = trace_id
 				if frappe.db.has_column("Planning Table", "split_from"):
 					cur_sf = str(frappe.db.get_value("Planning Table", ex_name, "split_from") or "").strip()
 					if cur_sf:
