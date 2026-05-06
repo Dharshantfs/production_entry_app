@@ -2,38 +2,83 @@
 
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
 // (avoids stale board grid until full reload).
+function _norm(v) {
+    return String(v || "").trim();
+}
+
+function _rowSoKey(row) {
+    // Planning sheet Item uses `so_item`; board rows can be `so_item` or `sales_order_item`
+    return _norm(row?.so_item || row?.sales_order_item || row?.salesOrderItem);
+}
+
+function _rowItemCode(row) {
+    return _norm(row?.item_code || row?.itemCode);
+}
+
+function _findPlannedRowForLegacy(frm, legacyRow) {
+    const psi = _norm(legacyRow?.name);
+    const soKey = _rowSoKey(legacyRow);
+    const ic = _rowItemCode(legacyRow);
+    const planned = frm?.doc?.planned_items || [];
+    if (!planned.length) return null;
+
+    // 1) strict link: board.source_item == legacy.name
+    if (psi) {
+        const hit = planned.find((pr) => _norm(pr.source_item) === psi);
+        if (hit) return hit;
+    }
+    // 2) fallback: match by SO line + item_code
+    if (soKey && ic) {
+        const hit2 = planned.find((pr) => _rowSoKey(pr) === soKey && _rowItemCode(pr) === ic);
+        if (hit2) return hit2;
+    }
+    return null;
+}
+
+function _findLegacyRowForPlanned(frm, plannedRow) {
+    const si = _norm(plannedRow?.source_item);
+    const soKey = _rowSoKey(plannedRow);
+    const ic = _rowItemCode(plannedRow);
+    const legacy = frm?.doc?.items || [];
+    if (!legacy.length) return null;
+
+    // 1) strict link: legacy.name == board.source_item
+    if (si) {
+        const hit = legacy.find((it) => _norm(it.name) === si);
+        if (hit) return hit;
+    }
+    // 2) fallback: match by SO line + item_code
+    if (soKey && ic) {
+        const hit2 = legacy.find((it) => _rowSoKey(it) === soKey && _rowItemCode(it) === ic);
+        if (hit2) return hit2;
+    }
+    return null;
+}
+
 frappe.ui.form.on('Planning sheet Item', {
     unit: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
-        const psi = (row.name || '').trim();
-        if (!psi || !frm.doc.planned_items || !frm.doc.planned_items.length) return;
-        (frm.doc.planned_items || []).forEach((pr) => {
-            if ((pr.source_item || '').trim() === psi) {
-                frappe.model.set_value(pr.doctype, pr.name, 'unit', row.unit);
-                if (row.custom_plan_code) {
-                    frappe.model.set_value(pr.doctype, pr.name, 'custom_plan_code', row.custom_plan_code);
-                }
-                if (row.plan_name) {
-                    frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
-                }
-            }
-        });
+        const pr = _findPlannedRowForLegacy(frm, row);
+        if (!pr) return;
+        frappe.model.set_value(pr.doctype, pr.name, 'unit', row.unit);
+        if (row.custom_plan_code) {
+            frappe.model.set_value(pr.doctype, pr.name, 'custom_plan_code', row.custom_plan_code);
+        }
+        if (row.plan_name) {
+            frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
+        }
         frm.refresh_field('planned_items');
     },
     custom_plan_code: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
-        const psi = (row.name || '').trim();
-        if (!psi || !frm.doc.planned_items || !frm.doc.planned_items.length) return;
-        (frm.doc.planned_items || []).forEach((pr) => {
-            if ((pr.source_item || '').trim() === psi) {
-                if (row.custom_plan_code) {
-                    frappe.model.set_value(pr.doctype, pr.name, 'custom_plan_code', row.custom_plan_code);
-                }
-                if (row.plan_name) {
-                    frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
-                }
-            }
-        });
+        const pr = _findPlannedRowForLegacy(frm, row);
+        if (!pr) return;
+        if (row.custom_plan_code) {
+            frappe.model.set_value(pr.doctype, pr.name, 'custom_plan_code', row.custom_plan_code);
+        }
+        if (row.plan_name) {
+            frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
+        }
         frm.refresh_field('planned_items');
     },
 });
@@ -41,35 +86,27 @@ frappe.ui.form.on('Planning sheet Item', {
 frappe.ui.form.on('Planning Table', {
     unit: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
-        const si = (row.source_item || '').trim();
-        if (!si || !frm.doc.items || !frm.doc.items.length) return;
-        (frm.doc.items || []).forEach((it) => {
-            if ((it.name || '').trim() === si) {
-                frappe.model.set_value(it.doctype, it.name, 'unit', row.unit);
-                if (row.custom_plan_code) {
-                    frappe.model.set_value(it.doctype, it.name, 'custom_plan_code', row.custom_plan_code);
-                }
-                if (row.plan_name) {
-                    frappe.model.set_value(it.doctype, it.name, 'plan_name', row.plan_name);
-                }
-            }
-        });
+        const leg = _findLegacyRowForPlanned(frm, row);
+        if (!leg) return;
+        frappe.model.set_value(leg.doctype, leg.name, 'unit', row.unit);
+        if (row.custom_plan_code) {
+            frappe.model.set_value(leg.doctype, leg.name, 'custom_plan_code', row.custom_plan_code);
+        }
+        if (row.plan_name) {
+            frappe.model.set_value(leg.doctype, leg.name, 'plan_name', row.plan_name);
+        }
         frm.refresh_field('items');
     },
     custom_plan_code: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
-        const si = (row.source_item || '').trim();
-        if (!si || !frm.doc.items || !frm.doc.items.length) return;
-        (frm.doc.items || []).forEach((it) => {
-            if ((it.name || '').trim() === si) {
-                if (row.custom_plan_code) {
-                    frappe.model.set_value(it.doctype, it.name, 'custom_plan_code', row.custom_plan_code);
-                }
-                if (row.plan_name) {
-                    frappe.model.set_value(it.doctype, it.name, 'plan_name', row.plan_name);
-                }
-            }
-        });
+        const leg = _findLegacyRowForPlanned(frm, row);
+        if (!leg) return;
+        if (row.custom_plan_code) {
+            frappe.model.set_value(leg.doctype, leg.name, 'custom_plan_code', row.custom_plan_code);
+        }
+        if (row.plan_name) {
+            frappe.model.set_value(leg.doctype, leg.name, 'plan_name', row.plan_name);
+        }
         frm.refresh_field('items');
     },
 });
