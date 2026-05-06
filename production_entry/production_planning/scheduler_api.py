@@ -7517,6 +7517,15 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     # Repair stale/missing source_item link so unit sync reaches legacy PSI immediately.
     resolved_source = _resolve_planning_table_source_item_link(item_doc.get("source_item"), item_doc.name)
     if not resolved_source:
+        # Last-resort repair: when board/legacy tables are 1:1 (same row count), relink by idx.
+        # This fixes cases where Planning Table.source_item accidentally stores a board-row id or garbage,
+        # causing unit changes (from Production Table / Color Chart) to not reflect in legacy grid.
+        try:
+            _link_board_planned_rows_to_legacy_items(item_doc.parent)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "repair source_item links by idx")
+        resolved_source = _resolve_planning_table_source_item_link(item_doc.get("source_item"), item_doc.name)
+    if not resolved_source:
         resolved_source = _resolve_legacy_source_item_from_board_row(item_doc)
     if resolved_source and resolved_source != (item_doc.get("source_item") or ""):
         item_doc.source_item = resolved_source
