@@ -136,7 +136,8 @@
             <div class="cc-table-unit-header" :style="{ backgroundColor: getUnitHeaderColor(unitGroup.unit) }">
                 {{ unitGroup.unit.toUpperCase() }} (06:00 am to 06:00 am) - Total: {{ unitGroup.totalWeight.toFixed(2) }} T
             </div>
-            
+
+            <div class="cc-table-scroll">
             <table class="cc-prod-table">
                 <thead>
                     <tr>
@@ -398,6 +399,7 @@
                     </tr>
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
   </div>
@@ -406,6 +408,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
+import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 
 // ===== MAINTENANCE DATA =====
 const maintenanceRecords = ref([]);
@@ -1970,11 +1973,11 @@ function getStockEntryTitle(item) {
   return `Start a new Shaft Production Run for this submitted Production Plan. Pending (PP): ${pendingQty.toFixed(0)} Kg.`;
 }
 
-function handleStockEntryAction(item) {
+async function handleStockEntryAction(item) {
   if (!item) return;
   const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
   if (isDraftSpr) {
-    openItemSPR(item.spr_name, item);
+    await openItemSPR(item.spr_name, item);
     return;
   }
   createItemStockEntry(item);
@@ -1990,7 +1993,7 @@ function syncSprNameForSamePP(ppId, sprId, sourceItemName = "") {
       String(row.pp_id || "").trim() === pid &&
       (!sourceItemName || String(row.itemName || "") === String(sourceItemName || ""))
     ) {
-      row.spr_name = sid;
+      row.spr_name = mergeSprCsv(row.spr_name, sid);
     }
   });
 }
@@ -2104,7 +2107,7 @@ async function createItemStockEntry(item) {
         
         if (res.message && res.message.status === "ok") {
           const sprId = res.message.spr_id;
-          item.spr_name = sprId;
+          item.spr_name = mergeSprCsv(item.spr_name, sprId);
           syncSprNameForSamePP(item.pp_id, sprId, item.itemName);
           const reused = !!res.message.reused;
           
@@ -2256,7 +2259,7 @@ async function createSingleMergedSPR(ppId, mergedItems, mergedRow) {
               
               if (res.message && res.message.status === "ok") {
                 const sprId = res.message.spr_id;
-                mergedRow.spr_name = sprId;
+                mergedRow.spr_name = mergeSprCsv(mergedRow.spr_name, sprId);
                 const reused = !!res.message.reused;
 
                 showLinkedWorkOrdersPopup(ppId);
@@ -2287,35 +2290,47 @@ async function createSingleMergedSPR(ppId, mergedItems, mergedRow) {
   });
 }
 
-function openItemSPR(sprName, item = null) {
+async function openItemSPR(sprName, item = null) {
   if (!sprName) {
     frappe.msgprint("No SPR linked");
     return;
   }
-  
-  // Verify SPR still exists
-  frappe.call({
-    method: "frappe.client.get",
-    args: { doctype: "Shaft Production Run", name: sprName },
-    callback: (r) => {
-      if (r.message) {
-        // SPR exists, open it
-        frappe.set_route('Form', 'Shaft Production Run', sprName);
-      } else {
-        // SPR was deleted, allow creating new one
-        if (item) {
-          item.spr_name = "";
-          frappe.show_alert({
-            message: '⚠️ SPR was deleted. You can create a new one.',
-            indicator: 'orange'
-          }, 3);
-          createItemStockEntry(item);
-        } else {
-          frappe.msgprint("SPR not found. It may have been deleted.");
-        }
-      }
+  const target = await resolveSprNavigationTarget(sprName, item?.spr_docstatus);
+  if (!target) {
+    frappe.msgprint("No SPR linked");
+    return;
+  }
+  try {
+    const r = await frappe.call({
+      method: "frappe.client.get",
+      args: { doctype: "Shaft Production Run", name: target },
+    });
+    if (r.message) {
+      frappe.set_route("Form", "Shaft Production Run", target);
+      return;
     }
-  });
+    if (item) {
+      item.spr_name = "";
+      frappe.show_alert({
+        message: "SPR was deleted. You can create a new one.",
+        indicator: "orange",
+      }, 3);
+      createItemStockEntry(item);
+    } else {
+      frappe.msgprint("SPR not found. It may have been deleted.");
+    }
+  } catch (e) {
+    if (item) {
+      item.spr_name = "";
+      frappe.show_alert({
+        message: "SPR was deleted. You can create a new one.",
+        indicator: "orange",
+      }, 3);
+      createItemStockEntry(item);
+    } else {
+      frappe.msgprint("SPR not found.");
+    }
+  }
 }
 
 function openMergedSPR(sprName, mergedRow) {
@@ -2793,6 +2808,14 @@ onBeforeUnmount(() => {
     display: flex;
     flex-direction: column;
     gap: 30px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+.cc-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 .cc-table-unit-header {
     padding: 10px 15px;
@@ -2804,6 +2827,7 @@ onBeforeUnmount(() => {
 }
 .cc-prod-table {
     width: 100%;
+    min-width: 1280px;
     border-collapse: collapse;
     background: white;
     font-size: 12px;

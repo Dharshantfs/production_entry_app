@@ -987,6 +987,31 @@ def _submitted_spr_run_date_map(spr_names):
 	return out
 
 
+def _expand_spr_name_tokens(*raw_values):
+	"""Split CSV/semicolon spr_name fields into unique ordered SPR document names."""
+	out = []
+	seen = set()
+	for raw in raw_values:
+		for segment in str(raw or "").replace(";", ",").split(","):
+			sn = segment.strip()
+			if sn and sn not in seen:
+				seen.add(sn)
+				out.append(sn)
+	return out
+
+
+def _fabric_ready_date_from_child_sprs(run_date_map, raw_child_spr):
+	"""Pick a single display date from mapped submitted SPR run dates (CSV on child fabric link)."""
+	best = None
+	for sn in _expand_spr_name_tokens(raw_child_spr):
+		d = run_date_map.get(sn)
+		if d is None:
+			continue
+		if best is None or str(d) > str(best):
+			best = d
+	return best or ""
+
+
 def _month_letter_from_date(dt):
     """January=A and December=L (single letter month code)."""
     m = int(getattr(dt, "month", 1) or 1)
@@ -3038,12 +3063,8 @@ def get_lamination_order_table_data(
     )
     by_psi = {e["psi_name"]: e for e in (extra or [])}
 
-    child_spr_names_lm = list(
-        {
-            str((e or {}).get("child_fabric_spr_name") or "").strip()
-            for e in (extra or [])
-            if str((e or {}).get("child_fabric_spr_name") or "").strip()
-        }
+    child_spr_names_lm = _expand_spr_name_tokens(
+        *[str((e or {}).get("child_fabric_spr_name") or "") for e in (extra or [])]
     )
     lm_fabric_ready_map = _submitted_spr_run_date_map(child_spr_names_lm)
 
@@ -3051,13 +3072,11 @@ def get_lamination_order_table_data(
     # so draft SPR links still aggregate meters even if the join row is missing a match.
     spr_name_set = set()
     for e in extra or []:
-        v = (e.get("spr_for_meter") or "").strip()
-        if v:
-            spr_name_set.add(v)
+        for sn in _expand_spr_name_tokens(e.get("spr_for_meter")):
+            spr_name_set.add(sn)
     for r in rows:
-        v = (r.get("spr_name") or "").strip()
-        if v:
-            spr_name_set.add(v)
+        for sn in _expand_spr_name_tokens(r.get("spr_name")):
+            spr_name_set.add(sn)
     spr_names = list(spr_name_set)
 
     spr_meters = {}
@@ -3280,8 +3299,11 @@ def get_lamination_order_table_data(
         nm = r.get("itemName") or r.get("item_name")
         ex = by_psi.get(nm) if nm else None
         spr_nm = ((ex.get("spr_for_meter") if ex else "") or (r.get("spr_name") or "") or "").strip()
-        achieved_m = flt(spr_meters.get(spr_nm)) if spr_nm else 0.0
-        achieved_w = flt(spr_weights.get(spr_nm)) if spr_nm else 0.0
+        achieved_m = 0.0
+        achieved_w = 0.0
+        for sid in _expand_spr_name_tokens(spr_nm):
+            achieved_m += flt(spr_meters.get(sid))
+            achieved_w += flt(spr_weights.get(sid))
         row = dict(r)
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
         if not row["lamination_booking_id"] and ex and ex.get("ps_name"):
@@ -3357,9 +3379,9 @@ def get_lamination_order_table_data(
             or (ex.get("child_trace_id") if ex else "")
             or _parent_child_trace_id_from_item_code(row.get("item_code") or row.get("itemCode"))
         )
-        row["fabric_ready_date"] = lm_fabric_ready_map.get(
-            str((ex.get("child_fabric_spr_name") if ex else "") or "").strip()
-        ) or ""
+        row["fabric_ready_date"] = _fabric_ready_date_from_child_sprs(
+            lm_fabric_ready_map, (ex.get("child_fabric_spr_name") if ex else "") or ""
+        )
         item_code = str(row.get("itemCode") or row.get("item_code") or "").strip()
         is_parent_lamination = bool(
             LAMINATION_FLOW_ENABLED and item_code and _is_lamination_parent_process(item_code)
@@ -3536,8 +3558,8 @@ def get_slitting_order_table_data(
     )
     by_psi = {e.get("psi_name"): e for e in (extra or [])}
 
-    child_spr_names = list(
-        {str((e or {}).get("child_spr_name") or "").strip() for e in (extra or []) if str((e or {}).get("child_spr_name") or "").strip()}
+    child_spr_names = _expand_spr_name_tokens(
+        *[str((e or {}).get("child_spr_name") or "") for e in (extra or [])]
     )
     run_date_map = _submitted_spr_run_date_map(child_spr_names)
 
@@ -3586,7 +3608,7 @@ def get_slitting_order_table_data(
         row["fabric_item_code"] = _cstr((ex or {}).get("fabric_item_code") or "")
         row["planned_kgs"] = flt(row.get("qty") or 0)
         row["achieved_kgs"] = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
-        row["fabric_ready_date"] = run_date_map.get(str((ex or {}).get("child_spr_name") or "").strip()) or ""
+        row["fabric_ready_date"] = _fabric_ready_date_from_child_sprs(run_date_map, (ex or {}).get("child_spr_name"))
         row["order_sheet"] = "YES" if cint(row.get("pp_docstatus") or 0) == 1 else "NO"
         so_name = str(row.get("salesOrder") or row.get("sales_order") or "").strip()
         so_item = str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip()
@@ -3681,8 +3703,8 @@ def get_rewinding_order_table_data(
     )
     by_psi = {e.get("psi_name"): e for e in (extra or [])}
 
-    child_spr_names = list(
-        {str((e or {}).get("child_spr_name") or "").strip() for e in (extra or []) if str((e or {}).get("child_spr_name") or "").strip()}
+    child_spr_names = _expand_spr_name_tokens(
+        *[str((e or {}).get("child_spr_name") or "") for e in (extra or [])]
     )
     run_date_map = _submitted_spr_run_date_map(child_spr_names)
 
@@ -3730,7 +3752,7 @@ def get_rewinding_order_table_data(
         row["fabric_item_code"] = _cstr((ex or {}).get("fabric_item_code") or "")
         row["planned_kgs"] = flt(row.get("qty") or 0)
         row["achieved_kgs"] = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
-        row["fabric_ready_date"] = run_date_map.get(str((ex or {}).get("child_spr_name") or "").strip()) or ""
+        row["fabric_ready_date"] = _fabric_ready_date_from_child_sprs(run_date_map, (ex or {}).get("child_spr_name"))
         row["order_sheet"] = "YES" if cint(row.get("pp_docstatus") or 0) == 1 else "NO"
         so_name = str(row.get("salesOrder") or row.get("sales_order") or "").strip()
         so_item = str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip()
@@ -3875,12 +3897,8 @@ def get_sheet_cutting_order_table_data(
         as_dict=True,
     )
     by_psi = {e.get("psi_name"): e for e in (extra or [])}
-    spr_names = list(
-        {
-            str((e or {}).get("parent_spr_name") or "").strip()
-            for e in (extra or [])
-            if str((e or {}).get("parent_spr_name") or "").strip()
-        }
+    spr_names = _expand_spr_name_tokens(
+        *[str((e or {}).get("parent_spr_name") or "") for e in (extra or [])]
     )
     spr_weights = {}
     if spr_names and frappe.db.exists("DocType", "Shaft Production Run Item"):
@@ -3923,7 +3941,9 @@ def get_sheet_cutting_order_table_data(
         size_info = size_map.get(sid) or {}
         spr_nm = _cstr((ex.get("parent_spr_name") or row.get("spr_name") or ""))
         # Sheet cutting achieved should come from submitted SPR only.
-        achieved = flt(spr_weights.get(spr_nm)) if spr_nm else 0.0
+        achieved = 0.0
+        for sid in _expand_spr_name_tokens(spr_nm):
+            achieved += flt(spr_weights.get(sid))
         row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()
         row["quality_code"] = _cstr(p.get("quality_code"))
         row["colour_code"] = _cstr(p.get("colour_code"))
@@ -4044,8 +4064,9 @@ def sync_spr_weight_to_lamination_table(spr_name=None):
                 UPDATE `tabPlanning Table`
                 SET actual_production_weight_kgs = %s
                 WHERE spr_name = %s
+                   OR FIND_IN_SET(%s, REPLACE(IFNULL(spr_name,''), ', ', ','))
                 """,
-                (weight, spr_id),
+                (weight, spr_id, spr_id),
             )
             updated += 1
 
@@ -5703,10 +5724,14 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
             frappe.db.set_value("Planning Table", r["name"], "order_sheet", row_pp, update_modified=False)
             updated_order_sheet += 1
 
-        row_spr = _pick_spr_for_pp(row_pp) if row_pp else ""
-        if row_spr and (r.get("spr_name") or "").strip() != row_spr:
-            frappe.db.set_value("Planning Table", r["name"], "spr_name", row_spr, update_modified=False)
-            updated_spr += 1
+        row_spr_single = _pick_spr_for_pp(row_pp) if row_pp else ""
+        if row_spr_single:
+            cur_raw = str((r.get("spr_name") or "")).strip()
+            cur_ids = _expand_spr_name_tokens(cur_raw)
+            if row_spr_single not in cur_ids:
+                merged_spr = ", ".join(cur_ids + [row_spr_single]) if cur_ids else row_spr_single
+                frappe.db.set_value("Planning Table", r["name"], "spr_name", merged_spr, update_modified=False)
+                updated_spr += 1
 
     return {
         "status": "ok",
@@ -8951,35 +8976,71 @@ def _get_color_chart_data_impl(
                     break
             achieved_col_sql = f"GREATEST({base_ach}, {items_net_sql})"
 
-            psi_spr_data = frappe.db.sql(f"""
-                SELECT 
-                    psi.name as psi_name,
-                    psi.spr_name as spr_name,
-                    spr.docstatus as spr_docstatus,
-                    {produced_col_sql} as total_produced,
-                    {achieved_col_sql} as total_achieved
-                FROM `tabPlanning Table` psi
-                LEFT JOIN `tabShaft Production Run` spr ON psi.spr_name = spr.name
-                WHERE psi.parent IN ({{}})
-                  AND psi.spr_name IS NOT NULL 
-                  AND psi.spr_name != ''
-                  AND spr.docstatus < 2
-            """.format(','.join(['%s'] * len(sheet_names))), tuple(sheet_names), as_dict=True)
-            
-            for row in psi_spr_data:
-                psi_name = row.get('psi_name')
-                spr_name = row.get('spr_name')
-                produced = flt(row.get('total_produced', 0))
-                achieved = flt(row.get('total_achieved', 0))
-                eff_kg = max(achieved, produced)
-                if psi_name and spr_name:
+            psi_spr_rows = []
+            if sheet_names:
+                fmt_psi = ",".join(["%s"] * len(sheet_names))
+                psi_spr_rows = frappe.db.sql(
+                    f"""
+                    SELECT name AS psi_name, spr_name
+                    FROM `tabPlanning Table`
+                    WHERE parent IN ({fmt_psi})
+                      AND spr_name IS NOT NULL
+                      AND TRIM(spr_name) != ''
+                    """,
+                    tuple(sheet_names),
+                    as_dict=True,
+                )
+
+            psi_to_spr_ids = {}
+            all_spr_ids = set()
+            for pr in psi_spr_rows or []:
+                pname = str(pr.get("psi_name") or "").strip()
+                spr_ids_row = _expand_spr_name_tokens(pr.get("spr_name"))
+                if pname and spr_ids_row:
+                    psi_to_spr_ids[pname] = spr_ids_row
+                    for sid in spr_ids_row:
+                        all_spr_ids.add(sid)
+
+            spr_metrics = {}
+            if all_spr_ids:
+                ids_list = list(all_spr_ids)
+                sf = ",".join(["%s"] * len(ids_list))
+                for mrow in frappe.db.sql(
+                    f"""
+                    SELECT spr.name AS spr_name,
+                           {produced_col_sql} AS total_produced,
+                           {achieved_col_sql} AS total_achieved,
+                           spr.docstatus AS spr_docstatus
+                    FROM `tabShaft Production Run` spr
+                    WHERE spr.name IN ({sf})
+                      AND spr.docstatus < 2
+                    """,
+                    tuple(ids_list),
+                    as_dict=True,
+                ):
+                    spr_metrics[str(mrow.get("spr_name") or "").strip()] = mrow
+
+            for psi_name, spr_ids in psi_to_spr_ids.items():
+                total_eff = 0.0
+                total_prod = 0.0
+                spr_with_prod = 0
+                for sid in spr_ids:
+                    m = spr_metrics.get(sid)
+                    if not m:
+                        continue
+                    produced = flt(m.get("total_produced", 0))
+                    achieved = flt(m.get("total_achieved", 0))
+                    eff_kg = max(achieved, produced)
                     if eff_kg > 0:
-                        spr_psi_achieved_weight_map[psi_name] = max(
-                            flt(spr_psi_achieved_weight_map.get(psi_name, 0)), eff_kg
-                        )
+                        total_eff += eff_kg
                     if produced > 0:
-                        spr_psi_produced_map[psi_name] = spr_psi_produced_map.get(psi_name, 0) + produced
-                        spr_psi_count_map[psi_name] = spr_psi_count_map.get(psi_name, 0) + 1
+                        total_prod += produced
+                        spr_with_prod += 1
+                if total_eff > 0:
+                    spr_psi_achieved_weight_map[psi_name] = total_eff
+                if total_prod > 0:
+                    spr_psi_produced_map[psi_name] = total_prod
+                    spr_psi_count_map[psi_name] = spr_with_prod
     except Exception:
         pass
 
@@ -9086,6 +9147,30 @@ def _get_color_chart_data_impl(
         spr_has_unit_col = frappe.db.has_column("Shaft Production Run", "unit")
     except Exception:
         spr_has_unit_col = False
+
+    def _meta_for_spr_csv(raw_spr):
+        """Docstatus/unit for a Planning row: any draft SPR => draft (0); else last linked."""
+        ids_ordered = _expand_spr_name_tokens(raw_spr)
+        if not ids_ordered:
+            return None, ""
+        ds_values = []
+        spr_unit_pick = ""
+        for sn in ids_ordered:
+            if sn in spr_meta_cache:
+                meta = spr_meta_cache[sn]
+            else:
+                spr_fields = ["docstatus"] + (["unit"] if spr_has_unit_col else [])
+                spr_meta_row = frappe.db.get_value("Shaft Production Run", sn, spr_fields, as_dict=True) or {}
+                meta = {"docstatus": spr_meta_row.get("docstatus"), "unit": (spr_meta_row.get("unit") or "")}
+                spr_meta_cache[sn] = meta
+            ds_values.append(meta.get("docstatus"))
+            if not spr_unit_pick:
+                spr_unit_pick = meta.get("unit") or ""
+        if any(cint(x) == 0 for x in ds_values if x is not None):
+            agg_ds = 0
+        else:
+            agg_ds = ds_values[-1] if ds_values else None
+        return agg_ds, spr_unit_pick
 
     def _normalize_gsm_key(value):
         txt = str(value or "").strip()
@@ -9492,18 +9577,7 @@ def _get_color_chart_data_impl(
             # when the SPR link has not been backfilled yet.
             spr_name = (item.get("spr_name") or "").strip()
 
-            spr_docstatus = None
-            spr_unit = ""
-            if spr_name:
-                if spr_name in spr_meta_cache:
-                    spr_docstatus = spr_meta_cache[spr_name].get("docstatus")
-                    spr_unit = spr_meta_cache[spr_name].get("unit") or ""
-                else:
-                    spr_fields = ["docstatus"] + (["unit"] if spr_has_unit_col else [])
-                    spr_meta = frappe.db.get_value("Shaft Production Run", spr_name, spr_fields, as_dict=True) or {}
-                    spr_docstatus = spr_meta.get("docstatus")
-                    spr_unit = spr_meta.get("unit") or ""
-                    spr_meta_cache[spr_name] = {"docstatus": spr_docstatus, "unit": spr_unit}
+            spr_docstatus, spr_unit = _meta_for_spr_csv(spr_name)
 
             item_pending_qty = max(flt(item.get("qty", 0)) - flt(item_level_produced), 0)
 
@@ -15573,18 +15647,66 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
         return {"status": "error", "message": f"Production Plan {pp_id} not found"}
     
     try:
-        def _link_items_to_spr(spr_name_to_link):
-            """Persist per-item SPR link so split rows remain independent across dates/units."""
+        def _ensure_spr_links_on_planning_rows(spr_nm, psi_names_list):
+            """Append SPR to Planning Table row (comma-separated); never overwrite prior runs."""
             try:
-                if not spr_name_to_link or not planning_sheet_item_names:
+                if not spr_nm or not psi_names_list:
                     return
                 if not frappe.db.has_column("Planning Table", "spr_name"):
                     return
-                for psi_name in planning_sheet_item_names:
-                    if frappe.db.exists("Planning Table", psi_name):
-                        frappe.db.set_value("Planning Table", psi_name, "spr_name", spr_name_to_link)
+                for pname in psi_names_list:
+                    if not frappe.db.exists("Planning Table", pname):
+                        continue
+                    cur = str(frappe.db.get_value("Planning Table", pname, "spr_name") or "").strip()
+                    parts = []
+                    seen_local = set()
+                    for segment in cur.replace(";", ",").split(","):
+                        x = segment.strip()
+                        if x and x not in seen_local:
+                            seen_local.add(x)
+                            parts.append(x)
+                    if spr_nm not in seen_local:
+                        parts.append(spr_nm)
+                    frappe.db.set_value("Planning Table", pname, "spr_name", ", ".join(parts))
             except Exception:
                 pass
+
+        def _spr_names_ordered_from_psi_rows(rows):
+            out = []
+            seen = set()
+            for psi in rows or []:
+                raw = str((psi.get("spr_name") or "")).strip()
+                for segment in raw.replace(";", ",").split(","):
+                    sn = segment.strip()
+                    if sn and sn not in seen:
+                        seen.add(sn)
+                        out.append(sn)
+            return out
+
+        def _pp_allows_additional_spr(current_pp_id, rows):
+            """False when every WO on this PP (matching item codes, else all) is terminal."""
+            terminal = {"completed", "stopped", "stoped", "closed"}
+            codes = {
+                str((r.get("item_code") or "")).strip()
+                for r in (rows or [])
+                if str((r.get("item_code") or "")).strip()
+            }
+            wos = (
+                frappe.get_all(
+                    "Work Order",
+                    filters={"production_plan": current_pp_id, "docstatus": ["<", 2]},
+                    fields=["name", "status", "production_item"],
+                )
+                or []
+            )
+            relevant = [wo for wo in wos if str((wo.get("production_item") or "")).strip() in codes]
+            check_list = relevant if relevant else wos
+            if not check_list:
+                return True
+            for wo in check_list:
+                if str((wo.get("status") or "")).strip().lower() not in terminal:
+                    return True
+            return False
 
         def _hydrate_existing_spr(existing_spr_name, current_pp_id):
             """Fill missing shaft job fields on reused draft SPR from PP shaft mapping."""
@@ -15650,19 +15772,38 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
 
         pp = frappe.get_doc("Production Plan", pp_id)
 
-        # If any provided PSI already has an SPR link, reuse that specific SPR only for those PSI rows.
         psi_list = []
-        existing_links = set()
         for psi_name in planning_sheet_item_names:
             if frappe.db.exists("Planning Table", psi_name):
-                psi = frappe.get_doc("Planning Table", psi_name)
-                psi_list.append(psi)
-                link_name = (psi.get("spr_name") or "").strip()
-                if link_name:
-                    existing_links.add(link_name)
+                psi_list.append(frappe.get_doc("Planning Table", psi_name))
 
         if not psi_list:
             return {"status": "error", "message": "No valid Planning Sheet Items found"}
+
+        ordered_linked_sprs = _spr_names_ordered_from_psi_rows(psi_list)
+        draft_reuse_spr = ""
+        for sn in ordered_linked_sprs:
+            if frappe.db.exists("Shaft Production Run", sn):
+                if cint(frappe.db.get_value("Shaft Production Run", sn, "docstatus") or 0) == 0:
+                    draft_reuse_spr = sn
+                    break
+
+        if draft_reuse_spr:
+            _hydrate_existing_spr(draft_reuse_spr, pp_id)
+            _ensure_spr_links_on_planning_rows(draft_reuse_spr, planning_sheet_item_names)
+            frappe.db.commit()
+            return {
+                "status": "ok",
+                "spr_id": draft_reuse_spr,
+                "message": f"Continuing draft SPR {draft_reuse_spr}",
+                "reused": 1,
+            }
+
+        if ordered_linked_sprs and not _pp_allows_additional_spr(pp_id, psi_list):
+            return {
+                "status": "error",
+                "message": _("Cannot create a new SPR: Work Order is Completed, Stopped, or Closed for this Production Plan."),
+            }
 
         is_slitting_from_rows = any(_item_process_prefix(str((psi.get("item_code") or "")).strip()) == "103" for psi in (psi_list or []))
 
@@ -15748,25 +15889,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
                     "message": f"Cannot create Slitting SPR until child WO is Completed/Stopped/Closed. Open WO: {open_wo}",
                 }
 
-        if len(existing_links) > 1:
-            return {
-                "status": "error",
-                "message": f"Multiple SPR links found for selected rows: {', '.join(sorted(existing_links))}. Please select rows with a single SPR or create separately.",
-            }
-
-        if len(existing_links) == 1:
-            reuse_spr = existing_links.pop()
-            if frappe.db.exists("Shaft Production Run", reuse_spr):
-                _hydrate_existing_spr(reuse_spr, pp_id)
-                _link_items_to_spr(reuse_spr)
-                return {
-                    "status": "ok",
-                    "spr_id": reuse_spr,
-                    "message": f"SPR Reused for PSI: {reuse_spr}",
-                    "reused": 1,
-                }
-        
-        # Create SPR
+        # Create SPR (second+ run for same PP/WO/planning row when prior SPRs are submitted)
         spr = frappe.new_doc("Shaft Production Run")
         spr.run_date = frappe.utils.today()
         spr.shift = get_current_shift()
@@ -16008,7 +16131,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
         if spr.name not in existing_spr_link:
             new_link = f"{existing_spr_link}, {spr.name}".strip(", ") if existing_spr_link else spr.name
             frappe.db.set_value("Production Plan", pp_id, "custom_shaft_production_run_id", new_link)
-        _link_items_to_spr(spr.name)
+        _ensure_spr_links_on_planning_rows(spr.name, planning_sheet_item_names)
         
         frappe.db.commit()
         

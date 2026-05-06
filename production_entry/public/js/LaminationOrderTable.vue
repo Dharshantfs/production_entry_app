@@ -268,6 +268,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 
 const props = defineProps({
   /** `lamination` = 104/107 lamination table; `printed_bopp_film` = PB / VR BOPP printing unit (independent scope). */
@@ -952,7 +953,7 @@ function syncSprNameForSamePP(ppId, sprId, sourceItemName = "") {
       String(row.pp_id || "").trim() === pid &&
       (!sourceItemName || String(row.itemName || "") === String(sourceItemName || ""))
     ) {
-      row.spr_name = sid;
+      row.spr_name = mergeSprCsv(row.spr_name, sid);
     }
   });
 }
@@ -993,36 +994,49 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
   }
 }
 
-function handleStockEntryAction(item) {
+async function handleStockEntryAction(item) {
   if (!item) return;
   const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
   if (isDraftSpr) {
-    openItemSPR(item.spr_name, item);
+    await openItemSPR(item.spr_name, item);
     return;
   }
   createItemStockEntry(item);
 }
 
-function openItemSPR(sprName, item = null) {
+async function openItemSPR(sprName, item = null) {
   if (!sprName) {
     frappe.msgprint("No SPR linked");
     return;
   }
-  frappe.call({
-    method: "frappe.client.get",
-    args: { doctype: "Shaft Production Run", name: sprName },
-    callback: (r) => {
-      if (r.message) {
-        frappe.set_route("Form", "Shaft Production Run", sprName);
-      } else if (item) {
-        item.spr_name = "";
-        frappe.show_alert({ message: "SPR was deleted.", indicator: "orange" }, 3);
-        createItemStockEntry(item);
-      } else {
-        frappe.msgprint("SPR not found");
-      }
-    },
-  });
+  const target = await resolveSprNavigationTarget(sprName, item?.spr_docstatus);
+  if (!target) {
+    frappe.msgprint("No SPR linked");
+    return;
+  }
+  try {
+    const r = await frappe.call({
+      method: "frappe.client.get",
+      args: { doctype: "Shaft Production Run", name: target },
+    });
+    if (r.message) {
+      frappe.set_route("Form", "Shaft Production Run", target);
+    } else if (item) {
+      item.spr_name = "";
+      frappe.show_alert({ message: "SPR was deleted.", indicator: "orange" }, 3);
+      createItemStockEntry(item);
+    } else {
+      frappe.msgprint("SPR not found");
+    }
+  } catch (e) {
+    if (item) {
+      item.spr_name = "";
+      frappe.show_alert({ message: "SPR was deleted.", indicator: "orange" }, 3);
+      createItemStockEntry(item);
+    } else {
+      frappe.msgprint("SPR not found");
+    }
+  }
 }
 
 async function createItemStockEntry(item) {
@@ -1066,7 +1080,7 @@ async function createItemStockEntry(item) {
       });
       if (res.message && res.message.status === "ok") {
         const sprId = res.message.spr_id || res.message.spr_name;
-        item.spr_name = sprId;
+        item.spr_name = mergeSprCsv(item.spr_name, sprId);
         syncSprNameForSamePP(item.pp_id, sprId, item.itemName);
         frappe.show_alert({ message: `SPR: ${sprId}`, indicator: "green" }, 3);
         setTimeout(() => frappe.set_route("Form", "Shaft Production Run", sprId), 600);
@@ -1489,8 +1503,12 @@ onUnmounted(() => {
 .cc-table-container {
   background: #fff;
   border-radius: 8px;
-  /* overflow: auto; */
   border: 1px solid #e5e7eb;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  font-size: 14px;
 }
 .cc-shift-board {
   background: #fff;
@@ -1565,6 +1583,7 @@ onUnmounted(() => {
 }
 .cc-prod-table {
   width: 100%;
+  min-width: 1280px;
   border-collapse: collapse;
   font-size: 13px;
   line-height: 1.6;
@@ -1656,9 +1675,6 @@ onUnmounted(() => {
 .cell-right {
   text-align: right;
   padding-right: 16px;
-}
-.cc-table-container {
-  font-size: 14px;
 }
 .cc-pp-btn {
   padding: 6px 10px;

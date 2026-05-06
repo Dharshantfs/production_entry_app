@@ -92,13 +92,12 @@
                   </div>
                   <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
                   <!-- View SPR button -->
-                  <button v-if="row.spr_name" type="button" @click="openSPR(row.spr_name)"
+                  <button v-if="row.spr_name" type="button" @click="openResolvedSPR(row)"
                     class="cc-pp-btn pt-btn-entry"
                     :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                     :title="itemSprTitle(row)">{{ itemSprLabel(row) }}</button>
-                  <!-- New SPR when WO is open, no existing SPR -->
-                  <button v-else-if="canCreateSpr(row)" type="button" @click="createSheetCuttingSpr(row)"
-                    class="cc-pp-btn pt-btn-entry" title="Create Shaft Production Run">New SPR</button>
+                  <button v-if="canCreateSpr(row) && Number(row.spr_docstatus) !== 0" type="button" @click="createSheetCuttingSpr(row)"
+                    class="cc-pp-btn pt-btn-entry" title="Create another Shaft Production Run">New SPR</button>
                   <!-- Open WO directly when WO exists and is open -->
                   <button v-else-if="row.wo_name && row.wo_open && Number(row.pp_docstatus) === 1"
                     type="button" @click="openWO(row.wo_name)"
@@ -123,6 +122,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { formatSheetSizeCell as formatSheetSizeCellMm, formatSingleDimension } from "./planning_table_size_units.js";
+import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_sheet_cutting";
 const sizeDimUnit = ref("inches");
 const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (in)"));
@@ -163,7 +163,23 @@ function getRowDateKey(row) { return toDateKey(row?.plannedDate || row?.planned_
 function sortRowsBySavedSequence(rows) { const grouped = {}; (rows || []).forEach((r) => { const dk = getRowDateKey(r); grouped[dk] = grouped[dk] || []; grouped[dk].push(r); }); const out = []; Object.keys(grouped).sort().forEach((dk) => { const arr = grouped[dk]; const saved = customOrderByDate.value[dk] || []; const rank = new Map(saved.map((nm, i) => [nm, i])); arr.sort((a, b) => { const ra = rank.has(a.itemName) ? rank.get(a.itemName) : 99999; const rb = rank.has(b.itemName) ? rank.get(b.itemName) : 99999; if (ra !== rb) return ra - rb; return String(a.itemName || "").localeCompare(String(b.itemName || "")); }); out.push(...arr); }); return out; }
 function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v); } function formatNum(v) { const n = Number(v || 0); if (!Number.isFinite(n)) return "-"; return n.toFixed(2).replace(/\.00$/, ""); }
 function goToBoard() { frappe.set_route("sheet-cutting-board"); }
-function openSPR(sprName) { if (sprName) frappe.set_route("Form", "Shaft Production Run", sprName); }
+function syncSprNameForSamePP(ppId, sprId, sourceItemName = "") {
+  const pid = String(ppId || "").trim();
+  const sid = String(sprId || "").trim();
+  if (!pid || !sid) return;
+  (rawData.value || []).forEach((row) => {
+    if (
+      String(row.pp_id || "").trim() === pid &&
+      (!sourceItemName || String(row.itemName || "") === String(sourceItemName || ""))
+    ) {
+      row.spr_name = mergeSprCsv(row.spr_name, sid);
+    }
+  });
+}
+async function openResolvedSPR(row) {
+  const target = await resolveSprNavigationTarget(row?.spr_name, row?.spr_docstatus);
+  if (target) frappe.set_route("Form", "Shaft Production Run", target);
+}
 function openPPForm(ppId) { if (ppId) frappe.set_route("Form", "Production Plan", ppId); }
 function openWO(woName) { if (woName) frappe.set_route("Form", "Work Order", woName); }
 function openProductionPlanView(planningSheetName, salesOrderItem, planningSheetItemName, directPpId) {
@@ -192,7 +208,6 @@ function itemSprTitle(row) { if (!row?.spr_name) return ""; if (Number(row.spr_d
 function canCreateSpr(row) { if (!row.pp_id || Number(row.pp_docstatus) !== 1) return false; if (!row.wo_open) return false; const planned = parseFloat(row.planned_quantity || 0); const achieved = parseFloat(row.achieved_quantity || 0); if (planned > 0 && achieved >= planned - 0.001) return false; return true; }
 async function createSheetCuttingSpr(item) {
   if (!item.pp_id) { frappe.msgprint("No Production Plan linked"); return; }
-  if (item.spr_name) { openSPR(item.spr_name); return; }
   if (item.__creating_spr) return;
   item.__creating_spr = true;
   try {
@@ -203,7 +218,8 @@ async function createSheetCuttingSpr(item) {
     const msg = r?.message || {};
     const sprName = msg.spr_id || msg.spr_name;
     if (sprName) {
-      item.spr_name = sprName;
+      item.spr_name = mergeSprCsv(item.spr_name, sprName);
+      syncSprNameForSamePP(item.pp_id, sprName, item.itemName);
       frappe.show_alert({ message: `SPR created: ${sprName}`, indicator: "green" }, 3);
       setTimeout(() => frappe.set_route("Form", "Shaft Production Run", sprName), 600);
     } else { frappe.msgprint(msg.message || "SPR creation failed"); }
@@ -304,7 +320,11 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  overflow: auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .cc-shift-board {
   background: #fff;
@@ -372,6 +392,7 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 }
 .cc-prod-table {
   width: 100%;
+  min-width: 1280px;
   border-collapse: collapse;
   font-size: 13px;
   line-height: 1.6;
