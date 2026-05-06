@@ -30,6 +30,7 @@
         <button type="button" class="cc-clear-btn" @click="restoreArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
+        <button type="button" class="cc-clear-btn" :title="sizeDimUnit === 'inches' ? 'Show roll & sheet size in mm (nearest 5)' : 'Show sizes in inches'" @click="toggleSizeDimUnit">{{ sizeDimUnit === "inches" ? "Sizes: mm" : "Sizes: in" }}</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Sheet Cutting Board</button>
       </div>
     </div>
@@ -60,7 +61,7 @@
     <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders (251)</div>
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:76px;">ROLL SIZE</th><th style="min-width:76px;">MTR</th><th style="min-width:92px;">SHEET SIZE</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:76px;">MTR</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td colspan="16" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
@@ -73,7 +74,7 @@
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
-              <td class="cell-center">{{ formatNum(row.roll_size) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ row.sheet_size || "-" }}</td>
+              <td class="cell-center">{{ formatRollSizeCell(row) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ formatSheetSizeCell(row) }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.per_day_production) }}</td>
               <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
               <td class="cell-center">
@@ -121,6 +122,27 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { formatSheetSizeCell as formatSheetSizeCellMm, formatSingleDimension } from "./planning_table_size_units.js";
+const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_sheet_cutting";
+const sizeDimUnit = ref("inches");
+const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (in)"));
+const sheetSizeHeader = computed(() =>
+  sizeDimUnit.value === "mm" ? "SHEET SIZE (mm)" : "SHEET SIZE (in)"
+);
+function toggleSizeDimUnit() {
+  sizeDimUnit.value = sizeDimUnit.value === "mm" ? "inches" : "mm";
+  try {
+    localStorage.setItem(DIM_UNIT_LS_KEY, sizeDimUnit.value);
+  } catch (_) {}
+}
+function formatRollSizeCell(row) {
+  if (!row || row.is_maintenance_row || row.is_maintenance_empty) return "-";
+  return formatSingleDimension(row, "roll_size", sizeDimUnit.value, row.fabric_item_code || "");
+}
+function formatSheetSizeCell(row) {
+  if (!row || row.is_maintenance_row || row.is_maintenance_empty) return "-";
+  return formatSheetSizeCellMm(row, sizeDimUnit.value);
+}
 const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
 const filterOrderDate = ref(frappe.datetime.get_today()); const filterWeek = ref(""); const filterMonth = ref(""); const viewScope = ref("daily");
 const filterPartyCode = ref(""); const filterCustomer = ref(""); const filterShift = ref("all"); const rawData = ref([]);
@@ -210,7 +232,7 @@ async function fetchData() { if (fetchInProgress) return; fetchInProgress = true
 function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
 function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
-onMounted(async () => { const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await fetchData(); startAutoRefresh(); });
+onMounted(async () => { try { const u = localStorage.getItem(DIM_UNIT_LS_KEY); if (u === "mm" || u === "inches") sizeDimUnit.value = u; } catch (_) {} const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await fetchData(); startAutoRefresh(); });
 onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 </script>
 

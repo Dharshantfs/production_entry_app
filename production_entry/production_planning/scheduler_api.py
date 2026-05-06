@@ -3524,6 +3524,7 @@ def get_slitting_order_table_data(
             {child_trace_expr} as child_trace_id,
             IFNULL(fab.width_inch, 0) as roll_size,
             IFNULL(pt.width_inch, 0) as slitting_size,
+            IFNULL(fab.item_code, '') as fabric_item_code,
             {spr_parent_expr} as parent_spr_name,
             {spr_child_expr} as child_spr_name
         FROM `tabPlanning Table` pt
@@ -3582,6 +3583,7 @@ def get_slitting_order_table_data(
         row["order_code"] = str(row.get("partyCode") or row.get("party_code") or "").strip()
         row["roll_size"] = flt((ex or {}).get("roll_size") or 0)
         row["slitting_size"] = flt((ex or {}).get("slitting_size") or 0)
+        row["fabric_item_code"] = _cstr((ex or {}).get("fabric_item_code") or "")
         row["planned_kgs"] = flt(row.get("qty") or 0)
         row["achieved_kgs"] = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
         row["fabric_ready_date"] = run_date_map.get(str((ex or {}).get("child_spr_name") or "").strip()) or ""
@@ -3667,6 +3669,7 @@ def get_rewinding_order_table_data(
             {child_trace_expr} as child_trace_id,
             IFNULL(fab.width_inch, 0) as roll_size,
             IFNULL(pt.width_inch, 0) as slitting_size,
+            IFNULL(fab.item_code, '') as fabric_item_code,
             {spr_parent_expr} as parent_spr_name,
             {spr_child_expr} as child_spr_name
         FROM `tabPlanning Table` pt
@@ -3724,6 +3727,7 @@ def get_rewinding_order_table_data(
         row["order_code"] = str(row.get("partyCode") or row.get("party_code") or "").strip()
         row["roll_size"] = flt((ex or {}).get("roll_size") or 0)
         row["slitting_size"] = flt((ex or {}).get("slitting_size") or 0)
+        row["fabric_item_code"] = _cstr((ex or {}).get("fabric_item_code") or "")
         row["planned_kgs"] = flt(row.get("qty") or 0)
         row["achieved_kgs"] = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
         row["fabric_ready_date"] = run_date_map.get(str((ex or {}).get("child_spr_name") or "").strip()) or ""
@@ -3860,6 +3864,7 @@ def get_sheet_cutting_order_table_data(
             {shift_expr} as shift_label,
             {spr_parent_expr} as parent_spr_name,
             IFNULL(fab.width_inch, 0) as child_roll_size,
+            IFNULL(fab.item_code, '') as fabric_item_code,
             IFNULL(pt.width_inch, 0) as roll_size,
             IFNULL(pt.meter, 0) as mtr
         FROM `tabPlanning Table` pt
@@ -3932,6 +3937,9 @@ def get_sheet_cutting_order_table_data(
             or row.get("width_inch")
             or 0
         )
+        row["fabric_item_code"] = _cstr(ex.get("fabric_item_code") or "")
+        row["sheet_width_inch"] = flt(size_info.get("width_inch") or 0)
+        row["sheet_height_inch"] = flt(size_info.get("height_inch") or 0)
         row["mtr"] = flt(ex.get("mtr") or row.get("meter") or 0)
         row["sheet_size"] = _cstr(size_info.get("sheet_size"))
         row["planned_quantity"] = flt(row.get("qty") or 0)

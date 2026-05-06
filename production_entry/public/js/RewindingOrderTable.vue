@@ -53,6 +53,12 @@
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
+        <button
+          type="button"
+          class="cc-clear-btn"
+          :title="sizeDimUnit === 'inches' ? 'Show roll size in millimetres (nearest 5 mm)' : 'Show roll size in inches'"
+          @click="toggleSizeDimUnit"
+        >{{ sizeDimUnit === "inches" ? "Roll size: mm" : "Roll size: in" }}</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Rewinding Board</button>
       </div>
     </div>
@@ -95,7 +101,7 @@
             <th>CUSTOMER NAME</th>
             <th>QUALITY</th>
             <th>COLOUR</th>
-            <th>ROLL SIZE</th>
+            <th>{{ rollSizeHeader }}</th>
             <th>REWINDING LENGTH (MTRS)</th>
             <th>PLANNED KGS</th>
             <th>ACHIEVED KGS</th>
@@ -115,7 +121,7 @@
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
-            <td class="cell-center">{{ row.roll_size || "-" }}</td>
+            <td class="cell-center">{{ formatRollSizeCell(row) }}</td>
             <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
             <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
@@ -150,7 +156,7 @@
             <th>CUSTOMER NAME</th>
             <th>QUALITY</th>
             <th>COLOUR</th>
-            <th>ROLL SIZE</th>
+            <th>{{ rollSizeHeader }}</th>
             <th>FABRIC READY DATE</th>
             <th>REWINDING LENGTH (MTRS)</th>
             <th>PLANNED KGS</th>
@@ -204,7 +210,7 @@
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
-            <td class="cell-center">{{ row.roll_size || "-" }}</td>
+            <td class="cell-center">{{ formatRollSizeCell(row) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
             <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
@@ -264,6 +270,21 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { formatSingleDimension } from "./planning_table_size_units.js";
+
+const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_rewinding";
+const sizeDimUnit = ref("inches");
+const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (in)"));
+function toggleSizeDimUnit() {
+  sizeDimUnit.value = sizeDimUnit.value === "mm" ? "inches" : "mm";
+  try {
+    localStorage.setItem(DIM_UNIT_LS_KEY, sizeDimUnit.value);
+  } catch (_) {}
+}
+function formatRollSizeCell(row) {
+  if (!row || row.is_maintenance_row || row.is_maintenance_empty) return "-";
+  return formatSingleDimension(row, "roll_size", sizeDimUnit.value, row.fabric_item_code || "");
+}
 
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
@@ -1281,6 +1302,10 @@ watch([filterOrderDate, filterWeek, filterMonth], () => {
 });
 
 onMounted(async () => {
+  try {
+    const u = localStorage.getItem(DIM_UNIT_LS_KEY);
+    if (u === "mm" || u === "inches") sizeDimUnit.value = u;
+  } catch (_) {}
   const p = new URLSearchParams(window.location.search);
   if (p.get("scope")) viewScope.value = p.get("scope");
   if (p.get("date")) filterOrderDate.value = p.get("date");
