@@ -1453,6 +1453,23 @@ class ShaftProductionRun(Document):
 		"""Remove stale row links so deleted SPR is not shown as Continue Entry on Production Table."""
 		try:
 			if frappe.db.exists("DocType", "Planning Table") and frappe.db.has_column("Planning Table", "spr_name"):
+				# spr_name is stored as CSV of SPR ids; remove this id from any row that references it.
+				rows = frappe.get_all(
+					"Planning Table",
+					filters={"spr_name": ["like", f"%{self.name}%"]},
+					fields=["name", "spr_name"],
+					limit_page_length=0,
+				) or []
+				for r in rows:
+					raw = str(r.get("spr_name") or "").strip()
+					if not raw:
+						continue
+					parts = [p.strip() for p in raw.replace(";", ",").split(",") if p and p.strip()]
+					filtered = [p for p in parts if p != self.name]
+					new_val = ", ".join(filtered)
+					if new_val != raw:
+						frappe.db.set_value("Planning Table", r["name"], "spr_name", new_val, update_modified=False)
+				# Back-compat: rows that stored a single id only.
 				frappe.db.sql(
 					"""
 					UPDATE `tabPlanning Table`
@@ -1461,6 +1478,7 @@ class ShaftProductionRun(Document):
 					""",
 					(self.name,),
 				)
+				frappe.db.commit()
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Planning Table spr_name")
 
