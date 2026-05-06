@@ -69,14 +69,14 @@
         <div class="cc-shift-lane" :class="{ over: dragOverShift === 'DAY' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'DAY'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('DAY')">
           <div class="cc-shift-lane-title">DAY</div>
           <div v-for="row in scheduleRowsByShift('DAY')" :key="`${row.itemName}-day`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
-            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-code">{{ row.partyCode || row.order_code || row.lamination_booking_id || row.itemCode }}</div>
             <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
           </div>
         </div>
         <div class="cc-shift-lane" :class="{ over: dragOverShift === 'NIGHT' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'NIGHT'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('NIGHT')">
           <div class="cc-shift-lane-title">NIGHT</div>
           <div v-for="row in scheduleRowsByShift('NIGHT')" :key="`${row.itemName}-night`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
-            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-code">{{ row.partyCode || row.order_code || row.lamination_booking_id || row.itemCode }}</div>
             <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
           </div>
         </div>

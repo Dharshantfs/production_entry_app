@@ -173,11 +173,29 @@ class Planningsheet(Document):
         )
 
         items_by_name = {((getattr(r, "name", None) or "").strip()): r for r in (self.get("items") or []) if getattr(r, "name", None)}
+        legacy_by_so_line = {}
+        for leg in self.get("items") or []:
+            so_line = (getattr(leg, "so_item", None) or getattr(leg, "sales_order_item", None) or "").strip()
+            ic = str(getattr(leg, "item_code", None) or "").strip()
+            if so_line and ic:
+                legacy_by_so_line[(so_line, ic)] = leg
+
         for pr in self.get("planned_items") or []:
             si = (getattr(pr, "source_item", None) or "").strip()
-            if not si or si not in items_by_name:
+            leg = None
+            if si and si in items_by_name:
+                leg = items_by_name[si]
+            if not leg:
+                pr_so = (
+                    getattr(pr, "so_item", None)
+                    or getattr(pr, "sales_order_item", None)
+                    or ""
+                ).strip()
+                pr_ic = str(getattr(pr, "item_code", None) or "").strip()
+                if pr_so and pr_ic:
+                    leg = legacy_by_so_line.get((pr_so, pr_ic))
+            if not leg:
                 continue
-            leg = items_by_name[si]
             pr_ic = str(getattr(pr, "item_code", None) or "").strip()
             leg_ic = str(getattr(leg, "item_code", None) or "").strip()
             if pr_ic.upper().startswith("PB-") or leg_ic.upper().startswith("PB-"):

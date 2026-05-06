@@ -3074,6 +3074,7 @@ def get_lamination_order_table_data(
         SELECT
             pt.name as psi_name,
             pt.parent as ps_name,
+            IFNULL(ps.party_code, '') as sheet_party_code,
             IFNULL(pt.meter, 0) as planned_meter,
             {booking_expr} as lamination_booking_id,
             {lam_gsm_expr} as lamination_gsm_value,
@@ -3345,6 +3346,12 @@ def get_lamination_order_table_data(
             achieved_w += flt(spr_weights.get(sid))
         row = dict(r)
         row["lamination_booking_id"] = (ex.get("lamination_booking_id") if ex else "") or ""
+        # Display order code from Planning sheet (party_code), not generated lamination booking id.
+        _party = str((ex.get("sheet_party_code") if ex else "") or "").strip()
+        if _party:
+            row["partyCode"] = _party
+        elif not row.get("partyCode"):
+            row["partyCode"] = str(row.get("party_code") or row.get("partyCode") or "").strip()
         if not row["lamination_booking_id"] and ex and ex.get("ps_name"):
             row["lamination_booking_id"] = _ensure_sheet_lamination_order_code(ex.get("ps_name")) or ""
         _fab_gsm = int(ex.get("fabric_gsm") or 0) if ex else 0
@@ -5073,8 +5080,9 @@ def _populate_planning_sheet_items(ps, doc):
     existing_items_map = defaultdict(list)
     raw_list = getattr(ps, target_field, ps.get("items", []))
     for it in raw_list:
-        if it.sales_order_item:
-            existing_items_map[it.sales_order_item].append(it)
+        _so_key = (getattr(it, "sales_order_item", None) or getattr(it, "so_item", None) or "").strip()
+        if _so_key:
+            existing_items_map[_so_key].append(it)
 
     # ... [Quality Lookup Logic] ...
     quality_lookup = list(QUAL_LIST)
@@ -5273,6 +5281,8 @@ def _populate_planning_sheet_items(ps, doc):
             "planned_date": p_date,
             "planning_sheet": ps.name # Explicitly link for grid visibility
         }
+        if frappe.db.has_column("Planning sheet Item", "so_item") or frappe.db.has_column("Planning Table", "so_item"):
+            psi_data["so_item"] = it.name
         if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
         if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):

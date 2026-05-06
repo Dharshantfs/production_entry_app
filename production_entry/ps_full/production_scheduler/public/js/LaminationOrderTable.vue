@@ -69,14 +69,14 @@
         <div class="cc-shift-lane" :class="{ over: dragOverShift === 'DAY' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'DAY'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('DAY')">
           <div class="cc-shift-lane-title">DAY</div>
           <div v-for="row in scheduleRowsByShift('DAY')" :key="`${row.itemName}-day`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
-            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-code">{{ row.partyCode || row.order_code || row.lamination_booking_id || row.itemCode }}</div>
             <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
           </div>
         </div>
         <div class="cc-shift-lane" :class="{ over: dragOverShift === 'NIGHT' }" @dragover.prevent @dragenter.prevent="dragOverShift = 'NIGHT'" @dragleave="dragOverShift = ''" @drop.prevent="handleShiftDrop('NIGHT')">
           <div class="cc-shift-lane-title">NIGHT</div>
           <div v-for="row in scheduleRowsByShift('NIGHT')" :key="`${row.itemName}-night`" class="cc-shift-card" draggable="true" @dragstart="onRowDragStart(row)" @dragend="onRowDragEnd">
-            <div class="cc-shift-card-code">{{ row.lamination_booking_id || row.partyCode || row.itemCode }}</div>
+            <div class="cc-shift-card-code">{{ row.partyCode || row.order_code || row.lamination_booking_id || row.itemCode }}</div>
             <div class="cc-shift-card-meta">{{ row.customer_name || row.customer }}</div>
           </div>
         </div>
@@ -94,7 +94,7 @@
             <th style="min-width:84px;">ARRANGMENT</th>
             <th>DATE</th>
             <th>SHIFT</th>
-            <th>BOOKING ID</th>
+            <th>ORDER CODE</th>
             <th>CUSTOMER</th>
             <th>QUALITY</th>
             <th>FABRIC COLOUR</th>
@@ -151,7 +151,7 @@
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.lamination_booking_id || "-" }}</td>
+            <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.partyCode || row.order_code || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality }}</td>
             <td class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
