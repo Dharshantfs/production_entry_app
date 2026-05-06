@@ -8023,10 +8023,16 @@ def _get_color_chart_data_impl(
     if bps is None and _mode_lc not in ("pull", "pull_board"):
         bps = "only_100"
 
+    # Default board/table scope is fabric-only (100…). These rows must stay visible even if color is blank
+    # (older sheets / some BOM-extracted children may not carry colour on the child row).
     _pull_color_sql = (
-        _sql_pull_color_or_printed_bopp_row("i")
-        if bps == "printed_bopp_pb_only"
-        else "i.color IS NOT NULL AND i.color != ''"
+        "i.item_code LIKE '100%'"
+        if bps == "only_100"
+        else (
+            _sql_pull_color_or_printed_bopp_row("i")
+            if bps == "printed_bopp_pb_only"
+            else "i.color IS NOT NULL AND i.color != ''"
+        )
     )
     _pull_inner_pb_or = f" OR {_sql_printed_bopp_row_kind('i')}" if bps == "printed_bopp_pb_only" else ""
 

@@ -10,6 +10,28 @@ frappe.ui.form.on('Planning sheet Item', {
         (frm.doc.planned_items || []).forEach((pr) => {
             if ((pr.source_item || '').trim() === psi) {
                 frappe.model.set_value(pr.doctype, pr.name, 'unit', row.unit);
+                if (row.custom_plan_code) {
+                    frappe.model.set_value(pr.doctype, pr.name, 'custom_plan_code', row.custom_plan_code);
+                }
+                if (row.plan_name) {
+                    frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
+                }
+            }
+        });
+        frm.refresh_field('planned_items');
+    },
+    custom_plan_code: function (frm, cdt, cdn) {
+        const row = locals[cdt][cdn];
+        const psi = (row.name || '').trim();
+        if (!psi || !frm.doc.planned_items || !frm.doc.planned_items.length) return;
+        (frm.doc.planned_items || []).forEach((pr) => {
+            if ((pr.source_item || '').trim() === psi) {
+                if (row.custom_plan_code) {
+                    frappe.model.set_value(pr.doctype, pr.name, 'custom_plan_code', row.custom_plan_code);
+                }
+                if (row.plan_name) {
+                    frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
+                }
             }
         });
         frm.refresh_field('planned_items');
@@ -24,6 +46,28 @@ frappe.ui.form.on('Planning Table', {
         (frm.doc.items || []).forEach((it) => {
             if ((it.name || '').trim() === si) {
                 frappe.model.set_value(it.doctype, it.name, 'unit', row.unit);
+                if (row.custom_plan_code) {
+                    frappe.model.set_value(it.doctype, it.name, 'custom_plan_code', row.custom_plan_code);
+                }
+                if (row.plan_name) {
+                    frappe.model.set_value(it.doctype, it.name, 'plan_name', row.plan_name);
+                }
+            }
+        });
+        frm.refresh_field('items');
+    },
+    custom_plan_code: function (frm, cdt, cdn) {
+        const row = locals[cdt][cdn];
+        const si = (row.source_item || '').trim();
+        if (!si || !frm.doc.items || !frm.doc.items.length) return;
+        (frm.doc.items || []).forEach((it) => {
+            if ((it.name || '').trim() === si) {
+                if (row.custom_plan_code) {
+                    frappe.model.set_value(it.doctype, it.name, 'custom_plan_code', row.custom_plan_code);
+                }
+                if (row.plan_name) {
+                    frappe.model.set_value(it.doctype, it.name, 'plan_name', row.plan_name);
+                }
             }
         });
         frm.refresh_field('items');
