@@ -7527,6 +7527,21 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
         resolved_source = _resolve_planning_table_source_item_link(item_doc.get("source_item"), item_doc.name)
     if not resolved_source:
         resolved_source = _resolve_legacy_source_item_from_board_row(item_doc)
+    if not resolved_source:
+        # Direct match fallback: find Planning sheet Item with same parent + so_item + item_code.
+        so_col = _planning_sheet_item_so_line_column()
+        si_ic = (item_doc.get("item_code") or "").strip()
+        si_soi = (item_doc.get("so_item") or item_doc.get("sales_order_item") or "").strip()
+        si_par = (item_doc.get("parent") or "").strip()
+        if so_col and si_ic and si_soi and si_par:
+            _candidates = frappe.get_all(
+                legacy_table,
+                filters={"parent": si_par, so_col: si_soi, "item_code": si_ic},
+                pluck="name",
+                limit=1,
+            )
+            if _candidates:
+                resolved_source = _candidates[0]
     if resolved_source and resolved_source != (item_doc.get("source_item") or ""):
         item_doc.source_item = resolved_source
         frappe.db.sql(
