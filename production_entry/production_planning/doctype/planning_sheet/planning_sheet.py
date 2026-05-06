@@ -272,6 +272,45 @@ class Planningsheet(Document):
         except Exception:
             pass
 
+    def _ensure_107_extras_on_rows(self):
+        """Guarantee 107 parent rows always have BOPP/LAM GSM, finishing, design name, white tint."""
+        if cint(self.docstatus) != 0:
+            return
+        try:
+            from production_entry.production_planning.scheduler_api import (
+                LAMINATION_FLOW_ENABLED,
+                _lamination_process_from_item_code,
+                _parse_107_item_code,
+                _planning_row_dict_107_lamination_extras,
+                _pb_design_name_from_sales_order_item,
+            )
+        except Exception:
+            return
+        if not LAMINATION_FLOW_ENABLED:
+            return
+
+        for table_key in ("planned_items", "items"):
+            for row in self.get(table_key) or []:
+                ic = str(getattr(row, "item_code", None) or "").strip()
+                if _lamination_process_from_item_code(ic) != "107":
+                    continue
+                soi = (getattr(row, "so_item", None) or getattr(row, "sales_order_item", None) or "").strip()
+                parsed = _parse_107_item_code(ic) or {}
+
+                # Populate finishing / GSMs / tint using the same helper as scheduler creation/regenerate.
+                extras = _planning_row_dict_107_lamination_extras(ic, parsed, soi) or {}
+                for k, v in (extras or {}).items():
+                    if v is None:
+                        continue
+                    try:
+                        setattr(row, k, v)
+                    except Exception:
+                        pass
+
+                dn = _pb_design_name_from_sales_order_item(soi) if soi else ""
+                if dn and hasattr(row, "custom_design_name") and not str(getattr(row, "custom_design_name", "") or "").strip():
+                    row.custom_design_name = dn
+
     def validate(self):
         """Validate planning sheet before saving"""
         self._sync_linked_planning_units()
@@ -281,6 +320,7 @@ class Planningsheet(Document):
         self._sync_line_plan_codes()
         self._recompute_printed_bopp_total_colours_on_child_rows()
         self._ensure_parent_child_trace_ids_on_rows()
+        self._ensure_107_extras_on_rows()
 
     def _ensure_parent_child_trace_ids_on_rows(self):
         """Set missing Parent Child Trace ID from item code (102 rewinding, 103 slitting, 104 lamination, etc.)."""
