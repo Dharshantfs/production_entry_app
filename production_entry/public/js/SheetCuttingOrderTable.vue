@@ -196,15 +196,15 @@ function openProductionPlanView(planningSheetName, salesOrderItem, planningSheet
     });
   }
 }
-function sprPillLabel(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Draft"; if (Number(row.spr_docstatus) === 1) return "Submitted"; return "SPR"; }
-function sprPillClass(row) { if (!row?.spr_name) return "pt-pill-muted"; if (Number(row.spr_docstatus) === 0) return "pt-pill-draft"; if (Number(row.spr_docstatus) === 1) return "pt-pill-submitted"; return "pt-pill-muted"; }
+function sprPillLabel(row) { if (!row?.spr_name) return ""; if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Draft"; if (Number(row.spr_docstatus) === 1) return "Submitted"; return "SPR"; }
+function sprPillClass(row) { if (!row?.spr_name) return "pt-pill-muted"; if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "pt-pill-draft"; if (Number(row.spr_docstatus) === 1) return "pt-pill-submitted"; return "pt-pill-muted"; }
 function sprPillTitle(row) { if (!row?.spr_name) return ""; return `SPR: ${row.spr_name}`; }
 function woPillLabel(row) { if (row.wo_terminal) return "WO done"; if (row.wo_open) return "WO open"; return "WO"; }
 function woPillClass(row) { if (row.wo_terminal) return "pt-pill-wo-done"; if (row.wo_open) return "pt-pill-wo-open"; return "pt-pill-wo-unknown"; }
 function woPillTitle(row) { if (row.wo_terminal) return "All work orders complete."; if (row.wo_open) return "Work order in progress."; return "No work order yet."; }
 function itemProductionStatusLine(row) { const t = parseFloat(row.planned_quantity || 0); const a = parseFloat(row.achieved_quantity || 0); const gap = t - a; if (Math.abs(gap) <= 0.5) return ""; return gap > 0 ? `${gap.toFixed(2)} kg below target` : `${(-gap).toFixed(2)} kg over target`; }
-function itemSprLabel(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Open draft SPR"; if (row.wo_terminal) return "View SPR (done)"; return "View SPR"; }
-function itemSprTitle(row) { if (!row?.spr_name) return ""; if (Number(row.spr_docstatus) === 0) return "Continue recording production in draft SPR"; if (row.wo_terminal) return "WO complete — view final SPR"; return "Open submitted SPR"; }
+function itemSprLabel(row) { if (!row?.spr_name) return ""; if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Open draft SPR"; if (row.wo_terminal) return "View SPR (done)"; return "View SPR"; }
+function itemSprTitle(row) { if (!row?.spr_name) return ""; if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Continue recording production in draft SPR"; if (row.wo_terminal) return "WO complete — view final SPR"; return "Open submitted SPR"; }
 function canCreateSpr(row) { if (!row.pp_id || Number(row.pp_docstatus) !== 1) return false; if (!row.wo_open) return false; const planned = parseFloat(row.planned_quantity || 0); const achieved = parseFloat(row.achieved_quantity || 0); if (planned > 0 && achieved >= planned - 0.001) return false; return true; }
 async function createSheetCuttingSpr(item) {
   if (!item.pp_id) { frappe.msgprint("No Production Plan linked"); return; }

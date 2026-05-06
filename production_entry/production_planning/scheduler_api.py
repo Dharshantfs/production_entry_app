@@ -9156,6 +9156,9 @@ def _get_color_chart_data_impl(
         ds_values = []
         spr_unit_pick = ""
         for sn in ids_ordered:
+            if not frappe.db.exists("Shaft Production Run", sn):
+                # Deleted / stale link: ignore for status. Frontend will clear spr_name when user tries opening.
+                continue
             if sn in spr_meta_cache:
                 meta = spr_meta_cache[sn]
             else:
@@ -9166,6 +9169,8 @@ def _get_color_chart_data_impl(
             ds_values.append(meta.get("docstatus"))
             if not spr_unit_pick:
                 spr_unit_pick = meta.get("unit") or ""
+        if not ds_values:
+            return None, spr_unit_pick or ""
         if any(cint(x) == 0 for x in ds_values if x is not None):
             agg_ds = 0
         else:

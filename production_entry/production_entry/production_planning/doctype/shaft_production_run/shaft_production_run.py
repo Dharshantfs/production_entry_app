@@ -12,17 +12,17 @@ from production_entry.production_planning.doctype.planning_sheet.planning_sheet 
 
 
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
-	"""True when WO FG is 104 / 103 (slitting) / 102 (rewinding) / 107 BOPP (design-first codes)."""
+	"""True when WO FG is 104 / 103 (slitting) / 102 (rewinding) / 251 (sheet cutting) / 107 BOPP (design-first codes)."""
 	pi = (production_item or "").strip().upper()
 	if not pi:
 		return False
 	tail = pi.split(" - ")[-1].strip() if " - " in pi else pi
-	if tail.startswith(("104", "103", "102")):
+	if tail.startswith(("104", "103", "102", "251")):
 		return True
 	if "-107" in pi:
 		return True
 	# Prefixed codes (e.g. MB-1031032210) or titled items where the numeric code is not leftmost.
-	if re.search(r"(?:^|[^0-9])(?:103|104|102)\d", pi):
+	if re.search(r"(?:^|[^0-9])(?:103|104|102|251)\d", pi):
 		return True
 	return False
 
@@ -2217,7 +2217,7 @@ class ShaftProductionRun(Document):
 	def _assign_rm_batches_for_stock_entry(self, se, wo_id: str | None = None):
 		"""Assign batch_no for batch-tracked RM lines before submit.
 
-		For Work Orders on 104 / 103 / 107 / 102 parents, 100* fabric lines consume batches from operator picks
+		For Work Orders on 104 / 103 / 107 / 102 / 251 parents, 100* fabric lines consume batches from operator picks
 		(`fabric_batch_picks`) in order instead of auto FIFO by quantity.
 		"""
 		for d in list(se.items or []):
@@ -2339,7 +2339,7 @@ class ShaftProductionRun(Document):
 		return 1.0
 
 	def _spr_build_fabric_batch_pick_context_dict(self) -> dict:
-		"""API payload for the desk fabric-batch dialog (104 / 103 / 107 / 102 WOs + 100 RM + WIP batches)."""
+		"""API payload for the desk fabric-batch dialog (104 / 103 / 107 / 102 / 251 WOs + 100 RM + WIP batches)."""
 		out: dict = {"needs_picks": False, "lines": [], "current_picks": [], "spr": self.name}
 		if not self._spr_fabric_picks_field_exists():
 			return out

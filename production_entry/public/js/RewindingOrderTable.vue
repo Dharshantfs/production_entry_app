@@ -799,20 +799,20 @@ function formatNum(v) {
 
 function sprPillLabel(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Draft";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "Draft";
   if (Number(item.spr_docstatus) === 1) return "Submitted";
   return "SPR";
 }
 function sprPillClass(item) {
   if (!item?.spr_name) return "pt-pill-muted";
-  if (Number(item.spr_docstatus) === 0) return "pt-pill-draft";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "pt-pill-draft";
   if (Number(item.spr_docstatus) === 1) return "pt-pill-submitted";
   return "pt-pill-muted";
 }
 function sprPillTitle(item) {
   if (!item?.spr_name) return "";
   const id = item.spr_name || "";
-  if (Number(item.spr_docstatus) === 0) return `Draft SPR ${id}`;
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return `Draft SPR ${id}`;
   if (Number(item.spr_docstatus) === 1) return `Submitted SPR ${id}`;
   return id;
 }
@@ -843,13 +843,13 @@ function itemProductionStatusLine(item) {
 }
 function itemSprPrimaryButtonLabel(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Open draft SPR";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "Open draft SPR";
   if (item.wo_terminal) return "View SPR (done)";
   return "View SPR";
 }
 function itemSprPrimaryButtonTitle(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Draft SPR - continue recording rolls.";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "Draft SPR - continue recording rolls.";
   if (item.wo_terminal) return "WO terminal - review only.";
   return "Open submitted SPR.";
 }
@@ -911,13 +911,13 @@ async function startParentWO(item) {
 
 function getStockEntryLabel(item) {
   if (!item) return "New SPR";
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   return isDraftSpr ? "Continue SPR" : "New SPR";
 }
 
 function getStockEntryTitle(item) {
   if (!item) return "Create Shaft Production Run";
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   const pendingQty = Number(item.pending_qty || 0);
   if (!item.is_lamination_parent && !item.wo_terminal) {
     return "Locked: child WO must be Completed/Stopped/Closed before parent SPR.";
@@ -983,7 +983,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
 
 async function handleStockEntryAction(item) {
   if (!item) return;
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   if (isDraftSpr) {
     await openItemSPR(item.spr_name, item);
     return;

@@ -1414,20 +1414,20 @@ function formatWidth(value) {
 /** Status pills: SPR docstate (draft vs submitted). */
 function sprPillLabel(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Draft";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "Draft";
   if (Number(item.spr_docstatus) === 1) return "Submitted";
   return "SPR";
 }
 function sprPillClass(item) {
   if (!item?.spr_name) return "pt-pill-muted";
-  if (Number(item.spr_docstatus) === 0) return "pt-pill-draft";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "pt-pill-draft";
   if (Number(item.spr_docstatus) === 1) return "pt-pill-submitted";
   return "pt-pill-muted";
 }
 function sprPillTitle(item) {
   if (!item?.spr_name) return "";
   const id = item.spr_name || "";
-  if (Number(item.spr_docstatus) === 0) {
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") {
     return `Draft Shaft Production Run ${id}. Submit in the SPR form when you finish recording rolls for this run.`;
   }
   if (Number(item.spr_docstatus) === 1) {
@@ -1456,20 +1456,20 @@ function woPillTitleItem(item) {
 
 function sprPillLabelMerge(row) {
   if (!row?.spr_name) return "";
-  if (Number(row.spr_docstatus) === 0) return "Draft";
+  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Draft";
   if (Number(row.spr_docstatus) === 1) return "Submitted";
   return "SPR";
 }
 function sprPillClassMerge(row) {
   if (!row?.spr_name) return "pt-pill-muted";
-  if (Number(row.spr_docstatus) === 0) return "pt-pill-draft";
+  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "pt-pill-draft";
   if (Number(row.spr_docstatus) === 1) return "pt-pill-submitted";
   return "pt-pill-muted";
 }
 function sprPillTitleMerge(row) {
   if (!row?.spr_name) return "";
   const id = row.spr_name || "";
-  if (Number(row.spr_docstatus) === 0) return `Draft SPR ${id} for merged group.`;
+  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return `Draft SPR ${id} for merged group.`;
   if (Number(row.spr_docstatus) === 1) return `Submitted SPR ${id}.`;
   return id;
 }
@@ -1540,7 +1540,7 @@ function mergeProductionStatusTitle(row) {
 function mergedStockPrimaryLabel(row) {
   if (!row || row.type !== "merge") return "New SPR";
   if (!row.spr_name) return "New SPR";
-  if (Number(row.spr_docstatus) === 0) return "Continue SPR";
+  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Continue SPR";
   return "View SPR";
 }
 
@@ -1549,7 +1549,7 @@ function mergedStockPrimaryTitle(row) {
   if (!row.spr_name) {
     return "Create the first Shaft Production Run for this merged group (one SPR can cover all merged lines).";
   }
-  if (Number(row.spr_docstatus) === 0) {
+  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") {
     return "Open draft SPR — add rolls, Submit when finished for the day. Come back tomorrow for more production on the same SPR if needed.";
   }
   return "Open submitted SPR (read-only). If you still need to record more weight and WO/PP allow it, system may link a new run — check pending qty.";
@@ -1558,14 +1558,14 @@ function mergedStockPrimaryTitle(row) {
 /** Primary action when pending Stock Entry column is hidden (no pending PP qty). */
 function itemSprPrimaryButtonLabel(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Open draft SPR";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "Open draft SPR";
   if (item.wo_terminal) return "View SPR (done)";
   return "View SPR";
 }
 
 function itemSprPrimaryButtonTitle(item) {
   if (!item?.spr_name) return "";
-  if (Number(item.spr_docstatus) === 0) return "Draft SPR — continue recording rolls, then Submit.";
+  if (item.spr_docstatus === 0 || item.spr_docstatus === "0") return "Draft SPR — continue recording rolls, then Submit.";
   if (item.wo_terminal) {
     return "All work orders on this Production Plan are in a closed/terminal status and this SPR is submitted — shop-floor entry is complete. Open to review the document only.";
   }
@@ -1574,14 +1574,14 @@ function itemSprPrimaryButtonTitle(item) {
 
 function mergedSprPrimaryButtonLabel(row) {
   if (!row?.spr_name) return "";
-  if (Number(row.spr_docstatus) === 0) return "Open draft SPR";
+  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Open draft SPR";
   if (row.mergeAllWoTerminal) return "View SPR (done)";
   return "View SPR";
 }
 
 function mergedSprPrimaryButtonTitle(row) {
   if (!row?.spr_name) return mergedStockPrimaryTitle(row);
-  if (Number(row.spr_docstatus) === 0) {
+  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") {
     return "Draft SPR for merged group — same SPR can cover all merged lines when linked.";
   }
   if (row.mergeAllWoTerminal) {
@@ -1956,7 +1956,7 @@ function canShowMergedStockEntry(row) {
 
 function getStockEntryLabel(item) {
   if (!item) return "New SPR";
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   if (isDraftSpr) {
     return `Continue SPR${item.spr_unit ? " · " + item.spr_unit : ""}`;
   }
@@ -1965,7 +1965,7 @@ function getStockEntryLabel(item) {
 
 function getStockEntryTitle(item) {
   if (!item) return "Create a Shaft Production Run for this line";
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   const pendingQty = Number(item.pending_qty || 0);
   if (isDraftSpr) {
     return `Open the draft SPR and continue recording rolls. Pending (PP): ${pendingQty.toFixed(0)} Kg.`;
@@ -1975,7 +1975,7 @@ function getStockEntryTitle(item) {
 
 async function handleStockEntryAction(item) {
   if (!item) return;
-  const isDraftSpr = !!item.spr_name && Number(item.spr_docstatus) === 0;
+  const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   if (isDraftSpr) {
     await openItemSPR(item.spr_name, item);
     return;
