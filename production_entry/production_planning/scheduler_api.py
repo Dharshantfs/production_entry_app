@@ -6,15 +6,11 @@ import re
 import datetime
 from collections import defaultdict
 
-from production_entry.production_planning.planning_doctypes import (
 	ensure_planning_line_unit_docfield_options,
 	normalize_planning_unit_for_select,
 	SHEET_CUTTING_UNIT,
 	LAMINATION_UNIT,
 	SLITTING_UNIT,
-	REWINDING_UNIT_L3,
-	REWINDING_UNIT_L4,
-	REWINDING_UNIT_L5,
 	REWINDING_UNASSIGNED_UNIT,
 	PRINTED_BOPP_FILM_UNIT as PLANNING_PRINTED_BOPP_FILM_UNIT,
 )
@@ -22,8 +18,6 @@ from production_entry.production_planning.planning_doctypes import (
 
 def _cstr(value):
 	"""Safe stripped string conversion used across scheduler helpers."""
-	return str(value or "").strip()
-
 
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
 # Set True to enable; False disables all calls (no codes generated, no SO writeback from this path).
@@ -34,57 +28,11 @@ PARTY_CODE_GENERATION_ENABLED = False
 LAMINATION_FLOW_ENABLED = True
 SLITTING_FLOW_ENABLED = True
 # Rewinding (102): four machine columns on board; new sheets land on Unassigned until moved.
-REWINDING_FLOW_ENABLED = True
-REWINDING_BOARD_UNITS = (
-	REWINDING_UNIT_L3,
-	REWINDING_UNIT_L4,
-	REWINDING_UNIT_L5,
-	REWINDING_UNASSIGNED_UNIT,
-)
-# Printed BOPP film (PB-* BOM children of 107 FG): dedicated queue unit + board/table scope.
-PRINTED_BOPP_FILM_UNIT = PLANNING_PRINTED_BOPP_FILM_UNIT
-
-
-@frappe.whitelist()
-def sync_planning_line_unit_options_meta():
-	"""
-	Desk / maintenance: force ``Planning Table`` + ``Planning sheet Item`` ``unit`` Select options
-	to the full canonical list (including rewinding machines). Idempotent.
-	"""
-	ensure_planning_line_unit_docfield_options()
-	return {"ok": True}
-
-
-def _sql_printed_bopp_row_kind(alias="i"):
-	"""True when Planning row is on the VR BOPP printing unit or uses PB / PRINTED BOPP item codes."""
-	u_esc = (PRINTED_BOPP_FILM_UNIT or "").replace("'", "''")
-	ic = f"{alias}.item_code"
-	un = f"{alias}.unit"
-	return (
-		f"({un} = '{u_esc}' OR UPPER(TRIM(IFNULL({ic},''))) LIKE 'PB-%' OR "
-		f"(LOCATE('PRINTED', UPPER(IFNULL({ic},''))) > 0 AND LOCATE('BOPP', UPPER(IFNULL({ic},''))) > 0))"
-	)
-
-
-def _sql_pull_color_or_printed_bopp_row(alias="i"):
-	"""
-	SQL predicate: normal colour rows OR Printed BOPP film rows (often have no colour filled).
-	Used in pull / pull_board queries that historically required non-empty colour.
-	"""
-	return f"(({alias}.color IS NOT NULL AND {alias}.color != '') OR {_sql_printed_bopp_row_kind(alias)})"
-
-
-def _item_process_prefix(item_code):
-	ic = str(item_code or "").strip()
-	if not ic:
 		return ""
 	# Accept prefixed codes like HB-103... by using the leading numeric stream.
 	digits = "".join(ch for ch in ic if ch.isdigit())
 	return digits[:3] if len(digits) >= 3 else ""
-
-
-def _rewinding_width_mm_from_item_code(item_code):
-	"""Last hyphen segment on 102 codes, e.g. 1021035420501600-1600 -> 1600 (mm)."""
+        WHERE item_code REGEXP '^(102|103|104|107|251)' {sheet_filter}
 	ic = str(item_code or "").strip()
 	if _item_process_prefix(ic) != "102":
 		return None
@@ -106,117 +54,87 @@ def _parse_sheet_cutting_item_code(item_code):
 	# Accept prefixed/mixed item codes by taking the rightmost 251 + 12 digits block.
 	matches = re.findall(r"(251\d{12})", digits)
 	if matches:
-		digits = matches[-1]
-	if digits[:3] != "251" or len(digits) < 15:
-		return {}
-	return {
-		"process": "251",
-		"quality_code": digits[3:6],
-		"colour_code": digits[6:9],
-		"gsm": cint(digits[9:12] or 0),
-		"series_id": digits[12:15],
-	}
+        """Backfill custom_parent_child_trace_id on parent rows and their child rows.
 
-
-def _sheet_cutting_series_size_map(series_ids):
-	"""Map series_id -> {'width_inch': float, 'height_inch': float, 'sheet_size': 'W*H'}."""
-	ids = [str(x or "").strip() for x in (series_ids or []) if str(x or "").strip()]
-	if not ids or not frappe.db.exists("DocType", "Sheet Cutting Series"):
-		return {}
-	meta = frappe.get_meta("Sheet Cutting Series")
-	width_field = None
-	height_field = None
-	size_field = None
-	for fn in ("width_in_inches", "custom_width_in_inches", "width", "sheet_width_inch"):
-		if meta.has_field(fn):
-			width_field = fn
-			break
-	for fn in ("height_in_inches", "custom_height_in_inches", "height", "sheet_height_inch"):
-		if meta.has_field(fn):
-			height_field = fn
-			break
-	for fn in ("size_in_inches", "custom_size_in_inches", "size"):
-		if meta.has_field(fn):
-			size_field = fn
-			break
-	series_id_fields = [fn for fn in ("series_id", "custom_series_id", "code", "series_code") if meta.has_field(fn)]
-	read_fields = ["name"] + [f for f in (width_field, height_field, size_field) if f]
-	for sf in series_id_fields:
-		if sf not in read_fields:
-			read_fields.append(sf)
-	out = {}
-	by_sid = {}
-	by_name = {
-		_cstr(r.get("name")): r
-		for r in (frappe.get_all("Sheet Cutting Series", filters={"name": ["in", ids]}, fields=read_fields, limit_page_length=0) or [])
-	}
-	for sid in ids:
-		row = by_name.get(sid)
-		if not row and series_id_fields:
-			for sf in series_id_fields:
-				got = frappe.get_all(
-					"Sheet Cutting Series",
-					filters={sf: sid},
-					fields=read_fields,
-					limit_page_length=1,
-				)
-				if got:
-					row = got[0]
-					break
-		if not row:
-			continue
-		w = flt(row.get(width_field)) if width_field else 0
-		h = flt(row.get(height_field)) if height_field else 0
-		sz = _cstr(row.get(size_field)) if size_field else ""
-		if not sz and w > 0 and h > 0:
-			wv = int(w) if abs(w - int(w)) < 1e-9 else w
-			hv = int(h) if abs(h - int(h)) < 1e-9 else h
-			sz = f"{wv}*{hv}"
-		by_sid[sid] = {"width_inch": w, "height_inch": h, "sheet_size": sz}
-	out.update(by_sid)
-	return out
-
-
-# --- BOPP (107): item codes like 7499-107F101MCC91500 (design-107…); process is NOT the first 3 digits. ---
-LAMINATION_QUALITY_CODES = {
-	"PREMIUM": "A",
-	"PLATINUM": "B",
-	"SUPER PLATINUM": "C",
-	"GOLD": "D",
-	"SILVER": "E",
-	"BRONZE": "F",
-	"CLASSIC": "G",
-	"SUPER CLASSIC": "H",
-	"LIFE STYLE": "I",
-	"ECO SPECIAL": "J",
-	"ECO GREEN": "K",
-	"SUPER ECO": "L",
-	"ULTRA": "M",
-	"DELUXE": "N",
-	"VIRGIN MIX - GOLD MIX": "O",
-	"MID MIX - CLASSIC MIX": "P",
-	"ECO MIX": "Q",
-	"DELUXE MIX": "R",
-}
-LAMINATION_FABRIC_GSM_CODES = {
-	"20": "A",
-	"25": "B",
-	"30": "C",
-	"35": "D",
-	"40": "E",
-	"45": "F",
-	"50": "G",
-	"55": "H",
-	"60": "I",
-	"65": "J",
-	"70": "K",
-	"75": "L",
-	"80": "M",
-	"85": "N",
-	"90": "O",
-	"95": "P",
-	"100": "Q",
-	"105": "R",
+        Covers: 102 (rewinding), 103 (slitting), 104/107 (lamination), 251 (sheet cutting).
+        Child rows include 100* fabric rows and PB-* printed BOPP rows when present.
+        """
+        if not (frappe.db.has_column("Planning Table", "custom_parent_child_trace_id") or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")):
+            return {"status": "noop", "updated": 0}
+        sheet_filter = ""
+        params = []
+        if planning_sheet_name:
+            sheet_filter = " AND parent = %s "
+            params.append(planning_sheet_name)
+        has_pt_sales_order_item = frappe.db.has_column("Planning Table", "sales_order_item")
+        has_pt_so_item = frappe.db.has_column("Planning Table", "so_item")
+        if has_pt_sales_order_item and has_pt_so_item:
+            child_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
+        elif has_pt_sales_order_item:
+            child_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
+        elif has_pt_so_item:
+            child_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
+        else:
+            child_match_expr = "''"
+        has_psi_sales_order_item = frappe.db.has_column("Planning sheet Item", "sales_order_item")
+        has_psi_so_item = frappe.db.has_column("Planning sheet Item", "so_item")
+        if has_psi_sales_order_item and has_psi_so_item:
+            psi_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
+        elif has_psi_sales_order_item:
+            psi_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
+        elif has_psi_so_item:
+            psi_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
+        else:
+            psi_match_expr = "''"
+        parent_rows = frappe.db.sql(
+            f"""
+            SELECT name, parent, item_code, sales_order_item
+            FROM `tabPlanning Table`
+            WHERE item_code REGEXP '^(102|103|104|107|251)' {sheet_filter}
+            """,
+            tuple(params),
+            as_dict=True,
+        )
+        updated = 0
+        for p in parent_rows or []:
+            trace_id = _parent_child_trace_id_from_item_code(p.get("item_code"))
+            if not trace_id:
+                continue
+            frappe.db.sql(
+                "UPDATE `tabPlanning Table` SET custom_parent_child_trace_id = %s WHERE name = %s",
+                (trace_id, p.get("name")),
+            )
+            updated += 1
+            so_item = (p.get("sales_order_item") or "").strip()
+            if so_item:
+                # Child rows on the board table (fabric 100* rows, PB-* rows) should inherit parent's trace id.
+                frappe.db.sql(
+                    f"""
+                    UPDATE `tabPlanning Table`
+                    SET custom_parent_child_trace_id = %s
+                    WHERE parent = %s
+                      AND (item_code LIKE '100%%' OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%')
+                      AND {child_match_expr} = %s
+                    """,
+                    (trace_id, p.get("parent"), so_item),
+                )
+        if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+            for p in parent_rows or []:
+                trace_id = _parent_child_trace_id_from_item_code(p.get("item_code"))
+                if not trace_id:
+                    continue
+                so_item = (p.get("sales_order_item") or "").strip()
+                if so_item:
+                    frappe.db.sql(
+                        f"""
+                        UPDATE `tabPlanning sheet Item`
+                        SET custom_parent_child_trace_id = %s
+                        WHERE parent = %s AND {psi_match_expr} = %s
+                        """,
+                        (trace_id, p.get("parent"), so_item),
+                    )
+        frappe.db.commit()
+        return {"status": "success", "updated": int(updated)}
 	"110": "S",
 	"115": "T",
 	"120": "U",
@@ -1434,28 +1352,13 @@ def _ensure_sheet_lamination_order_code(sheet_name):
 		elif frappe.db.has_column("Sales Order", "custom_lamination_booking_id"):
 			frappe.db.set_value("Sales Order", so, "custom_lamination_booking_id", code, update_modified=False)
 
-	return code
 
 
-@frappe.whitelist()
-def get_fabric_item_from_laminated_item(lam_item_code):
-	"""
-	Resolve the single fabric FG (item code prefix 100) from the 104/107 laminated item's active BOM.
 	Returns {"fabric_item_code", "bom_no"}. Raises with a clear message if invalid.
 	"""
 	item_code = (lam_item_code or "").strip()
 	if len(item_code) < 3:
 		frappe.throw(_("Item code is too short to read process prefix (need at least 3 characters)."))
-	proc = _lamination_process_from_item_code(item_code)
-	if proc not in ("104", "107"):
-		frappe.throw(
-			_("Lamination item must have process code 104 or 107. Got: {0}").format(proc or "")
-		)
-	return _get_fabric_item_from_process_item(item_code, expected_process=proc, process_label="Lamination")
-
-
-def _get_fabric_item_from_process_item(item_code, expected_process, process_label):
-	item_code = (item_code or "").strip()
 	if len(item_code) < 3:
 		frappe.throw(_("Item code is too short to read process prefix (need at least 3 characters)."))
 	if expected_process in ("104", "107"):
@@ -2697,11 +2600,15 @@ def _force_rewinding_unit_on_sheet(planning_sheet_name):
 
 @frappe.whitelist()
 def backfill_parent_child_trace_ids(planning_sheet_name=None):
+<<<<<<< HEAD
 	"""Backfill custom_parent_child_trace_id on parent rows and their child rows.
 
 	Covers: 102 (rewinding), 103 (slitting), 104/107 (lamination), 251 (sheet cutting).
 	Child rows include 100* fabric rows and PB-* printed BOPP rows when present.
 	"""
+=======
+    """Backfill custom_parent_child_trace_id on parent(103/104/107) and child(100/PB) rows + legacy table."""
+>>>>>>> 47e89ea (fix(planning): backfill 107 trace ids on regenerate)
 	if not (frappe.db.has_column("Planning Table", "custom_parent_child_trace_id") or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")):
 		return {"status": "noop", "updated": 0}
 	sheet_filter = ""
@@ -2709,7 +2616,9 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 	if planning_sheet_name:
 		sheet_filter = " AND parent = %s "
 		params.append(planning_sheet_name)
+<<<<<<< HEAD
 	has_pt_sales_order_item = frappe.db.has_column("Planning Table", "sales_order_item")
+<<<<<<< HEAD
 	has_pt_so_item = frappe.db.has_column("Planning Table", "so_item")
 	if has_pt_sales_order_item and has_pt_so_item:
 		child_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
@@ -2719,11 +2628,42 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		child_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
 	else:
 		child_match_expr = "''"
+=======
+=======
+    has_pt_sales_order_item = frappe.db.has_column("Planning Table", "sales_order_item")
+>>>>>>> 47e89ea (fix(planning): backfill 107 trace ids on regenerate)
+    has_pt_so_item = frappe.db.has_column("Planning Table", "so_item")
+    if has_pt_sales_order_item and has_pt_so_item:
+        child_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
+    elif has_pt_sales_order_item:
+        child_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
+    elif has_pt_so_item:
+        child_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
+    else:
+        child_match_expr = "''"
+<<<<<<< HEAD
+=======
+    has_psi_sales_order_item = frappe.db.has_column("Planning sheet Item", "sales_order_item")
+    has_psi_so_item = frappe.db.has_column("Planning sheet Item", "so_item")
+    if has_psi_sales_order_item and has_psi_so_item:
+        psi_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
+    elif has_psi_sales_order_item:
+        psi_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
+    elif has_psi_so_item:
+        psi_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
+    else:
+        psi_match_expr = "''"
+>>>>>>> 47e89ea (fix(planning): backfill 107 trace ids on regenerate)
+>>>>>>> 7f3ae88 (fix(planning): backfill 107 trace ids on regenerate)
 	parent_rows = frappe.db.sql(
 		f"""
 		SELECT name, parent, item_code, sales_order_item
 		FROM `tabPlanning Table`
+<<<<<<< HEAD
 		WHERE item_code REGEXP '^(102|103|104|107|251)' {sheet_filter}
+=======
+        WHERE item_code REGEXP '^(103|104|107)' {sheet_filter}
+>>>>>>> 47e89ea (fix(planning): backfill 107 trace ids on regenerate)
 		""",
 		tuple(params),
 		as_dict=True,
@@ -2745,9 +2685,18 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				f"""
 				UPDATE `tabPlanning Table`
 				SET custom_parent_child_trace_id = %s
+<<<<<<< HEAD
 				WHERE parent = %s
 				  AND (item_code LIKE '100%%' OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%')
+<<<<<<< HEAD
 				  AND {child_match_expr} = %s
+=======
+=======
+                WHERE parent = %s
+                  AND (item_code LIKE '100%%' OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%')
+>>>>>>> 47e89ea (fix(planning): backfill 107 trace ids on regenerate)
+                  AND {child_match_expr} = %s
+>>>>>>> 7f3ae88 (fix(planning): backfill 107 trace ids on regenerate)
 				""",
 				(trace_id, p.get("parent"), so_item),
 			)
