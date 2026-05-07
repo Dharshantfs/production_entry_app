@@ -41,6 +41,13 @@
           <option v-for="u in boardUnits" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
+      <button
+        class="cc-clear-btn"
+        @click="toggleWidthUnit"
+        :title="widthDimUnit === 'mm' ? 'Switch width display to inches' : 'Switch width display to mm (rounded to nearest 5mm) with item-code fallback'"
+      >
+        Width: {{ widthDimUnit === 'mm' ? 'MM' : 'IN' }}
+      </button>
       <button class="cc-clear-btn" @click="fetchData">🔄 Refresh</button>
       <button
         class="cc-lock-btn"
@@ -150,6 +157,7 @@
                         <th style="width: 80px;">QUALITY</th>
                         <th style="width: 100px;">COLOUR</th>
                         <th style="width: 80px;">GSM</th>
+                        <th style="width: 90px;">WIDTH ({{ widthDimUnit === 'mm' ? 'MM' : 'IN' }})</th>
                         <th style="width: 120px;">TARGET WEIGHT (Kgs)</th>
                         <th style="width: 100px;">TOTAL TARGET (Kgs)</th>
                         <th style="width: 150px;">ACTUAL PRODUCTION WEIGHT (Kgs)</th>
@@ -172,7 +180,7 @@
                 >
                       <!-- Maintenance Row (show once at maintenance start date, centered) -->
                       <tr v-if="getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-                        <td colspan="15" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+                        <td colspan="18" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                           <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                             <span>🔧 MAINTENANCE: {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).type }} ({{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).startDate }} - {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).endDate }})</span>
                             <button @click="deleteMaintenanceRecord(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -199,6 +207,9 @@
                             <td class="cell-center">{{ row.item.quality }}</td>
                             <td class="cell-center font-bold">{{ row.item.color }}</td>
                             <td class="cell-center">{{ row.item.gsm }}</td>
+                            <td class="cell-center font-bold">
+                              {{ formatWidthValue(widthInValue(row.item), row.item.itemCode || row.item.item_code || "") }}
+                            </td>
                             <td class="cell-right font-bold">{{ formatKg(row.item.qty) }}</td>
                             <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-right font-bold bg-blue-50">
                               {{ formatKg(dateGroup.dailyTotal) }}
@@ -296,7 +307,7 @@
                                   <span>{{ mItem.quality }}</span>
                                   <span>{{ mItem.color }}</span>
                                   <span>{{ mItem.gsm }} GSM</span>
-                                  <span>Width: {{ formatWidth(mItem.width_inch || mItem.width || mItem.custom_width) }}</span>
+                                  <span>Width: {{ formatWidthValue(widthInValue(mItem), mItem.itemCode || mItem.item_code || "") }}</span>
                                   <span>Target: {{ formatKg(mItem.qty) }} Kg</span>
                                   <span>Actual: {{ formatKg2(mItem.actual_production_weight_kgs) }} Kg</span>
                                 </div>
@@ -306,6 +317,7 @@
                             <td class="cell-center">{{ row.quality }}</td>
                             <td class="cell-center font-bold">{{ row.color }}</td>
                             <td class="cell-center">{{ row.gsm }}</td>
+                            <td class="cell-center font-bold">{{ mergedWidthCsv(row.items || []) }}</td>
                             <td class="cell-right font-bold">{{ formatKg(row.totalTargetWeight) }}</td>
                             <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-right font-bold bg-blue-50">
                               {{ formatKg(dateGroup.dailyTotal) }}
@@ -390,12 +402,12 @@
                         <td class="cell-center">-</td>
                         <td class="cell-center font-bold">{{ formatDate(dateGroup.date) }}</td>
                         <td class="cell-center">{{ getDayName(dateGroup.date) }}</td>
-                        <td colspan="12" style="text-align:center; color:#94a3b8; font-style:italic;">No orders (maintenance day)</td>
+                        <td colspan="15" style="text-align:center; color:#94a3b8; font-style:italic;">No orders (maintenance day)</td>
                       </tr>
                 </tbody>
                 <tbody>
                     <tr v-if="unitGroup.dates.length === 0">
-                        <td colspan="15" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
+                        <td colspan="18" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
                     </tr>
                 </tbody>
             </table>
@@ -409,10 +421,61 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import { mmDisplayFromInchesWithCodeFallback } from "./planning_table_size_units.js";
 
 // ===== MAINTENANCE DATA =====
 const maintenanceRecords = ref([]);
 const maintenanceData = ref({});
+
+const widthDimUnit = ref("inches"); // 'inches' | 'mm'
+const WIDTH_UNIT_LS_KEY = "pp_production_table_width_unit";
+
+function toggleWidthUnit() {
+  widthDimUnit.value = widthDimUnit.value === "mm" ? "inches" : "mm";
+  try {
+    localStorage.setItem(WIDTH_UNIT_LS_KEY, widthDimUnit.value);
+  } catch (e) {}
+}
+
+function widthInValue(item) {
+  const raw =
+    item?.width_inch ??
+    item?.width ??
+    item?.custom_width ??
+    item?.widthInch ??
+    item?.custom_width_inch ??
+    0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatWidthValue(inches, fallbackCode) {
+  if (widthDimUnit.value === "mm") {
+    const mm = mmDisplayFromInchesWithCodeFallback(inches, fallbackCode);
+    return mm != null && Number(mm) > 0 ? `${mm} mm` : "-";
+  }
+  return formatWidth(inches);
+}
+
+function mergedWidthCsv(items) {
+  const arr = Array.isArray(items) ? items : [];
+  const vals = [];
+  const seen = new Set();
+  for (const it of arr) {
+    const w = widthInValue(it);
+    if (!(w > 0)) continue;
+    const k = (Math.round(w * 100) / 100).toFixed(2);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    vals.push(w);
+  }
+  vals.sort((a, b) => a - b);
+  const out = vals
+    .map((w) => formatWidthValue(w, ""))
+    .filter((s) => s && s !== "-")
+    .join(", ");
+  return out || "-";
+}
 
 async function fetchMaintenanceRecords() {
 	try {
@@ -2672,6 +2735,13 @@ onMounted(async () => {
     isManufactureUser.value = false;
   }
   
+  try {
+    const saved = localStorage.getItem(WIDTH_UNIT_LS_KEY);
+    if (saved === "mm" || saved === "inches") {
+      widthDimUnit.value = saved;
+    }
+  } catch (e) {}
+
   const params = new URLSearchParams(window.location.search);
   isLaminationBoard.value = (params.get("board") || "").toLowerCase() === "lamination";
   isSlittingBoard.value = (params.get("board") || "").toLowerCase() === "slitting";
