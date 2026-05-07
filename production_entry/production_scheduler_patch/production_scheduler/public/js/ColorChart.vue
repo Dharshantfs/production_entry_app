@@ -5224,11 +5224,8 @@ async function openPushColorDialog(color, inputTargetDate = null) {
     
     // ── Available options for filters ──
     function rowEligibleForPushDialog(d, requireComposite) {
-        if (selectedPlan.value && selectedPlan.value !== 'Default') {
-            if (d.planName !== selectedPlan.value && d.planName !== selectedPlanLabel.value) return false;
-        } else {
-            if (d.planName && d.planName !== '' && d.planName !== 'Default') return false;
-        }
+        // Use the same robust plan matching as the rest of the UI (handles month/week prefixes).
+        if (!isPlanSelected(d.planName)) return false;
         if ((d.color || "").toUpperCase().trim() !== color.toUpperCase().trim()) return false;
         const colorUpper = (d.color || "").toUpperCase().trim();
         if (colorUpper === "WHITE" || colorUpper === "BRIGHT WHITE") return false;
@@ -5260,7 +5257,12 @@ async function openPushColorDialog(color, inputTargetDate = null) {
 
     let items = getFilteredItems();
 
-    if (allForColor.filter(d => !isRowAlreadyPushed(d)).length === 0) {
+    const unpushedCount = allForColor.filter(d => !isRowAlreadyPushed(d)).length;
+    if (allForColor.length === 0) {
+        frappe.msgprint("No eligible items found for this color under the current Plan/Unit/Status filters. Try clearing filters or switching Plan.");
+        return;
+    }
+    if (unpushedCount === 0) {
         frappe.msgprint("No eligible items found. (Note: White orders are auto-allocated and do not need to be pushed manually, and already-pushed items are hidden.)");
         return;
     }
