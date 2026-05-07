@@ -2630,21 +2630,21 @@ function ensure_spr_item_stylesheet() {
 	if (!window.__sprspr_lock_style) {
 		window.__sprspr_lock_style = true;
 		const lockCss = `
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) {
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) {
 			pointer-events: none;
 			opacity: 0.94;
 		}
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select {
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select {
 			pointer-events: none !important;
 			background-color: transparent !important;
 		}
@@ -2661,7 +2661,16 @@ function ensure_spr_item_stylesheet() {
 		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a,
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
-		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a {
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] button,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] .btn,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] a,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] button,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] .btn,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] a,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] button,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] .btn,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] a {
 			opacity: 0 !important;
 			visibility: hidden !important;
 			pointer-events: none !important;
