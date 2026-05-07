@@ -1784,8 +1784,6 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 							frappe.db.set_value(
 								"Planning Table", ex_name, "custom_design_colour", dc_u, update_modified=False
 							)
-                            if hasattr(existing_psi, "custom_design_colour"):
-                                existing_psi.custom_design_colour = dc_u
 							changed = True
 							# Keep legacy grid in sync too (regenerate often reuses existing PB rows).
 							try:
