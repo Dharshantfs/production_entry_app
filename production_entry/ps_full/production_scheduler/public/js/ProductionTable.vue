@@ -1115,7 +1115,10 @@ const filteredData = computed(() => {
   // Exclude missing parameters and NO COLOR
   data = data.filter(d => {
 
-      if (!d.quality || !d.color || !d.unit || d.unit === "Mixed" || d.unit === "Unassigned") return false;
+      const ic = String(d.itemCode || d.item_code || "").trim();
+      const isFabricChild = ic.startsWith("100");
+      if ((!d.unit || d.unit === "Mixed" || d.unit === "Unassigned")) return false;
+      if (!isFabricChild && (!d.quality || !d.color)) return false;
       const colorUpper = d.color.toUpperCase().trim();
       if (colorUpper === "NO COLOR") return false;
       return true;
