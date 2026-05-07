@@ -9618,7 +9618,12 @@ def _get_color_chart_data_impl(
             effective_date_str = str(item.get("ordered_date") or sheet.get("ordered_date") or "")
             
             # ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ Granular filtering: determine if item belongs to the current date view ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡
-            item_pdate = item.get("planned_date") or item.get("custom_item_planned_date")
+            # IMPORTANT:
+            # - `planned_date` = real "pushed / scheduled" date (set by Color Chart push, manual scheduling, etc.)
+            # - `custom_item_planned_date` = hint/suggestion date used for load/capacity visuals on some sites
+            # Only `planned_date` should mark an item as "already pushed".
+            item_pdate = item.get("planned_date")
+            item_hint_pdate = item.get("custom_item_planned_date")
             is_white = _is_white_color(color)
             is_sheet_cutting = bps == "sheet_cutting_only"
 
@@ -9627,9 +9632,9 @@ def _get_color_chart_data_impl(
             # - Unpushed non-white items stick to ordered_date.
             # - Pushed items (or auto-pushed whites) stick to their planned/pushed date.
             if is_sheet_cutting:
-                i_eff_pdate = item_pdate or sheet.get("ordered_date")
+                i_eff_pdate = item_pdate or item_hint_pdate or sheet.get("ordered_date")
             else:
-                i_eff_pdate = item_pdate or (sheet.get("custom_planned_date") if is_white else None) or sheet.get("ordered_date")
+                i_eff_pdate = item_pdate or item_hint_pdate or (sheet.get("custom_planned_date") if is_white else None) or sheet.get("ordered_date")
             
             if date or (start_date and end_date):
                 try:
@@ -9893,8 +9898,11 @@ def _get_color_chart_data_impl(
                 "pbPlanName": sheet.get("custom_pb_plan_name") or "",
                 "planCode": (item.get("custom_plan_code") or item.get("plan_name") or ""),
                 "ordered_date": str(sheet.ordered_date) if sheet.ordered_date else "",
+                # `planned_date` / `plannedDate` MUST reflect real scheduling only (item.planned_date).
+                # Keep hint dates separate so UI doesn't treat everything as "already pushed".
                 "planned_date": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
                 "plannedDate": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
+                "custom_item_planned_date": str(item_hint_pdate or ""),
                 "dod": str(sheet.dod) if sheet.dod else "",
                 "delivery_status": row_delivery_status,
                 "has_pp": bool(item_pp or sheet_has_pp),
