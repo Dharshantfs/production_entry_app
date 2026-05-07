@@ -1741,13 +1741,10 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 						if dn_u and frappe.db.has_column("Planning Table", "custom_design_name"):
 							frappe.db.set_value("Planning Table", ex_name, "custom_design_name", dn_u, update_modified=False)
 							changed = True
-						if prefix == "107" and parsed_107:
-							for k, v in _planning_row_dict_107_lamination_extras(
-								lam_ic, parsed_107, so_it.name
-							).items():
-								if k.startswith("custom_") and v and frappe.db.has_column("Planning Table", k):
-									frappe.db.set_value("Planning Table", ex_name, k, v, update_modified=False)
-									changed = True
+						# PB child rows must NOT inherit lamination GSM/BOPP GSM fields from 107 parent.
+						for fld in ("custom_lam_gsm", "custom_bopp_gsm"):
+							if frappe.db.has_column("Planning Table", fld):
+								frappe.db.set_value("Planning Table", ex_name, fld, 0, update_modified=False)
 					elif comp.get("role") == "fabric" and frappe.db.has_column("Planning Table", "unit"):
 						pt_clr = frappe.db.get_value("Planning Table", ex_name, "color") or ""
 						pt_w = flt(frappe.db.get_value("Planning Table", ex_name, "width_inch") or 0)
@@ -1841,10 +1838,11 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				dn_new = _pb_design_name_from_sales_order_item(so_it.name)
 				if dn_new and frappe.db.has_column("Planning Table", "custom_design_name"):
 					row["custom_design_name"] = dn_new
-				if prefix == "107" and parsed_107:
-					for k, v in _planning_row_dict_107_lamination_extras(lam_ic, parsed_107, so_it.name).items():
-						if k.startswith("custom_") and v:
-							row[k] = v
+				# PB child rows must NOT inherit lamination GSM/BOPP GSM fields from 107 parent.
+				if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+					row["custom_lam_gsm"] = 0
+				if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
+					row["custom_bopp_gsm"] = 0
 			_set_trace_id_if_supported(row, trace_id)
 			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 				row["split_from"] = lam_pt_name
@@ -5895,8 +5893,31 @@ WHITE_COLORS = {
 }
 
 def _normalize_unit(raw):
-    """Returns title-case unit names like 'Unit 1', ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ or UNASSIGNED for unassigned / legacy Mixed."""
-    r = (raw or "").strip().upper().replace(" ", "")
+    """Normalize unit key for Color Sequence Approval.
+
+    Must be stable across UI labels and stored Workstation names.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return "UNASSIGNED"
+    # If already one of our workstation keys, keep it.
+    if s in (
+        "UNASSIGNED",
+        "Unit 1",
+        "Unit 2",
+        "Unit 3",
+        "Unit 4",
+        LAMINATION_UNIT,
+        SLITTING_UNIT,
+        REWINDING_UNIT_L3,
+        REWINDING_UNIT_L4,
+        REWINDING_UNIT_L5,
+        REWINDING_UNASSIGNED_UNIT,
+        SHEET_CUTTING_UNIT,
+        PRINTED_BOPP_FILM_UNIT,
+    ):
+        return s
+    r = s.upper().replace(" ", "")
     if "UNIT1" in r:
         return "Unit 1"
     if "UNIT2" in r:
@@ -5905,11 +5926,42 @@ def _normalize_unit(raw):
         return "Unit 3"
     if "UNIT4" in r:
         return "Unit 4"
-    if "LAMINATIONUNIT" in r:
+    if "LAMINATIONUNIT" in r or ("TNSPL" in r and "LAMINATION" in r):
         return LAMINATION_UNIT
-    if "SLITTINGUNIT" in r:
+    if "SLITTINGUNIT" in r or ("JVE" in r and "SLITTING" in r):
         return SLITTING_UNIT
+    if "REWINDING" in r:
+        if "L3" in r and "TSNPL" in r:
+            return REWINDING_UNIT_L3
+        if "L4" in r and "JSB" in r:
+            return REWINDING_UNIT_L4
+        if "L5" in r and "JSB" in r:
+            return REWINDING_UNIT_L5
+        if "UNASSIGNED" in r:
+            return REWINDING_UNASSIGNED_UNIT
+    if "SHEET" in r and "CUTTING" in r and "JVE" in r:
+        return SHEET_CUTTING_UNIT
+    if "BOPP" in r and "PRINTING" in r:
+        return PRINTED_BOPP_FILM_UNIT
     return "UNASSIGNED"
+
+
+def _csa_docname(plan_name: str, unit: str, date: str) -> str:
+    """Build a safe, deterministic Color Sequence Approval name (<=140 chars)."""
+    import hashlib
+
+    pn = str(plan_name or "Default").strip() or "Default"
+    un = _normalize_unit(unit)
+    dt = str(date or "").strip()
+    base = f"CSA-{pn}-{un}-{dt}"
+    if len(base) <= 140:
+        return base
+    h = hashlib.md5(base.encode("utf-8")).hexdigest()[:8]
+    pn_t = pn[:30].strip()
+    un_t = un[:30].strip()
+    dt_t = dt[:16].strip()
+    out = f"CSA-{pn_t}-{un_t}-{dt_t}-{h}"
+    return out[:140]
 
 def _get_standard_month_name(month_index):
     # month_index 1-12
@@ -7859,16 +7911,21 @@ def get_kanban_board(start_date, end_date):
 @frappe.whitelist()
 def get_color_sequence(date, unit, plan_name="Default"):
     """Retrieves the saved sequence and status for a unit/plan on a given date."""
-    name = f"CSA-{plan_name}-{unit}-{date}"
-    if frappe.db.exists("Color Sequence Approval", name):
-        doc = frappe.get_doc("Color Sequence Approval", name)
-        return {
-            "sequence": json.loads(doc.sequence_data) if doc.sequence_data else [],
-            "status": doc.status,
-            "modified": doc.modified,
-            "modified_by": doc.modified_by
-        }
-    return {"sequence": [], "status": "Draft", "modified": None, "modified_by": None}
+    try:
+        unit_n = _normalize_unit(unit)
+        name = _csa_docname(plan_name, unit_n, date)
+        if frappe.db.exists("Color Sequence Approval", name):
+            doc = frappe.get_doc("Color Sequence Approval", name)
+            return {
+                "sequence": json.loads(doc.sequence_data) if doc.sequence_data else [],
+                "status": doc.status,
+                "modified": doc.modified,
+                "modified_by": doc.modified_by,
+            }
+        return {"sequence": [], "status": "Draft", "modified": None, "modified_by": None}
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_color_sequence_error")
+        return {"sequence": [], "status": "Draft", "modified": None, "modified_by": None}
 
 @frappe.whitelist()
 def get_color_sequences_range(start_date, end_date, unit=None, plan_name="__all__"):
@@ -7912,12 +7969,12 @@ def get_color_sequences_range(start_date, end_date, unit=None, plan_name="__all_
 def save_color_sequence(date, unit, sequence_data, plan_name="Default", new_date=None):
     """Saves the color arrangement. Handles date changes by renaming the document."""
     unit = _normalize_unit(unit)
-    name = f"CSA-{plan_name}-{unit}-{date}"
+    name = _csa_docname(plan_name, unit, date)
     
     # Handle date change (renaming)
     if new_date and new_date != date:
         if frappe.db.exists("Color Sequence Approval", name):
-            new_name = f"CSA-{plan_name}-{unit}-{new_date}"
+            new_name = _csa_docname(plan_name, unit, new_date)
             if frappe.db.exists("Color Sequence Approval", new_name):
                 frappe.throw(_("An arrangement already exists for {0} on {1} ({2}).").format(unit, new_date, plan_name))
             
