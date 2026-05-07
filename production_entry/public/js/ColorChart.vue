@@ -864,7 +864,7 @@ function isRowAlreadyPushed(d) {
 
     // Align with push_items_to_pb: sheet-level custom_pb_plan_name is copied onto every row
     // in the API and must NOT mean "already pushed". Only item-level planned_date does.
-    const planned = String(d.plannedDate || d.planned_date || d.custom_item_planned_date || "").trim();
+    const planned = String(d.plannedDate || d.planned_date || "").trim();
     return !!planned;
 }
 
@@ -1191,12 +1191,12 @@ const matrixData = computed(() => {
                     totalItems++;
                     // Non-white: only "pushed" if it has plannedDate (manually pushed from Color Chart)
                     // White: always considered "on the board" (auto-placed)
-                    let pushedForThisItem = isItemWhite ? true : (!!(m.plannedDate || m.planned_date || m.custom_item_planned_date) && String(m.plannedDate || m.planned_date || m.custom_item_planned_date).trim() !== "");
+                    let pushedForThisItem = isItemWhite ? true : (!!(m.plannedDate || m.planned_date) && String(m.plannedDate || m.planned_date).trim() !== "");
 
                     if (pushedForThisItem) {
                         anyPushed = true;
                         pushedItems++;
-                        const pDate = m.plannedDate || m.custom_item_planned_date || (isItemWhite ? 'Board' : '');
+                        const pDate = m.plannedDate || m.planned_date || (isItemWhite ? 'Board' : '');
                         if (pDate) pushedPlanNames.add(pDate);
                     }
                 });
