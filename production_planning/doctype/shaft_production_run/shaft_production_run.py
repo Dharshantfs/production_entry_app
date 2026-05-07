@@ -5582,8 +5582,13 @@ def spr_apply_bundle_packaging_for_job_width(
 		"sticker_bundle_weight": bundle_net,
 	}
 	bs_meta = frappe.get_meta("Bundle Stickers")
-	if not bs_meta.has_field("produced_length_mtrs"):
+	# Some sites use a custom produced-length field on Bundle Stickers; populate whichever exists.
+	if bs_meta.has_field("produced_length_mtrs"):
+		bs["produced_length_mtrs"] = produced_length_mtrs
+	elif "produced_length_mtrs" in bs:
 		bs.pop("produced_length_mtrs", None)
+	if bs_meta.has_field("custom_produced_length_mtrs"):
+		bs["custom_produced_length_mtrs"] = produced_length_mtrs
 	if bs_meta.has_field("job_id"):
 		bs["job_id"] = job_id or None
 	spr.append("bundle_stickers", bs)
