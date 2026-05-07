@@ -2665,15 +2665,15 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		sheet_filter = " AND parent = %s "
 		params.append(planning_sheet_name)
 	has_pt_sales_order_item = frappe.db.has_column("Planning Table", "sales_order_item")
-    has_pt_so_item = frappe.db.has_column("Planning Table", "so_item")
-    if has_pt_sales_order_item and has_pt_so_item:
-        child_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
-    elif has_pt_sales_order_item:
-        child_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
-    elif has_pt_so_item:
-        child_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
-    else:
-        child_match_expr = "''"
+	has_pt_so_item = frappe.db.has_column("Planning Table", "so_item")
+	if has_pt_sales_order_item and has_pt_so_item:
+		child_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
+	elif has_pt_sales_order_item:
+		child_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
+	elif has_pt_so_item:
+		child_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
+	else:
+		child_match_expr = "''"
 	parent_rows = frappe.db.sql(
 		f"""
 		SELECT name, parent, item_code, sales_order_item
@@ -2702,21 +2702,21 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				SET custom_parent_child_trace_id = %s
 				WHERE parent = %s
 				  AND (item_code LIKE '100%%' OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%')
-                  AND {child_match_expr} = %s
+				  AND {child_match_expr} = %s
 				""",
 				(trace_id, p.get("parent"), so_item),
 			)
 	if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
-        has_psi_sales_order_item = frappe.db.has_column("Planning sheet Item", "sales_order_item")
-        has_psi_so_item = frappe.db.has_column("Planning sheet Item", "so_item")
-        if has_psi_sales_order_item and has_psi_so_item:
-            psi_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
-        elif has_psi_sales_order_item:
-            psi_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
-        elif has_psi_so_item:
-            psi_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
-        else:
-            psi_match_expr = "''"
+		has_psi_sales_order_item = frappe.db.has_column("Planning sheet Item", "sales_order_item")
+		has_psi_so_item = frappe.db.has_column("Planning sheet Item", "so_item")
+		if has_psi_sales_order_item and has_psi_so_item:
+			psi_match_expr = "COALESCE(NULLIF(TRIM(IFNULL(sales_order_item,'')), ''), NULLIF(TRIM(IFNULL(so_item,'')), ''))"
+		elif has_psi_sales_order_item:
+			psi_match_expr = "NULLIF(TRIM(IFNULL(sales_order_item,'')), '')"
+		elif has_psi_so_item:
+			psi_match_expr = "NULLIF(TRIM(IFNULL(so_item,'')), '')"
+		else:
+			psi_match_expr = "''"
 		for p in parent_rows or []:
 			trace_id = _parent_child_trace_id_from_item_code(p.get("item_code"))
 			if not trace_id:
@@ -2724,10 +2724,10 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 			so_item = (p.get("sales_order_item") or "").strip()
 			if so_item:
 				frappe.db.sql(
-                    f"""
+					f"""
 					UPDATE `tabPlanning sheet Item`
 					SET custom_parent_child_trace_id = %s
-                    WHERE parent = %s AND {psi_match_expr} = %s
+					WHERE parent = %s AND {psi_match_expr} = %s
 					""",
 					(trace_id, p.get("parent"), so_item),
 				)
