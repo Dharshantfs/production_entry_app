@@ -75,7 +75,7 @@
               <td>{{ row.customer_name || row.customer || "-" }}</td>
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
               <td class="cell-center">{{ formatRollSizeCell(row) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ formatSheetSizeCell(row) }}</td>
-              <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.per_day_production) }}</td>
+              <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td v-if="showMergedPerDayProductionCell(row)" class="cell-right" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
               <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
               <td class="cell-center">
                 <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" class="cc-pp-btn" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id)">View</button>
@@ -150,6 +150,29 @@ const maintenanceRecords = ref([]); const moveTargetDate = ref(frappe.datetime.g
 const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragOverItemName = ref(""); const customOrderByDate = ref({});
 let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null; const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
+const mergedPerDayProductionDates = computed(() => {
+  if (viewScope.value !== "monthly") return {};
+  const map = {};
+  const seen = new Set();
+  for (const row of displayRows.value || []) {
+    if (!row || row.is_maintenance_row || row.is_maintenance_empty) continue;
+    const dateKey = getRowDateKey(row);
+    if (!dateKey || seen.has(dateKey)) continue;
+    seen.add(dateKey);
+    map[dateKey] = String(row.itemName || row.item_name || "");
+  }
+  return map;
+});
+const mergedPerDayProductionRowCounts = computed(() => {
+  if (viewScope.value !== "monthly") return {};
+  const counts = {};
+  for (const row of filteredRows.value || []) {
+    const dateKey = getRowDateKey(row);
+    if (!dateKey) continue;
+    counts[dateKey] = (counts[dateKey] || 0) + 1;
+  }
+  return counts;
+});
 const filteredRows = computed(() => {
   let d = rawData.value || []; const pc = (filterPartyCode.value || "").trim().toLowerCase(); const cu = (filterCustomer.value || "").trim().toLowerCase();
   if (pc) d = d.filter((r) => String(r.partyCode || r.party_code || "").toLowerCase().includes(pc));
@@ -162,6 +185,17 @@ function toDateKey(v) { if (!v) return ""; const d = new Date(v); if (Number.isN
 function getRowDateKey(row) { return toDateKey(row?.plannedDate || row?.planned_date || row?.date || ""); }
 function sortRowsBySavedSequence(rows) { const grouped = {}; (rows || []).forEach((r) => { const dk = getRowDateKey(r); grouped[dk] = grouped[dk] || []; grouped[dk].push(r); }); const out = []; Object.keys(grouped).sort().forEach((dk) => { const arr = grouped[dk]; const saved = customOrderByDate.value[dk] || []; const rank = new Map(saved.map((nm, i) => [nm, i])); arr.sort((a, b) => { const ra = rank.has(a.itemName) ? rank.get(a.itemName) : 99999; const rb = rank.has(b.itemName) ? rank.get(b.itemName) : 99999; if (ra !== rb) return ra - rb; return String(a.itemName || "").localeCompare(String(b.itemName || "")); }); out.push(...arr); }); return out; }
 function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v); } function formatNum(v) { const n = Number(v || 0); if (!Number.isFinite(n)) return "-"; return n.toFixed(2).replace(/\.00$/, ""); }
+function getMergedPerDayProductionRowSpan(row) {
+  if (viewScope.value !== "monthly") return 1;
+  const dateKey = getRowDateKey(row);
+  return mergedPerDayProductionRowCounts.value[dateKey] || 1;
+}
+function showMergedPerDayProductionCell(row) {
+  if (viewScope.value !== "monthly") return true;
+  const dateKey = getRowDateKey(row);
+  const firstItemName = mergedPerDayProductionDates.value[dateKey];
+  return String(row.itemName || row.item_name || "") === String(firstItemName || "");
+}
 function goToBoard() { frappe.set_route("sheet-cutting-board"); }
 function syncSprNameForSamePP(ppId, sprId, sourceItemName = "") {
   const pid = String(ppId || "").trim();
