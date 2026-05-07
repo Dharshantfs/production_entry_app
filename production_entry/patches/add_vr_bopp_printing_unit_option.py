@@ -22,8 +22,8 @@ def _ensure_vr_unit_option(doctype_name):
         return
     options = [str(x).strip() for x in str(df.options or "").split("\n") if str(x).strip()]
     changed = False
-    if "Slitting Unit" not in options:
-        options.append("Slitting Unit")
+    if "JVE - SLITTING MACHINE" not in options:
+        options.append("JVE - SLITTING MACHINE")
         changed = True
     if VR_UNIT not in options:
         options.append(VR_UNIT)

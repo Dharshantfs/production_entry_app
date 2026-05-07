@@ -2,6 +2,8 @@ import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 from frappe.custom.doctype.property_setter.property_setter import make_property_setter
 
+from production_entry.production_planning.planning_doctypes import SLITTING_UNIT
+
 
 def execute():
     custom_fields = {
@@ -48,9 +50,9 @@ def _ensure_slitting_unit_option(doctype_name):
     if not df or (df.fieldtype or "") != "Select":
         return
     options = [str(x).strip() for x in str(df.options or "").split("\n") if str(x).strip()]
-    if "Slitting Unit" in options:
+    if SLITTING_UNIT in options:
         return
-    options.append("Slitting Unit")
+    options.append(SLITTING_UNIT)
     make_property_setter(
         doctype_name,
         "unit",
@@ -66,15 +68,17 @@ def _force_existing_103_rows_to_slitting_unit():
         frappe.db.sql(
             """
             UPDATE `tabPlanning Table`
-            SET unit = 'Slitting Unit'
+            SET unit = %s
             WHERE item_code LIKE '103%%'
-            """
+            """,
+            (SLITTING_UNIT,),
         )
     if frappe.db.has_column("Planning sheet Item", "unit"):
         frappe.db.sql(
             """
             UPDATE `tabPlanning sheet Item`
-            SET unit = 'Slitting Unit'
+            SET unit = %s
             WHERE item_code LIKE '103%%'
-            """
+            """,
+            (SLITTING_UNIT,),
         )

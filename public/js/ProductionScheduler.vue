@@ -330,8 +330,8 @@ const COLOR_GROUPS = [
 ];
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
-const LAMINATION_UNIT = "Lamination Unit";
-const SLITTING_UNIT = "Slitting Unit";
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
+const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
   "Unit 2": 12,
@@ -355,7 +355,9 @@ function normalizeUnitName(rawUnit) {
   const txt = String(rawUnit || "").trim().toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
+  if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
+  if (txt === SLITTING_UNIT.toLowerCase() || (txt.includes("jve") && txt.includes("slitting"))) return SLITTING_UNIT;
   if (txt === "unit1" || txt === "unit 1") return "Unit 1";
   if (txt === "unit2" || txt === "unit 2") return "Unit 2";
   if (txt === "unit3" || txt === "unit 3") return "Unit 3";

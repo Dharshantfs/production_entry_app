@@ -94,9 +94,9 @@
         },
         {
             "fieldname": "unit",
-            "fieldtype": "Select",
+            "fieldtype": "Link",
             "label": "Unit",
-            "options": "UNASSIGNED\nUnit 1\nUnit 2\nUnit 3\nUnit 4\nLamination Unit\nSlitting Unit\nJVE - SHEET CUTTING MACHINE\nVR - 1200MM BOPP PRINTING MACHINE"
+            "options": "Workstation"
         },
         {
             "fieldname": "dot_spec",

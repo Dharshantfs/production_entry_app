@@ -791,12 +791,12 @@ function sortItems(unit, items, date) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
-const LAMINATION_UNIT = "Lamination Unit";
-const SLITTING_UNIT = "Slitting Unit";
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
+const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 const REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE";
 const REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE";
 const REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE";
-const REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine";
+const REWINDING_UNASSIGNED_UNIT = "UNASSIGNED REWINDING UNIT";
 const REWINDING_BOARD_UNITS = [REWINDING_UNIT_L3, REWINDING_UNIT_L4, REWINDING_UNIT_L5, REWINDING_UNASSIGNED_UNIT];
 const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
 /** True when opened from Lamination Board (production-table?board=lamination). */
@@ -837,6 +837,8 @@ function getArrangementKey(unit, date) {
 // Removed duplicate normalizeUnit definition
 function normalizeUnit(raw) {
   const r = String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+  if (r.includes("SLITTING") && r.includes("JVE")) return SLITTING_UNIT;
+  if (r.includes("TNSPL") && r.includes("LAMINATION")) return LAMINATION_UNIT;
   if (r.includes("LAMINATIONUNIT") || String(raw || "").trim().toLowerCase() === "lamination unit") return LAMINATION_UNIT;
   if (r.includes("UNIT1")) return "Unit 1";
   if (r.includes("UNIT2")) return "Unit 2";

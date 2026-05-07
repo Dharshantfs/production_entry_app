@@ -77,7 +77,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Slitting Unit - Planned orders (103)</div>
+      <div class="cc-table-unit-header lot-header">{{ SLITTING_UNIT }} - Planned orders (103)</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -196,6 +196,8 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+
+const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
@@ -456,7 +458,7 @@ async function fetchMaintenanceRecords() {
       method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
-    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === "Slitting Unit");
+    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === SLITTING_UNIT);
     maintenanceRecords.value = rows;
     const mapped = {};
     rows.forEach((rec) => {
@@ -497,7 +499,7 @@ async function fetchLaminationSequences() {
       args: {
         start_date,
         end_date,
-        unit: "Slitting Unit",
+        unit: SLITTING_UNIT,
         plan_name: "Default",
       },
     });
@@ -619,7 +621,7 @@ async function saveLaminationArrangement() {
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date: dateKey,
-          unit: "Slitting Unit",
+          unit: SLITTING_UNIT,
           sequence_data: JSON.stringify(seq),
           plan_name: "Default",
         },
@@ -644,7 +646,7 @@ async function restoreLaminationArrangement() {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: "Slitting Unit", plan_name: "Default" },
+        args: { date: dateKey, unit: SLITTING_UNIT, plan_name: "Default" },
       });
     }
     pendingArrangementUpdates.value = {};
@@ -1045,7 +1047,7 @@ function openMachineOffDialog() {
         const res = await frappe.call({
           method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
           args: {
-            unit: "Slitting Unit",
+            unit: SLITTING_UNIT,
             start_date: vals.start_date,
             end_date: vals.end_date,
             maintenance_type: vals.maintenance_type,

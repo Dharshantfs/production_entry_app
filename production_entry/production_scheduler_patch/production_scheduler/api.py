@@ -5,7 +5,15 @@ import json
 import re
 import datetime
 
-from production_scheduler.planning_doctypes import normalize_planning_unit_for_select
+from production_scheduler.planning_doctypes import (
+	LAMINATION_UNIT,
+	normalize_planning_unit_for_select,
+	REWINDING_UNIT_L3,
+	REWINDING_UNIT_L4,
+	REWINDING_UNIT_L5,
+	REWINDING_UNASSIGNED_UNIT,
+	SLITTING_UNIT,
+)
 
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
 # Set True to enable; False disables all calls (no codes generated, no SO writeback from this path).
@@ -16,10 +24,6 @@ PARTY_CODE_GENERATION_ENABLED = False
 LAMINATION_FLOW_ENABLED = True
 SLITTING_FLOW_ENABLED = True
 REWINDING_FLOW_ENABLED = True
-REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE"
-REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE"
-REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE"
-REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine"
 
 
 def _item_process_prefix(item_code):
@@ -1314,22 +1318,22 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		frappe.db.sql(
 			"""
 			UPDATE `tabPlanning Table`
-			SET unit = 'Slitting Unit'
+			SET unit = %s
 			WHERE parent = %s
 			  AND item_code LIKE '103%%'
 			""",
-			(planning_sheet_name,),
+			(SLITTING_UNIT, planning_sheet_name),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	if frappe.db.has_column("Planning sheet Item", "unit"):
 		frappe.db.sql(
 			"""
 			UPDATE `tabPlanning sheet Item`
-			SET unit = 'Slitting Unit'
+			SET unit = %s
 			WHERE parent = %s
 			  AND item_code LIKE '103%%'
 			""",
-			(planning_sheet_name,),
+			(SLITTING_UNIT, planning_sheet_name),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	return updated
@@ -1491,23 +1495,25 @@ def backfill_slitting_units(planning_sheet_name=None):
 		params.append(planning_sheet_name)
 	updated = 0
 	if frappe.db.has_column("Planning Table", "unit"):
+		p2 = (SLITTING_UNIT,) + tuple(params)
 		frappe.db.sql(
 			f"""
 			UPDATE `tabPlanning Table`
-			SET unit = 'Slitting Unit'
+			SET unit = %s
 			WHERE item_code LIKE '103%%' {sheet_filter}
 			""",
-			tuple(params),
+			p2,
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	if frappe.db.has_column("Planning sheet Item", "unit"):
+		p2 = (SLITTING_UNIT,) + tuple(params)
 		frappe.db.sql(
 			f"""
 			UPDATE `tabPlanning sheet Item`
-			SET unit = 'Slitting Unit'
+			SET unit = %s
 			WHERE item_code LIKE '103%%' {sheet_filter}
 			""",
-			tuple(params),
+			p2,
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	frappe.db.commit()
@@ -2746,8 +2752,8 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
         frappe.throw(_("Shift must be DAY or NIGHT."))
     if not frappe.db.has_column("Planning Table", "custom_lamination_shift"):
         frappe.throw(_("Field custom_lamination_shift is missing on Planning Table. Please migrate."))
-    if is_date_under_maintenance("Lamination Unit", str(target_date)):
-        info = get_maintenance_info_on_date("Lamination Unit", str(target_date)) or {}
+    if is_date_under_maintenance(LAMINATION_UNIT, str(target_date)):
+        info = get_maintenance_info_on_date(LAMINATION_UNIT, str(target_date)) or {}
         frappe.throw(
             _("Cannot place lamination orders on {0}. Machine is off ({1}) from {2} to {3}.").format(
                 target_date,
@@ -2811,8 +2817,8 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
         frappe.throw(_("Shift must be DAY or NIGHT."))
     if not frappe.db.has_column("Planning Table", "custom_slitting_shift"):
         frappe.throw(_("Field custom_slitting_shift is missing on Planning Table. Please migrate."))
-    if is_date_under_maintenance("Slitting Unit", str(target_date)):
-        info = get_maintenance_info_on_date("Slitting Unit", str(target_date)) or {}
+    if is_date_under_maintenance(SLITTING_UNIT, str(target_date)):
+        info = get_maintenance_info_on_date(SLITTING_UNIT, str(target_date)) or {}
         frappe.throw(
             _("Cannot place slitting orders on {0}. Machine is off ({1}) from {2} to {3}.").format(
                 target_date,
@@ -2940,7 +2946,7 @@ def add_lamination_machine_off(start_date=None, end_date=None, maintenance_type=
     if end_dt < start_dt:
         frappe.throw(_("End Date must be on or after Start Date."))
     return add_equipment_maintenance(
-        unit="Lamination Unit",
+        unit=LAMINATION_UNIT,
         maintenance_type=maintenance_type or "Machine Off",
         start_date=str(start_dt),
         end_date=str(end_dt),
@@ -3612,10 +3618,10 @@ def _populate_planning_sheet_items(ps, doc):
                 # 104 rows are always Lamination Unit (ignore existing unit/color).
                 # Non-104 rows: keep prior behavior (only set if unassigned).
                 if LAMINATION_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "104":
-                    existing_psi.unit = "Lamination Unit"
+                    existing_psi.unit = LAMINATION_UNIT
                     existing_psi.planned_date = p_date
                 elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "103":
-                    existing_psi.unit = "Slitting Unit"
+                    existing_psi.unit = SLITTING_UNIT
                     existing_psi.planned_date = p_date
                 elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
@@ -3659,9 +3665,9 @@ def compute_default_production_unit(color, width_inch, item_code=None):
     All other colors: pick one of Unit 1-4 by minimum width waste.
     """
     if LAMINATION_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "104":
-        return "Lamination Unit"
+        return LAMINATION_UNIT
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "103":
-        return "Slitting Unit"
+        return SLITTING_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
     w = flt(width_inch)
@@ -4132,9 +4138,9 @@ def _normalize_unit(raw):
     if "UNIT4" in r:
         return "Unit 4"
     if "LAMINATIONUNIT" in r:
-        return "Lamination Unit"
+        return LAMINATION_UNIT
     if "SLITTINGUNIT" in r:
-        return "Slitting Unit"
+        return SLITTING_UNIT
     return "UNASSIGNED"
 
 def _get_standard_month_name(month_index):
@@ -5161,9 +5167,9 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
         if item_unit:
             iu_upper = raw_upper
             if "LAMINATIONUNIT" in iu_upper:
-                item_unit = "Lamination Unit"
+                item_unit = LAMINATION_UNIT
             elif "SLITTINGUNIT" in iu_upper:
-                item_unit = "Slitting Unit"
+                item_unit = SLITTING_UNIT
             elif "UNIT1" in iu_upper:
                 item_unit = "Unit 1"
             elif "UNIT2" in iu_upper:
@@ -5176,9 +5182,9 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
         # Preserve dedicated process units even if older normalizer maps them to UNASSIGNED.
         if normalized == "UNASSIGNED":
             if "LAMINATIONUNIT" in raw_upper:
-                return "Lamination Unit"
+                return LAMINATION_UNIT
             if "SLITTINGUNIT" in raw_upper:
-                return "Slitting Unit"
+                return SLITTING_UNIT
             if "REWINDING" in raw_upper:
                 if "L3" in raw_upper and "TSNPL" in raw_upper:
                     return REWINDING_UNIT_L3

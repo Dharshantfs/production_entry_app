@@ -15,7 +15,7 @@ function sprApplyLaminationUnitDefaults(frm, unitVal) {
 		return;
 	}
 	const u = (unitVal != null ? String(unitVal) : String(frm.doc.custom_unit || '')).trim();
-	if (u !== 'Lamination Unit') {
+	if (u !== 'TNSPL - LAMINATION UNIT' && u !== 'Lamination Unit') {
 		return;
 	}
 	if (frappe.meta.get_docfield('Shaft Production Run', 'custom_is_lamination') && !cint(frm.doc.custom_is_lamination)) {

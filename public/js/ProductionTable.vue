@@ -788,8 +788,8 @@ function sortItems(unit, items, date) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
-const LAMINATION_UNIT = "Lamination Unit";
-const SLITTING_UNIT = "Slitting Unit";
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
+const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 /** True when opened from Lamination Board (production-table?board=lamination). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);

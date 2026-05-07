@@ -3,6 +3,7 @@
 Canonical Planning DocType names — must match planning_sheet*.json and live DB (`tabPlanning sheet`).
 
 Use these constants anywhere code references the doctype string (no literals like "Planning Sheet").
+``unit`` is a Link to Workstation — stored values MUST match ``tabWorkstation.name`` exactly.
 """
 
 PLANNING_SHEET = "Planning sheet"
@@ -12,38 +13,51 @@ PLANNING_SHEET_ITEM = "Planning sheet Item"
 # Set False for legacy behaviour that created one Production Plan per line on sheet submit.
 PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY = True
 
-# Must match `Planning Table` child `unit` Select options (planning_table.json).
+# Workstation names (`tabWorkstation.name`) — aligned with ERPNext master data.
+LAMINATION_UNIT = "TNSPL - LAMINATION UNIT"
+SLITTING_UNIT = "JVE - SLITTING MACHINE"
 REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE"
 REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE"
 REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE"
-REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine"
+REWINDING_UNASSIGNED_UNIT = "UNASSIGNED REWINDING UNIT"
 SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE"
+PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE"
+
+# Old Select / spreadsheet labels → current Workstation name (for normalize + migrations).
+LEGACY_PLANNING_UNIT_ALIASES = {
+    "Lamination Unit": LAMINATION_UNIT,
+    "Slitting Unit": SLITTING_UNIT,
+    "Unassigned rewinding machine": REWINDING_UNASSIGNED_UNIT,
+    # Title-case laminations typo / paste variants
+    "TNSPL - LAMINATION UNIT": LAMINATION_UNIT,
+}
 
 # Unit number / alpha code embedded in batch/order codes at position 2.
 # Example order code "051263" → digit at index 2 = "1" = Unit 1
 UNIT_NUMBER_MAP = {
-    "Unit 1":                         "1",
-    "Unit 2":                         "2",
-    "Unit 3":                         "3",
-    "Unit 4":                         "4",
-    "Lamination Unit":                "5",
-    "Slitting Unit":                  "6",
-    "TSNPL - L3 REWINDING MACHINE":   "7",
-    "JSB - L4 REWINDING MACHINE":     "8",
-    "JSB - L5 REWINDING MACHINE":     "9",
-    "JVE - SHEET CUTTING MACHINE":    "S",
-    "VR - 1200MM BOPP PRINTING MACHINE": "V",
+    "Unit 1": "1",
+    "Unit 2": "2",
+    "Unit 3": "3",
+    "Unit 4": "4",
+    LAMINATION_UNIT: "5",
+    SLITTING_UNIT: "6",
+    REWINDING_UNIT_L3: "7",
+    REWINDING_UNIT_L4: "8",
+    REWINDING_UNIT_L5: "9",
+    SHEET_CUTTING_UNIT: "S",
+    PRINTED_BOPP_FILM_UNIT: "V",
 }
 
 
 def normalize_planning_unit_for_select(raw, _depth=0):
-    """Map free-text to exact options on Planning Table / Planning sheet Item `unit` (Select)."""
+    """Resolve ``unit`` to exact Workstation name (or UNASSIGNED / Unit N). Accepts legacy Select labels."""
     if raw is None:
         return "UNASSIGNED"
     s = str(raw).strip()
     if not s:
         return "UNASSIGNED"
-    # Color Chart matrix column id: sheetCode|unit|planCode|gsm|quality — normalize only the unit segment.
+    if s in LEGACY_PLANNING_UNIT_ALIASES:
+        return LEGACY_PLANNING_UNIT_ALIASES[s]
     if _depth == 0 and "|" in s:
         parts = [p.strip() for p in s.split("|")]
         if len(parts) >= 2 and parts[1]:
@@ -54,14 +68,14 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         "Unit 2",
         "Unit 3",
         "Unit 4",
-        "Lamination Unit",
-        "Slitting Unit",
+        LAMINATION_UNIT,
+        SLITTING_UNIT,
         REWINDING_UNIT_L3,
         REWINDING_UNIT_L4,
         REWINDING_UNIT_L5,
         REWINDING_UNASSIGNED_UNIT,
         SHEET_CUTTING_UNIT,
-        "VR - 1200MM BOPP PRINTING MACHINE",
+        PRINTED_BOPP_FILM_UNIT,
     )
     if s in allowed:
         return s
@@ -71,10 +85,10 @@ def normalize_planning_unit_for_select(raw, _depth=0):
     if u == "MIXED":
         return "UNASSIGNED"
     if u == "LAMINATIONUNIT" or s.strip().lower() == "lamination unit":
-        return "Lamination Unit"
+        return LAMINATION_UNIT
     if u == "SLITTINGUNIT" or s.strip().lower() == "slitting unit":
-        return "Slitting Unit"
-    if "REWINDING" in u or "REWINDINGMACHINE" in u.replace(" ", ""):
+        return SLITTING_UNIT
+    if "REWINDING" in u:
         if "L3" in u and "TSNPL" in u:
             return REWINDING_UNIT_L3
         if "L4" in u and "JSB" in u:
@@ -85,52 +99,50 @@ def normalize_planning_unit_for_select(raw, _depth=0):
             return REWINDING_UNASSIGNED_UNIT
     if "JVESHEETCUTTINGMACHINE" in u or ("SHEETCUTTING" in u and "JVE" in u):
         return SHEET_CUTTING_UNIT
+    if "JVESLITTINGMACHINE" in u or ("SLITTING" in u and "JVE" in u and "MACHINE" in u):
+        return SLITTING_UNIT
+    if "TNSPL" in u and "LAMINATION" in u:
+        return LAMINATION_UNIT
     if "VR1200MMBOPPPRINTINGMACHINE" in u or "1200MMBOPP" in u:
-        return "VR - 1200MM BOPP PRINTING MACHINE"
+        return PRINTED_BOPP_FILM_UNIT
     for i in (1, 2, 3, 4):
         if f"UNIT{i}" in u or s == f"Unit {i}":
             return f"Unit {i}"
     return "UNASSIGNED"
 
 
-# Old names from earlier app JSON / deploys (for migration helpers only).
-LEGACY_PLANNING_SHEET = "Planning Sheet"
-LEGACY_PLANNING_SHEET_ITEM = "Planning Sheet Item"
+def planning_line_unit_option_lines():
+    """Distinct ``unit`` values we use for planning rows (documentation / optional validation)."""
+    return sorted(
+        {
+            "UNASSIGNED",
+            "Unit 1",
+            "Unit 2",
+            "Unit 3",
+            "Unit 4",
+            LAMINATION_UNIT,
+            SLITTING_UNIT,
+            REWINDING_UNIT_L3,
+            REWINDING_UNIT_L4,
+            REWINDING_UNIT_L5,
+            REWINDING_UNASSIGNED_UNIT,
+            SHEET_CUTTING_UNIT,
+            PRINTED_BOPP_FILM_UNIT,
+        }
+    )
 
-# Exact ``unit`` Select options for Planning Table + Planning sheet Item (must match planning_table.json / planning_sheet_item.json).
-CANONICAL_PLANNING_LINE_UNIT_OPTIONS = "\n".join(
-	(
-		"UNASSIGNED",
-		"Unit 1",
-		"Unit 2",
-		"Unit 3",
-		"Unit 4",
-		"Lamination Unit",
-		"Slitting Unit",
-		REWINDING_UNIT_L3,
-		REWINDING_UNIT_L4,
-		REWINDING_UNIT_L5,
-		REWINDING_UNASSIGNED_UNIT,
-		SHEET_CUTTING_UNIT,
-		"VR - 1200MM BOPP PRINTING MACHINE",
-	)
-)
+
+# Deprecated: was Select newline options; retained for migrations / logging only (not synced to DocField when Link).
+CANONICAL_PLANNING_LINE_UNIT_OPTIONS = "\n".join(planning_line_unit_option_lines())
 
 
 def _canonical_planning_unit_option_line_set():
-	"""Set of canonical ``unit`` option lines for strict DB sync checks."""
-	return frozenset(
-		line.strip()
-		for line in (CANONICAL_PLANNING_LINE_UNIT_OPTIONS or "").split("\n")
-		if line.strip()
-	)
+	return frozenset(line.strip() for line in planning_line_unit_option_lines())
 
 
 def _stored_unit_select_outdated(opts):
 	"""
-	Some sites have Planning sheet Item stuck at e.g. UNASSIGNED…VR BOPP **without**
-	L3/L4/L5/Unassigned rewinding rows; substring checks on ``Unassigned rewinding machine`` wrongly skip.
-	Use full line-set equality with canonical.
+	Legacy helper: compares old Select lists. Unused when ``unit`` is Link (``ensure`` skips non-Select).
 	"""
 	got = frozenset(line.strip() for line in str(opts or "").split("\n") if line.strip())
 	return got != _canonical_planning_unit_option_line_set()
@@ -138,22 +150,28 @@ def _stored_unit_select_outdated(opts):
 
 def ensure_planning_line_unit_docfield_options():
 	"""
-	Sync ``tabDocField.options`` for both child line DocTypes so Desk + validate accept rewinding / VR BOPP units.
+	Legacy Select sync — no-op when ``unit`` is Link to Workstation.
 
-	Sites can have Planning sheet Item (legacy grid) missing rewinding machines while Planning Table (board) is fine.
-	Idempotent when ``tabDocField`` already matches canonical.
+	Older sites synced ``tabDocField.options`` here; Links use ``options``='Workstation' from DocType JSON.
 	"""
 	import frappe
 
 	for dt in ("Planning Table", PLANNING_SHEET_ITEM):
 		try:
-			opts = frappe.db.get_value(
+			fieldtype = frappe.db.get_value(
 				"DocField",
-				{"parent": dt, "fieldname": "unit", "fieldtype": "Select"},
-				"options",
+				{"parent": dt, "fieldname": "unit"},
+				"fieldtype",
 			)
 		except Exception:
 			continue
+		if (fieldtype or "") != "Select":
+			continue
+		opts = frappe.db.get_value(
+			"DocField",
+			{"parent": dt, "fieldname": "unit", "fieldtype": "Select"},
+			"options",
+		)
 		if not _stored_unit_select_outdated(opts):
 			continue
 		try:
@@ -181,3 +199,8 @@ def ensure_planning_line_unit_docfield_options():
 		frappe.clear_cache(doctype=PLANNING_SHEET_ITEM)
 	except Exception:
 		pass
+
+
+# Old names from earlier app JSON / deploys (for migration helpers only).
+LEGACY_PLANNING_SHEET = "Planning Sheet"
+LEGACY_PLANNING_SHEET_ITEM = "Planning Sheet Item"

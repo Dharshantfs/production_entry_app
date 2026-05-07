@@ -302,7 +302,7 @@ const REWINDING_MAINT_UNITS = new Set([
   "TSNPL - L3 REWINDING MACHINE",
   "JSB - L4 REWINDING MACHINE",
   "JSB - L5 REWINDING MACHINE",
-  "Unassigned rewinding machine",
+  "UNASSIGNED REWINDING UNIT",
 ]);
 const REWINDING_FILTER_UNITS = [
   "TSNPL - L3 REWINDING MACHINE",
@@ -444,7 +444,7 @@ const rewindingUnitGroups = computed(() => {
     "TSNPL - L3 REWINDING MACHINE",
     "JSB - L4 REWINDING MACHINE",
     "JSB - L5 REWINDING MACHINE",
-    "Unassigned rewinding machine",
+    "UNASSIGNED REWINDING UNIT",
   ];
   const rows = (filteredRows.value || []).filter((r) => !r.is_maintenance_row && !r.is_maintenance_empty);
   return units.map((u) => ({

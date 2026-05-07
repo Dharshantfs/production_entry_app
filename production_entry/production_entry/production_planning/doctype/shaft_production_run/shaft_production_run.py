@@ -9,6 +9,7 @@ from frappe.utils import cint, flt, getdate, nowtime, today
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	extract_quality_and_color,
 )
+from production_entry.production_planning.planning_doctypes import LAMINATION_UNIT
 
 
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
@@ -1423,7 +1424,7 @@ class ShaftProductionRun(Document):
 		meta = frappe.get_meta("Shaft Production Run Item")
 		if not meta.has_field("produced_gsm"):
 			return
-		unit_lam = _cstr(getattr(self, "custom_unit", None)).strip() == "Lamination Unit"
+		unit_lam = _cstr(getattr(self, "custom_unit", None)).strip() == LAMINATION_UNIT
 		lam = spr_doc_is_lamination(self) or unit_lam
 		for row in self.items or []:
 			if lam:

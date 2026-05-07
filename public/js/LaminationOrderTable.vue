@@ -84,7 +84,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Lamination Unit - Planned orders ({{ laminationProcess }})</div>
+      <div class="cc-table-unit-header lot-header">{{ LAMINATION_UNIT }} - Planned orders ({{ laminationProcess }})</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -245,6 +245,8 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
 
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
@@ -506,7 +508,7 @@ async function fetchMaintenanceRecords() {
       method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
-    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === "Lamination Unit");
+    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === LAMINATION_UNIT);
     maintenanceRecords.value = rows;
     const mapped = {};
     rows.forEach((rec) => {
@@ -547,7 +549,7 @@ async function fetchLaminationSequences() {
       args: {
         start_date,
         end_date,
-        unit: "Lamination Unit",
+        unit: LAMINATION_UNIT,
         plan_name: "Default",
       },
     });
@@ -669,7 +671,7 @@ async function saveLaminationArrangement() {
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date: dateKey,
-          unit: "Lamination Unit",
+          unit: LAMINATION_UNIT,
           sequence_data: JSON.stringify(seq),
           plan_name: "Default",
         },
@@ -694,7 +696,7 @@ async function restoreLaminationArrangement() {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: "Lamination Unit", plan_name: "Default" },
+        args: { date: dateKey, unit: LAMINATION_UNIT, plan_name: "Default" },
       });
     }
     pendingArrangementUpdates.value = {};

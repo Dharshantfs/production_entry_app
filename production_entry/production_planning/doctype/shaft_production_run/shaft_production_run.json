@@ -114,7 +114,7 @@
    "fieldname": "custom_unit",
    "fieldtype": "Select",
    "label": "Unit",
-   "options": "UNIT 1\nUNIT 2\nUNIT 3\nUNIT 4\nLamination Unit"
+   "options": "UNIT 1\nUNIT 2\nUNIT 3\nUNIT 4\nTNSPL - LAMINATION UNIT"
   },
   {
    "fieldname": "shift",

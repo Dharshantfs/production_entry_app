@@ -260,14 +260,15 @@ const props = defineProps({
 });
 
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
 const isPrintedBoppTable = computed(() => (props.tableBoardKind || "").trim() === "printed_bopp_film");
 const pageTitle = computed(() => (isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table"));
-const tableMaintenanceUnit = computed(() => (isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : "Lamination Unit"));
+const tableMaintenanceUnit = computed(() => (isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT));
 const tableUnitHeader = computed(() => {
   if (isPrintedBoppTable.value) {
     return `${PRINTED_BOPP_FILM_UNIT} — Planned orders (Printed BOPP film)`;
   }
-  return `Lamination Unit - Planned orders (${laminationProcess.value}) — ${laminationProcess.value === "107" ? "BOPP" : "Plain"}`;
+  return `${LAMINATION_UNIT} - Planned orders (${laminationProcess.value}) — ${laminationProcess.value === "107" ? "BOPP" : "Plain"}`;
 });
 const showDesignNameColumn = computed(() => isPrintedBoppTable.value || laminationProcess.value === "107");
 const showCylinderTypeColumn = computed(() => isPrintedBoppTable.value);

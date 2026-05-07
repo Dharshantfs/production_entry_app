@@ -17,7 +17,7 @@ function sprApplyLaminationUnitDefaults(frm, unitVal) {
 	const u = (unitVal != null ? String(unitVal) : String(frm.doc.custom_unit || '')).trim();
 	const meta = frappe.meta;
 	const hasField = (f) => !!meta.get_docfield('Shaft Production Run', f);
-	if (u === 'Lamination Unit') {
+	if (u === 'TNSPL - LAMINATION UNIT' || u === 'Lamination Unit') {
 		if (hasField('custom_is_lamination') && !cint(frm.doc.custom_is_lamination)) {
 			frm.set_value('custom_is_lamination', 1);
 		}

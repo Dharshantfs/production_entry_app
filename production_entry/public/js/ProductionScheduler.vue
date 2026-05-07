@@ -317,12 +317,12 @@ const COLOR_GROUPS = [
 ];
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
-const LAMINATION_UNIT = "Lamination Unit";
-const SLITTING_UNIT = "Slitting Unit";
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
+const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 const REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE";
 const REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE";
 const REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE";
-const REWINDING_UNASSIGNED_UNIT = "Unassigned rewinding machine";
+const REWINDING_UNASSIGNED_UNIT = "UNASSIGNED REWINDING UNIT";
 const REWINDING_BOARD_UNITS = [REWINDING_UNIT_L3, REWINDING_UNIT_L4, REWINDING_UNIT_L5, REWINDING_UNASSIGNED_UNIT];
 const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
 const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
@@ -364,7 +364,9 @@ function normalizeUnitName(rawUnit) {
   const txt = full.toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
+  if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
+  if (txt === SLITTING_UNIT.toLowerCase() || (txt.includes("jve") && txt.includes("slitting"))) return SLITTING_UNIT;
   if (txt.includes("sheetcutting") || (txt.includes("sheet") && txt.includes("cutting") && txt.includes("jve"))) return SHEET_CUTTING_UNIT;
   const ru = String(rawUnit || "").trim();
   if (ru === REWINDING_UNIT_L3 || ru === REWINDING_UNIT_L4 || ru === REWINDING_UNIT_L5 || ru === REWINDING_UNASSIGNED_UNIT) {

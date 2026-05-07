@@ -12,6 +12,8 @@ from production_entry.production_planning.planning_doctypes import (
     PLANNING_SHEET as PLANNING_SHEET_DOCTYPE,
     PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY,
     normalize_planning_unit_for_select,
+    LAMINATION_UNIT,
+    SLITTING_UNIT,
 )
 
 
@@ -117,7 +119,7 @@ class Planningsheet(Document):
                     row.unit = PRINTED_BOPP_FILM_UNIT
                     continue
                 if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(item_code):
-                    row.unit = "Lamination Unit"
+                    row.unit = LAMINATION_UNIT
                     continue
                 if getattr(row, "planned_date", None) and str(row.planned_date).strip():
                     continue
@@ -147,7 +149,7 @@ class Planningsheet(Document):
                     if mapped:
                         row.color = mapped
                         color = mapped
-                    row.unit = "Slitting Unit"
+                    row.unit = SLITTING_UNIT
                     continue
                 if process_prefix == "251":
                     row.unit = SHEET_CUTTING_UNIT
@@ -205,8 +207,8 @@ class Planningsheet(Document):
             if LAMINATION_FLOW_ENABLED and (
                 _is_lamination_parent_process(pr_ic) or _is_lamination_parent_process(leg_ic)
             ):
-                pr.unit = "Lamination Unit"
-                leg.unit = "Lamination Unit"
+                pr.unit = LAMINATION_UNIT
+                leg.unit = LAMINATION_UNIT
                 continue
             # Hard lock for process 103 across linked rows.
             item_code = str(getattr(pr, "item_code", None) or getattr(leg, "item_code", None) or "").strip()
@@ -217,8 +219,8 @@ class Planningsheet(Document):
                 if mapped:
                     pr.color = mapped
                     leg.color = mapped
-                pr.unit = "Slitting Unit"
-                leg.unit = "Slitting Unit"
+                pr.unit = SLITTING_UNIT
+                leg.unit = SLITTING_UNIT
                 continue
             if _item_process_prefix(item_code) == "251":
                 pr.unit = SHEET_CUTTING_UNIT

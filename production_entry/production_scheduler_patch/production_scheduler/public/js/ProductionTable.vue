@@ -788,8 +788,8 @@ function sortItems(unit, items, date) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
-const LAMINATION_UNIT = "Lamination Unit";
-const SLITTING_UNIT = "Slitting Unit";
+const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
+const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 /** True when opened from Lamination Board (production-table?board=lamination). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
@@ -827,6 +827,8 @@ function getArrangementKey(unit, date) {
 // Removed duplicate normalizeUnit definition
 function normalizeUnit(raw) {
   const r = String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+  if (r.includes("SLITTING") && r.includes("JVE")) return SLITTING_UNIT;
+  if (r.includes("TNSPL") && r.includes("LAMINATION")) return LAMINATION_UNIT;
   if (r.includes("LAMINATIONUNIT") || String(raw || "").trim().toLowerCase() === "lamination unit") return LAMINATION_UNIT;
   if (r.includes("UNIT1")) return "Unit 1";
   if (r.includes("UNIT2")) return "Unit 2";
