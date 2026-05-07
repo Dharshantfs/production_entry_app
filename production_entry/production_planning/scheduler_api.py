@@ -611,6 +611,7 @@ def _pb_design_colour_from_sales_order_item(so_item_name):
 	"""Optional design colour from Sales Order Item custom fields (site-specific)."""
 	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
 		return ""
+	# 1) Fast path: known fieldnames.
 	for fn in (
 		"custom_design_colour",
 		"custom_design_color",
@@ -618,6 +619,10 @@ def _pb_design_colour_from_sales_order_item(so_item_name):
 		"custom_pb_design_color",
 		"custom_print_colour",
 		"custom_print_color",
+		"custom_design_colour_",
+		"custom_design_color_",
+		"custom_design_colours",
+		"custom_design_colors",
 		"design_colour",
 		"design_color",
 	):
@@ -629,6 +634,24 @@ def _pb_design_colour_from_sales_order_item(so_item_name):
 					return (v or "").strip()
 		except Exception:
 			continue
+	# 2) Fallback: scan Sales Order Item fields for anything like design+colour/color.
+	try:
+		meta = frappe.get_meta("Sales Order Item")
+		candidates = []
+		for df in (meta.fields or []):
+			fn = (getattr(df, "fieldname", None) or "").strip()
+			if not fn:
+				continue
+			low = fn.lower()
+			if "design" in low and ("colour" in low or "color" in low):
+				candidates.append(fn)
+		for fn in candidates:
+			if frappe.db.has_column("Sales Order Item", fn):
+				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+				if (v or "").strip():
+					return (v or "").strip()
+	except Exception:
+		pass
 	return ""
 
 
@@ -14510,6 +14533,79 @@ def debug_bopp_bom(item_code):
             )
         ),
     }
+
+
+@frappe.whitelist()
+def debug_107_trace_and_design(planning_sheet):
+	"""Debug helper: show 107 parent + 100/PB child trace/design fields for one Planning Sheet."""
+	ps = str(planning_sheet or "").strip()
+	if not ps or not frappe.db.exists("Planning sheet", ps):
+		frappe.throw(f"Planning Sheet {ps!r} not found.")
+
+	# parent 107 rows
+	parents = frappe.db.sql(
+		"""
+		SELECT name, item_code, sales_order_item, so_item, custom_parent_child_trace_id, custom_design_colour
+		FROM `tabPlanning Table`
+		WHERE parent = %s AND item_code LIKE '107%%'
+		ORDER BY idx ASC
+		""",
+		(ps,),
+		as_dict=True,
+	)
+
+	# child rows
+	children = frappe.db.sql(
+		"""
+		SELECT name, item_code, sales_order_item, so_item, custom_parent_child_trace_id, custom_design_colour
+		FROM `tabPlanning Table`
+		WHERE parent = %s AND (item_code LIKE '100%%' OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%')
+		ORDER BY idx ASC
+		""",
+		(ps,),
+		as_dict=True,
+	)
+
+	# legacy top grid
+	psi = []
+	try:
+		psi = frappe.db.sql(
+			"""
+			SELECT name, item_code, sales_order_item, so_item, custom_parent_child_trace_id, custom_design_colour
+			FROM `tabPlanning sheet Item`
+			WHERE parent = %s
+			ORDER BY idx ASC
+			""",
+			(ps,),
+			as_dict=True,
+		)
+	except Exception:
+		psi = []
+
+	# show SO Item design-colour value for each parent line
+	soi_values = {}
+	for p in parents or []:
+		soi = (p.get("sales_order_item") or p.get("so_item") or "").strip()
+		if not soi:
+			continue
+		if soi not in soi_values:
+			soi_values[soi] = {
+				"design_colour": _pb_design_colour_from_sales_order_item(soi),
+				"design_name": _pb_design_name_from_sales_order_item(soi),
+				"white_tint": _white_tint_yes_no_from_sales_order_item(soi),
+			}
+
+	return {
+		"planning_sheet": ps,
+		"parents_107": parents,
+		"children_100_pb": children,
+		"planning_sheet_items": psi,
+		"sales_order_item_values": soi_values,
+		"pt_has_sales_order_item": frappe.db.has_column("Planning Table", "sales_order_item"),
+		"pt_has_so_item": frappe.db.has_column("Planning Table", "so_item"),
+		"psi_has_sales_order_item": frappe.db.has_column("Planning sheet Item", "sales_order_item"),
+		"psi_has_so_item": frappe.db.has_column("Planning sheet Item", "so_item"),
+	}
 
 
 @frappe.whitelist()
