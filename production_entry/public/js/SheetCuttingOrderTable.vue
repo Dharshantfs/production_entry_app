@@ -151,7 +151,7 @@ const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragO
 let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null; const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 const mergedPerDayProductionDates = computed(() => {
-  if (viewScope.value !== "monthly") return {};
+  if (viewScope.value === "daily") return {};
   const map = {};
   const seen = new Set();
   for (const row of displayRows.value || []) {
@@ -164,7 +164,7 @@ const mergedPerDayProductionDates = computed(() => {
   return map;
 });
 const mergedPerDayProductionRowCounts = computed(() => {
-  if (viewScope.value !== "monthly") return {};
+  if (viewScope.value === "daily") return {};
   const counts = {};
   for (const row of filteredRows.value || []) {
     const dateKey = getRowDateKey(row);
@@ -180,18 +180,56 @@ const filteredRows = computed(() => {
   const sh = (filterShift.value || "all").toLowerCase(); if (sh === "day") d = d.filter((r) => String(r.shift_label || "DAY").toUpperCase() === "DAY"); else if (sh === "night") d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
   return sortRowsBySavedSequence(d);
 });
-const displayRows = computed(() => { const normalRows = filteredRows.value || []; const { start_date, end_date } = getScopeDateRange(); if (!start_date || !end_date) { normalRows.forEach((r, i) => { r._sno = i + 1; }); return normalRows; } const start = new Date(start_date); const end = new Date(end_date); const out = []; let sno = 1; for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) { const k = toDateKey(d); const recs = (maintenanceRecords.value || []).filter(r => new Date(k) >= new Date(r.start_date) && new Date(k) <= new Date(r.end_date)); if (recs.length) out.push({ is_maintenance_row: true, dateKey: k, record: recs[0] }); const dateRows = normalRows.filter(r => getRowDateKey(r) === k); for (const r of dateRows) { r._sno = sno++; out.push(r); } if (!dateRows.length && recs.length) out.push({ is_maintenance_empty: true, dateKey: k }); } return out; });
+const displayRows = computed(() => {
+  const normalRows = filteredRows.value || [];
+  const { start_date, end_date } = getScopeDateRange();
+  if (!start_date || !end_date) {
+    normalRows.forEach((r, i) => {
+      r._sno = i + 1;
+    });
+    return normalRows;
+  }
+  const start = new Date(start_date);
+  const end = new Date(end_date);
+  const out = [];
+  let sno = 1;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const k = toDateKey(d);
+    const recs = (maintenanceRecords.value || []).filter(
+      (r) => new Date(k) >= new Date(r.start_date) && new Date(k) <= new Date(r.end_date)
+    );
+    if (recs.length) out.push({ is_maintenance_row: true, dateKey: k, record: recs[0] });
+
+    const dateRows = normalRows.filter((r) => getRowDateKey(r) === k);
+
+    // PER DAY PRODUCTION is merged via rowspan in non-daily views (template uses v-if + rowspan),
+    // so do not mutate row values here.
+
+    for (const r of dateRows) {
+      r._sno = sno++;
+      out.push(r);
+    }
+    if (!dateRows.length && recs.length) out.push({ is_maintenance_empty: true, dateKey: k });
+  }
+  return out;
+});
 function toDateKey(v) { if (!v) return ""; const d = new Date(v); if (Number.isNaN(d.getTime())) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function getRowDateKey(row) { return toDateKey(row?.plannedDate || row?.planned_date || row?.date || ""); }
 function sortRowsBySavedSequence(rows) { const grouped = {}; (rows || []).forEach((r) => { const dk = getRowDateKey(r); grouped[dk] = grouped[dk] || []; grouped[dk].push(r); }); const out = []; Object.keys(grouped).sort().forEach((dk) => { const arr = grouped[dk]; const saved = customOrderByDate.value[dk] || []; const rank = new Map(saved.map((nm, i) => [nm, i])); arr.sort((a, b) => { const ra = rank.has(a.itemName) ? rank.get(a.itemName) : 99999; const rb = rank.has(b.itemName) ? rank.get(b.itemName) : 99999; if (ra !== rb) return ra - rb; return String(a.itemName || "").localeCompare(String(b.itemName || "")); }); out.push(...arr); }); return out; }
-function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v); } function formatNum(v) { const n = Number(v || 0); if (!Number.isFinite(n)) return "-"; return n.toFixed(2).replace(/\.00$/, ""); }
+function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v); }
+function formatNum(v) {
+  if (v === "" || v === null || typeof v === "undefined") return "-";
+  const n = Number(v || 0);
+  if (!Number.isFinite(n)) return "-";
+  return n.toFixed(2).replace(/\.00$/, "");
+}
 function getMergedPerDayProductionRowSpan(row) {
-  if (viewScope.value !== "monthly") return 1;
+  if (viewScope.value === "daily") return 1;
   const dateKey = getRowDateKey(row);
   return mergedPerDayProductionRowCounts.value[dateKey] || 1;
 }
 function showMergedPerDayProductionCell(row) {
-  if (viewScope.value !== "monthly") return true;
+  if (viewScope.value === "daily") return true;
   const dateKey = getRowDateKey(row);
   const firstItemName = mergedPerDayProductionDates.value[dateKey];
   return String(row.itemName || row.item_name || "") === String(firstItemName || "");

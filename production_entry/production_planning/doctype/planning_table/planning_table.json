@@ -275,6 +275,14 @@
    "options": "DAY\nNIGHT"
   },
   {
+   "default": "DAY",
+   "fieldname": "custom_sheet_cutting_shift",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Sheet Cutting Shift",
+   "options": "DAY\nNIGHT"
+  },
+  {
    "fieldname": "custom_cylinder_type",
    "fieldtype": "Data",
    "in_list_view": 1,
