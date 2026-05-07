@@ -4551,7 +4551,12 @@ def assign_sheet_cutting_shift(shift_date=None, shift_label="DAY", item_name=Non
     shift_label = (shift_label or "DAY").strip().upper()
     if shift_label not in ("DAY", "NIGHT"):
         frappe.throw(_("Shift must be DAY or NIGHT."))
-    if not frappe.db.has_column("Planning Table", "custom_sheet_cutting_shift"):
+    shift_field = None
+    if frappe.db.has_column("Planning Table", "custom_sheet_cutting_shift"):
+        shift_field = "custom_sheet_cutting_shift"
+    elif frappe.db.has_column("Planning Table", "custom_slitting_shift"):
+        shift_field = "custom_slitting_shift"
+    if not shift_field:
         frappe.throw(_("Field custom_sheet_cutting_shift is missing on Planning Table. Please migrate."))
     if is_date_under_maintenance(SHEET_CUTTING_UNIT, str(target_date)):
         info = get_maintenance_info_on_date(SHEET_CUTTING_UNIT, str(target_date)) or {}
@@ -4575,7 +4580,7 @@ def assign_sheet_cutting_shift(shift_date=None, shift_label="DAY", item_name=Non
     )
 
     if item_name:
-        set_parts = ["pt.custom_sheet_cutting_shift = %s"]
+        set_parts = [f"pt.{shift_field} = %s"]
         values = [shift_label]
         if pt_date_col:
             set_parts.append(f"pt.{pt_date_col} = %s")
@@ -4597,7 +4602,7 @@ def assign_sheet_cutting_shift(shift_date=None, shift_label="DAY", item_name=Non
             f"""
             UPDATE `tabPlanning Table` pt
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
-            SET pt.custom_sheet_cutting_shift = %s
+                        SET pt.{shift_field} = %s
             WHERE ps.docstatus < 2
               AND pt.item_code LIKE '251%%'
               AND DATE({eff_date}) = DATE(%s)
