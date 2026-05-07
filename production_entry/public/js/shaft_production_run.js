@@ -1744,12 +1744,14 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				}
 
 				function finishCreateEntry() {
-					(frm.doc.items || []).forEach(function (row) {
-						spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', row.name);
-					});
+					// PERFORMANCE: avoid per-row server calls and heavy styling loops on large grids.
+					// Server-side hooks will compute any derived fields on save/submit; keep UI responsive here.
 					update_shaft_job_achieved_from_items(frm);
 					sprScheduleTotalProducedSync(frm);
-					schedule_spr_item_row_styles(frm);
+					const totalRows = (frm.doc.items || []).length;
+					if (totalRows <= 250) {
+						schedule_spr_item_row_styles(frm);
+					}
 					sprAutoSaveAfterCreateEntry(frm);
 					frappe.show_alert({
 						message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
@@ -1775,12 +1777,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 							for (let i = 0; i < nums.length; i++) {
 								const row = fresh[startIdx + i];
 								if (row && nums[i]) {
-									if (nums[i].batch_no) {
-										frappe.model.set_value(row.doctype, row.name, 'batch_no', nums[i].batch_no);
-									}
-									if (nums[i].roll_no !== undefined && nums[i].roll_no !== null) {
-										frappe.model.set_value(row.doctype, row.name, 'roll_no', nums[i].roll_no);
-									}
+									// Direct assignment is much faster than model.set_value (which triggers grid events per row).
+									if (nums[i].batch_no) row.batch_no = nums[i].batch_no;
+									if (nums[i].roll_no !== undefined && nums[i].roll_no !== null) row.roll_no = nums[i].roll_no;
 								}
 							}
 							frm.refresh_field('items');
