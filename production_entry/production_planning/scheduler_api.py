@@ -1787,6 +1787,37 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
                             if hasattr(existing_psi, "custom_design_colour"):
                                 existing_psi.custom_design_colour = dc_u
 							changed = True
+							# Keep legacy grid in sync too (regenerate often reuses existing PB rows).
+							try:
+								if frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+									frappe.db.sql(
+										"""
+										UPDATE `tabPlanning sheet Item`
+										SET sales_order_item = %s
+										WHERE parent = %s AND item_code = %s AND (sales_order_item IS NULL OR sales_order_item = '')
+										""",
+										(so_it.name, ps.name, comp_ic),
+									)
+								if frappe.db.has_column("Planning sheet Item", "custom_design_colour"):
+									frappe.db.sql(
+										"""
+										UPDATE `tabPlanning sheet Item`
+										SET custom_design_colour = %s
+										WHERE parent = %s AND item_code = %s AND IFNULL(sales_order_item, '') = %s
+										""",
+										(dc_u, ps.name, comp_ic, so_it.name),
+									)
+								if trace_id and frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+									frappe.db.sql(
+										"""
+										UPDATE `tabPlanning sheet Item`
+										SET custom_parent_child_trace_id = %s
+										WHERE parent = %s AND item_code = %s AND IFNULL(sales_order_item, '') = %s
+										""",
+										(trace_id, ps.name, comp_ic, so_it.name),
+									)
+							except Exception:
+								pass
 						# PB child rows must NOT inherit lamination GSM/BOPP GSM fields from 107 parent.
 						for fld in ("custom_lam_gsm", "custom_bopp_gsm"):
 							if frappe.db.has_column("Planning Table", fld):
