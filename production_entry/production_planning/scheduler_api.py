@@ -784,49 +784,50 @@ def _resolve_107_child_components(lam_item_code):
 
 
 def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_order_item_name=None):
-	"""
-	Planning Table / Planning sheet Item fields for the 107 PARENT row (and shared finishing on PB child).
-	- Finishing (mg/mc) from parsed item-code finishes.
+    """
+    Planning Table / Planning sheet Item fields for the 107 PARENT row (and shared finishing on PB child).
+    - Finishing (mg/mc) from parsed item-code finishes.
     - Parent/child trace id from the 107 item code.
-	- White tint: Yes/No from Sales Order Item (not the second finish digit).
-	- BOPP / LAM GSM from parsed letter codes.
-	- Cylinder Type is NOT set here; it belongs only on the PB child row.
-	"""
-	out = {}
-	if not (LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(item_code or "")) == "107"):
-		return out
-	p107r = parsed107_early or (_parse_107_item_code(item_code) or {})
+    - White tint: Yes/No from Sales Order Item (not the second finish digit).
+    - BOPP / LAM GSM from parsed letter codes.
+    - Cylinder Type is NOT set here; it belongs only on the PB child row.
+    """
+    out = {}
+    if not (LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(item_code or "")) == "107"):
+        return out
+    p107r = parsed107_early or (_parse_107_item_code(item_code) or {})
     trace_id = _parent_child_trace_id_from_item_code(item_code)
     if trace_id and (
         frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
         or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")
     ):
         out["custom_parent_child_trace_id"] = trace_id
-	mg = (p107r.get("finish_matte_glossy") or "").strip() or "0"
-	mc = (p107r.get("finish_metallic_cooler") or "").strip() or "0"
-	if frappe.db.has_column("Planning Table", "custom_finishing") or frappe.db.has_column(
-		"Planning sheet Item", "custom_finishing"
-	):
-		out["custom_finishing"] = f"{mg}/{mc}"
-		wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
-		if wt and (
-			frappe.db.has_column("Planning Table", "custom_white_tint")
-			or frappe.db.has_column("Planning sheet Item", "custom_white_tint")
-		):
-			out["custom_white_tint"] = wt
-	bgv = cint(p107r.get("bopp_gsm") or 0)
-	if bgv > 0:
-		if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
-			out["custom_bopp_gsm"] = bgv
-		if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
-			out["custom_bopp_gsm"] = bgv
-	lgv = cint(p107r.get("lam_gsm") or 0)
-	if lgv > 0:
-		if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
-			out["custom_lam_gsm"] = lgv
-		if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
-			out["custom_lam_gsm"] = lgv
-	return out
+    mg = (p107r.get("finish_matte_glossy") or "").strip() or "0"
+    mc = (p107r.get("finish_metallic_cooler") or "").strip() or "0"
+    if frappe.db.has_column("Planning Table", "custom_finishing") or frappe.db.has_column(
+        "Planning sheet Item", "custom_finishing"
+    ):
+        out["custom_finishing"] = f"{mg}/{mc}"
+    if sales_order_item_name:
+        wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
+        if wt and (
+            frappe.db.has_column("Planning Table", "custom_white_tint")
+            or frappe.db.has_column("Planning sheet Item", "custom_white_tint")
+        ):
+            out["custom_white_tint"] = wt
+    bgv = cint(p107r.get("bopp_gsm") or 0)
+    if bgv > 0:
+        if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
+            out["custom_bopp_gsm"] = bgv
+        if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
+            out["custom_bopp_gsm"] = bgv
+    lgv = cint(p107r.get("lam_gsm") or 0)
+    if lgv > 0:
+        if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+            out["custom_lam_gsm"] = lgv
+        if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+            out["custom_lam_gsm"] = lgv
+    return out
 
 
 def _parent_child_trace_id_from_item_code(item_code):
