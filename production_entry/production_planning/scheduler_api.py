@@ -9994,16 +9994,23 @@ def _deduplicate_items(items):
         # Support both dict keys (camelCase vs snake_case) 
         so_item = item.get("salesOrderItem") or item.get("sales_order_item")
         is_split = item.get("isSplit") or item.get("is_split")
+
+        # For lamination 107 flows, the parent (107/104) and child fabric (100*) can legitimately share the
+        # same sales-order line. Deduplicating purely by SO line hides the child rows in Production Table.
+        ic = str(item.get("itemCode") or item.get("item_code") or "").strip()
+        proc = _item_process_prefix(ic) if ic else ""
+        # Use SO line + process prefix as dedupe key so 107 parent and 100 child both remain visible.
+        dedupe_key = f"{so_item}|{proc}" if so_item and proc else so_item
         
         if is_split or not so_item:
             result.append(item)
             continue
             
-        if so_item not in seen:
-            seen[so_item] = item
+        if dedupe_key not in seen:
+            seen[dedupe_key] = item
             result.append(item)
         else:
-            existing = seen[so_item]
+            existing = seen[dedupe_key]
             e_plan_raw = existing.get("planName") or existing.get("custom_plan_name") or "Default"
             i_plan_raw = item.get("planName") or item.get("custom_plan_name") or "Default"
             
@@ -10023,7 +10030,7 @@ def _deduplicate_items(items):
             if replace:
                 if existing in result:
                     result.remove(existing)
-                seen[so_item] = item
+                seen[dedupe_key] = item
                 result.append(item)
     return result
 
@@ -12811,6 +12818,18 @@ def push_items_to_pb(
                     )
                     if not resolved_source:
                         resolved_source = _resolve_legacy_source_item_from_board_row(refreshed_item)
+                    if resolved_source:
+                        # Safety: only sync legacy PSI when it matches this board row (avoid updating parent PSI).
+                        try:
+                            src_ic = (
+                                frappe.db.get_value("Planning sheet Item", resolved_source, "item_code")
+                                if frappe.db.has_column("Planning sheet Item", "item_code")
+                                else ""
+                            ) or ""
+                        except Exception:
+                            src_ic = ""
+                        if src_ic and str(src_ic).strip() != str(refreshed_item.get("item_code") or "").strip():
+                            resolved_source = None
                     if resolved_source:
                         if resolved_source != (refreshed_item.get("source_item") or ""):
                             frappe.db.sql(

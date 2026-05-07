@@ -6480,16 +6480,23 @@ def _deduplicate_items(items):
         # Support both dict keys (camelCase vs snake_case) 
         so_item = item.get("salesOrderItem") or item.get("sales_order_item")
         is_split = item.get("isSplit") or item.get("is_split")
+
+        # For lamination 107 flows, the parent (107/104) and child fabric (100*) can legitimately share the
+        # same sales-order line. Deduplicating purely by SO line hides the child rows in Production Table.
+        ic = str(item.get("itemCode") or item.get("item_code") or "").strip()
+        proc = _item_process_prefix(ic) if ic else ""
+        # Use SO line + process prefix as dedupe key so 107 parent and 100 child both remain visible.
+        dedupe_key = f"{so_item}|{proc}" if so_item and proc else so_item
         
         if is_split or not so_item:
             result.append(item)
             continue
             
-        if so_item not in seen:
-            seen[so_item] = item
+        if dedupe_key not in seen:
+            seen[dedupe_key] = item
             result.append(item)
         else:
-            existing = seen[so_item]
+            existing = seen[dedupe_key]
             e_plan_raw = existing.get("planName") or existing.get("custom_plan_name") or "Default"
             i_plan_raw = item.get("planName") or item.get("custom_plan_name") or "Default"
             
@@ -6509,7 +6516,7 @@ def _deduplicate_items(items):
             if replace:
                 if existing in result:
                     result.remove(existing)
-                seen[so_item] = item
+                seen[dedupe_key] = item
                 result.append(item)
     return result
 
