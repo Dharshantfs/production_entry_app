@@ -611,10 +611,6 @@ def _pb_design_colour_from_sales_order_item(so_item_name):
 	"""Optional design colour from Sales Order Item custom fields (site-specific)."""
 	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
 		return ""
-	try:
-		meta = frappe.get_meta("Sales Order Item")
-	except Exception:
-		return ""
 	for fn in (
 		"custom_design_colour",
 		"custom_design_color",
@@ -626,7 +622,8 @@ def _pb_design_colour_from_sales_order_item(so_item_name):
 		"design_color",
 	):
 		try:
-			if meta.has_field(fn):
+			# Prefer reading the actual column even if DocType metadata is stale/missing.
+			if frappe.db.has_column("Sales Order Item", fn):
 				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
 				if (v or "").strip():
 					return (v or "").strip()
@@ -1685,6 +1682,31 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		lam_row = frappe.get_doc("Planning Table", lam_pt_name) if lam_pt_name else None
 		if lam_row and trace_id:
 			_set_trace_id_if_supported(lam_row, trace_id)
+			# Persist parent trace id + SO line link so backfills can match reliably.
+			try:
+				parent_updates = {}
+				if frappe.db.has_column("Planning Table", "sales_order_item"):
+					cur_soi = frappe.db.get_value("Planning Table", lam_pt_name, "sales_order_item")
+					if not (cur_soi or "").strip():
+						parent_updates["sales_order_item"] = so_it.name
+				if frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+					cur_tr = str(frappe.db.get_value("Planning Table", lam_pt_name, "custom_parent_child_trace_id") or "").strip()
+					if not cur_tr:
+						parent_updates["custom_parent_child_trace_id"] = trace_id
+				if parent_updates:
+					frappe.db.set_value("Planning Table", lam_pt_name, parent_updates, update_modified=False)
+				# Keep legacy top grid trace id in sync for the parent row.
+				if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id") and frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+					frappe.db.sql(
+						"""
+						UPDATE `tabPlanning sheet Item`
+						SET custom_parent_child_trace_id = %s
+						WHERE parent = %s AND IFNULL(sales_order_item, '') = %s AND item_code = %s
+						""",
+						(trace_id, ps.name, so_it.name, lam_ic),
+					)
+			except Exception:
+				pass
 
 		so_item_lam_side = ""
 		if frappe.db.has_column("Sales Order Item", "custom_lamination_side"):
