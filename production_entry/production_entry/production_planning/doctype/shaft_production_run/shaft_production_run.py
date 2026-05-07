@@ -5798,6 +5798,55 @@ def spr_get_bundle_packaging_lines(shaft_production_run):
 	return spr_get_bundle_packaging_catalog(shaft_production_run)
 
 
+def _spr_calc_net_weight_from_gross_for_bundle(row, gross_kg: float) -> float:
+	"""
+	Server-side replica of the desk calculation used when operators enter `gross_weight`.
+	This is required because bundle packaging sets gross/prod length in the backend and
+	grid triggers do not run on reload.
+	"""
+	try:
+		width = flt(getattr(row, "width_inch", None))
+	except Exception:
+		width = 0.0
+	gw = flt(gross_kg)
+	if width <= 0 or gw <= 0:
+		return 0.0
+
+	gsm_val = flt(getattr(row, "gsm", None) or 0) or flt(getattr(row, "sticker_gsm", None) or 0) or 90.0
+	width_in_meter = width * 0.0254
+	raw_weight = (gsm_val * width_in_meter * gw) / 1000.0
+
+	standard_widths = (63.0, 85.0, 90.0, 118.0, 126.0)
+	is_standard = any(abs(width - w) < 0.01 for w in standard_widths)
+
+	core_weight = 0.0
+	if is_standard:
+		base_weight_of_core = 1.3
+		if 50.0 <= raw_weight <= 100.0:
+			base_weight_of_core = 1.8
+		elif raw_weight > 100.0:
+			base_weight_of_core = 2.5
+		numeric_core_width = flt(getattr(row, "custom_core_width_mm", None) or 1600.0) or 1600.0
+		core_weight = (base_weight_of_core / 1600.0) * numeric_core_width
+	else:
+		if width < 63.0:
+			core_width, prorate = 63.0, 1.30
+		elif width < 85.0:
+			core_width, prorate = 85.0, 1.75
+		elif width < 90.0:
+			core_width, prorate = 90.0, 1.86
+		elif width < 118.0:
+			core_width, prorate = 118.0, 2.43
+		else:
+			core_width, prorate = 126.0, 2.60
+		core_weight = (width / core_width) * prorate
+
+	net_val = gw - core_weight
+	if net_val <= 0:
+		net_val = gw
+	return flt(net_val, 2)
+
+
 @frappe.whitelist()
 def spr_apply_bundle_packaging_for_job_width(
 	shaft_production_run,
@@ -5879,9 +5928,15 @@ def spr_apply_bundle_packaging_for_job_width(
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(width_inch * float(no_of_packaging), 4)
 
+	item_meta = frappe.get_meta("Shaft Production Run Item")
+	can_set_net = item_meta.has_field("net_weight")
+	can_set_len = item_meta.has_field("produced_length_mtrs")
 	for it in selected:
 		it.gross_weight = single_gross
-		it.produced_length_mtrs = produced_length_mtrs
+		if can_set_len:
+			it.produced_length_mtrs = produced_length_mtrs
+		if can_set_net:
+			it.net_weight = _spr_calc_net_weight_from_gross_for_bundle(it, single_gross)
 
 	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in selected), 2)
 
@@ -5949,6 +6004,10 @@ def spr_apply_bundle_packaging(
 		sel_w = flt(getattr(target, "width_inch", None))
 	single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
 	total_width_inch = round(sel_w * float(no_of_packaging), 4)
+	net_one = flt(getattr(target, "net_weight", None))
+	item_meta = frappe.get_meta("Shaft Production Run Item")
+	if item_meta.has_field("net_weight"):
+		target.net_weight = _spr_calc_net_weight_from_gross_for_bundle(target, single_gross)
 	net_one = flt(getattr(target, "net_weight", None))
 	bundle_net = round(net_one * float(no_of_packaging), 2)
 
