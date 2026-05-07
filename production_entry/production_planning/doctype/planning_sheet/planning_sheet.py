@@ -412,6 +412,17 @@ class Planningsheet(Document):
         """Allocate unit before saving"""
         if not self.allocated_unit:
             self.allocate_unit_to_sheet()
+
+    def on_update(self):
+        """Notify boards/tables to refresh after sheet edits.
+
+        Users often edit planned_date/unit on the Planning Sheet directly; boards/tables are separate pages
+        and rely on realtime events to refresh without manual browser reload.
+        """
+        try:
+            frappe.publish_realtime("production_board_update", {"planning_sheet": self.name})
+        except Exception:
+            pass
     
     def on_submit(self):
         """Update queue and create Production Plans on submit (WOs are created on PP submit)."""
