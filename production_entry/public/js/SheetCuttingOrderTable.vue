@@ -75,7 +75,7 @@
               <td>{{ row.customer_name || row.customer || "-" }}</td>
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
               <td class="cell-center">{{ formatRollSizeCell(row) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ formatSheetSizeCell(row) }}</td>
-              <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td v-if="showMergedPerDayProductionCell(row)" class="cell-right" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
+              <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td v-if="showMergedPerDayProductionCell(row)" class="cell-right pt-merged-perday" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
               <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
               <td class="cell-center">
                 <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" class="cc-pp-btn" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id)">View</button>
@@ -151,7 +151,6 @@ const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragO
 let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null; const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 const mergedPerDayProductionDates = computed(() => {
-  if (viewScope.value === "daily") return {};
   const map = {};
   const seen = new Set();
   for (const row of displayRows.value || []) {
@@ -164,7 +163,6 @@ const mergedPerDayProductionDates = computed(() => {
   return map;
 });
 const mergedPerDayProductionRowCounts = computed(() => {
-  if (viewScope.value === "daily") return {};
   const counts = {};
   for (const row of filteredRows.value || []) {
     const dateKey = getRowDateKey(row);
@@ -224,12 +222,10 @@ function formatNum(v) {
   return n.toFixed(2).replace(/\.00$/, "");
 }
 function getMergedPerDayProductionRowSpan(row) {
-  if (viewScope.value === "daily") return 1;
   const dateKey = getRowDateKey(row);
   return mergedPerDayProductionRowCounts.value[dateKey] || 1;
 }
 function showMergedPerDayProductionCell(row) {
-  if (viewScope.value === "daily") return true;
   const dateKey = getRowDateKey(row);
   const firstItemName = mergedPerDayProductionDates.value[dateKey];
   return String(row.itemName || row.item_name || "") === String(firstItemName || "");
@@ -514,6 +510,11 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   outline: 2px dashed #0ea5e9;
   outline-offset: -2px;
   background: #f0f9ff;
+}
+.pt-merged-perday{
+  background: #f8fafc;
+  font-weight: 700;
+  border: 2px solid #cbd5e1;
 }
 .muted {
   color: #94a3b8;
