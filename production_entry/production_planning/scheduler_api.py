@@ -787,6 +787,8 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_o
 	"""
 	Planning Table / Planning sheet Item fields for the 107 PARENT row (and shared finishing on PB child).
 	- Finishing (mg/mc) from parsed item-code finishes.
+    - Design colour from Sales Order Item custom fields.
+    - Parent/child trace id from the 107 item code.
 	- White tint: Yes/No from Sales Order Item (not the second finish digit).
 	- BOPP / LAM GSM from parsed letter codes.
 	- Cylinder Type is NOT set here; it belongs only on the PB child row.
@@ -795,6 +797,12 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_o
 	if not (LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(item_code or "")) == "107"):
 		return out
 	p107r = parsed107_early or (_parse_107_item_code(item_code) or {})
+    trace_id = _parent_child_trace_id_from_item_code(item_code)
+    if trace_id and (
+        frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
+        or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")
+    ):
+        out["custom_parent_child_trace_id"] = trace_id
 	mg = (p107r.get("finish_matte_glossy") or "").strip() or "0"
 	mc = (p107r.get("finish_metallic_cooler") or "").strip() or "0"
 	if frappe.db.has_column("Planning Table", "custom_finishing") or frappe.db.has_column(
@@ -802,6 +810,16 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_o
 	):
 		out["custom_finishing"] = f"{mg}/{mc}"
 	if sales_order_item_name:
+        dc = _pb_design_colour_from_sales_order_item(sales_order_item_name)
+        if not dc:
+            colour_code = (p107r.get("colour_code") or "").strip()
+            if colour_code:
+                dc = _get_color_by_code(colour_code) or colour_code
+        if dc and (
+            frappe.db.has_column("Planning Table", "custom_design_colour")
+            or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
+        ):
+            out["custom_design_colour"] = dc
 		wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
 		if wt and (
 			frappe.db.has_column("Planning Table", "custom_white_tint")
