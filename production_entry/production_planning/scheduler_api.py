@@ -607,6 +607,34 @@ def _pb_design_name_from_sales_order_item(so_item_name):
 	return ""
 
 
+def _pb_design_colour_from_sales_order_item(so_item_name):
+	"""Optional design colour from Sales Order Item custom fields (site-specific)."""
+	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
+		return ""
+	try:
+		meta = frappe.get_meta("Sales Order Item")
+	except Exception:
+		return ""
+	for fn in (
+		"custom_design_colour",
+		"custom_design_color",
+		"custom_pb_design_colour",
+		"custom_pb_design_color",
+		"custom_print_colour",
+		"custom_print_color",
+		"design_colour",
+		"design_color",
+	):
+		try:
+			if meta.has_field(fn):
+				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+				if (v or "").strip():
+					return (v or "").strip()
+		except Exception:
+			continue
+	return ""
+
+
 def _is_white_tint_yes(val):
 	s = str(val or "").strip().lower()
 	return s in ("yes", "y", "1", "true")
@@ -1741,6 +1769,15 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 						if dn_u and frappe.db.has_column("Planning Table", "custom_design_name"):
 							frappe.db.set_value("Planning Table", ex_name, "custom_design_name", dn_u, update_modified=False)
 							changed = True
+						dc_u = _pb_design_colour_from_sales_order_item(so_it.name)
+						if dc_u and (
+							frappe.db.has_column("Planning Table", "custom_design_colour")
+							or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
+						):
+							frappe.db.set_value(
+								"Planning Table", ex_name, "custom_design_colour", dc_u, update_modified=False
+							)
+							changed = True
 						# PB child rows must NOT inherit lamination GSM/BOPP GSM fields from 107 parent.
 						for fld in ("custom_lam_gsm", "custom_bopp_gsm"):
 							if frappe.db.has_column("Planning Table", fld):
@@ -1838,6 +1875,12 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				dn_new = _pb_design_name_from_sales_order_item(so_it.name)
 				if dn_new and frappe.db.has_column("Planning Table", "custom_design_name"):
 					row["custom_design_name"] = dn_new
+				dc_new = _pb_design_colour_from_sales_order_item(so_it.name)
+				if dc_new and (
+					frappe.db.has_column("Planning Table", "custom_design_colour")
+					or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
+				):
+					row["custom_design_colour"] = dc_new
 				# PB child rows must NOT inherit lamination GSM/BOPP GSM fields from 107 parent.
 				if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
 					row["custom_lam_gsm"] = 0
@@ -3067,6 +3110,8 @@ def get_lamination_order_table_data(
     cyl_store_expr = "IFNULL(pt.custom_cylinder_type, '')" if has_pt_cylinder else "''"
     has_pt_design_name = frappe.db.has_column("Planning Table", "custom_design_name")
     pb_design_expr = "IFNULL(pt.custom_design_name, '')" if has_pt_design_name else "''"
+    has_pt_design_colour = frappe.db.has_column("Planning Table", "custom_design_colour")
+    pb_design_colour_expr = "IFNULL(pt.custom_design_colour, '')" if has_pt_design_colour else "''"
     has_pt_white_tint = frappe.db.has_column("Planning Table", "custom_white_tint")
     pb_white_expr = "IFNULL(pt.custom_white_tint, '')" if has_pt_white_tint else "''"
     has_pt_finishing = frappe.db.has_column("Planning Table", "custom_finishing")
@@ -3099,6 +3144,7 @@ def get_lamination_order_table_data(
             IFNULL(fab.gsm, 0) as fabric_gsm,
             {cyl_store_expr} as pb_cylinder_stored,
             {pb_design_expr} as pb_design_stored,
+            {pb_design_colour_expr} as pb_design_colour_stored,
             {pb_white_expr} as pb_white_tint_stored,
             {pb_fin_expr} as pb_finishing_stored,
             {pb_finish_expr} as pb_finish_stored,
@@ -3402,6 +3448,7 @@ def get_lamination_order_table_data(
             dstore = str((ex or {}).get("pb_design_stored") or "").strip() if ex else ""
             row["design_code"] = dcode or dstore
             row["design_name"] = dstore or dcode or row.get("design_name") or ""
+            row["design_colour"] = str((ex or {}).get("pb_design_colour_stored") or "").strip() if ex else ""
             _wt_raw = str((ex or {}).get("pb_white_tint_stored") or "").strip() if ex else ""
             row["white_tint"] = _normalized_white_tint_select(_wt_raw) or _wt_raw
             row["finishing"] = str((ex or {}).get("pb_finishing_stored") or "").strip() if ex else ""

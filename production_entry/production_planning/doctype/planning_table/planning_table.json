@@ -42,6 +42,7 @@
   "custom_slitting_shift",
   "custom_cylinder_type",
   "custom_design_name",
+  "custom_design_colour",
   "custom_finishing",
   "custom_white_tint",
   "custom_bopp_finish_size_mm",
@@ -285,6 +286,13 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Design Name"
+  },
+  {
+   "fieldname": "custom_design_colour",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Design Colour",
+   "read_only": 1
   },
   {
    "fieldname": "custom_finishing",

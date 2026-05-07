@@ -103,6 +103,7 @@
             <th v-if="isPrintedBoppTable">WHITE TINT</th>
             <th v-if="isPrintedBoppTable">FINISHING</th>
             <th v-if="isPrintedBoppTable">BOPP FINISH SIZE (MM)</th>
+            <th v-if="isPrintedBoppTable">DESIGN COLOUR</th>
             <th v-if="isPrintedBoppTable">NO OF DESIGN COLOURS</th>
             <th v-if="isPrintedBoppTable">TOTAL NO OF COLOURS</th>
             <th v-if="isPrintedBoppTable">PLANNED LENGTH (MTRS)</th>
@@ -168,6 +169,7 @@
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.white_tint || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.finishing || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center font-bold">{{ row.bopp_finish_size_mm || "—" }}</td>
+            <td v-if="isPrintedBoppTable" class="cell-center font-bold">{{ row.design_colour || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center font-bold">{{ row.no_of_design_colours || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center font-bold">{{ row.total_no_of_colours || row.no_of_design_colours || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-right">{{ row.planned_meter ?? "-" }}</td>
@@ -392,7 +394,9 @@ const filteredRows = computed(() => {
 
 const tableColCount = computed(() => {
   if (isPrintedBoppTable.value) {
-    return 19;
+    // Printed BOPP table adds extra columns vs lamination table
+    // (includes design colour column after BOPP finish size).
+    return 20;
   }
   let n = 17;
   if (showDesignNameColumn.value) n += 1;

@@ -37,6 +37,7 @@
         "custom_bopp_gsm",
         "custom_cylinder_type",
         "custom_design_name",
+        "custom_design_colour",
         "custom_finishing",
         "custom_white_tint",
         "order_sheet",
@@ -236,6 +237,13 @@
             "fieldtype": "Data",
             "in_list_view": 1,
             "label": "Design Name",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_design_colour",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Design Colour",
             "read_only": 1
         },
         {
