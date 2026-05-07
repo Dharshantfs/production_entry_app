@@ -787,7 +787,6 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_o
 	"""
 	Planning Table / Planning sheet Item fields for the 107 PARENT row (and shared finishing on PB child).
 	- Finishing (mg/mc) from parsed item-code finishes.
-    - Design colour from Sales Order Item custom fields.
     - Parent/child trace id from the 107 item code.
 	- White tint: Yes/No from Sales Order Item (not the second finish digit).
 	- BOPP / LAM GSM from parsed letter codes.
@@ -809,17 +808,6 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_o
 		"Planning sheet Item", "custom_finishing"
 	):
 		out["custom_finishing"] = f"{mg}/{mc}"
-	if sales_order_item_name:
-        dc = _pb_design_colour_from_sales_order_item(sales_order_item_name)
-        if not dc:
-            colour_code = (p107r.get("colour_code") or "").strip()
-            if colour_code:
-                dc = _get_color_by_code(colour_code) or colour_code
-        if dc and (
-            frappe.db.has_column("Planning Table", "custom_design_colour")
-            or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
-        ):
-            out["custom_design_colour"] = dc
 		wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
 		if wt and (
 			frappe.db.has_column("Planning Table", "custom_white_tint")
