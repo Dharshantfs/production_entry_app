@@ -1429,7 +1429,11 @@ def _force_rewinding_unit_on_sheet(planning_sheet_name):
 
 @frappe.whitelist()
 def backfill_parent_child_trace_ids(planning_sheet_name=None):
-	"""Backfill custom_parent_child_trace_id on parent(103/104) and child(100) rows + legacy table."""
+	"""Backfill custom_parent_child_trace_id on parent rows and their child rows.
+
+	Covers: 102 (rewinding), 103 (slitting), 104/107 (lamination), 251 (sheet cutting).
+	Child rows include 100* fabric rows and PB-* printed BOPP rows when present.
+	"""
 	if not (frappe.db.has_column("Planning Table", "custom_parent_child_trace_id") or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")):
 		return {"status": "noop", "updated": 0}
 	sheet_filter = ""
@@ -1437,11 +1441,13 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 	if planning_sheet_name:
 		sheet_filter = " AND parent = %s "
 		params.append(planning_sheet_name)
+	has_pt_sales_order_item = frappe.db.has_column("Planning Table", "sales_order_item")
+	child_match_field = "sales_order_item" if has_pt_sales_order_item else "so_item"
 	parent_rows = frappe.db.sql(
 		f"""
 		SELECT name, parent, item_code, sales_order_item
 		FROM `tabPlanning Table`
-		WHERE item_code REGEXP '^(102|103|104)' {sheet_filter}
+		WHERE item_code REGEXP '^(102|103|104|107|251)' {sheet_filter}
 		""",
 		tuple(params),
 		as_dict=True,
@@ -1459,10 +1465,12 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		so_item = (p.get("sales_order_item") or "").strip()
 		if so_item:
 			frappe.db.sql(
-				"""
+				f"""
 				UPDATE `tabPlanning Table`
 				SET custom_parent_child_trace_id = %s
-				WHERE parent = %s AND item_code LIKE '100%%' AND IFNULL(so_item, '') = %s
+				WHERE parent = %s
+				  AND (item_code LIKE '100%%' OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%')
+				  AND IFNULL({child_match_field}, '') = %s
 				""",
 				(trace_id, p.get("parent"), so_item),
 			)
