@@ -515,6 +515,8 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   background: #f8fafc;
   font-weight: 700;
   border: 2px solid #cbd5e1;
+  text-align: center;
+  vertical-align: middle;
 }
 .muted {
   color: #94a3b8;
