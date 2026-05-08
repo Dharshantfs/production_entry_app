@@ -724,6 +724,49 @@ def _pb_design_colour_from_sales_order_item(so_item_name):
 	return ""
 
 
+def _printing_design_attachment_from_sales_order_item(so_item_name):
+	"""Best-effort printing design attachment URL from Sales Order Item."""
+	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
+		return ""
+	# Prefer direct DB column reads to survive metadata drift.
+	for fn in (
+		"custom_design_attachment",
+		"custom_print_design_attachment",
+		"custom_printing_design_attachment",
+		"custom_design_image",
+		"custom_print_design_image",
+		"image",
+		"attachment",
+	):
+		try:
+			if frappe.db.has_column("Sales Order Item", fn):
+				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+				if (v or "").strip():
+					return (v or "").strip()
+		except Exception:
+			continue
+	# Fallback: scan fields for likely attachment/image.
+	try:
+		meta = frappe.get_meta("Sales Order Item")
+		candidates = []
+		for df in (meta.fields or []):
+			fn = (getattr(df, "fieldname", None) or "").strip()
+			ft = (getattr(df, "fieldtype", None) or "").strip()
+			if not fn:
+				continue
+			low = fn.lower()
+			if "design" in low and ("attach" in low or "image" in low):
+				candidates.append((fn, ft))
+		for fn, ft in candidates:
+			if frappe.db.has_column("Sales Order Item", fn):
+				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+				if (v or "").strip():
+					return (v or "").strip()
+	except Exception:
+		pass
+	return ""
+
+
 def _is_white_tint_yes(val):
 	s = str(val or "").strip().lower()
 	return s in ("yes", "y", "1", "true")
@@ -2789,9 +2832,39 @@ def _sync_printing_105_planning_rows(planning_sheet_name):
 				cur = str(getattr(parent_pt, "custom_design_code", "") or "").strip()
 				if not cur:
 					up["custom_design_code"] = design_code
+			if frappe.db.has_column("Planning Table", "custom_design_attachment"):
+				cur_da = str(getattr(parent_pt, "custom_design_attachment", "") or "").strip()
+				if not cur_da:
+					da = _printing_design_attachment_from_sales_order_item(so_it.name)
+					if da:
+						up["custom_design_attachment"] = da
 			if up:
 				frappe.db.set_value("Planning Table", parent_pt.name, up, update_modified=False)
 				changed = True
+			# Keep legacy top grid (Planning sheet Item) in sync for design fields.
+			try:
+				if frappe.db.has_column("Planning sheet Item", "custom_design_code") and design_code and frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+					frappe.db.sql(
+						"""
+						UPDATE `tabPlanning sheet Item`
+						SET custom_design_code = %s
+						WHERE parent = %s AND IFNULL(sales_order_item, '') = %s AND item_code = %s
+						""",
+						(design_code, ps.name, so_it.name, pr_ic),
+					)
+				if frappe.db.has_column("Planning sheet Item", "custom_design_attachment") and frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+					da2 = _printing_design_attachment_from_sales_order_item(so_it.name)
+					if da2:
+						frappe.db.sql(
+							"""
+							UPDATE `tabPlanning sheet Item`
+							SET custom_design_attachment = %s
+							WHERE parent = %s AND IFNULL(sales_order_item, '') = %s AND item_code = %s
+							""",
+							(da2, ps.name, so_it.name, pr_ic),
+						)
+			except Exception:
+				pass
 
 		bom = _resolve_lamination_bom(pr_ic)
 		if not bom:
