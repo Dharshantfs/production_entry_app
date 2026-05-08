@@ -8306,6 +8306,9 @@ def _get_color_chart_data_impl(
     lam_proc = str(lamination_process or "").strip().lower()
     if not lam_proc:
         lam_proc = "104"
+    # UI may send "__all__" for "show 104 + 107 together".
+    if lam_proc in ("__all__", "all", "*"):
+        lam_proc = "all"
     # Color chart path: fabric (100…) only unless scope is explicit or pull modes need full board rows.
     _mode_lc = str(mode or "").strip().lower()
     if bps is None and _mode_lc not in ("pull", "pull_board"):
@@ -8559,6 +8562,13 @@ def _get_color_chart_data_impl(
                     for it in items
                     if _lamination_process_from_item_code(it.get("item_code") or "") == lam_proc
                 ]
+        # Provide row-level lamination process for mixed views (e.g. All).
+        if items:
+            for it in items:
+                try:
+                    it["lamination_process"] = _lamination_process_from_item_code(it.get("item_code") or "")
+                except Exception:
+                    it["lamination_process"] = ""
         elif items and bps == "slitting_only":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "103"]
         elif items and bps == "rewinding_only":

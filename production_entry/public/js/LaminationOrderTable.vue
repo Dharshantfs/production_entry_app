@@ -35,6 +35,7 @@
         <div class="cc-shift-btns">
           <button type="button" :class="{ active: laminationProcess === '104' }" @click="setLaminationProcess('104')">104 Plain</button>
           <button type="button" :class="{ active: laminationProcess === '107' }" @click="setLaminationProcess('107')">107 BOPP</button>
+          <button type="button" :class="{ active: laminationProcess === '__all__' }" @click="setLaminationProcess('__all__')">All</button>
         </div>
       </div>
       <div class="cc-filter-item">
@@ -96,6 +97,7 @@
             <th>SHIFT</th>
             <th>ORDER CODE</th>
             <th>CUSTOMER</th>
+            <th v-if="showAllProcesses">PROCESS</th>
             <th v-if="!isPrintedBoppTable">QUALITY</th>
             <th v-if="!isPrintedBoppTable">FABRIC COLOUR</th>
             <th v-if="showDesignNameColumn">DESIGN NAME</th>
@@ -162,6 +164,7 @@
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.partyCode || row.order_code || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
+            <td v-if="showAllProcesses" class="cell-center font-bold">{{ processLabel(row) }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
             <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
@@ -291,11 +294,19 @@ const tableUnitHeader = computed(() => {
   if (isPrintedBoppTable.value) {
     return `${PRINTED_BOPP_FILM_UNIT} — Planned orders (Printed BOPP film)`;
   }
+  if (showAllProcesses.value) {
+    return `${LAMINATION_UNIT} - Planned orders (104 + 107) — All`;
+  }
   return `${LAMINATION_UNIT} - Planned orders (${laminationProcess.value}) — ${laminationProcess.value === "107" ? "BOPP" : "Plain"}`;
 });
-const showDesignNameColumn = computed(() => isPrintedBoppTable.value || laminationProcess.value === "107");
+const showAllProcesses = computed(() => !isPrintedBoppTable.value && laminationProcess.value === "__all__");
+const showDesignNameColumn = computed(
+  () => isPrintedBoppTable.value || laminationProcess.value === "107" || showAllProcesses.value
+);
 const showCylinderTypeColumn = computed(() => isPrintedBoppTable.value);
-const showBoppGsmColumn = computed(() => !isPrintedBoppTable.value && laminationProcess.value === "107");
+const showBoppGsmColumn = computed(
+  () => !isPrintedBoppTable.value && (laminationProcess.value === "107" || showAllProcesses.value)
+);
 const producedWeightHeader = computed(() =>
   isPrintedBoppTable.value ? "PRODUCED BOPP WEIGHT (KGS)" : "PRODUCED LAMINATION WEIGHT (KGS)"
 );
@@ -325,7 +336,7 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
-/** Plain lamination (104) vs BOPP (107); drives API filter and column layout. */
+/** Plain lamination (104) vs BOPP (107) vs All; drives API filter and column layout. */
 const laminationProcess = ref("104");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
@@ -399,6 +410,7 @@ const tableColCount = computed(() => {
     return 20;
   }
   let n = 17;
+  if (showAllProcesses.value) n += 1; // PROCESS column
   if (showDesignNameColumn.value) n += 1;
   if (showCylinderTypeColumn.value) n += 1;
   if (showBoppGsmColumn.value) n += 1;
@@ -407,7 +419,7 @@ const tableColCount = computed(() => {
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
 
 function setLaminationProcess(v) {
-  const next = v === "107" ? "107" : "104";
+  const next = v === "107" ? "107" : v === "__all__" ? "__all__" : "104";
   if (laminationProcess.value === next) return;
   laminationProcess.value = next;
   updateUrlParams();
@@ -1344,6 +1356,23 @@ async function fetchData() {
   }
 }
 
+function processLabel(row) {
+  const p =
+    String(row?.lamination_process || row?.laminationProcess || row?.process || "").trim() ||
+    inferLaminationProcessFromItemCode(row?.itemCode || row?.item_code || "");
+  return p === "107" ? "107 BOPP" : "104 Plain";
+}
+
+function inferLaminationProcessFromItemCode(itemCode) {
+  const ic = String(itemCode || "").trim().toUpperCase();
+  if (!ic) return "";
+  if (ic.startsWith("104")) return "104";
+  if (ic.startsWith("107")) return "107";
+  if (ic.includes("-107")) return "107";
+  if (ic.includes("-104")) return "104";
+  return "";
+}
+
 function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(() => {
@@ -1401,7 +1430,7 @@ onMounted(async () => {
   if (p.get("month")) filterMonth.value = p.get("month");
   if (!isPrintedBoppTable.value) {
     const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
-    if (lp === "104" || lp === "107") laminationProcess.value = lp;
+    if (lp === "104" || lp === "107" || lp === "__all__") laminationProcess.value = lp;
   }
   await fetchData();
   startAutoRefresh();
