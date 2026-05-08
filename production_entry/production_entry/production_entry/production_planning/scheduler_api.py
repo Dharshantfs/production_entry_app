@@ -86,6 +86,75 @@ def _get_pt_parentfield():
     return "planned_items"
 
 
+def _get_transfer_and_produced_for_pl_row(pl_row):
+    """Return produced/transferred qty metadata for a Process 105 planning row."""
+    psi_name = _cstr((pl_row or {}).get("psi_name") or (pl_row or {}).get("planning_sheet_item") or (pl_row or {}).get("item_name"))
+    planning_sheet = _cstr((pl_row or {}).get("planning_sheet") or (pl_row or {}).get("plan_name") or (pl_row or {}).get("parent"))
+    pp_id = _cstr((pl_row or {}).get("pp_id"))
+    out = {
+        "produced_qty": 0.0,
+        "transferred_qty": 0.0,
+        "transfer_status": "pending",
+        "transfer_details": [],
+        "can_create_spr": False,
+    }
+
+    try:
+        if not pp_id and planning_sheet and psi_name and "get_planning_sheet_pp_id" in globals():
+            res = get_planning_sheet_pp_id(planning_sheet, planning_sheet_item=psi_name)
+            if isinstance(res, dict) and res.get("status") == "ok":
+                pp_id = _cstr(res.get("pp_id"))
+
+        if pp_id:
+            wos = frappe.get_all(
+                "Work Order",
+                filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+                fields=["name", "qty", "produced_qty", "status"],
+                order_by="creation asc",
+            ) or []
+            produced_qty = sum(flt(wo.get("produced_qty") or 0) for wo in wos)
+            out["produced_qty"] = produced_qty
+
+        if psi_name:
+            transfer_rows = frappe.db.sql(
+                """
+                SELECT se.name, se.posting_date, se.purpose, SUM(COALESCE(sed.qty, 0)) AS qty
+                FROM `tabStock Entry` se
+                INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+                WHERE se.docstatus = 1
+                  AND se.purpose IN ('Material Transfer', 'Material Transfer for Manufacture')
+                  AND (
+                    IFNULL(sed.planning_sheet_item, '') = %s
+                    OR IFNULL(sed.custom_planning_sheet_item, '') = %s
+                    OR IFNULL(sed.planning_sheet_item_name, '') = %s
+                  )
+                GROUP BY se.name, se.posting_date, se.purpose
+                ORDER BY se.posting_date DESC, se.name DESC
+                """,
+                (psi_name, psi_name, psi_name),
+                as_dict=True,
+            ) or []
+            transferred_qty = sum(flt(r.get("qty") or 0) for r in transfer_rows)
+            out["transferred_qty"] = transferred_qty
+            out["transfer_details"] = transfer_rows
+
+        if out["transferred_qty"] > 0:
+            out["can_create_spr"] = True
+            out["transfer_status"] = "transferred"
+        elif out["produced_qty"] > 0:
+            out["transfer_status"] = "pending"
+        else:
+            out["transfer_status"] = "pending"
+
+        if out["transferred_qty"] > 0 and out["produced_qty"] > 0 and out["transferred_qty"] < out["produced_qty"]:
+            out["transfer_status"] = "partial"
+    except Exception:
+        # Ignore unexpected errors while gathering transfer/produced metadata.
+        pass
+
+    return out
+
+
 def _repair_child_table_schema(target_doctypes=None):
     """Ensure required child-table columns exist for istable DocTypes."""
     required = {
