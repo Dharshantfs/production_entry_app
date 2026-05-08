@@ -34,6 +34,8 @@ production_scheduler.ColorChartController = class {
 import ConfirmedOrder from "./ConfirmedOrder.vue";
 import ProductionTable from "./ProductionTable.vue";
 import LaminationOrderTable from "./LaminationOrderTable.vue";
+import PrintingOrderTable from "./PrintingOrderTable.vue";
+import PrintingOrderBoard from "./PrintingOrderBoard.vue";
 import SlittingOrderTable from "./SlittingOrderTable.vue";
 import RewindingOrderTable from "./RewindingOrderTable.vue";
 import SheetCuttingOrderTable from "./SheetCuttingOrderTable.vue";
@@ -67,9 +69,13 @@ production_scheduler.PrintedBoppFilmTableController = class {
 
 production_scheduler.PrintingOrderTableController = class {
     constructor(wrapper) {
-        safeMount(LaminationOrderTable, wrapper, "Printing Order Table", {
-            tableBoardKind: "printing_105",
-        });
+        safeMount(PrintingOrderTable, wrapper, "Printing Order Table");
+    }
+};
+
+production_scheduler.PrintingOrderBoardController = class {
+    constructor(wrapper) {
+        safeMount(PrintingOrderBoard, wrapper, "Printing Order Board");
     }
 };
 
