@@ -2342,6 +2342,8 @@ function sprRollPromptMeta(frm, row) {
 	const fromPp = cint((row && row.no_of_rolls) || 0);
 	const noOfRollsCreated = cint((frm && frm.doc && frm.doc.custom_no_of_rolls_created) || 0);
 	const defaultLines = noOfRollsCreated > 0 ? noOfRollsCreated : (fromPp > 0 ? fromPp : 1);
+	const unitText = String((frm && frm.doc && (frm.doc.custom_unit || frm.doc.unit || frm.doc.workstation || "")) || "").toLowerCase();
+	const isPrintingJob = unitText.includes("printing") || unitText.includes("105");
 	if (sprUsesSlittingRollPrompt(frm)) {
 		return {
 			title: __('Slitting — add roll lines'),
@@ -2372,8 +2374,8 @@ function sprRollPromptMeta(frm, row) {
 	}
 	if (sprUsesBoppFilmRollPrompt(frm)) {
 		return {
-			title: __('BOPP Film — add roll lines'),
-			description: __('Adds exactly this many new roll lines for the selected BOPP printing job.'),
+			title: isPrintingJob ? __('Printing — add roll lines') : __('BOPP Film — add roll lines'),
+			description: isPrintingJob ? __('Adds exactly this many new roll lines for the selected printing job.') : __('Adds exactly this many new roll lines for the selected BOPP printing job.'),
 			defaultLines: defaultLines,
 		};
 	}

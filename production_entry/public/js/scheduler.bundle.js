@@ -65,6 +65,14 @@ production_scheduler.PrintedBoppFilmTableController = class {
     }
 };
 
+production_scheduler.PrintingOrderTableController = class {
+    constructor(wrapper) {
+        safeMount(LaminationOrderTable, wrapper, "Printing Order Table", {
+            tableBoardKind: "printing_105",
+        });
+    }
+};
+
 production_scheduler.SlittingOrderTableController = class {
     constructor(wrapper) {
         safeMount(SlittingOrderTable, wrapper, "Slitting Order Table");

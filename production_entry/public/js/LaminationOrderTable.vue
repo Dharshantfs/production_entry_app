@@ -1,5 +1,5 @@
 <template>
-  <div class="cc-container" :class="{ 'printed-bopp-film-table': isPrintedBoppTable }">
+  <div class="cc-container" :class="{ 'printed-bopp-film-table': isPrintedBoppTable, 'printing-105-table': isPrinting105Table }">
     <div class="cc-filters">
       <div class="cc-filter-title">{{ pageTitle }}</div>
       <div class="cc-filter-item">
@@ -47,18 +47,18 @@
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
       <div class="cc-filter-actions">
-        <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button v-if="!isPrinting105Table" type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
-        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
-        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
-        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
-        <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
+        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
+        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
+        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
+        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">{{ backToBoardLabel }}</button>
       </div>
     </div>
 
-    <div class="cc-shift-board" v-if="showShiftPlanner">
+    <div class="cc-shift-board" v-if="showShiftPlanner && !isPrinting105Table">
       <div class="cc-shift-board-head">
         <div class="cc-shift-board-title">Shift Planner (drag between Day/Night)</div>
         <div class="cc-shift-board-date">
@@ -100,7 +100,11 @@
             <th v-if="showAllProcesses">PROCESS</th>
             <th v-if="!isPrintedBoppTable">QUALITY</th>
             <th v-if="!isPrintedBoppTable">FABRIC COLOUR</th>
+            <th v-if="isPrinting105Table">DESIGN CODE</th>
             <th v-if="showDesignNameColumn">DESIGN NAME</th>
+            <th v-if="showDesignAttachmentColumn">ATTACHMENT</th>
+            <th v-if="isPrinting105Table">SHIFT</th>
+            <th v-if="isPrinting105Table">ARRANGEMENT</th>
             <th v-if="showCylinderTypeColumn">CYLINDER TYPE</th>
             <th v-if="isPrintedBoppTable">WHITE TINT</th>
             <th v-if="isPrintedBoppTable">FINISHING</th>
@@ -167,7 +171,21 @@
             <td v-if="showAllProcesses" class="cell-center font-bold">{{ processLabel(row) }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
-            <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.design_name || row.design_code || "—" }}</td>
+            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_design_code || row.design_code || "—" }}</td>
+            <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.custom_design_name || row.design_name || row.design_code || "—" }}</td>
+            <td v-if="showDesignAttachmentColumn" class="cell-center">
+              <button
+                type="button"
+                class="cc-preview-btn"
+                :disabled="!getDesignAttachmentUrl(row)"
+                @click="openDesignPreview(row)"
+                :title="getDesignAttachmentUrl(row) ? 'Preview design attachment' : 'No attachment'"
+              >
+                👁 Preview
+              </button>
+            </td>
+            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_shift || row.shift_label || 'DAY' }}</td>
+            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_arrangement_seq ?? '—' }}</td>
             <td v-if="showCylinderTypeColumn" class="cell-center font-bold">{{ row.cylinder_type || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.white_tint || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.finishing || "—" }}</td>
@@ -192,19 +210,51 @@
             <td v-if="!isPrintedBoppTable" class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-center">
-              <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
-              <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>
-              <span v-else class="pt-no-pp-hint">No PP</span>
+              <template v-if="isPrinting105Table">
+                <button v-if="row.planningSheet || row.plan_name" type="button" @click="openProductionPlanView(row.planningSheet || row.plan_name, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">PP View</button>
+                <span v-else class="pt-no-pp-hint">No PP</span>
+              </template>
+              <template v-else>
+                <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">{{ isPrinting105Table ? 'PP View' : 'View' }}</button>
+                <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>
+                <span v-else class="pt-no-pp-hint">No PP</span>
+              </template>
             </td>
             <td class="cell-center">
               <div class="pt-stock-cell">
-                <div v-if="row.pp_id" class="pt-pill-row">
-                  <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
-                  <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
-                  <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
-                </div>
-                <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
-                <template v-if="row.is_lamination_parent && !row.parent_wo_terminal && Number(row.pp_docstatus) === 1 && row.child_wo_created">
+                <template v-if="isPrinting105Table">
+                  <div class="pt-pill-row">
+                    <span class="pt-pill pt-pill-muted" :title="`Transferred ${formatKg2(row.transferred_qty || 0)} Kg`">Transferred: {{ formatKg2(row.transferred_qty || 0) }} Kg</span>
+                    <span class="pt-pill pt-pill-wo" :title="`Produced ${formatKg2(row.produced_qty || 0)} Kg`">Produced: {{ formatKg2(row.produced_qty || 0) }} Kg</span>
+                  </div>
+                  <div v-if="row.transfer_details && row.transfer_details.length" class="pt-prod-status-line">
+                    {{ row.transfer_status || 'pending' }} · {{ row.transfer_details.length }} transfer(s)
+                  </div>
+                  <button
+                    v-if="canShowStockEntry(row)"
+                    type="button"
+                    @click="handleStockEntryAction(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    :title="getStockEntryTitle(row)"
+                  >{{ getStockEntryLabel(row) }}</button>
+                  <button
+                    v-else-if="row.spr_name"
+                    type="button"
+                    @click="openItemSPR(row.spr_name, row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    :class="Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
+                    :title="itemSprPrimaryButtonTitle(row)"
+                  >{{ itemSprPrimaryButtonLabel(row) }}</button>
+                  <span v-else class="pt-wo-closed-hint">Transfer pending</span>
+                </template>
+                <template v-else>
+                  <div v-if="row.pp_id" class="pt-pill-row">
+                    <span v-if="row.spr_name" class="pt-pill" :class="sprPillClass(row)" :title="sprPillTitle(row)">{{ sprPillLabel(row) }}</span>
+                    <span v-else class="pt-pill pt-pill-muted">SPR: -</span>
+                    <span class="pt-pill pt-pill-wo" :class="woPillClassItem(row)" :title="woPillTitleItem(row)">{{ woPillLabelItem(row) }}</span>
+                  </div>
+                  <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
+                  <template v-if="row.is_lamination_parent && !row.parent_wo_terminal && Number(row.pp_docstatus) === 1 && row.child_wo_created">
                   <button
                     v-if="!row.parent_wo_name"
                     type="button"
@@ -235,33 +285,34 @@
                   >Open WO</button>
                   <div v-if="row.is_lamination_parent && !row.parent_ready_for_wo" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Complete child WO first</div>
                 </template>
-                <div v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && row.pp_id && Number(row.pp_docstatus) === 1 && !row.child_wo_created" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Start fabric WO first</div>
-                <button
-                  v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
-                  type="button"
-                  disabled
-                  class="cc-pp-btn pt-btn-entry"
-                  style="opacity:0.45;cursor:not-allowed;"
-                  title="No Production Plan yet"
-                >Start WO</button>
-                <button
-                  v-if="canShowStockEntry(row)"
-                  type="button"
-                  @click="handleStockEntryAction(row)"
-                  class="cc-pp-btn pt-btn-entry"
-                  :title="getStockEntryTitle(row)"
-                >{{ getStockEntryLabel(row) }}</button>
-                <button
-                  v-else-if="row.spr_name"
-                  type="button"
-                  @click="openItemSPR(row.spr_name, row)"
-                  class="cc-pp-btn pt-btn-entry"
-                  :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
-                  :title="itemSprPrimaryButtonTitle(row)"
-                >{{ itemSprPrimaryButtonLabel(row) }}</button>
-                <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
-                <span v-else-if="!row.is_lamination_parent && row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
-                <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
+                  <div v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && row.pp_id && Number(row.pp_docstatus) === 1 && !row.child_wo_created" class="pt-wo-closed-hint" style="font-size:10px;margin-top:2px;">Start fabric WO first</div>
+                  <button
+                    v-else-if="row.is_lamination_parent && !row.parent_wo_terminal && !row.pp_id"
+                    type="button"
+                    disabled
+                    class="cc-pp-btn pt-btn-entry"
+                    style="opacity:0.45;cursor:not-allowed;"
+                    title="No Production Plan yet"
+                  >Start WO</button>
+                  <button
+                    v-if="canShowStockEntry(row)"
+                    type="button"
+                    @click="handleStockEntryAction(row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    :title="getStockEntryTitle(row)"
+                  >{{ getStockEntryLabel(row) }}</button>
+                  <button
+                    v-else-if="row.spr_name"
+                    type="button"
+                    @click="openItemSPR(row.spr_name, row)"
+                    class="cc-pp-btn pt-btn-entry"
+                    :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
+                    :title="itemSprPrimaryButtonTitle(row)"
+                  >{{ itemSprPrimaryButtonLabel(row) }}</button>
+                  <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="pt-wo-closed-hint">PP Draft</span>
+                  <span v-else-if="!row.is_lamination_parent && row.pp_id && row.wo_terminal" class="pt-wo-closed-hint">WO closed</span>
+                  <span v-else-if="!row.is_lamination_parent && !row.pp_id" style="color:#999;font-size:10px;">No PP</span>
+                </template>
               </div>
             </td>
           </tr>
@@ -280,17 +331,28 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 
 const props = defineProps({
-  /** `lamination` = 104/107 lamination table; `printed_bopp_film` = PB / VR BOPP printing unit (independent scope). */
+  /** `lamination` = 104/107 lamination table; `printed_bopp_film` = PB / VR BOPP printing unit; `printing_105` = process 105 board. */
   tableBoardKind: { type: String, default: "lamination" },
 });
 
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
+const PRINTING_105_UNIT = "UNASSIGNED PRINTING MACHINE";
 /** Must match ``planning_doctypes.LAMINATION_UNIT`` */
 const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
+const isPrinting105Table = computed(() => (props.tableBoardKind || "").trim() === "printing_105");
 const isPrintedBoppTable = computed(() => (props.tableBoardKind || "").trim() === "printed_bopp_film");
-const pageTitle = computed(() => (isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table"));
-const tableMaintenanceUnit = computed(() => (isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT));
+const pageTitle = computed(() => {
+  if (isPrinting105Table.value) return "Printing Order Table";
+  return isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table";
+});
+const tableMaintenanceUnit = computed(() => {
+  if (isPrinting105Table.value) return PRINTING_105_UNIT;
+  return isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT;
+});
 const tableUnitHeader = computed(() => {
+  if (isPrinting105Table.value) {
+    return `${PRINTING_105_UNIT} — Planned orders (Process 105)`;
+  }
   if (isPrintedBoppTable.value) {
     return `${PRINTED_BOPP_FILM_UNIT} — Planned orders (Printed BOPP film)`;
   }
@@ -299,33 +361,40 @@ const tableUnitHeader = computed(() => {
   }
   return `${LAMINATION_UNIT} - Planned orders (${laminationProcess.value}) — ${laminationProcess.value === "107" ? "BOPP" : "Plain"}`;
 });
-const showAllProcesses = computed(() => !isPrintedBoppTable.value && laminationProcess.value === "__all__");
+const showAllProcesses = computed(() => !isPrintedBoppTable.value && !isPrinting105Table.value && laminationProcess.value === "__all__");
 const showDesignNameColumn = computed(
-  () => isPrintedBoppTable.value || laminationProcess.value === "107" || showAllProcesses.value
+  () => isPrinting105Table.value || isPrintedBoppTable.value || laminationProcess.value === "107" || showAllProcesses.value
+);
+const showDesignAttachmentColumn = computed(
+  () => isPrinting105Table.value || isPrintedBoppTable.value
 );
 const showCylinderTypeColumn = computed(() => isPrintedBoppTable.value);
 const showBoppGsmColumn = computed(
-  () => !isPrintedBoppTable.value && (laminationProcess.value === "107" || showAllProcesses.value)
+  () => !isPrintedBoppTable.value && !isPrinting105Table.value && (laminationProcess.value === "107" || showAllProcesses.value)
 );
 const producedWeightHeader = computed(() =>
-  isPrintedBoppTable.value ? "PRODUCED BOPP WEIGHT (KGS)" : "PRODUCED LAMINATION WEIGHT (KGS)"
+  isPrinting105Table.value ? "PRODUCED PRINTING WEIGHT (KGS)" : isPrintedBoppTable.value ? "PRODUCED BOPP WEIGHT (KGS)" : "PRODUCED LAMINATION WEIGHT (KGS)"
 );
 const backToBoardLabel = computed(() =>
-  isPrintedBoppTable.value ? "Back to Printed BOPP Film Board" : "Back to Lamination Board"
+  isPrinting105Table.value ? "Back to Printing Board" : isPrintedBoppTable.value ? "Back to Printed BOPP Film Board" : "Back to Lamination Board"
 );
 const emptyMaintenanceDayLabel = computed(() =>
-  isPrintedBoppTable.value ? "No printed BOPP film orders (maintenance day)" : "No lamination orders (maintenance day)"
+  isPrinting105Table.value ? "No printing orders (maintenance day)" : isPrintedBoppTable.value ? "No printed BOPP film orders (maintenance day)" : "No lamination orders (maintenance day)"
 );
 const emptyTableLabel = computed(() =>
-  isPrintedBoppTable.value ? "No printed BOPP film orders for this view." : "No lamination orders for this view."
+  isPrinting105Table.value ? "No printing orders for this view." : isPrintedBoppTable.value ? "No printed BOPP film orders for this view." : "No lamination orders for this view."
 );
 const assignShiftMethod = computed(() =>
-  isPrintedBoppTable.value
+  isPrinting105Table.value
+    ? "production_entry.production_planning.scheduler_api.assign_printing_shift"
+    : isPrintedBoppTable.value
     ? "production_entry.production_planning.scheduler_api.assign_printed_bopp_film_shift"
     : "production_entry.production_planning.scheduler_api.assign_lamination_shift"
 );
 const addMachineOffMethod = computed(() =>
-  isPrintedBoppTable.value
+  isPrinting105Table.value
+    ? "production_entry.production_planning.scheduler_api.add_printing_machine_off"
+    : isPrintedBoppTable.value
     ? "production_entry.production_planning.scheduler_api.add_printed_bopp_film_machine_off"
     : "production_entry.production_planning.scheduler_api.add_lamination_machine_off"
 );
@@ -404,6 +473,9 @@ const filteredRows = computed(() => {
 });
 
 const tableColCount = computed(() => {
+  if (isPrinting105Table.value) {
+    return 21;
+  }
   if (isPrintedBoppTable.value) {
     // Printed BOPP table adds extra columns vs lamination table
     // (includes design colour column after BOPP finish size).
@@ -419,6 +491,7 @@ const tableColCount = computed(() => {
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
 
 function setLaminationProcess(v) {
+  if (isPrinting105Table.value) return;
   const next = v === "107" ? "107" : v === "__all__" ? "__all__" : "104";
   if (laminationProcess.value === next) return;
   laminationProcess.value = next;
@@ -899,7 +972,12 @@ function itemSprPrimaryButtonTitle(item) {
 }
 
 function canShowStockEntry(item) {
-  if (!item || !item.pp_id) return false;
+  if (!item) return false;
+  if (isPrinting105Table.value) {
+    if (item.spr_name) return true;
+    return item.can_create_spr !== false;
+  }
+  if (!item.pp_id) return false;
   if (item.is_lamination_parent && !item.parent_wo_started) return false;
   if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
@@ -947,9 +1025,24 @@ async function startParentWO(item) {
   }
 }
 
+function getDesignAttachmentUrl(item) {
+  if (!item) return "";
+  return String(item.custom_design_attachment || item.design_attachment || item.custom_design_image || item.design_image || "").trim();
+}
+
+function openDesignPreview(item) {
+  const url = getDesignAttachmentUrl(item);
+  if (!url) {
+    frappe.msgprint("No design attachment found");
+    return;
+  }
+  window.open(url, "_blank");
+}
+
 function getStockEntryLabel(item) {
   if (!item) return "New SPR";
   const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
+  if (isPrinting105Table.value) return isDraftSpr ? "Continue SPR" : "Create SPR";
   return isDraftSpr ? "Continue SPR" : "New SPR";
 }
 
@@ -957,6 +1050,7 @@ function getStockEntryTitle(item) {
   if (!item) return "Create Shaft Production Run";
   const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   const pendingQty = Number(item.pending_qty || 0);
+  if (isPrinting105Table.value) return isDraftSpr ? `Continue printing SPR. Pending: ${pendingQty.toFixed(0)} Kg` : `Create printing SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
   if (isDraftSpr) return `Continue draft SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
   return `New SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
 }
@@ -1099,7 +1193,7 @@ async function createItemStockEntry(item) {
     return;
   }
   const itemDisplay = getItemDisplayName(item);
-  const isBoppMode = isPrintedBoppTable.value;
+  const isBoppMode = isPrintedBoppTable.value || isPrinting105Table.value;
 
   async function _doCreateSpr() {
     item.__creating_spr = true;
@@ -1129,12 +1223,16 @@ async function createItemStockEntry(item) {
   }
 
   const confirmMsg = isBoppMode
-    ? `Create BOPP Film SPR for <b>${item.partyCode}</b> (${item.color})?<br/>PP: ${item.pp_id}<br/>Item: ${itemDisplay}`
+    ? `Create Printing SPR for <b>${item.partyCode || item.order_code || ""}</b> (${item.color || item.fabric_colour || ""})?<br/>PP: ${item.pp_id}<br/>Item: ${itemDisplay}`
     : `Create Stock Entry for <b>${item.partyCode}</b> (${item.color})?<br/>PP: ${item.pp_id}<br/>Item: ${itemDisplay}`;
   frappe.confirm(confirmMsg, async () => { await _doCreateSpr(); });
 }
 
 function goToBoard() {
+  if (isPrinting105Table.value) {
+    frappe.set_route("printing-order-table");
+    return;
+  }
   frappe.set_route(isPrintedBoppTable.value ? "printed-bopp-film-board" : "lamination-board");
 }
 
@@ -1299,7 +1397,7 @@ async function fetchData() {
       party_code: filterPartyCode.value,
       planned_only: 1,
     };
-    if (!isPrintedBoppTable.value) {
+    if (!isPrintedBoppTable.value && !isPrinting105Table.value) {
       args.lamination_process = laminationProcess.value;
     }
     if (viewScope.value === "monthly") {
@@ -1329,15 +1427,45 @@ async function fetchData() {
     }
 
     const r = await frappe.call({
-      method: isPrintedBoppTable.value
+      method: isPrinting105Table.value
+        ? "production_entry.production_planning.scheduler_api.get_printing_order_table_data"
+        : isPrintedBoppTable.value
         ? "production_entry.production_planning.scheduler_api.get_printed_bopp_film_table_data"
         : "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
       args,
     });
-    rawData.value = (r.message || []).map((d) => ({
-      ...d,
-      salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
-    }));
+    rawData.value = (r.message || []).map((d) => {
+      if (isPrinting105Table.value) {
+        return {
+          ...d,
+          itemName: d.psi_name || d.itemName || d.name || "",
+          itemCode: d.item_code || d.itemCode || "",
+          planningSheet: d.plan_name || d.planningSheet || "",
+          customer_name: d.customer || d.customer_name || "",
+          partyCode: d.order_code || d.partyCode || "",
+          order_code: d.order_code || d.partyCode || "",
+          color: d.color || "",
+          fabric_colour: d.color || "",
+          design_code: d.custom_design_code || d.design_code || "",
+          design_name: d.custom_design_name || d.design_name || d.custom_design_code || d.design_code || "",
+          custom_design_attachment: d.custom_design_attachment || d.custom_design_image || "",
+          custom_printing_shift: d.custom_printing_shift || d.shift_label || "DAY",
+          custom_printing_arrangement_seq: d.custom_printing_arrangement_seq || "",
+          plannedDate: d.planned_date || d.plannedDate || filterOrderDate.value,
+          planned_date: d.planned_date || d.plannedDate || filterOrderDate.value,
+          shift_label: d.custom_printing_shift || d.shift_label || "DAY",
+          can_create_spr: d.can_create_spr !== false,
+          transfer_details: d.transfer_details || [],
+          produced_qty: d.produced_qty || 0,
+          transferred_qty: d.transferred_qty || 0,
+          salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
+        };
+      }
+      return {
+        ...d,
+        salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
+      };
+    });
     if (!initialFetchRetried && (!rawData.value || rawData.value.length === 0)) {
       initialFetchRetried = true;
       setTimeout(() => fetchData(), 450);
@@ -1387,7 +1515,7 @@ function updateUrlParams() {
   if (viewScope.value === "weekly") q.set("week", filterWeek.value);
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
-  if (!isPrintedBoppTable.value) {
+  if (!isPrintedBoppTable.value && !isPrinting105Table.value) {
     q.set("lamination_process", laminationProcess.value);
   }
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
@@ -1402,7 +1530,9 @@ async function syncSprWeightToTable() {
       {
         message: isPrintedBoppTable.value
           ? "Printed BOPP film table refreshed from live WO data"
-          : "Lamination table refreshed from live WO data",
+          : isPrinting105Table.value
+            ? "Printing table refreshed from live WO data"
+            : "Lamination table refreshed from live WO data",
         indicator: "green",
       },
       4
@@ -1428,7 +1558,7 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
-  if (!isPrintedBoppTable.value) {
+  if (!isPrintedBoppTable.value && !isPrinting105Table.value) {
     const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
     if (lp === "104" || lp === "107" || lp === "__all__") laminationProcess.value = lp;
   }
@@ -1742,6 +1872,20 @@ onUnmounted(() => {
   background: #c7d2fe;
   border-color: #4f46e5;
 }
+.cc-preview-btn {
+  padding: 4px 8px;
+  font-size: 10px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cc-preview-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .pt-no-pp-hint {
   font-size: 10px;
   color: #94a3b8;
@@ -1845,6 +1989,24 @@ onUnmounted(() => {
 .printed-bopp-film-table .cc-shift-lane.over {
   border-color: #7c3aed;
   background: #f5f3ff;
+}
+.printing-105-table .cc-filter-title,
+.printing-105-table .cc-select-scope,
+.printing-105-table .cc-shift-board-title {
+  color: #0f766e;
+}
+.printing-105-table .lot-header {
+  background: linear-gradient(90deg, #ccfbf1 0%, #99f6e4 100%);
+  color: #115e59;
+  border-bottom-color: #5eead4;
+}
+.printing-105-table .cc-prod-table th {
+  background: linear-gradient(180deg, #14b8a6 0%, #0f766e 100%);
+}
+.printing-105-table .cc-preview-btn {
+  border-color: #5eead4;
+  background: #ecfdf5;
+  color: #0f766e;
 }
 </style>
 

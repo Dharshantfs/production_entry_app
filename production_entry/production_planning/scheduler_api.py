@@ -83,6 +83,74 @@ def _item_process_prefix(item_code):
 	return digits[:3] if len(digits) >= 3 else ""
 
 
+def _get_transfer_and_produced_for_pl_row(pl_row):
+    """Return produced/transferred qty metadata for a Process 105 planning row."""
+    psi_name = _cstr((pl_row or {}).get("psi_name") or (pl_row or {}).get("planning_sheet_item") or (pl_row or {}).get("item_name"))
+    planning_sheet = _cstr((pl_row or {}).get("planning_sheet") or (pl_row or {}).get("plan_name") or (pl_row or {}).get("parent"))
+    pp_id = _cstr((pl_row or {}).get("pp_id"))
+    out = {
+        "produced_qty": 0.0,
+        "transferred_qty": 0.0,
+        "transfer_status": "pending",
+        "transfer_details": [],
+        "can_create_spr": False,
+    }
+
+    try:
+        if not pp_id and planning_sheet and psi_name and "get_planning_sheet_pp_id" in globals():
+            res = get_planning_sheet_pp_id(planning_sheet, planning_sheet_item=psi_name)
+            if isinstance(res, dict) and res.get("status") == "ok":
+                pp_id = _cstr(res.get("pp_id"))
+
+        if pp_id:
+            wos = frappe.get_all(
+                "Work Order",
+                filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+                fields=["name", "qty", "produced_qty", "status"],
+                order_by="creation asc",
+            ) or []
+            produced_qty = sum(flt(wo.get("produced_qty") or 0) for wo in wos)
+            out["produced_qty"] = produced_qty
+
+        if psi_name:
+            transfer_rows = frappe.db.sql(
+                """
+                SELECT se.name, se.posting_date, se.purpose, SUM(COALESCE(sed.qty, 0)) AS qty
+                FROM `tabStock Entry` se
+                INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+                WHERE se.docstatus = 1
+                  AND se.purpose IN ('Material Transfer', 'Material Transfer for Manufacture')
+                  AND (
+                    IFNULL(sed.planning_sheet_item, '') = %s
+                    OR IFNULL(sed.custom_planning_sheet_item, '') = %s
+                    OR IFNULL(sed.planning_sheet_item_name, '') = %s
+                  )
+                GROUP BY se.name, se.posting_date, se.purpose
+                ORDER BY se.posting_date DESC, se.name DESC
+                """,
+                (psi_name, psi_name, psi_name),
+                as_dict=True,
+            ) or []
+            transferred_qty = sum(flt(r.get("qty") or 0) for r in transfer_rows)
+            out["transferred_qty"] = transferred_qty
+            out["transfer_details"] = transfer_rows
+
+        if out["transferred_qty"] > 0:
+            out["can_create_spr"] = True
+            out["transfer_status"] = "transferred"
+        elif out["produced_qty"] > 0:
+            out["transfer_status"] = "pending"
+        else:
+            out["transfer_status"] = "pending"
+
+        if out["transferred_qty"] > 0 and out["produced_qty"] > 0 and out["transferred_qty"] < out["produced_qty"]:
+            out["transfer_status"] = "partial"
+        except Exception:
+        pass
+
+    return out
+
+
 def _rewinding_width_mm_from_item_code(item_code):
 	"""Last hyphen segment on 102 codes, e.g. 1021035420501600-1600 -> 1600 (mm)."""
 	ic = str(item_code or "").strip()
@@ -3691,6 +3759,62 @@ def get_printed_bopp_film_table_data(
         lamination_process="104",
         board_process_scope="printed_bopp_pb_only",
     )
+
+
+@frappe.whitelist()
+def get_printing_order_table_data(start_date=None, end_date=None, filters=None):
+    """Return Process 105 printing rows with transfer/produced metrics."""
+    out = []
+    try:
+        sd = start_date or None
+        ed = end_date or None
+        q = (
+            "SELECT psi.name as psi_name, psi.parent as planning_sheet, psi.item_code, psi.qty, psi.meter, psi.color, "
+            "psi.custom_design_code, psi.custom_design_name, psi.custom_design_image, psi.custom_printing_shift, "
+            "psi.custom_printing_arrangement_seq, ps.name as plan_name, ps.order_code as planning_order_code, "
+            "ps.customer as customer, ps.custom_design_attachment, ps.planned_date "
+            "FROM `tabPlanning sheet Item` psi JOIN `tabPlanning sheet` ps ON ps.name = psi.parent "
+        )
+        params = []
+        if sd and ed:
+            q += " WHERE ps.planned_date BETWEEN %s AND %s"
+            params.extend([sd, ed])
+        q += " ORDER BY ps.planned_date, psi.idx"
+        rows = frappe.db.sql(q, tuple(params), as_dict=True) or []
+        for r in rows:
+            ic = _cstr(r.get("item_code"))
+            if not ic:
+                continue
+            ic_u = ic.upper()
+            is_105 = ic_u.startswith("105") or "-105" in ic_u or _item_process_prefix(ic) == "105"
+            if not is_105:
+                continue
+            metrics = _get_transfer_and_produced_for_pl_row(r)
+            out.append({
+                "psi_name": r.get("psi_name"),
+                "plan_name": r.get("plan_name"),
+                "order_code": r.get("planning_order_code"),
+                "customer": r.get("customer"),
+                "planned_date": _cstr(r.get("planned_date")),
+                "item_code": ic,
+                "qty": flt(r.get("qty") or 0.0),
+                "meter": flt(r.get("meter") or 0.0),
+                "color": r.get("color"),
+                "custom_design_code": r.get("custom_design_code"),
+                "custom_design_name": r.get("custom_design_name"),
+                "custom_design_image": r.get("custom_design_image"),
+                "custom_design_attachment": r.get("custom_design_attachment"),
+                "custom_printing_shift": r.get("custom_printing_shift"),
+                "custom_printing_arrangement_seq": r.get("custom_printing_arrangement_seq"),
+                "produced_qty": metrics.get("produced_qty", 0.0),
+                "transferred_qty": metrics.get("transferred_qty", 0.0),
+                "transfer_status": metrics.get("transfer_status"),
+                "transfer_details": metrics.get("transfer_details"),
+                "can_create_spr": metrics.get("can_create_spr", False),
+            })
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_printing_order_table_data_error")
+    return out
 
 
 @frappe.whitelist()
