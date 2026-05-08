@@ -1817,6 +1817,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					}
 				if (sprUsesLaminationRollPrompt(frm)) {
 					invokeBuildRollLines(0, n, true, 0);
+				} else if (sprUsesPrintingRollPrompt(frm)) {
+					invokeBuildRollLines(0, 0, true, n);
 				} else {
 					// Slitting, Rewinding, Sheet Cutting, BOPP Film — exact roll lines
 					invokeBuildRollLines(0, 0, true, n);
@@ -2338,6 +2340,10 @@ function sprUsesBoppFilmRollPrompt(frm) {
 	return frm && frm.doc && cint(frm.doc.custom_is_bopp_film);
 }
 
+function sprUsesPrintingRollPrompt(frm) {
+	return frm && frm.doc && cint(frm.doc.custom_is_printing);
+}
+
 function sprRollPromptMeta(frm, row) {
 	const fromPp = cint((row && row.no_of_rolls) || 0);
 	const noOfRollsCreated = cint((frm && frm.doc && frm.doc.custom_no_of_rolls_created) || 0);
@@ -2376,6 +2382,13 @@ function sprRollPromptMeta(frm, row) {
 		return {
 			title: isPrintingJob ? __('Printing — add roll lines') : __('BOPP Film — add roll lines'),
 			description: isPrintingJob ? __('Adds exactly this many new roll lines for the selected printing job.') : __('Adds exactly this many new roll lines for the selected BOPP printing job.'),
+			defaultLines: defaultLines,
+		};
+	}
+	if (sprUsesPrintingRollPrompt(frm)) {
+		return {
+			title: __('Printing — add roll lines'),
+			description: __('Adds exactly this many new roll lines for the selected printing job.'),
 			defaultLines: defaultLines,
 		};
 	}

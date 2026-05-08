@@ -30,7 +30,7 @@
           <button type="button" :class="{ active: filterShift === 'night' }" @click="filterShift = 'night'">Night</button>
         </div>
       </div>
-      <div v-if="!isPrintedBoppTable" class="cc-filter-item cc-shift-filter">
+      <div v-if="!isPrintedBoppTable && !isPrinting105Table" class="cc-filter-item cc-shift-filter">
         <label>Lamination process</label>
         <div class="cc-shift-btns">
           <button type="button" :class="{ active: laminationProcess === '104' }" @click="setLaminationProcess('104')">104 Plain</button>
@@ -49,16 +49,16 @@
       <div class="cc-filter-actions">
         <button v-if="!isPrinting105Table" type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
-        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
-        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
-        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
-        <button v-if="!isPrinting105Table" type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
+        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
+        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
+        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
+        <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">{{ backToBoardLabel }}</button>
       </div>
     </div>
 
-    <div class="cc-shift-board" v-if="showShiftPlanner && !isPrinting105Table">
+    <div class="cc-shift-board" v-if="showShiftPlanner">
       <div class="cc-shift-board-head">
         <div class="cc-shift-board-title">Shift Planner (drag between Day/Night)</div>
         <div class="cc-shift-board-date">
@@ -110,6 +110,8 @@
             <th v-if="isPrinting105Table">PLANNED MTRS</th>
             <th v-if="isPrinting105Table">ACHIEVED MTRS</th>
             <th v-if="isPrinting105Table">PRODUCED ROLLS</th>
+            <th v-if="isPrinting105Table">SHIFT</th>
+            <th v-if="isPrinting105Table">ARRANGEMENT</th>
             <th v-if="showCylinderTypeColumn">CYLINDER TYPE</th>
             <th v-if="isPrintedBoppTable">WHITE TINT</th>
             <th v-if="isPrintedBoppTable">FINISHING</th>
@@ -196,6 +198,8 @@
             <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatNum(row.meter || 0) }}</td>
             <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatNum(row.achieved_meter || 0) }}</td>
             <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.produced_rolls ?? "—" }}</td>
+            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_shift || row.shift_label || "DAY" }}</td>
+            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_arrangement_seq ?? "—" }}</td>
             <td v-if="showCylinderTypeColumn" class="cell-center font-bold">{{ row.cylinder_type || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.white_tint || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.finishing || "—" }}</td>
@@ -858,21 +862,32 @@ async function saveLaminationArrangement() {
   try {
     for (const [dateKey, seq] of Object.entries(pendingArrangementUpdates.value || {})) {
       if (!Array.isArray(seq) || !seq.length) continue;
-      await frappe.call({
-        method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-        args: {
-          date: dateKey,
-          unit: tableMaintenanceUnit.value,
-          sequence_data: JSON.stringify(seq),
-          plan_name: "Default",
-        },
-      });
+      if (isPrinting105Table.value) {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.save_printing_arrangement",
+          args: { date: dateKey, sequence_data: JSON.stringify(seq) },
+        });
+      } else {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.save_color_sequence",
+          args: {
+            date: dateKey,
+            unit: tableMaintenanceUnit.value,
+            sequence_data: JSON.stringify(seq),
+            plan_name: "Default",
+          },
+        });
+      }
     }
     pendingArrangementUpdates.value = {};
     arrangementDirty.value = false;
     frappe.show_alert(
       {
-        message: isPrintedBoppTable.value ? "Printed BOPP film arrangement saved" : "Lamination arrangement saved",
+        message: isPrinting105Table.value
+          ? "Printing arrangement saved"
+          : isPrintedBoppTable.value
+          ? "Printed BOPP film arrangement saved"
+          : "Lamination arrangement saved",
         indicator: "green",
       },
       3
@@ -891,17 +906,26 @@ async function restoreLaminationArrangement() {
     const end = new Date(end_date);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      await frappe.call({
-        method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: tableMaintenanceUnit.value, plan_name: "Default" },
-      });
+      if (isPrinting105Table.value) {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.restore_printing_arrangement",
+          args: { date: dateKey },
+        });
+      } else {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
+          args: { date: dateKey, unit: tableMaintenanceUnit.value, plan_name: "Default" },
+        });
+      }
     }
     pendingArrangementUpdates.value = {};
     arrangementDirty.value = false;
     await fetchData();
     frappe.show_alert(
       {
-        message: isPrintedBoppTable.value
+        message: isPrinting105Table.value
+          ? "Printing arrangement restored"
+          : isPrintedBoppTable.value
           ? "Printed BOPP film arrangement restored"
           : "Lamination arrangement restored",
         indicator: "green",

@@ -4045,10 +4045,12 @@ def get_printing_order_table_data(start_date=None, end_date=None, filters=None):
         ed = end_date or None
         has_pt_spr = frappe.db.has_column("Planning Table", "spr_name")
         spr_expr = "pt.spr_name as spr_name" if has_pt_spr else "'' as spr_name"
+        has_seq = frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq")
+        seq_expr = "pt.custom_printing_arrangement_seq as custom_printing_arrangement_seq" if has_seq else "0 as custom_printing_arrangement_seq"
         q = (
             "SELECT pt.name as psi_name, pt.parent as planning_sheet, pt.item_code, pt.qty, pt.meter, pt.color, "
             "pt.custom_design_code, pt.custom_design_name, pt.custom_design_attachment, pt.custom_printing_shift, "
-            "pt.custom_printing_arrangement_seq, "
+            f"{seq_expr}, "
             f"{spr_expr}, "
             "ps.name as plan_name, ps.order_code as planning_order_code, "
             "ps.customer as customer, ps.planned_date "
@@ -4058,7 +4060,10 @@ def get_printing_order_table_data(start_date=None, end_date=None, filters=None):
         if sd and ed:
             q += " WHERE ps.planned_date BETWEEN %s AND %s"
             params.extend([sd, ed])
-        q += " ORDER BY ps.planned_date, pt.idx"
+        if has_seq:
+            q += " ORDER BY ps.planned_date, CASE WHEN IFNULL(pt.custom_printing_arrangement_seq,0) > 0 THEN pt.custom_printing_arrangement_seq ELSE 999999 END, pt.idx"
+        else:
+            q += " ORDER BY ps.planned_date, pt.idx"
         rows = frappe.db.sql(q, tuple(params), as_dict=True) or []
 
         # Pre-fetch SPR metadata for operator + rolls (best-effort).
@@ -5294,6 +5299,92 @@ def add_printed_bopp_film_machine_off(start_date=None, end_date=None, maintenanc
         end_date=str(end_dt),
         notes=notes or "",
     )
+
+
+@frappe.whitelist()
+def save_printing_arrangement(date=None, sequence_data=None):
+	"""Persist row arrangement for Process 105 printing board by writing custom_printing_arrangement_seq."""
+	dt = str(date or "").strip()
+	if not dt:
+		frappe.throw(_("Date is required."))
+	try:
+		seq = json.loads(sequence_data) if isinstance(sequence_data, str) else (sequence_data or [])
+	except Exception:
+		seq = []
+	if not isinstance(seq, list) or not seq:
+		return {"status": "noop", "updated": 0}
+	if not frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq"):
+		frappe.throw(_("Field custom_printing_arrangement_seq is missing on Planning Table. Please migrate."))
+	names = [str(x or "").strip() for x in seq if str(x or "").strip()]
+	if not names:
+		return {"status": "noop", "updated": 0}
+	updated = 0
+	for i, nm in enumerate(names, start=1):
+		if not frappe.db.exists("Planning Table", nm):
+			continue
+		ic = str(frappe.db.get_value("Planning Table", nm, "item_code") or "")
+		if "-105" not in ic.upper():
+			continue
+		frappe.db.set_value("Planning Table", nm, "custom_printing_arrangement_seq", i, update_modified=False)
+		updated += 1
+		# Best-effort: mirror to legacy top grid row if linked via sales_order_item and item_code.
+		try:
+			if frappe.db.has_column("Planning sheet Item", "custom_printing_arrangement_seq"):
+				parent = frappe.db.get_value("Planning Table", nm, "parent")
+				soi = frappe.db.get_value("Planning Table", nm, "sales_order_item") or frappe.db.get_value("Planning Table", nm, "so_item")
+				if parent and soi:
+					frappe.db.sql(
+						"""
+						UPDATE `tabPlanning sheet Item`
+						SET custom_printing_arrangement_seq = %s
+						WHERE parent = %s AND IFNULL(sales_order_item, IFNULL(so_item,'')) = %s AND item_code = %s
+						""",
+						(i, parent, str(soi), ic),
+					)
+		except Exception:
+			pass
+	frappe.db.commit()
+	return {"status": "ok", "updated": int(updated)}
+
+
+@frappe.whitelist()
+def restore_printing_arrangement(date=None):
+	"""Clear Process 105 arrangement seq for a date (restores default ordering)."""
+	dt = str(date or "").strip()
+	if not dt:
+		frappe.throw(_("Date is required."))
+	if not frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq"):
+		return {"status": "noop", "updated": 0}
+	pt_date_col = "planned_date" if frappe.db.has_column("Planning Table", "planned_date") else (
+		"custom_item_planned_date" if frappe.db.has_column("Planning Table", "custom_item_planned_date") else None
+	)
+	if not pt_date_col:
+		return {"status": "noop", "updated": 0}
+	frappe.db.sql(
+		f"""
+		UPDATE `tabPlanning Table`
+		SET custom_printing_arrangement_seq = 0
+		WHERE UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-105%%'
+		  AND DATE({pt_date_col}) = DATE(%s)
+		""",
+		(dt,),
+	)
+	updated = int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "custom_printing_arrangement_seq") and frappe.db.has_column("Planning sheet Item", pt_date_col):
+		try:
+			frappe.db.sql(
+				f"""
+				UPDATE `tabPlanning sheet Item`
+				SET custom_printing_arrangement_seq = 0
+				WHERE UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-105%%'
+				  AND DATE({pt_date_col}) = DATE(%s)
+				""",
+				(dt,),
+			)
+		except Exception:
+			pass
+	frappe.db.commit()
+	return {"status": "ok", "updated": int(updated)}
 
 
 def _find_existing_sheet_for_sales_order(sales_order, exclude_name=None):
