@@ -145,7 +145,8 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
 
         if out["transferred_qty"] > 0 and out["produced_qty"] > 0 and out["transferred_qty"] < out["produced_qty"]:
             out["transfer_status"] = "partial"
-        except Exception:
+    except Exception:
+        # Ignore unexpected errors while gathering transfer/produced metadata.
         pass
 
     return out
