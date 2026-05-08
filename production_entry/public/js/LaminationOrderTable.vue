@@ -103,8 +103,13 @@
             <th v-if="isPrinting105Table">DESIGN CODE</th>
             <th v-if="showDesignNameColumn">DESIGN NAME</th>
             <th v-if="showDesignAttachmentColumn">ATTACHMENT</th>
-            <th v-if="isPrinting105Table">SHIFT</th>
-            <th v-if="isPrinting105Table">ARRANGEMENT</th>
+            <th v-if="isPrinting105Table">OPERATOR</th>
+            <th v-if="isPrinting105Table">FABRIC INPUT (KGS)</th>
+            <th v-if="isPrinting105Table">PLANNED WT (KGS)</th>
+            <th v-if="isPrinting105Table">ACHIEVED WT (KGS)</th>
+            <th v-if="isPrinting105Table">PLANNED MTRS</th>
+            <th v-if="isPrinting105Table">ACHIEVED MTRS</th>
+            <th v-if="isPrinting105Table">PRODUCED ROLLS</th>
             <th v-if="showCylinderTypeColumn">CYLINDER TYPE</th>
             <th v-if="isPrintedBoppTable">WHITE TINT</th>
             <th v-if="isPrintedBoppTable">FINISHING</th>
@@ -115,14 +120,14 @@
             <th v-if="isPrintedBoppTable">PLANNED LENGTH (MTRS)</th>
             <th v-if="isPrintedBoppTable">ACHIEVED LENGTH (MTRS)</th>
             <th v-if="isPrintedBoppTable">BOPP BOM KGS</th>
-            <th v-if="!isPrintedBoppTable">FABRIC GSM</th>
+            <th v-if="!isPrintedBoppTable && !isPrinting105Table">FABRIC GSM</th>
             <th v-if="showBoppGsmColumn">BOPP GSM</th>
-            <th v-if="!isPrintedBoppTable">LAM GSM</th>
-            <th v-if="!isPrintedBoppTable">FABRIC READY DATE</th>
-            <th v-if="!isPrintedBoppTable">PRODUCED FABRIC WT (KGS)</th>
+            <th v-if="!isPrintedBoppTable && !isPrinting105Table">LAM GSM</th>
+            <th v-if="!isPrintedBoppTable && !isPrinting105Table">FABRIC READY DATE</th>
+            <th v-if="!isPrintedBoppTable && !isPrinting105Table">PRODUCED FABRIC WT (KGS)</th>
             <th>{{ producedWeightHeader }}</th>
-            <th v-if="!isPrintedBoppTable">PLANNED LENGTH (MTRS)</th>
-            <th v-if="!isPrintedBoppTable">ACHIEVED LENGTH (MTRS)</th>
+            <th v-if="!isPrintedBoppTable && !isPrinting105Table">PLANNED LENGTH (MTRS)</th>
+            <th v-if="!isPrintedBoppTable && !isPrinting105Table">ACHIEVED LENGTH (MTRS)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
           </tr>
@@ -184,8 +189,13 @@
                 👁 Preview
               </button>
             </td>
-            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_shift || row.shift_label || 'DAY' }}</td>
-            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_arrangement_seq ?? '—' }}</td>
+            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.operator_name || row.operator_code || "—" }}</td>
+            <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatKg2(row.transferred_qty || 0) }}</td>
+            <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatKg2(row.qty || 0) }}</td>
+            <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatKg2(row.produced_qty || 0) }}</td>
+            <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatNum(row.meter || 0) }}</td>
+            <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatNum(row.achieved_meter || 0) }}</td>
+            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.produced_rolls ?? "—" }}</td>
             <td v-if="showCylinderTypeColumn" class="cell-center font-bold">{{ row.cylinder_type || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.white_tint || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.finishing || "—" }}</td>
@@ -196,19 +206,20 @@
             <td v-if="isPrintedBoppTable" class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td v-if="isPrintedBoppTable" class="cell-right">{{ formatKg2(row.bopp_bom_kgs) }}</td>
-            <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.fabric_gsm || "-" }}</td>
+            <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-center">{{ row.fabric_gsm || "-" }}</td>
             <td v-if="showBoppGsmColumn" class="cell-center">{{ row.bopp_gsm || "-" }}</td>
-            <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
-            <td v-if="!isPrintedBoppTable" class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
-            <td v-if="!isPrintedBoppTable" class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
+            <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-center">{{ row.lamination_gsm ?? row.gsm }}</td>
+            <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
+            <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
               {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
             </td>
-            <td class="cell-right" :title="!isPrintedBoppTable ? `Lamination: produced / planned (${formatKg2(row.planned_lamination_weight_kgs)} kg)` : ''">
+            <td class="cell-right" :title="(!isPrintedBoppTable && !isPrinting105Table) ? `Lamination: produced / planned (${formatKg2(row.planned_lamination_weight_kgs)} kg)` : ''">
               <template v-if="isPrintedBoppTable">{{ formatKg2(row.actual_production_weight_kgs) }}</template>
+              <template v-else-if="isPrinting105Table">{{ formatKg2(row.produced_qty || 0) }}</template>
               <template v-else>{{ formatKg2(row.actual_production_weight_kgs) }} / {{ formatKg2(row.planned_lamination_weight_kgs) }}</template>
             </td>
-            <td v-if="!isPrintedBoppTable" class="cell-right">{{ row.planned_meter ?? "-" }}</td>
-            <td v-if="!isPrintedBoppTable" class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
+            <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right">{{ row.planned_meter ?? "-" }}</td>
+            <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-center">
               <template v-if="isPrinting105Table">
                 <button v-if="row.planningSheet || row.plan_name" type="button" @click="openProductionPlanView(row.planningSheet || row.plan_name, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">PP View</button>
@@ -1194,6 +1205,7 @@ async function createItemStockEntry(item) {
   }
   const itemDisplay = getItemDisplayName(item);
   const isBoppMode = isPrintedBoppTable.value || isPrinting105Table.value;
+  const processTypeHint = isPrintedBoppTable.value ? "bopp_film" : isPrinting105Table.value ? "printing_105" : null;
 
   async function _doCreateSpr() {
     item.__creating_spr = true;
@@ -1203,7 +1215,7 @@ async function createItemStockEntry(item) {
         args: {
           pp_id: item.pp_id,
           planning_sheet_item_names: JSON.stringify([item.itemName]),
-          process_type: isBoppMode ? "bopp_film" : null,
+          process_type: processTypeHint,
         },
       });
       if (res.message && res.message.status === "ok") {

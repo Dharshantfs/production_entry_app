@@ -41,8 +41,12 @@
   "custom_lam_side_",
   "custom_slitting_shift",
   "custom_cylinder_type",
+  "custom_design_code",
   "custom_design_name",
   "custom_design_colour",
+  "custom_design_attachment",
+  "custom_printing_shift",
+  "custom_printing_arrangement_seq",
   "custom_finishing",
   "custom_white_tint",
   "custom_bopp_finish_size_mm",
@@ -296,11 +300,35 @@
    "label": "Design Name"
   },
   {
+   "fieldname": "custom_design_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Design Code"
+  },
+  {
    "fieldname": "custom_design_colour",
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Design Colour",
    "read_only": 1
+  },
+  {
+   "fieldname": "custom_design_attachment",
+   "fieldtype": "Attach",
+   "label": "Design Attachment"
+  },
+  {
+   "default": "DAY",
+   "fieldname": "custom_printing_shift",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Printing Shift",
+   "options": "DAY\nNIGHT"
+  },
+  {
+   "fieldname": "custom_printing_arrangement_seq",
+   "fieldtype": "Int",
+   "label": "Printing Arrangement Seq"
   },
   {
    "fieldname": "custom_finishing",

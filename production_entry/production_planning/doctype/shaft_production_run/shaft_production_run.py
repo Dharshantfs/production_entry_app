@@ -1521,6 +1521,9 @@ class ShaftProductionRun(Document):
 		if not u_raw:
 			return "0"
 		ul = u_raw.lower()
+		# Printing machines (Process 105): use 'P' as the unit code in batch numbers.
+		if "printing" in ul and "bopp" not in ul:
+			return "P"
 		if "lamination" in ul:
 			return "5"
 		if "slitting" in ul:
