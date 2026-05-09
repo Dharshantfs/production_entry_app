@@ -376,7 +376,7 @@ const tableMaintenanceUnit = computed(() => {
 });
 const tableUnitHeader = computed(() => {
   if (isPrinting105Table.value) {
-    return `${PRINTING_UNASSIGNED_UNIT} — Planned orders (Process 105)`;
+    return `${filterUnit.value || 'All Printing Units'} — Planned orders (Process 105)`;
   }
   if (isPrintedBoppTable.value) {
     return `${PRINTED_BOPP_FILM_UNIT} — Planned orders (Printed BOPP film)`;
@@ -1501,6 +1501,10 @@ async function fetchData() {
           order_code: d.order_code || d.partyCode || "",
           color: d.color || "",
           fabric_colour: d.color || "",
+          quality: d.quality || d.custom_quality || "",
+          unit: d.unit || "UNASSIGNED PRINTING MACHINE",
+          gsm: d.gsm || 0,
+          width_inch: d.width_inch || 0,
           design_code: d.custom_design_code || d.design_code || "",
           design_name: d.custom_design_name || d.design_name || d.custom_design_code || d.design_code || "",
           custom_design_attachment: d.custom_design_attachment || d.custom_design_image || "",

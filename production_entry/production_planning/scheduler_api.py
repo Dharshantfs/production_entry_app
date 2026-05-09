@@ -2918,10 +2918,11 @@ def _is_printing_105_parent_process(item_code):
 
 
 def _ensure_printing_105_parent_units_on_sheet(planning_sheet_name):
-	"""105 parent rows must use UNASSIGNED PRINTING MACHINE by default (until assigned)."""
+	"""105 parent rows must use a printing unit. Only override generic UNASSIGNED."""
 	if not planning_sheet_name:
 		return False
 	touched = False
+	printing_units = ("UNASSIGNED PRINTING MACHINE", "JVE - PRINTING MACHINE 2 COLOUR", "JVE - PRINTING MACHINE 6 COLOUR")
 	for dt in ("Planning Table", "Planning sheet Item"):
 		for row in frappe.get_all(
 			dt,
@@ -2931,7 +2932,10 @@ def _ensure_printing_105_parent_units_on_sheet(planning_sheet_name):
 			ic = (row.get("item_code") or "").strip()
 			if not _is_printing_105_parent_process(ic):
 				continue
-			if normalize_planning_unit_for_select(row.get("unit")) != "UNASSIGNED PRINTING MACHINE":
+			cur_unit = normalize_planning_unit_for_select(row.get("unit"))
+			# Only force to UNASSIGNED PRINTING MACHINE if current unit is generic UNASSIGNED
+			# Do NOT override if user already assigned a valid printing machine
+			if cur_unit not in printing_units:
 				frappe.db.set_value(dt, row.name, "unit", "UNASSIGNED PRINTING MACHINE", update_modified=False)
 				touched = True
 	return touched
@@ -3079,8 +3083,7 @@ def _sync_printing_105_planning_rows(planning_sheet_name):
 			"so_item": so_it.name,
 		}
 		_set_trace_id_if_supported(row, trace_id)
-		if design_code and (frappe.db.has_column("Planning Table", "custom_design_code") or frappe.db.has_column("Planning sheet Item", "custom_design_code")):
-			row["custom_design_code"] = design_code
+		# Design code should ONLY be on 105 parent, NOT on the BOM 100 fabric child
 
 		row_b = dict(row)
 		if hasattr(ps, "items") or ps.meta.has_field("items"):
@@ -4195,16 +4198,30 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         spr_expr = "pt.spr_name as spr_name" if has_pt_spr else "'' as spr_name"
         has_seq = frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq")
         seq_expr = "pt.custom_printing_arrangement_seq as custom_printing_arrangement_seq" if has_seq else "0 as custom_printing_arrangement_seq"
-        has_unit = frappe.db.has_column("Planning Table", "unit")
-        unit_expr = "pt.unit as unit" if has_unit else "'' as unit"
-        # Use item-level planned_date if available, fallback to sheet planned_date then ordered_date
+        has_quality = frappe.db.has_column("Planning Table", "quality")
+        quality_expr = "pt.quality as quality" if has_quality else "'' as quality"
+        has_cq = frappe.db.has_column("Planning Table", "custom_quality")
+        cq_expr = "pt.custom_quality as custom_quality" if has_cq else "'' as custom_quality"
+        has_gsm = frappe.db.has_column("Planning Table", "gsm")
+        gsm_expr = "pt.gsm as gsm" if has_gsm else "0 as gsm"
+        has_wi = frappe.db.has_column("Planning Table", "width_inch")
+        wi_expr = "pt.width_inch as width_inch" if has_wi else "0 as width_inch"
+        # Use item-level planned_date if available, fallback to sheet custom_planned_date then ordered_date
         has_pt_pd = frappe.db.has_column("Planning Table", "planned_date")
+        has_ps_cpd = frappe.db.has_column("Planning sheet", "custom_planned_date")
         if has_pt_pd:
-            eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
+            if has_ps_cpd:
+                eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.custom_planned_date, ps.ordered_date)"
+            else:
+                eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
         else:
-            eff_date = "COALESCE(ps.ordered_date, ps.ordered_date)"
+            if has_ps_cpd:
+                eff_date = "COALESCE(ps.custom_planned_date, ps.ordered_date)"
+            else:
+                eff_date = "COALESCE(ps.ordered_date, ps.ordered_date)"
         q = (
             "SELECT pt.name as psi_name, pt.parent as planning_sheet, pt.item_code, pt.qty, pt.meter, pt.color, "
+            f"{quality_expr}, {cq_expr}, {gsm_expr}, {wi_expr}, "
             "pt.custom_design_code, pt.custom_design_name, pt.custom_design_attachment, pt.custom_printing_shift, "
             f"{unit_expr}, "
             f"{seq_expr}, "
@@ -4282,6 +4299,9 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 "planned_date": _cstr(r.get("planned_date")),
                 "item_code": ic,
                 "unit": r.get("unit") or "UNASSIGNED PRINTING MACHINE",
+                "quality": r.get("quality") or r.get("custom_quality") or "",
+                "gsm": flt(r.get("gsm") or 0),
+                "width_inch": flt(r.get("width_inch") or 0),
                 "qty": flt(r.get("qty") or 0.0),
                 "meter": flt(r.get("meter") or 0.0),
                 "color": r.get("color"),
@@ -6281,11 +6301,12 @@ def _populate_planning_sheet_items(ps, doc):
                 gsm_105 = cint(p105_data.get("gsm") or 0)
                 if gsm_105 > 0:
                     psi_data["gsm"] = gsm_105
-            # Width from item code (mm -> convert if needed)
+            # Width from item code last 4 digits (mm -> inches, rounded)
             if p105_data.get("width_mm"):
                 w_mm = cint(p105_data.get("width_mm") or 0)
                 if w_mm > 0:
-                    psi_data["sheet_size"] = w_mm
+                    w_inch = round(w_mm / 25.4)
+                    psi_data["width_inch"] = w_inch
             # Force unit to UNASSIGNED PRINTING MACHINE
             psi_data["unit"] = PRINTING_UNASSIGNED_UNIT
         _set_trace_id_if_supported(psi_data, trace_id)
@@ -15183,6 +15204,8 @@ def regenerate_planning_sheet(so_name):
         _sync_sheet_cutting_fabric_planning_rows(ps.name)
         _force_sheet_cutting_unit_on_sheet(ps.name)
         _sync_rewinding_fabric_planning_rows(ps.name)
+        _sync_printing_fabric_planning_rows(ps.name)
+        _force_printing_unit_on_sheet(ps.name)
         _sync_printing_105_planning_rows(ps.name)
         _force_rewinding_unit_on_sheet(ps.name)
         # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
@@ -15236,6 +15259,8 @@ def regenerate_planning_sheet(so_name):
     _sync_sheet_cutting_fabric_planning_rows(ps.name)
     _force_sheet_cutting_unit_on_sheet(ps.name)
     _sync_rewinding_fabric_planning_rows(ps.name)
+    _sync_printing_fabric_planning_rows(ps.name)
+    _force_printing_unit_on_sheet(ps.name)
     _sync_printing_105_planning_rows(ps.name)
     _force_rewinding_unit_on_sheet(ps.name)
     # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
