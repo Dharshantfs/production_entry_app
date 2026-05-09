@@ -364,12 +364,12 @@ const pageTitle = computed(() => {
   return isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table";
 });
 const tableMaintenanceUnit = computed(() => {
-  if (isPrinting105Table.value) return PRINTING_105_UNIT;
+  if (isPrinting105Table.value) return PRINTING_UNASSIGNED_UNIT;
   return isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT;
 });
 const tableUnitHeader = computed(() => {
   if (isPrinting105Table.value) {
-    return `${PRINTING_105_UNIT} — Planned orders (Process 105)`;
+    return `${PRINTING_UNASSIGNED_UNIT} — Planned orders (Process 105)`;
   }
   if (isPrintedBoppTable.value) {
     return `${PRINTED_BOPP_FILM_UNIT} — Planned orders (Printed BOPP film)`;

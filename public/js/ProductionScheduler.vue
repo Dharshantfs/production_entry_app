@@ -435,6 +435,7 @@ const laminationProcess = ref("104");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
+const isPrintingBoard = ref(false);
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -638,6 +639,22 @@ const filteredData = computed(() => {
       ...d,
       unit: normalizeUnitName(d.unit)
   }));
+
+  if (isPrintingBoard.value) {
+    data = data
+      .filter((d) => {
+        const ic = String(d.item_code || d.itemCode || "");
+        return ic.toUpperCase().includes("-105") || ic.toUpperCase().startsWith("105");
+      })
+      .map((d) => {
+        const rawU = String(d.unit || "").trim();
+        let u = normalizeUnitName(d.unit);
+        if (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED") {
+          u = PRINTING_UNASSIGNED_UNIT;
+        }
+        return { ...d, unit: u };
+      });
+  }
 
   // For Production Board ONLY: Show pushed items.
   // Items are considered "pushed" to the board if they have a plannedDate set.

@@ -634,23 +634,7 @@ function goToPlan() {
         frappe.set_route("slitting-order-table", query);
         return;
     }
-    if (isPrintingBoard.value) {
-    data = data
-      .filter((d) => {
-        const ic = String(d.item_code || d.itemCode || "");
-        return "-105" in ic.toUpperCase() || ic.toUpperCase().startsWith("105");
-      })
-      .map((d) => {
-        const rawU = String(d.unit || "").trim();
-        let u = normalizeUnitName(d.unit);
-        if (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED") {
-          u = PRINTING_UNASSIGNED_UNIT;
-        }
-        return { ...d, unit: u };
-      });
-  }
-
-  if (isSheetCuttingBoard.value) {
+    if (isSheetCuttingBoard.value) {
         query.board = "sheet_cutting";
         frappe.set_route("sheet-cutting-order-table", query);
         return;
@@ -737,6 +721,22 @@ const filteredData = computed(() => {
       }
       return d;
     });
+  }
+
+  if (isPrintingBoard.value) {
+    data = data
+      .filter((d) => {
+        const ic = String(d.item_code || d.itemCode || "");
+        return ic.toUpperCase().includes("-105") || ic.toUpperCase().startsWith("105");
+      })
+      .map((d) => {
+        const rawU = String(d.unit || "").trim();
+        let u = normalizeUnitName(d.unit);
+        if (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED") {
+          u = PRINTING_UNASSIGNED_UNIT;
+        }
+        return { ...d, unit: u };
+      });
   }
 
   if (isSheetCuttingBoard.value) {
@@ -2303,6 +2303,7 @@ onMounted(() => {
       if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
       if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
       if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
+      if (path.includes("/desk/printing-order-board")) isPrintingBoard.value = true;
     } catch (e) {}
     try {
       const r = frappe.get_route && frappe.get_route();
@@ -2312,6 +2313,7 @@ onMounted(() => {
       if (routeName === "rewinding board") isRewindingBoard.value = true;
       if (routeName === "sheet cutting board") isSheetCuttingBoard.value = true;
       if (routeName.includes("printed bopp film board")) isPrintedBoppFilmBoard.value = true;
+      if (routeName === "printing order board") isPrintingBoard.value = true;
     } catch (e) {}
 
     // 1. Load CSS

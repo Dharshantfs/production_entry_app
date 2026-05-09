@@ -484,6 +484,7 @@ const filterUnit = ref("");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
 const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
+const isPrintingBoard = ref(false);
 /** Plain lamination (104) vs BOPP (107) on lamination board + color-chart API filter. */
 const laminationProcess = ref("104");
 const filterStatus = ref("");
@@ -725,6 +726,22 @@ const filteredData = computed(() => {
       }
       return d;
     });
+  }
+
+  if (isPrintingBoard.value) {
+    data = data
+      .filter((d) => {
+        const ic = String(d.item_code || d.itemCode || "");
+        return ic.toUpperCase().includes("-105") || ic.toUpperCase().startsWith("105");
+      })
+      .map((d) => {
+        const rawU = String(d.unit || "").trim();
+        let u = normalizeUnitName(d.unit);
+        if (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED") {
+          u = PRINTING_UNASSIGNED_UNIT;
+        }
+        return { ...d, unit: u };
+      });
   }
 
   // For Production Board ONLY: Show pushed items.
