@@ -4198,6 +4198,8 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         spr_expr = "pt.spr_name as spr_name" if has_pt_spr else "'' as spr_name"
         has_seq = frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq")
         seq_expr = "pt.custom_printing_arrangement_seq as custom_printing_arrangement_seq" if has_seq else "0 as custom_printing_arrangement_seq"
+        has_unit = frappe.db.has_column("Planning Table", "unit")
+        unit_expr = "pt.unit as unit" if has_unit else "'' as unit"
         has_quality = frappe.db.has_column("Planning Table", "quality")
         quality_expr = "pt.quality as quality" if has_quality else "'' as quality"
         has_cq = frappe.db.has_column("Planning Table", "custom_quality")
@@ -6129,10 +6131,14 @@ def _populate_planning_sheet_items(ps, doc):
             q_code = after_digits[3:6]
             c_code = after_digits[6:9]
             try:
-                qual_name = frappe.db.get_value("Quality Master", {"short_code": q_code}, "name") or \
-                           frappe.db.get_value("Quality Master", {"code": q_code}, "name") or \
-                           frappe.db.get_value("Quality Master", {"quality_code": q_code}, "name")
-                if qual_name: qual = qual_name
+                q_candidates = [q_code, q_code.lstrip("0") or "0"]
+                for qc in q_candidates:
+                    qual_name = frappe.db.get_value("Quality Master", {"short_code": qc}, "name") or \
+                               frappe.db.get_value("Quality Master", {"code": qc}, "name") or \
+                               frappe.db.get_value("Quality Master", {"quality_code": qc}, "name")
+                    if qual_name:
+                        qual = qual_name
+                        break
             except Exception: pass
             try:
                 color_result = _get_color_by_code(c_code)
@@ -15204,8 +15210,6 @@ def regenerate_planning_sheet(so_name):
         _sync_sheet_cutting_fabric_planning_rows(ps.name)
         _force_sheet_cutting_unit_on_sheet(ps.name)
         _sync_rewinding_fabric_planning_rows(ps.name)
-        _sync_printing_fabric_planning_rows(ps.name)
-        _force_printing_unit_on_sheet(ps.name)
         _sync_printing_105_planning_rows(ps.name)
         _force_rewinding_unit_on_sheet(ps.name)
         # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
@@ -15259,8 +15263,6 @@ def regenerate_planning_sheet(so_name):
     _sync_sheet_cutting_fabric_planning_rows(ps.name)
     _force_sheet_cutting_unit_on_sheet(ps.name)
     _sync_rewinding_fabric_planning_rows(ps.name)
-    _sync_printing_fabric_planning_rows(ps.name)
-    _force_printing_unit_on_sheet(ps.name)
     _sync_printing_105_planning_rows(ps.name)
     _force_rewinding_unit_on_sheet(ps.name)
     # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
