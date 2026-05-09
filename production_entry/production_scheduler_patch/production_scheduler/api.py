@@ -4237,7 +4237,7 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             f"{unit_expr}, "
             f"{seq_expr}, "
             f"{spr_expr}, "
-            "ps.name as plan_name, ps.order_code as planning_order_code, "
+            "ps.name as plan_name, ps.party_code as planning_order_code, "
             f"ps.customer as customer, {eff_date} as planned_date "
             "FROM `tabPlanning Table` pt JOIN `tabPlanning sheet` ps ON ps.name = pt.parent "
             "WHERE ps.docstatus < 2 "
