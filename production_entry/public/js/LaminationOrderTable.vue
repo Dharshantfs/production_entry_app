@@ -132,7 +132,7 @@
             <th v-if="!isPrintedBoppTable && !isPrinting105Table">LAM GSM</th>
             <th v-if="!isPrintedBoppTable && !isPrinting105Table">FABRIC READY DATE</th>
             <th v-if="!isPrintedBoppTable && !isPrinting105Table">PRODUCED FABRIC WT (KGS)</th>
-            <th>{{ producedWeightHeader }}</th>
+            <th v-if="!isPrinting105Table">{{ producedWeightHeader }}</th>
             <th v-if="!isPrintedBoppTable && !isPrinting105Table">PLANNED LENGTH (MTRS)</th>
             <th v-if="!isPrintedBoppTable && !isPrinting105Table">ACHIEVED LENGTH (MTRS)</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
@@ -220,9 +220,8 @@
             <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right" :title="`Fabric WO: ${formatKg2(row.child_wo_produced_kg)} produced / ${formatKg2(row.fabric_required_kg)} planned`">
               {{ formatKg2(row.child_wo_produced_kg) }} / {{ formatKg2(row.fabric_required_kg) }}
             </td>
-            <td class="cell-right" :title="(!isPrintedBoppTable && !isPrinting105Table) ? `Lamination: produced / planned (${formatKg2(row.planned_lamination_weight_kgs)} kg)` : ''">
+            <td v-if="!isPrinting105Table" class="cell-right" :title="(!isPrintedBoppTable && !isPrinting105Table) ? `Lamination: produced / planned (${formatKg2(row.planned_lamination_weight_kgs)} kg)` : ''">
               <template v-if="isPrintedBoppTable">{{ formatKg2(row.actual_production_weight_kgs) }}</template>
-              <template v-else-if="isPrinting105Table">{{ formatKg2(row.produced_qty || 0) }}</template>
               <template v-else>{{ formatKg2(row.actual_production_weight_kgs) }} / {{ formatKg2(row.planned_lamination_weight_kgs) }}</template>
             </td>
             <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right">{{ row.planned_meter ?? "-" }}</td>

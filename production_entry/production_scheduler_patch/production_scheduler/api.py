@@ -6140,11 +6140,13 @@ def _populate_planning_sheet_items(ps, doc):
             q_code = after_digits[3:6]
             c_code = after_digits[6:9]
             try:
-                q_candidates = [q_code, q_code.lstrip("0") or "0"]
+                qc_stripped = q_code.lstrip("0") or "0"
+                q_candidates = [q_code, qc_stripped, qc_stripped.zfill(2)]
                 for qc in q_candidates:
                     qual_name = frappe.db.get_value("Quality Master", {"short_code": qc}, "name") or \
                                frappe.db.get_value("Quality Master", {"code": qc}, "name") or \
-                               frappe.db.get_value("Quality Master", {"quality_code": qc}, "name")
+                               frappe.db.get_value("Quality Master", {"quality_code": qc}, "name") or \
+                               frappe.db.get_value("Quality Master", qc, "name")
                     if qual_name:
                         qual = qual_name
                         break
