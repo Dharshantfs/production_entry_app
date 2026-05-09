@@ -1,4 +1,4 @@
-﻿import re
+import re
 from collections import defaultdict
 
 import frappe
@@ -1504,53 +1504,83 @@ class ShaftProductionRun(Document):
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Production Plan links")
 
-	def _unit_digit(self) -> str:
-		"""Return the single character/digit code for embedding in batch numbers.
+	def _batch_prefix_parts(self):
+		"""Return (company_identifier, unit_number_2digit) for the new batch format.
 
-		Map (defined in UNIT_NUMBER_MAP):
-		  Unit 1-4 → '1'-'4'
-		  Lamination Unit → '5'
-		  Slitting Unit → '6'
-		  TSNPL - L3 REWINDING MACHINE → '7'
-		  JSB - L4 REWINDING MACHINE → '8'
-		  JSB - L5 REWINDING MACHINE → '9'
-		  JVE - SHEET CUTTING MACHINE → 'S'
-		  VR - 1200MM BOPP PRINTING MACHINE → 'V'
+		Mapping:
+		  Unit 1           → ('JS', '01')
+		  Unit 2           → ('JS', '02')
+		  Unit 3           → ('JS', '03')
+		  Unit 4           → ('TS', '04')
+		  TNSPL LAMINATION → ('TS', '05')
+		  JVE SLITTING     → ('JV', '06')
+		  TSNPL L3 REWINDING → ('TS', '07')
+		  JSB L4 REWINDING   → ('JS', '08')
+		  JSB L5 REWINDING   → ('JS', '09')
+		  JVE SHEET CUTTING  → ('JV', '10')
+		  JVE PRINTING 2/4 COLOUR 1200MM → ('JV', '11')
+		  PY  PRINTING 4 COLOUR 1600MM   → ('PY', '12')
 		"""
 		u_raw = (self.get("custom_unit") or "").strip()
 		if not u_raw:
-			return "0"
-		ul = u_raw.lower()
-		# Printing machines (Process 105): use 'P' as the unit code in batch numbers.
-		if "printing" in ul and "bopp" not in ul:
-			return "P"
-		if "lamination" in ul:
-			return "5"
-		if "slitting" in ul:
-			return "6"
-		if "sheet cutting" in ul or "jve" in ul:
-			return "S"
-		if "bopp printing" in ul or "vr" in ul and "bopp" in ul:
-			return "V"
-		# Rewinding machines: distinguish by L3 / L4 / L5
-		if "rewinding" in ul or "rewind" in ul:
-			if "l3" in ul or "l3" in u_raw:
-				return "7"
-			if "l4" in ul or "l4" in u_raw:
-				return "8"
-			if "l5" in ul or "l5" in u_raw:
-				return "9"
-			return "7"  # default rewinding
-		# Generic Unit N pattern → extract digit
-		m = re.search(r"\bunit\s*(\d+)\b", ul)
+			return ("JS", "01")
+		ul = u_raw.upper()
+
+		# --- Printing machines (check before generic JVE) ---
+		if "PRINTING" in ul and "BOPP" not in ul:
+			if "1600" in ul or ul.startswith("PY"):
+				return ("PY", "12")
+			return ("JV", "11")
+
+		# --- Lamination ---
+		if "LAMINATION" in ul:
+			return ("TS", "05")
+
+		# --- Slitting ---
+		if "SLITTING" in ul:
+			return ("JV", "06")
+
+		# --- Sheet Cutting ---
+		if "SHEET CUTTING" in ul:
+			return ("JV", "10")
+
+		# --- BOPP Printing ---
+		if "BOPP" in ul and "PRINTING" in ul:
+			return ("JV", "11")
+
+		# --- Rewinding machines: distinguish by L3/L4/L5 ---
+		if "REWINDING" in ul or "REWIND" in ul:
+			if "L3" in ul:
+				return ("TS", "07")
+			if "L4" in ul:
+				return ("JS", "08")
+			if "L5" in ul:
+				return ("JS", "09")
+			return ("TS", "07")  # default rewinding
+
+		# --- Generic Unit N pattern ---
+		m = re.search(r"(?i)\bunit\s*(\d+)\b", u_raw)
 		if m:
-			return m.group(1)
-		return "0"
+			num = int(m.group(1))
+			if num == 4:
+				return ("TS", "04")
+			return ("JS", f"{num:02d}")
+
+		return ("JS", "01")
+
+	def _unit_digit(self) -> str:
+		"""Legacy single-character unit code — kept for backward compatibility."""
+		_, unit_num = self._batch_prefix_parts()
+		return str(int(unit_num))  # '01' → '1', '10' → '10'
 
 	def generate_batch_numbers(self):
-		"""Assign batch_no on each roll line when draft is saved (after Create Entry + required header fields).
+		"""Assign batch_no on each roll line when draft is saved.
 
-		Format: ``{MM}{U}{YY}{S}/{N}`` — month (2) + unit digit + year (2) + shift suffix ``S`` + ``/`` + roll sequence ``N``.
+		New format: ``{ID}-{UU}{MM}{YY}{S}/{N}``
+		  ID = company identifier (JS / TS / JV / PY)
+		  UU = 2-digit unit number
+		  MM = month, YY = year, S = shift series, N = roll number
+		Example: JS-01052601/1
 		``tabBatch`` rows are created/updated on **submit** via ``sync_batch_custom_fields``, not on every save.
 		"""
 		if not self.run_date or not self.get("custom_unit") or not self.shift:
@@ -1562,8 +1592,8 @@ class ShaftProductionRun(Document):
 		if not any(not getattr(r, "batch_no", None) for r in rows):
 			return
 		rd = getdate(self.run_date)
-		unit_d = self._unit_digit()
-		root_5 = f"{rd.month:02d}{unit_d}{rd.year % 100:02d}"
+		comp_id, unit_num = self._batch_prefix_parts()
+		root_5 = f"{comp_id}-{unit_num}{rd.month:02d}{rd.year % 100:02d}"
 		series_prefix = self._resolve_series_prefix(root_5)
 		next_roll = self._next_roll_starting(series_prefix)
 		item_meta = frappe.get_meta("Shaft Production Run Item")
@@ -1605,7 +1635,7 @@ class ShaftProductionRun(Document):
 		for (bn,) in existing or []:
 			if bn and "/" in bn:
 				pref = bn.split("/")[0].strip()
-				if pref.startswith(root_5) and len(pref) >= 6:
+				if pref.startswith(root_5) and len(pref) >= len(root_5):
 					return pref
 
 		next_s = self._next_shift_suffix_num(root_5)
@@ -3944,8 +3974,8 @@ def get_next_spr_batch_numbers(
 	if not rd_val or not cu or not sh:
 		frappe.throw(_("Set Run Date, Unit, and Shift to assign batch numbers."))
 	rd = getdate(rd_val)
-	unit_d = doc._unit_digit()
-	root_5 = f"{rd.month:02d}{unit_d}{rd.year % 100:02d}"
+	comp_id, unit_num = doc._batch_prefix_parts()
+	root_5 = f"{comp_id}-{unit_num}{rd.month:02d}{rd.year % 100:02d}"
 	series_prefix = doc._resolve_series_prefix(root_5)
 	next_roll = doc._next_roll_starting(series_prefix)
 	try:

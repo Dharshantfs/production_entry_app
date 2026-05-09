@@ -16140,16 +16140,30 @@ def get_mix_item_details(quality, cl_type, gsm, shaft):
     
     return results
 
+def _resolve_mix_batch_prefix(unit_code):
+    """Return (company_identifier, unit_number_2digit) for mix roll batch format.
+    Mirrors ShaftProductionRun._batch_prefix_parts() logic."""
+    u = str(unit_code or "").strip()
+    # unit_code here is typically the last digit of the unit name, e.g. "1", "4"
+    mapping = {
+        "1": ("JS", "01"), "2": ("JS", "02"), "3": ("JS", "03"),
+        "4": ("TS", "04"), "5": ("TS", "05"), "6": ("JV", "06"),
+        "7": ("TS", "07"), "8": ("JS", "08"), "9": ("JS", "09"),
+    }
+    return mapping.get(u, ("JS", "01"))
+
+
 def get_mix_batch_roll(item_code, unit_code):
     """
     Calculates the next Series and Roll for a Mix Item based on the / format.
-    Format: MMUYYSeries/Roll (e.g. 032261/1)
+    New format: {ID}-{UU}{MM}{YY}{Series}/{Roll} (e.g. JS-01052601/1)
     """
     today_str = frappe.utils.today()
     month_str = today_str[5:7]
     year_str = today_str[2:4]
     
-    prefix = f"{month_str}{unit_code}{year_str}"
+    comp_id, unit_num = _resolve_mix_batch_prefix(unit_code)
+    prefix = f"{comp_id}-{unit_num}{month_str}{year_str}"
     
     # Search for the latest batch for this item/unit/today
     # We look for ANY batch that starts with prefix and has the / separator
