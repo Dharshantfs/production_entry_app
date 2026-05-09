@@ -110,8 +110,6 @@
             <th v-if="isPrinting105Table">PLANNED MTRS</th>
             <th v-if="isPrinting105Table">ACHIEVED MTRS</th>
             <th v-if="isPrinting105Table">PRODUCED ROLLS</th>
-            <th v-if="isPrinting105Table">SHIFT</th>
-            <th v-if="isPrinting105Table">ARRANGEMENT</th>
             <th v-if="showCylinderTypeColumn">CYLINDER TYPE</th>
             <th v-if="isPrintedBoppTable">WHITE TINT</th>
             <th v-if="isPrintedBoppTable">FINISHING</th>
@@ -198,8 +196,6 @@
             <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatNum(row.meter || 0) }}</td>
             <td v-if="isPrinting105Table" class="cell-right font-bold">{{ formatNum(row.achieved_meter || 0) }}</td>
             <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.produced_rolls ?? "—" }}</td>
-            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_shift || row.shift_label || "DAY" }}</td>
-            <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_printing_arrangement_seq ?? "—" }}</td>
             <td v-if="showCylinderTypeColumn" class="cell-center font-bold">{{ row.cylinder_type || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.white_tint || "—" }}</td>
             <td v-if="isPrintedBoppTable" class="cell-center">{{ row.finishing || "—" }}</td>
