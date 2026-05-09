@@ -30,7 +30,14 @@ def _item_process_prefix(item_code):
 	ic = str(item_code or "").strip()
 	if not ic:
 		return ""
-	# Accept prefixed codes like HB-103... by using the leading numeric stream.
+	# For hyphenated codes like 6002-1050011010301600, use part after hyphen
+	if "-" in ic:
+		parts = ic.split("-", 1)
+		if len(parts) == 2 and parts[1]:
+			after_digits = "".join(ch for ch in parts[1] if ch.isdigit())
+			if len(after_digits) >= 3:
+				return after_digits[:3]
+	# Fallback: Accept prefixed codes like HB-103... by using the leading numeric stream.
 	digits = "".join(ch for ch in ic if ch.isdigit())
 	return digits[:3] if len(digits) >= 3 else ""
 

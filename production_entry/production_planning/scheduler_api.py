@@ -79,7 +79,14 @@ def _item_process_prefix(item_code):
 	ic = str(item_code or "").strip()
 	if not ic:
 		return ""
-	# Accept prefixed codes like HB-103... by using the leading numeric stream.
+	# For hyphenated codes like 6002-1050011010301600, use part after hyphen
+	if "-" in ic:
+		parts = ic.split("-", 1)
+		if len(parts) == 2 and parts[1]:
+			after_digits = "".join(ch for ch in parts[1] if ch.isdigit())
+			if len(after_digits) >= 3:
+				return after_digits[:3]
+	# Fallback: Accept prefixed codes like HB-103... by using the leading numeric stream.
 	digits = "".join(ch for ch in ic if ch.isdigit())
 	return digits[:3] if len(digits) >= 3 else ""
 
@@ -3008,13 +3015,15 @@ def _sync_printing_105_planning_rows(planning_sheet_name):
 		bom = _resolve_lamination_bom(pr_ic)
 		if not bom:
 			continue
-		fab = _pick_first_100_from_bom_items(bom.items, pr_ic)
-		if not fab:
+		fab_result = _pick_first_100_from_bom_items(bom.items, pr_ic)
+		if not fab_result:
 			continue
-		fabric_ic = (getattr(fab, "item_code", None) or "").strip()
+		# _pick_first_100_from_bom_items returns (item_code, row) tuple
+		fabric_ic, fab_row = fab_result
+		fabric_ic = (fabric_ic or "").strip()
 		if not fabric_ic:
 			continue
-		fabric_qty = _scaled_component_qty_from_bom_row(bom.name, fab, flt(so_it.qty))
+		fabric_qty = _scaled_component_qty_from_bom_row(bom.name, fab_row, flt(so_it.qty))
 
 		existing = frappe.get_all(
 			"Planning Table",
@@ -6090,9 +6099,15 @@ def _populate_planning_sheet_items(ps, doc):
                 width = flt(parsed107_early.get("width_inch") or 0)
 
         digits = "".join(ch for ch in item_code_str if ch.isdigit())
-        if len(digits) >= 9 and _lamination_process_from_item_code(item_code_str) != "107":
-            q_code = digits[3:6]
-            c_code = digits[6:9]
+        # For hyphenated codes like 6002-105..., extract from part after hyphen
+        if "-" in item_code_str:
+            after_hyphen = item_code_str.split("-", 1)[1] if "-" in item_code_str else item_code_str
+            after_digits = "".join(ch for ch in after_hyphen if ch.isdigit())
+        else:
+            after_digits = digits
+        if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) != "107":
+            q_code = after_digits[3:6]
+            c_code = after_digits[6:9]
             try:
                 qual_name = frappe.db.get_value("Quality Master", {"short_code": q_code}, "name") or \
                            frappe.db.get_value("Quality Master", {"code": q_code}, "name") or \
@@ -6192,6 +6207,8 @@ def _populate_planning_sheet_items(ps, doc):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif _item_process_prefix(str(it.item_code or "")) == "251":
              p_date = getdate(doc.transaction_date or ps.ordered_date)
+        elif _is_printing_105_parent_process(str(it.item_code or "")):
+             p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif _is_white_color(col):
              p_date = getdate(ps.ordered_date)
 
@@ -6241,6 +6258,36 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_name"] = _dn_so
                 if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
                     psi_data["custom_design_name"] = _dn_so
+        # Process 105 (Printing): extract design code/name/attachment from SO and parsed item code
+        if _is_printing_105_parent_process(str(it.item_code or "")):
+            p105_data = _parse_105_item_code(it.item_code) or {}
+            _design_code_105 = (p105_data.get("design_code") or "").strip().upper()
+            if _design_code_105 and frappe.db.has_column("Planning Table", "custom_design_code"):
+                psi_data["custom_design_code"] = _design_code_105
+            _dn_105 = _pb_design_name_from_sales_order_item(it.name)
+            if _dn_105:
+                if frappe.db.has_column("Planning Table", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_105
+                if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_105
+            _da_105 = _printing_design_attachment_from_sales_order_item(it.name)
+            if _da_105:
+                if frappe.db.has_column("Planning Table", "custom_design_attachment"):
+                    psi_data["custom_design_attachment"] = _da_105
+                if frappe.db.has_column("Planning sheet Item", "custom_design_attachment"):
+                    psi_data["custom_design_attachment"] = _da_105
+            # GSM from item code position 9-11 after hyphen
+            if p105_data.get("gsm"):
+                gsm_105 = cint(p105_data.get("gsm") or 0)
+                if gsm_105 > 0:
+                    psi_data["gsm"] = gsm_105
+            # Width from item code (mm -> convert if needed)
+            if p105_data.get("width_mm"):
+                w_mm = cint(p105_data.get("width_mm") or 0)
+                if w_mm > 0:
+                    psi_data["sheet_size"] = w_mm
+            # Force unit to UNASSIGNED PRINTING MACHINE
+            psi_data["unit"] = PRINTING_UNASSIGNED_UNIT
         _set_trace_id_if_supported(psi_data, trace_id)
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
@@ -6280,9 +6327,23 @@ def _populate_planning_sheet_items(ps, doc):
                 elif _item_process_prefix(str(it.item_code or "")) == "251":
                     existing_psi.unit = SHEET_CUTTING_UNIT
                     existing_psi.planned_date = p_date
+                elif _is_printing_105_parent_process(str(it.item_code or "")):
+                    existing_psi.unit = PRINTING_UNASSIGNED_UNIT
+                    existing_psi.planned_date = p_date
                 elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
+                if _is_printing_105_parent_process(str(it.item_code or "")):
+                    p105_data_e = _parse_105_item_code(it.item_code) or {}
+                    _dc_e = (p105_data_e.get("design_code") or "").strip().upper()
+                    if _dc_e and hasattr(existing_psi, "custom_design_code"):
+                        existing_psi.custom_design_code = _dc_e
+                    _dn_105_e = _pb_design_name_from_sales_order_item(it.name)
+                    if _dn_105_e and hasattr(existing_psi, "custom_design_name"):
+                        existing_psi.custom_design_name = _dn_105_e
+                    _da_105_e = _printing_design_attachment_from_sales_order_item(it.name)
+                    if _da_105_e and hasattr(existing_psi, "custom_design_attachment"):
+                        existing_psi.custom_design_attachment = _da_105_e
                 if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
                     for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early, it.name).items():
                         setattr(existing_psi, k, v)
