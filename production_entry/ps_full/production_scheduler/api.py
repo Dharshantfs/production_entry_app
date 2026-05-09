@@ -1166,6 +1166,144 @@ def _sync_slitting_fabric_planning_rows(planning_sheet_name):
 		frappe.db.commit()
 
 
+
+def _sync_printing_fabric_planning_rows(planning_sheet_name):
+	"""For each SO line with item 105, append one fabric (100) row from BOM. Idempotent."""
+	if not planning_sheet_name:
+		return
+	if not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	if not ps.get("sales_order"):
+		return
+	so = frappe.get_doc("Sales Order", ps.sales_order)
+	parent_field = _get_pt_parentfield()
+	changed = False
+	for so_it in so.items or []:
+		pr_ic = (so_it.item_code or "").strip()
+		if not ("-105" in pr_ic.upper() or pr_ic.upper().startswith("105")):
+			continue
+		trace_id = _parent_child_trace_id_from_item_code(pr_ic)
+		try:
+			res = get_fabric_item_from_printing_item(pr_ic)
+		except Exception as e:
+			frappe.log_error(
+				title="Printing fabric BOM",
+				message=f"SO {so.name} line {so_it.name}: {e}\n{frappe.get_traceback()}",
+			)
+			continue
+
+		fabric_ic = res["fabric_item_code"]
+		bom_no = res["bom_no"]
+		fabric_qty = _fabric_qty_from_bom(bom_no, fabric_ic, flt(so_it.qty))
+
+		existing = frappe.get_all(
+			"Planning Table",
+			filters={"parent": ps.name, "item_code": fabric_ic, "so_item": so_it.name},
+			pluck="name",
+			limit=1,
+		)
+		if existing:
+			updates = {}
+			if frappe.db.has_column("Planning Table", "sales_order_item"):
+				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+				if not cur_soi:
+					updates["sales_order_item"] = so_it.name
+			if updates:
+				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
+			continue
+
+		pr_match = frappe.get_all(
+			"Planning Table",
+			filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": pr_ic},
+			fields=["name"],
+			limit=1,
+		)
+		pr_pt_name = pr_match[0].get("name") if pr_match else None
+		pr_row = frappe.get_doc("Planning Table", pr_pt_name) if pr_pt_name else None
+		if pr_row and trace_id:
+			_set_trace_id_if_supported(pr_row, trace_id)
+
+		fabric_item_name = frappe.db.get_value("Item", fabric_ic, "item_name") or ""
+		specs = _fabric_row_specs_from_fabric_item(fabric_ic, so_it, pr_row)
+		fab_color = specs.get("color") or ""
+		fab_width = flt(specs.get("width_inch"))
+		fabric_unit = compute_default_production_unit(fab_color, fab_width)
+		fabric_planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
+
+		row = {
+			"sales_order_item": so_it.name,
+			"item_code": fabric_ic,
+			"item_name": fabric_item_name,
+			"qty": fabric_qty,
+			"uom": so_it.uom,
+			"gsm": specs["gsm"],
+			"width_inch": specs["width_inch"],
+			"color": specs["color"],
+			"quality": specs["quality"],
+			"custom_quality": specs["custom_quality"],
+			"unit": fabric_unit,
+			"meter": specs["meter"],
+			"meter_per_roll": specs["meter_per_roll"],
+			"no_of_rolls": specs["no_of_rolls"],
+			"weight_per_roll": specs["weight_per_roll"],
+			"planned_date": fabric_planned_date,
+			"plan_name": ps.get("custom_plan_name"),
+			"party_code": ps.party_code,
+			"planning_sheet": ps.name,
+			"so_item": so_it.name,
+		}
+		_set_trace_id_if_supported(row, trace_id)
+		if frappe.db.has_column("Planning Table", "split_from"):
+			row["split_from"] = ""
+
+		row_b = dict(row)
+		if hasattr(ps, "items") or ps.meta.has_field("items"):
+			ps.append("items", row_b)
+		ps.append(parent_field, dict(row))
+		changed = True
+
+	if changed:
+		ps.flags.ignore_permissions = True
+		ps.save()
+		frappe.db.commit()
+
+@frappe.whitelist()
+def get_fabric_item_from_printing_item(printing_item_code):
+	"""Resolve the single 100* fabric child for a printing 105 item."""
+	return _get_fabric_item_from_process_item(printing_item_code, expected_process="105", process_label="Printing")
+
+def _force_printing_unit_on_sheet(planning_sheet_name):
+	"""Force process 105 rows to Unassigned Printing Machine on both planning tables."""
+	if not planning_sheet_name:
+		return 0
+	updated = 0
+	condition = "item_code REGEXP '^[a-zA-Z0-9]+-105|^105'"
+	if frappe.db.has_column("Planning Table", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning Table`
+			SET unit = %s
+			WHERE parent = %s
+			  AND {condition}
+			""",
+			(PRINTING_UNASSIGNED_UNIT, planning_sheet_name),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning sheet Item`
+			SET unit = %s
+			WHERE parent = %s
+			  AND {condition}
+			""",
+			(PRINTING_UNASSIGNED_UNIT, planning_sheet_name),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	return updated
+
+
 def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 102, append one fabric (100) row from BOM. Idempotent."""
 	if not REWINDING_FLOW_ENABLED or not planning_sheet_name:
@@ -9633,6 +9771,8 @@ def create_planning_sheet_from_so(doc):
         _sync_bopp_child_planning_rows(ps.name)
         _force_slitting_unit_on_sheet(ps.name)
         _sync_rewinding_fabric_planning_rows(ps.name)
+		_sync_printing_fabric_planning_rows(ps.name)
+		_force_printing_unit_on_sheet(ps.name)
         _force_rewinding_unit_on_sheet(ps.name)
         final_doc = frappe.get_doc("Planning sheet", ps.name)
         update_sheet_plan_codes(final_doc, include_legacy=True)
@@ -11923,6 +12063,8 @@ def auto_create_planning_sheet(doc, method=None):
             _sync_bopp_child_planning_rows(sheet.name)
             _force_slitting_unit_on_sheet(sheet.name)
             _sync_rewinding_fabric_planning_rows(sheet.name)
+			_sync_printing_fabric_planning_rows(sheet.name)
+			_force_printing_unit_on_sheet(sheet.name)
             _force_rewinding_unit_on_sheet(sheet.name)
             sheet.reload()
             ensure_lamination_booking_for_planning_sheet(sheet)
@@ -12014,6 +12156,8 @@ def regenerate_planning_sheet(so_name):
         _sync_bopp_child_planning_rows(_ps.name)
         _force_slitting_unit_on_sheet(_ps.name)
         _sync_rewinding_fabric_planning_rows(_ps.name)
+		_sync_printing_fabric_planning_rows(_ps.name)
+		_force_printing_unit_on_sheet(_ps.name)
         _force_rewinding_unit_on_sheet(_ps.name)
         _ps.reload()
         ensure_lamination_booking_for_planning_sheet(_ps)
@@ -12099,6 +12243,8 @@ def sync_bom_children_for_planning_sheet(planning_sheet):
     _sync_bopp_child_planning_rows(ps_name)
     _force_slitting_unit_on_sheet(ps_name)
     _sync_rewinding_fabric_planning_rows(ps_name)
+	_sync_printing_fabric_planning_rows(ps_name)
+	_force_printing_unit_on_sheet(ps_name)
     _force_rewinding_unit_on_sheet(ps_name)
     ps.reload()
     ensure_lamination_booking_for_planning_sheet(ps)

@@ -304,6 +304,11 @@ const filteredRows = computed(() => {
   let d = rawData.value || [];
   const pc = (filterPartyCode.value || "").trim().toLowerCase();
   const cu = (filterCustomer.value || "").trim().toLowerCase();
+
+  if (isPrinting105Table.value && filterUnit.value) {
+    d = d.filter((r) => String(r.unit || "").trim() === filterUnit.value);
+  }
+
   if (pc) {
     d = d.filter((r) => String(r.partyCode || "").toLowerCase().includes(pc));
   }

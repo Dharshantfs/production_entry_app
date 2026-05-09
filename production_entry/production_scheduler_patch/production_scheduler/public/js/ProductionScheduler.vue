@@ -362,6 +362,12 @@ const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
 const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
+const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR";
+const PRINTING_UNIT_6_COLOUR = "JVE - PRINTING MACHINE 6 COLOUR";
+const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
+const PRINTING_BOARD_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_6_COLOUR, PRINTING_UNASSIGNED_UNIT];
+const PRINTING_BOARD_SUBTITLE = "Planned orders (Process 105)";
+
 const isPrintedBoppFilmBoard = computed(() => (props.boardKind || "").trim() === "printed_bopp_film");
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
@@ -372,6 +378,9 @@ const UNIT_TONNAGE_LIMITS = {
   [LAMINATION_UNIT]: 999,
   [SLITTING_UNIT]: 999,
   [PRINTED_BOPP_FILM_UNIT]: 999,
+  [PRINTING_UNIT_2_COLOUR]: 999,
+  [PRINTING_UNIT_6_COLOUR]: 999,
+  [PRINTING_UNASSIGNED_UNIT]: 999,
 };
 const headerColors = {
   "Unit 1": "#3b82f6",
@@ -390,6 +399,9 @@ function normalizeUnitName(rawUnit) {
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
   if (full === PRINTED_BOPP_FILM_UNIT) return PRINTED_BOPP_FILM_UNIT;
   if (txt.includes("bopp") && txt.includes("printing")) return PRINTED_BOPP_FILM_UNIT;
+  if (txt.includes("printing machine 2 colour")) return PRINTING_UNIT_2_COLOUR;
+  if (txt.includes("printing machine 6 colour")) return PRINTING_UNIT_6_COLOUR;
+  if (txt === "unassigned printing machine") return PRINTING_UNASSIGNED_UNIT;
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
@@ -483,6 +495,7 @@ units.forEach(u => {
 unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 unitSortConfig.value[PRINTED_BOPP_FILM_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+PRINTING_BOARD_UNITS.forEach((u) => { unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' }; });
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -625,6 +638,11 @@ function goToPlan() {
         frappe.set_route("printed-bopp-film-table", query);
         return;
     }
+    if (isPrintingBoard.value) {
+        query.board = "printing_105";
+        frappe.set_route("printing-order-table", query);
+        return;
+    }
     if (isLaminationBoard.value) {
         query.board = "lamination";
         query.lamination_process = laminationProcess.value;
@@ -663,6 +681,7 @@ function toggleViewScope() {
 const boardUnits = computed(() => {
   if (isSlittingBoard.value) return [SLITTING_UNIT];
   if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
+  if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   return units;
 });

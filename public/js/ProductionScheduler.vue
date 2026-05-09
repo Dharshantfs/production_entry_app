@@ -354,6 +354,9 @@ const headerColors = {
 function normalizeUnitName(rawUnit) {
   const txt = String(rawUnit || "").trim().toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (txt.includes("printing machine 2 colour")) return PRINTING_UNIT_2_COLOUR;
+  if (txt.includes("printing machine 6 colour")) return PRINTING_UNIT_6_COLOUR;
+  if (txt === "unassigned printing machine") return PRINTING_UNASSIGNED_UNIT;
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
@@ -569,6 +572,11 @@ function goToPlan() {
         frappe.set_route("slitting-order-table", query);
         return;
     }
+    if (isPrintingBoard.value) {
+        query.board = "printing_105";
+        frappe.set_route("printing-order-table", query);
+        return;
+    }
     if (isLaminationBoard.value) {
         query.board = "lamination";
       query.lamination_process = laminationProcess.value;
@@ -606,6 +614,7 @@ function toggleViewScope() {
 
 const boardUnits = computed(() => {
   if (isSlittingBoard.value) return [SLITTING_UNIT];
+  if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   return units;
 });

@@ -1,16 +1,15 @@
 <template>
-  <LaminationOrderTable :tableBoardKind="'printing_105'" tableMode="board" />
+  <ProductionScheduler />
 </template>
 
 <script>
-import LaminationOrderTable from './LaminationOrderTable.vue';
+import ProductionScheduler from './ProductionScheduler.vue';
 
 export default {
   name: 'PrintingOrderBoard',
-  components: { LaminationOrderTable },
+  components: { ProductionScheduler },
 };
 </script>
 
 <style scoped>
-/* wrapper styles if needed */
 </style>

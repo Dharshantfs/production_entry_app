@@ -3,8 +3,8 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isRewindingBoard ? "Rewinding Board" : isSlittingBoard ? "Slitting Board" : isSheetCuttingBoard ? "Sheet Cutting Board" : isPrintedBoppFilmBoard ? "Printed BOPP Film Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : isSheetCuttingBoard ? SHEET_CUTTING_UNIT : isPrintedBoppFilmBoard ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT }}
+      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard || isPrintingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+        {{ isRewindingBoard ? "Rewinding Board" : isPrintingBoard ? "Printing Order Board" : isSlittingBoard ? "Slitting Board" : isPrintingBoard ? "Printing Order Board" : isSheetCuttingBoard ? "Sheet Cutting Board" : isPrintedBoppFilmBoard ? "Printed BOPP Film Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isPrintingBoard ? PRINTING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : isSheetCuttingBoard ? SHEET_CUTTING_UNIT : isPrintedBoppFilmBoard ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -328,6 +328,12 @@ const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
 const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
 /** PB-* / PRINTED BOPP film queue (must match scheduler_api.PRINTED_BOPP_FILM_UNIT). */
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
+const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR";
+const PRINTING_UNIT_6_COLOUR = "JVE - PRINTING MACHINE 6 COLOUR";
+const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
+const PRINTING_BOARD_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_6_COLOUR, PRINTING_UNASSIGNED_UNIT];
+const PRINTING_BOARD_SUBTITLE = "Planned orders (Process 105)";
+
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
   "Unit 2": 12,
@@ -342,6 +348,9 @@ const UNIT_TONNAGE_LIMITS = {
   [REWINDING_UNASSIGNED_UNIT]: 999,
   [SHEET_CUTTING_UNIT]: 999,
   [PRINTED_BOPP_FILM_UNIT]: 999,
+  [PRINTING_UNIT_2_COLOUR]: 999,
+  [PRINTING_UNIT_6_COLOUR]: 999,
+  [PRINTING_UNASSIGNED_UNIT]: 999,
 };
 const headerColors = {
   "Unit 1": "#3b82f6",
@@ -357,12 +366,18 @@ const headerColors = {
   [REWINDING_UNASSIGNED_UNIT]: "#64748b",
   [SHEET_CUTTING_UNIT]: "#0f766e",
   [PRINTED_BOPP_FILM_UNIT]: "#7c3aed",
+  [PRINTING_UNIT_2_COLOUR]: "#ec4899",
+  [PRINTING_UNIT_6_COLOUR]: "#f43f5e",
+  [PRINTING_UNASSIGNED_UNIT]: "#94a3b8",
 };
 
 function normalizeUnitName(rawUnit) {
   const full = String(rawUnit || "").trim();
   const txt = full.toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (txt.includes("printing machine 2 colour")) return PRINTING_UNIT_2_COLOUR;
+  if (txt.includes("printing machine 6 colour")) return PRINTING_UNIT_6_COLOUR;
+  if (txt === "unassigned printing machine") return PRINTING_UNASSIGNED_UNIT;
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
@@ -468,6 +483,7 @@ const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
 const isRewindingBoard = ref(false);
 const isSheetCuttingBoard = ref(false);
+const isPrintingBoard = ref(false);
 /** Printed BOPP film Kanban (PB / VR BOPP printing unit); uses dedicated API scope. */
 const isPrintedBoppFilmBoard = ref(false);
 const filterStatus = ref("");
@@ -483,6 +499,7 @@ REWINDING_BOARD_UNITS.forEach((u) => {
   unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 });
 unitSortConfig.value[PRINTED_BOPP_FILM_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+PRINTING_BOARD_UNITS.forEach((u) => { unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' }; });
 
 const rawData = ref([]);
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
@@ -617,9 +634,30 @@ function goToPlan() {
         frappe.set_route("slitting-order-table", query);
         return;
     }
-    if (isSheetCuttingBoard.value) {
+    if (isPrintingBoard.value) {
+    data = data
+      .filter((d) => {
+        const ic = String(d.item_code || d.itemCode || "");
+        return "-105" in ic.toUpperCase() || ic.toUpperCase().startsWith("105");
+      })
+      .map((d) => {
+        const rawU = String(d.unit || "").trim();
+        let u = normalizeUnitName(d.unit);
+        if (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED") {
+          u = PRINTING_UNASSIGNED_UNIT;
+        }
+        return { ...d, unit: u };
+      });
+  }
+
+  if (isSheetCuttingBoard.value) {
         query.board = "sheet_cutting";
         frappe.set_route("sheet-cutting-order-table", query);
+        return;
+    }
+    if (isPrintingBoard.value) {
+        query.board = "printing_105";
+        frappe.set_route("printing-order-table", query);
         return;
     }
     if (isLaminationBoard.value) {
@@ -664,6 +702,7 @@ const boardUnits = computed(() => {
   if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
   if (isSlittingBoard.value) return [SLITTING_UNIT];
   if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
+  if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
   return units;

@@ -349,7 +349,11 @@ const props = defineProps({
 });
 
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
-const PRINTING_105_UNIT = "UNASSIGNED PRINTING MACHINE";
+const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR";
+const PRINTING_UNIT_6_COLOUR = "JVE - PRINTING MACHINE 6 COLOUR";
+const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
+const PRINTING_FILTER_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_6_COLOUR, PRINTING_UNASSIGNED_UNIT];
+const filterUnit = ref("");
 /** Must match ``planning_doctypes.LAMINATION_UNIT`` */
 const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
 const isPrinting105Table = computed(() => (props.tableBoardKind || "").trim() === "printing_105");
@@ -475,6 +479,11 @@ const filteredRows = computed(() => {
   let d = rawData.value || [];
   const pc = (filterPartyCode.value || "").trim().toLowerCase();
   const cu = (filterCustomer.value || "").trim().toLowerCase();
+
+  if (isPrinting105Table.value && filterUnit.value) {
+    d = d.filter((r) => String(r.unit || "").trim() === filterUnit.value);
+  }
+
   if (pc) {
     d = d.filter((r) => String(r.partyCode || "").toLowerCase().includes(pc));
   }
