@@ -4208,6 +4208,15 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         gsm_expr = "pt.gsm as gsm" if has_gsm else "0 as gsm"
         has_wi = frappe.db.has_column("Planning Table", "width_inch")
         wi_expr = "pt.width_inch as width_inch" if has_wi else "0 as width_inch"
+        has_cdc = frappe.db.has_column("Planning Table", "custom_design_code")
+        cdc_expr = "pt.custom_design_code as custom_design_code" if has_cdc else "'' as custom_design_code"
+        has_cdn = frappe.db.has_column("Planning Table", "custom_design_name")
+        cdn_expr = "pt.custom_design_name as custom_design_name" if has_cdn else "'' as custom_design_name"
+        has_cda = frappe.db.has_column("Planning Table", "custom_design_attachment")
+        cda_expr = "pt.custom_design_attachment as custom_design_attachment" if has_cda else "'' as custom_design_attachment"
+        has_cps = frappe.db.has_column("Planning Table", "custom_printing_shift")
+        cps_expr = "pt.custom_printing_shift as custom_printing_shift" if has_cps else "'' as custom_printing_shift"
+        
         # Use item-level planned_date if available, fallback to sheet custom_planned_date then ordered_date
         has_pt_pd = frappe.db.has_column("Planning Table", "planned_date")
         has_ps_cpd = frappe.db.has_column("Planning sheet", "custom_planned_date")
@@ -4224,7 +4233,7 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         q = (
             "SELECT pt.name as psi_name, pt.parent as planning_sheet, pt.item_code, pt.qty, pt.meter, pt.color, "
             f"{quality_expr}, {cq_expr}, {gsm_expr}, {wi_expr}, "
-            "pt.custom_design_code, pt.custom_design_name, pt.custom_design_attachment, pt.custom_printing_shift, "
+            f"{cdc_expr}, {cdn_expr}, {cda_expr}, {cps_expr}, "
             f"{unit_expr}, "
             f"{seq_expr}, "
             f"{spr_expr}, "
