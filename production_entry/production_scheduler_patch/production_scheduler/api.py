@@ -1278,7 +1278,7 @@ def _force_printing_unit_on_sheet(planning_sheet_name):
 	if not planning_sheet_name:
 		return 0
 	updated = 0
-	condition = "item_code REGEXP '^[a-zA-Z0-9]+-105|^105'"
+	condition = "(item_code LIKE '%%-105%%' OR item_code LIKE '105%%')"
 	if frappe.db.has_column("Planning Table", "unit"):
 		frappe.db.sql(
 			f"""

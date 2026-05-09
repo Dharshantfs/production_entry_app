@@ -2389,7 +2389,7 @@ def _force_printing_unit_on_sheet(planning_sheet_name):
 	if not planning_sheet_name:
 		return 0
 	updated = 0
-	condition = "item_code REGEXP '^[a-zA-Z0-9]+-105|^105'"
+	condition = "(item_code LIKE '%%-105%%' OR item_code LIKE '105%%')"
 	if frappe.db.has_column("Planning Table", "unit"):
 		frappe.db.sql(
 			f"""
@@ -4176,7 +4176,7 @@ def get_printed_bopp_film_table_data(
 
 
 @frappe.whitelist()
-def get_printing_order_table_data(start_date=None, end_date=None, filters=None):
+def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None):
     """Return Process 105 printing rows with transfer/produced metrics."""
     out = []
     try:
@@ -4186,23 +4186,36 @@ def get_printing_order_table_data(start_date=None, end_date=None, filters=None):
         spr_expr = "pt.spr_name as spr_name" if has_pt_spr else "'' as spr_name"
         has_seq = frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq")
         seq_expr = "pt.custom_printing_arrangement_seq as custom_printing_arrangement_seq" if has_seq else "0 as custom_printing_arrangement_seq"
+        has_unit = frappe.db.has_column("Planning Table", "unit")
+        unit_expr = "pt.unit as unit" if has_unit else "'' as unit"
+        # Use item-level planned_date if available, fallback to sheet planned_date then ordered_date
+        has_pt_pd = frappe.db.has_column("Planning Table", "planned_date")
+        if has_pt_pd:
+            eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
+        else:
+            eff_date = "COALESCE(ps.ordered_date, ps.ordered_date)"
         q = (
             "SELECT pt.name as psi_name, pt.parent as planning_sheet, pt.item_code, pt.qty, pt.meter, pt.color, "
             "pt.custom_design_code, pt.custom_design_name, pt.custom_design_attachment, pt.custom_printing_shift, "
+            f"{unit_expr}, "
             f"{seq_expr}, "
             f"{spr_expr}, "
             "ps.name as plan_name, ps.order_code as planning_order_code, "
-            "ps.customer as customer, ps.planned_date "
+            f"ps.customer as customer, {eff_date} as planned_date "
             "FROM `tabPlanning Table` pt JOIN `tabPlanning sheet` ps ON ps.name = pt.parent "
+            "WHERE ps.docstatus < 2 "
         )
         params = []
         if sd and ed:
-            q += " WHERE ps.planned_date BETWEEN %s AND %s"
+            q += f" AND DATE({eff_date}) BETWEEN %s AND %s"
             params.extend([sd, ed])
+        elif date:
+            q += f" AND DATE({eff_date}) = %s"
+            params.append(date)
         if has_seq:
-            q += " ORDER BY ps.planned_date, CASE WHEN IFNULL(pt.custom_printing_arrangement_seq,0) > 0 THEN pt.custom_printing_arrangement_seq ELSE 999999 END, pt.idx"
+            q += f" ORDER BY {eff_date}, CASE WHEN IFNULL(pt.custom_printing_arrangement_seq,0) > 0 THEN pt.custom_printing_arrangement_seq ELSE 999999 END, pt.idx"
         else:
-            q += " ORDER BY ps.planned_date, pt.idx"
+            q += f" ORDER BY {eff_date}, pt.idx"
         rows = frappe.db.sql(q, tuple(params), as_dict=True) or []
 
         # Pre-fetch SPR metadata for operator + rolls (best-effort).
@@ -4259,6 +4272,7 @@ def get_printing_order_table_data(start_date=None, end_date=None, filters=None):
                 "customer": r.get("customer"),
                 "planned_date": _cstr(r.get("planned_date")),
                 "item_code": ic,
+                "unit": r.get("unit") or "UNASSIGNED PRINTING MACHINE",
                 "qty": flt(r.get("qty") or 0.0),
                 "meter": flt(r.get("meter") or 0.0),
                 "color": r.get("color"),
@@ -5150,7 +5164,7 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None):
         else (f"COALESCE(pt.{pt_date_col}, ps.ordered_date)" if pt_date_col else "COALESCE(ps.custom_planned_date, ps.ordered_date)")
     )
 
-    filt = "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-105%'"
+    filt = "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-105%%'"
     if item_name:
         set_parts = ["pt.custom_printing_shift = %s"]
         values = [shift_label]

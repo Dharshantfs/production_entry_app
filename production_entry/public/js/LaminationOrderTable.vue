@@ -46,6 +46,13 @@
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
+      <div v-if="isPrinting105Table" class="cc-filter-item">
+        <label>Unit</label>
+        <select v-model="filterUnit" class="cc-select-scope">
+          <option value="">All Units</option>
+          <option v-for="u in PRINTING_FILTER_UNITS" :key="u" :value="u">{{ u }}</option>
+        </select>
+      </div>
       <div class="cc-filter-actions">
         <button v-if="!isPrinting105Table" type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
@@ -1323,7 +1330,7 @@ function currentShiftDateForDialog() {
 
 function openAssignShiftDialog() {
   const d = new frappe.ui.Dialog({
-    title: isPrintedBoppTable.value ? "Assign Printed BOPP film shift" : "Assign Lamination Shift",
+    title: isPrinting105Table.value ? "Assign Printing Shift" : isPrintedBoppTable.value ? "Assign Printed BOPP film shift" : "Assign Lamination Shift",
     fields: [
       { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
       { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
