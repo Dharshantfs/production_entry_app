@@ -456,12 +456,25 @@ class Planningsheet(Document):
 
             bom_no = get_default_bom_for_item(item.item_code, company)
             if not bom_no:
-                frappe.throw(
-                    _(
-                        "No active default BOM found for item {0}. Set a default BOM on the BOM master before finalizing the Planning sheet."
-                    ).format(item.item_code),
-                    title=_("BOM No required"),
-                )
+                # For Process 105 items, try to find a parent item BOM
+                item_code_upper = str(item.item_code or "").upper()
+                if "105" in item_code_upper or item_code_upper.startswith("105"):
+                    # Try to get BOM for the design parent item (extract design code)
+                    if "-" in item.item_code:
+                        parent_code = item.item_code.split("-")[0]
+                        bom_no = get_default_bom_for_item(parent_code, company)
+                
+                if not bom_no:
+                    # Create a placeholder BOM or allow process without BOM for 105
+                    if not ("105" in item_code_upper or item_code_upper.startswith("105")):
+                        frappe.throw(
+                            _(
+                                "No active default BOM found for item {0}. Set a default BOM on the BOM master before finalizing the Planning sheet."
+                            ).format(item.item_code),
+                            title=_("BOM No required"),
+                        )
+                    # For Process 105, continue without BOM if not found (will be handled at manufacturing level)
+                    continue
             # Legacy: create one Production Plan per Planning sheet item (avoid when PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY is True)
             pp_dict = {
                 "doctype": "Production Plan",
@@ -852,24 +865,49 @@ def auto_create_planning_sheet(doc, method=None):
         ps.delivery_date = doc.delivery_date
         ps.planning_status = "Draft"
         
-        # Populate Items
-        for item in doc.items:
+        # Populate Items with quality, design info, and shift details
+        for idx, item in enumerate(doc.items, 1):
+            # Extract quality from item code or name
+            quality, color = extract_quality_and_color(item.item_name, item.item_code)
+            
+            # Get design info from SO item if available
+            design_code = item.get("custom_design_code") or ""
+            design_name = item.get("custom_design_name") or ""
+            design_image = item.get("custom_design_attachment") or ""
+            
+            # Parse design code from item code if not provided
+            if not design_code and item.item_code:
+                ic = str(item.item_code).strip()
+                if "-" in ic:
+                    design_code = ic.split("-")[0]
+            
+            # Determine printing shift based on index (alternate DAY/NIGHT for better distribution)
+            printing_shift = "DAY" if idx % 2 == 1 else "NIGHT"
+            printing_arrangement = idx
+            
             ps.append("planned_items", {
                 "sales_order_item": item.name,
                 "item_code": item.item_code,
                 "item_name": item.item_name,
                 "qty": item.qty,
                 "uom": item.uom,
+                "quality": quality or "Standard",
+                "color": color or "",
                 "gsm": item.get("gsm") or 0,
-                "width_inch": item.get("width_inch") or 0
+                "width_inch": item.get("width_inch") or 0,
+                "sheet_size": item.get("custom_sheet_size") or "",
+                "custom_design_code": design_code,
+                "custom_design_name": design_name,
+                "custom_design_attachment": design_image,
+                "custom_printing_shift": printing_shift,
+                "custom_printing_arrangement_seq": printing_arrangement,
+                "custom_design_colour": color or ""
             })
-
-        # Fix MandatoryError: quality
-        if not ps.get("quality"):
-            ps.quality = "Standard"
 
         ps.flags.ignore_permissions = True
         ps.insert()
+        ps.allocate_unit_to_sheet()
+        ps.save()
         frappe.db.commit()
         
         frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created and synced from Sales Order.")
@@ -880,6 +918,31 @@ def auto_create_planning_sheet(doc, method=None):
 def sync_to_planning_table(doc, method=None):
     """Sync Production Plan data back to Planning Table if needed."""
     pass
+
+
+@frappe.whitelist()
+def regenerate_planning_sheet_from_so(sales_order_name):
+    """Regenerate Planning Sheet from Sales Order - clears existing and recreates."""
+    if not sales_order_name:
+        frappe.throw(_("Sales Order name is required"))
+    
+    # Delete existing draft planning sheets for this SO
+    existing_sheets = frappe.get_all(
+        "Planning Sheet",
+        filters={"sales_order": sales_order_name, "docstatus": 0}
+    )
+    
+    for sheet in existing_sheets:
+        try:
+            frappe.delete_doc("Planning Sheet", sheet.name, ignore_permissions=True)
+        except Exception as e:
+            frappe.log_error(f"Could not delete {sheet.name}: {str(e)}", "Regenerate Planning Sheet")
+    
+    # Get SO and recreate planning sheet
+    so = frappe.get_doc("Sales Order", sales_order_name)
+    auto_create_planning_sheet(so)
+    
+    return frappe.db.get_value("Planning Sheet", {"sales_order": sales_order_name, "docstatus": 0}, "name")
 
 
 # Whitelisted Methods

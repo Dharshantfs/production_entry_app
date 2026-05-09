@@ -23,6 +23,7 @@
         "column_break_11",
         "weight_per_roll",
         "width_inch",
+        "sheet_size",
         "section_break_13",
         "quality",
         "custom_quality",
@@ -31,7 +32,19 @@
         "custom_item_planned_date",
         "custom_plan_code",
         "custom_lamination_order_code",
+        "custom_parent_child_trace_id",
         "custom_lam_side",
+        "custom_lam_gsm",
+        "custom_bopp_gsm",
+        "custom_cylinder_type",
+        "custom_design_code",
+        "custom_design_name",
+        "custom_design_colour",
+        "custom_design_attachment",
+        "custom_printing_shift",
+        "custom_printing_arrangement_seq",
+        "custom_finishing",
+        "custom_white_tint",
         "order_sheet",
         "custom_split_metadata",
         "total_weight",
@@ -144,6 +157,12 @@
             "precision": "2"
         },
         {
+            "fieldname": "sheet_size",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Sheet Size"
+        },
+        {
             "fieldname": "section_break_13",
             "fieldtype": "Section Break",
             "label": "Quality & Color"
@@ -186,10 +205,86 @@
             "read_only": 1
         },
         {
+            "fieldname": "custom_parent_child_trace_id",
+            "fieldtype": "Data",
+            "label": "Parent Child Trace ID",
+            "read_only": 1
+        },
+        {
             "fieldname": "custom_lam_side",
             "fieldtype": "Data",
             "label": "Lam Side",
             "read_only": 1
+        },
+        {
+            "fieldname": "custom_lam_gsm",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "LAM GSM",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_bopp_gsm",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "BOPP GSM",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_cylinder_type",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Cylinder Type",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_design_code",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Design Code",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_design_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Design Name",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_design_colour",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Design Colour",
+            "read_only": 1
+        },
+        {
+            "fieldname": "custom_design_attachment",
+            "fieldtype": "Attach",
+            "label": "Design Attachment"
+        },
+        {
+            "default": "DAY",
+            "fieldname": "custom_printing_shift",
+            "fieldtype": "Select",
+            "label": "Printing Shift",
+            "options": "DAY\nNIGHT"
+        },
+        {
+            "fieldname": "custom_printing_arrangement_seq",
+            "fieldtype": "Int",
+            "label": "Printing Arrangement Seq"
+        },
+        {
+            "fieldname": "custom_finishing",
+            "fieldtype": "Data",
+            "label": "Finishing"
+        },
+        {
+            "fieldname": "custom_white_tint",
+            "fieldtype": "Select",
+            "label": "White Tint",
+            "options": "\nYes\nNo"
         },
         {
             "fieldname": "order_sheet",
