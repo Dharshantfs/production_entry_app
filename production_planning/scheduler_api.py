@@ -2460,7 +2460,7 @@ def _populate_planning_sheet_items(ps, doc):
         pass
     quality_lookup.sort(key=len, reverse=True)
     
-    for it in doc.items:
+    for idx, it in enumerate(doc.items, 1):
         # Match all rows belonging to this SO item
         existing_psi_list = existing_items_map.get(it.name, [])
         is_existing = len(existing_psi_list) > 0
@@ -2512,6 +2512,30 @@ def _populate_planning_sheet_items(ps, doc):
                 color_result = _get_color_by_code(c_code)
                 if color_result: col = color_result
             except Exception: pass
+        elif "-105" in item_code_str.upper() or item_code_str.upper().startswith("105"):
+            parsed_105 = _parse_105_item_code(item_code_str)
+            q_code = str(parsed_105.get("quality_code") or "").strip()
+            c_code = str(parsed_105.get("colour_code") or "").strip()
+            if q_code:
+                try:
+                    qual_name = frappe.db.get_value("Quality Master", {"short_code": q_code}, "name") or \
+                               frappe.db.get_value("Quality Master", {"code": q_code}, "name") or \
+                               frappe.db.get_value("Quality Master", {"quality_code": q_code}, "name")
+                    if qual_name:
+                        qual = qual_name
+                except Exception:
+                    pass
+            if c_code:
+                try:
+                    color_result = _get_color_by_code(c_code)
+                    if color_result:
+                        col = color_result
+                except Exception:
+                    pass
+            if cint(parsed_105.get("gsm") or 0) > 0:
+                gsm = cint(parsed_105.get("gsm") or 0)
+            if flt(parsed_105.get("width_inch") or 0) > 0:
+                width = flt(parsed_105.get("width_inch") or 0)
 
         search_text = " " + " ".join(words) + " "
         search_norm = _normalize_quality_key(search_text)
@@ -2571,6 +2595,19 @@ def _populate_planning_sheet_items(ps, doc):
                 qual = parsed_107.get("quality_name")
             if parsed_107.get("width_inch") and flt(width) <= 0:
                 width = flt(parsed_107.get("width_inch") or 0)
+
+        is_process_105 = ("-105" in item_code_str.upper()) or item_code_str.upper().startswith("105")
+        design_code = ""
+        if is_process_105:
+            parsed_105 = _parse_105_item_code(item_code_str)
+            design_code = str(parsed_105.get("design_code") or "").strip()
+            if not design_code and "-" in item_code_str:
+                design_code = item_code_str.split("-")[0]
+        design_name = str(getattr(it, "custom_design_name", None) or "").strip()
+        design_attachment = str(getattr(it, "custom_design_attachment", None) or "").strip()
+        design_colour = col
+        printing_shift = "DAY" if idx % 2 == 1 else "NIGHT"
+        printing_arrangement_seq = idx
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
@@ -2600,6 +2637,7 @@ def _populate_planning_sheet_items(ps, doc):
 
         # Prepare PSI record data for syncing/creation
         psi_data = {
+            "so_item": it.name,
             "sales_order_item": it.name,
             "item_code": it.item_code,
             "item_name": it.item_name,
@@ -2619,6 +2657,20 @@ def _populate_planning_sheet_items(ps, doc):
             "planned_date": p_date,
             "planning_sheet": ps.name # Explicitly link for grid visibility
         }
+
+        if is_process_105:
+            if frappe.db.has_column("Planning sheet Item", "custom_design_code") or frappe.db.has_column("Planning Table", "custom_design_code"):
+                psi_data["custom_design_code"] = design_code
+            if frappe.db.has_column("Planning sheet Item", "custom_design_name") or frappe.db.has_column("Planning Table", "custom_design_name"):
+                psi_data["custom_design_name"] = design_name
+            if frappe.db.has_column("Planning sheet Item", "custom_design_attachment") or frappe.db.has_column("Planning Table", "custom_design_attachment"):
+                psi_data["custom_design_attachment"] = design_attachment
+            if frappe.db.has_column("Planning sheet Item", "custom_design_colour") or frappe.db.has_column("Planning Table", "custom_design_colour"):
+                psi_data["custom_design_colour"] = design_colour
+            if frappe.db.has_column("Planning sheet Item", "custom_printing_shift") or frappe.db.has_column("Planning Table", "custom_printing_shift"):
+                psi_data["custom_printing_shift"] = printing_shift
+            if frappe.db.has_column("Planning sheet Item", "custom_printing_arrangement_seq") or frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq"):
+                psi_data["custom_printing_arrangement_seq"] = printing_arrangement_seq
         if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
         if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
@@ -2641,6 +2693,19 @@ def _populate_planning_sheet_items(ps, doc):
                 existing_psi.quality = line_quality
                 existing_psi.custom_quality = qual or line_quality
                 existing_psi.color = col
+                if is_process_105:
+                    if hasattr(existing_psi, "custom_design_code"):
+                        existing_psi.custom_design_code = design_code
+                    if hasattr(existing_psi, "custom_design_name"):
+                        existing_psi.custom_design_name = design_name
+                    if hasattr(existing_psi, "custom_design_attachment"):
+                        existing_psi.custom_design_attachment = design_attachment
+                    if hasattr(existing_psi, "custom_design_colour"):
+                        existing_psi.custom_design_colour = design_colour
+                    if hasattr(existing_psi, "custom_printing_shift"):
+                        existing_psi.custom_printing_shift = printing_shift
+                    if hasattr(existing_psi, "custom_printing_arrangement_seq"):
+                        existing_psi.custom_printing_arrangement_seq = printing_arrangement_seq
                 if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
                     existing_psi.custom_lam_gsm = lam_gsm
                 if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
@@ -10872,10 +10937,14 @@ def regenerate_planning_sheet(so_name):
 
     existing_sheet = _find_existing_sheet_for_sales_order(so_name)
     if existing_sheet:
-        frappe.throw(
-            f"Planning Sheet <b>{existing_sheet['name']}</b> already exists for Sales Order <b>{so_name}</b>. "
-            "Delete it first, then regenerate."
-        )
+        existing_doc = frappe.get_doc("Planning sheet", existing_sheet["name"])
+        if cint(existing_doc.docstatus) != 0:
+            frappe.throw(
+                f"Planning Sheet <b>{existing_sheet['name']}</b> already exists for Sales Order <b>{so_name}</b> and is not Draft. "
+                "Cancel/Delete it first, then regenerate."
+            )
+        frappe.delete_doc("Planning sheet", existing_doc.name, ignore_permissions=True, force=True)
+        frappe.db.commit()
 
     doc = frappe.get_doc("Sales Order", so_name)
 

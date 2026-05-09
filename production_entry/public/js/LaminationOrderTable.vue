@@ -344,6 +344,8 @@ import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 const props = defineProps({
   /** `lamination` = 104/107 lamination table; `printed_bopp_film` = PB / VR BOPP printing unit; `printing_105` = process 105 board. */
   tableBoardKind: { type: String, default: "lamination" },
+  /** Render context: `table` or `board` (used for title/back-route labels). */
+  tableMode: { type: String, default: "table" },
 });
 
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
@@ -352,8 +354,9 @@ const PRINTING_105_UNIT = "UNASSIGNED PRINTING MACHINE";
 const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
 const isPrinting105Table = computed(() => (props.tableBoardKind || "").trim() === "printing_105");
 const isPrintedBoppTable = computed(() => (props.tableBoardKind || "").trim() === "printed_bopp_film");
+const isBoardMode = computed(() => (props.tableMode || "table").trim().toLowerCase() === "board");
 const pageTitle = computed(() => {
-  if (isPrinting105Table.value) return "Printing Order Table";
+  if (isPrinting105Table.value) return isBoardMode.value ? "Printing Order Board" : "Printing Order Table";
   return isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table";
 });
 const tableMaintenanceUnit = computed(() => {
@@ -387,7 +390,11 @@ const producedWeightHeader = computed(() =>
   isPrinting105Table.value ? "PRODUCED PRINTING WEIGHT (KGS)" : isPrintedBoppTable.value ? "PRODUCED BOPP WEIGHT (KGS)" : "PRODUCED LAMINATION WEIGHT (KGS)"
 );
 const backToBoardLabel = computed(() =>
-  isPrinting105Table.value ? "Back to Printing Board" : isPrintedBoppTable.value ? "Back to Printed BOPP Film Board" : "Back to Lamination Board"
+  isPrinting105Table.value
+    ? (isBoardMode.value ? "Back to Printing Table" : "Back to Printing Board")
+    : isPrintedBoppTable.value
+    ? "Back to Printed BOPP Film Board"
+    : "Back to Lamination Board"
 );
 const emptyMaintenanceDayLabel = computed(() =>
   isPrinting105Table.value ? "No printing orders (maintenance day)" : isPrintedBoppTable.value ? "No printed BOPP film orders (maintenance day)" : "No lamination orders (maintenance day)"
@@ -1262,7 +1269,7 @@ async function createItemStockEntry(item) {
 
 function goToBoard() {
   if (isPrinting105Table.value) {
-    frappe.set_route("printing-order-table");
+    frappe.set_route(isBoardMode.value ? "printing-order-table" : "printing-order-board");
     return;
   }
   frappe.set_route(isPrintedBoppTable.value ? "printed-bopp-film-board" : "lamination-board");

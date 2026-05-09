@@ -459,22 +459,23 @@ class Planningsheet(Document):
                 # For Process 105 items, try to find a parent item BOM
                 item_code_upper = str(item.item_code or "").upper()
                 if "105" in item_code_upper or item_code_upper.startswith("105"):
+                    # Prefer explicit BOM on the linked Sales Order Item when available
+                    if getattr(item, "so_item", None):
+                        so_bom = frappe.db.get_value("Sales Order Item", item.so_item, "bom_no")
+                        if so_bom:
+                            bom_no = so_bom
                     # Try to get BOM for the design parent item (extract design code)
-                    if "-" in item.item_code:
+                    if not bom_no and "-" in item.item_code:
                         parent_code = item.item_code.split("-")[0]
                         bom_no = get_default_bom_for_item(parent_code, company)
                 
                 if not bom_no:
-                    # Create a placeholder BOM or allow process without BOM for 105
-                    if not ("105" in item_code_upper or item_code_upper.startswith("105")):
-                        frappe.throw(
-                            _(
-                                "No active default BOM found for item {0}. Set a default BOM on the BOM master before finalizing the Planning sheet."
-                            ).format(item.item_code),
-                            title=_("BOM No required"),
-                        )
-                    # For Process 105, continue without BOM if not found (will be handled at manufacturing level)
-                    continue
+                    frappe.throw(
+                        _(
+                            "No active BOM found for item {0}. For Process 105, set BOM on Sales Order Item or Item BOM before finalizing the Planning sheet."
+                        ).format(item.item_code),
+                        title=_("BOM No required"),
+                    )
             # Legacy: create one Production Plan per Planning sheet item (avoid when PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY is True)
             pp_dict = {
                 "doctype": "Production Plan",
