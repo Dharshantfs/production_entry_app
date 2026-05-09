@@ -23,7 +23,7 @@ LEGACY_PLANNING_UNIT_ALIASES = {
 	"Lamination Unit": LAMINATION_UNIT,
 	"Slitting Unit": SLITTING_UNIT,
 	"Unassigned rewinding machine": REWINDING_UNASSIGNED_UNIT,
-    "Unassigned printing machine": PRINTING_UNASSIGNED_UNIT,
+	"Unassigned printing machine": PRINTING_UNASSIGNED_UNIT,
 	"TNSPL - LAMINATION UNIT": LAMINATION_UNIT,
 }
 
@@ -68,9 +68,9 @@ def normalize_planning_unit_for_select(raw, _depth=0):
 		REWINDING_UNASSIGNED_UNIT,
 		SHEET_CUTTING_UNIT,
 		PRINTED_BOPP_FILM_UNIT,
-        PRINTING_UNASSIGNED_UNIT,
-        PRINTING_UNIT_2_COLOUR,
-        PRINTING_UNIT_6_COLOUR,
+		PRINTING_UNASSIGNED_UNIT,
+		PRINTING_UNIT_2_COLOUR,
+		PRINTING_UNIT_6_COLOUR,
 	)
 	if s in allowed:
 		return s
@@ -99,12 +99,12 @@ def normalize_planning_unit_for_select(raw, _depth=0):
 	if "TNSPL" in u and "LAMINATION" in u:
 		return LAMINATION_UNIT
 	if "PRINTINGMACHINE2COLOUR" in u or ("PRINTING" in u and "2" in u):
-        return PRINTING_UNIT_2_COLOUR
-    if "PRINTINGMACHINE6COLOUR" in u or ("PRINTING" in u and "6" in u):
-        return PRINTING_UNIT_6_COLOUR
-    if "PRINTING" in u and "UNASSIGNED" in u:
-        return PRINTING_UNASSIGNED_UNIT
-    if "VR1200MMBOPPPRINTINGMACHINE" in u or "1200MMBOPP" in u:
+		return PRINTING_UNIT_2_COLOUR
+	if "PRINTINGMACHINE6COLOUR" in u or ("PRINTING" in u and "6" in u):
+		return PRINTING_UNIT_6_COLOUR
+	if "PRINTING" in u and "UNASSIGNED" in u:
+		return PRINTING_UNASSIGNED_UNIT
+	if "VR1200MMBOPPPRINTINGMACHINE" in u or "1200MMBOPP" in u:
 		return PRINTED_BOPP_FILM_UNIT
 	for i in (1, 2, 3, 4):
 		if f"UNIT{i}" in u or s == f"Unit {i}":
