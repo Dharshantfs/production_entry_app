@@ -328,10 +328,11 @@ const REWINDING_BOARD_SUBTITLE = "L3 / L4 / L5 + Unassigned (102)";
 const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
 /** PB-* / PRINTED BOPP film queue (must match scheduler_api.PRINTED_BOPP_FILM_UNIT). */
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
-const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR";
-const PRINTING_UNIT_6_COLOUR = "JVE - PRINTING MACHINE 6 COLOUR";
+const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR 1600MM";
+const PRINTING_UNIT_4_COLOUR = "JVE - PRINTING MACHINE 4 COLOUR 1600MM";
+const PRINTING_UNIT_TT = "TT - PRINTING MACHINE COLOUR 1200MM";
 const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
-const PRINTING_BOARD_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_6_COLOUR, PRINTING_UNASSIGNED_UNIT];
+const PRINTING_BOARD_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT, PRINTING_UNASSIGNED_UNIT];
 const PRINTING_BOARD_SUBTITLE = "Planned orders (Process 105)";
 
 const UNIT_TONNAGE_LIMITS = {
@@ -349,7 +350,8 @@ const UNIT_TONNAGE_LIMITS = {
   [SHEET_CUTTING_UNIT]: 999,
   [PRINTED_BOPP_FILM_UNIT]: 999,
   [PRINTING_UNIT_2_COLOUR]: 999,
-  [PRINTING_UNIT_6_COLOUR]: 999,
+  [PRINTING_UNIT_4_COLOUR]: 999,
+  [PRINTING_UNIT_TT]: 999,
   [PRINTING_UNASSIGNED_UNIT]: 999,
 };
 const headerColors = {
@@ -367,7 +369,8 @@ const headerColors = {
   [SHEET_CUTTING_UNIT]: "#0f766e",
   [PRINTED_BOPP_FILM_UNIT]: "#7c3aed",
   [PRINTING_UNIT_2_COLOUR]: "#ec4899",
-  [PRINTING_UNIT_6_COLOUR]: "#f43f5e",
+  [PRINTING_UNIT_4_COLOUR]: "#f43f5e",
+  [PRINTING_UNIT_TT]: "#d946ef",
   [PRINTING_UNASSIGNED_UNIT]: "#94a3b8",
 };
 
@@ -375,8 +378,12 @@ function normalizeUnitName(rawUnit) {
   const full = String(rawUnit || "").trim();
   const txt = full.toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (txt.includes("printing machine 2 colour") && txt.includes("1600")) return PRINTING_UNIT_2_COLOUR;
   if (txt.includes("printing machine 2 colour")) return PRINTING_UNIT_2_COLOUR;
-  if (txt.includes("printing machine 6 colour")) return PRINTING_UNIT_6_COLOUR;
+  if (txt.includes("printing machine 4 colour") && txt.includes("1600")) return PRINTING_UNIT_4_COLOUR;
+  if (txt.includes("printing machine 4 colour")) return PRINTING_UNIT_4_COLOUR;
+  if (txt.startsWith("tt") && txt.includes("printing") && txt.includes("1200")) return PRINTING_UNIT_TT;
+  if (txt.startsWith("tt") && txt.includes("printing")) return PRINTING_UNIT_TT;
   if (txt === "unassigned printing machine") return PRINTING_UNASSIGNED_UNIT;
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;

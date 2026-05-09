@@ -2922,7 +2922,7 @@ def _ensure_printing_105_parent_units_on_sheet(planning_sheet_name):
 	if not planning_sheet_name:
 		return False
 	touched = False
-	printing_units = ("UNASSIGNED PRINTING MACHINE", "JVE - PRINTING MACHINE 2 COLOUR", "JVE - PRINTING MACHINE 6 COLOUR")
+	printing_units = ("UNASSIGNED PRINTING MACHINE", "JVE - PRINTING MACHINE 2 COLOUR 1600MM", "JVE - PRINTING MACHINE 4 COLOUR 1600MM", "TT - PRINTING MACHINE COLOUR 1200MM")
 	for dt in ("Planning Table", "Planning sheet Item"):
 		for row in frappe.get_all(
 			dt,

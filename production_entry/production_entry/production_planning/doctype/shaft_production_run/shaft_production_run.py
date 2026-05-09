@@ -1528,8 +1528,10 @@ class ShaftProductionRun(Document):
 
 		# --- Printing machines (check before generic JVE) ---
 		if "PRINTING" in ul and "BOPP" not in ul:
-			if "1600" in ul or ul.startswith("PY"):
-				return ("PY", "12")
+			if "4 COLOUR" in ul and "1600" in ul:
+				return ("JV", "12")
+			if "TT" in ul.split("-")[0].strip() or ul.startswith("TT"):
+				return ("JV", "11")
 			return ("JV", "11")
 
 		# --- Lamination ---
