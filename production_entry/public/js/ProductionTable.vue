@@ -46,7 +46,7 @@
         @click="toggleWidthUnit"
         :title="widthDimUnit === 'mm' ? 'Switch width display to inches' : 'Switch width display to mm (rounded to nearest 5mm) with item-code fallback'"
       >
-        Width: {{ widthDimUnit === 'mm' ? 'MM' : 'IN' }}
+        Width: {{ widthDimUnit === 'mm' ? 'MM' : 'Inches' }}
       </button>
       <button class="cc-clear-btn" @click="fetchData">🔄 Refresh</button>
       <button
@@ -157,7 +157,7 @@
                         <th style="width: 80px;">QUALITY</th>
                         <th style="width: 100px;">COLOUR</th>
                         <th style="width: 80px;">GSM</th>
-                        <th style="width: 90px;">WIDTH ({{ widthDimUnit === 'mm' ? 'MM' : 'IN' }})</th>
+                        <th style="width: 90px;">WIDTH ({{ widthDimUnit === 'mm' ? 'MM' : 'Inches' }})</th>
                         <th style="width: 120px;">TARGET WEIGHT (Kgs)</th>
                         <th style="width: 100px;">TOTAL TARGET (Kgs)</th>
                         <th style="width: 150px;">ACTUAL PRODUCTION WEIGHT (Kgs)</th>
@@ -1476,7 +1476,7 @@ function formatKg2(value) {
 function formatWidth(value) {
   const num = parseFloat(value);
   if (!Number.isFinite(num) || num <= 0) return "-";
-  return `${num} in`;
+  return `${num} Inches`;
 }
 
 /** Status pills: SPR docstate (draft vs submitted). */

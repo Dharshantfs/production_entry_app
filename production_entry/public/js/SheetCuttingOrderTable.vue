@@ -30,7 +30,7 @@
         <button type="button" class="cc-clear-btn" @click="restoreArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
-        <button type="button" class="cc-clear-btn" :title="sizeDimUnit === 'inches' ? 'Show roll & sheet size in mm (nearest 5)' : 'Show sizes in inches'" @click="toggleSizeDimUnit">{{ sizeDimUnit === "inches" ? "Sizes: mm" : "Sizes: in" }}</button>
+        <button type="button" class="cc-clear-btn" :title="sizeDimUnit === 'inches' ? 'Show roll & sheet size in mm (nearest 5)' : 'Show sizes in inches'" @click="toggleSizeDimUnit">{{ sizeDimUnit === "inches" ? "Sizes: mm" : "Sizes: Inches" }}</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Sheet Cutting Board</button>
       </div>
     </div>
@@ -125,9 +125,9 @@ import { formatSheetSizeCell as formatSheetSizeCellMm, formatSingleDimension } f
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_sheet_cutting";
 const sizeDimUnit = ref("inches");
-const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (in)"));
+const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (Inches)"));
 const sheetSizeHeader = computed(() =>
-  sizeDimUnit.value === "mm" ? "SHEET SIZE (mm)" : "SHEET SIZE (in)"
+  sizeDimUnit.value === "mm" ? "SHEET SIZE (mm)" : "SHEET SIZE (Inches)"
 );
 function toggleSizeDimUnit() {
   sizeDimUnit.value = sizeDimUnit.value === "mm" ? "inches" : "mm";

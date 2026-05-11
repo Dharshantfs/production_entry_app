@@ -1024,7 +1024,7 @@ function spr_open_manual_job_dialog(frm) {
 					{
 						fieldname: 'combination_input',
 						fieldtype: 'Data',
-						label: __('Combination widths (in)'),
+						label: __('Combination widths (Inches)'),
 						description: __('Example: 34+34+42. Same GSM only. One segment = one roll per shaft.'),
 					},
 					{
@@ -1048,7 +1048,7 @@ function spr_open_manual_job_dialog(frm) {
 							'</div>' +
 							'<div class="spr-manual-lines-wrap"></div>' +
 							'<p class="text-muted small" style="margin-top:6px;">' +
-							__('WO qty default = net/roll Kg × rolls × shafts') +
+							__('WO qty default = net/roll Kg x rolls x shafts') +
 							'</p>',
 					},
 				],
@@ -1192,7 +1192,7 @@ function spr_open_manual_job_dialog(frm) {
 					'</th><th style="width:110px;">' +
 					__('Order Code') +
 					'</th><th style="width:70px;">' +
-					__('Width (in)') +
+					__('Width (Inches)') +
 					'</th><th style="width:110px;">' +
 					__('Meter/Roll') +
 					'</th><th style="width:95px;">' +
@@ -1218,9 +1218,9 @@ function spr_open_manual_job_dialog(frm) {
 					const defQ = sprManualDefaultWoQty(line, nShafts, nRolls);
 					const label =
 						String(line.item_code || '') +
-						' ┬╖ ' +
+						' - ' +
 						String(line.item_name || '').substring(0, 28) +
-						' ┬╖ ' +
+						' - ' +
 						String(line.production_plan_item || '');
 					html += '<tr>';
 					html +=
@@ -1341,7 +1341,7 @@ function spr_open_manual_job_dialog(frm) {
 					}
 					if (matchIdx === -1) {
 						setManualCombinationStatus(
-							__('No unused PP line found for GSM {0} width {1} in.', [comboGsm, targetWidth]),
+							__('No unused PP line found for GSM {0} width {1} Inches.', [comboGsm, targetWidth]),
 							'text-danger'
 						);
 						return;
@@ -1482,7 +1482,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 					{
 						fieldname: 'width_inch',
 						fieldtype: 'Select',
-						label: __('Width / segment (in) — pick one row from the table above'),
+						label: __('Width / segment (Inches) - pick one row from the table above'),
 						options: '',
 						reqd: 1,
 					},
@@ -1552,7 +1552,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 							const m = r2.message || {};
 							frappe.show_alert({
 								message: __(
-									'Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} in, bundle net {3} Kg.',
+									'Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} Inches, bundle net {3} Kg.',
 									[
 										String(m.updated_rolls != null ? m.updated_rolls : ''),
 										String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
@@ -1579,6 +1579,16 @@ function spr_open_bundle_packaging_dialog(frm) {
 				const segs = jp.segments || [];
 				const arr = widthsByJob[jp.job_id] || [];
 				if (segs.length) {
+					const uniqueSegs = [];
+					const seenWidths = new Set();
+					segs.forEach(function (s) {
+						const w = flt(s.width_inch);
+						if (w <= 0) return;
+						const key = (Math.round(w * 1000) / 1000).toString();
+						if (seenWidths.has(key)) return;
+						seenWidths.add(key);
+						uniqueSegs.push(s);
+					});
 					let html =
 						'<table class="table table-bordered table-condensed" style="font-size:11px;margin:4px 0;"><thead><tr><th>' +
 						__('Width') +
@@ -1587,7 +1597,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 						'</th><th>' +
 						__('WO item') +
 						'</th></tr></thead><tbody>';
-					segs.forEach(function (s) {
+					uniqueSegs.forEach(function (s) {
 						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(2) : '—';
 						const ic = [s.item_code || '', (s.item_name || '').substring(0, 28)].join(' ').trim();
 						html +=
@@ -1601,7 +1611,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 					});
 					html += '</tbody></table>';
 					det.html(html);
-					wf.df.options = segs
+					wf.df.options = uniqueSegs
 						.map(function (s) {
 							return String(flt(s.width_inch));
 						})
@@ -1618,7 +1628,17 @@ function spr_open_bundle_packaging_dialog(frm) {
 						wf.refresh();
 						return;
 					}
-					wf.df.options = arr
+					const uniqueArr = [];
+					const seenArr = new Set();
+					arr.forEach(function (x) {
+						const w = flt(x);
+						if (w <= 0) return;
+						const key = (Math.round(w * 1000) / 1000).toString();
+						if (seenArr.has(key)) return;
+						seenArr.add(key);
+						uniqueArr.push(x);
+					});
+					wf.df.options = uniqueArr
 						.map(function (x) {
 							return String(x);
 						})
@@ -1626,7 +1646,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 				}
 				wf.refresh();
 				const firstW =
-					segs.length > 0 ? flt(segs[0].width_inch) : arr.length > 0 ? flt(arr[0]) : 0;
+					wf.df.options ? flt(String(wf.df.options).split('\n')[0]) : 0;
 				if (firstW > 0) {
 					d.set_value('width_inch', String(firstW));
 				}
@@ -1643,7 +1663,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 				const single = n > 0 ? whole / n : 0;
 				const tw = flt(wsel) * n;
 				el.html(
-					__('Single gross: {0} Kg ┬╖ Sticker width (selected width × pkg): {1} in', [
+					__('Single gross: {0} Kg - Sticker width (selected width x pkg): {1} Inches', [
 						single.toFixed(2),
 						tw.toFixed(2),
 					])

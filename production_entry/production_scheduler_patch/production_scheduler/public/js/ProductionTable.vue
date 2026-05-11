@@ -1395,7 +1395,7 @@ function formatKg2(value) {
 function formatWidth(value) {
   const num = parseFloat(value);
   if (!Number.isFinite(num) || num <= 0) return "-";
-  return `${num} in`;
+  return `${num} Inches`;
 }
 
 /** Status pills: SPR docstate (draft vs submitted). */

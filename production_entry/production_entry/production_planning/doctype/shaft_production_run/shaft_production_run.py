@@ -6158,11 +6158,40 @@ def spr_apply_bundle_packaging_for_job_width(
 		return (rn if rn > 0 else 999999, idx if idx > 0 else 999999, _cstr(getattr(it, "name", "")))
 
 	matching = sorted(matching, key=_sort_key)
+
+	def _row_key(it):
+		return _cstr(getattr(it, "name", "")) or str(cint(getattr(it, "idx", 0) or 0))
+
+	def _is_unpackable(it):
+		return flt(getattr(it, "gross_weight", 0) or 0) <= 0
+
 	unpacked = []
 	for it in matching:
-		if flt(getattr(it, "gross_weight", 0) or 0) > 0:
+		if not _is_unpackable(it):
 			continue
 		unpacked.append(it)
+
+	if len(unpacked) < no_of_packaging:
+		seen = {_row_key(it) for it in matching}
+		ref_items = {_cstr(getattr(it, "item_code", None)) for it in matching if _cstr(getattr(it, "item_code", None))}
+		job_item = _spr_job_product_code(sj)
+		if job_item:
+			ref_items.add(job_item)
+		extra = []
+		for it in spr.items or []:
+			if not _spr_item_roll_matches_bundle_job(sj, it, job_id):
+				continue
+			if _row_key(it) in seen:
+				continue
+			if not _is_unpackable(it):
+				continue
+			item_code = _cstr(getattr(it, "item_code", None))
+			if ref_items and item_code and item_code not in ref_items:
+				continue
+			extra.append(it)
+		if extra:
+			matching = sorted(list(matching) + extra, key=_sort_key)
+			unpacked = [it for it in matching if _is_unpackable(it)]
 
 	if len(unpacked) < no_of_packaging:
 		frappe.throw(

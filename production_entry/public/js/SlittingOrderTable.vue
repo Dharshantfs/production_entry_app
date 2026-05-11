@@ -51,7 +51,7 @@
           class="cc-clear-btn"
           :title="sizeDimUnit === 'inches' ? 'Show sizes in mm (nearest 5 mm)' : 'Show sizes in inches'"
           @click="toggleSizeDimUnit"
-        >{{ sizeDimUnit === "inches" ? "Sizes: mm" : "Sizes: in" }}</button>
+        >{{ sizeDimUnit === "inches" ? "Sizes: mm" : "Sizes: Inches" }}</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Slitting Board</button>
       </div>
     </div>
@@ -210,9 +210,9 @@ const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_slitting";
 const sizeDimUnit = ref("inches");
-const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (in)"));
+const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (Inches)"));
 const slittingSizeHeader = computed(() =>
-  sizeDimUnit.value === "mm" ? "SLITTING SIZE (mm)" : "SLITTING SIZE (in)"
+  sizeDimUnit.value === "mm" ? "SLITTING SIZE (mm)" : "SLITTING SIZE (Inches)"
 );
 function toggleSizeDimUnit() {
   sizeDimUnit.value = sizeDimUnit.value === "mm" ? "inches" : "mm";

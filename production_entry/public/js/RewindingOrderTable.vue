@@ -275,7 +275,7 @@ import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_rewinding";
 const sizeDimUnit = ref("inches");
-const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (in)"));
+const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (Inches)"));
 function toggleSizeDimUnit() {
   sizeDimUnit.value = sizeDimUnit.value === "mm" ? "inches" : "mm";
   try {
