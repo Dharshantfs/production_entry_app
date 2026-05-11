@@ -316,8 +316,8 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 		or _cstr(_spr_row_get(spr_row, "party_code"))
 	)
 	work_order = _cstr(_spr_row_get(spr_row, "work_order") or _spr_row_get(spr_row, "wo_id"))
-	roll_no = _spr_row_get(spr_row, "roll_no")
 	roll_numbers = _spr_row_get(spr_row, "roll_numbers")
+	roll_no = _spr_row_get(spr_row, "roll_no") or roll_numbers
 
 	_set_first_batch_field(
 		("custom_order_code", "order_code", "party_code"),
@@ -1703,7 +1703,7 @@ class ShaftProductionRun(Document):
 		"""Copy SPR header order code onto Stock Entry when the site has a matching custom field."""
 		if not se_name:
 			return
-		oc = _cstr(self.get("custom_order_code") or "")
+		oc = self._resolve_spr_order_code()
 		if not oc:
 			return
 		meta = frappe.get_meta("Stock Entry")
@@ -1713,7 +1713,18 @@ class ShaftProductionRun(Document):
 					frappe.db.set_value("Stock Entry", se_name, fn, oc, update_modified=False)
 				except Exception:
 					pass
-				return
+
+	def _resolve_spr_order_code(self) -> str:
+		for key in ("custom_order_code", "order_code", "custom_party_code", "party_code"):
+			s = _cstr(self.get(key))
+			if s:
+				return s
+		for row in self.items or []:
+			for key in ("custom_order_code", "order_code", "custom_party_code_text", "party_code"):
+				s = _cstr(row.get(key))
+				if s:
+					return s
+		return ""
 
 	def _resolve_spr_unit_value(self, wo_doc=None) -> str:
 		"""Pick unit for Stock Entry: SPR header first, then WO."""
@@ -1730,11 +1741,26 @@ class ShaftProductionRun(Document):
 
 	def _set_stock_entry_unit(self, se, wo_doc=None):
 		meta = frappe.get_meta("Stock Entry")
-		if not meta.has_field("unit"):
+		unit_value = self._resolve_spr_unit_value(wo_doc)
+		if not unit_value:
+			return
+		for fn in ("unit", "custom_unit", "workstation", "custom_workstation"):
+			if meta.has_field(fn):
+				se.set(fn, unit_value)
+
+	def _apply_unit_to_submitted_stock_entry(self, se_name: str, wo_doc=None):
+		if not se_name:
 			return
 		unit_value = self._resolve_spr_unit_value(wo_doc)
-		if unit_value:
-			se.unit = unit_value
+		if not unit_value:
+			return
+		meta = frappe.get_meta("Stock Entry")
+		for fn in ("unit", "custom_unit", "workstation", "custom_workstation"):
+			if meta.has_field(fn):
+				try:
+					frappe.db.set_value("Stock Entry", se_name, fn, unit_value, update_modified=False)
+				except Exception:
+					pass
 
 	def _refresh_batch_qty_for_codes(self, batch_codes: list[str]):
 		"""Force-refresh Batch.batch_qty for given batch ids from stock ledger."""
@@ -2598,6 +2624,16 @@ class ShaftProductionRun(Document):
 			source_net = flt(sum(self._row_fg_qty(r) for r in source_rows), 2)
 			source_gross = flt(sum(flt(r.get("gross_weight")) for r in source_rows), 2)
 			bundle_net = flt(sticker.get("sticker_bundle_weight") or source_net, 2)
+			source_order_code = ""
+			for r in source_rows:
+				source_order_code = (
+					_cstr(r.get("custom_order_code"))
+					or _cstr(r.get("order_code"))
+					or _cstr(r.get("custom_party_code_text"))
+					or _cstr(r.get("party_code"))
+				)
+				if source_order_code:
+					break
 			if abs(bundle_net - source_net) > 0.05:
 				frappe.throw(
 					_("Bundle Sticker row {0}: bundle net {1} Kg does not match selected roll net {2} Kg.").format(
@@ -2622,6 +2658,9 @@ class ShaftProductionRun(Document):
 						or 0
 					),
 					"roll_numbers": ", ".join(roll_numbers),
+					"order_code": source_order_code,
+					"party_code": source_order_code,
+					"custom_party_code_text": source_order_code,
 					"bundle_sticker_idx": sticker.get("idx"),
 				}
 			)
@@ -3199,7 +3238,7 @@ class ShaftProductionRun(Document):
 				continue
 
 			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
-			row_chunks = self._split_rows_by_qty_limit(rows, allowed_entry_qty)
+			row_chunks = [rows]
 			expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
 			if len(row_chunks) > 1:
 				frappe.msgprint(
@@ -3363,13 +3402,7 @@ class ShaftProductionRun(Document):
 				se.flags.ignore_duplicate_for_work_order = True
 				self._set_stock_entry_spr_link(se)
 				self._set_stock_entry_unit(se, wo_doc)
-				se_meta = frappe.get_meta("Stock Entry")
-				if (
-					se_meta.has_field("unit")
-					and _cstr(self._resolve_spr_unit_value(wo_doc))
-					and _cstr(se.get("unit")) != _cstr(self._resolve_spr_unit_value(wo_doc))
-				):
-					frappe.db.set_value("Stock Entry", se.name, "unit", self._resolve_spr_unit_value(wo_doc), update_modified=False)
+				self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
 				if _cstr(se.purpose) != "Manufacture":
 					frappe.throw(
 						_(
@@ -3460,6 +3493,7 @@ class ShaftProductionRun(Document):
 					raise
 				# Link back to WO after successful submit, then sync WO produced qty.
 				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
+				self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
 				self._apply_order_code_to_submitted_stock_entry(se.name)
 				self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
 				self._sync_work_order_required_item_progress(wo_id)
