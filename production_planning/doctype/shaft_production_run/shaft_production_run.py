@@ -26,6 +26,27 @@ def _cstr(v) -> str:
 	return str(v).strip() if v is not None else ""
 
 
+def _spr_bundle_source_batch_prefix(batch_no) -> str:
+	raw = _cstr(batch_no)
+	if not raw:
+		return ""
+	m = re.match(r"^(?P<prefix>.+)-B\d+(?:-\d+-\d+)?$", raw)
+	return _cstr(m.group("prefix")) if m else raw
+
+
+def _spr_next_bundle_batch_no(spr, source_prefix: str) -> str:
+	source_prefix = _cstr(source_prefix)
+	if not source_prefix:
+		return ""
+	max_no = 0
+	for row in spr.bundle_stickers or []:
+		bn = _cstr(getattr(row, "batch_no", ""))
+		m = re.match(rf"^{re.escape(source_prefix)}-B(\d+)(?:-\d+-\d+)?$", bn)
+		if m:
+			max_no = max(max_no, cint(m.group(1)))
+	return f"{source_prefix}-B{max_no + 1}"
+
+
 def _spr_row_get(spr_row, key: str):
 	if spr_row is None:
 		return None
@@ -2508,17 +2529,12 @@ class ShaftProductionRun(Document):
 		return prefix, rn or batch_roll
 
 	def _bundle_batch_id(self, sticker_row, roll_numbers: list[str]) -> str:
-		prefix = _cstr(sticker_row.get("batch_no"))
+		raw_batch_no = _cstr(sticker_row.get("batch_no"))
+		if re.match(r"^.+-B\d+(?:-\d+-\d+)?$", raw_batch_no):
+			return raw_batch_no
+		prefix = _spr_bundle_source_batch_prefix(raw_batch_no)
 		if not prefix:
 			return ""
-		nums = []
-		for rn in roll_numbers or []:
-			try:
-				nums.append(cint(rn))
-			except Exception:
-				pass
-		if nums:
-			return f"{prefix}-B{min(nums)}-{max(nums)}-{len(nums)}"
 		return f"{prefix}-B{cint(sticker_row.get('idx') or 0) or 1}"
 
 	def _bundle_fg_plans(self) -> list[dict]:
@@ -2533,7 +2549,7 @@ class ShaftProductionRun(Document):
 				row_by_key[(prefix, roll_no)] = row
 
 		for sticker in self.bundle_stickers or []:
-			prefix = _cstr(sticker.get("batch_no"))
+			prefix = _spr_bundle_source_batch_prefix(sticker.get("batch_no"))
 			roll_numbers = self._bundle_roll_numbers_from_text(sticker.get("roll_numbers"))
 			if not prefix or not roll_numbers:
 				continue
@@ -5713,13 +5729,11 @@ def spr_apply_bundle_packaging_for_job_width(
 	for it in matching:
 		if flt(getattr(it, "gross_weight", 0) or 0) > 0:
 			continue
-		if flt(getattr(it, "produced_length_mtrs", 0) or 0) > 0:
-			continue
 		unpacked.append(it)
 
 	if len(unpacked) < no_of_packaging:
 		frappe.throw(
-			_("Only {0} unpacked rolls available for job {1} width {2} in, but {3} requested.")
+			_("Only {0} unpacked rolls available for job {1} width {2} Inches, but {3} requested.")
 			.format(len(unpacked), job_id, width_inch, no_of_packaging)
 		)
 
@@ -5739,8 +5753,26 @@ def spr_apply_bundle_packaging_for_job_width(
 
 	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in selected), 2)
 
-	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
-	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
+	# Store combination as: NO_OF_PACKAGING * WIDTH Inches (example: 4 * 39 Inches)
+	comb_calculated = f"{no_of_packaging} * {width_inch} Inches"
+	bundle_batch_no = ""
+	roll_numbers_list = []
+	for it in selected:
+		bn = _cstr(getattr(it, "batch_no", "") or "")
+		rn = _cstr(getattr(it, "roll_no", "") or "")
+		if bn and "/" in bn:
+			prefix = bn.rsplit("/", 1)[0]
+			if not bundle_batch_no:
+				bundle_batch_no = prefix
+		elif bn and not bundle_batch_no:
+			bundle_batch_no = bn
+		if rn:
+			roll_numbers_list.append(rn)
+		elif bn and "/" in bn:
+			roll_numbers_list.append(bn.rsplit("/", 1)[1])
+	roll_numbers_str = ", ".join(roll_numbers_list)
+	if bundle_batch_no:
+		bundle_batch_no = _spr_next_bundle_batch_no(spr, bundle_batch_no)
 	bs = {
 		"combination": comb_calculated,
 		"rolls_per_bundle": no_of_packaging,
@@ -5760,6 +5792,10 @@ def spr_apply_bundle_packaging_for_job_width(
 		bs["custom_produced_length_mtrs"] = produced_length_mtrs
 	if bs_meta.has_field("job_id"):
 		bs["job_id"] = job_id or None
+	if bs_meta.has_field("batch_no"):
+		bs["batch_no"] = bundle_batch_no or None
+	if bs_meta.has_field("roll_numbers"):
+		bs["roll_numbers"] = roll_numbers_str or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
 	remaining_unpacked = max(len(unpacked) - no_of_packaging, 0)
@@ -5826,6 +5862,20 @@ def spr_apply_bundle_packaging(
 				comb = _cstr(getattr(row, "combination", None))
 				break
 
+	bundle_batch_no = ""
+	roll_numbers_str = ""
+	bn = _cstr(getattr(target, "batch_no", "") or "")
+	rn = _cstr(getattr(target, "roll_no", "") or "")
+	if bn and "/" in bn:
+		bundle_batch_no = bn.rsplit("/", 1)[0]
+		if not rn:
+			rn = bn.rsplit("/", 1)[1]
+	elif bn:
+		bundle_batch_no = bn
+	if bundle_batch_no:
+		bundle_batch_no = _spr_next_bundle_batch_no(spr, bundle_batch_no)
+	roll_numbers_str = rn
+
 	bs = {
 		"combination": comb or None,
 		"rolls_per_bundle": no_of_packaging,
@@ -5834,8 +5884,13 @@ def spr_apply_bundle_packaging(
 		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
 		"sticker_bundle_weight": bundle_net,
 	}
-	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
+	bs_meta = frappe.get_meta("Bundle Stickers")
+	if bs_meta.has_field("job_id"):
 		bs["job_id"] = jid or None
+	if bs_meta.has_field("batch_no"):
+		bs["batch_no"] = bundle_batch_no or None
+	if bs_meta.has_field("roll_numbers"):
+		bs["roll_numbers"] = roll_numbers_str or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
 
