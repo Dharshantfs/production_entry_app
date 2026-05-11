@@ -296,6 +296,7 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 	)
 	work_order = _cstr(_spr_row_get(spr_row, "work_order") or _spr_row_get(spr_row, "wo_id"))
 	roll_no = _spr_row_get(spr_row, "roll_no")
+	roll_numbers = _spr_row_get(spr_row, "roll_numbers")
 
 	_set_first_batch_field(
 		("custom_order_code", "order_code", "party_code"),
@@ -311,6 +312,10 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 		("roll_no", "custom_roll_no", "roll_number", "custom_roll_number"),
 		roll_no,
 		("roll",),
+	)
+	_set_first_batch_field(
+		("custom_roll_numbers", "roll_numbers", "custom_source_roll_numbers", "source_roll_numbers"),
+		roll_numbers,
 	)
 	return out
 
@@ -1651,9 +1656,9 @@ class ShaftProductionRun(Document):
 				frappe.log_error(frappe.get_traceback(), "SPR Batch sync skipped")
 
 	def _row_fg_qty(self, row) -> float:
-		qty = flt(row.net_weight)
+		qty = flt(_spr_row_get(row, "net_weight"))
 		if qty <= 0:
-			qty = flt(row.gross_weight)
+			qty = flt(_spr_row_get(row, "gross_weight"))
 		return qty
 
 	def _set_stock_entry_spr_link(self, se):
@@ -2474,8 +2479,172 @@ class ShaftProductionRun(Document):
 				return found
 			raise
 
+	def _bundle_roll_numbers_from_text(self, raw_value) -> list[str]:
+		"""Parse Bundle Stickers.roll_numbers into stable roll number strings."""
+		out = []
+		seen = set()
+		for part in re.split(r"[,;\s]+", _cstr(raw_value)):
+			val = part.strip()
+			if not val:
+				continue
+			try:
+				val = str(cint(val)) if str(cint(val)) == val or val.isdigit() else val
+			except Exception:
+				pass
+			if val not in seen:
+				seen.add(val)
+				out.append(val)
+		return out
+
+	def _roll_batch_prefix_and_no(self, row) -> tuple[str, str]:
+		bn = _cstr(row.get("batch_no"))
+		rn = _cstr(row.get("roll_no"))
+		prefix = ""
+		batch_roll = ""
+		if "/" in bn:
+			prefix, batch_roll = [x.strip() for x in bn.rsplit("/", 1)]
+		elif bn:
+			prefix = bn
+		return prefix, rn or batch_roll
+
+	def _bundle_batch_id(self, sticker_row, roll_numbers: list[str]) -> str:
+		prefix = _cstr(sticker_row.get("batch_no"))
+		if not prefix:
+			return ""
+		nums = []
+		for rn in roll_numbers or []:
+			try:
+				nums.append(cint(rn))
+			except Exception:
+				pass
+		if nums:
+			return f"{prefix}-B{min(nums)}-{max(nums)}-{len(nums)}"
+		return f"{prefix}-B{cint(sticker_row.get('idx') or 0) or 1}"
+
+	def _bundle_fg_plans(self) -> list[dict]:
+		"""Build bundle FG rows from Bundle Stickers and map them to source roll rows."""
+		plans = []
+		used_roll_names = {}
+		rows = list(self.items or [])
+		row_by_key = {}
+		for row in rows:
+			prefix, roll_no = self._roll_batch_prefix_and_no(row)
+			if prefix and roll_no:
+				row_by_key[(prefix, roll_no)] = row
+
+		for sticker in self.bundle_stickers or []:
+			prefix = _cstr(sticker.get("batch_no"))
+			roll_numbers = self._bundle_roll_numbers_from_text(sticker.get("roll_numbers"))
+			if not prefix or not roll_numbers:
+				continue
+
+			source_rows = []
+			missing = []
+			for rn in roll_numbers:
+				row = row_by_key.get((prefix, rn))
+				if not row:
+					missing.append(rn)
+					continue
+				source_rows.append(row)
+			if missing:
+				frappe.throw(
+					_("Bundle Sticker row {0}: roll number(s) {1} not found for batch {2}.").format(
+						cint(sticker.get("idx") or 0) or "?", ", ".join(missing), prefix
+					),
+					title=_("Bundle roll mismatch"),
+				)
+
+			for row in source_rows:
+				row_name = _cstr(row.get("name"))
+				if row_name in used_roll_names:
+					frappe.throw(
+						_("Roll {0} is included in more than one bundle sticker row ({1} and {2}).").format(
+							row.get("roll_no") or row.get("batch_no"),
+							used_roll_names[row_name],
+							sticker.get("idx"),
+						),
+						title=_("Duplicate bundled roll"),
+					)
+				used_roll_names[row_name] = sticker.get("idx")
+
+			work_orders = {_cstr(r.get("work_order") or r.get("wo_id")) for r in source_rows}
+			work_orders.discard("")
+			item_codes = {_cstr(r.get("item_code")) for r in source_rows}
+			item_codes.discard("")
+			if len(work_orders) > 1 or len(item_codes) > 1:
+				frappe.throw(
+					_("Bundle Sticker row {0} mixes Work Orders or items. Pack one Work Order/item per bundle.").format(
+						cint(sticker.get("idx") or 0) or "?"
+					),
+					title=_("Invalid bundle"),
+				)
+
+			source_net = flt(sum(self._row_fg_qty(r) for r in source_rows), 2)
+			source_gross = flt(sum(flt(r.get("gross_weight")) for r in source_rows), 2)
+			bundle_net = flt(sticker.get("sticker_bundle_weight") or source_net, 2)
+			if abs(bundle_net - source_net) > 0.05:
+				frappe.throw(
+					_("Bundle Sticker row {0}: bundle net {1} Kg does not match selected roll net {2} Kg.").format(
+						cint(sticker.get("idx") or 0) or "?", bundle_net, source_net
+					),
+					title=_("Bundle weight mismatch"),
+				)
+
+			plans.append(
+				{
+					"source_rows": source_rows,
+					"source_names": {_cstr(r.get("name")) for r in source_rows},
+					"first_idx": min([cint(r.get("idx") or 0) for r in source_rows] or [0]),
+					"work_order": next(iter(work_orders), ""),
+					"item_code": next(iter(item_codes), ""),
+					"batch_no": self._bundle_batch_id(sticker, roll_numbers),
+					"net_weight": bundle_net,
+					"gross_weight": flt(sticker.get("sticker_bundle_gross_weight_kg") or source_gross, 2),
+					"produced_length_mtrs": flt(
+						sticker.get("produced_length_mtrs")
+						or sticker.get("custom_produced_length_mtrs")
+						or 0
+					),
+					"roll_numbers": ", ".join(roll_numbers),
+					"bundle_sticker_idx": sticker.get("idx"),
+				}
+			)
+		return plans
+
+	def _fg_posting_units_for_rows(self, spr_rows: list, wo_doc) -> list:
+		"""Return normal roll rows plus bundle rows for this chunk without double-posting packed rolls."""
+		chunk_names = {_cstr(r.get("name")) for r in spr_rows or []}
+		units = []
+		covered = set()
+		for plan in self._bundle_fg_plans():
+			if _cstr(plan.get("work_order")) != _cstr(getattr(wo_doc, "name", "")):
+				continue
+			src = set(plan.get("source_names") or set())
+			overlap = src & chunk_names
+			if not overlap:
+				continue
+			if overlap != src:
+				frappe.throw(
+					_("Bundle Sticker row {0} was split across Stock Entry chunks. Reduce bundle size or increase WO overproduction allowance.").format(
+						plan.get("bundle_sticker_idx") or "?"
+					),
+					title=_("Bundle split blocked"),
+				)
+			covered.update(src)
+			units.append({"sort_idx": plan.get("first_idx") or 0, "row": plan, "is_bundle": True})
+
+		for row in spr_rows or []:
+			if _cstr(row.get("name")) in covered:
+				continue
+			units.append({"sort_idx": cint(row.get("idx") or 0), "row": row, "is_bundle": False})
+		units.sort(key=lambda x: (cint(x.get("sort_idx") or 0), 1 if x.get("is_bundle") else 0))
+		return [u["row"] for u in units]
+
+	def _fg_posting_qty_for_rows(self, spr_rows: list, wo_doc) -> float:
+		return sum(flt(self._row_fg_qty(unit)) for unit in self._fg_posting_units_for_rows(spr_rows, wo_doc))
+
 	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list, fg_templates=None):
-		"""One finished-good Stock Entry line per SPR roll, cloned from ERPNext FG template rows."""
+		"""Append FG rows: normal rolls individually, packed rolls as one Bundle Stickers row."""
 		item_code = wo_doc.production_item
 		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
 		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
@@ -2489,7 +2658,7 @@ class ShaftProductionRun(Document):
 		if base_template is None and fg_templates:
 			base_template = fg_templates[0]
 
-		for spr in spr_rows:
+		for spr in self._fg_posting_units_for_rows(spr_rows, wo_doc):
 			qty = self._row_fg_qty(spr)
 			if qty <= 0:
 				continue
@@ -2712,7 +2881,7 @@ class ShaftProductionRun(Document):
 		has_batch = cint(frappe.db.get_value("Item", item_code, "has_batch_no"))
 		expected_total = 0.0
 		expected_by_batch = defaultdict(float)
-		for spr in spr_rows or []:
+		for spr in self._fg_posting_units_for_rows(spr_rows, wo_doc):
 			qty = flt(self._row_fg_qty(spr))
 			if qty <= 0:
 				continue
@@ -2980,7 +3149,7 @@ class ShaftProductionRun(Document):
 		# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
 		for wo_id, rows in wo_groups.items():
 			wo_doc = frappe.get_doc("Work Order", wo_id)
-			total_qty = sum(self._row_fg_qty(r) for r in rows)
+			total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
 			wo_item = _cstr(getattr(wo_doc, "production_item", None))
 
 			# Hard safety: one WO must not receive rows of other finished items.
@@ -3056,7 +3225,7 @@ class ShaftProductionRun(Document):
 			wo_id = plan["wo_id"]
 			wo_doc = plan["wo_doc"]
 			for chunk_rows in plan["row_chunks"]:
-				chunk_total_qty = sum(self._row_fg_qty(r) for r in chunk_rows)
+				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
 				if chunk_total_qty <= 0:
 					continue
 				preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
@@ -3085,7 +3254,7 @@ class ShaftProductionRun(Document):
 			expected_rm_map = plan["expected_rm_map"]
 			actual_rm_map = {}
 			for idx, chunk_rows in enumerate(row_chunks, start=1):
-				chunk_total_qty = sum(self._row_fg_qty(r) for r in chunk_rows)
+				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
 				if chunk_total_qty <= 0:
 					continue
 				se = frappe.new_doc("Stock Entry")
