@@ -7,6 +7,8 @@
  "field_order": [
   "job_id",
   "combination",
+  "batch_no",
+  "roll_numbers",
   "rolls_per_bundle",
   "produced_length_mtrs",
   "single_roll_gross_weight_kg",
@@ -17,6 +19,8 @@
  "fields": [
   {"fieldname": "job_id", "fieldtype": "Data", "in_list_view": 1, "label": "Job ID"},
   {"fieldname": "combination", "fieldtype": "Data", "in_list_view": 1, "label": "Combination"},
+  {"fieldname": "batch_no", "fieldtype": "Data", "in_list_view": 1, "label": "Batch No", "read_only": 1},
+  {"fieldname": "roll_numbers", "fieldtype": "Small Text", "in_list_view": 1, "label": "Roll Numbers", "read_only": 1},
   {"fieldname": "rolls_per_bundle", "fieldtype": "Int", "label": "Rolls per Bundle"},
   {"fieldname": "produced_length_mtrs", "fieldtype": "Float", "label": "Produced Length (Mtrs)", "precision": "2"},
   {"fieldname": "single_roll_gross_weight_kg", "fieldtype": "Float", "label": "Single Roll Gross (Kg)"},
@@ -27,7 +31,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-04-02 12:00:00.000000",
+ "modified": "2026-05-11 10:30:00.000000",
  "module": "Production Planning",
  "name": "Bundle Stickers",
  "owner": "Administrator",

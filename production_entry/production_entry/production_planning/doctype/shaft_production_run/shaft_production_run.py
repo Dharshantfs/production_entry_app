@@ -6003,6 +6003,26 @@ def spr_apply_bundle_packaging_for_job_width(
 
 	bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in selected), 2)
 
+	# Extract batch_no (common prefix) and roll numbers from the selected rolls.
+	# Batch format is "BATCHPREFIX/ROLLNO" — all rolls in a bundle share the same prefix.
+	bundle_batch_no = ""
+	roll_numbers_list = []
+	for it in selected:
+		bn = _cstr(getattr(it, "batch_no", "") or "")
+		rn = _cstr(getattr(it, "roll_no", "") or "")
+		if bn and "/" in bn:
+			prefix = bn.rsplit("/", 1)[0]
+			if not bundle_batch_no:
+				bundle_batch_no = prefix
+		elif bn and not bundle_batch_no:
+			bundle_batch_no = bn
+		if rn:
+			roll_numbers_list.append(rn)
+		elif bn and "/" in bn:
+			# Fallback: extract roll number from batch_no suffix
+			roll_numbers_list.append(bn.rsplit("/", 1)[1])
+	roll_numbers_str = ", ".join(roll_numbers_list)
+
 	# Store combination as: NO_OF_PACKAGING * WIDTH INCH (example: 4 * 39 INCH)
 	comb_calculated = f"{no_of_packaging} * {width_inch} INCH"
 	bs = {
@@ -6021,6 +6041,10 @@ def spr_apply_bundle_packaging_for_job_width(
 		bs["custom_produced_length_mtrs"] = produced_length_mtrs
 	if bs_meta.has_field("job_id"):
 		bs["job_id"] = job_id or None
+	if bs_meta.has_field("batch_no"):
+		bs["batch_no"] = bundle_batch_no or None
+	if bs_meta.has_field("roll_numbers"):
+		bs["roll_numbers"] = roll_numbers_str or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
 	remaining_unpacked = max(len(unpacked) - no_of_packaging, 0)
@@ -6087,6 +6111,19 @@ def spr_apply_bundle_packaging(
 				comb = _cstr(getattr(row, "combination", None))
 				break
 
+	# Extract batch_no and roll_no from the target roll line.
+	bundle_batch_no = ""
+	roll_numbers_str = ""
+	bn = _cstr(getattr(target, "batch_no", "") or "")
+	rn = _cstr(getattr(target, "roll_no", "") or "")
+	if bn and "/" in bn:
+		bundle_batch_no = bn.rsplit("/", 1)[0]
+		if not rn:
+			rn = bn.rsplit("/", 1)[1]
+	elif bn:
+		bundle_batch_no = bn
+	roll_numbers_str = rn
+
 	bs = {
 		"combination": comb or None,
 		"rolls_per_bundle": no_of_packaging,
@@ -6095,8 +6132,13 @@ def spr_apply_bundle_packaging(
 		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
 		"sticker_bundle_weight": bundle_net,
 	}
-	if frappe.get_meta("Bundle Stickers").has_field("job_id"):
+	bs_meta = frappe.get_meta("Bundle Stickers")
+	if bs_meta.has_field("job_id"):
 		bs["job_id"] = jid or None
+	if bs_meta.has_field("batch_no"):
+		bs["batch_no"] = bundle_batch_no or None
+	if bs_meta.has_field("roll_numbers"):
+		bs["roll_numbers"] = roll_numbers_str or None
 	spr.append("bundle_stickers", bs)
 	spr.save(ignore_permissions=True)
 
