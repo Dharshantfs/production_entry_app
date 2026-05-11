@@ -18,6 +18,9 @@ from production_entry.production_planning.planning_doctypes import (
 	REWINDING_UNASSIGNED_UNIT,
 	PRINTED_BOPP_FILM_UNIT as PLANNING_PRINTED_BOPP_FILM_UNIT,
 	PRINTING_UNASSIGNED_UNIT,
+	PRINTING_UNIT_2_COLOUR,
+	PRINTING_UNIT_4_COLOUR,
+	PRINTING_UNIT_TT,
 )
 
 
@@ -4188,7 +4191,7 @@ def get_printed_bopp_film_table_data(
 
 
 @frappe.whitelist()
-def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None):
+def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None, unit=None):
     """Return Process 105 printing rows with transfer/produced metrics."""
     out = []
     try:
@@ -4249,6 +4252,10 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         elif date:
             q += f" AND DATE({eff_date}) = %s"
             params.append(date)
+        unit_filter = _cstr(unit)
+        if unit_filter and has_unit:
+            q += " AND TRIM(IFNULL(pt.unit, '')) = %s"
+            params.append(unit_filter)
         if has_seq:
             q += f" ORDER BY {eff_date}, CASE WHEN IFNULL(pt.custom_printing_arrangement_seq,0) > 0 THEN pt.custom_printing_arrangement_seq ELSE 999999 END, pt.idx"
         else:
@@ -5174,7 +5181,7 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
 
 
 @frappe.whitelist()
-def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None):
+def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, unit=None):
     """Assign DAY/NIGHT shift for printing (105) rows (design-first item codes with -105...)."""
     target_date = getdate(shift_date or frappe.utils.nowdate())
     shift_label = (shift_label or "DAY").strip().upper()
@@ -5182,12 +5189,25 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None):
         frappe.throw(_("Shift must be DAY or NIGHT."))
     if not frappe.db.has_column("Planning Table", "custom_printing_shift"):
         frappe.throw(_("Field custom_printing_shift is missing on Planning Table. Please migrate."))
-    u_print = "UNASSIGNED PRINTING MACHINE"
-    if is_date_under_maintenance(u_print, str(target_date)):
-        info = get_maintenance_info_on_date(u_print, str(target_date)) or {}
+    allowed_units = {
+        PRINTING_UNIT_2_COLOUR,
+        PRINTING_UNIT_4_COLOUR,
+        PRINTING_UNIT_TT,
+        PRINTING_UNASSIGNED_UNIT,
+    }
+    unit_filter = normalize_planning_unit_for_select(unit) if unit else ""
+    if unit_filter and unit_filter not in allowed_units:
+        unit_filter = _cstr(unit)
+    row_unit = ""
+    if item_name and frappe.db.has_column("Planning Table", "unit"):
+        row_unit = _cstr(frappe.db.get_value("Planning Table", _cstr(item_name), "unit"))
+    check_unit = row_unit or unit_filter
+    if check_unit and is_date_under_maintenance(check_unit, str(target_date)):
+        info = get_maintenance_info_on_date(check_unit, str(target_date)) or {}
         frappe.throw(
-            _("Cannot place printing orders on {0}. Machine is off ({1}) from {2} to {3}.").format(
+            _("Cannot place printing orders on {0}. {1} is off ({2}) from {3} to {4}.").format(
                 target_date,
+                check_unit,
                 info.get("type") or "Maintenance",
                 info.get("start_date") or target_date,
                 info.get("end_date") or target_date,
@@ -5224,6 +5244,11 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None):
             tuple(values),
         )
     else:
+        unit_clause = ""
+        values = [shift_label, target_date]
+        if unit_filter and frappe.db.has_column("Planning Table", "unit"):
+            unit_clause = " AND TRIM(IFNULL(pt.unit, '')) = %s"
+            values.append(unit_filter)
         frappe.db.sql(
             f"""
             UPDATE `tabPlanning Table` pt
@@ -5232,8 +5257,9 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None):
             WHERE ps.docstatus < 2
               AND {filt}
               AND DATE({eff_date}) = DATE(%s)
+              {unit_clause}
             """,
-            (shift_label, target_date),
+            tuple(values),
         )
     updated = frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0].get("c") or 0
     frappe.db.commit()
@@ -5463,14 +5489,23 @@ def add_lamination_machine_off(start_date=None, end_date=None, maintenance_type=
 
 
 @frappe.whitelist()
-def add_printing_machine_off(start_date=None, end_date=None, maintenance_type="Machine Off", notes=None):
-    """Create maintenance window for Process 105 printing (Unassigned printing machine)."""
+def add_printing_machine_off(start_date=None, end_date=None, maintenance_type="Machine Off", notes=None, unit=None):
+    """Create maintenance window for a Process 105 printing unit."""
     start_dt = getdate(start_date or frappe.utils.nowdate())
     end_dt = getdate(end_date or start_dt)
     if end_dt < start_dt:
         frappe.throw(_("End Date must be on or after Start Date."))
+    target_unit = normalize_planning_unit_for_select(unit) if unit else PRINTING_UNASSIGNED_UNIT
+    allowed_units = {
+        PRINTING_UNIT_2_COLOUR,
+        PRINTING_UNIT_4_COLOUR,
+        PRINTING_UNIT_TT,
+        PRINTING_UNASSIGNED_UNIT,
+    }
+    if target_unit not in allowed_units:
+        frappe.throw(_("Select a valid printing unit."))
     return add_equipment_maintenance(
-        unit="UNASSIGNED PRINTING MACHINE",
+        unit=target_unit,
         maintenance_type=maintenance_type or "Machine Off",
         start_date=str(start_dt),
         end_date=str(end_dt),
@@ -15676,9 +15711,6 @@ def validate_planning_sheet_duplicates(doc, method=None):
     if not doc.sales_order:
         return
         
-    # Recalculate plan codes whenever saved
-    update_sheet_plan_codes(doc)
-
     # Strict singleton: block any second sheet for the same Sales Order.
     filters = {
         "sales_order": doc.sales_order,

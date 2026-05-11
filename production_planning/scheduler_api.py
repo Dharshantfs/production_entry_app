@@ -11166,9 +11166,6 @@ def validate_planning_sheet_duplicates(doc, method=None):
     if not doc.sales_order:
         return
         
-    # Recalculate plan codes whenever saved
-    update_sheet_plan_codes(doc)
-
     # Strict singleton: block any second sheet for the same Sales Order.
     filters = {
         "sales_order": doc.sales_order,

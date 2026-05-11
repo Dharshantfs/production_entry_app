@@ -54,7 +54,7 @@
         </select>
       </div>
       <div class="cc-filter-actions">
-        <button v-if="!isPrinting105Table" type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">{{ isPrinting105Table ? "Printing Machine Off" : "Machine Off" }}</button>
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
@@ -173,8 +173,8 @@
             </td>
             <td class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
-              <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date)" class="cc-maint-chip">
-                OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date) }}
+              <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date, row.unit)" class="cc-maint-chip">
+                OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date, row.unit) }}
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
@@ -371,7 +371,7 @@ const pageTitle = computed(() => {
   return isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table";
 });
 const tableMaintenanceUnit = computed(() => {
-  if (isPrinting105Table.value) return PRINTING_UNASSIGNED_UNIT;
+  if (isPrinting105Table.value) return filterUnit.value || PRINTING_UNASSIGNED_UNIT;
   return isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT;
 });
 const tableUnitHeader = computed(() => {
@@ -523,6 +523,15 @@ const tableColCount = computed(() => {
   return n;
 });
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
+
+function normalizeUnitValue(unit) {
+  return String(unit || "").trim();
+}
+
+function rowMatchesPrintingUnit(row) {
+  if (!isPrinting105Table.value || !filterUnit.value) return true;
+  return normalizeUnitValue(row?.unit) === filterUnit.value;
+}
 
 function setLaminationProcess(v) {
   if (isPrinting105Table.value) return;
@@ -722,7 +731,13 @@ async function fetchMaintenanceRecords() {
       method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
-    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === tableMaintenanceUnit.value);
+    const allRows = res?.message || [];
+    const rows = isPrinting105Table.value
+      ? allRows.filter((r) => {
+          const u = normalizeUnitValue(r.unit);
+          return filterUnit.value ? u === filterUnit.value : PRINTING_FILTER_UNITS.includes(u);
+        })
+      : allRows.filter((r) => normalizeUnitValue(r.unit) === tableMaintenanceUnit.value);
     maintenanceRecords.value = rows;
     const mapped = {};
     rows.forEach((rec) => {
@@ -730,7 +745,11 @@ async function fetchMaintenanceRecords() {
       const end = new Date(rec.end_date);
       for (let cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) {
         const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
-        mapped[key] = rec.maintenance_type || "Machine Off";
+        if (!mapped[key]) mapped[key] = [];
+        mapped[key].push({
+          unit: normalizeUnitValue(rec.unit),
+          type: rec.maintenance_type || "Machine Off",
+        });
       }
     });
     maintenanceByDate.value = mapped;
@@ -740,9 +759,19 @@ async function fetchMaintenanceRecords() {
   }
 }
 
-function maintenanceTypeForDate(dateValue) {
+function maintenanceTypeForDate(dateValue, unitValue = "") {
   const k = toDateKey(dateValue);
-  return k ? maintenanceByDate.value[k] : "";
+  const recs = k ? (maintenanceByDate.value[k] || []) : [];
+  if (!Array.isArray(recs) || recs.length === 0) return "";
+  if (isPrinting105Table.value) {
+    const targetUnit = normalizeUnitValue(unitValue) || filterUnit.value;
+    if (targetUnit) {
+      const hit = recs.find((r) => r.unit === targetUnit);
+      return hit ? hit.type : "";
+    }
+    return recs.map((r) => `${r.unit}: ${r.type}`).join(", ");
+  }
+  return recs[0]?.type || "";
 }
 
 function scheduleRowsByShift(shift) {
@@ -751,7 +780,13 @@ function scheduleRowsByShift(shift) {
   return (rawData.value || []).filter((r) => {
     const rk = toDateKey(r.plannedDate || r.planned_date);
     const sh = String(r.shift_label || "DAY").toUpperCase();
-    return rk === dateKey && sh === String(shift || "").toUpperCase();
+    const pc = (filterPartyCode.value || "").trim().toLowerCase();
+    const cu = (filterCustomer.value || "").trim().toLowerCase();
+    if (rk !== dateKey || sh !== String(shift || "").toUpperCase()) return false;
+    if (!rowMatchesPrintingUnit(r)) return false;
+    if (pc && !String(r.partyCode || "").toLowerCase().includes(pc)) return false;
+    if (cu && !String(r.customer_name || r.customer || "").toLowerCase().includes(cu)) return false;
+    return true;
   });
 }
 
@@ -1311,7 +1346,12 @@ async function handleShiftDrop(targetShift) {
   try {
     const res = await frappe.call({
       method: assignShiftMethod.value,
-      args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName },
+      args: {
+        shift_date: dateKey,
+        shift_label: targetShift,
+        item_name: row.itemName,
+        unit: isPrinting105Table.value ? row.unit || filterUnit.value || "" : undefined,
+      },
     });
     const msg = res?.message || {};
     frappe.show_alert({ message: `Moved to ${targetShift} on ${dateKey} (${msg.updated_count || 0})`, indicator: "green" }, 3);
@@ -1342,9 +1382,11 @@ function openAssignShiftDialog() {
           frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date)}).`);
           return;
         }
+        const assignArgs = { shift_date: vals.shift_date, shift_label: vals.shift_label };
+        if (isPrinting105Table.value && filterUnit.value) assignArgs.unit = filterUnit.value;
         const res = await frappe.call({
           method: assignShiftMethod.value,
-          args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
+          args: assignArgs,
         });
         const msg = res?.message || {};
         frappe.show_alert(
@@ -1364,33 +1406,46 @@ function openAssignShiftDialog() {
 
 function getMaintenanceRecordsHTML() {
   if (!maintenanceRecords.value.length) {
-    return `<p style="color:#64748b;text-align:center;padding:6px 0;">No maintenance records for ${isPrintedBoppTable.value ? "Printed BOPP film" : "Lamination"} in this scope.</p>`;
+    return `<p style="color:#64748b;text-align:center;padding:6px 0;">No maintenance records for ${isPrinting105Table.value ? "Printing" : isPrintedBoppTable.value ? "Printed BOPP film" : "Lamination"} in this scope.</p>`;
   }
-  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Unit</th><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
   maintenanceRecords.value.forEach((rec) => {
-    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
+    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.unit || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
   });
   html += "</table>";
   return html;
 }
 
 function openMachineOffDialog() {
+  const fields = [
+    { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
+    { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
+  ];
+  if (isPrinting105Table.value) {
+    fields.push({
+      fieldtype: "Select",
+      fieldname: "unit",
+      label: "Printing Unit",
+      options: PRINTING_FILTER_UNITS.join("\n"),
+      default: filterUnit.value || PRINTING_UNASSIGNED_UNIT,
+      reqd: 1,
+    });
+  }
+  fields.push(
+    {
+      fieldtype: "Select",
+      fieldname: "maintenance_type",
+      label: "Type",
+      options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change",
+      default: "Machine Off",
+      reqd: 1,
+    },
+    { fieldtype: "Small Text", fieldname: "notes", label: "Notes" },
+    { fieldtype: "HTML", fieldname: "records", options: getMaintenanceRecordsHTML() }
+  );
   const d = new frappe.ui.Dialog({
-    title: isPrintedBoppTable.value ? "Printed BOPP film — Machine Off" : "Lamination Machine Off",
-    fields: [
-      { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
-      { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
-      {
-        fieldtype: "Select",
-        fieldname: "maintenance_type",
-        label: "Type",
-        options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change",
-        default: "Machine Off",
-        reqd: 1,
-      },
-      { fieldtype: "Small Text", fieldname: "notes", label: "Notes" },
-      { fieldtype: "HTML", fieldname: "records", options: getMaintenanceRecordsHTML() },
-    ],
+    title: isPrinting105Table.value ? "Printing Machine Off" : isPrintedBoppTable.value ? "Printed BOPP film — Machine Off" : "Lamination Machine Off",
+    fields,
     primary_action_label: "Save",
     primary_action: async (vals) => {
       try {
@@ -1401,6 +1456,7 @@ function openMachineOffDialog() {
             end_date: vals.end_date,
             maintenance_type: vals.maintenance_type,
             notes: vals.notes || "",
+            unit: isPrinting105Table.value ? vals.unit : undefined,
           },
         });
         if (res?.message?.status === "success") {
@@ -1408,7 +1464,7 @@ function openMachineOffDialog() {
             {
               message:
                 res.message.message ||
-                (isPrintedBoppTable.value ? "Printed BOPP film maintenance saved" : "Lamination maintenance saved"),
+                (isPrinting105Table.value ? "Printing maintenance saved" : isPrintedBoppTable.value ? "Printed BOPP film maintenance saved" : "Lamination maintenance saved"),
               indicator: "green",
             },
             4
@@ -1454,6 +1510,9 @@ async function fetchData() {
     };
     if (!isPrintedBoppTable.value && !isPrinting105Table.value) {
       args.lamination_process = laminationProcess.value;
+    }
+    if (isPrinting105Table.value && filterUnit.value) {
+      args.unit = filterUnit.value;
     }
     if (viewScope.value === "monthly") {
       if (!filterMonth.value) return;
@@ -1577,6 +1636,9 @@ function updateUrlParams() {
   if (!isPrintedBoppTable.value && !isPrinting105Table.value) {
     q.set("lamination_process", laminationProcess.value);
   }
+  if (isPrinting105Table.value && filterUnit.value) {
+    q.set("unit", filterUnit.value);
+  }
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
 
@@ -1611,12 +1673,19 @@ watch([filterOrderDate, filterWeek, filterMonth], () => {
   fetchData();
 });
 
+watch(filterUnit, () => {
+  if (!filtersReady.value || !isPrinting105Table.value) return;
+  updateUrlParams();
+  fetchData();
+});
+
 onMounted(async () => {
   const p = new URLSearchParams(window.location.search);
   if (p.get("scope")) viewScope.value = p.get("scope");
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
+  if (isPrinting105Table.value && p.get("unit")) filterUnit.value = p.get("unit");
   if (!isPrintedBoppTable.value && !isPrinting105Table.value) {
     const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
     if (lp === "104" || lp === "107" || lp === "__all__") laminationProcess.value = lp;
