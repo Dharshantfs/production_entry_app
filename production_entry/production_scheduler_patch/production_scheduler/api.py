@@ -796,6 +796,65 @@ def _printing_design_attachment_from_sales_order_item(so_item_name):
 	return ""
 
 
+def _printing_sales_order_item_from_row(row):
+	"""Best-effort Sales Order Item link from table/board row variants."""
+	if not row:
+		return ""
+	for key in ("sales_order_item", "salesOrderItem", "so_item", "sales_order_detail"):
+		val = _cstr(row.get(key))
+		if val:
+			return val
+	return ""
+
+
+def _printing_design_name_from_row(row, design_code=None, so_item_name=None):
+	"""Prefer real design name; never use the numeric design code as the name."""
+	design_code = _cstr(design_code).strip()
+	so_item_name = _cstr(so_item_name).strip() or _printing_sales_order_item_from_row(row)
+	for val in (
+		(row or {}).get("custom_design_name"),
+		(row or {}).get("design_name"),
+		_pb_design_name_from_sales_order_item(so_item_name),
+	):
+		name = _cstr(val).strip()
+		if name and name != design_code:
+			return name
+	return ""
+
+
+def _printing_design_attachment_from_row(row, so_item_name=None):
+	"""Get print design attachment from Planning Table row, then Sales Order Item."""
+	so_item_name = _cstr(so_item_name).strip() or _printing_sales_order_item_from_row(row)
+	for val in (
+		(row or {}).get("custom_design_attachment"),
+		(row or {}).get("design_attachment"),
+		(row or {}).get("custom_design_image"),
+		(row or {}).get("design_image"),
+		_printing_design_attachment_from_sales_order_item(so_item_name),
+	):
+		url = _cstr(val).strip()
+		if url:
+			return url
+	return ""
+
+
+def _printing_planned_meter_from_row(row, width_inch=0, gsm=0):
+	"""Planned meters: stored meter first, then meter/roll * rolls, then kg/GSM/width."""
+	meter = flt((row or {}).get("meter") or (row or {}).get("planned_meter") or 0)
+	if meter > 0:
+		return meter
+	meter_per_roll = flt((row or {}).get("meter_per_roll") or (row or {}).get("custom_meter_per_roll") or 0)
+	no_of_rolls = flt((row or {}).get("no_of_rolls") or (row or {}).get("custom_no_of_rolls") or 0)
+	if meter_per_roll > 0 and no_of_rolls > 0:
+		return meter_per_roll * no_of_rolls
+	qty = flt((row or {}).get("qty") or 0)
+	width_inch = flt(width_inch or (row or {}).get("width_inch") or 0)
+	gsm = flt(gsm or (row or {}).get("gsm") or 0)
+	if qty > 0 and width_inch > 0 and gsm > 0:
+		return round((qty * 1000) / (gsm * width_inch * 0.0254))
+	return 0
+
+
 def _is_white_tint_yes(val):
 	s = str(val or "").strip().lower()
 	return s in ("yes", "y", "1", "true")
@@ -3204,6 +3263,73 @@ def _force_rewinding_unit_on_sheet(planning_sheet_name):
 	return updated
 
 
+def _repair_rewinding_parent_rows(planning_sheet_name=None):
+	"""Repair old 102 parent rows saved as Unit 1-4; leave 100 fabric children unchanged."""
+	if not REWINDING_FLOW_ENABLED:
+		return 0
+	updated = 0
+	sheet_filter = "AND parent = %s" if planning_sheet_name else ""
+	params = [planning_sheet_name] if planning_sheet_name else []
+	unit_marks = ",".join(["%s"] * len(REWINDING_BOARD_UNITS))
+	if frappe.db.has_column("Planning Table", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning Table`
+			SET unit = %s
+			WHERE item_code LIKE '102%%'
+			  {sheet_filter}
+			  AND (IFNULL(TRIM(unit), '') = '' OR TRIM(unit) NOT IN ({unit_marks}))
+			""",
+			tuple([REWINDING_UNASSIGNED_UNIT] + params + list(REWINDING_BOARD_UNITS)),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "unit"):
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning sheet Item`
+			SET unit = %s
+			WHERE item_code LIKE '102%%'
+			  {sheet_filter}
+			  AND (IFNULL(TRIM(unit), '') = '' OR TRIM(unit) NOT IN ({unit_marks}))
+			""",
+			tuple([REWINDING_UNASSIGNED_UNIT] + params + list(REWINDING_BOARD_UNITS)),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning Table", "planned_date"):
+		parent_filter = "AND pt.parent = %s" if planning_sheet_name else ""
+		sheet_date_expr = "COALESCE(ps.custom_planned_date, ps.ordered_date)" if frappe.db.has_column("Planning sheet", "custom_planned_date") else "ps.ordered_date"
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning Table` pt
+			INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+			SET pt.planned_date = COALESCE(NULLIF(pt.planned_date, ''), {sheet_date_expr})
+			WHERE pt.item_code LIKE '102%%'
+			  {parent_filter}
+			  AND (pt.planned_date IS NULL OR pt.planned_date = '')
+			""",
+			tuple(params),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if frappe.db.has_column("Planning sheet Item", "planned_date"):
+		parent_filter = "AND psi.parent = %s" if planning_sheet_name else ""
+		sheet_date_expr = "COALESCE(ps.custom_planned_date, ps.ordered_date)" if frappe.db.has_column("Planning sheet", "custom_planned_date") else "ps.ordered_date"
+		frappe.db.sql(
+			f"""
+			UPDATE `tabPlanning sheet Item` psi
+			INNER JOIN `tabPlanning sheet` ps ON ps.name = psi.parent
+			SET psi.planned_date = COALESCE(NULLIF(psi.planned_date, ''), {sheet_date_expr})
+			WHERE psi.item_code LIKE '102%%'
+			  {parent_filter}
+			  AND (psi.planned_date IS NULL OR psi.planned_date = '')
+			""",
+			tuple(params),
+		)
+		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	if updated:
+		frappe.db.commit()
+	return updated
+
+
 @frappe.whitelist()
 def backfill_parent_child_trace_ids(planning_sheet_name=None):
 	"""Backfill custom_parent_child_trace_id on parent rows and their child rows.
@@ -3600,6 +3726,11 @@ def get_color_chart_data(
         and mode_lc not in ("pull", "pull_board")
     ):
         board_process_scope = "only_100"
+    if str(board_process_scope or "").strip() == "rewinding_only":
+        try:
+            _repair_rewinding_parent_rows()
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows")
     try:
         return _get_color_chart_data_impl(
             date=date,
@@ -4280,6 +4411,11 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
         gsm = flt(r.get("gsm") or 0)
         if gsm <= 0 and p105.get("gsm"):
             gsm = flt(p105.get("gsm"))
+        so_item_name = _printing_sales_order_item_from_row(r)
+        design_code = r.get("custom_design_code") or r.get("design_code") or p105.get("design_code")
+        design_name = _printing_design_name_from_row(r, design_code, so_item_name)
+        design_attachment = _printing_design_attachment_from_row(r, so_item_name)
+        planned_meter = _printing_planned_meter_from_row(r, width_inch, gsm)
         out.append({
             "psi_name": psi_name,
             "plan_name": plan_name,
@@ -4287,16 +4423,17 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "customer": r.get("customer") or r.get("customer_name"),
             "planned_date": _cstr(r.get("planned_date") or r.get("plannedDate") or date or start_date),
             "item_code": ic,
+            "sales_order_item": so_item_name,
             "unit": r.get("unit") or PRINTING_UNASSIGNED_UNIT,
             "quality": r.get("quality") or p105.get("quality_code") or "",
             "gsm": gsm,
             "width_inch": width_inch,
             "qty": flt(r.get("qty") or 0.0),
-            "meter": flt(r.get("meter") or r.get("planned_meter") or 0.0),
+            "meter": planned_meter,
             "color": r.get("color") or r.get("fabric_colour"),
-            "custom_design_code": r.get("custom_design_code") or r.get("design_code") or p105.get("design_code"),
-            "custom_design_name": r.get("custom_design_name") or r.get("design_name") or r.get("design_code") or p105.get("design_code"),
-            "custom_design_attachment": r.get("custom_design_attachment") or r.get("custom_design_image") or "",
+            "custom_design_code": design_code,
+            "custom_design_name": design_name,
+            "custom_design_attachment": design_attachment,
             "custom_printing_shift": r.get("custom_printing_shift") or r.get("shift_label") or "DAY",
             "custom_printing_arrangement_seq": r.get("custom_printing_arrangement_seq") or "",
             "spr_name": spr_latest,
@@ -4337,12 +4474,20 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         gsm_expr = "pt.gsm as gsm" if has_gsm else "0 as gsm"
         has_wi = frappe.db.has_column("Planning Table", "width_inch")
         wi_expr = "pt.width_inch as width_inch" if has_wi else "0 as width_inch"
+        has_mpr = frappe.db.has_column("Planning Table", "meter_per_roll")
+        mpr_expr = "pt.meter_per_roll as meter_per_roll" if has_mpr else "0 as meter_per_roll"
+        has_nor = frappe.db.has_column("Planning Table", "no_of_rolls")
+        nor_expr = "pt.no_of_rolls as no_of_rolls" if has_nor else "0 as no_of_rolls"
         has_cdc = frappe.db.has_column("Planning Table", "custom_design_code")
         cdc_expr = "pt.custom_design_code as custom_design_code" if has_cdc else "'' as custom_design_code"
         has_cdn = frappe.db.has_column("Planning Table", "custom_design_name")
         cdn_expr = "pt.custom_design_name as custom_design_name" if has_cdn else "'' as custom_design_name"
         has_cda = frappe.db.has_column("Planning Table", "custom_design_attachment")
         cda_expr = "pt.custom_design_attachment as custom_design_attachment" if has_cda else "'' as custom_design_attachment"
+        has_soi = frappe.db.has_column("Planning Table", "sales_order_item")
+        soi_expr = "pt.sales_order_item as sales_order_item" if has_soi else "'' as sales_order_item"
+        has_so_item = frappe.db.has_column("Planning Table", "so_item")
+        so_item_expr = "pt.so_item as so_item" if has_so_item else "'' as so_item"
         has_cps = frappe.db.has_column("Planning Table", "custom_printing_shift")
         cps_expr = "pt.custom_printing_shift as custom_printing_shift" if has_cps else "'' as custom_printing_shift"
         pp_fields = _psi_production_plan_fields()
@@ -4379,8 +4524,9 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 eff_date = "COALESCE(ps.ordered_date, ps.ordered_date)"
         q = (
             "SELECT pt.name as psi_name, pt.parent as planning_sheet, pt.item_code, pt.qty, pt.meter, pt.color, "
-            f"{quality_expr}, {cq_expr}, {gsm_expr}, {wi_expr}, "
+            f"{quality_expr}, {cq_expr}, {gsm_expr}, {wi_expr}, {mpr_expr}, {nor_expr}, "
             f"{cdc_expr}, {cdn_expr}, {cda_expr}, {cps_expr}, "
+            f"{soi_expr}, {so_item_expr}, "
             f"{unit_expr}, "
             f"{seq_expr}, "
             f"{spr_expr}, "
@@ -4454,6 +4600,18 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             sm = spr_meta.get(spr_latest) or {}
             operator_code = (sm.get("custom_operator") or "").strip() if isinstance(sm, dict) else ""
             operator_name = emp_name_by_code.get(operator_code) or ""
+            p105 = _parse_105_item_code(ic) or {}
+            width_inch = flt(r.get("width_inch") or 0)
+            if width_inch <= 0 and p105.get("width_mm"):
+                width_inch = round(flt(p105.get("width_mm")) / 25.4)
+            gsm = flt(r.get("gsm") or 0)
+            if gsm <= 0 and p105.get("gsm"):
+                gsm = flt(p105.get("gsm"))
+            so_item_name = _printing_sales_order_item_from_row(r)
+            design_code = r.get("custom_design_code") or p105.get("design_code")
+            design_name = _printing_design_name_from_row(r, design_code, so_item_name)
+            design_attachment = _printing_design_attachment_from_row(r, so_item_name)
+            planned_meter = _printing_planned_meter_from_row(r, width_inch, gsm)
             out.append({
                 "psi_name": r.get("psi_name"),
                 "plan_name": r.get("plan_name"),
@@ -4461,16 +4619,17 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 "customer": r.get("customer"),
                 "planned_date": _cstr(r.get("planned_date")),
                 "item_code": ic,
+                "sales_order_item": so_item_name,
                 "unit": r.get("unit") or "UNASSIGNED PRINTING MACHINE",
                 "quality": r.get("quality") or r.get("custom_quality") or "",
-                "gsm": flt(r.get("gsm") or 0),
-                "width_inch": flt(r.get("width_inch") or 0),
+                "gsm": gsm,
+                "width_inch": width_inch,
                 "qty": flt(r.get("qty") or 0.0),
-                "meter": flt(r.get("meter") or 0.0),
+                "meter": planned_meter,
                 "color": r.get("color"),
-                "custom_design_code": r.get("custom_design_code"),
-                "custom_design_name": r.get("custom_design_name"),
-                "custom_design_attachment": r.get("custom_design_attachment"),
+                "custom_design_code": design_code,
+                "custom_design_name": design_name,
+                "custom_design_attachment": design_attachment,
                 "custom_printing_shift": r.get("custom_printing_shift"),
                 "custom_printing_arrangement_seq": r.get("custom_printing_arrangement_seq"),
                 "spr_name": spr_latest,
@@ -4661,6 +4820,10 @@ def get_rewinding_order_table_data(
     """
     102-only rows for Rewinding Order Table (same enrichment as slitting table).
     """
+    try:
+        _repair_rewinding_parent_rows()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows_table")
     try:
         rows = _get_color_chart_data_impl(
             date=date,

@@ -184,7 +184,7 @@
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
             <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_design_code || row.design_code || "—" }}</td>
-            <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ row.custom_design_name || row.design_name || row.design_code || "—" }}</td>
+            <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ displayDesignName(row) }}</td>
             <td v-if="showDesignAttachmentColumn" class="cell-center">
               <button
                 type="button"
@@ -1119,6 +1119,15 @@ function getDesignAttachmentUrl(item) {
   return String(item.custom_design_attachment || item.design_attachment || item.custom_design_image || item.design_image || "").trim();
 }
 
+function displayDesignName(row) {
+  if (!row) return "—";
+  const code = String(row.custom_design_code || row.design_code || "").trim();
+  const name = String(row.custom_design_name || row.design_name || "").trim();
+  if (!name) return isPrinting105Table.value ? "—" : (code || "—");
+  if (isPrinting105Table.value && name === code) return "—";
+  return name;
+}
+
 function openDesignPreview(item) {
   const url = getDesignAttachmentUrl(item);
   if (!url) {
@@ -1565,8 +1574,9 @@ async function fetchData() {
           gsm: d.gsm || 0,
           width_inch: d.width_inch || 0,
           design_code: d.custom_design_code || d.design_code || "",
-          design_name: d.custom_design_name || d.design_name || d.custom_design_code || d.design_code || "",
-          custom_design_attachment: d.custom_design_attachment || d.custom_design_image || "",
+          design_name: d.custom_design_name || d.design_name || "",
+          custom_design_name: d.custom_design_name || d.design_name || "",
+          custom_design_attachment: d.custom_design_attachment || d.design_attachment || d.custom_design_image || d.design_image || "",
           custom_printing_shift: d.custom_printing_shift || d.shift_label || "DAY",
           custom_printing_arrangement_seq: d.custom_printing_arrangement_seq || "",
           plannedDate: d.planned_date || d.plannedDate || filterOrderDate.value,
