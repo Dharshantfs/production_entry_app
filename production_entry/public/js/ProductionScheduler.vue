@@ -424,8 +424,12 @@ function normalizeUnitName(rawUnit) {
 }
 
 function itemProcessPrefix(itemCode) {
-  const ic = String(itemCode || "").trim();
-  return ic.length >= 3 ? ic.slice(0, 3) : "";
+  const ic = String(itemCode || "").trim().toUpperCase();
+  if (!ic) return "";
+  const hyphenMatch = ic.match(/-(\d{3})/);
+  if (hyphenMatch) return hyphenMatch[1];
+  const directMatch = ic.match(/^(\d{3})/);
+  return directMatch ? directMatch[1] : "";
 }
 
 const filterOrderDate = ref(frappe.datetime.get_today());
