@@ -3386,6 +3386,134 @@ def _repair_rewinding_parent_rows(planning_sheet_name=None):
 	return updated
 
 
+def _rewinding_rows_direct_from_planning_table(date=None, start_date=None, end_date=None, planned_only=1):
+	"""Direct 102 fallback for rewinding board/table when sheet-level board scan misses item rows."""
+	if not REWINDING_FLOW_ENABLED:
+		return []
+	try:
+		_repair_rewinding_parent_rows()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows_direct")
+
+	sd = _normalize_filter_date(start_date)
+	ed = _normalize_filter_date(end_date)
+	dt = _normalize_filter_date(date)
+	if not (sd and ed) and not dt:
+		return []
+
+	has_pt_pd = frappe.db.has_column("Planning Table", "planned_date")
+	has_ps_cpd = frappe.db.has_column("Planning sheet", "custom_planned_date")
+	if has_pt_pd and has_ps_cpd:
+		eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.custom_planned_date, ps.ordered_date)"
+	elif has_pt_pd:
+		eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
+	elif has_ps_cpd:
+		eff_date = "COALESCE(ps.custom_planned_date, ps.ordered_date)"
+	else:
+		eff_date = "ps.ordered_date"
+
+	quality_expr = "pt.quality as quality" if frappe.db.has_column("Planning Table", "quality") else "'' as quality"
+	custom_quality_expr = "pt.custom_quality as custom_quality" if frappe.db.has_column("Planning Table", "custom_quality") else "'' as custom_quality"
+	unit_expr = "pt.unit as unit" if frappe.db.has_column("Planning Table", "unit") else "'' as unit"
+	gsm_expr = "pt.gsm as gsm" if frappe.db.has_column("Planning Table", "gsm") else "0 as gsm"
+	width_expr = "pt.width_inch as width_inch" if frappe.db.has_column("Planning Table", "width_inch") else "0 as width_inch"
+	meter_expr = "pt.meter as meter" if frappe.db.has_column("Planning Table", "meter") else "0 as meter"
+	so_item_expr = "pt.sales_order_item as salesOrderItem" if frappe.db.has_column("Planning Table", "sales_order_item") else ("pt.so_item as salesOrderItem" if frappe.db.has_column("Planning Table", "so_item") else "'' as salesOrderItem")
+	source_expr = "pt.source_item as source_item" if frappe.db.has_column("Planning Table", "source_item") else "'' as source_item"
+	pp_fields = _psi_production_plan_fields()
+	pp_expr = f"pt.{pp_fields[0]} as pp_id" if pp_fields else "'' as pp_id"
+	spr_expr = "pt.spr_name as spr_name" if frappe.db.has_column("Planning Table", "spr_name") else "'' as spr_name"
+	shift_expr = "pt.custom_slitting_shift as shift_label" if frappe.db.has_column("Planning Table", "custom_slitting_shift") else "'DAY' as shift_label"
+
+	params = []
+	date_clause = ""
+	if sd and ed:
+		date_clause = f"AND DATE({eff_date}) BETWEEN %s AND %s"
+		params.extend([sd, ed])
+	else:
+		date_clause = f"AND DATE({eff_date}) = %s"
+		params.append(dt)
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			pt.name as itemName,
+			pt.name as item_name,
+			pt.item_code as itemCode,
+			pt.item_code as item_code,
+			pt.item_name as description,
+			pt.parent as planningSheet,
+			pt.parent as planning_sheet,
+			pt.qty,
+			{meter_expr},
+			pt.idx,
+			pt.color,
+			{quality_expr},
+			{custom_quality_expr},
+			{unit_expr},
+			{gsm_expr},
+			{width_expr},
+			{source_expr},
+			{so_item_expr},
+			{pp_expr},
+			{spr_expr},
+			{shift_expr},
+			ps.party_code as partyCode,
+			ps.party_code as order_code,
+			ps.customer,
+			COALESCE(c.customer_name, ps.customer, ps.party_code) as customer_name,
+			ps.sales_order as salesOrder,
+			ps.sales_order as sales_order,
+			ps.ordered_date,
+			{eff_date} as planned_date,
+			{eff_date} as plannedDate
+		FROM `tabPlanning Table` pt
+		INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
+		LEFT JOIN `tabCustomer` c ON c.name = ps.customer
+		WHERE ps.docstatus < 2
+		  AND UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE '102%%'
+		  {date_clause}
+		ORDER BY {eff_date}, pt.idx
+		""",
+		tuple(params),
+		as_dict=True,
+	) or []
+	if not rows:
+		return []
+
+	pp_ids = list({str(r.get("pp_id") or "").strip() for r in rows if str(r.get("pp_id") or "").strip()})
+	pp_docstatus = {}
+	if pp_ids and frappe.db.exists("DocType", "Production Plan"):
+		for p in frappe.get_all("Production Plan", filters={"name": ["in", pp_ids]}, fields=["name", "docstatus"], limit_page_length=0) or []:
+			pp_docstatus[p.get("name")] = cint(p.get("docstatus") or 0)
+
+	out = []
+	for r in rows:
+		row = dict(r)
+		ic = _cstr(row.get("item_code") or row.get("itemCode"))
+		color = _clean_color_value(row.get("color")) or _color_from_item_code_6_to_8(ic) or "Unknown Color"
+		unit = normalize_planning_unit_for_select(row.get("unit"))
+		if unit not in REWINDING_BOARD_UNITS:
+			unit = REWINDING_UNASSIGNED_UNIT
+		pp_id = _cstr(row.get("pp_id"))
+		row.update({
+			"name": f"{row.get('planningSheet')}-{row.get('idx') or 0}",
+			"color": color.upper().strip(),
+			"fabric_colour": color.upper().strip(),
+			"quality": row.get("custom_quality") or row.get("quality") or "",
+			"unit": unit,
+			"plannedDate": _cstr(row.get("planned_date") or row.get("plannedDate")),
+			"pp_docstatus": pp_docstatus.get(pp_id, 0) if pp_id else 0,
+			"actual_production_weight_kgs": 0,
+			"total_achieved_weight_kgs": 0,
+			"produced_qty": 0,
+			"pending_qty": flt(row.get("qty") or 0),
+			"spr_docstatus": 0,
+		})
+		out.append(row)
+	return _deduplicate_items(out)
+
+
 @frappe.whitelist()
 def backfill_parent_child_trace_ids(planning_sheet_name=None):
 	"""Backfill custom_parent_child_trace_id on parent rows and their child rows.
@@ -3788,7 +3916,7 @@ def get_color_chart_data(
         except Exception:
             frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows")
     try:
-        return _get_color_chart_data_impl(
+        rows = _get_color_chart_data_impl(
             date=date,
             start_date=start_date,
             end_date=end_date,
@@ -3798,6 +3926,14 @@ def get_color_chart_data(
             board_process_scope=board_process_scope,
             lamination_process=lamination_process,
         )
+        if str(board_process_scope or "").strip() == "rewinding_only" and not rows:
+            return _rewinding_rows_direct_from_planning_table(
+                date=date,
+                start_date=start_date,
+                end_date=end_date,
+                planned_only=planned_only,
+            )
+        return rows
     except Exception:
         frappe.log_error(frappe.get_traceback(), "get_color_chart_data_error")
         return []
@@ -4891,7 +5027,14 @@ def get_rewinding_order_table_data(
         )
     except Exception:
         frappe.log_error(frappe.get_traceback(), "get_rewinding_order_table_data")
-        return []
+        rows = []
+    if not rows:
+        rows = _rewinding_rows_direct_from_planning_table(
+            date=date,
+            start_date=start_date,
+            end_date=end_date,
+            planned_only=planned_only,
+        )
     if not rows:
         return []
     try:
