@@ -7491,16 +7491,16 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return LAMINATION_UNIT
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "103":
         return SLITTING_UNIT
-	if item_code and _item_process_prefix(str(item_code)) == "109":
-		return SLITTING_UNIT
+    if item_code and _item_process_prefix(str(item_code)) == "109":
+        return SLITTING_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "251":
         return SHEET_CUTTING_UNIT
-	if item_code and _item_process_prefix(str(item_code)) == "252":
-		return SHEET_CUTTING_UNIT
+    if item_code and _item_process_prefix(str(item_code)) == "252":
+        return SHEET_CUTTING_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
-	if item_code and _item_process_prefix(str(item_code)) == "106":
-		return PRINTING_UNASSIGNED_UNIT
+    if item_code and _item_process_prefix(str(item_code)) == "106":
+        return PRINTING_UNASSIGNED_UNIT
     w = flt(width_inch)
     if _is_white_color(color):
         return "UNASSIGNED"
