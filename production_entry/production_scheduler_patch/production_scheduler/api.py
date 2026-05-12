@@ -29,6 +29,24 @@ def _cstr(value):
 	return str(value or "").strip()
 
 
+def _normalize_filter_date(value):
+	"""Normalize date filters from routes/widgets to YYYY-MM-DD."""
+	txt = _cstr(value)
+	if not txt or txt.lower() in ("none", "null", "undefined", "nan"):
+		return ""
+	txt = re.sub(r"[\s/.]+", "-", txt)
+	m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", txt)
+	if m:
+		return f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"
+	m = re.match(r"^(\d{1,2})-(\d{1,2})-(\d{4})$", txt)
+	if m:
+		return f"{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"
+	try:
+		return _cstr(getdate(value))
+	except Exception:
+		return txt
+
+
 # Party / order code auto-generation (MonthLetter+YY+NNN + SO writeback).
 # Set True to enable; False disables all calls (no codes generated, no SO writeback from this path).
 PARTY_CODE_GENERATION_ENABLED = False
@@ -4195,8 +4213,9 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
     """Return Process 105 printing rows with transfer/produced metrics."""
     out = []
     try:
-        sd = start_date or None
-        ed = end_date or None
+        sd = _normalize_filter_date(start_date) or None
+        ed = _normalize_filter_date(end_date) or None
+        date = _normalize_filter_date(date) or None
         if not sd and not ed and not date:
             # Never let incidental page loads scan every historical Planning Table row.
             date = today()
@@ -4222,6 +4241,24 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         cda_expr = "pt.custom_design_attachment as custom_design_attachment" if has_cda else "'' as custom_design_attachment"
         has_cps = frappe.db.has_column("Planning Table", "custom_printing_shift")
         cps_expr = "pt.custom_printing_shift as custom_printing_shift" if has_cps else "'' as custom_printing_shift"
+        pp_fields = _psi_production_plan_fields()
+        pp_expr = f"pt.{pp_fields[0]} as pp_id" if pp_fields else "'' as pp_id"
+        printing_candidate_parts = [
+            "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '105%'",
+            "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-105%'",
+        ]
+        candidate_params = []
+        if has_unit:
+            printing_units = [
+                PRINTING_UNASSIGNED_UNIT,
+                PRINTING_UNIT_2_COLOUR,
+                PRINTING_UNIT_4_COLOUR,
+                PRINTING_UNIT_TT,
+            ]
+            unit_marks = ",".join(["%s"] * len(printing_units))
+            printing_candidate_parts.append(f"TRIM(IFNULL(pt.unit, '')) IN ({unit_marks})")
+            candidate_params.extend(printing_units)
+        printing_candidate_sql = " OR ".join(printing_candidate_parts)
         
         # Use item-level planned_date if available, fallback to sheet custom_planned_date then ordered_date
         has_pt_pd = frappe.db.has_column("Planning Table", "planned_date")
@@ -4243,13 +4280,14 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             f"{unit_expr}, "
             f"{seq_expr}, "
             f"{spr_expr}, "
+            f"{pp_expr}, "
             "ps.name as plan_name, ps.party_code as planning_order_code, "
             f"ps.customer as customer, {eff_date} as planned_date "
             "FROM `tabPlanning Table` pt JOIN `tabPlanning sheet` ps ON ps.name = pt.parent "
             "WHERE ps.docstatus < 2 "
-            "AND (UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '105%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-105%') "
+            f"AND ({printing_candidate_sql}) "
         )
-        params = []
+        params = list(candidate_params)
         if sd and ed:
             q += f" AND DATE({eff_date}) BETWEEN %s AND %s"
             params.extend([sd, ed])
@@ -4300,8 +4338,7 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             ic = _cstr(r.get("item_code"))
             if not ic:
                 continue
-            ic_u = ic.upper()
-            is_105 = ic_u.startswith("105") or "-105" in ic_u or _item_process_prefix(ic) == "105"
+            is_105 = _is_printing_105_parent_process(ic) or _item_process_prefix(ic) == "105"
             if not is_105:
                 continue
             metrics = _get_transfer_and_produced_for_pl_row(r)
