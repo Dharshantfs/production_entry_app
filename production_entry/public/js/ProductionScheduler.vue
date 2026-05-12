@@ -384,12 +384,12 @@ function normalizeUnitName(rawUnit) {
   const full = String(rawUnit || "").trim();
   const txt = full.toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (txt.startsWith("tt") && txt.includes("printing") && txt.includes("1200")) return PRINTING_UNIT_TT;
+  if (txt.startsWith("tt") && txt.includes("printing")) return PRINTING_UNIT_TT;
   if (txt.includes("printing machine 2 colour") && txt.includes("1600")) return PRINTING_UNIT_2_COLOUR;
   if (txt.includes("printing machine 2 colour")) return PRINTING_UNIT_2_COLOUR;
   if (txt.includes("printing machine 4 colour") && txt.includes("1600")) return PRINTING_UNIT_4_COLOUR;
   if (txt.includes("printing machine 4 colour")) return PRINTING_UNIT_4_COLOUR;
-  if (txt.startsWith("tt") && txt.includes("printing") && txt.includes("1200")) return PRINTING_UNIT_TT;
-  if (txt.startsWith("tt") && txt.includes("printing")) return PRINTING_UNIT_TT;
   if (txt === "unassigned printing machine") return PRINTING_UNASSIGNED_UNIT;
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;

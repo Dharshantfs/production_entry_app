@@ -1303,6 +1303,23 @@ def _stage3_lam_gsm_from_item_code(item_code):
 	return 0
 
 
+def _printing_color_from_item_code(item_code):
+	proc = _item_process_prefix(item_code)
+	if proc == "105":
+		parsed = _parse_105_item_code(item_code) or {}
+	elif proc == "106":
+		parsed = _parse_106_item_code(item_code) or {}
+	else:
+		return ""
+	colour_code = _cstr(parsed.get("colour_code"))
+	if not colour_code:
+		return ""
+	try:
+		return _get_color_by_code(colour_code) or colour_code
+	except Exception:
+		return colour_code
+
+
 def _set_trace_id_if_supported(row_dict_or_doc, trace_id):
 	if not trace_id:
 		return
@@ -10512,7 +10529,7 @@ def _get_color_chart_data_impl(
                     it["lamination_process"] = _lamination_process_from_item_code(it.get("item_code") or "")
                 except Exception:
                     it["lamination_process"] = ""
-        elif items and bps == "printing_only":
+        if items and bps == "printing_only":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("105", "106")]
         elif items and bps == "slitting_only":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("103", "109")]
@@ -11716,14 +11733,20 @@ def _get_color_chart_data_impl(
 
             color = (item.get("color") or item.get("colour") or "").strip()
             quality = (item.get("custom_quality") or "").strip()
+            item_code_for_color = (item.get("item_code") or "").strip()
+            if bps == "printing_only" and _item_process_prefix(item_code_for_color) in ("105", "106"):
+                parsed_printing_color = _printing_color_from_item_code(item_code_for_color)
+                if parsed_printing_color and (not color or color.upper() in {"NO COLOR", "UNKNOWN", "UNKNOWN COLOR"}):
+                    color = parsed_printing_color
             
             # Fallback for missing data instead of skipping (prevents "hidden" orders)
             if not color: color = "Unknown Color"
             if not quality: quality = "Unknown Quality"
             if color.upper() == "NO COLOR":
-                item_code_for_color = (item.get("item_code") or "").strip()
                 if bps == "rewinding_only" and _item_process_prefix(item_code_for_color) == "102":
                     color = _color_from_item_code_6_to_8(item_code_for_color) or "Unknown Color"
+                elif bps == "printing_only" and _item_process_prefix(item_code_for_color) in ("105", "106"):
+                    color = _printing_color_from_item_code(item_code_for_color) or "Unknown Color"
                 else:
                     continue
 

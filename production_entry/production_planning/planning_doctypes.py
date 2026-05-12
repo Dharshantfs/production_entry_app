@@ -113,6 +113,10 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return SLITTING_UNIT
     if "TNSPL" in u and "LAMINATION" in u:
         return LAMINATION_UNIT
+    if "TT" in u and "PRINTING" in u and "1200" in u:
+        return PRINTING_UNIT_TT
+    if u.startswith("TT") and "PRINTING" in u:
+        return PRINTING_UNIT_TT
     if "PRINTINGMACHINE2COLOUR" in u and "1600" in u:
         return PRINTING_UNIT_2_COLOUR
     if "PRINTINGMACHINE2COLOUR" in u or ("PRINTING" in u and "2COLOUR" in u):
@@ -121,10 +125,6 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return PRINTING_UNIT_4_COLOUR
     if "PRINTINGMACHINE4COLOUR" in u or ("PRINTING" in u and "4COLOUR" in u):
         return PRINTING_UNIT_4_COLOUR
-    if "TT" in u and "PRINTING" in u and "1200" in u:
-        return PRINTING_UNIT_TT
-    if u.startswith("TT") and "PRINTING" in u:
-        return PRINTING_UNIT_TT
     if "PRINTING" in u and "UNASSIGNED" in u:
         return PRINTING_UNASSIGNED_UNIT
     if "VR1200MMBOPPPRINTINGMACHINE" in u or "1200MMBOPP" in u:
