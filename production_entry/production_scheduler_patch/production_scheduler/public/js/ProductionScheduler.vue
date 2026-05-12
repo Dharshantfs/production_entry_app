@@ -759,9 +759,8 @@ const filteredData = computed(() => {
     data = data
       .filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === "102")
       .map((d) => {
-        const rawU = String(d.unit || "").trim();
         let u = normalizeUnitName(d.unit);
-        if (itemProcessPrefix(d.item_code || d.itemCode) === "102" && (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED")) {
+        if (itemProcessPrefix(d.item_code || d.itemCode) === "102" && !REWINDING_BOARD_UNITS.includes(u)) {
           u = REWINDING_UNASSIGNED_UNIT;
         }
         return { ...d, unit: u };

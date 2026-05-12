@@ -3152,30 +3152,27 @@ def _force_rewinding_unit_on_sheet(planning_sheet_name):
 					""",
 					(color_name, planning_sheet_name, str(rr.get("sales_order_item") or "").strip()),
 				)
-	_rw_legacy_unit = (
-		" (IFNULL(TRIM(unit), '') = '' OR UPPER(TRIM(unit)) IN ('UNASSIGNED', 'MIXED')) "
-	)
-	# Planned date before unit so WHERE still matches legacy UNASSIGNED rows.
+	rw_unit_marks = ",".join(["%s"] * len(REWINDING_BOARD_UNITS))
+	rw_bad_unit = f"(IFNULL(TRIM(unit), '') = '' OR TRIM(unit) NOT IN ({rw_unit_marks}))"
+	# Always stamp the 102 parent date so dedicated rewinding views can find the row.
 	if ordered_date and frappe.db.has_column("Planning Table", "planned_date"):
 		frappe.db.sql(
-			f"""
+			"""
 			UPDATE `tabPlanning Table`
 			SET planned_date = %s
 			WHERE parent = %s
 			  AND item_code LIKE '102%%'
-			  AND {_rw_legacy_unit}
 			""",
 			(ordered_date, planning_sheet_name),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	if ordered_date and frappe.db.has_column("Planning sheet Item", "planned_date"):
 		frappe.db.sql(
-			f"""
+			"""
 			UPDATE `tabPlanning sheet Item`
 			SET planned_date = %s
 			WHERE parent = %s
 			  AND item_code LIKE '102%%'
-			  AND {_rw_legacy_unit}
 			""",
 			(ordered_date, planning_sheet_name),
 		)
@@ -3187,9 +3184,9 @@ def _force_rewinding_unit_on_sheet(planning_sheet_name):
 			SET unit = %s
 			WHERE parent = %s
 			  AND item_code LIKE '102%%'
-			  AND {_rw_legacy_unit}
+			  AND {rw_bad_unit}
 			""",
-			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name),
+			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name, *REWINDING_BOARD_UNITS),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	if frappe.db.has_column("Planning sheet Item", "unit"):
@@ -3199,9 +3196,9 @@ def _force_rewinding_unit_on_sheet(planning_sheet_name):
 			SET unit = %s
 			WHERE parent = %s
 			  AND item_code LIKE '102%%'
-			  AND {_rw_legacy_unit}
+			  AND {rw_bad_unit}
 			""",
-			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name),
+			(REWINDING_UNASSIGNED_UNIT, planning_sheet_name, *REWINDING_BOARD_UNITS),
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	return updated
@@ -4208,6 +4205,113 @@ def get_printed_bopp_film_table_data(
     )
 
 
+def _printing_order_table_rows_from_board_source(date=None, start_date=None, end_date=None, planned_only=1, unit=None):
+    """Fallback: mirror Printing Board source, then map those rows to table columns."""
+    rows = _get_color_chart_data_impl(
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+        plan_name="__all__",
+        planned_only=cint(planned_only),
+        board_process_scope="exclude_special",
+    ) or []
+    unit_filter = _cstr(unit)
+    filtered = []
+    spr_names = set()
+    emp_codes = set()
+
+    for r in rows:
+        ic = _cstr(r.get("item_code") or r.get("itemCode"))
+        if not ic:
+            continue
+        if not (_is_printing_105_parent_process(ic) or _item_process_prefix(ic) == "105"):
+            continue
+        row_unit = _cstr(r.get("unit"))
+        if unit_filter and row_unit != unit_filter:
+            continue
+        filtered.append(r)
+        for sn in _expand_spr_name_tokens(r.get("spr_name")):
+            spr_names.add(sn)
+
+    spr_meta = {}
+    if spr_names and frappe.db.exists("DocType", "Shaft Production Run"):
+        spr_fields = ["name"]
+        if frappe.db.has_column("Shaft Production Run", "custom_operator"):
+            spr_fields.append("custom_operator")
+        if frappe.db.has_column("Shaft Production Run", "custom_no_of_rolls_created"):
+            spr_fields.append("custom_no_of_rolls_created")
+        for s in frappe.get_all(
+            "Shaft Production Run",
+            filters={"name": ["in", list(spr_names)]},
+            fields=spr_fields,
+            limit_page_length=0,
+        ) or []:
+            spr_meta[s.get("name")] = s
+            if s.get("custom_operator"):
+                emp_codes.add(s.get("custom_operator"))
+
+    emp_name_by_code = {}
+    if emp_codes and frappe.db.exists("DocType", "Employee"):
+        emp_name_by_code = {
+            e.get("name"): e.get("employee_name")
+            for e in (frappe.get_all("Employee", filters={"name": ["in", list(emp_codes)]}, fields=["name", "employee_name"], limit_page_length=0) or [])
+        }
+
+    out = []
+    for r in filtered:
+        ic = _cstr(r.get("item_code") or r.get("itemCode"))
+        p105 = _parse_105_item_code(ic) or {}
+        psi_name = r.get("psi_name") or r.get("itemName") or r.get("item_name") or r.get("name")
+        plan_name = r.get("plan_name") or r.get("planningSheet")
+        spr_latest = ""
+        for sn in _expand_spr_name_tokens(r.get("spr_name")):
+            spr_latest = sn
+            break
+        sm = spr_meta.get(spr_latest) or {}
+        operator_code = (sm.get("custom_operator") or "").strip() if isinstance(sm, dict) else ""
+        metrics = _get_transfer_and_produced_for_pl_row({
+            "psi_name": psi_name,
+            "planning_sheet": plan_name,
+            "pp_id": r.get("pp_id"),
+        })
+        width_inch = flt(r.get("width_inch") or r.get("width") or 0)
+        if width_inch <= 0 and p105.get("width_mm"):
+            width_inch = round(flt(p105.get("width_mm")) / 25.4)
+        gsm = flt(r.get("gsm") or 0)
+        if gsm <= 0 and p105.get("gsm"):
+            gsm = flt(p105.get("gsm"))
+        out.append({
+            "psi_name": psi_name,
+            "plan_name": plan_name,
+            "order_code": r.get("planning_order_code") or r.get("partyCode") or r.get("party_code"),
+            "customer": r.get("customer") or r.get("customer_name"),
+            "planned_date": _cstr(r.get("planned_date") or r.get("plannedDate") or date or start_date),
+            "item_code": ic,
+            "unit": r.get("unit") or PRINTING_UNASSIGNED_UNIT,
+            "quality": r.get("quality") or p105.get("quality_code") or "",
+            "gsm": gsm,
+            "width_inch": width_inch,
+            "qty": flt(r.get("qty") or 0.0),
+            "meter": flt(r.get("meter") or r.get("planned_meter") or 0.0),
+            "color": r.get("color") or r.get("fabric_colour"),
+            "custom_design_code": r.get("custom_design_code") or r.get("design_code") or p105.get("design_code"),
+            "custom_design_name": r.get("custom_design_name") or r.get("design_name") or r.get("design_code") or p105.get("design_code"),
+            "custom_design_attachment": r.get("custom_design_attachment") or r.get("custom_design_image") or "",
+            "custom_printing_shift": r.get("custom_printing_shift") or r.get("shift_label") or "DAY",
+            "custom_printing_arrangement_seq": r.get("custom_printing_arrangement_seq") or "",
+            "spr_name": spr_latest,
+            "operator_code": operator_code,
+            "operator_name": emp_name_by_code.get(operator_code) or "",
+            "produced_rolls": cint(sm.get("custom_no_of_rolls_created") or 0) if isinstance(sm, dict) else 0,
+            "produced_qty": metrics.get("produced_qty", r.get("produced_qty") or 0.0),
+            "transferred_qty": metrics.get("transferred_qty", 0.0),
+            "transfer_status": metrics.get("transfer_status"),
+            "transfer_details": metrics.get("transfer_details"),
+            "can_create_spr": metrics.get("can_create_spr", False),
+        })
+    return out
+
+
 @frappe.whitelist()
 def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None, unit=None):
     """Return Process 105 printing rows with transfer/produced metrics."""
@@ -4379,8 +4483,26 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 "transfer_details": metrics.get("transfer_details"),
                 "can_create_spr": metrics.get("can_create_spr", False),
             })
+        if not out:
+            out = _printing_order_table_rows_from_board_source(
+                date=date,
+                start_date=sd,
+                end_date=ed,
+                planned_only=planned_only,
+                unit=unit,
+            )
     except Exception:
         frappe.log_error(frappe.get_traceback(), "get_printing_order_table_data_error")
+        try:
+            out = _printing_order_table_rows_from_board_source(
+                date=date,
+                start_date=sd if "sd" in locals() else start_date,
+                end_date=ed if "ed" in locals() else end_date,
+                planned_only=planned_only,
+                unit=unit,
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "get_printing_order_table_fallback_error")
     return out
 
 
@@ -6318,6 +6440,8 @@ def _populate_planning_sheet_items(ps, doc):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "103":
              p_date = getdate(doc.transaction_date or ps.ordered_date)
+        elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
+             p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif _item_process_prefix(str(it.item_code or "")) == "251":
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif _is_printing_105_parent_process(str(it.item_code or "")):
@@ -6371,6 +6495,8 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_name"] = _dn_so
                 if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
                     psi_data["custom_design_name"] = _dn_so
+        if REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
+            psi_data["unit"] = REWINDING_UNASSIGNED_UNIT
         # Process 105 (Printing): extract design code/name/attachment from SO and parsed item code
         if _is_printing_105_parent_process(str(it.item_code or "")):
             p105_data = _parse_105_item_code(it.item_code) or {}
@@ -6434,8 +6560,10 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.planned_date = p_date
                 elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
                     prev = normalize_planning_unit_for_select(getattr(existing_psi, "unit", None))
-                    if prev == "UNASSIGNED" or not getattr(existing_psi, "unit", None):
-                        existing_psi.unit = unit
+                    if prev in REWINDING_BOARD_UNITS:
+                        existing_psi.unit = prev
+                    else:
+                        existing_psi.unit = REWINDING_UNASSIGNED_UNIT
                     if p_date:
                         existing_psi.planned_date = p_date
                 elif _item_process_prefix(str(it.item_code or "")) == "251":
@@ -9624,7 +9752,14 @@ def _get_color_chart_data_impl(
     # are allowed to appear directly on the Production Board without being pushed.
     # Non-white items are filtered per-item later unless they belong to a PB plan.
     # Sheet Cutting (251): always show — no planned-date gate needed.
-    if cint(planned_only) and _has_planned_date_column() and bps != "sheet_cutting_only":
+    dedicated_scope_no_plan_gate = bps in (
+        "lamination_only",
+        "slitting_only",
+        "rewinding_only",
+        "printed_bopp_pb_only",
+        "sheet_cutting_only",
+    )
+    if cint(planned_only) and _has_planned_date_column() and not dedicated_scope_no_plan_gate:
         # Allow sheets where EITHER the sheet has custom_planned_date OR items have planned_date
         has_item_planned = frappe.db.has_column("Planning Table", "planned_date")
         if has_item_planned:
@@ -10983,6 +11118,12 @@ def _get_color_chart_data_impl(
                 _white_tint_row = _normalized_white_tint_select(_wtp) or _wtp
                 _finishing_row = (item.get("custom_finishing") or "").strip()
 
+            row_planned_date = str(item_pdate or (sheet.get("custom_planned_date") if is_white else "") or "")
+            if bps in ("lamination_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only"):
+                row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
+            if bps == "rewinding_only" and _item_process_prefix(_ic_row) == "102" and unit not in REWINDING_BOARD_UNITS:
+                unit = REWINDING_UNASSIGNED_UNIT
+
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),
                 "itemName": item.name,
@@ -11014,8 +11155,8 @@ def _get_color_chart_data_impl(
                 "ordered_date": str(sheet.ordered_date) if sheet.ordered_date else "",
                 # `planned_date` / `plannedDate` MUST reflect real scheduling only (item.planned_date).
                 # Keep hint dates separate so UI doesn't treat everything as "already pushed".
-                "planned_date": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
-                "plannedDate": str(item_pdate or (sheet.get("custom_planned_date") if is_white else "")),
+                "planned_date": row_planned_date,
+                "plannedDate": row_planned_date,
                 "custom_item_planned_date": str(item_hint_pdate or ""),
                 "dod": str(sheet.dod) if sheet.dod else "",
                 "delivery_status": row_delivery_status,
