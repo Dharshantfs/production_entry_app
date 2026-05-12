@@ -38,6 +38,14 @@
           <button type="button" :class="{ active: laminationProcess === '__all__' }" @click="setLaminationProcess('__all__')">All</button>
         </div>
       </div>
+      <div v-if="isPrinting105Table" class="cc-filter-item cc-shift-filter">
+        <label>Printing process</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: printingProcess === '105' }" @click="setPrintingProcess('105')">105</button>
+          <button type="button" :class="{ active: printingProcess === '106' }" @click="setPrintingProcess('106')">106</button>
+          <button type="button" :class="{ active: printingProcess === '__all__' }" @click="setPrintingProcess('__all__')">All</button>
+        </div>
+      </div>
       <div class="cc-filter-item">
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
@@ -104,9 +112,10 @@
             <th>SHIFT</th>
             <th>ORDER CODE</th>
             <th>CUSTOMER</th>
-            <th v-if="showAllProcesses">PROCESS</th>
+            <th v-if="showProcessColumn">PROCESS</th>
             <th v-if="!isPrintedBoppTable">QUALITY</th>
             <th v-if="!isPrintedBoppTable">FABRIC COLOUR</th>
+            <th v-if="showPrintingLamGsmColumn">LAM GSM</th>
             <th v-if="isPrinting105Table">DESIGN CODE</th>
             <th v-if="showDesignNameColumn">DESIGN NAME</th>
             <th v-if="showDesignAttachmentColumn">ATTACHMENT</th>
@@ -180,9 +189,10 @@
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.partyCode || row.order_code || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
-            <td v-if="showAllProcesses" class="cell-center font-bold">{{ processLabel(row) }}</td>
+            <td v-if="showProcessColumn" class="cell-center font-bold">{{ processLabel(row) }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
+            <td v-if="showPrintingLamGsmColumn" class="cell-center font-bold">{{ row.lamination_gsm || row.custom_lam_gsm || "-" }}</td>
             <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_design_code || row.design_code || "—" }}</td>
             <td v-if="showDesignNameColumn" class="cell-center font-bold">{{ displayDesignName(row) }}</td>
             <td v-if="showDesignAttachmentColumn" class="cell-center">
@@ -357,7 +367,7 @@ const props = defineProps({
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
 const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR 1600MM";
 const PRINTING_UNIT_4_COLOUR = "JVE - PRINTING MACHINE 4 COLOUR 1600MM";
-const PRINTING_UNIT_TT = "TT - PRINTING MACHINE COLOUR 1200MM";
+const PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM";
 const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
 const PRINTING_FILTER_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT, PRINTING_UNASSIGNED_UNIT];
 const filterUnit = ref("");
@@ -376,7 +386,8 @@ const tableMaintenanceUnit = computed(() => {
 });
 const tableUnitHeader = computed(() => {
   if (isPrinting105Table.value) {
-    return `${filterUnit.value || 'All Printing Units'} — Planned orders (Process 105)`;
+    const proc = printingProcess.value === "__all__" ? "105 + 106" : printingProcess.value;
+    return `${filterUnit.value || 'All Printing Units'} — Planned orders (Process ${proc})`;
   }
   if (isPrintedBoppTable.value) {
     return `${PRINTED_BOPP_FILM_UNIT} — Planned orders (Printed BOPP film)`;
@@ -387,6 +398,9 @@ const tableUnitHeader = computed(() => {
   return `${LAMINATION_UNIT} - Planned orders (${laminationProcess.value}) — ${laminationProcess.value === "107" ? "BOPP" : "Plain"}`;
 });
 const showAllProcesses = computed(() => !isPrintedBoppTable.value && !isPrinting105Table.value && laminationProcess.value === "__all__");
+const showPrintingAllProcesses = computed(() => isPrinting105Table.value && printingProcess.value === "__all__");
+const showProcessColumn = computed(() => showAllProcesses.value || showPrintingAllProcesses.value);
+const showPrintingLamGsmColumn = computed(() => isPrinting105Table.value && (printingProcess.value === "106" || printingProcess.value === "__all__"));
 const showDesignNameColumn = computed(
   () => isPrinting105Table.value || isPrintedBoppTable.value || laminationProcess.value === "107" || showAllProcesses.value
 );
@@ -436,6 +450,8 @@ const filterPartyCode = ref("");
 const filterCustomer = ref("");
 /** Plain lamination (104) vs BOPP (107) vs All; drives API filter and column layout. */
 const laminationProcess = ref("104");
+/** Printing parent process filter: 105, 106, or All. */
+const printingProcess = ref("105");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 const rawData = ref([]);
@@ -508,7 +524,10 @@ const filteredRows = computed(() => {
 
 const tableColCount = computed(() => {
   if (isPrinting105Table.value) {
-    return 21;
+    let n = 21;
+    if (showPrintingAllProcesses.value) n += 1;
+    if (showPrintingLamGsmColumn.value) n += 1;
+    return n;
   }
   if (isPrintedBoppTable.value) {
     // Printed BOPP table adds extra columns vs lamination table
@@ -538,6 +557,15 @@ function setLaminationProcess(v) {
   const next = v === "107" ? "107" : v === "__all__" ? "__all__" : "104";
   if (laminationProcess.value === next) return;
   laminationProcess.value = next;
+  updateUrlParams();
+  fetchData();
+}
+
+function setPrintingProcess(v) {
+  if (!isPrinting105Table.value) return;
+  const next = v === "106" ? "106" : v === "__all__" ? "__all__" : "105";
+  if (printingProcess.value === next) return;
+  printingProcess.value = next;
   updateUrlParams();
   fetchData();
 }
@@ -1598,6 +1626,9 @@ async function fetchData() {
     if (isPrinting105Table.value && filterUnit.value) {
       args.unit = filterUnit.value;
     }
+    if (isPrinting105Table.value) {
+      args.process = printingProcess.value;
+    }
     if (viewScope.value === "monthly") {
       if (!filterMonth.value) return;
       const [year, month] = filterMonth.value.split("-");
@@ -1652,6 +1683,8 @@ async function fetchData() {
           design_name: d.custom_design_name || d.design_name || "",
           custom_design_name: d.custom_design_name || d.design_name || "",
           custom_design_attachment: d.custom_design_attachment || d.design_attachment || d.custom_design_image || d.design_image || "",
+          process: d.process || inferProcessFromItemCode(d.item_code || d.itemCode || ""),
+          lamination_gsm: d.lamination_gsm || d.custom_lam_gsm || 0,
           custom_printing_shift: d.custom_printing_shift || d.shift_label || "DAY",
           custom_printing_arrangement_seq: d.custom_printing_arrangement_seq || "",
           plannedDate: d.planned_date || d.plannedDate || filterOrderDate.value,
@@ -1690,8 +1723,19 @@ async function fetchData() {
 function processLabel(row) {
   const p =
     String(row?.lamination_process || row?.laminationProcess || row?.process || "").trim() ||
-    inferLaminationProcessFromItemCode(row?.itemCode || row?.item_code || "");
-  return p === "107" ? "107 BOPP" : "104 Plain";
+    inferProcessFromItemCode(row?.itemCode || row?.item_code || "");
+  if (p === "107") return "107 BOPP";
+  if (p === "106") return "106 Laminated Printing";
+  if (p === "105") return "105 Printing";
+  return p === "104" ? "104 Plain" : p || "-";
+}
+
+function inferProcessFromItemCode(itemCode) {
+  const ic = String(itemCode || "").trim().toUpperCase();
+  if (!ic) return "";
+  const body = ic.includes("-") ? ic.split("-").slice(1).join("-") : ic;
+  const m = body.match(/(\d{3})/);
+  return m ? m[1] : "";
 }
 
 function inferLaminationProcessFromItemCode(itemCode) {
@@ -1723,6 +1767,9 @@ function updateUrlParams() {
   }
   if (isPrinting105Table.value && filterUnit.value) {
     q.set("unit", filterUnit.value);
+  }
+  if (isPrinting105Table.value) {
+    q.set("process", printingProcess.value);
   }
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
@@ -1771,6 +1818,10 @@ onMounted(async () => {
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
   if (isPrinting105Table.value && p.get("unit")) filterUnit.value = p.get("unit");
+  if (isPrinting105Table.value) {
+    const pp = (p.get("process") || "").trim();
+    if (pp === "105" || pp === "106" || pp === "__all__") printingProcess.value = pp;
+  }
   if (!isPrintedBoppTable.value && !isPrinting105Table.value) {
     const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
     if (lp === "104" || lp === "107" || lp === "__all__") laminationProcess.value = lp;

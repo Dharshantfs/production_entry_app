@@ -30,6 +30,14 @@
           <button type="button" :class="{ active: filterShift === 'night' }" @click="filterShift = 'night'">Night</button>
         </div>
       </div>
+      <div class="cc-filter-item cc-shift-filter">
+        <label>Process</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: processFilter === '103' }" @click="setProcessFilter('103')">103</button>
+          <button type="button" :class="{ active: processFilter === '109' }" @click="setProcessFilter('109')">109</button>
+          <button type="button" :class="{ active: processFilter === '__all__' }" @click="setProcessFilter('__all__')">All</button>
+        </div>
+      </div>
       <div class="cc-filter-item">
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
@@ -83,7 +91,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">{{ SLITTING_UNIT }} - Planned orders (103)</div>
+      <div class="cc-table-unit-header lot-header">{{ SLITTING_UNIT }} - Planned orders ({{ processFilter === "__all__" ? "103 + 109" : processFilter }})</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -93,8 +101,10 @@
             <th>SHIFT</th>
             <th>CODE</th>
             <th>CUSTOMER NAME</th>
+            <th v-if="showProcessColumn">PROCESS</th>
             <th>QUALITY</th>
             <th>COLOUR</th>
+            <th v-if="showLamGsmColumn">LAM GSM</th>
             <th>{{ rollSizeHeader }}</th>
             <th>{{ slittingSizeHeader }}</th>
             <th>PLANNED KGS</th>
@@ -109,7 +119,7 @@
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-              <td colspan="17" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+              <td :colspan="tableColCount" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                   <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -122,7 +132,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td colspan="15" style="text-align:center; color:#94a3b8; font-style:italic;">No slitting orders (maintenance day)</td>
+              <td :colspan="Math.max(1, tableColCount - 2)" style="text-align:center; color:#94a3b8; font-style:italic;">No slitting orders (maintenance day)</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -147,8 +157,10 @@
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
+            <td v-if="showProcessColumn" class="cell-center font-bold">{{ row.process || inferProcessFromItemCode(row.itemCode || row.item_code) || "-" }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
+            <td v-if="showLamGsmColumn" class="cell-center font-bold">{{ row.lamination_gsm || row.custom_lam_gsm || "-" }}</td>
             <td class="cell-center">{{ formatRollSizeCell(row) }}</td>
             <td class="cell-center">{{ formatSlittingSizeCell(row) }}</td>
             <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
@@ -192,7 +204,7 @@
           </tr>
           </template>
           <tr v-if="!displayRows.length">
-            <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No slitting orders for this view.</td>
+            <td :colspan="tableColCount" class="cell-center" style="padding:24px;color:#64748b;">No slitting orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -238,6 +250,7 @@ const filterPartyCode = ref("");
 const filterCustomer = ref("");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
+const processFilter = ref("103");
 const rawData = ref([]);
 const filtersReady = ref(false);
 const maintenanceByDate = ref({});
@@ -258,6 +271,26 @@ let autoRefreshTimer = null;
 let fetchInProgress = false;
 let visibilityRefreshTimer = null;
 let sprRealtimeHandlerRegistered = false;
+
+const showProcessColumn = computed(() => processFilter.value === "__all__");
+const showLamGsmColumn = computed(() => processFilter.value === "109" || processFilter.value === "__all__");
+const tableColCount = computed(() => 17 + (showProcessColumn.value ? 1 : 0) + (showLamGsmColumn.value ? 1 : 0));
+
+function setProcessFilter(value) {
+  const next = value === "109" ? "109" : value === "__all__" ? "__all__" : "103";
+  if (processFilter.value === next) return;
+  processFilter.value = next;
+  updateUrlParams();
+  fetchData();
+}
+
+function inferProcessFromItemCode(itemCode) {
+  const ic = String(itemCode || "").trim().toUpperCase();
+  if (!ic) return "";
+  const body = ic.includes("-") ? ic.split("-").slice(1).join("-") : ic;
+  const m = body.match(/(\d{3})/);
+  return m ? m[1] : "";
+}
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
@@ -1144,7 +1177,7 @@ async function fetchData() {
   if (fetchInProgress) return;
   fetchInProgress = true;
   try {
-    let args = { party_code: filterPartyCode.value, planned_only: 1 };
+    let args = { party_code: filterPartyCode.value, planned_only: 1, process: processFilter.value };
     if (viewScope.value === "monthly") {
       if (!filterMonth.value) return;
       const [year, month] = filterMonth.value.split("-");
@@ -1177,6 +1210,8 @@ async function fetchData() {
     });
     rawData.value = (r.message || []).map((d) => ({
       ...d,
+      process: d.process || inferProcessFromItemCode(d.itemCode || d.item_code || ""),
+      lamination_gsm: d.lamination_gsm || d.custom_lam_gsm || 0,
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
     }));
     if (!initialFetchRetried && (!rawData.value || rawData.value.length === 0)) {
@@ -1207,6 +1242,7 @@ function updateUrlParams() {
   if (viewScope.value === "weekly") q.set("week", filterWeek.value);
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
+  q.set("process", processFilter.value);
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
 
@@ -1241,6 +1277,7 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
+  if (["103", "109", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process");
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);

@@ -9,7 +9,7 @@ from frappe.utils import cint, flt, getdate, nowtime, today
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	extract_quality_and_color,
 )
-from production_entry.production_planning.planning_doctypes import LAMINATION_UNIT
+from production_entry.production_planning.planning_doctypes import LAMINATION_UNIT, normalize_planning_unit_for_select
 
 
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
@@ -1210,7 +1210,11 @@ def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
 
 
 class ShaftProductionRun(Document):
+	def before_validate(self):
+		self.normalize_custom_unit()
+
 	def validate(self):
+		self.normalize_custom_unit()
 		self.sync_shaft_job_work_orders_from_plan()
 		self._spr_round_item_net_weights()
 		self.calculate_produced_gsm()
@@ -1218,6 +1222,14 @@ class ShaftProductionRun(Document):
 		self.recalculate_job_achieved_meters()
 		self.generate_batch_numbers()
 		self._spr_recalc_total_produced_weight_header()
+
+	def normalize_custom_unit(self):
+		unit_value = _cstr(self.get("custom_unit"))
+		if not unit_value:
+			return
+		normalized = normalize_planning_unit_for_select(unit_value)
+		if normalized and normalized != "UNASSIGNED":
+			self.custom_unit = normalized
 
 	def on_update(self):
 		try:
@@ -4035,9 +4047,12 @@ def get_production_plan_details(production_plan):
 		return {}
 	pp = frappe.get_doc("Production Plan", production_plan)
 	pp_meta = frappe.get_meta("Production Plan")
+	pp_unit = normalize_planning_unit_for_select(pp.get("custom_unit"))
+	if pp_unit == "UNASSIGNED":
+		pp_unit = ""
 	out = {
 		"customer": pp.get("customer"),
-		"custom_unit": pp.get("custom_unit"),
+		"custom_unit": pp_unit,
 	}
 	# custom_order_code comes from PP's custom_party_code
 	if pp_meta.has_field("custom_party_code"):

@@ -118,9 +118,9 @@
   },
   {
    "fieldname": "custom_unit",
-   "fieldtype": "Select",
+   "fieldtype": "Link",
    "label": "Unit",
-   "options": "UNIT 1\nUNIT 2\nUNIT 3\nUNIT 4\nTNSPL - LAMINATION UNIT"
+   "options": "Workstation"
   },
   {
    "fieldname": "shift",

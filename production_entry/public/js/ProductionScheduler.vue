@@ -60,6 +60,12 @@
           <option value="Finalized">Finalized</option>
         </select>
       </div>
+      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard" class="cc-filter-item cc-shift-filter">
+        <label>Process</label>
+        <div class="cc-shift-btns">
+          <button v-for="opt in boardProcessOptions" :key="opt.value" type="button" :class="{ active: boardProcessFilter === opt.value }" @click="setBoardProcessFilter(opt.value)">{{ opt.label }}</button>
+        </div>
+      </div>
       <button class="cc-clear-btn" @click="clearFilters">✕ Clear</button>
       <button class="cc-clear-btn" style="color: #2563eb; border-color: #2563eb; margin-left: 8px;" @click="autoAllocate" title="Auto-assign orders based on Width & Quality">
         🪄 Auto Alloc
@@ -330,7 +336,7 @@ const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
 const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR 1600MM";
 const PRINTING_UNIT_4_COLOUR = "JVE - PRINTING MACHINE 4 COLOUR 1600MM";
-const PRINTING_UNIT_TT = "TT - PRINTING MACHINE COLOUR 1200MM";
+const PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM";
 const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
 const PRINTING_BOARD_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT, PRINTING_UNASSIGNED_UNIT];
 const PRINTING_BOARD_SUBTITLE = "Planned orders (Process 105)";
@@ -493,6 +499,7 @@ const isSheetCuttingBoard = ref(false);
 const isPrintingBoard = ref(false);
 /** Printed BOPP film Kanban (PB / VR BOPP printing unit); uses dedicated API scope. */
 const isPrintedBoppFilmBoard = ref(false);
+const boardProcessFilter = ref("");
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -509,6 +516,17 @@ unitSortConfig.value[PRINTED_BOPP_FILM_UNIT] = { mode: 'manual', color: 'asc', g
 PRINTING_BOARD_UNITS.forEach((u) => { unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' }; });
 
 const rawData = ref([]);
+const boardProcessOptions = computed(() => {
+  if (isPrintingBoard.value) return [{ value: "105", label: "105" }, { value: "106", label: "106" }, { value: "__all__", label: "All" }];
+  if (isSlittingBoard.value) return [{ value: "103", label: "103" }, { value: "109", label: "109" }, { value: "__all__", label: "All" }];
+  if (isSheetCuttingBoard.value) return [{ value: "251", label: "251" }, { value: "252", label: "252" }, { value: "__all__", label: "All" }];
+  return [];
+});
+function setBoardProcessFilter(value) {
+  boardProcessFilter.value = value || "__all__";
+  updateUrlParams();
+  fetchData();
+}
 const selectedItems = ref([]); // Names of Planning Sheet Items selected for bulk actions
 const maintenanceRecords = ref([]);
 const maintenanceData = ref({});
@@ -631,6 +649,9 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
+    if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value) {
+        query.process = boardProcessFilter.value || "__all__";
+    }
     if (isRewindingBoard.value) {
         query.board = "rewinding";
         frappe.set_route("rewinding-order-table", query);
@@ -723,18 +744,22 @@ const filteredData = computed(() => {
   // Force them into Slitting Unit while viewing dedicated Slitting Board.
   if (isSlittingBoard.value) {
     data = data.map((d) => {
-      if (itemProcessPrefix(d.item_code || d.itemCode) === "103") {
+      if (["103", "109"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
         return { ...d, unit: SLITTING_UNIT };
       }
       return d;
     });
+    if (["103", "109"].includes(boardProcessFilter.value)) {
+      data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
+    }
   }
 
   if (isPrintingBoard.value) {
     data = data
       .filter((d) => {
-        const ic = String(d.item_code || d.itemCode || "");
-        return ic.toUpperCase().includes("-105") || ic.toUpperCase().startsWith("105");
+        const proc = itemProcessPrefix(d.item_code || d.itemCode);
+        if (!["105", "106"].includes(proc)) return false;
+        return !["105", "106"].includes(boardProcessFilter.value) || proc === boardProcessFilter.value;
       })
       .map((d) => {
         const rawU = String(d.unit || "").trim();
@@ -748,11 +773,14 @@ const filteredData = computed(() => {
 
   if (isSheetCuttingBoard.value) {
     data = data.map((d) => {
-      if (itemProcessPrefix(d.item_code || d.itemCode) === "251") {
+      if (["251", "252"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
         return { ...d, unit: SHEET_CUTTING_UNIT };
       }
       return d;
     });
+    if (["251", "252"].includes(boardProcessFilter.value)) {
+      data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
+    }
   }
 
   if (isRewindingBoard.value) {
@@ -2160,6 +2188,8 @@ async function fetchData() {
           args.board_process_scope = "slitting_only";
         } else if (isSheetCuttingBoard.value) {
           args.board_process_scope = "sheet_cutting_only";
+        } else if (isPrintingBoard.value) {
+          args.board_process_scope = "printing_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
         } else if (isPrintedBoppFilmBoard.value) {
@@ -2237,6 +2267,12 @@ function updateUrlParams() {
   
   url.searchParams.set('scope', viewScope.value);
   prefs.scope = viewScope.value;
+  if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value) {
+    url.searchParams.set('process', boardProcessFilter.value || "__all__");
+    prefs.process = boardProcessFilter.value || "__all__";
+  } else {
+    url.searchParams.delete('process');
+  }
 
   if (viewScope.value === 'weekly' && filterWeek.value) { url.searchParams.set('week', filterWeek.value); prefs.week = filterWeek.value; }
   else { url.searchParams.delete('week'); }
@@ -2324,6 +2360,11 @@ onMounted(() => {
       if (routeName.includes("printed bopp film board")) isPrintedBoppFilmBoard.value = true;
       if (routeName === "printing order board") isPrintingBoard.value = true;
     } catch (e) {}
+    if (!boardProcessFilter.value) {
+      if (isPrintingBoard.value) boardProcessFilter.value = "105";
+      else if (isSlittingBoard.value) boardProcessFilter.value = "103";
+      else if (isSheetCuttingBoard.value) boardProcessFilter.value = "251";
+    }
 
     // 1. Load CSS
     if (!document.getElementById('flatpickr-css')) {
@@ -2339,6 +2380,10 @@ onMounted(() => {
     const dateParam = qParams.get("date");
     const monthParam = qParams.get("month");
     const weekParam = qParams.get("week");
+    const processParam = qParams.get("process");
+    if (["103", "109", "105", "106", "251", "252", "__all__"].includes(processParam)) {
+      boardProcessFilter.value = processParam;
+    }
     
     // Check user role for visibility control
     try {

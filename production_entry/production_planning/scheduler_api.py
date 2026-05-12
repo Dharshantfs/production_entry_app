@@ -196,19 +196,28 @@ def _rewinding_width_mm_from_item_code(item_code):
 
 
 def _parse_sheet_cutting_item_code(item_code):
-	"""Parse 251 sheet-cutting code as PPP|QQQ|CCC|GGG|SSS (series id)."""
-	ic = str(item_code or "").strip()
-	digits = "".join(ch for ch in ic if ch.isdigit())
-	if len(digits) < 15:
+	"""Parse 251/252 sheet-cutting code as PPP|QQQ|CCC|GGG|SSS (series id)."""
+	ic = str(item_code or "").strip().upper()
+	if not ic:
 		return {}
-	# Accept prefixed/mixed item codes by taking the rightmost 251 + 12 digits block.
-	matches = re.findall(r"(251\d{12})", digits)
-	if matches:
-		digits = matches[-1]
-	if digits[:3] != "251" or len(digits) < 15:
+	design_code = ""
+	m = re.match(r"^(?P<design>[A-Z0-9]+)-(?P<body>25[12]\d{12})$", ic)
+	if m:
+		design_code = (m.group("design") or "").strip()
+		digits = m.group("body")
+	else:
+		digits = "".join(ch for ch in ic if ch.isdigit())
+		if len(digits) < 15:
+			return {}
+		# Accept prefixed/mixed item codes by taking the rightmost 251/252 + 12 digits block.
+		matches = re.findall(r"(25[12]\d{12})", digits)
+		if matches:
+			digits = matches[-1]
+	if digits[:3] not in ("251", "252") or len(digits) < 15:
 		return {}
 	return {
-		"process": "251",
+		"process": digits[:3],
+		"design_code": design_code,
 		"quality_code": digits[3:6],
 		"colour_code": digits[6:9],
 		"gsm": cint(digits[9:12] or 0),
@@ -1222,6 +1231,78 @@ def _parse_105_item_code(item_code):
 	}
 
 
+def _parse_106_item_code(item_code):
+	"""
+	Process 106 laminated printing item:
+	  <design>-106<quality><colour><gsm><width_mm>-<lam_gsm_code>
+	Example: 002-1061085211051600-A
+	"""
+	code = str(item_code or "").strip().upper()
+	m = re.match(
+		r"^(?P<design>[A-Z0-9]+)-106(?P<quality>\d{3})(?P<colour>\d{3})(?P<gsm>\d{3})(?P<width>\d{4})(?:-(?P<lam>[A-Z0-9]+))?$",
+		code,
+	)
+	if not m:
+		return {}
+	g = m.groupdict()
+	return {
+		"design_code": (g.get("design") or "").strip(),
+		"process": "106",
+		"quality_code": (g.get("quality") or "").strip(),
+		"colour_code": (g.get("colour") or "").strip(),
+		"gsm": (g.get("gsm") or "").strip(),
+		"width_mm": (g.get("width") or "").strip(),
+		"lam_gsm_code": (g.get("lam") or "").strip(),
+		"lam_gsm": cint(_LAM_GSM_SUFFIX_MAP.get((g.get("lam") or "").strip(), 0) or 0),
+	}
+
+
+def _parse_109_item_code(item_code):
+	"""
+	Process 109 laminated slitting item:
+	  109<quality><colour><gsm><width>-<lam_gsm_code>
+	Example: 1091000010800050-A
+	"""
+	code = str(item_code or "").strip().upper()
+	m = re.match(
+		r"^109(?P<quality>\d{3})(?P<colour>\d{3})(?P<gsm>\d{3})(?P<width>\d{4})(?:-(?P<lam>[A-Z0-9]+))?$",
+		code,
+	)
+	if not m:
+		return {}
+	g = m.groupdict()
+	return {
+		"process": "109",
+		"quality_code": (g.get("quality") or "").strip(),
+		"colour_code": (g.get("colour") or "").strip(),
+		"gsm": (g.get("gsm") or "").strip(),
+		"width_code": (g.get("width") or "").strip(),
+		"lam_gsm_code": (g.get("lam") or "").strip(),
+		"lam_gsm": cint(_LAM_GSM_SUFFIX_MAP.get((g.get("lam") or "").strip(), 0) or 0),
+	}
+
+
+def _is_printing_parent_process(item_code):
+	return _item_process_prefix(item_code) in ("105", "106")
+
+
+def _is_slitting_parent_process(item_code):
+	return _item_process_prefix(item_code) in ("103", "109")
+
+
+def _is_sheet_cutting_parent_process(item_code):
+	return _item_process_prefix(item_code) in ("251", "252")
+
+
+def _stage3_lam_gsm_from_item_code(item_code):
+	proc = _item_process_prefix(item_code)
+	if proc == "106":
+		return cint((_parse_106_item_code(item_code) or {}).get("lam_gsm") or 0)
+	if proc == "109":
+		return cint((_parse_109_item_code(item_code) or {}).get("lam_gsm") or 0)
+	return 0
+
+
 def _set_trace_id_if_supported(row_dict_or_doc, trace_id):
 	if not trace_id:
 		return
@@ -1811,6 +1892,44 @@ def _get_fabric_item_from_process_item(item_code, expected_process, process_labe
 	return {"fabric_item_code": fabric_item_code, "bom_no": bom_name}
 
 
+def _get_bom_child_item_from_process_item(item_code, expected_parent_process, expected_child_process, process_label):
+	"""Resolve one child process item from the active BOM for chained Stage 3 planning."""
+	item_code = (item_code or "").strip()
+	if not item_code:
+		frappe.throw(_("{0} item code is required.").format(process_label))
+	if _item_process_prefix(item_code) != expected_parent_process:
+		frappe.throw(
+			_("{0} parent must have process {1}. Got: {2}").format(
+				process_label, expected_parent_process, _item_process_prefix(item_code) or ""
+			)
+		)
+	bom = _resolve_lamination_bom(item_code)
+	if not bom:
+		frappe.throw(_("No active submitted BOM for {0} item {1}.").format(process_label.lower(), item_code))
+	child_rows = []
+	for row in bom.items or []:
+		ic = (row.item_code or "").strip()
+		if _item_process_prefix(ic) == expected_child_process:
+			child_rows.append((ic, row))
+	if len(child_rows) == 0:
+		frappe.throw(
+			_("BOM {0} has no process {1} child row for {2}.").format(
+				bom.name, expected_child_process, item_code
+			)
+		)
+	if len(child_rows) > 1:
+		codes = ", ".join([r[0] for r in child_rows])
+		frappe.throw(
+			_("BOM {0} has multiple process {1} child rows: {2}. Keep exactly one.").format(
+				bom.name, expected_child_process, codes
+			)
+		)
+	child_item_code = child_rows[0][0]
+	if not frappe.db.exists("Item", child_item_code):
+		frappe.throw(_("Child item {0} from BOM does not exist.").format(child_item_code))
+	return {"child_item_code": child_item_code, "bom_no": bom.name}
+
+
 @frappe.whitelist()
 def get_fabric_item_from_slitting_item(slitting_item_code):
 	"""Resolve the single 100* fabric child for a slitting 103 item."""
@@ -2301,6 +2420,10 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		ps.flags.ignore_permissions = True
 		ps.save()
 		frappe.db.commit()
+	try:
+		_sync_stage3_process_planning_rows(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "sync_stage3_process_planning_rows")
 
 
 def _sync_slitting_fabric_planning_rows(planning_sheet_name):
@@ -2528,11 +2651,11 @@ def get_fabric_item_from_printing_item(printing_item_code):
 	return _get_fabric_item_from_process_item(printing_item_code, expected_process="105", process_label="Printing")
 
 def _force_printing_unit_on_sheet(planning_sheet_name):
-	"""Force process 105 rows to Unassigned Printing Machine on both planning tables."""
+	"""Force process 105/106 rows to Unassigned Printing Machine on both planning tables."""
 	if not planning_sheet_name:
 		return 0
 	updated = 0
-	condition = "(item_code LIKE '%%-105%%' OR item_code LIKE '105%%')"
+	condition = "(item_code LIKE '%%-105%%' OR item_code LIKE '105%%' OR item_code LIKE '%%-106%%' OR item_code LIKE '106%%')"
 	if frappe.db.has_column("Planning Table", "unit"):
 		frappe.db.sql(
 			f"""
@@ -2556,6 +2679,207 @@ def _force_printing_unit_on_sheet(planning_sheet_name):
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	return updated
+
+
+def _sync_bom_child_rows_from_planning_rows(
+	planning_sheet_name,
+	parent_processes,
+	child_process,
+	child_unit=None,
+	so_parent_processes=None,
+	process_label="Stage 3",
+):
+	"""Append one BOM child row for each matching Planning Table parent row. Idempotent by sheet + item + SO row."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return 0
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	if not ps.get("sales_order"):
+		return 0
+	so = frappe.get_doc("Sales Order", ps.sales_order)
+	so_by_name = {str(it.name): it for it in (so.items or [])}
+	parent_processes = {str(p) for p in (parent_processes or []) if str(p)}
+	so_parent_processes = {str(p) for p in (so_parent_processes or []) if str(p)}
+	if not parent_processes:
+		return 0
+
+	parent_field = _get_pt_parentfield()
+	parent_rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": ps.name},
+		fields=[
+			"name",
+			"item_code",
+			"item_name",
+			"qty",
+			"uom",
+			"sales_order_item",
+			"so_item",
+			"meter",
+			"meter_per_roll",
+			"no_of_rolls",
+			"color",
+			"quality",
+			"custom_quality",
+			"width_inch",
+			"gsm",
+		],
+		limit_page_length=0,
+	) or []
+
+	changed = False
+	added = 0
+	for prow in parent_rows:
+		parent_ic = _cstr(prow.get("item_code"))
+		parent_proc = _item_process_prefix(parent_ic)
+		if parent_proc not in parent_processes:
+			continue
+		so_item_key = _cstr(prow.get("sales_order_item") or prow.get("so_item"))
+		so_it = so_by_name.get(so_item_key)
+		if so_parent_processes:
+			so_proc = _item_process_prefix(getattr(so_it, "item_code", "") if so_it else "")
+			if so_proc not in so_parent_processes:
+				continue
+		if not so_it:
+			so_it = frappe._dict(
+				{
+					"name": so_item_key,
+					"item_code": parent_ic,
+					"qty": flt(prow.get("qty") or 0),
+					"uom": _cstr(prow.get("uom")) or "Kg",
+					"custom_meter": flt(prow.get("meter") or 0),
+					"custom_meter_per_roll": flt(prow.get("meter_per_roll") or 0),
+					"custom_no_of_rolls": flt(prow.get("no_of_rolls") or 0),
+				}
+			)
+		try:
+			if child_process == "100":
+				res = _get_fabric_item_from_process_item(parent_ic, expected_process=parent_proc, process_label=process_label)
+				child_ic = res["fabric_item_code"]
+			else:
+				res = _get_bom_child_item_from_process_item(parent_ic, parent_proc, child_process, process_label)
+				child_ic = res["child_item_code"]
+			bom_no = res["bom_no"]
+		except Exception as e:
+			frappe.log_error(
+				title=f"{process_label} BOM child sync",
+				message=f"Planning Sheet {ps.name} row {prow.get('name')} ({parent_ic}): {e}\n{frappe.get_traceback()}",
+			)
+			continue
+
+		existing_filters = {"parent": ps.name, "item_code": child_ic}
+		if so_item_key:
+			existing_filters["so_item"] = so_item_key
+		existing = frappe.get_all("Planning Table", filters=existing_filters, pluck="name", limit=1)
+		if existing:
+			updates = {}
+			if so_item_key and frappe.db.has_column("Planning Table", "sales_order_item"):
+				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+				if not cur_soi:
+					updates["sales_order_item"] = so_item_key
+			if frappe.db.has_column("Planning Table", "split_from"):
+				cur_sf = _cstr(frappe.db.get_value("Planning Table", existing[0], "split_from"))
+				if cur_sf:
+					updates["split_from"] = ""
+			if updates:
+				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
+			continue
+
+		parent_doc = frappe.get_doc("Planning Table", prow.get("name")) if prow.get("name") else None
+		child_qty = _fabric_qty_from_bom(bom_no, child_ic, flt(prow.get("qty") or getattr(so_it, "qty", 0)))
+		item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
+		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
+		trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(getattr(so_it, "item_code", None) or parent_ic)
+		child_proc = _item_process_prefix(child_ic)
+		unit = child_unit
+		planned_date = None
+		if child_proc in ("104", "107"):
+			unit = LAMINATION_UNIT
+			planned_date = getdate(ps.ordered_date)
+		elif child_proc == "105":
+			unit = PRINTING_UNASSIGNED_UNIT
+			planned_date = getdate(ps.ordered_date)
+		elif child_proc == "100":
+			fab_color = specs.get("color") or ""
+			fab_width = flt(specs.get("width_inch"))
+			unit = compute_default_production_unit(fab_color, fab_width)
+			planned_date = getdate(ps.ordered_date) if _is_white_color(fab_color) else None
+		else:
+			unit = unit or compute_default_production_unit(specs.get("color"), specs.get("width_inch"), child_ic)
+
+		row = {
+			"sales_order_item": so_item_key,
+			"item_code": child_ic,
+			"item_name": item_name,
+			"qty": child_qty,
+			"uom": _cstr(getattr(so_it, "uom", None) or prow.get("uom") or "Kg"),
+			"gsm": specs["gsm"],
+			"width_inch": specs["width_inch"],
+			"color": specs["color"],
+			"quality": specs["quality"],
+			"custom_quality": specs["custom_quality"],
+			"unit": unit,
+			"meter": specs["meter"],
+			"meter_per_roll": specs["meter_per_roll"],
+			"no_of_rolls": specs["no_of_rolls"],
+			"weight_per_roll": specs["weight_per_roll"],
+			"planned_date": planned_date,
+			"plan_name": ps.get("custom_plan_name"),
+			"party_code": ps.party_code,
+			"planning_sheet": ps.name,
+			"so_item": so_item_key,
+		}
+		if child_proc == "104":
+			lam_gsm = _lam_gsm_from_item_code_suffix(child_ic)
+			if lam_gsm > 0 and (frappe.db.has_column("Planning Table", "custom_lam_gsm") or frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")):
+				row["custom_lam_gsm"] = lam_gsm
+		elif child_proc == "105":
+			p105 = _parse_105_item_code(child_ic) or {}
+			design_code = _cstr(p105.get("design_code")).upper()
+			if design_code and frappe.db.has_column("Planning Table", "custom_design_code"):
+				row["custom_design_code"] = design_code
+			design_name = _pb_design_name_from_sales_order_item(so_item_key)
+			if design_name and (frappe.db.has_column("Planning Table", "custom_design_name") or frappe.db.has_column("Planning sheet Item", "custom_design_name")):
+				row["custom_design_name"] = design_name
+			if cint(p105.get("gsm") or 0) > 0:
+				row["gsm"] = cint(p105.get("gsm") or 0)
+			if cint(p105.get("width_mm") or 0) > 0:
+				row["width_inch"] = round(cint(p105.get("width_mm") or 0) / 25.4)
+		_set_trace_id_if_supported(row, trace_id)
+		if frappe.db.has_column("Planning Table", "split_from"):
+			row["split_from"] = ""
+		if hasattr(ps, "items") or ps.meta.has_field("items"):
+			ps.append("items", dict(row))
+		ps.append(parent_field, dict(row))
+		changed = True
+		added += 1
+
+	if changed:
+		ps.flags.ignore_permissions = True
+		ps.save()
+		frappe.db.commit()
+	return added
+
+
+def _sync_stage3_process_planning_rows(planning_sheet_name):
+	"""Create Stage 3 chained BOM rows: 106/109 -> 104 -> 100 and 252 -> 105 -> 100."""
+	if not planning_sheet_name:
+		return
+	_sync_bom_child_rows_from_planning_rows(planning_sheet_name, ("106", "109"), "104", LAMINATION_UNIT, process_label="Stage 3 laminated parent")
+	_sync_bom_child_rows_from_planning_rows(planning_sheet_name, ("252",), "105", PRINTING_UNASSIGNED_UNIT, process_label="Stage 3 printed sheet")
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("104",),
+		"100",
+		so_parent_processes=("106", "109"),
+		process_label="Stage 3 lamination child",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("105",),
+		"100",
+		so_parent_processes=("252",),
+		process_label="Stage 3 printing child",
+	)
 
 
 def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
@@ -2887,18 +3211,20 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 
 
 def _force_slitting_unit_on_sheet(planning_sheet_name):
-	"""Force process 103 rows to Slitting Unit and strict color-from-code."""
+	"""Force process 103/109 rows to Slitting Unit and strict color-from-code."""
 	if not planning_sheet_name:
 		return 0
 	updated = 0
 	has_psi_so = frappe.db.has_column("Planning sheet Item", "sales_order_item")
 	slitting_rows = frappe.get_all(
 		"Planning Table",
-		filters={"parent": planning_sheet_name, "item_code": ["like", "103%"]},
+		filters={"parent": planning_sheet_name},
 		fields=["name", "item_code", "item_name", "color", "sales_order_item", "source_item"],
 		limit_page_length=1000,
 	) or []
 	for rr in slitting_rows:
+		if _item_process_prefix(rr.get("item_code")) not in ("103", "109"):
+			continue
 		row_name = str(rr.get("name") or "").strip()
 		if not row_name:
 			continue
@@ -2915,8 +3241,8 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 					UPDATE `tabPlanning sheet Item`
 					SET color = %s
 					WHERE parent = %s
-					  AND item_code LIKE '103%%'
 					  AND IFNULL(sales_order_item, '') = %s
+					  AND (item_code LIKE '103%%' OR item_code LIKE '109%%')
 					""",
 					(color_name, planning_sheet_name, str(rr.get("sales_order_item") or "").strip()),
 				)
@@ -2926,7 +3252,7 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 			UPDATE `tabPlanning Table`
 			SET unit = %s
 			WHERE parent = %s
-			  AND item_code LIKE '103%%'
+			  AND (item_code LIKE '103%%' OR item_code LIKE '109%%')
 			""",
 			(SLITTING_UNIT, planning_sheet_name),
 		)
@@ -2937,7 +3263,7 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 			UPDATE `tabPlanning sheet Item`
 			SET unit = %s
 			WHERE parent = %s
-			  AND item_code LIKE '103%%'
+			  AND (item_code LIKE '103%%' OR item_code LIKE '109%%')
 			""",
 			(SLITTING_UNIT, planning_sheet_name),
 		)
@@ -2946,7 +3272,7 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 
 
 def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
-	"""Force process 251 rows to JVE sheet-cutting unit on both planning tables."""
+	"""Force process 251/252 rows to JVE sheet-cutting unit on both planning tables."""
 	if not planning_sheet_name:
 		return 0
 	updated = 0
@@ -2956,7 +3282,7 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 			UPDATE `tabPlanning Table`
 			SET unit = %s
 			WHERE parent = %s
-			  AND item_code LIKE '251%%'
+			  AND (item_code LIKE '251%%' OR item_code LIKE '%%-252%%' OR item_code LIKE '252%%')
 			""",
 			(SHEET_CUTTING_UNIT, planning_sheet_name),
 		)
@@ -2967,7 +3293,7 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 			UPDATE `tabPlanning sheet Item`
 			SET unit = %s
 			WHERE parent = %s
-			  AND item_code LIKE '251%%'
+			  AND (item_code LIKE '251%%' OR item_code LIKE '%%-252%%' OR item_code LIKE '252%%')
 			""",
 			(SHEET_CUTTING_UNIT, planning_sheet_name),
 		)
@@ -2977,13 +3303,15 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 	try:
 		pt_rows = frappe.get_all(
 			"Planning Table",
-			filters={"parent": planning_sheet_name, "item_code": ["like", "251%"]},
+			filters={"parent": planning_sheet_name},
 			fields=["name", "item_code", "sales_order_item", "source_item"],
 			limit_page_length=1000,
 		) or []
 		series_ids = []
 		parsed = {}
 		for rr in pt_rows:
+			if _item_process_prefix(rr.get("item_code")) not in ("251", "252"):
+				continue
 			p = _parse_sheet_cutting_item_code(rr.get("item_code"))
 			parsed[rr.get("name")] = p
 			sid = _cstr(p.get("series_id"))
@@ -3023,7 +3351,7 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 						UPDATE `tabPlanning sheet Item`
 						SET width_inch = %s
 						WHERE parent = %s
-						  AND item_code LIKE '251%%'
+						  AND (item_code LIKE '251%%' OR item_code LIKE '%%-252%%' OR item_code LIKE '252%%')
 						  AND IFNULL(sales_order_item, '') = %s
 						""",
 						(w, planning_sheet_name, _cstr(rr.get("sales_order_item"))),
@@ -3034,7 +3362,7 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 						UPDATE `tabPlanning sheet Item`
 						SET sheet_size = %s
 						WHERE parent = %s
-						  AND item_code LIKE '251%%'
+						  AND (item_code LIKE '251%%' OR item_code LIKE '%%-252%%' OR item_code LIKE '252%%')
 						  AND IFNULL(sales_order_item, '') = %s
 						""",
 						(sz, planning_sheet_name, _cstr(rr.get("sales_order_item"))),
@@ -3058,7 +3386,7 @@ def _ensure_printing_105_parent_units_on_sheet(planning_sheet_name):
 	if not planning_sheet_name:
 		return False
 	touched = False
-	printing_units = ("UNASSIGNED PRINTING MACHINE", "JVE - PRINTING MACHINE 2 COLOUR 1600MM", "JVE - PRINTING MACHINE 4 COLOUR 1600MM", "TT - PRINTING MACHINE COLOUR 1200MM")
+	printing_units = (PRINTING_UNASSIGNED_UNIT, PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT)
 	for dt in ("Planning Table", "Planning sheet Item"):
 		for row in frappe.get_all(
 			dt,
@@ -3066,7 +3394,7 @@ def _ensure_printing_105_parent_units_on_sheet(planning_sheet_name):
 			fields=["name", "item_code", "unit"],
 		):
 			ic = (row.get("item_code") or "").strip()
-			if not _is_printing_105_parent_process(ic):
+			if not _is_printing_parent_process(ic):
 				continue
 			cur_unit = normalize_planning_unit_for_select(row.get("unit"))
 			# Only force to UNASSIGNED PRINTING MACHINE if current unit is generic UNASSIGNED
@@ -4538,7 +4866,7 @@ def get_printed_bopp_film_table_data(
     )
 
 
-def _printing_order_table_rows_from_board_source(date=None, start_date=None, end_date=None, planned_only=1, unit=None):
+def _printing_order_table_rows_from_board_source(date=None, start_date=None, end_date=None, planned_only=1, unit=None, process=None):
     """Fallback: mirror Printing Board source, then map those rows to table columns."""
     rows = _get_color_chart_data_impl(
         date=date,
@@ -4557,7 +4885,13 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
         ic = _cstr(r.get("item_code") or r.get("itemCode"))
         if not ic:
             continue
-        if not (_is_printing_105_parent_process(ic) or _item_process_prefix(ic) == "105"):
+        proc = _item_process_prefix(ic)
+        process_filter = _cstr(process).lower()
+        if process_filter in ("all", "__all__", "*"):
+            process_filter = ""
+        if proc not in ("105", "106"):
+            continue
+        if process_filter and proc != process_filter:
             continue
         row_unit = _cstr(r.get("unit"))
         if unit_filter and row_unit != unit_filter:
@@ -4593,7 +4927,9 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
     out = []
     for r in filtered:
         ic = _cstr(r.get("item_code") or r.get("itemCode"))
+        proc = _item_process_prefix(ic)
         p105 = _parse_105_item_code(ic) or {}
+        p106 = _parse_106_item_code(ic) or {}
         psi_name = r.get("psi_name") or r.get("itemName") or r.get("item_name") or r.get("name")
         plan_name = r.get("plan_name") or r.get("planningSheet")
         spr_latest = ""
@@ -4608,13 +4944,14 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "pp_id": r.get("pp_id"),
         })
         width_inch = flt(r.get("width_inch") or r.get("width") or 0)
-        if width_inch <= 0 and p105.get("width_mm"):
-            width_inch = round(flt(p105.get("width_mm")) / 25.4)
+        width_mm = p105.get("width_mm") or p106.get("width_mm")
+        if width_inch <= 0 and width_mm:
+            width_inch = round(flt(width_mm) / 25.4)
         gsm = flt(r.get("gsm") or 0)
-        if gsm <= 0 and p105.get("gsm"):
-            gsm = flt(p105.get("gsm"))
+        if gsm <= 0 and (p105.get("gsm") or p106.get("gsm")):
+            gsm = flt(p105.get("gsm") or p106.get("gsm"))
         so_item_name = _printing_sales_order_item_from_row(r)
-        design_code = r.get("custom_design_code") or r.get("design_code") or p105.get("design_code")
+        design_code = r.get("custom_design_code") or r.get("design_code") or p105.get("design_code") or p106.get("design_code")
         design_name = _printing_design_name_from_row(r, design_code, so_item_name)
         design_attachment = _printing_design_attachment_from_row(r, so_item_name)
         planned_meter = _printing_planned_meter_from_row(r, width_inch, gsm)
@@ -4625,6 +4962,8 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "customer": r.get("customer") or r.get("customer_name"),
             "planned_date": _cstr(r.get("planned_date") or r.get("plannedDate") or date or start_date),
             "item_code": ic,
+            "process": proc,
+            "lamination_gsm": _stage3_lam_gsm_from_item_code(ic),
             "sales_order_item": so_item_name,
             "unit": r.get("unit") or PRINTING_UNASSIGNED_UNIT,
             "quality": r.get("quality") or p105.get("quality_code") or "",
@@ -4652,8 +4991,8 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
 
 
 @frappe.whitelist()
-def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None, unit=None):
-    """Return Process 105 printing rows with transfer/produced metrics."""
+def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None, unit=None, process=None):
+    """Return Process 105/106 printing rows with transfer/produced metrics."""
     out = []
     try:
         sd = _normalize_filter_date(start_date) or None
@@ -4697,6 +5036,8 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         printing_candidate_parts = [
             "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '105%'",
             "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-105%'",
+            "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '106%'",
+            "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-106%'",
         ]
         candidate_params = []
         if has_unit:
@@ -4750,6 +5091,14 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
         if unit_filter and has_unit:
             q += " AND TRIM(IFNULL(pt.unit, '')) = %s"
             params.append(unit_filter)
+        process_filter = _cstr(process).lower()
+        if process_filter in ("all", "__all__", "*"):
+            process_filter = ""
+        if process_filter in ("105", "106"):
+            if process_filter == "105":
+                q += " AND (UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '105%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-105%')"
+            else:
+                q += " AND (UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '106%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-106%')"
         if has_seq:
             q += f" ORDER BY {eff_date}, CASE WHEN IFNULL(pt.custom_printing_arrangement_seq,0) > 0 THEN pt.custom_printing_arrangement_seq ELSE 999999 END, pt.idx"
         else:
@@ -4790,8 +5139,8 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             ic = _cstr(r.get("item_code"))
             if not ic:
                 continue
-            is_105 = _is_printing_105_parent_process(ic) or _item_process_prefix(ic) == "105"
-            if not is_105:
+            proc = _item_process_prefix(ic)
+            if proc not in ("105", "106"):
                 continue
             metrics = _get_transfer_and_produced_for_pl_row(r)
             # Choose latest SPR (if any) for operator/rolls.
@@ -4803,14 +5152,16 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             operator_code = (sm.get("custom_operator") or "").strip() if isinstance(sm, dict) else ""
             operator_name = emp_name_by_code.get(operator_code) or ""
             p105 = _parse_105_item_code(ic) or {}
+            p106 = _parse_106_item_code(ic) or {}
             width_inch = flt(r.get("width_inch") or 0)
-            if width_inch <= 0 and p105.get("width_mm"):
-                width_inch = round(flt(p105.get("width_mm")) / 25.4)
+            width_mm = p105.get("width_mm") or p106.get("width_mm")
+            if width_inch <= 0 and width_mm:
+                width_inch = round(flt(width_mm) / 25.4)
             gsm = flt(r.get("gsm") or 0)
-            if gsm <= 0 and p105.get("gsm"):
-                gsm = flt(p105.get("gsm"))
+            if gsm <= 0 and (p105.get("gsm") or p106.get("gsm")):
+                gsm = flt(p105.get("gsm") or p106.get("gsm"))
             so_item_name = _printing_sales_order_item_from_row(r)
-            design_code = r.get("custom_design_code") or p105.get("design_code")
+            design_code = r.get("custom_design_code") or p105.get("design_code") or p106.get("design_code")
             design_name = _printing_design_name_from_row(r, design_code, so_item_name)
             design_attachment = _printing_design_attachment_from_row(r, so_item_name)
             planned_meter = _printing_planned_meter_from_row(r, width_inch, gsm)
@@ -4821,6 +5172,8 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 "customer": r.get("customer"),
                 "planned_date": _cstr(r.get("planned_date")),
                 "item_code": ic,
+                "process": proc,
+                "lamination_gsm": _stage3_lam_gsm_from_item_code(ic),
                 "sales_order_item": so_item_name,
                 "unit": r.get("unit") or "UNASSIGNED PRINTING MACHINE",
                 "quality": r.get("quality") or r.get("custom_quality") or "",
@@ -4851,6 +5204,7 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 end_date=ed,
                 planned_only=planned_only,
                 unit=unit,
+                process=process,
             )
     except Exception:
         frappe.log_error(frappe.get_traceback(), "get_printing_order_table_data_error")
@@ -4861,6 +5215,7 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 end_date=ed if "ed" in locals() else end_date,
                 planned_only=planned_only,
                 unit=unit,
+                process=process,
             )
         except Exception:
             frappe.log_error(frappe.get_traceback(), "get_printing_order_table_fallback_error")
@@ -4873,6 +5228,7 @@ def get_slitting_order_table_data(
     start_date=None,
     end_date=None,
     planned_only=1,
+    process=None,
 ):
     """
     103-only rows for Slitting Order Table.
@@ -4892,7 +5248,16 @@ def get_slitting_order_table_data(
         return []
     if not rows:
         return []
-    # Hard safety: keep 103 rows pinned to Slitting Unit on every table load.
+    process_filter = _cstr(process).lower()
+    if process_filter in ("all", "__all__", "*"):
+        process_filter = ""
+    if process_filter in ("103", "109"):
+        rows = [r for r in rows if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == process_filter]
+    else:
+        rows = [r for r in rows if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in ("103", "109")]
+    if not rows:
+        return []
+    # Hard safety: keep 103/109 rows pinned to Slitting Unit on every table load.
     try:
         sheet_names = list({
             str(r.get("planningSheet") or r.get("planning_sheet") or "").strip()
@@ -4979,7 +5344,10 @@ def get_slitting_order_table_data(
     out = []
     for r in rows:
         row = dict(r)
-        if _item_process_prefix(str(row.get("item_code") or row.get("itemCode") or "")) == "103":
+        proc = _item_process_prefix(str(row.get("item_code") or row.get("itemCode") or ""))
+        row["process"] = proc
+        row["lamination_gsm"] = _stage3_lam_gsm_from_item_code(row.get("item_code") or row.get("itemCode"))
+        if proc in ("103", "109"):
             strict_color = _color_from_item_code_6_to_8(row.get("item_code") or row.get("itemCode"))
             if strict_color:
                 row["color"] = strict_color
@@ -5204,14 +5572,15 @@ def get_sheet_cutting_order_table_data(
     start_date=None,
     end_date=None,
     planned_only=1,
+    process=None,
 ):
-    """251-only rows for Sheet Cutting Order Table."""
+    """251/252 rows for Sheet Cutting Order Table."""
     try:
         sc_sheets = frappe.db.sql(
             """
             SELECT DISTINCT parent
             FROM `tabPlanning Table`
-            WHERE item_code LIKE '251%%'
+            WHERE item_code LIKE '251%%' OR item_code LIKE '%%-252%%' OR item_code LIKE '252%%'
             """,
             as_dict=True,
         ) or []
@@ -5238,11 +5607,19 @@ def get_sheet_cutting_order_table_data(
         return []
     if not rows:
         return []
-    # Hard safety: only process 251 rows.
+    # Hard safety: only process 251/252 rows.
     rows = [
         r for r in rows
-        if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == "251"
+        if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in ("251", "252")
     ]
+    process_filter = _cstr(process).lower()
+    if process_filter in ("all", "__all__", "*"):
+        process_filter = ""
+    if process_filter in ("251", "252"):
+        rows = [
+            r for r in rows
+            if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == process_filter
+        ]
     if not rows:
         return []
     try:
@@ -5343,6 +5720,9 @@ def get_sheet_cutting_order_table_data(
         row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()
         row["quality_code"] = _cstr(p.get("quality_code"))
         row["colour_code"] = _cstr(p.get("colour_code"))
+        row["process"] = _cstr(p.get("process")) or _item_process_prefix(row.get("item_code") or row.get("itemCode"))
+        row["design_code"] = _cstr(row.get("custom_design_code") or p.get("design_code"))
+        row["design_name"] = _printing_design_name_from_row(row, row["design_code"], row.get("salesOrderItem") or row.get("sales_order_item"))
         row["gsm"] = cint(p.get("gsm") or row.get("gsm") or 0)
         row["series_id"] = sid
         # Roll size in table should reflect child (100) item width first.
@@ -5693,7 +6073,7 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET {", ".join(set_parts)}
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '103%%'
+              AND (pt.item_code LIKE '103%%' OR pt.item_code LIKE '109%%')
               AND pt.name = %s
             """,
             tuple(values),
@@ -5705,7 +6085,7 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET pt.custom_slitting_shift = %s
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '103%%'
+              AND (pt.item_code LIKE '103%%' OR pt.item_code LIKE '109%%')
               AND DATE({eff_date}) = DATE(%s)
             """,
             (shift_label, target_date),
@@ -5763,6 +6143,8 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, un
     filt_parts = [
         "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '105%%'",
         "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-105%%'",
+        "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '106%%'",
+        "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-106%%'",
     ]
     filt_params = []
     if frappe.db.has_column("Planning Table", "unit"):
@@ -5922,7 +6304,7 @@ def assign_sheet_cutting_shift(shift_date=None, shift_label="DAY", item_name=Non
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET {", ".join(set_parts)}
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '251%%'
+              AND (pt.item_code LIKE '251%%' OR pt.item_code LIKE '%%-252%%' OR pt.item_code LIKE '252%%')
               AND pt.name = %s
             """,
             tuple(values),
@@ -5934,7 +6316,7 @@ def assign_sheet_cutting_shift(shift_date=None, shift_label="DAY", item_name=Non
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET pt.custom_sheet_cutting_shift = %s
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '251%%'
+              AND (pt.item_code LIKE '251%%' OR pt.item_code LIKE '%%-252%%' OR pt.item_code LIKE '252%%')
               AND DATE({eff_date}) = DATE(%s)
             """,
             (shift_label, target_date),
@@ -6797,6 +7179,16 @@ def _populate_planning_sheet_items(ps, doc):
             gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
             if gsm_from_code > 0:
                 gsm = gsm_from_code
+        elif _item_process_prefix(str(it.item_code or "")) == "106":
+            p106g = _parse_106_item_code(it.item_code) or {}
+            if cint(p106g.get("gsm") or 0) > 0:
+                gsm = cint(p106g.get("gsm") or 0)
+            if cint(p106g.get("width_mm") or 0) > 0:
+                width = round(cint(p106g.get("width_mm") or 0) / 25.4)
+        elif _item_process_prefix(str(it.item_code or "")) == "109":
+            p109g = _parse_109_item_code(it.item_code) or {}
+            if cint(p109g.get("gsm") or 0) > 0:
+                gsm = cint(p109g.get("gsm") or 0)
         wt = 0.0
         if gsm > 0 and width > 0 and m_roll > 0:
             wt = flt(gsm * width * m_roll * 0.0254) / 1000
@@ -6807,6 +7199,8 @@ def _populate_planning_sheet_items(ps, doc):
         elif LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
             p107g = parsed107_early or (_parse_107_item_code(it.item_code) or {})
             lam_gsm = cint(p107g.get("lam_gsm") or 0)
+        elif _item_process_prefix(str(it.item_code or "")) in ("106", "109"):
+            lam_gsm = _stage3_lam_gsm_from_item_code(it.item_code)
 
         # Pull lam_side strictly from Sales Order Item table for lamination parent rows (104/107)
         lam_side = ""
@@ -6823,13 +7217,13 @@ def _populate_planning_sheet_items(ps, doc):
         p_date = None
         if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(str(it.item_code or "")):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
-        elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "103":
+        elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("103", "109"):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
              p_date = getdate(doc.transaction_date or ps.ordered_date)
-        elif _item_process_prefix(str(it.item_code or "")) == "251":
+        elif _item_process_prefix(str(it.item_code or "")) in ("251", "252"):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
-        elif _is_printing_105_parent_process(str(it.item_code or "")):
+        elif _is_printing_parent_process(str(it.item_code or "")):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif _is_white_color(col):
              p_date = getdate(ps.ordered_date)
@@ -6913,6 +7307,52 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["width_inch"] = w_inch
             # Force unit to UNASSIGNED PRINTING MACHINE
             psi_data["unit"] = PRINTING_UNASSIGNED_UNIT
+        # Process 106 (Laminated Printing): printing board parent with lamination GSM.
+        if _item_process_prefix(str(it.item_code or "")) == "106":
+            p106_data = _parse_106_item_code(it.item_code) or {}
+            _dc_106 = (p106_data.get("design_code") or "").strip().upper()
+            if _dc_106 and frappe.db.has_column("Planning Table", "custom_design_code"):
+                psi_data["custom_design_code"] = _dc_106
+            _dn_106 = _pb_design_name_from_sales_order_item(it.name)
+            if _dn_106:
+                if frappe.db.has_column("Planning Table", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_106
+                if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_106
+            if cint(p106_data.get("gsm") or 0) > 0:
+                psi_data["gsm"] = cint(p106_data.get("gsm") or 0)
+            if cint(p106_data.get("width_mm") or 0) > 0:
+                psi_data["width_inch"] = round(cint(p106_data.get("width_mm") or 0) / 25.4)
+            if cint(p106_data.get("lam_gsm") or 0) > 0 and (
+                frappe.db.has_column("Planning Table", "custom_lam_gsm")
+                or frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
+            ):
+                psi_data["custom_lam_gsm"] = cint(p106_data.get("lam_gsm") or 0)
+            psi_data["unit"] = PRINTING_UNASSIGNED_UNIT
+        # Process 109 (Laminated Slitting): slitting board parent with lamination GSM.
+        if _item_process_prefix(str(it.item_code or "")) == "109":
+            p109_data = _parse_109_item_code(it.item_code) or {}
+            if cint(p109_data.get("gsm") or 0) > 0:
+                psi_data["gsm"] = cint(p109_data.get("gsm") or 0)
+            if cint(p109_data.get("lam_gsm") or 0) > 0 and (
+                frappe.db.has_column("Planning Table", "custom_lam_gsm")
+                or frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
+            ):
+                psi_data["custom_lam_gsm"] = cint(p109_data.get("lam_gsm") or 0)
+            psi_data["unit"] = SLITTING_UNIT
+        # Process 252 (Printed Sheet): sheet-cutting board parent with design metadata.
+        if _item_process_prefix(str(it.item_code or "")) == "252":
+            p252_data = _parse_sheet_cutting_item_code(it.item_code) or {}
+            _dc_252 = (p252_data.get("design_code") or "").strip().upper()
+            if _dc_252 and frappe.db.has_column("Planning Table", "custom_design_code"):
+                psi_data["custom_design_code"] = _dc_252
+            _dn_252 = _pb_design_name_from_sales_order_item(it.name)
+            if _dn_252:
+                if frappe.db.has_column("Planning Table", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_252
+                if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn_252
+            psi_data["unit"] = SHEET_CUTTING_UNIT
         _set_trace_id_if_supported(psi_data, trace_id)
 
         # Fix: Sync logic must be split-aware. Update existing rows without wiping extras.
@@ -6940,7 +7380,7 @@ def _populate_planning_sheet_items(ps, doc):
                 if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(str(it.item_code or "")):
                     existing_psi.unit = LAMINATION_UNIT
                     existing_psi.planned_date = p_date
-                elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "103":
+                elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("103", "109"):
                     existing_psi.unit = SLITTING_UNIT
                     existing_psi.planned_date = p_date
                 elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
@@ -6951,10 +7391,10 @@ def _populate_planning_sheet_items(ps, doc):
                         existing_psi.unit = REWINDING_UNASSIGNED_UNIT
                     if p_date:
                         existing_psi.planned_date = p_date
-                elif _item_process_prefix(str(it.item_code or "")) == "251":
+                elif _item_process_prefix(str(it.item_code or "")) in ("251", "252"):
                     existing_psi.unit = SHEET_CUTTING_UNIT
                     existing_psi.planned_date = p_date
-                elif _is_printing_105_parent_process(str(it.item_code or "")):
+                elif _is_printing_parent_process(str(it.item_code or "")):
                     existing_psi.unit = PRINTING_UNASSIGNED_UNIT
                     existing_psi.planned_date = p_date
                 elif not existing_psi.unit or existing_psi.unit == "UNASSIGNED":
@@ -6971,6 +7411,34 @@ def _populate_planning_sheet_items(ps, doc):
                     _da_105_e = _printing_design_attachment_from_sales_order_item(it.name)
                     if _da_105_e and hasattr(existing_psi, "custom_design_attachment"):
                         existing_psi.custom_design_attachment = _da_105_e
+                if _item_process_prefix(str(it.item_code or "")) == "106":
+                    p106_data_e = _parse_106_item_code(it.item_code) or {}
+                    _dc_106_e = (p106_data_e.get("design_code") or "").strip().upper()
+                    if _dc_106_e and hasattr(existing_psi, "custom_design_code"):
+                        existing_psi.custom_design_code = _dc_106_e
+                    _dn_106_e = _pb_design_name_from_sales_order_item(it.name)
+                    if _dn_106_e and hasattr(existing_psi, "custom_design_name"):
+                        existing_psi.custom_design_name = _dn_106_e
+                    if cint(p106_data_e.get("gsm") or 0) > 0:
+                        existing_psi.gsm = cint(p106_data_e.get("gsm") or 0)
+                    if cint(p106_data_e.get("width_mm") or 0) > 0:
+                        existing_psi.width_inch = round(cint(p106_data_e.get("width_mm") or 0) / 25.4)
+                    if cint(p106_data_e.get("lam_gsm") or 0) > 0 and hasattr(existing_psi, "custom_lam_gsm"):
+                        existing_psi.custom_lam_gsm = cint(p106_data_e.get("lam_gsm") or 0)
+                if _item_process_prefix(str(it.item_code or "")) == "109":
+                    p109_data_e = _parse_109_item_code(it.item_code) or {}
+                    if cint(p109_data_e.get("gsm") or 0) > 0:
+                        existing_psi.gsm = cint(p109_data_e.get("gsm") or 0)
+                    if cint(p109_data_e.get("lam_gsm") or 0) > 0 and hasattr(existing_psi, "custom_lam_gsm"):
+                        existing_psi.custom_lam_gsm = cint(p109_data_e.get("lam_gsm") or 0)
+                if _item_process_prefix(str(it.item_code or "")) == "252":
+                    p252_data_e = _parse_sheet_cutting_item_code(it.item_code) or {}
+                    _dc_252_e = (p252_data_e.get("design_code") or "").strip().upper()
+                    if _dc_252_e and hasattr(existing_psi, "custom_design_code"):
+                        existing_psi.custom_design_code = _dc_252_e
+                    _dn_252_e = _pb_design_name_from_sales_order_item(it.name)
+                    if _dn_252_e and hasattr(existing_psi, "custom_design_name"):
+                        existing_psi.custom_design_name = _dn_252_e
                 if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
                     for k, v in _planning_row_dict_107_lamination_extras(it.item_code, parsed107_early, it.name).items():
                         setattr(existing_psi, k, v)
@@ -7023,10 +7491,16 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return LAMINATION_UNIT
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "103":
         return SLITTING_UNIT
+	if item_code and _item_process_prefix(str(item_code)) == "109":
+		return SLITTING_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "251":
         return SHEET_CUTTING_UNIT
+	if item_code and _item_process_prefix(str(item_code)) == "252":
+		return SHEET_CUTTING_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
+	if item_code and _item_process_prefix(str(item_code)) == "106":
+		return PRINTING_UNASSIGNED_UNIT
     w = flt(width_inch)
     if _is_white_color(color):
         return "UNASSIGNED"
@@ -9827,7 +10301,7 @@ def _get_color_chart_data_impl(
             split_col = "0 as isSplit,"
 
         if bps == "sheet_cutting_only":
-            # Sheet Cutting: show ALL 251 rows for the date regardless of colour.
+            # Sheet Cutting: show ALL 251/252 rows for the date regardless of colour.
             # Use ordered_date (or planned_date if set) so operators always see their orders.
             sheet_date_col_sc = (
                 "COALESCE(NULLIF(i.planned_date,''), NULLIF(p.custom_planned_date,''), p.ordered_date)"
@@ -9848,7 +10322,7 @@ def _get_color_chart_data_impl(
                 FROM `tabPlanning Table` i
                 JOIN `tabPlanning sheet` p ON i.parent = p.name
                 LEFT JOIN `tabCustomer` c ON p.customer = c.name
-                WHERE i.item_code LIKE '251%%'
+                WHERE (i.item_code LIKE '251%%' OR i.item_code LIKE '%%-252%%' OR i.item_code LIKE '252%%')
                   AND p.docstatus < 2
                   AND DATE({sheet_date_col_sc}) = DATE(%s)
                 ORDER BY i.unit, i.idx
@@ -10038,12 +10512,14 @@ def _get_color_chart_data_impl(
                     it["lamination_process"] = _lamination_process_from_item_code(it.get("item_code") or "")
                 except Exception:
                     it["lamination_process"] = ""
+        elif items and bps == "printing_only":
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("105", "106")]
         elif items and bps == "slitting_only":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "103"]
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("103", "109")]
         elif items and bps == "rewinding_only":
             items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "102"]
         elif items and bps == "sheet_cutting_only":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "251"]
+            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("251", "252")]
         elif items and bps == "exclude_104":
             items = [it for it in items if not _is_lamination_parent_process(it.get("item_code") or "")]
         elif items and bps == "exclude_103":
@@ -10052,7 +10528,7 @@ def _get_color_chart_data_impl(
             items = [
                 it
                 for it in items
-                if _item_process_prefix(it.get("item_code") or "") not in ("103", "102")
+                if _item_process_prefix(it.get("item_code") or "") not in ("103", "102", "105", "106", "109", "251", "252")
                 and not _is_lamination_parent_process(it.get("item_code") or "")
             ]
         elif items and bps == "only_100":
@@ -10140,6 +10616,7 @@ def _get_color_chart_data_impl(
     dedicated_scope_no_plan_gate = bps in (
         "lamination_only",
         "slitting_only",
+        "printing_only",
         "rewinding_only",
         "printed_bopp_pb_only",
         "sheet_cutting_only",
@@ -11218,7 +11695,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "exclude_103" and icp == "103":
                     continue
-                if bps == "exclude_special" and (icp in ("103", "102") or _is_lamination_parent_process(ic)):
+                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "109", "251", "252") or _is_lamination_parent_process(ic)):
                     continue
                 if bps == "only_100" and icp != "100":
                     continue
@@ -11228,11 +11705,13 @@ def _get_color_chart_data_impl(
                             continue
                     elif lam_p != lam_proc:
                         continue
-                if bps == "slitting_only" and icp != "103":
+                if bps == "printing_only" and icp not in ("105", "106"):
+                    continue
+                if bps == "slitting_only" and icp not in ("103", "109"):
                     continue
                 if bps == "rewinding_only" and icp != "102":
                     continue
-                if bps == "sheet_cutting_only" and icp != "251":
+                if bps == "sheet_cutting_only" and icp not in ("251", "252"):
                     continue
 
             color = (item.get("color") or item.get("colour") or "").strip()
@@ -11290,7 +11769,7 @@ def _get_color_chart_data_impl(
 
             # Production Board special filtering: only show scheduled items if planned_only is requested
             if cint(planned_only):
-                if bps in ("lamination_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only"):
+                if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only"):
                     pass  # These dedicated boards/tables show all their items regardless of planned date
                 # NON-WHITE items MUST be explicitly pushed (have a planned date)
                 elif not is_white and not item_pdate:
@@ -11508,7 +11987,7 @@ def _get_color_chart_data_impl(
                 _finishing_row = (item.get("custom_finishing") or "").strip()
 
             row_planned_date = str(item_pdate or (sheet.get("custom_planned_date") if is_white else "") or "")
-            if bps in ("lamination_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only"):
+            if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only"):
                 row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
             if bps == "rewinding_only" and _item_process_prefix(_ic_row) == "102" and unit not in REWINDING_BOARD_UNITS:
                 unit = REWINDING_UNASSIGNED_UNIT
@@ -17899,10 +18378,10 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "102" for psi in (psi_list or [])
         )
         is_sheet_cutting_from_rows = any(
-            _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "251" for psi in (psi_list or [])
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("251", "252") for psi in (psi_list or [])
         )
         is_printing_from_rows = any(
-            "-105" in str((psi.get("item_code") or "")).strip().upper() for psi in (psi_list or [])
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("105", "106") for psi in (psi_list or [])
         )
         # BOPP Film = Printed BOPP items with PB- prefix (NOT 107 which is Lamination Unit like 104)
         is_bopp_film_from_rows = (
@@ -17930,6 +18409,14 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
         
         spr.custom_order_code = parent_sheet.party_code or ""
         spr.customer = pp.customer or parent_sheet.customer or ""
+        spr_unit = ""
+        for unit_candidate in [first_psi.get("unit"), pp.get("custom_unit"), pp.get("workstation"), pp.get("custom_workstation")]:
+            normalized_unit = normalize_planning_unit_for_select(unit_candidate)
+            if normalized_unit and normalized_unit != "UNASSIGNED":
+                spr_unit = normalized_unit
+                break
+        if spr_unit and spr_meta.has_field("custom_unit"):
+            spr.custom_unit = spr_unit
 
         from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
             _production_plan_total_planned_qty,
