@@ -9,7 +9,21 @@ from frappe.utils import cint, flt, getdate, nowtime, today
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	extract_quality_and_color,
 )
-from production_entry.production_planning.planning_doctypes import LAMINATION_UNIT, normalize_planning_unit_for_select
+from production_entry.production_planning.planning_doctypes import (
+	LAMINATION_UNIT,
+	PRINTED_BOPP_FILM_UNIT,
+	PRINTING_UNASSIGNED_UNIT,
+	PRINTING_UNIT_2_COLOUR,
+	PRINTING_UNIT_4_COLOUR,
+	PRINTING_UNIT_TT,
+	REWINDING_UNASSIGNED_UNIT,
+	REWINDING_UNIT_L3,
+	REWINDING_UNIT_L4,
+	REWINDING_UNIT_L5,
+	SHEET_CUTTING_UNIT,
+	SLITTING_UNIT,
+	normalize_planning_unit_for_select,
+)
 
 
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
@@ -41,6 +55,62 @@ def batch_shift_value(shift: str | None) -> str:
 
 def _cstr(v) -> str:
 	return str(v).strip() if v is not None else ""
+
+
+def _compact_unit_key(value) -> str:
+	return re.sub(r"[^A-Z0-9]", "", _cstr(value).upper())
+
+
+def _spr_unit_value_for_current_field(unit_value) -> str:
+	"""Return a unit value that validates against the site's current SPR custom_unit field."""
+	raw = _cstr(unit_value)
+	if not raw:
+		return ""
+	normalized = normalize_planning_unit_for_select(raw)
+	if not normalized or normalized == "UNASSIGNED":
+		return ""
+
+	try:
+		df = frappe.get_meta("Shaft Production Run").get_field("custom_unit")
+	except Exception:
+		df = None
+	if not df or df.fieldtype != "Select":
+		return normalized
+
+	options = [_cstr(opt) for opt in _cstr(df.options).splitlines() if _cstr(opt)]
+	if not options:
+		return normalized
+
+	alias_map = {
+		"Unit 1": ["UNIT 1", "Unit 1"],
+		"Unit 2": ["UNIT 2", "Unit 2"],
+		"Unit 3": ["UNIT 3", "Unit 3"],
+		"Unit 4": ["UNIT 4", "Unit 4"],
+		LAMINATION_UNIT: ["Lamination Unit", LAMINATION_UNIT],
+		SLITTING_UNIT: ["Slitting Unit", SLITTING_UNIT],
+		REWINDING_UNASSIGNED_UNIT: ["Unassigned rewinding machine", REWINDING_UNASSIGNED_UNIT],
+		PRINTING_UNASSIGNED_UNIT: ["Unassigned printing machine", PRINTING_UNASSIGNED_UNIT],
+		SHEET_CUTTING_UNIT: [SHEET_CUTTING_UNIT],
+		REWINDING_UNIT_L3: [REWINDING_UNIT_L3],
+		REWINDING_UNIT_L4: [REWINDING_UNIT_L4],
+		REWINDING_UNIT_L5: [REWINDING_UNIT_L5],
+		PRINTED_BOPP_FILM_UNIT: [PRINTED_BOPP_FILM_UNIT],
+		PRINTING_UNIT_2_COLOUR: [PRINTING_UNIT_2_COLOUR, "JVE - PRINTING MACHINE 2 COLOUR"],
+		PRINTING_UNIT_4_COLOUR: [PRINTING_UNIT_4_COLOUR, "JVE - PRINTING MACHINE 4 COLOUR"],
+		PRINTING_UNIT_TT: [PRINTING_UNIT_TT, "TT - PRINTING MACHINE COLOUR 1200MM"],
+	}
+	candidates = [raw, normalized] + alias_map.get(normalized, [])
+	option_by_key = {_compact_unit_key(opt): opt for opt in options}
+	for candidate in candidates:
+		candidate_key = _compact_unit_key(candidate)
+		if candidate_key in option_by_key:
+			return option_by_key[candidate_key]
+
+	# Older live sites can still have stale Select options. Widen the in-memory
+	# meta so validation accepts the canonical Workstation name during migration.
+	if normalized not in options:
+		df.options = (_cstr(df.options) + "\n" + normalized).strip()
+	return normalized
 
 
 def _spr_bundle_source_batch_prefix(batch_no) -> str:
@@ -1227,9 +1297,16 @@ class ShaftProductionRun(Document):
 		unit_value = _cstr(self.get("custom_unit"))
 		if not unit_value:
 			return
-		normalized = normalize_planning_unit_for_select(unit_value)
-		if normalized and normalized != "UNASSIGNED":
-			self.custom_unit = normalized
+		resolved = _spr_unit_value_for_current_field(unit_value)
+		if resolved:
+			try:
+				df = self.meta.get_field("custom_unit")
+				options = [_cstr(opt) for opt in _cstr(getattr(df, "options", "")).splitlines() if _cstr(opt)]
+				if df and df.fieldtype == "Select" and resolved not in options:
+					df.options = (_cstr(df.options) + "\n" + resolved).strip()
+			except Exception:
+				pass
+			self.custom_unit = resolved
 
 	def on_update(self):
 		try:
@@ -4047,9 +4124,7 @@ def get_production_plan_details(production_plan):
 		return {}
 	pp = frappe.get_doc("Production Plan", production_plan)
 	pp_meta = frappe.get_meta("Production Plan")
-	pp_unit = normalize_planning_unit_for_select(pp.get("custom_unit"))
-	if pp_unit == "UNASSIGNED":
-		pp_unit = ""
+	pp_unit = _spr_unit_value_for_current_field(pp.get("custom_unit"))
 	out = {
 		"customer": pp.get("customer"),
 		"custom_unit": pp_unit,
