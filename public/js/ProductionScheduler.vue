@@ -888,8 +888,11 @@ async function initSortable() {
         if (!isSameUnit || evt.newIndex !== evt.oldIndex) {
             setTimeout(async () => {
             try {
-                // Use the card's own date (crucial for weekly/monthly views)
-                const cardDate = itemEl.dataset.date || filterOrderDate.value;
+                // Use the card's own date (crucial for weekly/monthly views); guard legacy "None" strings.
+                const rawCardDate = String(itemEl.dataset.date || "").trim();
+                const cardDate = rawCardDate && !["none", "null", "undefined", "nan"].includes(rawCardDate.toLowerCase())
+                  ? rawCardDate
+                  : filterOrderDate.value;
 
                 // ── MULTI-SELECT DRAG: move ALL selected items if dragged card is selected ──
                 if (selectedItems.value.length > 0 && (selectedItems.value.includes(itemName) || !isSameUnit)) {

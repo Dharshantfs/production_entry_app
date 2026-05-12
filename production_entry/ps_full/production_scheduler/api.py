@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import getdate, flt, cint
+from frappe.utils import getdate, flt, cint, today
 import json
 import re
 import datetime
@@ -4197,6 +4197,9 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
     try:
         sd = start_date or None
         ed = end_date or None
+        if not sd and not ed and not date:
+            # Never let incidental page loads scan every historical Planning Table row.
+            date = today()
         has_pt_spr = frappe.db.has_column("Planning Table", "spr_name")
         spr_expr = "pt.spr_name as spr_name" if has_pt_spr else "'' as spr_name"
         has_seq = frappe.db.has_column("Planning Table", "custom_printing_arrangement_seq")
@@ -4244,6 +4247,7 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             f"ps.customer as customer, {eff_date} as planned_date "
             "FROM `tabPlanning Table` pt JOIN `tabPlanning sheet` ps ON ps.name = pt.parent "
             "WHERE ps.docstatus < 2 "
+            "AND (UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '105%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%-105%') "
         )
         params = []
         if sd and ed:

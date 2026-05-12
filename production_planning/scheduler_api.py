@@ -4233,7 +4233,6 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     Moves a specific Planning Sheet Item to a new unit/date.
     If date changes, the item is re-parented to a suitable Planning Sheet for that date.
     """
-    target_date = getdate(date)
     force_move = flt(force_move)
     perform_split = flt(perform_split)
     strict_next_day = flt(strict_next_day)
@@ -4242,6 +4241,16 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     # 1. Get Item and Parent Details
     item = frappe.get_doc("Planning Table", item_name)
     parent_sheet = frappe.get_doc("Planning sheet", item.parent)
+    date_text = _cstr(date)
+    if date_text.lower() in ("none", "null", "undefined", "nan"):
+        date_text = ""
+    fallback_date = (
+        item.get("planned_date")
+        or parent_sheet.get("custom_planned_date")
+        or parent_sheet.get("ordered_date")
+        or frappe.utils.today()
+    )
+    target_date = getdate(date_text or fallback_date)
     
     # 2. Docstatus check ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ allow movement even from submitted sheets
     # (user requested free movement; we use raw SQL to bypass Frappe immutability)
