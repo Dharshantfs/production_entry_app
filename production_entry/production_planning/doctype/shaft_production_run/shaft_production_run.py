@@ -61,8 +61,8 @@ def _compact_unit_key(value) -> str:
 	return re.sub(r"[^A-Z0-9]", "", _cstr(value).upper())
 
 
-def _spr_unit_value_for_current_field(unit_value) -> str:
-	"""Return a unit value that validates against the site's current SPR custom_unit field."""
+def _unit_value_for_doctype_field(unit_value, doctype: str, fieldname: str, meta=None) -> str:
+	"""Return a unit value that validates against the current DocType field."""
 	raw = _cstr(unit_value)
 	if not raw:
 		return ""
@@ -71,7 +71,8 @@ def _spr_unit_value_for_current_field(unit_value) -> str:
 		return ""
 
 	try:
-		df = frappe.get_meta("Shaft Production Run").get_field("custom_unit")
+		field_meta = meta or frappe.get_meta(doctype)
+		df = field_meta.get_field(fieldname)
 	except Exception:
 		df = None
 	if not df or df.fieldtype != "Select":
@@ -111,6 +112,11 @@ def _spr_unit_value_for_current_field(unit_value) -> str:
 	if normalized not in options:
 		df.options = (_cstr(df.options) + "\n" + normalized).strip()
 	return normalized
+
+
+def _spr_unit_value_for_current_field(unit_value) -> str:
+	"""Return a unit value that validates against the site's current SPR custom_unit field."""
+	return _unit_value_for_doctype_field(unit_value, "Shaft Production Run", "custom_unit")
 
 
 def _spr_bundle_source_batch_prefix(batch_no) -> str:
@@ -1933,7 +1939,9 @@ class ShaftProductionRun(Document):
 			return
 		for fn in ("unit", "custom_unit", "workstation", "custom_workstation"):
 			if meta.has_field(fn):
-				se.set(fn, unit_value)
+				resolved = _unit_value_for_doctype_field(unit_value, "Stock Entry", fn, meta=meta)
+				if resolved:
+					se.set(fn, resolved)
 
 	def _apply_unit_to_submitted_stock_entry(self, se_name: str, wo_doc=None):
 		if not se_name:
@@ -1944,8 +1952,11 @@ class ShaftProductionRun(Document):
 		meta = frappe.get_meta("Stock Entry")
 		for fn in ("unit", "custom_unit", "workstation", "custom_workstation"):
 			if meta.has_field(fn):
+				resolved = _unit_value_for_doctype_field(unit_value, "Stock Entry", fn, meta=meta)
+				if not resolved:
+					continue
 				try:
-					frappe.db.set_value("Stock Entry", se_name, fn, unit_value, update_modified=False)
+					frappe.db.set_value("Stock Entry", se_name, fn, resolved, update_modified=False)
 				except Exception:
 					pass
 
