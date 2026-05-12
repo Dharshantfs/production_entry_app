@@ -4891,7 +4891,7 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
         end_date=end_date,
         plan_name="__all__",
         planned_only=cint(planned_only),
-        board_process_scope="exclude_special",
+        board_process_scope="printing_only",
     ) or []
     unit_filter = _cstr(unit)
     filtered = []
@@ -5214,15 +5214,29 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 "transfer_details": metrics.get("transfer_details"),
                 "can_create_spr": metrics.get("can_create_spr", False),
             })
-        if not out:
-            out = _printing_order_table_rows_from_board_source(
-                date=date,
-                start_date=sd,
-                end_date=ed,
-                planned_only=planned_only,
-                unit=unit,
-                process=process,
+        board_rows = _printing_order_table_rows_from_board_source(
+            date=date,
+            start_date=sd,
+            end_date=ed,
+            planned_only=planned_only,
+            unit=unit,
+            process=process,
+        )
+        seen_keys = {
+            _cstr(row.get("psi_name") or row.get("itemName") or row.get("name"))
+            or f"{_cstr(row.get('plan_name') or row.get('planningSheet'))}::{_cstr(row.get('item_code') or row.get('itemCode'))}"
+            for row in out
+        }
+        for row in board_rows or []:
+            key = (
+                _cstr(row.get("psi_name") or row.get("itemName") or row.get("name"))
+                or f"{_cstr(row.get('plan_name') or row.get('planningSheet'))}::{_cstr(row.get('item_code') or row.get('itemCode'))}"
             )
+            if key and key in seen_keys:
+                continue
+            if key:
+                seen_keys.add(key)
+            out.append(row)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "get_printing_order_table_data_error")
         try:
