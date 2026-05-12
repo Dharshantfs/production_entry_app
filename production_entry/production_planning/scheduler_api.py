@@ -3386,6 +3386,16 @@ def _repair_rewinding_parent_rows(planning_sheet_name=None):
 	return updated
 
 
+def _clean_rewinding_color_value(value):
+	"""Normalize empty/placeholder colour values without hiding valid 102 rows."""
+	s = _cstr(value)
+	if not s:
+		return ""
+	if s.upper() in {"UNKNOWN", "UNKNOWN COLOR", "NO COLOR", "N/A", "NA", "-"}:
+		return ""
+	return s
+
+
 def _rewinding_rows_direct_from_planning_table(date=None, start_date=None, end_date=None, planned_only=1):
 	"""Direct 102 fallback for rewinding board/table when sheet-level board scan misses item rows."""
 	if not REWINDING_FLOW_ENABLED:
@@ -3491,7 +3501,7 @@ def _rewinding_rows_direct_from_planning_table(date=None, start_date=None, end_d
 	for r in rows:
 		row = dict(r)
 		ic = _cstr(row.get("item_code") or row.get("itemCode"))
-		color = _clean_color_value(row.get("color")) or _color_from_item_code_6_to_8(ic) or "Unknown Color"
+		color = _clean_rewinding_color_value(row.get("color")) or _color_from_item_code_6_to_8(ic) or "Unknown Color"
 		unit = normalize_planning_unit_for_select(row.get("unit"))
 		if unit not in REWINDING_BOARD_UNITS:
 			unit = REWINDING_UNASSIGNED_UNIT
