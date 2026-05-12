@@ -838,13 +838,69 @@ def _printing_design_attachment_from_row(row, so_item_name=None):
 	return ""
 
 
+def _printing_length_values_from_row(row):
+	"""Resolve planned length fields from Planning Table, legacy PSI, then Sales Order Item."""
+	row = row or {}
+	meter = flt(row.get("meter") or row.get("planned_meter") or row.get("custom_meter") or 0)
+	meter_per_roll = flt(row.get("meter_per_roll") or row.get("custom_meter_per_roll") or row.get("custom_meterperroll") or 0)
+	no_of_rolls = flt(row.get("no_of_rolls") or row.get("custom_no_of_rolls") or 0)
+	source_item = _cstr(row.get("source_item"))
+	so_item_name = _printing_sales_order_item_from_row(row)
+	psi_name = _cstr(row.get("psi_name") or row.get("itemName") or row.get("item_name") or row.get("name"))
+
+	def _take(src):
+		nonlocal meter, meter_per_roll, no_of_rolls, source_item, so_item_name
+		if not src:
+			return
+		meter = meter or flt(src.get("meter") or src.get("planned_meter") or src.get("custom_meter") or 0)
+		meter_per_roll = meter_per_roll or flt(src.get("meter_per_roll") or src.get("custom_meter_per_roll") or src.get("custom_meterperroll") or 0)
+		no_of_rolls = no_of_rolls or flt(src.get("no_of_rolls") or src.get("custom_no_of_rolls") or 0)
+		source_item = source_item or _cstr(src.get("source_item"))
+		so_item_name = so_item_name or _cstr(src.get("sales_order_item") or src.get("so_item"))
+
+	try:
+		if psi_name and frappe.db.exists("Planning Table", psi_name):
+			fields = [
+				f
+				for f in ("meter", "meter_per_roll", "no_of_rolls", "source_item", "sales_order_item", "so_item")
+				if frappe.db.has_column("Planning Table", f)
+			]
+			if fields:
+				_take(frappe.db.get_value("Planning Table", psi_name, fields, as_dict=True) or {})
+	except Exception:
+		pass
+
+	try:
+		if source_item and frappe.db.exists("Planning sheet Item", source_item):
+			fields = [
+				f
+				for f in ("meter", "meter_per_roll", "no_of_rolls", "so_item")
+				if frappe.db.has_column("Planning sheet Item", f)
+			]
+			if fields:
+				_take(frappe.db.get_value("Planning sheet Item", source_item, fields, as_dict=True) or {})
+	except Exception:
+		pass
+
+	try:
+		if so_item_name and frappe.db.exists("Sales Order Item", so_item_name):
+			fields = [
+				f
+				for f in ("custom_meter", "custom_meter_per_roll", "custom_meterperroll", "custom_no_of_rolls")
+				if frappe.db.has_column("Sales Order Item", f)
+			]
+			if fields:
+				_take(frappe.db.get_value("Sales Order Item", so_item_name, fields, as_dict=True) or {})
+	except Exception:
+		pass
+	return meter, meter_per_roll, no_of_rolls
+
+
 def _printing_planned_meter_from_row(row, width_inch=0, gsm=0):
 	"""Planned meters: stored meter first, then meter/roll * rolls, then kg/GSM/width."""
-	meter = flt((row or {}).get("meter") or (row or {}).get("planned_meter") or 0)
+	meter, meter_per_roll, no_of_rolls = _printing_length_values_from_row(row)
 	if meter > 0:
 		return meter
-	meter_per_roll = flt((row or {}).get("meter_per_roll") or (row or {}).get("custom_meter_per_roll") or 0)
-	no_of_rolls = flt((row or {}).get("no_of_rolls") or (row or {}).get("custom_no_of_rolls") or 0)
 	if meter_per_roll > 0 and no_of_rolls > 0:
 		return meter_per_roll * no_of_rolls
 	qty = flt((row or {}).get("qty") or 0)
@@ -11011,7 +11067,11 @@ def _get_color_chart_data_impl(
             if not color: color = "Unknown Color"
             if not quality: quality = "Unknown Quality"
             if color.upper() == "NO COLOR":
-                continue
+                item_code_for_color = (item.get("item_code") or "").strip()
+                if bps == "rewinding_only" and _item_process_prefix(item_code_for_color) == "102":
+                    color = _color_from_item_code_6_to_8(item_code_for_color) or "Unknown Color"
+                else:
+                    continue
 
             # ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ KEY FIX: Restore missing item details from sheet data ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡
             unit = normalize_planning_unit_for_select(
