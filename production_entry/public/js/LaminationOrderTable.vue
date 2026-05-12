@@ -1377,12 +1377,56 @@ function currentShiftDateForDialog() {
   return frappe.datetime.get_today();
 }
 
+function printingRowsForShiftDate(dateKey) {
+  const dk = toDateKey(dateKey);
+  const pc = (filterPartyCode.value || "").trim().toLowerCase();
+  const cu = (filterCustomer.value || "").trim().toLowerCase();
+  let rows = (rawData.value || []).filter((r) => {
+    if (toDateKey(r.plannedDate || r.planned_date) !== dk) return false;
+    if (filterUnit.value && normalizeUnitValue(r.unit) !== filterUnit.value) return false;
+    if (pc && !String(r.partyCode || r.order_code || "").toLowerCase().includes(pc)) return false;
+    if (cu && !String(r.customer_name || r.customer || "").toLowerCase().includes(cu)) return false;
+    return !!(r.itemName || r.item_name);
+  });
+  return sortRowsBySavedSequence(rows);
+}
+
+function shiftOrderLabel(row, idx = 0) {
+  const code = String(row.partyCode || row.order_code || row.itemCode || row.item_code || "-").trim();
+  const customer = String(row.customer_name || row.customer || "-").trim();
+  const design = String(row.custom_design_code || row.design_code || "").trim();
+  const item = String(row.itemCode || row.item_code || "").trim();
+  return `${idx + 1}. ${code} - ${customer}${design ? ` - Design ${design}` : ""}${item ? ` - ${item}` : ""}`;
+}
+
 function openAssignShiftDialog() {
+  let dialog = null;
+  const rowOptionMap = {};
+  const updatePrintingOrderChoices = () => {
+    if (!dialog || !isPrinting105Table.value) return;
+    const dateKey = dialog.get_value("shift_date") || currentShiftDateForDialog();
+    const rows = printingRowsForShiftDate(dateKey);
+    const options = [`All visible printing orders (${rows.length})`];
+    Object.keys(rowOptionMap).forEach((k) => delete rowOptionMap[k]);
+    rows.forEach((row, idx) => {
+      const label = shiftOrderLabel(row, idx);
+      rowOptionMap[label] = row;
+      options.push(label);
+    });
+    dialog.set_df_property("target_order", "options", options.join("\n"));
+    dialog.set_value("target_order", options[0]);
+    const preview = rows.length
+      ? rows.map((row, idx) => `<div>${shiftOrderLabel(row, idx)}</div>`).join("")
+      : "<div style='color:#b91c1c;'>No visible printing orders for this date/filter.</div>";
+    dialog.fields_dict.order_preview.$wrapper.html(`<div style="font-size:12px;color:#334155;line-height:1.5;"><b>Orders to assign:</b>${preview}</div>`);
+  };
   const d = new frappe.ui.Dialog({
     title: isPrinting105Table.value ? "Assign Printing Shift" : isPrintedBoppTable.value ? "Assign Printed BOPP film shift" : "Assign Lamination Shift",
     fields: [
-      { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
+      { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog(), onchange: () => updatePrintingOrderChoices() },
       { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
+      { fieldname: "target_order", label: "Printing Order", fieldtype: "Select", hidden: !isPrinting105Table.value },
+      { fieldname: "order_preview", fieldtype: "HTML", hidden: !isPrinting105Table.value },
     ],
     primary_action_label: "Apply",
     primary_action: async (vals) => {
@@ -1391,15 +1435,44 @@ function openAssignShiftDialog() {
           frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date)}).`);
           return;
         }
-        const assignArgs = { shift_date: vals.shift_date, shift_label: vals.shift_label };
-        if (isPrinting105Table.value && filterUnit.value) assignArgs.unit = filterUnit.value;
-        const res = await frappe.call({
-          method: assignShiftMethod.value,
-          args: assignArgs,
-        });
-        const msg = res?.message || {};
+        let msg = {};
+        let affectedLabels = [];
+        if (isPrinting105Table.value) {
+          const selected = String(vals.target_order || "").trim();
+          let rows = selected === "All visible printing orders (0)"
+            ? []
+            : selected.startsWith("All visible printing orders")
+            ? printingRowsForShiftDate(vals.shift_date)
+            : [rowOptionMap[selected]].filter(Boolean);
+          if (!rows.length) {
+            frappe.msgprint("Choose at least one printing order for this shift.");
+            return;
+          }
+          let updated = 0;
+          for (const row of rows) {
+            const res = await frappe.call({
+              method: assignShiftMethod.value,
+              args: {
+                shift_date: vals.shift_date,
+                shift_label: vals.shift_label,
+                item_name: row.itemName || row.item_name,
+                unit: row.unit || filterUnit.value || "",
+              },
+            });
+            updated += Number(res?.message?.updated_count || 0);
+            affectedLabels.push(shiftOrderLabel(row, affectedLabels.length));
+          }
+          msg = { shift: vals.shift_label, updated_count: updated };
+        } else {
+          const assignArgs = { shift_date: vals.shift_date, shift_label: vals.shift_label };
+          const res = await frappe.call({
+            method: assignShiftMethod.value,
+            args: assignArgs,
+          });
+          msg = res?.message || {};
+        }
         frappe.show_alert(
-          { message: `Shift ${msg.shift || vals.shift_label} applied to ${msg.updated_count || 0} order(s)`, indicator: "green" },
+          { message: `Shift ${msg.shift || vals.shift_label} applied to ${msg.updated_count || 0} update(s)${affectedLabels.length ? `: ${affectedLabels.join("; ")}` : ""}`, indicator: "green" },
           5
         );
         d.hide();
@@ -1410,7 +1483,9 @@ function openAssignShiftDialog() {
       }
     },
   });
+  dialog = d;
   d.show();
+  updatePrintingOrderChoices();
 }
 
 function getMaintenanceRecordsHTML() {

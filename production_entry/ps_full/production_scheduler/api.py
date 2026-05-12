@@ -5724,12 +5724,13 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, un
         frappe.throw(_("Shift must be DAY or NIGHT."))
     if not frappe.db.has_column("Planning Table", "custom_printing_shift"):
         frappe.throw(_("Field custom_printing_shift is missing on Planning Table. Please migrate."))
-    allowed_units = {
+    printing_units = [
         PRINTING_UNIT_2_COLOUR,
         PRINTING_UNIT_4_COLOUR,
         PRINTING_UNIT_TT,
         PRINTING_UNASSIGNED_UNIT,
-    }
+    ]
+    allowed_units = set(printing_units)
     unit_filter = normalize_planning_unit_for_select(unit) if unit else ""
     if unit_filter and unit_filter not in allowed_units:
         unit_filter = _cstr(unit)
@@ -5759,13 +5760,23 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, un
         else (f"COALESCE(pt.{pt_date_col}, ps.ordered_date)" if pt_date_col else "COALESCE(ps.custom_planned_date, ps.ordered_date)")
     )
 
-    filt = "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-105%%'"
+    filt_parts = [
+        "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '105%%'",
+        "UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-105%%'",
+    ]
+    filt_params = []
+    if frappe.db.has_column("Planning Table", "unit"):
+        unit_marks = ",".join(["%s"] * len(printing_units))
+        filt_parts.append(f"TRIM(IFNULL(pt.unit, '')) IN ({unit_marks})")
+        filt_params.extend(printing_units)
+    filt = "(" + " OR ".join(filt_parts) + ")"
     if item_name:
         set_parts = ["pt.custom_printing_shift = %s"]
         values = [shift_label]
         if pt_date_col:
             set_parts.append(f"pt.{pt_date_col} = %s")
             values.append(target_date)
+        values.extend(filt_params)
         values.append(str(item_name).strip())
         frappe.db.sql(
             f"""
@@ -5780,7 +5791,9 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, un
         )
     else:
         unit_clause = ""
-        values = [shift_label, target_date]
+        values = [shift_label]
+        values.extend(filt_params)
+        values.append(target_date)
         if unit_filter and frappe.db.has_column("Planning Table", "unit"):
             unit_clause = " AND TRIM(IFNULL(pt.unit, '')) = %s"
             values.append(unit_filter)
