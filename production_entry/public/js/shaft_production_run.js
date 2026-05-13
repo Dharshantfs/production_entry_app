@@ -605,7 +605,7 @@ function spr_open_fabric_batch_pick_dialog(frm) {
 			if (!ctx.needs_picks) {
 				frappe.msgprint(
 					__(
-							'No fabric batch selection is required for this SPR (no Work Orders for parent items 104, 103, 107, 102, or 251).'
+						'No fabric batch selection is required for this SPR (no Work Orders for FG processes 102–109, 251, or 252 that need fabric picks).'
 					)
 				);
 				return;

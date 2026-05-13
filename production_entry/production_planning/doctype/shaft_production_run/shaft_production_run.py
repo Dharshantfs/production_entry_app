@@ -26,20 +26,40 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 
+# FG Work Order processes that require manual 100-fabric batch lines in SPR fabric picker.
+SPR_FG_FABRIC_PICK_PROCESSES = ("102", "103", "104", "105", "106", "107", "109", "251", "252")
+
+
+def spr_fg_item_process_code(item_code: str) -> str:
+	"""3-digit process code from FG item_code.
+
+	- Design-first printing / sheet: ``002-105…``, ``DES-252…`` (process after first hyphen).
+	- Legacy width suffix: ``102…-1600`` (short numeric tail → process from head digit stream).
+	"""
+	raw = (item_code or "").strip().upper()
+	if not raw:
+		return ""
+	if " - " in raw:
+		raw = raw.split(" - ")[-1].strip()
+	if "-" in raw:
+		parts = raw.split("-", 1)
+		head = parts[0].strip()
+		tail = parts[1].strip() if len(parts) > 1 else ""
+		if raw.count("-") == 1 and tail.isdigit() and len(tail) <= 4:
+			head_digits = "".join([ch for ch in head if ch.isdigit()])
+			if len(head_digits) >= 3:
+				return head_digits[:3]
+		tail_digits = "".join([ch for ch in tail if ch.isdigit()])
+		if len(tail_digits) >= 3:
+			return tail_digits[:3]
+	digits = "".join([ch for ch in raw if ch.isdigit()])
+	return digits[:3] if len(digits) >= 3 else ""
+
+
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
-	"""True when WO FG is 104 / 103 (slitting) / 102 (rewinding) / 251 (sheet cutting) / 107 BOPP (design-first codes)."""
-	pi = (production_item or "").strip().upper()
-	if not pi:
-		return False
-	tail = pi.split(" - ")[-1].strip() if " - " in pi else pi
-	if tail.startswith(("104", "103", "102", "251")):
-		return True
-	if "-107" in pi:
-		return True
-	# Prefixed codes (e.g. MB-1031032210) or titled items where the numeric code is not leftmost.
-	if re.search(r"(?:^|[^0-9])(?:103|104|102|251)\d", pi):
-		return True
-	return False
+	"""True when WO FG needs manual 100-fabric batch allocation for this SPR (102–109, 251, 252 incl. design-first)."""
+	proc = spr_fg_item_process_code(production_item)
+	return bool(proc) and proc in SPR_FG_FABRIC_PICK_PROCESSES
 
 
 def batch_shift_value(shift: str | None) -> str:
@@ -2451,8 +2471,8 @@ class ShaftProductionRun(Document):
 	def _assign_rm_batches_for_stock_entry(self, se, wo_id: str | None = None):
 		"""Assign batch_no for batch-tracked RM lines before submit.
 
-		For Work Orders on 104 / 103 / 107 / 102 / 251 parents, 100* fabric lines consume batches from operator picks
-		(`fabric_batch_picks`) in order instead of auto FIFO by quantity.
+		For Work Orders on FG processes 102–109, 251, 252 (incl. design-first codes), 100* fabric lines consume
+		batches from operator picks (`fabric_batch_picks`) in order instead of auto FIFO by quantity.
 		"""
 		for d in list(se.items or []):
 			if not d.item_code or d.get("t_warehouse"):
@@ -2573,7 +2593,7 @@ class ShaftProductionRun(Document):
 		return 1.0
 
 	def _spr_build_fabric_batch_pick_context_dict(self) -> dict:
-		"""API payload for the desk fabric-batch dialog (104 / 103 / 107 / 102 / 251 WOs + 100 RM + WIP batches)."""
+		"""API payload for the desk fabric-batch dialog (102–109, 251, 252 WOs + 100 RM + WIP batches)."""
 		out: dict = {"needs_picks": False, "lines": [], "current_picks": [], "spr": self.name}
 		if not self._spr_fabric_picks_field_exists():
 			return out
