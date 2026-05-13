@@ -152,6 +152,14 @@ def planning_line_unit_option_lines():
             REWINDING_UNASSIGNED_UNIT,
             SHEET_CUTTING_UNIT,
             PRINTED_BOPP_FILM_UNIT,
+            PRINTING_UNASSIGNED_UNIT,
+            PRINTING_UNIT_2_COLOUR,
+            PRINTING_UNIT_4_COLOUR,
+            PRINTING_UNIT_TT,
+            # Legacy labels still seen on older sites / custom Select fields.
+            "JVE - PRINTING MACHINE 2 COLOUR",
+            "JVE - PRINTING MACHINE 4 COLOUR",
+            "TT - PRINTING MACHINE COLOUR 1200MM",
         }
     )
 
@@ -174,17 +182,26 @@ def _stored_unit_select_outdated(opts):
 
 def ensure_planning_line_unit_docfield_options():
 	"""
-	Legacy Select sync — no-op when ``unit`` is Link to Workstation.
+	Legacy Select sync for all known planning/manufacturing unit fields.
+	No-op for Link fields.
 
 	Older sites synced ``tabDocField.options`` here; Links use ``options``='Workstation' from DocType JSON.
 	"""
 	import frappe
 
-	for dt in ("Planning Table", PLANNING_SHEET_ITEM):
+	target_fields = (
+		("Planning Table", "unit"),
+		(PLANNING_SHEET_ITEM, "unit"),
+		("Shaft Production Run", "custom_unit"),
+		("Production Plan", "custom_unit"),
+		("Work Order", "custom_unit"),
+		("Stock Entry", "custom_unit"),
+	)
+	for dt, fieldname in target_fields:
 		try:
 			fieldtype = frappe.db.get_value(
 				"DocField",
-				{"parent": dt, "fieldname": "unit"},
+				{"parent": dt, "fieldname": fieldname},
 				"fieldtype",
 			)
 		except Exception:
@@ -193,7 +210,7 @@ def ensure_planning_line_unit_docfield_options():
 			continue
 		opts = frappe.db.get_value(
 			"DocField",
-			{"parent": dt, "fieldname": "unit", "fieldtype": "Select"},
+			{"parent": dt, "fieldname": fieldname, "fieldtype": "Select"},
 			"options",
 		)
 		if not _stored_unit_select_outdated(opts):
@@ -205,11 +222,11 @@ def ensure_planning_line_unit_docfield_options():
 				SET `options`=%s
 				WHERE `parent`=%s AND `fieldname`=%s AND `fieldtype`='Select'
 				""",
-				(CANONICAL_PLANNING_LINE_UNIT_OPTIONS, dt, "unit"),
+				(CANONICAL_PLANNING_LINE_UNIT_OPTIONS, dt, fieldname),
 			)
 			for ps in frappe.get_all(
 				"Property Setter",
-				filters={"doc_type": dt, "field_name": "unit", "property": "options"},
+				filters={"doc_type": dt, "field_name": fieldname, "property": "options"},
 				pluck="name",
 			) or []:
 				try:
@@ -221,6 +238,8 @@ def ensure_planning_line_unit_docfield_options():
 	try:
 		frappe.clear_cache(doctype="Planning Table")
 		frappe.clear_cache(doctype=PLANNING_SHEET_ITEM)
+		for dt in ("Shaft Production Run", "Production Plan", "Work Order", "Stock Entry"):
+			frappe.clear_cache(doctype=dt)
 	except Exception:
 		pass
 

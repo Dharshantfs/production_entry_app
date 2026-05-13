@@ -9229,28 +9229,48 @@ def delete_maintenance_and_cascade(maintenance_record_name):
 
 @frappe.whitelist()
 def get_all_equipment_maintenance(start_date=None, end_date=None):
-    """Get all maintenance records, optionally filtered by date range."""
-    if not frappe.db.exists("DocType", "Equipment Maintenance"):
-        return []
-    
-    if start_date and end_date:
-        # Find records that overlap with the date range
-        records = frappe.db.sql("""
-            SELECT name, unit, maintenance_type, start_date, end_date, status, notes
-            FROM `tabEquipment Maintenance`
-            WHERE start_date <= %s
-              AND end_date >= %s
-              AND docstatus < 2
-            ORDER BY unit, start_date
-        """, (end_date, start_date), as_dict=True)
-        return records
-    else:
-        records = frappe.get_all("Equipment Maintenance",
+    """Get all maintenance records, optionally filtered by date range.
+
+    Hardening note:
+    Some sites miss optional columns (for example ``status`` / ``notes``) during partial migrations.
+    Avoid 5xx by selecting only existing columns and returning an empty list on unexpected failures.
+    """
+    try:
+        if not frappe.db.exists("DocType", "Equipment Maintenance"):
+            return []
+
+        cols = set(frappe.db.get_table_columns("Equipment Maintenance") or [])
+        fields = ["name", "unit", "maintenance_type", "start_date", "end_date"]
+        for opt in ("status", "notes"):
+            if opt in cols:
+                fields.append(opt)
+
+        if start_date and end_date:
+            # Find records that overlap with the date range.
+            # Keep SELECT dynamic so missing optional columns don't break SQL.
+            select_cols = ", ".join(fields)
+            return frappe.db.sql(
+                f"""
+                SELECT {select_cols}
+                FROM `tabEquipment Maintenance`
+                WHERE start_date <= %s
+                  AND end_date >= %s
+                  AND docstatus < 2
+                ORDER BY unit, start_date
+                """,
+                (end_date, start_date),
+                as_dict=True,
+            )
+
+        return frappe.get_all(
+            "Equipment Maintenance",
             filters={"docstatus": ["<", 2]},
-            fields=["name", "unit", "maintenance_type", "start_date", "end_date", "status", "notes"],
-            order_by="unit, start_date"
+            fields=fields,
+            order_by="unit, start_date",
         )
-        return records
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_all_equipment_maintenance_failed")
+        return []
 
 def find_best_slot(item_qty_tons, quality, preferred_unit, start_date, recursion_depth=0):
     """
