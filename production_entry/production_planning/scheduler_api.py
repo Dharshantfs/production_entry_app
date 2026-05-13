@@ -5171,6 +5171,38 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
 @frappe.whitelist()
 def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None, unit=None, process=None):
     """Return Process 105/106 printing rows with transfer/produced metrics."""
+    try:
+        return _get_printing_order_table_data_impl(
+            date=date,
+            start_date=start_date,
+            end_date=end_date,
+            filters=filters,
+            planned_only=planned_only,
+            party_code=party_code,
+            unit=unit,
+            process=process,
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_printing_order_table_data_fatal")
+        try:
+            return (
+                _printing_order_table_rows_from_board_source(
+                    date=date,
+                    start_date=start_date,
+                    end_date=end_date,
+                    planned_only=planned_only,
+                    unit=unit,
+                    process=process,
+                )
+                or []
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "get_printing_order_table_data_fatal_fb")
+            return []
+
+
+def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None, unit=None, process=None):
+    """Internal implementation for printing order table."""
     out = []
     try:
         sd = _normalize_filter_date(start_date) or None
@@ -5281,7 +5313,11 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             q += f" ORDER BY {eff_date}, CASE WHEN IFNULL(pt.custom_printing_arrangement_seq,0) > 0 THEN pt.custom_printing_arrangement_seq ELSE 999999 END, pt.idx"
         else:
             q += f" ORDER BY {eff_date}, pt.idx"
-        rows = frappe.db.sql(q, tuple(params), as_dict=True) or []
+        try:
+            rows = frappe.db.sql(q, tuple(params), as_dict=True) or []
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "get_printing_order_table_data_sql")
+            rows = []
 
         # Pre-fetch SPR metadata for operator + rolls (best-effort).
         spr_names = set()
@@ -5320,7 +5356,16 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
             proc = _item_process_prefix(ic)
             if proc not in ("105", "106"):
                 continue
-            metrics = _get_transfer_and_produced_for_pl_row(r)
+            try:
+                metrics = _get_transfer_and_produced_for_pl_row(r)
+            except Exception:
+                metrics = {
+                    "produced_qty": 0.0,
+                    "transferred_qty": 0.0,
+                    "transfer_status": "pending",
+                    "transfer_details": [],
+                    "can_create_spr": False,
+                }
             # Choose latest SPR (if any) for operator/rolls.
             spr_latest = ""
             for sn in _expand_spr_name_tokens(r.get("spr_name")):
@@ -5375,14 +5420,18 @@ def get_printing_order_table_data(date=None, start_date=None, end_date=None, fil
                 "transfer_details": metrics.get("transfer_details"),
                 "can_create_spr": metrics.get("can_create_spr", False),
             })
-        board_rows = _printing_order_table_rows_from_board_source(
-            date=date,
-            start_date=sd,
-            end_date=ed,
-            planned_only=planned_only,
-            unit=unit,
-            process=process,
-        )
+        try:
+            board_rows = _printing_order_table_rows_from_board_source(
+                date=date,
+                start_date=sd,
+                end_date=ed,
+                planned_only=planned_only,
+                unit=unit,
+                process=process,
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "get_printing_order_table_board_merge")
+            board_rows = []
         seen_keys = {
             _cstr(row.get("psi_name") or row.get("itemName") or row.get("name"))
             or f"{_cstr(row.get('plan_name') or row.get('planningSheet'))}::{_cstr(row.get('item_code') or row.get('itemCode'))}"

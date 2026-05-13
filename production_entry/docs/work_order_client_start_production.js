@@ -3,6 +3,7 @@
  * Pairs with Server Script auto_material_transfer:
  *   - FG processes 102/103/104/105/106/107/109/251/252 with 100* RM lines open the
  *     fabric batch dialog, then POST fabric_batch_picks (JSON string) with work_order.
+ *   - Partial transfers: dialog shows remaining fabric qty; you may transfer extra (over BOM).
  *   - Otherwise calls auto_material_transfer with work_order only.
  * If your API route differs, change the method string in wo_call_auto_material_transfer().
  */
@@ -41,10 +42,30 @@ if (typeof frappe !== 'undefined') {
 
 function wo_fabric_rm_rows(frm) {
 	const rows = frm.doc.required_items || [];
-	return rows.filter(function (r) {
+	const out = [];
+	for (let i = 0; i < rows.length; i++) {
+		const r = rows[i];
 		const ic = cstr(r.item_code || '');
-		return ic.startsWith('100') && flt(r.required_qty) > 0;
-	});
+		if (!ic.startsWith('100') || flt(r.required_qty) <= 0) {
+			continue;
+		}
+		const req = flt(r.required_qty);
+		const tr = flt(r.transferred_qty);
+		const remaining_qty = Math.max(0, req - tr);
+		if (remaining_qty <= 0) {
+			continue;
+		}
+		out.push({
+			item_code: r.item_code,
+			required_qty: req,
+			transferred_qty: tr,
+			remaining_qty: remaining_qty,
+			source_warehouse: r.source_warehouse,
+			stock_uom: r.stock_uom,
+			idx: r.idx,
+		});
+	}
+	return out;
 }
 
 /**
@@ -158,34 +179,80 @@ function wo_open_fabric_batch_pick_dialog(frm) {
 		let body =
 			'<div class="wo-fabric-pick" style="max-height:72vh;overflow-y:auto;padding-right:4px">' +
 			'<p class="text-muted small">' +
-			__('Tick batches and set qty. Totals must cover required qty. Server caps by actual warehouse stock.') +
+			__(
+				'Tick batches and set qty. Total must be at least the remaining qty shown (you may enter more for over-transfer). Server caps by warehouse stock.'
+			) +
 			'</p>';
 
 		fabric_rows.forEach(function (row, idx) {
 			const wh = cstr(row.source_warehouse || frm.doc.source_warehouse || '');
 			const req = flt(row.required_qty);
+			const tr = flt(row.transferred_qty);
+			const rem = flt(row.remaining_qty);
 			body +=
 				'<div style="margin-bottom:1rem;border-bottom:1px solid #ddd;padding-bottom:0.5rem">' +
 				'<h5 style="margin:0 0 0.25rem 0">' + wo_escape_html(row.item_code) + '</h5>' +
 				'<p class="small text-muted" style="margin:0">' +
-				__('Required') + ': <b>' + String(req) + '</b>' +
-				' &nbsp;|&nbsp; ' + __('Source WH') + ': ' + wo_escape_html(wh) +
+				__('BOM required') +
+				': <b>' +
+				String(req) +
+				'</b> &nbsp;|&nbsp; ' +
+				__('Already to WIP') +
+				': <b>' +
+				String(tr) +
+				'</b> &nbsp;|&nbsp; ' +
+				__('Remaining') +
+				': <b>' +
+				String(rem) +
+				'</b><br/>' +
+				__('Source WH') +
+				': ' +
+				wo_escape_html(wh) +
 				'</p>' +
-				'<p class="small" id="wo-sum-p-' + idx + '">' +
-				__('Total selected') + ': <b id="wo-sum-' + idx + '">0</b> / ' + String(req) +
+				'<p class="small" id="wo-sum-p-' +
+				idx +
+				'">' +
+				__('Total selected') +
+				': <b id="wo-sum-' +
+				idx +
+				'">0</b> / ' +
+				__('need') +
+				' ' +
+				String(rem) +
 				'</p>' +
-				'<div id="wo-loading-' + idx + '" class="text-muted small">' + __('Loading batches…') + '</div>' +
-				'<p id="wo-cnt-' + idx + '" class="small text-muted" style="display:none"></p>' +
-				'<input type="text" id="wo-search-' + idx + '" class="form-control input-sm" placeholder="' +
-				__('Search batch number…') + '" style="display:none;margin-bottom:0.35rem;max-width:18rem" />' +
-				'<table id="wo-tbl-' + idx + '" class="table table-bordered table-condensed" style="display:none;margin-top:0.25rem">' +
+				'<div id="wo-loading-' +
+				idx +
+				'" class="text-muted small">' +
+				__('Loading batches…') +
+				'</div>' +
+				'<p id="wo-cnt-' +
+				idx +
+				'" class="small text-muted" style="display:none"></p>' +
+				'<input type="text" id="wo-search-' +
+				idx +
+				'" class="form-control input-sm" placeholder="' +
+				__('Search batch number…') +
+				'" style="display:none;margin-bottom:0.35rem;max-width:18rem" />' +
+				'<table id="wo-tbl-' +
+				idx +
+				'" class="table table-bordered table-condensed" style="display:none;margin-top:0.25rem">' +
 				'<thead><tr>' +
-				'<th style="width:2.5rem">' + __('Use') + '</th>' +
-				'<th>' + __('Batch No') + '</th>' +
-				'<th>' + __('Batch master qty') + '</th>' +
-				'<th>' + __('Use qty') + '</th>' +
+				'<th style="width:2.5rem">' +
+				__('Use') +
+				'</th>' +
+				'<th>' +
+				__('Batch No') +
+				'</th>' +
+				'<th>' +
+				__('Batch master qty') +
+				'</th>' +
+				'<th>' +
+				__('Use qty') +
+				'</th>' +
 				'</tr></thead>' +
-				'<tbody id="wo-tbody-' + idx + '"></tbody>' +
+				'<tbody id="wo-tbody-' +
+				idx +
+				'"></tbody>' +
 				'</table>' +
 				'</div>';
 		});
@@ -201,13 +268,20 @@ function wo_open_fabric_batch_pick_dialog(frm) {
 				/* Validation: each fabric RM must have enough selected. */
 				for (let i = 0; i < fabric_rows.length; i++) {
 					const ic = cstr(fabric_rows[i].item_code).trim();
-					const need = flt(fabric_rows[i].required_qty);
+					const need = flt(fabric_rows[i].remaining_qty);
 					const sum = lp_sum_for_item(ic);
 					if (sum + 1e-6 < need) {
 						frappe.msgprint(
-							'<b>' + ic + '</b>: ' +
-							__('selected') + ' ' + String(flt(sum, 3)) +
-							' / ' + __('required') + ' ' + String(need)
+							'<b>' +
+								ic +
+								'</b>: ' +
+								__('selected') +
+								' ' +
+								String(flt(sum, 3)) +
+								' / ' +
+								__('remaining') +
+								' ' +
+								String(need)
 						);
 						return;
 					}
@@ -329,10 +403,41 @@ function wo_call_auto_material_transfer(frm, fabric_batch_picks) {
 			},
 			data: args,
 			success: function (data) {
-				resolve({ message: data.message });
+				let raw = data && Object.prototype.hasOwnProperty.call(data, 'message') ? data.message : data;
+				if (typeof raw === 'string') {
+					try {
+						raw = JSON.parse(raw);
+					} catch (e) {
+						raw = { success: true, message: raw };
+					}
+				}
+				if (raw && typeof raw === 'object' && raw.success === undefined && raw.message) {
+					raw = { success: true, message: raw.message };
+				}
+				if (!raw || typeof raw !== 'object') {
+					raw = { success: false, message: __('Empty response from server') };
+				}
+				resolve({ message: raw });
 			},
 			error: function (xhr) {
-				reject(xhr);
+				let em = '';
+				try {
+					const rj = xhr.responseJSON || {};
+					em = cstr(rj.exception || rj.exc || rj.message || '');
+					if (!em && rj._server_messages) {
+						const arr = JSON.parse(rj._server_messages);
+						if (Array.isArray(arr) && arr[0]) {
+							const o = JSON.parse(arr[0]);
+							em = cstr(o.message || '');
+						}
+					}
+				} catch (e2) {
+					em = '';
+				}
+				if (!em) {
+					em = (xhr.status ? String(xhr.status) + ' ' : '') + cstr(xhr.statusText || __('Request failed'));
+				}
+				reject({ message: em, xhr: xhr });
 			},
 		});
 	});
@@ -364,8 +469,9 @@ frappe.ui.form.on('Work Order', {
 								wo_call_auto_material_transfer(frm, picks || [])
 									.then(function (r) {
 										frappe.dom.unfreeze();
-										const msg = r.message || {};
-										if (msg.success) {
+										const msg = (r && r.message) || {};
+										const ok = msg.success === true || msg.success === 1;
+										if (ok) {
 											const m = msg.message || __('Started');
 											if (String(m).indexOf('Skipped:') === 0) {
 												frappe.msgprint({
@@ -374,11 +480,15 @@ frappe.ui.form.on('Work Order', {
 													indicator: 'orange',
 												});
 											} else {
-												frappe.msgprint(m);
-												frm.reload_doc();
+												frappe.msgprint({ message: cstr(m), indicator: 'green' });
 											}
-										} else if (msg.message) {
-											frappe.msgprint(msg.message);
+											frm.reload_doc();
+										} else {
+											frappe.msgprint({
+												message: cstr(msg.message || msg.exc || __('Transfer did not complete')),
+												indicator: 'red',
+												title: __('Work Order'),
+											});
 										}
 									})
 									.catch(function (err) {

@@ -11,6 +11,9 @@
 #   3) Auto path — only allocates batches with positive merged qty in source_wh.
 #   4) FG processes 102/103/104/105/106/107/109/251/252: require fabric_batch_picks when
 #      the WO has batch-tracked 100* fabric; otherwise allow auto FIFO (no batch fabric).
+#   8) Partial transfers: each run transfers remaining BOM qty (or manual pick qty, including
+#      over-transfer). material_transferred_for_manufacturing is recomputed from submitted MT
+#      entries until all RM lines are covered; Start Production stays available until then.
 #   5) parse_fabric_batch_picks accepts list/dict or JSON strings.
 #   6) Client sends fabric_picks_json + wo_transfer_payload (strings) — Server Script form_dict
 #      often drops nested list args from frappe.call; strings survive.
@@ -359,6 +362,71 @@ def picks_pool_for_item(picks_list, item_code):
     return out
 
 
+def wo_rm_transferred_qty_by_item(wo_name):
+    """Per RM item, total qty moved to WIP on submitted Material Transfer for Manufacture."""
+    rows = frappe.db.sql(
+        """
+        SELECT sed.item_code, SUM(ABS(COALESCE(sed.qty, 0))) AS qty
+        FROM `tabStock Entry Detail` sed
+        INNER JOIN `tabStock Entry` se ON se.name = sed.parent
+        WHERE se.docstatus = 1
+          AND IFNULL(se.work_order, '') = %s
+          AND se.purpose = 'Material Transfer for Manufacture'
+          AND IFNULL(sed.t_warehouse, '') != ''
+        GROUP BY sed.item_code
+        """,
+        (str(wo_name),),
+        as_dict=True,
+    ) or []
+    acc = {}
+    for r in rows:
+        ic = str(r.get("item_code") or "").strip()
+        if ic:
+            acc[ic] = frappe.utils.flt(r.get("qty") or 0)
+    return acc
+
+
+def wo_any_rm_remaining(wo, rm_map):
+    """True if any required RM line is still short of BOM qty (by transferred qty)."""
+    for row in wo.required_items or []:
+        req = frappe.utils.flt(row.required_qty)
+        if req <= 0:
+            continue
+        ic = str(row.item_code or "").strip()
+        if not ic:
+            continue
+        tr = frappe.utils.flt((rm_map or {}).get(ic) or 0.0)
+        if tr + 1e-9 < req:
+            return True
+    return False
+
+
+def wo_recompute_material_transferred_field(wo):
+    """WO.material_transferred_for_manufacturing = FG qty covered by bottleneck RM (0..wo.qty)."""
+    rm_map = wo_rm_transferred_qty_by_item(wo.name)
+    wo_qty = frappe.utils.flt(wo.qty) or 0.0
+    if wo_qty <= 0:
+        wo.db_set("material_transferred_for_manufacturing", 0)
+        return 0.0
+    ratios = []
+    for row in wo.required_items or []:
+        req = frappe.utils.flt(row.required_qty)
+        if req <= 0:
+            continue
+        ic = str(row.item_code or "").strip()
+        if not ic:
+            continue
+        tr = frappe.utils.flt(rm_map.get(ic) or 0.0)
+        ratios.append(tr / req if req else 1.0)
+    cov = wo_qty * (min(ratios) if ratios else 1.0)
+    if cov < 0:
+        cov = 0.0
+    if cov > wo_qty:
+        cov = wo_qty
+    wo.db_set("material_transferred_for_manufacturing", cov)
+    return cov
+
+
 def auto_material_transfer():
     try:
         wo_id = frappe.form_dict.get("work_order") or frappe.form_dict.get("wo_id")
@@ -378,11 +446,18 @@ def auto_material_transfer():
         if wo.docstatus != 1:
             frappe.throw("Submit Work Order First")
 
-        if frappe.utils.flt(wo.material_transferred_for_manufacturing) >= frappe.utils.flt(
-            wo.qty
-        ):
+        had_actual_start = bool(wo.actual_start_date)
+        rm_map = wo_rm_transferred_qty_by_item(wo.name)
+        if not wo_any_rm_remaining(wo, rm_map):
+            wo_recompute_material_transferred_field(wo)
             wo.db_set("status", "In Process")
-            frappe.response["message"] = {"success": True, "message": "Already Started"}
+            frappe.response["message"] = {
+                "success": True,
+                "message": (
+                    "All BOM materials for this Work Order are already transferred to WIP. "
+                    "Use Finish Production when output is complete."
+                ),
+            }
             return
 
         fabric_picks = extract_fabric_picks_from_request()
@@ -406,7 +481,6 @@ def auto_material_transfer():
         se.use_serial_batch_fields = 1
 
         items_added = False
-        # (item_code, source_wh, batch_no) -> qty already allocated on this SE
         batch_reserved = {}
 
         for row in wo.required_items:
@@ -417,29 +491,35 @@ def auto_material_transfer():
             if req_qty <= 0:
                 continue
 
+            already = frappe.utils.flt(rm_map.get(item_code) or 0.0)
+            remaining = max(0.0, req_qty - already)
+
             source_wh = row.source_warehouse or wo.source_warehouse
             has_batch = frappe.db.get_value("Item", item_code, "has_batch_no")
 
             if not has_batch:
+                if remaining <= 1e-9:
+                    continue
                 avail = get_total_qty(item_code, source_wh)
-                if avail < req_qty:
+                if avail < remaining:
                     frappe.throw(
                         str(item_code)
-                        + " need "
-                        + str(req_qty)
+                        + " need remaining "
+                        + str(frappe.utils.flt(remaining, 4))
                         + " available "
                         + str(avail)
                         + " in "
                         + str(source_wh)
                     )
+                xfer = min(remaining, avail)
                 se.append(
                     "items",
                     {
                         "item_code": item_code,
                         "s_warehouse": source_wh,
                         "t_warehouse": wo.wip_warehouse,
-                        "qty": req_qty,
-                        "transfer_qty": req_qty,
+                        "qty": xfer,
+                        "transfer_qty": xfer,
                         "uom": row.stock_uom,
                         "stock_uom": row.stock_uom,
                         "conversion_factor": 1,
@@ -448,13 +528,16 @@ def auto_material_transfer():
                 items_added = True
                 continue
 
+            if remaining <= 1e-9:
+                continue
+
             total = get_total_qty(item_code, source_wh)
-            if total < req_qty:
+            if total < remaining:
                 frappe.throw(
                     str(item_code)
-                    + " need "
-                    + str(req_qty)
-                    + " available "
+                    + " need remaining "
+                    + str(frappe.utils.flt(remaining, 4))
+                    + " stock "
                     + str(total)
                     + " in "
                     + str(source_wh)
@@ -471,10 +554,8 @@ def auto_material_transfer():
                         + " (manual FG process). POST fabric_batch_picks as JSON string, e.g. "
                         + '[{"item_code":"100...","batch_no":"B1","qty":10}]'
                     )
-                pending = req_qty
+                allocated = 0.0
                 for pick in pool:
-                    if pending <= 0:
-                        break
                     bn = pick["batch_no"]
                     max_from_pick = frappe.utils.flt(pick["qty"])
                     rk = (item_code, source_wh, bn)
@@ -483,7 +564,7 @@ def auto_material_transfer():
                     wh_avail = max(0.0, ledger_bal - used_here)
                     if wh_avail <= 0:
                         continue
-                    use_qty = min(max_from_pick, wh_avail, pending)
+                    use_qty = min(max_from_pick, wh_avail)
                     if use_qty <= 0:
                         continue
                     se.append(
@@ -501,22 +582,22 @@ def auto_material_transfer():
                             "use_serial_batch_fields": 1,
                         },
                     )
-                    pending -= use_qty
+                    allocated += use_qty
                     batch_reserved[rk] = used_here + use_qty
                     items_added = True
-                if pending > 0.0001:
+                if allocated + 1e-9 < remaining:
                     frappe.throw(
                         str(item_code)
-                        + ": picks do not cover required "
-                        + str(req_qty)
+                        + ": fabric picks cover "
+                        + str(frappe.utils.flt(allocated, 4))
+                        + " but remaining BOM need is "
+                        + str(frappe.utils.flt(remaining, 4))
                         + " in "
                         + str(source_wh)
-                        + " (short "
-                        + str(frappe.utils.flt(pending, 3))
-                        + "). Check batch balances in this warehouse or add picks."
+                        + ". Add batches / qty or run another transfer after this one."
                     )
             else:
-                pending = req_qty
+                pending = remaining
                 batches = get_batches_from_ledger(item_code, source_wh)
                 for b in batches:
                     if pending <= 0:
@@ -543,29 +624,32 @@ def auto_material_transfer():
                     )
                     pending -= use_qty
                     items_added = True
-                if pending > 0:
+                if pending > 1e-6:
                     frappe.throw(
                         str(item_code)
                         + " pending batch qty "
-                        + str(pending)
+                        + str(frappe.utils.flt(pending, 4))
                         + " in "
                         + str(source_wh)
                     )
 
         if not items_added:
-            frappe.throw("No Items To Transfer")
+            frappe.throw(
+                "No materials left to transfer for this Work Order (all lines already satisfied in WIP)."
+            )
 
         se.insert(ignore_permissions=True)
         se.submit()
         frappe.db.commit()
 
         wo.reload()
-        wo.db_set("material_transferred_for_manufacturing", wo.qty)
-        wo.db_set("status", "In Process")
-        wo.db_set("actual_start_date", frappe.utils.now_datetime())
+        wo_recompute_material_transferred_field(wo)
         wo.reload()
+        wo.db_set("status", "In Process")
+        if not had_actual_start:
+            wo.db_set("actual_start_date", frappe.utils.now_datetime())
 
-        done_msg = "Production Started : " + str(se.name)
+        done_msg = "Material transferred : " + str(se.name)
         frappe.response["message"] = {"success": True, "message": done_msg}
 
     except Exception as e:
