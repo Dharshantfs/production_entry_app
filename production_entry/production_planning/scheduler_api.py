@@ -134,10 +134,10 @@ def _printing_table_order_code(planning_sheet_party_code, item_code):
 
 
 def _printing_work_orders_for_pl_row(pp_id, pl_row):
-	"""Work Orders for this planning row: same Production Plan + production_item (SO line + prefix fallback).
+	"""Resolve Work Order(s) for a printing planning row: same Production Plan + FG item.
 
-	Abbreviated planning item codes (e.g. ``002-105`` from display logic) must still match
-	Work Order ``production_item`` (e.g. ``002-1051135421000405``) via prefix match.
+	Order: exact ``production_item`` → Sales Order line ``item_code`` → optional prefix match
+	(only when planning code is a strict prefix of WO FG) → single-WO-on-PP fallback.
 	"""
 	if not pp_id:
 		return [], []
@@ -169,7 +169,7 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 				wos = _fetch_wos({"production_item": str(si_ic).strip()})
 				if wos:
 					break
-	# Prefix match: table may store short FG (002-105) while WO has full SKU (002-10511354…).
+	# Strict prefix: planning FG must be prefix of WO FG (same design + process, longer SKU on WO).
 	if not wos and row_ic and len(row_ic) >= 7:
 		candidates = _fetch_wos()
 		matched = []
@@ -181,13 +181,58 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 				matched.append(wo)
 		if matched:
 			wos = matched
-	# Last resort: exactly one open WO on this PP (small plans).
 	if not wos:
 		candidates = _fetch_wos()
 		if len(candidates) == 1:
 			wos = candidates
 	wo_names = [w.get("name") for w in wos if w.get("name")]
 	return wo_names, wos
+
+
+def _expand_work_orders_for_rm_transfer(wo_names):
+	"""Include child Work Orders (material may post against child WO name)."""
+	names = [str(n).strip() for n in (wo_names or []) if str(n or "").strip()]
+	if not names or not frappe.db.exists("DocType", "Work Order"):
+		return names
+	out = set(names)
+	meta = frappe.get_meta("Work Order")
+	for fname in ("parent_work_order", "custom_parent_work_order"):
+		if not meta.has_field(fname):
+			continue
+		for parent in list(out):
+			for ch in (
+				frappe.get_all(
+					"Work Order",
+					filters={fname: parent, "docstatus": ["<", 2]},
+					pluck="name",
+					limit_page_length=80,
+				)
+				or []
+			):
+				if ch:
+					out.add(ch)
+	return list(out)
+
+
+def _fabric_transferred_kg_from_work_order_items(wo_names):
+	"""Fabric (100*) RM transferred to WIP — uses ERPNext ``Work Order Item.transferred_qty`` (authoritative)."""
+	expanded = _expand_work_orders_for_rm_transfer(wo_names)
+	if not expanded:
+		return 0.0
+	ph = ",".join(["%s"] * len(expanded))
+	row = frappe.db.sql(
+		f"""
+		SELECT SUM(COALESCE(transferred_qty, 0)) AS qty
+		FROM `tabWork Order Item`
+		WHERE parent IN ({ph})
+		  AND IFNULL(item_code, '') LIKE '100%%'
+		""",
+		tuple(expanded),
+		as_dict=True,
+	)
+	if not row:
+		return 0.0
+	return flt((row[0] or {}).get("qty") or 0)
 
 
 def _mtfm_transfer_rows_for_work_orders(wo_names):
@@ -290,7 +335,7 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
                 if nm:
                     by_se[nm] = r
 
-        for r in _mtfm_transfer_rows_for_work_orders(wo_names):
+        for r in _mtfm_transfer_rows_for_work_orders(_expand_work_orders_for_rm_transfer(wo_names)):
             nm = r.get("name")
             if nm and nm not in by_se:
                 by_se[nm] = r
@@ -298,7 +343,10 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
         details = list(by_se.values())
         details.sort(key=lambda x: (_cstr(x.get("posting_date")), _cstr(x.get("name"))), reverse=True)
         out["transfer_details"] = details
-        out["transferred_qty"] = sum(flt(x.get("qty") or 0) for x in details)
+        se_kg = sum(flt(x.get("qty") or 0) for x in details)
+        wo_fabric_kg = _fabric_transferred_kg_from_work_order_items(wo_names)
+        # Fabric input: prefer BOM fabric RM transferred on the WO (parent/child WO items); Stock Entry sum as fallback.
+        out["transferred_qty"] = max(se_kg, wo_fabric_kg)
 
         if out["transferred_qty"] > 0:
             out["can_create_spr"] = True
