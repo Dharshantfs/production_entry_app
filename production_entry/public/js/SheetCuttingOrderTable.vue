@@ -26,6 +26,8 @@
         <div class="cc-shift-btns">
           <button type="button" :class="{ active: processFilter === '251' }" @click="setProcessFilter('251')">251</button>
           <button type="button" :class="{ active: processFilter === '252' }" @click="setProcessFilter('252')">252</button>
+          <button type="button" :class="{ active: processFilter === '253' }" @click="setProcessFilter('253')">253</button>
+          <button type="button" :class="{ active: processFilter === '255' }" @click="setProcessFilter('255')">255</button>
           <button type="button" :class="{ active: processFilter === '__all__' }" @click="setProcessFilter('__all__')">All</button>
         </div>
       </div>
@@ -67,9 +69,9 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilter === "__all__" ? "251 + 252" : processFilter }})</div>
+      <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilter === "__all__" ? "251 + 252 + 253 + 255" : processFilter }})</div>
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:76px;">MTR</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:76px;">MTR</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="tableColCount" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
@@ -85,6 +87,8 @@
               <td v-if="showDesignColumns" class="cell-center font-bold">{{ row.design_code || row.custom_design_code || "-" }}</td>
               <td v-if="showDesignColumns" class="cell-center font-bold">{{ row.design_name || row.custom_design_name || "-" }}</td>
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
+              <td v-if="showLamGsmColumn" class="cell-center">{{ formatNum(row.custom_lam_gsm) }}</td>
+              <td v-if="showBoppGsmColumn" class="cell-center">{{ formatNum(row.custom_bopp_gsm) }}</td>
               <td class="cell-center">{{ formatRollSizeCell(row) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ formatSheetSizeCell(row) }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td v-if="showMergedPerDayProductionCell(row)" class="cell-right pt-merged-perday" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
               <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
@@ -162,10 +166,29 @@ const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragO
 let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null; const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 const showProcessColumn = computed(() => processFilter.value === "__all__");
-const showDesignColumns = computed(() => processFilter.value === "252" || processFilter.value === "__all__");
-const tableColCount = computed(() => 16 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0));
-function setProcessFilter(value) { const next = value === "252" ? "252" : value === "__all__" ? "__all__" : "251"; if (processFilter.value === next) return; processFilter.value = next; updateUrlParams(); fetchData(); }
-function inferProcessFromItemCode(itemCode) { const ic = String(itemCode || "").trim().toUpperCase(); if (!ic) return ""; const body = ic.includes("-") ? ic.split("-").slice(1).join("-") : ic; const m = body.match(/(\d{3})/); return m ? m[1] : ""; }
+const showDesignColumns = computed(() => ["252", "255", "__all__"].includes(processFilter.value));
+const showLamGsmColumn = computed(() => processFilter.value === "253" || processFilter.value === "__all__");
+const showBoppGsmColumn = computed(() => processFilter.value === "255" || processFilter.value === "__all__");
+const tableColCount = computed(
+  () => 16 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)
+);
+function setProcessFilter(value) {
+  const allowed = new Set(["251", "252", "253", "255", "__all__"]);
+  const next = allowed.has(value) ? value : "251";
+  if (processFilter.value === next) return;
+  processFilter.value = next;
+  updateUrlParams();
+  fetchData();
+}
+function inferProcessFromItemCode(itemCode) {
+  const ic = String(itemCode || "").trim().toUpperCase();
+  if (!ic) return "";
+  if (/^253-/.test(ic) || /^[A-Z0-9]+-253/.test(ic)) return "253";
+  if (/-255[A-Z]/.test(ic) || /^255/.test(ic)) return "255";
+  const body = ic.includes("-") ? ic.split("-").slice(1).join("-") : ic;
+  const m = body.match(/(\d{3})/);
+  return m ? m[1] : "";
+}
 const mergedPerDayProductionDates = computed(() => {
   const map = {};
   const seen = new Set();
@@ -328,11 +351,11 @@ async function restoreArrangement() { try { const r = await frappe.call({ method
 function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.value) { const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` }; } if (viewScope.value === "weekly" && filterWeek.value) { const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { start_date: fmt(ws), end_date: fmt(we) }; } return { start_date: filterOrderDate.value, end_date: filterOrderDate.value }; }
 async function fetchMaintenanceRecords() { try { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance" }); maintenanceRecords.value = (res?.message || []).filter((r) => String(r.unit || "") === SHEET_CUTTING_UNIT); } catch { maintenanceRecords.value = []; } }
 function toggleViewScope() { if (viewScope.value === "monthly" && !filterMonth.value) filterMonth.value = frappe.datetime.get_today().substring(0, 7); updateUrlParams(); fetchData(); }
-async function fetchData() { if (fetchInProgress) return; fetchInProgress = true; try { let args = { planned_only: 1, process: processFilter.value }; if (viewScope.value === "monthly") { if (!filterMonth.value) return; const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); args.start_date = `${filterMonth.value}-01`; args.end_date = `${filterMonth.value}-${lastDay}`; } else if (viewScope.value === "weekly") { if (!filterWeek.value) return; const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; args.start_date = fmt(ws); args.end_date = fmt(we); } else args.date = filterOrderDate.value; const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_sheet_cutting_order_table_data", args }); rawData.value = (r.message || []).map((d) => ({ ...d, itemName: d.itemName || d.item_name || "", plannedDate: d.plannedDate || d.planned_date || "", planningSheet: d.planningSheet || d.planning_sheet || "", process: d.process || inferProcessFromItemCode(d.itemCode || d.item_code || ""), design_code: d.design_code || d.custom_design_code || "", design_name: d.design_name || d.custom_design_name || "", salesOrderItem: d.salesOrderItem || d.sales_order_item || "" })); await fetchMaintenanceRecords(); } catch (e) { frappe.msgprint(`Error loading Sheet Cutting Order Table: ${e?.message || e}`); } finally { fetchInProgress = false; } }
+async function fetchData() { if (fetchInProgress) return; fetchInProgress = true; try { let args = { planned_only: 1, process: processFilter.value }; if (viewScope.value === "monthly") { if (!filterMonth.value) return; const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); args.start_date = `${filterMonth.value}-01`; args.end_date = `${filterMonth.value}-${lastDay}`; } else if (viewScope.value === "weekly") { if (!filterWeek.value) return; const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; args.start_date = fmt(ws); args.end_date = fmt(we); } else args.date = filterOrderDate.value; const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_sheet_cutting_order_table_data", args }); rawData.value = (r.message || []).map((d) => ({ ...d, itemName: d.itemName || d.item_name || "", plannedDate: d.plannedDate || d.planned_date || "", planningSheet: d.planningSheet || d.planning_sheet || "", process: d.process || inferProcessFromItemCode(d.itemCode || d.item_code || ""), design_code: d.design_code || d.custom_design_code || "", design_name: d.design_name || d.custom_design_name || "", salesOrderItem: d.salesOrderItem || d.sales_order_item || "", custom_lam_gsm: d.custom_lam_gsm ?? d.customLamGsm, custom_bopp_gsm: d.custom_bopp_gsm ?? d.customBoppGsm })); await fetchMaintenanceRecords(); } catch (e) { frappe.msgprint(`Error loading Sheet Cutting Order Table: ${e?.message || e}`); } finally { fetchInProgress = false; } }
 function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); q.set("process", processFilter.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
 function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
-onMounted(async () => { try { const u = localStorage.getItem(DIM_UNIT_LS_KEY); if (u === "mm" || u === "inches") sizeDimUnit.value = u; } catch (_) {} const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); if (["251", "252", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await fetchData(); startAutoRefresh(); });
+onMounted(async () => { try { const u = localStorage.getItem(DIM_UNIT_LS_KEY); if (u === "mm" || u === "inches") sizeDimUnit.value = u; } catch (_) {} const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); if (["251", "252", "253", "255", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await fetchData(); startAutoRefresh(); });
 onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 </script>
 
