@@ -19,6 +19,7 @@
 #      often drops nested list args from frappe.call; strings survive.
 #   9) Avoid tuple unpacking / next(gen) / dict.items() pairs in for-loops — RestrictedPython
 #      (Server Script safe_exec) can raise name '_unpack_sequence_' is not defined.
+#  10) Helper function names must not start with "_" (Frappe Server Script validation).
 # =============================================================================
 
 
@@ -50,7 +51,7 @@ def wo_has_100_batch_fabric_rm(wo):
 MANUAL_FG_PROCESSES = ("102", "103", "104", "105", "106", "107", "109", "251", "252")
 
 
-def _first_field_name(meta, candidate_names):
+def meta_first_field(meta, candidate_names):
     """Pick first existing field from candidates (no generator/next — safe_exec friendly)."""
     for fn in candidate_names:
         if meta.has_field(fn):
@@ -58,7 +59,7 @@ def _first_field_name(meta, candidate_names):
     return ""
 
 
-def _ledger_batch_row_qty(row):
+def ledger_batch_row_qty(row):
     """Sort key for batch dict rows (no lambda — safe_exec)."""
     return frappe.utils.flt(row.get("qty") or 0)
 
@@ -128,8 +129,8 @@ def batch_qty_bundle_sle(item_code, batch_no, warehouse):
         return 0.0
     try:
         meta = frappe.get_meta(sb_dt)
-        batch_field = _first_field_name(meta, ("batch_no", "batch", "batch_id"))
-        qty_field = _first_field_name(meta, ("qty", "quantity"))
+        batch_field = meta_first_field(meta, ("batch_no", "batch", "batch_id"))
+        qty_field = meta_first_field(meta, ("qty", "quantity"))
         if not batch_field or not qty_field:
             return 0.0
         rows = frappe.db.sql(
@@ -194,8 +195,8 @@ def get_batches_from_ledger(item_code, warehouse):
             sb_dt = "Serial and Batch Entry"
             if frappe.db.exists("DocType", sb_dt):
                 meta = frappe.get_meta(sb_dt)
-                batch_field = _first_field_name(meta, ("batch_no", "batch", "batch_id"))
-                qty_field = _first_field_name(meta, ("qty", "quantity"))
+                batch_field = meta_first_field(meta, ("batch_no", "batch", "batch_id"))
+                qty_field = meta_first_field(meta, ("qty", "quantity"))
                 if batch_field and qty_field:
                     rows = frappe.db.sql(
                         f"""
@@ -240,7 +241,7 @@ def get_batches_from_ledger(item_code, warehouse):
     for k in acc:
         v = acc[k]
         out.append({"batch_no": k, "qty": frappe.utils.flt(v)})
-    out.sort(key=_ledger_batch_row_qty, reverse=True)
+    out.sort(key=ledger_batch_row_qty, reverse=True)
     return out
 
 
