@@ -1119,17 +1119,13 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_o
 
 def _parent_child_trace_id_from_item_code(item_code):
 	"""
-	Trace ID format: <process>-<colour>-<gsm>-<width>[-suffix]
-	Item code structure: PPP|QQQ|CCC|GGG|WWWW
-	- PPP: Process (102/103/104)
-	- QQQ: Quality (skipped)
-	- CCC: Colour Code (positions 6-8)
-	- GGG: GSM (positions 9-11)
-	- WWWW: Width in mm (positions 12-15)
+	Trace ID format (where PPP|QQQ|CCC|GGG|WWWW applies):
+	  <process>-<quality>-<colour>-<gsm>-<width>[-suffix]
+	- QQQ: quality / format (digits 3-6), included for uniqueness across SO lines.
 	Examples:
-	- 1031052210500050 -> 103-221-050-0050
-	- 1031035210500050 -> 103-521-050-0050
-	- 1041030010231475-B1 -> 104-023-147-5-B1
+	- 1031052210500050 -> 103-105-221-050-0050
+	- 1041030010231475-B1 -> 104-103-001-023-1475-B1 (suffix lam / variant)
+	106 (design-first): 106-<quality>-<colour>-<gsm>-<width_mm>-<lam code>
 	107 (design-first): 107-<colour>-<fabric gsm>-<lam gsm>-<width code>
 	"""
 	ic = str(item_code or "").strip()
@@ -1154,10 +1150,13 @@ def _parent_child_trace_id_from_item_code(item_code):
 	# 105 (design-first): <design>-105<quality><colour><gsm><width_mm>
 	if "-105" in ic.upper() or ic.strip().startswith("105"):
 		p = _parse_105_item_code(ic) or {}
+		qc = _cstr(p.get("quality_code")).strip()
 		cc = _cstr(p.get("colour_code")).strip()
 		gsm = _cstr(p.get("gsm")).strip()
 		wmm = _cstr(p.get("width_mm")).strip()
 		segs = ["105"]
+		if qc:
+			segs.append(qc)
 		if cc:
 			segs.append(cc)
 		if gsm:
@@ -1178,15 +1177,32 @@ def _parent_child_trace_id_from_item_code(item_code):
 			_cstr(p.get("gsm")).zfill(3),
 			_cstr(p.get("series_id")),
 		)
+	if process == "252":
+		p = _parse_sheet_cutting_item_code(ic)
+		if not p:
+			return ""
+		dc = _cstr(p.get("design_code")).strip()
+		body = "252-{0}-{1}-{2}-{3}".format(
+			_cstr(p.get("quality_code")),
+			_cstr(p.get("colour_code")),
+			_cstr(p.get("gsm")).zfill(3),
+			_cstr(p.get("series_id")),
+		)
+		if dc:
+			return f"{dc}-{body}"
+		return body
 	# 109 laminated slitting: 109QQQCCCGGGWWWW[-lam_suffix]
 	if process == "109":
 		p = _parse_109_item_code(ic) or {}
 		if (p.get("colour_code") or "").strip() or (p.get("gsm") or "").strip() or (p.get("width_code") or "").strip():
+			qc = _cstr(p.get("quality_code")).strip()
 			cc = _cstr(p.get("colour_code")).strip()
 			gsm = _cstr(p.get("gsm")).strip()
 			wc = _cstr(p.get("width_code")).strip()
 			lc = _cstr(p.get("lam_gsm_code")).strip()
 			segs = ["109"]
+			if qc:
+				segs.append(qc)
 			if cc:
 				segs.append(cc)
 			if gsm:
@@ -1200,12 +1216,15 @@ def _parent_child_trace_id_from_item_code(item_code):
 	# 106 laminated printing: <design>-106QQQCCCGGGWWWW[-suffix]
 	if process == "106" or "-106" in ic.upper():
 		p = _parse_106_item_code(ic) or {}
-		if (p.get("colour_code") or "").strip() or (p.get("gsm") or "").strip() or (p.get("width_mm") or "").strip():
+		if (p.get("colour_code") or "").strip() or (p.get("gsm") or "").strip() or (p.get("width_mm") or "").strip() or (p.get("quality_code") or "").strip():
+			qc = _cstr(p.get("quality_code")).strip()
 			cc = _cstr(p.get("colour_code")).strip()
 			gsm = _cstr(p.get("gsm")).strip()
 			wmm = _cstr(p.get("width_mm")).strip()
 			lc = _cstr(p.get("lam_gsm_code")).strip()
 			segs = ["106"]
+			if qc:
+				segs.append(qc)
 			if cc:
 				segs.append(cc)
 			if gsm:
@@ -1216,6 +1235,24 @@ def _parent_child_trace_id_from_item_code(item_code):
 				segs.append(lc)
 			if len(segs) > 1:
 				return "-".join(segs)
+	# Fabric 100: 100QQQCCCGGGWWWW (same digit layout as 102/103/104 body)
+	if process == "100":
+		left = ic
+		suffix = ""
+		if "-" in ic:
+			left, right = ic.rsplit("-", 1)
+			suffix = str(right or "").strip().upper()
+		digits = "".join(ch for ch in left if ch.isdigit())
+		if len(digits) >= 16 and digits.startswith("100"):
+			qual = digits[3:6]
+			colour = digits[6:9]
+			gsm = digits[9:12]
+			width = digits[12:16]
+			if colour and gsm and width:
+				if suffix:
+					return f"100-{qual}-{colour}-{gsm}-{width}-{suffix}"
+				return f"100-{qual}-{colour}-{gsm}-{width}"
+		return ""
 	if len(ic) < 16:
 		return ""
 	if process not in ("102", "103", "104"):
@@ -1230,7 +1267,8 @@ def _parent_child_trace_id_from_item_code(item_code):
 	digits = "".join(ch for ch in left if ch.isdigit())
 	if len(digits) < 16:
 		return ""
-	
+
+	quality = digits[3:6]
 	colour = digits[6:9]      # positions 6-8: colour code
 	gsm = digits[9:12]        # positions 9-11: gsm
 	width = digits[12:16]     # positions 12-15: width
@@ -1239,8 +1277,8 @@ def _parent_child_trace_id_from_item_code(item_code):
 		return ""
 	
 	if suffix:
-		return f"{process}-{colour}-{gsm}-{width}-{suffix}"
-	return f"{process}-{colour}-{gsm}-{width}"
+		return f"{process}-{quality}-{colour}-{gsm}-{width}-{suffix}"
+	return f"{process}-{quality}-{colour}-{gsm}-{width}"
 
 
 def _parse_105_item_code(item_code):
@@ -2867,9 +2905,11 @@ def _sync_bom_child_rows_from_planning_rows(
 			child_proc_ex = _item_process_prefix(child_ic)
 			prow_wrapped = frappe._dict(prow) if prow else None
 			specs_ex = _fabric_row_specs_from_fabric_item(child_ic, so_it, prow_wrapped)
-			trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
-				getattr(so_it, "item_code", None) or parent_ic
-			)
+			trace_refresh = _parent_child_trace_id_from_item_code(child_ic)
+			if not trace_refresh:
+				trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
+					getattr(so_it, "item_code", None) or parent_ic
+				)
 			if child_proc_ex == "104" and frappe.db.has_column("Planning Table", "gsm"):
 				gv = cint(specs_ex.get("gsm") or 0)
 				if gv > 0:
@@ -2892,7 +2932,11 @@ def _sync_bom_child_rows_from_planning_rows(
 		child_qty = _fabric_qty_from_bom(bom_no, child_ic, flt(prow.get("qty") or getattr(so_it, "qty", 0)))
 		item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
-		trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(getattr(so_it, "item_code", None) or parent_ic)
+		trace_id = _parent_child_trace_id_from_item_code(child_ic)
+		if not trace_id:
+			trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
+				getattr(so_it, "item_code", None) or parent_ic
+			)
 		child_proc = _item_process_prefix(child_ic)
 		unit = child_unit
 		planned_date = None
@@ -3965,8 +4009,9 @@ def _rewinding_rows_direct_from_planning_table(date=None, start_date=None, end_d
 def backfill_parent_child_trace_ids(planning_sheet_name=None):
 	"""Backfill custom_parent_child_trace_id on parent rows and their child rows.
 
-	Covers: 102 (rewinding), 103 (slitting), 104/107 (lamination), 105 (printing), 251 (sheet cutting).
-	Child rows include 100* fabric rows and PB-* printed BOPP rows when present.
+	Covers: 102/103/104/107, 105/106 (design-first), 109, 251/252, plus child fabric 100* / PB-*.
+	When ``planning_sheet_name`` is set, every row on that sheet is re-stamped from its own ``item_code``
+	so 106 / 104 / 100 lines do not share one parent trace string.
 	"""
 	if not (frappe.db.has_column("Planning Table", "custom_parent_child_trace_id") or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")):
 		return {"status": "noop", "updated": 0}
@@ -3990,8 +4035,9 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		SELECT name, parent, item_code, sales_order_item
 		FROM `tabPlanning Table`
 		WHERE (
-			item_code REGEXP '^(102|103|104|107|251)'
+			item_code REGEXP '^(102|103|104|107|251|252|109)'
 			OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%-105%'
+			OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%-106%'
 		) {sheet_filter}
 		""",
 		tuple(params),
@@ -4044,6 +4090,29 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 					WHERE parent = %s AND {psi_match_expr} = %s
 					""",
 					(trace_id, p.get("parent"), so_item),
+				)
+	# Re-stamp trace from each row's own item code (106 / 104 / 100 stay distinct; includes quality in string).
+	if planning_sheet_name:
+		pt_names = frappe.get_all("Planning Table", filters={"parent": planning_sheet_name}, pluck="name")
+		for nm in pt_names or []:
+			ic = frappe.db.get_value("Planning Table", nm, "item_code")
+			tid = _parent_child_trace_id_from_item_code(ic)
+			if tid:
+				frappe.db.set_value("Planning Table", nm, "custom_parent_child_trace_id", tid, update_modified=False)
+	if planning_sheet_name and frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+		for psi in frappe.get_all(
+			"Planning sheet Item",
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code"],
+		):
+			tid = _parent_child_trace_id_from_item_code(psi.get("item_code"))
+			if tid:
+				frappe.db.set_value(
+					"Planning sheet Item",
+					psi["name"],
+					"custom_parent_child_trace_id",
+					tid,
+					update_modified=False,
 				)
 	frappe.db.commit()
 	return {"status": "success", "updated": int(updated)}
