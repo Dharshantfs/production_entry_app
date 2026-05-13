@@ -369,7 +369,9 @@ const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR 1600MM";
 const PRINTING_UNIT_4_COLOUR = "JVE - PRINTING MACHINE 4 COLOUR 1600MM";
 const PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM";
 const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
-const PRINTING_FILTER_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT, PRINTING_UNASSIGNED_UNIT];
+/** Table + unit filter: real machines only (queue rows are hidden in table view). */
+const PRINTING_REAL_MACHINE_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT];
+const PRINTING_FILTER_UNITS = PRINTING_REAL_MACHINE_UNITS;
 const filterUnit = ref("");
 /** Must match ``planning_doctypes.LAMINATION_UNIT`` */
 const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
@@ -381,7 +383,7 @@ const pageTitle = computed(() => {
   return isPrintedBoppTable.value ? "Printed BOPP Film Table" : "Lamination Order Table";
 });
 const tableMaintenanceUnit = computed(() => {
-  if (isPrinting105Table.value) return filterUnit.value || PRINTING_UNASSIGNED_UNIT;
+  if (isPrinting105Table.value) return filterUnit.value || PRINTING_UNIT_2_COLOUR;
   return isPrintedBoppTable.value ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT;
 });
 const tableUnitHeader = computed(() => {
@@ -503,8 +505,11 @@ const filteredRows = computed(() => {
   const pc = (filterPartyCode.value || "").trim().toLowerCase();
   const cu = (filterCustomer.value || "").trim().toLowerCase();
 
-  if (isPrinting105Table.value && filterUnit.value) {
-    d = d.filter((r) => String(r.unit || "").trim() === filterUnit.value);
+  if (isPrinting105Table.value) {
+    d = d.filter((r) => !isPrintingQueueUnit(r));
+    if (filterUnit.value) {
+      d = d.filter((r) => normalizeUnitValue(r.unit) === filterUnit.value);
+    }
   }
 
   if (pc) {
@@ -547,8 +552,18 @@ function normalizeUnitValue(unit) {
   return String(unit || "").trim();
 }
 
+/** Printing “queue” pseudo-machine — shown on board, omitted from order table + filters. */
+function isPrintingQueueUnit(row) {
+  if (!isPrinting105Table.value) return false;
+  const u = normalizeUnitValue(row?.unit);
+  if (!u) return false;
+  return u.toUpperCase() === PRINTING_UNASSIGNED_UNIT.toUpperCase();
+}
+
 function rowMatchesPrintingUnit(row) {
-  if (!isPrinting105Table.value || !filterUnit.value) return true;
+  if (!isPrinting105Table.value) return true;
+  if (isPrintingQueueUnit(row)) return false;
+  if (!filterUnit.value) return true;
   return normalizeUnitValue(row?.unit) === filterUnit.value;
 }
 
@@ -1411,6 +1426,7 @@ function printingRowsForShiftDate(dateKey) {
   const cu = (filterCustomer.value || "").trim().toLowerCase();
   let rows = (rawData.value || []).filter((r) => {
     if (toDateKey(r.plannedDate || r.planned_date) !== dk) return false;
+    if (isPrinting105Table.value && isPrintingQueueUnit(r)) return false;
     if (filterUnit.value && normalizeUnitValue(r.unit) !== filterUnit.value) return false;
     if (pc && !String(r.partyCode || r.order_code || "").toLowerCase().includes(pc)) return false;
     if (cu && !String(r.customer_name || r.customer || "").toLowerCase().includes(cu)) return false;
@@ -1539,7 +1555,7 @@ function openMachineOffDialog() {
       fieldname: "unit",
       label: "Printing Unit",
       options: PRINTING_FILTER_UNITS.join("\n"),
-      default: filterUnit.value || PRINTING_UNASSIGNED_UNIT,
+      default: filterUnit.value || PRINTING_UNIT_2_COLOUR,
       reqd: 1,
     });
   }
@@ -1676,7 +1692,7 @@ async function fetchData() {
           color: d.color || "",
           fabric_colour: d.color || "",
           quality: d.quality || d.custom_quality || "",
-          unit: d.unit || "UNASSIGNED PRINTING MACHINE",
+          unit: d.unit || "",
           gsm: d.gsm || 0,
           width_inch: d.width_inch || 0,
           design_code: d.custom_design_code || d.design_code || "",
@@ -1817,7 +1833,12 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
-  if (isPrinting105Table.value && p.get("unit")) filterUnit.value = p.get("unit");
+  if (isPrinting105Table.value && p.get("unit")) {
+    const u = normalizeUnitValue(p.get("unit"));
+    if (u && u.toUpperCase() !== PRINTING_UNASSIGNED_UNIT.toUpperCase()) {
+      filterUnit.value = u;
+    }
+  }
   if (isPrinting105Table.value) {
     const pp = (p.get("process") || "").trim();
     if (pp === "105" || pp === "106" || pp === "__all__") printingProcess.value = pp;

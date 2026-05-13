@@ -54,6 +54,8 @@ PARTY_CODE_GENERATION_ENABLED = False
 # Lamination: SO lines with item 104 (laminated FG) get a paired fabric (100*) row from BOM on the same Planning sheet.
 # board_process_scope filters chart/board rows by item process (see get_color_chart_data; default fabric-only).
 LAMINATION_FLOW_ENABLED = True
+# When False: no new lamination booking/order codes (U26E001-style) on Planning sheets, rows, or Sales Orders.
+LAMINATION_ORDER_CODE_ENABLED = False
 SLITTING_FLOW_ENABLED = True
 # Rewinding (102): four machine columns on board; new sheets land on Unassigned until moved.
 REWINDING_FLOW_ENABLED = True
@@ -1176,6 +1178,44 @@ def _parent_child_trace_id_from_item_code(item_code):
 			_cstr(p.get("gsm")).zfill(3),
 			_cstr(p.get("series_id")),
 		)
+	# 109 laminated slitting: 109QQQCCCGGGWWWW[-lam_suffix]
+	if process == "109":
+		p = _parse_109_item_code(ic) or {}
+		if (p.get("colour_code") or "").strip() or (p.get("gsm") or "").strip() or (p.get("width_code") or "").strip():
+			cc = _cstr(p.get("colour_code")).strip()
+			gsm = _cstr(p.get("gsm")).strip()
+			wc = _cstr(p.get("width_code")).strip()
+			lc = _cstr(p.get("lam_gsm_code")).strip()
+			segs = ["109"]
+			if cc:
+				segs.append(cc)
+			if gsm:
+				segs.append(str(gsm).zfill(3))
+			if wc:
+				segs.append(str(wc).zfill(4))
+			if lc:
+				segs.append(lc)
+			if len(segs) > 1:
+				return "-".join(segs)
+	# 106 laminated printing: <design>-106QQQCCCGGGWWWW[-suffix]
+	if process == "106" or "-106" in ic.upper():
+		p = _parse_106_item_code(ic) or {}
+		if (p.get("colour_code") or "").strip() or (p.get("gsm") or "").strip() or (p.get("width_mm") or "").strip():
+			cc = _cstr(p.get("colour_code")).strip()
+			gsm = _cstr(p.get("gsm")).strip()
+			wmm = _cstr(p.get("width_mm")).strip()
+			lc = _cstr(p.get("lam_gsm_code")).strip()
+			segs = ["106"]
+			if cc:
+				segs.append(cc)
+			if gsm:
+				segs.append(str(gsm).zfill(3))
+			if wmm:
+				segs.append(str(wmm).zfill(4))
+			if lc:
+				segs.append(lc)
+			if len(segs) > 1:
+				return "-".join(segs)
 	if len(ic) < 16:
 		return ""
 	if process not in ("102", "103", "104"):
@@ -1581,16 +1621,17 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 		return
 
 	code = ""
-	if has_sheet_code_new:
-		code = (getattr(doc, "custom_lamination_order_code", None) or "").strip()
-	if not code and has_sheet_code_old:
-		code = (getattr(doc, "custom_lamination_booking_id", None) or "").strip()
-	if not code:
-		code = _next_lamination_order_code()
-	if has_sheet_code_new:
-		doc.custom_lamination_order_code = code
-	if has_sheet_code_old:
-		doc.custom_lamination_booking_id = code
+	if LAMINATION_ORDER_CODE_ENABLED:
+		if has_sheet_code_new:
+			code = (getattr(doc, "custom_lamination_order_code", None) or "").strip()
+		if not code and has_sheet_code_old:
+			code = (getattr(doc, "custom_lamination_booking_id", None) or "").strip()
+		if not code:
+			code = _next_lamination_order_code()
+		if has_sheet_code_new:
+			doc.custom_lamination_order_code = code
+		if has_sheet_code_old:
+			doc.custom_lamination_booking_id = code
 
 	# Build a map of SO item -> lamination side for 104/107 rows.
 	# Support multiple possible field names on Sales Order Item.
@@ -1638,10 +1679,11 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 				lam_gsm_val = cint(p107_book.get("lam_gsm") or 0)
 			bopp_gsm_book = cint(p107_book.get("bopp_gsm") or 0) if p107_book else 0
 			if fn in ("planned_items", "custom_planned_items"):
-				if has_pt_booking_new:
-					row.custom_lamination_order_code_ = code
-				elif has_pt_booking_old:
-					row.custom_lamination_booking_id = code
+				if LAMINATION_ORDER_CODE_ENABLED and code:
+					if has_pt_booking_new:
+						row.custom_lamination_order_code_ = code
+					elif has_pt_booking_old:
+						row.custom_lamination_booking_id = code
 				if has_pt_lam_gsm:
 					row.custom_lam_gsm = lam_gsm_val
 				if has_pt_bopp_gsm and bopp_gsm_book > 0:
@@ -1651,7 +1693,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					if lam_side_val:
 						row.custom_lam_side_ = lam_side_val
 			else:
-				if has_psi_booking:
+				if LAMINATION_ORDER_CODE_ENABLED and code and has_psi_booking:
 					row.custom_lamination_order_code = code
 				if has_psi_lam_gsm:
 					row.custom_lam_gsm = lam_gsm_val
@@ -1683,7 +1725,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 
 	# Mirror code to Sales Order header when available
 	sales_order = (getattr(doc, "sales_order", None) or "").strip()
-	if sales_order:
+	if LAMINATION_ORDER_CODE_ENABLED and code and sales_order:
 		try:
 			if frappe.db.has_column("Sales Order", "custom_lamination_order_code"):
 				frappe.db.set_value("Sales Order", sales_order, "custom_lamination_order_code", code, update_modified=False)
@@ -1707,16 +1749,28 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 
 
 def _gsm_from_lamination_item_code(item_code: str) -> int:
-    """Read laminated GSM from item-code index 9:12 (digits-only code), e.g. ...070... -> 70."""
-    if not item_code:
-        return 0
-    digits = "".join(ch for ch in str(item_code).strip() if ch.isdigit())
-    if len(digits) < 12:
-        return 0
-    try:
-        return cint(digits[9:12])
-    except Exception:
-        return 0
+	"""Fabric GSM from lamination FG code: 16-digit block 104+QQQ+CCC+GGG+WWWW → GSM = digits[9:12].
+	Finds embedded ``104`` + 13 digits so prefixed codes (e.g. design + 104…) do not mis-align slices."""
+	if not item_code:
+		return 0
+	digits_all = "".join(ch for ch in str(item_code).strip() if ch.isdigit())
+	best = 0
+	for m in re.finditer(r"104\d{13}", digits_all):
+		block = m.group(0)
+		if len(block) >= 12:
+			try:
+				best = cint(block[9:12])
+			except Exception:
+				pass
+	if best > 0:
+		return best
+	# Legacy: whole digit stream is exactly the 104 body (no leading design digits).
+	if digits_all.startswith("104") and len(digits_all) >= 12:
+		try:
+			return cint(digits_all[9:12])
+		except Exception:
+			return 0
+	return 0
 
 
 def _lam_gsm_from_item_code_suffix(item_code: str) -> int:
@@ -1754,6 +1808,19 @@ def _ensure_sheet_lamination_order_code(sheet_name):
 	sheet_name = (sheet_name or "").strip()
 	if not sheet_name or not frappe.db.exists("Planning sheet", sheet_name):
 		return ""
+	if not LAMINATION_ORDER_CODE_ENABLED:
+		has_sheet_new = frappe.db.has_column("Planning sheet", "custom_lamination_order_code")
+		has_sheet_old = frappe.db.has_column("Planning sheet", "custom_lamination_booking_id")
+		fields = ["name"]
+		if has_sheet_new:
+			fields.append("custom_lamination_order_code")
+		if has_sheet_old:
+			fields.append("custom_lamination_booking_id")
+		sheet = frappe.db.get_value("Planning sheet", sheet_name, fields, as_dict=True) or {}
+		return (
+			(sheet.get("custom_lamination_order_code") or sheet.get("custom_lamination_booking_id") or "")
+			.strip()
+		)
 
 	has_sheet_new = frappe.db.has_column("Planning sheet", "custom_lamination_order_code")
 	has_sheet_old = frappe.db.has_column("Planning sheet", "custom_lamination_booking_id")
@@ -2797,6 +2864,26 @@ def _sync_bom_child_rows_from_planning_rows(
 				cur_sf = _cstr(frappe.db.get_value("Planning Table", existing[0], "split_from"))
 				if cur_sf:
 					updates["split_from"] = ""
+			child_proc_ex = _item_process_prefix(child_ic)
+			prow_wrapped = frappe._dict(prow) if prow else None
+			specs_ex = _fabric_row_specs_from_fabric_item(child_ic, so_it, prow_wrapped)
+			trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
+				getattr(so_it, "item_code", None) or parent_ic
+			)
+			if child_proc_ex == "104" and frappe.db.has_column("Planning Table", "gsm"):
+				gv = cint(specs_ex.get("gsm") or 0)
+				if gv > 0:
+					updates["gsm"] = gv
+			if trace_refresh and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+				updates["custom_parent_child_trace_id"] = trace_refresh
+			if child_proc_ex == "105" and frappe.db.has_column("Planning Table", "unit"):
+				updates["unit"] = PRINTING_UNASSIGNED_UNIT
+			if child_proc_ex == "105" and frappe.db.has_column("Planning Table", "planned_date"):
+				updates["planned_date"] = getdate(ps.ordered_date)
+			if child_proc_ex == "104":
+				lam_gsm_ex = _lam_gsm_from_item_code_suffix(child_ic)
+				if lam_gsm_ex > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+					updates["custom_lam_gsm"] = lam_gsm_ex
 			if updates:
 				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
 			continue
@@ -2897,6 +2984,11 @@ def _sync_stage3_process_planning_rows(planning_sheet_name):
 		so_parent_processes=("252",),
 		process_label="Stage 3 printing child",
 	)
+	# BOM child 105 rows must stay on the printing queue unit (not Unit 1–4 from width rules).
+	try:
+		_force_printing_unit_on_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_stage3_process_planning_rows:_force_printing_unit_on_sheet")
 
 
 def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
@@ -7014,6 +7106,14 @@ def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 	meter_per_roll = cint(lam_row.meter_per_roll) if lam_row else cint(m_roll)
 	no_of_rolls = cint(lam_row.no_of_rolls) if lam_row else cint(getattr(so_it, "custom_no_of_rolls", 0) or 0)
 
+	# Process 104 laminated FG: GSM must follow item code (Item master / name can show 10 vs 100 wrong).
+	if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(fabric_ic or "")) == "104":
+		gc = _gsm_from_lamination_item_code(str(fabric_ic))
+		if gc > 0:
+			gsm = gc
+			if gsm > 0 and width > 0 and m_roll > 0:
+				wt = flt(gsm * width * m_roll * 0.0254) / 1000
+
 	return {
 		"gsm": cint(gsm) if gsm else 0,
 		"width_inch": flt(width),
@@ -7531,6 +7631,8 @@ def compute_default_production_unit(color, width_inch, item_code=None):
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "106":
+        return PRINTING_UNASSIGNED_UNIT
+    if item_code and _is_printing_105_parent_process(str(item_code)):
         return PRINTING_UNASSIGNED_UNIT
     w = flt(width_inch)
     if _is_white_color(color):
