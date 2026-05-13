@@ -17,7 +17,8 @@
 #   5) parse_fabric_batch_picks accepts list/dict or JSON strings.
 #   6) Client sends fabric_picks_json + wo_transfer_payload (strings) — Server Script form_dict
 #      often drops nested list args from frappe.call; strings survive.
-#   7) Do not use frappe.db.has_column in Server Script safe_exec — it is not exposed; use Meta.has_field.
+#   9) Avoid tuple unpacking / next(gen) / dict.items() pairs in for-loops — RestrictedPython
+#      (Server Script safe_exec) can raise name '_unpack_sequence_' is not defined.
 # =============================================================================
 
 
@@ -49,18 +50,40 @@ def wo_has_100_batch_fabric_rm(wo):
 MANUAL_FG_PROCESSES = ("102", "103", "104", "105", "106", "107", "109", "251", "252")
 
 
+def _first_field_name(meta, candidate_names):
+    """Pick first existing field from candidates (no generator/next — safe_exec friendly)."""
+    for fn in candidate_names:
+        if meta.has_field(fn):
+            return fn
+    return ""
+
+
+def _ledger_batch_row_qty(row):
+    """Sort key for batch dict rows (no lambda — safe_exec)."""
+    return frappe.utils.flt(row.get("qty") or 0)
+
+
 def fg_item_process_code(item_code):
     """Leading 3-digit process code; matches Work Order client ``wo_item_process_code``."""
     raw = str(item_code or "").strip().upper()
     if not raw:
         return ""
     if "-" in raw:
-        _, tail = raw.split("-", 1)
-        tail_digits = "".join(ch for ch in tail if ch.isdigit())
+        parts = raw.split("-", 1)
+        tail = parts[1] if len(parts) > 1 else ""
+        tail_digits = ""
+        for ch in tail:
+            if ch.isdigit():
+                tail_digits = tail_digits + ch
         if len(tail_digits) >= 3:
             return tail_digits[:3]
-    digits = "".join(ch for ch in raw if ch.isdigit())
-    return digits[:3] if len(digits) >= 3 else ""
+    digits = ""
+    for ch in raw:
+        if ch.isdigit():
+            digits = digits + ch
+    if len(digits) >= 3:
+        return digits[:3]
+    return ""
 
 
 def fg_needs_manual_fabric_picks(production_item):
@@ -105,14 +128,8 @@ def batch_qty_bundle_sle(item_code, batch_no, warehouse):
         return 0.0
     try:
         meta = frappe.get_meta(sb_dt)
-        batch_field = next(
-            (fn for fn in ("batch_no", "batch", "batch_id") if meta.has_field(fn)),
-            "",
-        )
-        qty_field = next(
-            (fn for fn in ("qty", "quantity") if meta.has_field(fn)),
-            "",
-        )
+        batch_field = _first_field_name(meta, ("batch_no", "batch", "batch_id"))
+        qty_field = _first_field_name(meta, ("qty", "quantity"))
         if not batch_field or not qty_field:
             return 0.0
         rows = frappe.db.sql(
@@ -177,14 +194,8 @@ def get_batches_from_ledger(item_code, warehouse):
             sb_dt = "Serial and Batch Entry"
             if frappe.db.exists("DocType", sb_dt):
                 meta = frappe.get_meta(sb_dt)
-                batch_field = next(
-                    (fn for fn in ("batch_no", "batch", "batch_id") if meta.has_field(fn)),
-                    "",
-                )
-                qty_field = next(
-                    (fn for fn in ("qty", "quantity") if meta.has_field(fn)),
-                    "",
-                )
+                batch_field = _first_field_name(meta, ("batch_no", "batch", "batch_id"))
+                qty_field = _first_field_name(meta, ("qty", "quantity"))
                 if batch_field and qty_field:
                     rows = frappe.db.sql(
                         f"""
@@ -225,8 +236,11 @@ def get_batches_from_ledger(item_code, warehouse):
         except Exception:
             pass
 
-    out = [{"batch_no": k, "qty": frappe.utils.flt(v)} for k, v in acc.items()]
-    out.sort(key=lambda x: frappe.utils.flt(x.get("qty") or 0), reverse=True)
+    out = []
+    for k in acc:
+        v = acc[k]
+        out.append({"batch_no": k, "qty": frappe.utils.flt(v)})
+    out.sort(key=_ledger_batch_row_qty, reverse=True)
     return out
 
 
@@ -238,7 +252,11 @@ def parse_fabric_batch_picks(form_dict):
     if raw is None:
         return []
     if isinstance(raw, (list, tuple)):
-        return [p for p in raw if p]
+        out = []
+        for p in raw:
+            if p:
+                out.append(p)
+        return out
     if isinstance(raw, dict):
         return [raw] if raw else []
     s = str(raw).strip()
@@ -301,7 +319,8 @@ def extract_fabric_picks_from_request():
         except Exception:
             pass
     if fd:
-        for key, val in fd.items():
+        for key in fd.keys():
+            val = fd.get(key)
             if val is None or key in ("cmd", "method"):
                 continue
             sv = str(val).strip()
