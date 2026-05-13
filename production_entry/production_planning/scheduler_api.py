@@ -134,7 +134,11 @@ def _printing_table_order_code(planning_sheet_party_code, item_code):
 
 
 def _printing_work_orders_for_pl_row(pp_id, pl_row):
-	"""Work Orders for this planning row: same Production Plan + production_item (SO line fallback)."""
+	"""Work Orders for this planning row: same Production Plan + production_item (SO line + prefix fallback).
+
+	Abbreviated planning item codes (e.g. ``002-105`` from display logic) must still match
+	Work Order ``production_item`` (e.g. ``002-1051135421000405``) via prefix match.
+	"""
 	if not pp_id:
 		return [], []
 
@@ -146,7 +150,7 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 			frappe.get_all(
 				"Work Order",
 				filters=fl,
-				fields=["name", "qty", "produced_qty", "status"],
+				fields=["name", "qty", "produced_qty", "status", "production_item"],
 				order_by="creation asc",
 				limit_page_length=50,
 			)
@@ -165,12 +169,33 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 				wos = _fetch_wos({"production_item": str(si_ic).strip()})
 				if wos:
 					break
+	# Prefix match: table may store short FG (002-105) while WO has full SKU (002-10511354…).
+	if not wos and row_ic and len(row_ic) >= 7:
+		candidates = _fetch_wos()
+		matched = []
+		for wo in candidates:
+			pi = _cstr(wo.get("production_item")).strip()
+			if not pi:
+				continue
+			if pi == row_ic or pi.startswith(row_ic):
+				matched.append(wo)
+		if matched:
+			wos = matched
+	# Last resort: exactly one open WO on this PP (small plans).
+	if not wos:
+		candidates = _fetch_wos()
+		if len(candidates) == 1:
+			wos = candidates
 	wo_names = [w.get("name") for w in wos if w.get("name")]
 	return wo_names, wos
 
 
 def _mtfm_transfer_rows_for_work_orders(wo_names):
-	"""Submitted Material Transfer for Manufacture lines (fabric/RM to WIP), keyed by Stock Entry."""
+	"""Submitted Material Transfer for Manufacture lines (fabric/RM to WIP), keyed by Stock Entry.
+
+	Uses ``COALESCE(transfer_qty, qty)`` and does not require ``t_warehouse`` on every line — some sites
+	leave target WIP only on the Stock Entry header or set ``s_warehouse`` only on RM lines.
+	"""
 	if not wo_names:
 		return []
 	ph = ",".join(["%s"] * len(wo_names))
@@ -178,13 +203,17 @@ def _mtfm_transfer_rows_for_work_orders(wo_names):
 		frappe.db.sql(
 			f"""
 			SELECT se.name, se.posting_date, se.purpose, se.work_order,
-				SUM(ABS(COALESCE(sed.qty, 0))) AS qty
+				SUM(ABS(COALESCE(NULLIF(sed.transfer_qty, 0), sed.qty, 0))) AS qty
 			FROM `tabStock Entry` se
 			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
 			WHERE se.docstatus = 1
 			  AND se.purpose = 'Material Transfer for Manufacture'
 			  AND IFNULL(se.work_order, '') IN ({ph})
-			  AND IFNULL(sed.t_warehouse, '') != ''
+			  AND IFNULL(sed.item_code, '') != ''
+			  AND (
+				  IFNULL(sed.t_warehouse, '') != ''
+				  OR IFNULL(sed.s_warehouse, '') != ''
+			  )
 			GROUP BY se.name, se.posting_date, se.purpose, se.work_order
 			ORDER BY se.posting_date DESC, se.name DESC
 			""",
