@@ -257,6 +257,20 @@
                   <div v-if="row.transfer_details && row.transfer_details.length" class="pt-prod-status-line">
                     {{ row.transfer_status || 'pending' }} · {{ row.transfer_details.length }} transfer(s)
                   </div>
+                  <div
+                    v-if="row.linked_work_orders && row.linked_work_orders.length"
+                    class="pt-prod-status-line pt-linked-wo-line"
+                    :title="row.linked_work_orders.join(', ')"
+                  >
+                    WO:
+                    <a
+                      v-for="(wn, wi) in row.linked_work_orders"
+                      :key="wn"
+                      href="#"
+                      class="pt-linked-wo-link"
+                      @click.prevent="frappe.set_route('Form', 'Work Order', wn)"
+                    >{{ wn }}<template v-if="wi < row.linked_work_orders.length - 1">, </template></a>
+                  </div>
                   <button
                     v-if="canShowStockEntry(row)"
                     type="button"
@@ -1713,6 +1727,7 @@ async function fetchData() {
           transfer_details: d.transfer_details || [],
           produced_qty: d.produced_qty || 0,
           transferred_qty: d.transferred_qty || 0,
+          linked_work_orders: d.linked_work_orders || [],
           salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
         };
       }
@@ -2236,6 +2251,19 @@ onUnmounted(() => {
 .pt-wo-closed-hint {
   font-size: 10px;
   color: #94a3b8;
+}
+.pt-linked-wo-line {
+  margin-top: 2px;
+  word-break: break-all;
+}
+.pt-linked-wo-link {
+  color: #0369a1;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 9px;
+}
+.pt-linked-wo-link:hover {
+  text-decoration: underline;
 }
 .pt-spr-btn-draft {
   border-color: #f59e0b !important;

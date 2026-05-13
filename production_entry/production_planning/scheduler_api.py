@@ -114,6 +114,87 @@ def _item_process_prefix(item_code):
 	return digits[:3] if len(digits) >= 3 else ""
 
 
+def _printing_table_order_code(planning_sheet_party_code, item_code):
+	"""Party code from Planning sheet, or compact code from FG (e.g. 002-105113… -> 002-105)."""
+	oc = _cstr(planning_sheet_party_code).strip()
+	if oc:
+		return oc
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return ""
+	if "-" in ic:
+		parts = ic.split("-", 2)
+		p0 = parts[0].strip()
+		if len(parts) >= 2 and p0:
+			rest = parts[1]
+			digits = "".join(ch for ch in rest if ch.isdigit())
+			if len(digits) >= 3:
+				return p0 + "-" + digits[:3]
+	return ic
+
+
+def _printing_work_orders_for_pl_row(pp_id, pl_row):
+	"""Work Orders for this planning row: same Production Plan + production_item (SO line fallback)."""
+	if not pp_id:
+		return [], []
+
+	def _fetch_wos(extra=None):
+		fl = {"production_plan": pp_id, "docstatus": ["<", 2]}
+		if extra:
+			fl.update(extra)
+		return (
+			frappe.get_all(
+				"Work Order",
+				filters=fl,
+				fields=["name", "qty", "produced_qty", "status"],
+				order_by="creation asc",
+				limit_page_length=50,
+			)
+			or []
+		)
+
+	row_ic = _cstr((pl_row or {}).get("item_code")).strip()
+	wos = _fetch_wos({"production_item": row_ic}) if row_ic else []
+	if not wos:
+		for fld in ("so_item", "sales_order_item"):
+			soi = _cstr((pl_row or {}).get(fld)).strip()
+			if not soi or not frappe.db.exists("Sales Order Item", soi):
+				continue
+			si_ic = frappe.db.get_value("Sales Order Item", soi, "item_code")
+			if si_ic:
+				wos = _fetch_wos({"production_item": str(si_ic).strip()})
+				if wos:
+					break
+	wo_names = [w.get("name") for w in wos if w.get("name")]
+	return wo_names, wos
+
+
+def _mtfm_transfer_rows_for_work_orders(wo_names):
+	"""Submitted Material Transfer for Manufacture lines (fabric/RM to WIP), keyed by Stock Entry."""
+	if not wo_names:
+		return []
+	ph = ",".join(["%s"] * len(wo_names))
+	return (
+		frappe.db.sql(
+			f"""
+			SELECT se.name, se.posting_date, se.purpose, se.work_order,
+				SUM(ABS(COALESCE(sed.qty, 0))) AS qty
+			FROM `tabStock Entry` se
+			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+			WHERE se.docstatus = 1
+			  AND se.purpose = 'Material Transfer for Manufacture'
+			  AND IFNULL(se.work_order, '') IN ({ph})
+			  AND IFNULL(sed.t_warehouse, '') != ''
+			GROUP BY se.name, se.posting_date, se.purpose, se.work_order
+			ORDER BY se.posting_date DESC, se.name DESC
+			""",
+			tuple(wo_names),
+			as_dict=True,
+		)
+		or []
+	)
+
+
 def _get_transfer_and_produced_for_pl_row(pl_row):
     """Return produced/transferred qty metadata for a Process 105 planning row."""
     psi_name = _cstr((pl_row or {}).get("psi_name") or (pl_row or {}).get("planning_sheet_item") or (pl_row or {}).get("item_name"))
@@ -125,6 +206,7 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
         "transfer_status": "pending",
         "transfer_details": [],
         "can_create_spr": False,
+        "linked_work_orders": [],
     }
 
     try:
@@ -133,15 +215,27 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
             if isinstance(res, dict) and res.get("status") == "ok":
                 pp_id = _cstr(res.get("pp_id"))
 
-        if pp_id:
-            wos = frappe.get_all(
-                "Work Order",
-                filters={"production_plan": pp_id, "docstatus": ["<", 2]},
-                fields=["name", "qty", "produced_qty", "status"],
-                order_by="creation asc",
-            ) or []
-            produced_qty = sum(flt(wo.get("produced_qty") or 0) for wo in wos)
-            out["produced_qty"] = produced_qty
+        wo_names, wos = _printing_work_orders_for_pl_row(pp_id, pl_row)
+        out["linked_work_orders"] = list(wo_names)
+
+        if wos:
+            out["produced_qty"] = sum(flt(wo.get("produced_qty") or 0) for wo in wos)
+        elif pp_id:
+            row_ic2 = _cstr((pl_row or {}).get("item_code")).strip()
+            if not row_ic2:
+                legacy = (
+                    frappe.get_all(
+                        "Work Order",
+                        filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+                        fields=["produced_qty"],
+                        order_by="creation asc",
+                        limit_page_length=50,
+                    )
+                    or []
+                )
+                out["produced_qty"] = sum(flt(wo.get("produced_qty") or 0) for wo in legacy)
+
+        by_se = {}
 
         if psi_name:
             transfer_rows = frappe.db.sql(
@@ -162,9 +256,20 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
                 (psi_name, psi_name, psi_name),
                 as_dict=True,
             ) or []
-            transferred_qty = sum(flt(r.get("qty") or 0) for r in transfer_rows)
-            out["transferred_qty"] = transferred_qty
-            out["transfer_details"] = transfer_rows
+            for r in transfer_rows:
+                nm = r.get("name")
+                if nm:
+                    by_se[nm] = r
+
+        for r in _mtfm_transfer_rows_for_work_orders(wo_names):
+            nm = r.get("name")
+            if nm and nm not in by_se:
+                by_se[nm] = r
+
+        details = list(by_se.values())
+        details.sort(key=lambda x: (_cstr(x.get("posting_date")), _cstr(x.get("name"))), reverse=True)
+        out["transfer_details"] = details
+        out["transferred_qty"] = sum(flt(x.get("qty") or 0) for x in details)
 
         if out["transferred_qty"] > 0:
             out["can_create_spr"] = True
@@ -5120,6 +5225,9 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "psi_name": psi_name,
             "planning_sheet": plan_name,
             "pp_id": r.get("pp_id"),
+            "item_code": ic,
+            "so_item": r.get("so_item"),
+            "sales_order_item": r.get("sales_order_item"),
         })
         width_inch = flt(r.get("width_inch") or r.get("width") or 0)
         width_mm = p105.get("width_mm") or p106.get("width_mm")
@@ -5133,10 +5241,14 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
         design_name = _printing_design_name_from_row(r, design_code, so_item_name)
         design_attachment = _printing_design_attachment_from_row(r, so_item_name)
         planned_meter = _printing_planned_meter_from_row(r, width_inch, gsm)
+        oc_disp = _printing_table_order_code(
+            r.get("planning_order_code") or r.get("partyCode") or r.get("party_code"),
+            ic,
+        )
         out.append({
             "psi_name": psi_name,
             "plan_name": plan_name,
-            "order_code": r.get("planning_order_code") or r.get("partyCode") or r.get("party_code"),
+            "order_code": oc_disp,
             "customer": r.get("customer") or r.get("customer_name"),
             "planned_date": _cstr(r.get("planned_date") or r.get("plannedDate") or date or start_date),
             "item_code": ic,
@@ -5164,6 +5276,7 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "transfer_status": metrics.get("transfer_status"),
             "transfer_details": metrics.get("transfer_details"),
             "can_create_spr": metrics.get("can_create_spr", False),
+            "linked_work_orders": metrics.get("linked_work_orders") or [],
         })
     return out
 
@@ -5365,6 +5478,7 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
                     "transfer_status": "pending",
                     "transfer_details": [],
                     "can_create_spr": False,
+                    "linked_work_orders": [],
                 }
             # Choose latest SPR (if any) for operator/rolls.
             spr_latest = ""
@@ -5391,7 +5505,7 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
             out.append({
                 "psi_name": r.get("psi_name"),
                 "plan_name": r.get("plan_name"),
-                "order_code": r.get("planning_order_code"),
+                "order_code": _printing_table_order_code(r.get("planning_order_code"), ic),
                 "customer": r.get("customer"),
                 "planned_date": _cstr(r.get("planned_date")),
                 "item_code": ic,
@@ -5419,6 +5533,7 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
                 "transfer_status": metrics.get("transfer_status"),
                 "transfer_details": metrics.get("transfer_details"),
                 "can_create_spr": metrics.get("can_create_spr", False),
+                "linked_work_orders": metrics.get("linked_work_orders") or [],
             })
         try:
             board_rows = _printing_order_table_rows_from_board_source(
