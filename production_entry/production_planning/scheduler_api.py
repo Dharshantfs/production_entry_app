@@ -17658,6 +17658,9 @@ def get_current_shift():
 @frappe.whitelist()
 def create_mix_stock_entry(item_codes, qty, unit, date_key):
     """Creates a Material Receipt. If qty is empty/0, created as DRAFT."""
+    # Ensure transfer/mix flows accept all current unit names across Select fields.
+    ensure_planning_line_unit_docfield_options()
+    unit = normalize_planning_unit_for_select(unit)
     if isinstance(item_codes, str):
         item_codes = [c.strip() for c in item_codes.split(",") if c.strip()]
     
@@ -17756,6 +17759,10 @@ def create_mix_wo_old(unit, mix_name, quality, gsm, shaft, kg, date_key):
     """
     Old Logic: Creates a Work Order for a Mix Roll manually entered in Color Chart.
     """
+    # Normalize + sync unit options before Work Order validation.
+    ensure_planning_line_unit_docfield_options()
+    unit = normalize_planning_unit_for_select(unit)
+
     # 1. Determine Production Item
     possible_names = [f"{quality} {gsm} GSM", f"{quality} {gsm}", f"MIX-{quality}-{gsm}".replace(" ", "-").upper(), mix_name]
     item_code = None
