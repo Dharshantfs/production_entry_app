@@ -5,7 +5,9 @@
  *     fabric batch dialog, then POST fabric_batch_picks (JSON string) with work_order.
  *   - Partial transfers: dialog shows remaining fabric qty; you may transfer extra (over BOM).
  *   - Otherwise calls auto_material_transfer with work_order only.
- * If your API route differs, change the method string in wo_call_auto_material_transfer().
+ *   - Uses frappe.call (picks inside POST args JSON) so Server Script receives fabric_batch_picks
+ *     even when top-level POST fields are stripped.
+ * If the API method name differs, change `method` in wo_call_auto_material_transfer().
  */
 
 const MANUAL_FG_PREFIXES = ['102', '103', '104', '105', '106', '107', '109', '251', '252'];
@@ -286,8 +288,13 @@ function wo_open_fabric_batch_pick_dialog(frm) {
 						return;
 					}
 				}
+				const payload = lp_all_picks();
+				if (!payload.length) {
+					frappe.msgprint(__('No batch picks captured. Tick Use or enter a Use qty, then try again.'));
+					return;
+				}
 				d.hide();
-				resolve(lp_all_picks());
+				resolve(payload);
 			},
 			secondary_action_label: __('Cancel'),
 			secondary_action: function () {
@@ -349,9 +356,12 @@ function wo_open_fabric_batch_pick_dialog(frm) {
 						$fw.find('#wo-sum-' + idx).text(String(flt(lp_sum_for_item(ic), 3)));
 					});
 
-					/* qty input: update livePicks */
+					/* qty input: update livePicks; typing qty implies Use without forcing checkbox first */
 					$qty.on('input change', function () {
 						const v = flt($qty.val());
+						if (v > 0 && !$chk.prop('checked')) {
+							$chk.prop('checked', true);
+						}
 						lp_set(ic, bn, $chk.prop('checked') ? v : 0);
 						$fw.find('#wo-sum-' + idx).text(String(flt(lp_sum_for_item(ic), 3)));
 					});
@@ -377,12 +387,11 @@ function wo_call_auto_material_transfer(frm, fabric_batch_picks) {
 	const picks = fabric_batch_picks || [];
 	const args = { work_order: frm.doc.name };
 	if (picks.length) {
-		// Frappe Server Script form_dict often drops nested list/dict args. Send picks as
-		// plain strings + envelope so extract_fabric_picks_from_request() always finds them.
 		const json = JSON.stringify(picks);
 		args.fabric_picks_json = json;
 		args.fabric_batch_picks = json;
 		args.fbp = json;
+		args.fabric_batch_picks_list = picks;
 		args.wo_transfer_payload = JSON.stringify({
 			work_order: frm.doc.name,
 			fabric_batch_picks: picks,
@@ -390,40 +399,43 @@ function wo_call_auto_material_transfer(frm, fabric_batch_picks) {
 	}
 
 	console.log('[WO Start] picks count =', picks.length);
-	console.log('[WO Start] payload keys =', Object.keys(args));
 
-	// Direct POST ensures plain form fields land in frappe.form_dict for Server Script APIs.
+	/* frappe.call puts all keys inside POST "args" JSON — Server Script usually receives that
+	   even when top-level fabric_* fields are blocked. Plain $.ajax form fields are often dropped. */
 	return new Promise(function (resolve, reject) {
-		$.ajax({
-			url: '/api/method/auto_material_transfer',
-			type: 'POST',
-			headers: {
-				'X-Frappe-CSRF-Token': frappe.csrf_token,
-				'X-Requested-With': 'XMLHttpRequest',
-			},
-			data: args,
-			success: function (data) {
-				let raw = data && Object.prototype.hasOwnProperty.call(data, 'message') ? data.message : data;
-				if (typeof raw === 'string') {
-					try {
-						raw = JSON.parse(raw);
-					} catch (e) {
-						raw = { success: true, message: raw };
+		frappe.call({
+			method: 'auto_material_transfer',
+			args: args,
+			callback: function (r) {
+				try {
+					if (!r) {
+						reject({ message: __('Empty response from server') });
+						return;
 					}
+					let raw = r.message;
+					if (typeof raw === 'string') {
+						try {
+							raw = JSON.parse(raw);
+						} catch (e) {
+							raw = { success: true, message: raw };
+						}
+					}
+					if (raw && typeof raw === 'object' && raw.success === undefined && raw.message) {
+						raw = { success: true, message: raw.message };
+					}
+					if (!raw || typeof raw !== 'object') {
+						raw = { success: false, message: __('Unexpected response') };
+					}
+					resolve({ message: raw });
+				} catch (e) {
+					reject({ message: String(e.message || e) });
 				}
-				if (raw && typeof raw === 'object' && raw.success === undefined && raw.message) {
-					raw = { success: true, message: raw.message };
-				}
-				if (!raw || typeof raw !== 'object') {
-					raw = { success: false, message: __('Empty response from server') };
-				}
-				resolve({ message: raw });
 			},
-			error: function (xhr) {
+			error: function (r) {
 				let em = '';
 				try {
-					const rj = xhr.responseJSON || {};
-					em = cstr(rj.exception || rj.exc || rj.message || '');
+					const rj = (r && r.responseJSON) || r || {};
+					em = cstr(rj.message || rj.exception || '');
 					if (!em && rj._server_messages) {
 						const arr = JSON.parse(rj._server_messages);
 						if (Array.isArray(arr) && arr[0]) {
@@ -431,13 +443,20 @@ function wo_call_auto_material_transfer(frm, fabric_batch_picks) {
 							em = cstr(o.message || '');
 						}
 					}
+					if (!em && rj.exc) {
+						const parsed = JSON.parse(rj.exc);
+						if (Array.isArray(parsed) && parsed[0]) {
+							const o = JSON.parse(parsed[0]);
+							em = cstr(o.message || '');
+						}
+					}
 				} catch (e2) {
 					em = '';
 				}
 				if (!em) {
-					em = (xhr.status ? String(xhr.status) + ' ' : '') + cstr(xhr.statusText || __('Request failed'));
+					em = __('Request failed');
 				}
-				reject({ message: em, xhr: xhr });
+				reject({ message: em });
 			},
 		});
 	});

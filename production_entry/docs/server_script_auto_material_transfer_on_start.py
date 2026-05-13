@@ -251,6 +251,8 @@ def parse_fabric_batch_picks(form_dict):
     if raw is None:
         raw = form_dict.get("fbp")
     if raw is None:
+        raw = form_dict.get("fabric_batch_picks_list")
+    if raw is None:
         return []
     if isinstance(raw, (list, tuple)):
         out = []
@@ -259,7 +261,9 @@ def parse_fabric_batch_picks(form_dict):
                 out.append(p)
         return out
     if isinstance(raw, dict):
-        return [raw] if raw else []
+        if raw:
+            return [raw]
+        return []
     s = str(raw).strip()
     if not s:
         return []
@@ -275,10 +279,55 @@ def parse_fabric_batch_picks(form_dict):
 
 
 def extract_fabric_picks_from_request():
-    """Resolve picks from form_dict. Server Scripts often drop nested list args — prefer JSON strings."""
+    """Resolve picks from form_dict / JSON body / frappe.call args."""
     fd = frappe.form_dict
     if fd is None:
         fd = {}
+
+    # frappe.call sends everything inside stringified "args" — this survives Server Script filters
+    args_blob = fd.get("args")
+    if args_blob:
+        try:
+            ad = frappe.parse_json(args_blob) if isinstance(args_blob, str) else args_blob
+            if isinstance(ad, dict):
+                out = parse_fabric_batch_picks(ad)
+                if out:
+                    return out
+                fbl = ad.get("fabric_batch_picks_list")
+                if isinstance(fbl, (list, tuple)):
+                    picks_out = []
+                    for p in fbl:
+                        if p:
+                            picks_out.append(p)
+                    if picks_out:
+                        return picks_out
+        except Exception:
+            pass
+
+    # JSON body (application/json) — not always merged into form_dict
+    try:
+        req = getattr(frappe.local, "request", None)
+        if req is not None:
+            get_json = getattr(req, "get_json", None)
+            if callable(get_json):
+                body = get_json(silent=True)
+                if isinstance(body, dict):
+                    out = parse_fabric_batch_picks(body)
+                    if out:
+                        return out
+    except Exception:
+        pass
+
+    # frappe.call may pass a native list as fabric_batch_picks_list (when allowed on Server Script)
+    fbl = fd.get("fabric_batch_picks_list")
+    if isinstance(fbl, (list, tuple)):
+        picks_out = []
+        for p in fbl:
+            if p:
+                picks_out.append(p)
+        if picks_out:
+            return picks_out
+
     env = fd.get("wo_transfer_payload")
     if env:
         try:
@@ -293,7 +342,7 @@ def extract_fabric_picks_from_request():
                         return out
         except Exception:
             pass
-    for key in ("fabric_picks_json", "fabric_batch_picks", "fbp"):
+    for key in ("fabric_picks_json", "fabric_batch_picks", "fbp", "fabric_batch_picks_list"):
         blob = fd.get(key)
         if blob is None:
             continue
@@ -309,16 +358,6 @@ def extract_fabric_picks_from_request():
     out = parse_fabric_batch_picks(fd)
     if out:
         return out
-    args_blob = fd.get("args") if fd else None
-    if args_blob:
-        try:
-            ad = frappe.parse_json(args_blob) if isinstance(args_blob, str) else args_blob
-            if isinstance(ad, dict):
-                out = parse_fabric_batch_picks(ad)
-                if out:
-                    return out
-        except Exception:
-            pass
     if fd:
         for key in fd.keys():
             val = fd.get(key)
@@ -484,10 +523,10 @@ def auto_material_transfer():
         if fg_manual and not fabric_picks:
             if wo_has_100_batch_fabric_rm(wo):
                 frappe.throw(
-                    "Fabric batch picks missing. "
-                    "Use Start Production on the Work Order (fabric batch dialog), "
-                    "or POST fabric_batch_picks / fabric_picks_json as a JSON list. "
-                    "Ensure the Work Order Client Script is saved and cache is cleared."
+                    "Fabric batch picks missing (server did not receive picks). "
+                    "Use the latest Work Order Client Script (frappe.call sends picks inside args). "
+                    "On Server Script, allow request parameters or rely on args JSON. "
+                    "Tick Use / enter qty, then Start with selected batches."
                 )
             fg_manual = False
 
