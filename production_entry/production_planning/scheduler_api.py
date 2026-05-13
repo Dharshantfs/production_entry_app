@@ -139,6 +139,97 @@ def _printing_table_order_code(planning_sheet_party_code, item_code):
 	return ic
 
 
+def _printing_work_orders_fallback_for_pl_row(pl_row):
+	"""Resolve Work Order(s) when ``production_plan`` is missing on the row or PP-scoped lookup finds nothing.
+
+	Matches ERPNext behaviour where the WO is keyed by SO + FG ``production_item`` even if the Planning row
+	lost its Production Plan link field.
+	"""
+	row_ic = _cstr((pl_row or {}).get("item_code")).strip()
+	planning_sheet = _cstr((pl_row or {}).get("planning_sheet")).strip()
+	if not row_ic:
+		return [], []
+
+	so_name = None
+	if planning_sheet and frappe.db.exists("Planning sheet", planning_sheet):
+		so_name = _cstr(frappe.db.get_value("Planning sheet", planning_sheet, "sales_order")).strip() or None
+
+	wos = []
+	if so_name and frappe.db.has_column("Work Order", "sales_order"):
+		wos = (
+			frappe.get_all(
+				"Work Order",
+				filters={"sales_order": so_name, "production_item": row_ic, "docstatus": ["<", 2]},
+				fields=["name", "qty", "produced_qty", "status", "production_item"],
+				order_by="creation desc",
+				limit_page_length=20,
+			)
+			or []
+		)
+
+	if not wos:
+		for fld in ("so_item", "sales_order_item"):
+			soi = _cstr((pl_row or {}).get(fld)).strip()
+			if not soi or not frappe.db.exists("Sales Order Item", soi):
+				continue
+			si_ic = frappe.db.get_value("Sales Order Item", soi, "item_code")
+			if not si_ic:
+				continue
+			si_ic = str(si_ic).strip()
+			fl = {"production_item": si_ic, "docstatus": ["<", 2]}
+			if so_name and frappe.db.has_column("Work Order", "sales_order"):
+				fl["sales_order"] = so_name
+			cand = (
+				frappe.get_all(
+					"Work Order",
+					filters=fl,
+					fields=["name", "qty", "produced_qty", "status", "production_item"],
+					order_by="creation desc",
+					limit_page_length=20,
+				)
+				or []
+			)
+			if cand:
+				wos = cand
+				break
+
+	if not wos and row_ic and len(row_ic) >= 7 and so_name and frappe.db.has_column("Work Order", "sales_order"):
+		candidates = (
+			frappe.get_all(
+				"Work Order",
+				filters={"sales_order": so_name, "docstatus": ["<", 2]},
+				fields=["name", "qty", "produced_qty", "status", "production_item"],
+				order_by="creation desc",
+				limit_page_length=50,
+			)
+			or []
+		)
+		matched = []
+		for wo in candidates:
+			pi = _cstr(wo.get("production_item")).strip()
+			if not pi:
+				continue
+			if pi == row_ic or pi.startswith(row_ic):
+				matched.append(wo)
+		if matched:
+			wos = matched
+
+	if not wos:
+		wos = (
+			frappe.get_all(
+				"Work Order",
+				filters={"production_item": row_ic, "docstatus": ["<", 2]},
+				fields=["name", "qty", "produced_qty", "status", "production_item"],
+				order_by="creation desc",
+				limit_page_length=20,
+			)
+			or []
+		)
+
+	wo_names = [w.get("name") for w in wos if w.get("name")]
+	return wo_names, wos
+
+
 def _printing_work_orders_for_pl_row(pp_id, pl_row):
 	"""Resolve Work Order(s) for a printing planning row: same Production Plan + FG item.
 
@@ -146,7 +237,7 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 	(only when planning code is a strict prefix of WO FG) → single-WO-on-PP fallback.
 	"""
 	if not pp_id:
-		return [], []
+		return _printing_work_orders_fallback_for_pl_row(pl_row)
 
 	def _fetch_wos(extra=None):
 		fl = {"production_plan": pp_id, "docstatus": ["<", 2]}
@@ -192,11 +283,13 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 		if len(candidates) == 1:
 			wos = candidates
 	wo_names = [w.get("name") for w in wos if w.get("name")]
+	if not wo_names:
+		return _printing_work_orders_fallback_for_pl_row(pl_row)
 	return wo_names, wos
 
 
 def _expand_work_orders_for_rm_transfer(wo_names):
-	"""Include child Work Orders (material may post against child WO name)."""
+	"""Include child and parent Work Orders (material may post against child or parent WO name)."""
 	names = [str(n).strip() for n in (wo_names or []) if str(n or "").strip()]
 	if not names or not frappe.db.exists("DocType", "Work Order"):
 		return names
@@ -217,6 +310,10 @@ def _expand_work_orders_for_rm_transfer(wo_names):
 			):
 				if ch:
 					out.add(ch)
+		for wo in list(out):
+			par = frappe.db.get_value("Work Order", wo, fname)
+			if par:
+				out.add(_cstr(par))
 	return list(out)
 
 
@@ -318,24 +415,38 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
         by_se = {}
 
         if psi_name:
-            transfer_rows = frappe.db.sql(
-                """
-                SELECT se.name, se.posting_date, se.purpose, SUM(COALESCE(sed.qty, 0)) AS qty
+            sed_cols = [
+                c
+                for c in ("planning_sheet_item", "custom_planning_sheet_item", "planning_sheet_item_name")
+                if frappe.db.has_column("Stock Entry Detail", c)
+            ]
+            transfer_rows = []
+            if sed_cols:
+                match_or = " OR ".join([f"IFNULL(sed.`{c}`, '') = %s" for c in sed_cols])
+                tr_params = tuple([psi_name] * len(sed_cols))
+                qty_sum = (
+                    "SUM(ABS(COALESCE(NULLIF(sed.transfer_qty, 0), sed.qty, 0)))"
+                    if frappe.db.has_column("Stock Entry Detail", "transfer_qty")
+                    else "SUM(ABS(COALESCE(sed.qty, 0)))"
+                )
+                transfer_rows = (
+                    frappe.db.sql(
+                        f"""
+                SELECT se.name, se.posting_date, se.purpose,
+                    {qty_sum} AS qty
                 FROM `tabStock Entry` se
                 INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
                 WHERE se.docstatus = 1
                   AND se.purpose IN ('Material Transfer', 'Material Transfer for Manufacture')
-                  AND (
-                    IFNULL(sed.planning_sheet_item, '') = %s
-                    OR IFNULL(sed.custom_planning_sheet_item, '') = %s
-                    OR IFNULL(sed.planning_sheet_item_name, '') = %s
-                  )
+                  AND ({match_or})
                 GROUP BY se.name, se.posting_date, se.purpose
                 ORDER BY se.posting_date DESC, se.name DESC
                 """,
-                (psi_name, psi_name, psi_name),
-                as_dict=True,
-            ) or []
+                        tr_params,
+                        as_dict=True,
+                    )
+                    or []
+                )
             for r in transfer_rows:
                 nm = r.get("name")
                 if nm:
@@ -365,8 +476,10 @@ def _get_transfer_and_produced_for_pl_row(pl_row):
         if out["transferred_qty"] > 0 and out["produced_qty"] > 0 and out["transferred_qty"] < out["produced_qty"]:
             out["transfer_status"] = "partial"
     except Exception:
-        # Ignore unexpected errors while gathering transfer/produced metadata.
-        pass
+        frappe.log_error(
+            frappe.get_traceback(),
+            "_get_transfer_and_produced_for_pl_row",
+        )
 
     return out
 
