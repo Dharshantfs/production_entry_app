@@ -1,8 +1,8 @@
 /**
  * Work Order — custom Start / Finish / Return (paste in Client Script or bundle).
  * Pairs with Server Script auto_material_transfer:
- *   - If FG item starts with 104 / 107 / 102 / 103 and BOM has 100* fabric lines,
- *     opens a batch picker then POSTs fabric_batch_picks (JSON string) with work_order.
+ *   - FG processes 102/103/104/105/106/107/109/251/252 with 100* RM lines open the
+ *     fabric batch dialog, then POST fabric_batch_picks (JSON string) with work_order.
  *   - Otherwise calls auto_material_transfer with work_order only.
  * If your API route differs, change the method string in wo_call_auto_material_transfer().
  */
@@ -30,6 +30,13 @@ function wo_item_process_code(itemCode) {
 function wo_fg_needs_fabric_picks(frm) {
 	const proc = wo_item_process_code(frm.doc.production_item || '');
 	return !!proc && MANUAL_FG_PREFIXES.includes(proc);
+}
+
+// Expose for console checks after Client Script save + hard refresh (Ctrl+F5).
+if (typeof frappe !== 'undefined') {
+	frappe.production_entry_wo = frappe.production_entry_wo || {};
+	frappe.production_entry_wo.wo_item_process_code = wo_item_process_code;
+	frappe.production_entry_wo.wo_fg_needs_fabric_picks = wo_fg_needs_fabric_picks;
 }
 
 function wo_fabric_rm_rows(frm) {

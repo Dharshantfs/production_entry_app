@@ -9,8 +9,8 @@
 #      Entry (same idea as production_entry SPR). Prevents BatchNegativeStockError
 #      when picks/qty exceed bundle-visible balance.
 #   3) Auto path — only allocates batches with positive merged qty in source_wh.
-#   4) FG 102/103/104/107: skip only when batch-tracked 100* fabric exists on the WO
-#      and no fabric_batch_picks were sent; otherwise run (picks path or auto FIFO).
+#   4) FG processes 102/103/104/105/106/107/109/251/252: require fabric_batch_picks when
+#      the WO has batch-tracked 100* fabric; otherwise allow auto FIFO (no batch fabric).
 #   5) parse_fabric_batch_picks accepts list/dict or JSON strings.
 #   6) Client sends fabric_picks_json + wo_transfer_payload (strings) — Server Script form_dict
 #      often drops nested list args from frappe.call; strings survive.
@@ -42,19 +42,32 @@ def wo_has_100_batch_fabric_rm(wo):
     return False
 
 
-def fg_needs_manual_fabric_picks(production_item):
-    """True when FG item code contains 102 / 103 / 104 / 107 anywhere.
+MANUAL_FG_PROCESSES = frozenset(
+    ("102", "103", "104", "105", "106", "107", "109", "251", "252")
+)
 
-    For these FGs we do not auto FIFO fabric batches. If the client POSTs
-    ``fabric_batch_picks``, transfer still runs using those picks for 100* RM lines.
+
+def fg_item_process_code(item_code):
+    """Leading 3-digit process code; matches Work Order client ``wo_item_process_code``."""
+    raw = str(item_code or "").strip().upper()
+    if not raw:
+        return ""
+    if "-" in raw:
+        _, tail = raw.split("-", 1)
+        tail_digits = "".join(ch for ch in tail if ch.isdigit())
+        if len(tail_digits) >= 3:
+            return tail_digits[:3]
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits[:3] if len(digits) >= 3 else ""
+
+
+def fg_needs_manual_fabric_picks(production_item):
+    """True for FG process codes that require explicit fabric batch picks (100* batch RM).
+
+    Must stay in sync with client ``MANUAL_FG_PREFIXES`` / ``wo_item_process_code``.
     """
-    if not production_item:
-        return False
-    pi = str(production_item)
-    for code in ("102", "103", "104", "107"):
-        if code in pi:
-            return True
-    return False
+    proc = fg_item_process_code(production_item)
+    return proc in MANUAL_FG_PROCESSES
 
 
 def get_total_qty(item_code, warehouse):
@@ -374,11 +387,14 @@ def auto_material_transfer():
 
         fabric_picks = extract_fabric_picks_from_request()
         fg_manual = fg_needs_manual_fabric_picks(wo.production_item)
-        manual_pick_fallback = False
-        # Never hard-stop WO start here. If picks did not arrive, continue with auto FIFO
-        # for this run so production is not blocked.
         if fg_manual and not fabric_picks:
-            manual_pick_fallback = wo_has_100_batch_fabric_rm(wo)
+            if wo_has_100_batch_fabric_rm(wo):
+                frappe.throw(
+                    "Fabric batch picks missing. "
+                    "Use Start Production on the Work Order (fabric batch dialog), "
+                    "or POST fabric_batch_picks / fabric_picks_json as a JSON list. "
+                    "Ensure the Work Order Client Script is saved and cache is cleared."
+                )
             fg_manual = False
 
         se = frappe.new_doc("Stock Entry")
@@ -452,7 +468,7 @@ def auto_material_transfer():
                     frappe.throw(
                         "fabric_batch_picks required for fabric item "
                         + str(item_code)
-                        + " (FG 104/107/102/103). POST fabric_batch_picks as JSON string, e.g. "
+                        + " (manual FG process). POST fabric_batch_picks as JSON string, e.g. "
                         + '[{"item_code":"100...","batch_no":"B1","qty":10}]'
                     )
                 pending = req_qty
@@ -550,8 +566,6 @@ def auto_material_transfer():
         wo.reload()
 
         done_msg = "Production Started : " + str(se.name)
-        if manual_pick_fallback:
-            done_msg += " (batch picks not received; used auto FIFO allocation)"
         frappe.response["message"] = {"success": True, "message": done_msg}
 
     except Exception as e:
