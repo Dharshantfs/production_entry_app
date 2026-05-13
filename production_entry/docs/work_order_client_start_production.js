@@ -7,11 +7,29 @@
  * If your API route differs, change the method string in wo_call_auto_material_transfer().
  */
 
-const MANUAL_FG_PREFIXES = ['104', '107', '102', '103'];
+const MANUAL_FG_PREFIXES = ['102', '103', '104', '105', '106', '107', '109', '251', '252'];
+
+function wo_item_process_code(itemCode) {
+	const raw = cstr(itemCode || '').trim().toUpperCase();
+	if (!raw) return '';
+
+	// Design-first codes like 002-105..., 002-106..., ABC-252...
+	if (raw.includes('-')) {
+		const parts = raw.split('-', 2);
+		if (parts.length === 2) {
+			const tailDigits = cstr(parts[1]).replace(/\D/g, '');
+			if (tailDigits.length >= 3) return tailDigits.slice(0, 3);
+		}
+	}
+
+	// Pure numeric / mixed prefixed codes (e.g. 109..., 251..., 252...)
+	const digits = raw.replace(/\D/g, '');
+	return digits.length >= 3 ? digits.slice(0, 3) : '';
+}
 
 function wo_fg_needs_fabric_picks(frm) {
-	const pi = cstr(frm.doc.production_item || '');
-	return pi.length >= 3 && MANUAL_FG_PREFIXES.includes(pi.slice(0, 3));
+	const proc = wo_item_process_code(frm.doc.production_item || '');
+	return !!proc && MANUAL_FG_PREFIXES.includes(proc);
 }
 
 function wo_fabric_rm_rows(frm) {
