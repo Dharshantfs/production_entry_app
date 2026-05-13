@@ -45,9 +45,8 @@ def wo_has_100_batch_fabric_rm(wo):
     return False
 
 
-MANUAL_FG_PROCESSES = frozenset(
-    ("102", "103", "104", "105", "106", "107", "109", "251", "252")
-)
+# Tuple (not frozenset): Server Script safe_exec does not expose frozenset.
+MANUAL_FG_PROCESSES = ("102", "103", "104", "105", "106", "107", "109", "251", "252")
 
 
 def fg_item_process_code(item_code):
