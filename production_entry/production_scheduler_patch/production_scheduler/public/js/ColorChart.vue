@@ -5711,7 +5711,14 @@ async function loadOrders(d) {
     try {
         const r = await frappe.call({
             method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-            args: { date: date, mode: 'pull_board', board_process_scope: "only_100" }
+            args: {
+                date: date,
+                mode: "pull_board",
+                board_process_scope: "only_100",
+                plan_name: "__all__",
+                planned_only: 1,
+                party_code: filterPartyCode.value || "",
+            },
         });
         
         const items = r.message || [];

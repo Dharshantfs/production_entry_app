@@ -11487,12 +11487,18 @@ def _get_color_chart_data_impl(
         else:
             so_item_col = f"i.{so_item_real_col} as salesOrderItem,"
         split_col = "i.is_split as isSplit," if frappe.db.has_column("Planning Table", "is_split") else "0 as isSplit,"
+        item_pulled_alias = (
+            "i.planned_date as item_planned_date_for_pull,"
+            if frappe.db.has_column("Planning Table", "planned_date")
+            else "NULL as item_planned_date_for_pull,"
+        )
 
         items = frappe.db.sql(f"""
             SELECT
                 i.name as itemName, i.item_code, i.item_name, i.qty, i.uom, i.unit,
                 i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name,
                 i.planned_date,
+                {item_pulled_alias}
                 {so_item_col} {split_col}
                 p.name as planningSheet, p.party_code as partyCode, p.customer,
                 COALESCE(c.customer_name, p.customer) as customer_name,
@@ -11525,22 +11531,24 @@ def _get_color_chart_data_impl(
                 or (bps == "printed_bopp_pb_only" and _matches_printed_bopp_board_row(it))
             ]
 
-        if items and bps != "sheet_cutting_only":
-            sheet_names = list(set(it.planningSheet for it in items))
-            so_names = list(set(it.salesOrder for it in items if it.salesOrder))
-            wo_sheets = set()
-            if so_names:
-                fmt = ','.join(['%s'] * len(so_names))
-                for r in frappe.db.sql(f"SELECT DISTINCT sales_order FROM `tabWork Order` WHERE sales_order IN ({fmt}) AND docstatus < 2", tuple(so_names)):
-                    wo_sheets.add(r[0])
-            if sheet_names:
-                fmt2 = ','.join(['%s'] * len(sheet_names))
-                try:
-                    for r in frappe.db.sql(f"SELECT DISTINCT custom_planning_sheet FROM `tabWork Order` WHERE custom_planning_sheet IN ({fmt2}) AND docstatus < 2", tuple(sheet_names)):
-                        wo_sheets.add(r[0])
-                except Exception:
-                    pass
-            items = [it for it in items if it.planningSheet not in wo_sheets]
+        # pull_board: do NOT strip rows just because a Work Order exists (Production Board shows those cards).
+        # Legacy mode=="pull" still excludes WO-backed sheets for older colour-chart flows.
+
+        # Match Production Board planned_only: non-white rows must be item-pushed (item-level planned_date).
+        if cint(planned_only) and items and bps not in (
+            "lamination_only",
+            "printing_only",
+            "slitting_only",
+            "rewinding_only",
+            "printed_bopp_pb_only",
+            "sheet_cutting_only",
+        ):
+            items = [
+                it
+                for it in items
+                if _is_white_color(it.get("color"))
+                or (it.get("item_planned_date_for_pull") not in (None, ""))
+            ]
         if items and bps == "lamination_only":
             if lam_proc == "all":
                 items = [it for it in items if _is_lamination_parent_process(it.get("item_code") or "")]

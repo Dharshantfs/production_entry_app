@@ -1500,6 +1500,53 @@ function openPullOrdersDialog() {
     loadOrders(d);
 }
 
+/** Same board scope + planned filters as fetchData so Pull preview matches visible cards. */
+function buildPullBoardChartArgsForSourceDate(sourceDate) {
+  const args = {
+    date: sourceDate,
+    mode: "pull_board",
+    plan_name: "__all__",
+    planned_only: 1,
+    party_code: filterPartyCode.value || "",
+  };
+  if (isRewindingBoard.value) {
+    args.board_process_scope = "rewinding_only";
+  } else if (isSlittingBoard.value) {
+    args.board_process_scope = "slitting_only";
+  } else if (isSheetCuttingBoard.value) {
+    args.board_process_scope = "sheet_cutting_only";
+  } else if (isPrintingBoard.value) {
+    args.board_process_scope = "printing_only";
+  } else if (isLaminationBoard.value) {
+    args.board_process_scope = "lamination_only";
+    const lp = (boardProcessFilter.value || "").trim();
+    if (lp && lp !== "__all__") {
+      args.lamination_process = lp;
+    }
+  } else if (isPrintedBoppFilmBoard.value) {
+    args.board_process_scope = "printed_bopp_pb_only";
+  } else {
+    try {
+      const sp = new URLSearchParams(window.location.search || "");
+      const b = (sp.get("board") || "").toLowerCase();
+      if (b === "lamination") {
+        args.board_process_scope = "lamination_only";
+      } else if (b === "slitting") {
+        args.board_process_scope = "slitting_only";
+      } else if (b === "rewinding") {
+        args.board_process_scope = "rewinding_only";
+      } else if (b === "sheet_cutting") {
+        args.board_process_scope = "sheet_cutting_only";
+      } else {
+        args.board_process_scope = "exclude_special";
+      }
+    } catch (e) {
+      args.board_process_scope = "exclude_special";
+    }
+  }
+  return args;
+}
+
 async function loadOrders(d) {
     const date = d.get_value('source_date');
     if (!date) return;
@@ -1507,16 +1554,15 @@ async function loadOrders(d) {
     d.set_value('preview_html', '<p class="text-gray-500 italic p-2">Loading...</p>');
     
     try {
-        // Production Board Pull = orders already ON the board for this date (move to today).
         const r = await frappe.call({
             method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-            args: { date: date, mode: 'pull_board' }
+            args: buildPullBoardChartArgsForSourceDate(date),
         });
         
         let items = r.message || [];
         
         if (items.length === 0) {
-            d.set_value('preview_html', '<p class="text-gray-500 italic p-2">No orders on the Production Board for this date.</p>');
+            d.set_value('preview_html', '<p class="text-gray-500 italic p-2">No orders on this board for the selected date.</p>');
             d.calc_selected_items = [];
             return;
         }
