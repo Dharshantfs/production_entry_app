@@ -154,6 +154,15 @@ def _printing_table_order_code(planning_sheet_party_code, item_code):
 	return ic
 
 
+def _printing_trace_id_for_pl_row(pl_row):
+	"""Prefer explicit trace on the planning row; otherwise derive from FG item_code (105/106-aware)."""
+	t = _cstr((pl_row or {}).get("custom_parent_child_trace_id")).strip()
+	if t:
+		return t
+	ic = _cstr((pl_row or {}).get("item_code")).strip()
+	return _parent_child_trace_id_from_item_code(ic) if ic else ""
+
+
 def _printing_work_orders_fallback_for_pl_row(pl_row):
 	"""Resolve Work Order(s) when ``production_plan`` is missing on the row or PP-scoped lookup finds nothing.
 
@@ -226,10 +235,24 @@ def _printing_work_orders_fallback_for_pl_row(pl_row):
 				continue
 			if pi == row_ic or pi.startswith(row_ic):
 				matched.append(wo)
-		if matched:
+		if len(matched) == 1:
 			wos = matched
 
 	if not wos:
+		fl = {"production_item": row_ic, "docstatus": ["<", 2]}
+		if so_name and frappe.db.has_column("Work Order", "sales_order"):
+			fl["sales_order"] = so_name
+		wos = (
+			frappe.get_all(
+				"Work Order",
+				filters=fl,
+				fields=["name", "qty", "produced_qty", "status", "production_item"],
+				order_by="creation desc",
+				limit_page_length=20,
+			)
+			or []
+		)
+	if not wos and not so_name:
 		wos = (
 			frappe.get_all(
 				"Work Order",
@@ -241,15 +264,34 @@ def _printing_work_orders_fallback_for_pl_row(pl_row):
 			or []
 		)
 
+	tid_fb = _printing_trace_id_for_pl_row(pl_row)
+	if (
+		len(wos) > 1
+		and tid_fb
+		and frappe.db.has_column("Work Order", "custom_parent_child_trace_id")
+	):
+		narrowed = []
+		for w in wos:
+			wname = w.get("name")
+			if not wname:
+				continue
+			wtr = _cstr(frappe.db.get_value("Work Order", wname, "custom_parent_child_trace_id")).strip()
+			if wtr and wtr == tid_fb:
+				narrowed.append(w)
+		if narrowed:
+			wos = narrowed
+
 	wo_names = [w.get("name") for w in wos if w.get("name")]
 	return wo_names, wos
 
 
 def _printing_work_orders_for_pl_row(pp_id, pl_row):
-	"""Resolve Work Order(s) for a printing planning row: same Production Plan + FG item.
+	"""Resolve Work Order(s) for a printing planning row scoped to the same Production Plan.
 
-	Order: exact ``production_item`` → Sales Order line ``item_code`` → optional prefix match
-	(only when planning code is a strict prefix of WO FG) → single-WO-on-PP fallback.
+	Priority: PP + ``custom_parent_child_trace_id`` on Work Order (when present) → exact
+	``production_item`` → SO line FG → **unique** prefix match only. Deliberately no
+	'sole WO on this PP' fallback — that attached one WO (and fabric transfers) to every
+	unmatched line on the plan.
 	"""
 	if not pp_id:
 		return _printing_work_orders_fallback_for_pl_row(pl_row)
@@ -269,8 +311,36 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 			or []
 		)
 
+	def _narrow_trace_wos(by_trace):
+		if not by_trace:
+			return []
+		if len(by_trace) == 1:
+			return by_trace
+		row_ic_local = _cstr((pl_row or {}).get("item_code")).strip()
+		if not row_ic_local:
+			return []
+		ex = [w for w in by_trace if _cstr(w.get("production_item")).strip() == row_ic_local]
+		if len(ex) == 1:
+			return ex
+		pref = []
+		for w in by_trace:
+			pi = _cstr(w.get("production_item")).strip()
+			if pi and (pi == row_ic_local or pi.startswith(row_ic_local)):
+				pref.append(w)
+		if len(pref) == 1:
+			return pref
+		return []
+
 	row_ic = _cstr((pl_row or {}).get("item_code")).strip()
-	wos = _fetch_wos({"production_item": row_ic}) if row_ic else []
+	tid = _printing_trace_id_for_pl_row(pl_row)
+	wos = []
+
+	if tid and frappe.db.has_column("Work Order", "custom_parent_child_trace_id"):
+		wos = _narrow_trace_wos(_fetch_wos({"custom_parent_child_trace_id": tid}))
+
+	if not wos and row_ic:
+		wos = _fetch_wos({"production_item": row_ic})
+
 	if not wos:
 		for fld in ("so_item", "sales_order_item"):
 			soi = _cstr((pl_row or {}).get(fld)).strip()
@@ -281,7 +351,6 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 				wos = _fetch_wos({"production_item": str(si_ic).strip()})
 				if wos:
 					break
-	# Strict prefix: planning FG must be prefix of WO FG (same design + process, longer SKU on WO).
 	if not wos and row_ic and len(row_ic) >= 7:
 		candidates = _fetch_wos()
 		matched = []
@@ -291,12 +360,8 @@ def _printing_work_orders_for_pl_row(pp_id, pl_row):
 				continue
 			if pi == row_ic or pi.startswith(row_ic):
 				matched.append(wo)
-		if matched:
+		if len(matched) == 1:
 			wos = matched
-	if not wos:
-		candidates = _fetch_wos()
-		if len(candidates) == 1:
-			wos = candidates
 	wo_names = [w.get("name") for w in wos if w.get("name")]
 	if not wo_names:
 		return _printing_work_orders_fallback_for_pl_row(pl_row)
@@ -548,6 +613,25 @@ def _parse_253_item_code(item_code):
 	code = re.sub(r"\s+", "", str(item_code or "").strip().upper())
 	if not code:
 		return {}
+	# Compact: 253105542100001-A (no hyphen after 253)
+	m0 = re.match(
+		r"^253(?P<quality>\d{3})(?P<colour>\d{3})(?P<gsm>\d{3})(?P<size>\d{3})(?:-(?P<lam>[A-Z0-9]+))?$",
+		code,
+	)
+	if m0:
+		lam = (m0.group("lam") or "").strip().upper()
+		lam_g = cint(_LAM_GSM_SUFFIX_MAP.get(lam, 0) or 0) if lam else 0
+		return {
+			"process": "253",
+			"design_code": "",
+			"quality_code": m0.group("quality"),
+			"colour_code": m0.group("colour"),
+			"gsm": cint(m0.group("gsm") or 0),
+			"series_id": m0.group("size"),
+			"lam_suffix": lam,
+			"lam_gsm_code": lam,
+			"lam_gsm": lam_g,
+		}
 	m = re.match(
 		r"^253-(?P<quality>\d{3})(?P<colour>\d{3})(?P<gsm>\d{3})(?P<size>\d{3})(?:-(?P<lam>[A-Z0-9]+))?$",
 		code,
@@ -699,15 +783,27 @@ LAMINATION_BOPP_GSM_CODES = {
 _LAMINATION_QUALITY_BY_CODE = {v: k for k, v in LAMINATION_QUALITY_CODES.items()}
 _LAMINATION_FABRIC_GSM_BY_CODE = {v: k for k, v in LAMINATION_FABRIC_GSM_CODES.items()}
 _LAMINATION_BOPP_GSM_BY_CODE = {v: k for k, v in LAMINATION_BOPP_GSM_CODES.items()}
-# Lam GSM letter in 107 codes uses same mapping as 104 lamination suffix after last '-'.
+# Lamination build GSM from single letter (104 suffix after '-', and lam letter in 107/255/106/109 tails).
+# Revised operator map: A=10, B=12, C=15, D=20, E=30, F=13 (legacy B1 → 13 kept).
 _LAM_GSM_SUFFIX_MAP = {
 	"A": 10,
 	"B": 12,
-	"C": 13,
-	"D": 15,
-	"E": 20,
-	"F": 30,
+	"B1": 13,
+	"C": 15,
+	"D": 20,
+	"E": 30,
+	"F": 13,
 }
+
+
+def _combined_bopp_line_gsm(parsed):
+	"""Finished GSM for design-first BOPP stack (107 / 255): fabric + BOPP film + lamination (M+C+C)."""
+	if not parsed:
+		return 0
+	fg = cint(parsed.get("fabric_gsm") or 0)
+	bg = cint(parsed.get("bopp_gsm") or 0)
+	lg = cint(parsed.get("lam_gsm") or 0)
+	return fg + bg + lg
 
 
 def _lamination_process_from_item_code(item_code):
@@ -1172,6 +1268,42 @@ def _pb_design_name_from_sales_order_item(so_item_name):
 	return ""
 
 
+def _pb_design_code_from_sales_order_item(so_item_name):
+	"""Design / style code from Sales Order Item (e.g. 6002 for BOPP laminated parents)."""
+	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
+		return ""
+	try:
+		meta = frappe.get_meta("Sales Order Item")
+	except Exception:
+		return ""
+	for fn in (
+		"custom_design_code",
+		"custom_pb_design_code",
+		"design_code",
+		"custom_style_code",
+	):
+		try:
+			if meta.has_field(fn):
+				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+				if (v or "").strip():
+					return (v or "").strip()
+		except Exception:
+			continue
+	try:
+		for df in (meta.fields or []):
+			fn = (getattr(df, "fieldname", None) or "").strip()
+			if not fn:
+				continue
+			low = fn.lower()
+			if "design" in low and "code" in low and frappe.db.has_column("Sales Order Item", fn):
+				v = frappe.db.get_value("Sales Order Item", so_item_name, fn)
+				if (v or "").strip():
+					return (v or "").strip()
+	except Exception:
+		pass
+	return ""
+
+
 def _pb_design_colour_from_sales_order_item(so_item_name):
 	"""Optional design colour from Sales Order Item custom fields (site-specific)."""
 	if not so_item_name or not frappe.db.exists("Sales Order Item", so_item_name):
@@ -1570,6 +1702,30 @@ def _planning_row_dict_107_lamination_extras(item_code, parsed107_early, sales_o
             out["custom_lam_gsm"] = lgv
         if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
             out["custom_lam_gsm"] = lgv
+    dcode = _cstr(p107r.get("design_code")).strip()
+    if dcode and (
+        frappe.db.has_column("Planning Table", "custom_design_code")
+        or frappe.db.has_column("Planning sheet Item", "custom_design_code")
+    ):
+        out["custom_design_code"] = dcode
+    dc_so = _pb_design_code_from_sales_order_item(sales_order_item_name)
+    if dc_so and not out.get("custom_design_code") and (
+        frappe.db.has_column("Planning Table", "custom_design_code")
+        or frappe.db.has_column("Planning sheet Item", "custom_design_code")
+    ):
+        out["custom_design_code"] = dc_so
+    da_so = _printing_design_attachment_from_sales_order_item(sales_order_item_name)
+    if da_so and (
+        frappe.db.has_column("Planning Table", "custom_design_attachment")
+        or frappe.db.has_column("Planning sheet Item", "custom_design_attachment")
+    ):
+        out["custom_design_attachment"] = da_so
+    col_so = _pb_design_colour_from_sales_order_item(sales_order_item_name)
+    if col_so and (
+        frappe.db.has_column("Planning Table", "custom_design_colour")
+        or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
+    ):
+        out["custom_design_colour"] = col_so
     return out
 
 
@@ -1610,6 +1766,30 @@ def _planning_row_dict_255_lamination_extras(item_code, parsed255_early, sales_o
 			out["custom_lam_gsm"] = lgv
 		if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
 			out["custom_lam_gsm"] = lgv
+	dcode = _cstr(p255.get("design_code")).strip()
+	if dcode and (
+		frappe.db.has_column("Planning Table", "custom_design_code")
+		or frappe.db.has_column("Planning sheet Item", "custom_design_code")
+	):
+		out["custom_design_code"] = dcode
+	dc_so = _pb_design_code_from_sales_order_item(sales_order_item_name)
+	if dc_so and not out.get("custom_design_code") and (
+		frappe.db.has_column("Planning Table", "custom_design_code")
+		or frappe.db.has_column("Planning sheet Item", "custom_design_code")
+	):
+		out["custom_design_code"] = dc_so
+	da_so = _printing_design_attachment_from_sales_order_item(sales_order_item_name)
+	if da_so and (
+		frappe.db.has_column("Planning Table", "custom_design_attachment")
+		or frappe.db.has_column("Planning sheet Item", "custom_design_attachment")
+	):
+		out["custom_design_attachment"] = da_so
+	col_so = _pb_design_colour_from_sales_order_item(sales_order_item_name)
+	if col_so and (
+		frappe.db.has_column("Planning Table", "custom_design_colour")
+		or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
+	):
+		out["custom_design_colour"] = col_so
 	return out
 
 
@@ -3518,7 +3698,9 @@ def _sync_bom_child_rows_from_planning_rows(
 			prow_wrapped = frappe._dict(prow) if prow else None
 			specs_ex = _fabric_row_specs_from_fabric_item(child_ic, so_it, prow_wrapped)
 			trace_refresh = _parent_child_trace_id_from_item_code(child_ic)
-			if not trace_refresh:
+			if parent_proc in ("253", "255") and child_proc_ex in ("104", "107"):
+				trace_refresh = _parent_child_trace_id_from_item_code(parent_ic)
+			elif not trace_refresh:
 				trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
 					getattr(so_it, "item_code", None) or parent_ic
 				)
@@ -3537,9 +3719,14 @@ def _sync_bom_child_rows_from_planning_rows(
 				if lam_gsm_ex > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
 					updates["custom_lam_gsm"] = lam_gsm_ex
 			if child_proc_ex == "107" and frappe.db.has_column("Planning Table", "gsm"):
-				gv7 = cint(specs_ex.get("gsm") or 0)
-				if gv7 > 0:
-					updates["gsm"] = gv7
+				p107gx = _parse_107_item_code(child_ic) or {}
+				csumx = _combined_bopp_line_gsm(p107gx)
+				if csumx > 0:
+					updates["gsm"] = csumx
+				else:
+					gv7 = cint(specs_ex.get("gsm") or 0)
+					if gv7 > 0:
+						updates["gsm"] = gv7
 			if child_proc_ex == "107":
 				p107ex = _parse_107_item_code(child_ic) or {}
 				for k, v in _planning_row_dict_107_lamination_extras(child_ic, p107ex, so_item_key).items():
@@ -3557,7 +3744,9 @@ def _sync_bom_child_rows_from_planning_rows(
 		item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
 		trace_id = _parent_child_trace_id_from_item_code(child_ic)
-		if not trace_id:
+		if parent_proc in ("253", "255") and child_proc in ("104", "107"):
+			trace_id = _parent_child_trace_id_from_item_code(parent_ic)
+		elif not trace_id:
 			trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
 				getattr(so_it, "item_code", None) or parent_ic
 			)
@@ -3606,7 +3795,10 @@ def _sync_bom_child_rows_from_planning_rows(
 				row["custom_lam_gsm"] = lam_gsm
 		elif child_proc == "107":
 			p107b = _parse_107_item_code(child_ic) or {}
-			if cint(p107b.get("fabric_gsm") or 0) > 0:
+			csumn = _combined_bopp_line_gsm(p107b)
+			if csumn > 0:
+				row["gsm"] = csumn
+			elif cint(p107b.get("fabric_gsm") or 0) > 0:
 				row["gsm"] = cint(p107b.get("fabric_gsm") or 0)
 			if flt(p107b.get("width_inch") or 0) > 0:
 				row["width_inch"] = flt(p107b.get("width_inch") or 0)
@@ -4109,9 +4301,15 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 		series_ids = []
 		parsed = {}
 		for rr in pt_rows:
-			if _item_process_prefix(rr.get("item_code")) not in ("251", "252"):
+			ic_rr = rr.get("item_code")
+			pp_rr = _item_process_prefix(ic_rr)
+			p = {}
+			if pp_rr in ("251", "252"):
+				p = _parse_sheet_cutting_item_code(ic_rr) or {}
+			elif pp_rr == "253":
+				p = _parse_253_item_code(ic_rr) or {}
+			else:
 				continue
-			p = _parse_sheet_cutting_item_code(rr.get("item_code"))
 			parsed[rr.get("name")] = p
 			sid = _cstr(p.get("series_id"))
 			if sid:
@@ -5810,6 +6008,9 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "item_code": ic,
             "so_item": r.get("so_item"),
             "sales_order_item": r.get("sales_order_item"),
+            "custom_parent_child_trace_id": _cstr(
+                r.get("custom_parent_child_trace_id") or r.get("parentChildTraceId") or ""
+            ).strip(),
         })
         width_inch = flt(r.get("width_inch") or r.get("width") or 0)
         width_mm = p105.get("width_mm") or p106.get("width_mm")
@@ -5859,6 +6060,9 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "transfer_details": metrics.get("transfer_details"),
             "can_create_spr": metrics.get("can_create_spr", False),
             "linked_work_orders": metrics.get("linked_work_orders") or [],
+            "custom_parent_child_trace_id": _cstr(
+                r.get("custom_parent_child_trace_id") or r.get("parentChildTraceId") or ""
+            ).strip(),
         })
     return out
 
@@ -5936,6 +6140,12 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
         so_item_expr = "pt.so_item as so_item" if has_so_item else "'' as so_item"
         has_cps = frappe.db.has_column("Planning Table", "custom_printing_shift")
         cps_expr = "pt.custom_printing_shift as custom_printing_shift" if has_cps else "'' as custom_printing_shift"
+        has_pt_trace = frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
+        trace_expr = (
+            "pt.custom_parent_child_trace_id as custom_parent_child_trace_id"
+            if has_pt_trace
+            else "'' as custom_parent_child_trace_id"
+        )
         pp_fields = _psi_production_plan_fields()
         pp_expr = f"pt.{pp_fields[0]} as pp_id" if pp_fields else "'' as pp_id"
         printing_candidate_parts = [
@@ -5981,6 +6191,7 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
             f"{seq_expr}, "
             f"{spr_expr}, "
             f"{pp_expr}, "
+            f"{trace_expr}, "
             "ps.name as plan_name, ps.party_code as planning_order_code, "
             f"ps.customer as customer, {eff_date} as planned_date "
             "FROM `tabPlanning Table` pt JOIN `tabPlanning sheet` ps ON ps.name = pt.parent "
@@ -6118,6 +6329,7 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
                 "transfer_details": metrics.get("transfer_details"),
                 "can_create_spr": metrics.get("can_create_spr", False),
                 "linked_work_orders": metrics.get("linked_work_orders") or [],
+                "custom_parent_child_trace_id": _cstr(r.get("custom_parent_child_trace_id") or "").strip(),
             })
         try:
             board_rows = _printing_order_table_rows_from_board_source(
@@ -8054,7 +8266,10 @@ def _populate_planning_sheet_items(ps, doc):
             parsed107_early = _parse_107_item_code(item_code_str) or {}
             if parsed107_early.get("quality_name"):
                 qual = str(parsed107_early.get("quality_name") or "").strip()
-            if cint(parsed107_early.get("fabric_gsm") or 0) > 0:
+            comb107 = _combined_bopp_line_gsm(parsed107_early)
+            if comb107 > 0:
+                gsm = comb107
+            elif cint(parsed107_early.get("fabric_gsm") or 0) > 0:
                 gsm = cint(parsed107_early.get("fabric_gsm") or 0)
             if parsed107_early.get("colour_code"):
                 try:
@@ -8073,7 +8288,10 @@ def _populate_planning_sheet_items(ps, doc):
             parsed255_early = _parse_255_item_code(item_code_str) or {}
             if parsed255_early.get("quality_name"):
                 qual = str(parsed255_early.get("quality_name") or "").strip()
-            if cint(parsed255_early.get("fabric_gsm") or 0) > 0:
+            comb255 = _combined_bopp_line_gsm(parsed255_early)
+            if comb255 > 0:
+                gsm = comb255
+            elif cint(parsed255_early.get("fabric_gsm") or 0) > 0:
                 gsm = cint(parsed255_early.get("fabric_gsm") or 0)
             if parsed255_early.get("colour_code"):
                 try:
@@ -8321,6 +8539,37 @@ def _populate_planning_sheet_items(ps, doc):
             dc253 = (p253row.get("design_code") or "").strip().upper()
             if dc253 and frappe.db.has_column("Planning Table", "custom_design_code"):
                 psi_data["custom_design_code"] = dc253
+            dc253_so = _pb_design_code_from_sales_order_item(it.name)
+            if dc253_so and frappe.db.has_column("Planning Table", "custom_design_code") and not psi_data.get("custom_design_code"):
+                psi_data["custom_design_code"] = dc253_so
+            _dn253 = _pb_design_name_from_sales_order_item(it.name)
+            if _dn253:
+                if frappe.db.has_column("Planning Table", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn253
+                if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
+                    psi_data["custom_design_name"] = _dn253
+            _da253 = _printing_design_attachment_from_sales_order_item(it.name)
+            if _da253:
+                if frappe.db.has_column("Planning Table", "custom_design_attachment"):
+                    psi_data["custom_design_attachment"] = _da253
+                if frappe.db.has_column("Planning sheet Item", "custom_design_attachment"):
+                    psi_data["custom_design_attachment"] = _da253
+            _col253 = _pb_design_colour_from_sales_order_item(it.name)
+            if _col253:
+                if frappe.db.has_column("Planning Table", "custom_design_colour"):
+                    psi_data["custom_design_colour"] = _col253
+                if frappe.db.has_column("Planning sheet Item", "custom_design_colour"):
+                    psi_data["custom_design_colour"] = _col253
+            sid253 = _cstr(p253row.get("series_id")).strip()
+            if sid253:
+                szm253 = _sheet_cutting_series_size_map([sid253])
+                info253 = szm253.get(sid253) or {}
+                sz253 = _cstr(info253.get("sheet_size") or "")
+                w253 = flt(info253.get("width_inch") or 0)
+                if sz253 and frappe.db.has_column("Planning Table", "sheet_size"):
+                    psi_data["sheet_size"] = sz253
+                if w253 > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
+                    psi_data["width_inch"] = w253
             if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
                 psi_data["custom_bopp_gsm"] = 0
             if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
