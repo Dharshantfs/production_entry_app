@@ -706,9 +706,16 @@ function sortRowsBySavedSequence(rows) {
       const sorted = groups[dateKey].slice().sort((a, b) => {
         const aKey = String(a.itemName || "").trim();
         const bKey = String(b.itemName || "").trim();
-        const ai = map[aKey] !== undefined ? map[aKey] : 999999;
-        const bi = map[bKey] !== undefined ? map[bKey] : 999999;
-        if (ai !== bi) return ai - bi;
+        const ai = map[aKey] !== undefined ? map[aKey] : null;
+        const bi = map[bKey] !== undefined ? map[bKey] : null;
+        if (ai !== null && bi !== null && ai !== bi) return ai - bi;
+        if (ai !== null && bi === null) return -1;
+        if (ai === null && bi !== null) return 1;
+        if (isPrinting105Table.value) {
+          const as = Number(a.custom_printing_arrangement_seq || 0) || 999999;
+          const bs = Number(b.custom_printing_arrangement_seq || 0) || 999999;
+          if (as !== bs) return as - bs;
+        }
         return Number(a.idx || 0) - Number(b.idx || 0);
       });
       out.push(...sorted);
@@ -834,7 +841,7 @@ function maintenanceTypeForDate(dateValue, unitValue = "") {
 function scheduleRowsByShift(shift) {
   const dateKey = toDateKey(moveTargetDate.value);
   if (!dateKey) return [];
-  return (rawData.value || []).filter((r) => {
+  const rows = (rawData.value || []).filter((r) => {
     const rk = toDateKey(r.plannedDate || r.planned_date);
     const sh = String(r.shift_label || "DAY").toUpperCase();
     const pc = (filterPartyCode.value || "").trim().toLowerCase();
@@ -845,9 +852,43 @@ function scheduleRowsByShift(shift) {
     if (cu && !String(r.customer_name || r.customer || "").toLowerCase().includes(cu)) return false;
     return true;
   });
+  return isPrinting105Table.value ? sortRowsBySavedSequence(rows) : rows;
+}
+
+function seedPrintingArrangementStoreFromRows() {
+  const pending = pendingArrangementUpdates.value || {};
+  const nextStore = { ...laminationSequenceStore.value };
+  const byDate = {};
+  (rawData.value || []).forEach((r) => {
+    if (isPrintingQueueUnit(r)) return;
+    if (filterUnit.value && normalizeUnitValue(r.unit) !== filterUnit.value) return;
+    const dk = getRowDateKey(r);
+    if (!dk) return;
+    if (!byDate[dk]) byDate[dk] = [];
+    byDate[dk].push(r);
+  });
+  Object.keys(byDate).forEach((dk) => {
+    const pend = pending[dk];
+    if (arrangementDirty.value && Array.isArray(pend) && pend.length) {
+      nextStore[dk] = pend.map((x) => String(x || "").trim()).filter(Boolean);
+      return;
+    }
+    byDate[dk].sort((a, b) => {
+      const as = Number(a.custom_printing_arrangement_seq || 0) || 999999;
+      const bs = Number(b.custom_printing_arrangement_seq || 0) || 999999;
+      if (as !== bs) return as - bs;
+      return Number(a.idx || 0) - Number(b.idx || 0);
+    });
+    nextStore[dk] = byDate[dk].map((r) => String(r.itemName || "").trim()).filter(Boolean);
+  });
+  laminationSequenceStore.value = nextStore;
 }
 
 async function fetchLaminationSequences() {
+  if (isPrinting105Table.value) {
+    seedPrintingArrangementStoreFromRows();
+    return;
+  }
   try {
     const { start_date, end_date } = getScopeDateRange();
     const res = await frappe.call({
@@ -1729,6 +1770,7 @@ async function fetchData() {
           transferred_qty: d.transferred_qty || 0,
           linked_work_orders: d.linked_work_orders || [],
           salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
+          idx: d.idx != null ? Number(d.idx) : 0,
         };
       }
       return {
@@ -1744,7 +1786,12 @@ async function fetchData() {
     await fetchMaintenanceRecords();
   } catch (e) {
     console.error(e);
-    frappe.msgprint(`Error loading lamination order table: ${getErrorText(e)}`);
+    const tableLabel = isPrinting105Table.value
+      ? "printing order table"
+      : isPrintedBoppTable.value
+      ? "printed BOPP film table"
+      : "lamination order table";
+    frappe.msgprint(`Error loading ${tableLabel}: ${getErrorText(e)}`);
   } finally {
     fetchInProgress = false;
     if (fetchQueued) {

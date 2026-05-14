@@ -6184,6 +6184,7 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
                 eff_date = "ps.ordered_date"
         q = (
             "SELECT pt.name as psi_name, pt.parent as planning_sheet, pt.item_code, pt.qty, pt.meter, pt.color, "
+            "pt.idx as idx, "
             f"{quality_expr}, {cq_expr}, {gsm_expr}, {wi_expr}, {mpr_expr}, {nor_expr}, "
             f"{cdc_expr}, {cdn_expr}, {cda_expr}, {cps_expr}, "
             f"{soi_expr}, {so_item_expr}, "
@@ -6319,6 +6320,7 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
                 "custom_design_attachment": design_attachment,
                 "custom_printing_shift": r.get("custom_printing_shift"),
                 "custom_printing_arrangement_seq": r.get("custom_printing_arrangement_seq"),
+                "idx": r.get("idx"),
                 "spr_name": spr_latest,
                 "operator_code": operator_code,
                 "operator_name": operator_name,
@@ -7489,11 +7491,15 @@ def assign_sheet_cutting_shift(shift_date=None, shift_label="DAY", item_name=Non
 
 
 def _printed_bopp_film_pt_filter_sql():
-    """SQL fragment: PB-*, PRINTED BOPP… long codes, or rows on the VR BOPP printing unit (parameterized)."""
+    """SQL fragment: PB-*, PRINTED BOPP… long codes, or rows on the VR BOPP printing unit (parameterized).
+
+	Literal ``%`` in LIKE patterns must be ``%%`` — this string is interpolated into queries executed with
+	parameter tuples; a single ``%`` before ``'`` makes MySQLdb treat ``%'`` as invalid printf-style input.
+	"""
     return (
         "(TRIM(IFNULL(pt.unit, '')) = %s "
         " OR UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE %s"
-        " OR UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE 'PRINTED BOPP%')"
+        " OR UPPER(TRIM(IFNULL(pt.item_code, ''))) LIKE 'PRINTED BOPP%%')"
     )
 
 
@@ -7643,7 +7649,7 @@ def save_printing_arrangement(date=None, sequence_data=None):
 		if not frappe.db.exists("Planning Table", nm):
 			continue
 		ic = str(frappe.db.get_value("Planning Table", nm, "item_code") or "")
-		if "-105" not in ic.upper():
+		if not _is_printing_parent_process(ic):
 			continue
 		frappe.db.set_value("Planning Table", nm, "custom_printing_arrangement_seq", i, update_modified=False)
 		updated += 1
@@ -7684,7 +7690,12 @@ def restore_printing_arrangement(date=None):
 		f"""
 		UPDATE `tabPlanning Table`
 		SET custom_printing_arrangement_seq = 0
-		WHERE UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-105%%'
+		WHERE (
+			UPPER(TRIM(IFNULL(item_code,''))) LIKE '105%%'
+			OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-105%%'
+			OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '106%%'
+			OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-106%%'
+		)
 		  AND DATE({pt_date_col}) = DATE(%s)
 		""",
 		(dt,),
@@ -7696,7 +7707,12 @@ def restore_printing_arrangement(date=None):
 				f"""
 				UPDATE `tabPlanning sheet Item`
 				SET custom_printing_arrangement_seq = 0
-				WHERE UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-105%%'
+				WHERE (
+					UPPER(TRIM(IFNULL(item_code,''))) LIKE '105%%'
+					OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-105%%'
+					OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '106%%'
+					OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-106%%'
+				)
 				  AND DATE({pt_date_col}) = DATE(%s)
 				""",
 				(dt,),
