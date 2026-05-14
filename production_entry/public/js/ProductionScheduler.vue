@@ -4,7 +4,7 @@
     <!-- Filter Bar -->
     <div class="cc-filters">
       <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard || isPrintingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
-        {{ isRewindingBoard ? "Rewinding Board" : isPrintingBoard ? "Printing Order Board" : isSlittingBoard ? "Slitting Board" : isPrintingBoard ? "Printing Order Board" : isSheetCuttingBoard ? "Sheet Cutting Board" : isPrintedBoppFilmBoard ? "Printed BOPP Film Board" : "Lamination Board" }} — {{ isRewindingBoard ? REWINDING_BOARD_SUBTITLE : isPrintingBoard ? PRINTING_BOARD_SUBTITLE : isSlittingBoard ? SLITTING_UNIT : isSheetCuttingBoard ? SHEET_CUTTING_UNIT : isPrintedBoppFilmBoard ? PRINTED_BOPP_FILM_UNIT : LAMINATION_UNIT }}
+        {{ boardBannerText }}
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
@@ -60,7 +60,7 @@
           <option value="Finalized">Finalized</option>
         </select>
       </div>
-      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard" class="cc-filter-item cc-shift-filter">
+      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard || isLaminationBoard" class="cc-filter-item cc-shift-filter">
         <label>Process</label>
         <div class="cc-shift-btns">
           <button v-for="opt in boardProcessOptions" :key="opt.value" type="button" :class="{ active: boardProcessFilter === opt.value }" @click="setBoardProcessFilter(opt.value)">{{ opt.label }}</button>
@@ -339,7 +339,7 @@ const PRINTING_UNIT_4_COLOUR = "JVE - PRINTING MACHINE 4 COLOUR 1600MM";
 const PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM";
 const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
 const PRINTING_BOARD_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT, PRINTING_UNASSIGNED_UNIT];
-const PRINTING_BOARD_SUBTITLE = "Planned orders (Process 105)";
+const PRINTING_BOARD_SUBTITLE = "105 · 106 · printing units";
 
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
@@ -430,6 +430,20 @@ function itemProcessPrefix(itemCode) {
   if (hyphenMatch) return hyphenMatch[1];
   const directMatch = ic.match(/^(\d{3})/);
   return directMatch ? directMatch[1] : "";
+}
+
+function pullOrdersEscapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Pull dialog: show stored unit / machine name as returned by API (full string for operators). */
+function pullOrdersUnitLabel(row) {
+  const raw = String(row?.unit ?? "").trim();
+  if (!raw) return "—";
+  return pullOrdersEscapeHtml(raw);
 }
 
 const filterOrderDate = ref(frappe.datetime.get_today());
@@ -523,9 +537,49 @@ const rawData = ref([]);
 const boardProcessOptions = computed(() => {
   if (isPrintingBoard.value) return [{ value: "105", label: "105" }, { value: "106", label: "106" }, { value: "__all__", label: "All" }];
   if (isSlittingBoard.value) return [{ value: "103", label: "103" }, { value: "109", label: "109" }, { value: "__all__", label: "All" }];
-  if (isSheetCuttingBoard.value) return [{ value: "251", label: "251" }, { value: "252", label: "252" }, { value: "__all__", label: "All" }];
+  if (isSheetCuttingBoard.value) {
+    return [
+      { value: "251", label: "251" },
+      { value: "252", label: "252" },
+      { value: "253", label: "253" },
+      { value: "255", label: "255" },
+      { value: "__all__", label: "All" },
+    ];
+  }
+  if (isLaminationBoard.value) {
+    return [
+      { value: "104", label: "104 Plain" },
+      { value: "107", label: "107 BOPP" },
+      { value: "__all__", label: "All" },
+    ];
+  }
   return [];
 });
+
+const boardBannerText = computed(() => {
+  const fu = (filterUnit.value || "").trim();
+  const unitScope = fu ? ` — Unit: ${fu}` : " — All units";
+  if (isRewindingBoard.value) return `Rewinding Board — ${REWINDING_BOARD_SUBTITLE}${unitScope}`;
+  if (isPrintingBoard.value) {
+    const p = (boardProcessFilter.value || "").trim();
+    const pLbl = !p || p === "__all__" ? "105 · 106" : `Process ${p}`;
+    return `Printing Order Board — ${pLbl}${unitScope}`;
+  }
+  if (isSlittingBoard.value) return `Slitting Board — ${SLITTING_UNIT}${unitScope}`;
+  if (isSheetCuttingBoard.value) {
+    const p = (boardProcessFilter.value || "").trim();
+    const pLbl = !p || p === "__all__" ? "251 · 252 · 253 · 255" : `Process ${p}`;
+    return `Sheet Cutting Board — ${SHEET_CUTTING_UNIT} — ${pLbl}${unitScope}`;
+  }
+  if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
+  if (isLaminationBoard.value) {
+    const p = (boardProcessFilter.value || "").trim();
+    const pLbl = p === "107" ? "107 BOPP" : p === "104" ? "104 Plain" : "104 · 107";
+    return `Lamination Board — ${LAMINATION_UNIT} — ${pLbl}${unitScope}`;
+  }
+  return `Production Board${unitScope}`;
+});
+
 function setBoardProcessFilter(value) {
   boardProcessFilter.value = value || "__all__";
   updateUrlParams();
@@ -656,6 +710,10 @@ function goToPlan() {
     if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value) {
         query.process = boardProcessFilter.value || "__all__";
     }
+    if (isLaminationBoard.value) {
+        const lp = (boardProcessFilter.value || "").trim();
+        query.lamination_process = !lp || lp === "__all__" ? "all" : lp;
+    }
     if (isRewindingBoard.value) {
         query.board = "rewinding";
         frappe.set_route("rewinding-order-table", query);
@@ -777,12 +835,13 @@ const filteredData = computed(() => {
 
   if (isSheetCuttingBoard.value) {
     data = data.map((d) => {
-      if (["251", "252"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
+      const proc = itemProcessPrefix(d.item_code || d.itemCode);
+      if (["251", "252", "253", "255"].includes(proc)) {
         return { ...d, unit: SHEET_CUTTING_UNIT };
       }
       return d;
     });
-    if (["251", "252"].includes(boardProcessFilter.value)) {
+    if (["251", "252", "253", "255"].includes(boardProcessFilter.value)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
     }
   }
@@ -1529,7 +1588,9 @@ function buildPullBoardChartArgsForSourceDate(sourceDate) {
   } else if (isLaminationBoard.value) {
     args.board_process_scope = "lamination_only";
     const lp = (boardProcessFilter.value || "").trim();
-    if (lp && lp !== "__all__") {
+    if (!lp || lp === "__all__") {
+      args.lamination_process = "all";
+    } else {
       args.lamination_process = lp;
     }
   } else if (isPrintedBoppFilmBoard.value) {
@@ -1643,7 +1704,7 @@ async function loadOrders(d) {
             } else {
                 html += `
                 <div style="max-height: 430px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff;">
-                  <div style="position: sticky; top: 0; background: #f8fafc; z-index: 10; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; display: grid; grid-template-columns: 44px 92px minmax(260px, 1fr) 110px 110px 110px 118px; gap: 10px; font-weight: 700; font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; align-items:center;">
+                  <div style="position: sticky; top: 0; background: #f8fafc; z-index: 10; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; display: grid; grid-template-columns: 44px minmax(168px, 1.4fr) minmax(260px, 1fr) 110px 110px 110px 118px; gap: 10px; font-weight: 700; font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; align-items:center;">
                         <div style="display:flex; align-items:center; justify-content:center;"><input type="checkbox" id="select-all-pull" style="cursor:pointer;" /></div>
                         <div>Unit</div>
                         <div>Order Details</div>
@@ -1667,11 +1728,11 @@ async function loadOrders(d) {
                   const rowDisabled = availableQty <= 0;
                     
                     html += `
-                  <div class="pull-item-row" style="display: grid; grid-template-columns: 44px 92px minmax(260px, 1fr) 110px 110px 110px 118px; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f1f5f9; align-items: center;">
+                  <div class="pull-item-row" style="display: grid; grid-template-columns: 44px minmax(168px, 1.4fr) minmax(260px, 1fr) 110px 110px 110px 118px; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f1f5f9; align-items: center;">
                         <div style="display:flex; align-items:center; justify-content:center;">
                       <input type="checkbox" class="pull-item-cb" data-name="${item.itemName}" style="cursor:pointer; transform: scale(1.1);" ${isChecked} ${rowDisabled ? 'disabled' : ''} />
                         </div>
-                        <div><span style="font-size: 11px; font-weight: 700; color: #64748b; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; white-space:nowrap;">${normalizeUnitName(item.unit) === 'Mixed' ? 'Unassigned' : normalizeUnitName(item.unit)}</span></div>
+                        <div><span style="font-size: 11px; font-weight: 700; color: #64748b; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; white-space:normal; word-break: break-word; line-height:1.25;">${pullOrdersUnitLabel(item)}</span></div>
                         <div style="display: flex; flex-direction: column; gap: 2px;">
                             <span style="font-size: 13px; font-weight: 600; color: #1e293b;">${item.color || 'No Color'} <span style="font-weight: 400; color: #94a3b8; font-size: 12px;">&bull; ${item.partyCode || item.customer || '-'}</span></span>
                             <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
@@ -2197,11 +2258,18 @@ async function fetchData() {
       try {
         try {
           const path = String(window.location.pathname || "").toLowerCase();
+          isLaminationBoard.value = false;
+          isSlittingBoard.value = false;
+          isRewindingBoard.value = false;
+          isSheetCuttingBoard.value = false;
+          isPrintedBoppFilmBoard.value = false;
+          isPrintingBoard.value = false;
           if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
           if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
           if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
           if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
           if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
+          if (path.includes("/desk/printing-order-board")) isPrintingBoard.value = true;
         } catch (e) {}
         if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
           filterOrderDate.value = frappe.datetime.get_today();
@@ -2251,6 +2319,12 @@ async function fetchData() {
           args.board_process_scope = "printing_only";
         } else if (isLaminationBoard.value) {
           args.board_process_scope = "lamination_only";
+          const lp = (boardProcessFilter.value || "").trim();
+          if (!lp || lp === "__all__") {
+            args.lamination_process = "all";
+          } else {
+            args.lamination_process = lp;
+          }
         } else if (isPrintedBoppFilmBoard.value) {
           args.board_process_scope = "printed_bopp_pb_only";
         } else {
@@ -2331,6 +2405,18 @@ function updateUrlParams() {
     prefs.process = boardProcessFilter.value || "__all__";
   } else {
     url.searchParams.delete('process');
+  }
+  if (isLaminationBoard.value) {
+    const lp = (boardProcessFilter.value || "").trim();
+    if (!lp || lp === "__all__") {
+      url.searchParams.set("lamination_process", "all");
+      prefs.lamination_process = "all";
+    } else {
+      url.searchParams.set("lamination_process", lp);
+      prefs.lamination_process = lp;
+    }
+  } else {
+    url.searchParams.delete("lamination_process");
   }
 
   if (viewScope.value === 'weekly' && filterWeek.value) { url.searchParams.set('week', filterWeek.value); prefs.week = filterWeek.value; }
@@ -2423,6 +2509,7 @@ onMounted(() => {
       if (isPrintingBoard.value) boardProcessFilter.value = "105";
       else if (isSlittingBoard.value) boardProcessFilter.value = "103";
       else if (isSheetCuttingBoard.value) boardProcessFilter.value = "251";
+      else if (isLaminationBoard.value) boardProcessFilter.value = "104";
     }
 
     // 1. Load CSS
@@ -2440,7 +2527,14 @@ onMounted(() => {
     const monthParam = qParams.get("month");
     const weekParam = qParams.get("week");
     const processParam = qParams.get("process");
-    if (["103", "109", "105", "106", "251", "252", "__all__"].includes(processParam)) {
+    const laminationProcessParam = qParams.get("lamination_process");
+    if (isLaminationBoard.value) {
+      if (["104", "107"].includes(laminationProcessParam)) {
+        boardProcessFilter.value = laminationProcessParam;
+      } else if (laminationProcessParam === "all" || laminationProcessParam === "__all__") {
+        boardProcessFilter.value = "__all__";
+      }
+    } else if (["103", "109", "105", "106", "251", "252", "253", "255", "__all__"].includes(processParam)) {
       boardProcessFilter.value = processParam;
     }
     

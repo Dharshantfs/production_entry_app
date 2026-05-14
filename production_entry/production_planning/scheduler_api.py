@@ -5095,6 +5095,13 @@ def get_color_chart_data(
                 for r in (pull_rows or [])
                 if _item_process_prefix((r.get("itemCode") or r.get("item_code") or "").strip()) == "100"
             ]
+        # Printing board pull: only printing parents (105/106), never fabric 100 rows.
+        if str(board_process_scope or "").strip() == "printing_only":
+            pull_rows = [
+                r
+                for r in (pull_rows or [])
+                if _item_process_prefix((r.get("itemCode") or r.get("item_code") or "").strip()) in ("105", "106")
+            ]
         return pull_rows
     try:
         rows = _get_color_chart_data_impl(
