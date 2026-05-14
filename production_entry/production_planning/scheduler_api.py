@@ -6316,10 +6316,6 @@ def get_rewinding_order_table_data(
     102-only rows for Rewinding Order Table (same enrichment as slitting table).
     """
     try:
-        _repair_rewinding_parent_rows()
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows_table")
-    try:
         rows = _get_color_chart_data_impl(
             date=date,
             start_date=start_date,

@@ -42,7 +42,7 @@
         <label>Unit</label>
         <select v-model="filterUnit" @change="fetchData">
           <option value="">All Units</option>
-          <option v-for="u in REWINDING_FILTER_UNITS" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in REWINDING_UNIT_OPTIONS" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
       <div class="cc-filter-actions">
@@ -144,7 +144,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Rewinding (102) — L3 / L4 / L5 + Unassigned</div>
+      <div class="cc-table-unit-header lot-header">{{ rewindingTableHeaderTitle }}</div>
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -156,6 +156,7 @@
             <th>CUSTOMER NAME</th>
             <th>QUALITY</th>
             <th>COLOUR</th>
+            <th style="min-width:120px;">UNIT</th>
             <th>{{ rollSizeHeader }}</th>
             <th>FABRIC READY DATE</th>
             <th>REWINDING LENGTH (MTRS)</th>
@@ -170,7 +171,7 @@
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-              <td colspan="17" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+              <td colspan="18" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                   <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -210,6 +211,7 @@
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
+            <td class="cell-center" style="font-size:11px;max-width:140px;word-break:break-word;">{{ row.unit || "-" }}</td>
             <td class="cell-center">{{ formatRollSizeCell(row) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
@@ -260,7 +262,7 @@
           </tr>
           </template>
           <tr v-if="!displayRows.length">
-              <td colspan="17" class="cell-center" style="padding:24px;color:#64748b;">No rewinding orders for this view.</td>
+              <td colspan="18" class="cell-center" style="padding:24px;color:#64748b;">No rewinding orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -304,13 +306,30 @@ const REWINDING_MAINT_UNITS = new Set([
   "JSB - L5 REWINDING MACHINE",
   "UNASSIGNED REWINDING UNIT",
 ]);
-const REWINDING_FILTER_UNITS = [
+/** All rewinding board units (including unassigned pool). */
+const REWINDING_UNIT_OPTIONS = [
   "TSNPL - L3 REWINDING MACHINE",
   "JSB - L4 REWINDING MACHINE",
   "JSB - L5 REWINDING MACHINE",
+  "UNASSIGNED REWINDING UNIT",
 ];
 const rawData = ref([]);
 const filtersReady = ref(false);
+
+function itemProcessPrefix(itemCode) {
+  const ic = String(itemCode || "").trim().toUpperCase();
+  if (!ic) return "";
+  const hyphenMatch = ic.match(/-(\d{3})/);
+  if (hyphenMatch) return hyphenMatch[1];
+  const directMatch = ic.match(/^(\d{3})/);
+  return directMatch ? directMatch[1] : "";
+}
+
+const rewindingTableHeaderTitle = computed(() => {
+  const u = (filterUnit.value || "").trim();
+  if (u) return `Rewinding (102) — ${u}`;
+  return "Rewinding (102) — L3 / L4 / L5 + Unassigned";
+});
 const maintenanceByDate = ref({});
 const maintenanceRecords = ref([]);
 const moveTargetDate = ref(frappe.datetime.get_today());
@@ -362,7 +381,7 @@ const filteredRows = computed(() => {
   if (cu) {
     d = d.filter((r) => String(r.customer_name || r.customer || "").toLowerCase().includes(cu));
   }
-  d = d.filter((r) => REWINDING_FILTER_UNITS.includes(String(r.unit || "").trim()));
+  d = d.filter((r) => REWINDING_UNIT_OPTIONS.includes(String(r.unit || "").trim()));
   if (filterUnit.value) {
     d = d.filter((r) => String(r.unit || "").trim() === filterUnit.value);
   }
@@ -612,6 +631,8 @@ function scheduleRowsByShift(shift) {
   const dateKey = toDateKey(moveTargetDate.value);
   if (!dateKey) return [];
   return (rawData.value || []).filter((r) => {
+    if (!REWINDING_UNIT_OPTIONS.includes(String(r.unit || "").trim())) return false;
+    if (itemProcessPrefix(r.itemCode || r.item_code) !== "102") return false;
     const rk = toDateKey(r.plannedDate || r.planned_date);
     const sh = String(r.shift_label || "DAY").toUpperCase();
     return rk === dateKey && sh === String(shift || "").toUpperCase();
@@ -1303,6 +1324,8 @@ function updateUrlParams() {
   if (viewScope.value === "weekly") q.set("week", filterWeek.value);
   if (viewScope.value === "monthly") q.set("month", filterMonth.value);
   q.set("scope", viewScope.value);
+  if ((filterUnit.value || "").trim()) q.set("unit", filterUnit.value.trim());
+  else q.delete("unit");
   window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
 }
 
@@ -1327,6 +1350,11 @@ watch([filterOrderDate, filterWeek, filterMonth], () => {
   fetchData();
 });
 
+watch(filterUnit, () => {
+  if (!filtersReady.value) return;
+  updateUrlParams();
+});
+
 onMounted(async () => {
   try {
     const u = localStorage.getItem(DIM_UNIT_LS_KEY);
@@ -1337,6 +1365,7 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
+  if (p.get("unit")) filterUnit.value = p.get("unit");
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);
