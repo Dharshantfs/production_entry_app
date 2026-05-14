@@ -11466,15 +11466,19 @@ def _get_color_chart_data_impl(
     # Use item-level planned_date when set, else sheet custom_planned_date
     if mode == "pull_board" and date:
         target_date = getdate(date)
-        has_item_planned = frappe.db.has_column("Planning Table", "planned_date")
-        has_sheet_planned = frappe.db.has_column("Planning sheet", "custom_planned_date")
-        # Effective date: prefer item level, then sheet level, fallback to ordered_date (for auto-whites)
-        item_date_expr = (
-            "COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date) = %s"
-            if (has_item_planned and has_sheet_planned)
-            else "COALESCE(p.custom_planned_date, p.ordered_date) = %s" if has_sheet_planned else "p.ordered_date = %s"
-        )
-        sheet_pushed = "" # No longer require sheet-level push check
+        # Match main board effective dating: item planned_date, optional item hint date,
+        # sheet custom_planned_date, then ordered_date. Use DATE() so time components do not exclude rows.
+        _dt_parts = []
+        if frappe.db.has_column("Planning Table", "planned_date"):
+            _dt_parts.append("i.planned_date")
+        if frappe.db.has_column("Planning Table", "custom_item_planned_date"):
+            _dt_parts.append("i.custom_item_planned_date")
+        if frappe.db.has_column("Planning sheet", "custom_planned_date"):
+            _dt_parts.append("p.custom_planned_date")
+        _dt_parts.append("p.ordered_date")
+        _date_coalesce = "COALESCE(" + ", ".join(_dt_parts) + ")"
+        item_date_expr = f"DATE({_date_coalesce}) = DATE(%s)"
+        sheet_pushed = ""  # No longer require sheet-level push check
 
         # Dynamically detect Sales Order Item column
         so_item_real_col = "sales_order_item"
@@ -11487,25 +11491,19 @@ def _get_color_chart_data_impl(
         else:
             so_item_col = f"i.{so_item_real_col} as salesOrderItem,"
         split_col = "i.is_split as isSplit," if frappe.db.has_column("Planning Table", "is_split") else "0 as isSplit,"
-        item_pulled_alias = (
-            "i.planned_date as item_planned_date_for_pull,"
-            if frappe.db.has_column("Planning Table", "planned_date")
-            else "NULL as item_planned_date_for_pull,"
-        )
 
         items = frappe.db.sql(f"""
             SELECT
                 i.name as itemName, i.item_code, i.item_name, i.qty, i.uom, i.unit,
                 i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name,
-                i.planned_date,
-                {item_pulled_alias}
+                i.planned_date as item_planned_date_raw,
                 {so_item_col} {split_col}
                 p.name as planningSheet, p.party_code as partyCode, p.customer,
                 COALESCE(c.customer_name, p.customer) as customer_name,
                 p.ordered_date, p.dod, p.sales_order as salesOrder,
                 COALESCE(p.custom_planned_date, '') as sheet_planned_date,
                 COALESCE(p.custom_pb_plan_name, '') as pbPlanName,
-                COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date) as planned_date
+                {_date_coalesce} as planned_date
             FROM `tabPlanning Table` i
             JOIN `tabPlanning sheet` p ON i.parent = p.name
             LEFT JOIN `tabCustomer` c ON p.customer = c.name
@@ -11534,21 +11532,6 @@ def _get_color_chart_data_impl(
         # pull_board: do NOT strip rows just because a Work Order exists (Production Board shows those cards).
         # Legacy mode=="pull" still excludes WO-backed sheets for older colour-chart flows.
 
-        # Match Production Board planned_only: non-white rows must be item-pushed (item-level planned_date).
-        if cint(planned_only) and items and bps not in (
-            "lamination_only",
-            "printing_only",
-            "slitting_only",
-            "rewinding_only",
-            "printed_bopp_pb_only",
-            "sheet_cutting_only",
-        ):
-            items = [
-                it
-                for it in items
-                if _is_white_color(it.get("color"))
-                or (it.get("item_planned_date_for_pull") not in (None, ""))
-            ]
         if items and bps == "lamination_only":
             if lam_proc == "all":
                 items = [it for it in items if _is_lamination_parent_process(it.get("item_code") or "")]
