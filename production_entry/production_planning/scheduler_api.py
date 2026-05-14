@@ -4512,11 +4512,14 @@ def _rewinding_rows_direct_from_planning_table(date=None, start_date=None, end_d
 		return []
 
 	has_pt_pd = frappe.db.has_column("Planning Table", "planned_date")
+	has_pt_hint = frappe.db.has_column("Planning Table", "custom_item_planned_date")
 	has_ps_cpd = frappe.db.has_column("Planning sheet", "custom_planned_date")
-	if has_pt_pd and has_ps_cpd:
-		eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.custom_planned_date, ps.ordered_date)"
+	if has_pt_pd and has_pt_hint and has_ps_cpd:
+		eff_date = "COALESCE(pt.planned_date, pt.custom_item_planned_date, ps.custom_planned_date, ps.ordered_date)"
+	elif has_pt_pd and has_ps_cpd:
+		eff_date = "COALESCE(pt.planned_date, ps.custom_planned_date, ps.ordered_date)"
 	elif has_pt_pd:
-		eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
+		eff_date = "COALESCE(pt.planned_date, ps.ordered_date)"
 	elif has_ps_cpd:
 		eff_date = "COALESCE(ps.custom_planned_date, ps.ordered_date)"
 	else:
@@ -5891,19 +5894,21 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
             candidate_params.extend(printing_units)
         printing_candidate_sql = " OR ".join(printing_candidate_parts)
         
-        # Use item-level planned_date if available, fallback to sheet custom_planned_date then ordered_date
+        # Use item-level planned_date, optional hint, sheet custom_planned_date, then ordered_date
         has_pt_pd = frappe.db.has_column("Planning Table", "planned_date")
+        has_pt_hint = frappe.db.has_column("Planning Table", "custom_item_planned_date")
         has_ps_cpd = frappe.db.has_column("Planning sheet", "custom_planned_date")
-        if has_pt_pd:
-            if has_ps_cpd:
-                eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.custom_planned_date, ps.ordered_date)"
-            else:
-                eff_date = "COALESCE(NULLIF(pt.planned_date, ''), ps.ordered_date)"
+        if has_pt_pd and has_pt_hint and has_ps_cpd:
+            eff_date = "COALESCE(pt.planned_date, pt.custom_item_planned_date, ps.custom_planned_date, ps.ordered_date)"
+        elif has_pt_pd and has_ps_cpd:
+            eff_date = "COALESCE(pt.planned_date, ps.custom_planned_date, ps.ordered_date)"
+        elif has_pt_pd:
+            eff_date = "COALESCE(pt.planned_date, ps.ordered_date)"
         else:
             if has_ps_cpd:
                 eff_date = "COALESCE(ps.custom_planned_date, ps.ordered_date)"
             else:
-                eff_date = "COALESCE(ps.ordered_date, ps.ordered_date)"
+                eff_date = "ps.ordered_date"
         q = (
             "SELECT pt.name as psi_name, pt.parent as planning_sheet, pt.item_code, pt.qty, pt.meter, pt.color, "
             f"{quality_expr}, {cq_expr}, {gsm_expr}, {wi_expr}, {mpr_expr}, {nor_expr}, "
@@ -12788,10 +12793,24 @@ def _get_color_chart_data_impl(
 
             # Effective item date for filtering:
             # - Sheet Cutting (251): always use planned_date if set, else ordered_date (no colour gate).
-            # - Unpushed non-white items stick to ordered_date.
-            # - Pushed items (or auto-pushed whites) stick to their planned/pushed date.
+            # - Dedicated process boards (102/103/105/…): include sheet custom_planned_date so monthly/weekly
+            #   views match what operators scheduled on that board (not only SO ordered_date).
+            # - Default Production Board: unpushed non-white items stick to ordered_date; whites may use sheet push.
             if is_sheet_cutting:
                 i_eff_pdate = item_pdate or item_hint_pdate or sheet.get("ordered_date")
+            elif bps in (
+                "lamination_only",
+                "printing_only",
+                "slitting_only",
+                "rewinding_only",
+                "printed_bopp_pb_only",
+            ):
+                i_eff_pdate = (
+                    item_pdate
+                    or item_hint_pdate
+                    or sheet.get("custom_planned_date")
+                    or sheet.get("ordered_date")
+                )
             else:
                 i_eff_pdate = item_pdate or item_hint_pdate or (sheet.get("custom_planned_date") if is_white else None) or sheet.get("ordered_date")
             
