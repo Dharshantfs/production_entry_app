@@ -3666,6 +3666,12 @@ def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
 	so = frappe.get_doc("Sales Order", ps.sales_order)
 	parent_field = _get_pt_parentfield()
 	changed = False
+	pt_cols = set(frappe.db.get_table_columns("Planning Table") or [])
+	pt_so_line_col = None
+	for _fld in ("sales_order_item", "custom_sales_order_item", "so_item"):
+		if _fld in pt_cols:
+			pt_so_line_col = _fld
+			break
 	for so_it in so.items or []:
 		rw_ic = (so_it.item_code or "").strip()
 		if _item_process_prefix(rw_ic) != "102":
@@ -3688,9 +3694,12 @@ def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
 		bom_no = res["bom_no"]
 		fabric_qty = _fabric_qty_from_bom(bom_no, fabric_ic, flt(so_it.qty))
 
+		ex_filters = {"parent": ps.name, "item_code": fabric_ic}
+		if pt_so_line_col:
+			ex_filters[pt_so_line_col] = so_it.name
 		existing = frappe.get_all(
 			"Planning Table",
-			filters={"parent": ps.name, "item_code": fabric_ic, "so_item": so_it.name},
+			filters=ex_filters,
 			pluck="name",
 			limit=1,
 		)
@@ -3712,9 +3721,12 @@ def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
 				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
 			continue
 
+		rw_filters = {"parent": ps.name, "item_code": rw_ic}
+		if pt_so_line_col:
+			rw_filters[pt_so_line_col] = so_it.name
 		rw_match = frappe.get_all(
 			"Planning Table",
-			filters={"parent": ps.name, "sales_order_item": so_it.name, "item_code": rw_ic},
+			filters=rw_filters,
 			fields=["name"],
 			limit=1,
 		)
@@ -5055,6 +5067,35 @@ def get_color_chart_data(
             _repair_rewinding_parent_rows()
         except Exception:
             frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows")
+    # Pull Orders dialog must list the same rows the board would show — reuse the normal chart pipeline
+    # instead of a separate SQL path (avoids drift with exclude_special / dates / colours).
+    if mode_lc == "pull_board" and (date or (start_date and end_date)):
+        try:
+            pull_rows = _get_color_chart_data_impl(
+                date=date,
+                start_date=start_date,
+                end_date=end_date,
+                plan_name=plan_name or "__all__",
+                mode=None,
+                planned_only=cint(planned_only),
+                board_process_scope=board_process_scope,
+                lamination_process=lamination_process,
+            )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "get_color_chart_data_pull_board")
+            pull_rows = []
+        pull_rows = pull_rows or []
+        if str(board_process_scope or "").strip() == "rewinding_only" and not pull_rows:
+            pull_rows = (
+                _rewinding_rows_direct_from_planning_table(
+                    date=date,
+                    start_date=start_date,
+                    end_date=end_date,
+                    planned_only=planned_only,
+                )
+                or []
+            )
+        return pull_rows
     try:
         rows = _get_color_chart_data_impl(
             date=date,
@@ -11467,117 +11508,6 @@ def _get_color_chart_data_impl(
             items = [it for it in items if _matches_printed_bopp_board_row(it)]
         return _deduplicate_items(items)
 
-    # PULL_BOARD MODE (Production Board only): items already ON the board for this date
-    # Use item-level planned_date when set, else sheet custom_planned_date
-    if mode == "pull_board" and date:
-        target_date = getdate(date)
-        # Match main board effective dating: item planned_date, optional item hint date,
-        # sheet custom_planned_date, then ordered_date. Use DATE() so time components do not exclude rows.
-        _dt_parts = []
-        if frappe.db.has_column("Planning Table", "planned_date"):
-            _dt_parts.append("i.planned_date")
-        if frappe.db.has_column("Planning Table", "custom_item_planned_date"):
-            _dt_parts.append("i.custom_item_planned_date")
-        if frappe.db.has_column("Planning sheet", "custom_planned_date"):
-            _dt_parts.append("p.custom_planned_date")
-        _dt_parts.append("p.ordered_date")
-        _date_coalesce = "COALESCE(" + ", ".join(_dt_parts) + ")"
-        item_date_expr = f"DATE({_date_coalesce}) = DATE(%s)"
-        sheet_pushed = ""  # No longer require sheet-level push check
-
-        # Dynamically detect Sales Order Item column
-        so_item_real_col = "sales_order_item"
-        columns = frappe.db.get_table_columns("Planning Table")
-        if "sales_order_item" not in columns and "custom_sales_order_item" in columns:
-            so_item_real_col = "custom_sales_order_item"
-        
-        if so_item_real_col not in columns:
-            so_item_col = "'' as salesOrderItem,"
-        else:
-            so_item_col = f"i.{so_item_real_col} as salesOrderItem,"
-        split_col = "i.is_split as isSplit," if frappe.db.has_column("Planning Table", "is_split") else "0 as isSplit,"
-
-        items = frappe.db.sql(f"""
-            SELECT
-                i.name as itemName, i.item_code, i.item_name, i.qty, i.uom, i.unit,
-                i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name,
-                i.planned_date as item_planned_date_raw,
-                {so_item_col} {split_col}
-                p.name as planningSheet, p.party_code as partyCode, p.customer,
-                COALESCE(c.customer_name, p.customer) as customer_name,
-                p.ordered_date, p.dod, p.sales_order as salesOrder,
-                COALESCE(p.custom_planned_date, '') as sheet_planned_date,
-                COALESCE(p.custom_pb_plan_name, '') as pbPlanName,
-                {_date_coalesce} as planned_date
-            FROM `tabPlanning Table` i
-            JOIN `tabPlanning sheet` p ON i.parent = p.name
-            LEFT JOIN `tabCustomer` c ON p.customer = c.name
-            WHERE {item_date_expr}
-              AND {_pull_color_sql}
-              {sheet_pushed}
-              AND p.docstatus < 2
-            ORDER BY i.unit, i.idx
-        """, (target_date,), as_dict=True)
-
-        # Visibility check:
-        # - White items: always visible if they match the date
-        # - Color items: visible if item OR sheet is planned on board
-        #   (item-level planned date, sheet-level planned date, or PB plan marker)
-        # - Sheet cutting (251): always visible regardless of colour or plan date
-        if bps != "sheet_cutting_only":
-            items = [
-                it for it in (items or [])
-                if _is_white_color(it.get("color"))
-                or it.get("planned_date")
-                or it.get("sheet_planned_date")
-                or it.get("pbPlanName")
-                or (bps == "printed_bopp_pb_only" and _matches_printed_bopp_board_row(it))
-            ]
-
-        # pull_board: do NOT strip rows just because a Work Order exists (Production Board shows those cards).
-        # Legacy mode=="pull" still excludes WO-backed sheets for older colour-chart flows.
-
-        if items and bps == "lamination_only":
-            if lam_proc == "all":
-                items = [it for it in items if _is_lamination_parent_process(it.get("item_code") or "")]
-            else:
-                items = [
-                    it
-                    for it in items
-                    if _lamination_process_from_item_code(it.get("item_code") or "") == lam_proc
-                ]
-        # Provide row-level lamination process for mixed views (e.g. All).
-        if items:
-            for it in items:
-                try:
-                    it["lamination_process"] = _lamination_process_from_item_code(it.get("item_code") or "")
-                except Exception:
-                    it["lamination_process"] = ""
-        if items and bps == "printing_only":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("105", "106")]
-        elif items and bps == "slitting_only":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("103", "109")]
-        elif items and bps == "rewinding_only":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "102"]
-        elif items and bps == "sheet_cutting_only":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") in ("251", "252", "253", "255")]
-        elif items and bps == "exclude_104":
-            items = [it for it in items if not _is_lamination_parent_process(it.get("item_code") or "")]
-        elif items and bps == "exclude_103":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") != "103"]
-        elif items and bps == "exclude_special":
-            items = [
-                it
-                for it in items
-                if _item_process_prefix(it.get("item_code") or "") not in ("103", "102", "105", "106", "109", "251", "252", "253", "255")
-                and not _is_lamination_parent_process(it.get("item_code") or "")
-            ]
-        elif items and bps == "only_100":
-            items = [it for it in items if _item_process_prefix(it.get("item_code") or "") == "100"]
-        elif items and bps == "printed_bopp_pb_only":
-            items = [it for it in items if _matches_printed_bopp_board_row(it)]
-        return _deduplicate_items(items) if items else []
-
     # Support both single date and range
     if start_date and end_date:
         query_start = getdate(start_date)
@@ -17332,6 +17262,8 @@ def auto_create_planning_sheet(doc, method=None):
     _force_sheet_cutting_unit_on_sheet(ps.name)
     _sync_rewinding_fabric_planning_rows(ps.name)
     _sync_printing_105_planning_rows(ps.name)
+    _sync_printing_fabric_planning_rows(ps.name)
+    _force_printing_unit_on_sheet(ps.name)
     _force_rewinding_unit_on_sheet(ps.name)
             
     frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
@@ -17387,6 +17319,8 @@ def regenerate_planning_sheet(so_name):
         _force_sheet_cutting_unit_on_sheet(ps.name)
         _sync_rewinding_fabric_planning_rows(ps.name)
         _sync_printing_105_planning_rows(ps.name)
+        _sync_printing_fabric_planning_rows(ps.name)
+        _force_printing_unit_on_sheet(ps.name)
         _force_rewinding_unit_on_sheet(ps.name)
         # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
         ps.reload()
@@ -17442,6 +17376,8 @@ def regenerate_planning_sheet(so_name):
     _force_sheet_cutting_unit_on_sheet(ps.name)
     _sync_rewinding_fabric_planning_rows(ps.name)
     _sync_printing_105_planning_rows(ps.name)
+    _sync_printing_fabric_planning_rows(ps.name)
+    _force_printing_unit_on_sheet(ps.name)
     _force_rewinding_unit_on_sheet(ps.name)
     # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
     ps.reload()
