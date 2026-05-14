@@ -4512,10 +4512,6 @@ def _rewinding_rows_direct_from_planning_table(date=None, start_date=None, end_d
 	"""Direct 102 fallback for rewinding board/table when sheet-level board scan misses item rows."""
 	if not REWINDING_FLOW_ENABLED:
 		return []
-	try:
-		_repair_rewinding_parent_rows()
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows_direct")
 
 	sd = _normalize_filter_date(start_date)
 	ed = _normalize_filter_date(end_date)
@@ -5062,11 +5058,8 @@ def get_color_chart_data(
         and mode_lc not in ("pull", "pull_board")
     ):
         board_process_scope = "only_100"
-    if str(board_process_scope or "").strip() == "rewinding_only":
-        try:
-            _repair_rewinding_parent_rows()
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "repair_rewinding_parent_rows")
+    # Do not run full-table _repair_rewinding_parent_rows() here — it UPDATEs every 102 row site-wide
+    # and can time out (502) on large DBs. Repair runs on sheet sync (_force_rewinding_unit_on_sheet) instead.
     # Pull Orders dialog must list the same rows the board would show — reuse the normal chart pipeline
     # instead of a separate SQL path (avoids drift with exclude_special / dates / colours).
     if mode_lc == "pull_board" and (date or (start_date and end_date)):
@@ -5095,6 +5088,13 @@ def get_color_chart_data(
                 )
                 or []
             )
+        # Main Production Board pull: only fabric (100…) rows — exclude_special still lets 107 etc. through.
+        if str(board_process_scope or "").strip() == "exclude_special":
+            pull_rows = [
+                r
+                for r in (pull_rows or [])
+                if _item_process_prefix((r.get("itemCode") or r.get("item_code") or "").strip()) == "100"
+            ]
         return pull_rows
     try:
         rows = _get_color_chart_data_impl(

@@ -799,10 +799,19 @@ const filteredData = computed(() => {
       });
   }
 
-  // For Production Board ONLY: Show pushed items.
-  // Items are considered "pushed" to the board if they have a plannedDate set.
-  // Note: White orders have plannedDate auto-set on creation.
-  data = data.filter(d => !!d.plannedDate);
+  // Production Board (exclude_special): only show rows that are actually scheduled (plannedDate).
+  // Dedicated process boards (rewinding / slitting / lamination / printing / sheet / printed BOPP)
+  // use their own date rules from the API — do NOT drop rows here or UNASSIGNED REWINDING etc. vanishes.
+  const dedicatedProcessBoard =
+    isRewindingBoard.value ||
+    isSlittingBoard.value ||
+    isLaminationBoard.value ||
+    isPrintingBoard.value ||
+    isSheetCuttingBoard.value ||
+    isPrintedBoppFilmBoard.value;
+  if (!dedicatedProcessBoard) {
+    data = data.filter((d) => !!d.plannedDate);
+  }
 
   if (filterPartyCode.value) {
     const search = filterPartyCode.value.toLowerCase();
