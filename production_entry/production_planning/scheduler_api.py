@@ -1860,17 +1860,21 @@ def _parent_child_trace_id_from_item_code(item_code):
 	- 1031052210500050 -> 103-105-221-050-0050
 	- 1041030010231475-B1 -> 104-103-001-023-1475-B1 (suffix lam / variant)
 	106 (design-first): 106-<quality>-<colour>-<gsm>-<width_mm>-<lam code>
-	107 (design-first): 107-<colour>-<stack gsm>-<lam gsm>-<width code> (stack gsm = fabric+BOPP+lam when encoded).
+	107 (design-first): 107-<quality letter>-<colour>-<stack gsm>-<width code> (stack = fabric+BOPP+lam; lam omitted when stack used).
+	255 (design-first): 255-<quality letter>-<colour>-<stack gsm>-<width code> — BOM children inherit this same string from the 255 parent row.
 	"""
 	ic = str(item_code or "").strip()
 	if _lamination_process_from_item_code(ic) == "107":
 		p = _parse_107_item_code(ic) or {}
 		cc = (p.get("colour_code") or "").strip()
+		qc = _cstr(p.get("quality_code") or "").strip().upper()
 		comb = _combined_bopp_line_gsm(p)
 		fg = cint(p.get("fabric_gsm") or 0)
 		lg = cint(p.get("lam_gsm") or 0)
 		wc = (p.get("width_code") or "").strip()
 		segs = ["107"]
+		if qc:
+			segs.append(qc)
 		if cc:
 			segs.append(cc)
 		if comb > 0:
@@ -1887,11 +1891,14 @@ def _parent_child_trace_id_from_item_code(item_code):
 	if _lamination_process_from_item_code(ic) == "255" or _item_process_prefix(ic) == "255":
 		p = _parse_255_item_code(ic) or {}
 		cc = (p.get("colour_code") or "").strip()
+		qc = _cstr(p.get("quality_code") or "").strip().upper()
 		comb = _combined_bopp_line_gsm(p)
 		fg = cint(p.get("fabric_gsm") or 0)
 		lg = cint(p.get("lam_gsm") or 0)
 		wc = (p.get("width_code") or "").strip()
 		segs = ["255"]
+		if qc:
+			segs.append(qc)
 		if cc:
 			segs.append(cc)
 		if comb > 0:
@@ -3877,7 +3884,8 @@ def _sync_bom_child_rows_from_planning_rows(
 			elif cint(p107b.get("fabric_gsm") or 0) > 0:
 				row["gsm"] = cint(p107b.get("fabric_gsm") or 0)
 			if flt(p107b.get("width_inch") or 0) > 0:
-				row["width_inch"] = float(int(round(flt(p107b.get("width_inch") or 0))))
+				wb = round(flt(p107b.get("width_inch") or 0), 1)
+				row["width_inch"] = float(int(wb)) if abs(wb - round(wb)) < 1e-9 else wb
 			for k, v in _planning_row_dict_107_lamination_extras(child_ic, p107b, so_item_key).items():
 				if not (k.startswith("custom_") and v is not None and str(v).strip() != ""):
 					continue
@@ -4460,7 +4468,7 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 						w = 0
 			if w <= 0 and not sz:
 				continue
-			w_write = float(int(round(w))) if w > 0 else 0.0
+			w_write = round(flt(w), 1) if w > 0 else 0.0
 			if frappe.db.has_column("Planning Table", "width_inch"):
 				if w_write > 0 and not _is_printed_bopp_item_code(str(ic_rr or "")):
 					frappe.db.set_value("Planning Table", rr.get("name"), "width_inch", w_write, update_modified=False)
@@ -5086,6 +5094,25 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				""",
 				(trace_id, p.get("parent"), so_item),
 			)
+			p_ic = str(p.get("item_code") or "").strip()
+			pp_root = _item_process_prefix(p_ic)
+			is255root = pp_root == "255" or _lamination_process_from_item_code(p_ic) == "255"
+			if pp_root == "253" or is255root:
+				frappe.db.sql(
+					f"""
+					UPDATE `tabPlanning Table`
+					SET custom_parent_child_trace_id = %s
+					WHERE parent = %s
+					  AND (
+					    UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-104%%'
+					    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-107%%'
+					    OR TRIM(IFNULL(item_code,'')) REGEXP '^104'
+					    OR TRIM(IFNULL(item_code,'')) REGEXP '^107'
+					  )
+					  AND {child_match_expr} = %s
+					""",
+					(trace_id, p.get("parent"), so_item),
+				)
 	if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
 		has_psi_sales_order_item = frappe.db.has_column("Planning sheet Item", "sales_order_item")
 		has_psi_so_item = frappe.db.has_column("Planning sheet Item", "so_item")
@@ -8290,6 +8317,16 @@ def _parse_gsm_width_from_item_text(raw_text):
 	"""Parse GSM and width (inch) from item code + item name (same token rules as SO line populate)."""
 	if not raw_text:
 		return 0, 0.0
+	rt = str(raw_text)
+	width_pref = 0.0
+	# Prefer explicit inch width in item name: "W - 16.5" / "W-16.9"
+	mw = re.search(r"W\s*-\s*(\d+(?:\.\d+)?)", rt, re.IGNORECASE)
+	if mw:
+		width_pref = flt(mw.group(1))
+	# Millimetres in parentheses, e.g. "( 420 MM )" → inches rounded to 0.1"
+	mm = re.search(r"\(\s*(\d+)\s*MM\s*\)", rt, re.IGNORECASE)
+	if width_pref <= 0 and mm:
+		width_pref = round(flt(mm.group(1)) / 25.4, 1)
 	clean_txt = raw_text.upper().replace("-", " ").replace("_", " ").replace("(", " ").replace(")", " ")
 	clean_txt = clean_txt.replace("''", " INCH ").replace('"', " INCH ")
 	words = clean_txt.split()
@@ -8315,6 +8352,10 @@ def _parse_gsm_width_from_item_text(raw_text):
 		elif w.endswith("INCH") and len(w) > 4 and w[:-4].replace(".", "", 1).isdigit():
 			width = float(w[:-4])
 			break
+	if width_pref > 0:
+		width = width_pref
+	elif width > 0:
+		width = round(flt(width), 1)
 	return gsm, width
 
 
@@ -8346,7 +8387,10 @@ def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 					break
 			except Exception:
 				pass
+	# Prefer width parsed from item name / code; Item master width often rounded wrong (e.g. 17 vs 16.9).
 	for col in ("custom_width_inch", "width_inch", "custom_width"):
+		if flt(width) > 0:
+			break
 		if frappe.db.has_column("Item", col):
 			try:
 				v = frappe.db.get_value("Item", fabric_ic, col)
@@ -8472,7 +8516,8 @@ def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 	if _is_printed_bopp_item_code(str(fabric_ic or "")):
 		width = 0.0
 	elif flt(width) > 0:
-		width = float(int(round(flt(width))))
+		rw = round(flt(width), 1)
+		width = float(int(rw)) if abs(rw - round(rw)) < 1e-9 else rw
 
 	return {
 		"gsm": cint(gsm) if gsm else 0,
@@ -8539,31 +8584,7 @@ def _populate_planning_sheet_items(ps, doc):
         clean_txt = clean_txt.replace("''", " INCH ").replace('"', " INCH ")
         words = clean_txt.split()
 
-        # ... [Extraction Logic] ... (omitted for brevity, keeping existing logic)
-        # GSM extraction
-        gsm = 0
-        for i, w in enumerate(words):
-            if w == "GSM" and i > 0 and words[i-1].isdigit():
-                gsm = int(words[i-1])
-                break
-            elif w.endswith("GSM") and w[:-3].isdigit():
-                gsm = int(w[:-3])
-                break
-
-        width = 0.0
-        for i, w in enumerate(words):
-            if w == "W" and i < len(words)-1 and words[i+1].replace('.','',1).isdigit():
-                width = float(words[i+1])
-                break
-            elif w.startswith("W") and len(w) > 1 and w[1:].replace('.','',1).isdigit():
-                width = float(w[1:])
-                break
-            elif w == "INCH" and i > 0 and words[i-1].replace('.','',1).isdigit():
-                width = float(words[i-1])
-                break
-            elif w.endswith("INCH") and w[:-4].replace('.','',1).isdigit():
-                width = float(w[:-4])
-                break
+        gsm, width = _parse_gsm_width_from_item_text(raw_txt)
 
         qual = ""
         col = ""
@@ -8858,8 +8879,9 @@ def _populate_planning_sheet_items(ps, doc):
                     sz255 = _format_sheet_size_label(w255, h255, "")
                 if sz255 and frappe.db.has_column("Planning Table", "sheet_size"):
                     psi_data["sheet_size"] = _normalize_sheet_size_str(sz255)
-                if w255 > 0:
-                    psi_data["width_inch"] = float(int(round(w255)))
+                if w255 > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
+                    wr5 = round(w255, 1)
+                    psi_data["width_inch"] = float(int(wr5)) if abs(wr5 - round(wr5)) < 1e-9 else wr5
             if not (psi_data.get("sheet_size") or "").strip() and frappe.db.has_column("Planning Table", "sheet_size"):
                 sz_item = ""
                 try:
@@ -8872,7 +8894,8 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["sheet_size"] = ns
                     aw, ah = _parse_two_dim_sheet_size(ns)
                     if aw > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
-                        psi_data["width_inch"] = float(int(round(aw)))
+                        awr = round(aw, 1)
+                        psi_data["width_inch"] = float(int(awr)) if abs(awr - round(awr)) < 1e-9 else awr
             if frappe.db.has_column("Planning Table", "unit"):
                 psi_data["unit"] = SHEET_CUTTING_UNIT
         if _item_process_prefix(str(it.item_code or "")) == "253":
@@ -8910,7 +8933,8 @@ def _populate_planning_sheet_items(ps, doc):
                 if sz253 and frappe.db.has_column("Planning Table", "sheet_size"):
                     psi_data["sheet_size"] = sz253
                 if w253 > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
-                    psi_data["width_inch"] = float(int(round(w253)))
+                    wr3 = round(w253, 1)
+                    psi_data["width_inch"] = float(int(wr3)) if abs(wr3 - round(wr3)) < 1e-9 else wr3
             if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
                 psi_data["custom_bopp_gsm"] = 0
             if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
