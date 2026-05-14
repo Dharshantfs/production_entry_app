@@ -423,13 +423,39 @@ function normalizeUnitName(rawUnit) {
   return full || "Mixed";
 }
 
+/**
+ * Not board-specific “allowed rows.” Used only by `itemProcessPrefix()` to disambiguate
+ * hyphenated codes (matches `scheduler_api._ITEM_PROCESS_KNOWN_PREFIXES`). Each board still
+ * filters by its own process (e.g. rewinding → 102, printing → 105/106).
+ */
+const ITEM_PROCESS_KNOWN = new Set([
+  "100", "102", "103", "104", "105", "106", "107", "109", "251", "252", "253", "255",
+]);
+
+/** Match scheduler_api._item_process_prefix: leading segment process wins over later -100- style digit runs. */
 function itemProcessPrefix(itemCode) {
   const ic = String(itemCode || "").trim().toUpperCase();
   if (!ic) return "";
-  const hyphenMatch = ic.match(/-(\d{3})/);
-  if (hyphenMatch) return hyphenMatch[1];
-  const directMatch = ic.match(/^(\d{3})/);
-  return directMatch ? directMatch[1] : "";
+  const dash = ic.indexOf("-");
+  if (dash !== -1) {
+    const head = ic.slice(0, dash);
+    const tail = ic.slice(dash + 1);
+    if (head === "253" || head === "255") return head;
+    if (tail.startsWith("253")) return "253";
+    if (tail.startsWith("255")) return "255";
+    const headDigits = head.replace(/\D/g, "");
+    if (headDigits.length >= 3) {
+      const hp = headDigits.slice(0, 3);
+      if (ITEM_PROCESS_KNOWN.has(hp)) return hp;
+    }
+    const tailDigits = tail.replace(/\D/g, "");
+    if (tailDigits.length >= 3) {
+      const tp = tailDigits.slice(0, 3);
+      if (ITEM_PROCESS_KNOWN.has(tp)) return tp;
+    }
+  }
+  const all = ic.replace(/\D/g, "");
+  return all.length >= 3 ? all.slice(0, 3) : "";
 }
 
 function pullOrdersEscapeHtml(s) {
@@ -447,6 +473,14 @@ function pullOrdersUnitLabel(row) {
 }
 
 const filterOrderDate = ref(frappe.datetime.get_today());
+
+/** First day when the filter holds comma-separated dates (Flatpickr multi-range). */
+function firstBoardFilterDate() {
+  const raw = String(filterOrderDate.value || "").trim();
+  if (!raw) return "";
+  return raw.includes(",") ? raw.split(",")[0].trim() : raw;
+}
+
 const filterWeek = ref("");
 const filterMonth = ref("");
 const viewScope = ref("daily");
@@ -634,7 +668,7 @@ async function fetchMaintenanceRecords() {
 
 function getMaintenanceForBoardDate(unit) {
   if (viewScope.value !== 'daily') return null;
-  const date = filterOrderDate.value;
+  const date = firstBoardFilterDate();
   if (!date || !maintenanceData.value[date] || !maintenanceData.value[date][unit]) return null;
   return maintenanceData.value[date][unit][0] || null;
 }
@@ -703,7 +737,7 @@ function clearSelection() {
 
 function goToPlan() {
     let query = {};
-    if (viewScope.value === 'daily') query.date = filterOrderDate.value;
+    if (viewScope.value === 'daily') query.date = firstBoardFilterDate();
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
@@ -827,6 +861,10 @@ const filteredData = computed(() => {
         const rawU = String(d.unit || "").trim();
         let u = normalizeUnitName(d.unit);
         if (u === "Mixed" || rawU.toUpperCase() === "UNASSIGNED") {
+          u = PRINTING_UNASSIGNED_UNIT;
+        }
+        // Legacy fabric / default rows must not appear as generic "Unit 1" on the printing board.
+        if (u === "Unit 1" || rawU.toLowerCase() === "unit 1") {
           u = PRINTING_UNASSIGNED_UNIT;
         }
         return { ...d, unit: u };
@@ -1103,7 +1141,7 @@ async function initSortable() {
                 const rawCardDate = String(itemEl.dataset.date || "").trim();
                 const cardDate = rawCardDate && !["none", "null", "undefined", "nan"].includes(rawCardDate.toLowerCase())
                   ? rawCardDate
-                  : filterOrderDate.value;
+                  : firstBoardFilterDate();
 
                 // ── MULTI-SELECT DRAG: move ALL selected items if dragged card is selected ──
                 if (selectedItems.value.length > 0 && (selectedItems.value.includes(itemName) || !isSameUnit)) {
@@ -1436,7 +1474,7 @@ async function analyzePreviousFlow() {
   try {
     const prevDateArgs = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_previous_production_date",
-      args: { date: filterOrderDate.value }
+      args: { date: firstBoardFilterDate() }
     });
     const prevDate = prevDateArgs.message;
     if (prevDate) {
@@ -1519,7 +1557,7 @@ async function handleMoveOrders(items, date, unit, dialog) {
 
 // ---- PULL ORDERS FROM FUTURE ----
 function openPullOrdersDialog() {
-    const nextDay = frappe.datetime.add_days(filterOrderDate.value, 1);
+    const nextDay = frappe.datetime.add_days(firstBoardFilterDate(), 1);
     
     // Create Dialog
     const d = new frappe.ui.Dialog({
@@ -1558,7 +1596,7 @@ function openPullOrdersDialog() {
                 return;
             }
             const targetUnit = d.get_value('target_unit');
-            handleMoveOrders(selected, filterOrderDate.value, targetUnit, d);
+            handleMoveOrders(selected, firstBoardFilterDate(), targetUnit, d);
         }
     });
     
@@ -1630,7 +1668,13 @@ async function loadOrders(d) {
         });
         
         let items = r.message || [];
-        
+
+        if (isPrintingBoard.value) {
+            items = items.filter((i) =>
+                ["105", "106"].includes(itemProcessPrefix(i.itemCode || i.item_code))
+            );
+        }
+
         if (items.length === 0) {
             d.set_value('preview_html', '<p class="text-gray-500 italic p-2">No orders on this board for the selected date.</p>');
             d.calc_selected_items = [];
@@ -1879,7 +1923,7 @@ function openRescueDialog() {
                 return;
             }
             const targetUnit = d.get_value('target_unit');
-            handleMoveOrders(selected, filterOrderDate.value, targetUnit, d);
+            handleMoveOrders(selected, firstBoardFilterDate(), targetUnit, d);
         }
     });
     d.show();
@@ -2163,10 +2207,10 @@ function openMovePlanDialog() {
 
             // In monthly/weekly view, keep each item on its own date; use first available
             const targetDate = viewScope.value === 'daily'
-                ? filterOrderDate.value
+                ? firstBoardFilterDate()
                 : (currentItems.find(i => selectedItems.includes(i.itemName))?.orderDate
                    || currentItems.find(i => selectedItems.includes(i.itemName))?.date
-                   || filterOrderDate.value);
+                   || firstBoardFilterDate());
 
             try {
                 const r = await frappe.call({
@@ -2303,7 +2347,7 @@ async function fetchData() {
             args.start_date = format(ISOweekStart);
             args.end_date = format(ISOweekEnd);
         } else {
-            args.date = filterOrderDate.value;
+            args.date = firstBoardFilterDate();
         }
 
         // Production Board: fetch ALL plans but ONLY pushed items (custom_planned_date set)
@@ -2551,21 +2595,30 @@ onMounted(() => {
         viewScope.value = "daily";
         filterOrderDate.value = frappe.datetime.get_today();
     } else {
-        // For other users: respect URL parameters
-        // Fallbacks
-        if (dateParam) {
-            filterOrderDate.value = dateParam;
-        } else if (monthParam) {
-            filterMonth.value = monthParam;
-        } else if (weekParam) {
-            filterWeek.value = weekParam;
-        }
-
+        // For other users: respect URL parameters (scope first so monthly/week filters are not skipped when `date` is also present).
         const scopeParam = qParams.get("scope");
         if (scopeParam && ["daily", "weekly", "monthly"].includes(scopeParam)) {
             viewScope.value = scopeParam;
         } else {
-            viewScope.value = 'daily';
+            viewScope.value = "daily";
+        }
+
+        if (viewScope.value === "monthly") {
+            if (monthParam) {
+                filterMonth.value = monthParam;
+            } else if (dateParam) {
+                const single = String(dateParam).split(",")[0].trim();
+                const ym = single.length >= 7 ? single.substring(0, 7) : "";
+                if (/^\d{4}-\d{2}$/.test(ym)) filterMonth.value = ym;
+            }
+            if (dateParam) filterOrderDate.value = String(dateParam).split(",")[0].trim();
+        } else if (viewScope.value === "weekly") {
+            if (weekParam) filterWeek.value = weekParam;
+            if (dateParam) filterOrderDate.value = String(dateParam).split(",")[0].trim();
+        } else {
+            if (dateParam) filterOrderDate.value = String(dateParam).split(",")[0].trim();
+            else if (monthParam) filterMonth.value = monthParam;
+            else if (weekParam) filterWeek.value = weekParam;
         }
     }
 

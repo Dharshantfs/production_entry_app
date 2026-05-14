@@ -34,6 +34,8 @@ def _normalize_filter_date(value):
 	txt = _cstr(value)
 	if not txt or txt.lower() in ("none", "null", "undefined", "nan"):
 		return ""
+	if "," in txt:
+		txt = txt.split(",")[0].strip()
 	txt = re.sub(r"[\s/.]+", "-", txt)
 	m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", txt)
 	if m:
@@ -98,6 +100,12 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 	return f"(({alias}.color IS NOT NULL AND {alias}.color != '') OR {_sql_printed_bopp_row_kind(alias)})"
 
 
+# First-segment wins for codes like 105-…-100… (GSM / width digits) so we never classify as 100 instead of 105.
+_ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
+	{"100", "102", "103", "104", "105", "106", "107", "109", "251", "252", "253", "255"}
+)
+
+
 def _item_process_prefix(item_code):
 	ic = str(item_code or "").strip()
 	if not ic:
@@ -112,10 +120,17 @@ def _item_process_prefix(item_code):
 			return "253"
 		if tail.startswith("255"):
 			return "255"
+		head_digits = "".join(ch for ch in (parts[0] or "") if ch.isdigit())
+		if len(head_digits) >= 3:
+			hp = head_digits[:3]
+			if hp in _ITEM_PROCESS_KNOWN_PREFIXES:
+				return hp
 		if len(parts) == 2 and parts[1]:
 			after_digits = "".join(ch for ch in parts[1] if ch.isdigit())
 			if len(after_digits) >= 3:
-				return after_digits[:3]
+				tp = after_digits[:3]
+				if tp in _ITEM_PROCESS_KNOWN_PREFIXES:
+					return tp
 	digits = "".join(ch for ch in ic if ch.isdigit())
 	return digits[:3] if len(digits) >= 3 else ""
 
@@ -11634,8 +11649,8 @@ def _get_color_chart_data_impl(
         if len(target_dates) == 1:
             item_date_param = target_dates[0]
         else:
-            item_date_param = None  # Only handle single target date case here
-        
+            item_date_param = None
+
         if item_date_param:
             planning_sheets = frappe.db.sql(f"""
                 SELECT {fields_str}, {eff} as effective_date
@@ -11654,14 +11669,28 @@ def _get_color_chart_data_impl(
                 ORDER BY {eff} ASC, p.creation ASC
             """, tuple(params) + (item_date_param,), as_dict=True)
         else:
-            planning_sheets = frappe.db.sql(f"""
+            # Multi-day daily (comma dates): still include sheets whose items are planned on any selected day.
+            fmt_td = ",".join(["%s"] * len(target_dates))
+            planning_sheets = frappe.db.sql(
+                f"""
                 SELECT {fields_str}, {eff} as effective_date
                 FROM `tabPlanning sheet` p
                 LEFT JOIN `tabCustomer` c ON p.customer = c.name
-                WHERE {date_condition} AND p.docstatus < 2
+                WHERE (
+                    {date_condition}
+                    OR EXISTS (
+                        SELECT 1 FROM `tabPlanning Table` psi
+                        WHERE psi.parent = p.name
+                          AND DATE(psi.{pt_item_pdate_col}) IN ({fmt_td})
+                    )
+                )
+                AND p.docstatus < 2
                 {plan_condition}
                 ORDER BY {eff} ASC, p.creation ASC
-            """, tuple(params), as_dict=True)
+                """,
+                tuple(params) + tuple(target_dates),
+                as_dict=True,
+            )
     else:
         planning_sheets = frappe.db.sql(f"""
             SELECT {fields_str}, {eff} as effective_date
