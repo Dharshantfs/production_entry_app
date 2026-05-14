@@ -42,7 +42,7 @@
         <label>Unit</label>
         <select v-model="filterUnit" @change="fetchData">
           <option value="">All Units</option>
-          <option v-for="u in REWINDING_UNIT_OPTIONS" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in REWINDING_ASSIGNED_TABLE_UNITS" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
       <div class="cc-filter-actions">
@@ -300,19 +300,13 @@ const filterUnit = ref("");
 const filterShift = ref("all");
 /** Color-sequence + maintenance APIs key off the primary L3 rewinding line. */
 const REWINDING_SEQUENCE_UNIT = "TSNPL - L3 REWINDING MACHINE";
-const REWINDING_MAINT_UNITS = new Set([
+/** Real machines only — table lists assigned work; unassigned queue stays on the board until slotted. */
+const REWINDING_ASSIGNED_TABLE_UNITS = [
   "TSNPL - L3 REWINDING MACHINE",
   "JSB - L4 REWINDING MACHINE",
   "JSB - L5 REWINDING MACHINE",
-  "UNASSIGNED REWINDING UNIT",
-]);
-/** All rewinding board units (including unassigned pool). */
-const REWINDING_UNIT_OPTIONS = [
-  "TSNPL - L3 REWINDING MACHINE",
-  "JSB - L4 REWINDING MACHINE",
-  "JSB - L5 REWINDING MACHINE",
-  "UNASSIGNED REWINDING UNIT",
 ];
+const REWINDING_MAINT_UNITS = new Set([...REWINDING_ASSIGNED_TABLE_UNITS, "UNASSIGNED REWINDING UNIT"]);
 /**
  * Not “processes shown on the rewinding table.”
  * Only used by `itemProcessPrefix()` so hyphenated `item_code` values don’t pick the wrong
@@ -353,7 +347,7 @@ function itemProcessPrefix(itemCode) {
 const rewindingTableHeaderTitle = computed(() => {
   const u = (filterUnit.value || "").trim();
   if (u) return `Rewinding (102) — ${u}`;
-  return "Rewinding (102) — L3 / L4 / L5 + Unassigned";
+  return "Rewinding (102) — L3 / L4 / L5";
 });
 const maintenanceByDate = ref({});
 const maintenanceRecords = ref([]);
@@ -406,7 +400,7 @@ const filteredRows = computed(() => {
   if (cu) {
     d = d.filter((r) => String(r.customer_name || r.customer || "").toLowerCase().includes(cu));
   }
-  d = d.filter((r) => REWINDING_UNIT_OPTIONS.includes(String(r.unit || "").trim()));
+  d = d.filter((r) => REWINDING_ASSIGNED_TABLE_UNITS.includes(String(r.unit || "").trim()));
   if (filterUnit.value) {
     d = d.filter((r) => String(r.unit || "").trim() === filterUnit.value);
   }
@@ -484,12 +478,7 @@ const displayRows = computed(() => {
 });
 
 const rewindingUnitGroups = computed(() => {
-  const units = [
-    "TSNPL - L3 REWINDING MACHINE",
-    "JSB - L4 REWINDING MACHINE",
-    "JSB - L5 REWINDING MACHINE",
-    "UNASSIGNED REWINDING UNIT",
-  ];
+  const units = [...REWINDING_ASSIGNED_TABLE_UNITS];
   const rows = (filteredRows.value || []).filter((r) => !r.is_maintenance_row && !r.is_maintenance_empty);
   return units.map((u) => ({
     unit: u,
@@ -653,10 +642,13 @@ function maintenanceTypeForDate(dateValue) {
 }
 
 function scheduleRowsByShift(shift) {
-  const dateKey = toDateKey(moveTargetDate.value);
+  const dateKey =
+    viewScope.value === "daily" && filterOrderDate.value
+      ? toDateKey(filterOrderDate.value)
+      : toDateKey(moveTargetDate.value);
   if (!dateKey) return [];
   return (rawData.value || []).filter((r) => {
-    if (!REWINDING_UNIT_OPTIONS.includes(String(r.unit || "").trim())) return false;
+    if (!REWINDING_ASSIGNED_TABLE_UNITS.includes(String(r.unit || "").trim())) return false;
     if (itemProcessPrefix(r.itemCode || r.item_code) !== "102") return false;
     const rk = toDateKey(r.plannedDate || r.planned_date);
     const sh = String(r.shift_label || "DAY").toUpperCase();
@@ -1151,7 +1143,10 @@ async function handleShiftDrop(targetShift) {
   const row = dragRow.value;
   dragOverShift.value = "";
   if (!row || !row.itemName) return;
-  const dateKey = toDateKey(moveTargetDate.value);
+  const dateKey =
+    viewScope.value === "daily" && filterOrderDate.value
+      ? toDateKey(filterOrderDate.value)
+      : toDateKey(moveTargetDate.value);
   if (!dateKey) {
     frappe.msgprint("Please choose a valid shift date.");
     return;
@@ -1390,7 +1385,10 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
-  if (p.get("unit")) filterUnit.value = p.get("unit");
+  if (p.get("unit")) {
+    const uq = String(p.get("unit")).trim();
+    filterUnit.value = REWINDING_ASSIGNED_TABLE_UNITS.includes(uq) ? uq : "";
+  }
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);

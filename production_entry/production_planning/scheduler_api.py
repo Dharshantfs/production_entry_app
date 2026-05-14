@@ -724,7 +724,16 @@ def _sheet_cutting_series_size_map(series_ids):
 		if not sz and w > 0 and h > 0:
 			wv = int(w) if abs(w - int(w)) < 1e-9 else w
 			hv = int(h) if abs(h - int(h)) < 1e-9 else h
-			sz = f"{wv}*{hv}"
+			sz = f'{wv}" x {hv}"'
+		elif sz and "*" in sz and '"' not in sz:
+			parts = [p.strip() for p in str(sz).replace(" ", "").split("*") if p.strip()]
+			if len(parts) == 2:
+				try:
+					a, b = flt(parts[0]), flt(parts[1])
+					if a > 0 and b > 0:
+						sz = f'{int(a) if abs(a - int(a)) < 1e-9 else a}" x {int(b) if abs(b - int(b)) < 1e-9 else b}"'
+				except Exception:
+					pass
 		by_sid[sid] = {"width_inch": w, "height_inch": h, "sheet_size": sz}
 	out.update(by_sid)
 	return out
@@ -3698,7 +3707,7 @@ def _sync_bom_child_rows_from_planning_rows(
 			prow_wrapped = frappe._dict(prow) if prow else None
 			specs_ex = _fabric_row_specs_from_fabric_item(child_ic, so_it, prow_wrapped)
 			trace_refresh = _parent_child_trace_id_from_item_code(child_ic)
-			if parent_proc in ("253", "255") and child_proc_ex in ("104", "107"):
+			if parent_proc in ("253", "255") and child_proc_ex in ("100", "104", "107"):
 				trace_refresh = _parent_child_trace_id_from_item_code(parent_ic)
 			elif not trace_refresh:
 				trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
@@ -3708,6 +3717,12 @@ def _sync_bom_child_rows_from_planning_rows(
 				gv = cint(specs_ex.get("gsm") or 0)
 				if gv > 0:
 					updates["gsm"] = gv
+			if parent_proc in ("253", "255") and child_proc_ex in ("100", "104", "107") and frappe.db.has_column(
+				"Planning Table", "sheet_size"
+			):
+				ps_sz = _cstr(frappe.db.get_value("Planning Table", prow.get("name"), "sheet_size"))
+				if ps_sz:
+					updates["sheet_size"] = ps_sz
 			if trace_refresh and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
 				updates["custom_parent_child_trace_id"] = trace_refresh
 			if child_proc_ex == "105" and frappe.db.has_column("Planning Table", "unit"):
@@ -3745,7 +3760,7 @@ def _sync_bom_child_rows_from_planning_rows(
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
 		child_proc = _item_process_prefix(child_ic)
 		trace_id = _parent_child_trace_id_from_item_code(child_ic)
-		if parent_proc in ("253", "255") and child_proc in ("104", "107"):
+		if parent_proc in ("253", "255") and child_proc in ("100", "104", "107"):
 			trace_id = _parent_child_trace_id_from_item_code(parent_ic)
 		elif not trace_id:
 			trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
@@ -3818,6 +3833,10 @@ def _sync_bom_child_rows_from_planning_rows(
 				row["gsm"] = cint(p105.get("gsm") or 0)
 			if cint(p105.get("width_mm") or 0) > 0:
 				row["width_inch"] = round(cint(p105.get("width_mm") or 0) / 25.4)
+		if parent_proc in ("253", "255") and frappe.db.has_column("Planning Table", "sheet_size"):
+			ps_sz = _cstr(frappe.db.get_value("Planning Table", prow.get("name"), "sheet_size"))
+			if ps_sz and child_proc in ("100", "104", "107"):
+				row["sheet_size"] = ps_sz
 		_set_trace_id_if_supported(row, trace_id)
 		if frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = ""
@@ -4308,6 +4327,8 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 				p = _parse_sheet_cutting_item_code(ic_rr) or {}
 			elif pp_rr == "253":
 				p = _parse_253_item_code(ic_rr) or {}
+			elif pp_rr == "255" or _lamination_process_from_item_code(str(ic_rr or "")) == "255":
+				p = _parse_255_item_code(ic_rr) or {}
 			else:
 				continue
 			parsed[rr.get("name")] = p
@@ -4318,14 +4339,28 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 		has_psi_so = frappe.db.has_column("Planning sheet Item", "sales_order_item")
 		for rr in pt_rows:
 			p = parsed.get(rr.get("name")) or {}
+			ic_rr = rr.get("item_code")
+			pp_rr = _item_process_prefix(ic_rr)
 			sid = _cstr(p.get("series_id"))
 			info = size_map.get(sid) or {}
 			w = flt(info.get("width_inch") or 0)
 			sz = _cstr(info.get("sheet_size") or "")
+			if (w <= 0 or not sz) and pp_rr == "255":
+				w255 = flt((p or {}).get("width_inch") or 0)
+				if w255 > 0 and w <= 0:
+					w = w255
+				if not sz and w255 > 0:
+					sz_item = ""
+					try:
+						if frappe.db.has_column("Item", "custom_sheet_size"):
+							sz_item = _cstr(frappe.db.get_value("Item", str(ic_rr).strip(), "custom_sheet_size") or "")
+					except Exception:
+						sz_item = ""
+					sz = sz_item or (f'{int(round(w255))}" width' if w255 > 0 else "")
 			if w <= 0 and sz:
 				try:
 					left = _cstr(sz).replace(" ", "").split("*")[0]
-					w = flt(left or 0)
+					w = flt(left.replace('"', "") or 0)
 				except Exception:
 					w = 0
 			if w <= 0 and not sz:
@@ -4366,6 +4401,39 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 					)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_force_sheet_cutting_unit_on_sheet width sync")
+	# Propagate sheet size from 253 parent row to BOM children on the same SO line (104/100/107).
+	try:
+		if frappe.db.has_column("Planning Table", "sheet_size"):
+			pt_rows2 = frappe.get_all(
+				"Planning Table",
+				filters={"parent": planning_sheet_name},
+				fields=["name", "item_code", "sales_order_item"],
+				limit_page_length=1000,
+			) or []
+			sz_by_soi = {}
+			for rr in pt_rows2:
+				icx = str(rr.get("item_code") or "")
+				pp = _item_process_prefix(icx)
+				if pp not in ("253", "255") and _lamination_process_from_item_code(icx) != "255":
+					continue
+				soik = _cstr(rr.get("sales_order_item"))
+				if not soik:
+					continue
+				szv = _cstr(frappe.db.get_value("Planning Table", rr.get("name"), "sheet_size") or "")
+				if szv:
+					sz_by_soi[soik] = szv
+			for rr in pt_rows2:
+				pp = _item_process_prefix(rr.get("item_code"))
+				if pp not in ("100", "104", "107"):
+					continue
+				soik = _cstr(rr.get("sales_order_item"))
+				szv = sz_by_soi.get(soik) if soik else ""
+				if szv:
+					cur = _cstr(frappe.db.get_value("Planning Table", rr.get("name"), "sheet_size") or "")
+					if cur != szv:
+						frappe.db.set_value("Planning Table", rr.get("name"), "sheet_size", szv, update_modified=False)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_force_sheet_cutting_unit_on_sheet sheet_size propagate")
 	return updated
 
 
@@ -7130,7 +7198,7 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
 
 @frappe.whitelist()
 def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
-    """Assign DAY/NIGHT shift for lamination rows. If item_name is set, moves only that row (date + shift)."""
+    """Assign DAY/NIGHT shift for lamination rows. Single-row updates shift only (planned date unchanged)."""
     target_date = getdate(shift_date or frappe.utils.nowdate())
     shift_label = (shift_label or "DAY").strip().upper()
     if shift_label not in ("DAY", "NIGHT"):
@@ -7161,9 +7229,6 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
     if item_name:
         set_parts = ["pt.custom_lamination_shift = %s"]
         values = [shift_label]
-        if pt_date_col:
-            set_parts.append(f"pt.{pt_date_col} = %s")
-            values.append(target_date)
         values.append("%-107%")
         values.append(str(item_name).strip())
         frappe.db.sql(
@@ -7196,7 +7261,7 @@ def assign_lamination_shift(shift_date=None, shift_label="DAY", item_name=None):
 
 @frappe.whitelist()
 def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
-    """Assign DAY/NIGHT shift for slitting rows. If item_name is set, moves only that row (date + shift)."""
+    """Assign DAY/NIGHT shift for slitting rows. Single-row updates shift only (planned date unchanged)."""
     target_date = getdate(shift_date or frappe.utils.nowdate())
     shift_label = (shift_label or "DAY").strip().upper()
     if shift_label not in ("DAY", "NIGHT"):
@@ -7227,9 +7292,6 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
     if item_name:
         set_parts = ["pt.custom_slitting_shift = %s"]
         values = [shift_label]
-        if pt_date_col:
-            set_parts.append(f"pt.{pt_date_col} = %s")
-            values.append(target_date)
         values.append(str(item_name).strip())
         frappe.db.sql(
             f"""
@@ -7282,21 +7344,26 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, un
     if item_name and frappe.db.has_column("Planning Table", "unit"):
         row_unit = _cstr(frappe.db.get_value("Planning Table", _cstr(item_name), "unit"))
     check_unit = row_unit or unit_filter
-    if check_unit and is_date_under_maintenance(check_unit, str(target_date)):
-        info = get_maintenance_info_on_date(check_unit, str(target_date)) or {}
-        frappe.throw(
-            _("Cannot place printing orders on {0}. {1} is off ({2}) from {3} to {4}.").format(
-                target_date,
-                check_unit,
-                info.get("type") or "Maintenance",
-                info.get("start_date") or target_date,
-                info.get("end_date") or target_date,
-            )
-        )
-
     pt_date_col = "planned_date" if frappe.db.has_column("Planning Table", "planned_date") else (
         "custom_item_planned_date" if frappe.db.has_column("Planning Table", "custom_item_planned_date") else None
     )
+    maint_ref = target_date
+    if item_name and pt_date_col:
+        pv = frappe.db.get_value("Planning Table", _cstr(item_name).strip(), pt_date_col)
+        if pv:
+            maint_ref = getdate(pv)
+    if check_unit and is_date_under_maintenance(check_unit, str(maint_ref)):
+        info = get_maintenance_info_on_date(check_unit, str(maint_ref)) or {}
+        frappe.throw(
+            _("Cannot place printing orders on {0}. {1} is off ({2}) from {3} to {4}.").format(
+                maint_ref,
+                check_unit,
+                info.get("type") or "Maintenance",
+                info.get("start_date") or maint_ref,
+                info.get("end_date") or maint_ref,
+            )
+        )
+
     has_sheet_planned = frappe.db.has_column("Planning sheet", "custom_planned_date")
     eff_date = (
         f"CASE WHEN pt.{pt_date_col} IS NOT NULL THEN pt.{pt_date_col} ELSE COALESCE(ps.custom_planned_date, ps.ordered_date) END"
@@ -7319,9 +7386,6 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, un
     if item_name:
         set_parts = ["pt.custom_printing_shift = %s"]
         values = [shift_label]
-        if pt_date_col:
-            set_parts.append(f"pt.{pt_date_col} = %s")
-            values.append(target_date)
         values.extend(filt_params)
         values.append(str(item_name).strip())
         frappe.db.sql(
@@ -7362,7 +7426,7 @@ def assign_printing_shift(shift_date=None, shift_label="DAY", item_name=None, un
 
 @frappe.whitelist()
 def assign_rewinding_shift(shift_date=None, shift_label="DAY", item_name=None):
-    """Assign DAY/NIGHT shift for rewinding (102) rows. Same field as slitting (`custom_slitting_shift`)."""
+    """Assign DAY/NIGHT shift for rewinding (102) rows. Single-row updates shift only (planned date unchanged)."""
     target_date = getdate(shift_date or frappe.utils.nowdate())
     shift_label = (shift_label or "DAY").strip().upper()
     if shift_label not in ("DAY", "NIGHT"):
@@ -7393,9 +7457,6 @@ def assign_rewinding_shift(shift_date=None, shift_label="DAY", item_name=None):
     if item_name:
         set_parts = ["pt.custom_slitting_shift = %s"]
         values = [shift_label]
-        if pt_date_col:
-            set_parts.append(f"pt.{pt_date_col} = %s")
-            values.append(target_date)
         values.append(str(item_name).strip())
         frappe.db.sql(
             f"""
@@ -7403,7 +7464,10 @@ def assign_rewinding_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET {", ".join(set_parts)}
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '102%%'
+              AND (
+                UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '102%%'
+                OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-102%%'
+              )
               AND pt.name = %s
             """,
             tuple(values),
@@ -7415,7 +7479,10 @@ def assign_rewinding_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET pt.custom_slitting_shift = %s
             WHERE ps.docstatus < 2
-              AND pt.item_code LIKE '102%%'
+              AND (
+                UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '102%%'
+                OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-102%%'
+              )
               AND DATE({eff_date}) = DATE(%s)
             """,
             (shift_label, target_date),
@@ -7458,9 +7525,6 @@ def assign_sheet_cutting_shift(shift_date=None, shift_label="DAY", item_name=Non
     if item_name:
         set_parts = ["pt.custom_sheet_cutting_shift = %s"]
         values = [shift_label]
-        if pt_date_col:
-            set_parts.append(f"pt.{pt_date_col} = %s")
-            values.append(target_date)
         values.append(str(item_name).strip())
         frappe.db.sql(
             f"""
@@ -7538,9 +7602,6 @@ def assign_printed_bopp_film_shift(shift_date=None, shift_label="DAY", item_name
     if item_name:
         set_parts = ["pt.custom_lamination_shift = %s"]
         values = [shift_label]
-        if pt_date_col:
-            set_parts.append(f"pt.{pt_date_col} = %s")
-            values.append(target_date)
         values.extend([u_pb, "PB-%", str(item_name).strip()])
         frappe.db.sql(
             f"""
@@ -8174,6 +8235,27 @@ def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 					col = c107
 			except Exception:
 				pass
+		qn107 = (p107.get("quality_name") or "").strip()
+		if qn107:
+			qual = qn107
+			line_quality = qn107
+	if LAMINATION_FLOW_ENABLED and (_item_process_prefix(str(fabric_ic or "")) == "255" or _lamination_process_from_item_code(str(fabric_ic or "")) == "255"):
+		p255 = _parse_255_item_code(str(fabric_ic)) or {}
+		if cint(p255.get("fabric_gsm") or 0) > 0:
+			gsm = cint(p255.get("fabric_gsm") or 0)
+		if flt(p255.get("width_inch") or 0) > 0:
+			width = flt(p255.get("width_inch"))
+		if (p255.get("colour_code") or "").strip():
+			try:
+				c255 = _get_color_by_code(p255.get("colour_code"))
+				if c255:
+					col = c255
+			except Exception:
+				pass
+		qn255 = (p255.get("quality_name") or "").strip()
+		if qn255:
+			qual = qn255
+			line_quality = qn255
 	# Process 104 laminated FG: GSM must follow item code (Item master / name can show 10 vs 100 wrong).
 	if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(fabric_ic or "")) == "104":
 		gc = _gsm_from_lamination_item_code(str(fabric_ic))

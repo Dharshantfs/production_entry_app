@@ -58,8 +58,9 @@ const SPR_LAM_GSM_SUFFIX_MAP = {
 	B: 12,
 	B1: 13,
 	C: 15,
-	D: 30,
-	E: 20,
+	D: 20,
+	E: 30,
+	F: 13,
 };
 
 function sprRollProcessPrefix(frm) {

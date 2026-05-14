@@ -546,7 +546,10 @@ function maintenanceTypeForDate(dateValue) {
 }
 
 function scheduleRowsByShift(shift) {
-  const dateKey = toDateKey(moveTargetDate.value);
+  const dateKey =
+    viewScope.value === "daily" && filterOrderDate.value
+      ? toDateKey(filterOrderDate.value)
+      : toDateKey(moveTargetDate.value);
   if (!dateKey) return [];
   return (rawData.value || []).filter((r) => {
     const rk = toDateKey(r.plannedDate || r.planned_date);
@@ -1042,7 +1045,10 @@ async function handleShiftDrop(targetShift) {
   const row = dragRow.value;
   dragOverShift.value = "";
   if (!row || !row.itemName) return;
-  const dateKey = toDateKey(moveTargetDate.value);
+  const dateKey =
+    viewScope.value === "daily" && filterOrderDate.value
+      ? toDateKey(filterOrderDate.value)
+      : toDateKey(moveTargetDate.value);
   if (!dateKey) {
     frappe.msgprint("Please choose a valid shift date.");
     return;

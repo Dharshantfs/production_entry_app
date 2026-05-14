@@ -298,14 +298,15 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
 	return 0
 
 
-# Lamination GSM suffix map: item code ending e.g. '1041030010750890-C' ΓåÆ suffix 'C' ΓåÆ 15 gsm
+# Lamination GSM suffix map (same as scheduler_api._LAM_GSM_SUFFIX_MAP): A=10 … F=13; B1 legacy 13.
 _LAM_GSM_SUFFIX_MAP: dict[str, int] = {
 	"A": 10,
 	"B": 12,
 	"B1": 13,
 	"C": 15,
-	"D": 30,
-	"E": 20,
+	"D": 20,
+	"E": 30,
+	"F": 13,
 }
 
 
