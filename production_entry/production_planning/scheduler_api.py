@@ -3743,6 +3743,7 @@ def _sync_bom_child_rows_from_planning_rows(
 		child_qty = _fabric_qty_from_bom(bom_no, child_ic, flt(prow.get("qty") or getattr(so_it, "qty", 0)))
 		item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
+		child_proc = _item_process_prefix(child_ic)
 		trace_id = _parent_child_trace_id_from_item_code(child_ic)
 		if parent_proc in ("253", "255") and child_proc in ("104", "107"):
 			trace_id = _parent_child_trace_id_from_item_code(parent_ic)
@@ -3750,7 +3751,6 @@ def _sync_bom_child_rows_from_planning_rows(
 			trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
 				getattr(so_it, "item_code", None) or parent_ic
 			)
-		child_proc = _item_process_prefix(child_ic)
 		unit = child_unit
 		planned_date = None
 		if child_proc in ("104", "107"):
