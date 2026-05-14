@@ -429,7 +429,7 @@ function normalizeUnitName(rawUnit) {
  * filters by its own process (e.g. rewinding → 102, printing → 105/106).
  */
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "109", "251", "252", "253", "255",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109", "251", "252", "253", "254", "255",
 ]);
 
 /** Match scheduler_api._item_process_prefix: leading segment process wins over later -100- style digit runs. */
@@ -440,9 +440,11 @@ function itemProcessPrefix(itemCode) {
   if (dash !== -1) {
     const head = ic.slice(0, dash);
     const tail = ic.slice(dash + 1);
-    if (head === "253" || head === "255") return head;
+    if (head === "253" || head === "255" || head === "254") return head;
     if (tail.startsWith("253")) return "253";
     if (tail.startsWith("255")) return "255";
+    if (tail.startsWith("254")) return "254";
+    if (tail.startsWith("108")) return "108";
     const headDigits = head.replace(/\D/g, "");
     if (headDigits.length >= 3) {
       const hp = headDigits.slice(0, 3);
@@ -570,12 +572,13 @@ PRINTING_BOARD_UNITS.forEach((u) => { unitSortConfig.value[u] = { mode: 'manual'
 const rawData = ref([]);
 const boardProcessOptions = computed(() => {
   if (isPrintingBoard.value) return [{ value: "105", label: "105" }, { value: "106", label: "106" }, { value: "__all__", label: "All" }];
-  if (isSlittingBoard.value) return [{ value: "103", label: "103" }, { value: "109", label: "109" }, { value: "__all__", label: "All" }];
+  if (isSlittingBoard.value) return [{ value: "103", label: "103" }, { value: "109", label: "109" }, { value: "108", label: "108" }, { value: "__all__", label: "All" }];
   if (isSheetCuttingBoard.value) {
     return [
       { value: "251", label: "251" },
       { value: "252", label: "252" },
       { value: "253", label: "253" },
+      { value: "254", label: "254" },
       { value: "255", label: "255" },
       { value: "__all__", label: "All" },
     ];
@@ -602,7 +605,7 @@ const boardBannerText = computed(() => {
   if (isSlittingBoard.value) return `Slitting Board — ${SLITTING_UNIT}${unitScope}`;
   if (isSheetCuttingBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const pLbl = !p || p === "__all__" ? "251 · 252 · 253 · 255" : `Process ${p}`;
+    const pLbl = !p || p === "__all__" ? "251 · 252 · 253 · 254 · 255" : `Process ${p}`;
     return `Sheet Cutting Board — ${SHEET_CUTTING_UNIT} — ${pLbl}${unitScope}`;
   }
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
@@ -840,12 +843,12 @@ const filteredData = computed(() => {
   // Force them into Slitting Unit while viewing dedicated Slitting Board.
   if (isSlittingBoard.value) {
     data = data.map((d) => {
-      if (["103", "109"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
+      if (["103", "109", "108"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
         return { ...d, unit: SLITTING_UNIT };
       }
       return d;
     });
-    if (["103", "109"].includes(boardProcessFilter.value)) {
+    if (["103", "109", "108"].includes(boardProcessFilter.value)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
     }
   }
@@ -874,12 +877,12 @@ const filteredData = computed(() => {
   if (isSheetCuttingBoard.value) {
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
-      if (["251", "252", "253", "255"].includes(proc)) {
+      if (["251", "252", "253", "254", "255"].includes(proc)) {
         return { ...d, unit: SHEET_CUTTING_UNIT };
       }
       return d;
     });
-    if (["251", "252", "253", "255"].includes(boardProcessFilter.value)) {
+    if (["251", "252", "253", "254", "255"].includes(boardProcessFilter.value)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
     }
   }
@@ -1375,7 +1378,8 @@ const unitEntriesCache = computed(() => {
         return itemProcessPrefix(d.item_code || d.itemCode) === "102" && normalizeUnitName(d.unit) === unit;
       }
       if (isSlittingBoard.value && unit === SLITTING_UNIT) {
-        return itemProcessPrefix(d.item_code || d.itemCode) === "103" || (d.unit || "Mixed") === unit;
+        const sp = itemProcessPrefix(d.item_code || d.itemCode);
+        return ["103", "109", "108"].includes(sp) || (d.unit || "Mixed") === unit;
       }
       return (d.unit || "Mixed") === unit;
     });
@@ -2578,7 +2582,7 @@ onMounted(() => {
       } else if (laminationProcessParam === "all" || laminationProcessParam === "__all__") {
         boardProcessFilter.value = "__all__";
       }
-    } else if (["103", "109", "105", "106", "251", "252", "253", "255", "__all__"].includes(processParam)) {
+    } else if (["103", "109", "108", "105", "106", "251", "252", "253", "254", "255", "__all__"].includes(processParam)) {
       boardProcessFilter.value = processParam;
     }
     

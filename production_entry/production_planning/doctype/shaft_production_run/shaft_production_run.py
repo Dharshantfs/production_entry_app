@@ -27,7 +27,7 @@ from production_entry.production_planning.planning_doctypes import (
 
 
 # FG Work Order processes that require manual 100-fabric batch lines in SPR fabric picker.
-SPR_FG_FABRIC_PICK_PROCESSES = ("102", "103", "104", "105", "106", "107", "109", "251", "252")
+SPR_FG_FABRIC_PICK_PROCESSES = ("102", "103", "104", "105", "106", "107", "108", "109", "251", "252", "253", "254", "255")
 
 
 def spr_fg_item_process_code(item_code: str) -> str:
@@ -57,7 +57,7 @@ def spr_fg_item_process_code(item_code: str) -> str:
 
 
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
-	"""True when WO FG needs manual 100-fabric batch allocation for this SPR (102–109, 251, 252 incl. design-first)."""
+	"""True when WO FG needs manual 100-fabric batch allocation for this SPR (102–109 incl. 108, 251–255 incl. 254, design-first)."""
 	proc = spr_fg_item_process_code(production_item)
 	return bool(proc) and proc in SPR_FG_FABRIC_PICK_PROCESSES
 

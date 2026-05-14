@@ -247,7 +247,7 @@
    "fieldtype": "Table",
    "label": "Manual fabric batches",
    "options": "SPR Fabric Batch Pick",
-   "description": "For Work Orders on items 104, 103 (slitting), 107, 102, or 251 (sheet cutting): pick 100-process fabric batches before Submit. Use the \"Select fabric batches\" button."
+   "description": "For Work Orders on FG items in processes 102–109 (incl. 108 slitting), 104/107 lamination, 251–255 sheet cutting (incl. 254), pick 100-process fabric batches before Submit. Use the \"Select fabric batches\" button."
   },
   {
    "fieldname": "section_manufacturing",

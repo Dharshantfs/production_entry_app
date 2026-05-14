@@ -27,6 +27,7 @@
           <button type="button" :class="{ active: processFilter === '251' }" @click="setProcessFilter('251')">251</button>
           <button type="button" :class="{ active: processFilter === '252' }" @click="setProcessFilter('252')">252</button>
           <button type="button" :class="{ active: processFilter === '253' }" @click="setProcessFilter('253')">253</button>
+          <button type="button" :class="{ active: processFilter === '254' }" @click="setProcessFilter('254')">254</button>
           <button type="button" :class="{ active: processFilter === '255' }" @click="setProcessFilter('255')">255</button>
           <button type="button" :class="{ active: processFilter === '__all__' }" @click="setProcessFilter('__all__')">All</button>
         </div>
@@ -69,7 +70,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilter === "__all__" ? "251 + 252 + 253 + 255" : processFilter }})</div>
+      <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilter === "__all__" ? "251 + 252 + 253 + 254 + 255" : processFilter }})</div>
       <table class="cc-prod-table lot-table">
         <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:76px;">MTR</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
@@ -166,14 +167,14 @@ const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragO
 let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null; const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 const showProcessColumn = computed(() => processFilter.value === "__all__");
-const showDesignColumns = computed(() => ["252", "255", "__all__"].includes(processFilter.value));
-const showLamGsmColumn = computed(() => processFilter.value === "253" || processFilter.value === "__all__");
+const showDesignColumns = computed(() => ["252", "253", "254", "255", "__all__"].includes(processFilter.value));
+const showLamGsmColumn = computed(() => ["253", "254", "__all__"].includes(processFilter.value));
 const showBoppGsmColumn = computed(() => processFilter.value === "255" || processFilter.value === "__all__");
 const tableColCount = computed(
   () => 16 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)
 );
 function setProcessFilter(value) {
-  const allowed = new Set(["251", "252", "253", "255", "__all__"]);
+  const allowed = new Set(["251", "252", "253", "254", "255", "__all__"]);
   const next = allowed.has(value) ? value : "251";
   if (processFilter.value === next) return;
   processFilter.value = next;
@@ -184,6 +185,7 @@ function inferProcessFromItemCode(itemCode) {
   const ic = String(itemCode || "").trim().toUpperCase();
   if (!ic) return "";
   if (/^253-/.test(ic) || /^[A-Z0-9]+-253/.test(ic)) return "253";
+  if (/^254-/.test(ic) || /^[A-Z0-9]+-254/.test(ic) || /^254\d/.test(ic)) return "254";
   if (/-255[A-Z]/.test(ic) || /^255/.test(ic)) return "255";
   const body = ic.includes("-") ? ic.split("-").slice(1).join("-") : ic;
   const m = body.match(/(\d{3})/);
@@ -355,7 +357,7 @@ async function fetchData() { if (fetchInProgress) return; fetchInProgress = true
 function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); q.set("process", processFilter.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
 function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
-onMounted(async () => { try { const u = localStorage.getItem(DIM_UNIT_LS_KEY); if (u === "mm" || u === "inches") sizeDimUnit.value = u; } catch (_) {} const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); if (["251", "252", "253", "255", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await fetchData(); startAutoRefresh(); });
+onMounted(async () => { try { const u = localStorage.getItem(DIM_UNIT_LS_KEY); if (u === "mm" || u === "inches") sizeDimUnit.value = u; } catch (_) {} const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); if (["251", "252", "253", "254", "255", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await fetchData(); startAutoRefresh(); });
 onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 </script>
 
