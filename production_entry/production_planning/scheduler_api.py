@@ -18921,19 +18921,13 @@ def regenerate_planning_sheet(so_name):
         _sync_sheet_cutting_fabric_planning_rows(ps.name)
         _force_sheet_cutting_unit_on_sheet(ps.name)
         _sync_rewinding_fabric_planning_rows(ps.name)
-        _sync_printing_105_planning_rows(ps.name)
         _sync_printing_fabric_planning_rows(ps.name)
         _force_printing_unit_on_sheet(ps.name)
         _force_rewinding_unit_on_sheet(ps.name)
-        _sync_stage3_safe(ps.name)
         # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
         ps.reload()
         ensure_lamination_booking_for_planning_sheet(ps)
         update_sheet_plan_codes(ps, include_legacy=True)
-        try:
-            backfill_parent_child_trace_ids(ps.name)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "regenerate_planning_sheet:backfill_parent_child_trace_ids")
         ps.save(ignore_permissions=True)
         frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> re-synced (BOM children, lam rows, slitting).")
         return ps
@@ -18984,15 +18978,10 @@ def regenerate_planning_sheet(so_name):
     _sync_printing_fabric_planning_rows(ps.name)
     _force_printing_unit_on_sheet(ps.name)
     _force_rewinding_unit_on_sheet(ps.name)
-    _sync_stage3_safe(ps.name)
     # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
     ps.reload()
     ensure_lamination_booking_for_planning_sheet(ps)
     update_sheet_plan_codes(ps, include_legacy=True)
-    try:
-        backfill_parent_child_trace_ids(ps.name)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "regenerate_planning_sheet:new:backfill_parent_child_trace_ids")
     ps.save(ignore_permissions=True)
 
     frappe.msgprint(f"Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
