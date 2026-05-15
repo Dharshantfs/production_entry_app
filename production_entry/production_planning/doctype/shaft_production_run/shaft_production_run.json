@@ -34,6 +34,8 @@
   "tolerance_override_reason",
   "section_break_9",
   "shaft_jobs",
+  "section_bundle_calculation",
+  "bundle_calculation",
   "section_break_items",
   "filter_job_id",
   "items",
@@ -195,13 +197,28 @@
   {
    "fieldname": "section_break_9",
    "fieldtype": "Section Break",
-   "label": "Shaft Details (Select Job)"
+   "label": "Shaft Details (Select Job)",
+   "depends_on": "eval:!doc.custom_is_sheet_cutting"
   },
   {
    "fieldname": "shaft_jobs",
    "fieldtype": "Table",
    "label": "Available Jobs",
-   "options": "Shaft Production Run Job"
+   "options": "Shaft Production Run Job",
+   "depends_on": "eval:!doc.custom_is_sheet_cutting"
+  },
+  {
+   "fieldname": "section_bundle_calculation",
+   "fieldtype": "Section Break",
+   "label": "Bundle Calculation",
+   "depends_on": "eval:doc.custom_is_sheet_cutting"
+  },
+  {
+   "fieldname": "bundle_calculation",
+   "fieldtype": "Table",
+   "label": "Bundle Calculation",
+   "options": "Bundle Calculation",
+   "depends_on": "eval:doc.custom_is_sheet_cutting"
   },
   {
    "fieldname": "section_break_items",

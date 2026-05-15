@@ -243,9 +243,12 @@ frappe.ui.form.on('Shaft Production Run', {
 	production_plan: function (frm) {
 		if (!frm.doc.production_plan) {
 			frm.clear_table('shaft_jobs');
+			frm.clear_table('bundle_calculation');
 			frm.clear_table('items');
 			frm.refresh_field('shaft_jobs');
+			frm.refresh_field('bundle_calculation');
 			frm.refresh_field('items');
+			sprToggleSheetCuttingUi(frm);
 			return;
 		}
 
@@ -288,35 +291,16 @@ frappe.ui.form.on('Shaft Production Run', {
 					sprLog('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
 					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty || 0));
 				}
+				if (d.custom_is_sheet_cutting) {
+					frm.set_value('custom_is_sheet_cutting', 1);
+				}
+				sprToggleSheetCuttingUi(frm);
+				if (sprIsSheetCutting(frm)) {
+					sprLoadBundleCalculationFromPp(frm, d.bundle_rows);
+				} else {
+					sprLoadShaftJobsFromPp(frm);
+				}
 				// Note: custom_party_code is only in the child table, not the header, so don't set it here
-			},
-		});
-
-		frappe.call({
-			method:
-				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_job_rows_for_production_plan',
-			args: { production_plan: frm.doc.production_plan },
-			freeze: true,
-			freeze_message: __('Loading shaft jobs from Production Plan...'),
-			callback: function (r) {
-				frm.clear_table('shaft_jobs');
-				(r.message || []).forEach(function (row) {
-					let c = frm.add_child('shaft_jobs');
-					Object.keys(row).forEach(function (k) {
-						if (row[k] !== undefined && row[k] !== null) {
-							c[k] = row[k];
-						}
-					});
-				});
-				frm.refresh_field('shaft_jobs');
-				frm.clear_table('items');
-				frm.refresh_field('items');
-				fetch_and_show_pp_wo_summary(frm);
-			},
-			error: function () {
-				frm.clear_table('items');
-				frm.refresh_field('items');
-				fetch_and_show_pp_wo_summary(frm);
 			},
 		});
 	},
@@ -324,6 +308,10 @@ frappe.ui.form.on('Shaft Production Run', {
 	custom_unit: function (frm) {
 		sprApplyLaminationUnitDefaults(frm);
 		sprToggleLaminationRollUi(frm);
+		sprToggleSheetCuttingUi(frm);
+	},
+	custom_is_sheet_cutting: function (frm) {
+		sprToggleSheetCuttingUi(frm);
 	},
 	custom_is_lamination: function (frm) {
 		sprToggleLaminationRollUi(frm);
@@ -358,6 +346,7 @@ frappe.ui.form.on('Shaft Production Run', {
 			/* ignore */
 		}
 		sprToggleLaminationRollUi(frm);
+		sprToggleSheetCuttingUi(frm);
 
 		spr_patch_items_grid_refresh(frm);
 		spr_register_spr_page_buttons(frm);
@@ -1705,6 +1694,122 @@ function spr_open_bundle_packaging_dialog(frm) {
 	});
 }
 
+frappe.ui.form.on('Bundle Calculation', {
+	create_bundle_entry: function (frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		if (!sprIsSheetCutting(frm)) {
+			frappe.msgprint(__('Bundle Create Entry is only for sheet-cutting SPR'));
+			return;
+		}
+		if (frm.is_new() || !frm.doc.name) {
+			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
+			return;
+		}
+		const nBundles = cint(row.no_of_bundles);
+		if (nBundles < 1) {
+			frappe.msgprint(__('No of Bundles must be at least 1'));
+			return;
+		}
+		const args = { shaft_production_run: frm.doc.name };
+		if (row.name) {
+			args.bundle_row_name = row.name;
+		} else {
+			const rows = frm.doc.bundle_calculation || [];
+			args.bundle_row_idx = rows.indexOf(row);
+		}
+		frappe.call({
+			method:
+				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.build_spr_bundle_result_lines_for_row',
+			args: args,
+			freeze: true,
+			freeze_message: __('Creating roll lines for this bundle...'),
+			callback: function (r) {
+				const lines = r.message || [];
+				lines.forEach(function (line) {
+					const it = frm.add_child('items');
+					Object.keys(line).forEach(function (k) {
+						if (line[k] !== undefined && line[k] !== null) {
+							it[k] = line[k];
+						}
+					});
+				});
+				frm.refresh_field('items');
+				const n = lines.length;
+				const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
+
+				function maxRollBeforeNew() {
+					let maxRoll = 0;
+					const all = frm.doc.items || [];
+					for (let i = 0; i < startIdx; i++) {
+						const prev = all[i];
+						if (prev.batch_no && String(prev.batch_no).indexOf('/') !== -1) {
+							const parts = String(prev.batch_no).split('/');
+							const p = parts[parts.length - 1];
+							const num = parseInt(p, 10);
+							if (!isNaN(num)) {
+								maxRoll = Math.max(maxRoll, num);
+							}
+						}
+						if (prev.roll_no !== undefined && prev.roll_no !== null && prev.roll_no !== '') {
+							const num = parseInt(String(prev.roll_no), 10);
+							if (!isNaN(num)) {
+								maxRoll = Math.max(maxRoll, num);
+							}
+						}
+					}
+					return maxRoll;
+				}
+
+				function finishCreateEntry() {
+					sprScheduleTotalProducedSync(frm);
+					const totalRows = (frm.doc.items || []).length;
+					if (totalRows <= 250) {
+						schedule_spr_item_row_styles(frm);
+					}
+					sprAutoSaveAfterCreateEntry(frm);
+					frappe.show_alert({
+						message: __('Added {0} roll line(s) for bundle.', [lines.length]),
+						indicator: 'green',
+					});
+				}
+
+				if (n > 0) {
+					frappe.call({
+						method:
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_next_spr_batch_numbers',
+						args: {
+							shaft_production_run: frm.doc.name,
+							count: n,
+							start_roll_no: maxRollBeforeNew() + 1,
+						},
+						callback: function (br) {
+							const batches = br.message || [];
+							const all = frm.doc.items || [];
+							for (let i = 0; i < n; i++) {
+								const it = all[startIdx + i];
+								if (!it) {
+									continue;
+								}
+								if (batches[i]) {
+									it.batch_no = batches[i].batch_no || batches[i];
+									if (batches[i].roll_no != null) {
+										it.roll_no = batches[i].roll_no;
+									}
+								}
+							}
+							frm.refresh_field('items');
+							finishCreateEntry();
+						},
+						error: finishCreateEntry,
+					});
+				} else {
+					finishCreateEntry();
+				}
+			},
+		});
+	},
+});
+
 frappe.ui.form.on('Shaft Production Run Job', {
 	create_roll_entry: function (frm, cdt, cdn) {
 		const row = locals[cdt][cdn];
@@ -2370,7 +2475,168 @@ function sprUsesRewindingRollPrompt(frm) {
 }
 
 function sprUsesSheetCuttingRollPrompt(frm) {
-	return frm && frm.doc && cint(frm.doc.custom_is_sheet_cutting);
+	return sprIsSheetCutting(frm);
+}
+
+function sprIsSheetCutting(frm) {
+	if (!frm || !frm.doc) {
+		return false;
+	}
+	if (cint(frm.doc.custom_is_sheet_cutting)) {
+		return true;
+	}
+	const u = String(frm.doc.custom_unit || '').trim();
+	return u === 'JVE - SHEET CUTTING MACHINE';
+}
+
+function sprLoadShaftJobsFromPp(frm) {
+	if (!frm || !frm.doc || !frm.doc.production_plan) {
+		return;
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_job_rows_for_production_plan',
+		args: { production_plan: frm.doc.production_plan },
+		freeze: true,
+		freeze_message: __('Loading shaft jobs from Production Plan...'),
+		callback: function (r) {
+			frm.clear_table('shaft_jobs');
+			(r.message || []).forEach(function (row) {
+				const c = frm.add_child('shaft_jobs');
+				Object.keys(row).forEach(function (k) {
+					if (row[k] !== undefined && row[k] !== null) {
+						c[k] = row[k];
+					}
+				});
+			});
+			frm.refresh_field('shaft_jobs');
+			frm.clear_table('items');
+			frm.refresh_field('items');
+			fetch_and_show_pp_wo_summary(frm);
+		},
+		error: function () {
+			frm.clear_table('items');
+			frm.refresh_field('items');
+			fetch_and_show_pp_wo_summary(frm);
+		},
+	});
+}
+
+function sprLoadBundleCalculationFromPp(frm, presetRows) {
+	if (!frm || !frm.doc || !frm.doc.production_plan) {
+		return;
+	}
+	frm.clear_table('shaft_jobs');
+	frm.refresh_field('shaft_jobs');
+	function applyRows(rows) {
+		frm.clear_table('bundle_calculation');
+		(rows || []).forEach(function (row) {
+			const c = frm.add_child('bundle_calculation');
+			Object.keys(row).forEach(function (k) {
+				if (row[k] !== undefined && row[k] !== null) {
+					c[k] = row[k];
+				}
+			});
+		});
+		frm.refresh_field('bundle_calculation');
+		frm.clear_table('items');
+		frm.refresh_field('items');
+		fetch_and_show_pp_wo_summary(frm);
+	}
+	if (presetRows && presetRows.length) {
+		applyRows(presetRows);
+		return;
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_bundle_calculation_rows_for_production_plan',
+		args: {
+			production_plan: frm.doc.production_plan,
+			order_code: frm.doc.custom_order_code || '',
+			order_meter: 0,
+		},
+		freeze: true,
+		freeze_message: __('Loading bundle calculation from Production Plan...'),
+		callback: function (r) {
+			applyRows(r.message || []);
+		},
+		error: function () {
+			applyRows([]);
+		},
+	});
+}
+
+function sprToggleSheetCuttingUi(frm) {
+	if (!frm) {
+		return;
+	}
+	const isSc = sprIsSheetCutting(frm);
+	try {
+		frm.set_df_property('section_break_9', 'hidden', isSc ? 1 : 0);
+		frm.set_df_property('shaft_jobs', 'hidden', isSc ? 1 : 0);
+	} catch (e) {
+		/* ignore */
+	}
+	sprToggleSheetCuttingRollUi(frm);
+}
+
+function sprToggleSheetCuttingRollUi(frm) {
+	const isSc = sprIsSheetCutting(frm);
+	const hideWidthCol = isSc ? 1 : 0;
+	const hideSheetCols = isSc ? 0 : 1;
+	try {
+		const widthField = frappe.meta.get_docfield('Shaft Production Run Item', 'width_inch');
+		const sheetSizeField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_sheet_size');
+		const pcsField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_total_produced_sheets');
+		if (widthField) {
+			widthField.hidden = hideWidthCol;
+		}
+		if (sheetSizeField) {
+			sheetSizeField.hidden = hideSheetCols;
+		}
+		if (pcsField) {
+			pcsField.hidden = hideSheetCols;
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
+	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
+		try {
+			fd.grid.update_docfield_property('width_inch', 'hidden', hideWidthCol);
+		} catch (e) {}
+		try {
+			fd.grid.update_docfield_property('custom_sheet_size', 'hidden', hideSheetCols);
+		} catch (e) {}
+		try {
+			fd.grid.update_docfield_property('custom_total_produced_sheets', 'hidden', hideSheetCols);
+		} catch (e) {}
+		if (typeof fd.grid.toggle_display === 'function') {
+			try {
+				fd.grid.toggle_display('width_inch', !isSc);
+			} catch (e) {}
+			try {
+				fd.grid.toggle_display('custom_sheet_size', showSheetCols);
+			} catch (e) {}
+			try {
+				fd.grid.toggle_display('custom_total_produced_sheets', showSheetCols);
+			} catch (e) {}
+		}
+		if (fd.grid && typeof fd.grid.setup_visible_columns === 'function') {
+			try {
+				fd.grid.visible_columns = null;
+				fd.grid.setup_visible_columns();
+			} catch (e) {}
+		}
+		if (fd.grid && typeof fd.grid.refresh === 'function') {
+			try {
+				fd.grid.refresh();
+			} catch (e) {}
+		}
+		if (frm) {
+			frm.refresh_field('items');
+		}
+	}
 }
 
 function sprUsesBoppFilmRollPrompt(frm) {

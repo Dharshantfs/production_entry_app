@@ -4173,6 +4173,15 @@ def get_production_plan_details(production_plan):
 	
 	# Calculate custom_total_planned_qty from WO sum
 	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
+	is_sc = pp_unit == "JVE - SHEET CUTTING MACHINE"
+	out["is_sheet_cutting"] = is_sc
+	if is_sc:
+		out["custom_is_sheet_cutting"] = 1
+		out["bundle_rows"] = get_bundle_calculation_rows_for_production_plan(
+			production_plan,
+			out.get("custom_order_code"),
+			0,
+		)
 	
 	frappe.logger().info(f"[get_production_plan_details] PP {production_plan}: custom_order_code={out.get('custom_order_code')}, custom_label={out.get('custom_label')}, custom_total_planned_qty={out.get('custom_total_planned_qty')}")
 	if pp.get("sales_order"):
@@ -4182,6 +4191,301 @@ def get_production_plan_details(production_plan):
 		if so:
 			out["customer"] = out["customer"] or so.customer
 	return out
+
+
+PP_BUNDLE_CALC_FIELD = "custom_bundle_calculation"
+BUNDLE_CALC_DOCTYPE = "Bundle Calculation"
+SHEET_CUTTING_PROCESS_CODES = frozenset({"251", "252", "253", "254", "255"})
+
+
+def _is_sheet_cutting_fg_code(item_code: str) -> bool:
+	return spr_fg_item_process_code(item_code) in SHEET_CUTTING_PROCESS_CODES
+
+
+def _sheet_cutting_parse_gsm(item_code: str) -> int:
+	ic = _cstr(item_code)
+	if not ic:
+		return 0
+	try:
+		from production_entry.production_planning.scheduler_api import (
+			_parse_253_item_code,
+			_parse_254_item_code,
+			_parse_255_item_code,
+			_parse_sheet_cutting_item_code,
+			_item_process_prefix,
+		)
+
+		pp = _item_process_prefix(ic)
+		if pp == "253":
+			return cint((_parse_253_item_code(ic) or {}).get("gsm") or 0)
+		if pp == "254":
+			return cint((_parse_254_item_code(ic) or {}).get("gsm") or 0)
+		if pp == "255":
+			p = _parse_255_item_code(ic) or {}
+			comb = cint(p.get("fabric_gsm") or 0) + cint(p.get("bopp_gsm") or 0) + cint(p.get("lam_gsm") or 0)
+			return comb or cint(p.get("fabric_gsm") or 0)
+		p = _parse_sheet_cutting_item_code(ic) or {}
+		return cint(p.get("gsm") or 0)
+	except Exception:
+		pass
+	gsm, _w = parse_item_code(ic)
+	return cint(gsm or 0)
+
+
+def _resolve_wo_for_pp_item_code(production_plan: str, item_code: str) -> dict:
+	"""Best-effort WO for a sheet-cutting FG on this Production Plan."""
+	pp = _cstr(production_plan)
+	ic = _cstr(item_code)
+	if not pp or not ic:
+		return {}
+	rows = frappe.get_all(
+		"Work Order",
+		filters={"production_plan": pp, "production_item": ic, "docstatus": ["<", 2]},
+		fields=["name", "production_item", "qty"],
+		order_by="creation asc",
+		limit=1,
+	) or []
+	if rows:
+		return rows[0]
+	proc = spr_fg_item_process_code(ic)
+	if not proc:
+		return {}
+	for wo in frappe.get_all(
+		"Work Order",
+		filters={"production_plan": pp, "docstatus": ["<", 2]},
+		fields=["name", "production_item", "qty"],
+		order_by="creation asc",
+	) or []:
+		if spr_fg_item_process_code(wo.get("production_item")) == proc:
+			return wo
+	return {}
+
+
+def _read_pp_bundle_calculation_rows(production_plan: str) -> list[dict]:
+	"""Rows from PP child table custom_bundle_calculation."""
+	pp = _cstr(production_plan)
+	if not pp or not frappe.db.exists("Production Plan", pp):
+		return []
+	if not frappe.db.exists("DocType", BUNDLE_CALC_DOCTYPE):
+		return []
+	pp_doc = frappe.get_doc("Production Plan", pp)
+	child_rows = pp_doc.get(PP_BUNDLE_CALC_FIELD) or []
+	out = []
+	for row in child_rows:
+		ic = _cstr(getattr(row, "item_code", None))
+		pkts = cint(getattr(row, "pkts_per_bundle", 0) or 0)
+		pcs = cint(getattr(row, "pcs_per_packet", 0) or 0)
+		tpb = flt(getattr(row, "total_pcs_per_bundle", 0) or 0)
+		if tpb <= 0 and pkts > 0 and pcs > 0:
+			tpb = flt(pkts * pcs)
+		out.append(
+			{
+				"item_code": ic,
+				"sheet_cutting_size": _cstr(getattr(row, "sheet_cutting_size", None)),
+				"no_of_bundles": flt(getattr(row, "no_of_bundles", 0) or 0),
+				"pkts_per_bundle": pkts,
+				"pcs_per_packet": pcs,
+				"total_pcs_per_bundle": tpb,
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=None, order_meter=None):
+	"""Copy PP bundle calculation rows for SPR (sheet cutting)."""
+	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
+		return []
+	oc = _cstr(order_code)
+	om = flt(order_meter)
+	if not oc:
+		pp = frappe.get_doc("Production Plan", production_plan)
+		oc = _cstr(pp.get("custom_party_code") or pp.get("party_code") or "")
+	out = []
+	for src in _read_pp_bundle_calculation_rows(production_plan):
+		ic = src.get("item_code") or ""
+		wo = _resolve_wo_for_pp_item_code(production_plan, ic)
+		pkts = cint(src.get("pkts_per_bundle") or 0)
+		pcs = cint(src.get("pcs_per_packet") or 0)
+		tpb = flt(src.get("total_pcs_per_bundle") or 0)
+		if tpb <= 0 and pkts > 0 and pcs > 0:
+			tpb = flt(pkts * pcs)
+		row = dict(src)
+		row["work_order"] = wo.get("name") if wo else ""
+		row["order_code"] = oc
+		row["order_meter"] = om or flt(row.get("order_meter") or 0)
+		row["total_produced_sheets"] = tpb
+		out.append(row)
+	return out
+
+
+def populate_spr_bundle_calculation_from_pp(spr_doc, production_plan, order_code=None, order_meter=None):
+	"""Replace SPR bundle_calculation child rows from PP."""
+	if not spr_doc or not hasattr(spr_doc, "bundle_calculation"):
+		return
+	rows = get_bundle_calculation_rows_for_production_plan(production_plan, order_code, order_meter)
+	spr_doc.set("bundle_calculation", [])
+	for r in rows:
+		spr_doc.append("bundle_calculation", r)
+	return rows
+
+
+def _spr_bundle_row_by_key(spr_doc, bundle_row_name=None, bundle_row_idx=None):
+	rows = getattr(spr_doc, "bundle_calculation", None) or []
+	if bundle_row_name:
+		for r in rows:
+			if r.name == bundle_row_name:
+				return r
+	if bundle_row_idx is not None:
+		idx = cint(bundle_row_idx)
+		if 0 <= idx < len(rows):
+			return rows[idx]
+	return None
+
+
+def _spr_item_line_from_bundle(pp_name, bundle_row, bundle_index: int, wo: dict, order_code: str):
+	"""Build one Roll Production Result line for sheet-cutting bundle Create Entry."""
+	item_code = _cstr(getattr(bundle_row, "item_code", None) or wo.get("production_item"))
+	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
+	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	gsm = _sheet_cutting_parse_gsm(item_code)
+	pkts = cint(getattr(bundle_row, "pkts_per_bundle", 0) or 0)
+	pcs = cint(getattr(bundle_row, "pcs_per_packet", 0) or 0)
+	pcs_per_bundle = flt(getattr(bundle_row, "total_pcs_per_bundle", 0) or 0)
+	if pcs_per_bundle <= 0 and pkts > 0 and pcs > 0:
+		pcs_per_bundle = flt(pkts * pcs)
+	order_m = flt(getattr(bundle_row, "order_meter", 0) or 0)
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	row = {
+		"work_order": wo.get("name"),
+		"item_code": item_code,
+		"item_name": item_name,
+		"quality": quality or None,
+		"gsm": gsm,
+		"planned_qty": 0,
+		"job": _cstr(bundle_index),
+		"batch_no": "",
+		"party_code": order_code or get_order_code(frappe.get_doc("Work Order", wo["name"])),
+		"uom": _item_stock_uom_for_spr(item_code),
+		"roll_no": 0,
+		"meter_roll": order_m,
+		"produced_length_mtrs": order_m,
+		"net_weight": 0,
+		"gross_weight": 0,
+		"width_inch": 0,
+		"color": color or None,
+	}
+	if spi_meta.has_field("custom_sheet_size"):
+		row["custom_sheet_size"] = _cstr(getattr(bundle_row, "sheet_cutting_size", None))
+	if spi_meta.has_field("custom_total_produced_sheets"):
+		row["custom_total_produced_sheets"] = pcs_per_bundle
+	return row
+
+
+@frappe.whitelist()
+def build_spr_bundle_result_lines_for_row(
+	shaft_production_run,
+	bundle_row_name=None,
+	bundle_row_idx=None,
+):
+	"""Append Roll Production Result lines for one bundle row (no_of_bundles lines)."""
+	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
+		frappe.throw(_("Save Shaft Production Run first"))
+	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	if not cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)):
+		frappe.throw(_("Bundle Create Entry is only for sheet-cutting SPR"))
+	pp_name = get_pp_from_spr(shaft_production_run)
+	if not pp_name:
+		frappe.throw(_("Production Plan not found on this Shaft Production Run"))
+	bundle_row = _spr_bundle_row_by_key(spr_doc, bundle_row_name, bundle_row_idx)
+	if not bundle_row:
+		frappe.throw(_("Bundle Calculation row not found"))
+	n_bundles = cint(getattr(bundle_row, "no_of_bundles", 0) or 0)
+	if n_bundles < 1:
+		frappe.throw(_("No of Bundles must be at least 1"))
+	ic = _cstr(getattr(bundle_row, "item_code", None))
+	wo = _resolve_wo_for_pp_item_code(pp_name, ic)
+	if not wo:
+		frappe.throw(_("No Work Order found for item {0} on Production Plan {1}").format(ic, pp_name))
+	order_code = _cstr(getattr(spr_doc, "custom_order_code", None) or getattr(bundle_row, "order_code", None))
+	lines = []
+	for i in range(n_bundles):
+		lines.append(_spr_item_line_from_bundle(pp_name, bundle_row, i + 1, wo, order_code))
+	return lines
+
+
+def _expand_spr_name_tokens_csv(spr_csv: str) -> list[str]:
+	out = []
+	for part in _cstr(spr_csv).split(","):
+		p = part.strip()
+		if p and p not in out:
+			out.append(p)
+	return out
+
+
+def _sheet_cutting_spr_metrics(spr_names, pp_id=None):
+	"""Aggregate sheet PCS and meters for order table / reporting."""
+	metrics = {
+		"total_planned_sheet_pcs": 0.0,
+		"total_produced_sheet_pcs": 0.0,
+		"produced_meter": 0.0,
+		"achieved_kg": 0.0,
+	}
+	spr_list = []
+	for nm in spr_names or []:
+		spr_list.extend(_expand_spr_name_tokens_csv(nm))
+	spr_list = [s for s in spr_list if s and frappe.db.exists("Shaft Production Run", s)]
+	if not spr_list and pp_id and frappe.db.has_column("Production Plan", "custom_shaft_production_run_id"):
+		pass
+	if frappe.db.exists("DocType", BUNDLE_CALC_DOCTYPE):
+		for spr_name in spr_list:
+			try:
+				spr = frappe.get_doc("Shaft Production Run", spr_name)
+			except Exception:
+				continue
+			for br in getattr(spr, "bundle_calculation", None) or []:
+				pkts = cint(getattr(br, "pkts_per_bundle", 0) or 0)
+				pcs = cint(getattr(br, "pcs_per_packet", 0) or 0)
+				tpb = flt(getattr(br, "total_pcs_per_bundle", 0) or 0)
+				if tpb <= 0 and pkts > 0 and pcs > 0:
+					tpb = flt(pkts * pcs)
+				metrics["total_planned_sheet_pcs"] += tpb
+	elif pp_id:
+		for src in _read_pp_bundle_calculation_rows(pp_id):
+			pkts = cint(src.get("pkts_per_bundle") or 0)
+			pcs = cint(src.get("pcs_per_packet") or 0)
+			tpb = flt(src.get("total_pcs_per_bundle") or 0)
+			if tpb <= 0 and pkts > 0 and pcs > 0:
+				tpb = flt(pkts * pcs)
+			metrics["total_planned_sheet_pcs"] += tpb
+	spr_cols = set(frappe.db.get_table_columns("Shaft Production Run Item") or [])
+	weight_expr = "IFNULL(sri.net_weight, 0)" if "net_weight" in spr_cols else "0"
+	len_expr = "IFNULL(sri.produced_length_mtrs, 0)" if "produced_length_mtrs" in spr_cols else "0"
+	pcs_expr = "IFNULL(sri.custom_total_produced_sheets, 0)" if "custom_total_produced_sheets" in spr_cols else "0"
+	if spr_list:
+		placeholders = ",".join(["%s"] * len(spr_list))
+		for r in frappe.db.sql(
+			f"""
+			SELECT
+				sri.parent,
+				SUM({weight_expr}) AS kgs,
+				SUM({len_expr}) AS len_m,
+				SUM({pcs_expr}) AS pcs_sum,
+				MAX(spr.docstatus) AS spr_docstatus
+			FROM `tabShaft Production Run Item` sri
+			INNER JOIN `tabShaft Production Run` spr ON spr.name = sri.parent
+			WHERE sri.parent IN ({placeholders})
+			GROUP BY sri.parent
+			""",
+			tuple(spr_list),
+			as_dict=True,
+		) or []:
+			if cint(r.get("spr_docstatus")) != 1:
+				continue
+			metrics["achieved_kg"] += flt(r.get("kgs"))
+			metrics["produced_meter"] += flt(r.get("len_m"))
+			metrics["total_produced_sheet_pcs"] += flt(r.get("pcs_sum"))
+	return metrics
 
 
 @frappe.whitelist()

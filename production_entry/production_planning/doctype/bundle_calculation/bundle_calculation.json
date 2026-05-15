@@ -1,0 +1,104 @@
+{
+ "actions": [],
+ "creation": "2026-05-15 11:32:39.729096",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "sheet_cutting_size",
+  "no_of_bundles",
+  "pkts_per_bundle",
+  "pcs_per_packet",
+  "total_pcs_per_bundle",
+  "work_order",
+  "order_code",
+  "order_meter",
+  "total_produced_sheets",
+  "create_bundle_entry"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "sheet_cutting_size",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Sheet Size"
+  },
+  {
+   "fieldname": "no_of_bundles",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "No of Bundles"
+  },
+  {
+   "fieldname": "pkts_per_bundle",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Pkts per Bundle",
+   "reqd": 1
+  },
+  {
+   "fieldname": "pcs_per_packet",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Pcs per Packet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "total_pcs_per_bundle",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Pcs per Bundle"
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "label": "Work Order",
+   "options": "Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "order_code",
+   "fieldtype": "Data",
+   "label": "Order Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "order_meter",
+   "fieldtype": "Float",
+   "label": "Order Meter (Mtr)",
+   "precision": "2"
+  },
+  {
+   "fieldname": "total_produced_sheets",
+   "fieldtype": "Float",
+   "label": "Total Produced Sheets (PCS)",
+   "precision": "0"
+  },
+  {
+   "fieldname": "create_bundle_entry",
+   "fieldtype": "Button",
+   "in_list_view": 1,
+   "label": "Create Entry"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-15 12:57:10.557816",
+ "module": "Production Planning",
+ "name": "Bundle Calculation",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

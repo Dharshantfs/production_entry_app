@@ -28,6 +28,8 @@
   "section_break_8",
   "color",
   "column_break_11",
+  "custom_sheet_size",
+  "custom_total_produced_sheets",
   "width_inch",
   "row_ready_for_print",
   "row_locked",
@@ -169,6 +171,19 @@
   {
    "fieldname": "column_break_11",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "custom_sheet_size",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Sheet Size"
+  },
+  {
+   "fieldname": "custom_total_produced_sheets",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Produced Sheets (PCS)",
+   "precision": "0"
   },
   {
    "fieldname": "width_inch",

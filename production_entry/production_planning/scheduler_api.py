@@ -1797,6 +1797,9 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 	"""Trace from ``item_code``; 107 mid-BOM on 108 sheets uses **108** parent trace (never ``107-``)."""
 	ic = str(item_code or "").strip()
 	soi = (sales_order_item_name or "").strip()
+	sc_trace = _resolve_sheet_cutting_parent_trace(ic, soi, planning_sheet_name)
+	if sc_trace:
+		return sc_trace
 	t108 = _resolve_108_family_trace(ic, soi, planning_sheet_name)
 	if t108:
 		return t108
@@ -2312,28 +2315,8 @@ def _parent_child_trace_id_from_item_code(item_code):
 			return "-".join(segs)
 		return ""
 	if _lamination_process_from_item_code(ic) == "255" or _item_process_prefix(ic) == "255":
-		p = _parse_255_item_code(ic) or {}
-		cc = (p.get("colour_code") or "").strip()
-		qc = _cstr(p.get("quality_code") or "").strip().upper()
-		comb = _combined_bopp_line_gsm(p)
-		fg = cint(p.get("fabric_gsm") or 0)
-		lg = cint(p.get("lam_gsm") or 0)
-		wc = (p.get("width_code") or "").strip()
-		segs = ["255"]
-		if qc:
-			segs.append(qc)
-		if cc:
-			segs.append(cc)
-		if comb > 0:
-			segs.append(str(comb))
-		elif fg:
-			segs.append(str(fg))
-		if comb <= 0 and lg:
-			segs.append(str(lg))
-		if wc:
-			segs.append(wc)
-		if len(segs) > 1:
-			return "-".join(segs)
+		return _sheet_cutting_canonical_parent_trace_id(ic)
+	if _is_sheet_cutting_child_process(ic):
 		return ""
 	if _item_process_prefix(ic) == "108" or re.search(r"-108(?=[A-Z])", ic.upper()):
 		p = _parse_108_item_code(ic) or {}
@@ -2626,8 +2609,180 @@ def _is_slitting_parent_process(item_code):
 	return _item_process_prefix(item_code) in ("103", "109", "108")
 
 
+def _is_sheet_cutting_child_process(item_code):
+	"""Sheet-cutting FG rows that inherit trace from the 255 parent on the same SO line."""
+	return _item_process_prefix(item_code) in ("251", "252", "253", "254")
+
+
 def _is_sheet_cutting_parent_process(item_code):
-	return _item_process_prefix(item_code) in ("251", "252", "253", "255", "254")
+	"""Only process 255 is the sheet-cutting parent; 251–254 are children on the same SO line."""
+	ic = str(item_code or "").strip()
+	if not ic:
+		return False
+	return _item_process_prefix(ic) == "255" or _lamination_process_from_item_code(ic) == "255"
+
+
+def _sheet_cutting_canonical_parent_trace_id(item_code, sibling_rows=None, sales_order_item=None):
+	"""
+	One parent trace id per sheet-cutting SO line — dashed 252-style (e.g. 002-252-113-542-100-001).
+	255 parent rows map to this format; children on the same SO line reuse it.
+	"""
+	ic = str(item_code or "").strip().upper()
+	if not ic:
+		return ""
+	soi = _cstr(sales_order_item).strip()
+	rows = sibling_rows or []
+
+	def _trace_from_252_parse(p, design_code=""):
+		if not p:
+			return ""
+		dc = _cstr(design_code or p.get("design_code")).strip()
+		qc = _cstr(p.get("quality_code")).strip()
+		cc = _cstr(p.get("colour_code")).strip()
+		gsm = cint(p.get("gsm") or 0)
+		sid = _cstr(p.get("series_id")).strip()
+		if not cc and not sid:
+			return ""
+		body = "252-{0}-{1}-{2}-{3}".format(
+			qc.zfill(3) if qc.isdigit() else qc,
+			cc.zfill(3) if cc.isdigit() else cc,
+			str(gsm).zfill(3),
+			sid.zfill(3) if sid.isdigit() else sid,
+		)
+		if dc:
+			return f"{dc}-{body}"
+		return body
+
+	# Prefer an explicit 252 row on the same SO line (native parent-id shape).
+	if soi and rows:
+		for r in rows:
+			ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
+			if _item_process_prefix(ric) != "252":
+				continue
+			rsoi = _cstr(
+				(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
+				or (r.get("so_item") if isinstance(r, dict) else getattr(r, "so_item", None))
+			).strip()
+			if rsoi != soi:
+				continue
+			t = _trace_from_252_parse(_parse_sheet_cutting_item_code(ric) or {}, "")
+			if t:
+				return t
+
+	pp = _item_process_prefix(ic)
+	if pp in ("251", "252"):
+		return _trace_from_252_parse(_parse_sheet_cutting_item_code(ic) or {}, "")
+
+	if pp == "255" or _lamination_process_from_item_code(ic) == "255":
+		p255 = _parse_255_item_code(ic) or {}
+		dc = _cstr(p255.get("design_code")).strip()
+		cc = _cstr(p255.get("colour_code")).strip()
+		qc = _cstr(p255.get("quality_code")).strip().upper()
+		comb = _combined_bopp_line_gsm(p255)
+		fg = cint(p255.get("fabric_gsm") or 0)
+		gsm_val = comb or fg
+		wc = _cstr(p255.get("width_code")).strip()
+		if not wc and soi and rows:
+			for r in rows:
+				ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
+				if _item_process_prefix(ric) != "252":
+					continue
+				rsoi = _cstr(
+					(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
+					or (r.get("so_item") if isinstance(r, dict) else getattr(r, "so_item", None))
+				).strip()
+				if rsoi == soi:
+					p252 = _parse_sheet_cutting_item_code(ric) or {}
+					wc = _cstr(p252.get("series_id")).strip()
+					if not qc or len(qc) == 1:
+						qc = _cstr(p252.get("quality_code")).strip()
+					break
+		if not cc and not wc:
+			return ""
+		body = "252-{0}-{1}-{2}-{3}".format(
+			qc.zfill(3) if qc.isdigit() else qc,
+			cc.zfill(3) if cc.isdigit() else cc,
+			str(gsm_val).zfill(3),
+			wc.zfill(3) if wc.isdigit() else wc,
+		)
+		if dc:
+			return f"{dc}-{body}"
+		return body
+
+	if pp == "253":
+		p = _parse_253_item_code(ic) or {}
+		sid = _cstr(p.get("series_id")).strip()
+		body = "252-{0}-{1}-{2}-{3}".format(
+			_cstr(p.get("quality_code")).strip(),
+			_cstr(p.get("colour_code")).strip(),
+			_cstr(p.get("gsm")).zfill(3),
+			sid.zfill(3) if sid.isdigit() else sid,
+		)
+		return body
+
+	if pp == "254":
+		p = _parse_254_item_code(ic) or {}
+		sid = _cstr(p.get("series_id")).strip()
+		body = "252-{0}-{1}-{2}-{3}".format(
+			_cstr(p.get("quality_code")).strip(),
+			_cstr(p.get("colour_code")).strip(),
+			_cstr(p.get("gsm")).zfill(3),
+			sid.zfill(3) if sid.isdigit() else sid,
+		)
+		return body
+
+	return ""
+
+
+def _resolve_sheet_cutting_parent_trace(item_code, sales_order_item=None, planning_sheet_name=None, pt_rows=None):
+	"""255 parent trace for sheet-cutting; children inherit from 255 (or 252) on the same SO line."""
+	ic = str(item_code or "").strip()
+	if not ic:
+		return ""
+	if _is_sheet_cutting_parent_process(ic):
+		rows = pt_rows
+		if rows is None and planning_sheet_name:
+			rows = (
+				frappe.get_all(
+					"Planning Table",
+					filters={"parent": planning_sheet_name},
+					fields=["item_code", "sales_order_item", "so_item"],
+					limit_page_length=2000,
+				)
+				or []
+			)
+		return _sheet_cutting_canonical_parent_trace_id(ic, rows, sales_order_item)
+
+	if not _is_sheet_cutting_child_process(ic):
+		return ""
+
+	soi = _cstr(sales_order_item).strip()
+	rows = pt_rows
+	if rows is None and planning_sheet_name:
+		rows = (
+			frappe.get_all(
+				"Planning Table",
+				filters={"parent": planning_sheet_name},
+				fields=["item_code", "sales_order_item", "so_item"],
+				limit_page_length=2000,
+			)
+			or []
+		)
+	if rows:
+		for r in rows:
+			ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
+			if not _is_sheet_cutting_parent_process(ric):
+				continue
+			rsoi = _cstr(
+				(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
+				or (r.get("so_item") if isinstance(r, dict) else getattr(r, "so_item", None))
+			).strip()
+			if soi and rsoi and rsoi != soi:
+				continue
+			t = _sheet_cutting_canonical_parent_trace_id(ric, rows, soi or rsoi)
+			if t:
+				return t
+	return _sheet_cutting_canonical_parent_trace_id(ic, rows, soi)
 
 
 def _stage3_lam_gsm_from_item_code(item_code):
@@ -6278,6 +6433,22 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 					""",
 					(trace_id, p.get("parent"), so_item),
 				)
+			if is255root:
+				frappe.db.sql(
+					f"""
+					UPDATE `tabPlanning Table`
+					SET custom_parent_child_trace_id = %s
+					WHERE parent = %s
+					  AND (
+					    item_code REGEXP '^(251|252|253|254)'
+					    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-252%%'
+					    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-253%%'
+					    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-254%%'
+					  )
+					  AND {child_match_expr} = %s
+					""",
+					(trace_id, p.get("parent"), so_item),
+				)
 			if pp_root == "254":
 				frappe.db.sql(
 					f"""
@@ -6351,10 +6522,13 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 			pp = _item_process_prefix(icp)
 			if pp not in ("253", "255", "108", "254") and _lamination_process_from_item_code(icp) != "255":
 				continue
-			tpid = _parent_child_trace_id_from_item_code(icp)
+			soik = (pr.get("sales_order_item") or pr.get("so_item") or "").strip()
+			if _is_sheet_cutting_parent_process(icp):
+				tpid = _resolve_sheet_cutting_parent_trace(icp, soik, planning_sheet_name, pt_full)
+			else:
+				tpid = _parent_child_trace_id_from_item_code(icp)
 			if not tpid:
 				continue
-			soik = (pr.get("sales_order_item") or pr.get("so_item") or "").strip()
 			if soik:
 				parent_trace_by_soi[soik] = tpid
 		for pr in pt_full:
@@ -6378,6 +6552,15 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				continue
 			pp = _item_process_prefix(ic)
 			lam = _lamination_process_from_item_code(ic)
+			if soik and soik in parent_trace_by_soi and _is_sheet_cutting_child_process(ic):
+				frappe.db.set_value(
+					"Planning Table",
+					nm,
+					"custom_parent_child_trace_id",
+					parent_trace_by_soi[soik],
+					update_modified=False,
+				)
+				continue
 			if soik and soik in parent_trace_by_soi and (pp in ("104", "107", "106") or lam in ("104", "107")):
 				frappe.db.set_value(
 					"Planning Table",
@@ -8263,7 +8446,7 @@ def get_sheet_cutting_order_table_data(
         return []
     if not rows:
         return []
-    # Hard safety: only sheet-cutting parent process rows.
+    # Hard safety: only sheet-cutting process rows (255 parent + 251–254 children).
     rows = [
         r for r in rows
         if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in ("251", "252", "253", "255", "254")
@@ -8395,6 +8578,20 @@ def get_sheet_cutting_order_table_data(
         achieved = 0.0
         for spr_tok in _expand_spr_name_tokens(spr_nm):
             achieved += flt(spr_weights.get(spr_tok))
+        try:
+            from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+                _sheet_cutting_spr_metrics,
+            )
+
+            pp_id_row = _cstr(row.get("pp_id") or "").strip()
+            sc_metrics = _sheet_cutting_spr_metrics(_expand_spr_name_tokens(spr_nm), pp_id_row)
+            row["total_planned_sheet_pcs"] = flt(sc_metrics.get("total_planned_sheet_pcs"))
+            row["total_produced_sheet_pcs"] = flt(sc_metrics.get("total_produced_sheet_pcs"))
+            row["produced_meter"] = flt(sc_metrics.get("produced_meter"))
+        except Exception:
+            row["total_planned_sheet_pcs"] = 0.0
+            row["total_produced_sheet_pcs"] = 0.0
+            row["produced_meter"] = 0.0
         row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()
         row["quality_code"] = _cstr(p.get("quality_code"))
         row["colour_code"] = _cstr(p.get("colour_code"))
@@ -21245,8 +21442,24 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             return False
 
         def _hydrate_existing_spr(existing_spr_name, current_pp_id):
-            """Fill missing shaft job fields on reused draft SPR from PP shaft mapping."""
+            """Fill missing shaft job / bundle fields on reused draft SPR from PP."""
             if not existing_spr_name or not frappe.db.exists("Shaft Production Run", existing_spr_name):
+                return
+
+            spr_doc = frappe.get_doc("Shaft Production Run", existing_spr_name)
+            if cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)):
+                from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+                    populate_spr_bundle_calculation_from_pp,
+                )
+
+                if not (spr_doc.get("bundle_calculation") or []):
+                    populate_spr_bundle_calculation_from_pp(
+                        spr_doc,
+                        current_pp_id,
+                        spr_doc.get("custom_order_code"),
+                        0,
+                    )
+                    spr_doc.save(ignore_permissions=True)
                 return
 
             payload = get_spr_shaft_jobs_from_pp(current_pp_id)
@@ -21441,7 +21654,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             _item_process_prefix(str((psi.get("item_code") or "")).strip()) == "102" for psi in (psi_list or [])
         )
         is_sheet_cutting_from_rows = any(
-            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("251", "252", "253", "254", "255") for psi in (psi_list or [])
+            _is_sheet_cutting_parent_process(str((psi.get("item_code") or "")).strip()) for psi in (psi_list or [])
         )
         is_printing_from_rows = any(
             _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("105", "106") for psi in (psi_list or [])
@@ -21481,8 +21694,17 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
         if spr_unit and spr_meta.has_field("custom_unit"):
             spr.custom_unit = spr_unit
 
+        if (
+            str(process_type or "").strip().lower() == "sheet_cutting"
+            or spr_unit == "JVE - SHEET CUTTING MACHINE"
+        ):
+            is_sheet_cutting_from_rows = True
+            if spr_meta.has_field("custom_is_sheet_cutting"):
+                spr.custom_is_sheet_cutting = 1
+
         from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
             _production_plan_total_planned_qty,
+            populate_spr_bundle_calculation_from_pp,
             resolve_label_from_planning_sheet_doc,
             resolve_label_from_pp_doc,
         )
@@ -21558,7 +21780,14 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             idx = cint(poi.get("idx") or 0)
             po_item_data[idx] = poi
 
-        if pp_shafts:
+        if is_sheet_cutting_from_rows:
+            order_m = flt(
+                pick_value(first_psi, ["meter", "mtr", "planned_length", "custom_meter"], 0) or 0
+            )
+            populate_spr_bundle_calculation_from_pp(
+                spr, pp_id, spr.custom_order_code, order_m
+            )
+        elif pp_shafts:
             for idx, pp_shaft in enumerate(pp_shafts, start=1):
                 matching_poi = po_item_data.get(idx, {})
                 row = spr.append("shaft_jobs", {})
@@ -21607,7 +21836,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
                 row.color = first_psi.color or ""
                 row.party_code = parent_sheet.party_code or ""
                 row.custom_label = pick_value(pp_shaft, ["custom_label", "label"], label_value or "")
-        elif not pp_shafts:
+        elif not pp_shafts and not is_sheet_cutting_from_rows:
             # Fallback: create one shaft job from PSI data if PP has no shaft_details
             for i, psi in enumerate(psi_list):
                 row = spr.append("shaft_jobs", {})
