@@ -1626,10 +1626,20 @@ def _printing_design_attachment_from_sales_order_item(so_item_name):
 
 
 def _design_master_extra_fields(design_code):
-	"""If DocType ``Design Master`` exists, resolve design name / attachment by code (site-specific fields)."""
+	"""If ``Design Master`` is installed and the DB table exists, resolve design name / attachment by code.
+
+	Safe on sites where the DocType is registered but ``tabDesign Master`` was never migrated
+	(``has_column`` / ``get_table_columns`` would otherwise raise ProgrammingError).
+	"""
 	out = {}
 	dc = (design_code or "").strip()
-	if not dc or not frappe.db.exists("DocType", "Design Master"):
+	if not dc:
+		return out
+	try:
+		if not frappe.db.exists("DocType", "Design Master"):
+			return out
+		dm_cols = set(frappe.db.get_table_columns("Design Master") or [])
+	except Exception:
 		return out
 	name = None
 	try:
@@ -1639,13 +1649,14 @@ def _design_master_extra_fields(design_code):
 		name = None
 	if not name:
 		for fld in ("design_code", "code", "style_code", "custom_design_code"):
-			if frappe.db.has_column("Design Master", fld):
-				try:
-					name = frappe.db.get_value("Design Master", {fld: dc}, "name")
-				except Exception:
-					name = None
-				if name:
-					break
+			if fld not in dm_cols:
+				continue
+			try:
+				name = frappe.db.get_value("Design Master", {fld: dc}, "name")
+			except Exception:
+				name = None
+			if name:
+				break
 	if not name:
 		return out
 	try:
@@ -3276,15 +3287,27 @@ def _ensure_lamination_parent_units_on_sheet(planning_sheet_name):
 	return touched
 
 
+def _sync_stage3_safe(planning_sheet_name):
+	"""254→106→104→100 (and other stage-3 BOM chains). Isolated so it still runs when lamination fabric sync is off."""
+	if not planning_sheet_name:
+		return
+	try:
+		_sync_stage3_process_planning_rows(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_stage3_process_planning_rows")
+
+
 def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 104/107, append required child rows to legacy items + board table. Idempotent."""
-	if not LAMINATION_FLOW_ENABLED or not planning_sheet_name:
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
 		return
-	if not frappe.db.exists("Planning sheet", planning_sheet_name):
+	if not frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order"):
+		_sync_stage3_safe(planning_sheet_name)
+		return
+	if not LAMINATION_FLOW_ENABLED:
+		_sync_stage3_safe(planning_sheet_name)
 		return
 	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
-	if not ps.get("sales_order"):
-		return
 	so = frappe.get_doc("Sales Order", ps.sales_order)
 	parent_field = _get_pt_parentfield()
 	changed = False
@@ -3747,10 +3770,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		ps.flags.ignore_permissions = True
 		ps.save()
 		frappe.db.commit()
-	try:
-		_sync_stage3_process_planning_rows(planning_sheet_name)
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), "sync_stage3_process_planning_rows")
+	_sync_stage3_safe(planning_sheet_name)
 
 
 def _sync_253_laminated_sheet_stack(planning_sheet_name):

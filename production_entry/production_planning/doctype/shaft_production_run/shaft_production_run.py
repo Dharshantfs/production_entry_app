@@ -2596,6 +2596,8 @@ class ShaftProductionRun(Document):
 	def _spr_build_fabric_batch_pick_context_dict(self) -> dict:
 		"""API payload for the desk fabric-batch dialog (102–109, 251, 252 WOs + 100 RM + WIP batches)."""
 		out: dict = {"needs_picks": False, "lines": [], "current_picks": [], "spr": self.name}
+		if cint(self.docstatus) != 0:
+			return out
 		if not self._spr_fabric_picks_field_exists():
 			return out
 		wo_groups: dict[str, list] = {}

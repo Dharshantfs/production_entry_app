@@ -109,6 +109,9 @@ function spr_sync_no_of_rolls_created(frm, opts) {
 	if (!frm || !frm.doc) {
 		return;
 	}
+	if (cint(frm.doc.docstatus) !== 0) {
+		return;
+	}
 	if (!frappe.meta.get_docfield('Shaft Production Run', 'custom_no_of_rolls_created')) {
 		return;
 	}
@@ -587,6 +590,10 @@ function spr_open_fabric_batch_pick_dialog(frm) {
 		frappe.msgprint(__('Save the SPR first, then select fabric batches.'));
 		return;
 	}
+	if (cint(frm.doc.docstatus) !== 0) {
+		frappe.msgprint(__('This SPR is submitted. Fabric batch picks cannot be changed.'));
+		return;
+	}
 	if (!frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks')) {
 		frappe.msgprint(
 			__(
@@ -811,7 +818,10 @@ function spr_register_spr_page_buttons(frm) {
 			});
 		} catch (e) {}
 		try {
-			if (frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks')) {
+			if (
+				frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
+				cint(frm.doc.docstatus) === 0
+			) {
 				frm.add_custom_button(__('Select fabric batches'), function () {
 					spr_open_fabric_batch_pick_dialog(frm);
 				});
@@ -829,7 +839,7 @@ function spr_register_spr_page_buttons(frm) {
 				rm.call(frm.page, lbl);
 			} catch (e) {}
 		});
-		[__('SPR — Manual job'), __('SPR — Bundle packaging')].forEach(function (lbl) {
+		[__('SPR — Manual job'), __('SPR — Bundle packaging'), __('SPR — Select fabric batches')].forEach(function (lbl) {
 			try {
 				rm.call(frm.page, lbl, tg);
 			} catch (e) {}
@@ -854,7 +864,10 @@ function spr_register_spr_page_buttons(frm) {
 		});
 	});
 	addInner(function () {
-		if (frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks')) {
+		if (
+			frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
+			cint(frm.doc.docstatus) === 0
+		) {
 			frm.page.add_inner_button(__('Select fabric batches'), function () {
 				spr_open_fabric_batch_pick_dialog(frm);
 			});
@@ -879,7 +892,10 @@ function spr_register_spr_page_buttons(frm) {
 		);
 	});
 	addInner(function () {
-		if (frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks')) {
+		if (
+			frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
+			cint(frm.doc.docstatus) === 0
+		) {
 			frm.page.add_inner_button(
 				__('SPR — Select fabric batches'),
 				function () {
