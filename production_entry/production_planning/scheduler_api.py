@@ -1625,6 +1625,71 @@ def _printing_design_attachment_from_sales_order_item(so_item_name):
 	return ""
 
 
+def _design_master_extra_fields(design_code):
+	"""If DocType ``Design Master`` exists, resolve design name / attachment by code (site-specific fields)."""
+	out = {}
+	dc = (design_code or "").strip()
+	if not dc or not frappe.db.exists("DocType", "Design Master"):
+		return out
+	name = None
+	try:
+		if frappe.db.exists("Design Master", dc):
+			name = dc
+	except Exception:
+		name = None
+	if not name:
+		for fld in ("design_code", "code", "style_code", "custom_design_code"):
+			if frappe.db.has_column("Design Master", fld):
+				try:
+					name = frappe.db.get_value("Design Master", {fld: dc}, "name")
+				except Exception:
+					name = None
+				if name:
+					break
+	if not name:
+		return out
+	try:
+		meta = frappe.get_meta("Design Master")
+		doc = frappe.get_cached_doc("Design Master", name)
+	except Exception:
+		return out
+	for fn in (
+		"design_name",
+		"design_title",
+		"subject",
+		"title",
+		"custom_design_name",
+	):
+		if meta.has_field(fn):
+			v = _cstr(getattr(doc, fn, None)).strip()
+			if v and v.upper() != dc.upper():
+				out["custom_design_name"] = v
+				break
+	for fn in ("design_attachment", "attachment", "custom_design_attachment", "custom_attachment", "image", "file"):
+		if meta.has_field(fn):
+			v = _cstr(getattr(doc, fn, None)).strip()
+			if v:
+				out["custom_design_attachment"] = v
+				break
+	return out
+
+
+def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=None):
+	"""Trace from ``item_code``, except BOM **107** rows tied to SO FG **108** (use parent 108 trace + width)."""
+	ic = str(item_code or "").strip()
+	soi = (sales_order_item_name or "").strip()
+	if soi and frappe.db.exists("Sales Order Item", soi):
+		try:
+			soi_ic = _cstr(frappe.db.get_value("Sales Order Item", soi, "item_code")).strip()
+			if _item_process_prefix(soi_ic) == "108" and _lamination_process_from_item_code(ic) == "107":
+				tg = _parent_child_trace_id_from_item_code(soi_ic)
+				if tg:
+					return tg
+		except Exception:
+			pass
+	return _parent_child_trace_id_from_item_code(ic)
+
+
 def _printing_sales_order_item_from_row(row):
 	"""Best-effort Sales Order Item link from table/board row variants."""
 	if not row:
@@ -2807,7 +2872,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_bopp_gsm = bopp_gsm_book
 				if has_pt_lam_side:
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val:
+					if lam_side_val and _lamination_process_from_item_code(ic) == "107":
 						row.custom_lam_side_ = lam_side_val
 			else:
 				if LAMINATION_ORDER_CODE_ENABLED and code and has_psi_booking:
@@ -2818,7 +2883,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_bopp_gsm = bopp_gsm_book
 				if has_psi_lam_side:
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val:
+					if lam_side_val and _lamination_process_from_item_code(ic) == "107":
 						row.custom_lam_side = lam_side_val
 
 	# Header fallback: if map was empty, derive from first lamination row lam side value.
@@ -2828,7 +2893,7 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 				continue
 			for row in doc.get(fn) or []:
 				ic = (getattr(row, "item_code", None) or "").strip()
-				if not _is_lamination_parent_process(ic):
+				if _lamination_process_from_item_code(ic) != "107":
 					continue
 				row_side = (
 					(getattr(row, "custom_lam_side_", None) or "").strip()
@@ -3418,10 +3483,6 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			except Exception:
 				pass
 
-		so_item_lam_side = ""
-		if frappe.db.has_column("Sales Order Item", "custom_lamination_side"):
-			so_item_lam_side = (getattr(so_it, "custom_lamination_side", None) or "").strip()
-
 		for comp in components:
 			comp_ic = (comp.get("item_code") or "").strip()
 			if not comp_ic:
@@ -3659,8 +3720,6 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			_set_trace_id_if_supported(row, trace_id)
 			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 				row["split_from"] = lam_pt_name
-			if so_item_lam_side:
-				row["custom_lam_side_"] = so_item_lam_side
 
 			row_b = dict(row)
 			if hasattr(ps, "items") or ps.meta.has_field("items"):
@@ -4003,6 +4062,80 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 	return ""
 
 
+def _planning_row_254_parent_for_soi(planning_sheet_name, so_item_key):
+	"""Planning Table row dict for process **254** on the same SO line (for design / lam GSM propagation)."""
+	psn = (planning_sheet_name or "").strip()
+	soik = (so_item_key or "").strip()
+	if not psn or not soik:
+		return {}
+	flds = ["name", "item_code", "item_name"]
+	for _dfc in ("custom_design_code", "custom_design_name", "custom_design_attachment", "custom_design_colour"):
+		if frappe.db.has_column("Planning Table", _dfc):
+			flds.append(_dfc)
+	try:
+		rows = (
+			frappe.get_all(
+				"Planning Table",
+				filters={"parent": psn, "sales_order_item": soik},
+				fields=flds,
+				limit_page_length=40,
+			)
+			or []
+		)
+	except Exception:
+		rows = []
+	if not rows and frappe.db.has_column("Planning Table", "so_item"):
+		try:
+			rows = (
+				frappe.get_all(
+					"Planning Table",
+					filters={"parent": psn, "so_item": soik},
+					fields=flds,
+					limit_page_length=40,
+				)
+				or []
+			)
+		except Exception:
+			rows = []
+	for r in rows:
+		if _item_process_prefix(str(r.get("item_code") or "")) == "254":
+			return r
+	return {}
+
+
+def _apply_254_fg_extras_to_bom_child_row(updates_dict, ps_name, so_item_key, so_it, child_ic, child_proc):
+	"""Design fields + lam GSM (106) from 254 FG / Design Master onto child planning rows."""
+	so_fg = _item_process_prefix(getattr(so_it, "item_code", "") if so_it else "")
+	if so_fg != "254" or child_proc not in ("106", "104", "100"):
+		return
+	rp = _planning_row_254_parent_for_soi(ps_name, so_item_key) or {}
+	for fld in ("custom_design_code", "custom_design_name", "custom_design_attachment", "custom_design_colour"):
+		if not frappe.db.has_column("Planning Table", fld):
+			continue
+		v = _cstr(rp.get(fld)).strip()
+		if v and not _cstr((updates_dict or {}).get(fld)).strip():
+			updates_dict[fld] = v
+	if not _cstr((updates_dict or {}).get("custom_design_code")).strip():
+		p254x = _parse_254_item_code(getattr(so_it, "item_code", "") or "") or {}
+		dcx = _cstr(p254x.get("design_code")).strip()
+		if dcx and frappe.db.has_column("Planning Table", "custom_design_code"):
+			updates_dict["custom_design_code"] = dcx
+	dc_final = _cstr((updates_dict or {}).get("custom_design_code")).strip()
+	for k, v in (_design_master_extra_fields(dc_final) or {}).items():
+		if not v or not frappe.db.has_column("Planning Table", k):
+			continue
+		if not _cstr((updates_dict or {}).get(k)).strip():
+			updates_dict[k] = v
+	if child_proc == "106":
+		lam254 = cint((_parse_254_item_code(getattr(so_it, "item_code", "") or "") or {}).get("lam_gsm") or 0)
+		if lam254 > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+			updates_dict["custom_lam_gsm"] = lam254
+	inm = frappe.db.get_value("Item", child_ic, "item_name") or ""
+	g_nm, _w_nm = _parse_gsm_width_from_item_text(f"{child_ic} {inm}")
+	if child_proc == "106" and g_nm > 0 and frappe.db.has_column("Planning Table", "gsm"):
+		updates_dict["gsm"] = g_nm
+
+
 def _sync_bom_child_rows_from_planning_rows(
 	planning_sheet_name,
 	parent_processes,
@@ -4025,28 +4158,27 @@ def _sync_bom_child_rows_from_planning_rows(
 		return 0
 
 	parent_field = _get_pt_parentfield()
-	parent_rows = frappe.get_all(
-		"Planning Table",
-		filters={"parent": ps.name},
-		fields=[
-			"name",
-			"item_code",
-			"item_name",
-			"qty",
-			"uom",
-			"sales_order_item",
-			"so_item",
-			"meter",
-			"meter_per_roll",
-			"no_of_rolls",
-			"color",
-			"quality",
-			"custom_quality",
-			"width_inch",
-			"gsm",
-		],
-		limit_page_length=0,
-	) or []
+	_pt_fields = [
+		"name",
+		"item_code",
+		"item_name",
+		"qty",
+		"uom",
+		"sales_order_item",
+		"so_item",
+		"meter",
+		"meter_per_roll",
+		"no_of_rolls",
+		"color",
+		"quality",
+		"custom_quality",
+		"width_inch",
+		"gsm",
+	]
+	for _dfc in ("custom_design_code", "custom_design_name", "custom_design_attachment", "custom_design_colour"):
+		if frappe.db.has_column("Planning Table", _dfc):
+			_pt_fields.append(_dfc)
+	parent_rows = frappe.get_all("Planning Table", filters={"parent": ps.name}, fields=_pt_fields, limit_page_length=0) or []
 
 	changed = False
 	added = 0
@@ -4106,7 +4238,9 @@ def _sync_bom_child_rows_from_planning_rows(
 			so_fg_ex = _item_process_prefix(getattr(so_it, "item_code", "") if so_it else "")
 			prow_wrapped = frappe._dict(prow) if prow else None
 			specs_ex = _fabric_row_specs_from_fabric_item(child_ic, so_it, prow_wrapped)
-			trace_refresh = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc_ex) or _parent_child_trace_id_from_item_code(child_ic)
+			trace_refresh = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc_ex) or _parent_child_trace_id_for_planning_row(
+				child_ic, so_item_key
+			)
 			if not trace_refresh:
 				trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
 					getattr(so_it, "item_code", None) or parent_ic
@@ -4151,6 +4285,10 @@ def _sync_bom_child_rows_from_planning_rows(
 				lam_gsm_ex = _lam_gsm_from_item_code_suffix(child_ic)
 				if lam_gsm_ex > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
 					updates["custom_lam_gsm"] = lam_gsm_ex
+			if child_proc_ex == "106":
+				lam106x = cint((_parse_106_item_code(child_ic) or {}).get("lam_gsm") or 0)
+				if lam106x > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
+					updates["custom_lam_gsm"] = lam106x
 			if child_proc_ex == "107" and frappe.db.has_column("Planning Table", "gsm"):
 				p107gx = _parse_107_item_code(child_ic) or {}
 				csumx = _combined_bopp_line_gsm(p107gx)
@@ -4170,6 +4308,7 @@ def _sync_bom_child_rows_from_planning_rows(
 					updates[k] = v
 			if _is_printed_bopp_item_code(child_ic) and frappe.db.has_column("Planning Table", "width_inch"):
 				updates["width_inch"] = 0
+			_apply_254_fg_extras_to_bom_child_row(updates, ps.name, so_item_key, so_it, child_ic, child_proc_ex)
 			if updates:
 				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
 			continue
@@ -4179,8 +4318,14 @@ def _sync_bom_child_rows_from_planning_rows(
 		item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
 		child_proc = _item_process_prefix(child_ic)
+		if child_proc == "106":
+			g106n, _w106n = _parse_gsm_width_from_item_text(f"{child_ic} {item_name}")
+			if g106n > 0:
+				specs["gsm"] = g106n
 		so_fg_new = _item_process_prefix(getattr(so_it, "item_code", "") if so_it else "")
-		trace_id = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc) or _parent_child_trace_id_from_item_code(child_ic)
+		trace_id = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc) or _parent_child_trace_id_for_planning_row(
+			child_ic, so_item_key
+		)
 		if not trace_id:
 			trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
 				getattr(so_it, "item_code", None) or parent_ic
@@ -4244,6 +4389,14 @@ def _sync_bom_child_rows_from_planning_rows(
 				if not (k.startswith("custom_") and v is not None and str(v).strip() != ""):
 					continue
 				row[k] = v
+		elif child_proc == "106":
+			p106b2 = _parse_106_item_code(child_ic) or {}
+			lg106 = cint(p106b2.get("lam_gsm") or 0)
+			if lg106 > 0 and (
+				frappe.db.has_column("Planning Table", "custom_lam_gsm")
+				or frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
+			):
+				row["custom_lam_gsm"] = lg106
 		elif child_proc == "105":
 			p105 = _parse_105_item_code(child_ic) or {}
 			design_code = _cstr(p105.get("design_code")).upper()
@@ -4276,6 +4429,7 @@ def _sync_bom_child_rows_from_planning_rows(
 				row["gsm"] = gp
 		if _is_printed_bopp_item_code(child_ic) and frappe.db.has_column("Planning Table", "width_inch"):
 			row["width_inch"] = 0
+		_apply_254_fg_extras_to_bom_child_row(row, ps.name, so_item_key, so_it, child_ic, child_proc)
 		_set_trace_id_if_supported(row, trace_id)
 		if frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = ""
@@ -5479,7 +5633,7 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 	)
 	updated = 0
 	for p in parent_rows or []:
-		trace_id = _parent_child_trace_id_from_item_code(p.get("item_code"))
+		trace_id = _parent_child_trace_id_for_planning_row(p.get("item_code"), p.get("sales_order_item"))
 		if not trace_id:
 			continue
 		frappe.db.sql(
@@ -5551,7 +5705,7 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		else:
 			psi_match_expr = "''"
 		for p in parent_rows or []:
-			trace_id = _parent_child_trace_id_from_item_code(p.get("item_code"))
+			trace_id = _parent_child_trace_id_for_planning_row(p.get("item_code"), p.get("sales_order_item"))
 			if not trace_id:
 				continue
 			so_item = (p.get("sales_order_item") or "").strip()
@@ -8826,6 +8980,8 @@ def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 	raw_txt = f"{fabric_ic} {item_name}"
 	gsm, width = _parse_gsm_width_from_item_text(raw_txt)
 	for col in ("custom_gsm", "gsm"):
+		if gsm > 0:
+			break
 		if frappe.db.has_column("Item", col):
 			try:
 				v = frappe.db.get_value("Item", fabric_ic, col)
@@ -9289,9 +9445,9 @@ def _populate_planning_sheet_items(ps, doc):
         elif _item_process_prefix(str(it.item_code or "")) in ("106", "109"):
             lam_gsm = _stage3_lam_gsm_from_item_code(it.item_code)
 
-        # Pull lam_side strictly from Sales Order Item table for lamination parent rows (104/107)
+        # Lamination side: stamp **107** rows only (legacy behaviour; 104/108/100/PB stay blank).
         lam_side = ""
-        if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(str(it.item_code or "")):
+        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
             lam_side = _lam_side_from_sales_order_item(getattr(it, "name", None))
             if not lam_side:
                 lam_side = (getattr(it, "custom_lamination_side", None) or "").strip()
@@ -9473,6 +9629,12 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_colour"] = _col254
                 if frappe.db.has_column("Planning sheet Item", "custom_design_colour"):
                     psi_data["custom_design_colour"] = _col254
+            _dc_for_dm = (psi_data.get("custom_design_code") or dc254 or dc254_so or "").strip()
+            for _k, _v in (_design_master_extra_fields(_dc_for_dm) or {}).items():
+                if not _v or not str(_v).strip():
+                    continue
+                if frappe.db.has_column("Planning Table", _k) and not (psi_data.get(_k) or "").strip():
+                    psi_data[_k] = _v
             sid254 = _cstr(p254row.get("series_id")).strip()
             if sid254:
                 szm254 = _sheet_cutting_series_size_map([sid254])
@@ -9534,15 +9696,26 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_name"] = _dn_106
                 if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
                     psi_data["custom_design_name"] = _dn_106
-            if cint(p106_data.get("gsm") or 0) > 0:
+            g106_so, w106_so = _parse_gsm_width_from_item_text(f"{it.item_code or ''} {it.item_name or ''}")
+            if g106_so > 0:
+                psi_data["gsm"] = g106_so
+            elif cint(p106_data.get("gsm") or 0) > 0:
                 psi_data["gsm"] = cint(p106_data.get("gsm") or 0)
-            if cint(p106_data.get("width_mm") or 0) > 0:
+            if w106_so > 0:
+                psi_data["width_inch"] = w106_so
+            elif cint(p106_data.get("width_mm") or 0) > 0:
                 psi_data["width_inch"] = round(cint(p106_data.get("width_mm") or 0) / 25.4)
             if cint(p106_data.get("lam_gsm") or 0) > 0 and (
                 frappe.db.has_column("Planning Table", "custom_lam_gsm")
                 or frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")
             ):
                 psi_data["custom_lam_gsm"] = cint(p106_data.get("lam_gsm") or 0)
+            _dc106_dm = (psi_data.get("custom_design_code") or _dc_106 or "").strip()
+            for _k, _v in (_design_master_extra_fields(_dc106_dm) or {}).items():
+                if not _v or not str(_v).strip():
+                    continue
+                if frappe.db.has_column("Planning Table", _k) and not (psi_data.get(_k) or "").strip():
+                    psi_data[_k] = _v
             psi_data["unit"] = PRINTING_UNASSIGNED_UNIT
         # Process 108 (BOPP laminated slitting): slitting unit + BOPP stack extras.
         if _item_process_prefix(str(it.item_code or "")) == "108":
