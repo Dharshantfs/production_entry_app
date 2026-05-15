@@ -3597,6 +3597,7 @@ def _rebuild_planning_sheet_from_sales_order(planning_sheet, sales_order_doc):
 	ensure_lamination_booking_for_planning_sheet(ps)
 	update_sheet_plan_codes(ps, include_legacy=True)
 	ps.flags.ignore_permissions = True
+	ps.flags.ignore_validate = True
 	ps.save(ignore_permissions=True)
 	frappe.db.commit()
 	_run_planning_sheet_post_sync(ps.name)
@@ -3604,6 +3605,7 @@ def _rebuild_planning_sheet_from_sales_order(planning_sheet, sales_order_doc):
 	ensure_lamination_booking_for_planning_sheet(ps)
 	update_sheet_plan_codes(ps, include_legacy=True)
 	ps.flags.ignore_permissions = True
+	ps.flags.ignore_validate = True
 	ps.save(ignore_permissions=True)
 	frappe.db.commit()
 	return ps
@@ -16788,12 +16790,20 @@ def create_planning_sheet_from_so(doc):
         ps.custom_plan_name = _get_contextual_plan_name(cc_plan, doc.transaction_date)
         ps.custom_pb_plan_name = pb_plan
 
+        _populate_planning_sheet_items(ps, doc)
+        ensure_lamination_booking_for_planning_sheet(ps)
+        update_sheet_plan_codes(ps, include_legacy=True)
         if not ps.get("quality"):
             ps.quality = "Standard"
         ps.flags.ignore_permissions = True
         ps.insert()
         frappe.db.commit()
-        final_doc = _rebuild_planning_sheet_from_sales_order(ps, doc)
+        _run_planning_sheet_post_sync(ps.name)
+        final_doc = frappe.get_doc("Planning sheet", ps.name)
+        ensure_lamination_booking_for_planning_sheet(final_doc)
+        update_sheet_plan_codes(final_doc, include_legacy=True)
+        final_doc.flags.ignore_permissions = True
+        final_doc.save(ignore_permissions=True)
         frappe.msgprint(f"Planning Sheet <b>{final_doc.name}</b> created and synchronized (all processes).")
         return final_doc
 
@@ -19128,6 +19138,10 @@ def auto_create_planning_sheet(doc, method=None):
     # color orders as "pushed". White items have planned_date set by
     # _populate_planning_sheet_items, and the SQL filter finds them via EXISTS.
 
+    _populate_planning_sheet_items(ps, doc)
+    ensure_lamination_booking_for_planning_sheet(ps)
+    update_sheet_plan_codes(ps, include_legacy=True)
+
     if not ps.get("quality"):
         ps.quality = "Standard"
 
@@ -19135,7 +19149,12 @@ def auto_create_planning_sheet(doc, method=None):
     ps.insert()
     frappe.db.commit()
 
-    final_doc = _rebuild_planning_sheet_from_sales_order(ps, doc)
+    _run_planning_sheet_post_sync(ps.name)
+    final_doc = frappe.get_doc("Planning sheet", ps.name)
+    ensure_lamination_booking_for_planning_sheet(final_doc)
+    update_sheet_plan_codes(final_doc, include_legacy=True)
+    final_doc.flags.ignore_permissions = True
+    final_doc.save(ignore_permissions=True)
     frappe.msgprint(f"Planning Sheet <b>{final_doc.name}</b> created in unlocked plan <b>{final_doc.custom_plan_name}</b> and synchronized.")
     return final_doc
 
@@ -19192,6 +19211,10 @@ def regenerate_planning_sheet(so_name):
     ps.planning_status = "Draft"
     ps.custom_plan_name = _get_contextual_plan_name(cc_plan, doc.transaction_date)
     ps.custom_pb_plan_name = ""
+
+    _populate_planning_sheet_items(ps, doc)
+    ensure_lamination_booking_for_planning_sheet(ps)
+    update_sheet_plan_codes(ps, include_legacy=True)
 
     if not ps.get("quality"):
         ps.quality = "Standard"
