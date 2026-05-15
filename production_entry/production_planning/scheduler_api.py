@@ -3297,6 +3297,259 @@ def _sync_stage3_safe(planning_sheet_name):
 		frappe.log_error(frappe.get_traceback(), "_sync_stage3_process_planning_rows")
 
 
+def _pt_soi_key(row):
+	"""Normalize SO line key from a Planning Table / PSI row dict."""
+	return (row.get("sales_order_item") or row.get("so_item") or "").strip()
+
+
+def _fg_design_prefix_from_item_code(item_code):
+	"""Design prefix before ``-108`` / ``-107`` / ``-254`` (e.g. ``7465-108F…`` → ``7465``)."""
+	ic = str(item_code or "").strip().upper()
+	if "-" in ic:
+		return ic.split("-", 1)[0]
+	return ""
+
+
+def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
+	"""Force 107 / 100 / PB rows to use the **108** parent trace (never a 107-* trace on the mid BOM row)."""
+	if not planning_sheet_name:
+		return
+	if not frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+		return
+	pt_rows = (
+		frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+			limit_page_length=2000,
+		)
+		or []
+	)
+	trace_by_soi = {}
+	trace_by_design = {}
+	soi_by_design = {}
+	default_108_trace = ""
+	for pr in pt_rows:
+		icp = str(pr.get("item_code") or "")
+		if _item_process_prefix(icp) != "108":
+			continue
+		soik = _pt_soi_key(pr)
+		tid = _cstr(pr.get("custom_parent_child_trace_id")).strip() or _parent_child_trace_id_from_item_code(icp)
+		if not tid:
+			continue
+		default_108_trace = tid
+		if soik:
+			trace_by_soi[soik] = tid
+		dp = _fg_design_prefix_from_item_code(icp)
+		if dp:
+			trace_by_design[dp] = tid
+			if soik:
+				soi_by_design[dp] = soik
+	if not default_108_trace and not trace_by_soi:
+		return
+
+	def _is_108_bopp_child(ic):
+		iu = str(ic or "").upper()
+		if _lamination_process_from_item_code(ic) == "107" or "-107" in iu:
+			return True
+		if str(ic or "").startswith("100"):
+			return True
+		if iu.startswith("PB-") or ("PRINTED" in iu and "BOPP" in iu):
+			return True
+		return False
+
+	def _resolve_108_trace(row):
+		soik = _pt_soi_key(row)
+		if soik and soik in trace_by_soi:
+			return trace_by_soi[soik], soik
+		dp = _fg_design_prefix_from_item_code(row.get("item_code"))
+		if dp and dp in trace_by_design:
+			return trace_by_design[dp], soi_by_design.get(dp) or soik
+		ic = str(row.get("item_code") or "")
+		if _is_108_bopp_child(ic) and default_108_trace:
+			fallback_soi = ""
+			if trace_by_soi:
+				fallback_soi = next(iter(trace_by_soi.keys()))
+			return default_108_trace, fallback_soi
+		return "", ""
+
+	def _apply_trace(table_doctype, row):
+		if not _is_108_bopp_child(row.get("item_code")):
+			return
+		tid, parent_soi = _resolve_108_trace(row)
+		if not tid:
+			return
+		nm = row.get("name")
+		up = {}
+		if tid != _cstr(row.get("custom_parent_child_trace_id")).strip():
+			up["custom_parent_child_trace_id"] = tid
+		if parent_soi:
+			if table_doctype == "Planning Table":
+				if frappe.db.has_column("Planning Table", "sales_order_item"):
+					if not _cstr(frappe.db.get_value("Planning Table", nm, "sales_order_item")).strip():
+						up["sales_order_item"] = parent_soi
+				if frappe.db.has_column("Planning Table", "so_item"):
+					if not _cstr(frappe.db.get_value("Planning Table", nm, "so_item")).strip():
+						up["so_item"] = parent_soi
+			elif table_doctype == "Planning sheet Item":
+				if frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+					if not _cstr(frappe.db.get_value("Planning sheet Item", nm, "sales_order_item")).strip():
+						up["sales_order_item"] = parent_soi
+				if frappe.db.has_column("Planning sheet Item", "so_item"):
+					if not _cstr(frappe.db.get_value("Planning sheet Item", nm, "so_item")).strip():
+						up["so_item"] = parent_soi
+		if up:
+			frappe.db.set_value(table_doctype, nm, up, update_modified=False)
+
+	for pr in pt_rows:
+		_apply_trace("Planning Table", pr)
+
+	if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+		psi_rows = (
+			frappe.get_all(
+				"Planning sheet Item",
+				filters={"parent": planning_sheet_name},
+				fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+				limit_page_length=2000,
+			)
+			or []
+		)
+		for psi in psi_rows:
+			_apply_trace("Planning sheet Item", psi)
+
+
+def _stamp_254_sheet_family_trace_ids(planning_sheet_name):
+	"""Force 106 / 104 / 100 rows to use the **254** FG trace on the same SO line."""
+	if not planning_sheet_name:
+		return
+	if not frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+		return
+	pt_rows = (
+		frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+			limit_page_length=2000,
+		)
+		or []
+	)
+	trace_by_soi = {}
+	trace_by_design = {}
+	soi_by_design = {}
+	default_254_trace = ""
+	for pr in pt_rows:
+		icp = str(pr.get("item_code") or "")
+		if _item_process_prefix(icp) != "254":
+			continue
+		soik = _pt_soi_key(pr)
+		tid = _cstr(pr.get("custom_parent_child_trace_id")).strip() or _parent_child_trace_id_from_item_code(icp)
+		if not tid:
+			continue
+		default_254_trace = tid
+		if soik:
+			trace_by_soi[soik] = tid
+		dp = _fg_design_prefix_from_item_code(icp)
+		if dp:
+			trace_by_design[dp] = tid
+			if soik:
+				soi_by_design[dp] = soik
+	if not default_254_trace and not trace_by_soi:
+		return
+
+	def _is_254_child(ic):
+		pp = _item_process_prefix(str(ic or ""))
+		if pp in ("106", "104"):
+			return True
+		if str(ic or "").startswith("100"):
+			return True
+		return False
+
+	def _resolve_254_trace(row):
+		soik = _pt_soi_key(row)
+		if soik and soik in trace_by_soi:
+			return trace_by_soi[soik], soik
+		dp = _fg_design_prefix_from_item_code(row.get("item_code"))
+		if dp and dp in trace_by_design:
+			return trace_by_design[dp], soi_by_design.get(dp) or soik
+		if _is_254_child(row.get("item_code")) and default_254_trace:
+			fallback_soi = next(iter(trace_by_soi.keys())) if trace_by_soi else ""
+			return default_254_trace, fallback_soi
+		return "", ""
+
+	def _apply_254_trace(table_doctype, row):
+		if not _is_254_child(row.get("item_code")):
+			return
+		tid, parent_soi = _resolve_254_trace(row)
+		if not tid:
+			return
+		nm = row.get("name")
+		up = {}
+		if tid != _cstr(row.get("custom_parent_child_trace_id")).strip():
+			up["custom_parent_child_trace_id"] = tid
+		if parent_soi:
+			if table_doctype == "Planning Table":
+				if frappe.db.has_column("Planning Table", "sales_order_item"):
+					if not _cstr(frappe.db.get_value("Planning Table", nm, "sales_order_item")).strip():
+						up["sales_order_item"] = parent_soi
+				if frappe.db.has_column("Planning Table", "so_item"):
+					if not _cstr(frappe.db.get_value("Planning Table", nm, "so_item")).strip():
+						up["so_item"] = parent_soi
+			elif table_doctype == "Planning sheet Item":
+				if frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+					if not _cstr(frappe.db.get_value("Planning sheet Item", nm, "sales_order_item")).strip():
+						up["sales_order_item"] = parent_soi
+				if frappe.db.has_column("Planning sheet Item", "so_item"):
+					if not _cstr(frappe.db.get_value("Planning sheet Item", nm, "so_item")).strip():
+						up["so_item"] = parent_soi
+		if up:
+			frappe.db.set_value(table_doctype, nm, up, update_modified=False)
+
+	for pr in pt_rows:
+		_apply_254_trace("Planning Table", pr)
+
+	if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+		psi_rows = (
+			frappe.get_all(
+				"Planning sheet Item",
+				filters={"parent": planning_sheet_name},
+				fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+				limit_page_length=2000,
+			)
+			or []
+		)
+		for psi in psi_rows:
+			_apply_254_trace("Planning sheet Item", psi)
+
+
+def _run_planning_sheet_post_sync(planning_sheet_name):
+	"""Single post-populate pipeline: BOM children, units, stage-3 chain, trace stamps (108/254 families)."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return
+	_link_board_planned_rows_to_legacy_items(planning_sheet_name)
+	_sync_253_laminated_sheet_stack(planning_sheet_name)
+	_sync_255_bopp_lam_sheet_stack(planning_sheet_name)
+	_sync_108_slitted_bopp_stack(planning_sheet_name)
+	_sync_lamination_fabric_planning_rows(planning_sheet_name)
+	_sync_slitting_fabric_planning_rows(planning_sheet_name)
+	_force_slitting_unit_on_sheet(planning_sheet_name)
+	_sync_sheet_cutting_fabric_planning_rows(planning_sheet_name)
+	_force_sheet_cutting_unit_on_sheet(planning_sheet_name)
+	_sync_rewinding_fabric_planning_rows(planning_sheet_name)
+	_sync_printing_105_planning_rows(planning_sheet_name)
+	_sync_printing_fabric_planning_rows(planning_sheet_name)
+	_force_printing_unit_on_sheet(planning_sheet_name)
+	_force_rewinding_unit_on_sheet(planning_sheet_name)
+	_sync_stage3_safe(planning_sheet_name)
+	_stamp_108_bopp_family_trace_ids(planning_sheet_name)
+	_stamp_254_sheet_family_trace_ids(planning_sheet_name)
+	try:
+		backfill_parent_child_trace_ids(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:backfill_parent_child_trace_ids")
+	_stamp_108_bopp_family_trace_ids(planning_sheet_name)
+	_stamp_254_sheet_family_trace_ids(planning_sheet_name)
+
+
 def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 104/107, append required child rows to legacy items + board table. Idempotent."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
@@ -16466,28 +16719,18 @@ def create_planning_sheet_from_so(doc):
         ps.custom_pb_plan_name = pb_plan
 
         _populate_planning_sheet_items(ps, doc)
+        ensure_lamination_booking_for_planning_sheet(ps)
         update_sheet_plan_codes(ps, include_legacy=True)
         if not ps.get("quality"):
             ps.quality = "Standard"
         ps.flags.ignore_permissions = True
         ps.insert()
         frappe.db.commit()
-        _link_board_planned_rows_to_legacy_items(ps.name)
-        _sync_253_laminated_sheet_stack(ps.name)
-        _sync_255_bopp_lam_sheet_stack(ps.name)
-        _sync_108_slitted_bopp_stack(ps.name)
-        _sync_lamination_fabric_planning_rows(ps.name)
-        _sync_slitting_fabric_planning_rows(ps.name)
-        _force_slitting_unit_on_sheet(ps.name)
-        _sync_sheet_cutting_fabric_planning_rows(ps.name)
-        _force_sheet_cutting_unit_on_sheet(ps.name)
-        _sync_rewinding_fabric_planning_rows(ps.name)
-        _sync_printing_fabric_planning_rows(ps.name)
-        _force_printing_unit_on_sheet(ps.name)
-        _sync_printing_105_planning_rows(ps.name)
-        _force_rewinding_unit_on_sheet(ps.name)
+        _run_planning_sheet_post_sync(ps.name)
         final_doc = frappe.get_doc("Planning sheet", ps.name)
+        ensure_lamination_booking_for_planning_sheet(final_doc)
         update_sheet_plan_codes(final_doc, include_legacy=True)
+        final_doc.save(ignore_permissions=True)
         frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â£ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  Planning Sheet <b>{ps.name}</b> Created!")
 
     except Exception as e:
@@ -18806,20 +19049,10 @@ def auto_create_planning_sheet(doc, method=None):
             update_sheet_plan_codes(sheet, include_legacy=True)
             sheet.save(ignore_permissions=True)
             frappe.db.commit()
-            _sync_253_laminated_sheet_stack(sheet.name)
-            _sync_255_bopp_lam_sheet_stack(sheet.name)
-            _sync_108_slitted_bopp_stack(sheet.name)
-            _sync_lamination_fabric_planning_rows(sheet.name)
-            _sync_slitting_fabric_planning_rows(sheet.name)
-            _force_slitting_unit_on_sheet(sheet.name)
-            _sync_sheet_cutting_fabric_planning_rows(sheet.name)
-            _force_sheet_cutting_unit_on_sheet(sheet.name)
-            _sync_rewinding_fabric_planning_rows(sheet.name)
-            _sync_printing_fabric_planning_rows(sheet.name)
-            _force_printing_unit_on_sheet(sheet.name)
-            _force_rewinding_unit_on_sheet(sheet.name)
+            _run_planning_sheet_post_sync(sheet.name)
             sheet.reload()
             ensure_lamination_booking_for_planning_sheet(sheet)
+            update_sheet_plan_codes(sheet, include_legacy=True)
             sheet.save(ignore_permissions=True)
 
         frappe.msgprint(f"Planning Sheet <b>{sheet.name}</b> already exists for Sales Order <b>{doc.name}</b>. Reusing existing sheet.")
@@ -18852,25 +19085,8 @@ def auto_create_planning_sheet(doc, method=None):
     ps.insert()
     frappe.db.commit()
 
-    # 4. Link board rows to legacy rows (source_item), then lamination fabric rows
-    _link_board_planned_rows_to_legacy_items(ps.name)
-    _sync_253_laminated_sheet_stack(ps.name)
-    _sync_255_bopp_lam_sheet_stack(ps.name)
-    _sync_108_slitted_bopp_stack(ps.name)
-    _sync_lamination_fabric_planning_rows(ps.name)
-    _sync_slitting_fabric_planning_rows(ps.name)
-    _force_slitting_unit_on_sheet(ps.name)
-    _sync_sheet_cutting_fabric_planning_rows(ps.name)
-    _force_sheet_cutting_unit_on_sheet(ps.name)
-    _sync_rewinding_fabric_planning_rows(ps.name)
-    _sync_printing_105_planning_rows(ps.name)
-    _sync_printing_fabric_planning_rows(ps.name)
-    _force_printing_unit_on_sheet(ps.name)
-    _force_rewinding_unit_on_sheet(ps.name)
-            
+    _run_planning_sheet_post_sync(ps.name)
     frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
-    
-    # RE-FETCH TO UPDATE HEADER PLAN CODES ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶ ONLY ITEMS ENABLED, HEADER DISABLED PER USER REQUEST
     final_doc = frappe.get_doc("Planning sheet", ps.name)
     ensure_lamination_booking_for_planning_sheet(final_doc)
     update_sheet_plan_codes(final_doc, include_legacy=True)
@@ -18911,20 +19127,7 @@ def regenerate_planning_sheet(so_name):
         ps.flags.ignore_permissions = True
         ps.save(ignore_permissions=True)
         frappe.db.commit()
-        _link_board_planned_rows_to_legacy_items(ps.name)
-        _sync_253_laminated_sheet_stack(ps.name)
-        _sync_255_bopp_lam_sheet_stack(ps.name)
-        _sync_108_slitted_bopp_stack(ps.name)
-        _sync_lamination_fabric_planning_rows(ps.name)
-        _sync_slitting_fabric_planning_rows(ps.name)
-        _force_slitting_unit_on_sheet(ps.name)
-        _sync_sheet_cutting_fabric_planning_rows(ps.name)
-        _force_sheet_cutting_unit_on_sheet(ps.name)
-        _sync_rewinding_fabric_planning_rows(ps.name)
-        _sync_printing_fabric_planning_rows(ps.name)
-        _force_printing_unit_on_sheet(ps.name)
-        _force_rewinding_unit_on_sheet(ps.name)
-        # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
+        _run_planning_sheet_post_sync(ps.name)
         ps.reload()
         ensure_lamination_booking_for_planning_sheet(ps)
         update_sheet_plan_codes(ps, include_legacy=True)
@@ -18964,21 +19167,7 @@ def regenerate_planning_sheet(so_name):
     ps.insert()
     frappe.db.commit()
 
-    _link_board_planned_rows_to_legacy_items(ps.name)
-    _sync_253_laminated_sheet_stack(ps.name)
-    _sync_255_bopp_lam_sheet_stack(ps.name)
-    _sync_108_slitted_bopp_stack(ps.name)
-    _sync_lamination_fabric_planning_rows(ps.name)
-    _sync_slitting_fabric_planning_rows(ps.name)
-    _force_slitting_unit_on_sheet(ps.name)
-    _sync_sheet_cutting_fabric_planning_rows(ps.name)
-    _force_sheet_cutting_unit_on_sheet(ps.name)
-    _sync_rewinding_fabric_planning_rows(ps.name)
-    _sync_printing_105_planning_rows(ps.name)
-    _sync_printing_fabric_planning_rows(ps.name)
-    _force_printing_unit_on_sheet(ps.name)
-    _force_rewinding_unit_on_sheet(ps.name)
-    # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
+    _run_planning_sheet_post_sync(ps.name)
     ps.reload()
     ensure_lamination_booking_for_planning_sheet(ps)
     update_sheet_plan_codes(ps, include_legacy=True)
@@ -19011,26 +19200,10 @@ def sync_bom_children_for_planning_sheet(planning_sheet):
         ps.save(ignore_permissions=True)
         frappe.db.commit()
 
-    _link_board_planned_rows_to_legacy_items(ps_name)
-    _sync_253_laminated_sheet_stack(ps_name)
-    _sync_255_bopp_lam_sheet_stack(ps_name)
-    _sync_108_slitted_bopp_stack(ps_name)
-    _sync_lamination_fabric_planning_rows(ps_name)
-    _sync_slitting_fabric_planning_rows(ps_name)
-    _force_slitting_unit_on_sheet(ps_name)
-    _sync_sheet_cutting_fabric_planning_rows(ps_name)
-    _force_sheet_cutting_unit_on_sheet(ps_name)
-    _sync_rewinding_fabric_planning_rows(ps_name)
-    _sync_printing_fabric_planning_rows(ps_name)
-    _force_printing_unit_on_sheet(ps_name)
-    _force_rewinding_unit_on_sheet(ps_name)
+    _run_planning_sheet_post_sync(ps_name)
     ps.reload()
     ensure_lamination_booking_for_planning_sheet(ps)
     update_sheet_plan_codes(ps, include_legacy=True)
-    try:
-        backfill_parent_child_trace_ids(ps_name)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "sync_bom_children_for_planning_sheet:backfill_parent_child_trace_ids")
     ps.save(ignore_permissions=True)
 
     # Check if 251 fabric rows were added
