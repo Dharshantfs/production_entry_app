@@ -23,7 +23,7 @@
    "fieldname": "item_code",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Fabric Item (100)",
+   "label": "RM Item",
    "reqd": 1
   },
   {

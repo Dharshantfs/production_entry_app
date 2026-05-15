@@ -26,7 +26,7 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 
-# FG Work Order processes that require manual 100-fabric batch lines in SPR fabric picker.
+# FG Work Order processes that require manual batch-tracked RM lines in SPR batch picker.
 SPR_FG_FABRIC_PICK_PROCESSES = ("102", "103", "104", "105", "106", "107", "108", "109", "251", "252", "253", "254", "255")
 
 
@@ -57,9 +57,70 @@ def spr_fg_item_process_code(item_code: str) -> str:
 
 
 def spr_fg_parent_needs_fabric_batch_pick(production_item: str) -> bool:
-	"""True when WO FG needs manual 100-fabric batch allocation for this SPR (102–109 incl. 108, 251–255 incl. 254, design-first)."""
+	"""True when WO FG needs manual batch-tracked RM allocation for this SPR (102–109 incl. 108, 251–255 incl. 254, design-first)."""
 	proc = spr_fg_item_process_code(production_item)
 	return bool(proc) and proc in SPR_FG_FABRIC_PICK_PROCESSES
+
+
+# FG process → (immediate BOM child process, fabric process) for desk batch-pick dialog.
+_SPR_BOM_STACK_BY_FG_PROCESS = {
+	"102": (None, "100"),
+	"103": (None, "100"),
+	"104": (None, "100"),
+	"105": (None, "100"),
+	"106": (None, "100"),
+	"107": (None, "100"),
+	"108": (None, "100"),
+	"109": (None, "100"),
+	"251": (None, "100"),
+	"252": ("105", "100"),
+	"253": ("104", "100"),
+	"254": ("106", "100"),
+	"255": (None, "100"),
+}
+
+
+def _spr_item_has_batch_no(item_code: str) -> bool:
+	try:
+		return bool(cint(frappe.db.get_value("Item", item_code, "has_batch_no") or 0))
+	except Exception:
+		return False
+
+
+def _spr_rm_needs_manual_batch_pick(item_code: str) -> bool:
+	"""True for any batch-tracked BOM RM on eligible FG WO (105 on 252 WO, not only 100*)."""
+	ic = _cstr(item_code)
+	if not ic:
+		return False
+	return _spr_item_has_batch_no(ic)
+
+
+def _spr_bom_stack_for_fg_item(production_item: str) -> list[dict]:
+	"""BOM chain rows for the fabric-batch dialog (FG → child → fabric)."""
+	proc = spr_fg_item_process_code(production_item)
+	if not proc:
+		return []
+	child_proc, fabric_proc = _SPR_BOM_STACK_BY_FG_PROCESS.get(proc, (None, "100"))
+	out = [{"process": proc, "label": _("FG ({0})").format(proc), "role": "fg", "item_code": _cstr(production_item)}]
+	if child_proc:
+		out.append(
+			{
+				"process": child_proc,
+				"label": _("BOM child ({0})").format(child_proc),
+				"role": "child",
+				"item_code": "",
+			}
+		)
+	if fabric_proc:
+		out.append(
+			{
+				"process": fabric_proc,
+				"label": _("Fabric ({0})").format(fabric_proc),
+				"role": "fabric",
+				"item_code": "",
+			}
+		)
+	return out
 
 
 def batch_shift_value(shift: str | None) -> str:
@@ -2354,7 +2415,7 @@ class ShaftProductionRun(Document):
 			return False
 
 	def _spr_init_manual_fabric_batch_pools(self, planned_wo_posts) -> None:
-		"""Validate `fabric_batch_picks` vs BOM 100-fabric need and build mutable pools for Manufacture SE."""
+		"""Validate `fabric_batch_picks` vs BOM batch-tracked RM need and build mutable pools for Manufacture SE."""
 		self.flags._spr_manual_batch_pools = {}
 		if not self._spr_fabric_picks_field_exists():
 			return
@@ -2369,10 +2430,12 @@ class ShaftProductionRun(Document):
 			if not spr_fg_parent_needs_fabric_batch_pick(pi):
 				continue
 			expected = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
-			hundred = {
-				ic: q for ic, q in (expected or {}).items() if _cstr(ic).startswith("100") and flt(q) > 1e-9
+			batch_rm = {
+				ic: q
+				for ic, q in (expected or {}).items()
+				if _spr_rm_needs_manual_batch_pick(ic) and flt(q) > 1e-9
 			}
-			if not hundred:
+			if not batch_rm:
 				continue
 			picks = [
 				r
@@ -2383,9 +2446,9 @@ class ShaftProductionRun(Document):
 				frappe.throw(
 					_(
 						"This SPR manufactures Work Order {0} (parent item {1}). "
-						"Use **Select fabric batches** on the toolbar and allocate each 100 fabric item before Submit."
+						"Use **Select RM batches** on the toolbar and allocate each batch-tracked BOM item before Submit."
 					).format(wo_id, pi or "—"),
-					title=_("Fabric batches required"),
+					title=_("RM batches required"),
 				)
 			by_item: dict[str, list] = defaultdict(list)
 			for p in picks:
@@ -2394,8 +2457,10 @@ class ShaftProductionRun(Document):
 				q = flt(getattr(p, "qty", None))
 				if not ic or not bn or q <= 0:
 					continue
-				if not ic.startswith("100"):
-					frappe.throw(_("Fabric batch lines must use item codes starting with 100 (got {0}).").format(ic))
+				if not _spr_rm_needs_manual_batch_pick(ic):
+					frappe.throw(
+						_("Batch pick lines must be for batch-tracked BOM items (got {0}).").format(ic)
+					)
 				if frappe.db.exists("Batch", bn):
 					batch_item = frappe.db.get_value("Batch", bn, "item")
 					if batch_item and _cstr(batch_item) != ic:
@@ -2403,15 +2468,15 @@ class ShaftProductionRun(Document):
 							_("Batch {0} belongs to item {1}, not {2}. Fix SPR {3}.").format(bn, batch_item, ic, self.name)
 						)
 				by_item[ic].append({"batch_no": bn, "qty": q})
-			for ic, req in hundred.items():
+			for ic, req in batch_rm.items():
 				got = sum(flt(x["qty"]) for x in by_item.get(ic, []))
 				if got + 1e-6 < flt(req):
 					frappe.throw(
 						_(
-							"Work Order {0}: fabric {1} needs {2} Kg in batch picks but only {3} Kg is set. "
-							"Open **Select fabric batches** and increase quantities."
+							"Work Order {0}: RM {1} needs {2} Kg in batch picks but only {3} Kg is set. "
+							"Open **Select RM batches** and increase quantities."
 						).format(wo_id, ic, flt(req, 3), flt(got, 3)),
-						title=_("Insufficient fabric batch quantity"),
+						title=_("Insufficient RM batch quantity"),
 					)
 			pools[wo_id] = {
 				k: [{"batch_no": x["batch_no"], "qty": flt(x["qty"])} for x in v] for k, v in by_item.items()
@@ -2425,7 +2490,7 @@ class ShaftProductionRun(Document):
 		if wo_id not in pools:
 			return False
 		ic = _cstr(item_code)
-		if not ic.startswith("100"):
+		if not _spr_rm_needs_manual_batch_pick(ic):
 			return False
 		return ic in (pools.get(wo_id) or {})
 
@@ -2489,8 +2554,8 @@ class ShaftProductionRun(Document):
 				if leftover > 1e-6 or not allocs:
 					frappe.throw(
 						_(
-							"Manual fabric batch pool for WO {0}, item {1}, is exhausted or short by {2} Kg "
-							"(required for this Manufacture line: {3} Kg). Re-open **Select fabric batches**."
+							"Manual RM batch pool for WO {0}, item {1}, is exhausted or short by {2} Kg "
+							"(required for this Manufacture line: {3} Kg). Re-open **Select RM batches**."
 						).format(wo_id or "—", _cstr(d.item_code), flt(leftover, 3), flt(required, 3)),
 						title=_("Fabric batch pool exhausted"),
 					)
@@ -2594,7 +2659,7 @@ class ShaftProductionRun(Document):
 		return 1.0
 
 	def _spr_build_fabric_batch_pick_context_dict(self) -> dict:
-		"""API payload for the desk fabric-batch dialog (102–109, 251, 252 WOs + 100 RM + WIP batches)."""
+		"""API payload for the desk RM-batch dialog (102–109, 251–255 WOs + batch-tracked BOM RM + WIP batches)."""
 		out: dict = {"needs_picks": False, "lines": [], "current_picks": [], "spr": self.name}
 		if cint(self.docstatus) != 0:
 			return out
@@ -2620,15 +2685,18 @@ class ShaftProductionRun(Document):
 				continue
 			expected = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
 			wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None) or "")
+			fg_process = spr_fg_item_process_code(pi)
+			bom_stack = _spr_bom_stack_for_fg_item(pi)
 			raw_list = []
 			for ic, req in sorted((expected or {}).items()):
 				ic_s = _cstr(ic)
-				if not ic_s.startswith("100"):
+				if not _spr_rm_needs_manual_batch_pick(ic_s):
 					continue
 				if flt(req) <= 1e-9:
 					continue
 				batches = self._available_batches_for_rm_all_wh(ic_s)
 				item_name = frappe.db.get_value("Item", ic_s, "item_name") or ""
+				rm_proc = spr_fg_item_process_code(ic_s)
 				qual, col = extract_quality_and_color(item_name, ic_s)
 				try:
 					gsm, width_inch = parse_item_code(ic_s)
@@ -2640,6 +2708,7 @@ class ShaftProductionRun(Document):
 					{
 						"item_code": ic_s,
 						"item_name": item_name,
+						"process_code": rm_proc,
 						"required_qty": flt(req, 3),
 						"quality": qual or "",
 						"colour": col or "",
@@ -2653,6 +2722,8 @@ class ShaftProductionRun(Document):
 					{
 						"work_order": wo_id,
 						"fg_item": pi,
+						"fg_process": fg_process,
+						"bom_stack": bom_stack,
 						"wip_warehouse": wip_wh,
 						"total_fg_kg": flt(total_qty, 3),
 						"raw_materials": raw_list,

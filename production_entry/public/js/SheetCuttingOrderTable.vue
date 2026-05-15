@@ -107,12 +107,14 @@
                     <span class="pt-pill pt-pill-wo" :class="woPillClass(row)" :title="woPillTitle(row)">{{ woPillLabel(row) }}</span>
                   </div>
                   <div v-if="itemProductionStatusLine(row)" class="pt-prod-status-line">{{ itemProductionStatusLine(row) }}</div>
-                  <!-- View SPR button -->
+                  <!-- View / create SPR -->
                   <button v-if="row.spr_name" type="button" @click="openResolvedSPR(row)"
                     class="cc-pp-btn pt-btn-entry"
                     :class="Number(row.spr_docstatus) === 1 && row.wo_terminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                     :title="itemSprTitle(row)">{{ itemSprLabel(row) }}</button>
-                  <button v-if="canCreateSpr(row) && Number(row.spr_docstatus) !== 0" type="button" @click="createSheetCuttingSpr(row)"
+                  <button v-else-if="canCreateSpr(row) && !row.spr_name" type="button" @click="createSheetCuttingSpr(row)"
+                    class="cc-pp-btn pt-btn-entry pt-spr-btn-submitted" title="Create Shaft Production Run for sheet cutting">Create SPR</button>
+                  <button v-else-if="canCreateSpr(row) && row.spr_name && Number(row.spr_docstatus) === 1" type="button" @click="createSheetCuttingSpr(row)"
                     class="cc-pp-btn pt-btn-entry" title="Create another Shaft Production Run">New SPR</button>
                   <!-- Open WO directly when WO exists and is open -->
                   <button v-else-if="row.wo_name && row.wo_open && Number(row.pp_docstatus) === 1"

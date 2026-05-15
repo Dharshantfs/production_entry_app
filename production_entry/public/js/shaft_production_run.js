@@ -602,7 +602,7 @@ function spr_open_fabric_batch_pick_dialog(frm) {
 			if (!ctx.needs_picks) {
 				frappe.msgprint(
 					__(
-						'No fabric batch selection is required for this SPR (no Work Orders for FG processes 102–109, 251, or 252 that need fabric picks).'
+						'No RM batch selection is required for this SPR (no Work Orders with batch-tracked BOM items to pick).'
 					)
 				);
 				return;
@@ -628,6 +628,7 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 			spr_escape_html(ln.work_order || '') +
 			' — FG ' +
 			spr_escape_html(ln.fg_item || '') +
+			(ln.fg_process ? ' (' + spr_escape_html(String(ln.fg_process)) + ')' : '') +
 			' — ' +
 			__('SPR total') +
 			' ' +
@@ -635,10 +636,31 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 			' Kg</h4>';
 		bodyHtml +=
 			'<p class="text-muted small">' + __('WIP warehouse') + ': ' + spr_escape_html(ln.wip_warehouse || '') + '</p>';
+		if (ln.bom_stack && ln.bom_stack.length) {
+			bodyHtml +=
+				'<table class="table table-bordered table-condensed" style="margin-bottom:0.5rem;max-width:36rem"><thead><tr>' +
+				'<th>' +
+				__('Step') +
+				'</th><th>' +
+				__('Process') +
+				'</th></tr></thead><tbody>';
+			(ln.bom_stack || []).forEach(function (st) {
+				bodyHtml +=
+					'<tr><td>' +
+					spr_escape_html(st.label || st.role || '') +
+					'</td><td>' +
+					spr_escape_html(st.process || '') +
+					(st.item_code ? ' — ' + spr_escape_html(st.item_code) : '') +
+					'</td></tr>';
+			});
+			bodyHtml += '</tbody></table>';
+		}
 		(ln.raw_materials || []).forEach(function (rm) {
+			const procTag = rm.process_code ? ' [' + spr_escape_html(String(rm.process_code)) + ']' : '';
 			bodyHtml +=
 				'<h5 style="margin-top:0.5rem">' +
 				spr_escape_html(rm.item_code || '') +
+				procTag +
 				' — ' +
 				spr_escape_html(rm.item_name || '') +
 				'</h5>';
@@ -711,7 +733,7 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 	bodyHtml += '</div>';
 
 	const d = new frappe.ui.Dialog({
-		title: __('Select fabric batches (100) for WO consumption'),
+		title: __('Select RM batches for WO consumption'),
 		fields: [{ fieldtype: 'HTML', fieldname: 'spr_batch_html' }],
 		size: 'extra-large',
 		primary_action_label: __('Save picks'),
@@ -754,7 +776,7 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 					d.hide();
 					frm.reload_doc();
 					frappe.show_alert({
-						message: __('Fabric batch picks saved. You can Submit the SPR.'),
+						message: __('RM batch picks saved. You can Submit the SPR.'),
 						indicator: 'green',
 					});
 				},
@@ -792,7 +814,7 @@ function spr_register_spr_page_buttons(frm) {
 			frm.remove_custom_button(__('Bundle packaging'));
 		} catch (e) {}
 		try {
-			frm.remove_custom_button(__('Select fabric batches'));
+			frm.remove_custom_button(__('Select RM batches'));
 		} catch (e) {}
 	}
 	if (canRemoveCustom && typeof frm.add_custom_button === 'function') {
@@ -811,7 +833,7 @@ function spr_register_spr_page_buttons(frm) {
 				frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
 				cint(frm.doc.docstatus) === 0
 			) {
-				frm.add_custom_button(__('Select fabric batches'), function () {
+				frm.add_custom_button(__('Select RM batches'), function () {
 					spr_open_fabric_batch_pick_dialog(frm);
 				});
 			}
@@ -823,12 +845,12 @@ function spr_register_spr_page_buttons(frm) {
 	const tg = __('Tools');
 	const rm = frm.page.remove_inner_button;
 	if (typeof rm === 'function') {
-		[__('Manual job'), __('Bundle packaging'), __('Select fabric batches')].forEach(function (lbl) {
+		[__('Manual job'), __('Bundle packaging'), __('Select RM batches')].forEach(function (lbl) {
 			try {
 				rm.call(frm.page, lbl);
 			} catch (e) {}
 		});
-		[__('SPR — Manual job'), __('SPR — Bundle packaging'), __('SPR — Select fabric batches')].forEach(function (lbl) {
+		[__('SPR — Manual job'), __('SPR — Bundle packaging'), __('SPR — Select RM batches')].forEach(function (lbl) {
 			try {
 				rm.call(frm.page, lbl, tg);
 			} catch (e) {}
@@ -857,7 +879,7 @@ function spr_register_spr_page_buttons(frm) {
 			frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
 			cint(frm.doc.docstatus) === 0
 		) {
-			frm.page.add_inner_button(__('Select fabric batches'), function () {
+			frm.page.add_inner_button(__('Select RM batches'), function () {
 				spr_open_fabric_batch_pick_dialog(frm);
 			});
 		}
@@ -886,7 +908,7 @@ function spr_register_spr_page_buttons(frm) {
 			cint(frm.doc.docstatus) === 0
 		) {
 			frm.page.add_inner_button(
-				__('SPR — Select fabric batches'),
+				__('SPR — Select RM batches'),
 				function () {
 					spr_open_fabric_batch_pick_dialog(frm);
 				},

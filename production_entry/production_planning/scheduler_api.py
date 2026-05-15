@@ -8639,18 +8639,30 @@ def get_sheet_cutting_order_table_data(
             tuple(pp_ids_sc),
             as_dict=True,
         ) or []
-        pp_to_sc_wo_map = {}
+        pp_to_sc_wo_by_proc = {}
         for w in sc_wo_rows:
             pp = str(w.get("production_plan") or "").strip()
             ic_w = str(w.get("production_item") or "").strip()
-            if pp and pp not in pp_to_sc_wo_map:
-                pp_to_sc_wo_map[pp] = str(w.get("name") or "").strip()
-            elif pp and _item_process_prefix(ic_w) in ("251", "253", "254", "255"):
-                pp_to_sc_wo_map[pp] = str(w.get("name") or "").strip()
+            proc_w = _item_process_prefix(ic_w)
+            if not pp or not proc_w:
+                continue
+            if pp not in pp_to_sc_wo_by_proc:
+                pp_to_sc_wo_by_proc[pp] = {}
+            pp_to_sc_wo_by_proc[pp][proc_w] = str(w.get("name") or "").strip()
         for row in out:
             pp = str(row.get("pp_id") or "").strip()
-            if pp:
-                row["wo_name"] = pp_to_sc_wo_map.get(pp, "")
+            if not pp:
+                continue
+            row_proc = _item_process_prefix(str(row.get("item_code") or row.get("itemCode") or ""))
+            by_proc = pp_to_sc_wo_by_proc.get(pp) or {}
+            row["wo_name"] = by_proc.get(row_proc) or ""
+            if not row["wo_name"]:
+                for pref in (row_proc, "252", "255", "251", "253", "254"):
+                    if pref and by_proc.get(pref):
+                        row["wo_name"] = by_proc[pref]
+                        break
+            if not row["wo_name"] and by_proc:
+                row["wo_name"] = next(iter(by_proc.values()))
 
     return out
 
