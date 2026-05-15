@@ -3550,6 +3550,37 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_stamp_254_sheet_family_trace_ids(planning_sheet_name)
 
 
+def _rebuild_planning_sheet_from_sales_order(planning_sheet, sales_order_doc):
+	"""Re-populate from SO + full post-sync (all processes: 102–109, 251–255, 108, 254, BOM chains).
+
+	Same pipeline as **Make Planning Sheet** after the sheet exists in the database.
+	"""
+	ps = planning_sheet
+	if isinstance(planning_sheet, str):
+		ps = frappe.get_doc("Planning sheet", planning_sheet)
+	doc = sales_order_doc
+	if isinstance(sales_order_doc, str):
+		doc = frappe.get_doc("Sales Order", sales_order_doc)
+	if not ps or not ps.name:
+		return ps
+	if not doc or not getattr(doc, "name", None):
+		return ps
+	_populate_planning_sheet_items(ps, doc)
+	ensure_lamination_booking_for_planning_sheet(ps)
+	update_sheet_plan_codes(ps, include_legacy=True)
+	ps.flags.ignore_permissions = True
+	ps.save(ignore_permissions=True)
+	frappe.db.commit()
+	_run_planning_sheet_post_sync(ps.name)
+	ps.reload()
+	ensure_lamination_booking_for_planning_sheet(ps)
+	update_sheet_plan_codes(ps, include_legacy=True)
+	ps.flags.ignore_permissions = True
+	ps.save(ignore_permissions=True)
+	frappe.db.commit()
+	return ps
+
+
 def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 104/107, append required child rows to legacy items + board table. Idempotent."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
@@ -16689,7 +16720,18 @@ def create_planning_sheet_from_so(doc):
     try:
         existing_sheet = _find_existing_sheet_for_sales_order(doc.name)
         if existing_sheet:
-            return
+            ps_existing = frappe.get_doc("Planning sheet", existing_sheet["name"])
+            if int(ps_existing.docstatus or 0) != 0:
+                frappe.msgprint(
+                    f"Planning Sheet <b>{ps_existing.name}</b> is submitted — cannot rebuild from Sales Order.",
+                    indicator="orange",
+                )
+                return ps_existing
+            _rebuild_planning_sheet_from_sales_order(ps_existing, doc)
+            frappe.msgprint(
+                f"Planning Sheet <b>{ps_existing.name}</b> re-synced from Sales Order (all processes / BOM children)."
+            )
+            return ps_existing
             
         # --- GET ACTIVE UNLOCKED PLANS ---
         try:
@@ -16718,20 +16760,14 @@ def create_planning_sheet_from_so(doc):
         ps.custom_plan_name = _get_contextual_plan_name(cc_plan, doc.transaction_date)
         ps.custom_pb_plan_name = pb_plan
 
-        _populate_planning_sheet_items(ps, doc)
-        ensure_lamination_booking_for_planning_sheet(ps)
-        update_sheet_plan_codes(ps, include_legacy=True)
         if not ps.get("quality"):
             ps.quality = "Standard"
         ps.flags.ignore_permissions = True
         ps.insert()
         frappe.db.commit()
-        _run_planning_sheet_post_sync(ps.name)
-        final_doc = frappe.get_doc("Planning sheet", ps.name)
-        ensure_lamination_booking_for_planning_sheet(final_doc)
-        update_sheet_plan_codes(final_doc, include_legacy=True)
-        final_doc.save(ignore_permissions=True)
-        frappe.msgprint(f"ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â£ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  Planning Sheet <b>{ps.name}</b> Created!")
+        final_doc = _rebuild_planning_sheet_from_sales_order(ps, doc)
+        frappe.msgprint(f"Planning Sheet <b>{final_doc.name}</b> created and synchronized (all processes).")
+        return final_doc
 
     except Exception as e:
         frappe.log_error("Planning Sheet Creation Failed: " + str(e))
@@ -19044,16 +19080,7 @@ def auto_create_planning_sheet(doc, method=None):
             if not (sheet.get("party_code") or "").strip():
                 generate_party_code(sheet)
 
-            _populate_planning_sheet_items(sheet, doc)
-            ensure_lamination_booking_for_planning_sheet(sheet)
-            update_sheet_plan_codes(sheet, include_legacy=True)
-            sheet.save(ignore_permissions=True)
-            frappe.db.commit()
-            _run_planning_sheet_post_sync(sheet.name)
-            sheet.reload()
-            ensure_lamination_booking_for_planning_sheet(sheet)
-            update_sheet_plan_codes(sheet, include_legacy=True)
-            sheet.save(ignore_permissions=True)
+            _rebuild_planning_sheet_from_sales_order(sheet, doc)
 
         frappe.msgprint(f"Planning Sheet <b>{sheet.name}</b> already exists for Sales Order <b>{doc.name}</b>. Reusing existing sheet.")
         return sheet
@@ -19073,11 +19100,6 @@ def auto_create_planning_sheet(doc, method=None):
     # color orders as "pushed". White items have planned_date set by
     # _populate_planning_sheet_items, and the SQL filter finds them via EXISTS.
 
-    _populate_planning_sheet_items(ps, doc)
-    ensure_lamination_booking_for_planning_sheet(ps)
-    
-    update_sheet_plan_codes(ps, include_legacy=True)
-
     if not ps.get("quality"):
         ps.quality = "Standard"
 
@@ -19085,14 +19107,8 @@ def auto_create_planning_sheet(doc, method=None):
     ps.insert()
     frappe.db.commit()
 
-    _run_planning_sheet_post_sync(ps.name)
-    frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> created in unlocked plan <b>{ps.custom_plan_name}</b> and synchronized.")
-    final_doc = frappe.get_doc("Planning sheet", ps.name)
-    ensure_lamination_booking_for_planning_sheet(final_doc)
-    update_sheet_plan_codes(final_doc, include_legacy=True)
-    final_doc.save(ignore_permissions=True)
-    # frappe.db.set_value("Planning sheet", ps.name, "custom_plan_code", final_doc.custom_plan_code)
-    
+    final_doc = _rebuild_planning_sheet_from_sales_order(ps, doc)
+    frappe.msgprint(f"Planning Sheet <b>{final_doc.name}</b> created in unlocked plan <b>{final_doc.custom_plan_name}</b> and synchronized.")
     return final_doc
 
 # ------------------------------------------------------------
@@ -19102,10 +19118,13 @@ def auto_create_planning_sheet(doc, method=None):
 @frappe.whitelist()
 def regenerate_planning_sheet(so_name):
     """Regenerate (or re-sync) a Planning Sheet for a Sales Order.
-    - If a draft sheet already exists: re-populates items and re-runs all sync steps (BOM children etc.).
-    - If no sheet exists: creates a new one.
-    - Uses the first unlocked Color Chart plan; aborts if all locked.
-    - Does NOT set `custom_planned_date` on creation.
+
+    Uses the same rebuild pipeline as **Make Planning Sheet** on the Sales Order
+    (``_rebuild_planning_sheet_from_sales_order`` → all BOM / unit / trace sync for every process).
+
+    - Draft sheet exists: full rebuild on that sheet.
+    - No sheet: creates one, then full rebuild.
+    - Uses the first unlocked Color Chart plan when creating; aborts if all locked.
     """
     if not so_name:
         frappe.throw("Sales Order Name is required")
@@ -19120,19 +19139,10 @@ def regenerate_planning_sheet(so_name):
                 f"Planning Sheet <b>{ps.name}</b> is already submitted/cancelled. "
                 "Amend or delete it first before regenerating."
             )
-        # Re-populate items and run all sync steps on the existing draft sheet.
-        _populate_planning_sheet_items(ps, doc)
-        ensure_lamination_booking_for_planning_sheet(ps)
-        update_sheet_plan_codes(ps, include_legacy=True)
-        ps.flags.ignore_permissions = True
-        ps.save(ignore_permissions=True)
-        frappe.db.commit()
-        _run_planning_sheet_post_sync(ps.name)
-        ps.reload()
-        ensure_lamination_booking_for_planning_sheet(ps)
-        update_sheet_plan_codes(ps, include_legacy=True)
-        ps.save(ignore_permissions=True)
-        frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> re-synced (BOM children, lam rows, slitting).")
+        ps = _rebuild_planning_sheet_from_sales_order(ps, doc)
+        frappe.msgprint(
+            f"Planning Sheet <b>{ps.name}</b> re-synced (same as Make Planning Sheet — all processes)."
+        )
         return ps
 
     # 1. FETCH UNLOCKED PLAN (same logic as auto_create)
@@ -19155,11 +19165,6 @@ def regenerate_planning_sheet(so_name):
     ps.custom_plan_name = _get_contextual_plan_name(cc_plan, doc.transaction_date)
     ps.custom_pb_plan_name = ""
 
-    _populate_planning_sheet_items(ps, doc)
-    ensure_lamination_booking_for_planning_sheet(ps)
-    
-    update_sheet_plan_codes(ps, include_legacy=True)
-
     if not ps.get("quality"):
         ps.quality = "Standard"
 
@@ -19167,13 +19172,8 @@ def regenerate_planning_sheet(so_name):
     ps.insert()
     frappe.db.commit()
 
-    _run_planning_sheet_post_sync(ps.name)
-    ps.reload()
-    ensure_lamination_booking_for_planning_sheet(ps)
-    update_sheet_plan_codes(ps, include_legacy=True)
-    ps.save(ignore_permissions=True)
-
-    frappe.msgprint(f"Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
+    ps = _rebuild_planning_sheet_from_sales_order(ps, doc)
+    frappe.msgprint(f"Regenerated Planning Sheet <b>{ps.name}</b> and synchronized (all processes).")
     return ps
 
 
@@ -19193,18 +19193,13 @@ def sync_bom_children_for_planning_sheet(planning_sheet):
 
     doc = frappe.get_doc("Sales Order", ps.sales_order) if ps.get("sales_order") else None
     if doc:
-        _populate_planning_sheet_items(ps, doc)
+        ps = _rebuild_planning_sheet_from_sales_order(ps, doc)
+    else:
+        _run_planning_sheet_post_sync(ps_name)
+        ps.reload()
         ensure_lamination_booking_for_planning_sheet(ps)
         update_sheet_plan_codes(ps, include_legacy=True)
-        ps.flags.ignore_permissions = True
         ps.save(ignore_permissions=True)
-        frappe.db.commit()
-
-    _run_planning_sheet_post_sync(ps_name)
-    ps.reload()
-    ensure_lamination_booking_for_planning_sheet(ps)
-    update_sheet_plan_codes(ps, include_legacy=True)
-    ps.save(ignore_permissions=True)
 
     # Check if 251 fabric rows were added
     sc_fabric_count = frappe.db.sql(
