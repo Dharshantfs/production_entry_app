@@ -3302,6 +3302,18 @@ def _pt_soi_key(row):
 	return (row.get("sales_order_item") or row.get("so_item") or "").strip()
 
 
+def _planning_child_row_fields_for_query(doctype):
+	"""Only columns that exist on this site's child table (PSI may lack sales_order_item)."""
+	flds = ["name", "item_code"]
+	for col in ("sales_order_item", "so_item", "custom_parent_child_trace_id"):
+		try:
+			if frappe.db.has_column(doctype, col):
+				flds.append(col)
+		except Exception:
+			pass
+	return flds
+
+
 def _fg_design_prefix_from_item_code(item_code):
 	"""Design prefix before ``-108`` / ``-107`` / ``-254`` (e.g. ``7465-108F…`` → ``7465``)."""
 	ic = str(item_code or "").strip().upper()
@@ -3316,11 +3328,12 @@ def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
 		return
 	if not frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
 		return
+	pt_fields = _planning_child_row_fields_for_query("Planning Table")
 	pt_rows = (
 		frappe.get_all(
 			"Planning Table",
 			filters={"parent": planning_sheet_name},
-			fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+			fields=pt_fields,
 			limit_page_length=2000,
 		)
 		or []
@@ -3405,11 +3418,12 @@ def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
 		_apply_trace("Planning Table", pr)
 
 	if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+		psi_fields = _planning_child_row_fields_for_query("Planning sheet Item")
 		psi_rows = (
 			frappe.get_all(
 				"Planning sheet Item",
 				filters={"parent": planning_sheet_name},
-				fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+				fields=psi_fields,
 				limit_page_length=2000,
 			)
 			or []
@@ -3424,11 +3438,12 @@ def _stamp_254_sheet_family_trace_ids(planning_sheet_name):
 		return
 	if not frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
 		return
+	pt_fields = _planning_child_row_fields_for_query("Planning Table")
 	pt_rows = (
 		frappe.get_all(
 			"Planning Table",
 			filters={"parent": planning_sheet_name},
-			fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+			fields=pt_fields,
 			limit_page_length=2000,
 		)
 		or []
@@ -3508,11 +3523,12 @@ def _stamp_254_sheet_family_trace_ids(planning_sheet_name):
 		_apply_254_trace("Planning Table", pr)
 
 	if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+		psi_fields = _planning_child_row_fields_for_query("Planning sheet Item")
 		psi_rows = (
 			frappe.get_all(
 				"Planning sheet Item",
 				filters={"parent": planning_sheet_name},
-				fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_child_trace_id"],
+				fields=psi_fields,
 				limit_page_length=2000,
 			)
 			or []
@@ -3540,14 +3556,26 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_force_printing_unit_on_sheet(planning_sheet_name)
 	_force_rewinding_unit_on_sheet(planning_sheet_name)
 	_sync_stage3_safe(planning_sheet_name)
-	_stamp_108_bopp_family_trace_ids(planning_sheet_name)
-	_stamp_254_sheet_family_trace_ids(planning_sheet_name)
+	try:
+		_stamp_108_bopp_family_trace_ids(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_108_bopp_family_trace_ids")
+	try:
+		_stamp_254_sheet_family_trace_ids(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_254_sheet_family_trace_ids")
 	try:
 		backfill_parent_child_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:backfill_parent_child_trace_ids")
-	_stamp_108_bopp_family_trace_ids(planning_sheet_name)
-	_stamp_254_sheet_family_trace_ids(planning_sheet_name)
+	try:
+		_stamp_108_bopp_family_trace_ids(planning_sheet_name)
+	except Exception:
+		pass
+	try:
+		_stamp_254_sheet_family_trace_ids(planning_sheet_name)
+	except Exception:
+		pass
 
 
 def _rebuild_planning_sheet_from_sales_order(planning_sheet, sales_order_doc):
