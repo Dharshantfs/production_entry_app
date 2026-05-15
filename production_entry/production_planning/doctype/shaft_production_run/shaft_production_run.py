@@ -1380,6 +1380,8 @@ class ShaftProductionRun(Document):
 		self.recalculate_job_achieved_meters()
 		self.generate_batch_numbers()
 		self._spr_recalc_total_produced_weight_header()
+		if cint(getattr(self, "custom_is_sheet_cutting", 0)):
+			sync_bundle_total_produced_sheets_for_doc(self)
 
 	def normalize_custom_unit(self):
 		unit_value = _cstr(self.get("custom_unit"))
@@ -4385,7 +4387,7 @@ def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=
 		row["work_order"] = wo.get("name") if wo else ""
 		row["order_code"] = oc
 		row["order_meter"] = om or flt(row.get("order_meter") or 0)
-		row["total_produced_sheets"] = tpb
+		row["total_produced_sheets"] = 0
 		out.append(row)
 	return out
 
@@ -4401,6 +4403,30 @@ def populate_spr_bundle_calculation_from_pp(spr_doc, production_plan, order_code
 	return rows
 
 
+def _spr_bundle_job_tag(bundle_row, bundle_index: int, bundle_row_idx=None) -> str:
+	"""Stable link between bundle_calculation row and roll lines (job field)."""
+	row_id = _cstr(getattr(bundle_row, "name", None) or "")
+	if not row_id and bundle_row_idx is not None:
+		row_id = f"idx{cint(bundle_row_idx)}"
+	return f"{row_id}::{cint(bundle_index)}"
+
+
+def _spr_bundle_job_prefix(bundle_row, bundle_row_idx=None) -> str:
+	row_id = _cstr(getattr(bundle_row, "name", None) or "")
+	if not row_id and bundle_row_idx is not None:
+		row_id = f"idx{cint(bundle_row_idx)}"
+	return f"{row_id}::" if row_id else ""
+
+
+def _spr_planned_pcs_per_bundle(bundle_row) -> float:
+	pkts = cint(getattr(bundle_row, "pkts_per_bundle", 0) or 0)
+	pcs = cint(getattr(bundle_row, "pcs_per_packet", 0) or 0)
+	tpb = flt(getattr(bundle_row, "total_pcs_per_bundle", 0) or 0)
+	if tpb <= 0 and pkts > 0 and pcs > 0:
+		tpb = flt(pkts * pcs)
+	return flt(tpb)
+
+
 def _spr_bundle_row_by_key(spr_doc, bundle_row_name=None, bundle_row_idx=None):
 	rows = getattr(spr_doc, "bundle_calculation", None) or []
 	if bundle_row_name:
@@ -4414,17 +4440,15 @@ def _spr_bundle_row_by_key(spr_doc, bundle_row_name=None, bundle_row_idx=None):
 	return None
 
 
-def _spr_item_line_from_bundle(pp_name, bundle_row, bundle_index: int, wo: dict, order_code: str):
+def _spr_item_line_from_bundle(
+	pp_name, bundle_row, bundle_index: int, wo: dict, order_code: str, bundle_row_idx=None
+):
 	"""Build one Roll Production Result line for sheet-cutting bundle Create Entry."""
 	item_code = _cstr(getattr(bundle_row, "item_code", None) or wo.get("production_item"))
 	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 	gsm = _sheet_cutting_parse_gsm(item_code)
-	pkts = cint(getattr(bundle_row, "pkts_per_bundle", 0) or 0)
-	pcs = cint(getattr(bundle_row, "pcs_per_packet", 0) or 0)
-	pcs_per_bundle = flt(getattr(bundle_row, "total_pcs_per_bundle", 0) or 0)
-	if pcs_per_bundle <= 0 and pkts > 0 and pcs > 0:
-		pcs_per_bundle = flt(pkts * pcs)
+	pcs_per_bundle = _spr_planned_pcs_per_bundle(bundle_row)
 	order_m = flt(getattr(bundle_row, "order_meter", 0) or 0)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row = {
@@ -4434,7 +4458,7 @@ def _spr_item_line_from_bundle(pp_name, bundle_row, bundle_index: int, wo: dict,
 		"quality": quality or None,
 		"gsm": gsm,
 		"planned_qty": 0,
-		"job": _cstr(bundle_index),
+		"job": _spr_bundle_job_tag(bundle_row, bundle_index, bundle_row_idx),
 		"batch_no": "",
 		"party_code": order_code or get_order_code(frappe.get_doc("Work Order", wo["name"])),
 		"uom": _item_stock_uom_for_spr(item_code),
@@ -4448,8 +4472,12 @@ def _spr_item_line_from_bundle(pp_name, bundle_row, bundle_index: int, wo: dict,
 	}
 	if spi_meta.has_field("custom_sheet_size"):
 		row["custom_sheet_size"] = _cstr(getattr(bundle_row, "sheet_cutting_size", None))
+	if spi_meta.has_field("custom_planned_sheets_pcs"):
+		row["custom_planned_sheets_pcs"] = pcs_per_bundle
+	elif spi_meta.has_field("planned_qty"):
+		row["planned_qty"] = pcs_per_bundle
 	if spi_meta.has_field("custom_total_produced_sheets"):
-		row["custom_total_produced_sheets"] = pcs_per_bundle
+		row["custom_total_produced_sheets"] = 0
 	return row
 
 
@@ -4479,10 +4507,74 @@ def build_spr_bundle_result_lines_for_row(
 	if not wo:
 		frappe.throw(_("No Work Order found for item {0} on Production Plan {1}").format(ic, pp_name))
 	order_code = _cstr(getattr(spr_doc, "custom_order_code", None) or getattr(bundle_row, "order_code", None))
+	resolved_idx = bundle_row_idx
+	rows = list(getattr(spr_doc, "bundle_calculation", None) or [])
+	if resolved_idx is None and bundle_row_name:
+		for i, r in enumerate(rows):
+			if r.name == bundle_row_name:
+				resolved_idx = i
+				break
+	if resolved_idx is None:
+		try:
+			resolved_idx = rows.index(bundle_row)
+		except ValueError:
+			resolved_idx = max(cint(getattr(bundle_row, "idx", 0)) - 1, 0)
 	lines = []
 	for i in range(n_bundles):
-		lines.append(_spr_item_line_from_bundle(pp_name, bundle_row, i + 1, wo, order_code))
+		lines.append(
+			_spr_item_line_from_bundle(
+				pp_name, bundle_row, i + 1, wo, order_code, bundle_row_idx=resolved_idx
+			)
+		)
 	return lines
+
+
+def _spr_sum_produced_sheets_for_bundle_row(spr_doc, bundle_row, bundle_row_idx=None) -> float:
+	"""Sum Produced Sheets (PCS) from roll lines linked to one bundle_calculation row."""
+	prefix = _spr_bundle_job_prefix(bundle_row, bundle_row_idx)
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	pcs_field = (
+		"custom_total_produced_sheets"
+		if spi_meta.has_field("custom_total_produced_sheets")
+		else None
+	)
+	if not pcs_field:
+		return 0.0
+	total = 0.0
+	prefix_hits = 0
+	ic = _cstr(getattr(bundle_row, "item_code", None))
+	wo = _cstr(getattr(bundle_row, "work_order", None))
+	n_bundles = cint(getattr(bundle_row, "no_of_bundles", 0) or 0)
+	for it in spr_doc.get("items") or []:
+		job = _cstr(getattr(it, "job", None))
+		matched = bool(prefix and job.startswith(prefix))
+		if matched:
+			prefix_hits += 1
+			total += flt(getattr(it, pcs_field, 0) or 0)
+	if prefix_hits:
+		return flt(total, 0)
+	# Legacy rows: job was "1", "2", … before bundle-row tags were introduced.
+	for it in spr_doc.get("items") or []:
+		job = _cstr(getattr(it, "job", None))
+		if _cstr(getattr(it, "item_code", None)) != ic or _cstr(getattr(it, "work_order", None)) != wo:
+			continue
+		try:
+			jn = int(job)
+		except (TypeError, ValueError):
+			continue
+		if n_bundles > 0 and not (1 <= jn <= n_bundles):
+			continue
+		total += flt(getattr(it, pcs_field, 0) or 0)
+	return flt(total, 0)
+
+
+def sync_bundle_total_produced_sheets_for_doc(spr_doc) -> None:
+	"""Update bundle_calculation.total_produced_sheets from roll line sums."""
+	if not spr_doc or not hasattr(spr_doc, "bundle_calculation"):
+		return
+	rows = list(spr_doc.get("bundle_calculation") or [])
+	for idx, br in enumerate(rows):
+		br.total_produced_sheets = _spr_sum_produced_sheets_for_bundle_row(spr_doc, br, bundle_row_idx=idx)
 
 
 def _expand_spr_name_tokens_csv(spr_csv: str) -> list[str]:
@@ -4515,12 +4607,8 @@ def _sheet_cutting_spr_metrics(spr_names, pp_id=None):
 			except Exception:
 				continue
 			for br in getattr(spr, "bundle_calculation", None) or []:
-				pkts = cint(getattr(br, "pkts_per_bundle", 0) or 0)
-				pcs = cint(getattr(br, "pcs_per_packet", 0) or 0)
-				tpb = flt(getattr(br, "total_pcs_per_bundle", 0) or 0)
-				if tpb <= 0 and pkts > 0 and pcs > 0:
-					tpb = flt(pkts * pcs)
-				metrics["total_planned_sheet_pcs"] += tpb
+				metrics["total_planned_sheet_pcs"] += _spr_planned_pcs_per_bundle(br)
+				metrics["total_produced_sheet_pcs"] += flt(getattr(br, "total_produced_sheets", 0) or 0)
 	elif pp_id:
 		for src in _read_pp_bundle_calculation_rows(pp_id):
 			pkts = cint(src.get("pkts_per_bundle") or 0)
@@ -4555,7 +4643,8 @@ def _sheet_cutting_spr_metrics(spr_names, pp_id=None):
 				continue
 			metrics["achieved_kg"] += flt(r.get("kgs"))
 			metrics["produced_meter"] += flt(r.get("len_m"))
-			metrics["total_produced_sheet_pcs"] += flt(r.get("pcs_sum"))
+			if metrics["total_produced_sheet_pcs"] <= 0:
+				metrics["total_produced_sheet_pcs"] += flt(r.get("pcs_sum"))
 	return metrics
 
 
@@ -6929,6 +7018,27 @@ def get_order_code(wo_doc):
 					return str(v).strip()
 		return str(so).strip()
 	return ""
+
+
+@frappe.whitelist()
+def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
+	"""Recompute bundle_calculation.total_produced_sheets from roll line sums (desk)."""
+	spr_name = _cstr(spr_name)
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found."))
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
+	sync_bundle_total_produced_sheets_for_doc(doc)
+	if cint(doc.docstatus) == 0:
+		doc.save()
+	out = []
+	for br in doc.get("bundle_calculation") or []:
+		out.append(
+			{
+				"name": br.name,
+				"total_produced_sheets": flt(getattr(br, "total_produced_sheets", 0) or 0),
+			}
+		)
+	return {"status": "ok", "rows": out}
 
 
 @frappe.whitelist()

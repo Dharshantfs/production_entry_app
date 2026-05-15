@@ -38,6 +38,7 @@
   "custom_lamination_shift",
   "custom_lam_gsm",
   "custom_bopp_gsm",
+  "custom_no_of_sheets",
   "custom_lam_side_",
   "custom_slitting_shift",
   "custom_cylinder_type",
@@ -263,6 +264,13 @@
    "in_list_view": 1,
    "label": "BOPP GSM",
    "read_only": 1
+  },
+  {
+   "fieldname": "custom_no_of_sheets",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "No of Sheets (Planned PCS)",
+   "precision": "0"
   },
   {
    "fieldname": "custom_lam_side_",

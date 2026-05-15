@@ -8493,6 +8493,11 @@ def get_sheet_cutting_order_table_data(
     fabric_pick_sql_s = _sql_correlated_pick_one_fabric_name("pt")
     lam_gsm_sql = "IFNULL(pt.custom_lam_gsm, 0)" if frappe.db.has_column("Planning Table", "custom_lam_gsm") else "0"
     bopp_gsm_sql = "IFNULL(pt.custom_bopp_gsm, 0)" if frappe.db.has_column("Planning Table", "custom_bopp_gsm") else "0"
+    no_of_sheets_sql = (
+        "IFNULL(pt.custom_no_of_sheets, 0)"
+        if frappe.db.has_column("Planning Table", "custom_no_of_sheets")
+        else "0"
+    )
     extra = frappe.db.sql(
         f"""
         SELECT
@@ -8504,7 +8509,8 @@ def get_sheet_cutting_order_table_data(
             IFNULL(pt.width_inch, 0) as roll_size,
             IFNULL(pt.meter, 0) as mtr,
             {lam_gsm_sql} as custom_lam_gsm,
-            {bopp_gsm_sql} as custom_bopp_gsm
+            {bopp_gsm_sql} as custom_bopp_gsm,
+            {no_of_sheets_sql} as custom_no_of_sheets
         FROM `tabPlanning Table` pt
         LEFT JOIN `tabPlanning Table` fab ON fab.name = {fabric_pick_sql_s}
         WHERE pt.name IN ({fmt})
@@ -8585,11 +8591,14 @@ def get_sheet_cutting_order_table_data(
 
             pp_id_row = _cstr(row.get("pp_id") or "").strip()
             sc_metrics = _sheet_cutting_spr_metrics(_expand_spr_name_tokens(spr_nm), pp_id_row)
-            row["total_planned_sheet_pcs"] = flt(sc_metrics.get("total_planned_sheet_pcs"))
+            planned_sheets = flt(ex.get("custom_no_of_sheets") or 0)
+            row["custom_no_of_sheets"] = planned_sheets
+            row["total_planned_sheet_pcs"] = planned_sheets
             row["total_produced_sheet_pcs"] = flt(sc_metrics.get("total_produced_sheet_pcs"))
             row["produced_meter"] = flt(sc_metrics.get("produced_meter"))
         except Exception:
-            row["total_planned_sheet_pcs"] = 0.0
+            row["custom_no_of_sheets"] = flt(ex.get("custom_no_of_sheets") or 0)
+            row["total_planned_sheet_pcs"] = flt(ex.get("custom_no_of_sheets") or 0)
             row["total_produced_sheet_pcs"] = 0.0
             row["produced_meter"] = 0.0
         row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()

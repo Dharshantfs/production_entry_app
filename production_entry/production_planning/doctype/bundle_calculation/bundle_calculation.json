@@ -55,7 +55,8 @@
    "fieldname": "total_pcs_per_bundle",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Total Pcs per Bundle"
+   "label": "Total Planned Pcs per Bundle",
+   "read_only": 1
   },
   {
    "fieldname": "work_order",
@@ -79,8 +80,10 @@
   {
    "fieldname": "total_produced_sheets",
    "fieldtype": "Float",
+   "in_list_view": 1,
    "label": "Total Produced Sheets (PCS)",
-   "precision": "0"
+   "precision": "0",
+   "read_only": 1
   },
   {
    "fieldname": "create_bundle_entry",

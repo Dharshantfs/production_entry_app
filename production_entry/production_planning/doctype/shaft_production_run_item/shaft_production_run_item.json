@@ -29,6 +29,7 @@
   "color",
   "column_break_11",
   "custom_sheet_size",
+  "custom_planned_sheets_pcs",
   "custom_total_produced_sheets",
   "width_inch",
   "row_ready_for_print",
@@ -177,6 +178,13 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Sheet Size"
+  },
+  {
+   "fieldname": "custom_planned_sheets_pcs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Planned Sheets (PCS)",
+   "precision": "0"
   },
   {
    "fieldname": "custom_total_produced_sheets",

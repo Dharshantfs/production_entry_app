@@ -145,8 +145,74 @@ function sprScheduleTotalProducedSync(frm, opts) {
 	}
 	frm.__spr_total_sync_timer = setTimeout(function () {
 		spr_sync_total_produced_weight(frm, opts || {});
+		if (sprIsSheetCutting(frm)) {
+			sprSyncBundleProducedSheets(frm, opts || {});
+		}
 		frm.__spr_total_sync_timer = null;
 	}, 120);
+}
+
+/** Sum roll-line Produced Sheets into bundle_calculation.total_produced_sheets (sheet cutting). */
+function sprSyncBundleProducedSheets(frm, opts) {
+	if (!frm || !sprIsSheetCutting(frm)) {
+		return;
+	}
+	const bundles = frm.doc.bundle_calculation || [];
+	if (!bundles.length) {
+		return;
+	}
+	const items = frm.doc.items || [];
+	bundles.forEach(function (br, idx) {
+		const rowId = String(br.name || '').trim() || 'idx' + String(idx);
+		const prefix = rowId + '::';
+		const ic = String(br.item_code || '').trim();
+		const wo = String(br.work_order || '').trim();
+		const nBundles = cint(br.no_of_bundles);
+		let sum = 0;
+		let prefixHits = 0;
+		items.forEach(function (it) {
+			const job = String(it.job || '');
+			if (job.indexOf(prefix) === 0) {
+				prefixHits += 1;
+				sum += flt(it.custom_total_produced_sheets);
+			}
+		});
+		if (!prefixHits) {
+			items.forEach(function (it) {
+				if (String(it.item_code || '').trim() !== ic || String(it.work_order || '').trim() !== wo) {
+					return;
+				}
+				const jn = parseInt(String(it.job || ''), 10);
+				if (isNaN(jn)) {
+					return;
+				}
+				if (nBundles > 0 && (jn < 1 || jn > nBundles)) {
+					return;
+				}
+				sum += flt(it.custom_total_produced_sheets);
+			});
+		}
+		const cur = flt(br.total_produced_sheets);
+		if (Math.abs(cur - sum) > 1e-6) {
+			if (br.name) {
+				frappe.model.set_value('Bundle Calculation', br.name, 'total_produced_sheets', sum);
+			} else {
+				br.total_produced_sheets = sum;
+			}
+		}
+	});
+	if (!(opts && opts.silent)) {
+		frm.refresh_field('bundle_calculation');
+	}
+}
+
+function sprRecalcBundlePlannedPcs(frm, cdt, cdn) {
+	const row = locals[cdt][cdn];
+	if (!row) {
+		return;
+	}
+	const tpb = cint(row.pkts_per_bundle) * cint(row.pcs_per_packet);
+	frappe.model.set_value(cdt, cdn, 'total_pcs_per_bundle', tpb > 0 ? tpb : 0);
 }
 
 function sprAutoSaveAfterCreateEntry(frm) {
@@ -1717,6 +1783,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 }
 
 frappe.ui.form.on('Bundle Calculation', {
+	pkts_per_bundle: function (frm, cdt, cdn) {
+		sprRecalcBundlePlannedPcs(frm, cdt, cdn);
+	},
+	pcs_per_packet: function (frm, cdt, cdn) {
+		sprRecalcBundlePlannedPcs(frm, cdt, cdn);
+	},
 	create_bundle_entry: function (frm, cdt, cdn) {
 		const row = locals[cdt][cdn];
 		if (!sprIsSheetCutting(frm)) {
@@ -1783,6 +1855,7 @@ frappe.ui.form.on('Bundle Calculation', {
 				}
 
 				function finishCreateEntry() {
+					sprSyncBundleProducedSheets(frm, { silent: true });
 					sprScheduleTotalProducedSync(frm);
 					const totalRows = (frm.doc.items || []).length;
 					if (totalRows <= 250) {
@@ -1998,6 +2071,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 });
 
 frappe.ui.form.on('Shaft Production Run Item', {
+	custom_total_produced_sheets: function (frm) {
+		sprSyncBundleProducedSheets(frm);
+	},
 	net_weight: function (frm, cdt, cdn) {
 		const row = locals[cdt][cdn];
 		const rounded = spr_round_net_weight_kg(row.net_weight);
@@ -2561,6 +2637,7 @@ function sprLoadBundleCalculationFromPp(frm, presetRows) {
 			});
 		});
 		frm.refresh_field('bundle_calculation');
+		sprSyncBundleProducedSheets(frm, { silent: true });
 		frm.clear_table('items');
 		frm.refresh_field('items');
 		fetch_and_show_pp_wo_summary(frm);
@@ -2609,12 +2686,19 @@ function sprToggleSheetCuttingRollUi(frm) {
 	try {
 		const widthField = frappe.meta.get_docfield('Shaft Production Run Item', 'width_inch');
 		const sheetSizeField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_sheet_size');
+		const plannedPcsField = frappe.meta.get_docfield(
+			'Shaft Production Run Item',
+			'custom_planned_sheets_pcs'
+		);
 		const pcsField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_total_produced_sheets');
 		if (widthField) {
 			widthField.hidden = hideWidthCol;
 		}
 		if (sheetSizeField) {
 			sheetSizeField.hidden = hideSheetCols;
+		}
+		if (plannedPcsField) {
+			plannedPcsField.hidden = hideSheetCols;
 		}
 		if (pcsField) {
 			pcsField.hidden = hideSheetCols;
@@ -2631,6 +2715,9 @@ function sprToggleSheetCuttingRollUi(frm) {
 			fd.grid.update_docfield_property('custom_sheet_size', 'hidden', hideSheetCols);
 		} catch (e) {}
 		try {
+			fd.grid.update_docfield_property('custom_planned_sheets_pcs', 'hidden', hideSheetCols);
+		} catch (e) {}
+		try {
 			fd.grid.update_docfield_property('custom_total_produced_sheets', 'hidden', hideSheetCols);
 		} catch (e) {}
 		if (typeof fd.grid.toggle_display === 'function') {
@@ -2639,6 +2726,9 @@ function sprToggleSheetCuttingRollUi(frm) {
 			} catch (e) {}
 			try {
 				fd.grid.toggle_display('custom_sheet_size', showSheetCols);
+			} catch (e) {}
+			try {
+				fd.grid.toggle_display('custom_planned_sheets_pcs', showSheetCols);
 			} catch (e) {}
 			try {
 				fd.grid.toggle_display('custom_total_produced_sheets', showSheetCols);
