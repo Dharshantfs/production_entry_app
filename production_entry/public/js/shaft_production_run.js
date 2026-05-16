@@ -162,10 +162,24 @@ function sprRollProcessPrefix(frm) {
 	}
 	const rows = frm.doc.items || [];
 	for (let i = 0; i < rows.length; i++) {
-		const code = String((rows[i] && rows[i].item_code) || '').trim();
+		const code = String((rows[i] && rows[i].item_code) || '').trim().toUpperCase();
+		if (!code) {
+			continue;
+		}
+		if (code.startsWith('104') || code.startsWith('107')) {
+			return code.substring(0, 3);
+		}
+		const m107 = code.match(/^[A-Z0-9]+-107(?=[A-Z0-9])/);
+		if (m107) {
+			return '107';
+		}
+		const m104 = code.match(/^[A-Z0-9]+-104(?=[A-Z0-9])/);
+		if (m104) {
+			return '104';
+		}
 		if (code.length >= 3) {
 			const prefix = code.substring(0, 3);
-			if (prefix === '100' || prefix === '104') {
+			if (prefix === '100' || prefix === '104' || prefix === '107') {
 				return prefix;
 			}
 		}
@@ -2896,8 +2910,8 @@ function spr_hide_duplicate_produced_gsm_columns(frm) {
 
 function sprToggleLaminationRollUi(frm) {
 	const processPrefix = sprRollProcessPrefix(frm);
-	const isProcess104 = processPrefix === '104';
-	const showLamCols = isProcess104 || sprUsesLaminationRollPrompt(frm);
+	const isLaminationProcess = processPrefix === '104' || processPrefix === '107';
+	const showLamCols = isLaminationProcess || sprUsesLaminationRollPrompt(frm);
 	const hidePlanned = showLamCols ? 1 : 0;
 	const hideLamCols = showLamCols ? 0 : 1;
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;

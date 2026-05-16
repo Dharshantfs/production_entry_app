@@ -143,7 +143,22 @@ def _spr_first_roll_item_code(doc) -> str:
 	return ""
 
 
-def _pp_has_104_work_order(pp_name: str) -> bool:
+def _spr_item_is_lamination_process(item_code: str) -> bool:
+	"""True for fabric lamination (104) or BOPP lamination (107), including design-first codes."""
+	ic = _cstr(item_code).upper()
+	if not ic:
+		return False
+	if ic.startswith("104") or ic.startswith("107"):
+		return True
+	if re.match(r"^[A-Z0-9]+-107(?=[A-Z0-9])", ic):
+		return True
+	if re.match(r"^[A-Z0-9]+-104(?=[A-Z0-9])", ic):
+		return True
+	return False
+
+
+def _pp_has_lamination_work_order(pp_name: str) -> bool:
+	"""True when the production plan has FG work orders for process 104 or 107 lamination."""
 	if not pp_name or not frappe.db.exists("Production Plan", pp_name):
 		return False
 	try:
@@ -151,10 +166,10 @@ def _pp_has_104_work_order(pp_name: str) -> bool:
 			"Work Order",
 			filters={"production_plan": pp_name, "docstatus": ["!=", 2]},
 			fields=["production_item"],
-			limit=30,
+			limit=50,
 		):
 			pi = _cstr((w or {}).get("production_item") or "")
-			if pi.upper().startswith("104"):
+			if _spr_item_is_lamination_process(pi):
 				return True
 	except Exception:
 		pass
@@ -162,14 +177,14 @@ def _pp_has_104_work_order(pp_name: str) -> bool:
 
 
 def spr_doc_is_lamination(doc) -> bool:
-	"""104 lamination flow: operator checks Is Lamination and plan / roll item is 104…"""
+	"""Lamination SPR: Is Lamination ticked and plan / roll lines are process 104 or 107."""
 	if not doc or not cint(getattr(doc, "custom_is_lamination", 0) or 0):
 		return False
 	ic = _spr_first_roll_item_code(doc)
-	if ic and ic.upper().startswith("104"):
+	if ic and _spr_item_is_lamination_process(ic):
 		return True
 	pp = _cstr(getattr(doc, "production_plan", None) or "")
-	return _pp_has_104_work_order(pp)
+	return _pp_has_lamination_work_order(pp)
 
 
 def _fabric_gsm_from_item_name(item_name: str) -> int:
@@ -3833,13 +3848,13 @@ def build_spr_roll_result_lines_for_job(
 	elif lam_exact_n > 0:
 		if not spr_doc_is_lamination(spr_doc):
 			frappe.throw(
-				_("Exact roll-line add mode is only for lamination: tick Is Lamination and use a 104 production plan.")
+				_("Exact roll-line add mode is only for lamination: tick Is Lamination and use a 104 or 107 production plan.")
 			)
 		n_rolls = max(1, lam_exact_n)
 	elif lam_n > 0:
 		if not spr_doc_is_lamination(spr_doc):
 			frappe.throw(
-				_("Rolls-per-combination mode is only for lamination: tick Is Lamination and use a 104 production plan.")
+				_("Rolls-per-combination mode is only for lamination: tick Is Lamination and use a 104 or 107 production plan.")
 			)
 		n_rolls = max(1, segs * lam_n)
 	elif spr_doc_is_lamination(spr_doc):
