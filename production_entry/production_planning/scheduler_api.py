@@ -3243,6 +3243,39 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
     return 0
 
 
+def _nominal_inch_from_mm(mm):
+	"""Convert mm width to nominal whole inches (405 mm → 16"), matching Planning Table display."""
+	mm_val = cint(mm or 0)
+	if mm_val <= 0:
+		return 0.0
+	return float(cint(round(mm_val / 25.4)))
+
+
+def _nominal_inch_from_width_code(width_code_str):
+	"""4-digit tail = mm (0405 → 16"); 3-digit tail = tenths of an inch."""
+	wc = _cstr(width_code_str).strip()
+	if not wc.isdigit():
+		return 0.0
+	if len(wc) == 4:
+		return _nominal_inch_from_mm(cint(wc))
+	if len(wc) == 3:
+		return round(flt(cint(wc)) / 10.0, 1)
+	return 0.0
+
+
+def _planning_row_stored_width_inch(row=None, ex=None):
+	"""Width from Planning Table / board row before item-code parsing."""
+	r = row or {}
+	e = ex or {}
+	return flt(
+		e.get("pt_width_inch")
+		or r.get("width_inch")
+		or r.get("widthInch")
+		or r.get("width")
+		or 0
+	)
+
+
 def _parse_104_item_code(item_code):
 	"""Process 104 laminated roll: ``104`` + QQQ + CCC + GGG + WWWW [``-lam``]; optional design prefix."""
 	code = re.sub(r"\s+", "", str(item_code or "").strip().upper())
@@ -3253,12 +3286,7 @@ def _parse_104_item_code(item_code):
 		lam = (gd.get("lam") or "").strip().upper()
 		lam_g = cint(_LAM_GSM_SUFFIX_MAP.get(lam, 0) or 0) if lam else 0
 		wc = (gd.get("width") or "").strip()
-		width_inch = 0.0
-		if wc.isdigit():
-			if len(wc) == 4:
-				width_inch = round(flt(cint(wc)) / 25.4, 1)
-			elif len(wc) == 3:
-				width_inch = round(flt(wc) / 10.0, 1)
+		width_inch = _nominal_inch_from_width_code(wc) if wc else 0.0
 		return {
 			"process": "104",
 			"design_code": design or "",
@@ -3299,12 +3327,12 @@ def _width_inch_from_104_item_code(item_code):
 		if len(block) >= 16:
 			wc = block[12:16]
 			if wc.isdigit():
-				return round(flt(cint(wc)) / 25.4, 1)
+				return _nominal_inch_from_width_code(wc)
 	return 0.0
 
 
 def _resolve_planning_row_width_inch(item_code, db_width=0, item_name=""):
-	"""Best-effort roll width (inch) for order tables — item code first, then Planning Table / name text."""
+	"""Roll width (inch) for order tables — Planning Table value first, then item-code / name text."""
 	w = flt(db_width or 0)
 	ic = _cstr(item_code).strip()
 	inm = _cstr(item_name).strip()
@@ -3325,23 +3353,23 @@ def _resolve_planning_row_width_inch(item_code, db_width=0, item_name=""):
 			p106 = _parse_106_item_code(ic) or {}
 			wmm = cint(p106.get("width_mm") or 0)
 			if wmm > 0:
-				w = round(wmm / 25.4, 1)
+				w = _nominal_inch_from_mm(wmm)
 		elif pp == "105":
 			p105 = _parse_105_item_code(ic) or {}
 			wmm = cint(p105.get("width_mm") or 0)
 			if wmm > 0:
-				w = round(wmm / 25.4, 1)
+				w = _nominal_inch_from_mm(wmm)
 		elif pp == "103":
 			digits = "".join(ch for ch in ic if ch.isdigit())
 			if len(digits) >= 16 and digits.startswith("103"):
 				wc = digits[12:16]
 				if wc.isdigit():
-					w = round(flt(cint(wc)) / 25.4, 1) if len(wc) == 4 else round(flt(wc) / 10.0, 1)
+					w = _nominal_inch_from_width_code(wc)
 		elif pp == "109":
 			p109 = _parse_109_item_code(ic) or {}
 			wc = _cstr(p109.get("width_code")).strip()
 			if wc.isdigit():
-				w = round(flt(cint(wc)) / 25.4, 1) if len(wc) == 4 else round(flt(wc) / 10.0, 1)
+				w = _nominal_inch_from_width_code(wc)
 		elif pp == "100" or ic.startswith("100"):
 			gbw = _fabric_gsm_before_width_in_item_text(f"{ic} {inm}")
 			_, wtxt = _parse_gsm_width_from_item_text(f"{ic} {inm}")
@@ -7395,6 +7423,8 @@ def get_lamination_order_table_data(
     has_pt_spr_lm = frappe.db.has_column("Planning Table", "spr_name")
     child_spr_lm = "IFNULL(fab.spr_name, '')" if has_pt_spr_lm else "''"
     fabric_pick_sql = _sql_correlated_pick_one_fabric_name("pt")
+    has_pt_wi = frappe.db.has_column("Planning Table", "width_inch")
+    pt_width_expr = "IFNULL(pt.width_inch, 0) as pt_width_inch" if has_pt_wi else "0 as pt_width_inch"
 
     extra = frappe.db.sql(
         f"""
@@ -7402,6 +7432,7 @@ def get_lamination_order_table_data(
             pt.name as psi_name,
             pt.parent as ps_name,
             IFNULL(ps.party_code, '') as sheet_party_code,
+            {pt_width_expr},
             IFNULL(pt.meter, 0) as planned_meter,
             {booking_expr} as lamination_booking_id,
             {lam_gsm_expr} as lamination_gsm_value,
@@ -7836,7 +7867,7 @@ def get_lamination_order_table_data(
         _inm_w = str(row.get("item_name") or row.get("itemName") or "").strip()
         row["width_inch"] = _resolve_planning_row_width_inch(
             _ic_w,
-            row.get("width_inch") or row.get("widthInch") or 0,
+            _planning_row_stored_width_inch(row, ex),
             _inm_w,
         )
         out.append(row)
@@ -8223,12 +8254,12 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
             p106 = _parse_106_item_code(ic) or {}
             width_inch = _resolve_planning_row_width_inch(
                 ic,
-                r.get("width_inch") or 0,
+                _planning_row_stored_width_inch(r),
                 frappe.db.get_value("Item", ic, "item_name") if ic else "",
             )
             width_mm = p105.get("width_mm") or p106.get("width_mm")
             if width_inch <= 0 and width_mm:
-                width_inch = round(flt(width_mm) / 25.4)
+                width_inch = _nominal_inch_from_mm(width_mm)
             gsm = flt(r.get("gsm") or 0)
             if gsm <= 0 and (p105.get("gsm") or p106.get("gsm")):
                 gsm = flt(p105.get("gsm") or p106.get("gsm"))
@@ -15656,6 +15687,7 @@ def _get_color_chart_data_impl(
                 "qty": flt(item.get("qty", 0)),
                 "idx": item.get("idx", 0),
                 "width": flt(item.get("width") or item.get("custom_width") or item.get("width_inches") or item.get("width_inch") or item.get("width_in") or 0),
+                "width_inch": flt(item.get("width_inch") or item.get("width") or item.get("custom_width") or item.get("width_inches") or item.get("width_in") or 0),
                 "unit": unit,
                 "planName": sheet.get("planName") or sheet.get("custom_plan_name") or "Default",
                 "pbPlanName": sheet.get("custom_pb_plan_name") or "",
