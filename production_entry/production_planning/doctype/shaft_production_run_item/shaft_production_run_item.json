@@ -28,8 +28,6 @@
   "gross_weight",
   "save_row",
   "uom",
-  "section_break_8",
-  "column_break_11",
   "custom_planned_sheets_pcs",
   "custom_total_produced_sheets",
   "row_ready_for_print",
@@ -61,6 +59,13 @@
    "fieldname": "quality",
    "fieldtype": "Data",
    "label": "Quality",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "color",
+   "fieldtype": "Data",
+   "label": "Color",
    "read_only": 1,
    "in_list_view": 1
   },
@@ -101,11 +106,13 @@
   {
    "fieldname": "batch_no",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Batch No"
   },
   {
    "fieldname": "party_code",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Order Code"
   },
   {
@@ -166,21 +173,6 @@
    "fieldtype": "Link",
    "label": "UOM",
    "options": "UOM"
-  },
-  {
-   "fieldname": "section_break_8",
-   "fieldtype": "Section Break",
-   "label": "Details"
-  },
-  {
-   "fieldname": "color",
-   "fieldtype": "Data",
-   "label": "Color",
-   "in_list_view": 1
-  },
-  {
-   "fieldname": "column_break_11",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "custom_sheet_size",

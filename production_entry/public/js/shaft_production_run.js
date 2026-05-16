@@ -2812,6 +2812,13 @@ function sprToggleSheetCuttingRollUi(frm) {
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	const grid = fd && fd.grid;
 	if (grid) {
+		if (isSc) {
+			spr_set_grid_col_hidden(grid, 'quality', 0);
+			spr_set_grid_col_hidden(grid, 'color', 0);
+			spr_set_grid_col_hidden(grid, 'gsm', 0);
+			spr_set_grid_col_hidden(grid, 'custom_fabric_gsm', 1);
+			spr_set_grid_col_hidden(grid, 'custom_lam_gsm', 1);
+		}
 		spr_set_grid_col_hidden(grid, 'width_inch', hideWidthCol);
 		spr_set_grid_col_hidden(grid, 'custom_sheet_size', hideSheetCols);
 		spr_set_grid_col_hidden(grid, 'custom_planned_sheets_pcs', hideSheetCols);

@@ -1210,6 +1210,173 @@ def _parse_255_item_code(item_code):
 	return {}
 
 
+def _hyphen_trace_from_255_parse(p):
+	"""255 parent trace: ``255-<Q>-<colour>-<stack gsm>-<width>`` (same shape as 107)."""
+	if not p:
+		return ""
+	segs = ["255"]
+	qc = _cstr(p.get("quality_code") or "").strip().upper()
+	cc = _cstr(p.get("colour_code") or "").strip()
+	comb = _combined_bopp_line_gsm(p)
+	fg = cint(p.get("fabric_gsm") or 0)
+	lg = cint(p.get("lam_gsm") or 0)
+	wc = _cstr(p.get("width_code") or "").strip()
+	if qc:
+		segs.append(qc)
+	if cc:
+		segs.append(cc)
+	if comb > 0:
+		segs.append(str(comb))
+	elif fg:
+		segs.append(str(fg))
+	if comb <= 0 and lg:
+		segs.append(str(lg))
+	if wc:
+		segs.append(wc)
+	return "-".join(segs) if len(segs) > 1 else ""
+
+
+def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
+	"""Quality, colour name, and GSM for planning / SPR rows (255, 107, 104, legacy numeric, PB)."""
+	ic = _cstr(item_code).strip()
+	nm = _cstr(item_name).strip()
+	if not ic:
+		return "", "", 0
+	quality = ""
+	color = ""
+	gsm = 0
+	pp = _item_process_prefix(ic)
+	lam = _lamination_process_from_item_code(ic)
+	if lam == "255" or pp == "255":
+		p = _parse_255_item_code(ic) or {}
+		quality = _cstr(p.get("quality_name") or "").strip().upper()
+		cc = _cstr(p.get("colour_code") or "").strip()
+		if cc:
+			try:
+				color = (_get_color_by_code(cc) or "").strip().upper()
+			except Exception:
+				color = ""
+		gsm = cint(_combined_bopp_line_gsm(p) or 0) or cint(p.get("fabric_gsm") or 0)
+		return quality, color, gsm
+	if lam == "107" or pp == "107":
+		p = _parse_107_item_code(ic) or {}
+		quality = _cstr(p.get("quality_name") or "").strip().upper()
+		cc = _cstr(p.get("colour_code") or "").strip()
+		if cc:
+			try:
+				color = (_get_color_by_code(cc) or "").strip().upper()
+			except Exception:
+				color = ""
+		gsm = cint(_combined_bopp_line_gsm(p) or 0) or cint(p.get("fabric_gsm") or 0)
+		return quality, color, gsm
+	if lam == "104" or pp == "104":
+		gsm = cint(_gsm_from_lamination_item_code(ic) or 0)
+	if pp in ("251", "252", "253", "254"):
+		if pp in ("253", "254"):
+			p = (_parse_253_item_code(ic) if pp == "253" else _parse_254_item_code(ic)) or {}
+		else:
+			p = _parse_sheet_cutting_item_code(ic) or {}
+		quality = _cstr(p.get("quality_name") or p.get("quality_code") or "").strip().upper()
+		cc = _cstr(p.get("colour_code") or "").strip()
+		if cc:
+			try:
+				color = (_get_color_by_code(cc) or "").strip().upper()
+			except Exception:
+				color = ""
+		gsm = cint(p.get("gsm") or 0)
+		if gsm:
+			return quality, color, gsm
+	# Legacy numeric + item-name fallback (planning_sheet.extract_quality_and_color)
+	try:
+		from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+			extract_quality_and_color,
+		)
+
+		quality, color = extract_quality_and_color(nm or frappe.db.get_value("Item", ic, "item_name") or "", item_code=ic)
+	except Exception:
+		quality, color = "", ""
+	if not gsm:
+		digits = "".join(ch for ch in ic if ch.isdigit())
+		if len(digits) >= 12:
+			try:
+				gsm = cint(digits[9:12])
+			except Exception:
+				gsm = 0
+	return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), cint(gsm or 0)
+
+
+def _sheet_size_for_item_code(item_code, width_inch=0):
+	"""Sheet size label from item master and/or parsed width (255 / sheet-cutting)."""
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return "", 0.0
+	sz = ""
+	if frappe.db.has_column("Item", "custom_sheet_size"):
+		sz = _cstr(frappe.db.get_value("Item", ic, "custom_sheet_size") or "")
+	sz = _normalize_sheet_size_str(sz)
+	w = flt(width_inch or 0)
+	if not w and (_item_process_prefix(ic) == "255" or _lamination_process_from_item_code(ic) == "255"):
+		w = flt((_parse_255_item_code(ic) or {}).get("width_inch") or 0)
+	if not sz and w > 0:
+		wc = _cstr((_parse_255_item_code(ic) or {}).get("width_code") or "").strip()
+		sid = wc if wc.isdigit() and len(wc) == 3 else ""
+		if sid:
+			info = (_sheet_cutting_series_size_map([sid]) or {}).get(sid) or {}
+			sz = _cstr(info.get("sheet_size") or "")
+			if not w:
+				w = flt(info.get("width_inch") or 0)
+	if sz:
+		return sz, w
+	return "", w
+
+
+def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
+	"""Desk save: fill quality/colour/GSM, sheet size, trace id, PB design fields from item_code."""
+	if not row:
+		return
+	ic = _cstr(getattr(row, "item_code", None) or "").strip()
+	if not ic:
+		return
+	soi = _cstr(getattr(row, "sales_order_item", None) or getattr(row, "so_item", None) or "").strip()
+	item_name = _cstr(getattr(row, "item_name", None) or frappe.db.get_value("Item", ic, "item_name") or "")
+	q, c, g = resolve_quality_color_gsm_from_item_code(ic, item_name)
+	if q and hasattr(row, "quality"):
+		row.quality = q
+	if c and hasattr(row, "color"):
+		row.color = c
+	if g and hasattr(row, "gsm"):
+		row.gsm = g
+	w = flt(getattr(row, "width_inch", 0) or 0)
+	sz, w2 = _sheet_size_for_item_code(ic, w)
+	if w2 > 0 and hasattr(row, "width_inch"):
+		row.width_inch = w2
+	if sz and hasattr(row, "sheet_size"):
+		row.sheet_size = sz
+	pp = _item_process_prefix(ic)
+	if pp == "255" or _lamination_process_from_item_code(ic) == "255":
+		extras = _planning_row_dict_255_lamination_extras(ic, None, soi) or {}
+		for k, v in (extras or {}).items():
+			if v is None:
+				continue
+			try:
+				setattr(row, k, v)
+			except Exception:
+				pass
+	if _matches_printed_bopp_board_row(row):
+		dc = _design_code_from_printed_bopp_item_code(ic) or _pb_design_code_from_sales_order_item(soi)
+		if dc and hasattr(row, "custom_design_code"):
+			row.custom_design_code = dc
+		dn = _printing_design_name_from_row(row, dc, soi) or _pb_design_name_from_sales_order_item(soi)
+		if dn and hasattr(row, "custom_design_name"):
+			row.custom_design_name = dn
+		da = _printing_design_attachment_from_row(row, soi)
+		if da and hasattr(row, "custom_design_attachment"):
+			row.custom_design_attachment = da
+	tid = _parent_child_trace_id_for_planning_row(ic, soi or None, planning_sheet_name)
+	if tid:
+		_set_trace_id_if_supported(row, tid)
+
+
 def _parse_108_item_code(item_code):
 	"""
 	Slitting FG process **108** — design-first BOPP laminated slitted NW fabric.
@@ -2380,6 +2547,10 @@ def _parent_child_trace_id_from_item_code(item_code):
 			return "-".join(segs)
 		return ""
 	if _lamination_process_from_item_code(ic) == "255" or _item_process_prefix(ic) == "255":
+		p255 = _parse_255_item_code(ic) or {}
+		t255 = _hyphen_trace_from_255_parse(p255)
+		if t255:
+			return t255
 		return _sheet_cutting_canonical_parent_trace_id(ic)
 	# 253/254 must resolve here — ``_is_sheet_cutting_child_process`` includes these prefixes and would otherwise return "".
 	_ic_proc = _item_process_prefix(ic)
@@ -20830,16 +21001,25 @@ def get_mix_item_details(quality, cl_type, gsm, shaft):
     return results
 
 def _resolve_mix_batch_prefix(unit_code):
-    """Return (company_identifier, unit_number_2digit) for mix roll batch format.
-    Mirrors ShaftProductionRun._batch_prefix_parts() logic."""
+    """Return (company_identifier, unit_number_2digit) for mix roll batch format."""
     u = str(unit_code or "").strip()
-    # unit_code here is typically the last digit of the unit name, e.g. "1", "4"
     mapping = {
-        "1": ("JS", "01"), "2": ("JS", "02"), "3": ("JS", "03"),
-        "4": ("TS", "04"), "5": ("TS", "05"), "6": ("JV", "06"),
-        "7": ("TS", "07"), "8": ("JS", "08"), "9": ("JS", "09"),
+        "1": ("JS", "01"),
+        "2": ("JS", "02"),
+        "3": ("JS", "03"),
+        "4": ("TS", "04"),
+        "5": ("TS", "05"),
+        "6": ("JV", "06"),
+        "7": ("TS", "07"),
+        "8": ("JS", "08"),
+        "9": ("JS", "09"),
+        "10": ("JV", "10"),
+        "11": ("JV", "11"),
+        "12": ("TT", "12"),
+        "13": ("JV", "13"),
+        "14": ("VR", "14"),
     }
-    return mapping.get(u, ("JS", "01"))
+    return mapping.get(u)
 
 
 def get_mix_batch_roll(item_code, unit_code):
@@ -20851,7 +21031,10 @@ def get_mix_batch_roll(item_code, unit_code):
     month_str = today_str[5:7]
     year_str = today_str[2:4]
     
-    comp_id, unit_num = _resolve_mix_batch_prefix(unit_code)
+    parts = _resolve_mix_batch_prefix(unit_code)
+    if not parts:
+        frappe.throw(_("No batch format configured for mix unit code {0}").format(unit_code))
+    comp_id, unit_num = parts
     prefix = f"{comp_id}-{unit_num}{month_str}{year_str}"
     
     # Search for the latest batch for this item/unit/today

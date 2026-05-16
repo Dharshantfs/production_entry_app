@@ -25,6 +25,41 @@ from production_entry.production_planning.planning_doctypes import (
 	normalize_planning_unit_for_select,
 )
 
+# Unique (company_id, 2-digit unit_no) per workstation — never reuse across units.
+SPR_BATCH_UNIT_MAP = {
+	"Unit 1": ("JS", "01"),
+	"Unit 2": ("JS", "02"),
+	"Unit 3": ("JS", "03"),
+	"Unit 4": ("TS", "04"),
+	LAMINATION_UNIT: ("TS", "05"),
+	SLITTING_UNIT: ("JV", "06"),
+	REWINDING_UNIT_L3: ("TS", "07"),
+	REWINDING_UNIT_L4: ("JS", "08"),
+	REWINDING_UNIT_L5: ("JS", "09"),
+	SHEET_CUTTING_UNIT: ("JV", "10"),
+	PRINTING_UNIT_2_COLOUR: ("JV", "11"),
+	PRINTING_UNIT_TT: ("TT", "12"),
+	PRINTING_UNIT_4_COLOUR: ("JV", "13"),
+	PRINTED_BOPP_FILM_UNIT: ("VR", "14"),
+}
+
+
+def spr_batch_prefix_for_unit(unit_value: str):
+	"""Resolve batch company + unit digits for a workstation name. Returns None if not configured."""
+	u = normalize_planning_unit_for_select(_cstr(unit_value))
+	if not u or u == "UNASSIGNED":
+		return None
+	if u in SPR_BATCH_UNIT_MAP:
+		return SPR_BATCH_UNIT_MAP[u]
+	m = re.search(r"(?i)\bunit\s*(\d+)\b", _cstr(unit_value))
+	if m:
+		num = int(m.group(1))
+		if num == 4:
+			return ("TS", "04")
+		if 1 <= num <= 3:
+			return ("JS", f"{num:02d}")
+	return None
+
 
 # FG Work Order processes that require manual batch-tracked RM lines in SPR batch picker.
 SPR_FG_FABRIC_PICK_PROCESSES = ("102", "103", "104", "105", "106", "107", "108", "109", "251", "252", "253", "254", "255")
@@ -1720,70 +1755,22 @@ class ShaftProductionRun(Document):
 			frappe.log_error(frappe.get_traceback(), "SPR on_trash cleanup: Production Plan links")
 
 	def _batch_prefix_parts(self):
-		"""Return (company_identifier, unit_number_2digit) for the new batch format.
-
-		Mapping:
-		  Unit 1           → ('JS', '01')
-		  Unit 2           → ('JS', '02')
-		  Unit 3           → ('JS', '03')
-		  Unit 4           → ('TS', '04')
-		  TNSPL LAMINATION → ('TS', '05')
-		  JVE SLITTING     → ('JV', '06')
-		  TSNPL L3 REWINDING → ('TS', '07')
-		  JSB L4 REWINDING   → ('JS', '08')
-		  JSB L5 REWINDING   → ('JS', '09')
-		  JVE SHEET CUTTING  → ('JV', '10')
-		  JVE PRINTING 2/4 COLOUR 1200MM → ('JV', '11')
-		  PY  PRINTING 4 COLOUR 1600MM   → ('PY', '12')
-		"""
+		"""Return (company_identifier, unit_number_2digit) for the batch format — one unique pair per workstation."""
 		u_raw = (self.get("custom_unit") or "").strip()
 		if not u_raw:
-			return ("JS", "01")
-		ul = u_raw.upper()
-
-		# --- Printing machines (check before generic JVE) ---
-		if "PRINTING" in ul and "BOPP" not in ul:
-			if "4 COLOUR" in ul and "1600" in ul:
-				return ("JV", "12")
-			if "TT" in ul.split("-")[0].strip() or ul.startswith("TT"):
-				return ("JV", "11")
-			return ("JV", "11")
-
-		# --- Lamination ---
-		if "LAMINATION" in ul:
-			return ("TS", "05")
-
-		# --- Slitting ---
-		if "SLITTING" in ul:
-			return ("JV", "06")
-
-		# --- Sheet Cutting ---
-		if "SHEET CUTTING" in ul:
-			return ("JV", "10")
-
-		# --- BOPP Printing ---
-		if "BOPP" in ul and "PRINTING" in ul:
-			return ("JV", "11")
-
-		# --- Rewinding machines: distinguish by L3/L4/L5 ---
-		if "REWINDING" in ul or "REWIND" in ul:
-			if "L3" in ul:
-				return ("TS", "07")
-			if "L4" in ul:
-				return ("JS", "08")
-			if "L5" in ul:
-				return ("JS", "09")
-			return ("TS", "07")  # default rewinding
-
-		# --- Generic Unit N pattern ---
-		m = re.search(r"(?i)\bunit\s*(\d+)\b", u_raw)
-		if m:
-			num = int(m.group(1))
-			if num == 4:
-				return ("TS", "04")
-			return ("JS", f"{num:02d}")
-
-		return ("JS", "01")
+			frappe.throw(
+				_("Set Unit on this Shaft Production Run before roll batch numbers can be assigned."),
+				title=_("Unit required"),
+			)
+		parts = spr_batch_prefix_for_unit(u_raw)
+		if not parts:
+			frappe.throw(
+				_("No batch number format is configured for unit «{0}». Choose a supported workstation or contact admin.").format(
+					u_raw
+				),
+				title=_("Unsupported unit"),
+			)
+		return parts
 
 	def _unit_digit(self) -> str:
 		"""Legacy single-character unit code — kept for backward compatibility."""
@@ -4457,8 +4444,20 @@ def _spr_item_line_from_bundle(
 	"""Build one Roll Production Result line for sheet-cutting bundle Create Entry."""
 	item_code = _cstr(getattr(bundle_row, "item_code", None) or wo.get("production_item"))
 	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
-	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
-	gsm = _sheet_cutting_parse_gsm(item_code)
+	try:
+		from production_entry.production_planning.scheduler_api import (
+			resolve_quality_color_gsm_from_item_code,
+			_sheet_size_for_item_code,
+		)
+
+		quality, color, gsm = resolve_quality_color_gsm_from_item_code(item_code, item_name)
+		sz_from_item, w_from_item = _sheet_size_for_item_code(item_code)
+	except Exception:
+		quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+		gsm = _sheet_cutting_parse_gsm(item_code)
+		sz_from_item, w_from_item = "", 0.0
+	if not gsm:
+		gsm = _sheet_cutting_parse_gsm(item_code)
 	pcs_per_bundle = _spr_planned_pcs_per_bundle(bundle_row)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row = {
@@ -4481,7 +4480,12 @@ def _spr_item_line_from_bundle(
 		"color": color or None,
 	}
 	if spi_meta.has_field("custom_sheet_size"):
-		row["custom_sheet_size"] = _cstr(getattr(bundle_row, "sheet_cutting_size", None))
+		sz = _cstr(getattr(bundle_row, "sheet_cutting_size", None))
+		if not sz and sz_from_item:
+			sz = sz_from_item
+		row["custom_sheet_size"] = sz
+	if w_from_item > 0 and spi_meta.has_field("width_inch"):
+		row["width_inch"] = flt(w_from_item)
 	if spi_meta.has_field("custom_planned_sheets_pcs"):
 		row["custom_planned_sheets_pcs"] = pcs_per_bundle
 	elif spi_meta.has_field("planned_qty"):
@@ -5321,7 +5325,14 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	item_code = wo_doc.production_item
 	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
 	gsm, width_inch = parse_item_code(item_code)
-	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	try:
+		from production_entry.production_planning.scheduler_api import resolve_quality_color_gsm_from_item_code
+
+		quality, color, gsm_parsed = resolve_quality_color_gsm_from_item_code(item_code, item_name)
+		if gsm_parsed > 0:
+			gsm = gsm_parsed
+	except Exception:
+		quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row: dict = {
 		"work_order": wo["name"],

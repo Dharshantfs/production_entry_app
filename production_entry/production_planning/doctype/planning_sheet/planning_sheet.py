@@ -319,10 +319,22 @@ class Planningsheet(Document):
         self.validate_items()
         self.calculate_totals()
         self.parse_item_details()
+        self._enrich_rows_from_item_codes()
         self._sync_line_plan_codes()
         self._recompute_printed_bopp_total_colours_on_child_rows()
         self._ensure_parent_child_trace_ids_on_rows()
         self._ensure_107_extras_on_rows()
+
+    def _enrich_rows_from_item_codes(self):
+        """Fill quality/colour/GSM, sheet size, 255 trace, PB design from item_code on desk save."""
+        try:
+            from production_entry.production_planning.scheduler_api import enrich_planning_child_row_from_item_code
+        except Exception:
+            return
+        ps_name = (getattr(self, "name", None) or "").strip() or None
+        for table_key in ("items", "planned_items"):
+            for row in self.get(table_key) or []:
+                enrich_planning_child_row_from_item_code(row, ps_name)
 
     def _ensure_parent_child_trace_ids_on_rows(self):
         """Set missing Parent Child Trace ID using the same resolver as post-sync backfill (SO line + sheet context).
