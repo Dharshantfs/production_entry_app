@@ -773,6 +773,68 @@ def _parse_254_item_code(item_code):
 	return {}
 
 
+def _hyphen_trace_lam_suffix_segment(lam_code):
+	"""Lamination tail for hyphenated traces; letters are lowercased (e.g. ``…-c``)."""
+	s = _cstr(lam_code).strip()
+	if not s:
+		return ""
+	return s.lower() if s.isalpha() else s
+
+
+def _hyphen_trace_from_laminated_sheet_parse(p, process_prefix):
+	"""253/254: ``process-quality-colour-gsm-size[-lam]`` (optional ``design-`` prefix when parsed)."""
+	if not p:
+		return ""
+	proc = _cstr(process_prefix).strip()
+	if proc not in ("253", "254"):
+		return ""
+	dc = _cstr(p.get("design_code")).strip()
+	qc = _cstr(p.get("quality_code")).strip()
+	cc = _cstr(p.get("colour_code")).strip()
+	gsm = _cstr(p.get("gsm") or "").strip()
+	sid = _cstr(p.get("series_id")).strip()
+	lc = _hyphen_trace_lam_suffix_segment(p.get("lam_suffix") or p.get("lam_gsm_code"))
+	segs = [proc]
+	if qc:
+		segs.append(qc.zfill(3) if qc.isdigit() else qc)
+	if cc:
+		segs.append(cc.zfill(3) if cc.isdigit() else cc)
+	if gsm:
+		segs.append(str(gsm).zfill(3))
+	if sid:
+		segs.append(sid.zfill(3) if sid.isdigit() else sid)
+	if lc:
+		segs.append(lc)
+	if len(segs) <= 1:
+		return ""
+	body = "-".join(segs)
+	if dc:
+		return f"{dc}-{body}"
+	return body
+
+
+def _trace_from_253_254_sales_order_fg_row(item_code, sales_order_item_name):
+	"""BOM / board rows that are not the 253/254 FG on the same SO line share that FG's hyphenated trace."""
+	soi = _cstr(sales_order_item_name).strip()
+	ic = _cstr(item_code).strip()
+	if not soi or not ic:
+		return ""
+	try:
+		if not frappe.db.exists("Sales Order Item", soi):
+			return ""
+		soi_ic = _cstr(frappe.db.get_value("Sales Order Item", soi, "item_code")).strip()
+	except Exception:
+		return ""
+	if not soi_ic:
+		return ""
+	fg_pf = _item_process_prefix(soi_ic)
+	if fg_pf not in ("253", "254"):
+		return ""
+	if _item_process_prefix(ic) == fg_pf:
+		return ""
+	return _parent_child_trace_id_from_item_code(soi_ic) or ""
+
+
 def _sheet_cutting_series_size_map(series_ids):
 	"""Map series_id -> {'width_inch': float, 'height_inch': float, 'sheet_size': 'W*H'}."""
 	ids = [str(x or "").strip() for x in (series_ids or []) if str(x or "").strip()]
@@ -1797,6 +1859,9 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 	"""Trace from ``item_code``; 107 mid-BOM on 108 sheets uses **108** parent trace (never ``107-``)."""
 	ic = str(item_code or "").strip()
 	soi = (sales_order_item_name or "").strip()
+	fg_trace = _trace_from_253_254_sales_order_fg_row(ic, soi)
+	if fg_trace:
+		return fg_trace
 	sc_trace = _resolve_sheet_cutting_parent_trace(ic, soi, planning_sheet_name)
 	if sc_trace:
 		return sc_trace
@@ -2316,6 +2381,16 @@ def _parent_child_trace_id_from_item_code(item_code):
 		return ""
 	if _lamination_process_from_item_code(ic) == "255" or _item_process_prefix(ic) == "255":
 		return _sheet_cutting_canonical_parent_trace_id(ic)
+	# 253/254 must resolve here — ``_is_sheet_cutting_child_process`` includes these prefixes and would otherwise return "".
+	_ic_proc = _item_process_prefix(ic)
+	if _ic_proc == "253":
+		_t253 = _hyphen_trace_from_laminated_sheet_parse(_parse_253_item_code(ic) or {}, "253")
+		if _t253:
+			return _t253
+	if _ic_proc == "254":
+		_t254 = _hyphen_trace_from_laminated_sheet_parse(_parse_254_item_code(ic) or {}, "254")
+		if _t254:
+			return _t254
 	if _is_sheet_cutting_child_process(ic):
 		return ""
 	if _item_process_prefix(ic) == "108" or re.search(r"-108(?=[A-Z])", ic.upper()):
@@ -2386,52 +2461,6 @@ def _parent_child_trace_id_from_item_code(item_code):
 		if dc:
 			return f"{dc}-{body}"
 		return body
-	if process == "253":
-		p = _parse_253_item_code(ic) or {}
-		if not p:
-			return ""
-		qc = _cstr(p.get("quality_code")).strip()
-		cc = _cstr(p.get("colour_code")).strip()
-		gsm = _cstr(p.get("gsm") or "").strip()
-		sid = _cstr(p.get("series_id")).strip()
-		lc = _cstr(p.get("lam_suffix") or p.get("lam_gsm_code")).strip()
-		segs = ["253"]
-		if qc:
-			segs.append(qc)
-		if cc:
-			segs.append(cc)
-		if gsm:
-			segs.append(str(gsm).zfill(3))
-		if sid:
-			segs.append(sid)
-		if lc:
-			segs.append(lc)
-		if len(segs) > 1:
-			return "-".join(segs)
-		return ""
-	if process == "254":
-		p = _parse_254_item_code(ic) or {}
-		if not p:
-			return ""
-		qc = _cstr(p.get("quality_code")).strip()
-		cc = _cstr(p.get("colour_code")).strip()
-		gsm = _cstr(p.get("gsm") or "").strip()
-		sid = _cstr(p.get("series_id")).strip()
-		lc = _cstr(p.get("lam_suffix") or p.get("lam_gsm_code")).strip()
-		segs = ["254"]
-		if qc:
-			segs.append(qc)
-		if cc:
-			segs.append(cc)
-		if gsm:
-			segs.append(str(gsm).zfill(3))
-		if sid:
-			segs.append(sid)
-		if lc:
-			segs.append(lc)
-		if len(segs) > 1:
-			return "-".join(segs)
-		return ""
 	# 109 laminated slitting: 109QQQCCCGGGWWWW[-lam_suffix]
 	if process == "109":
 		p = _parse_109_item_code(ic) or {}
@@ -2710,26 +2739,10 @@ def _sheet_cutting_canonical_parent_trace_id(item_code, sibling_rows=None, sales
 		return body
 
 	if pp == "253":
-		p = _parse_253_item_code(ic) or {}
-		sid = _cstr(p.get("series_id")).strip()
-		body = "252-{0}-{1}-{2}-{3}".format(
-			_cstr(p.get("quality_code")).strip(),
-			_cstr(p.get("colour_code")).strip(),
-			_cstr(p.get("gsm")).zfill(3),
-			sid.zfill(3) if sid.isdigit() else sid,
-		)
-		return body
+		return _hyphen_trace_from_laminated_sheet_parse(_parse_253_item_code(ic) or {}, "253")
 
 	if pp == "254":
-		p = _parse_254_item_code(ic) or {}
-		sid = _cstr(p.get("series_id")).strip()
-		body = "252-{0}-{1}-{2}-{3}".format(
-			_cstr(p.get("quality_code")).strip(),
-			_cstr(p.get("colour_code")).strip(),
-			_cstr(p.get("gsm")).zfill(3),
-			sid.zfill(3) if sid.isdigit() else sid,
-		)
-		return body
+		return _hyphen_trace_from_laminated_sheet_parse(_parse_254_item_code(ic) or {}, "254")
 
 	return ""
 

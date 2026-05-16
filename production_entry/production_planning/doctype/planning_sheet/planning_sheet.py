@@ -325,20 +325,31 @@ class Planningsheet(Document):
         self._ensure_107_extras_on_rows()
 
     def _ensure_parent_child_trace_ids_on_rows(self):
-        """Set missing Parent Child Trace ID from item code (102 rewinding, 103 slitting, 104 lamination, etc.)."""
+        """Set missing Parent Child Trace ID using the same resolver as post-sync backfill (SO line + sheet context).
+
+        Matches ``backfill_parent_child_trace_ids`` / ``_parent_child_trace_id_for_planning_row`` so desk saves,
+        253/254 FG children (104/100/… ), sheet-cutting, and 108-family rows stay consistent with create/regenerate.
+        """
         try:
             from production_entry.production_planning.scheduler_api import (
-                _parent_child_trace_id_from_item_code,
+                _parent_child_trace_id_for_planning_row,
                 _set_trace_id_if_supported,
             )
         except Exception:
             return
+        ps_name = (getattr(self, "name", None) or "").strip() or None
         for table_key in ("planned_items", "items"):
             for row in self.get(table_key) or []:
                 if str(getattr(row, "custom_parent_child_trace_id", None) or "").strip():
                     continue
                 ic = str(getattr(row, "item_code", None) or "").strip()
-                tid = _parent_child_trace_id_from_item_code(ic)
+                if not ic:
+                    continue
+                soi = (
+                    str(getattr(row, "sales_order_item", None) or "").strip()
+                    or str(getattr(row, "so_item", None) or "").strip()
+                )
+                tid = _parent_child_trace_id_for_planning_row(ic, soi or None, ps_name)
                 if tid:
                     _set_trace_id_if_supported(row, tid)
 
