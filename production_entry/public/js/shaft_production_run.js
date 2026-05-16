@@ -9,6 +9,118 @@ function spr_round_net_weight_kg(v) {
 	return Math.round(flt(v) * 100) / 100;
 }
 
+/** Child tables on SPR that must keep header/body columns aligned after show/hide or save. */
+const SPR_SPR_CHILD_TABLE_FIELDS = ['items', 'shaft_jobs', 'bundle_calculation'];
+
+function spr_set_grid_col_hidden(grid, fieldname, hidden) {
+	if (!grid || !fieldname) {
+		return;
+	}
+	const hideVal = hidden ? 1 : 0;
+	try {
+		if (typeof grid.update_docfield_property === 'function') {
+			grid.update_docfield_property(fieldname, 'hidden', hideVal);
+		}
+	} catch (e) {
+		/* ignore */
+	}
+}
+
+/** Keep grid header horizontally aligned with body when DataTable scrolls or columns toggle. */
+function spr_sync_grid_header_body_scroll(fd) {
+	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+		return;
+	}
+	const $w = fd.$wrapper;
+	const $bodyScroll = $w.find('.dt-scrollable, .form-grid .grid-body').first();
+	const $head = $w.find('.grid-heading-row, .dt-row-header, .dt-header').first();
+	if (!$bodyScroll.length || !$head.length) {
+		return;
+	}
+	const sl = $bodyScroll.scrollLeft();
+	if (Math.abs(($head.scrollLeft() || 0) - sl) > 0.5) {
+		$head.scrollLeft(sl);
+	}
+}
+
+/**
+ * Rebuild visible columns so header cells line up with body cells (fixes drift after data entry / submit).
+ * Do not call frm.refresh_field on the same table — it double-renders and worsens misalignment.
+ */
+function spr_realign_child_grid(frm, fieldname) {
+	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
+	if (!fd || !fd.grid) {
+		return;
+	}
+	const grid = fd.grid;
+	const run = function () {
+		try {
+			if (grid.visible_columns) {
+				grid.visible_columns = null;
+			}
+			if (typeof grid.setup_visible_columns === 'function') {
+				grid.setup_visible_columns();
+			}
+			if (typeof grid.make_head === 'function') {
+				grid.make_head();
+			}
+			if (typeof grid.refresh === 'function') {
+				grid.refresh();
+			}
+			const dtWrap = grid.datatable;
+			const dt = dtWrap && (dtWrap.datatable || dtWrap);
+			if (dt && typeof dt.refresh === 'function') {
+				dt.refresh();
+			}
+			if (dt && dt.columnmanager && typeof dt.columnmanager.applyColumnWidth === 'function') {
+				dt.columnmanager.applyColumnWidth();
+			}
+			spr_sync_grid_header_body_scroll(fd);
+			const $w = fd.$wrapper;
+			if ($w && $w.length && !$w.data('spr-scroll-sync')) {
+				$w.data('spr-scroll-sync', 1);
+				$w.on(
+					'scroll.sprGridAlign',
+					'.dt-scrollable, .form-grid .grid-body',
+					function () {
+						spr_sync_grid_header_body_scroll(fd);
+					}
+				);
+			}
+		} catch (e) {
+			/* ignore desk variants */
+		}
+	};
+	run();
+	if (typeof requestAnimationFrame === 'function') {
+		requestAnimationFrame(run);
+	}
+	[50, 200, 600].forEach(function (ms) {
+		setTimeout(run, ms);
+	});
+}
+
+function spr_realign_all_spr_child_grids(frm) {
+	if (!frm) {
+		return;
+	}
+	SPR_SPR_CHILD_TABLE_FIELDS.forEach(function (fn) {
+		spr_realign_child_grid(frm, fn);
+	});
+}
+
+/** After frm.refresh_field on a child table — realign header/body without a second full refresh. */
+function spr_after_child_table_refresh(frm, fieldnames) {
+	const names = fieldnames || SPR_SPR_CHILD_TABLE_FIELDS;
+	[0, 120, 400].forEach(function (ms) {
+		setTimeout(function () {
+			names.forEach(function (fn) {
+				spr_realign_child_grid(frm, fn);
+			});
+		}, ms);
+	});
+}
+
 /** When PP / operator selects a unit, default the matching process checkbox on (still user-clearable). */
 function sprApplyLaminationUnitDefaults(frm, unitVal) {
 	if (!frm || !frm.doc) {
@@ -448,6 +560,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		
 		spr_inject_gsm_legend(frm);
 		schedule_spr_item_row_styles(frm);
+		spr_realign_all_spr_child_grids(frm);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
@@ -484,11 +597,13 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_sync_no_of_rolls_created(frm, { silent: true });
 		schedule_spr_item_row_styles(frm);
 		spr_schedule_item_row_styles_after_doc_write(frm);
+		spr_realign_all_spr_child_grids(frm);
 	},
 
 	on_submit: function (frm) {
 		schedule_spr_item_row_styles(frm);
 		spr_schedule_item_row_styles_after_doc_write(frm);
+		spr_realign_all_spr_child_grids(frm);
 		if (frm.doc && frm.doc.production_plan) {
 			frappe.call({
 				method:
@@ -1886,6 +2001,7 @@ frappe.ui.form.on('Bundle Calculation', {
 					if (totalRows <= 250) {
 						schedule_spr_item_row_styles(frm);
 					}
+					spr_after_child_table_refresh(frm, ['items', 'bundle_calculation']);
 					sprAutoSaveAfterCreateEntry(frm);
 					frappe.show_alert({
 						message: __('Added {0} roll line(s) for bundle.', [lines.length]),
@@ -2320,12 +2436,13 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		}
 		const save_promise = frm.save();
 		function afterSprRowSave() {
-			frm.refresh_field('items');
+			spr_realign_child_grid(frm, 'items');
 			spr_schedule_item_row_styles_after_doc_write(frm);
 			[0, 50, 200, 500].forEach(function (ms) {
 				setTimeout(function () {
 					spr_apply_items_row_lock_ui(frm);
 					apply_spr_item_row_styles(frm);
+					spr_realign_child_grid(frm, 'items');
 				}, ms);
 			});
 			frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
@@ -2357,12 +2474,13 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		}
 		const save_promise = frm.save();
 		function afterSprEditSave() {
-			frm.refresh_field('items');
+			spr_realign_child_grid(frm, 'items');
 			spr_schedule_item_row_styles_after_doc_write(frm);
 			[0, 50, 200].forEach(function (ms) {
 				setTimeout(function () {
 					spr_apply_items_row_lock_ui(frm);
 					apply_spr_item_row_styles(frm);
+					spr_realign_child_grid(frm, 'items');
 				}, ms);
 			});
 			frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
@@ -2635,11 +2753,13 @@ function sprLoadShaftJobsFromPp(frm) {
 			frm.refresh_field('shaft_jobs');
 			frm.clear_table('items');
 			frm.refresh_field('items');
+			spr_after_child_table_refresh(frm, ['shaft_jobs', 'items']);
 			fetch_and_show_pp_wo_summary(frm);
 		},
 		error: function () {
 			frm.clear_table('items');
 			frm.refresh_field('items');
+			spr_after_child_table_refresh(frm, ['items']);
 			fetch_and_show_pp_wo_summary(frm);
 		},
 	});
@@ -2665,6 +2785,7 @@ function sprLoadBundleCalculationFromPp(frm, presetRows) {
 		sprSyncBundleProducedSheets(frm, { silent: true });
 		frm.clear_table('items');
 		frm.refresh_field('items');
+		spr_after_child_table_refresh(frm, ['bundle_calculation', 'items']);
 		fetch_and_show_pp_wo_summary(frm);
 	}
 	if (presetRows && presetRows.length) {
@@ -2709,93 +2830,16 @@ function sprToggleSheetCuttingRollUi(frm) {
 	const hideWidthCol = isSc ? 1 : 0;
 	const hideSheetCols = isSc ? 0 : 1;
 	const hideLengthCols = isSc ? 1 : 0;
-	const showSheetCols = isSc ? 1 : 0;
-	const showLengthCols = isSc ? 0 : 1;
-	try {
-		const widthField = frappe.meta.get_docfield('Shaft Production Run Item', 'width_inch');
-		const sheetSizeField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_sheet_size');
-		const plannedPcsField = frappe.meta.get_docfield(
-			'Shaft Production Run Item',
-			'custom_planned_sheets_pcs'
-		);
-		const pcsField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_total_produced_sheets');
-		const meterRollField = frappe.meta.get_docfield('Shaft Production Run Item', 'meter_roll');
-		const prodLenField = frappe.meta.get_docfield('Shaft Production Run Item', 'produced_length_mtrs');
-		if (widthField) {
-			widthField.hidden = hideWidthCol;
-		}
-		if (sheetSizeField) {
-			sheetSizeField.hidden = hideSheetCols;
-		}
-		if (plannedPcsField) {
-			plannedPcsField.hidden = hideSheetCols;
-		}
-		if (pcsField) {
-			pcsField.hidden = hideSheetCols;
-		}
-		if (meterRollField) {
-			meterRollField.hidden = hideLengthCols;
-		}
-		if (prodLenField) {
-			prodLenField.hidden = hideLengthCols;
-		}
-	} catch (e) {
-		/* ignore */
-	}
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
-	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
-		try {
-			fd.grid.update_docfield_property('width_inch', 'hidden', hideWidthCol);
-		} catch (e) {}
-		try {
-			fd.grid.update_docfield_property('custom_sheet_size', 'hidden', hideSheetCols);
-		} catch (e) {}
-		try {
-			fd.grid.update_docfield_property('custom_planned_sheets_pcs', 'hidden', hideSheetCols);
-		} catch (e) {}
-		try {
-			fd.grid.update_docfield_property('custom_total_produced_sheets', 'hidden', hideSheetCols);
-		} catch (e) {}
-		try {
-			fd.grid.update_docfield_property('meter_roll', 'hidden', hideLengthCols);
-		} catch (e) {}
-		try {
-			fd.grid.update_docfield_property('produced_length_mtrs', 'hidden', hideLengthCols);
-		} catch (e) {}
-		if (typeof fd.grid.toggle_display === 'function') {
-			try {
-				fd.grid.toggle_display('width_inch', !isSc);
-			} catch (e) {}
-			try {
-				fd.grid.toggle_display('custom_sheet_size', showSheetCols);
-			} catch (e) {}
-			try {
-				fd.grid.toggle_display('custom_planned_sheets_pcs', showSheetCols);
-			} catch (e) {}
-			try {
-				fd.grid.toggle_display('custom_total_produced_sheets', showSheetCols);
-			} catch (e) {}
-			try {
-				fd.grid.toggle_display('meter_roll', showLengthCols);
-			} catch (e) {}
-			try {
-				fd.grid.toggle_display('produced_length_mtrs', showLengthCols);
-			} catch (e) {}
-		}
-		if (fd.grid && typeof fd.grid.setup_visible_columns === 'function') {
-			try {
-				fd.grid.visible_columns = null;
-				fd.grid.setup_visible_columns();
-			} catch (e) {}
-		}
-		if (fd.grid && typeof fd.grid.refresh === 'function') {
-			try {
-				fd.grid.refresh();
-			} catch (e) {}
-		}
-		if (frm) {
-			frm.refresh_field('items');
-		}
+	const grid = fd && fd.grid;
+	if (grid) {
+		spr_set_grid_col_hidden(grid, 'width_inch', hideWidthCol);
+		spr_set_grid_col_hidden(grid, 'custom_sheet_size', hideSheetCols);
+		spr_set_grid_col_hidden(grid, 'custom_planned_sheets_pcs', hideSheetCols);
+		spr_set_grid_col_hidden(grid, 'custom_total_produced_sheets', hideSheetCols);
+		spr_set_grid_col_hidden(grid, 'meter_roll', hideLengthCols);
+		spr_set_grid_col_hidden(grid, 'produced_length_mtrs', hideLengthCols);
+		spr_realign_child_grid(frm, 'items');
 	}
 }
 
@@ -2864,40 +2908,13 @@ function sprToggleLaminationRollUi(frm) {
 	const showLamCols = isProcess104 || sprUsesLaminationRollPrompt(frm);
 	const hidePlanned = showLamCols ? 1 : 0;
 	const hideLamCols = showLamCols ? 0 : 1;
-
-	try {
-		const plannedQtyField = frappe.meta.get_docfield('Shaft Production Run Item', 'planned_qty');
-		const fabricGsmField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_fabric_gsm');
-		const lamGsmField = frappe.meta.get_docfield('Shaft Production Run Item', 'custom_lam_gsm');
-		if (plannedQtyField) plannedQtyField.hidden = hidePlanned;
-		if (fabricGsmField) fabricGsmField.hidden = hideLamCols;
-		if (lamGsmField) lamGsmField.hidden = hideLamCols;
-	} catch (e) {}
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
-	if (fd && fd.grid && typeof fd.grid.update_docfield_property === 'function') {
-		try { fd.grid.update_docfield_property('planned_qty', 'hidden', hidePlanned); } catch (e) {}
-		try { fd.grid.update_docfield_property('custom_fabric_gsm', 'hidden', hideLamCols); } catch (e) {}
-		try { fd.grid.update_docfield_property('custom_lam_gsm', 'hidden', hideLamCols); } catch (e) {}
-
-		if (typeof fd.grid.toggle_display === 'function') {
-			try { fd.grid.toggle_display('planned_qty', !showLamCols); } catch (e) {}
-			try { fd.grid.toggle_display('custom_fabric_gsm', showLamCols); } catch (e) {}
-			try { fd.grid.toggle_display('custom_lam_gsm', showLamCols); } catch (e) {}
-		}
-
-		if (fd.grid && typeof fd.grid.setup_visible_columns === 'function') {
-			try {
-				fd.grid.visible_columns = null;
-				fd.grid.setup_visible_columns();
-			} catch (e) {}
-		}
-		if (frm && frm.__spr_lam_cols_visible_state !== showLamCols) {
-			frm.__spr_lam_cols_visible_state = showLamCols;
-		}
-		if (fd.grid && typeof fd.grid.refresh === 'function') {
-			try { fd.grid.refresh(); } catch (e) {}
-		}
-		frm.refresh_field('items');
+	const grid = fd && fd.grid;
+	if (grid) {
+		spr_set_grid_col_hidden(grid, 'planned_qty', hidePlanned);
+		spr_set_grid_col_hidden(grid, 'custom_fabric_gsm', hideLamCols);
+		spr_set_grid_col_hidden(grid, 'custom_lam_gsm', hideLamCols);
+		spr_realign_child_grid(frm, 'items');
 	}
 	const $legend = fd && fd.$wrapper ? fd.$wrapper.prev('.spr-gsm-legend') : null;
 	if ($legend && $legend.length) {
@@ -2967,22 +2984,34 @@ function update_shaft_job_achieved_from_items(frm) {
 	}
 }
 
-function spr_patch_items_grid_refresh(frm) {
-	if (frm._spr_items_grid_patched) {
+function spr_patch_child_grid_refresh(frm, fieldname, onAfterRender) {
+	if (!frm || !fieldname) {
 		return;
 	}
-	const fd = frm.fields_dict && frm.fields_dict.items;
+	const patchKey = '_spr_grid_patched_' + fieldname;
+	if (frm[patchKey]) {
+		return;
+	}
+	const fd = frm.fields_dict && frm.fields_dict[fieldname];
 	if (!fd || !fd.grid) {
 		return;
 	}
 	const grid = fd.grid;
 	let hooked = false;
 	function schedule() {
-		[0, 80, 200, 450].forEach(function (ms) {
-			setTimeout(function () {
-				apply_spr_item_row_styles(frm);
-			}, ms);
-		});
+		if (fieldname === 'items' && typeof onAfterRender === 'function') {
+			[0, 80, 200, 450].forEach(function (ms) {
+				setTimeout(function () {
+					onAfterRender(frm);
+				}, ms);
+			});
+		}
+		setTimeout(function () {
+			spr_realign_child_grid(frm, fieldname);
+		}, 0);
+		setTimeout(function () {
+			spr_realign_child_grid(frm, fieldname);
+		}, 120);
 	}
 	function wrap(method) {
 		const orig = grid[method];
@@ -2999,11 +3028,12 @@ function spr_patch_items_grid_refresh(frm) {
 	}
 	wrap('refresh');
 	wrap('render');
-	if (grid.wrapper && grid.wrapper.length && !frm._spr_items_grid_click_patched) {
+	if (fieldname === 'items' && grid.wrapper && grid.wrapper.length && !frm._spr_items_grid_click_patched) {
 		frm._spr_items_grid_click_patched = true;
 		grid.wrapper.on('click', '.grid-row, .dt-row, .grid-form-row', function () {
 			setTimeout(function () {
 				apply_spr_item_row_styles(frm);
+				spr_realign_child_grid(frm, 'items');
 			}, 50);
 		});
 		grid.wrapper.on('focusin', function () {
@@ -3016,12 +3046,19 @@ function spr_patch_items_grid_refresh(frm) {
 			frm._spr_grid_input_debounce = setTimeout(function () {
 				frm._spr_grid_input_debounce = null;
 				schedule_spr_item_row_styles(frm);
+				spr_realign_child_grid(frm, 'items');
 			}, 120);
 		});
 	}
 	if (hooked) {
-		frm._spr_items_grid_patched = true;
+		frm[patchKey] = true;
 	}
+}
+
+function spr_patch_items_grid_refresh(frm) {
+	SPR_SPR_CHILD_TABLE_FIELDS.forEach(function (fn) {
+		spr_patch_child_grid_refresh(frm, fn, fn === 'items' ? apply_spr_item_row_styles : null);
+	});
 }
 
 /** Legend for |Sticker GSM vs Produced GSM| bands (above Roll Production Results grid). */
@@ -3156,7 +3193,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '16';
+	const sprItemsCssVer = '17';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -3294,6 +3331,38 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-band-3 td { background-color: #fecaca !important; }
 		.spr-items-wrap.spr-doc-submitted .dt-row.spr-gsm-pending, .spr-items-wrap.spr-doc-submitted .grid-row.spr-gsm-pending,
 		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
+		/* Header/body column alignment — hidden cols must not reserve width */
+		.spr-items-wrap .form-grid,
+		.spr-items-wrap .grid-heading-row,
+		.spr-items-wrap .grid-body,
+		.spr-items-wrap .datatable {
+			width: 100%;
+			box-sizing: border-box;
+		}
+		.spr-items-wrap .grid-heading-row {
+			overflow: hidden;
+		}
+		.form-group[data-fieldname="items"] .grid-heading-row .grid-static-col.hidden,
+		.form-group[data-fieldname="items"] .grid-row .col.hidden,
+		.frappe-control[data-fieldname="items"] .grid-heading-row .grid-static-col.hidden,
+		.frappe-control[data-fieldname="items"] .grid-row .col.hidden,
+		.fieldname-items .grid-heading-row .grid-static-col.hidden,
+		.fieldname-items .grid-row .col.hidden,
+		.form-group[data-fieldname="shaft_jobs"] .grid-heading-row .grid-static-col.hidden,
+		.form-group[data-fieldname="shaft_jobs"] .grid-row .col.hidden,
+		.form-group[data-fieldname="bundle_calculation"] .grid-heading-row .grid-static-col.hidden,
+		.form-group[data-fieldname="bundle_calculation"] .grid-row .col.hidden,
+		.spr-items-wrap .dt-cell.hidden,
+		.spr-items-wrap .dt-cell--hide {
+			display: none !important;
+			width: 0 !important;
+			min-width: 0 !important;
+			max-width: 0 !important;
+			padding: 0 !important;
+			margin: 0 !important;
+			border: none !important;
+			overflow: hidden !important;
+		}
 	`;
 	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);
 }
@@ -3436,6 +3505,7 @@ function schedule_spr_item_row_styles(frm) {
 	[0, 50, 150, 400, 900].forEach(function (ms) {
 		setTimeout(function () {
 			apply_spr_item_row_styles(frm);
+			spr_realign_child_grid(frm, 'items');
 		}, ms);
 	});
 }
@@ -3457,6 +3527,7 @@ function spr_schedule_item_row_styles_after_doc_write(frm) {
 				return;
 			}
 			apply_spr_item_row_styles(frm);
+			spr_realign_all_spr_child_grids(frm);
 		}, ms);
 	});
 }

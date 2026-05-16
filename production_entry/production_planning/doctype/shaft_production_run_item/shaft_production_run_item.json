@@ -9,6 +9,8 @@
   "item_code",
   "item_name",
   "quality",
+  "color",
+  "custom_sheet_size",
   "gsm",
   "custom_fabric_gsm",
   "custom_lam_gsm",
@@ -26,9 +28,7 @@
   "save_row",
   "uom",
   "section_break_8",
-  "color",
   "column_break_11",
-  "custom_sheet_size",
   "custom_planned_sheets_pcs",
   "custom_total_produced_sheets",
   "width_inch",
@@ -55,20 +55,21 @@
    "fieldname": "item_name",
    "fieldtype": "Data",
    "label": "Item Name",
-   "read_only": 1,
-   "in_list_view": 1
+   "read_only": 1
   },
   {
    "fieldname": "quality",
    "fieldtype": "Data",
    "label": "Quality",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "gsm",
    "fieldtype": "Int",
-   "label": "GSM",
-   "read_only": 1
+   "label": "Sticker GSM",
+   "read_only": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "custom_fabric_gsm",
@@ -118,14 +119,16 @@
   {
    "fieldname": "meter_roll",
    "fieldtype": "Float",
-   "label": "Meter/Roll",
-   "precision": "2"
+   "label": "Ordered Length (Mtrs)",
+   "precision": "2",
+   "in_list_view": 1
   },
   {
    "fieldname": "produced_length_mtrs",
    "fieldtype": "Float",
    "label": "Produced Length (Mtrs)",
-   "precision": "2"
+   "precision": "2",
+   "in_list_view": 1
   },
   {
    "fieldname": "net_weight",
@@ -139,19 +142,22 @@
    "fieldtype": "Float",
    "label": "Produced GSM",
    "read_only": 1,
-   "precision": "2"
+   "precision": "2",
+   "in_list_view": 1
   },
   {
    "fieldname": "gross_weight",
    "fieldtype": "Float",
    "label": "Gross Weight",
-   "precision": "2"
+   "precision": "2",
+   "in_list_view": 1
   },
   {
    "fieldname": "save_row",
    "fieldtype": "Button",
    "label": "Save Row",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "uom",
@@ -167,7 +173,8 @@
   {
    "fieldname": "color",
    "fieldtype": "Data",
-   "label": "Color"
+   "label": "Color",
+   "in_list_view": 1
   },
   {
    "fieldname": "column_break_11",
@@ -218,13 +225,15 @@
    "fieldname": "print_sticker",
    "fieldtype": "Button",
    "label": "Print Label",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "edit_row",
    "fieldtype": "Button",
    "label": "Edit Row",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 1
   }
  ],
  "index_web_pages_for_search": 1,
