@@ -1244,7 +1244,19 @@ async function startParentWO(item) {
 
 function getDesignAttachmentUrl(item) {
   if (!item) return "";
-  return String(item.custom_design_attachment || item.design_attachment || item.custom_design_image || item.design_image || "").trim();
+  let url = String(
+    item.custom_design_attachment ||
+      item.design_attachment ||
+      item.custom_design_image ||
+      item.design_image ||
+      ""
+  ).trim();
+  if (!url) return "";
+  if (url.startsWith("/")) {
+    const base = window.location.origin || "";
+    url = base ? base + url : url;
+  }
+  return url;
 }
 
 function displayDesignName(row) {
@@ -1806,11 +1818,23 @@ async function fetchData() {
           idx: d.idx != null ? Number(d.idx) : 0,
         };
       }
+      const soi = d.salesOrderItem || d.sales_order_item || "";
+      const designAttachment =
+        d.custom_design_attachment ||
+        d.design_attachment ||
+        d.custom_design_image ||
+        d.design_image ||
+        "";
       return {
         ...d,
         itemName: d.psi_name || d.itemName || d.name || "",
         itemCode: d.item_code || d.itemCode || "",
-        salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
+        salesOrderItem: soi,
+        sales_order_item: soi,
+        custom_design_attachment: designAttachment,
+        design_attachment: designAttachment,
+        custom_design_code: d.custom_design_code || d.design_code || "",
+        design_code: d.design_code || d.custom_design_code || "",
         width_inch: d.width_inch || d.widthInch || 0,
       };
     });

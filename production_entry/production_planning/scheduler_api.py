@@ -1242,6 +1242,40 @@ def _hyphen_trace_from_255_parse(p):
 	return body
 
 
+def _trace_from_109_parent_on_sales_order_line(sales_order_item, planning_sheet_name=None, pt_rows=None):
+	"""109 slitting parent trace on the same SO line for BOM children 104 / 100 (e.g. ``109-105-542-050-0050-A``)."""
+	soi = _cstr(sales_order_item).strip()
+	if not soi:
+		return ""
+	rows = pt_rows
+	if rows is None and planning_sheet_name:
+		rows = (
+			frappe.get_all(
+				"Planning Table",
+				filters={"parent": planning_sheet_name},
+				fields=["item_code", "sales_order_item", "so_item"],
+				limit_page_length=2000,
+			)
+			or []
+		)
+	if not rows:
+		return ""
+	for r in rows:
+		ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
+		if _item_process_prefix(ric) != "109":
+			continue
+		rsoi = _cstr(
+			(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
+			or (r.get("so_item") if isinstance(r, dict) else getattr(r, "so_item", None))
+		).strip()
+		if rsoi != soi:
+			continue
+		t = _parent_child_trace_id_from_item_code(ric)
+		if t:
+			return t
+	return ""
+
+
 def _trace_from_255_parent_on_sales_order_line(sales_order_item, planning_sheet_name=None, pt_rows=None):
 	"""255 parent trace on the same SO line (e.g. ``6002-255-F-101-100-002``) for 107/100/PB children."""
 	soi = _cstr(sales_order_item).strip()
@@ -1518,6 +1552,10 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 			or pp == "255"
 			or lam == "107"
 			or pp == "107"
+			or pp == "109"
+			or pp == "104"
+			or lam == "104"
+			or ic.startswith("100")
 			or _is_sheet_cutting_parent_process(ic)
 			or _is_sheet_cutting_child_process(ic)
 			or (cur_tid and tid and cur_tid != tid)
@@ -2183,6 +2221,9 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 		t255_parent = _trace_from_255_parent_on_sales_order_line(soi, planning_sheet_name)
 		if t255_parent:
 			return t255_parent
+		t109_parent = _trace_from_109_parent_on_sales_order_line(soi, planning_sheet_name)
+		if t109_parent:
+			return t109_parent
 	fg_trace = _trace_from_253_254_sales_order_fg_row(ic, soi)
 	if fg_trace:
 		return fg_trace
@@ -3486,7 +3527,10 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_bopp_gsm = bopp_gsm_book
 				if has_pt_lam_side:
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val and _lamination_process_from_item_code(ic) == "107":
+					if lam_side_val and (
+						_lamination_process_from_item_code(ic) in ("107", "104")
+						or _item_process_prefix(ic) in ("104", "109")
+					):
 						row.custom_lam_side_ = lam_side_val
 			else:
 				if LAMINATION_ORDER_CODE_ENABLED and code and has_psi_booking:
@@ -3497,7 +3541,10 @@ def ensure_lamination_booking_for_planning_sheet(doc):
 					row.custom_bopp_gsm = bopp_gsm_book
 				if has_psi_lam_side:
 					lam_side_val = so_lam_side_map.get(getattr(row, "so_item", "") or "") or so_lam_side_map.get(ic, "")
-					if lam_side_val and _lamination_process_from_item_code(ic) == "107":
+					if lam_side_val and (
+						_lamination_process_from_item_code(ic) in ("107", "104")
+						or _item_process_prefix(ic) in ("104", "109")
+					):
 						row.custom_lam_side = lam_side_val
 
 	# Header fallback: if map was empty, derive from first lamination row lam side value.
@@ -5233,6 +5280,10 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
 	if so_fg == "254" and parent_proc in ("254", "106", "104") and child_proc in ("100", "104", "106", "107"):
 		return _parent_child_trace_id_from_item_code(fg_ic) or ""
+	if so_fg == "109" and parent_proc == "109" and child_proc in ("104", "100"):
+		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
+	if so_fg == "103" and parent_proc == "103" and child_proc == "100":
+		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
 	return ""
 
 
@@ -5494,7 +5545,7 @@ def _sync_bom_child_rows_from_planning_rows(
 			if (
 				child_proc_ex in ("100", "104", "107", "106")
 				and frappe.db.has_column("Planning Table", "width_inch")
-				and (parent_proc in ("253", "255", "254") or so_fg_ex in ("253", "255", "254"))
+				and (parent_proc in ("253", "255", "254", "109", "103") or so_fg_ex in ("253", "255", "254", "109", "103"))
 			):
 				wex = flt(specs_ex.get("width_inch") or 0)
 				if child_proc_ex == "104" or _lamination_process_from_item_code(child_ic) == "104":
@@ -5511,6 +5562,9 @@ def _sync_bom_child_rows_from_planning_rows(
 				lam_gsm_ex = _lam_gsm_from_item_code_suffix(child_ic)
 				if lam_gsm_ex > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
 					updates["custom_lam_gsm"] = lam_gsm_ex
+				_lside = _lam_side_from_sales_order_item(so_item_key)
+				if _lside and frappe.db.has_column("Planning Table", "custom_lam_side_"):
+					updates["custom_lam_side_"] = _lside
 			if child_proc_ex == "106":
 				lam106x = cint((_parse_106_item_code(child_ic) or {}).get("lam_gsm") or 0)
 				if lam106x > 0 and (
@@ -7050,11 +7104,13 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		for pr in pt_full:
 			icp = str(pr.get("item_code") or "")
 			pp = _item_process_prefix(icp)
-			if pp not in ("253", "255", "108", "254") and _lamination_process_from_item_code(icp) != "255":
+			if pp not in ("253", "255", "108", "254", "109") and _lamination_process_from_item_code(icp) != "255":
 				continue
 			soik = (pr.get("sales_order_item") or pr.get("so_item") or "").strip()
 			if _is_sheet_cutting_parent_process(icp):
 				tpid = _resolve_sheet_cutting_parent_trace(icp, soik, planning_sheet_name, pt_full)
+			elif _item_process_prefix(icp) == "109":
+				tpid = _parent_child_trace_id_from_item_code(icp)
 			else:
 				tpid = _parent_child_trace_id_from_item_code(icp)
 			if not tpid:
@@ -7091,7 +7147,11 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 					update_modified=False,
 				)
 				continue
-			if soik and soik in parent_trace_by_soi and (pp in ("104", "107", "106") or lam in ("104", "107")):
+			if soik and soik in parent_trace_by_soi and (
+				pp in ("104", "107", "106", "100")
+				or lam in ("104", "107")
+				or ic.startswith("100")
+			):
 				frappe.db.set_value(
 					"Planning Table",
 					nm,
@@ -7141,7 +7201,11 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				continue
 			pp = _item_process_prefix(ic)
 			lam = _lamination_process_from_item_code(ic)
-			if soik and soik in parent_trace_by_soi and (pp in ("104", "107", "106") or lam in ("104", "107")):
+			if soik and soik in parent_trace_by_soi and (
+				pp in ("104", "107", "106", "100")
+				or lam in ("104", "107")
+				or ic.startswith("100")
+			):
 				frappe.db.set_value(
 					"Planning sheet Item",
 					nm,
@@ -8009,6 +8073,13 @@ def get_lamination_order_table_data(
             row["bopp_bom_kgs"] = flt((ex or {}).get("pb_bopp_bom_kgs_stored") or 0) if ex else 0
             if not row["bopp_bom_kgs"]:
                 row["bopp_bom_kgs"] = flt(row.get("qty") or row.get("Qty") or 0)
+            so_item_nm = str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip()
+            da_pb = _printing_design_attachment_from_row(row, so_item_nm)
+            if not da_pb and row.get("design_code"):
+                dm_pb = _design_master_extra_fields(_cstr(row.get("design_code")).strip()) or {}
+                da_pb = _cstr(dm_pb.get("custom_design_attachment") or "").strip()
+            row["custom_design_attachment"] = da_pb
+            row["design_attachment"] = da_pb
             row["fabric_gsm"] = 0
             row["lamination_gsm"] = 0
             row["bopp_gsm"] = 0
@@ -8656,7 +8727,10 @@ def get_slitting_order_table_data(
     spr_parent_expr = "IFNULL(pt.spr_name, '')" if has_pt_spr else "''"
     spr_child_expr = "IFNULL(fab.spr_name, '')" if has_pt_spr else "''"
     fabric_pick_sql_s = _sql_correlated_pick_one_fabric_name("pt")
+    roll_bom_pick_sql_s = _sql_correlated_pick_one_sheet_bom_roll_child("pt")
     lam_gsm_sql = "IFNULL(pt.custom_lam_gsm, 0)" if frappe.db.has_column("Planning Table", "custom_lam_gsm") else "0"
+    has_pt_lam_side = frappe.db.has_column("Planning Table", "custom_lam_side_")
+    lam_side_expr = "IFNULL(pt.custom_lam_side_, '')" if has_pt_lam_side else "''"
 
     extra = frappe.db.sql(
         f"""
@@ -8666,14 +8740,18 @@ def get_slitting_order_table_data(
             {shift_expr} as shift_label,
             {trace_expr} as parent_trace_id,
             {child_trace_expr} as child_trace_id,
-            IFNULL(fab.width_inch, 0) as roll_size,
+            IFNULL(fab.width_inch, 0) as fabric_roll_width,
+            IFNULL(roll_bom.width_inch, 0) as bom_roll_width,
+            IFNULL(roll_bom.item_code, '') as bom_roll_item_code,
             IFNULL(pt.width_inch, 0) as slitting_size,
             IFNULL(fab.item_code, '') as fabric_item_code,
             {spr_parent_expr} as parent_spr_name,
             {spr_child_expr} as child_spr_name,
-            {lam_gsm_sql} as custom_lam_gsm
+            {lam_gsm_sql} as custom_lam_gsm,
+            {lam_side_expr} as custom_lam_side_
         FROM `tabPlanning Table` pt
         LEFT JOIN `tabPlanning Table` fab ON fab.name = {fabric_pick_sql_s}
+        LEFT JOIN `tabPlanning Table` roll_bom ON roll_bom.name = {roll_bom_pick_sql_s}
         WHERE pt.name IN ({fmt})
         """,
         tuple(psi_names),
@@ -8740,8 +8818,25 @@ def get_slitting_order_table_data(
         row["shift_label"] = str((ex or {}).get("shift_label") or "DAY").upper()
         row["trace_id"] = (ex or {}).get("parent_trace_id") or (ex or {}).get("child_trace_id") or _parent_child_trace_id_from_item_code(row.get("item_code") or row.get("itemCode"))
         row["order_code"] = str(row.get("partyCode") or row.get("party_code") or "").strip()
-        row["roll_size"] = flt((ex or {}).get("roll_size") or 0)
+        bom_w = flt((ex or {}).get("bom_roll_width") or 0)
+        bom_ic = _cstr((ex or {}).get("bom_roll_item_code") or "").strip()
+        if bom_w <= 0 and bom_ic:
+            bom_w = _resolve_planning_row_width_inch(
+                bom_ic,
+                0,
+                frappe.db.get_value("Item", bom_ic, "item_name") or "",
+            )
+        if proc in ("103", "109", "108") and bom_w > 0:
+            row["roll_size"] = bom_w
+        else:
+            row["roll_size"] = flt((ex or {}).get("fabric_roll_width") or 0)
         row["slitting_size"] = flt((ex or {}).get("slitting_size") or 0)
+        if proc in ("103", "109", "108") and row["slitting_size"] <= 0:
+            row["slitting_size"] = _resolve_planning_row_width_inch(
+                row.get("item_code") or row.get("itemCode"),
+                row["slitting_size"],
+                row.get("item_name") or row.get("itemName") or "",
+            )
         row["fabric_item_code"] = _cstr((ex or {}).get("fabric_item_code") or "")
         row["planned_kgs"] = flt(row.get("qty") or 0)
         row["achieved_kgs"] = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
@@ -10870,9 +10965,12 @@ def _populate_planning_sheet_items(ps, doc):
         elif _item_process_prefix(str(it.item_code or "")) in ("106", "109"):
             lam_gsm = _stage3_lam_gsm_from_item_code(it.item_code)
 
-        # Lamination side: stamp **107** rows only (legacy behaviour; 104/108/100/PB stay blank).
+        # Lamination side from Sales Order for lamination / slitting-lam parents (107, 104, 109).
         lam_side = ""
-        if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(it.item_code or "")) == "107":
+        _ic_so = str(it.item_code or "")
+        _pp_so = _item_process_prefix(_ic_so)
+        _lam_so = _lamination_process_from_item_code(_ic_so)
+        if LAMINATION_FLOW_ENABLED and (_lam_so in ("107", "104") or _pp_so in ("104", "109")):
             lam_side = _lam_side_from_sales_order_item(getattr(it, "name", None))
             if not lam_side:
                 lam_side = (getattr(it, "custom_lamination_side", None) or "").strip()

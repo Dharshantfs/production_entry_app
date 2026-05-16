@@ -379,6 +379,10 @@ class Planningsheet(Document):
                         or pp == "255"
                         or lam == "107"
                         or pp == "107"
+                        or pp == "109"
+                        or pp == "104"
+                        or lam == "104"
+                        or ic.startswith("100")
                         or _is_sheet_cutting_parent_process(ic)
                         or _is_sheet_cutting_child_process(ic)
                         or (cur and tid and cur != tid)
