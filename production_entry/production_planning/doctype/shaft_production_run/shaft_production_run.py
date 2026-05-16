@@ -1379,9 +1379,11 @@ class ShaftProductionRun(Document):
 		self.recalculate_job_achieved_weights()
 		self.recalculate_job_achieved_meters()
 		self.generate_batch_numbers()
-		self._spr_recalc_total_produced_weight_header()
 		if cint(getattr(self, "custom_is_sheet_cutting", 0)):
 			sync_bundle_total_produced_sheets_for_doc(self)
+			sync_bundle_total_achieved_weight_for_doc(self)
+			sync_bundle_consumed_meter_header(self)
+		self._spr_recalc_total_produced_weight_header()
 
 	def normalize_custom_unit(self):
 		unit_value = _cstr(self.get("custom_unit"))
@@ -1419,11 +1421,16 @@ class ShaftProductionRun(Document):
 				row.net_weight = rnd
 
 	def _spr_recalc_total_produced_weight_header(self):
-		"""Header = sum of net_weight on every roll line (no job filter — matches operator spreadsheet total)."""
+		"""Header weight: sheet cutting = sum of bundle job achieved weights; else sum roll net_weight."""
 		meta = frappe.get_meta("Shaft Production Run")
 		if not meta.has_field("total_produced_weight"):
 			return
-		total = sum(flt(getattr(r, "net_weight", None), 2) for r in (self.items or []))
+		if cint(getattr(self, "custom_is_sheet_cutting", 0)) and getattr(self, "bundle_calculation", None):
+			total = sum(
+				flt(getattr(br, "total_achieved_weight", None), 2) for br in (self.bundle_calculation or [])
+			)
+		else:
+			total = sum(flt(getattr(r, "net_weight", None), 2) for r in (self.items or []))
 		self.total_produced_weight = flt(total, 2)
 		if meta.has_field("custom_total_produced_weight"):
 			self.custom_total_produced_weight = flt(total, 2)
@@ -1603,6 +1610,8 @@ class ShaftProductionRun(Document):
 
 	def recalculate_job_achieved_meters(self):
 		"""Per job + SPR header: sum produced_length_mtrs only (no meter_roll / ordered length)."""
+		if cint(getattr(self, "custom_is_sheet_cutting", 0)):
+			return
 		meta_job = frappe.get_meta("Shaft Production Run Job")
 		meta_spr = frappe.get_meta("Shaft Production Run")
 		has_job_m = meta_job.has_field("custom_total_achieved_meter")
@@ -4314,7 +4323,7 @@ def _resolve_wo_for_pp_item_code(production_plan: str, item_code: str) -> dict:
 	rows = frappe.get_all(
 		"Work Order",
 		filters={"production_plan": pp, "production_item": ic, "docstatus": ["<", 2]},
-		fields=["name", "production_item", "qty"],
+		fields=["name", "production_item", "qty", "production_plan_item"],
 		order_by="creation asc",
 		limit=1,
 	) or []
@@ -4326,7 +4335,7 @@ def _resolve_wo_for_pp_item_code(production_plan: str, item_code: str) -> dict:
 	for wo in frappe.get_all(
 		"Work Order",
 		filters={"production_plan": pp, "docstatus": ["<", 2]},
-		fields=["name", "production_item", "qty"],
+		fields=["name", "production_item", "qty", "production_plan_item"],
 		order_by="creation asc",
 	) or []:
 		if spr_fg_item_process_code(wo.get("production_item")) == proc:
@@ -4370,7 +4379,6 @@ def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=
 	if not production_plan or not frappe.db.exists("Production Plan", production_plan):
 		return []
 	oc = _cstr(order_code)
-	om = flt(order_meter)
 	if not oc:
 		pp = frappe.get_doc("Production Plan", production_plan)
 		oc = _cstr(pp.get("custom_party_code") or pp.get("party_code") or "")
@@ -4386,7 +4394,9 @@ def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=
 		row = dict(src)
 		row["work_order"] = wo.get("name") if wo else ""
 		row["order_code"] = oc
-		row["order_meter"] = om or flt(row.get("order_meter") or 0)
+		row["job"] = _cstr(wo.get("production_plan_item") or "") if wo else ""
+		row["total_consumed_meter"] = 0
+		row["total_achieved_weight"] = 0
 		row["total_produced_sheets"] = 0
 		out.append(row)
 	return out
@@ -4449,7 +4459,6 @@ def _spr_item_line_from_bundle(
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 	gsm = _sheet_cutting_parse_gsm(item_code)
 	pcs_per_bundle = _spr_planned_pcs_per_bundle(bundle_row)
-	order_m = flt(getattr(bundle_row, "order_meter", 0) or 0)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row = {
 		"work_order": wo.get("name"),
@@ -4463,8 +4472,8 @@ def _spr_item_line_from_bundle(
 		"party_code": order_code or get_order_code(frappe.get_doc("Work Order", wo["name"])),
 		"uom": _item_stock_uom_for_spr(item_code),
 		"roll_no": 0,
-		"meter_roll": order_m,
-		"produced_length_mtrs": order_m,
+		"meter_roll": 0,
+		"produced_length_mtrs": 0,
 		"net_weight": 0,
 		"gross_weight": 0,
 		"width_inch": 0,
@@ -4568,6 +4577,35 @@ def _spr_sum_produced_sheets_for_bundle_row(spr_doc, bundle_row, bundle_row_idx=
 	return flt(total, 0)
 
 
+def _spr_sum_net_weight_for_bundle_row(spr_doc, bundle_row, bundle_row_idx=None) -> float:
+	"""Sum net_weight (Kg) on roll lines linked to one bundle_calculation row."""
+	prefix = _spr_bundle_job_prefix(bundle_row, bundle_row_idx)
+	total = 0.0
+	prefix_hits = 0
+	ic = _cstr(getattr(bundle_row, "item_code", None))
+	wo = _cstr(getattr(bundle_row, "work_order", None))
+	n_bundles = cint(getattr(bundle_row, "no_of_bundles", 0) or 0)
+	for it in spr_doc.get("items") or []:
+		job = _cstr(getattr(it, "job", None))
+		if prefix and job.startswith(prefix):
+			prefix_hits += 1
+			total += flt(getattr(it, "net_weight", 0) or 0, 2)
+	if prefix_hits:
+		return flt(total, 2)
+	for it in spr_doc.get("items") or []:
+		job = _cstr(getattr(it, "job", None))
+		if _cstr(getattr(it, "item_code", None)) != ic or _cstr(getattr(it, "work_order", None)) != wo:
+			continue
+		try:
+			jn = int(job)
+		except (TypeError, ValueError):
+			continue
+		if n_bundles > 0 and not (1 <= jn <= n_bundles):
+			continue
+		total += flt(getattr(it, "net_weight", 0) or 0, 2)
+	return flt(total, 2)
+
+
 def sync_bundle_total_produced_sheets_for_doc(spr_doc) -> None:
 	"""Update bundle_calculation.total_produced_sheets from roll line sums."""
 	if not spr_doc or not hasattr(spr_doc, "bundle_calculation"):
@@ -4575,6 +4613,28 @@ def sync_bundle_total_produced_sheets_for_doc(spr_doc) -> None:
 	rows = list(spr_doc.get("bundle_calculation") or [])
 	for idx, br in enumerate(rows):
 		br.total_produced_sheets = _spr_sum_produced_sheets_for_bundle_row(spr_doc, br, bundle_row_idx=idx)
+
+
+def sync_bundle_total_achieved_weight_for_doc(spr_doc) -> None:
+	"""Update bundle_calculation.total_achieved_weight from roll line net_weight sums."""
+	if not spr_doc or not hasattr(spr_doc, "bundle_calculation"):
+		return
+	rows = list(spr_doc.get("bundle_calculation") or [])
+	for idx, br in enumerate(rows):
+		br.total_achieved_weight = _spr_sum_net_weight_for_bundle_row(spr_doc, br, bundle_row_idx=idx)
+
+
+def sync_bundle_consumed_meter_header(spr_doc) -> None:
+	"""Sheet cutting: SPR header consumed meters = sum of bundle Consumed Mtrs."""
+	if not spr_doc or not cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)):
+		return
+	meta = frappe.get_meta("Shaft Production Run")
+	if not meta.has_field("custom_total_achieved_meter"):
+		return
+	total = sum(
+		flt(getattr(br, "total_consumed_meter", 0) or 0, 2) for br in (spr_doc.get("bundle_calculation") or [])
+	)
+	spr_doc.custom_total_achieved_meter = flt(total, 2)
 
 
 def _expand_spr_name_tokens_csv(spr_csv: str) -> list[str]:
@@ -4606,9 +4666,12 @@ def _sheet_cutting_spr_metrics(spr_names, pp_id=None):
 				spr = frappe.get_doc("Shaft Production Run", spr_name)
 			except Exception:
 				continue
+			is_sub = cint(spr.docstatus) == 1
 			for br in getattr(spr, "bundle_calculation", None) or []:
 				metrics["total_planned_sheet_pcs"] += _spr_planned_pcs_per_bundle(br)
-				metrics["total_produced_sheet_pcs"] += flt(getattr(br, "total_produced_sheets", 0) or 0)
+				if is_sub:
+					metrics["total_produced_sheet_pcs"] += flt(getattr(br, "total_produced_sheets", 0) or 0)
+					metrics["produced_meter"] += flt(getattr(br, "total_consumed_meter", 0) or 0)
 	elif pp_id:
 		for src in _read_pp_bundle_calculation_rows(pp_id):
 			pkts = cint(src.get("pkts_per_bundle") or 0)
@@ -4642,7 +4705,8 @@ def _sheet_cutting_spr_metrics(spr_names, pp_id=None):
 			if cint(r.get("spr_docstatus")) != 1:
 				continue
 			metrics["achieved_kg"] += flt(r.get("kgs"))
-			metrics["produced_meter"] += flt(r.get("len_m"))
+			if metrics["produced_meter"] <= 0:
+				metrics["produced_meter"] += flt(r.get("len_m"))
 			if metrics["total_produced_sheet_pcs"] <= 0:
 				metrics["total_produced_sheet_pcs"] += flt(r.get("pcs_sum"))
 	return metrics
@@ -7022,13 +7086,17 @@ def get_order_code(wo_doc):
 
 @frappe.whitelist()
 def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
-	"""Recompute bundle_calculation.total_produced_sheets from roll line sums (desk)."""
+	"""Recompute bundle_calculation totals and sheet-cutting header fields (desk)."""
 	spr_name = _cstr(spr_name)
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found."))
 	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	sync_bundle_total_produced_sheets_for_doc(doc)
+	if cint(getattr(doc, "custom_is_sheet_cutting", 0)):
+		sync_bundle_total_achieved_weight_for_doc(doc)
+		sync_bundle_consumed_meter_header(doc)
 	if cint(doc.docstatus) == 0:
+		doc._spr_recalc_total_produced_weight_header()
 		doc.save()
 	out = []
 	for br in doc.get("bundle_calculation") or []:
@@ -7036,9 +7104,16 @@ def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
 			{
 				"name": br.name,
 				"total_produced_sheets": flt(getattr(br, "total_produced_sheets", 0) or 0),
+				"total_achieved_weight": flt(getattr(br, "total_achieved_weight", 0) or 0),
+				"total_consumed_meter": flt(getattr(br, "total_consumed_meter", 0) or 0),
 			}
 		)
-	return {"status": "ok", "rows": out}
+	return {
+		"status": "ok",
+		"rows": out,
+		"total_produced_weight": flt(getattr(doc, "total_produced_weight", 0) or 0),
+		"custom_total_achieved_meter": flt(getattr(doc, "custom_total_achieved_meter", 0) or 0),
+	}
 
 
 @frappe.whitelist()

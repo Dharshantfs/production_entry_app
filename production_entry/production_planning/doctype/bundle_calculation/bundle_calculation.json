@@ -13,7 +13,9 @@
   "total_pcs_per_bundle",
   "work_order",
   "order_code",
-  "order_meter",
+  "job",
+  "total_consumed_meter",
+  "total_achieved_weight",
   "total_produced_sheets",
   "create_bundle_entry"
  ],
@@ -72,10 +74,26 @@
    "read_only": 1
   },
   {
-   "fieldname": "order_meter",
+   "fieldname": "job",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Job",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_consumed_meter",
    "fieldtype": "Float",
-   "label": "Order Meter (Mtr)",
+   "in_list_view": 1,
+   "label": "Consumed Mtrs",
    "precision": "2"
+  },
+  {
+   "fieldname": "total_achieved_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Achieved Weight (Kg)",
+   "precision": "2",
+   "read_only": 1
   },
   {
    "fieldname": "total_produced_sheets",

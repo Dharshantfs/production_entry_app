@@ -8596,11 +8596,13 @@ def get_sheet_cutting_order_table_data(
             row["total_planned_sheet_pcs"] = planned_sheets
             row["total_produced_sheet_pcs"] = flt(sc_metrics.get("total_produced_sheet_pcs"))
             row["produced_meter"] = flt(sc_metrics.get("produced_meter"))
+            achieved = flt(sc_metrics.get("achieved_kg"))
         except Exception:
             row["custom_no_of_sheets"] = flt(ex.get("custom_no_of_sheets") or 0)
             row["total_planned_sheet_pcs"] = flt(ex.get("custom_no_of_sheets") or 0)
             row["total_produced_sheet_pcs"] = 0.0
             row["produced_meter"] = 0.0
+            # achieved stays from spr_weights loop above
         row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()
         row["quality_code"] = _cstr(p.get("quality_code"))
         row["colour_code"] = _cstr(p.get("colour_code"))
