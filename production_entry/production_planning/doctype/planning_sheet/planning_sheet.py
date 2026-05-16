@@ -377,8 +377,11 @@ class Planningsheet(Document):
                         not cur
                         or lam == "255"
                         or pp == "255"
+                        or lam == "107"
+                        or pp == "107"
                         or _is_sheet_cutting_parent_process(ic)
                         or _is_sheet_cutting_child_process(ic)
+                        or (cur and tid and cur != tid)
                     )
                 except Exception:
                     restamp = not cur

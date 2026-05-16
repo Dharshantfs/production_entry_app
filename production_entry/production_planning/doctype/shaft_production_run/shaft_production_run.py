@@ -4272,6 +4272,75 @@ def _is_sheet_cutting_fg_code(item_code: str) -> bool:
 	return spr_fg_item_process_code(item_code) in SHEET_CUTTING_PROCESS_CODES
 
 
+def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str = None) -> dict:
+	"""Quality, colour, GSM, sheet size, width from FG item code (251–255) for SPR roll lines."""
+	ic = _cstr(item_code).strip()
+	out = {"quality": "", "color": "", "gsm": 0, "sheet_size": "", "width_inch": 0.0}
+	if not ic:
+		return out
+	if not item_name:
+		item_name = _cstr(frappe.db.get_value("Item", ic, "item_name") or "")
+	try:
+		from production_entry.production_planning.scheduler_api import (
+			_LAMINATION_QUALITY_BY_CODE,
+			_combined_bopp_line_gsm,
+			_get_color_by_code,
+			_item_process_prefix,
+			_lamination_process_from_item_code,
+			_parse_253_item_code,
+			_parse_254_item_code,
+			_parse_255_item_code,
+			_parse_sheet_cutting_item_code,
+			_sheet_size_for_item_code,
+			resolve_quality_color_gsm_from_item_code,
+		)
+
+		q, c, g = resolve_quality_color_gsm_from_item_code(ic, item_name)
+		out["quality"] = _cstr(q).strip().upper()
+		out["color"] = _cstr(c).strip().upper()
+		out["gsm"] = cint(g or 0)
+		sz, w = _sheet_size_for_item_code(ic)
+		out["sheet_size"] = _cstr(sz).strip()
+		out["width_inch"] = flt(w or 0)
+		if out["quality"] and out["color"] and out["gsm"] > 0:
+			return out
+		pp = _item_process_prefix(ic)
+		lam = _lamination_process_from_item_code(ic)
+		p = {}
+		if lam == "255" or pp == "255":
+			p = _parse_255_item_code(ic) or {}
+		elif pp == "253":
+			p = _parse_253_item_code(ic) or {}
+		elif pp == "254":
+			p = _parse_254_item_code(ic) or {}
+		elif pp in ("251", "252"):
+			p = _parse_sheet_cutting_item_code(ic) or {}
+		if p:
+			if not out["quality"]:
+				qc = _cstr(p.get("quality_code") or "").strip().upper()
+				out["quality"] = _cstr(p.get("quality_name") or _LAMINATION_QUALITY_BY_CODE.get(qc, "") or "").strip().upper()
+			if not out["color"]:
+				cc = _cstr(p.get("colour_code") or "").strip()
+				if cc:
+					try:
+						out["color"] = _cstr(_get_color_by_code(cc) or "").strip().upper()
+					except Exception:
+						out["color"] = ""
+			if out["gsm"] <= 0:
+				out["gsm"] = cint(_combined_bopp_line_gsm(p) or 0) or cint(p.get("gsm") or p.get("fabric_gsm") or 0)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_spr_resolve_roll_line_specs_from_item_code")
+	if out["gsm"] <= 0:
+		out["gsm"] = _sheet_cutting_parse_gsm(ic)
+	if not out["quality"] or not out["color"]:
+		q2, c2 = extract_quality_and_color(item_name or "", item_code=ic)
+		if not out["quality"]:
+			out["quality"] = _cstr(q2).strip().upper()
+		if not out["color"]:
+			out["color"] = _cstr(c2).strip().upper()
+	return out
+
+
 def _sheet_cutting_parse_gsm(item_code: str) -> int:
 	ic = _cstr(item_code)
 	if not ic:
@@ -4443,28 +4512,22 @@ def _spr_item_line_from_bundle(
 ):
 	"""Build one Roll Production Result line for sheet-cutting bundle Create Entry."""
 	item_code = _cstr(getattr(bundle_row, "item_code", None) or wo.get("production_item"))
+	if not item_code:
+		frappe.throw(_("Item Code is missing on the bundle row and Work Order"))
 	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
-	try:
-		from production_entry.production_planning.scheduler_api import (
-			resolve_quality_color_gsm_from_item_code,
-			_sheet_size_for_item_code,
-		)
-
-		quality, color, gsm = resolve_quality_color_gsm_from_item_code(item_code, item_name)
-		sz_from_item, w_from_item = _sheet_size_for_item_code(item_code)
-	except Exception:
-		quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
-		gsm = _sheet_cutting_parse_gsm(item_code)
-		sz_from_item, w_from_item = "", 0.0
-	if not gsm:
-		gsm = _sheet_cutting_parse_gsm(item_code)
+	specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+	quality = specs.get("quality") or ""
+	color = specs.get("color") or ""
+	gsm = cint(specs.get("gsm") or 0)
+	sz_from_item = specs.get("sheet_size") or ""
+	w_from_item = flt(specs.get("width_inch") or 0)
 	pcs_per_bundle = _spr_planned_pcs_per_bundle(bundle_row)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row = {
 		"work_order": wo.get("name"),
 		"item_code": item_code,
 		"item_name": item_name,
-		"quality": quality or None,
+		"quality": quality,
 		"gsm": gsm,
 		"planned_qty": 0,
 		"job": _spr_bundle_job_tag(bundle_row, bundle_index, bundle_row_idx),
@@ -4476,12 +4539,12 @@ def _spr_item_line_from_bundle(
 		"produced_length_mtrs": 0,
 		"net_weight": 0,
 		"gross_weight": 0,
-		"width_inch": 0,
-		"color": color or None,
+		"width_inch": w_from_item if w_from_item > 0 else 0,
+		"color": color,
 	}
 	if spi_meta.has_field("custom_sheet_size"):
 		sz = sz_from_item or _cstr(getattr(bundle_row, "sheet_cutting_size", None))
-		row["custom_sheet_size"] = sz
+		row["custom_sheet_size"] = sz or None
 	if w_from_item > 0 and spi_meta.has_field("width_inch"):
 		row["width_inch"] = flt(w_from_item)
 	if spi_meta.has_field("custom_planned_sheets_pcs"):
@@ -5322,21 +5385,19 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 	wo_doc = frappe.get_doc("Work Order", wo["name"])
 	item_code = wo_doc.production_item
 	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
-	gsm, width_inch = parse_item_code(item_code)
-	try:
-		from production_entry.production_planning.scheduler_api import resolve_quality_color_gsm_from_item_code
-
-		quality, color, gsm_parsed = resolve_quality_color_gsm_from_item_code(item_code, item_name)
-		if gsm_parsed > 0:
-			gsm = gsm_parsed
-	except Exception:
-		quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
+	_, width_inch = parse_item_code(item_code)
+	specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+	quality = specs.get("quality") or ""
+	color = specs.get("color") or ""
+	gsm = cint(specs.get("gsm") or 0)
+	if flt(specs.get("width_inch") or 0) > 0:
+		width_inch = flt(specs.get("width_inch"))
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row: dict = {
 		"work_order": wo["name"],
 		"item_code": item_code,
 		"item_name": item_name,
-		"quality": quality or None,
+		"quality": quality,
 		"gsm": gsm,
 		"planned_qty": planned_qty,
 		"job": job_id,
@@ -5348,8 +5409,13 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		"net_weight": 0,
 		"gross_weight": 0,
 		"width_inch": width_inch,
-		"color": color or None,
+		"color": color,
 	}
+	if _is_sheet_cutting_fg_code(item_code):
+		if spi_meta.has_field("custom_sheet_size") and specs.get("sheet_size"):
+			row["custom_sheet_size"] = specs.get("sheet_size")
+		if spi_meta.has_field("custom_planned_sheets_pcs") and planned_qty > 0:
+			row["custom_planned_sheets_pcs"] = planned_qty
 	# Fabric GSM (F-60 in item name) and Lamination GSM (L-15 GSM in item name or -C suffix)
 	if spi_meta.has_field("custom_fabric_gsm"):
 		fab_gsm = _fabric_gsm_from_item_name(item_name) or _fabric_gsm_from_item_name(item_code)

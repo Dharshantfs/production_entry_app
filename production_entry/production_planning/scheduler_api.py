@@ -1233,7 +1233,47 @@ def _hyphen_trace_from_255_parse(p):
 		segs.append(str(lg))
 	if wc:
 		segs.append(wc.zfill(3) if wc.isdigit() and len(wc) <= 3 else wc)
-	return "-".join(segs) if len(segs) > 1 else ""
+	body = "-".join(segs) if len(segs) > 1 else ""
+	if not body:
+		return ""
+	dc = _cstr(p.get("design_code") or "").strip().upper()
+	if dc:
+		return f"{dc}-{body}"
+	return body
+
+
+def _trace_from_255_parent_on_sales_order_line(sales_order_item, planning_sheet_name=None, pt_rows=None):
+	"""255 parent trace on the same SO line (e.g. ``6002-255-F-101-100-002``) for 107/100/PB children."""
+	soi = _cstr(sales_order_item).strip()
+	if not soi:
+		return ""
+	rows = pt_rows
+	if rows is None and planning_sheet_name:
+		rows = (
+			frappe.get_all(
+				"Planning Table",
+				filters={"parent": planning_sheet_name},
+				fields=["item_code", "sales_order_item", "so_item"],
+				limit_page_length=2000,
+			)
+			or []
+		)
+	if not rows:
+		return ""
+	for r in rows:
+		ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
+		if not _is_sheet_cutting_parent_process(ric):
+			continue
+		rsoi = _cstr(
+			(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
+			or (r.get("so_item") if isinstance(r, dict) else getattr(r, "so_item", None))
+		).strip()
+		if rsoi != soi:
+			continue
+		t = _hyphen_trace_from_255_parse(_parse_255_item_code(ric) or {})
+		if t:
+			return t
+	return ""
 
 
 def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
@@ -1476,8 +1516,11 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 			not cur_tid
 			or lam == "255"
 			or pp == "255"
+			or lam == "107"
+			or pp == "107"
 			or _is_sheet_cutting_parent_process(ic)
 			or _is_sheet_cutting_child_process(ic)
+			or (cur_tid and tid and cur_tid != tid)
 		)
 		if force or cur_tid != tid:
 			_set_trace_id_if_supported(row, tid)
@@ -2136,6 +2179,10 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 		t255 = _hyphen_trace_from_255_parse(_parse_255_item_code(ic) or {})
 		if t255:
 			return t255
+	if soi and planning_sheet_name:
+		t255_parent = _trace_from_255_parent_on_sales_order_line(soi, planning_sheet_name)
+		if t255_parent:
+			return t255_parent
 	fg_trace = _trace_from_253_254_sales_order_fg_row(ic, soi)
 	if fg_trace:
 		return fg_trace

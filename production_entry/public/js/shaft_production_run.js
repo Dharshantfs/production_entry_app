@@ -1954,8 +1954,24 @@ frappe.ui.form.on('Bundle Calculation', {
 							it[k] = line[k];
 						}
 					});
+					if (line.quality) {
+						it.quality = line.quality;
+					}
+					if (line.color) {
+						it.color = line.color;
+					}
+					if (line.gsm != null && line.gsm !== '') {
+						it.gsm = cint(line.gsm);
+					}
+					if (line.custom_sheet_size) {
+						it.custom_sheet_size = line.custom_sheet_size;
+					}
+					if (line.custom_planned_sheets_pcs != null) {
+						it.custom_planned_sheets_pcs = flt(line.custom_planned_sheets_pcs);
+					}
 				});
 				frm.refresh_field('items');
+				sprToggleSheetCuttingRollUi(frm);
 				const n = lines.length;
 				const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
 
@@ -2804,6 +2820,30 @@ function sprToggleSheetCuttingUi(frm) {
 	sprToggleSheetCuttingRollUi(frm);
 }
 
+function spr_force_sheet_cutting_item_grid_columns(grid) {
+	if (!grid) {
+		return;
+	}
+	const show = [
+		'quality',
+		'color',
+		'gsm',
+		'custom_sheet_size',
+		'custom_planned_sheets_pcs',
+		'custom_total_produced_sheets',
+	];
+	show.forEach(function (fn) {
+		try {
+			if (typeof grid.update_docfield_property === 'function') {
+				grid.update_docfield_property(fn, 'hidden', 0);
+				grid.update_docfield_property(fn, 'in_list_view', 1);
+			}
+		} catch (e) {
+			/* ignore */
+		}
+	});
+}
+
 function sprToggleSheetCuttingRollUi(frm) {
 	const isSc = sprIsSheetCutting(frm);
 	const hideWidthCol = isSc ? 1 : 0;
@@ -2818,6 +2858,7 @@ function sprToggleSheetCuttingRollUi(frm) {
 			spr_set_grid_col_hidden(grid, 'gsm', 0);
 			spr_set_grid_col_hidden(grid, 'custom_fabric_gsm', 1);
 			spr_set_grid_col_hidden(grid, 'custom_lam_gsm', 1);
+			spr_force_sheet_cutting_item_grid_columns(grid);
 		}
 		spr_set_grid_col_hidden(grid, 'width_inch', hideWidthCol);
 		spr_set_grid_col_hidden(grid, 'custom_sheet_size', hideSheetCols);
