@@ -1310,6 +1310,111 @@ def _trace_from_255_parent_on_sales_order_line(sales_order_item, planning_sheet_
 	return ""
 
 
+def _quality_name_from_master(q_code):
+	"""Resolve Quality Master display name from a 3-digit quality code (e.g. 105 → BRONZE)."""
+	qc = _cstr(q_code).strip()
+	if not qc:
+		return ""
+	try:
+		from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+			_quality_name_by_code,
+		)
+
+		qn = _quality_name_by_code(qc)
+		if qn:
+			return _cstr(qn).strip().upper()
+	except Exception:
+		pass
+	candidates = [qc]
+	if qc.isdigit():
+		candidates.extend([qc.lstrip("0") or "0", (qc.lstrip("0") or "0").zfill(2), qc.zfill(3)])
+	for qc_try in candidates:
+		for fld in ("short_code", "code", "quality_code", "custom_quality_code"):
+			try:
+				if not frappe.db.has_column("Quality Master", fld):
+					continue
+				qual_name = frappe.db.get_value("Quality Master", {fld: qc_try}, "name")
+				if qual_name:
+					return _cstr(qual_name).strip().upper()
+			except Exception:
+				pass
+		try:
+			if frappe.db.exists("Quality Master", qc_try):
+				return _cstr(qc_try).strip().upper()
+		except Exception:
+			pass
+	return ""
+
+
+def _width_inch_from_105_item_code(item_code):
+	"""Roll width in inches from process 105 item code (last 4 digits = mm)."""
+	p = _parse_105_item_code(item_code) or {}
+	wmm = cint(p.get("width_mm") or 0)
+	if wmm > 0:
+		return round(wmm / 25.4)
+	return 0.0
+
+
+def _is_design_first_hyphen_item_code(item_code):
+	"""True when item code uses design-first layout (6002-252… / 6002-105…); legacy digit[9:12] GSM is wrong."""
+	ic = _cstr(item_code).strip().upper()
+	if "-" not in ic:
+		return False
+	pp = _item_process_prefix(ic)
+	if pp in ("251", "252", "253", "254", "255", "105", "106"):
+		return True
+	if _lamination_process_from_item_code(ic) in ("104", "107", "255"):
+		return True
+	if _is_printing_105_parent_process(ic):
+		return True
+	return False
+
+
+def _sync_252_roll_width_from_105_child(planning_sheet_name):
+	"""Process 252 FG: roll width = BOM printing child (105) on the same SO line, not sheet-series width."""
+	if not planning_sheet_name:
+		return
+	if not frappe.db.has_column("Planning Table", "width_inch"):
+		return
+	rows = (
+		frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code", "sales_order_item", "so_item", "source_item"],
+			limit_page_length=2000,
+		)
+		or []
+	)
+	if not rows:
+		return
+	w_by_soi = {}
+	for r in rows:
+		ic = _cstr(r.get("item_code")).strip()
+		if _item_process_prefix(ic) != "105" and not _is_printing_105_parent_process(ic):
+			continue
+		soik = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		if not soik:
+			continue
+		w = _width_inch_from_105_item_code(ic)
+		if w > 0:
+			w_by_soi[soik] = w
+	if not w_by_soi:
+		return
+	for r in rows:
+		ic = _cstr(r.get("item_code")).strip()
+		if _item_process_prefix(ic) != "252":
+			continue
+		soik = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		w = flt(w_by_soi.get(soik) or 0)
+		if w <= 0:
+			continue
+		frappe.db.set_value("Planning Table", r.get("name"), "width_inch", w, update_modified=False)
+		legacy = _cstr(r.get("source_item"))
+		if legacy and frappe.db.exists("Planning sheet Item", legacy):
+			if frappe.db.has_column("Planning sheet Item", "width_inch"):
+				frappe.db.set_value("Planning sheet Item", legacy, "width_inch", w, update_modified=False)
+
+
 def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 	"""Quality, colour name, and GSM for planning / SPR rows (255, 107, 104, legacy numeric, PB)."""
 	ic = _cstr(item_code).strip()
@@ -1348,12 +1453,10 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 		return quality, color, gsm
 	if lam == "104" or pp == "104":
 		gsm = cint(_gsm_from_lamination_item_code(ic) or 0)
-	if pp in ("251", "252", "253", "254"):
-		if pp in ("253", "254"):
-			p = (_parse_253_item_code(ic) if pp == "253" else _parse_254_item_code(ic)) or {}
-		else:
-			p = _parse_sheet_cutting_item_code(ic) or {}
-		quality = _cstr(p.get("quality_name") or p.get("quality_code") or "").strip().upper()
+	if pp == "105" or _is_printing_105_parent_process(ic):
+		p = _parse_105_item_code(ic) or {}
+		qc = _cstr(p.get("quality_code") or "").strip()
+		quality = _quality_name_from_master(qc) or qc
 		cc = _cstr(p.get("colour_code") or "").strip()
 		if cc:
 			try:
@@ -1362,7 +1465,23 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 				color = ""
 		gsm = cint(p.get("gsm") or 0)
 		if gsm:
-			return quality, color, gsm
+			return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), gsm
+	if pp in ("251", "252", "253", "254"):
+		if pp in ("253", "254"):
+			p = (_parse_253_item_code(ic) if pp == "253" else _parse_254_item_code(ic)) or {}
+		else:
+			p = _parse_sheet_cutting_item_code(ic) or {}
+		qc = _cstr(p.get("quality_code") or "").strip()
+		quality = _quality_name_from_master(qc) or qc
+		cc = _cstr(p.get("colour_code") or "").strip()
+		if cc:
+			try:
+				color = (_get_color_by_code(cc) or "").strip().upper()
+			except Exception:
+				color = ""
+		gsm = cint(p.get("gsm") or 0)
+		if gsm:
+			return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), gsm
 	# Legacy numeric + item-name fallback (planning_sheet.extract_quality_and_color)
 	try:
 		from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
@@ -1372,7 +1491,7 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 		quality, color = extract_quality_and_color(nm or frappe.db.get_value("Item", ic, "item_name") or "", item_code=ic)
 	except Exception:
 		quality, color = "", ""
-	if not gsm:
+	if not gsm and not _is_design_first_hyphen_item_code(ic):
 		digits = "".join(ch for ch in ic if ch.isdigit())
 		if len(digits) >= 12:
 			try:
@@ -1491,6 +1610,9 @@ def _stamp_sheet_cutting_size_on_planning_dict(row_dict, item_code):
 	w = flt(dims.get("width_inch") or 0)
 	if sz and frappe.db.has_column("Planning Table", "sheet_size"):
 		row_dict["sheet_size"] = _normalize_sheet_size_str(sz)
+	# Process 252: sheet size from series; roll width from BOM 105 child (not series width).
+	if _item_process_prefix(_cstr(item_code)) == "252":
+		return
 	if w > 0 and flt(row_dict.get("width_inch") or 0) <= 0:
 		wr = round(w, 1)
 		row_dict["width_inch"] = float(int(wr)) if abs(wr - round(wr)) < 1e-9 else wr
@@ -1522,6 +1644,35 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 	if sz and hasattr(row, "sheet_size"):
 		row.sheet_size = sz
 	pp = _item_process_prefix(ic)
+	if pp in ("251", "252", "105") or _is_printing_105_parent_process(ic):
+		p_sc = _parse_sheet_cutting_item_code(ic) if pp in ("251", "252") else (_parse_105_item_code(ic) or {})
+		dc = _cstr((p_sc or {}).get("design_code") or "").strip()
+		if dc and hasattr(row, "custom_design_code"):
+			row.custom_design_code = dc
+		for _kdm, _vdm in (_design_master_extra_fields(dc) or {}).items():
+			if not _vdm or not str(_vdm).strip():
+				continue
+			if hasattr(row, _kdm) and not _cstr(getattr(row, _kdm, None)).strip():
+				setattr(row, _kdm, _vdm)
+	if pp == "252" and planning_sheet_name and hasattr(row, "width_inch"):
+		soik = _cstr(getattr(row, "sales_order_item", None) or getattr(row, "so_item", None) or "").strip()
+		if soik:
+			for sib in (
+				frappe.get_all(
+					"Planning Table",
+					filters={"parent": planning_sheet_name, "sales_order_item": soik},
+					fields=["item_code"],
+					limit_page_length=20,
+				)
+				or []
+			):
+				sic = _cstr(sib.get("item_code")).strip()
+				if _item_process_prefix(sic) != "105" and not _is_printing_105_parent_process(sic):
+					continue
+				w105 = _width_inch_from_105_item_code(sic)
+				if w105 > 0:
+					row.width_inch = w105
+					break
 	if pp == "255" or _lamination_process_from_item_code(ic) == "255":
 		extras = _planning_row_dict_255_lamination_extras(ic, None, soi) or {}
 		for k, v in (extras or {}).items():
@@ -3272,7 +3423,7 @@ def _sql_correlated_pick_one_fabric_name(alias_pt="pt"):
 
 
 def _sql_correlated_pick_one_sheet_bom_roll_child(alias_pt="pt"):
-	"""Scalar subquery: 104/107 BOM child on the same SO line (sheet-cutting roll width, not fabric 100)."""
+	"""Scalar subquery: 105/104/107 BOM child on the same SO line (sheet-cutting roll width, not fabric 100)."""
 	pa = alias_pt
 	so_match = (
 		"(NULLIF(TRIM(IFNULL(c2.so_item,'')), '') <> '' "
@@ -3283,13 +3434,19 @@ def _sql_correlated_pick_one_sheet_bom_roll_child(alias_pt="pt"):
 	return (
 		"(SELECT c2.name FROM `tabPlanning Table` AS c2 "
 		"WHERE c2.parent = {pa}.parent "
-		"AND (TRIM(IFNULL(c2.item_code,'')) LIKE '104%%' "
+		"AND (TRIM(IFNULL(c2.item_code,'')) LIKE '105%%' "
+		"OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-105%%' "
+		"OR TRIM(IFNULL(c2.item_code,'')) LIKE '104%%' "
 		"OR TRIM(IFNULL(c2.item_code,'')) LIKE '107%%' "
 		"OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-104%%' "
 		"OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-107%%') "
 		"AND ({so_match}) "
-		"ORDER BY CASE WHEN TRIM(IFNULL(c2.item_code,'')) LIKE '104%%' THEN 0 "
-		"WHEN TRIM(IFNULL(c2.item_code,'')) LIKE '107%%' THEN 1 ELSE 2 END, "
+		"ORDER BY CASE "
+		"WHEN (TRIM(IFNULL({pa}.item_code,'')) LIKE '%%252%%' OR TRIM(IFNULL({pa}.item_code,'')) LIKE '252%%') "
+		" AND (TRIM(IFNULL(c2.item_code,'')) LIKE '105%%' OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-105%%') THEN 0 "
+		"WHEN TRIM(IFNULL(c2.item_code,'')) LIKE '104%%' OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-104%%' THEN 1 "
+		"WHEN TRIM(IFNULL(c2.item_code,'')) LIKE '107%%' OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-107%%' THEN 2 "
+		"ELSE 3 END, "
 		"IFNULL(c2.modified, c2.creation) DESC LIMIT 1)"
 	).format(pa=pa, so_match=so_match)
 
@@ -4356,6 +4513,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_force_rewinding_unit_on_sheet(planning_sheet_name)
 	_sync_stage3_safe(planning_sheet_name)
 	try:
+		_sync_252_roll_width_from_105_child(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_252_roll_width")
+	try:
 		backfill_parent_child_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:backfill_parent_child_trace_ids")
@@ -5284,6 +5445,8 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
 	if so_fg == "103" and parent_proc == "103" and child_proc == "100":
 		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
+	if so_fg == "252" and parent_proc in ("252", "105") and child_proc in ("105", "100"):
+		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
 	return ""
 
 
@@ -5787,6 +5950,10 @@ def _sync_stage3_process_planning_rows(planning_sheet_name):
 		so_parent_processes=("252",),
 		process_label="Stage 3 printing child",
 	)
+	try:
+		_sync_252_roll_width_from_105_child(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_stage3_process_planning_rows:_sync_252_roll_width")
 	# BOM child 105 rows must stay on the printing queue unit (not Unit 1–4 from width rules).
 	try:
 		_force_printing_unit_on_sheet(planning_sheet_name)
@@ -6318,6 +6485,17 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 		for rr in pt_rows:
 			ic_rr = rr.get("item_code")
 			if not _is_sheet_cutting_fg_item_code(ic_rr):
+				continue
+			# 252 roll width comes from BOM 105 child, not sheet-series width (e.g. 21 from size 002).
+			if _item_process_prefix(str(ic_rr or "")) == "252":
+				dims = _sheet_dimensions_from_item_code(ic_rr)
+				sz = _cstr(dims.get("sheet_size") or "")
+				if sz and frappe.db.has_column("Planning Table", "sheet_size"):
+					frappe.db.set_value("Planning Table", rr.get("name"), "sheet_size", sz, update_modified=False)
+				legacy = _cstr(rr.get("source_item"))
+				if legacy and frappe.db.exists("Planning sheet Item", legacy) and sz:
+					if frappe.db.has_column("Planning sheet Item", "sheet_size"):
+						frappe.db.set_value("Planning sheet Item", legacy, "sheet_size", sz, update_modified=False)
 				continue
 			dims = _sheet_dimensions_from_item_code(ic_rr)
 			w = flt(dims.get("width_inch") or 0)
@@ -10773,7 +10951,45 @@ def _populate_planning_sheet_items(ps, doc):
             after_digits = "".join(ch for ch in after_hyphen if ch.isdigit())
         else:
             after_digits = digits
-        if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) not in ("107", "255") and process_prefix not in ("253", "255", "254", "108"):
+        parsed252_early = {}
+        if process_prefix in ("251", "252"):
+            parsed252_early = _parse_sheet_cutting_item_code(item_code_str) or {}
+            if cint(parsed252_early.get("gsm") or 0) > 0:
+                gsm = cint(parsed252_early.get("gsm") or 0)
+            cc252 = (parsed252_early.get("colour_code") or "").strip()
+            if cc252:
+                try:
+                    _col252 = _get_color_by_code(cc252)
+                    if _col252:
+                        col = _col252
+                except Exception:
+                    pass
+            q252 = (parsed252_early.get("quality_code") or "").strip()
+            if q252:
+                qn252 = _quality_name_from_master(q252)
+                if qn252:
+                    qual = qn252
+        parsed105_early = {}
+        if process_prefix == "105" or _is_printing_105_parent_process(item_code_str):
+            parsed105_early = _parse_105_item_code(item_code_str) or {}
+            if cint(parsed105_early.get("gsm") or 0) > 0:
+                gsm = cint(parsed105_early.get("gsm") or 0)
+            cc105 = (parsed105_early.get("colour_code") or "").strip()
+            if cc105:
+                try:
+                    _col105 = _get_color_by_code(cc105)
+                    if _col105:
+                        col = _col105
+                except Exception:
+                    pass
+            q105 = (parsed105_early.get("quality_code") or "").strip()
+            if q105:
+                qn105 = _quality_name_from_master(q105)
+                if qn105:
+                    qual = qn105
+            if cint(parsed105_early.get("width_mm") or 0) > 0 and flt(width) <= 0:
+                width = round(cint(parsed105_early.get("width_mm") or 0) / 25.4)
+        if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) not in ("107", "255") and process_prefix not in ("253", "255", "254", "108", "251", "252", "105"):
             q_code = after_digits[3:6]
             c_code = after_digits[6:9]
             try:
@@ -10889,6 +11105,29 @@ def _populate_planning_sheet_items(ps, doc):
             p109g = _parse_109_item_code(it.item_code) or {}
             if cint(p109g.get("gsm") or 0) > 0:
                 gsm = cint(p109g.get("gsm") or 0)
+        elif process_prefix in ("251", "252"):
+            p252g = parsed252_early or (_parse_sheet_cutting_item_code(item_code_str) or {})
+            if cint(p252g.get("gsm") or 0) > 0:
+                gsm = cint(p252g.get("gsm") or 0)
+            cc252g = (p252g.get("colour_code") or "").strip()
+            if cc252g and not col:
+                try:
+                    _col252g = _get_color_by_code(cc252g)
+                    if _col252g:
+                        col = _col252g
+                except Exception:
+                    pass
+            q252g = (p252g.get("quality_code") or "").strip()
+            if q252g:
+                qn252g = _quality_name_from_master(q252g)
+                if qn252g:
+                    qual = qn252g
+        elif process_prefix == "105" or _is_printing_105_parent_process(item_code_str):
+            p105g = parsed105_early or (_parse_105_item_code(item_code_str) or {})
+            if cint(p105g.get("gsm") or 0) > 0:
+                gsm = cint(p105g.get("gsm") or 0)
+            if cint(p105g.get("width_mm") or 0) > 0:
+                width = round(cint(p105g.get("width_mm") or 0) / 25.4)
         elif process_prefix == "253":
             p253g = _parse_253_item_code(it.item_code) or {}
             if cint(p253g.get("gsm") or 0) > 0:
@@ -10903,19 +11142,9 @@ def _populate_planning_sheet_items(ps, doc):
                     pass
             q3 = (p253g.get("quality_code") or "").strip()
             if q3:
-                try:
-                    for qc in (q3, q3.lstrip("0") or "0", (q3.lstrip("0") or "0").zfill(2)):
-                        qual_name = (
-                            frappe.db.get_value("Quality Master", {"short_code": qc}, "name")
-                            or frappe.db.get_value("Quality Master", {"code": qc}, "name")
-                            or frappe.db.get_value("Quality Master", {"quality_code": qc}, "name")
-                            or frappe.db.get_value("Quality Master", qc, "name")
-                        )
-                        if qual_name:
-                            qual = qual_name
-                            break
-                except Exception:
-                    pass
+                qn3 = _quality_name_from_master(q3)
+                if qn3:
+                    qual = qn3
         elif process_prefix == "254":
             p254g = _parse_254_item_code(it.item_code) or {}
             if cint(p254g.get("gsm") or 0) > 0:
@@ -11144,6 +11373,14 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_attachment"] = _da_105
                 if frappe.db.has_column("Planning sheet Item", "custom_design_attachment"):
                     psi_data["custom_design_attachment"] = _da_105
+            _dc_for_dm105 = (psi_data.get("custom_design_code") or _design_code_105 or "").strip()
+            for _k105, _v105 in (_design_master_extra_fields(_dc_for_dm105) or {}).items():
+                if not _v105 or not str(_v105).strip():
+                    continue
+                if frappe.db.has_column("Planning Table", _k105) and not (psi_data.get(_k105) or "").strip():
+                    psi_data[_k105] = _v105
+                if frappe.db.has_column("Planning sheet Item", _k105) and not (psi_data.get(_k105) or "").strip():
+                    psi_data[_k105] = _v105
             # GSM from item code position 9-11 after hyphen
             if p105_data.get("gsm"):
                 gsm_105 = cint(p105_data.get("gsm") or 0)
@@ -11250,7 +11487,7 @@ def _populate_planning_sheet_items(ps, doc):
             psi_data["unit"] = SLITTING_UNIT
         # Process 252 (Printed Sheet): sheet-cutting board parent with design metadata.
         if _item_process_prefix(str(it.item_code or "")) == "252":
-            p252_data = _parse_sheet_cutting_item_code(it.item_code) or {}
+            p252_data = parsed252_early or (_parse_sheet_cutting_item_code(it.item_code) or {})
             _dc_252 = (p252_data.get("design_code") or "").strip().upper()
             if _dc_252 and frappe.db.has_column("Planning Table", "custom_design_code"):
                 psi_data["custom_design_code"] = _dc_252
@@ -11260,6 +11497,23 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_name"] = _dn_252
                 if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
                     psi_data["custom_design_name"] = _dn_252
+            _da_252 = _printing_design_attachment_from_sales_order_item(it.name)
+            if _da_252:
+                if frappe.db.has_column("Planning Table", "custom_design_attachment"):
+                    psi_data["custom_design_attachment"] = _da_252
+                if frappe.db.has_column("Planning sheet Item", "custom_design_attachment"):
+                    psi_data["custom_design_attachment"] = _da_252
+            _dc_for_dm252 = (psi_data.get("custom_design_code") or _dc_252 or "").strip()
+            for _k252, _v252 in (_design_master_extra_fields(_dc_for_dm252) or {}).items():
+                if not _v252 or not str(_v252).strip():
+                    continue
+                if frappe.db.has_column("Planning Table", _k252) and not (psi_data.get(_k252) or "").strip():
+                    psi_data[_k252] = _v252
+                if frappe.db.has_column("Planning sheet Item", _k252) and not (psi_data.get(_k252) or "").strip():
+                    psi_data[_k252] = _v252
+            _stamp_sheet_cutting_size_on_planning_dict(psi_data, it.item_code)
+            if cint(p252_data.get("gsm") or 0) > 0:
+                psi_data["gsm"] = cint(p252_data.get("gsm") or 0)
             psi_data["unit"] = SHEET_CUTTING_UNIT
         # BOM children (100 / 104 / 106) on the same SO line key as the 254 FG row: inherit design + lam GSM from the sheet's 254 Planning row.
         _pp254child = _item_process_prefix(str(it.item_code or ""))
@@ -11303,6 +11557,8 @@ def _populate_planning_sheet_items(ps, doc):
                 existing_psi.quality = line_quality
                 existing_psi.custom_quality = qual or line_quality
                 existing_psi.color = col
+                if gsm > 0 and hasattr(existing_psi, "gsm"):
+                    existing_psi.gsm = gsm
                 if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
                     existing_psi.custom_lam_gsm = lam_gsm
                 if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
@@ -11340,7 +11596,7 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.unit = unit
                     existing_psi.planned_date = p_date
                 if _is_printing_105_parent_process(str(it.item_code or "")):
-                    p105_data_e = _parse_105_item_code(it.item_code) or {}
+                    p105_data_e = parsed105_early or (_parse_105_item_code(it.item_code) or {})
                     _dc_e = (p105_data_e.get("design_code") or "").strip().upper()
                     if _dc_e and hasattr(existing_psi, "custom_design_code"):
                         existing_psi.custom_design_code = _dc_e
@@ -11350,6 +11606,13 @@ def _populate_planning_sheet_items(ps, doc):
                     _da_105_e = _printing_design_attachment_from_sales_order_item(it.name)
                     if _da_105_e and hasattr(existing_psi, "custom_design_attachment"):
                         existing_psi.custom_design_attachment = _da_105_e
+                    for _k105e, _v105e in (_design_master_extra_fields(_dc_e) or {}).items():
+                        if _v105e and hasattr(existing_psi, _k105e) and not _cstr(getattr(existing_psi, _k105e, None)).strip():
+                            setattr(existing_psi, _k105e, _v105e)
+                    if cint(p105_data_e.get("gsm") or 0) > 0:
+                        existing_psi.gsm = cint(p105_data_e.get("gsm") or 0)
+                    if cint(p105_data_e.get("width_mm") or 0) > 0:
+                        existing_psi.width_inch = round(cint(p105_data_e.get("width_mm") or 0) / 25.4)
                 if _item_process_prefix(str(it.item_code or "")) == "106":
                     p106_data_e = _parse_106_item_code(it.item_code) or {}
                     _dc_106_e = (p106_data_e.get("design_code") or "").strip().upper()
@@ -11381,13 +11644,18 @@ def _populate_planning_sheet_items(ps, doc):
                         if hasattr(existing_psi, k):
                             setattr(existing_psi, k, v)
                 if _item_process_prefix(str(it.item_code or "")) == "252":
-                    p252_data_e = _parse_sheet_cutting_item_code(it.item_code) or {}
+                    p252_data_e = parsed252_early or (_parse_sheet_cutting_item_code(it.item_code) or {})
                     _dc_252_e = (p252_data_e.get("design_code") or "").strip().upper()
                     if _dc_252_e and hasattr(existing_psi, "custom_design_code"):
                         existing_psi.custom_design_code = _dc_252_e
                     _dn_252_e = _pb_design_name_from_sales_order_item(it.name)
                     if _dn_252_e and hasattr(existing_psi, "custom_design_name"):
                         existing_psi.custom_design_name = _dn_252_e
+                    for _k252e, _v252e in (_design_master_extra_fields(_dc_252_e) or {}).items():
+                        if _v252e and hasattr(existing_psi, _k252e) and not _cstr(getattr(existing_psi, _k252e, None)).strip():
+                            setattr(existing_psi, _k252e, _v252e)
+                    if cint(p252_data_e.get("gsm") or 0) > 0:
+                        existing_psi.gsm = cint(p252_data_e.get("gsm") or 0)
                 if _item_process_prefix(str(it.item_code or "")) == "253":
                     p253_e = _parse_253_item_code(it.item_code) or {}
                     _dc_253_e = (p253_e.get("design_code") or "").strip().upper()
