@@ -540,6 +540,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		}, 700);
 		
 		spr_inject_gsm_legend(frm);
+		spr_hide_duplicate_produced_gsm_columns(frm);
 		spr_schedule_grid_ui_debounced(frm, { delay: 280 });
 		
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
@@ -2095,14 +2096,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				}
 
 				function finishCreateEntry() {
-					// PERFORMANCE: avoid per-row server calls and heavy styling loops on large grids.
-					// Server-side hooks will compute any derived fields on save/submit; keep UI responsive here.
 					update_shaft_job_achieved_from_items(frm);
 					sprScheduleTotalProducedSync(frm);
-					const totalRows = (frm.doc.items || []).length;
-					if (totalRows <= 250) {
-						schedule_spr_item_row_styles(frm);
-					}
+					spr_after_child_table_refresh(frm);
 					sprAutoSaveAfterCreateEntry(frm);
 					frappe.show_alert({
 						message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
@@ -2871,6 +2867,33 @@ function sprRollPromptMeta(frm, row) {
 	return null;
 }
 
+/** Hide duplicate Produced GSM custom fields (site Customize may add a second column). */
+function spr_hide_duplicate_produced_gsm_columns(frm) {
+	const grid = frm && frm.fields_dict && frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return;
+	}
+	const hideNames = ['custom_produced_gsm', 'produced_gsm_copy'];
+	hideNames.forEach(function (fn) {
+		if (frappe.meta.get_docfield('Shaft Production Run Item', fn)) {
+			spr_set_grid_col_hidden(grid, fn, 1);
+		}
+	});
+	try {
+		(frappe.get_meta('Shaft Production Run Item').fields || []).forEach(function (df) {
+			if (
+				df.fieldname &&
+				df.fieldname !== 'produced_gsm' &&
+				String(df.label || '').trim() === 'Produced GSM'
+			) {
+				spr_set_grid_col_hidden(grid, df.fieldname, 1);
+			}
+		});
+	} catch (e) {
+		/* ignore */
+	}
+}
+
 function sprToggleLaminationRollUi(frm) {
 	const processPrefix = sprRollProcessPrefix(frm);
 	const isProcess104 = processPrefix === '104';
@@ -2883,6 +2906,12 @@ function sprToggleLaminationRollUi(frm) {
 		spr_set_grid_col_hidden(grid, 'planned_qty', hidePlanned);
 		spr_set_grid_col_hidden(grid, 'custom_fabric_gsm', hideLamCols);
 		spr_set_grid_col_hidden(grid, 'custom_lam_gsm', hideLamCols);
+		if (showLamCols) {
+			spr_set_grid_col_hidden(grid, 'width_inch', 0);
+			spr_set_grid_col_hidden(grid, 'meter_roll', 0);
+			spr_set_grid_col_hidden(grid, 'produced_length_mtrs', 0);
+		}
+		spr_hide_duplicate_produced_gsm_columns(frm);
 		spr_sync_grid_columns_visible(frm, 'items');
 	}
 	const $legend = fd && fd.$wrapper ? fd.$wrapper.prev('.spr-gsm-legend') : null;
@@ -3144,7 +3173,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '17';
+	const sprItemsCssVer = '18';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -3678,15 +3707,6 @@ function apply_spr_item_row_styles(frm) {
 	const items = frm.doc.items || [];
 	const $domRows = sprGetItemsDatatableBodyRows(frm);
 	const $wrap = frm.fields_dict.items.$wrapper;
-	if (sprUsesLaminationRollPrompt(frm)) {
-		const $targets = ($wrap && $wrap.length) ? $wrap.find('.dt-row, .grid-row, tbody tr, .grid-form-row') : $();
-		$targets.removeClass(baseClasses).each(function () {
-			sprClearRowBg($(this));
-		});
-		spr_apply_items_row_lock_ui(frm);
-		frm._spr_applying_row_styles = false;
-		return;
-	}
 
 	items.forEach(function (doc, idx) {
 		// Try multiple resolution methods to find row element for DataTable / Frappe grids
