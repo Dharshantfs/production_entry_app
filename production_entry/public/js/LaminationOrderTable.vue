@@ -68,6 +68,13 @@
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
+        <button
+          v-if="!isPrintedBoppTable"
+          type="button"
+          class="cc-clear-btn"
+          :title="sizeDimUnit === 'inches' ? 'Show width in millimetres (nearest 5 mm)' : 'Show width in inches'"
+          @click="toggleSizeDimUnit"
+        >{{ sizeDimUnit === "inches" ? "Width: mm" : "Width: in" }}</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">{{ backToBoardLabel }}</button>
       </div>
@@ -114,6 +121,7 @@
             <th>CUSTOMER</th>
             <th v-if="showProcessColumn">PROCESS</th>
             <th v-if="!isPrintedBoppTable">QUALITY</th>
+            <th v-if="!isPrintedBoppTable">{{ widthColumnHeader }}</th>
             <th v-if="!isPrintedBoppTable">FABRIC COLOUR</th>
             <th v-if="showPrintingLamGsmColumn">LAM GSM</th>
             <th v-if="isPrinting105Table">DESIGN CODE</th>
@@ -191,6 +199,7 @@
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td v-if="showProcessColumn" class="cell-center font-bold">{{ processLabel(row) }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
+            <td v-if="!isPrintedBoppTable" class="cell-center">{{ formatWidthCell(row) }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center font-bold">{{ row.fabric_colour || row.color }}</td>
             <td v-if="showPrintingLamGsmColumn" class="cell-center font-bold">{{ row.lamination_gsm || row.custom_lam_gsm || "-" }}</td>
             <td v-if="isPrinting105Table" class="cell-center font-bold">{{ row.custom_design_code || row.design_code || "—" }}</td>
@@ -369,7 +378,25 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+
+const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_lamination_printing";
+const sizeDimUnit = ref("inches");
+const widthColumnHeader = computed(() =>
+  sizeDimUnit.value === "mm" ? "WIDTH (mm)" : "WIDTH (INCHES)"
+);
+function toggleSizeDimUnit() {
+  sizeDimUnit.value = sizeDimUnit.value === "mm" ? "inches" : "mm";
+  try {
+    localStorage.setItem(DIM_UNIT_LS_KEY, sizeDimUnit.value);
+  } catch (_) {}
+}
+function formatWidthCell(row) {
+  if (!row || row.is_maintenance_row || row.is_maintenance_empty) return "-";
+  const fb = row.itemCode || row.item_code || "";
+  return formatSingleDimension(row, "width_inch", sizeDimUnit.value, fb);
+}
 
 const props = defineProps({
   /** `lamination` = 104/107 lamination table; `printed_bopp_film` = PB / VR BOPP printing unit; `printing_105` = process 105 board. */
@@ -543,7 +570,7 @@ const filteredRows = computed(() => {
 
 const tableColCount = computed(() => {
   if (isPrinting105Table.value) {
-    let n = 21;
+    let n = 22;
     if (showPrintingAllProcesses.value) n += 1;
     if (showPrintingLamGsmColumn.value) n += 1;
     return n;
@@ -553,7 +580,7 @@ const tableColCount = computed(() => {
     // (includes design colour column after BOPP finish size).
     return 20;
   }
-  let n = 17;
+  let n = 18;
   if (showAllProcesses.value) n += 1; // PROCESS column
   if (showDesignNameColumn.value) n += 1;
   if (showCylinderTypeColumn.value) n += 1;
@@ -1781,7 +1808,10 @@ async function fetchData() {
       }
       return {
         ...d,
+        itemName: d.psi_name || d.itemName || d.name || "",
+        itemCode: d.item_code || d.itemCode || "",
         salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
+        width_inch: d.width_inch || d.widthInch || 0,
       };
     });
     if (!initialFetchRetried && (!rawData.value || rawData.value.length === 0)) {
@@ -1899,6 +1929,10 @@ watch(filterUnit, () => {
 });
 
 onMounted(async () => {
+  try {
+    const u = localStorage.getItem(DIM_UNIT_LS_KEY);
+    if (u === "mm" || u === "inches") sizeDimUnit.value = u;
+  } catch (_) {}
   const p = new URLSearchParams(window.location.search);
   if (p.get("scope")) viewScope.value = p.get("scope");
   if (p.get("date")) filterOrderDate.value = p.get("date");

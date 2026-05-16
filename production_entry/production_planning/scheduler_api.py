@@ -2929,6 +2929,29 @@ def _sql_correlated_pick_one_fabric_name(alias_pt="pt"):
 	).format(pa, where_clause, inner_case)
 
 
+def _sql_correlated_pick_one_sheet_bom_roll_child(alias_pt="pt"):
+	"""Scalar subquery: 104/107 BOM child on the same SO line (sheet-cutting roll width, not fabric 100)."""
+	pa = alias_pt
+	so_match = (
+		"(NULLIF(TRIM(IFNULL(c2.so_item,'')), '') <> '' "
+		"AND NULLIF(TRIM(IFNULL(c2.so_item,'')), '') = COALESCE("
+		"NULLIF(TRIM(IFNULL({pa}.sales_order_item,'')), ''), "
+		"NULLIF(TRIM(IFNULL({pa}.so_item,'')), '')))"
+	).format(pa=pa)
+	return (
+		"(SELECT c2.name FROM `tabPlanning Table` AS c2 "
+		"WHERE c2.parent = {pa}.parent "
+		"AND (TRIM(IFNULL(c2.item_code,'')) LIKE '104%%' "
+		"OR TRIM(IFNULL(c2.item_code,'')) LIKE '107%%' "
+		"OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-104%%' "
+		"OR UPPER(TRIM(IFNULL(c2.item_code,''))) LIKE '%%-107%%') "
+		"AND ({so_match}) "
+		"ORDER BY CASE WHEN TRIM(IFNULL(c2.item_code,'')) LIKE '104%%' THEN 0 "
+		"WHEN TRIM(IFNULL(c2.item_code,'')) LIKE '107%%' THEN 1 ELSE 2 END, "
+		"IFNULL(c2.modified, c2.creation) DESC LIMIT 1)"
+	).format(pa=pa, so_match=so_match)
+
+
 def _submitted_spr_run_date_map(spr_names):
 	"""Map SPR name -> run_date (or custom_run_date, etc.) for submitted docs only."""
 	out = {}
@@ -3218,6 +3241,120 @@ def _fabric_gsm_from_item_name(item_name: str) -> int:
         except Exception:
             pass
     return 0
+
+
+def _parse_104_item_code(item_code):
+	"""Process 104 laminated roll: ``104`` + QQQ + CCC + GGG + WWWW [``-lam``]; optional design prefix."""
+	code = re.sub(r"\s+", "", str(item_code or "").strip().upper())
+	if not code:
+		return {}
+
+	def _row(design, gd):
+		lam = (gd.get("lam") or "").strip().upper()
+		lam_g = cint(_LAM_GSM_SUFFIX_MAP.get(lam, 0) or 0) if lam else 0
+		wc = (gd.get("width") or "").strip()
+		width_inch = 0.0
+		if wc.isdigit():
+			if len(wc) == 4:
+				width_inch = round(flt(cint(wc)) / 25.4, 1)
+			elif len(wc) == 3:
+				width_inch = round(flt(wc) / 10.0, 1)
+		return {
+			"process": "104",
+			"design_code": design or "",
+			"quality_code": gd.get("quality"),
+			"colour_code": gd.get("colour"),
+			"gsm": cint(gd.get("gsm") or 0),
+			"width_code": wc,
+			"width_inch": width_inch,
+			"lam_suffix": lam,
+			"lam_gsm_code": lam,
+			"lam_gsm": lam_g,
+		}
+
+	m = re.match(
+		r"^104(?P<quality>\d{3})(?P<colour>\d{3})(?P<gsm>\d{3})(?P<width>\d{4})(?:-(?P<lam>[A-Z0-9]+))?$",
+		code,
+	)
+	if m:
+		return _row("", m.groupdict())
+	m2 = re.match(
+		r"^(?P<design>[A-Z0-9]+)-104(?P<quality>\d{3})(?P<colour>\d{3})(?P<gsm>\d{3})(?P<width>\d{4})(?:-(?P<lam>[A-Z0-9]+))?$",
+		code,
+	)
+	if m2:
+		return _row((m2.group("design") or "").strip(), m2.groupdict())
+	return {}
+
+
+def _width_inch_from_104_item_code(item_code):
+	"""Roll width (inch) from 104 body WWWW — stored as mm integer (e.g. ``0405`` → 405 mm → 16")."""
+	p = _parse_104_item_code(item_code) or {}
+	w = flt(p.get("width_inch") or 0)
+	if w > 0:
+		return w
+	digits = "".join(ch for ch in str(item_code or "") if ch.isdigit())
+	for m in re.finditer(r"104\d{13}", digits):
+		block = m.group(0)
+		if len(block) >= 16:
+			wc = block[12:16]
+			if wc.isdigit():
+				return round(flt(cint(wc)) / 25.4, 1)
+	return 0.0
+
+
+def _resolve_planning_row_width_inch(item_code, db_width=0, item_name=""):
+	"""Best-effort roll width (inch) for order tables — item code first, then Planning Table / name text."""
+	w = flt(db_width or 0)
+	ic = _cstr(item_code).strip()
+	inm = _cstr(item_name).strip()
+	if not ic:
+		return w
+	if w <= 0:
+		lam = _lamination_process_from_item_code(ic)
+		pp = _item_process_prefix(ic)
+		if lam == "104":
+			w = _width_inch_from_104_item_code(ic)
+		elif lam == "107":
+			w = flt((_parse_107_item_code(ic) or {}).get("width_inch") or 0)
+		elif pp == "255" or lam == "255":
+			w = flt((_parse_255_item_code(ic) or {}).get("width_inch") or 0)
+		elif pp == "108":
+			w = flt((_parse_108_item_code(ic) or {}).get("width_inch") or 0)
+		elif pp == "106":
+			p106 = _parse_106_item_code(ic) or {}
+			wmm = cint(p106.get("width_mm") or 0)
+			if wmm > 0:
+				w = round(wmm / 25.4, 1)
+		elif pp == "105":
+			p105 = _parse_105_item_code(ic) or {}
+			wmm = cint(p105.get("width_mm") or 0)
+			if wmm > 0:
+				w = round(wmm / 25.4, 1)
+		elif pp == "103":
+			digits = "".join(ch for ch in ic if ch.isdigit())
+			if len(digits) >= 16 and digits.startswith("103"):
+				wc = digits[12:16]
+				if wc.isdigit():
+					w = round(flt(cint(wc)) / 25.4, 1) if len(wc) == 4 else round(flt(wc) / 10.0, 1)
+		elif pp == "109":
+			p109 = _parse_109_item_code(ic) or {}
+			wc = _cstr(p109.get("width_code")).strip()
+			if wc.isdigit():
+				w = round(flt(cint(wc)) / 25.4, 1) if len(wc) == 4 else round(flt(wc) / 10.0, 1)
+		elif pp == "100" or ic.startswith("100"):
+			gbw = _fabric_gsm_before_width_in_item_text(f"{ic} {inm}")
+			_, wtxt = _parse_gsm_width_from_item_text(f"{ic} {inm}")
+			if wtxt > 0:
+				w = wtxt
+	if w <= 0:
+		_, wtxt = _parse_gsm_width_from_item_text(f"{ic} {inm}")
+		if wtxt > 0:
+			w = wtxt
+	if w > 0 and not _is_printed_bopp_item_code(ic):
+		rw = round(flt(w), 1)
+		return float(int(rw)) if abs(rw - round(rw)) < 1e-9 else rw
+	return w
 
 
 def _gsm_from_lamination_item_code(item_code: str) -> int:
@@ -3835,6 +3972,7 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_force_slitting_unit_on_sheet(planning_sheet_name)
 	_sync_sheet_cutting_fabric_planning_rows(planning_sheet_name)
 	_force_sheet_cutting_unit_on_sheet(planning_sheet_name)
+	_sync_sheet_cutting_bom_child_row_specs(planning_sheet_name)
 	_sync_rewinding_fabric_planning_rows(planning_sheet_name)
 	_sync_printing_105_planning_rows(planning_sheet_name)
 	_sync_printing_fabric_planning_rows(planning_sheet_name)
@@ -3935,6 +4073,13 @@ def _report_planning_sheet_bom_sync_gaps(planning_sheet_name):
 		hints.append(_("254 sheet: BOM child <b>104</b> missing after 106 — check 106 item BOM."))
 	if has_254 and has_104 and not has_100_child:
 		hints.append(_("254 sheet: fabric <b>100</b> row missing — check 104 item BOM."))
+	has_253 = any(_item_process_prefix(str(r.get("item_code") or "")) == "253" for r in pt_rows)
+	if has_253 and not has_104:
+		hints.append(
+			_("Process <b>253</b> row exists but BOM child <b>104</b> was not added — check active submitted BOM on the 253 item.")
+		)
+	if has_253 and has_104 and not has_100_child:
+		hints.append(_("253 sheet: fabric <b>100</b> row missing — check BOM on the 104 item (100* child)."))
 	if hints:
 		frappe.msgprint("<br>".join(hints), indicator="orange", title=_("Planning Sheet BOM sync"))
 
@@ -4137,21 +4282,21 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			)
 			continue
 
-		trace_id = _parent_child_trace_id_from_item_code(lam_ic)
+		trace_id = _parent_child_trace_id_for_planning_row(lam_ic, so_it.name, ps.name) or _parent_child_trace_id_from_item_code(lam_ic)
 		# When the SO line is 253/255 sheet FG but the lamination BOM row is 104/107 FG, stamp the
 		# sheet parent's trace on all BOM children (not 104-/107- derived from the lamination item).
 		so_parent_ic = (so_it.item_code or "").strip()
 		pp_so = _item_process_prefix(so_parent_ic)
 		if pp_so == "255" and _lamination_process_from_item_code(lam_ic) == "107":
-			t_sheet = _parent_child_trace_id_from_item_code(so_parent_ic)
+			t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
 			if t_sheet:
 				trace_id = t_sheet
 		elif pp_so == "108" and _lamination_process_from_item_code(lam_ic) == "107":
-			t_sheet = _parent_child_trace_id_from_item_code(so_parent_ic)
+			t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
 			if t_sheet:
 				trace_id = t_sheet
 		elif pp_so == "253" and _lamination_process_from_item_code(lam_ic) == "104":
-			t_sheet = _parent_child_trace_id_from_item_code(so_parent_ic)
+			t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
 			if t_sheet:
 				trace_id = t_sheet
 		lam_pt_name = _find_planning_table_lamination_parent_row(ps.name, lam_ic, so_it.name)
@@ -4873,6 +5018,7 @@ def _sync_bom_child_rows_from_planning_rows(
 	"""Append one BOM child row for each matching Planning Table parent row. Idempotent by sheet + item + SO row."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
 		return 0
+	frappe.db.commit()
 	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
 	if not ps.get("sales_order"):
 		return 0
@@ -4950,18 +5096,35 @@ def _sync_bom_child_rows_from_planning_rows(
 				frappe.flags.planning_sheet_bom_sync_errors = errs + [err_msg]
 			continue
 
-		existing_filters = {"parent": ps.name, "item_code": child_ic}
+		existing = []
 		if so_item_key:
-			existing_filters["so_item"] = so_item_key
-		existing = frappe.get_all("Planning Table", filters=existing_filters, pluck="name", limit=1)
+			existing = frappe.db.sql(
+				"""
+				SELECT name FROM `tabPlanning Table`
+				WHERE parent = %s AND item_code = %s
+				  AND (IFNULL(sales_order_item, '') = %s OR IFNULL(so_item, '') = %s)
+				LIMIT 1
+				""",
+				(ps.name, child_ic, so_item_key, so_item_key),
+				as_dict=True,
+			) or []
+		else:
+			existing = frappe.get_all(
+				"Planning Table",
+				filters={"parent": ps.name, "item_code": child_ic},
+				pluck="name",
+				limit=1,
+			)
+			existing = [{"name": existing[0]}] if existing else []
 		if existing:
+			ex_nm = existing[0].get("name") if isinstance(existing[0], dict) else existing[0]
 			updates = {}
 			if so_item_key and frappe.db.has_column("Planning Table", "sales_order_item"):
-				cur_soi = frappe.db.get_value("Planning Table", existing[0], "sales_order_item")
+				cur_soi = frappe.db.get_value("Planning Table", ex_nm, "sales_order_item")
 				if not cur_soi:
 					updates["sales_order_item"] = so_item_key
 			if frappe.db.has_column("Planning Table", "split_from"):
-				cur_sf = _cstr(frappe.db.get_value("Planning Table", existing[0], "split_from"))
+				cur_sf = _cstr(frappe.db.get_value("Planning Table", ex_nm, "split_from"))
 				if cur_sf:
 					updates["split_from"] = ""
 			child_proc_ex = _item_process_prefix(child_ic)
@@ -4969,7 +5132,7 @@ def _sync_bom_child_rows_from_planning_rows(
 			prow_wrapped = frappe._dict(prow) if prow else None
 			specs_ex = _fabric_row_specs_from_fabric_item(child_ic, so_it, prow_wrapped)
 			trace_refresh = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc_ex) or _parent_child_trace_id_for_planning_row(
-				child_ic, so_item_key
+				child_ic, so_item_key, ps.name
 			)
 			if not trace_refresh:
 				trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
@@ -5005,6 +5168,10 @@ def _sync_bom_child_rows_from_planning_rows(
 				and (parent_proc in ("253", "255", "254") or so_fg_ex in ("253", "255", "254"))
 			):
 				wex = flt(specs_ex.get("width_inch") or 0)
+				if child_proc_ex == "104" or _lamination_process_from_item_code(child_ic) == "104":
+					w104x = _width_inch_from_104_item_code(child_ic)
+					if w104x > 0:
+						wex = w104x
 				if wex > 0 and not _is_printed_bopp_item_code(child_ic):
 					updates["width_inch"] = wex
 			if child_proc_ex == "105" and frappe.db.has_column("Planning Table", "unit"):
@@ -5063,7 +5230,7 @@ def _sync_bom_child_rows_from_planning_rows(
 				updates["width_inch"] = 0
 			_apply_254_fg_extras_to_bom_child_row(updates, ps.name, so_item_key, so_it, child_ic, child_proc_ex)
 			if updates:
-				frappe.db.set_value("Planning Table", existing[0], updates, update_modified=False)
+				frappe.db.set_value("Planning Table", ex_nm, updates, update_modified=False)
 			continue
 
 		parent_doc = frappe.get_doc("Planning Table", prow.get("name")) if prow.get("name") else None
@@ -5082,7 +5249,7 @@ def _sync_bom_child_rows_from_planning_rows(
 					specs["gsm"] = g106n
 		so_fg_new = _item_process_prefix(getattr(so_it, "item_code", "") if so_it else "")
 		trace_id = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc) or _parent_child_trace_id_for_planning_row(
-			child_ic, so_item_key
+			child_ic, so_item_key, ps.name
 		)
 		if not trace_id:
 			trace_id = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
@@ -5133,6 +5300,12 @@ def _sync_bom_child_rows_from_planning_rows(
 			lam_gsm = _lam_gsm_from_item_code_suffix(child_ic)
 			if lam_gsm > 0 and (frappe.db.has_column("Planning Table", "custom_lam_gsm") or frappe.db.has_column("Planning sheet Item", "custom_lam_gsm")):
 				row["custom_lam_gsm"] = lam_gsm
+			w104n = _width_inch_from_104_item_code(child_ic)
+			if w104n > 0 and frappe.db.has_column("Planning Table", "width_inch"):
+				row["width_inch"] = w104n
+			g104n = _gsm_from_lamination_item_code(child_ic)
+			if g104n > 0 and frappe.db.has_column("Planning Table", "gsm"):
+				row["gsm"] = g104n
 		elif child_proc == "107":
 			p107b = _parse_107_item_code(child_ic) or {}
 			csumn = _combined_bopp_line_gsm(p107b)
@@ -5651,6 +5824,75 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	return updated
+
+
+def _sheet_cutting_fg_processes_on_sheet(planning_sheet_name):
+	"""SO item keys that have a sheet-cutting FG row (253/254/255/251/252) on this sheet."""
+	keys = set()
+	for r in frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=["item_code", "sales_order_item", "so_item"],
+		limit_page_length=2000,
+	) or []:
+		ic = _cstr(r.get("item_code")).strip()
+		pp = _item_process_prefix(ic)
+		if pp not in ("251", "252", "253", "254", "255") and _lamination_process_from_item_code(ic) != "255":
+			continue
+		soik = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		if soik:
+			keys.add(soik)
+	return keys
+
+
+def _sync_sheet_cutting_bom_child_row_specs(planning_sheet_name):
+	"""After sheet series width sync: 104/100 BOM children use their own item-code width (not 253 series width)."""
+	if not planning_sheet_name:
+		return
+	sc_soi = _sheet_cutting_fg_processes_on_sheet(planning_sheet_name)
+	if not sc_soi:
+		return
+	has_w = frappe.db.has_column("Planning Table", "width_inch")
+	has_gsm = frappe.db.has_column("Planning Table", "gsm")
+	for r in frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=["name", "item_code", "sales_order_item", "so_item", "source_item"],
+		limit_page_length=2000,
+	) or []:
+		ic = _cstr(r.get("item_code")).strip()
+		soik = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		if not soik or soik not in sc_soi:
+			continue
+		pp = _item_process_prefix(ic)
+		lam = _lamination_process_from_item_code(ic)
+		updates = {}
+		if pp == "104" or lam == "104":
+			w104 = _width_inch_from_104_item_code(ic)
+			if w104 > 0 and has_w:
+				updates["width_inch"] = w104
+			if has_gsm:
+				gc = _gsm_from_lamination_item_code(ic)
+				if gc > 0:
+					updates["gsm"] = gc
+		elif pp == "100" or ic.startswith("100"):
+			specs = _fabric_row_specs_from_fabric_item(ic, None, None)
+			if has_w:
+				wf = flt(specs.get("width_inch") or 0)
+				if wf > 0 and not _is_printed_bopp_item_code(ic):
+					updates["width_inch"] = wf
+			if has_gsm:
+				gf = cint(specs.get("gsm") or 0)
+				if gf > 0:
+					updates["gsm"] = gf
+		if not updates:
+			continue
+		frappe.db.set_value("Planning Table", r.get("name"), updates, update_modified=False)
+		legacy = _cstr(r.get("source_item"))
+		if legacy and frappe.db.exists("Planning sheet Item", legacy):
+			leg_up = {k: v for k, v in updates.items() if frappe.db.has_column("Planning sheet Item", k)}
+			if leg_up:
+				frappe.db.set_value("Planning sheet Item", legacy, leg_up, update_modified=False)
 
 
 def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
@@ -7590,6 +7832,13 @@ def get_lamination_order_table_data(
             row["child_wo_created"] = 0
             row["child_wo_done"] = 0
         row.pop("_achieved_m_spr", None)
+        _ic_w = str(row.get("itemCode") or row.get("item_code") or "").strip()
+        _inm_w = str(row.get("item_name") or row.get("itemName") or "").strip()
+        row["width_inch"] = _resolve_planning_row_width_inch(
+            _ic_w,
+            row.get("width_inch") or row.get("widthInch") or 0,
+            _inm_w,
+        )
         out.append(row)
     return out
 
@@ -7972,7 +8221,11 @@ def _get_printing_order_table_data_impl(date=None, start_date=None, end_date=Non
             operator_name = emp_name_by_code.get(operator_code) or ""
             p105 = _parse_105_item_code(ic) or {}
             p106 = _parse_106_item_code(ic) or {}
-            width_inch = flt(r.get("width_inch") or 0)
+            width_inch = _resolve_planning_row_width_inch(
+                ic,
+                r.get("width_inch") or 0,
+                frappe.db.get_value("Item", ic, "item_name") if ic else "",
+            )
             width_mm = p105.get("width_mm") or p106.get("width_mm")
             if width_inch <= 0 and width_mm:
                 width_inch = round(flt(width_mm) / 25.4)
@@ -8504,6 +8757,7 @@ def get_sheet_cutting_order_table_data(
     has_pt_spr = frappe.db.has_column("Planning Table", "spr_name")
     spr_parent_expr = "IFNULL(pt.spr_name, '')" if has_pt_spr else "''"
     fabric_pick_sql_s = _sql_correlated_pick_one_fabric_name("pt")
+    roll_bom_pick_sql = _sql_correlated_pick_one_sheet_bom_roll_child("pt")
     lam_gsm_sql = "IFNULL(pt.custom_lam_gsm, 0)" if frappe.db.has_column("Planning Table", "custom_lam_gsm") else "0"
     bopp_gsm_sql = "IFNULL(pt.custom_bopp_gsm, 0)" if frappe.db.has_column("Planning Table", "custom_bopp_gsm") else "0"
     no_of_sheets_sql = (
@@ -8519,6 +8773,8 @@ def get_sheet_cutting_order_table_data(
             {spr_parent_expr} as parent_spr_name,
             IFNULL(fab.width_inch, 0) as child_roll_size,
             IFNULL(fab.item_code, '') as fabric_item_code,
+            IFNULL(roll_bom.width_inch, 0) as bom_roll_width,
+            IFNULL(roll_bom.item_code, '') as bom_roll_item_code,
             IFNULL(pt.width_inch, 0) as roll_size,
             IFNULL(pt.meter, 0) as mtr,
             {lam_gsm_sql} as custom_lam_gsm,
@@ -8526,6 +8782,7 @@ def get_sheet_cutting_order_table_data(
             {no_of_sheets_sql} as custom_no_of_sheets
         FROM `tabPlanning Table` pt
         LEFT JOIN `tabPlanning Table` fab ON fab.name = {fabric_pick_sql_s}
+        LEFT JOIN `tabPlanning Table` roll_bom ON roll_bom.name = {roll_bom_pick_sql}
         WHERE pt.name IN ({fmt})
         """,
         tuple(psi_names),
@@ -8626,15 +8883,29 @@ def get_sheet_cutting_order_table_data(
         row["series_id"] = sid
         row["custom_lam_gsm"] = cint(ex.get("custom_lam_gsm") or row.get("custom_lam_gsm") or 0)
         row["custom_bopp_gsm"] = cint(ex.get("custom_bopp_gsm") or row.get("custom_bopp_gsm") or 0)
-        # Roll size in table should reflect child (100) item width first.
+        bom_ic = _cstr(ex.get("bom_roll_item_code") or "")
+        bom_w = _resolve_planning_row_width_inch(
+            bom_ic,
+            ex.get("bom_roll_width") or 0,
+            frappe.db.get_value("Item", bom_ic, "item_name") if bom_ic else "",
+        )
+        parent_w = _resolve_planning_row_width_inch(
+            ic2,
+            ex.get("roll_size") or row.get("width_inch") or 0,
+            _cstr(row.get("item_name") or row.get("itemName") or ""),
+        )
+        # Roll size: BOM child (104/107) width first, then parent row, then fabric 100 — not sheet series width.
         row["roll_size"] = flt(
-            ex.get("child_roll_size")
-            or size_info.get("width_inch")
-            or ex.get("roll_size")
-            or row.get("width_inch")
+            bom_w
+            or parent_w
+            or _resolve_planning_row_width_inch(
+                _cstr(ex.get("fabric_item_code") or ""),
+                ex.get("child_roll_size") or 0,
+                "",
+            )
             or 0
         )
-        row["fabric_item_code"] = _cstr(ex.get("fabric_item_code") or "")
+        row["fabric_item_code"] = bom_ic or _cstr(ex.get("fabric_item_code") or "")
         row["sheet_width_inch"] = flt(size_info.get("width_inch") or 0)
         row["sheet_height_inch"] = flt(size_info.get("height_inch") or 0)
         row["mtr"] = flt(ex.get("mtr") or row.get("meter") or 0)
@@ -9982,13 +10253,16 @@ def _fabric_row_specs_from_fabric_item(fabric_ic, so_it, lam_row):
 		if qn255:
 			qual = qn255
 			line_quality = qn255
-	# Process 104 laminated FG: GSM must follow item code (Item master / name can show 10 vs 100 wrong).
+	# Process 104 laminated FG: GSM + roll width from item code (not fabric Item master / sheet-size text).
 	if LAMINATION_FLOW_ENABLED and _lamination_process_from_item_code(str(fabric_ic or "")) == "104":
 		gc = _gsm_from_lamination_item_code(str(fabric_ic))
 		if gc > 0:
 			gsm = gc
-			if gsm > 0 and width > 0 and m_roll > 0:
-				wt = flt(gsm * width * m_roll * 0.0254) / 1000
+		w104 = _width_inch_from_104_item_code(str(fabric_ic))
+		if w104 > 0:
+			width = w104
+		if gsm > 0 and width > 0 and m_roll > 0:
+			wt = flt(gsm * width * m_roll * 0.0254) / 1000
 
 	if gsm > 0 and width > 0 and m_roll > 0:
 		wt = flt(gsm * width * m_roll * 0.0254) / 1000
@@ -10240,6 +10514,9 @@ def _populate_planning_sheet_items(ps, doc):
             gsm_from_code = _gsm_from_lamination_item_code(it.item_code)
             if gsm_from_code > 0:
                 gsm = gsm_from_code
+            w104_pop = _width_inch_from_104_item_code(it.item_code)
+            if w104_pop > 0:
+                width = w104_pop
         elif _item_process_prefix(str(it.item_code or "")) == "106":
             p106g = _parse_106_item_code(it.item_code) or {}
             if cint(p106g.get("gsm") or 0) > 0:
