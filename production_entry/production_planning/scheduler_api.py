@@ -1131,15 +1131,14 @@ def _parse_255_item_code(item_code):
 	def _row_from_groups(design, gd):
 		width_code = gd.get("width") or ""
 		width_inch = 0.0
-		if width_code.isdigit():
-			wl = len(width_code)
-			if wl == 4:
-				width_inch = flt(width_code) / 25.4
-			elif wl == 3:
-				width_inch = flt(width_code) / 10.0
+		if width_code.isdigit() and len(width_code) == 4:
+			width_inch = flt(width_code) / 25.4
 		qc = (gd.get("quality") or "").strip().upper()
 		lam_letter = (gd.get("lam") or "").strip().upper()
 		lam_val = cint(_LAM_GSM_SUFFIX_MAP.get(lam_letter, 0) or 0)
+		series_id = ""
+		if width_code.isdigit() and len(width_code) == 3:
+			series_id = width_code.zfill(3)
 		return {
 			"design_code": design or "",
 			"process": "255",
@@ -1153,13 +1152,14 @@ def _parse_255_item_code(item_code):
 			"lam_gsm_code": lam_letter,
 			"lam_gsm": lam_val,
 			"width_code": width_code,
+			"series_id": series_id,
 			"width_inch": width_inch,
 			"finish_matte_glossy": gd.get("finish1") or "0",
 			"finish_metallic_cooler": gd.get("finish2") or "0",
 		}
 
 	m = re.match(
-		r"^(?P<design>[A-Z0-9]+)-(?P<process>255)(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>\d)$",
+		r"^(?P<design>[A-Z0-9]+)-(?P<process>255)(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>[A-Z0-9])$",
 		code,
 	)
 	if m:
@@ -1196,7 +1196,7 @@ def _parse_255_item_code(item_code):
 		design = re.sub(r"[^A-Z0-9]", "", code[:pos])
 		tail = code[pos + 4 :]
 		m3 = re.match(
-			r"^(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>\d)$",
+			r"^(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<bopp>[A-Z])(?P<lam>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>[A-Z0-9])$",
 			tail,
 		)
 		if m3 and design:
@@ -1220,7 +1220,7 @@ def _hyphen_trace_from_255_parse(p):
 	comb = _combined_bopp_line_gsm(p)
 	fg = cint(p.get("fabric_gsm") or 0)
 	lg = cint(p.get("lam_gsm") or 0)
-	wc = _cstr(p.get("width_code") or "").strip()
+	wc = _cstr(p.get("series_id") or p.get("width_code") or "").strip()
 	if qc:
 		segs.append(qc)
 	if cc:
@@ -1232,7 +1232,7 @@ def _hyphen_trace_from_255_parse(p):
 	if comb <= 0 and lg:
 		segs.append(str(lg))
 	if wc:
-		segs.append(wc)
+		segs.append(wc.zfill(3) if wc.isdigit() and len(wc) <= 3 else wc)
 	return "-".join(segs) if len(segs) > 1 else ""
 
 
@@ -1249,7 +1249,10 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 	lam = _lamination_process_from_item_code(ic)
 	if lam == "255" or pp == "255":
 		p = _parse_255_item_code(ic) or {}
+		qc = _cstr(p.get("quality_code") or "").strip().upper()
 		quality = _cstr(p.get("quality_name") or "").strip().upper()
+		if not quality and qc:
+			quality = _cstr(_LAMINATION_QUALITY_BY_CODE.get(qc, "") or "").strip().upper()
 		cc = _cstr(p.get("colour_code") or "").strip()
 		if cc:
 			try:
@@ -1305,29 +1308,118 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 	return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), cint(gsm or 0)
 
 
-def _sheet_size_for_item_code(item_code, width_inch=0):
-	"""Sheet size label from item master and/or parsed width (255 / sheet-cutting)."""
-	ic = _cstr(item_code).strip()
+def _is_sheet_cutting_fg_item_code(item_code) -> bool:
+	"""True for FG sheet-cutting processes 251–255 (incl. design-first 255)."""
+	ic = _cstr(item_code).strip().upper()
 	if not ic:
-		return "", 0.0
-	sz = ""
-	if frappe.db.has_column("Item", "custom_sheet_size"):
-		sz = _cstr(frappe.db.get_value("Item", ic, "custom_sheet_size") or "")
-	sz = _normalize_sheet_size_str(sz)
-	w = flt(width_inch or 0)
-	if not w and (_item_process_prefix(ic) == "255" or _lamination_process_from_item_code(ic) == "255"):
-		w = flt((_parse_255_item_code(ic) or {}).get("width_inch") or 0)
-	if not sz and w > 0:
-		wc = _cstr((_parse_255_item_code(ic) or {}).get("width_code") or "").strip()
-		sid = wc if wc.isdigit() and len(wc) == 3 else ""
-		if sid:
-			info = (_sheet_cutting_series_size_map([sid]) or {}).get(sid) or {}
-			sz = _cstr(info.get("sheet_size") or "")
-			if not w:
-				w = flt(info.get("width_inch") or 0)
+		return False
+	pp = _item_process_prefix(ic)
+	if pp in ("251", "252", "253", "254", "255"):
+		return True
+	return _lamination_process_from_item_code(ic) == "255"
+
+
+def _parse_any_sheet_cutting_item_code(item_code):
+	"""Unified parse for 251/252/253/254/255 — includes ``series_id`` (3-digit size code) like 251."""
+	ic = _cstr(item_code).strip().upper()
+	if not ic:
+		return {}
+	pp = _item_process_prefix(ic)
+	if pp in ("251", "252"):
+		return _parse_sheet_cutting_item_code(ic) or {}
+	if pp == "253":
+		return _parse_253_item_code(ic) or {}
+	if pp == "254":
+		return _parse_254_item_code(ic) or {}
+	if pp == "255" or _lamination_process_from_item_code(ic) == "255":
+		p = dict(_parse_255_item_code(ic) or {})
+		if not _cstr(p.get("series_id")).strip():
+			wc = _cstr(p.get("width_code")).strip()
+			if wc.isdigit() and len(wc) == 3:
+				p["series_id"] = wc.zfill(3)
+		return p
+	return {}
+
+
+def _sheet_cutting_series_id_from_item_code(item_code) -> str:
+	"""3-digit Sheet Cutting Series code from item (e.g. 255 …LAC**002**0G → ``002``)."""
+	p = _parse_any_sheet_cutting_item_code(item_code)
+	sid = _cstr(p.get("series_id")).strip()
+	if sid.isdigit():
+		return sid.zfill(3)[-3:]
+	wc = _cstr(p.get("width_code")).strip()
+	if wc.isdigit() and len(wc) == 3:
+		return wc.zfill(3)
+	return ""
+
+
+def _sheet_dimensions_from_series_id(series_id):
+	"""Lookup width, height, and display sheet size from Sheet Cutting Series master."""
+	sid = _cstr(series_id).strip()
+	if not sid:
+		return {"series_id": "", "width_inch": 0.0, "height_inch": 0.0, "sheet_size": ""}
+	if sid.isdigit():
+		sid = sid.zfill(3)[-3:]
+	info = (_sheet_cutting_series_size_map([sid]) or {}).get(sid) or {}
+	w = flt(info.get("width_inch") or 0)
+	h = flt(info.get("height_inch") or 0)
+	sz = _cstr(info.get("sheet_size") or "")
 	if sz:
-		return sz, w
-	return "", w
+		sz = _normalize_sheet_size_str(sz)
+	elif w > 0 and h > 0:
+		sz = _format_sheet_size_label(w, h, "")
+	return {"series_id": sid, "width_inch": w, "height_inch": h, "sheet_size": sz}
+
+
+def _sheet_dimensions_from_item_code(item_code):
+	"""
+	Sheet size for all sheet-cutting FG (251–255): always from item-code size segment → Sheet Cutting Series.
+	Same rule as 251 (PPP|QQQ|CCC|GGG|**SSS**). For 255: letters after lam GSM, then 3-digit size code (e.g. 002).
+	"""
+	ic = _cstr(item_code).strip()
+	if not ic or not _is_sheet_cutting_fg_item_code(ic):
+		return {"series_id": "", "width_inch": 0.0, "height_inch": 0.0, "sheet_size": ""}
+	sid = _sheet_cutting_series_id_from_item_code(ic)
+	if sid:
+		out = _sheet_dimensions_from_series_id(sid)
+		if out.get("sheet_size") or flt(out.get("width_inch")) > 0:
+			return out
+	# Last resort only when series master row is missing
+	sz = ""
+	h = 0.0
+	if frappe.db.has_column("Item", "custom_sheet_size"):
+		sz = _normalize_sheet_size_str(frappe.db.get_value("Item", ic, "custom_sheet_size") or "")
+	w = 0.0
+	if sz:
+		aw, ah = _parse_two_dim_sheet_size(sz)
+		if aw > 0:
+			w = aw
+		h = flt(ah or 0)
+	return {"series_id": sid, "width_inch": w, "height_inch": h, "sheet_size": sz}
+
+
+def _sheet_size_for_item_code(item_code, width_inch=0):
+	"""Sheet size + width for sheet-cutting items via Sheet Cutting Series; else empty."""
+	dims = _sheet_dimensions_from_item_code(item_code)
+	sz = _cstr(dims.get("sheet_size"))
+	w = flt(dims.get("width_inch") or 0)
+	if w <= 0:
+		w = flt(width_inch or 0)
+	return sz, w
+
+
+def _stamp_sheet_cutting_size_on_planning_dict(row_dict, item_code):
+	"""Set ``sheet_size`` and ``width_inch`` on a planning row dict from item code → Sheet Cutting Series."""
+	if not row_dict or not _is_sheet_cutting_fg_item_code(item_code):
+		return
+	dims = _sheet_dimensions_from_item_code(item_code)
+	sz = _cstr(dims.get("sheet_size") or "")
+	w = flt(dims.get("width_inch") or 0)
+	if sz and frappe.db.has_column("Planning Table", "sheet_size"):
+		row_dict["sheet_size"] = _normalize_sheet_size_str(sz)
+	if w > 0 and flt(row_dict.get("width_inch") or 0) <= 0:
+		wr = round(w, 1)
+		row_dict["width_inch"] = float(int(wr)) if abs(wr - round(wr)) < 1e-9 else wr
 
 
 def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
@@ -1340,8 +1432,11 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 	soi = _cstr(getattr(row, "sales_order_item", None) or getattr(row, "so_item", None) or "").strip()
 	item_name = _cstr(getattr(row, "item_name", None) or frappe.db.get_value("Item", ic, "item_name") or "")
 	q, c, g = resolve_quality_color_gsm_from_item_code(ic, item_name)
-	if q and hasattr(row, "quality"):
-		row.quality = q
+	if q:
+		if hasattr(row, "quality"):
+			row.quality = q
+		if hasattr(row, "custom_quality"):
+			row.custom_quality = q
 	if c and hasattr(row, "color"):
 		row.color = c
 	if g and hasattr(row, "gsm"):
@@ -1374,7 +1469,18 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 			row.custom_design_attachment = da
 	tid = _parent_child_trace_id_for_planning_row(ic, soi or None, planning_sheet_name)
 	if tid:
-		_set_trace_id_if_supported(row, tid)
+		cur_tid = _cstr(getattr(row, "custom_parent_child_trace_id", None)).strip()
+		pp = _item_process_prefix(ic)
+		lam = _lamination_process_from_item_code(ic)
+		force = (
+			not cur_tid
+			or lam == "255"
+			or pp == "255"
+			or _is_sheet_cutting_parent_process(ic)
+			or _is_sheet_cutting_child_process(ic)
+		)
+		if force or cur_tid != tid:
+			_set_trace_id_if_supported(row, tid)
 
 
 def _parse_108_item_code(item_code):
@@ -2026,6 +2132,10 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 	"""Trace from ``item_code``; 107 mid-BOM on 108 sheets uses **108** parent trace (never ``107-``)."""
 	ic = str(item_code or "").strip()
 	soi = (sales_order_item_name or "").strip()
+	if _is_sheet_cutting_parent_process(ic):
+		t255 = _hyphen_trace_from_255_parse(_parse_255_item_code(ic) or {})
+		if t255:
+			return t255
 	fg_trace = _trace_from_253_254_sales_order_fg_row(ic, soi)
 	if fg_trace:
 		return fg_trace
@@ -2551,7 +2661,7 @@ def _parent_child_trace_id_from_item_code(item_code):
 		t255 = _hyphen_trace_from_255_parse(p255)
 		if t255:
 			return t255
-		return _sheet_cutting_canonical_parent_trace_id(ic)
+		return ""
 	# 253/254 must resolve here — ``_is_sheet_cutting_child_process`` includes these prefixes and would otherwise return "".
 	_ic_proc = _item_process_prefix(ic)
 	if _ic_proc == "253":
@@ -2874,40 +2984,10 @@ def _sheet_cutting_canonical_parent_trace_id(item_code, sibling_rows=None, sales
 		return _trace_from_252_parse(_parse_sheet_cutting_item_code(ic) or {}, "")
 
 	if pp == "255" or _lamination_process_from_item_code(ic) == "255":
-		p255 = _parse_255_item_code(ic) or {}
-		dc = _cstr(p255.get("design_code")).strip()
-		cc = _cstr(p255.get("colour_code")).strip()
-		qc = _cstr(p255.get("quality_code")).strip().upper()
-		comb = _combined_bopp_line_gsm(p255)
-		fg = cint(p255.get("fabric_gsm") or 0)
-		gsm_val = comb or fg
-		wc = _cstr(p255.get("width_code")).strip()
-		if not wc and soi and rows:
-			for r in rows:
-				ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
-				if _item_process_prefix(ric) != "252":
-					continue
-				rsoi = _cstr(
-					(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
-					or (r.get("so_item") if isinstance(r, dict) else getattr(r, "so_item", None))
-				).strip()
-				if rsoi == soi:
-					p252 = _parse_sheet_cutting_item_code(ric) or {}
-					wc = _cstr(p252.get("series_id")).strip()
-					if not qc or len(qc) == 1:
-						qc = _cstr(p252.get("quality_code")).strip()
-					break
-		if not cc and not wc:
-			return ""
-		body = "252-{0}-{1}-{2}-{3}".format(
-			qc.zfill(3) if qc.isdigit() else qc,
-			cc.zfill(3) if cc.isdigit() else cc,
-			str(gsm_val).zfill(3),
-			wc.zfill(3) if wc.isdigit() else wc,
-		)
-		if dc:
-			return f"{dc}-{body}"
-		return body
+		t255 = _hyphen_trace_from_255_parse(_parse_255_item_code(ic) or {})
+		if t255:
+			return t255
+		return ""
 
 	if pp == "253":
 		return _hyphen_trace_from_laminated_sheet_parse(_parse_253_item_code(ic) or {}, "253")
@@ -2924,6 +3004,9 @@ def _resolve_sheet_cutting_parent_trace(item_code, sales_order_item=None, planni
 	if not ic:
 		return ""
 	if _is_sheet_cutting_parent_process(ic):
+		t255 = _hyphen_trace_from_255_parse(_parse_255_item_code(ic) or {})
+		if t255:
+			return t255
 		rows = pt_rows
 		if rows is None and planning_sheet_name:
 			rows = (
@@ -6130,69 +6213,15 @@ def _force_sheet_cutting_unit_on_sheet(planning_sheet_name):
 			fields=["name", "item_code", "sales_order_item", "source_item"],
 			limit_page_length=1000,
 		) or []
-		series_ids = []
-		parsed = {}
-		for rr in pt_rows:
-			ic_rr = rr.get("item_code")
-			pp_rr = _item_process_prefix(ic_rr)
-			p = {}
-			if pp_rr in ("251", "252"):
-				p = _parse_sheet_cutting_item_code(ic_rr) or {}
-			elif pp_rr == "253":
-				p = _parse_253_item_code(ic_rr) or {}
-			elif pp_rr == "254":
-				p = _parse_254_item_code(ic_rr) or {}
-			elif pp_rr == "255" or _lamination_process_from_item_code(str(ic_rr or "")) == "255":
-				p = _parse_255_item_code(ic_rr) or {}
-			else:
-				continue
-			parsed[rr.get("name")] = p
-			sid = _cstr(p.get("series_id")).strip()
-			if not sid and (pp_rr == "255" or _lamination_process_from_item_code(str(ic_rr or "")) == "255"):
-				wc = _cstr((p or {}).get("width_code")).strip()
-				if wc.isdigit() and len(wc) == 3:
-					sid = wc
-			if sid:
-				series_ids.append(sid)
-		size_map = _sheet_cutting_series_size_map(series_ids)
 		has_psi_so = frappe.db.has_column("Planning sheet Item", "sales_order_item")
 		for rr in pt_rows:
-			p = parsed.get(rr.get("name")) or {}
 			ic_rr = rr.get("item_code")
-			pp_rr = _item_process_prefix(ic_rr)
-			sid = _cstr(p.get("series_id")).strip()
-			if not sid and (pp_rr == "255" or _lamination_process_from_item_code(str(ic_rr or "")) == "255"):
-				wc = _cstr((p or {}).get("width_code")).strip()
-				if wc.isdigit() and len(wc) == 3:
-					sid = wc
-			info = size_map.get(sid) or {}
-			w = flt(info.get("width_inch") or 0)
-			h = flt(info.get("height_inch") or 0)
-			sz = _cstr(info.get("sheet_size") or "")
-			if sz:
-				sz = _normalize_sheet_size_str(sz)
-			if not sz and w > 0 and h > 0:
-				sz = _format_sheet_size_label(w, h, "")
-			if (w <= 0 or not sz) and (pp_rr == "255" or _lamination_process_from_item_code(str(ic_rr or "")) == "255"):
-				sz_item = ""
-				try:
-					if frappe.db.has_column("Item", "custom_sheet_size"):
-						sz_item = _cstr(frappe.db.get_value("Item", str(ic_rr).strip(), "custom_sheet_size") or "")
-				except Exception:
-					sz_item = ""
-				ns = _normalize_sheet_size_str(sz_item)
-				if ns:
-					sz = ns
-					aw, ah = _parse_two_dim_sheet_size(sz)
-					if w <= 0 and aw > 0:
-						w = aw
-					if h <= 0 and ah > 0:
-						h = ah
-				if not sz and w > 0 and h > 0:
-					sz = _format_sheet_size_label(w, h, "")
-				w255 = flt((p or {}).get("width_inch") or 0)
-				if w <= 0 and w255 >= 1.0:
-					w = w255
+			if not _is_sheet_cutting_fg_item_code(ic_rr):
+				continue
+			dims = _sheet_dimensions_from_item_code(ic_rr)
+			w = flt(dims.get("width_inch") or 0)
+			h = flt(dims.get("height_inch") or 0)
+			sz = _cstr(dims.get("sheet_size") or "")
 			if w <= 0 and sz:
 				try:
 					aw, ah = _parse_two_dim_sheet_size(sz)
@@ -9017,21 +9046,9 @@ def get_sheet_cutting_order_table_data(
     series_ids = []
     for r in rows:
         ic = str(r.get("item_code") or r.get("itemCode") or "").strip()
-        ppfx = _item_process_prefix(ic)
-        if ppfx == "253":
-            p = _parse_253_item_code(ic) or {}
-        elif ppfx == "254":
-            p = _parse_254_item_code(ic) or {}
-        elif ppfx == "255":
-            p = _parse_255_item_code(ic) or {}
-        else:
-            p = _parse_sheet_cutting_item_code(ic)
+        p = _parse_any_sheet_cutting_item_code(ic) or {}
         parsed[str(r.get("itemName") or r.get("item_name") or "")] = p
-        sid = _cstr(p.get("series_id")).strip()
-        if not sid and (ppfx == "255" or _lamination_process_from_item_code(ic) == "255"):
-            wc = _cstr(p.get("width_code")).strip()
-            if wc.isdigit() and len(wc) == 3:
-                sid = wc
+        sid = _sheet_cutting_series_id_from_item_code(ic)
         if sid:
             series_ids.append(sid)
     size_map = _sheet_cutting_series_size_map(series_ids)
@@ -9044,13 +9061,8 @@ def get_sheet_cutting_order_table_data(
         ex = by_psi.get(nm) or {}
         p = parsed.get(nm) or {}
         ic2 = str(row.get("item_code") or row.get("itemCode") or "").strip()
-        ppfx2 = _item_process_prefix(ic2)
-        sid = _cstr(p.get("series_id")).strip()
-        if not sid and (ppfx2 == "255" or _lamination_process_from_item_code(ic2) == "255"):
-            wc = _cstr(p.get("width_code")).strip()
-            if wc.isdigit() and len(wc) == 3:
-                sid = wc
-        size_info = size_map.get(sid) or {}
+        sid = _sheet_cutting_series_id_from_item_code(ic2) or _cstr(p.get("series_id")).strip()
+        size_info = size_map.get(sid) or (_sheet_dimensions_from_series_id(sid) if sid else {})
         spr_nm = _cstr((ex.get("parent_spr_name") or row.get("spr_name") or ""))
         # Sheet cutting achieved should come from submitted SPR only.
         achieved = 0.0
@@ -10894,39 +10906,7 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_name"] = _dn_so255
                 if frappe.db.has_column("Planning sheet Item", "custom_design_name"):
                     psi_data["custom_design_name"] = _dn_so255
-            p255row = parsed255_early or (_parse_255_item_code(it.item_code) or {})
-            sid255 = _cstr(p255row.get("series_id")).strip()
-            if not sid255:
-                wc255 = _cstr(p255row.get("width_code")).strip()
-                if wc255.isdigit() and len(wc255) == 3:
-                    sid255 = wc255
-            if sid255:
-                szm255 = _sheet_cutting_series_size_map([sid255])
-                info255 = szm255.get(sid255) or {}
-                sz255 = _cstr(info255.get("sheet_size") or "")
-                w255 = flt(info255.get("width_inch") or 0)
-                h255 = flt(info255.get("height_inch") or 0)
-                if not sz255 and w255 > 0 and h255 > 0:
-                    sz255 = _format_sheet_size_label(w255, h255, "")
-                if sz255 and frappe.db.has_column("Planning Table", "sheet_size"):
-                    psi_data["sheet_size"] = _normalize_sheet_size_str(sz255)
-                if w255 > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
-                    wr5 = round(w255, 1)
-                    psi_data["width_inch"] = float(int(wr5)) if abs(wr5 - round(wr5)) < 1e-9 else wr5
-            if not (psi_data.get("sheet_size") or "").strip() and frappe.db.has_column("Planning Table", "sheet_size"):
-                sz_item = ""
-                try:
-                    if frappe.db.has_column("Item", "custom_sheet_size"):
-                        sz_item = _cstr(frappe.db.get_value("Item", str(it.item_code).strip(), "custom_sheet_size") or "")
-                except Exception:
-                    sz_item = ""
-                ns = _normalize_sheet_size_str(sz_item)
-                if ns:
-                    psi_data["sheet_size"] = ns
-                    aw, ah = _parse_two_dim_sheet_size(ns)
-                    if aw > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
-                        awr = round(aw, 1)
-                        psi_data["width_inch"] = float(int(awr)) if abs(awr - round(awr)) < 1e-9 else awr
+            _stamp_sheet_cutting_size_on_planning_dict(psi_data, it.item_code)
             if frappe.db.has_column("Planning Table", "unit"):
                 psi_data["unit"] = SHEET_CUTTING_UNIT
         if _item_process_prefix(str(it.item_code or "")) == "253":
@@ -10955,17 +10935,7 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data["custom_design_colour"] = _col253
                 if frappe.db.has_column("Planning sheet Item", "custom_design_colour"):
                     psi_data["custom_design_colour"] = _col253
-            sid253 = _cstr(p253row.get("series_id")).strip()
-            if sid253:
-                szm253 = _sheet_cutting_series_size_map([sid253])
-                info253 = szm253.get(sid253) or {}
-                sz253 = _cstr(info253.get("sheet_size") or "")
-                w253 = flt(info253.get("width_inch") or 0)
-                if sz253 and frappe.db.has_column("Planning Table", "sheet_size"):
-                    psi_data["sheet_size"] = sz253
-                if w253 > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
-                    wr3 = round(w253, 1)
-                    psi_data["width_inch"] = float(int(wr3)) if abs(wr3 - round(wr3)) < 1e-9 else wr3
+            _stamp_sheet_cutting_size_on_planning_dict(psi_data, it.item_code)
             if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
                 psi_data["custom_bopp_gsm"] = 0
             if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
@@ -11003,17 +10973,7 @@ def _populate_planning_sheet_items(ps, doc):
                     continue
                 if frappe.db.has_column("Planning Table", _k) and not (psi_data.get(_k) or "").strip():
                     psi_data[_k] = _v
-            sid254 = _cstr(p254row.get("series_id")).strip()
-            if sid254:
-                szm254 = _sheet_cutting_series_size_map([sid254])
-                info254 = szm254.get(sid254) or {}
-                sz254 = _cstr(info254.get("sheet_size") or "")
-                w254 = flt(info254.get("width_inch") or 0)
-                if sz254 and frappe.db.has_column("Planning Table", "sheet_size"):
-                    psi_data["sheet_size"] = sz254
-                if w254 > 0 and flt(psi_data.get("width_inch") or 0) <= 0:
-                    wr4 = round(w254, 1)
-                    psi_data["width_inch"] = float(int(wr4)) if abs(wr4 - round(wr4)) < 1e-9 else wr4
+            _stamp_sheet_cutting_size_on_planning_dict(psi_data, it.item_code)
             if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
                 psi_data["custom_bopp_gsm"] = 0
             if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):

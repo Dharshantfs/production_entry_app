@@ -4480,9 +4480,7 @@ def _spr_item_line_from_bundle(
 		"color": color or None,
 	}
 	if spi_meta.has_field("custom_sheet_size"):
-		sz = _cstr(getattr(bundle_row, "sheet_cutting_size", None))
-		if not sz and sz_from_item:
-			sz = sz_from_item
+		sz = sz_from_item or _cstr(getattr(bundle_row, "sheet_cutting_size", None))
 		row["custom_sheet_size"] = sz
 	if w_from_item > 0 and spi_meta.has_field("width_inch"):
 		row["width_inch"] = flt(w_from_item)

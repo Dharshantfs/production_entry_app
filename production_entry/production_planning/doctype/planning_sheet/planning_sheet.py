@@ -352,8 +352,6 @@ class Planningsheet(Document):
         ps_name = (getattr(self, "name", None) or "").strip() or None
         for table_key in ("planned_items", "items"):
             for row in self.get(table_key) or []:
-                if str(getattr(row, "custom_parent_child_trace_id", None) or "").strip():
-                    continue
                 ic = str(getattr(row, "item_code", None) or "").strip()
                 if not ic:
                     continue
@@ -362,7 +360,29 @@ class Planningsheet(Document):
                     or str(getattr(row, "so_item", None) or "").strip()
                 )
                 tid = _parent_child_trace_id_for_planning_row(ic, soi or None, ps_name)
-                if tid:
+                if not tid:
+                    continue
+                cur = str(getattr(row, "custom_parent_child_trace_id", None) or "").strip()
+                try:
+                    from production_entry.production_planning.scheduler_api import (
+                        _is_sheet_cutting_child_process,
+                        _is_sheet_cutting_parent_process,
+                        _item_process_prefix,
+                        _lamination_process_from_item_code,
+                    )
+
+                    pp = _item_process_prefix(ic)
+                    lam = _lamination_process_from_item_code(ic)
+                    restamp = (
+                        not cur
+                        or lam == "255"
+                        or pp == "255"
+                        or _is_sheet_cutting_parent_process(ic)
+                        or _is_sheet_cutting_child_process(ic)
+                    )
+                except Exception:
+                    restamp = not cur
+                if restamp or cur != tid:
                     _set_trace_id_if_supported(row, tid)
 
     def _sync_line_plan_codes(self):
