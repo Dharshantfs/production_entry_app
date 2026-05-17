@@ -247,7 +247,8 @@
             <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
             <td class="cell-center">
               <template v-if="isPrinting105Table">
-                <button v-if="row.planningSheet || row.plan_name" type="button" @click="openProductionPlanView(row.planningSheet || row.plan_name, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">PP View</button>
+                <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet || row.plan_name, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">PP View</button>
+                <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan to open print/form view">PP Draft</span>
                 <span v-else class="pt-no-pp-hint">No PP</span>
               </template>
               <template v-else>
@@ -1862,9 +1863,12 @@ async function fetchData() {
 }
 
 function processLabel(row) {
+  const disp = String(row?.process_display || "").trim();
+  if (disp) return disp;
   const p =
     String(row?.lamination_process || row?.laminationProcess || row?.process || "").trim() ||
     inferProcessFromItemCode(row?.itemCode || row?.item_code || "");
+  if (p === "108") return "108 BOPP Slitting";
   if (p === "107") return "107 BOPP";
   if (p === "106") return "106 Laminated Printing";
   if (p === "105") return "105 Printing";

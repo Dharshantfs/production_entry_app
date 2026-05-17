@@ -774,11 +774,11 @@ def _parse_254_item_code(item_code):
 
 
 def _hyphen_trace_lam_suffix_segment(lam_code):
-	"""Lamination tail for hyphenated traces; letters are lowercased (e.g. ``…-c``)."""
+	"""Lamination tail for hyphenated traces; letter suffixes stay uppercase (e.g. ``…-A``)."""
 	s = _cstr(lam_code).strip()
 	if not s:
 		return ""
-	return s.lower() if s.isalpha() else s
+	return s.upper() if s.isalpha() else s
 
 
 def _hyphen_trace_from_laminated_sheet_parse(p, process_prefix):
@@ -1345,6 +1345,7 @@ def _no_of_sheets_from_sales_order_item(so_item_name):
 	if not soi or not frappe.db.exists("Sales Order Item", soi):
 		return 0
 	for fld in (
+		"custom_no_of_sheets_pcs",
 		"custom_no_of_sheets",
 		"no_of_sheets",
 		"custom_total_no_of_sheets",
@@ -1362,6 +1363,7 @@ def _no_of_sheets_from_sales_order_item(so_item_name):
 	try:
 		so_row = frappe.get_cached_doc("Sales Order Item", soi)
 		for fld in (
+			"custom_no_of_sheets_pcs",
 			"custom_no_of_sheets",
 			"no_of_sheets",
 			"custom_total_no_of_sheets",
@@ -4385,6 +4387,65 @@ def _fg_design_prefix_from_item_code(item_code):
 	return ""
 
 
+def _parent_fg_trace_for_lamination_row(planning_sheet_name, sales_order_item, parent_item_code=None):
+	"""108/255 FG trace on the same planning sheet + SO line (for fabric progress / child stamping)."""
+	soi = _cstr(sales_order_item).strip()
+	ic = _cstr(parent_item_code).strip()
+	pp = _item_process_prefix(ic)
+	lam = _lamination_process_from_item_code(ic)
+	if planning_sheet_name:
+		if pp == "108" or lam == "107":
+			maps = _108_trace_maps_for_sheet(planning_sheet_name)
+			if maps.get("has_108"):
+				if soi and soi in maps.get("trace_by_soi", {}):
+					return maps["trace_by_soi"][soi]
+				if maps.get("default_108"):
+					return maps["default_108"]
+			if soi:
+				t108 = _resolve_108_family_trace(ic or "107", soi, planning_sheet_name)
+				if t108:
+					return t108
+		if _is_sheet_cutting_parent_process(ic) or pp == "255" or lam == "255":
+			t255 = _trace_from_255_parent_on_sales_order_line(soi, planning_sheet_name)
+			if t255:
+				return t255
+	if soi and frappe.db.exists("Sales Order Item", soi):
+		try:
+			soi_ic = _cstr(frappe.db.get_value("Sales Order Item", soi, "item_code")).strip()
+			soi_pp = _item_process_prefix(soi_ic)
+			if soi_pp == "108":
+				return _parent_child_trace_id_from_item_code(soi_ic) or ""
+			if soi_pp == "255" or _is_sheet_cutting_parent_process(soi_ic):
+				return (
+					_trace_from_255_parent_on_sales_order_line(soi, planning_sheet_name)
+					or _parent_child_trace_id_from_item_code(soi_ic)
+					or ""
+				)
+		except Exception:
+			pass
+	if pp == "108":
+		return _parent_child_trace_id_from_item_code(ic) or ""
+	if _is_sheet_cutting_parent_process(ic) or pp == "255":
+		return _parent_child_trace_id_from_item_code(ic) or _trace_from_255_parent_on_sales_order_line(
+			soi, planning_sheet_name
+		)
+	return ""
+
+
+def _lamination_process_for_order_row(item_code, sales_order_item=None):
+	"""Process code for lamination order table; 107 rows on 108 SO lines report as 108."""
+	lp = _lamination_process_from_item_code(item_code) or _item_process_prefix(item_code)
+	soi = _cstr(sales_order_item).strip()
+	if lp == "107" and soi and frappe.db.exists("Sales Order Item", soi):
+		try:
+			soi_ic = _cstr(frappe.db.get_value("Sales Order Item", soi, "item_code")).strip()
+			if _item_process_prefix(soi_ic) == "108":
+				return "108"
+		except Exception:
+			pass
+	return lp
+
+
 def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
 	"""Force 107 / 100 / PB rows to use the **108** parent trace (never a 107-* trace on the mid BOM row)."""
 	if not planning_sheet_name:
@@ -4606,6 +4667,117 @@ def _stamp_254_sheet_family_trace_ids(planning_sheet_name):
 			_apply_254_trace("Planning sheet Item", psi)
 
 
+def _stamp_255_sheet_family_trace_ids(planning_sheet_name):
+	"""Force 107 / 100 / PB rows to use the **255** FG trace on the same SO line."""
+	if not planning_sheet_name:
+		return
+	if not frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+		return
+	pt_fields = _planning_child_row_fields_for_query("Planning Table")
+	pt_rows = (
+		frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name},
+			fields=pt_fields,
+			limit_page_length=2000,
+		)
+		or []
+	)
+	trace_by_soi = {}
+	trace_by_design = {}
+	soi_by_design = {}
+	default_255_trace = ""
+	for pr in pt_rows:
+		icp = str(pr.get("item_code") or "")
+		if not (_is_sheet_cutting_parent_process(icp) or _item_process_prefix(icp) == "255"):
+			continue
+		soik = _pt_soi_key(pr)
+		tid = _cstr(pr.get("custom_parent_child_trace_id")).strip() or _parent_child_trace_id_from_item_code(icp)
+		if not tid:
+			tid = _trace_from_255_parent_on_sales_order_line(soik, planning_sheet_name, pt_rows=pt_rows)
+		if not tid:
+			continue
+		default_255_trace = tid
+		if soik:
+			trace_by_soi[soik] = tid
+		dp = _fg_design_prefix_from_item_code(icp)
+		if dp:
+			trace_by_design[dp] = tid
+			if soik:
+				soi_by_design[dp] = soik
+	if not default_255_trace and not trace_by_soi:
+		return
+
+	def _is_255_child(ic):
+		pp = _item_process_prefix(str(ic or ""))
+		if pp in ("107", "104"):
+			return True
+		if str(ic or "").startswith("100"):
+			return True
+		iu = str(ic or "").upper()
+		if iu.startswith("PB-") or ("PRINTED" in iu and "BOPP" in iu):
+			return True
+		return False
+
+	def _resolve_255_trace(row):
+		soik = _pt_soi_key(row)
+		if soik and soik in trace_by_soi:
+			return trace_by_soi[soik], soik
+		dp = _fg_design_prefix_from_item_code(row.get("item_code"))
+		if dp and dp in trace_by_design:
+			return trace_by_design[dp], soi_by_design.get(dp) or soik
+		if _is_255_child(row.get("item_code")) and default_255_trace:
+			fallback_soi = next(iter(trace_by_soi.keys())) if trace_by_soi else ""
+			return default_255_trace, fallback_soi
+		return "", ""
+
+	def _apply_255_trace(table_doctype, row):
+		if not _is_255_child(row.get("item_code")):
+			return
+		tid, parent_soi = _resolve_255_trace(row)
+		if not tid:
+			return
+		nm = row.get("name")
+		up = {}
+		cur_tid = _cstr(row.get("custom_parent_child_trace_id")).strip()
+		if tid and (tid != cur_tid or cur_tid.startswith("107-")):
+			up["custom_parent_child_trace_id"] = tid
+		if parent_soi:
+			if table_doctype == "Planning Table":
+				if frappe.db.has_column("Planning Table", "sales_order_item"):
+					if not _cstr(frappe.db.get_value("Planning Table", nm, "sales_order_item")).strip():
+						up["sales_order_item"] = parent_soi
+				if frappe.db.has_column("Planning Table", "so_item"):
+					if not _cstr(frappe.db.get_value("Planning Table", nm, "so_item")).strip():
+						up["so_item"] = parent_soi
+			elif table_doctype == "Planning sheet Item":
+				if frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+					if not _cstr(frappe.db.get_value("Planning sheet Item", nm, "sales_order_item")).strip():
+						up["sales_order_item"] = parent_soi
+				if frappe.db.has_column("Planning sheet Item", "so_item"):
+					if not _cstr(frappe.db.get_value("Planning sheet Item", nm, "so_item")).strip():
+						up["so_item"] = parent_soi
+		if up:
+			frappe.db.set_value(table_doctype, nm, up, update_modified=False)
+
+	for pr in pt_rows:
+		_apply_255_trace("Planning Table", pr)
+
+	if frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+		psi_fields = _planning_child_row_fields_for_query("Planning sheet Item")
+		psi_rows = (
+			frappe.get_all(
+				"Planning sheet Item",
+				filters={"parent": planning_sheet_name},
+				fields=psi_fields,
+				limit_page_length=2000,
+			)
+			or []
+		)
+		for psi in psi_rows:
+			_apply_255_trace("Planning sheet Item", psi)
+
+
 def _run_planning_sheet_post_sync(planning_sheet_name):
 	"""Single post-populate pipeline: BOM children, units, stage-3 chain, trace stamps (108/254 families)."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
@@ -4646,6 +4818,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_stamp_254_sheet_family_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_254_sheet_family_trace_ids")
+	try:
+		_stamp_255_sheet_family_trace_ids(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_255_sheet_family_trace_ids")
 
 
 def _reset_planning_sheet_child_tables_for_rebuild(ps):
@@ -5868,6 +6044,16 @@ def _sync_bom_child_rows_from_planning_rows(
 			trace_refresh = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc_ex) or _parent_child_trace_id_for_planning_row(
 				child_ic, so_item_key, ps.name
 			)
+			if child_proc_ex == "107" and (parent_proc == "108" or so_fg_ex == "108"):
+				t108 = _resolve_108_family_trace(child_ic, so_item_key, ps.name)
+				if t108:
+					trace_refresh = t108
+			elif child_proc_ex in ("107", "100") and (
+				parent_proc == "255" or so_fg_ex == "255" or _is_sheet_cutting_parent_process(parent_ic)
+			):
+				t255 = _trace_from_255_parent_on_sales_order_line(so_item_key, ps.name)
+				if t255:
+					trace_refresh = t255
 			if not trace_refresh:
 				trace_refresh = _cstr(prow.get("custom_parent_child_trace_id")) or _parent_child_trace_id_from_item_code(
 					getattr(so_it, "item_code", None) or parent_ic
@@ -8490,7 +8676,28 @@ def get_lamination_order_table_data(
             or row.get("trace_id")
             or ""
         ).strip()
+        if is_parent_lamination:
+            fg_trace = _parent_fg_trace_for_lamination_row(key[0], key[1], item_code)
+            if fg_trace:
+                parent_trace = fg_trace
+            elif parent_trace.startswith("107-"):
+                t108 = _resolve_108_family_trace(item_code, key[1], key[0])
+                if t108:
+                    parent_trace = t108
+        _lam_proc = _lamination_process_for_order_row(item_code, key[1])
+        row["lamination_process"] = _lam_proc
+        row["process"] = _lam_proc
+        if _lam_proc == "108":
+            row["process_display"] = "108 BOPP Slitting"
+        elif _lam_proc == "107":
+            row["process_display"] = "107 BOPP"
+        elif _lam_proc == "104":
+            row["process_display"] = "104 Plain"
         progress = _get_child_progress(key[0], key[1], row.get("pp_id"), parent_trace)
+        if is_parent_lamination and flt(progress.get("required") or 0) <= 0 and key[0]:
+            alt_progress = _get_child_progress(key[0], key[1], row.get("pp_id"), "")
+            if flt(alt_progress.get("required") or 0) > 0:
+                progress = alt_progress
         row["fabric_required_kg"] = flt(progress.get("required") or 0)
         row["fabric_achieved_kg"] = flt(progress.get("achieved") or 0)
         row["child_wo_produced_kg"] = flt(progress.get("child_wo_produced_kg") or 0)
@@ -9603,7 +9810,16 @@ def get_sheet_cutting_order_table_data(
         row["shift_label"] = _cstr(ex.get("shift_label") or "DAY").upper()
         row["quality_code"] = _cstr(p.get("quality_code"))
         row["colour_code"] = _cstr(p.get("colour_code"))
-        row["process"] = _cstr(p.get("process")) or _item_process_prefix(row.get("item_code") or row.get("itemCode"))
+        _sc_proc = _cstr(p.get("process")) or _item_process_prefix(row.get("item_code") or row.get("itemCode"))
+        row["process"] = _sc_proc
+        _SC_PROCESS_LABELS = {
+            "251": "251 Direct Sheet",
+            "252": "252 Design Sheet",
+            "253": "253 Laminated Sheet",
+            "254": "254 Laminated Sheet",
+            "255": "255 BOPP Lam Sheet",
+        }
+        row["process_label"] = _SC_PROCESS_LABELS.get(_sc_proc, _sc_proc)
         row["design_code"] = _cstr(row.get("custom_design_code") or p.get("design_code"))
         row["design_name"] = _printing_design_name_from_row(row, row["design_code"], row.get("salesOrderItem") or row.get("sales_order_item"))
         row["gsm"] = cint(p.get("gsm") or row.get("gsm") or 0)
@@ -11635,6 +11851,15 @@ def _populate_planning_sheet_items(ps, doc):
                     psi_data.get(_k) or ""
                 ).strip():
                     psi_data[_k] = _v
+            _da_106 = _printing_design_attachment_from_row(frappe._dict(psi_data), it.name)
+            if not _da_106 and _dc106_dm:
+                _dm106 = _design_master_extra_fields(_dc106_dm) or {}
+                _da_106 = _cstr(_dm106.get("custom_design_attachment") or "").strip()
+            if _da_106 and (
+                frappe.db.has_column("Planning Table", "custom_design_attachment")
+                or frappe.db.has_column("Planning sheet Item", "custom_design_attachment")
+            ):
+                psi_data["custom_design_attachment"] = _da_106
             psi_data["unit"] = PRINTING_UNASSIGNED_UNIT
         # Process 108 (BOPP laminated slitting): slitting unit + BOPP stack extras.
         if _item_process_prefix(str(it.item_code or "")) == "108":

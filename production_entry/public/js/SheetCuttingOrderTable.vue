@@ -24,11 +24,11 @@
       <div class="cc-filter-item cc-shift-filter">
         <label>Process</label>
         <div class="cc-shift-btns">
-          <button type="button" :class="{ active: processFilter === '251' }" @click="setProcessFilter('251')">251</button>
-          <button type="button" :class="{ active: processFilter === '252' }" @click="setProcessFilter('252')">252</button>
-          <button type="button" :class="{ active: processFilter === '253' }" @click="setProcessFilter('253')">253</button>
-          <button type="button" :class="{ active: processFilter === '254' }" @click="setProcessFilter('254')">254</button>
-          <button type="button" :class="{ active: processFilter === '255' }" @click="setProcessFilter('255')">255</button>
+          <button type="button" :class="{ active: processFilter === '251' }" @click="setProcessFilter('251')">{{ processFilterLabel("251") }}</button>
+          <button type="button" :class="{ active: processFilter === '252' }" @click="setProcessFilter('252')">{{ processFilterLabel("252") }}</button>
+          <button type="button" :class="{ active: processFilter === '253' }" @click="setProcessFilter('253')">{{ processFilterLabel("253") }}</button>
+          <button type="button" :class="{ active: processFilter === '254' }" @click="setProcessFilter('254')">{{ processFilterLabel("254") }}</button>
+          <button type="button" :class="{ active: processFilter === '255' }" @click="setProcessFilter('255')">{{ processFilterLabel("255") }}</button>
           <button type="button" :class="{ active: processFilter === '__all__' }" @click="setProcessFilter('__all__')">All</button>
         </div>
       </div>
@@ -70,9 +70,9 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilter === "__all__" ? "251 + 252 + 253 + 254 + 255" : processFilter }})</div>
+      <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilterTitle }})</div>
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:120px;">INPUT MTRS</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY</th><th style="min-width:96px;">ACHIEVED QTY</th><th style="min-width:120px;">TOTAL PLANNED SHEET (PCS)</th><th style="min-width:120px;">TOTAL PRODUCED SHEET (PCS)</th><th style="min-width:120px;">CONSUMED MTRS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:120px;">INPUT MTRS</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY (KGS)</th><th style="min-width:96px;">ACHIEVED QTY (KGS)</th><th style="min-width:120px;">TOTAL PLANNED SHEET (PCS)</th><th style="min-width:120px;">TOTAL PRODUCED SHEET (PCS)</th><th style="min-width:120px;">CONSUMED MTRS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="tableColCount" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
@@ -84,12 +84,12 @@
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
-              <td v-if="showProcessColumn" class="cell-center font-bold">{{ row.process || inferProcessFromItemCode(row.itemCode || row.item_code) || "-" }}</td>
-              <td v-if="showDesignColumns" class="cell-center font-bold">{{ row.design_code || row.custom_design_code || "-" }}</td>
-              <td v-if="showDesignColumns" class="cell-center font-bold">{{ row.design_name || row.custom_design_name || "-" }}</td>
+              <td v-if="showProcessColumn" class="cell-center font-bold">{{ processLabelForRow(row) }}</td>
+              <td v-if="showDesignColumnsForRow(row)" class="cell-center font-bold">{{ row.design_code || row.custom_design_code || "-" }}</td>
+              <td v-if="showDesignColumnsForRow(row)" class="cell-center font-bold">{{ row.design_name || row.custom_design_name || "-" }}</td>
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
               <td v-if="showLamGsmColumn" class="cell-center">{{ formatNum(row.custom_lam_gsm) }}</td>
-              <td v-if="showBoppGsmColumn" class="cell-center">{{ formatNum(row.custom_bopp_gsm) }}</td>
+              <td v-if="showBoppGsmForRow(row)" class="cell-center">{{ formatNum(row.custom_bopp_gsm) }}</td>
               <td class="cell-center">{{ formatRollSizeCell(row) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ formatSheetSizeCell(row) }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.total_planned_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.total_produced_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.produced_meter) }}</td><td v-if="showMergedPerDayProductionCell(row)" class="cell-right pt-merged-perday" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
               <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
@@ -153,13 +153,41 @@ function toggleSizeDimUnit() {
     localStorage.setItem(DIM_UNIT_LS_KEY, sizeDimUnit.value);
   } catch (_) {}
 }
+function withMmSuffix(val) {
+  if (sizeDimUnit.value !== "mm" || val == null || val === "" || val === "-") return val;
+  const s = String(val).trim();
+  if (!s || s === "-") return s;
+  return /\bmm\b/i.test(s) ? s : `${s} mm`;
+}
 function formatRollSizeCell(row) {
   if (!row || row.is_maintenance_row || row.is_maintenance_empty) return "-";
-  return formatSingleDimension(row, "roll_size", sizeDimUnit.value, row.fabric_item_code || "");
+  return withMmSuffix(formatSingleDimension(row, "roll_size", sizeDimUnit.value, row.fabric_item_code || ""));
 }
 function formatSheetSizeCell(row) {
   if (!row || row.is_maintenance_row || row.is_maintenance_empty) return "-";
-  return formatSheetSizeCellMm(row, sizeDimUnit.value);
+  return withMmSuffix(formatSheetSizeCellMm(row, sizeDimUnit.value));
+}
+const PROCESS_LABELS = {
+  "251": "251 Direct Sheet",
+  "252": "252 Design Sheet",
+  "253": "253 Laminated Sheet",
+  "254": "254 Laminated Sheet",
+  "255": "255 BOPP Lam Sheet",
+};
+function processFilterLabel(code) {
+  return PROCESS_LABELS[code] || code;
+}
+const processFilterTitle = computed(() => {
+  if (processFilter.value === "__all__") {
+    return Object.values(PROCESS_LABELS).join(" · ");
+  }
+  return PROCESS_LABELS[processFilter.value] || processFilter.value;
+});
+function processLabelForRow(row) {
+  const fromApi = row?.process_label;
+  if (fromApi) return fromApi;
+  const code = row?.process || inferProcessFromItemCode(row?.itemCode || row?.item_code);
+  return PROCESS_LABELS[code] || code || "-";
 }
 const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
 const filterOrderDate = ref(frappe.datetime.get_today()); const filterWeek = ref(""); const filterMonth = ref(""); const viewScope = ref("daily");
@@ -169,9 +197,20 @@ const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragO
 let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null; const showShiftPlanner = computed(() => viewScope.value !== "monthly");
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 const showProcessColumn = computed(() => processFilter.value === "__all__");
-const showDesignColumns = computed(() => ["252", "253", "254", "255", "__all__"].includes(processFilter.value));
+const showDesignColumns = computed(() => ["252", "254", "255", "__all__"].includes(processFilter.value));
+function showDesignColumnsForRow(row) {
+  if (!showDesignColumns.value) return false;
+  if (processFilter.value === "__all__") {
+    return inferProcessFromItemCode(row?.itemCode || row?.item_code) !== "253";
+  }
+  return true;
+}
 const showLamGsmColumn = computed(() => ["253", "254", "__all__"].includes(processFilter.value));
-const showBoppGsmColumn = computed(() => processFilter.value === "255" || processFilter.value === "__all__");
+const showBoppGsmColumn = computed(() => processFilter.value === "__all__");
+function showBoppGsmForRow(row) {
+  if (!showBoppGsmColumn.value) return false;
+  return inferProcessFromItemCode(row?.itemCode || row?.item_code) !== "255";
+}
 const tableColCount = computed(
   () => 19 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)
 );
