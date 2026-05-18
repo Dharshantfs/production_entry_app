@@ -21369,6 +21369,140 @@ def regenerate_planning_sheet(so_name):
     return ps
 
 
+def _existing_fg_sales_order_item_names_on_planning_sheet(planning_sheet_name, sales_order_doc):
+	"""SO item names that already have an FG row (planning row item_code = SO line FG)."""
+	so_fg_by_soi = {
+		it.name: _cstr(it.item_code).strip()
+		for it in (getattr(sales_order_doc, "items", None) or [])
+	}
+	existing_soi = set()
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.exists("DocType", doctype):
+			continue
+		fields = ["item_code", "so_item"]
+		if frappe.db.has_column(doctype, "sales_order_item"):
+			fields.append("sales_order_item")
+		if frappe.db.has_column(doctype, "custom_sales_order_item"):
+			fields.append("custom_sales_order_item")
+		for r in frappe.get_all(doctype, filters={"parent": planning_sheet_name}, fields=fields):
+			soik = _cstr(r.get("sales_order_item") or r.get("custom_sales_order_item") or r.get("so_item")).strip()
+			fg = so_fg_by_soi.get(soik) or ""
+			if soik and fg and _cstr(r.get("item_code")).strip() == fg:
+				existing_soi.add(soik)
+	return existing_soi
+
+
+def _update_fg_qty_meter_on_planning_sheet_doc(ps, so_item):
+	"""Update qty / meter / rolls on FG rows only (same item_code + SO line key)."""
+	fg = _cstr(so_item.item_code).strip()
+	soi = _cstr(so_item.name).strip()
+	if not fg or not soi:
+		return 0
+	updated = 0
+	for row in list(ps.get("planned_items") or []):
+		row_soi = _cstr(getattr(row, "sales_order_item", None) or getattr(row, "so_item", None)).strip()
+		if row_soi != soi or _cstr(row.item_code).strip() != fg:
+			continue
+		row.qty = flt(so_item.qty)
+		row.uom = so_item.uom
+		row.meter = flt(so_item.get("custom_meter") or 0)
+		if hasattr(row, "custom_meter"):
+			row.custom_meter = flt(so_item.get("custom_meter") or 0)
+		row.meter_per_roll = flt(so_item.get("custom_meter_per_roll") or 0)
+		row.no_of_rolls = flt(so_item.get("custom_no_of_rolls") or 0)
+		updated += 1
+	for row in list(ps.get("items") or []):
+		row_soi = _cstr(getattr(row, "so_item", None) or getattr(row, "sales_order_item", None)).strip()
+		if row_soi != soi or _cstr(row.item_code).strip() != fg:
+			continue
+		row.qty = flt(so_item.qty)
+		row.uom = so_item.uom
+		row.meter = flt(so_item.get("custom_meter") or 0)
+		row.meter_per_roll = flt(so_item.get("custom_meter_per_roll") or 0)
+		row.no_of_rolls = flt(so_item.get("custom_no_of_rolls") or 0)
+		updated += 1
+	return updated
+
+
+@frappe.whitelist()
+def planning_sheet_post_sync_only(planning_sheet):
+	"""BOM / fabric / unit / trace sync only — does not clear planning child tables."""
+	ps_name = _cstr(planning_sheet).strip()
+	if not ps_name or not frappe.db.exists("Planning sheet", ps_name):
+		frappe.throw(_("Planning sheet not found"))
+	ps = frappe.get_doc("Planning sheet", ps_name)
+	if int(ps.docstatus or 0) != 0:
+		frappe.throw(_("Planning Sheet must be Draft"))
+	_run_planning_sheet_post_sync(ps_name)
+	return {"ok": True, "planning_sheet": ps_name}
+
+
+@frappe.whitelist()
+def update_planning_sheet_from_sales_order(sales_order):
+	"""Partial update: Sales Order → draft Planning Sheet (Update Items button).
+
+	- Existing SO lines: qty, meter, meter_per_roll, no_of_rolls on FG rows only (BOM children untouched).
+	- New SO lines: ``_populate_planning_sheet_items`` + ``_run_planning_sheet_post_sync``
+	  (108→107→100+PB, 255, 253, 251, 102–109, stage-3 chains, etc.).
+	- Process 100 FG: row only; post-sync is idempotent and does not add BOM children.
+	"""
+	so_name = _cstr(sales_order).strip()
+	if not so_name:
+		frappe.throw(_("Sales Order required"))
+
+	ps_name = frappe.db.get_value("Planning sheet", {"sales_order": so_name, "docstatus": 0}, "name")
+	if not ps_name:
+		frappe.throw(_("No Draft Planning Sheet for this Sales Order"))
+
+	so = frappe.get_doc("Sales Order", so_name)
+	ps = frappe.get_doc("Planning sheet", ps_name)
+	if int(ps.docstatus or 0) != 0:
+		frappe.throw(_("Planning Sheet is not Draft"))
+
+	current_count = cint(so.get("custom_update_count") or 0)
+	new_count = current_count + 1
+	frappe.db.set_value("Sales Order", so_name, "custom_update_count", new_count, update_modified=False)
+	if ps.meta.has_field("custom_update_count"):
+		ps.custom_update_count = new_count
+
+	existing_soi = _existing_fg_sales_order_item_names_on_planning_sheet(ps.name, so)
+	had_new = False
+	fg_updates = 0
+
+	for it in so.items:
+		if it.name in existing_soi:
+			fg_updates += _update_fg_qty_meter_on_planning_sheet_doc(ps, it)
+		else:
+			had_new = True
+
+	if had_new:
+		_populate_planning_sheet_items(ps, so)
+
+	ensure_lamination_booking_for_planning_sheet(ps)
+	update_sheet_plan_codes(ps, include_legacy=True)
+	ps.flags.ignore_permissions = True
+	ps.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	if had_new:
+		_run_planning_sheet_post_sync(ps.name)
+		frappe.db.commit()
+
+	msg = _("Planning Sheet updated.")
+	if had_new:
+		msg = _("Planning Sheet updated. New line(s) added with BOM sync (108/255/253/251/…).")
+	elif fg_updates:
+		msg = _("Planning Sheet updated. Qty / meter / rolls updated on existing FG lines.")
+
+	return {
+		"ok": True,
+		"planning_sheet": ps.name,
+		"had_new_lines": had_new,
+		"fg_field_updates": fg_updates,
+		"message": msg,
+	}
+
+
 @frappe.whitelist()
 def sync_bom_children_for_planning_sheet(planning_sheet):
     """
