@@ -1328,6 +1328,37 @@ def _trace_from_252_parse_body(p, design_code=None):
 	return body
 
 
+def _trace_from_106_parse_body(p, design_code=None):
+	"""Hyphenated 106 trace: ``{design}-106-{quality}-{colour}-{gsm}-{width_mm}[-lam]``."""
+	if not p:
+		return ""
+	dc = _cstr(design_code if design_code is not None else p.get("design_code")).strip()
+	qc = _cstr(p.get("quality_code")).strip()
+	cc = _cstr(p.get("colour_code")).strip()
+	gsm = _cstr(p.get("gsm")).strip()
+	wmm = _cstr(p.get("width_mm")).strip()
+	lc = _cstr(p.get("lam_gsm_code")).strip()
+	if not (qc or cc or gsm or wmm or lc):
+		return ""
+	segs = ["106"]
+	if qc:
+		segs.append(qc.zfill(3) if qc.isdigit() else qc)
+	if cc:
+		segs.append(cc.zfill(3) if cc.isdigit() else cc)
+	if gsm:
+		segs.append(str(gsm).zfill(3))
+	if wmm:
+		segs.append(str(wmm).zfill(4))
+	if lc:
+		segs.append(lc)
+	if len(segs) <= 1:
+		return ""
+	body = "-".join(segs)
+	if dc:
+		return f"{dc}-{body}"
+	return body
+
+
 def _trace_from_sheet_cutting_fg_on_sales_order_line(sales_order_item, planning_sheet_name=None, pt_rows=None):
 	"""FG sheet-cutting trace on the same SO line (252/253/254/255/251) for BOM children (105/100/104…)."""
 	soi = _cstr(sales_order_item).strip()
@@ -3186,7 +3217,7 @@ def _parent_child_trace_id_from_item_code(item_code):
 	Examples:
 	- 1031052210500050 -> 103-105-221-050-0050
 	- 1041030010231475-B1 -> 104-103-001-023-1475-B1 (suffix lam / variant)
-	106 (design-first): 106-<quality>-<colour>-<gsm>-<width_mm>-<lam code>
+	106 (design-first): <design>-106-<quality>-<colour>-<gsm>-<width_mm>[-lam code]
 	107 (design-first): 107-<quality letter>-<colour>-<stack gsm>-<width code> (stack = fabric+BOPP+lam; lam omitted when stack used).
 	255 (design-first): 255-<quality letter>-<colour>-<stack gsm>-<width code> — BOM children inherit this same string from the 255 parent row.
 	"""
@@ -3313,26 +3344,9 @@ def _parent_child_trace_id_from_item_code(item_code):
 				return "-".join(segs)
 	# 106 laminated printing: <design>-106QQQCCCGGGWWWW[-suffix]
 	if process == "106" or "-106" in ic.upper():
-		p = _parse_106_item_code(ic) or {}
-		if (p.get("colour_code") or "").strip() or (p.get("gsm") or "").strip() or (p.get("width_mm") or "").strip() or (p.get("quality_code") or "").strip():
-			qc = _cstr(p.get("quality_code")).strip()
-			cc = _cstr(p.get("colour_code")).strip()
-			gsm = _cstr(p.get("gsm")).strip()
-			wmm = _cstr(p.get("width_mm")).strip()
-			lc = _cstr(p.get("lam_gsm_code")).strip()
-			segs = ["106"]
-			if qc:
-				segs.append(qc)
-			if cc:
-				segs.append(cc)
-			if gsm:
-				segs.append(str(gsm).zfill(3))
-			if wmm:
-				segs.append(str(wmm).zfill(4))
-			if lc:
-				segs.append(lc)
-			if len(segs) > 1:
-				return "-".join(segs)
+		t106 = _trace_from_106_parse_body(_parse_106_item_code(ic) or {})
+		if t106:
+			return t106
 	# Fabric 100: 100QQQCCCGGGWWWW (same digit layout as 102/103/104 body)
 	if process == "100":
 		left = ic
@@ -6093,6 +6107,10 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 	if so_fg == "108" and child_proc == "107":
 		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
 	if so_fg == "254" and parent_proc in ("254", "106", "104") and child_proc in ("100", "104", "106", "107"):
+		return _parent_child_trace_id_from_item_code(fg_ic) or ""
+	if so_fg == "106" and parent_proc in ("106",) and child_proc in ("104", "100", "106"):
+		return _parent_child_trace_id_from_item_code(fg_ic) or ""
+	if so_fg == "105" and parent_proc in ("105",) and child_proc in ("100", "105"):
 		return _parent_child_trace_id_from_item_code(fg_ic) or ""
 	if so_fg == "109" and parent_proc == "109" and child_proc in ("104", "100"):
 		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
