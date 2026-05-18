@@ -266,10 +266,17 @@ class Planningsheet(Document):
     def _recompute_printed_bopp_total_colours_on_child_rows(self):
         """Board grid: persist total colours when white tint / design token change (matches Printed BOPP table)."""
         try:
-            from production_entry.production_planning.scheduler_api import _apply_printed_bopp_total_colours_to_row
+            from production_entry.production_planning.scheduler_api import (
+                _apply_printed_bopp_planning_fields_to_row,
+                _apply_printed_bopp_total_colours_to_row,
+                _is_printed_bopp_item_code,
+            )
 
             for table_key in ("planned_items", "items"):
                 for row in self.get(table_key) or []:
+                    ic = str(getattr(row, "item_code", None) or "").strip()
+                    if ic and _is_printed_bopp_item_code(ic):
+                        _apply_printed_bopp_planning_fields_to_row(row, ic)
                     _apply_printed_bopp_total_colours_to_row(row)
         except Exception:
             pass
