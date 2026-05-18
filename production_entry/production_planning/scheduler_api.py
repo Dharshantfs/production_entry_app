@@ -2359,6 +2359,7 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 	Build Finishing column text for Printed BOPP from gsm token (e.g. ``15M``) and suffix.
 
 	- ``0M`` → ``15M MATE`` (M = mate; 0 = no second metallic line)
+	- ``0G`` → ``15M GLOSSY`` (G = glossy)
 	- ``MM`` → ``15M MATE 15M METALLIC``
 	- ``GC`` → ``15M GLOSSY 15 COLOUR`` (collier / coating)
 	"""
@@ -2372,6 +2373,8 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 
 	if suffix == "0M":
 		return f"{gsm_token} MATE"
+	if suffix == "0G":
+		return f"{gsm_token} GLOSSY"
 	if suffix == "MM":
 		return f"{gsm_token} MATE {gsm_token} METALLIC"
 	if suffix == "GC":
