@@ -85,11 +85,11 @@
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
               <td v-if="showProcessColumn" class="cell-center font-bold">{{ processLabelForRow(row) }}</td>
-              <td v-if="showDesignColumnsForRow(row)" class="cell-center font-bold">{{ row.design_code || row.custom_design_code || "-" }}</td>
-              <td v-if="showDesignColumnsForRow(row)" class="cell-center font-bold">{{ row.design_name || row.custom_design_name || "-" }}</td>
+              <td v-if="showDesignColumns" class="cell-center font-bold">{{ designCodeForRow(row) }}</td>
+              <td v-if="showDesignColumns" class="cell-center font-bold">{{ designNameForRow(row) }}</td>
               <td class="cell-center">{{ row.quality || "-" }}</td><td class="cell-center">{{ row.gsm || "-" }}</td>
               <td v-if="showLamGsmColumn" class="cell-center">{{ formatNum(row.custom_lam_gsm) }}</td>
-              <td v-if="showBoppGsmForRow(row)" class="cell-center">{{ formatNum(row.custom_bopp_gsm) }}</td>
+              <td v-if="showBoppGsmColumn" class="cell-center">{{ boppGsmForRow(row) }}</td>
               <td class="cell-center">{{ formatRollSizeCell(row) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ formatSheetSizeCell(row) }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.total_planned_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.total_produced_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.produced_meter) }}</td><td v-if="showMergedPerDayProductionCell(row)" class="cell-right pt-merged-perday" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
               <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
@@ -198,18 +198,22 @@ let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null;
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 const showProcessColumn = computed(() => processFilter.value === "__all__");
 const showDesignColumns = computed(() => ["252", "254", "255", "__all__"].includes(processFilter.value));
-function showDesignColumnsForRow(row) {
-  if (!showDesignColumns.value) return false;
-  if (processFilter.value === "__all__") {
-    return inferProcessFromItemCode(row?.itemCode || row?.item_code) !== "253";
-  }
-  return true;
+function rowProcessCode(row) {
+  return String(row?.process || inferProcessFromItemCode(row?.itemCode || row?.item_code) || "").trim();
+}
+function designCodeForRow(row) {
+  if (processFilter.value === "__all__" && rowProcessCode(row) === "253") return "-";
+  return row?.design_code || row?.custom_design_code || "-";
+}
+function designNameForRow(row) {
+  if (processFilter.value === "__all__" && rowProcessCode(row) === "253") return "-";
+  return row?.design_name || row?.custom_design_name || "-";
 }
 const showLamGsmColumn = computed(() => ["253", "254", "__all__"].includes(processFilter.value));
 const showBoppGsmColumn = computed(() => processFilter.value === "__all__");
-function showBoppGsmForRow(row) {
-  if (!showBoppGsmColumn.value) return false;
-  return inferProcessFromItemCode(row?.itemCode || row?.item_code) !== "255";
+function boppGsmForRow(row) {
+  if (processFilter.value === "__all__" && rowProcessCode(row) === "255") return "-";
+  return formatNum(row?.custom_bopp_gsm);
 }
 const tableColCount = computed(
   () => 19 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)

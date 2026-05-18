@@ -41,6 +41,7 @@
   "items",
   "custom_label",
   "custom_batch_width",
+  "custom_use_bundle_packaging_on_submit",
   "bundle_stickers",
   "section_fabric_batches",
   "fabric_batch_picks",
@@ -247,6 +248,13 @@
    "fieldtype": "Float",
    "label": "Custom Label Width (CM)",
    "precision": "2"
+  },
+  {
+   "default": "0",
+   "description": "When enabled, Manufacture Stock Entry on Submit posts Bundle Stickers as combined FG lines first, then remaining roll lines individually. When disabled, every roll line posts separately (Bundle Stickers ignored).",
+   "fieldname": "custom_use_bundle_packaging_on_submit",
+   "fieldtype": "Check",
+   "label": "Use Bundle Packaging on Submit"
   },
   {
    "fieldname": "bundle_stickers",

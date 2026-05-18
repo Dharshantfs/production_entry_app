@@ -990,6 +990,45 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
  * every time so buttons do not disappear (do not use a one-shot _spr_page_buttons_ok guard).
  * Also registers custom buttons — they survive some toolbar rebuilds better than inner_group alone.
  */
+function spr_bundle_packaging_toggle_label(enabled) {
+	return enabled
+		? __('Bundle SE on Submit: ON')
+		: __('Bundle SE on Submit: OFF');
+}
+
+function spr_toggle_bundle_packaging_on_submit(frm) {
+	if (!frm || !frm.doc || !frm.doc.name) {
+		return;
+	}
+	if (cint(frm.doc.docstatus) !== 0) {
+		frappe.msgprint(__('Save as draft to change bundle packaging mode.'));
+		return;
+	}
+	if (!frappe.meta.get_docfield('Shaft Production Run', 'custom_use_bundle_packaging_on_submit')) {
+		frappe.msgprint(__('Run bench migrate to enable the bundle packaging submit toggle.'));
+		return;
+	}
+	const cur = cint(frm.doc.custom_use_bundle_packaging_on_submit);
+	const next = cur ? 0 : 1;
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_bundle_packaging_on_submit',
+		args: {
+			shaft_production_run: frm.doc.name,
+			enabled: next,
+		},
+		freeze: true,
+		callback(r) {
+			const msg = (r.message && r.message.mode_label) || spr_bundle_packaging_toggle_label(next);
+			if (frm.doc.custom_use_bundle_packaging_on_submit !== next) {
+				frm.set_value('custom_use_bundle_packaging_on_submit', next);
+			}
+			frappe.show_alert({ message: msg, indicator: next ? 'green' : 'blue' }, 6);
+			spr_register_spr_page_buttons(frm);
+		},
+	});
+}
+
 function spr_register_spr_page_buttons(frm) {
 	if (!frm) {
 		return;
@@ -1001,6 +1040,12 @@ function spr_register_spr_page_buttons(frm) {
 		} catch (e) {}
 		try {
 			frm.remove_custom_button(__('Bundle packaging'));
+		} catch (e) {}
+		try {
+			frm.remove_custom_button(__('Bundle SE on Submit: ON'));
+		} catch (e) {}
+		try {
+			frm.remove_custom_button(__('Bundle SE on Submit: OFF'));
 		} catch (e) {}
 		try {
 			frm.remove_custom_button(__('Select RM batches'));
@@ -1019,6 +1064,17 @@ function spr_register_spr_page_buttons(frm) {
 		} catch (e) {}
 		try {
 			if (
+				frappe.meta.get_docfield('Shaft Production Run', 'custom_use_bundle_packaging_on_submit') &&
+				cint(frm.doc.docstatus) === 0
+			) {
+				const bundleOn = cint(frm.doc.custom_use_bundle_packaging_on_submit);
+				frm.add_custom_button(spr_bundle_packaging_toggle_label(bundleOn), function () {
+					spr_toggle_bundle_packaging_on_submit(frm);
+				});
+			}
+		} catch (e) {}
+		try {
+			if (
 				frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
 				cint(frm.doc.docstatus) === 0
 			) {
@@ -1034,7 +1090,13 @@ function spr_register_spr_page_buttons(frm) {
 	const tg = __('Tools');
 	const rm = frm.page.remove_inner_button;
 	if (typeof rm === 'function') {
-		[__('Manual job'), __('Bundle packaging'), __('Select RM batches')].forEach(function (lbl) {
+		[
+			__('Manual job'),
+			__('Bundle packaging'),
+			__('Bundle SE on Submit: ON'),
+			__('Bundle SE on Submit: OFF'),
+			__('Select RM batches'),
+		].forEach(function (lbl) {
 			try {
 				rm.call(frm.page, lbl);
 			} catch (e) {}
@@ -1062,6 +1124,17 @@ function spr_register_spr_page_buttons(frm) {
 		frm.page.add_inner_button(__('Bundle packaging'), function () {
 			spr_open_bundle_packaging_dialog(frm);
 		});
+	});
+	addInner(function () {
+		if (
+			frappe.meta.get_docfield('Shaft Production Run', 'custom_use_bundle_packaging_on_submit') &&
+			cint(frm.doc.docstatus) === 0
+		) {
+			const bundleOn = cint(frm.doc.custom_use_bundle_packaging_on_submit);
+			frm.page.add_inner_button(spr_bundle_packaging_toggle_label(bundleOn), function () {
+				spr_toggle_bundle_packaging_on_submit(frm);
+			});
+		}
 	});
 	addInner(function () {
 		if (

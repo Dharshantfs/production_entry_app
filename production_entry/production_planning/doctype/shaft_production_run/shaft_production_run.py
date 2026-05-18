@@ -3187,8 +3187,16 @@ class ShaftProductionRun(Document):
 			return ""
 		return f"{prefix}-B{cint(sticker_row.get('idx') or 0) or 1}"
 
+	def _spr_submit_uses_bundle_packaging(self) -> bool:
+		"""When True, Manufacture FG uses Bundle Stickers (combined) then unpacked rolls; when False, one FG per roll."""
+		if frappe.db.has_column("Shaft Production Run", "custom_use_bundle_packaging_on_submit"):
+			return cint(self.get("custom_use_bundle_packaging_on_submit") or 0) == 1
+		return False
+
 	def _bundle_fg_plans(self) -> list[dict]:
 		"""Build bundle FG rows from Bundle Stickers and map them to source roll rows."""
+		if not self._spr_submit_uses_bundle_packaging():
+			return []
 		plans = []
 		used_roll_names = {}
 		rows = list(self.items or [])
@@ -3291,11 +3299,12 @@ class ShaftProductionRun(Document):
 		return plans
 
 	def _fg_posting_units_for_rows(self, spr_rows: list, wo_doc) -> list:
-		"""Return normal roll rows plus bundle rows for this chunk without double-posting packed rolls."""
+		"""Return FG posting units: bundles first (when enabled), then individual roll lines."""
 		chunk_names = {_cstr(r.get("name")) for r in spr_rows or []}
 		units = []
 		covered = set()
-		for plan in self._bundle_fg_plans():
+		use_bundles = self._spr_submit_uses_bundle_packaging()
+		for plan in self._bundle_fg_plans() if use_bundles else []:
 			if _cstr(plan.get("work_order")) != _cstr(getattr(wo_doc, "name", "")):
 				continue
 			src = set(plan.get("source_names") or set())
@@ -3316,7 +3325,8 @@ class ShaftProductionRun(Document):
 			if _cstr(row.get("name")) in covered:
 				continue
 			units.append({"sort_idx": cint(row.get("idx") or 0), "row": row, "is_bundle": False})
-		units.sort(key=lambda x: (cint(x.get("sort_idx") or 0), 1 if x.get("is_bundle") else 0))
+		# Bundle FG lines first, then unpacked rolls (same sort_idx group).
+		units.sort(key=lambda x: (cint(x.get("sort_idx") or 0), 0 if x.get("is_bundle") else 1))
 		return [u["row"] for u in units]
 
 	def _fg_posting_qty_for_rows(self, spr_rows: list, wo_doc) -> float:
@@ -6770,6 +6780,38 @@ def spr_repair_broken_fg_batch_stock(shaft_production_run: str, submit_entry: in
 		"skipped_count": len(skipped),
 		"skipped": skipped[:200],
 	}
+
+
+@frappe.whitelist()
+def spr_set_bundle_packaging_on_submit(shaft_production_run, enabled=0):
+	"""Toggle whether SPR submit posts combined FG from Bundle Stickers (testing / rollout)."""
+	_spr_require_saved(shaft_production_run)
+	if not frappe.db.has_column("Shaft Production Run", "custom_use_bundle_packaging_on_submit"):
+		frappe.throw(
+			_("Field custom_use_bundle_packaging_on_submit is missing. Run bench migrate on Production Planning app."),
+			title=_("Migrate required"),
+		)
+	on = 1 if cint(enabled) else 0
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	if cint(spr.docstatus) != 0:
+		frappe.throw(_("Cannot change bundle packaging mode after submit."))
+	spr.custom_use_bundle_packaging_on_submit = on
+	spr.save(ignore_permissions=True)
+	mode = _("ON — Bundle Stickers combined FG first, then roll lines") if on else _(
+		"OFF — Each roll line is its own FG (Bundle Stickers ignored)"
+	)
+	return {"enabled": on, "mode_label": mode}
+
+
+@frappe.whitelist()
+def spr_get_bundle_packaging_on_submit_status(shaft_production_run):
+	"""Return current bundle-packaging toggle for SPR toolbar."""
+	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
+		return {"enabled": 0, "available": False}
+	if not frappe.db.has_column("Shaft Production Run", "custom_use_bundle_packaging_on_submit"):
+		return {"enabled": 0, "available": False}
+	enabled = cint(frappe.db.get_value("Shaft Production Run", shaft_production_run, "custom_use_bundle_packaging_on_submit") or 0)
+	return {"enabled": enabled, "available": True}
 
 
 @frappe.whitelist()
