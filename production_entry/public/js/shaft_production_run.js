@@ -410,24 +410,27 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	onload: function (frm) {
-		setTimeout(function () {
+		function spr_onload_refresh_layout() {
+			if (!frm || !frm.doc) {
+				return;
+			}
+			sprToggleSheetCuttingUi(frm);
+			sprToggleLaminationRollUi(frm);
+			['shaft_jobs', 'items', 'bundle_stickers', 'bundle_calculation', 'fabric_batch_picks'].forEach(function (fld) {
+				if (frm.fields_dict && frm.fields_dict[fld]) {
+					try {
+						frm.refresh_field(fld);
+					} catch (e) {}
+				}
+			});
 			spr_patch_items_grid_refresh(frm);
-		}, 0);
-		setTimeout(function () {
-			spr_patch_items_grid_refresh(frm);
-		}, 400);
-		setTimeout(function () {
 			spr_register_spr_page_buttons(frm);
-		}, 0);
-		setTimeout(function () {
-			spr_register_spr_page_buttons(frm);
-		}, 500);
-		[0, 400].forEach(function (ms) {
-			setTimeout(function () {
-				spr_inject_gsm_legend(frm);
-				schedule_spr_item_row_styles(frm);
-			}, ms);
-		});
+			spr_inject_gsm_legend(frm);
+			schedule_spr_item_row_styles(frm);
+		}
+		setTimeout(spr_onload_refresh_layout, 0);
+		setTimeout(spr_onload_refresh_layout, 350);
+		setTimeout(spr_onload_refresh_layout, 900);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
@@ -3029,11 +3032,20 @@ function spr_hide_duplicate_produced_gsm_columns(frm) {
 	}
 }
 
+function sprHasFabric100Rows(frm) {
+	return (frm && frm.doc && (frm.doc.items || [])).some(function (row) {
+		const ic = String((row && row.item_code) || '').trim().toUpperCase();
+		return ic.startsWith('100') || /^[A-Z0-9]+-100/.test(ic);
+	});
+}
+
 function sprToggleLaminationRollUi(frm) {
 	const processPrefix = sprRollProcessPrefix(frm);
 	const isLaminationProcess = processPrefix === '104' || processPrefix === '107';
 	const showLamCols = isLaminationProcess || sprUsesLaminationRollPrompt(frm);
-	const hidePlanned = showLamCols ? 1 : 0;
+	const hasFabric100 = sprHasFabric100Rows(frm);
+	// Fabric 100 rows always show planned qty; hide only on pure 104/107 lamination runs without fabric lines.
+	const hidePlanned = showLamCols && !hasFabric100 ? 1 : 0;
 	const hideLamCols = showLamCols ? 0 : 1;
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	const grid = fd && fd.grid;
