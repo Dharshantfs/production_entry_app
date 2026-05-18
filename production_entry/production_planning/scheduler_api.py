@@ -2729,6 +2729,116 @@ def _align_so_line_bom_parent_qty_from_sales_order(planning_sheet_name, so_item)
 	return updated
 
 
+def _set_planning_table_qty_with_legacy_sync(planning_sheet_name, pt_row_name, qty):
+	"""Set qty on Planning Table and the linked Planning sheet Item (legacy top grid)."""
+	if not pt_row_name or not frappe.db.exists("Planning Table", pt_row_name):
+		return False
+	qty = flt(qty)
+	if frappe.db.has_column("Planning Table", "qty"):
+		frappe.db.set_value("Planning Table", pt_row_name, "qty", qty, update_modified=False)
+	legacy_name = ""
+	if frappe.db.has_column("Planning Table", "source_item"):
+		legacy_name = _cstr(frappe.db.get_value("Planning Table", pt_row_name, "source_item")).strip()
+	if legacy_name and frappe.db.exists("Planning sheet Item", legacy_name):
+		if frappe.db.has_column("Planning sheet Item", "qty"):
+			frappe.db.set_value("Planning sheet Item", legacy_name, "qty", qty, update_modified=False)
+		return True
+	if not planning_sheet_name:
+		planning_sheet_name = frappe.db.get_value("Planning Table", pt_row_name, "parent")
+	ic = _cstr(frappe.db.get_value("Planning Table", pt_row_name, "item_code")).strip()
+	soi = ""
+	for col in ("sales_order_item", "so_item"):
+		if frappe.db.has_column("Planning Table", col):
+			soi = _cstr(frappe.db.get_value("Planning Table", pt_row_name, col)).strip()
+			if soi:
+				break
+	psi_name = _find_legacy_planning_sheet_item_row(planning_sheet_name, ic, soi)
+	if psi_name and frappe.db.has_column("Planning sheet Item", "qty"):
+		frappe.db.set_value("Planning sheet Item", psi_name, "qty", qty, update_modified=False)
+		if frappe.db.has_column("Planning Table", "source_item"):
+			frappe.db.set_value("Planning Table", pt_row_name, "source_item", psi_name, update_modified=False)
+		return True
+	return False
+
+
+def _find_legacy_planning_sheet_item_row(planning_sheet_name, item_code, so_item_key=None):
+	"""Resolve Planning sheet Item row for board row (item_code + optional SO line)."""
+	psn = _cstr(planning_sheet_name).strip()
+	ic = _cstr(item_code).strip()
+	soik = _cstr(so_item_key).strip()
+	if not psn or not ic or not frappe.db.table_exists("Planning sheet Item"):
+		return ""
+	filters = {"parent": psn, "item_code": ic}
+	if soik:
+		if frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+			rows = frappe.get_all(
+				"Planning sheet Item",
+				filters={**filters, "sales_order_item": soik},
+				pluck="name",
+				limit=1,
+			)
+			if rows:
+				return rows[0]
+		if frappe.db.has_column("Planning sheet Item", "so_item"):
+			rows = frappe.get_all(
+				"Planning sheet Item",
+				filters={**filters, "so_item": soik},
+				pluck="name",
+				limit=1,
+			)
+			if rows:
+				return rows[0]
+	rows = frappe.get_all("Planning sheet Item", filters=filters, pluck="name", limit=1)
+	return rows[0] if rows else ""
+
+
+def _sync_legacy_planning_sheet_items_qty_from_board(planning_sheet_name):
+	"""Copy rescaled BOM qty from Production board (Planning Table) → Planning sheet Item grid."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return 0
+	if not frappe.db.table_exists("Planning sheet Item") or not frappe.db.has_column("Planning sheet Item", "qty"):
+		return 0
+	if not frappe.db.table_exists("Planning Table") or not frappe.db.has_column("Planning Table", "qty"):
+		return 0
+	pt_fields = ["name", "item_code", "qty"]
+	for col in ("sales_order_item", "so_item", "source_item"):
+		if frappe.db.has_column("Planning Table", col):
+			pt_fields.append(col)
+	board_rows = (
+		frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name},
+			fields=pt_fields,
+			limit_page_length=0,
+		)
+		or []
+	)
+	updated = 0
+	for br in board_rows:
+		qty = flt(br.get("qty") or 0)
+		pt_name = br.get("name")
+		ic = _cstr(br.get("item_code")).strip()
+		if not pt_name or not ic or qty <= 0:
+			continue
+		soi = _cstr(br.get("sales_order_item") or br.get("so_item")).strip()
+		legacy_name = _cstr(br.get("source_item")).strip()
+		target_psi = legacy_name if legacy_name and frappe.db.exists("Planning sheet Item", legacy_name) else ""
+		if not target_psi:
+			target_psi = _find_legacy_planning_sheet_item_row(planning_sheet_name, ic, soi)
+		if not target_psi:
+			continue
+		cur = flt(frappe.db.get_value("Planning sheet Item", target_psi, "qty") or 0)
+		if abs(cur - qty) > 1e-6:
+			frappe.db.set_value("Planning sheet Item", target_psi, "qty", qty, update_modified=False)
+			updated += 1
+		if (
+			frappe.db.has_column("Planning Table", "source_item")
+			and legacy_name != target_psi
+		):
+			frappe.db.set_value("Planning Table", pt_name, "source_item", target_psi, update_modified=False)
+	return updated
+
+
 def _trace_108_from_107_item_code(item_code):
 	"""Build a **108**-prefixed trace from a process-107 item (same segments as 107 parse, never ``107-``)."""
 	p = _parse_107_item_code(item_code) or {}
@@ -5422,6 +5532,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_stamp_design_fields_on_planning_sheet(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_design_fields")
+	try:
+		_sync_legacy_planning_sheet_items_qty_from_board(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_legacy_psi_qty")
 	frappe.db.commit()
 	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
 
@@ -6869,7 +6983,10 @@ def _sync_bom_child_rows_from_planning_rows(
 			if child_qty_new > 0 and frappe.db.has_column("Planning Table", "qty"):
 				updates["qty"] = child_qty_new
 			if updates:
+				qty_up = updates.pop("qty", None)
 				frappe.db.set_value("Planning Table", ex_nm, updates, update_modified=False)
+				if qty_up is not None:
+					_set_planning_table_qty_with_legacy_sync(ps.name, ex_nm, qty_up)
 			continue
 
 		parent_doc = frappe.get_doc("Planning Table", prow.get("name")) if prow.get("name") else None
