@@ -3558,6 +3558,19 @@ def _total_colours_token_for_printed_bopp(ndc_token, white_tint_str):
 	return f"{n}C"
 
 
+def _pb_total_colours_for_display(ndc_token, white_tint_str=None, pt_row_name=None, so_item_name=None):
+	"""Printed BOPP table / API: total colours from design count + planning-row white tint (not stale SO-only)."""
+	ndc = _cstr(ndc_token).strip()
+	if not ndc:
+		return ""
+	wt = _cstr(white_tint_str).strip()
+	if pt_row_name:
+		wt = _effective_white_tint_for_pb_planning_row(pt_row_name, so_item_name) or wt
+	elif so_item_name and not wt:
+		wt = _white_tint_yes_no_from_sales_order_item(so_item_name) or wt
+	return _total_colours_token_for_printed_bopp(ndc, wt) or ndc
+
+
 def _apply_printed_bopp_total_colours_to_row(row):
 	"""
 	Persist ``custom_total_no_of_colours`` on a Planning Table child row from
@@ -9903,9 +9916,16 @@ def get_lamination_order_table_data(
             if not _ndc:
                 _ndc = _printed_bopp_design_colours_token(_ic_row, _pb_inm)
             row["no_of_design_colours"] = _ndc
-            _tnc = str((ex or {}).get("pb_total_colours_stored") or "").strip() if ex else ""
-            _bumped = _total_colours_token_for_printed_bopp(_ndc, row.get("white_tint") or "")
-            row["total_no_of_colours"] = _cstr(_so_pb.get("custom_total_no_of_colours")).strip() or _bumped or _tnc or _ndc
+            _pt_row_id = str(row.get("itemName") or "").strip()
+            _wt_tbl = row.get("white_tint") or ""
+            if _pt_row_id:
+                _wt_eff = _effective_white_tint_for_pb_planning_row(_pt_row_id, so_item_nm)
+                if _wt_eff:
+                    _wt_tbl = _normalized_white_tint_select(_wt_eff) or _wt_eff
+                    row["white_tint"] = _wt_tbl
+            row["total_no_of_colours"] = _pb_total_colours_for_display(
+                _ndc, _wt_tbl, _pt_row_id, so_item_nm
+            )
             row["bopp_bom_kgs"] = flt((ex or {}).get("pb_bopp_bom_kgs_stored") or 0) if ex else 0
             if not row["bopp_bom_kgs"]:
                 row["bopp_bom_kgs"] = flt(row.get("qty") or row.get("Qty") or 0)
