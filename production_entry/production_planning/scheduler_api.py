@@ -4386,6 +4386,35 @@ def _get_fabric_item_from_process_item(item_code, expected_process, process_labe
 	return {"fabric_item_code": fabric_item_code, "bom_no": bom_name}
 
 
+def _pick_bom_child_rows_for_process(bom_items, expected_child_process, parent_item_code=""):
+	"""Match BOM lines to a process code (107/104/…) including design-first item codes."""
+	exp = str(expected_child_process or "").strip()
+	rows = []
+	for row in bom_items or []:
+		ic = (row.item_code or "").strip()
+		if not ic:
+			continue
+		if _bom_item_matches_process(ic, exp):
+			rows.append((ic, row))
+	if rows:
+		return rows
+	if exp != "107":
+		return []
+	# 107 on 255/108 BOMs: any non-fabric, non-PB line that is a BOPP mid item.
+	fallback = []
+	for row in bom_items or []:
+		ic = (row.item_code or "").strip()
+		if not ic or ic.startswith("100") or _is_printed_bopp_item_code(ic):
+			continue
+		if _is_107_mid_bopp_item(ic) or _lamination_process_from_item_code(ic) == "107":
+			fallback.append((ic, row))
+		elif re.search(r"-107(?=[A-Z0-9])", ic.upper()) or re.search(r"-107\d", ic.upper()):
+			fallback.append((ic, row))
+	if fallback:
+		return fallback
+	return []
+
+
 def _get_bom_child_item_from_process_item(item_code, expected_parent_process, expected_child_process, process_label):
 	"""Resolve one child process item from the active BOM for chained Stage 3 planning."""
 	item_code = (item_code or "").strip()
@@ -4400,11 +4429,7 @@ def _get_bom_child_item_from_process_item(item_code, expected_parent_process, ex
 	bom = _resolve_lamination_bom(item_code)
 	if not bom:
 		frappe.throw(_("No active submitted BOM for {0} item {1}.").format(process_label.lower(), item_code))
-	child_rows = []
-	for row in bom.items or []:
-		ic = (row.item_code or "").strip()
-		if _bom_item_matches_process(ic, expected_child_process):
-			child_rows.append((ic, row))
+	child_rows = _pick_bom_child_rows_for_process(bom.items, expected_child_process, item_code)
 	if len(child_rows) == 0:
 		frappe.throw(
 			_("BOM {0} has no process {1} child row for {2}.").format(
@@ -4927,10 +4952,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	"""Single post-populate pipeline: BOM children, units, stage-3 chain, trace stamps (108/254 families)."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
 		return
+	_ensure_planning_table_has_board_rows(planning_sheet_name)
 	_link_board_planned_rows_to_legacy_items(planning_sheet_name)
 	_sync_253_laminated_sheet_stack(planning_sheet_name)
-	_sync_255_bopp_lam_sheet_stack(planning_sheet_name)
-	_sync_108_full_bopp_stack(planning_sheet_name)
+	_sync_bopp_sheet_stacks_from_sales_order(planning_sheet_name)
 	_sync_lamination_fabric_planning_rows(planning_sheet_name)
 	_sync_slitting_fabric_planning_rows(planning_sheet_name)
 	_force_slitting_unit_on_sheet(planning_sheet_name)
@@ -6143,7 +6168,7 @@ def _sync_bom_child_rows_from_planning_rows(
 		so_item_key = _cstr(prow.get("sales_order_item") or prow.get("so_item"))
 		so_it = so_by_name.get(so_item_key)
 		if so_parent_processes:
-			so_proc = _item_process_prefix(getattr(so_it, "item_code", "") if so_it else "")
+			so_proc = _bom_item_process_code(getattr(so_it, "item_code", "") if so_it else "")
 			if so_proc not in so_parent_processes:
 				continue
 		if not so_it:
@@ -8014,6 +8039,96 @@ def backfill_slitting_units(planning_sheet_name=None):
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	frappe.db.commit()
 	return {"status": "success", "updated": int(updated)}
+
+
+def _ensure_planning_table_has_board_rows(planning_sheet_name):
+	"""Copy legacy Planning sheet Item rows onto the board (planned_items) when missing."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return False
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	parent_field = _get_pt_parentfield()
+	board_rows = list(ps.get(parent_field) or [])
+	board_keys = set()
+	for br in board_rows:
+		ic = _cstr(br.item_code).strip()
+		soik = _cstr(getattr(br, "sales_order_item", None) or getattr(br, "so_item", None)).strip()
+		if ic:
+			board_keys.add((ic, soik))
+	changed = False
+	for psi in ps.get("items") or []:
+		ic = _cstr(psi.item_code).strip()
+		soik = _cstr(getattr(psi, "sales_order_item", None) or getattr(psi, "so_item", None)).strip()
+		if not ic or (ic, soik) in board_keys:
+			continue
+		row = psi.as_dict()
+		row.pop("name", None)
+		row.pop("parent", None)
+		row.pop("parenttype", None)
+		row.pop("parentfield", None)
+		row.pop("idx", None)
+		row["planning_sheet"] = ps.name
+		ps.append(parent_field, row)
+		board_keys.add((ic, soik))
+		changed = True
+	if changed:
+		ps.flags.ignore_permissions = True
+		ps.save(ignore_permissions=True)
+		frappe.db.commit()
+	return changed
+
+
+def _sync_bopp_sheet_stacks_from_sales_order(planning_sheet_name):
+	"""255/108 FG on the SO → 107 (+ downstream 100/PB via lamination sync)."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return 0
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	if not ps.get("sales_order"):
+		return 0
+	so = frappe.get_doc("Sales Order", ps.sales_order)
+	parent_field = _get_pt_parentfield()
+	added = 0
+	for so_it in so.items or []:
+		fg_ic = _cstr(so_it.item_code).strip()
+		pp = _bom_item_process_code(fg_ic)
+		if pp not in ("255", "108"):
+			continue
+		exists_parent = frappe.db.sql(
+			"""
+			SELECT name FROM `tabPlanning Table`
+			WHERE parent = %s AND item_code = %s
+			  AND (IFNULL(sales_order_item, '') = %s OR IFNULL(so_item, '') = %s)
+			LIMIT 1
+			""",
+			(ps.name, fg_ic, so_it.name, so_it.name),
+			as_dict=True,
+		)
+		if not exists_parent:
+			trace_id = _parent_child_trace_id_for_planning_row(fg_ic, so_it.name, ps.name)
+			row = {
+				"sales_order_item": so_it.name,
+				"so_item": so_it.name,
+				"item_code": fg_ic,
+				"item_name": so_it.item_name,
+				"qty": so_it.qty,
+				"uom": so_it.uom,
+				"party_code": ps.party_code,
+				"planning_sheet": ps.name,
+				"unit": SHEET_CUTTING_UNIT if pp == "255" else SLITTING_UNIT,
+				"planned_date": getdate(ps.ordered_date),
+			}
+			_set_trace_id_if_supported(row, trace_id)
+			if hasattr(ps, "items") or ps.meta.has_field("items"):
+				ps.append("items", dict(row))
+			ps.append(parent_field, dict(row))
+			added += 1
+	if added:
+		ps.flags.ignore_permissions = True
+		ps.save(ignore_permissions=True)
+		frappe.db.commit()
+	total = 0
+	total += _sync_255_bopp_lam_sheet_stack(planning_sheet_name)
+	total += _sync_108_full_bopp_stack(planning_sheet_name)
+	return total + added
 
 
 def _link_board_planned_rows_to_legacy_items(planning_sheet_name):
@@ -18743,13 +18858,10 @@ def create_planning_sheet_from_so(doc):
         ps.flags.ignore_permissions = True
         ps.insert()
         frappe.db.commit()
-        _run_planning_sheet_post_sync(ps.name)
-        final_doc = frappe.get_doc("Planning sheet", ps.name)
-        ensure_lamination_booking_for_planning_sheet(final_doc)
-        update_sheet_plan_codes(final_doc, include_legacy=True)
-        final_doc.flags.ignore_permissions = True
-        final_doc.save(ignore_permissions=True)
-        frappe.msgprint(f"Planning Sheet <b>{final_doc.name}</b> created and synchronized (all processes).")
+        final_doc = _rebuild_planning_sheet_from_sales_order(ps, doc)
+        frappe.msgprint(
+            f"Planning Sheet <b>{final_doc.name}</b> created and synchronized (255/108 BOM children, all processes)."
+        )
         return final_doc
 
     except Exception as e:
@@ -21094,13 +21206,11 @@ def auto_create_planning_sheet(doc, method=None):
     ps.insert()
     frappe.db.commit()
 
-    _run_planning_sheet_post_sync(ps.name)
-    final_doc = frappe.get_doc("Planning sheet", ps.name)
-    ensure_lamination_booking_for_planning_sheet(final_doc)
-    update_sheet_plan_codes(final_doc, include_legacy=True)
-    final_doc.flags.ignore_permissions = True
-    final_doc.save(ignore_permissions=True)
-    frappe.msgprint(f"Planning Sheet <b>{final_doc.name}</b> created in unlocked plan <b>{final_doc.custom_plan_name}</b> and synchronized.")
+    final_doc = _rebuild_planning_sheet_from_sales_order(ps, doc)
+    frappe.msgprint(
+        f"Planning Sheet <b>{final_doc.name}</b> created in unlocked plan <b>{final_doc.custom_plan_name}</b> "
+        f"and synchronized (255/108 BOM children, traces)."
+    )
     return final_doc
 
 # ------------------------------------------------------------
