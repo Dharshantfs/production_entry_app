@@ -143,10 +143,13 @@ scheduler_events = {
 
 # Overriding Methods
 # ------------------------------
-#
-# override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "production_entry.event.get_events"
-# }
+# Route legacy production_scheduler API names to the canonical implementation (255/108 BOM sync).
+override_whitelisted_methods = {
+	"production_scheduler.api.regenerate_planning_sheet": "production_entry.production_planning.scheduler_api.regenerate_planning_sheet",
+	"production_scheduler.api.create_planning_sheet_from_so": "production_entry.production_planning.scheduler_api.create_planning_sheet_from_so",
+	"production_scheduler.api.sync_bom_children_for_planning_sheet": "production_entry.production_planning.scheduler_api.sync_bom_children_for_planning_sheet",
+	"production_scheduler.api.make_planning_sheet_from_sales_order": "production_entry.production_planning.scheduler_api.make_planning_sheet_from_sales_order",
+}
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,

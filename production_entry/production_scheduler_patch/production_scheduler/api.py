@@ -15794,106 +15794,10 @@ def auto_create_planning_sheet(doc, method=None):
 
 @frappe.whitelist()
 def regenerate_planning_sheet(so_name):
-    """Regenerate (or re-sync) a Planning Sheet for a Sales Order.
-    - If a draft sheet already exists: re-populates items and re-runs all sync steps (BOM children etc.).
-    - If no sheet exists: creates a new one.
-    - Uses the first unlocked Color Chart plan; aborts if all locked.
-    - Does NOT set `custom_planned_date` on creation.
-    """
-    if not so_name:
-        frappe.throw("Sales Order Name is required")
+    """Delegate to production_entry (255/108 BOM children + full rebuild pipeline)."""
+    from production_entry.production_planning.scheduler_api import regenerate_planning_sheet as _regen_pe
 
-    doc = frappe.get_doc("Sales Order", so_name)
-
-    existing_meta = _find_existing_sheet_for_sales_order(so_name)
-    if existing_meta:
-        ps = frappe.get_doc("Planning sheet", existing_meta["name"])
-        if int(ps.docstatus or 0) != 0:
-            frappe.throw(
-                f"Planning Sheet <b>{ps.name}</b> is already submitted/cancelled. "
-                "Amend or delete it first before regenerating."
-            )
-        # Re-populate items and run all sync steps on the existing draft sheet.
-        _populate_planning_sheet_items(ps, doc)
-        ensure_lamination_booking_for_planning_sheet(ps)
-        update_sheet_plan_codes(ps, include_legacy=True)
-        ps.flags.ignore_permissions = True
-        ps.save(ignore_permissions=True)
-        frappe.db.commit()
-        _link_board_planned_rows_to_legacy_items(ps.name)
-        _sync_lamination_fabric_planning_rows(ps.name)
-        _sync_slitting_fabric_planning_rows(ps.name)
-        _force_slitting_unit_on_sheet(ps.name)
-        _sync_sheet_cutting_fabric_planning_rows(ps.name)
-        _force_sheet_cutting_unit_on_sheet(ps.name)
-        _sync_rewinding_fabric_planning_rows(ps.name)
-        _sync_printing_105_planning_rows(ps.name)
-        _force_rewinding_unit_on_sheet(ps.name)
-        # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
-        ps.reload()
-        ensure_lamination_booking_for_planning_sheet(ps)
-        update_sheet_plan_codes(ps, include_legacy=True)
-        try:
-            backfill_parent_child_trace_ids(ps.name)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "regenerate_planning_sheet:backfill_parent_child_trace_ids")
-        ps.save(ignore_permissions=True)
-        frappe.msgprint(f"Planning Sheet <b>{ps.name}</b> re-synced (BOM children, lam rows, slitting).")
-        return ps
-
-    # 1. FETCH UNLOCKED PLAN (same logic as auto_create)
-    parsed = get_persisted_plans("color_chart")
-    cc_plan = _find_best_unlocked_plan(parsed, doc.transaction_date)
-
-    if not cc_plan:
-        plan_summary = ", ".join([f"{p.get('name')}(L:{p.get('locked')})" for p in parsed if isinstance(p, dict)])
-        frappe.msgprint(f"All Color Chart plans are locked - cannot regenerate Planning Sheet. Plans found: {plan_summary}", indicator="orange", alert=True)
-        return None
-
-    # 2. CREATE PLANNING SHEET (order code generation + SO writeback)
-    ps = frappe.new_doc("Planning sheet")
-    ps.sales_order = doc.name
-    ps.customer = _resolve_customer_link(doc.customer, doc.get("party_code"))
-    generate_party_code(ps)
-    ps.ordered_date = doc.transaction_date
-    ps.dod = doc.delivery_date
-    ps.planning_status = "Draft"
-    ps.custom_plan_name = _get_contextual_plan_name(cc_plan, doc.transaction_date)
-    ps.custom_pb_plan_name = ""
-
-    _populate_planning_sheet_items(ps, doc)
-    ensure_lamination_booking_for_planning_sheet(ps)
-    
-    update_sheet_plan_codes(ps, include_legacy=True)
-
-    if not ps.get("quality"):
-        ps.quality = "Standard"
-
-    ps.flags.ignore_permissions = True
-    ps.insert()
-    frappe.db.commit()
-
-    _link_board_planned_rows_to_legacy_items(ps.name)
-    _sync_lamination_fabric_planning_rows(ps.name)
-    _sync_slitting_fabric_planning_rows(ps.name)
-    _force_slitting_unit_on_sheet(ps.name)
-    _sync_sheet_cutting_fabric_planning_rows(ps.name)
-    _force_sheet_cutting_unit_on_sheet(ps.name)
-    _sync_rewinding_fabric_planning_rows(ps.name)
-    _sync_printing_105_planning_rows(ps.name)
-    _force_rewinding_unit_on_sheet(ps.name)
-    # After unit-forcing, recompute plan codes and ensure trace IDs exist on child rows too.
-    ps.reload()
-    ensure_lamination_booking_for_planning_sheet(ps)
-    update_sheet_plan_codes(ps, include_legacy=True)
-    try:
-        backfill_parent_child_trace_ids(ps.name)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "regenerate_planning_sheet:new:backfill_parent_child_trace_ids")
-    ps.save(ignore_permissions=True)
-
-    frappe.msgprint(f"Regenerated Planning Sheet <b>{ps.name}</b> and synchronized.")
-    return ps
+    return _regen_pe(so_name)
 
 
 @frappe.whitelist()

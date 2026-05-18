@@ -2023,6 +2023,17 @@ def _resolve_lamination_bom(item_code):
 				"name",
 				order_by="is_default desc, modified desc",
 			)
+		if not bn and frappe.db.exists("Item", it_code):
+			default_bom = _cstr(frappe.db.get_value("Item", it_code, "default_bom")).strip()
+			if default_bom and frappe.db.exists("BOM", default_bom):
+				bn = default_bom
+		if not bn:
+			bn = frappe.db.get_value(
+				"BOM",
+				{"item": it_code, "docstatus": 1},
+				"name",
+				order_by="is_active desc, is_default desc, modified desc",
+			)
 		return bn
 
 	bom_name = _pick_bom_for_item(ic)
@@ -2032,7 +2043,46 @@ def _resolve_lamination_bom(item_code):
 			bom_name = _pick_bom_for_item(tmpl)
 	if not bom_name:
 		return None
-	return frappe.get_doc("BOM", bom_name)
+	bom = frappe.get_doc("BOM", bom_name)
+	if int(bom.docstatus or 0) != 1:
+		return None
+	if cint(bom.is_active) != 1 and frappe.db.has_column("BOM", "is_active"):
+		return None
+	return bom
+
+
+def _bom_sync_diagnosis_message(fg_item_code, process_code=None):
+	"""Human-readable hint when BOM sync fails for 255/108 FG (BOM must be on the FG item, not only on 107)."""
+	ic = _cstr(fg_item_code).strip()
+	pp = process_code or _bom_item_process_code(ic)
+	lines = [
+		_("No active submitted BOM found for FG item <b>{0}</b> (process <b>{1}</b>).").format(ic, pp or "?"),
+		_("Open the <b>{0}</b> item → BOM tab: submit the BOM, set <b>Is Active</b>, and <b>Is Default</b>.").format(ic),
+		_("The BOM must be on the <b>255/108 FG item</b> with a <b>107</b> child row (not only a BOM on the 107 item)."),
+	]
+	any_bom = frappe.db.get_value("BOM", {"item": ic}, "name", order_by="modified desc")
+	if any_bom:
+		ds, ia = frappe.db.get_value("BOM", any_bom, ["docstatus", "is_active"]) or (0, 0)
+		lines.append(
+			_("Found BOM <b>{0}</b> for this item but it is not usable (docstatus={1}, is_active={2}). Submit and activate it.").format(
+				any_bom, ds, ia
+			)
+		)
+	child_guess = frappe.db.sql(
+		"""
+		SELECT DISTINCT bi.item_code
+		FROM `tabBOM Item` bi
+		INNER JOIN `tabBOM` b ON b.name = bi.parent
+		WHERE b.item = %s AND b.docstatus = 1
+		LIMIT 5
+		""",
+		(ic,),
+		as_dict=True,
+	)
+	if child_guess:
+		codes = ", ".join([_cstr(r.get("item_code")) for r in child_guess if r.get("item_code")])
+		lines.append(_("BOM line items on file: {0}").format(codes))
+	return "<br>".join(lines)
 
 
 def _pick_first_100_from_bom_items(bom_items, parent_item_code):
@@ -4952,8 +5002,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	"""Single post-populate pipeline: BOM children, units, stage-3 chain, trace stamps (108/254 families)."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
 		return
+	frappe.flags.planning_sheet_bom_sync_errors = []
 	_ensure_planning_table_has_board_rows(planning_sheet_name)
 	_link_board_planned_rows_to_legacy_items(planning_sheet_name)
+	_preflight_bopp_fg_bom_on_sales_order(planning_sheet_name)
 	_sync_253_laminated_sheet_stack(planning_sheet_name)
 	_sync_bopp_sheet_stacks_from_sales_order(planning_sheet_name)
 	_sync_lamination_fabric_planning_rows(planning_sheet_name)
@@ -4992,6 +5044,46 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_stamp_255_sheet_family_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_255_sheet_family_trace_ids")
+	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
+
+
+def _preflight_bopp_fg_bom_on_sales_order(planning_sheet_name):
+	"""Show a clear desk message when 255/108 SO lines have no usable FG BOM (before sync runs)."""
+	if not planning_sheet_name:
+		return
+	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
+	if not so_name:
+		return
+	so = frappe.get_doc("Sales Order", so_name)
+	for so_it in so.items or []:
+		fg_ic = _cstr(so_it.item_code).strip()
+		pp = _bom_item_process_code(fg_ic)
+		if pp not in ("255", "108"):
+			continue
+		bom = _resolve_lamination_bom(fg_ic)
+		if bom:
+			child_rows = _pick_bom_child_rows_for_process(bom.items or [], "107", fg_ic)
+			if child_rows:
+				continue
+			frappe.msgprint(
+				_("BOM exists for <b>{0}</b> but has no <b>107</b> child line. Add the 107 BOPP item to that BOM.").format(
+					fg_ic
+				),
+				indicator="red",
+				title=_("BOM Missing 107 Child"),
+			)
+			errs = getattr(frappe.flags, "planning_sheet_bom_sync_errors", None) or []
+			errs.append(f"{fg_ic}: BOM has no 107 child")
+			frappe.flags.planning_sheet_bom_sync_errors = errs
+		else:
+			frappe.msgprint(
+				_bom_sync_diagnosis_message(fg_ic, pp),
+				indicator="red",
+				title=_("BOM Missing (255/108)"),
+			)
+			errs = getattr(frappe.flags, "planning_sheet_bom_sync_errors", None) or []
+			errs.append(f"{fg_ic}: no active BOM on FG item")
+			frappe.flags.planning_sheet_bom_sync_errors = errs
 
 
 def _reset_planning_sheet_child_tables_for_rebuild(ps):
@@ -19129,20 +19221,7 @@ def create_planning_sheets_bulk(sales_orders):
                 ps.quality = "Standard"
             ps.insert(ignore_permissions=True)
             frappe.db.commit()
-            _link_board_planned_rows_to_legacy_items(ps.name)
-            _sync_253_laminated_sheet_stack(ps.name)
-            _sync_255_bopp_lam_sheet_stack(ps.name)
-            _sync_108_slitted_bopp_stack(ps.name)
-            _sync_lamination_fabric_planning_rows(ps.name)
-            _sync_slitting_fabric_planning_rows(ps.name)
-            _force_slitting_unit_on_sheet(ps.name)
-            _sync_sheet_cutting_fabric_planning_rows(ps.name)
-            _force_sheet_cutting_unit_on_sheet(ps.name)
-            _sync_rewinding_fabric_planning_rows(ps.name)
-            _sync_printing_105_planning_rows(ps.name)
-            _force_rewinding_unit_on_sheet(ps.name)
-            final_doc = frappe.get_doc("Planning sheet", ps.name)
-            update_sheet_plan_codes(final_doc, include_legacy=True)
+            _rebuild_planning_sheet_from_sales_order(ps, doc)
             created.append(ps.name)
             
         except Exception as e:
@@ -21216,6 +21295,12 @@ def auto_create_planning_sheet(doc, method=None):
 # ------------------------------------------------------------
 # REGENERATE PLANNING SHEET (MANUAL RE-CREATION)
 # ------------------------------------------------------------
+
+@frappe.whitelist()
+def make_planning_sheet_from_sales_order(so_name):
+	"""Alias used by some Sales Order buttons — same as regenerate_planning_sheet."""
+	return regenerate_planning_sheet(so_name)
+
 
 @frappe.whitelist()
 def regenerate_planning_sheet(so_name):
