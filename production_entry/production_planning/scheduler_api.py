@@ -2358,10 +2358,10 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 	"""
 	Build Finishing column text for Printed BOPP from gsm token (e.g. ``15M``) and suffix.
 
-	- ``0M`` → ``15M MATE`` (M = mate; 0 = no second metallic line)
-	- ``0G`` → ``15M GLOSSY`` (G = glossy)
+	- ``0M`` → ``15M MATE``
+	- ``0G`` → ``15M GLOSSY``
 	- ``MM`` → ``15M MATE 15M METALLIC``
-	- ``GC`` → ``15M GLOSSY 15 COLOUR`` (collier / coating)
+	- ``GC`` → ``15M GLOSSY 15M COOLER`` (G = glossy, C = cooler / collier coating)
 	"""
 	gsm_token = _cstr(gsm_token).strip().upper()
 	suffix = _cstr(finish_suffix).strip().upper()
@@ -2369,7 +2369,6 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 		return ""
 	if not suffix:
 		return ""
-	num = re.sub(r"[^\d]", "", gsm_token) or gsm_token.replace("M", "")
 
 	if suffix == "0M":
 		return f"{gsm_token} MATE"
@@ -2378,7 +2377,7 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 	if suffix == "MM":
 		return f"{gsm_token} MATE {gsm_token} METALLIC"
 	if suffix == "GC":
-		return f"{gsm_token} GLOSSY {num} COLOUR"
+		return f"{gsm_token} GLOSSY {gsm_token} COOLER"
 	if suffix == "GM":
 		return f"{gsm_token} GLOSSY {gsm_token} MATE"
 	if suffix == "MG":
@@ -2392,8 +2391,8 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 			parts.append(f"{gsm_token} GLOSSY")
 		if c0 == "M" and c1 != "M":
 			parts.append(f"{gsm_token} METALLIC")
-		elif c0 in ("C", "K"):
-			parts.append(f"{num} COLOUR")
+		elif c0 == "C":
+			parts.append(f"{gsm_token} COOLER")
 		if parts:
 			return " ".join(parts)
 	return ""
