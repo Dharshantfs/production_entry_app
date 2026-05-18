@@ -2398,12 +2398,16 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 	return ""
 
 
-def _printed_bopp_planning_fields_from_item_code(item_code, item_name=""):
-	"""Planning / Printed BOPP table fields parsed from revised ``PB-*`` item codes."""
+def _printed_bopp_planning_fields_from_item_code(item_code, item_name="", so_item_name=None):
+	"""Planning / Printed BOPP fields from revised ``PB-*`` item code + SO design colours."""
 	ic = _cstr(item_code).strip()
 	inm = _cstr(item_name).strip()
+	so_item_name = _cstr(so_item_name).strip()
 	pb = _parse_pb_item_code(ic)
 	out = {}
+	so_cyl = _pb_cylinder_fields_from_sales_order_item(so_item_name) if so_item_name else {}
+	if so_cyl:
+		out.update(so_cyl)
 	if not pb.get("design_code") and not pb.get("gsm"):
 		return out
 	dc = pb.get("design_code") or _design_code_from_printed_bopp_item_code(ic)
@@ -2429,28 +2433,34 @@ def _printed_bopp_planning_fields_from_item_code(item_code, item_name=""):
 		for tbl in ("Planning Table", "custom_finishing"), ("Planning sheet Item", "custom_finishing"):
 			if frappe.db.has_column(tbl[0], tbl[1]):
 				out["custom_finishing"] = fin
-	cyl = _printed_bopp_design_colours_token(ic, inm)
-	if cyl:
-		if frappe.db.has_column("Planning Table", "custom_cylinder_type") or frappe.db.has_column(
-			"Planning sheet Item", "custom_cylinder_type"
-		):
+	if not out.get("custom_cylinder_type"):
+		cyl = _printed_bopp_design_colours_token(ic, inm)
+		if cyl:
 			out["custom_cylinder_type"] = cyl
-		if frappe.db.has_column("Planning Table", "custom_no_of_design_colours") or frappe.db.has_column(
-			"Planning sheet Item", "custom_no_of_design_colours"
-		):
-			out["custom_no_of_design_colours"] = cyl
+			out.setdefault("custom_no_of_design_colours", cyl)
+			wt_fb = _cstr(out.get("custom_white_tint")).strip() or _white_tint_yes_no_from_sales_order_item(so_item_name)
+			out.setdefault(
+				"custom_total_no_of_colours",
+				_total_colours_token_for_printed_bopp(cyl, wt_fb) or cyl,
+			)
 	return out
 
 
-def _apply_printed_bopp_planning_fields_to_row(row, item_code=None, item_name=None):
-	"""Set gsm / BOPP gsm / finish mm / finishing / design on a PB planning child row."""
+def _apply_printed_bopp_planning_fields_to_row(row, item_code=None, item_name=None, so_item_name=None):
+	"""Set gsm / BOPP gsm / finish mm / finishing / cylinder / design on a PB planning child row."""
 	if not row:
 		return
 	ic = _cstr(item_code or getattr(row, "item_code", None)).strip()
 	if not ic or not _is_printed_bopp_item_code(ic):
 		return
 	inm = _cstr(item_name or getattr(row, "item_name", None) or frappe.db.get_value("Item", ic, "item_name")).strip()
-	fields = _printed_bopp_planning_fields_from_item_code(ic, inm)
+	soi = _cstr(
+		so_item_name
+		or getattr(row, "sales_order_item", None)
+		or getattr(row, "so_item", None)
+		or _printing_sales_order_item_from_row(row)
+	).strip()
+	fields = _printed_bopp_planning_fields_from_item_code(ic, inm, soi)
 	for k, v in fields.items():
 		if v is None or v == "":
 			continue
@@ -2459,7 +2469,7 @@ def _apply_printed_bopp_planning_fields_to_row(row, item_code=None, item_name=No
 	wt = _cstr(getattr(row, "custom_white_tint", None)).strip()
 	ndc = _cstr(getattr(row, "custom_no_of_design_colours", None)).strip() or _cstr(fields.get("custom_no_of_design_colours")).strip()
 	if ndc and hasattr(row, "custom_total_no_of_colours"):
-		tnc = _total_colours_token_for_printed_bopp(ndc, wt) or ndc
+		tnc = _total_colours_token_for_printed_bopp(ndc, wt) or _cstr(fields.get("custom_total_no_of_colours")).strip() or ndc
 		setattr(row, "custom_total_no_of_colours", tnc)
 
 
@@ -2471,10 +2481,14 @@ def _stamp_printed_bopp_fields_on_planning_sheet(planning_sheet_name):
 	for doctype in ("Planning Table", "Planning sheet Item"):
 		if not frappe.db.table_exists(doctype):
 			continue
+		flds = ["name", "item_code", "item_name"]
+		for col in ("sales_order_item", "so_item"):
+			if frappe.db.has_column(doctype, col):
+				flds.append(col)
 		rows = frappe.get_all(
 			doctype,
 			filters={"parent": planning_sheet_name},
-			fields=["name", "item_code", "item_name"],
+			fields=flds,
 			limit_page_length=0,
 		) or []
 		for row in rows:
@@ -2482,7 +2496,8 @@ def _stamp_printed_bopp_fields_on_planning_sheet(planning_sheet_name):
 			if not _is_printed_bopp_item_code(ic):
 				continue
 			inm = _cstr(row.get("item_name") or frappe.db.get_value("Item", ic, "item_name")).strip()
-			patch = _printed_bopp_planning_fields_from_item_code(ic, inm)
+			soi = _cstr(row.get("sales_order_item") or row.get("so_item")).strip()
+			patch = _printed_bopp_planning_fields_from_item_code(ic, inm, soi)
 			if not patch:
 				continue
 			apply = {}
@@ -2626,6 +2641,71 @@ def _pb_design_colour_from_sales_order_item(so_item_name):
 	except Exception:
 		pass
 	return ""
+
+
+def _count_pb_design_colours_from_so_text(raw):
+	"""
+	Count design colours from SO text such as ``1.BLUE2.RED`` → 2, or plain ``2C`` → 2.
+	"""
+	s = _cstr(raw).strip()
+	if not s:
+		return 0
+	m = re.match(r"^(\d+)\s*C\b", s, re.I)
+	if m and not re.search(r"\d+\s*\.", s):
+		return cint(m.group(1))
+	hits = re.findall(r"(\d+)\s*\.", s)
+	if hits:
+		return len(hits)
+	parts = re.split(r"[,;|/\n]+", s)
+	n_named = 0
+	for p in parts:
+		p = p.strip()
+		if p and re.search(r"[A-Za-z]", p):
+			n_named += 1
+	if n_named > 0:
+		return n_named
+	digits = re.findall(r"\b(\d+)\b", s)
+	if len(digits) == 1 and cint(digits[0]) > 0:
+		return cint(digits[0])
+	return 0
+
+
+def _pb_cylinder_fields_from_sales_order_item(so_item_name, white_tint=None):
+	"""
+	From SO design colour string (e.g. ``1.BLUE2.RED``):
+	- ``custom_cylinder_type`` → ``2C``
+	- ``custom_no_of_design_colours`` → ``2C`` (same count token)
+	- ``custom_total_no_of_colours`` → ``3C`` when white tint Yes, else ``2C``
+	"""
+	so_item_name = _cstr(so_item_name).strip()
+	if not so_item_name:
+		return {}
+	raw = _pb_design_colour_from_sales_order_item(so_item_name)
+	n = _count_pb_design_colours_from_so_text(raw)
+	if n <= 0:
+		return {}
+	cyl = f"{n}C"
+	wt = _cstr(white_tint).strip() if white_tint is not None else ""
+	if not wt:
+		wt = _white_tint_yes_no_from_sales_order_item(so_item_name) or ""
+	tnc = _total_colours_token_for_printed_bopp(cyl, wt) or cyl
+	out = {
+		"custom_cylinder_type": cyl,
+		"custom_no_of_design_colours": cyl,
+		"custom_total_no_of_colours": tnc,
+	}
+	if raw and (
+		frappe.db.has_column("Planning Table", "custom_design_colour")
+		or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
+	):
+		out["custom_design_colour"] = raw
+	wt_norm = _normalized_white_tint_select(wt)
+	if wt_norm and (
+		frappe.db.has_column("Planning Table", "custom_white_tint")
+		or frappe.db.has_column("Planning sheet Item", "custom_white_tint")
+	):
+		out["custom_white_tint"] = wt_norm
+	return out
 
 
 def _printing_design_attachment_from_sales_order_item(so_item_name):
@@ -3495,7 +3575,11 @@ def _apply_printed_bopp_total_colours_to_row(row):
 		ic = getattr(row, "item_code", None)
 		if not ic:
 			return False
+		soi = _printing_sales_order_item_from_row(row)
 		ndc = str(getattr(row, "custom_no_of_design_colours", None) or "").strip()
+		if not ndc and soi:
+			so_cyl = _pb_cylinder_fields_from_sales_order_item(soi)
+			ndc = _cstr(so_cyl.get("custom_no_of_design_colours")).strip()
 		if not ndc:
 			pb_nm = frappe.db.get_value("Item", ic, "item_name") or ""
 			ndc = (_printed_bopp_design_colours_token(ic, pb_nm) or "").strip()
@@ -6206,7 +6290,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 						frappe.db.set_value("Planning Table", ex_name, "unit", PRINTED_BOPP_FILM_UNIT, update_modified=False)
 						changed = True
 						_pb_nm = frappe.db.get_value("Item", comp_ic, "item_name") or ""
-						_pb_patch = _printed_bopp_planning_fields_from_item_code(comp_ic, _pb_nm) or {}
+						_pb_patch = _printed_bopp_planning_fields_from_item_code(comp_ic, _pb_nm, so_it.name) or {}
 						if _pb_patch:
 							frappe.db.set_value("Planning Table", ex_name, _pb_patch, update_modified=False)
 							changed = True
@@ -6356,7 +6440,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				"so_item": so_it.name,
 			}
 			if comp.get("role") == "pb":
-				for _pk, _pv in (_printed_bopp_planning_fields_from_item_code(comp_ic, comp_item_name) or {}).items():
+				for _pk, _pv in (_printed_bopp_planning_fields_from_item_code(comp_ic, comp_item_name, so_it.name) or {}).items():
 					if _pv is not None and _pv != "" and frappe.db.has_column("Planning Table", _pk):
 						row[_pk] = _pv
 				cyl_new = row.get("custom_cylinder_type") or _cylinder_type_from_printed_bopp_item_code(
@@ -9789,6 +9873,11 @@ def get_lamination_order_table_data(
         if bps == "printed_bopp_pb_only":
             # ``itemName`` is Planning Table row id; use Item description for ``TFS - 1C`` parsing on short PB codes.
             _pb_inm = str(row.get("description") or row.get("item_name") or "").strip()
+            so_item_nm = str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip()
+            _so_pb = _pb_cylinder_fields_from_sales_order_item(so_item_nm) if so_item_nm else {}
+            cyl_val = str((ex or {}).get("pb_cylinder_stored") or "").strip() if ex else ""
+            if not cyl_val:
+                cyl_val = _cstr(_so_pb.get("custom_cylinder_type")).strip()
             if not cyl_val:
                 cyl_val = _cylinder_type_from_printed_bopp_item_code(_ic_row, _pb_inm)
             row["cylinder_type"] = cyl_val
@@ -9796,9 +9885,11 @@ def get_lamination_order_table_data(
             dstore = str((ex or {}).get("pb_design_stored") or "").strip() if ex else ""
             row["design_code"] = dcode or dstore
             row["design_name"] = dstore or dcode or row.get("design_name") or ""
-            row["design_colour"] = str((ex or {}).get("pb_design_colour_stored") or "").strip() if ex else ""
+            row["design_colour"] = (
+                str((ex or {}).get("pb_design_colour_stored") or "").strip() if ex else ""
+            ) or _cstr(_so_pb.get("custom_design_colour")).strip()
             _wt_raw = str((ex or {}).get("pb_white_tint_stored") or "").strip() if ex else ""
-            row["white_tint"] = _normalized_white_tint_select(_wt_raw) or _wt_raw
+            row["white_tint"] = _normalized_white_tint_select(_wt_raw) or _wt_raw or _cstr(_so_pb.get("custom_white_tint")).strip()
             row["finishing"] = str((ex or {}).get("pb_finishing_stored") or "").strip() if ex else ""
             if not row["finishing"]:
                 row["finishing"] = (_parse_pb_item_code(_ic_row) or {}).get("finishing_text") or ""
@@ -9808,15 +9899,16 @@ def get_lamination_order_table_data(
             )
             _ndc = str((ex or {}).get("pb_no_design_colours_stored") or "").strip() if ex else ""
             if not _ndc:
+                _ndc = _cstr(_so_pb.get("custom_no_of_design_colours")).strip()
+            if not _ndc:
                 _ndc = _printed_bopp_design_colours_token(_ic_row, _pb_inm)
             row["no_of_design_colours"] = _ndc
             _tnc = str((ex or {}).get("pb_total_colours_stored") or "").strip() if ex else ""
             _bumped = _total_colours_token_for_printed_bopp(_ndc, row.get("white_tint") or "")
-            row["total_no_of_colours"] = _bumped or _tnc or _ndc
+            row["total_no_of_colours"] = _cstr(_so_pb.get("custom_total_no_of_colours")).strip() or _bumped or _tnc or _ndc
             row["bopp_bom_kgs"] = flt((ex or {}).get("pb_bopp_bom_kgs_stored") or 0) if ex else 0
             if not row["bopp_bom_kgs"]:
                 row["bopp_bom_kgs"] = flt(row.get("qty") or row.get("Qty") or 0)
-            so_item_nm = str(row.get("salesOrderItem") or row.get("sales_order_item") or "").strip()
             da_pb = _printing_design_attachment_from_row(row, so_item_nm)
             if not da_pb and row.get("design_code"):
                 dm_pb = _design_master_extra_fields(_cstr(row.get("design_code")).strip()) or {}
