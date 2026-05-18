@@ -1328,6 +1328,34 @@ def _trace_from_252_parse_body(p, design_code=None):
 	return body
 
 
+def _trace_from_105_parse_body(p, design_code=None):
+	"""Hyphenated 105 trace: ``{design}-105-{quality}-{colour}-{gsm}-{width_mm}``."""
+	if not p:
+		return ""
+	dc = _cstr(design_code if design_code is not None else p.get("design_code")).strip()
+	qc = _cstr(p.get("quality_code")).strip()
+	cc = _cstr(p.get("colour_code")).strip()
+	gsm = _cstr(p.get("gsm")).strip()
+	wmm = _cstr(p.get("width_mm")).strip()
+	if not (qc or cc or gsm or wmm):
+		return ""
+	segs = ["105"]
+	if qc:
+		segs.append(qc.zfill(3) if qc.isdigit() else qc)
+	if cc:
+		segs.append(cc.zfill(3) if cc.isdigit() else cc)
+	if gsm:
+		segs.append(str(gsm).zfill(3))
+	if wmm:
+		segs.append(str(wmm).zfill(4))
+	if len(segs) <= 1:
+		return ""
+	body = "-".join(segs)
+	if dc:
+		return f"{dc}-{body}"
+	return body
+
+
 def _trace_from_106_parse_body(p, design_code=None):
 	"""Hyphenated 106 trace: ``{design}-106-{quality}-{colour}-{gsm}-{width_mm}[-lam]``."""
 	if not p:
@@ -3262,8 +3290,6 @@ def _parent_child_trace_id_from_item_code(item_code):
 		_t254 = _hyphen_trace_from_laminated_sheet_parse(_parse_254_item_code(ic) or {}, "254")
 		if _t254:
 			return _t254
-	if _is_sheet_cutting_child_process(ic):
-		return ""
 	if _item_process_prefix(ic) == "108" or re.search(r"-108(?=[A-Z])", ic.upper()):
 		p = _parse_108_item_code(ic) or {}
 		cc = (p.get("colour_code") or "").strip()
@@ -3288,25 +3314,11 @@ def _parent_child_trace_id_from_item_code(item_code):
 		if len(segs) > 1:
 			return "-".join(segs)
 		return ""
-	# 105 (design-first): <design>-105<quality><colour><gsm><width_mm>
+	# 105 (design-first): <design>-105-<quality>-<colour>-<gsm>-<width_mm>
 	if "-105" in ic.upper() or ic.strip().startswith("105"):
-		p = _parse_105_item_code(ic) or {}
-		qc = _cstr(p.get("quality_code")).strip()
-		cc = _cstr(p.get("colour_code")).strip()
-		gsm = _cstr(p.get("gsm")).strip()
-		wmm = _cstr(p.get("width_mm")).strip()
-		segs = ["105"]
-		if qc:
-			segs.append(qc)
-		if cc:
-			segs.append(cc)
-		if gsm:
-			segs.append(str(gsm).zfill(3))
-		if wmm:
-			segs.append(str(wmm).zfill(4))
-		if len(segs) > 1:
-			return "-".join(segs)
-		return ""
+		t105 = _trace_from_105_parse_body(_parse_105_item_code(ic) or {})
+		if t105:
+			return t105
 	process = _item_process_prefix(ic)
 	if process == "251":
 		p = _parse_sheet_cutting_item_code(ic)
@@ -3671,12 +3683,87 @@ def _planning_row_matches_sales_order_fg(item_code, so_item_key, so_by_name):
 	return _cstr(getattr(so_it, "item_code", None)).strip() == ic
 
 
-def _stamp_sales_order_fg_trace_ids(planning_sheet_name):
-	"""Force hyphenated parent-child trace on each SO FG row (106, 105, 108, 254, …).
+def _main_parent_trace_for_so_line(so_item_key, planning_sheet_name, pt_rows, so_by_name):
+	"""Main parent trace for a Sales Order line — always from the SO FG item_code when possible."""
+	soik = _cstr(so_item_key).strip()
+	if not soik:
+		return ""
+	so_it = (so_by_name or {}).get(soik)
+	if so_it:
+		fg_ic = _cstr(getattr(so_it, "item_code", None)).strip()
+		if fg_ic:
+			tid = _parent_child_trace_id_from_item_code(fg_ic)
+			if tid:
+				return tid
+			tid = _parent_child_trace_id_for_planning_row(fg_ic, soik, planning_sheet_name)
+			if tid:
+				return tid
+	parent_priority = (
+		"255",
+		"254",
+		"253",
+		"252",
+		"251",
+		"108",
+		"106",
+		"105",
+		"109",
+		"107",
+		"104",
+		"103",
+		"102",
+	)
+	for pref in parent_priority:
+		for pr in pt_rows or []:
+			if _pt_soi_key(pr) != soik:
+				continue
+			ic = _cstr(pr.get("item_code") if isinstance(pr, dict) else getattr(pr, "item_code", "")).strip()
+			if not ic:
+				continue
+			pp = _bom_item_process_code(ic)
+			if pp != pref and not (pref == "107" and _lamination_process_from_item_code(ic) == "107"):
+				continue
+			if so_it and _planning_row_matches_sales_order_fg(ic, soik, so_by_name):
+				tid = _parent_child_trace_id_from_item_code(ic)
+				if tid:
+					return tid
+			if pref in ("255", "254", "253", "252", "251", "108", "106", "105", "109", "104", "103", "102") and (
+				pp == pref or (pref == "107" and _lamination_process_from_item_code(ic) == "107")
+			):
+				tid = _parent_child_trace_id_from_item_code(ic) or _parent_child_trace_id_for_planning_row(
+					ic, soik, planning_sheet_name
+				)
+				if tid:
+					return tid
+	return ""
 
-	BOM children keep traces from ``_stamp_*_family`` / backfill; this fixes standalone
-	106/105 lines that were incorrectly inheriting another process trace (e.g. 108-*).
-	"""
+
+def _trace_for_planning_row_using_main_parent(row, planning_sheet_name, pt_rows, so_by_name):
+	"""Resolve trace for one board/legacy row; children use the SO line main parent trace."""
+	ic = _cstr(row.get("item_code") if isinstance(row, dict) else getattr(row, "item_code", "")).strip()
+	soik = _pt_soi_key(row if isinstance(row, dict) else frappe._dict(row))
+	if not ic:
+		return ""
+	if soik and _planning_row_matches_sales_order_fg(ic, soik, so_by_name):
+		tid = _parent_child_trace_id_from_item_code(ic)
+		if tid:
+			return tid
+		return _parent_child_trace_id_for_planning_row(ic, soik, planning_sheet_name)
+	if soik:
+		main_tid = _main_parent_trace_for_so_line(soik, planning_sheet_name, pt_rows, so_by_name)
+		if main_tid:
+			return main_tid
+	if _is_107_mid_bopp_item(ic):
+		tid = _resolve_lam107_planning_trace(ic, soik, planning_sheet_name, pt_rows=pt_rows)
+		if tid and not str(tid).strip().startswith("107-"):
+			return tid
+	return _parent_child_trace_id_for_planning_row(ic, soik, planning_sheet_name) or _parent_child_trace_id_from_item_code(
+		ic
+	)
+
+
+def _stamp_sales_order_fg_trace_ids(planning_sheet_name):
+	"""Stamp every planning row: SO FG native trace; BOM/children use that line's main parent trace."""
 	if not planning_sheet_name:
 		return 0
 	if not (
@@ -3685,44 +3772,40 @@ def _stamp_sales_order_fg_trace_ids(planning_sheet_name):
 	):
 		return 0
 	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
-	if not so_name:
-		return 0
-	so = frappe.get_doc("Sales Order", so_name)
-	so_by_name = {str(it.name): it for it in (so.items or [])}
+	so_by_name = {}
+	if so_name:
+		try:
+			so_doc = frappe.get_doc("Sales Order", so_name)
+			so_by_name = {str(it.name): it for it in (so_doc.items or [])}
+		except Exception:
+			so_by_name = {}
+	pt_rows = (
+		frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code", "sales_order_item", "so_item"],
+			limit_page_length=5000,
+		)
+		or []
+	)
 	updated = 0
-	for so_it in so.items or []:
-		fg_ic = _cstr(so_it.item_code).strip()
-		soik = _cstr(so_it.name).strip()
-		if not fg_ic or not soik:
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.exists("DocType", doctype):
 			continue
-		tid = _parent_child_trace_id_for_planning_row(fg_ic, soik, planning_sheet_name)
-		if not tid:
-			tid = _parent_child_trace_id_from_item_code(fg_ic)
-		if not tid:
+		if not frappe.db.has_column(doctype, "custom_parent_child_trace_id"):
 			continue
-		for doctype in ("Planning Table", "Planning sheet Item"):
-			if not frappe.db.exists("DocType", doctype):
+		fields = ["name", "item_code", "so_item"]
+		if frappe.db.has_column(doctype, "sales_order_item"):
+			fields.append("sales_order_item")
+		for r in frappe.get_all(doctype, filters={"parent": planning_sheet_name}, fields=fields, limit_page_length=5000):
+			tid = _trace_for_planning_row_using_main_parent(r, planning_sheet_name, pt_rows, so_by_name)
+			if not tid:
 				continue
-			if not frappe.db.has_column(doctype, "custom_parent_child_trace_id"):
+			cur = _cstr(frappe.db.get_value(doctype, r.name, "custom_parent_child_trace_id")).strip()
+			if cur == tid:
 				continue
-			fields = ["name", "item_code", "so_item"]
-			if frappe.db.has_column(doctype, "sales_order_item"):
-				fields.append("sales_order_item")
-			for r in frappe.get_all(
-				doctype,
-				filters={"parent": planning_sheet_name, "item_code": fg_ic},
-				fields=fields,
-			):
-				row_soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
-				if row_soi != soik:
-					continue
-				cur = _cstr(frappe.db.get_value(doctype, r.name, "custom_parent_child_trace_id")).strip()
-				if cur == tid:
-					continue
-				frappe.db.set_value(
-					doctype, r.name, "custom_parent_child_trace_id", tid, update_modified=False
-				)
-				updated += 1
+			frappe.db.set_value(doctype, r.name, "custom_parent_child_trace_id", tid, update_modified=False)
+			updated += 1
 	return updated
 
 
@@ -5129,6 +5212,7 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_stamp_sales_order_fg_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_sales_order_fg_trace_ids")
+	frappe.db.commit()
 	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
 
 
