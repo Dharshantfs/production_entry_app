@@ -3645,6 +3645,73 @@ def _set_trace_id_if_supported(row_dict_or_doc, trace_id):
 		pass
 
 
+def _planning_row_matches_sales_order_fg(item_code, so_item_key, so_by_name):
+	"""True when this planning row is the SO finished-good line (not a BOM child on the same SO key)."""
+	soik = _cstr(so_item_key).strip()
+	ic = _cstr(item_code).strip()
+	if not soik or not ic:
+		return False
+	so_it = so_by_name.get(soik) if so_by_name else None
+	if not so_it:
+		return False
+	return _cstr(getattr(so_it, "item_code", None)).strip() == ic
+
+
+def _stamp_sales_order_fg_trace_ids(planning_sheet_name):
+	"""Force hyphenated parent-child trace on each SO FG row (106, 105, 108, 254, …).
+
+	BOM children keep traces from ``_stamp_*_family`` / backfill; this fixes standalone
+	106/105 lines that were incorrectly inheriting another process trace (e.g. 108-*).
+	"""
+	if not planning_sheet_name:
+		return 0
+	if not (
+		frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
+		or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")
+	):
+		return 0
+	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
+	if not so_name:
+		return 0
+	so = frappe.get_doc("Sales Order", so_name)
+	so_by_name = {str(it.name): it for it in (so.items or [])}
+	updated = 0
+	for so_it in so.items or []:
+		fg_ic = _cstr(so_it.item_code).strip()
+		soik = _cstr(so_it.name).strip()
+		if not fg_ic or not soik:
+			continue
+		tid = _parent_child_trace_id_for_planning_row(fg_ic, soik, planning_sheet_name)
+		if not tid:
+			tid = _parent_child_trace_id_from_item_code(fg_ic)
+		if not tid:
+			continue
+		for doctype in ("Planning Table", "Planning sheet Item"):
+			if not frappe.db.exists("DocType", doctype):
+				continue
+			if not frappe.db.has_column(doctype, "custom_parent_child_trace_id"):
+				continue
+			fields = ["name", "item_code", "so_item"]
+			if frappe.db.has_column(doctype, "sales_order_item"):
+				fields.append("sales_order_item")
+			for r in frappe.get_all(
+				doctype,
+				filters={"parent": planning_sheet_name, "item_code": fg_ic},
+				fields=fields,
+			):
+				row_soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+				if row_soi != soik:
+					continue
+				cur = _cstr(frappe.db.get_value(doctype, r.name, "custom_parent_child_trace_id")).strip()
+				if cur == tid:
+					continue
+				frappe.db.set_value(
+					doctype, r.name, "custom_parent_child_trace_id", tid, update_modified=False
+				)
+				updated += 1
+	return updated
+
+
 def _sql_fabric_row_join_predicate(alias_pt="pt", alias_fab="fab"):
 	"""
 	SQL AND-clause predicates to pair a parent PT row with its BOM fabric (100%) row.
@@ -5044,6 +5111,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_stamp_255_sheet_family_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_255_sheet_family_trace_ids")
+	try:
+		_stamp_sales_order_fg_trace_ids(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_sales_order_fg_trace_ids")
 	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
 
 
@@ -7968,11 +8039,21 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 			planning_sheet_name, pt_rows=pt_full
 		)
 		fallback_108_trace = maps108.get("default_108") or ""
+		so_by_name_bf = {}
+		_so_name_bf = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
+		if _so_name_bf:
+			try:
+				_so_doc_bf = frappe.get_doc("Sales Order", _so_name_bf)
+				so_by_name_bf = {str(it.name): it for it in (_so_doc_bf.items or [])}
+			except Exception:
+				so_by_name_bf = {}
 		parent_trace_by_soi = {}
 		for pr in pt_full:
 			icp = str(pr.get("item_code") or "")
 			pp = _item_process_prefix(icp)
-			if pp not in ("251", "252", "253", "255", "108", "254", "109") and _lamination_process_from_item_code(icp) != "255":
+			if pp not in (
+				"251", "252", "253", "255", "108", "254", "109", "106", "105", "104", "107"
+			) and _lamination_process_from_item_code(icp) != "255":
 				continue
 			soik = (pr.get("sales_order_item") or pr.get("so_item") or "").strip()
 			if _is_sheet_cutting_parent_process(icp):
@@ -8007,18 +8088,24 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 			pp = _item_process_prefix(ic)
 			lam = _lamination_process_from_item_code(ic)
 			if soik and soik in parent_trace_by_soi and _is_sheet_cutting_child_process(ic):
-				frappe.db.set_value(
-					"Planning Table",
-					nm,
-					"custom_parent_child_trace_id",
-					parent_trace_by_soi[soik],
-					update_modified=False,
-				)
+				if not _planning_row_matches_sales_order_fg(ic, soik, so_by_name_bf):
+					frappe.db.set_value(
+						"Planning Table",
+						nm,
+						"custom_parent_child_trace_id",
+						parent_trace_by_soi[soik],
+						update_modified=False,
+					)
 				continue
-			if soik and soik in parent_trace_by_soi and (
-				pp in ("104", "107", "106", "105", "100")
-				or lam in ("104", "107")
-				or ic.startswith("100")
+			if (
+				soik
+				and soik in parent_trace_by_soi
+				and (
+					pp in ("104", "107", "106", "105", "100")
+					or lam in ("104", "107")
+					or ic.startswith("100")
+				)
+				and not _planning_row_matches_sales_order_fg(ic, soik, so_by_name_bf)
 			):
 				frappe.db.set_value(
 					"Planning Table",
@@ -8069,10 +8156,15 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				continue
 			pp = _item_process_prefix(ic)
 			lam = _lamination_process_from_item_code(ic)
-			if soik and soik in parent_trace_by_soi and (
-				pp in ("104", "107", "106", "105", "100")
-				or lam in ("104", "107")
-				or ic.startswith("100")
+			if (
+				soik
+				and soik in parent_trace_by_soi
+				and (
+					pp in ("104", "107", "106", "105", "100")
+					or lam in ("104", "107")
+					or ic.startswith("100")
+				)
+				and not _planning_row_matches_sales_order_fg(ic, soik, so_by_name_bf)
 			):
 				frappe.db.set_value(
 					"Planning sheet Item",
@@ -21487,6 +21579,12 @@ def update_planning_sheet_from_sales_order(sales_order):
 	if had_new:
 		_run_planning_sheet_post_sync(ps.name)
 		frappe.db.commit()
+	else:
+		try:
+			_stamp_sales_order_fg_trace_ids(ps.name)
+			frappe.db.commit()
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "update_planning_sheet_from_sales_order:stamp_fg_trace")
 
 	msg = _("Planning Sheet updated.")
 	if had_new:
