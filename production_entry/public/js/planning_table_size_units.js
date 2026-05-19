@@ -92,3 +92,14 @@ export function formatSheetSizeCell(row, unitMode) {
 	}
 	return `${wm} x ${hm} mm`;
 }
+
+/** Target/planned kg from Planning sheet — no integer rounding (164.580 → 164.58). */
+export function formatKgPlanning(value) {
+	const num = parseFloat(value || 0);
+	if (!Number.isFinite(num)) return '0';
+	if (Math.abs(num - Math.round(num)) < 1e-9) return String(Math.round(num));
+	return num
+		.toFixed(3)
+		.replace(/0+$/, '')
+		.replace(/\.$/, '');
+}

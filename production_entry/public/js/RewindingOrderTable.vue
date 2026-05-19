@@ -272,7 +272,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import { formatSingleDimension } from "./planning_table_size_units.js";
+import { formatKgPlanning, formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_rewinding";
@@ -835,17 +835,6 @@ function formatKg2(value) {
   const num = parseFloat(value || 0);
   if (!Number.isFinite(num)) return "0.00";
   return num.toFixed(2);
-}
-
-/** Match Planning sheet qty display (e.g. 164.580 → 164.58, 300 → 300). */
-function formatKgPlanning(value) {
-  const num = parseFloat(value || 0);
-  if (!Number.isFinite(num)) return "0";
-  if (Math.abs(num - Math.round(num)) < 1e-9) return String(Math.round(num));
-  return num
-    .toFixed(3)
-    .replace(/0+$/, "")
-    .replace(/\.$/, "");
 }
 
 function formatNum(v) {

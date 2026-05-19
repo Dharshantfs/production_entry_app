@@ -421,7 +421,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
-import { mmDisplayFromInchesWithCodeFallback } from "./planning_table_size_units.js";
+import { formatKgPlanning, mmDisplayFromInchesWithCodeFallback } from "./planning_table_size_units.js";
 
 // ===== MAINTENANCE DATA =====
 const maintenanceRecords = ref([]);
@@ -1462,9 +1462,7 @@ function getUnitHeaderColor(unit) {
 }
 
 function formatKg(value) {
-  const num = parseFloat(value || 0);
-  if (!Number.isFinite(num)) return "0";
-  return num.toFixed(0);
+  return formatKgPlanning(value);
 }
 
 function formatKg2(value) {
