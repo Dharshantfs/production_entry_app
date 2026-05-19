@@ -1356,6 +1356,69 @@ def _trace_from_105_parse_body(p, design_code=None):
 	return body
 
 
+def _trace_from_107_parse_body(p, design_code=None):
+	"""Hyphenated 107 trace: ``{design}-107-{quality}-{colour}-{stack_gsm}-{width}`` (e.g. ``6002-107-F-101-100-1016``)."""
+	if not p:
+		return ""
+	dc = _cstr(design_code if design_code is not None else p.get("design_code")).strip().upper()
+	qc = _cstr(p.get("quality_code") or "").strip().upper()
+	cc = _cstr(p.get("colour_code") or "").strip()
+	comb = _combined_bopp_line_gsm(p)
+	fg = cint(p.get("fabric_gsm") or 0)
+	lg = cint(p.get("lam_gsm") or 0)
+	wc = _cstr(p.get("width_code") or "").strip()
+	if not (qc or cc or comb or fg or lg or wc):
+		return ""
+	segs = ["107"]
+	if qc:
+		segs.append(qc)
+	if cc:
+		segs.append(cc)
+	if comb > 0:
+		segs.append(str(comb))
+	elif fg:
+		segs.append(str(fg))
+	if comb <= 0 and lg:
+		segs.append(str(lg))
+	if wc:
+		segs.append(wc)
+	if len(segs) <= 1:
+		return ""
+	body = "-".join(segs)
+	if dc:
+		return f"{dc}-{body}"
+	return body
+
+
+def _trace_from_104_parse_body(p):
+	"""Hyphenated 104 trace: ``{design}-104-{quality}-{colour}-{gsm}-{width}[-lam]``."""
+	if not p:
+		return ""
+	dc = _cstr(p.get("design_code") or "").strip().upper()
+	qc = _cstr(p.get("quality_code") or "").strip()
+	cc = _cstr(p.get("colour_code") or "").strip()
+	gsm = cint(p.get("gsm") or 0)
+	wc = _cstr(p.get("width_code") or "").strip()
+	lam = _cstr(p.get("lam_suffix") or p.get("lam_gsm_code") or "").strip().upper()
+	if not (qc or cc or gsm or wc):
+		return ""
+	segs = ["104"]
+	if qc:
+		segs.append(str(qc).zfill(3) if str(qc).isdigit() else qc)
+	if cc:
+		segs.append(str(cc).zfill(3) if str(cc).isdigit() else cc)
+	if gsm:
+		segs.append(str(gsm).zfill(3))
+	if wc:
+		segs.append(str(wc).zfill(4))
+	body = "-".join(segs)
+	if lam:
+		body = f"{body}-{lam}"
+	if dc:
+		return f"{dc}-{body}"
+	return body
+
+
 def _trace_from_106_parse_body(p, design_code=None):
 	"""Hyphenated 106 trace: ``{design}-106-{quality}-{colour}-{gsm}-{width_mm}[-lam]``."""
 	if not p:
@@ -3872,29 +3935,9 @@ def _parent_child_trace_id_from_item_code(item_code):
 	"""
 	ic = str(item_code or "").strip()
 	if _lamination_process_from_item_code(ic) == "107":
-		p = _parse_107_item_code(ic) or {}
-		cc = (p.get("colour_code") or "").strip()
-		qc = _cstr(p.get("quality_code") or "").strip().upper()
-		comb = _combined_bopp_line_gsm(p)
-		fg = cint(p.get("fabric_gsm") or 0)
-		lg = cint(p.get("lam_gsm") or 0)
-		wc = (p.get("width_code") or "").strip()
-		segs = ["107"]
-		if qc:
-			segs.append(qc)
-		if cc:
-			segs.append(cc)
-		if comb > 0:
-			segs.append(str(comb))
-		elif fg:
-			segs.append(str(fg))
-		if comb <= 0 and lg:
-			segs.append(str(lg))
-		if wc:
-			segs.append(wc)
-		if len(segs) > 1:
-			return "-".join(segs)
-		return ""
+		t107 = _trace_from_107_parse_body(_parse_107_item_code(ic) or {})
+		if t107:
+			return t107
 	if _lamination_process_from_item_code(ic) == "255" or _item_process_prefix(ic) == "255":
 		p255 = _parse_255_item_code(ic) or {}
 		t255 = _hyphen_trace_from_255_parse(p255)
@@ -3941,6 +3984,10 @@ def _parent_child_trace_id_from_item_code(item_code):
 		if t105:
 			return t105
 	process = _item_process_prefix(ic)
+	if process == "104" or _lamination_process_from_item_code(ic) == "104":
+		t104 = _trace_from_104_parse_body(_parse_104_item_code(ic) or {})
+		if t104:
+			return t104
 	if process == "251":
 		p = _parse_sheet_cutting_item_code(ic)
 		if not p:
@@ -4304,6 +4351,33 @@ def _planning_row_matches_sales_order_fg(item_code, so_item_key, so_by_name):
 	return _cstr(getattr(so_it, "item_code", None)).strip() == ic
 
 
+def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet_name, pt_rows):
+	"""104/107 lamination parent trace for 100 / PB children on the same SO line (not child's own 100-* id)."""
+	soik = _cstr(so_item_key).strip()
+	ic = _cstr(child_ic).strip()
+	if not soik or not ic:
+		return ""
+	if _bom_item_process_code(ic) != "100" and not _is_printed_bopp_item_code(ic):
+		return ""
+	for pr in pt_rows or []:
+		if _pt_soi_key(pr) != soik:
+			continue
+		pic = _cstr(pr.get("item_code") if isinstance(pr, dict) else getattr(pr, "item_code", "")).strip()
+		if not pic:
+			continue
+		if _lamination_process_from_item_code(pic) not in ("104", "107") and _bom_item_process_code(pic) not in (
+			"104",
+			"107",
+		):
+			continue
+		tid = _parent_child_trace_id_from_item_code(pic) or _parent_child_trace_id_for_planning_row(
+			pic, soik, planning_sheet_name
+		)
+		if tid:
+			return tid
+	return ""
+
+
 def _main_parent_trace_for_so_line(so_item_key, planning_sheet_name, pt_rows, so_by_name):
 	"""Main parent trace for a Sales Order line — always from the SO FG item_code when possible."""
 	soik = _cstr(so_item_key).strip()
@@ -4371,6 +4445,9 @@ def _trace_for_planning_row_using_main_parent(row, planning_sheet_name, pt_rows,
 			return tid
 		return _parent_child_trace_id_for_planning_row(ic, soik, planning_sheet_name)
 	if soik:
+		bom_parent_tid = _bom_parent_trace_for_child_on_so_line(ic, soik, planning_sheet_name, pt_rows)
+		if bom_parent_tid:
+			return bom_parent_tid
 		main_tid = _main_parent_trace_for_so_line(soik, planning_sheet_name, pt_rows, so_by_name)
 		if main_tid:
 			return main_tid
@@ -6192,22 +6269,38 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			continue
 
 		trace_id = _parent_child_trace_id_for_planning_row(lam_ic, so_it.name, ps.name)
-		# When the SO line is 253/255 sheet FG but the lamination BOM row is 104/107 FG, stamp the
-		# sheet parent's trace on all BOM children (not 104-/107- derived from the lamination item).
+		# When 107/104 has a design prefix, keep native trace (e.g. 6002-107-F-...); else sheet FG may supply trace.
 		so_parent_ic = (so_it.item_code or "").strip()
 		pp_so = _bom_item_process_code(so_parent_ic)
-		if pp_so == "255" and _lamination_process_from_item_code(lam_ic) == "107":
-			t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
-			if t_sheet:
-				trace_id = t_sheet
-		elif pp_so == "108" and _lamination_process_from_item_code(lam_ic) == "107":
-			t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
-			if t_sheet:
-				trace_id = t_sheet
-		elif pp_so == "253" and _lamination_process_from_item_code(lam_ic) == "104":
-			t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
-			if t_sheet:
-				trace_id = t_sheet
+		lam_proc = _lamination_process_from_item_code(lam_ic)
+		_has_lam_design = False
+		if lam_proc == "107":
+			_has_lam_design = bool(_cstr((_parse_107_item_code(lam_ic) or {}).get("design_code")).strip())
+		elif lam_proc == "104":
+			_has_lam_design = bool(_cstr((_parse_104_item_code(lam_ic) or {}).get("design_code")).strip())
+		if not _has_lam_design:
+			if pp_so == "255" and lam_proc == "107":
+				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
+				if t_sheet:
+					trace_id = t_sheet
+			elif pp_so == "108" and lam_proc == "107":
+				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
+				if t_sheet:
+					trace_id = t_sheet
+			elif pp_so == "253" and lam_proc == "104":
+				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
+				if t_sheet:
+					trace_id = t_sheet
+			elif pp_so == "109" and lam_proc == "104":
+				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
+				if t_sheet:
+					trace_id = t_sheet
+			elif pp_so == "104" and lam_proc == "104":
+				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
+				if t_sheet:
+					trace_id = t_sheet
+		if not trace_id:
+			trace_id = _parent_child_trace_id_from_item_code(lam_ic)
 		lam_pt_name = _find_planning_table_lamination_parent_row(ps.name, lam_ic, so_it.name)
 		lam_row = frappe.get_doc("Planning Table", lam_pt_name) if lam_pt_name else None
 		if lam_row and trace_id:
@@ -6860,6 +6953,14 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
 	if so_fg == "252" and parent_proc in ("252", "105") and child_proc in ("105", "100"):
 		return _parent_child_trace_id_from_item_code(parent_ic or fg_ic) or ""
+	if parent_proc == "104" and child_proc == "100":
+		return _parent_child_trace_id_from_item_code(parent_ic) or ""
+	if so_fg == "104" and child_proc == "100":
+		return _parent_child_trace_id_from_item_code(fg_ic or parent_ic) or ""
+	if parent_proc == "107" and child_proc == "100":
+		return _parent_child_trace_id_from_item_code(parent_ic) or ""
+	if so_fg == "108" and parent_proc == "107" and child_proc == "100":
+		return _parent_child_trace_id_from_item_code(parent_ic) or ""
 	return ""
 
 
