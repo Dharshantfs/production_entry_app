@@ -2570,7 +2570,8 @@ def _design_code_from_printed_bopp_item_code(ic):
 def _parse_pb_item_code(item_code):
 	"""
 	Revised PB layout: ``PB-{design}-{gsmM}-{widthMM}-{finishSuffix}``
-	e.g. ``PB-6003-15M-405MM-0M`` → design 6003, gsm 15 / 15M, width 405, suffix 0M.
+	e.g. ``PB-6003-15M-405MM-0M`` → single coat ``15M MATTE``.
+	``PB-6002-30M-405MM-MM`` → total 30 gsm → finishing ``15M MATTE 15M METALLIC``.
 	Legacy: ``PB-{design}-{gsmM}-{width}`` or long-form PRINTED BOPP - … lines.
 	"""
 	ic = _cstr(item_code).strip().upper()
@@ -2619,14 +2620,36 @@ def _parse_pb_item_code(item_code):
 	return out
 
 
+def _pb_coating_gsm_token(gsm_token, num_passes):
+	"""
+	Split total BOPP gsm in the item code across coating passes.
+
+	``PB-6002-30M-405MM-MM`` → token ``30M``, two passes → ``15M`` each (not ``30M`` each).
+	When total does not divide evenly (e.g. ``15M`` + dual suffix), keep the token as-is per pass.
+	"""
+	gsm_token = _cstr(gsm_token).strip().upper()
+	num_passes = cint(num_passes or 1)
+	if num_passes <= 1:
+		return gsm_token
+	m = re.match(r"^(\d+)M$", gsm_token, re.I)
+	if not m:
+		return gsm_token
+	n = cint(m.group(1))
+	if n <= 0:
+		return gsm_token
+	if n % num_passes == 0 and n >= num_passes:
+		return f"{n // num_passes}M"
+	return gsm_token
+
+
 def _pb_finishing_display_text(gsm_token, finish_suffix):
 	"""
-	Build Finishing column text for Printed BOPP from gsm token (e.g. ``15M``) and suffix.
+	Build Finishing column text for Printed BOPP from gsm token (e.g. ``30M``) and suffix.
 
-	- ``0M`` → ``15M MATE``
-	- ``0G`` → ``15M GLOSSY``
-	- ``MM`` → ``15M MATE 15M METALLIC``
-	- ``GC`` → ``15M GLOSSY 15M COOLER`` (G = glossy, C = cooler / collier coating)
+	- ``0M`` → ``30M MATTE`` (single coat — full token)
+	- ``0G`` → ``30M GLOSSY``
+	- ``MM`` → ``15M MATTE 15M METALLIC`` when token is ``30M`` (total gsm split across two coats)
+	- ``GC`` → ``15M GLOSSY 15M COOLER`` for ``30M`` token
 	"""
 	gsm_token = _cstr(gsm_token).strip().upper()
 	suffix = _cstr(finish_suffix).strip().upper()
@@ -2636,28 +2659,33 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 		return ""
 
 	if suffix == "0M":
-		return f"{gsm_token} MATE"
+		return f"{gsm_token} MATTE"
 	if suffix == "0G":
 		return f"{gsm_token} GLOSSY"
 	if suffix == "MM":
-		return f"{gsm_token} MATE {gsm_token} METALLIC"
+		coat = _pb_coating_gsm_token(gsm_token, 2)
+		return f"{coat} MATTE {coat} METALLIC"
 	if suffix == "GC":
-		return f"{gsm_token} GLOSSY {gsm_token} COOLER"
+		coat = _pb_coating_gsm_token(gsm_token, 2)
+		return f"{coat} GLOSSY {coat} COOLER"
 	if suffix == "GM":
-		return f"{gsm_token} GLOSSY {gsm_token} MATE"
+		coat = _pb_coating_gsm_token(gsm_token, 2)
+		return f"{coat} GLOSSY {coat} MATTE"
 	if suffix == "MG":
-		return f"{gsm_token} MATE {gsm_token} METALLIC"
+		coat = _pb_coating_gsm_token(gsm_token, 2)
+		return f"{coat} MATTE {coat} METALLIC"
 	if len(suffix) == 2:
 		c0, c1 = suffix[0], suffix[1]
 		parts = []
+		coat_b = _pb_coating_gsm_token(gsm_token, 2)
 		if c1 == "M":
-			parts.append(f"{gsm_token} MATE")
+			parts.append(f"{coat_b} MATTE")
 		elif c1 == "G":
-			parts.append(f"{gsm_token} GLOSSY")
+			parts.append(f"{coat_b} GLOSSY")
 		if c0 == "M" and c1 != "M":
-			parts.append(f"{gsm_token} METALLIC")
+			parts.append(f"{coat_b} METALLIC")
 		elif c0 == "C":
-			parts.append(f"{gsm_token} COOLER")
+			parts.append(f"{coat_b} COOLER")
 		if parts:
 			return " ".join(parts)
 	return ""
