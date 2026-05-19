@@ -11053,6 +11053,7 @@ def get_rewinding_order_table_data(
             {child_trace_expr} as child_trace_id,
             IFNULL(fab.width_inch, 0) as roll_size,
             IFNULL(pt.width_inch, 0) as slitting_size,
+            IFNULL(fab.qty, 0) as fabric_planned_qty,
             IFNULL(fab.item_code, '') as fabric_item_code,
             {spr_parent_expr} as parent_spr_name,
             {spr_child_expr} as child_spr_name
@@ -11112,7 +11113,13 @@ def get_rewinding_order_table_data(
         row["roll_size"] = flt((ex or {}).get("roll_size") or 0)
         row["slitting_size"] = flt((ex or {}).get("slitting_size") or 0)
         row["fabric_item_code"] = _cstr((ex or {}).get("fabric_item_code") or "")
-        row["planned_kgs"] = flt(row.get("qty") or 0)
+        fabric_planned = flt((ex or {}).get("fabric_planned_qty") or 0)
+        parent_planned = flt(row.get("qty") or 0)
+        if fabric_planned > 0:
+            row["planned_kgs"] = fabric_planned
+            row["qty"] = fabric_planned
+        else:
+            row["planned_kgs"] = parent_planned
         row["achieved_kgs"] = flt(row.get("actual_production_weight_kgs") or row.get("total_achieved_weight_kgs") or 0)
         row["fabric_ready_date"] = _fabric_ready_date_from_child_sprs(run_date_map, (ex or {}).get("child_spr_name"))
         row["order_sheet"] = "YES" if cint(row.get("pp_docstatus") or 0) == 1 else "NO"

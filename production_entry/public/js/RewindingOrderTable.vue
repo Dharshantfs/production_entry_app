@@ -123,7 +123,7 @@
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
             <td class="cell-center">{{ formatRollSizeCell(row) }}</td>
             <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
-            <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
+            <td class="cell-right">{{ formatKgPlanning(row.planned_kgs ?? row.qty) }}</td>
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
@@ -215,7 +215,7 @@
             <td class="cell-center">{{ formatRollSizeCell(row) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ formatRewindingLengthMm(row) }}</td>
-            <td class="cell-right">{{ formatKg2(row.planned_kgs ?? row.qty) }}</td>
+            <td class="cell-right">{{ formatKgPlanning(row.planned_kgs ?? row.qty) }}</td>
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
             <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
             <td class="cell-center">
@@ -300,6 +300,7 @@ const filterUnit = ref("");
 const filterShift = ref("all");
 /** Color-sequence + maintenance APIs key off the primary L3 rewinding line. */
 const REWINDING_SEQUENCE_UNIT = "TSNPL - L3 REWINDING MACHINE";
+const REWINDING_PP_PRINT_FORMAT = "Order Sheet format";
 /** Real machines only — table lists assigned work; unassigned queue stays on the board until slotted. */
 const REWINDING_ASSIGNED_TABLE_UNITS = [
   "TSNPL - L3 REWINDING MACHINE",
@@ -647,13 +648,20 @@ function scheduleRowsByShift(shift) {
       ? toDateKey(filterOrderDate.value)
       : toDateKey(moveTargetDate.value);
   if (!dateKey) return [];
+  const unitFilter = (filterUnit.value || "").trim();
   return (rawData.value || []).filter((r) => {
     if (!REWINDING_ASSIGNED_TABLE_UNITS.includes(String(r.unit || "").trim())) return false;
+    if (unitFilter && String(r.unit || "").trim() !== unitFilter) return false;
     if (itemProcessPrefix(r.itemCode || r.item_code) !== "102") return false;
     const rk = toDateKey(r.plannedDate || r.planned_date);
     const sh = String(r.shift_label || "DAY").toUpperCase();
     return rk === dateKey && sh === String(shift || "").toUpperCase();
   });
+}
+
+function activeRewindingSequenceUnit() {
+  const u = (filterUnit.value || "").trim();
+  return REWINDING_ASSIGNED_TABLE_UNITS.includes(u) ? u : REWINDING_SEQUENCE_UNIT;
 }
 
 async function fetchLaminationSequences() {
@@ -664,7 +672,7 @@ async function fetchLaminationSequences() {
       args: {
         start_date,
         end_date,
-        unit: REWINDING_SEQUENCE_UNIT,
+        unit: activeRewindingSequenceUnit(),
         plan_name: "Default",
       },
     });
@@ -786,7 +794,7 @@ async function saveLaminationArrangement() {
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
         args: {
           date: dateKey,
-          unit: REWINDING_SEQUENCE_UNIT,
+          unit: activeRewindingSequenceUnit(),
           sequence_data: JSON.stringify(seq),
           plan_name: "Default",
         },
@@ -811,7 +819,7 @@ async function restoreLaminationArrangement() {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: REWINDING_SEQUENCE_UNIT, plan_name: "Default" },
+        args: { date: dateKey, unit: activeRewindingSequenceUnit(), plan_name: "Default" },
       });
     }
     pendingArrangementUpdates.value = {};
@@ -827,6 +835,17 @@ function formatKg2(value) {
   const num = parseFloat(value || 0);
   if (!Number.isFinite(num)) return "0.00";
   return num.toFixed(2);
+}
+
+/** Match Planning sheet qty display (e.g. 164.580 → 164.58, 300 → 300). */
+function formatKgPlanning(value) {
+  const num = parseFloat(value || 0);
+  if (!Number.isFinite(num)) return "0";
+  if (Math.abs(num - Math.round(num)) < 1e-9) return String(Math.round(num));
+  return num
+    .toFixed(3)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
 }
 
 function formatNum(v) {
@@ -990,7 +1009,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
   }
   let ppId = String(directPpId || "").trim();
   if (ppId) {
-    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(REWINDING_PP_PRINT_FORMAT)}&trigger_print=0`;
     window.open(printUrl, "_blank");
     return;
   }
@@ -1006,7 +1025,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     if (res.message && res.message.status === "ok") {
       ppId = String(res.message.pp_id || "").trim();
       if (ppId) {
-        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(REWINDING_PP_PRINT_FORMAT)}&trigger_print=0`;
         window.open(printUrl, "_blank");
       } else {
         frappe.msgprint("No Production Plan found");
@@ -1240,7 +1259,7 @@ function openMachineOffDialog() {
         const res = await frappe.call({
           method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
           args: {
-            unit: REWINDING_SEQUENCE_UNIT,
+            unit: activeRewindingSequenceUnit(),
             start_date: vals.start_date,
             end_date: vals.end_date,
             maintenance_type: vals.maintenance_type,
@@ -1335,7 +1354,7 @@ function startAutoRefresh() {
   autoRefreshTimer = setInterval(() => {
     if (document.visibilityState !== "visible") return;
     fetchData();
-  }, 15000);
+  }, 5000);
 }
 
 function updateUrlParams() {
