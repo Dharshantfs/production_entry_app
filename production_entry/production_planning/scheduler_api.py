@@ -1390,6 +1390,50 @@ def _trace_from_107_parse_body(p, design_code=None):
 	return body
 
 
+def _trace_from_108_parse_body(p, design_code=None):
+	"""Hyphenated 108 trace: ``{design}-108-{quality}-{colour}-{stack_gsm}-{width}`` (e.g. ``6002-108-B-001-140-0050``)."""
+	if not p:
+		return ""
+	dc = _cstr(design_code if design_code is not None else p.get("design_code")).strip().upper()
+	qc = _cstr(p.get("quality_code") or "").strip().upper()
+	cc = _cstr(p.get("colour_code") or "").strip()
+	comb = _combined_bopp_line_gsm(p)
+	fg = cint(p.get("fabric_gsm") or 0)
+	lg = cint(p.get("lam_gsm") or 0)
+	wc = _cstr(p.get("width_code") or "").strip()
+	if not (qc or cc or comb or fg or lg or wc):
+		return ""
+	segs = ["108"]
+	if qc:
+		segs.append(qc)
+	if cc:
+		segs.append(cc)
+	if comb > 0:
+		segs.append(str(comb))
+	elif fg:
+		segs.append(str(fg))
+	if comb <= 0 and lg:
+		segs.append(str(lg))
+	if wc:
+		segs.append(wc)
+	if len(segs) <= 1:
+		return ""
+	body = "-".join(segs)
+	if dc:
+		return f"{dc}-{body}"
+	return body
+
+
+def _trace_is_native_107_process(trace_id):
+	"""True when trace is for process **107**, not a **108** parent chain (incl. design-prefixed ``6002-107-…``)."""
+	t = _cstr(trace_id).strip()
+	if not t:
+		return False
+	if t.startswith("107-"):
+		return True
+	return bool(re.search(r"(^|-)107(?:-|$)", t))
+
+
 def _trace_from_104_parse_body(p):
 	"""Hyphenated 104 trace: ``{design}-104-{quality}-{colour}-{gsm}-{width}[-lam]``."""
 	if not p:
@@ -3191,28 +3235,8 @@ def _sync_legacy_planning_sheet_items_qty_from_board(planning_sheet_name):
 
 
 def _trace_108_from_107_item_code(item_code):
-	"""Build a **108**-prefixed trace from a process-107 item (same segments as 107 parse, never ``107-``)."""
-	p = _parse_107_item_code(item_code) or {}
-	cc = (p.get("colour_code") or "").strip()
-	qc = _cstr(p.get("quality_code") or "").strip().upper()
-	comb = _combined_bopp_line_gsm(p)
-	fg = cint(p.get("fabric_gsm") or 0)
-	lg = cint(p.get("lam_gsm") or 0)
-	wc = (p.get("width_code") or "").strip()
-	segs = ["108"]
-	if qc:
-		segs.append(qc)
-	if cc:
-		segs.append(cc)
-	if comb > 0:
-		segs.append(str(comb))
-	elif fg:
-		segs.append(str(fg))
-	if comb <= 0 and lg:
-		segs.append(str(lg))
-	if wc:
-		segs.append(wc)
-	return "-".join(segs) if len(segs) > 1 else ""
+	"""Build a design-prefixed **108** trace from a process-107 item (same segments as 107 parse)."""
+	return _trace_from_108_parse_body(_parse_107_item_code(item_code) or {})
 
 
 def _is_107_mid_bopp_item(item_code):
@@ -3350,10 +3374,10 @@ def _resolve_lam107_planning_trace(item_code, sales_order_item=None, planning_sh
 	if not _is_107_mid_bopp_item(item_code):
 		return ""
 	t108 = _resolve_108_family_trace(item_code, sales_order_item, planning_sheet_name, pt_rows)
-	if t108 and not str(t108).strip().startswith("107-"):
+	if t108 and not _trace_is_native_107_process(t108):
 		return t108
 	t255 = _resolve_255_family_trace_for_107(item_code, sales_order_item, planning_sheet_name, pt_rows)
-	if t255 and not str(t255).strip().startswith("107-"):
+	if t255 and not _trace_is_native_107_process(t255):
 		return t255
 	if planning_sheet_name:
 		maps = _108_trace_maps_for_sheet(planning_sheet_name, pt_rows=pt_rows)
@@ -3373,7 +3397,7 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 	soi = (sales_order_item_name or "").strip()
 	if _is_107_mid_bopp_item(ic):
 		t107p = _resolve_lam107_planning_trace(ic, soi, planning_sheet_name)
-		if t107p and not str(t107p).strip().startswith("107-"):
+		if t107p and not _trace_is_native_107_process(t107p):
 			return t107p
 		if soi and frappe.db.exists("Sales Order Item", soi):
 			try:
@@ -3396,10 +3420,10 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 			if t255:
 				return t255
 		t108 = _resolve_108_family_trace(ic, soi, planning_sheet_name)
-		if t108 and not str(t108).strip().startswith("107-"):
+		if t108 and not _trace_is_native_107_process(t108):
 			return t108
 		t255f = _resolve_255_family_trace_for_107(ic, soi, planning_sheet_name)
-		if t255f and not str(t255f).strip().startswith("107-"):
+		if t255f and not _trace_is_native_107_process(t255f):
 			return t255f
 		# Standalone 107 FG on the SO line only — keep native 107-* trace.
 		if soi:
@@ -3734,7 +3758,7 @@ def _planning_row_dict_107_lamination_extras(
     trace_id = _parent_child_trace_id_for_planning_row(
         item_code, sales_order_item_name, planning_sheet_name
     )
-    if trace_id and str(trace_id).strip().startswith("107-"):
+    if trace_id and _trace_is_native_107_process(trace_id):
         trace_id = ""
     if trace_id and (
         frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
@@ -3955,29 +3979,9 @@ def _parent_child_trace_id_from_item_code(item_code):
 		if _t254:
 			return _t254
 	if _item_process_prefix(ic) == "108" or re.search(r"-108(?=[A-Z])", ic.upper()):
-		p = _parse_108_item_code(ic) or {}
-		cc = (p.get("colour_code") or "").strip()
-		qc = _cstr(p.get("quality_code") or "").strip().upper()
-		comb = _combined_bopp_line_gsm(p)
-		fg = cint(p.get("fabric_gsm") or 0)
-		lg = cint(p.get("lam_gsm") or 0)
-		wc = (p.get("width_code") or "").strip()
-		segs = ["108"]
-		if qc:
-			segs.append(qc)
-		if cc:
-			segs.append(cc)
-		if comb > 0:
-			segs.append(str(comb))
-		elif fg:
-			segs.append(str(fg))
-		if comb <= 0 and lg:
-			segs.append(str(lg))
-		if wc:
-			segs.append(wc)
-		if len(segs) > 1:
-			return "-".join(segs)
-		return ""
+		t108 = _trace_from_108_parse_body(_parse_108_item_code(ic) or {})
+		if t108:
+			return t108
 	# 105 (design-first): <design>-105-<quality>-<colour>-<gsm>-<width_mm>
 	if "-105" in ic.upper() or ic.strip().startswith("105"):
 		t105 = _trace_from_105_parse_body(_parse_105_item_code(ic) or {})
@@ -4351,7 +4355,7 @@ def _planning_row_matches_sales_order_fg(item_code, so_item_key, so_by_name):
 	return _cstr(getattr(so_it, "item_code", None)).strip() == ic
 
 
-def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet_name, pt_rows):
+def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet_name, pt_rows, so_by_name=None):
 	"""104/107 lamination parent trace for 100 / PB children on the same SO line (not child's own 100-* id)."""
 	soik = _cstr(so_item_key).strip()
 	ic = _cstr(child_ic).strip()
@@ -4359,6 +4363,13 @@ def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet
 		return ""
 	if _bom_item_process_code(ic) != "100" and not _is_printed_bopp_item_code(ic):
 		return ""
+	so_it = (so_by_name or {}).get(soik)
+	if so_it:
+		fg_ic = _cstr(getattr(so_it, "item_code", None)).strip()
+		if _bom_item_process_code(fg_ic) == "108":
+			tid108 = _parent_child_trace_id_from_item_code(fg_ic)
+			if tid108:
+				return tid108
 	for pr in pt_rows or []:
 		if _pt_soi_key(pr) != soik:
 			continue
@@ -4445,15 +4456,25 @@ def _trace_for_planning_row_using_main_parent(row, planning_sheet_name, pt_rows,
 			return tid
 		return _parent_child_trace_id_for_planning_row(ic, soik, planning_sheet_name)
 	if soik:
-		bom_parent_tid = _bom_parent_trace_for_child_on_so_line(ic, soik, planning_sheet_name, pt_rows)
-		if bom_parent_tid:
+		so_it = (so_by_name or {}).get(soik)
+		if so_it and _bom_item_process_code(_cstr(getattr(so_it, "item_code", None)).strip()) == "108":
+			main_tid = _main_parent_trace_for_so_line(soik, planning_sheet_name, pt_rows, so_by_name)
+			if main_tid:
+				return main_tid
+		bom_parent_tid = _bom_parent_trace_for_child_on_so_line(
+			ic, soik, planning_sheet_name, pt_rows, so_by_name=so_by_name
+		)
+		if bom_parent_tid and not (
+			_bom_item_process_code(_cstr(getattr(so_it, "item_code", None)).strip()) == "108"
+			and _trace_is_native_107_process(bom_parent_tid)
+		):
 			return bom_parent_tid
 		main_tid = _main_parent_trace_for_so_line(soik, planning_sheet_name, pt_rows, so_by_name)
 		if main_tid:
 			return main_tid
 	if _is_107_mid_bopp_item(ic):
 		tid = _resolve_lam107_planning_trace(ic, soik, planning_sheet_name, pt_rows=pt_rows)
-		if tid and not str(tid).strip().startswith("107-"):
+		if tid and not _trace_is_native_107_process(tid):
 			return tid
 	return _parent_child_trace_id_for_planning_row(ic, soik, planning_sheet_name) or _parent_child_trace_id_from_item_code(
 		ic
@@ -5543,7 +5564,7 @@ def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
 		if _bom_item_process_code(icp) != "108":
 			continue
 		soik = _pt_soi_key(pr)
-		tid = _cstr(pr.get("custom_parent_child_trace_id")).strip() or _parent_child_trace_id_from_item_code(icp)
+		tid = _parent_child_trace_id_from_item_code(icp) or _cstr(pr.get("custom_parent_child_trace_id")).strip()
 		if not tid:
 			continue
 		default_108_trace = tid
@@ -5572,9 +5593,9 @@ def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
 		soik = _pt_soi_key(row)
 		if _is_107_mid_bopp_item(ic):
 			tid = _resolve_lam107_planning_trace(ic, soik, planning_sheet_name, pt_rows=pt_rows)
-			if not tid or str(tid).startswith("107-"):
+			if not tid or _trace_is_native_107_process(tid):
 				tid = _resolve_108_family_trace(ic, soik, planning_sheet_name, pt_rows=pt_rows) or tid
-			if tid and not str(tid).startswith("107-"):
+			if tid and not _trace_is_native_107_process(tid):
 				parent_soi = soik
 				if not parent_soi and trace_by_soi:
 					parent_soi = next(iter(trace_by_soi.keys()))
@@ -5598,7 +5619,7 @@ def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
 		nm = row.get("name")
 		up = {}
 		cur_tid = _cstr(row.get("custom_parent_child_trace_id")).strip()
-		if tid and (tid != cur_tid or cur_tid.startswith("107-")):
+		if tid and (tid != cur_tid or _trace_is_native_107_process(cur_tid)):
 			up["custom_parent_child_trace_id"] = tid
 		if parent_soi:
 			if table_doctype == "Planning Table":
@@ -5798,9 +5819,9 @@ def _stamp_255_sheet_family_trace_ids(planning_sheet_name):
 		soik = _pt_soi_key(row)
 		if _is_107_mid_bopp_item(ic):
 			tid = _resolve_lam107_planning_trace(ic, soik, planning_sheet_name, pt_rows=pt_rows)
-			if not tid or str(tid).strip().startswith("107-"):
+			if not tid or _trace_is_native_107_process(tid):
 				tid = _resolve_255_family_trace_for_107(ic, soik, planning_sheet_name, pt_rows=pt_rows) or tid
-			if tid and not str(tid).strip().startswith("107-"):
+			if tid and not _trace_is_native_107_process(tid):
 				parent_soi = soik or (next(iter(trace_by_soi.keys())) if trace_by_soi else "")
 				return tid, parent_soi
 		if soik and soik in trace_by_soi:
@@ -5822,7 +5843,7 @@ def _stamp_255_sheet_family_trace_ids(planning_sheet_name):
 		nm = row.get("name")
 		up = {}
 		cur_tid = _cstr(row.get("custom_parent_child_trace_id")).strip()
-		if tid and (tid != cur_tid or cur_tid.startswith("107-")):
+		if tid and (tid != cur_tid or _trace_is_native_107_process(cur_tid)):
 			up["custom_parent_child_trace_id"] = tid
 		if parent_soi:
 			if table_doctype == "Planning Table":
@@ -6269,21 +6290,23 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			continue
 
 		trace_id = _parent_child_trace_id_for_planning_row(lam_ic, so_it.name, ps.name)
-		# When 107/104 has a design prefix, keep native trace (e.g. 6002-107-F-...); else sheet FG may supply trace.
+		# 108 FG: all BOM children (107 / 100 / PB) use design-prefixed ``6002-108-…`` from the SO line.
 		so_parent_ic = (so_it.item_code or "").strip()
 		pp_so = _bom_item_process_code(so_parent_ic)
 		lam_proc = _lamination_process_from_item_code(lam_ic)
+		if pp_so == "108":
+			t108 = _parent_child_trace_id_from_item_code(so_parent_ic) or _parent_child_trace_id_for_planning_row(
+				so_parent_ic, so_it.name, ps.name
+			)
+			if t108:
+				trace_id = t108
 		_has_lam_design = False
 		if lam_proc == "107":
 			_has_lam_design = bool(_cstr((_parse_107_item_code(lam_ic) or {}).get("design_code")).strip())
 		elif lam_proc == "104":
 			_has_lam_design = bool(_cstr((_parse_104_item_code(lam_ic) or {}).get("design_code")).strip())
-		if not _has_lam_design:
+		if not _has_lam_design and pp_so != "108":
 			if pp_so == "255" and lam_proc == "107":
-				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
-				if t_sheet:
-					trace_id = t_sheet
-			elif pp_so == "108" and lam_proc == "107":
 				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
 				if t_sheet:
 					trace_id = t_sheet
@@ -6366,7 +6389,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					if (
 						not cur_tr
 						or cur_tr != trace_id
-						or (cur_tr.startswith("107-") and trace_id and not str(trace_id).startswith("107-"))
+						or (_trace_is_native_107_process(cur_tr) and trace_id and not _trace_is_native_107_process(trace_id))
 					):
 						updates["custom_parent_child_trace_id"] = trace_id
 				if frappe.db.has_column("Planning Table", "split_from"):
@@ -7312,7 +7335,7 @@ def _sync_bom_child_rows_from_planning_rows(
 				cur_tr_ex = _cstr(frappe.db.get_value("Planning Table", ex_nm, "custom_parent_child_trace_id")).strip()
 				if (
 					trace_refresh != cur_tr_ex
-					or (cur_tr_ex.startswith("107-") and not str(trace_refresh).startswith("107-"))
+					or (_trace_is_native_107_process(cur_tr_ex) and not _trace_is_native_107_process(trace_refresh))
 				):
 					updates["custom_parent_child_trace_id"] = trace_refresh
 			if (
@@ -7415,7 +7438,7 @@ def _sync_bom_child_rows_from_planning_rows(
 		trace_id = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc) or _parent_child_trace_id_for_planning_row(
 			child_ic, so_item_key, ps.name
 		)
-		if trace_id and str(trace_id).strip().startswith("107-") and so_fg_new in ("108", "255"):
+		if trace_id and _trace_is_native_107_process(trace_id) and so_fg_new in ("108", "255"):
 			trace_id = _parent_child_trace_id_for_planning_row(
 				getattr(so_it, "item_code", None) or parent_ic, so_item_key, ps.name
 			) or ""
