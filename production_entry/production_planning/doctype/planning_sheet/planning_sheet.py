@@ -351,6 +351,8 @@ class Planningsheet(Document):
         """
         try:
             from production_entry.production_planning.scheduler_api import (
+                _fabric_row_has_stable_parent_trace,
+                _is_fabric_100_item_code,
                 _parent_child_trace_id_for_planning_row,
                 _set_trace_id_if_supported,
             )
@@ -370,6 +372,8 @@ class Planningsheet(Document):
                 if not tid:
                     continue
                 cur = str(getattr(row, "custom_parent_child_trace_id", None) or "").strip()
+                if _is_fabric_100_item_code(ic) and _fabric_row_has_stable_parent_trace(ic, cur):
+                    continue
                 try:
                     from production_entry.production_planning.scheduler_api import (
                         _is_sheet_cutting_child_process,
@@ -389,7 +393,6 @@ class Planningsheet(Document):
                         or pp == "109"
                         or pp == "104"
                         or lam == "104"
-                        or ic.startswith("100")
                         or _is_sheet_cutting_parent_process(ic)
                         or _is_sheet_cutting_child_process(ic)
                         or (cur and tid and cur != tid)
@@ -397,7 +400,7 @@ class Planningsheet(Document):
                 except Exception:
                     restamp = not cur
                 if restamp or cur != tid:
-                    _set_trace_id_if_supported(row, tid)
+                    _set_trace_id_if_supported(row, tid, item_code=ic)
 
     def _sync_line_plan_codes(self):
         """Fill Planning sheet Item / board row Plan Code from active plan + date + unit (color chart alignment)."""

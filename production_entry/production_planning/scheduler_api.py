@@ -1434,6 +1434,60 @@ def _trace_is_native_107_process(trace_id):
 	return bool(re.search(r"(^|-)107(?:-|$)", t))
 
 
+def _is_fabric_100_item_code(item_code):
+	"""Non-woven / fabric BOM child rows (item codes starting with ``100``, not FG process 100)."""
+	return str(item_code or "").strip().startswith("100")
+
+
+def _trace_is_native_100_process(trace_id):
+	"""True when trace was derived from the fabric item code (``100-QQQ-CCC-GGG-WWWW``), not a parent FG."""
+	t = _cstr(trace_id).strip()
+	if not t:
+		return False
+	if t.startswith("100-"):
+		return True
+	digits = "".join(ch for ch in t if ch.isdigit())
+	return bool(digits.startswith("100") and len(digits) >= 16)
+
+
+def _fabric_row_has_stable_parent_trace(item_code, current_trace_id):
+	"""Fabric ``100*`` row already linked to a parent-chain trace — do not replace on save/backfill."""
+	if not _is_fabric_100_item_code(item_code):
+		return False
+	cur = _cstr(current_trace_id).strip()
+	if not cur:
+		return False
+	return not _trace_is_native_100_process(cur)
+
+
+def _should_apply_trace_to_row(item_code, current_trace_id, new_trace_id):
+	"""Whether to write ``new_trace_id`` on this row (fabric rows keep stable parent traces)."""
+	new_tid = _cstr(new_trace_id).strip()
+	if not new_tid:
+		return False
+	cur = _cstr(current_trace_id).strip()
+	if not _is_fabric_100_item_code(item_code):
+		return cur != new_tid
+	if not cur:
+		return True
+	if cur == new_tid:
+		return False
+	if _fabric_row_has_stable_parent_trace(item_code, cur):
+		return False
+	if _trace_is_native_100_process(cur) and not _trace_is_native_100_process(new_tid):
+		return True
+	return cur != new_tid
+
+
+def _fabric_trace_sql_preserve_clause(column="custom_parent_child_trace_id"):
+	"""SQL fragment: only touch fabric rows with empty or native-``100`` trace (keep parent-linked traces)."""
+	col = column
+	return f"""(
+		IFNULL(TRIM({col}), '') = ''
+		OR {col} LIKE '100-%%'
+	)"""
+
+
 def _trace_from_104_parse_body(p):
 	"""Hyphenated 104 trace: ``{design}-104-{quality}-{colour}-{gsm}-{width}[-lam]``."""
 	if not p:
@@ -2024,6 +2078,8 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 	tid = _parent_child_trace_id_for_planning_row(ic, soi or None, planning_sheet_name)
 	if tid:
 		cur_tid = _cstr(getattr(row, "custom_parent_child_trace_id", None)).strip()
+		if _is_fabric_100_item_code(ic) and _fabric_row_has_stable_parent_trace(ic, cur_tid):
+			return
 		pp = _item_process_prefix(ic)
 		lam = _lamination_process_from_item_code(ic)
 		force = (
@@ -2035,13 +2091,12 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 			or pp == "109"
 			or pp == "104"
 			or lam == "104"
-			or ic.startswith("100")
 			or _is_sheet_cutting_parent_process(ic)
 			or _is_sheet_cutting_child_process(ic)
 			or (cur_tid and tid and cur_tid != tid)
 		)
 		if force or cur_tid != tid:
-			_set_trace_id_if_supported(row, tid)
+			_set_trace_id_if_supported(row, tid, item_code=ic)
 
 
 def _parse_108_item_code(item_code):
@@ -4324,8 +4379,21 @@ def _printing_color_from_item_code(item_code):
 		return colour_code
 
 
-def _set_trace_id_if_supported(row_dict_or_doc, trace_id):
+def _set_trace_id_if_supported(row_dict_or_doc, trace_id, item_code=None):
 	if not trace_id:
+		return
+	ic = _cstr(item_code).strip()
+	cur = ""
+	try:
+		if isinstance(row_dict_or_doc, dict):
+			ic = ic or _cstr(row_dict_or_doc.get("item_code")).strip()
+			cur = _cstr(row_dict_or_doc.get("custom_parent_child_trace_id")).strip()
+		else:
+			ic = ic or _cstr(getattr(row_dict_or_doc, "item_code", None)).strip()
+			cur = _cstr(getattr(row_dict_or_doc, "custom_parent_child_trace_id", None)).strip()
+	except Exception:
+		pass
+	if not _should_apply_trace_to_row(ic, cur, trace_id):
 		return
 	can_write = False
 	try:
@@ -4341,6 +4409,23 @@ def _set_trace_id_if_supported(row_dict_or_doc, trace_id):
 			setattr(row_dict_or_doc, "custom_parent_child_trace_id", trace_id)
 	except Exception:
 		pass
+
+
+def _safe_set_planning_trace_id(doctype, row_name, item_code, new_trace_id, current_trace_id=None):
+	"""DB set trace only when allowed (never downgrade fabric parent trace to native ``100-``)."""
+	if not row_name or not frappe.db.has_column(doctype, "custom_parent_child_trace_id"):
+		return False
+	ic = _cstr(item_code).strip()
+	cur = _cstr(current_trace_id).strip()
+	if cur == "":
+		try:
+			cur = _cstr(frappe.db.get_value(doctype, row_name, "custom_parent_child_trace_id")).strip()
+		except Exception:
+			cur = ""
+	if not _should_apply_trace_to_row(ic, cur, new_trace_id):
+		return False
+	frappe.db.set_value(doctype, row_name, "custom_parent_child_trace_id", new_trace_id, update_modified=False)
+	return True
 
 
 def _planning_row_matches_sales_order_fg(item_code, so_item_key, so_by_name):
@@ -5619,7 +5704,11 @@ def _stamp_108_bopp_family_trace_ids(planning_sheet_name):
 		nm = row.get("name")
 		up = {}
 		cur_tid = _cstr(row.get("custom_parent_child_trace_id")).strip()
-		if tid and (tid != cur_tid or _trace_is_native_107_process(cur_tid)):
+		ic_row = row.get("item_code")
+		if tid and (
+			_should_apply_trace_to_row(ic_row, cur_tid, tid)
+			or (_trace_is_native_107_process(cur_tid) and not _trace_is_native_107_process(tid))
+		):
 			up["custom_parent_child_trace_id"] = tid
 		if parent_soi:
 			if table_doctype == "Planning Table":
@@ -5724,7 +5813,8 @@ def _stamp_254_sheet_family_trace_ids(planning_sheet_name):
 			return
 		nm = row.get("name")
 		up = {}
-		if tid != _cstr(row.get("custom_parent_child_trace_id")).strip():
+		cur_tid = _cstr(row.get("custom_parent_child_trace_id")).strip()
+		if _should_apply_trace_to_row(row.get("item_code"), cur_tid, tid):
 			up["custom_parent_child_trace_id"] = tid
 		if parent_soi:
 			if table_doctype == "Planning Table":
@@ -5843,7 +5933,11 @@ def _stamp_255_sheet_family_trace_ids(planning_sheet_name):
 		nm = row.get("name")
 		up = {}
 		cur_tid = _cstr(row.get("custom_parent_child_trace_id")).strip()
-		if tid and (tid != cur_tid or _trace_is_native_107_process(cur_tid)):
+		ic_row = row.get("item_code")
+		if tid and (
+			_should_apply_trace_to_row(ic_row, cur_tid, tid)
+			or (_trace_is_native_107_process(cur_tid) and not _trace_is_native_107_process(tid))
+		):
 			up["custom_parent_child_trace_id"] = tid
 		if parent_soi:
 			if table_doctype == "Planning Table":
@@ -6383,13 +6477,11 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					cur_soi = frappe.db.get_value("Planning Table", ex_name, "sales_order_item")
 					if not cur_soi:
 						updates["sales_order_item"] = so_it.name
-				# Ensure trace id is always stamped on existing BOM child rows (fabric + PB).
+				# Ensure trace id is stamped on BOM child rows (fabric keeps stable parent trace).
 				if trace_id and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
 					cur_tr = str(frappe.db.get_value("Planning Table", ex_name, "custom_parent_child_trace_id") or "").strip()
-					if (
-						not cur_tr
-						or cur_tr != trace_id
-						or (_trace_is_native_107_process(cur_tr) and trace_id and not _trace_is_native_107_process(trace_id))
+					if _should_apply_trace_to_row(comp_ic, cur_tr, trace_id) or (
+						_trace_is_native_107_process(cur_tr) and trace_id and not _trace_is_native_107_process(trace_id)
 					):
 						updates["custom_parent_child_trace_id"] = trace_id
 				if frappe.db.has_column("Planning Table", "split_from"):
@@ -7333,9 +7425,8 @@ def _sync_bom_child_rows_from_planning_rows(
 					updates["gsm"] = gp
 			if trace_refresh and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
 				cur_tr_ex = _cstr(frappe.db.get_value("Planning Table", ex_nm, "custom_parent_child_trace_id")).strip()
-				if (
-					trace_refresh != cur_tr_ex
-					or (_trace_is_native_107_process(cur_tr_ex) and not _trace_is_native_107_process(trace_refresh))
+				if _should_apply_trace_to_row(child_ic, cur_tr_ex, trace_refresh) or (
+					_trace_is_native_107_process(cur_tr_ex) and not _trace_is_native_107_process(trace_refresh)
 				):
 					updates["custom_parent_child_trace_id"] = trace_refresh
 			if (
@@ -8835,14 +8926,25 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 		so_item = (p.get("sales_order_item") or "").strip()
 		if so_item:
 			# Child rows on the board table (fabric 100* rows, PB-* rows) should inherit parent's trace id.
+			fabric_preserve = _fabric_trace_sql_preserve_clause("custom_parent_child_trace_id")
+			frappe.db.sql(
+				f"""
+				UPDATE `tabPlanning Table`
+				SET custom_parent_child_trace_id = %s
+				WHERE parent = %s
+				  AND item_code LIKE '100%%'
+				  AND {fabric_preserve}
+				  AND {child_match_expr} = %s
+				""",
+				(trace_id, p.get("parent"), so_item),
+			)
 			frappe.db.sql(
 				f"""
 				UPDATE `tabPlanning Table`
 				SET custom_parent_child_trace_id = %s
 				WHERE parent = %s
 				  AND (
-				    item_code LIKE '100%%'
-				    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%'
+				    UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PB-%%'
 				    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE 'PRINTED%%BOPP%%'
 				  )
 				  AND {child_match_expr} = %s
@@ -8927,15 +9029,24 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				continue
 			so_item = (p.get("sales_order_item") or "").strip()
 			if so_item:
+				fabric_preserve_psi = _fabric_trace_sql_preserve_clause("custom_parent_child_trace_id")
 				frappe.db.sql(
 					f"""
 					UPDATE `tabPlanning sheet Item`
 					SET custom_parent_child_trace_id = %s
-					WHERE parent = %s AND {psi_match_expr} = %s
+					WHERE parent = %s AND item_code LIKE '100%%' AND {fabric_preserve_psi} AND {psi_match_expr} = %s
 					""",
 					(trace_id, p.get("parent"), so_item),
 				)
-	# Re-stamp trace from each row's item code, except 100 / PB / 107 / 104 children of 253/255 on the same SO line
+				frappe.db.sql(
+					f"""
+					UPDATE `tabPlanning sheet Item`
+					SET custom_parent_child_trace_id = %s
+					WHERE parent = %s AND item_code NOT LIKE '100%%' AND {psi_match_expr} = %s
+					""",
+					(trace_id, p.get("parent"), so_item),
+				)
+	# Re-stamp trace from each row's item code; fabric ``100*`` rows keep stable parent traces once set.
 	# (those must keep the sheet parent's trace — see _sync_bom_child_rows_from_planning_rows).
 	if planning_sheet_name:
 		pt_full = (
@@ -8983,7 +9094,23 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 			ic = str(pr.get("item_code") or "")
 			iu = ic.upper()
 			soik = (pr.get("sales_order_item") or pr.get("so_item") or "").strip()
-			if ic.startswith("100") or iu.startswith("PB-") or ("PRINTED" in iu and "BOPP" in iu):
+			if ic.startswith("100"):
+				cur_tr = _cstr(pr.get("custom_parent_child_trace_id")).strip()
+				if not cur_tr and nm:
+					try:
+						cur_tr = _cstr(frappe.db.get_value("Planning Table", nm, "custom_parent_child_trace_id")).strip()
+					except Exception:
+						cur_tr = ""
+				if soik and soik in parent_trace_by_soi:
+					_safe_set_planning_trace_id(
+						"Planning Table", nm, ic, parent_trace_by_soi[soik], current_trace_id=cur_tr
+					)
+				elif not cur_tr:
+					tid0 = _parent_child_trace_id_from_item_code(ic)
+					if tid0:
+						_safe_set_planning_trace_id("Planning Table", nm, ic, tid0, current_trace_id=cur_tr)
+				continue
+			if iu.startswith("PB-") or ("PRINTED" in iu and "BOPP" in iu):
 				if soik and soik in parent_trace_by_soi:
 					frappe.db.set_value(
 						"Planning Table",
@@ -8992,10 +9119,6 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 						parent_trace_by_soi[soik],
 						update_modified=False,
 					)
-				else:
-					tid0 = _parent_child_trace_id_from_item_code(ic)
-					if tid0:
-						frappe.db.set_value("Planning Table", nm, "custom_parent_child_trace_id", tid0, update_modified=False)
 				continue
 			pp = _item_process_prefix(ic)
 			lam = _lamination_process_from_item_code(ic)
@@ -9015,16 +9138,12 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				and (
 					pp in ("104", "107", "106", "105", "100")
 					or lam in ("104", "107")
-					or ic.startswith("100")
 				)
 				and not _planning_row_matches_sales_order_fg(ic, soik, so_by_name_bf)
 			):
-				frappe.db.set_value(
-					"Planning Table",
-					nm,
-					"custom_parent_child_trace_id",
-					parent_trace_by_soi[soik],
-					update_modified=False,
+				cur_tr = _cstr(pr.get("custom_parent_child_trace_id")).strip()
+				_safe_set_planning_trace_id(
+					"Planning Table", nm, ic, parent_trace_by_soi[soik], current_trace_id=cur_tr
 				)
 				continue
 			if _is_107_mid_bopp_item(ic):
@@ -9034,7 +9153,8 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				continue
 			tid = _parent_child_trace_id_for_planning_row(ic, soik, planning_sheet_name)
 			if tid and not (_is_107_mid_bopp_item(ic) and str(tid).startswith("107-")):
-				frappe.db.set_value("Planning Table", nm, "custom_parent_child_trace_id", tid, update_modified=False)
+				cur_tr = _cstr(pr.get("custom_parent_child_trace_id")).strip()
+				_safe_set_planning_trace_id("Planning Table", nm, ic, tid, current_trace_id=cur_tr)
 	if planning_sheet_name and frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
 		psi_rows = (
 			frappe.get_all(
@@ -9050,7 +9170,18 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 			ic = str(psi.get("item_code") or "")
 			iu = ic.upper()
 			soik = (psi.get("sales_order_item") or psi.get("so_item") or "").strip()
-			if ic.startswith("100") or iu.startswith("PB-") or ("PRINTED" in iu and "BOPP" in iu):
+			if ic.startswith("100"):
+				cur_tr = _cstr(psi.get("custom_parent_child_trace_id")).strip()
+				if soik and soik in parent_trace_by_soi:
+					_safe_set_planning_trace_id(
+						"Planning sheet Item", nm, ic, parent_trace_by_soi[soik], current_trace_id=cur_tr
+					)
+				elif not cur_tr:
+					tid0 = _parent_child_trace_id_from_item_code(ic)
+					if tid0:
+						_safe_set_planning_trace_id("Planning sheet Item", nm, ic, tid0, current_trace_id=cur_tr)
+				continue
+			if iu.startswith("PB-") or ("PRINTED" in iu and "BOPP" in iu):
 				if soik and soik in parent_trace_by_soi:
 					frappe.db.set_value(
 						"Planning sheet Item",
@@ -9059,12 +9190,6 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 						parent_trace_by_soi[soik],
 						update_modified=False,
 					)
-				else:
-					tid0 = _parent_child_trace_id_from_item_code(ic)
-					if tid0:
-						frappe.db.set_value(
-							"Planning sheet Item", nm, "custom_parent_child_trace_id", tid0, update_modified=False
-						)
 				continue
 			pp = _item_process_prefix(ic)
 			lam = _lamination_process_from_item_code(ic)
@@ -9074,16 +9199,12 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 				and (
 					pp in ("104", "107", "106", "105", "100")
 					or lam in ("104", "107")
-					or ic.startswith("100")
 				)
 				and not _planning_row_matches_sales_order_fg(ic, soik, so_by_name_bf)
 			):
-				frappe.db.set_value(
-					"Planning sheet Item",
-					nm,
-					"custom_parent_child_trace_id",
-					parent_trace_by_soi[soik],
-					update_modified=False,
+				cur_tr = _cstr(psi.get("custom_parent_child_trace_id")).strip()
+				_safe_set_planning_trace_id(
+					"Planning sheet Item", nm, ic, parent_trace_by_soi[soik], current_trace_id=cur_tr
 				)
 				continue
 			if _is_107_mid_bopp_item(ic):
