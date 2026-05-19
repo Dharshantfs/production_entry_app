@@ -355,6 +355,7 @@ class Planningsheet(Document):
                 _is_fabric_100_item_code,
                 _parent_child_trace_id_for_planning_row,
                 _set_trace_id_if_supported,
+                _trace_for_planning_row_using_main_parent,
             )
         except Exception:
             return
@@ -368,7 +369,14 @@ class Planningsheet(Document):
                     str(getattr(row, "sales_order_item", None) or "").strip()
                     or str(getattr(row, "so_item", None) or "").strip()
                 )
-                tid = _parent_child_trace_id_for_planning_row(ic, soi or None, ps_name)
+                row_probe = {
+                    "item_code": ic,
+                    "sales_order_item": soi,
+                    "so_item": soi,
+                }
+                tid = _trace_for_planning_row_using_main_parent(row_probe, ps_name, None, None)
+                if not tid:
+                    tid = _parent_child_trace_id_for_planning_row(ic, soi or None, ps_name)
                 if not tid:
                     continue
                 cur = str(getattr(row, "custom_parent_child_trace_id", None) or "").strip()
