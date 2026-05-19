@@ -71,6 +71,7 @@
 
     <div class="cc-table-container">
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilterTitle }})</div>
+      <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
         <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:120px;">INPUT MTRS</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY (KGS)</th><th style="min-width:96px;">ACHIEVED QTY (KGS)</th><th style="min-width:120px;">TOTAL PLANNED SHEET (PCS)</th><th style="min-width:120px;">TOTAL PRODUCED SHEET (PCS)</th><th style="min-width:120px;">CONSUMED MTRS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
@@ -133,6 +134,7 @@
           <tr v-if="!displayRows.length"><td :colspan="tableColCount" class="cell-center" style="padding:24px;color:#64748b;">No sheet cutting orders for this view.</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 </template>
@@ -477,7 +479,13 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow-x: auto;
+  overflow: visible;
+}
+.cc-order-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 240px);
+  overflow: auto;
   -webkit-overflow-scrolling: touch;
 }
 .cc-shift-board {
@@ -547,14 +555,15 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 .cc-prod-table {
   width: 100%;
   min-width: 1280px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
   line-height: 1.6;
 }
 .cc-prod-table th {
   position: sticky;
   top: 0;
-  z-index: 14;
+  z-index: 30;
   background: #047857;
   color: #fff;
   padding: 14px 12px;

@@ -110,6 +110,7 @@
       <div class="cc-table-unit-header lot-header">
         {{ tableUnitHeader }}
       </div>
+      <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
         <thead>
           <tr>
@@ -373,6 +374,7 @@
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 </template>
@@ -2105,9 +2107,15 @@ onUnmounted(() => {
   border: 1px solid #e5e7eb;
   width: 100%;
   max-width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  overflow: visible;
   font-size: 14px;
+}
+.cc-order-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 240px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .cc-shift-board {
   background: #fff;
@@ -2183,14 +2191,15 @@ onUnmounted(() => {
 .cc-prod-table {
   width: 100%;
   min-width: 1280px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
   line-height: 1.6;
 }
 .cc-prod-table th {
   position: sticky;
   top: 0;
-  z-index: 14;
+  z-index: 30;
   background: #047857;
   color: #fff;
   padding: 14px 12px;

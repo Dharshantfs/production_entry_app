@@ -13,7 +13,10 @@ app_license = "MIT"
 # ------------------
 
 # Scheduler board / Color Chart Vue (production_scheduler POC merged here)
-app_include_css = "/assets/production_entry/css/scheduler.css"
+app_include_css = [
+	"/assets/production_entry/css/scheduler.css",
+	"/assets/production_entry/css/planning_order_tables.css",
+]
 app_include_js = "scheduler.bundle.js"
 
 # include js, css files in header of web template

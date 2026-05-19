@@ -1,0 +1,37 @@
+/* Frozen header row for production / lamination / slitting / rewinding / printing / PB order tables */
+
+.cc-order-table-scroll,
+.cc-table-scroll.cc-order-table-scroll,
+.cc-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 220px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  background: #fff;
+}
+
+.cc-table-container .cc-order-table-scroll,
+.cc-table-unit-block .cc-table-scroll {
+  border: 1px solid #e5e7eb;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+}
+
+.cc-prod-table.lot-table,
+.cc-prod-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.cc-prod-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+/* Sticky right columns (production table) must sit above body cells */
+.cc-prod-table thead th[style*="position: sticky"][style*="right"] {
+  z-index: 40;
+}

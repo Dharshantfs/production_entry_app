@@ -144,7 +144,7 @@
                 {{ unitGroup.unit.toUpperCase() }} (06:00 am to 06:00 am) - Total: {{ unitGroup.totalWeight.toFixed(2) }} T
             </div>
 
-            <div class="cc-table-scroll">
+            <div class="cc-table-scroll cc-order-table-scroll">
             <table class="cc-prod-table">
                 <thead>
                     <tr>
@@ -2899,7 +2899,8 @@ onBeforeUnmount(() => {
 }
 .cc-table-scroll {
     width: 100%;
-    overflow-x: auto;
+    max-height: calc(100vh - 240px);
+    overflow: auto;
     -webkit-overflow-scrolling: touch;
 }
 .cc-table-unit-header {
@@ -2913,7 +2914,8 @@ onBeforeUnmount(() => {
 .cc-prod-table {
     width: 100%;
     min-width: 1280px;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     background: white;
     font-size: 12px;
     border: 1px solid #e5e7eb;
@@ -2929,8 +2931,9 @@ onBeforeUnmount(() => {
 .cc-prod-table thead th {
     position: sticky;
     top: 0;
-    z-index: 14;
+    z-index: 30;
     background: #f8fafc;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
 }
 .pt-sortable-body .pt-draggable-row {
   transition: background-color 0.2s;
