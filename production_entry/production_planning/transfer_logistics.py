@@ -1,0 +1,513 @@
+# -*- coding: utf-8 -*-
+"""Inter-company transfer logistics (isolated from BOM/planning sync)."""
+
+from __future__ import annotations
+
+import json
+
+import frappe
+from frappe import _
+from frappe.utils import cint, flt, getdate, now_datetime
+
+from production_entry.production_planning.scheduler_api import (
+	MOVEMENT_TRANSPORT,
+	PLANNING_MOVEMENT_TYPE_FIELD,
+	get_color_chart_data,
+)
+
+TRANSFER_WAREHOUSE_BY_COMPANY = {
+	"Jayashree Spun Bond - 1ZT": {
+		"s_warehouse": "Finished Goods - JSB-1ZT",
+		"t_warehouse": "Goods In Transit - JSB-1ZT",
+	},
+}
+
+BOARD_KIND_TO_SCOPE = {
+	"production": "only_100",
+	"lamination": "lamination_only",
+	"printing_105": "printing_only",
+	"printed_bopp_film": "printed_bopp_pb_only",
+	"slitting": "slitting_only",
+	"rewinding": "rewinding_only",
+	"sheet_cutting": "sheet_cutting_only",
+}
+
+TRANSFER_APPROVER_ROLES = frozenset({"System Manager", "Manufacturing Manager", "Administrator"})
+
+
+def _cstr(v):
+	return str(v or "").strip()
+
+
+def chart_row_transfer_fields(item):
+	"""Read transfer columns from a Planning Table row dict."""
+	mt = _cstr(item.get(PLANNING_MOVEMENT_TYPE_FIELD) or item.get("movement_type"))
+	dest = _cstr(item.get("custom_transfer_destination"))
+	status = _cstr(item.get("custom_transfer_status"))
+	return mt, dest, status
+
+
+def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
+	"""Build API payload fields for order tables (no change to planning sync)."""
+	mt, dest, status = chart_row_transfer_fields(item)
+	can_transfer = (
+		mt == MOVEMENT_TRANSPORT
+		and bool(wo_terminal)
+		and cint(spr_docstatus) == 1
+	)
+	block_reason = ""
+	if mt != MOVEMENT_TRANSPORT:
+		block_reason = "Not a transport row"
+	elif not wo_terminal:
+		block_reason = "Work order not completed"
+	elif cint(spr_docstatus) != 1:
+		block_reason = "SPR not done"
+	movement_display = mt or ""
+	if dest and mt == MOVEMENT_TRANSPORT:
+		movement_display = f"{mt} → {dest}"
+	return {
+		"movement_type": mt,
+		"transfer_destination": dest,
+		"transfer_status": status,
+		"movement_display": movement_display,
+		"can_transfer": can_transfer,
+		"transfer_block_reason": block_reason,
+	}
+
+
+def _parse_chart_rows(raw):
+	if raw is None:
+		return []
+	if isinstance(raw, str):
+		try:
+			raw = json.loads(raw)
+		except Exception:
+			return []
+	return list(raw) if isinstance(raw, list) else []
+
+
+def _chart_fetch_kwargs(view_scope, date=None, week=None, month=None, board_kind=None):
+	scope = BOARD_KIND_TO_SCOPE.get(_cstr(board_kind)) or "exclude_special"
+	kwargs = {"planned_only": 1, "board_process_scope": scope, "plan_name": "__all__"}
+	vs = _cstr(view_scope).lower() or "daily"
+	if vs == "weekly" and week:
+		kwargs["start_date"], kwargs["end_date"] = _week_range(week)
+	elif vs == "monthly" and month:
+		kwargs["start_date"], kwargs["end_date"] = _month_range(month)
+	elif date:
+		kwargs["date"] = date
+	else:
+		kwargs["date"] = getdate()
+	return kwargs
+
+
+def _week_range(week_val):
+	"""ISO week input YYYY-Www → start/end dates."""
+	try:
+		parts = _cstr(week_val).split("-W")
+		if len(parts) == 2:
+			y, w = int(parts[0]), int(parts[1])
+			from datetime import datetime, timedelta
+
+			d = datetime.strptime(f"{y}-W{w}-1", "%G-W%V-%u").date()
+			return str(d), str(d + timedelta(days=6))
+	except Exception:
+		pass
+	return getdate(), getdate()
+
+
+def _month_range(month_val):
+	try:
+		from frappe.utils import get_first_day, get_last_day
+
+		d = getdate(f"{month_val}-01")
+		return str(get_first_day(d)), str(get_last_day(d))
+	except Exception:
+		return getdate(), getdate()
+
+
+def _row_matches_filters(row, party_code=None, customer=None, unit=None):
+	if unit and _cstr(row.get("unit")) != _cstr(unit):
+		return False
+	pc = _cstr(party_code).lower()
+	if pc:
+		code = _cstr(row.get("partyCode") or row.get("party_code")).lower()
+		if pc not in code:
+			return False
+	cu = _cstr(customer).lower()
+	if cu:
+		cn = _cstr(row.get("customer_name") or row.get("customer")).lower()
+		if cu not in cn:
+			return False
+	return True
+
+
+@frappe.whitelist()
+def get_logistics_companies():
+	rows = frappe.get_all(
+		"Company",
+		filters={},
+		fields=["name"],
+		order_by="name asc",
+		limit_page_length=0,
+	)
+	return [{"name": r.name, "label": r.name} for r in rows]
+
+
+@frappe.whitelist()
+def get_transfer_destination_cards(from_company=None):
+	fc = _cstr(from_company)
+	companies = get_logistics_companies()
+	out = []
+	for c in companies:
+		if fc and c["name"] == fc:
+			continue
+		out.append(
+			{
+				"company": c["name"],
+				"label": _("Transfer to {0}").format(c["name"]),
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def get_transfer_eligible_rows(
+	board_kind=None,
+	view_scope=None,
+	date=None,
+	week=None,
+	month=None,
+	unit=None,
+	party_code=None,
+	customer=None,
+):
+	"""Rows with movement Transport; reuses color-chart WO/SPR flags without altering sync."""
+	kwargs = _chart_fetch_kwargs(view_scope, date, week, month, board_kind)
+	try:
+		raw = get_color_chart_data(**kwargs)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "get_transfer_eligible_rows")
+		raw = []
+	rows = _parse_chart_rows(raw)
+	out = []
+	for r in rows:
+		mt = _cstr(r.get("movement_type"))
+		if mt != MOVEMENT_TRANSPORT:
+			continue
+		if not _row_matches_filters(r, party_code, customer, unit):
+			continue
+		wo_terminal = bool(r.get("wo_terminal"))
+		spr_ds = cint(r.get("spr_docstatus") or 0)
+		extra = enrich_chart_row_transfer_payload(
+			{"custom_movement_type": mt, **r},
+			wo_terminal=wo_terminal,
+			spr_docstatus=spr_ds,
+		)
+		out.append(
+			{
+				"planning_table_row": r.get("itemName") or r.get("name"),
+				"planning_sheet": r.get("planningSheet"),
+				"party_code": r.get("partyCode"),
+				"customer_name": r.get("customer_name") or r.get("customer"),
+				"item_code": r.get("itemCode"),
+				"item_name": r.get("description"),
+				"unit": r.get("unit"),
+				"qty": flt(r.get("qty")),
+				"spr_name": r.get("spr_name"),
+				"spr_docstatus": spr_ds,
+				"wo_terminal": wo_terminal,
+				"pp_id": r.get("pp_id"),
+				"transfer_destination": r.get("transfer_destination"),
+				"transfer_status": r.get("transfer_status"),
+				**extra,
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None):
+	sn = _cstr(spr_name)
+	if not sn or not frappe.db.exists("Shaft Production Run", sn):
+		return []
+	if cint(frappe.db.get_value("Shaft Production Run", sn, "docstatus") or 0) != 1:
+		frappe.throw(_("SPR {0} must be submitted before transfer.").format(sn))
+	ic_filter = _cstr(item_code)
+	pc_filter = _cstr(party_code)
+	batches = []
+	seen = set()
+	for row in frappe.get_all(
+		"Shaft Production Run Item",
+		filters={"parent": sn},
+		fields=["batch_no", "item_code", "item_name", "net_weight", "gross_weight", "party_code", "work_order"],
+		order_by="idx asc",
+		limit_page_length=0,
+	):
+		bn = _cstr(row.get("batch_no"))
+		if not bn or bn in seen:
+			continue
+		if ic_filter and _cstr(row.get("item_code")) != ic_filter:
+			continue
+		if pc_filter and pc_filter.lower() not in _cstr(row.get("party_code")).lower():
+			continue
+		seen.add(bn)
+		qty = flt(row.get("net_weight") or row.get("gross_weight") or 0)
+		if qty <= 0:
+			qty = 1.0
+		batches.append(
+			{
+				"batch_no": bn,
+				"item_code": row.get("item_code"),
+				"item_name": row.get("item_name"),
+				"qty": qty,
+				"party_code": row.get("party_code"),
+				"work_order": row.get("work_order"),
+			}
+		)
+	return batches
+
+
+def _user_can_approve_transfer():
+	roles = set(frappe.get_roles(frappe.session.user) or [])
+	return bool(roles & TRANSFER_APPROVER_ROLES)
+
+
+@frappe.whitelist()
+def create_transfer_approval_request(
+	from_company=None,
+	to_company=None,
+	to_destination_label=None,
+	lines=None,
+):
+	fc = _cstr(from_company)
+	tc = _cstr(to_company)
+	label = _cstr(to_destination_label) or (_("Transfer to {0}").format(tc) if tc else "")
+	if not fc or not tc:
+		frappe.throw(_("From company and to company are required."))
+	if fc == tc:
+		frappe.throw(_("From and to company must be different."))
+	if not frappe.db.exists("Company", fc) or not frappe.db.exists("Company", tc):
+		frappe.throw(_("Invalid company."))
+	wh = TRANSFER_WAREHOUSE_BY_COMPANY.get(fc)
+	if not wh:
+		frappe.throw(
+			_("Transfer warehouses are not configured for company {0}. Contact administrator.").format(fc)
+		)
+	parsed = json.loads(lines) if isinstance(lines, str) else (lines or [])
+	if not parsed:
+		frappe.throw(_("Select at least one line with batch and qty."))
+
+	doc = frappe.new_doc("Transfer Approval")
+	doc.from_company = fc
+	doc.to_company = tc
+	doc.to_destination_label = label
+	doc.status = "Pending Approval"
+	doc.requested_by = frappe.session.user
+
+	for line in parsed:
+		ptr = _cstr(line.get("planning_table_row"))
+		if not ptr or not frappe.db.exists("Planning Table", ptr):
+			frappe.throw(_("Invalid planning row."))
+		spr = _cstr(line.get("spr_name"))
+		if not spr or cint(frappe.db.get_value("Shaft Production Run", spr, "docstatus") or 0) != 1:
+			frappe.throw(_("SPR not done for row {0}. Cannot request transfer.").format(ptr))
+		bn = _cstr(line.get("batch_no"))
+		if not bn:
+			frappe.throw(_("Batch is required for each line."))
+		qty = flt(line.get("qty") or 0)
+		if qty <= 0:
+			qty = 1.0
+		doc.append(
+			"lines",
+			{
+				"planning_table_row": ptr,
+				"planning_sheet": line.get("planning_sheet"),
+				"party_code": line.get("party_code"),
+				"customer_name": line.get("customer_name"),
+				"item_code": line.get("item_code"),
+				"unit": line.get("unit"),
+				"spr_name": spr,
+				"batch_no": bn,
+				"qty": qty,
+				"uom": line.get("uom") or "Kg",
+				"transfer_allowed": 1,
+				"block_reason": "",
+			},
+		)
+
+	doc.insert(ignore_permissions=True)
+	_stamp_planning_rows_for_transfer_request(doc.name, label)
+	frappe.db.commit()
+	return {"ok": True, "name": doc.name, "status": doc.status}
+
+
+def _stamp_planning_rows_for_transfer_request(approval_name, label):
+	ta = frappe.get_doc("Transfer Approval", approval_name)
+	for ln in ta.lines or []:
+		ptr = ln.planning_table_row
+		if not ptr:
+			continue
+		updates = {}
+		if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
+			updates["custom_transfer_destination"] = label
+		if frappe.db.has_column("Planning Table", "custom_transfer_status"):
+			updates["custom_transfer_status"] = "Pending Approval"
+		if frappe.db.has_column("Planning Table", "custom_transfer_approval"):
+			updates["custom_transfer_approval"] = approval_name
+		if updates:
+			frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
+		_sync_psi_transfer_fields(ptr, updates)
+
+
+def _sync_psi_transfer_fields(pt_name, updates):
+	if not updates or not frappe.db.table_exists("Planning sheet Item"):
+		return
+	pt = frappe.db.get_value(
+		"Planning Table",
+		pt_name,
+		["item_code", "sales_order_item", "so_item", "parent"],
+		as_dict=True,
+	)
+	if not pt:
+		return
+	soik = _cstr(pt.get("sales_order_item") or pt.get("so_item"))
+	filters = {"parent": pt.parent, "item_code": pt.item_code}
+	if soik and frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+		filters["sales_order_item"] = soik
+	psi = frappe.db.get_value("Planning sheet Item", filters, "name")
+	if psi:
+		frappe.db.set_value("Planning sheet Item", psi, updates, update_modified=False)
+
+
+@frappe.whitelist()
+def get_pending_transfer_approvals(limit=200):
+	rows = frappe.get_all(
+		"Transfer Approval",
+		filters={"status": ["in", ["Pending Approval", "Draft"]]},
+		fields=[
+			"name",
+			"from_company",
+			"to_company",
+			"to_destination_label",
+			"status",
+			"owner",
+			"modified",
+			"stock_entry",
+		],
+		order_by="modified desc",
+		limit_page_length=cint(limit) or 200,
+	)
+	return rows
+
+
+@frappe.whitelist()
+def get_transfer_approval_detail(name=None):
+	if not name or not frappe.db.exists("Transfer Approval", name):
+		frappe.throw(_("Transfer Approval not found."))
+	doc = frappe.get_doc("Transfer Approval", name)
+	return doc.as_dict()
+
+
+@frappe.whitelist()
+def approve_transfer_approval(name=None):
+	if not _user_can_approve_transfer():
+		frappe.throw(_("You do not have permission to approve transfers."), frappe.PermissionError)
+	if not name or not frappe.db.exists("Transfer Approval", name):
+		frappe.throw(_("Transfer Approval not found."))
+	ta = frappe.get_doc("Transfer Approval", name)
+	if ta.status == "Approved":
+		return {"ok": True, "name": name, "stock_entry": ta.stock_entry}
+	if ta.status == "Rejected":
+		frappe.throw(_("This transfer was rejected."))
+	ste = _create_draft_transfer_stock_entry(ta)
+	ta.stock_entry = ste
+	ta.status = "Approved"
+	ta.approved_by = frappe.session.user
+	ta.save(ignore_permissions=True)
+	_finalize_planning_rows_after_approval(ta)
+	frappe.db.commit()
+	return {"ok": True, "name": name, "stock_entry": ste}
+
+
+@frappe.whitelist()
+def reject_transfer_approval(name=None):
+	if not _user_can_approve_transfer():
+		frappe.throw(_("You do not have permission to reject transfers."), frappe.PermissionError)
+	ta = frappe.get_doc("Transfer Approval", name)
+	ta.status = "Rejected"
+	ta.approved_by = frappe.session.user
+	ta.save(ignore_permissions=True)
+	for ln in ta.lines or []:
+		if ln.planning_table_row and frappe.db.has_column("Planning Table", "custom_transfer_status"):
+			frappe.db.set_value(
+				"Planning Table",
+				ln.planning_table_row,
+				"custom_transfer_status",
+				"Rejected",
+				update_modified=False,
+			)
+	frappe.db.commit()
+	return {"ok": True, "name": name}
+
+
+def _create_draft_transfer_stock_entry(ta):
+	fc = _cstr(ta.from_company)
+	wh = TRANSFER_WAREHOUSE_BY_COMPANY.get(fc)
+	if not wh:
+		frappe.throw(_("Warehouses not configured for {0}").format(fc))
+	s_wh = wh["s_warehouse"]
+	t_wh = wh["t_warehouse"]
+	if not frappe.db.exists("Warehouse", s_wh):
+		frappe.throw(_("Source warehouse missing: {0}").format(s_wh))
+	if not frappe.db.exists("Warehouse", t_wh):
+		frappe.throw(_("Target warehouse missing: {0}").format(t_wh))
+
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = "Material Transfer"
+	se.company = fc
+	se.set_posting_time = 1
+	se.posting_date = getdate()
+	se.posting_time = now_datetime().strftime("%H:%M:%S")
+	if frappe.db.has_column("Stock Entry", "external_transfer"):
+		se.external_transfer = 1
+	unit_val = ""
+	for ln in ta.lines or []:
+		if ln.unit:
+			unit_val = ln.unit
+			break
+	if unit_val and frappe.db.has_column("Stock Entry", "unit"):
+		se.unit = unit_val
+
+	for ln in ta.lines or []:
+		qty = flt(ln.qty or 0)
+		if qty <= 0:
+			qty = 1.0
+		row = {
+			"item_code": ln.item_code,
+			"qty": qty,
+			"s_warehouse": s_wh,
+			"t_warehouse": t_wh,
+			"uom": ln.uom or frappe.db.get_value("Item", ln.item_code, "stock_uom") or "Kg",
+		}
+		if ln.batch_no and frappe.db.get_value("Item", ln.item_code, "has_batch_no"):
+			row["batch_no"] = ln.batch_no
+		se.append("items", row)
+
+	se.insert(ignore_permissions=True)
+	return se.name
+
+
+def _finalize_planning_rows_after_approval(ta):
+	for ln in ta.lines or []:
+		ptr = ln.planning_table_row
+		if not ptr:
+			continue
+		updates = {}
+		if frappe.db.has_column("Planning Table", "custom_transfer_status"):
+			updates["custom_transfer_status"] = "Draft STE Created"
+		if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
+			updates["custom_transfer_destination"] = ta.to_destination_label
+		if updates:
+			frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
+			_sync_psi_transfer_fields(ptr, updates)

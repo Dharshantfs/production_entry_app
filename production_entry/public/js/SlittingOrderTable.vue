@@ -49,6 +49,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <TransferToolbarBlock board-kind="slitting" :filter-context="transferFilterContext" @submitted="fetchData" />
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
@@ -113,6 +114,7 @@
             <th>ACHIEVED KGS</th>
             <th>FABRIC READY DATE</th>
             <th>ORDER SHEET</th>
+            <th style="min-width:100px;">MOVEMENT</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
             <th>STATUS</th>
@@ -169,6 +171,7 @@
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
             <td class="cell-center">{{ formatDate(row.fabric_ready_date) || "-" }}</td>
             <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
+            <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row) }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan first">PP Draft</span>
@@ -219,6 +222,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import { formatMovementCell } from "./movementDisplay.js";
 
 /** Must match Workstation name + ``planning_doctypes.SLITTING_UNIT`` */
 const SLITTING_UNIT = "JVE - SLITTING MACHINE";
@@ -251,6 +256,15 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+const transferFilterContext = computed(() => ({
+  view_scope: viewScope.value,
+  date: filterOrderDate.value,
+  week: filterWeek.value,
+  month: filterMonth.value,
+  unit: "",
+  party_code: filterPartyCode.value,
+  customer: filterCustomer.value,
+}));
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 const processFilter = ref("103");
@@ -277,7 +291,7 @@ let sprRealtimeHandlerRegistered = false;
 
 const showProcessColumn = computed(() => processFilter.value === "__all__");
 const showLamGsmColumn = computed(() => ["109", "108", "__all__"].includes(processFilter.value));
-const tableColCount = computed(() => 17 + (showProcessColumn.value ? 1 : 0) + (showLamGsmColumn.value ? 1 : 0));
+const tableColCount = computed(() => 18 + (showProcessColumn.value ? 1 : 0) + (showLamGsmColumn.value ? 1 : 0));
 
 function setProcessFilter(value) {
   const allowed = new Set(["103", "109", "108", "__all__"]);

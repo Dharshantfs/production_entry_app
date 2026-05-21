@@ -1,0 +1,15 @@
+{
+ "creation": "2026-05-19 12:00:00.000000",
+ "doctype": "Page",
+ "modified": "2026-05-19 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "transfer-approval",
+ "page_name": "transfer-approval",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "Manufacturing Manager"},
+  {"role": "Manufacturing User"}
+ ],
+ "standard": "Yes",
+ "title": "Transfer Approval"
+}

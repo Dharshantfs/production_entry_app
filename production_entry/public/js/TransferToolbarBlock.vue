@@ -1,0 +1,53 @@
+<template>
+  <button type="button" class="cc-transfer-btn" title="Transfer transport rows (SPR done)" @click="open">
+    Transfer
+  </button>
+  <TransferDialog
+    v-model="showTransferDialog"
+    :board-kind="boardKind"
+    :filter-context="filterContext"
+    :prefill="transferPrefill"
+    @submitted="onSubmitted"
+  />
+</template>
+
+<script setup>
+import { computed } from "vue";
+import TransferDialog from "./TransferDialog.vue";
+import { useTransferToolbar } from "./transferToolbar.js";
+
+const props = defineProps({
+  boardKind: { type: String, required: true },
+  filterContext: { type: Object, default: () => ({}) },
+});
+
+const emit = defineEmits(["submitted"]);
+
+const { showTransferDialog, transferPrefill, openTransferDialog } = useTransferToolbar(props.boardKind);
+
+const filterContext = computed(() => props.filterContext || {});
+
+function open() {
+  openTransferDialog({});
+}
+
+function onSubmitted() {
+  emit("submitted");
+}
+</script>
+
+<style scoped>
+.cc-transfer-btn {
+  background: #0ea5e9;
+  color: #fff;
+  border: 1px solid #0284c7;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cc-transfer-btn:hover {
+  background: #0284c7;
+}
+</style>

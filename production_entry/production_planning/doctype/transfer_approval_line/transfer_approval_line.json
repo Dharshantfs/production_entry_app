@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "creation": "2026-05-19 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "planning_table_row",
+  "planning_sheet",
+  "party_code",
+  "customer_name",
+  "item_code",
+  "unit",
+  "spr_name",
+  "batch_no",
+  "qty",
+  "uom",
+  "transfer_allowed",
+  "block_reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "planning_table_row",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Planning Table Row"
+  },
+  {
+   "fieldname": "planning_sheet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Planning Sheet",
+   "options": "Planning sheet"
+  },
+  {
+   "fieldname": "party_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Order Code"
+  },
+  {
+   "fieldname": "customer_name",
+   "fieldtype": "Data",
+   "label": "Customer"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "unit",
+   "fieldtype": "Data",
+   "label": "Unit"
+  },
+  {
+   "fieldname": "spr_name",
+   "fieldtype": "Link",
+   "label": "SPR",
+   "options": "Shaft Production Run"
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Batch No"
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty"
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM"
+  },
+  {
+   "default": "0",
+   "fieldname": "transfer_allowed",
+   "fieldtype": "Check",
+   "label": "Transfer Allowed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "block_reason",
+   "fieldtype": "Data",
+   "label": "Block Reason",
+   "read_only": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-19 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Production Planning",
+ "name": "Transfer Approval Line",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

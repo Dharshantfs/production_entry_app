@@ -359,6 +359,18 @@ def _finalize_planning_sheet_row_order_and_movement(planning_sheet_name):
 	_apply_movement_types_to_planning_sheet(planning_sheet_name)
 
 
+def _transfer_payload_for_chart_row(item, wo_terminal, spr_docstatus):
+	"""Transfer UI fields for order tables (lazy import avoids circular load at module init)."""
+	try:
+		from production_entry.production_planning.transfer_logistics import enrich_chart_row_transfer_payload
+
+		return enrich_chart_row_transfer_payload(
+			item, wo_terminal=bool(wo_terminal), spr_docstatus=cint(spr_docstatus or 0)
+		)
+	except Exception:
+		return {}
+
+
 @frappe.whitelist()
 def sync_planning_line_unit_options_meta():
 	"""
@@ -18756,6 +18768,7 @@ def _get_color_chart_data_impl(
                 "spr_name": spr_name,  # SPR linked to PP (validated)
                 "spr_docstatus": spr_docstatus,
                 "spr_unit": spr_unit,
+                **_transfer_payload_for_chart_row(item, wo_terminal, spr_docstatus),
             })
 
     if cint(planned_only) and plan_name == "__all__":

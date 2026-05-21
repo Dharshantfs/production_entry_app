@@ -40,6 +40,8 @@ import SlittingOrderTable from "./SlittingOrderTable.vue";
 import RewindingOrderTable from "./RewindingOrderTable.vue";
 import SheetCuttingOrderTable from "./SheetCuttingOrderTable.vue";
 import SequenceApproval from "./SequenceApproval.vue";
+import TransferApproval from "./TransferApproval.vue";
+import LogisticsKanban from "./LogisticsKanban.vue";
 
 production_scheduler.ConfirmedOrderController = class {
     constructor(wrapper) {
@@ -100,5 +102,17 @@ production_scheduler.SheetCuttingOrderTableController = class {
 production_scheduler.SequenceApprovalController = class {
     constructor(wrapper) {
         safeMount(SequenceApproval, wrapper, "Sequence Approval");
+    }
+};
+
+production_scheduler.TransferApprovalController = class {
+    constructor(wrapper) {
+        safeMount(TransferApproval, wrapper, "Transfer Approval");
+    }
+};
+
+production_scheduler.LogisticsKanbanController = class {
+    constructor(wrapper) {
+        safeMount(LogisticsKanban, wrapper, "Logistics Kanban");
     }
 };

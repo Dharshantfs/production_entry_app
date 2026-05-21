@@ -14,6 +14,9 @@
         "section_break_5",
         "unit",
         "custom_movement_type",
+        "custom_transfer_destination",
+        "custom_transfer_status",
+        "custom_transfer_approval",
         "dot_spec",
         "column_break_7",
         "gsm",
@@ -110,6 +113,24 @@
             "in_list_view": 1,
             "label": "Movement Type",
             "options": "Despatch\nTransport"
+        },
+        {
+            "fieldname": "custom_transfer_destination",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Transfer Destination"
+        },
+        {
+            "fieldname": "custom_transfer_status",
+            "fieldtype": "Select",
+            "label": "Transfer Status",
+            "options": "\nPending Approval\nApproved\nRejected\nDraft STE Created"
+        },
+        {
+            "fieldname": "custom_transfer_approval",
+            "fieldtype": "Link",
+            "label": "Transfer Approval",
+            "options": "Transfer Approval"
         },
         {
             "fieldname": "dot_spec",

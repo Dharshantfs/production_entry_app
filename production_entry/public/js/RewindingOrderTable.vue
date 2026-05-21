@@ -47,6 +47,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <TransferToolbarBlock board-kind="rewinding" :filter-context="transferFilterContext" @submitted="fetchData" />
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
@@ -164,6 +165,7 @@
             <th>PLANNED KGS</th>
             <th>ACHIEVED KGS</th>
             <th>ORDER SHEET</th>
+            <th style="min-width:100px;">MOVEMENT</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
             <th>STATUS</th>
@@ -172,7 +174,7 @@
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-              <td colspan="18" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+              <td colspan="19" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                   <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -185,7 +187,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td colspan="15" style="text-align:center; color:#94a3b8; font-style:italic;">No rewinding orders (maintenance day)</td>
+              <td colspan="16" style="text-align:center; color:#94a3b8; font-style:italic;">No rewinding orders (maintenance day)</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -219,6 +221,7 @@
             <td class="cell-right">{{ formatKgPlanning(row.planned_kgs ?? row.qty) }}</td>
             <td class="cell-right">{{ formatKg2(row.achieved_kgs ?? row.actual_production_weight_kgs) }}</td>
             <td class="cell-center">{{ row.order_sheet || (row.pp_id ? "YES" : "NO") }}</td>
+            <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row) }}</td>
             <td class="cell-center">
               <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">View</button>
               <span v-else-if="row.pp_id" class="pt-wo-closed-hint" title="Submit Production Plan first">PP Draft</span>
@@ -276,6 +279,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { formatKgPlanning, formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import { formatMovementCell } from "./movementDisplay.js";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_rewinding";
 const sizeDimUnit = ref("inches");
@@ -297,6 +302,15 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+const transferFilterContext = computed(() => ({
+  view_scope: viewScope.value,
+  date: filterOrderDate.value,
+  week: filterWeek.value,
+  month: filterMonth.value,
+  unit: filterUnit.value || "",
+  party_code: filterPartyCode.value,
+  customer: filterCustomer.value,
+}));
 const filterUnit = ref("");
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");

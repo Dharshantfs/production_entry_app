@@ -84,6 +84,7 @@
         {{ mergeMode ? '🔗 Merge Mode ON' : '🔗 Merge Mode OFF' }}
       </button>
       <button class="cc-maint-btn" @click="openMaintenanceDialog" title="Manage equipment maintenance schedules">⚙️ Maintenance</button>
+      <TransferToolbarBlock :board-kind="'production'" :filter-context="transferFilterContext" @submitted="fetchData" />
       
       <div class="cc-filter-item" style="margin-left: auto;">
           <button class="cc-view-btn" @click="goToBoard">📊 Back to Board</button>
@@ -164,6 +165,7 @@
                         <th style="width: 100px;">TOTAL ACTUAL (Kgs)</th>
                         <th style="width: 110px;">MERGE ACTION</th>
                         <th style="width: 100px;">DESPATCH STATUS</th>
+                        <th style="width: 110px;">MOVEMENT</th>
                         <th style="width: 90px; position: sticky; right: 100px; background: #fafafa; z-index: 10;">PRODUCTION PLAN</th>
                         <th style="width: 128px; position: sticky; right: 0; background: #fafafa; z-index: 10; line-height: 1.2;">
                           SPR / WO
@@ -180,7 +182,7 @@
                 >
                       <!-- Maintenance Row (show once at maintenance start date, centered) -->
                       <tr v-if="getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-                        <td colspan="18" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+                        <td colspan="19" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                           <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                             <span>🔧 MAINTENANCE: {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).type }} ({{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).startDate }} - {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).endDate }})</span>
                             <button @click="deleteMaintenanceRecord(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -225,6 +227,7 @@
                                 {{ formatDispatchStatus(row.item.delivery_status) }}
                               </span>
                             </td>
+                            <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row.item) }}</td>
                             <td class="cell-center" style="position: sticky; right: 100px; background: white; z-index: 9;">
                               <button v-if="row.item.pp_id" @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="`View PP: ${row.item.pp_id || 'resolve from sheet'}`">
                                 📋 View
@@ -422,6 +425,8 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } 
 import Sortable from "sortablejs";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import { formatKgPlanning, mmDisplayFromInchesWithCodeFallback } from "./planning_table_size_units.js";
+import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import { formatMovementCell } from "./movementDisplay.js";
 
 // ===== MAINTENANCE DATA =====
 const maintenanceRecords = ref([]);
@@ -874,6 +879,15 @@ const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
+const transferFilterContext = computed(() => ({
+  view_scope: viewScope.value,
+  date: filterOrderDate.value,
+  week: filterWeek.value,
+  month: filterMonth.value,
+  unit: filterUnit.value || "",
+  party_code: filterPartyCode.value,
+  customer: filterCustomer.value,
+}));
 const rawData = ref([]);
 const tableReorderLocked = ref(true);
 const sortableInstances = ref([]);

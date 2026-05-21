@@ -36,6 +36,7 @@
       <div class="cc-filter-item"><label>Customer</label><input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" /></div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
+        <TransferToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" @submitted="fetchData" />
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveArrangement">Save Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="restoreArrangement">Restore Arrangment</button>
@@ -73,7 +74,7 @@
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilterTitle }})</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:120px;">INPUT MTRS</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY (KGS)</th><th style="min-width:96px;">ACHIEVED QTY (KGS)</th><th style="min-width:120px;">TOTAL PLANNED SHEET (PCS)</th><th style="min-width:120px;">TOTAL PRODUCED SHEET (PCS)</th><th style="min-width:120px;">CONSUMED MTRS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:120px;">INPUT MTRS</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY (KGS)</th><th style="min-width:96px;">ACHIEVED QTY (KGS)</th><th style="min-width:120px;">TOTAL PLANNED SHEET (PCS)</th><th style="min-width:120px;">TOTAL PRODUCED SHEET (PCS)</th><th style="min-width:120px;">CONSUMED MTRS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="tableColCount" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
@@ -92,7 +93,8 @@
               <td v-if="showLamGsmColumn" class="cell-center">{{ formatNum(row.custom_lam_gsm) }}</td>
               <td v-if="showBoppGsmColumn" class="cell-center">{{ boppGsmForRow(row) }}</td>
               <td class="cell-center">{{ formatRollSizeCell(row) }}</td><td class="cell-right">{{ formatNum(row.mtr) }}</td><td class="cell-center">{{ formatSheetSizeCell(row) }}</td>
-              <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.total_planned_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.total_produced_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.produced_meter) }}</td><td v-if="showMergedPerDayProductionCell(row)" class="cell-right pt-merged-perday" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
+              <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td><td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td><td class="cell-right">{{ formatNum(row.total_planned_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.total_produced_sheet_pcs) }}</td><td class="cell-right">{{ formatNum(row.produced_meter) }}</td>              <td v-if="showMergedPerDayProductionCell(row)" class="cell-right pt-merged-perday" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
+              <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row) }}</td>
               <!-- PRODUCTION PLAN: open print format (same as Lamination table) -->
               <td class="cell-center">
                 <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" class="cc-pp-btn" @click="openProductionPlanView(row.planningSheet, row.salesOrderItem, row.itemName, row.pp_id)">View</button>
@@ -143,6 +145,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { formatSheetSizeCell as formatSheetSizeCellMm, formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import { formatMovementCell } from "./movementDisplay.js";
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_sheet_cutting";
 const sizeDimUnit = ref("inches");
 const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (Inches)"));
@@ -218,8 +222,17 @@ function boppGsmForRow(row) {
   return formatNum(row?.custom_bopp_gsm);
 }
 const tableColCount = computed(
-  () => 19 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)
+  () => 20 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)
 );
+const transferFilterContext = computed(() => ({
+  view_scope: viewScope.value,
+  date: filterOrderDate.value,
+  week: filterWeek.value,
+  month: filterMonth.value,
+  unit: "",
+  party_code: filterPartyCode.value,
+  customer: filterCustomer.value,
+}));
 function setProcessFilter(value) {
   const allowed = new Set(["251", "252", "253", "254", "255", "__all__"]);
   const next = allowed.has(value) ? value : "251";

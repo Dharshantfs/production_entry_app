@@ -63,6 +63,7 @@
       </div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">{{ isPrinting105Table ? "Printing Machine Off" : "Machine Off" }}</button>
+        <TransferToolbarBlock :board-kind="transferBoardKind" :filter-context="transferFilterContext" @submitted="fetchData" />
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
@@ -153,6 +154,7 @@
             <th v-if="!isPrinting105Table">{{ producedWeightHeader }}</th>
             <th v-if="!isPrintedBoppTable && !isPrinting105Table">PLANNED LENGTH (MTRS)</th>
             <th v-if="!isPrintedBoppTable && !isPrinting105Table">ACHIEVED LENGTH (MTRS)</th>
+            <th style="min-width:100px;">MOVEMENT</th>
             <th style="min-width:90px;">PRODUCTION PLAN</th>
             <th style="min-width:128px;">SPR / WO</th>
           </tr>
@@ -246,6 +248,7 @@
             </td>
             <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right">{{ row.planned_meter ?? "-" }}</td>
             <td v-if="!isPrintedBoppTable && !isPrinting105Table" class="cell-right">{{ formatNum(row.achieved_meter) }}</td>
+            <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row) }}</td>
             <td class="cell-center">
               <template v-if="isPrinting105Table">
                 <button v-if="row.pp_id && Number(row.pp_docstatus) === 1" type="button" @click="openProductionPlanView(row.planningSheet || row.plan_name, row.salesOrderItem, row.itemName, row.pp_id || '')" class="cc-pp-btn">PP View</button>
@@ -383,6 +386,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import { formatMovementCell } from "./movementDisplay.js";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_lamination_printing";
 const sizeDimUnit = ref("inches");
@@ -571,20 +576,33 @@ const filteredRows = computed(() => {
   return sortRowsBySavedSequence(d);
 });
 
+const transferBoardKind = computed(() => {
+  if (isPrintedBoppTable.value) return "printed_bopp_film";
+  if (isPrinting105Table.value) return "printing_105";
+  return "lamination";
+});
+const transferFilterContext = computed(() => ({
+  view_scope: viewScope.value,
+  date: filterOrderDate.value,
+  week: filterWeek.value,
+  month: filterMonth.value,
+  unit: filterUnit.value || "",
+  party_code: filterPartyCode.value,
+  customer: filterCustomer.value,
+}));
+
 const tableColCount = computed(() => {
   if (isPrinting105Table.value) {
-    let n = 22;
+    let n = 23;
     if (showPrintingAllProcesses.value) n += 1;
     if (showPrintingLamGsmColumn.value) n += 1;
     return n;
   }
   if (isPrintedBoppTable.value) {
-    // Printed BOPP table adds extra columns vs lamination table
-    // (includes design colour column after BOPP finish size).
-    return 20;
+    return 21;
   }
-  let n = 18;
-  if (showAllProcesses.value) n += 1; // PROCESS column
+  let n = 19;
+  if (showAllProcesses.value) n += 1;
   if (showDesignNameColumn.value) n += 1;
   if (showCylinderTypeColumn.value) n += 1;
   if (showBoppGsmColumn.value) n += 1;
