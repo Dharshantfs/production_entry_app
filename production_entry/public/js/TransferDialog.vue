@@ -57,18 +57,52 @@
                 <span v-if="row.can_transfer" class="tl-ok">Ready</span>
                 <span v-else class="tl-block">{{ row.transfer_block_reason || "Blocked" }}</span>
               </td>
-              <td>
+              <td class="tl-batch-cell">
                 <template v-if="isSelected(row) && row.can_transfer">
-                  <button type="button" class="cc-clear-btn" @click="openBatchPicker(row)">Select batch</button>
-                  <span v-if="selection[row.planning_table_row]">
-                    {{ selection[row.planning_table_row].batch_no }} · {{ selection[row.planning_table_row].qty }} kg
-                  </span>
+                  <button type="button" class="cc-clear-btn" @click="openBatchPicker(row)">
+                    {{ batchPickerOpenFor === row.planning_table_row ? "Edit batches" : "Select batches" }}
+                  </button>
+                  <div v-if="batchSummary(row)" class="tl-batch-summary">{{ batchSummary(row) }}</div>
                 </template>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
+
+      <!-- In-dialog batch picker (stays inside Transfer popup) -->
+      <div v-if="batchPickerOpenFor" class="tl-batch-panel">
+        <div class="tl-batch-panel-head">
+          <strong>Select batches (multi)</strong>
+          <span class="tl-batch-meta">Order {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.spr_name }}</span>
+          <button type="button" class="tl-close" @click="closeBatchPicker">✕</button>
+        </div>
+        <p v-if="batchLoading" class="tl-muted">Loading batches from SPR…</p>
+        <p v-else-if="!batchOptions.length" class="tl-block">No produced batches on this SPR.</p>
+        <div v-else class="tl-batch-list">
+          <label v-for="(b, idx) in batchOptions" :key="b.batch_no" class="tl-batch-row">
+            <input type="checkbox" v-model="b.selected" />
+            <span class="tl-batch-no">{{ b.batch_no }}</span>
+            <span class="tl-batch-item">{{ b.item_code }}</span>
+            <input
+              type="number"
+              class="tl-batch-qty"
+              step="0.001"
+              min="0.001"
+              :disabled="!b.selected"
+              v-model.number="b.qty"
+            />
+            <span class="tl-batch-uom">Kg</span>
+          </label>
+        </div>
+        <div class="tl-batch-panel-foot">
+          <button type="button" class="cc-clear-btn" @click="closeBatchPicker">Cancel</button>
+          <button type="button" class="cc-save-arrange-btn" :disabled="!batchApplyEnabled" @click="applyBatches">
+            Apply batches
+          </button>
+        </div>
+      </div>
+
       <div class="tl-footer">
         <button type="button" class="cc-clear-btn" @click="close">Cancel</button>
         <button type="button" class="cc-save-arrange-btn" :disabled="submitting || !canSubmit" @click="submit">
@@ -101,7 +135,13 @@ const fromCompany = ref("Jayashree Spun Bond - 1ZT");
 const toCompany = ref("");
 const dlgParty = ref("");
 const dlgCustomer = ref("");
+/** planning_table_row → { row, batches: [{ batch_no, qty, item_code }] } */
 const selection = ref({});
+
+const batchPickerOpenFor = ref("");
+const batchPickerRow = ref(null);
+const batchOptions = ref([]);
+const batchLoading = ref(false);
 
 const toCompanyOptions = computed(() => {
   const fc = (fromCompany.value || "").trim();
@@ -126,14 +166,31 @@ const destinationLabel = computed(() => {
   return `Transfer to ${tc}`;
 });
 
+const batchApplyEnabled = computed(() => {
+  const picked = batchOptions.value.filter((b) => b.selected);
+  return picked.length > 0 && picked.every((b) => b.batch_no && ltn(b.qty) > 0);
+});
+
 const canSubmit = computed(() => {
   if (!(toCompany.value || "").trim()) return false;
-  const keys = Object.keys(selection.value);
-  return keys.length > 0 && keys.every((k) => selection.value[k]?.batch_no);
+  const entries = Object.values(selection.value);
+  if (!entries.length) return false;
+  return entries.every((s) => Array.isArray(s.batches) && s.batches.length > 0);
 });
 
 function isSelected(row) {
   return Boolean(selection.value[row.planning_table_row]);
+}
+
+function batchSummary(row) {
+  const sel = selection.value[row.planning_table_row];
+  if (!sel?.batches?.length) return "";
+  return sel.batches.map((b) => `${b.batch_no} · ${formatQty(b.qty)} kg`).join("; ");
+}
+
+function formatQty(q) {
+  const n = ltn(q);
+  return Number.isFinite(n) ? (Math.round(n * 1000) / 1000).toString() : "0";
 }
 
 function toggleRow(row, ev) {
@@ -142,25 +199,53 @@ function toggleRow(row, ev) {
     const next = { ...selection.value };
     delete next[id];
     selection.value = next;
+    if (batchPickerOpenFor.value === id) closeBatchPicker();
     return;
   }
   if (!row.can_transfer) {
     ev.target.checked = false;
-    frappe.msgprint(row.transfer_block_reason || __("SPR not done — transfer not allowed."));
+    frappe.msgprint(row.transfer_block_reason || "SPR not done — transfer not allowed.");
     return;
   }
   selection.value = {
     ...selection.value,
-    [id]: { row, batch_no: "", qty: 1 },
+    [id]: { row, batches: selection.value[id]?.batches || [] },
   };
 }
 
+function ensureRowSelected(row) {
+  const id = row.planning_table_row;
+  if (!selection.value[id]) {
+    selection.value = {
+      ...selection.value,
+      [id]: { row, batches: [] },
+    };
+  }
+  return selection.value[id];
+}
+
 function openBatchPicker(row) {
-  const spr = (row.spr_name || "").trim();
-  if (!spr) {
-    frappe.msgprint(__("No SPR linked to this row."));
+  if (!row.can_transfer) {
+    frappe.msgprint(row.transfer_block_reason || "Cannot transfer this row.");
     return;
   }
+  const spr = (row.spr_name || "").trim();
+  if (!spr) {
+    frappe.msgprint("No SPR linked to this row.");
+    return;
+  }
+  ensureRowSelected(row);
+  batchPickerRow.value = row;
+  batchPickerOpenFor.value = row.planning_table_row;
+  batchLoading.value = true;
+  batchOptions.value = [];
+
+  const existing = selection.value[row.planning_table_row]?.batches || [];
+  const existingMap = {};
+  existing.forEach((b) => {
+    existingMap[b.batch_no] = b;
+  });
+
   frappe.call({
     method: `${API}.get_spr_produced_batches`,
     args: {
@@ -170,49 +255,55 @@ function openBatchPicker(row) {
     },
     callback: (r) => {
       const batches = r.message || [];
-      if (!batches.length) {
-        frappe.msgprint(__("No produced batches on submitted SPR {0}.", [spr]));
-        return;
-      }
-      const fields = [
-        {
-          fieldtype: "Select",
-          fieldname: "batch_no",
-          label: "Batch",
-          options: batches.map((b) => b.batch_no).join("\n"),
-          reqd: 1,
-        },
-        {
-          fieldtype: "Float",
-          fieldname: "qty",
-          label: "Qty (Kg)",
-          default: batches[0]?.qty || 1,
-          reqd: 1,
-        },
-      ];
-      const d = new frappe.ui.Dialog({
-        title: __("Select batch"),
-        fields,
-        primary_action_label: __("OK"),
-        primary_action(values) {
-          const bn = values.batch_no;
-          const b = batches.find((x) => x.batch_no === bn) || {};
-          const qty = Math.max(ltn(values.qty), 1);
-          selection.value = {
-            ...selection.value,
-            [row.planning_table_row]: {
-              row,
-              batch_no: bn,
-              qty,
-              item_code: b.item_code || row.item_code,
-            },
-          };
-          d.hide();
-        },
+      batchOptions.value = batches.map((b) => {
+        const prev = existingMap[b.batch_no];
+        return {
+          batch_no: b.batch_no,
+          item_code: b.item_code || row.item_code,
+          item_name: b.item_name,
+          qty: prev ? ltn(prev.qty) : ltn(b.qty) || 1,
+          selected: Boolean(prev),
+        };
       });
-      d.show();
+      batchLoading.value = false;
+      if (!batchOptions.value.length) {
+        frappe.msgprint(`No produced batches on submitted SPR ${spr}.`);
+      }
+    },
+    error: () => {
+      batchLoading.value = false;
+      frappe.msgprint("Failed to load batches from SPR.");
     },
   });
+}
+
+function closeBatchPicker() {
+  batchPickerOpenFor.value = "";
+  batchPickerRow.value = null;
+  batchOptions.value = [];
+}
+
+function applyBatches() {
+  const row = batchPickerRow.value;
+  if (!row) return;
+  const id = row.planning_table_row;
+  const picked = batchOptions.value
+    .filter((b) => b.selected && b.batch_no && ltn(b.qty) > 0)
+    .map((b) => ({
+      batch_no: b.batch_no,
+      qty: ltn(b.qty),
+      item_code: b.item_code || row.item_code,
+    }));
+  if (!picked.length) {
+    frappe.msgprint("Select at least one batch with qty.");
+    return;
+  }
+  selection.value = {
+    ...selection.value,
+    [id]: { row, batches: picked },
+  };
+  frappe.show_alert({ message: `${picked.length} batch(es) applied`, indicator: "green" }, 3);
+  closeBatchPicker();
 }
 
 function ltn(v) {
@@ -221,6 +312,7 @@ function ltn(v) {
 }
 
 function close() {
+  closeBatchPicker();
   emit("update:modelValue", false);
 }
 
@@ -255,20 +347,32 @@ function loadRows() {
 }
 
 function submit() {
-  if (!canSubmit.value) return;
+  if (!canSubmit.value) {
+    if (!(toCompany.value || "").trim()) {
+      frappe.msgprint("Select destination company.");
+    } else {
+      frappe.msgprint("Select at least one row and apply batches for each.");
+    }
+    return;
+  }
   submitting.value = true;
-  const lines = Object.values(selection.value).map((s) => ({
-    planning_table_row: s.row.planning_table_row,
-    planning_sheet: s.row.planning_sheet,
-    party_code: s.row.party_code,
-    customer_name: s.row.customer_name,
-    item_code: s.item_code || s.row.item_code,
-    unit: s.row.unit,
-    spr_name: s.row.spr_name,
-    batch_no: s.batch_no,
-    qty: s.qty,
-    uom: "Kg",
-  }));
+  const lines = [];
+  Object.values(selection.value).forEach((s) => {
+    (s.batches || []).forEach((b) => {
+      lines.push({
+        planning_table_row: s.row.planning_table_row,
+        planning_sheet: s.row.planning_sheet,
+        party_code: s.row.party_code,
+        customer_name: s.row.customer_name,
+        item_code: b.item_code || s.row.item_code,
+        unit: s.row.unit,
+        spr_name: s.row.spr_name,
+        batch_no: b.batch_no,
+        qty: Math.max(ltn(b.qty), 1),
+        uom: "Kg",
+      });
+    });
+  });
   frappe.call({
     method: `${API}.create_transfer_approval_request`,
     args: {
@@ -280,7 +384,7 @@ function submit() {
     callback: (r) => {
       submitting.value = false;
       frappe.show_alert({
-        message: __("Transfer sent for approval: {0}", [r.message?.name || ""]),
+        message: `Transfer sent for approval: ${r.message?.name || ""}`,
         indicator: "green",
       });
       emit("submitted", r.message);
@@ -297,6 +401,7 @@ watch(
   (open) => {
     if (!open) return;
     selection.value = {};
+    closeBatchPicker();
     dlgParty.value = props.prefill?.party_code || props.filterContext?.party_code || "";
     dlgCustomer.value = props.prefill?.customer || props.filterContext?.customer || "";
     fromCompany.value = props.prefill?.from_company || "Jayashree Spun Bond - 1ZT";
@@ -327,6 +432,7 @@ watch(
   display: flex;
   flex-direction: column;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
+  position: relative;
 }
 .tl-header {
   display: flex;
@@ -365,6 +471,7 @@ watch(
 .tl-table-wrap {
   overflow: auto;
   flex: 1;
+  min-height: 120px;
   padding: 0 20px;
 }
 .tl-table {
@@ -377,6 +484,77 @@ watch(
   border: 1px solid #e2e8f0;
   padding: 8px;
   text-align: left;
+  vertical-align: top;
+}
+.tl-batch-cell {
+  min-width: 200px;
+}
+.tl-batch-summary {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #0369a1;
+  line-height: 1.4;
+}
+.tl-batch-panel {
+  margin: 0 20px 12px;
+  padding: 12px 14px;
+  border: 2px solid #0ea5e9;
+  border-radius: 8px;
+  background: #f0f9ff;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+}
+.tl-batch-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.tl-batch-meta {
+  font-size: 11px;
+  color: #64748b;
+  flex: 1;
+}
+.tl-batch-list {
+  overflow: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tl-batch-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto 90px auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tl-batch-no {
+  font-weight: 600;
+  font-family: monospace;
+}
+.tl-batch-item {
+  color: #64748b;
+  font-size: 11px;
+}
+.tl-batch-qty {
+  width: 80px;
+  padding: 4px 6px;
+}
+.tl-batch-panel-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #bae6fd;
 }
 .tl-ok {
   color: #15803d;
@@ -387,7 +565,7 @@ watch(
   font-size: 11px;
 }
 .tl-muted {
-  padding: 20px;
+  padding: 8px 0;
   color: #64748b;
 }
 .tl-footer {
