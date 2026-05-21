@@ -70,6 +70,294 @@ REWINDING_BOARD_UNITS = (
 # Printed BOPP film (PB-* BOM children of 107 FG): dedicated queue unit + board/table scope.
 PRINTED_BOPP_FILM_UNIT = PLANNING_PRINTED_BOPP_FILM_UNIT
 
+# BOM-extracted rows vs SO FG parents (both Planning Table + Planning sheet Item).
+PLANNING_MOVEMENT_TYPE_FIELD = "custom_movement_type"
+MOVEMENT_DESPATCH = "Despatch"
+MOVEMENT_TRANSPORT = "Transport"
+
+# Lower rank = earlier in sheet (upstream production first).
+_PRODUCTION_SORT_RANK_BY_PROCESS = {
+	"100": 10,
+	"PB": 20,
+	"102": 30,
+	"103": 40,
+	"104": 50,
+	"105": 55,
+	"107": 60,
+	"106": 70,
+	"109": 75,
+	"251": 80,
+	"252": 90,
+	"253": 95,
+	"254": 100,
+	"255": 105,
+	"108": 110,
+}
+
+
+def _has_planning_movement_type_column(doctype="Planning Table"):
+	return bool(frappe.db.has_column(doctype, PLANNING_MOVEMENT_TYPE_FIELD))
+
+
+def _production_sort_rank(item_code):
+	"""Sort key tier for production sequence (fabric → PB → mid processes → FG)."""
+	ic = _cstr(item_code)
+	if not ic:
+		return 900
+	if _is_printed_bopp_item_code(ic) or ic.upper().startswith("PB-"):
+		return _PRODUCTION_SORT_RANK_BY_PROCESS["PB"]
+	pp = _bom_item_process_code(ic) or _item_process_prefix(ic) or _lamination_process_from_item_code(ic)
+	if pp == "100" or ic.startswith("100"):
+		return _PRODUCTION_SORT_RANK_BY_PROCESS["100"]
+	return _PRODUCTION_SORT_RANK_BY_PROCESS.get(pp, 500)
+
+
+def _planning_row_sort_key(row, so_line_order):
+	"""Group by SO line order, then upstream→downstream process rank, then stable idx."""
+	soik = _cstr(row.get("sales_order_item") or row.get("so_item"))
+	ic = _cstr(row.get("item_code"))
+	return (
+		so_line_order.get(soik, 99999),
+		_production_sort_rank(ic),
+		cint(row.get("idx") or 0),
+		_cstr(row.get("name")),
+	)
+
+
+def _movement_type_for_planning_row(item_code, so_item_key, so_fg_by_soi):
+	"""SO FG line item → Despatch; BOM-extracted children on that line → Transport."""
+	soik = _cstr(so_item_key)
+	ic = _cstr(item_code)
+	if not ic:
+		return MOVEMENT_TRANSPORT
+	so_it = so_fg_by_soi.get(soik) if soik else None
+	if so_it:
+		so_ic = _cstr(getattr(so_it, "item_code", None) or (so_it.get("item_code") if isinstance(so_it, dict) else ""))
+		if so_ic and ic == so_ic:
+			return MOVEMENT_DESPATCH
+	return MOVEMENT_TRANSPORT
+
+
+def _set_movement_type_if_supported(row, movement_type, doctype_hint="Planning Table"):
+	"""Set movement type on dict or document row when the column exists."""
+	if not movement_type or not _has_planning_movement_type_column(doctype_hint):
+		return
+	if isinstance(row, dict):
+		row[PLANNING_MOVEMENT_TYPE_FIELD] = movement_type
+	elif hasattr(row, PLANNING_MOVEMENT_TYPE_FIELD):
+		setattr(row, PLANNING_MOVEMENT_TYPE_FIELD, movement_type)
+
+
+def _so_line_order_and_fg_map(sales_order_name):
+	"""Return (so_line_idx map, so_item_name → SO line row)."""
+	order = {}
+	fg_map = {}
+	if not sales_order_name or not frappe.db.exists("Sales Order", sales_order_name):
+		return order, fg_map
+	so = frappe.get_doc("Sales Order", sales_order_name)
+	for i, it in enumerate(so.items or []):
+		order[it.name] = i
+		fg_map[it.name] = it
+	return order, fg_map
+
+
+def _apply_movement_types_to_planning_sheet(planning_sheet_name):
+	"""Stamp Despatch on SO FG rows and Transport on BOM-extracted children (both child tables)."""
+	if not planning_sheet_name or not _has_planning_movement_type_column("Planning Table"):
+		return
+	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
+	_, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
+
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not _has_planning_movement_type_column(doctype):
+			continue
+		soi_col = "sales_order_item" if frappe.db.has_column(doctype, "sales_order_item") else None
+		soi_alt = "so_item" if frappe.db.has_column(doctype, "so_item") else None
+		fields = ["name", "item_code"]
+		if soi_col:
+			fields.append(soi_col)
+		if soi_alt:
+			fields.append(soi_alt)
+		rows = frappe.get_all(
+			doctype,
+			filters={"parent": planning_sheet_name},
+			fields=fields,
+			limit_page_length=0,
+		) or []
+		for r in rows:
+			soik = _cstr(r.get(soi_col) or r.get(soi_alt))
+			mt = _movement_type_for_planning_row(r.get("item_code"), soik, so_fg_by_soi)
+			frappe.db.set_value(doctype, r.name, PLANNING_MOVEMENT_TYPE_FIELD, mt, update_modified=False)
+
+
+def _reorder_planning_sheet_by_production_sequence(planning_sheet_name):
+	"""Sort Planning Table + Planning sheet Item: per SO line, fabric/PB/mid/FG production order."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return
+	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
+	so_line_order, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
+
+	pt_fields = ["name", "item_code", "idx"]
+	for col in ("sales_order_item", "so_item"):
+		if frappe.db.has_column("Planning Table", col):
+			pt_fields.append(col)
+	pt_rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=pt_fields,
+		order_by="idx asc",
+		limit_page_length=0,
+	) or []
+	if not pt_rows:
+		return
+
+	pt_rows.sort(key=lambda r: _planning_row_sort_key(r, so_line_order))
+	for new_idx, r in enumerate(pt_rows, start=1):
+		frappe.db.set_value("Planning Table", r.name, "idx", new_idx, update_modified=False)
+		if _has_planning_movement_type_column("Planning Table"):
+			soik = _cstr(r.get("sales_order_item") or r.get("so_item"))
+			mt = _movement_type_for_planning_row(r.get("item_code"), soik, so_fg_by_soi)
+			frappe.db.set_value(
+				"Planning Table", r.name, PLANNING_MOVEMENT_TYPE_FIELD, mt, update_modified=False
+			)
+
+	if not frappe.db.table_exists("Planning sheet Item"):
+		return
+	psi_fields = ["name", "item_code", "idx"]
+	for col in ("sales_order_item", "so_item"):
+		if frappe.db.has_column("Planning sheet Item", col):
+			psi_fields.append(col)
+	psi_rows = frappe.get_all(
+		"Planning sheet Item",
+		filters={"parent": planning_sheet_name},
+		fields=psi_fields,
+		limit_page_length=0,
+	) or []
+	if not psi_rows:
+		return
+
+	psi_by_key = {}
+	for pr in psi_rows:
+		soik = _cstr(pr.get("sales_order_item") or pr.get("so_item"))
+		key = (soik, _cstr(pr.get("item_code")))
+		psi_by_key.setdefault(key, []).append(pr)
+
+	ordered_psi = []
+	used = set()
+	for r in pt_rows:
+		soik = _cstr(r.get("sales_order_item") or r.get("so_item"))
+		key = (soik, _cstr(r.get("item_code")))
+		for pr in psi_by_key.get(key, []):
+			pn = pr.get("name")
+			if pn and pn not in used:
+				ordered_psi.append(pr)
+				used.add(pn)
+	for pr in sorted(psi_rows, key=lambda x: (cint(x.get("idx") or 0), _cstr(x.get("name")))):
+		pn = pr.get("name")
+		if pn and pn not in used:
+			ordered_psi.append(pr)
+			used.add(pn)
+
+	for new_idx, pr in enumerate(ordered_psi, start=1):
+		frappe.db.set_value("Planning sheet Item", pr.name, "idx", new_idx, update_modified=False)
+		if _has_planning_movement_type_column("Planning sheet Item"):
+			soik = _cstr(pr.get("sales_order_item") or pr.get("so_item"))
+			mt = _movement_type_for_planning_row(pr.get("item_code"), soik, so_fg_by_soi)
+			frappe.db.set_value(
+				"Planning sheet Item", pr.name, PLANNING_MOVEMENT_TYPE_FIELD, mt, update_modified=False
+			)
+
+
+def reorder_planning_sheet_child_tables_in_doc(doc):
+	"""Reorder in-memory ``items`` + board table on desk save (same production sequence rules)."""
+	if not doc:
+		return
+	so_name = _cstr(doc.get("sales_order"))
+	so_line_order, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
+
+	def _sort_child_rows(rows):
+		if not rows:
+			return []
+		payload = []
+		for row in rows:
+			payload.append(
+				{
+					"row": row,
+					"item_code": _cstr(getattr(row, "item_code", None)),
+					"sales_order_item": _cstr(getattr(row, "sales_order_item", None) or getattr(row, "so_item", None)),
+					"so_item": _cstr(getattr(row, "so_item", None)),
+					"idx": cint(getattr(row, "idx", None) or 0),
+					"name": _cstr(getattr(row, "name", None)),
+				}
+			)
+		payload.sort(key=lambda p: _planning_row_sort_key(p, so_line_order))
+		for new_idx, p in enumerate(payload, start=1):
+			p["row"].idx = new_idx
+			ic = p["item_code"]
+			soik = p["sales_order_item"] or p["so_item"]
+			mt = _movement_type_for_planning_row(ic, soik, so_fg_by_soi)
+			_set_movement_type_if_supported(p["row"], mt, "Planning Table")
+		return [p["row"] for p in payload]
+
+	board_field = None
+	sorted_board = []
+	for field in ("planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"):
+		if doc.meta.has_field(field) and (doc.get(field) or []):
+			board_field = field
+			break
+	if board_field:
+		sorted_board = _sort_child_rows(list(doc.get(board_field) or []))
+		doc.set(board_field, sorted_board)
+
+	if doc.meta.has_field("items") and (doc.get("items") or []):
+		if board_field and sorted_board:
+			order_keys = [
+				(
+					_cstr(getattr(r, "sales_order_item", None) or getattr(r, "so_item", None)),
+					_cstr(getattr(r, "item_code", None)),
+				)
+				for r in sorted_board
+			]
+			legacy = list(doc.get("items") or [])
+			legacy_map = {}
+			for lr in legacy:
+				k = (
+					_cstr(getattr(lr, "sales_order_item", None) or getattr(lr, "so_item", None)),
+					_cstr(getattr(lr, "item_code", None)),
+				)
+				legacy_map.setdefault(k, []).append(lr)
+			ordered_legacy = []
+			used_l = set()
+			for k in order_keys:
+				for lr in legacy_map.get(k, []):
+					ln = getattr(lr, "name", None)
+					if ln and ln in used_l:
+						continue
+					if ln:
+						used_l.add(ln)
+					ordered_legacy.append(lr)
+			for lr in legacy:
+				ln = getattr(lr, "name", None)
+				if ln and ln in used_l:
+					continue
+				if ln:
+					used_l.add(ln)
+				ordered_legacy.append(lr)
+			for new_idx, lr in enumerate(ordered_legacy, start=1):
+				lr.idx = new_idx
+				soik = _cstr(getattr(lr, "sales_order_item", None) or getattr(lr, "so_item", None))
+				mt = _movement_type_for_planning_row(getattr(lr, "item_code", None), soik, so_fg_by_soi)
+				_set_movement_type_if_supported(lr, mt, "Planning sheet Item")
+			doc.set("items", ordered_legacy)
+		else:
+			doc.set("items", _sort_child_rows(list(doc.get("items") or [])))
+
+
+def _finalize_planning_sheet_row_order_and_movement(planning_sheet_name):
+	"""Production sequence + movement flags after BOM post-sync."""
+	_reorder_planning_sheet_by_production_sequence(planning_sheet_name)
+	_apply_movement_types_to_planning_sheet(planning_sheet_name)
+
 
 @frappe.whitelist()
 def sync_planning_line_unit_options_meta():
@@ -6228,6 +6516,12 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_stamp_printed_bopp_fields_on_planning_sheet(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_printed_bopp_fields")
+	try:
+		_finalize_planning_sheet_row_order_and_movement(planning_sheet_name)
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(), "_run_planning_sheet_post_sync:_finalize_planning_sheet_row_order_and_movement"
+		)
 	frappe.db.commit()
 	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
 
@@ -6893,6 +7187,8 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					row["custom_design_colour"] = dc_new
 				if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
 					row["custom_lam_gsm"] = 0
+			_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning Table")
+			_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning sheet Item")
 			_set_trace_id_if_supported(row, trace_id)
 			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 				row["split_from"] = lam_pt_name
@@ -7851,6 +8147,8 @@ def _sync_bom_child_rows_from_planning_rows(
 			row["width_inch"] = 0
 		_apply_254_fg_extras_to_bom_child_row(row, ps.name, so_item_key, so_it, child_ic, child_proc)
 		_apply_252_fg_extras_to_bom_child_row(row, ps.name, so_item_key, so_it, child_ic, child_proc)
+		_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning Table")
+		_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning sheet Item")
 		_set_trace_id_if_supported(row, trace_id)
 		if frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = ""
@@ -13434,6 +13732,7 @@ def _populate_planning_sheet_items(ps, doc):
             psi_data["custom_no_of_sheets"] = _so_sheets
         if _so_sheets > 0 and frappe.db.has_column("Planning sheet Item", "custom_no_of_sheets"):
             psi_data["custom_no_of_sheets"] = _so_sheets
+        _set_movement_type_if_supported(psi_data, MOVEMENT_DESPATCH, "Planning sheet Item")
         if lam_gsm > 0 and frappe.db.has_column("Planning Table", "custom_lam_gsm"):
             psi_data["custom_lam_gsm"] = lam_gsm
         if lam_gsm > 0 and frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
