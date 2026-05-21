@@ -35,9 +35,88 @@ BOARD_KIND_TO_SCOPE = {
 
 TRANSFER_APPROVER_ROLES = frozenset({"System Manager", "Manufacturing Manager", "Administrator"})
 
+_EXTERNAL_TRANSFER_FIELD_CANDIDATES = (
+	"external_transfer",
+	"custom_external_transfer",
+	"is_external_transfer",
+)
+
 
 def _cstr(v):
 	return str(v or "").strip()
+
+
+def _stock_entry_external_transfer_fieldname():
+	"""Resolve Stock Entry checkbox field for External Transfer (site may use custom fieldname)."""
+	for fn in _EXTERNAL_TRANSFER_FIELD_CANDIDATES:
+		if frappe.db.has_column("Stock Entry", fn):
+			return fn
+	try:
+		meta = frappe.get_meta("Stock Entry")
+		for df in meta.fields:
+			if df.fieldtype != "Check":
+				continue
+			lab = (df.label or "").strip().lower()
+			if lab == "external transfer" or "external transfer" in lab:
+				if frappe.db.has_column("Stock Entry", df.fieldname):
+					return df.fieldname
+	except Exception:
+		pass
+	return ""
+
+
+def _set_stock_entry_external_transfer(se, value=1):
+	fn = _stock_entry_external_transfer_fieldname()
+	if not fn:
+		return False
+	se.set(fn, cint(value))
+	return True
+
+
+def _ensure_stock_entry_external_transfer(stock_entry_name, value=1):
+	fn = _stock_entry_external_transfer_fieldname()
+	if not fn or not stock_entry_name:
+		return False
+	if cint(frappe.db.get_value("Stock Entry", stock_entry_name, fn) or 0) == cint(value):
+		return True
+	frappe.db.set_value("Stock Entry", stock_entry_name, fn, cint(value), update_modified=False)
+	return True
+
+
+def _draft_stock_entries_for_lane(from_company, to_company):
+	"""Approved transfers with draft (docstatus 0) Stock Entry for kanban lane."""
+	fc = _cstr(from_company)
+	tc = _cstr(to_company)
+	if not fc or not tc:
+		return []
+	rows = frappe.get_all(
+		"Transfer Approval",
+		filters={
+			"from_company": fc,
+			"to_company": tc,
+			"status": "Approved",
+			"stock_entry": ["is", "set"],
+		},
+		fields=["name", "stock_entry", "modified", "to_destination_label"],
+		order_by="modified desc",
+		limit_page_length=30,
+	)
+	out = []
+	for row in rows:
+		ste = _cstr(row.get("stock_entry"))
+		if not ste or not frappe.db.exists("Stock Entry", ste):
+			continue
+		if cint(frappe.db.get_value("Stock Entry", ste, "docstatus") or 0) != 0:
+			continue
+		out.append(
+			{
+				"name": ste,
+				"approval": row.get("name"),
+				"modified": row.get("modified"),
+				"label": ste,
+			}
+		)
+	return out
 
 
 def chart_row_transfer_fields(item):
@@ -164,10 +243,12 @@ def get_transfer_destination_cards(from_company=None):
 	for c in companies:
 		if fc and c["name"] == fc:
 			continue
+		tc = c["name"]
 		out.append(
 			{
-				"company": c["name"],
-				"label": _("Transfer to {0}").format(c["name"]),
+				"company": tc,
+				"label": _("Transfer to {0}").format(tc),
+				"draft_stock_entries": _draft_stock_entries_for_lane(fc, tc) if fc else [],
 			}
 		)
 	return out
@@ -491,8 +572,9 @@ def _create_draft_transfer_stock_entry(ta):
 	se.set_posting_time = 1
 	se.posting_date = getdate()
 	se.posting_time = now_datetime().strftime("%H:%M:%S")
-	if frappe.db.has_column("Stock Entry", "external_transfer"):
-		se.external_transfer = 1
+	_set_stock_entry_external_transfer(se, 1)
+	if frappe.db.has_column("Stock Entry", "add_to_transit"):
+		se.add_to_transit = 1
 	unit_val = ""
 	for ln in ta.lines or []:
 		if ln.unit:
@@ -517,6 +599,13 @@ def _create_draft_transfer_stock_entry(ta):
 		se.append("items", row)
 
 	se.insert(ignore_permissions=True)
+	if not _ensure_stock_entry_external_transfer(se.name, 1):
+		frappe.log_error(
+			title="Transfer Stock Entry — External Transfer field missing",
+			message=_("Could not set External Transfer on {0}. Add a Check field labeled 'External Transfer' on Stock Entry.").format(
+				se.name
+			),
+		)
 	return se.name
 
 

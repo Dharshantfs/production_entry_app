@@ -2,8 +2,8 @@
   <div class="lk-container">
     <div class="lk-hero">
       <div class="lk-hero-text">
-        <h2>Logistics</h2>
-        <p>Inter-company transfers and despatch lanes</p>
+        <h2 class="lk-title">Logistics</h2>
+        <p class="lk-subtitle">Inter-company transfers and despatch lanes</p>
       </div>
       <div class="lk-truck-lane" aria-hidden="true">
         <div class="lk-road"></div>
@@ -30,18 +30,29 @@
       <div v-else-if="!destinationCards.length" class="lk-hint">No destination companies configured.</div>
 
       <div v-else class="lk-grid">
-        <button
-          v-for="card in destinationCards"
-          :key="card.company"
-          type="button"
-          class="lk-card"
-          @click="openTransfer(card)"
-        >
-          <span class="lk-card-icon">📦</span>
-          <span class="lk-card-title">{{ card.label }}</span>
-          <span class="lk-card-sub">{{ card.company }}</span>
-          <span class="lk-card-cta">Start transfer →</span>
-        </button>
+        <div v-for="card in destinationCards" :key="card.company" class="lk-card-wrap">
+          <button type="button" class="lk-card" @click="openTransfer(card)">
+            <span class="lk-card-icon">📦</span>
+            <span class="lk-card-title">{{ card.label }}</span>
+            <span class="lk-card-sub">{{ card.company }}</span>
+            <span class="lk-card-cta">Start transfer →</span>
+          </button>
+
+          <div v-if="card.draft_stock_entries?.length" class="lk-draft-panel">
+            <div class="lk-draft-head">Draft stock entries</div>
+            <button
+              v-for="ste in card.draft_stock_entries"
+              :key="ste.name"
+              type="button"
+              class="lk-draft-chip"
+              @click="openSte(ste.name)"
+            >
+              <span class="lk-draft-badge">DRAFT</span>
+              <span class="lk-draft-name">{{ ste.name }}</span>
+              <span class="lk-draft-go">Open →</span>
+            </button>
+          </div>
+        </div>
       </div>
     </template>
 
@@ -61,6 +72,7 @@
       board-kind="production"
       :filter-context="dialogFilters"
       :prefill="dialogPrefill"
+      @submitted="loadCards"
     />
   </div>
 </template>
@@ -105,6 +117,10 @@ function openTransfer(card) {
   showDialog.value = true;
 }
 
+function openSte(name) {
+  frappe.set_route("Form", "Stock Entry", name);
+}
+
 function goApprovals() {
   frappe.set_route("transfer-approval");
 }
@@ -130,20 +146,24 @@ loadCards();
   padding: 20px 24px;
   background: linear-gradient(135deg, #0c4a6e 0%, #0369a1 55%, #0ea5e9 100%);
   border-radius: 16px;
-  color: #fff;
+  color: #ffffff;
   box-shadow: 0 8px 24px rgba(3, 105, 161, 0.25);
   position: relative;
   overflow: hidden;
 }
-.lk-hero h2 {
+.lk-title {
   margin: 0;
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 800;
+  color: #ffffff;
+  letter-spacing: -0.02em;
 }
-.lk-hero p {
-  margin: 4px 0 0;
-  opacity: 0.9;
+.lk-subtitle {
+  margin: 6px 0 0;
+  color: #ffffff;
   font-size: 13px;
+  font-weight: 600;
+  opacity: 0.95;
 }
 .lk-hero-text {
   flex: 1;
@@ -244,8 +264,14 @@ loadCards();
 }
 .lk-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 16px;
+  align-items: start;
+}
+.lk-card-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .lk-card {
   text-align: left;
@@ -259,6 +285,7 @@ loadCards();
   display: flex;
   flex-direction: column;
   gap: 4px;
+  width: 100%;
 }
 .lk-card:hover {
   border-color: #0ea5e9;
@@ -284,6 +311,61 @@ loadCards();
   font-size: 12px;
   font-weight: 700;
   color: #0284c7;
+}
+.lk-draft-panel {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 12px;
+  padding: 10px 10px 8px;
+}
+.lk-draft-head {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: #92400e;
+  margin-bottom: 8px;
+  letter-spacing: 0.04em;
+}
+.lk-draft-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #fde68a;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.lk-draft-chip:last-child {
+  margin-bottom: 0;
+}
+.lk-draft-chip:hover {
+  background: #fef3c7;
+  border-color: #f59e0b;
+}
+.lk-draft-badge {
+  font-size: 9px;
+  font-weight: 800;
+  background: #f59e0b;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.lk-draft-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 700;
+  color: #78350f;
+  font-family: ui-monospace, monospace;
+}
+.lk-draft-go {
+  font-size: 11px;
+  font-weight: 700;
+  color: #b45309;
 }
 .lk-grid-muted .lk-card-disabled {
   cursor: default;
