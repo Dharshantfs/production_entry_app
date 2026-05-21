@@ -1,5 +1,5 @@
 <template>
-  <button type="button" class="cc-transfer-btn" title="Transfer transport rows (SPR done)" @click="open">
+  <button type="button" class="cc-transfer-btn" title="Transfer rows (SPR done)" @click="open">
     Transfer
   </button>
   <TransferDialog

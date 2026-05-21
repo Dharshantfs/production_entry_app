@@ -73,7 +73,22 @@ PRINTED_BOPP_FILM_UNIT = PLANNING_PRINTED_BOPP_FILM_UNIT
 # BOM-extracted rows vs SO FG parents (both Planning Table + Planning sheet Item).
 PLANNING_MOVEMENT_TYPE_FIELD = "custom_movement_type"
 MOVEMENT_DESPATCH = "Despatch"
-MOVEMENT_TRANSPORT = "Transport"
+MOVEMENT_TRANSFER = "Transfer"
+LEGACY_MOVEMENT_TRANSPORT = "Transport"
+# Backward-compat alias for older imports
+MOVEMENT_TRANSPORT = MOVEMENT_TRANSFER
+
+
+def normalize_movement_type(movement_type):
+	"""Map legacy Transport label to Transfer."""
+	mt = str(movement_type or "").strip()
+	if mt == LEGACY_MOVEMENT_TRANSPORT:
+		return MOVEMENT_TRANSFER
+	return mt
+
+
+def is_transfer_movement(movement_type):
+	return normalize_movement_type(movement_type) == MOVEMENT_TRANSFER
 
 # Lower rank = earlier in sheet (upstream production first).
 _PRODUCTION_SORT_RANK_BY_PROCESS = {
@@ -129,13 +144,13 @@ def _movement_type_for_planning_row(item_code, so_item_key, so_fg_by_soi):
 	soik = _cstr(so_item_key)
 	ic = _cstr(item_code)
 	if not ic:
-		return MOVEMENT_TRANSPORT
+		return MOVEMENT_TRANSFER
 	so_it = so_fg_by_soi.get(soik) if soik else None
 	if so_it:
 		so_ic = _cstr(getattr(so_it, "item_code", None) or (so_it.get("item_code") if isinstance(so_it, dict) else ""))
 		if so_ic and ic == so_ic:
 			return MOVEMENT_DESPATCH
-	return MOVEMENT_TRANSPORT
+	return MOVEMENT_TRANSFER
 
 
 def _set_movement_type_if_supported(row, movement_type, doctype_hint="Planning Table"):
@@ -7199,8 +7214,8 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 					row["custom_design_colour"] = dc_new
 				if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
 					row["custom_lam_gsm"] = 0
-			_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning Table")
-			_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning sheet Item")
+			_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning Table")
+			_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning sheet Item")
 			_set_trace_id_if_supported(row, trace_id)
 			if lam_pt_name and frappe.db.has_column("Planning Table", "split_from"):
 				row["split_from"] = lam_pt_name

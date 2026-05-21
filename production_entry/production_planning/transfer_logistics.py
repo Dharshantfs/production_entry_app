@@ -10,9 +10,10 @@ from frappe import _
 from frappe.utils import cint, flt, getdate, now_datetime
 
 from production_entry.production_planning.scheduler_api import (
-	MOVEMENT_TRANSPORT,
 	PLANNING_MOVEMENT_TYPE_FIELD,
 	get_color_chart_data,
+	is_transfer_movement,
+	normalize_movement_type,
 )
 
 TRANSFER_WAREHOUSE_BY_COMPANY = {
@@ -50,23 +51,24 @@ def chart_row_transfer_fields(item):
 def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 	"""Build API payload fields for order tables (no change to planning sync)."""
 	mt, dest, status = chart_row_transfer_fields(item)
+	mt_norm = normalize_movement_type(mt)
 	can_transfer = (
-		mt == MOVEMENT_TRANSPORT
+		is_transfer_movement(mt)
 		and bool(wo_terminal)
 		and cint(spr_docstatus) == 1
 	)
 	block_reason = ""
-	if mt != MOVEMENT_TRANSPORT:
-		block_reason = "Not a transport row"
+	if not is_transfer_movement(mt):
+		block_reason = "Not a transfer row"
 	elif not wo_terminal:
 		block_reason = "Work order not completed"
 	elif cint(spr_docstatus) != 1:
 		block_reason = "SPR not done"
-	movement_display = mt or ""
-	if dest and mt == MOVEMENT_TRANSPORT:
-		movement_display = f"{mt} → {dest}"
+	movement_display = mt_norm or ""
+	if dest and is_transfer_movement(mt):
+		movement_display = f"{mt_norm} → {dest}"
 	return {
-		"movement_type": mt,
+		"movement_type": mt_norm,
 		"transfer_destination": dest,
 		"transfer_status": status,
 		"movement_display": movement_display,
@@ -192,8 +194,8 @@ def get_transfer_eligible_rows(
 	rows = _parse_chart_rows(raw)
 	out = []
 	for r in rows:
-		mt = _cstr(r.get("movement_type"))
-		if mt != MOVEMENT_TRANSPORT:
+		mt = normalize_movement_type(r.get("movement_type"))
+		if not is_transfer_movement(mt):
 			continue
 		if not _row_matches_filters(r, party_code, customer, unit):
 			continue
@@ -381,10 +383,23 @@ def _sync_psi_transfer_fields(pt_name, updates):
 
 
 @frappe.whitelist()
-def get_pending_transfer_approvals(limit=200):
+def get_transfer_approvals(status_filter=None, limit=200):
+	"""List transfer approvals for dashboard (all / pending / approved / rejected)."""
+	sf = _cstr(status_filter).lower() or "pending"
+	filters = {}
+	if sf == "pending":
+		filters["status"] = ["in", ["Pending Approval", "Draft"]]
+	elif sf == "approved":
+		filters["status"] = "Approved"
+	elif sf == "rejected":
+		filters["status"] = "Rejected"
+	elif sf == "draft":
+		filters["status"] = "Draft"
+	# sf == "all" → no status filter
+
 	rows = frappe.get_all(
 		"Transfer Approval",
-		filters={"status": ["in", ["Pending Approval", "Draft"]]},
+		filters=filters,
 		fields=[
 			"name",
 			"from_company",
@@ -394,11 +409,18 @@ def get_pending_transfer_approvals(limit=200):
 			"owner",
 			"modified",
 			"stock_entry",
+			"requested_by",
 		],
 		order_by="modified desc",
 		limit_page_length=cint(limit) or 200,
 	)
 	return rows
+
+
+@frappe.whitelist()
+def get_pending_transfer_approvals(limit=200):
+	"""Backward-compatible alias."""
+	return get_transfer_approvals(status_filter="pending", limit=limit)
 
 
 @frappe.whitelist()

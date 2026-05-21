@@ -2,7 +2,7 @@
   <div v-if="modelValue" class="tl-overlay" @click.self="close">
     <div class="tl-dialog">
       <div class="tl-header">
-        <h3>Transfer (Transport rows)</h3>
+        <h3>Transfer rows</h3>
         <button type="button" class="tl-close" @click="close">✕</button>
       </div>
       <div class="tl-filters">
@@ -383,9 +383,20 @@ function submit() {
     },
     callback: (r) => {
       submitting.value = false;
+      const docname = r.message?.name || "";
       frappe.show_alert({
-        message: `Transfer sent for approval: ${r.message?.name || ""}`,
+        message: `Transfer sent for approval: ${docname}`,
         indicator: "green",
+      });
+      frappe.msgprint({
+        title: __("Transfer submitted"),
+        message: __("Open Transfer Approval to approve or reject."),
+        primary_action: {
+          label: __("Open Transfer Approval"),
+          action() {
+            frappe.set_route("transfer-approval");
+          },
+        },
       });
       emit("submitted", r.message);
       close();

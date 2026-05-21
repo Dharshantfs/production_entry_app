@@ -86,6 +86,30 @@
    "type": "Link"
   },
   {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "exchange",
+   "is_query_report": 0,
+   "label": "Transfer Approval",
+   "link_count": 0,
+   "link_to": "transfer-approval",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "icon": "kanban",
+   "is_query_report": 0,
+   "label": "Logistics Kanban",
+   "link_count": 0,
+   "link_to": "logistics-kanban",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
    "hidden": 0,
    "is_query_report": 0,
    "label": "Documents",
@@ -173,6 +197,16 @@
   {
    "label": "Sequence Approval",
    "link_to": "sequence-approval",
+   "type": "Page"
+  },
+  {
+   "label": "Transfer Approval",
+   "link_to": "transfer-approval",
+   "type": "Page"
+  },
+  {
+   "label": "Logistics Kanban",
+   "link_to": "logistics-kanban",
    "type": "Page"
   }
  ],
