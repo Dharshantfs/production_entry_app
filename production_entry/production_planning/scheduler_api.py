@@ -1833,10 +1833,36 @@ def _fabric_row_has_stable_parent_trace(item_code, current_trace_id):
 	return True
 
 
+def _should_preserve_trace_on_desk_save(item_code, current_trace_id, new_trace_id):
+	"""Do not replace an existing parent-chain trace on incidental Planning sheet save."""
+	cur = _cstr(current_trace_id).strip()
+	new_tid = _cstr(new_trace_id).strip()
+	if not cur or not new_tid or cur == new_tid:
+		return True
+	if _fabric_row_has_stable_parent_trace(item_code, cur):
+		return True
+	ic_pp = _item_process_prefix(item_code) or _lamination_process_from_item_code(item_code)
+	if not ic_pp:
+		return False
+	# Never downgrade e.g. 6002-106-… → 104-105-… when user only changed unit/qty on save.
+	if not _trace_is_native_process_trace(cur, ic_pp) and _trace_is_native_process_trace(new_tid, ic_pp):
+		return True
+	# Child already on FG chain; new id is a different native process only.
+	for other_pp in ("104", "106", "107", "105", "108", "255"):
+		if other_pp == ic_pp:
+			continue
+		if not _trace_is_native_process_trace(cur, other_pp) and _trace_is_native_process_trace(new_tid, ic_pp):
+			if re.search(rf"(^|-){re.escape(other_pp)}(?:-|$)", cur):
+				return True
+	return False
+
+
 def _should_apply_trace_to_row(item_code, current_trace_id, new_trace_id):
 	"""Whether to write ``new_trace_id`` on this row (fabric rows keep stable parent traces)."""
 	new_tid = _cstr(new_trace_id).strip()
 	if not new_tid:
+		return False
+	if _should_preserve_trace_on_desk_save(item_code, current_trace_id, new_trace_id):
 		return False
 	cur = _cstr(current_trace_id).strip()
 	ic_pp = _item_process_prefix(item_code) or _lamination_process_from_item_code(item_code)
@@ -1847,7 +1873,7 @@ def _should_apply_trace_to_row(item_code, current_trace_id, new_trace_id):
 			return False
 		if ic_pp and _trace_is_native_process_trace(cur, ic_pp) and not _trace_is_native_process_trace(new_tid, ic_pp):
 			return True
-		return cur != new_tid
+		return False
 	if not cur:
 		return True
 	if cur == new_tid:
@@ -1856,7 +1882,7 @@ def _should_apply_trace_to_row(item_code, current_trace_id, new_trace_id):
 		return False
 	if _trace_is_native_100_process(cur) and not _trace_is_native_100_process(new_tid):
 		return True
-	return cur != new_tid
+	return False
 
 
 def _fabric_trace_sql_preserve_clause(column="custom_parent_child_trace_id"):

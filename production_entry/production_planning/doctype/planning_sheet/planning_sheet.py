@@ -351,23 +351,41 @@ class Planningsheet(Document):
             for row in self.get(table_key) or []:
                 enrich_planning_child_row_from_item_code(row, ps_name)
 
-    def _ensure_parent_child_trace_ids_on_rows(self):
-        """Set missing Parent Child Trace ID using the same resolver as post-sync backfill (SO line + sheet context).
+    def _planning_trace_sheet_context(self):
+        """Build board rows + SO map for trace resolver (same as post-sync backfill)."""
+        ps_name = (getattr(self, "name", None) or "").strip() or None
+        pt_rows = []
+        for pr in self.get("planned_items") or []:
+            pt_rows.append(
+                {
+                    "item_code": getattr(pr, "item_code", None),
+                    "sales_order_item": getattr(pr, "sales_order_item", None) or getattr(pr, "so_item", None),
+                    "so_item": getattr(pr, "so_item", None) or getattr(pr, "sales_order_item", None),
+                    "custom_parent_child_trace_id": getattr(pr, "custom_parent_child_trace_id", None),
+                }
+            )
+        so_by_name = {}
+        so_name = (getattr(self, "sales_order", None) or "").strip()
+        if so_name and frappe.db.exists("Sales Order", so_name):
+            try:
+                so_doc = frappe.get_doc("Sales Order", so_name)
+                so_by_name = {str(it.name): it for it in (so_doc.items or [])}
+            except Exception:
+                so_by_name = {}
+        return ps_name, pt_rows, so_by_name
 
-        Matches ``backfill_parent_child_trace_ids`` / ``_parent_child_trace_id_for_planning_row`` so desk saves,
-        253/254 FG children (104/100/… ), sheet-cutting, and 108-family rows stay consistent with create/regenerate.
-        """
+    def _ensure_parent_child_trace_ids_on_rows(self):
+        """Fill empty Parent Child Trace ID only — never overwrite stable traces on desk save."""
         try:
             from production_entry.production_planning.scheduler_api import (
-                _fabric_row_has_stable_parent_trace,
-                _is_fabric_100_item_code,
                 _parent_child_trace_id_for_planning_row,
                 _set_trace_id_if_supported,
+                _should_apply_trace_to_row,
                 _trace_for_planning_row_using_main_parent,
             )
         except Exception:
             return
-        ps_name = (getattr(self, "name", None) or "").strip() or None
+        ps_name, pt_rows, so_by_name = self._planning_trace_sheet_context()
         for table_key in ("planned_items", "items"):
             for row in self.get(table_key) or []:
                 ic = str(getattr(row, "item_code", None) or "").strip()
@@ -377,46 +395,20 @@ class Planningsheet(Document):
                     str(getattr(row, "sales_order_item", None) or "").strip()
                     or str(getattr(row, "so_item", None) or "").strip()
                 )
+                cur = str(getattr(row, "custom_parent_child_trace_id", None) or "").strip()
                 row_probe = {
                     "item_code": ic,
                     "sales_order_item": soi,
                     "so_item": soi,
                 }
-                tid = _trace_for_planning_row_using_main_parent(row_probe, ps_name, None, None)
+                tid = _trace_for_planning_row_using_main_parent(row_probe, ps_name, pt_rows, so_by_name)
                 if not tid:
                     tid = _parent_child_trace_id_for_planning_row(ic, soi or None, ps_name)
                 if not tid:
                     continue
-                cur = str(getattr(row, "custom_parent_child_trace_id", None) or "").strip()
-                if _is_fabric_100_item_code(ic) and _fabric_row_has_stable_parent_trace(ic, cur):
+                if not _should_apply_trace_to_row(ic, cur, tid):
                     continue
-                try:
-                    from production_entry.production_planning.scheduler_api import (
-                        _is_sheet_cutting_child_process,
-                        _is_sheet_cutting_parent_process,
-                        _item_process_prefix,
-                        _lamination_process_from_item_code,
-                    )
-
-                    pp = _item_process_prefix(ic)
-                    lam = _lamination_process_from_item_code(ic)
-                    restamp = (
-                        not cur
-                        or lam == "255"
-                        or pp == "255"
-                        or lam == "107"
-                        or pp == "107"
-                        or pp == "109"
-                        or pp == "104"
-                        or lam == "104"
-                        or _is_sheet_cutting_parent_process(ic)
-                        or _is_sheet_cutting_child_process(ic)
-                        or (cur and tid and cur != tid)
-                    )
-                except Exception:
-                    restamp = not cur
-                if restamp or cur != tid:
-                    _set_trace_id_if_supported(row, tid, item_code=ic)
+                _set_trace_id_if_supported(row, tid, item_code=ic)
 
     def _sync_line_plan_codes(self):
         """Fill Planning sheet Item / board row Plan Code from active plan + date + unit (color chart alignment)."""

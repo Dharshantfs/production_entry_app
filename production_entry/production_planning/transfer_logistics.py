@@ -134,7 +134,38 @@ def _ensure_stock_entry_order_codes(stock_entry_name, order_codes):
 	return True
 
 
-def _transfer_lane_stock_entries(from_company, to_company, include_submitted=1):
+def _transfer_date_in_scope(transfer_date, view_scope=None, date=None, week=None, month=None):
+	"""Filter transfer history by daily / weekly / monthly scope (same as production table)."""
+	try:
+		td = getdate(transfer_date) if transfer_date else None
+	except Exception:
+		td = None
+	if not td:
+		return True
+	vs = _cstr(view_scope).lower() or "all"
+	if vs == "all":
+		return True
+	if vs == "weekly" and week:
+		start, end = _week_range(week)
+		return getdate(start) <= td <= getdate(end)
+	if vs == "monthly" and month:
+		start, end = _month_range(month)
+		return getdate(start) <= td <= getdate(end)
+	if vs == "daily" and date:
+		return td == getdate(date)
+	return True
+
+
+def _transfer_lane_stock_entries(
+	from_company,
+	to_company,
+	include_submitted=1,
+	view_scope=None,
+	date=None,
+	week=None,
+	month=None,
+	order_code=None,
+):
 	"""All approved transfers for a lane (draft + submitted) with dates and order codes."""
 	fc = _cstr(from_company)
 	tc = _cstr(to_company)
@@ -179,6 +210,13 @@ def _transfer_lane_stock_entries(from_company, to_company, include_submitted=1):
 			if ste_oc and ste_oc not in order_codes:
 				order_codes = [ste_oc] + [c for c in order_codes if c != ste_oc]
 		transfer_date = _cstr(ste_row.get("posting_date") or row.get("modified") or row.get("creation"))
+		if not _transfer_date_in_scope(transfer_date, view_scope, date, week, month):
+			continue
+		oc_filter = _cstr(order_code).lower()
+		if oc_filter:
+			hay = " ".join(order_codes).lower()
+			if oc_filter not in hay:
+				continue
 		out.append(
 			{
 				"name": ste,
@@ -328,20 +366,35 @@ def get_logistics_companies():
 
 
 @frappe.whitelist()
-def get_transfer_destination_cards(from_company=None):
+def get_transfer_destination_cards(
+	from_company=None,
+	view_scope=None,
+	date=None,
+	week=None,
+	month=None,
+	order_code=None,
+):
 	fc = _cstr(from_company)
 	companies = get_logistics_companies()
+	lane_kw = {
+		"view_scope": view_scope,
+		"date": date,
+		"week": week,
+		"month": month,
+		"order_code": order_code,
+	}
 	out = []
 	for c in companies:
 		if fc and c["name"] == fc:
 			continue
 		tc = c["name"]
+		history = _transfer_lane_stock_entries(fc, tc, **lane_kw) if fc else []
 		out.append(
 			{
 				"company": tc,
 				"label": _("Transfer to {0}").format(tc),
-				"draft_stock_entries": _draft_stock_entries_for_lane(fc, tc) if fc else [],
-				"transfer_history": _transfer_lane_stock_entries(fc, tc) if fc else [],
+				"draft_stock_entries": [e for e in history if e.get("docstatus") == 0],
+				"transfer_history": history,
 			}
 		)
 	return out
