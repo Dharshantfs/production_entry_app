@@ -1837,7 +1837,11 @@ def _should_preserve_trace_on_desk_save(item_code, current_trace_id, new_trace_i
 	"""Do not replace an existing parent-chain trace on incidental Planning sheet save."""
 	cur = _cstr(current_trace_id).strip()
 	new_tid = _cstr(new_trace_id).strip()
-	if not cur or not new_tid or cur == new_tid:
+	if not new_tid:
+		return False
+	if not cur:
+		return False
+	if cur == new_tid:
 		return True
 	if _fabric_row_has_stable_parent_trace(item_code, cur):
 		return True

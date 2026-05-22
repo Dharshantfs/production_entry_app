@@ -406,9 +406,23 @@ class Planningsheet(Document):
                     tid = _parent_child_trace_id_for_planning_row(ic, soi or None, ps_name)
                 if not tid:
                     continue
+                if not cur:
+                    _set_trace_id_if_supported(row, tid, item_code=ic)
+                    continue
                 if not _should_apply_trace_to_row(ic, cur, tid):
                     continue
                 _set_trace_id_if_supported(row, tid, item_code=ic)
+                row_name = getattr(row, "name", None)
+                if row_name and ps_name:
+                    doctype = "Planning Table" if table_key == "planned_items" else "Planning sheet Item"
+                    try:
+                        from production_entry.production_planning.scheduler_api import (
+                            _safe_set_planning_trace_id,
+                        )
+
+                        _safe_set_planning_trace_id(doctype, row_name, ic, tid, current_trace_id=cur)
+                    except Exception:
+                        pass
 
     def _sync_line_plan_codes(self):
         """Fill Planning sheet Item / board row Plan Code from active plan + date + unit (color chart alignment)."""
