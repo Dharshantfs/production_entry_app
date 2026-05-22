@@ -139,8 +139,27 @@ def _planning_row_sort_key(row, so_line_order):
 	)
 
 
+def _same_fg_design_family(planning_ic, so_fg_ic):
+	"""True when planning row is the SO FG line (106/105/108…) even if item_code strings differ slightly."""
+	pic = _cstr(planning_ic)
+	sic = _cstr(so_fg_ic)
+	if not pic or not sic:
+		return False
+	if pic == sic:
+		return True
+	pp = _bom_item_process_code(pic)
+	sp = _bom_item_process_code(sic)
+	if not pp or pp != sp:
+		return False
+	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109"):
+		return False
+	p_design = pic.split("-")[0].upper()
+	s_design = sic.split("-")[0].upper()
+	return bool(p_design and p_design == s_design)
+
+
 def _movement_type_for_planning_row(item_code, so_item_key, so_fg_by_soi):
-	"""SO FG line item → Despatch; BOM-extracted children on that line → Transport."""
+	"""SO FG line item → Despatch; BOM-extracted children on that line → Transfer."""
 	soik = _cstr(so_item_key)
 	ic = _cstr(item_code)
 	if not ic:
@@ -148,9 +167,28 @@ def _movement_type_for_planning_row(item_code, so_item_key, so_fg_by_soi):
 	so_it = so_fg_by_soi.get(soik) if soik else None
 	if so_it:
 		so_ic = _cstr(getattr(so_it, "item_code", None) or (so_it.get("item_code") if isinstance(so_it, dict) else ""))
-		if so_ic and ic == so_ic:
+		if so_ic and (ic == so_ic or _same_fg_design_family(ic, so_ic)):
 			return MOVEMENT_DESPATCH
 	return MOVEMENT_TRANSFER
+
+
+def resolve_movement_type_for_chart_row(item):
+	"""Movement label for order tables when DB field is empty or stale."""
+	if not item:
+		return ""
+	mt = normalize_movement_type(
+		item.get(PLANNING_MOVEMENT_TYPE_FIELD) or item.get("movement_type") or ""
+	)
+	if mt:
+		return mt
+	ps = _cstr(item.get("planningSheet") or item.get("planning_sheet") or item.get("parent"))
+	soi = _cstr(item.get("salesOrderItem") or item.get("sales_order_item") or item.get("so_item"))
+	ic = _cstr(item.get("itemCode") or item.get("item_code"))
+	if not ps or not ic:
+		return ""
+	so_name = frappe.db.get_value("Planning sheet", ps, "sales_order")
+	_, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
+	return _movement_type_for_planning_row(ic, soi, so_fg_by_soi)
 
 
 def _set_movement_type_if_supported(row, movement_type, doctype_hint="Planning Table"):
@@ -4923,12 +4961,13 @@ def _planning_row_matches_sales_order_fg(item_code, so_item_key, so_by_name):
 
 
 def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet_name, pt_rows, so_by_name=None):
-	"""104/107 lamination parent trace for 100 / PB children on the same SO line (not child's own 100-* id)."""
+	"""Parent FG trace for BOM children (100 / 104 / 106 / 107 / PB) on the same SO line — not child's native id."""
 	soik = _cstr(so_item_key).strip()
 	ic = _cstr(child_ic).strip()
 	if not soik or not ic:
 		return ""
-	if _bom_item_process_code(ic) != "100" and not _is_printed_bopp_item_code(ic):
+	child_pp = _bom_item_process_code(ic)
+	if child_pp not in ("100", "104", "106", "107") and not _is_printed_bopp_item_code(ic):
 		return ""
 	so_it = (so_by_name or {}).get(soik)
 	if so_it:
@@ -4938,6 +4977,12 @@ def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet
 			tid_fg = _parent_child_trace_id_from_item_code(fg_ic)
 			if tid_fg:
 				return tid_fg
+		if fg_pp == "106" and child_pp in ("104", "100", "106"):
+			t106 = _fg_trace_for_bom_child_chain(so_it, fg_ic, fg_pp, child_pp) or _parent_child_trace_id_from_item_code(
+				fg_ic
+			)
+			if t106:
+				return t106
 		if fg_pp == "108":
 			tid108 = _parent_child_trace_id_from_item_code(fg_ic)
 			if tid108:
@@ -8174,8 +8219,8 @@ def _sync_bom_child_rows_from_planning_rows(
 			row["width_inch"] = 0
 		_apply_254_fg_extras_to_bom_child_row(row, ps.name, so_item_key, so_it, child_ic, child_proc)
 		_apply_252_fg_extras_to_bom_child_row(row, ps.name, so_item_key, so_it, child_ic, child_proc)
-		_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning Table")
-		_set_movement_type_if_supported(row, MOVEMENT_TRANSPORT, "Planning sheet Item")
+		_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning Table")
+		_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning sheet Item")
 		_set_trace_id_if_supported(row, trace_id)
 		if frappe.db.has_column("Planning Table", "split_from"):
 			row["split_from"] = ""
@@ -9528,6 +9573,22 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 					    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-104%%'
 					    OR TRIM(IFNULL(item_code,'')) REGEXP '^106'
 					    OR TRIM(IFNULL(item_code,'')) REGEXP '^104'
+					  )
+					  AND {child_match_expr} = %s
+					""",
+					(trace_id, p.get("parent"), so_item),
+				)
+			if pp_root == "106":
+				frappe.db.sql(
+					f"""
+					UPDATE `tabPlanning Table`
+					SET custom_parent_child_trace_id = %s
+					WHERE parent = %s
+					  AND (
+					    UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-104%%'
+					    OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-100%%'
+					    OR TRIM(IFNULL(item_code,'')) REGEXP '^104'
+					    OR TRIM(IFNULL(item_code,'')) REGEXP '^100'
 					  )
 					  AND {child_match_expr} = %s
 					""",

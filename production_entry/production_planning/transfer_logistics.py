@@ -83,8 +83,59 @@ def _ensure_stock_entry_external_transfer(stock_entry_name, value=1):
 	return True
 
 
-def _draft_stock_entries_for_lane(from_company, to_company):
-	"""Approved transfers with draft (docstatus 0) Stock Entry for kanban lane."""
+_ORDER_CODE_FIELD_CANDIDATES = (
+	"order_code",
+	"custom_order_code",
+	"party_code",
+	"custom_party_code",
+)
+
+
+def _stock_entry_order_code_fieldname():
+	for fn in _ORDER_CODE_FIELD_CANDIDATES:
+		if frappe.db.has_column("Stock Entry", fn):
+			return fn
+	try:
+		meta = frappe.get_meta("Stock Entry")
+		for df in meta.fields:
+			lab = (df.label or "").strip().lower()
+			if lab in ("order code", "order_code", "party code"):
+				if frappe.db.has_column("Stock Entry", df.fieldname):
+					return df.fieldname
+	except Exception:
+		pass
+	return ""
+
+
+def _order_codes_from_transfer_approval(ta):
+	codes = []
+	for ln in ta.lines or []:
+		pc = _cstr(ln.party_code)
+		if pc and pc not in codes:
+			codes.append(pc)
+	return codes
+
+
+def _set_stock_entry_order_codes(se, order_codes):
+	fn = _stock_entry_order_code_fieldname()
+	if not fn or not order_codes:
+		return False
+	val = ", ".join(order_codes) if len(order_codes) > 1 else order_codes[0]
+	se.set(fn, val)
+	return True
+
+
+def _ensure_stock_entry_order_codes(stock_entry_name, order_codes):
+	fn = _stock_entry_order_code_fieldname()
+	if not fn or not order_codes or not stock_entry_name:
+		return False
+	val = ", ".join(order_codes) if len(order_codes) > 1 else order_codes[0]
+	frappe.db.set_value("Stock Entry", stock_entry_name, fn, val, update_modified=False)
+	return True
+
+
+def _transfer_lane_stock_entries(from_company, to_company, include_submitted=1):
+	"""All approved transfers for a lane (draft + submitted) with dates and order codes."""
 	fc = _cstr(from_company)
 	tc = _cstr(to_company)
 	if not fc or not tc:
@@ -97,26 +148,58 @@ def _draft_stock_entries_for_lane(from_company, to_company):
 			"status": "Approved",
 			"stock_entry": ["is", "set"],
 		},
-		fields=["name", "stock_entry", "modified", "to_destination_label"],
+		fields=["name", "stock_entry", "modified", "creation", "to_destination_label", "approved_by"],
 		order_by="modified desc",
-		limit_page_length=30,
+		limit_page_length=50,
 	)
 	out = []
+	oc_fn = _stock_entry_order_code_fieldname()
 	for row in rows:
 		ste = _cstr(row.get("stock_entry"))
 		if not ste or not frappe.db.exists("Stock Entry", ste):
 			continue
-		if cint(frappe.db.get_value("Stock Entry", ste, "docstatus") or 0) != 0:
+		ds = cint(frappe.db.get_value("Stock Entry", ste, "docstatus") or 0)
+		if ds != 0 and not cint(include_submitted):
 			continue
+		ste_fields = ["posting_date", "posting_time"]
+		if oc_fn:
+			ste_fields.append(oc_fn)
+		ste_row = frappe.db.get_value("Stock Entry", ste, ste_fields, as_dict=True) or {}
+		try:
+			ta = frappe.get_doc("Transfer Approval", row.name)
+			order_codes = _order_codes_from_transfer_approval(ta)
+			qty_total = sum(flt(ln.qty) for ln in ta.lines or [])
+			line_count = len(ta.lines or [])
+		except Exception:
+			order_codes = []
+			qty_total = 0
+			line_count = 0
+		if oc_fn and ste_row.get(oc_fn):
+			ste_oc = _cstr(ste_row.get(oc_fn))
+			if ste_oc and ste_oc not in order_codes:
+				order_codes = [ste_oc] + [c for c in order_codes if c != ste_oc]
+		transfer_date = _cstr(ste_row.get("posting_date") or row.get("modified") or row.get("creation"))
 		out.append(
 			{
 				"name": ste,
 				"approval": row.get("name"),
 				"modified": row.get("modified"),
+				"transfer_date": transfer_date,
+				"docstatus": ds,
+				"status": "Draft" if ds == 0 else "Submitted",
+				"order_codes": order_codes,
+				"order_codes_label": ", ".join(order_codes) if order_codes else "",
+				"qty_total": qty_total,
+				"line_count": line_count,
 				"label": ste,
 			}
 		)
 	return out
+
+
+def _draft_stock_entries_for_lane(from_company, to_company):
+	"""Backward-compatible: draft-only entries."""
+	return [e for e in _transfer_lane_stock_entries(from_company, to_company) if e.get("docstatus") == 0]
 
 
 def chart_row_transfer_fields(item):
@@ -131,6 +214,13 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 	"""Build API payload fields for order tables (no change to planning sync)."""
 	mt, dest, status = chart_row_transfer_fields(item)
 	mt_norm = normalize_movement_type(mt)
+	if not mt_norm:
+		try:
+			from production_entry.production_planning.scheduler_api import resolve_movement_type_for_chart_row
+
+			mt_norm = normalize_movement_type(resolve_movement_type_for_chart_row(item))
+		except Exception:
+			mt_norm = ""
 	can_transfer = (
 		is_transfer_movement(mt)
 		and bool(wo_terminal)
@@ -146,6 +236,8 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 	movement_display = mt_norm or ""
 	if dest and is_transfer_movement(mt):
 		movement_display = f"{mt_norm} → {dest}"
+	elif mt_norm == "Despatch":
+		movement_display = "Despatch"
 	return {
 		"movement_type": mt_norm,
 		"transfer_destination": dest,
@@ -249,6 +341,7 @@ def get_transfer_destination_cards(from_company=None):
 				"company": tc,
 				"label": _("Transfer to {0}").format(tc),
 				"draft_stock_entries": _draft_stock_entries_for_lane(fc, tc) if fc else [],
+				"transfer_history": _transfer_lane_stock_entries(fc, tc) if fc else [],
 			}
 		)
 	return out
@@ -582,6 +675,8 @@ def _create_draft_transfer_stock_entry(ta):
 			break
 	if unit_val and frappe.db.has_column("Stock Entry", "unit"):
 		se.unit = unit_val
+	order_codes = _order_codes_from_transfer_approval(ta)
+	_set_stock_entry_order_codes(se, order_codes)
 
 	for ln in ta.lines or []:
 		qty = flt(ln.qty or 0)
@@ -599,6 +694,7 @@ def _create_draft_transfer_stock_entry(ta):
 		se.append("items", row)
 
 	se.insert(ignore_permissions=True)
+	_ensure_stock_entry_order_codes(se.name, order_codes)
 	if not _ensure_stock_entry_external_transfer(se.name, 1):
 		frappe.log_error(
 			title="Transfer Stock Entry — External Transfer field missing",

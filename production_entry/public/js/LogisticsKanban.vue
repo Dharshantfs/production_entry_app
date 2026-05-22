@@ -1,17 +1,18 @@
 <template>
-  <div class="lk-container">
+  <div class="lk-container" :class="{ 'lk-mode-transfer': mode === 'transfer', 'lk-mode-despatch': mode === 'despatch', 'lk-mounted': mounted }">
     <div class="lk-hero">
       <div class="lk-hero-text">
         <h2 class="lk-title">Logistics</h2>
         <p class="lk-subtitle">Inter-company transfers and despatch lanes</p>
       </div>
-      <div class="lk-truck-lane" aria-hidden="true">
+      <div class="lk-truck-scene" aria-hidden="true">
         <div class="lk-road"></div>
         <div class="lk-truck">🚛</div>
+        <div class="lk-customer">🏭</div>
       </div>
       <div class="lk-toggle">
-        <button type="button" :class="{ active: mode === 'transfer' }" @click="mode = 'transfer'">Transfer</button>
-        <button type="button" :class="{ active: mode === 'despatch' }" @click="mode = 'despatch'">Despatch</button>
+        <button type="button" :class="{ active: mode === 'transfer' }" @click="setMode('transfer')">Transfer</button>
+        <button type="button" :class="{ active: mode === 'despatch' }" @click="setMode('despatch')">Despatch</button>
       </div>
     </div>
 
@@ -22,15 +23,25 @@
           <option value="">Select company…</option>
           <option v-for="c in companies" :key="c.name" :value="c.name">{{ c.name }}</option>
         </select>
+        <label class="lk-filter-label">Show</label>
+        <select v-model="historyFilter" class="lk-select lk-select-sm">
+          <option value="all">All transfers</option>
+          <option value="draft">Draft STE only</option>
+          <option value="submitted">Submitted STE only</option>
+        </select>
         <button type="button" class="lk-link-btn" @click="goApprovals">Transfer Approvals →</button>
       </div>
 
       <div v-if="!fromCompany" class="lk-hint">Select a company to see transfer destination cards.</div>
-
       <div v-else-if="!destinationCards.length" class="lk-hint">No destination companies configured.</div>
 
       <div v-else class="lk-grid">
-        <div v-for="card in destinationCards" :key="card.company" class="lk-card-wrap">
+        <div
+          v-for="(card, idx) in destinationCards"
+          :key="card.company"
+          class="lk-card-wrap"
+          :style="{ animationDelay: `${idx * 60}ms` }"
+        >
           <button type="button" class="lk-card" @click="openTransfer(card)">
             <span class="lk-card-icon">📦</span>
             <span class="lk-card-title">{{ card.label }}</span>
@@ -38,18 +49,26 @@
             <span class="lk-card-cta">Start transfer →</span>
           </button>
 
-          <div v-if="card.draft_stock_entries?.length" class="lk-draft-panel">
-            <div class="lk-draft-head">Draft stock entries</div>
+          <div v-if="filteredHistory(card).length" class="lk-history-panel">
+            <div class="lk-history-head">Transfer history</div>
             <button
-              v-for="ste in card.draft_stock_entries"
+              v-for="ste in filteredHistory(card)"
               :key="ste.name"
               type="button"
-              class="lk-draft-chip"
+              class="lk-history-chip"
+              :class="ste.docstatus === 0 ? 'is-draft' : 'is-done'"
               @click="openSte(ste.name)"
             >
-              <span class="lk-draft-badge">DRAFT</span>
-              <span class="lk-draft-name">{{ ste.name }}</span>
-              <span class="lk-draft-go">Open →</span>
+              <span class="lk-history-badge">{{ ste.status }}</span>
+              <span class="lk-history-main">
+                <span class="lk-history-ste">{{ ste.name }}</span>
+                <span class="lk-history-meta">
+                  <span v-if="ste.order_codes_label">Order {{ ste.order_codes_label }}</span>
+                  <span v-if="ste.transfer_date"> · {{ formatDate(ste.transfer_date) }}</span>
+                  <span v-if="ste.qty_total"> · {{ ste.qty_total }} Kg</span>
+                </span>
+              </span>
+              <span class="lk-history-go">Open →</span>
             </button>
           </div>
         </div>
@@ -78,17 +97,43 @@
 </template>
 
 <script setup>
-import { ref, watch } from "vue";
+import { onMounted, ref } from "vue";
 import TransferDialog from "./TransferDialog.vue";
 
 const API = "production_entry.production_planning.transfer_logistics";
 const mode = ref("transfer");
+const mounted = ref(false);
+const historyFilter = ref("all");
 const companies = ref([]);
 const fromCompany = ref("Jayashree Spun Bond - 1ZT");
 const destinationCards = ref([]);
 const showDialog = ref(false);
 const dialogPrefill = ref({});
 const dialogFilters = ref({ view_scope: "daily", date: frappe.datetime.get_today() });
+
+function setMode(m) {
+  mode.value = m;
+}
+
+function formatDate(d) {
+  if (!d) return "";
+  try {
+    return frappe.datetime.str_to_user(d);
+  } catch {
+    return String(d).slice(0, 10);
+  }
+}
+
+function filteredHistory(card) {
+  const list = card.transfer_history || card.draft_stock_entries || [];
+  if (historyFilter.value === "draft") {
+    return list.filter((x) => x.docstatus === 0 || x.status === "Draft");
+  }
+  if (historyFilter.value === "submitted") {
+    return list.filter((x) => x.docstatus === 1 || x.status === "Submitted");
+  }
+  return list;
+}
 
 async function loadCompanies() {
   const r = await frappe.call({ method: `${API}.get_logistics_companies` });
@@ -125,9 +170,13 @@ function goApprovals() {
   frappe.set_route("transfer-approval");
 }
 
-watch(fromCompany, loadCards);
-loadCompanies();
-loadCards();
+onMounted(() => {
+  requestAnimationFrame(() => {
+    mounted.value = true;
+  });
+  loadCompanies();
+  loadCards();
+});
 </script>
 
 <style scoped>
@@ -136,6 +185,13 @@ loadCards();
   font-family: system-ui, sans-serif;
   background: linear-gradient(160deg, #f0f9ff 0%, #f8fafc 45%, #f1f5f9 100%);
   min-height: calc(100vh - 80px);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+.lk-container.lk-mounted {
+  opacity: 1;
+  transform: none;
 }
 .lk-hero {
   display: flex;
@@ -170,16 +226,16 @@ loadCards();
   min-width: 180px;
   z-index: 1;
 }
-.lk-truck-lane {
+.lk-truck-scene {
   position: relative;
-  width: 140px;
-  height: 36px;
+  width: 200px;
+  height: 40px;
   flex-shrink: 0;
   z-index: 1;
 }
 .lk-road {
   position: absolute;
-  bottom: 6px;
+  bottom: 4px;
   left: 0;
   right: 0;
   height: 4px;
@@ -188,20 +244,41 @@ loadCards();
 }
 .lk-truck {
   position: absolute;
-  bottom: 8px;
+  bottom: 10px;
   left: 0;
   font-size: 22px;
   line-height: 1;
-  animation: lk-truck-drive 4s ease-in-out infinite;
   will-change: transform;
 }
-@keyframes lk-truck-drive {
+.lk-customer {
+  position: absolute;
+  bottom: 8px;
+  right: 0;
+  font-size: 20px;
+  opacity: 0.85;
+}
+.lk-mode-transfer .lk-truck {
+  animation: lk-truck-to-customer 5s ease-in-out infinite;
+}
+.lk-mode-despatch .lk-truck {
+  animation: lk-truck-idle 3s ease-in-out infinite;
+}
+@keyframes lk-truck-to-customer {
   0%,
   100% {
     transform: translateX(0);
   }
+  55% {
+    transform: translateX(148px);
+  }
+}
+@keyframes lk-truck-idle {
+  0%,
+  100% {
+    transform: translateX(20px);
+  }
   50% {
-    transform: translateX(88px);
+    transform: translateX(60px);
   }
 }
 .lk-toggle {
@@ -237,11 +314,17 @@ loadCards();
   font-weight: 700;
   color: #475569;
 }
+.lk-filter-label {
+  margin-left: 8px;
+}
 .lk-select {
   min-width: 280px;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid #cbd5e1;
+}
+.lk-select-sm {
+  min-width: 160px;
 }
 .lk-link-btn {
   margin-left: auto;
@@ -264,7 +347,7 @@ loadCards();
 }
 .lk-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
   align-items: start;
 }
@@ -272,6 +355,18 @@ loadCards();
   display: flex;
   flex-direction: column;
   gap: 8px;
+  opacity: 0;
+  animation: lk-card-in 0.4s ease forwards;
+}
+@keyframes lk-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .lk-card {
   text-align: left;
@@ -312,27 +407,27 @@ loadCards();
   font-weight: 700;
   color: #0284c7;
 }
-.lk-draft-panel {
-  background: #fffbeb;
-  border: 1px solid #fcd34d;
+.lk-history-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
-  padding: 10px 10px 8px;
+  padding: 10px;
 }
-.lk-draft-head {
+.lk-history-head {
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
-  color: #92400e;
+  color: #64748b;
   margin-bottom: 8px;
   letter-spacing: 0.04em;
 }
-.lk-draft-chip {
+.lk-history-chip {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   width: 100%;
   text-align: left;
-  border: 1px solid #fde68a;
+  border: 1px solid #e2e8f0;
   background: #fff;
   border-radius: 8px;
   padding: 8px 10px;
@@ -340,44 +435,74 @@ loadCards();
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
-.lk-draft-chip:last-child {
+.lk-history-chip:last-child {
   margin-bottom: 0;
 }
-.lk-draft-chip:hover {
-  background: #fef3c7;
-  border-color: #f59e0b;
+.lk-history-chip.is-draft {
+  border-color: #fcd34d;
+  background: #fffbeb;
 }
-.lk-draft-badge {
+.lk-history-chip.is-draft:hover {
+  background: #fef3c7;
+}
+.lk-history-chip.is-done {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.lk-history-chip.is-done:hover {
+  background: #dcfce7;
+}
+.lk-history-badge {
   font-size: 9px;
   font-weight: 800;
-  background: #f59e0b;
-  color: #fff;
   padding: 2px 6px;
   border-radius: 4px;
+  flex-shrink: 0;
 }
-.lk-draft-name {
+.lk-history-chip.is-draft .lk-history-badge {
+  background: #f59e0b;
+  color: #fff;
+}
+.lk-history-chip.is-done .lk-history-badge {
+  background: #16a34a;
+  color: #fff;
+}
+.lk-history-main {
   flex: 1;
+  min-width: 0;
+}
+.lk-history-ste {
+  display: block;
   font-size: 12px;
   font-weight: 700;
-  color: #78350f;
   font-family: ui-monospace, monospace;
+  color: #0f172a;
 }
-.lk-draft-go {
+.lk-history-meta {
+  display: block;
+  font-size: 10px;
+  color: #64748b;
+  margin-top: 2px;
+  line-height: 1.35;
+}
+.lk-history-go {
   font-size: 11px;
   font-weight: 700;
-  color: #b45309;
+  color: #0284c7;
+  flex-shrink: 0;
 }
 .lk-grid-muted .lk-card-disabled {
   cursor: default;
   opacity: 0.75;
 }
-.lk-card-disabled:hover {
-  transform: none;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
-}
 @media (prefers-reduced-motion: reduce) {
+  .lk-container,
+  .lk-card-wrap,
   .lk-truck {
-    animation: none;
+    animation: none !important;
+    transition: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 }
 </style>
