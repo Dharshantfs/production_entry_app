@@ -349,7 +349,7 @@ function openSte(name) {
 }
 
 function goApprovals() {
-  frappe.set_route("transfer-approval");
+  frappe.set_route("transfer-approval-dashboard");
 }
 
 watch(fromCompany, loadCards);

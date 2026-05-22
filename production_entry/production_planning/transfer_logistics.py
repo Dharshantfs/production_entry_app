@@ -154,27 +154,75 @@ def _stock_entry_nature_of_processing_fieldname():
 	return ""
 
 
-def _stock_entry_party_fieldnames():
-	party_fn = ""
-	party_type_fn = ""
-	if frappe.db.has_column("Stock Entry", "party"):
-		party_fn = "party"
+_PARTY_FIELD_CANDIDATES = (
+	"party",
+	"custom_party",
+	"custom_transfer_party",
+	"custom_party_name",
+)
+
+
+def _resolve_stock_entry_party_fields(to_company):
+	"""Find Party (+ party_type) fields on Stock Entry; prefer Link to Company."""
+	tc = _cstr(to_company).strip()
+	if not tc:
+		return None, None, None
+	party_fn = None
+	party_type_fn = None
+	fieldtype = ""
+	try:
+		meta = frappe.get_meta("Stock Entry")
+		for df in meta.fields:
+			lab = (df.label or "").strip().lower()
+			fn = df.fieldname
+			if lab != "party" and fn not in _PARTY_FIELD_CANDIDATES:
+				continue
+			opts = _cstr(df.options).strip()
+			ft = df.fieldtype or ""
+			if ft == "Link" and opts and opts != "Company" and "Company" not in opts.split("\n"):
+				continue
+			if ft in ("Link", "Dynamic Link", "Data", "Small Text"):
+				party_fn = fn
+				fieldtype = ft
+				break
+	except Exception:
+		pass
+	if not party_fn:
+		for fn in _PARTY_FIELD_CANDIDATES:
+			if frappe.db.has_column("Stock Entry", fn):
+				party_fn = fn
+				fieldtype = "Data"
+				break
 	if frappe.db.has_column("Stock Entry", "party_type"):
 		party_type_fn = "party_type"
-	return party_fn, party_type_fn
+	return party_fn, party_type_fn, fieldtype
 
 
 def _set_stock_entry_party(se, to_company):
-	"""Party on STE = destination company (e.g. J Vasanth Exports)."""
+	"""Party on STE = destination company (To Company from transfer approval)."""
 	tc = _cstr(to_company).strip()
 	if not tc:
 		return False
-	party_fn, party_type_fn = _stock_entry_party_fieldnames()
+	wrote = False
+	if frappe.db.has_column("Stock Entry", "custom_transfer_to_company"):
+		se.set("custom_transfer_to_company", tc)
+		wrote = True
+	party_fn, party_type_fn, ft = _resolve_stock_entry_party_fields(tc)
 	if party_fn:
-		se.set(party_fn, tc)
-	if party_type_fn:
-		se.set(party_type_fn, "Company")
-	return bool(party_fn)
+		if ft == "Data" or ft == "Small Text":
+			se.set(party_fn, tc)
+			wrote = True
+		elif ft == "Link" and frappe.db.exists("Company", tc):
+			se.set(party_fn, tc)
+			if party_type_fn:
+				se.set(party_type_fn, "Company")
+			wrote = True
+		elif ft == "Dynamic Link":
+			se.set(party_fn, tc)
+			if party_type_fn:
+				se.set(party_type_fn, "Company")
+			wrote = True
+	return wrote
 
 
 def _set_stock_entry_nature_of_processing(se, nature):
@@ -189,18 +237,32 @@ def _set_stock_entry_nature_of_processing(se, nature):
 
 
 def _ensure_stock_entry_party_and_nature(stock_entry_name, to_company, nature_of_processing):
-	if not stock_entry_name:
+	"""Re-apply party/nature after insert (insert may drop invalid Link values)."""
+	if not stock_entry_name or not frappe.db.exists("Stock Entry", stock_entry_name):
 		return
-	party_fn, party_type_fn = _stock_entry_party_fieldnames()
 	tc = _cstr(to_company).strip()
-	if party_fn and tc:
-		frappe.db.set_value("Stock Entry", stock_entry_name, party_fn, tc, update_modified=False)
-	if party_type_fn and tc:
-		frappe.db.set_value("Stock Entry", stock_entry_name, party_type_fn, "Company", update_modified=False)
-	fn = _stock_entry_nature_of_processing_fieldname()
 	nat = _cstr(nature_of_processing).strip()
-	if fn and nat:
-		frappe.db.set_value("Stock Entry", stock_entry_name, fn, nat, update_modified=False)
+	try:
+		se = frappe.get_doc("Stock Entry", stock_entry_name)
+		if tc:
+			_set_stock_entry_party(se, tc)
+			if frappe.db.has_column("Stock Entry", "custom_transfer_to_company"):
+				se.custom_transfer_to_company = tc
+		if nat:
+			_set_stock_entry_nature_of_processing(se, nat)
+		se.flags.ignore_validate = True
+		se.flags.ignore_links = True
+		se.save(ignore_permissions=True)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_ensure_stock_entry_party_and_nature")
+		party_fn, party_type_fn, _ft = _resolve_stock_entry_party_fields(tc)
+		if party_fn and tc:
+			frappe.db.set_value("Stock Entry", stock_entry_name, party_fn, tc, update_modified=False)
+		if party_type_fn and tc:
+			frappe.db.set_value("Stock Entry", stock_entry_name, party_type_fn, "Company", update_modified=False)
+		fn = _stock_entry_nature_of_processing_fieldname()
+		if fn and nat:
+			frappe.db.set_value("Stock Entry", stock_entry_name, fn, nat, update_modified=False)
 
 
 def _transfer_date_in_scope(transfer_date, view_scope=None, date=None, week=None, month=None):

@@ -92,7 +92,7 @@
    "is_query_report": 0,
    "label": "Transfer Approval",
    "link_count": 0,
-   "link_to": "transfer-approval",
+   "link_to": "transfer-approval-dashboard",
    "link_type": "Page",
    "onboard": 1,
    "type": "Link"
@@ -201,7 +201,7 @@
   },
   {
    "label": "Transfer Approval",
-   "link_to": "transfer-approval",
+   "link_to": "transfer-approval-dashboard",
    "type": "Page"
   },
   {

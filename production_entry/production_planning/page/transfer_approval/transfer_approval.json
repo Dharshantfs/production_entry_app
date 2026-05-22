@@ -3,8 +3,8 @@
  "doctype": "Page",
  "modified": "2026-05-19 12:00:00.000000",
  "module": "Production Planning",
- "name": "transfer-approval",
- "page_name": "transfer-approval",
+ "name": "transfer-approval-dashboard",
+ "page_name": "transfer-approval-dashboard",
  "roles": [
   {"role": "System Manager"},
   {"role": "Manufacturing Manager"},

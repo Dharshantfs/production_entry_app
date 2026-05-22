@@ -1,4 +1,4 @@
-frappe.pages["transfer-approval"].on_page_load = function (wrapper) {
+frappe.pages["transfer-approval-dashboard"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
 		title: "Transfer Approval",
@@ -23,9 +23,12 @@ frappe.pages["transfer-approval"].on_page_load = function (wrapper) {
 		setTimeout(() => {
 			if (!mount()) {
 				$(page.body).html(
-					'<div class="text-danger p-5">Transfer Approval dashboard failed to load. Run <b>bench build --app production_entry</b> and refresh.</div>'
+					'<div class="text-danger p-5">Dashboard failed to load. Run <b>bench build --app production_entry</b> and refresh.</div>'
 				);
 			}
 		}, 1200);
 	}
 };
+
+// Old route (conflicted with Transfer Approval list) → dashboard page
+frappe.pages["transfer-approval"] = frappe.pages["transfer-approval-dashboard"];

@@ -10,7 +10,7 @@ function can_act_on_transfer_approval() {
 frappe.ui.form.on("Transfer Approval", {
 	refresh(frm) {
 		frm.add_custom_button(__("Open Approval Dashboard"), () => {
-			frappe.set_route("transfer-approval");
+			frappe.set_route("transfer-approval-dashboard");
 		});
 
 		if (!frm.is_new() && ["Pending Approval", "Draft"].includes(frm.doc.status)) {

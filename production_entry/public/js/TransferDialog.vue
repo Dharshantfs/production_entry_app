@@ -70,35 +70,65 @@
         </table>
       </div>
 
-      <!-- In-dialog batch picker (stays inside Transfer popup) -->
+      <!-- Batch picker: full-width panel below table (not hidden behind overlay) -->
       <div v-if="batchPickerOpenFor" class="tl-batch-panel">
         <div class="tl-batch-panel-head">
-          <strong>Select batches (multi)</strong>
-          <span class="tl-batch-meta">Order {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.spr_name }}</span>
-          <button type="button" class="tl-close" @click="closeBatchPicker">✕</button>
+          <div>
+            <strong>Select batches</strong>
+            <span class="tl-batch-meta">Order {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.spr_name }}</span>
+          </div>
+          <div class="tl-batch-head-actions">
+            <button type="button" class="cc-clear-btn tl-batch-mini" @click="selectAllBatches">Select all</button>
+            <button type="button" class="cc-clear-btn tl-batch-mini" @click="clearAllBatches">Clear</button>
+            <button type="button" class="tl-close" @click="closeBatchPicker">✕</button>
+          </div>
         </div>
         <p v-if="batchLoading" class="tl-muted">Loading batches from SPR…</p>
         <p v-else-if="!batchOptions.length" class="tl-block">No produced batches on this SPR.</p>
-        <div v-else class="tl-batch-list">
-          <label v-for="(b, idx) in batchOptions" :key="b.batch_no" class="tl-batch-row">
-            <input type="checkbox" v-model="b.selected" />
-            <span class="tl-batch-no">{{ b.batch_no }}</span>
-            <span class="tl-batch-item">{{ b.item_code }}</span>
-            <input
-              type="number"
-              class="tl-batch-qty"
-              step="0.001"
-              min="0.001"
-              :disabled="!b.selected"
-              v-model.number="b.qty"
-            />
-            <span class="tl-batch-uom">Kg</span>
-          </label>
+        <div v-else class="tl-batch-table-wrap">
+          <table class="tl-batch-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Batch No</th>
+                <th>Item</th>
+                <th class="text-right">Available (Kg)</th>
+                <th class="text-right">Transfer Qty (Kg)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="b in batchOptions"
+                :key="b.batch_no"
+                :class="{ 'is-selected': b.selected }"
+                @click="toggleBatchRow(b)"
+              >
+                <td><input type="checkbox" v-model="b.selected" @click.stop /></td>
+                <td class="tl-batch-no">{{ b.batch_no }}</td>
+                <td>{{ b.item_code }}</td>
+                <td class="text-right">{{ formatQty(b.available_qty) }}</td>
+                <td class="text-right" @click.stop>
+                  <input
+                    type="number"
+                    class="tl-batch-qty-input"
+                    step="0.001"
+                    min="0.001"
+                    :disabled="!b.selected"
+                    v-model.number="b.qty"
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tl-batch-summary-bar" v-if="batchPickerTotals.count">
+          <span>{{ batchPickerTotals.count }} batch(es)</span>
+          <span><strong>{{ formatQty(batchPickerTotals.qty) }} Kg</strong> total</span>
         </div>
         <div class="tl-batch-panel-foot">
           <button type="button" class="cc-clear-btn" @click="closeBatchPicker">Cancel</button>
           <button type="button" class="cc-save-arrange-btn" :disabled="!batchApplyEnabled" @click="applyBatches">
-            Apply batches
+            Apply {{ batchPickerTotals.count || "" }} batch(es)
           </button>
         </div>
       </div>
@@ -198,6 +228,14 @@ const batchApplyEnabled = computed(() => {
   return picked.length > 0 && picked.every((b) => b.batch_no && ltn(b.qty) > 0);
 });
 
+const batchPickerTotals = computed(() => {
+  const picked = batchOptions.value.filter((b) => b.selected && ltn(b.qty) > 0);
+  return {
+    count: picked.length,
+    qty: picked.reduce((a, b) => a + ltn(b.qty), 0),
+  };
+});
+
 const resolvedNature = computed(() => {
   let nat = (natureOfProcessing.value || "").trim();
   if (nat === "Other") nat = (natureOther.value || "").trim();
@@ -291,11 +329,13 @@ function openBatchPicker(row) {
       const batches = r.message || [];
       batchOptions.value = batches.map((b) => {
         const prev = existingMap[b.batch_no];
+        const avail = ltn(b.qty) || 1;
         return {
           batch_no: b.batch_no,
           item_code: b.item_code || row.item_code,
           item_name: b.item_name,
-          qty: prev ? ltn(prev.qty) : ltn(b.qty) || 1,
+          available_qty: avail,
+          qty: prev ? ltn(prev.qty) : avail,
           selected: Boolean(prev),
         };
       });
@@ -315,6 +355,25 @@ function closeBatchPicker() {
   batchPickerOpenFor.value = "";
   batchPickerRow.value = null;
   batchOptions.value = [];
+}
+
+function selectAllBatches() {
+  batchOptions.value = batchOptions.value.map((b) => ({
+    ...b,
+    selected: true,
+    qty: ltn(b.qty) > 0 ? b.qty : b.available_qty || 1,
+  }));
+}
+
+function clearAllBatches() {
+  batchOptions.value = batchOptions.value.map((b) => ({ ...b, selected: false }));
+}
+
+function toggleBatchRow(b) {
+  b.selected = !b.selected;
+  if (b.selected && ltn(b.qty) <= 0) {
+    b.qty = b.available_qty || 1;
+  }
 }
 
 function applyBatches() {
@@ -421,11 +480,11 @@ function sendForApproval(natureOfProcessing) {
         indicator: "green",
       });
       frappe.show_alert({
-        message: __("Open Transfer Approval dashboard to approve"),
-        indicator: "blue",
+        message: __("Transfer {0} sent for approval. Admin will approve from Transfer Approval dashboard.", [
+          docname,
+        ]),
+        indicator: "green",
       });
-      frappe.route_options = { name: docname, status_filter: "pending" };
-      frappe.set_route("transfer-approval");
       emit("submitted", r.message);
       close();
     },
@@ -602,11 +661,11 @@ watch(
 }
 .tl-batch-panel {
   margin: 0 20px 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   border: 2px solid #0ea5e9;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #f0f9ff;
-  max-height: 240px;
+  max-height: 42vh;
   display: flex;
   flex-direction: column;
 }
