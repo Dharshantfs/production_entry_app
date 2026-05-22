@@ -257,10 +257,10 @@ onMounted(() => {
   font-size: 20px;
   opacity: 0.85;
 }
-.lk-mode-transfer .lk-truck {
+.lk-mode-despatch .lk-truck {
   animation: lk-truck-to-customer 5s ease-in-out infinite;
 }
-.lk-mode-despatch .lk-truck {
+.lk-mode-transfer .lk-truck {
   animation: lk-truck-idle 3s ease-in-out infinite;
 }
 @keyframes lk-truck-to-customer {

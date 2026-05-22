@@ -76,8 +76,8 @@ flowchart TB
 
 ## Logistics Kanban
 
-- **Transfer** tab — truck animation toward customer; destination cards; **transfer history** (draft + submitted) with date and order code.
-- **Despatch** tab — Delivery Note (coming soon).
+- **Transfer** tab — destination cards; **transfer history** (draft + submitted) with date and order code.
+- **Despatch** tab — truck animation toward customer (🏭); Delivery Note (coming soon).
 - Filter: All / Draft STE only / Submitted STE only.
 
 ---
