@@ -103,6 +103,31 @@
         </div>
       </div>
 
+      <div class="tl-nature-panel">
+        <div class="tl-nature-grid">
+          <div class="tl-nature-field">
+            <label class="tl-nature-label">Nature of Processing <span class="tl-req">*</span></label>
+            <select v-model="natureOfProcessing" class="tl-select tl-nature-select">
+              <option value="">Select nature of processing…</option>
+              <option value="Lamination">Lamination</option>
+              <option value="Printing">Printing</option>
+              <option value="Slitting">Slitting</option>
+              <option value="Rewinding">Rewinding</option>
+              <option value="Sheet Cutting">Sheet Cutting</option>
+              <option value="FG Transfer">FG Transfer</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div v-if="natureOfProcessing === 'Other'" class="tl-nature-field">
+            <label class="tl-nature-label">Specify</label>
+            <input v-model="natureOther" type="text" class="tl-input-nature" placeholder="Enter nature of processing" />
+          </div>
+        </div>
+        <p v-if="toCompany" class="tl-party-hint">
+          Party on Stock Entry after approval: <strong>{{ toCompany }}</strong>
+        </p>
+      </div>
+
       <div class="tl-footer">
         <button type="button" class="cc-clear-btn" @click="close">Cancel</button>
         <button type="button" class="cc-save-arrange-btn" :disabled="submitting || !canSubmit" @click="submit">
@@ -142,6 +167,8 @@ const batchPickerOpenFor = ref("");
 const batchPickerRow = ref(null);
 const batchOptions = ref([]);
 const batchLoading = ref(false);
+const natureOfProcessing = ref("");
+const natureOther = ref("");
 
 const toCompanyOptions = computed(() => {
   const fc = (fromCompany.value || "").trim();
@@ -171,8 +198,15 @@ const batchApplyEnabled = computed(() => {
   return picked.length > 0 && picked.every((b) => b.batch_no && ltn(b.qty) > 0);
 });
 
+const resolvedNature = computed(() => {
+  let nat = (natureOfProcessing.value || "").trim();
+  if (nat === "Other") nat = (natureOther.value || "").trim();
+  return nat;
+});
+
 const canSubmit = computed(() => {
   if (!(toCompany.value || "").trim()) return false;
+  if (!resolvedNature.value) return false;
   const entries = Object.values(selection.value);
   if (!entries.length) return false;
   return entries.every((s) => Array.isArray(s.batches) && s.batches.length > 0);
@@ -386,16 +420,12 @@ function sendForApproval(natureOfProcessing) {
         message: `Transfer sent for approval: ${docname}`,
         indicator: "green",
       });
-      frappe.msgprint({
-        title: __("Transfer submitted"),
-        message: __("Party on STE will be set to {0} after approval.", [toCompany.value]),
-        primary_action: {
-          label: __("Open Transfer Approval"),
-          action() {
-            frappe.set_route("transfer-approval");
-          },
-        },
+      frappe.show_alert({
+        message: __("Open Transfer Approval dashboard to approve"),
+        indicator: "blue",
       });
+      frappe.route_options = { name: docname, status_filter: "pending" };
+      frappe.set_route("transfer-approval");
       emit("submitted", r.message);
       close();
     },
@@ -406,63 +436,26 @@ function sendForApproval(natureOfProcessing) {
 }
 
 function submit() {
-  if (!canSubmit.value) {
-    if (!(toCompany.value || "").trim()) {
-      frappe.msgprint("Select destination company.");
-    } else {
-      frappe.msgprint("Select at least one row and apply batches for each.");
-    }
+  if (!(toCompany.value || "").trim()) {
+    frappe.msgprint(__("Select destination company."));
     return;
   }
-  const tc = (toCompany.value || "").trim();
-  const d = new frappe.ui.Dialog({
-    title: __("Nature of Processing"),
-    fields: [
-      {
-        fieldname: "party_help",
-        fieldtype: "HTML",
-        options: `<p class="text-muted small">${__(
-          "Transfer to <b>{0}</b>. This company will be set as <b>Party</b> on the Stock Entry after approval.",
-          [frappe.utils.escape_html(tc)]
-        )}</p>`,
-      },
-      {
-        fieldname: "nature_of_processing",
-        fieldtype: "Select",
-        label: __("Nature of Processing"),
-        reqd: 1,
-        options: [
-          "Lamination",
-          "Printing",
-          "Slitting",
-          "Rewinding",
-          "Sheet Cutting",
-          "FG Transfer",
-          "Other",
-        ].join("\n"),
-      },
-      {
-        fieldname: "nature_other",
-        fieldtype: "Data",
-        label: __("Specify (if Other)"),
-        depends_on: "eval:doc.nature_of_processing=='Other'",
-      },
-    ],
-    primary_action_label: __("Submit for approval"),
-    primary_action(values) {
-      let nat = (values.nature_of_processing || "").trim();
-      if (nat === "Other") {
-        nat = (values.nature_other || "").trim();
-      }
-      if (!nat) {
-        frappe.msgprint(__("Nature of Processing is required."));
-        return;
-      }
-      d.hide();
-      sendForApproval(nat);
-    },
-  });
-  d.show();
+  if (!resolvedNature.value) {
+    frappe.msgprint(__("Select Nature of Processing before submitting."));
+    return;
+  }
+  if (!Object.values(selection.value).length) {
+    frappe.msgprint(__("Select at least one row."));
+    return;
+  }
+  const missingBatches = Object.values(selection.value).some(
+    (s) => !Array.isArray(s.batches) || !s.batches.length
+  );
+  if (missingBatches) {
+    frappe.msgprint(__("Apply batches for each selected row."));
+    return;
+  }
+  sendForApproval(resolvedNature.value);
 }
 
 watch(
@@ -475,6 +468,8 @@ watch(
     dlgCustomer.value = props.prefill?.customer || props.filterContext?.customer || "";
     fromCompany.value = props.prefill?.from_company || "Jayashree Spun Bond - 1ZT";
     toCompany.value = props.prefill?.to_company || "";
+    natureOfProcessing.value = "";
+    natureOther.value = "";
     loadCompanies();
     loadRows();
   }
@@ -482,6 +477,47 @@ watch(
 </script>
 
 <style scoped>
+.tl-nature-panel {
+  padding: 14px 20px;
+  border-top: 1px solid #e2e8f0;
+  background: #f0f9ff;
+}
+.tl-nature-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: flex-end;
+}
+.tl-nature-field {
+  flex: 1;
+  min-width: 220px;
+}
+.tl-nature-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0369a1;
+  margin-bottom: 6px;
+}
+.tl-req {
+  color: #dc2626;
+}
+.tl-nature-select {
+  width: 100%;
+  min-width: 0;
+}
+.tl-input-nature {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.tl-party-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #475569;
+}
 .tl-overlay {
   position: fixed;
   inset: 0;

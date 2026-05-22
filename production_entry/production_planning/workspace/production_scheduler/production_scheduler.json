@@ -50,6 +50,33 @@
 			"type": "Link"
 		},
 		{
+			"description": "Transfer Approval dashboard",
+			"icon": "exchange",
+			"label": "Transfer Approval",
+			"link_to": "transfer-approval",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"description": "Production Table",
+			"icon": "table",
+			"label": "Production Table",
+			"link_to": "production-table",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"description": "Logistics Kanban",
+			"icon": "truck",
+			"label": "Logistics Kanban",
+			"link_to": "logistics-kanban",
+			"link_type": "Page",
+			"onboard": 0,
+			"type": "Link"
+		},
+		{
 			"description": "Planning Sheet List",
 			"icon": "list",
 			"label": "Planning sheet",
@@ -90,6 +117,16 @@
 		{
 			"label": "Sequence Approval",
 			"link_to": "sequence-approval",
+			"type": "Page"
+		},
+		{
+			"label": "Transfer Approval",
+			"link_to": "transfer-approval",
+			"type": "Page"
+		},
+		{
+			"label": "Production Table",
+			"link_to": "production-table",
 			"type": "Page"
 		}
 	],

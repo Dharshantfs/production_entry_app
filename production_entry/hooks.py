@@ -43,7 +43,9 @@ doctype_js = {
     "Roll Production Entry": "public/js/roll_production_entry.js",
     "Transfer Approval": "public/js/transfer_approval_form.js",
 }
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
+doctype_list_js = {
+	"Transfer Approval": "public/js/transfer_approval_list.js",
+}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 

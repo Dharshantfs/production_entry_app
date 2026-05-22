@@ -4,6 +4,10 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 
 def execute():
+	if frappe.db.exists("DocType", "Transfer Approval"):
+		meta = frappe.get_meta("Transfer Approval", cached=False)
+		if meta.has_field("nature_of_processing"):
+			return
 	create_custom_fields(
 		{
 			"Transfer Approval": [

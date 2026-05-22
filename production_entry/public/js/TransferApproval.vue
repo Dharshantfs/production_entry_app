@@ -359,15 +359,14 @@ watch(statusFilter, () => {
 });
 
 onMounted(() => {
-  loadList();
   const opts = frappe.route_options || {};
-  if (opts.name) {
-    setTimeout(async () => {
-      await loadList();
+  if (opts.status_filter) statusFilter.value = opts.status_filter;
+  loadList().then(() => {
+    if (opts.name) {
       const hit = list.value.find((x) => x.name === opts.name);
       if (hit) select(hit);
-    }, 400);
-  }
+    }
+  });
 });
 </script>
 

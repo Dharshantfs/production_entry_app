@@ -665,7 +665,9 @@ def create_transfer_approval_request(
 	doc.from_company = fc
 	doc.to_company = tc
 	doc.to_destination_label = label
-	if hasattr(doc, "nature_of_processing") or frappe.db.has_column("Transfer Approval", "nature_of_processing"):
+	if frappe.db.has_column("Transfer Approval", "nature_of_processing"):
+		doc.set("nature_of_processing", nature)
+	elif hasattr(doc, "nature_of_processing"):
 		doc.nature_of_processing = nature
 	doc.status = "Pending Approval"
 	doc.requested_by = frappe.session.user
