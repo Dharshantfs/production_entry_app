@@ -671,46 +671,70 @@ watch(
 }
 .tl-batch-panel-head {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.tl-batch-head-actions {
+  display: flex;
+  gap: 6px;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+}
+.tl-batch-mini {
+  font-size: 11px;
+  padding: 4px 8px;
 }
 .tl-batch-meta {
+  display: block;
   font-size: 11px;
   color: #64748b;
-  flex: 1;
+  margin-top: 2px;
 }
-.tl-batch-list {
+.tl-batch-table-wrap {
   overflow: auto;
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.tl-batch-row {
-  display: grid;
-  grid-template-columns: auto 1fr auto 90px auto;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 8px;
   background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: 8px;
+  border: 1px solid #bae6fd;
+}
+.tl-batch-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.tl-batch-table th,
+.tl-batch-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.tl-batch-table tr.is-selected {
+  background: #eff6ff;
+}
+.tl-batch-table tr {
   cursor: pointer;
 }
 .tl-batch-no {
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+}
+.tl-batch-qty-input {
+  width: 100px;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  text-align: right;
+}
+.text-right {
+  text-align: right;
+}
+.tl-batch-summary-bar {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 13px;
   font-weight: 600;
-  font-family: monospace;
-}
-.tl-batch-item {
-  color: #64748b;
-  font-size: 11px;
-}
-.tl-batch-qty {
-  width: 80px;
-  padding: 4px 6px;
+  color: #0369a1;
 }
 .tl-batch-panel-foot {
   display: flex;
