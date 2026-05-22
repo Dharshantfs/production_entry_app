@@ -110,6 +110,7 @@ doc_events = {
         "before_validate": "production_entry.production_planning.scheduler_hooks.planning_sheet_before_validate",
         "validate": "production_entry.production_planning.scheduler_hooks.planning_sheet_validate_combined",
         "before_save": "production_entry.production_planning.scheduler_hooks.planning_sheet_allocate_unit",
+        "on_update": "production_entry.production_planning.scheduler_hooks.planning_sheet_on_update",
         "on_submit": "production_entry.production_planning.scheduler_hooks.planning_sheet_update_queue",
         "before_cancel": "production_entry.production_planning.scheduler_hooks.planning_sheet_before_cancel",
     },

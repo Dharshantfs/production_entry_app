@@ -8,8 +8,8 @@
       'lk-gate-open': gateOpen,
     }"
   >
-    <div class="lk-gate lk-gate-left" aria-hidden="true"></div>
-    <div class="lk-gate lk-gate-right" aria-hidden="true"></div>
+    <div class="lk-gate lk-gate-left" aria-hidden="true"><span class="lk-gate-label">IN</span></div>
+    <div class="lk-gate lk-gate-right" aria-hidden="true"><span class="lk-gate-label">OUT</span></div>
 
     <div class="lk-hero">
       <div class="lk-hero-text">
@@ -17,20 +17,18 @@
         <p class="lk-subtitle">Inter-company transfers and despatch lanes</p>
       </div>
 
-      <!-- Transfer: move between two sites -->
       <div v-if="mode === 'transfer'" class="lk-truck-scene lk-scene-transfer" aria-hidden="true">
         <span class="lk-site lk-site-a">🏭</span>
         <div class="lk-road-transfer">
-          <div class="lk-truck">🚛</div>
+          <div class="lk-truck lk-truck-transfer">🚛</div>
         </div>
         <span class="lk-site lk-site-b">🏢</span>
       </div>
-      <!-- Despatch: truck to customer only -->
       <div v-else class="lk-truck-scene lk-scene-despatch" aria-hidden="true">
         <div class="lk-road-despatch">
-          <div class="lk-truck">🚛</div>
+          <div class="lk-truck lk-truck-despatch">🚛</div>
         </div>
-        <span class="lk-customer">🏭</span>
+        <span class="lk-customer">📦</span>
       </div>
 
       <div class="lk-toggle">
@@ -99,31 +97,49 @@
           <button type="button" class="lk-card" @click="openTransfer(card)">
             <span class="lk-card-icon">📦</span>
             <span class="lk-card-title">{{ card.label }}</span>
-            <span class="lk-card-sub">{{ card.company }}</span>
             <span class="lk-card-cta">Start transfer →</span>
           </button>
 
           <div v-if="filteredHistory(card).length" class="lk-history-panel">
-            <div class="lk-history-head">Transfer history</div>
-            <button
-              v-for="ste in filteredHistory(card)"
-              :key="ste.name"
-              type="button"
-              class="lk-history-chip"
-              :class="ste.docstatus === 0 ? 'is-draft' : 'is-done'"
-              @click="openSte(ste.name)"
+            <div class="lk-history-head">
+              Transfer history
+              <span class="lk-history-hint">Drag draft STEs to set queue priority</span>
+            </div>
+            <div
+              class="lk-history-list"
+              @dragover.prevent
+              @drop.prevent="onHistoryDrop(card)"
             >
-              <span class="lk-history-badge">{{ ste.status }}</span>
-              <span class="lk-history-main">
-                <span class="lk-history-ste">{{ ste.name }}</span>
-                <span class="lk-history-meta">
-                  <span v-if="ste.order_codes_label">Order {{ ste.order_codes_label }}</span>
-                  <span v-if="ste.transfer_date"> · {{ formatDate(ste.transfer_date) }}</span>
-                  <span v-if="ste.qty_total"> · {{ ste.qty_total }} Kg</span>
+              <div
+                v-for="ste in filteredHistory(card)"
+                :key="ste.name"
+                class="lk-history-chip"
+                :class="{
+                  'is-draft': ste.docstatus === 0,
+                  'is-done': ste.docstatus === 1,
+                  'is-drag-over': dragOverSteName === ste.name,
+                  'is-draggable': ste.docstatus === 0,
+                }"
+                :draggable="ste.docstatus === 0"
+                @dragstart="onHistoryDragStart(card, ste, $event)"
+                @dragover.prevent="onHistoryDragOver(ste)"
+                @dragleave="onHistoryDragLeave(ste)"
+                @dragend="onHistoryDragEnd"
+                @click.stop="openSte(ste.name)"
+              >
+                <span v-if="ste.docstatus === 0" class="lk-drag-grip" title="Drag to reorder">⋮⋮</span>
+                <span class="lk-history-badge">{{ ste.status }}</span>
+                <span class="lk-history-main">
+                  <span class="lk-history-ste">{{ ste.name }}</span>
+                  <span class="lk-history-meta">
+                    <span v-if="ste.order_codes_label">Order {{ ste.order_codes_label }}</span>
+                    <span v-if="ste.transfer_date"> · {{ formatDate(ste.transfer_date) }}</span>
+                    <span v-if="ste.qty_total"> · {{ ste.qty_total }} Kg</span>
+                  </span>
                 </span>
-              </span>
-              <span class="lk-history-go">Open →</span>
-            </button>
+                <span class="lk-history-go">Open →</span>
+              </div>
+            </div>
           </div>
           <p v-else class="lk-no-history">No transfers in this period.</p>
         </div>
@@ -131,11 +147,11 @@
     </template>
 
     <template v-else>
-      <p class="lk-hint">Despatch — Delivery Note coming soon.</p>
+      <p class="lk-hint">Despatch — truck runs to customer (right). Delivery Note coming soon.</p>
       <div class="lk-grid lk-grid-muted">
         <div v-for="c in companies" :key="'d-' + c.name" class="lk-card lk-card-disabled">
           <span class="lk-card-icon">🚚</span>
-          <span class="lk-card-title">{{ c.name }}</span>
+          <span class="lk-card-title">Despatch — {{ c.name }}</span>
           <span class="lk-card-sub">Delivery Note — coming soon</span>
         </div>
       </div>
@@ -171,6 +187,9 @@ const destinationCards = ref([]);
 const showDialog = ref(false);
 const dialogPrefill = ref({});
 const dialogFilters = ref({ view_scope: "daily", date: frappe.datetime.get_today() });
+const dragLane = ref(null);
+const dragSte = ref(null);
+const dragOverSteName = ref("");
 
 function initWeekMonth() {
   const d = new Date();
@@ -206,6 +225,75 @@ function filteredHistory(card) {
     return list.filter((x) => x.docstatus === 1 || x.status === "Submitted");
   }
   return list;
+}
+
+function draftSteOrder(card) {
+  return filteredHistory(card)
+    .filter((s) => s.docstatus === 0)
+    .map((s) => s.name);
+}
+
+function onHistoryDragStart(card, ste, ev) {
+  if (ste.docstatus !== 0) {
+    ev.preventDefault();
+    return;
+  }
+  dragLane.value = card;
+  dragSte.value = ste;
+  try {
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", ste.name);
+  } catch (e) {}
+}
+
+function onHistoryDragOver(ste) {
+  if (ste.docstatus !== 0) return;
+  dragOverSteName.value = ste.name;
+}
+
+function onHistoryDragLeave(ste) {
+  if (dragOverSteName.value === ste.name) dragOverSteName.value = "";
+}
+
+function onHistoryDragEnd() {
+  dragSte.value = null;
+  dragLane.value = null;
+  dragOverSteName.value = "";
+}
+
+async function onHistoryDrop(card) {
+  const drag = dragSte.value;
+  const lane = dragLane.value;
+  if (!drag || !lane || lane.company !== card.company) {
+    onHistoryDragEnd();
+    return;
+  }
+  const drafts = draftSteOrder(card);
+  const from = drag.name;
+  const to = dragOverSteName.value;
+  if (to && from !== to) {
+    const fi = drafts.indexOf(from);
+    const ti = drafts.indexOf(to);
+    if (fi >= 0 && ti >= 0) {
+      drafts.splice(fi, 1);
+      drafts.splice(ti, 0, from);
+    }
+  }
+  try {
+    await frappe.call({
+      method: `${API}.reorder_transfer_lane_queue`,
+      args: {
+        from_company: fromCompany.value,
+        to_company: card.company,
+        ste_names: JSON.stringify(drafts),
+      },
+    });
+    frappe.show_alert({ message: __("Queue order saved"), indicator: "green" });
+  } catch (e) {
+    frappe.show_alert({ message: __("Could not save queue order"), indicator: "red" });
+  }
+  onHistoryDragEnd();
+  await loadCards();
 }
 
 function cardLoadArgs() {
@@ -274,7 +362,7 @@ onMounted(() => {
     mounted.value = true;
     setTimeout(() => {
       gateOpen.value = true;
-    }, 80);
+    }, 120);
   });
   loadCompanies();
   loadCards();
@@ -290,7 +378,7 @@ onMounted(() => {
   min-height: calc(100vh - 80px);
   opacity: 0;
   transform: translateY(10px);
-  transition: opacity 0.4s ease, transform 0.4s ease;
+  transition: opacity 0.45s ease, transform 0.45s ease;
   overflow: hidden;
 }
 .lk-container.lk-mounted {
@@ -301,25 +389,48 @@ onMounted(() => {
   position: fixed;
   top: 0;
   bottom: 0;
-  width: 0;
-  background: linear-gradient(90deg, #0c4a6e, #0369a1);
+  width: 48vw;
+  background: linear-gradient(90deg, #042f49 0%, #0c4a6e 40%, #0369a1 100%);
   z-index: 9998;
   pointer-events: none;
-  transition: width 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    transform 0.85s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.6s ease;
+  box-shadow: 0 0 40px rgba(3, 105, 161, 0.45);
+}
+.lk-gate-label {
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
 }
 .lk-gate-left {
   left: 0;
+  transform-origin: left center;
 }
 .lk-gate-right {
   right: 0;
+  transform-origin: right center;
+  background: linear-gradient(270deg, #042f49 0%, #0c4a6e 40%, #0369a1 100%);
 }
-.lk-container.lk-gate-open .lk-gate-left,
-.lk-container.lk-gate-open .lk-gate-right {
-  width: 0;
+.lk-container:not(.lk-gate-open) .lk-gate-left {
+  transform: translateX(0);
+  opacity: 1;
 }
-.lk-container:not(.lk-gate-open) .lk-gate-left,
 .lk-container:not(.lk-gate-open) .lk-gate-right {
-  width: 42vw;
+  transform: translateX(0);
+  opacity: 1;
+}
+.lk-container.lk-gate-open .lk-gate-left {
+  transform: translateX(-102%);
+  opacity: 0.6;
+}
+.lk-container.lk-gate-open .lk-gate-right {
+  transform: translateX(102%);
+  opacity: 0.6;
 }
 .lk-hero {
   display: flex;
@@ -344,7 +455,7 @@ onMounted(() => {
 }
 .lk-subtitle {
   margin: 6px 0 0;
-  color: #ffffff;
+  color: rgba(255, 255, 255, 0.92);
   font-size: 13px;
   font-weight: 600;
 }
@@ -355,77 +466,94 @@ onMounted(() => {
 .lk-scene-transfer {
   display: flex;
   align-items: flex-end;
-  gap: 6px;
-  width: 220px;
-  min-height: 44px;
+  gap: 4px;
+  width: 260px;
+  min-height: 48px;
 }
 .lk-site {
-  font-size: 22px;
+  font-size: 24px;
   line-height: 1;
-  opacity: 0.9;
+  opacity: 0.95;
+  flex-shrink: 0;
 }
 .lk-road-transfer {
   position: relative;
   flex: 1;
-  height: 28px;
-  border-bottom: 3px solid rgba(255, 255, 255, 0.4);
+  height: 36px;
+  border-bottom: 3px dashed rgba(255, 255, 255, 0.55);
 }
-.lk-scene-transfer .lk-truck {
+.lk-truck-transfer {
   position: absolute;
-  bottom: 6px;
+  bottom: 8px;
   left: 0;
-  font-size: 20px;
-  animation: lk-transfer-lr 4s ease-in-out infinite;
+  font-size: 24px;
+  line-height: 1;
+  transform: scaleX(1);
+  animation: lk-transfer-end-to-end 5s linear infinite;
 }
-@keyframes lk-transfer-lr {
-  0%,
-  100% {
-    transform: translateX(0);
-    opacity: 1;
+@keyframes lk-transfer-end-to-end {
+  0% {
+    left: 0;
+    transform: scaleX(1);
   }
   48% {
-    transform: translateX(calc(100% - 24px));
+    left: calc(100% - 28px);
+    transform: scaleX(1);
   }
   50% {
-    transform: translateX(calc(100% - 24px)) scaleX(-1);
+    left: calc(100% - 28px);
+    transform: scaleX(-1);
   }
   98% {
-    transform: translateX(0) scaleX(-1);
+    left: 0;
+    transform: scaleX(-1);
+  }
+  100% {
+    left: 0;
+    transform: scaleX(1);
   }
 }
 .lk-scene-despatch {
   position: relative;
-  width: 200px;
-  height: 40px;
+  width: 220px;
+  height: 44px;
+  flex-shrink: 0;
 }
 .lk-road-despatch {
   position: absolute;
-  bottom: 4px;
+  bottom: 6px;
   left: 0;
-  right: 36px;
+  right: 40px;
   height: 4px;
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.45);
   border-radius: 2px;
 }
-.lk-scene-despatch .lk-truck {
+.lk-truck-despatch {
   position: absolute;
-  bottom: 8px;
+  bottom: 10px;
   left: 0;
-  font-size: 22px;
-  animation: lk-despatch-to-customer 4.5s ease-in-out infinite;
+  font-size: 24px;
+  transform: scaleX(1);
+  animation: lk-despatch-to-customer 4s ease-in-out infinite;
 }
 .lk-customer {
   position: absolute;
-  bottom: 6px;
+  bottom: 8px;
   right: 0;
-  font-size: 22px;
+  font-size: 26px;
 }
 @keyframes lk-despatch-to-customer {
   0% {
-    transform: translateX(0);
+    left: 0;
+    transform: scaleX(1);
+  }
+  92% {
+    left: calc(100% - 36px);
+    transform: scaleX(1);
   }
   100% {
-    transform: translateX(140px);
+    left: calc(100% - 36px);
+    transform: scaleX(1);
   }
 }
 .lk-toggle {
@@ -515,11 +643,11 @@ onMounted(() => {
   color: #64748b;
   padding: 16px;
   text-align: center;
-  font-size: 12px;
+  font-size: 13px;
 }
 .lk-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px;
   position: relative;
   z-index: 1;
@@ -527,6 +655,9 @@ onMounted(() => {
 .lk-card-wrap {
   opacity: 0;
   animation: lk-card-in 0.45s ease forwards;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 @keyframes lk-card-in {
   to {
@@ -538,43 +669,79 @@ onMounted(() => {
   text-align: left;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
-  padding: 18px 16px;
+  padding: 20px 18px;
   cursor: pointer;
   background: #fff;
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
 .lk-card:hover {
   border-color: #0ea5e9;
   box-shadow: 0 8px 20px rgba(14, 165, 233, 0.12);
 }
+.lk-card-icon {
+  font-size: 28px;
+}
+.lk-card-title {
+  font-size: 17px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.25;
+}
+.lk-card-cta {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0284c7;
+  margin-top: 4px;
+}
 .lk-history-panel {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-  padding: 10px;
+  padding: 12px;
 }
 .lk-history-head {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
-  color: #64748b;
-  margin-bottom: 8px;
+  color: #475569;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lk-history-hint {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  color: #94a3b8;
+}
+.lk-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .lk-history-chip {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin-bottom: 6px;
+  border-radius: 10px;
+  padding: 12px 12px;
   cursor: pointer;
   border: 1px solid #e2e8f0;
   background: #fff;
   text-align: left;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.lk-history-chip.is-draggable {
+  cursor: grab;
+}
+.lk-history-chip.is-drag-over {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.25);
 }
 .lk-history-chip.is-draft {
   border-color: #fcd34d;
@@ -584,12 +751,20 @@ onMounted(() => {
   border-color: #86efac;
   background: #f0fdf4;
 }
+.lk-drag-grip {
+  font-size: 14px;
+  color: #94a3b8;
+  line-height: 1;
+  padding-top: 2px;
+  user-select: none;
+}
 .lk-history-badge {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
   color: #fff;
+  flex-shrink: 0;
 }
 .lk-history-chip.is-draft .lk-history-badge {
   background: #f59e0b;
@@ -597,25 +772,35 @@ onMounted(() => {
 .lk-history-chip.is-done .lk-history-badge {
   background: #16a34a;
 }
+.lk-history-main {
+  flex: 1;
+  min-width: 0;
+}
 .lk-history-ste {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
   font-family: ui-monospace, monospace;
+  color: #0f172a;
+  display: block;
 }
 .lk-history-meta {
-  font-size: 10px;
-  color: #64748b;
+  font-size: 13px;
+  color: #475569;
   display: block;
-  margin-top: 2px;
+  margin-top: 4px;
+  line-height: 1.35;
 }
 .lk-history-go {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: #0284c7;
+  flex-shrink: 0;
+  padding-top: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .lk-gate,
-  .lk-truck,
+  .lk-truck-transfer,
+  .lk-truck-despatch,
   .lk-card-wrap,
   .lk-container {
     animation: none !important;

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Merge :mod:`scheduler_api` document hooks with core Planning sheet handlers."""
 
+from frappe.utils import cint
+
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	allocate_unit,
 	update_queue,
@@ -30,3 +32,19 @@ def planning_sheet_allocate_unit(doc, method=None):
 
 def planning_sheet_update_queue(doc, method=None):
 	update_queue(doc, method)
+
+
+def planning_sheet_on_update(doc, method=None):
+	"""Stamp Parent Child Trace ID on every save (DB write; survives desk read_only fields)."""
+	if not doc or not doc.name or cint(getattr(doc, "docstatus", 0)) != 0:
+		return
+	try:
+		from production_entry.production_planning.scheduler_api import (
+			ensure_all_planning_sheet_trace_ids,
+		)
+
+		result = ensure_all_planning_sheet_trace_ids(doc.name) or {}
+		if cint(result.get("updated") or 0) > 0:
+			frappe.db.commit()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "planning_sheet_on_update:ensure_all_planning_sheet_trace_ids")

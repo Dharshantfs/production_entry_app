@@ -5217,6 +5217,47 @@ def ensure_all_planning_sheet_trace_ids(planning_sheet_name):
 				updated += 1
 			elif cur != tid and _safe_set_planning_trace_id(doctype, r.name, ic, tid, current_trace_id=cur):
 				updated += 1
+			# Mirror trace on linked legacy row when board row was updated (and vice versa).
+			if doctype == "Planning Table" and frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id"):
+				soik = _pt_soi_key(r)
+				if soik:
+					psi = frappe.db.get_value(
+						"Planning sheet Item",
+						{"parent": psn, "item_code": ic, "so_item": soik},
+						"name",
+					)
+					if not psi:
+						psi = frappe.db.get_value(
+							"Planning sheet Item",
+							{"parent": psn, "item_code": ic, "sales_order_item": soik},
+							"name",
+						)
+					if psi:
+						psi_cur = _cstr(frappe.db.get_value("Planning sheet Item", psi, "custom_parent_child_trace_id")).strip()
+						if not psi_cur:
+							frappe.db.set_value(
+								"Planning sheet Item", psi, "custom_parent_child_trace_id", tid, update_modified=False
+							)
+			elif doctype == "Planning sheet Item" and frappe.db.has_column("Planning Table", "custom_parent_child_trace_id"):
+				soik = _pt_soi_key(r)
+				if soik:
+					pt = frappe.db.get_value(
+						"Planning Table",
+						{"parent": psn, "item_code": ic, "sales_order_item": soik},
+						"name",
+					)
+					if not pt:
+						pt = frappe.db.get_value(
+							"Planning Table",
+							{"parent": psn, "item_code": ic, "so_item": soik},
+							"name",
+						)
+					if pt:
+						pt_cur = _cstr(frappe.db.get_value("Planning Table", pt, "custom_parent_child_trace_id")).strip()
+						if not pt_cur:
+							frappe.db.set_value(
+								"Planning Table", pt, "custom_parent_child_trace_id", tid, update_modified=False
+							)
 	return {
 		"updated": updated,
 		"no_trace_resolved": no_trace,

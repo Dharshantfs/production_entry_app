@@ -156,6 +156,24 @@ def _transfer_date_in_scope(transfer_date, view_scope=None, date=None, week=None
 	return True
 
 
+def _transfer_approval_queue_fieldname():
+	if frappe.db.has_column("Transfer Approval", "custom_logistics_queue_idx"):
+		return "custom_logistics_queue_idx"
+	return None
+
+
+def _queue_idx_for_stock_entry(ste_name, from_company=None, to_company=None):
+	qf = _transfer_approval_queue_fieldname()
+	if not qf or not ste_name:
+		return 0
+	filters = {"stock_entry": ste_name, "status": "Approved"}
+	if from_company:
+		filters["from_company"] = _cstr(from_company)
+	if to_company:
+		filters["to_company"] = _cstr(to_company)
+	return cint(frappe.db.get_value("Transfer Approval", filters, qf) or 0)
+
+
 def _transfer_lane_stock_entries(
 	from_company,
 	to_company,
@@ -217,6 +235,7 @@ def _transfer_lane_stock_entries(
 			hay = " ".join(order_codes).lower()
 			if oc_filter not in hay:
 				continue
+		qty_display = round(flt(qty_total), 2) if qty_total else 0
 		out.append(
 			{
 				"name": ste,
@@ -227,12 +246,54 @@ def _transfer_lane_stock_entries(
 				"status": "Draft" if ds == 0 else "Submitted",
 				"order_codes": order_codes,
 				"order_codes_label": ", ".join(order_codes) if order_codes else "",
-				"qty_total": qty_total,
+				"qty_total": qty_display,
 				"line_count": line_count,
 				"label": ste,
+				"queue_idx": _queue_idx_for_stock_entry(ste, fc, tc),
+				"can_reorder": ds == 0,
 			}
 		)
+	out.sort(
+		key=lambda x: (
+			0 if x.get("docstatus") == 0 else 1,
+			cint(x.get("queue_idx") or 0) or 9999,
+			_cstr(x.get("modified")),
+		)
+	)
 	return out
+
+
+@frappe.whitelist()
+def reorder_transfer_lane_queue(from_company=None, to_company=None, ste_names=None):
+	"""Persist draft STE priority on Transfer Approval (logistics kanban drag-and-drop)."""
+	fc = _cstr(from_company)
+	tc = _cstr(to_company)
+	if not fc or not tc:
+		frappe.throw(_("From company and to company are required."))
+	qf = _transfer_approval_queue_fieldname()
+	if not qf:
+		return {"updated": 0, "noop": "custom_logistics_queue_idx missing — run bench migrate"}
+	if isinstance(ste_names, str):
+		try:
+			ste_names = json.loads(ste_names)
+		except Exception:
+			ste_names = [s.strip() for s in ste_names.split(",") if s.strip()]
+	names = [n for n in (ste_names or []) if _cstr(n)]
+	updated = 0
+	for idx, ste in enumerate(names, start=1):
+		if cint(frappe.db.get_value("Stock Entry", ste, "docstatus") or 0) != 0:
+			continue
+		ta_name = frappe.db.get_value(
+			"Transfer Approval",
+			{"stock_entry": ste, "from_company": fc, "to_company": tc, "status": "Approved"},
+			"name",
+		)
+		if not ta_name:
+			continue
+		frappe.db.set_value("Transfer Approval", ta_name, qf, idx, update_modified=False)
+		updated += 1
+	frappe.db.commit()
+	return {"updated": updated, "from_company": fc, "to_company": tc}
 
 
 def _draft_stock_entries_for_lane(from_company, to_company):

@@ -204,6 +204,22 @@ frappe.ui.form.on('Planning sheet', {
             });
             d.show();
         }, __('Actions'));
+        frm.add_custom_button(__('Fill Parent Child Trace IDs'), function () {
+            frappe.call({
+                method: 'production_entry.production_planning.scheduler_api.ensure_planning_sheet_trace_ids',
+                args: { planning_sheet_name: frm.doc.name },
+                freeze: true,
+                freeze_message: __('Stamping trace IDs on all rows…'),
+                callback: function (r) {
+                    const m = r.message || {};
+                    frappe.show_alert({
+                        message: __('Updated {0} row(s)', [m.updated || 0]),
+                        indicator: (m.updated || 0) > 0 ? 'green' : 'orange',
+                    });
+                    frm.reload_doc();
+                },
+            });
+        }, __('Actions'));
     },
 
     after_load: function(frm) {
