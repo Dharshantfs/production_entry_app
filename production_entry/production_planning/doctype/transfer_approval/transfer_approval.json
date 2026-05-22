@@ -9,6 +9,7 @@
   "from_company",
   "to_company",
   "to_destination_label",
+  "nature_of_processing",
   "status",
   "column_break_h",
   "stock_entry",
@@ -40,6 +41,12 @@
    "in_list_view": 1,
    "label": "Transfer Label",
    "reqd": 1
+  },
+  {
+   "fieldname": "nature_of_processing",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Nature of Processing"
   },
   {
    "default": "Draft",

@@ -147,12 +147,10 @@
     </template>
 
     <template v-else>
-      <p class="lk-hint">Despatch — truck runs to customer (right). Delivery Note coming soon.</p>
       <div class="lk-grid lk-grid-muted">
         <div v-for="c in companies" :key="'d-' + c.name" class="lk-card lk-card-disabled">
           <span class="lk-card-icon">🚚</span>
-          <span class="lk-card-title">Despatch — {{ c.name }}</span>
-          <span class="lk-card-sub">Delivery Note — coming soon</span>
+          <span class="lk-card-title">{{ c.name }}</span>
         </div>
       </div>
     </template>
@@ -488,29 +486,29 @@ onMounted(() => {
   left: 0;
   font-size: 24px;
   line-height: 1;
-  transform: scaleX(1);
+  transform: scaleX(-1);
   animation: lk-transfer-end-to-end 5s linear infinite;
 }
 @keyframes lk-transfer-end-to-end {
   0% {
     left: 0;
-    transform: scaleX(1);
+    transform: scaleX(-1);
   }
   48% {
     left: calc(100% - 28px);
-    transform: scaleX(1);
+    transform: scaleX(-1);
   }
   50% {
     left: calc(100% - 28px);
-    transform: scaleX(-1);
+    transform: scaleX(1);
   }
   98% {
     left: 0;
-    transform: scaleX(-1);
+    transform: scaleX(1);
   }
   100% {
     left: 0;
-    transform: scaleX(1);
+    transform: scaleX(-1);
   }
 }
 .lk-scene-despatch {
@@ -533,7 +531,8 @@ onMounted(() => {
   bottom: 10px;
   left: 0;
   font-size: 24px;
-  transform: scaleX(1);
+  /* Emoji truck faces left by default — flip so it runs toward customer (right). */
+  transform: scaleX(-1);
   animation: lk-despatch-to-customer 4s ease-in-out infinite;
 }
 .lk-customer {

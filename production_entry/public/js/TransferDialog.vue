@@ -346,16 +346,7 @@ function loadRows() {
   });
 }
 
-function submit() {
-  if (!canSubmit.value) {
-    if (!(toCompany.value || "").trim()) {
-      frappe.msgprint("Select destination company.");
-    } else {
-      frappe.msgprint("Select at least one row and apply batches for each.");
-    }
-    return;
-  }
-  submitting.value = true;
+function buildSubmitLines() {
   const lines = [];
   Object.values(selection.value).forEach((s) => {
     (s.batches || []).forEach((b) => {
@@ -373,12 +364,19 @@ function submit() {
       });
     });
   });
+  return lines;
+}
+
+function sendForApproval(natureOfProcessing) {
+  const lines = buildSubmitLines();
+  submitting.value = true;
   frappe.call({
     method: `${API}.create_transfer_approval_request`,
     args: {
       from_company: fromCompany.value,
       to_company: toCompany.value,
       to_destination_label: destinationLabel.value,
+      nature_of_processing: natureOfProcessing,
       lines: JSON.stringify(lines),
     },
     callback: (r) => {
@@ -390,7 +388,7 @@ function submit() {
       });
       frappe.msgprint({
         title: __("Transfer submitted"),
-        message: __("Open Transfer Approval to approve or reject."),
+        message: __("Party on STE will be set to {0} after approval.", [toCompany.value]),
         primary_action: {
           label: __("Open Transfer Approval"),
           action() {
@@ -405,6 +403,66 @@ function submit() {
       submitting.value = false;
     },
   });
+}
+
+function submit() {
+  if (!canSubmit.value) {
+    if (!(toCompany.value || "").trim()) {
+      frappe.msgprint("Select destination company.");
+    } else {
+      frappe.msgprint("Select at least one row and apply batches for each.");
+    }
+    return;
+  }
+  const tc = (toCompany.value || "").trim();
+  const d = new frappe.ui.Dialog({
+    title: __("Nature of Processing"),
+    fields: [
+      {
+        fieldname: "party_help",
+        fieldtype: "HTML",
+        options: `<p class="text-muted small">${__(
+          "Transfer to <b>{0}</b>. This company will be set as <b>Party</b> on the Stock Entry after approval.",
+          [frappe.utils.escape_html(tc)]
+        )}</p>`,
+      },
+      {
+        fieldname: "nature_of_processing",
+        fieldtype: "Select",
+        label: __("Nature of Processing"),
+        reqd: 1,
+        options: [
+          "Lamination",
+          "Printing",
+          "Slitting",
+          "Rewinding",
+          "Sheet Cutting",
+          "FG Transfer",
+          "Other",
+        ].join("\n"),
+      },
+      {
+        fieldname: "nature_other",
+        fieldtype: "Data",
+        label: __("Specify (if Other)"),
+        depends_on: "eval:doc.nature_of_processing=='Other'",
+      },
+    ],
+    primary_action_label: __("Submit for approval"),
+    primary_action(values) {
+      let nat = (values.nature_of_processing || "").trim();
+      if (nat === "Other") {
+        nat = (values.nature_other || "").trim();
+      }
+      if (!nat) {
+        frappe.msgprint(__("Nature of Processing is required."));
+        return;
+      }
+      d.hide();
+      sendForApproval(nat);
+    },
+  });
+  d.show();
 }
 
 watch(

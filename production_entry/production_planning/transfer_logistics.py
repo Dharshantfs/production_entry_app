@@ -90,6 +90,11 @@ _ORDER_CODE_FIELD_CANDIDATES = (
 	"custom_party_code",
 )
 
+_NATURE_OF_PROCESSING_FIELD_CANDIDATES = (
+	"nature_of_processing",
+	"custom_nature_of_processing",
+)
+
 
 def _stock_entry_order_code_fieldname():
 	for fn in _ORDER_CODE_FIELD_CANDIDATES:
@@ -132,6 +137,70 @@ def _ensure_stock_entry_order_codes(stock_entry_name, order_codes):
 	val = ", ".join(order_codes) if len(order_codes) > 1 else order_codes[0]
 	frappe.db.set_value("Stock Entry", stock_entry_name, fn, val, update_modified=False)
 	return True
+
+
+def _stock_entry_nature_of_processing_fieldname():
+	for fn in _NATURE_OF_PROCESSING_FIELD_CANDIDATES:
+		if frappe.db.has_column("Stock Entry", fn):
+			return fn
+	try:
+		meta = frappe.get_meta("Stock Entry")
+		for df in meta.fields:
+			if (df.label or "").strip().lower() in ("nature of processing", "nature_of_processing"):
+				if frappe.db.has_column("Stock Entry", df.fieldname):
+					return df.fieldname
+	except Exception:
+		pass
+	return ""
+
+
+def _stock_entry_party_fieldnames():
+	party_fn = ""
+	party_type_fn = ""
+	if frappe.db.has_column("Stock Entry", "party"):
+		party_fn = "party"
+	if frappe.db.has_column("Stock Entry", "party_type"):
+		party_type_fn = "party_type"
+	return party_fn, party_type_fn
+
+
+def _set_stock_entry_party(se, to_company):
+	"""Party on STE = destination company (e.g. J Vasanth Exports)."""
+	tc = _cstr(to_company).strip()
+	if not tc:
+		return False
+	party_fn, party_type_fn = _stock_entry_party_fieldnames()
+	if party_fn:
+		se.set(party_fn, tc)
+	if party_type_fn:
+		se.set(party_type_fn, "Company")
+	return bool(party_fn)
+
+
+def _set_stock_entry_nature_of_processing(se, nature):
+	nat = _cstr(nature).strip()
+	if not nat:
+		return False
+	fn = _stock_entry_nature_of_processing_fieldname()
+	if not fn:
+		return False
+	se.set(fn, nat)
+	return True
+
+
+def _ensure_stock_entry_party_and_nature(stock_entry_name, to_company, nature_of_processing):
+	if not stock_entry_name:
+		return
+	party_fn, party_type_fn = _stock_entry_party_fieldnames()
+	tc = _cstr(to_company).strip()
+	if party_fn and tc:
+		frappe.db.set_value("Stock Entry", stock_entry_name, party_fn, tc, update_modified=False)
+	if party_type_fn and tc:
+		frappe.db.set_value("Stock Entry", stock_entry_name, party_type_fn, "Company", update_modified=False)
+	fn = _stock_entry_nature_of_processing_fieldname()
+	nat = _cstr(nature_of_processing).strip()
+	if fn and nat:
+		frappe.db.set_value("Stock Entry", stock_entry_name, fn, nat, update_modified=False)
 
 
 def _transfer_date_in_scope(transfer_date, view_scope=None, date=None, week=None, month=None):
@@ -569,6 +638,7 @@ def create_transfer_approval_request(
 	to_company=None,
 	to_destination_label=None,
 	lines=None,
+	nature_of_processing=None,
 ):
 	fc = _cstr(from_company)
 	tc = _cstr(to_company)
@@ -587,11 +657,16 @@ def create_transfer_approval_request(
 	parsed = json.loads(lines) if isinstance(lines, str) else (lines or [])
 	if not parsed:
 		frappe.throw(_("Select at least one line with batch and qty."))
+	nature = _cstr(nature_of_processing).strip()
+	if not nature:
+		frappe.throw(_("Nature of Processing is required before sending for approval."))
 
 	doc = frappe.new_doc("Transfer Approval")
 	doc.from_company = fc
 	doc.to_company = tc
 	doc.to_destination_label = label
+	if hasattr(doc, "nature_of_processing") or frappe.db.has_column("Transfer Approval", "nature_of_processing"):
+		doc.nature_of_processing = nature
 	doc.status = "Pending Approval"
 	doc.requested_by = frappe.session.user
 
@@ -698,6 +773,7 @@ def get_transfer_approvals(status_filter=None, limit=200):
 			"modified",
 			"stock_entry",
 			"requested_by",
+			"nature_of_processing",
 		],
 		order_by="modified desc",
 		limit_page_length=cint(limit) or 200,
@@ -738,6 +814,38 @@ def approve_transfer_approval(name=None):
 	_finalize_planning_rows_after_approval(ta)
 	frappe.db.commit()
 	return {"ok": True, "name": name, "stock_entry": ste}
+
+
+@frappe.whitelist()
+def reorder_transfer_approval_lines(name=None, line_names=None):
+	"""Reorder transfer lines before approval (same UX as sequence approval)."""
+	if not name or not frappe.db.exists("Transfer Approval", name):
+		frappe.throw(_("Transfer Approval not found."))
+	ta = frappe.get_doc("Transfer Approval", name)
+	if ta.status not in ("Pending Approval", "Draft"):
+		frappe.throw(_("Only pending transfers can be reordered."))
+	if isinstance(line_names, str):
+		try:
+			line_names = json.loads(line_names)
+		except Exception:
+			line_names = [x.strip() for x in line_names.split(",") if x.strip()]
+	names = [n for n in (line_names or []) if _cstr(n)]
+	if not names:
+		return {"ok": True}
+	by_name = {ln.name: ln for ln in (ta.lines or [])}
+	new_lines = []
+	for nm in names:
+		if nm in by_name:
+			new_lines.append(by_name[nm])
+	for ln in ta.lines or []:
+		if ln.name not in names:
+			new_lines.append(ln)
+	for i, ln in enumerate(new_lines, start=1):
+		ln.idx = i
+	ta.lines = new_lines
+	ta.save(ignore_permissions=True)
+	frappe.db.commit()
+	return {"ok": True, "name": name}
 
 
 @frappe.whitelist()
@@ -791,6 +899,9 @@ def _create_draft_transfer_stock_entry(ta):
 		se.unit = unit_val
 	order_codes = _order_codes_from_transfer_approval(ta)
 	_set_stock_entry_order_codes(se, order_codes)
+	_set_stock_entry_party(se, ta.to_company)
+	nature = _cstr(getattr(ta, "nature_of_processing", None)).strip()
+	_set_stock_entry_nature_of_processing(se, nature)
 
 	for ln in ta.lines or []:
 		qty = flt(ln.qty or 0)
@@ -809,6 +920,7 @@ def _create_draft_transfer_stock_entry(ta):
 
 	se.insert(ignore_permissions=True)
 	_ensure_stock_entry_order_codes(se.name, order_codes)
+	_ensure_stock_entry_party_and_nature(se.name, ta.to_company, nature)
 	if not _ensure_stock_entry_external_transfer(se.name, 1):
 		frappe.log_error(
 			title="Transfer Stock Entry — External Transfer field missing",
