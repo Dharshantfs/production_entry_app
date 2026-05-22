@@ -4943,7 +4943,9 @@ def _set_trace_id_if_supported(row_dict_or_doc, trace_id, item_code=None):
 			cur = _cstr(getattr(row_dict_or_doc, "custom_parent_child_trace_id", None)).strip()
 	except Exception:
 		pass
-	if not _should_apply_trace_to_row(ic, cur, trace_id):
+	if not cur:
+		pass
+	elif not _should_apply_trace_to_row(ic, cur, trace_id):
 		return
 	can_write = False
 	try:
@@ -4972,6 +4974,9 @@ def _safe_set_planning_trace_id(doctype, row_name, item_code, new_trace_id, curr
 			cur = _cstr(frappe.db.get_value(doctype, row_name, "custom_parent_child_trace_id")).strip()
 		except Exception:
 			cur = ""
+	if not cur:
+		frappe.db.set_value(doctype, row_name, "custom_parent_child_trace_id", new_trace_id, update_modified=False)
+		return True
 	if not _should_apply_trace_to_row(ic, cur, new_trace_id):
 		return False
 	frappe.db.set_value(doctype, row_name, "custom_parent_child_trace_id", new_trace_id, update_modified=False)
@@ -5130,6 +5135,101 @@ def _trace_for_planning_row_using_main_parent(row, planning_sheet_name, pt_rows,
 	return _parent_child_trace_id_for_planning_row(ic, soik, planning_sheet_name) or _parent_child_trace_id_from_item_code(
 		ic
 	)
+
+
+def _planning_trace_sheet_context(planning_sheet_name):
+	"""SO line map + all Planning Table rows for trace resolution on one sheet."""
+	so_by_name = {}
+	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order") if planning_sheet_name else None
+	if so_name:
+		try:
+			so_doc = frappe.get_doc("Sales Order", so_name)
+			so_by_name = {str(it.name): it for it in (so_doc.items or [])}
+		except Exception:
+			so_by_name = {}
+	pt_rows = []
+	if planning_sheet_name and frappe.db.exists("Planning sheet", planning_sheet_name):
+		pt_fields = _planning_child_row_fields_for_query("Planning Table")
+		pt_rows = (
+			frappe.get_all(
+				"Planning Table",
+				filters={"parent": planning_sheet_name},
+				fields=pt_fields,
+				limit_page_length=5000,
+			)
+			or []
+		)
+	return pt_rows, so_by_name
+
+
+def _resolve_trace_id_for_planning_row(row, planning_sheet_name, pt_rows=None, so_by_name=None):
+	"""Best trace for any process row (FG, 100/104/106/107/255/109…)."""
+	if not row:
+		return ""
+	if pt_rows is None or so_by_name is None:
+		_pt, _so = _planning_trace_sheet_context(planning_sheet_name)
+		pt_rows = pt_rows if pt_rows is not None else _pt
+		so_by_name = so_by_name if so_by_name is not None else _so
+	ic = _cstr(row.get("item_code") if isinstance(row, dict) else getattr(row, "item_code", None)).strip()
+	if not ic:
+		return ""
+	soik = _pt_soi_key(row if isinstance(row, dict) else frappe._dict(row))
+	tid = _trace_for_planning_row_using_main_parent(row, planning_sheet_name, pt_rows, so_by_name)
+	if not tid:
+		tid = _parent_child_trace_id_for_planning_row(ic, soik or None, planning_sheet_name)
+	if not tid:
+		tid = _parent_child_trace_id_from_item_code(ic)
+	return _cstr(tid).strip()
+
+
+def ensure_all_planning_sheet_trace_ids(planning_sheet_name):
+	"""Fill Parent Child Trace ID on every Planning Table + Planning sheet Item row (all processes)."""
+	psn = _cstr(planning_sheet_name).strip()
+	if not psn or not frappe.db.exists("Planning sheet", psn):
+		return {"updated": 0, "missing_item_code": 0, "no_trace_resolved": 0}
+	if not (
+		frappe.db.has_column("Planning Table", "custom_parent_child_trace_id")
+		or frappe.db.has_column("Planning sheet Item", "custom_parent_child_trace_id")
+	):
+		return {"updated": 0, "noop": "custom_parent_child_trace_id column missing on site"}
+	pt_rows, so_by_name = _planning_trace_sheet_context(psn)
+	updated = 0
+	no_trace = 0
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.has_column(doctype, "custom_parent_child_trace_id"):
+			continue
+		fields = _planning_child_row_fields_for_query(doctype)
+		for r in frappe.get_all(
+			doctype, filters={"parent": psn}, fields=fields, limit_page_length=5000
+		):
+			ic = _cstr(r.get("item_code")).strip()
+			if not ic:
+				continue
+			cur = _cstr(r.get("custom_parent_child_trace_id")).strip()
+			tid = _resolve_trace_id_for_planning_row(r, psn, pt_rows, so_by_name)
+			if not tid:
+				no_trace += 1
+				continue
+			if not cur:
+				frappe.db.set_value(
+					doctype, r.name, "custom_parent_child_trace_id", tid, update_modified=False
+				)
+				updated += 1
+			elif cur != tid and _safe_set_planning_trace_id(doctype, r.name, ic, tid, current_trace_id=cur):
+				updated += 1
+	return {
+		"updated": updated,
+		"no_trace_resolved": no_trace,
+		"planning_sheet": psn,
+	}
+
+
+@frappe.whitelist()
+def ensure_planning_sheet_trace_ids(planning_sheet_name=None):
+	"""Desk / API: stamp traces on all rows for one planning sheet."""
+	if not planning_sheet_name:
+		frappe.throw(_("Planning sheet is required."))
+	return ensure_all_planning_sheet_trace_ids(planning_sheet_name)
 
 
 def _stamp_sales_order_fg_trace_ids(planning_sheet_name):
@@ -6624,6 +6724,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		frappe.log_error(
 			frappe.get_traceback(), "_run_planning_sheet_post_sync:_finalize_planning_sheet_row_order_and_movement"
 		)
+	try:
+		ensure_all_planning_sheet_trace_ids(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:ensure_all_planning_sheet_trace_ids")
 	frappe.db.commit()
 	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
 
@@ -9849,7 +9953,15 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 					"Planning sheet Item", nm, "custom_parent_child_trace_id", tid, update_modified=False
 				)
 	frappe.db.commit()
-	return {"status": "success", "updated": int(updated)}
+	ensure_result = {}
+	if planning_sheet_name:
+		try:
+			ensure_result = ensure_all_planning_sheet_trace_ids(planning_sheet_name) or {}
+			updated += int(ensure_result.get("updated") or 0)
+			frappe.db.commit()
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "backfill_parent_child_trace_ids:ensure_all")
+	return {"status": "success", "updated": int(updated), **(ensure_result or {})}
 
 
 @frappe.whitelist()

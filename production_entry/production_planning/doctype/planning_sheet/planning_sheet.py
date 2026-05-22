@@ -378,10 +378,9 @@ class Planningsheet(Document):
         """Fill empty Parent Child Trace ID only — never overwrite stable traces on desk save."""
         try:
             from production_entry.production_planning.scheduler_api import (
-                _parent_child_trace_id_for_planning_row,
+                _resolve_trace_id_for_planning_row,
                 _set_trace_id_if_supported,
                 _should_apply_trace_to_row,
-                _trace_for_planning_row_using_main_parent,
             )
         except Exception:
             return
@@ -401,9 +400,7 @@ class Planningsheet(Document):
                     "sales_order_item": soi,
                     "so_item": soi,
                 }
-                tid = _trace_for_planning_row_using_main_parent(row_probe, ps_name, pt_rows, so_by_name)
-                if not tid:
-                    tid = _parent_child_trace_id_for_planning_row(ic, soi or None, ps_name)
+                tid = _resolve_trace_id_for_planning_row(row_probe, ps_name, pt_rows, so_by_name)
                 if not tid:
                     continue
                 if not cur:
