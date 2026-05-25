@@ -18,7 +18,7 @@ frappe.pages["transfer-approval-dashboard"].on_page_load = function (wrapper) {
 
 	if (!mount()) {
 		$(page.body).html(
-			'<div class="text-muted p-5">Loading Transfer Approval dashboard…</div>'
+			'<div class="text-muted p-5">Loading Transfer Approval dashboard...</div>'
 		);
 		setTimeout(() => {
 			if (!mount()) {
@@ -30,5 +30,5 @@ frappe.pages["transfer-approval-dashboard"].on_page_load = function (wrapper) {
 	}
 };
 
-// Old route (conflicted with Transfer Approval list) → dashboard page
+// Old route alias for users/bookmarks; the DocType list keeps using its own route.
 frappe.pages["transfer-approval"] = frappe.pages["transfer-approval-dashboard"];

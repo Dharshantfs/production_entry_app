@@ -117,11 +117,12 @@ frappe.ui.form.on('Planning Table', {
     },
 });
 
-function planningSheetBomLineLabel(row) {
+function planningSheetBomLineLabel(row, idx) {
     const code = _norm(row?.item_code);
     const name = _norm(row?.item_name);
     const qty = row?.qty ? ` - ${row.qty} ${row.uom || ''}` : '';
-    return `${row.sales_order_item} :: ${code}${name ? ` - ${name}` : ''}${qty}`;
+    const serial = Number.isFinite(idx) ? `${idx + 1}. ` : '';
+    return `${serial}${code}${name ? ` - ${name}` : ''}${qty}`;
 }
 
 function planningSheetBomOptionLabel(bom) {
@@ -152,7 +153,7 @@ function openSheetCuttingChangeBomDialog(frm) {
                 byKey[row.sales_order_item] = row;
             });
             const firstKey = rows[0].sales_order_item;
-            const lineOptions = rows.map(planningSheetBomLineLabel).join('\n');
+            const lineOptions = rows.map((row, idx) => planningSheetBomLineLabel(row, idx)).join('\n');
             const d = new frappe.ui.Dialog({
                 title: __('Change Sheet Cutting BOM'),
                 fields: [
@@ -162,10 +163,11 @@ function openSheetCuttingChangeBomDialog(frm) {
                         label: __('Finished Goods Row'),
                         reqd: 1,
                         options: lineOptions,
-                        default: planningSheetBomLineLabel(rows[0]),
+                        default: planningSheetBomLineLabel(rows[0], 0),
                         onchange: function () {
                             const selectedLabel = d.get_value('sales_order_item') || '';
-                            const selected = rows.find((row) => planningSheetBomLineLabel(row) === selectedLabel) || rows[0];
+                            const selected =
+                                rows.find((row, idx) => planningSheetBomLineLabel(row, idx) === selectedLabel) || rows[0];
                             const bomOptions = (selected.boms || []).map(planningSheetBomOptionLabel).join('\n');
                             d.fields_dict.bom_no.df.options = bomOptions;
                             d.fields_dict.bom_no.refresh();
@@ -192,7 +194,8 @@ function openSheetCuttingChangeBomDialog(frm) {
                 primary_action_label: __('Confirm'),
                 primary_action: function () {
                     const selectedLabel = d.get_value('sales_order_item') || '';
-                    const selected = rows.find((row) => planningSheetBomLineLabel(row) === selectedLabel) || byKey[firstKey];
+                    const selected =
+                        rows.find((row, idx) => planningSheetBomLineLabel(row, idx) === selectedLabel) || byKey[firstKey];
                     const selectedBomLabel = d.get_value('bom_no') || '';
                     const bom = (selected.boms || []).find((b) => planningSheetBomOptionLabel(b) === selectedBomLabel);
                     if (!selected || !bom) {

@@ -6,9 +6,15 @@
  "name": "transfer-approval-dashboard",
  "page_name": "transfer-approval-dashboard",
  "roles": [
-  {"role": "System Manager"},
-  {"role": "Manufacturing Manager"},
-  {"role": "Manufacturing User"}
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Manufacturing Manager"
+  },
+  {
+   "role": "Manufacturing User"
+  }
  ],
  "standard": "Yes",
  "title": "Transfer Approval"
