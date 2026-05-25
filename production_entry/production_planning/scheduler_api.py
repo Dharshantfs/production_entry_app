@@ -3047,10 +3047,10 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 	if not suffix:
 		return ""
 
-	if suffix == "0M":
+	if suffix in ("0M", "M0"):
 		return f"{gsm_token} MATTE"
-	if suffix == "0G":
-		return f"{gsm_token} GLOSSY"
+	if suffix in ("0G", "G0"):
+		return f"{gsm_token} GLOSS"
 	if suffix == "MM":
 		coat = _pb_coating_gsm_token(gsm_token, 2)
 		return f"{coat} MATTE {coat} METALLIC"
@@ -8918,7 +8918,7 @@ def get_sheet_cutting_bom_change_options(planning_sheet_name=None):
 	rows = []
 	for so_it in so.items or []:
 		ic = _cstr(getattr(so_it, "item_code", None)).strip()
-		if _item_process_prefix(ic) != "251":
+		if not _is_sheet_cutting_parent_process(ic):
 			continue
 		boms = _sheet_cutting_bom_candidates(ic)
 		if not boms:
@@ -8950,6 +8950,76 @@ def _child_row_payload_for_doctype(doctype, row):
 		if meta.has_field("custom_lamination_order_code") and row.get("custom_lamination_order_code_"):
 			out["custom_lamination_order_code"] = row.get("custom_lamination_order_code_")
 	return out
+
+
+_BOM_CHANGE_PRESERVE_FIELDS = (
+	"meter",
+	"meter_per_roll",
+	"no_of_rolls",
+	"weight_per_roll",
+	"planned_date",
+	"custom_item_planned_date",
+	"plan_name",
+	"custom_plan_code",
+	"party_code",
+	"planning_sheet",
+	"warehouse",
+)
+
+
+def _existing_sheet_cutting_bom_child_rows(doctype, planning_sheet_name, so_item_key, parent_item_code):
+	if not frappe.db.exists("DocType", doctype):
+		return []
+	cols = set(frappe.db.get_table_columns(doctype) or [])
+	so_conds = []
+	params = [planning_sheet_name, parent_item_code]
+	if "sales_order_item" in cols:
+		so_conds.append("IFNULL(sales_order_item, '') = %s")
+		params.append(so_item_key)
+	if "so_item" in cols:
+		so_conds.append("IFNULL(so_item, '') = %s")
+		params.append(so_item_key)
+	if not so_conds:
+		return []
+	select_fields = ["name", "item_code", "idx"]
+	for fn in _BOM_CHANGE_PRESERVE_FIELDS:
+		if fn in cols and fn not in select_fields:
+			select_fields.append(fn)
+	rows = frappe.db.sql(
+		f"""
+		SELECT {", ".join(select_fields)}
+		FROM `tab{doctype}`
+		WHERE parent = %s
+		  AND IFNULL(item_code, '') != %s
+		  AND ({" OR ".join(so_conds)})
+		ORDER BY idx ASC, name ASC
+		""",
+		tuple(params),
+		as_dict=True,
+	) or []
+	return rows
+
+
+def _preserved_bom_change_values(existing_row):
+	out = {}
+	for fn in _BOM_CHANGE_PRESERVE_FIELDS:
+		if existing_row and existing_row.get(fn) not in (None, ""):
+			out[fn] = existing_row.get(fn)
+	return out
+
+
+def _apply_payload_to_loaded_child(parent_doc, table_field, child_name, payload):
+	if not parent_doc or not table_field or not child_name:
+		return
+	for child in parent_doc.get(table_field) or []:
+		if _cstr(getattr(child, "name", None)) != _cstr(child_name):
+			continue
+		for k, v in (payload or {}).items():
+			try:
+				setattr(child, k, v)
+			except Exception:
+				pass
+		return
 
 
 def _delete_sheet_cutting_bom_children(planning_sheet_name, so_item_key, parent_item_code):
@@ -9015,7 +9085,7 @@ def _find_sheet_cutting_parent_planning_row(planning_sheet_name, so_item_key, pa
 	return rows[0] if rows else {}
 
 
-def _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom_name, bom_item):
+def _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom_name, bom_item, preserve=None):
 	child_ic = _cstr(getattr(bom_item, "item_code", None)).strip()
 	child_name = _cstr(getattr(bom_item, "item_name", None)).strip() or _cstr(
 		frappe.db.get_value("Item", child_ic, "item_name")
@@ -9060,6 +9130,9 @@ def _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom_name, bom_item):
 	row.update(dict(enrich_row))
 	if parent_trace:
 		row["custom_parent_child_trace_id"] = parent_trace
+	for k, v in (preserve or {}).items():
+		if v not in (None, ""):
+			row[k] = v
 	return row
 
 
@@ -9080,30 +9153,72 @@ def apply_sheet_cutting_bom_to_planning_sheet(planning_sheet_name=None, sales_or
 	if _cstr(getattr(so_it, "parent", None)).strip() != _cstr(ps.get("sales_order")).strip():
 		frappe.throw(_("Sales Order Item {0} does not belong to this Planning Sheet.").format(soi))
 	parent_ic = _cstr(so_it.item_code).strip()
-	if _item_process_prefix(parent_ic) != "251":
-		frappe.throw(_("Change BOM is allowed only for sheet cutting process 251 rows."))
+	if not _is_sheet_cutting_parent_process(parent_ic):
+		frappe.throw(_("Change BOM is allowed only for sheet cutting process rows."))
 	bom = frappe.get_doc("BOM", bom_name)
 	if _cstr(bom.item).strip() != parent_ic:
 		frappe.throw(_("BOM {0} is for {1}, not {2}.").format(bom.name, bom.item, parent_ic))
 	if cint(bom.docstatus) != 1:
 		frappe.throw(_("BOM {0} must be submitted.").format(bom.name))
 	parent_row = _find_sheet_cutting_parent_planning_row(psn, soi, parent_ic)
-	deleted = _delete_sheet_cutting_bom_children(psn, soi, parent_ic)
+	existing_pt_rows = _existing_sheet_cutting_bom_child_rows("Planning Table", psn, soi, parent_ic)
+	existing_psi_rows = _existing_sheet_cutting_bom_child_rows("Planning sheet Item", psn, soi, parent_ic)
 	ps = frappe.get_doc("Planning sheet", psn)
 	parent_field = _get_pt_parentfield()
 	added = 0
+	updated = 0
+	deleted = 0
 	child_codes = []
-	for bi in bom.items or []:
+	bom_items = [
+		bi
+		for bi in (bom.items or [])
+		if _cstr(getattr(bi, "item_code", None)).strip()
+		and _cstr(getattr(bi, "item_code", None)).strip() != parent_ic
+	]
+	for idx, bi in enumerate(bom_items):
 		child_ic = _cstr(getattr(bi, "item_code", None)).strip()
-		if not child_ic or child_ic == parent_ic:
-			continue
-		row = _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom.name, bi)
-		if hasattr(ps, "items") or ps.meta.has_field("items"):
+		pt_existing = existing_pt_rows[idx] if idx < len(existing_pt_rows) else None
+		psi_existing = existing_psi_rows[idx] if idx < len(existing_psi_rows) else None
+		preserve = _preserved_bom_change_values(pt_existing) or _preserved_bom_change_values(psi_existing)
+		row = _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom.name, bi, preserve=preserve)
+		if pt_existing:
+			pt_payload = _child_row_payload_for_doctype("Planning Table", row)
+			_apply_payload_to_loaded_child(ps, parent_field, pt_existing.get("name"), pt_payload)
+			frappe.db.set_value(
+				"Planning Table",
+				pt_existing.get("name"),
+				pt_payload,
+				update_modified=False,
+			)
+			updated += 1
+		else:
+			ps.append(parent_field, _child_row_payload_for_doctype("Planning Table", row))
+			added += 1
+		if psi_existing:
+			psi_payload = _child_row_payload_for_doctype("Planning sheet Item", row)
+			_apply_payload_to_loaded_child(ps, "items", psi_existing.get("name"), psi_payload)
+			frappe.db.set_value(
+				"Planning sheet Item",
+				psi_existing.get("name"),
+				psi_payload,
+				update_modified=False,
+			)
+		elif hasattr(ps, "items") or ps.meta.has_field("items"):
 			ps.append("items", _child_row_payload_for_doctype("Planning sheet Item", row))
-		ps.append(parent_field, _child_row_payload_for_doctype("Planning Table", row))
 		child_codes.append(child_ic)
-		added += 1
-	if added <= 0:
+	for extra in existing_pt_rows[len(bom_items) :]:
+		extra_name = extra.get("name")
+		if extra_name and ps.get(parent_field):
+			ps.set(parent_field, [r for r in (ps.get(parent_field) or []) if _cstr(getattr(r, "name", None)) != _cstr(extra_name)])
+		frappe.delete_doc("Planning Table", extra.get("name"), force=1, ignore_permissions=True)
+		deleted += 1
+	for extra in existing_psi_rows[len(bom_items) :]:
+		extra_name = extra.get("name")
+		if extra_name and ps.get("items"):
+			ps.set("items", [r for r in (ps.get("items") or []) if _cstr(getattr(r, "name", None)) != _cstr(extra_name)])
+		frappe.delete_doc("Planning sheet Item", extra.get("name"), force=1, ignore_permissions=True)
+		deleted += 1
+	if added <= 0 and updated <= 0:
 		frappe.throw(_("BOM {0} has no child items to add.").format(bom.name))
 	ps.flags.ignore_permissions = True
 	ps.save()
@@ -9123,9 +9238,10 @@ def apply_sheet_cutting_bom_to_planning_sheet(planning_sheet_name=None, sales_or
 		"bom_no": bom.name,
 		"deleted": deleted,
 		"added": added,
+		"updated": updated,
 		"child_items": child_codes,
-		"message": _("Applied BOM {0}: replaced {1} old child row(s), added {2} BOM child row(s).").format(
-			bom.name, deleted, added
+		"message": _("Applied BOM {0}: updated {1} child row(s), added {2}, removed {3}.").format(
+			bom.name, updated, added, deleted
 		),
 	}
 

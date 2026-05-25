@@ -13,6 +13,13 @@
           <button type="button" class="pill" :class="{ active: statusFilter === 'approved' }" @click="statusFilter = 'approved'">Approved</button>
           <button type="button" class="pill" :class="{ active: statusFilter === 'rejected' }" @click="statusFilter = 'rejected'">Rejected</button>
         </div>
+        <div class="ta-date-filter">
+          <label>From</label>
+          <input v-model="fromDate" type="date" />
+          <label>To</label>
+          <input v-model="toDate" type="date" />
+          <input v-model="orderFilter" type="text" placeholder="Order code" @keyup.enter="loadList" />
+        </div>
         <button type="button" class="btn btn-primary btn-sm" @click="loadList">
           <i class="fa fa-refresh"></i> Refresh
         </button>
@@ -56,6 +63,8 @@
             <span class="date">{{ item.from_company }} → {{ item.to_company }}</span>
             <span :class="['status-badge', statusSlug(item.status)]">{{ item.status }}</span>
           </div>
+          <div v-if="item.order_codes_label" class="ta-card-nature">Order {{ item.order_codes_label }}</div>
+          <div v-if="item.transfer_date" class="ta-card-date">{{ formatDate(item.transfer_date) }}</div>
           <div v-if="item.nature_of_processing" class="ta-card-nature">{{ item.nature_of_processing }}</div>
         </div>
       </div>
@@ -68,6 +77,7 @@
               <span><strong>From:</strong> {{ selected.from_company }}</span>
               <span><strong>Party (STE):</strong> <span class="text-primary">{{ selected.to_company }}</span></span>
               <span v-if="detailNature"><strong>Nature:</strong> {{ detailNature }}</span>
+              <span v-if="selected.order_codes_label"><strong>Order:</strong> {{ selected.order_codes_label }}</span>
               <span v-if="selected.owner"><i class="fa fa-user-circle"></i> {{ selected.owner }}</span>
             </p>
           </div>
@@ -157,6 +167,9 @@ const APPROVER_ROLES = ["System Manager", "Manufacturing Manager", "Administrato
 const loading = ref(false);
 const busy = ref(false);
 const statusFilter = ref("pending");
+const fromDate = ref(frappe.datetime.get_today());
+const toDate = ref(frappe.datetime.get_today());
+const orderFilter = ref("");
 const list = ref([]);
 const selected = ref(null);
 const lines = ref([]);
@@ -204,12 +217,28 @@ function formatQty(q) {
   return Number.isFinite(n) ? (Math.round(n * 1000) / 1000).toString() : "0";
 }
 
+function formatDate(d) {
+  if (!d) return "";
+  try {
+    return frappe.datetime.str_to_user(d);
+  } catch {
+    return String(d).slice(0, 10);
+  }
+}
+
 async function loadList() {
   loading.value = true;
   try {
+    const args = {
+      status_filter: statusFilter.value || "all",
+      limit: 300,
+      from_date: fromDate.value || "",
+      to_date: toDate.value || "",
+      order_code: (orderFilter.value || "").trim(),
+    };
     const r = await frappe.call({
       method: `${API}.get_transfer_approvals`,
-      args: { status_filter: "all", limit: 300 },
+      args,
     });
     list.value = r.message || [];
     if (selected.value) {
@@ -315,7 +344,6 @@ function approve() {
         await loadList();
         const hit = list.value.find((x) => x.name === selected.value?.name);
         if (hit) await select(hit);
-        if (r.message?.stock_entry) openSte(r.message.stock_entry);
       } finally {
         busy.value = false;
       }
@@ -351,6 +379,7 @@ function openForm(name) {
 }
 
 watch(statusFilter, () => {
+  loadList();
   if (selected.value && !filteredList.value.find((x) => x.name === selected.value.name)) {
     selected.value = null;
     lines.value = [];
@@ -361,6 +390,9 @@ watch(statusFilter, () => {
 onMounted(() => {
   const opts = frappe.route_options || {};
   if (opts.status_filter) statusFilter.value = opts.status_filter;
+  if (opts.order_code) orderFilter.value = opts.order_code;
+  if (opts.from_date) fromDate.value = opts.from_date;
+  if (opts.to_date) toDate.value = opts.to_date;
   loadList().then(() => {
     if (opts.name) {
       const hit = list.value.find((x) => x.name === opts.name);
@@ -376,6 +408,37 @@ onMounted(() => {
   color: #0369a1;
   font-weight: 700;
   margin-top: 4px;
+}
+.ta-transfer .ta-card-date {
+  font-size: 10px;
+  color: #64748b;
+  font-weight: 700;
+  margin-top: 3px;
+}
+.ta-date-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.ta-date-filter label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  color: #64748b;
+}
+.ta-date-filter input {
+  height: 28px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.ta-date-filter input[type="text"] {
+  width: 110px;
 }
 .ta-ste-banner {
   padding: 10px 24px;

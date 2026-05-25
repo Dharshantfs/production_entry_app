@@ -166,7 +166,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
 import TransferDialog from "./TransferDialog.vue";
 
 const API = "production_entry.production_planning.transfer_logistics";
@@ -188,6 +188,7 @@ const dialogFilters = ref({ view_scope: "daily", date: frappe.datetime.get_today
 const dragLane = ref(null);
 const dragSte = ref(null);
 const dragOverSteName = ref("");
+let refreshTimer = null;
 
 function initWeekMonth() {
   const d = new Date();
@@ -364,6 +365,18 @@ onMounted(() => {
   });
   loadCompanies();
   loadCards();
+  refreshTimer = window.setInterval(() => {
+    if (!showDialog.value) {
+      loadCards();
+    }
+  }, 5000);
+});
+
+onUnmounted(() => {
+  if (refreshTimer) {
+    window.clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
 });
 </script>
 

@@ -618,8 +618,8 @@ def get_transfer_eligible_rows(
 			continue
 		if not _row_matches_filters(r, party_code, customer, unit):
 			continue
-		wo_terminal = bool(r.get("wo_terminal"))
 		spr_ds = cint(r.get("spr_docstatus") or 0)
+		wo_terminal = bool(r.get("wo_terminal") or (spr_ds == 1 and _cstr(r.get("spr_name"))))
 		extra = enrich_chart_row_transfer_payload(
 			{"custom_movement_type": mt, **r},
 			wo_terminal=wo_terminal,
@@ -658,6 +658,27 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None):
 	pc_filter = _cstr(party_code)
 	batches = []
 	seen = set()
+
+	def _add_batch(batch_no, qty, row=None, warehouse=None):
+		bn = _cstr(batch_no)
+		if not bn or bn in seen:
+			return
+		q = flt(qty or 0)
+		if q <= 0:
+			q = 1.0
+		seen.add(bn)
+		batches.append(
+			{
+				"batch_no": bn,
+				"item_code": (row or {}).get("item_code") or ic_filter,
+				"item_name": (row or {}).get("item_name") or (frappe.db.get_value("Item", ic_filter, "item_name") if ic_filter else ""),
+				"qty": q,
+				"party_code": (row or {}).get("party_code") or pc_filter,
+				"work_order": (row or {}).get("work_order"),
+				"warehouse": warehouse,
+			}
+		)
+
 	for row in frappe.get_all(
 		"Shaft Production Run Item",
 		filters={"parent": sn},
@@ -672,19 +693,44 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None):
 			continue
 		if pc_filter and pc_filter.lower() not in _cstr(row.get("party_code")).lower():
 			continue
-		seen.add(bn)
-		qty = flt(row.get("net_weight") or row.get("gross_weight") or 0)
-		if qty <= 0:
-			qty = 1.0
-		batches.append(
-			{
-				"batch_no": bn,
-				"item_code": row.get("item_code"),
-				"item_name": row.get("item_name"),
-				"qty": qty,
-				"party_code": row.get("party_code"),
-				"work_order": row.get("work_order"),
-			}
+		_add_batch(bn, row.get("net_weight") or row.get("gross_weight") or 0, row)
+	if batches:
+		return batches
+
+	# Some submitted SPRs create stock/batches but the roll grid has no batch_no.
+	# Fall back to linked Manufacture Stock Entries / Stock Ledger quantities.
+	se_filters = {"docstatus": 1}
+	se_meta = frappe.get_meta("Stock Entry")
+	if se_meta.has_field("shaft_production_run"):
+		se_filters["shaft_production_run"] = sn
+	elif frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+		se_filters["custom_spr_reference"] = sn
+	else:
+		return []
+	se_names = frappe.get_all("Stock Entry", filters=se_filters, pluck="name", limit_page_length=100) or []
+	if not se_names:
+		return []
+	sle_filters = {
+		"voucher_type": "Stock Entry",
+		"voucher_no": ["in", se_names],
+		"actual_qty": [">", 0],
+	}
+	if ic_filter:
+		sle_filters["item_code"] = ic_filter
+	for sle in frappe.get_all(
+		"Stock Ledger Entry",
+		filters=sle_filters,
+		fields=["batch_no", "item_code", "actual_qty", "warehouse"],
+		order_by="posting_date asc, posting_time asc, creation asc",
+		limit_page_length=500,
+	):
+		if not _cstr(sle.get("batch_no")):
+			continue
+		_add_batch(
+			sle.get("batch_no"),
+			sle.get("actual_qty"),
+			{"item_code": sle.get("item_code"), "item_name": frappe.db.get_value("Item", sle.get("item_code"), "item_name")},
+			sle.get("warehouse"),
 		)
 	return batches
 
@@ -810,8 +856,8 @@ def _sync_psi_transfer_fields(pt_name, updates):
 
 
 @frappe.whitelist()
-def get_transfer_approvals(status_filter=None, limit=200):
-	"""List transfer approvals for dashboard (all / pending / approved / rejected)."""
+def get_transfer_approvals(status_filter=None, limit=200, from_date=None, to_date=None, order_code=None):
+	"""List transfer approvals for dashboard with status/date/order filters."""
 	sf = _cstr(status_filter).lower() or "pending"
 	filters = {}
 	if sf == "pending":
@@ -823,6 +869,18 @@ def get_transfer_approvals(status_filter=None, limit=200):
 	elif sf == "draft":
 		filters["status"] = "Draft"
 	# sf == "all" → no status filter
+	fd = _cstr(from_date).strip()
+	td = _cstr(to_date).strip()
+	if fd and len(fd) == 10:
+		fd = fd + " 00:00:00"
+	if td and len(td) == 10:
+		td = td + " 23:59:59"
+	if fd and td:
+		filters["creation"] = ["between", [fd, td]]
+	elif fd:
+		filters["creation"] = [">=", fd]
+	elif td:
+		filters["creation"] = ["<=", td]
 
 	rows = frappe.get_all(
 		"Transfer Approval",
@@ -838,11 +896,39 @@ def get_transfer_approvals(status_filter=None, limit=200):
 			"stock_entry",
 			"requested_by",
 			"nature_of_processing",
+			"creation",
 		],
 		order_by="modified desc",
 		limit_page_length=cint(limit) or 200,
 	)
-	return rows
+	if not rows:
+		return rows
+	names = [r.name for r in rows]
+	line_rows = frappe.get_all(
+		"Transfer Approval Line",
+		filters={"parent": ["in", names]},
+		fields=["parent", "party_code"],
+		limit_page_length=0,
+	) or []
+	codes_by_parent = {}
+	for ln in line_rows:
+		pc = _cstr(ln.get("party_code")).strip()
+		if not pc:
+			continue
+		codes_by_parent.setdefault(ln.get("parent"), [])
+		if pc not in codes_by_parent[ln.get("parent")]:
+			codes_by_parent[ln.get("parent")].append(pc)
+	oc = _cstr(order_code).strip().lower()
+	out = []
+	for row in rows:
+		codes = codes_by_parent.get(row.name, [])
+		row["order_codes"] = codes
+		row["order_codes_label"] = ", ".join(codes)
+		row["transfer_date"] = str(row.get("creation") or "")[:10]
+		if oc and not any(oc in _cstr(c).lower() for c in codes):
+			continue
+		out.append(row)
+	return out
 
 
 @frappe.whitelist()
