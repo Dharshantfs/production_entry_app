@@ -8714,6 +8714,7 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 						"uom": _cstr(prow.get("uom")) or "Kg",
 					}
 				)
+			so_item_key = _cstr(getattr(so_it, "name", None) or so_it_name or "")
 			trace_id = _parent_child_trace_id_from_item_code(sc_ic)
 			if _sheet_cutting_existing_bom_children_for_so_line(ps.name, so_item_key, sc_ic):
 				continue
@@ -8743,7 +8744,6 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 			fabric_ic = res["fabric_item_code"]
 			bom_no = res["bom_no"]
 			fabric_qty = _fabric_qty_from_bom(bom_no, fabric_ic, flt(so_it.qty))
-			so_item_key = _cstr(getattr(so_it, "name", None) or "")
 
 			# Idempotency: look for existing 100* row by fabric item + so_item key.
 			# Also check without so_item constraint (handles rows saved with empty key).
