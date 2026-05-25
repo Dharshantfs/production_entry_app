@@ -1875,6 +1875,8 @@ def _should_apply_trace_to_row(item_code, current_trace_id, new_trace_id):
 			return True
 		if cur == new_tid:
 			return False
+		if ic_pp == "251" and _trace_is_native_process_trace(cur, "252") and _trace_is_native_process_trace(new_tid, "251"):
+			return True
 		if ic_pp and _trace_is_native_process_trace(cur, ic_pp) and not _trace_is_native_process_trace(new_tid, ic_pp):
 			return True
 		return False
@@ -1882,6 +1884,8 @@ def _should_apply_trace_to_row(item_code, current_trace_id, new_trace_id):
 		return True
 	if cur == new_tid:
 		return False
+	if _trace_is_native_process_trace(cur, "252") and _trace_is_native_process_trace(new_tid, "251"):
+		return True
 	if _fabric_row_has_stable_parent_trace(item_code, cur):
 		return False
 	if _trace_is_native_100_process(cur) and not _trace_is_native_100_process(new_tid):
@@ -1976,7 +1980,7 @@ def _trace_from_sheet_cutting_fg_on_sales_order_line(sales_order_item, planning_
 		)
 	if not rows:
 		return ""
-	for pref in ("252", "253", "254", "255", "251"):
+	for pref in ("251", "252", "253", "254", "255"):
 		for r in rows:
 			ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
 			if _item_process_prefix(ric) != pref:
@@ -1990,7 +1994,9 @@ def _trace_from_sheet_cutting_fg_on_sales_order_line(sales_order_item, planning_
 			if pref in ("253", "254"):
 				pf = _parse_253_item_code(ric) if pref == "253" else _parse_254_item_code(ric)
 				t = _hyphen_trace_from_laminated_sheet_parse(pf or {}, pref)
-			elif pref in ("251", "252"):
+			elif pref == "251":
+				t = _parent_child_trace_id_from_item_code(ric)
+			elif pref == "252":
 				t = _trace_from_252_parse_body(_parse_sheet_cutting_item_code(ric) or {})
 			else:
 				t = _hyphen_trace_from_255_parse(_parse_255_item_code(ric) or {})
@@ -4027,6 +4033,9 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 				pass
 		return ""
 	if _is_sheet_cutting_parent_process(ic):
+		t_native = _parent_child_trace_id_from_item_code(ic)
+		if t_native:
+			return t_native
 		t255 = _hyphen_trace_from_255_parse(_parse_255_item_code(ic) or {})
 		if t255:
 			return t255
@@ -4797,14 +4806,18 @@ def _is_sheet_cutting_parent_process(item_code):
 
 def _sheet_cutting_canonical_parent_trace_id(item_code, sibling_rows=None, sales_order_item=None):
 	"""
-	One parent trace id per sheet-cutting SO line — dashed 252-style (e.g. 002-252-113-542-100-001).
-	255 parent rows map to this format; children on the same SO line reuse it.
+	One parent trace id per sheet-cutting SO line.
+	251 rows keep 251-* traces; 252/253/254/255 rows keep their own process traces.
 	"""
 	ic = str(item_code or "").strip().upper()
 	if not ic:
 		return ""
 	soi = _cstr(sales_order_item).strip()
 	rows = sibling_rows or []
+	pp = _item_process_prefix(ic)
+
+	if pp == "251":
+		return _parent_child_trace_id_from_item_code(ic)
 
 	# Prefer an explicit 252 row on the same SO line (native parent-id shape).
 	if soi and rows:
@@ -4822,8 +4835,7 @@ def _sheet_cutting_canonical_parent_trace_id(item_code, sibling_rows=None, sales
 			if t:
 				return t
 
-	pp = _item_process_prefix(ic)
-	if pp in ("251", "252"):
+	if pp == "252":
 		return _trace_from_252_parse_body(_parse_sheet_cutting_item_code(ic) or {})
 
 	if pp == "255" or _lamination_process_from_item_code(ic) == "255":
@@ -9008,6 +9020,7 @@ def _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom_name, bom_item):
 	child_name = _cstr(getattr(bom_item, "item_name", None)).strip() or _cstr(
 		frappe.db.get_value("Item", child_ic, "item_name")
 	)
+	parent_trace = _parent_child_trace_id_from_item_code(_cstr(getattr(so_it, "item_code", None)))
 	qty = _scaled_component_qty_from_bom_row(bom_name, bom_item, flt(getattr(so_it, "qty", 0)))
 	specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, frappe._dict(parent_row or {}))
 	q, c, g = resolve_quality_color_gsm_from_item_code(child_ic, child_name)
@@ -9041,11 +9054,12 @@ def _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom_name, bom_item):
 		"party_code": ps.party_code,
 		"planning_sheet": ps.name,
 	}
-	_set_trace_id_if_supported(row, _parent_child_trace_id_from_item_code(_cstr(getattr(so_it, "item_code", None))))
+	_set_trace_id_if_supported(row, parent_trace)
 	enrich_row = frappe._dict(row)
 	enrich_planning_child_row_from_item_code(enrich_row, ps.name)
 	row.update(dict(enrich_row))
-	_set_trace_id_if_supported(row, _parent_child_trace_id_from_item_code(_cstr(getattr(so_it, "item_code", None))))
+	if parent_trace:
+		row["custom_parent_child_trace_id"] = parent_trace
 	return row
 
 

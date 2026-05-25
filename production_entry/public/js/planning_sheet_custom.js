@@ -68,6 +68,9 @@ frappe.ui.form.on('Planning sheet Item', {
             frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
         }
         frm.refresh_field('planned_items');
+        setTimeout(function () {
+            registerWorkingSheetCuttingChangeBomButton(frm);
+        }, 100);
     },
     custom_plan_code: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
@@ -96,6 +99,9 @@ frappe.ui.form.on('Planning Table', {
             frappe.model.set_value(leg.doctype, leg.name, 'plan_name', row.plan_name);
         }
         frm.refresh_field('items');
+        setTimeout(function () {
+            registerWorkingSheetCuttingChangeBomButton(frm);
+        }, 100);
     },
     custom_plan_code: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
@@ -219,15 +225,106 @@ function openSheetCuttingChangeBomDialog(frm) {
     });
 }
 
+function openWorkingBomPickerForFgRow(frm, fgRow) {
+    const itemCode = _norm(fgRow?.item_code);
+    if (!itemCode) return;
+    frappe.call({
+        method: 'production_entry.production_planning.scheduler_api.get_sheet_cutting_bom_change_options',
+        args: { planning_sheet_name: frm.doc.name },
+        freeze: true,
+        freeze_message: __('Loading Sheet Cutting BOMs...'),
+        callback: function (r) {
+            const rows = (r.message && r.message.rows) || [];
+            const selected = rows.find((row) => _norm(row.item_code) === itemCode);
+            if (!selected) {
+                frappe.msgprint(__('No 251 Sheet Cutting row found for {0}', [itemCode]));
+                return;
+            }
+            const boms = selected.boms || [];
+            if (!boms.length) {
+                frappe.msgprint(__('No active BOM for {0}', [itemCode]));
+                return;
+            }
+            const defaultBom = (boms.find((b) => b.is_default) || boms[0]).name;
+            const d = new frappe.ui.Dialog({
+                title: __('Select BOM'),
+                fields: [
+                    {
+                        fieldtype: 'HTML',
+                        fieldname: 'info',
+                        options:
+                            '<p><b>' +
+                            frappe.utils.escape_html(selected.item_code || '') +
+                            '</b><br>' +
+                            frappe.utils.escape_html(selected.item_name || '') +
+                            '</p>',
+                    },
+                    {
+                        fieldtype: 'Select',
+                        fieldname: 'bom_no',
+                        label: __('BOM'),
+                        options: boms.map((b) => b.name).join('\n'),
+                        default: defaultBom,
+                        reqd: 1,
+                    },
+                ],
+                primary_action_label: __('Confirm'),
+                primary_action: function (values) {
+                    frappe.call({
+                        method: 'production_entry.production_planning.scheduler_api.apply_sheet_cutting_bom_to_planning_sheet',
+                        args: {
+                            planning_sheet_name: frm.doc.name,
+                            sales_order_item: selected.sales_order_item,
+                            bom_no: values.bom_no,
+                        },
+                        freeze: true,
+                        freeze_message: __('Replacing BOM child items...'),
+                        callback: function (res) {
+                            const m = res.message || {};
+                            d.hide();
+                            frappe.show_alert({
+                                message: __(m.message || 'BOM child rows updated.'),
+                                indicator: 'green',
+                            });
+                            frm.reload_doc();
+                        },
+                    });
+                },
+            });
+            d.show();
+        },
+    });
+}
+
+function installWorkingSheetCuttingBomPicker(frm) {
+    if (!frm || !frm.doc || !frm.doc.name) return;
+    window.open_bom_picker = function (fgRow) {
+        openWorkingBomPickerForFgRow(frm, fgRow);
+    };
+}
+
+function registerWorkingSheetCuttingChangeBomButton(frm) {
+    if (!frm || !frm.doc || !frm.doc.name) return;
+    installWorkingSheetCuttingBomPicker(frm);
+    try {
+        frm.remove_custom_button(__('Change BOM'), __('Actions'));
+    } catch (e) {}
+    frm.add_custom_button(__('Change BOM'), function () {
+        openSheetCuttingChangeBomDialog(frm);
+    }, __('Actions'));
+}
+
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
-        try {
-            frm.remove_custom_button(__('Change BOM'), __('Actions'));
-        } catch (e) {}
-        frm.add_custom_button(__('Change BOM'), function () {
-            openSheetCuttingChangeBomDialog(frm);
-        }, __('Actions'));
+        registerWorkingSheetCuttingChangeBomButton(frm);
+        // Site Client Scripts may re-add their own non-saving Change BOM button after app scripts.
+        setTimeout(function () {
+            registerWorkingSheetCuttingChangeBomButton(frm);
+        }, 300);
+        setTimeout(function () {
+            registerWorkingSheetCuttingChangeBomButton(frm);
+        }, 1000);
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',
@@ -334,6 +431,18 @@ frappe.ui.form.on('Planning sheet', {
                 },
             });
         }, __('Actions'));
+    },
+
+    items_add: function (frm) {
+        setTimeout(function () {
+            registerWorkingSheetCuttingChangeBomButton(frm);
+        }, 100);
+    },
+
+    items_remove: function (frm) {
+        setTimeout(function () {
+            registerWorkingSheetCuttingChangeBomButton(frm);
+        }, 100);
     },
 
     after_load: function(frm) {
