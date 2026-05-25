@@ -438,6 +438,9 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	production_plan: function (frm) {
 		if (!frm.doc.production_plan) {
+			if (frappe.meta.get_docfield('Shaft Production Run', 'company')) {
+				frm.set_value('company', '');
+			}
 			frm.clear_table('shaft_jobs');
 			frm.clear_table('bundle_calculation');
 			frm.clear_table('items');
@@ -466,6 +469,10 @@ frappe.ui.form.on('Shaft Production Run', {
 				sprLog('[SPR] response keys:', Object.keys(d));
 				
 				// Set all returned fields that exist on the form
+				if (d.company && frappe.meta.get_docfield('Shaft Production Run', 'company')) {
+					sprLog('[SPR] Setting company:', d.company);
+					frm.set_value('company', d.company);
+				}
 				if (d.customer) {
 					sprLog('[SPR] Setting customer:', d.customer);
 					frm.set_value('customer', d.customer);
@@ -516,6 +523,11 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	refresh: function (frm) {
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
+		try {
+			frm.set_df_property('company', 'read_only', 1);
+		} catch (e) {
+			/* field may not exist until migrate */
+		}
 		frm.set_df_property('total_produced_weight', 'read_only', 1);
 		try {
 			frm.set_df_property('custom_total_achieved_meter', 'read_only', 1);
@@ -1032,6 +1044,55 @@ function spr_toggle_bundle_packaging_on_submit(frm) {
 	});
 }
 
+function spr_button_text($btn) {
+	return String(($btn && $btn.text && $btn.text()) || '')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function spr_move_existing_top_buttons_to_tools(frm) {
+	if (!frm || !frm.page || typeof frm.page.add_inner_button !== 'function') {
+		return;
+	}
+	const tg = __('Tools');
+	const labels = [
+		__('View Party Stock'),
+		__('Bora Weight'),
+		__('Mixing Sheet'),
+	];
+	const $buttons = frm.page.wrapper
+		? frm.page.wrapper.find('.page-actions button, .custom-actions button, .standard-actions button')
+		: $();
+	labels.forEach(function (label) {
+		const lbl = String(label || '').trim();
+		if (!lbl) return;
+		const $btn = $buttons
+			.filter(function () {
+				return spr_button_text($(this)) === lbl;
+			})
+			.first();
+		if (!$btn.length || $btn.data('spr-moved-to-tools')) {
+			return;
+		}
+		try {
+			if (typeof frm.page.remove_inner_button === 'function') {
+				frm.page.remove_inner_button(lbl, tg);
+				frm.page.remove_inner_button(lbl, 'Tools');
+			}
+		} catch (e) {}
+		try {
+			frm.page.add_inner_button(
+				lbl,
+				function () {
+					$btn.trigger('click');
+				},
+				tg
+			);
+			$btn.data('spr-moved-to-tools', 1).hide();
+		} catch (e) {}
+	});
+}
+
 function spr_register_spr_page_buttons(frm) {
 	if (!frm) {
 		return;
@@ -1054,39 +1115,6 @@ function spr_register_spr_page_buttons(frm) {
 			frm.remove_custom_button(__('Select RM batches'));
 		} catch (e) {}
 	}
-	if (canRemoveCustom && typeof frm.add_custom_button === 'function') {
-		try {
-			frm.add_custom_button(__('Manual job'), function () {
-				spr_open_manual_job_dialog(frm);
-			});
-		} catch (e) {}
-		try {
-			frm.add_custom_button(__('Bundle packaging'), function () {
-				spr_open_bundle_packaging_dialog(frm);
-			});
-		} catch (e) {}
-		try {
-			if (
-				frappe.meta.get_docfield('Shaft Production Run', 'custom_use_bundle_packaging_on_submit') &&
-				cint(frm.doc.docstatus) === 0
-			) {
-				const bundleOn = cint(frm.doc.custom_use_bundle_packaging_on_submit);
-				frm.add_custom_button(spr_bundle_packaging_toggle_label(bundleOn), function () {
-					spr_toggle_bundle_packaging_on_submit(frm);
-				});
-			}
-		} catch (e) {}
-		try {
-			if (
-				frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
-				cint(frm.doc.docstatus) === 0
-			) {
-				frm.add_custom_button(__('Select RM batches'), function () {
-					spr_open_fabric_batch_pick_dialog(frm);
-				});
-			}
-		} catch (e) {}
-	}
 	if (!frm.page || typeof frm.page.add_inner_button !== 'function') {
 		return;
 	}
@@ -1104,7 +1132,13 @@ function spr_register_spr_page_buttons(frm) {
 				rm.call(frm.page, lbl);
 			} catch (e) {}
 		});
-		[__('SPR — Manual job'), __('SPR — Bundle packaging'), __('SPR — Select RM batches')].forEach(function (lbl) {
+		[
+			__('SPR — Manual job'),
+			__('SPR — Bundle packaging'),
+			__('SPR — Select RM batches'),
+			spr_bundle_packaging_toggle_label(0),
+			spr_bundle_packaging_toggle_label(1),
+		].forEach(function (lbl) {
 			try {
 				rm.call(frm.page, lbl, tg);
 			} catch (e) {}
@@ -1119,34 +1153,18 @@ function spr_register_spr_page_buttons(frm) {
 		} catch (e) {}
 	}
 	addInner(function () {
-		frm.page.add_inner_button(__('Manual job'), function () {
-			spr_open_manual_job_dialog(frm);
-		});
-	});
-	addInner(function () {
-		frm.page.add_inner_button(__('Bundle packaging'), function () {
-			spr_open_bundle_packaging_dialog(frm);
-		});
-	});
-	addInner(function () {
 		if (
 			frappe.meta.get_docfield('Shaft Production Run', 'custom_use_bundle_packaging_on_submit') &&
 			cint(frm.doc.docstatus) === 0
 		) {
 			const bundleOn = cint(frm.doc.custom_use_bundle_packaging_on_submit);
-			frm.page.add_inner_button(spr_bundle_packaging_toggle_label(bundleOn), function () {
-				spr_toggle_bundle_packaging_on_submit(frm);
-			});
-		}
-	});
-	addInner(function () {
-		if (
-			frappe.meta.get_docfield('Shaft Production Run', 'fabric_batch_picks') &&
-			cint(frm.doc.docstatus) === 0
-		) {
-			frm.page.add_inner_button(__('Select RM batches'), function () {
-				spr_open_fabric_batch_pick_dialog(frm);
-			});
+			frm.page.add_inner_button(
+				spr_bundle_packaging_toggle_label(bundleOn),
+				function () {
+					spr_toggle_bundle_packaging_on_submit(frm);
+				},
+				tg
+			);
 		}
 	});
 	addInner(function () {
@@ -1181,6 +1199,12 @@ function spr_register_spr_page_buttons(frm) {
 			);
 		}
 	});
+	setTimeout(function () {
+		spr_move_existing_top_buttons_to_tools(frm);
+	}, 80);
+	setTimeout(function () {
+		spr_move_existing_top_buttons_to_tools(frm);
+	}, 500);
 }
 
 /** After Save the toolbar is rebuilt asynchronously — retry so Manual job / Bundle packaging stay visible. */

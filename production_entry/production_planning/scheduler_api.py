@@ -8586,6 +8586,41 @@ def _sync_rewinding_fabric_planning_rows(planning_sheet_name):
 		frappe.db.commit()
 
 
+def _sheet_cutting_existing_bom_children_for_so_line(planning_sheet_name, so_item_key, parent_item_code):
+	"""Any existing non-FG rows for this 251 SO line mean the user may already have chosen a BOM."""
+	if not planning_sheet_name or not so_item_key:
+		return []
+	out = []
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.exists("DocType", doctype):
+			continue
+		cols = set(frappe.db.get_table_columns(doctype) or [])
+		so_conds = []
+		params = [planning_sheet_name, parent_item_code]
+		if "sales_order_item" in cols:
+			so_conds.append("IFNULL(sales_order_item, '') = %s")
+			params.append(so_item_key)
+		if "so_item" in cols:
+			so_conds.append("IFNULL(so_item, '') = %s")
+			params.append(so_item_key)
+		if not so_conds:
+			continue
+		rows = frappe.db.sql(
+			f"""
+			SELECT name, item_code
+			FROM `tab{doctype}`
+			WHERE parent = %s
+			  AND IFNULL(item_code, '') != %s
+			  AND ({" OR ".join(so_conds)})
+			LIMIT 20
+			""",
+			tuple(params),
+			as_dict=True,
+		) or []
+		out.extend(rows)
+	return out
+
+
 def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 251, append one fabric (100) row from BOM. Idempotent."""
 	if not planning_sheet_name:
@@ -8680,6 +8715,8 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 					}
 				)
 			trace_id = _parent_child_trace_id_from_item_code(sc_ic)
+			if _sheet_cutting_existing_bom_children_for_so_line(ps.name, so_item_key, sc_ic):
+				continue
 			try:
 				res = get_fabric_item_from_sheet_cutting_item(sc_ic)
 			except Exception as e:
@@ -8802,6 +8839,281 @@ def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 		ps.flags.ignore_permissions = True
 		ps.save()
 		frappe.db.commit()
+
+
+def _sheet_cutting_bom_candidates(item_code):
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return []
+	filters = {"item": ic, "docstatus": 1}
+	try:
+		if frappe.db.has_column("BOM", "is_active"):
+			filters["is_active"] = 1
+	except Exception:
+		pass
+	rows = frappe.get_all(
+		"BOM",
+		filters=filters,
+		fields=["name", "item", "quantity", "is_default", "is_active", "modified"],
+		order_by="is_default desc, modified desc",
+		limit_page_length=50,
+	) or []
+	out = []
+	for r in rows:
+		try:
+			bom = frappe.get_doc("BOM", r.name)
+		except Exception:
+			continue
+		children = []
+		for bi in bom.items or []:
+			child_ic = _cstr(getattr(bi, "item_code", None)).strip()
+			if not child_ic:
+				continue
+			child_name = _cstr(getattr(bi, "item_name", None)).strip() or _cstr(
+				frappe.db.get_value("Item", child_ic, "item_name")
+			)
+			children.append(
+				{
+					"item_code": child_ic,
+					"item_name": child_name,
+					"qty": flt(getattr(bi, "qty", 0)),
+					"uom": _cstr(getattr(bi, "uom", None)) or _cstr(getattr(bi, "stock_uom", None)),
+				}
+			)
+		out.append(
+			{
+				"name": bom.name,
+				"is_default": cint(getattr(bom, "is_default", 0)),
+				"is_active": cint(getattr(bom, "is_active", 1)),
+				"quantity": flt(getattr(bom, "quantity", 0)),
+				"children": children,
+				"label": "{0}{1}".format(bom.name, " (Default)" if cint(getattr(bom, "is_default", 0)) else ""),
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def get_sheet_cutting_bom_change_options(planning_sheet_name=None):
+	"""Rows + BOM choices for Planning Sheet → Actions → Change BOM."""
+	psn = _cstr(planning_sheet_name).strip()
+	if not psn or not frappe.db.exists("Planning sheet", psn):
+		frappe.throw(_("Planning Sheet is required."))
+	so_name = _cstr(frappe.db.get_value("Planning sheet", psn, "sales_order")).strip()
+	if not so_name or not frappe.db.exists("Sales Order", so_name):
+		frappe.throw(_("Planning Sheet {0} has no linked Sales Order.").format(psn))
+	so = frappe.get_doc("Sales Order", so_name)
+	rows = []
+	for so_it in so.items or []:
+		ic = _cstr(getattr(so_it, "item_code", None)).strip()
+		if _item_process_prefix(ic) != "251":
+			continue
+		boms = _sheet_cutting_bom_candidates(ic)
+		if not boms:
+			continue
+		rows.append(
+			{
+				"sales_order_item": so_it.name,
+				"item_code": ic,
+				"item_name": _cstr(getattr(so_it, "item_name", None)).strip(),
+				"qty": flt(getattr(so_it, "qty", 0)),
+				"uom": _cstr(getattr(so_it, "uom", None)),
+				"boms": boms,
+			}
+		)
+	return {"planning_sheet": psn, "sales_order": so_name, "rows": rows}
+
+
+def _child_row_payload_for_doctype(doctype, row):
+	meta = frappe.get_meta(doctype)
+	out = {}
+	for k, v in (row or {}).items():
+		if meta.has_field(k):
+			out[k] = v
+	if doctype == "Planning sheet Item":
+		if meta.has_field("so_item") and row.get("sales_order_item") and not out.get("so_item"):
+			out["so_item"] = row.get("sales_order_item")
+		if meta.has_field("custom_item_planned_date") and row.get("planned_date") and not out.get("custom_item_planned_date"):
+			out["custom_item_planned_date"] = row.get("planned_date")
+		if meta.has_field("custom_lamination_order_code") and row.get("custom_lamination_order_code_"):
+			out["custom_lamination_order_code"] = row.get("custom_lamination_order_code_")
+	return out
+
+
+def _delete_sheet_cutting_bom_children(planning_sheet_name, so_item_key, parent_item_code):
+	if not planning_sheet_name or not so_item_key:
+		return 0
+	deleted = 0
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.exists("DocType", doctype):
+			continue
+		cols = set(frappe.db.get_table_columns(doctype) or [])
+		so_conds = []
+		params = [planning_sheet_name, parent_item_code]
+		if "sales_order_item" in cols:
+			so_conds.append("IFNULL(sales_order_item, '') = %s")
+			params.append(so_item_key)
+		if "so_item" in cols:
+			so_conds.append("IFNULL(so_item, '') = %s")
+			params.append(so_item_key)
+		if not so_conds:
+			continue
+		count_rows = frappe.db.sql(
+			f"""
+			SELECT COUNT(*)
+			FROM `tab{doctype}`
+			WHERE parent = %s
+			  AND IFNULL(item_code, '') != %s
+			  AND ({" OR ".join(so_conds)})
+			""",
+			tuple(params),
+		)
+		deleted += cint((count_rows or [[0]])[0][0])
+		frappe.db.sql(
+			f"""
+			DELETE FROM `tab{doctype}`
+			WHERE parent = %s
+			  AND IFNULL(item_code, '') != %s
+			  AND ({" OR ".join(so_conds)})
+			""",
+			tuple(params),
+		)
+	return cint(deleted or 0)
+
+
+def _find_sheet_cutting_parent_planning_row(planning_sheet_name, so_item_key, parent_item_code):
+	fields = _planning_child_row_fields_for_query("Planning Table")
+	for key in ("sales_order_item", "so_item"):
+		if not frappe.db.has_column("Planning Table", key):
+			continue
+		rows = frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name, key: so_item_key, "item_code": parent_item_code},
+			fields=fields,
+			limit_page_length=1,
+		) or []
+		if rows:
+			return rows[0]
+	rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name, "item_code": parent_item_code},
+		fields=fields,
+		limit_page_length=1,
+	) or []
+	return rows[0] if rows else {}
+
+
+def _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom_name, bom_item):
+	child_ic = _cstr(getattr(bom_item, "item_code", None)).strip()
+	child_name = _cstr(getattr(bom_item, "item_name", None)).strip() or _cstr(
+		frappe.db.get_value("Item", child_ic, "item_name")
+	)
+	qty = _scaled_component_qty_from_bom_row(bom_name, bom_item, flt(getattr(so_it, "qty", 0)))
+	specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, frappe._dict(parent_row or {}))
+	q, c, g = resolve_quality_color_gsm_from_item_code(child_ic, child_name)
+	row_color = c or specs.get("color") or ""
+	row_width = flt(specs.get("width_inch") or 0)
+	if row_width <= 0:
+		_, row_width = _parse_gsm_width_from_item_text(child_ic + " " + child_name)
+	row_quality = q or specs.get("quality") or ""
+	row_gsm = cint(g or specs.get("gsm") or 0)
+	row_unit = compute_default_production_unit(row_color, row_width, child_ic)
+	row_planned_date = getdate(ps.ordered_date) if _is_white_color(row_color) else None
+	row = {
+		"sales_order_item": so_it.name,
+		"so_item": so_it.name,
+		"item_code": child_ic,
+		"item_name": child_name,
+		"qty": qty,
+		"uom": _cstr(getattr(bom_item, "uom", None)) or _cstr(getattr(so_it, "uom", None)) or "Kg",
+		"gsm": row_gsm,
+		"width_inch": row_width,
+		"color": row_color,
+		"quality": row_quality,
+		"custom_quality": q or specs.get("custom_quality") or row_quality,
+		"unit": row_unit,
+		"meter": specs.get("meter"),
+		"meter_per_roll": specs.get("meter_per_roll"),
+		"no_of_rolls": specs.get("no_of_rolls"),
+		"weight_per_roll": specs.get("weight_per_roll"),
+		"planned_date": row_planned_date,
+		"plan_name": ps.get("custom_plan_name"),
+		"party_code": ps.party_code,
+		"planning_sheet": ps.name,
+	}
+	_set_trace_id_if_supported(row, _parent_child_trace_id_from_item_code(_cstr(getattr(so_it, "item_code", None))))
+	enrich_row = frappe._dict(row)
+	enrich_planning_child_row_from_item_code(enrich_row, ps.name)
+	row.update(dict(enrich_row))
+	_set_trace_id_if_supported(row, _parent_child_trace_id_from_item_code(_cstr(getattr(so_it, "item_code", None))))
+	return row
+
+
+@frappe.whitelist()
+def apply_sheet_cutting_bom_to_planning_sheet(planning_sheet_name=None, sales_order_item=None, bom_no=None):
+	"""Replace only BOM-child rows for one sheet-cutting SO line with selected BOM children."""
+	psn = _cstr(planning_sheet_name).strip()
+	soi = _cstr(sales_order_item).strip()
+	bom_name = _cstr(bom_no).strip()
+	if not psn or not frappe.db.exists("Planning sheet", psn):
+		frappe.throw(_("Planning Sheet is required."))
+	if not soi or not frappe.db.exists("Sales Order Item", soi):
+		frappe.throw(_("Sales Order Item is required."))
+	if not bom_name or not frappe.db.exists("BOM", bom_name):
+		frappe.throw(_("BOM is required."))
+	ps = frappe.get_doc("Planning sheet", psn)
+	so_it = frappe.get_doc("Sales Order Item", soi)
+	if _cstr(getattr(so_it, "parent", None)).strip() != _cstr(ps.get("sales_order")).strip():
+		frappe.throw(_("Sales Order Item {0} does not belong to this Planning Sheet.").format(soi))
+	parent_ic = _cstr(so_it.item_code).strip()
+	if _item_process_prefix(parent_ic) != "251":
+		frappe.throw(_("Change BOM is allowed only for sheet cutting process 251 rows."))
+	bom = frappe.get_doc("BOM", bom_name)
+	if _cstr(bom.item).strip() != parent_ic:
+		frappe.throw(_("BOM {0} is for {1}, not {2}.").format(bom.name, bom.item, parent_ic))
+	if cint(bom.docstatus) != 1:
+		frappe.throw(_("BOM {0} must be submitted.").format(bom.name))
+	parent_row = _find_sheet_cutting_parent_planning_row(psn, soi, parent_ic)
+	deleted = _delete_sheet_cutting_bom_children(psn, soi, parent_ic)
+	ps = frappe.get_doc("Planning sheet", psn)
+	parent_field = _get_pt_parentfield()
+	added = 0
+	child_codes = []
+	for bi in bom.items or []:
+		child_ic = _cstr(getattr(bi, "item_code", None)).strip()
+		if not child_ic or child_ic == parent_ic:
+			continue
+		row = _sheet_cutting_bom_child_row(ps, so_it, parent_row, bom.name, bi)
+		if hasattr(ps, "items") or ps.meta.has_field("items"):
+			ps.append("items", _child_row_payload_for_doctype("Planning sheet Item", row))
+		ps.append(parent_field, _child_row_payload_for_doctype("Planning Table", row))
+		child_codes.append(child_ic)
+		added += 1
+	if added <= 0:
+		frappe.throw(_("BOM {0} has no child items to add.").format(bom.name))
+	ps.flags.ignore_permissions = True
+	ps.save()
+	try:
+		ensure_all_planning_sheet_trace_ids(ps.name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "apply_sheet_cutting_bom_to_planning_sheet:trace")
+	try:
+		_finalize_planning_sheet_row_order_and_movement(ps.name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "apply_sheet_cutting_bom_to_planning_sheet:finalize")
+	frappe.db.commit()
+	return {
+		"status": "success",
+		"planning_sheet": ps.name,
+		"sales_order_item": soi,
+		"bom_no": bom.name,
+		"deleted": deleted,
+		"added": added,
+		"child_items": child_codes,
+		"message": _("Applied BOM {0}: replaced {1} old child row(s), added {2} BOM child row(s).").format(
+			bom.name, deleted, added
+		),
+	}
 
 
 def _force_slitting_unit_on_sheet(planning_sheet_name):

@@ -1405,9 +1405,11 @@ def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
 
 class ShaftProductionRun(Document):
 	def before_validate(self):
+		self.sync_company_from_source()
 		self.normalize_custom_unit()
 
 	def validate(self):
+		self.sync_company_from_source()
 		self.normalize_custom_unit()
 		self.sync_shaft_job_work_orders_from_plan()
 		self._spr_round_item_net_weights()
@@ -1420,6 +1422,29 @@ class ShaftProductionRun(Document):
 			sync_bundle_total_achieved_weight_for_doc(self)
 			sync_bundle_consumed_meter_header(self)
 		self._spr_recalc_total_produced_weight_header()
+
+	def sync_company_from_source(self):
+		"""Show the manufacturing company on SPR from PP first, then linked WO."""
+		if not self.meta.has_field("company"):
+			return
+		company = ""
+		pp = _cstr(self.get("production_plan"))
+		if pp and frappe.db.exists("Production Plan", pp):
+			company = _cstr(frappe.db.get_value("Production Plan", pp, "company"))
+		if not company:
+			for table_name in ("items", "shaft_jobs"):
+				for row in self.get(table_name) or []:
+					wo_name = _cstr(_spr_row_get(row, "work_order") or _spr_row_get(row, "wo_id"))
+					if not wo_name:
+						wo_name = _cstr(getattr(row, "work_orders", None) or "").split(",")[0].strip()
+					if wo_name and frappe.db.exists("Work Order", wo_name):
+						company = _cstr(frappe.db.get_value("Work Order", wo_name, "company"))
+						if company:
+							break
+				if company:
+					break
+		if company:
+			self.company = company
 
 	def normalize_custom_unit(self):
 		unit_value = _cstr(self.get("custom_unit"))
@@ -4240,6 +4265,7 @@ def get_production_plan_details(production_plan):
 	pp_meta = frappe.get_meta("Production Plan")
 	pp_unit = _spr_unit_value_for_current_field(pp.get("custom_unit"))
 	out = {
+		"company": pp.get("company"),
 		"customer": pp.get("customer"),
 		"custom_unit": pp_unit,
 	}

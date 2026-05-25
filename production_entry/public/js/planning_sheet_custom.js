@@ -111,9 +111,123 @@ frappe.ui.form.on('Planning Table', {
     },
 });
 
+function planningSheetBomLineLabel(row) {
+    const code = _norm(row?.item_code);
+    const name = _norm(row?.item_name);
+    const qty = row?.qty ? ` - ${row.qty} ${row.uom || ''}` : '';
+    return `${row.sales_order_item} :: ${code}${name ? ` - ${name}` : ''}${qty}`;
+}
+
+function planningSheetBomOptionLabel(bom) {
+    const children = (bom?.children || [])
+        .map((it) => `${it.item_code}${it.qty ? ` (${it.qty})` : ''}`)
+        .join(', ');
+    return `${bom.label || bom.name}${children ? ` -> ${children}` : ''}`;
+}
+
+function openSheetCuttingChangeBomDialog(frm) {
+    frappe.call({
+        method: 'production_entry.production_planning.scheduler_api.get_sheet_cutting_bom_change_options',
+        args: { planning_sheet_name: frm.doc.name },
+        freeze: true,
+        freeze_message: __('Loading Sheet Cutting BOMs...'),
+        callback: function (r) {
+            const rows = (r.message && r.message.rows) || [];
+            if (!rows.length) {
+                frappe.msgprint({
+                    title: __('No Sheet Cutting BOMs'),
+                    message: __('No 251 Sheet Cutting Sales Order rows with submitted active BOMs were found.'),
+                    indicator: 'orange',
+                });
+                return;
+            }
+            const byKey = {};
+            rows.forEach((row) => {
+                byKey[row.sales_order_item] = row;
+            });
+            const firstKey = rows[0].sales_order_item;
+            const lineOptions = rows.map(planningSheetBomLineLabel).join('\n');
+            const d = new frappe.ui.Dialog({
+                title: __('Change Sheet Cutting BOM'),
+                fields: [
+                    {
+                        fieldname: 'sales_order_item',
+                        fieldtype: 'Select',
+                        label: __('Finished Goods Row'),
+                        reqd: 1,
+                        options: lineOptions,
+                        default: planningSheetBomLineLabel(rows[0]),
+                        onchange: function () {
+                            const selectedLabel = d.get_value('sales_order_item') || '';
+                            const selected = rows.find((row) => planningSheetBomLineLabel(row) === selectedLabel) || rows[0];
+                            const bomOptions = (selected.boms || []).map(planningSheetBomOptionLabel).join('\n');
+                            d.fields_dict.bom_no.df.options = bomOptions;
+                            d.fields_dict.bom_no.refresh();
+                            d.set_value('bom_no', planningSheetBomOptionLabel((selected.boms || [])[0] || {}));
+                        },
+                    },
+                    {
+                        fieldname: 'bom_no',
+                        fieldtype: 'Select',
+                        label: __('BOM'),
+                        reqd: 1,
+                        options: ((rows[0].boms || []).map(planningSheetBomOptionLabel)).join('\n'),
+                        default: planningSheetBomOptionLabel((rows[0].boms || [])[0] || {}),
+                    },
+                    {
+                        fieldname: 'help',
+                        fieldtype: 'HTML',
+                        options:
+                            '<div class="text-muted small">' +
+                            __('Only the BOM child rows for the selected 251 line will be replaced. The finished goods row stays unchanged.') +
+                            '</div>',
+                    },
+                ],
+                primary_action_label: __('Confirm'),
+                primary_action: function () {
+                    const selectedLabel = d.get_value('sales_order_item') || '';
+                    const selected = rows.find((row) => planningSheetBomLineLabel(row) === selectedLabel) || byKey[firstKey];
+                    const selectedBomLabel = d.get_value('bom_no') || '';
+                    const bom = (selected.boms || []).find((b) => planningSheetBomOptionLabel(b) === selectedBomLabel);
+                    if (!selected || !bom) {
+                        frappe.msgprint(__('Please select both Finished Goods row and BOM.'));
+                        return;
+                    }
+                    frappe.call({
+                        method: 'production_entry.production_planning.scheduler_api.apply_sheet_cutting_bom_to_planning_sheet',
+                        args: {
+                            planning_sheet_name: frm.doc.name,
+                            sales_order_item: selected.sales_order_item,
+                            bom_no: bom.name,
+                        },
+                        freeze: true,
+                        freeze_message: __('Replacing BOM child items...'),
+                        callback: function (res) {
+                            const m = res.message || {};
+                            d.hide();
+                            frappe.show_alert({
+                                message: __(m.message || 'BOM child rows updated.'),
+                                indicator: 'green',
+                            });
+                            frm.reload_doc();
+                        },
+                    });
+                },
+            });
+            d.show();
+        },
+    });
+}
+
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
+        try {
+            frm.remove_custom_button(__('Change BOM'), __('Actions'));
+        } catch (e) {}
+        frm.add_custom_button(__('Change BOM'), function () {
+            openSheetCuttingChangeBomDialog(frm);
+        }, __('Actions'));
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',
