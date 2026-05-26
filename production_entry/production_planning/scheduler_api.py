@@ -26745,33 +26745,58 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 	if not planning_sheet_name:
 		return {"status": "error", "message": "No planning sheet provided"}
 
-	# Get all rows for this sheet that are in Meter
-	rows = frappe.get_all("Planning Table", filters={"parent": planning_sheet_name, "uom": "Meter"}, fields=["name", "item_code", "qty", "uom"])
+	# Get all rows for this sheet
+	rows = frappe.get_all("Planning Table", filters={"parent": planning_sheet_name}, fields=["name", "item_code", "qty", "uom", "custom_parent_child_trace_id"])
 	
+	# Find 221 parent quantities by trace ID
+	parents = {}
+	for r in rows:
+		if _item_process_prefix(r.get("item_code")) == "221":
+			trace_id = r.get("custom_parent_child_trace_id")
+			if trace_id:
+				parents[trace_id] = flt(r.get("qty"))
+				
 	updated_count = 0
 	for r in rows:
 		ic = r.get("item_code")
 		if not ic:
 			continue
 		pp = _item_process_prefix(ic)
+		
 		# Box Bag BOM child processes
 		if pp in ("100", "103"):
-			# Get conversion factor from item master for Meter
-			conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
-			if conv and flt(conv) > 0:
-				new_qty = flt(r.get("qty")) / flt(conv)
-				frappe.db.set_value("Planning Table", r.get("name"), {
-					"uom": "Kg",
-					"qty": new_qty
-				})
-				# Also update Planning sheet Item if it is linked
-				source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
-				if source_item and frappe.db.exists("Planning sheet Item", source_item):
-					frappe.db.set_value("Planning sheet Item", source_item, {
+			qty = flt(r.get("qty"))
+			uom = r.get("uom")
+			
+			needs_conversion = False
+			if uom == "Meter":
+				needs_conversion = True
+			else:
+				# If UOM is Kg but the value is clearly still in meters (qty ratio > 0.2 compared to parent bags)
+				trace_id = r.get("custom_parent_child_trace_id")
+				parent_qty = parents.get(trace_id)
+				if parent_qty and parent_qty > 0:
+					ratio = qty / parent_qty
+					if ratio > 0.1: # 1 meter/bag is 1.0, converted is usually < 0.05
+						needs_conversion = True
+						
+			if needs_conversion:
+				# Get conversion factor from item master for Meter
+				conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
+				if conv and flt(conv) > 0:
+					new_qty = qty / flt(conv)
+					frappe.db.set_value("Planning Table", r.get("name"), {
 						"uom": "Kg",
 						"qty": new_qty
 					})
-				updated_count += 1
-				
+					# Also update Planning sheet Item if it is linked
+					source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
+					if source_item and frappe.db.exists("Planning sheet Item", source_item):
+						frappe.db.set_value("Planning sheet Item", source_item, {
+							"uom": "Kg",
+							"qty": new_qty
+						})
+					updated_count += 1
+					
 	frappe.db.commit()
 	return {"status": "success", "updated": updated_count}
