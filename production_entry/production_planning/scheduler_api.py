@@ -26757,6 +26757,22 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 				parents[trace_id] = flt(r.get("qty"))
 				
 	updated_count = 0
+	
+	def _get_gsm_color(item_code):
+		try:
+			from production_entry.production_planning.scheduler_api import _parse_100_item_code
+			parsed = _parse_100_item_code(item_code)
+			if parsed: return (cint(parsed.get("gsm")), parsed.get("color_code"))
+		except Exception:
+			pass
+		try:
+			from production_entry.production_planning.scheduler_api import _parse_103_item_code
+			parsed = _parse_103_item_code(item_code)
+			if parsed: return (cint(parsed.get("gsm")), parsed.get("color_code"))
+		except Exception:
+			pass
+		return (None, None)
+
 	for r in rows:
 		ic = r.get("item_code")
 		if not ic:
@@ -26772,7 +26788,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 			if uom == "Meter":
 				needs_conversion = True
 			else:
-				# If UOM is Kg but the value is clearly still in meters (qty ratio > 0.2 compared to parent bags)
+				# If UOM is Kg but the value is clearly still in meters (qty ratio > 0.1 compared to parent bags)
 				trace_id = r.get("custom_parent_child_trace_id")
 				parent_qty = parents.get(trace_id)
 				if parent_qty and parent_qty > 0:
@@ -26789,6 +26805,8 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						"uom": "Kg",
 						"qty": new_qty
 					})
+					r["qty"] = new_qty
+					r["uom"] = "Kg"
 					# Also update Planning sheet Item if it is linked
 					source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
 					if source_item and frappe.db.exists("Planning sheet Item", source_item):
@@ -26798,5 +26816,34 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						})
 					updated_count += 1
 					
+	# Pass 2: Force 100 items that are BOM children of 103 items to have the exact same Kg quantity as the 103 item
+	slitting_map = {}
+	for r in rows:
+		if _item_process_prefix(r.get("item_code")) == "103":
+			trace_id = r.get("custom_parent_child_trace_id")
+			gsm, color = _get_gsm_color(r.get("item_code"))
+			if trace_id and gsm and color:
+				slitting_map[(trace_id, gsm, color)] = flt(r.get("qty"))
+				
+	for r in rows:
+		if _item_process_prefix(r.get("item_code")) == "100":
+			trace_id = r.get("custom_parent_child_trace_id")
+			gsm, color = _get_gsm_color(r.get("item_code"))
+			if trace_id and gsm and color:
+				target_qty = slitting_map.get((trace_id, gsm, color))
+				if target_qty and target_qty > 0 and abs(flt(r.get("qty")) - target_qty) > 0.01:
+					frappe.db.set_value("Planning Table", r.get("name"), {
+						"uom": "Kg",
+						"qty": target_qty
+					})
+					source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
+					if source_item and frappe.db.exists("Planning sheet Item", source_item):
+						frappe.db.set_value("Planning sheet Item", source_item, {
+							"uom": "Kg",
+							"qty": target_qty
+						})
+					updated_count += 1
+
 	frappe.db.commit()
 	return {"status": "success", "updated": updated_count}
+
