@@ -450,7 +450,6 @@ def _transfer_status_blocks_request(status):
 		return False
 	return (
 		st in {"pending approval", "approved", "draft ste created"}
-		or st.startswith("transferred")
 	)
 
 
@@ -669,7 +668,7 @@ def get_transfer_eligible_rows(
 
 
 @frappe.whitelist()
-def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None):
+def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, from_company=None):
 	sn = _cstr(spr_name)
 	if not sn or not frappe.db.exists("Shaft Production Run", sn):
 		return []
@@ -677,13 +676,31 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None):
 		frappe.throw(_("SPR {0} must be submitted before transfer.").format(sn))
 	ic_filter = _cstr(item_code)
 	pc_filter = _cstr(party_code)
+	fc = _cstr(from_company)
 	batches = []
 	seen = set()
+	
+	wh_list = []
+	if fc:
+		wh_list = frappe.get_all("Warehouse", filters={"company": fc}, pluck="name")
 
 	def _add_batch(batch_no, qty, row=None, warehouse=None):
 		bn = _cstr(batch_no)
 		if not bn or bn in seen:
 			return
+			
+		if wh_list:
+			wh_placeholders = ", ".join(["%s"] * len(wh_list))
+			stock_qty = flt(frappe.db.sql(f"""
+				select sum(actual_qty) from `tabStock Ledger Entry` 
+				where batch_no=%s and warehouse in ({wh_placeholders}) and is_cancelled=0
+			""", [bn] + wh_list)[0][0] or 0)
+		else:
+			stock_qty = flt(frappe.db.sql("select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0", bn)[0][0] or 0)
+			
+		if stock_qty <= 0.001:
+			return
+			
 		q = flt(qty or 0)
 		if q <= 0:
 			q = 1.0

@@ -339,6 +339,7 @@ function openBatchPicker(row) {
       spr_name: spr,
       item_code: row.item_code,
       party_code: row.party_code,
+      from_company: fromCompany.value,
     },
     callback: (r) => {
       const batches = r.message || [];
