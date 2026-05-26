@@ -140,11 +140,14 @@ def _bag_series_size_map():
 
 
 def _force_box_bag_unit_on_sheet(planning_sheet_name=None):
-	"""Ensure all 221-process rows on Planning Table have a box bag unit assigned."""
+	"""Ensure all 221-process rows on Planning Table have a box bag unit assigned.
+	 Handles item codes: 221N..., 6000-221N..., 6000-511-221N... (any number of leading segments).
+	"""
 	if not frappe.db.has_column("Planning Table", "unit"):
 		return
+	# Match 221 anywhere in item_code — covers all segment patterns
 	conditions = """
-		(item_code LIKE '%%221%%')
+		item_code LIKE '%%221%%'
 		AND IFNULL(unit, '') NOT IN (%s, %s, %s)
 	"""
 	params = list(BOX_BAG_UNITS)
@@ -156,10 +159,6 @@ def _force_box_bag_unit_on_sheet(planning_sheet_name=None):
 		f"""UPDATE `tabPlanning Table`
 		SET unit = %s
 		WHERE {conditions}
-		  AND (
-			item_code LIKE '221%%'
-			OR item_code LIKE '%%-221%%'
-		  )
 		""",
 		[BOX_BAG_UNASSIGNED_UNIT] + params,
 	)

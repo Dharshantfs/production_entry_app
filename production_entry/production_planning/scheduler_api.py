@@ -468,6 +468,15 @@ def _item_process_prefix(item_code):
 	if not ic:
 		return ""
 	if "-" in ic:
+		# First pass: check each segment's leading digits independently
+		# This handles codes like 6000-511-221N101Q00PP where process is in the 3rd segment
+		all_segments = ic.split("-")
+		for seg in all_segments:
+			seg_digits = "".join(ch for ch in seg if ch.isdigit())
+			if len(seg_digits) >= 3:
+				sp = seg_digits[:3]
+				if sp in _ITEM_PROCESS_KNOWN_PREFIXES:
+					return sp
 		parts = ic.split("-", 1)
 		head = (parts[0] or "").strip().upper()
 		tail = (parts[1] or "").strip().upper() if len(parts) > 1 else ""
@@ -481,17 +490,6 @@ def _item_process_prefix(item_code):
 			return "254"
 		if tail.startswith("108"):
 			return "108"
-		head_digits = "".join(ch for ch in (parts[0] or "") if ch.isdigit())
-		if len(head_digits) >= 3:
-			hp = head_digits[:3]
-			if hp in _ITEM_PROCESS_KNOWN_PREFIXES:
-				return hp
-		if len(parts) == 2 and parts[1]:
-			after_digits = "".join(ch for ch in parts[1] if ch.isdigit())
-			if len(after_digits) >= 3:
-				tp = after_digits[:3]
-				if tp in _ITEM_PROCESS_KNOWN_PREFIXES:
-					return tp
 	digits = "".join(ch for ch in ic if ch.isdigit())
 	return digits[:3] if len(digits) >= 3 else ""
 
