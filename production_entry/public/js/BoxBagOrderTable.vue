@@ -21,6 +21,13 @@
           <button type="button" :class="{ active: filterShift === 'night' }" @click="filterShift = 'night'">Night</button>
         </div>
       </div>
+      <div class="cc-filter-item cc-shift-filter">
+        <label>Process</label>
+        <div class="cc-shift-btns" style="flex-wrap: wrap;">
+          <button type="button" :class="{ active: filterProcess === '221' }" @click="setProcessFilter('221')">221 Box Bag</button>
+          <button type="button" :class="{ active: filterProcess === 'all' }" @click="setProcessFilter('all')">All</button>
+        </div>
+      </div>
       <div class="cc-filter-item">
         <label>Unit</label>
         <select v-model="filterUnit" @change="debouncedFetch">
@@ -154,6 +161,7 @@ const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterShift = ref("all");
+const filterProcess = ref("221");
 const filterUnit = ref("");
 const rawData = ref([]);
 const maintenanceRecords = ref([]);
@@ -191,6 +199,8 @@ const filteredRows = computed(() => {
   const sh = (filterShift.value || "all").toLowerCase();
   if (sh === "day") d = d.filter((r) => String(r.shift_label || "DAY").toUpperCase() === "DAY");
   else if (sh === "night") d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
+  const fp = (filterProcess.value || "all");
+  if (fp !== "all") d = d.filter((r) => String(r.process || "").includes(fp) || String(r.itemCode || "").includes(fp));
   return sortRowsBySavedSequence(d);
 });
 
@@ -357,6 +367,7 @@ function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.
 
 async function fetchMaintenanceRecords() { try { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance" }); maintenanceRecords.value = (res?.message || []).filter((r) => BOX_BAG_UNITS.includes(String(r.unit || ""))); } catch { maintenanceRecords.value = []; } }
 function toggleViewScope() { if (viewScope.value === "monthly" && !filterMonth.value) filterMonth.value = frappe.datetime.get_today().substring(0, 7); updateUrlParams(); fetchData(); }
+function setProcessFilter(val) { filterProcess.value = val; updateUrlParams(); }
 
 async function fetchData() {
   if (fetchInProgress) return;
@@ -406,7 +417,7 @@ async function fetchData() {
   }
 }
 
-function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
+function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); if (filterProcess.value !== "all") q.set("process", filterProcess.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
 function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
 
@@ -416,6 +427,7 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
+  if (p.get("process")) filterProcess.value = p.get("process");
   moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today();
   updateUrlParams();
   await fetchData();

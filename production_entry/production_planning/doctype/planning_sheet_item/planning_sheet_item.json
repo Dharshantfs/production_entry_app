@@ -27,6 +27,8 @@
         "column_break_11",
         "weight_per_roll",
         "width_inch",
+        "sheet_size",
+        "bag_size",
         "section_break_13",
         "quality",
         "custom_quality",
@@ -188,6 +190,13 @@
             "fieldtype": "Data",
             "in_list_view": 1,
             "label": "Sheet Size"
+        },
+        {
+            "fieldname": "bag_size",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Bag Size",
+            "read_only": 1
         },
         {
             "fieldname": "section_break_13",

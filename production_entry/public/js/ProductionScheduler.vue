@@ -60,7 +60,7 @@
           <option value="Finalized">Finalized</option>
         </select>
       </div>
-      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard || isLaminationBoard" class="cc-filter-item cc-shift-filter">
+      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard || isLaminationBoard || isBoxBagBoard" class="cc-filter-item cc-shift-filter">
         <label>Process</label>
         <div class="cc-shift-btns">
           <button v-for="opt in boardProcessOptions" :key="opt.value" type="button" :class="{ active: boardProcessFilter === opt.value }" @click="setBoardProcessFilter(opt.value)">{{ opt.label }}</button>
@@ -591,7 +591,7 @@ const boardProcessOptions = computed(() => {
       { value: "__all__", label: "All" },
     ];
   }
-  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }];
+  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }, { value: "__all__", label: "All" }];
   return [];
 });
 

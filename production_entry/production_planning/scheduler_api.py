@@ -2509,6 +2509,26 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 				if w105 > 0:
 					row.width_inch = w105
 					break
+	if pp == "221":
+		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code, _bag_series_size_map
+		p = _parse_box_bag_item_code(ic)
+		bs_id = p.get("bag_size_id")
+		if bs_id and hasattr(row, "bag_size"):
+			bsm = _bag_series_size_map()
+			sz = bsm.get(bs_id)
+			if sz:
+				row.bag_size = sz
+			else:
+				row.bag_size = bs_id
+		dc = _cstr(p.get("design_code") or "").strip()
+		if dc and hasattr(row, "custom_design_code"):
+			row.custom_design_code = dc
+		for _kdm, _vdm in (_design_master_extra_fields(dc) or {}).items():
+			if not _vdm or not str(_vdm).strip():
+				continue
+			if hasattr(row, _kdm) and not _cstr(getattr(row, _kdm, None)).strip():
+				setattr(row, _kdm, _vdm)
+
 	if pp == "255" or _lamination_process_from_item_code(ic) == "255":
 		extras = _planning_row_dict_255_lamination_extras(ic, None, soi) or {}
 		for k, v in (extras or {}).items():
@@ -4609,6 +4629,15 @@ def _parent_child_trace_id_from_item_code(item_code):
 		)
 	if process == "252":
 		return _trace_from_252_parse_body(_parse_sheet_cutting_item_code(ic) or {})
+	if process == "221":
+		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
+		p = _parse_box_bag_item_code(ic)
+		return "221-{0}-{1}-{2}-{3}".format(
+			_cstr(p.get("quality_letter")),
+			_cstr(p.get("colour_code")),
+			_cstr(p.get("fabric_gsm")).zfill(3),
+			_cstr(p.get("bag_size_id")),
+		)
 	# 109 laminated slitting: 109QQQCCCGGGWWWW[-lam_suffix]
 	if process == "109":
 		p = _parse_109_item_code(ic) or {}
@@ -5018,13 +5047,13 @@ def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet
 	if not soik or not ic:
 		return ""
 	child_pp = _bom_item_process_code(ic)
-	if child_pp not in ("100", "104", "106", "107") and not _is_printed_bopp_item_code(ic):
+	if child_pp not in ("100", "103", "104", "106", "107") and not _is_printed_bopp_item_code(ic):
 		return ""
 	so_it = (so_by_name or {}).get(soik)
 	if so_it:
 		fg_ic = _cstr(getattr(so_it, "item_code", None)).strip()
 		fg_pp = _bom_item_process_code(fg_ic)
-		if fg_pp in ("254", "253", "255", "252", "251", "108", "109", "106", "105"):
+		if fg_pp in ("255", "254", "253", "252", "251", "221", "108", "109", "106", "105"):
 			tid_fg = _parent_child_trace_id_from_item_code(fg_ic)
 			if tid_fg:
 				return tid_fg
@@ -5043,7 +5072,7 @@ def _bom_parent_trace_for_child_on_so_line(child_ic, so_item_key, planning_sheet
 		return main_tid
 	if so_it:
 		fg_pp = _bom_item_process_code(_cstr(getattr(so_it, "item_code", None)).strip())
-		if fg_pp in ("255", "254", "253", "252", "251", "108", "109", "106", "105"):
+		if fg_pp in ("255", "254", "253", "252", "251", "221", "108", "109", "106", "105"):
 			return ""
 	for pr in pt_rows or []:
 		if _pt_soi_key(pr) != soik:
