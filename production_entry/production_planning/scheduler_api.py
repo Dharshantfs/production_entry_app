@@ -26737,3 +26737,41 @@ def sync_merge_planned_date(merge_id, new_date):
             updated_count += 1
     
     return {"status": "success", "updated": updated_count}
+
+
+@frappe.whitelist()
+def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
+	"""Convert Meter to Kg for Box Bag BOM items (100 and 103)."""
+	if not planning_sheet_name:
+		return {"status": "error", "message": "No planning sheet provided"}
+
+	# Get all rows for this sheet that are in Meter
+	rows = frappe.get_all("Planning Table", filters={"parent": planning_sheet_name, "uom": "Meter"}, fields=["name", "item_code", "qty", "uom"])
+	
+	updated_count = 0
+	for r in rows:
+		ic = r.get("item_code")
+		if not ic:
+			continue
+		pp = _item_process_prefix(ic)
+		# Box Bag BOM child processes
+		if pp in ("100", "103"):
+			# Get conversion factor from item master for Meter
+			conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
+			if conv and flt(conv) > 0:
+				new_qty = flt(r.get("qty")) / flt(conv)
+				frappe.db.set_value("Planning Table", r.get("name"), {
+					"uom": "Kg",
+					"qty": new_qty
+				})
+				# Also update Planning sheet Item if it is linked
+				source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
+				if source_item and frappe.db.exists("Planning sheet Item", source_item):
+					frappe.db.set_value("Planning sheet Item", source_item, {
+						"uom": "Kg",
+						"qty": new_qty
+					})
+				updated_count += 1
+				
+	frappe.db.commit()
+	return {"status": "success", "updated": updated_count}
