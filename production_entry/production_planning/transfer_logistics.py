@@ -450,6 +450,7 @@ def _transfer_status_blocks_request(status):
 		return False
 	return (
 		st in {"pending approval", "approved", "draft ste created"}
+		or st.startswith("transferred")
 	)
 
 
