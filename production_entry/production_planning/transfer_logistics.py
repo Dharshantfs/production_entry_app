@@ -638,6 +638,7 @@ def get_transfer_eligible_rows(
 		pt_name = r.get("itemName") or r.get("name")
 		if pt_name:
 			r["transfer_status"] = _resolved_planning_row_transfer_status(pt_name, r.get("transfer_status"))
+			r["custom_transfer_status"] = r["transfer_status"]
 		spr_ds = cint(r.get("spr_docstatus") or 0)
 		wo_terminal = bool(r.get("wo_terminal") or (spr_ds == 1 and _cstr(r.get("spr_name"))))
 		extra = enrich_chart_row_transfer_payload(
