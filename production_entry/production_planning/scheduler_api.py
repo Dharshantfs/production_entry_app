@@ -26816,34 +26816,49 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						})
 					updated_count += 1
 					
-	# Pass 2: Force 100 items that are BOM children of 103 items to have the exact same Kg quantity as the 103 item
-	slitting_map = {}
+	# Pass 2: Force 100 items that are BOM children of intermediate items (like 103, 107) to use the correct Kg quantity from the BOM.
+	intermediate_map = {}
 	for r in rows:
-		if _item_process_prefix(r.get("item_code")) == "103":
+		pp = _item_process_prefix(r.get("item_code"))
+		if pp in ("103", "104", "105", "106", "107"):
 			trace_id = r.get("custom_parent_child_trace_id")
 			gsm, color = _get_gsm_color(r.get("item_code"))
 			if trace_id and gsm and color:
-				slitting_map[(trace_id, gsm, color)] = flt(r.get("qty"))
+				intermediate_map[(trace_id, gsm, color)] = {
+					"qty": flt(r.get("qty")),
+					"item_code": r.get("item_code")
+				}
 				
 	for r in rows:
 		if _item_process_prefix(r.get("item_code")) == "100":
 			trace_id = r.get("custom_parent_child_trace_id")
 			gsm, color = _get_gsm_color(r.get("item_code"))
 			if trace_id and gsm and color:
-				target_qty = slitting_map.get((trace_id, gsm, color))
-				if target_qty and target_qty > 0 and abs(flt(r.get("qty")) - target_qty) > 0.01:
-					frappe.db.set_value("Planning Table", r.get("name"), {
-						"uom": "Kg",
-						"qty": target_qty
-					})
-					source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
-					if source_item and frappe.db.exists("Planning sheet Item", source_item):
-						frappe.db.set_value("Planning sheet Item", source_item, {
-							"uom": "Kg",
-							"qty": target_qty
-						})
-					updated_count += 1
+				parent_info = intermediate_map.get((trace_id, gsm, color))
+				if parent_info:
+					parent_qty = parent_info.get("qty")
+					parent_ic = parent_info.get("item_code")
+					if parent_qty and parent_qty > 0:
+						bom_name = frappe.db.get_value("Item", parent_ic, "default_bom")
+						if bom_name:
+							# Calculate the target Kg using the intermediate parent's BOM ratio
+							from production_entry.production_planning.scheduler_api import _fabric_qty_from_bom
+							target_qty = _fabric_qty_from_bom(bom_name, r.get("item_code"), parent_qty)
+							
+							if target_qty and target_qty > 0 and abs(flt(r.get("qty")) - target_qty) > 0.01:
+								frappe.db.set_value("Planning Table", r.get("name"), {
+									"uom": "Kg",
+									"qty": target_qty
+								})
+								source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
+								if source_item and frappe.db.exists("Planning sheet Item", source_item):
+									frappe.db.set_value("Planning sheet Item", source_item, {
+										"uom": "Kg",
+										"qty": target_qty
+									})
+								updated_count += 1
 
 	frappe.db.commit()
 	return {"status": "success", "updated": updated_count}
+
 
