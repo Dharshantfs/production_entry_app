@@ -23,13 +23,13 @@
         </select>
       </div>
       <p v-if="loading" class="tl-muted">Loading…</p>
-      <p v-else-if="!rows.length" class="tl-muted">No transport rows for this view.</p>
+      <p v-else-if="!rows.length" class="tl-muted">No transfer rows for this view.</p>
       <div v-else class="tl-table-wrap">
         <table class="tl-table">
           <thead>
             <tr>
               <th></th>
-              <th>Order</th>
+              <th>Order Code</th>
               <th>Customer</th>
               <th>Item</th>
               <th>Unit</th>
@@ -54,8 +54,7 @@
               <td>{{ row.unit }}</td>
               <td>{{ row.spr_name || "—" }}</td>
               <td>
-                <span v-if="row.can_transfer" class="tl-ok">Ready</span>
-                <span v-else class="tl-block">{{ row.transfer_block_reason || "Blocked" }}</span>
+                <span :class="transferStatusClass(row)">{{ transferStatusLabel(row) }}</span>
               </td>
               <td class="tl-batch-cell">
                 <template v-if="isSelected(row) && row.can_transfer">
@@ -75,7 +74,7 @@
         <div class="tl-batch-panel-head">
           <div>
             <strong>Select batches</strong>
-            <span class="tl-batch-meta">Order {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.spr_name }}</span>
+            <span class="tl-batch-meta">Order Code {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.spr_name }}</span>
           </div>
           <div class="tl-batch-head-actions">
             <button type="button" class="cc-clear-btn tl-batch-mini" @click="selectAllBatches">Select all</button>
@@ -263,6 +262,22 @@ function batchSummary(row) {
 function formatQty(q) {
   const n = ltn(q);
   return Number.isFinite(n) ? (Math.round(n * 1000) / 1000).toString() : "0";
+}
+
+function transferStatusLabel(row) {
+  const status = (row?.transfer_status || "").trim();
+  if (status.startsWith("Transferred")) return status;
+  if (status === "Rejected" && row?.can_transfer) return "Rejected - can request again";
+  if (status && !row?.can_transfer) return status;
+  if (row?.can_transfer) return "Ready";
+  return row?.transfer_block_reason || "Blocked";
+}
+
+function transferStatusClass(row) {
+  const status = (row?.transfer_status || "").trim().toLowerCase();
+  if (status.startsWith("transferred")) return "tl-transferred";
+  if (status === "rejected" && row?.can_transfer) return "tl-warn";
+  return row?.can_transfer ? "tl-ok" : "tl-block";
 }
 
 function toggleRow(row, ev) {
@@ -751,6 +766,15 @@ watch(
 .tl-block {
   color: #b91c1c;
   font-size: 11px;
+}
+.tl-warn {
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 600;
+}
+.tl-transferred {
+  color: #0284c7;
+  font-weight: 600;
 }
 .tl-muted {
   padding: 8px 0;

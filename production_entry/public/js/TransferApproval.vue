@@ -63,7 +63,7 @@
             <span class="date">{{ item.from_company }} → {{ item.to_company }}</span>
             <span :class="['status-badge', statusSlug(item.status)]">{{ item.status }}</span>
           </div>
-          <div v-if="item.order_codes_label" class="ta-card-nature">Order {{ item.order_codes_label }}</div>
+          <div v-if="item.order_codes_label" class="ta-card-nature">Order Code {{ item.order_codes_label }}</div>
           <div v-if="item.transfer_date" class="ta-card-date">{{ formatDate(item.transfer_date) }}</div>
           <div v-if="item.nature_of_processing" class="ta-card-nature">{{ item.nature_of_processing }}</div>
         </div>
@@ -77,7 +77,7 @@
               <span><strong>From:</strong> {{ selected.from_company }}</span>
               <span><strong>Party (STE):</strong> <span class="text-primary">{{ selected.to_company }}</span></span>
               <span v-if="detailNature"><strong>Nature:</strong> {{ detailNature }}</span>
-              <span v-if="selected.order_codes_label"><strong>Order:</strong> {{ selected.order_codes_label }}</span>
+              <span v-if="selected.order_codes_label"><strong>Order Code:</strong> {{ selected.order_codes_label }}</span>
               <span v-if="selected.owner"><i class="fa fa-user-circle"></i> {{ selected.owner }}</span>
             </p>
           </div>
@@ -116,7 +116,7 @@
           <div class="list-header">
             <div class="col-drag"></div>
             <div class="col-idx">#</div>
-            <div class="col-party">Order</div>
+            <div class="col-party">Order Code</div>
             <div class="col-color">Customer</div>
             <div class="col-quality">Item / Batch</div>
             <div class="col-qty text-right">Qty (Kg)</div>

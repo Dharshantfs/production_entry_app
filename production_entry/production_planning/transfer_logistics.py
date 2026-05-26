@@ -350,10 +350,12 @@ def _transfer_lane_stock_entries(
 			order_codes = _order_codes_from_transfer_approval(ta)
 			qty_total = sum(flt(ln.qty) for ln in ta.lines or [])
 			line_count = len(ta.lines or [])
+			submitted_status = _transfer_submitted_status_text(ta)
 		except Exception:
 			order_codes = []
 			qty_total = 0
 			line_count = 0
+			submitted_status = _("Transferred")
 		if oc_fn and ste_row.get(oc_fn):
 			ste_oc = _cstr(ste_row.get(oc_fn))
 			if ste_oc and ste_oc not in order_codes:
@@ -374,7 +376,7 @@ def _transfer_lane_stock_entries(
 				"modified": row.get("modified"),
 				"transfer_date": transfer_date,
 				"docstatus": ds,
-				"status": "Draft" if ds == 0 else "Submitted",
+				"status": "Draft" if ds == 0 else submitted_status,
 				"order_codes": order_codes,
 				"order_codes_label": ", ".join(order_codes) if order_codes else "",
 				"qty_total": qty_display,
@@ -440,6 +442,18 @@ def chart_row_transfer_fields(item):
 	return mt, dest, status
 
 
+def _transfer_status_blocks_request(status):
+	st = _cstr(status).lower()
+	if not st:
+		return False
+	if st == "rejected":
+		return False
+	return (
+		st in {"pending approval", "approved", "draft ste created"}
+		or st.startswith("transferred")
+	)
+
+
 def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 	"""Build API payload fields for order tables (no change to planning sync)."""
 	mt, dest, status = chart_row_transfer_fields(item)
@@ -455,6 +469,7 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 		is_transfer_movement(mt)
 		and bool(wo_terminal)
 		and cint(spr_docstatus) == 1
+		and not _transfer_status_blocks_request(status)
 	)
 	block_reason = ""
 	if not is_transfer_movement(mt):
@@ -463,6 +478,8 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 		block_reason = "Work order not completed"
 	elif cint(spr_docstatus) != 1:
 		block_reason = "SPR not done"
+	elif _transfer_status_blocks_request(status):
+		block_reason = status
 	movement_display = mt_norm or ""
 	if dest and is_transfer_movement(mt):
 		movement_display = f"{mt_norm} → {dest}"
@@ -618,6 +635,9 @@ def get_transfer_eligible_rows(
 			continue
 		if not _row_matches_filters(r, party_code, customer, unit):
 			continue
+		pt_name = r.get("itemName") or r.get("name")
+		if pt_name:
+			r["transfer_status"] = _resolved_planning_row_transfer_status(pt_name, r.get("transfer_status"))
 		spr_ds = cint(r.get("spr_docstatus") or 0)
 		wo_terminal = bool(r.get("wo_terminal") or (spr_ds == 1 and _cstr(r.get("spr_name"))))
 		extra = enrich_chart_row_transfer_payload(
@@ -627,7 +647,7 @@ def get_transfer_eligible_rows(
 		)
 		out.append(
 			{
-				"planning_table_row": r.get("itemName") or r.get("name"),
+				"planning_table_row": pt_name,
 				"planning_sheet": r.get("planningSheet"),
 				"party_code": r.get("partyCode"),
 				"customer_name": r.get("customer_name") or r.get("customer"),
@@ -784,6 +804,14 @@ def create_transfer_approval_request(
 		ptr = _cstr(line.get("planning_table_row"))
 		if not ptr or not frappe.db.exists("Planning Table", ptr):
 			frappe.throw(_("Invalid planning row."))
+		current_status = _cstr(
+			frappe.db.get_value("Planning Table", ptr, "custom_transfer_status")
+			if frappe.db.has_column("Planning Table", "custom_transfer_status")
+			else ""
+		)
+		current_status = _resolved_planning_row_transfer_status(ptr, current_status)
+		if _transfer_status_blocks_request(current_status):
+			frappe.throw(_("Row {0} is already in transfer status: {1}").format(ptr, current_status))
 		spr = _cstr(line.get("spr_name"))
 		if not spr or cint(frappe.db.get_value("Shaft Production Run", spr, "docstatus") or 0) != 1:
 			frappe.throw(_("SPR not done for row {0}. Cannot request transfer.").format(ptr))
@@ -853,6 +881,76 @@ def _sync_psi_transfer_fields(pt_name, updates):
 	psi = frappe.db.get_value("Planning sheet Item", filters, "name")
 	if psi:
 		frappe.db.set_value("Planning sheet Item", psi, updates, update_modified=False)
+
+
+def _transfer_submitted_status_text(ta):
+	if isinstance(ta, dict):
+		dest = _cstr(ta.get("to_company")) or _cstr(ta.get("to_destination_label"))
+	else:
+		dest = _cstr(getattr(ta, "to_company", None)) or _cstr(getattr(ta, "to_destination_label", None))
+	return _("Transferred to {0}").format(dest) if dest else _("Transferred")
+
+
+def _stamp_planning_rows_after_transfer_submit(ta):
+	status_text = _transfer_submitted_status_text(ta)
+	for ln in ta.lines or []:
+		ptr = _cstr(getattr(ln, "planning_table_row", None))
+		if not ptr:
+			continue
+		updates = {}
+		if frappe.db.has_column("Planning Table", "custom_transfer_status"):
+			updates["custom_transfer_status"] = status_text
+		if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
+			updates["custom_transfer_destination"] = ta.to_destination_label or ta.to_company
+		if updates:
+			frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
+			_sync_psi_transfer_fields(ptr, updates)
+
+
+def _resolved_planning_row_transfer_status(pt_name, fallback_status=""):
+	ptr = _cstr(pt_name)
+	if not ptr or not frappe.db.has_column("Planning Table", "custom_transfer_approval"):
+		return _cstr(fallback_status)
+	row = frappe.db.get_value(
+		"Planning Table",
+		ptr,
+		["custom_transfer_status", "custom_transfer_approval"],
+		as_dict=True,
+	)
+	if not row:
+		return _cstr(fallback_status)
+	status = _cstr(row.get("custom_transfer_status") or fallback_status)
+	approval = _cstr(row.get("custom_transfer_approval"))
+	if not approval:
+		return status
+	ta_row = frappe.db.get_value(
+		"Transfer Approval",
+		approval,
+		["stock_entry", "to_company", "to_destination_label"],
+		as_dict=True,
+	)
+	if not ta_row or not ta_row.get("stock_entry"):
+		return status
+	if cint(frappe.db.get_value("Stock Entry", ta_row.get("stock_entry"), "docstatus") or 0) != 1:
+		return status
+	transfer_status = _transfer_submitted_status_text(ta_row)
+	if transfer_status != status and frappe.db.has_column("Planning Table", "custom_transfer_status"):
+		updates = {"custom_transfer_status": transfer_status}
+		frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
+		_sync_psi_transfer_fields(ptr, updates)
+	return transfer_status
+
+
+def stock_entry_on_submit(doc, method=None):
+	"""When transfer STE is submitted, mark source planning rows as transferred to destination."""
+	ste_name = _cstr(getattr(doc, "name", None))
+	if not ste_name or not frappe.db.exists("Transfer Approval", {"stock_entry": ste_name}):
+		return
+	ta_name = frappe.db.get_value("Transfer Approval", {"stock_entry": ste_name}, "name")
+	if not ta_name:
+		return
+	ta = frappe.get_doc("Transfer Approval", ta_name)
+	_stamp_planning_rows_after_transfer_submit(ta)
 
 
 @frappe.whitelist()

@@ -142,9 +142,9 @@
   },
   {
    "fieldname": "custom_transfer_status",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "label": "Transfer Status",
-   "options": "\nPending Approval\nApproved\nRejected\nDraft STE Created"
+   "in_list_view": 1
   },
   {
    "fieldname": "custom_transfer_approval",

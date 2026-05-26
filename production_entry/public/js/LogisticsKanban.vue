@@ -132,7 +132,7 @@
                 <span class="lk-history-main">
                   <span class="lk-history-ste">{{ ste.name }}</span>
                   <span class="lk-history-meta">
-                    <span v-if="ste.order_codes_label">Order {{ ste.order_codes_label }}</span>
+                    <span v-if="ste.order_codes_label">Order Code {{ ste.order_codes_label }}</span>
                     <span v-if="ste.transfer_date"> · {{ formatDate(ste.transfer_date) }}</span>
                     <span v-if="ste.qty_total"> · {{ ste.qty_total }} Kg</span>
                   </span>

@@ -130,6 +130,9 @@ doc_events = {
         "before_validate": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",
         "before_submit": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",
     },
+    "Stock Entry": {
+        "on_submit": "production_entry.production_planning.transfer_logistics.stock_entry_on_submit",
+    },
 }
 
 # Scheduled Tasks
