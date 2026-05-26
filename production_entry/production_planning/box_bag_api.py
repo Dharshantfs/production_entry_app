@@ -283,7 +283,10 @@ def get_box_bag_order_table_data(
 		achieved_qty = flt(row.get("actual_production_weight_kgs") or row.get("produced_qty") or 0)
 
 		# Length from row data
-		length = flt(row.get("meter") or row.get("mtr") or 0)
+		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
+		total_achieved_meters = 0.0
+		if planned_qty > 0 and length > 0:
+			total_achieved_meters = (achieved_qty / planned_qty) * length
 
 		# PP/WO/SPR data
 		pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
@@ -340,6 +343,7 @@ def get_box_bag_order_table_data(
 			"length": length,
 			"planned_quantity": planned_qty,
 			"achieved_quantity": achieved_qty,
+			"total_achieved_meters": total_achieved_meters,
 			"per_day_production": flt(row.get("per_day_production") or 0),
 			"pp_id": pp_id,
 			"pp_docstatus": pp_docstatus,

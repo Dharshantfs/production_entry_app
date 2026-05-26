@@ -86,7 +86,8 @@
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-              <td class="cell-center" style="font-size:11px;">{{ row.unit || "-" }}</td>
+              <td class="cell-center" style="font-weight:600;">{{ row.achieved_quantity || 0 }}</td>
+              <td class="cell-center" style="font-weight:600;">{{ row.total_achieved_meters || 0 }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
               <td class="cell-center font-bold">{{ row.design_code || "-" }}</td>
@@ -176,7 +177,7 @@ const customOrderByDate = ref({});
 let fetchTimer = null;
 let fetchInProgress = false;
 let autoRefreshTimer = null;
-const showShiftPlanner = computed(() => viewScope.value !== "monthly");
+const showShiftPlanner = computed(() => true);
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
 const transferFilterContext = computed(() => ({
@@ -361,8 +362,8 @@ async function openMachineOffDialog() {
   d.show();
 }
 
-async function saveArrangement() { try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: BOX_BAG_UNITS[2], sequence_data: JSON.stringify(seq), plan_name: "box_bag_table" } }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
-async function restoreArrangement() { try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: BOX_BAG_UNITS[2], plan_name: "box_bag_table" } }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }
+async function saveArrangement() { try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: filterUnit.value || "BoxBag", sequence_data: JSON.stringify(seq), plan_name: "box_bag_table" } }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
+async function restoreArrangement() { try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: filterUnit.value || "BoxBag", plan_name: "box_bag_table" } }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }
 
 function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.value) { const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` }; } if (viewScope.value === "weekly" && filterWeek.value) { const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { start_date: fmt(ws), end_date: fmt(we) }; } return { start_date: filterOrderDate.value, end_date: filterOrderDate.value }; }
 
@@ -410,6 +411,7 @@ async function fetchData() {
       planningSheet: d.planningSheet || d.planning_sheet || "",
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
     }));
+    await restoreArrangement();
     await fetchMaintenanceRecords();
   } catch (e) {
     frappe.msgprint(`Error loading Box Bag Order Table: ${e?.message || e}`);

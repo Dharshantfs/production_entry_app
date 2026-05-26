@@ -2316,6 +2316,19 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 		gsm = cint(p.get("gsm") or 0)
 		if gsm:
 			return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), gsm
+	if pp == "221":
+		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
+		p = _parse_box_bag_item_code(ic)
+		qc = _cstr(p.get("quality_letter") or "").strip()
+		quality = _cstr(_LAMINATION_QUALITY_BY_CODE.get(qc, "") or "").strip().upper() or qc
+		cc = _cstr(p.get("colour_code") or "").strip()
+		if cc:
+			try:
+				color = (_get_color_by_code(cc) or "").strip().upper()
+			except Exception:
+				color = ""
+		gsm = cint(p.get("fabric_gsm") or 0)
+		return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), gsm
 	# Legacy numeric + item-name fallback (planning_sheet.extract_quality_and_color)
 	try:
 		from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
