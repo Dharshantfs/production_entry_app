@@ -88,8 +88,14 @@ def _parse_box_bag_item_code(item_code):
 			if gsm_char.isdigit():
 				result["fabric_gsm"] = int(gsm_char) * 10
 			else:
-				# Letter encoding: A=10, B=20, ... or the char represents a range
-				result["fabric_gsm"] = (ord(gsm_char.upper()) - ord('A') + 1) * 10
+				try:
+					from production_entry.production_planning.scheduler_api import _LAMINATION_FABRIC_GSM_BY_CODE
+					if gsm_char.upper() in _LAMINATION_FABRIC_GSM_BY_CODE:
+						result["fabric_gsm"] = int(_LAMINATION_FABRIC_GSM_BY_CODE[gsm_char.upper()])
+					else:
+						result["fabric_gsm"] = (ord(gsm_char.upper()) - ord('A') + 1) * 10
+				except Exception:
+					result["fabric_gsm"] = (ord(gsm_char.upper()) - ord('A') + 1) * 10
 		except Exception:
 			pass
 	if len(after) >= 6:

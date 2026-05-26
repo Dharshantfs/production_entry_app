@@ -2518,6 +2518,8 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 				row.bag_size = sz
 			else:
 				row.bag_size = bs_id
+		if p.get("finishing_label") and hasattr(row, "custom_finishing"):
+			row.custom_finishing = p.get("finishing_label")
 		dc = _cstr(p.get("design_code") or "").strip()
 		if dc and hasattr(row, "custom_design_code"):
 			row.custom_design_code = dc
@@ -4630,11 +4632,11 @@ def _parent_child_trace_id_from_item_code(item_code):
 	if process == "221":
 		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
 		p = _parse_box_bag_item_code(ic)
-		return "221-{0}-{1}-{2}-{3}".format(
-			_cstr(p.get("quality_letter")),
-			_cstr(p.get("colour_code")),
-			_cstr(p.get("fabric_gsm")).zfill(3),
-			_cstr(p.get("bag_size_id")),
+		return "{0}-221-{1}-{2}-{3}".format(
+			_cstr(p.get("design_code")).strip(),
+			_cstr(p.get("quality_letter")).strip(),
+			_cstr(p.get("colour_code")).strip(),
+			_cstr(p.get("bag_size_id")).strip(),
 		)
 	# 109 laminated slitting: 109QQQCCCGGGWWWW[-lam_suffix]
 	if process == "109":
@@ -8354,12 +8356,13 @@ def _sync_bom_child_rows_from_planning_rows(
 		else:
 			unit = unit or compute_default_production_unit(specs.get("color"), specs.get("width_inch"), child_ic)
 
+		item_uom = frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
 		row = {
 			"sales_order_item": so_item_key,
 			"item_code": child_ic,
 			"item_name": item_name,
 			"qty": child_qty,
-			"uom": _cstr(getattr(so_it, "uom", None) or prow.get("uom") or "Kg"),
+			"uom": item_uom,
 			"gsm": specs["gsm"],
 			"width_inch": specs["width_inch"],
 			"color": specs["color"],
@@ -8681,6 +8684,12 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		"103",
 		SLITTING_UNIT,
 		process_label="Box bag slitting (221 → 103)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("221",),
+		"100",
+		process_label="Box bag fabric (221 → 100)",
 	)
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
