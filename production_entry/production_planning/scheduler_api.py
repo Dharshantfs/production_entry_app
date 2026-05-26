@@ -8089,7 +8089,13 @@ def _sync_bom_child_rows_from_planning_rows(
 	for _dfc in ("custom_design_code", "custom_design_name", "custom_design_attachment", "custom_design_colour"):
 		if frappe.db.has_column("Planning Table", _dfc):
 			_pt_fields.append(_dfc)
-	parent_rows = frappe.get_all("Planning Table", filters={"parent": ps.name}, fields=_pt_fields, limit_page_length=0) or []
+	
+	_sql_fields = ", ".join([f"IFNULL(`{f}`, '') AS `{f}`" for f in _pt_fields])
+	parent_rows = frappe.db.sql(
+		f"SELECT {_sql_fields} FROM `tabPlanning Table` WHERE parent = %s LIMIT 5000",
+		(ps.name,),
+		as_dict=True,
+	) or []
 
 	changed = False
 	added = 0
