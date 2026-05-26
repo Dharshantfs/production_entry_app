@@ -21,6 +21,9 @@ from production_entry.production_planning.planning_doctypes import (
 	PRINTING_UNIT_2_COLOUR,
 	PRINTING_UNIT_4_COLOUR,
 	PRINTING_UNIT_TT,
+	BOX_BAG_UNIT_L1,
+	BOX_BAG_UNIT_L2,
+	BOX_BAG_UNASSIGNED_UNIT,
 )
 
 
@@ -107,6 +110,7 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"254": 100,
 	"255": 105,
 	"108": 110,
+	"221": 115,
 }
 
 
@@ -151,7 +155,7 @@ def _same_fg_design_family(planning_ic, so_fg_ic):
 	sp = _bom_item_process_code(sic)
 	if not pp or pp != sp:
 		return False
-	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109"):
+	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109", "221"):
 		return False
 	p_design = pic.split("-")[0].upper()
 	s_design = sic.split("-")[0].upper()
@@ -455,7 +459,7 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 
 # First-segment wins for codes like 105-…-100… (GSM / width digits) so we never classify as 100 instead of 105.
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
-	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "251", "252", "253", "254", "255"}
+	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "251", "252", "253", "254", "255"}
 )
 
 
@@ -499,7 +503,7 @@ def _bom_item_process_code(item_code):
 		return ""
 	pp = _item_process_prefix(ic)
 	lam = _lamination_process_from_item_code(ic)
-	if pp in ("108", "255", "253", "254", "251", "252"):
+	if pp in ("108", "255", "253", "254", "251", "252", "221"):
 		return pp
 	if lam in ("104", "107", "255"):
 		return lam
@@ -6708,6 +6712,7 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_force_slitting_unit_on_sheet(planning_sheet_name)
 	_sync_sheet_cutting_fabric_planning_rows(planning_sheet_name)
 	_force_sheet_cutting_unit_on_sheet(planning_sheet_name)
+	_sync_box_bag_fabric_planning_rows(planning_sheet_name)
 	_sync_sheet_cutting_bom_child_row_specs(planning_sheet_name)
 	try:
 		_sync_sheet_cutting_no_of_sheets_from_so(planning_sheet_name)
@@ -8632,6 +8637,30 @@ def _sheet_cutting_existing_bom_children_for_so_line(planning_sheet_name, so_ite
 		out.extend(rows)
 	return out
 
+
+def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
+	"""Box Bag (221) BOM child sync: 221 → 103 (Slitting) → 100 (Fabric)."""
+	if not planning_sheet_name:
+		return
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("221",),
+		"103",
+		SLITTING_UNIT,
+		process_label="Box bag slitting (221 → 103)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("103",),
+		"100",
+		so_parent_processes=("221",),
+		process_label="Box bag fabric (103 → 100)",
+	)
+	try:
+		from production_entry.production_planning.box_bag_api import _force_box_bag_unit_on_sheet
+		_force_box_bag_unit_on_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:_force_box_bag_unit_on_sheet")
 
 def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 251, append one fabric (100) row from BOM. Idempotent."""
@@ -14940,6 +14969,8 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return SHEET_CUTTING_UNIT
     if item_code and _item_process_prefix(str(item_code)) in ("253", "255", "254"):
         return SHEET_CUTTING_UNIT
+    if item_code and _item_process_prefix(str(item_code)) == "221":
+        return BOX_BAG_UNASSIGNED_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "106":
@@ -18003,6 +18034,7 @@ def _get_color_chart_data_impl(
         "rewinding_only",
         "printed_bopp_pb_only",
         "sheet_cutting_only",
+        "box_bag_only",
     )
     if cint(planned_only) and _has_planned_date_column() and not dedicated_scope_no_plan_gate:
         # Allow sheets where EITHER the sheet has custom_planned_date OR items have planned_date
@@ -19092,7 +19124,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "exclude_103" and icp == "103":
                     continue
-                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
+                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "221", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
                     continue
                 if bps == "only_100" and icp != "100":
                     continue
@@ -19109,6 +19141,8 @@ def _get_color_chart_data_impl(
                 if bps == "rewinding_only" and icp != "102":
                     continue
                 if bps == "sheet_cutting_only" and icp not in ("251", "252", "253", "255", "254"):
+                    continue
+                if bps == "box_bag_only" and icp != "221":
                     continue
 
             color = (item.get("color") or item.get("colour") or "").strip()

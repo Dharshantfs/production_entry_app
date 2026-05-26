@@ -39,6 +39,7 @@ import PrintingOrderBoard from "./PrintingOrderBoard.vue";
 import SlittingOrderTable from "./SlittingOrderTable.vue";
 import RewindingOrderTable from "./RewindingOrderTable.vue";
 import SheetCuttingOrderTable from "./SheetCuttingOrderTable.vue";
+import BoxBagOrderTable from "./BoxBagOrderTable.vue";
 import SequenceApproval from "./SequenceApproval.vue";
 import TransferApproval from "./TransferApproval.vue";
 import LogisticsKanban from "./LogisticsKanban.vue";
@@ -96,6 +97,12 @@ production_scheduler.RewindingOrderTableController = class {
 production_scheduler.SheetCuttingOrderTableController = class {
     constructor(wrapper) {
         safeMount(SheetCuttingOrderTable, wrapper, "Sheet Cutting Order Table");
+    }
+};
+
+production_scheduler.BoxBagOrderTableController = class {
+    constructor(wrapper) {
+        safeMount(BoxBagOrderTable, wrapper, "Box Bag Order Table");
     }
 };
 

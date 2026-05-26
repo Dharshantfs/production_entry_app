@@ -3,7 +3,7 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard || isPrintingBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard || isPrintingBoard || isBoxBagBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
         {{ boardBannerText }}
       </div>
       <div class="cc-filter-item">
@@ -550,6 +550,7 @@ const isLaminationBoard = ref(false);
 const isSlittingBoard = ref(false);
 const isRewindingBoard = ref(false);
 const isSheetCuttingBoard = ref(false);
+const isBoxBagBoard = ref(false);
 const isPrintingBoard = ref(false);
 /** Printed BOPP film Kanban (PB / VR BOPP printing unit); uses dedicated API scope. */
 const isPrintedBoppFilmBoard = ref(false);
@@ -590,6 +591,7 @@ const boardProcessOptions = computed(() => {
       { value: "__all__", label: "All" },
     ];
   }
+  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }];
   return [];
 });
 
@@ -608,6 +610,7 @@ const boardBannerText = computed(() => {
     const pLbl = !p || p === "__all__" ? "251 · 252 · 253 · 254 · 255" : `Process ${p}`;
     return `Sheet Cutting Board — ${SHEET_CUTTING_UNIT} — ${pLbl}${unitScope}`;
   }
+  if (isBoxBagBoard.value) return `Box Bag Board — Process 221${unitScope}`;
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
   if (isLaminationBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
@@ -744,7 +747,7 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value) {
+    if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value || isBoxBagBoard.value) {
         query.process = boardProcessFilter.value || "__all__";
     }
     if (isLaminationBoard.value) {
@@ -764,6 +767,11 @@ function goToPlan() {
     if (isSheetCuttingBoard.value) {
         query.board = "sheet_cutting";
         frappe.set_route("sheet-cutting-order-table", query);
+        return;
+    }
+    if (isBoxBagBoard.value) {
+        query.board = "box_bag";
+        frappe.set_route("box-bag-order-table", query);
         return;
     }
     if (isPrintingBoard.value) {
@@ -813,6 +821,7 @@ const boardUnits = computed(() => {
   if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
   if (isSlittingBoard.value) return [SLITTING_UNIT];
   if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
+  if (isBoxBagBoard.value) return ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
   if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
@@ -887,6 +896,18 @@ const filteredData = computed(() => {
     }
   }
 
+  if (isBoxBagBoard.value) {
+    const BOX_BAG_UNIT_LIST = ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
+    data = data.map((d) => {
+      const proc = itemProcessPrefix(d.item_code || d.itemCode);
+      if (proc === "221") {
+        const u = (d.unit || "").trim();
+        if (!BOX_BAG_UNIT_LIST.includes(u)) return { ...d, unit: "UNASSIGNED BOX BAG MACHINE" };
+      }
+      return d;
+    });
+  }
+
   if (isRewindingBoard.value) {
     data = data
       .filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === "102")
@@ -908,6 +929,7 @@ const filteredData = computed(() => {
     isLaminationBoard.value ||
     isPrintingBoard.value ||
     isSheetCuttingBoard.value ||
+    isBoxBagBoard.value ||
     isPrintedBoppFilmBoard.value;
   if (!dedicatedProcessBoard) {
     data = data.filter((d) => !!d.plannedDate);
@@ -2310,12 +2332,14 @@ async function fetchData() {
           isSlittingBoard.value = false;
           isRewindingBoard.value = false;
           isSheetCuttingBoard.value = false;
+          isBoxBagBoard.value = false;
           isPrintedBoppFilmBoard.value = false;
           isPrintingBoard.value = false;
           if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
           if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
           if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
           if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
+          if (path.includes("/desk/box-bag-board")) isBoxBagBoard.value = true;
           if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
           if (path.includes("/desk/printing-order-board")) isPrintingBoard.value = true;
         } catch (e) {}
@@ -2363,6 +2387,8 @@ async function fetchData() {
           args.board_process_scope = "slitting_only";
         } else if (isSheetCuttingBoard.value) {
           args.board_process_scope = "sheet_cutting_only";
+        } else if (isBoxBagBoard.value) {
+          args.board_process_scope = "box_bag_only";
         } else if (isPrintingBoard.value) {
           args.board_process_scope = "printing_only";
         } else if (isLaminationBoard.value) {
@@ -2550,6 +2576,7 @@ onMounted(() => {
       if (routeName === "slitting board") isSlittingBoard.value = true;
       if (routeName === "rewinding board") isRewindingBoard.value = true;
       if (routeName === "sheet cutting board") isSheetCuttingBoard.value = true;
+      if (routeName === "box bag board") isBoxBagBoard.value = true;
       if (routeName.includes("printed bopp film board")) isPrintedBoppFilmBoard.value = true;
       if (routeName === "printing order board") isPrintingBoard.value = true;
     } catch (e) {}

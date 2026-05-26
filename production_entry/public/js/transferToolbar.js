@@ -9,6 +9,7 @@ export const TRANSFER_BOARD_KINDS = {
   slitting: "slitting",
   rewinding: "rewinding",
   sheet_cutting: "sheet_cutting",
+  box_bag: "box_bag",
 };
 
 export function useTransferToolbar(boardKind) {
