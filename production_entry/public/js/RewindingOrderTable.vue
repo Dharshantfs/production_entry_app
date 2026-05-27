@@ -116,7 +116,7 @@
         <tbody>
           <tr v-for="(row, idx) in grp.rows" :key="row.itemName || row.item_name || idx">
             <td class="cell-center">{{ idx + 1 }}</td>
-            <td class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
+            <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
             <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
@@ -198,12 +198,12 @@
             @dragend="onOrderDragEnd"
             :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }"
           >
-            <td class="cell-center">{{ row._sno }}</td>
+            <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ row._sno || (idx + 1) }}</td>
             <td class="cell-center">
               <span v-if="arrangementUnlocked" class="cc-drag-handle" title="Drag to reorder inside same date">Drag</span>
               <span v-else class="cc-lock-hint" title="Unlock arrangement to reorder">Locked</span>
             </td>
-            <td class="cell-center">
+            <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
               <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date)" class="cc-maint-chip">
                 OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date) }}
@@ -472,10 +472,14 @@ const displayRows = computed(() => {
     }
     
     const dateRows = normalRows.filter(r => getRowDateKey(r) === k);
-    for (const r of dateRows) {
-      r._sno = sno++;
+    for (let i = 0; i < dateRows.length; i++) {
+      const r = dateRows[i];
+      r._sno = sno;
+      r.isFirstOfDate = (i === 0);
+      r.dateRowspan = dateRows.length;
       out.push(r);
     }
+    if (dateRows.length > 0) sno++;
     
     if (hasMaintToday && dateRows.length === 0) {
       out.push({
@@ -488,6 +492,8 @@ const displayRows = computed(() => {
   const unhandled = normalRows.filter(r => !datesHandled.has(getRowDateKey(r)));
   for (const r of unhandled) {
     r._sno = sno++;
+    r.isFirstOfDate = true;
+    r.dateRowspan = 1;
     out.push(r);
   }
   

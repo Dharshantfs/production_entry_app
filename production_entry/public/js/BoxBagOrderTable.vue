@@ -82,9 +82,9 @@
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="21" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
             <tr v-else-if="row.is_maintenance_empty"><td class="cell-center">-</td><td class="cell-center"><span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span></td><td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td><td :colspan="18" style="text-align:center;color:#94a3b8;font-style:italic;">No box bag orders (maintenance day)</td></tr>
             <tr v-else :draggable="arrangementUnlocked" @dragstart="onOrderDragStart(row, $event)" @dragover.prevent="onOrderDragOver(row)" @dragleave="onOrderDragLeave(row)" @drop.prevent="onOrderDrop(row)" @dragend="onOrderDragEnd" :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }">
-              <td class="cell-center">{{ row._sno }}</td>
+              <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ row._sno || (idx + 1) }}</td>
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
-              <td class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
+              <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
