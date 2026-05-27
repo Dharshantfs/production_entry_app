@@ -898,6 +898,12 @@ def _quality_name_by_code(q_code: str) -> str:
     if not q_code:
         return ""
     q_code = str(q_code).strip()
+    _HARDCODED_QUALITY = {
+        "L": "LAMINATED",
+        "U": "UNLAMINATED",
+        "M": "MATTE",
+        "P": "PLAIN"
+    }
     for fn in ("custom_quality_code", "quality_code", "short_code", "code", "name"):
         try:
             if fn == "name":
@@ -905,9 +911,16 @@ def _quality_name_by_code(q_code: str) -> str:
             else:
                 doc = frappe.db.get_value("Quality Master", {fn: q_code}, ["name", "quality_name", "description"], as_dict=True)
             if doc:
-                return str(doc.get("quality_name") or doc.get("description") or doc.get("name")).strip().upper()
+                found_name = str(doc.get("quality_name") or doc.get("description") or doc.get("name")).strip().upper()
+                if found_name == q_code.upper() and q_code.upper() in _HARDCODED_QUALITY:
+                    return _HARDCODED_QUALITY[q_code.upper()]
+                return found_name
         except Exception:
             continue
+            
+    if q_code.upper() in _HARDCODED_QUALITY:
+        return _HARDCODED_QUALITY[q_code.upper()]
+        
     return ""
 
 

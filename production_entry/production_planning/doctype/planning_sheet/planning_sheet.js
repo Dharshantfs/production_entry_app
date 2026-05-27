@@ -22,14 +22,21 @@ frappe.ui.form.on('Planning sheet', {
     
     toggle_221_fields: function(frm) {
         let is_221 = false;
+        let has_other = false;
         
         let all_items = (frm.doc.items || []).concat(frm.doc.planned_items || []);
+        if (all_items.length === 0) return;
+        
         for (let row of all_items) {
             if (row.item_code && (row.item_code.includes('-221') || row.item_code.startsWith('221'))) {
                 is_221 = true;
-                break;
+            } else if (row.item_code) {
+                has_other = true;
             }
         }
+        
+        // Only hide if we have 221 items AND no other processes (like 100, 102) in the same sheet
+        let should_hide = is_221 && !has_other;
         
         let fields_to_hide = [
             'sheet_size',
@@ -52,7 +59,7 @@ frappe.ui.form.on('Planning sheet', {
                 fields_to_hide.forEach(fieldname => {
                     let df = frappe.meta.get_docfield(frm.fields_dict[table].grid.doctype, fieldname, frm.docname);
                     if (df) {
-                        frm.fields_dict[table].grid.update_docfield_property(fieldname, 'hidden', is_221 ? 1 : 0);
+                        frm.fields_dict[table].grid.update_docfield_property(fieldname, 'hidden', should_hide ? 1 : 0);
                         updated = true;
                     }
                 });
