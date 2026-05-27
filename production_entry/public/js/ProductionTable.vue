@@ -2928,7 +2928,7 @@ onBeforeUnmount(() => {
 .cc-prod-table {
     width: 100%;
     min-width: 1280px;
-    border-collapse: separate;
+    border-collapse: collapse;
     border-spacing: 0;
     background: white;
     font-size: 12px;

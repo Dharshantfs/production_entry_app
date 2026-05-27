@@ -1631,7 +1631,7 @@ onUnmounted(() => {
 .cc-prod-table {
   width: 100%;
   min-width: 1280px;
-  border-collapse: separate;
+  border-collapse: collapse;
   border-spacing: 0;
   font-size: 13px;
   line-height: 1.6;
@@ -1650,7 +1650,7 @@ onUnmounted(() => {
   word-wrap: break-word;
 }
 .cc-prod-table td {
-  border-bottom: 1px solid #d1d5db;
+  border: 1px solid #d1d5db;
   padding: 12px 12px;
   vertical-align: middle;
   line-height: 1.5;

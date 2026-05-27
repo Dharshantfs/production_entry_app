@@ -4,9 +4,7 @@ frappe.ui.form.on('Planning sheet', {
             frm.add_custom_button(__('Meter to Kgs (Box Bag BOM)'), function() {
                 frappe.call({
                     method: "production_entry.production_planning.scheduler_api.convert_meter_to_kgs_for_box_bag_bom",
-                    args: {
-                        planning_sheet_name: frm.doc.name
-                    },
+                    args: { planning_sheet_name: frm.doc.name },
                     callback: function(r) {
                         if (!r.exc) {
                             frappe.msgprint(__('Converted ' + (r.message.updated || 0) + ' items from Meter to Kgs successfully.'));
@@ -16,10 +14,10 @@ frappe.ui.form.on('Planning sheet', {
                 });
             }, __('Actions'));
         }
-        frm.trigger('toggle_221_fields');
+        setTimeout(() => frm.trigger('toggle_221_fields'), 100);
     },
     
-    onload_post_render: function(frm) { frm.trigger('toggle_221_fields'); },
+    onload_post_render: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 200); },
     
     validate: function(frm) { frm.trigger('toggle_221_fields'); },
     items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
@@ -27,17 +25,13 @@ frappe.ui.form.on('Planning sheet', {
     planned_items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     planned_items_remove: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     
-    toggle_221_fields: function(frm, skip_refresh) {
+    toggle_221_fields: function(frm) {
         let all_items = (frm.doc.items || []).concat(frm.doc.planned_items || []);
-        if (all_items.length === 0) return;
         
         let processes = new Set();
-        
         for (let row of all_items) {
             if (!row.item_code) continue;
             let ic = row.item_code;
-            
-            // Extract process code (e.g. 100, 102, 103, 104, 107, 251, 221)
             let process_code = "";
             if (ic.includes('-')) {
                 let parts = ic.split('-');
@@ -57,15 +51,12 @@ frappe.ui.form.on('Planning sheet', {
             if (process_code) processes.add(process_code);
         }
         
-        // Positive mapping: A field is visible if ANY of the processes in the grid requires it
         let required_by = {
             'sheet_size': ['251', '252', '253', '254', '255'],
             'custom_no_of_sheets': ['251', '252', '253', '254', '255'],
-            
             'custom_lam_gsm': ['104', '107', '254', '255', '109'],
             'custom_lam_side': ['104', '107', '254', '255', '109'],
             'custom_lam_side_': ['104', '107', '254', '255', '109'],
-            
             'custom_bopp_gsm': ['107', '255', '109'],
             'custom_cylinder_type': ['107', '255', '109'],
             'custom_white_tint': ['107', '255', '109'],
@@ -73,64 +64,54 @@ frappe.ui.form.on('Planning sheet', {
             'custom_bopp_finish_size_mm': ['107', '255', '109'],
             'custom_total_no_of_colours': ['107', '255', '109'],
             'custom_bopp_bom_kgs': ['107', '255', '109'],
-            
             'custom_design_code': ['107', '255', '109', '221'],
             'custom_design_name': ['107', '255', '109', '221'],
             'custom_design_colour': ['107', '255', '109', '221'],
             'custom_design_attachment': ['107', '255', '109', '221'],
-            
             'custom_finishing': ['107', '255', '109', '221'],
             'bag_size': ['221']
         };
         
-        let fields_to_toggle = Object.keys(required_by);
-        let updated_tables = [];
-        
         ['items', 'planned_items'].forEach(table => {
-            if (frm.fields_dict[table] && frm.fields_dict[table].grid) {
-                let grid = frm.fields_dict[table].grid;
-                let cdt = grid.doctype;
-                let updated = false;
-                
-                for (let fieldname of fields_to_toggle) {
-                    let df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
-                    if (df) {
-                        let is_required = false;
-                        for (let p of processes) {
-                            if (required_by[fieldname].includes(p)) {
-                                is_required = true;
-                                break;
-                            }
-                        }
-                        
-                        let is_hidden = is_required ? 0 : 1;
-                        let grid_df = grid.docfields ? grid.docfields.find(d => d.fieldname === fieldname) : null;
-                        
-                        if (df.hidden !== is_hidden || (grid_df && grid_df.hidden !== is_hidden)) {
-                            df.hidden = is_hidden;
-                            if (grid_df) {
-                                grid_df.hidden = is_hidden;
-                            }
-                            updated = true;
+            let grid = frm.fields_dict[table] ? frm.fields_dict[table].grid : null;
+            if (!grid) return;
+            
+            let cdt = grid.doctype;
+            let need_refresh = false;
+            
+            for (let fieldname of Object.keys(required_by)) {
+                let is_required = false;
+                if (all_items.length > 0) {
+                    for (let p of processes) {
+                        if (required_by[fieldname].includes(p)) {
+                            is_required = true;
+                            break;
                         }
                     }
                 }
                 
-                if (updated) {
-                    updated_tables.push(table);
+                let is_hidden = is_required ? 0 : 1;
+                
+                let df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
+                if (df && df.hidden !== is_hidden) {
+                    df.hidden = is_hidden;
+                    need_refresh = true;
+                }
+                
+                if (grid.docfields) {
+                    let grid_df = grid.docfields.find(d => d.fieldname === fieldname);
+                    if (grid_df && grid_df.hidden !== is_hidden) {
+                        grid_df.hidden = is_hidden;
+                        need_refresh = true;
+                    }
                 }
             }
+            
+            if (need_refresh) {
+                grid.setup_columns();
+                grid.refresh();
+            }
         });
-        
-        if (updated_tables.length > 0 && !skip_refresh) {
-            updated_tables.forEach(table => {
-                let grid = frm.fields_dict[table].grid;
-                if (grid && grid.setup_columns) {
-                    grid.setup_columns();
-                    grid.refresh();
-                }
-            });
-        }
     }
 });
 
@@ -145,7 +126,6 @@ function trigger_toggle(frm, cdt, cdn) {
                 if (row.custom_design_code !== dc) {
                     frappe.model.set_value(cdt, cdn, 'custom_design_code', dc);
                 } else {
-                    // Trigger fetch manually if already set
                     fetch_design_name(frm, cdt, cdn);
                 }
             }

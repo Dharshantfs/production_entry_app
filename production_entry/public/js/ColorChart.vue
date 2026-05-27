@@ -6514,7 +6514,7 @@ function updateRescueSelection(d) {
 
 .cc-matrix-table {
     width: 100%;
-    border-collapse: separate; /* Required for sticky headers */
+    border-collapse: collapse; /* Required for sticky headers */
     border-spacing: 0;
     font-size: 12px;
 }
