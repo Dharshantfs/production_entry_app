@@ -370,7 +370,7 @@
     "name": "Planning sheet Item",
     "owner": "Administrator",
     "permissions": [],
-    "sort_field": "modified",
-    "sort_order": "DESC",
+    "sort_field": "idx",
+    "sort_order": "ASC",
     "states": []
 }
