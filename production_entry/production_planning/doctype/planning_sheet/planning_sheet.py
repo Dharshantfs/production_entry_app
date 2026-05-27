@@ -331,14 +331,7 @@ class Planningsheet(Document):
         self._recompute_printed_bopp_total_colours_on_child_rows()
         self._ensure_parent_child_trace_ids_on_rows()
         self._ensure_107_extras_on_rows()
-        try:
-            from production_entry.production_planning.scheduler_api import (
-                reorder_planning_sheet_child_tables_in_doc,
-            )
-
-            reorder_planning_sheet_child_tables_in_doc(self)
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "Planning sheet validate: reorder child rows")
+        # Removed reorder_planning_sheet_child_tables_in_doc to preserve user's manual row order in child tables
 
     def _enrich_rows_from_item_codes(self):
         """Fill quality/colour/GSM, sheet size, 255 trace, PB design from item_code on desk save."""

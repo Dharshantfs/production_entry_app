@@ -1110,8 +1110,10 @@ const unitStatsCache = computed(() => {
         return EXCLUDED_WHITES.some(ex => colorUpper.includes(ex));
     });
     
-    const hiddenWhite = whiteOrders.reduce((sum, d) => sum + d.qty, 0) / 1000;
-    const total = allUnitData.reduce((sum, d) => sum + d.qty, 0) / 1000;
+    const rawHiddenWhite = whiteOrders.reduce((sum, d) => sum + d.qty, 0);
+    const hiddenWhite = isBoxBagBoard.value ? rawHiddenWhite : rawHiddenWhite / 1000;
+    const rawTotal = allUnitData.reduce((sum, d) => sum + d.qty, 0);
+    const total = isBoxBagBoard.value ? rawTotal : rawTotal / 1000;
     
     const limit = getUnitCapacityLimit(unit);
     let capacityStatus;
@@ -1467,7 +1469,7 @@ function getUnitProductionTotal(unit) {
     .filter((d) => normalizeUnitName(d.unit) === unit)
     .reduce((sum, d) => sum + d.qty, 0);
   const mixWeight = getMixRollTotalWeight(unit);
-  return (production + mixWeight) / 1000;
+  return isBoxBagBoard.value ? (production + mixWeight) : (production + mixWeight) / 1000;
 }
 
 function getMixRollCount(unit) {
