@@ -1,14 +1,5 @@
 frappe.ui.form.on('Planning sheet', {
-    setup: function(frm) {
-        patch_planning_grids(frm);
-    },
-    
-    onload: function(frm) {
-        patch_planning_grids(frm);
-    },
-
     refresh: function(frm) {
-        patch_planning_grids(frm);
         if (!frm.is_new()) {
             frm.add_custom_button(__('Meter to Kgs (Box Bag BOM)'), function() {
                 frappe.call({
@@ -93,13 +84,16 @@ frappe.ui.form.on('Planning sheet', {
         };
         
         let fields_to_toggle = Object.keys(required_by);
+        let updated_tables = [];
         
         ['items', 'planned_items'].forEach(table => {
             if (frm.fields_dict[table] && frm.fields_dict[table].grid) {
+                let grid = frm.fields_dict[table].grid;
+                let cdt = grid.doctype;
                 let updated = false;
                 
                 for (let fieldname of fields_to_toggle) {
-                    let df = frappe.meta.get_docfield(frm.fields_dict[table].grid.doctype, fieldname, frm.docname);
+                    let df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
                     if (df) {
                         let is_required = false;
                         for (let p of processes) {
@@ -109,56 +103,36 @@ frappe.ui.form.on('Planning sheet', {
                             }
                         }
                         
-                        frm.fields_dict[table].grid.update_docfield_property(fieldname, 'hidden', is_required ? 0 : 1);
-                        updated = true;
+                        let is_hidden = is_required ? 0 : 1;
+                        if (df.hidden !== is_hidden) {
+                            df.hidden = is_hidden;
+                            
+                            if (grid.docfields) {
+                                let grid_df = grid.docfields.find(d => d.fieldname === fieldname);
+                                if (grid_df) grid_df.hidden = is_hidden;
+                            }
+                            updated = true;
+                        }
                     }
                 }
                 
-                if (updated && !skip_refresh) {
-                    frm.fields_dict[table].grid.refresh();
+                if (updated) {
+                    updated_tables.push(table);
                 }
             }
         });
+        
+        if (updated_tables.length > 0 && !skip_refresh) {
+            updated_tables.forEach(table => {
+                let grid = frm.fields_dict[table].grid;
+                if (grid && grid.setup_columns) {
+                    grid.setup_columns();
+                    grid.refresh();
+                }
+            });
+        }
     }
 });
-
-function patch_planning_grids(frm) {
-    if (frm._grids_patched) return;
-    
-    let all_patched = true;
-    ['items', 'planned_items'].forEach(table => {
-        let fd = frm.fields_dict[table];
-        if (fd && fd.grid) {
-            let grid = fd.grid;
-            
-            // Patch refresh
-            let orig_refresh = grid.refresh;
-            if (orig_refresh && !orig_refresh.__is_patched) {
-                grid.refresh = function() {
-                    frm.trigger('toggle_221_fields', true);
-                    return orig_refresh.apply(grid, arguments);
-                };
-                grid.refresh.__is_patched = true;
-            }
-            
-            // Patch render
-            let orig_render = grid.render;
-            if (orig_render && !orig_render.__is_patched) {
-                grid.render = function() {
-                    frm.trigger('toggle_221_fields', true);
-                    return orig_render.apply(grid, arguments);
-                };
-                grid.render.__is_patched = true;
-            }
-        } else {
-            all_patched = false;
-        }
-    });
-    
-    if (all_patched) {
-        frm._grids_patched = true;
-    }
-}
 
 function trigger_toggle(frm, cdt, cdn) {
     frm.trigger('toggle_221_fields');

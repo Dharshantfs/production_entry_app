@@ -68,6 +68,7 @@ frappe.ui.form.on('Planning sheet Item', {
             frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
         }
         frm.refresh_field('planned_items');
+                        frm.trigger('toggle_221_fields');
         setTimeout(function () {
             registerWorkingSheetCuttingChangeBomButton(frm);
         }, 100);
@@ -83,6 +84,7 @@ frappe.ui.form.on('Planning sheet Item', {
             frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
         }
         frm.refresh_field('planned_items');
+                        frm.trigger('toggle_221_fields');
     },
 });
 
@@ -463,6 +465,7 @@ frappe.ui.form.on('Planning sheet', {
                     frappe.model.with_doctype('Planning Table', function () {
                         frm.refresh_field('items');
                         frm.refresh_field('planned_items');
+                        frm.trigger('toggle_221_fields');
                         try {
                             if (frm.fields_dict.custom_planned_items) frm.refresh_field('custom_planned_items');
                         } catch (e2) {}

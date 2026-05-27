@@ -13,6 +13,7 @@ frappe.ui.form.on('Planning sheet Item', {
             }
         });
         frm.refresh_field('planned_items');
+                        frm.trigger('toggle_221_fields');
     },
 });
 
