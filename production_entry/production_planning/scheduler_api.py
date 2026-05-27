@@ -2079,6 +2079,39 @@ def _trace_from_255_parent_on_sales_order_line(sales_order_item, planning_sheet_
 	return ""
 
 
+def _trace_from_221_parent_on_sales_order_line(sales_order_item, planning_sheet_name=None, pt_rows=None):
+	"""221 parent trace on the same SO line for 103 children."""
+	soi = _cstr(sales_order_item).strip()
+	if not soi:
+		return ""
+	rows = pt_rows
+	if rows is None and planning_sheet_name:
+		rows = (
+			frappe.get_all(
+				"Planning Table",
+				filters={"parent": planning_sheet_name},
+				fields=["item_code", "sales_order_item", "so_item"],
+				limit_page_length=2000,
+			)
+			or []
+		)
+	if not rows:
+		return ""
+	for r in rows:
+		ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
+		if _item_process_prefix(ric) != "221":
+			continue
+		rsoi = _cstr(
+			(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
+			or (r.get("so_item") if isinstance(r, dict) else getattr(r, "so_item", None))
+		).strip()
+		if rsoi != soi:
+			continue
+		t = _parent_child_trace_id_from_item_code(ric)
+		if t:
+			return t
+	return ""
+
 def _quality_name_from_master(q_code):
 	"""Resolve Quality Master display name from a 3-digit quality code (e.g. 105 → BRONZE)."""
 	qc = _cstr(q_code).strip()
@@ -3519,7 +3552,7 @@ def _design_master_extra_fields(design_code):
 	):
 		if meta.has_field(fn):
 			v = _cstr(getattr(doc, fn, None)).strip()
-			if v and v.upper() != dc.upper():
+			if v:
 				out["custom_design_name"] = v
 				break
 	for fn in ("design_attachment", "attachment", "custom_design_attachment", "custom_attachment", "image", "file"):
@@ -4078,6 +4111,9 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 		if t255:
 			return t255
 	if soi and planning_sheet_name:
+		t221_parent = _trace_from_221_parent_on_sales_order_line(soi, planning_sheet_name)
+		if t221_parent:
+			return t221_parent
 		t255_parent = _trace_from_255_parent_on_sales_order_line(soi, planning_sheet_name)
 		if t255_parent:
 			return t255_parent
@@ -4646,12 +4682,21 @@ def _parent_child_trace_id_from_item_code(item_code):
 	if process == "221":
 		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
 		p = _parse_box_bag_item_code(ic)
-		return "{0}-221-{1}-{2}-{3}".format(
+		segs = [
 			_cstr(p.get("design_code")).strip(),
-			_cstr(p.get("quality_letter")).strip(),
-			_cstr(p.get("colour_code")).strip(),
-			_cstr(p.get("bag_size_id")).strip(),
-		)
+			"221"
+		]
+		q = _cstr(p.get("quality_letter")).strip()
+		if q: segs.append(q)
+		gsm = _cstr(p.get("fabric_gsm")).strip()
+		if gsm and gsm != "0": segs.append(gsm)
+		cc = _cstr(p.get("colour_code")).strip()
+		if cc: segs.append(cc)
+		bs = _cstr(p.get("bag_size_id")).strip()
+		if bs: segs.append(bs)
+		fin = _cstr(p.get("finishing_code")).strip()
+		if fin: segs.append(fin)
+		return "-".join(segs)
 	# 109 laminated slitting: 109QQQCCCGGGWWWW[-lam_suffix]
 	if process == "109":
 		p = _parse_109_item_code(ic) or {}
@@ -5123,6 +5168,7 @@ def _main_parent_trace_for_so_line(so_item_key, planning_sheet_name, pt_rows, so
 			if tid:
 				return tid
 	parent_priority = (
+		"221",
 		"255",
 		"254",
 		"253",
@@ -5151,7 +5197,7 @@ def _main_parent_trace_for_so_line(so_item_key, planning_sheet_name, pt_rows, so
 				tid = _parent_child_trace_id_from_item_code(ic)
 				if tid:
 					return tid
-			if pref in ("255", "254", "253", "252", "251", "108", "106", "105", "109", "104", "103", "102") and (
+			if pref in ("221", "255", "254", "253", "252", "251", "108", "106", "105", "109", "104", "103", "102") and (
 				pp == pref or (pref == "107" and _lamination_process_from_item_code(ic) == "107")
 			):
 				tid = _parent_child_trace_id_from_item_code(ic) or _parent_child_trace_id_for_planning_row(

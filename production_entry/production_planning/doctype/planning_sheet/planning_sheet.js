@@ -65,8 +65,23 @@ frappe.ui.form.on('Planning sheet', {
     }
 });
 
-function trigger_toggle(frm) {
+function trigger_toggle(frm, cdt, cdn) {
     frm.trigger('toggle_221_fields');
+    if (cdt && cdn) {
+        let row = frappe.get_doc(cdt, cdn);
+        if (row.item_code && (row.item_code.includes('-221') || row.item_code.includes('221'))) {
+            let parts = row.item_code.split('-');
+            if (parts.length > 1) {
+                let dc = parts[0];
+                if (row.custom_design_code !== dc) {
+                    frappe.model.set_value(cdt, cdn, 'custom_design_code', dc);
+                } else {
+                    // Trigger fetch manually if already set
+                    fetch_design_name(frm, cdt, cdn);
+                }
+            }
+        }
+    }
 }
 
 function fetch_design_name(frm, cdt, cdn) {
