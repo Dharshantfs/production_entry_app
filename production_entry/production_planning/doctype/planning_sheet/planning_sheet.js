@@ -1,5 +1,14 @@
 frappe.ui.form.on('Planning sheet', {
+    setup: function(frm) {
+        patch_planning_grids(frm);
+    },
+    
+    onload: function(frm) {
+        patch_planning_grids(frm);
+    },
+
     refresh: function(frm) {
+        patch_planning_grids(frm);
         if (!frm.is_new()) {
             frm.add_custom_button(__('Meter to Kgs (Box Bag BOM)'), function() {
                 frappe.call({
@@ -16,10 +25,10 @@ frappe.ui.form.on('Planning sheet', {
                 });
             }, __('Actions'));
         }
-        setTimeout(() => frm.trigger('toggle_221_fields'), 100);
+        frm.trigger('toggle_221_fields');
     },
     
-    onload_post_render: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 200); },
+    onload_post_render: function(frm) { frm.trigger('toggle_221_fields'); },
     
     validate: function(frm) { frm.trigger('toggle_221_fields'); },
     items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
@@ -27,7 +36,7 @@ frappe.ui.form.on('Planning sheet', {
     planned_items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     planned_items_remove: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     
-    toggle_221_fields: function(frm) {
+    toggle_221_fields: function(frm, skip_refresh) {
         let all_items = (frm.doc.items || []).concat(frm.doc.planned_items || []);
         if (all_items.length === 0) return;
         
@@ -105,13 +114,51 @@ frappe.ui.form.on('Planning sheet', {
                     }
                 }
                 
-                if (updated) {
+                if (updated && !skip_refresh) {
                     frm.fields_dict[table].grid.refresh();
                 }
             }
         });
     }
 });
+
+function patch_planning_grids(frm) {
+    if (frm._grids_patched) return;
+    
+    let all_patched = true;
+    ['items', 'planned_items'].forEach(table => {
+        let fd = frm.fields_dict[table];
+        if (fd && fd.grid) {
+            let grid = fd.grid;
+            
+            // Patch refresh
+            let orig_refresh = grid.refresh;
+            if (orig_refresh && !orig_refresh.__is_patched) {
+                grid.refresh = function() {
+                    frm.trigger('toggle_221_fields', true);
+                    return orig_refresh.apply(grid, arguments);
+                };
+                grid.refresh.__is_patched = true;
+            }
+            
+            // Patch render
+            let orig_render = grid.render;
+            if (orig_render && !orig_render.__is_patched) {
+                grid.render = function() {
+                    frm.trigger('toggle_221_fields', true);
+                    return orig_render.apply(grid, arguments);
+                };
+                grid.render.__is_patched = true;
+            }
+        } else {
+            all_patched = false;
+        }
+    });
+    
+    if (all_patched) {
+        frm._grids_patched = true;
+    }
+}
 
 function trigger_toggle(frm, cdt, cdn) {
     frm.trigger('toggle_221_fields');
