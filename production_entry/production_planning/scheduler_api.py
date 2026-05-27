@@ -17900,7 +17900,7 @@ def _get_color_chart_data_impl(
             items = frappe.db.sql(f"""
                 SELECT
                     i.name as itemName, i.item_code, i.item_name, i.qty, i.uom, i.unit,
-                    i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name,
+                    i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name, i.meter,
                     {so_item_col} {split_col}
                     p.name as planningSheet, p.party_code as partyCode, p.customer,
                     COALESCE(c.customer_name, p.customer) as customer_name,
@@ -17923,7 +17923,7 @@ def _get_color_chart_data_impl(
             items = frappe.db.sql(f"""
                 SELECT 
                     i.name as itemName, i.item_code, i.item_name, i.qty, i.uom, i.unit,
-                    i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name,
+                    i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name, i.meter,
                     {so_item_col} {split_col}
                     p.name as planningSheet, p.party_code as partyCode, p.customer,
                     COALESCE(c.customer_name, p.customer) as customer_name,
@@ -17949,7 +17949,7 @@ def _get_color_chart_data_impl(
             items = frappe.db.sql(f"""
                 SELECT 
                     i.name as itemName, i.item_code, i.item_name, i.qty, i.uom, i.unit,
-                    i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name,
+                    i.color, i.custom_quality as quality, i.gsm, i.idx, i.plan_name, i.meter,
                     {so_item_col} {split_col}
                     p.name as planningSheet, p.party_code as partyCode, p.customer,
                     COALESCE(c.customer_name, p.customer) as customer_name,
