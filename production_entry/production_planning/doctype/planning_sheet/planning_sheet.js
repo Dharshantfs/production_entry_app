@@ -40,7 +40,6 @@ frappe.ui.form.on('Planning sheet', {
             'custom_cylinder_type',
             'custom_white_tint',
             'custom_no_of_design_colours',
-            'custom_finishing',
             'custom_bopp_finish_size_mm',
             'custom_total_no_of_colours',
             'custom_bopp_bom_kgs',

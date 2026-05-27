@@ -898,11 +898,14 @@ def _quality_name_by_code(q_code: str) -> str:
     if not q_code:
         return ""
     q_code = str(q_code).strip()
-    for fn in ("custom_quality_code", "quality_code", "short_code", "code"):
+    for fn in ("custom_quality_code", "quality_code", "short_code", "code", "name"):
         try:
-            v = frappe.db.get_value("Quality Master", {fn: q_code}, "name")
-            if v:
-                return str(v).strip().upper()
+            if fn == "name":
+                doc = frappe.db.get_value("Quality Master", {"name": q_code}, ["name", "quality_name", "description"], as_dict=True)
+            else:
+                doc = frappe.db.get_value("Quality Master", {fn: q_code}, ["name", "quality_name", "description"], as_dict=True)
+            if doc:
+                return str(doc.get("quality_name") or doc.get("description") or doc.get("name")).strip().upper()
         except Exception:
             continue
     return ""
