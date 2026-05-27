@@ -128,7 +128,7 @@
                 @click.stop="openSte(ste.name)"
               >
                 <span v-if="ste.docstatus === 0" class="lk-drag-grip" title="Drag to reorder">⋮⋮</span>
-                <span class="lk-history-badge">{{ ste.status }}</span>
+                <span class="lk-history-badge">{{ formatStatus(ste.status) }}</span>
                 <span class="lk-history-main">
                   <span class="lk-history-ste">{{ ste.name }}</span>
                   <span class="lk-history-meta">
@@ -230,6 +230,12 @@ function draftSteOrder(card) {
   return filteredHistory(card)
     .filter((s) => s.docstatus === 0)
     .map((s) => s.name);
+}
+
+function formatStatus(status) {
+  if (!status) return "";
+  if (status.startsWith("Transferred")) return "Transferred";
+  return status;
 }
 
 function onHistoryDragStart(card, ste, ev) {

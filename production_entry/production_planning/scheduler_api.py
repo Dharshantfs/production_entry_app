@@ -19521,6 +19521,7 @@ def _get_color_chart_data_impl(
                 "finishing": _finishing_row,
                 "quality": item.get("custom_quality") or item.get("quality") or "",
                 "gsm": item.get("gsm") or "",
+                "meter": flt(item.get("meter") or 0),
                 "qty": flt(item.get("qty", 0)),
                 "idx": item.get("idx", 0),
                 "width": flt(item.get("width") or item.get("custom_width") or item.get("width_inches") or item.get("width_inch") or item.get("width_in") or 0),
