@@ -16,5 +16,57 @@ frappe.ui.form.on('Planning sheet', {
                 });
             }, __('Actions'));
         }
+        
+        frm.trigger('toggle_221_fields');
+    },
+    
+    toggle_221_fields: function(frm) {
+        let is_221 = false;
+        
+        let all_items = (frm.doc.items || []).concat(frm.doc.planned_items || []);
+        for (let row of all_items) {
+            if (row.item_code && (row.item_code.includes('-221') || row.item_code.startsWith('221'))) {
+                is_221 = true;
+                break;
+            }
+        }
+        
+        let fields_to_hide = [
+            'sheet_size',
+            'custom_lam_side',
+            'custom_lam_side_',
+            'custom_lam_gsm',
+            'custom_bopp_gsm',
+            'custom_cylinder_type',
+            'custom_white_tint',
+            'custom_no_of_design_colours',
+            'custom_finishing',
+            'custom_total_no_of_colours',
+            'custom_bopp_bom_kgs',
+            'custom_no_of_sheets'
+        ];
+        
+        ['items', 'planned_items'].forEach(table => {
+            if (frm.fields_dict[table] && frm.fields_dict[table].grid) {
+                fields_to_hide.forEach(fieldname => {
+                    let df = frappe.meta.get_docfield(frm.fields_dict[table].grid.doctype, fieldname, frm.docname);
+                    if (df) {
+                        frm.fields_dict[table].grid.update_docfield_property(fieldname, 'hidden', is_221 ? 1 : 0);
+                    }
+                });
+            }
+        });
     }
+});
+
+function trigger_toggle(frm) {
+    frm.trigger('toggle_221_fields');
+}
+
+frappe.ui.form.on('Planning sheet Item', {
+    item_code: trigger_toggle
+});
+
+frappe.ui.form.on('Planning Table', {
+    item_code: trigger_toggle
 });
