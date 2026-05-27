@@ -16,15 +16,16 @@ frappe.ui.form.on('Planning sheet', {
                 });
             }, __('Actions'));
         }
-        
-        frm.trigger('toggle_221_fields');
+        setTimeout(() => frm.trigger('toggle_221_fields'), 100);
     },
     
+    onload_post_render: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 200); },
+    
     validate: function(frm) { frm.trigger('toggle_221_fields'); },
-    items_add: function(frm) { frm.trigger('toggle_221_fields'); },
-    items_remove: function(frm) { frm.trigger('toggle_221_fields'); },
-    planned_items_add: function(frm) { frm.trigger('toggle_221_fields'); },
-    planned_items_remove: function(frm) { frm.trigger('toggle_221_fields'); },
+    items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
+    items_remove: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
+    planned_items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
+    planned_items_remove: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     
     toggle_221_fields: function(frm) {
         let all_items = (frm.doc.items || []).concat(frm.doc.planned_items || []);
@@ -75,6 +76,7 @@ frappe.ui.form.on('Planning sheet', {
             
             'custom_design_code': ['107', '255', '109', '221'],
             'custom_design_name': ['107', '255', '109', '221'],
+            'custom_design_colour': ['107', '255', '109', '221'],
             'custom_design_attachment': ['107', '255', '109', '221'],
             
             'custom_finishing': ['107', '255', '109', '221'],
