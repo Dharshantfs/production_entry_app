@@ -245,7 +245,14 @@ const displayRows = computed(() => {
     );
     if (recs.length) out.push({ is_maintenance_row: true, dateKey: k, record: recs[0] });
     const dateRows = normalRows.filter((r) => getRowDateKey(r) === k);
-    for (const r of dateRows) { r._sno = sno++; out.push(r); }
+        for (let i = 0; i < dateRows.length; i++) {
+      const r = dateRows[i];
+      r._sno = sno;
+      r.isFirstOfDate = (i === 0);
+      r.dateRowspan = dateRows.length;
+      out.push(r);
+    }
+    if (dateRows.length > 0) sno++;
     if (!dateRows.length && recs.length) out.push({ is_maintenance_empty: true, dateKey: k });
   }
   return out;
@@ -253,7 +260,7 @@ const displayRows = computed(() => {
 
 function toDateKey(v) { if (!v) return ""; const d = new Date(v); if (Number.isNaN(d.getTime())) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function getRowDateKey(row) { return toDateKey(row?.plannedDate || row?.planned_date || row?.date || ""); }
-function sortRowsBySavedSequence(rows) { const grouped = {}; (rows || []).forEach((r) => { const dk = getRowDateKey(r); grouped[dk] = grouped[dk] || []; grouped[dk].push(r); }); const out = []; Object.keys(grouped).sort().forEach((dk) => { const arr = grouped[dk]; const saved = customOrderByDate.value[dk] || []; const rank = new Map(saved.map((nm, i) => [nm, i])); arr.sort((a, b) => { const ra = rank.has(a.itemName) ? rank.get(a.itemName) : 99999; const rb = rank.has(b.itemName) ? rank.get(b.itemName) : 99999; if (ra !== rb) return ra - rb; return String(a.itemName || "").localeCompare(String(b.itemName || "")); }); out.push(...arr); }); return out; }
+function sortRowsBySavedSequence(rows) { const grouped = {}; (rows || []).forEach((r) => { const dk = getRowDateKey(r); grouped[dk] = grouped[dk] || []; grouped[dk].push(r); }); const out = []; Object.keys(grouped).sort().forEach((dk) => { const arr = grouped[dk]; const saved = customOrderByDate.value[dk] || []; const rank = new Map(saved.map((nm, i) => [nm, i])); arr.sort((a, b) => { const ra = rank.has(a.itemName) ? rank.get(a.itemName) : 99999; const rb = rank.has(b.itemName) ? rank.get(b.itemName) : 99999; if (ra !== rb) return ra - rb; const qa = String(a.quality || "").toLowerCase(); const qb = String(b.quality || "").toLowerCase(); if (qa !== qb) return qa.localeCompare(qb); return String(a.itemName || "").localeCompare(String(b.itemName || "")); }); out.push(...arr); }); return out; }
 function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v); }
 function formatQuality(v) { if (!v) return "-"; if (v === "N") return "Deluxe"; if (v === "E") return "Economy"; return v; }
 function formatNum(v) { if (v === "" || v === null || typeof v === "undefined") return "-"; const n = Number(v || 0); if (!Number.isFinite(n)) return "-"; return n.toFixed(2).replace(/\.00$/, ""); }

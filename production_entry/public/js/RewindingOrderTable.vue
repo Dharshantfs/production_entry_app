@@ -555,6 +555,9 @@ function sortRowsBySavedSequence(rows) {
         const ai = map[aKey] !== undefined ? map[aKey] : 999999;
         const bi = map[bKey] !== undefined ? map[bKey] : 999999;
         if (ai !== bi) return ai - bi;
+        const qa = String(a.quality || "").toLowerCase();
+        const qb = String(b.quality || "").toLowerCase();
+        if (qa !== qb) return qa.localeCompare(qb);
         return Number(a.idx || 0) - Number(b.idx || 0);
       });
       out.push(...sorted);

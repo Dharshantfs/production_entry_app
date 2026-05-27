@@ -770,6 +770,9 @@ function sortRowsBySavedSequence(rows) {
           const bs = Number(b.custom_printing_arrangement_seq || 0) || 999999;
           if (as !== bs) return as - bs;
         }
+        const qa = String(a.quality || "").toLowerCase();
+        const qb = String(b.quality || "").toLowerCase();
+        if (qa !== qb) return qa.localeCompare(qb);
         return Number(a.idx || 0) - Number(b.idx || 0);
       });
       out.push(...sorted);
