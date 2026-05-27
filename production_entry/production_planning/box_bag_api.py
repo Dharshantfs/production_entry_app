@@ -262,7 +262,7 @@ def get_box_bag_order_table_data(
 		# Shift label
 		shift_label = "DAY"
 		try:
-			pt_name = str(row.get("name") or "").strip()
+			pt_name = str(row.get("itemName") or row.get("item_name") or "").strip()
 			if pt_name:
 				for sf in ("custom_box_bag_shift", "custom_sheet_cutting_shift", "custom_slitting_shift"):
 					if frappe.db.has_column("Planning Table", sf):
@@ -411,18 +411,13 @@ def assign_box_bag_shift(shift_date=None, shift_label="DAY", item_name=None):
 		except Exception:
 			pass
 
-	box_bag_like = "%-221%"
-	frappe.db.sql(
-		f"""
-		UPDATE `tabPlanning Table`
-		SET `{shift_field}` = %s
-		WHERE IFNULL(planned_date, '') = %s
-		  AND (
-			item_code LIKE '221%%'
-			OR item_code LIKE %s
-		  )
-		""",
-		(shift_label, sd, box_bag_like),
-	)
+	items = get_box_bag_order_table_data(date=sd, planned_only=1)
+	updated = 0
+	for it in items:
+		it_name = it.get("itemName")
+		if it_name:
+			frappe.db.set_value("Planning Table", it_name, shift_field, shift_label, update_modified=False)
+			updated += 1
+
 	frappe.db.commit()
-	return {"status": "success"}
+	return {"status": "success", "updated": updated}

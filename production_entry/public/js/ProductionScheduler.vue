@@ -135,10 +135,15 @@
             </div>
           </div>
             <span class="cc-stat-weight" :class="getUnitCapacityStatus(unit).class">
-              {{ getUnitTotal(unit).toFixed(2) }} / {{ Number(getUnitCapacityLimit(unit).toFixed(2)) }}{{ getCapacityLabel() }}
-              <span v-if="getHiddenWhiteTotal(unit) > 0" style="font-size:10px; font-weight:700; color:#475569; display:block;">
-                 (Inc. {{ getHiddenWhiteTotal(unit).toFixed(2) }}T White)
-              </span>
+              <template v-if="isBoxBagBoard">
+                {{ getUnitTotal(unit).toFixed(0) }} / {{ Number(getUnitCapacityLimit(unit).toFixed(0)) }}{{ getCapacityLabel() }}
+              </template>
+              <template v-else>
+                {{ getUnitTotal(unit).toFixed(2) }} / {{ Number(getUnitCapacityLimit(unit).toFixed(2)) }}{{ getCapacityLabel() }}
+                <span v-if="getHiddenWhiteTotal(unit) > 0" style="font-size:10px; font-weight:700; color:#475569; display:block;">
+                   (Inc. {{ getHiddenWhiteTotal(unit).toFixed(2) }}T White)
+                </span>
+              </template>
             </span>
             <span class="cc-stat-mix" v-if="getMixRollCount(unit) > 0">
               ⚠️ {{ getMixRollCount(unit) }} mix{{ getMixRollCount(unit) > 1 ? 'es' : '' }}
@@ -210,8 +215,13 @@
                 </div>
               </div>
               <div class="cc-card-right">
-                <span class="cc-card-qty">{{ (entry.qty / 1000).toFixed(3) }} T</span>
-                <span class="cc-card-qty-kg">{{ entry.qty }} Kg</span>
+                <template v-if="isBoxBagBoard">
+                  <span class="cc-card-qty">{{ entry.qty }} PCS</span>
+                </template>
+                <template v-else>
+                  <span class="cc-card-qty">{{ (entry.qty / 1000).toFixed(3) }} T</span>
+                  <span class="cc-card-qty-kg">{{ entry.qty }} Kg</span>
+                </template>
                 <button v-if="entry.isSplit"
                   class="cc-revert-btn" 
                   style="background: #eff6ff; color: #2563eb; border-color: #bfdbfe; margin-bottom: 4px;"
@@ -238,10 +248,15 @@
 
         <!-- Unit Footer -->
         <div class="cc-col-footer">
-          <span>Production: {{ getUnitProductionTotal(unit).toFixed(2) }}T</span>
-          <span v-if="getMixRollTotalWeight(unit) > 0">
-            Mix Waste: {{ (getMixRollTotalWeight(unit) / 1000).toFixed(3) }}T
-          </span>
+          <template v-if="isBoxBagBoard">
+            <span>Production: {{ getUnitProductionTotal(unit).toFixed(0) }} PCS</span>
+          </template>
+          <template v-else>
+            <span>Production: {{ getUnitProductionTotal(unit).toFixed(2) }}T</span>
+            <span v-if="getMixRollTotalWeight(unit) > 0">
+              Mix Waste: {{ (getMixRollTotalWeight(unit) / 1000).toFixed(3) }}T
+            </span>
+          </template>
         </div>
       </div>
     </div>
@@ -1071,6 +1086,11 @@ function getUnitCapacityLimit(unit) {
 }
 
 function getCapacityLabel() {
+    if (isBoxBagBoard.value) {
+        if (viewScope.value === 'weekly') return ' PCS/W';
+        if (viewScope.value === 'monthly') return ' PCS/M';
+        return ' PCS/D';
+    }
     if (viewScope.value === 'weekly') return 'TPW';
     if (viewScope.value === 'monthly') return 'TPM';
     return 'TPD';
