@@ -899,10 +899,24 @@ def _quality_name_by_code(q_code: str) -> str:
         return ""
     q_code = str(q_code).strip()
     _HARDCODED_QUALITY = {
-        "L": "LAMINATED",
-        "U": "UNLAMINATED",
-        "M": "MATTE",
-        "P": "PLAIN"
+        "A": "PREMIUM",
+        "B": "PLATINUM",
+        "C": "SUPER PLATINUM",
+        "D": "GOLD",
+        "E": "SILVER",
+        "F": "BRONZE",
+        "G": "CLASSIC",
+        "H": "SUPER CLASSIC",
+        "I": "LIFE STYLE",
+        "J": "ECO SPECIAL",
+        "K": "ECO GREEN",
+        "L": "SUPER ECO",
+        "M": "ULTRA",
+        "N": "DELUXE",
+        "O": "VIRGIN MIX - GOLD MIX",
+        "P": "MID MIX - CLASSIC MIX",
+        "Q": "ECO MIX",
+        "R": "DELUXE MIX"
     }
     for fn in ("custom_quality_code", "quality_code", "short_code", "code", "name"):
         try:

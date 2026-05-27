@@ -262,7 +262,30 @@ function toDateKey(v) { if (!v) return ""; const d = new Date(v); if (Number.isN
 function getRowDateKey(row) { return toDateKey(row?.plannedDate || row?.planned_date || row?.date || ""); }
 function sortRowsBySavedSequence(rows) { const grouped = {}; (rows || []).forEach((r) => { const dk = getRowDateKey(r); grouped[dk] = grouped[dk] || []; grouped[dk].push(r); }); const out = []; Object.keys(grouped).sort().forEach((dk) => { const arr = grouped[dk]; const saved = customOrderByDate.value[dk] || []; const rank = new Map(saved.map((nm, i) => [nm, i])); arr.sort((a, b) => { const ra = rank.has(a.itemName) ? rank.get(a.itemName) : 99999; const rb = rank.has(b.itemName) ? rank.get(b.itemName) : 99999; if (ra !== rb) return ra - rb; const qa = String(a.quality || "").toLowerCase(); const qb = String(b.quality || "").toLowerCase(); if (qa !== qb) return qa.localeCompare(qb); return String(a.itemName || "").localeCompare(String(b.itemName || "")); }); out.push(...arr); }); return out; }
 function formatDate(v) { if (!v) return ""; return frappe.datetime.str_to_user(v); }
-function formatQuality(v) { if (!v) return "-"; if (v === "N") return "Deluxe"; if (v === "E") return "Economy"; return v; }
+function formatQuality(v) {
+  if (!v) return "-";
+  const map = {
+    "A": "PREMIUM",
+    "B": "PLATINUM",
+    "C": "SUPER PLATINUM",
+    "D": "GOLD",
+    "E": "SILVER",
+    "F": "BRONZE",
+    "G": "CLASSIC",
+    "H": "SUPER CLASSIC",
+    "I": "LIFE STYLE",
+    "J": "ECO SPECIAL",
+    "K": "ECO GREEN",
+    "L": "SUPER ECO",
+    "M": "ULTRA",
+    "N": "DELUXE",
+    "O": "VIRGIN MIX - GOLD MIX",
+    "P": "MID MIX - CLASSIC MIX",
+    "Q": "ECO MIX",
+    "R": "DELUXE MIX"
+  };
+  return map[v.toUpperCase()] || v;
+}
 function formatNum(v) { if (v === "" || v === null || typeof v === "undefined") return "-"; const n = Number(v || 0); if (!Number.isFinite(n)) return "-"; return n.toFixed(2).replace(/\.00$/, ""); }
 function getMergedPerDayProductionRowSpan(row) { const dateKey = getRowDateKey(row); return mergedPerDayProductionRowCounts.value[dateKey] || 1; }
 function showMergedPerDayProductionCell(row) { const dateKey = getRowDateKey(row); const firstItemName = mergedPerDayProductionDates.value[dateKey]; return String(row.itemName || row.item_name || "") === String(firstItemName || ""); }
