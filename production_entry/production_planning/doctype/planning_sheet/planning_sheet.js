@@ -20,6 +20,12 @@ frappe.ui.form.on('Planning sheet', {
         frm.trigger('toggle_221_fields');
     },
     
+    validate: function(frm) { frm.trigger('toggle_221_fields'); },
+    items_add: function(frm) { frm.trigger('toggle_221_fields'); },
+    items_remove: function(frm) { frm.trigger('toggle_221_fields'); },
+    planned_items_add: function(frm) { frm.trigger('toggle_221_fields'); },
+    planned_items_remove: function(frm) { frm.trigger('toggle_221_fields'); },
+    
     toggle_221_fields: function(frm) {
         let all_items = (frm.doc.items || []).concat(frm.doc.planned_items || []);
         if (all_items.length === 0) return;
