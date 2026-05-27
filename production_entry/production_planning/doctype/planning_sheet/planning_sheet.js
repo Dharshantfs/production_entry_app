@@ -68,7 +68,7 @@ function trigger_toggle(frm, cdt, cdn) {
     frm.trigger('toggle_221_fields');
     if (cdt && cdn) {
         let row = frappe.get_doc(cdt, cdn);
-        if (row.item_code && (row.item_code.includes('-221') || row.item_code.includes('221'))) {
+        if (row.item_code && (row.item_code.includes('-221') || row.item_code.startsWith('221'))) {
             let parts = row.item_code.split('-');
             if (parts.length > 1) {
                 let dc = parts[0];

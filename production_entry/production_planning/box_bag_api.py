@@ -151,9 +151,9 @@ def _force_box_bag_unit_on_sheet(planning_sheet_name=None):
 	"""
 	if not frappe.db.has_column("Planning Table", "unit"):
 		return
-	# Match 221 anywhere in item_code — covers all segment patterns
+	# Match 221 process code safely (either starts with 221 or preceded by hyphen)
 	conditions = """
-		item_code LIKE '%%221%%'
+		(item_code LIKE '221%%' OR item_code LIKE '%%-221%%')
 		AND IFNULL(unit, '') NOT IN (%s, %s, %s)
 	"""
 	params = list(BOX_BAG_UNITS)
