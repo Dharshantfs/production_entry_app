@@ -41,6 +41,7 @@ frappe.ui.form.on('Planning sheet', {
             'custom_white_tint',
             'custom_no_of_design_colours',
             'custom_finishing',
+            'custom_bopp_finish_size_mm',
             'custom_total_no_of_colours',
             'custom_bopp_bom_kgs',
             'custom_no_of_sheets'
@@ -48,12 +49,17 @@ frappe.ui.form.on('Planning sheet', {
         
         ['items', 'planned_items'].forEach(table => {
             if (frm.fields_dict[table] && frm.fields_dict[table].grid) {
+                let updated = false;
                 fields_to_hide.forEach(fieldname => {
                     let df = frappe.meta.get_docfield(frm.fields_dict[table].grid.doctype, fieldname, frm.docname);
                     if (df) {
                         frm.fields_dict[table].grid.update_docfield_property(fieldname, 'hidden', is_221 ? 1 : 0);
+                        updated = true;
                     }
                 });
+                if (updated) {
+                    frm.fields_dict[table].grid.refresh();
+                }
             }
         });
     }
@@ -63,10 +69,27 @@ function trigger_toggle(frm) {
     frm.trigger('toggle_221_fields');
 }
 
+function fetch_design_name(frm, cdt, cdn) {
+    let row = frappe.get_doc(cdt, cdn);
+    if (row.custom_design_code) {
+        frappe.call({
+            method: 'production_entry.production_planning.scheduler_api._design_master_extra_fields',
+            args: { design_code: row.custom_design_code },
+            callback: function(r) {
+                if (r.message && r.message.custom_design_name) {
+                    frappe.model.set_value(cdt, cdn, 'custom_design_name', r.message.custom_design_name);
+                }
+            }
+        });
+    }
+}
+
 frappe.ui.form.on('Planning sheet Item', {
-    item_code: trigger_toggle
+    item_code: trigger_toggle,
+    custom_design_code: fetch_design_name
 });
 
 frappe.ui.form.on('Planning Table', {
-    item_code: trigger_toggle
+    item_code: trigger_toggle,
+    custom_design_code: fetch_design_name
 });

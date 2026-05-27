@@ -3470,6 +3470,7 @@ def _printing_design_attachment_from_sales_order_item(so_item_name):
 	return ""
 
 
+@frappe.whitelist()
 def _design_master_extra_fields(design_code):
 	"""If ``Design Master`` is installed and the DB table exists, resolve design name / attachment by code.
 
