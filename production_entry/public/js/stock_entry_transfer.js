@@ -69,15 +69,27 @@ frappe.ui.form.on("Stock Entry", {
             callback: function(r) {
                 if (r.message && !r.message.error) {
                     let batch = r.message;
+
+                    // GUARD: item must match what is already being transferred
+                    if (expected_item && batch.item_code && batch.item_code !== expected_item) {
+                        frappe.msgprint({
+                            title: __('Wrong Item'),
+                            indicator: 'red',
+                            message: `The scanned batch <b>${barcode}</b> belongs to item <b>${batch.item_code}</b>, but this transfer is for <b>${expected_item}</b>. Row NOT added.`
+                        });
+                        frappe.utils.play_sound("error");
+                        return;   // ← stop here, do NOT add any row
+                    }
+
                     if (batch.available_qty <= 0) {
                         frappe.msgprint({title: __('No Stock'), indicator: 'orange', message: `The scanned batch (${barcode}) has 0 qty in the source warehouse.`});
                         frappe.utils.play_sound("error");
                         return;
                     }
                     
-                    // Add new row properly triggering item triggers
+                    // Only now — safe to add the row
                     let new_row = frm.add_child("items");
-                    // Lock the new row as well in case ERPNext standard script tries to touch it
+                    // Lock qty to protect against ERPNext background script
                     new_row._protected_qty = batch.available_qty;
                     setTimeout(() => { new_row._protected_qty = undefined; }, 3000);
                     
