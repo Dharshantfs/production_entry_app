@@ -198,16 +198,12 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
 
     parent_field = _get_pt_parentfield()
 
-    # Fetch 107 rows on the sheet that are linked to 233 SO lines
-    rows_107 = frappe.db.sql(
-        """SELECT name, item_code, sales_order_item, so_item, qty, uom
-           FROM `tabPlanning Table`
-           WHERE parent = %s
-             AND (item_code LIKE '107%%' OR item_code LIKE '%%-107%%')
-        """,
-        (planning_sheet_name,),
-        as_dict=True,
-    ) or []
+    # Fetch 107 rows on the sheet that are linked to 233 SO lines (from document, not DB!)
+    rows_107 = []
+    for prow in (ps.get(parent_field) or []):
+        ic = str(prow.get("item_code") or "").strip()
+        if ic.startswith("107") or "-107" in ic:
+            rows_107.append(prow)
 
     for prow in rows_107:
         soi_key = str(prow.get("sales_order_item") or prow.get("so_item") or "")
@@ -245,8 +241,8 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
         pb_ic = str(pb_row.item_code or "").strip()
         pb_item_name = frappe.db.get_value("Item", pb_ic, "item_name") or pb_ic
 
-        # Check if already exists
-        existing = frappe.db.sql(
+        # Check if already exists in DB
+        existing_db = frappe.db.sql(
             """SELECT name FROM `tabPlanning Table`
                WHERE parent = %s AND item_code = %s
                  AND (IFNULL(sales_order_item,'') = %s OR IFNULL(so_item,'') = %s)
@@ -254,7 +250,13 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
             (planning_sheet_name, pb_ic, soi_key, soi_key),
             as_dict=True,
         )
-        if existing:
+        # Check if already exists in memory
+        existing_mem = any(
+            str(r.get("item_code") or "").strip() == pb_ic and
+            str(r.get("sales_order_item") or r.get("so_item") or "") == soi_key
+            for r in (ps.get(parent_field) or [])
+        )
+        if existing_db or existing_mem:
             continue
 
         so_it = so_items_233[soi_key]
@@ -389,6 +391,32 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
             if nc:
                 updates["custom_no_of_design_colours"] = nc + "C"
         
+        # Finishing
+        if parsed.get("finishing_label") or parsed.get("finishing_code"):
+            fin = parsed.get("finishing_label") or parsed.get("finishing_code")
+            if frappe.db.has_column("Planning Table", "custom_finishing"):
+                updates["custom_finishing"] = fin
+            if frappe.db.has_column("Planning Table", "finishing"):
+                updates["finishing"] = fin
+
+        # Design Master info
+        dc = parsed.get("design_code")
+        if dc:
+            try:
+                from production_entry.production_planning.scheduler_api import _design_master_extra_fields
+                dm_info = _design_master_extra_fields(dc)
+                
+                if frappe.db.has_column("Planning Table", "custom_design_code"):
+                    updates["custom_design_code"] = dc
+                if frappe.db.has_column("Planning Table", "custom_design_name") and dm_info.get("custom_design_name"):
+                    updates["custom_design_name"] = dm_info.get("custom_design_name")
+                if frappe.db.has_column("Planning Table", "custom_design_attachment") and dm_info.get("custom_design_attachment"):
+                    updates["custom_design_attachment"] = dm_info.get("custom_design_attachment")
+                if frappe.db.has_column("Planning Table", "custom_design_colour") and dm_info.get("custom_design_colour"):
+                    updates["custom_design_colour"] = dm_info.get("custom_design_colour")
+            except Exception:
+                pass
+
         # Validation fixes: Quality, Color, and Bag Size
         if quality_name:
             if frappe.db.has_column("Planning Table", "quality"):
@@ -403,66 +431,109 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
                 updates["sheet_size"] = parsed["bag_size_id"]
             if frappe.db.has_column("Planning Table", "bag_size"):
                 updates["bag_size"] = parsed["bag_size_id"]
+                
+        # Force Unit
+        if frappe.db.has_column("Planning Table", "unit"):
+            cur_unit = row.get("unit") or ""
+            from production_entry.production_planning.bopp_bag_api import BOPP_BAG_UNITS, BOX_BAG_UNASSIGNED_UNIT
+            if cur_unit not in BOPP_BAG_UNITS:
+                updates["unit"] = BOX_BAG_UNASSIGNED_UNIT
 
         frappe.db.set_value("Planning Table", row["name"], updates, update_modified=False)
 
     # Same update on Planning sheet Item table if it exists
-    if frappe.db.exists("DocType", "Planning sheet Item"):
-        ps_rows = frappe.db.sql(
-            """SELECT name, item_code FROM `tabPlanning sheet Item`
-               WHERE parent = %s
-                 AND (item_code LIKE '233%%' OR item_code LIKE '%%-233%%')""",
-            (planning_sheet_name,),
-            as_dict=True,
-        ) or []
-        for row in ps_rows:
-            parsed = _parse_bopp_bag_item_code(row.get("item_code") or "")
-            total = parsed.get("total_gsm") or 0
-            if total <= 0:
-                continue
-            updates = {"gsm": total}
+    if not frappe.db.exists("DocType", "Planning sheet Item"):
+        return
 
-            # Resolve quality and color names
-            quality_name = ""
-            color_name = ""
+    psi_rows = frappe.db.sql(
+        """SELECT name, item_code FROM `tabPlanning sheet Item`
+           WHERE parent = %s
+             AND (item_code LIKE '233%%' OR item_code LIKE '%%-233%%')""",
+        (planning_sheet_name,),
+        as_dict=True,
+    ) or []
+    
+    for row in (psi_rows or []):
+        parsed = _parse_bopp_bag_item_code(row.get("item_code") or "")
+        total = parsed.get("total_gsm") or 0
+        if total <= 0:
+            continue
+        updates = {"gsm": total}
+
+        # Resolve quality and color names
+        quality_name = ""
+        color_name = ""
+        try:
+            from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+                _quality_name_by_code,
+                _color_name_by_code,
+            )
+            if parsed["quality_letter"]:
+                quality_name = _quality_name_by_code(parsed["quality_letter"]) or parsed["quality_letter"]
+            if parsed["colour_code"]:
+                color_name = _color_name_by_code(parsed["colour_code"]) or parsed["colour_code"]
+        except Exception:
+            quality_name = parsed["quality_letter"]
+            color_name = parsed["colour_code"]
+
+        if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
+            updates["custom_lam_gsm"] = parsed.get("lam_gsm") or 0
+        if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
+            updates["custom_bopp_gsm"] = parsed.get("bopp_gsm") or 0
+        if frappe.db.has_column("Planning sheet Item", "custom_no_of_design_colours"):
+            nc = parsed.get("num_colors") or ""
+            if nc:
+                updates["custom_no_of_design_colours"] = nc + "C"
+        
+        # Finishing
+        if parsed.get("finishing_label") or parsed.get("finishing_code"):
+            fin = parsed.get("finishing_label") or parsed.get("finishing_code")
+            if frappe.db.has_column("Planning sheet Item", "custom_finishing"):
+                updates["custom_finishing"] = fin
+            if frappe.db.has_column("Planning sheet Item", "finishing"):
+                updates["finishing"] = fin
+
+        # Design Master info
+        dc = parsed.get("design_code")
+        if dc:
             try:
-                from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
-                    _quality_name_by_code,
-                    _color_name_by_code,
-                )
-                if parsed["quality_letter"]:
-                    quality_name = _quality_name_by_code(parsed["quality_letter"]) or parsed["quality_letter"]
-                if parsed["colour_code"]:
-                    color_name = _color_name_by_code(parsed["colour_code"]) or parsed["colour_code"]
+                from production_entry.production_planning.scheduler_api import _design_master_extra_fields
+                dm_info = _design_master_extra_fields(dc)
+                
+                if frappe.db.has_column("Planning sheet Item", "custom_design_code"):
+                    updates["custom_design_code"] = dc
+                if frappe.db.has_column("Planning sheet Item", "custom_design_name") and dm_info.get("custom_design_name"):
+                    updates["custom_design_name"] = dm_info.get("custom_design_name")
+                if frappe.db.has_column("Planning sheet Item", "custom_design_attachment") and dm_info.get("custom_design_attachment"):
+                    updates["custom_design_attachment"] = dm_info.get("custom_design_attachment")
+                if frappe.db.has_column("Planning sheet Item", "custom_design_colour") and dm_info.get("custom_design_colour"):
+                    updates["custom_design_colour"] = dm_info.get("custom_design_colour")
             except Exception:
-                quality_name = parsed["quality_letter"]
-                color_name = parsed["colour_code"]
+                pass
+        
+        # Validation fixes: Quality, Color, and Bag Size
+        if quality_name:
+            if frappe.db.has_column("Planning sheet Item", "quality"):
+                updates["quality"] = quality_name
+            if frappe.db.has_column("Planning sheet Item", "custom_quality"):
+                updates["custom_quality"] = quality_name
+        if color_name:
+            if frappe.db.has_column("Planning sheet Item", "color"):
+                updates["color"] = color_name
+        if parsed.get("bag_size_id"):
+            if frappe.db.has_column("Planning sheet Item", "sheet_size"):
+                updates["sheet_size"] = parsed["bag_size_id"]
+            if frappe.db.has_column("Planning sheet Item", "bag_size"):
+                updates["bag_size"] = parsed["bag_size_id"]
+                
+        # Force Unit
+        if frappe.db.has_column("Planning sheet Item", "unit"):
+            cur_unit = row.get("unit") or ""
+            from production_entry.production_planning.bopp_bag_api import BOPP_BAG_UNITS, BOX_BAG_UNASSIGNED_UNIT
+            if cur_unit not in BOPP_BAG_UNITS:
+                updates["unit"] = BOX_BAG_UNASSIGNED_UNIT
 
-            if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
-                updates["custom_lam_gsm"] = parsed.get("lam_gsm") or 0
-            if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
-                updates["custom_bopp_gsm"] = parsed.get("bopp_gsm") or 0
-            if frappe.db.has_column("Planning sheet Item", "custom_no_of_design_colours"):
-                nc = parsed.get("num_colors") or ""
-                if nc:
-                    updates["custom_no_of_design_colours"] = nc + "C"
-            
-            # Validation fixes: Quality, Color, and Bag Size
-            if quality_name:
-                if frappe.db.has_column("Planning sheet Item", "quality"):
-                    updates["quality"] = quality_name
-                if frappe.db.has_column("Planning sheet Item", "custom_quality"):
-                    updates["custom_quality"] = quality_name
-            if color_name:
-                if frappe.db.has_column("Planning sheet Item", "color"):
-                    updates["color"] = color_name
-            if parsed.get("bag_size_id"):
-                if frappe.db.has_column("Planning sheet Item", "sheet_size"):
-                    updates["sheet_size"] = parsed["bag_size_id"]
-                if frappe.db.has_column("Planning sheet Item", "bag_size"):
-                    updates["bag_size"] = parsed["bag_size_id"]
-
-            frappe.db.set_value("Planning sheet Item", row["name"], updates, update_modified=False)
+        frappe.db.set_value("Planning sheet Item", row["name"], updates, update_modified=False)
 
 
 @frappe.whitelist()
