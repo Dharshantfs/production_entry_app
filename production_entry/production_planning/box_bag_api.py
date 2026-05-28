@@ -202,18 +202,22 @@ def get_box_bag_order_table_data(
 		board_process_scope="box_bag_only",
 	)
 
-	# Hard safety filter: only process 221
+	# Hard safety filter: only processes 221 and 233
 	raw = [
 		r for r in (raw or [])
-		if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == "221"
+		if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in ("221", "233")
 	]
 
 	bag_sizes = _bag_series_size_map()
 
 	out = []
+	from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
 	for row in raw:
 		ic = str(row.get("item_code") or row.get("itemCode") or "").strip()
-		parsed = _parse_box_bag_item_code(ic)
+		if _item_process_prefix(ic) == "233":
+			parsed = _parse_bopp_bag_item_code(ic)
+		else:
+			parsed = _parse_box_bag_item_code(ic)
 		item_name = str(row.get("item_name") or "").strip()
 		planning_sheet = str(row.get("planningSheet") or row.get("planning_sheet") or row.get("parent") or "").strip()
 
@@ -353,8 +357,8 @@ def get_box_bag_order_table_data(
 			"spr_name": spr_name,
 			"spr_docstatus": spr_docstatus,
 			"salesOrderItem": row.get("salesOrderItem") or row.get("sales_order_item") or "",
-			"process": "221",
-			"process_label": "221 Box Bag",
+			"process": "233" if _item_process_prefix(ic) == "233" else "221",
+			"process_label": "233 BOPP Box Bag" if _item_process_prefix(ic) == "233" else "221 Box Bag",
 			"movement_type": row.get(PLANNING_MOVEMENT_TYPE_FIELD) or row.get("movement_type") or "",
 		}
 

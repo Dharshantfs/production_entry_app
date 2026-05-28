@@ -54,22 +54,22 @@ frappe.ui.form.on('Planning sheet', {
         let required_by = {
             'sheet_size': ['251', '252', '253', '254', '255'],
             'custom_no_of_sheets': ['251', '252', '253', '254', '255'],
-            'custom_lam_gsm': ['104', '107', '254', '255', '109'],
+            'custom_lam_gsm': ['104', '107', '254', '255', '109', '233'],
             'custom_lam_side': ['104', '107', '254', '255', '109'],
             'custom_lam_side_': ['104', '107', '254', '255', '109'],
-            'custom_bopp_gsm': ['107', '255', '109'],
+            'custom_bopp_gsm': ['107', '255', '109', '233'],
             'custom_cylinder_type': ['107', '255', '109'],
             'custom_white_tint': ['107', '255', '109'],
-            'custom_no_of_design_colours': ['107', '255', '109'],
+            'custom_no_of_design_colours': ['107', '255', '109', '233'],
             'custom_bopp_finish_size_mm': ['107', '255', '109'],
             'custom_total_no_of_colours': ['107', '255', '109'],
             'custom_bopp_bom_kgs': ['107', '255', '109'],
-            'custom_design_code': ['107', '255', '109', '221'],
-            'custom_design_name': ['107', '255', '109', '221'],
-            'custom_design_colour': ['107', '255', '109', '221'],
-            'custom_design_attachment': ['107', '255', '109', '221'],
-            'custom_finishing': ['107', '255', '109', '221'],
-            'bag_size': ['221']
+            'custom_design_code': ['107', '255', '109', '221', '233'],
+            'custom_design_name': ['107', '255', '109', '221', '233'],
+            'custom_design_colour': ['107', '255', '109', '221', '233'],
+            'custom_design_attachment': ['107', '255', '109', '221', '233'],
+            'custom_finishing': ['107', '255', '109', '221', '233'],
+            'bag_size': ['221', '233']
         };
         
         ['items', 'planned_items'].forEach(table => {
