@@ -90,7 +90,7 @@ frappe.ui.form.on('Planning sheet', {
                     }
                 }
                 
-                let is_hidden = is_required ? 0 : 1;
+                let is_hidden = 0; // is_required ? 0 : 1; // Temporarily reverted per user request
                 
                 let df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
                 if (df && !!df.hidden != !!is_hidden) {

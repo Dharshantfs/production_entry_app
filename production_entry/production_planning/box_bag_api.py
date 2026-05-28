@@ -202,10 +202,10 @@ def get_box_bag_order_table_data(
 		board_process_scope="box_bag_only",
 	)
 
-	# Hard safety filter: only processes 221 and 233
+	# Hard safety filter: only process 221 (233 is handled by bopp_bag_api.py)
 	raw = [
 		r for r in (raw or [])
-		if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in ("221", "233")
+		if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == "221"
 	]
 
 	bag_sizes = _bag_series_size_map()

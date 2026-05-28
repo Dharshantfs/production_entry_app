@@ -674,6 +674,26 @@ def get_bopp_bag_order_table_data(
         spr_name = str(row.get("spr_name") or "").strip()
         spr_docstatus = row.get("spr_docstatus") or 0
 
+        if not pp_id:
+            # Fallback for Box Bag legacy orders: try to fetch by Sales Order + Item
+            so_name = str(row.get("salesOrder") or "").strip()
+            if so_name and ic:
+                try:
+                    pp_wos = frappe.db.sql("""
+                        SELECT pp.name as pp_id, wo.name as wo_name, wo.status 
+                        FROM `tabProduction Plan` pp
+                        JOIN `tabWork Order` wo ON wo.production_plan = pp.name
+                        WHERE pp.docstatus < 2 AND wo.sales_order = %s AND wo.production_item = %s
+                    """, (so_name, ic), as_dict=True)
+                    if pp_wos:
+                        pp_id = pp_wos[0].pp_id
+                        wo_name = pp_wos[0].wo_name
+                        wo_status = str(pp_wos[0].status or "").strip()
+                        wo_open = wo_status in ("Not Started", "In Process", "Open")
+                        wo_terminal = wo_status in ("Completed", "Stopped", "Cancelled")
+                except Exception:
+                    pass
+
         if pp_id:
             try:
                 wos = frappe.get_all(
