@@ -26888,7 +26888,6 @@ def scan_stock_entry_batch(barcode, expected_item, source_warehouse=None):
         
     available_qty = batch.batch_qty
     if source_warehouse:
-        import frappe.utils
         bin_qty = frappe.db.get_value('Bin', {'item_code': batch.item, 'warehouse': source_warehouse}, 'actual_qty')
         # Wait, get_batch_qty is better
         try:
