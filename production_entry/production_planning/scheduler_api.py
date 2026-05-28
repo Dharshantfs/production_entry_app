@@ -413,7 +413,7 @@ def reorder_planning_sheet_child_tables_in_doc(doc):
 
 def _finalize_planning_sheet_row_order_and_movement(planning_sheet_name):
 	"""Production sequence + movement flags after BOM post-sync."""
-	# _reorder_planning_sheet_by_production_sequence(planning_sheet_name)
+	_reorder_planning_sheet_by_production_sequence(planning_sheet_name)
 	_apply_movement_types_to_planning_sheet(planning_sheet_name)
 
 
@@ -6815,17 +6815,17 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_preflight_bopp_fg_bom_on_sales_order(planning_sheet_name)
 	_sync_253_laminated_sheet_stack(planning_sheet_name)
 	_sync_bopp_sheet_stacks_from_sales_order(planning_sheet_name)
+	try:
+		from production_entry.production_planning.bopp_bag_api import _sync_bopp_bag_planning_rows
+		_sync_bopp_bag_planning_rows(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_bopp_bag_planning_rows")
 	_sync_lamination_fabric_planning_rows(planning_sheet_name)
 	_sync_slitting_fabric_planning_rows(planning_sheet_name)
 	_force_slitting_unit_on_sheet(planning_sheet_name)
 	_sync_sheet_cutting_fabric_planning_rows(planning_sheet_name)
 	_force_sheet_cutting_unit_on_sheet(planning_sheet_name)
 	_sync_box_bag_fabric_planning_rows(planning_sheet_name)
-	try:
-		from production_entry.production_planning.bopp_bag_api import _sync_bopp_bag_planning_rows
-		_sync_bopp_bag_planning_rows(planning_sheet_name)
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_bopp_bag_planning_rows")
 	_sync_sheet_cutting_bom_child_row_specs(planning_sheet_name)
 	try:
 		_sync_sheet_cutting_no_of_sheets_from_so(planning_sheet_name)
@@ -7130,7 +7130,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			continue
 		pp = _bom_item_process_code((so_line.item_code or "").strip())
 		lp = _lamination_process_from_item_code(lam_ic)
-		if (pp == "253" and lp == "104") or (pp == "255" and lp == "107") or (pp == "108" and lp == "107"):
+		if (pp == "253" and lp == "104") or (pp == "255" and lp == "107") or (pp == "108" and lp == "107") or (pp == "233" and lp == "107"):
 			key = (so_line.name, lam_ic)
 			if key not in seen_lt:
 				seen_lt.add(key)
@@ -7250,7 +7250,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		so_parent_ic = (so_it.item_code or "").strip()
 		pp_so = _bom_item_process_code(so_parent_ic)
 		lam_proc = _lamination_process_from_item_code(lam_ic)
-		if pp_so in ("108", "109", "253", "255", "254", "106"):
+		if pp_so in ("108", "109", "253", "255", "254", "106", "233"):
 			t_fg = _parent_child_trace_id_from_item_code(so_parent_ic) or _parent_child_trace_id_for_planning_row(
 				so_parent_ic, so_it.name, ps.name
 			)
@@ -7261,7 +7261,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			_has_lam_design = bool(_cstr((_parse_107_item_code(lam_ic) or {}).get("design_code")).strip())
 		elif lam_proc == "104":
 			_has_lam_design = bool(_cstr((_parse_104_item_code(lam_ic) or {}).get("design_code")).strip())
-		if not _has_lam_design and pp_so not in ("108", "109", "253", "255", "254", "106"):
+		if not _has_lam_design and pp_so not in ("108", "109", "253", "255", "254", "106", "233"):
 			if pp_so == "104" and lam_proc == "104":
 				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
 				if t_sheet:

@@ -329,16 +329,8 @@ def _sync_bopp_bag_planning_rows(planning_sheet_name):
         LAMINATION_UNIT,
         process_label="BOPP bag laminated fabric (233 → 107)",
     )
-    _sync_bom_child_rows_from_planning_rows(
-        planning_sheet_name,
-        ("107",),
-        "100",
-        so_parent_processes=("233",),
-        process_label="BOPP bag fabric via lam (107 → 100)",
-    )
-    # PB (Printed BOPP Film) extraction: 233→107 BOM contains PB-* children.
-    # We do this inline because _sync_bom_child_rows_from_planning_rows doesn't match PB- prefixes.
-    _sync_bopp_pb_rows_from_107(planning_sheet_name)
+    # Note: 107 -> 100 and 107 -> PB extraction are handled natively by _sync_lamination_fabric_planning_rows
+    # We rely on _run_planning_sheet_post_sync calling this function BEFORE _sync_lamination_fabric_planning_rows.
 
     # Write total_gsm into the gsm field of 233 parent rows
     _update_bopp_bag_gsm_on_sheet(planning_sheet_name)
