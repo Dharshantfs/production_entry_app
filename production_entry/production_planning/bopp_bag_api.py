@@ -191,7 +191,7 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
     so_doc = frappe.get_doc("Sales Order", ps.sales_order)
     so_items_233 = {
         str(it.name): it for it in (so_doc.items or [])
-        if _item_process_prefix(str(it.item_code or "")) == "233"
+        if _item_process_prefix(str(it.item_code or "")) in ("221", "233")
     }
     if not so_items_233:
         return
@@ -352,8 +352,9 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
     """For each 233-process row, parse item code and write fabric+lam+bopp total into gsm field."""
     if not planning_sheet_name:
         return
+    so_name = str(frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order") or "").strip()
     rows = frappe.db.sql(
-        """SELECT name, item_code FROM `tabPlanning Table`
+        """SELECT name, item_code, sales_order_item, so_item FROM `tabPlanning Table`
            WHERE parent = %s
              AND (item_code LIKE '233%%' OR item_code LIKE '%%-233%%')""",
         (planning_sheet_name,),
@@ -403,15 +404,32 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
         dc = parsed.get("design_code")
         if dc:
             try:
-                from production_entry.production_planning.scheduler_api import _design_master_extra_fields
+                from production_entry.production_planning.scheduler_api import _design_master_extra_fields, _pb_design_name_from_sales_order_item, _printing_design_attachment_from_sales_order_item
                 dm_info = _design_master_extra_fields(dc)
                 
+                soi_name = str(row.get("sales_order_item") or row.get("so_item") or "").strip()
+                if not soi_name and so_name:
+                    so_doc = frappe.get_doc("Sales Order", so_name)
+                    for it in so_doc.items or []:
+                        if str(it.item_code or "").startswith(dc + "-"):
+                            soi_name = it.name
+                            break
+                            
+                design_name = dm_info.get("custom_design_name")
+                design_attachment = dm_info.get("custom_design_attachment")
+                
+                if soi_name:
+                    if not design_name:
+                        design_name = _pb_design_name_from_sales_order_item(soi_name)
+                    if not design_attachment:
+                        design_attachment = _printing_design_attachment_from_sales_order_item(soi_name)
+
                 if frappe.db.has_column("Planning Table", "custom_design_code"):
                     updates["custom_design_code"] = dc
-                if frappe.db.has_column("Planning Table", "custom_design_name") and dm_info.get("custom_design_name"):
-                    updates["custom_design_name"] = dm_info.get("custom_design_name")
-                if frappe.db.has_column("Planning Table", "custom_design_attachment") and dm_info.get("custom_design_attachment"):
-                    updates["custom_design_attachment"] = dm_info.get("custom_design_attachment")
+                if design_name and frappe.db.has_column("Planning Table", "custom_design_name"):
+                    updates["custom_design_name"] = design_name
+                if design_attachment and frappe.db.has_column("Planning Table", "custom_design_attachment"):
+                    updates["custom_design_attachment"] = design_attachment
                 if frappe.db.has_column("Planning Table", "custom_design_colour") and dm_info.get("custom_design_colour"):
                     updates["custom_design_colour"] = dm_info.get("custom_design_colour")
             except Exception:
@@ -427,8 +445,6 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
             if frappe.db.has_column("Planning Table", "color"):
                 updates["color"] = color_name
         if parsed.get("bag_size_id"):
-            if frappe.db.has_column("Planning Table", "sheet_size"):
-                updates["sheet_size"] = parsed["bag_size_id"]
             if frappe.db.has_column("Planning Table", "bag_size"):
                 updates["bag_size"] = parsed["bag_size_id"]
                 
@@ -446,7 +462,7 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
         return
 
     psi_rows = frappe.db.sql(
-        """SELECT name, item_code FROM `tabPlanning sheet Item`
+        """SELECT name, item_code, sales_order_item, so_item FROM `tabPlanning sheet Item`
            WHERE parent = %s
              AND (item_code LIKE '233%%' OR item_code LIKE '%%-233%%')""",
         (planning_sheet_name,),
@@ -497,15 +513,32 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
         dc = parsed.get("design_code")
         if dc:
             try:
-                from production_entry.production_planning.scheduler_api import _design_master_extra_fields
+                from production_entry.production_planning.scheduler_api import _design_master_extra_fields, _pb_design_name_from_sales_order_item, _printing_design_attachment_from_sales_order_item
                 dm_info = _design_master_extra_fields(dc)
                 
+                soi_name = str(row.get("sales_order_item") or row.get("so_item") or "").strip()
+                if not soi_name and so_name:
+                    so_doc = frappe.get_doc("Sales Order", so_name)
+                    for it in so_doc.items or []:
+                        if str(it.item_code or "").startswith(dc + "-"):
+                            soi_name = it.name
+                            break
+                            
+                design_name = dm_info.get("custom_design_name")
+                design_attachment = dm_info.get("custom_design_attachment")
+                
+                if soi_name:
+                    if not design_name:
+                        design_name = _pb_design_name_from_sales_order_item(soi_name)
+                    if not design_attachment:
+                        design_attachment = _printing_design_attachment_from_sales_order_item(soi_name)
+
                 if frappe.db.has_column("Planning sheet Item", "custom_design_code"):
                     updates["custom_design_code"] = dc
-                if frappe.db.has_column("Planning sheet Item", "custom_design_name") and dm_info.get("custom_design_name"):
-                    updates["custom_design_name"] = dm_info.get("custom_design_name")
-                if frappe.db.has_column("Planning sheet Item", "custom_design_attachment") and dm_info.get("custom_design_attachment"):
-                    updates["custom_design_attachment"] = dm_info.get("custom_design_attachment")
+                if design_name and frappe.db.has_column("Planning sheet Item", "custom_design_name"):
+                    updates["custom_design_name"] = design_name
+                if design_attachment and frappe.db.has_column("Planning sheet Item", "custom_design_attachment"):
+                    updates["custom_design_attachment"] = design_attachment
                 if frappe.db.has_column("Planning sheet Item", "custom_design_colour") and dm_info.get("custom_design_colour"):
                     updates["custom_design_colour"] = dm_info.get("custom_design_colour")
             except Exception:
@@ -521,8 +554,6 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
             if frappe.db.has_column("Planning sheet Item", "color"):
                 updates["color"] = color_name
         if parsed.get("bag_size_id"):
-            if frappe.db.has_column("Planning sheet Item", "sheet_size"):
-                updates["sheet_size"] = parsed["bag_size_id"]
             if frappe.db.has_column("Planning sheet Item", "bag_size"):
                 updates["bag_size"] = parsed["bag_size_id"]
                 

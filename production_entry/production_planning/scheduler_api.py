@@ -15097,7 +15097,7 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return SHEET_CUTTING_UNIT
     if item_code and _item_process_prefix(str(item_code)) in ("253", "255", "254"):
         return SHEET_CUTTING_UNIT
-    if item_code and _item_process_prefix(str(item_code)) == "221":
+    if item_code and _item_process_prefix(str(item_code)) in ("221", "233"):
         return BOX_BAG_UNASSIGNED_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
