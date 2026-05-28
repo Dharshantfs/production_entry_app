@@ -111,6 +111,7 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"255": 105,
 	"108": 110,
 	"221": 115,
+	"233": 115,
 }
 
 
@@ -155,7 +156,7 @@ def _same_fg_design_family(planning_ic, so_fg_ic):
 	sp = _bom_item_process_code(sic)
 	if not pp or pp != sp:
 		return False
-	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109", "221"):
+	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109", "221", "233"):
 		return False
 	p_design = pic.split("-")[0].upper()
 	s_design = sic.split("-")[0].upper()
@@ -459,7 +460,7 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 
 # First-segment wins for codes like 105-…-100… (GSM / width digits) so we never classify as 100 instead of 105.
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
-	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "251", "252", "253", "254", "255"}
+	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "233", "251", "252", "253", "254", "255"}
 )
 
 
@@ -501,7 +502,7 @@ def _bom_item_process_code(item_code):
 		return ""
 	pp = _item_process_prefix(ic)
 	lam = _lamination_process_from_item_code(ic)
-	if pp in ("108", "255", "253", "254", "251", "252", "221"):
+	if pp in ("108", "255", "253", "254", "251", "252", "221", "233"):
 		return pp
 	if lam in ("104", "107", "255"):
 		return lam
@@ -4697,6 +4698,24 @@ def _parent_child_trace_id_from_item_code(item_code):
 		fin = _cstr(p.get("finishing_code")).strip()
 		if fin: segs.append(fin)
 		return "-".join(segs)
+	if process == "233":
+		from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
+		p = _parse_bopp_bag_item_code(ic)
+		# Trace format: design-numcolors-size-quality-color-totalgsm-finishing
+		segs = [_cstr(p.get("design_code")).strip()]
+		nc = _cstr(p.get("num_colors")).strip()
+		if nc: segs.append(nc + "C")
+		bs = _cstr(p.get("bag_size_id")).strip()
+		if bs: segs.append(bs)
+		q = _cstr(p.get("quality_letter")).strip()
+		if q: segs.append(q)
+		cc = _cstr(p.get("colour_code")).strip()
+		if cc: segs.append(cc)
+		total_gsm = int(p.get("total_gsm") or 0)
+		if total_gsm > 0: segs.append(str(total_gsm))
+		fin = _cstr(p.get("finishing_code")).strip()
+		if fin: segs.append(fin)
+		return "-".join(segs)
 	# 109 laminated slitting: 109QQQCCCGGGWWWW[-lam_suffix]
 	if process == "109":
 		p = _parse_109_item_code(ic) or {}
@@ -6802,6 +6821,11 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_sync_sheet_cutting_fabric_planning_rows(planning_sheet_name)
 	_force_sheet_cutting_unit_on_sheet(planning_sheet_name)
 	_sync_box_bag_fabric_planning_rows(planning_sheet_name)
+	try:
+		from production_entry.production_planning.bopp_bag_api import _sync_bopp_bag_planning_rows
+		_sync_bopp_bag_planning_rows(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_bopp_bag_planning_rows")
 	_sync_sheet_cutting_bom_child_row_specs(planning_sheet_name)
 	try:
 		_sync_sheet_cutting_no_of_sheets_from_so(planning_sheet_name)

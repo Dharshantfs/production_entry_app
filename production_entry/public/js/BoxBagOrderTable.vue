@@ -25,6 +25,7 @@
         <label>Process</label>
         <div class="cc-shift-btns" style="flex-wrap: wrap;">
           <button type="button" :class="{ active: filterProcess === '221' }" @click="setProcessFilter('221')">221 Box Bag</button>
+          <button type="button" :class="{ active: filterProcess === '233' }" @click="setProcessFilter('233')">233 BOPP Box Bag</button>
           <button type="button" :class="{ active: filterProcess === 'all' }" @click="setProcessFilter('all')">All</button>
         </div>
       </div>
@@ -76,7 +77,7 @@
       <div class="cc-table-unit-header lot-header">BOX BAG PRODUCTION — Planned orders</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGEMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">UNIT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">DESIGN CODE</th><th style="min-width:100px;">BAG SIZE</th><th style="min-width:90px;">QUALITY</th><th style="min-width:90px;">COLOUR</th><th style="min-width:64px;">GSM</th><th style="min-width:100px;">FINISHING</th><th style="min-width:80px;">PLANNED METERS</th><th style="min-width:100px;">PLANNED QTY (PCS)</th><th style="min-width:100px;">ACHIEVED QTY (PCS)</th><th style="min-width:100px;">TOTAL ACHIEVED METERS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGEMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:130px;">PROCESS</th><th style="min-width:120px;">UNIT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">DESIGN CODE</th><th style="min-width:60px;">NO. COLOURS</th><th style="min-width:100px;">BAG SIZE</th><th style="min-width:90px;">QUALITY</th><th style="min-width:90px;">COLOUR</th><th style="min-width:64px;">GSM</th><th style="min-width:100px;">FINISHING</th><th style="min-width:80px;">PLANNED METERS</th><th style="min-width:100px;">PLANNED QTY (PCS)</th><th style="min-width:100px;">ACHIEVED QTY (PCS)</th><th style="min-width:100px;">TOTAL ACHIEVED METERS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th><th style="min-width:120px;">DESIGN FILE</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="21" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
@@ -86,14 +87,16 @@
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
+              <td class="cell-center" :style="row.process === '233' ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || (row.process === '221' ? '221 Box Bag' : row.process || '-') }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
               <td class="cell-center font-bold">{{ row.design_code || "-" }}</td>
+              <td class="cell-center">{{ row.num_colors ? row.num_colors + 'C' : '-' }}</td>
               <td class="cell-center font-bold">{{ row.bag_size_inches || row.bag_size_id || "-" }}</td>
               <td class="cell-center">{{ formatQuality(row.quality) }}</td>
               <td class="cell-center">{{ row.color || "-" }}</td>
-              <td class="cell-center">{{ row.fabric_gsm || row.gsm || "-" }}</td>
+              <td class="cell-center">{{ row.total_gsm || row.fabric_gsm || row.gsm || "-" }}</td>
               <td class="cell-center">{{ row.finishing || "-" }}</td>
               <td class="cell-right">{{ formatNum(row.length || row.meter) }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td>
@@ -131,6 +134,11 @@
                   <span v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1" class="muted" style="font-size:11px;">PP Draft</span>
                   <span v-else-if="!row.pp_id" class="muted" style="font-size:11px;">No PP</span>
                 </div>
+              </td>
+              <!-- DESIGN ATTACHMENT -->
+              <td class="cell-center">
+                <a v-if="row.design_attachment" :href="row.design_attachment" target="_blank" class="cc-pp-btn" style="background:#f0fdf4;border-color:#86efac;color:#166534;">View File</a>
+                <span v-else class="muted">-</span>
               </td>
             </tr>
           </template>
@@ -433,7 +441,15 @@ async function fetchData() {
       method: "production_entry.production_planning.box_bag_api.get_box_bag_order_table_data",
       args
     });
-    rawData.value = (r.message || []).map((d) => ({
+    const r2 = await frappe.call({
+      method: "production_entry.production_planning.bopp_bag_api.get_bopp_bag_order_table_data",
+      args
+    });
+    const combined = [
+      ...(r.message || []),
+      ...(r2.message || []),
+    ];
+    rawData.value = combined.map((d) => ({
       ...d,
       itemName: d.itemName || d.item_name || "",
       plannedDate: d.plannedDate || d.planned_date || "",
