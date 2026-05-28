@@ -257,6 +257,11 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
         if existing:
             continue
 
+        so_it = so_items_233[soi_key]
+        so_fg_ic = str(so_it.item_code or "").strip()
+        from production_entry.production_planning.scheduler_api import _parent_child_trace_id_from_item_code
+        trace_id = _parent_child_trace_id_from_item_code(so_fg_ic)
+
         # Insert PB row
         new_row = {
             "item_code": pb_ic,
@@ -266,6 +271,7 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
             "unit": PRINTED_BOPP_FILM_UNIT,
             "sales_order_item": soi_key,
             "so_item": soi_key,
+            "custom_parent_child_trace_id": trace_id,
         }
         try:
             ps.append(parent_field, dict(new_row))
@@ -357,6 +363,23 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
         if total <= 0:
             continue
         updates = {"gsm": total}
+
+        # Resolve quality and color names
+        quality_name = ""
+        color_name = ""
+        try:
+            from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+                _quality_name_by_code,
+                _color_name_by_code,
+            )
+            if parsed["quality_letter"]:
+                quality_name = _quality_name_by_code(parsed["quality_letter"]) or parsed["quality_letter"]
+            if parsed["colour_code"]:
+                color_name = _color_name_by_code(parsed["colour_code"]) or parsed["colour_code"]
+        except Exception:
+            quality_name = parsed["quality_letter"]
+            color_name = parsed["colour_code"]
+
         if frappe.db.has_column("Planning Table", "custom_lam_gsm"):
             updates["custom_lam_gsm"] = parsed.get("lam_gsm") or 0
         if frappe.db.has_column("Planning Table", "custom_bopp_gsm"):
@@ -365,6 +388,22 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
             nc = parsed.get("num_colors") or ""
             if nc:
                 updates["custom_no_of_design_colours"] = nc + "C"
+        
+        # Validation fixes: Quality, Color, and Bag Size
+        if quality_name:
+            if frappe.db.has_column("Planning Table", "quality"):
+                updates["quality"] = quality_name
+            if frappe.db.has_column("Planning Table", "custom_quality"):
+                updates["custom_quality"] = quality_name
+        if color_name:
+            if frappe.db.has_column("Planning Table", "color"):
+                updates["color"] = color_name
+        if parsed.get("bag_size_id"):
+            if frappe.db.has_column("Planning Table", "sheet_size"):
+                updates["sheet_size"] = parsed["bag_size_id"]
+            if frappe.db.has_column("Planning Table", "bag_size"):
+                updates["bag_size"] = parsed["bag_size_id"]
+
         frappe.db.set_value("Planning Table", row["name"], updates, update_modified=False)
 
     # Same update on Planning sheet Item table if it exists
@@ -382,6 +421,23 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
             if total <= 0:
                 continue
             updates = {"gsm": total}
+
+            # Resolve quality and color names
+            quality_name = ""
+            color_name = ""
+            try:
+                from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+                    _quality_name_by_code,
+                    _color_name_by_code,
+                )
+                if parsed["quality_letter"]:
+                    quality_name = _quality_name_by_code(parsed["quality_letter"]) or parsed["quality_letter"]
+                if parsed["colour_code"]:
+                    color_name = _color_name_by_code(parsed["colour_code"]) or parsed["colour_code"]
+            except Exception:
+                quality_name = parsed["quality_letter"]
+                color_name = parsed["colour_code"]
+
             if frappe.db.has_column("Planning sheet Item", "custom_lam_gsm"):
                 updates["custom_lam_gsm"] = parsed.get("lam_gsm") or 0
             if frappe.db.has_column("Planning sheet Item", "custom_bopp_gsm"):
@@ -390,6 +446,22 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
                 nc = parsed.get("num_colors") or ""
                 if nc:
                     updates["custom_no_of_design_colours"] = nc + "C"
+            
+            # Validation fixes: Quality, Color, and Bag Size
+            if quality_name:
+                if frappe.db.has_column("Planning sheet Item", "quality"):
+                    updates["quality"] = quality_name
+                if frappe.db.has_column("Planning sheet Item", "custom_quality"):
+                    updates["custom_quality"] = quality_name
+            if color_name:
+                if frappe.db.has_column("Planning sheet Item", "color"):
+                    updates["color"] = color_name
+            if parsed.get("bag_size_id"):
+                if frappe.db.has_column("Planning sheet Item", "sheet_size"):
+                    updates["sheet_size"] = parsed["bag_size_id"]
+                if frappe.db.has_column("Planning sheet Item", "bag_size"):
+                    updates["bag_size"] = parsed["bag_size_id"]
+
             frappe.db.set_value("Planning sheet Item", row["name"], updates, update_modified=False)
 
 

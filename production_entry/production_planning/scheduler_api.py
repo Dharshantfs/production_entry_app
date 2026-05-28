@@ -7911,11 +7911,13 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 	if not child_proc:
 		return ""
 	# SO finished-good trace always wins over immediate BOM parent (e.g. 106→104→100 uses 106, not 104).
-	if so_fg in ("255", "254", "253", "252", "251", "108", "109", "106", "105") and child_proc in (
+	if so_fg in ("255", "254", "253", "252", "251", "108", "109", "106", "105", "221", "233") and child_proc in (
 		"100",
 		"104",
 		"106",
 		"107",
+		"103",
+		"PB",
 	):
 		t_fg = _parent_child_trace_id_from_item_code(fg_ic)
 		if t_fg:
