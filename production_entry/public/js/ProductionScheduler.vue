@@ -606,7 +606,7 @@ const boardProcessOptions = computed(() => {
       { value: "__all__", label: "All" },
     ];
   }
-  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }, { value: "__all__", label: "All" }];
+  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }, { value: "233", label: "233 BOPP Bag" }, { value: "__all__", label: "All" }];
   return [];
 });
 
@@ -625,7 +625,11 @@ const boardBannerText = computed(() => {
     const pLbl = !p || p === "__all__" ? "251 · 252 · 253 · 254 · 255" : `Process ${p}`;
     return `Sheet Cutting Board — ${SHEET_CUTTING_UNIT} — ${pLbl}${unitScope}`;
   }
-  if (isBoxBagBoard.value) return `Box Bag Board — Process 221${unitScope}`;
+  if (isBoxBagBoard.value) {
+    const p = (boardProcessFilter.value || "").trim();
+    const pLbl = !p || p === "__all__" ? "221 · 233" : `Process ${p}`;
+    return `Box Bag Board — ${pLbl}${unitScope}`;
+  }
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
   if (isLaminationBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
@@ -915,12 +919,17 @@ const filteredData = computed(() => {
     const BOX_BAG_UNIT_LIST = ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
-      if (proc === "221") {
+      if (proc === "221" || proc === "233") {
         const u = (d.unit || "").trim();
         if (!BOX_BAG_UNIT_LIST.includes(u)) return { ...d, unit: "UNASSIGNED BOX BAG MACHINE" };
       }
       return d;
     });
+    if (["221", "233"].includes(boardProcessFilter.value)) {
+      data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
+    } else {
+      data = data.filter((d) => ["221", "233"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
+    }
   }
 
   if (isRewindingBoard.value) {
