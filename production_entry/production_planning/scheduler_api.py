@@ -26910,3 +26910,33 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 	return {"status": "success", "updated": updated_count}
 
 
+
+
+@frappe.whitelist()
+def scan_stock_entry_batch(barcode, expected_item, source_warehouse=None):
+    if not barcode:
+        return {'error': 'No barcode provided'}
+        
+    batch = frappe.db.get_value('Batch', barcode, ['name', 'item', 'batch_qty'], as_dict=1)
+    if not batch:
+        return {'error': f'Batch {barcode} not found in the system.'}
+        
+    if expected_item and batch.item != expected_item:
+        return {'error': f'Wrong Item: The scanned batch belongs to {batch.item}, but expected {expected_item}.'}
+        
+    available_qty = batch.batch_qty
+    if source_warehouse:
+        import frappe.utils
+        bin_qty = frappe.db.get_value('Bin', {'item_code': batch.item, 'warehouse': source_warehouse}, 'actual_qty')
+        # Wait, get_batch_qty is better
+        try:
+            from erpnext.stock.utils import get_batch_qty
+            available_qty = get_batch_qty(barcode, source_warehouse, batch.item)
+        except Exception:
+            pass
+            
+    return {
+        'batch_no': batch.name,
+        'item_code': batch.item,
+        'available_qty': available_qty or batch.batch_qty
+    }
