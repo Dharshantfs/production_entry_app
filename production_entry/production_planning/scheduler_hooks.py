@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Merge :mod:`scheduler_api` document hooks with core Planning sheet handlers."""
 
+import frappe
 from frappe.utils import cint
 
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (

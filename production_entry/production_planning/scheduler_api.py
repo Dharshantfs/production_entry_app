@@ -5350,7 +5350,7 @@ def ensure_all_planning_sheet_trace_ids(planning_sheet_name):
 						{"parent": psn, "item_code": ic, "so_item": soik},
 						"name",
 					)
-					if not psi:
+					if not psi and frappe.db.has_column("Planning sheet Item", "sales_order_item"):
 						psi = frappe.db.get_value(
 							"Planning sheet Item",
 							{"parent": psn, "item_code": ic, "sales_order_item": soik},
