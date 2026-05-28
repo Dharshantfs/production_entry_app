@@ -704,6 +704,8 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 			
 		q = flt(qty or 0)
 		if q <= 0:
+			q = stock_qty
+		if q <= 0:
 			q = 1.0
 		seen.add(bn)
 		batches.append(
@@ -732,7 +734,19 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 			continue
 		if pc_filter and pc_filter.lower() not in _cstr(row.get("party_code")).lower():
 			continue
+		
+		# Original exact batch
 		_add_batch(bn, row.get("net_weight") or row.get("gross_weight") or 0, row)
+		
+		# Check for split batches (e.g. JS-01052611/1)
+		split_bns = frappe.db.sql("""
+			select distinct batch_no
+			from `tabStock Ledger Entry`
+			where batch_no like %s and is_cancelled=0
+		""", (bn + "/%",), as_dict=1)
+		for sb in split_bns:
+			_add_batch(sb.batch_no, 0, row)
+			
 	if batches:
 		return batches
 
