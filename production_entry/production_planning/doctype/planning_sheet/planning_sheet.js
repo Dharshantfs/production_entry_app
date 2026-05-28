@@ -108,8 +108,14 @@ frappe.ui.form.on('Planning sheet', {
             }
             
             if (need_refresh) {
-                grid.setup_columns();
-                grid.refresh();
+                if (grid.wrapper && grid.wrapper.is(':visible')) {
+                    grid.setup_columns();
+                    grid.refresh();
+                } else {
+                    // If grid is not visible (e.g. in another tab or loading),
+                    // we don't call setup_columns() because it calculates 0 width and collapses them!
+                    // Frappe will automatically setup columns when the grid becomes visible.
+                }
             }
         });
     }

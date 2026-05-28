@@ -412,7 +412,7 @@ def reorder_planning_sheet_child_tables_in_doc(doc):
 
 def _finalize_planning_sheet_row_order_and_movement(planning_sheet_name):
 	"""Production sequence + movement flags after BOM post-sync."""
-	_reorder_planning_sheet_by_production_sequence(planning_sheet_name)
+	# _reorder_planning_sheet_by_production_sequence(planning_sheet_name)
 	_apply_movement_types_to_planning_sheet(planning_sheet_name)
 
 
@@ -11801,7 +11801,7 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
             "lamination_gsm": _stage3_lam_gsm_from_item_code(ic),
             "sales_order_item": so_item_name,
             "unit": r.get("unit") or PRINTING_UNASSIGNED_UNIT,
-            "quality": r.get("quality") or p105.get("quality_code") or "",
+            "quality": r.get("quality") or _LAMINATION_QUALITY_BY_CODE.get(p105.get("quality_code"), p105.get("quality_code")) or "",
             "gsm": gsm,
             "width_inch": width_inch,
             "qty": flt(r.get("qty") or 0.0),
@@ -17483,47 +17483,9 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     except Exception:
         frappe.log_error(frappe.get_traceback(), "merge reunited legacy PSI")
 
-    if new_idx is not None:
-        try:
-            eff = _effective_date_expr("sheet")
-            
-            # Re-load the current parent to ensure we use the TARGET sheet's plan
-            target_parent = frappe.get_doc("Planning sheet", item_doc.parent)
-            pb_plan = target_parent.get("custom_pb_plan_name") or ""
-            if pb_plan:
-                pb_cond = "AND sheet.custom_pb_plan_name = %(pb_plan)s"
-            else:
-                pb_cond = "AND (sheet.custom_pb_plan_name IS NULL OR sheet.custom_pb_plan_name = '')"
-
-            sql_fetch = f"""
-                SELECT item.name 
-                FROM `tabPlanning Table` item
-                JOIN `tabPlanning sheet` sheet ON item.parent = sheet.name
-                WHERE {eff} = %(target_date)s AND item.unit = %(unit)s AND item.name != %(item_name)s
-                {pb_cond}
-                ORDER BY item.idx ASC, item.creation ASC
-            """
-            params = {
-                "target_date": target_date,
-                "unit": unit,
-                "item_name": item_doc.name,
-            }
-            if pb_plan:
-                params["pb_plan"] = pb_plan
-
-            other_items = frappe.db.sql(sql_fetch, params)
-            others = [r[0] for r in other_items]
-            
-            insert_pos = max(0, new_idx - 1)
-            others.insert(insert_pos, item_doc.name)
-            
-            for i, name in enumerate(others):
-                frappe.db.sql(
-                    "UPDATE `tabPlanning Table` SET idx = %s WHERE name = %s",
-                    (i + 1, name),
-                )
-        except Exception as e:
-            frappe.log_error(f"Global Sequence Fix Error: {str(e)}")
+    # IDX shifting disabled to prevent child table corruption in Frappe.
+    # Frappe requires idx to be unique per parent. Updating idx across multiple documents 
+    # to form a board sequence breaks the native child table order (causing data cross-contamination).
 
     # 3. Update Plan Codes for Affected Sheets (Planning Table only)
     for sheet_name in set([source_parent.name, item_doc.parent]):
