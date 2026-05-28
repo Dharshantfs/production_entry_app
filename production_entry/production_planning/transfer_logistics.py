@@ -690,23 +690,12 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 		if not bn or bn in seen:
 			return
 			
-		if wh_list:
-			wh_placeholders = ", ".join(["%s"] * len(wh_list))
-			stock_qty = flt(frappe.db.sql(f"""
-				select sum(actual_qty) from `tabStock Ledger Entry` 
-				where batch_no=%s and warehouse in ({wh_placeholders}) and is_cancelled=0
-			""", [bn] + wh_list)[0][0] or 0)
-		else:
-			stock_qty = flt(frappe.db.sql("select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0", bn)[0][0] or 0)
-			
-		if stock_qty <= 0.001:
-			return
+		stock_qty = flt(frappe.db.sql("select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0", bn)[0][0] or 0)
 			
 		q = flt(qty or 0)
 		if q <= 0:
 			q = stock_qty
-		if q <= 0:
-			q = 1.0
+			
 		seen.add(bn)
 		batches.append(
 			{
@@ -729,10 +718,6 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 	):
 		bn = _cstr(row.get("batch_no"))
 		if not bn or bn in seen:
-			continue
-		if ic_filter and _cstr(row.get("item_code")) != ic_filter:
-			continue
-		if pc_filter and pc_filter.lower() not in _cstr(row.get("party_code")).lower():
 			continue
 		
 		# Original exact batch
