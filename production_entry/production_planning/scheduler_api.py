@@ -19214,7 +19214,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "exclude_103" and icp == "103":
                     continue
-                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "221", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
+                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "221", "233", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
                     continue
                 if bps == "only_100" and icp != "100":
                     continue
@@ -19232,7 +19232,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "sheet_cutting_only" and icp not in ("251", "252", "253", "255", "254"):
                     continue
-                if bps == "box_bag_only" and icp != "221":
+                if bps == "box_bag_only" and icp not in ("221", "233"):
                     continue
 
             color = (item.get("color") or item.get("colour") or "").strip()
@@ -26787,7 +26787,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 	# Find 221 parent quantities by trace ID
 	parents = {}
 	for r in rows:
-		if _item_process_prefix(r.get("item_code")) == "221":
+		if _item_process_prefix(r.get("item_code")) in ("221", "233"):
 			trace_id = r.get("custom_parent_child_trace_id")
 			if trace_id:
 				parents[trace_id] = flt(r.get("qty"))
