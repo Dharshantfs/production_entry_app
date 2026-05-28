@@ -93,14 +93,14 @@ frappe.ui.form.on('Planning sheet', {
                 let is_hidden = is_required ? 0 : 1;
                 
                 let df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
-                if (df && df.hidden !== is_hidden) {
+                if (df && !!df.hidden != !!is_hidden) {
                     df.hidden = is_hidden;
                     need_refresh = true;
                 }
                 
                 if (grid.docfields) {
                     let grid_df = grid.docfields.find(d => d.fieldname === fieldname);
-                    if (grid_df && grid_df.hidden !== is_hidden) {
+                    if (grid_df && !!grid_df.hidden != !!is_hidden) {
                         grid_df.hidden = is_hidden;
                         need_refresh = true;
                     }
