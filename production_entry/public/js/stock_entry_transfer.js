@@ -30,16 +30,11 @@ frappe.ui.form.on("Stock Entry", {
             expected_item = frm.doc.items[0].item_code;
         }
         
-        if (!expected_item) {
-            frappe.msgprint({title: __('Error'), indicator: 'red', message: __('Cannot determine expected item. Please add at least one row first.')});
-            return;
-        }
-        
         // First check if the scanned batch is already in the table
         let existing_row = (frm.doc.items || []).find(r => r.batch_no === barcode || r.custom_roll_no === barcode);
         if (existing_row) {
             // Check if the item matches (just in case)
-            if (existing_row.item_code !== expected_item) {
+            if (expected_item && existing_row.item_code !== expected_item) {
                 frappe.msgprint({title: __('Wrong Item'), indicator: 'red', message: `The scanned batch belongs to <b>${existing_row.item_code}</b>, but we are transferring <b>${expected_item}</b>.`});
                 frappe.utils.play_sound("error");
                 return;
@@ -52,7 +47,7 @@ frappe.ui.form.on("Stock Entry", {
         }
         
         // If not in the table, we need to fetch the batch item from the database
-        let source_warehouse = frm.doc.from_warehouse || (frm.doc.items && frm.doc.items[0].s_warehouse) || '';
+        let source_warehouse = frm.doc.from_warehouse || (frm.doc.items && frm.doc.items.length > 0 ? frm.doc.items[0].s_warehouse : '');
         
         frappe.call({
             method: 'production_entry.production_planning.scheduler_api.scan_stock_entry_batch',
@@ -70,25 +65,24 @@ frappe.ui.form.on("Stock Entry", {
                         return;
                     }
                     
-                    // Add new row
+                    // Add new row properly triggering item triggers
                     let new_row = frm.add_child("items");
-                    new_row.item_code = batch.item_code;
-                    new_row.s_warehouse = frm.doc.from_warehouse || (frm.doc.items && frm.doc.items[0].s_warehouse) || '';
-                    new_row.t_warehouse = frm.doc.to_warehouse || (frm.doc.items && frm.doc.items[0].t_warehouse) || '';
-                    new_row.qty = batch.available_qty;
-                    new_row.uom = frm.doc.items[0].uom || 'Kg';
-                    new_row.stock_uom = frm.doc.items[0].stock_uom || 'Kg';
-                    new_row.conversion_factor = 1;
-                    new_row.batch_no = batch.batch_no;
-                    new_row.custom_scanned_qty = batch.available_qty;
-                    // Optionally custom_roll_no if it exists
-                    if (frappe.meta.has_field(new_row.doctype, 'custom_roll_no')) {
-                        new_row.custom_roll_no = batch.batch_no;
-                    }
                     
-                    frm.refresh_field("items");
-                    frappe.show_alert({message: `Added & Scanned: ${barcode}`, indicator: 'green'});
-                    frappe.utils.play_sound("submit");
+                    frappe.model.set_value(new_row.doctype, new_row.name, 'item_code', batch.item_code).then(() => {
+                        let updates = {
+                            s_warehouse: frm.doc.from_warehouse || (frm.doc.items && frm.doc.items.length > 1 ? frm.doc.items[0].s_warehouse : ''),
+                            t_warehouse: frm.doc.to_warehouse || (frm.doc.items && frm.doc.items.length > 1 ? frm.doc.items[0].t_warehouse : ''),
+                            qty: batch.available_qty,
+                            batch_no: batch.batch_no,
+                            custom_scanned_qty: batch.available_qty
+                        };
+                        if (frappe.meta.has_field(new_row.doctype, 'custom_roll_no')) {
+                            updates.custom_roll_no = batch.batch_no;
+                        }
+                        frappe.model.set_value(new_row.doctype, new_row.name, updates);
+                        frappe.show_alert({message: `Added & Scanned: ${barcode}`, indicator: 'green'});
+                        frappe.utils.play_sound("submit");
+                    });
                 } else if (r.message && r.message.error) {
                     frappe.msgprint({title: __('Scan Failed'), indicator: 'red', message: r.message.error});
                     frappe.utils.play_sound("error");
