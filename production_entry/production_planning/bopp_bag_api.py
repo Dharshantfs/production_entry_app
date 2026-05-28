@@ -274,6 +274,7 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
             "sales_order_item": soi_key,
             "so_item": soi_key,
             "custom_parent_child_trace_id": trace_id,
+            "quality": "PRINTED BOPP",
         }
         try:
             ps.append(parent_field, dict(new_row))
