@@ -40,9 +40,19 @@ frappe.ui.form.on("Stock Entry", {
                 return;
             }
             
+            // LOCK the quantity to protect it from the background ERPNext standard script
+            existing_row._protected_qty = existing_row.qty;
+            
             frappe.model.set_value(existing_row.doctype, existing_row.name, 'custom_scanned_qty', existing_row.qty);
-            frappe.show_alert({message: `Scanned: ${barcode}`, indicator: 'green'});
+            if (frappe.meta.has_field(existing_row.doctype, 'scanned_qty')) {
+                frappe.model.set_value(existing_row.doctype, existing_row.name, 'scanned_qty', existing_row.qty);
+            }
+            
+            frappe.show_alert({message: `Verified: <b>${barcode}</b>`, indicator: 'green'});
             frappe.utils.play_sound("submit");
+            
+            // Remove lock after 3 seconds
+            setTimeout(() => { existing_row._protected_qty = undefined; }, 3000);
             return;
         }
         
@@ -67,6 +77,9 @@ frappe.ui.form.on("Stock Entry", {
                     
                     // Add new row properly triggering item triggers
                     let new_row = frm.add_child("items");
+                    // Lock the new row as well in case ERPNext standard script tries to touch it
+                    new_row._protected_qty = batch.available_qty;
+                    setTimeout(() => { new_row._protected_qty = undefined; }, 3000);
                     
                     frappe.model.set_value(new_row.doctype, new_row.name, 'item_code', batch.item_code).then(() => {
                         let updates = {
@@ -79,6 +92,9 @@ frappe.ui.form.on("Stock Entry", {
                         if (frappe.meta.has_field(new_row.doctype, 'custom_roll_no')) {
                             updates.custom_roll_no = batch.batch_no;
                         }
+                        if (frappe.meta.has_field(new_row.doctype, 'scanned_qty')) {
+                            updates.scanned_qty = batch.available_qty;
+                        }
                         frappe.model.set_value(new_row.doctype, new_row.name, updates);
                         frappe.show_alert({message: `Added & Scanned: ${barcode}`, indicator: 'green'});
                         frappe.utils.play_sound("submit");
@@ -89,5 +105,17 @@ frappe.ui.form.on("Stock Entry", {
                 }
             }
         });
+    }
+});
+
+// INTERCEPTOR: Catch the background script trying to change the Qty and block it!
+frappe.ui.form.on('Stock Entry Detail', {
+    qty: function(frm, cdt, cdn) {
+        let row = frappe.get_doc(cdt, cdn);
+        
+        // If the row is currently locked and the background script changed the qty, revert it instantly
+        if (row._protected_qty !== undefined && row.qty !== row._protected_qty) {
+            frappe.model.set_value(cdt, cdn, 'qty', row._protected_qty);
+        }
     }
 });
