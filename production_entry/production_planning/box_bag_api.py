@@ -82,32 +82,12 @@ def _parse_box_bag_item_code(item_code):
 	if len(after) >= 4:
 		result["colour_code"] = after[1:4]
 	if len(after) >= 5:
-		# The GSM char — try numeric interpretation
-		gsm_char = after[4]
-		try:
-			if gsm_char.isdigit():
-				result["fabric_gsm"] = int(gsm_char) * 10
-			else:
-				try:
-					from production_entry.production_planning.scheduler_api import _LAMINATION_FABRIC_GSM_BY_CODE
-					if gsm_char.upper() in _LAMINATION_FABRIC_GSM_BY_CODE:
-						result["fabric_gsm"] = int(_LAMINATION_FABRIC_GSM_BY_CODE[gsm_char.upper()])
-					else:
-						result["fabric_gsm"] = (ord(gsm_char.upper()) - ord('A') + 1) * 10
-				except Exception:
-					result["fabric_gsm"] = (ord(gsm_char.upper()) - ord('A') + 1) * 10
-		except Exception:
-			pass
+		from production_entry.production_planning.bopp_bag_api import _decode_fabric_gsm_char, _decode_lam_bopp_gsm_char
+		result["fabric_gsm"] = _decode_fabric_gsm_char(after[4])
 	if len(after) >= 6:
-		try:
-			result["lam_gsm"] = int(after[5]) * 10
-		except Exception:
-			pass
+		result["lam_gsm"] = _decode_lam_bopp_gsm_char(after[5])
 	if len(after) >= 7:
-		try:
-			result["bopp_gsm"] = int(after[6]) * 10
-		except Exception:
-			pass
+		result["bopp_gsm"] = _decode_lam_bopp_gsm_char(after[6])
 	if len(after) >= 9:
 		result["finishing_code"] = after[7:9].upper()
 		result["finishing_label"] = _box_bag_finishing_label(after[7:9])

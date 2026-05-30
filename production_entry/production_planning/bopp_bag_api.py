@@ -46,23 +46,37 @@ _BOPP_FINISHING_MAP = {
     "G":  "Glossy",
 }
 
-# Letter-encoded GSM values (same table used by 221/107/104 etc.)
-_GSM_LETTER_MAP = {
-    "A": 10, "B": 20, "C": 15, "D": 40, "E": 50, "F": 60,
-    "G": 70, "H": 80, "I": 90, "J": 100, "K": 110, "L": 120,
-    "M": 130, "N": 140, "O": 150, "P": 160, "Q": 100, "R": 180,
-    "S": 190, "T": 200,
-}
-
-
-def _decode_gsm_char(ch):
-    """Decode a single letter or digit to GSM integer."""
+def _decode_fabric_gsm_char(ch):
+    """Decode a single letter or digit to Fabric GSM integer."""
     if not ch:
         return 0
     ch = str(ch).strip().upper()
     if ch.isdigit():
         return int(ch) * 10
-    return _GSM_LETTER_MAP.get(ch, 0)
+    try:
+        from production_entry.production_planning.scheduler_api import LAMINATION_FABRIC_GSM_CODES
+        rev = {v: k for k, v in LAMINATION_FABRIC_GSM_CODES.items()}
+        if ch in rev:
+            return int(rev[ch])
+    except Exception:
+        pass
+    return (ord(ch) - ord('A') + 1) * 10
+
+def _decode_lam_bopp_gsm_char(ch):
+    """Decode a single letter or digit to Lam/BOPP GSM integer."""
+    if not ch:
+        return 0
+    ch = str(ch).strip().upper()
+    if ch.isdigit():
+        return int(ch) * 10
+    try:
+        from production_entry.production_planning.scheduler_api import LAMINATION_BOPP_GSM_CODES
+        rev = {v: k for k, v in LAMINATION_BOPP_GSM_CODES.items()}
+        if ch in rev:
+            return int(rev[ch])
+    except Exception:
+        pass
+    return 15
 
 
 def _bopp_finishing_label(code):
@@ -129,11 +143,11 @@ def _parse_bopp_bag_item_code(item_code):
     if len(after) >= 4:
         result["colour_code"] = after[1:4]
     if len(after) >= 5:
-        result["fabric_gsm"] = _decode_gsm_char(after[4])
+        result["fabric_gsm"] = _decode_fabric_gsm_char(after[4])
     if len(after) >= 6:
-        result["lam_gsm"] = _decode_gsm_char(after[5])
+        result["lam_gsm"] = _decode_lam_bopp_gsm_char(after[5])
     if len(after) >= 7:
-        result["bopp_gsm"] = _decode_gsm_char(after[6])
+        result["bopp_gsm"] = _decode_lam_bopp_gsm_char(after[6])
     if len(after) >= 9:
         result["extra_code"] = after[7]
         result["finishing_code"] = after[7:9].upper()

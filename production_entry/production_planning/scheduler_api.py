@@ -26916,6 +26916,27 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 							"qty": new_qty
 						})
 					updated_count += 1
+		elif pp in ("221", "233"):
+			qty = flt(r.get("qty"))
+			uom = r.get("uom")
+			
+			if uom == "Meter":
+				conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
+				if conv and flt(conv) > 0:
+					new_qty = qty / flt(conv)
+					frappe.db.set_value("Planning Table", r.get("name"), {
+						"uom": "Kg",
+						"qty": new_qty
+					})
+					r["qty"] = new_qty
+					r["uom"] = "Kg"
+					source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
+					if source_item and frappe.db.exists("Planning sheet Item", source_item):
+						frappe.db.set_value("Planning sheet Item", source_item, {
+							"uom": "Kg",
+							"qty": new_qty
+						})
+					updated_count += 1
 					
 	frappe.db.commit()
 	
