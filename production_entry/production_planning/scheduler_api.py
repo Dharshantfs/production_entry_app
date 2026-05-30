@@ -7510,12 +7510,23 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			else:
 				row_unit = compute_default_production_unit(row_color, row_width, comp_ic)
 			row_planned_date = getdate(ps.ordered_date) if _is_white_color(row_color) else None
+			
+			try:
+				bom_uom = frappe.db.get_value(
+					"BOM Item",
+					{"parent": bom_no, "item_code": comp_ic},
+					"uom"
+				) if bom_no else None
+				comp_uom = bom_uom or frappe.db.get_value("Item", comp_ic, "stock_uom") or "Meter"
+			except Exception:
+				comp_uom = frappe.db.get_value("Item", comp_ic, "stock_uom") or "Meter"
+
 			row = {
 				"sales_order_item": so_it.name,
 				"item_code": comp_ic,
 				"item_name": comp_item_name,
 				"qty": comp_qty,
-				"uom": so_it.uom,
+				"uom": comp_uom,
 				"gsm": row_gsm,
 				"width_inch": row_width,
 				"color": row_color,
@@ -26839,6 +26850,12 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 			if parsed: return (cint(parsed.get("gsm")), parsed.get("color_code"))
 		except Exception:
 			pass
+		try:
+			from production_entry.production_planning.scheduler_api import _parse_107_item_code
+			parsed = _parse_107_item_code(item_code)
+			if parsed: return (cint(parsed.get("fabric_gsm")), parsed.get("colour_code"))
+		except Exception:
+			pass
 		return (None, None)
 
 	for r in rows:
@@ -26848,7 +26865,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 		pp = _item_process_prefix(ic)
 		
 		# Box Bag BOM child processes
-		if pp in ("100", "103"):
+		if pp in ("100", "103", "107"):
 			qty = flt(r.get("qty"))
 			uom = r.get("uom")
 			
