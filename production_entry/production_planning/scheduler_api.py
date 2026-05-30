@@ -19562,6 +19562,15 @@ def _get_color_chart_data_impl(
             if bps == "box_bag_only":
                 row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
 
+            row_gsm = item.get("gsm") or ""
+            if _item_process_prefix(_ic_row) == "233":
+                try:
+                    _p = _parse_bopp233_gsm(_ic_row)
+                    if _p and _p.get("total_gsm"):
+                        row_gsm = _p["total_gsm"]
+                except Exception:
+                    pass
+
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),
                 "itemName": item.name,
@@ -19582,12 +19591,7 @@ def _get_color_chart_data_impl(
                 "white_tint": _white_tint_row,
                 "finishing": _finishing_row,
                 "quality": item.get("custom_quality") or item.get("quality") or "",
-                "gsm": item.get("gsm") or "",
-                # For BOPP Box Bag items (233), always re-parse GSM from item code to avoid stale DB values
-                **(
-                    (lambda _p: {"gsm": _p["total_gsm"]} if _p.get("total_gsm") else {})
-                    (_parse_bopp233_gsm(_ic_row))
-                ) if _item_process_prefix(_ic_row) == "233" else {},
+                "gsm": row_gsm,
                 "meter": flt(item.get("meter") or 0),
                 "qty": flt(item.get("qty", 0)),
                 "idx": item.get("idx", 0),
