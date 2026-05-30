@@ -14512,6 +14512,22 @@ def _populate_planning_sheet_items(ps, doc):
                 gsm = cint(p105g.get("gsm") or 0)
             if cint(p105g.get("width_mm") or 0) > 0:
                 width = round(cint(p105g.get("width_mm") or 0) / 25.4)
+        elif process_prefix == "233":
+            try:
+                from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
+                p233g = _parse_bopp_bag_item_code(item_code_str) or {}
+                if cint(p233g.get("total_gsm") or 0) > 0:
+                    gsm = cint(p233g.get("total_gsm") or 0)
+            except Exception:
+                pass
+        elif process_prefix == "221":
+            try:
+                from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
+                p221g = _parse_box_bag_item_code(item_code_str) or {}
+                if cint(p221g.get("total_gsm") or 0) > 0:
+                    gsm = cint(p221g.get("total_gsm") or 0)
+            except Exception:
+                pass
         elif process_prefix == "253":
             p253g = _parse_253_item_code(it.item_code) or {}
             if cint(p253g.get("gsm") or 0) > 0:
@@ -17911,6 +17927,10 @@ def _get_color_chart_data_impl(
         from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code as _parse_bopp233_gsm
     except Exception:
         _parse_bopp233_gsm = lambda ic: {}
+    try:
+        from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code as _parse_box221_gsm
+    except Exception:
+        _parse_box221_gsm = lambda ic: {}
     # When unset, no process-prefix filtering (preserves existing callers).
     # When set:
     # - exclude_104 / exclude_103: hide process from main production board
@@ -19589,6 +19609,13 @@ def _get_color_chart_data_impl(
             if _item_process_prefix(_ic_row) == "233":
                 try:
                     _p = _parse_bopp233_gsm(_ic_row)
+                    if _p and _p.get("total_gsm"):
+                        row_gsm = _p["total_gsm"]
+                except Exception:
+                    pass
+            elif _item_process_prefix(_ic_row) == "221":
+                try:
+                    _p = _parse_box221_gsm(_ic_row)
                     if _p and _p.get("total_gsm"):
                         row_gsm = _p["total_gsm"]
                 except Exception:
@@ -26878,45 +26905,29 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 		ic = r.get("item_code")
 		if not ic:
 			continue
+		
+		# Dynamically fix GSM for 233 and 221 if they are 0 or from old DB values
+		pp_prefix = _item_process_prefix(ic)
+		if pp_prefix == "233":
+			try:
+				from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
+				p = _parse_bopp_bag_item_code(ic)
+				if p and p.get("total_gsm"):
+					r["gsm"] = p["total_gsm"]
+			except Exception:
+				pass
+		elif pp_prefix == "221":
+			try:
+				from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
+				p = _parse_box_bag_item_code(ic)
+				if p and p.get("total_gsm"):
+					r["gsm"] = p["total_gsm"]
+			except Exception:
+				pass
 		pp = _item_process_prefix(ic)
 		
-		# Box Bag BOM child processes
-		if pp in ("103", "107"):
-			qty = flt(r.get("qty"))
-			uom = r.get("uom")
-			
-			needs_conversion = False
-			if uom == "Meter":
-				needs_conversion = True
-			else:
-				# If UOM is Kg but the value is clearly still in meters (qty ratio > 0.1 compared to parent bags)
-				trace_id = r.get("custom_parent_child_trace_id")
-				parent_qty = parents.get(trace_id)
-				if parent_qty and parent_qty > 0:
-					ratio = qty / parent_qty
-					if ratio > 0.1: # 1 meter/bag is 1.0, converted is usually < 0.05
-						needs_conversion = True
-						
-			if needs_conversion:
-				# Get conversion factor from item master for Meter
-				conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
-				if conv and flt(conv) > 0:
-					new_qty = qty / flt(conv)
-					frappe.db.set_value("Planning Table", r.get("name"), {
-						"uom": "Kg",
-						"qty": new_qty
-					})
-					r["qty"] = new_qty
-					r["uom"] = "Kg"
-					# Also update Planning sheet Item if it is linked
-					source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
-					if source_item and frappe.db.exists("Planning sheet Item", source_item):
-						frappe.db.set_value("Planning sheet Item", source_item, {
-							"uom": "Kg",
-							"qty": new_qty
-						})
-					updated_count += 1
-		elif pp in ("221", "233"):
+		# Box Bag BOM child processes (removed manual division to respect BOM)
+		if pp in ("221", "233"):
 			qty = flt(r.get("qty"))
 			uom = r.get("uom")
 			
@@ -26940,11 +26951,18 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					
 	frappe.db.commit()
 	
-	if updated_count > 0:
-		try:
-			sync_bom_children_for_planning_sheet(planning_sheet_name)
-		except Exception as e:
-			frappe.log_error("BOM sync failed after meter to kg conversion", str(e))
+	try:
+		from production_entry.production_planning.bopp_bag_api import _sync_bopp_bag_planning_rows
+		_sync_bopp_bag_planning_rows(planning_sheet_name)
+	except Exception:
+		pass
+	try:
+		_sync_box_bag_fabric_planning_rows(planning_sheet_name)
+	except Exception:
+		pass
+	frappe.db.commit()
+					
+	frappe.db.commit()
 			
 	return {"status": "success", "updated": updated_count}
 
