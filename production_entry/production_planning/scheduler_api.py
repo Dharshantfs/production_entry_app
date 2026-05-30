@@ -26863,44 +26863,16 @@ def sync_merge_planned_date(merge_id, new_date):
 
 @frappe.whitelist()
 def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
-	"""Convert Meter to Kg for Box Bag BOM items (100 and 103)."""
+	"""Convert Meter to Kg for Box Bag BOM items (103 and 107) and update their children."""
 	if not planning_sheet_name:
 		return {"status": "error", "message": "No planning sheet provided"}
 
 	# Get all rows for this sheet
-	rows = frappe.get_all("Planning Table", filters={"parent": planning_sheet_name}, fields=["name", "item_code", "qty", "uom", "custom_parent_child_trace_id"])
+	rows = frappe.get_all("Planning Table", filters={"parent": planning_sheet_name}, fields=["name", "item_code", "qty", "uom", "custom_parent_child_trace_id", "sales_order_item", "so_item", "source_item"])
 	
-	# Find 221 parent quantities by trace ID
-	parents = {}
-	for r in rows:
-		if _item_process_prefix(r.get("item_code")) in ("221", "233"):
-			trace_id = r.get("custom_parent_child_trace_id")
-			if trace_id:
-				parents[trace_id] = flt(r.get("qty"))
-				
 	updated_count = 0
+	converted_parents = {}
 	
-	def _get_gsm_color(item_code):
-		try:
-			from production_entry.production_planning.scheduler_api import _parse_100_item_code
-			parsed = _parse_100_item_code(item_code)
-			if parsed: return (cint(parsed.get("gsm")), parsed.get("color_code"))
-		except Exception:
-			pass
-		try:
-			from production_entry.production_planning.scheduler_api import _parse_103_item_code
-			parsed = _parse_103_item_code(item_code)
-			if parsed: return (cint(parsed.get("gsm")), parsed.get("color_code"))
-		except Exception:
-			pass
-		try:
-			from production_entry.production_planning.scheduler_api import _parse_107_item_code
-			parsed = _parse_107_item_code(item_code)
-			if parsed: return (cint(parsed.get("fabric_gsm")), parsed.get("colour_code"))
-		except Exception:
-			pass
-		return (None, None)
-
 	for r in rows:
 		ic = r.get("item_code")
 		if not ic:
@@ -26924,14 +26896,19 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					r["gsm"] = p["total_gsm"]
 			except Exception:
 				pass
+				
 		pp = _item_process_prefix(ic)
 		
-		# Box Bag BOM child processes (removed manual division to respect BOM)
-		if pp in ("221", "233"):
+		# Convert child processes that are in Meter to Kg (103, 107, 109, 108)
+		if pp in ("103", "107", "109", "108"):
 			qty = flt(r.get("qty"))
 			uom = r.get("uom")
 			
+			needs_conversion = False
 			if uom == "Meter":
+				needs_conversion = True
+				
+			if needs_conversion:
 				conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
 				if conv and flt(conv) > 0:
 					new_qty = qty / flt(conv)
@@ -26941,7 +26918,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					})
 					r["qty"] = new_qty
 					r["uom"] = "Kg"
-					source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
+					source_item = r.get("source_item")
 					if source_item and frappe.db.exists("Planning sheet Item", source_item):
 						frappe.db.set_value("Planning sheet Item", source_item, {
 							"uom": "Kg",
@@ -26949,20 +26926,57 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						})
 					updated_count += 1
 					
-	frappe.db.commit()
-	
-	try:
-		from production_entry.production_planning.bopp_bag_api import _sync_bopp_bag_planning_rows
-		_sync_bopp_bag_planning_rows(planning_sheet_name)
-	except Exception:
-		pass
-	try:
-		_sync_box_bag_fabric_planning_rows(planning_sheet_name)
-	except Exception:
-		pass
-	frappe.db.commit()
+					so_item = r.get("sales_order_item") or r.get("so_item")
+					if so_item:
+						converted_parents.setdefault(so_item, [])
+						converted_parents[so_item].append({
+							"parent_ic": ic,
+							"new_qty": new_qty,
+							"pp": pp
+						})
 					
 	frappe.db.commit()
+	
+	if updated_count > 0 and converted_parents:
+		for r in rows:
+			ic = r.get("item_code")
+			if not ic: continue
+			child_pp = _item_process_prefix(ic)
+			so_item = r.get("sales_order_item") or r.get("so_item")
+			
+			if child_pp in ("100", "104", "106", "PB-") and so_item and so_item in converted_parents:
+				for parent_data in converted_parents[so_item]:
+					parent_ic = parent_data["parent_ic"]
+					parent_pp = parent_data["pp"]
+					parent_qty = parent_data["new_qty"]
+					
+					try:
+						res = None
+						if child_pp == "100":
+							res = _get_fabric_item_from_process_item(parent_ic, expected_process=parent_pp, process_label="Child Fabric")
+						else:
+							res = _get_bom_child_item_from_process_item(parent_ic, parent_pp, child_pp, process_label="Child item")
+							
+						if res and (res.get("fabric_item_code") == ic or res.get("child_item_code") == ic):
+							bom_no = res["bom_no"]
+							child_qty = _fabric_qty_from_bom(bom_no, ic, parent_qty, from_uom="Kg", parent_item_code=parent_ic)
+							
+							frappe.db.set_value("Planning Table", r.get("name"), {
+								"qty": child_qty,
+								"uom": "Kg"
+							})
+							
+							source_item = r.get("source_item")
+							if source_item and frappe.db.exists("Planning sheet Item", source_item):
+								frappe.db.set_value("Planning sheet Item", source_item, {
+									"qty": child_qty,
+									"uom": "Kg"
+								})
+							break
+					except Exception:
+						pass
+						
+		frappe.db.commit()
 			
 	return {"status": "success", "updated": updated_count}
 
