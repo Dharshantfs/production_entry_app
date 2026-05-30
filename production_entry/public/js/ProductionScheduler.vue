@@ -444,7 +444,7 @@ function normalizeUnitName(rawUnit) {
  * filters by its own process (e.g. rewinding → 102, printing → 105/106).
  */
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "108", "109", "251", "252", "253", "254", "255",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "233", "251", "252", "253", "254", "255",
 ]);
 
 /** Match scheduler_api._item_process_prefix: leading segment process wins over later -100- style digit runs. */
