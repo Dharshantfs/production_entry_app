@@ -57,6 +57,22 @@ function spr_sync_grid_columns_visible(frm, fieldname) {
 		if (grid.visible_columns) {
 			grid.visible_columns = null;
 		}
+
+		// Force fields to be in list view right before setup_visible_columns
+		if (fieldname === 'shaft_jobs') {
+			const jobFields = ['job_id', 'gsm', 'quality', 'combination', 'total_width', 'meter_roll_mtrs', 'net_weight', 'total_weight', 'custom_total_achieved_weight', 'custom_total_achieved_meter', 'no_of_shafts', 'no_of_rolls', 'party_code', 'work_orders', 'is_manual', 'manual_items', 'create_roll_entry'];
+			jobFields.forEach(f => {
+				let df = frappe.meta.get_docfield('Shaft Production Run Job', f);
+				if (df) df.in_list_view = 1;
+			});
+		} else if (fieldname === 'items') {
+			const itemFields = ['planned_qty', 'batch_no', 'party_code', 'meter_roll', 'produced_length_mtrs', 'produced_gsm', 'gross_weight', 'save_row', 'quality', 'color', 'width_inch', 'gsm', 'custom_production_label', 'edit_row', 'work_order', 'item_code', 'item_name', 'job', 'net_weight', 'custom_core_width_mm', 'core_width', 'custom_diameter_inches', 'diameter', 'custom_cbm_cubic_meters', 'cbm', 'custom_qc_approval_label', 'qc_approval_label', 'row_ready_for_print', 'row_locked', 'row_printed', 'custom_polybag_kgs', 'polybag_kgs', 'print_sticker'];
+			itemFields.forEach(f => {
+				let df = frappe.meta.get_docfield('Shaft Production Run Item', f);
+				if (df) df.in_list_view = 1;
+			});
+		}
+
 		if (typeof grid.setup_visible_columns === 'function') {
 			grid.setup_visible_columns();
 		}
@@ -406,28 +422,7 @@ function spr_sync_total_planned_qty_from_jobs(frm, opts) {
 
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
-		const jobFields = [
-			'job_id', 'gsm', 'quality', 'combination', 'total_width', 'meter_roll_mtrs',
-			'net_weight', 'total_weight', 'custom_total_achieved_weight', 'custom_total_achieved_meter',
-			'no_of_shafts', 'no_of_rolls', 'party_code', 'work_orders', 'is_manual', 'manual_items', 'create_roll_entry'
-		];
-		jobFields.forEach(f => {
-			let df = frappe.meta.get_docfield('Shaft Production Run Job', f);
-			if (df) df.in_list_view = 1;
-		});
-
-		const itemFields = [
-			'planned_qty', 'batch_no', 'party_code', 'meter_roll', 'produced_length_mtrs',
-			'produced_gsm', 'gross_weight', 'save_row', 'quality', 'color', 'width_inch', 'gsm',
-			'custom_production_label', 'edit_row', 'work_order', 'item_code', 'item_name', 'job',
-			'net_weight', 'custom_core_width_mm', 'core_width', 'custom_diameter_inches', 'diameter',
-			'custom_cbm_cubic_meters', 'cbm', 'custom_qc_approval_label', 'qc_approval_label', 'row_ready_for_print',
-			'row_locked', 'row_printed', 'custom_polybag_kgs', 'polybag_kgs', 'print_sticker'
-		];
-		itemFields.forEach(f => {
-			let df = frappe.meta.get_docfield('Shaft Production Run Item', f);
-			if (df) df.in_list_view = 1;
-		});
+		// Buttons registered in refresh — see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
 	},
 
 	onload: function (frm) {
@@ -737,8 +732,8 @@ function spr_show_tolerance_override_dialog(frm, violations, opts) {
 		'<p class="text-muted">' +
 		__(
 			forSubmit
-				? 'Allowed deviation: ┬▒{0}%. Enter a reason and confirm approval to submit, or adjust roll weights.'
-				: 'Allowed deviation: ┬▒{0}%. Enter a reason and confirm approval to save, or adjust roll weights.',
+				? 'Allowed deviation: &plusmn;{0}%. Enter a reason and confirm approval to submit, or adjust roll weights.'
+				: 'Allowed deviation: &plusmn;{0}%. Enter a reason and confirm approval to save, or adjust roll weights.',
 			[tol]
 		) +
 		'</p><table class="table table-bordered table-condensed" style="font-size:12px;"><thead><tr><th>' +
