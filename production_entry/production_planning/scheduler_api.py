@@ -26918,6 +26918,13 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					updated_count += 1
 					
 	frappe.db.commit()
+	
+	if updated_count > 0:
+		try:
+			sync_bom_children_for_planning_sheet(planning_sheet_name)
+		except Exception as e:
+			frappe.log_error("BOM sync failed after meter to kg conversion", str(e))
+			
 	return {"status": "success", "updated": updated_count}
 
 

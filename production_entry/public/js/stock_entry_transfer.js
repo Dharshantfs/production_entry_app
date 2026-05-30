@@ -2,18 +2,65 @@
 frappe.ui.form.on("Stock Entry", {
 	refresh(frm) {
 		const co = (frm.doc.custom_transfer_to_company || "").trim();
-		if (!co) return;
-		if (frm.fields_dict.party_type && !frm.doc.party_type) {
-			frm.set_value("party_type", "Company");
+		if (co) {
+			if (frm.fields_dict.party_type && !frm.doc.party_type) {
+				frm.set_value("party_type", "Company");
+			}
+			if (frm.fields_dict.party && !frm.doc.party) {
+				frm.set_value("party", co);
+			}
 		}
-		if (frm.fields_dict.party && !frm.doc.party) {
-			frm.set_value("party", co);
+
+		if (frm.doc.docstatus === 0 && frm.doc.stock_entry_type === "Material Transfer" && frm.doc.items && frm.doc.items.length > 0) {
+			frm.add_custom_button(__('Approved Rolls'), () => {
+				frappe.call({
+					method: 'frappe.client.get_list',
+					args: {
+						doctype: 'Transfer Approval',
+						filters: { stock_entry: frm.doc.name },
+						fields: ['name']
+					},
+					callback: function(r) {
+						if(r.message && r.message.length > 0) {
+							let ta_name = r.message[0].name;
+							frappe.call({
+								method: 'frappe.client.get',
+								args: { doctype: 'Transfer Approval', name: ta_name },
+								callback: function(r2) {
+									if(r2.message) {
+										let html = "<table class='table table-bordered'><tr><th>Item</th><th>Batch No</th><th>Qty</th></tr>";
+										(r2.message.lines || []).forEach(row => {
+											html += `<tr><td>${row.item_code}</td><td>${row.batch_no || ''}</td><td>${row.qty}</td></tr>`;
+										});
+										html += "</table>";
+										let d = new frappe.ui.Dialog({
+											title: 'Approved Rolls',
+											fields: [{fieldtype: 'HTML', fieldname: 'html_content', options: html}]
+										});
+										d.show();
+									}
+								}
+							});
+						} else {
+							frappe.msgprint("No Transfer Approval linked to this Stock Entry.");
+						}
+					}
+				});
+			}, __('Actions'));
 		}
 	},
-});
 
+	validate(frm) {
+		if (frm.doc.stock_entry_type === "Material Transfer" && frm.doc.items) {
+			let pending = frm.doc.items.filter(r => !r.batch_no && (r.qty > 0));
+			// Basic check: if there are rows without a batch number, they haven't scanned everything
+			if (pending.length > 0) {
+				frappe.msgprint({title: "Validation Error", indicator: "red", message: `You must scan all approved rolls! Found pending summary rows without batch numbers.`});
+				frappe.validated = false;
+			}
+		}
+	},
 
-frappe.ui.form.on("Stock Entry", {
     scan_barcode: function(frm) { frm.trigger('process_barcode_scan'); },
     custom_barcode_scanner: function(frm) { frm.trigger('process_barcode_scan'); },
     
@@ -87,6 +134,18 @@ frappe.ui.form.on("Stock Entry", {
                         return;
                     }
                     
+                    // Reduce from summary row if it exists
+                    let summary_row = (frm.doc.items || []).find(r => r.item_code === batch.item_code && !r.batch_no);
+                    let should_remove_summary = false;
+                    let remaining_qty = batch.available_qty;
+                    if (summary_row) {
+                        if (summary_row.qty <= batch.available_qty + 0.01) {
+                            should_remove_summary = true;
+                        } else {
+                            frappe.model.set_value(summary_row.doctype, summary_row.name, 'qty', summary_row.qty - batch.available_qty);
+                        }
+                    }
+
                     // Only now — safe to add the row
                     let new_row = frm.add_child("items");
                     // Lock qty to protect against ERPNext background script
@@ -107,7 +166,14 @@ frappe.ui.form.on("Stock Entry", {
                         if (frappe.meta.has_field(new_row.doctype, 'scanned_qty')) {
                             updates.scanned_qty = batch.available_qty;
                         }
-                        frappe.model.set_value(new_row.doctype, new_row.name, updates);
+                        frappe.model.set_value(new_row.doctype, new_row.name, updates).then(() => {
+                            if (should_remove_summary) {
+                                let grid = frm.get_field("items").grid;
+                                let sr = grid.grid_rows.find(gr => gr.doc.name === summary_row.name);
+                                if (sr) sr.remove();
+                            }
+                            frm.refresh_field("items");
+                        });
                         frappe.show_alert({message: `Added & Scanned: ${barcode}`, indicator: 'green'});
                         frappe.utils.play_sound("submit");
                     });

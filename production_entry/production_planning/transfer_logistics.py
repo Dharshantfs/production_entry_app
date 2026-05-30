@@ -1169,19 +1169,32 @@ def _create_draft_transfer_stock_entry(ta):
 	nature = _cstr(getattr(ta, "nature_of_processing", None)).strip()
 	_set_stock_entry_nature_of_processing(se, nature)
 
+	items_map = {}
 	for ln in ta.lines or []:
 		qty = flt(ln.qty or 0)
 		if qty <= 0:
 			qty = 1.0
+		ic = ln.item_code
+		if ic not in items_map:
+			items_map[ic] = {
+				"item_code": ic,
+				"qty": 0.0,
+				"s_warehouse": s_wh,
+				"t_warehouse": t_wh,
+				"uom": ln.uom or frappe.db.get_value("Item", ic, "stock_uom") or "Kg",
+			}
+		items_map[ic]["qty"] += qty
+
+	for ic, row_data in items_map.items():
 		row = {
-			"item_code": ln.item_code,
-			"qty": qty,
-			"s_warehouse": s_wh,
-			"t_warehouse": t_wh,
-			"uom": ln.uom or frappe.db.get_value("Item", ln.item_code, "stock_uom") or "Kg",
+			"item_code": row_data["item_code"],
+			"qty": row_data["qty"],
+			"s_warehouse": row_data["s_warehouse"],
+			"t_warehouse": row_data["t_warehouse"],
+			"uom": row_data["uom"],
 		}
-		if ln.batch_no and frappe.db.get_value("Item", ln.item_code, "has_batch_no"):
-			row["batch_no"] = ln.batch_no
+		if frappe.db.has_column("Stock Entry Detail", "use_serial_batch_fields"):
+			row["use_serial_batch_fields"] = 0
 		se.append("items", row)
 
 	se.insert(ignore_permissions=True)
