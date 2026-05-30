@@ -8448,21 +8448,16 @@ def _sync_bom_child_rows_from_planning_rows(
 		else:
 			unit = unit or compute_default_production_unit(specs.get("color"), specs.get("width_inch"), child_ic)
 
-		# Fetch UOM from BOM first (most accurate), fall back to item stock_uom
-		# For Box Bag (221/233) BOM children (100 fabric, 103 slitting), force Kg
-		if parent_proc in ("221", "233") and child_proc in ("100", "103"):
-			item_uom = "Kg"
-		else:
-			# Try to get UOM from the BOM itself
-			try:
-				bom_uom = frappe.db.get_value(
-					"BOM Item",
-					{"parent": bom_no, "item_code": child_ic},
-					"uom"
-				) if bom_no else None
-				item_uom = bom_uom or frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
-			except Exception:
-				item_uom = frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
+		# Try to get UOM from the BOM itself (most accurate), fall back to item stock_uom
+		try:
+			bom_uom = frappe.db.get_value(
+				"BOM Item",
+				{"parent": bom_no, "item_code": child_ic},
+				"uom"
+			) if bom_no else None
+			item_uom = bom_uom or frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
+		except Exception:
+			item_uom = frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
 		row = {
 			"sales_order_item": so_item_key,
 			"item_code": child_ic,
@@ -19308,6 +19303,7 @@ def _get_color_chart_data_impl(
                 "slitting_only",
                 "rewinding_only",
                 "printed_bopp_pb_only",
+                "box_bag_only",
             ):
                 i_eff_pdate = (
                     item_pdate
