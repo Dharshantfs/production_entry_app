@@ -6324,13 +6324,26 @@ def get_fabric_item_from_sheet_cutting_item(sheet_cutting_item_code):
 	)
 
 
-def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty):
+def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty, from_uom=None, parent_item_code=None):
 	"""Lamination SO qty (FG) -> required fabric qty using BOM line qty / BOM quantity."""
 	bom = frappe.get_doc("BOM", bom_name)
 	fg_qty = flt(bom.quantity) or 1.0
 	if fg_qty <= 0:
 		fg_qty = 1.0
 	lamination_so_qty = flt(lamination_so_qty) or 0
+	
+	if from_uom and parent_item_code and bom.uom and from_uom != bom.uom:
+		# Convert lamination_so_qty from `from_uom` to `bom.uom`
+		from_conv = 1.0
+		if from_uom != frappe.db.get_value("Item", parent_item_code, "stock_uom"):
+			from_conv = frappe.db.get_value("UOM Conversion Detail", {"parent": parent_item_code, "uom": from_uom}, "conversion_factor") or 1.0
+		
+		to_conv = 1.0
+		if bom.uom != frappe.db.get_value("Item", parent_item_code, "stock_uom"):
+			to_conv = frappe.db.get_value("UOM Conversion Detail", {"parent": parent_item_code, "uom": bom.uom}, "conversion_factor") or 1.0
+			
+		lamination_so_qty = (lamination_so_qty * flt(from_conv)) / flt(to_conv)
+
 	for row in bom.items or []:
 		if (row.item_code or "").strip() == fabric_item_code:
 			return flt(lamination_so_qty) * flt(row.qty) / fg_qty
@@ -8404,7 +8417,8 @@ def _sync_bom_child_rows_from_planning_rows(
 			_apply_254_fg_extras_to_bom_child_row(updates, ps.name, so_item_key, so_it, child_ic, child_proc_ex)
 			_apply_252_fg_extras_to_bom_child_row(updates, ps.name, so_item_key, so_it, child_ic, child_proc_ex)
 			scale_qty = flt(getattr(so_it, "qty", 0)) or flt(prow.get("qty") or 0)
-			child_qty_new = _fabric_qty_from_bom(bom_no, child_ic, scale_qty)
+			scale_uom = getattr(so_it, "uom", None) if flt(getattr(so_it, "qty", 0)) > 0 else prow.get("uom")
+			child_qty_new = _fabric_qty_from_bom(bom_no, child_ic, scale_qty, from_uom=scale_uom, parent_item_code=parent_ic)
 			if child_qty_new > 0 and frappe.db.has_column("Planning Table", "qty"):
 				updates["qty"] = child_qty_new
 			if updates:
@@ -8415,7 +8429,9 @@ def _sync_bom_child_rows_from_planning_rows(
 			continue
 
 		parent_doc = frappe.get_doc("Planning Table", prow.get("name")) if prow.get("name") else None
-		child_qty = _fabric_qty_from_bom(bom_no, child_ic, flt(prow.get("qty") or getattr(so_it, "qty", 0)))
+		scale_qty = flt(getattr(so_it, "qty", 0)) or flt(prow.get("qty") or 0)
+		scale_uom = getattr(so_it, "uom", None) if flt(getattr(so_it, "qty", 0)) > 0 else prow.get("uom")
+		child_qty = _fabric_qty_from_bom(bom_no, child_ic, scale_qty, from_uom=scale_uom, parent_item_code=parent_ic)
 		item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
 		child_proc = _bom_item_process_code(child_ic)
@@ -25663,7 +25679,7 @@ def test_quality_extraction():
         extraction_tests = []
         for tc in test_cases:
             item_code_str = str(tc["code"]).strip()
-            if len(item_code_str) >= 9 and item_code_str.startswith("100"):
+            if len(item_code_str) >= 9:
                 q_code = item_code_str[3:6]
                 c_code = item_code_str[6:9]
                 
@@ -26865,7 +26881,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 		pp = _item_process_prefix(ic)
 		
 		# Box Bag BOM child processes
-		if pp in ("100", "103", "107"):
+		if pp in ("103", "107"):
 			qty = flt(r.get("qty"))
 			uom = r.get("uom")
 			
@@ -26901,48 +26917,6 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						})
 					updated_count += 1
 					
-	# Pass 2: Force 100 items that are BOM children of intermediate items (like 103, 107) to use the correct Kg quantity from the BOM.
-	intermediate_map = {}
-	for r in rows:
-		pp = _item_process_prefix(r.get("item_code"))
-		if pp in ("103", "104", "105", "106", "107"):
-			trace_id = r.get("custom_parent_child_trace_id")
-			gsm, color = _get_gsm_color(r.get("item_code"))
-			if trace_id and gsm and color:
-				intermediate_map[(trace_id, gsm, color)] = {
-					"qty": flt(r.get("qty")),
-					"item_code": r.get("item_code")
-				}
-				
-	for r in rows:
-		if _item_process_prefix(r.get("item_code")) == "100":
-			trace_id = r.get("custom_parent_child_trace_id")
-			gsm, color = _get_gsm_color(r.get("item_code"))
-			if trace_id and gsm and color:
-				parent_info = intermediate_map.get((trace_id, gsm, color))
-				if parent_info:
-					parent_qty = parent_info.get("qty")
-					parent_ic = parent_info.get("item_code")
-					if parent_qty and parent_qty > 0:
-						bom_name = frappe.db.get_value("Item", parent_ic, "default_bom")
-						if bom_name:
-							# Calculate the target Kg using the intermediate parent's BOM ratio
-							from production_entry.production_planning.scheduler_api import _fabric_qty_from_bom
-							target_qty = _fabric_qty_from_bom(bom_name, r.get("item_code"), parent_qty)
-							
-							if target_qty and target_qty > 0 and abs(flt(r.get("qty")) - target_qty) > 0.01:
-								frappe.db.set_value("Planning Table", r.get("name"), {
-									"uom": "Kg",
-									"qty": target_qty
-								})
-								source_item = frappe.db.get_value("Planning Table", r.get("name"), "source_item")
-								if source_item and frappe.db.exists("Planning sheet Item", source_item):
-									frappe.db.set_value("Planning sheet Item", source_item, {
-										"uom": "Kg",
-										"qty": target_qty
-									})
-								updated_count += 1
-
 	frappe.db.commit()
 	return {"status": "success", "updated": updated_count}
 

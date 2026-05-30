@@ -451,25 +451,23 @@ const ITEM_PROCESS_KNOWN = new Set([
 function itemProcessPrefix(itemCode) {
   const ic = String(itemCode || "").trim().toUpperCase();
   if (!ic) return "";
-  const dash = ic.indexOf("-");
-  if (dash !== -1) {
-    const head = ic.slice(0, dash);
-    const tail = ic.slice(dash + 1);
+  if (ic.includes("-")) {
+    const allSegments = ic.split("-");
+    for (const seg of allSegments) {
+      const segDigits = seg.replace(/\D/g, "");
+      if (segDigits.length >= 3) {
+        const sp = segDigits.slice(0, 3);
+        if (ITEM_PROCESS_KNOWN.has(sp)) return sp;
+      }
+    }
+    const parts = ic.split("-");
+    const head = parts[0] || "";
+    const tail = parts.length > 1 ? parts.slice(1).join("-") : "";
     if (head === "253" || head === "255" || head === "254") return head;
     if (tail.startsWith("253")) return "253";
     if (tail.startsWith("255")) return "255";
     if (tail.startsWith("254")) return "254";
     if (tail.startsWith("108")) return "108";
-    const headDigits = head.replace(/\D/g, "");
-    if (headDigits.length >= 3) {
-      const hp = headDigits.slice(0, 3);
-      if (ITEM_PROCESS_KNOWN.has(hp)) return hp;
-    }
-    const tailDigits = tail.replace(/\D/g, "");
-    if (tailDigits.length >= 3) {
-      const tp = tailDigits.slice(0, 3);
-      if (ITEM_PROCESS_KNOWN.has(tp)) return tp;
-    }
   }
   const all = ic.replace(/\D/g, "");
   return all.length >= 3 ? all.slice(0, 3) : "";
