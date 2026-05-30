@@ -3057,7 +3057,9 @@ def _parse_pb_item_code(item_code):
 			out["gsm_token"] = segs[2].upper()
 			gm = re.match(r"^(\d+)M$", segs[2], re.I)
 			if gm:
-				out["gsm"] = cint(gm.group(1))
+				microns = cint(gm.group(1))
+				out["gsm"] = round(microns * 0.91, 1)
+				out["microns"] = microns
 			wm = re.match(r"^(\d+)MM?$", segs[3], re.I)
 			if wm:
 				out["bopp_finish_mm"] = wm.group(1)
@@ -3070,7 +3072,9 @@ def _parse_pb_item_code(item_code):
 			seg = segs[i]
 			if re.match(r"^\d+M$", seg, re.I):
 				out["gsm_token"] = seg.upper()
-				out["gsm"] = cint(re.match(r"^(\d+)M$", seg, re.I).group(1))
+				microns_leg = cint(re.match(r"^(\d+)M$", seg, re.I).group(1))
+				out["gsm"] = round(microns_leg * 0.91, 1)
+				out["microns"] = microns_leg
 			wm = re.match(r"^(\d+)MM?$", seg, re.I)
 			if wm and not out["bopp_finish_mm"]:
 				out["bopp_finish_mm"] = wm.group(1)
@@ -3118,7 +3122,7 @@ def _pb_finishing_display_text(gsm_token, finish_suffix):
 	if not suffix:
 		return ""
 
-	if suffix in ("0M", "M0"):
+	if suffix in ("0M", "M0", "00"):
 		return f"{gsm_token} MATTE"
 	if suffix in ("0G", "G0"):
 		return f"{gsm_token} GLOSS"
@@ -3186,6 +3190,8 @@ def _printed_bopp_planning_fields_from_item_code(item_code, item_name="", so_ite
 		for tbl in ("Planning Table", "custom_finishing"), ("Planning sheet Item", "custom_finishing"):
 			if frappe.db.has_column(tbl[0], tbl[1]):
 				out["custom_finishing"] = fin
+		if frappe.db.has_column("Planning Table", "finishing") or frappe.db.has_column("Planning sheet Item", "finishing"):
+			out["finishing"] = fin
 	if not out.get("custom_cylinder_type"):
 		cyl = _printed_bopp_design_colours_token(ic, inm)
 		if cyl:
@@ -8442,7 +8448,21 @@ def _sync_bom_child_rows_from_planning_rows(
 		else:
 			unit = unit or compute_default_production_unit(specs.get("color"), specs.get("width_inch"), child_ic)
 
-		item_uom = frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
+		# Fetch UOM from BOM first (most accurate), fall back to item stock_uom
+		# For Box Bag (221/233) BOM children (100 fabric, 103 slitting), force Kg
+		if parent_proc in ("221", "233") and child_proc in ("100", "103"):
+			item_uom = "Kg"
+		else:
+			# Try to get UOM from the BOM itself
+			try:
+				bom_uom = frappe.db.get_value(
+					"BOM Item",
+					{"parent": bom_no, "item_code": child_ic},
+					"uom"
+				) if bom_no else None
+				item_uom = bom_uom or frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
+			except Exception:
+				item_uom = frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
 		row = {
 			"sales_order_item": so_item_key,
 			"item_code": child_ic,
@@ -17865,6 +17885,10 @@ def _get_color_chart_data_impl(
     lamination_process="104",
 ):
     from frappe.utils import getdate
+    try:
+        from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code as _parse_bopp233_gsm
+    except Exception:
+        _parse_bopp233_gsm = lambda ic: {}
     # When unset, no process-prefix filtering (preserves existing callers).
     # When set:
     # - exclude_104 / exclude_103: hide process from main production board
@@ -19310,7 +19334,7 @@ def _get_color_chart_data_impl(
 
             # Production Board special filtering: only show scheduled items if planned_only is requested
             if cint(planned_only):
-                if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only"):
+                if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only", "box_bag_only"):
                     pass  # These dedicated boards/tables show all their items regardless of planned date
                 # NON-WHITE items MUST be explicitly pushed (have a planned date)
                 elif not is_white and not item_pdate:
@@ -19535,6 +19559,9 @@ def _get_color_chart_data_impl(
             if bps == "rewinding_only" and _item_process_prefix(_ic_row) == "102" and unit not in REWINDING_BOARD_UNITS:
                 unit = REWINDING_UNASSIGNED_UNIT
 
+            if bps == "box_bag_only":
+                row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
+
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),
                 "itemName": item.name,
@@ -19556,6 +19583,11 @@ def _get_color_chart_data_impl(
                 "finishing": _finishing_row,
                 "quality": item.get("custom_quality") or item.get("quality") or "",
                 "gsm": item.get("gsm") or "",
+                # For BOPP Box Bag items (233), always re-parse GSM from item code to avoid stale DB values
+                **(
+                    (lambda _p: {"gsm": _p["total_gsm"]} if _p.get("total_gsm") else {})
+                    (_parse_bopp233_gsm(_ic_row))
+                ) if _item_process_prefix(_ic_row) == "233" else {},
                 "meter": flt(item.get("meter") or 0),
                 "qty": flt(item.get("qty", 0)),
                 "idx": item.get("idx", 0),
