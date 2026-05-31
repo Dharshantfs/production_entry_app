@@ -26966,17 +26966,21 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 							bom_no = res["bom_no"]
 							child_qty = _fabric_qty_from_bom(bom_no, ic, parent_qty, from_uom="Kg", parent_item_code=parent_ic)
 							
-							frappe.db.set_value("Planning Table", r.get("name"), {
+							update_dict = {
 								"qty": child_qty,
 								"uom": "Kg"
-							})
+							}
+							if child_pp == "PB-" and frappe.db.has_column("Planning Table", "custom_bopp_bom_kgs"):
+								update_dict["custom_bopp_bom_kgs"] = child_qty
+								
+							frappe.db.set_value("Planning Table", r.get("name"), update_dict)
 							
 							source_item = r.get("source_item")
 							if source_item and frappe.db.exists("Planning sheet Item", source_item):
-								frappe.db.set_value("Planning sheet Item", source_item, {
-									"qty": child_qty,
-									"uom": "Kg"
-								})
+								update_dict_source = update_dict.copy()
+								if child_pp == "PB-" and not frappe.db.has_column("Planning sheet Item", "custom_bopp_bom_kgs"):
+									update_dict_source.pop("custom_bopp_bom_kgs", None)
+								frappe.db.set_value("Planning sheet Item", source_item, update_dict_source)
 							break
 					except Exception:
 						pass
