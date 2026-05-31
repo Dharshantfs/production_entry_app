@@ -500,6 +500,8 @@ def _bom_item_process_code(item_code):
 	ic = str(item_code or "").strip()
 	if not ic:
 		return ""
+	if ic.startswith("PB-") or "PRINTED" in ic.upper():
+		return "PB-"
 	pp = _item_process_prefix(ic)
 	lam = _lamination_process_from_item_code(ic)
 	if pp in ("108", "255", "253", "254", "251", "252", "221", "233"):
@@ -26886,6 +26888,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 				p = _parse_bopp_bag_item_code(ic)
 				if p and p.get("total_gsm"):
 					r["gsm"] = p["total_gsm"]
+					frappe.db.set_value("Planning Table", r.get("name"), "gsm", p["total_gsm"])
 			except Exception:
 				pass
 		elif pp_prefix == "221":
@@ -26894,6 +26897,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 				p = _parse_box_bag_item_code(ic)
 				if p and p.get("total_gsm"):
 					r["gsm"] = p["total_gsm"]
+					frappe.db.set_value("Planning Table", r.get("name"), "gsm", p["total_gsm"])
 			except Exception:
 				pass
 				
@@ -26926,7 +26930,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						})
 					updated_count += 1
 					
-					so_item = r.get("sales_order_item") or r.get("so_item")
+					so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
 					if so_item:
 						converted_parents.setdefault(so_item, [])
 						converted_parents[so_item].append({
@@ -26943,7 +26947,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 			if not ic: continue
 			
 			child_pp = "PB-" if ic.startswith("PB-") or "PRINTED" in ic.upper() else _item_process_prefix(ic)
-			so_item = r.get("sales_order_item") or r.get("so_item")
+			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
 			
 			if child_pp in ("100", "104", "106", "PB-") and so_item and so_item in converted_parents:
 				for parent_data in converted_parents[so_item]:
