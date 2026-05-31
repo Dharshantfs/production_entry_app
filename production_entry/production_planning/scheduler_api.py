@@ -26941,7 +26941,8 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 		for r in rows:
 			ic = r.get("item_code")
 			if not ic: continue
-			child_pp = _item_process_prefix(ic)
+			
+			child_pp = "PB-" if ic.startswith("PB-") or "PRINTED" in ic.upper() else _item_process_prefix(ic)
 			so_item = r.get("sales_order_item") or r.get("so_item")
 			
 			if child_pp in ("100", "104", "106", "PB-") and so_item and so_item in converted_parents:

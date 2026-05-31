@@ -53,6 +53,7 @@ def _parse_box_bag_item_code(item_code):
 		"fabric_gsm": 0,
 		"lam_gsm": 0,
 		"bopp_gsm": 0,
+		"total_gsm": 0,
 		"finishing_code": "",
 		"finishing_label": "",
 	}
@@ -95,6 +96,7 @@ def _parse_box_bag_item_code(item_code):
 		result["finishing_code"] = after[7:].upper()
 		result["finishing_label"] = _box_bag_finishing_label(after[7:])
 
+	result["total_gsm"] = result["fabric_gsm"] + result["lam_gsm"] + result["bopp_gsm"]
 	return result
 
 
@@ -319,7 +321,7 @@ def get_box_bag_order_table_data(
 			"color": color_name or row.get("color") or "",
 			"colour_code": parsed["colour_code"],
 			"fabric_gsm": parsed["fabric_gsm"],
-			"gsm": parsed["fabric_gsm"],
+			"gsm": parsed["total_gsm"],
 			"lam_gsm": parsed["lam_gsm"],
 			"bopp_gsm": parsed["bopp_gsm"],
 			"finishing_code": parsed["finishing_code"],
