@@ -915,18 +915,26 @@ const filteredData = computed(() => {
 
   if (isBoxBagBoard.value) {
     const BOX_BAG_UNIT_LIST = ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
+    const FABRIC_UNITS = new Set(["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed", "UNASSIGNED"]);
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
-      if (proc === "221" || proc === "233") {
-        const u = (d.unit || "").trim();
+      const u = (d.unit || "").trim();
+      if (proc === "233") {
         if (!BOX_BAG_UNIT_LIST.includes(u)) return { ...d, unit: "UNASSIGNED BOX BAG MACHINE" };
+        return d;
+      }
+      if (proc === "221" || proc === "224") {
+        if (!BOX_BAG_UNIT_LIST.includes(u) || FABRIC_UNITS.has(u)) {
+          return { ...d, unit: "UNASSIGNED BOX BAG MACHINE" };
+        }
       }
       return d;
     });
-    if (["221", "233"].includes(boardProcessFilter.value)) {
-      data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
+    const bpf = boardProcessFilter.value || "__all__";
+    if (["221", "224", "233"].includes(bpf)) {
+      data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === bpf);
     } else {
-      data = data.filter((d) => ["221", "233"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
+      data = data.filter((d) => ["221", "224", "233"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
     }
   }
 
@@ -2503,7 +2511,7 @@ function updateUrlParams() {
   
   url.searchParams.set('scope', viewScope.value);
   prefs.scope = viewScope.value;
-  if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value) {
+  if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value || isBoxBagBoard.value) {
     url.searchParams.set('process', boardProcessFilter.value || "__all__");
     prefs.process = boardProcessFilter.value || "__all__";
   } else {
@@ -2614,6 +2622,7 @@ onMounted(() => {
       else if (isSlittingBoard.value) boardProcessFilter.value = "103";
       else if (isSheetCuttingBoard.value) boardProcessFilter.value = "251";
       else if (isLaminationBoard.value) boardProcessFilter.value = "104";
+      else if (isBoxBagBoard.value) boardProcessFilter.value = "__all__";
     }
 
     // 1. Load CSS
@@ -2638,6 +2647,11 @@ onMounted(() => {
       } else if (laminationProcessParam === "all" || laminationProcessParam === "__all__") {
         boardProcessFilter.value = "__all__";
       }
+    } else if (
+      isBoxBagBoard.value
+      && ["221", "224", "233", "__all__"].includes(processParam)
+    ) {
+      boardProcessFilter.value = processParam;
     } else if (["103", "109", "108", "105", "106", "251", "252", "253", "254", "255", "__all__"].includes(processParam)) {
       boardProcessFilter.value = processParam;
     }

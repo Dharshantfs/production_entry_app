@@ -163,6 +163,27 @@ const BOX_BAG_UNITS = [
   "UNASSIGNED BOX BAG MACHINE",
 ];
 
+const ITEM_PROCESS_KNOWN = new Set([
+  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "224", "233",
+  "251", "252", "253", "254", "255",
+]);
+
+function itemProcessPrefix(itemCode) {
+  const ic = String(itemCode || "").trim().toUpperCase();
+  if (!ic) return "";
+  if (ic.includes("-")) {
+    for (const seg of ic.split("-")) {
+      const segDigits = seg.replace(/\D/g, "");
+      if (segDigits.length >= 3) {
+        const sp = segDigits.slice(0, 3);
+        if (ITEM_PROCESS_KNOWN.has(sp)) return sp;
+      }
+    }
+  }
+  const all = ic.replace(/\D/g, "");
+  return all.length >= 3 ? all.slice(0, 3) : "";
+}
+
 const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
@@ -209,7 +230,12 @@ const filteredRows = computed(() => {
   if (sh === "day") d = d.filter((r) => String(r.shift_label || "DAY").toUpperCase() === "DAY");
   else if (sh === "night") d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
   const fp = (filterProcess.value || "all");
-  if (fp !== "all") d = d.filter((r) => String(r.process || "").includes(fp) || String(r.itemCode || "").includes(fp));
+  if (fp !== "all") {
+    d = d.filter((r) => {
+      const proc = String(r.process || itemProcessPrefix(r.itemCode || r.item_code || "")).trim();
+      return proc === fp;
+    });
+  }
   return sortRowsBySavedSequence(d);
 });
 

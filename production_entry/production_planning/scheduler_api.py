@@ -2573,7 +2573,18 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 					break
 	if pp in ("221", "224"):
 		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code, _bag_series_size_map
+
 		p = _parse_box_bag_item_code(ic)
+		box_specs = _box_bag_line_specs_from_item_code(ic)
+		if box_specs:
+			if box_specs.get("quality") and hasattr(row, "quality"):
+				row.quality = box_specs["quality"]
+			if box_specs.get("quality") and hasattr(row, "custom_quality"):
+				row.custom_quality = box_specs["quality"]
+			if box_specs.get("color") and hasattr(row, "color"):
+				row.color = box_specs["color"]
+			if cint(box_specs.get("gsm") or 0) and hasattr(row, "gsm"):
+				row.gsm = cint(box_specs["gsm"])
 		bs_id = p.get("bag_size_id")
 		if bs_id and hasattr(row, "bag_size"):
 			bsm = _bag_series_size_map()
@@ -14660,6 +14671,8 @@ def _populate_planning_sheet_items(ps, doc):
                 lam_side = (getattr(it, "custom_lamination_side", None) or "").strip()
 
         unit = compute_default_production_unit(col, width, it.item_code)
+        if process_prefix in ("221", "224"):
+            unit = BOX_BAG_UNASSIGNED_UNIT
         
         # Planned date for Lamination parent (104/107) must be order date.
         # For Fabric (100), white-color logic remains unchanged.
@@ -19379,6 +19392,12 @@ def _get_color_chart_data_impl(
             unit = normalize_planning_unit_for_select(
                 (item.get("unit") or sheet.get("unit") or "Unit 1").strip()
             )
+            if bps == "box_bag_only":
+                _bb_icp = _item_process_prefix(item_code_for_color)
+                if _bb_icp in ("221", "224"):
+                    unit = BOX_BAG_UNASSIGNED_UNIT
+                elif _bb_icp == "233" and unit in ("", "Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed", "UNASSIGNED"):
+                    unit = BOX_BAG_UNASSIGNED_UNIT
             
             effective_date_str = str(item.get("ordered_date") or sheet.get("ordered_date") or "")
             

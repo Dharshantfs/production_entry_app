@@ -148,7 +148,10 @@ def _force_box_bag_unit_on_sheet(planning_sheet_name=None):
 	# Match 221 or 224 process code safely (either starts with 221/224 or preceded by hyphen)
 	conditions = """
 		(item_code LIKE '221%%' OR item_code LIKE '%%-221%%' OR item_code LIKE '224%%' OR item_code LIKE '%%-224%%')
-		AND IFNULL(unit, '') NOT IN (%s, %s, %s)
+		AND (
+			IFNULL(unit, '') NOT IN (%s, %s, %s)
+			OR unit IN ('Unit 1', 'Unit 2', 'Unit 3', 'Unit 4', 'Mixed', 'UNASSIGNED')
+		)
 	"""
 	params = list(BOX_BAG_UNITS)
 	if planning_sheet_name:
