@@ -26981,6 +26981,22 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 							bom_no = res["bom_no"]
 							child_qty = _fabric_qty_from_bom(bom_no, ic, parent_qty, from_uom=parent_uom, parent_item_code=parent_ic)
 							
+							bom_item_uom = frappe.db.get_value("BOM Item", {"parent": bom_no, "item_code": ic}, "uom")
+							if bom_item_uom == "Meter":
+								conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
+								if conv and flt(conv) > 0:
+									child_qty = child_qty / flt(conv)
+								else:
+									gsm = flt(r.get("gsm"))
+									width = flt(r.get("width_inch") or r.get("custom_width_inch") or r.get("custom_width_"))
+									if not gsm or not width:
+										from production_entry.production_planning.scheduler_api import _parse_gsm_width_from_item_text
+										p = _parse_gsm_width_from_item_text(r.get("item_name") or r.get("description") or "")
+										gsm = flt(p.get("total_gsm"))
+										width = flt(p.get("width_inch"))
+									if gsm > 0 and width > 0:
+										child_qty = child_qty * (gsm * width * 0.0254) / 1000
+							
 							update_dict = {
 								"qty": child_qty,
 								"uom": "Kg"
