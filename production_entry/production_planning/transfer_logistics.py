@@ -443,16 +443,67 @@ def chart_row_transfer_fields(item):
 	return mt, dest, status
 
 
-def _transfer_status_blocks_request(status):
+def _produced_roll_count_for_chart_row(item):
+	"""Rolls recorded on submitted SPR (Roll Production Results or summary field)."""
+	pr = cint(item.get("produced_rolls") or 0) if isinstance(item, dict) else 0
+	if pr > 0:
+		return pr
+	spr = _cstr(item.get("spr_name") if isinstance(item, dict) else "")
+	if not spr or not frappe.db.exists("Shaft Production Run", spr):
+		return 0
+	if cint(frappe.db.get_value("Shaft Production Run", spr, "docstatus") or 0) != 1:
+		return 0
+	try:
+		if frappe.db.table_exists("Roll Production Result"):
+			cnt = frappe.db.count(
+				"Roll Production Result",
+				{"parent": spr, "parenttype": "Shaft Production Run"},
+			)
+			if cnt:
+				return cint(cnt)
+	except Exception:
+		pass
+	for fn in ("custom_no_of_rolls_created", "no_of_rolls", "roll_count_per_shaft"):
+		if frappe.db.has_column("Shaft Production Run", fn):
+			val = cint(frappe.db.get_value("Shaft Production Run", spr, fn) or 0)
+			if val:
+				return val
+	return 0
+
+
+def _transferred_roll_count_for_planning_row(ptr):
+	"""Non-rejected transfer approval lines linked to this planning row."""
+	row_id = _cstr(ptr)
+	if not row_id:
+		return 0
+	rows = frappe.db.sql(
+		"""
+		select count(tl.name) as cnt
+		from `tabTransfer Approval Line` tl
+		inner join `tabTransfer Approval` ta on ta.name = tl.parent
+		where tl.planning_table_row = %s and ifnull(ta.status, '') != 'Rejected'
+		""",
+		row_id,
+		as_dict=True,
+	)
+	return cint(rows[0].cnt if rows else 0)
+
+
+def _transfer_status_blocks_request(status, planning_table_row=None, produced_rolls=0, transferred_rolls=0):
 	st = _cstr(status).lower()
 	if not st:
 		return False
 	if st == "rejected":
 		return False
-	return (
-		st in {"pending approval", "approved", "draft ste created"}
-		or st.startswith("transferred")
-	)
+	if st in {"pending approval", "approved", "draft ste created"}:
+		return True
+	if st.startswith("transferred") or "partially transferred" in st:
+		pr = cint(produced_rolls)
+		tr = cint(transferred_rolls)
+		if pr > 0 and tr < pr:
+			return False
+		return True
+	return False
 
 
 def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
@@ -466,11 +517,16 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 			mt_norm = normalize_movement_type(resolve_movement_type_for_chart_row(item))
 		except Exception:
 			mt_norm = ""
+	ptr = _cstr(item.get("itemName") or item.get("name") or item.get("planning_table_row"))
+	produced_rolls = _produced_roll_count_for_chart_row(item)
+	transferred_rolls = _transferred_roll_count_for_planning_row(ptr)
 	can_transfer = (
 		is_transfer_movement(mt)
 		and bool(wo_terminal)
 		and cint(spr_docstatus) == 1
-		and not _transfer_status_blocks_request(status)
+		and not _transfer_status_blocks_request(
+			status, ptr, produced_rolls, transferred_rolls
+		)
 	)
 	block_reason = ""
 	if not is_transfer_movement(mt):
@@ -479,11 +535,17 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 		block_reason = "Work order not completed"
 	elif cint(spr_docstatus) != 1:
 		block_reason = "SPR not done"
-	elif _transfer_status_blocks_request(status):
-		block_reason = status
+	elif _transfer_status_blocks_request(status, ptr, produced_rolls, transferred_rolls):
+		if produced_rolls > 0 and transferred_rolls >= produced_rolls:
+			block_reason = _("All {0} produced rolls already in transfer").format(produced_rolls)
+		else:
+			block_reason = status
 	movement_display = mt_norm or ""
 	if dest and is_transfer_movement(mt):
-		movement_display = f"{mt_norm} → {dest}"
+		if produced_rolls > 0:
+			movement_display = f"{mt_norm} → {dest} ({transferred_rolls}/{produced_rolls} rolls)"
+		else:
+			movement_display = f"{mt_norm} → {dest}"
 	elif mt_norm == "Despatch":
 		movement_display = "Despatch"
 	return {
@@ -493,6 +555,8 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 		"movement_display": movement_display,
 		"can_transfer": can_transfer,
 		"transfer_block_reason": block_reason,
+		"produced_rolls": produced_rolls,
+		"transferred_rolls": transferred_rolls,
 	}
 
 
@@ -889,12 +953,40 @@ def update_planning_row_transfer_status(ptr):
 	else:
 		dests = []
 		statuses = []
+		total_transferred = 0
 		for r in rows:
 			lbl = r.to_destination_label or r.to_company or ""
-			dests.append(f"{lbl} ({r.roll_count} rolls)" if r.roll_count else lbl)
+			rc = cint(r.roll_count)
+			total_transferred += rc
+			if lbl and rc:
+				dests.append(f"{lbl} ({rc} roll{'s' if rc != 1 else ''})")
+			elif lbl:
+				dests.append(lbl)
 			statuses.append(r.status)
-			
-		final_status = "Pending Approval" if "Pending Approval" in statuses else "Transferred"
+
+		produced_rolls = 0
+		try:
+			pt_row = frappe.db.get_value(
+				"Planning Table",
+				ptr,
+				["spr_name", "item_code"],
+				as_dict=True,
+			)
+			if pt_row:
+				produced_rolls = _produced_roll_count_for_chart_row(
+					{"spr_name": pt_row.get("spr_name"), "item_code": pt_row.get("item_code")}
+				)
+		except Exception:
+			pass
+
+		if "Pending Approval" in statuses:
+			final_status = "Pending Approval"
+		elif produced_rolls > 0 and total_transferred < produced_rolls:
+			final_status = _("Partially transferred ({0}/{1} rolls)").format(
+				total_transferred, produced_rolls
+			)
+		else:
+			final_status = "Transferred"
 		final_dest = " | ".join(dests)
 		
 		updates = {

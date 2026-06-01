@@ -25,7 +25,7 @@
         <label>Process</label>
         <div class="cc-shift-btns" style="flex-wrap: wrap;">
           <button type="button" :class="{ active: filterProcess === '221' }" @click="setProcessFilter('221')">221 Box Bag</button>
-          <button type="button" :class="{ active: filterProcess === '224' }" @click="setProcessFilter('224')">224 Box Bag</button>
+          <button type="button" :class="{ active: filterProcess === '224' }" @click="setProcessFilter('224')">PLAIN LAMINATED BOX BAG</button>
           <button type="button" :class="{ active: filterProcess === '233' }" @click="setProcessFilter('233')">233 BOPP Box Bag</button>
           <button type="button" :class="{ active: filterProcess === 'all' }" @click="setProcessFilter('all')">All</button>
         </div>
@@ -88,7 +88,7 @@
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-              <td class="cell-center" :style="row.process === '233' ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || (row.process === '221' ? '221 Box Bag' : (row.process === '224' ? '224 Box Bag' : row.process || '-')) }}</td>
+              <td class="cell-center" :style="row.process === '233' ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || (row.process === '221' ? '221 Box Bag' : (row.process === '224' ? 'PLAIN LAMINATED BOX BAG' : row.process || '-')) }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
@@ -426,8 +426,106 @@ async function openMachineOffDialog() {
   d.show();
 }
 
-async function saveArrangement() { try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: filterUnit.value || "BoxBag", sequence_data: JSON.stringify(seq), plan_name: "box_bag_table" } }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
-async function restoreArrangement() { try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: filterUnit.value || "BoxBag", plan_name: "box_bag_table" } }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }
+const BOX_BAG_ARRANGEMENT_UNIT = "BoxBag";
+
+function parseSavedArrangementPayload(raw) {
+  const next = {};
+  let seq = raw;
+  if (typeof seq === "string") {
+    try { seq = JSON.parse(seq); } catch { seq = {}; }
+  }
+  if (!seq || typeof seq !== "object") return next;
+  Object.keys(seq).forEach((k) => {
+    const block = seq[k];
+    if (Array.isArray(block)) {
+      next[k] = block.map((x) => (typeof x === "string" ? x : x?.item_name)).filter(Boolean);
+      return;
+    }
+    const list = block?.sequence || [];
+    if (Array.isArray(list)) {
+      next[k] = list.map((x) => (typeof x === "string" ? x : x?.item_name)).filter(Boolean);
+    }
+  });
+  return next;
+}
+
+async function loadSavedArrangement() {
+  try {
+    const { start_date, end_date } = getScopeDateRange();
+    if (!start_date || !end_date) return;
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
+      args: {
+        start_date,
+        end_date,
+        unit: BOX_BAG_ARRANGEMENT_UNIT,
+        plan_name: "box_bag_table",
+      },
+    });
+    const payload = res?.message || {};
+    const next = {};
+    Object.keys(payload).forEach((key) => {
+      const rec = payload[key];
+      let seq = rec?.sequence;
+      if (typeof seq === "string") {
+        try { seq = JSON.parse(seq); } catch { seq = null; }
+      }
+      if (seq && !Array.isArray(seq) && typeof seq === "object") {
+        Object.assign(next, parseSavedArrangementPayload(seq));
+      } else if (Array.isArray(seq) && seq.length) {
+        const dk = String(key).split("-").slice(-1)[0];
+        if (dk) next[dk] = seq.map((x) => (typeof x === "string" ? x : x?.item_name)).filter(Boolean);
+      }
+    });
+    if (Object.keys(next).length) {
+      customOrderByDate.value = { ...customOrderByDate.value, ...next };
+    }
+  } catch (_) { /* keep local order */ }
+}
+
+async function saveArrangement() {
+  try {
+    const seq = {};
+    Object.keys(customOrderByDate.value || {}).forEach((dateKey) => {
+      seq[dateKey] = {
+        date: dateKey,
+        sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })),
+      };
+    });
+    const anchorDate = filterOrderDate.value || Object.keys(seq)[0] || frappe.datetime.get_today();
+    await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.save_color_sequence",
+      args: {
+        date: anchorDate,
+        unit: BOX_BAG_ARRANGEMENT_UNIT,
+        sequence_data: JSON.stringify(seq),
+        plan_name: "box_bag_table",
+      },
+    });
+    frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3);
+  } catch (e) {
+    frappe.msgprint(`Save failed: ${e?.message || e}`);
+  }
+}
+
+async function restoreArrangement() {
+  try {
+    const r = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
+      args: {
+        date: filterOrderDate.value || frappe.datetime.get_today(),
+        unit: BOX_BAG_ARRANGEMENT_UNIT,
+        plan_name: "box_bag_table",
+      },
+    });
+    const raw = r?.message?.sequence_data;
+    const next = parseSavedArrangementPayload(typeof raw === "string" ? JSON.parse(raw || "{}") : raw);
+    if (Object.keys(next).length) customOrderByDate.value = next;
+    else frappe.show_alert({ message: "No previous arrangement snapshot", indicator: "orange" }, 3);
+  } catch (e) {
+    frappe.msgprint(`Restore failed: ${e?.message || e}`);
+  }
+}
 
 function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.value) { const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` }; } if (viewScope.value === "weekly" && filterWeek.value) { const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { start_date: fmt(ws), end_date: fmt(we) }; } return { start_date: filterOrderDate.value, end_date: filterOrderDate.value }; }
 
@@ -483,7 +581,7 @@ async function fetchData() {
       planningSheet: d.planningSheet || d.planning_sheet || "",
       salesOrderItem: d.salesOrderItem || d.sales_order_item || "",
     }));
-    await restoreArrangement();
+    await loadSavedArrangement();
     await fetchMaintenanceRecords();
   } catch (e) {
     frappe.msgprint(`Error loading Box Bag Order Table: ${e?.message || e}`);

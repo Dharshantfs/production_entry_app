@@ -604,7 +604,7 @@ const boardProcessOptions = computed(() => {
       { value: "__all__", label: "All" },
     ];
   }
-  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }, { value: "224", label: "224 Box Bag" }, { value: "233", label: "233 BOPP Bag" }, { value: "__all__", label: "All" }];
+  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }, { value: "224", label: "PLAIN LAMINATED BOX BAG" }, { value: "233", label: "233 BOPP Bag" }, { value: "__all__", label: "All" }];
   return [];
 });
 
@@ -1696,6 +1696,8 @@ function buildPullBoardChartArgsForSourceDate(sourceDate) {
     }
   } else if (isPrintedBoppFilmBoard.value) {
     args.board_process_scope = "printed_bopp_pb_only";
+  } else if (isBoxBagBoard.value) {
+    args.board_process_scope = "box_bag_only";
   } else {
     try {
       const sp = new URLSearchParams(window.location.search || "");
@@ -1735,6 +1737,12 @@ async function loadOrders(d) {
         if (isPrintingBoard.value) {
             items = items.filter((i) =>
                 ["105", "106"].includes(itemProcessPrefix(i.itemCode || i.item_code))
+            );
+        }
+
+        if (isBoxBagBoard.value) {
+            items = items.filter((i) =>
+                ["221", "224", "233"].includes(itemProcessPrefix(i.itemCode || i.item_code))
             );
         }
 

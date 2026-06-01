@@ -19394,9 +19394,16 @@ def _get_color_chart_data_impl(
             )
             if bps == "box_bag_only":
                 _bb_icp = _item_process_prefix(item_code_for_color)
+                _bb_valid = (
+                    BOX_BAG_UNIT_L1,
+                    BOX_BAG_UNIT_L2,
+                    BOX_BAG_UNASSIGNED_UNIT,
+                )
+                nu_bb = normalize_planning_unit_for_select(unit)
                 if _bb_icp in ("221", "224"):
-                    unit = BOX_BAG_UNASSIGNED_UNIT
-                elif _bb_icp == "233" and unit in ("", "Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed", "UNASSIGNED"):
+                    if nu_bb not in _bb_valid:
+                        unit = BOX_BAG_UNASSIGNED_UNIT
+                elif _bb_icp == "233" and nu_bb not in _bb_valid:
                     unit = BOX_BAG_UNASSIGNED_UNIT
             
             effective_date_str = str(item.get("ordered_date") or sheet.get("ordered_date") or "")

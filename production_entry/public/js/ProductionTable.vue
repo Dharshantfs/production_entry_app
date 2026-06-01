@@ -166,8 +166,8 @@
                         <th style="width: 110px;">MERGE ACTION</th>
                         <th style="width: 100px;">DESPATCH STATUS</th>
                         <th style="width: 110px;">MOVEMENT</th>
-                        <th style="width: 90px; position: sticky; right: 100px; background: #fafafa; z-index: 10;">PRODUCTION PLAN</th>
-                        <th style="width: 128px; position: sticky; right: 0; background: #fafafa; z-index: 10; line-height: 1.2;">
+                        <th style="width: 90px; position: sticky; right: 200px; background: #fafafa; z-index: 10;">PRODUCTION PLAN</th>
+                        <th style="width: 200px; min-width: 200px; position: sticky; right: 0; background: #fafafa; z-index: 10; line-height: 1.2;">
                           SPR / WO
                           <div style="font-size: 9px; font-weight: 500; color: #64748b;">Status &amp; entry</div>
                         </th>
@@ -228,7 +228,7 @@
                               </span>
                             </td>
                             <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row.item) }}</td>
-                            <td class="cell-center" style="position: sticky; right: 100px; background: white; z-index: 9;">
+                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9;">
                               <button v-if="row.item.pp_id" @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="`View PP: ${row.item.pp_id || 'resolve from sheet'}`">
                                 📋 View
                               </button>
@@ -345,7 +345,7 @@
                                 {{ formatDispatchStatus(row.mergeDispatchStatus) }}
                               </span>
                             </td>
-                            <td class="cell-center" style="position: sticky; right: 100px; background: white; z-index: 9;">
+                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9;">
                               <button v-if="row.pp_id" @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="`View PP for merged row`">
                                 📋 View
                               </button>
@@ -3004,10 +3004,18 @@ onBeforeUnmount(() => {
 .pt-stock-cell {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 4px;
-  max-width: 128px;
+  min-width: 180px;
+  max-width: none;
   margin: 0 auto;
+  overflow: visible;
+}
+.pt-stock-cell .pt-spr-btn,
+.pt-stock-cell .btn {
+  white-space: normal;
+  word-break: break-word;
+  max-width: 100%;
 }
 .pt-pill-row {
   display: flex;

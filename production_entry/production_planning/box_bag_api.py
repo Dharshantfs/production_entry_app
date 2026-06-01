@@ -23,6 +23,9 @@ _BOX_BAG_FINISHING_MAP = {
 	"CG": "Cooler / Glossy",
 	"PM": "Plain / Matte",
 	"PG": "Plain / Glossy",
+	"0M": "Matte",
+	"M": "Matte",
+	"G": "Glossy",
 }
 
 
@@ -356,7 +359,11 @@ def get_box_bag_order_table_data(
 			"spr_docstatus": spr_docstatus,
 			"salesOrderItem": row.get("salesOrderItem") or row.get("sales_order_item") or "",
 			"process": "233" if proc_prefix == "233" else ("224" if proc_prefix == "224" else "221"),
-			"process_label": "233 BOPP Box Bag" if proc_prefix == "233" else ("224 Box Bag" if proc_prefix == "224" else "221 Box Bag"),
+			"process_label": (
+				"233 BOPP Box Bag"
+				if proc_prefix == "233"
+				else ("PLAIN LAMINATED BOX BAG" if proc_prefix == "224" else "221 Box Bag")
+			),
 			"movement_type": row.get(PLANNING_MOVEMENT_TYPE_FIELD) or row.get("movement_type") or "",
 		}
 
