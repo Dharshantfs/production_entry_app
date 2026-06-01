@@ -460,7 +460,7 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 
 # First-segment wins for codes like 105-…-100… (GSM / width digits) so we never classify as 100 instead of 105.
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
-	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "233", "251", "252", "253", "254", "255"}
+	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "233", "224", "251", "252", "253", "254", "255"}
 )
 
 
@@ -504,7 +504,7 @@ def _bom_item_process_code(item_code):
 		return "PB-"
 	pp = _item_process_prefix(ic)
 	lam = _lamination_process_from_item_code(ic)
-	if pp in ("108", "255", "253", "254", "251", "252", "221", "233"):
+	if pp in ("108", "255", "253", "254", "251", "252", "221", "233", "224"):
 		return pp
 	if lam in ("104", "107", "255"):
 		return lam
