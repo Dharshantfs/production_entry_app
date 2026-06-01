@@ -26942,16 +26942,18 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 							"qty": new_qty
 						})
 					updated_count += 1
+				else:
+					frappe.throw(f"There is no UOM Conversion from Meter to Kg set for Item {ic}!")
 					
-					so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
-					if so_item:
-						converted_parents.setdefault(so_item, [])
-						converted_parents[so_item].append({
-							"parent_ic": ic,
-							"new_qty": new_qty,
-							"pp": pp,
-							"uom": "Kg"
-						})
+			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
+			if so_item:
+				converted_parents.setdefault(so_item, [])
+				converted_parents[so_item].append({
+					"parent_ic": ic,
+					"new_qty": new_qty if needs_conversion else qty,
+					"pp": pp,
+					"uom": "Kg" if needs_conversion else uom
+				})
 					
 	frappe.db.commit()
 	
@@ -26963,7 +26965,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 			child_pp = "PB-" if ic.startswith("PB-") or "PRINTED" in ic.upper() else _item_process_prefix(ic)
 			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
 			
-			if child_pp in ("100", "104", "106", "PB-") and so_item and so_item in converted_parents:
+			if child_pp in ("100", "103", "107", "108", "109", "104", "106", "PB-") and so_item and so_item in converted_parents:
 				for parent_data in converted_parents[so_item]:
 					parent_ic = parent_data["parent_ic"]
 					parent_pp = parent_data["pp"]
@@ -26987,15 +26989,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 								if conv and flt(conv) > 0:
 									child_qty = child_qty / flt(conv)
 								else:
-									gsm = flt(r.get("gsm"))
-									width = flt(r.get("width_inch") or r.get("custom_width_inch") or r.get("custom_width_"))
-									if not gsm or not width:
-										from production_entry.production_planning.scheduler_api import _parse_gsm_width_from_item_text
-										p = _parse_gsm_width_from_item_text(r.get("item_name") or r.get("description") or "")
-										gsm = flt(p.get("total_gsm"))
-										width = flt(p.get("width_inch"))
-									if gsm > 0 and width > 0:
-										child_qty = child_qty * (gsm * width * 0.0254) / 1000
+									frappe.throw(f"There is no UOM Conversion from Meter to Kg set for Item {ic}!")
 							
 							update_dict = {
 								"qty": child_qty,
