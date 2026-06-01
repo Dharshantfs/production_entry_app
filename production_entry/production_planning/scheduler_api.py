@@ -8828,6 +8828,36 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		so_parent_processes=("221",),
 		process_label="Box bag fabric (103 → 100)",
 	)
+
+	# 224 BOM Extraction
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("224",),
+		"104",
+		LAMINATION_UNIT,
+		process_label="224 Box Bag Lamination (224 → 104)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("104",),
+		"100",
+		so_parent_processes=("224",),
+		process_label="224 Box Bag Fabric (104 → 100)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("224",),
+		"103",
+		SLITTING_UNIT,
+		process_label="224 Box Bag Slitting (224 → 103)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("103",),
+		"100",
+		so_parent_processes=("224",),
+		process_label="224 Box Bag Fabric (103 → 100)",
+	)
 	try:
 		from production_entry.production_planning.box_bag_api import _force_box_bag_unit_on_sheet
 		_force_box_bag_unit_on_sheet(planning_sheet_name)
@@ -26849,7 +26879,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					frappe.db.set_value("Planning Table", r.get("name"), "gsm", p["total_gsm"])
 			except Exception:
 				pass
-		elif pp_prefix == "221":
+		elif pp_prefix in ("221", "224"):
 			try:
 				from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
 				p = _parse_box_bag_item_code(ic)
@@ -26862,7 +26892,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 		pp = _item_process_prefix(ic)
 		
 		# Force trigger BOM recalculation for children of specific parents even if the parent isn't converted
-		if pp in ("221", "233"):
+		if pp in ("221", "233", "224"):
 			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
 			if so_item:
 				converted_parents.setdefault(so_item, [])
@@ -26874,8 +26904,8 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 				})
 				updated_count += 1
 		
-		# Convert child processes that are in Meter to Kg (100, 103, 107, 109, 108)
-		if pp in ("100", "103", "107", "109", "108"):
+		# Convert child processes that are in Meter to Kg (100, 103, 107, 109, 108, 104, 106)
+		if pp in ("100", "103", "107", "109", "108", "104", "106"):
 			qty = flt(r.get("qty"))
 			uom = r.get("uom")
 			
