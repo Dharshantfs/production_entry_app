@@ -19698,50 +19698,9 @@ def _deduplicate_items(items):
     2. Newer items (higher idx or recent creation) over older ones.
     Legitimate splits (is_split=1) are PRESERVED.
     """
-    seen = {}
-    result = []
-    for item in items:
-        # Support both dict keys (camelCase vs snake_case) 
-        so_item = item.get("salesOrderItem") or item.get("sales_order_item")
-        is_split = item.get("isSplit") or item.get("is_split")
-
-        # For lamination 107 flows, the parent (107/104) and child fabric (100*) can legitimately share the
-        # same sales-order line. Deduplicating purely by SO line hides the child rows in Production Table.
-        ic = str(item.get("itemCode") or item.get("item_code") or "").strip()
-        # Use SO line + item_code as dedupe key so multiple children of the same process (e.g. 100 body and 100 handle) both remain visible.
-        dedupe_key = f"{so_item}|{ic}" if so_item and ic else so_item
-        
-        if is_split or not so_item:
-            result.append(item)
-            continue
-            
-        if dedupe_key not in seen:
-            seen[dedupe_key] = item
-            result.append(item)
-        else:
-            existing = seen[dedupe_key]
-            e_plan_raw = existing.get("planName") or existing.get("custom_plan_name") or "Default"
-            i_plan_raw = item.get("planName") or item.get("custom_plan_name") or "Default"
-            
-            # Strip legacy prefixes for logic consistency (e.g. 'MARCH W12 26 PLAN 1' -> 'PLAN 1')
-            e_plan = _strip_legacy_prefixes(e_plan_raw)
-            i_plan = _strip_legacy_prefixes(i_plan_raw)
-            
-            replace = False
-            # Priority 1: Specific Plan > Default
-            if e_plan == "Default" and i_plan != "Default":
-                replace = True
-            # Priority 2: Newer Sheet wins if both are specific plans or both are Default
-            # Since items is ordered by creation, 'item' is newer than 'existing'
-            elif e_plan == i_plan or (e_plan != "Default" and i_plan != "Default"):
-                replace = True
-                
-            if replace:
-                if existing in result:
-                    result.remove(existing)
-                seen[dedupe_key] = item
-                result.append(item)
-    return result
+    # User requested: "no mater duplicate ok if the itme place in planning sheet... always show item for there dahboards"
+    # Returning items directly without hiding any rows.
+    return items
 
 
 @frappe.whitelist()
