@@ -39,6 +39,7 @@ _EXTERNAL_TRANSFER_FIELD_CANDIDATES = (
 	"external_transfer",
 	"custom_external_transfer",
 	"is_external_transfer",
+	"ge_external_transfer",
 )
 
 

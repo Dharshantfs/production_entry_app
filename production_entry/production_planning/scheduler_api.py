@@ -27019,3 +27019,35 @@ def scan_stock_entry_batch(barcode, expected_item, source_warehouse=None):
         'item_code': batch.item,
         'available_qty': available_qty or batch.batch_qty
     }
+
+@frappe.whitelist()
+def add_batch_to_bundle(bundle_id, item_code, warehouse, batch_no, qty, voucher_type="Stock Entry"):
+    if not bundle_id:
+        bundle = frappe.get_doc({
+            "doctype": "Serial and Batch Bundle",
+            "item_code": item_code,
+            "warehouse": warehouse,
+            "type_of_transaction": "Outward",
+            "voucher_type": voucher_type,
+            "has_batch_no": 1,
+            "entries": [{
+                "batch_no": batch_no,
+                "qty": qty
+            }]
+        })
+        bundle.insert(ignore_permissions=True)
+        return {"bundle_id": bundle.name, "added": True, "qty_added": qty}
+    else:
+        bundle = frappe.get_doc("Serial and Batch Bundle", bundle_id)
+        # Check if already exists
+        for row in bundle.entries:
+            if row.batch_no == batch_no:
+                # Do not increase qty if it's the same roll, just return
+                return {"bundle_id": bundle.name, "added": False, "qty_added": 0}
+        
+        bundle.append("entries", {
+            "batch_no": batch_no,
+            "qty": qty
+        })
+        bundle.save(ignore_permissions=True)
+        return {"bundle_id": bundle.name, "added": True, "qty_added": qty}
