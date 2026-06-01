@@ -26903,8 +26903,8 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 				
 		pp = _item_process_prefix(ic)
 		
-		# Convert child processes that are in Meter to Kg (103, 107, 109, 108)
-		if pp in ("103", "107", "109", "108"):
+		# Convert child processes that are in Meter to Kg (100, 103, 107, 109, 108)
+		if pp in ("100", "103", "107", "109", "108"):
 			qty = flt(r.get("qty"))
 			uom = r.get("uom")
 			
