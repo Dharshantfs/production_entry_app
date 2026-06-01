@@ -27022,6 +27022,7 @@ def scan_stock_entry_batch(barcode, expected_item, source_warehouse=None):
 
 @frappe.whitelist()
 def add_batch_to_bundle(bundle_id, item_code, warehouse, batch_no, qty, voucher_type="Stock Entry"):
+    qty = float(qty)
     if not bundle_id:
         bundle = frappe.get_doc({
             "doctype": "Serial and Batch Bundle",

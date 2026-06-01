@@ -1,5 +1,14 @@
 // Transfer STE: show destination company on Party when set from Transfer Approval.
 frappe.ui.form.on("Stock Entry", {
+	onload(frm) {
+		// Stop standard ERPNext scan_barcode from running and messing up qty/rows
+		if (frm.script_manager && frm.script_manager.events && frm.script_manager.events['scan_barcode']) {
+			frm.script_manager.events['scan_barcode'] = frm.script_manager.events['scan_barcode'].filter(
+				fn => fn.toString().includes('process_barcode_scan')
+			);
+		}
+	},
+
 	refresh(frm) {
 		const co = (frm.doc.custom_transfer_to_company || "").trim();
 		if (co) {
@@ -74,6 +83,11 @@ frappe.ui.form.on("Stock Entry", {
     custom_barcode_scanner: function(frm) { frm.trigger('process_barcode_scan'); },
     
     process_barcode_scan: function(frm) {
+        // Prevent standard ERPNext barcode scanner from triggering
+        if (frm.barcode_scanner) {
+            frm.barcode_scanner = null; 
+        }
+
         let barcode = (frm.doc.scan_barcode || frm.doc.custom_barcode_scanner || "").trim();
         if (!barcode) return;
         
