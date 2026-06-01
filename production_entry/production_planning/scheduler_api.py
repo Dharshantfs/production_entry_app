@@ -2251,6 +2251,31 @@ def _sync_252_roll_width_from_105_child(planning_sheet_name):
 				frappe.db.set_value("Planning sheet Item", legacy, "width_inch", w, update_modified=False)
 
 
+def _box_bag_line_specs_from_item_code(item_code):
+	"""Quality, colour, and total GSM from 221/224 box-bag item codes (e.g. 6000-511-224F542R0C0M)."""
+	ic = _cstr(item_code).strip()
+	pp = _item_process_prefix(ic)
+	if pp not in ("221", "224"):
+		return None
+	try:
+		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
+
+		p = _parse_box_bag_item_code(ic) or {}
+	except Exception:
+		return None
+	qc = _cstr(p.get("quality_letter")).strip().upper()
+	quality = _cstr(_LAMINATION_QUALITY_BY_CODE.get(qc, "") or "").strip().upper() or qc
+	color = ""
+	cc = _cstr(p.get("colour_code")).strip()
+	if cc:
+		try:
+			color = (_get_color_by_code(cc) or "").strip().upper()
+		except Exception:
+			color = ""
+	gsm = cint(p.get("total_gsm") or 0)
+	return {"quality": quality, "color": color, "gsm": gsm, "parsed": p}
+
+
 def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 	"""Quality, colour name, and GSM for planning / SPR rows (255, 107, 104, legacy numeric, PB)."""
 	ic = _cstr(item_code).strip()
@@ -2352,19 +2377,9 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 		gsm = cint(p.get("gsm") or 0)
 		if gsm:
 			return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), gsm
-	if pp == "221":
-		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
-		p = _parse_box_bag_item_code(ic)
-		qc = _cstr(p.get("quality_letter") or "").strip()
-		quality = _cstr(_LAMINATION_QUALITY_BY_CODE.get(qc, "") or "").strip().upper() or qc
-		cc = _cstr(p.get("colour_code") or "").strip()
-		if cc:
-			try:
-				color = (_get_color_by_code(cc) or "").strip().upper()
-			except Exception:
-				color = ""
-		gsm = cint(p.get("fabric_gsm") or 0)
-		return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), gsm
+	box_specs = _box_bag_line_specs_from_item_code(ic)
+	if box_specs:
+		return box_specs["quality"], box_specs["color"], box_specs["gsm"]
 	# Legacy numeric + item-name fallback (planning_sheet.extract_quality_and_color)
 	try:
 		from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
@@ -2556,7 +2571,7 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 				if w105 > 0:
 					row.width_inch = w105
 					break
-	if pp == "221":
+	if pp in ("221", "224"):
 		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code, _bag_series_size_map
 		p = _parse_box_bag_item_code(ic)
 		bs_id = p.get("bag_size_id")
@@ -2658,8 +2673,10 @@ def _sync_planning_row_quality_specs(planning_sheet_name):
 			cc = _cstr(r.get("color")).strip()
 			if c and not cc and frappe.db.has_column(table, "color"):
 				up["color"] = c
-			if g and not cint(r.get("gsm") or 0) and frappe.db.has_column(table, "gsm"):
-				up["gsm"] = g
+			if g and frappe.db.has_column(table, "gsm"):
+				cur_gsm = cint(r.get("gsm") or 0)
+				if not cur_gsm or (_item_process_prefix(ic) in ("221", "224") and cur_gsm != g):
+					up["gsm"] = g
 			if up:
 				frappe.db.set_value(table, r.get("name"), up, update_modified=False)
 
@@ -14360,6 +14377,16 @@ def _populate_planning_sheet_items(ps, doc):
             if parsed108_early.get("width_inch") and flt(width) <= 0:
                 width = flt(parsed108_early.get("width_inch") or 0)
 
+        if process_prefix in ("221", "224"):
+            box_specs = _box_bag_line_specs_from_item_code(item_code_str)
+            if box_specs:
+                if box_specs.get("quality"):
+                    qual = box_specs["quality"]
+                if box_specs.get("color"):
+                    col = box_specs["color"]
+                if cint(box_specs.get("gsm") or 0) > 0:
+                    gsm = cint(box_specs["gsm"])
+
         digits = "".join(ch for ch in item_code_str if ch.isdigit())
         # For hyphenated codes like 6002-105..., extract from part after hyphen
         if "-" in item_code_str:
@@ -14405,7 +14432,7 @@ def _populate_planning_sheet_items(ps, doc):
                     qual = qn105
             if cint(parsed105_early.get("width_mm") or 0) > 0 and flt(width) <= 0:
                 width = round(cint(parsed105_early.get("width_mm") or 0) / 25.4)
-        if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) not in ("107", "255") and process_prefix not in ("253", "255", "254", "108", "251", "252", "105"):
+        if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) not in ("107", "255") and process_prefix not in ("253", "255", "254", "108", "251", "252", "105", "221", "224", "233"):
             q_code = after_digits[3:6]
             c_code = after_digits[6:9]
             try:
@@ -14552,14 +14579,10 @@ def _populate_planning_sheet_items(ps, doc):
                     gsm = cint(p233g.get("total_gsm") or 0)
             except Exception:
                 pass
-        elif process_prefix == "221":
-            try:
-                from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
-                p221g = _parse_box_bag_item_code(item_code_str) or {}
-                if cint(p221g.get("total_gsm") or 0) > 0:
-                    gsm = cint(p221g.get("total_gsm") or 0)
-            except Exception:
-                pass
+        elif process_prefix in ("221", "224"):
+            box_gsm = (_box_bag_line_specs_from_item_code(item_code_str) or {}).get("gsm") or 0
+            if cint(box_gsm) > 0:
+                gsm = cint(box_gsm)
         elif process_prefix == "253":
             p253g = _parse_253_item_code(it.item_code) or {}
             if cint(p253g.get("gsm") or 0) > 0:
@@ -15187,7 +15210,7 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return SHEET_CUTTING_UNIT
     if item_code and _item_process_prefix(str(item_code)) in ("253", "255", "254"):
         return SHEET_CUTTING_UNIT
-    if item_code and _item_process_prefix(str(item_code)) in ("221", "233"):
+    if item_code and _item_process_prefix(str(item_code)) in ("221", "224", "233"):
         return BOX_BAG_UNASSIGNED_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
@@ -19330,7 +19353,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "sheet_cutting_only" and icp not in ("251", "252", "253", "255", "254"):
                     continue
-                if bps == "box_bag_only" and icp not in ("221", "233"):
+                if bps == "box_bag_only" and icp not in ("221", "224", "233"):
                     continue
 
             color = (item.get("color") or item.get("colour") or "").strip()
@@ -19645,7 +19668,7 @@ def _get_color_chart_data_impl(
                         row_gsm = _p["total_gsm"]
                 except Exception:
                     pass
-            elif _item_process_prefix(_ic_row) == "221":
+            elif _item_process_prefix(_ic_row) in ("221", "224"):
                 try:
                     _p = _parse_box221_gsm(_ic_row)
                     if _p and _p.get("total_gsm"):

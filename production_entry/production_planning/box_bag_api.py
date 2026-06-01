@@ -33,16 +33,17 @@ def _box_bag_finishing_label(code):
 
 def _parse_box_bag_item_code(item_code):
 	"""Parse box bag item code: DESIGN-BAGSIZE-221QCCCGLLBB
-	Format: 6000-511-221N101Q00PP
+	Format: 6000-511-221N101Q00PP or 6000-511-224F542R0C0M
 	  - 6000   = design code (before first hyphen)
 	  - 511    = bag size id (between first and second hyphen, from Bag Series)
-	  - 221    = process code
-	  - N      = quality letter (1 char, from Quality Master)
-	  - 101    = colour code (3 digits)
-	  - Q      = fabric GSM encoded (single char)
-	  - 0      = lam_gsm digit
-	  - 0      = bopp_gsm digit
-	  - PP     = finishing code (2 chars)
+	  - 221/224 = process code
+	  - F      = quality letter (1 char, from Quality Master / LAMINATION_QUALITY_CODES)
+	  - 542    = colour code (3 digits)
+	  - R      = fabric GSM letter (105)
+	  - 0      = bopp GSM digit/letter (0)
+	  - C      = lam GSM letter (15)
+	  - 0M     = finishing code (optional tail)
+	  Total GSM = fabric + bopp + lam (e.g. 105 + 0 + 15 = 120)
 	"""
 	result = {
 		"design_code": "",
