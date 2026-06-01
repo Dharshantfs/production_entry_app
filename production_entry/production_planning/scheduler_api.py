@@ -25671,6 +25671,7 @@ def test_quality_extraction():
             "status": "PASS" if qm_count > 0 else "FAIL"
         })
         
+        if qm_count == 0:
             results["warnings"].append("No Quality Masters found - quality extraction will have nothing to lookup")
         
         # TEST 2: Sample Quality Masters with codes
