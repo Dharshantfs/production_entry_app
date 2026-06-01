@@ -41,6 +41,8 @@ SPR_BATCH_UNIT_MAP = {
 	PRINTING_UNIT_TT: ("TT", "12"),
 	PRINTING_UNIT_4_COLOUR: ("JV", "13"),
 	PRINTED_BOPP_FILM_UNIT: ("VR", "14"),
+	"L1 LEADER OYANG MACHINE": ("VT", "16"),
+	"L2 LEADER ZX MACHINE": ("VT", "15"),
 }
 
 
@@ -1417,7 +1419,7 @@ class ShaftProductionRun(Document):
 		self.recalculate_job_achieved_weights()
 		self.recalculate_job_achieved_meters()
 		self.generate_batch_numbers()
-		if cint(getattr(self, "custom_is_sheet_cutting", 0)):
+		if cint(getattr(self, "custom_is_sheet_cutting", 0)) or cint(getattr(self, "custom_is_box_bag", 0)):
 			sync_bundle_total_produced_sheets_for_doc(self)
 			sync_bundle_total_achieved_weight_for_doc(self)
 			sync_bundle_consumed_meter_header(self)
@@ -1486,7 +1488,7 @@ class ShaftProductionRun(Document):
 		meta = frappe.get_meta("Shaft Production Run")
 		if not meta.has_field("total_produced_weight"):
 			return
-		if cint(getattr(self, "custom_is_sheet_cutting", 0)) and getattr(self, "bundle_calculation", None):
+		if (cint(getattr(self, "custom_is_sheet_cutting", 0)) or cint(getattr(self, "custom_is_box_bag", 0))) and getattr(self, "bundle_calculation", None):
 			total = sum(
 				flt(getattr(br, "total_achieved_weight", None), 2) for br in (self.bundle_calculation or [])
 			)
@@ -1671,7 +1673,7 @@ class ShaftProductionRun(Document):
 
 	def recalculate_job_achieved_meters(self):
 		"""Per job + SPR header: sum produced_length_mtrs only (no meter_roll / ordered length)."""
-		if cint(getattr(self, "custom_is_sheet_cutting", 0)):
+		if cint(getattr(self, "custom_is_sheet_cutting", 0)) or cint(getattr(self, "custom_is_box_bag", 0)):
 			return
 		meta_job = frappe.get_meta("Shaft Production Run Job")
 		meta_spr = frappe.get_meta("Shaft Production Run")
@@ -4302,10 +4304,15 @@ def get_production_plan_details(production_plan):
 PP_BUNDLE_CALC_FIELD = "custom_bundle_calculation"
 BUNDLE_CALC_DOCTYPE = "Bundle Calculation"
 SHEET_CUTTING_PROCESS_CODES = frozenset({"251", "252", "253", "254", "255"})
+BOX_BAG_PROCESS_CODES = frozenset({"221", "224", "233"})
 
 
 def _is_sheet_cutting_fg_code(item_code: str) -> bool:
 	return spr_fg_item_process_code(item_code) in SHEET_CUTTING_PROCESS_CODES
+
+
+def _is_box_bag_fg_code(item_code: str) -> bool:
+	return spr_fg_item_process_code(item_code) in BOX_BAG_PROCESS_CODES
 
 
 def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str = None) -> dict:
@@ -4602,7 +4609,7 @@ def build_spr_bundle_result_lines_for_row(
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save Shaft Production Run first"))
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
-	if not cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)):
+	if not (cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)) or cint(getattr(spr_doc, "custom_is_box_bag", 0))):
 		frappe.throw(_("Bundle Create Entry is only for sheet-cutting SPR"))
 	pp_name = get_pp_from_spr(shaft_production_run)
 	if not pp_name:
@@ -4728,7 +4735,7 @@ def sync_bundle_total_achieved_weight_for_doc(spr_doc) -> None:
 
 def sync_bundle_consumed_meter_header(spr_doc) -> None:
 	"""Sheet cutting: SPR header consumed meters = sum of bundle Consumed Mtrs."""
-	if not spr_doc or not cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)):
+	if not spr_doc or not (cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)) or cint(getattr(spr_doc, "custom_is_box_bag", 0))):
 		return
 	meta = frappe.get_meta("Shaft Production Run")
 	if not meta.has_field("custom_total_achieved_meter"):
@@ -7236,7 +7243,7 @@ def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
 		frappe.throw(_("Shaft Production Run not found."))
 	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	sync_bundle_total_produced_sheets_for_doc(doc)
-	if cint(getattr(doc, "custom_is_sheet_cutting", 0)):
+	if cint(getattr(doc, "custom_is_sheet_cutting", 0)) or cint(getattr(doc, "custom_is_box_bag", 0)):
 		sync_bundle_total_achieved_weight_for_doc(doc)
 		sync_bundle_consumed_meter_header(doc)
 	if cint(doc.docstatus) == 0:

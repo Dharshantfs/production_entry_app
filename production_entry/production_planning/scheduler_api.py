@@ -25889,7 +25889,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
                 return
 
             spr_doc = frappe.get_doc("Shaft Production Run", existing_spr_name)
-            if cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)):
+            if cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)) or cint(getattr(spr_doc, "custom_is_box_bag", 0)):
                 from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
                     populate_spr_bundle_calculation_from_pp,
                 )
@@ -26101,6 +26101,9 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
         is_printing_from_rows = any(
             _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("105", "106") for psi in (psi_list or [])
         )
+        is_box_bag_from_rows = any(
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("221", "224", "233") for psi in (psi_list or [])
+        )
         # BOPP Film = Printed BOPP items with PB- prefix (NOT 107 which is Lamination Unit like 104)
         is_bopp_film_from_rows = (
             any(str((psi.get("item_code") or "")).strip().upper().startswith("PB") for psi in (psi_list or []))
@@ -26120,6 +26123,8 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             spr.custom_is_bopp_film = 1
         if is_printing_from_rows and spr_meta.has_field("custom_is_printing"):
             spr.custom_is_printing = 1
+        if is_box_bag_from_rows and spr_meta.has_field("custom_is_box_bag"):
+            spr.custom_is_box_bag = 1
         
         # Extract order code and customer from first item's parent sheet and PP
         first_psi = psi_list[0]

@@ -12,6 +12,7 @@
   "custom_is_lamination",
   "custom_is_rewinding",
   "custom_is_sheet_cutting",
+  "custom_is_box_bag",
   "custom_is_bopp_film",
   "custom_is_printing",
   "custom_no_of_rolls_created",
@@ -85,6 +86,11 @@
    "fieldname": "custom_is_sheet_cutting",
    "fieldtype": "Check",
    "label": "Is Sheet Cutting"
+  },
+  {
+   "fieldname": "custom_is_box_bag",
+   "fieldtype": "Check",
+   "label": "Is Box Bag"
   },
   {
    "fieldname": "custom_is_bopp_film",
@@ -208,27 +214,27 @@
    "fieldname": "section_break_9",
    "fieldtype": "Section Break",
    "label": "Shaft Details (Select Job)",
-   "depends_on": "eval:!doc.custom_is_sheet_cutting"
+   "depends_on": "eval:!doc.custom_is_sheet_cutting && !doc.custom_is_box_bag"
   },
   {
    "fieldname": "shaft_jobs",
    "fieldtype": "Table",
    "label": "Available Jobs",
    "options": "Shaft Production Run Job",
-   "depends_on": "eval:!doc.custom_is_sheet_cutting"
+   "depends_on": "eval:!doc.custom_is_sheet_cutting && !doc.custom_is_box_bag"
   },
   {
    "fieldname": "section_bundle_calculation",
    "fieldtype": "Section Break",
    "label": "Bundle Calculation",
-   "depends_on": "eval:doc.custom_is_sheet_cutting"
+   "depends_on": "eval:doc.custom_is_sheet_cutting || doc.custom_is_box_bag"
   },
   {
    "fieldname": "bundle_calculation",
    "fieldtype": "Table",
    "label": "Bundle Calculation",
    "options": "Bundle Calculation",
-   "depends_on": "eval:doc.custom_is_sheet_cutting"
+   "depends_on": "eval:doc.custom_is_sheet_cutting || doc.custom_is_box_bag"
   },
   {
    "fieldname": "section_break_items",
