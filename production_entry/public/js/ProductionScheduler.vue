@@ -444,7 +444,7 @@ function normalizeUnitName(rawUnit) {
  * filters by its own process (e.g. rewinding → 102, printing → 105/106).
  */
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "233", "251", "252", "253", "254", "255",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "224", "233", "251", "252", "253", "254", "255",
 ]);
 
 /** Match scheduler_api._item_process_prefix: leading segment process wins over later -100- style digit runs. */
@@ -604,7 +604,7 @@ const boardProcessOptions = computed(() => {
       { value: "__all__", label: "All" },
     ];
   }
-  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }, { value: "233", label: "233 BOPP Bag" }, { value: "__all__", label: "All" }];
+  if (isBoxBagBoard.value) return [{ value: "221", label: "221 Box Bag" }, { value: "224", label: "224 Box Bag" }, { value: "233", label: "233 BOPP Bag" }, { value: "__all__", label: "All" }];
   return [];
 });
 

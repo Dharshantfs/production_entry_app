@@ -25,6 +25,7 @@
         <label>Process</label>
         <div class="cc-shift-btns" style="flex-wrap: wrap;">
           <button type="button" :class="{ active: filterProcess === '221' }" @click="setProcessFilter('221')">221 Box Bag</button>
+          <button type="button" :class="{ active: filterProcess === '224' }" @click="setProcessFilter('224')">224 Box Bag</button>
           <button type="button" :class="{ active: filterProcess === '233' }" @click="setProcessFilter('233')">233 BOPP Box Bag</button>
           <button type="button" :class="{ active: filterProcess === 'all' }" @click="setProcessFilter('all')">All</button>
         </div>
@@ -87,7 +88,7 @@
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-              <td class="cell-center" :style="row.process === '233' ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || (row.process === '221' ? '221 Box Bag' : row.process || '-') }}</td>
+              <td class="cell-center" :style="row.process === '233' ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || (row.process === '221' ? '221 Box Bag' : (row.process === '224' ? '224 Box Bag' : row.process || '-')) }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>

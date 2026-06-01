@@ -2102,7 +2102,7 @@ def _trace_from_221_parent_on_sales_order_line(sales_order_item, planning_sheet_
 		return ""
 	for r in rows:
 		ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
-		if _item_process_prefix(ric) != "221":
+		if _item_process_prefix(ric) not in ("221", "224"):
 			continue
 		rsoi = _cstr(
 			(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
@@ -4688,12 +4688,12 @@ def _parent_child_trace_id_from_item_code(item_code):
 		)
 	if process == "252":
 		return _trace_from_252_parse_body(_parse_sheet_cutting_item_code(ic) or {})
-	if process == "221":
+	if process in ("221", "224"):
 		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
 		p = _parse_box_bag_item_code(ic)
 		segs = [
 			_cstr(p.get("design_code")).strip(),
-			"221"
+			process
 		]
 		q = _cstr(p.get("quality_letter")).strip()
 		if q: segs.append(q)
@@ -25671,7 +25671,6 @@ def test_quality_extraction():
             "status": "PASS" if qm_count > 0 else "FAIL"
         })
         
-        if qm_count == 0:
             results["warnings"].append("No Quality Masters found - quality extraction will have nothing to lookup")
         
         # TEST 2: Sample Quality Masters with codes

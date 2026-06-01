@@ -64,12 +64,12 @@ frappe.ui.form.on('Planning sheet', {
             'custom_bopp_finish_size_mm': ['107', '255', '109'],
             'custom_total_no_of_colours': ['107', '255', '109'],
             'custom_bopp_bom_kgs': ['107', '255', '109'],
-            'custom_design_code': ['107', '255', '109', '221', '233'],
-            'custom_design_name': ['107', '255', '109', '221', '233'],
-            'custom_design_colour': ['107', '255', '109', '221', '233'],
-            'custom_design_attachment': ['107', '255', '109', '221', '233'],
-            'custom_finishing': ['107', '255', '109', '221', '233'],
-            'bag_size': ['221', '233']
+            'custom_design_code': ['107', '255', '109', '221', '224', '233'],
+            'custom_design_name': ['107', '255', '109', '221', '224', '233'],
+            'custom_design_colour': ['107', '255', '109', '221', '224', '233'],
+            'custom_design_attachment': ['107', '255', '109', '221', '224', '233'],
+            'custom_finishing': ['107', '255', '109', '221', '224', '233'],
+            'bag_size': ['221', '224', '233']
         };
         
         ['items', 'planned_items'].forEach(table => {
@@ -125,7 +125,7 @@ function trigger_toggle(frm, cdt, cdn) {
     frm.trigger('toggle_221_fields');
     if (cdt && cdn) {
         let row = frappe.get_doc(cdt, cdn);
-        if (row.item_code && (row.item_code.includes('-221') || row.item_code.startsWith('221'))) {
+        if (row.item_code && (row.item_code.includes('-221') || row.item_code.startsWith('221') || row.item_code.includes('-224') || row.item_code.startsWith('224'))) {
             let parts = row.item_code.split('-');
             if (parts.length > 1) {
                 let dc = parts[0];

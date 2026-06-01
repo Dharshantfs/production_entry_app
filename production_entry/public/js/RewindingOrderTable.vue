@@ -331,7 +331,7 @@ const REWINDING_MAINT_UNITS = new Set([...REWINDING_ASSIGNED_TABLE_UNITS, "UNASS
  * `scheduler_api._ITEM_PROCESS_KNOWN_PREFIXES`. Rows here are still restricted to 102 in filters.
  */
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "109", "251", "252", "253", "255",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "224", "233", "251", "252", "253", "254", "255",
 ]);
 const rawData = ref([]);
 const filtersReady = ref(false);
