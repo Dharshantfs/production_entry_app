@@ -26973,6 +26973,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					parent_uom = parent_data.get("uom", "Kg")
 					
 					try:
+						msg_len = len(frappe.local.message_log) if hasattr(frappe.local, "message_log") else 0
 						res = None
 						if child_pp == "100":
 							res = _get_fabric_item_from_process_item(parent_ic, expected_process=parent_pp, process_label="Child Fabric")
@@ -27008,6 +27009,8 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 								frappe.db.set_value("Planning sheet Item", source_item, update_dict_source)
 							break
 					except Exception:
+						if hasattr(frappe.local, "message_log"):
+							frappe.local.message_log = frappe.local.message_log[:msg_len]
 						pass
 						
 		frappe.db.commit()

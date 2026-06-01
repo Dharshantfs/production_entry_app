@@ -681,6 +681,13 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 	fc = _cstr(from_company)
 	batches = []
 	seen = set()
+	existing_transferred = frappe.db.sql("""
+		select tl.batch_no 
+		from `tabTransfer Approval Line` tl
+		inner join `tabTransfer Approval` ta on ta.name = tl.parent
+		where ta.status != 'Rejected' and tl.batch_no is not null
+	""", as_dict=1)
+	transferred_batches = {r.batch_no for r in existing_transferred}
 	
 	wh_list = []
 	if fc:
@@ -688,7 +695,7 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 
 	def _add_batch(batch_no, qty, row=None, warehouse=None):
 		bn = _cstr(batch_no)
-		if not bn or bn in seen:
+		if not bn or bn in seen or bn in transferred_batches:
 			return
 			
 		stock_qty = flt(frappe.db.sql("select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0", bn)[0][0] or 0)
@@ -829,8 +836,6 @@ def create_transfer_approval_request(
 			else ""
 		)
 		current_status = _resolved_planning_row_transfer_status(ptr, current_status)
-		if _transfer_status_blocks_request(current_status):
-			frappe.throw(_("Row {0} is already in transfer status: {1}").format(ptr, current_status))
 		spr = _cstr(line.get("spr_name"))
 		if not spr or cint(frappe.db.get_value("Shaft Production Run", spr, "docstatus") or 0) != 1:
 			frappe.throw(_("SPR not done for row {0}. Cannot request transfer.").format(ptr))
@@ -864,22 +869,49 @@ def create_transfer_approval_request(
 	return {"ok": True, "name": doc.name, "status": doc.status}
 
 
+def update_planning_row_transfer_status(ptr):
+	if not ptr or not frappe.db.exists("Planning Table", ptr):
+		return
+		
+	rows = frappe.db.sql("""
+		select ta.to_destination_label, ta.to_company, ta.status, count(tl.name) as roll_count
+		from `tabTransfer Approval Line` tl
+		inner join `tabTransfer Approval` ta on ta.name = tl.parent
+		where tl.planning_table_row = %s and ta.status != 'Rejected'
+		group by ta.name
+	""", ptr, as_dict=1)
+	
+	if not rows:
+		updates = {
+			"custom_transfer_destination": "",
+			"custom_transfer_status": ""
+		}
+	else:
+		dests = []
+		statuses = []
+		for r in rows:
+			lbl = r.to_destination_label or r.to_company or ""
+			dests.append(f"{lbl} ({r.roll_count} rolls)" if r.roll_count else lbl)
+			statuses.append(r.status)
+			
+		final_status = "Pending Approval" if "Pending Approval" in statuses else "Transferred"
+		final_dest = " | ".join(dests)
+		
+		updates = {
+			"custom_transfer_destination": final_dest,
+			"custom_transfer_status": final_status
+		}
+		
+	if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
+		frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
+	_sync_psi_transfer_fields(ptr, updates)
+
+
 def _stamp_planning_rows_for_transfer_request(approval_name, label):
 	ta = frappe.get_doc("Transfer Approval", approval_name)
 	for ln in ta.lines or []:
-		ptr = ln.planning_table_row
-		if not ptr:
-			continue
-		updates = {}
-		if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
-			updates["custom_transfer_destination"] = label
-		if frappe.db.has_column("Planning Table", "custom_transfer_status"):
-			updates["custom_transfer_status"] = "Pending Approval"
-		if frappe.db.has_column("Planning Table", "custom_transfer_approval"):
-			updates["custom_transfer_approval"] = approval_name
-		if updates:
-			frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
-		_sync_psi_transfer_fields(ptr, updates)
+		if ln.planning_table_row:
+			update_planning_row_transfer_status(ln.planning_table_row)
 
 
 def _sync_psi_transfer_fields(pt_name, updates):
@@ -911,19 +943,9 @@ def _transfer_submitted_status_text(ta):
 
 
 def _stamp_planning_rows_after_transfer_submit(ta):
-	status_text = _transfer_submitted_status_text(ta)
 	for ln in ta.lines or []:
-		ptr = _cstr(getattr(ln, "planning_table_row", None))
-		if not ptr:
-			continue
-		updates = {}
-		if frappe.db.has_column("Planning Table", "custom_transfer_status"):
-			updates["custom_transfer_status"] = status_text
-		if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
-			updates["custom_transfer_destination"] = ta.to_destination_label or ta.to_company
-		if updates:
-			frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
-			_sync_psi_transfer_fields(ptr, updates)
+		if ln.planning_table_row:
+			update_planning_row_transfer_status(ln.planning_table_row)
 
 
 def _resolved_planning_row_transfer_status(pt_name, fallback_status=""):
@@ -1124,14 +1146,8 @@ def reject_transfer_approval(name=None):
 	ta.approved_by = frappe.session.user
 	ta.save(ignore_permissions=True)
 	for ln in ta.lines or []:
-		if ln.planning_table_row and frappe.db.has_column("Planning Table", "custom_transfer_status"):
-			frappe.db.set_value(
-				"Planning Table",
-				ln.planning_table_row,
-				"custom_transfer_status",
-				"Rejected",
-				update_modified=False,
-			)
+		if ln.planning_table_row:
+			update_planning_row_transfer_status(ln.planning_table_row)
 	frappe.db.commit()
 	return {"ok": True, "name": name}
 
