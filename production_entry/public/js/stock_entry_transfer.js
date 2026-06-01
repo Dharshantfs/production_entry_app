@@ -1,7 +1,12 @@
 // Transfer STE: show destination company on Party when set from Transfer Approval.
 frappe.ui.form.on("Stock Entry", {
-	onload(frm) {
-		// Handled in refresh now
+	setup(frm) {
+		if (frm.barcode_scanner) {
+			frm.barcode_scanner.process_scan = function() {};
+			frm.barcode_scanner.clean_up = function() {};
+			frm.barcode_scanner.update_item_quantity = function() {};
+			frm.barcode_scanner.scan_barcode = function() {};
+		}
 	},
 
 	refresh(frm) {
@@ -19,7 +24,32 @@ frappe.ui.form.on("Stock Entry", {
 		if (frm.barcode_scanner) {
 			frm.barcode_scanner.process_scan = function() {};
 			frm.barcode_scanner.clean_up = function() {};
+			frm.barcode_scanner.update_item_quantity = function() {};
+			frm.barcode_scanner.scan_barcode = function() {};
 		}
+		
+		// Attempt to overwrite the field's onchange directly to bypass native logic
+		try {
+			frm.set_df_property('scan_barcode', 'onchange', function() {
+				frm.trigger('process_barcode_scan');
+			});
+		} catch(e) {}
+
+		// DESTROY the native bound events by replacing the DOM node's change listeners
+		setTimeout(() => {
+			if (frm.fields_dict.scan_barcode && frm.fields_dict.scan_barcode.$input) {
+				let $input = frm.fields_dict.scan_barcode.$input;
+				$input.off('change keypress keyup input'); // Kills the native barcode scanner's bound method
+				$input.on('change', function() {
+					let val = $input.val();
+					if (val) {
+						frappe.model.set_value(frm.doctype, frm.docname, 'scan_barcode', val).then(() => {
+							frm.trigger('process_barcode_scan');
+						});
+					}
+				});
+			}
+		}, 500);
 
 		const co = (frm.doc.custom_transfer_to_company || "").trim();
 		if (co) {
