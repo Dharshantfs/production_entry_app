@@ -19708,9 +19708,8 @@ def _deduplicate_items(items):
         # For lamination 107 flows, the parent (107/104) and child fabric (100*) can legitimately share the
         # same sales-order line. Deduplicating purely by SO line hides the child rows in Production Table.
         ic = str(item.get("itemCode") or item.get("item_code") or "").strip()
-        proc = _item_process_prefix(ic) if ic else ""
-        # Use SO line + process prefix as dedupe key so 107 parent and 100 child both remain visible.
-        dedupe_key = f"{so_item}|{proc}" if so_item and proc else so_item
+        # Use SO line + item_code as dedupe key so multiple children of the same process (e.g. 100 body and 100 handle) both remain visible.
+        dedupe_key = f"{so_item}|{ic}" if so_item and ic else so_item
         
         if is_split or not so_item:
             result.append(item)
