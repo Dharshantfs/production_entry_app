@@ -26903,6 +26903,19 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 				
 		pp = _item_process_prefix(ic)
 		
+		# Force trigger BOM recalculation for children of specific parents even if the parent isn't converted
+		if pp in ("221", "233"):
+			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
+			if so_item:
+				converted_parents.setdefault(so_item, [])
+				converted_parents[so_item].append({
+					"parent_ic": ic,
+					"new_qty": flt(r.get("qty")),
+					"pp": pp,
+					"uom": r.get("uom")
+				})
+				updated_count += 1
+		
 		# Convert child processes that are in Meter to Kg (100, 103, 107, 109, 108)
 		if pp in ("100", "103", "107", "109", "108"):
 			qty = flt(r.get("qty"))
@@ -26936,7 +26949,8 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						converted_parents[so_item].append({
 							"parent_ic": ic,
 							"new_qty": new_qty,
-							"pp": pp
+							"pp": pp,
+							"uom": "Kg"
 						})
 					
 	frappe.db.commit()
@@ -26954,6 +26968,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					parent_ic = parent_data["parent_ic"]
 					parent_pp = parent_data["pp"]
 					parent_qty = parent_data["new_qty"]
+					parent_uom = parent_data.get("uom", "Kg")
 					
 					try:
 						res = None
@@ -26964,7 +26979,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 							
 						if res and (res.get("fabric_item_code") == ic or res.get("child_item_code") == ic):
 							bom_no = res["bom_no"]
-							child_qty = _fabric_qty_from_bom(bom_no, ic, parent_qty, from_uom="Kg", parent_item_code=parent_ic)
+							child_qty = _fabric_qty_from_bom(bom_no, ic, parent_qty, from_uom=parent_uom, parent_item_code=parent_ic)
 							
 							update_dict = {
 								"qty": child_qty,
