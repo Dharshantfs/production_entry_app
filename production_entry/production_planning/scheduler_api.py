@@ -13923,6 +13923,96 @@ def _planning_sheet_all_linked_production_plans_submitted(sheet_name):
     return True
 
 
+def _normalize_production_plan_multi_uom_rm_requirements(doc):
+    """Recompute PP raw-material required qty in stock UOM for multi-UOM BOM rows.
+
+    Fixes cases where Meter-based BOM qty is multiplied by conversion factor instead of divided.
+    """
+    if not doc:
+        return
+
+    po_items = list(doc.get("po_items") or [])
+    mr_items = list(doc.get("mr_items") or [])
+    if not po_items or not mr_items:
+        return
+
+    item_qty_map = {}
+    multi_uom_items = set()
+
+    for poi in po_items:
+        bom_no = (poi.get("bom_no") or "").strip()
+        fg_qty = flt(poi.get("planned_qty") or poi.get("qty") or 0)
+        if not bom_no or fg_qty <= 0 or not frappe.db.exists("BOM", bom_no):
+            continue
+
+        bom = frappe.get_doc("BOM", bom_no)
+        bom_fg_qty = flt(getattr(bom, "quantity", 0) or 0) or 1.0
+        if bom_fg_qty <= 0:
+            bom_fg_qty = 1.0
+
+        for b_row in (bom.items or []):
+            item_code = (getattr(b_row, "item_code", "") or "").strip()
+            if not item_code:
+                continue
+
+            req_qty_bom_uom = flt(fg_qty) * flt(getattr(b_row, "qty", 0) or 0) / flt(bom_fg_qty)
+            stock_uom = (frappe.db.get_value("Item", item_code, "stock_uom") or "").strip()
+            bom_row_uom = (getattr(b_row, "uom", None) or stock_uom or "").strip()
+
+            req_qty_stock_uom = flt(req_qty_bom_uom)
+            if stock_uom and bom_row_uom and stock_uom != bom_row_uom:
+                conv = frappe.db.get_value(
+                    "UOM Conversion Detail",
+                    {"parent": item_code, "uom": bom_row_uom},
+                    "conversion_factor",
+                )
+                if conv and flt(conv) > 0:
+                    # UOM Conversion Detail stores: 1 stock_uom = conv(uom) * qty_in_uom
+                    # so qty in stock_uom = qty in row_uom / conv(row_uom)
+                    req_qty_stock_uom = flt(req_qty_bom_uom) / flt(conv)
+                    multi_uom_items.add(item_code)
+
+            item_qty_map[item_code] = flt(item_qty_map.get(item_code, 0)) + flt(req_qty_stock_uom)
+
+    if not multi_uom_items:
+        return
+
+    qty_fields = ("required_bom_qty", "required_qty", "qty", "quantity")
+    for r in mr_items:
+        item_code = (r.get("item_code") or "").strip()
+        if not item_code or item_code not in multi_uom_items or item_code not in item_qty_map:
+            continue
+
+        fixed_qty = flt(item_qty_map[item_code], 6)
+        for f in qty_fields:
+            if hasattr(r, f):
+                try:
+                    r.set(f, fixed_qty)
+                except Exception:
+                    setattr(r, f, fixed_qty)
+
+        stock_uom = (frappe.db.get_value("Item", item_code, "stock_uom") or "").strip()
+        if stock_uom:
+            if hasattr(r, "uom"):
+                try:
+                    r.set("uom", stock_uom)
+                except Exception:
+                    r.uom = stock_uom
+            if hasattr(r, "stock_uom"):
+                try:
+                    r.set("stock_uom", stock_uom)
+                except Exception:
+                    r.stock_uom = stock_uom
+
+
+def normalize_production_plan_multi_uom_rm_requirements(doc, method=None):
+    """Doc event: keep PP Raw Materials qty correct for multi-UOM BOM items."""
+    try:
+        _normalize_production_plan_multi_uom_rm_requirements(doc)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "normalize_production_plan_multi_uom_rm_requirements")
+
+
 def on_production_plan_submitted(doc, method=None):
     """Link Work Orders onto Planning sheet items when a PP is submitted; auto-submit Planning sheet when all PPs are."""
     pp_name = doc.name if doc else None

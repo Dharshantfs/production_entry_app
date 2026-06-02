@@ -118,6 +118,8 @@ doc_events = {
         "before_cancel": "production_entry.production_planning.scheduler_hooks.planning_sheet_before_cancel",
     },
     "Production Plan": {
+        "validate": "production_entry.production_planning.scheduler_api.normalize_production_plan_multi_uom_rm_requirements",
+        "before_save": "production_entry.production_planning.scheduler_api.normalize_production_plan_multi_uom_rm_requirements",
         "on_submit": "production_entry.production_planning.scheduler_api.on_production_plan_submitted",
     },
     "Work Order": {
