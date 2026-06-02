@@ -12,7 +12,7 @@
       </div>
       <div class="tl-company-row">
         <label>From company</label>
-        <select v-model="fromCompany" disabled class="tl-select">
+        <select v-model="fromCompany" class="tl-select">
           <option value="">—</option>
           <option v-for="c in companies" :key="c.name" :value="c.name">{{ c.name }}</option>
         </select>
@@ -185,7 +185,7 @@ const loading = ref(false);
 const submitting = ref(false);
 const rows = ref([]);
 const companies = ref([]);
-const fromCompany = ref("Jayashree Spun Bond - 1ZT");
+const fromCompany = ref("");
 const toCompany = ref("");
 const dlgParty = ref("");
 const dlgCustomer = ref("");
@@ -428,6 +428,17 @@ function close() {
 async function loadCompanies() {
   const r = await frappe.call({ method: `${API}.get_logistics_companies` });
   companies.value = r.message || [];
+  const names = new Set((companies.value || []).map((c) => c.name));
+  if (!fromCompany.value || !names.has(fromCompany.value)) {
+    if (names.has("Jayashree Spun Bond - 1ZT")) {
+      fromCompany.value = "Jayashree Spun Bond - 1ZT";
+    } else {
+      fromCompany.value = (companies.value[0] || {}).name || "";
+    }
+  }
+  if (toCompany.value && toCompany.value === fromCompany.value) {
+    toCompany.value = "";
+  }
 }
 
 function loadRows() {
@@ -541,7 +552,7 @@ watch(
     closeBatchPicker();
     dlgParty.value = props.prefill?.party_code || props.filterContext?.party_code || "";
     dlgCustomer.value = props.prefill?.customer || props.filterContext?.customer || "";
-    fromCompany.value = props.prefill?.from_company || "Jayashree Spun Bond - 1ZT";
+    fromCompany.value = props.prefill?.from_company || "";
     toCompany.value = props.prefill?.to_company || "";
     natureOfProcessing.value = "";
     natureOther.value = "";
@@ -549,6 +560,12 @@ watch(
     loadRows();
   }
 );
+
+watch(fromCompany, (fc) => {
+  if ((toCompany.value || "").trim() === (fc || "").trim()) {
+    toCompany.value = "";
+  }
+});
 </script>
 
 <style scoped>

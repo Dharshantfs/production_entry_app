@@ -21,6 +21,10 @@ TRANSFER_WAREHOUSE_BY_COMPANY = {
 		"s_warehouse": "Finished Goods - JSB-1ZT",
 		"t_warehouse": "Goods In Transit - JSB-1ZT",
 	},
+	"J Vasanth Exports": {
+		"s_warehouse": "Finished Goods Warehouse  - JVE",
+		"t_warehouse": "Goods In Transit Warehouse  - JVE",
+	},
 }
 
 BOARD_KIND_TO_SCOPE = {
