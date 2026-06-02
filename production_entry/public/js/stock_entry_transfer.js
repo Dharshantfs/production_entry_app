@@ -114,6 +114,15 @@ frappe.ui.form.on("Stock Entry", {
 				});
 			}, __('Actions'));
 		}
+
+		if (frm.doc.docstatus === 1 && frm.doc.items && frm.doc.items.length > 0) {
+			frm.add_custom_button(__("Sales Invoice"), () => {
+				frappe.model.open_mapped_doc({
+					method: "production_entry.stock_entry_sales_invoice.make_sales_invoice_from_stock_entry",
+					frm: frm,
+				});
+			}, __("Create"));
+		}
 	},
 
 	validate(frm) {
