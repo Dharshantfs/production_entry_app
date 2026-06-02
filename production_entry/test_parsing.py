@@ -3,4 +3,8 @@ from production_entry.production_planning.box_bag_api import _parse_box_bag_item
 
 print("BOPP Bag 1 (QCC):", _parse_bopp_bag_item_code("7465-2C-511-233B001QCC0M"))
 print("BOPP Bag 2 (OCC):", _parse_bopp_bag_item_code("6003-0C-511-233A221OCC0M"))
+print("BOPP Bag 231:", _parse_bopp_bag_item_code("6000-0C-511-231F001KCCMM"))
+print("BOPP Bag 241:", _parse_bopp_bag_item_code("7465-2C-511-241F542OCCMM"))
+print("BOPP Bag 242:", _parse_bopp_bag_item_code("7465-2C-511-242F542KCCCM"))
+print("BOPP Bag 222:", _parse_bopp_bag_item_code("6003-0C-511-222F542Q00MM"))
 print("Box Bag (OCC):", _parse_box_bag_item_code("6003-0C-511-221A221OCC0M"))

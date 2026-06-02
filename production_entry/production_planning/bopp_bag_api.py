@@ -31,6 +31,9 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 BOPP_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+BOPP_BOX_BAG_PROCESS_CODES = ("222", "231", "233", "241", "242")
+BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
+BOPP_BOX_BAG_PARENT_PROCESSES = ("221",) + BOPP_BOX_BAG_PROCESS_CODES
 
 _BOPP_FINISHING_MAP = {
     "PP": "Plain",
@@ -83,6 +86,19 @@ def _bopp_finishing_label(code):
     return _BOPP_FINISHING_MAP.get(str(code or "").strip().upper(), str(code or "").strip())
 
 
+def _bopp_process_label(process_code):
+    p = str(process_code or "").strip()
+    if p == "231":
+        return "231 colored bopp box bag"
+    if p == "241":
+        return "241 mettalic box bag"
+    if p == "242":
+        return "242 cooler box bag"
+    if p == "222":
+        return "222 flexo printed box bag"
+    return "233 BOPP Box Bag"
+
+
 def _parse_bopp_bag_item_code(item_code):
     """
     Parse BOPP Box Bag item code: DESIGN-NCOLOURS-BAGSIZE-233QCCCFLLBBXF
@@ -111,7 +127,7 @@ def _parse_bopp_bag_item_code(item_code):
 
     parts = ic.split("-")
 
-    # Find which segment contains "233"
+    # Find which segment contains any BOPP box bag process code (222/231/233/241/242).
     tail = ""
     if len(parts) >= 2:
         result["design_code"] = parts[0].strip()
@@ -132,10 +148,16 @@ def _parse_bopp_bag_item_code(item_code):
     else:
         tail = ic
 
-    # Find "233" in the tail
-    idx = tail.find("233")
+    process = ""
+    idx = -1
+    for proc in BOPP_BOX_BAG_PROCESS_CODES:
+        at = tail.find(proc)
+        if at >= 0 and (idx < 0 or at < idx):
+            idx = at
+            process = proc
     if idx < 0:
         return result
+    result["process"] = process
 
     after = tail[idx + 3:]   # e.g. B001QCC0M
     if len(after) >= 1:
@@ -162,11 +184,14 @@ def _parse_bopp_bag_item_code(item_code):
 
 
 def _force_bopp_bag_unit_on_sheet(planning_sheet_name=None):
-    """Ensure all 233-process rows on Planning Table have a box bag unit assigned."""
+    """Ensure all 222/231/233/241/242 rows on Planning Table have a box bag unit assigned."""
     if not frappe.db.has_column("Planning Table", "unit"):
         return
-    conditions = """
-        (item_code LIKE '233%%' OR item_code LIKE '%%-233%%')
+    proc_like = " OR ".join(
+        [f"item_code LIKE '{p}%%' OR item_code LIKE '%%-{p}%%'" for p in BOPP_BOX_BAG_PROCESS_CODES]
+    )
+    conditions = f"""
+        ({proc_like})
         AND IFNULL(unit, '') NOT IN (%s, %s, %s)
     """
     params = list(BOPP_BAG_UNITS)
@@ -185,7 +210,7 @@ def _force_bopp_bag_unit_on_sheet(planning_sheet_name=None):
 
 def _sync_bopp_pb_rows_from_107(planning_sheet_name):
     """
-    For each 107 planning row on this sheet that belongs to a 233 SO line,
+    For each 107 planning row on this sheet that belongs to a BOPP box-bag SO line,
     look at the 107 item's BOM and extract any PB-* child into the Planning Table.
     """
     if not planning_sheet_name:
@@ -203,16 +228,16 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
     if not ps.get("sales_order"):
         return
     so_doc = frappe.get_doc("Sales Order", ps.sales_order)
-    so_items_233 = {
+    so_items_bopp = {
         str(it.name): it for it in (so_doc.items or [])
-        if _item_process_prefix(str(it.item_code or "")) in ("221", "233")
+        if _item_process_prefix(str(it.item_code or "")) in BOPP_BOX_BAG_PARENT_PROCESSES
     }
-    if not so_items_233:
+    if not so_items_bopp:
         return
 
     parent_field = _get_pt_parentfield()
 
-    # Fetch 107 rows on the sheet that are linked to 233 SO lines (from document, not DB!)
+    # Fetch 107 rows on the sheet that are linked to BOPP box-bag SO lines (from document, not DB!)
     rows_107 = []
     for prow in (ps.get(parent_field) or []):
         ic = str(prow.get("item_code") or "").strip()
@@ -221,8 +246,8 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
 
     for prow in rows_107:
         soi_key = str(prow.get("sales_order_item") or prow.get("so_item") or "")
-        # Only proceed if this 107 row belongs to a 233 SO line
-        if soi_key not in so_items_233:
+        # Only proceed if this 107 row belongs to a BOPP box-bag SO line
+        if soi_key not in so_items_bopp:
             continue
 
         item_107 = str(prow.get("item_code") or "").strip()
@@ -273,7 +298,7 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
         if existing_db or existing_mem:
             continue
 
-        so_it = so_items_233[soi_key]
+        so_it = so_items_bopp[soi_key]
         so_fg_ic = str(so_it.item_code or "").strip()
         from production_entry.production_planning.scheduler_api import _parent_child_trace_id_from_item_code
         trace_id = _parent_child_trace_id_from_item_code(so_fg_ic)
@@ -305,10 +330,10 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
 
 def _sync_bopp_bag_planning_rows(planning_sheet_name):
     """
-    BOPP Box Bag (233) BOM child sync:
-      233 → 103 (Slitting)
+    BOPP Box Bag (231/233/241/242) BOM child sync:
+      231/233/241/242 → 103 (Slitting)
       103 → 100 (Fabric for Slitting)
-      233 → 107 (BOPP Laminated Fabric)
+      231/233/241/242 → 107 (BOPP Laminated Fabric)
       107 → 100 (Fabric for Lam)
       107 → PB  (Printed BOPP Film)
 
@@ -324,29 +349,29 @@ def _sync_bopp_bag_planning_rows(planning_sheet_name):
 
     _sync_bom_child_rows_from_planning_rows(
         planning_sheet_name,
-        ("233",),
+        BOPP_BOX_BAG_SYNC_PARENT_PROCESSES,
         "103",
         SLITTING_UNIT,
-        process_label="BOPP bag slitting (233 → 103)",
+        process_label="BOPP bag slitting (231/233/241/242 → 103)",
     )
     _sync_bom_child_rows_from_planning_rows(
         planning_sheet_name,
         ("103",),
         "100",
-        so_parent_processes=("233",),
+        so_parent_processes=BOPP_BOX_BAG_SYNC_PARENT_PROCESSES,
         process_label="BOPP bag fabric via slitting (103 → 100)",
     )
     _sync_bom_child_rows_from_planning_rows(
         planning_sheet_name,
-        ("233",),
+        BOPP_BOX_BAG_SYNC_PARENT_PROCESSES,
         "107",
         LAMINATION_UNIT,
-        process_label="BOPP bag laminated fabric (233 → 107)",
+        process_label="BOPP bag laminated fabric (231/233/241/242 → 107)",
     )
     # Note: 107 -> 100 and 107 -> PB extraction are handled natively by _sync_lamination_fabric_planning_rows
     # We rely on _run_planning_sheet_post_sync calling this function BEFORE _sync_lamination_fabric_planning_rows.
 
-    # Write total_gsm into the gsm field of 233 parent rows
+    # Write total_gsm into the gsm field of BOPP box-bag parent rows.
     _update_bopp_bag_gsm_on_sheet(planning_sheet_name)
 
     try:
@@ -356,17 +381,23 @@ def _sync_bopp_bag_planning_rows(planning_sheet_name):
 
 
 def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
-    """For each 233-process row, parse item code and write fabric+lam+bopp total into gsm field."""
+    """For each 222/231/233/241/242 row, parse item code and write fabric+lam+bopp total into gsm field."""
     if not planning_sheet_name:
         return
     so_name = str(frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order") or "").strip()
-    rows = frappe.db.sql(
-        """SELECT name, item_code, sales_order_item, so_item FROM `tabPlanning Table`
-           WHERE parent = %s
-             AND (item_code LIKE '233%%' OR item_code LIKE '%%-233%%')""",
-        (planning_sheet_name,),
-        as_dict=True,
-    ) or []
+    rows = [
+        r
+        for r in (
+            frappe.db.sql(
+                """SELECT name, item_code, sales_order_item, so_item, unit FROM `tabPlanning Table`
+                   WHERE parent = %s""",
+                (planning_sheet_name,),
+                as_dict=True,
+            )
+            or []
+        )
+        if _parse_bopp_bag_item_code(r.get("item_code") or "").get("process") in BOPP_BOX_BAG_PROCESS_CODES
+    ]
     for row in rows:
         parsed = _parse_bopp_bag_item_code(row.get("item_code") or "")
         total = parsed.get("total_gsm") or 0
@@ -468,13 +499,19 @@ def _update_bopp_bag_gsm_on_sheet(planning_sheet_name):
     if not frappe.db.exists("DocType", "Planning sheet Item"):
         return
 
-    psi_rows = frappe.db.sql(
-        """SELECT name, item_code, sales_order_item, so_item FROM `tabPlanning sheet Item`
-           WHERE parent = %s
-             AND (item_code LIKE '233%%' OR item_code LIKE '%%-233%%')""",
-        (planning_sheet_name,),
-        as_dict=True,
-    ) or []
+    psi_rows = [
+        r
+        for r in (
+            frappe.db.sql(
+                """SELECT name, item_code, sales_order_item, so_item, unit FROM `tabPlanning sheet Item`
+                   WHERE parent = %s""",
+                (planning_sheet_name,),
+                as_dict=True,
+            )
+            or []
+        )
+        if _parse_bopp_bag_item_code(r.get("item_code") or "").get("process") in BOPP_BOX_BAG_PROCESS_CODES
+    ]
     
     for row in (psi_rows or []):
         parsed = _parse_bopp_bag_item_code(row.get("item_code") or "")
@@ -581,7 +618,7 @@ def get_bopp_bag_order_table_data(
     end_date=None,
     planned_only=1,
 ):
-    """BOPP Box Bag board rows (process 233) for the Box Bag Order Table."""
+    """BOPP Box Bag board rows (222/231/233/241/242) for the Box Bag Order Table."""
     from production_entry.production_planning.scheduler_api import (
         _get_color_chart_data_impl,
         _item_process_prefix,
@@ -606,10 +643,10 @@ def get_bopp_bag_order_table_data(
         board_process_scope="box_bag_only",
     )
 
-    # Hard-filter: only process 233
+    # Hard-filter: only BOPP box-bag process rows.
     raw = [
         r for r in (raw or [])
-        if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == "233"
+        if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in BOPP_BOX_BAG_PROCESS_CODES
     ]
 
     bag_sizes = _bag_series_size_map()
@@ -765,8 +802,8 @@ def get_bopp_bag_order_table_data(
             "spr_name": spr_name,
             "spr_docstatus": spr_docstatus,
             "salesOrderItem": row.get("salesOrderItem") or row.get("sales_order_item") or "",
-            "process": "233",
-            "process_label": "233 BOPP Box Bag",
+            "process": parsed.get("process") or "233",
+            "process_label": _bopp_process_label(parsed.get("process") or "233"),
             "movement_type": row.get(PLANNING_MOVEMENT_TYPE_FIELD) or row.get("movement_type") or "",
         }
 
