@@ -1334,7 +1334,7 @@ def _finalize_planning_rows_after_approval(ta):
 
 @frappe.whitelist()
 def record_transfer_barcode_scan(stock_entry, barcode):
-	"""Material Transfer: add +1 to scanned_qty on the matching batch row; never change approved qty."""
+	"""Material Transfer: scan marks full approved batch weight as scanned; never changes approved qty."""
 	barcode = (barcode or "").strip()
 	if not barcode:
 		return {"ok": False, "error": _("No barcode provided")}
@@ -1368,10 +1368,7 @@ def record_transfer_barcode_scan(stock_entry, barcode):
 		}
 
 	approved_qty = flt(match.qty)
-	cur = flt(match.get("scanned_qty") if has_scanned else 0)
-	if has_custom_scanned:
-		cur = max(cur, flt(match.get("custom_scanned_qty") or 0))
-	new_scanned = approved_qty if approved_qty > 0 and cur + 1 >= approved_qty else cur + 1
+	new_scanned = approved_qty if approved_qty > 0 else 0
 
 	updates = {}
 	if has_scanned:

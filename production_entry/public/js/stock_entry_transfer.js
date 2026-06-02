@@ -86,8 +86,7 @@ function _scan_locally(frm, barcode) {
 	}
 
 	const approved = Number(existing_row._protected_qty != null ? existing_row._protected_qty : existing_row.qty || 0);
-	const cur = Math.max(Number(existing_row.scanned_qty || 0), Number(existing_row.custom_scanned_qty || 0));
-	const new_scanned = approved > 0 && cur + 1 >= approved ? approved : cur + 1;
+	const new_scanned = approved > 0 ? approved : 0;
 	const updates = { custom_scanned_qty: new_scanned, qty: approved };
 	if (frappe.meta.has_field("Stock Entry Detail", "scanned_qty")) {
 		updates.scanned_qty = new_scanned;
