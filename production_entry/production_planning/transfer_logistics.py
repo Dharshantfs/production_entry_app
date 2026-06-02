@@ -1336,6 +1336,28 @@ def _finalize_planning_rows_after_approval(ta):
 			_sync_psi_transfer_fields(ptr, updates)
 
 
+def _find_transfer_ste_row_for_barcode(se, barcode):
+	"""Match STE line by batch/roll barcode; multi-item transfers use batch, not first row item."""
+	barcode = (barcode or "").strip()
+	if not barcode:
+		return None
+
+	has_roll_no = frappe.db.has_column("Stock Entry Detail", "custom_roll_no")
+	for row in se.items or []:
+		roll = (row.get("custom_roll_no") or "").strip() if has_roll_no else ""
+		if (row.batch_no or "").strip() == barcode or roll == barcode:
+			return row
+
+	if frappe.db.exists("Batch", barcode):
+		batch_item = frappe.db.get_value("Batch", barcode, "item")
+		if batch_item:
+			for row in se.items or []:
+				if row.item_code == batch_item and (row.batch_no or "").strip() == barcode:
+					return row
+
+	return None
+
+
 @frappe.whitelist()
 def record_transfer_barcode_scan(stock_entry, barcode):
 	"""Material Transfer: scan marks full approved batch weight as scanned; never changes approved qty."""
@@ -1351,25 +1373,13 @@ def record_transfer_barcode_scan(stock_entry, barcode):
 	if (se.stock_entry_type or "").strip() != "Material Transfer":
 		return {"ok": False, "error": _("Barcode scan is only for Material Transfer")}
 
-	expected_item = (se.items[0].item_code if se.items else None) or None
-	has_roll_no = frappe.db.has_column("Stock Entry Detail", "custom_roll_no")
 	has_scanned = frappe.db.has_column("Stock Entry Detail", "scanned_qty")
 	has_custom_scanned = frappe.db.has_column("Stock Entry Detail", "custom_scanned_qty")
 
-	match = None
-	for row in se.items:
-		roll = (row.get("custom_roll_no") or "").strip() if has_roll_no else ""
-		if (row.batch_no or "").strip() == barcode or roll == barcode:
-			match = row
-			break
+	match = _find_transfer_ste_row_for_barcode(se, barcode)
 
 	if not match:
 		return {"ok": False, "error": _("Batch {0} is not in the approved transfer list").format(barcode)}
-	if expected_item and match.item_code != expected_item:
-		return {
-			"ok": False,
-			"error": _("Wrong item: batch belongs to {0}, expected {1}").format(match.item_code, expected_item),
-		}
 
 	approved_qty = flt(match.qty)
 	new_scanned = approved_qty if approved_qty > 0 else 0

@@ -125,7 +125,8 @@
    "fieldname": "roll_no",
    "fieldtype": "Int",
    "label": "Roll No",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 0
   },
   {
    "fieldname": "meter_roll",
@@ -220,17 +221,20 @@
   {
    "fieldname": "row_ready_for_print",
    "fieldtype": "Check",
-   "label": "Row Ready For Print"
+   "label": "Row Ready For Print",
+   "in_list_view": 0
   },
   {
    "fieldname": "row_locked",
    "fieldtype": "Check",
-   "label": "Row Locked"
+   "label": "Row Locked",
+   "in_list_view": 0
   },
   {
    "fieldname": "row_printed",
    "fieldtype": "Check",
-   "label": "Row Printed"
+   "label": "Row Printed",
+   "in_list_view": 0
   },
   {
    "allow_on_submit": 1,

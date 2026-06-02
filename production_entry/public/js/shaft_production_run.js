@@ -12,6 +12,52 @@ function spr_round_net_weight_kg(v) {
 /** Child tables on SPR that must keep header/body columns aligned after show/hide or save. */
 const SPR_SPR_CHILD_TABLE_FIELDS = ['items', 'shaft_jobs', 'bundle_calculation'];
 
+/** Process 100 roll results: default visible grid columns (no manual column picker each Create Entry). */
+const SPR_FABRIC100_ITEMS_GRID_SHOW = [
+	'work_order',
+	'item_code',
+	'batch_no',
+	'party_code',
+	'quality',
+	'color',
+	'gsm',
+	'planned_qty',
+	'meter_roll',
+	'produced_length_mtrs',
+	'width_inch',
+	'custom_core_width_mm',
+	'core_width',
+	'custom_diameter_inches',
+	'diameter',
+	'net_weight',
+	'gross_weight',
+	'produced_gsm',
+	'save_row',
+	'print_sticker',
+	'edit_row',
+];
+
+const SPR_FABRIC100_ITEMS_GRID_HIDE = [
+	'item_name',
+	'job',
+	'roll_no',
+	'uom',
+	'custom_cbm_cubic_meters',
+	'cbm',
+	'custom_polybag_kgs',
+	'polybag_kgs',
+	'row_ready_for_print',
+	'row_locked',
+	'row_printed',
+	'custom_fabric_gsm',
+	'custom_lam_gsm',
+	'custom_sheet_size',
+	'custom_planned_sheets_pcs',
+	'custom_total_produced_sheets',
+	'custom_planned_bag_pcs',
+	'custom_achieved_bag_pcs',
+];
+
 function spr_set_grid_col_hidden(grid, fieldname, hidden) {
 	if (!grid || !fieldname) {
 		return;
@@ -66,10 +112,30 @@ function spr_sync_grid_columns_visible(frm, fieldname) {
 				if (df) df.in_list_view = 1;
 			});
 		} else if (fieldname === 'items') {
-			const itemFields = ['planned_qty', 'batch_no', 'party_code', 'meter_roll', 'produced_length_mtrs', 'produced_gsm', 'gross_weight', 'save_row', 'quality', 'color', 'width_inch', 'gsm', 'custom_production_label', 'edit_row', 'work_order', 'item_code', 'item_name', 'job', 'net_weight', 'custom_core_width_mm', 'core_width', 'custom_diameter_inches', 'diameter', 'custom_cbm_cubic_meters', 'cbm', 'custom_qc_approval_label', 'qc_approval_label', 'custom_planned_bag_pcs', 'custom_achieved_bag_pcs', 'row_ready_for_print', 'row_locked', 'row_printed', 'custom_polybag_kgs', 'polybag_kgs', 'print_sticker'];
-			itemFields.forEach(f => {
-				let df = frappe.meta.get_docfield('Shaft Production Run Item', f);
-				if (df) df.in_list_view = 1;
+			const cfg = spr_get_items_list_view_config(frm);
+			cfg.show.forEach(function (f) {
+				const df = frappe.meta.get_docfield('Shaft Production Run Item', f);
+				if (df) {
+					df.in_list_view = 1;
+				}
+				try {
+					grid.update_docfield_property(f, 'hidden', 0);
+					grid.update_docfield_property(f, 'in_list_view', 1);
+				} catch (e) {
+					/* ignore */
+				}
+			});
+			cfg.hide.forEach(function (f) {
+				const df = frappe.meta.get_docfield('Shaft Production Run Item', f);
+				if (df) {
+					df.in_list_view = 0;
+				}
+				try {
+					grid.update_docfield_property(f, 'hidden', 1);
+					grid.update_docfield_property(f, 'in_list_view', 0);
+				} catch (e) {
+					/* ignore */
+				}
 			});
 		}
 
@@ -580,6 +646,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		}
 		sprToggleLaminationRollUi(frm);
 		sprToggleSheetCuttingUi(frm);
+		spr_apply_fabric100_item_grid_columns(frm);
 
 		spr_patch_items_grid_refresh(frm);
 		spr_register_spr_page_buttons(frm);
@@ -2258,6 +2325,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				function finishCreateEntry() {
 					update_shaft_job_achieved_from_items(frm);
 					sprScheduleTotalProducedSync(frm);
+					spr_apply_fabric100_item_grid_columns(frm);
 					spr_after_child_table_refresh(frm);
 					sprAutoSaveAfterCreateEntry(frm);
 					frappe.show_alert({
@@ -3108,6 +3176,74 @@ function sprHasFabric100Rows(frm) {
 		const ic = String((row && row.item_code) || '').trim().toUpperCase();
 		return ic.startsWith('100') || /^[A-Z0-9]+-100/.test(ic);
 	});
+}
+
+function sprIsFabric100Run(frm) {
+	return sprRollProcessPrefix(frm) === '100' || sprHasFabric100Rows(frm);
+}
+
+function spr_get_items_list_view_config(frm) {
+	if (sprIsFabric100Run(frm)) {
+		return { show: SPR_FABRIC100_ITEMS_GRID_SHOW, hide: SPR_FABRIC100_ITEMS_GRID_HIDE };
+	}
+	return {
+		show: [
+			'planned_qty',
+			'batch_no',
+			'party_code',
+			'meter_roll',
+			'produced_length_mtrs',
+			'produced_gsm',
+			'gross_weight',
+			'save_row',
+			'quality',
+			'color',
+			'width_inch',
+			'gsm',
+			'custom_production_label',
+			'edit_row',
+			'work_order',
+			'item_code',
+			'item_name',
+			'job',
+			'net_weight',
+			'custom_core_width_mm',
+			'core_width',
+			'custom_diameter_inches',
+			'diameter',
+			'custom_cbm_cubic_meters',
+			'cbm',
+			'custom_qc_approval_label',
+			'qc_approval_label',
+			'custom_planned_bag_pcs',
+			'custom_achieved_bag_pcs',
+			'row_ready_for_print',
+			'row_locked',
+			'row_printed',
+			'custom_polybag_kgs',
+			'polybag_kgs',
+			'print_sticker',
+		],
+		hide: [],
+	};
+}
+
+function spr_apply_fabric100_item_grid_columns(frm) {
+	if (!sprIsFabric100Run(frm)) {
+		return;
+	}
+	const grid = frm && frm.fields_dict && frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return;
+	}
+	const cfg = spr_get_items_list_view_config(frm);
+	cfg.show.forEach(function (fn) {
+		spr_set_grid_col_hidden(grid, fn, 0);
+	});
+	cfg.hide.forEach(function (fn) {
+		spr_set_grid_col_hidden(grid, fn, 1);
+	});
+	spr_sync_grid_columns_visible(frm, 'items');
 }
 
 function sprToggleLaminationRollUi(frm) {

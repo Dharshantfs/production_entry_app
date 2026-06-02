@@ -58,28 +58,23 @@ function _apply_scan_to_locals(frm, row_name, scanned_qty, qty) {
 	frm.refresh_field("items");
 }
 
-function _scan_locally(frm, barcode) {
-	const expected_item = frm.doc.items && frm.doc.items.length ? frm.doc.items[0].item_code : null;
-	const existing_row = (frm.doc.items || []).find(
-		(r) => r.batch_no === barcode || r.custom_roll_no === barcode
+function _find_transfer_row_for_barcode(frm, barcode) {
+	const code = (barcode || "").trim();
+	if (!code) return null;
+	return (frm.doc.items || []).find(
+		(r) =>
+			(r.batch_no || "").trim() === code ||
+			((r.custom_roll_no || "").trim() === code)
 	);
+}
+
+function _scan_locally(frm, barcode) {
+	const existing_row = _find_transfer_row_for_barcode(frm, barcode);
 	if (!existing_row) {
 		frappe.msgprint({
 			title: __("Batch Not Found"),
 			indicator: "orange",
 			message: __("The scanned batch <b>{0}</b> is not in the approved list.", [barcode]),
-		});
-		frappe.utils.play_sound("error");
-		return;
-	}
-	if (expected_item && existing_row.item_code !== expected_item) {
-		frappe.msgprint({
-			title: __("Wrong Item"),
-			indicator: "red",
-			message: __("The scanned batch belongs to <b>{0}</b>, but we are transferring <b>{1}</b>.", [
-				existing_row.item_code,
-				expected_item,
-			]),
 		});
 		frappe.utils.play_sound("error");
 		return;
