@@ -6371,8 +6371,11 @@ def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty, from_uom
 		to_conv = 1.0
 		if bom.uom != frappe.db.get_value("Item", parent_item_code, "stock_uom"):
 			to_conv = frappe.db.get_value("UOM Conversion Detail", {"parent": parent_item_code, "uom": bom.uom}, "conversion_factor") or 1.0
-			
-		lamination_so_qty = (lamination_so_qty * flt(from_conv)) / flt(to_conv)
+
+		# UOM Conversion Detail conversion_factor is stored as:
+		#   1 stock_uom = conversion_factor(uom) * qty_in_uom
+		# so: qty_in_bom_uom = qty_in_from_uom * to_conv / from_conv
+		lamination_so_qty = (lamination_so_qty * flt(to_conv)) / flt(from_conv)
 
 	for row in bom.items or []:
 		if (row.item_code or "").strip() == fabric_item_code:

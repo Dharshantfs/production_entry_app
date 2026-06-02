@@ -228,13 +228,13 @@
                               </span>
                             </td>
                             <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row.item) }}</td>
-                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9;">
+                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
                               <button v-if="row.item.pp_id" @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="`View PP: ${row.item.pp_id || 'resolve from sheet'}`">
                                 📋 View
                               </button>
                               <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
-                            <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9;">
+                            <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
                               <div class="pt-stock-cell">
                                 <div v-if="row.item.pp_id" class="pt-pill-row">
                                   <span
@@ -345,13 +345,13 @@
                                 {{ formatDispatchStatus(row.mergeDispatchStatus) }}
                               </span>
                             </td>
-                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9;">
+                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
                               <button v-if="row.pp_id" @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="`View PP for merged row`">
                                 📋 View
                               </button>
                               <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
-                            <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9;">
+                            <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
                               <div class="pt-stock-cell">
                                 <div v-if="row.pp_id" class="pt-pill-row">
                                   <span
@@ -3006,9 +3006,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
-  min-width: 180px;
+  min-width: 0;
+  width: 100%;
   max-width: none;
-  margin: 0 auto;
+  margin: 0;
   overflow: visible;
 }
 .pt-stock-cell .pt-spr-btn,
