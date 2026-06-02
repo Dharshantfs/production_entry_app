@@ -228,13 +228,13 @@
                               </span>
                             </td>
                             <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row.item) }}</td>
-                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
+                            <td class="cell-center pt-pp-sticky-cell" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
                               <button v-if="row.item.pp_id" @click="openProductionPlanView(row.item.planningSheet, row.item.salesOrderItem, row.item.itemName, row.item.pp_id || '')" class="cc-pp-btn" :title="`View PP: ${row.item.pp_id || 'resolve from sheet'}`">
                                 📋 View
                               </button>
                               <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
-                            <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
+                            <td class="cell-center pt-spr-sticky-cell" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
                               <div class="pt-stock-cell">
                                 <div v-if="row.item.pp_id" class="pt-pill-row">
                                   <span
@@ -345,13 +345,13 @@
                                 {{ formatDispatchStatus(row.mergeDispatchStatus) }}
                               </span>
                             </td>
-                            <td class="cell-center" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
+                            <td class="cell-center pt-pp-sticky-cell" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
                               <button v-if="row.pp_id" @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="`View PP for merged row`">
                                 📋 View
                               </button>
                               <span v-else class="pt-no-pp-hint">No PP created</span>
                             </td>
-                            <td class="cell-center" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
+                            <td class="cell-center pt-spr-sticky-cell" style="position: sticky; right: 0; background: white; z-index: 9; width: 200px; min-width: 200px;">
                               <div class="pt-stock-cell">
                                 <div v-if="row.pp_id" class="pt-pill-row">
                                   <span
@@ -2967,6 +2967,12 @@ onBeforeUnmount(() => {
 .cell-right { text-align: right; }
 .font-bold { font-weight: 700; }
 .bg-yellow-50 { background-color: #fefce8; }
+.pt-pp-sticky-cell,
+.pt-spr-sticky-cell {
+  vertical-align: top;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+}
 
 .status-badge {
     padding: 2px 8px;
@@ -3004,8 +3010,9 @@ onBeforeUnmount(() => {
 .pt-stock-cell {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
   min-width: 0;
   width: 100%;
   max-width: none;
@@ -3023,7 +3030,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 3px;
   justify-content: center;
-  margin-bottom: 2px;
+  margin-bottom: 0;
 }
 .pt-pill {
   font-size: 9px;
@@ -3095,7 +3102,7 @@ onBeforeUnmount(() => {
   line-height: 1.25;
   color: #475569;
   text-align: center;
-  max-width: 122px;
+  max-width: 174px;
 }
 .pt-prod-status-merge {
   color: #334155;
