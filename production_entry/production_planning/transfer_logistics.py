@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import frappe
 from frappe import _
@@ -1336,24 +1337,189 @@ def _finalize_planning_rows_after_approval(ta):
 			_sync_psi_transfer_fields(ptr, updates)
 
 
+def _normalize_transfer_scan(raw):
+	"""Fix common scanner misreads on roll labels (e.g. #S → JS, missing hyphen)."""
+	s = (raw or "").strip().upper()
+	s = re.sub(r"[\s\r\n\t]+", "", s)
+	s = re.sub(r"\*+$", "", s)
+	if s.startswith("#S"):
+		s = "JS" + s[2:]
+	elif s.startswith("IS-"):
+		s = "JS-" + s[3:]
+	elif s.startswith("IS") and len(s) > 2:
+		s = "JS" + s[2:]
+	if re.match(r"^JS\d", s):
+		s = "JS-" + s[2:]
+	if re.match(r"^\d{6,}/\d", s):
+		s = "JS-" + s
+	return s
+
+
+def _batch_match_key(value):
+	return re.sub(r"[^A-Z0-9/]", "", _normalize_transfer_scan(value))
+
+
+def _levenshtein(a, b):
+	if a == b:
+		return 0
+	if len(a) < len(b):
+		a, b = b, a
+	prev = list(range(len(b) + 1))
+	for i, ca in enumerate(a, 1):
+		cur = [i]
+		for j, cb in enumerate(b, 1):
+			cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (0 if ca == cb else 1)))
+		prev = cur
+	return prev[-1]
+
+
+def _batch_fuzzy_equal(a, b):
+	if not a or not b:
+		return False
+	if a == b:
+		return True
+	ka, kb = _batch_match_key(a), _batch_match_key(b)
+	if ka == kb:
+		return True
+	ma = re.search(r"/(\d+)$", ka)
+	mb = re.search(r"/(\d+)$", kb)
+	if ma and mb and ma.group(1) == mb.group(1):
+		return True
+	if ka and kb and min(len(ka), len(kb)) >= 8:
+		return _levenshtein(ka, kb) <= 2
+	return False
+
+
+def _transfer_scan_candidates(raw):
+	raw = (raw or "").strip()
+	cands = []
+
+	def add(v):
+		v = (v or "").strip()
+		if v and v not in cands:
+			cands.append(v)
+
+	add(raw)
+	add(raw.upper())
+	norm = _normalize_transfer_scan(raw)
+	add(norm)
+	add(_batch_match_key(norm))
+	if "/" in norm:
+		parts = norm.split("/")
+		add(parts[-1])
+		if len(parts) >= 2:
+			add(f"{parts[-2]}/{parts[-1]}")
+	m = re.search(r"/(\d+)", norm)
+	if m:
+		add("/" + m.group(1))
+		if len(m.group(1)) == 1:
+			add("/" + m.group(1) + "0")
+	return cands
+
+
+def _row_needs_scan(row):
+	qty = flt(row.qty)
+	scanned = flt(row.get("scanned_qty") or row.get("custom_scanned_qty") or 0)
+	return qty > scanned + 0.01
+
+
+def _ste_row_batch_values(row, has_roll_no):
+	bn = (row.batch_no or "").strip()
+	roll = (row.get("custom_roll_no") or "").strip() if has_roll_no else ""
+	return [x for x in (bn, roll) if x]
+
+
 def _find_transfer_ste_row_for_barcode(se, barcode):
-	"""Match STE line by batch/roll barcode; multi-item transfers use batch, not first row item."""
-	barcode = (barcode or "").strip()
-	if not barcode:
+	"""Match STE line by batch scan; supports multi-item STE and noisy scanner input."""
+	candidates = _transfer_scan_candidates(barcode)
+	if not candidates:
 		return None
 
+	rows = list(se.items or [])
 	has_roll_no = frappe.db.has_column("Stock Entry Detail", "custom_roll_no")
-	for row in se.items or []:
-		roll = (row.get("custom_roll_no") or "").strip() if has_roll_no else ""
-		if (row.batch_no or "").strip() == barcode or roll == barcode:
-			return row
 
-	if frappe.db.exists("Batch", barcode):
-		batch_item = frappe.db.get_value("Batch", barcode, "item")
-		if batch_item:
-			for row in se.items or []:
-				if row.item_code == batch_item and (row.batch_no or "").strip() == barcode:
+	for cand in candidates:
+		ck = _batch_match_key(cand)
+		for row in rows:
+			for bn in _ste_row_batch_values(row, has_roll_no):
+				if cand == bn or ck == _batch_match_key(bn):
 					return row
+
+	ta_name = frappe.db.get_value("Transfer Approval", {"stock_entry": se.name}, "name")
+	if ta_name:
+		ta_lines = frappe.get_all(
+			"Transfer Approval Line",
+			filters={"parent": ta_name},
+			fields=["batch_no", "item_code"],
+		)
+		for line in ta_lines:
+			abn = (line.batch_no or "").strip()
+			if not abn:
+				continue
+			for cand in candidates:
+				if not _batch_fuzzy_equal(cand, abn):
+					continue
+				for row in rows:
+					if row.item_code != line.item_code:
+						continue
+					row_batches = _ste_row_batch_values(row, has_roll_no)
+					if any(_batch_fuzzy_equal(rb, abn) for rb in row_batches) or not row_batches:
+						return row
+				item_rows = [r for r in rows if r.item_code == line.item_code]
+				if len(item_rows) == 1:
+					return item_rows[0]
+
+	for cand in candidates:
+		m = re.search(r"/(\d+)", _batch_match_key(cand))
+		if not m:
+			continue
+		suffix = "/" + m.group(1)
+		matched = [
+			r
+			for r in rows
+			if any(suffix in _batch_match_key(b) or _batch_match_key(b).endswith(suffix) for b in _ste_row_batch_values(r, has_roll_no))
+		]
+		if len(matched) == 1:
+			return matched[0]
+		if len(m.group(1)) == 1:
+			suffix10 = "/" + m.group(1) + "0"
+			matched = [
+				r
+				for r in rows
+				if any(_batch_match_key(b).endswith(suffix10) for b in _ste_row_batch_values(r, has_roll_no))
+			]
+			if len(matched) == 1:
+				return matched[0]
+
+	for cand in candidates:
+		if frappe.db.exists("Batch", cand):
+			item = frappe.db.get_value("Batch", cand, "item")
+			for row in rows:
+				if row.item_code == item:
+					return row
+		if "/" in cand:
+			tail = (cand.split("/")[-1] or "").strip()
+			if tail.isdigit():
+				for row in rows:
+					for bn in _ste_row_batch_values(row, has_roll_no):
+						if bn.endswith(f"/{tail}") or bn.endswith(f"/{tail.lstrip('0') or '0'}"):
+							return row
+
+	for cand in candidates:
+		digits = re.sub(r"\D", "", cand)
+		if len(digits) < 8:
+			continue
+		item = frappe.db.get_value("Item", {"barcode": cand}, "name")
+		if not item and digits != cand:
+			item = frappe.db.get_value("Item", {"barcode": digits}, "name")
+		if not item:
+			continue
+		item_rows = [r for r in rows if r.item_code == item]
+		unscanned = [r for r in item_rows if _row_needs_scan(r)]
+		if len(unscanned) == 1:
+			return unscanned[0]
+		if len(item_rows) == 1:
+			return item_rows[0]
 
 	return None
 
@@ -1400,5 +1566,6 @@ def record_transfer_barcode_scan(stock_entry, barcode):
 		"idx": match.idx,
 		"scanned_qty": new_scanned,
 		"qty": approved_qty,
-		"batch_no": barcode,
+		"batch_no": (match.batch_no or "").strip() or barcode,
+		"item_code": match.item_code,
 	}

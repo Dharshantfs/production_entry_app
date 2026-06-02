@@ -58,14 +58,64 @@ function _apply_scan_to_locals(frm, row_name, scanned_qty, qty) {
 	frm.refresh_field("items");
 }
 
+function _normalizeTransferScan(raw) {
+	let s = (raw || "").trim().toUpperCase().replace(/\s+/g, "");
+	s = s.replace(/\*+$/, "");
+	if (s.startsWith("#S")) s = "JS" + s.slice(2);
+	else if (s.startsWith("IS-")) s = "JS-" + s.slice(3);
+	else if (s.startsWith("IS") && s.length > 2) s = "JS" + s.slice(2);
+	if (/^JS\d/.test(s)) s = "JS-" + s.slice(2);
+	if (/^\d{6,}\/\d/.test(s)) s = "JS-" + s;
+	return s;
+}
+
+function _batchMatchKey(v) {
+	return _normalizeTransferScan(v).replace(/[^A-Z0-9/]/g, "");
+}
+
+function _transferScanCandidates(raw) {
+	const cands = [];
+	const add = (v) => {
+		v = (v || "").trim();
+		if (v && !cands.includes(v)) cands.push(v);
+	};
+	add(raw);
+	add((raw || "").toUpperCase());
+	const norm = _normalizeTransferScan(raw);
+	add(norm);
+	add(_batchMatchKey(norm));
+	const m = norm.match(/\/(\d+)/);
+	if (m) {
+		add("/" + m[1]);
+		if (m[1].length === 1) add("/" + m[1] + "0");
+	}
+	return cands;
+}
+
 function _find_transfer_row_for_barcode(frm, barcode) {
-	const code = (barcode || "").trim();
-	if (!code) return null;
-	return (frm.doc.items || []).find(
-		(r) =>
-			(r.batch_no || "").trim() === code ||
-			((r.custom_roll_no || "").trim() === code)
-	);
+	const rows = frm.doc.items || [];
+	const cands = _transferScanCandidates(barcode);
+	for (const cand of cands) {
+		const ck = _batchMatchKey(cand);
+		for (const r of rows) {
+			const bn = (r.batch_no || "").trim();
+			const roll = (r.custom_roll_no || "").trim();
+			if (cand === bn || cand === roll || ck === _batchMatchKey(bn)) return r;
+		}
+	}
+	for (const cand of cands) {
+		const m = _batchMatchKey(cand).match(/\/(\d+)$/);
+		if (!m) continue;
+		const suf = "/" + m[1];
+		let matched = rows.filter((r) => _batchMatchKey(r.batch_no || "").includes(suf));
+		if (matched.length === 1) return matched[0];
+		if (m[1].length === 1) {
+			const suf10 = "/" + m[1] + "0";
+			matched = rows.filter((r) => _batchMatchKey(r.batch_no || "").endsWith(suf10));
+			if (matched.length === 1) return matched[0];
+		}
+	}
+	return null;
 }
 
 function _scan_locally(frm, barcode) {
