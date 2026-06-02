@@ -112,14 +112,15 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"108": 110,
 	"221": 115,
 	"222": 115,
+	"223": 115,
 	"231": 115,
 	"233": 115,
 	"241": 115,
 	"242": 115,
 }
 
-BOX_BAG_PROCESS_CODES = ("221", "222", "224", "231", "233", "241", "242")
-BOPP_BOX_BAG_PROCESS_CODES = ("222", "231", "233", "241", "242")
+BOX_BAG_PROCESS_CODES = ("221", "222", "223", "224", "231", "233", "241", "242")
+BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242")
 BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
 
 
@@ -164,7 +165,7 @@ def _same_fg_design_family(planning_ic, so_fg_ic):
 	sp = _bom_item_process_code(sic)
 	if not pp or pp != sp:
 		return False
-	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109", "221", "222", "231", "233", "241", "242"):
+	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109", "221", "222", "223", "231", "233", "241", "242"):
 		return False
 	p_design = pic.split("-")[0].upper()
 	s_design = sic.split("-")[0].upper()
@@ -468,7 +469,7 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 
 # First-segment wins for codes like 105-…-100… (GSM / width digits) so we never classify as 100 instead of 105.
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
-	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "222", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255"}
+	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255"}
 )
 
 
@@ -512,7 +513,7 @@ def _bom_item_process_code(item_code):
 		return "PB-"
 	pp = _item_process_prefix(ic)
 	lam = _lamination_process_from_item_code(ic)
-	if pp in ("108", "255", "253", "254", "251", "252", "221", "222", "224", "231", "233", "241", "242"):
+	if pp in ("108", "255", "253", "254", "251", "252", "221", "222", "223", "224", "231", "233", "241", "242"):
 		return pp
 	if lam in ("104", "107", "255"):
 		return lam
@@ -2110,7 +2111,7 @@ def _trace_from_221_parent_on_sales_order_line(sales_order_item, planning_sheet_
 		return ""
 	for r in rows:
 		ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
-		if _item_process_prefix(ric) not in ("221", "222", "224", "231", "233", "241", "242"):
+		if _item_process_prefix(ric) not in ("221", "222", "223", "224", "231", "233", "241", "242"):
 			continue
 		rsoi = _cstr(
 			(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
@@ -4752,10 +4753,11 @@ def _parent_child_trace_id_from_item_code(item_code):
 	if process in BOPP_BOX_BAG_PROCESS_CODES:
 		from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
 		p = _parse_bopp_bag_item_code(ic)
-		# Trace format: design-numcolors-size-quality-color-totalgsm-finishing
+		# Trace format: design-numcolors-process-size-quality-color-totalgsm-finishing
 		segs = [_cstr(p.get("design_code")).strip()]
 		nc = _cstr(p.get("num_colors")).strip()
 		if nc: segs.append(nc + "C")
+		segs.append(process)
 		bs = _cstr(p.get("bag_size_id")).strip()
 		if bs: segs.append(bs)
 		q = _cstr(p.get("quality_letter")).strip()
@@ -7317,7 +7319,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		so_parent_ic = (so_it.item_code or "").strip()
 		pp_so = _bom_item_process_code(so_parent_ic)
 		lam_proc = _lamination_process_from_item_code(lam_ic)
-		if pp_so in ("108", "109", "253", "255", "254", "106", "222", "231", "233", "241", "242"):
+		if pp_so in ("108", "109", "253", "255", "254", "106", "222", "223", "231", "233", "241", "242"):
 			t_fg = _parent_child_trace_id_from_item_code(so_parent_ic) or _parent_child_trace_id_for_planning_row(
 				so_parent_ic, so_it.name, ps.name
 			)
@@ -7328,7 +7330,7 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			_has_lam_design = bool(_cstr((_parse_107_item_code(lam_ic) or {}).get("design_code")).strip())
 		elif lam_proc == "104":
 			_has_lam_design = bool(_cstr((_parse_104_item_code(lam_ic) or {}).get("design_code")).strip())
-		if not _has_lam_design and pp_so not in ("108", "109", "253", "255", "254", "106", "222", "231", "233", "241", "242"):
+		if not _has_lam_design and pp_so not in ("108", "109", "253", "255", "254", "106", "222", "223", "231", "233", "241", "242"):
 			if pp_so == "104" and lam_proc == "104":
 				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
 				if t_sheet:
@@ -7989,7 +7991,7 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 	if not child_proc:
 		return ""
 	# SO finished-good trace always wins over immediate BOM parent (e.g. 106→104→100 uses 106, not 104).
-	if so_fg in ("255", "254", "253", "252", "251", "108", "109", "106", "105", "221", "222", "224", "231", "233", "241", "242") and child_proc in (
+	if so_fg in ("255", "254", "253", "252", "251", "108", "109", "106", "105", "221", "222", "223", "224", "231", "233", "241", "242") and child_proc in (
 		"100",
 		"104",
 		"106",
@@ -8933,6 +8935,36 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		"100",
 		so_parent_processes=("222",),
 		process_label="222 Flexo Printed Box Bag Fabric (103 → 100)",
+	)
+	# 223 custom BOM expansion:
+	# 223 -> 105 -> 100 and 223 -> 103 -> 100
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("223",),
+		"105",
+		PRINTING_UNASSIGNED_UNIT,
+		process_label="223 Flexo Printed Box Bag (223 → 105)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("105",),
+		"100",
+		so_parent_processes=("223",),
+		process_label="223 Flexo Printed Box Bag Fabric (105 → 100)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("223",),
+		"103",
+		SLITTING_UNIT,
+		process_label="223 Flexo Printed Box Bag Slitting (223 → 103)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("103",),
+		"100",
+		so_parent_processes=("223",),
+		process_label="223 Flexo Printed Box Bag Fabric (103 → 100)",
 	)
 	try:
 		from production_entry.production_planning.box_bag_api import _force_box_bag_unit_on_sheet
@@ -14581,7 +14613,7 @@ def _populate_planning_sheet_items(ps, doc):
                     qual = qn105
             if cint(parsed105_early.get("width_mm") or 0) > 0 and flt(width) <= 0:
                 width = round(cint(parsed105_early.get("width_mm") or 0) / 25.4)
-        if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) not in ("107", "255") and process_prefix not in ("253", "255", "254", "108", "251", "252", "105", "221", "222", "224", "231", "233", "241", "242"):
+        if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) not in ("107", "255") and process_prefix not in ("253", "255", "254", "108", "251", "252", "105", "221", "222", "223", "224", "231", "233", "241", "242"):
             q_code = after_digits[3:6]
             c_code = after_digits[6:9]
             try:
@@ -19486,7 +19518,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "exclude_103" and icp == "103":
                     continue
-                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "221", "222", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
+                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
                     continue
                 if bps == "only_100" and icp != "100":
                     continue

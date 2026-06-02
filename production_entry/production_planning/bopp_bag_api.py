@@ -31,7 +31,7 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 BOPP_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
-BOPP_BOX_BAG_PROCESS_CODES = ("222", "231", "233", "241", "242")
+BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242")
 BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
 BOPP_BOX_BAG_PARENT_PROCESSES = ("221",) + BOPP_BOX_BAG_PROCESS_CODES
 
@@ -96,6 +96,8 @@ def _bopp_process_label(process_code):
         return "242 cooler box bag"
     if p == "222":
         return "222 flexo printed box bag"
+    if p == "223":
+        return "223 flexo printed box bag"
     return "233 BOPP Box Bag"
 
 

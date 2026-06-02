@@ -362,7 +362,7 @@ def get_box_bag_order_table_data(
 			"process_label": (
 				"233 BOPP Box Bag"
 				if proc_prefix == "233"
-				else ("PLAIN LAMINATED BOX BAG" if proc_prefix == "224" else "221 Box Bag")
+				else ("224 PLAIN LAMINATED BOX BAG" if proc_prefix == "224" else "221 Box Bag")
 			),
 			"movement_type": row.get(PLANNING_MOVEMENT_TYPE_FIELD) or row.get("movement_type") or "",
 		}

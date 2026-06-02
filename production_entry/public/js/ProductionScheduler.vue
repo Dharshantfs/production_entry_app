@@ -444,7 +444,7 @@ function normalizeUnitName(rawUnit) {
  * filters by its own process (e.g. rewinding → 102, printing → 105/106).
  */
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "222", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255",
 ]);
 
 /** Match scheduler_api._item_process_prefix: leading segment process wins over later -100- style digit runs. */
@@ -606,7 +606,8 @@ const boardProcessOptions = computed(() => {
   }
   if (isBoxBagBoard.value) return [
     { value: "221", label: "221 Box Bag" },
-    { value: "224", label: "PLAIN LAMINATED BOX BAG" },
+    { value: "224", label: "224 PLAIN LAMINATED BOX BAG" },
+    { value: "223", label: "223 flexo printed box bag" },
     { value: "231", label: "231 colored bopp box bag" },
     { value: "233", label: "233 BOPP Box Bag" },
     { value: "241", label: "241 mettalic box bag" },
@@ -634,7 +635,7 @@ const boardBannerText = computed(() => {
   }
   if (isBoxBagBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const pLbl = !p || p === "__all__" ? "221 · 222 · 224 · 231 · 233 · 241 · 242" : `Process ${p}`;
+    const pLbl = !p || p === "__all__" ? "221 · 222 · 223 · 224 · 231 · 233 · 241 · 242" : `Process ${p}`;
     return `Box Bag Board — ${pLbl}${unitScope}`;
   }
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
@@ -928,7 +929,7 @@ const filteredData = computed(() => {
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
       const u = (d.unit || "").trim();
-      if (["222", "231", "233", "241", "242"].includes(proc)) {
+      if (["222", "223", "231", "233", "241", "242"].includes(proc)) {
         if (!BOX_BAG_UNIT_LIST.includes(u)) return { ...d, unit: "UNASSIGNED BOX BAG MACHINE" };
         return d;
       }
@@ -940,10 +941,10 @@ const filteredData = computed(() => {
       return d;
     });
     const bpf = boardProcessFilter.value || "__all__";
-    if (["221", "222", "224", "231", "233", "241", "242"].includes(bpf)) {
+    if (["221", "222", "223", "224", "231", "233", "241", "242"].includes(bpf)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === bpf);
     } else {
-      data = data.filter((d) => ["221", "222", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
+      data = data.filter((d) => ["221", "222", "223", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
     }
   }
 
@@ -1751,7 +1752,7 @@ async function loadOrders(d) {
 
         if (isBoxBagBoard.value) {
             items = items.filter((i) =>
-                ["221", "222", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(i.itemCode || i.item_code))
+                ["221", "222", "223", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(i.itemCode || i.item_code))
             );
         }
 
@@ -2666,7 +2667,7 @@ onMounted(() => {
       }
     } else if (
       isBoxBagBoard.value
-      && ["221", "222", "224", "231", "233", "241", "242", "__all__"].includes(processParam)
+      && ["221", "222", "223", "224", "231", "233", "241", "242", "__all__"].includes(processParam)
     ) {
       boardProcessFilter.value = processParam;
     } else if (["103", "109", "108", "105", "106", "251", "252", "253", "254", "255", "__all__"].includes(processParam)) {
