@@ -29,6 +29,11 @@ PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM"
 BOX_BAG_UNIT_L1 = "L1 LEADER OYANG MACHINE"
 BOX_BAG_UNIT_L2 = "L2 LEADER ZX MACHINE"
 BOX_BAG_UNASSIGNED_UNIT = "UNASSIGNED BOX BAG MACHINE"
+W_CUT_D_CUT_UNIT_L1 = "TTT- L1 - OYANG C700 BAG MAKING LINE"
+W_CUT_D_CUT_UNIT_L2 = "TTT- L2 - OYANG C700 BAG MAKING LINE"
+W_CUT_D_CUT_UNIT_L3 = "TTT- L3 - OYANG C900 BAG MAKING LINE"
+W_CUT_UNASSIGNED_UNIT = "UNASSIGNED W CUT BAG MACHINE"
+D_CUT_UNASSIGNED_UNIT = "UNASSIGNED D CUT BAG MACHINE"
 
 # Old Select / spreadsheet labels → current Workstation name (for normalize + migrations).
 LEGACY_PLANNING_UNIT_ALIASES = {
@@ -58,6 +63,11 @@ UNIT_NUMBER_MAP = {
     BOX_BAG_UNIT_L1: "B",
     BOX_BAG_UNIT_L2: "C",
     BOX_BAG_UNASSIGNED_UNIT: "D",
+    W_CUT_D_CUT_UNIT_L1: "W",
+    W_CUT_D_CUT_UNIT_L2: "X",
+    W_CUT_D_CUT_UNIT_L3: "Y",
+    W_CUT_UNASSIGNED_UNIT: "Z",
+    D_CUT_UNASSIGNED_UNIT: "E",
 }
 
 
@@ -95,6 +105,11 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         BOX_BAG_UNIT_L1,
         BOX_BAG_UNIT_L2,
         BOX_BAG_UNASSIGNED_UNIT,
+        W_CUT_D_CUT_UNIT_L1,
+        W_CUT_D_CUT_UNIT_L2,
+        W_CUT_D_CUT_UNIT_L3,
+        W_CUT_UNASSIGNED_UNIT,
+        D_CUT_UNASSIGNED_UNIT,
     )
     if s in allowed:
         return s
@@ -144,6 +159,16 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return BOX_BAG_UNIT_L1
     if "L2" in u and "LEADER" in u and "ZX" in u:
         return BOX_BAG_UNIT_L2
+    if "WCUT" in u and "UNASSIGNED" in u:
+        return W_CUT_UNASSIGNED_UNIT
+    if "DCUT" in u and "UNASSIGNED" in u:
+        return D_CUT_UNASSIGNED_UNIT
+    if "OYANGC700BAGMAKINGLINE" in u and "L1" in u:
+        return W_CUT_D_CUT_UNIT_L1
+    if "OYANGC700BAGMAKINGLINE" in u and "L2" in u:
+        return W_CUT_D_CUT_UNIT_L2
+    if "OYANGC900BAGMAKINGLINE" in u and "L3" in u:
+        return W_CUT_D_CUT_UNIT_L3
     for i in (1, 2, 3, 4):
         if f"UNIT{i}" in u or s == f"Unit {i}":
             return f"Unit {i}"
@@ -174,6 +199,11 @@ def planning_line_unit_option_lines():
             BOX_BAG_UNIT_L1,
             BOX_BAG_UNIT_L2,
             BOX_BAG_UNASSIGNED_UNIT,
+            W_CUT_D_CUT_UNIT_L1,
+            W_CUT_D_CUT_UNIT_L2,
+            W_CUT_D_CUT_UNIT_L3,
+            W_CUT_UNASSIGNED_UNIT,
+            D_CUT_UNASSIGNED_UNIT,
             # Legacy labels still seen on older sites / custom Select fields.
             "JVE - PRINTING MACHINE 2 COLOUR",
             "JVE - PRINTING MACHINE 4 COLOUR",

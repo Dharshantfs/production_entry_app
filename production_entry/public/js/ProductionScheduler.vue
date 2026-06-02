@@ -3,7 +3,7 @@
   <div class="cc-container">
     <!-- Filter Bar -->
     <div class="cc-filters">
-      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard || isPrintingBoard || isBoxBagBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
+      <div v-if="isLaminationBoard || isSlittingBoard || isRewindingBoard || isPrintedBoppFilmBoard || isSheetCuttingBoard || isPrintingBoard || isBoxBagBoard || isWCutDCutBoard" class="cc-filter-item" style="align-self:center;padding:8px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-weight:600;color:#047857;">
         {{ boardBannerText }}
       </div>
       <div class="cc-filter-item">
@@ -60,7 +60,7 @@
           <option value="Finalized">Finalized</option>
         </select>
       </div>
-      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard || isLaminationBoard || isBoxBagBoard" class="cc-filter-item cc-shift-filter">
+      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard || isLaminationBoard || isBoxBagBoard || isWCutDCutBoard" class="cc-filter-item cc-shift-filter">
         <label>Process</label>
         <div class="cc-shift-btns">
           <button v-for="opt in boardProcessOptions" :key="opt.value" type="button" :class="{ active: boardProcessFilter === opt.value }" @click="setBoardProcessFilter(opt.value)">{{ opt.label }}</button>
@@ -135,7 +135,7 @@
             </div>
           </div>
             <span class="cc-stat-weight" :class="getUnitCapacityStatus(unit).class">
-              <template v-if="isBoxBagBoard">
+              <template v-if="isBoxBagBoard || isWCutDCutBoard">
                 {{ getUnitTotal(unit).toFixed(0) }} / {{ Number(getUnitCapacityLimit(unit).toFixed(0)) }}{{ getCapacityLabel() }}
               </template>
               <template v-else>
@@ -215,7 +215,7 @@
                 </div>
               </div>
               <div class="cc-card-right">
-                <template v-if="isBoxBagBoard">
+                <template v-if="isBoxBagBoard || isWCutDCutBoard">
                   <span class="cc-card-qty">{{ entry.qty }} PCS</span>
                 </template>
                 <template v-else>
@@ -248,7 +248,7 @@
 
         <!-- Unit Footer -->
         <div class="cc-col-footer">
-          <template v-if="isBoxBagBoard">
+          <template v-if="isBoxBagBoard || isWCutDCutBoard">
             <span>Production: {{ getUnitProductionTotal(unit).toFixed(0) }} PCS</span>
           </template>
           <template v-else>
@@ -444,7 +444,7 @@ function normalizeUnitName(rawUnit) {
  * filters by its own process (e.g. rewinding → 102, printing → 105/106).
  */
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "108", "109", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109", "211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255",
 ]);
 
 /** Match scheduler_api._item_process_prefix: leading segment process wins over later -100- style digit runs. */
@@ -564,6 +564,7 @@ const isSlittingBoard = ref(false);
 const isRewindingBoard = ref(false);
 const isSheetCuttingBoard = ref(false);
 const isBoxBagBoard = ref(false);
+const isWCutDCutBoard = ref(false);
 const isPrintingBoard = ref(false);
 /** Printed BOPP film Kanban (PB / VR BOPP printing unit); uses dedicated API scope. */
 const isPrintedBoppFilmBoard = ref(false);
@@ -615,6 +616,12 @@ const boardProcessOptions = computed(() => {
     { value: "222", label: "222 flexo printed box bag" },
     { value: "__all__", label: "All" },
   ];
+  if (isWCutDCutBoard.value) return [
+    { value: "211", label: "211 plain d cut bag" },
+    { value: "212", label: "212 printed d cut bag" },
+    { value: "213", label: "213 plain laminated d cut bag" },
+    { value: "__all__", label: "All" },
+  ];
   return [];
 });
 
@@ -637,6 +644,11 @@ const boardBannerText = computed(() => {
     const p = (boardProcessFilter.value || "").trim();
     const pLbl = !p || p === "__all__" ? "221 · 222 · 223 · 224 · 231 · 233 · 241 · 242" : `Process ${p}`;
     return `Box Bag Board — ${pLbl}${unitScope}`;
+  }
+  if (isWCutDCutBoard.value) {
+    const p = (boardProcessFilter.value || "").trim();
+    const pLbl = !p || p === "__all__" ? "211 · 212 · 213" : `Process ${p}`;
+    return `W CUT / D CUT Board — ${pLbl}${unitScope}`;
   }
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
   if (isLaminationBoard.value) {
@@ -774,7 +786,7 @@ function goToPlan() {
     if (viewScope.value === 'weekly') query.week = filterWeek.value;
     if (viewScope.value === 'monthly') query.month = filterMonth.value;
     query.scope = viewScope.value;
-    if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value || isBoxBagBoard.value) {
+    if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value || isBoxBagBoard.value || isWCutDCutBoard.value) {
         query.process = boardProcessFilter.value || "__all__";
     }
     if (isLaminationBoard.value) {
@@ -799,6 +811,11 @@ function goToPlan() {
     if (isBoxBagBoard.value) {
         query.board = "box_bag";
         frappe.set_route("box-bag-order-table", query);
+        return;
+    }
+    if (isWCutDCutBoard.value) {
+        query.board = "w_cut_d_cut";
+        frappe.set_route("w-cut-d-cut-order-table", query);
         return;
     }
     if (isPrintingBoard.value) {
@@ -849,6 +866,7 @@ const boardUnits = computed(() => {
   if (isSlittingBoard.value) return [SLITTING_UNIT];
   if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
   if (isBoxBagBoard.value) return ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
+  if (isWCutDCutBoard.value) return ["TTT- L1 - OYANG C700 BAG MAKING LINE", "TTT- L2 - OYANG C700 BAG MAKING LINE", "TTT- L3 - OYANG C900 BAG MAKING LINE", "UNASSIGNED W CUT BAG MACHINE", "UNASSIGNED D CUT BAG MACHINE"];
   if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
@@ -947,6 +965,23 @@ const filteredData = computed(() => {
       data = data.filter((d) => ["221", "222", "223", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
     }
   }
+  if (isWCutDCutBoard.value) {
+    const D_CUT_UNIT_LIST = ["TTT- L1 - OYANG C700 BAG MAKING LINE", "TTT- L2 - OYANG C700 BAG MAKING LINE", "TTT- L3 - OYANG C900 BAG MAKING LINE", "UNASSIGNED W CUT BAG MACHINE", "UNASSIGNED D CUT BAG MACHINE"];
+    data = data.map((d) => {
+      const proc = itemProcessPrefix(d.item_code || d.itemCode);
+      const u = (d.unit || "").trim();
+      if (["211", "212", "213"].includes(proc) && !D_CUT_UNIT_LIST.includes(u)) {
+        return { ...d, unit: "UNASSIGNED D CUT BAG MACHINE" };
+      }
+      return d;
+    });
+    const bpf = boardProcessFilter.value || "__all__";
+    if (["211", "212", "213"].includes(bpf)) {
+      data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === bpf);
+    } else {
+      data = data.filter((d) => ["211", "212", "213"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
+    }
+  }
 
   if (isRewindingBoard.value) {
     data = data
@@ -970,7 +1005,8 @@ const filteredData = computed(() => {
     isPrintingBoard.value ||
     isSheetCuttingBoard.value ||
     isBoxBagBoard.value ||
-    isPrintedBoppFilmBoard.value;
+    isPrintedBoppFilmBoard.value ||
+    isWCutDCutBoard.value;
   if (!dedicatedProcessBoard) {
     data = data.filter((d) => !!d.plannedDate);
   }
@@ -1708,6 +1744,8 @@ function buildPullBoardChartArgsForSourceDate(sourceDate) {
     args.board_process_scope = "printed_bopp_pb_only";
   } else if (isBoxBagBoard.value) {
     args.board_process_scope = "box_bag_only";
+  } else if (isWCutDCutBoard.value) {
+    args.board_process_scope = "dcut_only";
   } else {
     try {
       const sp = new URLSearchParams(window.location.search || "");
@@ -1753,6 +1791,11 @@ async function loadOrders(d) {
         if (isBoxBagBoard.value) {
             items = items.filter((i) =>
                 ["221", "222", "223", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(i.itemCode || i.item_code))
+            );
+        }
+        if (isWCutDCutBoard.value) {
+            items = items.filter((i) =>
+                ["211", "212", "213"].includes(itemProcessPrefix(i.itemCode || i.item_code))
             );
         }
 
@@ -2388,6 +2431,7 @@ async function fetchData() {
           isRewindingBoard.value = false;
           isSheetCuttingBoard.value = false;
           isBoxBagBoard.value = false;
+          isWCutDCutBoard.value = false;
           isPrintedBoppFilmBoard.value = false;
           isPrintingBoard.value = false;
           if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
@@ -2395,6 +2439,7 @@ async function fetchData() {
           if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
           if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
           if (path.includes("/desk/box-bag-board")) isBoxBagBoard.value = true;
+          if (path.includes("/desk/w-cut-d-cut-board")) isWCutDCutBoard.value = true;
           if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
           if (path.includes("/desk/printing-order-board")) isPrintingBoard.value = true;
         } catch (e) {}
@@ -2444,6 +2489,8 @@ async function fetchData() {
           args.board_process_scope = "sheet_cutting_only";
         } else if (isBoxBagBoard.value) {
           args.board_process_scope = "box_bag_only";
+        } else if (isWCutDCutBoard.value) {
+          args.board_process_scope = "dcut_only";
         } else if (isPrintingBoard.value) {
           args.board_process_scope = "printing_only";
         } else if (isLaminationBoard.value) {
@@ -2529,7 +2576,7 @@ function updateUrlParams() {
   
   url.searchParams.set('scope', viewScope.value);
   prefs.scope = viewScope.value;
-  if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value || isBoxBagBoard.value) {
+  if (isPrintingBoard.value || isSlittingBoard.value || isSheetCuttingBoard.value || isBoxBagBoard.value || isWCutDCutBoard.value) {
     url.searchParams.set('process', boardProcessFilter.value || "__all__");
     prefs.process = boardProcessFilter.value || "__all__";
   } else {
@@ -2621,6 +2668,8 @@ onMounted(() => {
       if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
       if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
       if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
+      if (path.includes("/desk/box-bag-board")) isBoxBagBoard.value = true;
+      if (path.includes("/desk/w-cut-d-cut-board")) isWCutDCutBoard.value = true;
       if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
       if (path.includes("/desk/printing-order-board")) isPrintingBoard.value = true;
     } catch (e) {}
@@ -2632,6 +2681,7 @@ onMounted(() => {
       if (routeName === "rewinding board") isRewindingBoard.value = true;
       if (routeName === "sheet cutting board") isSheetCuttingBoard.value = true;
       if (routeName === "box bag board") isBoxBagBoard.value = true;
+      if (routeName === "w cut d cut board" || routeName === "w cut / d cut board") isWCutDCutBoard.value = true;
       if (routeName.includes("printed bopp film board")) isPrintedBoppFilmBoard.value = true;
       if (routeName === "printing order board") isPrintingBoard.value = true;
     } catch (e) {}
@@ -2641,6 +2691,7 @@ onMounted(() => {
       else if (isSheetCuttingBoard.value) boardProcessFilter.value = "251";
       else if (isLaminationBoard.value) boardProcessFilter.value = "104";
       else if (isBoxBagBoard.value) boardProcessFilter.value = "__all__";
+      else if (isWCutDCutBoard.value) boardProcessFilter.value = "__all__";
     }
 
     // 1. Load CSS
@@ -2668,6 +2719,11 @@ onMounted(() => {
     } else if (
       isBoxBagBoard.value
       && ["221", "222", "223", "224", "231", "233", "241", "242", "__all__"].includes(processParam)
+    ) {
+      boardProcessFilter.value = processParam;
+    } else if (
+      isWCutDCutBoard.value
+      && ["211", "212", "213", "__all__"].includes(processParam)
     ) {
       boardProcessFilter.value = processParam;
     } else if (["103", "109", "108", "105", "106", "251", "252", "253", "254", "255", "__all__"].includes(processParam)) {

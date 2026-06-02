@@ -10,6 +10,13 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	refresh(frm) {
+		// Freeze approved transfer qty so barcode scanning can only mark scanned fields.
+		(frm.doc.items || []).forEach((r) => {
+			if (r && r.name && r._protected_qty === undefined) {
+				r._protected_qty = Number(r.qty || 0);
+			}
+		});
+
 		// Forcefully hijack the barcode events so standard ERPNext scanner never runs!
 		if (frm.script_manager && frm.script_manager.events) {
 			if (frm.script_manager.events.scan_barcode) {
@@ -154,7 +161,6 @@ frappe.ui.form.on("Stock Entry", {
                 frm.refresh_field("items");
                 frappe.show_alert({message: `Verified: <b>${barcode}</b>`, indicator: 'green'});
                 frappe.utils.play_sound("submit");
-                setTimeout(() => { existing_row._protected_qty = undefined; }, 3000);
             });
             return;
         } else {
@@ -173,9 +179,9 @@ frappe.ui.form.on("Stock Entry", {
 frappe.ui.form.on('Stock Entry Detail', {
     qty: function(frm, cdt, cdn) {
         let row = frappe.get_doc(cdt, cdn);
-        
-        // If the row is currently locked and the background script changed the qty, revert it instantly
-        if (row._protected_qty !== undefined && row.qty !== row._protected_qty) {
+
+        // Keep approved qty fixed; barcode scans should only update scanned_qty fields.
+        if (frm.doc.stock_entry_type === "Material Transfer" && row._protected_qty !== undefined && row.qty !== row._protected_qty) {
             frappe.model.set_value(cdt, cdn, 'qty', row._protected_qty);
         }
     }

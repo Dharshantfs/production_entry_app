@@ -4304,7 +4304,7 @@ def get_production_plan_details(production_plan):
 PP_BUNDLE_CALC_FIELD = "custom_bundle_calculation"
 BUNDLE_CALC_DOCTYPE = "Bundle Calculation"
 SHEET_CUTTING_PROCESS_CODES = frozenset({"251", "252", "253", "254", "255"})
-BOX_BAG_PROCESS_CODES = frozenset({"221", "222", "223", "224", "231", "233", "241", "242"})
+BOX_BAG_PROCESS_CODES = frozenset({"211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242"})
 
 
 def _is_sheet_cutting_fg_code(item_code: str) -> bool:

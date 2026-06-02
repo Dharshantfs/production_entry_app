@@ -11,9 +11,22 @@ from production_entry.production_planning.planning_doctypes import (
 	BOX_BAG_UNIT_L1,
 	BOX_BAG_UNIT_L2,
 	BOX_BAG_UNASSIGNED_UNIT,
+	W_CUT_D_CUT_UNIT_L1,
+	W_CUT_D_CUT_UNIT_L2,
+	W_CUT_D_CUT_UNIT_L3,
+	W_CUT_UNASSIGNED_UNIT,
+	D_CUT_UNASSIGNED_UNIT,
 )
 
 BOX_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+W_CUT_D_CUT_UNITS = (
+	W_CUT_D_CUT_UNIT_L1,
+	W_CUT_D_CUT_UNIT_L2,
+	W_CUT_D_CUT_UNIT_L3,
+	W_CUT_UNASSIGNED_UNIT,
+	D_CUT_UNASSIGNED_UNIT,
+)
+D_CUT_PROCESS_CODES = ("211", "212", "213")
 
 _BOX_BAG_FINISHING_MAP = {
 	"PP": "Plain",
@@ -115,6 +128,90 @@ def _parse_box_bag_item_code(item_code):
 	return result
 
 
+def _dcut_process_label(process_code):
+	p = str(process_code or "").strip()
+	if p == "211":
+		return "211 plain d cut bag"
+	if p == "212":
+		return "212 printed d cut bag"
+	if p == "213":
+		return "213 plain laminated d cut bag"
+	return p
+
+
+def _parse_dcut_bag_item_code(item_code):
+	"""Parse D-CUT code: DESIGN[-NCOLOURS]-SIZE-PROCESSQCCCFLBBFF."""
+	from production_entry.production_planning.bopp_bag_api import _decode_fabric_gsm_char, _decode_lam_bopp_gsm_char
+
+	out = {
+		"design_code": "",
+		"num_colors": "",
+		"bag_size_id": "",
+		"process": "",
+		"quality_letter": "",
+		"colour_code": "",
+		"fabric_gsm": 0,
+		"lam_gsm": 0,
+		"bopp_gsm": 0,
+		"total_gsm": 0,
+		"finishing_code": "",
+		"finishing_label": "",
+	}
+	ic = str(item_code or "").strip()
+	if not ic:
+		return out
+
+	parts = ic.split("-")
+	if not parts:
+		return out
+	out["design_code"] = parts[0].strip()
+
+	tail_idx = 1
+	if len(parts) >= 4:
+		m = str(parts[1] or "").strip()
+		if m.upper().endswith("C") and m[:-1].isdigit():
+			out["num_colors"] = m[:-1]
+			out["bag_size_id"] = str(parts[2] or "").strip()
+			tail_idx = 3
+		else:
+			out["bag_size_id"] = str(parts[1] or "").strip()
+			tail_idx = 2
+	elif len(parts) >= 3:
+		out["bag_size_id"] = str(parts[1] or "").strip()
+		tail_idx = 2
+
+	tail = "-".join(parts[tail_idx:]).strip()
+	process = ""
+	at = -1
+	for p in D_CUT_PROCESS_CODES:
+		i = tail.find(p)
+		if i >= 0 and (at < 0 or i < at):
+			at = i
+			process = p
+	if at < 0:
+		return out
+	out["process"] = process
+	after = tail[at + 3:]
+	if len(after) >= 1:
+		out["quality_letter"] = after[0]
+	if len(after) >= 4:
+		out["colour_code"] = after[1:4]
+	if len(after) >= 5:
+		out["fabric_gsm"] = _decode_fabric_gsm_char(after[4])
+	if len(after) >= 6:
+		out["lam_gsm"] = _decode_lam_bopp_gsm_char(after[5])
+	if len(after) >= 7:
+		out["bopp_gsm"] = _decode_lam_bopp_gsm_char(after[6])
+	if len(after) >= 9:
+		out["finishing_code"] = after[7:9].upper()
+		out["finishing_label"] = _box_bag_finishing_label(after[7:9])
+	elif len(after) > 7:
+		out["finishing_code"] = after[7:].upper()
+		out["finishing_label"] = _box_bag_finishing_label(after[7:])
+	out["total_gsm"] = out["fabric_gsm"] + out["lam_gsm"] + out["bopp_gsm"]
+	return out
+
+
 def _bag_series_size_map():
 	"""Return {bag_series_name: size_in_inches} from the Bag Series doctype."""
 	cache_key = "box_bag_series_size_map"
@@ -167,6 +264,28 @@ def _force_box_bag_unit_on_sheet(planning_sheet_name=None):
 		WHERE {conditions}
 		""",
 		[BOX_BAG_UNASSIGNED_UNIT] + params,
+	)
+
+
+def _force_dcut_unit_on_sheet(planning_sheet_name=None):
+	"""Ensure all D-CUT parent rows have D-CUT default unit."""
+	if not frappe.db.has_column("Planning Table", "unit"):
+		return
+	proc_like = " OR ".join([f"item_code LIKE '{p}%%' OR item_code LIKE '%%-{p}%%'" for p in D_CUT_PROCESS_CODES])
+	conditions = f"""
+		({proc_like})
+		AND IFNULL(unit, '') NOT IN (%s, %s, %s, %s, %s)
+	"""
+	params = list(W_CUT_D_CUT_UNITS)
+	if planning_sheet_name:
+		conditions += " AND parent = %s"
+		params.append(planning_sheet_name)
+	frappe.db.sql(
+		f"""UPDATE `tabPlanning Table`
+		SET unit = %s
+		WHERE {conditions}
+		""",
+		[D_CUT_UNASSIGNED_UNIT] + params,
 	)
 
 
@@ -376,6 +495,139 @@ def get_box_bag_order_table_data(
 
 		out.append(enriched)
 
+	return out
+
+
+@frappe.whitelist()
+def get_w_cut_d_cut_order_table_data(
+	date=None,
+	start_date=None,
+	end_date=None,
+	planned_only=1,
+):
+	"""W CUT / D CUT table rows (D-CUT for now: 211/212/213)."""
+	from production_entry.production_planning.scheduler_api import (
+		_get_color_chart_data_impl,
+		_item_process_prefix,
+		_transfer_payload_for_chart_row,
+		PLANNING_MOVEMENT_TYPE_FIELD,
+	)
+
+	try:
+		_force_dcut_unit_on_sheet()
+	except Exception:
+		pass
+
+	raw = _get_color_chart_data_impl(
+		date=date,
+		start_date=start_date,
+		end_date=end_date,
+		plan_name="__all__",
+		mode=None,
+		planned_only=cint(planned_only),
+		board_process_scope="dcut_only",
+	)
+	raw = [
+		r for r in (raw or [])
+		if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in D_CUT_PROCESS_CODES
+	]
+	bag_sizes = _bag_series_size_map()
+	out = []
+	for row in raw:
+		ic = str(row.get("item_code") or row.get("itemCode") or "").strip()
+		parsed = _parse_dcut_bag_item_code(ic)
+		prefix = _item_process_prefix(ic)
+		shift_label = "DAY"
+		try:
+			pt_name = str(row.get("itemName") or row.get("item_name") or "").strip()
+			if pt_name:
+				for sf in ("custom_box_bag_shift", "custom_sheet_cutting_shift", "custom_slitting_shift"):
+					if frappe.db.has_column("Planning Table", sf):
+						val = frappe.db.get_value("Planning Table", pt_name, sf)
+						if val:
+							shift_label = str(val).strip().upper()
+							break
+		except Exception:
+			pass
+		unit = str(row.get("unit") or "").strip()
+		if unit not in W_CUT_D_CUT_UNITS:
+			unit = D_CUT_UNASSIGNED_UNIT
+		planned_qty = flt(row.get("qty") or row.get("quantity") or 0)
+		achieved_qty = flt(row.get("actual_production_weight_kgs") or row.get("produced_qty") or 0)
+		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
+		total_achieved_meters = (achieved_qty / planned_qty) * length if planned_qty > 0 and length > 0 else 0.0
+		pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
+		pp_docstatus = row.get("pp_docstatus") or 0
+		spr_name = str(row.get("spr_name") or "").strip()
+		wo_name = ""
+		wo_open = False
+		wo_terminal = False
+		if pp_id:
+			try:
+				wos = frappe.get_all(
+					"Work Order",
+					filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+					fields=["name", "status"],
+					order_by="creation desc",
+					limit_page_length=5,
+				) or []
+				for w in wos:
+					wo_name = w.name
+					wo_status = str(w.get("status") or "").strip()
+					wo_open = wo_status in ("Not Started", "In Process", "Open")
+					wo_terminal = wo_status in ("Completed", "Stopped", "Cancelled")
+					break
+			except Exception:
+				pass
+		enriched = {
+			"itemName": row.get("itemName") or row.get("item_name") or row.get("name") or "",
+			"item_code": ic,
+			"item_name": row.get("item_name") or "",
+			"planningSheet": str(row.get("planningSheet") or row.get("planning_sheet") or row.get("parent") or "").strip(),
+			"plannedDate": row.get("plannedDate") or row.get("planned_date") or "",
+			"partyCode": row.get("partyCode") or row.get("party_code") or row.get("order_code") or "",
+			"customer": row.get("customer") or row.get("customer_name") or "",
+			"customer_name": row.get("customer_name") or row.get("customer") or "",
+			"unit": unit,
+			"shift_label": shift_label,
+			"design_code": parsed.get("design_code") or "",
+			"design_name": row.get("item_name") or "",
+			"bag_size_id": parsed.get("bag_size_id") or "",
+			"bag_size_inches": bag_sizes.get(parsed.get("bag_size_id") or "", ""),
+			"quality": parsed.get("quality_letter") or "",
+			"color": parsed.get("colour_code") or "",
+			"colour_code": parsed.get("colour_code") or "",
+			"num_colors": parsed.get("num_colors") or "",
+			"fabric_gsm": parsed.get("fabric_gsm") or 0,
+			"gsm": parsed.get("total_gsm") or 0,
+			"lam_gsm": parsed.get("lam_gsm") or 0,
+			"bopp_gsm": parsed.get("bopp_gsm") or 0,
+			"total_gsm": parsed.get("total_gsm") or 0,
+			"finishing_code": parsed.get("finishing_code") or "",
+			"finishing": parsed.get("finishing_label") or parsed.get("finishing_code") or "",
+			"length": length,
+			"planned_quantity": planned_qty,
+			"achieved_quantity": achieved_qty,
+			"total_achieved_meters": total_achieved_meters,
+			"per_day_production": flt(row.get("per_day_production") or 0),
+			"pp_id": pp_id,
+			"pp_docstatus": pp_docstatus,
+			"wo_name": wo_name,
+			"wo_open": wo_open,
+			"wo_terminal": wo_terminal,
+			"spr_name": spr_name,
+			"spr_docstatus": row.get("spr_docstatus") or 0,
+			"salesOrderItem": row.get("salesOrderItem") or row.get("sales_order_item") or "",
+			"process": prefix,
+			"process_label": _dcut_process_label(prefix),
+			"movement_type": row.get(PLANNING_MOVEMENT_TYPE_FIELD) or row.get("movement_type") or "",
+		}
+		try:
+			transfer_data = _transfer_payload_for_chart_row(row, False, enriched["spr_docstatus"])
+			enriched.update(transfer_data)
+		except Exception:
+			pass
+		out.append(enriched)
 	return out
 
 

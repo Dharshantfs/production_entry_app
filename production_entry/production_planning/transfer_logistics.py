@@ -31,6 +31,8 @@ BOARD_KIND_TO_SCOPE = {
 	"slitting": "slitting_only",
 	"rewinding": "rewinding_only",
 	"sheet_cutting": "sheet_cutting_only",
+	"box_bag": "box_bag_only",
+	"w_cut_d_cut": "dcut_only",
 }
 
 TRANSFER_APPROVER_ROLES = frozenset({"System Manager", "Manufacturing Manager", "Administrator"})
