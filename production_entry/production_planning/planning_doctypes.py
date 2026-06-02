@@ -16,6 +16,8 @@ PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY = True
 # Workstation names (`tabWorkstation.name`) — aligned with ERPNext master data.
 LAMINATION_UNIT = "TNSPL - LAMINATION UNIT"
 SLITTING_UNIT = "JVE - SLITTING MACHINE"
+SLITTING_UNIT_VTP = "VTP - SLITTING MACHINE"
+SLITTING_UNASSIGNED_UNIT = "UNASSIGNED SLITTING MACHINE"
 REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE"
 REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE"
 REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE"
@@ -39,6 +41,7 @@ D_CUT_UNASSIGNED_UNIT = "UNASSIGNED D CUT BAG MACHINE"
 LEGACY_PLANNING_UNIT_ALIASES = {
     "Lamination Unit": LAMINATION_UNIT,
     "Slitting Unit": SLITTING_UNIT,
+    "Unassigned slitting machine": SLITTING_UNASSIGNED_UNIT,
     "Unassigned rewinding machine": REWINDING_UNASSIGNED_UNIT,
     "Unassigned printing machine": PRINTING_UNASSIGNED_UNIT,
     "TT - PRINTING MACHINE COLOUR 1200MM": PRINTING_UNIT_TT,
@@ -55,6 +58,8 @@ UNIT_NUMBER_MAP = {
     "Unit 4": "4",
     LAMINATION_UNIT: "5",
     SLITTING_UNIT: "6",
+    SLITTING_UNIT_VTP: "T",
+    SLITTING_UNASSIGNED_UNIT: "U",
     REWINDING_UNIT_L3: "7",
     REWINDING_UNIT_L4: "8",
     REWINDING_UNIT_L5: "9",
@@ -92,6 +97,8 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         "Unit 4",
         LAMINATION_UNIT,
         SLITTING_UNIT,
+        SLITTING_UNIT_VTP,
+        SLITTING_UNASSIGNED_UNIT,
         REWINDING_UNIT_L3,
         REWINDING_UNIT_L4,
         REWINDING_UNIT_L5,
@@ -122,6 +129,10 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return LAMINATION_UNIT
     if u == "SLITTINGUNIT" or s.strip().lower() == "slitting unit":
         return SLITTING_UNIT
+    if "UNASSIGNED" in u and "SLITTING" in u:
+        return SLITTING_UNASSIGNED_UNIT
+    if "VTP" in u and "SLITTING" in u:
+        return SLITTING_UNIT_VTP
     if "REWINDING" in u:
         if "L3" in u and "TSNPL" in u:
             return REWINDING_UNIT_L3
@@ -135,6 +146,8 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return SHEET_CUTTING_UNIT
     if "JVESLITTINGMACHINE" in u or ("SLITTING" in u and "JVE" in u and "MACHINE" in u):
         return SLITTING_UNIT
+    if "VTPSLITTINGMACHINE" in u or ("SLITTING" in u and "VTP" in u and "MACHINE" in u):
+        return SLITTING_UNIT_VTP
     if "TNSPL" in u and "LAMINATION" in u:
         return LAMINATION_UNIT
     if "TT" in u and "PRINTING" in u and "1200" in u:
@@ -186,6 +199,8 @@ def planning_line_unit_option_lines():
             "Unit 4",
             LAMINATION_UNIT,
             SLITTING_UNIT,
+            SLITTING_UNIT_VTP,
+            SLITTING_UNASSIGNED_UNIT,
             REWINDING_UNIT_L3,
             REWINDING_UNIT_L4,
             REWINDING_UNIT_L5,

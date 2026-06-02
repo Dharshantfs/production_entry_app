@@ -14,6 +14,8 @@ from production_entry.production_planning.planning_doctypes import (
     normalize_planning_unit_for_select,
     LAMINATION_UNIT,
     SLITTING_UNIT,
+    SLITTING_UNIT_VTP,
+    SLITTING_UNASSIGNED_UNIT,
 )
 
 
@@ -140,7 +142,7 @@ class Planningsheet(Document):
                 elif not color:
                     color = resolved or ""
                 width = flt(getattr(row, "width_inch", None))
-                # Hard rule: process 103 always belongs to Slitting Unit and color from Colour Master code.
+                # Hard rule: process 103 defaults to Unassigned Slitting Unit and color from Colour Master code.
                 process_prefix = _item_process_prefix(item_code)
                 if process_prefix == "103":
                     digits = "".join(ch for ch in item_code if ch.isdigit())
@@ -149,7 +151,8 @@ class Planningsheet(Document):
                     if mapped:
                         row.color = mapped
                         color = mapped
-                    row.unit = SLITTING_UNIT
+                    current = normalize_planning_unit_for_select(getattr(row, "unit", None))
+                    row.unit = current if current in (SLITTING_UNIT, SLITTING_UNIT_VTP, SLITTING_UNASSIGNED_UNIT) else SLITTING_UNASSIGNED_UNIT
                     continue
                 if process_prefix == "251":
                     row.unit = SHEET_CUTTING_UNIT
@@ -210,7 +213,7 @@ class Planningsheet(Document):
                 pr.unit = LAMINATION_UNIT
                 leg.unit = LAMINATION_UNIT
                 continue
-            # Hard lock for process 103 across linked rows.
+            # Hard lock for process 103 across linked rows (default to unassigned, preserve selected slitting machine).
             item_code = str(getattr(pr, "item_code", None) or getattr(leg, "item_code", None) or "").strip()
             if _item_process_prefix(item_code) == "103":
                 digits = "".join(ch for ch in item_code if ch.isdigit())
@@ -219,8 +222,13 @@ class Planningsheet(Document):
                 if mapped:
                     pr.color = mapped
                     leg.color = mapped
-                pr.unit = SLITTING_UNIT
-                leg.unit = SLITTING_UNIT
+                pr_unit = normalize_planning_unit_for_select(getattr(pr, "unit", None))
+                leg_unit = normalize_planning_unit_for_select(getattr(leg, "unit", None))
+                chosen = pr_unit if pr_unit in (SLITTING_UNIT, SLITTING_UNIT_VTP, SLITTING_UNASSIGNED_UNIT) else (
+                    leg_unit if leg_unit in (SLITTING_UNIT, SLITTING_UNIT_VTP, SLITTING_UNASSIGNED_UNIT) else SLITTING_UNASSIGNED_UNIT
+                )
+                pr.unit = chosen
+                leg.unit = chosen
                 continue
             if _item_process_prefix(item_code) == "251":
                 pr.unit = SHEET_CUTTING_UNIT

@@ -340,6 +340,9 @@ const COLOR_GROUPS = [
 const units = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed"];
 const LAMINATION_UNIT = "TNSPL - LAMINATION UNIT";
 const SLITTING_UNIT = "JVE - SLITTING MACHINE";
+const SLITTING_UNIT_VTP = "VTP - SLITTING MACHINE";
+const SLITTING_UNASSIGNED_UNIT = "UNASSIGNED SLITTING MACHINE";
+const SLITTING_BOARD_UNITS = [SLITTING_UNIT, SLITTING_UNIT_VTP, SLITTING_UNASSIGNED_UNIT];
 const REWINDING_UNIT_L3 = "TSNPL - L3 REWINDING MACHINE";
 const REWINDING_UNIT_L4 = "JSB - L4 REWINDING MACHINE";
 const REWINDING_UNIT_L5 = "JSB - L5 REWINDING MACHINE";
@@ -364,6 +367,8 @@ const UNIT_TONNAGE_LIMITS = {
   "Mixed": 999,
   [LAMINATION_UNIT]: 999,
   [SLITTING_UNIT]: 999,
+  [SLITTING_UNIT_VTP]: 999,
+  [SLITTING_UNASSIGNED_UNIT]: 999,
   [REWINDING_UNIT_L3]: 999,
   [REWINDING_UNIT_L4]: 999,
   [REWINDING_UNIT_L5]: 999,
@@ -383,6 +388,8 @@ const headerColors = {
   "Mixed": "#64748b",
   [LAMINATION_UNIT]: "#0d9488",
   [SLITTING_UNIT]: "#0f766e",
+  [SLITTING_UNIT_VTP]: "#0ea5e9",
+  [SLITTING_UNASSIGNED_UNIT]: "#64748b",
   [REWINDING_UNIT_L3]: "#0369a1",
   [REWINDING_UNIT_L4]: "#0d9488",
   [REWINDING_UNIT_L5]: "#059669",
@@ -409,6 +416,8 @@ function normalizeUnitName(rawUnit) {
   if (txt === "lamination unit" || txt === "laminationunit") return LAMINATION_UNIT;
   if (txt === LAMINATION_UNIT.toLowerCase() || (txt.includes("tnspl") && txt.includes("lamination"))) return LAMINATION_UNIT;
   if (txt === "slitting unit" || txt === "slittingunit") return SLITTING_UNIT;
+  if (txt === "unassigned slitting machine" || (txt.includes("slitting") && txt.includes("unassigned"))) return SLITTING_UNASSIGNED_UNIT;
+  if (txt === SLITTING_UNIT_VTP.toLowerCase() || (txt.includes("vtp") && txt.includes("slitting"))) return SLITTING_UNIT_VTP;
   if (txt === SLITTING_UNIT.toLowerCase() || (txt.includes("jve") && txt.includes("slitting"))) return SLITTING_UNIT;
   if (txt.includes("sheetcutting") || (txt.includes("sheet") && txt.includes("cutting") && txt.includes("jve"))) return SHEET_CUTTING_UNIT;
   const ru = String(rawUnit || "").trim();
@@ -630,6 +639,8 @@ units.forEach(u => {
 });
 unitSortConfig.value[LAMINATION_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 unitSortConfig.value[SLITTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+unitSortConfig.value[SLITTING_UNIT_VTP] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
+unitSortConfig.value[SLITTING_UNASSIGNED_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 unitSortConfig.value[SHEET_CUTTING_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 REWINDING_BOARD_UNITS.forEach((u) => {
   unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
@@ -687,7 +698,7 @@ const boardBannerText = computed(() => {
     const pLbl = !p || p === "__all__" ? "105 · 106" : `Process ${p}`;
     return `Printing Order Board — ${pLbl}${unitScope}`;
   }
-  if (isSlittingBoard.value) return `Slitting Board — ${SLITTING_UNIT}${unitScope}`;
+  if (isSlittingBoard.value) return `Slitting Board — JVE / VTP / Unassigned${unitScope}`;
   if (isSheetCuttingBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
     const pLbl = !p || p === "__all__" ? "251 · 252 · 253 · 254 · 255" : `Process ${p}`;
@@ -916,7 +927,7 @@ function toggleViewScope() {
 
 const boardUnits = computed(() => {
   if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
-  if (isSlittingBoard.value) return [SLITTING_UNIT];
+  if (isSlittingBoard.value) return [...SLITTING_BOARD_UNITS];
   if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
   if (isBoxBagBoard.value) return ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
   if (isWCutDCutBoard.value) return ["TTT- L1 - OYANG C700 BAG MAKING LINE", "TTT- L2 - OYANG C700 BAG MAKING LINE", "TTT- L3 - OYANG C900 BAG MAKING LINE", "UNASSIGNED W CUT BAG MACHINE", "UNASSIGNED D CUT BAG MACHINE"];
@@ -951,7 +962,11 @@ const filteredData = computed(() => {
   if (isSlittingBoard.value) {
     data = data.map((d) => {
       if (["103", "109", "108"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
-        return { ...d, unit: SLITTING_UNIT };
+        const u = normalizeUnitName(d.unit);
+        if (!SLITTING_BOARD_UNITS.includes(u)) {
+          return { ...d, unit: SLITTING_UNASSIGNED_UNIT };
+        }
+        return { ...d, unit: u };
       }
       return d;
     });

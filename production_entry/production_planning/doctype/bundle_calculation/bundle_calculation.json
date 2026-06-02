@@ -17,6 +17,7 @@
   "total_consumed_meter",
   "total_achieved_weight",
   "total_produced_sheets",
+  "total_produced_bag_pcs",
   "create_bundle_entry"
  ],
  "fields": [
@@ -100,6 +101,14 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Total Produced Sheets (PCS)",
+   "precision": "0",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_produced_bag_pcs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Produced Bag PCS",
    "precision": "0",
    "read_only": 1
   },

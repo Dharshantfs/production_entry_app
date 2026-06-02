@@ -66,7 +66,7 @@ function spr_sync_grid_columns_visible(frm, fieldname) {
 				if (df) df.in_list_view = 1;
 			});
 		} else if (fieldname === 'items') {
-			const itemFields = ['planned_qty', 'batch_no', 'party_code', 'meter_roll', 'produced_length_mtrs', 'produced_gsm', 'gross_weight', 'save_row', 'quality', 'color', 'width_inch', 'gsm', 'custom_production_label', 'edit_row', 'work_order', 'item_code', 'item_name', 'job', 'net_weight', 'custom_core_width_mm', 'core_width', 'custom_diameter_inches', 'diameter', 'custom_cbm_cubic_meters', 'cbm', 'custom_qc_approval_label', 'qc_approval_label', 'row_ready_for_print', 'row_locked', 'row_printed', 'custom_polybag_kgs', 'polybag_kgs', 'print_sticker'];
+			const itemFields = ['planned_qty', 'batch_no', 'party_code', 'meter_roll', 'produced_length_mtrs', 'produced_gsm', 'gross_weight', 'save_row', 'quality', 'color', 'width_inch', 'gsm', 'custom_production_label', 'edit_row', 'work_order', 'item_code', 'item_name', 'job', 'net_weight', 'custom_core_width_mm', 'core_width', 'custom_diameter_inches', 'diameter', 'custom_cbm_cubic_meters', 'cbm', 'custom_qc_approval_label', 'qc_approval_label', 'custom_planned_bag_pcs', 'custom_achieved_bag_pcs', 'row_ready_for_print', 'row_locked', 'row_printed', 'custom_polybag_kgs', 'polybag_kgs', 'print_sticker'];
 			itemFields.forEach(f => {
 				let df = frappe.meta.get_docfield('Shaft Production Run Item', f);
 				if (df) df.in_list_view = 1;
@@ -268,7 +268,7 @@ function sprScheduleTotalProducedSync(frm, opts) {
 	}
 	frm.__spr_total_sync_timer = setTimeout(function () {
 		spr_sync_total_produced_weight(frm, opts || {});
-		if (sprIsSheetCutting(frm)) {
+		if (sprIsBundlePackagingMode(frm)) {
 			sprSyncBundleProducedSheets(frm, opts || {});
 		}
 		frm.__spr_total_sync_timer = null;
@@ -277,7 +277,7 @@ function sprScheduleTotalProducedSync(frm, opts) {
 
 /** Sum roll-line Produced Sheets / net weight into bundle rows; consumed mtrs into SPR header (sheet cutting). */
 function sprSyncBundleProducedSheets(frm, opts) {
-	if (!frm || !sprIsSheetCutting(frm)) {
+	if (!frm || !sprIsBundlePackagingMode(frm)) {
 		return;
 	}
 	const bundles = frm.doc.bundle_calculation || [];
@@ -291,7 +291,10 @@ function sprSyncBundleProducedSheets(frm, opts) {
 		const ic = String(br.item_code || '').trim();
 		const wo = String(br.work_order || '').trim();
 		const nBundles = cint(br.no_of_bundles);
+		const nBoxes = cint(br.no_of_boxes);
+		const nRows = sprIsBag(frm) && nBundles < 1 ? nBoxes : nBundles;
 		let sumPcs = 0;
+		let sumBagPcs = 0;
 		let sumNw = 0;
 		let prefixHits = 0;
 		items.forEach(function (it) {
@@ -299,6 +302,7 @@ function sprSyncBundleProducedSheets(frm, opts) {
 			if (job.indexOf(prefix) === 0) {
 				prefixHits += 1;
 				sumPcs += flt(it.custom_total_produced_sheets);
+				sumBagPcs += flt(it.custom_achieved_bag_pcs);
 				sumNw += spr_round_net_weight_kg(it.net_weight);
 			}
 		});
@@ -311,10 +315,11 @@ function sprSyncBundleProducedSheets(frm, opts) {
 				if (isNaN(jn)) {
 					return;
 				}
-				if (nBundles > 0 && (jn < 1 || jn > nBundles)) {
+				if (nRows > 0 && (jn < 1 || jn > nRows)) {
 					return;
 				}
 				sumPcs += flt(it.custom_total_produced_sheets);
+				sumBagPcs += flt(it.custom_achieved_bag_pcs);
 				sumNw += spr_round_net_weight_kg(it.net_weight);
 			});
 		}
@@ -325,9 +330,13 @@ function sprSyncBundleProducedSheets(frm, opts) {
 			if (Math.abs(flt(br.total_achieved_weight) - sumNw) > 1e-6) {
 				frappe.model.set_value('Bundle Calculation', br.name, 'total_achieved_weight', sumNw);
 			}
+			if (frappe.meta.get_docfield('Bundle Calculation', 'total_produced_bag_pcs') && Math.abs(flt(br.total_produced_bag_pcs) - sumBagPcs) > 1e-6) {
+				frappe.model.set_value('Bundle Calculation', br.name, 'total_produced_bag_pcs', sumBagPcs);
+			}
 		} else {
 			br.total_produced_sheets = sumPcs;
 			br.total_achieved_weight = sumNw;
+			br.total_produced_bag_pcs = sumBagPcs;
 		}
 	});
 	let consumedHdr = 0;
@@ -2035,8 +2044,8 @@ frappe.ui.form.on('Bundle Calculation', {
 	},
 	create_bundle_entry: function (frm, cdt, cdn) {
 		const row = locals[cdt][cdn];
-		if (!sprIsSheetCutting(frm)) {
-			frappe.msgprint(__('Bundle Create Entry is only for sheet-cutting SPR'));
+		if (!sprIsBundlePackagingMode(frm)) {
+			frappe.msgprint(__('Bundle Create Entry is only for sheet-cutting / bag SPR'));
 			return;
 		}
 		if (frm.is_new() || !frm.doc.name) {
@@ -2044,8 +2053,10 @@ frappe.ui.form.on('Bundle Calculation', {
 			return;
 		}
 		const nBundles = cint(row.no_of_bundles);
-		if (nBundles < 1) {
-			frappe.msgprint(__('No of Bundles must be at least 1'));
+		const nBoxes = cint(row.no_of_boxes);
+		const nRows = sprIsBag(frm) && nBundles < 1 ? nBoxes : nBundles;
+		if (nRows < 1) {
+			frappe.msgprint(__('No of Bundles / No of Boxes must be at least 1'));
 			return;
 		}
 		const args = { shaft_production_run: frm.doc.name };
@@ -2084,6 +2095,9 @@ frappe.ui.form.on('Bundle Calculation', {
 					}
 					if (line.custom_planned_sheets_pcs != null) {
 						it.custom_planned_sheets_pcs = flt(line.custom_planned_sheets_pcs);
+					}
+					if (line.custom_planned_bag_pcs != null) {
+						it.custom_planned_bag_pcs = flt(line.custom_planned_bag_pcs);
 					}
 				});
 				frm.refresh_field('items');
@@ -2830,6 +2844,17 @@ function sprUsesSheetCuttingRollPrompt(frm) {
 	return sprIsSheetCutting(frm);
 }
 
+function sprIsBag(frm) {
+	if (!frm || !frm.doc) {
+		return false;
+	}
+	return cint(frm.doc.custom_is_box_bag);
+}
+
+function sprIsBundlePackagingMode(frm) {
+	return sprIsSheetCutting(frm) || sprIsBag(frm);
+}
+
 function sprIsSheetCutting(frm) {
 	if (!frm || !frm.doc) {
 		return false;
@@ -2947,6 +2972,8 @@ function spr_force_sheet_cutting_item_grid_columns(grid) {
 		'custom_sheet_size',
 		'custom_planned_sheets_pcs',
 		'custom_total_produced_sheets',
+		'custom_planned_bag_pcs',
+		'custom_achieved_bag_pcs',
 	];
 	show.forEach(function (fn) {
 		try {
@@ -2962,9 +2989,11 @@ function spr_force_sheet_cutting_item_grid_columns(grid) {
 
 function sprToggleSheetCuttingRollUi(frm) {
 	const isSc = sprIsSheetCutting(frm);
+	const isBag = sprIsBag(frm);
+	const useBundlePcsCols = isSc || isBag;
 	const hideWidthCol = isSc ? 1 : 0;
-	const hideSheetCols = isSc ? 0 : 1;
-	const hideLengthCols = isSc ? 1 : 0;
+	const hideSheetCols = useBundlePcsCols ? 0 : 1;
+	const hideLengthCols = useBundlePcsCols ? 1 : 0;
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	const grid = fd && fd.grid;
 	if (grid) {
@@ -2980,6 +3009,8 @@ function sprToggleSheetCuttingRollUi(frm) {
 		spr_set_grid_col_hidden(grid, 'custom_sheet_size', hideSheetCols);
 		spr_set_grid_col_hidden(grid, 'custom_planned_sheets_pcs', hideSheetCols);
 		spr_set_grid_col_hidden(grid, 'custom_total_produced_sheets', hideSheetCols);
+		spr_set_grid_col_hidden(grid, 'custom_planned_bag_pcs', hideSheetCols);
+		spr_set_grid_col_hidden(grid, 'custom_achieved_bag_pcs', hideSheetCols);
 		spr_set_grid_col_hidden(grid, 'meter_roll', hideLengthCols);
 		spr_set_grid_col_hidden(grid, 'produced_length_mtrs', hideLengthCols);
 		spr_sync_grid_columns_visible(frm, 'items');

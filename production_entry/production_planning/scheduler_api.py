@@ -12,6 +12,8 @@ from production_entry.production_planning.planning_doctypes import (
 	SHEET_CUTTING_UNIT,
 	LAMINATION_UNIT,
 	SLITTING_UNIT,
+	SLITTING_UNIT_VTP,
+	SLITTING_UNASSIGNED_UNIT,
 	REWINDING_UNIT_L3,
 	REWINDING_UNIT_L4,
 	REWINDING_UNIT_L5,
@@ -74,6 +76,11 @@ REWINDING_BOARD_UNITS = (
 	REWINDING_UNIT_L4,
 	REWINDING_UNIT_L5,
 	REWINDING_UNASSIGNED_UNIT,
+)
+SLITTING_BOARD_UNITS = (
+	SLITTING_UNIT,
+	SLITTING_UNIT_VTP,
+	SLITTING_UNASSIGNED_UNIT,
 )
 # Printed BOPP film (PB-* BOM children of 107 FG): dedicated queue unit + board/table scope.
 PRINTED_BOPP_FILM_UNIT = PLANNING_PRINTED_BOPP_FILM_UNIT
@@ -9656,7 +9663,7 @@ def apply_sheet_cutting_bom_to_planning_sheet(planning_sheet_name=None, sales_or
 
 
 def _force_slitting_unit_on_sheet(planning_sheet_name):
-	"""Force process 103/109/108 rows to Slitting Unit; 103 uses strict digit colour, 108 uses parsed colour code."""
+	"""Normalize 103/109/108 rows to allowed slitting units; defaults invalid units by process."""
 	if not planning_sheet_name:
 		return 0
 	updated = 0
@@ -9664,7 +9671,7 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 	slitting_rows = frappe.get_all(
 		"Planning Table",
 		filters={"parent": planning_sheet_name},
-		fields=["name", "item_code", "item_name", "color", "sales_order_item", "source_item"],
+		fields=["name", "item_code", "item_name", "color", "unit", "sales_order_item", "source_item"],
 		limit_page_length=1000,
 	) or []
 	slitting_like = (
@@ -9705,28 +9712,23 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 					""",
 					(color_name, planning_sheet_name, str(rr.get("sales_order_item") or "").strip()),
 				)
-	if frappe.db.has_column("Planning Table", "unit"):
-		frappe.db.sql(
-			f"""
-			UPDATE `tabPlanning Table`
-			SET unit = %s
-			WHERE parent = %s
-			  AND {slitting_like}
-			""",
-			(SLITTING_UNIT, planning_sheet_name),
-		)
-		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
-	if frappe.db.has_column("Planning sheet Item", "unit"):
-		frappe.db.sql(
-			f"""
-			UPDATE `tabPlanning sheet Item`
-			SET unit = %s
-			WHERE parent = %s
-			  AND {slitting_like}
-			""",
-			(SLITTING_UNIT, planning_sheet_name),
-		)
-		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
+	for rr in slitting_rows:
+		pp = _item_process_prefix(rr.get("item_code"))
+		if pp not in ("103", "109", "108"):
+			continue
+		row_name = _cstr(rr.get("name"))
+		if not row_name:
+			continue
+		cur_unit = normalize_planning_unit_for_select(rr.get("unit") or "")
+		if cur_unit in SLITTING_BOARD_UNITS:
+			continue
+		target_unit = _default_slitting_unit_for_process(pp)
+		if frappe.db.has_column("Planning Table", "unit"):
+			frappe.db.set_value("Planning Table", row_name, "unit", target_unit, update_modified=False)
+			updated += 1
+		legacy = _cstr(rr.get("source_item"))
+		if legacy and frappe.db.exists("Planning sheet Item", legacy) and frappe.db.has_column("Planning sheet Item", "unit"):
+			frappe.db.set_value("Planning sheet Item", legacy, "unit", target_unit, update_modified=False)
 	return updated
 
 
@@ -10858,7 +10860,7 @@ def backfill_parent_child_trace_ids(planning_sheet_name=None):
 
 @frappe.whitelist()
 def backfill_slitting_units(planning_sheet_name=None):
-	"""Backfill all 103 rows to Slitting Unit in both table rows."""
+	"""Backfill all 103 rows to Unassigned Slitting Unit in both tables."""
 	params = []
 	sheet_filter = ""
 	if planning_sheet_name:
@@ -10866,7 +10868,7 @@ def backfill_slitting_units(planning_sheet_name=None):
 		params.append(planning_sheet_name)
 	updated = 0
 	if frappe.db.has_column("Planning Table", "unit"):
-		p2 = (SLITTING_UNIT,) + tuple(params)
+		p2 = (SLITTING_UNASSIGNED_UNIT,) + tuple(params)
 		frappe.db.sql(
 			f"""
 			UPDATE `tabPlanning Table`
@@ -10877,7 +10879,7 @@ def backfill_slitting_units(planning_sheet_name=None):
 		)
 		updated += int((frappe.db.sql("SELECT ROW_COUNT() as c", as_dict=True)[0] or {}).get("c") or 0)
 	if frappe.db.has_column("Planning sheet Item", "unit"):
-		p2 = (SLITTING_UNIT,) + tuple(params)
+		p2 = (SLITTING_UNASSIGNED_UNIT,) + tuple(params)
 		frappe.db.sql(
 			f"""
 			UPDATE `tabPlanning sheet Item`
@@ -15287,7 +15289,12 @@ def _populate_planning_sheet_items(ps, doc):
                     existing_psi.unit = LAMINATION_UNIT
                     existing_psi.planned_date = p_date
                 elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("103", "109", "108"):
-                    existing_psi.unit = SLITTING_UNIT
+                    _pp_sl = _item_process_prefix(str(it.item_code or ""))
+                    _nu_sl = normalize_planning_unit_for_select(getattr(existing_psi, "unit", None))
+                    if _nu_sl in SLITTING_BOARD_UNITS:
+                        existing_psi.unit = _nu_sl
+                    else:
+                        existing_psi.unit = _default_slitting_unit_for_process(_pp_sl)
                     existing_psi.planned_date = p_date
                 elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
                     prev = normalize_planning_unit_for_select(getattr(existing_psi, "unit", None))
@@ -15439,6 +15446,11 @@ def _is_white_color(color):
     return any(w == c for w in WHITE_COLORS)
 
 
+def _default_slitting_unit_for_process(process_code: str) -> str:
+    """Default slitting unit per process; 103 starts in unassigned lane."""
+    return SLITTING_UNASSIGNED_UNIT if str(process_code or "") == "103" else SLITTING_UNIT
+
+
 def compute_default_production_unit(color, width_inch, item_code=None):
     """
     Only white-family colors use UNASSIGNED (pool for that order date).
@@ -15452,7 +15464,7 @@ def compute_default_production_unit(color, width_inch, item_code=None):
     if LAMINATION_FLOW_ENABLED and item_code and _is_lamination_parent_process(str(item_code)):
         return LAMINATION_UNIT
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "103":
-        return SLITTING_UNIT
+        return SLITTING_UNASSIGNED_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "109":
         return SLITTING_UNIT
     if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "108":
@@ -16312,6 +16324,8 @@ MAINTENANCE_UNIT_OPTIONS = (
     "Unit 4",
     LAMINATION_UNIT,
     SLITTING_UNIT,
+    SLITTING_UNIT_VTP,
+    SLITTING_UNASSIGNED_UNIT,
     REWINDING_UNIT_L3,
     REWINDING_UNIT_L4,
     REWINDING_UNIT_L5,
@@ -16328,6 +16342,10 @@ def _is_non_blocking_maintenance_type(maintenance_type):
 def _normalize_maintenance_unit(unit):
     u = _cstr(unit)
     lu = u.lower()
+    if "unassigned" in lu and "slitting" in lu:
+        return SLITTING_UNASSIGNED_UNIT
+    if "vtp" in lu and "slitting" in lu:
+        return SLITTING_UNIT_VTP
     if lu in {"slitting", "slitting unit"} or ("jve" in lu and "slitting" in lu):
         return SLITTING_UNIT
     if "lamination" in lu or ("tnspl" in lu and "lamination" in lu):
@@ -17195,6 +17213,10 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
             iu_upper = raw_upper
             if ("TNSPL" in iu_upper and "LAMINATION" in iu_upper) or ("LAMINATIONUNIT" in iu_upper):
                 item_unit = LAMINATION_UNIT
+            elif "UNASSIGNED" in iu_upper and "SLITTING" in iu_upper:
+                item_unit = SLITTING_UNASSIGNED_UNIT
+            elif "VTP" in iu_upper and "SLITTING" in iu_upper:
+                item_unit = SLITTING_UNIT_VTP
             elif ("JVE" in iu_upper and "SLITTING" in iu_upper) or ("SLITTINGUNIT" in iu_upper):
                 item_unit = SLITTING_UNIT
             elif "UNIT1" in iu_upper:
@@ -17210,6 +17232,10 @@ def update_sheet_plan_codes(sheet_doc, include_legacy=False):
         if normalized == "UNASSIGNED":
             if ("TNSPL" in raw_upper and "LAMINATION" in raw_upper) or ("LAMINATIONUNIT" in raw_upper):
                 return LAMINATION_UNIT
+            if "UNASSIGNED" in raw_upper and "SLITTING" in raw_upper:
+                return SLITTING_UNASSIGNED_UNIT
+            if "VTP" in raw_upper and "SLITTING" in raw_upper:
+                return SLITTING_UNIT_VTP
             if ("JVE" in raw_upper and "SLITTING" in raw_upper) or ("SLITTINGUNIT" in raw_upper):
                 return SLITTING_UNIT
             if "REWINDING" in raw_upper:
@@ -26418,7 +26444,8 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("105", "106") for psi in (psi_list or [])
         )
         is_box_bag_from_rows = any(
-            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in BOX_BAG_PROCESS_CODES for psi in (psi_list or [])
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in (BOX_BAG_PROCESS_CODES + D_CUT_PROCESS_CODES)
+            for psi in (psi_list or [])
         )
         # BOPP Film = Printed BOPP items with PB- prefix (NOT 107 which is Lamination Unit like 104)
         is_bopp_film_from_rows = (

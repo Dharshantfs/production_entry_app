@@ -30,6 +30,8 @@
   "uom",
   "custom_planned_sheets_pcs",
   "custom_total_produced_sheets",
+  "custom_planned_bag_pcs",
+  "custom_achieved_bag_pcs",
   "row_ready_for_print",
   "row_locked",
   "row_printed",
@@ -192,6 +194,20 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Produced Sheets (PCS)",
+   "precision": "0"
+  },
+  {
+   "fieldname": "custom_planned_bag_pcs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Planned Bag PCS",
+   "precision": "0"
+  },
+  {
+   "fieldname": "custom_achieved_bag_pcs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Achieved Bag PCS",
    "precision": "0"
   },
   {

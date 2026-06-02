@@ -1421,6 +1421,7 @@ class ShaftProductionRun(Document):
 		self.generate_batch_numbers()
 		if cint(getattr(self, "custom_is_sheet_cutting", 0)) or cint(getattr(self, "custom_is_box_bag", 0)):
 			sync_bundle_total_produced_sheets_for_doc(self)
+			sync_bundle_total_produced_bag_pcs_for_doc(self)
 			sync_bundle_total_achieved_weight_for_doc(self)
 			sync_bundle_consumed_meter_header(self)
 		self._spr_recalc_total_produced_weight_header()
@@ -4465,6 +4466,7 @@ def _read_pp_bundle_calculation_rows(production_plan: str) -> list[dict]:
 				"item_code": ic,
 				"sheet_cutting_size": _cstr(getattr(row, "sheet_cutting_size", None)),
 				"no_of_bundles": flt(getattr(row, "no_of_bundles", 0) or 0),
+				"no_of_boxes": flt(getattr(row, "no_of_boxes", 0) or 0),
 				"pkts_per_bundle": pkts,
 				"pcs_per_packet": pcs,
 				"total_pcs_per_bundle": tpb,
@@ -4498,6 +4500,7 @@ def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=
 		row["total_consumed_meter"] = 0
 		row["total_achieved_weight"] = 0
 		row["total_produced_sheets"] = 0
+		row["total_produced_bag_pcs"] = 0
 		out.append(row)
 	return out
 
@@ -4594,8 +4597,12 @@ def _spr_item_line_from_bundle(
 		row["custom_planned_sheets_pcs"] = pcs_per_bundle
 	elif spi_meta.has_field("planned_qty"):
 		row["planned_qty"] = pcs_per_bundle
+	if spi_meta.has_field("custom_planned_bag_pcs"):
+		row["custom_planned_bag_pcs"] = pcs_per_bundle
 	if spi_meta.has_field("custom_total_produced_sheets"):
 		row["custom_total_produced_sheets"] = 0
+	if spi_meta.has_field("custom_achieved_bag_pcs"):
+		row["custom_achieved_bag_pcs"] = 0
 	return row
 
 
@@ -4610,7 +4617,7 @@ def build_spr_bundle_result_lines_for_row(
 		frappe.throw(_("Save Shaft Production Run first"))
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if not (cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)) or cint(getattr(spr_doc, "custom_is_box_bag", 0))):
-		frappe.throw(_("Bundle Create Entry is only for sheet-cutting SPR"))
+		frappe.throw(_("Bundle Create Entry is only for sheet-cutting / bag SPR"))
 	pp_name = get_pp_from_spr(shaft_production_run)
 	if not pp_name:
 		frappe.throw(_("Production Plan not found on this Shaft Production Run"))
@@ -4618,8 +4625,10 @@ def build_spr_bundle_result_lines_for_row(
 	if not bundle_row:
 		frappe.throw(_("Bundle Calculation row not found"))
 	n_bundles = cint(getattr(bundle_row, "no_of_bundles", 0) or 0)
+	if cint(getattr(spr_doc, "custom_is_box_bag", 0)) and n_bundles < 1:
+		n_bundles = cint(getattr(bundle_row, "no_of_boxes", 0) or 0)
 	if n_bundles < 1:
-		frappe.throw(_("No of Bundles must be at least 1"))
+		frappe.throw(_("No of Bundles / No of Boxes must be at least 1"))
 	ic = _cstr(getattr(bundle_row, "item_code", None))
 	wo = _resolve_wo_for_pp_item_code(pp_name, ic)
 	if not wo:
@@ -4722,6 +4731,46 @@ def sync_bundle_total_produced_sheets_for_doc(spr_doc) -> None:
 	rows = list(spr_doc.get("bundle_calculation") or [])
 	for idx, br in enumerate(rows):
 		br.total_produced_sheets = _spr_sum_produced_sheets_for_bundle_row(spr_doc, br, bundle_row_idx=idx)
+
+
+def _spr_sum_produced_bag_pcs_for_bundle_row(spr_doc, bundle_row, bundle_row_idx=None) -> float:
+	"""Sum Achieved Bag PCS from roll lines linked to one bundle_calculation row."""
+	prefix = _spr_bundle_job_prefix(bundle_row, bundle_row_idx)
+	total = 0.0
+	prefix_hits = 0
+	ic = _cstr(getattr(bundle_row, "item_code", None))
+	wo = _cstr(getattr(bundle_row, "work_order", None))
+	n_bundles = cint(getattr(bundle_row, "no_of_bundles", 0) or 0)
+	for it in spr_doc.get("items") or []:
+		job = _cstr(getattr(it, "job", None))
+		matched = bool(prefix and job.startswith(prefix))
+		if matched:
+			prefix_hits += 1
+			total += flt(getattr(it, "custom_achieved_bag_pcs", 0) or 0)
+	if prefix_hits:
+		return flt(total, 0)
+	for it in spr_doc.get("items") or []:
+		job = _cstr(getattr(it, "job", None))
+		if _cstr(getattr(it, "item_code", None)) != ic or _cstr(getattr(it, "work_order", None)) != wo:
+			continue
+		try:
+			jn = int(job)
+		except (TypeError, ValueError):
+			continue
+		if n_bundles > 0 and not (1 <= jn <= n_bundles):
+			continue
+		total += flt(getattr(it, "custom_achieved_bag_pcs", 0) or 0)
+	return flt(total, 0)
+
+
+def sync_bundle_total_produced_bag_pcs_for_doc(spr_doc) -> None:
+	"""Update bundle_calculation.total_produced_bag_pcs from roll line achieved bag pcs sums."""
+	if not spr_doc or not hasattr(spr_doc, "bundle_calculation"):
+		return
+	rows = list(spr_doc.get("bundle_calculation") or [])
+	for idx, br in enumerate(rows):
+		if hasattr(br, "total_produced_bag_pcs"):
+			br.total_produced_bag_pcs = _spr_sum_produced_bag_pcs_for_bundle_row(spr_doc, br, bundle_row_idx=idx)
 
 
 def sync_bundle_total_achieved_weight_for_doc(spr_doc) -> None:
@@ -7243,6 +7292,7 @@ def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
 		frappe.throw(_("Shaft Production Run not found."))
 	doc = frappe.get_doc("Shaft Production Run", spr_name)
 	sync_bundle_total_produced_sheets_for_doc(doc)
+	sync_bundle_total_produced_bag_pcs_for_doc(doc)
 	if cint(getattr(doc, "custom_is_sheet_cutting", 0)) or cint(getattr(doc, "custom_is_box_bag", 0)):
 		sync_bundle_total_achieved_weight_for_doc(doc)
 		sync_bundle_consumed_meter_header(doc)
@@ -7255,6 +7305,7 @@ def spr_sync_bundle_produced_sheets(spr_name: str | None = None):
 			{
 				"name": br.name,
 				"total_produced_sheets": flt(getattr(br, "total_produced_sheets", 0) or 0),
+				"total_produced_bag_pcs": flt(getattr(br, "total_produced_bag_pcs", 0) or 0),
 				"total_achieved_weight": flt(getattr(br, "total_achieved_weight", 0) or 0),
 				"total_consumed_meter": flt(getattr(br, "total_consumed_meter", 0) or 0),
 			}

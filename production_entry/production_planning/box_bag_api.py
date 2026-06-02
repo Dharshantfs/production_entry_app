@@ -42,6 +42,29 @@ _BOX_BAG_FINISHING_MAP = {
 }
 
 
+def _spr_achieved_bag_pcs_total(spr_name_csv: str) -> float:
+	"""Sum achieved bag pcs across submitted/draft SPR ids stored in CSV."""
+	if not frappe.db.table_exists("Shaft Production Run Item"):
+		return 0.0
+	raw = str(spr_name_csv or "").strip()
+	if not raw:
+		return 0.0
+	names = [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
+	if not names:
+		return 0.0
+	placeholders = ", ".join(["%s"] * len(names))
+	rows = frappe.db.sql(
+		f"""
+		SELECT SUM(IFNULL(custom_achieved_bag_pcs, 0)) AS pcs_sum
+		FROM `tabShaft Production Run Item`
+		WHERE parent IN ({placeholders})
+		""",
+		tuple(names),
+		as_dict=True,
+	)
+	return flt((rows[0] or {}).get("pcs_sum") or 0)
+
+
 def _box_bag_finishing_label(code):
 	"""Decode 2-char finishing suffix to human label."""
 	return _BOX_BAG_FINISHING_MAP.get(str(code or "").strip().upper(), str(code or "").strip())
@@ -405,6 +428,10 @@ def get_box_bag_order_table_data(
 		# Planned and achieved qty (PCS for box bag)
 		planned_qty = flt(row.get("qty") or row.get("quantity") or 0)
 		achieved_qty = flt(row.get("actual_production_weight_kgs") or row.get("produced_qty") or 0)
+		spr_name = str(row.get("spr_name") or "").strip()
+		achieved_bag_pcs = _spr_achieved_bag_pcs_total(spr_name)
+		if achieved_bag_pcs > 0:
+			achieved_qty = achieved_bag_pcs
 
 		# Length from row data
 		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
@@ -467,6 +494,8 @@ def get_box_bag_order_table_data(
 			"length": length,
 			"planned_quantity": planned_qty,
 			"achieved_quantity": achieved_qty,
+			"planned_bag_pcs": planned_qty,
+			"achieved_bag_pcs": achieved_qty,
 			"total_achieved_meters": total_achieved_meters,
 			"per_day_production": flt(row.get("per_day_production") or 0),
 			"pp_id": pp_id,
@@ -554,6 +583,10 @@ def get_w_cut_d_cut_order_table_data(
 			unit = D_CUT_UNASSIGNED_UNIT
 		planned_qty = flt(row.get("qty") or row.get("quantity") or 0)
 		achieved_qty = flt(row.get("actual_production_weight_kgs") or row.get("produced_qty") or 0)
+		spr_name = str(row.get("spr_name") or "").strip()
+		achieved_bag_pcs = _spr_achieved_bag_pcs_total(spr_name)
+		if achieved_bag_pcs > 0:
+			achieved_qty = achieved_bag_pcs
 		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
 		total_achieved_meters = (achieved_qty / planned_qty) * length if planned_qty > 0 and length > 0 else 0.0
 		pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
@@ -608,6 +641,8 @@ def get_w_cut_d_cut_order_table_data(
 			"length": length,
 			"planned_quantity": planned_qty,
 			"achieved_quantity": achieved_qty,
+			"planned_bag_pcs": planned_qty,
+			"achieved_bag_pcs": achieved_qty,
 			"total_achieved_meters": total_achieved_meters,
 			"per_day_production": flt(row.get("per_day_production") or 0),
 			"pp_id": pp_id,

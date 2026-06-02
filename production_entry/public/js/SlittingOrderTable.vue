@@ -93,7 +93,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">{{ SLITTING_UNIT }} - Planned orders ({{ processFilter === "__all__" ? "103 + 109 + 108" : processFilter }})</div>
+      <div class="cc-table-unit-header lot-header">Slitting Units (JVE / VTP / Unassigned) - Planned orders ({{ processFilter === "__all__" ? "103 + 109 + 108" : processFilter }})</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
         <thead>
@@ -227,6 +227,7 @@ import { formatMovementCell } from "./movementDisplay.js";
 
 /** Must match Workstation name + ``planning_doctypes.SLITTING_UNIT`` */
 const SLITTING_UNIT = "JVE - SLITTING MACHINE";
+const SLITTING_PP_PRINT_FORMAT = "Slitting Order Sheet";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_slitting";
 const sizeDimUnit = ref("inches");
@@ -827,7 +828,7 @@ function canShowStockEntry(item) {
   if (item.is_lamination_parent && Number(item.parent_wo_docstatus || 0) !== 1) return false;
   if (!item.wo_open && !item.wo_terminal) return false;
   if (item.is_lamination_parent && !item.parent_ready_for_wo) return false;
-  if (!item.is_lamination_parent && !item.wo_terminal) return false;
+  if (!item.is_lamination_parent && !item.wo_open && !item.wo_terminal) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
   const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   if (!(pendingQty > 0)) return false;
@@ -880,8 +881,8 @@ function getStockEntryTitle(item) {
   if (!item) return "Create Shaft Production Run";
   const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
   const pendingQty = Number(item.pending_qty || 0);
-  if (!item.is_lamination_parent && !item.wo_terminal) {
-    return "Locked: child WO must be Completed/Stopped/Closed before parent SPR.";
+  if (!item.is_lamination_parent && !item.wo_open && !item.wo_terminal) {
+    return "Locked: start Work Order first, then create SPR.";
   }
   if (isDraftSpr) return `Continue draft SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
   return `New SPR. Pending: ${pendingQty.toFixed(0)} Kg`;
@@ -913,7 +914,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
   }
   let ppId = String(directPpId || "").trim();
   if (ppId) {
-    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(SLITTING_PP_PRINT_FORMAT)}&trigger_print=0`;
     window.open(printUrl, "_blank");
     return;
   }
@@ -929,7 +930,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     if (res.message && res.message.status === "ok") {
       ppId = String(res.message.pp_id || "").trim();
       if (ppId) {
-        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
+        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(SLITTING_PP_PRINT_FORMAT)}&trigger_print=0`;
         window.open(printUrl, "_blank");
       } else {
         frappe.msgprint("No Production Plan found");
