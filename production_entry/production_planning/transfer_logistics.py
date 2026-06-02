@@ -1330,3 +1330,64 @@ def _finalize_planning_rows_after_approval(ta):
 		if updates:
 			frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
 			_sync_psi_transfer_fields(ptr, updates)
+
+
+@frappe.whitelist()
+def record_transfer_barcode_scan(stock_entry, barcode):
+	"""Material Transfer: add +1 to scanned_qty on the matching batch row; never change approved qty."""
+	barcode = (barcode or "").strip()
+	if not barcode:
+		return {"ok": False, "error": _("No barcode provided")}
+	if not stock_entry:
+		return {"ok": False, "error": _("Stock Entry is required")}
+
+	se = frappe.get_doc("Stock Entry", stock_entry)
+	if se.docstatus != 0:
+		return {"ok": False, "error": _("Cannot scan on a submitted Stock Entry")}
+	if (se.stock_entry_type or "").strip() != "Material Transfer":
+		return {"ok": False, "error": _("Barcode scan is only for Material Transfer")}
+
+	expected_item = (se.items[0].item_code if se.items else None) or None
+	has_roll_no = frappe.db.has_column("Stock Entry Detail", "custom_roll_no")
+	has_scanned = frappe.db.has_column("Stock Entry Detail", "scanned_qty")
+	has_custom_scanned = frappe.db.has_column("Stock Entry Detail", "custom_scanned_qty")
+
+	match = None
+	for row in se.items:
+		roll = (row.get("custom_roll_no") or "").strip() if has_roll_no else ""
+		if (row.batch_no or "").strip() == barcode or roll == barcode:
+			match = row
+			break
+
+	if not match:
+		return {"ok": False, "error": _("Batch {0} is not in the approved transfer list").format(barcode)}
+	if expected_item and match.item_code != expected_item:
+		return {
+			"ok": False,
+			"error": _("Wrong item: batch belongs to {0}, expected {1}").format(match.item_code, expected_item),
+		}
+
+	approved_qty = flt(match.qty)
+	cur = flt(match.get("scanned_qty") if has_scanned else 0)
+	if has_custom_scanned:
+		cur = max(cur, flt(match.get("custom_scanned_qty") or 0))
+	new_scanned = approved_qty if approved_qty > 0 and cur + 1 >= approved_qty else cur + 1
+
+	updates = {}
+	if has_scanned:
+		updates["scanned_qty"] = new_scanned
+	if has_custom_scanned:
+		updates["custom_scanned_qty"] = new_scanned
+	if updates:
+		frappe.db.set_value("Stock Entry Detail", match.name, updates, update_modified=False)
+	if flt(match.qty) != approved_qty:
+		frappe.db.set_value("Stock Entry Detail", match.name, "qty", approved_qty, update_modified=False)
+
+	return {
+		"ok": True,
+		"row_name": match.name,
+		"idx": match.idx,
+		"scanned_qty": new_scanned,
+		"qty": approved_qty,
+		"batch_no": barcode,
+	}

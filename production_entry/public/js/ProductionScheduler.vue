@@ -555,19 +555,72 @@ function detectRestrictedUser() {
   return false;
 }
 
+/** Detect dedicated board pages from URL before first paint (avoids empty board on first load). */
+function syncBoardKindFromLocation() {
+  const flags = {
+    lamination: false,
+    slitting: false,
+    rewinding: false,
+    sheetCutting: false,
+    boxBag: false,
+    wCutDCut: false,
+    printedBopp: false,
+    printing: false,
+  };
+  try {
+    const path = String(window.location.pathname || "").toLowerCase();
+    flags.lamination = path.includes("lamination-board");
+    flags.slitting = path.includes("slitting-board");
+    flags.rewinding = path.includes("rewinding-board");
+    flags.sheetCutting = path.includes("sheet-cutting-board");
+    flags.boxBag = path.includes("box-bag-board");
+    flags.wCutDCut = path.includes("w-cut-d-cut-board");
+    flags.printedBopp = path.includes("printed-bopp-film-board");
+    flags.printing = path.includes("printing-order-board");
+  } catch (e) {}
+  try {
+    const r = frappe.get_route && frappe.get_route();
+    const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
+    if (routeName === "lamination board") flags.lamination = true;
+    if (routeName === "slitting board") flags.slitting = true;
+    if (routeName === "rewinding board") flags.rewinding = true;
+    if (routeName === "sheet cutting board") flags.sheetCutting = true;
+    if (routeName === "box bag board") flags.boxBag = true;
+    if (routeName === "w cut d cut board" || routeName === "w cut / d cut board") flags.wCutDCut = true;
+    if (routeName.includes("printed bopp film board")) flags.printedBopp = true;
+    if (routeName === "printing order board") flags.printing = true;
+  } catch (e) {}
+  return flags;
+}
+
+function applyBoardKindFromLocation() {
+  const flags = syncBoardKindFromLocation();
+  isLaminationBoard.value = flags.lamination;
+  isSlittingBoard.value = flags.slitting;
+  isRewindingBoard.value = flags.rewinding;
+  isSheetCuttingBoard.value = flags.sheetCutting;
+  isBoxBagBoard.value = flags.boxBag;
+  isWCutDCutBoard.value = flags.wCutDCut;
+  isPrintedBoppFilmBoard.value = flags.printedBopp;
+  isPrintingBoard.value = flags.printing;
+}
+
+const _initialBoardFlags = syncBoardKindFromLocation();
+
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
 /** Set in onMounted when Desk route is lamination-board (dedicated lamination Kanban). */
-const isLaminationBoard = ref(false);
-const isSlittingBoard = ref(false);
-const isRewindingBoard = ref(false);
-const isSheetCuttingBoard = ref(false);
-const isBoxBagBoard = ref(false);
-const isWCutDCutBoard = ref(false);
-const isPrintingBoard = ref(false);
+const isLaminationBoard = ref(_initialBoardFlags.lamination);
+const isSlittingBoard = ref(_initialBoardFlags.slitting);
+const isRewindingBoard = ref(_initialBoardFlags.rewinding);
+const isSheetCuttingBoard = ref(_initialBoardFlags.sheetCutting);
+const isBoxBagBoard = ref(_initialBoardFlags.boxBag);
+const isWCutDCutBoard = ref(_initialBoardFlags.wCutDCut);
+const isPrintingBoard = ref(_initialBoardFlags.printing);
 /** Printed BOPP film Kanban (PB / VR BOPP printing unit); uses dedicated API scope. */
-const isPrintedBoppFilmBoard = ref(false);
+const isPrintedBoppFilmBoard = ref(_initialBoardFlags.printedBopp);
+const isPcsBoard = computed(() => isBoxBagBoard.value || isWCutDCutBoard.value);
 const boardProcessFilter = ref("");
 const filterStatus = ref("");
 const unitSortConfig = ref({});
@@ -1147,7 +1200,7 @@ function getUnitCapacityLimit(unit) {
 }
 
 function getCapacityLabel() {
-    if (isBoxBagBoard.value) {
+    if (isPcsBoard.value) {
         if (viewScope.value === 'weekly') return ' PCS/W';
         if (viewScope.value === 'monthly') return ' PCS/M';
         return ' PCS/D';
@@ -1172,9 +1225,9 @@ const unitStatsCache = computed(() => {
     });
     
     const rawHiddenWhite = whiteOrders.reduce((sum, d) => sum + d.qty, 0);
-    const hiddenWhite = isBoxBagBoard.value ? rawHiddenWhite : rawHiddenWhite / 1000;
+    const hiddenWhite = isPcsBoard.value ? rawHiddenWhite : rawHiddenWhite / 1000;
     const rawTotal = allUnitData.reduce((sum, d) => sum + d.qty, 0);
-    const total = isBoxBagBoard.value ? rawTotal : rawTotal / 1000;
+    const total = isPcsBoard.value ? rawTotal : rawTotal / 1000;
     
     const limit = getUnitCapacityLimit(unit);
     let capacityStatus;
@@ -1530,7 +1583,7 @@ function getUnitProductionTotal(unit) {
     .filter((d) => normalizeUnitName(d.unit) === unit)
     .reduce((sum, d) => sum + d.qty, 0);
   const mixWeight = getMixRollTotalWeight(unit);
-  return isBoxBagBoard.value ? (production + mixWeight) : (production + mixWeight) / 1000;
+  return isPcsBoard.value ? (production + mixWeight) : (production + mixWeight) / 1000;
 }
 
 function getMixRollCount(unit) {
@@ -2424,25 +2477,7 @@ async function fetchData() {
     fetchTimeout = setTimeout(async () => {
       isLoading.value = true;
       try {
-        try {
-          const path = String(window.location.pathname || "").toLowerCase();
-          isLaminationBoard.value = false;
-          isSlittingBoard.value = false;
-          isRewindingBoard.value = false;
-          isSheetCuttingBoard.value = false;
-          isBoxBagBoard.value = false;
-          isWCutDCutBoard.value = false;
-          isPrintedBoppFilmBoard.value = false;
-          isPrintingBoard.value = false;
-          if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
-          if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
-          if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
-          if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
-          if (path.includes("/desk/box-bag-board")) isBoxBagBoard.value = true;
-          if (path.includes("/desk/w-cut-d-cut-board")) isWCutDCutBoard.value = true;
-          if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
-          if (path.includes("/desk/printing-order-board")) isPrintingBoard.value = true;
-        } catch (e) {}
+        applyBoardKindFromLocation();
         if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
           filterOrderDate.value = frappe.datetime.get_today();
         }
@@ -2661,30 +2696,7 @@ function initFlatpickr() {
 }
 
 onMounted(() => {
-    // Path-first: frappe.get_route can be unset on first mount; wrong board filters -> empty grid.
-    try {
-      const path = String(window.location.pathname || "").toLowerCase();
-      if (path.includes("/desk/lamination-board")) isLaminationBoard.value = true;
-      if (path.includes("/desk/slitting-board")) isSlittingBoard.value = true;
-      if (path.includes("/desk/rewinding-board")) isRewindingBoard.value = true;
-      if (path.includes("/desk/sheet-cutting-board")) isSheetCuttingBoard.value = true;
-      if (path.includes("/desk/box-bag-board")) isBoxBagBoard.value = true;
-      if (path.includes("/desk/w-cut-d-cut-board")) isWCutDCutBoard.value = true;
-      if (path.includes("printed-bopp-film-board")) isPrintedBoppFilmBoard.value = true;
-      if (path.includes("/desk/printing-order-board")) isPrintingBoard.value = true;
-    } catch (e) {}
-    try {
-      const r = frappe.get_route && frappe.get_route();
-      const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
-      if (routeName === "lamination board") isLaminationBoard.value = true;
-      if (routeName === "slitting board") isSlittingBoard.value = true;
-      if (routeName === "rewinding board") isRewindingBoard.value = true;
-      if (routeName === "sheet cutting board") isSheetCuttingBoard.value = true;
-      if (routeName === "box bag board") isBoxBagBoard.value = true;
-      if (routeName === "w cut d cut board" || routeName === "w cut / d cut board") isWCutDCutBoard.value = true;
-      if (routeName.includes("printed bopp film board")) isPrintedBoppFilmBoard.value = true;
-      if (routeName === "printing order board") isPrintingBoard.value = true;
-    } catch (e) {}
+    applyBoardKindFromLocation();
     if (!boardProcessFilter.value) {
       if (isPrintingBoard.value) boardProcessFilter.value = "105";
       else if (isSlittingBoard.value) boardProcessFilter.value = "103";
@@ -2782,11 +2794,13 @@ onMounted(() => {
          filterWeek.value = `${d.getFullYear()}-W${String(weekNum).padStart(2,'0')}`;
     }
 
+    // Load board data immediately (do not wait for flatpickr CDN — empty board if CDN is slow).
+    fetchData();
+
     // 3. Load flatpickr JS and init
     frappe.require('https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.js', () => {
         initFlatpickr();
-      fetchMaintenanceRecords();
-        fetchData();
+        fetchMaintenanceRecords();
     });
 
     // 4. Realtime sync: listen for board updates from backend
