@@ -126,7 +126,10 @@ doc_events = {
         "before_validate": [
             "production_entry.production_planning.scheduler_api.sync_work_order_custom_production_plan",
             "production_entry.production_planning.scheduler_api.normalize_work_order_pending_status",
+            "production_entry.production_planning.scheduler_api.normalize_work_order_multi_uom_rm_requirements",
         ],
+        "validate": "production_entry.production_planning.scheduler_api.normalize_work_order_multi_uom_rm_requirements",
+        "before_save": "production_entry.production_planning.scheduler_api.normalize_work_order_multi_uom_rm_requirements",
     },
     "Shaft Production Run": {
         "before_validate": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",
