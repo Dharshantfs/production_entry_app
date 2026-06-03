@@ -669,6 +669,13 @@ frappe.ui.form.on('Shaft Production Run', {
 		}
 		sprToggleLaminationRollUi(frm);
 		sprToggleSheetCuttingUi(frm);
+		if (
+			sprIsBundlePackagingMode(frm) &&
+			frm.doc.production_plan &&
+			!(frm.doc.bundle_calculation || []).length
+		) {
+			sprLoadBundleCalculationFromPp(frm, null);
+		}
 		spr_apply_fabric100_item_grid_columns(frm);
 
 		spr_patch_items_grid_refresh(frm);

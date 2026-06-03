@@ -4580,14 +4580,72 @@ def _bundle_row_bag_size(row, item_code: str, *, for_bag_fg: bool = False) -> st
 	return ""
 
 
-def _normalize_pp_bundle_src_row(row) -> dict:
-	"""Map PP bundle row to SPR bundle_calculation (sheet cutting + box bag field names)."""
+def _pp_bundle_calc_child_table_names() -> list[str]:
+	"""All Production Plan child tables that use Bundle Calculation doctype."""
+	names = []
+	try:
+		meta = frappe.get_meta("Production Plan")
+		for df in meta.fields:
+			if df.fieldtype == "Table" and df.options == BUNDLE_CALC_DOCTYPE:
+				if df.fieldname not in names:
+					names.append(df.fieldname)
+	except Exception:
+		pass
+	for fn in (PP_BUNDLE_CALC_FIELD, "bundle_calculation", "custom_bundle_calculation_table"):
+		if fn not in names:
+			names.append(fn)
+	return names
+
+
+def _pp_is_box_bag_unit(pp_doc) -> bool:
+	u = _spr_unit_value_for_current_field(pp_doc.get("custom_unit") if pp_doc else None)
+	return u in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+
+
+def _first_pp_bundle_calc_row(pp_doc):
+	for tbl in _pp_bundle_calc_child_table_names():
+		rows = pp_doc.get(tbl) or []
+		if rows:
+			return rows[0]
+	return None
+
+
+def _resolve_pp_bundle_item_code(row, pp_doc=None, default_item_code=None) -> str:
 	ic = _cstr(
 		_bundle_child_field(row, "", "item_code", "production_item", "finished_item", "item")
 	).strip()
+	if ic:
+		return ic
+	ic = _cstr(default_item_code).strip()
+	if ic:
+		return ic
+	if not pp_doc:
+		return ""
+	for poi in pp_doc.get("po_items") or []:
+		pic = _cstr(poi.get("item_code")).strip()
+		if not pic:
+			continue
+		if _pp_is_box_bag_unit(pp_doc) or _is_bag_bundle_fg_code(pic) or _is_sheet_cutting_fg_code(pic):
+			return pic
+	for wo in frappe.get_all(
+		"Work Order",
+		filters={"production_plan": pp_doc.name, "docstatus": ["<", 2]},
+		fields=["production_item"],
+		order_by="creation asc",
+		limit=5,
+	):
+		pic = _cstr(wo.get("production_item")).strip()
+		if pic and (_pp_is_box_bag_unit(pp_doc) or _is_bag_bundle_fg_code(pic) or _is_sheet_cutting_fg_code(pic)):
+			return pic
+	return ""
+
+
+def _normalize_pp_bundle_src_row(row, default_item_code=None, pp_doc=None) -> dict:
+	"""Map PP bundle row to SPR bundle_calculation (sheet cutting + box bag field names)."""
+	ic = _resolve_pp_bundle_item_code(row, pp_doc=pp_doc, default_item_code=default_item_code)
 	if not ic:
 		return {}
-	is_bag = _is_bag_bundle_fg_code(ic)
+	is_bag = _is_bag_bundle_fg_code(ic) or bool(pp_doc and _pp_is_box_bag_unit(pp_doc))
 	if is_bag:
 		pcs = cint(
 			_bundle_child_field(
@@ -4701,14 +4759,15 @@ def _production_plan_uses_bundle_calculation(pp) -> bool:
 
 
 def _pp_row_has_bundle_fields(row) -> bool:
-	ic = _cstr(_bundle_child_field(row, "", "item_code", "production_item", "finished_item", "item")).strip()
-	if not ic:
-		return False
 	if _bundle_child_field(row, 0, "no_of_boxes", "custom_no_of_boxes", "no_of_bundles"):
 		return True
 	if _bundle_child_field(row, 0, "pcs_per_box", "custom_pcs_per_box", "pcs_per_packet", "pcs_per_pack"):
 		return True
-	return False
+	if _bundle_child_field(
+		row, 0, "total_planned_pcs", "custom_total_planned_pcs", "total_pcs_per_bundle", "total_planned_qty"
+	):
+		return True
+	return bool(_cstr(_bundle_child_field(row, "", "item_code", "production_item", "finished_item", "item")).strip())
 
 
 def _get_pp_doc(pp_or_name):
@@ -4776,17 +4835,22 @@ def _pp_length_per_roll_for_item(pp_doc_or_name, item_code: str, production_plan
 def _iter_pp_bundle_source_rows(pp_doc):
 	"""Yield PP rows that carry bundle / box fields (child table + assembly + po_items)."""
 	seen = set()
-	for row in pp_doc.get(PP_BUNDLE_CALC_FIELD) or []:
-		key = (
-			_cstr(_bundle_child_field(row, "", "item_code", "production_item", "finished_item", "item")),
-			_cstr(getattr(row, "name", None)),
-		)
+	is_bb = _pp_is_box_bag_unit(pp_doc)
+
+	def _yield_row(row, key_ic: str = ""):
+		ic = key_ic or _resolve_pp_bundle_item_code(row, pp_doc=pp_doc)
+		key = (ic or "__no_item__", _cstr(getattr(row, "name", None)))
 		if key in seen:
-			continue
+			return
 		seen.add(key)
 		yield row
-	if seen:
-		return
+
+	for tbl in _pp_bundle_calc_child_table_names():
+		for row in pp_doc.get(tbl) or []:
+			if not _pp_row_has_bundle_fields(row):
+				continue
+			yield from _yield_row(row)
+
 	pp_meta = frappe.get_meta("Production Plan")
 	skip_tables = frozenset(
 		{
@@ -4796,6 +4860,7 @@ def _iter_pp_bundle_source_rows(pp_doc):
 			"material_request_plan_items",
 			"sub_assembly_items",
 		}
+		| frozenset(_pp_bundle_calc_child_table_names())
 	)
 	for df in pp_meta.fields:
 		if df.fieldtype != "Table" or df.fieldname in skip_tables:
@@ -4803,23 +4868,66 @@ def _iter_pp_bundle_source_rows(pp_doc):
 		for row in pp_doc.get(df.fieldname) or []:
 			if not _pp_row_has_bundle_fields(row):
 				continue
-			key = (
-				_cstr(_bundle_child_field(row, "", "item_code", "production_item", "finished_item", "item")),
-				_cstr(getattr(row, "name", None)),
-			)
-			if key in seen:
-				continue
-			seen.add(key)
-			yield row
+			yield from _yield_row(row)
+
 	for poi in pp_doc.get("po_items") or []:
 		ic = _cstr(poi.get("item_code")).strip()
-		if not ic or not _is_bag_bundle_fg_code(ic):
+		if not ic:
+			continue
+		if not is_bb and not _is_bag_bundle_fg_code(ic) and not _is_sheet_cutting_fg_code(ic):
 			continue
 		key = (ic, _cstr(poi.name))
 		if key in seen:
 			continue
 		seen.add(key)
 		yield poi
+
+
+def _fallback_bundle_rows_from_pp(pp_doc) -> list[dict]:
+	"""When bundle child rows lack item_code or normalize empty, merge PP bundle qty with po_items / WO."""
+	merged_src = _first_pp_bundle_calc_row(pp_doc)
+	out = []
+	seen_ic = set()
+	is_bb = _pp_is_box_bag_unit(pp_doc)
+
+	def _append(ic: str, src_row):
+		if not ic or ic in seen_ic:
+			return
+		seen_ic.add(ic)
+		norm = _normalize_pp_bundle_src_row(src_row, default_item_code=ic, pp_doc=pp_doc)
+		if norm:
+			out.append(norm)
+
+	for poi in pp_doc.get("po_items") or []:
+		ic = _cstr(poi.get("item_code")).strip()
+		if not ic:
+			continue
+		if not is_bb and not _is_bag_bundle_fg_code(ic) and not _is_sheet_cutting_fg_code(ic):
+			continue
+		_append(ic, merged_src or poi)
+
+	if out:
+		return out
+
+	for wo in frappe.get_all(
+		"Work Order",
+		filters={"production_plan": pp_doc.name, "docstatus": ["<", 2]},
+		fields=["production_item"],
+		order_by="creation asc",
+	):
+		ic = _cstr(wo.get("production_item")).strip()
+		if not ic:
+			continue
+		if not is_bb and not _is_bag_bundle_fg_code(ic) and not _is_sheet_cutting_fg_code(ic):
+			continue
+		_append(ic, merged_src or {})
+
+	if not out and merged_src:
+		norm = _normalize_pp_bundle_src_row(merged_src, pp_doc=pp_doc)
+		if norm:
+			out.append(norm)
+
+	return out
 
 
 def _read_pp_bundle_calculation_rows(production_plan: str) -> list[dict]:
@@ -4829,10 +4937,19 @@ def _read_pp_bundle_calculation_rows(production_plan: str) -> list[dict]:
 		return []
 	pp_doc = frappe.get_doc("Production Plan", pp)
 	out = []
+	seen_ic = set()
 	for row in _iter_pp_bundle_source_rows(pp_doc):
-		norm = _normalize_pp_bundle_src_row(row)
-		if norm:
-			out.append(norm)
+		norm = _normalize_pp_bundle_src_row(row, pp_doc=pp_doc)
+		if not norm:
+			continue
+		ic = norm.get("item_code") or ""
+		if ic and ic in seen_ic:
+			continue
+		if ic:
+			seen_ic.add(ic)
+		out.append(norm)
+	if not out:
+		out = _fallback_bundle_rows_from_pp(pp_doc)
 	return out
 
 
