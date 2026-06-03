@@ -178,8 +178,8 @@ import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
 
 const BOX_BAG_UNITS = [
-  "L1 LEADER OYANG MACHINE",
-  "L2 LEADER ZX MACHINE",
+  "VTP-L1 LEADER OYANG MACHINE",
+  "VTP-L2 LEADER ZX MACHINE",
   "UNASSIGNED BOX BAG MACHINE",
 ];
 const W_CUT_D_CUT_UNIT_JVE_L1 = "JVE-L1  B700 BAG MAKING MACHINE";

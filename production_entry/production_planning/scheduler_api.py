@@ -14329,12 +14329,17 @@ def _bom_rm_stock_qty_map_for_fg(bom_no, fg_qty):
 	return item_qty_map, multi_uom_items
 
 
-def _planning_table_kg_qty_by_item_for_production_plan(pp_name):
-	"""Sum Kg qty from Planning Table / Planning sheet Item rows for sheets linked to this PP."""
+def _planning_table_kg_qty_by_item_for_production_plan(pp_name, bom_kg_by_item=None):
+	"""Sum Kg qty from Planning Table / Planning sheet Item rows for sheets linked to this PP.
+
+	When ``bom_kg_by_item`` is supplied, ignore planning rows whose Kg qty is far above BOM
+	(e.g. meter totals stored as Kg — 328 instead of 41).
+	"""
 	pp_name = _cstr(pp_name).strip()
 	if not pp_name:
 		return {}
 	out = {}
+	bom_kg_by_item = bom_kg_by_item or {}
 
 	def _accumulate_rows(rows):
 		for r in rows or []:
@@ -14344,7 +14349,13 @@ def _planning_table_kg_qty_by_item_for_production_plan(pp_name):
 			uom = _cstr(r.get("uom")).strip()
 			if uom and uom.lower() != "kg":
 				continue
-			out[ic] = flt(out.get(ic, 0)) + flt(r.get("qty") or 0)
+			qty = flt(r.get("qty") or 0)
+			if qty <= 0:
+				continue
+			bom_kg = flt(bom_kg_by_item.get(ic))
+			if bom_kg > 0 and qty > bom_kg * 3:
+				continue
+			out[ic] = flt(out.get(ic, 0)) + qty
 
 	for sheet_name in _planning_sheets_referencing_production_plan(pp_name) or []:
 		if not frappe.db.exists("Planning sheet", sheet_name):
@@ -14379,10 +14390,13 @@ def _work_order_rm_stock_qty_map(doc):
 		return {}
 
 	item_qty_map, _multi = _bom_rm_stock_qty_map_for_fg(bom_no, fg_qty)
+	bom_only_map = dict(item_qty_map)
 
 	pp_name = _cstr(getattr(doc, "production_plan", None)).strip()
 	if pp_name:
-		for ic, pt_qty in (_planning_table_kg_qty_by_item_for_production_plan(pp_name) or {}).items():
+		for ic, pt_qty in (
+			_planning_table_kg_qty_by_item_for_production_plan(pp_name, bom_kg_by_item=bom_only_map) or {}
+		).items():
 			if flt(pt_qty) > 0:
 				item_qty_map[ic] = flt(pt_qty)
 		if frappe.db.exists("DocType", "Material Request Plan Item"):
@@ -14500,7 +14514,10 @@ def _normalize_production_plan_multi_uom_rm_requirements(doc):
             item_qty_map[ic] = flt(item_qty_map.get(ic, 0)) + flt(q)
         multi_uom_items.update(bom_multi)
 
-    pt_map = _planning_table_kg_qty_by_item_for_production_plan(doc.name if hasattr(doc, "name") else "")
+    pt_map = _planning_table_kg_qty_by_item_for_production_plan(
+        doc.name if hasattr(doc, "name") else "",
+        bom_kg_by_item=item_qty_map,
+    )
     for ic, pt_qty in (pt_map or {}).items():
         if flt(pt_qty) > 0:
             item_qty_map[ic] = flt(pt_qty)
@@ -14574,6 +14591,21 @@ def persist_work_order_rm_stock_qty_after_save(doc, method=None):
 		frappe.log_error(frappe.get_traceback(), "persist_work_order_rm_stock_qty_after_save")
 	finally:
 		frappe.flags.in_wo_rm_qty_fixup = False
+
+
+@frappe.whitelist()
+def fix_production_plan_rm_stock_qty(production_plan=None):
+	"""Re-apply Meter→Kg divide on draft Production Plan raw materials (fixes 328 vs 41 Kg)."""
+	pp_name = _cstr(production_plan).strip()
+	if not pp_name or not frappe.db.exists("Production Plan", pp_name):
+		frappe.throw(_("Production Plan not found."))
+	pp = frappe.get_doc("Production Plan", pp_name)
+	if cint(pp.docstatus) != 0:
+		frappe.throw(_("Only draft Production Plans can be updated."))
+	_normalize_production_plan_multi_uom_rm_requirements(pp)
+	pp.flags.ignore_permissions = True
+	pp.save()
+	return {"status": "ok", "message": _("Raw material quantities recalculated in stock UOM (Kg).")}
 
 
 @frappe.whitelist()
@@ -18238,6 +18270,54 @@ def _resolve_planning_table_source_item_link(source_item_value, board_row_name=N
     return None
 
 
+def _planning_table_so_line_key(row):
+	"""Sales order line id for deduping Planning Table rows after a unit move."""
+	if isinstance(row, dict):
+		data = row
+	elif hasattr(row, "as_dict"):
+		data = row.as_dict()
+	else:
+		data = {}
+	for fn in ("so_item", "sales_order_item", "custom_sales_order_item"):
+		v = _cstr(data.get(fn)).strip()
+		if v:
+			return v
+	return ""
+
+
+def _cleanup_duplicate_planning_table_rows_after_unit_move(moved_pt, target_unit):
+	"""Remove duplicate PT rows for the same SO line + item on other units (slitting board dupes)."""
+	parent = _cstr(getattr(moved_pt, "parent", None) or "").strip()
+	ic = _cstr(getattr(moved_pt, "item_code", None) or "").strip()
+	moved_name = _cstr(getattr(moved_pt, "name", None) or "").strip()
+	if not parent or not ic or not moved_name:
+		return
+	so_key = _planning_table_so_line_key(moved_pt)
+	target_norm = normalize_planning_unit_for_select(target_unit)
+	is_split = False
+	if frappe.db.has_column("Planning Table", "is_split"):
+		is_split = cint(getattr(moved_pt, "is_split", 0) or frappe.db.get_value("Planning Table", moved_name, "is_split"))
+	others = frappe.get_all(
+		"Planning Table",
+		filters={"parent": parent, "item_code": ic, "name": ["!=", moved_name]},
+		fields=["name", "unit", "qty", "so_item", "sales_order_item", "is_split"],
+		limit_page_length=0,
+	)
+	for o in others or []:
+		if so_key and _planning_table_so_line_key(o) != so_key:
+			continue
+		if is_split or (frappe.db.has_column("Planning Table", "is_split") and cint(o.get("is_split"))):
+			continue
+		o_norm = normalize_planning_unit_for_select(o.get("unit"))
+		if o_norm != target_norm:
+			frappe.delete_doc("Planning Table", o["name"], force=1)
+		else:
+			new_qty = flt(getattr(moved_pt, "qty", 0)) + flt(o.get("qty"))
+			frappe.db.set_value("Planning Table", moved_name, "qty", new_qty, update_modified=False)
+			moved_pt.qty = new_qty
+			frappe.delete_doc("Planning Table", o["name"], force=1)
+
+
 def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     """Internal helper to move a Planning Sheet Item to a specific slot.
     Re-parents item if date changes, avoiding moving the entire order."""
@@ -18305,7 +18385,16 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
         # No other Planning Table rows share this legacy PSI (e.g. sole split leaving Unassigned): only sync legacy unit.
         if siblings:
             s0 = normalize_planning_unit_for_select(siblings[0].unit or "")
-            if normalize_planning_unit_for_select(unit) != s0:
+            new_unit_norm = normalize_planning_unit_for_select(unit)
+            legacy_qty = flt(frappe.db.get_value(legacy_table, item_doc.source_item, "qty") or 0)
+            pt_total = flt(item_doc.qty) + sum(flt(s.get("qty")) for s in siblings)
+            split_across_units = (
+                new_unit_norm != s0
+                and legacy_qty > 0
+                and flt(item_doc.qty) < legacy_qty - 1e-6
+                and pt_total <= legacy_qty + 1e-6
+            )
+            if split_across_units:
                 old_legacy_doc = frappe.get_doc(legacy_table, item_doc.source_item)
                 new_legacy_doc = frappe.copy_doc(old_legacy_doc)
                 new_legacy_doc.name = None
@@ -18316,6 +18405,11 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
                 frappe.db.set_value(legacy_table, old_legacy_doc.name, "qty", new_orig_qty)
                 item_doc.source_item = new_legacy_doc.name
             else:
+                for sib in siblings:
+                    try:
+                        frappe.delete_doc("Planning Table", sib["name"], force=1)
+                    except Exception:
+                        frappe.log_error(frappe.get_traceback(), f"remove stale PT sibling:{sib.get('name')}")
                 _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit, move_code)
         else:
             _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), unit, move_code)
@@ -18385,6 +18479,12 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
     )
     frappe.db.commit() # FORCE SAVE FOR BOARD
     item_doc.unit = unit
+
+    try:
+        _cleanup_duplicate_planning_table_rows_after_unit_move(item_doc, unit)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "cleanup duplicate PT after unit move")
 
     try:
         _merge_reunited_legacy_psi_rows(item_doc.parent)
@@ -20608,9 +20708,14 @@ def update_item_unit(item_name, unit):
     if not item_name or not unit:
         frappe.throw(_("Item Name and Unit are required"))
 
-    frappe.db.set_value(
-        "Planning Table", item_name, "unit", normalize_planning_unit_for_select(unit)
+    unit = normalize_planning_unit_for_select(unit)
+    item_doc = frappe.get_doc("Planning Table", item_name)
+    eff_date = getdate(
+        item_doc.get("planned_date")
+        or frappe.db.get_value("Planning sheet", item_doc.parent, "custom_planned_date")
+        or frappe.db.get_value("Planning sheet", item_doc.parent, "ordered_date")
     )
+    _move_item_to_slot(item_doc, unit, eff_date)
     return {"status": "success"}
 
 

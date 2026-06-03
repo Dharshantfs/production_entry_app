@@ -17,3 +17,4 @@ production_entry.patches.add_spr_company_field
 production_entry.patches.force_spr_custom_unit_to_link
 production_entry.patches.ensure_jve_wcut_bag_workstations
 production_entry.patches.ensure_planning_unit_field_links_workstation
+production_entry.patches.migrate_box_bag_vtp_unit_names

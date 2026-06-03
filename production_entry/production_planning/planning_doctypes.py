@@ -28,8 +28,11 @@ PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE"
 PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR 1600MM"
 PRINTING_UNIT_4_COLOUR = "JVE - PRINTING MACHINE 4 COLOUR 1600MM"
 PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM"
-BOX_BAG_UNIT_L1 = "L1 LEADER OYANG MACHINE"
-BOX_BAG_UNIT_L2 = "L2 LEADER ZX MACHINE"
+BOX_BAG_UNIT_L1 = "VTP-L1 LEADER OYANG MACHINE"
+BOX_BAG_UNIT_L2 = "VTP-L2 LEADER ZX MACHINE"
+# Legacy names (pre-rename) — map to VTP workstations on read/migrate.
+LEGACY_BOX_BAG_UNIT_L1 = "L1 LEADER OYANG MACHINE"
+LEGACY_BOX_BAG_UNIT_L2 = "L2 LEADER ZX MACHINE"
 BOX_BAG_UNASSIGNED_UNIT = "UNASSIGNED BOX BAG MACHINE"
 W_CUT_D_CUT_UNIT_JVE_L1 = "JVE-L1  B700 BAG MAKING MACHINE"
 W_CUT_D_CUT_UNIT_JVE_L2 = "JVE-L2  B700 BAG MAKING MACHINE"
@@ -77,6 +80,10 @@ LEGACY_PLANNING_UNIT_ALIASES = {
     "TT - PRINTING MACHINE COLOUR 1200MM": PRINTING_UNIT_TT,
     # Title-case laminations typo / paste variants
     "TNSPL - LAMINATION UNIT": LAMINATION_UNIT,
+    LEGACY_BOX_BAG_UNIT_L1: BOX_BAG_UNIT_L1,
+    LEGACY_BOX_BAG_UNIT_L2: BOX_BAG_UNIT_L2,
+    "L1 LEADER OYANG": BOX_BAG_UNIT_L1,
+    "L2 LEADER ZX": BOX_BAG_UNIT_L2,
 }
 
 # Unit number / alpha code embedded in batch/order codes at position 2.
@@ -204,6 +211,10 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return PRINTED_BOPP_FILM_UNIT
     if "BOXBAG" in u and "UNASSIGNED" in u:
         return BOX_BAG_UNASSIGNED_UNIT
+    if "VTP" in u and "L1" in u and ("LEADER" in u or "OYANG" in u):
+        return BOX_BAG_UNIT_L1
+    if "VTP" in u and "L2" in u and ("LEADER" in u or "ZX" in u):
+        return BOX_BAG_UNIT_L2
     if "L1" in u and "LEADER" in u and "OYANG" in u:
         return BOX_BAG_UNIT_L1
     if "L2" in u and "LEADER" in u and "ZX" in u:

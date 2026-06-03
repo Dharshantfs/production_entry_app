@@ -385,8 +385,8 @@ const W_CUT_D_CUT_UNIT_JVE_L3 = "JVE-L3  B700 BAG MAKING MACHINE";
 const W_CUT_D_CUT_UNIT_L1 = "TTT- L1 - OYANG C700 BAG MAKING LINE";
 const W_CUT_D_CUT_UNIT_L2 = "TTT- L2 - OYANG C700 BAG MAKING LINE";
 const W_CUT_D_CUT_UNIT_L3 = "TTT- L3 - OYANG C900 BAG MAKING LINE";
-const BOX_BAG_UNIT_L1 = "L1 LEADER OYANG MACHINE";
-const BOX_BAG_UNIT_L2 = "L2 LEADER ZX MACHINE";
+const BOX_BAG_UNIT_L1 = "VTP-L1 LEADER OYANG MACHINE";
+const BOX_BAG_UNIT_L2 = "VTP-L2 LEADER ZX MACHINE";
 const W_CUT_UNASSIGNED_UNIT = "UNASSIGNED W CUT BAG MACHINE";
 const D_CUT_UNASSIGNED_UNIT = "UNASSIGNED D CUT BAG MACHINE";
 const W_CUT_D_CUT_JVE_UNITS = [W_CUT_D_CUT_UNIT_JVE_L1, W_CUT_D_CUT_UNIT_JVE_L2, W_CUT_D_CUT_UNIT_JVE_L3, W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT];
@@ -1029,7 +1029,7 @@ const boardUnits = computed(() => {
   if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
   if (isSlittingBoard.value) return [...SLITTING_BOARD_UNITS];
   if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
-  if (isBoxBagBoard.value) return ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
+  if (isBoxBagBoard.value) return ["VTP-L1 LEADER OYANG MACHINE", "VTP-L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
   if (isWCutDCutBoard.value) {
     const scope = wCutDCutCompanyScope.value;
     if (scope === "jve") return [...W_CUT_D_CUT_JVE_UNITS];
@@ -1115,7 +1115,7 @@ const filteredData = computed(() => {
   }
 
   if (isBoxBagBoard.value) {
-    const BOX_BAG_UNIT_LIST = ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
+    const BOX_BAG_UNIT_LIST = ["VTP-L1 LEADER OYANG MACHINE", "VTP-L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
     const FABRIC_UNITS = new Set(["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed", "UNASSIGNED"]);
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
