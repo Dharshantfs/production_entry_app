@@ -9872,6 +9872,67 @@ def apply_sheet_cutting_bom_to_planning_sheet(planning_sheet_name=None, sales_or
 	}
 
 
+def _remove_duplicate_slitting_pt_rows_on_sheet(planning_sheet_name):
+	"""Keep one Planning Table row per slitting item + SO line (fixes JVE+VTP duplicate cards)."""
+	if not planning_sheet_name:
+		return 0
+	so_col = "sales_order_item"
+	if not frappe.db.has_column("Planning Table", so_col):
+		so_col = "so_item" if frappe.db.has_column("Planning Table", "so_item") else ""
+	fields = ["name", "item_code", "unit", "idx"]
+	if so_col:
+		fields.append(so_col)
+	rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=fields,
+		limit_page_length=0,
+	) or []
+	groups = {}
+	for r in rows:
+		pp = _item_process_prefix(r.get("item_code"))
+		if pp not in ("103", "109", "108"):
+			continue
+		soi = _cstr(r.get(so_col)).strip() if so_col else ""
+		key = (_cstr(r.get("item_code")).strip(), soi)
+		groups.setdefault(key, []).append(r)
+	removed = 0
+	for _key, lst in groups.items():
+		if len(lst) <= 1:
+			continue
+		lst.sort(key=lambda x: -cint(x.get("idx") or 0))
+		for extra in lst[1:]:
+			try:
+				frappe.delete_doc("Planning Table", extra["name"], force=1)
+				removed += 1
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), f"dedupe slitting PT:{extra.get('name')}")
+	return removed
+
+
+def _deduplicate_slitting_board_rows(rows):
+	"""API-level dedupe when duplicate PT rows still exist in DB."""
+	out = []
+	seen = {}
+	for r in rows or []:
+		ic = _cstr(r.get("item_code") or r.get("itemCode")).strip()
+		soi = _cstr(r.get("salesOrderItem") or r.get("sales_order_item") or "").strip()
+		pd = _cstr(r.get("planned_date") or r.get("plannedDate") or "").strip()
+		key = (ic, soi, pd)
+		prev = seen.get(key)
+		if not prev:
+			seen[key] = r
+			out.append(r)
+			continue
+		def _rank(row):
+			u = normalize_planning_unit_for_select(row.get("unit"))
+			return (cint(row.get("idx") or 0), 0 if u == SLITTING_UNASSIGNED_UNIT else 1)
+		if _rank(r) >= _rank(prev):
+			out[out.index(prev)] = r
+			seen[key] = r
+	return out
+
+
 def _force_slitting_unit_on_sheet(planning_sheet_name):
 	"""Normalize 103/109/108 rows to allowed slitting units; defaults invalid units by process."""
 	if not planning_sheet_name:
@@ -9930,15 +9991,22 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		if not row_name:
 			continue
 		cur_unit = normalize_planning_unit_for_select(rr.get("unit") or "")
-		if cur_unit in SLITTING_BOARD_UNITS:
+		if pp == "103":
+			target_unit = SLITTING_UNASSIGNED_UNIT
+		elif cur_unit in SLITTING_BOARD_UNITS:
 			continue
-		target_unit = _default_slitting_unit_for_process(pp)
+		else:
+			target_unit = _default_slitting_unit_for_process(pp)
 		if frappe.db.has_column("Planning Table", "unit"):
 			frappe.db.set_value("Planning Table", row_name, "unit", target_unit, update_modified=False)
 			updated += 1
 		legacy = _cstr(rr.get("source_item"))
 		if legacy and frappe.db.exists("Planning sheet Item", legacy) and frappe.db.has_column("Planning sheet Item", "unit"):
 			frappe.db.set_value("Planning sheet Item", legacy, "unit", target_unit, update_modified=False)
+	try:
+		_remove_duplicate_slitting_pt_rows_on_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_remove_duplicate_slitting_pt_rows_on_sheet")
 	return updated
 
 
@@ -12824,7 +12892,7 @@ def get_slitting_order_table_data(
         else:
             row["dispatch_status"] = "NOT DESPATCHED"
         out.append(row)
-    return out
+    return _deduplicate_slitting_board_rows(out)
 
 
 @frappe.whitelist()
@@ -20631,6 +20699,9 @@ def _get_color_chart_data_impl(
     if cint(planned_only) and plan_name == "__all__":
         return _deduplicate_items(data)
 
+    if bps == "slitting_only":
+        data = _deduplicate_slitting_board_rows(data)
+
     return data
 
 def _deduplicate_items(items):
@@ -26813,13 +26884,13 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
                     populate_spr_bundle_calculation_from_pp,
                 )
 
-                if not (spr_doc.get("bundle_calculation") or []):
-                    populate_spr_bundle_calculation_from_pp(
-                        spr_doc,
-                        current_pp_id,
-                        spr_doc.get("custom_order_code"),
-                        0,
-                    )
+                populate_spr_bundle_calculation_from_pp(
+                    spr_doc,
+                    current_pp_id,
+                    spr_doc.get("custom_order_code"),
+                    0,
+                )
+                if spr_doc.get("bundle_calculation"):
                     spr_doc.save(ignore_permissions=True)
                 return
 

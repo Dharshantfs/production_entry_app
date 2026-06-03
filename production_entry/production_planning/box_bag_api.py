@@ -612,8 +612,6 @@ def get_box_bag_order_table_data(
 		# Length from row data
 		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
 		total_achieved_meters = 0.0
-		if planned_qty > 0 and length > 0:
-			total_achieved_meters = (achieved_qty / planned_qty) * length
 
 		# PP/WO/SPR data
 		pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
@@ -765,7 +763,7 @@ def get_w_cut_d_cut_order_table_data(
 		if achieved_bag_pcs > 0:
 			achieved_qty = achieved_bag_pcs
 		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
-		total_achieved_meters = (achieved_qty / planned_qty) * length if planned_qty > 0 and length > 0 else 0.0
+		total_achieved_meters = 0.0
 		pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
 		pp_docstatus = row.get("pp_docstatus") or 0
 		spr_name = str(row.get("spr_name") or "").strip()

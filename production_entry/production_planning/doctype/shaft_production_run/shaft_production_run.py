@@ -4325,7 +4325,10 @@ def get_production_plan_details(production_plan):
 	out["is_sheet_cutting"] = is_sc
 	if is_sc and frappe.get_meta("Shaft Production Run").has_field("custom_is_sheet_cutting"):
 		out["custom_is_sheet_cutting"] = 1
-	is_bb = pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT) or _production_plan_uses_bundle_calculation(pp)
+	is_bb = (
+		pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+		or _production_plan_uses_bundle_calculation(pp)
+	)
 	if is_bb and frappe.get_meta("Shaft Production Run").has_field("custom_is_box_bag"):
 		out["custom_is_box_bag"] = 1
 	if is_sc or is_bb or _production_plan_uses_bundle_calculation(pp):
@@ -4358,6 +4361,19 @@ def _is_box_bag_fg_code(item_code: str) -> bool:
 	return spr_fg_item_process_code(item_code) in BOX_BAG_PROCESS_CODES
 
 
+def _is_wcut_dcut_fg_code(item_code: str) -> bool:
+	try:
+		from production_entry.production_planning.scheduler_api import W_CUT_D_CUT_FG_PROCESS_CODES
+
+		return spr_fg_item_process_code(item_code) in W_CUT_D_CUT_FG_PROCESS_CODES
+	except Exception:
+		return False
+
+
+def _is_bag_bundle_fg_code(item_code: str) -> bool:
+	return _is_box_bag_fg_code(item_code) or _is_wcut_dcut_fg_code(item_code)
+
+
 def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str = None) -> dict:
 	"""Quality, colour, GSM, sheet size, width from FG item code (251–255) for SPR roll lines."""
 	ic = _cstr(item_code).strip()
@@ -4388,11 +4404,14 @@ def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str =
 		sz, w = _sheet_size_for_item_code(ic)
 		out["sheet_size"] = _cstr(sz).strip()
 		out["width_inch"] = flt(w or 0)
-		if _is_box_bag_fg_code(ic):
+		if _is_bag_bundle_fg_code(ic):
 			try:
-				from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
+				from production_entry.production_planning.box_bag_api import (
+					_parse_box_bag_item_code,
+					_parse_dcut_bag_item_code,
+				)
 
-				p221 = _parse_box_bag_item_code(ic) or {}
+				p221 = _parse_box_bag_item_code(ic) or _parse_dcut_bag_item_code(ic) or {}
 				if p221:
 					if out["gsm"] <= 0:
 						out["gsm"] = cint(p221.get("total_gsm") or 0)
@@ -4528,25 +4547,40 @@ def _normalize_pp_bundle_src_row(row) -> dict:
 	if not ic:
 		return {}
 	pkts = cint(_bundle_child_field(row, 0, "pkts_per_bundle", "packets_per_bundle") or 0)
-	pcs = cint(_bundle_child_field(row, 0, "pcs_per_packet", "pcs_per_box", "pcs_per_pack") or 0)
-	n_bundles = flt(_bundle_child_field(row, 0, "no_of_bundles") or 0)
-	n_boxes = flt(_bundle_child_field(row, 0, "no_of_boxes") or 0)
+	pcs = cint(
+		_bundle_child_field(
+			row,
+			0,
+			"pcs_per_packet",
+			"pcs_per_box",
+			"pcs_per_pack",
+			"custom_pcs_per_box",
+			"custom_pcs_per_packet",
+		)
+		or 0
+	)
+	n_bundles = flt(_bundle_child_field(row, 0, "no_of_bundles", "custom_no_of_bundles") or 0)
+	n_boxes = flt(_bundle_child_field(row, 0, "no_of_boxes", "custom_no_of_boxes") or 0)
 	if n_bundles <= 0 and n_boxes > 0:
 		n_bundles = n_boxes
-	if pkts <= 0 and (n_bundles > 0 or n_boxes > 0):
+	if pkts <= 0:
 		pkts = 1
-	if pcs <= 0:
-		pcs = cint(_bundle_child_field(row, 0, "pcs_per_box") or 0)
 	tpb = flt(
 		_bundle_child_field(row, 0, "total_pcs_per_bundle", "total_planned_qty", "total_planned_pcs") or 0
 	)
-	if tpb <= 0 and pkts > 0 and pcs > 0:
+	# Box / W-CUT: planned bag pcs = pcs per box (not total÷no_of_boxes on roll lines).
+	if _is_bag_bundle_fg_code(ic):
+		if pcs <= 0 and tpb > 0 and n_boxes > 0:
+			pcs = cint(tpb / n_boxes) if tpb > n_boxes else cint(tpb)
+		if tpb <= 0 and pcs > 0:
+			tpb = flt(pcs)
+	elif tpb <= 0 and pkts > 0 and pcs > 0:
 		tpb = flt(pkts * pcs)
 	if tpb <= 0 and n_boxes > 0 and pcs > 0:
 		tpb = flt(n_boxes * pcs)
 	return {
 		"item_code": ic,
-		"sheet_cutting_size": _cstr(_bundle_child_field(row, "", "sheet_cutting_size", "sheet_size")),
+		"sheet_cutting_size": _cstr(_bundle_child_field(row, "", "sheet_cutting_size", "sheet_size", "bag_size")),
 		"no_of_bundles": n_bundles,
 		"no_of_boxes": n_boxes,
 		"pkts_per_bundle": pkts,
@@ -4568,26 +4602,118 @@ def _production_plan_uses_bundle_calculation(pp) -> bool:
 		ic = _cstr(_bundle_child_field(row, "item_code"))
 		if not ic:
 			continue
-		if _is_sheet_cutting_fg_code(ic) or _is_box_bag_fg_code(ic):
+		if _is_sheet_cutting_fg_code(ic) or _is_bag_bundle_fg_code(ic):
 			return True
 	for poi in pp.get("po_items") or []:
 		ic = _cstr(poi.get("item_code"))
-		if _is_sheet_cutting_fg_code(ic) or _is_box_bag_fg_code(ic):
+		if _is_sheet_cutting_fg_code(ic) or _is_bag_bundle_fg_code(ic):
 			return True
 	return False
 
 
+def _pp_row_has_bundle_fields(row) -> bool:
+	ic = _cstr(_bundle_child_field(row, "item_code")).strip()
+	if not ic:
+		return False
+	if _bundle_child_field(row, 0, "no_of_boxes", "custom_no_of_boxes", "no_of_bundles"):
+		return True
+	if _bundle_child_field(row, 0, "pcs_per_box", "custom_pcs_per_box", "pcs_per_packet", "pcs_per_pack"):
+		return True
+	return False
+
+
+def _pp_length_per_roll_for_item(pp_doc, item_code: str, production_plan_item: str = None) -> float:
+	"""Length / Roll from PP Assembly Items (or po_items) for ordered length on SPR roll lines."""
+	ic = _cstr(item_code).strip()
+	ppi = _cstr(production_plan_item).strip()
+	length_fields = (
+		"length_per_roll",
+		"custom_length_per_roll",
+		"length__roll",
+		"meter__roll",
+		"custom_length_roll",
+		"length_roll",
+		"custom_meter_per_roll",
+		"meter_per_roll",
+		"planned_length",
+		"custom_planned_length",
+	)
+	table_keys = (
+		"assembly_items",
+		"custom_assembly_items",
+		"sub_assembly_items",
+		"custom_sub_assembly_items",
+		"po_items",
+		"prod_order_items",
+	)
+	for tk in table_keys:
+		for row in pp_doc.get(tk) or []:
+			row_ic = _cstr(getattr(row, "item_code", None) or row.get("production_item")).strip()
+			if ic and row_ic and row_ic != ic:
+				continue
+			if ppi and _cstr(getattr(row, "name", None)).strip() != ppi:
+				continue
+			for fn in length_fields:
+				if hasattr(row, fn):
+					v = flt(getattr(row, fn, 0) or 0)
+				else:
+					v = flt(row.get(fn) or 0) if isinstance(row, dict) else 0
+				if v > 0:
+					return v
+	return 0.0
+
+
+def _iter_pp_bundle_source_rows(pp_doc):
+	"""Yield PP rows that carry bundle / box fields (child table + assembly + po_items)."""
+	seen = set()
+	for row in pp_doc.get(PP_BUNDLE_CALC_FIELD) or []:
+		key = (_cstr(_bundle_child_field(row, "item_code")), _cstr(getattr(row, "name", None)))
+		if key in seen:
+			continue
+		seen.add(key)
+		yield row
+	if seen:
+		return
+	pp_meta = frappe.get_meta("Production Plan")
+	skip_tables = frozenset(
+		{
+			"po_items",
+			"mr_items",
+			"prod_order_items",
+			"material_request_plan_items",
+			"sub_assembly_items",
+		}
+	)
+	for df in pp_meta.fields:
+		if df.fieldtype != "Table" or df.fieldname in skip_tables:
+			continue
+		for row in pp_doc.get(df.fieldname) or []:
+			if not _pp_row_has_bundle_fields(row):
+				continue
+			key = (_cstr(_bundle_child_field(row, "item_code")), _cstr(getattr(row, "name", None)))
+			if key in seen:
+				continue
+			seen.add(key)
+			yield row
+	for poi in pp_doc.get("po_items") or []:
+		ic = _cstr(poi.get("item_code")).strip()
+		if not ic or not _is_bag_bundle_fg_code(ic):
+			continue
+		key = (ic, _cstr(poi.name))
+		if key in seen:
+			continue
+		seen.add(key)
+		yield poi
+
+
 def _read_pp_bundle_calculation_rows(production_plan: str) -> list[dict]:
-	"""Rows from PP child table custom_bundle_calculation."""
-	pp = _cstr(production_plan)
+	"""Rows from PP bundle table + assembly/po_items fallback."""
+	pp = _cstr(production_plan).strip()
 	if not pp or not frappe.db.exists("Production Plan", pp):
 		return []
-	if not frappe.db.exists("DocType", BUNDLE_CALC_DOCTYPE):
-		return []
 	pp_doc = frappe.get_doc("Production Plan", pp)
-	child_rows = pp_doc.get(PP_BUNDLE_CALC_FIELD) or []
 	out = []
-	for row in child_rows:
+	for row in _iter_pp_bundle_source_rows(pp_doc):
 		norm = _normalize_pp_bundle_src_row(row)
 		if norm:
 			out.append(norm)
@@ -4681,15 +4807,15 @@ def _spr_planned_pcs_per_bundle(bundle_row) -> float:
 
 
 def _spr_planned_pcs_per_bundle_entry(bundle_row, bundle_index: int, n_entries: int, is_box_bag: bool = False) -> float:
-	"""Per roll line: box bag uses pcs_per_packet (per box); sheet cutting uses row total."""
+	"""Per roll line: box / W-CUT bag = full pcs per box (200 each line, not 200÷5)."""
 	n_entries = cint(n_entries) or 1
 	if is_box_bag:
 		pcs = cint(getattr(bundle_row, "pcs_per_packet", 0) or 0)
 		if pcs > 0:
 			return flt(pcs)
-		tpb = _spr_planned_pcs_per_bundle(bundle_row)
-		if tpb > 0 and n_entries > 0:
-			return flt(tpb / n_entries)
+		tpb = flt(getattr(bundle_row, "total_pcs_per_bundle", 0) or 0)
+		if tpb > 0:
+			return flt(tpb)
 		return 0.0
 	return _spr_planned_pcs_per_bundle(bundle_row)
 
@@ -4731,6 +4857,11 @@ def _spr_item_line_from_bundle(
 	pcs_per_bundle = _spr_planned_pcs_per_bundle_entry(
 		bundle_row, bundle_index, n_entries, is_box_bag=is_box_bag
 	)
+	ordered_len = _pp_length_per_roll_for_item(
+		pp_name,
+		item_code,
+		_cstr(wo.get("production_plan_item") or getattr(bundle_row, "job", None)),
+	)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row = {
 		"work_order": wo.get("name"),
@@ -4744,7 +4875,7 @@ def _spr_item_line_from_bundle(
 		"party_code": order_code or get_order_code(frappe.get_doc("Work Order", wo["name"])),
 		"uom": _item_stock_uom_for_spr(item_code),
 		"roll_no": 0,
-		"meter_roll": 0,
+		"meter_roll": flt(ordered_len) if ordered_len > 0 else 0,
 		"produced_length_mtrs": 0,
 		"net_weight": 0,
 		"gross_weight": 0,
@@ -4754,7 +4885,10 @@ def _spr_item_line_from_bundle(
 	if spi_meta.has_field("custom_sheet_size"):
 		sz = sz_from_item or _cstr(getattr(bundle_row, "sheet_cutting_size", None))
 		row["custom_sheet_size"] = sz or None
-	if w_from_item > 0 and spi_meta.has_field("width_inch"):
+	if is_box_bag and sz_from_item:
+		if spi_meta.has_field("width_inch"):
+			row["width_inch"] = sz_from_item
+	elif w_from_item > 0 and spi_meta.has_field("width_inch"):
 		row["width_inch"] = flt(w_from_item)
 	if spi_meta.has_field("custom_planned_sheets_pcs"):
 		row["custom_planned_sheets_pcs"] = pcs_per_bundle

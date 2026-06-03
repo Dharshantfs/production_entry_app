@@ -618,6 +618,18 @@ def _month_range(month_val):
 		return getdate(), getdate()
 
 
+def _transfer_row_unit_is_unassigned(unit) -> bool:
+	"""Exclude generic unassigned pool rows from Transfer popup (Unit 1–4 / slitting unassigned, etc.)."""
+	from production_entry.production_planning.planning_doctypes import normalize_planning_unit_for_select
+
+	u = _cstr(normalize_planning_unit_for_select(unit)).upper().replace(" ", "")
+	if not u:
+		return True
+	if u in ("UNASSIGNED", "MIXED"):
+		return True
+	return "UNASSIGNED" in u
+
+
 def _row_matches_filters(row, party_code=None, customer=None, unit=None):
 	if unit and _cstr(row.get("unit")) != _cstr(unit):
 		return False
@@ -706,6 +718,8 @@ def get_transfer_eligible_rows(
 		if not is_transfer_movement(mt):
 			continue
 		if not _row_matches_filters(r, party_code, customer, unit):
+			continue
+		if _transfer_row_unit_is_unassigned(r.get("unit")):
 			continue
 		pt_name = r.get("itemName") or r.get("name")
 		if pt_name:
