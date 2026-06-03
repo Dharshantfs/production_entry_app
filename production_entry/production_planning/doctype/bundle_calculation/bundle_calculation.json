@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "item_code",
+  "bag_size",
   "sheet_cutting_size",
   "no_of_bundles",
   "no_of_boxes",
@@ -30,6 +31,12 @@
    "options": "Item"
   },
   {
+   "fieldname": "bag_size",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Bag Size"
+  },
+  {
    "fieldname": "sheet_cutting_size",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -51,8 +58,7 @@
    "fieldname": "pkts_per_bundle",
    "fieldtype": "Int",
    "in_list_view": 1,
-   "label": "Pkts per Bundle",
-   "reqd": 1
+   "label": "Pkts per Bundle"
   },
   {
    "fieldname": "pcs_per_packet",

@@ -429,7 +429,18 @@ function sprRecalcBundlePlannedPcs(frm, cdt, cdn) {
 	if (!row) {
 		return;
 	}
-	const tpb = cint(row.pkts_per_bundle) * cint(row.pcs_per_packet);
+	let tpb = 0;
+	if (sprIsBag(frm)) {
+		const nBoxes = cint(row.no_of_boxes);
+		const pcs = cint(row.pcs_per_packet);
+		if (nBoxes > 0 && pcs > 0) {
+			tpb = nBoxes * pcs;
+		} else {
+			tpb = cint(row.pkts_per_bundle) * pcs;
+		}
+	} else {
+		tpb = cint(row.pkts_per_bundle) * cint(row.pcs_per_packet);
+	}
 	frappe.model.set_value(cdt, cdn, 'total_pcs_per_bundle', tpb > 0 ? tpb : 0);
 }
 
@@ -3104,6 +3115,30 @@ function spr_force_sheet_cutting_item_grid_columns(grid) {
 	});
 }
 
+function sprToggleBundleCalculationGrid(frm) {
+	if (!frm || !frm.fields_dict || !frm.fields_dict.bundle_calculation) {
+		return;
+	}
+	const grid = frm.fields_dict.bundle_calculation.grid;
+	if (!grid || typeof grid.update_docfield_property !== 'function') {
+		return;
+	}
+	const isBag = sprIsBag(frm);
+	spr_set_grid_col_hidden(grid, 'sheet_cutting_size', isBag ? 1 : 0);
+	spr_set_grid_col_hidden(grid, 'bag_size', isBag ? 0 : 1);
+	if (isBag) {
+		grid.update_docfield_property('bag_size', 'label', __('Bag Size'));
+		grid.update_docfield_property('pcs_per_packet', 'label', __('Pcs per Box'));
+		grid.update_docfield_property('total_pcs_per_bundle', 'label', __('Total Planned Pcs'));
+		grid.update_docfield_property('no_of_bundles', 'hidden', 1);
+		grid.update_docfield_property('pkts_per_bundle', 'hidden', 1);
+	} else {
+		grid.update_docfield_property('no_of_bundles', 'hidden', 0);
+		grid.update_docfield_property('pkts_per_bundle', 'hidden', 0);
+	}
+	spr_sync_grid_columns_visible(frm, 'bundle_calculation');
+}
+
 function sprToggleSheetCuttingRollUi(frm) {
 	const isSc = sprIsSheetCutting(frm);
 	const isBag = sprIsBag(frm);
@@ -3130,8 +3165,13 @@ function sprToggleSheetCuttingRollUi(frm) {
 		spr_set_grid_col_hidden(grid, 'custom_achieved_bag_pcs', hideSheetCols);
 		spr_set_grid_col_hidden(grid, 'meter_roll', hideLengthCols);
 		spr_set_grid_col_hidden(grid, 'produced_length_mtrs', hideLengthCols);
+		if (isBag && typeof grid.update_docfield_property === 'function') {
+			grid.update_docfield_property('custom_sheet_size', 'label', __('Bag Size'));
+			grid.update_docfield_property('custom_planned_bag_pcs', 'label', __('Planned Bag PCS'));
+		}
 		spr_sync_grid_columns_visible(frm, 'items');
 	}
+	sprToggleBundleCalculationGrid(frm);
 }
 
 function sprUsesBoppFilmRollPrompt(frm) {
