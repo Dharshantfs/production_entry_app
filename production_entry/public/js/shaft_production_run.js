@@ -522,6 +522,9 @@ frappe.ui.form.on('Shaft Production Run', {
 		setTimeout(spr_onload_refresh_layout, 0);
 		setTimeout(spr_onload_refresh_layout, 350);
 		setTimeout(spr_onload_refresh_layout, 900);
+		setTimeout(function () {
+			sprEnsureBundleRowsFromPp(frm);
+		}, 400);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
@@ -588,8 +591,11 @@ frappe.ui.form.on('Shaft Production Run', {
 				if (d.custom_is_sheet_cutting) {
 					frm.set_value('custom_is_sheet_cutting', 1);
 				}
+				if (d.custom_is_box_bag) {
+					frm.set_value('custom_is_box_bag', 1);
+				}
 				sprToggleSheetCuttingUi(frm);
-				if (sprIsSheetCutting(frm)) {
+				if (sprIsBundlePackagingMode(frm) || (d.bundle_rows && d.bundle_rows.length)) {
 					sprLoadBundleCalculationFromPp(frm, d.bundle_rows);
 				} else {
 					sprLoadShaftJobsFromPp(frm);
@@ -606,6 +612,12 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 	custom_is_sheet_cutting: function (frm) {
 		sprToggleSheetCuttingUi(frm);
+	},
+	custom_is_box_bag: function (frm) {
+		sprToggleSheetCuttingUi(frm);
+		if (sprIsBag(frm) && frm.doc.production_plan && !(frm.doc.bundle_calculation || []).length) {
+			sprLoadBundleCalculationFromPp(frm, null);
+		}
 	},
 	custom_is_lamination: function (frm) {
 		sprToggleLaminationRollUi(frm);
@@ -1276,6 +1288,33 @@ function spr_register_spr_page_buttons(frm) {
 			},
 			tg
 		);
+	});
+	addInner(function () {
+		if (cint(frm.doc.docstatus) === 0 && sprIsBundlePackagingMode(frm) && frm.doc.production_plan) {
+			frm.page.add_inner_button(
+				__('Reload bundle from PP'),
+				function () {
+					frappe.call({
+						method:
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_refresh_bundle_calculation_from_pp',
+						args: { shaft_production_run: frm.doc.name },
+						freeze: true,
+						callback: function (r) {
+							if (!r.exc) {
+								frm.reload_doc();
+								frappe.show_alert({
+									message: __('Loaded {0} bundle row(s) from Production Plan.', [
+										(r.message && r.message.rows) || 0,
+									]),
+									indicator: 'green',
+								});
+							}
+						},
+					});
+				},
+				tg
+			);
+		}
 	});
 	addInner(function () {
 		if (
@@ -3019,14 +3058,24 @@ function sprToggleSheetCuttingUi(frm) {
 	if (!frm) {
 		return;
 	}
-	const isSc = sprIsSheetCutting(frm);
+	const isBundleMode = sprIsBundlePackagingMode(frm);
 	try {
-		frm.set_df_property('section_break_9', 'hidden', isSc ? 1 : 0);
-		frm.set_df_property('shaft_jobs', 'hidden', isSc ? 1 : 0);
+		frm.set_df_property('section_break_9', 'hidden', isBundleMode ? 1 : 0);
+		frm.set_df_property('shaft_jobs', 'hidden', isBundleMode ? 1 : 0);
 	} catch (e) {
 		/* ignore */
 	}
 	sprToggleSheetCuttingRollUi(frm);
+}
+
+function sprEnsureBundleRowsFromPp(frm) {
+	if (!frm || !frm.doc || !frm.doc.production_plan || !sprIsBag(frm)) {
+		return;
+	}
+	if ((frm.doc.bundle_calculation || []).length) {
+		return;
+	}
+	sprLoadBundleCalculationFromPp(frm, null);
 }
 
 function spr_force_sheet_cutting_item_grid_columns(grid) {

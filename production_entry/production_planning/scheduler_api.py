@@ -27070,7 +27070,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             idx = cint(poi.get("idx") or 0)
             po_item_data[idx] = poi
 
-        if is_sheet_cutting_from_rows:
+        if is_sheet_cutting_from_rows or is_box_bag_from_rows:
             order_m = flt(
                 pick_value(first_psi, ["meter", "mtr", "planned_length", "custom_meter"], 0) or 0
             )

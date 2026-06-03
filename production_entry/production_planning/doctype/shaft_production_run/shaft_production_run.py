@@ -12,6 +12,7 @@ from production_entry.production_planning.doctype.planning_sheet.planning_sheet 
 from production_entry.production_planning.planning_doctypes import (
 	BOX_BAG_UNIT_L1,
 	BOX_BAG_UNIT_L2,
+	BOX_BAG_UNASSIGNED_UNIT,
 	LAMINATION_UNIT,
 	PRINTED_BOPP_FILM_UNIT,
 	PRINTING_UNASSIGNED_UNIT,
@@ -4320,10 +4321,14 @@ def get_production_plan_details(production_plan):
 	
 	# Calculate custom_total_planned_qty from WO sum
 	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
-	is_sc = pp_unit == "JVE - SHEET CUTTING MACHINE"
+	is_sc = pp_unit == SHEET_CUTTING_UNIT
 	out["is_sheet_cutting"] = is_sc
-	if is_sc:
+	if is_sc and frappe.get_meta("Shaft Production Run").has_field("custom_is_sheet_cutting"):
 		out["custom_is_sheet_cutting"] = 1
+	is_bb = pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT) or _production_plan_uses_bundle_calculation(pp)
+	if is_bb and frappe.get_meta("Shaft Production Run").has_field("custom_is_box_bag"):
+		out["custom_is_box_bag"] = 1
+	if is_sc or is_bb or _production_plan_uses_bundle_calculation(pp):
 		out["bundle_rows"] = get_bundle_calculation_rows_for_production_plan(
 			production_plan,
 			out.get("custom_order_code"),
@@ -4481,6 +4486,73 @@ def _resolve_wo_for_pp_item_code(production_plan: str, item_code: str) -> dict:
 	return {}
 
 
+def _bundle_child_field(row, *names, default=None):
+	"""Read a field from a PP/SPR Bundle Calculation child row (supports box-bag aliases)."""
+	for n in names:
+		try:
+			v = row.get(n) if isinstance(row, dict) else getattr(row, n, None)
+		except Exception:
+			v = None
+		if v not in (None, ""):
+			return v
+	return default
+
+
+def _normalize_pp_bundle_src_row(row) -> dict:
+	"""Map PP bundle row to SPR bundle_calculation (sheet cutting + box bag field names)."""
+	ic = _cstr(_bundle_child_field(row, "item_code"))
+	if not ic:
+		return {}
+	pkts = cint(_bundle_child_field(row, 0, "pkts_per_bundle", "packets_per_bundle") or 0)
+	pcs = cint(_bundle_child_field(row, 0, "pcs_per_packet", "pcs_per_box", "pcs_per_pack") or 0)
+	n_bundles = flt(_bundle_child_field(row, 0, "no_of_bundles") or 0)
+	n_boxes = flt(_bundle_child_field(row, 0, "no_of_boxes") or 0)
+	if n_bundles <= 0 and n_boxes > 0:
+		n_bundles = n_boxes
+	if pkts <= 0 and (n_bundles > 0 or n_boxes > 0):
+		pkts = 1
+	if pcs <= 0:
+		pcs = cint(_bundle_child_field(row, 0, "pcs_per_box") or 0)
+	tpb = flt(
+		_bundle_child_field(row, 0, "total_pcs_per_bundle", "total_planned_qty", "total_planned_pcs") or 0
+	)
+	if tpb <= 0 and pkts > 0 and pcs > 0:
+		tpb = flt(pkts * pcs)
+	if tpb <= 0 and n_boxes > 0 and pcs > 0:
+		tpb = flt(n_boxes * pcs)
+	return {
+		"item_code": ic,
+		"sheet_cutting_size": _cstr(_bundle_child_field(row, "", "sheet_cutting_size", "sheet_size")),
+		"no_of_bundles": n_bundles,
+		"no_of_boxes": n_boxes,
+		"pkts_per_bundle": pkts,
+		"pcs_per_packet": pcs,
+		"total_pcs_per_bundle": tpb,
+	}
+
+
+def _production_plan_uses_bundle_calculation(pp) -> bool:
+	"""True when PP has sheet-cutting or box-bag bundle calculation lines."""
+	if not pp:
+		return False
+	pp_unit = _spr_unit_value_for_current_field(pp.get("custom_unit"))
+	if pp_unit == SHEET_CUTTING_UNIT:
+		return True
+	if pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT):
+		return True
+	for row in pp.get(PP_BUNDLE_CALC_FIELD) or []:
+		ic = _cstr(_bundle_child_field(row, "item_code"))
+		if not ic:
+			continue
+		if _is_sheet_cutting_fg_code(ic) or _is_box_bag_fg_code(ic):
+			return True
+	for poi in pp.get("po_items") or []:
+		ic = _cstr(poi.get("item_code"))
+		if _is_sheet_cutting_fg_code(ic) or _is_box_bag_fg_code(ic):
+			return True
+	return False
+
+
 def _read_pp_bundle_calculation_rows(production_plan: str) -> list[dict]:
 	"""Rows from PP child table custom_bundle_calculation."""
 	pp = _cstr(production_plan)
@@ -4492,23 +4564,9 @@ def _read_pp_bundle_calculation_rows(production_plan: str) -> list[dict]:
 	child_rows = pp_doc.get(PP_BUNDLE_CALC_FIELD) or []
 	out = []
 	for row in child_rows:
-		ic = _cstr(getattr(row, "item_code", None))
-		pkts = cint(getattr(row, "pkts_per_bundle", 0) or 0)
-		pcs = cint(getattr(row, "pcs_per_packet", 0) or 0)
-		tpb = flt(getattr(row, "total_pcs_per_bundle", 0) or 0)
-		if tpb <= 0 and pkts > 0 and pcs > 0:
-			tpb = flt(pkts * pcs)
-		out.append(
-			{
-				"item_code": ic,
-				"sheet_cutting_size": _cstr(getattr(row, "sheet_cutting_size", None)),
-				"no_of_bundles": flt(getattr(row, "no_of_bundles", 0) or 0),
-				"no_of_boxes": flt(getattr(row, "no_of_boxes", 0) or 0),
-				"pkts_per_bundle": pkts,
-				"pcs_per_packet": pcs,
-				"total_pcs_per_bundle": tpb,
-			}
-		)
+		norm = _normalize_pp_bundle_src_row(row)
+		if norm:
+			out.append(norm)
 	return out
 
 
@@ -4551,6 +4609,24 @@ def populate_spr_bundle_calculation_from_pp(spr_doc, production_plan, order_code
 	for r in rows:
 		spr_doc.append("bundle_calculation", r)
 	return rows
+
+
+@frappe.whitelist()
+def spr_refresh_bundle_calculation_from_pp(shaft_production_run=None):
+	"""Desk: reload bundle_calculation from linked Production Plan (box bag / sheet cutting)."""
+	name = _cstr(shaft_production_run).strip()
+	if not name or not frappe.db.exists("Shaft Production Run", name):
+		frappe.throw(_("Shaft Production Run not found"))
+	doc = frappe.get_doc("Shaft Production Run", name)
+	if cint(doc.docstatus) != 0:
+		frappe.throw(_("Only draft Shaft Production Run can be refreshed"))
+	pp = get_pp_from_spr(name)
+	if not pp:
+		frappe.throw(_("Production Plan not linked"))
+	populate_spr_bundle_calculation_from_pp(doc, pp, doc.get("custom_order_code"), 0)
+	doc.flags.ignore_permissions = True
+	doc.save()
+	return {"status": "ok", "rows": len(doc.get("bundle_calculation") or [])}
 
 
 def _spr_bundle_job_tag(bundle_row, bundle_index: int, bundle_row_idx=None) -> str:

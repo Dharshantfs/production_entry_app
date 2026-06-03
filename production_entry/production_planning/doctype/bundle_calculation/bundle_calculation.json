@@ -8,6 +8,7 @@
   "item_code",
   "sheet_cutting_size",
   "no_of_bundles",
+  "no_of_boxes",
   "pkts_per_bundle",
   "pcs_per_packet",
   "total_pcs_per_bundle",
@@ -39,6 +40,12 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "No of Bundles"
+  },
+  {
+   "fieldname": "no_of_boxes",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "No of Boxes"
   },
   {
    "fieldname": "pkts_per_bundle",
