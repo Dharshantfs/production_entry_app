@@ -64,7 +64,12 @@ function _normalizeTransferScan(raw) {
 	if (s.startsWith("#S")) s = "JS" + s.slice(2);
 	else if (s.startsWith("IS-")) s = "JS-" + s.slice(3);
 	else if (s.startsWith("IS") && s.length > 2) s = "JS" + s.slice(2);
-	if (/^JS\d/.test(s)) s = "JS-" + s.slice(2);
+	for (const prefix of ["JVE", "TTT", "VTP", "JS", "JV", "TS", "TT", "VR", "VT"]) {
+		if (new RegExp(`^${prefix}\\d`).test(s)) {
+			s = `${prefix}-` + s.slice(prefix.length);
+			break;
+		}
+	}
 	if (/^\d{6,}\/\d/.test(s)) s = "JS-" + s;
 	return s;
 }

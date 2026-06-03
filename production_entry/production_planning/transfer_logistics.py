@@ -37,7 +37,7 @@ BOARD_KIND_TO_SCOPE = {
 	"rewinding": "rewinding_only",
 	"sheet_cutting": "sheet_cutting_only",
 	"box_bag": "box_bag_only",
-	"w_cut_d_cut": "dcut_only",
+	"w_cut_d_cut": "w_cut_d_cut_only",
 }
 
 TRANSFER_APPROVER_ROLES = frozenset({"System Manager", "Manufacturing Manager", "Administrator"})
@@ -1348,8 +1348,10 @@ def _normalize_transfer_scan(raw):
 		s = "JS-" + s[3:]
 	elif s.startswith("IS") and len(s) > 2:
 		s = "JS" + s[2:]
-	if re.match(r"^JS\d", s):
-		s = "JS-" + s[2:]
+	for prefix in ("JS", "JV", "TS", "TT", "VR", "VT", "JVE", "TTT", "VTP"):
+		if re.match(rf"^{prefix}\d", s):
+			s = f"{prefix}-" + s[len(prefix) :]
+			break
 	if re.match(r"^\d{6,}/\d", s):
 		s = "JS-" + s
 	return s

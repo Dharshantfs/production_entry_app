@@ -10,6 +10,8 @@ from production_entry.production_planning.doctype.planning_sheet.planning_sheet 
 	extract_quality_and_color,
 )
 from production_entry.production_planning.planning_doctypes import (
+	BOX_BAG_UNIT_L1,
+	BOX_BAG_UNIT_L2,
 	LAMINATION_UNIT,
 	PRINTED_BOPP_FILM_UNIT,
 	PRINTING_UNASSIGNED_UNIT,
@@ -22,6 +24,12 @@ from production_entry.production_planning.planning_doctypes import (
 	REWINDING_UNIT_L5,
 	SHEET_CUTTING_UNIT,
 	SLITTING_UNIT,
+	W_CUT_D_CUT_UNIT_JVE_L1,
+	W_CUT_D_CUT_UNIT_JVE_L2,
+	W_CUT_D_CUT_UNIT_JVE_L3,
+	W_CUT_D_CUT_UNIT_L1,
+	W_CUT_D_CUT_UNIT_L2,
+	W_CUT_D_CUT_UNIT_L3,
 	normalize_planning_unit_for_select,
 )
 
@@ -41,8 +49,14 @@ SPR_BATCH_UNIT_MAP = {
 	PRINTING_UNIT_TT: ("TT", "12"),
 	PRINTING_UNIT_4_COLOUR: ("JV", "13"),
 	PRINTED_BOPP_FILM_UNIT: ("VR", "14"),
-	"L1 LEADER OYANG MACHINE": ("VT", "16"),
-	"L2 LEADER ZX MACHINE": ("VT", "15"),
+	BOX_BAG_UNIT_L2: ("VTP", "15"),
+	BOX_BAG_UNIT_L1: ("VTP", "16"),
+	W_CUT_D_CUT_UNIT_JVE_L1: ("JVE", "17"),
+	W_CUT_D_CUT_UNIT_JVE_L2: ("JVE", "18"),
+	W_CUT_D_CUT_UNIT_JVE_L3: ("JVE", "19"),
+	W_CUT_D_CUT_UNIT_L1: ("TTT", "20"),
+	W_CUT_D_CUT_UNIT_L2: ("TTT", "21"),
+	W_CUT_D_CUT_UNIT_L3: ("TTT", "22"),
 }
 
 
@@ -114,7 +128,31 @@ _SPR_BOM_STACK_BY_FG_PROCESS = {
 	"253": ("104", "100"),
 	"254": ("106", "100"),
 	"255": (None, "100"),
+	"200": (None, "100"),
+	"201": ("105", "100"),
+	"202": ("104", "100"),
+	"211": (None, "100"),
+	"212": ("105", "100"),
+	"213": ("104", "100"),
+	"217": ("107", "100"),
 }
+
+BOX_BAG_PROCESS_CODES = frozenset({
+	"200", "201", "202", "211", "212", "213", "217",
+	"221", "222", "223", "224", "231", "233", "241", "242",
+})
+
+
+def spr_bag_fg_needs_rm_batch_pick(production_item: str) -> bool:
+	"""Bag FG SPR (211–213, 217, 200–202, 221–242) needs Select RM batches dialog."""
+	proc = spr_fg_item_process_code(production_item)
+	return bool(proc) and proc in BOX_BAG_PROCESS_CODES
+
+
+def spr_fg_needs_rm_batch_pick(production_item: str, is_box_bag_spr: bool = False) -> bool:
+	if is_box_bag_spr:
+		return spr_bag_fg_needs_rm_batch_pick(production_item)
+	return spr_fg_parent_needs_fabric_batch_pick(production_item)
 
 
 def _spr_item_has_batch_no(item_code: str) -> bool:
@@ -2454,7 +2492,7 @@ class ShaftProductionRun(Document):
 			if not wo_id or not wo_doc or total_qty <= 0:
 				continue
 			pi = _cstr(getattr(wo_doc, "production_item", None) or "")
-			if not spr_fg_parent_needs_fabric_batch_pick(pi):
+			if not spr_fg_needs_rm_batch_pick(pi, cint(getattr(self, "custom_is_box_bag", 0))):
 				continue
 			expected = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
 			batch_rm = {
@@ -2705,7 +2743,7 @@ class ShaftProductionRun(Document):
 				continue
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			pi = _cstr(getattr(wo_doc, "production_item", None) or "")
-			if not spr_fg_parent_needs_fabric_batch_pick(pi):
+			if not spr_fg_needs_rm_batch_pick(pi, cint(getattr(self, "custom_is_box_bag", 0))):
 				continue
 			total_qty = self._spr_fabric_pick_preview_fg_qty(rows, wo_doc)
 			if total_qty <= 0:
@@ -4305,7 +4343,6 @@ def get_production_plan_details(production_plan):
 PP_BUNDLE_CALC_FIELD = "custom_bundle_calculation"
 BUNDLE_CALC_DOCTYPE = "Bundle Calculation"
 SHEET_CUTTING_PROCESS_CODES = frozenset({"251", "252", "253", "254", "255"})
-BOX_BAG_PROCESS_CODES = frozenset({"211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242"})
 
 
 def _is_sheet_cutting_fg_code(item_code: str) -> bool:

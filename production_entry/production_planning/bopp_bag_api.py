@@ -210,10 +210,10 @@ def _force_bopp_bag_unit_on_sheet(planning_sheet_name=None):
     )
 
 
-def _sync_bopp_pb_rows_from_107(planning_sheet_name):
+def _sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, fg_parent_processes):
     """
-    For each 107 planning row on this sheet that belongs to a BOPP box-bag SO line,
-    look at the 107 item's BOM and extract any PB-* child into the Planning Table.
+    For each 107 planning row linked to SO lines whose FG is in fg_parent_processes,
+    extract PB-* BOM children into the Planning Table.
     """
     if not planning_sheet_name:
         return
@@ -226,13 +226,17 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
         _get_pt_parentfield,
     )
 
+    fg_set = tuple(str(p).strip() for p in (fg_parent_processes or ()) if str(p).strip())
+    if not fg_set:
+        return
+
     ps = frappe.get_doc("Planning sheet", planning_sheet_name)
     if not ps.get("sales_order"):
         return
     so_doc = frappe.get_doc("Sales Order", ps.sales_order)
     so_items_bopp = {
         str(it.name): it for it in (so_doc.items or [])
-        if _item_process_prefix(str(it.item_code or "")) in BOPP_BOX_BAG_PARENT_PROCESSES
+        if _item_process_prefix(str(it.item_code or "")) in fg_set
     }
     if not so_items_bopp:
         return
@@ -327,7 +331,12 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
         ps.save()
         frappe.db.commit()
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "_sync_bopp_pb_rows_from_107")
+        frappe.log_error(frappe.get_traceback(), "_sync_bopp_pb_rows_from_107_for_fg_parents")
+
+
+def _sync_bopp_pb_rows_from_107(planning_sheet_name):
+    """PB rows for BOPP box-bag FG parents (231/233/241/242)."""
+    _sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, BOPP_BOX_BAG_PARENT_PROCESSES)
 
 
 def _sync_bopp_bag_planning_rows(planning_sheet_name):

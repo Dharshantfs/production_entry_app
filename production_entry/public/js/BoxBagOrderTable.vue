@@ -27,6 +27,14 @@
           <button v-for="opt in processOptions" :key="opt.value" type="button" :class="{ active: filterProcess === opt.value }" @click="setProcessFilter(opt.value)">{{ opt.label }}</button>
         </div>
       </div>
+      <div v-if="isWCutDCutTable" class="cc-filter-item cc-shift-filter">
+        <label>Company</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: wCutDCutCompanyScope === 'jve' }" @click="setWCutDCutCompanyScope('jve')">JVE</button>
+          <button type="button" :class="{ active: wCutDCutCompanyScope === 'vtp' }" @click="setWCutDCutCompanyScope('vtp')">VTP</button>
+          <button type="button" :class="{ active: wCutDCutCompanyScope === 'both' }" @click="setWCutDCutCompanyScope('both')">Both</button>
+        </div>
+      </div>
       <div class="cc-filter-item">
         <label>Unit</label>
         <select v-model="filterUnit" @change="debouncedFetch">
@@ -85,7 +93,7 @@
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-              <td class="cell-center" :style="['211','212','213','222','223','231','233','241','242'].includes(String(row.process || '')) ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || row.process || '-' }}</td>
+              <td class="cell-center" :style="['200','201','202','211','212','213','217','222','223','231','233','241','242'].includes(String(row.process || '')) ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || row.process || '-' }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
@@ -159,24 +167,57 @@ const BOX_BAG_UNITS = [
   "L2 LEADER ZX MACHINE",
   "UNASSIGNED BOX BAG MACHINE",
 ];
-const W_CUT_D_CUT_UNITS = [
-  "TTT- L1 - OYANG C700 BAG MAKING LINE",
-  "TTT- L2 - OYANG C700 BAG MAKING LINE",
-  "TTT- L3 - OYANG C900 BAG MAKING LINE",
-  "UNASSIGNED W CUT BAG MACHINE",
-  "UNASSIGNED D CUT BAG MACHINE",
+const W_CUT_D_CUT_UNIT_JVE_L1 = "JVE-L1  B700 BAG MAKING MACHINE";
+const W_CUT_D_CUT_UNIT_JVE_L2 = "JVE-L2  B700 BAG MAKING MACHINE";
+const W_CUT_D_CUT_UNIT_JVE_L3 = "JVE-L3  B700 BAG MAKING MACHINE";
+const W_CUT_D_CUT_UNIT_L1 = "TTT- L1 - OYANG C700 BAG MAKING LINE";
+const W_CUT_D_CUT_UNIT_L2 = "TTT- L2 - OYANG C700 BAG MAKING LINE";
+const W_CUT_D_CUT_UNIT_L3 = "TTT- L3 - OYANG C900 BAG MAKING LINE";
+const W_CUT_UNASSIGNED_UNIT = "UNASSIGNED W CUT BAG MACHINE";
+const D_CUT_UNASSIGNED_UNIT = "UNASSIGNED D CUT BAG MACHINE";
+const W_CUT_D_CUT_JVE_UNITS = [W_CUT_D_CUT_UNIT_JVE_L1, W_CUT_D_CUT_UNIT_JVE_L2, W_CUT_D_CUT_UNIT_JVE_L3, W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT];
+const W_CUT_D_CUT_VTP_UNITS = [W_CUT_D_CUT_UNIT_L1, W_CUT_D_CUT_UNIT_L2, W_CUT_D_CUT_UNIT_L3, "L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT];
+const W_CUT_D_CUT_ALL_UNITS = [
+  W_CUT_D_CUT_UNIT_JVE_L1, W_CUT_D_CUT_UNIT_JVE_L2, W_CUT_D_CUT_UNIT_JVE_L3,
+  W_CUT_D_CUT_UNIT_L1, W_CUT_D_CUT_UNIT_L2, W_CUT_D_CUT_UNIT_L3,
+  "L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT,
 ];
 
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "108", "109", "211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109",
+  "200", "201", "202", "211", "212", "213", "217",
+  "221", "222", "223", "224", "231", "233", "241", "242",
   "251", "252", "253", "254", "255",
 ]);
 
 const isWCutDCutTable = computed(() => String(window.location.pathname || "").toLowerCase().includes("/desk/w-cut-d-cut-order-table"));
 const boardKind = computed(() => (isWCutDCutTable.value ? "w_cut_d_cut" : "box_bag"));
-const ACTIVE_UNITS = computed(() => (isWCutDCutTable.value ? W_CUT_D_CUT_UNITS : BOX_BAG_UNITS));
-const tableTitle = computed(() => (isWCutDCutTable.value ? "W CUT / D CUT Table" : "Box Bag Order Table"));
-const tableHeader = computed(() => (isWCutDCutTable.value ? "W CUT / D CUT PRODUCTION — Planned orders" : "BOX BAG PRODUCTION — Planned orders"));
+const wCutDCutCompanyScope = ref("both");
+try {
+  const _wcs = localStorage.getItem("wCutDCutCompanyScope");
+  if (_wcs === "jve" || _wcs === "vtp" || _wcs === "both") wCutDCutCompanyScope.value = _wcs;
+} catch (e) { /* ignore */ }
+function setWCutDCutCompanyScope(scope) {
+  wCutDCutCompanyScope.value = scope;
+  try { localStorage.setItem("wCutDCutCompanyScope", scope); } catch (e) { /* ignore */ }
+}
+const ACTIVE_UNITS = computed(() => {
+  if (!isWCutDCutTable.value) return BOX_BAG_UNITS;
+  const scope = wCutDCutCompanyScope.value;
+  if (scope === "jve") return W_CUT_D_CUT_JVE_UNITS;
+  if (scope === "vtp") return W_CUT_D_CUT_VTP_UNITS;
+  return W_CUT_D_CUT_ALL_UNITS;
+});
+const tableTitle = computed(() => {
+  if (!isWCutDCutTable.value) return "Box Bag Order Table";
+  const co = wCutDCutCompanyScope.value === "jve" ? "JVE" : wCutDCutCompanyScope.value === "vtp" ? "VTP" : "Both";
+  return `W CUT / D CUT Table — ${co}`;
+});
+const tableHeader = computed(() => {
+  if (!isWCutDCutTable.value) return "BOX BAG PRODUCTION — Planned orders";
+  const co = wCutDCutCompanyScope.value === "jve" ? "JVE" : wCutDCutCompanyScope.value === "vtp" ? "VTP" : "Both companies";
+  return `W CUT / D CUT PRODUCTION — ${co} — Planned orders`;
+});
 const backToBoardLabel = computed(() => (isWCutDCutTable.value ? "Back to W CUT / D CUT Board" : "Back to Box Bag Board"));
 const processOptions = computed(() => {
   if (isWCutDCutTable.value) {
@@ -184,6 +225,10 @@ const processOptions = computed(() => {
       { value: "211", label: "211 plain d cut bag" },
       { value: "212", label: "212 printed d cut bag" },
       { value: "213", label: "213 plain laminated d cut bag" },
+      { value: "217", label: "217 d cut bopp bag" },
+      { value: "200", label: "200 plain w cut bag" },
+      { value: "201", label: "201 printed w cut bag" },
+      { value: "202", label: "202 laminated w cut bag" },
       { value: "all", label: "All" },
     ];
   }

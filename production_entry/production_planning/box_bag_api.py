@@ -11,22 +11,23 @@ from production_entry.production_planning.planning_doctypes import (
 	BOX_BAG_UNIT_L1,
 	BOX_BAG_UNIT_L2,
 	BOX_BAG_UNASSIGNED_UNIT,
+	W_CUT_D_CUT_UNIT_JVE_L1,
+	W_CUT_D_CUT_UNIT_JVE_L2,
+	W_CUT_D_CUT_UNIT_JVE_L3,
 	W_CUT_D_CUT_UNIT_L1,
 	W_CUT_D_CUT_UNIT_L2,
 	W_CUT_D_CUT_UNIT_L3,
+	W_CUT_D_CUT_ALL_UNITS,
 	W_CUT_UNASSIGNED_UNIT,
 	D_CUT_UNASSIGNED_UNIT,
 )
 
 BOX_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
-W_CUT_D_CUT_UNITS = (
-	W_CUT_D_CUT_UNIT_L1,
-	W_CUT_D_CUT_UNIT_L2,
-	W_CUT_D_CUT_UNIT_L3,
-	W_CUT_UNASSIGNED_UNIT,
-	D_CUT_UNASSIGNED_UNIT,
-)
-D_CUT_PROCESS_CODES = ("211", "212", "213")
+W_CUT_D_CUT_UNITS = W_CUT_D_CUT_ALL_UNITS
+D_CUT_PROCESS_CODES = ("211", "212", "213", "217")
+W_CUT_PROCESS_CODES = ("200", "201", "202")
+W_CUT_D_CUT_FG_PROCESS_CODES = D_CUT_PROCESS_CODES + W_CUT_PROCESS_CODES
+ALL_BAG_FG_PROCESS_CODES = W_CUT_D_CUT_FG_PROCESS_CODES  # extended in scheduler with box bag codes
 
 _BOX_BAG_FINISHING_MAP = {
 	"PP": "Plain",
@@ -159,7 +160,27 @@ def _dcut_process_label(process_code):
 		return "212 printed d cut bag"
 	if p == "213":
 		return "213 plain laminated d cut bag"
+	if p == "217":
+		return "217 d cut bopp bag"
 	return p
+
+
+def _wcut_process_label(process_code):
+	p = str(process_code or "").strip()
+	if p == "200":
+		return "200 plain w cut bag"
+	if p == "201":
+		return "201 printed w cut bag"
+	if p == "202":
+		return "202 laminated w cut bag"
+	return p
+
+
+def _wcut_dcut_process_label(process_code):
+	p = str(process_code or "").strip()
+	if p in W_CUT_PROCESS_CODES:
+		return _wcut_process_label(p)
+	return _dcut_process_label(p)
 
 
 def _parse_dcut_bag_item_code(item_code):
@@ -206,7 +227,7 @@ def _parse_dcut_bag_item_code(item_code):
 	tail = "-".join(parts[tail_idx:]).strip()
 	process = ""
 	at = -1
-	for p in D_CUT_PROCESS_CODES:
+	for p in W_CUT_D_CUT_FG_PROCESS_CODES:
 		i = tail.find(p)
 		if i >= 0 and (at < 0 or i < at):
 			at = i
@@ -295,9 +316,10 @@ def _force_dcut_unit_on_sheet(planning_sheet_name=None):
 	if not frappe.db.has_column("Planning Table", "unit"):
 		return
 	proc_like = " OR ".join([f"item_code LIKE '{p}%%' OR item_code LIKE '%%-{p}%%'" for p in D_CUT_PROCESS_CODES])
+	placeholders = ", ".join(["%s"] * len(W_CUT_D_CUT_UNITS))
 	conditions = f"""
 		({proc_like})
-		AND IFNULL(unit, '') NOT IN (%s, %s, %s, %s, %s)
+		AND IFNULL(unit, '') NOT IN ({placeholders})
 	"""
 	params = list(W_CUT_D_CUT_UNITS)
 	if planning_sheet_name:
@@ -310,6 +332,58 @@ def _force_dcut_unit_on_sheet(planning_sheet_name=None):
 		""",
 		[D_CUT_UNASSIGNED_UNIT] + params,
 	)
+
+
+def _force_wcut_unit_on_sheet(planning_sheet_name=None):
+	"""Ensure all W-CUT parent rows (200–202) default to W-CUT unassigned unless on a valid machine."""
+	if not frappe.db.has_column("Planning Table", "unit"):
+		return
+	proc_like = " OR ".join([f"item_code LIKE '{p}%%' OR item_code LIKE '%%-{p}%%'" for p in W_CUT_PROCESS_CODES])
+	placeholders = ", ".join(["%s"] * len(W_CUT_D_CUT_UNITS))
+	conditions = f"""
+		({proc_like})
+		AND IFNULL(unit, '') NOT IN ({placeholders})
+	"""
+	params = list(W_CUT_D_CUT_UNITS)
+	if planning_sheet_name:
+		conditions += " AND parent = %s"
+		params.append(planning_sheet_name)
+	frappe.db.sql(
+		f"""UPDATE `tabPlanning Table`
+		SET unit = %s
+		WHERE {conditions}
+		""",
+		[W_CUT_UNASSIGNED_UNIT] + params,
+	)
+
+
+def _sync_dcut_bopp_bag_planning_rows(planning_sheet_name):
+	"""217 D-CUT BOPP: 217→107→100 + PB (233-style)."""
+	if not planning_sheet_name:
+		return
+	from production_entry.production_planning.scheduler_api import (
+		_sync_bom_child_rows_from_planning_rows,
+		LAMINATION_UNIT,
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("217",),
+		"107",
+		LAMINATION_UNIT,
+		process_label="217 D-CUT BOPP (217 → 107)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("107",),
+		"100",
+		so_parent_processes=("217",),
+		process_label="217 D-CUT BOPP fabric (107 → 100)",
+	)
+	try:
+		from production_entry.production_planning.bopp_bag_api import _sync_bopp_pb_rows_from_107_for_fg_parents
+		_sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, ("217",))
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_dcut_bopp_bag_planning_rows:pb")
 
 
 @frappe.whitelist()
@@ -534,7 +608,7 @@ def get_w_cut_d_cut_order_table_data(
 	end_date=None,
 	planned_only=1,
 ):
-	"""W CUT / D CUT table rows (D-CUT for now: 211/212/213)."""
+	"""W CUT / D CUT table rows (211–213, 217, 200–202)."""
 	from production_entry.production_planning.scheduler_api import (
 		_get_color_chart_data_impl,
 		_item_process_prefix,
@@ -544,6 +618,7 @@ def get_w_cut_d_cut_order_table_data(
 
 	try:
 		_force_dcut_unit_on_sheet()
+		_force_wcut_unit_on_sheet()
 	except Exception:
 		pass
 
@@ -554,11 +629,11 @@ def get_w_cut_d_cut_order_table_data(
 		plan_name="__all__",
 		mode=None,
 		planned_only=cint(planned_only),
-		board_process_scope="dcut_only",
+		board_process_scope="w_cut_d_cut_only",
 	)
 	raw = [
 		r for r in (raw or [])
-		if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in D_CUT_PROCESS_CODES
+		if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in W_CUT_D_CUT_FG_PROCESS_CODES
 	]
 	bag_sizes = _bag_series_size_map()
 	out = []
@@ -580,7 +655,7 @@ def get_w_cut_d_cut_order_table_data(
 			pass
 		unit = str(row.get("unit") or "").strip()
 		if unit not in W_CUT_D_CUT_UNITS:
-			unit = D_CUT_UNASSIGNED_UNIT
+			unit = W_CUT_UNASSIGNED_UNIT if prefix in W_CUT_PROCESS_CODES else D_CUT_UNASSIGNED_UNIT
 		planned_qty = flt(row.get("qty") or row.get("quantity") or 0)
 		achieved_qty = flt(row.get("actual_production_weight_kgs") or row.get("produced_qty") or 0)
 		spr_name = str(row.get("spr_name") or "").strip()
@@ -654,7 +729,7 @@ def get_w_cut_d_cut_order_table_data(
 			"spr_docstatus": row.get("spr_docstatus") or 0,
 			"salesOrderItem": row.get("salesOrderItem") or row.get("sales_order_item") or "",
 			"process": prefix,
-			"process_label": _dcut_process_label(prefix),
+			"process_label": _wcut_dcut_process_label(prefix),
 			"movement_type": row.get(PLANNING_MOVEMENT_TYPE_FIELD) or row.get("movement_type") or "",
 		}
 		try:

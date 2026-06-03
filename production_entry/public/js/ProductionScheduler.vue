@@ -66,6 +66,14 @@
           <button v-for="opt in boardProcessOptions" :key="opt.value" type="button" :class="{ active: boardProcessFilter === opt.value }" @click="setBoardProcessFilter(opt.value)">{{ opt.label }}</button>
         </div>
       </div>
+      <div v-if="isWCutDCutBoard" class="cc-filter-item cc-shift-filter">
+        <label>Company</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: wCutDCutCompanyScope === 'jve' }" @click="setWCutDCutCompanyScope('jve')">JVE</button>
+          <button type="button" :class="{ active: wCutDCutCompanyScope === 'vtp' }" @click="setWCutDCutCompanyScope('vtp')">VTP</button>
+          <button type="button" :class="{ active: wCutDCutCompanyScope === 'both' }" @click="setWCutDCutCompanyScope('both')">Both</button>
+        </div>
+      </div>
       <button class="cc-clear-btn" @click="clearFilters">✕ Clear</button>
       <button class="cc-clear-btn" style="color: #2563eb; border-color: #2563eb; margin-left: 8px;" @click="autoAllocate" title="Auto-assign orders based on Width & Quality">
         🪄 Auto Alloc
@@ -358,6 +366,26 @@ const PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM";
 const PRINTING_UNASSIGNED_UNIT = "UNASSIGNED PRINTING MACHINE";
 const PRINTING_BOARD_UNITS = [PRINTING_UNIT_2_COLOUR, PRINTING_UNIT_4_COLOUR, PRINTING_UNIT_TT, PRINTING_UNASSIGNED_UNIT];
 const PRINTING_BOARD_SUBTITLE = "105 · 106 · printing units";
+const W_CUT_D_CUT_UNIT_JVE_L1 = "JVE-L1  B700 BAG MAKING MACHINE";
+const W_CUT_D_CUT_UNIT_JVE_L2 = "JVE-L2  B700 BAG MAKING MACHINE";
+const W_CUT_D_CUT_UNIT_JVE_L3 = "JVE-L3  B700 BAG MAKING MACHINE";
+const W_CUT_D_CUT_UNIT_L1 = "TTT- L1 - OYANG C700 BAG MAKING LINE";
+const W_CUT_D_CUT_UNIT_L2 = "TTT- L2 - OYANG C700 BAG MAKING LINE";
+const W_CUT_D_CUT_UNIT_L3 = "TTT- L3 - OYANG C900 BAG MAKING LINE";
+const BOX_BAG_UNIT_L1 = "L1 LEADER OYANG MACHINE";
+const BOX_BAG_UNIT_L2 = "L2 LEADER ZX MACHINE";
+const W_CUT_UNASSIGNED_UNIT = "UNASSIGNED W CUT BAG MACHINE";
+const D_CUT_UNASSIGNED_UNIT = "UNASSIGNED D CUT BAG MACHINE";
+const W_CUT_D_CUT_JVE_UNITS = [W_CUT_D_CUT_UNIT_JVE_L1, W_CUT_D_CUT_UNIT_JVE_L2, W_CUT_D_CUT_UNIT_JVE_L3, W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT];
+const W_CUT_D_CUT_VTP_UNITS = [W_CUT_D_CUT_UNIT_L1, W_CUT_D_CUT_UNIT_L2, W_CUT_D_CUT_UNIT_L3, BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT];
+const W_CUT_D_CUT_ALL_UNITS = [
+  W_CUT_D_CUT_UNIT_JVE_L1, W_CUT_D_CUT_UNIT_JVE_L2, W_CUT_D_CUT_UNIT_JVE_L3,
+  W_CUT_D_CUT_UNIT_L1, W_CUT_D_CUT_UNIT_L2, W_CUT_D_CUT_UNIT_L3,
+  BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT,
+];
+const W_CUT_D_CUT_FG_PROCS = ["211", "212", "213", "217", "200", "201", "202"];
+const D_CUT_FG_PROCS = ["211", "212", "213", "217"];
+const W_CUT_FG_PROCS = ["200", "201", "202"];
 
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
@@ -379,6 +407,16 @@ const UNIT_TONNAGE_LIMITS = {
   [PRINTING_UNIT_4_COLOUR]: 999,
   [PRINTING_UNIT_TT]: 999,
   [PRINTING_UNASSIGNED_UNIT]: 999,
+  [W_CUT_D_CUT_UNIT_JVE_L1]: 999,
+  [W_CUT_D_CUT_UNIT_JVE_L2]: 999,
+  [W_CUT_D_CUT_UNIT_JVE_L3]: 999,
+  [W_CUT_D_CUT_UNIT_L1]: 999,
+  [W_CUT_D_CUT_UNIT_L2]: 999,
+  [W_CUT_D_CUT_UNIT_L3]: 999,
+  [BOX_BAG_UNIT_L1]: 999,
+  [BOX_BAG_UNIT_L2]: 999,
+  [W_CUT_UNASSIGNED_UNIT]: 999,
+  [D_CUT_UNASSIGNED_UNIT]: 999,
 };
 const headerColors = {
   "Unit 1": "#3b82f6",
@@ -400,6 +438,16 @@ const headerColors = {
   [PRINTING_UNIT_4_COLOUR]: "#f43f5e",
   [PRINTING_UNIT_TT]: "#d946ef",
   [PRINTING_UNASSIGNED_UNIT]: "#94a3b8",
+  [W_CUT_D_CUT_UNIT_JVE_L1]: "#b45309",
+  [W_CUT_D_CUT_UNIT_JVE_L2]: "#d97706",
+  [W_CUT_D_CUT_UNIT_JVE_L3]: "#f59e0b",
+  [W_CUT_D_CUT_UNIT_L1]: "#0284c7",
+  [W_CUT_D_CUT_UNIT_L2]: "#0ea5e9",
+  [W_CUT_D_CUT_UNIT_L3]: "#38bdf8",
+  [BOX_BAG_UNIT_L1]: "#7c3aed",
+  [BOX_BAG_UNIT_L2]: "#8b5cf6",
+  [W_CUT_UNASSIGNED_UNIT]: "#64748b",
+  [D_CUT_UNASSIGNED_UNIT]: "#64748b",
 };
 
 function normalizeUnitName(rawUnit) {
@@ -631,6 +679,15 @@ const isPrintingBoard = ref(_initialBoardFlags.printing);
 const isPrintedBoppFilmBoard = ref(_initialBoardFlags.printedBopp);
 const isPcsBoard = computed(() => isBoxBagBoard.value || isWCutDCutBoard.value);
 const boardProcessFilter = ref("");
+const wCutDCutCompanyScope = ref("both");
+try {
+  const _wcs = localStorage.getItem("wCutDCutCompanyScope");
+  if (_wcs === "jve" || _wcs === "vtp" || _wcs === "both") wCutDCutCompanyScope.value = _wcs;
+} catch (e) { /* ignore */ }
+function setWCutDCutCompanyScope(scope) {
+  wCutDCutCompanyScope.value = scope;
+  try { localStorage.setItem("wCutDCutCompanyScope", scope); } catch (e) { /* ignore */ }
+}
 const filterStatus = ref("");
 const unitSortConfig = ref({});
 // Pre-initialize for all units to prevent reactive loops during render
@@ -647,6 +704,7 @@ REWINDING_BOARD_UNITS.forEach((u) => {
 });
 unitSortConfig.value[PRINTED_BOPP_FILM_UNIT] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' };
 PRINTING_BOARD_UNITS.forEach((u) => { unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' }; });
+W_CUT_D_CUT_ALL_UNITS.forEach((u) => { unitSortConfig.value[u] = { mode: 'manual', color: 'asc', gsm: 'desc', priority: 'color' }; });
 
 const rawData = ref([]);
 const boardProcessOptions = computed(() => {
@@ -684,6 +742,10 @@ const boardProcessOptions = computed(() => {
     { value: "211", label: "211 plain d cut bag" },
     { value: "212", label: "212 printed d cut bag" },
     { value: "213", label: "213 plain laminated d cut bag" },
+    { value: "217", label: "217 d cut bopp bag" },
+    { value: "200", label: "200 plain w cut bag" },
+    { value: "201", label: "201 printed w cut bag" },
+    { value: "202", label: "202 laminated w cut bag" },
     { value: "__all__", label: "All" },
   ];
   return [];
@@ -711,8 +773,9 @@ const boardBannerText = computed(() => {
   }
   if (isWCutDCutBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const pLbl = !p || p === "__all__" ? "211 · 212 · 213" : `Process ${p}`;
-    return `W CUT / D CUT Board — ${pLbl}${unitScope}`;
+    const pLbl = !p || p === "__all__" ? "211 · 212 · 213 · 217 · 200 · 201 · 202" : `Process ${p}`;
+    const co = wCutDCutCompanyScope.value === "jve" ? "JVE" : wCutDCutCompanyScope.value === "vtp" ? "VTP" : "Both";
+    return `W CUT / D CUT Board — ${co} — ${pLbl}${unitScope}`;
   }
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
   if (isLaminationBoard.value) {
@@ -930,7 +993,12 @@ const boardUnits = computed(() => {
   if (isSlittingBoard.value) return [...SLITTING_BOARD_UNITS];
   if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
   if (isBoxBagBoard.value) return ["L1 LEADER OYANG MACHINE", "L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
-  if (isWCutDCutBoard.value) return ["TTT- L1 - OYANG C700 BAG MAKING LINE", "TTT- L2 - OYANG C700 BAG MAKING LINE", "TTT- L3 - OYANG C900 BAG MAKING LINE", "UNASSIGNED W CUT BAG MACHINE", "UNASSIGNED D CUT BAG MACHINE"];
+  if (isWCutDCutBoard.value) {
+    const scope = wCutDCutCompanyScope.value;
+    if (scope === "jve") return [...W_CUT_D_CUT_JVE_UNITS];
+    if (scope === "vtp") return [...W_CUT_D_CUT_VTP_UNITS];
+    return [...W_CUT_D_CUT_ALL_UNITS];
+  }
   if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
   if (isLaminationBoard.value) return [LAMINATION_UNIT];
   if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
@@ -1034,20 +1102,23 @@ const filteredData = computed(() => {
     }
   }
   if (isWCutDCutBoard.value) {
-    const D_CUT_UNIT_LIST = ["TTT- L1 - OYANG C700 BAG MAKING LINE", "TTT- L2 - OYANG C700 BAG MAKING LINE", "TTT- L3 - OYANG C900 BAG MAKING LINE", "UNASSIGNED W CUT BAG MACHINE", "UNASSIGNED D CUT BAG MACHINE"];
+    const validUnits = new Set(W_CUT_D_CUT_ALL_UNITS);
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
       const u = (d.unit || "").trim();
-      if (["211", "212", "213"].includes(proc) && !D_CUT_UNIT_LIST.includes(u)) {
-        return { ...d, unit: "UNASSIGNED D CUT BAG MACHINE" };
+      if (D_CUT_FG_PROCS.includes(proc) && !validUnits.has(u)) {
+        return { ...d, unit: D_CUT_UNASSIGNED_UNIT };
+      }
+      if (W_CUT_FG_PROCS.includes(proc) && !validUnits.has(u)) {
+        return { ...d, unit: W_CUT_UNASSIGNED_UNIT };
       }
       return d;
     });
     const bpf = boardProcessFilter.value || "__all__";
-    if (["211", "212", "213"].includes(bpf)) {
+    if (W_CUT_D_CUT_FG_PROCS.includes(bpf)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === bpf);
     } else {
-      data = data.filter((d) => ["211", "212", "213"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
+      data = data.filter((d) => W_CUT_D_CUT_FG_PROCS.includes(itemProcessPrefix(d.item_code || d.itemCode)));
     }
   }
 
@@ -1813,7 +1884,7 @@ function buildPullBoardChartArgsForSourceDate(sourceDate) {
   } else if (isBoxBagBoard.value) {
     args.board_process_scope = "box_bag_only";
   } else if (isWCutDCutBoard.value) {
-    args.board_process_scope = "dcut_only";
+    args.board_process_scope = "w_cut_d_cut_only";
   } else {
     try {
       const sp = new URLSearchParams(window.location.search || "");
@@ -2540,7 +2611,7 @@ async function fetchData() {
         } else if (isBoxBagBoard.value) {
           args.board_process_scope = "box_bag_only";
         } else if (isWCutDCutBoard.value) {
-          args.board_process_scope = "dcut_only";
+          args.board_process_scope = "w_cut_d_cut_only";
         } else if (isPrintingBoard.value) {
           args.board_process_scope = "printing_only";
         } else if (isLaminationBoard.value) {

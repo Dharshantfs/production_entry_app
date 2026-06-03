@@ -26,9 +26,13 @@ from production_entry.production_planning.planning_doctypes import (
 	BOX_BAG_UNIT_L1,
 	BOX_BAG_UNIT_L2,
 	BOX_BAG_UNASSIGNED_UNIT,
+	W_CUT_D_CUT_UNIT_JVE_L1,
+	W_CUT_D_CUT_UNIT_JVE_L2,
+	W_CUT_D_CUT_UNIT_JVE_L3,
 	W_CUT_D_CUT_UNIT_L1,
 	W_CUT_D_CUT_UNIT_L2,
 	W_CUT_D_CUT_UNIT_L3,
+	W_CUT_D_CUT_ALL_UNITS,
 	W_CUT_UNASSIGNED_UNIT,
 	D_CUT_UNASSIGNED_UNIT,
 )
@@ -132,12 +136,19 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"211": 116,
 	"212": 116,
 	"213": 116,
+	"217": 116,
+	"200": 116,
+	"201": 116,
+	"202": 116,
 }
 
 BOX_BAG_PROCESS_CODES = ("221", "222", "223", "224", "231", "233", "241", "242")
 BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242")
 BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
-D_CUT_PROCESS_CODES = ("211", "212", "213")
+D_CUT_PROCESS_CODES = ("211", "212", "213", "217")
+W_CUT_PROCESS_CODES = ("200", "201", "202")
+W_CUT_D_CUT_FG_PROCESS_CODES = D_CUT_PROCESS_CODES + W_CUT_PROCESS_CODES
+ALL_BAG_FG_PROCESS_CODES = BOX_BAG_PROCESS_CODES + W_CUT_D_CUT_FG_PROCESS_CODES
 
 
 def _has_planning_movement_type_column(doctype="Planning Table"):
@@ -2127,7 +2138,7 @@ def _trace_from_221_parent_on_sales_order_line(sales_order_item, planning_sheet_
 		return ""
 	for r in rows:
 		ric = _cstr(r.get("item_code") if isinstance(r, dict) else getattr(r, "item_code", "")).strip()
-		if _item_process_prefix(ric) not in ("211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242"):
+		if _item_process_prefix(ric) not in ALL_BAG_FG_PROCESS_CODES:
 			continue
 		rsoi = _cstr(
 			(r.get("sales_order_item") if isinstance(r, dict) else getattr(r, "sales_order_item", None))
@@ -2280,13 +2291,13 @@ def _box_bag_line_specs_from_item_code(item_code):
 	"""Quality, colour, and total GSM from box/d-cut item codes."""
 	ic = _cstr(item_code).strip()
 	pp = _item_process_prefix(ic)
-	if pp not in BOX_BAG_PROCESS_CODES and pp not in D_CUT_PROCESS_CODES:
+	if pp not in BOX_BAG_PROCESS_CODES and pp not in W_CUT_D_CUT_FG_PROCESS_CODES:
 		return None
 	try:
 		if pp in BOPP_BOX_BAG_PROCESS_CODES:
 			from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
 			p = _parse_bopp_bag_item_code(ic) or {}
-		elif pp in D_CUT_PROCESS_CODES:
+		elif pp in W_CUT_D_CUT_FG_PROCESS_CODES:
 			from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
 			p = _parse_dcut_bag_item_code(ic) or {}
 		else:
@@ -3749,7 +3760,7 @@ def _stamp_design_fields_on_planning_sheet(planning_sheet_name):
 		return 0
 	if not _planning_row_supports_design_fields():
 		return 0
-	design_procs = frozenset({"105", "106", "108", "252", "253", "254", "255", "251"})
+	design_procs = frozenset({"105", "106", "108", "201", "212", "217", "252", "253", "254", "255", "251"})
 	updated = 0
 	flds = ["name", "item_code", "sales_order_item", "so_item"]
 	for col in ("custom_design_code", "custom_design_name", "custom_design_attachment"):
@@ -4769,7 +4780,7 @@ def _parent_child_trace_id_from_item_code(item_code):
 		fin = _cstr(p.get("finishing_code")).strip()
 		if fin: segs.append(fin)
 		return "-".join(segs)
-	if process in D_CUT_PROCESS_CODES:
+	if process in W_CUT_D_CUT_FG_PROCESS_CODES:
 		from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
 		p = _parse_dcut_bag_item_code(ic)
 		segs = [
@@ -6925,6 +6936,11 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_sync_bopp_bag_planning_rows(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_bopp_bag_planning_rows")
+	try:
+		from production_entry.production_planning.box_bag_api import _sync_dcut_bopp_bag_planning_rows
+		_sync_dcut_bopp_bag_planning_rows(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_dcut_bopp")
 	_sync_lamination_fabric_planning_rows(planning_sheet_name)
 	_sync_slitting_fabric_planning_rows(planning_sheet_name)
 	_force_slitting_unit_on_sheet(planning_sheet_name)
@@ -8027,7 +8043,7 @@ def _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc):
 	if not child_proc:
 		return ""
 	# SO finished-good trace always wins over immediate BOM parent (e.g. 106→104→100 uses 106, not 104).
-	if so_fg in ("255", "254", "253", "252", "251", "108", "109", "106", "105", "211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242") and child_proc in (
+	if so_fg in ("255", "254", "253", "252", "251", "108", "109", "106", "105", "211", "212", "213", "217", "200", "201", "202", "221", "222", "223", "224", "231", "233", "241", "242") and child_proc in (
 		"100",
 		"104",
 		"106",
@@ -9038,16 +9054,57 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		so_parent_processes=("213",),
 		process_label="213 D-CUT Fabric (104 → 100)",
 	)
+	# W-CUT BOM expansion: 200→100, 201→105→100, 202→104→100
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("200",),
+		"100",
+		process_label="200 W-CUT Fabric (200 → 100)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("201",),
+		"105",
+		PRINTING_UNASSIGNED_UNIT,
+		process_label="201 W-CUT Printing (201 → 105)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("105",),
+		"100",
+		so_parent_processes=("201",),
+		process_label="201 W-CUT Fabric (105 → 100)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("202",),
+		"104",
+		LAMINATION_UNIT,
+		process_label="202 W-CUT Lamination (202 → 104)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("104",),
+		"100",
+		so_parent_processes=("202",),
+		process_label="202 W-CUT Fabric (104 → 100)",
+	)
+	try:
+		from production_entry.production_planning.box_bag_api import _sync_dcut_bopp_bag_planning_rows
+		_sync_dcut_bopp_bag_planning_rows(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:_sync_dcut_bopp")
 	try:
 		from production_entry.production_planning.box_bag_api import _force_box_bag_unit_on_sheet
 		_force_box_bag_unit_on_sheet(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:_force_box_bag_unit_on_sheet")
 	try:
-		from production_entry.production_planning.box_bag_api import _force_dcut_unit_on_sheet
+		from production_entry.production_planning.box_bag_api import _force_dcut_unit_on_sheet, _force_wcut_unit_on_sheet
 		_force_dcut_unit_on_sheet(planning_sheet_name)
+		_force_wcut_unit_on_sheet(planning_sheet_name)
 	except Exception:
-		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:_force_dcut_unit_on_sheet")
+		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:_force_dcut_wcut_unit")
 
 def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 251, append one fabric (100) row from BOM. Idempotent."""
@@ -15479,6 +15536,8 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return BOX_BAG_UNASSIGNED_UNIT
     if item_code and _item_process_prefix(str(item_code)) in D_CUT_PROCESS_CODES:
         return D_CUT_UNASSIGNED_UNIT
+    if item_code and _item_process_prefix(str(item_code)) in W_CUT_PROCESS_CODES:
+        return W_CUT_UNASSIGNED_UNIT
     if REWINDING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "102":
         return REWINDING_UNASSIGNED_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "106":
@@ -18528,6 +18587,7 @@ def _get_color_chart_data_impl(
         "sheet_cutting_only",
         "box_bag_only",
         "dcut_only",
+        "w_cut_d_cut_only",
     )
     if cint(planned_only) and _has_planned_date_column() and not dedicated_scope_no_plan_gate:
         # Allow sheets where EITHER the sheet has custom_planned_date OR items have planned_date
@@ -19617,7 +19677,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "exclude_103" and icp == "103":
                     continue
-                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
+                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "211", "212", "213", "217", "200", "201", "202", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
                     continue
                 if bps == "only_100" and icp != "100":
                     continue
@@ -19638,6 +19698,8 @@ def _get_color_chart_data_impl(
                 if bps == "box_bag_only" and icp not in BOX_BAG_PROCESS_CODES:
                     continue
                 if bps == "dcut_only" and icp not in D_CUT_PROCESS_CODES:
+                    continue
+                if bps == "w_cut_d_cut_only" and icp not in W_CUT_D_CUT_FG_PROCESS_CODES:
                     continue
 
             color = (item.get("color") or item.get("colour") or "").strip()
@@ -19674,18 +19736,14 @@ def _get_color_chart_data_impl(
                 if _bb_icp in BOX_BAG_PROCESS_CODES:
                     if nu_bb not in _bb_valid:
                         unit = BOX_BAG_UNASSIGNED_UNIT
-            if bps == "dcut_only":
+            if bps in ("dcut_only", "w_cut_d_cut_only"):
                 _dc_icp = _item_process_prefix(item_code_for_color)
-                _dc_valid = (
-                    W_CUT_D_CUT_UNIT_L1,
-                    W_CUT_D_CUT_UNIT_L2,
-                    W_CUT_D_CUT_UNIT_L3,
-                    W_CUT_UNASSIGNED_UNIT,
-                    D_CUT_UNASSIGNED_UNIT,
-                )
+                _dc_valid = W_CUT_D_CUT_ALL_UNITS
                 nu_dc = normalize_planning_unit_for_select(unit)
                 if _dc_icp in D_CUT_PROCESS_CODES and nu_dc not in _dc_valid:
                     unit = D_CUT_UNASSIGNED_UNIT
+                elif _dc_icp in W_CUT_PROCESS_CODES and nu_dc not in _dc_valid:
+                    unit = W_CUT_UNASSIGNED_UNIT
             
             effective_date_str = str(item.get("ordered_date") or sheet.get("ordered_date") or "")
             
@@ -19714,6 +19772,7 @@ def _get_color_chart_data_impl(
                 "printed_bopp_pb_only",
                 "box_bag_only",
                 "dcut_only",
+                "w_cut_d_cut_only",
             ):
                 i_eff_pdate = (
                     item_pdate
@@ -19740,7 +19799,7 @@ def _get_color_chart_data_impl(
 
             # Production Board special filtering: only show scheduled items if planned_only is requested
             if cint(planned_only):
-                if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only", "box_bag_only", "dcut_only"):
+                if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only", "box_bag_only", "dcut_only", "w_cut_d_cut_only"):
                     pass  # These dedicated boards/tables show all their items regardless of planned date
                 # NON-WHITE items MUST be explicitly pushed (have a planned date)
                 elif not is_white and not item_pdate:
@@ -19960,14 +20019,12 @@ def _get_color_chart_data_impl(
                 _finishing_row = (item.get("custom_finishing") or "").strip()
 
             row_planned_date = str(item_pdate or (sheet.get("custom_planned_date") if is_white else "") or "")
-            if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only", "dcut_only"):
+            if bps in ("lamination_only", "printing_only", "slitting_only", "rewinding_only", "printed_bopp_pb_only", "sheet_cutting_only", "dcut_only", "w_cut_d_cut_only"):
                 row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
             if bps == "rewinding_only" and _item_process_prefix(_ic_row) == "102" and unit not in REWINDING_BOARD_UNITS:
                 unit = REWINDING_UNASSIGNED_UNIT
 
             if bps == "box_bag_only":
-                row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
-            if bps == "dcut_only":
                 row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
 
             row_gsm = item.get("gsm") or ""
@@ -19985,7 +20042,7 @@ def _get_color_chart_data_impl(
                         row_gsm = _p["total_gsm"]
                 except Exception:
                     pass
-            elif _item_process_prefix(_ic_row) in D_CUT_PROCESS_CODES:
+            elif _item_process_prefix(_ic_row) in W_CUT_D_CUT_FG_PROCESS_CODES:
                 try:
                     from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
                     _p = _parse_dcut_bag_item_code(_ic_row)
@@ -26444,7 +26501,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ("105", "106") for psi in (psi_list or [])
         )
         is_box_bag_from_rows = any(
-            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in (BOX_BAG_PROCESS_CODES + D_CUT_PROCESS_CODES)
+            _item_process_prefix(str((psi.get("item_code") or "")).strip()) in ALL_BAG_FG_PROCESS_CODES
             for psi in (psi_list or [])
         )
         # BOPP Film = Printed BOPP items with PB- prefix (NOT 107 which is Lamination Unit like 104)
@@ -27235,7 +27292,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 					frappe.db.set_value("Planning Table", r.get("name"), "gsm", p["total_gsm"])
 			except Exception:
 				pass
-		elif pp_prefix in D_CUT_PROCESS_CODES:
+		elif pp_prefix in W_CUT_D_CUT_FG_PROCESS_CODES:
 			try:
 				from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
 				p = _parse_dcut_bag_item_code(ic)
@@ -27248,7 +27305,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 		pp = _item_process_prefix(ic)
 		
 		# Force trigger BOM recalculation for children of specific parents even if the parent isn't converted
-		if pp in BOX_BAG_PROCESS_CODES or pp in D_CUT_PROCESS_CODES:
+		if pp in BOX_BAG_PROCESS_CODES or pp in W_CUT_D_CUT_FG_PROCESS_CODES:
 			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
 			if so_item:
 				converted_parents.setdefault(so_item, [])
