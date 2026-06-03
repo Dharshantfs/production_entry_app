@@ -496,7 +496,12 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 
 # First-segment wins for codes like 105-…-100… (GSM / width digits) so we never classify as 100 instead of 105.
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
-	{"100", "102", "103", "104", "105", "106", "107", "108", "109", "211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255"}
+	{
+		"100", "102", "103", "104", "105", "106", "107", "108", "109",
+		"200", "201", "202", "211", "212", "213", "217",
+		"221", "222", "223", "224", "231", "233", "241", "242",
+		"251", "252", "253", "254", "255",
+	}
 )
 
 
@@ -505,6 +510,15 @@ def _item_process_prefix(item_code):
 	if not ic:
 		return ""
 	if "-" in ic:
+		# W/D-CUT bag codes embed process in the tail (e.g. 2500-1C-201-217…); segment ``201`` is bag size, not process 201.
+		try:
+			from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
+
+			bag_proc = str((_parse_dcut_bag_item_code(ic) or {}).get("process") or "").strip()
+			if bag_proc in W_CUT_D_CUT_FG_PROCESS_CODES:
+				return bag_proc
+		except Exception:
+			pass
 		# First pass: check each segment's leading digits independently
 		# This handles codes like 6000-511-221N101Q00PP where process is in the 3rd segment
 		all_segments = ic.split("-")
@@ -540,7 +554,11 @@ def _bom_item_process_code(item_code):
 		return "PB-"
 	pp = _item_process_prefix(ic)
 	lam = _lamination_process_from_item_code(ic)
-	if pp in ("108", "255", "253", "254", "251", "252", "211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242"):
+	if pp in (
+		"108", "255", "253", "254", "251", "252",
+		"211", "212", "213", "217", "200", "201", "202",
+		"221", "222", "223", "224", "231", "233", "241", "242",
+	):
 		return pp
 	if lam in ("104", "107", "255"):
 		return lam
@@ -1831,8 +1849,18 @@ def _trace_is_native_107_process(trace_id):
 
 
 def _is_fabric_100_item_code(item_code):
-	"""Non-woven / fabric BOM child rows (item codes starting with ``100``, not FG process 100)."""
-	return str(item_code or "").strip().startswith("100")
+	"""Non-woven / fabric BOM child rows (process 100 / ``100-…``), not FG codes like ``1000-…``."""
+	ic = str(item_code or "").strip()
+	if not ic:
+		return False
+	if _item_process_prefix(ic) == "100":
+		return True
+	if ic.startswith("100-"):
+		return True
+	# Compact fabric encoding (100 + quality + color + …); exclude process 1000/1001 prefixes.
+	if ic.startswith("100") and not ic.startswith("1000") and len(ic) >= 9:
+		return True
+	return False
 
 
 def _trace_is_native_100_process(trace_id):
@@ -4120,7 +4148,9 @@ def _resolve_lam107_planning_trace(item_code, sales_order_item=None, planning_sh
 	return ""
 
 
-def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=None, planning_sheet_name=None):
+def _parent_child_trace_id_for_planning_row(
+	item_code, sales_order_item_name=None, planning_sheet_name=None, skip_main_parent=False
+):
 	"""Trace from ``item_code``; 107 mid-BOM on 108/255 sheets uses parent FG trace (never ``107-``)."""
 	ic = str(item_code or "").strip()
 	soi = (sales_order_item_name or "").strip()
@@ -4144,9 +4174,10 @@ def _parent_child_trace_id_for_planning_row(item_code, sales_order_item_name=Non
 					so_by_early = {str(it.name): it for it in (_so_d.items or [])}
 				except Exception:
 					so_by_early = {}
-		main_early = _main_parent_trace_for_so_line(soi, planning_sheet_name, pt_rows_early, so_by_early)
-		if main_early:
-			return main_early
+		if not skip_main_parent:
+			main_early = _main_parent_trace_for_so_line(soi, planning_sheet_name, pt_rows_early, so_by_early)
+			if main_early:
+				return main_early
 	if _is_107_mid_bopp_item(ic):
 		t107p = _resolve_lam107_planning_trace(ic, soi, planning_sheet_name)
 		if t107p and not _trace_is_native_107_process(t107p):
@@ -5283,7 +5314,9 @@ def _main_parent_trace_for_so_line(so_item_key, planning_sheet_name, pt_rows, so
 			tid = _parent_child_trace_id_from_item_code(fg_ic)
 			if tid:
 				return tid
-			tid = _parent_child_trace_id_for_planning_row(fg_ic, soik, planning_sheet_name)
+			tid = _parent_child_trace_id_for_planning_row(
+				fg_ic, soik, planning_sheet_name, skip_main_parent=True
+			)
 			if tid:
 				return tid
 	parent_priority = (
@@ -5320,7 +5353,7 @@ def _main_parent_trace_for_so_line(so_item_key, planning_sheet_name, pt_rows, so
 				pp == pref or (pref == "107" and _lamination_process_from_item_code(ic) == "107")
 			):
 				tid = _parent_child_trace_id_from_item_code(ic) or _parent_child_trace_id_for_planning_row(
-					ic, soik, planning_sheet_name
+					ic, soik, planning_sheet_name, skip_main_parent=True
 				)
 				if tid:
 					return tid
