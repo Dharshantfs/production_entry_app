@@ -64,8 +64,7 @@
    "fieldname": "pcs_per_packet",
    "fieldtype": "Int",
    "in_list_view": 1,
-   "label": "Pcs per Packet",
-   "reqd": 1
+   "label": "Pcs per Packet"
   },
   {
    "fieldname": "total_pcs_per_bundle",

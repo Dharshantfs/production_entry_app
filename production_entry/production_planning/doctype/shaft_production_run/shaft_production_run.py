@@ -1743,6 +1743,7 @@ class ShaftProductionRun(Document):
 			return
 		unit_lam = _cstr(getattr(self, "custom_unit", None)).strip() == LAMINATION_UNIT
 		lam = spr_doc_is_lamination(self) or unit_lam
+		is_bb = cint(getattr(self, "custom_is_box_bag", 0))
 		for row in self.items or []:
 			if lam:
 				ln = 0.0
@@ -1758,7 +1759,12 @@ class ShaftProductionRun(Document):
 				else:
 					ln = flt(ln_m)
 			wgt = _effective_weight_kg_for_produced_gsm(row)
-			row.produced_gsm = compute_produced_gsm(wgt, row.width_inch, flt(ln))
+			w_in = flt(getattr(row, "width_inch", None))
+			if is_bb and w_in <= 0:
+				ic = _cstr(getattr(row, "item_code", None))
+				if ic:
+					w_in = flt(_spr_resolve_roll_line_specs_from_item_code(ic).get("width_inch") or 0)
+			row.produced_gsm = compute_produced_gsm(wgt, w_in, flt(ln))
 
 	def on_submit(self):
 		self.sync_batch_custom_fields()
@@ -4724,6 +4730,8 @@ def _normalize_pp_bundle_src_row(row, default_item_code=None, pp_doc=None) -> di
 			tpb = flt(n_boxes * pcs)
 	bag_sz = _bundle_row_bag_size(row, ic, for_bag_fg=True) if is_bag else ""
 	sheet_sz = "" if is_bag else _bundle_row_bag_size(row, ic, for_bag_fg=False)
+	if is_bag and bag_sz:
+		sheet_sz = bag_sz
 	return {
 		"item_code": ic,
 		"bag_size": bag_sz,
@@ -4978,6 +4986,11 @@ def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=
 			tpb = flt(n_boxes * pcs)
 		row = dict(src)
 		row["total_pcs_per_bundle"] = tpb
+		if _is_bag_bundle_fg_code(ic) or _pp_is_box_bag_unit(frappe.get_doc("Production Plan", production_plan)):
+			bz = _cstr(row.get("bag_size") or row.get("sheet_cutting_size") or "")
+			if bz:
+				row["bag_size"] = bz
+				row["sheet_cutting_size"] = bz
 		row["work_order"] = wo.get("name") if wo else ""
 		row["order_code"] = oc
 		row["job"] = _cstr(wo.get("production_plan_item") or "") if wo else ""
@@ -5130,8 +5143,8 @@ def _spr_item_line_from_bundle(
 		bag_sz = _cstr(getattr(bundle_row, "bag_size", None) or getattr(bundle_row, "sheet_cutting_size", None) or sz_from_item)
 		if spi_meta.has_field("custom_sheet_size") and bag_sz:
 			row["custom_sheet_size"] = bag_sz
-		if bag_sz and spi_meta.has_field("width_inch"):
-			row["width_inch"] = bag_sz
+		if w_from_item > 0 and spi_meta.has_field("width_inch"):
+			row["width_inch"] = flt(w_from_item)
 	elif spi_meta.has_field("custom_sheet_size"):
 		sz = sz_from_item or _cstr(getattr(bundle_row, "sheet_cutting_size", None))
 		row["custom_sheet_size"] = sz or None

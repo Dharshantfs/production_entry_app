@@ -111,6 +111,32 @@ function spr_sync_grid_columns_visible(frm, fieldname) {
 				let df = frappe.meta.get_docfield('Shaft Production Run Job', f);
 				if (df) df.in_list_view = 1;
 			});
+		} else if (fieldname === 'bundle_calculation') {
+			const cfg = spr_get_bundle_list_view_config(frm);
+			cfg.show.forEach(function (f) {
+				const df = frappe.meta.get_docfield('Bundle Calculation', f);
+				if (df) {
+					df.in_list_view = 1;
+				}
+				try {
+					grid.update_docfield_property(f, 'hidden', 0);
+					grid.update_docfield_property(f, 'in_list_view', 1);
+				} catch (e) {
+					/* ignore */
+				}
+			});
+			cfg.hide.forEach(function (f) {
+				const df = frappe.meta.get_docfield('Bundle Calculation', f);
+				if (df) {
+					df.in_list_view = 0;
+				}
+				try {
+					grid.update_docfield_property(f, 'hidden', 1);
+					grid.update_docfield_property(f, 'in_list_view', 0);
+				} catch (e) {
+					/* ignore */
+				}
+			});
 		} else if (fieldname === 'items') {
 			const cfg = spr_get_items_list_view_config(frm);
 			cfg.show.forEach(function (f) {
@@ -459,8 +485,14 @@ function sprAutoSaveAfterCreateEntry(frm) {
 		if (p && typeof p.then === 'function') {
 			p.then(function () {
 				frm.__spr_auto_save_in_progress = false;
-			}).catch(function () {
+				spr_schedule_grid_ui_debounced(frm, { delay: 400 });
+			}).catch(function (err) {
 				frm.__spr_auto_save_in_progress = false;
+				frappe.msgprint({
+					title: __('Save failed'),
+					indicator: 'red',
+					message: err && err.message ? err.message : __('Could not save Shaft Production Run.'),
+				});
 			});
 		} else {
 			frm.__spr_auto_save_in_progress = false;
@@ -672,7 +704,8 @@ frappe.ui.form.on('Shaft Production Run', {
 		if (
 			sprIsBundlePackagingMode(frm) &&
 			frm.doc.production_plan &&
-			!(frm.doc.bundle_calculation || []).length
+			!(frm.doc.bundle_calculation || []).length &&
+			(!frm.is_dirty || !frm.is_dirty())
 		) {
 			sprLoadBundleCalculationFromPp(frm, null);
 		}
@@ -2256,9 +2289,17 @@ frappe.ui.form.on('Bundle Calculation', {
 					sprSyncBundleProducedSheets(frm, { silent: true });
 					sprScheduleTotalProducedSync(frm);
 					const totalRows = (frm.doc.items || []).length;
+					const start = Math.max(0, totalRows - n);
+					for (let i = start; i < totalRows; i++) {
+						const it = (frm.doc.items || [])[i];
+						if (it && it.name) {
+							spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', it.name);
+						}
+					}
 					if (totalRows <= 250) {
 						schedule_spr_item_row_styles(frm);
 					}
+					spr_schedule_grid_ui_debounced(frm, { delay: 300 });
 					spr_after_child_table_refresh(frm);
 					sprAutoSaveAfterCreateEntry(frm);
 					frappe.show_alert({
@@ -2743,6 +2784,14 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	},
 });
 
+function sprResolveWidthInchForGsm(frm, row) {
+	const wi = flt(row && row.width_inch);
+	if (wi > 0 && wi < 500) {
+		return wi;
+	}
+	return 0;
+}
+
 function spr_update_produced_gsm(frm, cdt, cdn) {
 	if (!frappe.meta.get_docfield('Shaft Production Run Item', 'produced_gsm')) {
 		return;
@@ -2774,9 +2823,8 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 		nw = flt(row.gross_weight);
 	}
 	
-	// Get width (required)
-	const wi = flt(row.width_inch);
-	
+	const wi = sprResolveWidthInchForGsm(frm, row);
+
 	const mr = sprResolveLengthMeters(row);
 	
 	// Calculate GSM only if all required values are present
@@ -3041,8 +3089,16 @@ function sprLoadBundleCalculationFromPp(frm, presetRows) {
 					c[k] = row[k];
 				}
 			});
+			if (sprIsBag(frm)) {
+				const bz = row.bag_size || row.sheet_cutting_size || '';
+				if (bz) {
+					c.bag_size = bz;
+					c.sheet_cutting_size = bz;
+				}
+			}
 		});
 		frm.refresh_field('bundle_calculation');
+		sprToggleBundleCalculationGrid(frm);
 		sprSyncBundleProducedSheets(frm, { silent: true });
 		frm.clear_table('items');
 		frm.refresh_field('items');
@@ -3122,26 +3178,75 @@ function spr_force_sheet_cutting_item_grid_columns(grid) {
 	});
 }
 
+function spr_bundle_bag_size_col() {
+	return frappe.meta.get_docfield('Bundle Calculation', 'bag_size')
+		? 'bag_size'
+		: 'sheet_cutting_size';
+}
+
+function spr_get_bundle_list_view_config(frm) {
+	if (sprIsBag(frm)) {
+		const bagCol = spr_bundle_bag_size_col();
+		return {
+			show: [
+				'item_code',
+				bagCol,
+				'no_of_boxes',
+				'pcs_per_packet',
+				'total_pcs_per_bundle',
+				'work_order',
+				'order_code',
+				'create_bundle_entry',
+				'total_produced_bag_pcs',
+				'total_achieved_weight',
+			],
+			hide: [
+				bagCol === 'bag_size' ? 'sheet_cutting_size' : 'bag_size',
+				'no_of_bundles',
+				'pkts_per_bundle',
+				'job',
+				'total_consumed_meter',
+				'total_produced_sheets',
+			],
+		};
+	}
+	if (sprIsSheetCutting(frm)) {
+		return {
+			show: [
+				'item_code',
+				'sheet_cutting_size',
+				'no_of_bundles',
+				'pkts_per_bundle',
+				'pcs_per_packet',
+				'total_pcs_per_bundle',
+				'work_order',
+				'order_code',
+				'job',
+				'create_bundle_entry',
+				'total_consumed_meter',
+				'total_produced_sheets',
+				'total_achieved_weight',
+			],
+			hide: ['bag_size', 'no_of_boxes', 'total_produced_bag_pcs'],
+		};
+	}
+	return { show: [], hide: [] };
+}
+
 function sprToggleBundleCalculationGrid(frm) {
 	if (!frm || !frm.fields_dict || !frm.fields_dict.bundle_calculation) {
 		return;
 	}
 	const grid = frm.fields_dict.bundle_calculation.grid;
-	if (!grid || typeof grid.update_docfield_property !== 'function') {
+	if (!grid) {
 		return;
 	}
 	const isBag = sprIsBag(frm);
-	spr_set_grid_col_hidden(grid, 'sheet_cutting_size', isBag ? 1 : 0);
-	spr_set_grid_col_hidden(grid, 'bag_size', isBag ? 0 : 1);
-	if (isBag) {
+	if (isBag && typeof grid.update_docfield_property === 'function') {
 		grid.update_docfield_property('bag_size', 'label', __('Bag Size'));
+		grid.update_docfield_property('sheet_cutting_size', 'label', __('Bag Size (alt)'));
 		grid.update_docfield_property('pcs_per_packet', 'label', __('Pcs per Box'));
 		grid.update_docfield_property('total_pcs_per_bundle', 'label', __('Total Planned Pcs'));
-		grid.update_docfield_property('no_of_bundles', 'hidden', 1);
-		grid.update_docfield_property('pkts_per_bundle', 'hidden', 1);
-	} else {
-		grid.update_docfield_property('no_of_bundles', 'hidden', 0);
-		grid.update_docfield_property('pkts_per_bundle', 'hidden', 0);
 	}
 	spr_sync_grid_columns_visible(frm, 'bundle_calculation');
 }
@@ -3150,9 +3255,7 @@ function sprToggleSheetCuttingRollUi(frm) {
 	const isSc = sprIsSheetCutting(frm);
 	const isBag = sprIsBag(frm);
 	const useBundlePcsCols = isSc || isBag;
-	const hideWidthCol = isSc ? 1 : 0;
-	const hideSheetCols = useBundlePcsCols ? 0 : 1;
-	const hideLengthCols = useBundlePcsCols ? 1 : 0;
+	const hideWidthCol = isSc || isBag ? 1 : 0;
 	const fd = frm && frm.fields_dict ? frm.fields_dict.items : null;
 	const grid = fd && fd.grid;
 	if (grid) {
@@ -3164,21 +3267,18 @@ function sprToggleSheetCuttingRollUi(frm) {
 			spr_set_grid_col_hidden(grid, 'custom_lam_gsm', 1);
 			spr_force_sheet_cutting_item_grid_columns(grid);
 		}
-		spr_set_grid_col_hidden(grid, 'width_inch', hideWidthCol);
-		spr_set_grid_col_hidden(grid, 'custom_sheet_size', hideSheetCols);
-		spr_set_grid_col_hidden(grid, 'custom_planned_sheets_pcs', hideSheetCols);
-		spr_set_grid_col_hidden(grid, 'custom_total_produced_sheets', hideSheetCols);
-		spr_set_grid_col_hidden(grid, 'custom_planned_bag_pcs', hideSheetCols);
-		spr_set_grid_col_hidden(grid, 'custom_achieved_bag_pcs', hideSheetCols);
-		spr_set_grid_col_hidden(grid, 'meter_roll', hideLengthCols);
-		spr_set_grid_col_hidden(grid, 'produced_length_mtrs', hideLengthCols);
 		if (isBag && typeof grid.update_docfield_property === 'function') {
 			grid.update_docfield_property('custom_sheet_size', 'label', __('Bag Size'));
 			grid.update_docfield_property('custom_planned_bag_pcs', 'label', __('Planned Bag PCS'));
+			grid.update_docfield_property('custom_achieved_bag_pcs', 'label', __('Achieved Bag PCS'));
 		}
+		spr_set_grid_col_hidden(grid, 'width_inch', hideWidthCol);
 		spr_sync_grid_columns_visible(frm, 'items');
 	}
 	sprToggleBundleCalculationGrid(frm);
+	if (useBundlePcsCols) {
+		spr_schedule_grid_ui_debounced(frm, { delay: 200 });
+	}
 }
 
 function sprUsesBoppFilmRollPrompt(frm) {
@@ -3281,6 +3381,62 @@ function sprIsFabric100Run(frm) {
 function spr_get_items_list_view_config(frm) {
 	if (sprIsFabric100Run(frm)) {
 		return { show: SPR_FABRIC100_ITEMS_GRID_SHOW, hide: SPR_FABRIC100_ITEMS_GRID_HIDE };
+	}
+	if (sprIsBag(frm)) {
+		return {
+			show: [
+				'batch_no',
+				'party_code',
+				'item_code',
+				'custom_sheet_size',
+				'gsm',
+				'produced_gsm',
+				'custom_planned_bag_pcs',
+				'custom_achieved_bag_pcs',
+				'meter_roll',
+				'produced_length_mtrs',
+				'net_weight',
+				'gross_weight',
+				'save_row',
+				'work_order',
+			],
+			hide: [
+				'width_inch',
+				'custom_planned_sheets_pcs',
+				'custom_total_produced_sheets',
+				'quality',
+				'color',
+				'planned_qty',
+			],
+		};
+	}
+	if (sprIsSheetCutting(frm)) {
+		return {
+			show: [
+				'batch_no',
+				'party_code',
+				'item_code',
+				'custom_sheet_size',
+				'quality',
+				'color',
+				'gsm',
+				'produced_gsm',
+				'custom_planned_sheets_pcs',
+				'custom_total_produced_sheets',
+				'net_weight',
+				'gross_weight',
+				'save_row',
+				'work_order',
+			],
+			hide: [
+				'width_inch',
+				'meter_roll',
+				'produced_length_mtrs',
+				'custom_planned_bag_pcs',
+				'custom_achieved_bag_pcs',
+				'planned_qty',
+			],
+		};
 	}
 	return {
 		show: [
@@ -3559,14 +3715,13 @@ function sprEffectiveProducedGsm(doc) {
 		nw = flt(doc.gross_weight);
 	}
 	
-	// Get width (required)
 	const wi = flt(doc.width_inch);
-	
+	const wiOk = wi > 0 && wi < 500 ? wi : 0;
+
 	const mr = sprResolveLengthMeters(doc);
-	
-	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
-	if (nw > 0 && wi > 0 && mr > 0) {
-		return Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
+
+	if (nw > 0 && wiOk > 0 && mr > 0) {
+		return Math.round((nw * 1000) / (wiOk * mr * 0.0254) * 100) / 100;
 	}
 	return 0;
 }
