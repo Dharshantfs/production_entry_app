@@ -24,8 +24,8 @@ from production_entry.production_planning.planning_doctypes import (
 
 BOX_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
 W_CUT_D_CUT_UNITS = W_CUT_D_CUT_ALL_UNITS
-D_CUT_PROCESS_CODES = ("211", "212", "213", "217")
-W_CUT_PROCESS_CODES = ("200", "201", "202")
+D_CUT_PROCESS_CODES = ("211", "212", "213", "214", "217")
+W_CUT_PROCESS_CODES = ("200", "201", "202", "203")
 W_CUT_D_CUT_FG_PROCESS_CODES = D_CUT_PROCESS_CODES + W_CUT_PROCESS_CODES
 ALL_BAG_FG_PROCESS_CODES = W_CUT_D_CUT_FG_PROCESS_CODES  # extended in scheduler with box bag codes
 
@@ -162,6 +162,8 @@ def _dcut_process_label(process_code):
 		return "213 plain laminated d cut bag"
 	if p == "217":
 		return "217 d cut bopp bag"
+	if p == "214":
+		return "214 printed d cut bag"
 	return p
 
 
@@ -173,6 +175,8 @@ def _wcut_process_label(process_code):
 		return "201 printed w cut bag"
 	if p == "202":
 		return "202 laminated w cut bag"
+	if p == "203":
+		return "203 printed laminated w cut bag"
 	return p
 
 
@@ -355,6 +359,104 @@ def _force_wcut_unit_on_sheet(planning_sheet_name=None):
 		""",
 		[W_CUT_UNASSIGNED_UNIT] + params,
 	)
+
+
+def _wcut_dcut_bag_field_updates_from_parsed(parsed, row, so_name=""):
+	"""Build PT/PSI field updates from _parse_dcut_bag_item_code result."""
+	updates = {}
+	if not parsed:
+		return updates
+	total = flt(parsed.get("total_gsm") or 0)
+	if total > 0:
+		updates["gsm"] = int(total)
+	quality_name = ""
+	color_name = ""
+	try:
+		from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+			_quality_name_by_code,
+			_color_name_by_code,
+		)
+		if parsed.get("quality_letter"):
+			quality_name = _quality_name_by_code(parsed["quality_letter"]) or parsed["quality_letter"]
+		if parsed.get("colour_code"):
+			color_name = _color_name_by_code(parsed["colour_code"]) or parsed["colour_code"]
+	except Exception:
+		quality_name = parsed.get("quality_letter") or ""
+		color_name = parsed.get("colour_code") or ""
+	if parsed.get("lam_gsm"):
+		updates["custom_lam_gsm"] = int(parsed.get("lam_gsm") or 0)
+	if parsed.get("bopp_gsm"):
+		updates["custom_bopp_gsm"] = int(parsed.get("bopp_gsm") or 0)
+	if parsed.get("num_colors"):
+		updates["custom_no_of_design_colours"] = f"{parsed['num_colors']}C"
+	fin = parsed.get("finishing_label") or parsed.get("finishing_code")
+	if fin:
+		updates["custom_finishing"] = fin
+		updates["finishing"] = fin
+	if quality_name:
+		updates["quality"] = quality_name
+		updates["custom_quality"] = quality_name
+	if color_name:
+		updates["color"] = color_name
+	if parsed.get("bag_size_id"):
+		updates["bag_size"] = parsed["bag_size_id"]
+	dc = parsed.get("design_code")
+	if dc:
+		updates["custom_design_code"] = dc
+		try:
+			from production_entry.production_planning.scheduler_api import (
+				_design_master_extra_fields,
+				_pb_design_name_from_sales_order_item,
+				_printing_design_attachment_from_sales_order_item,
+			)
+			dm_info = _design_master_extra_fields(dc) or {}
+			soi_name = str(row.get("sales_order_item") or row.get("so_item") or "").strip()
+			design_name = dm_info.get("custom_design_name")
+			design_attachment = dm_info.get("custom_design_attachment")
+			if soi_name:
+				if not design_name:
+					design_name = _pb_design_name_from_sales_order_item(soi_name)
+				if not design_attachment:
+					design_attachment = _printing_design_attachment_from_sales_order_item(soi_name)
+			if design_name:
+				updates["custom_design_name"] = design_name
+			if design_attachment:
+				updates["custom_design_attachment"] = design_attachment
+			if dm_info.get("custom_design_colour"):
+				updates["custom_design_colour"] = dm_info["custom_design_colour"]
+		except Exception:
+			pass
+	return updates
+
+
+def _update_wcut_dcut_bag_fields_on_sheet(planning_sheet_name):
+	"""Stamp GSM, finishing, design, bag size on W/D-CUT FG rows (Planning Table + Planning sheet Item)."""
+	if not planning_sheet_name:
+		return
+	so_name = str(frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order") or "").strip()
+
+	def _apply(doctype, table):
+		if not frappe.db.exists("DocType", doctype):
+			return
+		rows = frappe.db.sql(
+			f"""SELECT name, item_code, sales_order_item, so_item FROM `tab{table}`
+			   WHERE parent = %s""",
+			(planning_sheet_name,),
+			as_dict=True,
+		) or []
+		for row in rows:
+			parsed = _parse_dcut_bag_item_code(row.get("item_code") or "")
+			if parsed.get("process") not in W_CUT_D_CUT_FG_PROCESS_CODES:
+				continue
+			updates = _wcut_dcut_bag_field_updates_from_parsed(parsed, row, so_name)
+			if not updates:
+				continue
+			safe = {k: v for k, v in updates.items() if frappe.db.has_column(doctype, k)}
+			if safe:
+				frappe.db.set_value(doctype, row["name"], safe, update_modified=False)
+
+	_apply("Planning Table", "Planning Table")
+	_apply("Planning sheet Item", "Planning sheet Item")
 
 
 def _sync_dcut_bopp_bag_planning_rows(planning_sheet_name):

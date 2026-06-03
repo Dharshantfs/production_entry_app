@@ -21,7 +21,14 @@
           <button type="button" :class="{ active: filterShift === 'night' }" @click="filterShift = 'night'">Night</button>
         </div>
       </div>
-      <div class="cc-filter-item cc-shift-filter">
+      <div v-if="isWCutDCutTable" class="cc-filter-item cc-shift-filter">
+        <label>Bag type</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: wCutDCutFamily === 'w_cut' }" @click="setWCutDCutFamily('w_cut')">W CUT</button>
+          <button type="button" :class="{ active: wCutDCutFamily === 'd_cut' }" @click="setWCutDCutFamily('d_cut')">D CUT</button>
+        </div>
+      </div>
+      <div v-if="!isWCutDCutTable || wCutDCutFamily" class="cc-filter-item cc-shift-filter">
         <label>Process</label>
         <div class="cc-shift-btns" style="flex-wrap: wrap;">
           <button v-for="opt in processOptions" :key="opt.value" type="button" :class="{ active: filterProcess === opt.value }" @click="setProcessFilter(opt.value)">{{ opt.label }}</button>
@@ -185,21 +192,56 @@ const W_CUT_D_CUT_ALL_UNITS = [
 
 const ITEM_PROCESS_KNOWN = new Set([
   "100", "102", "103", "104", "105", "106", "107", "108", "109",
-  "200", "201", "202", "211", "212", "213", "217",
+  "200", "201", "202", "203", "211", "212", "213", "214", "217",
   "221", "222", "223", "224", "231", "233", "241", "242",
   "251", "252", "253", "254", "255",
 ]);
+const D_CUT_FG_PROCS = ["211", "212", "213", "214", "217"];
+const W_CUT_FG_PROCS = ["200", "201", "202", "203"];
+const W_CUT_D_CUT_PROCESS_LABELS = {
+  "211": "211 plain d cut bag", "212": "212 printed d cut bag", "213": "213 plain laminated d cut bag",
+  "214": "214 printed d cut bag", "217": "217 d cut bopp bag",
+  "200": "200 plain w cut bag", "201": "201 printed w cut bag", "202": "202 laminated w cut bag", "203": "203 printed laminated w cut bag",
+};
 
 const isWCutDCutTable = computed(() => String(window.location.pathname || "").toLowerCase().includes("/desk/w-cut-d-cut-order-table"));
 const boardKind = computed(() => (isWCutDCutTable.value ? "w_cut_d_cut" : "box_bag"));
 const wCutDCutCompanyScope = ref("both");
+const wCutDCutFamily = ref("");
 try {
   const _wcs = localStorage.getItem("wCutDCutCompanyScope");
   if (_wcs === "jve" || _wcs === "vtp" || _wcs === "both") wCutDCutCompanyScope.value = _wcs;
+  const _wf = localStorage.getItem("wCutDCutFamily");
+  if (_wf === "w_cut" || _wf === "d_cut") wCutDCutFamily.value = _wf;
 } catch (e) { /* ignore */ }
 function setWCutDCutCompanyScope(scope) {
   wCutDCutCompanyScope.value = scope;
   try { localStorage.setItem("wCutDCutCompanyScope", scope); } catch (e) { /* ignore */ }
+}
+function setWCutDCutFamily(family) {
+  wCutDCutFamily.value = family;
+  filterProcess.value = "all";
+  try { localStorage.setItem("wCutDCutFamily", family); } catch (e) { /* ignore */ }
+  updateUrlParams();
+  fetchData();
+}
+function rowProcessPrefix(row) {
+  const fromApi = String(row?.process || "").trim();
+  if (fromApi && (D_CUT_FG_PROCS.includes(fromApi) || W_CUT_FG_PROCS.includes(fromApi))) return fromApi;
+  return itemProcessPrefix(row?.itemCode || row?.item_code || "");
+}
+function formatFrappeError(e) {
+  if (!e) return "Unknown error";
+  if (typeof e === "string") return e;
+  if (e.message && typeof e.message === "string") return e.message;
+  if (e._server_messages) {
+    try {
+      const msgs = JSON.parse(e._server_messages);
+      return msgs.map((m) => { try { return JSON.parse(m).message; } catch { return m; } }).join("; ");
+    } catch { /* ignore */ }
+  }
+  if (e.exc_type) return `${e.exc_type}: ${e.message || ""}`;
+  try { return JSON.stringify(e); } catch { return String(e); }
 }
 const ACTIVE_UNITS = computed(() => {
   if (!isWCutDCutTable.value) return BOX_BAG_UNITS;
@@ -221,16 +263,10 @@ const tableHeader = computed(() => {
 const backToBoardLabel = computed(() => (isWCutDCutTable.value ? "Back to W CUT / D CUT Board" : "Back to Box Bag Board"));
 const processOptions = computed(() => {
   if (isWCutDCutTable.value) {
-    return [
-      { value: "211", label: "211 plain d cut bag" },
-      { value: "212", label: "212 printed d cut bag" },
-      { value: "213", label: "213 plain laminated d cut bag" },
-      { value: "217", label: "217 d cut bopp bag" },
-      { value: "200", label: "200 plain w cut bag" },
-      { value: "201", label: "201 printed w cut bag" },
-      { value: "202", label: "202 laminated w cut bag" },
-      { value: "all", label: "All" },
-    ];
+    const procs = wCutDCutFamily.value === "w_cut" ? W_CUT_FG_PROCS : wCutDCutFamily.value === "d_cut" ? D_CUT_FG_PROCS : [];
+    const opts = procs.map((p) => ({ value: p, label: W_CUT_D_CUT_PROCESS_LABELS[p] || p }));
+    opts.push({ value: "all", label: "All" });
+    return opts;
   }
   return [
     { value: "221", label: "221 Box Bag" },
@@ -306,12 +342,23 @@ const filteredRows = computed(() => {
   const sh = (filterShift.value || "all").toLowerCase();
   if (sh === "day") d = d.filter((r) => String(r.shift_label || "DAY").toUpperCase() === "DAY");
   else if (sh === "night") d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
+  if (isWCutDCutTable.value) {
+    if (wCutDCutFamily.value === "w_cut") {
+      d = d.filter((r) => W_CUT_FG_PROCS.includes(rowProcessPrefix(r)));
+    } else if (wCutDCutFamily.value === "d_cut") {
+      d = d.filter((r) => D_CUT_FG_PROCS.includes(rowProcessPrefix(r)));
+    } else {
+      d = [];
+    }
+    const scope = wCutDCutCompanyScope.value;
+    const jveSet = new Set(W_CUT_D_CUT_JVE_UNITS);
+    const vtpSet = new Set(W_CUT_D_CUT_VTP_UNITS);
+    if (scope === "jve") d = d.filter((r) => jveSet.has(String(r.unit || "").trim()));
+    else if (scope === "vtp") d = d.filter((r) => vtpSet.has(String(r.unit || "").trim()));
+  }
   const fp = (filterProcess.value || "all");
   if (fp !== "all") {
-    d = d.filter((r) => {
-      const proc = String(r.process || itemProcessPrefix(r.itemCode || r.item_code || "")).trim();
-      return proc === fp;
-    });
+    d = d.filter((r) => rowProcessPrefix(r) === fp);
   }
   return sortRowsBySavedSequence(d);
 });
@@ -661,13 +708,22 @@ async function fetchData() {
     await loadSavedArrangement();
     await fetchMaintenanceRecords();
   } catch (e) {
-    frappe.msgprint(`Error loading ${isWCutDCutTable.value ? "W CUT / D CUT Table" : "Box Bag Order Table"}: ${e?.message || e}`);
+    frappe.msgprint(`Error loading ${isWCutDCutTable.value ? "W CUT / D CUT Table" : "Box Bag Order Table"}: ${formatFrappeError(e)}`);
   } finally {
     fetchInProgress = false;
   }
 }
 
-function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); if (filterProcess.value !== "all") q.set("process", filterProcess.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
+function updateUrlParams() {
+  const q = new URLSearchParams();
+  if (viewScope.value === "daily") q.set("date", filterOrderDate.value);
+  if (viewScope.value === "weekly") q.set("week", filterWeek.value);
+  if (viewScope.value === "monthly") q.set("month", filterMonth.value);
+  q.set("scope", viewScope.value);
+  if (filterProcess.value !== "all") q.set("process", filterProcess.value);
+  if (isWCutDCutTable.value && wCutDCutFamily.value) q.set("family", wCutDCutFamily.value);
+  window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
+}
 function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
 
@@ -678,9 +734,8 @@ onMounted(async () => {
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
   if (p.get("process")) filterProcess.value = p.get("process");
-  if (!p.get("process")) {
-    filterProcess.value = "all";
-  }
+  if (!p.get("process")) filterProcess.value = "all";
+  if (p.get("family") === "w_cut" || p.get("family") === "d_cut") wCutDCutFamily.value = p.get("family");
   moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today();
   updateUrlParams();
   await fetchData();

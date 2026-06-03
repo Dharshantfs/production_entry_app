@@ -224,6 +224,9 @@ def _sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, fg_parent_pr
         _item_process_prefix,
         _is_printed_bopp_item_code,
         _get_pt_parentfield,
+        _printed_bopp_planning_fields_from_item_code,
+        MOVEMENT_TRANSFER,
+        _set_movement_type_if_supported,
     )
 
     fg_set = tuple(str(p).strip() for p in (fg_parent_processes or ()) if str(p).strip())
@@ -309,7 +312,7 @@ def _sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, fg_parent_pr
         from production_entry.production_planning.scheduler_api import _parent_child_trace_id_from_item_code
         trace_id = _parent_child_trace_id_from_item_code(so_fg_ic)
 
-        # Insert PB row
+        # Insert PB row (Planning Table + Planning sheet Item)
         new_row = {
             "item_code": pb_ic,
             "item_name": pb_item_name,
@@ -321,7 +324,12 @@ def _sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, fg_parent_pr
             "custom_parent_child_trace_id": trace_id,
             "quality": "PRINTED BOPP",
         }
+        pb_patch = _printed_bopp_planning_fields_from_item_code(pb_ic, pb_item_name, soi_key) or {}
+        new_row.update(pb_patch)
+        _set_movement_type_if_supported(new_row, MOVEMENT_TRANSFER, "Planning Table")
         try:
+            if hasattr(ps, "items") or ps.meta.has_field("items"):
+                ps.append("items", dict(new_row))
             ps.append(parent_field, dict(new_row))
         except Exception:
             pass

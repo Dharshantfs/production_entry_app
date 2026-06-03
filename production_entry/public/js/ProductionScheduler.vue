@@ -60,10 +60,23 @@
           <option value="Finalized">Finalized</option>
         </select>
       </div>
-      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard || isLaminationBoard || isBoxBagBoard || isWCutDCutBoard" class="cc-filter-item cc-shift-filter">
+      <div v-if="isPrintingBoard || isSlittingBoard || isSheetCuttingBoard || isLaminationBoard || isBoxBagBoard" class="cc-filter-item cc-shift-filter">
         <label>Process</label>
         <div class="cc-shift-btns">
           <button v-for="opt in boardProcessOptions" :key="opt.value" type="button" :class="{ active: boardProcessFilter === opt.value }" @click="setBoardProcessFilter(opt.value)">{{ opt.label }}</button>
+        </div>
+      </div>
+      <div v-if="isWCutDCutBoard" class="cc-filter-item cc-shift-filter">
+        <label>Bag type</label>
+        <div class="cc-shift-btns">
+          <button type="button" :class="{ active: wCutDCutFamily === 'w_cut' }" @click="setWCutDCutFamily('w_cut')">W CUT</button>
+          <button type="button" :class="{ active: wCutDCutFamily === 'd_cut' }" @click="setWCutDCutFamily('d_cut')">D CUT</button>
+        </div>
+      </div>
+      <div v-if="isWCutDCutBoard && wCutDCutFamily" class="cc-filter-item cc-shift-filter">
+        <label>Process</label>
+        <div class="cc-shift-btns" style="flex-wrap: wrap;">
+          <button v-for="opt in wCutDCutProcessOptions" :key="opt.value" type="button" :class="{ active: boardProcessFilter === opt.value }" @click="setBoardProcessFilter(opt.value)">{{ opt.label }}</button>
         </div>
       </div>
       <div v-if="isWCutDCutBoard" class="cc-filter-item cc-shift-filter">
@@ -383,9 +396,14 @@ const W_CUT_D_CUT_ALL_UNITS = [
   W_CUT_D_CUT_UNIT_L1, W_CUT_D_CUT_UNIT_L2, W_CUT_D_CUT_UNIT_L3,
   W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT,
 ];
-const W_CUT_D_CUT_FG_PROCS = ["211", "212", "213", "217", "200", "201", "202"];
-const D_CUT_FG_PROCS = ["211", "212", "213", "217"];
-const W_CUT_FG_PROCS = ["200", "201", "202"];
+const W_CUT_D_CUT_FG_PROCS = ["211", "212", "213", "214", "217", "200", "201", "202", "203"];
+const D_CUT_FG_PROCS = ["211", "212", "213", "214", "217"];
+const W_CUT_FG_PROCS = ["200", "201", "202", "203"];
+const W_CUT_D_CUT_PROCESS_LABELS = {
+  "211": "211 plain d cut bag", "212": "212 printed d cut bag", "213": "213 plain laminated d cut bag",
+  "214": "214 printed d cut bag", "217": "217 d cut bopp bag",
+  "200": "200 plain w cut bag", "201": "201 printed w cut bag", "202": "202 laminated w cut bag", "203": "203 printed laminated w cut bag",
+};
 
 const UNIT_TONNAGE_LIMITS = {
   "Unit 1": 4.4,
@@ -501,7 +519,10 @@ function normalizeUnitName(rawUnit) {
  * filters by its own process (e.g. rewinding → 102, printing → 105/106).
  */
 const ITEM_PROCESS_KNOWN = new Set([
-  "100", "102", "103", "104", "105", "106", "107", "108", "109", "211", "212", "213", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255",
+  "100", "102", "103", "104", "105", "106", "107", "108", "109",
+  "200", "201", "202", "203", "211", "212", "213", "214", "217",
+  "221", "222", "223", "224", "231", "233", "241", "242",
+  "251", "252", "253", "254", "255",
 ]);
 
 /** Match scheduler_api._item_process_prefix: leading segment process wins over later -100- style digit runs. */
@@ -679,6 +700,11 @@ const isPrintingBoard = ref(_initialBoardFlags.printing);
 const isPrintedBoppFilmBoard = ref(_initialBoardFlags.printedBopp);
 const isPcsBoard = computed(() => isBoxBagBoard.value || isWCutDCutBoard.value);
 const boardProcessFilter = ref("");
+const wCutDCutFamily = ref("");
+try {
+  const _wf = localStorage.getItem("wCutDCutFamily");
+  if (_wf === "w_cut" || _wf === "d_cut") wCutDCutFamily.value = _wf;
+} catch (e) { /* ignore */ }
 const wCutDCutCompanyScope = ref("both");
 try {
   const _wcs = localStorage.getItem("wCutDCutCompanyScope");
@@ -687,6 +713,25 @@ try {
 function setWCutDCutCompanyScope(scope) {
   wCutDCutCompanyScope.value = scope;
   try { localStorage.setItem("wCutDCutCompanyScope", scope); } catch (e) { /* ignore */ }
+  fetchData();
+}
+function setWCutDCutFamily(family) {
+  wCutDCutFamily.value = family;
+  boardProcessFilter.value = "__all__";
+  try { localStorage.setItem("wCutDCutFamily", family); } catch (e) { /* ignore */ }
+  updateUrlParams();
+  fetchData();
+}
+const wCutDCutProcessOptions = computed(() => {
+  const procs = wCutDCutFamily.value === "w_cut" ? W_CUT_FG_PROCS : wCutDCutFamily.value === "d_cut" ? D_CUT_FG_PROCS : [];
+  const opts = procs.map((p) => ({ value: p, label: W_CUT_D_CUT_PROCESS_LABELS[p] || p }));
+  opts.push({ value: "__all__", label: "All" });
+  return opts;
+});
+function rowProcessPrefix(row) {
+  const fromApi = String(row?.process || "").trim();
+  if (fromApi && W_CUT_D_CUT_FG_PROCS.includes(fromApi)) return fromApi;
+  return itemProcessPrefix(row?.item_code || row?.itemCode || "");
 }
 const filterStatus = ref("");
 const unitSortConfig = ref({});
@@ -738,16 +783,7 @@ const boardProcessOptions = computed(() => {
     { value: "222", label: "222 flexo printed box bag" },
     { value: "__all__", label: "All" },
   ];
-  if (isWCutDCutBoard.value) return [
-    { value: "211", label: "211 plain d cut bag" },
-    { value: "212", label: "212 printed d cut bag" },
-    { value: "213", label: "213 plain laminated d cut bag" },
-    { value: "217", label: "217 d cut bopp bag" },
-    { value: "200", label: "200 plain w cut bag" },
-    { value: "201", label: "201 printed w cut bag" },
-    { value: "202", label: "202 laminated w cut bag" },
-    { value: "__all__", label: "All" },
-  ];
+  if (isWCutDCutBoard.value) return [];
   return [];
 });
 
@@ -773,9 +809,10 @@ const boardBannerText = computed(() => {
   }
   if (isWCutDCutBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const pLbl = !p || p === "__all__" ? "211 · 212 · 213 · 217 · 200 · 201 · 202" : `Process ${p}`;
+    const fam = wCutDCutFamily.value === "w_cut" ? "W CUT" : wCutDCutFamily.value === "d_cut" ? "D CUT" : "Select W CUT or D CUT";
+    const pLbl = !p || p === "__all__" ? "All processes" : (W_CUT_D_CUT_PROCESS_LABELS[p] || p);
     const co = wCutDCutCompanyScope.value === "jve" ? "JVE" : wCutDCutCompanyScope.value === "vtp" ? "VTP" : "Both";
-    return `W CUT / D CUT Board — ${co} — ${pLbl}${unitScope}`;
+    return `W CUT / D CUT Board — ${co} — ${fam} — ${pLbl}${unitScope}`;
   }
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
   if (isLaminationBoard.value) {
@@ -1102,9 +1139,12 @@ const filteredData = computed(() => {
     }
   }
   if (isWCutDCutBoard.value) {
+    const scope = wCutDCutCompanyScope.value;
+    const jveSet = new Set(W_CUT_D_CUT_JVE_UNITS);
+    const vtpSet = new Set(W_CUT_D_CUT_VTP_UNITS);
     const validUnits = new Set(W_CUT_D_CUT_ALL_UNITS);
     data = data.map((d) => {
-      const proc = itemProcessPrefix(d.item_code || d.itemCode);
+      const proc = rowProcessPrefix(d);
       const u = (d.unit || "").trim();
       if (D_CUT_FG_PROCS.includes(proc) && !validUnits.has(u)) {
         return { ...d, unit: D_CUT_UNASSIGNED_UNIT };
@@ -1114,11 +1154,21 @@ const filteredData = computed(() => {
       }
       return d;
     });
-    const bpf = boardProcessFilter.value || "__all__";
-    if (W_CUT_D_CUT_FG_PROCS.includes(bpf)) {
-      data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === bpf);
+    if (wCutDCutFamily.value === "w_cut") {
+      data = data.filter((d) => W_CUT_FG_PROCS.includes(rowProcessPrefix(d)));
+    } else if (wCutDCutFamily.value === "d_cut") {
+      data = data.filter((d) => D_CUT_FG_PROCS.includes(rowProcessPrefix(d)));
     } else {
-      data = data.filter((d) => W_CUT_D_CUT_FG_PROCS.includes(itemProcessPrefix(d.item_code || d.itemCode)));
+      data = [];
+    }
+    if (scope === "jve") {
+      data = data.filter((d) => jveSet.has((d.unit || "").trim()));
+    } else if (scope === "vtp") {
+      data = data.filter((d) => vtpSet.has((d.unit || "").trim()));
+    }
+    const bpf = boardProcessFilter.value || "__all__";
+    if (bpf !== "__all__" && W_CUT_D_CUT_FG_PROCS.includes(bpf)) {
+      data = data.filter((d) => rowProcessPrefix(d) === bpf);
     }
   }
 
@@ -1933,9 +1983,8 @@ async function loadOrders(d) {
             );
         }
         if (isWCutDCutBoard.value) {
-            items = items.filter((i) =>
-                ["211", "212", "213"].includes(itemProcessPrefix(i.itemCode || i.item_code))
-            );
+            const famProcs = wCutDCutFamily.value === "w_cut" ? W_CUT_FG_PROCS : wCutDCutFamily.value === "d_cut" ? D_CUT_FG_PROCS : W_CUT_D_CUT_FG_PROCS;
+            items = items.filter((i) => famProcs.includes(rowProcessPrefix(i)));
         }
 
         if (items.length === 0) {
@@ -2703,6 +2752,12 @@ function updateUrlParams() {
   } else {
     url.searchParams.delete('process');
   }
+  if (isWCutDCutBoard.value && wCutDCutFamily.value) {
+    url.searchParams.set('family', wCutDCutFamily.value);
+    prefs.family = wCutDCutFamily.value;
+  } else {
+    url.searchParams.delete('family');
+  }
   if (isLaminationBoard.value) {
     const lp = (boardProcessFilter.value || "").trim();
     if (!lp || lp === "__all__") {
@@ -2819,11 +2874,12 @@ onMounted(() => {
       && ["221", "222", "223", "224", "231", "233", "241", "242", "__all__"].includes(processParam)
     ) {
       boardProcessFilter.value = processParam;
-    } else if (
-      isWCutDCutBoard.value
-      && ["211", "212", "213", "__all__"].includes(processParam)
-    ) {
-      boardProcessFilter.value = processParam;
+    } else if (isWCutDCutBoard.value) {
+      const familyParam = qParams.get("family");
+      if (familyParam === "w_cut" || familyParam === "d_cut") wCutDCutFamily.value = familyParam;
+      if (processParam && (W_CUT_D_CUT_FG_PROCS.includes(processParam) || processParam === "__all__")) {
+        boardProcessFilter.value = processParam;
+      }
     } else if (["103", "109", "108", "105", "106", "251", "252", "253", "254", "255", "__all__"].includes(processParam)) {
       boardProcessFilter.value = processParam;
     }

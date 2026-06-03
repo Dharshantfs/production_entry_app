@@ -136,17 +136,28 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"211": 116,
 	"212": 116,
 	"213": 116,
+	"214": 116,
 	"217": 116,
 	"200": 116,
 	"201": 116,
 	"202": 116,
+	"203": 116,
+}
+
+# Parent-first display order for bag / W-D-CUT sheets (FG first, then BOM children).
+_BAG_PARENT_FIRST_RANK = {
+	"211": 10, "212": 10, "213": 10, "214": 10, "217": 10,
+	"200": 10, "201": 10, "202": 10, "203": 10,
+	"221": 10, "222": 10, "223": 10, "224": 10, "231": 10, "233": 10, "241": 10, "242": 10,
+	"PB": 25,
+	"106": 30, "105": 35, "107": 40, "104": 45, "103": 50, "100": 60,
 }
 
 BOX_BAG_PROCESS_CODES = ("221", "222", "223", "224", "231", "233", "241", "242")
 BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242")
 BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
-D_CUT_PROCESS_CODES = ("211", "212", "213", "217")
-W_CUT_PROCESS_CODES = ("200", "201", "202")
+D_CUT_PROCESS_CODES = ("211", "212", "213", "214", "217")
+W_CUT_PROCESS_CODES = ("200", "201", "202", "203")
 W_CUT_D_CUT_FG_PROCESS_CODES = D_CUT_PROCESS_CODES + W_CUT_PROCESS_CODES
 ALL_BAG_FG_PROCESS_CODES = BOX_BAG_PROCESS_CODES + W_CUT_D_CUT_FG_PROCESS_CODES
 
@@ -168,13 +179,46 @@ def _production_sort_rank(item_code):
 	return _PRODUCTION_SORT_RANK_BY_PROCESS.get(pp, 500)
 
 
-def _planning_row_sort_key(row, so_line_order):
-	"""Group by SO line order, then upstream→downstream process rank, then stable idx."""
+def _production_sort_rank_parent_first(item_code):
+	"""Bag sheets: FG parent first, then BOM children (106/107/104/100/PB)."""
+	ic = _cstr(item_code)
+	if not ic:
+		return 900
+	if _is_printed_bopp_item_code(ic) or ic.upper().startswith("PB-"):
+		return _BAG_PARENT_FIRST_RANK.get("PB", 25)
+	pp = _bom_item_process_code(ic) or _item_process_prefix(ic) or _lamination_process_from_item_code(ic)
+	if pp == "100" or (ic.startswith("100") and not ic.startswith("1000")):
+		return _BAG_PARENT_FIRST_RANK.get("100", 60)
+	return _BAG_PARENT_FIRST_RANK.get(pp, 500)
+
+
+def _planning_sheet_uses_parent_first_sort(planning_sheet_name):
+	"""True when sheet has box-bag or W/D-CUT FG lines (parent-before-child display)."""
+	if not planning_sheet_name:
+		return False
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.exists("DocType", doctype):
+			continue
+		for r in frappe.get_all(
+			doctype,
+			filters={"parent": planning_sheet_name},
+			fields=["item_code"],
+			limit_page_length=200,
+		) or []:
+			pp = _item_process_prefix(_cstr(r.get("item_code")))
+			if pp in ALL_BAG_FG_PROCESS_CODES:
+				return True
+	return False
+
+
+def _planning_row_sort_key(row, so_line_order, parent_first=False):
+	"""Group by SO line order, then process rank, then stable idx."""
 	soik = _cstr(row.get("sales_order_item") or row.get("so_item"))
 	ic = _cstr(row.get("item_code"))
+	rank_fn = _production_sort_rank_parent_first if parent_first else _production_sort_rank
 	return (
 		so_line_order.get(soik, 99999),
-		_production_sort_rank(ic),
+		rank_fn(ic),
 		cint(row.get("idx") or 0),
 		_cstr(row.get("name")),
 	)
@@ -192,7 +236,11 @@ def _same_fg_design_family(planning_ic, so_fg_ic):
 	sp = _bom_item_process_code(sic)
 	if not pp or pp != sp:
 		return False
-	if pp not in ("106", "105", "108", "254", "255", "253", "252", "251", "109", "211", "212", "213", "221", "222", "223", "231", "233", "241", "242"):
+	if pp not in (
+		"106", "105", "108", "254", "255", "253", "252", "251", "109",
+		"211", "212", "213", "214", "217", "200", "201", "202", "203",
+		"221", "222", "223", "231", "233", "241", "242",
+	):
 		return False
 	p_design = pic.split("-")[0].upper()
 	s_design = sic.split("-")[0].upper()
@@ -305,7 +353,8 @@ def _reorder_planning_sheet_by_production_sequence(planning_sheet_name):
 	if not pt_rows:
 		return
 
-	pt_rows.sort(key=lambda r: _planning_row_sort_key(r, so_line_order))
+	parent_first = _planning_sheet_uses_parent_first_sort(planning_sheet_name)
+	pt_rows.sort(key=lambda r: _planning_row_sort_key(r, so_line_order, parent_first))
 	for new_idx, r in enumerate(pt_rows, start=1):
 		frappe.db.set_value("Planning Table", r.name, "idx", new_idx, update_modified=False)
 		if _has_planning_movement_type_column("Planning Table"):
@@ -368,6 +417,17 @@ def reorder_planning_sheet_child_tables_in_doc(doc):
 		return
 	so_name = _cstr(doc.get("sales_order"))
 	so_line_order, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
+	parent_first = False
+	for field in ("planned_items", "custom_planned_items", "planning_table", "items"):
+		if not doc.meta.has_field(field):
+			continue
+		for row in doc.get(field) or []:
+			pp = _item_process_prefix(_cstr(getattr(row, "item_code", None)))
+			if pp in ALL_BAG_FG_PROCESS_CODES:
+				parent_first = True
+				break
+		if parent_first:
+			break
 
 	def _sort_child_rows(rows):
 		if not rows:
@@ -384,7 +444,7 @@ def reorder_planning_sheet_child_tables_in_doc(doc):
 					"name": _cstr(getattr(row, "name", None)),
 				}
 			)
-		payload.sort(key=lambda p: _planning_row_sort_key(p, so_line_order))
+		payload.sort(key=lambda p: _planning_row_sort_key(p, so_line_order, parent_first))
 		for new_idx, p in enumerate(payload, start=1):
 			p["row"].idx = new_idx
 			ic = p["item_code"]
@@ -498,7 +558,7 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
 	{
 		"100", "102", "103", "104", "105", "106", "107", "108", "109",
-		"200", "201", "202", "211", "212", "213", "217",
+		"200", "201", "202", "203", "211", "212", "213", "214", "217",
 		"221", "222", "223", "224", "231", "233", "241", "242",
 		"251", "252", "253", "254", "255",
 	}
@@ -556,7 +616,7 @@ def _bom_item_process_code(item_code):
 	lam = _lamination_process_from_item_code(ic)
 	if pp in (
 		"108", "255", "253", "254", "251", "252",
-		"211", "212", "213", "217", "200", "201", "202",
+		"211", "212", "213", "214", "217", "200", "201", "202", "203",
 		"221", "222", "223", "224", "231", "233", "241", "242",
 	):
 		return pp
@@ -2641,11 +2701,14 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 				if w105 > 0:
 					row.width_inch = w105
 					break
-	if pp in BOX_BAG_PROCESS_CODES:
+	if pp in BOX_BAG_PROCESS_CODES or pp in W_CUT_D_CUT_FG_PROCESS_CODES:
 		from production_entry.production_planning.box_bag_api import _bag_series_size_map
 		if pp in BOPP_BOX_BAG_PROCESS_CODES:
 			from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
 			p = _parse_bopp_bag_item_code(ic)
+		elif pp in W_CUT_D_CUT_FG_PROCESS_CODES:
+			from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
+			p = _parse_dcut_bag_item_code(ic)
 		else:
 			from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
 			p = _parse_box_bag_item_code(ic)
@@ -2669,6 +2732,10 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 				row.bag_size = bs_id
 		if p.get("finishing_label") and hasattr(row, "custom_finishing"):
 			row.custom_finishing = p.get("finishing_label")
+		if p.get("lam_gsm") and hasattr(row, "custom_lam_gsm"):
+			row.custom_lam_gsm = cint(p.get("lam_gsm") or 0)
+		if p.get("bopp_gsm") and hasattr(row, "custom_bopp_gsm"):
+			row.custom_bopp_gsm = cint(p.get("bopp_gsm") or 0)
 		dc = _cstr(p.get("design_code") or "").strip()
 		if dc and hasattr(row, "custom_design_code"):
 			row.custom_design_code = dc
@@ -3788,7 +3855,7 @@ def _stamp_design_fields_on_planning_sheet(planning_sheet_name):
 		return 0
 	if not _planning_row_supports_design_fields():
 		return 0
-	design_procs = frozenset({"105", "106", "108", "201", "212", "217", "252", "253", "254", "255", "251"})
+	design_procs = frozenset({"105", "106", "108", "201", "203", "212", "214", "217", "252", "253", "254", "255", "251"})
 	updated = 0
 	flds = ["name", "item_code", "sales_order_item", "so_item"]
 	for col in ("custom_design_code", "custom_design_name", "custom_design_attachment"):
@@ -6974,6 +7041,11 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_sync_dcut_bopp_bag_planning_rows(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_dcut_bopp")
+	try:
+		from production_entry.production_planning.box_bag_api import _update_wcut_dcut_bag_fields_on_sheet
+		_update_wcut_dcut_bag_fields_on_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_update_wcut_dcut_bag_fields")
 	_sync_lamination_fabric_planning_rows(planning_sheet_name)
 	_sync_slitting_fabric_planning_rows(planning_sheet_name)
 	_force_slitting_unit_on_sheet(planning_sheet_name)
@@ -9087,6 +9159,28 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		so_parent_processes=("213",),
 		process_label="213 D-CUT Fabric (104 → 100)",
 	)
+	# 214 D-CUT (106 sheet print chain): 214 → 106 → 104 → 100
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("214",),
+		"106",
+		PRINTING_UNASSIGNED_UNIT,
+		process_label="214 D-CUT sheet print (214 → 106)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("106",),
+		"104",
+		so_parent_processes=("214",),
+		process_label="214 D-CUT lamination (106 → 104)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("104",),
+		"100",
+		so_parent_processes=("214",),
+		process_label="214 D-CUT fabric (104 → 100)",
+	)
 	# W-CUT BOM expansion: 200→100, 201→105→100, 202→104→100
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
@@ -9121,6 +9215,28 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		"100",
 		so_parent_processes=("202",),
 		process_label="202 W-CUT Fabric (104 → 100)",
+	)
+	# 203 W-CUT (106 sheet print chain): 203 → 106 → 104 → 100
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("203",),
+		"106",
+		PRINTING_UNASSIGNED_UNIT,
+		process_label="203 W-CUT sheet print (203 → 106)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("106",),
+		"104",
+		so_parent_processes=("203",),
+		process_label="203 W-CUT lamination (106 → 104)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("104",),
+		"100",
+		so_parent_processes=("203",),
+		process_label="203 W-CUT fabric (104 → 100)",
 	)
 	try:
 		from production_entry.production_planning.box_bag_api import _sync_dcut_bopp_bag_planning_rows
@@ -14274,17 +14390,37 @@ def _work_order_rm_stock_qty_map(doc):
 			for row in frappe.get_all(
 				"Material Request Plan Item",
 				filters={"parent": pp_name},
-				fields=["item_code", "required_qty", "required_bom_qty", "qty"],
+				fields=_mr_plan_item_fields_for_get_all(),
 				limit_page_length=0,
 			) or []:
 				ic = _cstr(row.get("item_code")).strip()
 				if not ic:
 					continue
-				pp_qty = flt(row.get("required_qty") or row.get("required_bom_qty") or row.get("qty") or 0)
+				pp_qty = _mr_plan_item_qty_from_row(row)
 				if pp_qty > 0:
 					item_qty_map[ic] = pp_qty
 
 	return item_qty_map
+
+
+def _mr_plan_item_qty_from_row(row):
+	"""Qty from Production Plan Material Request Plan Item (column names vary by ERPNext version)."""
+	row = row or {}
+	for fn in ("required_qty", "required_bom_qty", "qty", "quantity", "planned_qty"):
+		if fn in row and flt(row.get(fn)) > 0:
+			return flt(row.get(fn))
+	return 0.0
+
+
+def _mr_plan_item_fields_for_get_all():
+	"""Safe field list for Material Request Plan Item."""
+	fields = ["item_code"]
+	if not frappe.db.exists("DocType", "Material Request Plan Item"):
+		return fields
+	for fn in ("required_qty", "required_bom_qty", "qty", "quantity", "planned_qty"):
+		if frappe.db.has_column("Material Request Plan Item", fn):
+			fields.append(fn)
+	return fields
 
 
 def _persist_work_order_rm_stock_qty_rows(wo_name, item_qty_map):
@@ -19968,7 +20104,7 @@ def _get_color_chart_data_impl(
                     continue
                 if bps == "exclude_103" and icp == "103":
                     continue
-                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "211", "212", "213", "217", "200", "201", "202", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
+                if bps == "exclude_special" and (icp in ("103", "102", "105", "106", "108", "109", "211", "212", "213", "214", "217", "200", "201", "202", "203", "221", "222", "223", "224", "231", "233", "241", "242", "251", "252", "253", "254", "255") or _is_lamination_parent_process(ic)):
                     continue
                 if bps == "only_100" and icp != "100":
                     continue
@@ -20009,6 +20145,19 @@ def _get_color_chart_data_impl(
                     color = _color_from_item_code_6_to_8(item_code_for_color) or "Unknown Color"
                 elif bps == "printing_only" and _item_process_prefix(item_code_for_color) in ("105", "106"):
                     color = _printing_color_from_item_code(item_code_for_color) or "Unknown Color"
+                elif bps in ("w_cut_d_cut_only", "dcut_only", "box_bag_only") and icp in ALL_BAG_FG_PROCESS_CODES:
+                    box_specs = _box_bag_line_specs_from_item_code(item_code_for_color) or {}
+                    cc = _cstr(box_specs.get("colour_code")).strip()
+                    if cc:
+                        try:
+                            from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+                                _color_name_by_code,
+                            )
+                            color = _color_name_by_code(cc) or cc
+                        except Exception:
+                            color = cc
+                    else:
+                        color = "Unknown Color"
                 else:
                     continue
 
