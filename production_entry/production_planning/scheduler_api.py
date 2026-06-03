@@ -6542,7 +6542,10 @@ def _fabric_qty_from_bom(bom_name, fabric_item_code, lamination_so_qty, from_uom
 
 	for row in bom.items or []:
 		if (row.item_code or "").strip() == fabric_item_code:
-			return flt(lamination_so_qty) * flt(row.qty) / fg_qty
+			raw_qty = flt(lamination_so_qty) * flt(row.qty) / fg_qty
+			bom_row_uom = _cstr(getattr(row, "uom", None) or "").strip()
+			stock_uom = _cstr(frappe.db.get_value("Item", fabric_item_code, "stock_uom") or "").strip()
+			return _uom_qty_to_stock_uom(fabric_item_code, raw_qty, bom_row_uom or stock_uom)
 	return lamination_so_qty
 
 
@@ -7124,6 +7127,8 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		ensure_all_planning_sheet_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:ensure_all_planning_sheet_trace_ids")
+	# Do not auto-change Planning sheet/board Kg (operators may keep machine-facing totals).
+	# Meter→Kg (÷ factor) applies on Production Plan / Work Order raw materials only.
 	frappe.db.commit()
 	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
 
@@ -8625,8 +8630,17 @@ def _sync_bom_child_rows_from_planning_rows(
 			scale_qty = flt(getattr(so_it, "qty", 0)) or flt(prow.get("qty") or 0)
 			scale_uom = getattr(so_it, "uom", None) if flt(getattr(so_it, "qty", 0)) > 0 else prow.get("uom")
 			child_qty_new = _fabric_qty_from_bom(bom_no, child_ic, scale_qty, from_uom=scale_uom, parent_item_code=parent_ic)
-			if child_qty_new > 0 and frappe.db.has_column("Planning Table", "qty"):
+			so_fg_ex = _bom_item_process_code(getattr(so_it, "item_code", "") if so_it else "")
+			skip_board_qty = (
+				child_qty_new > 0
+				and (parent_proc in ALL_BAG_FG_PROCESS_CODES or so_fg_ex in ALL_BAG_FG_PROCESS_CODES)
+				and flt(frappe.db.get_value("Planning Table", ex_nm, "qty") or 0) > 0
+			)
+			if child_qty_new > 0 and frappe.db.has_column("Planning Table", "qty") and not skip_board_qty:
 				updates["qty"] = child_qty_new
+			stock_uom_child = _cstr(frappe.db.get_value("Item", child_ic, "stock_uom") or "").strip()
+			if stock_uom_child and frappe.db.has_column("Planning Table", "uom"):
+				updates["uom"] = stock_uom_child
 			if updates:
 				qty_up = updates.pop("qty", None)
 				frappe.db.set_value("Planning Table", ex_nm, updates, update_modified=False)
@@ -8681,16 +8695,7 @@ def _sync_bom_child_rows_from_planning_rows(
 		else:
 			unit = unit or compute_default_production_unit(specs.get("color"), specs.get("width_inch"), child_ic)
 
-		# Try to get UOM from the BOM itself (most accurate), fall back to item stock_uom
-		try:
-			bom_uom = frappe.db.get_value(
-				"BOM Item",
-				{"parent": bom_no, "item_code": child_ic},
-				"uom"
-			) if bom_no else None
-			item_uom = bom_uom or frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
-		except Exception:
-			item_uom = frappe.db.get_value("Item", child_ic, "stock_uom") or "Meter"
+		item_uom = _cstr(frappe.db.get_value("Item", child_ic, "stock_uom") or "Kg").strip() or "Kg"
 		row = {
 			"sales_order_item": so_item_key,
 			"item_code": child_ic,
@@ -14330,10 +14335,9 @@ def _bom_rm_stock_qty_map_for_fg(bom_no, fg_qty):
 
 
 def _planning_table_kg_qty_by_item_for_production_plan(pp_name, bom_kg_by_item=None):
-	"""Sum Kg qty from Planning Table / Planning sheet Item rows for sheets linked to this PP.
+	"""Legacy helper — not used for Production Plan / Work Order RM qty (board totals are not added).
 
-	When ``bom_kg_by_item`` is supplied, ignore planning rows whose Kg qty is far above BOM
-	(e.g. meter totals stored as Kg — 328 instead of 41).
+	PP/WO use ``_bom_rm_stock_qty_map_for_fg`` only (Meter÷conversion factor → Kg, e.g. 29.22).
 	"""
 	pp_name = _cstr(pp_name).strip()
 	if not pp_name:
@@ -14381,7 +14385,7 @@ def _planning_table_kg_qty_by_item_for_production_plan(pp_name, bom_kg_by_item=N
 
 
 def _work_order_rm_stock_qty_map(doc):
-	"""Correct RM qty map for a Work Order (Meter→Kg divide; planning sheet Kg overrides PP)."""
+	"""Correct RM qty map for a Work Order (BOM FG qty → stock UOM; Meter÷conversion factor)."""
 	if not doc or cint(getattr(doc, "docstatus", 0)) == 2:
 		return {}
 	bom_no = _cstr(getattr(doc, "bom_no", None)).strip()
@@ -14390,29 +14394,6 @@ def _work_order_rm_stock_qty_map(doc):
 		return {}
 
 	item_qty_map, _multi = _bom_rm_stock_qty_map_for_fg(bom_no, fg_qty)
-	bom_only_map = dict(item_qty_map)
-
-	pp_name = _cstr(getattr(doc, "production_plan", None)).strip()
-	if pp_name:
-		for ic, pt_qty in (
-			_planning_table_kg_qty_by_item_for_production_plan(pp_name, bom_kg_by_item=bom_only_map) or {}
-		).items():
-			if flt(pt_qty) > 0:
-				item_qty_map[ic] = flt(pt_qty)
-		if frappe.db.exists("DocType", "Material Request Plan Item"):
-			for row in frappe.get_all(
-				"Material Request Plan Item",
-				filters={"parent": pp_name},
-				fields=_mr_plan_item_fields_for_get_all(),
-				limit_page_length=0,
-			) or []:
-				ic = _cstr(row.get("item_code")).strip()
-				if not ic:
-					continue
-				pp_qty = _mr_plan_item_qty_from_row(row)
-				if pp_qty > 0:
-					item_qty_map[ic] = pp_qty
-
 	return item_qty_map
 
 
@@ -14492,8 +14473,8 @@ def _apply_rm_qty_map_to_mr_rows(mr_items, item_qty_map, multi_uom_items=None):
 def _normalize_production_plan_multi_uom_rm_requirements(doc):
     """Recompute PP raw-material required qty in stock UOM for multi-UOM BOM rows.
 
-    Fixes cases where Meter-based BOM qty is multiplied by conversion factor instead of divided.
-    Planning sheet Kg rows (after Meter→Kg) override BOM math when linked to this PP.
+    Uses BOM × FG planned qty only (Meter÷conversion factor, e.g. 360÷12.32≈29.22 Kg).
+    Ignores Planning sheet/board Kg (406 on PL is never added to PP/WO RM).
     """
     if not doc:
         return
@@ -14513,15 +14494,6 @@ def _normalize_production_plan_multi_uom_rm_requirements(doc):
         for ic, q in bom_map.items():
             item_qty_map[ic] = flt(item_qty_map.get(ic, 0)) + flt(q)
         multi_uom_items.update(bom_multi)
-
-    pt_map = _planning_table_kg_qty_by_item_for_production_plan(
-        doc.name if hasattr(doc, "name") else "",
-        bom_kg_by_item=item_qty_map,
-    )
-    for ic, pt_qty in (pt_map or {}).items():
-        if flt(pt_qty) > 0:
-            item_qty_map[ic] = flt(pt_qty)
-            multi_uom_items.add(ic)
 
     if not item_qty_map:
         return
@@ -27803,9 +27775,84 @@ def sync_merge_planned_date(merge_id, new_date):
     return {"status": "success", "updated": updated_count}
 
 
+BAG_BOM_METER_CHILD_PROCESSES = ("100", "103", "105", "107", "109", "108", "104", "106")
+
+
+def _planning_row_meter_qty_needs_kg_conversion(item_code, qty, uom):
+	"""True when qty is in meters (or meter total stored under Kg) and item stock UOM is Kg."""
+	ic = _cstr(item_code).strip()
+	qty = flt(qty)
+	uom = _cstr(uom).strip()
+	if not ic or qty <= 0:
+		return False
+	if uom == "Meter":
+		return True
+	if uom.lower() != "kg":
+		return False
+	stock_uom = _cstr(frappe.db.get_value("Item", ic, "stock_uom") or "").strip()
+	if stock_uom.lower() != "kg":
+		return False
+	conv = frappe.db.get_value(
+		"UOM Conversion Detail",
+		{"parent": ic, "uom": "Meter"},
+		"conversion_factor",
+	)
+	if not conv or flt(conv) <= 0:
+		return False
+	kg_qty = qty / flt(conv)
+	return kg_qty < qty * 0.85
+
+
+def _convert_planning_row_meter_to_kg(row_name, item_code, qty, uom, source_item=None):
+	"""Divide meter qty by conversion factor; update Planning Table + linked PSI."""
+	if not _planning_row_meter_qty_needs_kg_conversion(item_code, qty, uom):
+		return False
+	conv = frappe.db.get_value(
+		"UOM Conversion Detail",
+		{"parent": item_code, "uom": "Meter"},
+		"conversion_factor",
+	)
+	if not conv or flt(conv) <= 0:
+		return False
+	new_qty = flt(qty) / flt(conv)
+	frappe.db.set_value(
+		"Planning Table",
+		row_name,
+		{"uom": "Kg", "qty": new_qty},
+		update_modified=False,
+	)
+	if source_item and frappe.db.exists("Planning sheet Item", source_item):
+		frappe.db.set_value(
+			"Planning sheet Item",
+			source_item,
+			{"uom": "Kg", "qty": new_qty},
+			update_modified=False,
+		)
+	return True
+
+
+def _apply_meter_to_kg_for_bag_planning_sheet(planning_sheet_name):
+	"""Auto Meter→Kg (÷ factor) for all bag-process BOM children on a planning sheet."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return 0
+	has_bag_fg = False
+	for ic in frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		pluck="item_code",
+		limit_page_length=0,
+	) or []:
+		if _item_process_prefix(ic) in ALL_BAG_FG_PROCESS_CODES:
+			has_bag_fg = True
+			break
+	if not has_bag_fg:
+		return 0
+	return convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=True).get("updated", 0)
+
+
 @frappe.whitelist()
-def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
-	"""Convert Meter to Kg for Box Bag BOM items (103 and 107) and update their children."""
+def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=False):
+	"""Convert Meter to Kg for all bag BOM children (100/103/104/105/107/108/109/106) on W/D-CUT and box bag sheets."""
 	if not planning_sheet_name:
 		return {"status": "error", "message": "No planning sheet provided"}
 
@@ -27871,43 +27918,33 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 				})
 				updated_count += 1
 		
-		# Convert child processes that are in Meter to Kg (100, 103, 105, 107, 109, 108, 104, 106)
-		if pp in ("100", "103", "105", "107", "109", "108", "104", "106"):
+		# Convert child processes (100, 103, …): Meter UOM or meter totals wrongly stored as Kg
+		if pp in BAG_BOM_METER_CHILD_PROCESSES:
 			qty = flt(r.get("qty"))
 			uom = r.get("uom")
-			
-			needs_conversion = False
-			if uom == "Meter":
-				needs_conversion = True
-				
+			needs_conversion = _planning_row_meter_qty_needs_kg_conversion(ic, qty, uom)
+			new_qty = qty
 			if needs_conversion:
 				conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
 				if conv and flt(conv) > 0:
 					new_qty = qty / flt(conv)
-					frappe.db.set_value("Planning Table", r.get("name"), {
-						"uom": "Kg",
-						"qty": new_qty
-					})
+					frappe.db.set_value("Planning Table", r.get("name"), {"uom": "Kg", "qty": new_qty})
 					r["qty"] = new_qty
 					r["uom"] = "Kg"
 					source_item = r.get("source_item")
 					if source_item and frappe.db.exists("Planning sheet Item", source_item):
-						frappe.db.set_value("Planning sheet Item", source_item, {
-							"uom": "Kg",
-							"qty": new_qty
-						})
+						frappe.db.set_value("Planning sheet Item", source_item, {"uom": "Kg", "qty": new_qty})
 					updated_count += 1
-				else:
-					frappe.throw(f"There is no UOM Conversion from Meter to Kg set for Item {ic}!")
-					
+				elif not _internal_call:
+					frappe.throw(_("No UOM Conversion from Meter to Kg for Item {0}").format(ic))
 			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
 			if so_item:
 				converted_parents.setdefault(so_item, [])
 				converted_parents[so_item].append({
 					"parent_ic": ic,
-					"new_qty": new_qty if needs_conversion else qty,
+					"new_qty": new_qty,
 					"pp": pp,
-					"uom": "Kg" if needs_conversion else uom
+					"uom": "Kg" if needs_conversion else uom,
 				})
 					
 	frappe.db.commit()
@@ -27938,18 +27975,10 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 						if res and (res.get("fabric_item_code") == ic or res.get("child_item_code") == ic):
 							bom_no = res["bom_no"]
 							child_qty = _fabric_qty_from_bom(bom_no, ic, parent_qty, from_uom=parent_uom, parent_item_code=parent_ic)
-							
-							bom_item_uom = frappe.db.get_value("BOM Item", {"parent": bom_no, "item_code": ic}, "uom")
-							if bom_item_uom == "Meter":
-								conv = frappe.db.get_value("UOM Conversion Detail", {"parent": ic, "uom": "Meter"}, "conversion_factor")
-								if conv and flt(conv) > 0:
-									child_qty = child_qty / flt(conv)
-								else:
-									frappe.throw(f"There is no UOM Conversion from Meter to Kg set for Item {ic}!")
-							
+							stock_uom = _cstr(frappe.db.get_value("Item", ic, "stock_uom") or "Kg").strip() or "Kg"
 							update_dict = {
 								"qty": child_qty,
-								"uom": "Kg"
+								"uom": stock_uom,
 							}
 							if child_pp == "PB-" and frappe.db.has_column("Planning Table", "custom_bopp_bom_kgs"):
 								update_dict["custom_bopp_bom_kgs"] = child_qty
