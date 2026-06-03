@@ -260,20 +260,40 @@ def resolve_planning_workstation_name(raw):
 	return norm or s
 
 
+def _workstation_type_for_new_record(name):
+	"""Pick an existing Workstation Type only (never invent types like 'Bag Making')."""
+	import frappe
+
+	name = str(name or "").strip()
+	candidates = []
+	if name in ("Unit 1", "Unit 2", "Unit 3", "Unit 4", "UNASSIGNED"):
+		candidates.extend(("Fabric", "Production", "Manufacturing"))
+	else:
+		candidates.extend(("Bag Making", "Bag", "Production", "Manufacturing"))
+	candidates.append(None)
+	for wt in candidates:
+		if wt and frappe.db.exists("Workstation Type", wt):
+			return wt
+	existing = frappe.db.get_value("Workstation Type", {}, "name", order_by="modified desc")
+	return existing or None
+
+
 def ensure_planning_workstation_record(name):
-	"""Create a Workstation row when missing (box-bag / W-D-CUT machine names)."""
+	"""Create a Workstation row when missing; skips if no Workstation Type exists on site."""
 	import frappe
 
 	name = str(name or "").strip()
 	if not name or frappe.db.exists("Workstation", name):
 		return name
-	ws_type = "Bag Making"
-	if name in ("Unit 1", "Unit 2", "Unit 3", "Unit 4", "UNASSIGNED"):
-		ws_type = "Fabric"
-	doc = frappe.get_doc(
-		{"doctype": "Workstation", "workstation_name": name, "workstation_type": ws_type}
-	)
-	doc.insert(ignore_permissions=True)
+	payload = {"doctype": "Workstation", "workstation_name": name}
+	ws_type = _workstation_type_for_new_record(name)
+	if ws_type:
+		payload["workstation_type"] = ws_type
+	try:
+		doc = frappe.get_doc(payload)
+		doc.insert(ignore_permissions=True)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"ensure_planning_workstation_record:{name}")
 	return name
 
 
@@ -318,14 +338,6 @@ def ensure_planning_unit_field_links_workstation():
 					pass
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"ensure_planning_unit_link:{dt}")
-	for ws_name in (
-		BOX_BAG_UNIT_L1,
-		BOX_BAG_UNIT_L2,
-		BOX_BAG_UNASSIGNED_UNIT,
-		LAMINATION_UNIT,
-		SLITTING_UNIT,
-	):
-		ensure_planning_workstation_record(ws_name)
 	try:
 		frappe.clear_cache(doctype="Planning Table")
 		frappe.clear_cache(doctype=PLANNING_SHEET_ITEM)

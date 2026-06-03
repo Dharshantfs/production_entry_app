@@ -9,17 +9,8 @@ from production_entry.production_planning.planning_doctypes import (
 
 
 def execute():
-	import frappe
+	from production_entry.production_planning.planning_doctypes import ensure_planning_workstation_record
 
 	for name in (W_CUT_D_CUT_UNIT_JVE_L1, W_CUT_D_CUT_UNIT_JVE_L2, W_CUT_D_CUT_UNIT_JVE_L3):
-		if frappe.db.exists("Workstation", name):
-			continue
-		doc = frappe.get_doc(
-			{
-				"doctype": "Workstation",
-				"workstation_name": name,
-				"workstation_type": "Bag Making",
-			}
-		)
-		doc.insert(ignore_permissions=True)
+		ensure_planning_workstation_record(name)
 	frappe.db.commit()

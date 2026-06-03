@@ -28,10 +28,18 @@
           <button type="button" :class="{ active: wCutDCutFamily === 'd_cut' }" @click="setWCutDCutFamily('d_cut')">D CUT</button>
         </div>
       </div>
-      <div v-if="!isWCutDCutTable || wCutDCutFamily" class="cc-filter-item cc-shift-filter">
+      <div v-if="!isWCutDCutTable || wCutDCutFamily" class="cc-filter-item cc-process-filter">
         <label>Process</label>
-        <div class="cc-shift-btns" style="flex-wrap: wrap;">
-          <button v-for="opt in processOptions" :key="opt.value" type="button" :class="{ active: filterProcess === opt.value }" @click="setProcessFilter(opt.value)">{{ opt.label }}</button>
+        <div class="cc-process-btns">
+          <button
+            v-for="opt in processOptions"
+            :key="opt.value"
+            type="button"
+            class="cc-process-btn"
+            :class="{ active: filterProcess === opt.value }"
+            :title="opt.label"
+            @click="setProcessFilter(opt.value)"
+          >{{ opt.shortLabel || opt.label }}</button>
         </div>
       </div>
       <div v-if="isWCutDCutTable" class="cc-filter-item cc-shift-filter">
@@ -264,20 +272,24 @@ const backToBoardLabel = computed(() => (isWCutDCutTable.value ? "Back to W CUT 
 const processOptions = computed(() => {
   if (isWCutDCutTable.value) {
     const procs = wCutDCutFamily.value === "w_cut" ? W_CUT_FG_PROCS : wCutDCutFamily.value === "d_cut" ? D_CUT_FG_PROCS : [];
-    const opts = procs.map((p) => ({ value: p, label: W_CUT_D_CUT_PROCESS_LABELS[p] || p }));
-    opts.push({ value: "all", label: "All" });
+    const opts = procs.map((p) => ({
+      value: p,
+      label: W_CUT_D_CUT_PROCESS_LABELS[p] || p,
+      shortLabel: W_CUT_D_CUT_PROCESS_LABELS[p] || p,
+    }));
+    opts.push({ value: "all", label: "All", shortLabel: "All" });
     return opts;
   }
   return [
-    { value: "221", label: "221 Box Bag" },
-    { value: "224", label: "224 PLAIN LAMINATED BOX BAG" },
-    { value: "223", label: "223 flexo printed box bag" },
-    { value: "231", label: "231 colored bopp box bag" },
-    { value: "233", label: "233 BOPP Box Bag" },
-    { value: "241", label: "241 mettalic box bag" },
-    { value: "242", label: "242 cooler box bag" },
-    { value: "222", label: "222 flexo printed box bag" },
-    { value: "all", label: "All" },
+    { value: "221", label: "221 Box Bag", shortLabel: "221 Box Bag" },
+    { value: "224", label: "224 PLAIN LAMINATED BOX BAG", shortLabel: "224 Plain Lam" },
+    { value: "223", label: "223 flexo printed box bag", shortLabel: "223 Flexo" },
+    { value: "231", label: "231 colored bopp box bag", shortLabel: "231 Colored BOPP" },
+    { value: "233", label: "233 BOPP Box Bag", shortLabel: "233 BOPP" },
+    { value: "241", label: "241 mettalic box bag", shortLabel: "241 Metallic" },
+    { value: "242", label: "242 cooler box bag", shortLabel: "242 Cooler" },
+    { value: "222", label: "222 flexo printed box bag", shortLabel: "222 Flexo" },
+    { value: "all", label: "All", shortLabel: "All" },
   ];
 });
 
@@ -830,6 +842,35 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   font-weight: 600;
 }
 .cc-shift-filter .cc-shift-btns button.active {
+  background: #7c3aed;
+  color: #fff;
+  border-color: #7c3aed;
+}
+.cc-process-filter {
+  grid-column: 1 / -1;
+}
+.cc-process-btns {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+.cc-process-btn {
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cc-process-btn.active {
   background: #7c3aed;
   color: #fff;
   border-color: #7c3aed;
