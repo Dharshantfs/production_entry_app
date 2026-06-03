@@ -1,5 +1,40 @@
+const PLANNING_SHEET_DEFAULT_GRID_COLUMNS = [
+    'item_code', 'item_name', 'qty', 'uom', 'unit',
+    'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'width_inch',
+    'gsm', 'quality', 'color', 'custom_quality',
+    'plan_name', 'custom_plan_code', 'custom_lamination_order_code', 'custom_lamination_order_code_',
+    'custom_lam_gsm', 'custom_lam_side', 'custom_lam_side_', 'custom_bopp_gsm',
+    'custom_design_code', 'custom_design_name', 'custom_design_colour', 'custom_design_attachment',
+    'custom_finishing', 'custom_white_tint', 'total_weight', 'warehouse', 'allocated_to_unit',
+    'planned_date', 'custom_movement_type', 'bag_size', 'sheet_size',
+];
+
+function ensure_planning_sheet_grid_columns(frm, table) {
+    const grid = frm.fields_dict[table] ? frm.fields_dict[table].grid : null;
+    if (!grid) return;
+    const cdt = grid.doctype;
+    let need_refresh = false;
+    for (const fieldname of PLANNING_SHEET_DEFAULT_GRID_COLUMNS) {
+        const df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
+        if (df && df.hidden) {
+            df.hidden = 0;
+            need_refresh = true;
+        }
+        const grid_df = (grid.docfields || []).find((d) => d.fieldname === fieldname);
+        if (grid_df && grid_df.hidden) {
+            grid_df.hidden = 0;
+            need_refresh = true;
+        }
+    }
+    if (need_refresh && grid.wrapper && grid.wrapper.is(':visible')) {
+        grid.setup_columns();
+        grid.refresh();
+    }
+}
+
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
+        ['items', 'planned_items'].forEach((t) => ensure_planning_sheet_grid_columns(frm, t));
         if (!frm.is_new()) {
             frm.add_custom_button(__('Meter to Kgs (Box Bag BOM)'), function() {
                 frappe.call({
@@ -17,7 +52,10 @@ frappe.ui.form.on('Planning sheet', {
         setTimeout(() => frm.trigger('toggle_221_fields'), 100);
     },
     
-    onload_post_render: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 200); },
+    onload_post_render: function(frm) {
+        ['items', 'planned_items'].forEach((t) => ensure_planning_sheet_grid_columns(frm, t));
+        setTimeout(() => frm.trigger('toggle_221_fields'), 200);
+    },
     
     validate: function(frm) { frm.trigger('toggle_221_fields'); },
     items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
@@ -111,12 +149,9 @@ frappe.ui.form.on('Planning sheet', {
                 if (grid.wrapper && grid.wrapper.is(':visible')) {
                     grid.setup_columns();
                     grid.refresh();
-                } else {
-                    // If grid is not visible (e.g. in another tab or loading),
-                    // we don't call setup_columns() because it calculates 0 width and collapses them!
-                    // Frappe will automatically setup columns when the grid becomes visible.
                 }
             }
+            ensure_planning_sheet_grid_columns(frm, table);
         });
     }
 });

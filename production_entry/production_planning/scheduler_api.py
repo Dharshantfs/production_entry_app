@@ -13358,6 +13358,10 @@ def start_lamination_parent_wo(item_name, submit_existing=0):
     wo.source_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
     wo.flags.ignore_mandatory = True
     wo.insert(ignore_permissions=True)
+    try:
+        persist_work_order_rm_stock_qty_after_save(wo, "after_insert")
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "create_lamination_wo:rm_qty_fixup")
     frappe.db.commit()
     return {
         "status": "ok",
@@ -14211,21 +14215,14 @@ def _bom_rm_stock_qty_map_for_fg(bom_no, fg_qty):
 
 
 def _planning_table_kg_qty_by_item_for_production_plan(pp_name):
-	"""Sum Kg qty from Planning Table rows linked to this Production Plan."""
+	"""Sum Kg qty from Planning Table / Planning sheet Item rows for sheets linked to this PP."""
 	pp_name = _cstr(pp_name).strip()
 	if not pp_name:
 		return {}
 	out = {}
-	for sheet_name in _planning_sheets_referencing_production_plan(pp_name) or []:
-		if not frappe.db.exists("Planning sheet", sheet_name):
-			continue
-		rows = frappe.get_all(
-			"Planning Table",
-			filters={"parent": sheet_name},
-			fields=["item_code", "qty", "uom"],
-			limit_page_length=0,
-		) or []
-		for r in rows:
+
+	def _accumulate_rows(rows):
+		for r in rows or []:
 			ic = _cstr(r.get("item_code")).strip()
 			if not ic:
 				continue
@@ -14233,7 +14230,87 @@ def _planning_table_kg_qty_by_item_for_production_plan(pp_name):
 			if uom and uom.lower() != "kg":
 				continue
 			out[ic] = flt(out.get(ic, 0)) + flt(r.get("qty") or 0)
+
+	for sheet_name in _planning_sheets_referencing_production_plan(pp_name) or []:
+		if not frappe.db.exists("Planning sheet", sheet_name):
+			continue
+		_accumulate_rows(
+			frappe.get_all(
+				"Planning Table",
+				filters={"parent": sheet_name},
+				fields=["item_code", "qty", "uom"],
+				limit_page_length=0,
+			)
+		)
+		if frappe.db.exists("DocType", "Planning sheet Item"):
+			_accumulate_rows(
+				frappe.get_all(
+					"Planning sheet Item",
+					filters={"parent": sheet_name},
+					fields=["item_code", "qty", "uom"],
+					limit_page_length=0,
+				)
+			)
 	return out
+
+
+def _work_order_rm_stock_qty_map(doc):
+	"""Correct RM qty map for a Work Order (Meter→Kg divide; planning sheet Kg overrides PP)."""
+	if not doc or cint(getattr(doc, "docstatus", 0)) == 2:
+		return {}
+	bom_no = _cstr(getattr(doc, "bom_no", None)).strip()
+	fg_qty = flt(getattr(doc, "qty", None) or getattr(doc, "planned_qty", None) or 0)
+	if not bom_no or fg_qty <= 0:
+		return {}
+
+	item_qty_map, _multi = _bom_rm_stock_qty_map_for_fg(bom_no, fg_qty)
+
+	pp_name = _cstr(getattr(doc, "production_plan", None)).strip()
+	if pp_name:
+		for ic, pt_qty in (_planning_table_kg_qty_by_item_for_production_plan(pp_name) or {}).items():
+			if flt(pt_qty) > 0:
+				item_qty_map[ic] = flt(pt_qty)
+		if frappe.db.exists("DocType", "Material Request Plan Item"):
+			for row in frappe.get_all(
+				"Material Request Plan Item",
+				filters={"parent": pp_name},
+				fields=["item_code", "required_qty", "required_bom_qty", "qty"],
+				limit_page_length=0,
+			) or []:
+				ic = _cstr(row.get("item_code")).strip()
+				if not ic:
+					continue
+				pp_qty = flt(row.get("required_qty") or row.get("required_bom_qty") or row.get("qty") or 0)
+				if pp_qty > 0:
+					item_qty_map[ic] = pp_qty
+
+	return item_qty_map
+
+
+def _persist_work_order_rm_stock_qty_rows(wo_name, item_qty_map):
+	"""Write corrected stock-UOM qty onto Work Order Item rows (after ERPNext BOM multiply)."""
+	if not wo_name or not item_qty_map:
+		return 0
+	if not frappe.db.exists("DocType", "Work Order Item"):
+		return 0
+	wo_fields = ["name", "item_code", "required_qty"]
+	if frappe.db.has_column("Work Order Item", "stock_qty"):
+		wo_fields.append("stock_qty")
+	updated = 0
+	for row in frappe.get_all("Work Order Item", filters={"parent": wo_name}, fields=wo_fields) or []:
+		ic = _cstr(row.get("item_code")).strip()
+		if not ic or ic not in item_qty_map:
+			continue
+		fixed_qty = flt(item_qty_map[ic], 6)
+		cur_qty = flt(row.get("required_qty") or 0)
+		if abs(cur_qty - fixed_qty) <= 1e-6:
+			continue
+		updates = {"required_qty": fixed_qty}
+		if "stock_qty" in wo_fields:
+			updates["stock_qty"] = fixed_qty
+		frappe.db.set_value("Work Order Item", row.name, updates, update_modified=False)
+		updated += 1
+	return updated
 
 
 def _apply_rm_qty_map_to_mr_rows(mr_items, item_qty_map, multi_uom_items=None):
@@ -14312,36 +14389,11 @@ def _normalize_work_order_multi_uom_rm_requirements(doc):
 	"""Recompute WO required_items qty in stock UOM (same divide logic as Production Plan)."""
 	if not doc or cint(getattr(doc, "docstatus", 0)) == 2:
 		return
-	bom_no = _cstr(getattr(doc, "bom_no", None)).strip()
-	fg_qty = flt(getattr(doc, "qty", None) or getattr(doc, "planned_qty", None) or 0)
 	req_items = list(getattr(doc, "required_items", None) or [])
-	if not bom_no or fg_qty <= 0 or not req_items:
+	if not req_items:
 		return
 
-	item_qty_map, multi_uom_items = _bom_rm_stock_qty_map_for_fg(bom_no, fg_qty)
-
-	pp_name = _cstr(getattr(doc, "production_plan", None)).strip()
-	if pp_name:
-		pt_map = _planning_table_kg_qty_by_item_for_production_plan(pp_name)
-		for ic, pt_qty in (pt_map or {}).items():
-			if flt(pt_qty) > 0:
-				item_qty_map[ic] = flt(pt_qty)
-				multi_uom_items.add(ic)
-		if frappe.db.exists("DocType", "Material Request Plan Item"):
-			for row in frappe.get_all(
-				"Material Request Plan Item",
-				filters={"parent": pp_name},
-				fields=["item_code", "required_qty", "required_bom_qty", "qty"],
-				limit_page_length=0,
-			) or []:
-				ic = _cstr(row.get("item_code")).strip()
-				if not ic:
-					continue
-				pp_qty = flt(row.get("required_qty") or row.get("required_bom_qty") or row.get("qty") or 0)
-				if pp_qty > 0:
-					item_qty_map[ic] = pp_qty
-					multi_uom_items.add(ic)
-
+	item_qty_map = _work_order_rm_stock_qty_map(doc)
 	if not item_qty_map:
 		return
 
@@ -14371,6 +14423,43 @@ def normalize_work_order_multi_uom_rm_requirements(doc, method=None):
 		frappe.log_error(frappe.get_traceback(), "normalize_work_order_multi_uom_rm_requirements")
 
 
+def persist_work_order_rm_stock_qty_after_save(doc, method=None):
+	"""After ERPNext builds required_items (Meter×factor), persist divide-correct Kg qty on child rows."""
+	if frappe.flags.in_wo_rm_qty_fixup or not doc or not getattr(doc, "name", None):
+		return
+	if cint(getattr(doc, "docstatus", 0)) == 2:
+		return
+	frappe.flags.in_wo_rm_qty_fixup = True
+	try:
+		item_qty_map = _work_order_rm_stock_qty_map(doc)
+		if item_qty_map:
+			_persist_work_order_rm_stock_qty_rows(doc.name, item_qty_map)
+			_normalize_work_order_multi_uom_rm_requirements(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "persist_work_order_rm_stock_qty_after_save")
+	finally:
+		frappe.flags.in_wo_rm_qty_fixup = False
+
+
+@frappe.whitelist()
+def fix_work_order_rm_stock_qty(work_order=None):
+	"""Re-apply Meter→Kg divide on an existing draft Work Order (fixes 4580 vs 41.3 Kg)."""
+	wo_name = _cstr(work_order).strip()
+	if not wo_name or not frappe.db.exists("Work Order", wo_name):
+		frappe.throw(_("Work Order not found."))
+	wo = frappe.get_doc("Work Order", wo_name)
+	if cint(wo.docstatus) != 0:
+		frappe.throw(_("Only draft Work Orders can be updated."))
+	item_qty_map = _work_order_rm_stock_qty_map(wo)
+	if not item_qty_map:
+		return {"status": "ok", "updated": 0, "message": _("No multi-UOM BOM lines to fix.")}
+	updated = _persist_work_order_rm_stock_qty_rows(wo_name, item_qty_map)
+	_normalize_work_order_multi_uom_rm_requirements(wo)
+	wo.flags.ignore_permissions = True
+	wo.save()
+	return {"status": "ok", "updated": updated}
+
+
 def _sync_linked_production_plans_rm_from_planning_sheet(planning_sheet_name):
 	"""After Meter→Kg on Planning sheet, refresh draft Production Plan mr_items and linked WOs."""
 	sheet_name = _cstr(planning_sheet_name).strip()
@@ -14396,6 +14485,9 @@ def _sync_linked_production_plans_rm_from_planning_sheet(planning_sheet_name):
 		) or []:
 			try:
 				wo = frappe.get_doc("Work Order", wo_name)
+				item_qty_map = _work_order_rm_stock_qty_map(wo)
+				if item_qty_map:
+					_persist_work_order_rm_stock_qty_rows(wo_name, item_qty_map)
 				_normalize_work_order_multi_uom_rm_requirements(wo)
 				wo.flags.ignore_permissions = True
 				wo.save()
@@ -14421,6 +14513,9 @@ def on_production_plan_submitted(doc, method=None):
             ) or []:
                 try:
                     wo = frappe.get_doc("Work Order", wo_name)
+                    item_qty_map = _work_order_rm_stock_qty_map(wo)
+                    if item_qty_map:
+                        _persist_work_order_rm_stock_qty_rows(wo_name, item_qty_map)
                     _normalize_work_order_multi_uom_rm_requirements(wo)
                     wo.flags.ignore_permissions = True
                     wo.save()

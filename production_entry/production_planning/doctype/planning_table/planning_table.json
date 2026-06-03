@@ -82,6 +82,7 @@
   {
    "fieldname": "sales_order_item",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Sales Order Item"
   },
   {
@@ -126,6 +127,7 @@
   {
    "fieldname": "unit",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Unit",
    "options": "Workstation"
   },
@@ -174,6 +176,7 @@
   {
    "fieldname": "meter",
    "fieldtype": "Int",
+   "in_list_view": 1,
    "label": "Meter"
   },
   {
@@ -183,11 +186,13 @@
   {
    "fieldname": "meter_per_roll",
    "fieldtype": "Int",
+   "in_list_view": 1,
    "label": "Meter per Roll"
   },
   {
    "fieldname": "no_of_rolls",
    "fieldtype": "Int",
+   "in_list_view": 1,
    "label": "No of Rolls"
   },
   {
@@ -197,12 +202,14 @@
   {
    "fieldname": "weight_per_roll",
    "fieldtype": "Float",
+   "in_list_view": 1,
    "label": "Weight per Roll (KG)",
    "precision": "3"
   },
   {
    "fieldname": "width_inch",
    "fieldtype": "Float",
+   "in_list_view": 1,
    "label": "Width (Inch)",
    "precision": "2"
   },
@@ -234,11 +241,13 @@
   {
    "fieldname": "custom_quality",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Custom Quality"
   },
   {
    "fieldname": "color",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Color"
   },
   {
@@ -248,11 +257,13 @@
   {
    "fieldname": "planned_date",
    "fieldtype": "Date",
+   "in_list_view": 1,
    "label": "Planned date"
   },
   {
    "fieldname": "plan_name",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Plan name"
   },
   {
@@ -263,12 +274,14 @@
   {
    "fieldname": "custom_plan_code",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Plan Code"
   },
   {
    "description": "Same as sheet Lamination Order Code for 104 rows (auto-filled).",
    "fieldname": "custom_lamination_order_code_",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Lamination Order Code",
    "read_only": 1
   },
@@ -313,6 +326,7 @@
   {
    "fieldname": "custom_lam_side_",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Lam Side",
    "read_only": 1
   },
@@ -361,6 +375,7 @@
   {
    "fieldname": "custom_design_attachment",
    "fieldtype": "Attach",
+   "in_list_view": 1,
    "label": "Design Attachment"
   },
   {
@@ -385,6 +400,7 @@
   {
    "fieldname": "custom_white_tint",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "White Tint",
    "options": "\nYes\nNo"
   },
@@ -458,6 +474,7 @@
   {
    "fieldname": "total_weight",
    "fieldtype": "Float",
+   "in_list_view": 1,
    "label": "Total Weight (KG)",
    "precision": "3",
    "read_only": 1
@@ -465,6 +482,7 @@
   {
    "fieldname": "warehouse",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Warehouse",
    "options": "Warehouse"
   },
@@ -478,6 +496,7 @@
   {
    "fieldname": "allocated_to_unit",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Allocated to Unit",
    "options": "\nUnit 1\nUnit 2\nUnit 3\nUnit 4",
    "read_only": 1

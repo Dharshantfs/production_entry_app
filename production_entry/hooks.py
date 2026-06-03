@@ -39,6 +39,7 @@ doctype_js = {
         "public/js/production_entry.js",
         "public/js/planning_sheet_custom.js",
     ],
+    "Work Order": "public/js/work_order_rm_uom.js",
     "Shaft Production Run": "public/js/shaft_production_run.js",
     "Roll Production Entry": "public/js/roll_production_entry.js",
     "Transfer Approval": "public/js/transfer_approval_form.js",
@@ -130,6 +131,8 @@ doc_events = {
         ],
         "validate": "production_entry.production_planning.scheduler_api.normalize_work_order_multi_uom_rm_requirements",
         "before_save": "production_entry.production_planning.scheduler_api.normalize_work_order_multi_uom_rm_requirements",
+        "after_insert": "production_entry.production_planning.scheduler_api.persist_work_order_rm_stock_qty_after_save",
+        "on_update": "production_entry.production_planning.scheduler_api.persist_work_order_rm_stock_qty_after_save",
     },
     "Shaft Production Run": {
         "before_validate": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",
