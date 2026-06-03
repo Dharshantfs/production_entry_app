@@ -18,3 +18,24 @@ print("W CUT 201:", _parse_dcut_bag_item_code("1000-001-201F542Q00PP"))
 print("W CUT 202:", _parse_dcut_bag_item_code("1000-001-202F542O0APP"))
 print("D CUT 214:", _parse_dcut_bag_item_code("2500-1C-201-214F542KCCMM"))
 print("W CUT 203:", _parse_dcut_bag_item_code("1000-001-203F542O0APP"))
+# Production item codes (7465 design)
+print("W CUT 203 (7465):", _parse_dcut_bag_item_code("7465-2C-001-203N201O0APP"))
+print("D CUT 214 (7465):", _parse_dcut_bag_item_code("7465-2C-201-214F161Q0APP"))
+
+if __name__ == "__main__":
+    from production_entry.production_planning.scheduler_api import _item_process_prefix, _bom_item_process_code
+    samples = [
+        ("7465-2C-001-203N201O0APP", "203"),
+        ("7465-2C-201-214F161Q0APP", "214"),
+    ]
+    ok = True
+    for ic, exp in samples:
+        got = _item_process_prefix(ic)
+        bom = _bom_item_process_code(ic)
+        if got != exp or bom != exp:
+            ok = False
+            print(f"FAIL {ic}: prefix={got} bom={bom} expected={exp}")
+        else:
+            print(f"OK {ic} -> {got}")
+    if not ok:
+        raise SystemExit(1)
