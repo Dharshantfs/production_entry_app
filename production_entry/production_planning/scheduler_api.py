@@ -8,7 +8,9 @@ from collections import defaultdict
 
 from production_entry.production_planning.planning_doctypes import (
 	ensure_planning_line_unit_docfield_options,
+	ensure_planning_unit_field_links_workstation,
 	normalize_planning_unit_for_select,
+	resolve_planning_workstation_name,
 	SHEET_CUTTING_UNIT,
 	LAMINATION_UNIT,
 	SLITTING_UNIT,
@@ -193,22 +195,29 @@ def _production_sort_rank_parent_first(item_code):
 
 
 def _planning_sheet_uses_parent_first_sort(planning_sheet_name):
-	"""True when sheet has box-bag or W/D-CUT FG lines (parent-before-child display)."""
+	"""Bag/box sheets use upstream-first order (100 → 103 → … → 221), not FG-first."""
+	return False
+
+
+def _normalize_planning_sheet_workstation_units(planning_sheet_name):
+	"""Resolve ``unit`` to Workstation names (avoids Link validate against legacy Unit doctype)."""
 	if not planning_sheet_name:
-		return False
+		return
 	for doctype in ("Planning Table", "Planning sheet Item"):
 		if not frappe.db.exists("DocType", doctype):
 			continue
 		for r in frappe.get_all(
 			doctype,
 			filters={"parent": planning_sheet_name},
-			fields=["item_code"],
-			limit_page_length=200,
+			fields=["name", "unit"],
+			limit_page_length=0,
 		) or []:
-			pp = _item_process_prefix(_cstr(r.get("item_code")))
-			if pp in ALL_BAG_FG_PROCESS_CODES:
-				return True
-	return False
+			raw = _cstr(r.get("unit"))
+			if not raw:
+				continue
+			resolved = resolve_planning_workstation_name(raw)
+			if resolved and resolved != raw:
+				frappe.db.set_value(doctype, r.name, "unit", resolved, update_modified=False)
 
 
 def _planning_row_sort_key(row, so_line_order, parent_first=False):
@@ -418,16 +427,6 @@ def reorder_planning_sheet_child_tables_in_doc(doc):
 	so_name = _cstr(doc.get("sales_order"))
 	so_line_order, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
 	parent_first = False
-	for field in ("planned_items", "custom_planned_items", "planning_table", "items"):
-		if not doc.meta.has_field(field):
-			continue
-		for row in doc.get(field) or []:
-			pp = _item_process_prefix(_cstr(getattr(row, "item_code", None)))
-			if pp in ALL_BAG_FG_PROCESS_CODES:
-				parent_first = True
-				break
-		if parent_first:
-			break
 
 	def _sort_child_rows(rows):
 		if not rows:
@@ -14611,6 +14610,8 @@ def _sync_linked_production_plans_rm_from_planning_sheet(planning_sheet_name):
 			pp = frappe.get_doc("Production Plan", pp_name)
 			_normalize_production_plan_multi_uom_rm_requirements(pp)
 			pp.flags.ignore_permissions = True
+			pp.flags.ignore_validate = True
+			pp.flags.ignore_links = True
 			pp.save()
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"sync_pp_rm_from_sheet:{pp_name}")
@@ -14626,6 +14627,8 @@ def _sync_linked_production_plans_rm_from_planning_sheet(planning_sheet_name):
 					_persist_work_order_rm_stock_qty_rows(wo_name, item_qty_map)
 				_normalize_work_order_multi_uom_rm_requirements(wo)
 				wo.flags.ignore_permissions = True
+				wo.flags.ignore_validate = True
+				wo.flags.ignore_links = True
 				wo.save()
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), f"sync_wo_rm_from_sheet:{wo_name}")
@@ -27700,6 +27703,12 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name):
 	"""Convert Meter to Kg for Box Bag BOM items (103 and 107) and update their children."""
 	if not planning_sheet_name:
 		return {"status": "error", "message": "No planning sheet provided"}
+
+	try:
+		ensure_planning_unit_field_links_workstation()
+		_normalize_planning_sheet_workstation_units(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "convert_meter_to_kgs:unit_workstation")
 
 	# Get all rows for this sheet
 	rows = frappe.get_all("Planning Table", filters={"parent": planning_sheet_name}, fields=["name", "item_code", "qty", "uom", "custom_parent_child_trace_id", "sales_order_item", "so_item", "source_item"])

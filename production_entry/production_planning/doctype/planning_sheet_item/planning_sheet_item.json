@@ -94,6 +94,7 @@
         {
             "fieldname": "uom",
             "fieldtype": "Link",
+            "in_list_view": 1,
             "label": "UOM",
             "options": "UOM",
             "reqd": 1
@@ -235,6 +236,7 @@
         {
             "fieldname": "custom_item_planned_date",
             "fieldtype": "Date",
+            "in_list_view": 1,
             "label": "Planned Date"
         },
         {

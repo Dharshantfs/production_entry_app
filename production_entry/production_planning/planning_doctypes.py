@@ -231,6 +231,108 @@ def normalize_planning_unit_for_select(raw, _depth=0):
     return "UNASSIGNED"
 
 
+def resolve_planning_workstation_name(raw):
+	"""Map planning row ``unit`` to an existing ``Workstation.name`` (exact match)."""
+	import frappe
+
+	if raw is None:
+		return ""
+	s = str(raw).strip()
+	if not s:
+		return ""
+	if frappe.db.exists("Workstation", s):
+		return s
+	norm = normalize_planning_unit_for_select(s)
+	if norm and frappe.db.exists("Workstation", norm):
+		return norm
+	su = s.upper().replace(" ", "")
+	for ws_name in frappe.get_all("Workstation", pluck="name", limit_page_length=0) or []:
+		ws = str(ws_name or "").strip()
+		if not ws:
+			continue
+		wu = ws.upper().replace(" ", "")
+		if ws == s or wu == su:
+			return ws
+	if norm:
+		ensure_planning_workstation_record(norm)
+		if frappe.db.exists("Workstation", norm):
+			return norm
+	return norm or s
+
+
+def ensure_planning_workstation_record(name):
+	"""Create a Workstation row when missing (box-bag / W-D-CUT machine names)."""
+	import frappe
+
+	name = str(name or "").strip()
+	if not name or frappe.db.exists("Workstation", name):
+		return name
+	ws_type = "Bag Making"
+	if name in ("Unit 1", "Unit 2", "Unit 3", "Unit 4", "UNASSIGNED"):
+		ws_type = "Fabric"
+	doc = frappe.get_doc(
+		{"doctype": "Workstation", "workstation_name": name, "workstation_type": ws_type}
+	)
+	doc.insert(ignore_permissions=True)
+	return name
+
+
+def ensure_planning_unit_field_links_workstation():
+	"""Force planning ``unit`` child fields to Link → Workstation (fixes 'Could not find Unit')."""
+	import frappe
+
+	targets = (
+		("Planning Table", "unit"),
+		(PLANNING_SHEET_ITEM, "unit"),
+	)
+	for dt, fieldname in targets:
+		try:
+			frappe.db.sql(
+				"""
+				UPDATE `tabDocField`
+				SET `fieldtype`='Link', `options`='Workstation'
+				WHERE `parent`=%s AND `fieldname`=%s
+				""",
+				(dt, fieldname),
+			)
+			frappe.db.sql(
+				"""
+				UPDATE `tabCustom Field`
+				SET `fieldtype`='Link', `options`='Workstation'
+				WHERE `dt`=%s AND `fieldname`=%s
+				""",
+				(dt, fieldname),
+			)
+			for ps in frappe.get_all(
+				"Property Setter",
+				filters={
+					"doc_type": dt,
+					"field_name": fieldname,
+					"property": ["in", ["fieldtype", "options"]],
+				},
+				pluck="name",
+			) or []:
+				try:
+					frappe.delete_doc("Property Setter", ps, force=True, ignore_missing=True)
+				except Exception:
+					pass
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"ensure_planning_unit_link:{dt}")
+	for ws_name in (
+		BOX_BAG_UNIT_L1,
+		BOX_BAG_UNIT_L2,
+		BOX_BAG_UNASSIGNED_UNIT,
+		LAMINATION_UNIT,
+		SLITTING_UNIT,
+	):
+		ensure_planning_workstation_record(ws_name)
+	try:
+		frappe.clear_cache(doctype="Planning Table")
+		frappe.clear_cache(doctype=PLANNING_SHEET_ITEM)
+	except Exception:
+		pass
+
+
 def planning_line_unit_option_lines():
     """Distinct ``unit`` values we use for planning rows (documentation / optional validation)."""
     return sorted(

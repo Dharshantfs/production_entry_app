@@ -1,31 +1,52 @@
 const PLANNING_SHEET_DEFAULT_GRID_COLUMNS = [
     'item_code', 'item_name', 'qty', 'uom', 'unit',
     'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'width_inch',
+    'length', 'length_per_roll', 'length_roll', 'custom_length', 'custom_length_mtrs',
+    'custom_length_per_roll', 'custom_length_roll',
     'gsm', 'quality', 'color', 'custom_quality',
-    'plan_name', 'custom_plan_code', 'custom_lamination_order_code', 'custom_lamination_order_code_',
+    'planned_date', 'custom_item_planned_date', 'plan_name',
+    'custom_plan_code', 'custom_lamination_order_code', 'custom_lamination_order_code_',
     'custom_lam_gsm', 'custom_lam_side', 'custom_lam_side_', 'custom_bopp_gsm',
     'custom_design_code', 'custom_design_name', 'custom_design_colour', 'custom_design_attachment',
-    'custom_finishing', 'custom_white_tint', 'total_weight', 'warehouse', 'allocated_to_unit',
+    'custom_finishing', 'custom_white_tint', 'custom_no_of_rolls', 'custom_no_of_sheets',
+    'total_weight', 'warehouse', 'allocated_to_unit',
     'planned_date', 'custom_movement_type', 'bag_size', 'sheet_size',
 ];
+
+const PLANNING_SHEET_ALWAYS_VISIBLE_SUFFIXES = ['length', 'planned_date', 'meter', 'roll', 'unit', 'plan_code', 'lamination'];
 
 function ensure_planning_sheet_grid_columns(frm, table) {
     const grid = frm.fields_dict[table] ? frm.fields_dict[table].grid : null;
     if (!grid) return;
     const cdt = grid.doctype;
     let need_refresh = false;
-    for (const fieldname of PLANNING_SHEET_DEFAULT_GRID_COLUMNS) {
-        const df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
-        if (df && df.hidden) {
+
+    const touch_df = (df) => {
+        if (!df || df.fieldtype === 'Section Break' || df.fieldtype === 'Column Break') return;
+        const fn = (df.fieldname || '').toLowerCase();
+        const label = (df.label || '').toLowerCase();
+        const force_visible = PLANNING_SHEET_DEFAULT_GRID_COLUMNS.includes(df.fieldname)
+            || PLANNING_SHEET_ALWAYS_VISIBLE_SUFFIXES.some((s) => fn.includes(s) || label.includes(s));
+        if (!force_visible) return;
+        if (df.hidden) {
             df.hidden = 0;
             need_refresh = true;
         }
-        const grid_df = (grid.docfields || []).find((d) => d.fieldname === fieldname);
-        if (grid_df && grid_df.hidden) {
-            grid_df.hidden = 0;
+        if (!df.in_list_view) {
+            df.in_list_view = 1;
             need_refresh = true;
         }
+    };
+
+    for (const fieldname of PLANNING_SHEET_DEFAULT_GRID_COLUMNS) {
+        touch_df(frappe.meta.get_docfield(cdt, fieldname, frm.docname));
+        const grid_df = (grid.docfields || []).find((d) => d.fieldname === fieldname);
+        touch_df(grid_df);
     }
+    for (const df of (grid.docfields || [])) {
+        touch_df(df);
+    }
+
     if (need_refresh && grid.wrapper && grid.wrapper.is(':visible')) {
         grid.setup_columns();
         grid.refresh();
@@ -33,127 +54,43 @@ function ensure_planning_sheet_grid_columns(frm, table) {
 }
 
 frappe.ui.form.on('Planning sheet', {
-    refresh: function(frm) {
+    refresh( function(frm) {
         ['items', 'planned_items'].forEach((t) => ensure_planning_sheet_grid_columns(frm, t));
         if (!frm.is_new()) {
             frm.add_custom_button(__('Meter to Kgs (Box Bag BOM)'), function() {
                 frappe.call({
-                    method: "production_entry.production_planning.scheduler_api.convert_meter_to_kgs_for_box_bag_bom",
+                    method: 'production_entry.production_planning.scheduler_api.convert_meter_to_kgs_for_box_bag_bom',
                     args: { planning_sheet_name: frm.doc.name },
+                    freeze: true,
                     callback: function(r) {
                         if (!r.exc) {
-                            frappe.msgprint(__('Converted ' + (r.message.updated || 0) + ' items from Meter to Kgs successfully.'));
+                            frappe.show_alert({
+                                message: __('Converted {0} line(s).', [(r.message && r.message.updated) || 0]),
+                                indicator: 'green',
+                            });
                             frm.reload_doc();
                         }
-                    }
+                    },
                 });
             }, __('Actions'));
         }
         setTimeout(() => frm.trigger('toggle_221_fields'), 100);
     },
-    
+
     onload_post_render: function(frm) {
         ['items', 'planned_items'].forEach((t) => ensure_planning_sheet_grid_columns(frm, t));
         setTimeout(() => frm.trigger('toggle_221_fields'), 200);
     },
-    
+
     validate: function(frm) { frm.trigger('toggle_221_fields'); },
     items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     items_remove: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     planned_items_add: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
     planned_items_remove: function(frm) { setTimeout(() => frm.trigger('toggle_221_fields'), 50); },
-    
+
     toggle_221_fields: function(frm) {
-        let all_items = (frm.doc.items || []).concat(frm.doc.planned_items || []);
-        
-        let processes = new Set();
-        for (let row of all_items) {
-            if (!row.item_code) continue;
-            let ic = row.item_code;
-            let process_code = "";
-            if (ic.includes('-')) {
-                let parts = ic.split('-');
-                for (let seg of parts) {
-                    let nums = seg.replace(/[^0-9]/g, '');
-                    if (nums.length >= 3) {
-                        process_code = nums.substring(0, 3);
-                        break;
-                    }
-                }
-            } else {
-                let nums = ic.replace(/[^0-9]/g, '');
-                if (nums.length >= 3) {
-                    process_code = nums.substring(0, 3);
-                }
-            }
-            if (process_code) processes.add(process_code);
-        }
-        
-        let required_by = {
-            'sheet_size': ['251', '252', '253', '254', '255'],
-            'custom_no_of_sheets': ['251', '252', '253', '254', '255'],
-            'custom_lam_gsm': ['104', '107', '213', '254', '255', '109', '222', '223', '231', '233', '241', '242'],
-            'custom_lam_side': ['104', '107', '254', '255', '109'],
-            'custom_lam_side_': ['104', '107', '254', '255', '109'],
-            'custom_bopp_gsm': ['107', '255', '109', '222', '223', '231', '233', '241', '242', '211', '212', '213'],
-            'custom_cylinder_type': ['107', '255', '109'],
-            'custom_white_tint': ['107', '255', '109'],
-            'custom_no_of_design_colours': ['107', '255', '109', '201', '212', '217', '222', '223', '231', '233', '241', '242'],
-            'custom_bopp_finish_size_mm': ['107', '255', '109'],
-            'custom_total_no_of_colours': ['107', '255', '109'],
-            'custom_bopp_bom_kgs': ['107', '255', '109'],
-            'custom_design_code': ['107', '255', '109', '200', '201', '202', '211', '212', '213', '217', '221', '222', '223', '224', '231', '233', '241', '242'],
-            'custom_design_name': ['107', '255', '109', '200', '201', '202', '211', '212', '213', '217', '221', '222', '223', '224', '231', '233', '241', '242'],
-            'custom_design_colour': ['107', '255', '109', '200', '201', '202', '211', '212', '213', '217', '221', '222', '223', '224', '231', '233', '241', '242'],
-            'custom_design_attachment': ['107', '255', '109', '200', '201', '202', '211', '212', '213', '217', '221', '222', '223', '224', '231', '233', '241', '242'],
-            'custom_finishing': ['107', '255', '109', '200', '201', '202', '203', '211', '212', '213', '214', '217', '221', '222', '223', '224', '231', '233', '241', '242'],
-            'bag_size': ['200', '201', '202', '203', '211', '212', '213', '214', '217', '221', '222', '223', '224', '231', '233', '241', '242']
-        };
-        
-        ['items', 'planned_items'].forEach(table => {
-            let grid = frm.fields_dict[table] ? frm.fields_dict[table].grid : null;
-            if (!grid) return;
-            
-            let cdt = grid.doctype;
-            let need_refresh = false;
-            
-            for (let fieldname of Object.keys(required_by)) {
-                let is_required = false;
-                if (all_items.length > 0) {
-                    for (let p of processes) {
-                        if (required_by[fieldname].includes(p)) {
-                            is_required = true;
-                            break;
-                        }
-                    }
-                }
-                
-                let is_hidden = 0; // is_required ? 0 : 1; // Temporarily reverted per user request
-                
-                let df = frappe.meta.get_docfield(cdt, fieldname, frm.docname);
-                if (df && !!df.hidden != !!is_hidden) {
-                    df.hidden = is_hidden;
-                    need_refresh = true;
-                }
-                
-                if (grid.docfields) {
-                    let grid_df = grid.docfields.find(d => d.fieldname === fieldname);
-                    if (grid_df && !!grid_df.hidden != !!is_hidden) {
-                        grid_df.hidden = is_hidden;
-                        need_refresh = true;
-                    }
-                }
-            }
-            
-            if (need_refresh) {
-                if (grid.wrapper && grid.wrapper.is(':visible')) {
-                    grid.setup_columns();
-                    grid.refresh();
-                }
-            }
-            ensure_planning_sheet_grid_columns(frm, table);
-        });
-    }
+        ['items', 'planned_items'].forEach((table) => ensure_planning_sheet_grid_columns(frm, table));
+    },
 });
 
 function trigger_toggle(frm, cdt, cdn) {
@@ -196,17 +133,17 @@ function fetch_design_name(frm, cdt, cdn) {
                 if (r.message && r.message.custom_design_name) {
                     frappe.model.set_value(cdt, cdn, 'custom_design_name', r.message.custom_design_name);
                 }
-            }
+            },
         });
     }
 }
 
 frappe.ui.form.on('Planning sheet Item', {
     item_code: trigger_toggle,
-    custom_design_code: fetch_design_name
+    custom_design_code: fetch_design_name,
 });
 
 frappe.ui.form.on('Planning Table', {
     item_code: trigger_toggle,
-    custom_design_code: fetch_design_name
+    custom_design_code: fetch_design_name,
 });
