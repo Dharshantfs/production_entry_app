@@ -54,7 +54,7 @@ function ensure_planning_sheet_grid_columns(frm, table) {
 }
 
 frappe.ui.form.on('Planning sheet', {
-    refresh( function(frm) {
+    refresh: function(frm) {
         ['items', 'planned_items'].forEach((t) => ensure_planning_sheet_grid_columns(frm, t));
         if (!frm.is_new()) {
             frm.add_custom_button(__('Meter to Kgs (Box Bag BOM)'), function() {
