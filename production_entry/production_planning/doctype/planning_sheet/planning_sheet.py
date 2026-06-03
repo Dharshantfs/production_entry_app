@@ -12,6 +12,9 @@ from production_entry.production_planning.planning_doctypes import (
     PLANNING_SHEET as PLANNING_SHEET_DOCTYPE,
     PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY,
     normalize_planning_unit_for_select,
+    resolve_planning_workstation_name,
+    ensure_planning_workstation_record,
+    ensure_planning_unit_field_links_workstation,
     LAMINATION_UNIT,
     SLITTING_UNIT,
     SLITTING_UNIT_VTP,
@@ -90,6 +93,12 @@ class Planningsheet(Document):
             # Whites → UNASSIGNED; colors → Unit 1–4 by width before Select normalization.
             self._recompute_line_units_from_width_and_color()
             # Runs before super(): insert() also validates links before before_validate.
+            if not frappe.flags.get("planning_unit_field_meta_patched"):
+                try:
+                    ensure_planning_unit_field_links_workstation()
+                    frappe.flags.planning_unit_field_meta_patched = True
+                except Exception:
+                    frappe.log_error(frappe.get_traceback(), "planning_sheet:ensure_unit_workstation_link")
             self._normalize_child_table_units()
         super()._validate_links()
 
@@ -266,10 +275,24 @@ class Planningsheet(Document):
                 leg.unit = nu
 
     def _normalize_child_table_units(self):
+        """Map ``unit`` to existing Workstation names (L1/L2 Leader, Unit 1–4, etc.)."""
         for row in self.get("planned_items") or []:
-            row.unit = normalize_planning_unit_for_select(getattr(row, "unit", None))
+            row.unit = self._resolve_row_workstation_unit(getattr(row, "unit", None))
         for row in self.get("items") or []:
-            row.unit = normalize_planning_unit_for_select(getattr(row, "unit", None))
+            row.unit = self._resolve_row_workstation_unit(getattr(row, "unit", None))
+
+    def _resolve_row_workstation_unit(self, raw):
+        norm = normalize_planning_unit_for_select(raw)
+        resolved = resolve_planning_workstation_name(norm or raw)
+        if resolved and frappe.db.exists("Workstation", resolved):
+            return resolved
+        if norm:
+            ensure_planning_workstation_record(norm)
+            if frappe.db.exists("Workstation", norm):
+                return norm
+        if norm in ("Unit 1", "Unit 2", "Unit 3", "Unit 4", "UNASSIGNED"):
+            return norm
+        return resolved or norm or ""
 
     def _recompute_printed_bopp_total_colours_on_child_rows(self):
         """Board grid: persist total colours when white tint / design token change (matches Printed BOPP table)."""

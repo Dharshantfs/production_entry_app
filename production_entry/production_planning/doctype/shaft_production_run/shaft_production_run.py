@@ -4388,6 +4388,30 @@ def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str =
 		sz, w = _sheet_size_for_item_code(ic)
 		out["sheet_size"] = _cstr(sz).strip()
 		out["width_inch"] = flt(w or 0)
+		if _is_box_bag_fg_code(ic):
+			try:
+				from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code
+
+				p221 = _parse_box_bag_item_code(ic) or {}
+				if p221:
+					if out["gsm"] <= 0:
+						out["gsm"] = cint(p221.get("total_gsm") or 0)
+					if not out["quality"]:
+						qc = _cstr(p221.get("quality_code") or "").strip().upper()
+						out["quality"] = _cstr(
+							p221.get("quality_name") or _LAMINATION_QUALITY_BY_CODE.get(qc, "") or ""
+						).strip().upper()
+					if not out["color"]:
+						cc = _cstr(p221.get("colour_code") or "").strip()
+						if cc:
+							try:
+								out["color"] = _cstr(_get_color_by_code(cc) or "").strip().upper()
+							except Exception:
+								out["color"] = ""
+					if not out["sheet_size"]:
+						out["sheet_size"] = _cstr(p221.get("bag_size") or "").strip()
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "_spr_resolve_roll_line_specs:box_bag")
 		if out["quality"] and out["color"] and out["gsm"] > 0:
 			return out
 		pp = _item_process_prefix(ic)
@@ -4650,7 +4674,24 @@ def _spr_planned_pcs_per_bundle(bundle_row) -> float:
 	tpb = flt(getattr(bundle_row, "total_pcs_per_bundle", 0) or 0)
 	if tpb <= 0 and pkts > 0 and pcs > 0:
 		tpb = flt(pkts * pcs)
+	n_boxes = flt(getattr(bundle_row, "no_of_boxes", 0) or 0)
+	if tpb <= 0 and n_boxes > 0 and pcs > 0:
+		tpb = flt(n_boxes * pcs)
 	return flt(tpb)
+
+
+def _spr_planned_pcs_per_bundle_entry(bundle_row, bundle_index: int, n_entries: int, is_box_bag: bool = False) -> float:
+	"""Per roll line: box bag uses pcs_per_packet (per box); sheet cutting uses row total."""
+	n_entries = cint(n_entries) or 1
+	if is_box_bag:
+		pcs = cint(getattr(bundle_row, "pcs_per_packet", 0) or 0)
+		if pcs > 0:
+			return flt(pcs)
+		tpb = _spr_planned_pcs_per_bundle(bundle_row)
+		if tpb > 0 and n_entries > 0:
+			return flt(tpb / n_entries)
+		return 0.0
+	return _spr_planned_pcs_per_bundle(bundle_row)
 
 
 def _spr_bundle_row_by_key(spr_doc, bundle_row_name=None, bundle_row_idx=None):
@@ -4667,9 +4708,16 @@ def _spr_bundle_row_by_key(spr_doc, bundle_row_name=None, bundle_row_idx=None):
 
 
 def _spr_item_line_from_bundle(
-	pp_name, bundle_row, bundle_index: int, wo: dict, order_code: str, bundle_row_idx=None
+	pp_name,
+	bundle_row,
+	bundle_index: int,
+	wo: dict,
+	order_code: str,
+	bundle_row_idx=None,
+	is_box_bag: bool = False,
+	n_entries: int = 1,
 ):
-	"""Build one Roll Production Result line for sheet-cutting bundle Create Entry."""
+	"""Build one Roll Production Result line for sheet-cutting / box-bag bundle Create Entry."""
 	item_code = _cstr(getattr(bundle_row, "item_code", None) or wo.get("production_item"))
 	if not item_code:
 		frappe.throw(_("Item Code is missing on the bundle row and Work Order"))
@@ -4680,7 +4728,9 @@ def _spr_item_line_from_bundle(
 	gsm = cint(specs.get("gsm") or 0)
 	sz_from_item = specs.get("sheet_size") or ""
 	w_from_item = flt(specs.get("width_inch") or 0)
-	pcs_per_bundle = _spr_planned_pcs_per_bundle(bundle_row)
+	pcs_per_bundle = _spr_planned_pcs_per_bundle_entry(
+		bundle_row, bundle_index, n_entries, is_box_bag=is_box_bag
+	)
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	row = {
 		"work_order": wo.get("name"),
@@ -4712,6 +4762,8 @@ def _spr_item_line_from_bundle(
 		row["planned_qty"] = pcs_per_bundle
 	if spi_meta.has_field("custom_planned_bag_pcs"):
 		row["custom_planned_bag_pcs"] = pcs_per_bundle
+	if is_box_bag and spi_meta.has_field("custom_sheet_size") and sz_from_item:
+		row["custom_sheet_size"] = sz_from_item
 	if spi_meta.has_field("custom_total_produced_sheets"):
 		row["custom_total_produced_sheets"] = 0
 	if spi_meta.has_field("custom_achieved_bag_pcs"):
@@ -4759,11 +4811,19 @@ def build_spr_bundle_result_lines_for_row(
 			resolved_idx = rows.index(bundle_row)
 		except ValueError:
 			resolved_idx = max(cint(getattr(bundle_row, "idx", 0)) - 1, 0)
+	is_bb = cint(getattr(spr_doc, "custom_is_box_bag", 0))
 	lines = []
 	for i in range(n_bundles):
 		lines.append(
 			_spr_item_line_from_bundle(
-				pp_name, bundle_row, i + 1, wo, order_code, bundle_row_idx=resolved_idx
+				pp_name,
+				bundle_row,
+				i + 1,
+				wo,
+				order_code,
+				bundle_row_idx=resolved_idx,
+				is_box_bag=bool(is_bb),
+				n_entries=n_bundles,
 			)
 		)
 	return lines

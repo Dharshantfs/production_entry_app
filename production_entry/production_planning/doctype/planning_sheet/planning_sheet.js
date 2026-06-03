@@ -48,8 +48,15 @@ function ensure_planning_sheet_grid_columns(frm, table) {
     }
 
     if (need_refresh && grid.wrapper && grid.wrapper.is(':visible')) {
-        grid.setup_columns();
-        grid.refresh();
+        try {
+            if (typeof grid.setup_visible_columns === 'function') {
+                grid.setup_visible_columns();
+            } else if (typeof grid.refresh === 'function') {
+                grid.refresh();
+            }
+        } catch (e) {
+            /* grid API differs by Frappe version */
+        }
     }
 }
 

@@ -338,6 +338,17 @@ def ensure_planning_unit_field_links_workstation():
 					pass
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"ensure_planning_unit_link:{dt}")
+	for ws_name in (
+		BOX_BAG_UNIT_L1,
+		BOX_BAG_UNIT_L2,
+		BOX_BAG_UNASSIGNED_UNIT,
+		"Unit 1",
+		"Unit 2",
+		"Unit 3",
+		"Unit 4",
+		"UNASSIGNED",
+	):
+		ensure_planning_workstation_record(ws_name)
 	try:
 		frappe.clear_cache(doctype="Planning Table")
 		frappe.clear_cache(doctype=PLANNING_SHEET_ITEM)
