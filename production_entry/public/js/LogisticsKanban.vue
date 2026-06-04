@@ -194,6 +194,7 @@
                 v-for="da in card.approved_ready_dn"
                 :key="'a-' + da.name"
                 class="lk-history-chip is-done"
+                @click.stop="openDespatchApproval(da.name)"
               >
                 <span class="lk-history-badge">Approved</span>
                 <span class="lk-history-main">
@@ -203,6 +204,29 @@
                 <button type="button" class="lk-dn-btn" @click.stop="createDeliveryNote(da.name)">
                   Create Delivery Note
                 </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="card.despatched_approvals?.length" class="lk-history-panel">
+            <div class="lk-history-head">Despatched</div>
+            <div class="lk-history-list">
+              <div
+                v-for="da in card.despatched_approvals"
+                :key="'d-' + da.name"
+                class="lk-history-chip is-despatched"
+                @click.stop="openDespatchApproval(da.name)"
+              >
+                <span class="lk-history-badge">Despatch</span>
+                <span class="lk-history-main">
+                  <span class="lk-history-ste">{{ da.name }}</span>
+                  <span class="lk-history-meta">
+                    <span v-if="da.order_codes_label">Order {{ da.order_codes_label }}</span>
+                    <span v-if="da.roll_count"> · {{ da.roll_count }} roll(s)</span>
+                    <span v-if="da.delivery_note"> · {{ da.delivery_note }}</span>
+                  </span>
+                </span>
+                <span class="lk-history-go">Open →</span>
               </div>
             </div>
           </div>
@@ -942,6 +966,13 @@ onUnmounted(() => {
 }
 .lk-history-chip.is-pending .lk-history-badge {
   background: #ea580c;
+}
+.lk-history-chip.is-despatched .lk-history-badge {
+  background: #0369a1;
+}
+.lk-history-chip.is-despatched {
+  border-color: #bae6fd;
+  background: #f0f9ff;
 }
 .lk-dn-btn {
   flex-shrink: 0;

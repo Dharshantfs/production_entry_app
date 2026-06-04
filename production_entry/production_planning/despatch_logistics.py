@@ -103,35 +103,59 @@ def get_despatch_company_cards(
 			lines = frappe.get_all(
 				"Despatch Approval Line",
 				filters={"parent": da.name},
-				fields=["party_code", "customer_name", "qty"],
+				fields=["party_code", "customer_name", "qty", "batch_no"],
 				limit_page_length=200,
 			)
 			codes = []
+			batches = set()
 			for ln in lines:
 				pc = _cstr(ln.get("party_code"))
 				if pc and pc not in codes:
 					codes.append(pc)
+				bn = _cstr(ln.get("batch_no"))
+				if bn:
+					batches.add(bn)
 			if oc and not any(oc in _cstr(x).lower() for x in codes):
 				continue
 			total_qty = sum(flt(ln.get("qty")) for ln in lines)
+			dn_name = _cstr(da.delivery_note)
+			dn_docstatus = 0
+			if dn_name and frappe.db.exists("Delivery Note", dn_name):
+				dn_docstatus = cint(frappe.db.get_value("Delivery Note", dn_name, "docstatus") or 0)
+			roll_count = len(batches) or len(lines)
+			card_status = da.status
+			if da.status == "Approved" and dn_docstatus >= 1:
+				card_status = "Despatched"
 			enriched.append(
 				{
 					"name": da.name,
 					"status": da.status,
-					"delivery_note": da.delivery_note,
+					"card_status": card_status,
+					"delivery_note": dn_name,
+					"dn_docstatus": dn_docstatus,
+					"roll_count": roll_count,
 					"order_codes_label": ", ".join(codes),
 					"qty_total": total_qty,
 					"creation": da.creation,
 				}
 			)
 		pending = [a for a in enriched if a["status"] in ("Pending Approval", "Draft")]
-		approved = [a for a in enriched if a["status"] == "Approved" and not a.get("delivery_note")]
+		approved_ready_dn = [
+			a
+			for a in enriched
+			if a["status"] == "Approved"
+			and (not a.get("delivery_note") or cint(a.get("dn_docstatus")) == 0)
+		]
+		despatched = [a for a in enriched if a.get("card_status") == "Despatched"]
+		approved_on_card = [a for a in enriched if a["status"] == "Approved"]
 		out.append(
 			{
 				"company": name,
 				"label": name,
 				"pending_approvals": pending,
-				"approved_ready_dn": approved,
+				"approved_ready_dn": approved_ready_dn,
+				"approved_approvals": approved_on_card,
+				"despatched_approvals": despatched,
 				"despatch_history": enriched,
 			}
 		)
