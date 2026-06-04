@@ -636,6 +636,10 @@ def _bom_item_matches_process(item_code, expected_process):
 		return False
 	if _bom_item_process_code(item_code) == exp:
 		return True
+	if exp == "PB" and (
+		_bom_item_process_code(item_code) in ("PB", "PB-") or _is_printed_bopp_item_code(item_code)
+	):
+		return True
 	if exp == "107" and _is_107_mid_bopp_item(item_code):
 		return True
 	return False
@@ -6512,6 +6516,13 @@ def _pick_bom_child_rows_for_process(bom_items, expected_child_process, parent_i
 			rows.append((ic, row))
 	if rows:
 		return rows
+	if exp == "PB":
+		pb_rows = []
+		for row in bom_items or []:
+			ic = (row.item_code or "").strip()
+			if ic and _is_printed_bopp_item_code(ic):
+				pb_rows.append((ic, row))
+		return pb_rows
 	if exp != "107":
 		return []
 	# 107 on 255/108 BOMs: any non-fabric, non-PB line that is a BOPP mid item.
@@ -7221,14 +7232,7 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		ensure_all_planning_sheet_trace_ids(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:ensure_all_planning_sheet_trace_ids")
-	try:
-		_apply_meter_to_kg_for_bag_planning_sheet(planning_sheet_name)
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_apply_meter_to_kg")
-	try:
-		_refresh_planning_sheet_bom_child_kg_qty(planning_sheet_name)
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_refresh_bom_child_kg")
+	# Meter→Kg + child BOM recalc: bag sheets only, via desk button (not post-sync).
 	frappe.db.commit()
 	_report_planning_sheet_bom_sync_gaps(planning_sheet_name)
 
@@ -7460,7 +7464,9 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			continue
 		pp = _bom_item_process_code((so_line.item_code or "").strip())
 		lp = _lamination_process_from_item_code(lam_ic)
-		if (pp == "253" and lp == "104") or (pp == "255" and lp == "107") or (pp == "108" and lp == "107") or (pp in BOPP_BOX_BAG_SYNC_PARENT_PROCESSES and lp == "107"):
+		if (pp == "253" and lp == "104") or (pp == "255" and lp == "107") or (pp == "108" and lp == "107") or (
+			pp in BOPP_BOX_BAG_SYNC_PARENT_PROCESSES and lp == "107"
+		) or (pp in D_CUT_PROCESS_CODES and lp == "107"):
 			key = (so_line.name, lam_ic)
 			if key not in seen_lt:
 				seen_lt.add(key)
@@ -7580,7 +7586,24 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 		so_parent_ic = (so_it.item_code or "").strip()
 		pp_so = _bom_item_process_code(so_parent_ic)
 		lam_proc = _lamination_process_from_item_code(lam_ic)
-		if pp_so in ("108", "109", "253", "255", "254", "106", "222", "223", "231", "233", "241", "242", "225", "226"):
+		if pp_so in (
+			"108",
+			"109",
+			"253",
+			"255",
+			"254",
+			"106",
+			"222",
+			"223",
+			"231",
+			"233",
+			"241",
+			"242",
+			"225",
+			"226",
+			"216",
+			"217",
+		):
 			t_fg = _parent_child_trace_id_from_item_code(so_parent_ic) or _parent_child_trace_id_for_planning_row(
 				so_parent_ic, so_it.name, ps.name
 			)
@@ -7591,7 +7614,24 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			_has_lam_design = bool(_cstr((_parse_107_item_code(lam_ic) or {}).get("design_code")).strip())
 		elif lam_proc == "104":
 			_has_lam_design = bool(_cstr((_parse_104_item_code(lam_ic) or {}).get("design_code")).strip())
-		if not _has_lam_design and pp_so not in ("108", "109", "253", "255", "254", "106", "222", "223", "231", "233", "241", "242", "225", "226"):
+		if not _has_lam_design and pp_so not in (
+			"108",
+			"109",
+			"253",
+			"255",
+			"254",
+			"106",
+			"222",
+			"223",
+			"231",
+			"233",
+			"241",
+			"242",
+			"225",
+			"226",
+			"216",
+			"217",
+		):
 			if pp_so == "104" and lam_proc == "104":
 				t_sheet = _parent_child_trace_id_for_planning_row(so_parent_ic, so_it.name, ps.name)
 				if t_sheet:
@@ -7606,10 +7646,21 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 			try:
 				parent_updates = {}
 				if frappe.db.has_column("Planning Table", "qty"):
-					lam_so_qty = flt(so_it.qty)
-					cur_lam_q = flt(frappe.db.get_value("Planning Table", lam_pt_name, "qty") or 0)
-					if lam_so_qty > 0 and abs(cur_lam_q - lam_so_qty) > 1e-6:
-						parent_updates["qty"] = lam_so_qty
+					_bag_sheet = _planning_sheet_has_bag_fg(ps.name)
+					if _bag_sheet and (so_it.item_code or "").strip() != lam_ic:
+						pass
+					elif (so_it.item_code or "").strip() == lam_ic:
+						lam_so_qty, _ = _parent_bom_scale_qty_uom(
+							lam_ic, flt(so_it.qty), getattr(so_it, "uom", None), ps.name
+						)
+						cur_lam_q = flt(frappe.db.get_value("Planning Table", lam_pt_name, "qty") or 0)
+						if lam_so_qty > 0 and abs(cur_lam_q - lam_so_qty) > 1e-6:
+							parent_updates["qty"] = lam_so_qty
+					elif not _bag_sheet:
+						lam_so_qty, _ = _lam_parent_scale_for_bom(lam_ic, lam_row, so_it, ps.name)
+						cur_lam_q = flt(frappe.db.get_value("Planning Table", lam_pt_name, "qty") or 0)
+						if lam_so_qty > 0 and abs(cur_lam_q - lam_so_qty) > 1e-6:
+							parent_updates["qty"] = lam_so_qty
 				if frappe.db.has_column("Planning Table", "sales_order_item"):
 					cur_soi = frappe.db.get_value("Planning Table", lam_pt_name, "sales_order_item")
 					if not (cur_soi or "").strip():
@@ -7691,10 +7742,17 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 				bom_no_ex = comp.get("bom_no")
 				bom_row_ex = comp.get("bom_row")
 				if bom_no_ex and frappe.db.has_column("Planning Table", "qty"):
+					lam_scale, lam_uom = _lam_parent_scale_for_bom(lam_ic, lam_row, so_it, ps.name)
 					if bom_row_ex is not None:
-						comp_qty_ex = _scaled_component_qty_from_bom_row(bom_no_ex, bom_row_ex, flt(so_it.qty))
+						comp_qty_ex = _scaled_component_qty_from_bom_row(bom_no_ex, bom_row_ex, lam_scale)
 					else:
-						comp_qty_ex = _fabric_qty_from_bom(bom_no_ex, comp_ic, flt(so_it.qty))
+						comp_qty_ex = _fabric_qty_from_bom(
+							bom_no_ex,
+							comp_ic,
+							lam_scale,
+							from_uom=lam_uom or "Kg",
+							parent_item_code=lam_ic,
+						)
 					if comp_qty_ex > 0:
 						cur_q_ex = flt(frappe.db.get_value("Planning Table", ex_name, "qty") or 0)
 						if abs(comp_qty_ex - cur_q_ex) > 1e-6:
@@ -7802,10 +7860,17 @@ def _sync_lamination_fabric_planning_rows(planning_sheet_name):
 
 			bom_no = comp.get("bom_no")
 			bom_row = comp.get("bom_row")
+			lam_scale, lam_uom = _lam_parent_scale_for_bom(lam_ic, lam_row, so_it, ps.name)
 			if bom_no and bom_row is not None:
-				comp_qty = _scaled_component_qty_from_bom_row(bom_no, bom_row, flt(so_it.qty))
+				comp_qty = _scaled_component_qty_from_bom_row(bom_no, bom_row, lam_scale)
 			else:
-				comp_qty = _fabric_qty_from_bom(bom_no, comp_ic, flt(so_it.qty)) if bom_no else flt(so_it.qty)
+				comp_qty = (
+					_fabric_qty_from_bom(
+						bom_no, comp_ic, lam_scale, from_uom=lam_uom or "Kg", parent_item_code=lam_ic
+					)
+					if bom_no
+					else lam_scale
+				)
 
 			comp_item_name = frappe.db.get_value("Item", comp_ic, "item_name") or ""
 			if comp.get("role") == "fabric":
@@ -8741,10 +8806,9 @@ def _sync_bom_child_rows_from_planning_rows(
 			_apply_252_fg_extras_to_bom_child_row(updates, ps.name, so_item_key, so_it, child_ic, child_proc_ex)
 			scale_qty = flt(prow.get("qty") or 0) or flt(getattr(so_it, "qty", 0))
 			scale_uom = prow.get("uom") or getattr(so_it, "uom", None)
-			scale_qty = _planning_qty_in_kg_for_bom(parent_ic, scale_qty, scale_uom)
-			scale_uom = "Kg"
+			scale_qty, scale_uom = _parent_bom_scale_qty_uom(parent_ic, scale_qty, scale_uom, ps.name)
 			child_qty_new = _fabric_qty_from_bom(
-				bom_no, child_ic, scale_qty, from_uom=scale_uom, parent_item_code=parent_ic
+				bom_no, child_ic, scale_qty, from_uom=scale_uom or "Kg", parent_item_code=parent_ic
 			)
 			cur_child_qty = flt(frappe.db.get_value("Planning Table", ex_nm, "qty") or 0)
 			skip_board_qty = child_qty_new > 0 and abs(cur_child_qty - child_qty_new) < 0.001
@@ -8763,9 +8827,10 @@ def _sync_bom_child_rows_from_planning_rows(
 		parent_doc = frappe.get_doc("Planning Table", prow.get("name")) if prow.get("name") else None
 		scale_qty = flt(prow.get("qty") or 0) or flt(getattr(so_it, "qty", 0))
 		scale_uom = prow.get("uom") or getattr(so_it, "uom", None)
-		scale_qty = _planning_qty_in_kg_for_bom(parent_ic, scale_qty, scale_uom)
-		scale_uom = "Kg"
-		child_qty = _fabric_qty_from_bom(bom_no, child_ic, scale_qty, from_uom=scale_uom, parent_item_code=parent_ic)
+		scale_qty, scale_uom = _parent_bom_scale_qty_uom(parent_ic, scale_qty, scale_uom, ps.name)
+		child_qty = _fabric_qty_from_bom(
+			bom_no, child_ic, scale_qty, from_uom=scale_uom or "Kg", parent_item_code=parent_ic
+		)
 		item_name = frappe.db.get_value("Item", child_ic, "item_name") or ""
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, parent_doc)
 		child_proc = _bom_item_process_code(child_ic)
@@ -28047,6 +28112,105 @@ _BOM_KG_PARENT_PROCESSES = frozenset(
 )
 
 
+def _planning_sheet_has_bag_fg(planning_sheet_name):
+	"""True when this sheet has a W/D-CUT or box-bag finished-good row."""
+	if not planning_sheet_name:
+		return False
+	for ic in frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		pluck="item_code",
+		limit_page_length=0,
+	) or []:
+		if _item_process_prefix(_cstr(ic)) in ALL_BAG_FG_PROCESS_CODES:
+			return True
+	return False
+
+
+def _parent_bom_scale_qty_uom(item_code, qty, uom, planning_sheet_name=None):
+	"""Bag sheets: keep qty/uom until **Meter to Kgs** button. Other sheets: normalize to Kg."""
+	qty = flt(qty)
+	uom = _cstr(uom).strip()
+	if planning_sheet_name and _planning_sheet_has_bag_fg(planning_sheet_name):
+		if not uom:
+			uom = _cstr(frappe.db.get_value("Item", item_code, "stock_uom") or "").strip()
+		return qty, uom
+	return _planning_qty_in_kg_for_bom(item_code, qty, uom), "Kg"
+
+
+def _lam_parent_scale_for_bom(lam_ic, lam_row, so_it, planning_sheet_name=None):
+	"""Scale qty for 107/104 BOM children (bag: planning row as-is; else Kg)."""
+	lam_ic = _cstr(lam_ic).strip()
+	if planning_sheet_name and _planning_sheet_has_bag_fg(planning_sheet_name):
+		if lam_row:
+			q = flt(getattr(lam_row, "qty", None) or (lam_row.get("qty") if isinstance(lam_row, dict) else 0))
+			u = _cstr(
+				getattr(lam_row, "uom", None) or (lam_row.get("uom") if isinstance(lam_row, dict) else "")
+			).strip()
+			if q > 0:
+				return q, u or _cstr(frappe.db.get_value("Item", lam_ic, "stock_uom") or "").strip()
+		if so_it:
+			return flt(getattr(so_it, "qty", 0)), _cstr(getattr(so_it, "uom", None) or "").strip()
+		return 0, ""
+	qty = _lam_parent_scale_qty_kg(lam_ic, lam_row, so_it)
+	return qty, "Kg"
+
+
+def _lam_parent_scale_qty_kg(lam_ic, lam_row, so_it):
+	"""Kg qty for scaling 107/104 BOM children — use the lamination planning row, not SO piece qty."""
+	lam_ic = _cstr(lam_ic).strip()
+	if lam_row:
+		q = flt(getattr(lam_row, "qty", None) or (lam_row.get("qty") if isinstance(lam_row, dict) else 0))
+		u = _cstr(
+			getattr(lam_row, "uom", None) or (lam_row.get("uom") if isinstance(lam_row, dict) else "")
+		).strip()
+		if q > 0:
+			return _planning_qty_in_kg_for_bom(lam_ic, q, u)
+	if so_it and _is_lamination_parent_process(_cstr(getattr(so_it, "item_code", ""))):
+		return _planning_qty_in_kg_for_bom(lam_ic, flt(getattr(so_it, "qty", 0)), getattr(so_it, "uom", None))
+	return _planning_qty_in_kg_for_bom(
+		lam_ic, flt(getattr(so_it, "qty", 0) if so_it else 0), getattr(so_it, "uom", None) if so_it else None
+	)
+
+
+def _resolve_planning_bom_child_match(parent_ic, parent_pp, child_ic):
+	"""Resolve BOM child (100 / PB) for qty refresh without throwing desk messages."""
+	parent_ic = _cstr(parent_ic).strip()
+	child_ic = _cstr(child_ic).strip()
+	if not parent_ic or not child_ic:
+		return None, None
+	lam_pp = _lamination_process_from_item_code(parent_ic)
+	if lam_pp == "107" or parent_pp == "107":
+		try:
+			res107 = _resolve_107_child_components(parent_ic)
+			bom_no = res107.get("bom_name")
+			fab = res107.get("fabric")
+			pb = res107.get("pb")
+			if fab and fab[0] == child_ic:
+				return child_ic, bom_no
+			if pb and pb[0] == child_ic:
+				return child_ic, bom_no
+		except Exception:
+			pass
+	try:
+		if child_ic.startswith("100"):
+			res = _get_fabric_item_from_process_item(
+				parent_ic, expected_process=parent_pp, process_label="BOM child fabric"
+			)
+			if res.get("fabric_item_code") == child_ic:
+				return child_ic, res.get("bom_no")
+		child_pp = "PB" if _is_printed_bopp_item_code(child_ic) else _item_process_prefix(child_ic)
+		if child_pp:
+			res = _get_bom_child_item_from_process_item(
+				parent_ic, parent_pp, child_pp, process_label="BOM child"
+			)
+			if res.get("child_item_code") == child_ic:
+				return child_ic, res.get("bom_no")
+	except Exception:
+		pass
+	return None, None
+
+
 def _planning_qty_in_kg_for_bom(item_code, qty, uom):
 	"""Normalize planning row qty to Kg using Item UOM Conversion (Meter÷factor)."""
 	qty = flt(qty)
@@ -28094,7 +28258,7 @@ def _refresh_planning_sheet_bom_child_kg_qty(planning_sheet_name):
 		)
 		for prow in parent_rows:
 			parent_ic = _cstr(prow.get("item_code"))
-			parent_pp = _item_process_prefix(parent_ic)
+			parent_pp = _bom_item_process_code(parent_ic) or _item_process_prefix(parent_ic)
 			if parent_ic.startswith("PB-") or "PRINTED" in parent_ic.upper():
 				parent_pp = "PB"
 			scale_qty = _planning_qty_in_kg_for_bom(parent_ic, prow.get("qty"), prow.get("uom"))
@@ -28104,43 +28268,35 @@ def _refresh_planning_sheet_bom_child_kg_qty(planning_sheet_name):
 				child_ic = _cstr(crow.get("item_code"))
 				if not child_ic or child_ic == parent_ic:
 					continue
-				child_pp = _item_process_prefix(child_ic)
-				if child_ic.startswith("PB-") or "PRINTED" in child_ic.upper():
+				child_pp = _bom_item_process_code(child_ic) or _item_process_prefix(child_ic)
+				if _is_printed_bopp_item_code(child_ic):
 					child_pp = "PB"
-				try:
-					if child_pp == "100":
-						res = _get_fabric_item_from_process_item(
-							parent_ic, expected_process=parent_pp, process_label="BOM child fabric"
-						)
-						match_ic = res.get("fabric_item_code")
-					else:
-						res = _get_bom_child_item_from_process_item(
-							parent_ic, parent_pp, child_pp, process_label="BOM child"
-						)
-						match_ic = res.get("child_item_code")
-					if match_ic != child_ic:
-						continue
-					bom_no = res["bom_no"]
-					child_qty = _fabric_qty_from_bom(
-						bom_no, child_ic, scale_qty, from_uom="Kg", parent_item_code=parent_ic
-					)
-					if child_qty <= 0:
-						continue
-					cur = flt(crow.get("qty") or 0)
-					if abs(cur - child_qty) < 0.001:
-						continue
-					stock_uom = _cstr(frappe.db.get_value("Item", child_ic, "stock_uom") or "Kg").strip() or "Kg"
-					frappe.db.set_value(
-						"Planning Table",
-						crow.get("name"),
-						{"qty": child_qty, "uom": stock_uom},
-						update_modified=False,
-					)
-					_set_planning_table_qty_with_legacy_sync(planning_sheet_name, crow.get("name"), child_qty)
-					crow["qty"] = child_qty
-					updated += 1
-				except Exception:
+				if child_pp in ALL_BAG_FG_PROCESS_CODES:
 					continue
+				msg_len = len(getattr(frappe.local, "message_log", None) or [])
+				match_ic, bom_no = _resolve_planning_bom_child_match(parent_ic, parent_pp, child_ic)
+				if hasattr(frappe.local, "message_log"):
+					frappe.local.message_log = (frappe.local.message_log or [])[:msg_len]
+				if not match_ic or not bom_no:
+					continue
+				child_qty = _fabric_qty_from_bom(
+					bom_no, child_ic, scale_qty, from_uom="Kg", parent_item_code=parent_ic
+				)
+				if child_qty <= 0:
+					continue
+				cur = flt(crow.get("qty") or 0)
+				if abs(cur - child_qty) < 0.001:
+					continue
+				stock_uom = _cstr(frappe.db.get_value("Item", child_ic, "stock_uom") or "Kg").strip() or "Kg"
+				frappe.db.set_value(
+					"Planning Table",
+					crow.get("name"),
+					{"qty": child_qty, "uom": stock_uom},
+					update_modified=False,
+				)
+				_set_planning_table_qty_with_legacy_sync(planning_sheet_name, crow.get("name"), child_qty)
+				crow["qty"] = child_qty
+				updated += 1
 	return updated
 
 
@@ -28197,30 +28353,17 @@ def _convert_planning_row_meter_to_kg(row_name, item_code, qty, uom, source_item
 	return True
 
 
-def _apply_meter_to_kg_for_bag_planning_sheet(planning_sheet_name):
-	"""Auto Meter→Kg (÷ factor) for all bag-process BOM children on a planning sheet."""
-	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
-		return 0
-	has_bag_fg = False
-	for ic in frappe.get_all(
-		"Planning Table",
-		filters={"parent": planning_sheet_name},
-		pluck="item_code",
-		limit_page_length=0,
-	) or []:
-		if _item_process_prefix(ic) in ALL_BAG_FG_PROCESS_CODES:
-			has_bag_fg = True
-			break
-	if not has_bag_fg:
-		return 0
-	return convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=True).get("updated", 0)
-
-
 @frappe.whitelist()
 def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=False):
-	"""Convert Meter to Kg for all bag BOM children (100/103/104/105/107/108/109/106) on W/D-CUT and box bag sheets."""
+	"""Desk **Meter to Kgs (All Bag BOM)**: bag sheets only — Meter→Kg then child BOM recalc."""
 	if not planning_sheet_name:
 		return {"status": "error", "message": "No planning sheet provided"}
+	if not frappe.db.exists("Planning sheet", planning_sheet_name):
+		frappe.throw(_("Planning Sheet {0} not found.").format(planning_sheet_name))
+	if not _planning_sheet_has_bag_fg(planning_sheet_name):
+		frappe.throw(
+			_("Meter to Kg applies only to planning sheets with bag finished goods (W/D-CUT / box bag).")
+		)
 
 	try:
 		ensure_planning_unit_field_links_workstation()
@@ -28320,50 +28463,51 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=Fal
 			ic = r.get("item_code")
 			if not ic: continue
 			
-			child_pp = "PB-" if ic.startswith("PB-") or "PRINTED" in ic.upper() else _item_process_prefix(ic)
+			child_pp = "PB" if ic.startswith("PB-") or "PRINTED" in ic.upper() else _item_process_prefix(ic)
 			so_item = r.get("sales_order_item") or r.get("so_item") or r.get("custom_parent_child_trace_id")
 			
-			if child_pp in ("100", "103", "105", "107", "108", "109", "104", "106", "PB-") and so_item and so_item in converted_parents:
+			if child_pp in BAG_BOM_METER_CHILD_PROCESSES + ("PB",) and so_item and so_item in converted_parents:
 				for parent_data in converted_parents[so_item]:
 					parent_ic = parent_data["parent_ic"]
 					parent_pp = parent_data["pp"]
-					parent_qty = parent_data["new_qty"]
-					parent_uom = parent_data.get("uom", "Kg")
-					
-					try:
-						msg_len = len(frappe.local.message_log) if hasattr(frappe.local, "message_log") else 0
-						res = None
-						if child_pp == "100":
-							res = _get_fabric_item_from_process_item(parent_ic, expected_process=parent_pp, process_label="Child Fabric")
-						else:
-							res = _get_bom_child_item_from_process_item(parent_ic, parent_pp, child_pp, process_label="Child item")
-							
-						if res and (res.get("fabric_item_code") == ic or res.get("child_item_code") == ic):
-							bom_no = res["bom_no"]
-							child_qty = _fabric_qty_from_bom(bom_no, ic, parent_qty, from_uom=parent_uom, parent_item_code=parent_ic)
-							stock_uom = _cstr(frappe.db.get_value("Item", ic, "stock_uom") or "Kg").strip() or "Kg"
-							update_dict = {
-								"qty": child_qty,
-								"uom": stock_uom,
-							}
-							if child_pp == "PB-" and frappe.db.has_column("Planning Table", "custom_bopp_bom_kgs"):
-								update_dict["custom_bopp_bom_kgs"] = child_qty
-								
-							frappe.db.set_value("Planning Table", r.get("name"), update_dict)
-							
-							source_item = r.get("source_item")
-							if source_item and frappe.db.exists("Planning sheet Item", source_item):
-								update_dict_source = update_dict.copy()
-								if child_pp == "PB-" and not frappe.db.has_column("Planning sheet Item", "custom_bopp_bom_kgs"):
-									update_dict_source.pop("custom_bopp_bom_kgs", None)
-								frappe.db.set_value("Planning sheet Item", source_item, update_dict_source)
-							break
-					except Exception:
-						if hasattr(frappe.local, "message_log"):
-							frappe.local.message_log = frappe.local.message_log[:msg_len]
-						pass
+					if parent_pp in ALL_BAG_FG_PROCESS_CODES and child_pp in ("107", "103", "104", "105", "106", "108", "109"):
+						continue
+					if child_pp in ALL_BAG_FG_PROCESS_CODES:
+						continue
+					parent_qty = _planning_qty_in_kg_for_bom(
+						parent_ic, parent_data["new_qty"], parent_data.get("uom", "Kg")
+					)
+					if parent_qty <= 0:
+						continue
+					msg_len = len(getattr(frappe.local, "message_log", None) or [])
+					match_ic, bom_no = _resolve_planning_bom_child_match(parent_ic, parent_pp, ic)
+					if hasattr(frappe.local, "message_log"):
+						frappe.local.message_log = (frappe.local.message_log or [])[:msg_len]
+					if not match_ic or not bom_no:
+						continue
+					child_qty = _fabric_qty_from_bom(
+						bom_no, ic, parent_qty, from_uom="Kg", parent_item_code=parent_ic
+					)
+					stock_uom = _cstr(frappe.db.get_value("Item", ic, "stock_uom") or "Kg").strip() or "Kg"
+					update_dict = {"qty": child_qty, "uom": stock_uom}
+					if _is_printed_bopp_item_code(ic) and frappe.db.has_column("Planning Table", "custom_bopp_bom_kgs"):
+						update_dict["custom_bopp_bom_kgs"] = child_qty
+					frappe.db.set_value("Planning Table", r.get("name"), update_dict)
+					source_item = r.get("source_item")
+					if source_item and frappe.db.exists("Planning sheet Item", source_item):
+						update_dict_source = update_dict.copy()
+						if not frappe.db.has_column("Planning sheet Item", "custom_bopp_bom_kgs"):
+							update_dict_source.pop("custom_bopp_bom_kgs", None)
+						frappe.db.set_value("Planning sheet Item", source_item, update_dict_source)
+					break
 						
 		frappe.db.commit()
+
+	try:
+		updated_count += _refresh_planning_sheet_bom_child_kg_qty(planning_sheet_name)
+		frappe.db.commit()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "convert_meter_to_kgs:refresh_bom_child_kg")
 
 	try:
 		_sync_linked_production_plans_rm_from_planning_sheet(planning_sheet_name)

@@ -314,13 +314,16 @@ def _sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, fg_parent_pr
         so_it = so_items_bopp[soi_key]
         so_fg_ic = str(so_it.item_code or "").strip()
         from production_entry.production_planning.scheduler_api import _parent_child_trace_id_from_item_code
+
         trace_id = _parent_child_trace_id_from_item_code(so_fg_ic)
+        # PB Kg qty is set when user clicks **Meter to Kgs (All Bag BOM)** on the planning sheet.
+        pb_qty = flt(prow.get("qty") or 0)
 
         # Insert PB row (Planning Table + Planning sheet Item)
         new_row = {
             "item_code": pb_ic,
             "item_name": pb_item_name,
-            "qty": flt(prow.get("qty") or 0),
+            "qty": pb_qty,
             "uom": prow.get("uom") or "Kg",
             "unit": PRINTED_BOPP_FILM_UNIT,
             "sales_order_item": soi_key,
