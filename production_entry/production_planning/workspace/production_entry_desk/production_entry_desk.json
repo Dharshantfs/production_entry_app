@@ -52,6 +52,18 @@
   {
    "dependencies": "",
    "hidden": 0,
+   "icon": "education",
+   "is_query_report": 0,
+   "label": "Production Learning",
+   "link_count": 0,
+   "link_to": "production-learning",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
    "icon": "table",
    "is_query_report": 0,
    "label": "Production Table",

@@ -43,6 +43,7 @@ import BoxBagOrderTable from "./BoxBagOrderTable.vue";
 import SequenceApproval from "./SequenceApproval.vue";
 import TransferApproval from "./TransferApproval.vue";
 import LogisticsKanban from "./LogisticsKanban.vue";
+import ProductionLearning from "./ProductionLearning.vue";
 
 production_scheduler.ConfirmedOrderController = class {
     constructor(wrapper) {
@@ -121,5 +122,11 @@ production_scheduler.TransferApprovalController = class {
 production_scheduler.LogisticsKanbanController = class {
     constructor(wrapper) {
         safeMount(LogisticsKanban, wrapper, "Logistics Kanban");
+    }
+};
+
+production_scheduler.ProductionLearningController = class {
+    constructor(wrapper) {
+        safeMount(ProductionLearning, wrapper, "Production Learning");
     }
 };

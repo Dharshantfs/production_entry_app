@@ -42,6 +42,7 @@ def after_install():
 	_sync_app_if_planning_missing()
 	_sync_production_queue_custom_block()
 	_ensure_workspace_shows_production_queue()
+	_ensure_learning_page_on_workspace()
 
 
 def after_migrate():
@@ -50,6 +51,7 @@ def after_migrate():
 	_rename_workspace_that_hijacks_planning_sheet_route()
 	_sync_production_queue_custom_block()
 	_ensure_workspace_shows_production_queue()
+	_ensure_learning_page_on_workspace()
 	_ensure_planning_line_unit_docfield_meta()
 	_warn_if_duplicate_scheduler_app()
 
@@ -207,6 +209,35 @@ def _ensure_workspace_shows_production_queue():
 		changed = True
 	if changed:
 		doc.save(ignore_permissions=True)
+
+
+def _ensure_learning_page_on_workspace():
+	"""Add Production Learning page shortcut to Production Entry Desk if missing."""
+	if frappe.flags.in_test:
+		return
+	if not frappe.db.exists("Workspace", WORKSPACE_PRODUCTION_ENTRY_DESK):
+		return
+	if not frappe.db.exists("Page", "production-learning"):
+		return
+	doc = frappe.get_doc("Workspace", WORKSPACE_PRODUCTION_ENTRY_DESK)
+	existing = {row.link_to for row in (doc.links or []) if row.link_type == "Page"}
+	if "production-learning" in existing:
+		return
+	doc.append(
+		"links",
+		{
+			"type": "Link",
+			"label": "Production Learning",
+			"link_type": "Page",
+			"link_to": "production-learning",
+			"icon": "education",
+			"onboard": 1,
+			"hidden": 0,
+			"is_query_report": 0,
+			"link_count": 0,
+		},
+	)
+	doc.save(ignore_permissions=True)
 
 
 def _rename_workspace_that_hijacks_planning_sheet_route():

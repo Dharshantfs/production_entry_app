@@ -16,6 +16,7 @@ app_license = "MIT"
 app_include_css = [
 	"/assets/production_entry/css/scheduler.css",
 	"/assets/production_entry/css/planning_order_tables.css",
+	"/assets/production_entry/css/production_learning.css",
 ]
 app_include_js = "scheduler.bundle.js"
 
