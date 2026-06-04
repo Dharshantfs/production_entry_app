@@ -26,6 +26,7 @@
         <div class="cc-shift-btns">
           <button type="button" :class="{ active: wCutDCutFamily === 'w_cut' }" @click="setWCutDCutFamily('w_cut')">W CUT</button>
           <button type="button" :class="{ active: wCutDCutFamily === 'd_cut' }" @click="setWCutDCutFamily('d_cut')">D CUT</button>
+          <button type="button" :class="{ active: wCutDCutFamily === 'both' }" @click="setWCutDCutFamily('both')">Both</button>
         </div>
       </div>
       <div v-if="!isWCutDCutTable || wCutDCutFamily" class="cc-filter-item cc-process-filter">
@@ -98,17 +99,17 @@
       <div class="cc-table-unit-header lot-header">{{ tableHeader }}</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGEMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:130px;">PROCESS</th><th style="min-width:120px;">UNIT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">DESIGN CODE</th><th style="min-width:60px;">NO. COLOURS</th><th style="min-width:100px;">BAG SIZE</th><th style="min-width:90px;">QUALITY</th><th style="min-width:90px;">COLOUR</th><th style="min-width:64px;">GSM</th><th style="min-width:100px;">FINISHING</th><th style="min-width:80px;">PLANNED METERS</th><th style="min-width:100px;">PLANNED QTY (PCS)</th><th style="min-width:100px;">ACHIEVED QTY (PCS)</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th><th style="min-width:120px;">DESIGN FILE</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGEMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:130px;">PROCESS</th><th style="min-width:120px;">UNIT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">DESIGN CODE</th><th style="min-width:60px;">NO. COLOURS</th><th style="min-width:100px;">BAG SIZE</th><th style="min-width:90px;">QUALITY</th><th style="min-width:90px;">COLOUR</th><th style="min-width:64px;">GSM</th><th style="min-width:100px;">FINISHING</th><th style="min-width:80px;">PLANNED METERS</th><th style="min-width:100px;">TOTAL ACHIEVED METERS</th><th style="min-width:100px;">PLANNED QTY (PCS)</th><th style="min-width:100px;">ACHIEVED QTY (PCS)</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th><th style="min-width:120px;">DESIGN FILE</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
-            <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="20" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
-            <tr v-else-if="row.is_maintenance_empty"><td class="cell-center">-</td><td class="cell-center"><span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span></td><td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td><td :colspan="18" style="text-align:center;color:#94a3b8;font-style:italic;">No orders (maintenance day)</td></tr>
+            <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="21" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
+            <tr v-else-if="row.is_maintenance_empty"><td class="cell-center">-</td><td class="cell-center"><span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span></td><td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td><td :colspan="19" style="text-align:center;color:#94a3b8;font-style:italic;">No orders (maintenance day)</td></tr>
             <tr v-else :draggable="arrangementUnlocked" @dragstart="onOrderDragStart(row, $event)" @dragover.prevent="onOrderDragOver(row)" @dragleave="onOrderDragLeave(row)" @drop.prevent="onOrderDrop(row)" @dragend="onOrderDragEnd" :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }">
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ row._sno || (idx + 1) }}</td>
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-              <td class="cell-center" :style="['200','201','202','211','212','213','217','222','223','231','233','241','242'].includes(String(row.process || '')) ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || row.process || '-' }}</td>
+              <td class="cell-center" :style="['200','201','202','211','212','213','216','217','222','223','225','226','231','233','241','242'].includes(String(row.process || '')) ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || row.process || '-' }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
@@ -120,6 +121,7 @@
               <td class="cell-center">{{ row.total_gsm || row.fabric_gsm || row.gsm || "-" }}</td>
               <td class="cell-center">{{ row.finishing || "-" }}</td>
               <td class="cell-right">{{ formatNum(row.length || row.meter) }}</td>
+              <td class="cell-right font-bold">{{ formatNum(row.total_achieved_meters) }}</td>
               <td class="cell-right">{{ formatNum(row.planned_quantity) }}</td>
               <td class="cell-right">{{ formatNum(row.achieved_quantity) }}</td>
               <td v-if="showMergedPerDayProductionCell(row)" class="cell-right pt-merged-perday" :rowspan="getMergedPerDayProductionRowSpan(row)">{{ formatNum(row.per_day_production) }}</td>
@@ -162,7 +164,7 @@
               </td>
             </tr>
           </template>
-          <tr v-if="!displayRows.length"><td :colspan="21" class="cell-center" style="padding:24px;color:#64748b;">No orders for this view.</td></tr>
+          <tr v-if="!displayRows.length"><td :colspan="22" class="cell-center" style="padding:24px;color:#64748b;">No orders for this view.</td></tr>
         </tbody>
       </table>
       </div>
@@ -199,15 +201,16 @@ const W_CUT_D_CUT_ALL_UNITS = [
 
 const ITEM_PROCESS_KNOWN = new Set([
   "100", "102", "103", "104", "105", "106", "107", "108", "109",
-  "200", "201", "202", "203", "211", "212", "213", "214", "217",
-  "221", "222", "223", "224", "231", "233", "241", "242",
+  "200", "201", "202", "203", "211", "212", "213", "214", "216", "217",
+  "221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
   "251", "252", "253", "254", "255",
 ]);
-const D_CUT_FG_PROCS = ["211", "212", "213", "214", "217"];
+const D_CUT_FG_PROCS = ["211", "212", "213", "214", "216", "217"];
+const W_CUT_D_CUT_ALL_FG_PROCS = [...W_CUT_FG_PROCS, ...D_CUT_FG_PROCS];
 const W_CUT_FG_PROCS = ["200", "201", "202", "203"];
 const W_CUT_D_CUT_PROCESS_LABELS = {
   "211": "211 plain d cut bag", "212": "212 printed d cut bag", "213": "213 plain laminated d cut bag",
-  "214": "214 printed d cut bag", "217": "217 d cut bopp bag",
+  "214": "214 printed d cut bag", "216": "216 d cut mettalic roto", "217": "217 d cut bopp bag",
   "200": "200 plain w cut bag", "201": "201 printed w cut bag", "202": "202 laminated w cut bag", "203": "203 printed laminated w cut bag",
 };
 
@@ -219,7 +222,7 @@ try {
   const _wcs = localStorage.getItem("wCutDCutCompanyScope");
   if (_wcs === "jve" || _wcs === "vtp" || _wcs === "both") wCutDCutCompanyScope.value = _wcs;
   const _wf = localStorage.getItem("wCutDCutFamily");
-  if (_wf === "w_cut" || _wf === "d_cut") wCutDCutFamily.value = _wf;
+  if (_wf === "w_cut" || _wf === "d_cut" || _wf === "both") wCutDCutFamily.value = _wf;
 } catch (e) { /* ignore */ }
 function setWCutDCutCompanyScope(scope) {
   wCutDCutCompanyScope.value = scope;
@@ -270,7 +273,13 @@ const tableHeader = computed(() => {
 const backToBoardLabel = computed(() => (isWCutDCutTable.value ? "Back to W CUT / D CUT Board" : "Back to Box Bag Board"));
 const processOptions = computed(() => {
   if (isWCutDCutTable.value) {
-    const procs = wCutDCutFamily.value === "w_cut" ? W_CUT_FG_PROCS : wCutDCutFamily.value === "d_cut" ? D_CUT_FG_PROCS : [];
+    const procs = wCutDCutFamily.value === "w_cut"
+      ? W_CUT_FG_PROCS
+      : wCutDCutFamily.value === "d_cut"
+        ? D_CUT_FG_PROCS
+        : wCutDCutFamily.value === "both"
+          ? W_CUT_D_CUT_ALL_FG_PROCS
+          : [];
     const opts = procs.map((p) => ({
       value: p,
       label: W_CUT_D_CUT_PROCESS_LABELS[p] || p,
@@ -287,6 +296,8 @@ const processOptions = computed(() => {
     { value: "233", label: "233 BOPP Box Bag", shortLabel: "233 BOPP" },
     { value: "241", label: "241 mettalic box bag", shortLabel: "241 Metallic" },
     { value: "242", label: "242 cooler box bag", shortLabel: "242 Cooler" },
+    { value: "225", label: "225 pre-flexo laminated printed box bag", shortLabel: "225 Pre-Flexo" },
+    { value: "226", label: "226 custom flexo laminated printed box bag", shortLabel: "226 Custom Flexo" },
     { value: "222", label: "222 flexo printed box bag", shortLabel: "222 Flexo" },
     { value: "all", label: "All", shortLabel: "All" },
   ];
@@ -358,6 +369,8 @@ const filteredRows = computed(() => {
       d = d.filter((r) => W_CUT_FG_PROCS.includes(rowProcessPrefix(r)));
     } else if (wCutDCutFamily.value === "d_cut") {
       d = d.filter((r) => D_CUT_FG_PROCS.includes(rowProcessPrefix(r)));
+    } else if (wCutDCutFamily.value === "both") {
+      d = d.filter((r) => W_CUT_D_CUT_ALL_FG_PROCS.includes(rowProcessPrefix(r)));
     } else {
       d = [];
     }
@@ -746,7 +759,7 @@ onMounted(async () => {
   if (p.get("month")) filterMonth.value = p.get("month");
   if (p.get("process")) filterProcess.value = p.get("process");
   if (!p.get("process")) filterProcess.value = "all";
-  if (p.get("family") === "w_cut" || p.get("family") === "d_cut") wCutDCutFamily.value = p.get("family");
+  if (p.get("family") === "w_cut" || p.get("family") === "d_cut" || p.get("family") === "both") wCutDCutFamily.value = p.get("family");
   moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today();
   updateUrlParams();
   await fetchData();
@@ -832,18 +845,25 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   gap: 2px;
 }
 .cc-shift-filter .cc-shift-btns button {
-  padding: 6px 10px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background: #f8fafc;
+  padding: 6px 12px;
+  border: 1px solid #c4b5fd;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f3ff 100%);
   font-size: 12px;
   cursor: pointer;
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(91, 33, 182, 0.08);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+.cc-shift-filter .cc-shift-btns button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(91, 33, 182, 0.15);
 }
 .cc-shift-filter .cc-shift-btns button.active {
-  background: #7c3aed;
+  background: linear-gradient(135deg, #6d28d9 0%, #7c3aed 55%, #8b5cf6 100%);
   color: #fff;
-  border-color: #7c3aed;
+  border-color: #5b21b6;
+  box-shadow: 0 4px 12px rgba(109, 40, 217, 0.35);
 }
 .cc-process-filter {
   grid-column: 1 / -1;
@@ -855,11 +875,11 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   width: 100%;
 }
 .cc-process-btn {
-  min-height: 34px;
-  padding: 6px 8px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  background: #f8fafc;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #c4b5fd;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #faf5ff 100%);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -868,11 +888,18 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  box-shadow: 0 1px 3px rgba(91, 33, 182, 0.1);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.cc-process-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(109, 40, 217, 0.18);
 }
 .cc-process-btn.active {
-  background: #7c3aed;
+  background: linear-gradient(135deg, #5b21b6 0%, #7c3aed 50%, #a78bfa 100%);
   color: #fff;
-  border-color: #7c3aed;
+  border-color: #5b21b6;
+  box-shadow: 0 4px 14px rgba(109, 40, 217, 0.35);
 }
 .cc-table-container {
   background: #ffffff;

@@ -31,7 +31,7 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 BOPP_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
-BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242")
+BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242", "225", "226")
 BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
 BOPP_BOX_BAG_PARENT_PROCESSES = ("221",) + BOPP_BOX_BAG_PROCESS_CODES
 
@@ -94,6 +94,10 @@ def _bopp_process_label(process_code):
         return "241 mettalic box bag"
     if p == "242":
         return "242 cooler box bag"
+    if p == "225":
+        return "225 pre-flexo laminated printed box bag"
+    if p == "226":
+        return "226 custom flexo laminated printed box bag"
     if p == "222":
         return "222 flexo printed box bag"
     if p == "223":
@@ -735,13 +739,21 @@ def get_bopp_bag_order_table_data(
         planned_qty = flt(row.get("qty") or row.get("quantity") or 0)
         achieved_qty = flt(row.get("actual_production_weight_kgs") or row.get("produced_qty") or 0)
         length = flt(row.get("length") or row.get("meter") or 0)
+        spr_name = str(row.get("spr_name") or "").strip()
+        from production_entry.production_planning.box_bag_api import (
+            _spr_achieved_bag_pcs_total,
+            _spr_total_achieved_meters_from_bundle,
+        )
+        achieved_bag_pcs = _spr_achieved_bag_pcs_total(spr_name)
+        if achieved_bag_pcs > 0:
+            achieved_qty = achieved_bag_pcs
+        total_achieved_meters = _spr_total_achieved_meters_from_bundle(spr_name)
 
         pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
         pp_docstatus = row.get("pp_docstatus") or 0
         wo_name = ""
         wo_open = False
         wo_terminal = False
-        spr_name = str(row.get("spr_name") or "").strip()
         spr_docstatus = row.get("spr_docstatus") or 0
 
         if not pp_id:
@@ -812,6 +824,7 @@ def get_bopp_bag_order_table_data(
             "length": length,
             "planned_quantity": planned_qty,
             "achieved_quantity": achieved_qty,
+            "total_achieved_meters": total_achieved_meters,
             "per_day_production": flt(row.get("per_day_production") or 0),
             "pp_id": pp_id,
             "pp_docstatus": pp_docstatus,

@@ -71,6 +71,7 @@
         <div class="cc-shift-btns">
           <button type="button" :class="{ active: wCutDCutFamily === 'w_cut' }" @click="setWCutDCutFamily('w_cut')">W CUT</button>
           <button type="button" :class="{ active: wCutDCutFamily === 'd_cut' }" @click="setWCutDCutFamily('d_cut')">D CUT</button>
+          <button type="button" :class="{ active: wCutDCutFamily === 'both' }" @click="setWCutDCutFamily('both')">Both</button>
         </div>
       </div>
       <div v-if="isWCutDCutBoard && wCutDCutFamily" class="cc-filter-item cc-shift-filter">
@@ -396,12 +397,12 @@ const W_CUT_D_CUT_ALL_UNITS = [
   W_CUT_D_CUT_UNIT_L1, W_CUT_D_CUT_UNIT_L2, W_CUT_D_CUT_UNIT_L3,
   W_CUT_UNASSIGNED_UNIT, D_CUT_UNASSIGNED_UNIT,
 ];
-const W_CUT_D_CUT_FG_PROCS = ["211", "212", "213", "214", "217", "200", "201", "202", "203"];
-const D_CUT_FG_PROCS = ["211", "212", "213", "214", "217"];
+const W_CUT_D_CUT_FG_PROCS = ["211", "212", "213", "214", "216", "217", "200", "201", "202", "203"];
+const D_CUT_FG_PROCS = ["211", "212", "213", "214", "216", "217"];
 const W_CUT_FG_PROCS = ["200", "201", "202", "203"];
 const W_CUT_D_CUT_PROCESS_LABELS = {
   "211": "211 plain d cut bag", "212": "212 printed d cut bag", "213": "213 plain laminated d cut bag",
-  "214": "214 printed d cut bag", "217": "217 d cut bopp bag",
+  "214": "214 printed d cut bag", "216": "216 d cut mettalic roto", "217": "217 d cut bopp bag",
   "200": "200 plain w cut bag", "201": "201 printed w cut bag", "202": "202 laminated w cut bag", "203": "203 printed laminated w cut bag",
 };
 
@@ -520,8 +521,8 @@ function normalizeUnitName(rawUnit) {
  */
 const ITEM_PROCESS_KNOWN = new Set([
   "100", "102", "103", "104", "105", "106", "107", "108", "109",
-  "200", "201", "202", "203", "211", "212", "213", "214", "217",
-  "221", "222", "223", "224", "231", "233", "241", "242",
+  "200", "201", "202", "203", "211", "212", "213", "214", "216", "217",
+  "221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
   "251", "252", "253", "254", "255",
 ]);
 
@@ -703,7 +704,7 @@ const boardProcessFilter = ref("");
 const wCutDCutFamily = ref("");
 try {
   const _wf = localStorage.getItem("wCutDCutFamily");
-  if (_wf === "w_cut" || _wf === "d_cut") wCutDCutFamily.value = _wf;
+  if (_wf === "w_cut" || _wf === "d_cut" || _wf === "both") wCutDCutFamily.value = _wf;
 } catch (e) { /* ignore */ }
 const wCutDCutCompanyScope = ref("both");
 try {
@@ -723,7 +724,13 @@ function setWCutDCutFamily(family) {
   fetchData();
 }
 const wCutDCutProcessOptions = computed(() => {
-  const procs = wCutDCutFamily.value === "w_cut" ? W_CUT_FG_PROCS : wCutDCutFamily.value === "d_cut" ? D_CUT_FG_PROCS : [];
+  const procs = wCutDCutFamily.value === "w_cut"
+    ? W_CUT_FG_PROCS
+    : wCutDCutFamily.value === "d_cut"
+      ? D_CUT_FG_PROCS
+      : wCutDCutFamily.value === "both"
+        ? W_CUT_D_CUT_FG_PROCS
+        : [];
   const opts = procs.map((p) => ({ value: p, label: W_CUT_D_CUT_PROCESS_LABELS[p] || p }));
   opts.push({ value: "__all__", label: "All" });
   return opts;
@@ -780,6 +787,8 @@ const boardProcessOptions = computed(() => {
     { value: "233", label: "233 BOPP Box Bag" },
     { value: "241", label: "241 mettalic box bag" },
     { value: "242", label: "242 cooler box bag" },
+    { value: "225", label: "225 pre-flexo laminated printed box bag" },
+    { value: "226", label: "226 custom flexo laminated printed box bag" },
     { value: "222", label: "222 flexo printed box bag" },
     { value: "__all__", label: "All" },
   ];
@@ -804,12 +813,12 @@ const boardBannerText = computed(() => {
   }
   if (isBoxBagBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const pLbl = !p || p === "__all__" ? "221 · 222 · 223 · 224 · 231 · 233 · 241 · 242" : `Process ${p}`;
+    const pLbl = !p || p === "__all__" ? "221 · 222 · 223 · 224 · 231 · 233 · 241 · 242 · 225 · 226" : `Process ${p}`;
     return `Box Bag Board — ${pLbl}${unitScope}`;
   }
   if (isWCutDCutBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const fam = wCutDCutFamily.value === "w_cut" ? "W CUT" : wCutDCutFamily.value === "d_cut" ? "D CUT" : "Select W CUT or D CUT";
+    const fam = wCutDCutFamily.value === "w_cut" ? "W CUT" : wCutDCutFamily.value === "d_cut" ? "D CUT" : wCutDCutFamily.value === "both" ? "W CUT + D CUT" : "Select bag type";
     const pLbl = !p || p === "__all__" ? "All processes" : (W_CUT_D_CUT_PROCESS_LABELS[p] || p);
     const co = wCutDCutCompanyScope.value === "jve" ? "JVE" : wCutDCutCompanyScope.value === "vtp" ? "VTP" : "Both";
     return `W CUT / D CUT Board — ${co} — ${fam} — ${pLbl}${unitScope}`;
@@ -1120,7 +1129,7 @@ const filteredData = computed(() => {
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
       const u = (d.unit || "").trim();
-      if (["222", "223", "231", "233", "241", "242"].includes(proc)) {
+      if (["222", "223", "231", "233", "241", "242", "225", "226"].includes(proc)) {
         if (!BOX_BAG_UNIT_LIST.includes(u)) return { ...d, unit: "UNASSIGNED BOX BAG MACHINE" };
         return d;
       }
@@ -1132,10 +1141,10 @@ const filteredData = computed(() => {
       return d;
     });
     const bpf = boardProcessFilter.value || "__all__";
-    if (["221", "222", "223", "224", "231", "233", "241", "242"].includes(bpf)) {
+    if (["221", "222", "223", "224", "231", "233", "241", "242", "225", "226"].includes(bpf)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === bpf);
     } else {
-      data = data.filter((d) => ["221", "222", "223", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
+      data = data.filter((d) => ["221", "222", "223", "224", "231", "233", "241", "242", "225", "226"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
     }
   }
   if (isWCutDCutBoard.value) {
@@ -1158,6 +1167,8 @@ const filteredData = computed(() => {
       data = data.filter((d) => W_CUT_FG_PROCS.includes(rowProcessPrefix(d)));
     } else if (wCutDCutFamily.value === "d_cut") {
       data = data.filter((d) => D_CUT_FG_PROCS.includes(rowProcessPrefix(d)));
+    } else if (wCutDCutFamily.value === "both") {
+      data = data.filter((d) => W_CUT_D_CUT_FG_PROCS.includes(rowProcessPrefix(d)));
     } else {
       data = [];
     }
@@ -1979,11 +1990,15 @@ async function loadOrders(d) {
 
         if (isBoxBagBoard.value) {
             items = items.filter((i) =>
-                ["221", "222", "223", "224", "231", "233", "241", "242"].includes(itemProcessPrefix(i.itemCode || i.item_code))
+                ["221", "222", "223", "224", "231", "233", "241", "242", "225", "226"].includes(itemProcessPrefix(i.itemCode || i.item_code))
             );
         }
         if (isWCutDCutBoard.value) {
-            const famProcs = wCutDCutFamily.value === "w_cut" ? W_CUT_FG_PROCS : wCutDCutFamily.value === "d_cut" ? D_CUT_FG_PROCS : W_CUT_D_CUT_FG_PROCS;
+            const famProcs = wCutDCutFamily.value === "w_cut"
+              ? W_CUT_FG_PROCS
+              : wCutDCutFamily.value === "d_cut"
+                ? D_CUT_FG_PROCS
+                : W_CUT_D_CUT_FG_PROCS;
             items = items.filter((i) => famProcs.includes(rowProcessPrefix(i)));
         }
 
@@ -2871,12 +2886,12 @@ onMounted(() => {
       }
     } else if (
       isBoxBagBoard.value
-      && ["221", "222", "223", "224", "231", "233", "241", "242", "__all__"].includes(processParam)
+      && ["221", "222", "223", "224", "231", "233", "241", "242", "225", "226", "__all__"].includes(processParam)
     ) {
       boardProcessFilter.value = processParam;
     } else if (isWCutDCutBoard.value) {
       const familyParam = qParams.get("family");
-      if (familyParam === "w_cut" || familyParam === "d_cut") wCutDCutFamily.value = familyParam;
+      if (familyParam === "w_cut" || familyParam === "d_cut" || familyParam === "both") wCutDCutFamily.value = familyParam;
       if (processParam && (W_CUT_D_CUT_FG_PROCS.includes(processParam) || processParam === "__all__")) {
         boardProcessFilter.value = processParam;
       }
@@ -3175,9 +3190,10 @@ async function restoreWhiteOrders() {
   flex: 0 0 280px;
   display: flex;
   flex-direction: column;
-  background-color: white; /* Clean white column */
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
+  background-color: white;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
   max-height: 100%;
 }
 .cc-col-header {
@@ -3242,17 +3258,45 @@ async function restoreWhiteOrders() {
   border-radius: 0 0 6px 6px;
 }
 
+.cc-shift-filter .cc-shift-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cc-shift-filter .cc-shift-btns button {
+  padding: 6px 12px;
+  border: 1px solid #c4b5fd;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f3ff 100%);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(91, 33, 182, 0.08);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.cc-shift-filter .cc-shift-btns button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(91, 33, 182, 0.15);
+}
+.cc-shift-filter .cc-shift-btns button.active {
+  background: linear-gradient(135deg, #6d28d9 0%, #7c3aed 55%, #8b5cf6 100%);
+  color: #fff;
+  border-color: #5b21b6;
+  box-shadow: 0 4px 12px rgba(109, 40, 217, 0.35);
+}
+
 /* Cards */
 .cc-card {
-  background-color: white;
+  background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
   border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 8px;
+  border-left: 4px solid #7c3aed;
+  border-radius: 8px;
+  padding: 10px;
   margin-bottom: 8px;
   display: flex;
   cursor: grab;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-  transition: transform 0.1s, box-shadow 0.1s;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
 .cc-card-selected {

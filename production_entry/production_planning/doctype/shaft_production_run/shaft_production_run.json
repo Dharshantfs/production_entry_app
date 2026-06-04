@@ -90,7 +90,7 @@
   {
    "fieldname": "custom_is_box_bag",
    "fieldtype": "Check",
-   "label": "Is Box Bag"
+   "label": "Is Bag"
   },
   {
    "fieldname": "custom_is_bopp_film",

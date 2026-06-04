@@ -24,7 +24,7 @@ from production_entry.production_planning.planning_doctypes import (
 
 BOX_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
 W_CUT_D_CUT_UNITS = W_CUT_D_CUT_ALL_UNITS
-D_CUT_PROCESS_CODES = ("211", "212", "213", "214", "217")
+D_CUT_PROCESS_CODES = ("211", "212", "213", "214", "216", "217")
 W_CUT_PROCESS_CODES = ("200", "201", "202", "203")
 W_CUT_D_CUT_FG_PROCESS_CODES = D_CUT_PROCESS_CODES + W_CUT_PROCESS_CODES
 ALL_BAG_FG_PROCESS_CODES = W_CUT_D_CUT_FG_PROCESS_CODES  # extended in scheduler with box bag codes
@@ -64,6 +64,29 @@ def _spr_achieved_bag_pcs_total(spr_name_csv: str) -> float:
 		as_dict=True,
 	)
 	return flt((rows[0] or {}).get("pcs_sum") or 0)
+
+
+def _spr_total_achieved_meters_from_bundle(spr_name_csv: str) -> float:
+	"""Board Total Achieved Meters: SUM(bundle_calculation.total_consumed_meter) for linked SPR(s)."""
+	if not frappe.db.table_exists("Bundle Calculation"):
+		return 0.0
+	raw = str(spr_name_csv or "").strip()
+	if not raw:
+		return 0.0
+	names = [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
+	if not names:
+		return 0.0
+	placeholders = ", ".join(["%s"] * len(names))
+	rows = frappe.db.sql(
+		f"""
+		SELECT SUM(IFNULL(total_consumed_meter, 0)) AS m_sum
+		FROM `tabBundle Calculation`
+		WHERE parent IN ({placeholders})
+		""",
+		tuple(names),
+		as_dict=True,
+	)
+	return flt((rows[0] or {}).get("m_sum") or 0)
 
 
 def _box_bag_finishing_label(code):
@@ -162,6 +185,8 @@ def _dcut_process_label(process_code):
 		return "213 plain laminated d cut bag"
 	if p == "217":
 		return "217 d cut bopp bag"
+	if p == "216":
+		return "216 d cut mettalic roto"
 	if p == "214":
 		return "214 printed d cut bag"
 	return p
@@ -460,30 +485,31 @@ def _update_wcut_dcut_bag_fields_on_sheet(planning_sheet_name):
 
 
 def _sync_dcut_bopp_bag_planning_rows(planning_sheet_name):
-	"""217 D-CUT BOPP: 217→107→100 + PB (233-style)."""
+	"""216/217 D-CUT BOPP: FG→107→100 + PB."""
 	if not planning_sheet_name:
 		return
 	from production_entry.production_planning.scheduler_api import (
 		_sync_bom_child_rows_from_planning_rows,
 		LAMINATION_UNIT,
 	)
+	_dcut_bopp_parents = ("216", "217")
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
-		("217",),
+		_dcut_bopp_parents,
 		"107",
 		LAMINATION_UNIT,
-		process_label="217 D-CUT BOPP (217 → 107)",
+		process_label="216/217 D-CUT BOPP (FG → 107)",
 	)
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
 		("107",),
 		"100",
-		so_parent_processes=("217",),
-		process_label="217 D-CUT BOPP fabric (107 → 100)",
+		so_parent_processes=_dcut_bopp_parents,
+		process_label="216/217 D-CUT BOPP fabric (107 → 100)",
 	)
 	try:
 		from production_entry.production_planning.bopp_bag_api import _sync_bopp_pb_rows_from_107_for_fg_parents
-		_sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, ("217",))
+		_sync_bopp_pb_rows_from_107_for_fg_parents(planning_sheet_name, _dcut_bopp_parents)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_sync_dcut_bopp_bag_planning_rows:pb")
 
@@ -611,7 +637,6 @@ def get_box_bag_order_table_data(
 
 		# Length from row data
 		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
-		total_achieved_meters = 0.0
 
 		# PP/WO/SPR data
 		pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
@@ -621,6 +646,7 @@ def get_box_bag_order_table_data(
 		wo_terminal = False
 		spr_name = str(row.get("spr_name") or "").strip()
 		spr_docstatus = row.get("spr_docstatus") or 0
+		total_achieved_meters = _spr_total_achieved_meters_from_bundle(spr_name)
 
 		# Try to find WO
 		if pp_id:
@@ -763,10 +789,10 @@ def get_w_cut_d_cut_order_table_data(
 		if achieved_bag_pcs > 0:
 			achieved_qty = achieved_bag_pcs
 		length = flt(row.get("length") or row.get("meter") or row.get("mtr") or row.get("planned_meter") or 0)
-		total_achieved_meters = 0.0
 		pp_id = str(row.get("pp_id") or row.get("production_plan") or "").strip()
 		pp_docstatus = row.get("pp_docstatus") or 0
 		spr_name = str(row.get("spr_name") or "").strip()
+		total_achieved_meters = _spr_total_achieved_meters_from_bundle(spr_name)
 		wo_name = ""
 		wo_open = False
 		wo_terminal = False

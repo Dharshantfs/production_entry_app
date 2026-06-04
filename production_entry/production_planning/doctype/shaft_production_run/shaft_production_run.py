@@ -135,12 +135,15 @@ _SPR_BOM_STACK_BY_FG_PROCESS = {
 	"211": (None, "100"),
 	"212": ("105", "100"),
 	"213": ("104", "100"),
+	"216": ("107", "100"),
 	"217": ("107", "100"),
+	"225": ("106", "104"),
+	"226": ("106", "104"),
 }
 
 BOX_BAG_PROCESS_CODES = frozenset({
-	"200", "201", "202", "211", "212", "213", "217",
-	"221", "222", "223", "224", "231", "233", "241", "242",
+	"200", "201", "202", "211", "212", "213", "216", "217",
+	"221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
 })
 
 
@@ -4561,6 +4564,20 @@ def _bundle_child_field(row, default=None, *names):
 	return default
 
 
+def _bundle_optional_field(row, default=None, *names):
+	"""Read PP/SPR bundle field; return default when missing (do not coerce empty to zero)."""
+	if not names:
+		return default
+	for n in names:
+		try:
+			v = row.get(n) if isinstance(row, dict) else getattr(row, n, None)
+		except Exception:
+			v = None
+		if v not in (None, ""):
+			return v
+	return default
+
+
 def _bundle_row_bag_size(row, item_code: str, *, for_bag_fg: bool = False) -> str:
 	if for_bag_fg:
 		field_names = (
@@ -4732,7 +4749,7 @@ def _normalize_pp_bundle_src_row(row, default_item_code=None, pp_doc=None) -> di
 	sheet_sz = "" if is_bag else _bundle_row_bag_size(row, ic, for_bag_fg=False)
 	if is_bag and bag_sz:
 		sheet_sz = bag_sz
-	return {
+	out = {
 		"item_code": ic,
 		"bag_size": bag_sz,
 		"sheet_cutting_size": sheet_sz,
@@ -4742,6 +4759,17 @@ def _normalize_pp_bundle_src_row(row, default_item_code=None, pp_doc=None) -> di
 		"pcs_per_packet": pcs,
 		"total_pcs_per_bundle": tpb,
 	}
+	for spr_field, aliases in (
+		("total_consumed_meter", ("total_consumed_meter", "consumed_meter", "custom_total_consumed_meter")),
+		("total_achieved_weight", ("total_achieved_weight", "custom_total_achieved_weight")),
+		("total_produced_sheets", ("total_produced_sheets", "custom_total_produced_sheets")),
+		("total_produced_bag_pcs", ("total_produced_bag_pcs", "custom_total_produced_bag_pcs", "achieved_bag_pcs")),
+	):
+		v = _bundle_optional_field(row, None, *aliases)
+		if v not in (None, ""):
+			prec = 2 if spr_field in ("total_consumed_meter", "total_achieved_weight") else 0
+			out[spr_field] = flt(v, prec)
+	return out
 
 
 def _production_plan_uses_bundle_calculation(pp) -> bool:
@@ -4994,10 +5022,14 @@ def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=
 		row["work_order"] = wo.get("name") if wo else ""
 		row["order_code"] = oc
 		row["job"] = _cstr(wo.get("production_plan_item") or "") if wo else ""
-		row["total_consumed_meter"] = 0
-		row["total_achieved_weight"] = 0
-		row["total_produced_sheets"] = 0
-		row["total_produced_bag_pcs"] = 0
+		for prod_field in (
+			"total_consumed_meter",
+			"total_achieved_weight",
+			"total_produced_sheets",
+			"total_produced_bag_pcs",
+		):
+			if prod_field not in row or row.get(prod_field) in (None, ""):
+				row.pop(prod_field, None)
 		out.append(row)
 	return out
 

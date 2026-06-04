@@ -3197,6 +3197,7 @@ function spr_get_bundle_list_view_config(frm) {
 				'work_order',
 				'order_code',
 				'create_bundle_entry',
+				'total_consumed_meter',
 				'total_produced_bag_pcs',
 				'total_achieved_weight',
 			],
@@ -3205,7 +3206,6 @@ function spr_get_bundle_list_view_config(frm) {
 				'no_of_bundles',
 				'pkts_per_bundle',
 				'job',
-				'total_consumed_meter',
 				'total_produced_sheets',
 			],
 		};
