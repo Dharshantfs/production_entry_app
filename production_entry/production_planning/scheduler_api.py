@@ -9300,19 +9300,7 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 	"""Box Bag (221) BOM child sync: 221 → 103 (Slitting) → 100 (Fabric)."""
 	if not planning_sheet_name:
 		return
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("221",),
-		"103",
-		SLITTING_UNIT,
-		process_label="Box bag slitting (221 → 103)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("221",),
-		"100",
-		process_label="Box bag fabric (221 → 100)",
-	)
+	_sync_bag_fg_direct_bom_children(planning_sheet_name, ("221",), process_label="221 Box Bag direct BOM")
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
 		("103",),
@@ -9321,27 +9309,14 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		process_label="Box bag fabric (103 → 100)",
 	)
 
-	# 224 BOM Extraction
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("224",),
-		"104",
-		LAMINATION_UNIT,
-		process_label="224 Box Bag Lamination (224 → 104)",
-	)
+	# 224: BOM has 104 + 103 (meter) — not 105
+	_sync_bag_fg_direct_bom_children(planning_sheet_name, ("224",), process_label="224 Box Bag direct BOM")
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
 		("104",),
 		"100",
 		so_parent_processes=("224",),
 		process_label="224 Box Bag Fabric (104 → 100)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("224",),
-		"103",
-		SLITTING_UNIT,
-		process_label="224 Box Bag Slitting (224 → 103)",
 	)
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
@@ -28171,6 +28146,174 @@ _BOM_KG_PARENT_PROCESSES = frozenset(
 )
 
 
+def _bag_fg_direct_bom_children_by_soi(planning_sheet_name):
+	"""Per SO line: item codes that are direct children on the bag FG BOM (not 103→100 fabric)."""
+	out = {}
+	if not planning_sheet_name:
+		return out
+	rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=["item_code", "sales_order_item", "so_item"],
+		limit_page_length=0,
+	) or []
+	for r in rows:
+		fg_ic = _cstr(r.get("item_code")).strip()
+		if _bom_item_process_code(fg_ic) not in ALL_BAG_FG_PROCESS_CODES:
+			continue
+		soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		if not soi:
+			continue
+		bom = _resolve_lamination_bom(fg_ic)
+		if not bom:
+			out[soi] = set()
+			continue
+		children = set()
+		for brow in bom.items or []:
+			cic = _cstr(brow.item_code).strip()
+			if cic:
+				children.add(cic)
+		out[soi] = children
+	return out
+
+
+def _planning_row_is_bag_fg_direct_bom_child(item_code, so_item_key, direct_by_soi):
+	"""True when this row is a direct FG BOM line (eligible for Meter→Kg on button)."""
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return False
+	soi = _cstr(so_item_key).strip()
+	if soi and ic in (direct_by_soi or {}).get(soi, set()):
+		return True
+	# Child rows sometimes lack sales_order_item; match when only one SO line has this BOM child.
+	holders = [s for s, ch in (direct_by_soi or {}).items() if ic in ch]
+	return len(holders) == 1
+
+
+def _unit_for_bag_fg_bom_child(child_ic, child_proc, specs=None):
+	"""Default production unit for a direct BOM child on bag FG."""
+	if _is_printed_bopp_item_code(child_ic):
+		return PRINTED_BOPP_FILM_UNIT
+	if child_proc == "103":
+		return SLITTING_UNIT
+	if child_proc in ("104", "107"):
+		return LAMINATION_UNIT
+	if child_proc in ("105", "106"):
+		return PRINTING_UNASSIGNED_UNIT
+	specs = specs or {}
+	return compute_default_production_unit(
+		specs.get("color") or "",
+		flt(specs.get("width_inch") or 0),
+		child_ic,
+	)
+
+
+def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_label="Bag FG direct BOM"):
+	"""Add planning rows for each line on the FG BOM (104+103 on 224, 103+100 on 221) — not hardcoded 105."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return 0
+	fg_set = {str(p).strip() for p in (fg_processes or ()) if str(p).strip()}
+	if not fg_set:
+		return 0
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	if not ps.get("sales_order"):
+		return 0
+	so = frappe.get_doc("Sales Order", ps.sales_order)
+	so_by_name = {str(it.name): it for it in (so.items or [])}
+	parent_field = _get_pt_parentfield()
+	pt_rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": ps.name},
+		fields=["name", "item_code", "qty", "uom", "sales_order_item", "so_item"],
+		limit_page_length=0,
+	) or []
+	added = 0
+	for prow in pt_rows:
+		parent_ic = _cstr(prow.get("item_code")).strip()
+		parent_pp = _bom_item_process_code(parent_ic) or _item_process_prefix(parent_ic)
+		if parent_pp not in fg_set:
+			continue
+		so_item_key = _cstr(prow.get("sales_order_item") or prow.get("so_item")).strip()
+		so_it = so_by_name.get(so_item_key)
+		if not so_it:
+			so_it = frappe._dict(
+				{
+					"name": so_item_key,
+					"item_code": parent_ic,
+					"qty": flt(prow.get("qty") or 0),
+					"uom": _cstr(prow.get("uom")) or "Kg",
+				}
+			)
+		bom = _resolve_lamination_bom(parent_ic)
+		if not bom:
+			continue
+		scale_qty, scale_uom = _parent_bom_scale_qty_uom(
+			parent_ic, flt(prow.get("qty") or 0) or flt(so_it.qty), prow.get("uom") or getattr(so_it, "uom", None), ps.name
+		)
+		for bom_row in bom.items or []:
+			child_ic = _cstr(bom_row.item_code).strip()
+			if not child_ic:
+				continue
+			child_pp = _bom_item_process_code(child_ic) or _item_process_prefix(child_ic)
+			if _is_printed_bopp_item_code(child_ic):
+				child_pp = "PB"
+			existing = frappe.db.sql(
+				"""
+				SELECT name FROM `tabPlanning Table`
+				WHERE parent = %s AND item_code = %s
+				  AND (IFNULL(sales_order_item, '') = %s OR IFNULL(so_item, '') = %s)
+				LIMIT 1
+				""",
+				(ps.name, child_ic, so_item_key, so_item_key),
+				as_dict=True,
+			) or []
+			if existing:
+				continue
+			child_qty, child_uom = _fabric_qty_uom_from_bom(
+				bom.name,
+				child_ic,
+				scale_qty,
+				from_uom=scale_uom or "Kg",
+				parent_item_code=parent_ic,
+				planning_sheet_name=ps.name,
+			)
+			specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, None) if child_ic.startswith("100") else {}
+			item_name = frappe.db.get_value("Item", child_ic, "item_name") or child_ic
+			trace_id = _parent_child_trace_id_from_item_code(parent_ic) or _parent_child_trace_id_for_planning_row(
+				parent_ic, so_item_key, ps.name
+			)
+			row = {
+				"sales_order_item": so_item_key,
+				"so_item": so_item_key,
+				"item_code": child_ic,
+				"item_name": item_name,
+				"qty": child_qty,
+				"uom": child_uom,
+				"unit": _unit_for_bag_fg_bom_child(child_ic, child_pp, specs),
+				"custom_parent_child_trace_id": trace_id,
+			}
+			if child_ic.startswith("100"):
+				row.update(
+					{
+						"gsm": specs.get("gsm"),
+						"width_inch": specs.get("width_inch"),
+						"color": specs.get("color"),
+						"quality": specs.get("quality"),
+						"custom_quality": specs.get("custom_quality"),
+					}
+				)
+			_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning Table")
+			if hasattr(ps, "items") or ps.meta.has_field("items"):
+				ps.append("items", dict(row))
+			ps.append(parent_field, dict(row))
+			added += 1
+	if added:
+		ps.flags.ignore_permissions = True
+		ps.save(ignore_permissions=True)
+		frappe.db.commit()
+	return added
+
+
 def _skip_bag_deeper_child_qty_on_sync(planning_sheet_name, parent_ic, child_ic):
 	"""Bag sheets: 100/PB qty is set only on Meter→Kg button, not during BOM sync."""
 	if not planning_sheet_name or not _planning_sheet_has_bag_fg(planning_sheet_name):
@@ -28370,19 +28513,104 @@ def _refresh_planning_sheet_bom_child_kg_qty(planning_sheet_name):
 	return updated
 
 
-def _planning_row_meter_qty_needs_kg_conversion(item_code, qty, uom):
-	"""True only for mid-chain bag rows explicitly in Meter (107, 103, … — not 100 / PB)."""
+def _planning_row_meter_qty_needs_kg_conversion(
+	item_code, qty, uom, planning_sheet_name=None, so_item_key=None, direct_by_soi=None
+):
+	"""True for bag FG **direct** BOM children in Meter (incl. 100* on 221/224 — not 103→100 fabric)."""
 	ic = _cstr(item_code).strip()
 	qty = flt(qty)
 	uom = _cstr(uom).strip()
 	if not ic or qty <= 0 or uom != "Meter":
 		return False
-	if ic.startswith("100") or _is_printed_bopp_item_code(ic):
+	if _is_printed_bopp_item_code(ic):
+		return False
+	if planning_sheet_name and _planning_sheet_has_bag_fg(planning_sheet_name):
+		if direct_by_soi is None:
+			direct_by_soi = _bag_fg_direct_bom_children_by_soi(planning_sheet_name)
+		if _planning_row_is_bag_fg_direct_bom_child(ic, so_item_key, direct_by_soi):
+			return True
 		return False
 	pp = _item_process_prefix(ic)
 	if pp in BAG_METER_TO_KG_CONVERT_PROCESSES:
 		return True
 	return _lamination_process_from_item_code(ic) == "107" or _is_107_mid_bopp_item(ic)
+
+
+def _recalc_bag_fabric_under_bom_parent(planning_sheet_name, parent_process):
+	"""After 103/104 parent is Kg: scale 100 from that parent's BOM (not meter÷factor on fabric)."""
+	if not planning_sheet_name or not parent_process:
+		return 0
+	rows = (
+		frappe.get_all(
+			"Planning Table",
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code", "qty", "uom", "sales_order_item", "so_item", "source_item"],
+			limit_page_length=0,
+		)
+		or []
+	)
+	by_soi = {}
+	orphan = []
+	for r in rows:
+		soi = _cstr(r.get("sales_order_item") or r.get("so_item"))
+		if soi:
+			by_soi.setdefault(soi, []).append(r)
+		else:
+			orphan.append(r)
+	updated = 0
+	exp = str(parent_process).strip()
+	for _soi, group in list(by_soi.items()) + ([("", orphan)] if orphan else []):
+		for prow in group:
+			pic = _cstr(prow.get("item_code"))
+			if exp == "104":
+				if _lamination_process_from_item_code(pic) != "104":
+					continue
+			elif _item_process_prefix(pic) != exp:
+				continue
+			if _cstr(prow.get("uom")).strip().lower() == "meter":
+				continue
+			scale_kg = flt(prow.get("qty") or 0)
+			if scale_kg <= 0:
+				continue
+			try:
+				res = _get_fabric_item_from_process_item(
+					pic, expected_process=exp, process_label="Bag BOM fabric"
+				)
+				fab_ic = res.get("fabric_item_code")
+				bom_no = res.get("bom_no")
+			except Exception:
+				continue
+			if not fab_ic or not bom_no:
+				continue
+			child_qty = _fabric_qty_from_bom(bom_no, fab_ic, scale_kg, from_uom="Kg", parent_item_code=pic)
+			if child_qty <= 0:
+				continue
+			match_pool = group if _soi else rows
+			for crow in match_pool:
+				if _cstr(crow.get("item_code")) != fab_ic:
+					continue
+				c_soi = _cstr(crow.get("sales_order_item") or crow.get("so_item"))
+				if _soi and c_soi and c_soi != _soi:
+					continue
+				stock_uom = _cstr(frappe.db.get_value("Item", fab_ic, "stock_uom") or "Kg").strip() or "Kg"
+				frappe.db.set_value(
+					"Planning Table",
+					crow.get("name"),
+					{"qty": child_qty, "uom": stock_uom},
+					update_modified=False,
+				)
+				_set_planning_table_qty_with_legacy_sync(planning_sheet_name, crow.get("name"), child_qty)
+				updated += 1
+				break
+	return updated
+
+
+def _recalc_bag_fabric_under_slitting_parent(planning_sheet_name):
+	return _recalc_bag_fabric_under_bom_parent(planning_sheet_name, "103")
+
+
+def _recalc_bag_fabric_under_lamination_parent(planning_sheet_name):
+	return _recalc_bag_fabric_under_bom_parent(planning_sheet_name, "104")
 
 
 def _recalc_bag_deeper_bom_children(planning_sheet_name):
@@ -28519,6 +28747,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=Fal
 	) or []
 
 	updated_count = 0
+	direct_by_soi = _bag_fg_direct_bom_children_by_soi(planning_sheet_name)
 
 	for r in rows:
 		ic = r.get("item_code")
@@ -28553,12 +28782,15 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=Fal
 			except Exception:
 				pass
 
-		pp = _item_process_prefix(ic)
-		if pp not in BAG_METER_TO_KG_CONVERT_PROCESSES and not (
-			_lamination_process_from_item_code(ic) == "107" or _is_107_mid_bopp_item(ic)
+		so_item = r.get("sales_order_item") or r.get("so_item")
+		if not _planning_row_meter_qty_needs_kg_conversion(
+			ic,
+			flt(r.get("qty")),
+			r.get("uom"),
+			planning_sheet_name=planning_sheet_name,
+			so_item_key=so_item,
+			direct_by_soi=direct_by_soi,
 		):
-			continue
-		if not _planning_row_meter_qty_needs_kg_conversion(ic, flt(r.get("qty")), r.get("uom")):
 			continue
 		conv = frappe.db.get_value(
 			"UOM Conversion Detail",
@@ -28577,6 +28809,8 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=Fal
 	frappe.db.commit()
 
 	try:
+		updated_count += _recalc_bag_fabric_under_slitting_parent(planning_sheet_name)
+		updated_count += _recalc_bag_fabric_under_lamination_parent(planning_sheet_name)
 		updated_count += _recalc_bag_deeper_bom_children(planning_sheet_name)
 		frappe.db.commit()
 	except Exception:
