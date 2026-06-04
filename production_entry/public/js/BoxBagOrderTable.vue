@@ -206,8 +206,8 @@ const ITEM_PROCESS_KNOWN = new Set([
   "251", "252", "253", "254", "255",
 ]);
 const D_CUT_FG_PROCS = ["211", "212", "213", "214", "216", "217"];
-const W_CUT_D_CUT_ALL_FG_PROCS = [...W_CUT_FG_PROCS, ...D_CUT_FG_PROCS];
 const W_CUT_FG_PROCS = ["200", "201", "202", "203"];
+const W_CUT_D_CUT_ALL_FG_PROCS = [...W_CUT_FG_PROCS, ...D_CUT_FG_PROCS];
 const W_CUT_D_CUT_PROCESS_LABELS = {
   "211": "211 plain d cut bag", "212": "212 printed d cut bag", "213": "213 plain laminated d cut bag",
   "214": "214 printed d cut bag", "216": "216 d cut mettalic roto", "217": "217 d cut bopp bag",
