@@ -1,0 +1,223 @@
+/* Centered modal for Transfer / Despatch row dialogs (shared) */
+
+.tl-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.tl-dialog {
+  background: #fff;
+  border-radius: 12px;
+  max-width: 1100px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
+  position: relative;
+  overflow: hidden;
+}
+
+.tl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.tl-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.tl-close {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.tl-filters,
+.tl-company-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 20px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.tl-company-row label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.tl-select {
+  min-width: 220px;
+  padding: 6px 8px;
+}
+
+.tl-table-wrap {
+  overflow: auto;
+  flex: 1;
+  min-height: 120px;
+  padding: 0 20px;
+}
+
+.tl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.tl-table th,
+.tl-table td {
+  border: 1px solid #e2e8f0;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.tl-batch-cell {
+  min-width: 200px;
+}
+
+.tl-batch-summary {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #0369a1;
+  line-height: 1.4;
+}
+
+.tl-batch-panel {
+  margin: 0 20px 12px;
+  padding: 14px 16px;
+  border: 2px solid #0ea5e9;
+  border-radius: 10px;
+  background: #f0f9ff;
+  max-height: 42vh;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.tl-batch-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.tl-batch-head-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tl-batch-toggle {
+  font-size: 12px;
+  margin-right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tl-batch-meta {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.tl-batch-table-wrap {
+  overflow: auto;
+  flex: 1;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #bae6fd;
+}
+
+.tl-batch-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tl-batch-table th,
+.tl-batch-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tl-batch-table tr.is-selected {
+  background: #eff6ff;
+}
+
+.tl-batch-table tr {
+  cursor: pointer;
+}
+
+.tl-batch-no {
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+}
+
+.tl-batch-qty-input {
+  width: 100px;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  text-align: right;
+}
+
+.tl-batch-panel-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #bae6fd;
+}
+
+.tl-ok {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.tl-block {
+  color: #b91c1c;
+  font-size: 11px;
+}
+
+.tl-muted {
+  padding: 12px 20px;
+  color: #64748b;
+}
+
+.tl-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.tl-nature-panel {
+  padding: 14px 20px;
+  border-top: 1px solid #e2e8f0;
+  background: #f0f9ff;
+  flex-shrink: 0;
+}

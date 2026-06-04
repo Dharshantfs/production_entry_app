@@ -1,8 +1,9 @@
 <template>
-  <div v-if="modelValue" class="tl-overlay" @click.self="close">
-    <div class="tl-dialog">
+  <Teleport to="body">
+    <div v-if="modelValue" class="tl-overlay" @click.self="close">
+      <div class="tl-dialog" role="dialog" aria-modal="true" aria-labelledby="tl-despatch-title">
       <div class="tl-header">
-        <h3>Despatch rows</h3>
+        <h3 id="tl-despatch-title">Despatch rows</h3>
         <button type="button" class="tl-close" @click="close">✕</button>
       </div>
       <div class="tl-filters">
@@ -116,8 +117,9 @@
           {{ submitting ? "Submitting…" : "Submit for despatch approval" }}
         </button>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup>
@@ -406,12 +408,3 @@ watch(fromCompany, () => {
 });
 </script>
 
-<style scoped>
-.tl-batch-toggle {
-  font-size: 12px;
-  margin-right: 10px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-</style>

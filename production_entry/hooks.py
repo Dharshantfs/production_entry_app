@@ -17,6 +17,7 @@ app_include_css = [
 	"/assets/production_entry/css/scheduler.css",
 	"/assets/production_entry/css/planning_order_tables.css",
 	"/assets/production_entry/css/production_learning.css",
+	"/assets/production_entry/css/logistics_transfer_dialog.css",
 ]
 app_include_js = "scheduler.bundle.js"
 

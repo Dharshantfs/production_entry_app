@@ -1,8 +1,9 @@
 <template>
-  <div v-if="modelValue" class="tl-overlay" @click.self="close">
-    <div class="tl-dialog">
+  <Teleport to="body">
+    <div v-if="modelValue" class="tl-overlay" @click.self="close">
+      <div class="tl-dialog" role="dialog" aria-modal="true" aria-labelledby="tl-transfer-title">
       <div class="tl-header">
-        <h3>Transfer rows</h3>
+        <h3 id="tl-transfer-title">Transfer rows</h3>
         <button type="button" class="tl-close" @click="close">✕</button>
       </div>
       <div class="tl-filters">
@@ -163,8 +164,9 @@
           {{ submitting ? "Submitting…" : "Submit for approval" }}
         </button>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup>
