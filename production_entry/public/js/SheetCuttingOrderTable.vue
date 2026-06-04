@@ -37,6 +37,7 @@
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <TransferToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" @submitted="fetchData" />
+        <DespatchToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" @submitted="fetchData" />
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveArrangement">Save Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="restoreArrangement">Restore Arrangment</button>
@@ -146,6 +147,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { formatSheetSizeCell as formatSheetSizeCellMm, formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_sheet_cutting";
 const sizeDimUnit = ref("inches");

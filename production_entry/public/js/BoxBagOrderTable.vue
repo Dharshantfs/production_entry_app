@@ -63,6 +63,7 @@
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
         <TransferToolbarBlock :board-kind="boardKind" :filter-context="transferFilterContext" @submitted="fetchData" />
+        <DespatchToolbarBlock :board-kind="boardKind" :filter-context="transferFilterContext" @submitted="fetchData" />
         <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
         <button type="button" class="cc-clear-btn" @click="saveArrangement">Save Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="restoreArrangement">Restore Arrangement</button>
@@ -176,6 +177,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
 
 const BOX_BAG_UNITS = [

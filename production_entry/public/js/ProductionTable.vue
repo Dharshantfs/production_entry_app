@@ -85,6 +85,7 @@
       </button>
       <button class="cc-maint-btn" @click="openMaintenanceDialog" title="Manage equipment maintenance schedules">⚙️ Maintenance</button>
       <TransferToolbarBlock :board-kind="'production'" :filter-context="transferFilterContext" @submitted="fetchData" />
+      <DespatchToolbarBlock board-kind="production" :filter-context="transferFilterContext" @submitted="fetchData" />
       
       <div class="cc-filter-item" style="margin-left: auto;">
           <button class="cc-view-btn" @click="goToBoard">📊 Back to Board</button>
@@ -426,6 +427,7 @@ import Sortable from "sortablejs";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import { formatKgPlanning, mmDisplayFromInchesWithCodeFallback } from "./planning_table_size_units.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
+import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
 
 // ===== MAINTENANCE DATA =====

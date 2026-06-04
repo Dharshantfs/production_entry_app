@@ -18,7 +18,9 @@
         </select>
       </div>
       <p v-if="loading" class="tl-muted">Loading…</p>
-      <p v-else-if="!rows.length" class="tl-muted">No despatch (FG) rows for this view.</p>
+      <p v-else-if="!rows.length" class="tl-muted">
+        No rows with movement <strong>Despatch</strong> for this table view (SPR submitted). Check month/unit filters or Planning Sheet movement.
+      </p>
       <div v-else class="tl-table-wrap">
         <table class="tl-table">
           <thead>
@@ -315,8 +317,9 @@ function loadRows() {
       date: ctx.date || "",
       week: ctx.week || "",
       month: ctx.month || "",
-      party_code: dlgParty.value || "",
-      customer: dlgCustomer.value || "",
+      unit: ctx.unit || "",
+      party_code: dlgParty.value || ctx.party_code || "",
+      customer: dlgCustomer.value || ctx.customer || "",
       from_company: fromCompany.value,
     },
     callback: (r) => {
@@ -389,13 +392,18 @@ watch(
   (open) => {
     if (!open) return;
     selection.value = {};
-    dlgParty.value = props.prefill?.party_code || "";
-    dlgCustomer.value = props.prefill?.customer || "";
+    const ctx = props.filterContext || {};
+    dlgParty.value = props.prefill?.party_code || ctx.party_code || "";
+    dlgCustomer.value = props.prefill?.customer || ctx.customer || "";
     fromCompany.value = props.prefill?.from_company || "";
     loadCompanies();
     loadRows();
   }
 );
+
+watch(fromCompany, () => {
+  if (props.modelValue) loadRows();
+});
 </script>
 
 <style scoped>
