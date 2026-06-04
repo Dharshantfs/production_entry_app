@@ -4,7 +4,49 @@ function _is_material_transfer(frm) {
 	return (frm.doc.stock_entry_type || "").trim() === "Material Transfer";
 }
 
+function _externalTransferFieldname() {
+	const candidates = [
+		"custom_external_transfer",
+		"external_transfer",
+		"is_external_transfer",
+		"ge_external_transfer",
+	];
+	for (const f of candidates) {
+		if (frappe.meta.has_field("Stock Entry", f)) return f;
+	}
+	return "";
+}
+
+/** Scan / approved-roll rules only for logistics Transfer Approval STE — not manual Material Transfer. */
+function _is_logistics_material_transfer(frm) {
+	if (!_is_material_transfer(frm)) return false;
+	const fn = _externalTransferFieldname();
+	if (fn && cint(frm.doc[fn])) return true;
+	if (frm._pe_logistics_transfer === true) return true;
+	return false;
+}
+
+function cint(v) {
+	const n = parseInt(v, 10);
+	return Number.isFinite(n) ? n : 0;
+}
+
+function _refreshLogisticsTransferFlag(frm) {
+	frm._pe_logistics_transfer = false;
+	if (!_is_material_transfer(frm) || !frm.doc.name || frm.is_new()) return;
+	frappe.call({
+		method: "production_entry.production_planning.transfer_logistics.stock_entry_is_logistics_transfer",
+		args: { stock_entry: frm.doc.name },
+		async: false,
+		callback(r) {
+			frm._pe_logistics_transfer = !!(r.message);
+			frm.refresh_fields();
+		},
+	});
+}
+
 function _disable_native_barcode_scanner(frm) {
+	if (!_is_logistics_material_transfer(frm)) return;
 	if (!frm.barcode_scanner) return;
 	const noop = function () {};
 	frm.barcode_scanner.process_scan = noop;
@@ -15,7 +57,7 @@ function _disable_native_barcode_scanner(frm) {
 }
 
 function _protect_transfer_row_qty(frm) {
-	if (!_is_material_transfer(frm)) return;
+	if (!_is_logistics_material_transfer(frm)) return;
 	(frm.doc.items || []).forEach((r) => {
 		if (r && r.name) {
 			r._protected_qty = Number(r._protected_qty != null ? r._protected_qty : r.qty || 0);
@@ -24,7 +66,7 @@ function _protect_transfer_row_qty(frm) {
 }
 
 function _bind_scan_input(frm) {
-	if (!_is_material_transfer(frm)) return;
+	if (!_is_logistics_material_transfer(frm)) return;
 	const fields = ["scan_barcode", "custom_barcode_scanner"];
 	fields.forEach((fieldname) => {
 		if (!frm.fields_dict[fieldname] || !frm.fields_dict[fieldname].$input) return;
@@ -171,18 +213,19 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	scan_barcode(frm) {
-		if (_is_material_transfer(frm)) {
+		if (_is_logistics_material_transfer(frm)) {
 			frm.trigger("process_barcode_scan");
 		}
 	},
 
 	custom_barcode_scanner(frm) {
-		if (_is_material_transfer(frm)) {
+		if (_is_logistics_material_transfer(frm)) {
 			frm.trigger("process_barcode_scan");
 		}
 	},
 
 	refresh(frm) {
+		_refreshLogisticsTransferFlag(frm);
 		_disable_native_barcode_scanner(frm);
 		_protect_transfer_row_qty(frm);
 		_bind_scan_input(frm);
@@ -197,7 +240,12 @@ frappe.ui.form.on("Stock Entry", {
 			}
 		}
 
-		if (frm.doc.docstatus === 0 && _is_material_transfer(frm) && frm.doc.items && frm.doc.items.length > 0) {
+		if (
+			frm.doc.docstatus === 0 &&
+			_is_logistics_material_transfer(frm) &&
+			frm.doc.items &&
+			frm.doc.items.length > 0
+		) {
 			frm.add_custom_button(
 				__("Approved Rolls"),
 				() => {
@@ -266,7 +314,7 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	validate(frm) {
-		if (_is_material_transfer(frm) && frm.doc.items) {
+		if (_is_logistics_material_transfer(frm) && frm.doc.items) {
 			let pending = frm.doc.items.filter(
 				(r) => (r.qty || 0) > ((r.scanned_qty || r.custom_scanned_qty) || 0) + 0.01
 			);
@@ -284,7 +332,7 @@ frappe.ui.form.on("Stock Entry", {
 
 	process_barcode_scan: function (frm) {
 		let barcode = (frm.doc.scan_barcode || frm.doc.custom_barcode_scanner || "").trim();
-		if (!barcode || !_is_material_transfer(frm)) return;
+		if (!barcode || !_is_logistics_material_transfer(frm)) return;
 
 		if (frm.doc.scan_barcode) frappe.model.set_value(frm.doctype, frm.docname, "scan_barcode", "");
 		if (frm.doc.custom_barcode_scanner)
@@ -324,7 +372,7 @@ frappe.ui.form.on("Stock Entry Detail", {
 	qty: function (frm, cdt, cdn) {
 		let row = frappe.get_doc(cdt, cdn);
 		if (
-			_is_material_transfer(frm) &&
+			_is_logistics_material_transfer(frm) &&
 			row._protected_qty !== undefined &&
 			row.qty !== row._protected_qty
 		) {

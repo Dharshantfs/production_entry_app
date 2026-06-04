@@ -39,9 +39,40 @@ ACTION_LABELS = {
 	"despatch": "Despatch",
 }
 
+# Official process display names (fabric learning)
+PROCESS_NAMES = {
+	"100": "NON WOVEN FABRIC",
+	"102": "REWINDING NWF",
+	"103": "SLITTED NWF",
+	"104": "NON WOVEN LAMINATED FABRIC",
+	"105": "NON WOVEN FLEXO PRINTED FABRIC",
+	"106": "NON WOVEN LAMINATED PRINTED FABRIC",
+	"107": "BOPP LAMINATED NON WOVEN FABRIC",
+	"108": "BOPP LAMINATED SLITTED NON WOVEN FABRIC",
+	"109": "NON WOVEN LAMINATED SLITTED FABRIC",
+	"251": "NON WOVEN PLAIN SHEET",
+	"252": "NON WOVEN PRINTED SHEET",
+	"253": "NON WOVEN LAMINATED SHEET",
+	"254": "NON WOVEN LAMINATED PRINTED SHEET",
+	"255": "NON WOVEN BOPP LAMINATED SHEET",
+	"PB": "Printed BOPP",
+}
 
-def _name(code: str, default: str) -> str:
-	return frappe._(default)
+
+def _name(code: str, default: str | None = None) -> str:
+	label = PROCESS_NAMES.get(code) or default or code
+	return frappe._(label)
+
+
+def _display_name_for_code(code: str) -> str:
+	entry = _CATALOG_BY_CODE.get(code)
+	if entry:
+		return entry.get("name") or _name(code)
+	return _name(code)
+
+
+def _bom_tree_children(chain: list) -> list:
+	return [{"code": c, "name": _display_name_for_code(c)} for c in chain]
 
 
 def _chain_label(codes: list) -> str:
@@ -50,22 +81,35 @@ def _chain_label(codes: list) -> str:
 	return " → ".join(codes)
 
 
+def _walkthrough_actions_for_role(node_code: str, role: str) -> list:
+	"""Only BOM child rows use Transfer; SO FG uses Despatch (no transfer on FG or base-only 100)."""
+	if role == "fg":
+		return ["plan", "produce", "despatch"]
+	if role in ("child", "pb"):
+		return ["plan", "produce", "transfer"]
+	if role == "fabric" and node_code == "100":
+		return ["plan", "produce"]
+	return ["plan", "produce", "transfer"]
+
+
 def _build_walkthrough_steps(fg_code: str, bom_chain: list, fg_is_so_line: bool = True) -> list:
-	"""Micro-steps for animation: upstream children first, then FG."""
+	"""Micro-steps: upstream BOM children first (transfer), then FG (despatch)."""
 	steps = []
 	for child in bom_chain:
-		row = {
-			"node_code": child,
-			"node_role": "child",
-			"actions": ["plan", "produce", "transfer"],
-		}
-		steps.append(row)
+		role = "pb" if child == "PB" else "child"
+		steps.append(
+			{
+				"node_code": child,
+				"node_role": role,
+				"actions": _walkthrough_actions_for_role(child, role),
+			}
+		)
 	if fg_is_so_line:
 		steps.append(
 			{
 				"node_code": fg_code,
 				"node_role": "fg",
-				"actions": ["plan", "produce", "despatch"],
+				"actions": _walkthrough_actions_for_role(fg_code, "fg"),
 			}
 		)
 	return steps
@@ -92,12 +136,21 @@ def _slides_for_process(entry: dict) -> list:
 		"Plan and produce in this order (upstream first): <b>{0}</b>."
 	).format(" → ".join(priority_items))
 
+	related = entry.get("related_processes") or []
+	related_html = ""
+	if related:
+		parts = [
+			f"<b>{r.get('code')}</b> — {_display_name_for_code(r.get('code'))}: {frappe._(r.get('hint') or '')}"
+			for r in related
+		]
+		related_html = "<p class='pl-related-intro'>" + _("Related in this lane: ") + "<br/>".join(parts) + "</p>"
+
 	slides = [
 		{
 			"id": "intro",
 			"title": _("Introduction"),
 			"subtitle": tagline,
-			"body_html": intro_body,
+			"body_html": intro_body + related_html,
 		},
 		{
 			"id": "bom",
@@ -106,7 +159,7 @@ def _slides_for_process(entry: dict) -> list:
 			"body_html": _(
 				"Finished good <b>{0}</b> at the top; BOM children appear below on the same Sales Order line."
 			).format(code),
-			"tree": {"fg": code, "children": chain},
+			"tree": {"fg": code, "fg_name": name, "children": _bom_tree_children(chain)},
 		},
 		{
 			"id": "priority",
@@ -120,7 +173,8 @@ def _slides_for_process(entry: dict) -> list:
 			"title": _("Walkthrough"),
 			"subtitle": _("Plan → Produce → Transfer or Despatch"),
 			"body_html": _(
-				"BOM child rows use <b>Transfer</b> to the next unit. The Sales Order finished-good line uses <b>Despatch</b> when complete."
+				"Only <b>BOM child</b> rows (fabric 100, slitting, lamination, printing, PB, etc.) use <b>Transfer</b> to the next process unit. "
+				"The <b>Sales Order finished-good</b> line uses <b>Despatch</b> when complete — never Transfer on the FG row."
 			),
 			"steps": entry.get("walkthrough_steps") or [],
 		},
@@ -140,12 +194,12 @@ def _slides_for_process(entry: dict) -> list:
 _FABRIC_ENTRIES = [
 	{
 		"code": "100",
-		"name": _name("100", "Fabric"),
+		"name": _name("100"),
 		"phase": "fabric",
 		"role": "fabric",
 		"tags": ["base"],
 		"tagline": _("Base material — most processes start here"),
-		"summary": _("Raw fabric rolls; plan and produce before lamination, slitting, or rewinding."),
+		"summary": _("Non woven fabric rolls; plan and produce before slitting, lamination, printing, or rewinding."),
 		"bom_chain": [],
 		"sort_rank": SORT_RANK["100"],
 		"prerequisite_hint": _("Fabric 100 is planned first when it appears as a BOM child on another line."),
@@ -159,12 +213,12 @@ _FABRIC_ENTRIES = [
 			{"label": _("Planning Sheet"), "route": "/app/planning-sheet"},
 		],
 		"walkthrough_steps": [
-			{"node_code": "100", "node_role": "fabric", "actions": ["plan", "produce", "transfer"]},
+			{"node_code": "100", "node_role": "fabric", "actions": ["plan", "produce"]},
 		],
 	},
 	{
 		"code": "PB",
-		"name": _name("PB", "Printed BOPP"),
+		"name": _name("PB"),
 		"phase": "fabric",
 		"role": "child",
 		"tags": ["bopp"],
@@ -176,16 +230,16 @@ _FABRIC_ENTRIES = [
 		"checklist": [_("Check PB row exists on Planning Sheet when 107 FG is on the order")],
 		"shortcuts": [{"label": _("Printed BOPP Film Board"), "route": "/app/printed-bopp-film-board"}],
 		"walkthrough_steps": [
-			{"node_code": "PB", "node_role": "child", "actions": ["plan", "produce", "transfer"]},
+			{"node_code": "PB", "node_role": "pb", "actions": _walkthrough_actions_for_role("PB", "pb")},
 		],
 	},
 	{
 		"code": "102",
-		"name": _name("102", "Rewinding"),
+		"name": _name("102"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["mid"],
-		"tagline": _("Rewinding needs fabric 100 from BOM"),
+		"tagline": _("Rewinding NWF — needs fabric 100 from BOM"),
 		"summary": _("Needs fabric 100 first"),
 		"bom_chain": ["100"],
 		"sort_rank": SORT_RANK["102"],
@@ -199,12 +253,16 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "103",
-		"name": _name("103", "Slitting"),
+		"name": _name("103"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["mid"],
-		"tagline": _("Slitting pulls fabric 100 from BOM"),
-		"summary": _("Needs fabric 100 first"),
+		"tagline": _("Slitted NWF — fabric 100 from BOM; related: laminated slitting 109"),
+		"summary": _("Slitting unit: plan 100 first. Laminated slitting (109) adds 104 under the same SO line."),
+		"related_processes": [
+			{"code": "109", "hint": _("Laminated slitting — BOM adds 104 then 100 before 109 FG")},
+			{"code": "108", "hint": _("BOPP laminated slitting — 107 → 100 + PB chain")},
+		],
 		"bom_chain": ["100"],
 		"sort_rank": SORT_RANK["103"],
 		"prerequisite_hint": _("Complete fabric 100 before slitting 103."),
@@ -217,11 +275,15 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "104",
-		"name": _name("104", "Lamination"),
+		"name": _name("104"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["mid"],
-		"tagline": _("Lamination needs fabric 100 from BOM"),
+		"tagline": _("Laminated fabric — needs 100; used inside slitting (109) and sheet chains"),
+		"related_processes": [
+			{"code": "109", "hint": _("109 laminated slitting expands 104 + 100")},
+			{"code": "106", "hint": _("106 lam printed — child of 254 sheet chain")},
+		],
 		"summary": _("Needs fabric 100 first"),
 		"bom_chain": ["100"],
 		"sort_rank": SORT_RANK["104"],
@@ -239,11 +301,12 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "105",
-		"name": _name("105", "Printing"),
+		"name": _name("105"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["mid"],
-		"tagline": _("Flexo printing needs fabric 100"),
+		"tagline": _("Flexo printed fabric — needs 100; feeds sheet 252"),
+		"related_processes": [{"code": "252", "hint": _("Printed sheet 252 expands 105 then 100")}],
 		"summary": _("Needs fabric 100 first"),
 		"bom_chain": ["100"],
 		"sort_rank": SORT_RANK["105"],
@@ -257,11 +320,11 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "106",
-		"name": _name("106", "Sheet printing"),
+		"name": _name("106"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["mid", "sheet"],
-		"tagline": _("Often part of 254 sheet chain: 106 → 104 → 100"),
+		"tagline": _("Lam printed fabric — stage in 254 sheet chain (106 → 104 → 100)"),
 		"summary": _("In stage-3 sheets: needs 104 and 100 below"),
 		"bom_chain": ["100", "104"],
 		"sort_rank": SORT_RANK["106"],
@@ -275,11 +338,11 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "107",
-		"name": _name("107", "BOPP lamination"),
+		"name": _name("107"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["bopp", "mid"],
-		"tagline": _("BOPP lam adds fabric 100 and Printed BOPP (PB)"),
+		"tagline": _("BOPP laminated NW fabric — adds 100 and Printed BOPP (PB)"),
 		"summary": _("Needs 100 and PB from BOM"),
 		"bom_chain": ["100", "PB"],
 		"sort_rank": SORT_RANK["107"],
@@ -293,11 +356,12 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "108",
-		"name": _name("108", "BOPP lam slitting"),
+		"name": _name("108"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["bopp"],
-		"tagline": _("108 expands to 107, then 100 and PB"),
+		"tagline": _("BOPP laminated slitted — slitting family; BOM: 107 → 100 + PB"),
+		"related_processes": [{"code": "103", "hint": _("Plain slitting 103 — fabric 100 only")}],
 		"summary": _("Chain: 107 → 100 + PB"),
 		"bom_chain": ["100", "PB", "107"],
 		"sort_rank": SORT_RANK["108"],
@@ -311,11 +375,12 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "109",
-		"name": _name("109", "Lam slitting FG"),
+		"name": _name("109"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["mid"],
-		"tagline": _("109 laminated slitting adds 104 then 100"),
+		"tagline": _("Laminated slitted — inside slitting lane; BOM adds 104 then 100"),
+		"related_processes": [{"code": "103", "hint": _("103 slitting — fabric 100 only on slitting board")}],
 		"summary": _("Needs 104 → 100"),
 		"bom_chain": ["100", "104"],
 		"sort_rank": SORT_RANK["109"],
@@ -329,7 +394,7 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "251",
-		"name": _name("251", "Direct sheet cutting"),
+		"name": _name("251"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["sheet"],
@@ -347,7 +412,7 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "252",
-		"name": _name("252", "Design sheet"),
+		"name": _name("252"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["sheet"],
@@ -365,7 +430,7 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "253",
-		"name": _name("253", "Laminated sheet"),
+		"name": _name("253"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["sheet"],
@@ -383,7 +448,7 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "254",
-		"name": _name("254", "Lam sheet FG"),
+		"name": _name("254"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["sheet"],
@@ -406,7 +471,7 @@ _FABRIC_ENTRIES = [
 	},
 	{
 		"code": "255",
-		"name": _name("255", "BOPP lam sheet"),
+		"name": _name("255"),
 		"phase": "fabric",
 		"role": "fg",
 		"tags": ["bopp", "sheet"],
@@ -473,6 +538,8 @@ def get_lesson(process_code: str) -> dict | None:
 	lesson["slides"] = _slides_for_process(entry)
 	lesson["recommended_path"] = RECOMMENDED_LEARNING_PATH
 	lesson["action_labels"] = ACTION_LABELS
+	lesson["process_names"] = {e["code"]: e["name"] for e in _FABRIC_ENTRIES}
+	lesson["related_processes"] = entry.get("related_processes") or []
 	return lesson
 
 

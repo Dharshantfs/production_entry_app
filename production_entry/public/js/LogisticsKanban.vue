@@ -147,10 +147,65 @@
     </template>
 
     <template v-else>
-      <div class="lk-grid lk-grid-muted">
-        <div v-for="c in companies" :key="'d-' + c.name" class="lk-card lk-card-disabled">
-          <span class="lk-card-icon">🚚</span>
-          <span class="lk-card-title">{{ c.name }}</span>
+      <div class="lk-toolbar">
+        <label>From company</label>
+        <select v-model="fromCompany" @change="loadDespatchCards" class="lk-select">
+          <option value="">All companies…</option>
+          <option v-for="c in companies" :key="c.name" :value="c.name">{{ c.name }}</option>
+        </select>
+        <button type="button" class="lk-link-btn" @click="goDespatchApprovals">Despatch Approvals →</button>
+      </div>
+
+      <div v-if="!despatchCards.length" class="lk-hint">No company cards for despatch.</div>
+      <div v-else class="lk-grid">
+        <div v-for="(card, idx) in despatchCards" :key="card.company" class="lk-card-wrap" :style="{ animationDelay: `${idx * 60}ms` }">
+          <button type="button" class="lk-card" @click="openDespatch(card)">
+            <span class="lk-card-icon">📦</span>
+            <span class="lk-card-title">{{ card.label }}</span>
+            <span class="lk-card-cta">Start despatch →</span>
+          </button>
+
+          <div v-if="card.pending_approvals?.length" class="lk-history-panel">
+            <div class="lk-history-head">Pending approval</div>
+            <div class="lk-history-list">
+              <div
+                v-for="da in card.pending_approvals"
+                :key="da.name"
+                class="lk-history-chip is-pending"
+                @click.stop="openDespatchApproval(da.name)"
+              >
+                <span class="lk-history-badge">Pending</span>
+                <span class="lk-history-main">
+                  <span class="lk-history-ste">{{ da.name }}</span>
+                  <span class="lk-history-meta">
+                    <span v-if="da.order_codes_label">Order {{ da.order_codes_label }}</span>
+                    <span v-if="da.qty_total"> · {{ da.qty_total }} Kg</span>
+                  </span>
+                </span>
+                <span class="lk-history-go">Review →</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="card.approved_ready_dn?.length" class="lk-history-panel">
+            <div class="lk-history-head">Approved — create Delivery Note</div>
+            <div class="lk-history-list">
+              <div
+                v-for="da in card.approved_ready_dn"
+                :key="'a-' + da.name"
+                class="lk-history-chip is-done"
+              >
+                <span class="lk-history-badge">Approved</span>
+                <span class="lk-history-main">
+                  <span class="lk-history-ste">{{ da.name }}</span>
+                  <span class="lk-history-meta" v-if="da.order_codes_label">Order {{ da.order_codes_label }}</span>
+                </span>
+                <button type="button" class="lk-dn-btn" @click.stop="createDeliveryNote(da.name)">
+                  Create Delivery Note
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </template>
@@ -162,14 +217,23 @@
       :prefill="dialogPrefill"
       @submitted="loadCards"
     />
+    <DespatchDialog
+      v-model="showDespatchDialog"
+      board-kind="production"
+      :filter-context="dialogFilters"
+      :prefill="despatchPrefill"
+      @submitted="onDespatchSubmitted"
+    />
   </div>
 </template>
 
 <script setup>
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import TransferDialog from "./TransferDialog.vue";
+import DespatchDialog from "./DespatchDialog.vue";
 
 const API = "production_entry.production_planning.transfer_logistics";
+const DESPATCH_API = "production_entry.production_planning.despatch_logistics";
 const mode = ref("transfer");
 const mounted = ref(false);
 const gateOpen = ref(false);
@@ -183,7 +247,10 @@ const companies = ref([]);
 const fromCompany = ref("Jayashree Spun Bond - 1ZT");
 const destinationCards = ref([]);
 const showDialog = ref(false);
+const showDespatchDialog = ref(false);
 const dialogPrefill = ref({});
+const despatchPrefill = ref({});
+const despatchCards = ref([]);
 const dialogFilters = ref({ view_scope: "daily", date: frappe.datetime.get_today() });
 const dragLane = ref(null);
 const dragSte = ref(null);
@@ -204,6 +271,8 @@ function initWeekMonth() {
 
 function setMode(m) {
   mode.value = m;
+  if (m === "despatch") loadDespatchCards();
+  else loadCards();
 }
 
 function formatDate(d) {
@@ -359,7 +428,70 @@ function goApprovals() {
   frappe.set_route("transfer-approval-dashboard");
 }
 
-watch(fromCompany, loadCards);
+function goDespatchApprovals() {
+  frappe.set_route("despatch-approval-dashboard");
+}
+
+async function loadDespatchCards() {
+  dialogFilters.value = {
+    view_scope: viewScope.value === "all" ? "daily" : viewScope.value,
+    date: filterDate.value,
+    week: filterWeek.value,
+    month: filterMonth.value,
+    party_code: filterOrderCode.value,
+  };
+  const args = { from_company: fromCompany.value || "" };
+  if (viewScope.value !== "all") {
+    args.view_scope = viewScope.value;
+    if (viewScope.value === "daily") args.date = filterDate.value;
+    if (viewScope.value === "weekly") args.week = filterWeek.value;
+    if (viewScope.value === "monthly") args.month = filterMonth.value;
+  } else {
+    args.view_scope = "all";
+  }
+  if ((filterOrderCode.value || "").trim()) args.order_code = filterOrderCode.value.trim();
+  const r = await frappe.call({ method: `${DESPATCH_API}.get_despatch_company_cards`, args });
+  despatchCards.value = r.message || [];
+}
+
+function openDespatch(card) {
+  despatchPrefill.value = {
+    from_company: card.company || fromCompany.value,
+  };
+  showDespatchDialog.value = true;
+}
+
+function openDespatchApproval(name) {
+  frappe.route_options = { approval: name };
+  frappe.set_route("despatch-approval-dashboard");
+}
+
+async function createDeliveryNote(approvalName) {
+  try {
+    const r = await frappe.call({
+      method: `${DESPATCH_API}.create_delivery_note_from_despatch_approval`,
+      args: { name: approvalName },
+    });
+    const dn = r.message?.delivery_note;
+    frappe.show_alert({ message: __("Delivery Note {0} created", [dn]), indicator: "green" });
+    if (dn) frappe.set_route("Form", "Delivery Note", dn);
+    await loadDespatchCards();
+  } catch (e) {
+    frappe.msgprint(e?.message || String(e));
+  }
+}
+
+function onDespatchSubmitted() {
+  loadDespatchCards();
+}
+
+function reloadBoard() {
+  if (mode.value === "despatch") loadDespatchCards();
+  else loadCards();
+}
+
+watch(fromCompany, reloadBoard);
+watch([viewScope, filterDate, filterWeek, filterMonth, filterOrderCode], reloadBoard);
 
 onMounted(() => {
   initWeekMonth();
@@ -372,9 +504,9 @@ onMounted(() => {
   loadCompanies();
   loadCards();
   refreshTimer = window.setInterval(() => {
-    if (!showDialog.value) {
-      loadCards();
-    }
+    if (showDialog.value || showDespatchDialog.value) return;
+    if (mode.value === "despatch") loadDespatchCards();
+    else loadCards();
   }, 5000);
 });
 
@@ -807,6 +939,23 @@ onUnmounted(() => {
   display: block;
   margin-top: 4px;
   line-height: 1.35;
+}
+.lk-history-chip.is-pending .lk-history-badge {
+  background: #ea580c;
+}
+.lk-dn-btn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  background: #16a34a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.lk-dn-btn:hover {
+  background: #15803d;
 }
 .lk-history-go {
   font-size: 12px;

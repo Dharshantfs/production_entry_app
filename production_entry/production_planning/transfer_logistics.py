@@ -1554,6 +1554,8 @@ def record_transfer_barcode_scan(stock_entry, barcode):
 		return {"ok": False, "error": _("Cannot scan on a submitted Stock Entry")}
 	if (se.stock_entry_type or "").strip() != "Material Transfer":
 		return {"ok": False, "error": _("Barcode scan is only for Material Transfer")}
+	if not stock_entry_requires_logistics_scan(se):
+		return {"ok": False, "error": _("Barcode scan applies only to logistics transfer Stock Entries.")}
 
 	has_scanned = frappe.db.has_column("Stock Entry Detail", "scanned_qty")
 	has_custom_scanned = frappe.db.has_column("Stock Entry Detail", "custom_scanned_qty")
@@ -1585,3 +1587,47 @@ def record_transfer_barcode_scan(stock_entry, barcode):
 		"batch_no": (match.batch_no or "").strip() or barcode,
 		"item_code": match.item_code,
 	}
+
+
+def stock_entry_requires_logistics_scan(stock_entry):
+	"""True only for Material Transfer STE created from Transfer Approval / logistics (external transfer)."""
+	if isinstance(stock_entry, str):
+		if not stock_entry or not frappe.db.exists("Stock Entry", stock_entry):
+			return False
+		stock_entry = frappe.get_doc("Stock Entry", stock_entry)
+	se = stock_entry
+	if (se.stock_entry_type or "").strip() != "Material Transfer":
+		return False
+	fn = _stock_entry_external_transfer_fieldname()
+	if fn and cint(se.get(fn)):
+		return True
+	if se.name and frappe.db.exists("Transfer Approval", {"stock_entry": se.name}):
+		return True
+	return False
+
+
+def stock_entry_validate_logistics_scan(doc, method=None):
+	"""Server guard: scan-all-rolls rule applies only to logistics kanban / transfer approval STE."""
+	if doc.docstatus != 0:
+		return
+	if not stock_entry_requires_logistics_scan(doc):
+		return
+	pending = []
+	for row in doc.items or []:
+		qty = flt(row.qty)
+		scanned = flt(row.get("scanned_qty") or row.get("custom_scanned_qty") or 0)
+		if qty > scanned + 0.01:
+			pending.append(row.item_code)
+	if pending:
+		frappe.throw(
+			_("You must scan all approved rolls before submit. Missing scan for: {0}").format(
+				", ".join(sorted(set(pending)))
+			),
+			title=_("Scan validation"),
+		)
+
+
+@frappe.whitelist()
+def stock_entry_is_logistics_transfer(stock_entry=None):
+	"""Client helper: whether scan / approved-roll rules apply on this STE."""
+	return bool(stock_entry_requires_logistics_scan(stock_entry))

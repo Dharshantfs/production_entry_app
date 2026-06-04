@@ -1,5 +1,5 @@
 <template>
-  <div class="pl-flow" :class="{ 'pl-flow--static': reducedMotion }">
+  <div class="pl-flow" :class="{ 'pl-flow--static': reducedMotion, 'pl-flow--fast': fastPlay }">
     <div class="pl-flow-nodes">
       <div
         v-for="(node, ni) in displayNodes"
@@ -12,8 +12,11 @@
           :style="staggerStyle(ni)"
         >
           <span class="pl-flow-node-code">{{ node.code }}</span>
-          <span v-if="node.role === 'fg'" class="pl-flow-badge pl-flow-badge--fg">FG</span>
+          <span class="pl-flow-node-name">{{ nodeName(node.code) }}</span>
+          <span v-if="node.role === 'fg'" class="pl-flow-badge pl-flow-badge--fg">FG · Despatch</span>
+          <span v-else-if="node.role !== 'fabric'" class="pl-flow-badge pl-flow-badge--child">Child · Transfer</span>
           <span v-if="node.done" class="pl-flow-check" aria-hidden="true">✓</span>
+          <span v-if="node.active && !reducedMotion" class="pl-flow-pulse" aria-hidden="true" />
         </div>
         <div
           v-if="ni < displayNodes.length - 1"
@@ -28,7 +31,7 @@
             />
           </svg>
           <div
-            v-if="showTransferOnConnector(ni) && !reducedMotion"
+            v-if="showTransferOnConnector(ni)"
             class="pl-flow-truck"
             :class="{ 'pl-flow-truck--run': truckRunning(ni) }"
           >
@@ -39,14 +42,19 @@
     </div>
     <div v-if="activeAction" class="pl-flow-action">
       <LearningIcons :name="activeAction" />
-      <span class="pl-flow-action-label">{{ actionLabel(activeAction) }}</span>
-      <span v-if="activeNodeCode" class="pl-flow-action-node">Process {{ activeNodeCode }}</span>
+      <div class="pl-flow-action-text">
+        <span class="pl-flow-action-label">{{ actionLabel(activeAction) }}</span>
+        <span v-if="activeNodeCode" class="pl-flow-action-node">{{ activeNodeCode }} — {{ nodeName(activeNodeCode) }}</span>
+        <p v-if="subtitle" class="pl-flow-subtitle">{{ subtitle }}</p>
+      </div>
       <div
-        v-if="activeAction === 'produce' && !reducedMotion"
+        v-if="activeAction === 'produce' && !reducedMotion && !fastPlay"
         class="pl-flow-ring"
         :style="{ '--pl-ring-pct': ringPct + '%' }"
       />
+      <div v-else-if="activeAction === 'despatch'" class="pl-flow-despatch-chip">Despatch</div>
     </div>
+    <p v-else class="pl-flow-idle">Select <strong>Start walkthrough</strong> or use <strong>Next</strong> to step through.</p>
   </div>
 </template>
 
@@ -58,9 +66,11 @@ const props = defineProps({
   walkthroughSteps: { type: Array, default: () => [] },
   fgCode: { type: String, default: "" },
   actionLabels: { type: Object, default: () => ({}) },
-  /** Current micro-step index within walkthrough (flat) */
+  processNames: { type: Object, default: () => ({}) },
   microIndex: { type: Number, default: 0 },
   playing: { type: Boolean, default: false },
+  fastPlay: { type: Boolean, default: false },
+  subtitle: { type: String, default: "" },
 });
 
 const reducedMotion = computed(() => {
@@ -88,15 +98,15 @@ const ringPct = ref(0);
 let ringTimer = null;
 
 watch(
-  () => [props.microIndex, activeAction.value, props.playing],
+  () => [props.microIndex, activeAction.value, props.playing, props.fastPlay],
   () => {
     if (ringTimer) clearInterval(ringTimer);
     ringTimer = null;
-    if (activeAction.value === "produce" && !reducedMotion.value) {
+    if (activeAction.value === "produce" && !reducedMotion.value && !props.fastPlay) {
       ringPct.value = 0;
       ringTimer = setInterval(() => {
-        ringPct.value = Math.min(100, ringPct.value + 8);
-      }, 120);
+        ringPct.value = Math.min(100, ringPct.value + 12);
+      }, 80);
     } else {
       ringPct.value = activeAction.value === "produce" ? 100 : 0;
     }
@@ -115,9 +125,6 @@ const displayNodes = computed(() => {
     const code = row.node_code;
     if (!code || seen.has(code)) continue;
     seen.add(code);
-    const idxEnd = flatMicroSteps.value.findIndex(
-      (s, i) => s.code === code && i > props.microIndex
-    );
     const lastForNode = flatMicroSteps.value
       .map((s, i) => ({ s, i }))
       .filter((x) => x.s.code === code)
@@ -129,6 +136,10 @@ const displayNodes = computed(() => {
   return nodes;
 });
 
+function nodeName(code) {
+  return props.processNames[code] || "";
+}
+
 function nodeStateClass(node) {
   return {
     "pl-flow-node--active": node.active,
@@ -138,8 +149,8 @@ function nodeStateClass(node) {
 }
 
 function staggerStyle(i) {
-  if (reducedMotion.value) return {};
-  return { animationDelay: `${i * 90}ms` };
+  if (reducedMotion.value || props.fastPlay) return {};
+  return { animationDelay: `${i * 50}ms` };
 }
 
 function connectorActive(ni) {
@@ -148,11 +159,14 @@ function connectorActive(ni) {
 }
 
 function connectorPathStyle(ni) {
-  if (reducedMotion.value) return {};
   const on = connectorActive(ni);
+  if (props.fastPlay) {
+    return { strokeDashoffset: on ? 0 : 48 };
+  }
+  if (reducedMotion.value) return {};
   return {
     strokeDashoffset: on ? 0 : 48,
-    transition: "stroke-dashoffset 0.6s ease",
+    transition: props.fastPlay ? "none" : "stroke-dashoffset 0.35s ease",
   };
 }
 
@@ -164,7 +178,7 @@ function showTransferOnConnector(ni) {
 }
 
 function truckRunning(ni) {
-  return showTransferOnConnector(ni) && props.playing;
+  return showTransferOnConnector(ni) && props.playing && !props.fastPlay;
 }
 
 function actionLabel(act) {

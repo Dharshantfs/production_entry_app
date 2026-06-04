@@ -17,16 +17,24 @@
       </header>
 
       <nav class="pl-stepper" aria-label="Lesson progress">
-        <button
-          v-for="(s, i) in slideIds"
-          :key="s"
-          type="button"
-          class="pl-stepper-item"
-          :class="{ 'pl-stepper-item--active': slideIndex === i, 'pl-stepper-item--done': slideIndex > i }"
-          @click="goSlide(i)"
-        >
-          {{ stepperLabel(s) }}
-        </button>
+        <div v-for="(s, i) in slideIds" :key="s" class="pl-stepper-wrap">
+          <button
+            type="button"
+            class="pl-stepper-item"
+            :class="{ 'pl-stepper-item--active': slideIndex === i, 'pl-stepper-item--done': slideIndex > i }"
+            @click="goSlide(i)"
+          >
+            {{ stepperLabel(s) }}
+          </button>
+          <button
+            v-if="slideIndex !== i"
+            type="button"
+            class="pl-stepper-start"
+            @click="startTab(i)"
+          >
+            Start
+          </button>
+        </div>
       </nav>
 
       <div class="pl-modal-body">
@@ -35,21 +43,33 @@
           <p v-if="currentSlide.subtitle" class="pl-slide-sub">{{ currentSlide.subtitle }}</p>
           <div class="pl-slide-html" v-html="currentSlide.body_html" />
 
+          <div v-if="lesson.related_processes?.length && currentSlide.id === 'intro'" class="pl-related-panel">
+            <h4 class="pl-related-title">Related processes</h4>
+            <ul class="pl-related-list">
+              <li v-for="rp in lesson.related_processes" :key="rp.code">
+                <strong>{{ rp.code }}</strong> — {{ processLabel(rp.code) }}
+                <span v-if="rp.hint" class="pl-related-hint">{{ rp.hint }}</span>
+              </li>
+            </ul>
+          </div>
+
           <div v-if="currentSlide.id === 'bom' && currentSlide.tree" class="pl-bom-tree">
             <div class="pl-bom-fg" :title="tooltipBom">
-              <span>{{ currentSlide.tree.fg }}</span>
+              <span class="pl-bom-code">{{ currentSlide.tree.fg }}</span>
+              <span class="pl-bom-name">{{ currentSlide.tree.fg_name || processLabel(currentSlide.tree.fg) }}</span>
               <small>Finished good (SO line)</small>
             </div>
-            <div v-if="(currentSlide.tree.children || []).length" class="pl-bom-children">
+            <div v-if="bomChildren.length" class="pl-bom-children">
               <div
-                v-for="c in currentSlide.tree.children"
-                :key="c"
+                v-for="c in bomChildren"
+                :key="c.code"
                 class="pl-bom-child"
-                title="Added automatically from BOM"
+                title="Added automatically from BOM — Transfer when moving to next unit"
               >
                 <span class="pl-bom-arrow">↓</span>
-                <span>{{ c }}</span>
-                <small>BOM child</small>
+                <span class="pl-bom-code">{{ c.code }}</span>
+                <span class="pl-bom-name">{{ c.name }}</span>
+                <small>BOM child · Transfer</small>
               </div>
             </div>
             <p v-else class="pl-bom-none">No BOM children — base material.</p>
@@ -64,15 +84,25 @@
             >
               <span class="pl-timeline-num">{{ ti + 1 }}</span>
               <span class="pl-timeline-code">{{ code }}</span>
+              <span class="pl-timeline-name">{{ processLabel(code) }}</span>
             </div>
           </div>
 
           <div v-if="currentSlide.id === 'walkthrough'" class="pl-walkthrough">
             <div class="pl-walkthrough-caption">
               <p class="pl-walk-caption-main">{{ microCaption }}</p>
+              <p class="pl-walk-caption-sub">{{ microHelp }}</p>
               <p class="pl-walk-caption-sub">Step {{ microIndex + 1 }} of {{ totalMicroSteps }}</p>
+              <div class="pl-walk-progress" aria-hidden="true">
+                <span
+                  v-for="(_, si) in totalMicroSteps"
+                  :key="si"
+                  class="pl-walk-dot"
+                  :class="{ 'pl-walk-dot--on': si <= microIndex, 'pl-walk-dot--cur': si === microIndex }"
+                />
+              </div>
               <div class="pl-legend">
-                <span class="pl-legend-chip pl-legend-chip--transfer">Transfer — next unit</span>
+                <span class="pl-legend-chip pl-legend-chip--transfer">Transfer — BOM child only</span>
                 <span class="pl-legend-chip pl-legend-chip--despatch">Despatch — SO finished good</span>
               </div>
             </div>
@@ -80,8 +110,11 @@
               :walkthrough-steps="lesson.walkthrough_steps"
               :fg-code="lesson.code"
               :action-labels="lesson.action_labels || {}"
+              :process-names="lesson.process_names || {}"
               :micro-index="microIndex"
               :playing="playing"
+              :fast-play="playing"
+              :subtitle="microHelp"
             />
           </div>
 
@@ -111,17 +144,17 @@
             v-if="isWalkthroughSlide"
             type="button"
             class="pl-btn pl-btn--secondary"
-            @click="togglePlay"
+            @click="startWalkthrough"
           >
-            {{ playing ? "Pause" : "Play walkthrough" }}
+            {{ playing ? "Pause" : "Start walkthrough" }}
           </button>
           <button
-            v-if="!isWalkthroughSlide"
+            v-else-if="slideIndex < 3"
             type="button"
             class="pl-btn pl-btn--secondary"
             @click="skipToWalkthrough"
           >
-            Skip to animation
+            Skip to walkthrough
           </button>
         </div>
         <button type="button" class="pl-btn pl-btn--primary" @click="next">
@@ -149,6 +182,8 @@ const playing = ref(false);
 const modalRef = ref(null);
 let playTimer = null;
 
+const PLAY_INTERVAL_MS = 1400;
+
 const slideIds = ["intro", "bom", "priority", "walkthrough", "summary"];
 
 const slidesById = computed(() => {
@@ -166,11 +201,16 @@ const currentSlide = computed(() => {
 
 const isWalkthroughSlide = computed(() => slideIds[slideIndex.value] === "walkthrough");
 
+const bomChildren = computed(() => {
+  const ch = currentSlide.value?.tree?.children || [];
+  return ch.map((c) => (typeof c === "string" ? { code: c, name: processLabel(c) } : c));
+});
+
 const flatMicroSteps = computed(() => {
   const out = [];
   for (const row of props.lesson?.walkthrough_steps || []) {
     for (const act of row.actions || []) {
-      out.push({ code: row.node_code, action: act });
+      out.push({ code: row.node_code, role: row.node_role, action: act });
     }
   }
   return out;
@@ -198,12 +238,37 @@ const unlockedThrough = computed(() => {
   return idx >= 0 ? idx : -1;
 });
 
+function processLabel(code) {
+  return props.lesson?.process_names?.[code] || code;
+}
+
 const microCaption = computed(() => {
   const step = flatMicroSteps.value[microIndex.value];
-  if (!step) return "Press Play to start the walkthrough.";
+  if (!step) return "Start walkthrough to see each step.";
   const labels = props.lesson?.action_labels || {};
   const act = labels[step.action] || step.action;
-  return `${act} — process ${step.code}`;
+  return `${act} — ${step.code} ${processLabel(step.code)}`;
+});
+
+const microHelp = computed(() => {
+  const step = flatMicroSteps.value[microIndex.value];
+  const nm = step ? processLabel(step.code) : "";
+  if (!step) {
+    return "Child BOM rows: Plan → Produce → Transfer. SO finished good: Plan → Produce → Despatch.";
+  }
+  if (step.action === "plan") {
+    return `Add ${nm} on the Planning Sheet and assign the correct process unit.`;
+  }
+  if (step.action === "produce") {
+    return `Run production for ${nm} on the board / color chart until qty is complete.`;
+  }
+  if (step.action === "transfer") {
+    return `Transfer ${nm} to the next process unit (child row only — not the SO FG line).`;
+  }
+  if (step.action === "despatch") {
+    return `When ${nm} FG is complete, use Despatch from Logistics (not Transfer).`;
+  }
+  return "";
 });
 
 const tooltipBom = "Added automatically from BOM on the same Sales Order line";
@@ -220,9 +285,13 @@ function stepperLabel(id) {
   return m[id] || id;
 }
 
+function startTab(i) {
+  goSlide(i);
+}
+
 function goSlide(i) {
   slideIndex.value = i;
-  if (i < 3) microIndex.value = 0;
+  if (i !== 3) microIndex.value = 0;
   stopPlay();
 }
 
@@ -239,10 +308,14 @@ function stopPlay() {
   }
 }
 
-function togglePlay() {
+function startWalkthrough() {
   if (playing.value) {
     stopPlay();
     return;
+  }
+  if (!isWalkthroughSlide.value) {
+    slideIndex.value = 3;
+    microIndex.value = 0;
   }
   playing.value = true;
   if (playTimer) clearInterval(playTimer);
@@ -252,12 +325,13 @@ function togglePlay() {
     } else {
       stopPlay();
     }
-  }, 4000);
+  }, PLAY_INTERVAL_MS);
 }
 
 function skipToWalkthrough() {
   slideIndex.value = 3;
   microIndex.value = 0;
+  stopPlay();
 }
 
 function back() {
@@ -299,7 +373,7 @@ function onKeydown(e) {
   if (e.key === "ArrowLeft") back();
   if (e.key === " " && isWalkthroughSlide.value) {
     e.preventDefault();
-    togglePlay();
+    startWalkthrough();
   }
 }
 

@@ -64,6 +64,18 @@
   {
    "dependencies": "",
    "hidden": 0,
+   "icon": "truck",
+   "is_query_report": 0,
+   "label": "Despatch Approval",
+   "link_count": 0,
+   "link_to": "despatch-approval-dashboard",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
    "icon": "table",
    "is_query_report": 0,
    "label": "Production Table",

@@ -217,26 +217,44 @@ def _ensure_learning_page_on_workspace():
 		return
 	if not frappe.db.exists("Workspace", WORKSPACE_PRODUCTION_ENTRY_DESK):
 		return
-	if not frappe.db.exists("Page", "production-learning"):
+	if not frappe.db.exists("Page", "production-learning") and not frappe.db.exists(
+		"Page", "despatch-approval-dashboard"
+	):
 		return
 	doc = frappe.get_doc("Workspace", WORKSPACE_PRODUCTION_ENTRY_DESK)
 	existing = {row.link_to for row in (doc.links or []) if row.link_type == "Page"}
 	if "production-learning" in existing:
-		return
-	doc.append(
-		"links",
-		{
-			"type": "Link",
-			"label": "Production Learning",
-			"link_type": "Page",
-			"link_to": "production-learning",
-			"icon": "education",
-			"onboard": 1,
-			"hidden": 0,
-			"is_query_report": 0,
-			"link_count": 0,
-		},
-	)
+		pass
+	else:
+		doc.append(
+			"links",
+			{
+				"type": "Link",
+				"label": "Production Learning",
+				"link_type": "Page",
+				"link_to": "production-learning",
+				"icon": "education",
+				"onboard": 1,
+				"hidden": 0,
+				"is_query_report": 0,
+				"link_count": 0,
+			},
+		)
+	if "despatch-approval-dashboard" not in existing:
+		doc.append(
+			"links",
+			{
+				"type": "Link",
+				"label": "Despatch Approval",
+				"link_type": "Page",
+				"link_to": "despatch-approval-dashboard",
+				"icon": "truck",
+				"onboard": 1,
+				"hidden": 0,
+				"is_query_report": 0,
+				"link_count": 0,
+			},
+		)
 	doc.save(ignore_permissions=True)
 
 

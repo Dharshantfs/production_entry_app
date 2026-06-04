@@ -55,7 +55,7 @@
         @keydown.enter="openLesson(item.code)"
       >
         <span class="pl-card-code">{{ item.code }}</span>
-        <h2 class="pl-card-name">{{ item.name }}</h2>
+        <h2 class="pl-card-name" :title="item.name">{{ item.name }}</h2>
         <p class="pl-card-tagline">{{ item.tagline || item.summary }}</p>
         <p v-if="item.chain_label" class="pl-card-chain">{{ item.chain_label }}</p>
         <p v-else class="pl-card-chain pl-card-chain--muted">Base material</p>
