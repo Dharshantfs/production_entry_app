@@ -356,6 +356,20 @@ function spr_sync_no_of_rolls_created(frm, opts) {
 	}
 }
 
+function spr_should_skip_desk_auto_sync(frm) {
+	if (!frm) {
+		return false;
+	}
+	return frm._spr_just_saved && Date.now() - frm._spr_just_saved < 8000;
+}
+
+function spr_mark_just_saved(frm) {
+	if (!frm) {
+		return;
+	}
+	frm._spr_just_saved = Date.now();
+}
+
 function sprLaminationGsmFromItemCode(itemCode) {
 	const code = ((itemCode || '') + '').trim().toUpperCase();
 	if (!code || code.indexOf('-') === -1) {
@@ -368,7 +382,7 @@ function sprLaminationGsmFromItemCode(itemCode) {
 function sprScheduleTotalProducedSync(frm, opts) {
 	if (!frm) return;
 	// Server validate() already syncs bundle/header totals on save — skip desk resync briefly to avoid dirty loop (blocks Submit).
-	if (frm._spr_just_saved && Date.now() - frm._spr_just_saved < 4000) {
+	if (spr_should_skip_desk_auto_sync(frm)) {
 		return;
 	}
 	if (frm.__spr_total_sync_timer) {
@@ -719,10 +733,12 @@ frappe.ui.form.on('Shaft Production Run', {
 		
 		sprScheduleTotalProducedSync(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
-		try {
-			update_shaft_job_achieved_from_items(frm);
-		} catch (e) {
-			/* ignore */
+		if (!sprIsBundlePackagingMode(frm)) {
+			try {
+				update_shaft_job_achieved_from_items(frm);
+			} catch (e) {
+				/* ignore */
+			}
 		}
 		sprToggleLaminationRollUi(frm);
 		sprToggleSheetCuttingUi(frm);
@@ -741,7 +757,9 @@ frappe.ui.form.on('Shaft Production Run', {
 		
 		// Keep one lightweight retry only (old code had 4 retries, causing UI lag on large grids).
 		setTimeout(function () {
-			sprScheduleTotalProducedSync(frm, { silent: true });
+			if (!spr_should_skip_desk_auto_sync(frm)) {
+				sprScheduleTotalProducedSync(frm, { silent: true });
+			}
 		}, 400);
 		
 		setTimeout(function () {
@@ -784,7 +802,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	after_save: function (frm) {
-		frm._spr_just_saved = Date.now();
+		spr_mark_just_saved(frm);
 		spr_register_spr_page_buttons_after_save(frm);
 		spr_sync_no_of_rolls_created(frm, { silent: true });
 		spr_schedule_grid_ui_debounced(frm, { delay: 200 });
@@ -1165,12 +1183,37 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 				args: { spr_name: frm.doc.name, picks_json: JSON.stringify(out) },
 				freeze: true,
 				freeze_message: __('Saving...'),
-				callback: function () {
+				callback: function (r) {
+					if (r.exc) {
+						frappe.msgprint({
+							title: __('Save failed'),
+							indicator: 'red',
+							message: r.exc,
+						});
+						return;
+					}
 					d.hide();
-					frm.reload_doc();
+					spr_mark_just_saved(frm);
+					const reload = frm.reload_doc();
+					if (reload && typeof reload.then === 'function') {
+						reload.then(function () {
+							spr_mark_just_saved(frm);
+						});
+					}
 					frappe.show_alert({
-						message: __('RM batch picks saved. You can Submit the SPR.'),
+						message: __('RM batch picks saved ({0} line(s)). Form should stay saved — click Submit.', [
+							(r.message && r.message.count) || out.length,
+						]),
 						indicator: 'green',
+					});
+				},
+				error: function (err) {
+					frappe.msgprint({
+						title: __('Save failed'),
+						indicator: 'red',
+						message:
+							(err && err.message) ||
+							__('Could not save RM batch picks. Open Tools → SPR — Diagnose save for details.'),
 					});
 				},
 			});
@@ -1410,6 +1453,97 @@ function spr_register_spr_page_buttons(frm) {
 				__('SPR — Select RM batches'),
 				function () {
 					spr_open_fabric_batch_pick_dialog(frm);
+				},
+				tg
+			);
+		}
+	});
+	addInner(function () {
+		if (!frm.is_new() && cint(frm.doc.docstatus) === 0) {
+			frm.page.add_inner_button(
+				__('SPR — Diagnose save'),
+				function () {
+					frappe.call({
+						method:
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_diagnose_save_blockers',
+						args: { spr_name: frm.doc.name },
+						freeze: true,
+						callback: function (r) {
+							const d = r.message || {};
+							let html = '<table class="table table-bordered table-condensed"><tbody>';
+							html +=
+								'<tr><th>' +
+								__('Validate') +
+								'</th><td>' +
+								(d.validate_ok ? __('OK') : __('Failed')) +
+								'</td></tr>';
+							if (d.validate_error) {
+								html +=
+									'<tr><th>' +
+									__('Error') +
+									'</th><td style="color:#c0392b;white-space:pre-wrap">' +
+									frappe.utils.escape_html(String(d.validate_error)) +
+									'</td></tr>';
+							}
+							html +=
+								'<tr><th>' +
+								__('Bag SPR') +
+								'</th><td>' +
+								(cint(d.is_bag_spr) ? __('Yes') : __('No')) +
+								'</td></tr>';
+							html +=
+								'<tr><th>' +
+								__('RM batch picks') +
+								'</th><td>' +
+								String(d.fabric_batch_picks_count || 0) +
+								'</td></tr>';
+							if (d.rm_batch_context) {
+								html +=
+									'<tr><th>' +
+									__('RM dialog lines') +
+									'</th><td>' +
+									String(d.rm_batch_context.line_count || 0) +
+									' (needs_picks=' +
+									String(!!d.rm_batch_context.needs_picks) +
+									')</td></tr>';
+							}
+							if (d.duplicate_custom_fields && d.duplicate_custom_fields.length) {
+								html +=
+									'<tr><th>' +
+									__('Duplicate fields') +
+									'</th><td style="color:#c0392b">' +
+									d.duplicate_custom_fields
+										.map(function (x) {
+											return x.fieldname;
+										})
+										.join(', ') +
+									' — ' +
+									__('run bench migrate') +
+									'</td></tr>';
+							}
+							if (d.batch_prefix_note) {
+								html +=
+									'<tr><th>' +
+									__('Batch prefix') +
+									'</th><td>' +
+									frappe.utils.escape_html(String(d.batch_prefix_note)) +
+									'</td></tr>';
+							}
+							html += '</tbody></table>';
+							if (d.form_dirty_causes && d.form_dirty_causes.length) {
+								html += '<p><b>' + __('Notes') + '</b></p><ul>';
+								d.form_dirty_causes.forEach(function (line) {
+									html += '<li>' + frappe.utils.escape_html(String(line)) + '</li>';
+								});
+								html += '</ul>';
+							}
+							frappe.msgprint({
+								title: __('SPR save diagnosis — {0}', [frm.doc.name]),
+								message: html,
+								wide: true,
+							});
+						},
+					});
 				},
 				tg
 			);

@@ -2030,8 +2030,12 @@ class ShaftProductionRun(Document):
 		# Heavy series queries only when at least one line still needs batch_no (routine saves with full grid skip this).
 		if not any(not getattr(r, "batch_no", None) for r in rows):
 			return
+		parts = spr_batch_prefix_for_unit(self.get("custom_unit"))
+		if not parts:
+			# Unsupported / unassigned unit — skip roll batch assignment on save (submit may still require Shift + unit).
+			return
 		rd = getdate(self.run_date)
-		comp_id, unit_num = self._batch_prefix_parts()
+		comp_id, unit_num = parts
 		root_5 = f"{comp_id}-{unit_num}{rd.month:02d}{rd.year % 100:02d}"
 		series_prefix = self._resolve_series_prefix(root_5)
 		next_roll = self._next_roll_starting(series_prefix)
@@ -2893,6 +2897,25 @@ class ShaftProductionRun(Document):
 		qty = sum(self._row_fg_qty(r) for r in rows)
 		if qty > 1e-9:
 			return qty
+		wo_id = _cstr(getattr(wo_doc, "name", None))
+		if spr_doc_is_bag_spr(self) and wo_id:
+			for br in self.bundle_calculation or []:
+				if _cstr(getattr(br, "work_order", None)) != wo_id:
+					continue
+				planned = flt(getattr(br, "total_pcs_per_bundle", 0) or 0)
+				if planned > 1e-9:
+					return planned
+				n_boxes = cint(getattr(br, "no_of_boxes", 0) or 0)
+				pcs = cint(getattr(br, "pcs_per_packet", 0) or 0)
+				if n_boxes > 0 and pcs > 0:
+					return flt(n_boxes * pcs)
+			achieved = sum(
+				flt(_spr_row_get(r, "custom_achieved_bag_pcs"))
+				for r in (self.items or [])
+				if _cstr(r.get("work_order") or r.get("wo_id")) == wo_id
+			)
+			if achieved > 1e-9:
+				return achieved
 		if cint(getattr(self, "custom_is_box_bag", 0)):
 			planned_bags = sum(flt(_spr_row_get(r, "custom_planned_bag_pcs")) for r in rows)
 			if planned_bags > 1e-9:
@@ -8220,6 +8243,123 @@ def spr_get_fabric_batch_pick_context(spr_name: str | None = None):
 	return doc._spr_build_fabric_batch_pick_context_dict()
 
 
+def _spr_resolve_batch_link_name(batch_no: str, item_code: str = "") -> str:
+	"""Map SLE / label batch text to a valid Batch.name for Link fields."""
+	bn = _cstr(batch_no).strip()
+	if not bn:
+		return ""
+	if frappe.db.exists("Batch", bn):
+		return bn
+	alt = frappe.db.get_value("Batch", {"batch_id": bn}, "name")
+	if alt:
+		return _cstr(alt)
+	if frappe.db.has_column("Batch", "batch_id"):
+		row = frappe.db.sql(
+			"""
+			SELECT name, item FROM `tabBatch`
+			WHERE batch_id = %s OR name = %s
+			ORDER BY creation DESC
+			LIMIT 1
+			""",
+			(bn, bn),
+			as_dict=True,
+		)
+		if row:
+			name = _cstr(row[0].get("name"))
+			batch_item = _cstr(row[0].get("item"))
+			ic = _cstr(item_code)
+			if ic and batch_item and batch_item != ic:
+				frappe.throw(_("Batch {0} is for item {1}, not {2}.").format(name, batch_item, ic))
+			return name
+	frappe.throw(
+		_("Batch {0} was not found in Batch master. Pick a batch from stock list or create the Batch record first.").format(
+			bn
+		),
+		title=_("Invalid batch"),
+	)
+
+
+@frappe.whitelist()
+def spr_diagnose_save_blockers(spr_name: str | None = None):
+	"""Desk troubleshooting: duplicate fields, validate preview, RM batch gaps."""
+	spr_name = _cstr(spr_name)
+	out: dict = {
+		"spr": spr_name,
+		"docstatus": None,
+		"is_bag_spr": False,
+		"duplicate_custom_fields": [],
+		"fabric_batch_picks_count": 0,
+		"rm_batch_context": {},
+		"validate_ok": True,
+		"validate_error": "",
+		"batch_prefix_ok": True,
+		"batch_prefix_note": "",
+		"form_dirty_causes": [],
+	}
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		out["validate_ok"] = False
+		out["validate_error"] = _("Shaft Production Run not found.")
+		return out
+
+	for fn in ("company", "custom_total_planned_pcs", "custom_total_achieved_pcs"):
+		cfs = frappe.get_all(
+			"Custom Field",
+			filters={"dt": "Shaft Production Run", "fieldname": fn},
+			pluck="name",
+		)
+		if cfs:
+			out["duplicate_custom_fields"].append({"fieldname": fn, "names": cfs})
+
+	doc = frappe.get_doc("Shaft Production Run", spr_name)
+	out["docstatus"] = cint(doc.docstatus)
+	out["is_bag_spr"] = spr_doc_is_bag_spr(doc)
+	out["fabric_batch_picks_count"] = len(doc.get("fabric_batch_picks") or [])
+	try:
+		ctx = doc._spr_build_fabric_batch_pick_context_dict()
+		out["rm_batch_context"] = {
+			"needs_picks": bool(ctx.get("needs_picks")),
+			"line_count": len(ctx.get("lines") or []),
+			"is_bag_spr": bool(ctx.get("is_bag_spr")),
+		}
+	except Exception as exc:
+		out["rm_batch_context"] = {"error": _cstr(exc)}
+
+	parts = spr_batch_prefix_for_unit(doc.get("custom_unit"))
+	if not parts and _cstr(doc.get("custom_unit")).strip():
+		out["batch_prefix_ok"] = False
+		out["batch_prefix_note"] = _(
+			"Unit «{0}» has no roll batch prefix — roll batch_no assignment is skipped on Save."
+		).format(doc.get("custom_unit"))
+
+	if out["duplicate_custom_fields"]:
+		out["form_dirty_causes"].append(
+			_("Duplicate Custom Field rows on this site — run bench migrate (cleanup_spr_duplicate_custom_fields).")
+		)
+
+	try:
+		probe = frappe.copy_doc(doc)
+		probe.run_method("validate")
+	except Exception as exc:
+		out["validate_ok"] = False
+		out["validate_error"] = _cstr(exc)
+
+	if not out["validate_ok"]:
+		out["form_dirty_causes"].append(_("Server validate() failed — see validate_error."))
+	elif out["duplicate_custom_fields"]:
+		out["form_dirty_causes"].append(
+			_("Save may succeed but duplicate header fields confuse the desk — migrate to remove Custom Field copies.")
+		)
+	else:
+		out["form_dirty_causes"].append(
+			_(
+				"If the form shows Not Saved after Save, hard-refresh (Ctrl+F5). "
+				"Desk auto-sync was re-marking the form dirty — fixed in latest JS."
+			)
+		)
+
+	return out
+
+
 @frappe.whitelist()
 def spr_save_fabric_batch_picks(spr_name: str | None = None, picks_json=None):
 	"""Replace `fabric_batch_picks` on a Draft SPR from the desk dialog."""
@@ -8240,19 +8380,23 @@ def spr_save_fabric_batch_picks(spr_name: str | None = None, picks_json=None):
 	for p in picks or []:
 		wo = _cstr((p or {}).get("work_order"))
 		ic = _cstr((p or {}).get("item_code"))
-		bn = _cstr((p or {}).get("batch_no"))
+		bn_raw = _cstr((p or {}).get("batch_no"))
 		q = flt((p or {}).get("qty"))
-		if not wo or not ic or not bn or q <= 0:
+		if not wo or not ic or not bn_raw or q <= 0:
 			continue
-		if frappe.db.exists("Batch", bn):
-			batch_item = frappe.db.get_value("Batch", bn, "item")
-			if batch_item and _cstr(batch_item) != ic:
-				frappe.throw(_("Batch {0} is for item {1}, not {2}.").format(bn, batch_item, ic))
+		bn = _spr_resolve_batch_link_name(bn_raw, ic)
 		doc.append(
 			"fabric_batch_picks",
 			{"work_order": wo, "item_code": ic, "batch_no": bn, "qty": q},
 		)
-	doc.save()
+	try:
+		doc.save()
+	except Exception as exc:
+		frappe.log_error(frappe.get_traceback(), f"spr_save_fabric_batch_picks:{spr_name}")
+		frappe.throw(
+			_("Could not save RM batch picks on {0}: {1}").format(spr_name, _cstr(exc)),
+			title=_("Save failed"),
+		)
 	return {"status": "ok", "name": doc.name, "count": len(doc.fabric_batch_picks or [])}
 
 
