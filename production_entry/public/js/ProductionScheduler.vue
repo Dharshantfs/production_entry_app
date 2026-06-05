@@ -161,9 +161,9 @@
                 {{ getUnitTotal(unit).toFixed(0) }} / {{ Number(getUnitCapacityLimit(unit).toFixed(0)) }}{{ getCapacityLabel() }}
               </template>
               <template v-else>
-                {{ getUnitTotal(unit).toFixed(2) }} / {{ Number(getUnitCapacityLimit(unit).toFixed(2)) }}{{ getCapacityLabel() }}
+                {{ formatBoardHeaderWeight(unit) }} / {{ Number(getUnitCapacityLimit(unit).toFixed(2)) }}{{ getCapacityLabel() }}
                 <span v-if="getHiddenWhiteTotal(unit) > 0" style="font-size:10px; font-weight:700; color:#475569; display:block;">
-                   (Inc. {{ getHiddenWhiteTotal(unit).toFixed(2) }}T White)
+                   (Inc. {{ formatBoardHeaderWeight(unit, true) }} White)
                 </span>
               </template>
             </span>
@@ -241,8 +241,8 @@
                   <span class="cc-card-qty">{{ entry.qty }} PCS</span>
                 </template>
                 <template v-else>
-                  <span class="cc-card-qty">{{ (entry.qty / 1000).toFixed(3) }} T</span>
-                  <span class="cc-card-qty-kg">{{ entry.qty }} Kg</span>
+                  <span class="cc-card-qty">{{ formatBoardCardMain(entry.qty) }}</span>
+                  <span v-if="formatBoardCardSub(entry.qty)" class="cc-card-qty-kg">{{ formatBoardCardSub(entry.qty) }}</span>
                 </template>
                 <button v-if="entry.isSplit"
                   class="cc-revert-btn" 
@@ -274,7 +274,7 @@
             <span>Production: {{ getUnitProductionTotal(unit).toFixed(0) }} PCS</span>
           </template>
           <template v-else>
-            <span>Production: {{ getUnitProductionTotal(unit).toFixed(2) }}T</span>
+            <span>Production: {{ formatBoardFooterWeight(unit) }}</span>
             <span v-if="getMixRollTotalWeight(unit) > 0">
               Mix Waste: {{ (getMixRollTotalWeight(unit) / 1000).toFixed(3) }}T
             </span>
@@ -1403,6 +1403,57 @@ function getSortLabel(unit) {
     return `${p} (${d.toUpperCase()})`; 
 }
 
+const BOARD_KG_PRIMARY_THRESHOLD = 1000;
+
+function boardUsesKgPrimaryDisplay() {
+  return isSlittingBoard.value || isRewindingBoard.value;
+}
+
+function unitRawKgTotal(unit) {
+  return filteredData.value
+    .filter((d) => (d.unit || "Mixed") === unit)
+    .reduce((sum, d) => sum + (Number(d.qty) || 0), 0);
+}
+
+function formatBoardHeaderWeight(unit, whiteOnly = false) {
+  const rawKg = whiteOnly
+    ? (filteredData.value.filter((d) => {
+        if ((d.unit || "Mixed") !== unit) return false;
+        const colorUpper = (d.color || "").toUpperCase();
+        if (colorUpper.includes("IVORY") || colorUpper.includes("CREAM") || colorUpper.includes("OFF WHITE")) return false;
+        return EXCLUDED_WHITES.some((ex) => colorUpper.includes(ex));
+      }).reduce((sum, d) => sum + (Number(d.qty) || 0), 0))
+    : unitRawKgTotal(unit);
+  if (boardUsesKgPrimaryDisplay() && rawKg < BOARD_KG_PRIMARY_THRESHOLD) {
+    return `${rawKg.toFixed(1)} Kg`;
+  }
+  return `${(rawKg / 1000).toFixed(2)} T`;
+}
+
+function formatBoardCardMain(kg) {
+  const k = Number(kg) || 0;
+  if (boardUsesKgPrimaryDisplay() && k < BOARD_KG_PRIMARY_THRESHOLD) {
+    return `${k.toFixed(1)} Kg`;
+  }
+  return `${(k / 1000).toFixed(3)} T`;
+}
+
+function formatBoardCardSub(kg) {
+  const k = Number(kg) || 0;
+  if (boardUsesKgPrimaryDisplay() && k < BOARD_KG_PRIMARY_THRESHOLD) {
+    return null;
+  }
+  return `${k.toFixed(0)} Kg`;
+}
+
+function formatBoardFooterWeight(unit) {
+  const rawKg = unitRawKgTotal(unit) + getMixRollTotalWeight(unit);
+  if (boardUsesKgPrimaryDisplay() && rawKg < BOARD_KG_PRIMARY_THRESHOLD) {
+    return `${rawKg.toFixed(1)} Kg`;
+  }
+  return `${getUnitProductionTotal(unit).toFixed(2)}T`;
+}
+
 function getUnitTotal(unit) {
   return (unitStatsCache.value[unit] || {}).total || 0;
 }
@@ -1682,9 +1733,8 @@ const unitEntriesCache = computed(() => {
       if (isRewindingBoard.value && REWINDING_BOARD_UNITS.includes(unit)) {
         return itemProcessPrefix(d.item_code || d.itemCode) === "102" && normalizeUnitName(d.unit) === unit;
       }
-      if (isSlittingBoard.value && unit === SLITTING_UNIT) {
-        const sp = itemProcessPrefix(d.item_code || d.itemCode);
-        return ["103", "109", "108"].includes(sp) || (d.unit || "Mixed") === unit;
+      if (isSlittingBoard.value && SLITTING_BOARD_UNITS.includes(unit)) {
+        return normalizeUnitName(d.unit) === unit;
       }
       return (d.unit || "Mixed") === unit;
     });

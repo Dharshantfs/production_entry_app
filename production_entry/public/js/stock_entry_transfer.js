@@ -313,20 +313,24 @@ frappe.ui.form.on("Stock Entry", {
 		}
 	},
 
-	validate(frm) {
-		if (_is_logistics_material_transfer(frm) && frm.doc.items) {
-			let pending = frm.doc.items.filter(
-				(r) => (r.qty || 0) > ((r.scanned_qty || r.custom_scanned_qty) || 0) + 0.01
-			);
-			if (pending.length > 0) {
-				let pending_items = pending.map((r) => r.item_code).join(", ");
-				frappe.msgprint({
-					title: "Validation Error",
-					indicator: "red",
-					message: `You must scan all approved rolls! Missing scanned quantity for: <b>${pending_items}</b>.`,
-				});
-				frappe.validated = false;
-			}
+	before_submit(frm) {
+		if (!_is_logistics_material_transfer(frm) || !frm.doc.items) {
+			return;
+		}
+		const pending = frm.doc.items.filter(
+			(r) => (r.qty || 0) > ((r.scanned_qty || r.custom_scanned_qty) || 0) + 0.01
+		);
+		if (pending.length > 0) {
+			const pending_items = pending.map((r) => r.item_code).join(", ");
+			frappe.msgprint({
+				title: "Scan validation",
+				indicator: "red",
+				message: __(
+					"You must scan all approved rolls before submit. Missing scan for: <b>{0}</b>.",
+					[pending_items]
+				),
+			});
+			frappe.validated = false;
 		}
 	},
 

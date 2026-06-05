@@ -1607,9 +1607,7 @@ def stock_entry_requires_logistics_scan(stock_entry):
 
 
 def stock_entry_validate_logistics_scan(doc, method=None):
-	"""Server guard: scan-all-rolls rule applies only to logistics kanban / transfer approval STE."""
-	if doc.docstatus != 0:
-		return
+	"""Server guard on STE submit only — not when approving transfer / creating draft STE."""
 	if not stock_entry_requires_logistics_scan(doc):
 		return
 	pending = []

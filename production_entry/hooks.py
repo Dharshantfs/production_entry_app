@@ -142,7 +142,7 @@ doc_events = {
         "before_submit": "production_entry.production_planning.scheduler_api.normalize_linked_work_orders_for_spr",
     },
     "Stock Entry": {
-        "validate": "production_entry.production_planning.transfer_logistics.stock_entry_validate_logistics_scan",
+        "before_submit": "production_entry.production_planning.transfer_logistics.stock_entry_validate_logistics_scan",
         "on_submit": "production_entry.production_planning.transfer_logistics.stock_entry_on_submit",
     },
 }

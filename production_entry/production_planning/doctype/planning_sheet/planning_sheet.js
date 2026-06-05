@@ -1,6 +1,6 @@
 const PLANNING_SHEET_DEFAULT_GRID_COLUMNS = [
     'item_code', 'item_name', 'qty', 'uom', 'unit',
-    'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'width_inch',
+    'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'width_inch', 'custom_parent_fabric',
     'length', 'length_per_roll', 'length_roll', 'custom_length', 'custom_length_mtrs',
     'custom_length_per_roll', 'custom_length_roll',
     'gsm', 'quality', 'color', 'custom_quality',
@@ -71,10 +71,18 @@ frappe.ui.form.on('Planning sheet', {
                     freeze: true,
                     callback: function(r) {
                         if (!r.exc) {
+                            const msg = r.message || {};
                             frappe.show_alert({
-                                message: __('Converted {0} line(s).', [(r.message && r.message.updated) || 0]),
+                                message: __('Converted {0} line(s).', [msg.updated || 0]),
                                 indicator: 'green',
                             });
+                            if (msg.warning) {
+                                frappe.msgprint({
+                                    title: __('Meter to Kg'),
+                                    message: msg.warning,
+                                    indicator: 'orange',
+                                });
+                            }
                             frm.reload_doc();
                         }
                     },

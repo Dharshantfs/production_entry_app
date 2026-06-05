@@ -207,7 +207,19 @@ function spr_schedule_grid_ui_debounced(frm, opts) {
 }
 
 function spr_after_child_table_refresh(frm) {
-	spr_schedule_grid_ui_debounced(frm, { delay: 180 });
+	spr_schedule_grid_ui_debounced(frm, { delay: 380 });
+	if (typeof requestAnimationFrame === 'function') {
+		requestAnimationFrame(function () {
+			requestAnimationFrame(function () {
+				if (!frm || !frm.fields_dict) {
+					return;
+				}
+				SPR_SPR_CHILD_TABLE_FIELDS.forEach(function (fn) {
+					spr_sync_grid_columns_visible(frm, fn);
+				});
+			});
+		});
+	}
 }
 
 /** When PP / operator selects a unit, default the matching process checkbox on (still user-clearable). */

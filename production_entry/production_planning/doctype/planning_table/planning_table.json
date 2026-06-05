@@ -41,6 +41,7 @@
   "custom_plan_code",
   "custom_lamination_order_code_",
   "custom_parent_child_trace_id",
+  "custom_parent_fabric",
   "custom_lamination_shift",
   "custom_lam_gsm",
   "custom_bopp_gsm",
@@ -291,6 +292,14 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Parent Child Trace ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_parent_fabric",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Parent Fabric",
+   "options": "Bag FG\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\nPB",
    "read_only": 1
   },
 

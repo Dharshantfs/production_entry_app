@@ -7250,6 +7250,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_printed_bopp_fields")
 	try:
+		_stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:parent_fabric")
+	try:
 		_finalize_planning_sheet_row_order_and_movement(planning_sheet_name)
 	except Exception:
 		frappe.log_error(
@@ -10137,6 +10141,44 @@ def apply_sheet_cutting_bom_to_planning_sheet(planning_sheet_name=None, sales_or
 	}
 
 
+def _dedupe_slitting_pt_after_board_move(kept_pt_name, planning_sheet_name=None):
+	"""After a board drag, keep one slitting PT row per item + SO line (fixes JVE+VTP duplicate cards)."""
+	if not kept_pt_name or not frappe.db.exists("Planning Table", kept_pt_name):
+		return 0
+	kept = frappe.db.get_value(
+		"Planning Table",
+		kept_pt_name,
+		["name", "item_code", "sales_order_item", "so_item", "parent", "unit"],
+		as_dict=True,
+	)
+	if not kept:
+		return 0
+	ic = _cstr(kept.get("item_code")).strip()
+	if _item_process_prefix(ic) not in ("103", "109", "108"):
+		return 0
+	parent = _cstr(planning_sheet_name or kept.get("parent")).strip()
+	if not parent:
+		return 0
+	soi = _cstr(kept.get("sales_order_item") or kept.get("so_item")).strip()
+	others = frappe.get_all(
+		"Planning Table",
+		filters={"parent": parent, "item_code": ic, "name": ["!=", kept_pt_name]},
+		fields=["name", "sales_order_item", "so_item", "unit"],
+		limit_page_length=0,
+	) or []
+	removed = 0
+	for o in others:
+		o_soi = _cstr(o.get("sales_order_item") or o.get("so_item")).strip()
+		if soi and o_soi and o_soi != soi:
+			continue
+		try:
+			frappe.delete_doc("Planning Table", o.get("name"), force=1)
+			removed += 1
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"dedupe slitting move:{o.get('name')}")
+	return removed
+
+
 def _remove_duplicate_slitting_pt_rows_on_sheet(planning_sheet_name):
 	"""Keep one Planning Table row per slitting item + SO line (fixes JVE+VTP duplicate cards)."""
 	if not planning_sheet_name:
@@ -10183,7 +10225,7 @@ def _deduplicate_slitting_board_rows(rows):
 		ic = _cstr(r.get("item_code") or r.get("itemCode")).strip()
 		soi = _cstr(r.get("salesOrderItem") or r.get("sales_order_item") or "").strip()
 		pd = _cstr(r.get("planned_date") or r.get("plannedDate") or "").strip()
-		key = (ic, soi, pd)
+		key = (ic, pd)
 		prev = seen.get(key)
 		if not prev:
 			seen[key] = r
@@ -10191,7 +10233,12 @@ def _deduplicate_slitting_board_rows(rows):
 			continue
 		def _rank(row):
 			u = normalize_planning_unit_for_select(row.get("unit"))
-			return (cint(row.get("idx") or 0), 0 if u == SLITTING_UNASSIGNED_UNIT else 1)
+			has_soi = bool(_cstr(row.get("salesOrderItem") or row.get("sales_order_item")).strip())
+			return (
+				1 if has_soi else 0,
+				cint(row.get("idx") or 0),
+				0 if u == SLITTING_UNASSIGNED_UNIT else 1,
+			)
 		if _rank(r) >= _rank(prev):
 			out[out.index(prev)] = r
 			seen[key] = r
@@ -18358,6 +18405,12 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     # We should respect it.
     
     _move_item_to_slot(item, final_unit, final_date, idx_val, plan_name)
+    try:
+        _dedupe_slitting_pt_after_board_move(item.name, item.parent)
+        _remove_duplicate_slitting_pt_rows_on_sheet(item.parent)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "update_schedule:dedupe_slitting")
     
     frappe.db.commit()
     try:
@@ -28146,6 +28199,180 @@ _BOM_KG_PARENT_PROCESSES = frozenset(
 )
 
 
+_SLITTING_LOOP_FABRIC_PROCESSES = frozenset({"103", "109"})
+_MAIN_FABRIC_MID_PROCESSES = frozenset({"104", "105", "106", "107"})
+_BASE_FABRIC_PARENT_PROCESSES = frozenset({"102", "103", "104", "105", "106", "107"})
+
+
+def _fabric_parent_process_from_item_code(item_code):
+	"""Embedded parent in legacy fabric codes (e.g. 100105… → 105)."""
+	ic = _cstr(item_code).strip()
+	if not ic.startswith("100") or len(ic) < 6:
+		return ""
+	cand = ic[3:6]
+	if cand in _BASE_FABRIC_PARENT_PROCESSES:
+		return cand
+	return ""
+
+
+def _resolve_parent_fabric_label(
+	item_code,
+	so_fg_item_code=None,
+	direct_on_fg_bom=False,
+	chain_parent_process=None,
+):
+	"""Human-friendly BOM role for planning rows (bag + fabric chains)."""
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return ""
+	if _is_printed_bopp_item_code(ic):
+		return "PB"
+	pp = _bom_item_process_code(ic) or _item_process_prefix(ic)
+	fg_pp = _bom_item_process_code(so_fg_item_code) if so_fg_item_code else ""
+	if fg_pp and pp == fg_pp:
+		if fg_pp in ALL_BAG_FG_PROCESS_CODES:
+			return "Bag FG"
+		return ""
+	if chain_parent_process and ic.startswith("100"):
+		cp = _cstr(chain_parent_process).strip()
+		if cp in _BASE_FABRIC_PARENT_PROCESSES:
+			return f"{cp} Base Fabric"
+	if direct_on_fg_bom:
+		if pp in _SLITTING_LOOP_FABRIC_PROCESSES:
+			return "Loop Fabric"
+		if pp in _MAIN_FABRIC_MID_PROCESSES or ic.startswith("100"):
+			return "Main Fabric"
+		return ""
+	if ic.startswith("100"):
+		emb = _fabric_parent_process_from_item_code(ic)
+		if emb:
+			return f"{emb} Base Fabric"
+		return "Main Fabric"
+	if pp in _SLITTING_LOOP_FABRIC_PROCESSES:
+		return "Loop Fabric"
+	if pp in _MAIN_FABRIC_MID_PROCESSES:
+		return "Main Fabric"
+	return ""
+
+
+def _infer_fabric_chain_parent_process(fabric_ic, soi, pt_rows):
+	"""Match a 100* row to its mid-chain parent on the same SO line via BOM."""
+	fabric_ic = _cstr(fabric_ic).strip()
+	soi = _cstr(soi).strip()
+	if not fabric_ic.startswith("100") or not pt_rows:
+		return ""
+	for parent_pp in ("103", "104", "105", "106", "107", "102"):
+		for prow in pt_rows:
+			pic = _cstr(prow.get("item_code") if isinstance(prow, dict) else getattr(prow, "item_code", "")).strip()
+			row_soi = _cstr(
+				(prow.get("sales_order_item") or prow.get("so_item"))
+				if isinstance(prow, dict)
+				else (getattr(prow, "sales_order_item", None) or getattr(prow, "so_item", None))
+			).strip()
+			if soi and row_soi and row_soi != soi:
+				continue
+			if parent_pp == "104":
+				if _lamination_process_from_item_code(pic) != "104":
+					continue
+			elif _item_process_prefix(pic) != parent_pp:
+				continue
+			try:
+				res = _get_fabric_item_from_process_item(pic, expected_process=parent_pp, process_label="Parent fabric")
+				if _cstr(res.get("fabric_item_code")).strip() == fabric_ic:
+					return parent_pp
+			except Exception:
+				continue
+	return _fabric_parent_process_from_item_code(fabric_ic)
+
+
+def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
+	"""Set custom_parent_fabric on Planning Table + Planning sheet Item."""
+	if not planning_sheet_name:
+		return 0
+	if not (
+		frappe.db.has_column("Planning Table", "custom_parent_fabric")
+		or frappe.db.has_column("Planning sheet Item", "custom_parent_fabric")
+	):
+		return 0
+	pt_rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=["name", "item_code", "sales_order_item", "so_item", "source_item", "custom_parent_fabric"],
+		limit_page_length=0,
+	) or []
+	if not pt_rows:
+		return 0
+	so_fg_by_soi = {}
+	for r in pt_rows:
+		soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		ic = _cstr(r.get("item_code")).strip()
+		pp = _bom_item_process_code(ic) or _item_process_prefix(ic)
+		if pp in ALL_BAG_FG_PROCESS_CODES or _lamination_process_from_item_code(ic) in ("255", "254", "253", "252", "251"):
+			if soi:
+				so_fg_by_soi[soi] = ic
+	direct_by_soi = _bag_fg_direct_bom_children_by_soi(planning_sheet_name)
+	updated = 0
+	for r in pt_rows:
+		ic = _cstr(r.get("item_code")).strip()
+		soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		so_fg = so_fg_by_soi.get(soi) or ""
+		direct = _planning_row_is_bag_fg_direct_bom_child(ic, soi, direct_by_soi)
+		chain_pp = None
+		if ic.startswith("100") and not direct:
+			chain_pp = _infer_fabric_chain_parent_process(ic, soi, pt_rows)
+		label = _resolve_parent_fabric_label(
+			ic,
+			so_fg_item_code=so_fg,
+			direct_on_fg_bom=direct,
+			chain_parent_process=chain_pp,
+		)
+		if not label or label == _cstr(r.get("custom_parent_fabric")).strip():
+			continue
+		if frappe.db.has_column("Planning Table", "custom_parent_fabric"):
+			frappe.db.set_value("Planning Table", r.get("name"), "custom_parent_fabric", label, update_modified=False)
+			updated += 1
+		src = _cstr(r.get("source_item")).strip()
+		if src and frappe.db.exists("Planning sheet Item", src) and frappe.db.has_column(
+			"Planning sheet Item", "custom_parent_fabric"
+		):
+			frappe.db.set_value("Planning sheet Item", src, "custom_parent_fabric", label, update_modified=False)
+	frappe.db.commit()
+	return updated
+
+
+def _meter_qty_to_kg_for_planning_row(item_code, meter_qty, source_item=None, pt_name=None):
+	"""Meter → Kg using Item UOM conversion, else weight_per_roll / meter from planning row."""
+	meter_qty = flt(meter_qty)
+	if meter_qty <= 0 or not item_code:
+		return 0
+	conv = frappe.db.get_value(
+		"UOM Conversion Detail",
+		{"parent": item_code, "uom": "Meter"},
+		"conversion_factor",
+	)
+	if conv and flt(conv) > 0:
+		return flt(meter_qty) / flt(conv)
+	for doctype, row_name in (
+		("Planning sheet Item", source_item),
+		("Planning Table", pt_name),
+	):
+		if not row_name or not frappe.db.exists(doctype, row_name):
+			continue
+		row = frappe.db.get_value(
+			doctype,
+			row_name,
+			["meter", "weight_per_roll", "qty", "uom"],
+			as_dict=True,
+		) or {}
+		m_ref = flt(row.get("meter") or 0)
+		w_ref = flt(row.get("weight_per_roll") or 0)
+		if m_ref > 0 and w_ref > 0:
+			return flt(meter_qty) * w_ref / m_ref
+		if _cstr(row.get("uom")).strip() == "Kg" and flt(row.get("qty") or 0) > 0 and m_ref > 0:
+			return flt(meter_qty) * flt(row.get("qty")) / m_ref
+	return 0
+
+
 def _bag_fg_direct_bom_children_by_soi(planning_sheet_name):
 	"""Per SO line: item codes that are direct children on the bag FG BOM (not 103→100 fabric)."""
 	out = {}
@@ -28195,7 +28422,7 @@ def _unit_for_bag_fg_bom_child(child_ic, child_proc, specs=None):
 	if _is_printed_bopp_item_code(child_ic):
 		return PRINTED_BOPP_FILM_UNIT
 	if child_proc == "103":
-		return SLITTING_UNIT
+		return SLITTING_UNASSIGNED_UNIT
 	if child_proc in ("104", "107"):
 		return LAMINATION_UNIT
 	if child_proc in ("105", "106"):
@@ -28747,6 +28974,7 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=Fal
 	) or []
 
 	updated_count = 0
+	skipped_no_conv = []
 	direct_by_soi = _bag_fg_direct_bom_children_by_soi(planning_sheet_name)
 
 	for r in rows:
@@ -28792,14 +29020,12 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=Fal
 			direct_by_soi=direct_by_soi,
 		):
 			continue
-		conv = frappe.db.get_value(
-			"UOM Conversion Detail",
-			{"parent": ic, "uom": "Meter"},
-			"conversion_factor",
+		new_qty = _meter_qty_to_kg_for_planning_row(
+			ic, flt(r.get("qty")), source_item=r.get("source_item"), pt_name=r.get("name")
 		)
-		if not conv or flt(conv) <= 0:
-			frappe.throw(_("No UOM Conversion from Meter to Kg for Item {0}").format(ic))
-		new_qty = flt(r.get("qty")) / flt(conv)
+		if new_qty <= 0:
+			skipped_no_conv.append(ic)
+			continue
 		frappe.db.set_value("Planning Table", r.get("name"), {"uom": "Kg", "qty": new_qty})
 		source_item = r.get("source_item")
 		if source_item and frappe.db.exists("Planning sheet Item", source_item):
@@ -28821,7 +29047,13 @@ def convert_meter_to_kgs_for_box_bag_bom(planning_sheet_name, _internal_call=Fal
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "convert_meter_to_kgs:sync_pp_wo")
 
-	return {"status": "success", "updated": updated_count}
+	result = {"status": "success", "updated": updated_count}
+	if skipped_no_conv:
+		result["skipped"] = skipped_no_conv
+		result["warning"] = _("Skipped {0} item(s) — no Meter→Kg conversion and no weight/meter on planning row.").format(
+			len(skipped_no_conv)
+		)
+	return result
 
 
 
