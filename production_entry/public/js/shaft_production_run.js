@@ -989,9 +989,13 @@ function spr_open_fabric_batch_pick_dialog(frm) {
 			frappe.dom.unfreeze();
 			const ctx = r.message || {};
 			if (!ctx.needs_picks) {
+				const bagHint = cint(ctx.is_bag_spr)
+					? __(' Bag FG was recognized, but no batch-tracked BOM raw materials were found on linked Work Order(s). Check BOM / Item has_batch_no on fabric (100*) or slitting (103*) lines.')
+					: __(' No bag / fabric Work Order with batch-tracked BOM items was recognized. Ensure Is Bag is checked, roll lines are saved with Work Order, and FG item code is a bag process (221, 224, 211–217, 200–203).');
 				frappe.msgprint(
 					__(
-						'No RM batch selection is required for this SPR (no Work Orders with batch-tracked BOM items to pick).'
+						'No RM batch selection is required for this SPR.{0}',
+						[bagHint]
 					)
 				);
 				return;

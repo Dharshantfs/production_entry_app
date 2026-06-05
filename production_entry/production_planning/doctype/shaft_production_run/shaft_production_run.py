@@ -31,6 +31,7 @@ from production_entry.production_planning.planning_doctypes import (
 	W_CUT_D_CUT_UNIT_L1,
 	W_CUT_D_CUT_UNIT_L2,
 	W_CUT_D_CUT_UNIT_L3,
+	W_CUT_D_CUT_ALL_UNITS,
 	normalize_planning_unit_for_select,
 )
 
@@ -139,27 +140,76 @@ _SPR_BOM_STACK_BY_FG_PROCESS = {
 	"217": ("107", "100"),
 	"225": ("106", "104"),
 	"226": ("106", "104"),
+	"221": ("103", "100"),
+	"222": ("107", "100"),
+	"223": ("107", "100"),
+	"224": ("104", "103"),
+	"231": ("107", "104"),
+	"233": ("107", "104"),
+	"241": ("106", "104"),
+	"242": ("106", "104"),
 }
 
-BOX_BAG_PROCESS_CODES = frozenset({
-	"200", "201", "202", "211", "212", "213", "216", "217",
+# Box bag + W-CUT + D-CUT finished-goods process codes (221/224, 211–217, 200–203, BOPP bag, etc.).
+ALL_BAG_FG_PROCESS_CODES = frozenset({
+	"200", "201", "202", "203",
+	"211", "212", "213", "214", "216", "217",
 	"221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
 })
 
 
-def spr_bag_fg_needs_rm_batch_pick(production_item: str) -> bool:
-	"""Bag FG SPR (211–213, 217, 200–202, 221–242) needs Select RM batches dialog."""
+def _spr_resolve_bag_fg_process_code(item_code: str) -> str:
+	"""Resolve FG process for bag items (design-first 6000-511-221…, W/D-CUT, BOPP bag)."""
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return ""
 	try:
-		from production_entry.production_planning.scheduler_api import BOX_BAG_PROCESS_CODES
+		from production_entry.production_planning.scheduler_api import (
+			W_CUT_D_CUT_FG_PROCESS_CODES,
+			_item_process_prefix,
+		)
 
-		proc = _spr_item_process_prefix(production_item)
-		return bool(proc) and proc in BOX_BAG_PROCESS_CODES
+		try:
+			from production_entry.production_planning.box_bag_api import (
+				_parse_box_bag_item_code,
+				_parse_dcut_bag_item_code,
+			)
+
+			p_dc = _parse_dcut_bag_item_code(ic) or {}
+			proc_dc = _cstr(p_dc.get("process") or "").strip()
+			if proc_dc in W_CUT_D_CUT_FG_PROCESS_CODES:
+				return proc_dc
+			p_bb = _parse_box_bag_item_code(ic) or {}
+			proc_bb = _cstr(p_bb.get("process") or "").strip()
+			if proc_bb in ALL_BAG_FG_PROCESS_CODES:
+				return proc_bb
+		except Exception:
+			pass
+		try:
+			from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
+
+			p_bopp = _parse_bopp_bag_item_code(ic) or {}
+			proc_bopp = _cstr(p_bopp.get("process") or "").strip()
+			if proc_bopp in ALL_BAG_FG_PROCESS_CODES:
+				return proc_bopp
+		except Exception:
+			pass
+		proc = _cstr(_item_process_prefix(ic)).strip()
+		if proc in ALL_BAG_FG_PROCESS_CODES:
+			return proc
 	except Exception:
-		return False
+		pass
+	proc = spr_fg_item_process_code(ic)
+	return proc if proc in ALL_BAG_FG_PROCESS_CODES else ""
 
 
-def spr_fg_needs_rm_batch_pick(production_item: str, is_box_bag_spr: bool = False) -> bool:
-	if is_box_bag_spr:
+def spr_bag_fg_needs_rm_batch_pick(production_item: str) -> bool:
+	"""Bag FG SPR (box bag, W-CUT, D-CUT, BOPP bag) needs Select RM batches dialog."""
+	return bool(_spr_resolve_bag_fg_process_code(production_item))
+
+
+def spr_fg_needs_rm_batch_pick(production_item: str, is_bag_spr: bool = False) -> bool:
+	if is_bag_spr or spr_bag_fg_needs_rm_batch_pick(production_item):
 		return spr_bag_fg_needs_rm_batch_pick(production_item)
 	return spr_fg_parent_needs_fabric_batch_pick(production_item)
 
@@ -181,7 +231,7 @@ def _spr_rm_needs_manual_batch_pick(item_code: str) -> bool:
 
 def _spr_bom_stack_for_fg_item(production_item: str) -> list[dict]:
 	"""BOM chain rows for the fabric-batch dialog (FG → child → fabric)."""
-	proc = spr_fg_item_process_code(production_item)
+	proc = _spr_resolve_bag_fg_process_code(production_item) or spr_fg_item_process_code(production_item)
 	if not proc:
 		return []
 	child_proc, fabric_proc = _SPR_BOM_STACK_BY_FG_PROCESS.get(proc, (None, "100"))
@@ -2615,7 +2665,7 @@ class ShaftProductionRun(Document):
 			if not wo_id or not wo_doc or total_qty <= 0:
 				continue
 			pi = _cstr(getattr(wo_doc, "production_item", None) or "")
-			if not spr_fg_needs_rm_batch_pick(pi, cint(getattr(self, "custom_is_box_bag", 0))):
+			if not spr_fg_needs_rm_batch_pick(pi, spr_doc_is_bag_spr(self)):
 				continue
 			expected = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
 			batch_rm = {
@@ -2631,7 +2681,7 @@ class ShaftProductionRun(Document):
 				if _cstr(getattr(r, "work_order", None) or "") == wo_id
 			]
 			if not picks:
-				if cint(getattr(self, "custom_is_box_bag", 0)):
+				if spr_doc_is_bag_spr(self):
 					frappe.throw(
 						_(
 							"Bag SPR — Work Order {0} (item {1}) needs raw-material batches before Submit. "
@@ -2862,34 +2912,74 @@ class ShaftProductionRun(Document):
 			return base
 		return 1.0
 
+	def _spr_wo_groups_for_batch_pick(self) -> dict[str, list]:
+		"""Work Orders → roll lines for RM batch dialog (items + bundle_calculation + shaft jobs)."""
+		wo_groups: dict[str, list] = {}
+		for row in self.items or []:
+			wo_name = _cstr(row.get("work_order") or row.get("wo_id"))
+			if wo_name:
+				wo_groups.setdefault(wo_name, []).append(row)
+		for br in self.bundle_calculation or []:
+			wo_name = _cstr(getattr(br, "work_order", None))
+			if not wo_name or wo_name in wo_groups:
+				continue
+			linked = [
+				r
+				for r in (self.items or [])
+				if _cstr(r.get("work_order") or r.get("wo_id")) == wo_name
+			]
+			wo_groups[wo_name] = linked or [{"work_order": wo_name, "wo_id": wo_name}]
+		self._spr_merge_wos_from_shaft_jobs(wo_groups)
+		if spr_doc_is_bag_spr(self):
+			for br in self.bundle_calculation or []:
+				wo_name = _cstr(getattr(br, "work_order", None))
+				if not wo_name or wo_name in wo_groups:
+					continue
+				wo_groups[wo_name] = [{"work_order": wo_name, "wo_id": wo_name}]
+			pp = _cstr(self.get("production_plan"))
+			if pp:
+				for wo in frappe.get_all(
+					"Work Order",
+					filters={"production_plan": pp, "docstatus": ["<", 2]},
+					fields=["name", "production_item"],
+				):
+					wo_name = _cstr(wo.get("name"))
+					pi = _cstr(wo.get("production_item"))
+					if not wo_name or wo_name in wo_groups:
+						continue
+					if spr_bag_fg_needs_rm_batch_pick(pi):
+						wo_groups[wo_name] = wo_groups.get(wo_name) or [{"work_order": wo_name, "wo_id": wo_name}]
+		return wo_groups
+
 	def _spr_build_fabric_batch_pick_context_dict(self) -> dict:
 		"""API payload for the desk RM-batch dialog (102–109, 251–255 WOs + batch-tracked BOM RM + WIP batches)."""
-		out: dict = {"needs_picks": False, "lines": [], "current_picks": [], "spr": self.name}
+		is_bag_spr = spr_doc_is_bag_spr(self)
+		out: dict = {
+			"needs_picks": False,
+			"lines": [],
+			"current_picks": [],
+			"spr": self.name,
+			"is_bag_spr": bool(is_bag_spr),
+		}
 		if cint(self.docstatus) != 0:
 			return out
 		if not self._spr_fabric_picks_field_exists():
 			return out
-		wo_groups: dict[str, list] = {}
-		for row in self.items or []:
-			wo_name = row.get("work_order") or row.get("wo_id")
-			if not wo_name:
-				continue
-			wo_groups.setdefault(_cstr(wo_name), []).append(row)
-		self._spr_merge_wos_from_shaft_jobs(wo_groups)
+		wo_groups = self._spr_wo_groups_for_batch_pick()
 		lines = []
 		for wo_id, rows in wo_groups.items():
 			if not frappe.db.exists("Work Order", wo_id):
 				continue
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			pi = _cstr(getattr(wo_doc, "production_item", None) or "")
-			if not spr_fg_needs_rm_batch_pick(pi, cint(getattr(self, "custom_is_box_bag", 0))):
+			if not spr_fg_needs_rm_batch_pick(pi, is_bag_spr):
 				continue
 			total_qty = self._spr_fabric_pick_preview_fg_qty(rows, wo_doc)
 			if total_qty <= 0:
 				continue
 			expected = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
 			wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None) or "")
-			fg_process = spr_fg_item_process_code(pi)
+			fg_process = _spr_resolve_bag_fg_process_code(pi) or spr_fg_item_process_code(pi)
 			bom_stack = _spr_bom_stack_for_fg_item(pi)
 			raw_list = []
 			for ic, req in sorted((expected or {}).items()):
@@ -4467,6 +4557,7 @@ def get_production_plan_details(production_plan):
 		out["custom_is_sheet_cutting"] = 1
 	is_bb = (
 		pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+		or pp_unit in W_CUT_D_CUT_ALL_UNITS
 		or _production_plan_uses_bundle_calculation(pp)
 	)
 	if is_bb and frappe.get_meta("Shaft Production Run").has_field("custom_is_box_bag"):
@@ -4526,7 +4617,7 @@ def _is_wcut_dcut_fg_code(item_code: str) -> bool:
 
 
 def _is_bag_bundle_fg_code(item_code: str) -> bool:
-	return _is_box_bag_fg_code(item_code) or _is_wcut_dcut_fg_code(item_code)
+	return bool(_spr_resolve_bag_fg_process_code(item_code))
 
 
 def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str = None) -> dict:
@@ -4779,6 +4870,39 @@ def _pp_bundle_calc_child_table_names() -> list[str]:
 def _pp_is_box_bag_unit(pp_doc) -> bool:
 	u = _spr_unit_value_for_current_field(pp_doc.get("custom_unit") if pp_doc else None)
 	return u in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+
+
+def _pp_is_wcut_dcut_unit(pp_doc) -> bool:
+	u = _spr_unit_value_for_current_field(pp_doc.get("custom_unit") if pp_doc else None)
+	return u in W_CUT_D_CUT_ALL_UNITS
+
+
+def spr_doc_is_bag_spr(doc) -> bool:
+	"""True when this SPR is a bag run (box bag, W-CUT, or D-CUT) — drives PCS qty + RM batch pick."""
+	if cint(getattr(doc, "custom_is_box_bag", 0)):
+		return True
+	unit = _spr_unit_value_for_current_field(getattr(doc, "custom_unit", None))
+	if unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT):
+		return True
+	if unit in W_CUT_D_CUT_ALL_UNITS:
+		return True
+	for br in getattr(doc, "bundle_calculation", None) or []:
+		ic = _cstr(getattr(br, "item_code", None))
+		if ic and spr_bag_fg_needs_rm_batch_pick(ic):
+			return True
+	for row in getattr(doc, "items", None) or []:
+		ic = _cstr(getattr(row, "item_code", None))
+		if ic and spr_bag_fg_needs_rm_batch_pick(ic):
+			return True
+	pp = _cstr(getattr(doc, "production_plan", None))
+	if pp and frappe.db.exists("Production Plan", pp):
+		try:
+			pp_doc = frappe.get_doc("Production Plan", pp)
+			if _pp_is_box_bag_unit(pp_doc) or _pp_is_wcut_dcut_unit(pp_doc):
+				return True
+		except Exception:
+			pass
+	return False
 
 
 def _first_pp_bundle_calc_row(pp_doc):
