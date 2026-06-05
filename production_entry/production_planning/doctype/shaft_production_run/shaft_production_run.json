@@ -20,6 +20,8 @@
  "company",
   "customer",
   "custom_total_planned_qty",
+  "custom_total_planned_pcs",
+  "custom_total_achieved_pcs",
   "custom_unit",
   "shift",
   "column_break_shift",
@@ -133,6 +135,22 @@
    "fieldtype": "Float",
    "label": "Total Planned Qty (KG)",
    "precision": "2"
+  },
+  {
+   "depends_on": "eval:doc.custom_is_box_bag",
+   "fieldname": "custom_total_planned_pcs",
+   "fieldtype": "Float",
+   "label": "Total Planned Qty (PCS)",
+   "precision": "0",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.custom_is_box_bag",
+   "fieldname": "custom_total_achieved_pcs",
+   "fieldtype": "Float",
+   "label": "Total Achieved PCS",
+   "precision": "0",
+   "read_only": 1
   },
   {
    "fieldname": "custom_unit",

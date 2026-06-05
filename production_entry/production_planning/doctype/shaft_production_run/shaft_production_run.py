@@ -748,6 +748,45 @@ def _production_plan_total_planned_qty(production_plan: str) -> float:
 	return 0.0
 
 
+def _production_plan_total_planned_pcs(production_plan: str) -> float:
+	"""Sum planned bag/sheet PCS from PP bundle rows (box-bag / bundle calc)."""
+	pp_doc = _get_pp_doc(production_plan)
+	if not pp_doc:
+		return 0.0
+	total = 0.0
+	for src in _read_pp_bundle_calculation_rows(production_plan):
+		tpb = flt(src.get("total_pcs_per_bundle") or 0)
+		if tpb <= 0:
+			n_boxes = flt(src.get("no_of_boxes") or 0)
+			pcs = cint(src.get("pcs_per_packet") or 0)
+			pkts = cint(src.get("pkts_per_bundle") or 0)
+			if n_boxes > 0 and pcs > 0:
+				tpb = flt(n_boxes * pcs)
+			elif pkts > 0 and pcs > 0:
+				tpb = flt(pkts * pcs)
+		if tpb > 0:
+			total += tpb
+	if total > 0:
+		return flt(total, 0)
+	try:
+		wo_qty = flt(
+			frappe.db.sql(
+				"""
+				SELECT IFNULL(SUM(wo.qty), 0)
+				FROM `tabWork Order` wo
+				WHERE wo.production_plan = %(pp)s
+				  AND wo.docstatus < 2
+				""",
+				{"pp": production_plan},
+			)[0][0]
+		)
+		if wo_qty > 0:
+			return flt(wo_qty, 0)
+	except Exception:
+		pass
+	return 0.0
+
+
 def _effective_weight_kg_for_produced_gsm(row) -> float:
 	"""Prefer net weight; if not entered yet, use gross (same rule as desk JS spr_update_produced_gsm)."""
 	nw = flt(getattr(row, "net_weight", None))
@@ -1463,11 +1502,13 @@ class ShaftProductionRun(Document):
 		self.recalculate_job_achieved_meters()
 		self.generate_batch_numbers()
 		if cint(getattr(self, "custom_is_sheet_cutting", 0)) or cint(getattr(self, "custom_is_box_bag", 0)):
+			self._spr_stamp_bag_sizes_on_bundle_rows()
 			sync_bundle_total_produced_sheets_for_doc(self)
 			sync_bundle_total_produced_bag_pcs_for_doc(self)
 			sync_bundle_total_achieved_weight_for_doc(self)
 			sync_bundle_consumed_meter_header(self)
 		self._spr_recalc_total_produced_weight_header()
+		self._spr_recalc_bag_pcs_headers()
 
 	def sync_company_from_source(self):
 		"""Show the manufacturing company on SPR from PP first, then linked WO."""
@@ -1534,6 +1575,41 @@ class ShaftProductionRun(Document):
 			if sz:
 				row.custom_sheet_size = sz
 
+	def _spr_stamp_bag_sizes_on_bundle_rows(self):
+		"""Fill bundle_calculation.bag_size from FG item code when missing on bag SPR."""
+		if not cint(getattr(self, "custom_is_box_bag", 0)):
+			return
+		for row in self.bundle_calculation or []:
+			if _cstr(getattr(row, "bag_size", None) or getattr(row, "sheet_cutting_size", None)).strip():
+				continue
+			ic = _cstr(getattr(row, "item_code", None)).strip()
+			if not ic:
+				continue
+			sz = _bundle_row_bag_size(row, ic, for_bag_fg=True)
+			if sz:
+				row.bag_size = sz
+				if hasattr(row, "sheet_cutting_size"):
+					row.sheet_cutting_size = sz
+
+	def _spr_recalc_bag_pcs_headers(self):
+		"""Bag SPR header: planned PCS from PP, achieved PCS = sum of bundle Total Produced Bag PCS."""
+		if not cint(getattr(self, "custom_is_box_bag", 0)):
+			return
+		meta = frappe.get_meta("Shaft Production Run")
+		pp = _cstr(self.get("production_plan"))
+		if meta.has_field("custom_total_planned_pcs"):
+			planned = 0.0
+			if pp:
+				planned = _production_plan_total_planned_pcs(pp)
+			if planned <= 0 and getattr(self, "bundle_calculation", None):
+				planned = sum(flt(getattr(br, "total_pcs_per_bundle", 0) or 0) for br in (self.bundle_calculation or []))
+			self.custom_total_planned_pcs = flt(planned, 0)
+		if meta.has_field("custom_total_achieved_pcs") and getattr(self, "bundle_calculation", None):
+			self.custom_total_achieved_pcs = flt(
+				sum(flt(getattr(br, "total_produced_bag_pcs", 0) or 0) for br in (self.bundle_calculation or [])),
+				0,
+			)
+
 	def _spr_round_item_net_weights(self):
 		"""Keep roll net weight at 2 decimal kg (matches child DocType precision and manual totals)."""
 		item_meta = frappe.get_meta("Shaft Production Run Item")
@@ -1549,19 +1625,21 @@ class ShaftProductionRun(Document):
 				row.net_weight = rnd
 
 	def _spr_recalc_total_produced_weight_header(self):
-		"""Header weight: sheet cutting = sum of bundle job achieved weights; else sum roll net_weight."""
+		"""Header totals: bag = sum bundle bag PCS; sheet cutting = bundle achieved kg; else roll net_weight."""
 		meta = frappe.get_meta("Shaft Production Run")
 		if not meta.has_field("total_produced_weight"):
 			return
-		if (cint(getattr(self, "custom_is_sheet_cutting", 0)) or cint(getattr(self, "custom_is_box_bag", 0))) and getattr(self, "bundle_calculation", None):
-			total = sum(
-				flt(getattr(br, "total_achieved_weight", None), 2) for br in (self.bundle_calculation or [])
-			)
+		if cint(getattr(self, "custom_is_box_bag", 0)) and getattr(self, "bundle_calculation", None):
+			total = sum(flt(getattr(br, "total_produced_bag_pcs", 0) or 0) for br in (self.bundle_calculation or []))
+			self.total_produced_weight = flt(total, 0)
+		elif cint(getattr(self, "custom_is_sheet_cutting", 0)) and getattr(self, "bundle_calculation", None):
+			total = sum(flt(getattr(br, "total_achieved_weight", None), 2) for br in (self.bundle_calculation or []))
+			self.total_produced_weight = flt(total, 2)
 		else:
 			total = sum(flt(getattr(r, "net_weight", None), 2) for r in (self.items or []))
-		self.total_produced_weight = flt(total, 2)
+			self.total_produced_weight = flt(total, 2)
 		if meta.has_field("custom_total_produced_weight"):
-			self.custom_total_produced_weight = flt(total, 2)
+			self.custom_total_produced_weight = flt(self.total_produced_weight, 2 if not cint(getattr(self, "custom_is_box_bag", 0)) else 0)
 
 	def _spr_needs_job_work_order_resync(self) -> bool:
 		"""True when PP-driven WO list on jobs should be recomputed (saves DB work on routine saves)."""
@@ -4364,6 +4442,8 @@ def get_production_plan_details(production_plan):
 	
 	# Calculate custom_total_planned_qty from WO sum
 	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
+	if frappe.get_meta("Shaft Production Run").has_field("custom_total_planned_pcs"):
+		out["custom_total_planned_pcs"] = _production_plan_total_planned_pcs(production_plan)
 	is_sc = pp_unit == SHEET_CUTTING_UNIT
 	out["is_sheet_cutting"] = is_sc
 	if is_sc and frappe.get_meta("Shaft Production Run").has_field("custom_is_sheet_cutting"):
@@ -5075,6 +5155,8 @@ def get_bundle_calculation_rows_for_production_plan(production_plan, order_code=
 		row["total_pcs_per_bundle"] = tpb
 		if _is_bag_bundle_fg_code(ic) or _pp_is_box_bag_unit(frappe.get_doc("Production Plan", production_plan)):
 			bz = _cstr(row.get("bag_size") or row.get("sheet_cutting_size") or "")
+			if not bz and ic:
+				bz = _bundle_row_bag_size(src, ic, for_bag_fg=True)
 			if bz:
 				row["bag_size"] = bz
 				row["sheet_cutting_size"] = bz

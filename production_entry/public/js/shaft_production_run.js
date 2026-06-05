@@ -371,10 +371,10 @@ function sprScheduleTotalProducedSync(frm, opts) {
 		clearTimeout(frm.__spr_total_sync_timer);
 	}
 	frm.__spr_total_sync_timer = setTimeout(function () {
-		spr_sync_total_produced_weight(frm, opts || {});
 		if (sprIsBundlePackagingMode(frm)) {
 			sprSyncBundleProducedSheets(frm, opts || {});
 		}
+		spr_sync_total_produced_weight(frm, opts || {});
 		frm.__spr_total_sync_timer = null;
 	}, 120);
 }
@@ -642,6 +642,9 @@ frappe.ui.form.on('Shaft Production Run', {
 				if ('custom_total_planned_qty' in d) {
 					sprLog('[SPR] Setting custom_total_planned_qty:', d.custom_total_planned_qty);
 					frm.set_value('custom_total_planned_qty', flt(d.custom_total_planned_qty || 0));
+				}
+				if ('custom_total_planned_pcs' in d && frappe.meta.get_docfield('Shaft Production Run', 'custom_total_planned_pcs')) {
+					frm.set_value('custom_total_planned_pcs', flt(d.custom_total_planned_pcs || 0));
 				}
 				if (d.custom_is_sheet_cutting) {
 					frm.set_value('custom_is_sheet_cutting', 1);
@@ -3145,9 +3148,31 @@ function sprToggleSheetCuttingUi(frm) {
 		return;
 	}
 	const isBundleMode = sprIsBundlePackagingMode(frm);
+	const isBag = sprIsBag(frm);
 	try {
 		frm.set_df_property('section_break_9', 'hidden', isBundleMode ? 1 : 0);
 		frm.set_df_property('shaft_jobs', 'hidden', isBundleMode ? 1 : 0);
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		if (frappe.meta.get_docfield('Shaft Production Run', 'custom_total_planned_qty')) {
+			frm.set_df_property('custom_total_planned_qty', 'hidden', isBag ? 1 : 0);
+		}
+		if (frappe.meta.get_docfield('Shaft Production Run', 'custom_total_planned_pcs')) {
+			frm.set_df_property('custom_total_planned_pcs', 'hidden', isBag ? 0 : 1);
+		}
+		if (frappe.meta.get_docfield('Shaft Production Run', 'custom_total_achieved_pcs')) {
+			frm.set_df_property('custom_total_achieved_pcs', 'hidden', isBag ? 0 : 1);
+		}
+		if (frappe.meta.get_docfield('Shaft Production Run', 'total_produced_weight')) {
+			frm.set_df_property(
+				'total_produced_weight',
+				'label',
+				isBag ? __('Total Produced Bag PCS') : __('Total Produced Weight (KG)')
+			);
+			frm.set_df_property('total_produced_weight', 'precision', isBag ? 0 : 2);
+		}
 	} catch (e) {
 		/* ignore */
 	}
@@ -3211,7 +3236,6 @@ function spr_get_bundle_list_view_config(frm) {
 				'create_bundle_entry',
 				'total_consumed_meter',
 				'total_produced_bag_pcs',
-				'total_achieved_weight',
 			],
 			hide: [
 				bagCol === 'bag_size' ? 'sheet_cutting_size' : 'bag_size',
@@ -3219,6 +3243,7 @@ function spr_get_bundle_list_view_config(frm) {
 				'pkts_per_bundle',
 				'job',
 				'total_produced_sheets',
+				'total_achieved_weight',
 			],
 		};
 	}
@@ -4400,6 +4425,14 @@ function spr_compute_total_produced_weight(frm) {
 	if (!frm || !frm.doc) {
 		return 0;
 	}
+	if (sprIsBag(frm)) {
+		const bundles = frm.doc.bundle_calculation || [];
+		let t = 0;
+		for (let i = 0; i < bundles.length; i++) {
+			t += flt(bundles[i].total_produced_bag_pcs);
+		}
+		return flt(t);
+	}
 	if (sprIsSheetCutting(frm)) {
 		const bundles = frm.doc.bundle_calculation || [];
 		let t = 0;
@@ -4416,6 +4449,30 @@ function spr_compute_total_produced_weight(frm) {
 	return spr_round_net_weight_kg(total);
 }
 
+function spr_sync_bag_pcs_headers(frm, opts) {
+	if (!frm || !frm.doc || !sprIsBag(frm)) {
+		return;
+	}
+	const settings = opts || {};
+	const bundles = frm.doc.bundle_calculation || [];
+	let achieved = 0;
+	bundles.forEach(function (br) {
+		achieved += flt(br.total_produced_bag_pcs);
+	});
+	achieved = flt(achieved);
+	if (frappe.meta.get_docfield('Shaft Production Run', 'custom_total_achieved_pcs')) {
+		const curAch = flt(frm.doc.custom_total_achieved_pcs);
+		if (Math.abs(curAch - achieved) > 0.5) {
+			if (settings.silent) {
+				frm.doc.custom_total_achieved_pcs = achieved;
+				frm.refresh_field('custom_total_achieved_pcs');
+			} else {
+				frm.set_value('custom_total_achieved_pcs', achieved);
+			}
+		}
+	}
+}
+
 function spr_sync_total_produced_weight(frm, opts) {
 	if (!frm || !frm.doc) {
 		return;
@@ -4425,9 +4482,10 @@ function spr_sync_total_produced_weight(frm, opts) {
 	}
 	const settings = opts || {};
 	const calculated = spr_compute_total_produced_weight(frm);
-	const current = spr_round_net_weight_kg(frm.doc.total_produced_weight);
+	const current = sprIsBag(frm) ? flt(frm.doc.total_produced_weight) : spr_round_net_weight_kg(frm.doc.total_produced_weight);
+	const tolerance = sprIsBag(frm) ? 0.5 : 0.001;
 
-	if (Math.abs(current - calculated) > 0.001) {
+	if (Math.abs(current - calculated) > tolerance) {
 		if (settings.silent) {
 			frm.doc.total_produced_weight = calculated;
 			if (frappe.meta.get_docfield('Shaft Production Run', 'custom_total_produced_weight')) {
@@ -4443,5 +4501,8 @@ function spr_sync_total_produced_weight(frm, opts) {
 				frm.set_value('custom_total_produced_weight', calculated);
 			}
 		}
+	}
+	if (sprIsBag(frm)) {
+		spr_sync_bag_pcs_headers(frm, settings);
 	}
 }
