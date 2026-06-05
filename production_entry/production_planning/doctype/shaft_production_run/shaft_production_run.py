@@ -1552,6 +1552,7 @@ class ShaftProductionRun(Document):
 		self.sync_shaft_job_work_orders_from_plan()
 		self._spr_round_item_net_weights()
 		self._spr_stamp_bag_sizes_on_roll_lines()
+		self._spr_stamp_sheet_sizes_on_roll_lines()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.recalculate_job_achieved_meters()
@@ -1610,15 +1611,11 @@ class ShaftProductionRun(Document):
 			pass
 
 	def _spr_stamp_bag_sizes_on_roll_lines(self):
-		"""Fill Bag Size (custom_bag_size) from FG item code when missing on bag SPR roll lines."""
-		if not cint(getattr(self, "custom_is_box_bag", 0)):
+		"""Fill custom_bag_size from FG item code when missing on bag SPR roll lines."""
+		if not spr_doc_is_bag_spr(self):
 			return
 		spi_meta = frappe.get_meta("Shaft Production Run Item")
 		if not spi_meta.has_field("custom_bag_size"):
-			return
-		try:
-			from production_entry.production_planning.box_bag_api import resolve_bag_size_from_item_code
-		except Exception:
 			return
 		for row in self.items or []:
 			if _cstr(getattr(row, "custom_bag_size", None)).strip():
@@ -1626,9 +1623,31 @@ class ShaftProductionRun(Document):
 			ic = _cstr(getattr(row, "item_code", None)).strip()
 			if not ic or not _is_bag_bundle_fg_code(ic):
 				continue
-			sz = _cstr(resolve_bag_size_from_item_code(ic)).strip()
+			sz = _spr_bag_size_from_item_code(ic)
 			if sz:
 				row.custom_bag_size = sz
+
+	def _spr_stamp_sheet_sizes_on_roll_lines(self):
+		"""Fill custom_sheet_size from FG item code when missing on sheet-cutting SPR roll lines."""
+		if spr_doc_is_bag_spr(self):
+			return
+		if not cint(getattr(self, "custom_is_sheet_cutting", 0)):
+			return
+		spi_meta = frappe.get_meta("Shaft Production Run Item")
+		if not spi_meta.has_field("custom_sheet_size"):
+			return
+		for row in self.items or []:
+			if _cstr(getattr(row, "custom_sheet_size", None)).strip():
+				continue
+			ic = _cstr(getattr(row, "item_code", None)).strip()
+			if not ic:
+				continue
+			sz = _spr_sheet_size_from_item_code(ic)
+			if not sz:
+				specs = _spr_resolve_roll_line_specs_from_item_code(ic)
+				sz = _cstr(specs.get("sheet_size") or "").strip()
+			if sz:
+				row.custom_sheet_size = sz
 
 	def _spr_stamp_bag_sizes_on_bundle_rows(self):
 		"""Fill bundle_calculation.bag_size from FG item code when missing on bag SPR."""
@@ -4643,10 +4662,37 @@ def _is_bag_bundle_fg_code(item_code: str) -> bool:
 	return bool(_spr_resolve_bag_fg_process_code(item_code))
 
 
+def _spr_bag_size_from_item_code(item_code: str) -> str:
+	"""Bag size label (inches) from FG item code — Bag Series master, same as Planning Sheet."""
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return ""
+	try:
+		from production_entry.production_planning.box_bag_api import resolve_bag_size_from_item_code
+
+		return _cstr(resolve_bag_size_from_item_code(ic)).strip()
+	except Exception:
+		return ""
+
+
+def _spr_sheet_size_from_item_code(item_code: str) -> str:
+	"""Sheet size label from FG item code — Sheet Cutting Series master."""
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return ""
+	try:
+		from production_entry.production_planning.scheduler_api import _sheet_size_for_item_code
+
+		sz, _ = _sheet_size_for_item_code(ic)
+		return _cstr(sz).strip()
+	except Exception:
+		return ""
+
+
 def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str = None) -> dict:
 	"""Quality, colour, GSM, sheet size, width from FG item code (251–255) for SPR roll lines."""
 	ic = _cstr(item_code).strip()
-	out = {"quality": "", "color": "", "gsm": 0, "sheet_size": "", "width_inch": 0.0}
+	out = {"quality": "", "color": "", "gsm": 0, "sheet_size": "", "bag_size": "", "width_inch": 0.0}
 	if not ic:
 		return out
 	if not item_name:
@@ -4697,8 +4743,9 @@ def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str =
 								out["color"] = _cstr(_get_color_by_code(cc) or "").strip().upper()
 							except Exception:
 								out["color"] = ""
-					if not out["sheet_size"]:
-						out["sheet_size"] = _cstr(resolve_bag_size_from_item_code(ic)).strip()
+				bag_sz = _cstr(resolve_bag_size_from_item_code(ic)).strip()
+				if bag_sz:
+					out["bag_size"] = bag_sz
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), "_spr_resolve_roll_line_specs:box_bag")
 		if out["quality"] and out["color"] and out["gsm"] > 0:
@@ -5480,21 +5527,21 @@ def _spr_item_line_from_bundle(
 		bag_sz = _cstr(
 			getattr(bundle_row, "bag_size", None)
 			or getattr(bundle_row, "sheet_cutting_size", None)
+			or specs.get("bag_size")
 			or sz_from_item
 		)
 		if not bag_sz and item_code:
-			try:
-				from production_entry.production_planning.box_bag_api import resolve_bag_size_from_item_code
-
-				bag_sz = _cstr(resolve_bag_size_from_item_code(item_code)).strip()
-			except Exception:
-				pass
+			bag_sz = _spr_bag_size_from_item_code(item_code)
 		if spi_meta.has_field("custom_bag_size") and bag_sz:
 			row["custom_bag_size"] = bag_sz
 		if w_from_item > 0 and spi_meta.has_field("width_inch"):
 			row["width_inch"] = flt(w_from_item)
 	elif spi_meta.has_field("custom_sheet_size"):
-		sz = sz_from_item or _cstr(getattr(bundle_row, "sheet_cutting_size", None))
+		sz = _cstr(specs.get("sheet_size") or "").strip()
+		if not sz:
+			sz = _spr_sheet_size_from_item_code(item_code)
+		if not sz:
+			sz = _cstr(getattr(bundle_row, "sheet_cutting_size", None))
 		row["custom_sheet_size"] = sz or None
 		if w_from_item > 0 and spi_meta.has_field("width_inch"):
 			row["width_inch"] = flt(w_from_item)
@@ -6418,9 +6465,16 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		"width_inch": width_inch,
 		"color": color,
 	}
-	if _is_sheet_cutting_fg_code(item_code):
-		if spi_meta.has_field("custom_sheet_size") and specs.get("sheet_size"):
-			row["custom_sheet_size"] = specs.get("sheet_size")
+	if _is_bag_bundle_fg_code(item_code):
+		if spi_meta.has_field("custom_bag_size"):
+			bag_sz = _cstr(specs.get("bag_size") or "").strip() or _spr_bag_size_from_item_code(item_code)
+			if bag_sz:
+				row["custom_bag_size"] = bag_sz
+	elif _is_sheet_cutting_fg_code(item_code):
+		if spi_meta.has_field("custom_sheet_size"):
+			sz = _cstr(specs.get("sheet_size") or "").strip() or _spr_sheet_size_from_item_code(item_code)
+			if sz:
+				row["custom_sheet_size"] = sz
 		if spi_meta.has_field("custom_planned_sheets_pcs") and planned_qty > 0:
 			row["custom_planned_sheets_pcs"] = planned_qty
 	# Fabric GSM (F-60 in item name) and Lamination GSM (L-15 GSM in item name or -C suffix)
