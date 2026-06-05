@@ -3192,6 +3192,15 @@ function sprToggleSheetCuttingUi(frm) {
 			);
 			frm.set_df_property('total_produced_weight', 'precision', isBag ? 0 : 2);
 		}
+		[
+			'custom_core_details',
+			'custom_polybag_details',
+			'custom_running_patty_wastage',
+		].forEach(function (fn) {
+			if (frappe.meta.get_docfield('Shaft Production Run', fn)) {
+				frm.set_df_property(fn, 'hidden', isBag ? 1 : 0);
+			}
+		});
 	} catch (e) {
 		/* ignore */
 	}
