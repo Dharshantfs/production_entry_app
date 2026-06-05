@@ -149,8 +149,13 @@ BOX_BAG_PROCESS_CODES = frozenset({
 
 def spr_bag_fg_needs_rm_batch_pick(production_item: str) -> bool:
 	"""Bag FG SPR (211–213, 217, 200–202, 221–242) needs Select RM batches dialog."""
-	proc = spr_fg_item_process_code(production_item)
-	return bool(proc) and proc in BOX_BAG_PROCESS_CODES
+	try:
+		from production_entry.production_planning.scheduler_api import BOX_BAG_PROCESS_CODES
+
+		proc = _spr_item_process_prefix(production_item)
+		return bool(proc) and proc in BOX_BAG_PROCESS_CODES
+	except Exception:
+		return False
 
 
 def spr_fg_needs_rm_batch_pick(production_item: str, is_box_bag_spr: bool = False) -> bool:
@@ -1661,7 +1666,11 @@ class ShaftProductionRun(Document):
 		return False
 
 	def before_submit(self):
-		if not spr_doc_is_lamination(self):
+		if (
+			not spr_doc_is_lamination(self)
+			and not cint(getattr(self, "custom_is_box_bag", 0))
+			and not cint(getattr(self, "custom_is_sheet_cutting", 0))
+		):
 			self._validate_roll_weight_tolerance()
 		# Create/submit Manufacture entries before final submit so shortage handling can block
 		# submission and still persist a draft transfer link for operators.
@@ -2622,6 +2631,14 @@ class ShaftProductionRun(Document):
 				if _cstr(getattr(r, "work_order", None) or "") == wo_id
 			]
 			if not picks:
+				if cint(getattr(self, "custom_is_box_bag", 0)):
+					frappe.throw(
+						_(
+							"Bag SPR — Work Order {0} (item {1}) needs raw-material batches before Submit. "
+							"Open **Tools → SPR — Select RM batches**, allocate fabric/BOM batches, Save picks, then Submit again."
+						).format(wo_id, pi or "—"),
+						title=_("RM batches required"),
+					)
 				frappe.throw(
 					_(
 						"This SPR manufactures Work Order {0} (parent item {1}). "
@@ -5490,6 +5507,8 @@ def _spr_sum_produced_bag_pcs_for_bundle_row(spr_doc, bundle_row, bundle_row_idx
 	ic = _cstr(getattr(bundle_row, "item_code", None))
 	wo = _cstr(getattr(bundle_row, "work_order", None))
 	n_bundles = cint(getattr(bundle_row, "no_of_bundles", 0) or 0)
+	n_boxes = cint(getattr(bundle_row, "no_of_boxes", 0) or 0)
+	n_rows = n_bundles if n_bundles > 0 else n_boxes
 	for it in spr_doc.get("items") or []:
 		job = _cstr(getattr(it, "job", None))
 		matched = bool(prefix and job.startswith(prefix))
@@ -5506,7 +5525,7 @@ def _spr_sum_produced_bag_pcs_for_bundle_row(spr_doc, bundle_row, bundle_row_idx
 			jn = int(job)
 		except (TypeError, ValueError):
 			continue
-		if n_bundles > 0 and not (1 <= jn <= n_bundles):
+		if n_rows > 0 and not (1 <= jn <= n_rows):
 			continue
 		total += flt(getattr(it, "custom_achieved_bag_pcs", 0) or 0)
 	return flt(total, 0)

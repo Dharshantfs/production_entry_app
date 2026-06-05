@@ -367,6 +367,10 @@ function sprLaminationGsmFromItemCode(itemCode) {
 
 function sprScheduleTotalProducedSync(frm, opts) {
 	if (!frm) return;
+	// Server validate() already syncs bundle/header totals on save — skip desk resync briefly to avoid dirty loop (blocks Submit).
+	if (frm._spr_just_saved && Date.now() - frm._spr_just_saved < 4000) {
+		return;
+	}
 	if (frm.__spr_total_sync_timer) {
 		clearTimeout(frm.__spr_total_sync_timer);
 	}
@@ -377,6 +381,17 @@ function sprScheduleTotalProducedSync(frm, opts) {
 		spr_sync_total_produced_weight(frm, opts || {});
 		frm.__spr_total_sync_timer = null;
 	}, 120);
+}
+
+function spr_assign_bundle_row_metric(br, fieldname, value, silent) {
+	if (Math.abs(flt(br[fieldname]) - flt(value)) <= 1e-6) {
+		return;
+	}
+	if (silent || !br.name) {
+		br[fieldname] = flt(value);
+		return;
+	}
+	frappe.model.set_value('Bundle Calculation', br.name, fieldname, flt(value));
 }
 
 /** Sum roll-line Produced Sheets / net weight into bundle rows; consumed mtrs into SPR header (sheet cutting). */
@@ -427,20 +442,11 @@ function sprSyncBundleProducedSheets(frm, opts) {
 				sumNw += spr_round_net_weight_kg(it.net_weight);
 			});
 		}
-		if (br.name) {
-			if (Math.abs(flt(br.total_produced_sheets) - sumPcs) > 1e-6) {
-				frappe.model.set_value('Bundle Calculation', br.name, 'total_produced_sheets', sumPcs);
-			}
-			if (Math.abs(flt(br.total_achieved_weight) - sumNw) > 1e-6) {
-				frappe.model.set_value('Bundle Calculation', br.name, 'total_achieved_weight', sumNw);
-			}
-			if (frappe.meta.get_docfield('Bundle Calculation', 'total_produced_bag_pcs') && Math.abs(flt(br.total_produced_bag_pcs) - sumBagPcs) > 1e-6) {
-				frappe.model.set_value('Bundle Calculation', br.name, 'total_produced_bag_pcs', sumBagPcs);
-			}
-		} else {
-			br.total_produced_sheets = sumPcs;
-			br.total_achieved_weight = sumNw;
-			br.total_produced_bag_pcs = sumBagPcs;
+		const silent = !!(opts && opts.silent);
+		spr_assign_bundle_row_metric(br, 'total_produced_sheets', sumPcs, silent);
+		spr_assign_bundle_row_metric(br, 'total_achieved_weight', sumNw, silent);
+		if (frappe.meta.get_docfield('Bundle Calculation', 'total_produced_bag_pcs')) {
+			spr_assign_bundle_row_metric(br, 'total_produced_bag_pcs', sumBagPcs, silent);
 		}
 	});
 	let consumedHdr = 0;
@@ -450,8 +456,12 @@ function sprSyncBundleProducedSheets(frm, opts) {
 	if (frappe.meta.get_docfield('Shaft Production Run', 'custom_total_achieved_meter')) {
 		const cur = flt(frm.doc.custom_total_achieved_meter);
 		if (Math.abs(cur - consumedHdr) > 1e-6) {
-			if (cint(frm.doc.docstatus) !== 0) {
+			const silent = !!(opts && opts.silent);
+			if (silent || cint(frm.doc.docstatus) !== 0) {
 				frm.doc.custom_total_achieved_meter = consumedHdr;
+				if (silent) {
+					frm.refresh_field('custom_total_achieved_meter');
+				}
 			} else {
 				frm.set_value('custom_total_achieved_meter', consumedHdr);
 			}
@@ -752,6 +762,10 @@ frappe.ui.form.on('Shaft Production Run', {
 		if (cint(frm.doc.docstatus) !== 0) {
 			return;
 		}
+		// Bag / sheet-cutting bundle runs post PCS (not kg) — skip net-weight tolerance gate.
+		if (sprIsBag(frm) || sprIsSheetCutting(frm)) {
+			return;
+		}
 		if (!frappe.meta.get_docfield('Shaft Production Run', 'tolerance_override_approved')) {
 			return;
 		}
@@ -770,6 +784,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	after_save: function (frm) {
+		frm._spr_just_saved = Date.now();
 		spr_register_spr_page_buttons_after_save(frm);
 		spr_sync_no_of_rolls_created(frm, { silent: true });
 		spr_schedule_grid_ui_debounced(frm, { delay: 200 });
