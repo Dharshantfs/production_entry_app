@@ -1610,25 +1610,25 @@ class ShaftProductionRun(Document):
 			pass
 
 	def _spr_stamp_bag_sizes_on_roll_lines(self):
-		"""Fill Bag Size (custom_sheet_size) from FG item code when missing on bag SPR roll lines."""
+		"""Fill Bag Size (custom_bag_size) from FG item code when missing on bag SPR roll lines."""
 		if not cint(getattr(self, "custom_is_box_bag", 0)):
 			return
 		spi_meta = frappe.get_meta("Shaft Production Run Item")
-		if not spi_meta.has_field("custom_sheet_size"):
+		if not spi_meta.has_field("custom_bag_size"):
 			return
 		try:
 			from production_entry.production_planning.box_bag_api import resolve_bag_size_from_item_code
 		except Exception:
 			return
 		for row in self.items or []:
-			if _cstr(getattr(row, "custom_sheet_size", None)).strip():
+			if _cstr(getattr(row, "custom_bag_size", None)).strip():
 				continue
 			ic = _cstr(getattr(row, "item_code", None)).strip()
 			if not ic or not _is_bag_bundle_fg_code(ic):
 				continue
 			sz = _cstr(resolve_bag_size_from_item_code(ic)).strip()
 			if sz:
-				row.custom_sheet_size = sz
+				row.custom_bag_size = sz
 
 	def _spr_stamp_bag_sizes_on_bundle_rows(self):
 		"""Fill bundle_calculation.bag_size from FG item code when missing on bag SPR."""
@@ -5489,8 +5489,8 @@ def _spr_item_line_from_bundle(
 				bag_sz = _cstr(resolve_bag_size_from_item_code(item_code)).strip()
 			except Exception:
 				pass
-		if spi_meta.has_field("custom_sheet_size") and bag_sz:
-			row["custom_sheet_size"] = bag_sz
+		if spi_meta.has_field("custom_bag_size") and bag_sz:
+			row["custom_bag_size"] = bag_sz
 		if w_from_item > 0 and spi_meta.has_field("width_inch"):
 			row["width_inch"] = flt(w_from_item)
 	elif spi_meta.has_field("custom_sheet_size"):

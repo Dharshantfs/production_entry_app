@@ -58,6 +58,7 @@ const SPR_FABRIC100_ITEMS_GRID_HIDE = [
 	'custom_fabric_gsm',
 	'custom_lam_gsm',
 	'custom_sheet_size',
+	'custom_bag_size',
 	'custom_planned_sheets_pcs',
 	'custom_total_produced_sheets',
 	'custom_planned_bag_pcs',
@@ -2500,7 +2501,12 @@ frappe.ui.form.on('Bundle Calculation', {
 					if (line.gsm != null && line.gsm !== '') {
 						it.gsm = cint(line.gsm);
 					}
-					if (line.custom_sheet_size) {
+					if (line.custom_bag_size) {
+						it.custom_bag_size = line.custom_bag_size;
+					} else if (line.custom_sheet_size && sprIsBag(frm)) {
+						it.custom_bag_size = line.custom_sheet_size;
+					}
+					if (line.custom_sheet_size && !sprIsBag(frm)) {
 						it.custom_sheet_size = line.custom_sheet_size;
 					}
 					if (line.custom_planned_sheets_pcs != null) {
@@ -3447,8 +3453,6 @@ function spr_force_sheet_cutting_item_grid_columns(grid) {
 		'custom_sheet_size',
 		'custom_planned_sheets_pcs',
 		'custom_total_produced_sheets',
-		'custom_planned_bag_pcs',
-		'custom_achieved_bag_pcs',
 	];
 	show.forEach(function (fn) {
 		try {
@@ -3460,6 +3464,9 @@ function spr_force_sheet_cutting_item_grid_columns(grid) {
 			/* ignore */
 		}
 	});
+	spr_set_grid_col_hidden(grid, 'custom_bag_size', 1);
+	spr_set_grid_col_hidden(grid, 'custom_planned_bag_pcs', 1);
+	spr_set_grid_col_hidden(grid, 'custom_achieved_bag_pcs', 1);
 }
 
 function spr_bundle_bag_size_col() {
@@ -3553,9 +3560,11 @@ function sprToggleSheetCuttingRollUi(frm) {
 			spr_force_sheet_cutting_item_grid_columns(grid);
 		}
 		if (isBag && typeof grid.update_docfield_property === 'function') {
-			grid.update_docfield_property('custom_sheet_size', 'label', __('Bag Size'));
-			grid.update_docfield_property('custom_planned_bag_pcs', 'label', __('Planned Bag PCS'));
-			grid.update_docfield_property('custom_achieved_bag_pcs', 'label', __('Achieved Bag PCS'));
+			grid.update_docfield_property('custom_sheet_size', 'label', __('Sheet Size'));
+			grid.update_docfield_property('custom_bag_size', 'label', __('Bag Size'));
+		}
+		if (isSc && typeof grid.update_docfield_property === 'function') {
+			grid.update_docfield_property('custom_sheet_size', 'label', __('Sheet Size'));
 		}
 		spr_set_grid_col_hidden(grid, 'width_inch', hideWidthCol);
 		spr_sync_grid_columns_visible(frm, 'items');
@@ -3674,12 +3683,13 @@ function spr_get_items_list_view_config(frm) {
 				'item_code',
 				'batch_no',
 				'party_code',
-				'custom_sheet_size',
+				'custom_bag_size',
 				'custom_planned_bag_pcs',
 				'custom_achieved_bag_pcs',
 				'save_row',
 			],
 			hide: [
+				'custom_sheet_size',
 				'width_inch',
 				'meter_roll',
 				'produced_length_mtrs',
@@ -3719,6 +3729,7 @@ function spr_get_items_list_view_config(frm) {
 				'work_order',
 			],
 			hide: [
+				'custom_bag_size',
 				'width_inch',
 				'meter_roll',
 				'produced_length_mtrs',
@@ -4241,7 +4252,9 @@ function ensure_spr_item_stylesheet() {
 		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="sheet_cutting_size"],
 		.spr-grid-wrap .grid-row .col[data-fieldname="sheet_cutting_size"],
 		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="custom_sheet_size"],
-		.spr-grid-wrap .grid-row .col[data-fieldname="custom_sheet_size"] {
+		.spr-grid-wrap .grid-row .col[data-fieldname="custom_sheet_size"],
+		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="custom_bag_size"],
+		.spr-grid-wrap .grid-row .col[data-fieldname="custom_bag_size"] {
 			min-width: 120px;
 		}
 		.form-group[data-fieldname="items"] .grid-heading-row .grid-static-col.hidden,

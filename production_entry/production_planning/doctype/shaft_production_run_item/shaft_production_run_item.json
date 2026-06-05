@@ -11,6 +11,7 @@
   "quality",
   "color",
   "custom_sheet_size",
+  "custom_bag_size",
   "gsm",
   "custom_fabric_gsm",
   "custom_lam_gsm",
@@ -182,6 +183,12 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Sheet Size"
+  },
+  {
+   "fieldname": "custom_bag_size",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Bag Size"
   },
   {
    "fieldname": "custom_planned_sheets_pcs",
