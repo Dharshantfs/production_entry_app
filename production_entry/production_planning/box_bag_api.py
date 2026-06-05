@@ -312,6 +312,46 @@ def _bag_series_size_map():
 	return result
 
 
+def resolve_bag_size_from_item_code(item_code):
+	"""Resolve bag size (inches label) from FG item code — same rules as Planning Sheet."""
+	ic = str(item_code or "").strip()
+	if not ic:
+		return ""
+	parsers = []
+	try:
+		from production_entry.production_planning.scheduler_api import (
+			BOPP_BOX_BAG_PROCESS_CODES,
+			BOX_BAG_PROCESS_CODES,
+			W_CUT_D_CUT_FG_PROCESS_CODES,
+			_item_process_prefix,
+		)
+
+		pp = _item_process_prefix(ic)
+		if pp in BOPP_BOX_BAG_PROCESS_CODES:
+			from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
+
+			parsers.append(_parse_bopp_bag_item_code)
+		elif pp in W_CUT_D_CUT_FG_PROCESS_CODES:
+			parsers.append(_parse_dcut_bag_item_code)
+		elif pp in BOX_BAG_PROCESS_CODES:
+			parsers.append(_parse_box_bag_item_code)
+	except Exception:
+		pass
+	if not parsers:
+		parsers = [_parse_box_bag_item_code, _parse_dcut_bag_item_code]
+	bsm = _bag_series_size_map()
+	for fn in parsers:
+		try:
+			p = fn(ic) or {}
+			bs_id = str(p.get("bag_size_id") or "").strip()
+			if not bs_id:
+				continue
+			return str(bsm.get(bs_id) or bs_id).strip()
+		except Exception:
+			continue
+	return ""
+
+
 def _force_box_bag_unit_on_sheet(planning_sheet_name=None):
 	"""Ensure all 221-process rows on Planning Table have a box bag unit assigned.
 	 Handles item codes: 221N..., 6000-221N..., 6000-511-221N... (any number of leading segments).

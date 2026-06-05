@@ -1457,6 +1457,7 @@ class ShaftProductionRun(Document):
 		self.normalize_custom_unit()
 		self.sync_shaft_job_work_orders_from_plan()
 		self._spr_round_item_net_weights()
+		self._spr_stamp_bag_sizes_on_roll_lines()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.recalculate_job_achieved_meters()
@@ -1511,6 +1512,27 @@ class ShaftProductionRun(Document):
 			frappe.publish_realtime("shaft_production_run_updated", {"name": self.name})
 		except Exception:
 			pass
+
+	def _spr_stamp_bag_sizes_on_roll_lines(self):
+		"""Fill Bag Size (custom_sheet_size) from FG item code when missing on bag SPR roll lines."""
+		if not cint(getattr(self, "custom_is_box_bag", 0)):
+			return
+		spi_meta = frappe.get_meta("Shaft Production Run Item")
+		if not spi_meta.has_field("custom_sheet_size"):
+			return
+		try:
+			from production_entry.production_planning.box_bag_api import resolve_bag_size_from_item_code
+		except Exception:
+			return
+		for row in self.items or []:
+			if _cstr(getattr(row, "custom_sheet_size", None)).strip():
+				continue
+			ic = _cstr(getattr(row, "item_code", None)).strip()
+			if not ic or not _is_bag_bundle_fg_code(ic):
+				continue
+			sz = _cstr(resolve_bag_size_from_item_code(ic)).strip()
+			if sz:
+				row.custom_sheet_size = sz
 
 	def _spr_round_item_net_weights(self):
 		"""Keep roll net weight at 2 decimal kg (matches child DocType precision and manual totals)."""
@@ -2030,6 +2052,10 @@ class ShaftProductionRun(Document):
 		qty = flt(_spr_row_get(row, "net_weight"))
 		if qty <= 0:
 			qty = flt(_spr_row_get(row, "gross_weight"))
+		if qty <= 0 and cint(getattr(self, "custom_is_box_bag", 0)):
+			qty = flt(_spr_row_get(row, "custom_achieved_bag_pcs"))
+		if qty <= 0 and cint(getattr(self, "custom_is_sheet_cutting", 0)):
+			qty = flt(_spr_row_get(row, "custom_total_produced_sheets"))
 		return qty
 
 	def _set_stock_entry_spr_link(self, se):
@@ -2722,6 +2748,14 @@ class ShaftProductionRun(Document):
 		qty = sum(self._row_fg_qty(r) for r in rows)
 		if qty > 1e-9:
 			return qty
+		if cint(getattr(self, "custom_is_box_bag", 0)):
+			planned_bags = sum(flt(_spr_row_get(r, "custom_planned_bag_pcs")) for r in rows)
+			if planned_bags > 1e-9:
+				return planned_bags
+		if cint(getattr(self, "custom_is_sheet_cutting", 0)):
+			planned_sheets = sum(flt(_spr_row_get(r, "custom_planned_sheets_pcs")) for r in rows)
+			if planned_sheets > 1e-9:
+				return planned_sheets
 		planned = sum(flt(_spr_row_get(r, "planned_qty")) for r in rows)
 		if planned > 1e-9:
 			return planned
@@ -3888,9 +3922,7 @@ class ShaftProductionRun(Document):
 				continue
 			wo_groups.setdefault(wo_name, []).append(row)
 		if not wo_groups:
-			positive_rows = [
-				r for r in (self.items or []) if flt(r.get("net_weight") or r.get("gross_weight") or 0) > 0
-			]
+			positive_rows = [r for r in (self.items or []) if self._row_fg_qty(r) > 0]
 			if positive_rows:
 				frappe.throw(
 					_(
@@ -3902,7 +3934,8 @@ class ShaftProductionRun(Document):
 			frappe.throw(
 				_(
 					"Cannot submit SPR without any Work Order-linked production rows. "
-					"Create Entry and ensure each row has Work Order + produced weight."
+					"Create Entry and ensure each row has Work Order plus produced weight "
+					"(or achieved bag PCS for bag runs)."
 				),
 				title=_("No manufacturing rows"),
 			)
@@ -4248,7 +4281,8 @@ class ShaftProductionRun(Document):
 				frappe.throw(
 					_(
 						"SPR submit blocked: no Manufacture Stock Entry was created. "
-						"Check Work Order mapping and produced weights, then retry."
+						"Check Work Order mapping and produced quantity "
+						"(weight for roll runs, achieved bag PCS for bag runs), then retry."
 					),
 					title=_("No stock entry created"),
 				)
@@ -4362,19 +4396,34 @@ BUNDLE_CALC_DOCTYPE = "Bundle Calculation"
 SHEET_CUTTING_PROCESS_CODES = frozenset({"251", "252", "253", "254", "255"})
 
 
+def _spr_item_process_prefix(item_code: str) -> str:
+	"""Process prefix for FG items (design-first bag codes e.g. 6000-511-221…)."""
+	try:
+		from production_entry.production_planning.scheduler_api import _item_process_prefix
+
+		return _cstr(_item_process_prefix(item_code)).strip()
+	except Exception:
+		return spr_fg_item_process_code(item_code)
+
+
 def _is_sheet_cutting_fg_code(item_code: str) -> bool:
-	return spr_fg_item_process_code(item_code) in SHEET_CUTTING_PROCESS_CODES
+	return _spr_item_process_prefix(item_code) in SHEET_CUTTING_PROCESS_CODES
 
 
 def _is_box_bag_fg_code(item_code: str) -> bool:
-	return spr_fg_item_process_code(item_code) in BOX_BAG_PROCESS_CODES
+	try:
+		from production_entry.production_planning.scheduler_api import BOX_BAG_PROCESS_CODES
+
+		return _spr_item_process_prefix(item_code) in BOX_BAG_PROCESS_CODES
+	except Exception:
+		return False
 
 
 def _is_wcut_dcut_fg_code(item_code: str) -> bool:
 	try:
 		from production_entry.production_planning.scheduler_api import W_CUT_D_CUT_FG_PROCESS_CODES
 
-		return spr_fg_item_process_code(item_code) in W_CUT_D_CUT_FG_PROCESS_CODES
+		return _spr_item_process_prefix(item_code) in W_CUT_D_CUT_FG_PROCESS_CODES
 	except Exception:
 		return False
 
@@ -4418,6 +4467,7 @@ def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str =
 				from production_entry.production_planning.box_bag_api import (
 					_parse_box_bag_item_code,
 					_parse_dcut_bag_item_code,
+					resolve_bag_size_from_item_code,
 				)
 
 				p221 = _parse_box_bag_item_code(ic) or _parse_dcut_bag_item_code(ic) or {}
@@ -4437,7 +4487,7 @@ def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str =
 							except Exception:
 								out["color"] = ""
 					if not out["sheet_size"]:
-						out["sheet_size"] = _cstr(p221.get("bag_size") or "").strip()
+						out["sheet_size"] = _cstr(resolve_bag_size_from_item_code(ic)).strip()
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), "_spr_resolve_roll_line_specs:box_bag")
 		if out["quality"] and out["color"] and out["gsm"] > 0:
@@ -4599,6 +4649,15 @@ def _bundle_row_bag_size(row, item_code: str, *, for_bag_fg: bool = False) -> st
 	if sz:
 		return sz
 	if item_code:
+		try:
+			from production_entry.production_planning.box_bag_api import resolve_bag_size_from_item_code
+
+			if for_bag_fg:
+				sz = _cstr(resolve_bag_size_from_item_code(item_code)).strip()
+				if sz:
+					return sz
+		except Exception:
+			pass
 		return _cstr(_spr_resolve_roll_line_specs_from_item_code(item_code).get("sheet_size") or "")
 	return ""
 
@@ -5172,7 +5231,18 @@ def _spr_item_line_from_bundle(
 		"color": color,
 	}
 	if is_box_bag:
-		bag_sz = _cstr(getattr(bundle_row, "bag_size", None) or getattr(bundle_row, "sheet_cutting_size", None) or sz_from_item)
+		bag_sz = _cstr(
+			getattr(bundle_row, "bag_size", None)
+			or getattr(bundle_row, "sheet_cutting_size", None)
+			or sz_from_item
+		)
+		if not bag_sz and item_code:
+			try:
+				from production_entry.production_planning.box_bag_api import resolve_bag_size_from_item_code
+
+				bag_sz = _cstr(resolve_bag_size_from_item_code(item_code)).strip()
+			except Exception:
+				pass
 		if spi_meta.has_field("custom_sheet_size") and bag_sz:
 			row["custom_sheet_size"] = bag_sz
 		if w_from_item > 0 and spi_meta.has_field("width_inch"):
