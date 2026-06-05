@@ -130,67 +130,45 @@ function spr_grid_list_view_config(frm, fieldname) {
 	return { show: [], hide: [] };
 }
 
-/** Apply show/hide to every child field so stray Customize columns cannot drift header/body. */
+/** Apply show/hide only for configured columns — do not hide every other field (breaks grid headers). */
 function spr_apply_grid_list_view_config(grid, metaDoctype, cfg) {
-	if (!grid || !cfg || !(cfg.show || []).length) {
+	if (!grid || !cfg) {
 		return;
 	}
-	const showSet = {};
-	(cfg.show || []).forEach(function (f) {
-		showSet[f] = 1;
-	});
-	const hideSet = {};
-	(cfg.hide || []).forEach(function (f) {
-		hideSet[f] = 1;
-	});
-	(frappe.get_meta(metaDoctype).fields || []).forEach(function (df) {
-		if (!df || !df.fieldname) {
-			return;
+	(cfg.show || []).forEach(function (fn) {
+		const df = frappe.meta.get_docfield(metaDoctype, fn);
+		if (df) {
+			df.in_list_view = 1;
 		}
-		if (['Section Break', 'Column Break', 'Tab Break', 'Table'].indexOf(df.fieldtype) >= 0) {
-			return;
-		}
-		const fn = df.fieldname;
-		const visible = !!showSet[fn];
-		const hidden = !!hideSet[fn] || !visible;
 		try {
-			grid.update_docfield_property(fn, 'hidden', hidden ? 1 : 0);
-			grid.update_docfield_property(fn, 'in_list_view', visible ? 1 : 0);
+			grid.update_docfield_property(fn, 'hidden', 0);
+			grid.update_docfield_property(fn, 'in_list_view', 1);
 		} catch (e) {
 			/* ignore */
 		}
-		const metaDf = frappe.meta.get_docfield(metaDoctype, fn);
-		if (metaDf) {
-			metaDf.in_list_view = visible ? 1 : 0;
+	});
+	(cfg.hide || []).forEach(function (fn) {
+		const df = frappe.meta.get_docfield(metaDoctype, fn);
+		if (df) {
+			df.in_list_view = 0;
+		}
+		try {
+			grid.update_docfield_property(fn, 'hidden', 1);
+			grid.update_docfield_property(fn, 'in_list_view', 0);
+		} catch (e) {
+			/* ignore */
 		}
 	});
 }
 
-function spr_rebuild_grid_rows(frm, fieldname) {
-	if (!frm || frm._spr_grid_rebuild_guard === fieldname) {
-		return;
-	}
-	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
-	if (!fd || !fd.grid || typeof fd.grid.refresh !== 'function') {
-		return;
-	}
-	frm._spr_grid_rebuild_guard = fieldname;
-	try {
-		fd.grid.refresh();
-	} catch (e) {
-		frm._spr_grid_rebuild_guard = null;
-	}
-}
-
 /**
- * Sync visible columns then rebuild grid rows so header and body stay aligned after reopen.
+ * Sync visible columns + header/body scroll — never grid.refresh() here (breaks headers / collapses rows).
  */
-function spr_sync_grid_columns_visible(frm, fieldname, opts) {
+function spr_sync_grid_columns_visible(frm, fieldname) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
 	if (!fd || !fd.grid) {
 		return;
 	}
-	const settings = opts || {};
 	const grid = fd.grid;
 	const metaDoctype = SPR_GRID_META_BY_FIELD[fieldname];
 	try {
@@ -198,15 +176,14 @@ function spr_sync_grid_columns_visible(frm, fieldname, opts) {
 			grid.visible_columns = null;
 		}
 		const cfg = spr_grid_list_view_config(frm, fieldname);
-		if (metaDoctype && (cfg.show || []).length) {
+		if (metaDoctype && ((cfg.show || []).length || (cfg.hide || []).length)) {
 			spr_apply_grid_list_view_config(grid, metaDoctype, cfg);
 		}
-
 		if (typeof grid.setup_visible_columns === 'function') {
 			grid.setup_visible_columns();
 		}
-		if (settings.rebuild !== false) {
-			spr_rebuild_grid_rows(frm, fieldname);
+		if (typeof grid.refresh_header === 'function') {
+			grid.refresh_header();
 		}
 		spr_sync_grid_header_body_scroll(fd);
 		const $w = fd.$wrapper;
@@ -217,7 +194,7 @@ function spr_sync_grid_columns_visible(frm, fieldname, opts) {
 			});
 		}
 	} catch (e) {
-		frm._spr_grid_rebuild_guard = null;
+		/* ignore desk variants */
 	}
 }
 
@@ -238,7 +215,7 @@ function spr_apply_grid_wrap_classes(frm) {
 	});
 }
 
-/** One-shot layout pass after open / refresh / expand row — prevents collapsed/misaligned grids. */
+/** One-shot column sync after open / refresh — light touch, no grid.refresh(). */
 function spr_layout_all_grids(frm, opts) {
 	if (!frm || !frm.fields_dict) {
 		return;
@@ -250,7 +227,7 @@ function spr_layout_all_grids(frm, opts) {
 		sprToggleSheetCuttingUi(frm);
 	} else {
 		SPR_SPR_CHILD_TABLE_FIELDS.forEach(function (fn) {
-			spr_sync_grid_columns_visible(frm, fn, { rebuild: true });
+			spr_sync_grid_columns_visible(frm, fn);
 		});
 	}
 	spr_hide_duplicate_produced_gsm_columns(frm);
@@ -278,7 +255,7 @@ function spr_schedule_grid_ui_debounced(frm, opts) {
 		}
 		if (settings.columns !== false) {
 			SPR_SPR_CHILD_TABLE_FIELDS.forEach(function (fn) {
-				spr_sync_grid_columns_visible(frm, fn, { rebuild: true });
+				spr_sync_grid_columns_visible(frm, fn);
 			});
 		}
 	}, settings.delay != null ? settings.delay : 220);
@@ -682,10 +659,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		}, 400);
 		setTimeout(function () {
 			spr_layout_all_grids(frm);
-		}, 900);
-		setTimeout(function () {
-			spr_layout_all_grids(frm, { toggleUi: false });
-		}, 1600);
+		}, 600);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
@@ -838,15 +812,11 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_register_spr_page_buttons(frm);
 		spr_layout_all_grids(frm, { toggleUi: false });
 		
-		// Keep one lightweight retry only (old code had 4 retries, causing UI lag on large grids).
 		setTimeout(function () {
 			if (!spr_should_skip_desk_auto_sync(frm)) {
 				sprScheduleTotalProducedSync(frm, { silent: true });
 			}
 		}, 400);
-		setTimeout(function () {
-			spr_layout_all_grids(frm, { toggleUi: false });
-		}, 650);
 		
 		setTimeout(function () {
 			spr_register_spr_page_buttons(frm);
@@ -3904,15 +3874,10 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	const grid = fd.grid;
 	let hooked = false;
 	function afterGridPaint() {
-		if (frm._spr_grid_rebuild_guard === fieldname) {
-			spr_sync_grid_header_body_scroll(fd);
-			frm._spr_grid_rebuild_guard = null;
-			return;
-		}
 		if (fieldname === 'items') {
 			spr_schedule_grid_ui_debounced(frm, { delay: 160, columns: false });
 		} else {
-			spr_sync_grid_columns_visible(frm, fieldname, { rebuild: true });
+			spr_sync_grid_columns_visible(frm, fieldname);
 		}
 	}
 	function wrap(method) {
@@ -4084,7 +4049,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '19';
+	const sprItemsCssVer = '20';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -4224,38 +4189,9 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
 		/* Header/body column alignment — hidden cols must not reserve width */
 		.spr-grid-wrap .form-grid,
-		.spr-items-wrap .form-grid,
-		.spr-grid-wrap .grid-heading-row,
-		.spr-items-wrap .grid-heading-row,
-		.spr-grid-wrap .grid-body,
-		.spr-items-wrap .grid-body,
-		.spr-grid-wrap .datatable,
-		.spr-items-wrap .datatable {
+		.spr-items-wrap .form-grid {
 			width: 100%;
 			box-sizing: border-box;
-		}
-		.spr-grid-wrap .grid-heading-row,
-		.spr-items-wrap .grid-heading-row {
-			overflow: hidden;
-		}
-		.spr-grid-wrap .grid-heading-row .grid-static-col,
-		.spr-grid-wrap .grid-row .col,
-		.spr-items-wrap .grid-heading-row .grid-static-col,
-		.spr-items-wrap .grid-row .col {
-			flex: 0 0 auto;
-			min-width: 72px;
-		}
-		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="item_code"],
-		.spr-grid-wrap .grid-row .col[data-fieldname="item_code"],
-		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="bag_size"],
-		.spr-grid-wrap .grid-row .col[data-fieldname="bag_size"],
-		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="sheet_cutting_size"],
-		.spr-grid-wrap .grid-row .col[data-fieldname="sheet_cutting_size"],
-		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="custom_sheet_size"],
-		.spr-grid-wrap .grid-row .col[data-fieldname="custom_sheet_size"],
-		.spr-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="custom_bag_size"],
-		.spr-grid-wrap .grid-row .col[data-fieldname="custom_bag_size"] {
-			min-width: 120px;
 		}
 		.form-group[data-fieldname="items"] .grid-heading-row .grid-static-col.hidden,
 		.form-group[data-fieldname="items"] .grid-row .col.hidden,
@@ -4285,7 +4221,6 @@ function ensure_spr_item_stylesheet() {
 			margin: 0 !important;
 			border: none !important;
 			overflow: hidden !important;
-			flex: 0 0 0 !important;
 		}
 	`;
 	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);
