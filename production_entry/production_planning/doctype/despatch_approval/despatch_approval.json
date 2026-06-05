@@ -77,7 +77,7 @@
  "module": "Production Planning",
  "name": "Despatch Approval",
  "naming_rule": "Expression",
- "autoname": "hash",
+ "autoname": "format:DESP-APPR-{YYYY}-{#####}",
  "owner": "Administrator",
  "permissions": [
   {

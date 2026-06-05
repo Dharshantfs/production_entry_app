@@ -47,13 +47,20 @@ function _refreshLogisticsTransferFlag(frm) {
 
 function _disable_native_barcode_scanner(frm) {
 	if (!_is_logistics_material_transfer(frm)) return;
-	if (!frm.barcode_scanner) return;
-	const noop = function () {};
-	frm.barcode_scanner.process_scan = noop;
-	frm.barcode_scanner.clean_up = noop;
-	frm.barcode_scanner.update_item_quantity = noop;
-	frm.barcode_scanner.update_item = noop;
-	frm.barcode_scanner.scan_barcode = noop;
+	if (frm.barcode_scanner) {
+		const noop = function () {};
+		frm.barcode_scanner.process_scan = noop;
+		frm.barcode_scanner.clean_up = noop;
+		frm.barcode_scanner.update_item_quantity = noop;
+		frm.barcode_scanner.update_item = noop;
+		frm.barcode_scanner.scan_barcode = noop;
+	}
+	["scan_barcode", "custom_barcode_scanner"].forEach((fieldname) => {
+		const fd = frm.fields_dict[fieldname];
+		if (!fd || !fd.$input) return;
+		fd.$input.off("change.barcode_scan");
+		fd.$input.off("keydown.barcode_scan");
+	});
 }
 
 function _protect_transfer_row_qty(frm) {
@@ -72,20 +79,56 @@ function _bind_scan_input(frm) {
 		if (!frm.fields_dict[fieldname] || !frm.fields_dict[fieldname].$input) return;
 		const $input = frm.fields_dict[fieldname].$input;
 		$input.off(".transfer_scan");
-		$input.on("change.transfer_scan keypress.transfer_scan", function (e) {
-			if (e.type === "keypress" && e.which !== 13) return;
+		$input.on("keypress.transfer_scan", function (e) {
+			if (e.which !== 13) return;
+			e.preventDefault();
+			e.stopImmediatePropagation();
 			const val = ($input.val() || "").trim();
-			if (!val) return;
-			if (fieldname === "scan_barcode") {
-				frappe.model.set_value(frm.doctype, frm.docname, "scan_barcode", val).then(() => {
-					frm.trigger("process_barcode_scan");
-				});
-			} else {
-				frappe.model.set_value(frm.doctype, frm.docname, "custom_barcode_scanner", val).then(() => {
-					frm.trigger("process_barcode_scan");
-				});
-			}
+			$input.val("");
+			if (frm.doc[fieldname]) frm.doc[fieldname] = "";
+			if (val) _run_transfer_scan(frm, val);
 		});
+	});
+}
+
+function _run_transfer_scan(frm, barcode) {
+	if (!barcode || !_is_logistics_material_transfer(frm)) return;
+	if (frm._pe_scan_busy) return;
+	frm._pe_scan_busy = true;
+	const done = () => {
+		setTimeout(() => {
+			frm._pe_scan_busy = false;
+		}, 400);
+	};
+
+	if (!frm.doc.name || frm.is_new()) {
+		_scan_locally(frm, barcode);
+		done();
+		return;
+	}
+
+	frappe.call({
+		method: "production_entry.production_planning.transfer_logistics.record_transfer_barcode_scan",
+		args: { stock_entry: frm.doc.name, barcode: barcode },
+		callback: function (r) {
+			const msg = r.message || {};
+			if (!msg.ok) {
+				_scan_locally(frm, barcode);
+				done();
+				return;
+			}
+			_apply_scan_to_locals(frm, msg.row_name, msg.scanned_qty, msg.qty);
+			frappe.show_alert({
+				message: __("Row #{0}: Scanned {1} / {2}", [msg.idx, msg.scanned_qty, msg.qty]),
+				indicator: "green",
+			});
+			frappe.utils.play_sound("submit");
+			done();
+		},
+		error: function () {
+			_scan_locally(frm, barcode);
+			done();
+		},
 	});
 }
 
@@ -213,14 +256,20 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	scan_barcode(frm) {
-		if (_is_logistics_material_transfer(frm)) {
-			frm.trigger("process_barcode_scan");
+		if (!_is_logistics_material_transfer(frm)) return;
+		const val = (frm.doc.scan_barcode || "").trim();
+		if (val) {
+			frm.doc.scan_barcode = "";
+			_run_transfer_scan(frm, val);
 		}
 	},
 
 	custom_barcode_scanner(frm) {
-		if (_is_logistics_material_transfer(frm)) {
-			frm.trigger("process_barcode_scan");
+		if (!_is_logistics_material_transfer(frm)) return;
+		const val = (frm.doc.custom_barcode_scanner || "").trim();
+		if (val) {
+			frm.doc.custom_barcode_scanner = "";
+			_run_transfer_scan(frm, val);
 		}
 	},
 
@@ -335,40 +384,11 @@ frappe.ui.form.on("Stock Entry", {
 	},
 
 	process_barcode_scan: function (frm) {
-		let barcode = (frm.doc.scan_barcode || frm.doc.custom_barcode_scanner || "").trim();
+		const barcode = (frm.doc.scan_barcode || frm.doc.custom_barcode_scanner || "").trim();
 		if (!barcode || !_is_logistics_material_transfer(frm)) return;
-
-		if (frm.doc.scan_barcode) frappe.model.set_value(frm.doctype, frm.docname, "scan_barcode", "");
-		if (frm.doc.custom_barcode_scanner)
-			frappe.model.set_value(frm.doctype, frm.docname, "custom_barcode_scanner", "");
-
-		if (!frm.doc.name || frm.is_new()) {
-			_scan_locally(frm, barcode);
-			return;
-		}
-
-		frappe.call({
-			method: "production_entry.production_planning.transfer_logistics.record_transfer_barcode_scan",
-			args: { stock_entry: frm.doc.name, barcode: barcode },
-			callback: function (r) {
-				const msg = r.message || {};
-				if (!msg.ok) {
-					frappe.msgprint({
-						title: __("Scan failed"),
-						indicator: "red",
-						message: msg.error || __("Could not record scan"),
-					});
-					frappe.utils.play_sound("error");
-					return;
-				}
-				_apply_scan_to_locals(frm, msg.row_name, msg.scanned_qty, msg.qty);
-				frappe.show_alert({
-					message: __("Row #{0}: Scanned {1} / {2}", [msg.idx, msg.scanned_qty, msg.qty]),
-					indicator: "green",
-				});
-				frappe.utils.play_sound("submit");
-			},
-		});
+		frm.doc.scan_barcode = "";
+		frm.doc.custom_barcode_scanner = "";
+		_run_transfer_scan(frm, barcode);
 	},
 });
 

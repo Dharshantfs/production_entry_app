@@ -187,46 +187,54 @@
             </div>
           </div>
 
-          <div v-if="card.approved_ready_dn?.length" class="lk-history-panel">
-            <div class="lk-history-head">Approved — create Delivery Note</div>
+          <div v-if="card.approved_approvals?.length" class="lk-history-panel">
+            <div class="lk-history-head">Approved despatch</div>
             <div class="lk-history-list">
               <div
-                v-for="da in card.approved_ready_dn"
+                v-for="da in card.approved_approvals"
                 :key="'a-' + da.name"
-                class="lk-history-chip is-done"
+                class="lk-da-card"
+                :class="despatchCardClass(da)"
                 @click.stop="openDespatchApproval(da.name)"
               >
-                <span class="lk-history-badge">Approved</span>
-                <span class="lk-history-main">
-                  <span class="lk-history-ste">{{ da.name }}</span>
-                  <span class="lk-history-meta" v-if="da.order_codes_label">Order {{ da.order_codes_label }}</span>
-                </span>
-                <button type="button" class="lk-dn-btn" @click.stop="createDeliveryNote(da.name)">
-                  Create Delivery Note
+                <div class="lk-da-top">
+                  <span class="lk-da-badge">{{ despatchCardBadge(da) }}</span>
+                  <span class="lk-da-id">{{ da.name }}</span>
+                </div>
+                <div class="lk-da-grid">
+                  <div class="lk-da-row">
+                    <span class="lk-da-label">Order code</span>
+                    <span class="lk-da-val">{{ da.order_codes_label || "—" }}</span>
+                  </div>
+                  <div class="lk-da-row">
+                    <span class="lk-da-label">Customer</span>
+                    <span class="lk-da-val">{{ da.customers_label || "—" }}</span>
+                  </div>
+                  <div class="lk-da-row">
+                    <span class="lk-da-label">Items / Rolls</span>
+                    <span class="lk-da-val">{{ da.item_count || 0 }} · {{ da.roll_count || 0 }} rolls</span>
+                  </div>
+                  <div class="lk-da-row">
+                    <span class="lk-da-label">Qty</span>
+                    <span class="lk-da-val">{{ da.qty_total || 0 }} Kg</span>
+                  </div>
+                </div>
+                <button
+                  v-if="da.dn_docstatus < 1"
+                  type="button"
+                  class="lk-dn-btn"
+                  @click.stop="openDeliveryNote(da)"
+                >
+                  {{ despatchDnButtonLabel(da) }}
                 </button>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="card.despatched_approvals?.length" class="lk-history-panel">
-            <div class="lk-history-head">Despatched</div>
-            <div class="lk-history-list">
-              <div
-                v-for="da in card.despatched_approvals"
-                :key="'d-' + da.name"
-                class="lk-history-chip is-despatched"
-                @click.stop="openDespatchApproval(da.name)"
-              >
-                <span class="lk-history-badge">Despatch</span>
-                <span class="lk-history-main">
-                  <span class="lk-history-ste">{{ da.name }}</span>
-                  <span class="lk-history-meta">
-                    <span v-if="da.order_codes_label">Order {{ da.order_codes_label }}</span>
-                    <span v-if="da.roll_count"> · {{ da.roll_count }} roll(s)</span>
-                    <span v-if="da.delivery_note"> · {{ da.delivery_note }}</span>
-                  </span>
-                </span>
-                <span class="lk-history-go">Open →</span>
+                <button
+                  v-else
+                  type="button"
+                  class="lk-dn-btn lk-dn-btn-done"
+                  @click.stop="openDeliveryNote(da)"
+                >
+                  Despatched — Open DN
+                </button>
               </div>
             </div>
           </div>
@@ -490,16 +498,61 @@ function openDespatchApproval(name) {
   frappe.set_route("despatch-approval-dashboard");
 }
 
-async function createDeliveryNote(approvalName) {
+function despatchCardBadge(da) {
+  if (da.dn_docstatus >= 1 || da.card_status === "Despatched") return "Despatched";
+  if (da.delivery_note || da.card_status === "Draft DN") return "Draft DN";
+  return "Approved";
+}
+
+function despatchCardClass(da) {
+  if (da.dn_docstatus >= 1) return "is-despatched";
+  if (da.delivery_note) return "is-draft-dn";
+  return "is-done";
+}
+
+function despatchDnButtonLabel(da) {
+  if (da.delivery_note) return __("Open Draft DN");
+  return __("Create Delivery Note");
+}
+
+async function openDeliveryNote(da) {
+  if (!da?.name) return;
+  if (da.delivery_note) {
+    frappe.set_route("Form", "Delivery Note", da.delivery_note);
+    return;
+  }
   try {
     const r = await frappe.call({
-      method: `${DESPATCH_API}.create_delivery_note_from_despatch_approval`,
-      args: { name: approvalName },
+      method: `${DESPATCH_API}.prepare_delivery_note_from_despatch_approval`,
+      args: { name: da.name },
     });
-    const dn = r.message?.delivery_note;
-    frappe.show_alert({ message: __("Delivery Note {0} created", [dn]), indicator: "green" });
-    if (dn) frappe.set_route("Form", "Delivery Note", dn);
-    await loadDespatchCards();
+    const msg = r.message || {};
+    if (msg.mode === "existing" && msg.delivery_note) {
+      frappe.set_route("Form", "Delivery Note", msg.delivery_note);
+      return;
+    }
+    if (msg.mode !== "new" || !msg.doc) {
+      frappe.msgprint(__("Could not open Delivery Note."));
+      return;
+    }
+    frappe.model.with_doctype("Delivery Note", () => {
+      const local = frappe.model.make_new_doc_and_get_name("Delivery Note");
+      const target = locals["Delivery Note"][local];
+      const src = msg.doc;
+      Object.keys(src).forEach((k) => {
+        if (["items", "doctype", "name", "__islocal", "__unsaved"].includes(k)) return;
+        target[k] = src[k];
+      });
+      (src.items || []).forEach((row) => {
+        const child = frappe.model.add_child(target, "Delivery Note Item", "items");
+        Object.keys(row).forEach((k) => {
+          if (["name", "parent", "parenttype", "parentfield", "doctype"].includes(k)) return;
+          child[k] = row[k];
+        });
+      });
+      frappe.route_options = { despatch_approval: da.name };
+      frappe.set_route("Form", "Delivery Note", local);
+    });
   } catch (e) {
     frappe.msgprint(e?.message || String(e));
   }
@@ -974,19 +1027,96 @@ onUnmounted(() => {
   border-color: #bae6fd;
   background: #f0f9ff;
 }
+.lk-da-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  cursor: pointer;
+}
+.lk-da-card.is-draft-dn {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.lk-da-card.is-despatched {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+}
+.lk-da-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lk-da-badge {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #16a34a;
+  color: #fff;
+}
+.lk-da-card.is-draft-dn .lk-da-badge {
+  background: #d97706;
+}
+.lk-da-card.is-despatched .lk-da-badge {
+  background: #0369a1;
+}
+.lk-da-id {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: #334155;
+}
+.lk-da-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+}
+.lk-da-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.lk-da-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+  letter-spacing: 0.03em;
+}
+.lk-da-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-word;
+}
 .lk-dn-btn {
+  align-self: flex-start;
   flex-shrink: 0;
-  padding: 6px 12px;
+  padding: 8px 14px;
   border-radius: 8px;
   border: none;
   background: #16a34a;
   color: #fff;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
 }
 .lk-dn-btn:hover {
   background: #15803d;
+}
+.lk-dn-btn-done {
+  background: #0369a1;
+}
+.lk-dn-btn-done:hover {
+  background: #075985;
 }
 .lk-history-go {
   font-size: 12px;

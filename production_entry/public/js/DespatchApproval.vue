@@ -92,16 +92,16 @@
                 <i class="fa fa-times"></i> Reject
               </button>
             </template>
-            <div v-else-if="selected.status === 'Approved'" class="status-indicator" style="display:flex;gap:10px;align-items:center">
-              <span class="status-badge-lg approved"><i class="fa fa-check-circle"></i> APPROVED</span>
+            <div v-else-if="selected.status === 'Approved'" class="status-indicator" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span class="status-badge-lg approved"><i class="fa fa-check-circle"></i> {{ dnStatusLabel }}</span>
               <button
-                v-if="!selected.delivery_note"
+                v-if="dnDocstatus < 1"
                 type="button"
                 class="btn btn-success btn-lg"
                 :disabled="busy"
-                @click="createDn"
+                @click="openDeliveryNoteFlow"
               >
-                Create Delivery Note
+                {{ dnButtonLabel }}
               </button>
               <a v-else href="#" class="btn btn-default btn-lg" @click.prevent="openDn(selected.delivery_note)">
                 Open {{ selected.delivery_note }}
@@ -222,6 +222,19 @@ const totalQty = computed(() => {
   return Math.round(s * 1000) / 1000;
 });
 
+const dnDocstatus = computed(() => parseInt(selected.value?.dn_docstatus, 10) || 0);
+
+const dnStatusLabel = computed(() => {
+  if (dnDocstatus.value >= 1) return "DESPATCHED";
+  if (selected.value?.delivery_note) return "DRAFT DN";
+  return "APPROVED";
+});
+
+const dnButtonLabel = computed(() => {
+  if (selected.value?.delivery_note) return __("Open Draft DN");
+  return __("Create Delivery Note");
+});
+
 function formatQty(q) {
   const n = parseFloat(q);
   return Number.isFinite(n) ? (Math.round(n * 1000) / 1000).toString() : "0";
@@ -303,6 +316,7 @@ async function select(item) {
   });
   const doc = r.message || {};
   lines.value = doc.lines || [];
+  selected.value = { ...item, ...doc };
   await nextTick();
   initSortable();
 }
@@ -354,20 +368,45 @@ function approve() {
   );
 }
 
-async function createDn() {
+async function openDeliveryNoteFlow() {
   if (!selected.value) return;
+  if (selected.value.delivery_note) {
+    openDn(selected.value.delivery_note);
+    return;
+  }
   busy.value = true;
   try {
     const r = await frappe.call({
-      method: `${API}.create_delivery_note_from_despatch_approval`,
+      method: `${API}.prepare_delivery_note_from_despatch_approval`,
       args: { name: selected.value.name },
     });
-    const dn = r.message?.delivery_note;
-    frappe.show_alert({ message: __("Delivery Note {0}", [dn]), indicator: "green" });
-    await loadList();
-    const hit = list.value.find((x) => x.name === selected.value?.name);
-    if (hit) await select(hit);
-    if (dn) openDn(dn);
+    const msg = r.message || {};
+    if (msg.mode === "existing" && msg.delivery_note) {
+      openDn(msg.delivery_note);
+      return;
+    }
+    if (msg.mode !== "new" || !msg.doc) {
+      frappe.msgprint(__("Could not open Delivery Note."));
+      return;
+    }
+    frappe.model.with_doctype("Delivery Note", () => {
+      const local = frappe.model.make_new_doc_and_get_name("Delivery Note");
+      const target = locals["Delivery Note"][local];
+      const src = msg.doc;
+      Object.keys(src).forEach((k) => {
+        if (["items", "doctype", "name", "__islocal", "__unsaved"].includes(k)) return;
+        target[k] = src[k];
+      });
+      (src.items || []).forEach((row) => {
+        const child = frappe.model.add_child(target, "Delivery Note Item", "items");
+        Object.keys(row).forEach((k) => {
+          if (["name", "parent", "parenttype", "parentfield", "doctype"].includes(k)) return;
+          child[k] = row[k];
+        });
+      });
+      frappe.route_options = { despatch_approval: selected.value.name };
+      frappe.set_route("Form", "Delivery Note", local);
+    });
   } finally {
     busy.value = false;
   }

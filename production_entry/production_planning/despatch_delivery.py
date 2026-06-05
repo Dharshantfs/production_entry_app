@@ -10,8 +10,8 @@ from frappe.utils import flt, getdate
 from production_entry.production_planning.despatch_logistics import _cstr, _fg_warehouse_for_company, _resolve_customer
 
 
-def make_delivery_note_from_despatch(despatch_approval):
-	"""Build and insert draft Delivery Note from approved despatch lines."""
+def build_delivery_note_from_despatch(despatch_approval):
+	"""Build Delivery Note doc (not saved) from approved despatch lines."""
 	da = despatch_approval
 	if isinstance(da, str):
 		da = frappe.get_doc("Despatch Approval", da)
@@ -57,6 +57,11 @@ def make_delivery_note_from_despatch(despatch_approval):
 
 	if not dn.items:
 		frappe.throw(_("No delivery lines to create."))
+	return dn
 
+
+def make_delivery_note_from_despatch(despatch_approval):
+	"""Insert draft Delivery Note (legacy auto-create path)."""
+	dn = build_delivery_note_from_despatch(despatch_approval)
 	dn.insert(ignore_permissions=True)
 	return dn.name

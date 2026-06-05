@@ -21,6 +21,7 @@ from production_entry.production_planning.transfer_logistics import (
 	_chart_fetch_kwargs,
 	_parse_chart_rows,
 	_row_matches_filters,
+	_transfer_date_in_scope,
 	_transfer_row_unit_is_unassigned,
 	_user_can_approve_transfer,
 	get_logistics_companies,
@@ -100,32 +101,46 @@ def get_despatch_company_cards(
 		)
 		enriched = []
 		for da in approvals or []:
+			despatch_date = _cstr(da.get("modified") or da.get("creation"))[:10]
+			if not _transfer_date_in_scope(despatch_date, view_scope, date, week, month):
+				continue
 			lines = frappe.get_all(
 				"Despatch Approval Line",
 				filters={"parent": da.name},
-				fields=["party_code", "customer_name", "qty", "batch_no"],
+				fields=["party_code", "customer_name", "item_code", "qty", "batch_no"],
 				limit_page_length=200,
 			)
 			codes = []
+			customers = []
+			items = set()
 			batches = set()
 			for ln in lines:
 				pc = _cstr(ln.get("party_code"))
 				if pc and pc not in codes:
 					codes.append(pc)
+				cn = _cstr(ln.get("customer_name"))
+				if cn and cn not in customers:
+					customers.append(cn)
+				ic = _cstr(ln.get("item_code"))
+				if ic:
+					items.add(ic)
 				bn = _cstr(ln.get("batch_no"))
 				if bn:
 					batches.add(bn)
 			if oc and not any(oc in _cstr(x).lower() for x in codes):
 				continue
-			total_qty = sum(flt(ln.get("qty")) for ln in lines)
+			total_qty = round(sum(flt(ln.get("qty")) for ln in lines), 3)
 			dn_name = _cstr(da.delivery_note)
 			dn_docstatus = 0
 			if dn_name and frappe.db.exists("Delivery Note", dn_name):
 				dn_docstatus = cint(frappe.db.get_value("Delivery Note", dn_name, "docstatus") or 0)
 			roll_count = len(batches) or len(lines)
+			item_count = len(items) or len(lines)
 			card_status = da.status
 			if da.status == "Approved" and dn_docstatus >= 1:
 				card_status = "Despatched"
+			elif da.status == "Approved" and dn_name and dn_docstatus == 0:
+				card_status = "Draft DN"
 			enriched.append(
 				{
 					"name": da.name,
@@ -134,9 +149,13 @@ def get_despatch_company_cards(
 					"delivery_note": dn_name,
 					"dn_docstatus": dn_docstatus,
 					"roll_count": roll_count,
+					"item_count": item_count,
+					"line_count": len(lines),
 					"order_codes_label": ", ".join(codes),
+					"customers_label": ", ".join(customers),
 					"qty_total": total_qty,
 					"creation": da.creation,
+					"despatch_date": despatch_date,
 				}
 			)
 		pending = [a for a in enriched if a["status"] in ("Pending Approval", "Draft")]
@@ -391,6 +410,16 @@ def get_despatch_approvals(status_filter=None, limit=200, from_date=None, to_dat
 		row["order_codes_label"] = ", ".join(codes)
 		row["customers_label"] = ", ".join(customers_by_parent.get(row.name, []))
 		row["despatch_date"] = str(row.get("creation") or "")[:10]
+		dn_name = _cstr(row.get("delivery_note"))
+		row["dn_docstatus"] = 0
+		if dn_name and frappe.db.exists("Delivery Note", dn_name):
+			row["dn_docstatus"] = cint(frappe.db.get_value("Delivery Note", dn_name, "docstatus") or 0)
+		if row.get("status") == "Approved" and row["dn_docstatus"] >= 1:
+			row["card_status"] = "Despatched"
+		elif row.get("status") == "Approved" and dn_name:
+			row["card_status"] = "Draft DN"
+		else:
+			row["card_status"] = row.get("status")
 		if oc and not any(oc in _cstr(c).lower() for c in codes):
 			continue
 		out.append(row)
@@ -401,7 +430,34 @@ def get_despatch_approvals(status_filter=None, limit=200, from_date=None, to_dat
 def get_despatch_approval_detail(name=None):
 	if not name or not frappe.db.exists("Despatch Approval", name):
 		frappe.throw(_("Despatch Approval not found."))
-	return frappe.get_doc("Despatch Approval", name).as_dict()
+	doc = frappe.get_doc("Despatch Approval", name).as_dict()
+	dn_name = _cstr(doc.get("delivery_note"))
+	doc["dn_docstatus"] = 0
+	if dn_name and frappe.db.exists("Delivery Note", dn_name):
+		doc["dn_docstatus"] = cint(frappe.db.get_value("Delivery Note", dn_name, "docstatus") or 0)
+	lines = doc.get("lines") or []
+	codes = []
+	customers = []
+	items = set()
+	batches = set()
+	for ln in lines:
+		pc = _cstr(ln.get("party_code"))
+		if pc and pc not in codes:
+			codes.append(pc)
+		cn = _cstr(ln.get("customer_name"))
+		if cn and cn not in customers:
+			customers.append(cn)
+		ic = _cstr(ln.get("item_code"))
+		if ic:
+			items.add(ic)
+		bn = _cstr(ln.get("batch_no"))
+		if bn:
+			batches.add(bn)
+	doc["order_codes_label"] = ", ".join(codes)
+	doc["customers_label"] = ", ".join(customers)
+	doc["item_count"] = len(items) or len(lines)
+	doc["roll_count"] = len(batches) or len(lines)
+	return doc
 
 
 @frappe.whitelist()
@@ -466,20 +522,45 @@ def reorder_despatch_approval_lines(name=None, line_names=None):
 
 
 @frappe.whitelist()
-def create_delivery_note_from_despatch_approval(name=None):
-	"""Create draft Delivery Note after despatch approval (operator action)."""
+def prepare_delivery_note_from_despatch_approval(name=None):
+	"""Return unsaved Delivery Note doc for desk form (operator saves manually)."""
 	if not name or not frappe.db.exists("Despatch Approval", name):
 		frappe.throw(_("Despatch Approval not found."))
 	da = frappe.get_doc("Despatch Approval", name)
 	if da.status != "Approved":
 		frappe.throw(_("Despatch must be approved before creating Delivery Note."))
 	if da.delivery_note and frappe.db.exists("Delivery Note", da.delivery_note):
-		return {"ok": True, "delivery_note": da.delivery_note}
+		ds = cint(frappe.db.get_value("Delivery Note", da.delivery_note, "docstatus") or 0)
+		return {
+			"ok": True,
+			"mode": "existing",
+			"delivery_note": da.delivery_note,
+			"docstatus": ds,
+		}
+	from production_entry.production_planning.despatch_delivery import build_delivery_note_from_despatch
 
-	from production_entry.production_planning.despatch_delivery import make_delivery_note_from_despatch
+	dn = build_delivery_note_from_despatch(da)
+	return {"ok": True, "mode": "new", "doc": dn.as_dict(), "despatch_approval": da.name}
 
-	dn_name = make_delivery_note_from_despatch(da)
-	da.delivery_note = dn_name
-	da.save(ignore_permissions=True)
+
+@frappe.whitelist()
+def link_delivery_note_to_despatch(despatch_approval=None, delivery_note=None):
+	"""Link saved Delivery Note back to Despatch Approval."""
+	da_name = _cstr(despatch_approval)
+	dn_name = _cstr(delivery_note)
+	if not da_name or not frappe.db.exists("Despatch Approval", da_name):
+		frappe.throw(_("Despatch Approval not found."))
+	if not dn_name or not frappe.db.exists("Delivery Note", dn_name):
+		frappe.throw(_("Delivery Note not found."))
+	cur = _cstr(frappe.db.get_value("Despatch Approval", da_name, "delivery_note"))
+	if cur and cur != dn_name and frappe.db.exists("Delivery Note", cur):
+		frappe.throw(_("Despatch Approval already linked to {0}.").format(cur))
+	frappe.db.set_value("Despatch Approval", da_name, "delivery_note", dn_name, update_modified=True)
 	frappe.db.commit()
-	return {"ok": True, "delivery_note": dn_name}
+	return {"ok": True, "despatch_approval": da_name, "delivery_note": dn_name}
+
+
+@frappe.whitelist()
+def create_delivery_note_from_despatch_approval(name=None):
+	"""Legacy alias — opens existing DN or returns unsaved doc (no auto-insert)."""
+	return prepare_delivery_note_from_despatch_approval(name)

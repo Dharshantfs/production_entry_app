@@ -47,6 +47,7 @@ doctype_js = {
     "Roll Production Entry": "public/js/roll_production_entry.js",
     "Transfer Approval": "public/js/transfer_approval_form.js",
     "Stock Entry": "public/js/stock_entry_transfer.js",
+    "Delivery Note": "public/js/delivery_note_despatch.js",
 }
 doctype_list_js = {
 	"Transfer Approval": "public/js/transfer_approval_list.js",
