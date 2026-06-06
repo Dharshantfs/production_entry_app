@@ -2910,6 +2910,85 @@ def _sync_planning_row_quality_specs(planning_sheet_name):
 				frappe.db.set_value(table, r.get("name"), up, update_modified=False)
 
 
+def _decoded_width_inch_for_planning_item(item_code, item_name="", db_width=0):
+	"""Roll width from item-code parsers; falls back to name/text helpers."""
+	w = flt(db_width or 0)
+	if w > 0:
+		return w
+	ic = _cstr(item_code).strip()
+	inm = _cstr(item_name).strip()
+	if not ic:
+		return 0
+	pp = _bom_item_process_code(ic) or _item_process_prefix(ic)
+	if pp in ("108", "110"):
+		parsed = (_parse_110_item_code(ic) if pp == "110" else _parse_108_item_code(ic)) or {}
+		w = flt(parsed.get("width_inch") or 0)
+		if w > 0:
+			rw = round(w, 1)
+			return float(int(rw)) if abs(rw - round(rw)) < 1e-9 else rw
+	return _resolve_planning_row_width_inch(ic, 0, inm)
+
+
+def _sync_planning_row_width_specs(planning_sheet_name):
+	"""Backfill missing width_inch on board + legacy rows from item-code decoders."""
+	if not planning_sheet_name:
+		return
+	for table in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.exists("DocType", table):
+			continue
+		if not frappe.db.has_column(table, "width_inch"):
+			continue
+		fields = ["name", "item_code", "item_name", "width_inch"]
+		rows = (
+			frappe.get_all(
+				table,
+				filters={"parent": planning_sheet_name},
+				fields=fields,
+				limit_page_length=2000,
+			)
+			or []
+		)
+		for r in rows:
+			ic = _cstr(r.get("item_code")).strip()
+			if not ic or flt(r.get("width_inch") or 0) > 0:
+				continue
+			w = _decoded_width_inch_for_planning_item(ic, r.get("item_name") or "")
+			if w <= 0:
+				continue
+			frappe.db.set_value(table, r.get("name"), "width_inch", w, update_modified=False)
+
+
+def _patch_bag_fg_bom_child_row_specs(planning_sheet_name, pt_name, child_ic, child_pp, so_it=None):
+	"""Update an existing planning row when BOM sync skipped insert (missing width/specs)."""
+	if not pt_name or not child_ic:
+		return
+	specs = _bag_fg_bom_child_row_specs(child_ic, child_pp, so_it)
+	up = {}
+	for fld in ("gsm", "width_inch", "color", "quality", "custom_quality"):
+		if specs.get(fld) is not None and frappe.db.has_column("Planning Table", fld):
+			cur = frappe.db.get_value("Planning Table", pt_name, fld)
+			if fld == "width_inch" and flt(cur or 0) > 0:
+				continue
+			if fld in ("gsm",) and cint(cur or 0) > 0 and fld == "gsm":
+				continue
+			if fld in ("color", "quality", "custom_quality") and _cstr(cur).strip():
+				continue
+			up[fld] = specs[fld]
+	for fld in ("custom_fabric_gsm", "custom_lam_gsm", "custom_bopp_gsm"):
+		if specs.get(fld) is not None and frappe.db.has_column("Planning Table", fld):
+			if cint(frappe.db.get_value("Planning Table", pt_name, fld) or 0) > 0:
+				continue
+			up[fld] = specs[fld]
+	if not up:
+		return
+	frappe.db.set_value("Planning Table", pt_name, up, update_modified=False)
+	src = frappe.db.get_value("Planning Table", pt_name, "source_item")
+	if src and frappe.db.exists("Planning sheet Item", src):
+		psi_up = {k: v for k, v in up.items() if frappe.db.has_column("Planning sheet Item", k)}
+		if psi_up:
+			frappe.db.set_value("Planning sheet Item", src, psi_up, update_modified=False)
+
+
 def _parse_108_item_code(item_code):
 	"""
 	Slitting FG process **108** — design-first BOPP laminated slitted NW fabric.
@@ -6396,6 +6475,8 @@ def _resolve_planning_row_width_inch(item_code, db_width=0, item_name=""):
 			w = flt((_parse_255_item_code(ic) or {}).get("width_inch") or 0)
 		elif pp == "108":
 			w = flt((_parse_108_item_code(ic) or {}).get("width_inch") or 0)
+		elif pp == "110":
+			w = flt((_parse_110_item_code(ic) or {}).get("width_inch") or 0)
 		elif pp == "106":
 			p106 = _parse_106_item_code(ic) or {}
 			wmm = cint(p106.get("width_mm") or 0)
@@ -7370,6 +7451,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_sync_planning_row_quality_specs(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_planning_row_quality_specs")
+	try:
+		_sync_planning_row_width_specs(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_planning_row_width_specs")
 	try:
 		_sync_252_roll_width_from_105_child(planning_sheet_name)
 	except Exception:
@@ -9513,6 +9598,10 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 	# New 107 / 103 children from loop expansion need downstream 100 / PB rows.
 	_sync_lamination_fabric_planning_rows(planning_sheet_name)
 	_sync_slitting_fabric_planning_rows(planning_sheet_name)
+	try:
+		_sync_planning_row_width_specs(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:_sync_planning_row_width_specs")
 	# D-CUT custom BOM expansion:
 	# 211 -> 100, 212 -> 105 -> 100, 213 -> 104 -> 100
 	_sync_bom_child_rows_from_planning_rows(
@@ -28390,6 +28479,72 @@ def _has_107_on_soi(soi, pt_rows):
 	return False
 
 
+def _fabric_chain_parent_item_for_child(fabric_ic, soi, pt_rows, parent_pp):
+	"""Planning-row item_code of the mid-chain parent (107 / 104 / 103 …) for a 100* fabric."""
+	fabric_ic = _cstr(fabric_ic).strip()
+	parent_pp = _cstr(parent_pp).strip()
+	soi = _cstr(soi).strip()
+	if not fabric_ic.startswith("100") or not parent_pp or not pt_rows:
+		return ""
+	for prow in pt_rows:
+		pic = _cstr(prow.get("item_code")).strip()
+		row_soi = _cstr(prow.get("sales_order_item") or prow.get("so_item")).strip()
+		if soi and row_soi and row_soi != soi:
+			continue
+		if parent_pp == "104":
+			if _lamination_process_from_item_code(pic) != "104":
+				continue
+		elif _item_process_prefix(pic) != parent_pp and _lamination_process_from_item_code(pic) != parent_pp:
+			continue
+		try:
+			res = _get_fabric_item_from_process_item(pic, expected_process=parent_pp, process_label="Parent fabric")
+			if _cstr(res.get("fabric_item_code")).strip() == fabric_ic:
+				return pic
+		except Exception:
+			continue
+	return ""
+
+
+def _107_parent_item_for_planning_child(child_ic, soi, pt_rows):
+	"""Which 107 row on this SO line owns the given 100* or PB child (via 107 BOM)."""
+	child_ic = _cstr(child_ic).strip()
+	soi = _cstr(soi).strip()
+	if not child_ic or not pt_rows:
+		return ""
+	for prow in pt_rows:
+		pic = _cstr(prow.get("item_code")).strip()
+		row_soi = _cstr(prow.get("sales_order_item") or prow.get("so_item")).strip()
+		if soi and row_soi and row_soi != soi:
+			continue
+		if _lamination_process_from_item_code(pic) != "107" and _item_process_prefix(pic) != "107":
+			continue
+		try:
+			if child_ic.startswith("100"):
+				res = _get_fabric_item_from_process_item(pic, expected_process="107", process_label="Parent fabric")
+				if _cstr(res.get("fabric_item_code")).strip() == child_ic:
+					return pic
+			elif _is_printed_bopp_item_code(child_ic):
+				res107 = _resolve_107_child_components(pic)
+				pb = res107.get("pb")
+				if pb and _cstr(pb[0]).strip() == child_ic:
+					return pic
+		except Exception:
+			continue
+	return ""
+
+
+def _parent_fabric_is_loop_chain(parent_ic, parent_pp, soi, direct_by_soi):
+	"""True when parent is a loop handle (103/108/110) or a 107 expanded from loop (not FG main 107)."""
+	parent_ic = _cstr(parent_ic).strip()
+	parent_pp = _cstr(parent_pp).strip()
+	if parent_pp in _SLITTING_LOOP_FABRIC_PROCESSES and parent_pp != "109":
+		return True
+	if parent_pp == "107" and parent_ic:
+		if not _planning_row_is_bag_fg_direct_bom_child(parent_ic, soi, direct_by_soi):
+			return True
+	return False
+
+
 def _resolve_parent_fabric_label(
 	item_code,
 	so_fg_item_code=None,
@@ -28399,42 +28554,57 @@ def _resolve_parent_fabric_label(
 	pt_rows=None,
 	direct_by_soi=None,
 ):
-	"""Human-friendly BOM role for planning rows (bag + fabric chains)."""
+	"""Human-friendly BOM role — Main vs Loop chains (231/233/241/242 dual 107+108, simple 221 bag, etc.)."""
 	ic = _cstr(item_code).strip()
 	if not ic:
 		return ""
-	if _is_printed_bopp_item_code(ic):
-		if not direct_on_fg_bom and soi and pt_rows and _has_107_on_soi(soi, pt_rows):
-			return "107 PB"
-		return "PB"
 	pp = _bom_item_process_code(ic) or _item_process_prefix(ic)
 	fg_pp = _bom_item_process_code(so_fg_item_code) if so_fg_item_code else ""
+
+	if _is_printed_bopp_item_code(ic):
+		if direct_on_fg_bom:
+			return "PB"
+		parent_107 = _107_parent_item_for_planning_child(ic, soi, pt_rows)
+		if parent_107 and _planning_row_is_bag_fg_direct_bom_child(parent_107, soi, direct_by_soi):
+			return "Main 107 PB"
+		if parent_107 or (soi and pt_rows and _has_107_on_soi(soi, pt_rows)):
+			return "Loop 107 PB"
+		return "PB"
+
 	if fg_pp and pp == fg_pp:
 		if fg_pp in ALL_BAG_FG_PROCESS_CODES:
 			return "Bag FG"
 		return ""
-	if chain_parent_process and ic.startswith("100"):
-		cp = _cstr(chain_parent_process).strip()
-		if cp in _BASE_FABRIC_PARENT_PROCESSES:
-			return f"{cp} Base Fabric"
+
+	if ic.startswith("100"):
+		if direct_on_fg_bom:
+			return "Main Fabric"
+		cp = _cstr(chain_parent_process).strip() or _fabric_parent_process_from_item_code(ic)
+		if cp:
+			parent_ic = _fabric_chain_parent_item_for_child(ic, soi, pt_rows, cp) if pt_rows else ""
+			if _parent_fabric_is_loop_chain(parent_ic, cp, soi, direct_by_soi):
+				return f"Loop {cp} Base Fabric"
+			return f"Main {cp} Base Fabric"
+		return "Main Fabric"
+
 	if direct_on_fg_bom:
 		if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
 			return "Loop Fabric"
 		if pp in _MAIN_FABRIC_MID_PROCESSES or ic.startswith("100"):
 			return "Main Fabric"
 		return ""
-	if ic.startswith("100"):
-		emb = _fabric_parent_process_from_item_code(ic)
-		if emb:
-			return f"{emb} Base Fabric"
-		return "Main Fabric"
+
 	if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
 		return "Loop Fabric"
-	if pp == "107":
+
+	if pp == "107" or _lamination_process_from_item_code(ic) == "107":
+		if direct_on_fg_bom:
+			return "Main Fabric"
 		loop_pp = _loop_fabric_process_on_soi(soi, pt_rows, direct_by_soi) if soi and pt_rows else ""
 		if loop_pp:
-			return f"{loop_pp} Base Fabric"
+			return f"Loop {loop_pp} Base Fabric"
 		return "Main Fabric"
+
 	if pp in _MAIN_FABRIC_MID_PROCESSES:
 		return "Main Fabric"
 	return ""
@@ -28681,6 +28851,8 @@ def _bag_fg_bom_child_row_specs(child_ic, child_pp, so_it=None):
 		if g:
 			specs["gsm"] = g
 		w_in = flt(parsed.get("width_inch") or 0)
+		if w_in <= 0:
+			w_in = _decoded_width_inch_for_planning_item(child_ic)
 		if w_in > 0:
 			specs["width_inch"] = w_in
 		for fld, key in (
@@ -28794,6 +28966,9 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 				as_dict=True,
 			) or []
 			if existing:
+				_patch_bag_fg_bom_child_row_specs(
+					ps.name, existing[0].name, child_ic, child_pp, so_it
+				)
 				continue
 			child_qty, child_uom = _fabric_qty_uom_from_bom(
 				bom.name,
