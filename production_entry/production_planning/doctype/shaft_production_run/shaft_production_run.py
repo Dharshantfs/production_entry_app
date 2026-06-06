@@ -533,6 +533,40 @@ def _lam_gsm_from_item(item_name: str, item_code: str) -> int:
 	return 0
 
 
+def _bopp_gsm_from_item(item_code: str, item_name: str = "") -> int:
+	"""Parse BOPP GSM from lamination / slitting item codes (107, 108, 109, encoded tails)."""
+	ic = _cstr(item_code)
+	if not ic:
+		return 0
+	try:
+		from production_entry.production_planning.scheduler_api import (
+			_item_process_prefix,
+			_parse_107_item_code,
+			_parse_108_item_code,
+		)
+
+		proc = _item_process_prefix(ic)
+		if proc == "107":
+			return cint((_parse_107_item_code(ic) or {}).get("bopp_gsm") or 0)
+		if proc in ("108", "109"):
+			return cint((_parse_108_item_code(ic) or {}).get("bopp_gsm") or 0)
+		if proc in ("104", "107"):
+			parsed = _parse_107_item_code(ic) or {}
+			if cint(parsed.get("bopp_gsm") or 0) > 0:
+				return cint(parsed.get("bopp_gsm") or 0)
+	except Exception:
+		pass
+	try:
+		from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
+
+		parsed = _parse_dcut_bag_item_code(ic) or {}
+		if cint(parsed.get("bopp_gsm") or 0) > 0:
+			return cint(parsed.get("bopp_gsm") or 0)
+	except Exception:
+		pass
+	return 0
+
+
 def _fabric_gsm_from_planning_for_pp(pp_name: str) -> int:
 	"""Fabric (100ΓÇª) GSM from Planning Table child row on same sheet as 104 lamination line."""
 	if not pp_name or not frappe.db.exists("DocType", "Planning Table"):
@@ -6709,6 +6743,10 @@ def _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo):
 		lam_gsm = _lam_gsm_from_item(item_name, item_code)
 		if lam_gsm > 0:
 			row["custom_lam_gsm"] = lam_gsm
+	if spi_meta.has_field("custom_bopp_gsm"):
+		bopp_gsm = _bopp_gsm_from_item(item_code, item_name)
+		if bopp_gsm > 0:
+			row["custom_bopp_gsm"] = bopp_gsm
 	return row
 
 

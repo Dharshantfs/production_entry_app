@@ -15,6 +15,7 @@
   "gsm",
   "custom_fabric_gsm",
   "custom_lam_gsm",
+  "custom_bopp_gsm",
   "planned_qty",
   "job",
   "batch_no",
@@ -63,40 +64,47 @@
    "fieldtype": "Data",
    "label": "Quality",
    "read_only": 1,
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "color",
    "fieldtype": "Data",
    "label": "Color",
    "read_only": 1,
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "gsm",
    "fieldtype": "Int",
    "label": "Sticker GSM",
    "read_only": 1,
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "custom_fabric_gsm",
    "fieldtype": "Int",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Fabric GSM",
    "read_only": 1
   },
   {
    "fieldname": "custom_lam_gsm",
    "fieldtype": "Int",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Lam GSM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_bopp_gsm",
+   "fieldtype": "Int",
+   "in_list_view": 0,
+   "label": "BOPP GSM",
    "read_only": 1
   },
   {
    "fieldname": "planned_qty",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Planned Qty",
    "precision": "2"
   },
@@ -109,13 +117,13 @@
   {
    "fieldname": "batch_no",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Batch No"
   },
   {
    "fieldname": "party_code",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Order Code"
   },
   {
@@ -134,14 +142,14 @@
    "fieldtype": "Float",
    "label": "Ordered Length (Mtrs)",
    "precision": "2",
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "produced_length_mtrs",
    "fieldtype": "Float",
    "label": "Produced Length (Mtrs)",
    "precision": "2",
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "net_weight",
@@ -156,21 +164,21 @@
    "label": "Produced GSM",
    "read_only": 1,
    "precision": "2",
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "gross_weight",
    "fieldtype": "Float",
    "label": "Gross Weight",
    "precision": "2",
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "save_row",
    "fieldtype": "Button",
    "label": "Save Row",
    "read_only": 1,
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "uom",
@@ -181,47 +189,47 @@
   {
    "fieldname": "custom_sheet_size",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Sheet Size"
   },
   {
    "fieldname": "custom_bag_size",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Bag Size"
   },
   {
    "fieldname": "custom_planned_sheets_pcs",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Planned Sheets (PCS)",
    "precision": "0"
   },
   {
    "fieldname": "custom_total_produced_sheets",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Produced Sheets (PCS)",
    "precision": "0"
   },
   {
    "fieldname": "custom_planned_bag_pcs",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Planned Bag PCS",
    "precision": "0"
   },
   {
    "fieldname": "custom_achieved_bag_pcs",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Achieved Bag PCS",
    "precision": "0"
   },
   {
    "fieldname": "width_inch",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Width (Inches)",
    "precision": "2"
   },
@@ -249,14 +257,14 @@
    "fieldtype": "Button",
    "label": "Print Label",
    "read_only": 1,
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "fieldname": "edit_row",
    "fieldtype": "Button",
    "label": "Edit Row",
    "read_only": 1,
-   "in_list_view": 1
+   "in_list_view": 0
   }
  ],
  "index_web_pages_for_search": 1,
