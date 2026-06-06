@@ -614,6 +614,43 @@ def _spr_wo_rm_still_needed_map(wo_doc) -> dict[str, float]:
 	return dict(out)
 
 
+def _spr_rm_stock_qty_precision() -> int:
+	"""Decimal places for BOM RM Kg on Stock Entry lines (matches MTFM / site ledger)."""
+	try:
+		p = int(frappe.conf.get("spr_rm_stock_qty_precision") or 3)
+	except (TypeError, ValueError):
+		p = 3
+	return max(0, min(p, 6))
+
+
+def _spr_rm_wip_shortage_tolerance(required_qty: float) -> float:
+	"""Ignore float/rounding gaps when comparing WIP Bin vs BOM RM need (Kg)."""
+	try:
+		base = flt(frappe.conf.get("spr_rm_wip_shortage_tolerance_kg") or 0.01)
+	except (TypeError, ValueError):
+		base = 0.01
+	req = flt(required_qty)
+	if req <= 0:
+		return base
+	return max(base, req * 0.001)
+
+
+def _spr_wo_rm_transfer_remaining(wo_doc, item_code: str) -> float:
+	"""Qty still to transfer to WIP for one RM item on the WO."""
+	item_code = _cstr(item_code).strip()
+	if not wo_doc or not item_code:
+		return 0.0
+	for req in getattr(wo_doc, "required_items", None) or []:
+		if _cstr(getattr(req, "item_code", None)).strip() != item_code:
+			continue
+		return flt(getattr(req, "required_qty", 0)) - flt(getattr(req, "transferred_qty", 0))
+	return 0.0
+
+
+def _spr_round_rm_stock_qty(qty: float) -> float:
+	return flt(qty, _spr_rm_stock_qty_precision())
+
+
 def _spr_apply_bag_rm_qty_from_bom(se, bom_no: str, fg_qty: float) -> None:
 	"""Replace RM line qty on Stock Entry with BOM×FG using Meter→Kg divide (matches WO/PP)."""
 	fg_qty = flt(fg_qty)
@@ -625,7 +662,7 @@ def _spr_apply_bag_rm_qty_from_bom(se, bom_no: str, fg_qty: float) -> None:
 	for d in se.items or []:
 		if not d.item_code or d.get("t_warehouse"):
 			continue
-		needed = flt(rm_map.get(_cstr(d.item_code)))
+		needed = _spr_round_rm_stock_qty(rm_map.get(_cstr(d.item_code)))
 		if needed <= 0:
 			continue
 		stock_uom = frappe.db.get_value("Item", d.item_code, "stock_uom") or d.stock_uom or "Kg"
@@ -2526,20 +2563,27 @@ class ShaftProductionRun(Document):
 			)
 		return sorted({_cstr(x).strip() for x in (names or []) if _cstr(x).strip()})
 
-	def _rm_shortages_for_se(self, se) -> list[tuple[str, str, float, float, float]]:
+	def _rm_shortages_for_se(self, se, wo_doc=None) -> list[tuple[str, str, float, float, float]]:
 		"""Return RM shortages as (item_code, s_warehouse, required, available, shortage)."""
 		out = []
 		for d in se.items or []:
 			if not d.item_code or d.get("t_warehouse"):
 				continue
-			required = flt(d.get("transfer_qty") or d.get("qty"))
+			required = _spr_round_rm_stock_qty(d.get("transfer_qty") or d.get("qty"))
 			if required <= 0:
 				continue
 			wh = _cstr(d.get("s_warehouse"))
-			available = flt(frappe.db.get_value("Bin", {"item_code": d.item_code, "warehouse": wh}, "actual_qty") or 0)
+			available = _spr_round_rm_stock_qty(
+				frappe.db.get_value("Bin", {"item_code": d.item_code, "warehouse": wh}, "actual_qty") or 0
+			)
+			tol = _spr_rm_wip_shortage_tolerance(required)
 			shortage = required - available
-			if shortage > 1e-9:
-				out.append((_cstr(d.item_code), wh, required, available, shortage))
+			if shortage <= tol:
+				continue
+			if wo_doc and _spr_wo_rm_transfer_remaining(wo_doc, d.item_code) <= tol:
+				# MTFM already submitted — WIP Bin may differ from BOM preview by fractions of a gram.
+				continue
+			out.append((_cstr(d.item_code), wh, required, available, shortage))
 		return out
 
 	def _best_available_batch_for_rm(self, item_code: str, warehouse: str, required_qty: float) -> str:
@@ -3261,12 +3305,21 @@ class ShaftProductionRun(Document):
 		if not short_by_item:
 			return ""
 
-		if is_bag:
-			wo_still_needed = _spr_wo_rm_still_needed_map(wo_doc)
-			for ic in list(short_by_item.keys()):
-				still = flt(wo_still_needed.get(ic, 0))
-				if still > 0:
-					short_by_item[ic] = min(flt(short_by_item[ic]), still)
+		for ic in list(short_by_item.keys()):
+			qty = _spr_round_rm_stock_qty(short_by_item.get(ic))
+			tol = _spr_rm_wip_shortage_tolerance(qty)
+			if qty <= tol:
+				short_by_item.pop(ic, None)
+				continue
+			short_by_item[ic] = qty
+			if is_bag:
+				still = _spr_wo_rm_transfer_remaining(wo_doc, ic)
+				if still <= tol:
+					short_by_item.pop(ic, None)
+				elif still > 0:
+					short_by_item[ic] = min(flt(short_by_item[ic]), _spr_round_rm_stock_qty(still))
+		if not short_by_item:
+			return ""
 
 		def _item_source_wh(item_code: str) -> str:
 			if is_bag:
@@ -3313,7 +3366,7 @@ class ShaftProductionRun(Document):
 					d.s_warehouse = raw_source_wh
 				if not d.t_warehouse:
 					d.t_warehouse = wip_wh
-			if any(d.item_code and d.get("t_warehouse") for d in (se.items or [])):
+			if any(d.item_code and not d.get("t_warehouse") for d in (se.items or [])):
 				se.insert()
 				return se.name
 		except Exception:
@@ -3418,10 +3471,11 @@ class ShaftProductionRun(Document):
 		except Exception:
 			transfer_err = _cstr(frappe.get_traceback())
 			transfer_name = ""
+		prec = _spr_rm_stock_qty_precision()
 		lines = "\n".join(
 			[
 				_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
-					it, wh or "—", flt(req, 2), flt(avl, 2), flt(sh, 2)
+					it, wh or "—", flt(req, prec), flt(avl, prec), flt(sh, prec)
 				)
 				for it, wh, req, avl, sh in shortages[:20]
 			]
@@ -3470,10 +3524,11 @@ class ShaftProductionRun(Document):
 					did_create_or_reuse = True
 			except Exception:
 				transfer_name = ""
+			prec = _spr_rm_stock_qty_precision()
 			lines = "\n".join(
 				[
 					_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
-						it, wh or "—", flt(req, 2), flt(avl, 2), flt(sh, 2)
+						it, wh or "—", flt(req, prec), flt(avl, prec), flt(sh, prec)
 					)
 					for it, wh, req, avl, sh in shortages[:10]
 				]
@@ -4417,7 +4472,7 @@ class ShaftProductionRun(Document):
 				if chunk_total_qty <= 0:
 					continue
 				preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
-				shortages = self._rm_shortages_for_se(preview_se)
+				shortages = self._rm_shortages_for_se(preview_se, wo_doc)
 				if shortages:
 					shortage_events.append(
 						{
@@ -4557,7 +4612,7 @@ class ShaftProductionRun(Document):
 						frappe.db.rollback(save_point=mfg_submit_savepoint)
 					except Exception:
 						pass
-					shortages = self._rm_shortages_for_se(se)
+					shortages = self._rm_shortages_for_se(se, wo_doc)
 					if not shortages:
 						shortages = self._rm_shortages_from_exception(e)
 					if shortages:
@@ -4578,7 +4633,7 @@ class ShaftProductionRun(Document):
 								if chunk_total_qty2 <= 0:
 									continue
 								preview_se2 = self._build_shortage_preview_for_chunk(wo_doc2, chunk_total_qty2)
-								shortages2 = self._rm_shortages_for_se(preview_se2)
+								shortages2 = self._rm_shortages_for_se(preview_se2, wo_doc2)
 								if not shortages2:
 									continue
 								submit_shortage_events.append(
@@ -4611,11 +4666,14 @@ class ShaftProductionRun(Document):
 										)
 										or 0
 									)
+									req2 = _spr_round_rm_stock_qty(req2)
+									avl2 = _spr_round_rm_stock_qty(avl2)
 									sh2 = req2 - avl2
-									if sh2 <= 0:
-										# future-SLE path may still fail even when current bin is positive;
-										# keep WO in draft list when the triggering RM is common.
-										sh2 = req2
+									tol2 = _spr_rm_wip_shortage_tolerance(req2)
+									if sh2 <= tol2:
+										continue
+									if _spr_wo_rm_transfer_remaining(wo_doc2, ic) <= tol2:
+										continue
 									extra_shortages.append((ic, wip_wh2, req2, avl2, sh2))
 								if extra_shortages:
 									submit_shortage_events.append(
