@@ -128,6 +128,7 @@ _SPR_BOM_STACK_BY_FG_PROCESS = {
 	"107": (None, "100"),
 	"108": (None, "100"),
 	"109": (None, "100"),
+	"110": (None, "100"),
 	"251": (None, "100"),
 	"252": ("105", "100"),
 	"253": ("104", "100"),
@@ -543,6 +544,7 @@ def _bopp_gsm_from_item(item_code: str, item_name: str = "") -> int:
 			_item_process_prefix,
 			_parse_107_item_code,
 			_parse_108_item_code,
+			_parse_110_item_code,
 		)
 
 		proc = _item_process_prefix(ic)
@@ -550,6 +552,8 @@ def _bopp_gsm_from_item(item_code: str, item_name: str = "") -> int:
 			return cint((_parse_107_item_code(ic) or {}).get("bopp_gsm") or 0)
 		if proc in ("108", "109"):
 			return cint((_parse_108_item_code(ic) or {}).get("bopp_gsm") or 0)
+		if proc == "110":
+			return cint((_parse_110_item_code(ic) or {}).get("bopp_gsm") or 0)
 		if proc in ("104", "107"):
 			parsed = _parse_107_item_code(ic) or {}
 			if cint(parsed.get("bopp_gsm") or 0) > 0:

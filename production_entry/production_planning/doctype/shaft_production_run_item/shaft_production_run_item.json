@@ -44,21 +44,21 @@
   {
    "fieldname": "work_order",
    "fieldtype": "Link",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Work Order",
    "options": "Work Order"
   },
   {
    "fieldname": "item_code",
    "fieldtype": "Link",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Item Code",
    "options": "Item"
   },
   {
    "fieldname": "item_name",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Item Name",
    "read_only": 1
   },
@@ -114,20 +114,20 @@
   {
    "fieldname": "job",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Job",
    "read_only": 1
   },
   {
    "fieldname": "batch_no",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Batch No"
   },
   {
    "fieldname": "party_code",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Order Code"
   },
   {
@@ -199,7 +199,7 @@
   {
    "fieldname": "custom_bag_size",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Bag Size"
   },
   {
@@ -219,14 +219,14 @@
   {
    "fieldname": "custom_planned_bag_pcs",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Planned Bag PCS",
    "precision": "0"
   },
   {
    "fieldname": "custom_achieved_bag_pcs",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Achieved Bag PCS",
    "precision": "0"
   },

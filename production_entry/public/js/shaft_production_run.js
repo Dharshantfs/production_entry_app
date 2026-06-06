@@ -32,7 +32,7 @@ const SPR_ITEMS_FIELD_FALLBACKS = {
 };
 
 const SPR_ITEM_KNOWN_PREFIXES = [
-	'100', '102', '103', '104', '105', '106', '107', '108', '109',
+	'100', '102', '103', '104', '105', '106', '107', '108', '109', '110',
 	'200', '201', '202', '203', '211', '212', '213', '214', '216', '217',
 	'221', '222', '223', '224', '231', '233', '241', '242', '225', '226',
 ];
@@ -161,7 +161,7 @@ function spr_items_process_mode(frm) {
 	if (prefix === '104' || prefix === '107' || sprUsesLaminationRollPrompt(frm)) {
 		return 'lamination';
 	}
-	if (prefix === '108' || prefix === '109') {
+	if (prefix === '108' || prefix === '109' || prefix === '110') {
 		return 'slitting108109';
 	}
 	if (prefix === '103' || sprUsesSlittingRollPrompt(frm)) {
@@ -298,7 +298,16 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, showFields, force) {
 	if (typeof grid.refresh_header === 'function') {
 		grid.refresh_header();
 	}
-	spr_refresh_grid_body_rows(grid);
+	// Refresh body rows so cell count matches header column count (avoids data/header misalignment).
+	try {
+		if (typeof grid.refresh === 'function') {
+			grid.refresh();
+		} else {
+			spr_refresh_grid_body_rows(grid);
+		}
+	} catch (e) {
+		/* ignore */
+	}
 	spr_attach_grid_scroll_sync(fd);
 	spr_sync_grid_header_body_scroll(fd);
 }
@@ -1111,12 +1120,15 @@ frappe.ui.form.on('Shaft Production Run', {
 		) {
 			sprLoadBundleCalculationFromPp(frm, null);
 		}
-		spr_apply_fabric100_item_grid_columns(frm);
-
 		spr_patch_items_grid_refresh(frm);
 		spr_register_spr_page_buttons(frm);
 		spr_layout_all_grids(frm, { toggleUi: false });
-		
+
+		// Apply column presets synchronously — JSON has all in_list_view:0 so no initial render mismatch.
+		spr_reset_items_grid_field_visibility(frm);
+		spr_apply_items_grid_columns(frm, true);
+		spr_apply_shaft_jobs_grid_columns(frm, true);
+
 		setTimeout(function () {
 			if (!spr_should_skip_desk_auto_sync(frm)) {
 				sprScheduleTotalProducedSync(frm, { silent: true });
@@ -1131,13 +1143,6 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_apply_shaft_jobs_create_entry_ui(frm);
 		spr_schedule_grid_ui_debounced(frm, { delay: 280, columns: false });
 
-		// One column preset pass after grid paint (avoids header/body drift from repeated applies).
-		setTimeout(function () {
-			spr_reset_items_grid_field_visibility(frm);
-			spr_apply_items_grid_columns(frm, true);
-			spr_apply_shaft_jobs_grid_columns(frm, true);
-		}, 150);
-		
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 

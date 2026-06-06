@@ -604,7 +604,7 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 # First-segment wins for codes like 105-…-100… (GSM / width digits) so we never classify as 100 instead of 105.
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
 	{
-		"100", "102", "103", "104", "105", "106", "107", "108", "109",
+		"100", "102", "103", "104", "105", "106", "107", "108", "109", "110",
 		"200", "201", "202", "203", "211", "212", "213", "214", "217",
 		"221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
 		"251", "252", "253", "254", "255",
@@ -2517,6 +2517,30 @@ def resolve_quality_color_gsm_from_item_code(item_code, item_name=None):
 				color = ""
 		gsm = cint(p.get("gsm") or 0) or cint(_gsm_from_lamination_item_code(ic) or 0)
 		return _cstr(quality).strip().upper(), _cstr(color).strip().upper(), gsm
+	if pp == "108":
+		p = _parse_108_item_code(ic) or {}
+		qc = _cstr(p.get("quality_code") or "").strip().upper()
+		quality = _cstr(p.get("quality_name") or _LAMINATION_QUALITY_BY_CODE.get(qc, "") or "").strip().upper()
+		cc = _cstr(p.get("colour_code") or "").strip()
+		if cc:
+			try:
+				color = (_get_color_by_code(cc) or "").strip().upper()
+			except Exception:
+				color = ""
+		gsm = cint(_combined_bopp_line_gsm(p) or 0) or cint(p.get("fabric_gsm") or 0)
+		return quality, color, gsm
+	if pp == "110":
+		p = _parse_110_item_code(ic) or {}
+		qc = _cstr(p.get("quality_code") or "").strip().upper()
+		quality = _cstr(p.get("quality_name") or _LAMINATION_QUALITY_BY_CODE.get(qc, "") or "").strip().upper()
+		cc = _cstr(p.get("colour_code") or "").strip()
+		if cc:
+			try:
+				color = (_get_color_by_code(cc) or "").strip().upper()
+			except Exception:
+				color = ""
+		gsm = cint(_combined_bopp_line_gsm(p) or 0) or cint(p.get("fabric_gsm") or 0)
+		return quality, color, gsm
 	if lam == "104" or pp == "104":
 		p = _parse_104_item_code(ic) or {}
 		gsm = cint(p.get("gsm") or 0) or cint(_gsm_from_lamination_item_code(ic) or 0)
@@ -2986,6 +3010,111 @@ def _parse_108_item_code(item_code):
 			"finish_metallic_cooler": "0",
 		}
 	pos = code.find("-108")
+	if pos > 0:
+		design = re.sub(r"[^A-Z0-9]", "", code[:pos])
+		tail = code[pos + 4 :]
+		m4 = re.match(
+			r"^(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<lam>[A-Z])(?P<bopp>[A-Z])(?P<width>\d{4})MM$",
+			tail,
+		)
+		if m4 and design:
+			return _row_mm(design, m4.groupdict())
+		m5 = re.match(
+			r"^(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<lam>[A-Z])(?P<bopp>[A-Z])(?P<width>\d{4})(?P<finish1>[A-Z0-9])(?P<finish2>[A-Z0-9])$",
+			tail,
+		)
+		if m5 and design:
+			return _row_mm(design, m5.groupdict())
+		m6 = re.match(
+			r"^(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<lam>[A-Z])(?P<bopp>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>\d)$",
+			tail,
+		)
+		if m6 and design:
+			return _row_inch3(design, m6.groupdict())
+	return {}
+
+
+def _parse_110_item_code(item_code):
+	"""
+	Slitting FG process **110** — BOPP metallic loop handle fabric (same tail structure as 108).
+	Tail order after ``110``: quality letter, 3-digit colour, fabric letter, lam letter, BOPP letter,
+	then width (4 digits mm with optional MM suffix, or 3-digit legacy inch*10), optional finish tokens.
+	"""
+	code = re.sub(r"\s+", "", str(item_code or "").strip().upper())
+	if not code:
+		return {}
+
+	def _row_mm(design, gd):
+		width_code = gd.get("width") or ""
+		width_mm = cint(width_code) if width_code.isdigit() else 0
+		width_inch = flt(width_mm) / 25.4 if width_mm else 0.0
+		qc = (gd.get("quality") or "").strip().upper()
+		lam_letter = (gd.get("lam") or "").strip().upper()
+		lam_val = cint(_LAM_GSM_SUFFIX_MAP.get(lam_letter, 0) or 0)
+		return {
+			"design_code": design or "",
+			"process": "110",
+			"quality_code": qc,
+			"quality_name": _LAMINATION_QUALITY_BY_CODE.get(qc, ""),
+			"colour_code": gd.get("colour") or "",
+			"fabric_gsm_code": (gd.get("fabric") or "").strip().upper(),
+			"fabric_gsm": cint(_LAMINATION_FABRIC_GSM_BY_CODE.get((gd.get("fabric") or "").strip().upper(), "") or 0),
+			"bopp_gsm_code": (gd.get("bopp") or "").strip().upper(),
+			"bopp_gsm": cint(_LAMINATION_BOPP_GSM_BY_CODE.get((gd.get("bopp") or "").strip().upper(), "") or 0),
+			"lam_gsm_code": lam_letter,
+			"lam_gsm": lam_val,
+			"width_code": width_code,
+			"width_mm": width_mm,
+			"width_inch": width_inch,
+			"finish_matte_glossy": (gd.get("finish1") or "").strip() or "0",
+			"finish_metallic_cooler": (gd.get("finish2") or "").strip() or "0",
+		}
+
+	def _row_inch3(design, gd):
+		width_code = gd.get("width") or ""
+		width_inch = flt(width_code) / 10.0 if width_code.isdigit() and len(width_code) == 3 else 0.0
+		width_mm = cint(round(width_inch * 25.4)) if width_inch else 0
+		qc = (gd.get("quality") or "").strip().upper()
+		lam_letter = (gd.get("lam") or "").strip().upper()
+		lam_val = cint(_LAM_GSM_SUFFIX_MAP.get(lam_letter, 0) or 0)
+		return {
+			"design_code": design or "",
+			"process": "110",
+			"quality_code": qc,
+			"quality_name": _LAMINATION_QUALITY_BY_CODE.get(qc, ""),
+			"colour_code": gd.get("colour") or "",
+			"fabric_gsm_code": (gd.get("fabric") or "").strip().upper(),
+			"fabric_gsm": cint(_LAMINATION_FABRIC_GSM_BY_CODE.get((gd.get("fabric") or "").strip().upper(), "") or 0),
+			"bopp_gsm_code": (gd.get("bopp") or "").strip().upper(),
+			"bopp_gsm": cint(_LAMINATION_BOPP_GSM_BY_CODE.get((gd.get("bopp") or "").strip().upper(), "") or 0),
+			"lam_gsm_code": lam_letter,
+			"lam_gsm": lam_val,
+			"width_code": width_code,
+			"width_mm": width_mm,
+			"width_inch": width_inch,
+			"finish_matte_glossy": (gd.get("finish1") or "").strip() or "0",
+			"finish_metallic_cooler": (gd.get("finish2") or "").strip() or "0",
+		}
+
+	m = re.match(
+		r"^(?P<design>[A-Z0-9]+)-110(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<lam>[A-Z])(?P<bopp>[A-Z])(?P<width>\d{4})MM$",
+		code,
+	)
+	if m:
+		return _row_mm(m.group("design"), m.groupdict())
+	mw = re.match(
+		r"^(?P<design>[A-Z0-9]+)-110(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<lam>[A-Z])(?P<bopp>[A-Z])(?P<width>\d{4})(?P<finish1>[A-Z0-9])(?P<finish2>[A-Z0-9])$",
+		code,
+	)
+	if mw:
+		return _row_mm(mw.group("design"), mw.groupdict())
+	m3 = re.match(
+		r"^(?P<design>[A-Z0-9]+)-110(?P<quality>[A-Z])(?P<colour>\d{3})(?P<fabric>[A-Z])(?P<lam>[A-Z])(?P<bopp>[A-Z])(?P<width>\d{3})(?P<finish1>\d)(?P<finish2>\d)$",
+		code,
+	)
+	if m3:
+		return _row_inch3(m3.group("design"), m3.groupdict())
+	pos = code.find("-110")
 	if pos > 0:
 		design = re.sub(r"[^A-Z0-9]", "", code[:pos])
 		tail = code[pos + 4 :]
@@ -5135,7 +5264,7 @@ def _is_printing_parent_process(item_code):
 
 
 def _is_slitting_parent_process(item_code):
-	return _item_process_prefix(item_code) in ("103", "109", "108")
+	return _item_process_prefix(item_code) in ("103", "108", "109", "110")
 
 
 def _is_sheet_cutting_child_process(item_code):
@@ -8775,7 +8904,7 @@ def _sync_bom_child_rows_from_planning_rows(
 				t107p = _resolve_lam107_planning_trace(child_ic, so_item_key, ps.name)
 				if t107p:
 					trace_refresh = t107p
-				elif parent_proc == "108" or so_fg_ex == "108":
+				elif parent_proc in ("108", "110") or so_fg_ex in ("108", "110"):
 					t108 = _resolve_108_family_trace(child_ic, so_item_key, ps.name)
 					if t108:
 						trace_refresh = t108
@@ -8803,7 +8932,7 @@ def _sync_bom_child_rows_from_planning_rows(
 				ss_clear = True
 			elif so_fg_ex in ("253", "255", "254") and child_proc_ex in ("100", "104", "107", "106"):
 				ss_clear = True
-			elif parent_proc == "108" and child_proc_ex == "107":
+			elif parent_proc in ("108", "110") and child_proc_ex == "107":
 				ss_clear = True
 			if ss_clear and frappe.db.has_column("Planning Table", "sheet_size"):
 				updates["sheet_size"] = ""
@@ -8883,11 +9012,11 @@ def _sync_bom_child_rows_from_planning_rows(
 					if v is None or v == "":
 						continue
 					updates[k] = v
-				if parent_proc == "108" and so_item_key and frappe.db.has_column("Planning Table", "sales_order_item"):
+				if parent_proc in ("108", "110") and so_item_key and frappe.db.has_column("Planning Table", "sales_order_item"):
 					updates["sales_order_item"] = so_item_key
-				if parent_proc == "108" and so_item_key and frappe.db.has_column("Planning Table", "so_item"):
+				if parent_proc in ("108", "110") and so_item_key and frappe.db.has_column("Planning Table", "so_item"):
 					updates["so_item"] = so_item_key
-			if parent_proc == "108" and child_proc_ex == "107" and frappe.db.has_column(
+			if parent_proc in ("108", "110") and child_proc_ex == "107" and frappe.db.has_column(
 				"Planning Table", "custom_parent_child_trace_id"
 			):
 				t108b = _parent_child_trace_id_from_item_code(parent_ic) or ""
@@ -8954,7 +9083,7 @@ def _sync_bom_child_rows_from_planning_rows(
 		trace_id = _fg_trace_for_bom_child_chain(so_it, parent_ic, parent_proc, child_proc) or _parent_child_trace_id_for_planning_row(
 			child_ic, so_item_key, ps.name
 		)
-		if trace_id and _trace_is_native_107_process(trace_id) and so_fg_new in ("108", "255"):
+		if trace_id and _trace_is_native_107_process(trace_id) and so_fg_new in ("108", "110", "255"):
 			trace_id = _parent_child_trace_id_for_planning_row(
 				getattr(so_it, "item_code", None) or parent_ic, so_item_key, ps.name
 			) or ""
@@ -9059,7 +9188,7 @@ def _sync_bom_child_rows_from_planning_rows(
 			ss_clear_new = True
 		elif so_fg_new in ("253", "255", "254") and child_proc in ("100", "104", "107", "106"):
 			ss_clear_new = True
-		elif parent_proc == "108" and child_proc == "107":
+		elif parent_proc in ("108", "110") and child_proc == "107":
 			ss_clear_new = True
 		if ss_clear_new and frappe.db.has_column("Planning Table", "sheet_size"):
 			if child_proc in ("100", "104", "107", "106"):
@@ -9352,10 +9481,11 @@ def _sync_225_226_box_bag_planning_rows(planning_sheet_name):
 
 
 def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
-	"""Box Bag (221) BOM child sync: 221 → 103 (Slitting) → 100 (Fabric)."""
+	"""Box Bag (221) BOM child sync: 221 → 103/108/110 (Slitting) → 100/107 (Fabric/Lamination)."""
 	if not planning_sheet_name:
 		return
 	_sync_bag_fg_direct_bom_children(planning_sheet_name, ("221",), process_label="221 Box Bag direct BOM")
+	# 221 → 103 → 100
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
 		("103",),
@@ -9363,8 +9493,26 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		so_parent_processes=("221",),
 		process_label="Box bag fabric (103 → 100)",
 	)
+	# 221 → 108 → 107 (BOPP loop handle); 107 → 100 + PB handled by _sync_lamination_fabric_planning_rows
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("108",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("221",),
+		process_label="221 Box Bag BOPP loop (108 → 107)",
+	)
+	# 221 → 110 → 107 (BOPP metallic loop handle); 107 → 100 + PB handled by _sync_lamination_fabric_planning_rows
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("110",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("221",),
+		process_label="221 Box Bag BOPP metallic loop (110 → 107)",
+	)
 
-	# 224: BOM has 104 + 103 (meter) — not 105
+	# 224: BOM has 104 + 103/108/110 (meter)
 	_sync_bag_fg_direct_bom_children(planning_sheet_name, ("224",), process_label="224 Box Bag direct BOM")
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
@@ -9380,8 +9528,24 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		so_parent_processes=("224",),
 		process_label="224 Box Bag Fabric (103 → 100)",
 	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("108",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("224",),
+		process_label="224 Box Bag BOPP loop (108 → 107)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("110",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("224",),
+		process_label="224 Box Bag BOPP metallic loop (110 → 107)",
+	)
 	# 222 custom BOM expansion:
-	# 222 -> 105 -> 100 and 222 -> 103 -> 100
+	# 222 -> 105 -> 100 and 222 -> 103/108/110
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
 		("222",),
@@ -9410,8 +9574,24 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		so_parent_processes=("222",),
 		process_label="222 Flexo Printed Box Bag Fabric (103 → 100)",
 	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("108",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("222",),
+		process_label="222 Flexo Printed Box Bag BOPP loop (108 → 107)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("110",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("222",),
+		process_label="222 Flexo Printed Box Bag BOPP metallic loop (110 → 107)",
+	)
 	# 223 custom BOM expansion:
-	# 223 -> 105 -> 100 and 223 -> 103 -> 100
+	# 223 -> 105 -> 100 and 223 -> 103/108/110
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
 		("223",),
@@ -9439,6 +9619,22 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		"100",
 		so_parent_processes=("223",),
 		process_label="223 Flexo Printed Box Bag Fabric (103 → 100)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("108",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("223",),
+		process_label="223 Flexo Printed Box Bag BOPP loop (108 → 107)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("110",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=("223",),
+		process_label="223 Flexo Printed Box Bag BOPP metallic loop (110 → 107)",
 	)
 	_sync_225_226_box_bag_planning_rows(planning_sheet_name)
 	# D-CUT custom BOM expansion:
@@ -10205,7 +10401,7 @@ def _dedupe_slitting_pt_after_board_move(kept_pt_name, planning_sheet_name=None)
 	if not kept:
 		return 0
 	ic = _cstr(kept.get("item_code")).strip()
-	if _item_process_prefix(ic) not in ("103", "109", "108"):
+	if _item_process_prefix(ic) not in ("103", "108", "109", "110"):
 		return 0
 	parent = _cstr(planning_sheet_name or kept.get("parent")).strip()
 	if not parent:
@@ -10314,7 +10510,7 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 	)
 	for rr in slitting_rows:
 		pp = _item_process_prefix(rr.get("item_code"))
-		if pp not in ("103", "109", "108"):
+		if pp not in ("103", "108", "109", "110"):
 			continue
 		row_name = str(rr.get("name") or "").strip()
 		if not row_name:
@@ -10322,8 +10518,8 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		color_name = ""
 		if pp in ("103", "109"):
 			color_name = _color_from_item_code_6_to_8(rr.get("item_code")) or ""
-		elif pp == "108":
-			p108c = _parse_108_item_code(rr.get("item_code")) or {}
+		elif pp in ("108", "110"):
+			p108c = (_parse_110_item_code(rr.get("item_code")) if pp == "110" else _parse_108_item_code(rr.get("item_code"))) or {}
 			cc = (p108c.get("colour_code") or "").strip()
 			if cc:
 				try:
@@ -10348,7 +10544,7 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 				)
 	for rr in slitting_rows:
 		pp = _item_process_prefix(rr.get("item_code"))
-		if pp not in ("103", "109", "108"):
+		if pp not in ("103", "108", "109", "110"):
 			continue
 		row_name = _cstr(rr.get("name"))
 		if not row_name:
@@ -13092,10 +13288,10 @@ def get_slitting_order_table_data(
     process_filter = _cstr(process).lower()
     if process_filter in ("all", "__all__", "*"):
         process_filter = ""
-    if process_filter in ("103", "109", "108"):
+    if process_filter in ("103", "108", "109", "110"):
         rows = [r for r in rows if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) == process_filter]
     else:
-        rows = [r for r in rows if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in ("103", "109", "108")]
+        rows = [r for r in rows if _item_process_prefix(str(r.get("item_code") or r.get("itemCode") or "")) in ("103", "108", "109", "110")]
     if not rows:
         return []
     # Hard safety: keep slitting rows pinned to Slitting Unit on every table load.
@@ -28223,7 +28419,7 @@ def sync_merge_planned_date(merge_id, new_date):
 
 
 # Mid-chain bag BOM rows that may stay in Meter until **Meter to Kgs** (not 100 / PB).
-BAG_METER_TO_KG_CONVERT_PROCESSES = ("103", "104", "105", "106", "107", "108", "109")
+BAG_METER_TO_KG_CONVERT_PROCESSES = ("103", "104", "105", "106", "107", "108", "109", "110")
 # Legacy alias (avoid using for meter conversion — includes 100).
 BAG_BOM_METER_CHILD_PROCESSES = BAG_METER_TO_KG_CONVERT_PROCESSES + ("100",)
 
@@ -28238,6 +28434,7 @@ _BOM_KG_PARENT_PROCESSES = frozenset(
 		"107",
 		"108",
 		"109",
+		"110",
 		"221",
 		"222",
 		"223",
@@ -28257,7 +28454,7 @@ _BOM_KG_PARENT_PROCESSES = frozenset(
 )
 
 
-_SLITTING_LOOP_FABRIC_PROCESSES = frozenset({"103", "109"})
+_SLITTING_LOOP_FABRIC_PROCESSES = frozenset({"103", "108", "109", "110"})
 _MAIN_FABRIC_MID_PROCESSES = frozenset({"104", "105", "106", "107"})
 _BASE_FABRIC_PARENT_PROCESSES = frozenset({"102", "103", "104", "105", "106", "107"})
 
@@ -28394,6 +28591,31 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			"Planning sheet Item", "custom_parent_fabric"
 		):
 			frappe.db.set_value("Planning sheet Item", src, "custom_parent_fabric", label, update_modified=False)
+
+	# Second pass: stamp PSI rows that have no PT source_item link (e.g. rows added directly to items table).
+	if frappe.db.has_column("Planning sheet Item", "custom_parent_fabric"):
+		stamped_psi = {
+			_cstr(r.get("source_item")).strip()
+			for r in pt_rows
+			if _cstr(r.get("source_item")).strip()
+		}
+		psi_rows = frappe.get_all(
+			"Planning sheet Item",
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code", "custom_parent_fabric"],
+			limit_page_length=0,
+		) or []
+		for psi in psi_rows:
+			if _cstr(psi.get("name")).strip() in stamped_psi:
+				continue  # already stamped via source_item link above
+			psi_ic = _cstr(psi.get("item_code")).strip()
+			psi_label = _resolve_parent_fabric_label(psi_ic)
+			if not psi_label or psi_label == _cstr(psi.get("custom_parent_fabric")).strip():
+				continue
+			frappe.db.set_value(
+				"Planning sheet Item", psi.get("name"), "custom_parent_fabric", psi_label, update_modified=False
+			)
+
 	frappe.db.commit()
 	return updated
 

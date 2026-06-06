@@ -535,24 +535,7 @@ async function openDeliveryNote(da) {
       frappe.msgprint(__("Could not open Delivery Note."));
       return;
     }
-    frappe.model.with_doctype("Delivery Note", () => {
-      const local = frappe.model.make_new_doc_and_get_name("Delivery Note");
-      const target = locals["Delivery Note"][local];
-      const src = msg.doc;
-      Object.keys(src).forEach((k) => {
-        if (["items", "doctype", "name", "__islocal", "__unsaved"].includes(k)) return;
-        target[k] = src[k];
-      });
-      (src.items || []).forEach((row) => {
-        const child = frappe.model.add_child(target, "Delivery Note Item", "items");
-        Object.keys(row).forEach((k) => {
-          if (["name", "parent", "parenttype", "parentfield", "doctype"].includes(k)) return;
-          child[k] = row[k];
-        });
-      });
-      frappe.route_options = { despatch_approval: da.name };
-      frappe.set_route("Form", "Delivery Note", local);
-    });
+    frappe.set_route("List", "Delivery Note");
   } catch (e) {
     frappe.msgprint(e?.message || String(e));
   }
