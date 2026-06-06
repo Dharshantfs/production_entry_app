@@ -712,7 +712,8 @@ def _batch_fields_from_spr_row(batch_meta, spr_row, is_bag_spr: bool = False) ->
 		if pcs > 0:
 			_set_first_batch_field(("custom_produced_bagpcs",), pcs, ("produced", "bag"))
 			if batch_meta.has_field("custom_produced_bagpcs"):
-				out["custom_produced_bagpcs"] = pcs
+				ft = batch_meta.get_field("custom_produced_bagpcs").fieldtype
+				out["custom_produced_bagpcs"] = cstr(int(pcs)) if ft == "Data" else pcs
 		bag_sz = _cstr(_spr_row_get(spr_row, "custom_bag_size"))
 		if bag_sz:
 			_set_first_batch_field(("custom_bag_size", "bag_size"), bag_sz, ("bag", "size"))

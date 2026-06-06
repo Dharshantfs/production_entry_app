@@ -166,9 +166,10 @@ function spr_apply_grid_list_view_config(grid, metaDoctype, cfg) {
 }
 
 /**
- * Roll Production Results + Bundle Calculation: show every child field in the grid (no programmatic hide).
+ * Roll Production Results + Bundle Calculation: unhide cols and restore DocType list-view defaults.
+ * Do NOT force in_list_view=1 on every field — that breaks header/body column alignment.
  */
-function spr_show_all_grid_columns(frm, fieldname) {
+function spr_reset_grid_list_view_from_meta(frm, fieldname) {
 	if (SPR_GRID_SHOW_ALL_FIELDNAMES.indexOf(fieldname) < 0) {
 		return;
 	}
@@ -182,15 +183,21 @@ function spr_show_all_grid_columns(frm, fieldname) {
 		return;
 	}
 	const skipTypes = ['Section Break', 'Column Break', 'Tab Break', 'Table', 'HTML', 'Fold'];
+	const listViewDefaults = {};
+	(frappe.get_meta(metaDoctype).fields || []).forEach(function (df) {
+		if (!df || !df.fieldname) {
+			return;
+		}
+		listViewDefaults[df.fieldname] = cint(df.in_list_view || 0);
+	});
 	(frappe.get_meta(metaDoctype).fields || []).forEach(function (df) {
 		if (!df || !df.fieldname || skipTypes.indexOf(df.fieldtype) >= 0) {
 			return;
 		}
-		df.hidden = 0;
-		df.in_list_view = 1;
+		const inList = listViewDefaults[df.fieldname] || 0;
 		try {
 			grid.update_docfield_property(df.fieldname, 'hidden', 0);
-			grid.update_docfield_property(df.fieldname, 'in_list_view', 1);
+			grid.update_docfield_property(df.fieldname, 'in_list_view', inList);
 		} catch (e) {
 			/* ignore */
 		}
@@ -201,6 +208,18 @@ function spr_show_all_grid_columns(frm, fieldname) {
 	if (typeof grid.setup_visible_columns === 'function') {
 		grid.setup_visible_columns();
 	}
+	if (typeof grid.refresh_header === 'function') {
+		grid.refresh_header();
+	}
+	if (typeof grid.refresh === 'function') {
+		grid.refresh();
+	}
+	spr_sync_grid_header_body_scroll(fd);
+}
+
+/** @deprecated alias */
+function spr_show_all_grid_columns(frm, fieldname) {
+	spr_reset_grid_list_view_from_meta(frm, fieldname);
 }
 
 /**
@@ -215,7 +234,7 @@ function spr_sync_grid_columns_visible(frm, fieldname) {
 	const metaDoctype = SPR_GRID_META_BY_FIELD[fieldname];
 	try {
 		if (SPR_GRID_SHOW_ALL_FIELDNAMES.indexOf(fieldname) >= 0) {
-			spr_show_all_grid_columns(frm, fieldname);
+			spr_reset_grid_list_view_from_meta(frm, fieldname);
 		} else {
 			if (grid.visible_columns) {
 				grid.visible_columns = null;
@@ -4074,7 +4093,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '21';
+	const sprItemsCssVer = '22';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -4216,6 +4235,21 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .form-grid {
 			width: 100%;
 			box-sizing: border-box;
+		}
+		.spr-items-wrap .form-grid-container,
+		.spr-items-wrap .grid-field {
+			overflow-x: auto;
+			max-width: 100%;
+		}
+		.spr-items-wrap .grid-heading-row,
+		.spr-items-wrap .grid-body .rows,
+		.spr-items-wrap .grid-body .grid-row {
+			width: max-content;
+			min-width: 100%;
+		}
+		.spr-items-wrap .grid-heading-row .grid-static-col,
+		.spr-items-wrap .grid-row .col {
+			flex: 0 0 auto;
 		}
 	`;
 	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);
