@@ -166,60 +166,17 @@ function spr_apply_grid_list_view_config(grid, metaDoctype, cfg) {
 }
 
 /**
- * Roll Production Results + Bundle Calculation: unhide cols and restore DocType list-view defaults.
- * Do NOT force in_list_view=1 on every field — that breaks header/body column alignment.
+ * items + bundle_calculation: scroll sync only — never mutate columns (causes hang / blank grid).
  */
-function spr_reset_grid_list_view_from_meta(frm, fieldname) {
-	if (SPR_GRID_SHOW_ALL_FIELDNAMES.indexOf(fieldname) < 0) {
-		return;
-	}
+function spr_light_grid_scroll_sync(frm, fieldname) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
-	if (!fd || !fd.grid) {
-		return;
+	if (fd) {
+		spr_sync_grid_header_body_scroll(fd);
 	}
-	const grid = fd.grid;
-	const metaDoctype = SPR_GRID_META_BY_FIELD[fieldname];
-	if (!metaDoctype) {
-		return;
-	}
-	const skipTypes = ['Section Break', 'Column Break', 'Tab Break', 'Table', 'HTML', 'Fold'];
-	const listViewDefaults = {};
-	(frappe.get_meta(metaDoctype).fields || []).forEach(function (df) {
-		if (!df || !df.fieldname) {
-			return;
-		}
-		listViewDefaults[df.fieldname] = cint(df.in_list_view || 0);
-	});
-	(frappe.get_meta(metaDoctype).fields || []).forEach(function (df) {
-		if (!df || !df.fieldname || skipTypes.indexOf(df.fieldtype) >= 0) {
-			return;
-		}
-		const inList = listViewDefaults[df.fieldname] || 0;
-		try {
-			grid.update_docfield_property(df.fieldname, 'hidden', 0);
-			grid.update_docfield_property(df.fieldname, 'in_list_view', inList);
-		} catch (e) {
-			/* ignore */
-		}
-	});
-	if (grid.visible_columns) {
-		grid.visible_columns = null;
-	}
-	if (typeof grid.setup_visible_columns === 'function') {
-		grid.setup_visible_columns();
-	}
-	if (typeof grid.refresh_header === 'function') {
-		grid.refresh_header();
-	}
-	if (typeof grid.refresh === 'function') {
-		grid.refresh();
-	}
-	spr_sync_grid_header_body_scroll(fd);
 }
 
-/** @deprecated alias */
 function spr_show_all_grid_columns(frm, fieldname) {
-	spr_reset_grid_list_view_from_meta(frm, fieldname);
+	spr_light_grid_scroll_sync(frm, fieldname);
 }
 
 /**
@@ -234,18 +191,18 @@ function spr_sync_grid_columns_visible(frm, fieldname) {
 	const metaDoctype = SPR_GRID_META_BY_FIELD[fieldname];
 	try {
 		if (SPR_GRID_SHOW_ALL_FIELDNAMES.indexOf(fieldname) >= 0) {
-			spr_reset_grid_list_view_from_meta(frm, fieldname);
-		} else {
-			if (grid.visible_columns) {
-				grid.visible_columns = null;
-			}
-			const cfg = spr_grid_list_view_config(frm, fieldname);
-			if (metaDoctype && ((cfg.show || []).length || (cfg.hide || []).length)) {
-				spr_apply_grid_list_view_config(grid, metaDoctype, cfg);
-			}
-			if (typeof grid.setup_visible_columns === 'function') {
-				grid.setup_visible_columns();
-			}
+			spr_light_grid_scroll_sync(frm, fieldname);
+			return;
+		}
+		if (grid.visible_columns) {
+			grid.visible_columns = null;
+		}
+		const cfg = spr_grid_list_view_config(frm, fieldname);
+		if (metaDoctype && ((cfg.show || []).length || (cfg.hide || []).length)) {
+			spr_apply_grid_list_view_config(grid, metaDoctype, cfg);
+		}
+		if (typeof grid.setup_visible_columns === 'function') {
+			grid.setup_visible_columns();
 		}
 		if (typeof grid.refresh_header === 'function') {
 			grid.refresh_header();
@@ -698,33 +655,19 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	onload: function (frm) {
-		function spr_onload_refresh_layout() {
+		spr_patch_items_grid_refresh(frm);
+		spr_register_spr_page_buttons(frm);
+		setTimeout(function () {
 			if (!frm || !frm.doc) {
 				return;
 			}
 			sprToggleSheetCuttingUi(frm);
 			sprToggleLaminationRollUi(frm);
-			['shaft_jobs', 'items', 'bundle_stickers', 'bundle_calculation', 'fabric_batch_picks'].forEach(function (fld) {
-				if (frm.fields_dict && frm.fields_dict[fld]) {
-					try {
-						frm.refresh_field(fld);
-					} catch (e) {}
-				}
-			});
-			spr_patch_items_grid_refresh(frm);
-			spr_register_spr_page_buttons(frm);
 			spr_inject_gsm_legend(frm);
-			schedule_spr_item_row_styles(frm);
-		}
-		setTimeout(spr_onload_refresh_layout, 0);
-		setTimeout(spr_onload_refresh_layout, 350);
-		setTimeout(spr_onload_refresh_layout, 900);
-		setTimeout(function () {
-			sprEnsureBundleRowsFromPp(frm);
-		}, 400);
-		setTimeout(function () {
 			spr_layout_all_grids(frm);
-		}, 600);
+			schedule_spr_item_row_styles(frm);
+			sprEnsureBundleRowsFromPp(frm);
+		}, 120);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
@@ -3918,11 +3861,14 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	const grid = fd.grid;
 	let hooked = false;
 	function afterGridPaint() {
-		if (fieldname === 'items') {
-			spr_schedule_grid_ui_debounced(frm, { delay: 160, columns: false });
-		} else {
-			spr_sync_grid_columns_visible(frm, fieldname);
+		if (SPR_GRID_SHOW_ALL_FIELDNAMES.indexOf(fieldname) >= 0) {
+			spr_light_grid_scroll_sync(frm, fieldname);
+			if (fieldname === 'items') {
+				spr_schedule_grid_ui_debounced(frm, { delay: 160, columns: false });
+			}
+			return;
 		}
+		spr_sync_grid_columns_visible(frm, fieldname);
 	}
 	function wrap(method) {
 		const orig = grid[method];
@@ -4093,7 +4039,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '22';
+	const sprItemsCssVer = '23';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -4236,20 +4182,12 @@ function ensure_spr_item_stylesheet() {
 			width: 100%;
 			box-sizing: border-box;
 		}
+		.spr-grid-wrap .form-grid-container,
+		.spr-grid-wrap .grid-field,
 		.spr-items-wrap .form-grid-container,
 		.spr-items-wrap .grid-field {
 			overflow-x: auto;
 			max-width: 100%;
-		}
-		.spr-items-wrap .grid-heading-row,
-		.spr-items-wrap .grid-body .rows,
-		.spr-items-wrap .grid-body .grid-row {
-			width: max-content;
-			min-width: 100%;
-		}
-		.spr-items-wrap .grid-heading-row .grid-static-col,
-		.spr-items-wrap .grid-row .col {
-			flex: 0 0 auto;
 		}
 	`;
 	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);
