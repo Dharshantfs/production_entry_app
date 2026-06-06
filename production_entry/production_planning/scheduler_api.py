@@ -181,6 +181,8 @@ BOX_BAG_PROCESS_CODES = ("221", "222", "223", "224", "231", "233", "241", "242",
 BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242", "225", "226")
 BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
 _BOX_BAG_225_226_PARENTS = ("225", "226")
+# Loop handle processes read from FG BOM on all box bag sheets.
+_BOX_BAG_LOOP_CHILD_PROCESSES = ("103", "108", "110")
 D_CUT_PROCESS_CODES = ("211", "212", "213", "214", "216", "217")
 W_CUT_PROCESS_CODES = ("200", "201", "202", "203")
 W_CUT_D_CUT_FG_PROCESS_CODES = D_CUT_PROCESS_CODES + W_CUT_PROCESS_CODES
@@ -9439,7 +9441,7 @@ def _sheet_cutting_existing_bom_children_for_so_line(planning_sheet_name, so_ite
 
 
 def _sync_225_226_box_bag_planning_rows(planning_sheet_name):
-	"""225/226 box bag: 225/226→106→104→100 and 225/226→103→100 (no 107 BOPP sync)."""
+	"""225/226 box bag: 225/226→106→104→100 (loop 103/108/110 via _sync_box_bag_loop_bom_chain)."""
 	if not planning_sheet_name:
 		return
 	parents = _BOX_BAG_225_226_PARENTS
@@ -9464,56 +9466,17 @@ def _sync_225_226_box_bag_planning_rows(planning_sheet_name):
 		so_parent_processes=parents,
 		process_label="225/226 Box Bag fabric (104 → 100)",
 	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		parents,
-		"103",
-		SLITTING_UNIT,
-		process_label="225/226 Box Bag slitting (225/226 → 103)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("103",),
-		"100",
-		so_parent_processes=parents,
-		process_label="225/226 Box Bag fabric via slitting (103 → 100)",
-	)
 
 
 def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
-	"""Box Bag (221) BOM child sync: 221 → 103/108/110 (Slitting) → 100/107 (Fabric/Lamination)."""
+	"""Box bag FG BOM sync — all processes use FG BOM for loop 103/108/110 + child expansions."""
 	if not planning_sheet_name:
 		return
-	_sync_bag_fg_direct_bom_children(planning_sheet_name, ("221",), process_label="221 Box Bag direct BOM")
-	# 221 → 103 → 100
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("103",),
-		"100",
-		so_parent_processes=("221",),
-		process_label="Box bag fabric (103 → 100)",
-	)
-	# 221 → 108 → 107 (BOPP loop handle); 107 → 100 + PB handled by _sync_lamination_fabric_planning_rows
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("108",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("221",),
-		process_label="221 Box Bag BOPP loop (108 → 107)",
-	)
-	# 221 → 110 → 107 (BOPP metallic loop handle); 107 → 100 + PB handled by _sync_lamination_fabric_planning_rows
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("110",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("221",),
-		process_label="221 Box Bag BOPP metallic loop (110 → 107)",
-	)
 
-	# 224: BOM has 104 + 103/108/110 (meter)
-	_sync_bag_fg_direct_bom_children(planning_sheet_name, ("224",), process_label="224 Box Bag direct BOM")
+	# All box bag FGs: read loop items from BOM + 103→100, 108→107, 110→107.
+	_sync_box_bag_loop_bom_chain(planning_sheet_name, BOX_BAG_PROCESS_CODES)
+
+	# 224: main fabric chain (104 → 100) in addition to loop BOM.
 	_sync_bom_child_rows_from_planning_rows(
 		planning_sheet_name,
 		("104",),
@@ -9521,122 +9484,27 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		so_parent_processes=("224",),
 		process_label="224 Box Bag Fabric (104 → 100)",
 	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("103",),
-		"100",
-		so_parent_processes=("224",),
-		process_label="224 Box Bag Fabric (103 → 100)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("108",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("224",),
-		process_label="224 Box Bag BOPP loop (108 → 107)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("110",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("224",),
-		process_label="224 Box Bag BOPP metallic loop (110 → 107)",
-	)
-	# 222 custom BOM expansion:
-	# 222 -> 105 -> 100 and 222 -> 103/108/110
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("222",),
-		"105",
-		PRINTING_UNASSIGNED_UNIT,
-		process_label="222 Flexo Printed Box Bag (222 → 105)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("105",),
-		"100",
-		so_parent_processes=("222",),
-		process_label="222 Flexo Printed Box Bag Fabric (105 → 100)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("222",),
-		"103",
-		SLITTING_UNIT,
-		process_label="222 Flexo Printed Box Bag Slitting (222 → 103)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("103",),
-		"100",
-		so_parent_processes=("222",),
-		process_label="222 Flexo Printed Box Bag Fabric (103 → 100)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("108",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("222",),
-		process_label="222 Flexo Printed Box Bag BOPP loop (108 → 107)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("110",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("222",),
-		process_label="222 Flexo Printed Box Bag BOPP metallic loop (110 → 107)",
-	)
-	# 223 custom BOM expansion:
-	# 223 -> 105 -> 100 and 223 -> 103/108/110
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("223",),
-		"105",
-		PRINTING_UNASSIGNED_UNIT,
-		process_label="223 Flexo Printed Box Bag (223 → 105)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("105",),
-		"100",
-		so_parent_processes=("223",),
-		process_label="223 Flexo Printed Box Bag Fabric (105 → 100)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("223",),
-		"103",
-		SLITTING_UNIT,
-		process_label="223 Flexo Printed Box Bag Slitting (223 → 103)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("103",),
-		"100",
-		so_parent_processes=("223",),
-		process_label="223 Flexo Printed Box Bag Fabric (103 → 100)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("108",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("223",),
-		process_label="223 Flexo Printed Box Bag BOPP loop (108 → 107)",
-	)
-	_sync_bom_child_rows_from_planning_rows(
-		planning_sheet_name,
-		("110",),
-		"107",
-		LAMINATION_UNIT,
-		so_parent_processes=("223",),
-		process_label="223 Flexo Printed Box Bag BOPP metallic loop (110 → 107)",
-	)
+	# 222 / 223: flexo print chain (105 → 100).
+	for fg_proc, label in (("222", "222"), ("223", "223")):
+		_sync_bom_child_rows_from_planning_rows(
+			planning_sheet_name,
+			(fg_proc,),
+			"105",
+			PRINTING_UNASSIGNED_UNIT,
+			process_label=f"{label} Flexo Printed Box Bag ({fg_proc} → 105)",
+		)
+		_sync_bom_child_rows_from_planning_rows(
+			planning_sheet_name,
+			("105",),
+			"100",
+			so_parent_processes=(fg_proc,),
+			process_label=f"{label} Flexo Printed Box Bag Fabric (105 → 100)",
+		)
 	_sync_225_226_box_bag_planning_rows(planning_sheet_name)
+
+	# New 107 / 103 children from loop expansion need downstream 100 / PB rows.
+	_sync_lamination_fabric_planning_rows(planning_sheet_name)
+	_sync_slitting_fabric_planning_rows(planning_sheet_name)
 	# D-CUT custom BOM expansion:
 	# 211 -> 100, 212 -> 105 -> 100, 213 -> 104 -> 100
 	_sync_bom_child_rows_from_planning_rows(
@@ -28701,8 +28569,8 @@ def _unit_for_bag_fg_bom_child(child_ic, child_proc, specs=None):
 	"""Default production unit for a direct BOM child on bag FG."""
 	if _is_printed_bopp_item_code(child_ic):
 		return PRINTED_BOPP_FILM_UNIT
-	if child_proc == "103":
-		return SLITTING_UNASSIGNED_UNIT
+	if child_proc in ("103", "108", "110"):
+		return SLITTING_UNIT
 	if child_proc in ("104", "107"):
 		return LAMINATION_UNIT
 	if child_proc in ("105", "106"):
@@ -28712,6 +28580,78 @@ def _unit_for_bag_fg_bom_child(child_ic, child_proc, specs=None):
 		specs.get("color") or "",
 		flt(specs.get("width_inch") or 0),
 		child_ic,
+	)
+
+
+def _bag_fg_bom_child_row_specs(child_ic, child_pp, so_it=None):
+	"""Quality / colour / GSM / width for direct BOM children on bag FG (103 / 108 / 110 / 100)."""
+	specs = {}
+	if child_ic.startswith("100"):
+		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, None) or {}
+	elif child_pp == "103" and frappe.db.has_column("Planning Table", "width_inch"):
+		w103 = flt(_resolve_planning_row_width_inch(child_ic))
+		if w103 > 0:
+			specs["width_inch"] = w103
+	elif child_pp in ("108", "110"):
+		parsed = (_parse_110_item_code(child_ic) if child_pp == "110" else _parse_108_item_code(child_ic)) or {}
+		q, c, g = resolve_quality_color_gsm_from_item_code(child_ic)
+		if q:
+			specs["quality"] = q
+		if c:
+			specs["color"] = c
+		if g:
+			specs["gsm"] = g
+		w_in = flt(parsed.get("width_inch") or 0)
+		if w_in > 0:
+			specs["width_inch"] = w_in
+		for fld, key in (
+			("custom_fabric_gsm", "fabric_gsm"),
+			("custom_lam_gsm", "lam_gsm"),
+			("custom_bopp_gsm", "bopp_gsm"),
+		):
+			val = cint(parsed.get(key) or 0)
+			if val > 0:
+				specs[fld] = val
+	return specs
+
+
+def _sync_box_bag_loop_bom_chain(planning_sheet_name, fg_parent_processes=None):
+	"""
+	All box bag FG processes: read 103 / 108 / 110 from FG BOM, then expand:
+	  103 → 100, 108 → 107 → 100 + PB, 110 → 107 → 100 + PB.
+	"""
+	if not planning_sheet_name:
+		return
+	fg_tuple = tuple(fg_parent_processes or BOX_BAG_PROCESS_CODES)
+	if not fg_tuple:
+		return
+	_sync_bag_fg_direct_bom_children(
+		planning_sheet_name,
+		fg_tuple,
+		process_label="Box bag FG direct BOM (103/108/110 from BOM)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("103",),
+		"100",
+		so_parent_processes=fg_tuple,
+		process_label="Box bag loop fabric (103 → 100)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("108",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=fg_tuple,
+		process_label="Box bag BOPP loop (108 → 107)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("110",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=fg_tuple,
+		process_label="Box bag BOPP metallic loop (110 → 107)",
 	)
 
 
@@ -28784,12 +28724,7 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 				parent_item_code=parent_ic,
 				planning_sheet_name=ps.name,
 			)
-			specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, None) if child_ic.startswith("100") else {}
-			if child_pp == "103" and frappe.db.has_column("Planning Table", "width_inch"):
-				w103 = flt(_resolve_planning_row_width_inch(child_ic))
-				if w103 > 0:
-					specs = dict(specs or {})
-					specs["width_inch"] = w103
+			specs = _bag_fg_bom_child_row_specs(child_ic, child_pp, so_it)
 			item_name = frappe.db.get_value("Item", child_ic, "item_name") or child_ic
 			trace_id = _parent_child_trace_id_from_item_code(parent_ic) or _parent_child_trace_id_for_planning_row(
 				parent_ic, so_item_key, ps.name
@@ -28804,18 +28739,12 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 				"unit": _unit_for_bag_fg_bom_child(child_ic, child_pp, specs),
 				"custom_parent_child_trace_id": trace_id,
 			}
-			if child_ic.startswith("100"):
-				row.update(
-					{
-						"gsm": specs.get("gsm"),
-						"width_inch": specs.get("width_inch"),
-						"color": specs.get("color"),
-						"quality": specs.get("quality"),
-						"custom_quality": specs.get("custom_quality"),
-					}
-				)
-			elif child_pp == "103" and specs.get("width_inch") and frappe.db.has_column("Planning Table", "width_inch"):
-				row["width_inch"] = flt(specs.get("width_inch"))
+			for fld in ("gsm", "width_inch", "color", "quality", "custom_quality"):
+				if specs.get(fld) is not None and frappe.db.has_column("Planning Table", fld):
+					row[fld] = specs[fld]
+			for fld in ("custom_fabric_gsm", "custom_lam_gsm", "custom_bopp_gsm"):
+				if specs.get(fld) is not None and frappe.db.has_column("Planning Table", fld):
+					row[fld] = specs[fld]
 			_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning Table")
 			if hasattr(ps, "items") or ps.meta.has_field("items"):
 				ps.append("items", dict(row))

@@ -356,48 +356,13 @@ def _sync_bopp_pb_rows_from_107(planning_sheet_name):
 
 def _sync_bopp_bag_planning_rows(planning_sheet_name):
     """
-    BOPP Box Bag (231/233/241/242) BOM child sync:
-      231/233/241/242 → 103 (Slitting)
-      103 → 100 (Fabric for Slitting)
-      231/233/241/242 → 107 (BOPP Laminated Fabric)
-      107 → 100 (Fabric for Lam)
-      107 → PB  (Printed BOPP Film)
-
-    Also writes total_gsm into the gsm field of the 233 parent row.
+    BOPP Box Bag (222/231/233/241/242/225/226): loop 103/108/110 from FG BOM and
+    child expansions are handled by _sync_box_bag_loop_bom_chain in scheduler_api.
+    Here: stamp total GSM on parent rows and assign box bag units.
     """
     if not planning_sheet_name:
         return
 
-    from production_entry.production_planning.scheduler_api import (
-        _sync_bom_child_rows_from_planning_rows,
-        _item_process_prefix,
-    )
-
-    _sync_bom_child_rows_from_planning_rows(
-        planning_sheet_name,
-        BOPP_BOX_BAG_SYNC_PARENT_PROCESSES,
-        "103",
-        SLITTING_UNIT,
-        process_label="BOPP bag slitting (231/233/241/242 → 103)",
-    )
-    _sync_bom_child_rows_from_planning_rows(
-        planning_sheet_name,
-        ("103",),
-        "100",
-        so_parent_processes=BOPP_BOX_BAG_SYNC_PARENT_PROCESSES,
-        process_label="BOPP bag fabric via slitting (103 → 100)",
-    )
-    _sync_bom_child_rows_from_planning_rows(
-        planning_sheet_name,
-        BOPP_BOX_BAG_SYNC_PARENT_PROCESSES,
-        "107",
-        LAMINATION_UNIT,
-        process_label="BOPP bag laminated fabric (231/233/241/242 → 107)",
-    )
-    # Note: 107 -> 100 and 107 -> PB extraction are handled natively by _sync_lamination_fabric_planning_rows
-    # We rely on _run_planning_sheet_post_sync calling this function BEFORE _sync_lamination_fabric_planning_rows.
-
-    # Write total_gsm into the gsm field of BOPP box-bag parent rows.
     _update_bopp_bag_gsm_on_sheet(planning_sheet_name)
 
     try:
