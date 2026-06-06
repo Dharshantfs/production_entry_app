@@ -5825,6 +5825,8 @@ def build_spr_bundle_result_lines_for_row(
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save Shaft Production Run first"))
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	if cint(spr_doc.docstatus) != 0:
+		frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
 	if not (cint(getattr(spr_doc, "custom_is_sheet_cutting", 0)) or cint(getattr(spr_doc, "custom_is_box_bag", 0))):
 		frappe.throw(_("Bundle Create Entry is only for sheet-cutting / bag SPR"))
 	pp_name = get_pp_from_spr(shaft_production_run)
@@ -6270,6 +6272,8 @@ def build_spr_roll_result_lines_for_job(
 	if not pp_name:
 		frappe.throw(_("Production Plan not found on this Shaft Production Run"))
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	if cint(spr_doc.docstatus) != 0:
+		frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
 	job_row = None
 	for j in _spr_job_rows(spr_doc):
 		if _spr_job_keys_match(_spr_job_id(j), job_id):
