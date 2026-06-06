@@ -123,11 +123,22 @@ function spr_build_roll_items_show_list(frm, opts) {
 	return out;
 }
 
+function spr_has_bag_fg_in_items(frm) {
+	if (!frm || !frm.doc) {
+		return false;
+	}
+	const bagFg = ['221', '222', '223', '224', '231', '233', '241', '242', '225', '226'];
+	return (frm.doc.items || []).some(function (row) {
+		const p = spr_item_process_prefix(row && row.item_code);
+		return bagFg.indexOf(p) >= 0;
+	});
+}
+
 function spr_items_process_mode(frm) {
 	if (!frm || !frm.doc) {
 		return 'default';
 	}
-	if (sprIsBag(frm)) {
+	if (sprIsBag(frm) || spr_has_bag_fg_in_items(frm)) {
 		return 'bag';
 	}
 	if (sprIsSheetCutting(frm)) {
@@ -199,36 +210,46 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, showFields, force) {
 	if (!metaDoctype) {
 		return;
 	}
+	const resolvedShow = [];
+	(showFields || []).forEach(function (fn) {
+		if (frappe.meta.get_docfield(metaDoctype, fn)) {
+			resolvedShow.push(fn);
+		}
+	});
+	if (!resolvedShow.length) {
+		spr_attach_grid_scroll_sync(fd);
+		spr_sync_grid_header_body_scroll(fd);
+		return;
+	}
 	if (!force && spr_grid_has_user_column_settings(grid)) {
 		spr_attach_grid_scroll_sync(fd);
 		spr_sync_grid_header_body_scroll(fd);
 		return;
 	}
 	const showSet = {};
-	(showFields || []).forEach(function (fn) {
+	resolvedShow.forEach(function (fn) {
 		showSet[fn] = 1;
 	});
-	grid.visible_columns = (showFields || [])
-		.map(function (fn) {
-			const df = frappe.meta.get_docfield(metaDoctype, fn);
-			if (!df) {
-				return null;
-			}
-			return [df.label || fn, fn, df.columns || 2];
-		})
-		.filter(Boolean);
 	(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
 		if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
 			return;
 		}
 		const show = !!showSet[df.fieldname];
 		try {
-			grid.update_docfield_property(df.fieldname, 'hidden', show ? 0 : 1);
+			// Never set hidden=1 on grid fields — it blanks the grid / breaks header-body alignment.
+			grid.update_docfield_property(df.fieldname, 'hidden', 0);
 			grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
 		} catch (e) {
 			/* ignore */
 		}
 	});
+	try {
+		if (grid.visible_columns) {
+			delete grid.visible_columns;
+		}
+	} catch (e) {
+		/* ignore */
+	}
 	if (typeof grid.setup_visible_columns === 'function') {
 		grid.setup_visible_columns();
 	}
@@ -245,6 +266,9 @@ function spr_apply_shaft_jobs_grid_columns(frm, force) {
 }
 
 function spr_apply_items_grid_columns(frm, force) {
+	if (!frm || !frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
+		return;
+	}
 	const mode = spr_items_process_mode(frm);
 	if (frm._spr_items_cols_mode !== mode) {
 		force = true;
@@ -252,6 +276,24 @@ function spr_apply_items_grid_columns(frm, force) {
 	}
 	const cfg = spr_get_items_list_view_config(frm);
 	spr_apply_grid_visible_columns(frm, 'items', cfg.show || [], force);
+}
+
+/** Emergency: clear hidden flags on all item grid fields (recover from bad column apply). */
+function spr_reset_items_grid_field_visibility(frm) {
+	const grid = frm && frm.fields_dict && frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return;
+	}
+	(frappe.meta.get_docfields(SPR_SPI_DOCTYPE) || []).forEach(function (df) {
+		if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
+			return;
+		}
+		try {
+			grid.update_docfield_property(df.fieldname, 'hidden', 0);
+		} catch (e) {
+			/* ignore */
+		}
+	});
 }
 
 function spr_set_grid_col_hidden(grid, fieldname, hidden) {
@@ -262,11 +304,19 @@ function spr_set_grid_col_hidden(grid, fieldname, hidden) {
 	if (parentField && SPR_GRID_SHOW_ALL_FIELDNAMES.indexOf(parentField) >= 0) {
 		return;
 	}
-	const hideVal = hidden ? 1 : 0;
+	// items / shaft_jobs: never hidden=1 — breaks header/body alignment and blanks columns.
+	const useListViewOnly =
+		parentField === 'items' || parentField === 'shaft_jobs';
 	try {
-		if (typeof grid.update_docfield_property === 'function') {
-			grid.update_docfield_property(fieldname, 'hidden', hideVal);
+		if (typeof grid.update_docfield_property !== 'function') {
+			return;
 		}
+		if (useListViewOnly) {
+			grid.update_docfield_property(fieldname, 'hidden', 0);
+			grid.update_docfield_property(fieldname, 'in_list_view', hidden ? 0 : 1);
+			return;
+		}
+		grid.update_docfield_property(fieldname, 'hidden', hidden ? 1 : 0);
 	} catch (e) {
 		/* ignore */
 	}
@@ -343,7 +393,7 @@ function spr_apply_grid_list_view_config(grid, metaDoctype, cfg) {
 			df.in_list_view = 0;
 		}
 		try {
-			grid.update_docfield_property(fn, 'hidden', 1);
+			grid.update_docfield_property(fn, 'hidden', 0);
 			grid.update_docfield_property(fn, 'in_list_view', 0);
 		} catch (e) {
 			/* ignore */
@@ -943,6 +993,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	refresh: function (frm) {
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
+		spr_reset_items_grid_field_visibility(frm);
 		try {
 			frm.set_df_property('company', 'read_only', 1);
 		} catch (e) {
@@ -1004,6 +1055,17 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_inject_gsm_legend(frm);
 		spr_hide_duplicate_produced_gsm_columns(frm);
 		spr_schedule_grid_ui_debounced(frm, { delay: 280 });
+
+		// Re-apply column presets after grid paint (fixes blank/misaligned columns on open).
+		setTimeout(function () {
+			spr_reset_items_grid_field_visibility(frm);
+			spr_apply_items_grid_columns(frm, true);
+			spr_apply_shaft_jobs_grid_columns(frm, true);
+		}, 120);
+		setTimeout(function () {
+			spr_apply_items_grid_columns(frm);
+			spr_apply_shaft_jobs_grid_columns(frm);
+		}, 600);
 		
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
@@ -3615,6 +3677,12 @@ function spr_force_sheet_cutting_item_grid_columns(grid) {
 	spr_set_grid_col_hidden(grid, 'custom_bag_size', 1);
 	spr_set_grid_col_hidden(grid, 'custom_planned_bag_pcs', 1);
 	spr_set_grid_col_hidden(grid, 'custom_achieved_bag_pcs', 1);
+	if (typeof grid.setup_visible_columns === 'function') {
+		grid.setup_visible_columns();
+	}
+	if (typeof grid.refresh_header === 'function') {
+		grid.refresh_header();
+	}
 }
 
 function spr_bundle_bag_size_col() {
@@ -3796,6 +3864,16 @@ function spr_hide_duplicate_produced_gsm_columns(frm) {
 	} catch (e) {
 		/* ignore */
 	}
+	try {
+		if (typeof grid.setup_visible_columns === 'function') {
+			grid.setup_visible_columns();
+		}
+		if (typeof grid.refresh_header === 'function') {
+			grid.refresh_header();
+		}
+	} catch (e) {
+		/* ignore */
+	}
 }
 
 function sprHasFabric100Rows(frm) {
@@ -3822,7 +3900,9 @@ function spr_get_items_list_view_config(frm) {
 				'custom_planned_bag_pcs',
 				'custom_achieved_bag_pcs',
 				'save_row',
-			],
+			].filter(function (fn) {
+				return frappe.meta.get_docfield(SPR_SPI_DOCTYPE, fn);
+			}),
 			hide: [],
 		};
 	}
@@ -4134,7 +4214,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '24';
+	const sprItemsCssVer = '25';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
