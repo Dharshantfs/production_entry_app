@@ -28691,7 +28691,7 @@ def _infer_fabric_chain_parent_process(fabric_ic, soi, pt_rows):
 
 
 def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
-	"""Set custom_parent_fabric on Planning Table + Planning sheet Item."""
+	"""Set custom_parent_fabric on Planning Table + Planning sheet Item (both grids, always)."""
 	from production_entry.production_planning.parent_fabric_options import normalize_parent_fabric_label
 
 	if not planning_sheet_name:
@@ -28718,17 +28718,23 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			if soi:
 				so_fg_by_soi[soi] = ic
 	direct_by_soi = _bag_fg_direct_bom_children_by_soi(planning_sheet_name)
-	updated = 0
-	for r in pt_rows:
-		ic = _cstr(r.get("item_code")).strip()
-		soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
-		so_fg = so_fg_by_soi.get(soi) or ""
-		bag_ctx = _is_bag_fg_item_code(so_fg)
-		direct = _planning_row_is_bag_fg_direct_bom_child(ic, soi, direct_by_soi)
-		chain_pp = None
-		if ic.startswith("100") and not direct:
+
+	def _label_for_item(ic, soi, direct=None, chain_pp=None):
+		ic = _cstr(ic).strip()
+		soi = _cstr(soi).strip()
+		if not ic:
+			return ""
+		if direct is None:
+			direct = _planning_row_is_bag_fg_direct_bom_child(ic, soi, direct_by_soi)
+		if chain_pp is None and ic.startswith("100") and not direct:
 			chain_pp = _infer_fabric_chain_parent_process(ic, soi, pt_rows)
-		label = _resolve_parent_fabric_label(
+		so_fg = so_fg_by_soi.get(soi) or ""
+		if not so_fg and soi:
+			pass
+		elif not so_fg and len(so_fg_by_soi) == 1:
+			so_fg = next(iter(so_fg_by_soi.values()))
+		bag_ctx = _is_bag_fg_item_code(so_fg)
+		raw = _resolve_parent_fabric_label(
 			ic,
 			so_fg_item_code=so_fg,
 			direct_on_fg_bom=direct,
@@ -28738,62 +28744,69 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			direct_by_soi=direct_by_soi,
 			bag_fg_context=bag_ctx,
 		)
-		label = normalize_parent_fabric_label(label)
+		return normalize_parent_fabric_label(raw)
+
+	labels_by_pt = {}
+	labels_by_soi_ic = {}
+	for r in pt_rows:
+		soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		ic = _cstr(r.get("item_code")).strip()
+		label = _label_for_item(ic, soi)
 		if not label:
 			continue
-		if not bag_ctx and label == _cstr(r.get("custom_parent_fabric")).strip():
-			continue
-		if frappe.db.has_column("Planning Table", "custom_parent_fabric"):
-			frappe.db.set_value("Planning Table", r.get("name"), "custom_parent_fabric", label, update_modified=False)
-			updated += 1
-		src = _cstr(r.get("source_item")).strip()
-		if src and frappe.db.exists("Planning sheet Item", src) and frappe.db.has_column(
-			"Planning sheet Item", "custom_parent_fabric"
-		):
-			frappe.db.set_value("Planning sheet Item", src, "custom_parent_fabric", label, update_modified=False)
+		labels_by_pt[r.get("name")] = label
+		labels_by_soi_ic[(soi, ic)] = label
 
-	# Second pass: stamp PSI rows that have no PT source_item link (e.g. rows added directly to items table).
-	if frappe.db.has_column("Planning sheet Item", "custom_parent_fabric"):
-		stamped_psi = {
-			_cstr(r.get("source_item")).strip()
-			for r in pt_rows
-			if _cstr(r.get("source_item")).strip()
-		}
-		psi_rows = frappe.get_all(
-			"Planning sheet Item",
-			filters={"parent": planning_sheet_name},
-			fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_fabric"],
-			limit_page_length=0,
-		) or []
-		for psi in psi_rows:
-			if _cstr(psi.get("name")).strip() in stamped_psi:
-				continue  # already stamped via source_item link above
-			psi_ic = _cstr(psi.get("item_code")).strip()
-			psi_soi = _cstr(psi.get("sales_order_item") or psi.get("so_item")).strip()
-			psi_so_fg = so_fg_by_soi.get(psi_soi) or ""
-			psi_bag_ctx = _is_bag_fg_item_code(psi_so_fg)
-			psi_direct = _planning_row_is_bag_fg_direct_bom_child(psi_ic, psi_soi, direct_by_soi)
-			psi_chain = None
-			if psi_ic.startswith("100") and not psi_direct:
-				psi_chain = _infer_fabric_chain_parent_process(psi_ic, psi_soi, pt_rows)
-			psi_label = _resolve_parent_fabric_label(
-				psi_ic,
-				so_fg_item_code=psi_so_fg,
-				direct_on_fg_bom=psi_direct,
-				chain_parent_process=psi_chain,
-				soi=psi_soi,
-				pt_rows=pt_rows,
-				direct_by_soi=direct_by_soi,
-				bag_fg_context=psi_bag_ctx,
-			)
-			psi_label = normalize_parent_fabric_label(psi_label)
-			if not psi_label:
-				continue
-			if not psi_bag_ctx and psi_label == _cstr(psi.get("custom_parent_fabric")).strip():
-				continue
-			frappe.db.set_value(
-				"Planning sheet Item", psi.get("name"), "custom_parent_fabric", psi_label, update_modified=False
-			)
+	updated = 0
+	if frappe.db.has_column("Planning Table", "custom_parent_fabric"):
+		for pt_name, label in labels_by_pt.items():
+			frappe.db.set_value("Planning Table", pt_name, "custom_parent_fabric", label, update_modified=False)
+			updated += 1
+
+	if not frappe.db.has_column("Planning sheet Item", "custom_parent_fabric"):
+		frappe.db.commit()
+		return updated
+
+	# Board → legacy items: source_item link, then item_code + SO line match (same as qty sync).
+	stamped_psi = set()
+	for r in pt_rows:
+		label = labels_by_pt.get(r.get("name"))
+		if not label:
+			continue
+		ic = _cstr(r.get("item_code")).strip()
+		soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
+		legacy = _cstr(r.get("source_item")).strip()
+		target_psi = legacy if legacy and frappe.db.exists("Planning sheet Item", legacy) else ""
+		if not target_psi:
+			target_psi = _find_legacy_planning_sheet_item_row(planning_sheet_name, ic, soi)
+		if not target_psi:
+			continue
+		frappe.db.set_value("Planning sheet Item", target_psi, "custom_parent_fabric", label, update_modified=False)
+		stamped_psi.add(target_psi)
+		if (
+			frappe.db.has_column("Planning Table", "source_item")
+			and legacy != target_psi
+		):
+			frappe.db.set_value("Planning Table", r.get("name"), "source_item", target_psi, update_modified=False)
+
+	psi_rows = frappe.get_all(
+		"Planning sheet Item",
+		filters={"parent": planning_sheet_name},
+		fields=["name", "item_code", "sales_order_item", "so_item", "custom_parent_fabric"],
+		limit_page_length=0,
+	) or []
+	for psi in psi_rows:
+		psi_name = _cstr(psi.get("name")).strip()
+		psi_ic = _cstr(psi.get("item_code")).strip()
+		psi_soi = _cstr(psi.get("sales_order_item") or psi.get("so_item")).strip()
+		label = labels_by_soi_ic.get((psi_soi, psi_ic))
+		if not label:
+			label = _label_for_item(psi_ic, psi_soi)
+		if not label:
+			continue
+		if label == _cstr(psi.get("custom_parent_fabric")).strip() and psi_name in stamped_psi:
+			continue
+		frappe.db.set_value("Planning sheet Item", psi_name, "custom_parent_fabric", label, update_modified=False)
 
 	frappe.db.commit()
 	return updated
