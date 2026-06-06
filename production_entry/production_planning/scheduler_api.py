@@ -8780,11 +8780,16 @@ def _sync_bom_child_rows_from_planning_rows(
 				):
 					updates["custom_parent_child_trace_id"] = trace_refresh
 			if (
-				child_proc_ex in ("100", "104", "107", "106")
+				child_proc_ex in ("100", "103", "104", "107", "106")
 				and frappe.db.has_column("Planning Table", "width_inch")
-				and (parent_proc in ("253", "255", "254", "109", "103") or so_fg_ex in ("253", "255", "254", "109", "103"))
+				and (parent_proc in ("253", "255", "254", "109", "103") or so_fg_ex in ("253", "255", "254", "109", "103")
+				or parent_proc in ALL_BAG_FG_PROCESS_CODES or so_fg_ex in ALL_BAG_FG_PROCESS_CODES)
 			):
 				wex = flt(specs_ex.get("width_inch") or 0)
+				if child_proc_ex == "103" and wex <= 0:
+					w103x = flt(_resolve_planning_row_width_inch(child_ic))
+					if w103x > 0:
+						wex = w103x
 				if child_proc_ex == "104" or _lamination_process_from_item_code(child_ic) == "104":
 					w104x = _width_inch_from_104_item_code(child_ic)
 					if w104x > 0:
@@ -9003,6 +9008,10 @@ def _sync_bom_child_rows_from_planning_rows(
 				row["gsm"] = cint(p105.get("gsm") or 0)
 			if cint(p105.get("width_mm") or 0) > 0:
 				row["width_inch"] = round(cint(p105.get("width_mm") or 0) / 25.4)
+		elif child_proc == "103" and frappe.db.has_column("Planning Table", "width_inch"):
+			w103 = flt(_resolve_planning_row_width_inch(child_ic))
+			if w103 > 0:
+				row["width_inch"] = w103
 		ss_clear_new = False
 		if parent_proc in ("253", "255", "254") and child_proc in ("100", "104", "107", "106"):
 			ss_clear_new = True
@@ -28505,6 +28514,11 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 				planning_sheet_name=ps.name,
 			)
 			specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, None) if child_ic.startswith("100") else {}
+			if child_pp == "103" and frappe.db.has_column("Planning Table", "width_inch"):
+				w103 = flt(_resolve_planning_row_width_inch(child_ic))
+				if w103 > 0:
+					specs = dict(specs or {})
+					specs["width_inch"] = w103
 			item_name = frappe.db.get_value("Item", child_ic, "item_name") or child_ic
 			trace_id = _parent_child_trace_id_from_item_code(parent_ic) or _parent_child_trace_id_for_planning_row(
 				parent_ic, so_item_key, ps.name
@@ -28529,6 +28543,8 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 						"custom_quality": specs.get("custom_quality"),
 					}
 				)
+			elif child_pp == "103" and specs.get("width_inch") and frappe.db.has_column("Planning Table", "width_inch"):
+				row["width_inch"] = flt(specs.get("width_inch"))
 			_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning Table")
 			if hasattr(ps, "items") or ps.meta.has_field("items"):
 				ps.append("items", dict(row))

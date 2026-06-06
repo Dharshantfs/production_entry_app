@@ -9,6 +9,9 @@ from frappe.utils import cint, flt, getdate, nowtime, today
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	extract_quality_and_color,
 )
+from production_entry.production_planning.scheduler_api import (
+	_bom_rm_stock_qty_map_for_fg,
+)
 from production_entry.production_planning.planning_doctypes import (
 	BOX_BAG_UNIT_L1,
 	BOX_BAG_UNIT_L2,
@@ -577,7 +580,63 @@ def _fabric_gsm_from_planning_for_pp(pp_name: str) -> int:
 	return 0
 
 
-def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
+def _spr_wo_rm_source_warehouse(wo_doc, item_code: str, wip_wh: str = "") -> str:
+	"""Per-item RM source warehouse from WO required_items (Is Bag MTFM)."""
+	item_code = _cstr(item_code).strip()
+	wip_wh = _cstr(wip_wh).strip()
+	for req in getattr(wo_doc, "required_items", None) or []:
+		if _cstr(getattr(req, "item_code", None)).strip() == item_code:
+			src = _cstr(getattr(req, "source_warehouse", None)).strip()
+			if src and src != wip_wh:
+				return src
+	header_src = _cstr(getattr(wo_doc, "source_warehouse", None)).strip()
+	if header_src and header_src != wip_wh:
+		return header_src
+	try:
+		default_wh = _cstr(frappe.db.get_single_value("Stock Settings", "default_warehouse")).strip()
+		if default_wh and default_wh != wip_wh:
+			return default_wh
+	except Exception:
+		pass
+	return header_src or ""
+
+
+def _spr_wo_rm_still_needed_map(wo_doc) -> dict[str, float]:
+	"""RM qty still to transfer to WIP from WO required_items (stock UOM, typically Kg)."""
+	out = defaultdict(float)
+	for req in getattr(wo_doc, "required_items", None) or []:
+		ic = _cstr(getattr(req, "item_code", None)).strip()
+		if not ic:
+			continue
+		need = flt(getattr(req, "required_qty", 0)) - flt(getattr(req, "transferred_qty", 0))
+		if need > 1e-9:
+			out[ic] += need
+	return dict(out)
+
+
+def _spr_apply_bag_rm_qty_from_bom(se, bom_no: str, fg_qty: float) -> None:
+	"""Replace RM line qty on Stock Entry with BOM×FG using Meter→Kg divide (matches WO/PP)."""
+	fg_qty = flt(fg_qty)
+	if fg_qty <= 0 or not se:
+		return
+	rm_map, _multi = _bom_rm_stock_qty_map_for_fg(_cstr(bom_no), fg_qty)
+	if not rm_map:
+		return
+	for d in se.items or []:
+		if not d.item_code or d.get("t_warehouse"):
+			continue
+		needed = flt(rm_map.get(_cstr(d.item_code)))
+		if needed <= 0:
+			continue
+		stock_uom = frappe.db.get_value("Item", d.item_code, "stock_uom") or d.stock_uom or "Kg"
+		d.uom = stock_uom
+		d.stock_uom = stock_uom
+		d.conversion_factor = 1.0
+		d.transfer_qty = needed
+		d.qty = needed
+
+
+def _batch_fields_from_spr_row(batch_meta, spr_row, is_bag_spr: bool = False) -> dict:
 	"""Map Roll Production Result line to Batch fields (Net/Gross Weight Kgs, Length Mtrs, CBM)."""
 	if not spr_row:
 		return {}
@@ -648,6 +707,23 @@ def _batch_fields_from_spr_row(batch_meta, spr_row) -> dict:
 		("custom_roll_numbers", "roll_numbers", "custom_source_roll_numbers", "source_roll_numbers"),
 		roll_numbers,
 	)
+	if is_bag_spr:
+		pcs = flt(_spr_row_get(spr_row, "custom_achieved_bag_pcs"))
+		if pcs > 0:
+			_set_first_batch_field(("custom_produced_bagpcs",), pcs, ("produced", "bag"))
+			if batch_meta.has_field("custom_produced_bagpcs"):
+				out["custom_produced_bagpcs"] = pcs
+		bag_sz = _cstr(_spr_row_get(spr_row, "custom_bag_size"))
+		if bag_sz:
+			_set_first_batch_field(("custom_bag_size", "bag_size"), bag_sz, ("bag", "size"))
+		for val, cands, tokens in (
+			(_spr_row_get(spr_row, "quality"), ("custom_quality", "quality"), ("quality",)),
+			(_spr_row_get(spr_row, "color"), ("custom_color", "color"), ("color",)),
+			(_spr_row_get(spr_row, "gsm"), ("custom_gsm", "gsm"), ("gsm",)),
+			(flt(_spr_row_get(spr_row, "width_inch") or 0), ("custom_width_inch", "width_inch"), ("width",)),
+		):
+			if val not in (None, "", 0):
+				_set_first_batch_field(cands, val, tokens)
 	return out
 
 
@@ -2174,6 +2250,7 @@ class ShaftProductionRun(Document):
 
 	def sync_batch_custom_fields(self):
 		batch_meta = frappe.get_meta("Batch")
+		is_bag = spr_doc_is_bag_spr(self)
 		for row in self.items or []:
 			if not row.batch_no:
 				continue
@@ -2190,7 +2267,7 @@ class ShaftProductionRun(Document):
 				)
 			if not batch_name or not frappe.db.exists("Batch", batch_name):
 				continue
-			data = dict(_batch_fields_from_spr_row(batch_meta, row))
+			data = dict(_batch_fields_from_spr_row(batch_meta, row, is_bag_spr=is_bag))
 			if batch_meta.has_field("custom_gross_weight") and row.get("gross_weight") is not None:
 				data["custom_gross_weight"] = flt(row.gross_weight)
 			if batch_meta.has_field("custom_cbm") and row.get("custom_cbm") is not None:
@@ -2209,6 +2286,10 @@ class ShaftProductionRun(Document):
 				frappe.log_error(frappe.get_traceback(), "SPR Batch sync skipped")
 
 	def _row_fg_qty(self, row) -> float:
+		if spr_doc_is_bag_spr(self):
+			pcs = flt(_spr_row_get(row, "custom_achieved_bag_pcs"))
+			if pcs > 0:
+				return pcs
 		qty = flt(_spr_row_get(row, "net_weight"))
 		if qty <= 0:
 			qty = flt(_spr_row_get(row, "gross_weight"))
@@ -2217,6 +2298,48 @@ class ShaftProductionRun(Document):
 		if qty <= 0 and cint(getattr(self, "custom_is_sheet_cutting", 0)):
 			qty = flt(_spr_row_get(row, "custom_total_produced_sheets"))
 		return qty
+
+	def _spr_bag_fg_posting_qty_for_wo(self, wo_doc, spr_rows: list | None = None) -> float:
+		"""Is Bag: FG qty in PCS from bundle/header — never meters or roll weight."""
+		if not spr_doc_is_bag_spr(self) or not wo_doc:
+			return 0.0
+		wo_id = _cstr(getattr(wo_doc, "name", None))
+		total = 0.0
+		for br in self.bundle_calculation or []:
+			if _cstr(getattr(br, "work_order", None)) == wo_id:
+				total += flt(getattr(br, "total_produced_bag_pcs", 0) or 0)
+		if total > 1e-9:
+			return flt(total, 0)
+		meta = frappe.get_meta("Shaft Production Run")
+		if meta.has_field("custom_total_achieved_pcs"):
+			hdr = flt(getattr(self, "custom_total_achieved_pcs", 0) or 0)
+			if hdr > 1e-9:
+				return flt(hdr, 0)
+		rows = spr_rows if spr_rows is not None else [
+			r for r in (self.items or [])
+			if _cstr(r.get("work_order") or r.get("wo_id")) == wo_id
+		]
+		return flt(sum(flt(_spr_row_get(r, "custom_achieved_bag_pcs")) for r in rows), 0)
+
+	def _spr_validate_bag_fg_qty_for_wo(self, wo_doc, fg_pcs: float) -> None:
+		"""Is Bag: ensure posting PCS does not exceed WO remaining qty."""
+		if not spr_doc_is_bag_spr(self) or fg_pcs <= 0:
+			return
+		remaining, allowed, already, _over = self._wo_allowed_remaining_qty(wo_doc)
+		if fg_pcs > remaining + 1e-9:
+			frappe.throw(
+				_(
+					"Bag SPR produced {0} PCS for WO {1}, but WO allows only {2} PCS remaining "
+					"(WO qty {3}, already produced {4}). Adjust Achieved Bag PCS before submit."
+				).format(
+					flt(fg_pcs, 0),
+					wo_doc.name,
+					flt(remaining, 0),
+					flt(getattr(wo_doc, "qty", 0), 0),
+					flt(already, 0),
+				),
+				title=_("Bag PCS exceeds WO qty"),
+			)
 
 	def _set_stock_entry_spr_link(self, se):
 		"""Link Manufacture / transfer entries back to this SPR for traceability and recovery tools."""
@@ -3118,6 +3241,7 @@ class ShaftProductionRun(Document):
 		"""Create a draft Material Transfer for Manufacture for shortage items only."""
 		if not wo_doc or not shortages:
 			return ""
+		is_bag = spr_doc_is_bag_spr(self)
 		# Use current day/time for shortage transfers to avoid backdated ledger insufficiency on old run dates.
 		transfer_posting_date = today()
 		transfer_posting_time = nowtime()
@@ -3136,6 +3260,18 @@ class ShaftProductionRun(Document):
 		if not short_by_item:
 			return ""
 
+		if is_bag:
+			wo_still_needed = _spr_wo_rm_still_needed_map(wo_doc)
+			for ic in list(short_by_item.keys()):
+				still = flt(wo_still_needed.get(ic, 0))
+				if still > 0:
+					short_by_item[ic] = min(flt(short_by_item[ic]), still)
+
+		def _item_source_wh(item_code: str) -> str:
+			if is_bag:
+				return _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh) or raw_source_wh
+			return raw_source_wh
+
 		# Path A: BOM-driven draft (best when site config supports it)
 		try:
 			se = frappe.new_doc("Stock Entry")
@@ -3149,12 +3285,14 @@ class ShaftProductionRun(Document):
 			se.from_bom = 1
 			se.bom_no = wo_doc.bom_no
 			se.use_multi_level_bom = wo_doc.use_multi_level_bom
-			se.from_warehouse = raw_source_wh or None
+			se.from_warehouse = None if is_bag else (raw_source_wh or None)
 			se.wip_warehouse = wip_wh
 			se.to_warehouse = wip_wh
 			se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
 			self._set_stock_entry_spr_link(se)
 			se.get_items()
+			if is_bag:
+				_spr_apply_bag_rm_qty_from_bom(se, wo_doc.bom_no, se.fg_completed_qty)
 
 			for i in range(len(se.items or []) - 1, -1, -1):
 				d = se.items[i]
@@ -3164,10 +3302,13 @@ class ShaftProductionRun(Document):
 				if short_qty <= 0:
 					se.items.pop(i)
 					continue
+				item_src = _item_source_wh(d.item_code)
 				cf = flt(d.get("conversion_factor") or 1.0) or 1.0
 				d.transfer_qty = flt(short_qty)
 				d.qty = flt(short_qty / cf)
-				if raw_source_wh:
+				if item_src:
+					d.s_warehouse = item_src
+				elif raw_source_wh:
 					d.s_warehouse = raw_source_wh
 				if not d.t_warehouse:
 					d.t_warehouse = wip_wh
@@ -3187,20 +3328,23 @@ class ShaftProductionRun(Document):
 		se.stock_entry_type = self._transfer_for_manufacture_type_name()
 		se.work_order = wo_doc.name
 		se.from_bom = 0
-		se.from_warehouse = raw_source_wh or None
+		se.from_warehouse = None if is_bag else (raw_source_wh or None)
 		se.wip_warehouse = wip_wh
 		se.to_warehouse = wip_wh
 		self._set_stock_entry_spr_link(se)
 		for item_code, wh, _req, _avl, short_qty in shortages:
-			qty = flt(short_qty)
+			qty = flt(short_by_item.get(_cstr(item_code), short_qty))
 			if not item_code or qty <= 0:
 				continue
 			stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
+			item_src = _item_source_wh(item_code)
+			if is_bag and not item_src:
+				item_src = _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh)
 			se.append(
 				"items",
 				{
 					"item_code": item_code,
-					"s_warehouse": raw_source_wh or wh or wip_wh,
+					"s_warehouse": item_src or raw_source_wh,
 					"t_warehouse": wip_wh,
 					"uom": stock_uom,
 					"stock_uom": stock_uom,
@@ -3255,6 +3399,8 @@ class ShaftProductionRun(Document):
 		self._set_stock_entry_spr_link(se)
 		self._set_stock_entry_unit(se, wo_doc)
 		se.get_items()
+		if spr_doc_is_bag_spr(self):
+			_spr_apply_bag_rm_qty_from_bom(se, wo_doc.bom_no, se.fg_completed_qty)
 		wip_warehouse = _cstr(getattr(wo_doc, "wip_warehouse", None))
 		for item in se.items or []:
 			if item.item_code and not item.get("t_warehouse"):
@@ -3280,16 +3426,21 @@ class ShaftProductionRun(Document):
 			]
 		)
 		next_steps = _(
-			"1) Submit shortage transfer (Raw Materials -> WIP).\n"
+			"1) Submit shortage transfer (each RM source warehouse -> WIP).\n"
 			"2) Return to SPR and submit again."
 		)
 		if transfer_name:
+			verify_line = (
+				"2) Verify each line: source = item WO Required Items warehouse, target = WIP, qty in Kg matches WO.\n"
+				if spr_doc_is_bag_spr(self)
+				else "2) Verify source warehouse = Raw Materials and target warehouse = WIP, then submit.\n"
+			)
 			next_steps = _(
 				'1) Open draft transfer: <a href="/app/stock-entry/{0}" target="_blank">{0}</a> '
 				'(/app/stock-entry/{0})\n'
-				"2) Verify source warehouse = Raw Materials and target warehouse = WIP, then submit.\n"
-				'3) Return to SPR: <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
-			).format(transfer_name, self.name)
+				"{1}"
+				'3) Return to SPR: <a href="/app/shaft-production-run/{2}" target="_blank">{2}</a> and submit again.'
+			).format(transfer_name, verify_line, self.name)
 		elif transfer_err:
 			next_steps = _(
 				"Could not auto-create draft transfer on this site. "
@@ -3421,7 +3572,8 @@ class ShaftProductionRun(Document):
 			return ""
 
 		batch_meta = frappe.get_meta("Batch")
-		roll_batch_data = _batch_fields_from_spr_row(batch_meta, spr_row)
+		is_bag = spr_doc_is_bag_spr(self)
+		roll_batch_data = _batch_fields_from_spr_row(batch_meta, spr_row, is_bag_spr=is_bag)
 
 		def _existing_name() -> str | None:
 			if frappe.db.exists("Batch", bid):
@@ -3667,6 +3819,10 @@ class ShaftProductionRun(Document):
 		return [u["row"] for u in units]
 
 	def _fg_posting_qty_for_rows(self, spr_rows: list, wo_doc) -> float:
+		if spr_doc_is_bag_spr(self):
+			bag_total = self._spr_bag_fg_posting_qty_for_wo(wo_doc, spr_rows)
+			if bag_total > 0:
+				return bag_total
 		return sum(flt(self._row_fg_qty(unit)) for unit in self._fg_posting_units_for_rows(spr_rows, wo_doc))
 
 	def _append_manufacture_fg_from_spr_rolls(self, se, wo_doc, spr_rows: list, fg_templates=None):
@@ -3850,6 +4006,8 @@ class ShaftProductionRun(Document):
 		se.wip_warehouse = wo_doc.wip_warehouse
 		se.to_warehouse = wo_doc.fg_warehouse
 		se.get_items()
+		if spr_doc_is_bag_spr(self):
+			_spr_apply_bag_rm_qty_from_bom(se, wo_doc.bom_no, fg_qty)
 		rm = defaultdict(float)
 		for d in se.items or []:
 			if d.item_code and not d.get("t_warehouse"):
@@ -4176,6 +4334,8 @@ class ShaftProductionRun(Document):
 			wo_doc = frappe.get_doc("Work Order", wo_id)
 			total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
 			wo_item = _cstr(getattr(wo_doc, "production_item", None))
+			if spr_doc_is_bag_spr(self):
+				self._spr_validate_bag_fg_qty_for_wo(wo_doc, total_qty)
 
 			# Hard safety: one WO must not receive rows of other finished items.
 			mismatch_items = sorted(
@@ -4198,13 +4358,15 @@ class ShaftProductionRun(Document):
 			frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
 			
 			# Show in UI
+			qty_label = "PCS" if spr_doc_is_bag_spr(self) else "KG"
 			frappe.msgprint(
-				_(f"≡ƒôè Creating Manufacturing Entry for WO: {wo_id} | Total Quantity: {total_qty} KG | WO Authorized: {wo_doc.qty} KG"),
+				_(f"Creating Manufacturing Entry for WO: {wo_id} | Total Quantity: {total_qty} {qty_label} | WO Authorized: {wo_doc.qty} {qty_label}"),
 				alert=False
 			)
 
 			if total_qty <= 0:
-				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)
+				skip_msg = _("Skipping WO {0} — achieved bag PCS is 0").format(wo_id) if spr_doc_is_bag_spr(self) else _("Skipping WO {0} — net/gross weight is 0").format(wo_id)
+				frappe.msgprint(skip_msg, alert=True)
 				continue
 
 			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
@@ -4313,6 +4475,8 @@ class ShaftProductionRun(Document):
 
 				# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
 				se.get_items()
+				if spr_doc_is_bag_spr(self):
+					_spr_apply_bag_rm_qty_from_bom(se, wo_doc.bom_no, chunk_total_qty)
 
 				# ≡ƒöÆ ENFORCE: ALL RM items MUST use WIP warehouse ONLY - NO OTHER WAREHOUSE
 				# This prevents double consumption (materials already transferred to WIP)
