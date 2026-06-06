@@ -13,6 +13,7 @@ from frappe.utils import cint, flt, getdate, now_datetime
 from production_entry.production_planning.scheduler_api import (
 	PLANNING_MOVEMENT_TYPE_FIELD,
 	get_color_chart_data,
+	is_stock_movement,
 	is_transfer_movement,
 	normalize_movement_type,
 )
@@ -536,7 +537,9 @@ def enrich_chart_row_transfer_payload(item, wo_terminal=False, spr_docstatus=0):
 		)
 	)
 	block_reason = ""
-	if not is_transfer_movement(mt):
+	if is_stock_movement(mt):
+		block_reason = _("Stock row — covered by existing inventory")
+	elif not is_transfer_movement(mt):
 		block_reason = "Not a transfer row"
 	elif not wo_terminal:
 		block_reason = "Work order not completed"
@@ -715,6 +718,8 @@ def get_transfer_eligible_rows(
 	out = []
 	for r in rows:
 		mt = normalize_movement_type(r.get("movement_type"))
+		if is_stock_movement(mt):
+			continue
 		if not is_transfer_movement(mt):
 			continue
 		if not _row_matches_filters(r, party_code, customer, unit):

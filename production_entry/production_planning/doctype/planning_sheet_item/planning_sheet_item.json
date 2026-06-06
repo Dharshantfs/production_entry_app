@@ -117,7 +117,7 @@
             "fieldtype": "Select",
             "in_list_view": 1,
             "label": "Movement Type",
-            "options": "Despatch\nTransfer"
+            "options": "Despatch\nTransfer\nStock"
         },
         {
             "fieldname": "custom_transfer_destination",

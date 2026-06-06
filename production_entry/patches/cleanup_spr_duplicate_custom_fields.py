@@ -13,7 +13,6 @@ _SPR_STANDARD_FIELDNAMES = (
 _SPR_BAG_HIDDEN_TABLE_FIELDS = (
 	"custom_core_details",
 	"custom_polybag_details",
-	"custom_running_patty_wastage",
 )
 
 

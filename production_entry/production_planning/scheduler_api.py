@@ -95,6 +95,7 @@ PRINTED_BOPP_FILM_UNIT = PLANNING_PRINTED_BOPP_FILM_UNIT
 PLANNING_MOVEMENT_TYPE_FIELD = "custom_movement_type"
 MOVEMENT_DESPATCH = "Despatch"
 MOVEMENT_TRANSFER = "Transfer"
+MOVEMENT_STOCK = "Stock"
 LEGACY_MOVEMENT_TRANSPORT = "Transport"
 # Backward-compat alias for older imports
 MOVEMENT_TRANSPORT = MOVEMENT_TRANSFER
@@ -110,6 +111,24 @@ def normalize_movement_type(movement_type):
 
 def is_transfer_movement(movement_type):
 	return normalize_movement_type(movement_type) == MOVEMENT_TRANSFER
+
+
+def is_stock_movement(movement_type):
+	return normalize_movement_type(movement_type) == MOVEMENT_STOCK
+
+
+def _should_skip_planning_movement_restamp(row_name, doctype="Planning Table"):
+	"""Do not overwrite user-confirmed Stock movement on BOM re-sync."""
+	if not row_name:
+		return False
+	try:
+		from production_entry.production_planning.planning_stock_check import should_skip_movement_restamp
+
+		return should_skip_movement_restamp(row_name, doctype)
+	except Exception:
+		if not frappe.db.has_column(doctype, PLANNING_MOVEMENT_TYPE_FIELD):
+			return False
+		return is_stock_movement(frappe.db.get_value(doctype, row_name, PLANNING_MOVEMENT_TYPE_FIELD))
 
 # Lower rank = earlier in sheet (upstream production first).
 _PRODUCTION_SORT_RANK_BY_PROCESS = {
@@ -300,6 +319,24 @@ def _set_movement_type_if_supported(row, movement_type, doctype_hint="Planning T
 	if not movement_type or not _has_planning_movement_type_column(doctype_hint):
 		return
 	if isinstance(row, dict):
+		if cint(row.get("custom_stock_locked") or 0):
+			return
+		if is_stock_movement(row.get(PLANNING_MOVEMENT_TYPE_FIELD)):
+			return
+		row_name = row.get("name")
+	elif hasattr(row, "name"):
+		if hasattr(row, "custom_stock_locked") and cint(getattr(row, "custom_stock_locked", 0) or 0):
+			return
+		if hasattr(row, PLANNING_MOVEMENT_TYPE_FIELD) and is_stock_movement(
+			getattr(row, PLANNING_MOVEMENT_TYPE_FIELD, None)
+		):
+			return
+		row_name = getattr(row, "name", None)
+	else:
+		row_name = None
+	if row_name and _should_skip_planning_movement_restamp(row_name, doctype_hint):
+		return
+	if isinstance(row, dict):
 		row[PLANNING_MOVEMENT_TYPE_FIELD] = movement_type
 	elif hasattr(row, PLANNING_MOVEMENT_TYPE_FIELD):
 		setattr(row, PLANNING_MOVEMENT_TYPE_FIELD, movement_type)
@@ -342,6 +379,8 @@ def _apply_movement_types_to_planning_sheet(planning_sheet_name):
 			limit_page_length=0,
 		) or []
 		for r in rows:
+			if _should_skip_planning_movement_restamp(r.name, doctype):
+				continue
 			soik = _cstr(r.get(soi_col) or r.get(soi_alt))
 			mt = _movement_type_for_planning_row(r.get("item_code"), soik, so_fg_by_soi)
 			frappe.db.set_value(doctype, r.name, PLANNING_MOVEMENT_TYPE_FIELD, mt, update_modified=False)
@@ -373,11 +412,12 @@ def _reorder_planning_sheet_by_production_sequence(planning_sheet_name):
 	for new_idx, r in enumerate(pt_rows, start=1):
 		frappe.db.set_value("Planning Table", r.name, "idx", new_idx, update_modified=False)
 		if _has_planning_movement_type_column("Planning Table"):
-			soik = _cstr(r.get("sales_order_item") or r.get("so_item"))
-			mt = _movement_type_for_planning_row(r.get("item_code"), soik, so_fg_by_soi)
-			frappe.db.set_value(
-				"Planning Table", r.name, PLANNING_MOVEMENT_TYPE_FIELD, mt, update_modified=False
-			)
+			if not _should_skip_planning_movement_restamp(r.name, "Planning Table"):
+				soik = _cstr(r.get("sales_order_item") or r.get("so_item"))
+				mt = _movement_type_for_planning_row(r.get("item_code"), soik, so_fg_by_soi)
+				frappe.db.set_value(
+					"Planning Table", r.name, PLANNING_MOVEMENT_TYPE_FIELD, mt, update_modified=False
+				)
 
 	if not frappe.db.table_exists("Planning sheet Item"):
 		return
@@ -419,6 +459,8 @@ def _reorder_planning_sheet_by_production_sequence(planning_sheet_name):
 	for new_idx, pr in enumerate(ordered_psi, start=1):
 		frappe.db.set_value("Planning sheet Item", pr.name, "idx", new_idx, update_modified=False)
 		if _has_planning_movement_type_column("Planning sheet Item"):
+			if _should_skip_planning_movement_restamp(pr.name, "Planning sheet Item"):
+				continue
 			soik = _cstr(pr.get("sales_order_item") or pr.get("so_item"))
 			mt = _movement_type_for_planning_row(pr.get("item_code"), soik, so_fg_by_soi)
 			frappe.db.set_value(
@@ -20564,6 +20606,13 @@ def _get_color_chart_data_impl(
             produced_weight = frappe.db.get_value("Work Order", wo_name, "produced_qty") or 0
 
         for item in items:
+            try:
+                from production_entry.production_planning.planning_stock_check import planning_row_hidden_from_board
+
+                if planning_row_hidden_from_board(item):
+                    continue
+            except Exception:
+                pass
             if bps == "printed_bopp_pb_only" and not _matches_printed_bopp_board_row(item):
                 continue
             if bps and bps != "printed_bopp_pb_only":

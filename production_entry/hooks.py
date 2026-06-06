@@ -40,6 +40,7 @@ doctype_js = {
     "Planning sheet": [
         "public/js/production_entry.js",
         "public/js/planning_sheet_custom.js",
+        "public/js/planning_sheet_stock_check.js",
     ],
     "Work Order": "public/js/work_order_rm_uom.js",
     "Production Plan": "public/js/production_plan_rm_uom.js",
