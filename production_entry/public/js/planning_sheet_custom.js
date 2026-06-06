@@ -330,6 +330,11 @@ frappe.ui.form.on('Planning sheet', {
         setTimeout(function () {
             registerWorkingSheetCuttingChangeBomButton(frm);
         }, 1000);
+        if (typeof register_planning_sheet_stock_check_button === 'function') {
+            register_planning_sheet_stock_check_button(frm);
+            setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 300);
+            setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 1000);
+        }
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',

@@ -563,3 +563,43 @@ def clear_planning_sheet_stock(planning_sheet_name: str | None = None, planning_
 		cleared.append(rn)
 	frappe.db.commit()
 	return {"status": "ok", "cleared_rows": cleared, "count": len(cleared)}
+
+
+def revert_unconfirmed_stock_on_planning_sheet(doc):
+	"""Stock movement may only be set via Check Stock (custom_stock_locked=1)."""
+	if not doc:
+		return
+	so_name = _cstr(doc.get("sales_order"))
+	_, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
+	reverted = []
+
+	def _check_row(row, table_label):
+		if not row:
+			return
+		mt = row.get(PLANNING_MOVEMENT_TYPE_FIELD)
+		if not is_stock_movement(mt):
+			return
+		if cint(row.get("custom_stock_locked") or 0):
+			return
+		row[PLANNING_MOVEMENT_TYPE_FIELD] = (
+			MOVEMENT_DESPATCH if _is_despatch_fg_row(row, so_fg_by_soi) else MOVEMENT_TRANSFER
+		)
+		row["custom_stock_locked"] = 0
+		row["custom_stock_batch_no"] = ""
+		row["custom_stock_warehouse"] = ""
+		row["custom_stock_company"] = ""
+		reverted.append(_cstr(row.get("item_code")) or table_label)
+
+	for row in doc.get("items") or []:
+		_check_row(row, "items")
+	for row in doc.get("planned_items") or []:
+		_check_row(row, "planned_items")
+
+	if reverted:
+		frappe.msgprint(
+			_("Movement Type Stock was removed on {0} — use Actions → Check Stock to confirm stock before applying.").format(
+				", ".join(reverted[:8]) + ("…" if len(reverted) > 8 else "")
+			),
+			title=_("Stock confirmation required"),
+			indicator="orange",
+		)

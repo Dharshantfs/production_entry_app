@@ -2,32 +2,62 @@
 
 const PLANNING_BAG_FG_PREFIXES = new Set([
 	'200', '201', '202', '203',
-	'211', '212', '213', '214', '215', '216', '217',
+	'211', '212', '213', '214', '216', '217',
 	'221', '222', '223', '224',
-	'231', '233', '241', '242',
+	'231', '233', '241', '242', '225', '226',
 ]);
 
+const PLANNING_ITEM_KNOWN_PREFIXES = new Set([
+	'100', '102', '103', '104', '105', '106', '107', '108', '109',
+	'200', '201', '202', '203',
+	'211', '212', '213', '214', '216', '217',
+	'221', '222', '223', '224', '231', '233', '241', '242', '225', '226',
+	'251', '252', '253', '254', '255',
+]);
+
+const PLANNING_BAG_BOM_PREFIXES = new Set(['100', '102', '103', '104', '105', '106', '107', '108', '109']);
+
+/** Match backend _item_process_prefix (incl. 6000-511-221N…). */
 function planning_sheet_item_process_prefix(item_code) {
 	const ic = (item_code || '').trim();
 	if (!ic) return '';
+	if (ic.indexOf('-') >= 0) {
+		const segments = ic.split('-');
+		for (let i = 0; i < segments.length; i += 1) {
+			const segDigits = segments[i].replace(/\D/g, '');
+			if (segDigits.length >= 3) {
+				const sp = segDigits.substring(0, 3);
+				if (PLANNING_ITEM_KNOWN_PREFIXES.has(sp)) return sp;
+			}
+		}
+	}
 	const m = ic.match(/^(\d{3})/);
-	if (m) return m[1];
-	const dash = ic.indexOf('-');
-	if (dash > 0) return ic.substring(0, dash).substring(0, 3);
+	if (m && PLANNING_ITEM_KNOWN_PREFIXES.has(m[1])) return m[1];
 	return '';
 }
 
 function planning_sheet_has_bag_fg(frm) {
 	const rows = [...(frm.doc.items || []), ...(frm.doc.planned_items || [])];
 	for (const r of rows) {
-		const pref = planning_sheet_item_process_prefix(r.item_code);
-		if (PLANNING_BAG_FG_PREFIXES.has(pref)) return true;
+		if (PLANNING_BAG_FG_PREFIXES.has(planning_sheet_item_process_prefix(r.item_code))) return true;
 	}
 	return false;
 }
 
+function planning_sheet_has_bag_bom_rows(frm) {
+	const rows = [...(frm.doc.items || []), ...(frm.doc.planned_items || [])];
+	for (const r of rows) {
+		if (PLANNING_BAG_BOM_PREFIXES.has(planning_sheet_item_process_prefix(r.item_code))) return true;
+	}
+	return false;
+}
+
+function planning_sheet_is_stock_check_eligible(frm) {
+	return planning_sheet_has_bag_fg(frm) || planning_sheet_has_bag_bom_rows(frm);
+}
+
 function planning_sheet_toggle_stock_mode_field(frm) {
-	const show = planning_sheet_has_bag_fg(frm);
+	const show = planning_sheet_is_stock_check_eligible(frm);
 	if (frm.fields_dict.custom_stock_check_mode) {
 		frm.toggle_display('custom_stock_check_mode', show);
 	}
@@ -47,7 +77,7 @@ function planning_sheet_stock_batches_html(batches) {
 	if (!batches || !batches.length) {
 		return `<div class="text-muted small">${__('No batch stock found across warehouses.')}</div>`;
 	}
-	let rows = batches.map((b) => `
+	const rows = batches.map((b) => `
 		<tr>
 			<td>${planning_sheet_stock_esc(b.batch_no)}</td>
 			<td class="text-right">${flt(b.qty)}</td>
@@ -71,7 +101,8 @@ function planning_sheet_stock_build_inquiry_html(ctx, mode) {
 			${__('Mode')}: <strong>${isAuto ? __('Auto') : __('Manual')}</strong>
 			&nbsp;|&nbsp; ${__('Eligible rows')}: ${ctx.eligible_count || 0}
 			&nbsp;|&nbsp; ${__('Sufficient')}: ${ctx.sufficient_count || 0}
-		</p>`;
+		</p>
+		<p class="text-muted small">${__('Stock movement is applied only after you confirm in the next step.')}</p>`;
 	for (const grp of (ctx.groups || [])) {
 		html += `<div class="stock-check-so-group" style="margin-bottom:12px;">
 			<h6 style="margin:8px 0 4px;">${__('SO line')}: ${planning_sheet_stock_esc(grp.sales_order_item)}</h6>`;
@@ -205,7 +236,7 @@ function planning_sheet_stock_show_confirm_dialog(frm, preview, mode, selections
 					confirm.hide();
 					if (inquiryDialog) inquiryDialog.hide();
 					frappe.show_alert({
-						message: __('Stock applied on {0} row(s).', [m.count || 0]),
+						message: __('Stock applied on {0} row(s). Batch, warehouse and company are saved on each row.', [m.count || 0]),
 						indicator: 'green',
 					});
 					frm.reload_doc();
@@ -218,6 +249,34 @@ function planning_sheet_stock_show_confirm_dialog(frm, preview, mode, selections
 		},
 	});
 	confirm.show();
+}
+
+function open_planning_sheet_clear_stock(frm) {
+	if (!frm || !frm.doc || !frm.doc.name) return;
+	frappe.confirm(
+		__('Reset all Stock rows on this sheet back to Transfer/Despatch?'),
+		() => {
+			frappe.call({
+				method: 'production_entry.production_planning.planning_stock_check.clear_planning_sheet_stock',
+				args: {
+					planning_sheet_name: frm.doc.name,
+					planning_table_rows_json: '[]',
+					confirmed: 1,
+				},
+				freeze: true,
+				freeze_message: __('Clearing Stock movement...'),
+				callback(res) {
+					if (res.exc) return;
+					const m = res.message || {};
+					frappe.show_alert({
+						message: __('Cleared Stock on {0} row(s).', [m.count || 0]),
+						indicator: 'green',
+					});
+					frm.reload_doc();
+				},
+			});
+		}
+	);
 }
 
 function open_planning_sheet_stock_check_dialog(frm) {
@@ -261,52 +320,78 @@ function open_planning_sheet_stock_check_dialog(frm) {
 					},
 				});
 			});
-			d.add_custom_action(__('Clear Stock'), () => {
-				frappe.confirm(
-					__('Reset all Stock rows on this sheet back to Transfer/Despatch?'),
-					() => {
-						frappe.call({
-							method: 'production_entry.production_planning.planning_stock_check.clear_planning_sheet_stock',
-							args: {
-								planning_sheet_name: frm.doc.name,
-								planning_table_rows_json: '[]',
-								confirmed: 1,
-							},
-							freeze: true,
-							callback(res) {
-								if (res.exc) return;
-								const m = res.message || {};
-								d.hide();
-								frappe.show_alert({
-									message: __('Cleared Stock on {0} row(s).', [m.count || 0]),
-									indicator: 'green',
-								});
-								frm.reload_doc();
-							},
-						});
-					}
-				);
-			});
 			d.show();
 		},
 	});
 }
 
+function planning_sheet_apply_stock_grid_ui(frm) {
+	if (!frm || !frm.doc) return;
+	['items', 'planned_items'].forEach((table) => {
+		const fd = frm.fields_dict[table];
+		const grid = fd && fd.grid;
+		if (!grid) return;
+		const cdt = grid.doctype;
+		const rows = frm.doc[table] || [];
+		const hasStock = rows.some((r) => cint(r.custom_stock_locked) || (r.custom_movement_type || '') === 'Stock');
+		['custom_stock_batch_no', 'custom_stock_warehouse', 'custom_stock_company'].forEach((fn) => {
+			if (!frappe.meta.get_docfield(cdt, fn)) return;
+			try {
+				grid.update_docfield_property(fn, 'hidden', hasStock ? 0 : 1);
+				grid.update_docfield_property(fn, 'in_list_view', hasStock ? 1 : 0);
+				grid.update_docfield_property(fn, 'read_only', 1);
+			} catch (e) { /* ignore */ }
+		});
+		if (hasStock && typeof grid.setup_visible_columns === 'function') {
+			try { grid.setup_visible_columns(); } catch (e) { /* ignore */ }
+		}
+	});
+}
+
 function register_planning_sheet_stock_check_button(frm) {
-	if (!frm || !frm.doc || !frm.doc.name) return;
+	if (!frm || !frm.doc || !frm.doc.name || frm.is_new()) return;
 	planning_sheet_toggle_stock_mode_field(frm);
-	if (!planning_sheet_has_bag_fg(frm)) return;
+	planning_sheet_apply_stock_grid_ui(frm);
+	if (!planning_sheet_is_stock_check_eligible(frm)) return;
 	try {
 		frm.remove_custom_button(__('Check Stock'), __('Actions'));
+		frm.remove_custom_button(__('Clear Stock'), __('Actions'));
 	} catch (e) { /* ignore */ }
 	frm.add_custom_button(__('Check Stock'), () => open_planning_sheet_stock_check_dialog(frm), __('Actions'));
+	frm.add_custom_button(__('Clear Stock'), () => open_planning_sheet_clear_stock(frm), __('Actions'));
+}
+
+function planning_sheet_block_manual_stock(frm, cdt, cdn) {
+	const row = frappe.get_doc(cdt, cdn);
+	if (!row) return;
+	if ((row.custom_movement_type || '') === 'Stock' && !cint(row.custom_stock_locked)) {
+		frappe.show_alert({
+			message: __('Use Actions → Check Stock, confirm availability, then apply Stock.'),
+			indicator: 'orange',
+		});
+		frappe.model.set_value(cdt, cdn, 'custom_movement_type', 'Transfer');
+	}
 }
 
 frappe.ui.form.on('Planning sheet', {
 	refresh(frm) {
 		register_planning_sheet_stock_check_button(frm);
+		setTimeout(() => register_planning_sheet_stock_check_button(frm), 400);
+		setTimeout(() => register_planning_sheet_stock_check_button(frm), 1200);
 	},
 	custom_stock_check_mode() {
-		/* mode saved on form; dialog reads frm.doc on open */
+		/* saved on form; dialog reads frm.doc on open */
+	},
+});
+
+frappe.ui.form.on('Planning Table', {
+	custom_movement_type(frm, cdt, cdn) {
+		planning_sheet_block_manual_stock(frm, cdt, cdn);
+	},
+});
+
+frappe.ui.form.on('Planning sheet Item', {
+	custom_movement_type(frm, cdt, cdn) {
+		planning_sheet_block_manual_stock(frm, cdt, cdn);
 	},
 });

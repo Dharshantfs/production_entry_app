@@ -10,7 +10,7 @@ const PLANNING_SHEET_DEFAULT_GRID_COLUMNS = [
     'custom_design_code', 'custom_design_name', 'custom_design_colour', 'custom_design_attachment',
     'custom_finishing', 'custom_white_tint', 'custom_no_of_rolls', 'custom_no_of_sheets',
     'total_weight', 'warehouse', 'allocated_to_unit',
-    'planned_date', 'custom_movement_type', 'bag_size', 'sheet_size',
+    'planned_date', 'custom_movement_type', 'custom_stock_batch_no', 'custom_stock_warehouse', 'custom_stock_company', 'bag_size', 'sheet_size',
 ];
 
 const PLANNING_SHEET_ALWAYS_VISIBLE_SUFFIXES = ['length', 'planned_date', 'meter', 'roll', 'unit', 'plan_code', 'lamination'];

@@ -21,6 +21,12 @@ def planning_sheet_before_validate(doc, method=None):
 
 def planning_sheet_validate_combined(doc, method=None):
 	validate_planning_sheet_duplicates(doc, method)
+	try:
+		from production_entry.production_planning.planning_stock_check import revert_unconfirmed_stock_on_planning_sheet
+
+		revert_unconfirmed_stock_on_planning_sheet(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "planning_sheet_validate:stock")
 
 
 def planning_sheet_before_cancel(doc, method=None):

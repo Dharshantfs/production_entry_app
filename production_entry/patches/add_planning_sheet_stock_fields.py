@@ -98,7 +98,7 @@ def execute():
 
 
 def _update_movement_type_options():
-	opts = "Despatch\nTransfer\nStock"
+	opts = "Despatch\nTransfer"
 	for dt in ("Planning Table", "Planning sheet Item"):
 		cf = frappe.db.get_value(
 			"Custom Field",
