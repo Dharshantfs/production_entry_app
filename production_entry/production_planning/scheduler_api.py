@@ -9566,8 +9566,8 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 	if not planning_sheet_name:
 		return
 
-	# All box bag FGs: read loop items from BOM + 103→100, 108→107, 110→107.
-	_sync_box_bag_loop_bom_chain(planning_sheet_name, BOX_BAG_PROCESS_CODES)
+	# All bag FGs (box + W-CUT + D-CUT): read loop items from BOM + 103→100, 108→107, 110→107.
+	_sync_box_bag_loop_bom_chain(planning_sheet_name, ALL_BAG_FG_PROCESS_CODES)
 
 	# 224: main fabric chain (104 → 100) in addition to loop BOM.
 	_sync_bom_child_rows_from_planning_rows(
@@ -9733,6 +9733,11 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 		_force_wcut_unit_on_sheet(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:_force_dcut_wcut_unit")
+	try:
+		_stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_sync_box_bag_fabric_planning_rows:parent_fabric")
+
 
 def _sync_sheet_cutting_fabric_planning_rows(planning_sheet_name):
 	"""For each SO line with item 251, append one fabric (100) row from BOM. Idempotent."""
@@ -28450,6 +28455,38 @@ def _planning_sheet_so_fg_process_codes(planning_sheet_name):
 	return frozenset(procs)
 
 
+def _is_bag_fg_item_code(item_code):
+	"""True when item_code is a box / W-CUT / D-CUT finished-good bag process."""
+	pp = _bom_item_process_code(item_code) or _item_process_prefix(item_code)
+	return pp in ALL_BAG_FG_PROCESS_CODES
+
+
+def _loop_parent_for_107_item(ic_107, soi, pt_rows, direct_by_soi):
+	"""When this 107 row is the BOM child of loop 108/110 on the same SO line, return 108 or 110."""
+	ic_107 = _cstr(ic_107).strip()
+	soi = _cstr(soi).strip()
+	if not ic_107 or not pt_rows:
+		return ""
+	for loop_pp in ("108", "110"):
+		for prow in pt_rows:
+			row_soi = _cstr(prow.get("sales_order_item") or prow.get("so_item")).strip()
+			if soi and row_soi and row_soi != soi:
+				continue
+			pic = _cstr(prow.get("item_code")).strip()
+			if not _planning_row_is_bag_fg_direct_bom_child(pic, soi, direct_by_soi):
+				continue
+			pp = _bom_item_process_code(pic) or _item_process_prefix(pic)
+			if pp != loop_pp:
+				continue
+			try:
+				res = _get_bom_child_item_from_process_item(pic, loop_pp, "107", "Loop parent fabric")
+				if _cstr(res.get("child_item_code")).strip() == ic_107:
+					return loop_pp
+			except Exception:
+				continue
+	return ""
+
+
 def _loop_fabric_process_on_soi(soi, pt_rows, direct_by_soi):
 	"""Loop handle (103/108/110) that is a direct FG BOM child on this SO line."""
 	soi = _cstr(soi).strip()
@@ -28533,16 +28570,20 @@ def _107_parent_item_for_planning_child(child_ic, soi, pt_rows):
 	return ""
 
 
-def _parent_fabric_is_loop_chain(parent_ic, parent_pp, soi, direct_by_soi):
-	"""True when parent is a loop handle (103/108/110) or a 107 expanded from loop (not FG main 107)."""
-	parent_ic = _cstr(parent_ic).strip()
+def _chain_child_parent_fabric_label(parent_ic, parent_pp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False):
+	"""Main / Loop label for 100* or PB rows under a mid-chain parent (107 / 104 / 103 …)."""
 	parent_pp = _cstr(parent_pp).strip()
+	if not bag_fg_context:
+		return f"{parent_pp} PB" if pb else f"{parent_pp} Base Fabric"
+	if parent_pp == "107":
+		if parent_ic and _planning_row_is_bag_fg_direct_bom_child(parent_ic, soi, direct_by_soi):
+			return "Main 107 PB" if pb else "Main 107 Base Fabric"
+		if parent_ic and _loop_parent_for_107_item(parent_ic, soi, pt_rows, direct_by_soi):
+			return "Loop 107 PB" if pb else "Loop 107 Base Fabric"
+		return "Main 107 PB" if pb else "Main 107 Base Fabric"
 	if parent_pp in _SLITTING_LOOP_FABRIC_PROCESSES and parent_pp != "109":
-		return True
-	if parent_pp == "107" and parent_ic:
-		if not _planning_row_is_bag_fg_direct_bom_child(parent_ic, soi, direct_by_soi):
-			return True
-	return False
+		return f"Loop {parent_pp} PB" if pb else f"Loop {parent_pp} Base Fabric"
+	return f"Main {parent_pp} PB" if pb else f"Main {parent_pp} Base Fabric"
 
 
 def _resolve_parent_fabric_label(
@@ -28553,21 +28594,26 @@ def _resolve_parent_fabric_label(
 	soi=None,
 	pt_rows=None,
 	direct_by_soi=None,
+	bag_fg_context=None,
 ):
-	"""Human-friendly BOM role — Main vs Loop chains (231/233/241/242 dual 107+108, simple 221 bag, etc.)."""
+	"""Human-friendly BOM role — Main vs Loop chains for all bag FG processes (221–226, 231/233/241/242, W/D-CUT)."""
 	ic = _cstr(item_code).strip()
 	if not ic:
 		return ""
 	pp = _bom_item_process_code(ic) or _item_process_prefix(ic)
 	fg_pp = _bom_item_process_code(so_fg_item_code) if so_fg_item_code else ""
+	if bag_fg_context is None:
+		bag_fg_context = _is_bag_fg_item_code(so_fg_item_code)
 
 	if _is_printed_bopp_item_code(ic):
 		if direct_on_fg_bom:
 			return "PB"
-		parent_107 = _107_parent_item_for_planning_child(ic, soi, pt_rows)
-		if parent_107 and _planning_row_is_bag_fg_direct_bom_child(parent_107, soi, direct_by_soi):
-			return "Main 107 PB"
-		if parent_107 or (soi and pt_rows and _has_107_on_soi(soi, pt_rows)):
+		if bag_fg_context:
+			parent_107 = _107_parent_item_for_planning_child(ic, soi, pt_rows)
+			if parent_107:
+				return _chain_child_parent_fabric_label(
+					parent_107, "107", soi, pt_rows, direct_by_soi, bag_fg_context, pb=True
+				)
 			return "Loop 107 PB"
 		return "PB"
 
@@ -28582,9 +28628,11 @@ def _resolve_parent_fabric_label(
 		cp = _cstr(chain_parent_process).strip() or _fabric_parent_process_from_item_code(ic)
 		if cp:
 			parent_ic = _fabric_chain_parent_item_for_child(ic, soi, pt_rows, cp) if pt_rows else ""
-			if _parent_fabric_is_loop_chain(parent_ic, cp, soi, direct_by_soi):
-				return f"Loop {cp} Base Fabric"
-			return f"Main {cp} Base Fabric"
+			if bag_fg_context:
+				return _chain_child_parent_fabric_label(
+					parent_ic, cp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
+				)
+			return f"{cp} Base Fabric"
 		return "Main Fabric"
 
 	if direct_on_fg_bom:
@@ -28600,9 +28648,14 @@ def _resolve_parent_fabric_label(
 	if pp == "107" or _lamination_process_from_item_code(ic) == "107":
 		if direct_on_fg_bom:
 			return "Main Fabric"
+		if bag_fg_context:
+			loop_pp = _loop_parent_for_107_item(ic, soi, pt_rows, direct_by_soi)
+			if loop_pp:
+				return f"Loop {loop_pp} Base Fabric"
+			return "Main Fabric"
 		loop_pp = _loop_fabric_process_on_soi(soi, pt_rows, direct_by_soi) if soi and pt_rows else ""
 		if loop_pp:
-			return f"Loop {loop_pp} Base Fabric"
+			return f"{loop_pp} Base Fabric"
 		return "Main Fabric"
 
 	if pp in _MAIN_FABRIC_MID_PROCESSES:
@@ -28671,6 +28724,7 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 		ic = _cstr(r.get("item_code")).strip()
 		soi = _cstr(r.get("sales_order_item") or r.get("so_item")).strip()
 		so_fg = so_fg_by_soi.get(soi) or ""
+		bag_ctx = _is_bag_fg_item_code(so_fg)
 		direct = _planning_row_is_bag_fg_direct_bom_child(ic, soi, direct_by_soi)
 		chain_pp = None
 		if ic.startswith("100") and not direct:
@@ -28683,8 +28737,11 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			soi=soi,
 			pt_rows=pt_rows,
 			direct_by_soi=direct_by_soi,
+			bag_fg_context=bag_ctx,
 		)
-		if not label or label == _cstr(r.get("custom_parent_fabric")).strip():
+		if not label:
+			continue
+		if not bag_ctx and label == _cstr(r.get("custom_parent_fabric")).strip():
 			continue
 		if frappe.db.has_column("Planning Table", "custom_parent_fabric"):
 			frappe.db.set_value("Planning Table", r.get("name"), "custom_parent_fabric", label, update_modified=False)
@@ -28714,6 +28771,7 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			psi_ic = _cstr(psi.get("item_code")).strip()
 			psi_soi = _cstr(psi.get("sales_order_item") or psi.get("so_item")).strip()
 			psi_so_fg = so_fg_by_soi.get(psi_soi) or ""
+			psi_bag_ctx = _is_bag_fg_item_code(psi_so_fg)
 			psi_direct = _planning_row_is_bag_fg_direct_bom_child(psi_ic, psi_soi, direct_by_soi)
 			psi_chain = None
 			if psi_ic.startswith("100") and not psi_direct:
@@ -28726,8 +28784,11 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 				soi=psi_soi,
 				pt_rows=pt_rows,
 				direct_by_soi=direct_by_soi,
+				bag_fg_context=psi_bag_ctx,
 			)
-			if not psi_label or psi_label == _cstr(psi.get("custom_parent_fabric")).strip():
+			if not psi_label:
+				continue
+			if not psi_bag_ctx and psi_label == _cstr(psi.get("custom_parent_fabric")).strip():
 				continue
 			frappe.db.set_value(
 				"Planning sheet Item", psi.get("name"), "custom_parent_fabric", psi_label, update_modified=False
