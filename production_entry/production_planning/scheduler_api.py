@@ -28653,10 +28653,7 @@ def _resolve_parent_fabric_label(
 			if loop_pp:
 				return f"Loop {loop_pp} Base Fabric"
 			return "Main Fabric"
-		loop_pp = _loop_fabric_process_on_soi(soi, pt_rows, direct_by_soi) if soi and pt_rows else ""
-		if loop_pp:
-			return f"{loop_pp} Base Fabric"
-		return "Main Fabric"
+		return "107 Base Fabric"
 
 	if pp in _MAIN_FABRIC_MID_PROCESSES:
 		return "Main Fabric"
@@ -28695,6 +28692,8 @@ def _infer_fabric_chain_parent_process(fabric_ic, soi, pt_rows):
 
 def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 	"""Set custom_parent_fabric on Planning Table + Planning sheet Item."""
+	from production_entry.production_planning.parent_fabric_options import normalize_parent_fabric_label
+
 	if not planning_sheet_name:
 		return 0
 	if not (
@@ -28739,6 +28738,7 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			direct_by_soi=direct_by_soi,
 			bag_fg_context=bag_ctx,
 		)
+		label = normalize_parent_fabric_label(label)
 		if not label:
 			continue
 		if not bag_ctx and label == _cstr(r.get("custom_parent_fabric")).strip():
@@ -28786,6 +28786,7 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 				direct_by_soi=direct_by_soi,
 				bag_fg_context=psi_bag_ctx,
 			)
+			psi_label = normalize_parent_fabric_label(psi_label)
 			if not psi_label:
 				continue
 			if not psi_bag_ctx and psi_label == _cstr(psi.get("custom_parent_fabric")).strip():
@@ -29067,6 +29068,7 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 			added += 1
 	if added:
 		ps.flags.ignore_permissions = True
+		ps.flags.ignore_validate = True
 		ps.save(ignore_permissions=True)
 		frappe.db.commit()
 	return added

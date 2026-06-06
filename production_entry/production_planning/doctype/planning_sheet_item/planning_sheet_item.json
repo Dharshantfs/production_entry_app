@@ -264,7 +264,7 @@
             "fieldtype": "Select",
             "in_list_view": 1,
             "label": "Parent Fabric",
-            "options": "Bag FG\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\nPB",
+            "options": "Bag FG\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\nPB\nMain 102 Base Fabric\nMain 103 Base Fabric\nMain 104 Base Fabric\nMain 105 Base Fabric\nMain 106 Base Fabric\nMain 107 Base Fabric\nMain 107 PB\nLoop 103 Base Fabric\nLoop 108 Base Fabric\nLoop 110 Base Fabric\nLoop 107 Base Fabric\nLoop 107 PB",
             "read_only": 1
         },
         {
