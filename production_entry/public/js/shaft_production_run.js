@@ -138,7 +138,7 @@ function spr_items_process_mode(frm) {
 	if (!frm || !frm.doc) {
 		return 'default';
 	}
-	if (sprIsBag(frm) || spr_has_bag_fg_in_items(frm)) {
+	if (sprIsBag(frm)) {
 		return 'bag';
 	}
 	if (sprIsSheetCutting(frm)) {

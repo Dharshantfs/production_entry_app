@@ -213,7 +213,7 @@ def spr_bag_fg_needs_rm_batch_pick(production_item: str) -> bool:
 
 
 def spr_fg_needs_rm_batch_pick(production_item: str, is_bag_spr: bool = False) -> bool:
-	if is_bag_spr or spr_bag_fg_needs_rm_batch_pick(production_item):
+	if is_bag_spr:
 		return spr_bag_fg_needs_rm_batch_pick(production_item)
 	return spr_fg_parent_needs_fabric_batch_pick(production_item)
 
@@ -5557,31 +5557,8 @@ def _pp_is_wcut_dcut_unit(pp_doc) -> bool:
 
 
 def spr_doc_is_bag_spr(doc) -> bool:
-	"""True when this SPR is a bag run (box bag, W-CUT, or D-CUT) — drives PCS qty + RM batch pick."""
-	if cint(getattr(doc, "custom_is_box_bag", 0)):
-		return True
-	unit = _spr_unit_value_for_current_field(getattr(doc, "custom_unit", None))
-	if unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT):
-		return True
-	if unit in W_CUT_D_CUT_ALL_UNITS:
-		return True
-	for br in getattr(doc, "bundle_calculation", None) or []:
-		ic = _cstr(getattr(br, "item_code", None))
-		if ic and spr_bag_fg_needs_rm_batch_pick(ic):
-			return True
-	for row in getattr(doc, "items", None) or []:
-		ic = _cstr(getattr(row, "item_code", None))
-		if ic and spr_bag_fg_needs_rm_batch_pick(ic):
-			return True
-	pp = _cstr(getattr(doc, "production_plan", None))
-	if pp and frappe.db.exists("Production Plan", pp):
-		try:
-			pp_doc = frappe.get_doc("Production Plan", pp)
-			if _pp_is_box_bag_unit(pp_doc) or _pp_is_wcut_dcut_unit(pp_doc):
-				return True
-		except Exception:
-			pass
-	return False
+	"""True only when Is Bag is explicitly checked on the SPR — drives PCS qty + RM batch pick."""
+	return bool(cint(getattr(doc, "custom_is_box_bag", 0)))
 
 
 def _first_pp_bundle_calc_row(pp_doc):
