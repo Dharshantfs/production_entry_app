@@ -36,7 +36,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in filteredRows" :key="row.planning_table_row">
+            <tr v-for="row in filteredRows" :key="rowSelectionId(row)">
               <td>
                 <input
                   type="checkbox"
@@ -47,13 +47,16 @@
               </td>
               <td>{{ row.party_code }}</td>
               <td>{{ row.customer_name }}</td>
-              <td>{{ row.item_code }}</td>
+              <td>
+                <span v-if="row._isSprGroup" :title="(row.item_codes || []).join(', ')">{{ row.item_code }}</span>
+                <span v-else>{{ row.item_code }}</span>
+              </td>
               <td>{{ row.spr_name || "—" }}</td>
               <td><span :class="statusClass(row)">{{ statusLabel(row) }}</span></td>
               <td class="tl-batch-cell">
                 <template v-if="isSelected(row) && row.can_despatch">
                   <button type="button" class="cc-clear-btn" @click="openBatchPicker(row)">
-                    {{ batchPickerOpenFor === row.planning_table_row ? "Edit batches" : "Select batches" }}
+                    {{ batchPickerOpenFor === rowSelectionId(row) ? "Edit batches" : "Select batches" }}
                   </button>
                   <div v-if="batchSummary(row)" class="tl-batch-summary">{{ batchSummary(row) }}</div>
                 </template>
@@ -67,7 +70,13 @@
         <div class="tl-batch-panel-head">
           <div>
             <strong>Select batches</strong>
-            <span class="tl-batch-meta">{{ batchPickerRow?.party_code }} · {{ batchPickerRow?.customer_name }}</span>
+            <span class="tl-batch-meta">
+              {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.customer_name }}
+              <template v-if="batchPickerRow?.spr_name"> · {{ batchPickerRow.spr_name }}</template>
+            </span>
+            <div v-if="batchPickerRow?._isSprGroup && batchPickerRow.item_codes?.length" class="tl-batch-items">
+              Items: {{ batchPickerRow.item_codes.join(", ") }}
+            </div>
           </div>
           <div class="tl-batch-head-actions">
             <label class="tl-batch-toggle">
@@ -89,6 +98,7 @@
               <tr>
                 <th></th>
                 <th>Batch No</th>
+                <th>Item Code</th>
                 <th class="text-right">Net / Avail (Kg)</th>
                 <th class="text-right">Despatch Qty (Kg)</th>
               </tr>
@@ -97,6 +107,7 @@
               <tr v-for="b in batchOptions" :key="b.batch_no" :class="{ 'is-selected': b.selected }" @click="toggleBatchRow(b)">
                 <td><input type="checkbox" v-model="b.selected" @click.stop /></td>
                 <td class="tl-batch-no">{{ b.batch_no }}</td>
+                <td class="tl-item-code">{{ b.item_code || "—" }}</td>
                 <td class="text-right">{{ formatQty(b.available_qty) }}</td>
                 <td class="text-right" @click.stop>
                   <input type="number" class="tl-batch-qty-input" step="0.001" min="0.001" :disabled="!b.selected" v-model.number="b.qty" />
@@ -124,6 +135,11 @@
 
 <script setup>
 import { computed, ref, watch } from "vue";
+import {
+  groupRowsBySpr,
+  rowSelectionId,
+  buildLogisticsSubmitLines,
+} from "./logistics_spr_group.js";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -151,10 +167,12 @@ const batchOptions = ref([]);
 const batchLoading = ref(false);
 const batchSource = ref("spr");
 
+const displayRows = computed(() => groupRowsBySpr(rows.value));
+
 const filteredRows = computed(() => {
   const pc = (dlgParty.value || "").trim().toLowerCase();
   const cu = (dlgCustomer.value || "").trim().toLowerCase();
-  return rows.value.filter((r) => {
+  return displayRows.value.filter((r) => {
     if (pc && !(r.party_code || "").toLowerCase().includes(pc)) return false;
     if (cu && !(r.customer_name || "").toLowerCase().includes(cu)) return false;
     return true;
@@ -183,11 +201,11 @@ function formatQty(q) {
 }
 
 function isSelected(row) {
-  return Boolean(selection.value[row.planning_table_row]);
+  return Boolean(selection.value[rowSelectionId(row)]);
 }
 
 function batchSummary(row) {
-  const sel = selection.value[row.planning_table_row];
+  const sel = selection.value[rowSelectionId(row)];
   if (!sel?.batches?.length) return "";
   return sel.batches.map((b) => `${b.batch_no} · ${formatQty(b.qty)} kg`).join("; ");
 }
@@ -201,7 +219,7 @@ function statusClass(row) {
 }
 
 function toggleRow(row, ev) {
-  const id = row.planning_table_row;
+  const id = rowSelectionId(row);
   if (!ev.target.checked) {
     const next = { ...selection.value };
     delete next[id];
@@ -219,7 +237,7 @@ function toggleRow(row, ev) {
 
 function openBatchPicker(row) {
   batchPickerRow.value = row;
-  batchPickerOpenFor.value = row.planning_table_row;
+  batchPickerOpenFor.value = rowSelectionId(row);
   batchSource.value = "spr";
   reloadBatches();
 }
@@ -229,21 +247,58 @@ function reloadBatches() {
   if (!row) return;
   batchLoading.value = true;
   batchOptions.value = [];
-  const existing = selection.value[row.planning_table_row]?.batches || [];
+  const existing = selection.value[rowSelectionId(row)]?.batches || [];
   const existingMap = {};
   existing.forEach((b) => {
     existingMap[b.batch_no] = b;
   });
+  if (batchSource.value === "other" && row._isSprGroup && (row.item_codes || []).length > 1) {
+    const itemCodes = row.item_codes || [];
+    Promise.all(
+      itemCodes.map(
+        (ic) =>
+          new Promise((resolve) => {
+            frappe.call({
+              method: `${API}.get_despatch_other_batches`,
+              args: {
+                item_code: ic,
+                from_company: fromCompany.value,
+                party_code: row.party_code,
+              },
+              callback: (r) => resolve(r.message || []),
+              error: () => resolve([]),
+            });
+          })
+      )
+    ).then((lists) => {
+      const seen = new Set();
+      const merged = [];
+      lists.flat().forEach((b) => {
+        const key = `${b.batch_no}::${b.item_code || ""}`;
+        if (!b.batch_no || seen.has(key)) return;
+        seen.add(key);
+        merged.push(b);
+      });
+      applyLoadedBatches(merged, row, existingMap);
+      batchLoading.value = false;
+    });
+    return;
+  }
+
   const method =
     batchSource.value === "other"
       ? `${API}.get_despatch_other_batches`
       : `${API}.get_despatch_spr_batches`;
   const args =
     batchSource.value === "other"
-      ? { item_code: row.item_code, from_company: fromCompany.value, party_code: row.party_code }
+      ? {
+          item_code: row.item_code,
+          from_company: fromCompany.value,
+          party_code: row.party_code,
+        }
       : {
           spr_name: row.spr_name,
-          item_code: row.item_code,
+          item_code: row._isSprGroup ? "" : row.item_code,
           party_code: row.party_code,
           from_company: fromCompany.value,
         };
@@ -251,24 +306,27 @@ function reloadBatches() {
     method,
     args,
     callback: (r) => {
-      const batches = r.message || [];
-      batchOptions.value = batches.map((b) => {
-        const prev = existingMap[b.batch_no];
-        const avail = ltn(b.available_qty || b.qty) || 1;
-        return {
-          batch_no: b.batch_no,
-          item_code: b.item_code || row.item_code,
-          available_qty: avail,
-          net_weight: ltn(b.net_weight || b.qty),
-          qty: prev ? ltn(prev.qty) : avail,
-          selected: Boolean(prev),
-        };
-      });
+      applyLoadedBatches(r.message || [], row, existingMap);
       batchLoading.value = false;
     },
     error: () => {
       batchLoading.value = false;
     },
+  });
+}
+
+function applyLoadedBatches(batches, row, existingMap) {
+  batchOptions.value = (batches || []).map((b) => {
+    const prev = existingMap[b.batch_no];
+    const avail = ltn(b.available_qty || b.qty) || 1;
+    return {
+      batch_no: b.batch_no,
+      item_code: b.item_code || row.item_code,
+      available_qty: avail,
+      net_weight: ltn(b.net_weight || b.qty),
+      qty: prev ? ltn(prev.qty) : avail,
+      selected: Boolean(prev),
+    };
   });
 }
 
@@ -286,7 +344,7 @@ function toggleBatchRow(b) {
 function applyBatches() {
   const row = batchPickerRow.value;
   if (!row) return;
-  const id = row.planning_table_row;
+  const id = rowSelectionId(row);
   const picked = batchOptions.value
     .filter((b) => b.selected && b.batch_no && ltn(b.qty) > 0)
     .map((b) => ({
@@ -339,24 +397,7 @@ function submit() {
     frappe.msgprint("Select from company.");
     return;
   }
-  const lines = [];
-  Object.values(selection.value).forEach((s) => {
-    (s.batches || []).forEach((b) => {
-      lines.push({
-        planning_table_row: s.row.planning_table_row,
-        planning_sheet: s.row.planning_sheet,
-        party_code: s.row.party_code,
-        customer_name: s.row.customer_name,
-        item_code: b.item_code || s.row.item_code,
-        unit: s.row.unit,
-        spr_name: s.row.spr_name,
-        batch_no: b.batch_no,
-        net_weight: b.net_weight || b.qty,
-        qty: Math.max(ltn(b.qty), 1),
-        uom: "Kg",
-      });
-    });
-  });
+  const lines = buildLogisticsSubmitLines(selection.value, "despatch");
   if (!lines.length) {
     frappe.msgprint("Select rows and batches.");
     return;

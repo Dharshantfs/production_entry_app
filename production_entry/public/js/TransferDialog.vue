@@ -40,7 +40,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in filteredRows" :key="row.planning_table_row">
+            <tr v-for="row in filteredRows" :key="rowSelectionId(row)">
               <td>
                 <input
                   type="checkbox"
@@ -51,7 +51,10 @@
               </td>
               <td>{{ row.party_code }}</td>
               <td>{{ row.customer_name }}</td>
-              <td>{{ row.item_code }}</td>
+              <td>
+                <span v-if="row._isSprGroup" :title="(row.item_codes || []).join(', ')">{{ row.item_code }}</span>
+                <span v-else>{{ row.item_code }}</span>
+              </td>
               <td>{{ row.unit }}</td>
               <td>{{ row.spr_name || "—" }}</td>
               <td>
@@ -60,7 +63,7 @@
               <td class="tl-batch-cell">
                 <template v-if="isSelected(row) && row.can_transfer">
                   <button type="button" class="cc-clear-btn" @click="openBatchPicker(row)">
-                    {{ batchPickerOpenFor === row.planning_table_row ? "Edit batches" : "Select batches" }}
+                    {{ batchPickerOpenFor === rowSelectionId(row) ? "Edit batches" : "Select batches" }}
                   </button>
                   <div v-if="batchSummary(row)" class="tl-batch-summary">{{ batchSummary(row) }}</div>
                 </template>
@@ -75,7 +78,12 @@
         <div class="tl-batch-panel-head">
           <div>
             <strong>Select batches</strong>
-            <span class="tl-batch-meta">Order Code {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.spr_name }}</span>
+            <span class="tl-batch-meta">
+              Order Code {{ batchPickerRow?.party_code }} · {{ batchPickerRow?.spr_name }}
+            </span>
+            <div v-if="batchPickerRow?._isSprGroup && batchPickerRow.item_codes?.length" class="tl-batch-items">
+              Items: {{ batchPickerRow.item_codes.join(", ") }}
+            </div>
           </div>
           <div class="tl-batch-head-actions">
             <button type="button" class="cc-clear-btn tl-batch-mini" @click="selectAllBatches">Select all</button>
@@ -171,6 +179,11 @@
 
 <script setup>
 import { computed, ref, watch } from "vue";
+import {
+  groupRowsBySpr,
+  rowSelectionId,
+  buildLogisticsSubmitLines,
+} from "./logistics_spr_group.js";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -208,10 +221,12 @@ const toCompanyOptions = computed(() => {
     .map((c) => ({ name: c.name, label: `Transfer to ${c.name}` }));
 });
 
+const displayRows = computed(() => groupRowsBySpr(rows.value));
+
 const filteredRows = computed(() => {
   const pc = (dlgParty.value || "").trim().toLowerCase();
   const cu = (dlgCustomer.value || "").trim().toLowerCase();
-  return rows.value.filter((r) => {
+  return displayRows.value.filter((r) => {
     if (pc && !(r.party_code || "").toLowerCase().includes(pc)) return false;
     if (cu && !(r.customer_name || "").toLowerCase().includes(cu)) return false;
     return true;
@@ -252,11 +267,11 @@ const canSubmit = computed(() => {
 });
 
 function isSelected(row) {
-  return Boolean(selection.value[row.planning_table_row]);
+  return Boolean(selection.value[rowSelectionId(row)]);
 }
 
 function batchSummary(row) {
-  const sel = selection.value[row.planning_table_row];
+  const sel = selection.value[rowSelectionId(row)];
   if (!sel?.batches?.length) return "";
   return sel.batches.map((b) => `${b.batch_no} · ${formatQty(b.qty)} kg`).join("; ");
 }
@@ -283,7 +298,7 @@ function transferStatusClass(row) {
 }
 
 function toggleRow(row, ev) {
-  const id = row.planning_table_row;
+  const id = rowSelectionId(row);
   if (!ev.target.checked) {
     const next = { ...selection.value };
     delete next[id];
@@ -303,7 +318,7 @@ function toggleRow(row, ev) {
 }
 
 function ensureRowSelected(row) {
-  const id = row.planning_table_row;
+  const id = rowSelectionId(row);
   if (!selection.value[id]) {
     selection.value = {
       ...selection.value,
@@ -325,11 +340,11 @@ function openBatchPicker(row) {
   }
   ensureRowSelected(row);
   batchPickerRow.value = row;
-  batchPickerOpenFor.value = row.planning_table_row;
+  batchPickerOpenFor.value = rowSelectionId(row);
   batchLoading.value = true;
   batchOptions.value = [];
 
-  const existing = selection.value[row.planning_table_row]?.batches || [];
+  const existing = selection.value[rowSelectionId(row)]?.batches || [];
   const existingMap = {};
   existing.forEach((b) => {
     existingMap[b.batch_no] = b;
@@ -339,7 +354,7 @@ function openBatchPicker(row) {
     method: `${API}.get_spr_produced_batches`,
     args: {
       spr_name: spr,
-      item_code: row.item_code,
+      item_code: row._isSprGroup ? "" : row.item_code,
       party_code: row.party_code,
       from_company: fromCompany.value,
     },
@@ -397,7 +412,7 @@ function toggleBatchRow(b) {
 function applyBatches() {
   const row = batchPickerRow.value;
   if (!row) return;
-  const id = row.planning_table_row;
+  const id = rowSelectionId(row);
   const picked = batchOptions.value
     .filter((b) => b.selected && b.batch_no && ltn(b.qty) > 0)
     .map((b) => ({
@@ -469,24 +484,7 @@ function loadRows() {
 }
 
 function buildSubmitLines() {
-  const lines = [];
-  Object.values(selection.value).forEach((s) => {
-    (s.batches || []).forEach((b) => {
-      lines.push({
-        planning_table_row: s.row.planning_table_row,
-        planning_sheet: s.row.planning_sheet,
-        party_code: s.row.party_code,
-        customer_name: s.row.customer_name,
-        item_code: b.item_code || s.row.item_code,
-        unit: s.row.unit,
-        spr_name: s.row.spr_name,
-        batch_no: b.batch_no,
-        qty: Math.max(ltn(b.qty), 1),
-        uom: "Kg",
-      });
-    });
-  });
-  return lines;
+  return buildLogisticsSubmitLines(selection.value, "transfer");
 }
 
 function sendForApproval(natureOfProcessing) {

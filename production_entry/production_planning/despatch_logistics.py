@@ -29,6 +29,7 @@ from production_entry.production_planning.transfer_logistics import (
 )
 
 DESPATCH_APPROVER_ROLES = frozenset({"System Manager", "Manufacturing Manager", "Administrator"})
+DESPATCH_PENDING_ARRANGEMENT_HISTORY_KEY = "despatch_pending_arrangement_history"
 
 
 def _user_can_approve_despatch():
@@ -59,6 +60,77 @@ def _batches_reserved_on_despatch():
 		as_dict=1,
 	)
 	return {r.batch_no for r in rows if r.batch_no}
+
+
+def _despatch_approval_queue_fieldname():
+	if frappe.db.has_column("Despatch Approval", "custom_logistics_queue_idx"):
+		return "custom_logistics_queue_idx"
+	return None
+
+
+def _despatch_pending_arrangement_history_key(from_company):
+	return f"{DESPATCH_PENDING_ARRANGEMENT_HISTORY_KEY}::{_cstr(from_company)}"
+
+
+def _load_despatch_pending_arrangement_history(from_company):
+	key = _despatch_pending_arrangement_history_key(from_company)
+	raw = frappe.defaults.get_global_default(key) or "[]"
+	try:
+		arr = json.loads(raw) if isinstance(raw, str) else (raw or [])
+		return arr if isinstance(arr, list) else []
+	except Exception:
+		return []
+
+
+def _save_despatch_pending_arrangement_history(from_company, snapshot):
+	key = _despatch_pending_arrangement_history_key(from_company)
+	history = _load_despatch_pending_arrangement_history(from_company)
+	history.append(snapshot)
+	if len(history) > 20:
+		history = history[-20:]
+	frappe.defaults.set_global_default(key, json.dumps(history))
+
+
+def _pending_approval_names_sorted(from_company):
+	qf = _despatch_approval_queue_fieldname()
+	fields = ["name", "status", "creation"]
+	if qf:
+		fields.append(qf)
+	rows = frappe.get_all(
+		"Despatch Approval",
+		filters={"from_company": _cstr(from_company), "status": ["in", ["Pending Approval", "Draft"]]},
+		fields=fields,
+		order_by="modified desc",
+		limit_page_length=200,
+	)
+	rows.sort(
+		key=lambda a: (
+			cint(a.get(qf) or 0) or 9999 if qf else 9999,
+			_cstr(a.get("creation")),
+		)
+	)
+	return [_cstr(r.name) for r in rows if _cstr(r.name)]
+
+
+def _apply_despatch_pending_queue(from_company, approval_names):
+	qf = _despatch_approval_queue_fieldname()
+	if not qf:
+		return 0
+	fc = _cstr(from_company)
+	names = [n for n in (approval_names or []) if _cstr(n)]
+	updated = 0
+	for idx, name in enumerate(names, start=1):
+		if not frappe.db.exists("Despatch Approval", name):
+			continue
+		st = _cstr(frappe.db.get_value("Despatch Approval", name, "status"))
+		if st not in ("Pending Approval", "Draft"):
+			continue
+		if fc and _cstr(frappe.db.get_value("Despatch Approval", name, "from_company")) != fc:
+			continue
+		frappe.db.set_value("Despatch Approval", name, qf, idx, update_modified=False)
+		updated += 1
+	frappe.db.commit()
+	return updated
 
 
 def _resolve_customer(customer_name):
@@ -92,10 +164,14 @@ def get_despatch_company_cards(
 		filters = {"from_company": name}
 		if oc:
 			pass
+		qf = _despatch_approval_queue_fieldname()
+		approval_fields = ["name", "status", "delivery_note", "modified", "creation"]
+		if qf:
+			approval_fields.append(qf)
 		approvals = frappe.get_all(
 			"Despatch Approval",
 			filters=filters,
-			fields=["name", "status", "delivery_note", "modified", "creation"],
+			fields=approval_fields,
 			order_by="modified desc",
 			limit_page_length=80,
 		)
@@ -141,6 +217,7 @@ def get_despatch_company_cards(
 				card_status = "Despatched"
 			elif da.status == "Approved" and dn_name and dn_docstatus == 0:
 				card_status = "Draft DN"
+			queue_idx = cint(da.get(qf) or 0) if qf else 0
 			enriched.append(
 				{
 					"name": da.name,
@@ -156,9 +233,16 @@ def get_despatch_company_cards(
 					"qty_total": total_qty,
 					"creation": da.creation,
 					"despatch_date": despatch_date,
+					"queue_idx": queue_idx,
 				}
 			)
 		pending = [a for a in enriched if a["status"] in ("Pending Approval", "Draft")]
+		pending.sort(
+			key=lambda a: (
+				cint(a.get("queue_idx") or 0) or 9999,
+				_cstr(a.get("creation")),
+			)
+		)
 		approved_ready_dn = [
 			a
 			for a in enriched
@@ -488,6 +572,62 @@ def reject_despatch_approval(name=None):
 	da.save(ignore_permissions=True)
 	frappe.db.commit()
 	return {"ok": True, "name": name}
+
+
+@frappe.whitelist()
+def reorder_despatch_pending_queue(from_company=None, approval_names=None):
+	"""Persist pending despatch approval priority (logistics kanban drag-and-drop)."""
+	fc = _cstr(from_company)
+	if not fc:
+		frappe.throw(_("From company is required."))
+	if isinstance(approval_names, str):
+		try:
+			approval_names = json.loads(approval_names)
+		except Exception:
+			approval_names = [s.strip() for s in approval_names.split(",") if s.strip()]
+	updated = _apply_despatch_pending_queue(fc, approval_names or [])
+	return {"updated": updated, "from_company": fc}
+
+
+@frappe.whitelist()
+def save_despatch_pending_arrangement(from_company=None, approval_names=None):
+	"""Save pending despatch queue order and snapshot previous order for restore."""
+	fc = _cstr(from_company)
+	if not fc:
+		frappe.throw(_("From company is required."))
+	if isinstance(approval_names, str):
+		try:
+			approval_names = json.loads(approval_names)
+		except Exception:
+			approval_names = [s.strip() for s in approval_names.split(",") if s.strip()]
+	names = [n for n in (approval_names or []) if _cstr(n)]
+	current = _pending_approval_names_sorted(fc)
+	if current:
+		_save_despatch_pending_arrangement_history(
+			fc,
+			{"approval_names": current, "saved_at": _cstr(now_datetime())},
+		)
+	updated = _apply_despatch_pending_queue(fc, names)
+	return {"updated": updated, "from_company": fc, "approval_names": names}
+
+
+@frappe.whitelist()
+def restore_despatch_pending_arrangement(from_company=None):
+	"""Restore previous pending despatch queue snapshot."""
+	fc = _cstr(from_company)
+	if not fc:
+		frappe.throw(_("From company is required."))
+	history = _load_despatch_pending_arrangement_history(fc)
+	if not history:
+		frappe.throw(_("No previous arrangement to restore."))
+	last = history.pop()
+	frappe.defaults.set_global_default(
+		_despatch_pending_arrangement_history_key(fc),
+		json.dumps(history),
+	)
+	names = last.get("approval_names") or []
+	updated = _apply_despatch_pending_queue(fc, names)
+	return {"updated": updated, "from_company": fc, "approval_names": names}
 
 
 @frappe.whitelist()
