@@ -1538,7 +1538,9 @@ function spr_show_fabric_batch_pick_dialog(frm, ctx) {
 		});
 		if (!batches.length) {
 			bodyHtml +=
-				'<tr><td colspan="5">' + __('No batch stock found for this item.') + '</td></tr>';
+				'<tr><td colspan="5">' +
+				__('No batches transferred for this WO yet. Submit Material Transfer for Manufacture first.') +
+				'</td></tr>';
 		}
 			bodyHtml += '</tbody></table>';
 		});

@@ -273,14 +273,24 @@ frappe.ui.form.on("Stock Entry", {
 		}
 	},
 
+function _applyTransferToCompanyFieldAccess(frm) {
+	const logistics = _is_logistics_material_transfer(frm);
+	["custom_transfer_to_company", "transfer_to_company"].forEach((fieldname) => {
+		if (!frm.fields_dict[fieldname]) return;
+		frm.set_df_property(fieldname, "read_only", logistics ? 1 : 0);
+	});
+}
+
 	refresh(frm) {
 		_refreshLogisticsTransferFlag(frm);
 		_disable_native_barcode_scanner(frm);
 		_protect_transfer_row_qty(frm);
 		_bind_scan_input(frm);
+		_applyTransferToCompanyFieldAccess(frm);
 
+		const logistics = _is_logistics_material_transfer(frm);
 		const co = (frm.doc.custom_transfer_to_company || "").trim();
-		if (co) {
+		if (logistics && co) {
 			if (frm.fields_dict.party_type && !frm.doc.party_type) {
 				frm.set_value("party_type", "Company");
 			}

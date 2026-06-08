@@ -14,7 +14,7 @@ def execute():
 					"fieldtype": "Link",
 					"options": "Company",
 					"insert_after": "company",
-					"read_only": 1,
+					"read_only": 0,
 				}
 			]
 		},

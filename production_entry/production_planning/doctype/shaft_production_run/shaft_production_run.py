@@ -2875,6 +2875,41 @@ class ShaftProductionRun(Document):
 		out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
 		return out
 
+	def _mtfm_batch_nos_for_wo_item(self, wo_name: str, item_code: str) -> set[str]:
+		"""Batch numbers transferred to WIP for this WO via submitted Material Transfer for Manufacture."""
+		wo_name = _cstr(wo_name).strip()
+		item_code = _cstr(item_code).strip()
+		out: set[str] = set()
+		if not wo_name or not item_code:
+			return out
+		for r in frappe.db.sql(
+			"""
+			SELECT DISTINCT IFNULL(sed.batch_no, '') AS batch_no
+			FROM `tabStock Entry` se
+			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+			WHERE se.docstatus = 1
+			  AND IFNULL(se.work_order, '') = %s
+			  AND IFNULL(se.purpose, '') = 'Material Transfer for Manufacture'
+			  AND IFNULL(sed.item_code, '') = %s
+			  AND IFNULL(sed.batch_no, '') != ''
+			""",
+			(wo_name, item_code),
+			as_dict=True,
+		):
+			bn = _cstr(r.get("batch_no")).strip()
+			if bn:
+				out.add(bn)
+		return out
+
+	def _available_batches_for_wo_transfer(self, wo_doc, item_code: str) -> list[dict]:
+		"""Only batches already transferred for this WO (MTFM), with current stock qty."""
+		wo_name = _cstr(getattr(wo_doc, "name", None)).strip()
+		allowed = self._mtfm_batch_nos_for_wo_item(wo_name, item_code)
+		if not allowed:
+			return []
+		all_batches = self._available_batches_for_rm_all_wh(item_code)
+		return [b for b in all_batches if _cstr(b.get("batch_no")).strip() in allowed]
+
 	def _spr_fabric_picks_field_exists(self) -> bool:
 		try:
 			return bool(frappe.get_meta("Shaft Production Run").has_field("fabric_batch_picks"))
@@ -3236,7 +3271,7 @@ class ShaftProductionRun(Document):
 					continue
 				if flt(req) <= 1e-9:
 					continue
-				batches = self._available_batches_for_rm_all_wh(ic_s)
+				batches = self._available_batches_for_wo_transfer(wo_doc, ic_s)
 				item_name = frappe.db.get_value("Item", ic_s, "item_name") or ""
 				rm_proc = spr_fg_item_process_code(ic_s)
 				qual, col = extract_quality_and_color(item_name, ic_s)
@@ -3360,9 +3395,7 @@ class ShaftProductionRun(Document):
 			return ""
 
 		def _item_source_wh(item_code: str) -> str:
-			if is_bag:
-				return _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh) or raw_source_wh
-			return raw_source_wh
+			return _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh) or raw_source_wh
 
 		# Path A: BOM-driven draft (best when site config supports it)
 		try:
@@ -3430,7 +3463,7 @@ class ShaftProductionRun(Document):
 				continue
 			stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
 			item_src = _item_source_wh(item_code)
-			if is_bag and not item_src:
+			if not item_src:
 				item_src = _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh)
 			se.append(
 				"items",
@@ -3447,8 +3480,133 @@ class ShaftProductionRun(Document):
 			)
 		if not se.items:
 			return ""
-		se.insert()
-		return se.name
+		try:
+			se.insert()
+			return se.name
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (manual path) failed")
+			return ""
+
+	def _find_open_spr_shortage_transfer_draft(self) -> str:
+		"""Find latest combined draft MTFM for this SPR."""
+		filters = {
+			"docstatus": 0,
+			"purpose": "Material Transfer for Manufacture",
+		}
+		meta = frappe.get_meta("Stock Entry")
+		if meta.has_field("shaft_production_run"):
+			filters["shaft_production_run"] = self.name
+		elif frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+			filters["custom_spr_reference"] = self.name
+		else:
+			return ""
+		names = frappe.get_all("Stock Entry", filters=filters, pluck="name", order_by="modified desc", limit=1)
+		return _cstr(names[0]) if names else ""
+
+	def _create_combined_spr_shortage_transfer_draft(self, shortage_events) -> str:
+		"""One draft Material Transfer for Manufacture with all RM shortages (PP, LD, fabric, etc.)."""
+		if not shortage_events:
+			return ""
+		existing = self._find_open_spr_shortage_transfer_draft()
+		if existing:
+			return existing
+
+		is_bag = spr_doc_is_bag_spr(self)
+		transfer_posting_date = today()
+		transfer_posting_time = nowtime()
+		short_by_item: dict[str, float] = defaultdict(float)
+		item_wo: dict[str, object] = {}
+		wo_ids: list[str] = []
+
+		for event in shortage_events or []:
+			wo_doc = event.get("wo_doc")
+			wo_id = _cstr(event.get("wo_id"))
+			if wo_doc and wo_id and wo_id not in wo_ids:
+				wo_ids.append(wo_id)
+			for item_code, _wh, _req, _avl, short_qty in event.get("shortages") or []:
+				ic = _cstr(item_code).strip()
+				if not ic or not wo_doc:
+					continue
+				qty = _spr_round_rm_stock_qty(flt(short_qty))
+				if qty <= 0:
+					continue
+				short_by_item[ic] += qty
+				item_wo[ic] = wo_doc
+
+		if not short_by_item or not wo_ids:
+			return ""
+
+		primary_wo_doc = (shortage_events[0] or {}).get("wo_doc")
+		if not primary_wo_doc:
+			return ""
+		wip_wh = _cstr(getattr(primary_wo_doc, "wip_warehouse", None) or "")
+		if not wip_wh:
+			return ""
+
+		for ic in list(short_by_item.keys()):
+			qty = _spr_round_rm_stock_qty(short_by_item.get(ic))
+			tol = _spr_rm_wip_shortage_tolerance(qty)
+			if qty <= tol:
+				short_by_item.pop(ic, None)
+				continue
+			short_by_item[ic] = qty
+			wo_for_item = item_wo.get(ic) or primary_wo_doc
+			if is_bag:
+				still = _spr_wo_rm_transfer_remaining(wo_for_item, ic)
+				if still <= tol:
+					short_by_item.pop(ic, None)
+				elif still > 0:
+					short_by_item[ic] = min(flt(short_by_item[ic]), _spr_round_rm_stock_qty(still))
+		if not short_by_item:
+			return ""
+
+		raw_source_wh = _cstr(getattr(primary_wo_doc, "source_warehouse", None) or "")
+		se = frappe.new_doc("Stock Entry")
+		se.company = primary_wo_doc.company
+		se.posting_date = transfer_posting_date
+		se.posting_time = transfer_posting_time
+		se.set_posting_time = 1
+		se.purpose = "Material Transfer for Manufacture"
+		se.stock_entry_type = self._transfer_for_manufacture_type_name()
+		se.work_order = wo_ids[0] if len(wo_ids) == 1 else None
+		se.from_bom = 0
+		se.from_warehouse = None if is_bag else (raw_source_wh or None)
+		se.wip_warehouse = wip_wh
+		se.to_warehouse = wip_wh
+		self._set_stock_entry_spr_link(se)
+
+		for item_code, qty in sorted(short_by_item.items()):
+			wo_doc = item_wo.get(item_code) or primary_wo_doc
+			item_wip = _cstr(getattr(wo_doc, "wip_warehouse", None) or wip_wh)
+			item_src = _spr_wo_rm_source_warehouse(wo_doc, item_code, item_wip) or raw_source_wh
+			if not item_src:
+				frappe.log_error(
+					_("No source warehouse for {0} on WO {1}").format(item_code, getattr(wo_doc, "name", "")),
+					"SPR combined shortage draft",
+				)
+				continue
+			stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
+			se.append(
+				"items",
+				{
+					"item_code": item_code,
+					"s_warehouse": item_src,
+					"t_warehouse": item_wip,
+					"uom": stock_uom,
+					"stock_uom": stock_uom,
+					"conversion_factor": 1.0,
+					"qty": qty,
+					"transfer_qty": qty,
+				},
+			)
+		if not se.items:
+			return ""
+		try:
+			se.insert()
+			return se.name
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR combined shortage draft transfer failed")
+			return ""
 
 	def _find_open_wip_shortage_transfer_draft(self, wo_name: str) -> str:
 		"""Find latest draft transfer-for-manufacture for this WO and SPR."""
@@ -3545,24 +3703,14 @@ class ShaftProductionRun(Document):
 		)
 
 	def _raise_shortage_with_transfer_batch(self, shortage_events):
-		"""Create/reuse drafts for all shortage WOs and raise one combined message."""
+		"""Create one combined draft transfer for all shortages, then raise actionable message."""
 		if not shortage_events:
 			return
+		prec = _spr_rm_stock_qty_precision()
 		sections = []
-		did_create_or_reuse = False
 		for event in shortage_events:
 			wo_id = _cstr(event.get("wo_id"))
-			wo_doc = event.get("wo_doc")
-			chunk_total_qty = flt(event.get("chunk_total_qty"))
 			shortages = event.get("shortages") or []
-			transfer_name = ""
-			try:
-				transfer_name = self._create_wip_shortage_transfer_draft(wo_doc, chunk_total_qty, shortages)
-				if transfer_name:
-					did_create_or_reuse = True
-			except Exception:
-				transfer_name = ""
-			prec = _spr_rm_stock_qty_precision()
 			lines = "\n".join(
 				[
 					_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
@@ -3571,25 +3719,37 @@ class ShaftProductionRun(Document):
 					for it, wh, req, avl, sh in shortages[:10]
 				]
 			)
-			if transfer_name:
-				sections.append(
-					_("WO {0}\n{1}\nDraft Transfer: <a href=\"/app/stock-entry/{2}\" target=\"_blank\">{2}</a>").format(
-						wo_id, lines, transfer_name
-					)
-				)
-			else:
-				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
-		# Persist auto-created draft transfers before throwing, else request rollback can hide them.
-		if did_create_or_reuse:
+			if lines:
+				sections.append(_("WO {0}\n{1}").format(wo_id, lines))
+
+		transfer_name = ""
+		try:
+			transfer_name = self._create_combined_spr_shortage_transfer_draft(shortage_events)
+		except Exception:
+			transfer_name = ""
+
+		if transfer_name:
 			try:
 				frappe.db.commit()
 			except Exception:
 				pass
+			next_steps = _(
+				'1) Open draft Material Transfer for Manufacture: '
+				'<a href="/app/stock-entry/{0}" target="_blank">{0}</a>\n'
+				"2) Verify each line: source = RM warehouse, target = WIP, qty in Kg.\n"
+				'3) Submit the Stock Entry, then return to SPR '
+				'<a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
+			).format(transfer_name, self.name)
+		else:
+			next_steps = _(
+				"Could not auto-create draft transfer on this site. "
+				"Create one 'Material Transfer for Manufacture' (RM -> WIP) with all shortage items, submit it, then submit SPR again."
+			)
+
 		frappe.throw(
 			_(
-				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
-				"Submit all listed draft transfer(s), then return to SPR {2} and submit once."
-			).format(len(shortage_events), "\n\n".join(sections), self.name),
+				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n{2}"
+			).format(len(shortage_events), "\n\n".join(sections), next_steps),
 			title=_("Insufficient stock"),
 		)
 
