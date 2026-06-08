@@ -31,6 +31,14 @@ function cint(v) {
 	return Number.isFinite(n) ? n : 0;
 }
 
+function _applyTransferToCompanyFieldAccess(frm) {
+	const logistics = _is_logistics_material_transfer(frm);
+	["custom_transfer_to_company", "transfer_to_company"].forEach((fieldname) => {
+		if (!frm.fields_dict[fieldname]) return;
+		frm.set_df_property(fieldname, "read_only", logistics ? 1 : 0);
+	});
+}
+
 function _refreshLogisticsTransferFlag(frm) {
 	frm._pe_logistics_transfer = false;
 	if (!_is_material_transfer(frm) || !frm.doc.name || frm.is_new()) return;
@@ -272,14 +280,6 @@ frappe.ui.form.on("Stock Entry", {
 			_run_transfer_scan(frm, val);
 		}
 	},
-
-function _applyTransferToCompanyFieldAccess(frm) {
-	const logistics = _is_logistics_material_transfer(frm);
-	["custom_transfer_to_company", "transfer_to_company"].forEach((fieldname) => {
-		if (!frm.fields_dict[fieldname]) return;
-		frm.set_df_property(fieldname, "read_only", logistics ? 1 : 0);
-	});
-}
 
 	refresh(frm) {
 		_refreshLogisticsTransferFlag(frm);
