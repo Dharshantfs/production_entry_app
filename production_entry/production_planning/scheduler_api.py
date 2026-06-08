@@ -7783,6 +7783,12 @@ def _rebuild_planning_sheet_from_sales_order(planning_sheet, sales_order_doc):
 	_populate_planning_sheet_items(ps, doc)
 	ensure_lamination_booking_for_planning_sheet(ps)
 	update_sheet_plan_codes(ps, include_legacy=True)
+	try:
+		from production_entry.production_planning.parent_fabric_options import sync_parent_fabric_field_options_to_db
+
+		sync_parent_fabric_field_options_to_db()
+	except Exception:
+		pass
 	ps.flags.ignore_permissions = True
 	ps.flags.ignore_validate = True
 	ps.save(ignore_permissions=True)
@@ -7792,6 +7798,12 @@ def _rebuild_planning_sheet_from_sales_order(planning_sheet, sales_order_doc):
 	ps.reload()
 	ensure_lamination_booking_for_planning_sheet(ps)
 	update_sheet_plan_codes(ps, include_legacy=True)
+	try:
+		from production_entry.production_planning.parent_fabric_options import sync_parent_fabric_field_options_to_db
+
+		sync_parent_fabric_field_options_to_db()
+	except Exception:
+		pass
 	ps.flags.ignore_permissions = True
 	ps.flags.ignore_validate = True
 	ps.save(ignore_permissions=True)
@@ -28710,6 +28722,13 @@ def _resolve_parent_fabric_label(
 			return "Bag FG"
 		return "FG Fabric"
 
+	if not bag_fg_context and not is_direct_so_line:
+		nb_early = _non_bag_parent_fabric_label(
+			ic, soi, pt_rows, pb=_is_printed_bopp_item_code(ic)
+		)
+		if nb_early:
+			return nb_early
+
 	if _is_printed_bopp_item_code(ic):
 		if direct_on_fg_bom:
 			return "PB"
@@ -28744,7 +28763,7 @@ def _resolve_parent_fabric_label(
 		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
 		return nb or "Main Fabric"
 
-	if direct_on_fg_bom:
+	if direct_on_fg_bom and bag_fg_context:
 		if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
 			return "Loop Fabric"
 		if pp in _MAIN_FABRIC_MID_PROCESSES or ic.startswith("100"):
@@ -28808,7 +28827,12 @@ def _infer_fabric_chain_parent_process(fabric_ic, soi, pt_rows):
 
 def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 	"""Set custom_parent_fabric on Planning Table + Planning sheet Item (both grids, always)."""
-	from production_entry.production_planning.parent_fabric_options import normalize_parent_fabric_label
+	from production_entry.production_planning.parent_fabric_options import (
+		normalize_parent_fabric_label,
+		sync_parent_fabric_field_options_to_db,
+	)
+
+	sync_parent_fabric_field_options_to_db()
 
 	if not planning_sheet_name:
 		return 0
@@ -28861,12 +28885,13 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			pass
 		elif not so_fg and len(so_fg_by_soi) == 1:
 			so_fg = next(iter(so_fg_by_soi.values()))
-		bag_ctx = _is_bag_fg_item_code(so_fg)
 		so_direct_ic = so_line_ic_by_soi.get(soi, "")
 		is_direct_so_line = bool(so_direct_ic and so_direct_ic == ic)
+		bag_ctx = _is_bag_fg_item_code(so_direct_ic) if so_direct_ic else _is_bag_fg_item_code(so_fg)
+		so_fg_for_label = so_direct_ic or so_fg
 		raw = _resolve_parent_fabric_label(
 			ic,
-			so_fg_item_code=so_fg,
+			so_fg_item_code=so_fg_for_label,
 			direct_on_fg_bom=direct,
 			chain_parent_process=chain_pp,
 			soi=soi,

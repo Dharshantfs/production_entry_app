@@ -48,3 +48,27 @@ def normalize_parent_fabric_label(label):
 	if val in PARENT_FABRIC_OPTION_SET:
 		return val
 	return ""
+
+
+def sync_parent_fabric_field_options_to_db():
+	"""Push PARENT_FABRIC_OPTIONS to Custom Field metadata (required before save validation)."""
+	try:
+		import frappe
+
+		for dt in ("Planning Table", "Planning sheet Item"):
+			cf_name = frappe.db.get_value(
+				"Custom Field",
+				{"dt": dt, "fieldname": "custom_parent_fabric"},
+				"name",
+			)
+			if cf_name:
+				frappe.db.set_value(
+					"Custom Field",
+					cf_name,
+					"options",
+					PARENT_FABRIC_OPTIONS,
+					update_modified=False,
+				)
+		frappe.db.commit()
+	except Exception:
+		pass
