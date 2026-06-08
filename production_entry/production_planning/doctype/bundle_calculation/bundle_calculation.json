@@ -26,56 +26,57 @@
   {
    "fieldname": "item_code",
    "fieldtype": "Link",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Item",
    "options": "Item"
   },
   {
    "fieldname": "bag_size",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Bag Size"
   },
   {
    "fieldname": "sheet_cutting_size",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Sheet Size"
   },
   {
    "fieldname": "no_of_bundles",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "No of Bundles"
   },
   {
    "fieldname": "no_of_boxes",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "No of Boxes"
   },
   {
    "fieldname": "pkts_per_bundle",
    "fieldtype": "Int",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Pkts per Bundle"
   },
   {
    "fieldname": "pcs_per_packet",
    "fieldtype": "Int",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Pcs per Packet"
   },
   {
    "fieldname": "total_pcs_per_bundle",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Total Planned Pcs per Bundle",
    "read_only": 1
   },
   {
    "fieldname": "work_order",
    "fieldtype": "Link",
+   "in_list_view": 0,
    "label": "Work Order",
    "options": "Work Order",
    "read_only": 1
@@ -83,27 +84,28 @@
   {
    "fieldname": "order_code",
    "fieldtype": "Data",
+   "in_list_view": 0,
    "label": "Order Code",
    "read_only": 1
   },
   {
    "fieldname": "job",
    "fieldtype": "Data",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Job",
    "read_only": 1
   },
   {
    "fieldname": "total_consumed_meter",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Consumed Mtrs",
    "precision": "2"
   },
   {
    "fieldname": "total_achieved_weight",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Total Achieved Weight (Kg)",
    "precision": "2",
    "read_only": 1
@@ -111,7 +113,7 @@
   {
    "fieldname": "total_produced_sheets",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Total Produced Sheets (PCS)",
    "precision": "0",
    "read_only": 1
@@ -119,7 +121,7 @@
   {
    "fieldname": "total_produced_bag_pcs",
    "fieldtype": "Float",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Total Produced Bag PCS",
    "precision": "0",
    "read_only": 1
@@ -127,7 +129,7 @@
   {
    "fieldname": "create_bundle_entry",
    "fieldtype": "Button",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Create Entry"
   }
  ],
