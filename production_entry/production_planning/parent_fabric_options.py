@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """Allowed values for Planning sheet custom_parent_fabric (Select field)."""
 
+import re
+
+_STANDALONE_CHAIN_PB_RE = re.compile(r"^\d{3} PB$")
+
 PARENT_FABRIC_OPTIONS = (
 	"\nBag FG"
 	"\nFG Fabric"
@@ -47,6 +51,9 @@ def normalize_parent_fabric_label(label):
 	val = _PARENT_FABRIC_ALIASES.get(val, val)
 	if val in PARENT_FABRIC_OPTION_SET:
 		return val
+	# Standalone fabric chains stamp "{parent} PB" (e.g. 107 PB) — map to Select option PB.
+	if _STANDALONE_CHAIN_PB_RE.match(val) and "PB" in PARENT_FABRIC_OPTION_SET:
+		return "PB"
 	return ""
 
 

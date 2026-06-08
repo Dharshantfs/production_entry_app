@@ -595,8 +595,8 @@ function spr_after_child_table_refresh(frm) {
 				if (!frm || !frm.fields_dict) {
 					return;
 				}
-				spr_apply_items_grid_columns(frm);
-				spr_apply_shaft_jobs_grid_columns(frm);
+				spr_apply_items_grid_columns(frm, true);
+				spr_apply_shaft_jobs_grid_columns(frm, true);
 				spr_light_grid_scroll_sync(frm, 'items');
 				spr_light_grid_scroll_sync(frm, 'shaft_jobs');
 				spr_light_grid_scroll_sync(frm, 'bundle_calculation');
@@ -3616,12 +3616,14 @@ function sprLoadShaftJobsFromPp(frm) {
 			frm.refresh_field('shaft_jobs');
 			frm.clear_table('items');
 			frm.refresh_field('items');
+			spr_apply_shaft_jobs_grid_columns(frm, true);
 			spr_after_child_table_refresh(frm);
 			fetch_and_show_pp_wo_summary(frm);
 		},
 		error: function () {
 			frm.clear_table('items');
 			frm.refresh_field('items');
+			spr_apply_shaft_jobs_grid_columns(frm, true);
 			spr_after_child_table_refresh(frm);
 			fetch_and_show_pp_wo_summary(frm);
 		},
@@ -4269,7 +4271,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '25';
+	const sprItemsCssVer = '26';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -4418,6 +4420,34 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .grid-field {
 			overflow-x: auto;
 			max-width: 100%;
+		}
+		.spr-shaft-jobs-wrap .grid-heading-row,
+		.spr-shaft-jobs-wrap .grid-body .rows {
+			display: table;
+			width: 100%;
+			table-layout: fixed;
+		}
+		.spr-shaft-jobs-wrap .grid-heading-row .grid-static-col,
+		.spr-shaft-jobs-wrap .grid-row .col {
+			min-width: 72px;
+			box-sizing: border-box;
+			vertical-align: middle;
+		}
+		.spr-shaft-jobs-wrap .grid-row .col[data-fieldname="combination"],
+		.spr-shaft-jobs-wrap .grid-heading-row .grid-static-col[data-fieldname="combination"] {
+			min-width: 130px;
+		}
+		.spr-shaft-jobs-wrap .grid-row .col[data-fieldname="work_orders"],
+		.spr-shaft-jobs-wrap .grid-heading-row .grid-static-col[data-fieldname="work_orders"] {
+			min-width: 150px;
+		}
+		.spr-shaft-jobs-wrap .grid-row .col[data-fieldname="net_weight"],
+		.spr-shaft-jobs-wrap .grid-heading-row .grid-static-col[data-fieldname="net_weight"] {
+			min-width: 90px;
+		}
+		.spr-shaft-jobs-wrap .grid-row .col[data-fieldname="create_roll_entry"],
+		.spr-shaft-jobs-wrap .grid-heading-row .grid-static-col[data-fieldname="create_roll_entry"] {
+			min-width: 110px;
 		}
 	`;
 	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);

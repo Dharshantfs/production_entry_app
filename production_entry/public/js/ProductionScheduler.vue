@@ -761,7 +761,7 @@ W_CUT_D_CUT_ALL_UNITS.forEach((u) => { unitSortConfig.value[u] = { mode: 'manual
 const rawData = ref([]);
 const boardProcessOptions = computed(() => {
   if (isPrintingBoard.value) return [{ value: "105", label: "105" }, { value: "106", label: "106" }, { value: "__all__", label: "All" }];
-  if (isSlittingBoard.value) return [{ value: "103", label: "103" }, { value: "109", label: "109" }, { value: "108", label: "108" }, { value: "__all__", label: "All" }];
+  if (isSlittingBoard.value) return [{ value: "103", label: "103" }, { value: "109", label: "109" }, { value: "108", label: "108" }, { value: "110", label: "110" }, { value: "__all__", label: "All" }];
   if (isSheetCuttingBoard.value) {
     return [
       { value: "251", label: "251" },
@@ -1075,7 +1075,7 @@ const filteredData = computed(() => {
   // Force them into Slitting Unit while viewing dedicated Slitting Board.
   if (isSlittingBoard.value) {
     data = data.map((d) => {
-      if (["103", "109", "108"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
+      if (["103", "109", "108", "110"].includes(itemProcessPrefix(d.item_code || d.itemCode))) {
         const u = normalizeUnitName(d.unit);
         if (!SLITTING_BOARD_UNITS.includes(u)) {
           return { ...d, unit: SLITTING_UNASSIGNED_UNIT };
@@ -1084,7 +1084,7 @@ const filteredData = computed(() => {
       }
       return d;
     });
-    if (["103", "109", "108"].includes(boardProcessFilter.value)) {
+    if (["103", "109", "108", "110"].includes(boardProcessFilter.value)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === boardProcessFilter.value);
     }
   }
@@ -2960,7 +2960,7 @@ onMounted(() => {
       if (processParam && (W_CUT_D_CUT_FG_PROCS.includes(processParam) || processParam === "__all__")) {
         boardProcessFilter.value = processParam;
       }
-    } else if (["103", "109", "108", "105", "106", "251", "252", "253", "254", "255", "__all__"].includes(processParam)) {
+    } else if (["103", "109", "108", "110", "105", "106", "251", "252", "253", "254", "255", "__all__"].includes(processParam)) {
       boardProcessFilter.value = processParam;
     }
     

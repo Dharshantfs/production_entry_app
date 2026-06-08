@@ -88,6 +88,7 @@ SLITTING_BOARD_UNITS = (
 	SLITTING_UNIT_VTP,
 	SLITTING_UNASSIGNED_UNIT,
 )
+SLITTING_BOARD_PROCESS_CODES = ("103", "108", "109", "110")
 # Printed BOPP film (PB-* BOM children of 107 FG): dedicated queue unit + board/table scope.
 PRINTED_BOPP_FILM_UNIT = PLANNING_PRINTED_BOPP_FILM_UNIT
 
@@ -10514,7 +10515,7 @@ def _remove_duplicate_slitting_pt_rows_on_sheet(planning_sheet_name):
 	groups = {}
 	for r in rows:
 		pp = _item_process_prefix(r.get("item_code"))
-		if pp not in ("103", "109", "108"):
+		if pp not in SLITTING_BOARD_PROCESS_CODES:
 			continue
 		soi = _cstr(r.get(so_col)).strip() if so_col else ""
 		key = (_cstr(r.get("item_code")).strip(), soi)
@@ -10575,7 +10576,8 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 	) or []
 	slitting_like = (
 		"(item_code LIKE '103%%' OR item_code LIKE '109%%' "
-		"OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-108%%')"
+		"OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-108%%' "
+		"OR UPPER(TRIM(IFNULL(item_code,''))) LIKE '%%-110%%')"
 	)
 	for rr in slitting_rows:
 		pp = _item_process_prefix(rr.get("item_code"))
@@ -13337,7 +13339,7 @@ def get_slitting_order_table_data(
     process=None,
 ):
     """
-    Slitting board rows (103/109/108) for Slitting Order Table.
+    Slitting board rows (103/108/109/110) for Slitting Order Table.
     Includes parent-child trace id and child fabric readiness date from linked fabric SPR run date.
     """
     try:
@@ -13469,9 +13471,13 @@ def get_slitting_order_table_data(
             strict_color = _color_from_item_code_6_to_8(row.get("item_code") or row.get("itemCode"))
             if strict_color:
                 row["color"] = strict_color
-        elif proc == "108":
-            p108c = _parse_108_item_code(row.get("item_code") or row.get("itemCode")) or {}
-            cc = (p108c.get("colour_code") or "").strip()
+        elif proc in ("108", "110"):
+            parsed_loop = (
+                _parse_110_item_code(row.get("item_code") or row.get("itemCode"))
+                if proc == "110"
+                else _parse_108_item_code(row.get("item_code") or row.get("itemCode"))
+            ) or {}
+            cc = (parsed_loop.get("colour_code") or "").strip()
             if cc:
                 try:
                     c108 = _get_color_by_code(cc)
@@ -13490,12 +13496,12 @@ def get_slitting_order_table_data(
                 0,
                 frappe.db.get_value("Item", bom_ic, "item_name") or "",
             )
-        if proc in ("103", "109", "108") and bom_w > 0:
+        if proc in SLITTING_BOARD_PROCESS_CODES and bom_w > 0:
             row["roll_size"] = bom_w
         else:
             row["roll_size"] = flt((ex or {}).get("fabric_roll_width") or 0)
         row["slitting_size"] = flt((ex or {}).get("slitting_size") or 0)
-        if proc in ("103", "109", "108") and row["slitting_size"] <= 0:
+        if proc in SLITTING_BOARD_PROCESS_CODES and row["slitting_size"] <= 0:
             row["slitting_size"] = _resolve_planning_row_width_inch(
                 row.get("item_code") or row.get("itemCode"),
                 row["slitting_size"],
@@ -14291,7 +14297,7 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET {", ".join(set_parts)}
             WHERE ps.docstatus < 2
-              AND (pt.item_code LIKE '103%%' OR pt.item_code LIKE '109%%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-108%%')
+              AND (pt.item_code LIKE '103%%' OR pt.item_code LIKE '109%%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-108%%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-110%%')
               AND pt.name = %s
             """,
             tuple(values),
@@ -14303,7 +14309,7 @@ def assign_slitting_shift(shift_date=None, shift_label="DAY", item_name=None):
             INNER JOIN `tabPlanning sheet` ps ON ps.name = pt.parent
             SET pt.custom_slitting_shift = %s
             WHERE ps.docstatus < 2
-              AND (pt.item_code LIKE '103%%' OR pt.item_code LIKE '109%%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-108%%')
+              AND (pt.item_code LIKE '103%%' OR pt.item_code LIKE '109%%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-108%%' OR UPPER(TRIM(IFNULL(pt.item_code,''))) LIKE '%%-110%%')
               AND DATE({eff_date}) = DATE(%s)
             """,
             (shift_label, target_date),
@@ -16111,7 +16117,7 @@ def _populate_planning_sheet_items(ps, doc):
         p_date = None
         if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(str(it.item_code or "")):
              p_date = getdate(doc.transaction_date or ps.ordered_date)
-        elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("103", "109", "108"):
+        elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in SLITTING_BOARD_PROCESS_CODES:
              p_date = getdate(doc.transaction_date or ps.ordered_date)
         elif REWINDING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) == "102":
              p_date = getdate(doc.transaction_date or ps.ordered_date)
@@ -16477,7 +16483,7 @@ def _populate_planning_sheet_items(ps, doc):
                 if LAMINATION_FLOW_ENABLED and _is_lamination_parent_process(str(it.item_code or "")):
                     existing_psi.unit = LAMINATION_UNIT
                     existing_psi.planned_date = p_date
-                elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in ("103", "109", "108"):
+                elif SLITTING_FLOW_ENABLED and _item_process_prefix(str(it.item_code or "")) in SLITTING_BOARD_PROCESS_CODES:
                     _pp_sl = _item_process_prefix(str(it.item_code or ""))
                     _nu_sl = normalize_planning_unit_for_select(getattr(existing_psi, "unit", None))
                     if _nu_sl in SLITTING_BOARD_UNITS:
@@ -16656,7 +16662,7 @@ def compute_default_production_unit(color, width_inch, item_code=None):
         return SLITTING_UNASSIGNED_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "109":
         return SLITTING_UNIT
-    if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) == "108":
+    if SLITTING_FLOW_ENABLED and item_code and _item_process_prefix(str(item_code)) in ("108", "110"):
         return SLITTING_UNIT
     if item_code and _item_process_prefix(str(item_code)) == "251":
         return SHEET_CUTTING_UNIT
@@ -20902,7 +20908,7 @@ def _get_color_chart_data_impl(
                         continue
                 if bps == "printing_only" and icp not in ("105", "106"):
                     continue
-                if bps == "slitting_only" and icp not in ("103", "109", "108"):
+                if bps == "slitting_only" and icp not in SLITTING_BOARD_PROCESS_CODES:
                     continue
                 if bps == "rewinding_only" and icp != "102":
                     continue
@@ -28900,7 +28906,10 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			bag_fg_context=bag_ctx,
 			is_direct_so_line=is_direct_so_line,
 		)
-		return normalize_parent_fabric_label(raw)
+		label = normalize_parent_fabric_label(raw)
+		if not label and _is_printed_bopp_item_code(ic):
+			label = "PB"
+		return label
 
 	labels_by_pt = {}
 	labels_by_soi_ic = {}

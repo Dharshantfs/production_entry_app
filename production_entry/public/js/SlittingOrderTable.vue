@@ -36,6 +36,7 @@
           <button type="button" :class="{ active: processFilter === '103' }" @click="setProcessFilter('103')">103</button>
           <button type="button" :class="{ active: processFilter === '109' }" @click="setProcessFilter('109')">109</button>
           <button type="button" :class="{ active: processFilter === '108' }" @click="setProcessFilter('108')">108</button>
+          <button type="button" :class="{ active: processFilter === '110' }" @click="setProcessFilter('110')">110</button>
           <button type="button" :class="{ active: processFilter === '__all__' }" @click="setProcessFilter('__all__')">All</button>
         </div>
       </div>
@@ -94,7 +95,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Slitting Units (JVE / VTP / Unassigned) - Planned orders ({{ processFilter === "__all__" ? "103 + 109 + 108" : processFilter }})</div>
+      <div class="cc-table-unit-header lot-header">Slitting Units (JVE / VTP / Unassigned) - Planned orders ({{ processFilter === "__all__" ? "103 + 108 + 109 + 110" : processFilter }})</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
         <thead>
@@ -293,11 +294,11 @@ let visibilityRefreshTimer = null;
 let sprRealtimeHandlerRegistered = false;
 
 const showProcessColumn = computed(() => processFilter.value === "__all__");
-const showLamGsmColumn = computed(() => ["109", "108", "__all__"].includes(processFilter.value));
+const showLamGsmColumn = computed(() => ["109", "108", "110", "__all__"].includes(processFilter.value));
 const tableColCount = computed(() => 18 + (showProcessColumn.value ? 1 : 0) + (showLamGsmColumn.value ? 1 : 0));
 
 function setProcessFilter(value) {
-  const allowed = new Set(["103", "109", "108", "__all__"]);
+  const allowed = new Set(["103", "109", "108", "110", "__all__"]);
   const next = allowed.has(value) ? value : "103";
   if (processFilter.value === next) return;
   processFilter.value = next;
@@ -1313,7 +1314,7 @@ onMounted(async () => {
   if (p.get("date")) filterOrderDate.value = p.get("date");
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
-  if (["103", "109", "108", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process");
+  if (["103", "109", "108", "110", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process");
   await fetchData();
   startAutoRefresh();
   document.addEventListener("visibilitychange", onVisibilityRefresh);
