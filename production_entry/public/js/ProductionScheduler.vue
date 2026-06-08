@@ -218,11 +218,11 @@
                 />
                 <div
                   class="cc-color-swatch"
-                  :style="{ backgroundColor: getHexColor(entry.color) }"
-                  :title="entry.color"
+                  :style="{ backgroundColor: boardCardSwatchColor(entry) }"
+                  :title="boardCardColorLabel(entry)"
                 ></div>
                 <div class="cc-card-info">
-                  <div class="cc-card-color-name">{{ entry.color }}</div>
+                  <div class="cc-card-color-name">{{ boardCardColorLabel(entry) }}</div>
                   <div class="cc-card-customer">
                     <span style="font-weight:700; color:#111827;">{{ entry.partyCode }}</span>
                     <span v-if="entry.partyCode !== entry.customer" style="font-weight:400; color:#6b7280;"> · {{ entry.customer }}</span>
@@ -1274,6 +1274,21 @@ function getColorPriority(color) {
 function getHexColor(color) {
   const group = findColorGroup(color);
   return group ? group.hex : "#ccc";
+}
+
+function boardCardColorLabel(entry) {
+  if (isPrintedBoppFilmBoard.value) {
+    const dn = (entry.design_name || "").trim();
+    const dc = (entry.design_code || "").trim();
+    if (dn && dc && dn.toUpperCase() !== dc.toUpperCase()) return `${dn} · ${dc}`;
+    return dn || dc || (entry.color || "").trim() || "—";
+  }
+  return (entry.color || "").trim() || "—";
+}
+
+function boardCardSwatchColor(entry) {
+  if (isPrintedBoppFilmBoard.value) return "#7c3aed";
+  return getHexColor(entry.color);
 }
 
 function getMixRollQty(gap) {

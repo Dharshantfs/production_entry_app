@@ -1167,8 +1167,11 @@ def auto_create_planning_sheet(doc, method=None):
         ps.delivery_date = doc.delivery_date
         ps.planning_status = "Draft"
         
-        # Populate Items
+        # Populate Items (skip CY-* cylinder reference lines — not planned)
+        from production_entry.production_planning.scheduler_api import _is_cylinder_yield_so_item
         for item in doc.items:
+            if _is_cylinder_yield_so_item(item.item_code):
+                continue
             ps.append("planned_items", {
                 "sales_order_item": item.name,
                 "item_code": item.item_code,

@@ -3,6 +3,7 @@
 
 PARENT_FABRIC_OPTIONS = (
 	"\nBag FG"
+	"\nFG Fabric"
 	"\nMain Fabric"
 	"\nLoop Fabric"
 	"\n102 Base Fabric"

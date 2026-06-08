@@ -1174,6 +1174,15 @@ def _is_printed_bopp_item_code(item_code):
 	return False
 
 
+def _is_cylinder_yield_so_item(item_code):
+	"""CY-* cylinder reference lines on SO — never create or sync on Planning Sheet."""
+	su = _cstr(item_code).strip().upper()
+	if not su:
+		return False
+	compact = su.replace(" ", "")
+	return compact.startswith("CY-") or su.startswith("CY ")
+
+
 def _parse_two_dim_sheet_size(text):
 	"""Return (width_inch, height_inch) from strings like ``12 * 16``, ``12x16``, ``12\" x 16\"``."""
 	s = _cstr(text).strip()
@@ -15637,6 +15646,8 @@ def _populate_planning_sheet_items(ps, doc):
     quality_lookup.sort(key=len, reverse=True)
     
     for it in doc.items:
+        if _is_cylinder_yield_so_item(it.item_code):
+            continue
         # Match all rows belonging to this SO item
         existing_psi_list = existing_items_map.get(it.name, [])
         is_existing = len(existing_psi_list) > 0
@@ -21122,12 +21133,20 @@ def _get_color_chart_data_impl(
             _finishing_row = ""
             if bps == "printed_bopp_pb_only":
                 _dn_stored = (item.get("custom_design_name") or "").strip()
+                _dc_pb = (_design_code_from_printed_bopp_item_code(_ic_row) or _design_code_row or "").strip()
                 _design_name_row = (
                     _dn_stored
                     or _pb_design_name_from_sales_order_item(_soi_for_dn)
-                    or (_design_code_from_printed_bopp_item_code(_ic_row) or "")
-                    or _design_code_row
+                    or _dc_pb
                 )
+                _design_code_row = _dc_pb or _design_code_row
+                if _design_name_row or _design_code_row:
+                    _dn_disp = (_design_name_row or "").strip()
+                    _dc_disp = (_design_code_row or "").strip()
+                    if _dn_disp and _dc_disp and _dn_disp.upper() != _dc_disp.upper():
+                        color = f"{_dn_disp} · {_dc_disp}"
+                    else:
+                        color = _dn_disp or _dc_disp
                 _white_tint_row = (item.get("custom_white_tint") or "").strip()
                 _finishing_row = (item.get("custom_finishing") or "").strip()
                 if not _finishing_row:
@@ -28595,6 +28614,7 @@ def _resolve_parent_fabric_label(
 	pt_rows=None,
 	direct_by_soi=None,
 	bag_fg_context=None,
+	is_direct_so_line=False,
 ):
 	"""Human-friendly BOM role — Main vs Loop chains for all bag FG processes (221–226, 231/233/241/242, W/D-CUT)."""
 	ic = _cstr(item_code).strip()
@@ -28604,6 +28624,11 @@ def _resolve_parent_fabric_label(
 	fg_pp = _bom_item_process_code(so_fg_item_code) if so_fg_item_code else ""
 	if bag_fg_context is None:
 		bag_fg_context = _is_bag_fg_item_code(so_fg_item_code)
+
+	if is_direct_so_line:
+		if pp in ALL_BAG_FG_PROCESS_CODES or _is_bag_fg_item_code(ic):
+			return "Bag FG"
+		return "FG Fabric"
 
 	if _is_printed_bopp_item_code(ic):
 		if direct_on_fg_bom:
@@ -28620,7 +28645,7 @@ def _resolve_parent_fabric_label(
 	if fg_pp and pp == fg_pp:
 		if fg_pp in ALL_BAG_FG_PROCESS_CODES:
 			return "Bag FG"
-		return ""
+		return "FG Fabric"
 
 	if ic.startswith("100"):
 		if direct_on_fg_bom:
@@ -28718,6 +28743,18 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			if soi:
 				so_fg_by_soi[soi] = ic
 	direct_by_soi = _bag_fg_direct_bom_children_by_soi(planning_sheet_name)
+	so_line_ic_by_soi = {}
+	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
+	if so_name:
+		for so_row in frappe.get_all(
+			"Sales Order Item",
+			filters={"parent": so_name},
+			fields=["name", "item_code"],
+			limit_page_length=0,
+		) or []:
+			if _is_cylinder_yield_so_item(so_row.get("item_code")):
+				continue
+			so_line_ic_by_soi[_cstr(so_row.get("name")).strip()] = _cstr(so_row.get("item_code")).strip()
 
 	def _label_for_item(ic, soi, direct=None, chain_pp=None):
 		ic = _cstr(ic).strip()
@@ -28734,6 +28771,8 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 		elif not so_fg and len(so_fg_by_soi) == 1:
 			so_fg = next(iter(so_fg_by_soi.values()))
 		bag_ctx = _is_bag_fg_item_code(so_fg)
+		so_direct_ic = so_line_ic_by_soi.get(soi, "")
+		is_direct_so_line = bool(so_direct_ic and so_direct_ic == ic)
 		raw = _resolve_parent_fabric_label(
 			ic,
 			so_fg_item_code=so_fg,
@@ -28743,6 +28782,7 @@ def _stamp_parent_fabric_labels_on_planning_sheet(planning_sheet_name):
 			pt_rows=pt_rows,
 			direct_by_soi=direct_by_soi,
 			bag_fg_context=bag_ctx,
+			is_direct_so_line=is_direct_so_line,
 		)
 		return normalize_parent_fabric_label(raw)
 
