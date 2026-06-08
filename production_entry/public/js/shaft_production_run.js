@@ -506,6 +506,12 @@ function spr_sync_grid_columns_visible(frm, fieldname) {
 	}
 	if (fieldname === 'shaft_jobs') {
 		spr_apply_shaft_jobs_grid_columns(frm);
+		spr_ensure_child_grid_heights(frm);
+		return;
+	}
+	if (fieldname === 'bundle_calculation') {
+		spr_apply_bundle_calculation_grid_columns(frm);
+		spr_ensure_child_grid_heights(frm);
 		return;
 	}
 	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
@@ -539,6 +545,28 @@ function spr_apply_grid_wrap_classes(frm) {
 		if (fn === 'shaft_jobs') {
 			fd.$wrapper.addClass('spr-shaft-jobs-wrap');
 		}
+		if (fn === 'bundle_calculation') {
+			fd.$wrapper.addClass('spr-bundle-calc-wrap');
+		}
+	});
+	spr_ensure_child_grid_heights(frm);
+}
+
+/** Prevent Available Jobs / Bundle Calculation grids from collapsing to a thin strip. */
+function spr_ensure_child_grid_heights(frm) {
+	if (!frm || !frm.fields_dict) {
+		return;
+	}
+	['shaft_jobs', 'bundle_calculation'].forEach(function (fn) {
+		const fd = frm.fields_dict[fn];
+		if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+			return;
+		}
+		const $rows = fd.$wrapper.find('.grid-body .rows');
+		if ($rows.length) {
+			$rows.css({ 'min-height': '48px', display: 'block' });
+		}
+		fd.$wrapper.find('.grid-row').css({ 'min-height': '38px' });
 	});
 }
 
@@ -600,6 +628,7 @@ function spr_after_child_table_refresh(frm) {
 				spr_light_grid_scroll_sync(frm, 'items');
 				spr_light_grid_scroll_sync(frm, 'shaft_jobs');
 				spr_light_grid_scroll_sync(frm, 'bundle_calculation');
+				spr_ensure_child_grid_heights(frm);
 			});
 		});
 	}
@@ -3834,6 +3863,15 @@ function spr_get_bundle_list_view_config(frm) {
 	return { show: [], hide: [] };
 }
 
+function spr_apply_bundle_calculation_grid_columns(frm, force) {
+	if (!frm || !sprIsBundlePackagingMode(frm)) {
+		return;
+	}
+	const cfg = spr_get_bundle_list_view_config(frm);
+	spr_apply_grid_visible_columns(frm, 'bundle_calculation', cfg.show || [], force);
+	spr_apply_create_entry_buttons_ui(frm);
+}
+
 function sprToggleBundleCalculationGrid(frm) {
 	if (!frm || !frm.fields_dict || !frm.fields_dict.bundle_calculation) {
 		return;
@@ -3849,9 +3887,9 @@ function sprToggleBundleCalculationGrid(frm) {
 		grid.update_docfield_property('pcs_per_packet', 'label', __('Pcs per Box'));
 		grid.update_docfield_property('total_pcs_per_bundle', 'label', __('Total Planned Pcs'));
 	}
-	spr_show_all_grid_columns(frm, 'bundle_calculation');
-	spr_apply_create_entry_buttons_ui(frm);
+	spr_apply_bundle_calculation_grid_columns(frm, true);
 	spr_sync_grid_header_body_scroll(frm.fields_dict.bundle_calculation);
+	spr_ensure_child_grid_heights(frm);
 }
 
 function sprToggleSheetCuttingRollUi(frm) {
@@ -4271,7 +4309,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '26';
+	const sprItemsCssVer = '27';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -4421,11 +4459,24 @@ function ensure_spr_item_stylesheet() {
 			overflow-x: auto;
 			max-width: 100%;
 		}
-		.spr-shaft-jobs-wrap .grid-heading-row,
-		.spr-shaft-jobs-wrap .grid-body .rows {
-			display: table;
+		.spr-shaft-jobs-wrap .form-grid-container,
+		.spr-bundle-calc-wrap .form-grid-container {
+			min-height: 120px;
+		}
+		.spr-shaft-jobs-wrap .grid-body .rows,
+		.spr-bundle-calc-wrap .grid-body .rows {
+			display: block;
+			min-height: 48px;
+		}
+		.spr-shaft-jobs-wrap .grid-row,
+		.spr-bundle-calc-wrap .grid-row {
+			display: flex;
+			align-items: center;
+			min-height: 38px;
+		}
+		.spr-shaft-jobs-wrap .grid-heading-row {
+			display: flex;
 			width: 100%;
-			table-layout: fixed;
 		}
 		.spr-shaft-jobs-wrap .grid-heading-row .grid-static-col,
 		.spr-shaft-jobs-wrap .grid-row .col {
