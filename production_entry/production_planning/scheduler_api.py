@@ -18735,7 +18735,18 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
         frappe.db.commit()
     except Exception:
         frappe.log_error(frappe.get_traceback(), "update_schedule:dedupe_slitting")
-    
+
+    try:
+        move_code = generate_plan_code(
+            final_date,
+            normalize_planning_unit_for_select(final_unit),
+            (parent_sheet.get("custom_plan_name") or "Default"),
+        )
+        _force_sync_unit_both_planning_tables(item, final_unit, move_code)
+        _normalize_planning_sheet_workstation_units(item.parent)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "update_schedule:force_sync_unit")
+
     frappe.db.commit()
     try:
         frappe.publish_realtime("production_board_update", {"date": str(final_date)})
@@ -18810,14 +18821,102 @@ def _sync_legacy_planning_sheet_item_unit(source_item, unit, plan_code=None):
     if not name or not frappe.db.exists("Planning sheet Item", name):
         return
     updates = {}
+    norm_unit = normalize_planning_unit_for_select(unit)
     if frappe.db.has_column("Planning sheet Item", "unit"):
-        updates["unit"] = normalize_planning_unit_for_select(unit)
+        updates["unit"] = norm_unit
+    if frappe.db.has_column("Planning sheet Item", "allocated_to_unit"):
+        updates["allocated_to_unit"] = norm_unit
     if plan_code and frappe.db.has_column("Planning sheet Item", "custom_plan_code"):
         updates["custom_plan_code"] = plan_code
     if not updates:
         return
     set_clause = ", ".join([f"`{k}` = %s" for k in updates.keys()])
     frappe.db.sql(f"UPDATE `tabPlanning sheet Item` SET {set_clause} WHERE name = %s", list(updates.values()) + [name])
+
+
+def _resolve_psi_for_board_row(item_doc):
+    """Best-effort Planning sheet Item link for a Planning Table (board) row."""
+    if not item_doc:
+        return None
+    board_name = _cstr(getattr(item_doc, "name", None) or (item_doc.get("name") if isinstance(item_doc, dict) else ""))
+    if not board_name:
+        return None
+    if not isinstance(item_doc, dict):
+        try:
+            row = item_doc.as_dict()
+        except Exception:
+            row = {"name": board_name, "parent": getattr(item_doc, "parent", None), "source_item": getattr(item_doc, "source_item", None)}
+    else:
+        row = item_doc
+
+    psi = _resolve_planning_table_source_item_link(row.get("source_item"), board_name)
+    if psi:
+        return psi
+    if frappe.db.exists("Planning Table", board_name):
+        psi = _resolve_legacy_source_item_from_board_row(frappe.get_doc("Planning Table", board_name))
+        if psi:
+            return psi
+
+    sheet_parent = _cstr(row.get("parent"))
+    if sheet_parent and frappe.db.exists("Planning sheet", sheet_parent):
+        try:
+            _link_board_planned_rows_to_legacy_items(sheet_parent)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "resolve_psi: link by idx")
+        refreshed = frappe.db.get_value("Planning Table", board_name, "source_item")
+        psi = _resolve_planning_table_source_item_link(refreshed, board_name)
+        if psi:
+            return psi
+
+    so_col_pt = _planning_table_so_line_column()
+    so_col_psi = _planning_sheet_item_so_line_column()
+    ic = _cstr(row.get("item_code"))
+    so_val = _cstr(row.get(so_col_pt)) if so_col_pt else ""
+    if sheet_parent and ic:
+        filters = {"parent": sheet_parent, "item_code": ic}
+        if so_col_psi and so_val:
+            filters[so_col_psi] = so_val
+        candidates = frappe.get_all("Planning sheet Item", filters=filters, pluck="name", limit=2)
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
+def _force_sync_unit_both_planning_tables(item_doc, unit, plan_code=None):
+    """Guarantee Planning Table (board) + Planning sheet Item (legacy) share the same unit immediately."""
+    if not item_doc:
+        return None
+    board_name = _cstr(getattr(item_doc, "name", None) or (item_doc.get("name") if isinstance(item_doc, dict) else ""))
+    if not board_name or not frappe.db.exists("Planning Table", board_name):
+        return None
+
+    norm_unit = normalize_planning_unit_for_select(unit)
+    plan_code = _cstr(plan_code).strip() or None
+
+    pt_updates = {"unit": norm_unit}
+    if frappe.db.has_column("Planning Table", "allocated_to_unit"):
+        pt_updates["allocated_to_unit"] = norm_unit
+    if plan_code:
+        if frappe.db.has_column("Planning Table", "custom_plan_code"):
+            pt_updates["custom_plan_code"] = plan_code
+        if frappe.db.has_column("Planning Table", "plan_name"):
+            pt_updates["plan_name"] = plan_code
+    set_clause = ", ".join([f"`{k}` = %s" for k in pt_updates.keys()])
+    frappe.db.sql(
+        f"UPDATE `tabPlanning Table` SET {set_clause} WHERE name = %s",
+        list(pt_updates.values()) + [board_name],
+    )
+
+    if not isinstance(item_doc, dict):
+        item_doc.unit = norm_unit
+
+    psi_name = _resolve_psi_for_board_row(item_doc)
+    if psi_name:
+        cur_src = frappe.db.get_value("Planning Table", board_name, "source_item")
+        if cur_src != psi_name:
+            frappe.db.set_value("Planning Table", board_name, "source_item", psi_name, update_modified=False)
+        _sync_legacy_planning_sheet_item_unit(psi_name, norm_unit, plan_code)
+    return psi_name
 
 
 def _legacy_psi_has_board_on_unit(sheet_parent, psi_name, target_unit):
@@ -19173,6 +19272,14 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
         frappe.db.commit()
     except Exception:
         frappe.log_error(frappe.get_traceback(), "merge reunited legacy PSI")
+
+    # Final guarantee: board row + legacy Planning sheet Item always show the same unit.
+    try:
+        _force_sync_unit_both_planning_tables(item_doc, unit, move_code)
+        _normalize_planning_sheet_workstation_units(item_doc.parent)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "force_sync_unit_both_planning_tables")
 
     # IDX shifting disabled to prevent child table corruption in Frappe.
     # Frappe requires idx to be unique per parent. Updating idx across multiple documents 
@@ -21416,6 +21523,17 @@ def update_item_unit(item_name, unit):
         or frappe.db.get_value("Planning sheet", item_doc.parent, "ordered_date")
     )
     _move_item_to_slot(item_doc, unit, eff_date)
+    try:
+        move_code = generate_plan_code(
+            eff_date,
+            normalize_planning_unit_for_select(unit),
+            (frappe.db.get_value("Planning sheet", item_doc.parent, "custom_plan_name") or "Default"),
+        )
+        _force_sync_unit_both_planning_tables(item_doc, unit, move_code)
+        _normalize_planning_sheet_workstation_units(item_doc.parent)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "update_item_unit:force_sync")
     return {"status": "success"}
 
 
@@ -22824,7 +22942,15 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
                 WHERE name = %s
             """, (target_sheet.name, new_idx, new_unit, pt_pf, item_doc.name))
 
-            _sync_legacy_planning_sheet_item_unit(item_doc.get("source_item"), new_unit)
+            try:
+                move_code = generate_plan_code(
+                    target_date,
+                    normalize_planning_unit_for_select(new_unit),
+                    (target_sheet.get("custom_plan_name") or plan_name or "Default"),
+                )
+                _force_sync_unit_both_planning_tables(item_doc, new_unit, move_code)
+            except Exception:
+                frappe.log_error(frappe.get_traceback(), "move_orders_to_date:force_sync_unit")
 
             count = int(count) + 1
         
