@@ -363,6 +363,9 @@ function spr_apply_items_grid_columns(frm, force) {
 	}
 	const cfg = spr_get_items_list_view_config(frm);
 	spr_apply_grid_visible_columns(frm, 'items', cfg.show || [], force);
+	if (force) {
+		spr_force_grid_realign(frm, 'items');
+	}
 }
 
 /** Emergency: clear hidden flags on all item grid fields (recover from bad column apply). */

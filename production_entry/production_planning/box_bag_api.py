@@ -113,7 +113,7 @@ def _parse_box_bag_item_code(item_code):
 	result = {
 		"design_code": "",
 		"bag_size_id": "",
-		"process": "221",
+		"process": "",
 		"quality_letter": "",
 		"colour_code": "",
 		"fabric_gsm": 0,
@@ -125,6 +125,12 @@ def _parse_box_bag_item_code(item_code):
 	}
 	ic = str(item_code or "").strip()
 	if not ic:
+		return result
+
+	# Box bag codes always have the form DESIGN-BAGSIZE-PROC… (at least one hyphen).
+	# A hyphen-free item code (e.g. pure-numeric fabric code like 1001032210851600) can
+	# never be a box bag — bail out early to avoid false substring matches of "221"/"224".
+	if "-" not in ic:
 		return result
 
 	parts = ic.split("-")
