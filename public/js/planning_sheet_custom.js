@@ -1,8 +1,67 @@
 // Planning Sheet Custom Script - Display customer name instead of ID
 
+const process_fields_map = {
+    '100': [
+        'item_code', 'item_name', 'qty', 'uom', 'quality', 'color', 
+        'gsm', 'meter', 'meter_per_roll', 'no_of_rolls', 'unit', 
+        'order_sheet', 'spr_name', 'work_order'
+    ],
+    '104': [],
+    '105': []
+};
+
+const core_fields = new Set(['item_code', 'item_name', 'qty', 'uom', 'unit']);
+
+function apply_process_code_visibility(frm) {
+    let active_process_codes = new Set();
+    
+    (frm.doc.items || []).forEach(row => {
+        if (row.item_code && row.item_code.length >= 3) {
+            active_process_codes.add(row.item_code.substring(0, 3));
+        }
+    });
+    (frm.doc.planned_items || []).forEach(row => {
+        if (row.item_code && row.item_code.length >= 3) {
+            active_process_codes.add(row.item_code.substring(0, 3));
+        }
+    });
+
+    let fields_to_show = new Set();
+    active_process_codes.forEach(code => {
+        if (process_fields_map[code]) {
+            process_fields_map[code].forEach(f => fields_to_show.add(f));
+        }
+    });
+
+    let all_managed_fields = new Set();
+    Object.values(process_fields_map).forEach(fields_array => {
+        fields_array.forEach(f => {
+            if (!core_fields.has(f)) {
+                all_managed_fields.add(f);
+            }
+        });
+    });
+
+    ['items', 'planned_items'].forEach(table_fieldname => {
+        let grid = frm.fields_dict[table_fieldname] && frm.fields_dict[table_fieldname].grid;
+        if (!grid) return;
+        
+        all_managed_fields.forEach(fieldname => {
+            let df = frappe.meta.get_docfield(grid.doctype, fieldname, frm.doc.name);
+            if (df) {
+                let is_hidden = fields_to_show.has(fieldname) ? 0 : 1;
+                grid.update_docfield_property(fieldname, 'hidden', is_hidden);
+            }
+        });
+    });
+}
+
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
 // (avoids stale board grid until full reload).
 frappe.ui.form.on('Planning sheet Item', {
+    item_code: function(frm) {
+        apply_process_code_visibility(frm);
+    },
     unit: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
         const psi = (row.name || '').trim();
@@ -18,6 +77,9 @@ frappe.ui.form.on('Planning sheet Item', {
 });
 
 frappe.ui.form.on('Planning Table', {
+    item_code: function(frm) {
+        apply_process_code_visibility(frm);
+    },
     unit: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
         const si = (row.source_item || '').trim();
@@ -34,6 +96,7 @@ frappe.ui.form.on('Planning Table', {
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
+        apply_process_code_visibility(frm);
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',
@@ -125,6 +188,11 @@ frappe.ui.form.on('Planning sheet', {
             d.show();
         }, __('Actions'));
     },
+
+    items_add: function(frm) { apply_process_code_visibility(frm); },
+    items_remove: function(frm) { apply_process_code_visibility(frm); },
+    planned_items_add: function(frm) { apply_process_code_visibility(frm); },
+    planned_items_remove: function(frm) { apply_process_code_visibility(frm); },
 
     after_load: function(frm) {
         // Fetch and display customer name
