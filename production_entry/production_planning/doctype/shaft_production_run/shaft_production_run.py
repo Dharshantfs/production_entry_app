@@ -624,14 +624,53 @@ def _spr_company_rm_warehouse(company: str, wip_wh: str = "") -> str:
 	wip_wh = _cstr(wip_wh).strip()
 	if not company:
 		return ""
-	for pattern in ("%Raw Material%", "%Raw Materials%", "%RM Warehouse%", "%Stores%"):
-		wh = frappe.db.get_value(
-			"Warehouse",
-			{"company": company, "name": ["like", pattern], "is_group": 0},
-			"name",
-			order_by="modified desc",
-		)
-		wh = _cstr(wh).strip()
+	patterns = (
+		"%Raw Material%",
+		"%Raw Materials%",
+		"%RM Warehouse%",
+		"%Stores%",
+		"%Store%",
+		"%Material%",
+	)
+	for pattern in patterns:
+		for is_group in (0, 1):
+			wh = frappe.db.get_value(
+				"Warehouse",
+				{"company": company, "name": ["like", pattern], "is_group": is_group},
+				"name",
+				order_by="modified desc",
+			)
+			wh = _cstr(wh).strip()
+			if wh and wh != wip_wh and "work in progress" not in wh.lower():
+				if is_group:
+					leaf = frappe.db.get_value(
+						"Warehouse",
+						{"company": company, "parent_warehouse": wh, "is_group": 0},
+						"name",
+						order_by="modified desc",
+					)
+					leaf = _cstr(leaf).strip()
+					if leaf and leaf != wip_wh:
+						return leaf
+				else:
+					return wh
+	rows = frappe.db.sql(
+		"""
+		SELECT name
+		FROM `tabWarehouse`
+		WHERE company = %s
+		  AND IFNULL(is_group, 0) = 0
+		  AND IFNULL(name, '') != ''
+		  AND IFNULL(name, '') != %s
+		  AND LOWER(IFNULL(name, '')) NOT LIKE %s
+		ORDER BY modified DESC
+		LIMIT 20
+		""",
+		(company, wip_wh, "%work in progress%"),
+		as_dict=True,
+	)
+	for row in rows or []:
+		wh = _cstr(row.get("name")).strip()
 		if wh and wh != wip_wh:
 			return wh
 	return ""
@@ -3421,15 +3460,23 @@ class ShaftProductionRun(Document):
 		try:
 			se.flags.ignore_mandatory = True
 			se.flags.ignore_permissions = True
+			se.flags.ignore_validate = True
 			se.insert()
-			self._persist_stock_entry_spr_reference_db(se.name)
-			return _cstr(se.name)
+			name = _cstr(se.name)
+			self._persist_stock_entry_spr_reference_db(name)
+			# Commit immediately so draft survives frappe.throw rollback during SPR before_submit.
+			try:
+				frappe.db.commit()
+			except Exception:
+				pass
+			if name and frappe.db.exists("Stock Entry", name):
+				return name
 		except Exception:
 			frappe.log_error(
 				frappe.get_traceback(),
 				f"SPR shortage draft insert failed:{self.name}",
 			)
-			return ""
+		return ""
 
 	def _transfer_for_manufacture_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type for 'Material Transfer for Manufacture' purpose."""
@@ -3440,10 +3487,99 @@ class ShaftProductionRun(Document):
 		name = frappe.db.get_value("Stock Entry Type", {"purpose": "Material Transfer for Manufacture"}, "name")
 		return _cstr(name) if name else "Material Transfer for Manufacture"
 
+	def _reload_work_order_doc(self, wo_doc):
+		wo_name = _cstr(getattr(wo_doc, "name", None)).strip()
+		if not wo_name:
+			return wo_doc
+		try:
+			return frappe.get_doc("Work Order", wo_name)
+		except Exception:
+			return wo_doc
+
+	def _resolve_rm_source_warehouse_for_transfer(self, wo_doc, item_code: str, wip_wh: str) -> str:
+		"""RM store for MTFM lines (never WIP)."""
+		item_code = _cstr(item_code).strip()
+		wip_wh = _cstr(wip_wh).strip()
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)).strip()
+		company = _cstr(getattr(wo_doc, "company", None)).strip()
+		src = _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh)
+		if src and src != wip_wh:
+			return src
+		if raw_source_wh and raw_source_wh != wip_wh:
+			return raw_source_wh
+		co_rm = _spr_company_rm_warehouse(company, wip_wh)
+		if co_rm:
+			return co_rm
+		return ""
+
+	def _append_mtfm_shortage_lines(self, se, wo_doc, short_by_item: dict, wip_wh: str) -> int:
+		"""Append RM->WIP lines for shortage qty; returns count of lines added."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		wip_wh = _cstr(wip_wh).strip()
+		is_bag = spr_doc_is_bag_spr(self)
+		added = 0
+		for item_code, short_qty in sorted((short_by_item or {}).items()):
+			ic = _cstr(item_code).strip()
+			qty = _spr_round_rm_stock_qty(short_qty)
+			tol = _spr_rm_wip_shortage_tolerance(qty)
+			if not ic or qty <= tol:
+				continue
+			still = _spr_wo_rm_transfer_remaining(wo_doc, ic)
+			if still > tol:
+				qty = min(qty, _spr_round_rm_stock_qty(still))
+			elif is_bag and still <= tol:
+				continue
+			item_src = self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
+			if not item_src:
+				frappe.log_error(
+					_("No RM source warehouse for {0} on WO {1}").format(ic, getattr(wo_doc, "name", "")),
+					f"SPR MTFM draft no source:{self.name}",
+				)
+				continue
+			stock_uom = frappe.db.get_value("Item", ic, "stock_uom") or "Nos"
+			se.append(
+				"items",
+				{
+					"item_code": ic,
+					"s_warehouse": item_src,
+					"t_warehouse": wip_wh,
+					"uom": stock_uom,
+					"stock_uom": stock_uom,
+					"conversion_factor": 1.0,
+					"qty": qty,
+					"transfer_qty": qty,
+				},
+			)
+			added += 1
+		return added
+
+	def _new_mtfm_stock_entry_shell(self, wo_doc, chunk_total_qty: float, transfer_posting_date=None, transfer_posting_time=None):
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)) or ""
+		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
+		is_bag = spr_doc_is_bag_spr(self)
+		se = frappe.new_doc("Stock Entry")
+		se.company = wo_doc.company
+		se.posting_date = transfer_posting_date or today()
+		se.posting_time = transfer_posting_time or nowtime()
+		se.set_posting_time = 1
+		se.purpose = "Material Transfer for Manufacture"
+		se.stock_entry_type = self._transfer_for_manufacture_type_name()
+		se.work_order = wo_doc.name
+		se.production_item = wo_doc.production_item
+		se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
+		se.from_warehouse = None if is_bag else (raw_source_wh or None)
+		se.wip_warehouse = wip_wh
+		se.to_warehouse = wip_wh
+		self._set_stock_entry_spr_link(se)
+		return se, wip_wh
+
 	def _create_wip_shortage_transfer_draft(self, wo_doc, chunk_total_qty: float, shortages: list[tuple[str, str, float, float, float]]) -> str:
 		"""Create a draft Material Transfer for Manufacture for shortage items only."""
 		if not wo_doc or not shortages:
 			return ""
+		wo_doc = self._reload_work_order_doc(wo_doc)
 		is_bag = spr_doc_is_bag_spr(self)
 		# Use current day/time for shortage transfers to avoid backdated ledger insufficiency on old run dates.
 		transfer_posting_date = today()
@@ -3480,7 +3616,20 @@ class ShaftProductionRun(Document):
 			return ""
 
 		def _item_source_wh(item_code: str) -> str:
-			return _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh) or raw_source_wh
+			return self._resolve_rm_source_warehouse_for_transfer(wo_doc, item_code, wip_wh) or raw_source_wh
+
+		# Path 0 (preferred): WO required_items / RM warehouse map — reliable for PP, LD, fabric, etc.
+		try:
+			se0, _wip0 = self._new_mtfm_stock_entry_shell(
+				wo_doc, chunk_total_qty, transfer_posting_date, transfer_posting_time
+			)
+			se0.from_bom = 0
+			if self._append_mtfm_shortage_lines(se0, wo_doc, dict(short_by_item), wip_wh):
+				name = self._spr_insert_shortage_transfer_draft(se0)
+				if name:
+					return name
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (WO path) failed")
 
 		# Path A: BOM-driven draft (best when site config supports it)
 		try:
@@ -3530,51 +3679,11 @@ class ShaftProductionRun(Document):
 			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (BOM path) failed")
 
 		# Path B (fallback): manual rows directly from shortage map
-		se = frappe.new_doc("Stock Entry")
-		se.company = wo_doc.company
-		se.posting_date = transfer_posting_date
-		se.posting_time = transfer_posting_time
-		se.set_posting_time = 1
-		se.purpose = "Material Transfer for Manufacture"
-		se.stock_entry_type = self._transfer_for_manufacture_type_name()
-		se.work_order = wo_doc.name
-		se.production_item = wo_doc.production_item
-		se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
+		se, _wip_b = self._new_mtfm_stock_entry_shell(
+			wo_doc, chunk_total_qty, transfer_posting_date, transfer_posting_time
+		)
 		se.from_bom = 0
-		se.from_warehouse = None if is_bag else (raw_source_wh or None)
-		se.wip_warehouse = wip_wh
-		se.to_warehouse = wip_wh
-		self._set_stock_entry_spr_link(se)
-		for item_code, wh, _req, _avl, short_qty in shortages:
-			qty = flt(short_by_item.get(_cstr(item_code), short_qty))
-			if not item_code or qty <= 0:
-				continue
-			stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
-			item_src = _item_source_wh(item_code) or _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh)
-			if not item_src:
-				item_src = _spr_company_rm_warehouse(_cstr(getattr(wo_doc, "company", None)), wip_wh)
-			if not item_src:
-				item_src = raw_source_wh
-			if not item_src:
-				frappe.log_error(
-					_("No RM source warehouse for {0} on WO {1}").format(item_code, getattr(wo_doc, "name", "")),
-					"SPR shortage draft manual rows",
-				)
-				continue
-			se.append(
-				"items",
-				{
-					"item_code": item_code,
-					"s_warehouse": item_src,
-					"t_warehouse": wip_wh,
-					"uom": stock_uom,
-					"stock_uom": stock_uom,
-					"conversion_factor": 1.0,
-					"qty": qty,
-					"transfer_qty": qty,
-				},
-			)
-		if not se.items:
+		if not self._append_mtfm_shortage_lines(se, wo_doc, dict(short_by_item), wip_wh):
 			return ""
 		return self._spr_insert_shortage_transfer_draft(se)
 
@@ -3611,19 +3720,42 @@ class ShaftProductionRun(Document):
 		for event in shortage_events or []:
 			wo_doc = event.get("wo_doc")
 			if wo_doc and not primary_wo_doc:
-				primary_wo_doc = wo_doc
+				primary_wo_doc = self._reload_work_order_doc(wo_doc)
 			chunk_max = max(chunk_max, flt(event.get("chunk_total_qty")))
 			for item_code, wh, req, avl, short_qty in event.get("shortages") or []:
 				ic = _cstr(item_code).strip()
 				if not ic or not wo_doc or flt(short_qty) <= 0:
 					continue
 				short_map[ic] += flt(short_qty)
-				item_wo[ic] = wo_doc
+				item_wo[ic] = self._reload_work_order_doc(wo_doc)
 				if ic not in item_meta:
 					item_meta[ic] = (_cstr(wh), flt(req), flt(avl))
 
 		if not short_map or not primary_wo_doc:
 			return ""
+
+		# Combined manual STE: all shortage RM lines in one draft (PP + LD + fabric, etc.).
+		try:
+			se, wip_wh = self._new_mtfm_stock_entry_shell(
+				primary_wo_doc, chunk_max if chunk_max > 0 else 1.0
+			)
+			se.from_bom = 0
+			per_wo_short: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+			for ic, qty in short_map.items():
+				wo_for_ic = item_wo.get(ic) or primary_wo_doc
+				wo_key = _cstr(getattr(wo_for_ic, "name", None)).strip() or "__primary__"
+				per_wo_short[wo_key][ic] += flt(qty)
+			added_total = 0
+			for _wo_key, ic_map in per_wo_short.items():
+				sample_ic = next(iter(ic_map.keys()), "")
+				wo_ref = item_wo.get(sample_ic) or primary_wo_doc
+				added_total += self._append_mtfm_shortage_lines(se, wo_ref, dict(ic_map), wip_wh)
+			if added_total > 0:
+				name = self._spr_insert_shortage_transfer_draft(se)
+				if name:
+					return name
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR combined MTFM draft:{self.name}")
 
 		agg_shortages = [
 			(ic, item_meta[ic][0], item_meta[ic][1], item_meta[ic][2], short_map[ic])
@@ -3781,6 +3913,8 @@ class ShaftProductionRun(Document):
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR combined shortage draft:{self.name}")
 			transfer_name = ""
+		if not transfer_name:
+			transfer_name = self._find_open_spr_shortage_transfer_draft()
 
 		if transfer_name:
 			try:
