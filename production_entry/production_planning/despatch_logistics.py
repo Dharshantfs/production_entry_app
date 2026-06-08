@@ -30,6 +30,9 @@ from production_entry.production_planning.transfer_logistics import (
 
 DESPATCH_APPROVER_ROLES = frozenset({"System Manager", "Manufacturing Manager", "Administrator"})
 DESPATCH_PENDING_ARRANGEMENT_HISTORY_KEY = "despatch_pending_arrangement_history"
+DESPATCH_APPROVED_ARRANGEMENT_HISTORY_KEY = "despatch_approved_arrangement_history"
+DESPATCH_QUEUE_DEFAULTS_PENDING = "despatch_queue_pending"
+DESPATCH_QUEUE_DEFAULTS_APPROVED = "despatch_queue_approved"
 
 
 def _user_can_approve_despatch():
@@ -91,6 +94,181 @@ def _save_despatch_pending_arrangement_history(from_company, snapshot):
 	frappe.defaults.set_global_default(key, json.dumps(history))
 
 
+def _despatch_queue_defaults_key(from_company, scope):
+	prefix = DESPATCH_QUEUE_DEFAULTS_PENDING if scope == "pending" else DESPATCH_QUEUE_DEFAULTS_APPROVED
+	return f"{prefix}::{_cstr(from_company)}"
+
+
+def _load_despatch_queue_from_defaults(from_company, scope):
+	raw = frappe.defaults.get_global_default(_despatch_queue_defaults_key(from_company, scope)) or "[]"
+	try:
+		arr = json.loads(raw) if isinstance(raw, str) else (raw or [])
+		return [n for n in arr if _cstr(n)]
+	except Exception:
+		return []
+
+
+def _save_despatch_queue_to_defaults(from_company, scope, approval_names):
+	names = [n for n in (approval_names or []) if _cstr(n)]
+	frappe.defaults.set_global_default(
+		_despatch_queue_defaults_key(from_company, scope),
+		json.dumps(names),
+	)
+
+
+def _order_approval_cards(cards, from_company, scope):
+	"""Apply saved queue order (defaults + DB queue_idx fallback)."""
+	items = list(cards or [])
+	if not items:
+		return items
+	saved = _load_despatch_queue_from_defaults(from_company, scope)
+	if saved:
+		by_name = {c["name"]: c for c in items}
+		ordered = [by_name[n] for n in saved if n in by_name]
+		tail = [c for c in items if c["name"] not in saved]
+		return ordered + tail
+	items.sort(
+		key=lambda a: (
+			cint(a.get("queue_idx") or 0) or 9999,
+			_cstr(a.get("creation")),
+		)
+	)
+	return items
+
+
+def _despatch_status_blocks_request(status):
+	st = _cstr(status).strip().lower()
+	if not st:
+		return False
+	if st == "rejected":
+		return False
+	if st in {"pending approval", "approved", "draft", "draft dn", "despatched"}:
+		return True
+	return False
+
+
+def _sync_psi_despatch_fields(pt_name, updates):
+	if not updates or not frappe.db.table_exists("Planning sheet Item"):
+		return
+	pt = frappe.db.get_value(
+		"Planning Table",
+		pt_name,
+		["item_code", "sales_order_item", "so_item", "parent", "source_item"],
+		as_dict=True,
+	)
+	if not pt:
+		return
+	psi = _cstr(pt.get("source_item"))
+	if not psi or not frappe.db.exists("Planning sheet Item", psi):
+		soik = _cstr(pt.get("sales_order_item") or pt.get("so_item"))
+		filters = {"parent": pt.parent, "item_code": pt.item_code}
+		if soik and frappe.db.has_column("Planning sheet Item", "sales_order_item"):
+			filters["sales_order_item"] = soik
+		elif soik and frappe.db.has_column("Planning sheet Item", "so_item"):
+			filters["so_item"] = soik
+		psi = frappe.db.get_value("Planning sheet Item", filters, "name")
+	if psi:
+		frappe.db.set_value("Planning sheet Item", psi, updates, update_modified=False)
+
+
+def update_planning_row_despatch_status(ptr):
+	"""Mirror active despatch approval state onto Planning Table + Planning sheet Item."""
+	ptr = _cstr(ptr)
+	if not ptr or not frappe.db.exists("Planning Table", ptr):
+		return
+	rows = frappe.db.sql(
+		"""
+		select da.name, da.status, da.delivery_note
+		from `tabDespatch Approval Line` dl
+		inner join `tabDespatch Approval` da on da.name = dl.parent
+		where dl.planning_table_row = %s and ifnull(da.status, '') != 'Rejected'
+		group by da.name, da.status, da.delivery_note
+		order by da.modified desc
+		""",
+		ptr,
+		as_dict=1,
+	)
+	if not rows:
+		updates = {"custom_despatch_status": "", "custom_despatch_approval": ""}
+	else:
+		statuses = [_cstr(r.get("status")) for r in rows]
+		approval = _cstr(rows[0].get("name"))
+		if any(s in ("Pending Approval", "Draft") for s in statuses):
+			final_status = "Pending Approval"
+			for r in rows:
+				if r.get("status") in ("Pending Approval", "Draft"):
+					approval = _cstr(r.get("name"))
+					break
+		elif any(s == "Approved" for s in statuses):
+			final_status = "Approved"
+			for r in rows:
+				if r.get("status") == "Approved":
+					approval = _cstr(r.get("name"))
+					dn = _cstr(r.get("delivery_note"))
+					if dn and frappe.db.exists("Delivery Note", dn):
+						ds = cint(frappe.db.get_value("Delivery Note", dn, "docstatus") or 0)
+						if ds >= 1:
+							final_status = "Despatched"
+					break
+		else:
+			final_status = statuses[0] or ""
+		updates = {"custom_despatch_status": final_status, "custom_despatch_approval": approval}
+	if frappe.db.has_column("Planning Table", "custom_despatch_status"):
+		frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
+	_sync_psi_despatch_fields(ptr, updates)
+
+
+def _resolved_planning_row_despatch_status(ptr, fallback_status=""):
+	ptr = _cstr(ptr)
+	if not ptr or not frappe.db.has_column("Planning Table", "custom_despatch_status"):
+		return _cstr(fallback_status)
+	row = frappe.db.get_value(
+		"Planning Table",
+		ptr,
+		["custom_despatch_status", "custom_despatch_approval"],
+		as_dict=True,
+	)
+	if not row:
+		return _cstr(fallback_status)
+	status = _cstr(row.get("custom_despatch_status") or fallback_status)
+	if not status:
+		live_rows = frappe.db.sql(
+			"""
+			select da.status
+			from `tabDespatch Approval Line` dl
+			inner join `tabDespatch Approval` da on da.name = dl.parent
+			where dl.planning_table_row = %s and ifnull(da.status, '') != 'Rejected'
+			order by da.modified desc
+			limit 1
+			""",
+			ptr,
+			as_dict=1,
+		)
+		if live_rows:
+			update_planning_row_despatch_status(ptr)
+			status = _cstr(
+				frappe.db.get_value("Planning Table", ptr, "custom_despatch_status") or live_rows[0].get("status")
+			)
+	approval = _cstr(row.get("custom_despatch_approval"))
+	if approval and frappe.db.exists("Despatch Approval", approval):
+		live = _cstr(frappe.db.get_value("Despatch Approval", approval, "status"))
+		if live == "Rejected":
+			update_planning_row_despatch_status(ptr)
+			return _cstr(
+				frappe.db.get_value("Planning Table", ptr, "custom_despatch_status") or ""
+			)
+		if live and live != status:
+			status = live
+	return status
+
+
+def _stamp_planning_rows_for_despatch_request(approval_name):
+	da = frappe.get_doc("Despatch Approval", approval_name)
+	for ln in da.lines or []:
+		if ln.planning_table_row:
+			update_planning_row_despatch_status(ln.planning_table_row)
+
+
 def _pending_approval_names_sorted(from_company):
 	qf = _despatch_approval_queue_fieldname()
 	fields = ["name", "status", "creation"]
@@ -129,6 +307,48 @@ def _apply_despatch_pending_queue(from_company, approval_names):
 			continue
 		frappe.db.set_value("Despatch Approval", name, qf, idx, update_modified=False)
 		updated += 1
+	_save_despatch_queue_to_defaults(fc, "pending", names)
+	frappe.db.commit()
+	return updated
+
+
+def _approved_approval_names_sorted(from_company):
+	qf = _despatch_approval_queue_fieldname()
+	fields = ["name", "status", "creation"]
+	if qf:
+		fields.append(qf)
+	rows = frappe.get_all(
+		"Despatch Approval",
+		filters={"from_company": _cstr(from_company), "status": "Approved"},
+		fields=fields,
+		order_by="modified desc",
+		limit_page_length=200,
+	)
+	rows.sort(
+		key=lambda a: (
+			cint(a.get(qf) or 0) or 9999 if qf else 9999,
+			_cstr(a.get("creation")),
+		)
+	)
+	return [_cstr(r.name) for r in rows if _cstr(r.name)]
+
+
+def _apply_despatch_approved_queue(from_company, approval_names):
+	qf = _despatch_approval_queue_fieldname()
+	fc = _cstr(from_company)
+	names = [n for n in (approval_names or []) if _cstr(n)]
+	updated = 0
+	for idx, name in enumerate(names, start=1):
+		if not frappe.db.exists("Despatch Approval", name):
+			continue
+		if _cstr(frappe.db.get_value("Despatch Approval", name, "status")) != "Approved":
+			continue
+		if fc and _cstr(frappe.db.get_value("Despatch Approval", name, "from_company")) != fc:
+			continue
+		if qf:
+			frappe.db.set_value("Despatch Approval", name, qf, idx, update_modified=False)
+		updated += 1
+	_save_despatch_queue_to_defaults(fc, "approved", names)
 	frappe.db.commit()
 	return updated
 
@@ -237,12 +457,7 @@ def get_despatch_company_cards(
 				}
 			)
 		pending = [a for a in enriched if a["status"] in ("Pending Approval", "Draft")]
-		pending.sort(
-			key=lambda a: (
-				cint(a.get("queue_idx") or 0) or 9999,
-				_cstr(a.get("creation")),
-			)
-		)
+		pending = _order_approval_cards(pending, name, "pending")
 		approved_ready_dn = [
 			a
 			for a in enriched
@@ -251,6 +466,7 @@ def get_despatch_company_cards(
 		]
 		despatched = [a for a in enriched if a.get("card_status") == "Despatched"]
 		approved_on_card = [a for a in enriched if a["status"] == "Approved"]
+		approved_on_card = _order_approval_cards(approved_on_card, name, "approved")
 		out.append(
 			{
 				"company": name,
@@ -296,15 +512,22 @@ def get_despatch_eligible_rows(
 			continue
 		spr = _cstr(r.get("spr_name"))
 		spr_ds = cint(r.get("spr_docstatus") or 0)
+		ptr = _cstr(r.get("itemName") or r.get("name"))
+		despatch_status = _resolved_planning_row_despatch_status(
+			ptr, _cstr(r.get("custom_despatch_status") or r.get("despatch_status"))
+		)
 		can = bool(spr and spr_ds == 1)
 		block = ""
 		if not spr:
 			block = _("No SPR linked")
 		elif spr_ds != 1:
 			block = _("SPR must be submitted")
+		elif _despatch_status_blocks_request(despatch_status):
+			can = False
+			block = despatch_status or _("Despatch approval in progress")
 		out.append(
 			{
-				"planning_table_row": r.get("itemName") or r.get("name"),
+				"planning_table_row": ptr,
 				"planning_sheet": r.get("planningSheet"),
 				"party_code": r.get("partyCode"),
 				"customer_name": r.get("customer_name") or r.get("customer"),
@@ -316,6 +539,7 @@ def get_despatch_eligible_rows(
 				"spr_docstatus": spr_ds,
 				"can_despatch": can,
 				"despatch_block_reason": block,
+				"despatch_status": despatch_status,
 				"movement_type": mt,
 			}
 		)
@@ -392,6 +616,14 @@ def create_despatch_approval_request(from_company=None, lines=None):
 
 	for line in parsed:
 		ptr = _cstr(line.get("planning_table_row"))
+		if ptr and not ptr.startswith("sprgrp:"):
+			st = _resolved_planning_row_despatch_status(ptr, "")
+			if _despatch_status_blocks_request(st):
+				frappe.throw(
+					_("Row {0} already has despatch status: {1}. Reject the approval to request again.").format(
+						ptr, st
+					)
+				)
 		bn = _cstr(line.get("batch_no"))
 		if not bn:
 			frappe.throw(_("Batch is required for each line."))
@@ -419,6 +651,7 @@ def create_despatch_approval_request(from_company=None, lines=None):
 			},
 		)
 	doc.insert(ignore_permissions=True)
+	_stamp_planning_rows_for_despatch_request(doc.name)
 	frappe.db.commit()
 	return {"ok": True, "name": doc.name, "status": doc.status}
 
@@ -558,6 +791,7 @@ def approve_despatch_approval(name=None):
 	da.status = "Approved"
 	da.approved_by = frappe.session.user
 	da.save(ignore_permissions=True)
+	_stamp_planning_rows_for_despatch_request(da.name)
 	frappe.db.commit()
 	return {"ok": True, "name": name, "delivery_note": da.delivery_note}
 
@@ -570,6 +804,7 @@ def reject_despatch_approval(name=None):
 	da.status = "Rejected"
 	da.approved_by = frappe.session.user
 	da.save(ignore_permissions=True)
+	_stamp_planning_rows_for_despatch_request(da.name)
 	frappe.db.commit()
 	return {"ok": True, "name": name}
 
@@ -627,6 +862,70 @@ def restore_despatch_pending_arrangement(from_company=None):
 	)
 	names = last.get("approval_names") or []
 	updated = _apply_despatch_pending_queue(fc, names)
+	return {"updated": updated, "from_company": fc, "approval_names": names}
+
+
+def _despatch_approved_arrangement_history_key(from_company):
+	return f"{DESPATCH_APPROVED_ARRANGEMENT_HISTORY_KEY}::{_cstr(from_company)}"
+
+
+def _load_despatch_approved_arrangement_history(from_company):
+	raw = frappe.defaults.get_global_default(_despatch_approved_arrangement_history_key(from_company)) or "[]"
+	try:
+		arr = json.loads(raw) if isinstance(raw, str) else (raw or [])
+		return arr if isinstance(arr, list) else []
+	except Exception:
+		return []
+
+
+def _save_despatch_approved_arrangement_history(from_company, snapshot):
+	history = _load_despatch_approved_arrangement_history(from_company)
+	history.append(snapshot)
+	if len(history) > 20:
+		history = history[-20:]
+	frappe.defaults.set_global_default(
+		_despatch_approved_arrangement_history_key(from_company),
+		json.dumps(history),
+	)
+
+
+@frappe.whitelist()
+def save_despatch_approved_arrangement(from_company=None, approval_names=None):
+	"""Save approved despatch delivery queue order."""
+	fc = _cstr(from_company)
+	if not fc:
+		frappe.throw(_("From company is required."))
+	if isinstance(approval_names, str):
+		try:
+			approval_names = json.loads(approval_names)
+		except Exception:
+			approval_names = [s.strip() for s in approval_names.split(",") if s.strip()]
+	names = [n for n in (approval_names or []) if _cstr(n)]
+	current = _approved_approval_names_sorted(fc)
+	if current:
+		_save_despatch_approved_arrangement_history(
+			fc,
+			{"approval_names": current, "saved_at": _cstr(now_datetime())},
+		)
+	updated = _apply_despatch_approved_queue(fc, names)
+	return {"updated": updated, "from_company": fc, "approval_names": names}
+
+
+@frappe.whitelist()
+def restore_despatch_approved_arrangement(from_company=None):
+	fc = _cstr(from_company)
+	if not fc:
+		frappe.throw(_("From company is required."))
+	history = _load_despatch_approved_arrangement_history(fc)
+	if not history:
+		frappe.throw(_("No previous arrangement to restore."))
+	last = history.pop()
+	frappe.defaults.set_global_default(
+		_despatch_approved_arrangement_history_key(fc),
+		json.dumps(history),
+	)
+	names = last.get("approval_names") or []
+	updated = _apply_despatch_approved_queue(fc, names)
 	return {"updated": updated, "from_company": fc, "approval_names": names}
 
 

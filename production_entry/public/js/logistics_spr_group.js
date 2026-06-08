@@ -41,10 +41,10 @@ export function groupRowsBySpr(rawRows) {
 		const itemCodes = [...new Set(members.map((m) => String(m.item_code || "").trim()).filter(Boolean))];
 		const canTransfer = members.every((m) => m.can_transfer);
 		const canDespatch = members.every((m) => m.can_despatch);
-		const blockReason =
-			members.find((m) => m.transfer_block_reason)?.transfer_block_reason ||
-			members.find((m) => m.despatch_block_reason)?.despatch_block_reason ||
-			"";
+		const blockedTransfer = members.find((m) => !m.can_transfer);
+		const blockedDespatch = members.find((m) => !m.can_despatch);
+		const despatchStatus =
+			members.map((m) => String(m.despatch_status || "").trim()).find(Boolean) || "";
 		out.push({
 			...lead,
 			_isSprGroup: true,
@@ -56,8 +56,10 @@ export function groupRowsBySpr(rawRows) {
 			item_count: itemCodes.length,
 			can_transfer: canTransfer,
 			can_despatch: canDespatch,
-			transfer_block_reason: canTransfer ? "" : blockReason,
-			despatch_block_reason: canDespatch ? "" : blockReason,
+			despatch_status: despatchStatus,
+			transfer_block_reason: blockedTransfer?.transfer_block_reason || "",
+			despatch_block_reason:
+				blockedDespatch?.despatch_block_reason || blockedDespatch?.despatch_status || despatchStatus || "",
 		});
 	});
 	singles.forEach((r) => out.push(r));

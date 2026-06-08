@@ -211,10 +211,16 @@ function batchSummary(row) {
 }
 
 function statusLabel(row) {
-  return row.can_despatch ? "Ready" : row.despatch_block_reason || "Blocked";
+  const st = String(row.despatch_status || "").trim();
+  if (st) return st;
+  if (!row.can_despatch) return row.despatch_block_reason || "Blocked";
+  return "Ready";
 }
 
 function statusClass(row) {
+  const st = String(row.despatch_status || "").toLowerCase();
+  if (st === "pending approval" || st === "draft") return "tl-warn";
+  if (st === "approved" || st === "despatched" || st === "draft dn") return "tl-transferred";
   return row.can_despatch ? "tl-ok" : "tl-block";
 }
 

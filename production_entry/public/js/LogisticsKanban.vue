@@ -168,37 +168,26 @@
           <div v-if="pendingListFor(card).length" class="lk-history-panel">
             <div class="lk-history-head lk-history-head-arrange">
               <span>Pending approval</span>
-              <span class="lk-history-hint">Drag to set delivery priority</span>
+              <span class="lk-history-hint">Drag to set delivery priority — saves automatically</span>
               <div class="lk-arrange-btns">
-                <button type="button" class="cc-clear-btn lk-arrange-btn" @click.stop="toggleDespatchArrangementLock">
-                  {{ despatchArrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}
+                <button type="button" class="lk-arrange-btn lk-arrange-btn-lock" @click.stop="toggleDespatchArrangementLock">
+                  {{ despatchArrangementLocked ? "🔒 Lock Arrangment" : "🔓 Unlock Arrangment" }}
                 </button>
-                <button type="button" class="cc-clear-btn lk-arrange-btn" @click.stop="saveDespatchArrangement(card)">
-                  Save Arrangment
+                <button type="button" class="lk-arrange-btn lk-arrange-btn-save" @click.stop="saveDespatchArrangement(card)">
+                  💾 Save Arrangment
                 </button>
-                <button type="button" class="cc-clear-btn lk-arrange-btn" @click.stop="restoreDespatchArrangement(card)">
-                  Restore Arrangment
+                <button type="button" class="lk-arrange-btn lk-arrange-btn-restore" @click.stop="restoreDespatchArrangement(card)">
+                  ↩ Restore Arrangment
                 </button>
               </div>
             </div>
-            <div
-              class="lk-history-list"
-              @dragover.prevent
-              @drop.prevent="onDespatchPendingDrop(card)"
-            >
+            <div class="lk-history-list" :data-lk-pending-list="card.company">
               <div
                 v-for="da in pendingListFor(card)"
                 :key="da.name"
                 class="lk-history-chip is-pending"
-                :class="{
-                  'is-drag-over': dragOverDespatchName === da.name,
-                  'is-draggable': !despatchArrangementLocked,
-                }"
-                :draggable="!despatchArrangementLocked"
-                @dragstart="onDespatchPendingDragStart(card, da, $event)"
-                @dragover.prevent="onDespatchPendingDragOver(da)"
-                @dragleave="onDespatchPendingDragLeave(da)"
-                @dragend="onDespatchPendingDragEnd"
+                :class="{ 'is-draggable': !despatchArrangementLocked }"
+                :data-approval-name="da.name"
                 @click.stop="openDespatchApproval(da.name)"
               >
                 <span v-if="!despatchArrangementLocked" class="lk-drag-grip" title="Drag to reorder">⋮⋮</span>
@@ -215,17 +204,33 @@
             </div>
           </div>
 
-          <div v-if="card.approved_approvals?.length" class="lk-history-panel">
-            <div class="lk-history-head">Approved despatch</div>
-            <div class="lk-history-list">
+          <div v-if="approvedListFor(card).length" class="lk-history-panel">
+            <div class="lk-history-head lk-history-head-arrange">
+              <span>Approved despatch</span>
+              <span class="lk-history-hint">Drag to set delivery queue — saves automatically</span>
+              <div class="lk-arrange-btns">
+                <button type="button" class="lk-arrange-btn lk-arrange-btn-lock" @click.stop="toggleApprovedArrangementLock">
+                  {{ approvedArrangementLocked ? "🔒 Lock Arrangment" : "🔓 Unlock Arrangment" }}
+                </button>
+                <button type="button" class="lk-arrange-btn lk-arrange-btn-save" @click.stop="saveApprovedArrangement(card)">
+                  💾 Save Arrangment
+                </button>
+                <button type="button" class="lk-arrange-btn lk-arrange-btn-restore" @click.stop="restoreApprovedArrangement(card)">
+                  ↩ Restore Arrangment
+                </button>
+              </div>
+            </div>
+            <div class="lk-history-list lk-approved-sort-list" :data-lk-approved-list="card.company">
               <div
-                v-for="da in card.approved_approvals"
+                v-for="da in approvedListFor(card)"
                 :key="'a-' + da.name"
                 class="lk-da-card"
+                :data-approval-name="da.name"
                 :class="despatchCardClass(da)"
                 @click.stop="openDespatchApproval(da.name)"
               >
                 <div class="lk-da-top">
+                  <span v-if="!approvedArrangementLocked" class="lk-drag-grip lk-drag-grip-approved" title="Drag to reorder">⋮⋮</span>
                   <span class="lk-da-badge">{{ despatchCardBadge(da) }}</span>
                   <span class="lk-da-id">{{ da.name }}</span>
                 </div>
@@ -288,7 +293,8 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { onMounted, onUnmounted, ref, watch, nextTick } from "vue";
+import Sortable from "sortablejs";
 import TransferDialog from "./TransferDialog.vue";
 import DespatchDialog from "./DespatchDialog.vue";
 
@@ -316,10 +322,12 @@ const dragLane = ref(null);
 const dragSte = ref(null);
 const dragOverSteName = ref("");
 const pendingOrderByCompany = ref({});
+const approvedOrderByCompany = ref({});
 const despatchArrangementLocked = ref(true);
-const dragDespatchCard = ref(null);
-const dragDespatchApproval = ref(null);
-const dragOverDespatchName = ref("");
+const approvedArrangementLocked = ref(true);
+const despatchSortableBusy = ref(false);
+const pendingSortables = [];
+const approvedSortables = [];
 let refreshTimer = null;
 
 function initWeekMonth() {
@@ -498,11 +506,21 @@ function goDespatchApprovals() {
 }
 
 function syncPendingOrderFromCards(cards) {
+  if (despatchSortableBusy.value) return;
   const map = { ...(pendingOrderByCompany.value || {}) };
   (cards || []).forEach((card) => {
     map[card.company] = [...(card.pending_approvals || [])];
   });
   pendingOrderByCompany.value = map;
+}
+
+function syncApprovedOrderFromCards(cards) {
+  if (despatchSortableBusy.value) return;
+  const map = { ...(approvedOrderByCompany.value || {}) };
+  (cards || []).forEach((card) => {
+    map[card.company] = [...(card.approved_approvals || [])];
+  });
+  approvedOrderByCompany.value = map;
 }
 
 function pendingListFor(card) {
@@ -511,75 +529,132 @@ function pendingListFor(card) {
   return card.pending_approvals || [];
 }
 
+function approvedListFor(card) {
+  const list = approvedOrderByCompany.value[card.company];
+  if (Array.isArray(list) && list.length) return list;
+  return card.approved_approvals || [];
+}
+
+function reorderCardsFromDom(container, card, scope) {
+  const names = [...container.querySelectorAll("[data-approval-name]")].map((el) => el.dataset.approvalName);
+  const source = scope === "pending" ? pendingListFor(card) : approvedListFor(card);
+  const byName = Object.fromEntries(source.map((a) => [a.name, a]));
+  const ordered = names.map((n) => byName[n]).filter(Boolean);
+  if (scope === "pending") {
+    pendingOrderByCompany.value = { ...pendingOrderByCompany.value, [card.company]: ordered };
+  } else {
+    approvedOrderByCompany.value = { ...approvedOrderByCompany.value, [card.company]: ordered };
+  }
+  return names;
+}
+
+function destroyDespatchSortables() {
+  [...pendingSortables, ...approvedSortables].forEach((s) => {
+    try {
+      s.destroy();
+    } catch (e) {}
+  });
+  pendingSortables.length = 0;
+  approvedSortables.length = 0;
+}
+
+async function persistPendingOrder(card, names) {
+  if (!names?.length) return;
+  await frappe.call({
+    method: `${DESPATCH_API}.save_despatch_pending_arrangement`,
+    args: { from_company: card.company, approval_names: JSON.stringify(names) },
+  });
+}
+
+async function persistApprovedOrder(card, names) {
+  if (!names?.length) return;
+  await frappe.call({
+    method: `${DESPATCH_API}.save_despatch_approved_arrangement`,
+    args: { from_company: card.company, approval_names: JSON.stringify(names) },
+  });
+}
+
+async function initDespatchSortables() {
+  await nextTick();
+  destroyDespatchSortables();
+  if (mode.value !== "despatch") return;
+
+  document.querySelectorAll("[data-lk-pending-list]").forEach((el) => {
+    const company = el.dataset.lkPendingList;
+    const card = despatchCards.value.find((c) => c.company === company);
+    if (!card) return;
+    const s = new Sortable(el, {
+      animation: 180,
+      handle: ".lk-drag-grip",
+      draggable: ".lk-history-chip",
+      disabled: despatchArrangementLocked.value,
+      ghostClass: "lk-sort-ghost",
+      onStart() {
+        despatchSortableBusy.value = true;
+      },
+      onEnd: async () => {
+        try {
+          const names = reorderCardsFromDom(el, card, "pending");
+          await persistPendingOrder(card, names);
+          frappe.show_alert({ message: __("Pending priority saved"), indicator: "green" });
+        } catch (e) {
+          frappe.show_alert({ message: __("Could not save priority"), indicator: "red" });
+        } finally {
+          despatchSortableBusy.value = false;
+        }
+      },
+    });
+    pendingSortables.push(s);
+  });
+
+  document.querySelectorAll("[data-lk-approved-list]").forEach((el) => {
+    const company = el.dataset.lkApprovedList;
+    const card = despatchCards.value.find((c) => c.company === company);
+    if (!card) return;
+    const s = new Sortable(el, {
+      animation: 180,
+      handle: ".lk-drag-grip-approved",
+      draggable: ".lk-da-card",
+      disabled: approvedArrangementLocked.value,
+      ghostClass: "lk-sort-ghost",
+      onStart() {
+        despatchSortableBusy.value = true;
+      },
+      onEnd: async () => {
+        try {
+          const names = reorderCardsFromDom(el, card, "approved");
+          await persistApprovedOrder(card, names);
+          frappe.show_alert({ message: __("Approved queue saved"), indicator: "green" });
+        } catch (e) {
+          frappe.show_alert({ message: __("Could not save queue"), indicator: "red" });
+        } finally {
+          despatchSortableBusy.value = false;
+        }
+      },
+    });
+    approvedSortables.push(s);
+  });
+}
+
 function toggleDespatchArrangementLock() {
   despatchArrangementLocked.value = !despatchArrangementLocked.value;
+  pendingSortables.forEach((s) => {
+    s.option("disabled", despatchArrangementLocked.value);
+  });
 }
 
-function onDespatchPendingDragStart(card, da, ev) {
-  if (despatchArrangementLocked.value) {
-    ev.preventDefault();
-    return;
-  }
-  dragDespatchCard.value = card;
-  dragDespatchApproval.value = da;
-  try {
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", da.name);
-  } catch (e) {}
-}
-
-function onDespatchPendingDragOver(da) {
-  if (despatchArrangementLocked.value) return;
-  dragOverDespatchName.value = da.name;
-}
-
-function onDespatchPendingDragLeave(da) {
-  if (dragOverDespatchName.value === da.name) dragOverDespatchName.value = "";
-}
-
-function onDespatchPendingDragEnd() {
-  dragDespatchApproval.value = null;
-  dragDespatchCard.value = null;
-  dragOverDespatchName.value = "";
-}
-
-function reorderPendingLocal(card, fromName, toName) {
-  const company = card.company;
-  const list = [...pendingListFor(card)];
-  const fi = list.findIndex((x) => x.name === fromName);
-  const ti = list.findIndex((x) => x.name === toName);
-  if (fi < 0 || ti < 0 || fi === ti) return list;
-  const [moved] = list.splice(fi, 1);
-  list.splice(ti, 0, moved);
-  pendingOrderByCompany.value = { ...pendingOrderByCompany.value, [company]: list };
-  return list;
-}
-
-async function onDespatchPendingDrop(card) {
-  const drag = dragDespatchApproval.value;
-  const lane = dragDespatchCard.value;
-  if (!drag || !lane || lane.company !== card.company) {
-    onDespatchPendingDragEnd();
-    return;
-  }
-  const to = dragOverDespatchName.value;
-  if (to && drag.name !== to) {
-    reorderPendingLocal(card, drag.name, to);
-  }
-  onDespatchPendingDragEnd();
+function toggleApprovedArrangementLock() {
+  approvedArrangementLocked.value = !approvedArrangementLocked.value;
+  approvedSortables.forEach((s) => {
+    s.option("disabled", approvedArrangementLocked.value);
+  });
 }
 
 async function saveDespatchArrangement(card) {
   const names = pendingListFor(card).map((a) => a.name);
   if (!names.length) return;
   try {
-    await frappe.call({
-      method: `${DESPATCH_API}.save_despatch_pending_arrangement`,
-      args: {
-        from_company: card.company,
-        approval_names: JSON.stringify(names),
-      },
-    });
+    await persistPendingOrder(card, names);
     frappe.show_alert({ message: __("Despatch priority saved"), indicator: "green" });
   } catch (e) {
     frappe.show_alert({ message: __("Could not save arrangement"), indicator: "red" });
@@ -590,6 +665,30 @@ async function restoreDespatchArrangement(card) {
   try {
     await frappe.call({
       method: `${DESPATCH_API}.restore_despatch_pending_arrangement`,
+      args: { from_company: card.company },
+    });
+    frappe.show_alert({ message: __("Arrangement restored"), indicator: "green" });
+    await loadDespatchCards();
+  } catch (e) {
+    frappe.msgprint(e?.message || __("No previous arrangement to restore."));
+  }
+}
+
+async function saveApprovedArrangement(card) {
+  const names = approvedListFor(card).map((a) => a.name);
+  if (!names.length) return;
+  try {
+    await persistApprovedOrder(card, names);
+    frappe.show_alert({ message: __("Approved queue saved"), indicator: "green" });
+  } catch (e) {
+    frappe.show_alert({ message: __("Could not save arrangement"), indicator: "red" });
+  }
+}
+
+async function restoreApprovedArrangement(card) {
+  try {
+    await frappe.call({
+      method: `${DESPATCH_API}.restore_despatch_approved_arrangement`,
       args: { from_company: card.company },
     });
     frappe.show_alert({ message: __("Arrangement restored"), indicator: "green" });
@@ -620,6 +719,8 @@ async function loadDespatchCards() {
   const r = await frappe.call({ method: `${DESPATCH_API}.get_despatch_company_cards`, args });
   despatchCards.value = r.message || [];
   syncPendingOrderFromCards(despatchCards.value);
+  syncApprovedOrderFromCards(despatchCards.value);
+  await initDespatchSortables();
 }
 
 function openDespatch(card) {
@@ -701,16 +802,22 @@ onMounted(() => {
   loadCards();
   refreshTimer = window.setInterval(() => {
     if (showDialog.value || showDespatchDialog.value) return;
+    if (despatchSortableBusy.value) return;
     if (mode.value === "despatch") loadDespatchCards();
     else loadCards();
   }, 5000);
 });
 
 onUnmounted(() => {
+  destroyDespatchSortables();
   if (refreshTimer) {
     window.clearInterval(refreshTimer);
     refreshTimer = null;
   }
+});
+
+watch([despatchArrangementLocked, approvedArrangementLocked, mode], () => {
+  if (mode.value === "despatch") initDespatchSortables();
 });
 </script>
 
@@ -1070,15 +1177,51 @@ onUnmounted(() => {
 .lk-arrange-btns {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 8px;
+  margin-top: 6px;
 }
 .lk-arrange-btn {
-  font-size: 11px !important;
-  padding: 4px 10px !important;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.lk-history-chip.is-pending.is-draggable {
+.lk-arrange-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+}
+.lk-arrange-btn-lock {
+  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+  color: #334155;
+  border: 1px solid #cbd5e1;
+}
+.lk-arrange-btn-save {
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  color: #fff;
+}
+.lk-arrange-btn-restore {
+  background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+  color: #fff;
+}
+.lk-history-chip.is-pending.is-draggable,
+.lk-da-card .lk-drag-grip-approved {
   cursor: grab;
+}
+.lk-approved-sort-list {
+  gap: 10px;
+}
+.lk-sort-ghost {
+  opacity: 0.45;
+  background: #e0f2fe !important;
+  border: 2px dashed #0ea5e9 !important;
+}
+.lk-drag-grip-approved {
+  margin-right: 4px;
+  flex-shrink: 0;
 }
 .lk-history-list {
   display: flex;

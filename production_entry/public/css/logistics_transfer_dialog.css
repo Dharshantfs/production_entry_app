@@ -239,3 +239,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.tl-warn {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.tl-transferred {
+  color: #15803d;
+  font-weight: 700;
+}
