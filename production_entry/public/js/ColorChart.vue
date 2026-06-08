@@ -3299,16 +3299,12 @@ async function pushToProductionBoard() {
 
     // Re-assign sequence numbers based on final sorted order
     masterSequence.forEach((item, i) => { item.sequence_no = i + 1; });
-    const relevantUnits = [...new Set(masterSequence.map(s => s.unit || 'Unit 1'))];
-    const unitStatuses = relevantUnits.map(u => sequenceStatuses.value[u] || 'Draft');
-    const overallStatus = unitStatuses.some(s => s === 'Rejected') ? 'Rejected' :
-                         (unitStatuses.every(s => s === 'Approved') ? 'Approved' : 
-                          (unitStatuses.some(s => s === 'Pending Approval' || s === 'Draft') ? 
-                           (unitStatuses.some(s => s === 'Draft') ? 'Draft' : 'Pending Approval') : 'Approved'));
+    const initialPushTargetUnit = 'Unit 1';
+    const overallStatus = sequenceStatuses.value[initialPushTargetUnit] || 'Draft';
 
     let dialogOverallStatus = overallStatus;
     let dialogApprovalMeta = null;
-    let dialogPendingUnits = [];
+    let dialogPendingUnits = overallStatus !== 'Approved' ? [initialPushTargetUnit] : [];
 
     const canApprove = frappe.user.has_role('Manufacturing Manager') || frappe.user.has_role('System Manager') || frappe.user.has_role('Administrator') || frappe.session.user === 'Administrator';
 
@@ -3423,6 +3419,7 @@ async function pushToProductionBoard() {
         
         const activeFetchDates = hasD ? (d.get_value('fetch_dates') ? d.get_value('fetch_dates').split(',').map(s => s.trim()) : []) : fetchDates;
         const activeTargetDate = hasD ? d.get_value('target_date') : defaultTargetDate;
+        const activeTargetUnit = hasD ? getPushTargetUnit(d) : 'Unit 1';
         
         const isDateMismatch = activeTargetDate && !activeFetchDates.some(fd => fd === activeTargetDate);
 
@@ -3447,7 +3444,7 @@ async function pushToProductionBoard() {
                 <div style="background:#f1f5f9;padding:6px 12px;border-radius:20px;display:flex;align-items:center;gap:8px;">
                     <span style="width:8px;height:8px;border-radius:50%;background:${currentStatus === 'Approved' ? '#16a34a' : (currentStatus === 'Rejected' ? '#dc2626' : (currentStatus === 'Pending Approval' ? '#ca8a04' : '#64748b'))}"></span>
                     <div style="display:flex; flex-direction:column;">
-                        <span style="font-size:11px;font-weight:700;color:#1e293b;text-transform:uppercase;letter-spacing:0.02em;">Arrangement for ${activeTargetDate}: ${currentStatus}</span>
+                        <span style="font-size:11px;font-weight:700;color:#1e293b;text-transform:uppercase;letter-spacing:0.02em;">Arrangement for ${activeTargetDate} → ${esc(activeTargetUnit)}: ${currentStatus}</span>
                         ${currentStatus === 'Approved' && dialogApprovalMeta ? `
                             <div style="font-size:9px; color:#16a34a; margin-top:1px;">
                                 <i class="fa fa-check-circle"></i> Approved by ${dialogApprovalMeta.modified_by} on ${frappe.datetime.str_to_user(dialogApprovalMeta.modified.split(' ')[0])}
@@ -3492,6 +3489,15 @@ async function pushToProductionBoard() {
         </div>
         ${renderTable(seq, currentStatus)}`;
     }
+    function getPushTargetUnit(dialogRef) {
+        try {
+            const u = (dialogRef.get_value('push_target_unit') || 'Unit 1').toString().trim();
+            return u || 'Unit 1';
+        } catch (e) {
+            return 'Unit 1';
+        }
+    }
+
     async function loadGlobalCapacityPreview(dialog, seq) {
         const checkedItems = seq.filter(i => i.checked !== false && !i.pushed);
         if (!checkedItems.length) {
@@ -3501,9 +3507,7 @@ async function pushToProductionBoard() {
         }
 
         const targetDate = (dialog.get_value('target_date') || defaultTargetDate || today).trim();
-        
-        let filterUnitValue = 'All Units';
-        try { filterUnitValue = dialog.get_value('filter_unit') || 'All Units'; } catch(e) {}
+        const pushTargetUnit = getPushTargetUnit(dialog);
 
         let capHtml = `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:10px; margin-top:4px;">`;
         let capacityExceeded = false;
@@ -3535,7 +3539,7 @@ async function pushToProductionBoard() {
             const pushLoadsByDate = {}; // (date) -> { unit -> weight }
             
             checkedItems.forEach(sel => {
-                const u = sel.unit || 'Unit 1';
+                const u = pushTargetUnit;
                 const limit = UNIT_LIMITS[u] || 999;
                 const itemWt = (parseFloat(sel.qty || 0) / 1000);
                 
@@ -3567,7 +3571,7 @@ async function pushToProductionBoard() {
             uniqueDates.forEach(pDate => {
                 const dayLoads = pushLoadsByDate[pDate];
                 Object.keys(dayLoads).forEach(u => {
-                    if (filterUnitValue !== 'All Units' && u !== filterUnitValue) return;
+                    if (u !== pushTargetUnit) return;
                     
                     const limit = UNIT_LIMITS[u] || 999;
                     const totalDayLoad = dayLoads[u];
@@ -3636,16 +3640,6 @@ async function pushToProductionBoard() {
             const targetDate = (values.target_date || defaultTargetDate || today).trim();
             const pushTargetUnit = (values.push_target_unit || 'Unit 1').toString().trim() || 'Unit 1';
             const currentStatus = dialogOverallStatus || d.overallStatus || overallStatus;
-            
-            const normalizeUnit = (u) => {
-                const r = (u || "").toString().trim().toUpperCase().replace(/\s+/g, '');
-                if (r.indexOf('UNIT1') !== -1) return 'Unit 1';
-                if (r.indexOf('UNIT2') !== -1) return 'Unit 2';
-                if (r.indexOf('UNIT3') !== -1) return 'Unit 3';
-                if (r.indexOf('UNIT4') !== -1) return 'Unit 4';
-                if (r === 'UNASSIGNED' || r === 'MIXED') return 'UNASSIGNED';
-                return 'UNASSIGNED';
-            };
 
             const checkedItems = currentSequence.filter(i => i.checked !== false && !i.pushed);
             const allApproved = checkedItems.length > 0 && checkedItems.every(i => i.approvalStatus === 'Approved');
@@ -3658,20 +3652,17 @@ async function pushToProductionBoard() {
                         frappe.msgprint('No pending items selected for approval.');
                         return;
                     }
-                    const unitsToRequest = [...new Set(checkedItems.map(s => normalizeUnit(s.unit || 'Unit 1')))];
-                    for (const u of unitsToRequest) {
-                        const unitItems = checkedItems.filter(s => normalizeUnit(s.unit || 'Unit 1') === u).map(s => s.name);
-                        await frappe.call({
-                            method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-                            args: { date: targetDate, unit: u, sequence_data: unitItems, plan_name: selectedPlan.value }
-                        });
-                        
-                        await frappe.call({
-                            method: "production_entry.production_planning.scheduler_api.request_sequence_approval",
-                            args: { date: targetDate, unit: u, plan_name: selectedPlan.value }
-                        });
-                    }
-                    frappe.show_alert({ message: 'Arrangement approval requested', indicator: 'orange' });
+                    const unitItems = checkedItems.map(s => s.name);
+                    await frappe.call({
+                        method: "production_entry.production_planning.scheduler_api.save_color_sequence",
+                        args: { date: targetDate, unit: pushTargetUnit, sequence_data: unitItems, plan_name: selectedPlan.value }
+                    });
+                    
+                    await frappe.call({
+                        method: "production_entry.production_planning.scheduler_api.request_sequence_approval",
+                        args: { date: targetDate, unit: pushTargetUnit, plan_name: selectedPlan.value }
+                    });
+                    frappe.show_alert({ message: `Arrangement approval requested for ${pushTargetUnit}`, indicator: 'orange' });
                     d.hide();
                     fetchData();
                     return;
@@ -3681,22 +3672,18 @@ async function pushToProductionBoard() {
                 if (allApproved) {
                     // Force pushing despite pending status
                 } else {
-                    const unitsToApprove = [...new Set(checkedItems.map(s => normalizeUnit(s.unit || 'Unit 1')))];
-                    for (const u of unitsToApprove) {
-                        const unitItems = checkedItems.filter(s => normalizeUnit(s.unit || 'Unit 1') === u).map(s => s.name);
-                        
-                        // Always save the latest selection before approving
-                        await frappe.call({
-                            method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-                            args: { date: targetDate, unit: u, sequence_data: unitItems, plan_name: selectedPlan.value }
-                        });
+                    const unitItems = checkedItems.map(s => s.name);
+                    
+                    await frappe.call({
+                        method: "production_entry.production_planning.scheduler_api.save_color_sequence",
+                        args: { date: targetDate, unit: pushTargetUnit, sequence_data: unitItems, plan_name: selectedPlan.value }
+                    });
 
-                        await frappe.call({
-                            method: "production_entry.production_planning.scheduler_api.approve_sequence",
-                            args: { date: targetDate, unit: u, plan_name: selectedPlan.value }
-                        });
-                    }
-                    frappe.show_alert({ message: 'Arrangement Approved', indicator: 'green' });
+                    await frappe.call({
+                        method: "production_entry.production_planning.scheduler_api.approve_sequence",
+                        args: { date: targetDate, unit: pushTargetUnit, plan_name: selectedPlan.value }
+                    });
+                    frappe.show_alert({ message: `Arrangement approved for ${pushTargetUnit}`, indicator: 'green' });
                     d.hide();
                     fetchData();
                     return;
@@ -3848,15 +3835,8 @@ async function pushToProductionBoard() {
 
     const updateDialogStatus = async (newTargetDate) => {
         if (!newTargetDate) return;
-        const relevantUnits = [...new Set(currentSequence.map(s => {
-            const raw = (s.unit || s.unitKey || 'Unit 1').trim();
-            // Robust normalization to 'Unit X' format
-            if (raw.toUpperCase().includes('UNIT 1')) return 'Unit 1';
-            if (raw.toUpperCase().includes('UNIT 2')) return 'Unit 2';
-            if (raw.toUpperCase().includes('UNIT 3')) return 'Unit 3';
-            if (raw.toUpperCase().includes('UNIT 4')) return 'Unit 4';
-            return raw;
-        }))].sort();
+        const pushTargetUnit = getPushTargetUnit(d);
+        const relevantUnits = [pushTargetUnit];
         
         const unitStatuses = [];
         dialogApprovalMeta = null;
@@ -3873,15 +3853,13 @@ async function pushToProductionBoard() {
             const st = msg.status || 'Draft';
             unitStatuses.push(st);
             
-            // Sync individual row statuses for this unit
+            // All selected items share the target-unit arrangement on push.
             const approvedSequence = msg.sequence || [];
             currentSequence.forEach(it => {
-                if ((it.unit || 'Unit 1') === u) {
-                    if (approvedSequence.includes(it.name) && st !== 'Draft') {
-                        it.approvalStatus = st;
-                    } else {
-                        it.approvalStatus = 'Draft';
-                    }
+                if (approvedSequence.includes(it.name) && st !== 'Draft') {
+                    it.approvalStatus = st;
+                } else if (!approvedSequence.includes(it.name)) {
+                    it.approvalStatus = 'Draft';
                 }
             });
 
@@ -3985,6 +3963,12 @@ async function pushToProductionBoard() {
         if (val) updateDialogStatus(val);
     };
 
+    d.fields_dict.push_target_unit.df.onchange = () => {
+        const val = d.get_value('target_date') || defaultTargetDate;
+        loadGlobalCapacityPreview(d, currentSequence);
+        if (val) updateDialogStatus(val);
+    };
+
     d.show();
     
     d.on_hide = () => {
@@ -4060,8 +4044,13 @@ async function pushToProductionBoard() {
         d.fields_dict[fn].$input.on('input', () => applyFilters());
     });
     d.fields_dict.filter_logic.$input.on('change', () => applyFilters());
-    d.fields_dict.filter_unit.$input.on('change', () => { applyFilters(); loadGlobalCapacityPreview(d, currentSequence); });
+    d.fields_dict.filter_unit.$input.on('change', () => { applyFilters(); });
     d.fields_dict.target_date.$input.on('change', () => loadGlobalCapacityPreview(d, currentSequence));
+    d.fields_dict.push_target_unit.$input.on('change', () => {
+        loadGlobalCapacityPreview(d, currentSequence);
+        const val = d.get_value('target_date') || defaultTargetDate;
+        if (val) updateDialogStatus(val);
+    });
 
     // Wire up checkbox events
     function wireCheckboxes() {
