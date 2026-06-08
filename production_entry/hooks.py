@@ -174,6 +174,9 @@ override_whitelisted_methods = {
 	"production_scheduler.api.create_planning_sheet_from_so": "production_entry.production_planning.scheduler_api.create_planning_sheet_from_so",
 	"production_scheduler.api.sync_bom_children_for_planning_sheet": "production_entry.production_planning.scheduler_api.sync_bom_children_for_planning_sheet",
 	"production_scheduler.api.make_planning_sheet_from_sales_order": "production_entry.production_planning.scheduler_api.make_planning_sheet_from_sales_order",
+	"production_scheduler.api.get_printing_order_table_data": "production_entry.production_planning.scheduler_api.get_printing_order_table_data",
+	"production_scheduler.api.get_lamination_order_table_data": "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
+	"production_scheduler.api.get_printed_bopp_film_table_data": "production_entry.production_planning.scheduler_api.get_printed_bopp_film_table_data",
 }
 #
 # each overriding function accepts a `data` argument;

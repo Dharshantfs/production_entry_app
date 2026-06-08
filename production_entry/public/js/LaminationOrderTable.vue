@@ -33,8 +33,8 @@
       <div v-if="!isPrintedBoppTable && !isPrinting105Table" class="cc-filter-item cc-shift-filter">
         <label>Lamination process</label>
         <div class="cc-shift-btns">
-          <button type="button" :class="{ active: laminationProcess === '104' }" @click="setLaminationProcess('104')">104 Plain</button>
-          <button type="button" :class="{ active: laminationProcess === '107' }" @click="setLaminationProcess('107')">107 BOPP</button>
+          <button type="button" :class="{ active: laminationProcess === '104' }" @click="setLaminationProcess('104')">104 Plain Lamination Fabric</button>
+          <button type="button" :class="{ active: laminationProcess === '107' }" @click="setLaminationProcess('107')">107 BOPP Lamination Fabric</button>
           <button type="button" :class="{ active: laminationProcess === '__all__' }" @click="setLaminationProcess('__all__')">All</button>
         </div>
       </div>
@@ -1806,14 +1806,31 @@ async function fetchData() {
       args.date = filterOrderDate.value;
     }
 
-    const r = await frappe.call({
-      method: isPrinting105Table.value
-        ? "production_entry.production_planning.scheduler_api.get_printing_order_table_data"
-        : isPrintedBoppTable.value
-        ? "production_entry.production_planning.scheduler_api.get_printed_bopp_film_table_data"
-        : "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
-      args,
-    });
+    const tableMethods = isPrinting105Table.value
+      ? [
+          "production_entry.production_planning.scheduler_api.get_printing_order_table_data",
+          "production_scheduler.api.get_printing_order_table_data",
+        ]
+      : isPrintedBoppTable.value
+      ? [
+          "production_entry.production_planning.scheduler_api.get_printed_bopp_film_table_data",
+          "production_scheduler.api.get_printed_bopp_film_table_data",
+        ]
+      : [
+          "production_entry.production_planning.scheduler_api.get_lamination_order_table_data",
+          "production_scheduler.api.get_lamination_order_table_data",
+        ];
+    let r = null;
+    let lastErr = null;
+    for (const method of tableMethods) {
+      try {
+        r = await frappe.call({ method, args });
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!r) throw lastErr || new Error("Failed to load order table data");
     rawData.value = (r.message || []).map((d) => {
       if (isPrinting105Table.value) {
         return {
@@ -1900,10 +1917,10 @@ function processLabel(row) {
     String(row?.lamination_process || row?.laminationProcess || row?.process || "").trim() ||
     inferProcessFromItemCode(row?.itemCode || row?.item_code || "");
   if (p === "108") return "108 BOPP Slitting";
-  if (p === "107") return "107 BOPP";
+  if (p === "107") return "107 BOPP Lamination Fabric";
   if (p === "106") return "106 Laminated Printing";
   if (p === "105") return "105 Printing";
-  return p === "104" ? "104 Plain" : p || "-";
+  return p === "104" ? "104 Plain Lamination Fabric" : p || "-";
 }
 
 function inferProcessFromItemCode(itemCode) {

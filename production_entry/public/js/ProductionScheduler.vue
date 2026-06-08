@@ -774,8 +774,8 @@ const boardProcessOptions = computed(() => {
   }
   if (isLaminationBoard.value) {
     return [
-      { value: "104", label: "104 Plain" },
-      { value: "107", label: "107 BOPP" },
+      { value: "104", label: "104 Plain Lamination Fabric" },
+      { value: "107", label: "107 BOPP Lamination Fabric" },
       { value: "__all__", label: "All" },
     ];
   }
@@ -826,7 +826,7 @@ const boardBannerText = computed(() => {
   if (isPrintedBoppFilmBoard.value) return `Printed BOPP Film Board — ${PRINTED_BOPP_FILM_UNIT}${unitScope}`;
   if (isLaminationBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const pLbl = p === "107" ? "107 BOPP" : p === "104" ? "104 Plain" : "104 · 107";
+    const pLbl = p === "107" ? "107 BOPP Lamination Fabric" : p === "104" ? "104 Plain Lamination Fabric" : "104 · 107";
     return `Lamination Board — ${LAMINATION_UNIT} — ${pLbl}${unitScope}`;
   }
   return `Production Board${unitScope}`;

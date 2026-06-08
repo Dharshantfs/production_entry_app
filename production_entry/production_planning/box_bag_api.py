@@ -4,6 +4,8 @@ Box Bag (process 221) — Board + Order Table API functions.
 
 All functions are imported and called from scheduler_api.py.
 """
+import re
+
 import frappe
 from frappe.utils import flt, cint
 
@@ -232,6 +234,11 @@ def _parse_dcut_bag_item_code(item_code):
 	}
 	ic = str(item_code or "").strip()
 	if not ic:
+		return out
+
+	# Design-prefixed printing FG (6003-105…) — not a W/D-CUT bag; digit tail can falsely contain "201".
+	ic_up = ic.upper()
+	if re.match(r"^[A-Z0-9]+-105\d", ic_up) or re.match(r"^[A-Z0-9]+-106", ic_up):
 		return out
 
 	parts = ic.split("-")

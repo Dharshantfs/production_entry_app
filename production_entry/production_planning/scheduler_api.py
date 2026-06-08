@@ -614,11 +614,28 @@ _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
 )
 
 
+def _is_standalone_printing_fg_item_code(item_code):
+	"""Design-prefixed 105/106 FG on SO (e.g. 6003-1051131811201395) — not W-CUT/D-CUT bag."""
+	ic = str(item_code or "").strip().upper()
+	if not ic or "-" not in ic:
+		return False
+	if _parse_105_item_code(ic):
+		return True
+	if (_parse_106_item_code(ic) or {}).get("process") == "106":
+		return True
+	return bool(re.match(r"^[A-Z0-9]+-105\d", ic) or re.match(r"^[A-Z0-9]+-106", ic))
+
+
 def _item_process_prefix(item_code):
 	ic = str(item_code or "").strip()
 	if not ic:
 		return ""
 	if "-" in ic:
+		# 6003-105… digit tails contain ``201`` substrings — must not run D-CUT parser before 105 detection.
+		if _is_standalone_printing_fg_item_code(ic):
+			if re.match(r"^[A-Z0-9]+-106", ic.upper()):
+				return "106"
+			return "105"
 		# W/D-CUT bag codes embed process in the tail (e.g. 2500-1C-201-217…); segment ``201`` is bag size, not process 201.
 		try:
 			from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
@@ -12686,9 +12703,9 @@ def get_lamination_order_table_data(
         if _lam_proc == "108":
             row["process_display"] = "108 BOPP Slitting"
         elif _lam_proc == "107":
-            row["process_display"] = "107 BOPP"
+            row["process_display"] = "107 BOPP Lamination Fabric"
         elif _lam_proc == "104":
-            row["process_display"] = "104 Plain"
+            row["process_display"] = "104 Plain Lamination Fabric"
         progress = _get_child_progress(key[0], key[1], row.get("pp_id"), parent_trace)
         if is_parent_lamination and flt(progress.get("required") or 0) <= 0 and key[0]:
             alt_progress = _get_child_progress(key[0], key[1], row.get("pp_id"), "")
@@ -28476,6 +28493,8 @@ def _planning_sheet_so_fg_process_codes(planning_sheet_name):
 
 def _is_bag_fg_item_code(item_code):
 	"""True when item_code is a box / W-CUT / D-CUT finished-good bag process."""
+	if _is_standalone_printing_fg_item_code(item_code):
+		return False
 	pp = _bom_item_process_code(item_code) or _item_process_prefix(item_code)
 	return pp in ALL_BAG_FG_PROCESS_CODES
 
