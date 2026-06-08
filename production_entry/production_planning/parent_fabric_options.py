@@ -12,6 +12,8 @@ PARENT_FABRIC_OPTIONS = (
 	"\n105 Base Fabric"
 	"\n106 Base Fabric"
 	"\n107 Base Fabric"
+	"\n108 Base Fabric"
+	"\n110 Base Fabric"
 	"\nPB"
 	"\nMain 102 Base Fabric"
 	"\nMain 103 Base Fabric"
@@ -33,8 +35,6 @@ PARENT_FABRIC_OPTION_SET = frozenset(
 
 # Legacy / mistaken labels from older stamp logic → current Select options.
 _PARENT_FABRIC_ALIASES = {
-	"108 Base Fabric": "Loop 108 Base Fabric",
-	"110 Base Fabric": "Loop 110 Base Fabric",
 	"103 Base Fabric": "Loop 103 Base Fabric",
 }
 

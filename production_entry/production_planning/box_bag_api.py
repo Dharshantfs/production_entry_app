@@ -236,8 +236,10 @@ def _parse_dcut_bag_item_code(item_code):
 	if not ic:
 		return out
 
-	# Design-prefixed printing FG (6003-105…) — not a W/D-CUT bag; digit tail can falsely contain "201".
+	# Design-prefixed fabric / printing FG — not a W/D-CUT bag; digit tail can falsely contain 221/201.
 	ic_up = ic.upper()
+	if re.match(r"^[A-Z0-9]+-(105|106|107|108|109|110|104|103|102)\w", ic_up):
+		return out
 	if re.match(r"^[A-Z0-9]+-105\d", ic_up) or re.match(r"^[A-Z0-9]+-106", ic_up):
 		return out
 

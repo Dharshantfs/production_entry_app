@@ -636,6 +636,14 @@ def _item_process_prefix(item_code):
 			if re.match(r"^[A-Z0-9]+-106", ic.upper()):
 				return "106"
 			return "105"
+		# Design-prefixed fabric FG (7465-108D22115I) — segment scan before D-CUT (tail may contain 221).
+		all_segments = ic.split("-")
+		for seg in all_segments:
+			seg_digits = "".join(ch for ch in seg if ch.isdigit())
+			if len(seg_digits) >= 3:
+				sp = seg_digits[:3]
+				if sp in _ITEM_PROCESS_KNOWN_PREFIXES:
+					return sp
 		# W/D-CUT bag codes embed process in the tail (e.g. 2500-1C-201-217…); segment ``201`` is bag size, not process 201.
 		try:
 			from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
@@ -645,15 +653,6 @@ def _item_process_prefix(item_code):
 				return bag_proc
 		except Exception:
 			pass
-		# First pass: check each segment's leading digits independently
-		# This handles codes like 6000-511-221N101Q00PP where process is in the 3rd segment
-		all_segments = ic.split("-")
-		for seg in all_segments:
-			seg_digits = "".join(ch for ch in seg if ch.isdigit())
-			if len(seg_digits) >= 3:
-				sp = seg_digits[:3]
-				if sp in _ITEM_PROCESS_KNOWN_PREFIXES:
-					return sp
 		parts = ic.split("-", 1)
 		head = (parts[0] or "").strip().upper()
 		tail = (parts[1] or "").strip().upper() if len(parts) > 1 else ""
@@ -1196,8 +1195,67 @@ def _is_cylinder_yield_so_item(item_code):
 	su = _cstr(item_code).strip().upper()
 	if not su:
 		return False
-	compact = su.replace(" ", "")
-	return compact.startswith("CY-") or su.startswith("CY ")
+	if re.match(r"^CY(\s|-|:|$)", su):
+		return True
+	compact = re.sub(r"[\s:]+", "-", su)
+	return compact.startswith("CY-")
+
+
+def _purge_cylinder_yield_rows_from_planning_sheet(planning_sheet_name):
+	"""Remove any CY cylinder reference rows left on a planning sheet."""
+	if not planning_sheet_name:
+		return 0
+	removed = 0
+	for doctype, parentfield in (
+		("Planning Table", _get_pt_parentfield()),
+		("Planning sheet Item", "items"),
+	):
+		if not frappe.db.exists("DocType", doctype):
+			continue
+		rows = frappe.get_all(
+			doctype,
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code"],
+			limit_page_length=0,
+		) or []
+		for row in rows:
+			if _is_cylinder_yield_so_item(row.get("item_code")):
+				frappe.delete_doc(doctype, row.name, force=1, ignore_permissions=True)
+				removed += 1
+	if removed:
+		frappe.db.commit()
+	return removed
+
+
+def _apply_mandatory_planning_row_defaults(row, item_code=None):
+	"""Ensure gsm / quality exist before Planning sheet save validation."""
+	if not row:
+		return row
+	ic = _cstr(item_code or row.get("item_code")).strip()
+	q = _cstr(row.get("quality") or row.get("custom_quality")).strip()
+	if not q:
+		q = "GENERIC"
+		try:
+			q2, _c, _g = resolve_quality_color_gsm_from_item_code(ic)
+			if q2:
+				q = q2
+		except Exception:
+			pass
+	row["quality"] = q
+	if frappe.db.has_column("Planning Table", "custom_quality") or frappe.db.has_column(
+		"Planning sheet Item", "custom_quality"
+	):
+		row["custom_quality"] = q
+	gsm_val = cint(row.get("gsm") or 0)
+	if gsm_val <= 0:
+		try:
+			_q, _c, g = resolve_quality_color_gsm_from_item_code(ic)
+			if g:
+				gsm_val = cint(g)
+		except Exception:
+			pass
+	row["gsm"] = gsm_val or 0
+	return row
 
 
 def _parse_two_dim_sheet_size(text):
@@ -7721,6 +7779,7 @@ def _rebuild_planning_sheet_from_sales_order(planning_sheet, sales_order_doc):
 		return ps
 	frappe.flags.planning_sheet_bom_sync_errors = []
 	_reset_planning_sheet_child_tables_for_rebuild(ps)
+	_purge_cylinder_yield_rows_from_planning_sheet(ps.name)
 	_populate_planning_sheet_items(ps, doc)
 	ensure_lamination_booking_for_planning_sheet(ps)
 	update_sheet_plan_codes(ps, include_legacy=True)
@@ -9590,6 +9649,8 @@ def _sync_225_226_box_bag_planning_rows(planning_sheet_name):
 def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 	"""Box bag FG BOM sync — all processes use FG BOM for loop 103/108/110 + child expansions."""
 	if not planning_sheet_name:
+		return
+	if not _planning_sheet_has_bag_fg(planning_sheet_name):
 		return
 
 	# All bag FGs (box + W-CUT + D-CUT): read loop items from BOM + 103→100, 108→107, 110→107.
@@ -28659,7 +28720,8 @@ def _resolve_parent_fabric_label(
 					parent_107, "107", soi, pt_rows, direct_by_soi, bag_fg_context, pb=True
 				)
 			return "Loop 107 PB"
-		return "PB"
+		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows, pb=True)
+		return nb or "PB"
 
 	if fg_pp and pp == fg_pp:
 		if fg_pp in ALL_BAG_FG_PROCESS_CODES:
@@ -28669,7 +28731,9 @@ def _resolve_parent_fabric_label(
 	if ic.startswith("100"):
 		if direct_on_fg_bom:
 			return "Main Fabric"
-		cp = _cstr(chain_parent_process).strip() or _fabric_parent_process_from_item_code(ic)
+		cp = _cstr(chain_parent_process).strip() or _infer_fabric_chain_parent_process(ic, soi, pt_rows)
+		if not cp:
+			cp = _fabric_parent_process_from_item_code(ic)
 		if cp:
 			parent_ic = _fabric_chain_parent_item_for_child(ic, soi, pt_rows, cp) if pt_rows else ""
 			if bag_fg_context:
@@ -28677,7 +28741,8 @@ def _resolve_parent_fabric_label(
 					parent_ic, cp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
 				)
 			return f"{cp} Base Fabric"
-		return "Main Fabric"
+		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
+		return nb or "Main Fabric"
 
 	if direct_on_fg_bom:
 		if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
@@ -28687,7 +28752,10 @@ def _resolve_parent_fabric_label(
 		return ""
 
 	if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
-		return "Loop Fabric"
+		if bag_fg_context:
+			return "Loop Fabric"
+		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
+		return nb or f"{pp} Base Fabric"
 
 	if pp == "107" or _lamination_process_from_item_code(ic) == "107":
 		if direct_on_fg_bom:
@@ -28697,10 +28765,14 @@ def _resolve_parent_fabric_label(
 			if loop_pp:
 				return f"Loop {loop_pp} Base Fabric"
 			return "Main Fabric"
-		return "107 Base Fabric"
+		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
+		return nb or "107 Base Fabric"
 
 	if pp in _MAIN_FABRIC_MID_PROCESSES:
-		return "Main Fabric"
+		if bag_fg_context:
+			return "Main Fabric"
+		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
+		return nb or f"{pp} Base Fabric"
 	return ""
 
 
@@ -28969,6 +29041,7 @@ def _unit_for_bag_fg_bom_child(child_ic, child_proc, specs=None):
 def _bag_fg_bom_child_row_specs(child_ic, child_pp, so_it=None):
 	"""Quality / colour / GSM / width for direct BOM children on bag FG (103 / 108 / 110 / 100)."""
 	specs = {}
+	child_ic = _cstr(child_ic).strip()
 	if child_ic.startswith("100"):
 		specs = _fabric_row_specs_from_fabric_item(child_ic, so_it, None) or {}
 	elif child_pp == "103" and frappe.db.has_column("Planning Table", "width_inch"):
@@ -28997,7 +29070,55 @@ def _bag_fg_bom_child_row_specs(child_ic, child_pp, so_it=None):
 			val = cint(parsed.get(key) or 0)
 			if val > 0:
 				specs[fld] = val
+	if not specs.get("quality") or not specs.get("gsm"):
+		q, c, g = resolve_quality_color_gsm_from_item_code(child_ic)
+		if q and not specs.get("quality"):
+			specs["quality"] = q
+		if c and not specs.get("color"):
+			specs["color"] = c
+		if g and not specs.get("gsm"):
+			specs["gsm"] = g
+	if not specs.get("quality"):
+		specs["quality"] = "GENERIC"
+	if specs.get("gsm") is None:
+		specs["gsm"] = 0
 	return specs
+
+
+def _immediate_parent_process_for_planning_child(child_ic, soi, pt_rows):
+	"""Same SO line: parent planning row whose BOM contains this child (106→104→100 chains)."""
+	child_ic = _cstr(child_ic).strip()
+	soi = _cstr(soi).strip()
+	if not child_ic or not pt_rows:
+		return ""
+	for prow in pt_rows:
+		pic = _cstr(
+			prow.get("item_code") if isinstance(prow, dict) else getattr(prow, "item_code", "")
+		).strip()
+		if not pic or pic == child_ic:
+			continue
+		row_soi = _cstr(
+			(prow.get("sales_order_item") or prow.get("so_item"))
+			if isinstance(prow, dict)
+			else (getattr(prow, "sales_order_item", None) or getattr(prow, "so_item", None))
+		).strip()
+		if soi and row_soi and row_soi != soi:
+			continue
+		bom = _resolve_lamination_bom(pic)
+		if not bom:
+			continue
+		for bom_row in bom.items or []:
+			if _cstr(bom_row.item_code).strip() == child_ic:
+				return _bom_item_process_code(pic) or _item_process_prefix(pic)
+	return ""
+
+
+def _non_bag_parent_fabric_label(ic, soi, pt_rows, pb=False):
+	"""Standalone fabric SO chains: FG Fabric on SO line; children use {parent} Base Fabric."""
+	parent_pp = _immediate_parent_process_for_planning_child(ic, soi, pt_rows)
+	if parent_pp:
+		return f"{parent_pp} PB" if pb else f"{parent_pp} Base Fabric"
+	return ""
 
 
 def _sync_box_bag_loop_bom_chain(planning_sheet_name, fg_parent_processes=None):
@@ -29133,6 +29254,7 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 			for fld in ("custom_fabric_gsm", "custom_lam_gsm", "custom_bopp_gsm"):
 				if specs.get(fld) is not None and frappe.db.has_column("Planning Table", fld):
 					row[fld] = specs[fld]
+			_apply_mandatory_planning_row_defaults(row, child_ic)
 			_set_movement_type_if_supported(row, MOVEMENT_TRANSFER, "Planning Table")
 			if hasattr(ps, "items") or ps.meta.has_field("items"):
 				ps.append("items", dict(row))
