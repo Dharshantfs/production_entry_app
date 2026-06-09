@@ -241,43 +241,108 @@ function spr_refresh_grid_body_rows(grid) {
 	}
 }
 
-/**
- * Realign grid header/body columns — don't change visibility, let JSON handle that.
- * Just ensure header and body are in sync.
- */
+function spr_is_draft_spr(frm) {
+	return !!(frm && frm.doc && cint(frm.doc.docstatus) === 0);
+}
+
+/** Build ordered visible field list for items / shaft_jobs grids. */
+function spr_resolve_grid_show_columns(frm, gridFieldname, columnFieldList) {
+	const metaDoctype = SPR_GRID_META_BY_FIELD[gridFieldname];
+	if (!metaDoctype) {
+		return [];
+	}
+	const isDraft = spr_is_draft_spr(frm);
+	const resolvedShow = [];
+	(columnFieldList || []).forEach(function (fn) {
+		if (frappe.meta.get_docfield(metaDoctype, fn)) {
+			resolvedShow.push(fn);
+		}
+	});
+	let visibleCols = resolvedShow;
+	if (gridFieldname === 'items') {
+		const hideExtra = spr_duplicate_produced_gsm_fieldnames();
+		visibleCols = visibleCols.filter(function (fn) {
+			return !hideExtra[fn];
+		});
+	}
+	if (!isDraft) {
+		if (gridFieldname === 'shaft_jobs') {
+			visibleCols = visibleCols.filter(function (fn) {
+				return fn !== 'create_roll_entry';
+			});
+		}
+		if (gridFieldname === 'items') {
+			visibleCols = visibleCols.filter(function (fn) {
+				return fn !== 'save_row' && fn !== 'edit_row' && fn !== 'print_sticker';
+			});
+		}
+	}
+	return visibleCols;
+}
+
+/** Apply column list via grid_columns helper — never hidden=1 on data fields. */
 function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, force) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[gridFieldname];
 	if (!fd || !fd.grid) {
 		return;
 	}
 	const grid = fd.grid;
-	// Clear hidden flags that may have been set by previous code
 	const metaDoctype = SPR_GRID_META_BY_FIELD[gridFieldname];
-	if (metaDoctype) {
+	if (!metaDoctype) {
+		spr_attach_grid_scroll_sync(fd);
+		spr_sync_grid_header_body_scroll(fd);
+		return;
+	}
+	const visibleCols = spr_resolve_grid_show_columns(frm, gridFieldname, columnFieldList);
+	if (!visibleCols.length) {
+		spr_attach_grid_scroll_sync(fd);
+		spr_sync_grid_header_body_scroll(fd);
+		return;
+	}
+	if (!force && spr_grid_has_user_column_settings(grid)) {
+		spr_attach_grid_scroll_sync(fd);
+		spr_sync_grid_header_body_scroll(fd);
+		return;
+	}
+	const gc = spr_get_grid_columns_module();
+	if (gc && typeof gc.apply === 'function') {
+		try {
+			gc.apply(frm, gridFieldname, metaDoctype, visibleCols);
+		} catch (e) {
+			/* fallback below */
+		}
+	}
+	if (!gc || typeof gc.apply !== 'function') {
+		const showSet = {};
+		visibleCols.forEach(function (fn) {
+			showSet[fn] = 1;
+		});
 		(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
 			if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
 				return;
 			}
+			const show = !!showSet[df.fieldname];
 			try {
 				grid.update_docfield_property(df.fieldname, 'hidden', 0);
+				grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
 			} catch (e) {
 				/* ignore */
 			}
 		});
+		spr_force_grid_realign(frm, gridFieldname);
 	}
-	// Realign header with body
-	spr_force_grid_realign(frm, gridFieldname);
 	spr_attach_grid_scroll_sync(fd);
 	spr_sync_grid_header_body_scroll(fd);
 }
 
+/** Draft only: Create Entry in grid + row expand. Submitted: fully hidden (not in list view). */
 function spr_apply_create_entry_buttons_ui(frm) {
-	const isDraft = frm && frm.doc && cint(frm.doc.docstatus) === 0;
+	const isDraft = spr_is_draft_spr(frm);
 	const jobsGrid = frm && frm.fields_dict && frm.fields_dict.shaft_jobs && frm.fields_dict.shaft_jobs.grid;
 	if (jobsGrid) {
 		try {
-			jobsGrid.update_docfield_property('create_roll_entry', 'hidden', 0);
 			jobsGrid.update_docfield_property('create_roll_entry', 'in_list_view', isDraft ? 1 : 0);
+			jobsGrid.update_docfield_property('create_roll_entry', 'hidden', isDraft ? 0 : 1);
 		} catch (e) {
 			/* ignore */
 		}
@@ -286,8 +351,8 @@ function spr_apply_create_entry_buttons_ui(frm) {
 		frm && frm.fields_dict && frm.fields_dict.bundle_calculation && frm.fields_dict.bundle_calculation.grid;
 	if (bundleGrid) {
 		try {
-			bundleGrid.update_docfield_property('create_bundle_entry', 'hidden', 0);
 			bundleGrid.update_docfield_property('create_bundle_entry', 'in_list_view', isDraft ? 1 : 0);
+			bundleGrid.update_docfield_property('create_bundle_entry', 'hidden', isDraft ? 0 : 1);
 		} catch (e) {
 			/* ignore */
 		}
@@ -305,10 +370,6 @@ function spr_apply_shaft_jobs_grid_columns(frm, force) {
 	const cfg = spr_grid_list_view_config(frm, 'shaft_jobs');
 	spr_apply_grid_visible_columns(frm, 'shaft_jobs', cfg.show || [], force);
 	spr_apply_shaft_jobs_create_entry_ui(frm);
-	const gc = spr_get_grid_columns_module();
-	if (gc && typeof gc.realign === 'function') {
-		gc.realign(frm, 'shaft_jobs');
-	}
 }
 
 function spr_apply_items_grid_columns(frm, force) {
@@ -322,10 +383,6 @@ function spr_apply_items_grid_columns(frm, force) {
 	}
 	const cfg = spr_get_items_list_view_config(frm);
 	spr_apply_grid_visible_columns(frm, 'items', cfg.show || [], force);
-	const gc = spr_get_grid_columns_module();
-	if (gc && typeof gc.realign === 'function') {
-		gc.realign(frm, 'items');
-	}
 }
 
 /** Emergency: clear hidden flags on all item grid fields (recover from bad column apply). */
@@ -377,7 +434,6 @@ function spr_reset_shaft_jobs_grid_field_visibility(frm) {
 		}
 		try {
 			grid.update_docfield_property(df.fieldname, 'hidden', 0);
-			grid.update_docfield_property(df.fieldname, 'in_list_view', 0);
 		} catch (e) {
 			/* ignore */
 		}
@@ -509,8 +565,10 @@ function spr_grid_list_view_config(frm, fieldname) {
 			'work_orders',
 			'is_manual',
 			'manual_items',
-			'create_roll_entry',
 		];
+		if (spr_is_draft_spr(frm)) {
+			show.push('create_roll_entry');
+		}
 		return { show: show, hide: [] };
 	}
 	if (fieldname === 'bundle_calculation' || fieldname === 'items') {
@@ -1224,7 +1282,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_register_spr_page_buttons(frm);
 		spr_layout_all_grids(frm, { toggleUi: false });
 
-		// Full synchronous column reset — JSON has all in_list_view:0 so JS fully owns the columns.
+		// Clear stale hidden flags, then apply column lists (JS owns in_list_view).
 		spr_reset_items_grid_field_visibility(frm);
 		spr_reset_shaft_jobs_grid_field_visibility(frm);
 		spr_reset_bundle_calc_grid_field_visibility(frm);
@@ -1303,7 +1361,10 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	on_submit: function (frm) {
-		spr_schedule_grid_ui_debounced(frm, { delay: 200 });
+		spr_apply_shaft_jobs_grid_columns(frm, true);
+		spr_apply_items_grid_columns(frm, true);
+		spr_apply_create_entry_buttons_ui(frm);
+		spr_schedule_grid_ui_debounced(frm, { delay: 200, columns: false });
 		if (frm.doc && frm.doc.production_plan) {
 			frappe.call({
 				method:

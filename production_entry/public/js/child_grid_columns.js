@@ -10,7 +10,7 @@
 frappe.provide('production_entry.grid_columns');
 
 const CG_SKIP_FIELD_TYPES = new Set([
-	'Column Break', 'Section Break', 'Tab Break', 'HTML', 'Button',
+	'Column Break', 'Section Break', 'Tab Break', 'HTML',
 ]);
 
 function cg_skip_field(df) {
