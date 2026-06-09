@@ -241,11 +241,81 @@ function spr_refresh_grid_body_rows(grid) {
 	}
 }
 
-/** Grid columns come from child doctype in_list_view — no runtime column toggling. */
-function spr_apply_grid_visible_columns(frm, gridFieldname) {
+/** Apply a fixed column list — never use hidden=1 (breaks header/body alignment). */
+function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, force) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[gridFieldname];
 	if (!fd || !fd.grid) {
 		return;
+	}
+	const grid = fd.grid;
+	const metaDoctype = SPR_GRID_META_BY_FIELD[gridFieldname];
+	if (!metaDoctype) {
+		spr_attach_grid_scroll_sync(fd);
+		spr_sync_grid_header_body_scroll(fd);
+		return;
+	}
+	const resolvedShow = [];
+	(columnFieldList || []).forEach(function (fn) {
+		if (frappe.meta.get_docfield(metaDoctype, fn)) {
+			resolvedShow.push(fn);
+		}
+	});
+	if (!resolvedShow.length) {
+		spr_attach_grid_scroll_sync(fd);
+		spr_sync_grid_header_body_scroll(fd);
+		return;
+	}
+	if (!force && spr_grid_has_user_column_settings(grid)) {
+		spr_attach_grid_scroll_sync(fd);
+		spr_sync_grid_header_body_scroll(fd);
+		return;
+	}
+	const hideExtra = gridFieldname === 'items' ? spr_duplicate_produced_gsm_fieldnames() : {};
+	let visibleCols = resolvedShow.filter(function (fn) {
+		return !hideExtra[fn];
+	});
+	if (gridFieldname === 'items' && frm && frm.doc && cint(frm.doc.docstatus) !== 0) {
+		visibleCols = visibleCols.filter(function (fn) {
+			return fn !== 'save_row' && fn !== 'edit_row';
+		});
+	}
+	const showSet = {};
+	visibleCols.forEach(function (fn) {
+		showSet[fn] = 1;
+	});
+	(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
+		if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
+			return;
+		}
+		const show = !!showSet[df.fieldname];
+		try {
+			grid.update_docfield_property(df.fieldname, 'hidden', 0);
+			grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
+		} catch (e) {
+			/* ignore */
+		}
+	});
+	try {
+		if (grid.visible_columns) {
+			delete grid.visible_columns;
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	if (typeof grid.setup_visible_columns === 'function') {
+		grid.setup_visible_columns();
+	}
+	if (typeof grid.refresh_header === 'function') {
+		grid.refresh_header();
+	}
+	try {
+		if (typeof grid.refresh === 'function') {
+			grid.refresh();
+		} else {
+			spr_refresh_grid_body_rows(grid);
+		}
+	} catch (e) {
+		/* ignore */
 	}
 	spr_attach_grid_scroll_sync(fd);
 	spr_sync_grid_header_body_scroll(fd);
@@ -4368,7 +4438,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '28';
+	const sprItemsCssVer = '29';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -4517,6 +4587,68 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .grid-field {
 			overflow-x: auto;
 			max-width: 100%;
+		}
+		/* === Roll Production Results (items) — readable columns after submit === */
+		.spr-items-wrap .form-grid-container {
+			min-height: 120px;
+			overflow-x: auto;
+		}
+		.spr-items-wrap .form-grid {
+			min-width: 1280px;
+		}
+		.spr-items-wrap .grid-heading-row {
+			display: flex !important;
+			align-items: flex-start;
+			min-height: 32px;
+			width: max-content;
+			min-width: 100%;
+		}
+		.spr-items-wrap .grid-body .rows {
+			display: block;
+			min-height: 48px;
+		}
+		.spr-items-wrap .grid-row {
+			display: flex !important;
+			align-items: center;
+			min-height: 38px;
+			width: max-content;
+			min-width: 100%;
+		}
+		.spr-items-wrap .grid-heading-row .grid-static-col,
+		.spr-items-wrap .grid-row .col {
+			flex: 0 0 auto;
+			min-width: 72px;
+			max-width: none;
+			padding-right: 8px;
+			box-sizing: border-box;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.spr-items-wrap .grid-row .col[data-fieldname="item_code"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="item_code"],
+		.spr-items-wrap .grid-row .col[data-fieldname="item_name"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="item_name"],
+		.spr-items-wrap .grid-row .col[data-fieldname="batch_no"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="batch_no"],
+		.spr-items-wrap .grid-row .col[data-fieldname="party_code"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="party_code"],
+		.spr-items-wrap .grid-row .col[data-fieldname="quality"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="quality"],
+		.spr-items-wrap .grid-row .col[data-fieldname="color"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="color"] {
+			min-width: 110px;
+			max-width: 200px;
+		}
+		.spr-items-wrap .grid-row .col[data-fieldname="work_order"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="work_order"] {
+			min-width: 130px;
+		}
+		.spr-items-wrap .grid-row .col[data-fieldname="save_row"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="save_row"],
+		.spr-items-wrap .grid-row .col[data-fieldname="print_sticker"],
+		.spr-items-wrap .grid-heading-row .grid-static-col[data-fieldname="print_sticker"] {
+			min-width: 88px;
 		}
 		/* === Available Jobs + Bundle Calculation alignment === */
 		.spr-shaft-jobs-wrap .form-grid-container,
