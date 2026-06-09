@@ -7,9 +7,13 @@ const PS_KNOWN_PREFIXES = new Set([
 ]);
 
 /** Always visible in grid list view — never use hidden=1 (breaks header/body alignment). */
-const PS_CORE_GRID_FIELDS = new Set([
-	'item_code', 'item_name', 'qty', 'uom', 'unit',
-]);
+const PS_CORE_GRID_ORDER = ['item_code', 'item_name', 'qty', 'uom', 'unit'];
+const PS_CORE_GRID_FIELDS = new Set(PS_CORE_GRID_ORDER);
+
+const PS_GRID_META_BY_FIELD = {
+	items: 'Planning sheet Item',
+	planned_items: 'Planning Table',
+};
 
 const PS_BASE_FIELDS = [
 	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'width_inch',
@@ -159,52 +163,74 @@ function ps_build_allowed_fieldnames(frm) {
 	return allowed;
 }
 
-function ps_apply_grid_columns(frm, table_fieldname) {
-	const fd = frm.fields_dict[table_fieldname];
-	if (!fd || !fd.grid) return;
-	const grid = fd.grid;
-	const metaDoctype = grid.doctype;
+function ps_build_show_fieldnames(frm, table_fieldname) {
+	const metaDoctype = PS_GRID_META_BY_FIELD[table_fieldname];
+	if (!metaDoctype) {
+		return [];
+	}
 	const allowed = ps_build_allowed_fieldnames(frm);
-
-	(frappe.meta.get_docfields(metaDoctype) || []).forEach((df) => {
-		if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
-			return;
-		}
-		const show = PS_CORE_GRID_FIELDS.has(df.fieldname) || allowed.has(df.fieldname);
-		try {
-			grid.update_docfield_property(df.fieldname, 'hidden', 0);
-			grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
-		} catch (e) {
-			/* ignore */
+	const showSet = {};
+	PS_CORE_GRID_ORDER.forEach((fn) => {
+		if (allowed.has(fn)) {
+			showSet[fn] = 1;
 		}
 	});
-
-	try {
-		if (grid.visible_columns) delete grid.visible_columns;
-	} catch (e) {
-		/* ignore */
+	if (allowed.has('so_item')) {
+		showSet.so_item = 1;
 	}
-	if (typeof grid.setup_visible_columns === 'function') {
-		grid.setup_visible_columns();
+	if (table_fieldname === 'planned_items' && allowed.has('sales_order_item')) {
+		showSet.sales_order_item = 1;
 	}
-	if (typeof grid.refresh_header === 'function') {
-		grid.refresh_header();
-	}
-	try {
-		if (typeof grid.refresh === 'function') {
-			grid.refresh();
+	(frappe.meta.get_docfields(metaDoctype) || []).forEach((df) => {
+		if (!df || !allowed.has(df.fieldname)) {
+			return;
 		}
-	} catch (e) {
-		/* ignore */
+		if (PS_CORE_GRID_FIELDS.has(df.fieldname)) {
+			return;
+		}
+		if (df.fieldname === 'so_item' || df.fieldname === 'sales_order_item') {
+			return;
+		}
+		showSet[df.fieldname] = 1;
+	});
+	const gc = production_entry && production_entry.grid_columns;
+	if (gc && typeof gc.ordered_show_fields === 'function') {
+		return gc.ordered_show_fields(metaDoctype, showSet);
 	}
+	return Object.keys(showSet);
+}
+
+function ps_apply_grid_columns(frm, table_fieldname) {
+	const metaDoctype = PS_GRID_META_BY_FIELD[table_fieldname];
+	const gc = production_entry && production_entry.grid_columns;
+	if (!metaDoctype || !gc || typeof gc.apply !== 'function') {
+		return;
+	}
+	const showFields = ps_build_show_fieldnames(frm, table_fieldname);
+	gc.apply(frm, table_fieldname, metaDoctype, showFields);
 }
 
 function apply_process_code_visibility(frm) {
-	if (!frm || !frm.fields_dict) return;
+	if (!frm || !frm.fields_dict) {
+		return;
+	}
 	['items', 'planned_items'].forEach((t) => ps_apply_grid_columns(frm, t));
 }
 
+function schedule_apply_process_code_visibility(frm, delay) {
+	const gc = production_entry && production_entry.grid_columns;
+	if (gc && typeof gc.debounce === 'function') {
+		gc.debounce(frm, 'ps_visibility', () => apply_process_code_visibility(frm), delay);
+		return;
+	}
+	setTimeout(() => apply_process_code_visibility(frm), delay != null ? delay : 80);
+}
+
 frappe.ui.form.on('Planning sheet', {
+	onload(frm) {
+		apply_process_code_visibility(frm);
+	},
+
 	refresh(frm) {
 		apply_process_code_visibility(frm);
 		if (!frm.is_new()) {
@@ -236,11 +262,11 @@ frappe.ui.form.on('Planning sheet', {
 				register_planning_sheet_stock_check_button(frm);
 			}
 		}
-		setTimeout(() => apply_process_code_visibility(frm), 100);
+		schedule_apply_process_code_visibility(frm, 100);
 	},
 
 	onload_post_render(frm) {
-		setTimeout(() => apply_process_code_visibility(frm), 200);
+		schedule_apply_process_code_visibility(frm, 0);
 	},
 
 	validate(frm) {
@@ -248,16 +274,16 @@ frappe.ui.form.on('Planning sheet', {
 	},
 
 	items_add(frm) {
-		setTimeout(() => apply_process_code_visibility(frm), 50);
+		schedule_apply_process_code_visibility(frm, 50);
 	},
 	items_remove(frm) {
-		setTimeout(() => apply_process_code_visibility(frm), 50);
+		schedule_apply_process_code_visibility(frm, 50);
 	},
 	planned_items_add(frm) {
-		setTimeout(() => apply_process_code_visibility(frm), 50);
+		schedule_apply_process_code_visibility(frm, 50);
 	},
 	planned_items_remove(frm) {
-		setTimeout(() => apply_process_code_visibility(frm), 50);
+		schedule_apply_process_code_visibility(frm, 50);
 	},
 
 	/** Legacy hook name used by planning_sheet_custom.js */

@@ -38,13 +38,17 @@ app_include_js = "scheduler.bundle.js"
 # include js in doctype views
 doctype_js = {
     "Planning sheet": [
+        "public/js/child_grid_columns.js",
         "public/js/production_entry.js",
         "public/js/planning_sheet_custom.js",
         "public/js/planning_sheet_stock_check.js",
     ],
     "Work Order": "public/js/work_order_rm_uom.js",
     "Production Plan": "public/js/production_plan_rm_uom.js",
-    "Shaft Production Run": "public/js/shaft_production_run.js",
+    "Shaft Production Run": [
+        "public/js/child_grid_columns.js",
+        "public/js/shaft_production_run.js",
+    ],
     "Roll Production Entry": "public/js/roll_production_entry.js",
     "Transfer Approval": "public/js/transfer_approval_form.js",
     "Stock Entry": "public/js/stock_entry_transfer.js",

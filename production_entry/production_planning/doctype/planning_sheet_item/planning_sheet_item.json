@@ -68,7 +68,7 @@
         {
             "fieldname": "item_code",
             "fieldtype": "Link",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Item Code",
             "options": "Item",
             "reqd": 1
@@ -77,7 +77,7 @@
             "fetch_from": "item_code.item_name",
             "fieldname": "item_name",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Item Name",
             "read_only": 1
         },
@@ -88,14 +88,14 @@
         {
             "fieldname": "qty",
             "fieldtype": "Float",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Qty",
             "reqd": 1
         },
         {
             "fieldname": "uom",
             "fieldtype": "Link",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "UOM",
             "options": "UOM",
             "reqd": 1
@@ -108,21 +108,21 @@
         {
             "fieldname": "unit",
             "fieldtype": "Link",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Unit",
             "options": "Workstation"
         },
         {
             "fieldname": "custom_movement_type",
             "fieldtype": "Select",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Movement Type",
             "options": "Despatch\nTransfer"
         },
         {
             "fieldname": "custom_transfer_destination",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Transfer Destination"
         },
         {
@@ -149,14 +149,14 @@
         {
             "fieldname": "gsm",
             "fieldtype": "Int",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "GSM",
             "reqd": 1
         },
         {
             "fieldname": "meter",
             "fieldtype": "Int",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Meter"
         },
         {
@@ -166,13 +166,13 @@
         {
             "fieldname": "meter_per_roll",
             "fieldtype": "Int",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Meter per Roll"
         },
         {
             "fieldname": "no_of_rolls",
             "fieldtype": "Int",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "No of Rolls"
         },
         {
@@ -182,27 +182,27 @@
         {
             "fieldname": "weight_per_roll",
             "fieldtype": "Float",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Weight per Roll (KG)",
             "precision": "3"
         },
         {
             "fieldname": "width_inch",
             "fieldtype": "Float",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Width (Inch)",
             "precision": "2"
         },
         {
             "fieldname": "sheet_size",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Sheet Size"
         },
         {
             "fieldname": "bag_size",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Bag Size",
             "read_only": 1
         },
@@ -214,20 +214,20 @@
         {
             "fieldname": "quality",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Quality",
             "reqd": 1
         },
         {
             "fieldname": "custom_quality",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Custom Quality"
         },
         {
             "fieldname": "color",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Color"
         },
         {
@@ -237,19 +237,19 @@
         {
             "fieldname": "custom_item_planned_date",
             "fieldtype": "Date",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Planned Date"
         },
         {
             "fieldname": "custom_plan_code",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Plan Code"
         },
         {
             "fieldname": "custom_lamination_order_code",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Lamination Order Code",
             "read_only": 1
         },
@@ -262,7 +262,7 @@
         {
             "fieldname": "custom_parent_fabric",
             "fieldtype": "Select",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Parent Fabric",
             "options": "Bag FG\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\nPB\nMain 102 Base Fabric\nMain 103 Base Fabric\nMain 104 Base Fabric\nMain 105 Base Fabric\nMain 106 Base Fabric\nMain 107 Base Fabric\nMain 107 PB\nLoop 103 Base Fabric\nLoop 108 Base Fabric\nLoop 110 Base Fabric\nLoop 107 Base Fabric\nLoop 107 PB\nFG Sheet\n251 Base Fabric\n252 Base Fabric\n253 Base Fabric\n254 Base Fabric\n255 Base Fabric",
             "read_only": 1
@@ -270,56 +270,56 @@
         {
             "fieldname": "custom_lam_side",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Lam Side",
             "read_only": 1
         },
         {
             "fieldname": "custom_lam_gsm",
             "fieldtype": "Int",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "LAM GSM",
             "read_only": 1
         },
         {
             "fieldname": "custom_bopp_gsm",
             "fieldtype": "Int",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "BOPP GSM",
             "read_only": 1
         },
         {
             "fieldname": "custom_cylinder_type",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Cylinder Type",
             "read_only": 1
         },
         {
             "fieldname": "custom_design_code",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Design Code",
             "read_only": 1
         },
         {
             "fieldname": "custom_design_name",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Design Name",
             "read_only": 1
         },
         {
             "fieldname": "custom_design_colour",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Design Colour",
             "read_only": 1
         },
         {
             "fieldname": "custom_design_attachment",
             "fieldtype": "Attach",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Design Attachment"
         },
         {
@@ -337,13 +337,13 @@
         {
             "fieldname": "custom_finishing",
             "fieldtype": "Data",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Finishing"
         },
         {
             "fieldname": "custom_white_tint",
             "fieldtype": "Select",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "White Tint",
             "options": "\nYes\nNo"
         },
@@ -360,7 +360,7 @@
         {
             "fieldname": "total_weight",
             "fieldtype": "Float",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Total Weight (KG)",
             "precision": "3",
             "read_only": 1
@@ -368,7 +368,7 @@
         {
             "fieldname": "warehouse",
             "fieldtype": "Link",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Warehouse",
             "options": "Warehouse"
         },
@@ -382,7 +382,7 @@
         {
             "fieldname": "allocated_to_unit",
             "fieldtype": "Select",
-            "in_list_view": 1,
+            "in_list_view": 0,
             "label": "Allocated to Unit",
             "options": "\nUnit 1\nUnit 2\nUnit 3\nUnit 4",
             "read_only": 1
