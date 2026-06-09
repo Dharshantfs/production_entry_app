@@ -268,17 +268,17 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, showFields, force) {
 		return;
 	}
 	const hideExtra = gridFieldname === 'items' ? spr_duplicate_produced_gsm_fieldnames() : {};
-	const showFields = resolvedShow.filter(function (fn) {
+	const visibleFields = resolvedShow.filter(function (fn) {
 		return !hideExtra[fn];
 	});
 	const gc = production_entry && production_entry.grid_columns;
 	if (gc && typeof gc.apply === 'function') {
-		gc.apply(frm, gridFieldname, metaDoctype, showFields);
+		gc.apply(frm, gridFieldname, metaDoctype, visibleFields);
 		spr_attach_grid_scroll_sync(fd);
 		return;
 	}
 	const showSet = {};
-	showFields.forEach(function (fn) {
+	visibleFields.forEach(function (fn) {
 		showSet[fn] = 1;
 	});
 	(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
