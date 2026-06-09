@@ -6,13 +6,35 @@ const PS_KNOWN_PREFIXES = new Set([
 	'251', '252', '253', '254', '255',
 ]);
 
-/** Always visible in grid list view — never use hidden=1 (breaks header/body alignment). */
-const PS_CORE_GRID_ORDER = ['item_code', 'item_name', 'qty', 'uom', 'unit'];
-const PS_CORE_GRID_FIELDS = new Set(PS_CORE_GRID_ORDER);
-
 const PS_GRID_META_BY_FIELD = {
 	items: 'Planning sheet Item',
 	planned_items: 'Planning Table',
+};
+
+/** Fabric 100 / 102 / 103 — canonical grid column order. */
+const PS_ORDER_FABRIC_BASE = [
+	'item_code', 'item_name', 'qty', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
+	'planned_date', 'custom_parent_child_trace_id', 'custom_parent_fabric',
+	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
+];
+
+/** Explicit grid column order per process code (logical field keys; resolved per child table). */
+const PS_FIELD_ORDER_BY_PROCESS = {
+	100: PS_ORDER_FABRIC_BASE,
+	102: PS_ORDER_FABRIC_BASE,
+	103: PS_ORDER_FABRIC_BASE,
+	104: [
+		'item_code', 'item_name', 'qty', 'uom', 'gsm', 'custom_lam_gsm', 'custom_lam_side',
+		'quality', 'color', 'width_inch', 'unit', 'planned_date', 'custom_parent_child_trace_id',
+		'custom_parent_fabric', 'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll',
+		'order_sheet', 'spr_name',
+	],
+	105: [
+		'item_code', 'item_name', 'qty', 'custom_design_code', 'custom_design_name',
+		'custom_design_attachment', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
+		'planned_date', 'custom_parent_child_trace_id', 'custom_parent_fabric',
+		'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
+	],
 };
 
 const PS_BASE_FIELDS = [
@@ -21,7 +43,7 @@ const PS_BASE_FIELDS = [
 	'custom_parent_fabric', 'custom_parent_child_trace_id',
 	'custom_item_planned_date', 'planned_date', 'custom_plan_code', 'plan_name',
 	'custom_movement_type', 'so_item', 'sales_order_item',
-	'total_weight', 'warehouse', 'allocated_to_unit', 'work_order',
+	'total_weight', 'warehouse', 'allocated_to_unit', 'work_order', 'order_sheet', 'spr_name',
 ];
 
 const PS_LAM_104_FIELDS = [
@@ -62,42 +84,107 @@ const PS_PB_FIELDS = [
 
 function ps_item_process_prefix(item_code) {
 	const ic = String(item_code || '').trim();
-	if (!ic) return '';
+	if (!ic) {
+		return '';
+	}
 	if (ic.toUpperCase().startsWith('PB') || ic.toUpperCase().startsWith('PB-')) {
 		return 'PB';
 	}
 	if (ic.indexOf('-') >= 0) {
+		const upper = ic.toUpperCase();
+		// Design-prefixed 105/106 FG (e.g. 6003-1051131811201395) — match server _item_process_prefix.
+		if (/^[A-Z0-9]+-105\d/.test(upper)) {
+			return '105';
+		}
+		if (/^[A-Z0-9]+-106/.test(upper)) {
+			return '106';
+		}
 		const segments = ic.split('-');
 		for (let i = 0; i < segments.length; i += 1) {
 			const segDigits = segments[i].replace(/\D/g, '');
 			if (segDigits.length >= 3) {
 				const sp = segDigits.substring(0, 3);
-				if (PS_KNOWN_PREFIXES.has(sp)) return sp;
+				if (PS_KNOWN_PREFIXES.has(sp)) {
+					return sp;
+				}
 			}
 		}
+		return '';
 	}
-	const m = ic.match(/^(\d{3})/);
-	if (m && PS_KNOWN_PREFIXES.has(m[1])) return m[1];
-	return '';
+	const digits = ic.replace(/\D/g, '');
+	const sp = digits.length >= 3 ? digits.substring(0, 3) : '';
+	return PS_KNOWN_PREFIXES.has(sp) ? sp : '';
+}
+
+function ps_resolve_field_for_table(table_fieldname, logicalField) {
+	if (logicalField === 'planned_date') {
+		return table_fieldname === 'planned_items' ? 'planned_date' : 'custom_item_planned_date';
+	}
+	if (logicalField === 'custom_lam_side') {
+		return table_fieldname === 'planned_items' ? 'custom_lam_side_' : 'custom_lam_side';
+	}
+	return logicalField;
+}
+
+function ps_resolve_order_for_table(table_fieldname, logicalOrder) {
+	const metaDoctype = PS_GRID_META_BY_FIELD[table_fieldname];
+	if (!metaDoctype || !logicalOrder || !logicalOrder.length) {
+		return [];
+	}
+	const out = [];
+	const seen = {};
+	logicalOrder.forEach((fn) => {
+		const resolved = ps_resolve_field_for_table(table_fieldname, fn);
+		if (seen[resolved]) {
+			return;
+		}
+		if (frappe.meta.get_docfield(metaDoctype, resolved)) {
+			seen[resolved] = 1;
+			out.push(resolved);
+		}
+	});
+	return out;
+}
+
+function ps_merge_process_field_orders(codes) {
+	const sorted = Array.from(codes).sort();
+	if (!sorted.length) {
+		return PS_ORDER_FABRIC_BASE.slice();
+	}
+	let merged = (PS_FIELD_ORDER_BY_PROCESS[sorted[0]] || PS_ORDER_FABRIC_BASE).slice();
+	const seen = new Set(merged);
+	for (let i = 1; i < sorted.length; i += 1) {
+		const tpl = PS_FIELD_ORDER_BY_PROCESS[sorted[i]] || [];
+		tpl.forEach((fn) => {
+			if (seen.has(fn)) {
+				return;
+			}
+			seen.add(fn);
+			const idxInTpl = tpl.indexOf(fn);
+			let insertAt = merged.length;
+			for (let j = idxInTpl - 1; j >= 0; j -= 1) {
+				const anchor = tpl[j];
+				const anchorIdx = merged.indexOf(anchor);
+				if (anchorIdx >= 0) {
+					insertAt = anchorIdx + 1;
+					break;
+				}
+			}
+			merged.splice(insertAt, 0, fn);
+		});
+	}
+	return merged;
 }
 
 function ps_fields_for_process(code) {
+	if (PS_FIELD_ORDER_BY_PROCESS[code]) {
+		return new Set(PS_FIELD_ORDER_BY_PROCESS[code]);
+	}
 	const out = new Set(PS_BASE_FIELDS);
 	if (!code || code === 'PB') {
 		if (code === 'PB') {
 			PS_PB_FIELDS.forEach((f) => out.add(f));
 		}
-		return out;
-	}
-	if (code === '100' || code === '102' || code === '103') {
-		return out;
-	}
-	if (code === '104') {
-		PS_LAM_104_FIELDS.forEach((f) => out.add(f));
-		return out;
-	}
-	if (code === '105') {
-		PS_PRINT_105_FIELDS.forEach((f) => out.add(f));
 		return out;
 	}
 	if (code === '106') {
@@ -150,48 +237,46 @@ function ps_collect_active_process_codes(frm) {
 	return codes;
 }
 
-function ps_build_allowed_fieldnames(frm) {
-	const allowed = new Set(PS_CORE_GRID_FIELDS);
+function ps_build_logical_field_order(frm) {
 	const codes = ps_collect_active_process_codes(frm);
-	if (!codes.size) {
-		PS_BASE_FIELDS.forEach((f) => allowed.add(f));
-		return allowed;
+	const fabricCodes = new Set(['100', '102', '103', '104', '105']);
+	const activeFabric = Array.from(codes).filter((c) => fabricCodes.has(c));
+	if (activeFabric.length) {
+		return ps_merge_process_field_orders(activeFabric);
 	}
+	if (!codes.size) {
+		return PS_ORDER_FABRIC_BASE.slice();
+	}
+	// Other processes: union fields, keep meta field_order via child_grid_columns fallback.
+	const allowed = new Set();
 	codes.forEach((code) => {
 		ps_fields_for_process(code).forEach((f) => allowed.add(f));
 	});
-	return allowed;
+	return Array.from(allowed);
 }
 
 function ps_build_show_fieldnames(frm, table_fieldname) {
+	const logicalOrder = ps_build_logical_field_order(frm);
+	const codes = ps_collect_active_process_codes(frm);
+	const fabricOnly = !codes.size || Array.from(codes).every((c) => PS_FIELD_ORDER_BY_PROCESS[c]);
+	if (fabricOnly) {
+		return ps_resolve_order_for_table(table_fieldname, logicalOrder);
+	}
+	// Non-fabric processes: allowed set + meta field_order (legacy).
 	const metaDoctype = PS_GRID_META_BY_FIELD[table_fieldname];
-	if (!metaDoctype) {
-		return [];
-	}
-	const allowed = ps_build_allowed_fieldnames(frm);
-	const showSet = {};
-	PS_CORE_GRID_ORDER.forEach((fn) => {
-		if (allowed.has(fn)) {
-			showSet[fn] = 1;
-		}
+	const allowed = new Set();
+	Array.from(codes).forEach((code) => {
+		ps_fields_for_process(code).forEach((f) => allowed.add(f));
 	});
-	if (allowed.has('so_item')) {
-		showSet.so_item = 1;
+	if (!codes.size) {
+		PS_BASE_FIELDS.forEach((f) => allowed.add(f));
 	}
-	if (table_fieldname === 'planned_items' && allowed.has('sales_order_item')) {
-		showSet.sales_order_item = 1;
-	}
-	(frappe.meta.get_docfields(metaDoctype) || []).forEach((df) => {
-		if (!df || !allowed.has(df.fieldname)) {
-			return;
+	const showSet = {};
+	Array.from(allowed).forEach((fn) => {
+		const resolved = ps_resolve_field_for_table(table_fieldname, fn);
+		if (frappe.meta.get_docfield(metaDoctype, resolved)) {
+			showSet[resolved] = 1;
 		}
-		if (PS_CORE_GRID_FIELDS.has(df.fieldname)) {
-			return;
-		}
-		if (df.fieldname === 'so_item' || df.fieldname === 'sales_order_item') {
-			return;
-		}
-		showSet[df.fieldname] = 1;
 	});
 	const gc = production_entry && production_entry.grid_columns;
 	if (gc && typeof gc.ordered_show_fields === 'function') {

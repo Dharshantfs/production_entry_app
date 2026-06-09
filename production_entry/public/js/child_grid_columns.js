@@ -31,33 +31,71 @@ function cg_reset_all_list_view(grid, metaDoctype) {
 	});
 }
 
-function cg_ordered_show_fields(metaDoctype, showSet) {
-	const meta = frappe.get_meta(metaDoctype);
-	const order = (meta && meta.field_order) || [];
+function cg_field_exists(metaDoctype, fn) {
+	const df = frappe.meta.get_docfield(metaDoctype, fn);
+	return !!df && !cg_skip_field(df);
+}
+
+function cg_ordered_show_fields(metaDoctype, showSet, preferredOrder) {
 	const show = [];
 	const seen = {};
+	if (preferredOrder && preferredOrder.length) {
+		preferredOrder.forEach((fn) => {
+			if (!showSet[fn] || seen[fn] || !cg_field_exists(metaDoctype, fn)) {
+				return;
+			}
+			show.push(fn);
+			seen[fn] = 1;
+		});
+	}
+	const meta = frappe.get_meta(metaDoctype);
+	const order = (meta && meta.field_order) || [];
 	order.forEach((fn) => {
-		if (!showSet[fn] || seen[fn]) {
-			return;
-		}
-		const df = frappe.meta.get_docfield(metaDoctype, fn);
-		if (cg_skip_field(df)) {
+		if (!showSet[fn] || seen[fn] || !cg_field_exists(metaDoctype, fn)) {
 			return;
 		}
 		show.push(fn);
 		seen[fn] = 1;
 	});
 	Object.keys(showSet || {}).forEach((fn) => {
-		if (seen[fn]) {
-			return;
-		}
-		const df = frappe.meta.get_docfield(metaDoctype, fn);
-		if (cg_skip_field(df)) {
+		if (seen[fn] || !cg_field_exists(metaDoctype, fn)) {
 			return;
 		}
 		show.push(fn);
 	});
 	return show;
+}
+
+/** Reorder grid.docfields so visible columns follow preferredOrder (Frappe uses docfields iteration order). */
+function cg_reorder_grid_docfields(grid, metaDoctype, preferredOrder) {
+	if (!grid || !preferredOrder || !preferredOrder.length) {
+		return;
+	}
+	const source = (grid.docfields || []).slice();
+	if (!source.length) {
+		return;
+	}
+	const byName = {};
+	source.forEach((df) => {
+		if (df && df.fieldname) {
+			byName[df.fieldname] = df;
+		}
+	});
+	const ordered = [];
+	const seen = {};
+	preferredOrder.forEach((fn) => {
+		if (byName[fn] && !seen[fn]) {
+			ordered.push(byName[fn]);
+			seen[fn] = 1;
+		}
+	});
+	source.forEach((df) => {
+		if (df && df.fieldname && !seen[df.fieldname]) {
+			ordered.push(df);
+			seen[df.fieldname] = 1;
+		}
+	});
+	grid.docfields = ordered;
 }
 
 function cg_refresh_grid_body(grid) {
@@ -139,7 +177,7 @@ production_entry.grid_columns = {
 	 * @param {object} frm - Frappe form
 	 * @param {string} tableFieldname - parent child table fieldname
 	 * @param {string} metaDoctype - child doctype name
-	 * @param {string[]} showFieldnames - fieldnames to show, in any order (re-sorted by meta field_order)
+	 * @param {string[]} showFieldnames - fieldnames to show; array order is preserved when provided
 	 */
 	apply(frm, tableFieldname, metaDoctype, showFieldnames) {
 		const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
@@ -147,13 +185,15 @@ production_entry.grid_columns = {
 			return;
 		}
 		const grid = fd.grid;
+		const preferred = (showFieldnames || []).filter((fn) => cg_field_exists(metaDoctype, fn));
 		const showSet = {};
-		(showFieldnames || []).forEach((fn) => {
+		preferred.forEach((fn) => {
 			showSet[fn] = 1;
 		});
 
 		cg_reset_all_list_view(grid, metaDoctype);
-		const ordered = cg_ordered_show_fields(metaDoctype, showSet);
+		cg_reorder_grid_docfields(grid, metaDoctype, preferred);
+		const ordered = cg_ordered_show_fields(metaDoctype, showSet, preferred);
 		ordered.forEach((fn) => {
 			try {
 				grid.update_docfield_property(fn, 'hidden', 0);
