@@ -1,18 +1,35 @@
 // Planning Sheet Custom Script - Display customer name instead of ID
 
-const process_fields_map = {
-    '100': [
-        'item_code', 'item_name', 'qty', 'uom', 'quality', 'color', 
-        'gsm', 'meter', 'meter_per_roll', 'no_of_rolls', 'unit', 
-        'order_sheet', 'spr_name', 'work_order'
-    ],
-    '104': [],
-    '105': []
-};
+
 
 const core_fields = new Set(['item_code', 'item_name', 'qty', 'uom', 'unit']);
 
 function apply_process_code_visibility(frm) {
+    const process_fields_map = {
+        '100': [
+            // Using labels or fieldnames to be absolutely safe
+            'Item Code', 'item_code',
+            'Item Name', 'item_name',
+            'Qty (KG)', 'qty',
+            'UOM', 'uom',
+            'Unit', 'unit',
+            'Planned date', 'planned_date', 'custom_item_planned_date',
+            'Plan Code', 'plan_code', 'custom_plan_code',
+            'Width (Inch)', 'width_inch',
+            'Quality', 'quality',
+            'Color', 'color',
+            'GSM', 'gsm',
+            'Length', 'length', 'custom_length', 'meter',
+            'Length / Roll', 'length_per_roll', 'custom_length_per_roll', 'meter_per_roll',
+            'No of Rolls', 'no_of_rolls',
+            'Parent Fabric', 'parent_fabric', 'custom_parent_fabric',
+            'Weight per Roll (KG)', 'weight_per_roll',
+            'Movement Type', 'movement_type', 'custom_movement_type'
+        ],
+        '104': [],
+        '105': []
+    };
+
     let active_process_codes = new Set();
     
     (frm.doc.items || []).forEach(row => {
@@ -26,10 +43,10 @@ function apply_process_code_visibility(frm) {
         }
     });
 
-    let fields_to_show = new Set();
+    let allowed_keys = new Set();
     active_process_codes.forEach(code => {
         if (process_fields_map[code]) {
-            process_fields_map[code].forEach(f => fields_to_show.add(f));
+            process_fields_map[code].forEach(k => allowed_keys.add(k));
         }
     });
 
@@ -39,7 +56,9 @@ function apply_process_code_visibility(frm) {
         
         grid.docfields.forEach(df => {
             if (!core_fields.has(df.fieldname)) {
-                let is_hidden = fields_to_show.has(df.fieldname) ? 0 : 1;
+                // Check if either fieldname or label is in our allowed keys
+                let is_allowed = allowed_keys.has(df.fieldname) || (df.label && allowed_keys.has(df.label));
+                let is_hidden = is_allowed ? 0 : 1;
                 grid.update_docfield_property(df.fieldname, 'hidden', is_hidden);
             }
         });
