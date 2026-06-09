@@ -241,79 +241,11 @@ function spr_refresh_grid_body_rows(grid) {
 	}
 }
 
-function spr_apply_grid_visible_columns(frm, gridFieldname, showFields, force) {
+/** Grid columns come from child doctype in_list_view — no runtime column toggling. */
+function spr_apply_grid_visible_columns(frm, gridFieldname) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[gridFieldname];
 	if (!fd || !fd.grid) {
 		return;
-	}
-	const grid = fd.grid;
-	const metaDoctype = SPR_GRID_META_BY_FIELD[gridFieldname];
-	if (!metaDoctype) {
-		return;
-	}
-	const resolvedShow = [];
-	(showFields || []).forEach(function (fn) {
-		if (frappe.meta.get_docfield(metaDoctype, fn)) {
-			resolvedShow.push(fn);
-		}
-	});
-	if (!resolvedShow.length) {
-		spr_attach_grid_scroll_sync(fd);
-		spr_sync_grid_header_body_scroll(fd);
-		return;
-	}
-	if (!force && spr_grid_has_user_column_settings(grid)) {
-		spr_attach_grid_scroll_sync(fd);
-		spr_sync_grid_header_body_scroll(fd);
-		return;
-	}
-	const hideExtra = gridFieldname === 'items' ? spr_duplicate_produced_gsm_fieldnames() : {};
-	const visibleFields = resolvedShow.filter(function (fn) {
-		return !hideExtra[fn];
-	});
-	const gc = production_entry && production_entry.grid_columns;
-	if (gc && typeof gc.apply === 'function') {
-		gc.apply(frm, gridFieldname, metaDoctype, visibleFields);
-		spr_attach_grid_scroll_sync(fd);
-		return;
-	}
-	const showSet = {};
-	visibleFields.forEach(function (fn) {
-		showSet[fn] = 1;
-	});
-	(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
-		if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
-			return;
-		}
-		const show = !!showSet[df.fieldname];
-		try {
-			grid.update_docfield_property(df.fieldname, 'hidden', 0);
-			grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
-		} catch (e) {
-			/* ignore */
-		}
-	});
-	try {
-		if (grid.visible_columns) {
-			delete grid.visible_columns;
-		}
-	} catch (e) {
-		/* ignore */
-	}
-	if (typeof grid.setup_visible_columns === 'function') {
-		grid.setup_visible_columns();
-	}
-	if (typeof grid.refresh_header === 'function') {
-		grid.refresh_header();
-	}
-	try {
-		if (typeof grid.refresh === 'function') {
-			grid.refresh();
-		} else {
-			spr_refresh_grid_body_rows(grid);
-		}
-	} catch (e) {
-		/* ignore */
 	}
 	spr_attach_grid_scroll_sync(fd);
 	spr_sync_grid_header_body_scroll(fd);
