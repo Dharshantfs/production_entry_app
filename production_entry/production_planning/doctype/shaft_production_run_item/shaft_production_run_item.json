@@ -5,35 +5,35 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "work_order",
+  "job",
+  "party_code",
   "item_code",
   "item_name",
   "quality",
   "color",
-  "custom_sheet_size",
-  "custom_bag_size",
+  "width_inch",
+  "meter_roll",
+  "produced_length_mtrs",
   "gsm",
   "custom_fabric_gsm",
   "custom_lam_gsm",
   "custom_bopp_gsm",
-  "planned_qty",
-  "job",
-  "batch_no",
-  "party_code",
-  "width_inch",
-  "column_break_4",
-  "roll_no",
-  "meter_roll",
-  "produced_length_mtrs",
-  "net_weight",
   "produced_gsm",
+  "batch_no",
+  "net_weight",
   "gross_weight",
-  "save_row",
-  "uom",
+  "planned_qty",
+  "custom_sheet_size",
   "custom_planned_sheets_pcs",
   "custom_total_produced_sheets",
+  "custom_bag_size",
   "custom_planned_bag_pcs",
   "custom_achieved_bag_pcs",
+  "save_row",
+  "work_order",
+  "column_break_4",
+  "roll_no",
+  "uom",
   "row_ready_for_print",
   "row_locked",
   "row_printed",
@@ -42,11 +42,17 @@
  ],
  "fields": [
   {
-   "fieldname": "work_order",
-   "fieldtype": "Link",
+   "fieldname": "job",
+   "fieldtype": "Data",
    "in_list_view": 0,
-   "label": "Work Order",
-   "options": "Work Order"
+   "label": "Job",
+   "read_only": 1
+  },
+  {
+   "fieldname": "party_code",
+   "fieldtype": "Data",
+   "in_list_view": 0,
+   "label": "Order Code"
   },
   {
    "fieldname": "item_code",
@@ -65,23 +71,44 @@
   {
    "fieldname": "quality",
    "fieldtype": "Data",
+   "in_list_view": 0,
    "label": "Quality",
-   "read_only": 1,
-   "in_list_view": 0
+   "read_only": 1
   },
   {
    "fieldname": "color",
    "fieldtype": "Data",
+   "in_list_view": 0,
    "label": "Color",
-   "read_only": 1,
-   "in_list_view": 0
+   "read_only": 1
+  },
+  {
+   "fieldname": "width_inch",
+   "fieldtype": "Float",
+   "in_list_view": 0,
+   "label": "Width (Inches)",
+   "precision": "2"
+  },
+  {
+   "fieldname": "meter_roll",
+   "fieldtype": "Float",
+   "in_list_view": 0,
+   "label": "Ordered Length (Mtrs)",
+   "precision": "2"
+  },
+  {
+   "fieldname": "produced_length_mtrs",
+   "fieldtype": "Float",
+   "in_list_view": 0,
+   "label": "Produced Length (Mtrs)",
+   "precision": "2"
   },
   {
    "fieldname": "gsm",
    "fieldtype": "Int",
+   "in_list_view": 0,
    "label": "Sticker GSM",
-   "read_only": 1,
-   "in_list_view": 0
+   "read_only": 1
   },
   {
    "fieldname": "custom_fabric_gsm",
@@ -105,17 +132,11 @@
    "read_only": 1
   },
   {
-   "fieldname": "planned_qty",
+   "fieldname": "produced_gsm",
    "fieldtype": "Float",
    "in_list_view": 0,
-   "label": "Planned Qty",
-   "precision": "2"
-  },
-  {
-   "fieldname": "job",
-   "fieldtype": "Data",
-   "in_list_view": 0,
-   "label": "Job",
+   "label": "Produced GSM",
+   "precision": "2",
    "read_only": 1
   },
   {
@@ -125,82 +146,32 @@
    "label": "Batch No"
   },
   {
-   "fieldname": "party_code",
-   "fieldtype": "Data",
-   "in_list_view": 0,
-   "label": "Order Code"
-  },
-  {
-   "fieldname": "column_break_4",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "roll_no",
-   "fieldtype": "Int",
-   "label": "Roll No",
-   "read_only": 1,
-   "in_list_view": 0
-  },
-  {
-   "fieldname": "meter_roll",
-   "fieldtype": "Float",
-   "label": "Ordered Length (Mtrs)",
-   "precision": "2",
-   "in_list_view": 0
-  },
-  {
-   "fieldname": "produced_length_mtrs",
-   "fieldtype": "Float",
-   "label": "Produced Length (Mtrs)",
-   "precision": "2",
-   "in_list_view": 0
-  },
-  {
    "fieldname": "net_weight",
    "fieldtype": "Float",
+   "in_list_view": 0,
    "label": "Net Weight",
    "precision": "2",
    "read_only": 1
   },
   {
-   "fieldname": "produced_gsm",
-   "fieldtype": "Float",
-   "label": "Produced GSM",
-   "read_only": 1,
-   "precision": "2",
-   "in_list_view": 0
-  },
-  {
    "fieldname": "gross_weight",
    "fieldtype": "Float",
+   "in_list_view": 0,
    "label": "Gross Weight",
-   "precision": "2",
-   "in_list_view": 0
+   "precision": "2"
   },
   {
-   "fieldname": "save_row",
-   "fieldtype": "Button",
-   "label": "Save Row",
-   "read_only": 1,
-   "in_list_view": 0
-  },
-  {
-   "fieldname": "uom",
-   "fieldtype": "Link",
-   "label": "UOM",
-   "options": "UOM"
+   "fieldname": "planned_qty",
+   "fieldtype": "Float",
+   "in_list_view": 0,
+   "label": "Planned Qty",
+   "precision": "2"
   },
   {
    "fieldname": "custom_sheet_size",
    "fieldtype": "Data",
    "in_list_view": 0,
    "label": "Sheet Size"
-  },
-  {
-   "fieldname": "custom_bag_size",
-   "fieldtype": "Data",
-   "in_list_view": 0,
-   "label": "Bag Size"
   },
   {
    "fieldname": "custom_planned_sheets_pcs",
@@ -217,6 +188,12 @@
    "precision": "0"
   },
   {
+   "fieldname": "custom_bag_size",
+   "fieldtype": "Data",
+   "in_list_view": 0,
+   "label": "Bag Size"
+  },
+  {
    "fieldname": "custom_planned_bag_pcs",
    "fieldtype": "Float",
    "in_list_view": 0,
@@ -231,50 +208,75 @@
    "precision": "0"
   },
   {
-   "fieldname": "width_inch",
-   "fieldtype": "Float",
+   "fieldname": "save_row",
+   "fieldtype": "Button",
    "in_list_view": 0,
-   "label": "Width (Inches)",
-   "precision": "2"
+   "label": "Save Row",
+   "read_only": 1
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "in_list_view": 0,
+   "label": "Work Order",
+   "options": "Work Order"
+  },
+  {
+   "fieldname": "column_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "roll_no",
+   "fieldtype": "Int",
+   "in_list_view": 0,
+   "label": "Roll No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "in_list_view": 0,
+   "label": "UOM",
+   "options": "UOM"
   },
   {
    "fieldname": "row_ready_for_print",
    "fieldtype": "Check",
-   "label": "Row Ready For Print",
-   "in_list_view": 0
+   "in_list_view": 0,
+   "label": "Row Ready For Print"
   },
   {
    "fieldname": "row_locked",
    "fieldtype": "Check",
-   "label": "Row Locked",
-   "in_list_view": 0
+   "in_list_view": 0,
+   "label": "Row Locked"
   },
   {
    "fieldname": "row_printed",
    "fieldtype": "Check",
-   "label": "Row Printed",
-   "in_list_view": 0
+   "in_list_view": 0,
+   "label": "Row Printed"
   },
   {
    "allow_on_submit": 1,
    "fieldname": "print_sticker",
    "fieldtype": "Button",
+   "in_list_view": 0,
    "label": "Print Label",
-   "read_only": 1,
-   "in_list_view": 0
+   "read_only": 1
   },
   {
    "fieldname": "edit_row",
    "fieldtype": "Button",
+   "in_list_view": 0,
    "label": "Edit Row",
-   "read_only": 1,
-   "in_list_view": 0
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-04-01 15:52:00.000000",
+ "modified": "2026-06-09 08:14:00.000000",
  "module": "Production Planning",
  "name": "Shaft Production Run Item",
  "owner": "Administrator",
