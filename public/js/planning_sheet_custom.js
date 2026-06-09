@@ -5,28 +5,35 @@
 const core_fields = new Set(['item_code', 'item_name', 'qty', 'uom', 'unit']);
 
 function apply_process_code_visibility(frm) {
+    const base_fields = [
+        'Item Code', 'item_code',
+        'Item Name', 'item_name',
+        'Qty (KG)', 'qty',
+        'UOM', 'uom',
+        'Unit', 'unit',
+        'Planned date', 'planned_date', 'custom_item_planned_date',
+        'Plan Code', 'plan_code', 'custom_plan_code',
+        'Width (Inch)', 'width_inch',
+        'Quality', 'quality',
+        'Color', 'color',
+        'GSM', 'gsm',
+        'Length', 'length', 'custom_length', 'meter',
+        'Length / Roll', 'length_per_roll', 'custom_length_per_roll', 'meter_per_roll',
+        'No of Rolls', 'no_of_rolls',
+        'Parent Fabric', 'parent_fabric', 'custom_parent_fabric',
+        'Weight per Roll (KG)', 'weight_per_roll',
+        'Movement Type', 'movement_type', 'custom_movement_type'
+    ];
+
     const process_fields_map = {
-        '100': [
-            // Using labels or fieldnames to be absolutely safe
-            'Item Code', 'item_code',
-            'Item Name', 'item_name',
-            'Qty (KG)', 'qty',
-            'UOM', 'uom',
-            'Unit', 'unit',
-            'Planned date', 'planned_date', 'custom_item_planned_date',
-            'Plan Code', 'plan_code', 'custom_plan_code',
-            'Width (Inch)', 'width_inch',
-            'Quality', 'quality',
-            'Color', 'color',
-            'GSM', 'gsm',
-            'Length', 'length', 'custom_length', 'meter',
-            'Length / Roll', 'length_per_roll', 'custom_length_per_roll', 'meter_per_roll',
-            'No of Rolls', 'no_of_rolls',
-            'Parent Fabric', 'parent_fabric', 'custom_parent_fabric',
-            'Weight per Roll (KG)', 'weight_per_roll',
-            'Movement Type', 'movement_type', 'custom_movement_type'
+        '100': [...base_fields],
+        '102': [...base_fields],
+        '103': [...base_fields],
+        '104': [
+            ...base_fields,
+            'fabric gsm', 'fabric_gsm', 'custom_fabric_gsm',
+            'LAM GSM', 'lam_gsm', 'custom_lam_gsm'
         ],
-        '104': [],
         '105': []
     };
 
