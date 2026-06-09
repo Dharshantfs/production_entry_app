@@ -241,87 +241,43 @@ function spr_refresh_grid_body_rows(grid) {
 	}
 }
 
-/** Build ordered visible field list for items / shaft_jobs grids. */
-function spr_resolve_grid_show_columns(frm, gridFieldname, columnFieldList) {
-	const metaDoctype = SPR_GRID_META_BY_FIELD[gridFieldname];
-	if (!metaDoctype) {
-		return [];
-	}
-	const resolvedShow = [];
-	(columnFieldList || []).forEach(function (fn) {
-		if (frappe.meta.get_docfield(metaDoctype, fn)) {
-			resolvedShow.push(fn);
-		}
-	});
-	const hideExtra = gridFieldname === 'items' ? spr_duplicate_produced_gsm_fieldnames() : {};
-	let visibleCols = resolvedShow.filter(function (fn) {
-		return !hideExtra[fn];
-	});
-	if (gridFieldname === 'items' && frm && frm.doc && cint(frm.doc.docstatus) !== 0) {
-		visibleCols = visibleCols.filter(function (fn) {
-			return fn !== 'save_row' && fn !== 'edit_row';
-		});
-	}
-	return visibleCols;
-}
-
-/** Apply a fixed column list — never use hidden=1 (breaks header/body alignment). */
+/**
+ * Realign grid header/body columns — don't change visibility, let JSON handle that.
+ * Just ensure header and body are in sync.
+ */
 function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, force) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[gridFieldname];
 	if (!fd || !fd.grid) {
 		return;
 	}
 	const grid = fd.grid;
+	// Clear hidden flags that may have been set by previous code
 	const metaDoctype = SPR_GRID_META_BY_FIELD[gridFieldname];
-	if (!metaDoctype) {
-		spr_attach_grid_scroll_sync(fd);
-		spr_sync_grid_header_body_scroll(fd);
-		return;
+	if (metaDoctype) {
+		(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
+			if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
+				return;
+			}
+			try {
+				grid.update_docfield_property(df.fieldname, 'hidden', 0);
+			} catch (e) {
+				/* ignore */
+			}
+		});
 	}
-	const visibleCols = spr_resolve_grid_show_columns(frm, gridFieldname, columnFieldList);
-	if (!visibleCols.length) {
-		spr_attach_grid_scroll_sync(fd);
-		spr_sync_grid_header_body_scroll(fd);
-		return;
-	}
-	if (!force && spr_grid_has_user_column_settings(grid)) {
-		spr_attach_grid_scroll_sync(fd);
-		spr_sync_grid_header_body_scroll(fd);
-		return;
-	}
-	const gc = spr_get_grid_columns_module();
-	if (gc && typeof gc.apply === 'function' && (gridFieldname === 'items' || gridFieldname === 'shaft_jobs')) {
-		gc.apply(frm, gridFieldname, metaDoctype, visibleCols);
-		spr_attach_grid_scroll_sync(fd);
-		return;
-	}
-	const showSet = {};
-	visibleCols.forEach(function (fn) {
-		showSet[fn] = 1;
-	});
-	(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
-		if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
-			return;
-		}
-		const show = !!showSet[df.fieldname];
-		try {
-			grid.update_docfield_property(df.fieldname, 'hidden', 0);
-			grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
-		} catch (e) {
-			/* ignore */
-		}
-	});
+	// Realign header with body
 	spr_force_grid_realign(frm, gridFieldname);
 	spr_attach_grid_scroll_sync(fd);
+	spr_sync_grid_header_body_scroll(fd);
 }
 
 function spr_apply_create_entry_buttons_ui(frm) {
-	// Button fields in list view break header/body alignment — use row expand form instead.
+	const isDraft = frm && frm.doc && cint(frm.doc.docstatus) === 0;
 	const jobsGrid = frm && frm.fields_dict && frm.fields_dict.shaft_jobs && frm.fields_dict.shaft_jobs.grid;
 	if (jobsGrid) {
 		try {
 			jobsGrid.update_docfield_property('create_roll_entry', 'hidden', 0);
-			jobsGrid.update_docfield_property('create_roll_entry', 'in_list_view', 0);
+			jobsGrid.update_docfield_property('create_roll_entry', 'in_list_view', isDraft ? 1 : 0);
 		} catch (e) {
 			/* ignore */
 		}
@@ -331,7 +287,7 @@ function spr_apply_create_entry_buttons_ui(frm) {
 	if (bundleGrid) {
 		try {
 			bundleGrid.update_docfield_property('create_bundle_entry', 'hidden', 0);
-			bundleGrid.update_docfield_property('create_bundle_entry', 'in_list_view', 0);
+			bundleGrid.update_docfield_property('create_bundle_entry', 'in_list_view', isDraft ? 1 : 0);
 		} catch (e) {
 			/* ignore */
 		}
@@ -553,8 +509,8 @@ function spr_grid_list_view_config(frm, fieldname) {
 			'work_orders',
 			'is_manual',
 			'manual_items',
+			'create_roll_entry',
 		];
-		// create_roll_entry is a Button — keep out of list view (breaks header/body alignment).
 		return { show: show, hide: [] };
 	}
 	if (fieldname === 'bundle_calculation' || fieldname === 'items') {

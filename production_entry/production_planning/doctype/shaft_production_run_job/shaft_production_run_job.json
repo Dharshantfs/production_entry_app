@@ -6,11 +6,9 @@
  "engine": "InnoDB",
  "field_order": [
   "job_id",
-  "production_plan_item",
   "gsm",
   "quality",
   "combination",
-  "notes",
   "total_width",
   "meter_roll_mtrs",
   "net_weight",
@@ -23,15 +21,128 @@
   "work_orders",
   "is_manual",
   "manual_items",
-  "create_roll_entry"
+  "create_roll_entry",
+  "production_plan_item",
+  "notes"
  ],
  "fields": [
   {
    "fieldname": "job_id",
    "fieldtype": "Data",
-   "in_list_view": 0,
+   "in_list_view": 1,
    "label": "Job ID",
    "read_only": 1
+  },
+  {
+   "fieldname": "gsm",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "GSM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quality",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Quality",
+   "read_only": 1
+  },
+  {
+   "fieldname": "combination",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Combination",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_width",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Width (Inches)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "meter_roll_mtrs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Meter / Roll (Mtrs)",
+   "precision": "2"
+  },
+  {
+   "fieldname": "net_weight",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Net Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Target Weight (Kgs)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_total_achieved_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Achieved Weight (Kgs)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_total_achieved_meter",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total Achieved Meter (Mtr)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "no_of_shafts",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "No of Shafts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "no_of_rolls",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "No of Rolls (per shaft)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "party_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Order Code"
+  },
+  {
+   "fieldname": "work_orders",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Work Orders"
+  },
+  {
+   "fieldname": "is_manual",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Manual"
+  },
+  {
+   "fieldname": "manual_items",
+   "fieldtype": "Text",
+   "in_list_view": 1,
+   "label": "Manual Items"
+  },
+  {
+   "fieldname": "create_roll_entry",
+   "fieldtype": "Button",
+   "in_list_view": 1,
+   "label": "Create Entry"
   },
   {
    "fieldname": "production_plan_item",
@@ -42,128 +153,17 @@
    "read_only": 1
   },
   {
-   "fieldname": "gsm",
-   "fieldtype": "Int",
-   "in_list_view": 0,
-   "label": "GSM",
-   "read_only": 1
-  },
-  {
-   "fieldname": "quality",
-   "fieldtype": "Data",
-   "in_list_view": 0,
-   "label": "Quality",
-   "read_only": 1
-  },
-  {
-   "fieldname": "combination",
-   "fieldtype": "Small Text",
-   "in_list_view": 0,
-   "label": "Combination",
-   "read_only": 1
-  },
-  {
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "in_list_view": 0,
    "label": "Notes",
    "read_only": 1
-  },
-  {
-   "fieldname": "total_width",
-   "fieldtype": "Float",
-   "in_list_view": 0,
-   "label": "Total Width (Inches)",
-   "precision": "2",
-   "read_only": 1
-  },
-  {
-   "fieldname": "meter_roll_mtrs",
-   "fieldtype": "Float",
-   "in_list_view": 0,
-   "label": "Meter / Roll (Mtrs)",
-   "precision": "2"
-  },
-  {
-   "fieldname": "net_weight",
-   "fieldtype": "Small Text",
-   "in_list_view": 0,
-   "label": "Net Weight",
-   "read_only": 1
-  },
-  {
-   "fieldname": "total_weight",
-   "fieldtype": "Float",
-   "in_list_view": 0,
-   "label": "Total Target Weight (Kgs)",
-   "precision": "2",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_total_achieved_weight",
-   "fieldtype": "Float",
-   "in_list_view": 0,
-   "label": "Total Achieved Weight (Kgs)",
-   "precision": "2",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_total_achieved_meter",
-   "fieldtype": "Float",
-   "in_list_view": 0,
-   "label": "Total Achieved Meter (Mtr)",
-   "precision": "2",
-   "read_only": 1
-  },
-  {
-   "fieldname": "no_of_shafts",
-   "fieldtype": "Int",
-   "in_list_view": 0,
-   "label": "No of Shafts",
-   "read_only": 1
-  },
-  {
-   "fieldname": "no_of_rolls",
-   "fieldtype": "Int",
-   "in_list_view": 0,
-   "label": "No of Rolls (per shaft)",
-   "read_only": 1
-  },
-  {
-   "fieldname": "party_code",
-   "fieldtype": "Data",
-   "in_list_view": 0,
-   "label": "Order Code"
-  },
-  {
-   "fieldname": "work_orders",
-   "fieldtype": "Small Text",
-   "in_list_view": 0,
-   "label": "Work Orders"
-  },
-  {
-   "fieldname": "is_manual",
-   "fieldtype": "Check",
-   "in_list_view": 0,
-   "label": "Is Manual"
-  },
-  {
-   "fieldname": "manual_items",
-   "fieldtype": "Text",
-   "in_list_view": 0,
-   "label": "Manual Items"
-  },
-  {
-   "fieldname": "create_roll_entry",
-   "fieldtype": "Button",
-   "in_list_view": 0,
-   "label": "Create Entry"
   }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 0,
  "links": [],
- "modified": "2026-04-01 15:52:00.000000",
+ "modified": "2026-06-09 10:15:00.000000",
  "module": "Production Planning",
  "name": "Shaft Production Run Job",
  "owner": "Administrator",
