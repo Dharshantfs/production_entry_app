@@ -26697,6 +26697,7 @@ def _resolve_mix_batch_prefix(unit_code):
         "12": ("TT", "12"),
         "13": ("JV", "13"),
         "14": ("VR", "14"),
+        "23": ("VTP", "23"),
     }
     return mapping.get(u)
 
