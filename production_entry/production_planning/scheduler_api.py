@@ -2797,15 +2797,10 @@ def _stamp_sheet_cutting_size_on_planning_dict(row_dict, item_code):
 		return
 	dims = _sheet_dimensions_from_item_code(item_code)
 	sz = _cstr(dims.get("sheet_size") or "")
-	w = flt(dims.get("width_inch") or 0)
 	if sz and frappe.db.has_column("Planning Table", "sheet_size"):
 		row_dict["sheet_size"] = _normalize_sheet_size_str(sz)
-	# Process 252: sheet size from series; roll width from BOM 105 child (not series width).
-	if _item_process_prefix(_cstr(item_code)) == "252":
-		return
-	if w > 0 and flt(row_dict.get("width_inch") or 0) <= 0:
-		wr = round(w, 1)
-		row_dict["width_inch"] = float(int(wr)) if abs(wr - round(wr)) < 1e-9 else wr
+	# Sheet-cutting FG: sheet_size from series; roll width comes from BOM fabric (100/105/104/107), not series width.
+	return
 
 
 def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
@@ -2829,9 +2824,14 @@ def enrich_planning_child_row_from_item_code(row, planning_sheet_name=None):
 		row.gsm = g
 	w = flt(getattr(row, "width_inch", 0) or 0)
 	sz, w2 = _sheet_size_for_item_code(ic, w)
-	if w2 > 0 and hasattr(row, "width_inch"):
+	if _is_sheet_cutting_fg_item_code(ic):
+		if sz and hasattr(row, "sheet_size"):
+			row.sheet_size = sz
+	elif w2 > 0 and hasattr(row, "width_inch"):
 		row.width_inch = w2
-	if sz and hasattr(row, "sheet_size"):
+		if sz and hasattr(row, "sheet_size"):
+			row.sheet_size = sz
+	elif sz and hasattr(row, "sheet_size"):
 		row.sheet_size = sz
 	pp = _item_process_prefix(ic)
 	if pp in ("251", "252", "105") or _is_printing_105_parent_process(ic):
@@ -13931,23 +13931,15 @@ def get_sheet_cutting_order_table_data(
             ex.get("bom_roll_width") or 0,
             frappe.db.get_value("Item", bom_ic, "item_name") if bom_ic else "",
         )
-        parent_w = _resolve_planning_row_width_inch(
-            ic2,
-            ex.get("roll_size") or row.get("width_inch") or 0,
-            _cstr(row.get("item_name") or row.get("itemName") or ""),
+        fabric_ic = _cstr(ex.get("fabric_item_code") or "")
+        fabric_w = _resolve_planning_row_width_inch(
+            fabric_ic,
+            ex.get("child_roll_size") or 0,
+            frappe.db.get_value("Item", fabric_ic, "item_name") if fabric_ic else "",
         )
-        # Roll size: BOM child (104/107) width first, then parent row, then fabric 100 — not sheet series width.
-        row["roll_size"] = flt(
-            bom_w
-            or parent_w
-            or _resolve_planning_row_width_inch(
-                _cstr(ex.get("fabric_item_code") or ""),
-                ex.get("child_roll_size") or 0,
-                "",
-            )
-            or 0
-        )
-        row["fabric_item_code"] = bom_ic or _cstr(ex.get("fabric_item_code") or "")
+        # Roll size = BOM roll child (105/104/107) or main fabric 100 width — never FG sheet series width.
+        row["roll_size"] = flt(bom_w or fabric_w or 0)
+        row["fabric_item_code"] = bom_ic or fabric_ic
         row["sheet_width_inch"] = flt(size_info.get("width_inch") or 0)
         row["sheet_height_inch"] = flt(size_info.get("height_inch") or 0)
         row["mtr"] = flt(ex.get("mtr") or row.get("meter") or 0)
@@ -28852,6 +28844,8 @@ def _resolve_parent_fabric_label(
 	if is_direct_so_line:
 		if pp in ALL_BAG_FG_PROCESS_CODES or _is_bag_fg_item_code(ic):
 			return "Bag FG"
+		if _is_sheet_cutting_fg_item_code(ic):
+			return "FG Sheet"
 		return "FG Fabric"
 
 	if not bag_fg_context and not is_direct_so_line:
@@ -28933,7 +28927,7 @@ def _infer_fabric_chain_parent_process(fabric_ic, soi, pt_rows):
 	soi = _cstr(soi).strip()
 	if not fabric_ic.startswith("100") or not pt_rows:
 		return ""
-	for parent_pp in ("103", "104", "105", "106", "107", "102"):
+	for parent_pp in ("251", "252", "253", "254", "255", "103", "104", "105", "106", "107", "102"):
 		for prow in pt_rows:
 			pic = _cstr(prow.get("item_code") if isinstance(prow, dict) else getattr(prow, "item_code", "")).strip()
 			row_soi = _cstr(
@@ -28943,13 +28937,22 @@ def _infer_fabric_chain_parent_process(fabric_ic, soi, pt_rows):
 			).strip()
 			if soi and row_soi and row_soi != soi:
 				continue
-			if parent_pp == "104":
+			if parent_pp == "255":
+				if _item_process_prefix(pic) != "255" and _lamination_process_from_item_code(pic) != "255":
+					continue
+			elif parent_pp in ("251", "252", "253", "254"):
+				if _item_process_prefix(pic) != parent_pp:
+					continue
+			elif parent_pp == "104":
 				if _lamination_process_from_item_code(pic) != "104":
 					continue
 			elif _item_process_prefix(pic) != parent_pp:
 				continue
 			try:
-				res = _get_fabric_item_from_process_item(pic, expected_process=parent_pp, process_label="Parent fabric")
+				if parent_pp == "251":
+					res = get_fabric_item_from_sheet_cutting_item(pic)
+				else:
+					res = _get_fabric_item_from_process_item(pic, expected_process=parent_pp, process_label="Parent fabric")
 				if _cstr(res.get("fabric_item_code")).strip() == fabric_ic:
 					return parent_pp
 			except Exception:
