@@ -322,10 +322,6 @@ frappe.ui.form.on('Shaft Production Run', {
 			spr_schedule_item_row_styles_after_doc_write(frm);
 		}
 		
-		// Force grid reflow on submitted docs to align headers with data
-		if (frm.doc && cint(frm.doc.docstatus) === 1) {
-			spr_force_grid_reflow(frm);
-		}
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 
@@ -362,8 +358,6 @@ frappe.ui.form.on('Shaft Production Run', {
 	on_submit: function (frm) {
 		schedule_spr_item_row_styles(frm);
 		spr_schedule_item_row_styles_after_doc_write(frm);
-		// Force both grids to recalculate column layout after submit
-		spr_force_grid_reflow(frm);
 		if (frm.doc && frm.doc.production_plan) {
 			frappe.call({
 				method:
@@ -2262,28 +2256,6 @@ function spr_patch_items_grid_refresh(frm) {
 	}
 }
 
-/** Force both Available Jobs and Roll Production Results grids to recalculate column widths.
- *  After submit/refresh Frappe rebuilds grids as read-only HTML tables; column widths can
- *  become stale causing headers and data cells to misalign. This function schedules
- *  setup_visible_columns + refresh on both grids at several intervals. */
-function spr_force_grid_reflow(frm) {
-	if (!frm || !frm.fields_dict) return;
-	['shaft_jobs', 'items'].forEach(function (tbl) {
-		var fd = frm.fields_dict[tbl];
-		if (!fd || !fd.grid) return;
-		var grid = fd.grid;
-		[0, 200, 600, 1500, 3000].forEach(function (ms) {
-			setTimeout(function () {
-				try {
-					if (typeof grid.setup_visible_columns === 'function') {
-						grid.setup_visible_columns();
-					}
-					grid.refresh();
-				} catch (e) { /* ignore */ }
-			}, ms);
-		});
-	});
-}
 
 /** Legend for |Sticker GSM − Produced GSM| bands (above Roll Production Results grid). */
 function spr_inject_gsm_legend(frm) {
