@@ -433,12 +433,25 @@ function spr_reset_shaft_jobs_grid_field_visibility(frm) {
 	});
 }
 
+/** Safe access — child_grid_columns.js may not be loaded; bare `production_entry` throws ReferenceError. */
+function spr_get_grid_columns_module() {
+	try {
+		const pe = typeof window !== 'undefined' && window.production_entry;
+		if (pe && pe.grid_columns) {
+			return pe.grid_columns;
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	return null;
+}
+
 /**
  * Force full header+body column realignment for a single grid.
  * Deletes cached visible_columns, re-runs setup + header + body refresh.
  */
 function spr_force_grid_realign(frm, fieldname) {
-	const gc = production_entry && production_entry.grid_columns;
+	const gc = spr_get_grid_columns_module();
 	if (gc && typeof gc.realign === 'function') {
 		gc.realign(frm, fieldname);
 		spr_ensure_child_grid_heights(frm);
