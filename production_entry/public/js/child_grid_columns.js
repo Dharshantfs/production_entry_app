@@ -36,6 +36,38 @@ function cg_field_exists(metaDoctype, fn) {
 	return !!df && !cg_skip_field(df);
 }
 
+/** Frappe meta.field_order may be array, JSON string, or object — normalize before iteration. */
+function cg_meta_field_order(metaDoctype) {
+	const meta = frappe.get_meta(metaDoctype);
+	if (!meta) {
+		return [];
+	}
+	const fo = meta.field_order;
+	if (Array.isArray(fo)) {
+		return fo;
+	}
+	if (typeof fo === 'string') {
+		try {
+			const parsed = JSON.parse(fo);
+			if (Array.isArray(parsed)) {
+				return parsed;
+			}
+		} catch (e) {
+			/* ignore */
+		}
+	}
+	if (fo && typeof fo === 'object') {
+		const keys = Object.keys(fo).filter((k) => /^\d+$/.test(k)).sort((a, b) => Number(a) - Number(b));
+		if (keys.length) {
+			return keys.map((k) => fo[k]);
+		}
+		return Object.values(fo);
+	}
+	return (frappe.meta.get_docfields(metaDoctype) || [])
+		.map((df) => df && df.fieldname)
+		.filter(Boolean);
+}
+
 function cg_ordered_show_fields(metaDoctype, showSet, preferredOrder) {
 	const show = [];
 	const seen = {};
@@ -48,8 +80,7 @@ function cg_ordered_show_fields(metaDoctype, showSet, preferredOrder) {
 			seen[fn] = 1;
 		});
 	}
-	const meta = frappe.get_meta(metaDoctype);
-	const order = (meta && meta.field_order) || [];
+	const order = cg_meta_field_order(metaDoctype);
 	order.forEach((fn) => {
 		if (!showSet[fn] || seen[fn] || !cg_field_exists(metaDoctype, fn)) {
 			return;
@@ -180,29 +211,38 @@ production_entry.grid_columns = {
 	 * @param {string[]} showFieldnames - fieldnames to show; array order is preserved when provided
 	 */
 	apply(frm, tableFieldname, metaDoctype, showFieldnames) {
-		const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
-		if (!fd || !fd.grid || !metaDoctype) {
-			return;
-		}
-		const grid = fd.grid;
-		const preferred = (showFieldnames || []).filter((fn) => cg_field_exists(metaDoctype, fn));
-		const showSet = {};
-		preferred.forEach((fn) => {
-			showSet[fn] = 1;
-		});
-
-		cg_reset_all_list_view(grid, metaDoctype);
-		cg_reorder_grid_docfields(grid, metaDoctype, preferred);
-		const ordered = cg_ordered_show_fields(metaDoctype, showSet, preferred);
-		ordered.forEach((fn) => {
-			try {
-				grid.update_docfield_property(fn, 'hidden', 0);
-				grid.update_docfield_property(fn, 'in_list_view', 1);
-			} catch (e) {
-				/* ignore */
+		try {
+			const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
+			if (!fd || !fd.grid || !metaDoctype) {
+				return;
 			}
-		});
-		cg_realign_grid(grid, fd);
+			const grid = fd.grid;
+			const preferred = (showFieldnames || []).filter((fn) => cg_field_exists(metaDoctype, fn));
+			if (!preferred.length) {
+				return;
+			}
+			const showSet = {};
+			preferred.forEach((fn) => {
+				showSet[fn] = 1;
+			});
+
+			cg_reset_all_list_view(grid, metaDoctype);
+			cg_reorder_grid_docfields(grid, metaDoctype, preferred);
+			const ordered = cg_ordered_show_fields(metaDoctype, showSet, preferred);
+			ordered.forEach((fn) => {
+				try {
+					grid.update_docfield_property(fn, 'hidden', 0);
+					grid.update_docfield_property(fn, 'in_list_view', 1);
+				} catch (e) {
+					/* ignore */
+				}
+			});
+			cg_realign_grid(grid, fd);
+		} catch (e) {
+			if (typeof console !== 'undefined' && console.warn) {
+				console.warn('grid_columns.apply failed', tableFieldname, e);
+			}
+		}
 	},
 
 	realign(frm, tableFieldname) {

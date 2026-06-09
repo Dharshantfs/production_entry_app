@@ -146,15 +146,28 @@ function ps_resolve_order_for_table(table_fieldname, logicalOrder) {
 	return out;
 }
 
+function ps_ordered_fields_for_process(code) {
+	if (PS_FIELD_ORDER_BY_PROCESS[code]) {
+		return PS_FIELD_ORDER_BY_PROCESS[code].slice();
+	}
+	const extras = [];
+	ps_fields_for_process(code).forEach((fn) => {
+		if (PS_ORDER_FABRIC_BASE.indexOf(fn) < 0 && extras.indexOf(fn) < 0) {
+			extras.push(fn);
+		}
+	});
+	return PS_ORDER_FABRIC_BASE.concat(extras);
+}
+
 function ps_merge_process_field_orders(codes) {
 	const sorted = Array.from(codes).sort();
 	if (!sorted.length) {
 		return PS_ORDER_FABRIC_BASE.slice();
 	}
-	let merged = (PS_FIELD_ORDER_BY_PROCESS[sorted[0]] || PS_ORDER_FABRIC_BASE).slice();
+	let merged = ps_ordered_fields_for_process(sorted[0]).slice();
 	const seen = new Set(merged);
 	for (let i = 1; i < sorted.length; i += 1) {
-		const tpl = PS_FIELD_ORDER_BY_PROCESS[sorted[i]] || [];
+		const tpl = ps_ordered_fields_for_process(sorted[i]);
 		tpl.forEach((fn) => {
 			if (seen.has(fn)) {
 				return;
@@ -239,50 +252,14 @@ function ps_collect_active_process_codes(frm) {
 
 function ps_build_logical_field_order(frm) {
 	const codes = ps_collect_active_process_codes(frm);
-	const fabricCodes = new Set(['100', '102', '103', '104', '105']);
-	const activeFabric = Array.from(codes).filter((c) => fabricCodes.has(c));
-	if (activeFabric.length) {
-		return ps_merge_process_field_orders(activeFabric);
-	}
 	if (!codes.size) {
 		return PS_ORDER_FABRIC_BASE.slice();
 	}
-	// Other processes: union fields, keep meta field_order via child_grid_columns fallback.
-	const allowed = new Set();
-	codes.forEach((code) => {
-		ps_fields_for_process(code).forEach((f) => allowed.add(f));
-	});
-	return Array.from(allowed);
+	return ps_merge_process_field_orders(codes);
 }
 
 function ps_build_show_fieldnames(frm, table_fieldname) {
-	const logicalOrder = ps_build_logical_field_order(frm);
-	const codes = ps_collect_active_process_codes(frm);
-	const fabricOnly = !codes.size || Array.from(codes).every((c) => PS_FIELD_ORDER_BY_PROCESS[c]);
-	if (fabricOnly) {
-		return ps_resolve_order_for_table(table_fieldname, logicalOrder);
-	}
-	// Non-fabric processes: allowed set + meta field_order (legacy).
-	const metaDoctype = PS_GRID_META_BY_FIELD[table_fieldname];
-	const allowed = new Set();
-	Array.from(codes).forEach((code) => {
-		ps_fields_for_process(code).forEach((f) => allowed.add(f));
-	});
-	if (!codes.size) {
-		PS_BASE_FIELDS.forEach((f) => allowed.add(f));
-	}
-	const showSet = {};
-	Array.from(allowed).forEach((fn) => {
-		const resolved = ps_resolve_field_for_table(table_fieldname, fn);
-		if (frappe.meta.get_docfield(metaDoctype, resolved)) {
-			showSet[resolved] = 1;
-		}
-	});
-	const gc = production_entry && production_entry.grid_columns;
-	if (gc && typeof gc.ordered_show_fields === 'function') {
-		return gc.ordered_show_fields(metaDoctype, showSet);
-	}
-	return Object.keys(showSet);
+	return ps_resolve_order_for_table(table_fieldname, ps_build_logical_field_order(frm));
 }
 
 function ps_apply_grid_columns(frm, table_fieldname) {
@@ -299,7 +276,13 @@ function apply_process_code_visibility(frm) {
 	if (!frm || !frm.fields_dict) {
 		return;
 	}
-	['items', 'planned_items'].forEach((t) => ps_apply_grid_columns(frm, t));
+	try {
+		['items', 'planned_items'].forEach((t) => ps_apply_grid_columns(frm, t));
+	} catch (e) {
+		if (typeof console !== 'undefined' && console.warn) {
+			console.warn('apply_process_code_visibility failed', e);
+		}
+	}
 }
 
 function schedule_apply_process_code_visibility(frm, delay) {
@@ -313,11 +296,10 @@ function schedule_apply_process_code_visibility(frm, delay) {
 
 frappe.ui.form.on('Planning sheet', {
 	onload(frm) {
-		apply_process_code_visibility(frm);
+		schedule_apply_process_code_visibility(frm, 150);
 	},
 
 	refresh(frm) {
-		apply_process_code_visibility(frm);
 		if (!frm.is_new()) {
 			frm.add_custom_button(__('Meter to Kgs (All Bag BOM)'), function () {
 				frappe.call({
@@ -347,7 +329,7 @@ frappe.ui.form.on('Planning sheet', {
 				register_planning_sheet_stock_check_button(frm);
 			}
 		}
-		schedule_apply_process_code_visibility(frm, 100);
+		schedule_apply_process_code_visibility(frm, 80);
 	},
 
 	onload_post_render(frm) {
