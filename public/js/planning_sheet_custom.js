@@ -33,24 +33,14 @@ function apply_process_code_visibility(frm) {
         }
     });
 
-    let all_managed_fields = new Set();
-    Object.values(process_fields_map).forEach(fields_array => {
-        fields_array.forEach(f => {
-            if (!core_fields.has(f)) {
-                all_managed_fields.add(f);
-            }
-        });
-    });
-
     ['items', 'planned_items'].forEach(table_fieldname => {
         let grid = frm.fields_dict[table_fieldname] && frm.fields_dict[table_fieldname].grid;
         if (!grid) return;
         
-        all_managed_fields.forEach(fieldname => {
-            let df = frappe.meta.get_docfield(grid.doctype, fieldname, frm.doc.name);
-            if (df) {
-                let is_hidden = fields_to_show.has(fieldname) ? 0 : 1;
-                grid.update_docfield_property(fieldname, 'hidden', is_hidden);
+        grid.docfields.forEach(df => {
+            if (!core_fields.has(df.fieldname)) {
+                let is_hidden = fields_to_show.has(df.fieldname) ? 0 : 1;
+                grid.update_docfield_property(df.fieldname, 'hidden', is_hidden);
             }
         });
     });
