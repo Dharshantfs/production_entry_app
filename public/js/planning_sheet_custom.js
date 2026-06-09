@@ -22,7 +22,8 @@ function apply_process_code_visibility(frm) {
         'No of Rolls', 'no_of_rolls',
         'Parent Fabric', 'parent_fabric', 'custom_parent_fabric',
         'Weight per Roll (KG)', 'weight_per_roll',
-        'Movement Type', 'movement_type', 'custom_movement_type'
+        'Movement Type', 'movement_type', 'custom_movement_type',
+        'Parent Child Trace ID', 'parent_child_trace_id', 'custom_parent_child_trace_id'
     ];
 
     const process_fields_map = {
