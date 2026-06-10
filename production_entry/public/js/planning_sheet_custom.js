@@ -183,7 +183,14 @@ function ps_schedule_planning_grid_columns(frm) {
         frm._ps_grid_followup_timer = setTimeout(function () {
             frm._ps_grid_followup_timer = null;
             run();
+            ps_realign_planning_grids(frm);
         }, 500);
+    }
+    if (!frm._ps_grid_followup_timer2) {
+        frm._ps_grid_followup_timer2 = setTimeout(function () {
+            frm._ps_grid_followup_timer2 = null;
+            ps_realign_planning_grids(frm);
+        }, 1200);
     }
 }
 

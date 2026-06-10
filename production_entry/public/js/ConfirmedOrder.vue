@@ -138,7 +138,7 @@ const hideEmpty = ref(false);
 
 const loading = ref(false);
 const cards = ref([]);
-const unitOptionsSet = ref(["Unit 1", "Unit 2", "Unit 3", "Unit 4"]);
+const unitOptions = ref([]);
 
 let debounceTimer = null;
 function debouncedFetch() {
@@ -156,8 +156,6 @@ const totalSheets = computed(() =>
 const totalQty = computed(() =>
   cards.value.reduce((s, c) => s + (c.total_qty || 0), 0)
 );
-
-const unitOptions = computed(() => unitOptionsSet.value);
 
 function cardColor(idx) {
   return CARD_COLORS[idx % CARD_COLORS.length];
@@ -232,7 +230,7 @@ function buildDateArgs() {
     const [year, month] = filterMonth.value.split("-");
     const lastDay = new Date(year, month, 0).getDate();
     args.start_date = `${filterMonth.value}-01`;
-    args.end_date = `${filterMonth.value}-${lastDay}`;
+    args.end_date = `${filterMonth.value}-${String(lastDay).padStart(2, "0")}`;
   }
   return args;
 }
@@ -249,42 +247,11 @@ async function fetchData() {
       method: "production_entry.production_planning.scheduler_api.get_confirm_orders_company_kanban",
       args,
     });
-    const companies = (r.message && r.message.companies) || [];
-    cards.value = companies;
-    // #region agent log
-    try {
-      const payload = {
-        sessionId: "28d245",
-        hypothesisId: "H4",
-        location: "ConfirmedOrder.vue:fetchData",
-        message: "API returned companies",
-        data: { companyCount: companies.length, sheetCount: companies.reduce((s, c) => s + (c.sheets || []).length, 0) },
-        timestamp: Date.now(),
-        runId: "pre-fix",
-      };
-      console.log("[DEBUG-28d245]", payload);
-      fetch("http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "28d245" },
-        body: JSON.stringify(payload),
-      }).catch(() => {});
-    } catch (e) {
-      /* ignore */
+    const msg = r.message || {};
+    cards.value = msg.companies || [];
+    if (Array.isArray(msg.unitOptions) && msg.unitOptions.length) {
+      unitOptions.value = msg.unitOptions;
     }
-    // #endregion
-
-    // Collect unit options from loaded data (only grow the list).
-    const known = new Set(unitOptionsSet.value);
-    companies.forEach((c) =>
-      (c.sheets || []).forEach((s) =>
-        String(s.units || "")
-          .split(",")
-          .map((u) => u.trim())
-          .filter(Boolean)
-          .forEach((u) => known.add(u))
-      )
-    );
-    unitOptionsSet.value = Array.from(known).sort();
   } catch (e) {
     console.error("Confirm Orders kanban load failed:", e);
     frappe.msgprint("Error loading Confirm Orders");
@@ -293,29 +260,22 @@ async function fetchData() {
   }
 }
 
+async function loadUnitOptions() {
+  try {
+    const r = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.get_confirm_orders_unit_options",
+    });
+    if (Array.isArray(r.message) && r.message.length) {
+      unitOptions.value = r.message;
+    }
+  } catch (e) {
+    console.warn("Confirm Orders unit options load failed:", e);
+  }
+}
+
 onMounted(() => {
-	// #region agent log
-	try {
-		const payload = {
-			sessionId: "28d245",
-			hypothesisId: "H4",
-			location: "ConfirmedOrder.vue:onMounted",
-			message: "Vue component mounted",
-			data: { filterDate: filterDate.value, viewScope: viewScope.value },
-			timestamp: Date.now(),
-			runId: "pre-fix",
-		};
-		console.log("[DEBUG-28d245]", payload);
-		fetch("http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a", {
-			method: "POST",
-			headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "28d245" },
-			body: JSON.stringify(payload),
-		}).catch(() => {});
-	} catch (e) {
-		/* ignore */
-	}
-	// #endregion
-	fetchData();
+  loadUnitOptions();
+  fetchData();
 });
 </script>
 
@@ -338,11 +298,15 @@ onMounted(() => {
   background: linear-gradient(120deg, #1e293b 0%, #312e81 60%, #4f46e5 100%);
   color: white;
 }
+.co-hero-text {
+  color: #ffffff;
+}
 .co-title {
   margin: 0;
   font-size: 22px;
   font-weight: 800;
   letter-spacing: 0.2px;
+  color: #ffffff;
 }
 .co-subtitle {
   margin: 4px 0 0;

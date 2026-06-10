@@ -23146,6 +23146,86 @@ def _confirm_kanban_company_priority(company_name):
     return len(_CONFIRM_KANBAN_COMPANY_RULES)
 
 
+def _get_confirm_orders_unit_options_list():
+    """All Workstation names for the Confirm Orders unit filter (fabric + process machines)."""
+    units = set()
+    try:
+        for name in frappe.get_all("Workstation", pluck="name", order_by="name", limit_page_length=0) or []:
+            if name and str(name).strip():
+                units.add(str(name).strip())
+    except Exception:
+        pass
+    try:
+        from production_entry.production_planning.planning_doctypes import planning_line_unit_option_lines
+
+        for line in planning_line_unit_option_lines() or []:
+            if line and str(line).strip():
+                units.add(str(line).strip())
+    except Exception:
+        pass
+    if frappe.db.has_column("Sales Order", "custom_production_status"):
+        try:
+            for row in frappe.db.sql(
+                """
+                SELECT DISTINCT NULLIF(TRIM(i.unit), '') AS unit
+                FROM `tabPlanning Table` i
+                JOIN `tabPlanning sheet` p ON i.parent = p.name
+                JOIN `tabSales Order` so ON so.name = p.sales_order
+                WHERE p.docstatus < 2
+                  AND so.custom_production_status = 'Confirmed'
+                  AND IFNULL(i.unit, '') != ''
+                """,
+                as_dict=True,
+            ):
+                u = (row.get("unit") or "").strip()
+                if u:
+                    units.add(u)
+        except Exception:
+            pass
+
+    def _sort_key(label):
+        s = (label or "").strip()
+        low = s.lower()
+        if low.startswith("unit ") and low[5:6].isdigit():
+            return (0, int(low[5]), low)
+        if low == "unassigned":
+            return (1, 0, low)
+        return (2, 0, low)
+
+    return sorted(units, key=_sort_key)
+
+
+def _confirm_orders_date_filter_sql(has_custom_planned_date, order_date=None, start_date=None, end_date=None):
+    """Match a sheet when ANY planning/board/SO date falls in the filter (not MIN-only HAVING)."""
+    item_planned = "NULLIF(i2.planned_date, '')"
+    sheet_exprs = ["NULLIF(p.ordered_date, '')", "so.transaction_date"]
+    if has_custom_planned_date:
+        sheet_exprs.insert(0, "NULLIF(p.custom_planned_date, '')")
+
+    if order_date:
+        parts = [
+            f"EXISTS (SELECT 1 FROM `tabPlanning Table` i2 WHERE i2.parent = p.name AND {item_planned} = %s)"
+        ]
+        vals = [order_date]
+        for expr in sheet_exprs:
+            parts.append(f"({expr} = %s)")
+            vals.append(order_date)
+        return "(" + " OR ".join(parts) + ")", vals
+
+    if start_date and end_date:
+        parts = [
+            "EXISTS (SELECT 1 FROM `tabPlanning Table` i2 WHERE i2.parent = p.name "
+            f"AND {item_planned} BETWEEN %s AND %s)"
+        ]
+        vals = [start_date, end_date]
+        for expr in sheet_exprs:
+            parts.append(f"({expr} BETWEEN %s AND %s)")
+            vals.extend([start_date, end_date])
+        return "(" + " OR ".join(parts) + ")", vals
+
+    return None, []
+
+
 def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, end_date=None, order_code=None, customer=None, unit=None):
     """Planning Sheets (SO custom_production_status = 'Confirmed') grouped per company card."""
     if not frappe.db.has_column("Sales Order", "custom_production_status"):
@@ -23153,19 +23233,23 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
             "Sales Order missing custom_production_status; Confirm Orders kanban cannot filter.",
             "get_confirm_orders_company_kanban",
         )
-        return {"companies": []}
+        return {"companies": [], "unitOptions": _get_confirm_orders_unit_options_list()}
 
     has_ps_company = frappe.db.has_column("Planning sheet", "custom_company")
+    has_custom_planned_date = frappe.db.has_column("Planning sheet", "custom_planned_date")
     company_expr = (
         "COALESCE(NULLIF(p.custom_company, ''), so.company)" if has_ps_company else "so.company"
     )
     dod_expr = "p.dod" if frappe.db.has_column("Planning sheet", "dod") else "NULL"
     so_status_sel = "so.delivery_status" if frappe.db.has_column("Sales Order", "delivery_status") else "NULL"
 
-    if frappe.db.has_column("Planning sheet", "custom_planned_date"):
-        eff = "COALESCE(MIN(NULLIF(i.planned_date, '')), NULLIF(p.custom_planned_date, ''), NULLIF(p.ordered_date, ''))"
+    if has_custom_planned_date:
+        eff = (
+            "COALESCE(MAX(NULLIF(i.planned_date, '')), NULLIF(p.custom_planned_date, ''), "
+            "NULLIF(p.ordered_date, ''), so.transaction_date)"
+        )
     else:
-        eff = "COALESCE(MIN(NULLIF(i.planned_date, '')), NULLIF(p.ordered_date, ''))"
+        eff = "COALESCE(MAX(NULLIF(i.planned_date, '')), NULLIF(p.ordered_date, ''), so.transaction_date)"
 
     conditions = ["p.docstatus < 2", "so.custom_production_status = 'Confirmed'"]
     values = []
@@ -23178,18 +23262,20 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
         values.extend([f"%{customer}%", f"%{customer}%"])
     if unit:
         conditions.append(
-            "EXISTS (SELECT 1 FROM `tabPlanning Table` u WHERE u.parent = p.name AND u.unit = %s)"
+            "EXISTS (SELECT 1 FROM `tabPlanning Table` u WHERE u.parent = p.name "
+            "AND LOWER(TRIM(u.unit)) = LOWER(TRIM(%s)))"
         )
         values.append(unit)
 
-    having = ""
-    having_values = []
-    if start_date and end_date:
-        having = f"HAVING {eff} BETWEEN %s AND %s"
-        having_values = [start_date, end_date]
-    elif order_date:
-        having = f"HAVING {eff} = %s"
-        having_values = [order_date]
+    date_sql, date_vals = _confirm_orders_date_filter_sql(
+        has_custom_planned_date,
+        order_date=order_date,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if date_sql:
+        conditions.append(date_sql)
+        values.extend(date_vals)
 
     where_clause = " AND ".join(conditions)
 
@@ -23210,11 +23296,10 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
         LEFT JOIN `tabPlanning Table` i ON i.parent = p.name
         WHERE {where_clause}
         GROUP BY p.name
-        {having}
         ORDER BY {eff} ASC, p.creation DESC
     """
 
-    sheets = frappe.db.sql(sql, tuple(values + having_values), as_dict=True)
+    sheets = frappe.db.sql(sql, tuple(values), as_dict=True)
 
     cards = {}
 
@@ -23253,21 +23338,23 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
         })
 
     ordered = sorted(cards.values(), key=lambda card: (card["priority"], (card["company"] or "").lower()))
-    return {"companies": ordered}
+    return {"companies": ordered, "unitOptions": _get_confirm_orders_unit_options_list()}
+
+
+@frappe.whitelist()
+def get_confirm_orders_unit_options():
+    """Workstation list for Confirm Orders unit filter dropdown."""
+    try:
+        return _get_confirm_orders_unit_options_list()
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "get_confirm_orders_unit_options_error")
+        return []
 
 
 @frappe.whitelist()
 def get_confirm_orders_company_kanban(order_date=None, start_date=None, end_date=None, order_code=None, customer=None, unit=None):
     """Safe wrapper so the Confirm Orders page never 502s on schema drift."""
     try:
-        # #region agent log
-        frappe.logger("confirm_orders_debug").info(
-            "[DEBUG-28d245] get_confirm_orders_company_kanban called order_date=%s start=%s end=%s",
-            order_date,
-            start_date,
-            end_date,
-        )
-        # #endregion
         return _get_confirm_orders_company_kanban_impl(
             order_date=order_date,
             start_date=start_date,
@@ -23278,7 +23365,7 @@ def get_confirm_orders_company_kanban(order_date=None, start_date=None, end_date
         )
     except Exception:
         frappe.log_error(frappe.get_traceback(), "get_confirm_orders_company_kanban_error")
-        return {"companies": []}
+        return {"companies": [], "unitOptions": _get_confirm_orders_unit_options_list()}
 
 
 

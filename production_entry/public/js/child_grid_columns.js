@@ -195,7 +195,16 @@ function cg_realign_grid(grid, fd) {
 	} catch (e) {
 		/* ignore */
 	}
-	cg_refresh_grid_body(grid);
+	// Full body rebuild after header — row-only refresh leaves columns misaligned.
+	try {
+		if (typeof grid.refresh === 'function') {
+			grid.refresh();
+		} else {
+			cg_refresh_grid_body(grid);
+		}
+	} catch (e) {
+		cg_refresh_grid_body(grid);
+	}
 	cg_sync_header_scroll(fd);
 }
 

@@ -1,9 +1,21 @@
-/* Planning sheet child tables — readable columns, horizontal scroll, no flex desync */
+/* Planning sheet child tables — readable columns, horizontal scroll, header/body stay aligned */
 
 .ps-grid-wrap .form-grid-container {
 	overflow-x: auto;
 	max-width: 100%;
 	width: 100%;
+}
+
+.ps-grid-wrap .form-grid {
+	min-width: 100%;
+}
+
+.ps-grid-wrap .grid-heading-row,
+.ps-grid-wrap .grid-body .rows {
+	display: flex;
+	flex-wrap: nowrap;
+	width: max-content;
+	min-width: 100%;
 }
 
 .ps-grid-wrap .grid-heading-row .grid-static-col,
@@ -15,6 +27,13 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.ps-grid-wrap .grid-heading-row .row-check,
+.ps-grid-wrap .grid-row .row-check {
+	flex: 0 0 36px !important;
+	min-width: 36px !important;
+	max-width: 36px !important;
 }
 
 .ps-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="item_code"],
