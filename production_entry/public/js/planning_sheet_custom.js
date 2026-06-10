@@ -2,6 +2,8 @@
 
 /** Hidden from grid by default; user can enable via Configure Columns. */
 const PS_GRID_DEFAULT_HIDDEN = {
+    so_item: 1,
+    sales_order_item: 1,
     custom_transfer_destination: 1,
     custom_transfer_status: 1,
     custom_slitting_shift: 1,
@@ -58,7 +60,25 @@ function ps_build_grid_show_fields(metaDoctype) {
     return names;
 }
 
+function ps_realign_planning_grids(frm) {
+    const gc = ps_get_grid_columns_module();
+    if (!gc) {
+        return;
+    }
+    Object.keys(PS_GRID_META_BY_FIELD).forEach(function (tableField) {
+        if (typeof gc.realign === 'function') {
+            gc.realign(frm, tableField);
+        }
+        if (typeof gc.sync_header_scroll === 'function') {
+            gc.sync_header_scroll(frm, tableField);
+        }
+    });
+}
+
 function ps_apply_planning_grid_columns(frm) {
+    if (!frm || !frm.fields_dict) {
+        return;
+    }
     const gc = ps_get_grid_columns_module();
     if (!gc || typeof gc.apply !== 'function') {
         return;
@@ -70,17 +90,25 @@ function ps_apply_planning_grid_columns(frm) {
             gc.apply(frm, tableField, metaDoctype, show);
         }
     });
+    ps_realign_planning_grids(frm);
 }
 
 function ps_schedule_planning_grid_columns(frm) {
-    const gc = ps_get_grid_columns_module();
-    if (!gc || typeof gc.debounce !== 'function') {
-        ps_apply_planning_grid_columns(frm);
+    if (!frm || frm.is_new()) {
         return;
     }
-    gc.debounce(frm, 'ps_grid_columns', function () {
+    const gc = ps_get_grid_columns_module();
+    const run = function () {
         ps_apply_planning_grid_columns(frm);
-    }, 100);
+        setTimeout(function () {
+            ps_realign_planning_grids(frm);
+        }, 120);
+    };
+    if (!gc || typeof gc.debounce !== 'function') {
+        run();
+        return;
+    }
+    gc.debounce(frm, 'ps_grid_columns', run, 150);
 }
 
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows

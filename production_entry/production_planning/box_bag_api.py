@@ -220,6 +220,17 @@ def _wcut_dcut_process_label(process_code):
 	return _dcut_process_label(p)
 
 
+def _dcut_fg_process_from_tail_segment(tail_segment):
+	"""FG process at the start of the last hyphen segment (e.g. 214K542Q0APM → 214)."""
+	tail_segment = str(tail_segment or "").strip()
+	if not tail_segment:
+		return ""
+	for p in sorted(W_CUT_D_CUT_FG_PROCESS_CODES, key=len, reverse=True):
+		if tail_segment.startswith(p):
+			return p
+	return ""
+
+
 def _parse_dcut_bag_item_code(item_code):
 	"""Parse D-CUT code: DESIGN[-NCOLOURS]-SIZE-PROCESSQCCCFLBBFF."""
 	from production_entry.production_planning.bopp_bag_api import _decode_fabric_gsm_char, _decode_lam_bopp_gsm_char
@@ -254,32 +265,42 @@ def _parse_dcut_bag_item_code(item_code):
 		return out
 	out["design_code"] = parts[0].strip()
 
-	tail_idx = 1
+	tail = ""
 	if len(parts) >= 4:
 		m = str(parts[1] or "").strip()
 		if m.upper().endswith("C") and m[:-1].isdigit():
 			out["num_colors"] = m[:-1]
 			out["bag_size_id"] = str(parts[2] or "").strip()
-			tail_idx = 3
+			tail = str(parts[3] or "").strip()
 		else:
-			out["bag_size_id"] = str(parts[1] or "").strip()
-			tail_idx = 2
+			# e.g. 7465-2C-201-214K542Q0APM — bag size is penultimate segment; process in last segment only.
+			_last = str(parts[-1] or "").strip()
+			_proc = _dcut_fg_process_from_tail_segment(_last)
+			if _proc:
+				out["bag_size_id"] = str(parts[-2] or "").strip()
+				tail = _last
+			else:
+				out["bag_size_id"] = str(parts[1] or "").strip()
+				tail = "-".join(parts[2:]).strip()
 	elif len(parts) >= 3:
 		out["bag_size_id"] = str(parts[1] or "").strip()
-		tail_idx = 2
+		tail = str(parts[2] or "").strip()
+	else:
+		return out
 
-	tail = "-".join(parts[tail_idx:]).strip()
-	process = ""
-	at = -1
-	for p in W_CUT_D_CUT_FG_PROCESS_CODES:
-		i = tail.find(p)
-		if i >= 0 and (at < 0 or i < at):
-			at = i
-			process = p
-	if at < 0:
+	process = _dcut_fg_process_from_tail_segment(tail)
+	if not process:
+		at = -1
+		for p in W_CUT_D_CUT_FG_PROCESS_CODES:
+			i = tail.find(p)
+			if i >= 0 and (at < 0 or i < at):
+				at = i
+				process = p
+	if not process:
 		return out
 	out["process"] = process
-	after = tail[at + 3:]
+	at = tail.find(process)
+	after = tail[at + len(process):] if at >= 0 else ""
 	if len(after) >= 1:
 		out["quality_letter"] = after[0]
 	if len(after) >= 4:
@@ -298,6 +319,18 @@ def _parse_dcut_bag_item_code(item_code):
 		out["finishing_label"] = _box_bag_finishing_label(after[7:])
 	out["total_gsm"] = out["fabric_gsm"] + out["lam_gsm"] + out["bopp_gsm"]
 	return out
+
+
+def _is_wcut_dcut_bag_fg_item_code(item_code):
+	"""True when item_code is a W-CUT / D-CUT finished-good bag."""
+	ic = str(item_code or "").strip()
+	if not ic:
+		return False
+	try:
+		proc = str((_parse_dcut_bag_item_code(ic) or {}).get("process") or "").strip()
+		return proc in W_CUT_D_CUT_FG_PROCESS_CODES
+	except Exception:
+		return False
 
 
 def _bag_series_size_map():

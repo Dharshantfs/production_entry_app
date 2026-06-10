@@ -608,7 +608,7 @@ def _sql_pull_color_or_printed_bopp_row(alias="i"):
 _ITEM_PROCESS_KNOWN_PREFIXES = frozenset(
 	{
 		"100", "102", "103", "104", "105", "106", "107", "108", "109", "110",
-		"200", "201", "202", "203", "211", "212", "213", "214", "217",
+		"200", "201", "202", "203", "211", "212", "213", "214", "216", "217",
 		"221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
 		"251", "252", "253", "254", "255",
 	}
@@ -637,15 +637,7 @@ def _item_process_prefix(item_code):
 			if re.match(r"^[A-Z0-9]+-106", ic.upper()):
 				return "106"
 			return "105"
-		# Design-prefixed fabric FG (7465-108D22115I) — segment scan before D-CUT (tail may contain 221).
-		all_segments = ic.split("-")
-		for seg in all_segments:
-			seg_digits = "".join(ch for ch in seg if ch.isdigit())
-			if len(seg_digits) >= 3:
-				sp = seg_digits[:3]
-				if sp in _ITEM_PROCESS_KNOWN_PREFIXES:
-					return sp
-		# W/D-CUT bag codes embed process in the tail (e.g. 2500-1C-201-217…); segment ``201`` is bag size, not process 201.
+		# W/D-CUT bag FG — parse before segment scan (bag size ``201`` is not W-CUT process 201).
 		try:
 			from production_entry.production_planning.box_bag_api import _parse_dcut_bag_item_code
 
@@ -654,6 +646,14 @@ def _item_process_prefix(item_code):
 				return bag_proc
 		except Exception:
 			pass
+		# Design-prefixed fabric FG (7465-108D22115I) — segment scan (tail may contain 221).
+		all_segments = ic.split("-")
+		for seg in all_segments:
+			seg_digits = "".join(ch for ch in seg if ch.isdigit())
+			if len(seg_digits) >= 3:
+				sp = seg_digits[:3]
+				if sp in _ITEM_PROCESS_KNOWN_PREFIXES:
+					return sp
 		parts = ic.split("-", 1)
 		head = (parts[0] or "").strip().upper()
 		tail = (parts[1] or "").strip().upper() if len(parts) > 1 else ""
@@ -7520,7 +7520,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	_force_slitting_unit_on_sheet(planning_sheet_name)
 	_sync_sheet_cutting_fabric_planning_rows(planning_sheet_name)
 	_force_sheet_cutting_unit_on_sheet(planning_sheet_name)
-	_sync_box_bag_fabric_planning_rows(planning_sheet_name)
+	try:
+		_sync_box_bag_fabric_planning_rows(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_sync_box_bag_fabric")
 	_sync_sheet_cutting_bom_child_row_specs(planning_sheet_name)
 	try:
 		_sync_sheet_cutting_no_of_sheets_from_so(planning_sheet_name)
@@ -10885,6 +10888,13 @@ def _is_printing_105_parent_process(item_code):
 	ic = str(item_code or "").strip().upper()
 	if not ic:
 		return False
+	try:
+		from production_entry.production_planning.box_bag_api import _is_wcut_dcut_bag_fg_item_code
+
+		if _is_wcut_dcut_bag_fg_item_code(item_code):
+			return False
+	except Exception:
+		pass
 	if ic.startswith("105"):
 		return True
 	return "-105" in ic
