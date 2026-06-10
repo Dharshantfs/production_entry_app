@@ -90,7 +90,7 @@
    "hidden": 0,
    "icon": "tick",
    "is_query_report": 0,
-   "label": "Confirmed Order",
+   "label": "Confirm Orders",
    "link_count": 0,
    "link_to": "confirmed-order",
    "link_type": "Page",
@@ -214,7 +214,7 @@
    "type": "Page"
   },
   {
-   "label": "Confirmed Order",
+   "label": "Confirm Orders",
    "link_to": "confirmed-order",
    "type": "Page"
   },

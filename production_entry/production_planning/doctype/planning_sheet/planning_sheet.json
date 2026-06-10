@@ -18,6 +18,7 @@
   "custom_lamination_order_code",
   "custom_lam_side",
   "customer",
+  "custom_company",
   "column_break_7",
   "dod",
   "ordered_date",
@@ -125,6 +126,14 @@
    "in_list_view": 1,
    "label": "Customer",
    "options": "Customer"
+  },
+  {
+   "fieldname": "custom_company",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
   },
   {
    "fieldname": "column_break_7",
@@ -312,7 +321,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-04-25 20:00:00.000000",
+ "modified": "2026-06-10 16:10:00.000000",
  "modified_by": "Administrator",
  "module": "Production Planning",
  "name": "Planning sheet",

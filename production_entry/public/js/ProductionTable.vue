@@ -167,8 +167,8 @@
                         <th style="width: 110px;">MERGE ACTION</th>
                         <th style="width: 100px;">DESPATCH STATUS</th>
                         <th style="width: 110px;">MOVEMENT</th>
-                        <th style="width: 90px; position: sticky; right: 200px; background: #fafafa; z-index: 10;">PRODUCTION PLAN</th>
-                        <th style="width: 200px; min-width: 200px; position: sticky; right: 0; background: #fafafa; z-index: 10; line-height: 1.2;">
+                        <th class="pt-pp-sticky-cell" style="width: 90px; min-width: 90px; max-width: 90px; position: sticky; right: 200px; background: #fafafa; z-index: 31;">PRODUCTION PLAN</th>
+                        <th class="pt-spr-sticky-cell" style="width: 200px; min-width: 200px; max-width: 200px; position: sticky; right: 0; background: #fafafa; z-index: 31; line-height: 1.2;">
                           SPR / WO
                           <div style="font-size: 9px; font-weight: 500; color: #64748b;">Status &amp; entry</div>
                         </th>
@@ -2793,10 +2793,13 @@ onBeforeUnmount(() => {
   padding: 16px;
   background-color: #f3f4f6;
   min-height: 100vh;
+  max-width: 100%;
+  min-width: 0;
 }
 .cc-filters {
   display: flex;
   align-items: center;
+  flex-wrap: wrap; /* prevents toolbar from widening the page and pushing sticky columns off-screen */
   padding: 12px 16px;
   background-color: white;
   border-radius: 8px;
@@ -2930,17 +2933,20 @@ onBeforeUnmount(() => {
 .cc-prod-table {
     width: 100%;
     min-width: 1280px;
-    border-collapse: collapse;
+    /* border-collapse: separate is required — `collapse` breaks position:sticky on table cells */
+    border-collapse: separate;
     border-spacing: 0;
     background: white;
     font-size: 12px;
-    border: 1px solid #e5e7eb;
+    border-left: 1px solid #e5e7eb;
+    border-top: 1px solid #e5e7eb;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 .cc-prod-table th {
     background: #f8fafc;
     padding: 10px;
-    border: 1px solid #e5e7eb;
+    border-right: 1px solid #e5e7eb;
+    border-bottom: 1px solid #e5e7eb;
     text-align: center;
     font-weight: 700;
 }
@@ -2963,17 +2969,34 @@ onBeforeUnmount(() => {
 }
 .cc-prod-table td {
     padding: 8px;
-    border: 1px solid #e5e7eb;
+    border-right: 1px solid #e5e7eb;
+    border-bottom: 1px solid #e5e7eb;
 }
 .cell-center { text-align: center; }
 .cell-right { text-align: right; }
 .font-bold { font-weight: 700; }
 .bg-yellow-50 { background-color: #fefce8; }
-.pt-pp-sticky-cell,
-.pt-spr-sticky-cell {
+td.pt-pp-sticky-cell,
+td.pt-spr-sticky-cell {
   vertical-align: top;
   padding-top: 6px !important;
   padding-bottom: 6px !important;
+}
+.pt-pp-sticky-cell,
+.pt-spr-sticky-cell {
+  box-sizing: border-box;
+  overflow: hidden;
+}
+/* Fixed widths so the right-pinned offsets (right: 0 / right: 200px) always line up */
+.pt-spr-sticky-cell {
+  width: 200px !important;
+  min-width: 200px !important;
+  max-width: 200px !important;
+}
+td.pt-pp-sticky-cell {
+  width: 90px !important;
+  min-width: 90px !important;
+  max-width: 90px !important;
 }
 
 .status-badge {

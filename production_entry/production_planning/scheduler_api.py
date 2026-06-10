@@ -15715,6 +15715,12 @@ def _populate_planning_sheet_items(ps, doc):
     """
     # Legacy ``Planning sheet Item`` grid + ``Planning Table`` board must share identical ``unit`` Select metadata in DB.
     ensure_planning_line_unit_docfield_options()
+    # Stamp owning company from the Sales Order (create / regenerate / update all flow through here).
+    try:
+        if ps.meta.has_field("custom_company") and getattr(doc, "company", None):
+            ps.custom_company = doc.company
+    except Exception:
+        pass
     # Use confirmed field name
     target_field = "planned_items"
     for field in ["planned_items", "custom_planned_items", "planning_table", "custom_planning_table", "table"]:
@@ -23114,125 +23120,157 @@ def get_unscheduled_planning_sheets():
     
     return sheets
 
-def _get_confirmed_orders_kanban_impl(order_date=None, delivery_date=None, party_code=None, start_date=None, end_date=None):
-    """
-    Fetches Planning Sheet Items where the linked Sales Order is 'Confirmed'.
-    Supports date, start_date/end_date range, delivery_date, and party_code filters.
-    """
-    # Effective date for Confirmed Orders grouping:
-    # Prefer item-level `planned_date` so the queue date matches what users see on the Board.
-    # Fallback to sheet-level `custom_planned_date`, then `ordered_date`.
-    if frappe.db.has_column("Planning Table", "planned_date"):
-        if frappe.db.has_column("Planning sheet", "custom_planned_date"):
-            # Some sites store dates as empty string '' instead of NULL.
-            # NULLIF(...,'') lets COALESCE correctly fall back.
-            eff = "COALESCE(NULLIF(i.planned_date, ''), NULLIF(p.custom_planned_date, ''), NULLIF(p.ordered_date, ''))"
-        else:
-            eff = "COALESCE(NULLIF(i.planned_date, ''), NULLIF(p.ordered_date, ''))"
+# Company card order on the Confirm Orders kanban (matched on normalised name).
+_CONFIRM_KANBAN_COMPANY_RULES = [
+    lambda s: "jayashree" in s and "1zt" in s,
+    lambda s: "jayashree" in s and "2zs" in s,
+    lambda s: "thusma" in s and "1z0" in s,
+    lambda s: "thusma" in s and "2zz" in s,
+    lambda s: "varshinetex" in s and ("puducherry" in s or "pondicherry" in s),
+    lambda s: "varshinetex" in s and "odisha" in s,
+    lambda s: "vasanth" in s,
+    lambda s: "varshineretail" in s,
+    lambda s: "thusmattex" in s,
+    lambda s: "avitas" in s,
+]
+
+
+def _confirm_kanban_company_priority(company_name):
+    normalized = re.sub(r"[^a-z0-9]", "", (company_name or "").lower())
+    for idx, rule in enumerate(_CONFIRM_KANBAN_COMPANY_RULES):
+        try:
+            if rule(normalized):
+                return idx
+        except Exception:
+            continue
+    return len(_CONFIRM_KANBAN_COMPANY_RULES)
+
+
+def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, end_date=None, order_code=None, customer=None, unit=None):
+    """Planning Sheets (SO custom_production_status = 'Confirmed') grouped per company card."""
+    if not frappe.db.has_column("Sales Order", "custom_production_status"):
+        frappe.log_error(
+            "Sales Order missing custom_production_status; Confirm Orders kanban cannot filter.",
+            "get_confirm_orders_company_kanban",
+        )
+        return {"companies": []}
+
+    has_ps_company = frappe.db.has_column("Planning sheet", "custom_company")
+    company_expr = (
+        "COALESCE(NULLIF(p.custom_company, ''), so.company)" if has_ps_company else "so.company"
+    )
+    dod_expr = "p.dod" if frappe.db.has_column("Planning sheet", "dod") else "NULL"
+    so_status_sel = "so.delivery_status" if frappe.db.has_column("Sales Order", "delivery_status") else "NULL"
+
+    if frappe.db.has_column("Planning sheet", "custom_planned_date"):
+        eff = "COALESCE(MIN(NULLIF(i.planned_date, '')), NULLIF(p.custom_planned_date, ''), NULLIF(p.ordered_date, ''))"
     else:
-        eff = _effective_date_expr("p")
-    conditions = ["p.docstatus < 2"]
+        eff = "COALESCE(MIN(NULLIF(i.planned_date, '')), NULLIF(p.ordered_date, ''))"
+
+    conditions = ["p.docstatus < 2", "so.custom_production_status = 'Confirmed'"]
     values = []
 
-    if frappe.db.has_column("Sales Order", "custom_production_status"):
-        so_confirmed_sql = "so.custom_production_status = 'Confirmed'"
-    else:
-        frappe.log_error(
-            "Sales Order missing custom_production_status; confirmed orders list cannot filter. Add field or restore column.",
-            "get_confirmed_orders_kanban",
+    if order_code:
+        conditions.append("p.party_code LIKE %s")
+        values.append(f"%{order_code}%")
+    if customer:
+        conditions.append("(p.customer LIKE %s OR c.customer_name LIKE %s)")
+        values.extend([f"%{customer}%", f"%{customer}%"])
+    if unit:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM `tabPlanning Table` u WHERE u.parent = p.name AND u.unit = %s)"
         )
-        return []
+        values.append(unit)
 
-    conditions.append(so_confirmed_sql)
-
-    # Date range support (weekly/monthly)
+    having = ""
+    having_values = []
     if start_date and end_date:
-        conditions.append(f"{eff} BETWEEN %s AND %s")
-        values.extend([start_date, end_date])
+        having = f"HAVING {eff} BETWEEN %s AND %s"
+        having_values = [start_date, end_date]
     elif order_date:
-        conditions.append(f"{eff} = %s")
-        values.append(order_date)
-
-    # Filter by Delivery Date (DOD)
-    if delivery_date and frappe.db.has_column("Planning sheet", "dod"):
-        conditions.append("p.dod = %s")
-        values.append(delivery_date)
-
-    if party_code:
-        conditions.append("(p.party_code LIKE %s OR p.customer LIKE %s)")
-        values.extend([f"%{party_code}%", f"%{party_code}%"])
+        having = f"HAVING {eff} = %s"
+        having_values = [order_date]
 
     where_clause = " AND ".join(conditions)
 
-    so_status_sel = "so.delivery_status" if frappe.db.has_column("Sales Order", "delivery_status") else "NULL"
-    so_cps_sel = "so.custom_production_status" if frappe.db.has_column("Sales Order", "custom_production_status") else "NULL"
-
-    qual_expr = "i.custom_quality" if frappe.db.has_column("Planning Table", "custom_quality") else "NULL"
-    width_expr = "i.width_inch" if frappe.db.has_column("Planning Table", "width_inch") else "0"
-    dod_expr = "p.dod" if frappe.db.has_column("Planning sheet", "dod") else "NULL"
-
     sql = f"""
-        SELECT 
-            i.name, i.item_code, i.item_name, i.qty, i.unit, i.color,
-            i.gsm, {qual_expr} as quality, {width_expr} as width_inch, i.idx,
-            p.name as planning_sheet, p.party_code, p.customer,
-            COALESCE(c.customer_name, p.customer) as customer_name,
-            {dod_expr} as dod, p.planning_status, p.creation,
-            so.transaction_date as so_date, {so_cps_sel} as custom_production_status, {so_status_sel} as delivery_status,
-            {eff} as effective_date
-        FROM
-            `tabPlanning Table` i
-        JOIN
-            `tabPlanning sheet` p ON i.parent = p.name
-        LEFT JOIN
-            `tabCustomer` c ON p.customer = c.name
-        LEFT JOIN
-            `tabSales Order` so ON p.sales_order = so.name
-        WHERE
-            {where_clause}
-        ORDER BY
-            {eff} ASC, p.creation DESC, i.idx ASC
+        SELECT
+            p.name, p.sales_order, p.party_code, p.customer,
+            COALESCE(c.customer_name, p.customer) AS customer_name,
+            p.planning_status, {dod_expr} AS dod, p.creation,
+            {company_expr} AS company,
+            so.transaction_date AS so_date,
+            {so_status_sel} AS delivery_status,
+            SUM(i.qty) AS total_qty,
+            GROUP_CONCAT(DISTINCT NULLIF(i.unit, '') ORDER BY NULLIF(i.unit, '') SEPARATOR ', ') AS units,
+            {eff} AS effective_date
+        FROM `tabPlanning sheet` p
+        JOIN `tabSales Order` so ON so.name = p.sales_order
+        LEFT JOIN `tabCustomer` c ON c.name = p.customer
+        LEFT JOIN `tabPlanning Table` i ON i.parent = p.name
+        WHERE {where_clause}
+        GROUP BY p.name
+        {having}
+        ORDER BY {eff} ASC, p.creation DESC
     """
 
-    items = frappe.db.sql(sql, tuple(values), as_dict=True)
+    sheets = frappe.db.sql(sql, tuple(values + having_values), as_dict=True)
 
-    data = []
-    for item in items:
-        data.append({
-            "name": "{}-{}".format(item.planning_sheet, item.idx),
-            "itemName": item.name,
-            "planningSheet": item.planning_sheet,
-            "customer": item.customer,
-            "partyCode": item.party_code,
-            "planningStatus": item.planning_status or "Draft",
-            "color": (item.color or "").upper().strip(),
-            "quality": item.quality or "",
-            "gsm": item.gsm or "",
-            "qty": flt(item.qty),
-            "width": flt(item.width_inch or 0),
-            "unit": item.unit or "",
-            "dod": str(item.dod) if item.dod else "",
-            "order_date": str(item.effective_date),
-            "delivery_status": item.delivery_status or "Not Delivered",
+    cards = {}
+
+    def _card_for(company_name):
+        key = company_name or "Unassigned"
+        if key not in cards:
+            cards[key] = {
+                "company": key,
+                "priority": _confirm_kanban_company_priority(key),
+                "sheets": [],
+                "total_qty": 0.0,
+            }
+        return cards[key]
+
+    # Show every company as a card (priority order), even if it has no confirmed sheets yet.
+    for comp in frappe.get_all("Company", pluck="name"):
+        _card_for(comp)
+
+    for s in sheets:
+        card = _card_for(s.company)
+        qty = flt(s.total_qty)
+        card["total_qty"] += qty
+        card["sheets"].append({
+            "name": s.name,
+            "salesOrder": s.sales_order,
+            "orderCode": s.party_code or "",
+            "customer": s.customer or "",
+            "customerName": s.customer_name or s.customer or "",
+            "planningStatus": s.planning_status or "Draft",
+            "qty": qty,
+            "units": s.units or "",
+            "dod": str(s.dod) if s.dod else "",
+            "plannedDate": str(s.effective_date) if s.effective_date else "",
+            "soDate": str(s.so_date) if s.so_date else "",
+            "deliveryStatus": s.delivery_status or "Not Delivered",
         })
 
-    return _deduplicate_items(data)
+    ordered = sorted(cards.values(), key=lambda card: (card["priority"], (card["company"] or "").lower()))
+    return {"companies": ordered}
 
 
 @frappe.whitelist()
-def get_confirmed_orders_kanban(order_date=None, delivery_date=None, party_code=None, start_date=None, end_date=None):
-    """Safe wrapper so Confirmed Order page never 502s on schema drift."""
+def get_confirm_orders_company_kanban(order_date=None, start_date=None, end_date=None, order_code=None, customer=None, unit=None):
+    """Safe wrapper so the Confirm Orders page never 502s on schema drift."""
     try:
-        return _get_confirmed_orders_kanban_impl(
+        return _get_confirm_orders_company_kanban_impl(
             order_date=order_date,
-            delivery_date=delivery_date,
-            party_code=party_code,
             start_date=start_date,
             end_date=end_date,
+            order_code=order_code,
+            customer=customer,
+            unit=unit,
         )
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "get_confirmed_orders_kanban_error")
-        return []
+        frappe.log_error(frappe.get_traceback(), "get_confirm_orders_company_kanban_error")
+        return {"companies": []}
 
 
 
