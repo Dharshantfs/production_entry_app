@@ -1,5 +1,88 @@
 // Planning Sheet Custom Script - Display customer name instead of ID
 
+/** Hidden from grid by default; user can enable via Configure Columns. */
+const PS_GRID_DEFAULT_HIDDEN = {
+    custom_transfer_destination: 1,
+    custom_transfer_status: 1,
+    custom_slitting_shift: 1,
+    custom_lamination_shift: 1,
+    custom_sheet_cutting_shift: 1,
+    custom_printing_shift: 1,
+    allocated_to_unit: 1,
+};
+
+const PS_GRID_META_BY_FIELD = {
+    items: 'Planning sheet Item',
+    planned_items: 'Planning Table',
+};
+
+function ps_get_grid_columns_module() {
+    try {
+        if (typeof production_entry !== 'undefined' && production_entry.grid_columns) {
+            return production_entry.grid_columns;
+        }
+        if (typeof window !== 'undefined' && window.production_entry && window.production_entry.grid_columns) {
+            return window.production_entry.grid_columns;
+        }
+    } catch (e) {
+        /* ignore */
+    }
+    return null;
+}
+
+function ps_build_grid_show_fields(metaDoctype) {
+    const skipNames = PS_GRID_DEFAULT_HIDDEN;
+    const skipTypes = { 'Column Break': 1, 'Section Break': 1, 'Tab Break': 1, 'HTML': 1 };
+    const names = [];
+    const seen = {};
+    function pushField(fn) {
+        if (!fn || seen[fn] || skipNames[fn]) {
+            return;
+        }
+        const df = frappe.meta.get_docfield(metaDoctype, fn);
+        if (!df || skipTypes[df.fieldtype] || cint(df.hidden)) {
+            return;
+        }
+        seen[fn] = 1;
+        names.push(fn);
+    }
+    const meta = frappe.get_meta(metaDoctype);
+    const fo = meta && meta.field_order;
+    if (Array.isArray(fo) && fo.length) {
+        fo.forEach(pushField);
+    } else {
+        (frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
+            pushField(df && df.fieldname);
+        });
+    }
+    return names;
+}
+
+function ps_apply_planning_grid_columns(frm) {
+    const gc = ps_get_grid_columns_module();
+    if (!gc || typeof gc.apply !== 'function') {
+        return;
+    }
+    Object.keys(PS_GRID_META_BY_FIELD).forEach(function (tableField) {
+        const metaDoctype = PS_GRID_META_BY_FIELD[tableField];
+        const show = ps_build_grid_show_fields(metaDoctype);
+        if (show.length) {
+            gc.apply(frm, tableField, metaDoctype, show);
+        }
+    });
+}
+
+function ps_schedule_planning_grid_columns(frm) {
+    const gc = ps_get_grid_columns_module();
+    if (!gc || typeof gc.debounce !== 'function') {
+        ps_apply_planning_grid_columns(frm);
+        return;
+    }
+    gc.debounce(frm, 'ps_grid_columns', function () {
+        ps_apply_planning_grid_columns(frm);
+    }, 100);
+}
+
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
 // (avoids stale board grid until full reload).
 function _norm(v) {
@@ -68,7 +151,7 @@ frappe.ui.form.on('Planning sheet Item', {
             frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
         }
         frm.refresh_field('planned_items');
-                        frm.trigger('toggle_221_fields');
+        ps_schedule_planning_grid_columns(frm);
         setTimeout(function () {
             registerWorkingSheetCuttingChangeBomButton(frm);
         }, 100);
@@ -84,7 +167,7 @@ frappe.ui.form.on('Planning sheet Item', {
             frappe.model.set_value(pr.doctype, pr.name, 'plan_name', row.plan_name);
         }
         frm.refresh_field('planned_items');
-                        frm.trigger('toggle_221_fields');
+        ps_schedule_planning_grid_columns(frm);
     },
 });
 
@@ -322,6 +405,7 @@ function registerWorkingSheetCuttingChangeBomButton(frm) {
 frappe.ui.form.on('Planning sheet', {
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
+        ps_schedule_planning_grid_columns(frm);
         registerWorkingSheetCuttingChangeBomButton(frm);
         // Site Client Scripts may re-add their own non-saving Change BOM button after app scripts.
         setTimeout(function () {
@@ -444,15 +528,25 @@ frappe.ui.form.on('Planning sheet', {
     },
 
     items_add: function (frm) {
+        ps_schedule_planning_grid_columns(frm);
         setTimeout(function () {
             registerWorkingSheetCuttingChangeBomButton(frm);
         }, 100);
     },
 
     items_remove: function (frm) {
+        ps_schedule_planning_grid_columns(frm);
         setTimeout(function () {
             registerWorkingSheetCuttingChangeBomButton(frm);
         }, 100);
+    },
+
+    planned_items_add: function (frm) {
+        ps_schedule_planning_grid_columns(frm);
+    },
+
+    planned_items_remove: function (frm) {
+        ps_schedule_planning_grid_columns(frm);
     },
 
     after_load: function(frm) {
@@ -470,7 +564,7 @@ frappe.ui.form.on('Planning sheet', {
                     frappe.model.with_doctype('Planning Table', function () {
                         frm.refresh_field('items');
                         frm.refresh_field('planned_items');
-                        frm.trigger('toggle_221_fields');
+                        ps_schedule_planning_grid_columns(frm);
                         try {
                             if (frm.fields_dict.custom_planned_items) frm.refresh_field('custom_planned_items');
                         } catch (e2) {}

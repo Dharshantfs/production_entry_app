@@ -1,4 +1,4 @@
-// Process-based grid column visibility disabled — columns come from child doctype in_list_view JSON.
+// Planning sheet grid columns: child doctype JSON field_order + planning_sheet_custom.js grid_columns.apply.
 
 frappe.ui.form.on('Planning sheet', {
 	refresh(frm) {
