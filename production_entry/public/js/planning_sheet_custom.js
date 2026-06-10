@@ -4,6 +4,7 @@
 const PS_GRID_DEFAULT_HIDDEN = {
     so_item: 1,
     sales_order_item: 1,
+    dot_spec: 1,
     custom_transfer_destination: 1,
     custom_transfer_status: 1,
     custom_slitting_shift: 1,
@@ -60,18 +61,55 @@ function ps_build_grid_show_fields(metaDoctype) {
     return names;
 }
 
+function ps_attach_planning_grid_scroll_sync(frm, tableField) {
+    const fd = frm && frm.fields_dict && frm.fields_dict[tableField];
+    if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+        return;
+    }
+    const $w = fd.$wrapper;
+    const syncKey = 'ps-grid-scroll-sync-' + tableField;
+    if ($w.data(syncKey)) {
+        return;
+    }
+    $w.data(syncKey, 1);
+    $w.on('scroll.psGridAlign', '.dt-scrollable, .form-grid .grid-body, .grid-heading-row', function () {
+        const gc = ps_get_grid_columns_module();
+        if (gc && typeof gc.sync_header_scroll === 'function') {
+            gc.sync_header_scroll(frm, tableField);
+        }
+    });
+}
+
+function ps_refresh_planning_grid_body_rows(frm, tableField) {
+    const grid = frm && frm.fields_dict && frm.fields_dict[tableField] && frm.fields_dict[tableField].grid;
+    if (!grid) {
+        return;
+    }
+    try {
+        (grid.grid_rows || []).forEach(function (gr) {
+            if (gr && typeof gr.refresh === 'function') {
+                gr.refresh();
+            }
+        });
+    } catch (e) {
+        /* ignore */
+    }
+}
+
 function ps_realign_planning_grids(frm) {
     const gc = ps_get_grid_columns_module();
     if (!gc) {
         return;
     }
     Object.keys(PS_GRID_META_BY_FIELD).forEach(function (tableField) {
+        ps_attach_planning_grid_scroll_sync(frm, tableField);
         if (typeof gc.realign === 'function') {
             gc.realign(frm, tableField);
         }
         if (typeof gc.sync_header_scroll === 'function') {
             gc.sync_header_scroll(frm, tableField);
         }
+        ps_refresh_planning_grid_body_rows(frm, tableField);
     });
 }
 
@@ -86,9 +124,12 @@ function ps_apply_planning_grid_columns(frm) {
     Object.keys(PS_GRID_META_BY_FIELD).forEach(function (tableField) {
         const metaDoctype = PS_GRID_META_BY_FIELD[tableField];
         const show = ps_build_grid_show_fields(metaDoctype);
-        if (show.length) {
-            gc.apply(frm, tableField, metaDoctype, show);
+        if (!show.length) {
+            return;
         }
+        ps_attach_planning_grid_scroll_sync(frm, tableField);
+        gc.apply(frm, tableField, metaDoctype, show);
+        ps_refresh_planning_grid_body_rows(frm, tableField);
     });
     ps_realign_planning_grids(frm);
 }
@@ -97,18 +138,18 @@ function ps_schedule_planning_grid_columns(frm) {
     if (!frm || frm.is_new()) {
         return;
     }
-    const gc = ps_get_grid_columns_module();
     const run = function () {
         ps_apply_planning_grid_columns(frm);
-        setTimeout(function () {
-            ps_realign_planning_grids(frm);
-        }, 120);
     };
-    if (!gc || typeof gc.debounce !== 'function') {
+    const gc = ps_get_grid_columns_module();
+    if (gc && typeof gc.debounce === 'function') {
+        gc.debounce(frm, 'ps_grid_columns', run, 120);
+    } else {
         run();
-        return;
     }
-    gc.debounce(frm, 'ps_grid_columns', run, 150);
+    [200, 500, 1000].forEach(function (ms) {
+        setTimeout(run, ms);
+    });
 }
 
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
@@ -592,7 +633,9 @@ frappe.ui.form.on('Planning sheet', {
                     frappe.model.with_doctype('Planning Table', function () {
                         frm.refresh_field('items');
                         frm.refresh_field('planned_items');
-                        ps_schedule_planning_grid_columns(frm);
+                        setTimeout(function () {
+                            ps_schedule_planning_grid_columns(frm);
+                        }, 50);
                         try {
                             if (frm.fields_dict.custom_planned_items) frm.refresh_field('custom_planned_items');
                         } catch (e2) {}

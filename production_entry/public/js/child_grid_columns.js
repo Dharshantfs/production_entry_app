@@ -217,6 +217,17 @@ production_entry.grid_columns = {
 				return;
 			}
 			const grid = fd.grid;
+			try {
+				delete grid.user_settings;
+				grid.visible_columns = null;
+				(grid.grid_rows || []).forEach((gr) => {
+					if (gr && gr.grid) {
+						delete gr.grid.user_settings;
+					}
+				});
+			} catch (e) {
+				/* ignore */
+			}
 			const preferred = (showFieldnames || []).filter((fn) => cg_field_exists(metaDoctype, fn));
 			if (!preferred.length) {
 				return;
