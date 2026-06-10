@@ -19,6 +19,27 @@ const PS_GRID_META_BY_FIELD = {
     planned_items: 'Planning Table',
 };
 
+/** Curated list-view columns only — avoids 40+ columns crushing the grid. */
+const PS_GRID_SHOW_BY_META = {
+    'Planning sheet Item': [
+        'item_code', 'item_name', 'quality', 'color', 'gsm', 'width_inch',
+        'sheet_size', 'bag_size', 'custom_design_code', 'custom_design_name', 'custom_design_colour',
+        'qty', 'uom', 'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'total_weight',
+        'custom_lam_side', 'custom_lam_gsm', 'custom_bopp_gsm',
+        'custom_parent_fabric', 'custom_parent_child_trace_id', 'custom_lamination_order_code',
+        'unit', 'custom_item_planned_date', 'custom_plan_code', 'custom_movement_type', 'warehouse',
+    ],
+    'Planning Table': [
+        'item_code', 'item_name', 'quality', 'color', 'gsm', 'width_inch',
+        'sheet_size', 'bag_size', 'custom_design_code', 'custom_design_name', 'custom_design_colour',
+        'custom_no_of_design_colours', 'custom_total_no_of_colours',
+        'qty', 'uom', 'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'total_weight',
+        'custom_no_of_sheets', 'custom_lam_side_', 'custom_lam_gsm', 'custom_bopp_gsm',
+        'custom_parent_fabric', 'custom_parent_child_trace_id', 'custom_lamination_order_code_',
+        'unit', 'planned_date', 'plan_name', 'custom_plan_code', 'custom_movement_type', 'warehouse',
+    ],
+};
+
 function ps_get_grid_columns_module() {
     try {
         if (typeof production_entry !== 'undefined' && production_entry.grid_columns) {
@@ -36,6 +57,7 @@ function ps_get_grid_columns_module() {
 function ps_build_grid_show_fields(metaDoctype) {
     const skipNames = PS_GRID_DEFAULT_HIDDEN;
     const skipTypes = { 'Column Break': 1, 'Section Break': 1, 'Tab Break': 1, 'HTML': 1 };
+    const preferred = PS_GRID_SHOW_BY_META[metaDoctype] || [];
     const names = [];
     const seen = {};
     function pushField(fn) {
@@ -49,16 +71,25 @@ function ps_build_grid_show_fields(metaDoctype) {
         seen[fn] = 1;
         names.push(fn);
     }
-    const meta = frappe.get_meta(metaDoctype);
-    const fo = meta && meta.field_order;
-    if (Array.isArray(fo) && fo.length) {
-        fo.forEach(pushField);
-    } else {
-        (frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
-            pushField(df && df.fieldname);
-        });
-    }
+    preferred.forEach(pushField);
     return names;
+}
+
+function ps_wrap_planning_grids(frm) {
+    if (!frm || !frm.fields_dict) {
+        return;
+    }
+    Object.keys(PS_GRID_META_BY_FIELD).forEach(function (tableField) {
+        const fd = frm.fields_dict[tableField];
+        if (fd && fd.$wrapper && fd.$wrapper.length) {
+            fd.$wrapper.addClass('ps-grid-wrap');
+            if (tableField === 'items') {
+                fd.$wrapper.addClass('ps-grid-items-wrap');
+            } else if (tableField === 'planned_items') {
+                fd.$wrapper.addClass('ps-grid-board-wrap');
+            }
+        }
+    });
 }
 
 function ps_attach_planning_grid_scroll_sync(frm, tableField) {
@@ -117,6 +148,7 @@ function ps_apply_planning_grid_columns(frm) {
     if (!frm || !frm.fields_dict) {
         return;
     }
+    ps_wrap_planning_grids(frm);
     const gc = ps_get_grid_columns_module();
     if (!gc || typeof gc.apply !== 'function') {
         return;
@@ -143,13 +175,16 @@ function ps_schedule_planning_grid_columns(frm) {
     };
     const gc = ps_get_grid_columns_module();
     if (gc && typeof gc.debounce === 'function') {
-        gc.debounce(frm, 'ps_grid_columns', run, 120);
+        gc.debounce(frm, 'ps_grid_columns', run, 150);
     } else {
         run();
     }
-    [200, 500, 1000].forEach(function (ms) {
-        setTimeout(run, ms);
-    });
+    if (!frm._ps_grid_followup_timer) {
+        frm._ps_grid_followup_timer = setTimeout(function () {
+            frm._ps_grid_followup_timer = null;
+            run();
+        }, 500);
+    }
 }
 
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
@@ -631,11 +666,7 @@ frappe.ui.form.on('Planning sheet', {
                 } catch (e) {}
                 frappe.model.with_doctype('Planning sheet Item', function () {
                     frappe.model.with_doctype('Planning Table', function () {
-                        frm.refresh_field('items');
-                        frm.refresh_field('planned_items');
-                        setTimeout(function () {
-                            ps_schedule_planning_grid_columns(frm);
-                        }, 50);
+                        ps_schedule_planning_grid_columns(frm);
                         try {
                             if (frm.fields_dict.custom_planned_items) frm.refresh_field('custom_planned_items');
                         } catch (e2) {}

@@ -1,0 +1,33 @@
+/* Planning sheet child tables — readable columns, horizontal scroll, no flex desync */
+
+.ps-grid-wrap .form-grid-container {
+	overflow-x: auto;
+	max-width: 100%;
+	width: 100%;
+}
+
+.ps-grid-wrap .grid-heading-row .grid-static-col,
+.ps-grid-wrap .grid-row .grid-static-col,
+.ps-grid-wrap .grid-row .col {
+	min-width: 100px;
+	flex: 0 0 auto !important;
+	box-sizing: border-box;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.ps-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="item_code"],
+.ps-grid-wrap .grid-row .col[data-fieldname="item_code"] {
+	min-width: 150px;
+}
+
+.ps-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="item_name"],
+.ps-grid-wrap .grid-row .col[data-fieldname="item_name"] {
+	min-width: 140px;
+}
+
+.ps-grid-wrap .grid-heading-row .grid-static-col[data-fieldname="custom_parent_child_trace_id"],
+.ps-grid-wrap .grid-row .col[data-fieldname="custom_parent_child_trace_id"] {
+	min-width: 170px;
+}

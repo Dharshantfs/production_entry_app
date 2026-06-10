@@ -133,14 +133,7 @@ function cg_refresh_grid_body(grid) {
 	if (!grid) {
 		return;
 	}
-	try {
-		if (typeof grid.refresh === 'function') {
-			grid.refresh();
-			return;
-		}
-	} catch (e) {
-		/* fall through */
-	}
+	// Never call grid.refresh() here — it rebuilds body columns from stale state and desyncs headers.
 	try {
 		(grid.grid_rows || []).forEach((gr) => {
 			if (gr && typeof gr.refresh === 'function') {
@@ -149,6 +142,15 @@ function cg_refresh_grid_body(grid) {
 		});
 	} catch (e) {
 		/* ignore */
+	}
+	if (!(grid.grid_rows || []).length) {
+		try {
+			if (typeof grid.refresh === 'function') {
+				grid.refresh();
+			}
+		} catch (e2) {
+			/* ignore */
+		}
 	}
 }
 
@@ -247,6 +249,21 @@ production_entry.grid_columns = {
 				} catch (e) {
 					/* ignore */
 				}
+			});
+			// Sync each visible docfield on the grid instance (header + row templates use these).
+			ordered.forEach((fn) => {
+				const gdf = (grid.docfields || []).find((d) => d && d.fieldname === fn);
+				const mdf = frappe.meta.get_docfield(metaDoctype, fn);
+				if (gdf && mdf) {
+					gdf.in_list_view = 1;
+					gdf.hidden = 0;
+				}
+			});
+			(grid.docfields || []).forEach((df) => {
+				if (!df || cg_skip_field(df) || showSet[df.fieldname]) {
+					return;
+				}
+				df.in_list_view = 0;
 			});
 			cg_realign_grid(grid, fd);
 		} catch (e) {
