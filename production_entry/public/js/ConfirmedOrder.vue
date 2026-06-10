@@ -251,6 +251,27 @@ async function fetchData() {
     });
     const companies = (r.message && r.message.companies) || [];
     cards.value = companies;
+    // #region agent log
+    try {
+      const payload = {
+        sessionId: "28d245",
+        hypothesisId: "H4",
+        location: "ConfirmedOrder.vue:fetchData",
+        message: "API returned companies",
+        data: { companyCount: companies.length, sheetCount: companies.reduce((s, c) => s + (c.sheets || []).length, 0) },
+        timestamp: Date.now(),
+        runId: "pre-fix",
+      };
+      console.log("[DEBUG-28d245]", payload);
+      fetch("http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "28d245" },
+        body: JSON.stringify(payload),
+      }).catch(() => {});
+    } catch (e) {
+      /* ignore */
+    }
+    // #endregion
 
     // Collect unit options from loaded data (only grow the list).
     const known = new Set(unitOptionsSet.value);
@@ -272,7 +293,30 @@ async function fetchData() {
   }
 }
 
-onMounted(fetchData);
+onMounted(() => {
+	// #region agent log
+	try {
+		const payload = {
+			sessionId: "28d245",
+			hypothesisId: "H4",
+			location: "ConfirmedOrder.vue:onMounted",
+			message: "Vue component mounted",
+			data: { filterDate: filterDate.value, viewScope: viewScope.value },
+			timestamp: Date.now(),
+			runId: "pre-fix",
+		};
+		console.log("[DEBUG-28d245]", payload);
+		fetch("http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "28d245" },
+			body: JSON.stringify(payload),
+		}).catch(() => {});
+	} catch (e) {
+		/* ignore */
+	}
+	// #endregion
+	fetchData();
+});
 </script>
 
 <style scoped>

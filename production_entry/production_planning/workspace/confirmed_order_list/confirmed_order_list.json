@@ -1,7 +1,7 @@
 {
 	"app": "production_entry",
 	"charts": [],
-	"content": "[{\"id\":\"confirmed_order_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Confirmed Order\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"confirmed-order\",\"label\":\"Confirmed Order\"}}]",
+	"content": "[{\"id\":\"confirmed_order_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Confirmed Order\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"confirm-orders\",\"label\":\"Confirmed Order\"}}]",
 	"creation": "2026-03-11 12:00:00.000000",
 	"custom_blocks": [],
 	"docstatus": 0,
@@ -27,8 +27,8 @@
 	"sequence_id": 88,
 	"shortcuts": [
 		{
-			"label": "Confirmed Order",
-			"link_to": "confirmed-order",
+			"label": "Confirm Orders",
+			"link_to": "confirm-orders",
 			"type": "Page"
 		}
 	],

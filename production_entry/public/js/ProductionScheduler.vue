@@ -1009,7 +1009,7 @@ function goToPlan() {
 }
 
 function goToConfirmedOrders() {
-    frappe.set_route("confirmed-order");
+    frappe.set_route("confirm-orders");
 }
 
 function toggleViewScope() {

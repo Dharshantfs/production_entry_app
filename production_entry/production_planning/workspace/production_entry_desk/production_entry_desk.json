@@ -92,7 +92,7 @@
    "is_query_report": 0,
    "label": "Confirm Orders",
    "link_count": 0,
-   "link_to": "confirmed-order",
+   "link_to": "confirm-orders",
    "link_type": "Page",
    "onboard": 1,
    "type": "Link"
@@ -215,7 +215,7 @@
   },
   {
    "label": "Confirm Orders",
-   "link_to": "confirmed-order",
+   "link_to": "confirm-orders",
    "type": "Page"
   },
   {

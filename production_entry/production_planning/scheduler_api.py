@@ -23260,6 +23260,14 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
 def get_confirm_orders_company_kanban(order_date=None, start_date=None, end_date=None, order_code=None, customer=None, unit=None):
     """Safe wrapper so the Confirm Orders page never 502s on schema drift."""
     try:
+        # #region agent log
+        frappe.logger("confirm_orders_debug").info(
+            "[DEBUG-28d245] get_confirm_orders_company_kanban called order_date=%s start=%s end=%s",
+            order_date,
+            start_date,
+            end_date,
+        )
+        # #endregion
         return _get_confirm_orders_company_kanban_impl(
             order_date=order_date,
             start_date=start_date,
