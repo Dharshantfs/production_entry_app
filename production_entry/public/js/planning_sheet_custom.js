@@ -166,32 +166,23 @@ function ps_apply_planning_grid_columns(frm) {
     ps_realign_planning_grids(frm);
 }
 
+/** Grid columns come from child doctype JSON (in_list_view). JS overrides were collapsing the grid. */
 function ps_schedule_planning_grid_columns(frm) {
-    if (!frm || frm.is_new()) {
+    if (!frm || !frm.fields_dict) {
         return;
     }
-    const run = function () {
-        ps_apply_planning_grid_columns(frm);
-    };
-    const gc = ps_get_grid_columns_module();
-    if (gc && typeof gc.debounce === 'function') {
-        gc.debounce(frm, 'ps_grid_columns', run, 150);
-    } else {
-        run();
-    }
-    if (!frm._ps_grid_followup_timer) {
-        frm._ps_grid_followup_timer = setTimeout(function () {
-            frm._ps_grid_followup_timer = null;
-            run();
-            ps_realign_planning_grids(frm);
-        }, 500);
-    }
-    if (!frm._ps_grid_followup_timer2) {
-        frm._ps_grid_followup_timer2 = setTimeout(function () {
-            frm._ps_grid_followup_timer2 = null;
-            ps_realign_planning_grids(frm);
-        }, 1200);
-    }
+    ['items', 'planned_items'].forEach(function (tableField) {
+        const grid = frm.fields_dict[tableField] && frm.fields_dict[tableField].grid;
+        if (!grid) {
+            return;
+        }
+        try {
+            delete grid.user_settings;
+            grid.visible_columns = null;
+        } catch (e) {
+            /* ignore */
+        }
+    });
 }
 
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
@@ -673,9 +664,8 @@ frappe.ui.form.on('Planning sheet', {
                 } catch (e) {}
                 frappe.model.with_doctype('Planning sheet Item', function () {
                     frappe.model.with_doctype('Planning Table', function () {
-                        ps_schedule_planning_grid_columns(frm);
                         try {
-                            if (frm.fields_dict.custom_planned_items) frm.refresh_field('custom_planned_items');
+                            if (frm.fields_dict.planned_items) frm.refresh_field('planned_items');
                         } catch (e2) {}
                     });
                 });

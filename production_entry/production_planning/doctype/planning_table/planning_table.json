@@ -1,478 +1,538 @@
 {
- "actions": [],
- "creation": "2026-04-03 00:00:00.000000",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "so_item",
-  "sales_order_item",
-  "item_code",
-  "item_name",
-  "quality",
-  "custom_quality",
-  "color",
-  "gsm",
-  "width_inch",
-  "sheet_size",
-  "bag_size",
-  "custom_design_code",
-  "custom_design_name",
-  "custom_design_colour",
-  "custom_no_of_design_colours",
-  "custom_total_no_of_colours",
-  "custom_cylinder_type",
-  "custom_finishing",
-  "custom_white_tint",
-  "custom_bopp_finish_size_mm",
-  "column_break_2",
-  "qty",
-  "uom",
-  "meter",
-  "section_break_9",
-  "meter_per_roll",
-  "no_of_rolls",
-  "column_break_11",
-  "weight_per_roll",
-  "total_weight",
-  "custom_no_of_sheets",
-  "custom_bopp_bom_kgs",
-  "dot_spec",
-  "section_break_13",
-  "custom_lam_side_",
-  "custom_lam_gsm",
-  "custom_bopp_gsm",
-  "custom_parent_fabric",
-  "custom_parent_child_trace_id",
-  "custom_lamination_order_code_",
-  "section_break_5",
-  "unit",
-  "planned_date",
-  "plan_name",
-  "custom_plan_code",
-  "custom_movement_type",
-  "warehouse",
-  "work_order",
-  "order_sheet",
-  "spr_name",
-  "custom_transfer_destination",
-  "custom_transfer_status",
-  "custom_transfer_approval",
-  "custom_lamination_shift",
-  "custom_slitting_shift",
-  "custom_sheet_cutting_shift",
-  "custom_printing_shift",
-  "custom_printing_arrangement_seq",
-  "allocated_to_unit",
-  "custom_design_attachment",
-  "custom_split_metadata",
-  "section_split",
-  "is_split",
-  "split_from",
-  "source_item",
-  "custom_item_planned_date",
-  "column_break_7",
-  "column_break_15"
- ],
- "fields": [
-  {
-   "fieldname": "so_item",
-   "fieldtype": "Data",
-   "label": "SO Item",
-   "read_only": 1
-  },
-  {
-   "fieldname": "sales_order_item",
-   "fieldtype": "Data",
-   "label": "Sales Order Item"
-  },
-  {
-   "fieldname": "item_code",
-   "fieldtype": "Link",
-   "label": "Item Code",
-   "options": "Item",
-   "reqd": 1
-  },
-  {
-   "fetch_from": "item_code.item_name",
-   "fieldname": "item_name",
-   "fieldtype": "Data",
-   "label": "Item Name",
-   "read_only": 1
-  },
-  {
-   "fieldname": "quality",
-   "fieldtype": "Data",
-   "label": "Quality",
-   "reqd": 1
-  },
-  {
-   "fieldname": "custom_quality",
-   "fieldtype": "Data",
-   "label": "Custom Quality"
-  },
-  {
-   "fieldname": "color",
-   "fieldtype": "Data",
-   "label": "Color"
-  },
-  {
-   "fieldname": "gsm",
-   "fieldtype": "Int",
-   "label": "GSM",
-   "reqd": 1
-  },
-  {
-   "fieldname": "width_inch",
-   "fieldtype": "Float",
-   "label": "Width (Inch)",
-   "precision": "2"
-  },
-  {
-   "fieldname": "sheet_size",
-   "fieldtype": "Data",
-   "label": "Sheet Size"
-  },
-  {
-   "fieldname": "bag_size",
-   "fieldtype": "Data",
-   "label": "Bag Size",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_design_code",
-   "fieldtype": "Data",
-   "label": "Design Code"
-  },
-  {
-   "fieldname": "custom_design_name",
-   "fieldtype": "Data",
-   "label": "Design Name"
-  },
-  {
-   "fieldname": "custom_design_colour",
-   "fieldtype": "Data",
-   "label": "Design Colour",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_no_of_design_colours",
-   "fieldtype": "Data",
-   "label": "No of Design Colours",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_total_no_of_colours",
-   "fieldtype": "Data",
-   "label": "Total No of Colours",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_cylinder_type",
-   "fieldtype": "Data",
-   "label": "Cylinder Type",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_finishing",
-   "fieldtype": "Data",
-   "label": "Finishing"
-  },
-  {
-   "fieldname": "custom_white_tint",
-   "fieldtype": "Select",
-   "label": "White Tint",
-   "options": "\nYes\nNo"
-  },
-  {
-   "fieldname": "custom_bopp_finish_size_mm",
-   "fieldtype": "Data",
-   "label": "BOPP Finish Size (MM)",
-   "read_only": 1
-  },
-  {
-   "fieldname": "column_break_2",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "qty",
-   "fieldtype": "Float",
-   "label": "Qty (KG)",
-   "reqd": 1
-  },
-  {
-   "fieldname": "uom",
-   "fieldtype": "Link",
-   "label": "UOM",
-   "options": "UOM",
-   "reqd": 1
-  },
-  {
-   "fieldname": "meter",
-   "fieldtype": "Int",
-   "label": "Meter"
-  },
-  {
-   "fieldname": "section_break_9",
-   "fieldtype": "Section Break"
-  },
-  {
-   "fieldname": "meter_per_roll",
-   "fieldtype": "Int",
-   "label": "Meter per Roll"
-  },
-  {
-   "fieldname": "no_of_rolls",
-   "fieldtype": "Int",
-   "label": "No of Rolls"
-  },
-  {
-   "fieldname": "column_break_11",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "weight_per_roll",
-   "fieldtype": "Float",
-   "label": "Weight per Roll (KG)",
-   "precision": "3"
-  },
-  {
-   "fieldname": "total_weight",
-   "fieldtype": "Float",
-   "label": "Total Weight (KG)",
-   "precision": "3",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_no_of_sheets",
-   "fieldtype": "Float",
-   "label": "No of Sheets (Planned PCS)",
-   "precision": "0"
-  },
-  {
-   "fieldname": "custom_bopp_bom_kgs",
-   "fieldtype": "Float",
-   "label": "BOPP BOM KGS",
-   "precision": "3",
-   "read_only": 1
-  },
-  {
-   "fieldname": "dot_spec",
-   "fieldtype": "Select",
-   "label": "Dot Spec",
-   "options": "Big Dot\nSmall Dot"
-  },
-  {
-   "fieldname": "section_break_13",
-   "fieldtype": "Section Break",
-   "label": "Quality & Color"
-  },
-  {
-   "fieldname": "custom_lam_side_",
-   "fieldtype": "Data",
-   "label": "Lam Side",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_lam_gsm",
-   "fieldtype": "Int",
-   "label": "LAM GSM",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_bopp_gsm",
-   "fieldtype": "Int",
-   "label": "BOPP GSM",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_parent_fabric",
-   "fieldtype": "Select",
-   "label": "Parent Fabric",
-   "options": "Bag FG\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\nPB\nMain 102 Base Fabric\nMain 103 Base Fabric\nMain 104 Base Fabric\nMain 105 Base Fabric\nMain 106 Base Fabric\nMain 107 Base Fabric\nMain 107 PB\nLoop 103 Base Fabric\nLoop 108 Base Fabric\nLoop 110 Base Fabric\nLoop 107 Base Fabric\nLoop 107 PB\nFG Sheet\n251 Base Fabric\n252 Base Fabric\n253 Base Fabric\n254 Base Fabric\n255 Base Fabric",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_parent_child_trace_id",
-   "fieldtype": "Data",
-   "label": "Parent Child Trace ID",
-   "read_only": 1
-  },
-  {
-   "description": "Same as sheet Lamination Order Code for 104 rows (auto-filled).",
-   "fieldname": "custom_lamination_order_code_",
-   "fieldtype": "Data",
-   "label": "Lamination Order Code",
-   "read_only": 1
-  },
-  {
-   "fieldname": "section_break_5",
-   "fieldtype": "Section Break",
-   "label": "Specifications"
-  },
-  {
-   "fieldname": "unit",
-   "fieldtype": "Link",
-   "label": "Unit",
-   "options": "Workstation"
-  },
-  {
-   "fieldname": "planned_date",
-   "fieldtype": "Date",
-   "label": "Planned date"
-  },
-  {
-   "fieldname": "plan_name",
-   "fieldtype": "Data",
-   "label": "Plan name"
-  },
-  {
-   "fieldname": "custom_plan_code",
-   "fieldtype": "Data",
-   "label": "Plan Code"
-  },
-  {
-   "fieldname": "custom_movement_type",
-   "fieldtype": "Select",
-   "label": "Movement Type",
-   "options": "Despatch\nTransfer"
-  },
-  {
-   "fieldname": "warehouse",
-   "fieldtype": "Link",
-   "label": "Warehouse",
-   "options": "Warehouse"
-  },
-  {
-   "fieldname": "work_order",
-   "fieldtype": "Link",
-   "label": "Work Order",
-   "options": "Work Order",
-   "read_only": 1
-  },
-  {
-   "fieldname": "order_sheet",
-   "fieldtype": "Data",
-   "label": "Order Sheet"
-  },
-  {
-   "fieldname": "spr_name",
-   "fieldtype": "Data",
-   "label": "SPR"
-  },
-  {
-   "fieldname": "custom_transfer_destination",
-   "fieldtype": "Data",
-   "label": "Transfer Destination"
-  },
-  {
-   "fieldname": "custom_transfer_status",
-   "fieldtype": "Data",
-   "label": "Transfer Status"
-  },
-  {
-   "fieldname": "custom_transfer_approval",
-   "fieldtype": "Link",
-   "label": "Transfer Approval",
-   "options": "Transfer Approval"
-  },
-  {
-   "default": "DAY",
-   "fieldname": "custom_lamination_shift",
-   "fieldtype": "Select",
-   "label": "Shift",
-   "options": "DAY\nNIGHT"
-  },
-  {
-   "default": "DAY",
-   "fieldname": "custom_slitting_shift",
-   "fieldtype": "Select",
-   "label": "Slitting Shift",
-   "options": "DAY\nNIGHT"
-  },
-  {
-   "default": "DAY",
-   "fieldname": "custom_sheet_cutting_shift",
-   "fieldtype": "Select",
-   "label": "Sheet Cutting Shift",
-   "options": "DAY\nNIGHT"
-  },
-  {
-   "default": "DAY",
-   "fieldname": "custom_printing_shift",
-   "fieldtype": "Select",
-   "label": "Printing Shift",
-   "options": "DAY\nNIGHT"
-  },
-  {
-   "fieldname": "custom_printing_arrangement_seq",
-   "fieldtype": "Int",
-   "label": "Printing Arrangement Seq"
-  },
-  {
-   "fieldname": "allocated_to_unit",
-   "fieldtype": "Select",
-   "label": "Allocated to Unit",
-   "options": "\nUnit 1\nUnit 2\nUnit 3\nUnit 4",
-   "read_only": 1
-  },
-  {
-   "fieldname": "custom_design_attachment",
-   "fieldtype": "Attach",
-   "label": "Design Attachment"
-  },
-  {
-   "fieldname": "custom_split_metadata",
-   "fieldtype": "Long Text",
-   "label": "Split Metadata"
-  },
-  {
-   "fieldname": "section_split",
-   "fieldtype": "Section Break",
-   "label": "Split / trace"
-  },
-  {
-   "default": "0",
-   "fieldname": "is_split",
-   "fieldtype": "Check",
-   "label": "Is split"
-  },
-  {
-   "fieldname": "split_from",
-   "fieldtype": "Link",
-   "label": "Split from",
-   "options": "Planning Table"
-  },
-  {
-   "fieldname": "source_item",
-   "fieldtype": "Link",
-   "label": "Source planning line",
-   "options": "Planning sheet Item"
-  },
-  {
-   "fieldname": "custom_item_planned_date",
-   "fieldtype": "Date",
-   "label": "Item planned date (legacy)"
-  },
-  {
-   "fieldname": "column_break_7",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "column_break_15",
-   "fieldtype": "Column Break"
-  }
- ],
- "index_web_pages_for_search": 0,
- "istable": 1,
- "links": [],
- "modified": "2026-06-10 14:00:00.000000",
- "modified_by": "Administrator",
- "module": "Production Planning",
- "name": "Planning Table",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "idx",
- "sort_order": "ASC",
- "states": []
+    "actions": [],
+    "creation": "2026-04-03 00:00:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "so_item",
+        "sales_order_item",
+        "item_code",
+        "item_name",
+        "quality",
+        "custom_quality",
+        "color",
+        "gsm",
+        "width_inch",
+        "sheet_size",
+        "bag_size",
+        "custom_design_code",
+        "custom_design_name",
+        "custom_design_colour",
+        "custom_no_of_design_colours",
+        "custom_total_no_of_colours",
+        "custom_cylinder_type",
+        "custom_finishing",
+        "custom_white_tint",
+        "custom_bopp_finish_size_mm",
+        "column_break_2",
+        "qty",
+        "uom",
+        "meter",
+        "section_break_9",
+        "meter_per_roll",
+        "no_of_rolls",
+        "column_break_11",
+        "weight_per_roll",
+        "total_weight",
+        "custom_no_of_sheets",
+        "custom_bopp_bom_kgs",
+        "dot_spec",
+        "section_break_13",
+        "custom_lam_side_",
+        "custom_lam_gsm",
+        "custom_bopp_gsm",
+        "custom_parent_fabric",
+        "custom_parent_child_trace_id",
+        "custom_lamination_order_code_",
+        "section_break_5",
+        "unit",
+        "planned_date",
+        "plan_name",
+        "custom_plan_code",
+        "custom_movement_type",
+        "warehouse",
+        "work_order",
+        "order_sheet",
+        "spr_name",
+        "custom_transfer_destination",
+        "custom_transfer_status",
+        "custom_transfer_approval",
+        "custom_lamination_shift",
+        "custom_slitting_shift",
+        "custom_sheet_cutting_shift",
+        "custom_printing_shift",
+        "custom_printing_arrangement_seq",
+        "allocated_to_unit",
+        "custom_design_attachment",
+        "custom_split_metadata",
+        "section_split",
+        "is_split",
+        "split_from",
+        "source_item",
+        "custom_item_planned_date",
+        "column_break_7",
+        "column_break_15"
+    ],
+    "fields": [
+        {
+            "fieldname": "so_item",
+            "fieldtype": "Data",
+            "label": "SO Item",
+            "read_only": 1,
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "sales_order_item",
+            "fieldtype": "Data",
+            "label": "Sales Order Item",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "item_code",
+            "fieldtype": "Link",
+            "label": "Item Code",
+            "options": "Item",
+            "reqd": 1,
+            "in_list_view": 1
+        },
+        {
+            "fetch_from": "item_code.item_name",
+            "fieldname": "item_name",
+            "fieldtype": "Data",
+            "label": "Item Name",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "quality",
+            "fieldtype": "Data",
+            "label": "Quality",
+            "reqd": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_quality",
+            "fieldtype": "Data",
+            "label": "Custom Quality",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "color",
+            "fieldtype": "Data",
+            "label": "Color",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "gsm",
+            "fieldtype": "Int",
+            "label": "GSM",
+            "reqd": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "width_inch",
+            "fieldtype": "Float",
+            "label": "Width (Inch)",
+            "precision": "2",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "sheet_size",
+            "fieldtype": "Data",
+            "label": "Sheet Size",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "bag_size",
+            "fieldtype": "Data",
+            "label": "Bag Size",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_design_code",
+            "fieldtype": "Data",
+            "label": "Design Code",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_design_name",
+            "fieldtype": "Data",
+            "label": "Design Name",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_design_colour",
+            "fieldtype": "Data",
+            "label": "Design Colour",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_no_of_design_colours",
+            "fieldtype": "Data",
+            "label": "No of Design Colours",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_total_no_of_colours",
+            "fieldtype": "Data",
+            "label": "Total No of Colours",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_cylinder_type",
+            "fieldtype": "Data",
+            "label": "Cylinder Type",
+            "read_only": 1,
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_finishing",
+            "fieldtype": "Data",
+            "label": "Finishing",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_white_tint",
+            "fieldtype": "Select",
+            "label": "White Tint",
+            "options": "\nYes\nNo",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_bopp_finish_size_mm",
+            "fieldtype": "Data",
+            "label": "BOPP Finish Size (MM)",
+            "read_only": 1,
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "column_break_2",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "qty",
+            "fieldtype": "Float",
+            "label": "Qty (KG)",
+            "reqd": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "uom",
+            "fieldtype": "Link",
+            "label": "UOM",
+            "options": "UOM",
+            "reqd": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "meter",
+            "fieldtype": "Int",
+            "label": "Meter",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "section_break_9",
+            "fieldtype": "Section Break"
+        },
+        {
+            "fieldname": "meter_per_roll",
+            "fieldtype": "Int",
+            "label": "Meter per Roll",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "no_of_rolls",
+            "fieldtype": "Int",
+            "label": "No of Rolls",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "column_break_11",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "weight_per_roll",
+            "fieldtype": "Float",
+            "label": "Weight per Roll (KG)",
+            "precision": "3",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "total_weight",
+            "fieldtype": "Float",
+            "label": "Total Weight (KG)",
+            "precision": "3",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_no_of_sheets",
+            "fieldtype": "Float",
+            "label": "No of Sheets (Planned PCS)",
+            "precision": "0",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_bopp_bom_kgs",
+            "fieldtype": "Float",
+            "label": "BOPP BOM KGS",
+            "precision": "3",
+            "read_only": 1,
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "dot_spec",
+            "fieldtype": "Select",
+            "label": "Dot Spec",
+            "options": "Big Dot\nSmall Dot",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "section_break_13",
+            "fieldtype": "Section Break",
+            "label": "Quality & Color"
+        },
+        {
+            "fieldname": "custom_lam_side_",
+            "fieldtype": "Data",
+            "label": "Lam Side",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_lam_gsm",
+            "fieldtype": "Int",
+            "label": "LAM GSM",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_bopp_gsm",
+            "fieldtype": "Int",
+            "label": "BOPP GSM",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_parent_fabric",
+            "fieldtype": "Select",
+            "label": "Parent Fabric",
+            "options": "Bag FG\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\nPB\nMain 102 Base Fabric\nMain 103 Base Fabric\nMain 104 Base Fabric\nMain 105 Base Fabric\nMain 106 Base Fabric\nMain 107 Base Fabric\nMain 107 PB\nLoop 103 Base Fabric\nLoop 108 Base Fabric\nLoop 110 Base Fabric\nLoop 107 Base Fabric\nLoop 107 PB\nFG Sheet\n251 Base Fabric\n252 Base Fabric\n253 Base Fabric\n254 Base Fabric\n255 Base Fabric",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_parent_child_trace_id",
+            "fieldtype": "Data",
+            "label": "Parent Child Trace ID",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "description": "Same as sheet Lamination Order Code for 104 rows (auto-filled).",
+            "fieldname": "custom_lamination_order_code_",
+            "fieldtype": "Data",
+            "label": "Lamination Order Code",
+            "read_only": 1,
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "section_break_5",
+            "fieldtype": "Section Break",
+            "label": "Specifications"
+        },
+        {
+            "fieldname": "unit",
+            "fieldtype": "Link",
+            "label": "Unit",
+            "options": "Workstation",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "planned_date",
+            "fieldtype": "Date",
+            "label": "Planned date",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "plan_name",
+            "fieldtype": "Data",
+            "label": "Plan name",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_plan_code",
+            "fieldtype": "Data",
+            "label": "Plan Code",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "custom_movement_type",
+            "fieldtype": "Select",
+            "label": "Movement Type",
+            "options": "Despatch\nTransfer",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "warehouse",
+            "fieldtype": "Link",
+            "label": "Warehouse",
+            "options": "Warehouse",
+            "in_list_view": 1
+        },
+        {
+            "fieldname": "work_order",
+            "fieldtype": "Link",
+            "label": "Work Order",
+            "options": "Work Order",
+            "read_only": 1,
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "order_sheet",
+            "fieldtype": "Data",
+            "label": "Order Sheet",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "spr_name",
+            "fieldtype": "Data",
+            "label": "SPR",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_transfer_destination",
+            "fieldtype": "Data",
+            "label": "Transfer Destination",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_transfer_status",
+            "fieldtype": "Data",
+            "label": "Transfer Status",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_transfer_approval",
+            "fieldtype": "Link",
+            "label": "Transfer Approval",
+            "options": "Transfer Approval",
+            "in_list_view": 0
+        },
+        {
+            "default": "DAY",
+            "fieldname": "custom_lamination_shift",
+            "fieldtype": "Select",
+            "label": "Shift",
+            "options": "DAY\nNIGHT",
+            "in_list_view": 0
+        },
+        {
+            "default": "DAY",
+            "fieldname": "custom_slitting_shift",
+            "fieldtype": "Select",
+            "label": "Slitting Shift",
+            "options": "DAY\nNIGHT",
+            "in_list_view": 0
+        },
+        {
+            "default": "DAY",
+            "fieldname": "custom_sheet_cutting_shift",
+            "fieldtype": "Select",
+            "label": "Sheet Cutting Shift",
+            "options": "DAY\nNIGHT",
+            "in_list_view": 0
+        },
+        {
+            "default": "DAY",
+            "fieldname": "custom_printing_shift",
+            "fieldtype": "Select",
+            "label": "Printing Shift",
+            "options": "DAY\nNIGHT",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_printing_arrangement_seq",
+            "fieldtype": "Int",
+            "label": "Printing Arrangement Seq",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "allocated_to_unit",
+            "fieldtype": "Select",
+            "label": "Allocated to Unit",
+            "options": "\nUnit 1\nUnit 2\nUnit 3\nUnit 4",
+            "read_only": 1,
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_design_attachment",
+            "fieldtype": "Attach",
+            "label": "Design Attachment",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_split_metadata",
+            "fieldtype": "Long Text",
+            "label": "Split Metadata",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "section_split",
+            "fieldtype": "Section Break",
+            "label": "Split / trace"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_split",
+            "fieldtype": "Check",
+            "label": "Is split",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "split_from",
+            "fieldtype": "Link",
+            "label": "Split from",
+            "options": "Planning Table",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "source_item",
+            "fieldtype": "Link",
+            "label": "Source planning line",
+            "options": "Planning sheet Item",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "custom_item_planned_date",
+            "fieldtype": "Date",
+            "label": "Item planned date (legacy)",
+            "in_list_view": 0
+        },
+        {
+            "fieldname": "column_break_7",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "column_break_15",
+            "fieldtype": "Column Break"
+        }
+    ],
+    "index_web_pages_for_search": 0,
+    "istable": 1,
+    "links": [],
+    "modified": "2026-06-10 14:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "Production Planning",
+    "name": "Planning Table",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "idx",
+    "sort_order": "ASC",
+    "states": []
 }
