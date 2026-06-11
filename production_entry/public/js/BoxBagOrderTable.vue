@@ -110,7 +110,7 @@
               <td class="cell-center"><span v-if="arrangementUnlocked" class="cc-drag-handle">Drag</span><span v-else>-</span></td>
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
-              <td class="cell-center" :style="['200','201','202','211','212','213','216','217','222','223','225','226','231','233','241','242'].includes(String(row.process || '')) ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || row.process || '-' }}</td>
+              <td class="cell-center" :style="['200','201','202','211','212','213','216','217','222','223','225','226','231','232','233','241','242'].includes(String(row.process || '')) ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || row.process || '-' }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
               <td>{{ row.customer_name || row.customer || "-" }}</td>
@@ -183,6 +183,7 @@ import { formatMovementCell } from "./movementDisplay.js";
 const BOX_BAG_UNITS = [
   "VTP-L1 LEADER OYANG MACHINE",
   "VTP-L2 LEADER ZX MACHINE",
+  "VTP-L4 SCREEN PRINTING MACHINE",
   "UNASSIGNED BOX BAG MACHINE",
 ];
 const W_CUT_D_CUT_UNIT_JVE_L1 = "JVE-L1  B700 BAG MAKING MACHINE";
@@ -204,7 +205,7 @@ const W_CUT_D_CUT_ALL_UNITS = [
 const ITEM_PROCESS_KNOWN = new Set([
   "100", "102", "103", "104", "105", "106", "107", "108", "109",
   "200", "201", "202", "203", "211", "212", "213", "214", "216", "217",
-  "221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
+  "221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226",
   "251", "252", "253", "254", "255",
 ]);
 const D_CUT_FG_PROCS = ["211", "212", "213", "214", "216", "217"];
@@ -295,6 +296,7 @@ const processOptions = computed(() => {
     { value: "224", label: "224 PLAIN LAMINATED BOX BAG", shortLabel: "224 Plain Lam" },
     { value: "223", label: "223 flexo printed box bag", shortLabel: "223 Flexo" },
     { value: "231", label: "231 colored bopp box bag", shortLabel: "231 Colored BOPP" },
+    { value: "232", label: "232 colored bopp screen printed box bag", shortLabel: "232 Screen BOPP" },
     { value: "233", label: "233 BOPP Box Bag", shortLabel: "233 BOPP" },
     { value: "241", label: "241 mettalic box bag", shortLabel: "241 Metallic" },
     { value: "242", label: "242 cooler box bag", shortLabel: "242 Cooler" },

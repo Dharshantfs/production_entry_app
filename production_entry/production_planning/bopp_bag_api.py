@@ -24,15 +24,16 @@ from frappe.utils import flt, cint
 from production_entry.production_planning.planning_doctypes import (
     BOX_BAG_UNIT_L1,
     BOX_BAG_UNIT_L2,
+    BOX_BAG_UNIT_L4_SCREEN,
     BOX_BAG_UNASSIGNED_UNIT,
     SLITTING_UNIT,
     LAMINATION_UNIT,
     PRINTED_BOPP_FILM_UNIT,
 )
 
-BOPP_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
-BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "233", "241", "242", "225", "226")
-BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "233", "241", "242")
+BOPP_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNIT_L4_SCREEN, BOX_BAG_UNASSIGNED_UNIT)
+BOPP_BOX_BAG_PROCESS_CODES = ("222", "223", "231", "232", "233", "241", "242", "225", "226")
+BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "232", "233", "241", "242")
 BOPP_BOX_BAG_PARENT_PROCESSES = ("221",) + BOPP_BOX_BAG_PROCESS_CODES
 
 _BOPP_FINISHING_MAP = {
@@ -90,6 +91,8 @@ def _bopp_process_label(process_code):
     p = str(process_code or "").strip()
     if p == "231":
         return "231 colored bopp box bag"
+    if p == "232":
+        return "232 colored bopp screen printed box bag"
     if p == "241":
         return "241 mettalic box bag"
     if p == "242":

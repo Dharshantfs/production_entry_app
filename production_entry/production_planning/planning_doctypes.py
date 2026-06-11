@@ -30,6 +30,7 @@ PRINTING_UNIT_4_COLOUR = "JVE - PRINTING MACHINE 4 COLOUR 1600MM"
 PRINTING_UNIT_TT = "TT - PRINTING MACHINE 4 COLOUR 1200MM"
 BOX_BAG_UNIT_L1 = "VTP-L1 LEADER OYANG MACHINE"
 BOX_BAG_UNIT_L2 = "VTP-L2 LEADER ZX MACHINE"
+BOX_BAG_UNIT_L4_SCREEN = "VTP-L4 SCREEN PRINTING MACHINE"
 # Legacy names (pre-rename) — map to VTP workstations on read/migrate.
 LEGACY_BOX_BAG_UNIT_L1 = "L1 LEADER OYANG MACHINE"
 LEGACY_BOX_BAG_UNIT_L2 = "L2 LEADER ZX MACHINE"
@@ -104,6 +105,7 @@ UNIT_NUMBER_MAP = {
     PRINTED_BOPP_FILM_UNIT: "V",
     BOX_BAG_UNIT_L1: "B",
     BOX_BAG_UNIT_L2: "C",
+    BOX_BAG_UNIT_L4_SCREEN: "F",
     BOX_BAG_UNASSIGNED_UNIT: "D",
     W_CUT_D_CUT_UNIT_JVE_L1: "P",
     W_CUT_D_CUT_UNIT_JVE_L2: "Q",
@@ -151,6 +153,7 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         PRINTING_UNIT_TT,
         BOX_BAG_UNIT_L1,
         BOX_BAG_UNIT_L2,
+        BOX_BAG_UNIT_L4_SCREEN,
         BOX_BAG_UNASSIGNED_UNIT,
         W_CUT_D_CUT_UNIT_JVE_L1,
         W_CUT_D_CUT_UNIT_JVE_L2,
@@ -215,6 +218,8 @@ def normalize_planning_unit_for_select(raw, _depth=0):
         return BOX_BAG_UNIT_L1
     if "VTP" in u and "L2" in u and ("LEADER" in u or "ZX" in u):
         return BOX_BAG_UNIT_L2
+    if "VTP" in u and "L4" in u and "SCREEN" in u:
+        return BOX_BAG_UNIT_L4_SCREEN
     if "L1" in u and "LEADER" in u and "OYANG" in u:
         return BOX_BAG_UNIT_L1
     if "L2" in u and "LEADER" in u and "ZX" in u:
@@ -352,6 +357,7 @@ def ensure_planning_unit_field_links_workstation():
 	for ws_name in (
 		BOX_BAG_UNIT_L1,
 		BOX_BAG_UNIT_L2,
+		BOX_BAG_UNIT_L4_SCREEN,
 		BOX_BAG_UNASSIGNED_UNIT,
 		"Unit 1",
 		"Unit 2",

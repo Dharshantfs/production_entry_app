@@ -15,6 +15,7 @@ from production_entry.production_planning.scheduler_api import (
 from production_entry.production_planning.planning_doctypes import (
 	BOX_BAG_UNIT_L1,
 	BOX_BAG_UNIT_L2,
+	BOX_BAG_UNIT_L4_SCREEN,
 	BOX_BAG_UNASSIGNED_UNIT,
 	LAMINATION_UNIT,
 	PRINTED_BOPP_FILM_UNIT,
@@ -58,6 +59,7 @@ SPR_BATCH_UNIT_MAP = {
 	PRINTED_BOPP_FILM_UNIT: ("VR", "14"),
 	BOX_BAG_UNIT_L2: ("VTP", "15"),
 	BOX_BAG_UNIT_L1: ("VTP", "16"),
+	BOX_BAG_UNIT_L4_SCREEN: ("VTP", "24"),
 	W_CUT_D_CUT_UNIT_JVE_L1: ("JVE", "17"),
 	W_CUT_D_CUT_UNIT_JVE_L2: ("JVE", "18"),
 	W_CUT_D_CUT_UNIT_JVE_L3: ("JVE", "19"),
@@ -151,6 +153,7 @@ _SPR_BOM_STACK_BY_FG_PROCESS = {
 	"223": ("107", "100"),
 	"224": ("104", "103"),
 	"231": ("107", "104"),
+	"232": ("231", "107"),
 	"233": ("107", "104"),
 	"241": ("106", "104"),
 	"242": ("106", "104"),
@@ -160,7 +163,7 @@ _SPR_BOM_STACK_BY_FG_PROCESS = {
 ALL_BAG_FG_PROCESS_CODES = frozenset({
 	"200", "201", "202", "203",
 	"211", "212", "213", "214", "216", "217",
-	"221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
+	"221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226",
 })
 
 
@@ -5209,7 +5212,7 @@ def get_production_plan_details(production_plan):
 	if is_sc and frappe.get_meta("Shaft Production Run").has_field("custom_is_sheet_cutting"):
 		out["custom_is_sheet_cutting"] = 1
 	is_bb = (
-		pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+		pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNIT_L4_SCREEN, BOX_BAG_UNASSIGNED_UNIT)
 		or pp_unit in W_CUT_D_CUT_ALL_UNITS
 		or _production_plan_uses_bundle_calculation(pp)
 	)
@@ -5550,7 +5553,7 @@ def _pp_bundle_calc_child_table_names() -> list[str]:
 
 def _pp_is_box_bag_unit(pp_doc) -> bool:
 	u = _spr_unit_value_for_current_field(pp_doc.get("custom_unit") if pp_doc else None)
-	return u in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+	return u in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNIT_L4_SCREEN, BOX_BAG_UNASSIGNED_UNIT)
 
 
 def _pp_is_wcut_dcut_unit(pp_doc) -> bool:
@@ -5717,7 +5720,7 @@ def _production_plan_uses_bundle_calculation(pp) -> bool:
 	pp_unit = _spr_unit_value_for_current_field(pp.get("custom_unit"))
 	if pp_unit == SHEET_CUTTING_UNIT:
 		return True
-	if pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT):
+	if pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNIT_L4_SCREEN, BOX_BAG_UNASSIGNED_UNIT):
 		return True
 	for row in pp.get(PP_BUNDLE_CALC_FIELD) or []:
 		ic = _cstr(_bundle_child_field(row, "", "item_code", "production_item", "finished_item", "item"))

@@ -12,6 +12,7 @@ from frappe.utils import flt, cint
 from production_entry.production_planning.planning_doctypes import (
 	BOX_BAG_UNIT_L1,
 	BOX_BAG_UNIT_L2,
+	BOX_BAG_UNIT_L4_SCREEN,
 	BOX_BAG_UNASSIGNED_UNIT,
 	W_CUT_D_CUT_UNIT_JVE_L1,
 	W_CUT_D_CUT_UNIT_JVE_L2,
@@ -24,7 +25,7 @@ from production_entry.production_planning.planning_doctypes import (
 	D_CUT_UNASSIGNED_UNIT,
 )
 
-BOX_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNASSIGNED_UNIT)
+BOX_BAG_UNITS = (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNIT_L4_SCREEN, BOX_BAG_UNASSIGNED_UNIT)
 W_CUT_D_CUT_UNITS = W_CUT_D_CUT_ALL_UNITS
 D_CUT_PROCESS_CODES = ("211", "212", "213", "214", "216", "217")
 W_CUT_PROCESS_CODES = ("200", "201", "202", "203")

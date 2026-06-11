@@ -387,6 +387,7 @@ const W_CUT_D_CUT_UNIT_L1 = "TTT- L1 - OYANG C700 BAG MAKING LINE";
 const W_CUT_D_CUT_UNIT_L2 = "TTT- L2 - OYANG C700 BAG MAKING LINE";
 const W_CUT_D_CUT_UNIT_L3 = "TTT- L3 - OYANG C900 BAG MAKING LINE";
 const BOX_BAG_UNIT_L1 = "VTP-L1 LEADER OYANG MACHINE";
+const BOX_BAG_UNIT_L4_SCREEN = "VTP-L4 SCREEN PRINTING MACHINE";
 const BOX_BAG_UNIT_L2 = "VTP-L2 LEADER ZX MACHINE";
 const W_CUT_UNASSIGNED_UNIT = "UNASSIGNED W CUT BAG MACHINE";
 const D_CUT_UNASSIGNED_UNIT = "UNASSIGNED D CUT BAG MACHINE";
@@ -434,6 +435,7 @@ const UNIT_TONNAGE_LIMITS = {
   [W_CUT_D_CUT_UNIT_L3]: 999,
   [BOX_BAG_UNIT_L1]: 999,
   [BOX_BAG_UNIT_L2]: 999,
+  [BOX_BAG_UNIT_L4_SCREEN]: 999,
   [W_CUT_UNASSIGNED_UNIT]: 999,
   [D_CUT_UNASSIGNED_UNIT]: 999,
 };
@@ -465,6 +467,7 @@ const headerColors = {
   [W_CUT_D_CUT_UNIT_L3]: "#38bdf8",
   [BOX_BAG_UNIT_L1]: "#7c3aed",
   [BOX_BAG_UNIT_L2]: "#8b5cf6",
+  [BOX_BAG_UNIT_L4_SCREEN]: "#a855f7",
   [W_CUT_UNASSIGNED_UNIT]: "#64748b",
   [D_CUT_UNASSIGNED_UNIT]: "#64748b",
 };
@@ -522,7 +525,7 @@ function normalizeUnitName(rawUnit) {
 const ITEM_PROCESS_KNOWN = new Set([
   "100", "102", "103", "104", "105", "106", "107", "108", "109",
   "200", "201", "202", "203", "211", "212", "213", "214", "216", "217",
-  "221", "222", "223", "224", "231", "233", "241", "242", "225", "226",
+  "221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226",
   "251", "252", "253", "254", "255",
 ]);
 
@@ -784,6 +787,7 @@ const boardProcessOptions = computed(() => {
     { value: "224", label: "224 PLAIN LAMINATED BOX BAG" },
     { value: "223", label: "223 flexo printed box bag" },
     { value: "231", label: "231 colored bopp box bag" },
+    { value: "232", label: "232 colored bopp screen printed box bag" },
     { value: "233", label: "233 BOPP Box Bag" },
     { value: "241", label: "241 mettalic box bag" },
     { value: "242", label: "242 cooler box bag" },
@@ -813,7 +817,7 @@ const boardBannerText = computed(() => {
   }
   if (isBoxBagBoard.value) {
     const p = (boardProcessFilter.value || "").trim();
-    const pLbl = !p || p === "__all__" ? "221 · 222 · 223 · 224 · 231 · 233 · 241 · 242 · 225 · 226" : `Process ${p}`;
+    const pLbl = !p || p === "__all__" ? "221 · 222 · 223 · 224 · 231 · 232 · 233 · 241 · 242 · 225 · 226" : `Process ${p}`;
     return `Box Bag Board — ${pLbl}${unitScope}`;
   }
   if (isWCutDCutBoard.value) {
@@ -1038,7 +1042,7 @@ const boardUnits = computed(() => {
   if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
   if (isSlittingBoard.value) return [...SLITTING_BOARD_UNITS];
   if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
-  if (isBoxBagBoard.value) return ["VTP-L1 LEADER OYANG MACHINE", "VTP-L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
+  if (isBoxBagBoard.value) return [BOX_BAG_UNIT_L1, "VTP-L2 LEADER ZX MACHINE", BOX_BAG_UNIT_L4_SCREEN, "UNASSIGNED BOX BAG MACHINE"];
   if (isWCutDCutBoard.value) {
     const scope = wCutDCutCompanyScope.value;
     if (scope === "jve") return [...W_CUT_D_CUT_JVE_UNITS];
@@ -1124,12 +1128,12 @@ const filteredData = computed(() => {
   }
 
   if (isBoxBagBoard.value) {
-    const BOX_BAG_UNIT_LIST = ["VTP-L1 LEADER OYANG MACHINE", "VTP-L2 LEADER ZX MACHINE", "UNASSIGNED BOX BAG MACHINE"];
+    const BOX_BAG_UNIT_LIST = [BOX_BAG_UNIT_L1, "VTP-L2 LEADER ZX MACHINE", BOX_BAG_UNIT_L4_SCREEN, "UNASSIGNED BOX BAG MACHINE"];
     const FABRIC_UNITS = new Set(["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Mixed", "UNASSIGNED"]);
     data = data.map((d) => {
       const proc = itemProcessPrefix(d.item_code || d.itemCode);
       const u = (d.unit || "").trim();
-      if (["222", "223", "231", "233", "241", "242", "225", "226"].includes(proc)) {
+      if (["222", "223", "231", "232", "233", "241", "242", "225", "226"].includes(proc)) {
         if (!BOX_BAG_UNIT_LIST.includes(u)) return { ...d, unit: "UNASSIGNED BOX BAG MACHINE" };
         return d;
       }
@@ -1141,10 +1145,10 @@ const filteredData = computed(() => {
       return d;
     });
     const bpf = boardProcessFilter.value || "__all__";
-    if (["221", "222", "223", "224", "231", "233", "241", "242", "225", "226"].includes(bpf)) {
+    if (["221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226"].includes(bpf)) {
       data = data.filter((d) => itemProcessPrefix(d.item_code || d.itemCode) === bpf);
     } else {
-      data = data.filter((d) => ["221", "222", "223", "224", "231", "233", "241", "242", "225", "226"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
+      data = data.filter((d) => ["221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226"].includes(itemProcessPrefix(d.item_code || d.itemCode)));
     }
   }
   if (isWCutDCutBoard.value) {
@@ -2055,7 +2059,7 @@ async function loadOrders(d) {
 
         if (isBoxBagBoard.value) {
             items = items.filter((i) =>
-                ["221", "222", "223", "224", "231", "233", "241", "242", "225", "226"].includes(itemProcessPrefix(i.itemCode || i.item_code))
+                ["221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226"].includes(itemProcessPrefix(i.itemCode || i.item_code))
             );
         }
         if (isWCutDCutBoard.value) {
@@ -2951,7 +2955,7 @@ onMounted(() => {
       }
     } else if (
       isBoxBagBoard.value
-      && ["221", "222", "223", "224", "231", "233", "241", "242", "225", "226", "__all__"].includes(processParam)
+      && ["221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226", "__all__"].includes(processParam)
     ) {
       boardProcessFilter.value = processParam;
     } else if (isWCutDCutBoard.value) {

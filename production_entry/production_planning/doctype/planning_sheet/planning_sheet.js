@@ -55,6 +55,7 @@ function ps_fill_design_from_item_code(frm, cdt, cdn) {
 		|| ic.includes('-212') || ic.startsWith('212')
 		|| ic.includes('-213') || ic.startsWith('213')
 		|| ic.includes('-231') || ic.startsWith('231')
+		|| ic.includes('-232') || ic.startsWith('232')
 		|| ic.includes('-233') || ic.startsWith('233')
 		|| ic.includes('-241') || ic.startsWith('241')
 		|| ic.includes('-242') || ic.startsWith('242')

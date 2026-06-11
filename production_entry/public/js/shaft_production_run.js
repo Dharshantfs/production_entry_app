@@ -34,7 +34,7 @@ const SPR_ITEMS_FIELD_FALLBACKS = {
 const SPR_ITEM_KNOWN_PREFIXES = [
 	'100', '102', '103', '104', '105', '106', '107', '108', '109', '110',
 	'200', '201', '202', '203', '211', '212', '213', '214', '216', '217',
-	'221', '222', '223', '224', '231', '233', '241', '242', '225', '226',
+	'221', '222', '223', '224', '231', '232', '233', '241', '242', '225', '226',
 ];
 
 function spr_resolve_spi_field(fieldname) {
@@ -127,7 +127,7 @@ function spr_has_bag_fg_in_items(frm) {
 	if (!frm || !frm.doc) {
 		return false;
 	}
-	const bagFg = ['221', '222', '223', '224', '231', '233', '241', '242', '225', '226'];
+	const bagFg = ['221', '222', '223', '224', '231', '232', '233', '241', '242', '225', '226'];
 	return (frm.doc.items || []).some(function (row) {
 		const p = spr_item_process_prefix(row && row.item_code);
 		return bagFg.indexOf(p) >= 0;
