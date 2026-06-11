@@ -1,7 +1,16 @@
-/* Planning sheet child tables — horizontal scroll only; do not override Frappe grid flex layout */
+/* Planning sheet child tables — horizontal scroll; keep header + body in one scroll context */
 
 .ps-grid-wrap .form-grid-container {
 	overflow-x: auto;
 	max-width: 100%;
 	width: 100%;
+}
+
+.ps-grid-wrap .form-grid {
+	overflow-x: auto;
+}
+
+.ps-grid-wrap .grid-heading-row,
+.ps-grid-wrap .grid-body .rows {
+	min-width: max-content;
 }

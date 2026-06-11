@@ -129,11 +129,44 @@ function cg_reorder_grid_docfields(grid, metaDoctype, preferredOrder) {
 	grid.docfields = ordered;
 }
 
+function cg_visible_column_count(grid) {
+	if (!grid) {
+		return 0;
+	}
+	if (grid.visible_columns && grid.visible_columns.length) {
+		return grid.visible_columns.length;
+	}
+	return (grid.docfields || []).filter((df) => df && df.in_list_view && !cg_skip_field(df)).length;
+}
+
+function cg_sync_row_docfields(grid, showSet) {
+	if (!grid || !showSet) {
+		return;
+	}
+	(grid.grid_rows || []).forEach((gr) => {
+		if (!gr) {
+			return;
+		}
+		[gr.docfields, gr.grid && gr.grid.docfields].forEach((docfields) => {
+			if (!docfields || !docfields.length) {
+				return;
+			}
+			docfields.forEach((df) => {
+				if (!df || !df.fieldname || cg_skip_field(df)) {
+					return;
+				}
+				const show = !!showSet[df.fieldname];
+				df.in_list_view = show ? 1 : 0;
+				df.hidden = 0;
+			});
+		});
+	});
+}
+
 function cg_refresh_grid_body(grid) {
 	if (!grid) {
 		return;
 	}
-	// Never call grid.refresh() here — it rebuilds body columns from stale state and desyncs headers.
 	try {
 		(grid.grid_rows || []).forEach((gr) => {
 			if (gr && typeof gr.refresh === 'function') {
@@ -142,15 +175,6 @@ function cg_refresh_grid_body(grid) {
 		});
 	} catch (e) {
 		/* ignore */
-	}
-	if (!(grid.grid_rows || []).length) {
-		try {
-			if (typeof grid.refresh === 'function') {
-				grid.refresh();
-			}
-		} catch (e2) {
-			/* ignore */
-		}
 	}
 }
 
@@ -188,6 +212,9 @@ function cg_realign_grid(grid, fd) {
 	} catch (e) {
 		/* ignore */
 	}
+	if (cg_visible_column_count(grid) < 1) {
+		return;
+	}
 	try {
 		if (typeof grid.refresh_header === 'function') {
 			grid.refresh_header();
@@ -195,9 +222,22 @@ function cg_realign_grid(grid, fd) {
 	} catch (e) {
 		/* ignore */
 	}
-	// Row-only refresh — full grid.refresh() collapses Planning Sheet / SPR grids.
-	cg_refresh_grid_body(grid);
+	// Full body rebuild so column order/count matches header (row-only refresh desyncs).
+	try {
+		if (typeof grid.refresh === 'function') {
+			grid.refresh();
+		} else {
+			cg_refresh_grid_body(grid);
+		}
+	} catch (e) {
+		cg_refresh_grid_body(grid);
+	}
 	cg_sync_header_scroll(fd);
+	if (fd && fd.$wrapper && fd.$wrapper.length) {
+		requestAnimationFrame(function () {
+			cg_sync_header_scroll(fd);
+		});
+	}
 }
 
 production_entry.grid_columns = {
@@ -266,6 +306,7 @@ production_entry.grid_columns = {
 				}
 				df.in_list_view = 0;
 			});
+			cg_sync_row_docfields(grid, showSet);
 			cg_realign_grid(grid, fd);
 		} catch (e) {
 			if (typeof console !== 'undefined' && console.warn) {

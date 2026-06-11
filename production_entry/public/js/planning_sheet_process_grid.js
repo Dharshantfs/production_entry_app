@@ -302,6 +302,25 @@ function ps_build_show_fieldnames(frm, table_fieldname) {
 	return Object.keys(showSet);
 }
 
+function ps_attach_planning_grid_scroll_sync(frm, tableField) {
+	const fd = frm && frm.fields_dict && frm.fields_dict[tableField];
+	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+		return;
+	}
+	const $w = fd.$wrapper;
+	const syncKey = 'ps-grid-scroll-sync-' + tableField;
+	if ($w.data(syncKey)) {
+		return;
+	}
+	$w.data(syncKey, 1);
+	$w.on('scroll.psGridAlign', '.dt-scrollable, .form-grid .grid-body, .grid-heading-row', function () {
+		const gc = ps_get_grid_columns_module();
+		if (gc && typeof gc.sync_header_scroll === 'function') {
+			gc.sync_header_scroll(frm, tableField);
+		}
+	});
+}
+
 function ps_wrap_planning_grids(frm) {
 	if (!frm || !frm.fields_dict) {
 		return;
@@ -315,6 +334,7 @@ function ps_wrap_planning_grids(frm) {
 			} else if (tableField === 'planned_items') {
 				fd.$wrapper.addClass('ps-grid-board-wrap');
 			}
+			ps_attach_planning_grid_scroll_sync(frm, tableField);
 		}
 	});
 }
@@ -397,6 +417,19 @@ function schedule_apply_process_code_visibility(frm, delay) {
 		apply_process_code_visibility(frm);
 		if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
 			planning_sheet_apply_stock_grid_ui(frm);
+		}
+		// Paint pass — wide planning grids can leave header/body offset after first refresh.
+		const gc2 = ps_get_grid_columns_module();
+		if (gc2 && typeof gc2.realign === 'function') {
+			setTimeout(function () {
+				PS_GRID_TABLE_FIELDS.forEach(function (t) {
+					try {
+						gc2.realign(frm, t);
+					} catch (e) {
+						/* ignore */
+					}
+				});
+			}, 150);
 		}
 	};
 	if (gc && typeof gc.debounce === 'function') {

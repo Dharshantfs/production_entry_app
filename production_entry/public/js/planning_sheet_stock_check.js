@@ -342,13 +342,15 @@ function planning_sheet_apply_stock_grid_ui(frm) {
 				grid.update_docfield_property(fn, 'read_only', 1);
 			} catch (e) { /* ignore */ }
 		});
-		if (hasStock) {
-			const gc = typeof production_entry !== 'undefined' && production_entry.grid_columns;
-			if (gc && typeof gc.realign === 'function') {
-				try { gc.realign(frm, table); } catch (e) { /* ignore */ }
-			} else if (typeof grid.setup_visible_columns === 'function') {
-				try { grid.setup_visible_columns(); } catch (e) { /* ignore */ }
-			}
+		const gc = typeof production_entry !== 'undefined' && production_entry.grid_columns;
+		if (gc && typeof gc.realign === 'function') {
+			try { gc.realign(frm, table); } catch (e) { /* ignore */ }
+		} else if (typeof grid.setup_visible_columns === 'function') {
+			try {
+				grid.setup_visible_columns();
+				if (typeof grid.refresh_header === 'function') grid.refresh_header();
+				if (typeof grid.refresh === 'function') grid.refresh();
+			} catch (e) { /* ignore */ }
 		}
 	});
 }
