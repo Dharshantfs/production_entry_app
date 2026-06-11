@@ -230,6 +230,35 @@ function cg_sync_header_scroll(fd) {
 	}
 }
 
+/** After fullRefresh teardown, grid.refresh() does not recreate rows — reload from frm.doc. */
+function cg_repopulate_grid_if_empty(grid, fd) {
+	if (!grid || (grid.grid_rows || []).length > 0) {
+		return false;
+	}
+	const frm = grid.frm || (fd && fd.frm);
+	const fieldname = (grid.df && grid.df.fieldname) || (fd && fd.df && fd.df.fieldname);
+	if (!frm || !fieldname) {
+		return false;
+	}
+	const docRows = frm.doc && frm.doc[fieldname];
+	if (!docRows || !docRows.length) {
+		return false;
+	}
+	try {
+		frm._cg_repopulating_grid = fieldname;
+		frm.refresh_field(fieldname);
+		return true;
+	} catch (e) {
+		return false;
+	} finally {
+		setTimeout(function () {
+			if (frm._cg_repopulating_grid === fieldname) {
+				delete frm._cg_repopulating_grid;
+			}
+		}, 200);
+	}
+}
+
 /** Tear down row DOM / datatable so the next refresh rebuilds from current grid.docfields. */
 function cg_teardown_grid_rows(grid) {
 	if (!grid) {
@@ -316,6 +345,7 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 			} else {
 				cg_refresh_grid_body(grid);
 			}
+			const repopulated = cg_repopulate_grid_if_empty(grid, fd);
 			if (order.length) {
 				cg_reorder_all_row_docfields(grid, order);
 			}
@@ -329,8 +359,21 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 				cg_sync_row_docfields(grid, showSet);
 				cg_refresh_grid_body(grid);
 			}
+			if (repopulated && order.length) {
+				setTimeout(function () {
+					try {
+						cg_reorder_all_row_docfields(grid, order);
+						cg_sync_row_docfields(grid, showSet);
+						cg_refresh_grid_body(grid);
+						cg_sync_header_scroll(fd);
+					} catch (e) {
+						/* ignore */
+					}
+				}, 80);
+			}
 		} catch (e) {
 			cg_refresh_grid_body(grid);
+			cg_repopulate_grid_if_empty(grid, fd);
 		}
 	} else {
 		cg_refresh_grid_body(grid);
@@ -361,6 +404,9 @@ production_entry.grid_columns = {
 	 */
 	apply(frm, tableFieldname, metaDoctype, showFieldnames, options) {
 		try {
+			if (frm && frm._cg_repopulating_grid === tableFieldname) {
+				return;
+			}
 			const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
 			if (!fd || !fd.grid || !metaDoctype) {
 				return;

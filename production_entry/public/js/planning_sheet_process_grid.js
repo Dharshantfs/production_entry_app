@@ -416,28 +416,43 @@ function ps_stabilize_planning_grids_after_refresh(frm) {
 		colCache[t] = ps_build_show_fieldnames(frm, t);
 	});
 	ps_wrap_planning_grids(frm);
+	const gc = ps_get_grid_columns_module();
 	PS_GRID_TABLE_FIELDS.forEach(function (t) {
-		try {
-			frm.refresh_field(t);
-		} catch (e) {
-			/* ignore */
+		const meta = PS_GRID_META_BY_FIELD[t];
+		const show = colCache[t] || [];
+		if (!gc || !meta || !show.length || typeof gc.apply !== 'function') {
+			return;
 		}
+		ps_bind_planning_grid_user_settings_hook(frm, t);
+		const fd = frm.fields_dict[t];
+		if (fd && fd.grid) {
+			ps_clear_planning_grid_user_settings(fd.grid);
+		}
+		gc.apply(frm, t, meta, show, { fullRefresh: true });
 	});
 	setTimeout(function () {
 		try {
-			const gc = ps_get_grid_columns_module();
+			PS_GRID_TABLE_FIELDS.forEach(function (t) {
+				try {
+					frm.refresh_field(t);
+				} catch (e) {
+					/* ignore */
+				}
+			});
+		} catch (e) {
+			/* ignore */
+		}
+	}, 50);
+	setTimeout(function () {
+		try {
 			PS_GRID_TABLE_FIELDS.forEach(function (t) {
 				const meta = PS_GRID_META_BY_FIELD[t];
 				const show = colCache[t] || [];
-				if (!gc || !meta || !show.length || typeof gc.apply !== 'function') {
-					return;
+				if (gc && meta && show.length && typeof gc.apply === 'function') {
+					gc.apply(frm, t, meta, show, { fullRefresh: false });
+				} else if (gc && typeof gc.realign === 'function') {
+					gc.realign(frm, t, { fullRefresh: false });
 				}
-				ps_bind_planning_grid_user_settings_hook(frm, t);
-				const fd = frm.fields_dict[t];
-				if (fd && fd.grid) {
-					ps_clear_planning_grid_user_settings(fd.grid);
-				}
-				gc.apply(frm, t, meta, show, { fullRefresh: true });
 			});
 			if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
 				planning_sheet_apply_stock_grid_ui(frm);
@@ -450,7 +465,7 @@ function ps_stabilize_planning_grids_after_refresh(frm) {
 			frm._ps_grid_rebuilding = false;
 			frm._ps_skip_grid_schedule = false;
 		}
-	}, 250);
+	}, 200);
 }
 
 function schedule_apply_process_code_visibility(frm, delay, options) {

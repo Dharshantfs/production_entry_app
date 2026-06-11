@@ -334,7 +334,7 @@ function registerWorkingSheetCuttingChangeBomButton(frm) {
 
 frappe.ui.form.on('Planning sheet', {
     onload: function (frm) {
-        if (frm._ps_skip_grid_schedule) {
+        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
             return;
         }
         ps_schedule_planning_grid_columns(frm, 300, true);
@@ -342,7 +342,7 @@ frappe.ui.form.on('Planning sheet', {
 
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
-        if (frm._ps_skip_grid_schedule) {
+        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
             return;
         }
         ps_schedule_planning_grid_columns(frm, 300, true);
@@ -465,14 +465,19 @@ frappe.ui.form.on('Planning sheet', {
                 },
             });
         }, __('Actions'));
-        ps_schedule_planning_grid_columns(frm);
     },
 
     onload_post_render: function (frm) {
+        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
+            return;
+        }
         ps_schedule_planning_grid_columns(frm);
     },
 
     validate: function (frm) {
+        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
+            return;
+        }
         ps_schedule_planning_grid_columns(frm);
     },
 
