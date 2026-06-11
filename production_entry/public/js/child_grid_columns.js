@@ -97,14 +97,11 @@ function cg_ordered_show_fields(metaDoctype, showSet, preferredOrder) {
 	return show;
 }
 
-/** Reorder grid.docfields so visible columns follow preferredOrder (Frappe uses docfields iteration order). */
-function cg_reorder_grid_docfields(grid, metaDoctype, preferredOrder) {
-	if (!grid || !preferredOrder || !preferredOrder.length) {
-		return;
-	}
-	const source = (grid.docfields || []).slice();
-	if (!source.length) {
-		return;
+/** Return docfields array reordered to preferredOrder (unknown fields trail at end). */
+function cg_reorder_docfields_array(docfields, preferredOrder) {
+	const source = (docfields || []).slice();
+	if (!source.length || !preferredOrder || !preferredOrder.length) {
+		return source;
 	}
 	const byName = {};
 	source.forEach((df) => {
@@ -126,7 +123,38 @@ function cg_reorder_grid_docfields(grid, metaDoctype, preferredOrder) {
 			seen[df.fieldname] = 1;
 		}
 	});
-	grid.docfields = ordered;
+	return ordered;
+}
+
+/** Reorder grid.docfields so visible columns follow preferredOrder (Frappe header uses this order). */
+function cg_reorder_grid_docfields(grid, metaDoctype, preferredOrder) {
+	if (!grid || !preferredOrder || !preferredOrder.length) {
+		return;
+	}
+	if (!(grid.docfields || []).length) {
+		return;
+	}
+	grid.docfields = cg_reorder_docfields_array(grid.docfields, preferredOrder);
+}
+
+/**
+ * Row body cells iterate gr.docfields — must match grid.docfields order or values sit under wrong headers.
+ */
+function cg_reorder_all_row_docfields(grid, preferredOrder) {
+	if (!grid || !preferredOrder || !preferredOrder.length) {
+		return;
+	}
+	(grid.grid_rows || []).forEach((gr) => {
+		if (!gr) {
+			return;
+		}
+		if (gr.docfields && gr.docfields.length) {
+			gr.docfields = cg_reorder_docfields_array(gr.docfields, preferredOrder);
+		}
+		if (gr.grid && gr.grid.docfields && gr.grid.docfields.length) {
+			gr.grid.docfields = cg_reorder_docfields_array(gr.grid.docfields, preferredOrder);
+		}
+	});
 }
 
 function cg_visible_column_count(grid) {
@@ -194,12 +222,17 @@ function cg_sync_header_scroll(fd) {
 	}
 }
 
-function cg_realign_grid(grid, fd, options) {
+function cg_realign_grid(grid, fd, options, columnOrder) {
 	if (!grid) {
 		return;
 	}
 	const opts = options || {};
 	const fullRefresh = opts.fullRefresh === true;
+	const order =
+		columnOrder ||
+		(grid.docfields || [])
+			.filter((df) => df && df.in_list_view && !cg_skip_field(df))
+			.map((df) => df.fieldname);
 	try {
 		if (grid.visible_columns) {
 			delete grid.visible_columns;
@@ -236,8 +269,12 @@ function cg_realign_grid(grid, fd, options) {
 		} catch (e) {
 			cg_refresh_grid_body(grid);
 		}
-		// Re-sync row templates after full rebuild (prevents values under wrong headers).
+		// Header uses grid.docfields; body uses row docfields — keep both in sync.
 		try {
+			if (order.length) {
+				cg_reorder_grid_docfields(grid, null, order);
+				cg_reorder_all_row_docfields(grid, order);
+			}
 			const showSet = {};
 			(grid.docfields || []).forEach((df) => {
 				if (df && df.fieldname && df.in_list_view && !cg_skip_field(df)) {
@@ -329,8 +366,9 @@ production_entry.grid_columns = {
 				}
 				df.in_list_view = 0;
 			});
+			cg_reorder_all_row_docfields(grid, ordered);
 			cg_sync_row_docfields(grid, showSet);
-			cg_realign_grid(grid, fd, options);
+			cg_realign_grid(grid, fd, options, ordered);
 		} catch (e) {
 			if (typeof console !== 'undefined' && console.warn) {
 				console.warn('grid_columns.apply failed', tableFieldname, e);

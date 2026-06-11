@@ -406,46 +406,35 @@ function apply_process_code_visibility(frm) {
 }
 
 function ps_stabilize_planning_grids_after_refresh(frm) {
-	if (!frm || !frm.fields_dict || frm._ps_grid_stabilizing) {
+	if (!frm || !frm.fields_dict) {
 		return;
 	}
-	frm._ps_grid_stabilizing = true;
-	try {
+	apply_process_code_visibility(frm);
+	if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
+		planning_sheet_apply_stock_grid_ui(frm);
+	}
+	const gc2 = ps_get_grid_columns_module();
+	if (!gc2 || typeof gc2.realign !== 'function') {
+		return;
+	}
+	setTimeout(function () {
 		PS_GRID_TABLE_FIELDS.forEach(function (t) {
 			try {
-				frm.refresh_field(t);
+				gc2.realign(frm, t, { fullRefresh: true });
 			} catch (e) {
 				/* ignore */
 			}
 		});
-		setTimeout(function () {
+	}, 100);
+	setTimeout(function () {
+		PS_GRID_TABLE_FIELDS.forEach(function (t) {
 			try {
-				apply_process_code_visibility(frm);
-				if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
-					planning_sheet_apply_stock_grid_ui(frm);
-				}
-				const gc2 = ps_get_grid_columns_module();
-				if (gc2 && typeof gc2.realign === 'function') {
-					setTimeout(function () {
-						PS_GRID_TABLE_FIELDS.forEach(function (t) {
-							try {
-								gc2.realign(frm, t, { fullRefresh: true });
-							} catch (e) {
-								/* ignore */
-							}
-						});
-						frm._ps_grid_stabilizing = false;
-					}, 120);
-				} else {
-					frm._ps_grid_stabilizing = false;
-				}
+				gc2.realign(frm, t, { fullRefresh: true });
 			} catch (e) {
-				frm._ps_grid_stabilizing = false;
+				/* ignore */
 			}
-		}, 80);
-	} catch (e) {
-		frm._ps_grid_stabilizing = false;
-	}
+		});
+	}, 350);
 }
 
 function schedule_apply_process_code_visibility(frm, delay, options) {

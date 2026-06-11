@@ -53,7 +53,23 @@ def after_migrate():
 	_ensure_workspace_shows_production_queue()
 	_ensure_learning_page_on_workspace()
 	_ensure_planning_line_unit_docfield_meta()
+	_ensure_parent_fabric_select_options()
 	_warn_if_duplicate_scheduler_app()
+
+
+def _ensure_parent_fabric_select_options():
+	"""Keep Parent Fabric Select options in sync (232 RM Bag, 231 Main/Loop, …)."""
+	if frappe.flags.in_test:
+		return
+	try:
+		from production_entry.production_planning.parent_fabric_options import sync_parent_fabric_field_options_to_db
+
+		sync_parent_fabric_field_options_to_db()
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			"production_entry: sync_parent_fabric_field_options after migrate",
+		)
 
 
 def _ensure_planning_line_unit_docfield_meta():
