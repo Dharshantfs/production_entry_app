@@ -3624,6 +3624,54 @@ def _pb_coating_gsm_token(gsm_token, num_passes):
 	return gsm_token
 
 
+_LAMINATION_FINISH_MG_WORDS = {
+	"0": "PLAIN",
+	"P": "PLAIN",
+	"M": "MATTE",
+	"G": "GLOSSY",
+}
+_LAMINATION_FINISH_MC_WORDS = {
+	"0": "PLAIN",
+	"P": "PLAIN",
+	"M": "METALLIC",
+	"C": "COOLER",
+	"G": "GLOSSY",
+}
+
+
+def _lamination_finishing_display_text(mg, mc):
+	"""Human-readable finishing for 107/108/255 item-code tails (e.g. P/P → PLAIN / PLAIN, 0/P → 0/PLAIN)."""
+	mg = _cstr(mg).strip().upper() or "0"
+	mc = _cstr(mc).strip().upper() or "0"
+	if mg == "0" and mc == "P":
+		return "0/PLAIN"
+	if mg == "P" and mc == "P":
+		return "PLAIN / PLAIN"
+	if mg == "0" and mc == "0":
+		return "PLAIN / PLAIN"
+	w1 = _LAMINATION_FINISH_MG_WORDS.get(mg, mg)
+	w2 = _LAMINATION_FINISH_MC_WORDS.get(mc, mc)
+	if mg == "0":
+		return f"0/{w2}"
+	return f"{w1} / {w2}"
+
+
+def _two_char_finishing_display_text(code):
+	"""Box/BOPP bag 2-char finishing suffix → words (PP → PLAIN / PLAIN, 0P → 0/PLAIN, MG → METALLIC / GLOSSY)."""
+	suffix = _cstr(code).strip().upper()
+	if not suffix:
+		return ""
+	if suffix == "PP":
+		return "PLAIN / PLAIN"
+	if suffix == "0P":
+		return "0/PLAIN"
+	try:
+		from production_entry.production_planning.box_bag_api import _box_bag_finishing_label
+		return _box_bag_finishing_label(suffix)
+	except Exception:
+		return suffix
+
+
 def _pb_finishing_display_text(gsm_token, finish_suffix):
 	"""
 	Build Finishing column text for Printed BOPP from gsm token (e.g. ``30M``) and suffix.
@@ -4099,6 +4147,18 @@ def _design_master_extra_fields(design_code):
 			if v:
 				out["custom_design_attachment"] = v
 				break
+	for fn in (
+		"design_colour",
+		"design_color",
+		"design_colours",
+		"custom_design_colour",
+		"custom_design_color",
+	):
+		if meta.has_field(fn):
+			v = _cstr(getattr(doc, fn, None)).strip()
+			if v:
+				out["custom_design_colour"] = v
+				break
 	return out
 
 
@@ -4202,10 +4262,14 @@ def _stamp_design_fields_on_planning_sheet(planning_sheet_name):
 		return 0
 	if not _planning_row_supports_design_fields():
 		return 0
-	design_procs = frozenset({"105", "106", "108", "201", "203", "212", "214", "216", "217", "225", "226", "252", "253", "254", "255", "251"})
+	design_procs = frozenset({
+		"105", "106", "107", "108", "201", "203", "212", "214", "216", "217",
+		"221", "222", "223", "224", "225", "226", "231", "232", "233", "241", "242",
+		"252", "253", "254", "255", "251",
+	})
 	updated = 0
 	flds = ["name", "item_code", "sales_order_item", "so_item"]
-	for col in ("custom_design_code", "custom_design_name", "custom_design_attachment"):
+	for col in ("custom_design_code", "custom_design_name", "custom_design_attachment", "custom_design_colour"):
 		if frappe.db.has_column("Planning Table", col):
 			flds.append(col)
 	for doctype in ("Planning Table", "Planning sheet Item"):
@@ -4222,7 +4286,13 @@ def _stamp_design_fields_on_planning_sheet(planning_sheet_name):
 			if not ic:
 				continue
 			pp = _item_process_prefix(ic)
-			if pp not in design_procs and not _is_printing_105_parent_process(ic) and not _matches_printed_bopp_board_row(row):
+			if (
+				pp not in design_procs
+				and pp not in BOPP_BOX_BAG_PROCESS_CODES
+				and not _is_printing_105_parent_process(ic)
+				and not _matches_printed_bopp_board_row(row)
+				and _lamination_process_from_item_code(ic) != "107"
+			):
 				continue
 			soi = _cstr(row.get("sales_order_item") or row.get("so_item")).strip()
 			patch = {}
@@ -4242,6 +4312,74 @@ def _stamp_design_fields_on_planning_sheet(planning_sheet_name):
 			if apply:
 				frappe.db.set_value(doctype, row["name"], apply, update_modified=False)
 				updated += 1
+	return updated
+
+
+def _stamp_finishing_display_on_planning_sheet(planning_sheet_name):
+	"""Backfill human-readable custom_finishing from item-code tails (107/108/255/bag)."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return 0
+	if not (
+		frappe.db.has_column("Planning Table", "custom_finishing")
+		or frappe.db.has_column("Planning sheet Item", "custom_finishing")
+	):
+		return 0
+	updated = 0
+	for doctype in ("Planning Table", "Planning sheet Item"):
+		if not frappe.db.table_exists(doctype):
+			continue
+		rows = frappe.get_all(
+			doctype,
+			filters={"parent": planning_sheet_name},
+			fields=["name", "item_code", "custom_finishing"],
+			limit_page_length=0,
+		) or []
+		for row in rows:
+			ic = _cstr(row.get("item_code")).strip()
+			if not ic:
+				continue
+			fin_txt = ""
+			lam = _lamination_process_from_item_code(ic)
+			if lam == "107":
+				p = _parse_107_item_code(ic) or {}
+				fin_txt = _lamination_finishing_display_text(
+					p.get("finish_matte_glossy"), p.get("finish_metallic_cooler")
+				)
+			elif _item_process_prefix(ic) == "255":
+				p = _parse_255_item_code(ic) or {}
+				fin_txt = _lamination_finishing_display_text(
+					p.get("finish_matte_glossy"), p.get("finish_metallic_cooler")
+				)
+			elif _item_process_prefix(ic) == "108":
+				p = _parse_108_item_code(ic) or {}
+				fin_txt = _lamination_finishing_display_text(
+					p.get("finish_matte_glossy"), p.get("finish_metallic_cooler")
+				)
+			elif _item_process_prefix(ic) in BOPP_BOX_BAG_PROCESS_CODES:
+				try:
+					from production_entry.production_planning.bopp_bag_api import _parse_bopp_bag_item_code
+					p = _parse_bopp_bag_item_code(ic) or {}
+					fin_txt = p.get("finishing_label") or _two_char_finishing_display_text(p.get("finishing_code"))
+				except Exception:
+					fin_txt = ""
+			elif _item_process_prefix(ic) in BOX_BAG_PROCESS_CODES or _item_process_prefix(ic) in W_CUT_D_CUT_FG_PROCESS_CODES:
+				try:
+					from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code, _parse_dcut_bag_item_code
+					pp = _item_process_prefix(ic)
+					if pp in W_CUT_D_CUT_FG_PROCESS_CODES:
+						p = _parse_dcut_bag_item_code(ic) or {}
+					else:
+						p = _parse_box_bag_item_code(ic) or {}
+					fin_txt = p.get("finishing_label") or _two_char_finishing_display_text(p.get("finishing_code"))
+				except Exception:
+					fin_txt = ""
+			if not fin_txt:
+				continue
+			cur = _cstr(row.get("custom_finishing")).strip()
+			if cur == fin_txt:
+				continue
+			frappe.db.set_value(doctype, row.get("name"), "custom_finishing", fin_txt, update_modified=False)
+			updated += 1
 	return updated
 
 
@@ -4970,10 +5108,12 @@ def _planning_row_dict_107_lamination_extras(
         out["custom_parent_child_trace_id"] = trace_id
     mg = (p107r.get("finish_matte_glossy") or "").strip() or "0"
     mc = (p107r.get("finish_metallic_cooler") or "").strip() or "0"
-    if frappe.db.has_column("Planning Table", "custom_finishing") or frappe.db.has_column(
-        "Planning sheet Item", "custom_finishing"
+    fin_txt = _lamination_finishing_display_text(mg, mc)
+    if fin_txt and (
+        frappe.db.has_column("Planning Table", "custom_finishing")
+        or frappe.db.has_column("Planning sheet Item", "custom_finishing")
     ):
-        out["custom_finishing"] = f"{mg}/{mc}"
+        out["custom_finishing"] = fin_txt
     if sales_order_item_name:
         wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
         if wt and (
@@ -5017,6 +5157,20 @@ def _planning_row_dict_107_lamination_extras(
         or frappe.db.has_column("Planning sheet Item", "custom_design_colour")
     ):
         out["custom_design_colour"] = col_so
+    if dcode:
+        for _kdm, _vdm in (_design_master_extra_fields(dcode) or {}).items():
+            if not _vdm or not _cstr(_vdm).strip():
+                continue
+            if _kdm in out and _cstr(out.get(_kdm)).strip():
+                continue
+            if frappe.db.has_column("Planning Table", _kdm) or frappe.db.has_column("Planning sheet Item", _kdm):
+                out[_kdm] = _vdm
+        dn_dm = _cstr((_design_master_extra_fields(dcode) or {}).get("custom_design_name")).strip()
+        if dn_dm and (
+            frappe.db.has_column("Planning Table", "custom_design_name")
+            or frappe.db.has_column("Planning sheet Item", "custom_design_name")
+        ):
+            out.setdefault("custom_design_name", dn_dm)
     return out
 
 
@@ -5034,10 +5188,12 @@ def _planning_row_dict_255_lamination_extras(item_code, parsed255_early, sales_o
 		out["custom_parent_child_trace_id"] = trace_id
 	mg = (p255.get("finish_matte_glossy") or "").strip() or "0"
 	mc = (p255.get("finish_metallic_cooler") or "").strip() or "0"
-	if frappe.db.has_column("Planning Table", "custom_finishing") or frappe.db.has_column(
-		"Planning sheet Item", "custom_finishing"
+	fin_txt = _lamination_finishing_display_text(mg, mc)
+	if fin_txt and (
+		frappe.db.has_column("Planning Table", "custom_finishing")
+		or frappe.db.has_column("Planning sheet Item", "custom_finishing")
 	):
-		out["custom_finishing"] = f"{mg}/{mc}"
+		out["custom_finishing"] = fin_txt
 	if sales_order_item_name:
 		wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
 		if wt and (
@@ -5098,10 +5254,12 @@ def _planning_row_dict_108_slitting_extras(item_code, parsed108_early, sales_ord
 		out["custom_parent_child_trace_id"] = trace_id
 	mg = (p108.get("finish_matte_glossy") or "").strip() or "0"
 	mc = (p108.get("finish_metallic_cooler") or "").strip() or "0"
-	if frappe.db.has_column("Planning Table", "custom_finishing") or frappe.db.has_column(
-		"Planning sheet Item", "custom_finishing"
+	fin_txt = _lamination_finishing_display_text(mg, mc)
+	if fin_txt and (
+		frappe.db.has_column("Planning Table", "custom_finishing")
+		or frappe.db.has_column("Planning sheet Item", "custom_finishing")
 	):
-		out["custom_finishing"] = f"{mg}/{mc}"
+		out["custom_finishing"] = fin_txt
 	if sales_order_item_name:
 		wt = _white_tint_yes_no_from_sales_order_item(sales_order_item_name)
 		if wt and (
@@ -7590,6 +7748,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 		_stamp_design_fields_on_planning_sheet(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_design_fields")
+	try:
+		_stamp_finishing_display_on_planning_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:_stamp_finishing_display")
 	try:
 		_sync_legacy_planning_sheet_items_qty_from_board(planning_sheet_name)
 	except Exception:
@@ -29007,6 +29169,39 @@ def _resolve_parent_fabric_label(
 	fg_pp = _bom_item_process_code(so_fg_item_code) if so_fg_item_code else ""
 	if bag_fg_context is None:
 		bag_fg_context = _is_bag_fg_item_code(so_fg_item_code)
+
+	fg_pp_label = _bom_item_process_code(so_fg_item_code) if so_fg_item_code else ""
+	if not fg_pp_label and so_fg_item_code:
+		fg_pp_label = _item_process_prefix(so_fg_item_code)
+
+	# 232 screen-printed box bag: FG 232 → 231 RM → 107 main / 103 loop → 100 / PB.
+	if bag_fg_context and fg_pp_label == "232":
+		if pp == "232" or (fg_pp_label and pp == fg_pp_label):
+			return "Bag FG"
+		if pp == "231":
+			return "232 RM Bag"
+		if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
+			return "231 Loop Fabric"
+		if pp == "107" or _lamination_process_from_item_code(ic) == "107":
+			if direct_on_fg_bom:
+				return "Main Fabric"
+			return "231 Main Fabric"
+		if ic.startswith("100"):
+			cp = _cstr(chain_parent_process).strip() or _infer_fabric_chain_parent_process(ic, soi, pt_rows)
+			if not cp:
+				cp = _fabric_parent_process_from_item_code(ic)
+			if cp:
+				parent_ic = _fabric_chain_parent_item_for_child(ic, soi, pt_rows, cp) if pt_rows else ""
+				return _chain_child_parent_fabric_label(
+					parent_ic, cp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
+				)
+		if _is_printed_bopp_item_code(ic):
+			parent_107 = _107_parent_item_for_planning_child(ic, soi, pt_rows)
+			if parent_107:
+				return _chain_child_parent_fabric_label(
+					parent_107, "107", soi, pt_rows, direct_by_soi, bag_fg_context, pb=True
+				)
+			return "Main 107 PB"
 
 	if is_direct_so_line:
 		if pp in ALL_BAG_FG_PROCESS_CODES or _is_bag_fg_item_code(ic):

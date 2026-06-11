@@ -405,20 +405,68 @@ function apply_process_code_visibility(frm) {
 	}
 }
 
-function schedule_apply_process_code_visibility(frm, delay) {
+function ps_stabilize_planning_grids_after_refresh(frm) {
+	if (!frm || !frm.fields_dict || frm._ps_grid_stabilizing) {
+		return;
+	}
+	frm._ps_grid_stabilizing = true;
+	try {
+		PS_GRID_TABLE_FIELDS.forEach(function (t) {
+			try {
+				frm.refresh_field(t);
+			} catch (e) {
+				/* ignore */
+			}
+		});
+		setTimeout(function () {
+			try {
+				apply_process_code_visibility(frm);
+				if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
+					planning_sheet_apply_stock_grid_ui(frm);
+				}
+				const gc2 = ps_get_grid_columns_module();
+				if (gc2 && typeof gc2.realign === 'function') {
+					setTimeout(function () {
+						PS_GRID_TABLE_FIELDS.forEach(function (t) {
+							try {
+								gc2.realign(frm, t, { fullRefresh: true });
+							} catch (e) {
+								/* ignore */
+							}
+						});
+						frm._ps_grid_stabilizing = false;
+					}, 120);
+				} else {
+					frm._ps_grid_stabilizing = false;
+				}
+			} catch (e) {
+				frm._ps_grid_stabilizing = false;
+			}
+		}, 80);
+	} catch (e) {
+		frm._ps_grid_stabilizing = false;
+	}
+}
+
+function schedule_apply_process_code_visibility(frm, delay, options) {
 	if (!frm) {
 		return;
 	}
+	const opts = options || {};
+	const stabilize = opts.stabilize === true;
 	const gc = ps_get_grid_columns_module();
 	const run = function () {
 		if (!frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
+			return;
+		}
+		if (stabilize) {
+			ps_stabilize_planning_grids_after_refresh(frm);
 			return;
 		}
 		apply_process_code_visibility(frm);
 		if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
 			planning_sheet_apply_stock_grid_ui(frm);
 		}
-		// Paint pass — wide planning grids can leave header/body offset after first refresh.
 		const gc2 = ps_get_grid_columns_module();
 		if (gc2 && typeof gc2.realign === 'function') {
 			setTimeout(function () {
@@ -432,15 +480,17 @@ function schedule_apply_process_code_visibility(frm, delay) {
 			}, 150);
 		}
 	};
+	const wait = delay != null ? delay : (stabilize ? 200 : 120);
 	if (gc && typeof gc.debounce === 'function') {
-		gc.debounce(frm, 'ps_visibility', run, delay != null ? delay : 120);
+		gc.debounce(frm, stabilize ? 'ps_visibility_stabilize' : 'ps_visibility', run, wait);
 		return;
 	}
-	setTimeout(run, delay != null ? delay : 120);
+	setTimeout(run, wait);
 }
 
 production_entry.planning_sheet_process_grid = {
 	apply: apply_process_code_visibility,
 	schedule: schedule_apply_process_code_visibility,
+	stabilize: ps_stabilize_planning_grids_after_refresh,
 	item_process_prefix: ps_item_process_prefix,
 };

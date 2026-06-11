@@ -2,14 +2,14 @@
 // Grid column logic lives in planning_sheet_process_grid.js (loaded before this file).
 
 /** Process-wise grid columns — auto-detected from item_code (see planning_sheet_process_grid.js). */
-function ps_schedule_planning_grid_columns(frm) {
+function ps_schedule_planning_grid_columns(frm, delay, stabilize) {
 	const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
 	if (pg && typeof pg.schedule === 'function') {
-		pg.schedule(frm, 120);
+		pg.schedule(frm, delay != null ? delay : 120, stabilize ? { stabilize: true } : undefined);
 		return;
 	}
 	if (typeof schedule_apply_process_code_visibility === 'function') {
-		schedule_apply_process_code_visibility(frm, 120);
+		schedule_apply_process_code_visibility(frm, delay != null ? delay : 120, stabilize ? { stabilize: true } : undefined);
 	}
 }
 
@@ -339,7 +339,7 @@ frappe.ui.form.on('Planning sheet', {
 
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
-        ps_schedule_planning_grid_columns(frm);
+        ps_schedule_planning_grid_columns(frm, 200, true);
         registerWorkingSheetCuttingChangeBomButton(frm);
         // Site Client Scripts may re-add their own non-saving Change BOM button after app scripts.
         setTimeout(function () {

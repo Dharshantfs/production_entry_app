@@ -236,6 +236,21 @@ function cg_realign_grid(grid, fd, options) {
 		} catch (e) {
 			cg_refresh_grid_body(grid);
 		}
+		// Re-sync row templates after full rebuild (prevents values under wrong headers).
+		try {
+			const showSet = {};
+			(grid.docfields || []).forEach((df) => {
+				if (df && df.fieldname && df.in_list_view && !cg_skip_field(df)) {
+					showSet[df.fieldname] = 1;
+				}
+			});
+			if (Object.keys(showSet).length) {
+				cg_sync_row_docfields(grid, showSet);
+				cg_refresh_grid_body(grid);
+			}
+		} catch (e) {
+			/* ignore */
+		}
 	} else {
 		cg_refresh_grid_body(grid);
 	}

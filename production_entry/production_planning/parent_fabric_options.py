@@ -7,6 +7,9 @@ _STANDALONE_CHAIN_PB_RE = re.compile(r"^\d{3} PB$")
 
 PARENT_FABRIC_OPTIONS = (
 	"\nBag FG"
+	"\n232 RM Bag"
+	"\n231 Main Fabric"
+	"\n231 Loop Fabric"
 	"\nFG Fabric"
 	"\nFG Sheet"
 	"\nMain Fabric"

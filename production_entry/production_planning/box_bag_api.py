@@ -33,16 +33,20 @@ W_CUT_D_CUT_FG_PROCESS_CODES = D_CUT_PROCESS_CODES + W_CUT_PROCESS_CODES
 ALL_BAG_FG_PROCESS_CODES = W_CUT_D_CUT_FG_PROCESS_CODES  # extended in scheduler with box bag codes
 
 _BOX_BAG_FINISHING_MAP = {
-	"PP": "Plain",
-	"MM": "Metallic / Matte",
-	"MG": "Metallic / Glossy",
-	"CM": "Cooler / Matte",
-	"CG": "Cooler / Glossy",
-	"PM": "Plain / Matte",
-	"PG": "Plain / Glossy",
-	"0M": "Matte",
-	"M": "Matte",
-	"G": "Glossy",
+	"PP": "PLAIN / PLAIN",
+	"0P": "0/PLAIN",
+	"MM": "METALLIC / MATTE",
+	"MG": "METALLIC / GLOSSY",
+	"CM": "COOLER / MATTE",
+	"CG": "COOLER / GLOSSY",
+	"PM": "PLAIN / MATTE",
+	"PG": "PLAIN / GLOSSY",
+	"0M": "MATTE",
+	"0G": "GLOSSY",
+	"M": "MATTE",
+	"G": "GLOSSY",
+	"P": "PLAIN",
+	"0": "PLAIN",
 }
 
 

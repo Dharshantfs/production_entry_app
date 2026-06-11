@@ -37,17 +37,21 @@ BOPP_BOX_BAG_SYNC_PARENT_PROCESSES = ("231", "232", "233", "241", "242")
 BOPP_BOX_BAG_PARENT_PROCESSES = ("221",) + BOPP_BOX_BAG_PROCESS_CODES
 
 _BOPP_FINISHING_MAP = {
-    "PP": "Plain",
-    "MM": "Metallic / Matte",
-    "MG": "Metallic / Glossy",
-    "CM": "Cooler / Matte",
-    "CG": "Cooler / Glossy",
-    "PM": "Plain / Matte",
-    "PG": "Plain / Glossy",
-    "0M": "Matte",
-    "0G": "Glossy",
-    "M":  "Matte",
-    "G":  "Glossy",
+    "PP": "PLAIN / PLAIN",
+    "0P": "0/PLAIN",
+    "OP": "0/PLAIN",
+    "MM": "METALLIC / MATTE",
+    "MG": "METALLIC / GLOSSY",
+    "CM": "COOLER / MATTE",
+    "CG": "COOLER / GLOSSY",
+    "PM": "PLAIN / MATTE",
+    "PG": "PLAIN / GLOSSY",
+    "0M": "MATTE",
+    "0G": "GLOSSY",
+    "M":  "MATTE",
+    "G":  "GLOSSY",
+    "P":  "PLAIN",
+    "0":  "PLAIN",
 }
 
 def _decode_fabric_gsm_char(ch):
