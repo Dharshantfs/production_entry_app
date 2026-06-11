@@ -87,12 +87,17 @@ function ps_fetch_design_name(cdt, cdn) {
 	});
 }
 
+function ps_schedule_process_grid_columns(frm, delay) {
+	const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
+	if (pg && typeof pg.schedule === 'function') {
+		pg.schedule(frm, delay != null ? delay : 80);
+	}
+}
+
 frappe.ui.form.on('Planning sheet Item', {
 	item_code(frm, cdt, cdn) {
 		ps_fill_design_from_item_code(frm, cdt, cdn);
-		if (typeof schedule_apply_process_code_visibility === 'function') {
-			schedule_apply_process_code_visibility(frm, 80);
-		}
+		ps_schedule_process_grid_columns(frm, 80);
 	},
 	custom_design_code(frm, cdt, cdn) {
 		ps_fetch_design_name(cdt, cdn);
@@ -102,9 +107,7 @@ frappe.ui.form.on('Planning sheet Item', {
 frappe.ui.form.on('Planning Table', {
 	item_code(frm, cdt, cdn) {
 		ps_fill_design_from_item_code(frm, cdt, cdn);
-		if (typeof schedule_apply_process_code_visibility === 'function') {
-			schedule_apply_process_code_visibility(frm, 80);
-		}
+		ps_schedule_process_grid_columns(frm, 80);
 	},
 	custom_design_code(frm, cdt, cdn) {
 		ps_fetch_design_name(cdt, cdn);

@@ -310,6 +310,11 @@ function ps_wrap_planning_grids(frm) {
 		const fd = frm.fields_dict[tableField];
 		if (fd && fd.$wrapper && fd.$wrapper.length) {
 			fd.$wrapper.addClass('ps-grid-wrap');
+			if (tableField === 'items') {
+				fd.$wrapper.addClass('ps-grid-items-wrap');
+			} else if (tableField === 'planned_items') {
+				fd.$wrapper.addClass('ps-grid-board-wrap');
+			}
 		}
 	});
 }
