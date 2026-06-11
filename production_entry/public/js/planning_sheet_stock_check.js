@@ -337,13 +337,18 @@ function planning_sheet_apply_stock_grid_ui(frm) {
 		['custom_stock_batch_no', 'custom_stock_warehouse', 'custom_stock_company'].forEach((fn) => {
 			if (!frappe.meta.get_docfield(cdt, fn)) return;
 			try {
-				grid.update_docfield_property(fn, 'hidden', hasStock ? 0 : 1);
+				grid.update_docfield_property(fn, 'hidden', 0);
 				grid.update_docfield_property(fn, 'in_list_view', hasStock ? 1 : 0);
 				grid.update_docfield_property(fn, 'read_only', 1);
 			} catch (e) { /* ignore */ }
 		});
-		if (hasStock && typeof grid.setup_visible_columns === 'function') {
-			try { grid.setup_visible_columns(); } catch (e) { /* ignore */ }
+		if (hasStock) {
+			const gc = typeof production_entry !== 'undefined' && production_entry.grid_columns;
+			if (gc && typeof gc.realign === 'function') {
+				try { gc.realign(frm, table); } catch (e) { /* ignore */ }
+			} else if (typeof grid.setup_visible_columns === 'function') {
+				try { grid.setup_visible_columns(); } catch (e) { /* ignore */ }
+			}
 		}
 	});
 }

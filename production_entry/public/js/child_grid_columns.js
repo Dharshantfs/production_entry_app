@@ -195,16 +195,8 @@ function cg_realign_grid(grid, fd) {
 	} catch (e) {
 		/* ignore */
 	}
-	// Full body rebuild after header — row-only refresh leaves columns misaligned.
-	try {
-		if (typeof grid.refresh === 'function') {
-			grid.refresh();
-		} else {
-			cg_refresh_grid_body(grid);
-		}
-	} catch (e) {
-		cg_refresh_grid_body(grid);
-	}
+	// Row-only refresh — full grid.refresh() collapses Planning Sheet / SPR grids.
+	cg_refresh_grid_body(grid);
 	cg_sync_header_scroll(fd);
 }
 

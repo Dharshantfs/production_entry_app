@@ -90,6 +90,9 @@ function ps_fetch_design_name(cdt, cdn) {
 frappe.ui.form.on('Planning sheet Item', {
 	item_code(frm, cdt, cdn) {
 		ps_fill_design_from_item_code(frm, cdt, cdn);
+		if (typeof schedule_apply_process_code_visibility === 'function') {
+			schedule_apply_process_code_visibility(frm, 80);
+		}
 	},
 	custom_design_code(frm, cdt, cdn) {
 		ps_fetch_design_name(cdt, cdn);
@@ -99,6 +102,9 @@ frappe.ui.form.on('Planning sheet Item', {
 frappe.ui.form.on('Planning Table', {
 	item_code(frm, cdt, cdn) {
 		ps_fill_design_from_item_code(frm, cdt, cdn);
+		if (typeof schedule_apply_process_code_visibility === 'function') {
+			schedule_apply_process_code_visibility(frm, 80);
+		}
 	},
 	custom_design_code(frm, cdt, cdn) {
 		ps_fetch_design_name(cdt, cdn);

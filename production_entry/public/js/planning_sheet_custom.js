@@ -166,23 +166,11 @@ function ps_apply_planning_grid_columns(frm) {
     ps_realign_planning_grids(frm);
 }
 
-/** Grid columns come from child doctype JSON (in_list_view). JS overrides were collapsing the grid. */
+/** Process-wise grid columns — auto-detected from item_code (see planning_sheet_process_grid.js). */
 function ps_schedule_planning_grid_columns(frm) {
-    if (!frm || !frm.fields_dict) {
-        return;
-    }
-    ['items', 'planned_items'].forEach(function (tableField) {
-        const grid = frm.fields_dict[tableField] && frm.fields_dict[tableField].grid;
-        if (!grid) {
-            return;
-        }
-        try {
-            delete grid.user_settings;
-            grid.visible_columns = null;
-        } catch (e) {
-            /* ignore */
-        }
-    });
+	if (typeof schedule_apply_process_code_visibility === 'function') {
+		schedule_apply_process_code_visibility(frm, 120);
+	}
 }
 
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
@@ -505,6 +493,10 @@ function registerWorkingSheetCuttingChangeBomButton(frm) {
 }
 
 frappe.ui.form.on('Planning sheet', {
+    onload: function (frm) {
+        ps_schedule_planning_grid_columns(frm);
+    },
+
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
         ps_schedule_planning_grid_columns(frm);
@@ -627,6 +619,15 @@ frappe.ui.form.on('Planning sheet', {
                 },
             });
         }, __('Actions'));
+        ps_schedule_planning_grid_columns(frm);
+    },
+
+    onload_post_render: function (frm) {
+        ps_schedule_planning_grid_columns(frm);
+    },
+
+    validate: function (frm) {
+        ps_schedule_planning_grid_columns(frm);
     },
 
     items_add: function (frm) {
@@ -667,6 +668,7 @@ frappe.ui.form.on('Planning sheet', {
                         try {
                             if (frm.fields_dict.planned_items) frm.refresh_field('planned_items');
                         } catch (e2) {}
+                        ps_schedule_planning_grid_columns(frm);
                     });
                 });
             },
