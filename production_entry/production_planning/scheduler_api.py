@@ -23413,6 +23413,154 @@ def _confirm_orders_date_filter_sql(has_custom_planned_date, order_date=None, st
     return None, []
 
 
+_CONFIRM_ORDERS_FG_PARENT_FABRICS = frozenset({"Bag FG", "FG Fabric", "FG Sheet"})
+_CONFIRM_ORDERS_PCS_UOMS = frozenset({"nos", "pcs", "pieces", "piece", "pc"})
+_CONFIRM_ORDERS_KG_UOMS = frozenset({"kg", "kilogram", "kilograms"})
+
+
+def _confirm_orders_fg_parent_fabric_types():
+	return _CONFIRM_ORDERS_FG_PARENT_FABRICS
+
+
+def _confirm_orders_uom_bucket(uom):
+	u = _cstr(uom).strip().lower()
+	if u in _CONFIRM_ORDERS_PCS_UOMS:
+		return "pcs"
+	if u in _CONFIRM_ORDERS_KG_UOMS:
+		return "kg"
+	return "other"
+
+
+def _confirm_orders_uom_label(uom):
+	u = _cstr(uom).strip()
+	low = u.lower()
+	if low in _CONFIRM_ORDERS_PCS_UOMS:
+		return "Pcs"
+	if low in _CONFIRM_ORDERS_KG_UOMS:
+		return "Kg"
+	return u or ""
+
+
+def _confirm_orders_format_qty_display(qty, uom_label):
+	q = flt(qty)
+	if q <= 0:
+		return ""
+	if uom_label == "Pcs":
+		return f"{int(round(q)):,} Pcs"
+	if uom_label == "Kg":
+		if q >= 1000:
+			return f"{q / 1000:.2f} T"
+		return f"{q:,.2f} Kg"
+	return f"{q:,.2f} {uom_label}" if uom_label else f"{q:,.2f}"
+
+
+def _confirm_orders_is_fg_row(row, so_fg_by_soi=None):
+	ic = _cstr(row.get("item_code")).strip()
+	if not ic:
+		return False
+	mt = normalize_movement_type(row.get(PLANNING_MOVEMENT_TYPE_FIELD) or row.get("movement_type"))
+	if mt == MOVEMENT_DESPATCH:
+		return True
+	pf = _cstr(row.get("custom_parent_fabric")).strip()
+	if pf in _CONFIRM_ORDERS_FG_PARENT_FABRICS:
+		return True
+	if so_fg_by_soi:
+		soi = _cstr(row.get("sales_order_item") or row.get("so_item")).strip()
+		so_it = so_fg_by_soi.get(soi) if soi else None
+		if so_it:
+			so_ic = _cstr(
+				getattr(so_it, "item_code", None)
+				or (so_it.get("item_code") if isinstance(so_it, dict) else "")
+			)
+			if so_ic and (ic == so_ic or _same_fg_design_family(ic, so_ic)):
+				return True
+	return False
+
+
+def _summarize_fg_qty_for_planning_sheets(sheet_rows):
+	"""FG finished-good qty per planning sheet (Despatch / Bag FG / FG Fabric / FG Sheet only)."""
+	if not sheet_rows:
+		return {}
+	sheet_names = [_cstr(s.get("name")).strip() for s in sheet_rows if _cstr(s.get("name")).strip()]
+	if not sheet_names:
+		return {}
+
+	fields = ["parent", "item_code", "qty", "uom"]
+	for col in ("sales_order_item", "so_item", "custom_parent_fabric", PLANNING_MOVEMENT_TYPE_FIELD):
+		if frappe.db.has_column("Planning Table", col):
+			fields.append(col)
+
+	pt_rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": ["in", sheet_names]},
+		fields=fields,
+		limit_page_length=0,
+	) or []
+
+	sheet_so = {
+		_cstr(s.get("name")).strip(): _cstr(s.get("sales_order")).strip() for s in sheet_rows
+	}
+	so_fg_maps = {}
+	for so_name in {v for v in sheet_so.values() if v}:
+		_, so_fg_maps[so_name] = _so_line_order_and_fg_map(so_name)
+
+	by_sheet = {n: [] for n in sheet_names}
+	for row in pt_rows:
+		parent = _cstr(row.get("parent")).strip()
+		if parent not in by_sheet:
+			continue
+		so_fg = so_fg_maps.get(sheet_so.get(parent, ""), {})
+		if _confirm_orders_is_fg_row(row, so_fg):
+			by_sheet[parent].append(row)
+
+	out = {}
+	for sheet_name in sheet_names:
+		fg_rows = by_sheet.get(sheet_name) or []
+		fg_qty_kg = 0.0
+		fg_qty_pcs = 0.0
+		other_lines = []
+		parent_fabrics = []
+		fg_lines = []
+		seen_pf = set()
+
+		for row in fg_rows:
+			qty = flt(row.get("qty"))
+			uom = _cstr(row.get("uom")).strip()
+			bucket = _confirm_orders_uom_bucket(uom)
+			pf = _cstr(row.get("custom_parent_fabric")).strip()
+			if pf and pf not in seen_pf:
+				seen_pf.add(pf)
+				parent_fabrics.append(pf)
+			fg_lines.append({"qty": qty, "uom": uom, "parent_fabric": pf})
+			if bucket == "pcs":
+				fg_qty_pcs += qty
+			elif bucket == "kg":
+				fg_qty_kg += qty
+			else:
+				other_lines.append((qty, uom))
+
+		display_parts = []
+		if fg_qty_pcs > 0:
+			display_parts.append(_confirm_orders_format_qty_display(fg_qty_pcs, "Pcs"))
+		if fg_qty_kg > 0:
+			display_parts.append(_confirm_orders_format_qty_display(fg_qty_kg, "Kg"))
+		for qty, uom in other_lines:
+			label = _confirm_orders_uom_label(uom) or uom
+			part = _confirm_orders_format_qty_display(qty, label)
+			if part:
+				display_parts.append(part)
+
+		out[sheet_name] = {
+			"fg_qty_kg": fg_qty_kg,
+			"fg_qty_pcs": fg_qty_pcs,
+			"fg_display": " + ".join(display_parts),
+			"parent_fabrics": parent_fabrics,
+			"parent_fabric": parent_fabrics[0] if parent_fabrics else "",
+			"fg_lines": fg_lines,
+		}
+	return out
+
+
 def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, end_date=None, order_code=None, customer=None, unit=None):
     """Planning Sheets (SO custom_production_status = 'Confirmed') grouped per company card."""
     if not frappe.db.has_column("Sales Order", "custom_production_status"):
@@ -23474,7 +23622,6 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
             {company_expr} AS company,
             so.transaction_date AS so_date,
             {so_status_sel} AS delivery_status,
-            SUM(i.qty) AS total_qty,
             GROUP_CONCAT(DISTINCT NULLIF(i.unit, '') ORDER BY NULLIF(i.unit, '') SEPARATOR ', ') AS units,
             {eff} AS effective_date
         FROM `tabPlanning sheet` p
@@ -23487,6 +23634,7 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
     """
 
     sheets = frappe.db.sql(sql, tuple(values), as_dict=True)
+    fg_by_sheet = _summarize_fg_qty_for_planning_sheets(sheets)
 
     cards = {}
 
@@ -23497,6 +23645,8 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
                 "company": key,
                 "priority": _confirm_kanban_company_priority(key),
                 "sheets": [],
+                "total_qty_kg": 0.0,
+                "total_qty_pcs": 0.0,
                 "total_qty": 0.0,
             }
         return cards[key]
@@ -23507,8 +23657,12 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
 
     for s in sheets:
         card = _card_for(s.company)
-        qty = flt(s.total_qty)
-        card["total_qty"] += qty
+        fg = fg_by_sheet.get(s.name) or {}
+        fg_qty_kg = flt(fg.get("fg_qty_kg"))
+        fg_qty_pcs = flt(fg.get("fg_qty_pcs"))
+        card["total_qty_kg"] += fg_qty_kg
+        card["total_qty_pcs"] += fg_qty_pcs
+        card["total_qty"] += fg_qty_kg
         card["sheets"].append({
             "name": s.name,
             "salesOrder": s.sales_order,
@@ -23516,7 +23670,12 @@ def _get_confirm_orders_company_kanban_impl(order_date=None, start_date=None, en
             "customer": s.customer or "",
             "customerName": s.customer_name or s.customer or "",
             "planningStatus": s.planning_status or "Draft",
-            "qty": qty,
+            "qty": fg_qty_kg,
+            "fg_qty_kg": fg_qty_kg,
+            "fg_qty_pcs": fg_qty_pcs,
+            "fg_display": fg.get("fg_display") or "",
+            "parent_fabric": fg.get("parent_fabric") or "",
+            "parent_fabrics": fg.get("parent_fabrics") or [],
             "units": s.units or "",
             "dod": str(s.dod) if s.dod else "",
             "plannedDate": str(s.effective_date) if s.effective_date else "",

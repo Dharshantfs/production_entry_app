@@ -11,9 +11,13 @@
           <span class="co-hero-stat-value">{{ totalSheets }}</span>
           <span class="co-hero-stat-label">Sheets</span>
         </div>
-        <div class="co-hero-stat">
-          <span class="co-hero-stat-value">{{ (totalQty / 1000).toFixed(2) }} T</span>
-          <span class="co-hero-stat-label">Total Qty</span>
+        <div v-if="totalQtyKg > 0" class="co-hero-stat">
+          <span class="co-hero-stat-value">{{ (totalQtyKg / 1000).toFixed(2) }} T</span>
+          <span class="co-hero-stat-label">FG Kg</span>
+        </div>
+        <div v-if="totalQtyPcs > 0" class="co-hero-stat">
+          <span class="co-hero-stat-value">{{ formatQty(totalQtyPcs) }} Pcs</span>
+          <span class="co-hero-stat-label">FG Pcs</span>
         </div>
       </div>
     </div>
@@ -80,7 +84,8 @@
           </div>
           <div class="co-card-meta">
             <span class="co-card-count">{{ card.sheets.length }} sheet{{ card.sheets.length === 1 ? '' : 's' }}</span>
-            <span class="co-card-qty">{{ (card.total_qty / 1000).toFixed(2) }} T</span>
+            <span v-if="(card.total_qty_kg || 0) > 0" class="co-card-qty">{{ ((card.total_qty_kg || 0) / 1000).toFixed(2) }} T</span>
+            <span v-if="(card.total_qty_pcs || 0) > 0" class="co-card-qty co-card-qty-pcs">{{ formatQty(card.total_qty_pcs) }} Pcs</span>
           </div>
         </div>
 
@@ -97,7 +102,8 @@
             </div>
             <div class="co-sheet-customer">{{ sheet.customerName || sheet.customer }}</div>
             <div class="co-sheet-meta">
-              <span class="co-sheet-qty">{{ sheet.qty.toFixed(2) }} Kg</span>
+              <span class="co-sheet-qty">{{ sheet.fg_display || '—' }}</span>
+              <span v-if="sheet.parent_fabric" class="co-sheet-fg-type">{{ sheet.parent_fabric }}</span>
               <span v-if="sheet.units" class="co-sheet-units">· {{ sheet.units }}</span>
             </div>
             <div class="co-sheet-dates">
@@ -153,9 +159,20 @@ const visibleCards = computed(() =>
 const totalSheets = computed(() =>
   cards.value.reduce((s, c) => s + c.sheets.length, 0)
 );
-const totalQty = computed(() =>
-  cards.value.reduce((s, c) => s + (c.total_qty || 0), 0)
+const totalQtyKg = computed(() =>
+  cards.value.reduce((s, c) => s + (c.total_qty_kg || 0), 0)
 );
+const totalQtyPcs = computed(() =>
+  cards.value.reduce((s, c) => s + (c.total_qty_pcs || 0), 0)
+);
+
+function formatQty(n) {
+  const v = Number(n) || 0;
+  if (Math.abs(v - Math.round(v)) < 1e-6) {
+    return Math.round(v).toLocaleString("en-IN");
+  }
+  return v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 function cardColor(idx) {
   return CARD_COLORS[idx % CARD_COLORS.length];
@@ -465,6 +482,10 @@ onMounted(() => {
   border-radius: 999px;
   padding: 2px 8px;
 }
+.co-card-qty-pcs {
+  color: #1e40af;
+  background: #dbeafe;
+}
 
 .co-card-body {
   padding: 10px;
@@ -545,6 +566,17 @@ onMounted(() => {
 }
 .co-sheet-qty {
   font-weight: 700;
+}
+.co-sheet-fg-type {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #5b21b6;
+  background: #ede9fe;
+  border-radius: 999px;
+  padding: 1px 7px;
+  vertical-align: middle;
 }
 .co-sheet-units {
   color: #6b7280;
