@@ -334,12 +334,18 @@ function registerWorkingSheetCuttingChangeBomButton(frm) {
 
 frappe.ui.form.on('Planning sheet', {
     onload: function (frm) {
-        ps_schedule_planning_grid_columns(frm);
+        if (frm._ps_skip_grid_schedule) {
+            return;
+        }
+        ps_schedule_planning_grid_columns(frm, 300, true);
     },
 
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
-        ps_schedule_planning_grid_columns(frm, 200, true);
+        if (frm._ps_skip_grid_schedule) {
+            return;
+        }
+        ps_schedule_planning_grid_columns(frm, 300, true);
         registerWorkingSheetCuttingChangeBomButton(frm);
         // Site Client Scripts may re-add their own non-saving Change BOM button after app scripts.
         setTimeout(function () {

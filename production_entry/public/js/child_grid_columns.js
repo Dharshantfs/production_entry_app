@@ -211,14 +211,54 @@ function cg_sync_header_scroll(fd) {
 		return;
 	}
 	const $w = fd.$wrapper;
+	const $scroller = $w.find('.form-grid-container').first();
 	const $body = $w.find('.dt-scrollable, .form-grid .grid-body').first();
 	const $head = $w.find('.grid-heading-row, .dt-row-header, .dt-header').first();
-	if (!$body.length || !$head.length) {
+	const sl = ($scroller.length ? $scroller.scrollLeft() : $body.scrollLeft()) || 0;
+	if ($scroller.length) {
+		if (Math.abs(($scroller.scrollLeft() || 0) - sl) > 0.5) {
+			$scroller.scrollLeft(sl);
+		}
+	}
+	if ($body.length && $head.length) {
+		if (Math.abs(($head.scrollLeft() || 0) - sl) > 0.5) {
+			$head.scrollLeft(sl);
+		}
+		if (Math.abs(($body.scrollLeft() || 0) - sl) > 0.5) {
+			$body.scrollLeft(sl);
+		}
+	}
+}
+
+/** Tear down row DOM / datatable so the next refresh rebuilds from current grid.docfields. */
+function cg_teardown_grid_rows(grid) {
+	if (!grid) {
 		return;
 	}
-	const sl = $body.scrollLeft() || 0;
-	if (Math.abs(($head.scrollLeft() || 0) - sl) > 0.5) {
-		$head.scrollLeft(sl);
+	try {
+		if (grid.datatable && typeof grid.datatable.destroy === 'function') {
+			grid.datatable.destroy();
+		}
+		grid.datatable = null;
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		(grid.grid_rows || []).forEach((gr) => {
+			if (gr && typeof gr.remove === 'function') {
+				gr.remove();
+			}
+		});
+		grid.grid_rows = [];
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		if (grid.wrapper) {
+			grid.wrapper.find('.grid-body .rows').empty();
+		}
+	} catch (e) {
+		/* ignore */
 	}
 }
 
@@ -257,22 +297,26 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	} catch (e) {
 		/* ignore */
 	}
-	// Planning sheet only: full body rebuild fixes header/body column drift.
+	// Planning sheet only: destroy rows + full rebuild so header/body share column order.
 	// SPR and other doctypes: row refresh only (full refresh clears job/roll grids).
 	if (fullRefresh) {
 		try {
+			if (order.length) {
+				cg_reorder_grid_docfields(grid, null, order);
+			}
+			cg_teardown_grid_rows(grid);
+			if (typeof grid.setup_visible_columns === 'function') {
+				grid.setup_visible_columns();
+			}
+			if (typeof grid.refresh_header === 'function') {
+				grid.refresh_header();
+			}
 			if (typeof grid.refresh === 'function') {
 				grid.refresh();
 			} else {
 				cg_refresh_grid_body(grid);
 			}
-		} catch (e) {
-			cg_refresh_grid_body(grid);
-		}
-		// Header uses grid.docfields; body uses row docfields — keep both in sync.
-		try {
 			if (order.length) {
-				cg_reorder_grid_docfields(grid, null, order);
 				cg_reorder_all_row_docfields(grid, order);
 			}
 			const showSet = {};
@@ -286,7 +330,7 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 				cg_refresh_grid_body(grid);
 			}
 		} catch (e) {
-			/* ignore */
+			cg_refresh_grid_body(grid);
 		}
 	} else {
 		cg_refresh_grid_body(grid);
@@ -305,6 +349,8 @@ production_entry.grid_columns = {
 	reset_all_list_view: cg_reset_all_list_view,
 
 	ordered_show_fields: cg_ordered_show_fields,
+
+	teardown_grid_rows: cg_teardown_grid_rows,
 
 	/**
 	 * @param {object} frm - Frappe form

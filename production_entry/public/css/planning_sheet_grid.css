@@ -1,16 +1,43 @@
-/* Planning sheet child tables — horizontal scroll; keep header + body in one scroll context */
+/* Planning sheet child tables — single horizontal scroll; header + body stay aligned */
 
 .ps-grid-wrap .form-grid-container {
 	overflow-x: auto;
+	overflow-y: visible;
 	max-width: 100%;
 	width: 100%;
+	-webkit-overflow-scrolling: touch;
 }
 
+/* One scroll container only — nested overflow-x causes header/body drift */
 .ps-grid-wrap .form-grid {
-	overflow-x: auto;
+	overflow-x: visible !important;
+	overflow-y: visible;
 }
 
-.ps-grid-wrap .grid-heading-row,
-.ps-grid-wrap .grid-body .rows {
+.ps-grid-wrap .grid-heading-row {
+	overflow-x: visible !important;
+	overflow-y: visible;
 	min-width: max-content;
+}
+
+.ps-grid-wrap .grid-body,
+.ps-grid-wrap .grid-body .rows,
+.ps-grid-wrap .dt-scrollable {
+	overflow-x: visible !important;
+	overflow-y: visible;
+	min-width: max-content;
+}
+
+.ps-grid-wrap .grid-heading-row .grid-static-col,
+.ps-grid-wrap .grid-body .data-row .col,
+.ps-grid-wrap .grid-body .grid-row .col {
+	box-sizing: border-box;
+	flex-shrink: 0;
+}
+
+.ps-grid-wrap .grid-heading-row .grid-static-col .static-area,
+.ps-grid-wrap .grid-body .data-row .col .field-area {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }

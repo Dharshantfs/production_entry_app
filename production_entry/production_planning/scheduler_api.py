@@ -151,8 +151,8 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"221": 115,
 	"222": 115,
 	"223": 115,
-	"231": 115,
 	"232": 114,
+	"231": 115,
 	"233": 115,
 	"241": 115,
 	"242": 115,
@@ -174,7 +174,9 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 _BAG_PARENT_FIRST_RANK = {
 	"211": 10, "212": 10, "213": 10, "214": 10, "216": 10, "217": 10,
 	"200": 10, "201": 10, "202": 10, "203": 10,
-	"221": 10, "222": 10, "223": 10, "224": 10, "231": 10, "232": 10, "233": 10, "241": 10, "242": 10, "225": 10, "226": 10,
+	"232": 8,
+	"231": 9,
+	"221": 10, "222": 10, "223": 10, "224": 10, "233": 10, "241": 10, "242": 10, "225": 10, "226": 10,
 	"PB": 25,
 	"106": 30, "105": 35, "107": 40, "104": 45, "103": 50, "100": 60,
 }
@@ -224,8 +226,10 @@ def _production_sort_rank_parent_first(item_code):
 
 
 def _planning_sheet_uses_parent_first_sort(planning_sheet_name):
-	"""Bag/box sheets use upstream-first order (100 → 103 → … → 221), not FG-first."""
-	return False
+	"""Bag/box sheets: FG parent first (232 before 231 RM), then BOM children downstream."""
+	if not planning_sheet_name:
+		return False
+	return _planning_sheet_has_bag_fg(planning_sheet_name)
 
 
 def _normalize_planning_sheet_workstation_units(planning_sheet_name):
@@ -478,7 +482,7 @@ def reorder_planning_sheet_child_tables_in_doc(doc):
 		return
 	so_name = _cstr(doc.get("sales_order"))
 	so_line_order, so_fg_by_soi = _so_line_order_and_fg_map(so_name)
-	parent_first = False
+	parent_first = _planning_sheet_uses_parent_first_sort(_cstr(doc.get("name")))
 
 	def _sort_child_rows(rows):
 		if not rows:

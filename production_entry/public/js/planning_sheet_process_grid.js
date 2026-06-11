@@ -313,7 +313,7 @@ function ps_attach_planning_grid_scroll_sync(frm, tableField) {
 		return;
 	}
 	$w.data(syncKey, 1);
-	$w.on('scroll.psGridAlign', '.dt-scrollable, .form-grid .grid-body, .grid-heading-row', function () {
+	$w.on('scroll.psGridAlign', '.form-grid-container, .dt-scrollable, .form-grid .grid-body, .grid-heading-row', function () {
 		const gc = ps_get_grid_columns_module();
 		if (gc && typeof gc.sync_header_scroll === 'function') {
 			gc.sync_header_scroll(frm, tableField);
@@ -406,35 +406,51 @@ function apply_process_code_visibility(frm) {
 }
 
 function ps_stabilize_planning_grids_after_refresh(frm) {
-	if (!frm || !frm.fields_dict) {
+	if (!frm || !frm.fields_dict || frm._ps_grid_rebuilding) {
 		return;
 	}
-	apply_process_code_visibility(frm);
-	if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
-		planning_sheet_apply_stock_grid_ui(frm);
-	}
-	const gc2 = ps_get_grid_columns_module();
-	if (!gc2 || typeof gc2.realign !== 'function') {
-		return;
-	}
+	frm._ps_grid_rebuilding = true;
+	frm._ps_skip_grid_schedule = true;
+	const colCache = {};
+	PS_GRID_TABLE_FIELDS.forEach(function (t) {
+		colCache[t] = ps_build_show_fieldnames(frm, t);
+	});
+	ps_wrap_planning_grids(frm);
+	PS_GRID_TABLE_FIELDS.forEach(function (t) {
+		try {
+			frm.refresh_field(t);
+		} catch (e) {
+			/* ignore */
+		}
+	});
 	setTimeout(function () {
-		PS_GRID_TABLE_FIELDS.forEach(function (t) {
-			try {
-				gc2.realign(frm, t, { fullRefresh: true });
-			} catch (e) {
-				/* ignore */
+		try {
+			const gc = ps_get_grid_columns_module();
+			PS_GRID_TABLE_FIELDS.forEach(function (t) {
+				const meta = PS_GRID_META_BY_FIELD[t];
+				const show = colCache[t] || [];
+				if (!gc || !meta || !show.length || typeof gc.apply !== 'function') {
+					return;
+				}
+				ps_bind_planning_grid_user_settings_hook(frm, t);
+				const fd = frm.fields_dict[t];
+				if (fd && fd.grid) {
+					ps_clear_planning_grid_user_settings(fd.grid);
+				}
+				gc.apply(frm, t, meta, show, { fullRefresh: true });
+			});
+			if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
+				planning_sheet_apply_stock_grid_ui(frm);
 			}
-		});
-	}, 100);
-	setTimeout(function () {
-		PS_GRID_TABLE_FIELDS.forEach(function (t) {
-			try {
-				gc2.realign(frm, t, { fullRefresh: true });
-			} catch (e) {
-				/* ignore */
+		} catch (e) {
+			if (typeof console !== 'undefined' && console.warn) {
+				console.warn('ps_stabilize_planning_grids_after_refresh failed', e);
 			}
-		});
-	}, 350);
+		} finally {
+			frm._ps_grid_rebuilding = false;
+			frm._ps_skip_grid_schedule = false;
+		}
+	}, 250);
 }
 
 function schedule_apply_process_code_visibility(frm, delay, options) {
