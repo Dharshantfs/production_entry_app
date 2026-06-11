@@ -385,7 +385,7 @@ function ps_apply_grid_columns(frm, tableFieldname) {
 	if (!showFields.length) {
 		return;
 	}
-	gc.apply(frm, tableFieldname, metaDoctype, showFields);
+	gc.apply(frm, tableFieldname, metaDoctype, showFields, { fullRefresh: true });
 }
 
 function apply_process_code_visibility(frm) {
@@ -424,7 +424,7 @@ function schedule_apply_process_code_visibility(frm, delay) {
 			setTimeout(function () {
 				PS_GRID_TABLE_FIELDS.forEach(function (t) {
 					try {
-						gc2.realign(frm, t);
+						gc2.realign(frm, t, { fullRefresh: true });
 					} catch (e) {
 						/* ignore */
 					}

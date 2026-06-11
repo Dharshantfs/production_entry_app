@@ -194,10 +194,12 @@ function cg_sync_header_scroll(fd) {
 	}
 }
 
-function cg_realign_grid(grid, fd) {
+function cg_realign_grid(grid, fd, options) {
 	if (!grid) {
 		return;
 	}
+	const opts = options || {};
+	const fullRefresh = opts.fullRefresh === true;
 	try {
 		if (grid.visible_columns) {
 			delete grid.visible_columns;
@@ -222,14 +224,19 @@ function cg_realign_grid(grid, fd) {
 	} catch (e) {
 		/* ignore */
 	}
-	// Full body rebuild so column order/count matches header (row-only refresh desyncs).
-	try {
-		if (typeof grid.refresh === 'function') {
-			grid.refresh();
-		} else {
+	// Planning sheet only: full body rebuild fixes header/body column drift.
+	// SPR and other doctypes: row refresh only (full refresh clears job/roll grids).
+	if (fullRefresh) {
+		try {
+			if (typeof grid.refresh === 'function') {
+				grid.refresh();
+			} else {
+				cg_refresh_grid_body(grid);
+			}
+		} catch (e) {
 			cg_refresh_grid_body(grid);
 		}
-	} catch (e) {
+	} else {
 		cg_refresh_grid_body(grid);
 	}
 	cg_sync_header_scroll(fd);
@@ -252,8 +259,9 @@ production_entry.grid_columns = {
 	 * @param {string} tableFieldname - parent child table fieldname
 	 * @param {string} metaDoctype - child doctype name
 	 * @param {string[]} showFieldnames - fieldnames to show; array order is preserved when provided
+	 * @param {object} [options] - { fullRefresh: true } for Planning sheet grids only
 	 */
-	apply(frm, tableFieldname, metaDoctype, showFieldnames) {
+	apply(frm, tableFieldname, metaDoctype, showFieldnames, options) {
 		try {
 			const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
 			if (!fd || !fd.grid || !metaDoctype) {
@@ -307,7 +315,7 @@ production_entry.grid_columns = {
 				df.in_list_view = 0;
 			});
 			cg_sync_row_docfields(grid, showSet);
-			cg_realign_grid(grid, fd);
+			cg_realign_grid(grid, fd, options);
 		} catch (e) {
 			if (typeof console !== 'undefined' && console.warn) {
 				console.warn('grid_columns.apply failed', tableFieldname, e);
@@ -315,12 +323,12 @@ production_entry.grid_columns = {
 		}
 	},
 
-	realign(frm, tableFieldname) {
+	realign(frm, tableFieldname, options) {
 		const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
 		if (!fd || !fd.grid) {
 			return;
 		}
-		cg_realign_grid(fd.grid, fd);
+		cg_realign_grid(fd.grid, fd, options);
 	},
 
 	sync_header_scroll(frm, tableFieldname) {

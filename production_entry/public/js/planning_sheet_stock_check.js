@@ -344,7 +344,7 @@ function planning_sheet_apply_stock_grid_ui(frm) {
 		});
 		const gc = typeof production_entry !== 'undefined' && production_entry.grid_columns;
 		if (gc && typeof gc.realign === 'function') {
-			try { gc.realign(frm, table); } catch (e) { /* ignore */ }
+			try { gc.realign(frm, table, { fullRefresh: true }); } catch (e) { /* ignore */ }
 		} else if (typeof grid.setup_visible_columns === 'function') {
 			try {
 				grid.setup_visible_columns();

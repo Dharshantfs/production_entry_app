@@ -339,35 +339,24 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 		spr_sync_grid_header_body_scroll(fd);
 		return;
 	}
-	const gc = spr_get_grid_columns_module();
-	let applied = false;
-	if (gc && typeof gc.apply === 'function') {
-		try {
-			gc.apply(frm, gridFieldname, metaDoctype, visibleCols);
-			applied = true;
-		} catch (e) {
-			/* fallback below */
+	// Never use shared grid_columns.apply on SPR — cg_reset_all_list_view breaks jobs/rolls display.
+	const showSet = {};
+	visibleCols.forEach(function (fn) {
+		showSet[fn] = 1;
+	});
+	(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
+		if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
+			return;
 		}
-	}
-	if (!applied) {
-		const showSet = {};
-		visibleCols.forEach(function (fn) {
-			showSet[fn] = 1;
-		});
-		(frappe.meta.get_docfields(metaDoctype) || []).forEach(function (df) {
-			if (!df || df.fieldtype === 'Column Break' || df.fieldtype === 'Section Break') {
-				return;
-			}
-			const show = !!showSet[df.fieldname];
-			try {
-				grid.update_docfield_property(df.fieldname, 'hidden', 0);
-				grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
-			} catch (e) {
-				/* ignore */
-			}
-		});
-		spr_force_grid_realign(frm, gridFieldname);
-	}
+		const show = !!showSet[df.fieldname];
+		try {
+			grid.update_docfield_property(df.fieldname, 'hidden', 0);
+			grid.update_docfield_property(df.fieldname, 'in_list_view', show ? 1 : 0);
+		} catch (e) {
+			/* ignore */
+		}
+	});
+	spr_force_grid_realign(frm, gridFieldname);
 	spr_attach_grid_scroll_sync(fd);
 	spr_sync_grid_header_body_scroll(fd);
 }
@@ -407,10 +396,6 @@ function spr_apply_shaft_jobs_grid_columns(frm, force) {
 	const cfg = spr_grid_list_view_config(frm, 'shaft_jobs');
 	spr_apply_grid_visible_columns(frm, 'shaft_jobs', cfg.show || [], true);
 	spr_apply_shaft_jobs_create_entry_ui(frm);
-	const gc = spr_get_grid_columns_module();
-	if (gc && typeof gc.realign === 'function') {
-		gc.realign(frm, 'shaft_jobs');
-	}
 }
 
 function spr_apply_items_grid_columns(frm, force) {
@@ -499,12 +484,7 @@ function spr_get_grid_columns_module() {
  * Deletes cached visible_columns, re-runs setup + header + body refresh.
  */
 function spr_force_grid_realign(frm, fieldname) {
-	const gc = spr_get_grid_columns_module();
-	if (gc && typeof gc.realign === 'function') {
-		gc.realign(frm, fieldname);
-		spr_ensure_child_grid_heights(frm);
-		return;
-	}
+	// SPR always uses full grid.refresh() here — shared cg.realign is planning-sheet-only.
 	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
 	if (!fd || !fd.grid) {
 		return;
