@@ -230,33 +230,45 @@ function cg_sync_header_scroll(fd) {
 	}
 }
 
-/** After fullRefresh teardown, grid.refresh() does not recreate rows — reload from frm.doc. */
-function cg_repopulate_grid_if_empty(grid, fd) {
-	if (!grid || (grid.grid_rows || []).length > 0) {
+/** frm.doc has child rows but the grid body is empty — reload field from doc. */
+function cg_ensure_grid_rows_from_doc(frm, tableFieldname) {
+	if (!frm || !tableFieldname) {
 		return false;
 	}
-	const frm = grid.frm || (fd && fd.frm);
-	const fieldname = (grid.df && grid.df.fieldname) || (fd && fd.df && fd.df.fieldname);
-	if (!frm || !fieldname) {
-		return false;
-	}
-	const docRows = frm.doc && frm.doc[fieldname];
+	const docRows = frm.doc && frm.doc[tableFieldname];
 	if (!docRows || !docRows.length) {
 		return false;
 	}
+	const fd = frm.fields_dict && frm.fields_dict[tableFieldname];
+	const grid = fd && fd.grid;
+	if (!grid) {
+		return false;
+	}
+	if ((grid.grid_rows || []).length > 0) {
+		return false;
+	}
 	try {
-		frm._cg_repopulating_grid = fieldname;
-		frm.refresh_field(fieldname);
+		frm._cg_repopulating_grid = tableFieldname;
+		frm.refresh_field(tableFieldname);
 		return true;
 	} catch (e) {
 		return false;
 	} finally {
 		setTimeout(function () {
-			if (frm._cg_repopulating_grid === fieldname) {
+			if (frm._cg_repopulating_grid === tableFieldname) {
 				delete frm._cg_repopulating_grid;
 			}
-		}, 200);
+		}, 300);
 	}
+}
+
+function cg_repopulate_grid_if_empty(grid, fd) {
+	const frm = grid && (grid.frm || (fd && fd.frm));
+	const fieldname = (grid && grid.df && grid.df.fieldname) || (fd && fd.df && fd.df.fieldname);
+	if (!frm || !fieldname) {
+		return false;
+	}
+	return cg_ensure_grid_rows_from_doc(frm, fieldname);
 }
 
 /** Tear down row DOM / datatable so the next refresh rebuilds from current grid.docfields. */
@@ -326,9 +338,9 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	} catch (e) {
 		/* ignore */
 	}
-	// Planning sheet only: destroy rows + full rebuild so header/body share column order.
-	// SPR and other doctypes: row refresh only (full refresh clears job/roll grids).
-	if (fullRefresh) {
+	// fullRefresh teardown breaks Frappe child grids (rows never rebuild from frm.doc).
+	// Planning sheet uses column reorder + body refresh only; SPR never passes fullRefresh.
+	if (false && fullRefresh) {
 		try {
 			if (order.length) {
 				cg_reorder_grid_docfields(grid, null, order);
@@ -460,12 +472,17 @@ production_entry.grid_columns = {
 			});
 			cg_reorder_all_row_docfields(grid, ordered);
 			cg_sync_row_docfields(grid, showSet);
-			cg_realign_grid(grid, fd, options, ordered);
+			cg_realign_grid(grid, fd, { fullRefresh: false }, ordered);
+			cg_ensure_grid_rows_from_doc(frm, tableFieldname);
 		} catch (e) {
 			if (typeof console !== 'undefined' && console.warn) {
 				console.warn('grid_columns.apply failed', tableFieldname, e);
 			}
 		}
+	},
+
+	ensure_rows_from_doc(frm, tableFieldname) {
+		return cg_ensure_grid_rows_from_doc(frm, tableFieldname);
 	},
 
 	realign(frm, tableFieldname, options) {

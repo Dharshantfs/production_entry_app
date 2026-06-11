@@ -13,6 +13,27 @@ function ps_schedule_planning_grid_columns(frm, delay, stabilize) {
 	}
 }
 
+/** reload_doc then rebuild child grids (create / regenerate / sync). */
+function ps_reload_planning_sheet_doc(frm) {
+	if (!frm || typeof frm.reload_doc !== 'function') {
+		return;
+	}
+	const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
+	const after = function () {
+		if (pg && typeof pg.after_reload === 'function') {
+			pg.after_reload(frm);
+		} else {
+			ps_schedule_planning_grid_columns(frm, 200, true);
+		}
+	};
+	const p = frm.reload_doc();
+	if (p && typeof p.then === 'function') {
+		p.then(after);
+	} else {
+		setTimeout(after, 300);
+	}
+}
+
 // Keep legacy `items` and board `planned_items` unit fields in sync when `source_item` links rows
 // (avoids stale board grid until full reload).
 function _norm(v) {
@@ -233,7 +254,7 @@ function openSheetCuttingChangeBomDialog(frm) {
                                 message: __(m.message || 'BOM child rows updated.'),
                                 indicator: 'green',
                             });
-                            frm.reload_doc();
+                            ps_reload_planning_sheet_doc(frm);
                         },
                     });
                 },
@@ -304,7 +325,7 @@ function openWorkingBomPickerForFgRow(frm, fgRow) {
                                 message: __(m.message || 'BOM child rows updated.'),
                                 indicator: 'green',
                             });
-                            frm.reload_doc();
+                            ps_reload_planning_sheet_doc(frm);
                         },
                     });
                 },
@@ -371,7 +392,7 @@ frappe.ui.form.on('Planning sheet', {
                         message: __(m.message || 'Color update completed.'),
                         indicator: 'green'
                     });
-                    frm.reload_doc();
+                    ps_reload_planning_sheet_doc(frm);
                 }
             });
         }, __('Actions'));
@@ -387,7 +408,7 @@ frappe.ui.form.on('Planning sheet', {
                         message: __(m.message || 'SPR/Order Sheet update completed.'),
                         indicator: 'green'
                     });
-                    frm.reload_doc();
+                    ps_reload_planning_sheet_doc(frm);
                 }
             });
         }, __('Actions'));
@@ -442,7 +463,7 @@ frappe.ui.form.on('Planning sheet', {
                             } else {
                                 frappe.show_alert({ message: __(m.message || 'Updated successfully'), indicator: 'green' });
                             }
-                            frm.reload_doc();
+                            ps_reload_planning_sheet_doc(frm);
                         },
                     });
                 },
@@ -461,7 +482,7 @@ frappe.ui.form.on('Planning sheet', {
                         message: __('Updated {0} row(s)', [m.updated || 0]),
                         indicator: (m.updated || 0) > 0 ? 'green' : 'orange',
                     });
-                    frm.reload_doc();
+                    ps_reload_planning_sheet_doc(frm);
                 },
             });
         }, __('Actions'));
@@ -516,10 +537,16 @@ frappe.ui.form.on('Planning sheet', {
                 } catch (e) {}
                 frappe.model.with_doctype('Planning sheet Item', function () {
                     frappe.model.with_doctype('Planning Table', function () {
-                        try {
-                            if (frm.fields_dict.planned_items) frm.refresh_field('planned_items');
-                        } catch (e2) {}
-                        ps_schedule_planning_grid_columns(frm);
+                        const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
+                        if (pg && typeof pg.after_reload === 'function') {
+                            pg.after_reload(frm);
+                        } else {
+                            try {
+                                if (frm.fields_dict.items) frm.refresh_field('items');
+                                if (frm.fields_dict.planned_items) frm.refresh_field('planned_items');
+                            } catch (e2) {}
+                            ps_schedule_planning_grid_columns(frm, 200, true);
+                        }
                     });
                 });
             },

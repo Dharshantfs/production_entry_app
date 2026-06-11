@@ -22,7 +22,11 @@ frappe.ui.form.on('Planning sheet', {
 									indicator: 'orange',
 								});
 							}
-							frm.reload_doc();
+							if (typeof ps_reload_planning_sheet_doc === 'function') {
+								ps_reload_planning_sheet_doc(frm);
+							} else {
+								frm.reload_doc();
+							}
 						}
 					},
 				});

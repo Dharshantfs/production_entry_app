@@ -239,7 +239,11 @@ function planning_sheet_stock_show_confirm_dialog(frm, preview, mode, selections
 						message: __('Stock applied on {0} row(s). Batch, warehouse and company are saved on each row.', [m.count || 0]),
 						indicator: 'green',
 					});
-					frm.reload_doc();
+					if (typeof ps_reload_planning_sheet_doc === 'function') {
+						ps_reload_planning_sheet_doc(frm);
+					} else {
+						frm.reload_doc();
+					}
 				},
 			});
 		},
@@ -272,7 +276,11 @@ function open_planning_sheet_clear_stock(frm) {
 						message: __('Cleared Stock on {0} row(s).', [m.count || 0]),
 						indicator: 'green',
 					});
-					frm.reload_doc();
+					if (typeof ps_reload_planning_sheet_doc === 'function') {
+						ps_reload_planning_sheet_doc(frm);
+					} else {
+						frm.reload_doc();
+					}
 				},
 			});
 		}
@@ -344,7 +352,10 @@ function planning_sheet_apply_stock_grid_ui(frm) {
 		});
 		const gc = typeof production_entry !== 'undefined' && production_entry.grid_columns;
 		if (gc && typeof gc.realign === 'function') {
-			try { gc.realign(frm, table, { fullRefresh: true }); } catch (e) { /* ignore */ }
+			try { gc.realign(frm, table, { fullRefresh: false }); } catch (e) { /* ignore */ }
+			if (typeof gc.ensure_rows_from_doc === 'function') {
+				try { gc.ensure_rows_from_doc(frm, table); } catch (e) { /* ignore */ }
+			}
 		} else if (typeof grid.setup_visible_columns === 'function') {
 			try {
 				grid.setup_visible_columns();
