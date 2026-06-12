@@ -39,6 +39,8 @@ from production_entry.production_planning.planning_doctypes import (
 	W_CUT_D_CUT_UNIT_L3,
 	W_CUT_D_CUT_ALL_UNITS,
 	normalize_planning_unit_for_select,
+	get_mix_roll_unit_max_shaft_inches,
+	validate_mix_shaft_width,
 	resolve_mix_roll_company_and_fg_warehouse,
 )
 
@@ -6848,16 +6850,25 @@ def build_spr_roll_result_lines_for_job(
 	if not job_row:
 		frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
 
-	if spr_doc_is_mix_roll(spr_doc) or (
-		_spr_is_manual_shaft_job(job_row)
-		and _spr_parse_manual_item_codes(job_row)
-		and not _cstr(getattr(spr_doc, "production_plan", None))
+	has_pinned_wos = bool(_cstr(getattr(job_row, "work_orders", None) or "").strip())
+	if not has_pinned_wos and (
+		spr_doc_is_mix_roll(spr_doc)
+		or (
+			_spr_is_manual_shaft_job(job_row)
+			and _spr_parse_manual_item_codes(job_row)
+			and not _cstr(getattr(spr_doc, "production_plan", None))
+		)
 	):
 		return _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=exact_roll_lines)
 
 	pp_name = get_pp_from_spr(shaft_production_run)
-	if not pp_name or not frappe.db.exists("Production Plan", pp_name):
-		frappe.throw(_("Production Plan not found on this Shaft Production Run"))
+	if not pp_name and has_pinned_wos:
+		pp_name = None
+	elif not pp_name or not frappe.db.exists("Production Plan", pp_name):
+		if has_pinned_wos:
+			pp_name = None
+		else:
+			frappe.throw(_("Production Plan not found on this Shaft Production Run"))
 
 	no_shafts = int(flt(getattr(job_row, "no_of_shafts", 0) or 0))
 	if no_shafts < 1:
@@ -6900,7 +6911,7 @@ def build_spr_roll_result_lines_for_job(
 
 	wo_list = _get_work_orders_for_spr_job(pp_name, spr_doc, job_row)
 	if not wo_list:
-		frappe.throw(_("No Work Orders for job {0} on this Production Plan").format(job_id))
+		frappe.throw(_("No Work Orders for job {0}").format(job_id))
 
 	# Extract job GSM
 	job_gsm = None
@@ -6955,6 +6966,8 @@ def build_spr_roll_result_lines_for_job(
 		else:
 			planned_qty = _planned_kg_for_spr_result_roll(job_row, idx, n_rolls, segs)
 		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
+		if not _cstr(row.get("party_code")) and _cstr(getattr(job_row, "party_code", None)):
+			row["party_code"] = _cstr(job_row.party_code)
 		if job_gsm is not None:
 			row["gsm"] = job_gsm
 		if individual_width is not None and flt(individual_width) > 0:
@@ -7901,7 +7914,14 @@ def spr_get_manual_job_catalog(shaft_production_run):
 				"reusable_work_orders": _spr_list_reusable_manual_work_orders(pp_name, ic, row.name),
 			}
 		)
-	return {"production_plan": pp_name, "company": company, "lines": out}
+	unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+	return {
+		"production_plan": pp_name,
+		"company": company,
+		"custom_unit": unit,
+		"max_shaft_inches": get_mix_roll_unit_max_shaft_inches(unit),
+		"lines": out,
+	}
 
 
 def _format_shaft_combination_inches(width_inch) -> str:
@@ -8030,7 +8050,9 @@ def spr_create_manual_job(
 
 
 @frappe.whitelist()
-def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_of_rolls=None):
+def spr_create_manual_jobs_multi(
+	shaft_production_run, no_of_shafts, items, no_of_rolls=None, combination_input=None
+):
 	"""
 	Create one new Work Order per selected Production Plan line; one manual Available Jobs row.
 	items: list of { item_code, production_plan_item, wo_qty, meter_roll }.
@@ -8051,6 +8073,10 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 	pp_name, company, spr = _spr_pp_and_company(shaft_production_run)
 	_spr_warehouses_exist()
 	pp = frappe.get_doc("Production Plan", pp_name)
+	combo_raw = _cstr(combination_input).strip()
+	if combo_raw:
+		unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+		validate_mix_shaft_width(unit, combo_raw)
 
 	wo_names: list[str] = []
 	reused_wo_names: list[str] = []
@@ -8168,6 +8194,319 @@ def spr_create_manual_jobs_multi(shaft_production_run, no_of_shafts, items, no_o
 		row["manual_items"] = ",".join(item_codes_list)
 	if meta.has_field("party_code") and first_order_code:
 		row["party_code"] = first_order_code
+	if meta.has_field("meter_roll_mtrs") and meter_roll_from_popup is not None and meter_roll_from_popup > 0:
+		row["meter_roll_mtrs"] = flt(meter_roll_from_popup)
+
+	spr.reload()
+	spr.append("shaft_jobs", row)
+	spr.save(ignore_permissions=True)
+
+	return {
+		"work_orders": wo_names,
+		"reused_work_orders": reused_wo_names,
+		"job_id": job_id,
+		"shaft_production_run": spr.name,
+	}
+
+
+def _spr_company_from_doc(spr_doc) -> str:
+	company = _cstr(getattr(spr_doc, "company", None))
+	if company:
+		return company
+	pp_name = get_pp_from_spr(spr_doc.name)
+	if pp_name:
+		company = _cstr(frappe.db.get_value("Production Plan", pp_name, "company"))
+	if company:
+		return company
+	company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+		"Global Defaults", "default_company"
+	)
+	if not company:
+		frappe.throw(_("Company could not be resolved"))
+	return company
+
+
+def _spr_insert_trial_work_order(company: str, item_code: str, qty: float, order_code: str) -> str:
+	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+		get_default_bom_for_item,
+	)
+
+	bom = get_default_bom_for_item(item_code, company)
+	if not bom:
+		frappe.throw(_("No active BOM for item {0}").format(item_code))
+	wo = frappe.new_doc("Work Order")
+	wo.production_item = item_code
+	wo.bom_no = bom
+	wo.qty = flt(qty)
+	wo.company = company
+	meta_wo = frappe.get_meta("Work Order")
+	if meta_wo.has_field("description"):
+		wo.description = _("SPR trial order — Item {0} — Order {1}").format(item_code, order_code)
+	for fn in ("custom_order_code", "order_code", "custom_party_code"):
+		if meta_wo.has_field(fn) and order_code:
+			wo.set(fn, order_code)
+	wo.source_warehouse = SPR_MANUAL_SOURCE_WH
+	wo.fg_warehouse = SPR_MANUAL_FG_WH
+	if meta_wo.has_field("wip_warehouse"):
+		wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+		if wip:
+			wo.wip_warehouse = wip
+	frappe.flags.spr_manual_work_order_insert = True
+	try:
+		wo.insert(ignore_permissions=True)
+	finally:
+		frappe.flags.spr_manual_work_order_insert = False
+	wo_name = wo.name
+	_spr_try_submit_manual_work_order(wo_name)
+	return wo_name
+
+
+def _spr_list_reusable_trial_work_orders(item_code: str, order_code: str = "") -> list[str]:
+	if not item_code:
+		return []
+	rows = (
+		frappe.get_all(
+			"Work Order",
+			filters={
+				"production_item": item_code,
+				"docstatus": ["<", 2],
+				"status": ["not in", ["Completed", "Stopped", "Cancelled"]],
+			},
+			fields=["name", "description", "modified", "production_plan"],
+			order_by="modified desc",
+		)
+		or []
+	)
+	rows = [r for r in rows if not _cstr(r.get("production_plan"))]
+	oc = _cstr(order_code)
+	out: list[str] = []
+	seen = set()
+	for r in rows:
+		wo_name = _cstr(r.get("name"))
+		if not wo_name or wo_name in seen:
+			continue
+		desc = _cstr(r.get("description"))
+		if "SPR trial" not in desc and oc:
+			continue
+		if oc:
+			try:
+				wo_doc = frappe.get_doc("Work Order", wo_name)
+				if get_order_code(wo_doc) != oc:
+					continue
+			except Exception:
+				pass
+		seen.add(wo_name)
+		out.append(wo_name)
+	if not out:
+		for r in rows:
+			wo_name = _cstr(r.get("name"))
+			if wo_name and wo_name not in seen:
+				seen.add(wo_name)
+				out.append(wo_name)
+	return out
+
+
+@frappe.whitelist()
+def spr_get_trial_order_context(shaft_production_run):
+	_spr_require_saved(shaft_production_run)
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	company = _spr_company_from_doc(spr)
+	unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+	qualities = frappe.get_all("Quality Master", fields=["name", "quality_name"], order_by="quality_name asc") or []
+	colors = frappe.get_all("Colour Master", fields=["name", "colour_name"], order_by="colour_name asc") or []
+	return {
+		"company": company,
+		"custom_unit": unit,
+		"max_shaft_inches": get_mix_roll_unit_max_shaft_inches(unit),
+		"source_warehouse": SPR_MANUAL_SOURCE_WH,
+		"fg_warehouse": SPR_MANUAL_FG_WH,
+		"qualities": qualities,
+		"colors": colors,
+	}
+
+
+@frappe.whitelist()
+def spr_resolve_trial_fabric_item(
+	quality,
+	color,
+	gsm,
+	width_inch,
+	company=None,
+	create_if_missing=1,
+):
+	from production_entry.production_planning.fabric_item_bom import (
+		ensure_fabric_item,
+		ensure_nonwoven_fabric_bom,
+		resolve_fabric_item_code,
+	)
+
+	company = _cstr(company) or frappe.defaults.get_global_default("company")
+	resolved = resolve_fabric_item_code(quality, color, gsm, width_inch)
+	item_code = _cstr(resolved.get("item_code"))
+	created = 0
+	if not frappe.db.exists("Item", item_code) and cint(create_if_missing):
+		out = ensure_fabric_item(company, quality, color, gsm, width_inch)
+		item_code = _cstr(out.get("item_code"))
+		created = cint(out.get("created"))
+	bom_name = None
+	if frappe.db.exists("Item", item_code):
+		bom_name = ensure_nonwoven_fabric_bom(item_code, company, quality, color, gsm=gsm)
+	return {
+		"item_code": item_code,
+		"item_name": frappe.db.get_value("Item", item_code, "item_name") if item_code else "",
+		"width_inch": resolved.get("width_inch"),
+		"width_mm": resolved.get("width_mm"),
+		"gsm": int(flt(gsm)),
+		"created": created,
+		"bom": bom_name,
+		"exists": bool(frappe.db.exists("Item", item_code)),
+	}
+
+
+@frappe.whitelist()
+def spr_preview_trial_fabric_bom(item_code, company=None, quality=None, color=None, gsm=None):
+	from production_entry.production_planning.fabric_item_bom import preview_fabric_bom
+
+	return preview_fabric_bom(item_code, company=company, quality=quality, color=color, gsm=gsm)
+
+
+@frappe.whitelist()
+def spr_create_trial_jobs_multi(
+	shaft_production_run,
+	order_code,
+	no_of_shafts,
+	items,
+	no_of_rolls=None,
+	combination_input=None,
+):
+	"""Create standalone trial Work Orders and append Available Jobs row (mirror manual job)."""
+	order_code = _cstr(order_code)
+	if not order_code:
+		frappe.throw(_("Order code is required for Trail Order"))
+	no_of_shafts = cint(no_of_shafts)
+	if no_of_shafts < 1:
+		frappe.throw(_("Number of shafts must be at least 1"))
+	no_of_rolls = cint(no_of_rolls) if no_of_rolls is not None else 1
+	if no_of_rolls < 1:
+		no_of_rolls = 1
+	if isinstance(items, str):
+		items = frappe.parse_json(items)
+	if not items or not isinstance(items, list):
+		frappe.throw(_("Add at least one trial fabric line"))
+
+	_spr_require_saved(shaft_production_run)
+	_spr_warehouses_exist()
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	company = _spr_company_from_doc(spr)
+	combo_raw = _cstr(combination_input).strip()
+	if combo_raw:
+		unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+		validate_mix_shaft_width(unit, combo_raw)
+
+	wo_names: list[str] = []
+	reused_wo_names: list[str] = []
+	qtys: list[float] = []
+	widths_list: list[float] = []
+	item_codes_list: list[str] = []
+	meter_roll_from_popup: float | None = None
+
+	for raw in items:
+		if not isinstance(raw, dict):
+			frappe.throw(_("Invalid line payload"))
+		item_code = _cstr(raw.get("item_code"))
+		qty = flt(raw.get("wo_qty"))
+		if not item_code or qty <= 0:
+			frappe.throw(_("Each line needs item and Work Order qty greater than zero"))
+		selected_reuse = _cstr(raw.get("selected_reuse_work_order"))
+		wo_name = ""
+		if selected_reuse and selected_reuse != "__NEW__":
+			candidates = _spr_list_reusable_trial_work_orders(item_code, order_code)
+			if selected_reuse in candidates:
+				wo_name = selected_reuse
+		if not wo_name:
+			candidates = _spr_list_reusable_trial_work_orders(item_code, order_code)
+			if candidates and selected_reuse != "__NEW__":
+				wo_name = candidates[0]
+		if not wo_name:
+			wo_name = _spr_insert_trial_work_order(company, item_code, qty, order_code)
+		else:
+			reused_wo_names.append(wo_name)
+		spr.reload()
+		for j in _spr_job_rows(spr):
+			wos = _cstr(getattr(j, "work_orders", None) or "")
+			for part in wos.replace("\n", ",").split(","):
+				if part.strip() == wo_name:
+					frappe.throw(
+						_("Work Order {0} is already linked to this Shaft Production Run (Job {1}).").format(
+							wo_name,
+							_spr_job_id(j),
+						)
+					)
+		wo_names.append(wo_name)
+		qtys.append(qty)
+		item_codes_list.append(item_code)
+		_gsm, w_in = parse_item_code(item_code)
+		widths_list.append(flt(w_in))
+		if meter_roll_from_popup is None and raw.get("meter_roll") not in (None, ""):
+			mr = flt(raw.get("meter_roll"))
+			if mr > 0:
+				meter_roll_from_popup = mr
+
+	job_id = f"TRIAL-{frappe.generate_hash(length=6).upper()}"
+	for _attempt in range(20):
+		if not any(_cstr(_spr_job_id(j)) == job_id for j in _spr_job_rows(spr)):
+			break
+		job_id = f"TRIAL-{frappe.generate_hash(length=6).upper()}"
+
+	first_ic = item_codes_list[0]
+	gsm, width_inch_one = parse_item_code(first_ic)
+	item_name = frappe.db.get_value("Item", first_ic, "item_name")
+	quality, color = extract_quality_and_color(item_name or "", item_code=first_ic)
+
+	def _fmt_w(w):
+		w = flt(w)
+		return str(int(w)) if w == int(w) else str(w)
+
+	comb_str = ""
+	if len(widths_list) > 1:
+		comb_str = " + ".join([f'{_fmt_w(w)}"' for w in widths_list])
+	elif combo_raw:
+		comb_str = combo_raw.replace("+", " + ")
+	total_w = sum(widths_list) if widths_list else width_inch_one
+	total_qty = sum(qtys)
+
+	row = {
+		"job_id": job_id,
+		"is_manual": 1,
+		"no_of_shafts": no_of_shafts,
+		"work_orders": ",".join(wo_names),
+		"total_weight": total_qty,
+	}
+	meta = frappe.get_meta("Shaft Production Run Job")
+	if meta.has_field("no_of_rolls"):
+		row["no_of_rolls"] = no_of_rolls
+	if meta.has_field("gsm") and gsm:
+		try:
+			row["gsm"] = int(gsm)
+		except Exception:
+			row["gsm"] = gsm
+	if meta.has_field("quality") and quality:
+		row["quality"] = quality
+	if meta.has_field("color") and color:
+		row["color"] = color
+	if meta.has_field("combination"):
+		if len(widths_list) > 1 and comb_str:
+			row["combination"] = comb_str
+		else:
+			cb = _format_shaft_combination_inches(width_inch_one)
+			if cb:
+				row["combination"] = cb
+	if meta.has_field("total_width"):
+		row["total_width"] = total_w
+	if meta.has_field("manual_items"):
+		row["manual_items"] = ",".join(item_codes_list)
+	if meta.has_field("party_code"):
+		row["party_code"] = order_code
 	if meta.has_field("meter_roll_mtrs") and meter_roll_from_popup is not None and meter_roll_from_popup > 0:
 		row["meter_roll_mtrs"] = flt(meter_roll_from_popup)
 

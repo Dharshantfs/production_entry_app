@@ -1988,6 +1988,9 @@ function spr_register_spr_page_buttons(frm) {
 			frm.remove_custom_button(__('Manual job'));
 		} catch (e) {}
 		try {
+			frm.remove_custom_button(__('Trail Order'));
+		} catch (e) {}
+		try {
 			frm.remove_custom_button(__('Bundle packaging'));
 		} catch (e) {}
 		try {
@@ -2008,6 +2011,7 @@ function spr_register_spr_page_buttons(frm) {
 	if (typeof rm === 'function') {
 		[
 			__('Manual job'),
+			__('Trail Order'),
 			__('Bundle packaging'),
 			__('Bundle SE on Submit: ON'),
 			__('Bundle SE on Submit: OFF'),
@@ -2019,6 +2023,7 @@ function spr_register_spr_page_buttons(frm) {
 		});
 		[
 			__('SPR — Manual job'),
+			__('SPR — Trail Order'),
 			__('SPR — Bundle packaging'),
 			__('SPR — Select RM batches'),
 			spr_bundle_packaging_toggle_label(0),
@@ -2057,6 +2062,15 @@ function spr_register_spr_page_buttons(frm) {
 			__('SPR — Manual job'),
 			function () {
 				spr_open_manual_job_dialog(frm);
+			},
+			tg
+		);
+	});
+	addInner(function () {
+		frm.page.add_inner_button(
+			__('SPR — Trail Order'),
+			function () {
+				spr_open_trial_order_dialog(frm);
 			},
 			tg
 		);
@@ -2281,6 +2295,8 @@ function spr_open_manual_job_dialog(frm) {
 			const payload = r.message || {};
 			const lines = payload.lines || [];
 			const ppName = payload.production_plan || '';
+			const sprUnit = payload.custom_unit || frm.doc.custom_unit || '';
+			const maxShaftInches = flt(payload.max_shaft_inches || 0);
 			if (!lines.length) {
 				frappe.msgprint(
 					__('No Production Plan lines found. Set Production Plan and ensure it has planned items.')
@@ -2320,6 +2336,13 @@ function spr_open_manual_job_dialog(frm) {
 							'</div></div>' +
 							'<div class="text-muted small">' +
 							__('Production Plan: {0}', [ppName || '—']) +
+							(sprUnit && maxShaftInches > 0
+								? '<br>' +
+								  __('Unit: {0} — max combination width {1}"', [
+										sprUnit,
+										String(maxShaftInches),
+								  ])
+								: '') +
 							'</div></div></div>',
 					},
 					{
@@ -2513,6 +2536,8 @@ function spr_open_manual_job_dialog(frm) {
 					__('Order Code') +
 					'</th><th style="width:70px;">' +
 					__('Width (Inches)') +
+					'</th><th style="width:55px;">' +
+					__('GSM') +
 					'</th><th style="width:110px;">' +
 					__('Meter/Roll') +
 					'</th><th style="width:95px;">' +
@@ -2536,12 +2561,10 @@ function spr_open_manual_job_dialog(frm) {
 								  : '')
 							: '—';
 					const defQ = sprManualDefaultWoQty(line, nShafts, nRolls);
+					const itemName = String(line.item_name || '').trim();
 					const label =
 						String(line.item_code || '') +
-						' - ' +
-						String(line.item_name || '').substring(0, 28) +
-						' - ' +
-						String(line.production_plan_item || '');
+						(itemName ? ' — ' + itemName.substring(0, 40) : '');
 					html += '<tr>';
 					html +=
 						'<td style="text-align:center;"><input type="checkbox" class="spr-manual-inc" data-idx="' +
@@ -2553,6 +2576,10 @@ function spr_open_manual_job_dialog(frm) {
 						'</td>';
 					html += '<td>' + frappe.utils.escape_html(line.order_code || '') + '</td>';
 					html += '<td>' + wIn.toFixed(1) + '</td>';
+					html +=
+						'<td>' +
+						(line.gsm != null && line.gsm !== '' ? cint(line.gsm) : '—') +
+						'</td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-meter-roll" data-idx="' +
 						idx +
@@ -2618,17 +2645,26 @@ function spr_open_manual_job_dialog(frm) {
 			}
 
 			function syncManualCombinationMode() {
-				const comboRaw = String(d.get_value('combination_input') || '').trim();
-				const hasCombo = !!comboRaw;
-				const nr = d.fields_dict.no_of_rolls;
-				if (nr && nr.$input) {
-					nr.$input.prop('disabled', hasCombo);
-				}
-				if (hasCombo && cint(d.get_value('no_of_rolls')) !== 1) {
-					d.set_value('no_of_rolls', 1);
-					return true;
-				}
 				return false;
+			}
+
+			function recalcManualQtyInputs() {
+				const nShafts = cint(d.get_value('no_of_shafts')) || 1;
+				const nRolls = cint(d.get_value('no_of_rolls')) || 1;
+				const comboRaw = String(d.get_value('combination_input') || '').trim();
+				if (comboRaw) {
+					applyManualCombinationSelection();
+					return;
+				}
+				d.$wrapper.find('.spr-manual-inc:checked').each(function () {
+					const idx = cint($(this).attr('data-idx'));
+					const line = lines[idx];
+					if (!line) return;
+					d.$wrapper
+						.find('.spr-manual-qty[data-idx="' + idx + '"]')
+						.val(sprManualDefaultWoQty(line, nShafts, nRolls).toFixed(2));
+				});
+				updateManualSelectionSummary();
 			}
 
 			function applyManualCombinationSelection() {
@@ -2645,6 +2681,19 @@ function spr_open_manual_job_dialog(frm) {
 				const widths = sprManualParseCombination(comboRaw);
 				if (!widths.length) {
 					setManualCombinationStatus(__('Enter widths like 34+34+42.'), 'text-warning');
+					return;
+				}
+				const totalWidth = widths.reduce(function (sum, w) {
+					return sum + flt(w);
+				}, 0);
+				if (maxShaftInches > 0 && totalWidth > maxShaftInches + 1e-6) {
+					setManualCombinationStatus(
+						__(
+							'{0} maximum shaft width is {1}". Combination {2} = {3}" is not allowed.',
+							[sprUnit || __('Unit'), String(maxShaftInches), comboRaw, totalWidth.toFixed(1)]
+						),
+						'text-danger'
+					);
 					return;
 				}
 				const picks = [];
@@ -2679,9 +2728,16 @@ function spr_open_manual_job_dialog(frm) {
 					const rollCount = cint(countsByIdx[idx] || 1);
 					lines[idx].__combo_roll_count_per_shaft = rollCount;
 					d.$wrapper.find('.spr-manual-inc[data-idx="' + idx + '"]').prop('checked', true);
+					const nRollsHdr = cint(d.get_value('no_of_rolls')) || 1;
 					d.$wrapper
 						.find('.spr-manual-qty[data-idx="' + idx + '"]')
-						.val(sprManualDefaultWoQty(lines[idx], cint(d.get_value('no_of_shafts')) || 1, rollCount).toFixed(2));
+						.val(
+							sprManualDefaultWoQty(
+								lines[idx],
+								cint(d.get_value('no_of_shafts')) || 1,
+								rollCount * nRollsHdr
+							).toFixed(2)
+						);
 				});
 				setManualCombinationStatus(
 					__('Selected {0} segment(s) for GSM {1}: {2}', [
@@ -2712,31 +2768,461 @@ function spr_open_manual_job_dialog(frm) {
 			const ns = d.fields_dict.no_of_shafts;
 			if (ns && ns.$input) {
 				ns.$input.on('change input', function () {
-					if (syncManualCombinationMode()) return;
-					renderManualLinesTable();
+					syncManualCombinationMode();
+					recalcManualQtyInputs();
 				});
 			}
 			const nr = d.fields_dict.no_of_rolls;
 			if (nr && nr.$input) {
 				nr.$input.on('change input', function () {
-					if (syncManualCombinationMode()) return;
-					renderManualLinesTable();
+					syncManualCombinationMode();
+					recalcManualQtyInputs();
 				});
 			}
 			const cg = d.fields_dict.combination_gsm;
 			if (cg && cg.$input) {
 				cg.$input.on('change input', function () {
-					if (syncManualCombinationMode()) return;
-					renderManualLinesTable();
+					syncManualCombinationMode();
+					if (String(d.get_value('combination_input') || '').trim()) {
+						applyManualCombinationSelection();
+					} else {
+						renderManualLinesTable();
+					}
 				});
 			}
 			const ci = d.fields_dict.combination_input;
 			if (ci && ci.$input) {
 				ci.$input.on('change input', function () {
-					if (syncManualCombinationMode()) return;
-					renderManualLinesTable();
+					syncManualCombinationMode();
+					if (String(d.get_value('combination_input') || '').trim()) {
+						applyManualCombinationSelection();
+					} else {
+						renderManualLinesTable();
+					}
 				});
 			}
+		},
+	});
+}
+
+/** Actions → Trail Order: Item Master fabric lines + BOM preview + standalone WO → Available Jobs. */
+function spr_open_trial_order_dialog(frm) {
+	if (frm.is_new() || !frm.doc.name) {
+		frappe.msgprint(__('Save the Shaft Production Run first.'));
+		return;
+	}
+	if (frm.doc.docstatus && frm.doc.docstatus !== 0) {
+		frappe.msgprint(__('This document is submitted and cannot be edited.'));
+		return;
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_trial_order_context',
+		args: { shaft_production_run: frm.doc.name },
+		freeze: true,
+		freeze_message: __('Loading Trail Order context...'),
+		callback: function (r) {
+			const ctx = r.message || {};
+			const trialLines = [];
+			const sprUnit = ctx.custom_unit || frm.doc.custom_unit || '';
+			const maxShaftInches = flt(ctx.max_shaft_inches || 0);
+
+			const d = new frappe.ui.Dialog({
+				title: __('Trail Order'),
+				fields: [
+					{
+						fieldname: 'spr_trial_ui_style',
+						fieldtype: 'HTML',
+						options:
+							'<style>' +
+							'.spr-trial-shell{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px;margin-bottom:10px;}' +
+							'.spr-trial-table-wrap{overflow:auto;border:1px solid #dbe2ea;border-radius:12px;background:#fff;max-height:320px;}' +
+							'.spr-trial-table{font-size:12px;margin:0;min-width:980px;}' +
+							'.spr-trial-bom{margin-top:10px;padding:10px;border:1px dashed #cbd5e1;border-radius:8px;background:#fff;}' +
+							'</style>',
+					},
+					{
+						fieldname: 'spr_trial_hint',
+						fieldtype: 'HTML',
+						options:
+							'<div class="spr-trial-shell"><b>' +
+							__('Trail Order — fabric from Item Master') +
+							'</b><div class="text-muted small">' +
+							__('Resolve item + BOM, then create Work Order(s) into Available Jobs.') +
+							(sprUnit && maxShaftInches > 0
+								? '<br>' + __('Unit: {0} — max combination width {1}"', [sprUnit, String(maxShaftInches)])
+								: '') +
+							'</div></div>',
+					},
+					{ fieldname: 'order_code', fieldtype: 'Data', label: __('Order code'), reqd: 1 },
+					{
+						fieldname: 'no_of_shafts',
+						fieldtype: 'Int',
+						label: __('Number of shafts (deck positions)'),
+						reqd: 1,
+						default: 1,
+					},
+					{
+						fieldname: 'no_of_rolls',
+						fieldtype: 'Int',
+						label: __('Number of rolls (per shaft)'),
+						reqd: 1,
+						default: 1,
+					},
+					{ fieldname: 'quality', fieldtype: 'Link', label: __('Quality'), options: 'Quality Master' },
+					{ fieldname: 'color', fieldtype: 'Link', label: __('Color'), options: 'Colour Master' },
+					{ fieldname: 'gsm', fieldtype: 'Int', label: __('GSM') },
+					{ fieldname: 'width_inch', fieldtype: 'Float', label: __('Width (Inches)') },
+					{
+						fieldname: 'combination_input',
+						fieldtype: 'Data',
+						label: __('Combination widths (Inches)'),
+						description: __('Optional: 34+34+42 for multi-width shaft.'),
+					},
+					{
+						fieldname: 'add_line_html',
+						fieldtype: 'HTML',
+						options:
+							'<button type="button" class="btn btn-sm btn-primary spr-trial-add-line">' +
+							__('Add / resolve line') +
+							'</button>',
+					},
+					{
+						fieldname: 'lines_html',
+						fieldtype: 'HTML',
+						label: __('Trial lines'),
+						options: '<div class="spr-trial-lines-wrap"></div>',
+					},
+					{
+						fieldname: 'bom_preview_html',
+						fieldtype: 'HTML',
+						label: __('BOM preview'),
+						options: '<div class="spr-trial-bom-wrap text-muted small">' + __('Add a line to preview BOM.') + '</div>',
+					},
+				],
+				primary_action_label: __('Create Work Order(s)'),
+				primary_action: function () {
+					const orderCode = String(d.get_value('order_code') || '').trim();
+					if (!orderCode) {
+						frappe.msgprint(__('Order code is required.'));
+						return;
+					}
+					const noShafts = cint(d.get_value('no_of_shafts'));
+					const noRolls = cint(d.get_value('no_of_rolls'));
+					if (noShafts < 1 || noRolls < 1) {
+						frappe.msgprint(__('Shafts and rolls per shaft must be at least 1.'));
+						return;
+					}
+					const comboRaw = String(d.get_value('combination_input') || '').trim();
+					if (comboRaw && maxShaftInches > 0) {
+						const widths = sprManualParseCombination(comboRaw);
+						const totalW = widths.reduce(function (s, w) {
+							return s + flt(w);
+						}, 0);
+						if (totalW > maxShaftInches + 1e-6) {
+							frappe.msgprint(
+								__('Combination width {0}" exceeds unit limit {1}".', [totalW.toFixed(1), maxShaftInches])
+							);
+							return;
+						}
+					}
+					const selected = trialLines.filter(function (ln) {
+						return cint(ln.included) !== 0;
+					});
+					if (!selected.length) {
+						frappe.msgprint(__('Add and select at least one trial line.'));
+						return;
+					}
+					const items = [];
+					for (let i = 0; i < selected.length; i++) {
+						const ln = selected[i];
+						const q = flt(ln.wo_qty);
+						const mr = flt(ln.meter_roll);
+						if (!(q > 0) || !(mr > 0)) {
+							frappe.msgprint(__('Enter valid Meter/Roll and WO qty for each selected line.'));
+							return;
+						}
+						items.push({
+							item_code: ln.item_code,
+							wo_qty: q,
+							meter_roll: mr,
+							selected_reuse_work_order: ln.reuse_wo || '',
+						});
+					}
+					const runCreate = function () {
+						d.hide();
+						frappe.call({
+							method:
+								'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_create_trial_jobs_multi',
+							args: {
+								shaft_production_run: frm.doc.name,
+								order_code: orderCode,
+								no_of_shafts: noShafts,
+								no_of_rolls: noRolls,
+								items: items,
+								combination_input: comboRaw,
+							},
+							freeze: true,
+							freeze_message: __('Creating trial Work Order(s)...'),
+							callback: function (r2) {
+								const m = r2.message || {};
+								frappe.show_alert({
+									message: __('Trial job {0} — WO(s): {1}', [
+										m.job_id || '',
+										(m.work_orders || []).join(', '),
+									]),
+									indicator: 'green',
+								});
+								frm.reload_doc();
+							},
+						});
+					};
+					if (frm.is_dirty && frm.is_dirty()) {
+						const p = frm.save();
+						if (p && typeof p.then === 'function') {
+							p.then(runCreate).catch(function () {
+								frappe.msgprint(__('Could not save SPR before Trail Order.'));
+							});
+						} else {
+							setTimeout(runCreate, 250);
+						}
+						return;
+					}
+					runCreate();
+				},
+			});
+
+			function renderTrialBom(itemCode, quality, color, gsm) {
+				if (!itemCode) return;
+				frappe.call({
+					method:
+						'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_preview_trial_fabric_bom',
+					args: {
+						item_code: itemCode,
+						company: ctx.company,
+						quality: quality,
+						color: color,
+						gsm: gsm,
+					},
+					callback: function (br) {
+						const payload = br.message || {};
+						const lines = payload.lines || [];
+						let html = '<div class="spr-trial-bom"><b>' + __('BOM preview') + '</b>';
+						if (payload.bom) {
+							html += ' <span class="text-muted">(' + frappe.utils.escape_html(payload.bom) + ')</span>';
+						}
+						if (payload.ldr_percent) {
+							html +=
+								'<div class="text-muted small">LDR: ' +
+								flt(payload.ldr_percent).toFixed(2) +
+								'%</div>';
+						}
+						html += '<table class="table table-condensed table-bordered" style="margin-top:6px;font-size:11px;">';
+						html +=
+							'<thead><tr><th>' +
+							__('Item') +
+							'</th><th>' +
+							__('Qty') +
+							'</th><th>' +
+							__('UOM') +
+							'</th></tr></thead><tbody>';
+						lines.forEach(function (ln) {
+							html +=
+								'<tr><td>' +
+								frappe.utils.escape_html(ln.item_code || '') +
+								'</td><td>' +
+								flt(ln.qty).toFixed(5) +
+								'</td><td>' +
+								frappe.utils.escape_html(ln.uom || 'Kg') +
+								'</td></tr>';
+						});
+						html += '</tbody></table></div>';
+						d.$wrapper.find('.spr-trial-bom-wrap').html(html);
+					},
+				});
+			}
+
+			function renderTrialLinesTable() {
+				const nShafts = cint(d.get_value('no_of_shafts')) || 1;
+				const nRolls = cint(d.get_value('no_of_rolls')) || 1;
+				const wrap = d.$wrapper.find('.spr-trial-lines-wrap');
+				if (!wrap.length) return;
+				let html = '<div class="spr-trial-table-wrap"><table class="table table-bordered table-condensed spr-trial-table">';
+				html +=
+					'<thead><tr><th></th><th>' +
+					__('Item') +
+					'</th><th>' +
+					__('GSM') +
+					'</th><th>' +
+					__('Width') +
+					'</th><th>' +
+					__('Meter/Roll') +
+					'</th><th>' +
+					__('Net/roll') +
+					'</th><th>' +
+					__('Reuse WO') +
+					'</th><th>' +
+					__('WO qty') +
+					'</th></tr></thead><tbody>';
+				trialLines.forEach(function (ln, idx) {
+					const gsm = flt(ln.gsm);
+					const wIn = flt(ln.width_inch);
+					const mr = flt(ln.meter_roll) || 500;
+					const netKg =
+						gsm > 0 && wIn > 0 && mr > 0 ? round((gsm * wIn * mr * 0.0254) / 1000, 2) : 0;
+					if (!ln.wo_qty || ln.wo_qty <= 0) {
+						ln.wo_qty = netKg > 0 ? netKg * nRolls * nShafts : 1;
+					}
+					if (!ln.meter_roll) ln.meter_roll = mr;
+					let woSelect =
+						'<select class="input-with-feedback spr-trial-reuse" data-idx="' +
+						idx +
+						'" style="width:150px"><option value="">' +
+						__('Auto') +
+						'</option><option value="__NEW__">' +
+						__('Create New WO') +
+						'</option>';
+					(ln.reusable_work_orders || []).forEach(function (wo) {
+						woSelect +=
+							'<option value="' +
+							frappe.utils.escape_html(String(wo)) +
+							'">' +
+							frappe.utils.escape_html(String(wo)) +
+							'</option>';
+					});
+					woSelect += '</select>';
+					const label =
+						frappe.utils.escape_html(ln.item_code || '') +
+						(ln.item_name ? ' — ' + frappe.utils.escape_html(String(ln.item_name).substring(0, 36)) : '');
+					html += '<tr>';
+					html +=
+						'<td><input type="checkbox" class="spr-trial-inc" data-idx="' +
+						idx +
+						'" ' +
+						(cint(ln.included) !== 0 ? 'checked' : '') +
+						'/></td>';
+					html += '<td>' + label + '</td>';
+					html += '<td>' + (ln.gsm != null ? cint(ln.gsm) : '') + '</td>';
+					html += '<td>' + wIn.toFixed(1) + '</td>';
+					html +=
+						'<td><input type="number" class="spr-trial-meter" data-idx="' +
+						idx +
+						'" value="' +
+						mr +
+						'" step="0.1" style="width:90px"/></td>';
+					html += '<td>' + (netKg > 0 ? netKg.toFixed(2) : '—') + '</td>';
+					html += '<td>' + woSelect + '</td>';
+					html +=
+						'<td><input type="number" class="spr-trial-qty" data-idx="' +
+						idx +
+						'" value="' +
+						flt(ln.wo_qty).toFixed(2) +
+						'" step="0.001" style="width:90px"/></td>';
+					html += '</tr>';
+				});
+				html += '</tbody></table></div>';
+				wrap.html(html);
+			}
+
+			function round(v, p) {
+				const f = Math.pow(10, p || 0);
+				return Math.round(flt(v) * f) / f;
+			}
+
+			d.show();
+			try {
+				d.$wrapper.find('.modal-dialog').css('max-width', '1100px');
+			} catch (e) {}
+
+			d.$wrapper.on('click', '.spr-trial-add-line', function () {
+				const quality = d.get_value('quality');
+				const color = d.get_value('color');
+				const gsm = cint(d.get_value('gsm'));
+				const widthInch = flt(d.get_value('width_inch'));
+				if (!quality || !color || gsm < 1 || !(widthInch > 0)) {
+					frappe.msgprint(__('Enter Quality, Color, GSM, and Width before adding a line.'));
+					return;
+				}
+				frappe.call({
+					method:
+						'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_resolve_trial_fabric_item',
+					args: {
+						quality: quality,
+						color: color,
+						gsm: gsm,
+						width_inch: widthInch,
+						company: ctx.company,
+						create_if_missing: 1,
+					},
+					freeze: true,
+					freeze_message: __('Resolving item and BOM...'),
+					callback: function (rr) {
+						const res = rr.message || {};
+						if (!res.item_code) {
+							frappe.msgprint(__('Could not resolve fabric item.'));
+							return;
+						}
+						frappe.db
+							.get_list('Work Order', {
+								filters: {
+									production_item: res.item_code,
+									docstatus: ['<', 2],
+									status: ['not in', ['Completed', 'Stopped', 'Cancelled']],
+								},
+								fields: ['name', 'production_plan'],
+								limit: 20,
+								order_by: 'modified desc',
+							})
+							.then(function (wos) {
+								const reusable = (wos || [])
+									.filter(function (w) {
+										return !w.production_plan;
+									})
+									.map(function (w) {
+										return w.name;
+									});
+								trialLines.push({
+									item_code: res.item_code,
+									item_name: res.item_name,
+									gsm: res.gsm || gsm,
+									width_inch: res.width_inch || widthInch,
+									quality: quality,
+									color: color,
+									meter_roll: 500,
+									wo_qty: 0,
+									included: 1,
+									reuse_wo: '',
+									reusable_work_orders: reusable,
+								});
+								renderTrialLinesTable();
+								renderTrialBom(res.item_code, quality, color, gsm);
+								frappe.show_alert({
+									message: __('Line added: {0}', [res.item_code]),
+									indicator: 'green',
+								});
+							});
+					},
+				});
+			});
+
+			d.$wrapper.on('change input', '.spr-trial-meter, .spr-trial-qty, .spr-trial-reuse, .spr-trial-inc', function () {
+				const idx = cint($(this).attr('data-idx'));
+				const ln = trialLines[idx];
+				if (!ln) return;
+				if ($(this).hasClass('spr-trial-meter')) ln.meter_roll = flt($(this).val());
+				if ($(this).hasClass('spr-trial-qty')) ln.wo_qty = flt($(this).val());
+				if ($(this).hasClass('spr-trial-reuse')) ln.reuse_wo = $(this).val();
+				if ($(this).hasClass('spr-trial-inc')) ln.included = $(this).is(':checked') ? 1 : 0;
+			});
+
+			['no_of_shafts', 'no_of_rolls'].forEach(function (fn) {
+				const f = d.fields_dict[fn];
+				if (f && f.$input) {
+					f.$input.on('change input', function () {
+						renderTrialLinesTable();
+					});
+				}
+			});
 		},
 	});
 }
