@@ -26,7 +26,7 @@ const PS_CORE_GRID_FIELDS = new Set(['item_code', 'item_name', 'qty', 'uom', 'un
 const PS_ORDER_FABRIC_BASE = [
 	'item_code', 'item_name', 'qty', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
 	'planned_date', 'custom_parent_child_trace_id', 'custom_parent_fabric',
-	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
+	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'work_order', 'spr_name',
 ];
 
 const PS_FIELD_ORDER_BY_PROCESS = {
@@ -37,13 +37,13 @@ const PS_FIELD_ORDER_BY_PROCESS = {
 		'item_code', 'item_name', 'qty', 'uom', 'gsm', 'custom_lam_gsm', 'custom_lam_side',
 		'quality', 'color', 'width_inch', 'unit', 'planned_date', 'custom_parent_child_trace_id',
 		'custom_parent_fabric', 'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll',
-		'order_sheet', 'spr_name',
+		'order_sheet', 'work_order', 'spr_name',
 	],
 	105: [
 		'item_code', 'item_name', 'qty', 'custom_design_code', 'custom_design_name',
 		'custom_design_attachment', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
 		'planned_date', 'custom_parent_child_trace_id', 'custom_parent_fabric',
-		'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
+		'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'work_order', 'spr_name',
 	],
 };
 
@@ -53,7 +53,7 @@ const PS_BASE_FIELDS = [
 	'gsm', 'quality', 'color', 'custom_quality',
 	'custom_parent_fabric', 'custom_parent_child_trace_id',
 	'custom_item_planned_date', 'planned_date', 'custom_plan_code', 'plan_name',
-	'custom_movement_type', 'order_sheet', 'spr_name',
+	'custom_movement_type', 'order_sheet', 'work_order', 'spr_name',
 ];
 
 const PS_PRINT_105_FIELDS = [

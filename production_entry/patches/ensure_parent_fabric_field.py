@@ -5,6 +5,17 @@ from production_entry.production_planning.parent_fabric_options import PARENT_FA
 
 
 def execute():
+	# Field ships in planning_table.json / planning_sheet_item.json — skip Custom Field insert.
+	if all(
+		frappe.get_meta(dt).has_field("custom_parent_fabric")
+		for dt in ("Planning Table", "Planning sheet Item")
+		if frappe.db.exists("DocType", dt)
+	):
+		from production_entry.production_planning.parent_fabric_options import sync_parent_fabric_field_options_to_db
+
+		sync_parent_fabric_field_options_to_db()
+		return
+
 	create_custom_fields(
 		{
 			"Planning Table": [

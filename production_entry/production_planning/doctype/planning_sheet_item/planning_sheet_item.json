@@ -266,7 +266,7 @@
             "fieldname": "custom_parent_fabric",
             "fieldtype": "Select",
             "label": "Parent Fabric",
-            "options": "Bag FG\n232 RM Bag\n231 Main Fabric\n231 Loop Fabric\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\nPB\nMain 102 Base Fabric\nMain 103 Base Fabric\nMain 104 Base Fabric\nMain 105 Base Fabric\nMain 106 Base Fabric\nMain 107 Base Fabric\nMain 107 PB\nLoop 103 Base Fabric\nLoop 108 Base Fabric\nLoop 110 Base Fabric\nLoop 107 Base Fabric\nLoop 107 PB\nFG Sheet\n251 Base Fabric\n252 Base Fabric\n253 Base Fabric\n254 Base Fabric\n255 Base Fabric",
+            "options": "Bag FG\n232 RM Bag\n231 Main Fabric\n231 Loop Fabric\nFG Fabric\nFG Sheet\nMain Fabric\nLoop Fabric\n102 Base Fabric\n103 Base Fabric\n104 Base Fabric\n105 Base Fabric\n106 Base Fabric\n107 Base Fabric\n108 Base Fabric\n110 Base Fabric\n251 Base Fabric\n252 Base Fabric\n253 Base Fabric\n254 Base Fabric\n255 Base Fabric\nPB\nMain 102 Base Fabric\nMain 103 Base Fabric\nMain 104 Base Fabric\nMain 105 Base Fabric\nMain 106 Base Fabric\nMain 107 Base Fabric\nMain 107 PB\nLoop 103 Base Fabric\nLoop 108 Base Fabric\nLoop 110 Base Fabric\nLoop 107 Base Fabric\nLoop 107 PB",
             "read_only": 1,
             "in_list_view": 0
         },
@@ -327,8 +327,7 @@
             "fieldtype": "Link",
             "label": "Work Order",
             "options": "Work Order",
-            "read_only": 1,
-            "in_list_view": 0
+            "in_list_view": 1
         },
         {
             "fieldname": "order_sheet",

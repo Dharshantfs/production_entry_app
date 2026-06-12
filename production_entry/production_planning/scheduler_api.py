@@ -7773,6 +7773,10 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:parent_fabric")
 	try:
+		_sync_planning_board_work_orders_from_items(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_run_planning_sheet_post_sync:work_order_sync")
+	try:
 		_finalize_planning_sheet_row_order_and_movement(planning_sheet_name)
 	except Exception:
 		frappe.log_error(
@@ -12092,6 +12096,42 @@ def _sync_bopp_sheet_stacks_from_sales_order(planning_sheet_name):
 	return total + added
 
 
+def _sync_planning_board_work_orders_from_items(planning_sheet_name):
+	"""Copy work_order from Planning sheet Item rows onto linked Planning Table board rows."""
+	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
+		return 0
+	if not frappe.db.has_column("Planning sheet Item", "work_order"):
+		return 0
+	if not frappe.db.has_column("Planning Table", "work_order"):
+		return 0
+	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
+	parent_field = _get_pt_parentfield()
+	board_rows = list(ps.get(parent_field) or [])
+	if not board_rows:
+		return 0
+	legacy_by_name = {r.name: r for r in (ps.get("items") or [])}
+	updated = 0
+	for br in board_rows:
+		wo = ""
+		si = _cstr(getattr(br, "source_item", None))
+		if si and si in legacy_by_name:
+			wo = _cstr(getattr(legacy_by_name[si], "work_order", None))
+		if not wo:
+			soik = _cstr(getattr(br, "sales_order_item", None) or getattr(br, "so_item", None))
+			ic = _cstr(br.item_code)
+			for leg in legacy_by_name.values():
+				leg_so = _cstr(getattr(leg, "so_item", None) or getattr(leg, "sales_order_item", None))
+				if _cstr(leg.item_code) == ic and leg_so == soik:
+					wo = _cstr(getattr(leg, "work_order", None))
+					break
+		if wo and wo != _cstr(getattr(br, "work_order", None)):
+			frappe.db.set_value("Planning Table", br.name, "work_order", wo, update_modified=False)
+			updated += 1
+	if updated:
+		frappe.db.commit()
+	return updated
+
+
 def _link_board_planned_rows_to_legacy_items(planning_sheet_name):
 	"""Set Planning Table `source_item` from legacy Planning sheet Item rows (1:1 by idx)."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
@@ -15544,6 +15584,7 @@ def on_production_plan_submitted(doc, method=None):
                 continue
             ps = frappe.get_doc("Planning sheet", sheet_name)
             ps.link_work_orders_for_production_plan(pp_name)
+            _sync_planning_board_work_orders_from_items(sheet_name)
             for wo_name in frappe.get_all(
                 "Work Order",
                 filters={"production_plan": pp_name, "docstatus": ["<", 2]},

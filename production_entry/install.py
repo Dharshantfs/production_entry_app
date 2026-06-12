@@ -54,6 +54,7 @@ def after_migrate():
 	_ensure_learning_page_on_workspace()
 	_ensure_planning_line_unit_docfield_meta()
 	_ensure_parent_fabric_select_options()
+	_ensure_planning_work_order_editable()
 	_warn_if_duplicate_scheduler_app()
 
 
@@ -69,6 +70,21 @@ def _ensure_parent_fabric_select_options():
 		frappe.log_error(
 			frappe.get_traceback(),
 			"production_entry: sync_parent_fabric_field_options after migrate",
+		)
+
+
+def _ensure_planning_work_order_editable():
+	"""Dedupe Parent Fabric metadata; keep Work Order editable on planning child tables."""
+	if frappe.flags.in_test:
+		return
+	try:
+		from production_entry.production_planning.parent_fabric_options import repair_planning_child_table_metadata
+
+		repair_planning_child_table_metadata()
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			"production_entry: repair_planning_child_table_metadata after migrate",
 		)
 
 

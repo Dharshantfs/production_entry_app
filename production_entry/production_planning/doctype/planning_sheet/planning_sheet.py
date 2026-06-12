@@ -640,6 +640,12 @@ class Planningsheet(Document):
                     update_modified=False,
                 )
                 updated = True
+        if updated:
+            from production_entry.production_planning.scheduler_api import (
+                _sync_planning_board_work_orders_from_items,
+            )
+
+            _sync_planning_board_work_orders_from_items(self.name)
         return updated
 
     def create_production_docs(self):

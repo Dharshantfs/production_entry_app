@@ -1,17 +1,7 @@
 # -*- coding: utf-8 -*-
-import frappe
-
-from production_entry.production_planning.parent_fabric_options import PARENT_FABRIC_OPTIONS
+from production_entry.production_planning.parent_fabric_options import repair_planning_child_table_metadata
 
 
 def execute():
 	"""Expand Parent Fabric Select options for Main / Loop bag chain labels."""
-	for dt in ("Planning Table", "Planning sheet Item"):
-		cf_name = frappe.db.get_value(
-			"Custom Field",
-			{"dt": dt, "fieldname": "custom_parent_fabric"},
-			"name",
-		)
-		if cf_name:
-			frappe.db.set_value("Custom Field", cf_name, "options", PARENT_FABRIC_OPTIONS, update_modified=False)
-	frappe.db.commit()
+	repair_planning_child_table_metadata()
