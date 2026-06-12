@@ -1134,6 +1134,30 @@ def compute_produced_gsm(weight_kg, width_inch, length_m) -> float:
 	return round((wgt * 10000.0) / den, 2)
 
 
+def compute_mix_roll_planned_qty_kg(gsm, width_inch, length_m) -> float:
+	"""Mix-roll line planned qty (kg): gsm * width_inch * length_m * 0.0254 / 1000."""
+	g, w, ln = flt(gsm), flt(width_inch), flt(length_m)
+	if g <= 0 or w <= 0 or ln <= 0:
+		return 0.0
+	return round(g * w * ln * 0.0254 / 1000, 2)
+
+
+def _spr_mix_roll_planned_length_m(row) -> float:
+	"""Length for mix-roll planned qty: meter_roll / ordered length only (not produced)."""
+	for key in (
+		"meter_roll",
+		"meter_roll_mtrs",
+		"custom_meter_roll_mtrs",
+		"ordered_length",
+		"ordered_length_mtrs",
+		"custom_ordered_length",
+	):
+		v = _spr_row_get(row, key)
+		if v is not None and flt(v) > 0:
+			return flt(v)
+	return 0.0
+
+
 def _work_order_names_for_pp_job(production_plan: str, m: dict, idx: int) -> str:
 	"""Comma-separated WO names for this shaft row (same rules as _get_work_orders_for_spr_job)."""
 	
@@ -1826,6 +1850,7 @@ class ShaftProductionRun(Document):
 		self._spr_round_item_net_weights()
 		self._spr_stamp_bag_sizes_on_roll_lines()
 		self._spr_stamp_sheet_sizes_on_roll_lines()
+		self._spr_recalc_mix_roll_planned_qty()
 		self.calculate_produced_gsm()
 		self.recalculate_job_achieved_weights()
 		self.recalculate_job_achieved_meters()
@@ -2193,6 +2218,25 @@ class ShaftProductionRun(Document):
 		if has_hdr_m:
 			self.custom_total_achieved_meter = flt(total_all, 2)
 
+	def _spr_recalc_mix_roll_planned_qty(self):
+		"""Mix-roll line planned qty from gsm × width × meter/roll (not color-chart split)."""
+		if not spr_doc_is_mix_roll(self):
+			return
+		for row in self.items or []:
+			ic = _cstr(getattr(row, "item_code", None))
+			gsm_val = flt(getattr(row, "gsm", None) or 0)
+			if gsm_val <= 0 and ic:
+				parsed_gsm, _pw = parse_item_code(ic)
+				gsm_val = flt(parsed_gsm)
+			w_in = flt(getattr(row, "width_inch", None) or 0)
+			if w_in <= 0 and ic:
+				_pg, parsed_w = parse_item_code(ic)
+				w_in = flt(parsed_w)
+			length_m = _spr_mix_roll_planned_length_m(row)
+			pq = compute_mix_roll_planned_qty_kg(gsm_val, w_in, length_m)
+			if pq > 0:
+				row.planned_qty = pq
+
 	def calculate_produced_gsm(self):
 		"""Set produced_gsm on each roll line from effective weight (net, else gross), width, length (m)."""
 		meta = frappe.get_meta("Shaft Production Run Item")
@@ -2200,15 +2244,19 @@ class ShaftProductionRun(Document):
 			return
 		unit_lam = _cstr(getattr(self, "custom_unit", None)).strip() == LAMINATION_UNIT
 		lam = spr_doc_is_lamination(self) or unit_lam
+		is_mix = spr_doc_is_mix_roll(self)
 		is_bb = cint(getattr(self, "custom_is_box_bag", 0))
 		for row in self.items or []:
-			if lam:
+			if lam or is_mix:
 				ln = 0.0
 				for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
 					v = _spr_row_get(row, key)
 					if v is not None and flt(v) > 0:
 						ln = flt(v)
 						break
+				if is_mix and ln <= 0:
+					row.produced_gsm = 0
+					continue
 			else:
 				ln_m = _spr_length_meters(row)
 				if ln_m is None or flt(ln_m) <= 0:
@@ -6736,7 +6784,7 @@ def _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=None
 		n_rolls = max(no_shafts, len(item_codes)) * rolls_per_shaft
 
 	total_weight = flt(getattr(job_row, "total_weight", None) or 0)
-	planned_each = flt(total_weight / n_rolls) if total_weight > 0 else 0
+	fallback_planned_each = flt(total_weight / n_rolls) if total_weight > 0 else 0
 
 	meter_roll_job = None
 	mr_attr = getattr(job_row, "meter_roll_mtrs", None)
@@ -6751,10 +6799,17 @@ def _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=None
 			job_row,
 			job_id,
 			item_code,
-			planned_each,
+			0,
 			width_inch=width_inch,
 			meter_roll=meter_roll_job,
 		)
+		gsm_val = flt(row.get("gsm") or 0)
+		w_in = flt(row.get("width_inch") or 0)
+		length_m = meter_roll_job or _spr_mix_roll_planned_length_m(row)
+		planned_each = compute_mix_roll_planned_qty_kg(gsm_val, w_in, length_m)
+		if planned_each <= 0:
+			planned_each = fallback_planned_each
+		row["planned_qty"] = planned_each
 		row["roll_no"] = idx + 1
 		lines.append(row)
 	return lines

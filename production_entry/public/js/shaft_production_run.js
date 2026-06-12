@@ -852,6 +852,99 @@ function sprStickerGsmFromItemCode(itemCode) {
 	return !isNaN(n) && n > 0 ? n : 0;
 }
 
+function sprWidthInchFromItemCode(itemCode) {
+	const code = String(itemCode || '').trim();
+	if (!/^\d+$/.test(code) || code.length < 16) {
+		return 0;
+	}
+	const mm = parseInt(code.substring(12, 16), 10);
+	if (isNaN(mm) || mm <= 0) {
+		return 0;
+	}
+	return Math.round((mm / 25.4) * 10) / 10;
+}
+
+function sprResolveMixRollPlannedLengthMeters(doc) {
+	const aliases = [
+		'meter_roll',
+		'meter_roll_mtrs',
+		'custom_meter_roll_mtrs',
+		'ordered_length',
+		'ordered_length_mtrs',
+		'custom_ordered_length',
+		'roll_mtrs',
+		'roll',
+	];
+	for (let i = 0; i < aliases.length; i++) {
+		const v = flt(doc[aliases[i]]);
+		if (v > 0) {
+			return v;
+		}
+	}
+	return 0;
+}
+
+function sprResolveMixRollProducedLengthMeters(doc) {
+	const aliases = ['produced_length_mtrs', 'custom_produced_length_mtrs'];
+	for (let i = 0; i < aliases.length; i++) {
+		const v = flt(doc[aliases[i]]);
+		if (v > 0) {
+			return v;
+		}
+	}
+	return 0;
+}
+
+function sprResolveLengthMetersForProducedGsm(frm, row) {
+	if (frm && frm.doc && cint(frm.doc.is_mix_roll)) {
+		return sprResolveMixRollProducedLengthMeters(row);
+	}
+	return sprResolveLengthMeters(row);
+}
+
+function sprComputeMixRollPlannedQtyKg(row) {
+	const gsm =
+		sprStickerGsmFromItemCode(row.item_code) ||
+		flt(row.gsm) ||
+		flt(row.custom_sticker_gsm) ||
+		flt(row.sticker_gsm);
+	const wi = flt(row.width_inch) || sprWidthInchFromItemCode(row.item_code);
+	const mr = sprResolveMixRollPlannedLengthMeters(row);
+	if (gsm > 0 && wi > 0 && mr > 0) {
+		return Math.round(((gsm * wi * mr * 0.0254) / 1000) * 100) / 100;
+	}
+	return 0;
+}
+
+function spr_update_mix_roll_planned_qty(frm, cdt, cdn) {
+	if (!frm || !frm.doc || !cint(frm.doc.is_mix_roll)) {
+		return;
+	}
+	const row = locals[cdt][cdn];
+	if (!row) {
+		return;
+	}
+	const pq = sprComputeMixRollPlannedQtyKg(row);
+	if (flt(row.planned_qty) !== pq) {
+		frappe.model.set_value(cdt, cdn, 'planned_qty', pq);
+	}
+}
+
+function spr_apply_mix_roll_planned_qty(frm) {
+	if (!frm || !frm.doc || !cint(frm.doc.is_mix_roll)) {
+		return;
+	}
+	(frm.doc.items || []).forEach(function (row) {
+		if (!row || !row.name) {
+			return;
+		}
+		const pq = sprComputeMixRollPlannedQtyKg(row);
+		if (flt(row.planned_qty) !== pq) {
+			frappe.model.set_value(row.doctype, row.name, 'planned_qty', pq);
+		}
+	});
+}
+
 function spr_count_created_roll_lines(frm) {
 	if (!frm || !frm.doc) {
 		return 0;
@@ -3162,6 +3255,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				}
 
 				function finishCreateEntry() {
+					spr_apply_mix_roll_planned_qty(frm);
 					update_shaft_job_achieved_from_items(frm);
 					sprScheduleTotalProducedSync(frm);
 					spr_apply_fabric100_item_grid_columns(frm);
@@ -3314,7 +3408,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
 
 			// Also calculate produced_gsm immediately
-			let mr = sprResolveLengthMeters(row) || 0;
+			let mr = sprResolveLengthMetersForProducedGsm(frm, row) || 0;
 			let newGsm = 0;
 			if (net_val > 0 && width > 0 && mr > 0) {
 				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
@@ -3326,37 +3420,16 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		update_shaft_job_achieved_from_items(frm);
 		sprScheduleTotalProducedSync(frm);
 	},
-	gsm: function (frm) {
+	gsm: function (frm, cdt, cdn) {
+		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
 		schedule_spr_item_row_styles(frm);
 	},
 	width_inch: function (frm, cdt, cdn) {
-		// Recalculate produced_gsm when width changes
-		const row = locals[cdt][cdn];
-		let nw = flt(row.net_weight) || 0;
-		let wi = flt(row.width_inch) || 0;
-		let mr = sprResolveLengthMeters(row) || 0;
-		
-		let newGsm = 0;
-		if (nw > 0 && wi > 0 && mr > 0) {
-			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
-		}
-		
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	meter_roll: function (frm, cdt, cdn) {
-		// Recalculate produced_gsm when meter_roll changes
-		const row = locals[cdt][cdn];
-		let nw = flt(row.net_weight) || 0;
-		let wi = flt(row.width_inch) || 0;
-		let mr = sprResolveLengthMeters(row) || 0;
-		
-		let newGsm = 0;
-		if (nw > 0 && wi > 0 && mr > 0) {
-			newGsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
-		}
-		
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
+		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		try {
 			update_shaft_job_achieved_from_items(frm);
@@ -3369,18 +3442,22 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		} catch (e) {}
 	},
 	meter_roll_mtrs: function (frm, cdt, cdn) {
+		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		try {
 			update_shaft_job_achieved_from_items(frm);
 		} catch (e) {}
 	},
 	ordered_length: function (frm, cdt, cdn) {
+		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	ordered_length_mtrs: function (frm, cdt, cdn) {
+		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	custom_ordered_length: function (frm, cdt, cdn) {
+		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 	},
 	produced_gsm: function (frm) {
@@ -3568,15 +3645,23 @@ function spr_update_produced_gsm(frm, cdt, cdn) {
 	
 	const wi = sprResolveWidthInchForGsm(frm, row);
 
-	const mr = sprResolveLengthMeters(row);
-	
+	const isMix = frm && frm.doc && cint(frm.doc.is_mix_roll);
+	const mr = sprResolveLengthMetersForProducedGsm(frm, row);
+
+	if (isMix && mr <= 0) {
+		frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
+		apply_spr_item_row_styles(frm);
+		schedule_spr_item_row_styles(frm);
+		return;
+	}
+
 	// Calculate GSM only if all required values are present
 	// Formula: (net_weight * 1000) / (width_inch * length_mtrs * 0.0254)
 	let pgsm = 0;
 	if (nw > 0 && wi > 0 && mr > 0) {
 		pgsm = Math.round((nw * 1000) / (wi * mr * 0.0254) * 100) / 100;
 	}
-	
+
 	frappe.model.set_value(cdt, cdn, 'produced_gsm', pgsm);
 	// Avoid full grid refresh on every keypress (causes lag and cursor jumps).
 	apply_spr_item_row_styles(frm);
@@ -4410,22 +4495,25 @@ function sprRollProducedLengthIncomplete(doc) {
 }
 
 /** Same formula as spr_update_produced_gsm — use when produced_gsm not yet written (avoids all-white rows). */
-function sprEffectiveProducedGsm(doc) {
+function sprEffectiveProducedGsm(doc, frm) {
 	let p = flt(doc.produced_gsm);
 	if (p > 0) {
 		return p;
 	}
-	
+
 	// Get weight: prefer net_weight, fallback to gross_weight
 	let nw = flt(doc.net_weight);
 	if (nw <= 0) {
 		nw = flt(doc.gross_weight);
 	}
-	
+
 	const wi = flt(doc.width_inch);
 	const wiOk = wi > 0 && wi < 500 ? wi : 0;
 
-	const mr = sprResolveLengthMeters(doc);
+	const mr = sprResolveLengthMetersForProducedGsm(frm, doc);
+	if (frm && frm.doc && cint(frm.doc.is_mix_roll) && mr <= 0) {
+		return 0;
+	}
 
 	if (nw > 0 && wiOk > 0 && mr > 0) {
 		return Math.round((nw * 1000) / (wiOk * mr * 0.0254) * 100) / 100;
@@ -5048,7 +5136,7 @@ function apply_spr_item_row_styles(frm) {
 		const $targets = sprCollectItemRowTargets(frm, doc, idx, $row, $wrap);
 		// Roll Production Results: Sticker GSM vs produced (field or computed from net/gross × width × length)
 		const sticker = sprStickerGsmFromDoc(doc);
-		const produced = sprEffectiveProducedGsm(doc);
+		const produced = sprEffectiveProducedGsm(doc, frm);
 		$targets.removeClass(baseClasses);
 		$targets.each(function () {
 			sprClearRowBg($(this));
