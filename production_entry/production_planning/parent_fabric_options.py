@@ -83,26 +83,82 @@ def _delete_custom_fields(dt, fieldname):
 			frappe.delete_doc("Custom Field", cf, force=1)
 		except Exception:
 			pass
+	# Hard delete any rows left (corrupt / partial deletes).
+	try:
+		frappe.db.delete("Custom Field", {"dt": dt, "fieldname": fieldname})
+	except Exception:
+		pass
 
 
 def _dedupe_docfield_rows(dt, fieldname):
 	"""Keep a single DocField row per fieldname (legacy migrate/import duplicates)."""
 	import frappe
 
-	rows = frappe.get_all(
+	names = frappe.get_all(
 		"DocField",
 		filters={"parent": dt, "fieldname": fieldname},
-		fields=["name", "idx"],
+		pluck="name",
 		order_by="idx asc, creation asc",
 	)
-	for row in rows[1:]:
+	for name in names[1:]:
 		try:
-			frappe.delete_doc("DocField", row.name, force=1)
+			frappe.delete_doc("DocField", name, force=1)
 		except Exception:
 			try:
-				frappe.db.delete("DocField", {"name": row.name})
+				frappe.db.delete("DocField", {"name": name})
 			except Exception:
 				pass
+
+
+def _dedupe_doctype_fields_and_field_order(doctype_name):
+	"""Reload DocType child rows + field_order so each fieldname appears once."""
+	import json
+
+	import frappe
+
+	_delete_custom_fields(doctype_name, "custom_parent_fabric")
+	_dedupe_docfield_rows(doctype_name, "custom_parent_fabric")
+
+	doc = frappe.get_doc("DocType", doctype_name)
+	seen = set()
+	unique = []
+	for row in doc.fields:
+		fn = row.fieldname
+		if not fn or fn in seen:
+			continue
+		seen.add(fn)
+		unique.append(row)
+
+	if len(unique) != len(doc.fields):
+		doc.fields = []
+		for idx, row in enumerate(unique, start=1):
+			row.idx = idx
+			doc.fields.append(row)
+
+	field_order = doc.field_order
+	if isinstance(field_order, str):
+		try:
+			field_order = json.loads(field_order)
+		except Exception:
+			field_order = []
+	if not field_order:
+		field_order = [row.fieldname for row in doc.fields]
+
+	seen_order = set()
+	clean_order = []
+	for fn in field_order:
+		if not fn or fn in seen_order:
+			continue
+		seen_order.add(fn)
+		clean_order.append(fn)
+	for row in doc.fields:
+		if row.fieldname not in seen_order:
+			clean_order.append(row.fieldname)
+			seen_order.add(row.fieldname)
+
+	doc.field_order = json.dumps(clean_order)
+	doc.flags.ignore_validate = True
+	doc.save(ignore_permissions=True)
 
 
 def _clear_field_property_setters(dt, fieldname, properties=None):
@@ -129,25 +185,32 @@ def repair_planning_child_table_metadata():
 	for dt in ("Planning Table", "Planning sheet Item"):
 		if not frappe.db.exists("DocType", dt):
 			continue
-		_delete_custom_fields(dt, "custom_parent_fabric")
-		_dedupe_docfield_rows(dt, "custom_parent_fabric")
-		pf_filter = {"parent": dt, "fieldname": "custom_parent_fabric"}
-		if frappe.db.exists("DocField", pf_filter):
-			frappe.db.set_value("DocField", pf_filter, "options", options, update_modified=False)
-			frappe.db.set_value("DocField", pf_filter, "read_only", 1, update_modified=False)
-			frappe.db.set_value("DocField", pf_filter, "in_list_view", 1, update_modified=False)
+		try:
+			frappe.reload_doc("production_planning", "doctype", dt.replace(" ", "_").lower())
+		except Exception:
+			pass
+		_dedupe_doctype_fields_and_field_order(dt)
+
+		doc = frappe.get_doc("DocType", dt)
+		changed = False
+		for row in doc.fields:
+			if row.fieldname == "custom_parent_fabric":
+				row.options = options
+				row.read_only = 1
+				row.in_list_view = 1
+				changed = True
+			elif row.fieldname == "work_order":
+				row.read_only = 0
+				row.in_list_view = 1
+				changed = True
+		if changed:
+			doc.flags.ignore_validate = True
+			doc.save(ignore_permissions=True)
+
 		_clear_field_property_setters(dt, "work_order", ("read_only",))
-		wo_filter = {"parent": dt, "fieldname": "work_order"}
-		if frappe.db.exists("DocField", wo_filter):
-			frappe.db.set_value("DocField", wo_filter, "read_only", 0, update_modified=False)
-			frappe.db.set_value("DocField", wo_filter, "in_list_view", 1, update_modified=False)
+		_clear_field_property_setters(dt, "custom_parent_fabric", ("read_only", "in_list_view", "options"))
 		frappe.clear_cache(doctype=dt)
 
-	try:
-		frappe.reload_doc("production_planning", "doctype", "planning_table")
-		frappe.reload_doc("production_planning", "doctype", "planning_sheet_item")
-	except Exception:
-		pass
 	frappe.db.commit()
 
 
