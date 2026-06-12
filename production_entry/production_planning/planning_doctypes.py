@@ -532,3 +532,102 @@ def ensure_planning_line_unit_docfield_options():
 # Old names from earlier app JSON / deploys (for migration helpers only).
 LEGACY_PLANNING_SHEET = "Planning Sheet"
 LEGACY_PLANNING_SHEET_ITEM = "Planning Sheet Item"
+
+# Fabric mix roll — max total shaft width (inches) per Color Chart unit.
+MIX_ROLL_UNIT_MAX_SHAFT_INCHES = {
+	"Unit 1": 63,
+	"Unit 2": 126,
+	"Unit 3": 126,
+	"Unit 4": 90,
+}
+
+# Mix roll Material Receipt: company + finished-goods warehouse per fabric unit.
+MIX_ROLL_COMPANY_FG_BY_UNIT = {
+	"Unit 1": ("Jayashree Spun Bond - 1ZT", "Finished Goods - JSB-1ZT"),
+	"Unit 2": ("Jayashree Spun Bond - 1ZT", "Finished Goods - JSB-1ZT"),
+	"Unit 3": ("Jayashree Spun Bond - 1ZT", "Finished Goods - JSB-1ZT"),
+	"Unit 4": (
+		"Thusma SMS Nonwovens Private Limited - 1Z0",
+		"Finished Goods Warehouse  - TSNPL",
+	),
+}
+
+MIX_ROLL_FG_WAREHOUSE_FALLBACKS = (
+	"Finished Goods - JSB-1ZT",
+	"Finished Goods Warehouse  - TSNPL",
+	"Finished Goods - IZT",
+)
+
+
+def parse_mix_shaft_total_inches(shaft) -> float:
+	"""Sum inch widths from a shaft string like '32+30' or '40 + 40'."""
+	import re
+
+	from frappe.utils import flt
+
+	widths = re.findall(r"\d+(?:\.\d+)?", str(shaft or ""))
+	if not widths:
+		return 0.0
+	return sum(flt(w) for w in widths)
+
+
+def get_mix_roll_unit_max_shaft_inches(unit) -> float:
+	"""Return max allowed total shaft inches for a fabric unit (0 if unknown)."""
+	u = normalize_planning_unit_for_select(unit)
+	return float(MIX_ROLL_UNIT_MAX_SHAFT_INCHES.get(u, 0) or 0)
+
+
+def validate_mix_shaft_width(unit, shaft):
+	"""Raise if shaft combination total exceeds the unit's inch capacity."""
+	import frappe
+	from frappe import _
+
+	max_in = get_mix_roll_unit_max_shaft_inches(unit)
+	if max_in <= 0:
+		return
+	total = parse_mix_shaft_total_inches(shaft)
+	if total <= 0:
+		return
+	if total > max_in + 1e-6:
+		u = normalize_planning_unit_for_select(unit) or str(unit or "").strip() or "Unit"
+		frappe.throw(
+			_(
+				"{0} maximum shaft width is {1}\". Combination {2} = {3}\" is not allowed. "
+				"Enter a combination within {1}\"."
+			).format(u, int(max_in) if max_in == int(max_in) else max_in, shaft, total)
+		)
+
+
+def resolve_mix_roll_company_and_fg_warehouse(unit):
+	"""Return (company, fg_warehouse) for mix roll stock posting."""
+	import frappe
+
+	u = normalize_planning_unit_for_select(unit)
+	company, fg_wh = MIX_ROLL_COMPANY_FG_BY_UNIT.get(u, MIX_ROLL_COMPANY_FG_BY_UNIT.get("Unit 1", ("", "")))
+	company = str(company or "").strip()
+	fg_wh = str(fg_wh or "").strip()
+	if fg_wh and not frappe.db.exists("Warehouse", fg_wh):
+		for alt in MIX_ROLL_FG_WAREHOUSE_FALLBACKS:
+			if frappe.db.exists("Warehouse", alt):
+				fg_wh = alt
+				break
+	if company and not frappe.db.exists("Company", company):
+		company = (
+			frappe.defaults.get_user_default("Company")
+			or frappe.db.get_single_value("Global Defaults", "default_company")
+			or ""
+		)
+	if fg_wh and company:
+		wh_co = frappe.db.get_value("Warehouse", fg_wh, "company")
+		if wh_co and wh_co != company:
+			alt = frappe.db.get_value(
+				"Warehouse",
+				{"company": company, "is_group": 0, "name": ["like", "%Finished%"]},
+				"name",
+				order_by="modified desc",
+			)
+			if alt:
+				fg_wh = alt
+	if not fg_wh:
+		fg_wh = frappe.db.get_value("Stock Settings", None, "default_fg_warehouse") or "Finished Goods - P"
+	return company, fg_wh

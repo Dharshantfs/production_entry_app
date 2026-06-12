@@ -39,6 +39,8 @@ from production_entry.production_planning.planning_doctypes import (
 	W_CUT_D_CUT_ALL_UNITS,
 	W_CUT_UNASSIGNED_UNIT,
 	D_CUT_UNASSIGNED_UNIT,
+	validate_mix_shaft_width,
+	resolve_mix_roll_company_and_fg_warehouse,
 )
 
 
@@ -27142,11 +27144,13 @@ def get_master_code(doctype, name, possible_fields):
     except Exception:
         return "000"
 
-def get_mix_item_details(quality, cl_type, gsm, shaft):
+def get_mix_item_details(quality, cl_type, gsm, shaft, unit=None):
     """
     Parses 'shaft' for widths (e.g. '32+30') and generates details for EACH width.
     Returns a list of dicts.
     """
+    if unit:
+        validate_mix_shaft_width(unit, shaft)
     # Extract all numbers from shaft string (e.g. "32+30" -> ["32", "30"])
     widths = re.findall(r'\d+', str(shaft))
     if not widths:
@@ -27248,9 +27252,9 @@ def get_mix_batch_roll(item_code, unit_code):
         return f"{prefix}1/1"
 
 @frappe.whitelist()
-def create_mix_item(quality, cl_type, gsm, shaft):
+def create_mix_item(quality, cl_type, gsm, shaft, unit=None):
     """Creates/Gets Items for all widths in shaft."""
-    items_details = get_mix_item_details(quality, cl_type, gsm, shaft)
+    items_details = get_mix_item_details(quality, cl_type, gsm, shaft, unit=unit)
     
     for details in items_details:
         item_code = details["item_code"]
@@ -27313,15 +27317,28 @@ def create_mix_spr(date_key, mix_data):
     doc.is_mix_roll = 1
     doc.status = "Draft"
 
-    # Sync mix name to order code header if available
+    first_unit = None
     if mix_data and len(mix_data) > 0:
         doc.custom_order_code = mix_data[0].get("mixName")
+        first_unit = mix_data[0].get("unit")
+
+    if first_unit:
+        ensure_planning_line_unit_docfield_options()
+        first_unit = normalize_planning_unit_for_select(first_unit)
+        doc.custom_unit = first_unit
+        company, _fg = resolve_mix_roll_company_and_fg_warehouse(first_unit)
+        if company and frappe.db.exists("Company", company):
+            doc.company = company
 
     # Map mix data to shaft jobs
     for i, mix in enumerate(mix_data):
         # Require item code
         if not mix.get("item_code"):
             continue
+
+        mix_unit = mix.get("unit") or first_unit
+        if mix_unit and mix.get("shaft"):
+            validate_mix_shaft_width(mix_unit, mix.get("shaft"))
 
         row = doc.append("shaft_jobs", {})
         row.job_id = str(i + 1)
@@ -27345,13 +27362,15 @@ def create_mix_spr(date_key, mix_data):
             or mix.get("meters_per_roll")
         )
         row.meter_roll_mtrs = flt(raw_meter) if raw_meter else 800
-        row.no_of_shafts = len(widths)
+        row.no_of_shafts = len(widths) if widths else 1
+        row.no_of_rolls = 1
+        row.total_weight = flt(mix.get("kg"))
 
         # Allow manual weight sync if needed; SPR has its own items grid
         row.is_manual = 1
 
         item_codes = [x.strip() for x in str(mix.get("item_code")).split(",") if x.strip()]
-        row.manual_items = json.dumps(item_codes)
+        row.manual_items = ",".join(item_codes)
 
     doc.insert(ignore_permissions=True)
 
@@ -27409,20 +27428,20 @@ def create_mix_stock_entry(item_codes, qty, unit, date_key):
     qty = flt(qty)
     is_draft = (qty <= 0)
 
+    company, target_warehouse = resolve_mix_roll_company_and_fg_warehouse(unit)
+
     se = frappe.new_doc("Stock Entry")
     se.stock_entry_type = "Material Receipt"
-    
-    target_warehouse = "Finished Goods - JSB-1ZT"
-    if not frappe.db.exists("Warehouse", target_warehouse):
-        target_warehouse = "Finished Goods - IZT" 
-    if not frappe.db.exists("Warehouse", target_warehouse):
-        target_warehouse = frappe.db.get_value("Stock Settings", None, "default_fg_warehouse") or "Finished Goods - P"
+    if company:
+        se.company = company
 
-    # Unit Code (Last digit)
+    # Unit Code (last digit of unit name for batch series)
     try:
         u_code = str(unit).strip()[-1]
-        if not u_code.isdigit(): u_code = "1"
-    except: u_code = "1"
+        if not u_code.isdigit():
+            u_code = "1"
+    except Exception:
+        u_code = "1"
 
     split_qty = qty / len(item_codes) if len(item_codes) > 0 else 0
 

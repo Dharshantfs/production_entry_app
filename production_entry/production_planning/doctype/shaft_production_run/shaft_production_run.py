@@ -1,3 +1,4 @@
+import json
 import re
 from collections import defaultdict
 
@@ -38,6 +39,7 @@ from production_entry.production_planning.planning_doctypes import (
 	W_CUT_D_CUT_UNIT_L3,
 	W_CUT_D_CUT_ALL_UNITS,
 	normalize_planning_unit_for_select,
+	resolve_mix_roll_company_and_fg_warehouse,
 )
 
 # Unique (company_id, 2-digit unit_no) per workstation — never reuse across units.
@@ -477,6 +479,11 @@ def _pp_has_lamination_work_order(pp_name: str) -> bool:
 	except Exception:
 		pass
 	return False
+
+
+def spr_doc_is_mix_roll(doc) -> bool:
+	"""Mix roll SPR from Color Chart — no Production Plan / Work Order."""
+	return bool(doc and cint(getattr(doc, "is_mix_roll", 0) or 0))
 
 
 def spr_doc_is_lamination(doc) -> bool:
@@ -2001,6 +2008,9 @@ class ShaftProductionRun(Document):
 		return False
 
 	def before_submit(self):
+		if spr_doc_is_mix_roll(self):
+			self.create_mix_roll_material_receipts()
+			return
 		if (
 			not spr_doc_is_lamination(self)
 			and not cint(getattr(self, "custom_is_box_bag", 0))
@@ -5128,6 +5138,83 @@ class ShaftProductionRun(Document):
 					title=_("No stock entry created"),
 				)
 
+	def create_mix_roll_material_receipts(self):
+		"""Post mix roll FG via Material Receipt (no Work Order / Manufacture)."""
+		if not spr_doc_is_mix_roll(self):
+			frappe.throw(_("This method is only for mix roll Shaft Production Runs."))
+
+		unit = _cstr(self.get("custom_unit") or self.get("unit"))
+		company, fg_wh = resolve_mix_roll_company_and_fg_warehouse(unit)
+		if self.get("company") and frappe.db.exists("Company", self.company):
+			company = _cstr(self.company)
+		if not company:
+			frappe.throw(_("Company is required for mix roll stock posting."))
+		if not fg_wh or not frappe.db.exists("Warehouse", fg_wh):
+			frappe.throw(_("Finished goods warehouse not found for {0}.").format(unit or "unit"))
+
+		lines = []
+		for row in self.items or []:
+			qty = flt(row.get("net_weight") or row.get("gross_weight") or 0)
+			if qty <= 0:
+				continue
+			item_code = _cstr(row.get("item_code"))
+			batch_id = _cstr(row.get("batch_no"))
+			if not item_code:
+				frappe.throw(_("Mix roll line missing item code (roll {0}).").format(row.get("roll_no") or "?"))
+			if not batch_id:
+				frappe.throw(_("Mix roll line missing batch (item {0}).").format(item_code))
+			lines.append((row, item_code, batch_id, qty))
+
+		if not lines:
+			frappe.throw(
+				_("Cannot submit mix roll SPR without produced roll weights on Roll Production Results."),
+				title=_("No produced quantity"),
+			)
+
+		se = frappe.new_doc("Stock Entry")
+		se.company = company
+		se.posting_date = self.run_date or today()
+		se.posting_time = nowtime()
+		se.set_posting_time = 1
+		se.stock_entry_type = self._stock_entry_type_name_for_purpose("Material Receipt")
+		se.purpose = "Material Receipt"
+		se.remarks = _("Mix roll production from {0}").format(self.name)
+		self._set_stock_entry_spr_link(se)
+		self._set_stock_entry_unit(se)
+		se_meta = frappe.get_meta("Stock Entry")
+		if se_meta.has_field("custom_is_mix_roll"):
+			se.custom_is_mix_roll = 1
+
+		for spr_row, item_code, batch_id, qty in lines:
+			batch_link = self._get_batch_link_name_for_stock_entry(batch_id, item_code, company, spr_row)
+			uom = _cstr(spr_row.get("uom")) or frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
+			se.append(
+				"items",
+				{
+					"item_code": item_code,
+					"item_name": spr_row.get("item_name") or frappe.db.get_value("Item", item_code, "item_name"),
+					"qty": qty,
+					"transfer_qty": qty,
+					"t_warehouse": fg_wh,
+					"uom": uom,
+					"stock_uom": uom,
+					"conversion_factor": 1,
+					"batch_no": batch_link or batch_id,
+					"is_finished_item": 1,
+				},
+			)
+
+		se.insert(ignore_permissions=True)
+		se.submit()
+		self._persist_stock_entry_spr_reference_db(se.name)
+		self._apply_order_code_to_submitted_stock_entry(se.name)
+		self.db_set("manufacturing_entries", se.name)
+		self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r, *_ in lines])
+		frappe.msgprint(
+			_("Mix roll Material Receipt created: {0} → {1}").format(se.name, fg_wh),
+			alert=True,
+		)
+
 	def update_work_order_statuses(self):
 		wo_ids = list(
 			{
@@ -6580,6 +6667,99 @@ def get_next_spr_batch_numbers(
 	return out
 
 
+def _spr_parse_manual_item_codes(sj) -> list[str]:
+	"""Parse manual_items from shaft job (comma list or JSON array)."""
+	mi = _cstr(getattr(sj, "manual_items", None) or "").strip()
+	if not mi:
+		return []
+	if mi.startswith("["):
+		try:
+			parsed = json.loads(mi)
+			if isinstance(parsed, list):
+				return [_cstr(x) for x in parsed if _cstr(x)]
+		except Exception:
+			pass
+	return [_cstr(x) for x in mi.replace("\n", ",").split(",") if _cstr(x)]
+
+
+def _spr_item_line_from_manual_item(job_row, job_id, item_code, planned_qty, width_inch=None, meter_roll=None):
+	item_code = _cstr(item_code)
+	item_name = frappe.db.get_value("Item", item_code, "item_name") or ""
+	specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+	_gsm, parsed_width = parse_item_code(item_code)
+	if width_inch is not None and flt(width_inch) > 0:
+		parsed_width = flt(width_inch)
+	gsm = cint(specs.get("gsm") or 0) or (int(flt(_gsm)) if _gsm else 0)
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	row: dict = {
+		"item_code": item_code,
+		"item_name": item_name,
+		"quality": specs.get("quality") or getattr(job_row, "quality", None) or "",
+		"gsm": gsm or getattr(job_row, "gsm", None) or 0,
+		"planned_qty": flt(planned_qty),
+		"job": job_id,
+		"batch_no": "",
+		"party_code": _cstr(getattr(job_row, "party_code", None) or ""),
+		"uom": _item_stock_uom_for_spr(item_code),
+		"roll_no": 0,
+		"meter_roll": flt(meter_roll) if meter_roll else 0,
+		"net_weight": 0,
+		"gross_weight": 0,
+		"width_inch": parsed_width,
+		"color": specs.get("color") or getattr(job_row, "color", None) or "",
+	}
+	if spi_meta.has_field("custom_fabric_gsm"):
+		fab_gsm = _fabric_gsm_from_item_name(item_name) or _fabric_gsm_from_item_name(item_code)
+		if fab_gsm > 0:
+			row["custom_fabric_gsm"] = fab_gsm
+	return row
+
+
+def _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=None):
+	"""Build roll lines for mix-roll SPR from manual_items (no Work Order)."""
+	job_id = _spr_job_id(job_row)
+	item_codes = _spr_parse_manual_item_codes(job_row)
+	if not item_codes:
+		frappe.throw(_("Mix roll job {0} has no manual items.").format(job_id))
+
+	comb = getattr(job_row, "combination", None) or ""
+	widths = _parse_combination_widths_inches(comb)
+	no_shafts = max(1, cint(getattr(job_row, "no_of_shafts", 0) or 0))
+	rolls_per_shaft = max(1, cint(getattr(job_row, "no_of_rolls", 0) or 0))
+	exact_n = cint(exact_roll_lines or 0)
+
+	if exact_n > 0:
+		n_rolls = max(1, exact_n)
+	elif widths:
+		n_rolls = max(len(widths), len(item_codes)) * rolls_per_shaft
+	else:
+		n_rolls = max(no_shafts, len(item_codes)) * rolls_per_shaft
+
+	total_weight = flt(getattr(job_row, "total_weight", None) or 0)
+	planned_each = flt(total_weight / n_rolls) if total_weight > 0 else 0
+
+	meter_roll_job = None
+	mr_attr = getattr(job_row, "meter_roll_mtrs", None)
+	if mr_attr not in (None, "", 0):
+		meter_roll_job = flt(mr_attr)
+
+	lines = []
+	for idx in range(n_rolls):
+		item_code = item_codes[idx % len(item_codes)]
+		width_inch = widths[idx % len(widths)] if widths else None
+		row = _spr_item_line_from_manual_item(
+			job_row,
+			job_id,
+			item_code,
+			planned_each,
+			width_inch=width_inch,
+			meter_roll=meter_roll_job,
+		)
+		row["roll_no"] = idx + 1
+		lines.append(row)
+	return lines
+
+
 @frappe.whitelist()
 def build_spr_roll_result_lines_for_job(
 	shaft_production_run,
@@ -6602,9 +6782,6 @@ def build_spr_roll_result_lines_for_job(
 		frappe.throw(_("Job ID is required"))
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save Shaft Production Run first"))
-	pp_name = get_pp_from_spr(shaft_production_run)
-	if not pp_name:
-		frappe.throw(_("Production Plan not found on this Shaft Production Run"))
 	spr_doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if cint(spr_doc.docstatus) != 0:
 		frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
@@ -6615,6 +6792,17 @@ def build_spr_roll_result_lines_for_job(
 			break
 	if not job_row:
 		frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
+
+	if spr_doc_is_mix_roll(spr_doc) or (
+		_spr_is_manual_shaft_job(job_row)
+		and _spr_parse_manual_item_codes(job_row)
+		and not _cstr(getattr(spr_doc, "production_plan", None))
+	):
+		return _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=exact_roll_lines)
+
+	pp_name = get_pp_from_spr(shaft_production_run)
+	if not pp_name or not frappe.db.exists("Production Plan", pp_name):
+		frappe.throw(_("Production Plan not found on this Shaft Production Run"))
 
 	no_shafts = int(flt(getattr(job_row, "no_of_shafts", 0) or 0))
 	if no_shafts < 1:

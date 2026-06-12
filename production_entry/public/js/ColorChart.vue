@@ -601,6 +601,7 @@
                         </td>
                         <td class="p-2 border">
                             <input type="text" class="w-full border p-1 rounded outline-none focus:border-blue-500 text-center font-bold text-gray-700" style="font-size: 12px;" placeholder="32 + 30..." v-model="mix.shaft" :disabled="mix._submitted" @input="debouncedSaveMixRolls()" />
+                            <div v-if="mixShaftHint(mix.unit)" class="text-[9px] text-gray-500 mt-0.5 text-center">{{ mixShaftHint(mix.unit) }}</div>
                         </td>
                         <td class="p-2 border text-center">
                         <input 
@@ -1574,9 +1575,43 @@ function getMixColorType(c1, c2) {
     return "Color Mix";
 }
 
+function parseShaftTotalInches(shaft) {
+    const widths = String(shaft || "").match(/\d+(?:\.\d+)?/g) || [];
+    return widths.reduce((sum, w) => sum + (parseFloat(w) || 0), 0);
+}
+
+function getUnitMaxShaftInches(unit) {
+    return UNIT_WIDTHS[unit] || UNIT_WIDTHS[String(unit || "").trim()] || 0;
+}
+
+function validateMixShaft(unit, shaft) {
+    const maxIn = getUnitMaxShaftInches(unit);
+    const total = parseShaftTotalInches(shaft);
+    if (!maxIn || !shaft || total <= 0) return { ok: true, total, max: maxIn };
+    if (total > maxIn) {
+        return {
+            ok: false,
+            total,
+            max: maxIn,
+            message: `${unit || "Unit"} maximum shaft width is ${maxIn}". Combination ${shaft} = ${total}" is not allowed. Enter a combination within ${maxIn}".`
+        };
+    }
+    return { ok: true, total, max: maxIn };
+}
+
+function mixShaftHint(unit) {
+    const maxIn = getUnitMaxShaftInches(unit);
+    return maxIn ? `Max ${maxIn}" total` : "";
+}
+
 async function createMixItem(mix) {
     if (!mix.gsm || !mix.shaft) {
         frappe.msgprint("Please enter GSM and Shaft Details (Widths like 32+30) to generate Items.");
+        return;
+    }
+    const shaftCheck = validateMixShaft(mix.unit, mix.shaft);
+    if (!shaftCheck.ok) {
+        frappe.msgprint(shaftCheck.message);
         return;
     }
     
@@ -1587,7 +1622,8 @@ async function createMixItem(mix) {
                 quality: mix.quality,
                 cl_type: mix.clType,
                 gsm: mix.gsm,
-                shaft: mix.shaft
+                shaft: mix.shaft,
+                unit: mix.unit
             }
         });
         
@@ -1629,6 +1665,11 @@ async function createMixStockEntry(mix) {
     
     if (!mix.gsm || !mix.shaft) {
         frappe.msgprint("Please ensure GSM and Combination (Shaft) are filled before creating SPR.");
+        return;
+    }
+    const shaftCheck = validateMixShaft(mix.unit, mix.shaft);
+    if (!shaftCheck.ok) {
+        frappe.msgprint(shaftCheck.message);
         return;
     }
     

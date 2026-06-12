@@ -3233,6 +3233,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					invokeBuildRollLines(0, n, true, 0);
 				} else if (sprUsesPrintingRollPrompt(frm)) {
 					invokeBuildRollLines(0, 0, true, n);
+				} else if (cint(frm.doc.is_mix_roll)) {
+					invokeBuildRollLines(0, 0, true, n);
 				} else {
 					// Slitting, Rewinding, Sheet Cutting, BOPP Film — exact roll lines
 					invokeBuildRollLines(0, 0, true, n);
@@ -4090,6 +4092,16 @@ function sprRollPromptMeta(frm, row) {
 	const defaultLines = noOfRollsCreated > 0 ? noOfRollsCreated : (fromPp > 0 ? fromPp : 1);
 	const unitText = String((frm && frm.doc && (frm.doc.custom_unit || frm.doc.unit || frm.doc.workstation || "")) || "").toLowerCase();
 	const isPrintingJob = unitText.includes("printing") || unitText.includes("105");
+	if (frm && frm.doc && cint(frm.doc.is_mix_roll)) {
+		const comb = String((row && row.combination) || '');
+		const segCount = comb ? comb.split('+').map((s) => s.trim()).filter(Boolean).length : 0;
+		const shafts = cint((row && row.no_of_shafts) || 0) || segCount || 1;
+		return {
+			title: __('Mix Roll — add roll lines'),
+			description: __('Adds roll lines from manual items / combination widths (no Work Order).'),
+			defaultLines: Math.max(shafts, segCount, 1),
+		};
+	}
 	if (sprUsesSlittingRollPrompt(frm)) {
 		return {
 			title: __('Slitting — add roll lines'),
