@@ -429,6 +429,12 @@ import { formatKgPlanning, mmDisplayFromInchesWithCodeFallback } from "./plannin
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
+import {
+  buildMaintenanceData,
+  getMaintenanceRecordsForDate,
+  getPrimaryMaintenanceRecord,
+  normalizeMaintenanceUnit,
+} from "./maintenance_utils.js";
 
 // ===== MAINTENANCE DATA =====
 const maintenanceRecords = ref([]);
@@ -491,24 +497,7 @@ async function fetchMaintenanceRecords() {
 		});
 		if (res.message) {
 			maintenanceRecords.value = res.message;
-			// Map by date and unit for quick lookup
-			maintenanceData.value = {};
-			res.message.forEach(rec => {
-				const startD = new Date(rec.start_date);
-				const endD = new Date(rec.end_date);
-				for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
-					const dateStr = d.toISOString().split('T')[0];
-          if (!maintenanceData.value[dateStr]) maintenanceData.value[dateStr] = {};
-          if (!maintenanceData.value[dateStr][rec.unit]) maintenanceData.value[dateStr][rec.unit] = [];
-          maintenanceData.value[dateStr][rec.unit].push({
-						name: rec.name,
-						type: rec.maintenance_type,
-						startDate: rec.start_date,
-						endDate: rec.end_date,
-						status: rec.status
-					});
-				}
-			});
+			maintenanceData.value = buildMaintenanceData(res.message);
 		}
 	} catch (e) {
 		console.error("Failed to fetch maintenance records", e);
@@ -536,8 +525,7 @@ async function deleteMaintenanceRecord(recordName) {
 }
 
 function getMaintenanceForDate(date, unit) {
-  if (!date || !maintenanceData.value[date]) return null;
-  return maintenanceData.value[date][unit];
+  return getMaintenanceRecordsForDate(maintenanceData.value, date, unit);
 }
 
 function normalizeDateString(dateValue) {
@@ -546,8 +534,7 @@ function normalizeDateString(dateValue) {
 }
 
 function getMaintenanceBannerForDate(date, unit) {
-  const records = getMaintenanceForDate(date, unit) || [];
-  return records.find(rec => normalizeDateString(rec.startDate) === date) || null;
+  return getPrimaryMaintenanceRecord(maintenanceData.value, date, unit);
 }
 
 function getCurrentScopeDateRange() {
@@ -586,15 +573,16 @@ function getScopeMaintenanceDates(unit) {
   const out = [];
   const cur = new Date(range.start);
   while (cur <= range.end) {
-    const y = cur.getFullYear();
-    const m = String(cur.getMonth() + 1).padStart(2, '0');
-    const d = String(cur.getDate()).padStart(2, '0');
-    const dateStr = `${y}-${m}-${d}`;
-    if (getMaintenanceForDate(dateStr, unit)) out.push(dateStr);
+    const dateStr = toLocalDateKeyFromDate(cur);
+    if (getMaintenanceForDate(dateStr, unit)?.length) out.push(dateStr);
     cur.setDate(cur.getDate() + 1);
   }
 
   return out;
+}
+
+function toLocalDateKeyFromDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 async function openMaintenanceDialog() {
@@ -915,14 +903,9 @@ function getArrangementKey(unit, date) {
 
 // Removed duplicate normalizeUnit definition
 function normalizeUnit(raw) {
-  const r = String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
-  if (r.includes("SLITTING") && r.includes("JVE")) return SLITTING_UNIT;
-  if (r.includes("TNSPL") && r.includes("LAMINATION")) return LAMINATION_UNIT;
-  if (r.includes("LAMINATIONUNIT") || String(raw || "").trim().toLowerCase() === "lamination unit") return LAMINATION_UNIT;
-  if (r.includes("UNIT1")) return "Unit 1";
-  if (r.includes("UNIT2")) return "Unit 2";
-  if (r.includes("UNIT3")) return "Unit 3";
-  if (r.includes("UNIT4")) return "Unit 4";
+  const norm = normalizeMaintenanceUnit(raw);
+  if (["Unit 1", "Unit 2", "Unit 3", "Unit 4"].includes(norm)) return norm;
+  if (norm === LAMINATION_UNIT || norm === SLITTING_UNIT) return norm;
   return "Mixed";
 }
 
@@ -1352,7 +1335,7 @@ function toggleMergeExpanded(mergeId) {
 
 const tableData = computed(() => {
     return visibleUnits.value.map(unit => {
-        let items = filteredData.value.filter(d => (d.unit || "Mixed") === unit);
+        let items = filteredData.value.filter(d => normalizeUnit(d.unit || "Mixed") === unit);
         
         const dateGroupsObj = {};
         items.forEach(item => {

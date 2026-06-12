@@ -11,6 +11,8 @@ from production_entry.production_planning.planning_doctypes import (
 	ensure_planning_unit_field_links_workstation,
 	normalize_planning_unit_for_select,
 	resolve_planning_workstation_name,
+	maintenance_unit_match_values,
+	maintenance_units_equal,
 	SHEET_CUTTING_UNIT,
 	LAMINATION_UNIT,
 	SLITTING_UNIT,
@@ -17733,28 +17735,20 @@ def _is_non_blocking_maintenance_type(maintenance_type):
 
 def _normalize_maintenance_unit(unit):
     u = _cstr(unit)
-    lu = u.lower()
-    if "unassigned" in lu and "slitting" in lu:
-        return SLITTING_UNASSIGNED_UNIT
-    if "vtp" in lu and "slitting" in lu:
-        return SLITTING_UNIT_VTP
-    if lu in {"slitting", "slitting unit"} or ("jve" in lu and "slitting" in lu):
-        return SLITTING_UNIT
-    if "lamination" in lu or ("tnspl" in lu and "lamination" in lu):
-        return LAMINATION_UNIT
-    if "rewinding" in lu and "l3" in lu:
-        return REWINDING_UNIT_L3
-    if "rewinding" in lu and "l4" in lu:
-        return REWINDING_UNIT_L4
-    if "rewinding" in lu and "l5" in lu:
-        return REWINDING_UNIT_L5
-    if "unassigned" in lu and "rewinding" in lu:
-        return REWINDING_UNASSIGNED_UNIT
-    if "sheet" in lu and "cutting" in lu:
-        return SHEET_CUTTING_UNIT
-    if "bopp" in lu and "printing" in lu:
-        return PRINTED_BOPP_FILM_UNIT
-    return u
+    if not u:
+        return u
+    canon = normalize_planning_unit_for_select(u)
+    resolved = resolve_planning_workstation_name(canon or u)
+    return resolved or canon or u
+
+
+def _maintenance_unit_sql_in(unit):
+    """Return (sql_fragment, params) for matching equivalent workstation names."""
+    values = maintenance_unit_match_values(unit)
+    if not values:
+        return "1=0", ()
+    placeholders = ", ".join(["%s"] * len(values))
+    return f"unit IN ({placeholders})", tuple(values)
 
 
 def _ensure_equipment_maintenance_unit_options():
@@ -17827,14 +17821,18 @@ def get_maintenance_windows(unit, start_date, end_date):
     if not frappe.db.exists("DocType", "Equipment Maintenance"):
         return {}
     
-    records = frappe.db.sql("""
+    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+    if not unit_params:
+        return {}
+
+    records = frappe.db.sql(f"""
         SELECT name, unit, maintenance_type, start_date, end_date, status
         FROM `tabEquipment Maintenance`
-        WHERE unit = %s
+        WHERE {unit_sql}
           AND start_date <= %s
           AND end_date >= %s
           AND docstatus < 2
-    """, (unit, end_dt, start_dt), as_dict=True)
+    """, unit_params + (end_dt, start_dt), as_dict=True)
     
     # Build date map
     result = {}
@@ -17863,16 +17861,19 @@ def is_date_under_maintenance(unit, date_string):
         return False
     
     check_date = getdate(date_string)
+    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+    if not unit_params:
+        return False
 
-    count = frappe.db.sql("""
+    count = frappe.db.sql(f"""
         SELECT COUNT(*) as cnt
         FROM `tabEquipment Maintenance`
-        WHERE unit = %s
+        WHERE {unit_sql}
           AND start_date <= %s
           AND end_date >= %s
           AND docstatus < 2
           AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
-        """, (unit, check_date, check_date))
+        """, unit_params + (check_date, check_date))
     
     return count[0][0] > 0 if count else False
 
@@ -17884,17 +17885,20 @@ def get_maintenance_info_on_date(unit, date_string):
         return None
     
     check_date = getdate(date_string)
+    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+    if not unit_params:
+        return None
     
-    rec = frappe.db.sql("""
+    rec = frappe.db.sql(f"""
         SELECT name, maintenance_type, start_date, end_date, status
         FROM `tabEquipment Maintenance`
-        WHERE unit = %s
+        WHERE {unit_sql}
           AND start_date <= %s
           AND end_date >= %s
           AND docstatus < 2
           AND UPPER(TRIM(COALESCE(maintenance_type, ''))) NOT IN ('MESH CHANGE', 'DIE CHANGE')
         LIMIT 1
-    """, (unit, check_date, check_date), as_dict=True)
+    """, unit_params + (check_date, check_date), as_dict=True)
     
     if rec:
         return {
@@ -18009,18 +18013,21 @@ def cascade_orders_after_maintenance_removal(unit, maint_start_date, maint_end_d
     
     start_dt = getdate(maint_start_date)
     end_dt = getdate(maint_end_date)
+    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+    if not unit_params:
+        return {"status": "success", "message": "No items to cascade", "cascaded_count": 0}
     
     # Find all items planned between maintenance start and end dates
-    items = frappe.db.sql("""
+    items = frappe.db.sql(f"""
         SELECT i.name, i.qty, i.unit, COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date) as effective_planned_date
         FROM `tabPlanning Table` i
         JOIN `tabPlanning sheet` p ON i.parent = p.name
-        WHERE i.unit = %s
+        WHERE i.unit IN ({", ".join(["%s"] * len(unit_params))})
           AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) >= %s
           AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) <= %s
           AND p.docstatus < 2
           AND i.docstatus < 2
-    """, (unit, start_dt, end_dt), as_dict=True)
+    """, unit_params + (start_dt, end_dt), as_dict=True)
     
     if not items:
         return {"status": "success", "message": "No items to cascade", "cascaded_count": 0}
@@ -18031,12 +18038,10 @@ def cascade_orders_after_maintenance_removal(unit, maint_start_date, maint_end_d
     movement_log = []
     
     for item in items:
-        if not has_item_planned_col:
-            continue
-        
         item_name = item.get("name")
+        item_unit = normalize_planning_unit_for_select(item.get("unit") or unit) or unit
         qty_tons = flt(item.get("qty")) / 1000.0
-        unit_limit = HARD_LIMITS.get(unit, 999.0)
+        unit_limit = HARD_LIMITS.get(item_unit, HARD_LIMITS.get(unit, 999.0))
         current_date = getdate(item.get("effective_planned_date"))
         original_date_str = current_date.strftime("%Y-%m-%d")
         
@@ -18048,24 +18053,31 @@ def cascade_orders_after_maintenance_removal(unit, maint_start_date, maint_end_d
             candidate_str = candidate if isinstance(candidate, str) else candidate.strftime("%Y-%m-%d")
             
             # Skip if under maintenance
-            if is_date_under_maintenance(unit, candidate_str):
+            if is_date_under_maintenance(item_unit, candidate_str):
                 candidate = add_days(candidate, 1)
                 continue
             
-            load_key = (candidate_str, unit)
+            load_key = (candidate_str, item_unit)
             if load_key not in local_loads:
-                local_loads[load_key] = get_unit_load(candidate_str, unit, "__all__", pb_only=1)
+                local_loads[load_key] = get_unit_load(candidate_str, item_unit, "__all__", pb_only=1)
             
             current_load = local_loads[load_key]
             
             if (current_load + qty_tons <= unit_limit * 1.05) or (current_load == 0 and qty_tons >= unit_limit):
                 local_loads[load_key] = current_load + qty_tons
-                # Update item's planned date
-                frappe.db.sql("""
-                    UPDATE `tabPlanning Table`
-                    SET planned_date = %s
-                    WHERE name = %s
-                """, (candidate_str, item_name))
+                if has_item_planned_col:
+                    frappe.db.sql("""
+                        UPDATE `tabPlanning Table`
+                        SET planned_date = %s
+                        WHERE name = %s
+                    """, (candidate_str, item_name))
+                elif frappe.db.has_column("Planning sheet", "custom_planned_date"):
+                    frappe.db.sql("""
+                        UPDATE `tabPlanning sheet` p
+                        INNER JOIN `tabPlanning Table` i ON i.parent = p.name
+                        SET p.custom_planned_date = %s
+                        WHERE i.name = %s
+                    """, (candidate_str, item_name))
                 movement_log.append({
                     "item_name": item_name,
                     "from_date": original_date_str,
@@ -18299,7 +18311,7 @@ def _restore_orders_to_original_dates(unit, movement_log):
 
         # Restore if item is still on or after the maintenance-shifted date.
         # This allows rollback even when later logic pushed it further forward.
-        if current_unit != unit or current_effective < str(getdate(to_date)):
+        if not maintenance_units_equal(current_unit, unit) or current_effective < str(getdate(to_date)):
             skipped_count += 1
             continue
 
@@ -18330,18 +18342,22 @@ def _fallback_restore_by_range(unit, maint_start_date, maint_end_date):
     window_days = (end_dt - start_dt).days + 1
     search_end = add_days(end_dt, max(3, window_days + 2))
 
-    rows = frappe.db.sql("""
+    unit_sql, unit_params = _maintenance_unit_sql_in(unit)
+    if not unit_params:
+        return {"restored_count": 0, "skipped_count": 0}
+
+    rows = frappe.db.sql(f"""
         SELECT i.name, i.unit, i.qty,
                DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) AS effective_planned_date
         FROM `tabPlanning Table` i
         JOIN `tabPlanning sheet` p ON p.name = i.parent
-        WHERE i.unit = %s
+        WHERE i.unit IN ({", ".join(["%s"] * len(unit_params))})
           AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) > %s
           AND DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) <= %s
           AND p.docstatus < 2
           AND i.docstatus < 2
         ORDER BY DATE(COALESCE(i.planned_date, p.custom_planned_date, p.ordered_date)) ASC, i.idx ASC
-    """, (unit, end_dt, search_end), as_dict=True)
+    """, unit_params + (end_dt, search_end), as_dict=True)
 
     if not rows:
         return {"restored_count": 0, "skipped_count": 0}

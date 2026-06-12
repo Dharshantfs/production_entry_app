@@ -42,7 +42,7 @@
         <label>Unit</label>
         <select v-model="filterUnit" @change="fetchData">
           <option value="">All Units</option>
-          <option v-for="u in REWINDING_ASSIGNED_TABLE_UNITS" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in REWINDING_TABLE_UNITS" :key="u" :value="u">{{ rewindingUnitLabel(u) }}</option>
         </select>
       </div>
       <div class="cc-filter-actions">
@@ -177,7 +177,7 @@
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
               <td colspan="19" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
-                  <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
+                  <span>🔧 MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
                 </div>
               </td>
@@ -206,8 +206,8 @@
             </td>
             <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
-              <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date)" class="cc-maint-chip">
-                OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date) }}
+              <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date, rowRewindingUnit(row))" class="cc-maint-chip">
+                OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date, rowRewindingUnit(row)) }}
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
@@ -283,6 +283,13 @@ import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
+import {
+  buildMaintenanceByDateMap,
+  filterMaintenanceRecordsForScope,
+  maintenanceTypeForUnitDate,
+  maintenanceUnitsEqual,
+  normalizeMaintenanceUnit,
+} from "./maintenance_utils.js";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_rewinding";
 const sizeDimUnit = ref("inches");
@@ -325,7 +332,21 @@ const REWINDING_ASSIGNED_TABLE_UNITS = [
   "JSB - L4 REWINDING MACHINE",
   "JSB - L5 REWINDING MACHINE",
 ];
-const REWINDING_MAINT_UNITS = new Set([...REWINDING_ASSIGNED_TABLE_UNITS, "UNASSIGNED REWINDING UNIT"]);
+const REWINDING_UNASSIGNED_UNIT = "UNASSIGNED REWINDING UNIT";
+const REWINDING_TABLE_UNITS = [...REWINDING_ASSIGNED_TABLE_UNITS, REWINDING_UNASSIGNED_UNIT];
+const REWINDING_MAINT_UNITS = REWINDING_TABLE_UNITS;
+
+function rewindingUnitLabel(unit) {
+  if (unit === "TSNPL - L3 REWINDING MACHINE") return "L3 Rewinding";
+  if (unit === "JSB - L4 REWINDING MACHINE") return "L4 Rewinding";
+  if (unit === "JSB - L5 REWINDING MACHINE") return "L5 Rewinding";
+  if (unit === REWINDING_UNASSIGNED_UNIT) return "Unassigned Rewinding";
+  return unit;
+}
+
+function rowRewindingUnit(row) {
+  return normalizeMaintenanceUnit(row?.unit || REWINDING_UNASSIGNED_UNIT);
+}
 /**
  * Not “processes shown on the rewinding table.”
  * Only used by `itemProcessPrefix()` so hyphenated `item_code` values don’t pick the wrong
@@ -368,6 +389,12 @@ const rewindingTableHeaderTitle = computed(() => {
 });
 const maintenanceByDate = ref({});
 const maintenanceRecords = ref([]);
+const scopedMaintenanceRecords = computed(() =>
+  filterMaintenanceRecordsForScope(maintenanceRecords.value, {
+    unit: filterUnit.value,
+    allowedUnits: REWINDING_MAINT_UNITS,
+  })
+);
 const moveTargetDate = ref(frappe.datetime.get_today());
 const dragRow = ref(null);
 const dragOverShift = ref("");
@@ -417,9 +444,9 @@ const filteredRows = computed(() => {
   if (cu) {
     d = d.filter((r) => String(r.customer_name || r.customer || "").toLowerCase().includes(cu));
   }
-  d = d.filter((r) => REWINDING_ASSIGNED_TABLE_UNITS.includes(String(r.unit || "").trim()));
+  d = d.filter((r) => REWINDING_TABLE_UNITS.some((u) => maintenanceUnitsEqual(r.unit, u)));
   if (filterUnit.value) {
-    d = d.filter((r) => String(r.unit || "").trim() === filterUnit.value);
+    d = d.filter((r) => maintenanceUnitsEqual(r.unit, filterUnit.value));
   }
   const sh = (filterShift.value || "all").toLowerCase();
   if (sh === "day") {
@@ -450,7 +477,7 @@ const displayRows = computed(() => {
     const k = toDateKey(d);
     datesHandled.add(k);
     
-    const recs = (maintenanceRecords.value || []).filter(r => {
+    const recs = scopedMaintenanceRecords.value.filter(r => {
       const rStart = new Date(r.start_date);
       const rEnd = new Date(r.end_date);
       return d >= rStart && d <= rEnd;
@@ -510,7 +537,7 @@ const rewindingUnitGroups = computed(() => {
 });
 
 async function deleteMaintenanceRecord(recordName) {
-  if (!confirm("Remove this maintenance record?")) return;
+  if (!confirm("Remove this maintenance record? Orders moved for this maintenance will be restored to original dates.")) return;
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
@@ -644,27 +671,23 @@ async function fetchMaintenanceRecords() {
       method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
-    const rows = (res?.message || []).filter((r) => REWINDING_MAINT_UNITS.has((r.unit || "").trim()));
-    maintenanceRecords.value = rows;
-    const mapped = {};
-    rows.forEach((rec) => {
-      const start = new Date(rec.start_date);
-      const end = new Date(rec.end_date);
-      for (let cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) {
-        const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
-        mapped[key] = rec.maintenance_type || "Machine Off";
-      }
+    const rows = filterMaintenanceRecordsForScope(res?.message || [], {
+      allowedUnits: REWINDING_MAINT_UNITS,
     });
-    maintenanceByDate.value = mapped;
+    maintenanceRecords.value = rows;
+    maintenanceByDate.value = buildMaintenanceByDateMap(rows);
   } catch (e) {
     console.error("Failed to load lamination maintenance", e);
     maintenanceByDate.value = {};
   }
 }
 
-function maintenanceTypeForDate(dateValue) {
-  const k = toDateKey(dateValue);
-  return k ? maintenanceByDate.value[k] : "";
+function maintenanceTypeForDate(dateValue, unitValue = "") {
+  return maintenanceTypeForUnitDate(
+    maintenanceByDate.value,
+    dateValue,
+    unitValue || filterUnit.value || REWINDING_SEQUENCE_UNIT
+  );
 }
 
 function scheduleRowsByShift(shift) {
@@ -684,9 +707,13 @@ function scheduleRowsByShift(shift) {
   });
 }
 
-function activeRewindingSequenceUnit() {
+function activeRewindingMaintenanceUnit() {
   const u = (filterUnit.value || "").trim();
-  return REWINDING_ASSIGNED_TABLE_UNITS.includes(u) ? u : REWINDING_SEQUENCE_UNIT;
+  return REWINDING_TABLE_UNITS.some((x) => maintenanceUnitsEqual(u, x)) ? u : REWINDING_SEQUENCE_UNIT;
+}
+
+function activeRewindingSequenceUnit() {
+  return activeRewindingMaintenanceUnit();
 }
 
 async function fetchLaminationSequences() {
@@ -1214,8 +1241,9 @@ function openAssignShiftDialog() {
     primary_action_label: "Apply",
     primary_action: async (vals) => {
       try {
-        if (maintenanceTypeForDate(vals.shift_date)) {
-          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date)}).`);
+        const blockedUnits = REWINDING_TABLE_UNITS.filter((u) => maintenanceTypeForDate(vals.shift_date, u));
+        if (blockedUnits.length) {
+          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF for: ${blockedUnits.map(rewindingUnitLabel).join(", ")}`);
           return;
         }
         const res = await frappe.call({
@@ -1239,21 +1267,31 @@ function openAssignShiftDialog() {
 }
 
 function getMaintenanceRecordsHTML() {
-  if (!maintenanceRecords.value.length) {
+  const rows = scopedMaintenanceRecords.value;
+  if (!rows.length) {
     return '<p style="color:#64748b;text-align:center;padding:6px 0;">No rewinding maintenance records in this scope.</p>';
   }
-  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
-  maintenanceRecords.value.forEach((rec) => {
-    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Unit</th><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
+  rows.forEach((rec) => {
+    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rewindingUnitLabel(normalizeMaintenanceUnit(rec.unit))}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
   });
   html += "</table>";
   return html;
 }
 
 function openMachineOffDialog() {
+  const defaultUnit = activeRewindingMaintenanceUnit();
   const d = new frappe.ui.Dialog({
     title: "Rewinding Machine Off",
     fields: [
+      {
+        fieldtype: "Select",
+        fieldname: "unit",
+        label: "Rewinding Unit",
+        options: REWINDING_TABLE_UNITS.join("\n"),
+        reqd: 1,
+        default: defaultUnit,
+      },
       { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
       { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
       {
@@ -1273,7 +1311,7 @@ function openMachineOffDialog() {
         const res = await frappe.call({
           method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
           args: {
-            unit: activeRewindingSequenceUnit(),
+            unit: vals.unit || defaultUnit,
             start_date: vals.start_date,
             end_date: vals.end_date,
             maintenance_type: vals.maintenance_type,

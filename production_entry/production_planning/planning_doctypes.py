@@ -276,6 +276,40 @@ def resolve_planning_workstation_name(raw):
 	return norm or s
 
 
+def maintenance_units_equal(a, b):
+	"""True when two unit strings refer to the same planning workstation."""
+	return normalize_planning_unit_for_select(a) == normalize_planning_unit_for_select(b)
+
+
+def maintenance_unit_match_values(raw_unit):
+	"""All ``Planning Table.unit`` / ``Equipment Maintenance.unit`` values equivalent to *raw_unit*."""
+	import frappe
+
+	s = str(raw_unit or "").strip()
+	if not s:
+		return []
+	out = set()
+	out.add(s)
+	canon = normalize_planning_unit_for_select(s)
+	if canon:
+		out.add(canon)
+	resolved = resolve_planning_workstation_name(s)
+	if resolved:
+		out.add(resolved)
+	canon_resolved = normalize_planning_unit_for_select(resolved or s)
+	if canon_resolved:
+		out.add(canon_resolved)
+	su = s.upper().replace(" ", "")
+	for ws in frappe.get_all("Workstation", pluck="name", limit_page_length=0) or []:
+		w = str(ws or "").strip()
+		if not w:
+			continue
+		wu = w.upper().replace(" ", "")
+		if wu == su or normalize_planning_unit_for_select(w) == canon_resolved:
+			out.add(w)
+	return sorted(out)
+
+
 def _workstation_type_for_new_record(name):
 	"""Pick an existing Workstation Type only (never invent types like 'Bag Making')."""
 	import frappe

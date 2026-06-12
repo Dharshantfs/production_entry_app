@@ -288,6 +288,11 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
+import {
+  buildMaintenanceData,
+  getPrimaryMaintenanceRecord,
+  normalizeMaintenanceUnit,
+} from "./maintenance_utils.js";
 
 const isLoading = ref(false);
 
@@ -473,9 +478,12 @@ const headerColors = {
 };
 
 function normalizeUnitName(rawUnit) {
+  const norm = normalizeMaintenanceUnit(rawUnit);
+  if (["Unit 1", "Unit 2", "Unit 3", "Unit 4"].includes(norm)) return norm;
   const full = String(rawUnit || "").trim();
   const txt = full.toLowerCase();
   if (!txt || txt === "unassigned" || txt === "mixed") return "Mixed";
+  if (norm && norm !== full) return norm;
   if (txt.startsWith("tt") && txt.includes("printing") && txt.includes("1200")) return PRINTING_UNIT_TT;
   if (txt.startsWith("tt") && txt.includes("printing")) return PRINTING_UNIT_TT;
   if (txt.includes("printing machine 2 colour") && txt.includes("1600")) return PRINTING_UNIT_2_COLOUR;
@@ -865,24 +873,7 @@ async function fetchMaintenanceRecords() {
     });
 
     maintenanceRecords.value = res.message || [];
-    maintenanceData.value = {};
-
-    maintenanceRecords.value.forEach(rec => {
-      const startD = new Date(rec.start_date);
-      const endD = new Date(rec.end_date);
-      for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().split('T')[0];
-        if (!maintenanceData.value[dateStr]) maintenanceData.value[dateStr] = {};
-        if (!maintenanceData.value[dateStr][rec.unit]) maintenanceData.value[dateStr][rec.unit] = [];
-        maintenanceData.value[dateStr][rec.unit].push({
-          name: rec.name,
-          type: rec.maintenance_type,
-          startDate: rec.start_date,
-          endDate: rec.end_date,
-          status: rec.status
-        });
-      }
-    });
+    maintenanceData.value = buildMaintenanceData(maintenanceRecords.value);
   } catch (e) {
     console.error("Failed to fetch maintenance records", e);
   }
@@ -891,8 +882,7 @@ async function fetchMaintenanceRecords() {
 function getMaintenanceForBoardDate(unit) {
   if (viewScope.value !== 'daily') return null;
   const date = firstBoardFilterDate();
-  if (!date || !maintenanceData.value[date] || !maintenanceData.value[date][unit]) return null;
-  return maintenanceData.value[date][unit][0] || null;
+  return getPrimaryMaintenanceRecord(maintenanceData.value, date, unit);
 }
 
 async function deleteMaintenanceRecordFromBoard(recordName) {

@@ -103,7 +103,7 @@
         <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGEMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:130px;">PROCESS</th><th style="min-width:120px;">UNIT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">DESIGN CODE</th><th style="min-width:60px;">NO. COLOURS</th><th style="min-width:100px;">BAG SIZE</th><th style="min-width:90px;">QUALITY</th><th style="min-width:90px;">COLOUR</th><th style="min-width:64px;">GSM</th><th style="min-width:100px;">FINISHING</th><th style="min-width:80px;">PLANNED METERS</th><th style="min-width:100px;">TOTAL ACHIEVED METERS</th><th style="min-width:100px;">PLANNED QTY (PCS)</th><th style="min-width:100px;">ACHIEVED QTY (PCS)</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th><th style="min-width:120px;">DESIGN FILE</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
-            <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="21" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;">MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</td></tr>
+            <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="21" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;"><div style="display:inline-flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;"><span>🔧 MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span><button type="button" @click="deleteMaintenanceRecord(row.record.name)" style="background:#dc2626;color:white;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-weight:600;font-size:11px;">Remove</button></div></td></tr>
             <tr v-else-if="row.is_maintenance_empty"><td class="cell-center">-</td><td class="cell-center"><span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span></td><td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td><td :colspan="19" style="text-align:center;color:#94a3b8;font-style:italic;">No orders (maintenance day)</td></tr>
             <tr v-else :draggable="arrangementUnlocked" @dragstart="onOrderDragStart(row, $event)" @dragover.prevent="onOrderDragOver(row)" @dragleave="onOrderDragLeave(row)" @drop.prevent="onOrderDrop(row)" @dragend="onOrderDragEnd" :class="{ 'cc-row-draggable': arrangementUnlocked, 'cc-row-drag-over': dragOverItemName === row.itemName }">
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ row._sno || (idx + 1) }}</td>
@@ -179,6 +179,7 @@ import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
+import { maintenanceUnitsEqual, normalizeMaintenanceUnit } from "./maintenance_utils.js";
 
 const BOX_BAG_UNITS = [
   "VTP-L1 LEADER OYANG MACHINE",
@@ -429,6 +430,7 @@ const displayRows = computed(() => {
     const k = toDateKey(d);
     const recs = (maintenanceRecords.value || []).filter(
       (r) => new Date(k) >= new Date(r.start_date) && new Date(k) <= new Date(r.end_date)
+        && (!filterUnit.value || maintenanceUnitsEqual(r.unit, filterUnit.value))
     );
     if (recs.length) out.push({ is_maintenance_row: true, dateKey: k, record: recs[0] });
     const dateRows = normalRows.filter((r) => getRowDateKey(r) === k);
@@ -560,22 +562,45 @@ async function openMachineOffDialog() {
     fields: [
       { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
       { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
-      { fieldtype: "Select", fieldname: "unit", label: "Machine", options: ACTIVE_UNITS.value.join("\n"), reqd: 1, default: ACTIVE_UNITS.value[ACTIVE_UNITS.value.length - 1] },
+      { fieldtype: "Select", fieldname: "unit", label: "Machine", options: ACTIVE_UNITS.value.join("\n"), reqd: 1, default: filterUnit.value || ACTIVE_UNITS.value[0] },
       { fieldtype: "Select", fieldname: "maintenance_type", label: "Type", options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown", default: "Machine Off", reqd: 1 },
       { fieldtype: "Small Text", fieldname: "notes", label: "Notes" }
     ],
     primary_action_label: "Save",
     primary_action: async (vals) => {
-      await frappe.call({
+      const res = await frappe.call({
         method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
         args: { unit: vals.unit, start_date: vals.start_date, end_date: vals.end_date, maintenance_type: vals.maintenance_type, notes: vals.notes || "" }
       });
+      if (res?.message?.status === "success") {
+        frappe.show_alert({ message: res.message.message || "Maintenance saved", indicator: "green" }, 4);
+      }
       d.hide();
       await fetchMaintenanceRecords();
       await fetchData();
     }
   });
   d.show();
+}
+
+async function deleteMaintenanceRecord(recordName) {
+  if (!recordName) return;
+  if (!confirm("Remove this maintenance record? Orders moved for this maintenance will be restored to original dates.")) return;
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
+      args: { maintenance_record_name: recordName },
+    });
+    if (res?.message?.status === "success") {
+      frappe.show_alert({ message: res.message.message || "Maintenance removed", indicator: "green" }, 4);
+      await fetchMaintenanceRecords();
+      await fetchData();
+    } else {
+      frappe.msgprint(res?.message?.message || "Error deleting maintenance record");
+    }
+  } catch (e) {
+    frappe.msgprint(`Error deleting maintenance record: ${e?.message || e}`);
+  }
 }
 
 const ARRANGEMENT_UNIT = computed(() => (isWCutDCutTable.value ? "WCutDCut" : "BoxBag"));
@@ -682,7 +707,16 @@ async function restoreArrangement() {
 
 function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.value) { const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` }; } if (viewScope.value === "weekly" && filterWeek.value) { const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { start_date: fmt(ws), end_date: fmt(we) }; } return { start_date: filterOrderDate.value, end_date: filterOrderDate.value }; }
 
-async function fetchMaintenanceRecords() { try { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance" }); maintenanceRecords.value = (res?.message || []).filter((r) => ACTIVE_UNITS.value.includes(String(r.unit || ""))); } catch { maintenanceRecords.value = []; } }
+async function fetchMaintenanceRecords() {
+  try {
+    const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance" });
+    maintenanceRecords.value = (res?.message || []).filter((r) =>
+      ACTIVE_UNITS.value.some((u) => maintenanceUnitsEqual(r.unit, u))
+    );
+  } catch {
+    maintenanceRecords.value = [];
+  }
+}
 function toggleViewScope() { if (viewScope.value === "monthly" && !filterMonth.value) filterMonth.value = frappe.datetime.get_today().substring(0, 7); updateUrlParams(); fetchData(); }
 function setProcessFilter(val) { filterProcess.value = val; updateUrlParams(); }
 

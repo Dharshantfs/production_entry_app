@@ -165,7 +165,7 @@
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
               <td :colspan="tableColCount" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
-                  <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
+                  <span>🔧 MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
                 </div>
               </td>
@@ -390,6 +390,13 @@ import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
+import {
+  buildMaintenanceByDateMap,
+  filterMaintenanceRecordsForScope,
+  maintenanceTypeForUnitDate,
+  maintenanceUnitsEqual,
+  normalizeMaintenanceUnit,
+} from "./maintenance_utils.js";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_lamination_printing";
 const sizeDimUnit = ref("inches");
@@ -613,7 +620,7 @@ const tableColCount = computed(() => {
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));
 
 function normalizeUnitValue(unit) {
-  return String(unit || "").trim();
+  return normalizeMaintenanceUnit(unit);
 }
 
 /** Printing “queue” pseudo-machine — shown on board, omitted from order table + filters. */
@@ -628,7 +635,7 @@ function rowMatchesPrintingUnit(row) {
   if (!isPrinting105Table.value) return true;
   if (isPrintingQueueUnit(row)) return false;
   if (!filterUnit.value) return true;
-  return normalizeUnitValue(row?.unit) === filterUnit.value;
+  return maintenanceUnitsEqual(row?.unit, filterUnit.value);
 }
 
 function setLaminationProcess(v) {
@@ -648,6 +655,23 @@ function setPrintingProcess(v) {
   updateUrlParams();
   fetchData();
 }
+
+const scopedMaintenanceRecords = computed(() => {
+  if (isPrinting105Table.value) {
+    return filterMaintenanceRecordsForScope(maintenanceRecords.value, {
+      unit: filterUnit.value,
+      allowedUnits: PRINTING_FILTER_UNITS,
+    });
+  }
+  if (isPrintedBoppTable.value) {
+    return filterMaintenanceRecordsForScope(maintenanceRecords.value, {
+      unit: PRINTED_BOPP_FILM_UNIT,
+    });
+  }
+  return filterMaintenanceRecordsForScope(maintenanceRecords.value, {
+    unit: LAMINATION_UNIT,
+  });
+});
 
 const displayRows = computed(() => {
   const normalRows = filteredRows.value || [];
@@ -669,7 +693,7 @@ const displayRows = computed(() => {
     const k = toDateKey(d);
     datesHandled.add(k);
     
-    const recs = (maintenanceRecords.value || []).filter(r => {
+    const recs = scopedMaintenanceRecords.value.filter(r => {
       const rStart = new Date(r.start_date);
       const rEnd = new Date(r.end_date);
       return d >= rStart && d <= rEnd;
@@ -720,7 +744,7 @@ const displayRows = computed(() => {
 });
 
 async function deleteMaintenanceRecord(recordName) {
-  if (!confirm("Remove this maintenance record?")) return;
+  if (!confirm("Remove this maintenance record? Orders moved for this maintenance will be restored to original dates.")) return;
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
@@ -856,26 +880,15 @@ async function fetchMaintenanceRecords() {
     });
     const allRows = res?.message || [];
     const rows = isPrinting105Table.value
-      ? allRows.filter((r) => {
-          const u = normalizeUnitValue(r.unit);
-          return filterUnit.value ? u === filterUnit.value : PRINTING_FILTER_UNITS.includes(u);
+      ? filterMaintenanceRecordsForScope(allRows, {
+          unit: filterUnit.value,
+          allowedUnits: PRINTING_FILTER_UNITS,
         })
-      : allRows.filter((r) => normalizeUnitValue(r.unit) === tableMaintenanceUnit.value);
+      : isPrintedBoppTable.value
+      ? filterMaintenanceRecordsForScope(allRows, { unit: PRINTED_BOPP_FILM_UNIT })
+      : filterMaintenanceRecordsForScope(allRows, { unit: LAMINATION_UNIT });
     maintenanceRecords.value = rows;
-    const mapped = {};
-    rows.forEach((rec) => {
-      const start = new Date(rec.start_date);
-      const end = new Date(rec.end_date);
-      for (let cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) {
-        const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
-        if (!mapped[key]) mapped[key] = [];
-        mapped[key].push({
-          unit: normalizeUnitValue(rec.unit),
-          type: rec.maintenance_type || "Machine Off",
-        });
-      }
-    });
-    maintenanceByDate.value = mapped;
+    maintenanceByDate.value = buildMaintenanceByDateMap(rows);
   } catch (e) {
     console.error("Failed to load lamination maintenance", e);
     maintenanceByDate.value = {};
@@ -883,18 +896,19 @@ async function fetchMaintenanceRecords() {
 }
 
 function maintenanceTypeForDate(dateValue, unitValue = "") {
-  const k = toDateKey(dateValue);
-  const recs = k ? (maintenanceByDate.value[k] || []) : [];
-  if (!Array.isArray(recs) || recs.length === 0) return "";
   if (isPrinting105Table.value) {
     const targetUnit = normalizeUnitValue(unitValue) || filterUnit.value;
-    if (targetUnit) {
-      const hit = recs.find((r) => r.unit === targetUnit);
-      return hit ? hit.type : "";
-    }
-    return recs.map((r) => `${r.unit}: ${r.type}`).join(", ");
+    if (targetUnit) return maintenanceTypeForUnitDate(maintenanceByDate.value, dateValue, targetUnit);
+    const k = toDateKey(dateValue);
+    const dayMap = k ? maintenanceByDate.value[k] : null;
+    if (!dayMap) return "";
+    return Object.entries(dayMap).map(([u, t]) => `${u}: ${t}`).join(", ");
   }
-  return recs[0]?.type || "";
+  return maintenanceTypeForUnitDate(
+    maintenanceByDate.value,
+    dateValue,
+    unitValue || tableMaintenanceUnit.value
+  );
 }
 
 function scheduleRowsByShift(shift) {
@@ -1610,8 +1624,14 @@ function openAssignShiftDialog() {
     primary_action_label: "Apply",
     primary_action: async (vals) => {
       try {
-        if (maintenanceTypeForDate(vals.shift_date)) {
-          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date)}).`);
+        if (isPrinting105Table.value) {
+          const blocked = PRINTING_FILTER_UNITS.filter((u) => maintenanceTypeForDate(vals.shift_date, u));
+          if (blocked.length) {
+            frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF for: ${blocked.join(", ")}`);
+            return;
+          }
+        } else if (maintenanceTypeForDate(vals.shift_date, tableMaintenanceUnit.value)) {
+          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date, tableMaintenanceUnit.value)}).`);
           return;
         }
         let msg = {};

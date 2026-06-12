@@ -41,6 +41,13 @@
         </div>
       </div>
       <div class="cc-filter-item">
+        <label>Slitting Unit</label>
+        <select v-model="filterSlittingUnit" @change="debouncedFetch">
+          <option value="">All Units</option>
+          <option v-for="u in SLITTING_BOARD_UNITS" :key="u" :value="u">{{ slittingUnitLabel(u) }}</option>
+        </select>
+      </div>
+      <div class="cc-filter-item">
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
       </div>
@@ -95,7 +102,7 @@
     </div>
 
     <div class="cc-table-container">
-      <div class="cc-table-unit-header lot-header">Slitting Units (JVE / VTP / Unassigned) - Planned orders ({{ processFilter === "__all__" ? "103 + 108 + 109 + 110" : processFilter }})</div>
+      <div class="cc-table-unit-header lot-header">{{ tableHeaderLabel }}</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
         <thead>
@@ -127,7 +134,7 @@
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
               <td :colspan="tableColCount" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
-                  <span>?? MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
+                  <span>🔧 MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
                 </div>
               </td>
@@ -156,8 +163,8 @@
             </td>
             <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">
               {{ formatDate(row.plannedDate || row.planned_date) }}
-              <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date)" class="cc-maint-chip">
-                OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date) }}
+              <span v-if="maintenanceTypeForDate(row.plannedDate || row.planned_date, rowSlittingUnit(row))" class="cc-maint-chip">
+                OFF: {{ maintenanceTypeForDate(row.plannedDate || row.planned_date, rowSlittingUnit(row)) }}
               </span>
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
@@ -227,9 +234,18 @@ import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
+import {
+  maintenanceUnitsEqual,
+  normalizeMaintenanceUnit,
+  filterMaintenanceRecordsForUnit,
+  toLocalDateKey,
+} from "./maintenance_utils.js";
 
 /** Must match Workstation name + ``planning_doctypes.SLITTING_UNIT`` */
 const SLITTING_UNIT = "JVE - SLITTING MACHINE";
+const SLITTING_UNIT_VTP = "VTP - SLITTING MACHINE";
+const SLITTING_UNASSIGNED_UNIT = "UNASSIGNED SLITTING MACHINE";
+const SLITTING_BOARD_UNITS = [SLITTING_UNIT, SLITTING_UNIT_VTP, SLITTING_UNASSIGNED_UNIT];
 const SLITTING_PP_PRINT_FORMAT = "Slitting Order Sheet";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_slitting";
@@ -271,11 +287,19 @@ const transferFilterContext = computed(() => ({
 }));
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
+const filterSlittingUnit = ref("");
 const processFilter = ref("103");
 const rawData = ref([]);
 const filtersReady = ref(false);
 const maintenanceByDate = ref({});
 const maintenanceRecords = ref([]);
+const scopedMaintenanceRecords = computed(() => {
+  const rows = maintenanceRecords.value || [];
+  if (!filterSlittingUnit.value) {
+    return rows.filter((r) => SLITTING_BOARD_UNITS.some((u) => maintenanceUnitsEqual(r.unit, u)));
+  }
+  return filterMaintenanceRecordsForUnit(rows, filterSlittingUnit.value);
+});
 const moveTargetDate = ref(frappe.datetime.get_today());
 const dragRow = ref(null);
 const dragOverShift = ref("");
@@ -296,6 +320,26 @@ let sprRealtimeHandlerRegistered = false;
 const showProcessColumn = computed(() => processFilter.value === "__all__");
 const showLamGsmColumn = computed(() => ["109", "108", "110", "__all__"].includes(processFilter.value));
 const tableColCount = computed(() => 18 + (showProcessColumn.value ? 1 : 0) + (showLamGsmColumn.value ? 1 : 0));
+const activeSlittingUnits = computed(() => {
+  if (filterSlittingUnit.value) return [filterSlittingUnit.value];
+  return [...SLITTING_BOARD_UNITS];
+});
+const tableHeaderLabel = computed(() => {
+  const proc = processFilter.value === "__all__" ? "103 + 108 + 109 + 110" : processFilter.value;
+  const unitLabel = filterSlittingUnit.value ? slittingUnitLabel(filterSlittingUnit.value) : "JVE / VTP / Unassigned";
+  return `${unitLabel} - Planned orders (${proc})`;
+});
+
+function slittingUnitLabel(unit) {
+  if (unit === SLITTING_UNIT) return "JVE Slitting";
+  if (unit === SLITTING_UNIT_VTP) return "VTP Slitting";
+  if (unit === SLITTING_UNASSIGNED_UNIT) return "Unassigned Slitting";
+  return unit;
+}
+
+function rowSlittingUnit(row) {
+  return normalizeMaintenanceUnit(row?.unit || SLITTING_UNASSIGNED_UNIT);
+}
 
 function setProcessFilter(value) {
   const allowed = new Set(["103", "109", "108", "110", "__all__"]);
@@ -352,6 +396,9 @@ const filteredRows = computed(() => {
   } else if (sh === "night") {
     d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
   }
+  if (filterSlittingUnit.value) {
+    d = d.filter((r) => rowSlittingUnit(r) === normalizeMaintenanceUnit(filterSlittingUnit.value));
+  }
   return sortRowsBySavedSequence(d);
 });
 
@@ -375,7 +422,7 @@ const displayRows = computed(() => {
     const k = toDateKey(d);
     datesHandled.add(k);
     
-    const recs = (maintenanceRecords.value || []).filter(r => {
+    const recs = scopedMaintenanceRecords.value.filter((r) => {
       const rStart = new Date(r.start_date);
       const rEnd = new Date(r.end_date);
       return d >= rStart && d <= rEnd;
@@ -426,10 +473,10 @@ const displayRows = computed(() => {
 });
 
 async function deleteMaintenanceRecord(recordName) {
-  if (!confirm("Remove this maintenance record?")) return;
+  if (!confirm("Remove this maintenance record? Orders moved for this maintenance will be restored to original dates.")) return;
   try {
     const res = await frappe.call({
-      method: "production_scheduler.api.delete_maintenance_and_cascade",
+      method: "production_entry.production_planning.scheduler_api.delete_maintenance_and_cascade",
       args: { maintenance_record_name: recordName }
     });
     if (res.message && res.message.status === "success") {
@@ -553,27 +600,43 @@ async function fetchMaintenanceRecords() {
       method: "production_entry.production_planning.scheduler_api.get_all_equipment_maintenance",
       args: { start_date, end_date },
     });
-    const rows = (res?.message || []).filter((r) => (r.unit || "").trim() === SLITTING_UNIT);
+    const rows = (res?.message || []).filter((r) =>
+      SLITTING_BOARD_UNITS.some((u) => maintenanceUnitsEqual(r.unit, u))
+    );
     maintenanceRecords.value = rows;
     const mapped = {};
     rows.forEach((rec) => {
-      const start = new Date(rec.start_date);
-      const end = new Date(rec.end_date);
-      for (let cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) {
-        const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
-        mapped[key] = rec.maintenance_type || "Machine Off";
-      }
+      const unitKey = normalizeMaintenanceUnit(rec.unit);
+      expandDateKeys(rec.start_date, rec.end_date).forEach((key) => {
+        if (!mapped[key]) mapped[key] = {};
+        mapped[key][unitKey] = rec.maintenance_type || "Machine Off";
+      });
     });
     maintenanceByDate.value = mapped;
   } catch (e) {
-    console.error("Failed to load lamination maintenance", e);
+    console.error("Failed to load slitting maintenance", e);
     maintenanceByDate.value = {};
   }
 }
 
-function maintenanceTypeForDate(dateValue) {
+function expandDateKeys(startDate, endDate) {
+  const keys = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const endLocal = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  while (cur <= endLocal) {
+    keys.push(toLocalDateKey(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return keys;
+}
+
+function maintenanceTypeForDate(dateValue, unitValue) {
   const k = toDateKey(dateValue);
-  return k ? maintenanceByDate.value[k] : "";
+  if (!k) return "";
+  const unitKey = normalizeMaintenanceUnit(unitValue || filterSlittingUnit.value || SLITTING_UNIT);
+  return maintenanceByDate.value?.[k]?.[unitKey] || "";
 }
 
 function scheduleRowsByShift(shift) {
@@ -1114,8 +1177,9 @@ function openAssignShiftDialog() {
     primary_action_label: "Apply",
     primary_action: async (vals) => {
       try {
-        if (maintenanceTypeForDate(vals.shift_date)) {
-          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF (${maintenanceTypeForDate(vals.shift_date)}).`);
+        const blockedUnits = activeSlittingUnits.value.filter((u) => maintenanceTypeForDate(vals.shift_date, u));
+        if (blockedUnits.length) {
+          frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF for: ${blockedUnits.map(slittingUnitLabel).join(", ")}`);
           return;
         }
         const res = await frappe.call({
@@ -1139,21 +1203,31 @@ function openAssignShiftDialog() {
 }
 
 function getMaintenanceRecordsHTML() {
-  if (!maintenanceRecords.value.length) {
+  const rows = scopedMaintenanceRecords.value;
+  if (!rows.length) {
     return '<p style="color:#64748b;text-align:center;padding:6px 0;">No Slitting maintenance records in this scope.</p>';
   }
-  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
-  maintenanceRecords.value.forEach((rec) => {
-    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f8fafc;font-weight:700;"><th style="border:1px solid #e2e8f0;padding:6px;">Unit</th><th style="border:1px solid #e2e8f0;padding:6px;">Type</th><th style="border:1px solid #e2e8f0;padding:6px;">From</th><th style="border:1px solid #e2e8f0;padding:6px;">To</th><th style="border:1px solid #e2e8f0;padding:6px;">Status</th></tr>';
+  rows.forEach((rec) => {
+    html += `<tr><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${slittingUnitLabel(normalizeMaintenanceUnit(rec.unit))}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.maintenance_type || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.start_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.end_date || "-"}</td><td style="border:1px solid #e2e8f0;padding:6px;text-align:center;">${rec.status || "-"}</td></tr>`;
   });
   html += "</table>";
   return html;
 }
 
 function openMachineOffDialog() {
+  const defaultUnit = filterSlittingUnit.value || SLITTING_UNIT;
   const d = new frappe.ui.Dialog({
     title: "Slitting Machine Off",
     fields: [
+      {
+        fieldtype: "Select",
+        fieldname: "unit",
+        label: "Slitting Unit",
+        options: SLITTING_BOARD_UNITS.join("\n"),
+        reqd: 1,
+        default: defaultUnit,
+      },
       { fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
       { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() },
       {
@@ -1170,10 +1244,11 @@ function openMachineOffDialog() {
     primary_action_label: "Save",
     primary_action: async (vals) => {
       try {
+        const selectedUnit = vals.unit || defaultUnit;
         const res = await frappe.call({
           method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance",
           args: {
-            unit: SLITTING_UNIT,
+            unit: selectedUnit,
             start_date: vals.start_date,
             end_date: vals.end_date,
             maintenance_type: vals.maintenance_type,

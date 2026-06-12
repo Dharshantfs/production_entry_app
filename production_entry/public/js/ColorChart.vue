@@ -656,6 +656,10 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
+import {
+  buildMaintenanceData,
+  getMaintenanceRecordsForDate,
+} from "./maintenance_utils.js";
 
 // Color groups for keyword-based matching
 // Check MOST SPECIFIC (multi-word) first, then SINGLE-WORD catch-all groups
@@ -983,42 +987,24 @@ async function fetchMaintenanceRecords() {
 		});
 		if (res.message) {
 			maintenanceRecords.value = res.message;
-			// Map by date and unit for quick lookup
-			maintenanceData.value = {};
-			res.message.forEach(rec => {
-				const startD = new Date(rec.start_date);
-				const endD = new Date(rec.end_date);
-				// FIX: Properly iterate through date range
-				for (let d = new Date(startD); d.getTime() <= endD.getTime(); d.setDate(d.getDate() + 1)) {
-					const dateStr = d.toISOString().split('T')[0];
-					if (!maintenanceData.value[dateStr]) maintenanceData.value[dateStr] = {};
-					if (!maintenanceData.value[dateStr][rec.unit]) maintenanceData.value[dateStr][rec.unit] = [];
-					maintenanceData.value[dateStr][rec.unit].push({
-						type: rec.maintenance_type,
-						start: rec.start_date,
-						end: rec.end_date,
-						status: rec.status
-					});
-				}
-			});
-			console.log("✅ Maintenance records loaded:", maintenanceData.value);
+			Object.keys(maintenanceData).forEach((k) => delete maintenanceData[k]);
+			Object.assign(maintenanceData, buildMaintenanceData(res.message));
 		}
 	} catch (e) {
-		console.error("❌ Failed to fetch maintenance records", e);
+		console.error("Failed to fetch maintenance records", e);
 	}
 }
 
 function getMaintenanceForDateAndUnit(date, unit) {
 	if (!date || !unit) return null;
-	try {
-		const dateStr = typeof date === 'string' ? date.split('T')[0] : new Date(date).toISOString().split('T')[0];
-		const data = maintenanceData.value[dateStr];
-		if (!data) return null;
-		return data[unit] || null;
-	} catch (e) {
-		console.error("Error getting maintenance data:", e);
-		return null;
-	}
+	const records = getMaintenanceRecordsForDate(maintenanceData, date, unit);
+	if (!records.length) return null;
+	return records.map((rec) => ({
+		type: rec.type,
+		start: rec.startDate,
+		end: rec.endDate,
+		status: rec.status,
+	}));
 }
 
 async function syncAllPlanCodes() {
