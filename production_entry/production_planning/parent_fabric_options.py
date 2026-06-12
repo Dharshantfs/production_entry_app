@@ -135,28 +135,32 @@ def _dedupe_doctype_fields_and_field_order(doctype_name):
 			row.idx = idx
 			doc.fields.append(row)
 
-	field_order = doc.field_order
-	if isinstance(field_order, str):
-		try:
-			field_order = json.loads(field_order)
-		except Exception:
-			field_order = []
-	if not field_order:
-		field_order = [row.fieldname for row in doc.fields]
+	# field_order is not on DocType in older Frappe — dedupe DocField rows only.
+	dt_meta = frappe.get_meta("DocType")
+	if dt_meta.has_field("field_order"):
+		field_order = getattr(doc, "field_order", None)
+		if isinstance(field_order, str):
+			try:
+				field_order = json.loads(field_order)
+			except Exception:
+				field_order = []
+		if not field_order:
+			field_order = [row.fieldname for row in doc.fields]
 
-	seen_order = set()
-	clean_order = []
-	for fn in field_order:
-		if not fn or fn in seen_order:
-			continue
-		seen_order.add(fn)
-		clean_order.append(fn)
-	for row in doc.fields:
-		if row.fieldname not in seen_order:
-			clean_order.append(row.fieldname)
-			seen_order.add(row.fieldname)
+		seen_order = set()
+		clean_order = []
+		for fn in field_order:
+			if not fn or fn in seen_order:
+				continue
+			seen_order.add(fn)
+			clean_order.append(fn)
+		for row in doc.fields:
+			if row.fieldname not in seen_order:
+				clean_order.append(row.fieldname)
+				seen_order.add(row.fieldname)
 
-	doc.field_order = json.dumps(clean_order)
+		doc.set("field_order", json.dumps(clean_order))
+
 	doc.flags.ignore_validate = True
 	doc.save(ignore_permissions=True)
 
