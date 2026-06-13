@@ -8371,6 +8371,29 @@ def spr_preview_trial_fabric_bom(item_code, company=None, quality=None, color=No
 
 
 @frappe.whitelist()
+def spr_create_trial_fabric_bom(
+	item_code,
+	company=None,
+	quality=None,
+	color=None,
+	gsm=None,
+	recipe_payload=None,
+	force_new=0,
+):
+	from production_entry.production_planning.fabric_item_bom import create_fabric_bom_from_recipe
+
+	return create_fabric_bom_from_recipe(
+		item_code,
+		company=company,
+		quality=quality,
+		color=color,
+		gsm=gsm,
+		recipe_payload=recipe_payload,
+		force_new=force_new,
+	)
+
+
+@frappe.whitelist()
 def spr_create_trial_jobs_multi(
 	shaft_production_run,
 	order_code,

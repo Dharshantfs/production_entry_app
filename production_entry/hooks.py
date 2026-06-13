@@ -49,6 +49,7 @@ doctype_js = {
     "Production Plan": "public/js/production_plan_rm_uom.js",
     "Shaft Production Run": [
         "public/js/child_grid_columns.js",
+        "public/js/spr_trial_smart_bom.js",
         "public/js/shaft_production_run.js",
     ],
     "Roll Production Entry": "public/js/roll_production_entry.js",

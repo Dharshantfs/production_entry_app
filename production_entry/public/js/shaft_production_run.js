@@ -2805,6 +2805,24 @@ function spr_open_manual_job_dialog(frm) {
 	});
 }
 
+/** Net weight per roll (Kg) for trial fabric lines. */
+function sprTrialNetPerRollKg(gsm, widthInch, meterRoll) {
+	const g = flt(gsm);
+	const w = flt(widthInch);
+	const m = flt(meterRoll);
+	if (!(g > 0 && w > 0 && m > 0)) return 0;
+	return (g * w * m * 0.0254) / 1000;
+}
+
+/** WO qty (Kg) = net/roll × rolls × shafts. */
+function sprTrialDefaultWoQty(line, nShafts, nRolls) {
+	const mr = flt(line.meter_roll) || 500;
+	const net = sprTrialNetPerRollKg(line.gsm, line.width_inch, mr);
+	const s = cint(nShafts) > 0 ? cint(nShafts) : 1;
+	const r = cint(nRolls) > 0 ? cint(nRolls) : 1;
+	return net > 0 ? net * r * s : 1;
+}
+
 /** Actions → Trail Order: Item Master fabric lines + BOM preview + standalone WO → Available Jobs. */
 function spr_open_trial_order_dialog(frm) {
 	if (frm.is_new() || !frm.doc.name) {
@@ -2824,6 +2842,9 @@ function spr_open_trial_order_dialog(frm) {
 		callback: function (r) {
 			const ctx = r.message || {};
 			const trialLines = [];
+			const trialBomCache = {};
+			let activeTrialLineIdx = -1;
+			let trialBomPreviewTimer = null;
 			const sprUnit = ctx.custom_unit || frm.doc.custom_unit || '';
 			const maxShaftInches = flt(ctx.max_shaft_inches || 0);
 
@@ -2839,6 +2860,9 @@ function spr_open_trial_order_dialog(frm) {
 							'.spr-trial-table-wrap{overflow:auto;border:1px solid #dbe2ea;border-radius:12px;background:#fff;max-height:320px;}' +
 							'.spr-trial-table{font-size:12px;margin:0;min-width:980px;}' +
 							'.spr-trial-bom{margin-top:10px;padding:10px;border:1px dashed #cbd5e1;border-radius:8px;background:#fff;}' +
+							'.spr-trial-row-active{background:#ecfeff !important;}' +
+							'.spr-trial-bom-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}' +
+							'.spr-trial-summary{font-size:12px;color:#334155;margin-left:auto;}' +
 							'</style>',
 					},
 					{
@@ -2898,6 +2922,11 @@ function spr_open_trial_order_dialog(frm) {
 						fieldtype: 'HTML',
 						label: __('BOM preview'),
 						options: '<div class="spr-trial-bom-wrap text-muted small">' + __('Add a line to preview BOM.') + '</div>',
+					},
+					{
+						fieldname: 'trial_selection_summary',
+						fieldtype: 'HTML',
+						options: '<div class="spr-trial-summary spr-trial-selection-summary text-muted small">—</div>',
 					},
 				],
 				primary_action_label: __('Create Work Order(s)'),
@@ -2992,54 +3021,148 @@ function spr_open_trial_order_dialog(frm) {
 				},
 			});
 
-			function renderTrialBom(itemCode, quality, color, gsm) {
-				if (!itemCode) return;
+			function round(v, p) {
+				const f = Math.pow(10, p || 0);
+				return Math.round(flt(v) * f) / f;
+			}
+
+			function getActiveTrialLine() {
+				if (activeTrialLineIdx >= 0 && activeTrialLineIdx < trialLines.length) {
+					return trialLines[activeTrialLineIdx];
+				}
+				return null;
+			}
+
+			function updateTrialSelectionSummary() {
+				const checked = trialLines.filter(function (ln) {
+					return cint(ln.included) !== 0;
+				});
+				let totalQty = 0;
+				checked.forEach(function (ln) {
+					totalQty += flt(ln.wo_qty) > 0 ? flt(ln.wo_qty) : 0;
+				});
+				d.$wrapper.find('.spr-trial-selection-summary').text(
+					__('Selected: {0} | WO Qty: {1} Kg', [checked.length, totalQty.toFixed(2)])
+				);
+			}
+
+			function recalcTrialQtyInputs() {
+				const nShafts = cint(d.get_value('no_of_shafts')) || 1;
+				const nRolls = cint(d.get_value('no_of_rolls')) || 1;
+				trialLines.forEach(function (ln, idx) {
+					if (cint(ln.included) === 0) return;
+					const qty = sprTrialDefaultWoQty(ln, nShafts, nRolls);
+					ln.wo_qty = qty;
+					const $inp = d.$wrapper.find('.spr-trial-qty[data-idx="' + idx + '"]');
+					if ($inp.length) $inp.val(qty.toFixed(2));
+				});
+				updateTrialSelectionSummary();
+				scheduleTrialBomPreviewRefresh();
+			}
+
+			function cacheTrialBomPayload(itemCode, payload) {
+				if (!itemCode || !payload) return;
+				trialBomCache[itemCode] = {
+					bom: payload.bom || '',
+					lines: payload.lines || [],
+					ldr_percent: flt(payload.ldr_percent),
+				};
+				const ln = trialLines.find(function (l) {
+					return l.item_code === itemCode;
+				});
+				if (ln) ln.bom = payload.bom || ln.bom;
+			}
+
+			function fetchTrialBomForLine(ln, callback) {
+				if (!ln || !ln.item_code) return;
+				if (trialBomCache[ln.item_code]) {
+					if (typeof callback === 'function') callback(trialBomCache[ln.item_code]);
+					return;
+				}
 				frappe.call({
 					method:
 						'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_preview_trial_fabric_bom',
 					args: {
-						item_code: itemCode,
+						item_code: ln.item_code,
 						company: ctx.company,
-						quality: quality,
-						color: color,
-						gsm: gsm,
+						quality: ln.quality,
+						color: ln.color,
+						gsm: ln.gsm,
 					},
 					callback: function (br) {
 						const payload = br.message || {};
-						const lines = payload.lines || [];
-						let html = '<div class="spr-trial-bom"><b>' + __('BOM preview') + '</b>';
-						if (payload.bom) {
-							html += ' <span class="text-muted">(' + frappe.utils.escape_html(payload.bom) + ')</span>';
-						}
-						if (payload.ldr_percent) {
-							html +=
-								'<div class="text-muted small">LDR: ' +
-								flt(payload.ldr_percent).toFixed(2) +
-								'%</div>';
-						}
-						html += '<table class="table table-condensed table-bordered" style="margin-top:6px;font-size:11px;">';
-						html +=
-							'<thead><tr><th>' +
-							__('Item') +
-							'</th><th>' +
-							__('Qty') +
-							'</th><th>' +
-							__('UOM') +
-							'</th></tr></thead><tbody>';
-						lines.forEach(function (ln) {
-							html +=
-								'<tr><td>' +
-								frappe.utils.escape_html(ln.item_code || '') +
-								'</td><td>' +
-								flt(ln.qty).toFixed(5) +
-								'</td><td>' +
-								frappe.utils.escape_html(ln.uom || 'Kg') +
-								'</td></tr>';
-						});
-						html += '</tbody></table></div>';
-						d.$wrapper.find('.spr-trial-bom-wrap').html(html);
+						cacheTrialBomPayload(ln.item_code, payload);
+						if (typeof callback === 'function') callback(trialBomCache[ln.item_code]);
 					},
 				});
+			}
+
+			function renderTrialBomPreview() {
+				const ln = getActiveTrialLine();
+				const wrap = d.$wrapper.find('.spr-trial-bom-wrap');
+				if (!wrap.length) return;
+				if (!ln || !ln.item_code) {
+					wrap.html('<span class="text-muted">' + __('Add a line to preview BOM.') + '</span>');
+					return;
+				}
+				const scaleQty = flt(ln.wo_qty) > 0 ? flt(ln.wo_qty) : sprTrialDefaultWoQty(ln, d.get_value('no_of_shafts'), d.get_value('no_of_rolls'));
+				const cached = trialBomCache[ln.item_code];
+
+				function drawPreview(payload) {
+					const lines = (payload && payload.lines) || [];
+					const ldr = payload ? flt(payload.ldr_percent) : 0;
+					const bomName = payload ? payload.bom : '';
+					let html = '<div class="spr-trial-bom">';
+					html += '<div class="spr-trial-bom-toolbar">';
+					html += '<b>' + __('BOM preview') + '</b>';
+					if (bomName) {
+						html += ' <span class="text-muted">(' + frappe.utils.escape_html(bomName) + ')</span>';
+					}
+					html +=
+						'<button type="button" class="btn btn-xs btn-default spr-trial-edit-bom">' +
+						__('Edit BOM / Set Recipe') +
+						'</button>';
+					html +=
+						'<span class="spr-trial-summary">' +
+						__('WO qty: {0} Kg', [scaleQty.toFixed(2)]) +
+						(ldr ? ' | LDR: ' + ldr.toFixed(2) + '%' : '') +
+						'</span></div>';
+					html += '<table class="table table-condensed table-bordered" style="margin-top:6px;font-size:11px;">';
+					html +=
+						'<thead><tr><th>' +
+						__('Item') +
+						'</th><th>' +
+						__('Qty') +
+						'</th><th>' +
+						__('UOM') +
+						'</th></tr></thead><tbody>';
+					lines.forEach(function (row) {
+						html +=
+							'<tr><td>' +
+							frappe.utils.escape_html(row.item_code || '') +
+							'</td><td>' +
+							(flt(row.qty) * scaleQty).toFixed(5) +
+							'</td><td>' +
+							frappe.utils.escape_html(row.uom || 'Kg') +
+							'</td></tr>';
+					});
+					html += '</tbody></table></div>';
+					wrap.html(html);
+				}
+
+				if (cached) {
+					drawPreview(cached);
+				} else {
+					wrap.html('<span class="text-muted">' + __('Loading BOM preview...') + '</span>');
+					fetchTrialBomForLine(ln, drawPreview);
+				}
+			}
+
+			function scheduleTrialBomPreviewRefresh() {
+				if (trialBomPreviewTimer) clearTimeout(trialBomPreviewTimer);
+				trialBomPreviewTimer = setTimeout(function () {
+					renderTrialBomPreview();
+				}, 150);
 			}
 
 			function renderTrialLinesTable() {
@@ -3068,12 +3191,12 @@ function spr_open_trial_order_dialog(frm) {
 					const gsm = flt(ln.gsm);
 					const wIn = flt(ln.width_inch);
 					const mr = flt(ln.meter_roll) || 500;
-					const netKg =
-						gsm > 0 && wIn > 0 && mr > 0 ? round((gsm * wIn * mr * 0.0254) / 1000, 2) : 0;
-					if (!ln.wo_qty || ln.wo_qty <= 0) {
-						ln.wo_qty = netKg > 0 ? netKg * nRolls * nShafts : 1;
+					ln.meter_roll = mr;
+					const netKg = sprTrialNetPerRollKg(gsm, wIn, mr);
+					ln.net_per_roll_kg = netKg;
+					if (cint(ln.included) !== 0) {
+						ln.wo_qty = sprTrialDefaultWoQty(ln, nShafts, nRolls);
 					}
-					if (!ln.meter_roll) ln.meter_roll = mr;
 					let woSelect =
 						'<select class="input-with-feedback spr-trial-reuse" data-idx="' +
 						idx +
@@ -3083,10 +3206,13 @@ function spr_open_trial_order_dialog(frm) {
 						__('Create New WO') +
 						'</option>';
 					(ln.reusable_work_orders || []).forEach(function (wo) {
+						const sel = ln.reuse_wo === wo ? ' selected' : '';
 						woSelect +=
 							'<option value="' +
 							frappe.utils.escape_html(String(wo)) +
-							'">' +
+							'"' +
+							sel +
+							'>' +
 							frappe.utils.escape_html(String(wo)) +
 							'</option>';
 					});
@@ -3094,7 +3220,8 @@ function spr_open_trial_order_dialog(frm) {
 					const label =
 						frappe.utils.escape_html(ln.item_code || '') +
 						(ln.item_name ? ' — ' + frappe.utils.escape_html(String(ln.item_name).substring(0, 36)) : '');
-					html += '<tr>';
+					const rowCls = idx === activeTrialLineIdx ? ' spr-trial-row-active' : '';
+					html += '<tr class="spr-trial-line-row' + rowCls + '" data-idx="' + idx + '">';
 					html +=
 						'<td><input type="checkbox" class="spr-trial-inc" data-idx="' +
 						idx +
@@ -3110,7 +3237,7 @@ function spr_open_trial_order_dialog(frm) {
 						'" value="' +
 						mr +
 						'" step="0.1" style="width:90px"/></td>';
-					html += '<td>' + (netKg > 0 ? netKg.toFixed(2) : '—') + '</td>';
+					html += '<td class="spr-trial-net" data-idx="' + idx + '">' + (netKg > 0 ? netKg.toFixed(2) : '—') + '</td>';
 					html += '<td>' + woSelect + '</td>';
 					html +=
 						'<td><input type="number" class="spr-trial-qty" data-idx="' +
@@ -3122,11 +3249,7 @@ function spr_open_trial_order_dialog(frm) {
 				});
 				html += '</tbody></table></div>';
 				wrap.html(html);
-			}
-
-			function round(v, p) {
-				const f = Math.pow(10, p || 0);
-				return Math.round(flt(v) * f) / f;
+				updateTrialSelectionSummary();
 			}
 
 			d.show();
@@ -3193,9 +3316,13 @@ function spr_open_trial_order_dialog(frm) {
 									included: 1,
 									reuse_wo: '',
 									reusable_work_orders: reusable,
+									bom: res.bom || '',
 								});
+								activeTrialLineIdx = trialLines.length - 1;
 								renderTrialLinesTable();
-								renderTrialBom(res.item_code, quality, color, gsm);
+								fetchTrialBomForLine(trialLines[activeTrialLineIdx], function () {
+									renderTrialBomPreview();
+								});
 								frappe.show_alert({
 									message: __('Line added: {0}', [res.item_code]),
 									indicator: 'green',
@@ -3205,21 +3332,67 @@ function spr_open_trial_order_dialog(frm) {
 				});
 			});
 
+			d.$wrapper.on('click', '.spr-trial-line-row', function (e) {
+				if ($(e.target).is('input, select, option')) return;
+				activeTrialLineIdx = cint($(this).attr('data-idx'));
+				d.$wrapper.find('.spr-trial-line-row').removeClass('spr-trial-row-active');
+				$(this).addClass('spr-trial-row-active');
+				renderTrialBomPreview();
+			});
+
+			d.$wrapper.on('click', '.spr-trial-edit-bom', function () {
+				const ln = getActiveTrialLine();
+				if (!ln) {
+					frappe.msgprint(__('Select a trial line first.'));
+					return;
+				}
+				if (!window.sprTrialFabricRecipe || typeof window.sprTrialFabricRecipe.openDialog !== 'function') {
+					frappe.msgprint(__('Recipe editor not loaded. Refresh the page.'));
+					return;
+				}
+				window.sprTrialFabricRecipe.openDialog(ctx, ln, function (payload) {
+					cacheTrialBomPayload(ln.item_code, payload);
+					if (payload && payload.bom) ln.bom = payload.bom;
+					renderTrialBomPreview();
+				});
+			});
+
 			d.$wrapper.on('change input', '.spr-trial-meter, .spr-trial-qty, .spr-trial-reuse, .spr-trial-inc', function () {
 				const idx = cint($(this).attr('data-idx'));
 				const ln = trialLines[idx];
 				if (!ln) return;
-				if ($(this).hasClass('spr-trial-meter')) ln.meter_roll = flt($(this).val());
-				if ($(this).hasClass('spr-trial-qty')) ln.wo_qty = flt($(this).val());
+				if ($(this).hasClass('spr-trial-meter')) {
+					ln.meter_roll = flt($(this).val());
+					const netKg = sprTrialNetPerRollKg(ln.gsm, ln.width_inch, ln.meter_roll);
+					ln.net_per_roll_kg = netKg;
+					d.$wrapper.find('.spr-trial-net[data-idx="' + idx + '"]').text(netKg > 0 ? netKg.toFixed(2) : '—');
+					if (cint(ln.included) !== 0) {
+						const qty = sprTrialDefaultWoQty(ln, d.get_value('no_of_shafts'), d.get_value('no_of_rolls'));
+						ln.wo_qty = qty;
+						d.$wrapper.find('.spr-trial-qty[data-idx="' + idx + '"]').val(qty.toFixed(2));
+					}
+					if (idx === activeTrialLineIdx) scheduleTrialBomPreviewRefresh();
+				}
+				if ($(this).hasClass('spr-trial-qty')) {
+					ln.wo_qty = flt($(this).val());
+					if (idx === activeTrialLineIdx) scheduleTrialBomPreviewRefresh();
+				}
 				if ($(this).hasClass('spr-trial-reuse')) ln.reuse_wo = $(this).val();
-				if ($(this).hasClass('spr-trial-inc')) ln.included = $(this).is(':checked') ? 1 : 0;
+				if ($(this).hasClass('spr-trial-inc')) {
+					ln.included = $(this).is(':checked') ? 1 : 0;
+					if (cint(ln.included) !== 0) {
+						ln.wo_qty = sprTrialDefaultWoQty(ln, d.get_value('no_of_shafts'), d.get_value('no_of_rolls'));
+						d.$wrapper.find('.spr-trial-qty[data-idx="' + idx + '"]').val(flt(ln.wo_qty).toFixed(2));
+					}
+				}
+				updateTrialSelectionSummary();
 			});
 
 			['no_of_shafts', 'no_of_rolls'].forEach(function (fn) {
 				const f = d.fields_dict[fn];
 				if (f && f.$input) {
 					f.$input.on('change input', function () {
-						renderTrialLinesTable();
+						recalcTrialQtyInputs();
 					});
 				}
 			});

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from production_entry.production_planning.scheduler_api import get_master_code, get_mix_item_details
 
@@ -334,3 +334,147 @@ def preview_fabric_bom(item_code, company=None, quality=None, color=None, gsm=No
 			}
 		)
 	return {"bom": None, "lines": out, "ldr_percent": ldr_percent}
+
+
+def _recipe_payload_to_bom_lines(pp_rows, fl_rows, ad_rows, mb_rows, mb_ldr):
+	"""Normalize Smart-BOM-style recipe rows to per-1-Kg BOM lines."""
+	pp_rows = [r for r in (pp_rows or []) if _cstr(r.get("item_code")) and flt(r.get("qty")) > 0]
+	fl_rows = [r for r in (fl_rows or []) if _cstr(r.get("item_code")) and flt(r.get("qty")) > 0]
+	ad_rows = [r for r in (ad_rows or []) if _cstr(r.get("item_code")) and flt(r.get("qty")) > 0]
+	mb_rows = [r for r in (mb_rows or []) if _cstr(r.get("item_code"))]
+
+	if not pp_rows:
+		frappe.throw(_("At least one PP row with quantity is required."))
+
+	pp_total = sum(flt(r.get("qty")) for r in pp_rows)
+	fl_total = sum(flt(r.get("qty")) for r in fl_rows)
+	ad_total = sum(flt(r.get("qty")) for r in ad_rows)
+	ldr_percent = flt(mb_ldr) or 0
+	mb_kgs = ((pp_total + fl_total) * ldr_percent) / 100.0 if ldr_percent > 0 else 0
+	grand = pp_total + fl_total + ad_total + mb_kgs
+	if grand <= 0:
+		frappe.throw(_("Total recipe weight must be greater than zero."))
+	factor = 1.0 / grand
+
+	lines = []
+	for r in pp_rows:
+		lines.append(
+			{
+				"item_code": _cstr(r.get("item_code")),
+				"qty": round(flt(r.get("qty")) * factor, 5),
+				"uom": "Kg",
+			}
+		)
+	for r in fl_rows:
+		lines.append(
+			{
+				"item_code": _cstr(r.get("item_code")),
+				"qty": round(flt(r.get("qty")) * factor, 5),
+				"uom": "Kg",
+			}
+		)
+	for r in ad_rows:
+		lines.append(
+			{
+				"item_code": _cstr(r.get("item_code")),
+				"qty": round(flt(r.get("qty")) * factor, 5),
+				"uom": "Kg",
+			}
+		)
+	if mb_kgs > 0:
+		mb_code = _cstr(mb_rows[0].get("item_code")) if mb_rows else ""
+		if not mb_code:
+			frappe.throw(_("Masterbatch item is required when LDR is set."))
+		if not frappe.db.exists("Item", mb_code):
+			frappe.throw(_("Masterbatch item {0} not found.").format(mb_code))
+		lines.append({"item_code": mb_code, "qty": round(mb_kgs * factor, 5), "uom": "Kg"})
+	return lines, ldr_percent
+
+
+def _bom_lines_for_response(lines):
+	out = []
+	for ln in lines:
+		ic = ln["item_code"]
+		out.append(
+			{
+				"item_code": ic,
+				"item_name": frappe.db.get_value("Item", ic, "item_name") or ic,
+				"qty": flt(ln["qty"]),
+				"uom": ln.get("uom") or "Kg",
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def create_fabric_bom_from_recipe(
+	item_code,
+	company,
+	quality,
+	color,
+	gsm=None,
+	recipe_payload=None,
+	force_new=0,
+):
+	"""Create/submit fabric BOM from Smart-BOM-style recipe payload (per 1 Kg FG)."""
+	item_code = _cstr(item_code)
+	if not item_code or not frappe.db.exists("Item", item_code):
+		frappe.throw(_("Item {0} not found.").format(item_code))
+	company = _cstr(company) or frappe.defaults.get_global_default("company")
+	payload = frappe.parse_json(recipe_payload) if isinstance(recipe_payload, str) else (recipe_payload or {})
+	lines, ldr_percent = _recipe_payload_to_bom_lines(
+		payload.get("pp_rows"),
+		payload.get("fl_rows"),
+		payload.get("ad_rows"),
+		payload.get("mb_rows"),
+		payload.get("mb_ldr"),
+	)
+
+	if not cint(force_new):
+		existing = _existing_bom_name(item_code)
+		if existing:
+			existing_lines = frappe.get_all(
+				"BOM Item",
+				filters={"parent": existing},
+				fields=["item_code", "qty", "uom"],
+				order_by="idx asc",
+			)
+			ldr = frappe.db.get_value("BOM", existing, "custom_ldr_") if frappe.get_meta("BOM").has_field("custom_ldr_") else None
+			out = []
+			for row in existing_lines:
+				out.append(
+					{
+						"item_code": row.item_code,
+						"item_name": frappe.db.get_value("Item", row.item_code, "item_name") or row.item_code,
+						"qty": flt(row.qty),
+						"uom": row.uom or "Kg",
+					}
+				)
+			return {"bom": existing, "lines": out, "ldr_percent": flt(ldr)}
+
+	for old in frappe.get_all(
+		"BOM",
+		filters={"item": item_code, "is_default": 1, "docstatus": ["<", 2]},
+		pluck="name",
+	):
+		try:
+			frappe.db.set_value("BOM", old, "is_default", 0, update_modified=False)
+		except Exception:
+			pass
+
+	bom = frappe.new_doc("BOM")
+	bom.company = company
+	bom.item = item_code
+	bom.quantity = 1.0
+	bom.is_default = 1
+	bom.is_active = 1
+	bom.currency = "INR"
+	bom.rm_cost_as_per = "Valuation Rate"
+	bom_meta = frappe.get_meta("BOM")
+	if bom_meta.has_field("custom_ldr_"):
+		bom.custom_ldr_ = ldr_percent
+	for ln in lines:
+		bom.append("items", {"item_code": ln["item_code"], "qty": ln["qty"], "uom": ln.get("uom") or "Kg"})
+	bom.insert(ignore_permissions=True)
+	bom.submit()
+	return {"bom": bom.name, "lines": _bom_lines_for_response(lines), "ldr_percent": ldr_percent}
