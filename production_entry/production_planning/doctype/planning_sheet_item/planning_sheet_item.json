@@ -45,7 +45,6 @@
         "custom_plan_code",
         "custom_movement_type",
         "warehouse",
-        "work_order",
         "order_sheet",
         "custom_transfer_destination",
         "custom_transfer_status",
@@ -321,13 +320,6 @@
             "label": "Warehouse",
             "options": "Warehouse",
             "in_list_view": 0
-        },
-        {
-            "fieldname": "work_order",
-            "fieldtype": "Link",
-            "label": "Work Order",
-            "options": "Work Order",
-            "in_list_view": 1
         },
         {
             "fieldname": "order_sheet",

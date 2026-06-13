@@ -566,14 +566,13 @@ class Planningsheet(Document):
             out["custom_plan_code"] = code
         return out
 
-    def _try_link_work_order_from_existing_production_plan(self, item, pp_name):
-        """
-        If this Planning sheet row already belongs to an existing Production Plan, set work_order
-        from WO(production_plan, production_plan_item) — no second PP insert.
-        Returns True if work_order was set or PP matched.
-        """
+    def _planning_item_work_order_field_enabled(self):
+        return frappe.db.has_column("Planning sheet Item", "work_order")
+
+    def _lookup_work_order_from_production_plan(self, item, pp_name):
+        """Resolve Work Order from Production Plan + line match (does not write to planning row)."""
         if not pp_name or not frappe.db.exists("Production Plan", pp_name):
-            return False
+            return None
         pp = frappe.get_doc("Production Plan", pp_name)
         so_item = item.get("so_item") or item.get("sales_order_item")
         ppi_name = None
@@ -585,7 +584,7 @@ class Planningsheet(Document):
             ppi_name = ppi.name
             break
         if not ppi_name:
-            return False
+            return None
         wo_name = frappe.db.get_value(
             "Work Order",
             {
@@ -606,13 +605,45 @@ class Planningsheet(Document):
                 pp.name,
             )
             wo_name = rows[0][0] if rows else None
-        if wo_name:
+        return wo_name
+
+    def _resolve_work_order_for_item(self, item, pp_name=None):
+        """Work Order for a planning line: stored value (legacy) or lookup from Production Plan."""
+        if self._planning_item_work_order_field_enabled():
+            wo = (item.get("work_order") or "").strip()
+            if wo:
+                return wo
+        if pp_name:
+            return self._lookup_work_order_from_production_plan(item, pp_name)
+        from production_entry.production_planning.scheduler_api import (
+            _get_item_level_production_plan,
+            _production_plan_usable,
+            _resolve_existing_production_plan_for_planning_sheet,
+        )
+
+        sheet_level_pp = _resolve_existing_production_plan_for_planning_sheet(self.name)
+        item_pp = _get_item_level_production_plan(item.name)
+        pp_for_row = _production_plan_usable(item_pp) or sheet_level_pp
+        if pp_for_row:
+            return self._lookup_work_order_from_production_plan(item, pp_for_row)
+        return None
+
+    def _try_link_work_order_from_existing_production_plan(self, item, pp_name):
+        """
+        If this Planning sheet row belongs to a submitted Production Plan, optionally persist
+        work_order on the line (legacy). Returns True when a WO exists for the PP line.
+        """
+        wo_name = self._lookup_work_order_from_production_plan(item, pp_name)
+        if not wo_name:
+            return False
+        if self._planning_item_work_order_field_enabled():
             item.work_order = wo_name
-            return True
-        return False
+        return True
 
     def link_work_orders_for_production_plan(self, pp_name):
         """After a Production Plan is submitted, attach Work Orders to Planning sheet Item rows that use that PP."""
+        if not self._planning_item_work_order_field_enabled():
+            return False
         from production_entry.production_planning.scheduler_api import (
             _get_item_level_production_plan,
             _production_plan_usable,
@@ -757,7 +788,8 @@ class Planningsheet(Document):
                 )
                 wo_name = rows[0][0] if rows else None
             if wo_name:
-                item.work_order = wo_name
+                if self._planning_item_work_order_field_enabled():
+                    item.work_order = wo_name
 
         self.db_update()
 
@@ -773,10 +805,11 @@ class Planningsheet(Document):
         
         entry_results = []
         for item in self.items:
-            if not item.work_order:
+            wo_name = self._resolve_work_order_for_item(item)
+            if not wo_name:
                 continue
-            
-            wo = frappe.get_doc("Work Order", item.work_order)
+
+            wo = frappe.get_doc("Work Order", wo_name)
             if wo.status in ["Completed", "Closed"]:
                 continue
             
@@ -799,7 +832,7 @@ class Planningsheet(Document):
                 entry_results.append(f"Created Entry {se.name} for {item.item_code}")
                 
             except Exception as e:
-                frappe.log_error(f"Production Entry Error for {item.work_order}: {str(e)}")
+                frappe.log_error(f"Production Entry Error for {wo_name}: {str(e)}")
                 entry_results.append(f"Error for {item.item_code}: {str(e)}")
         
         return entry_results

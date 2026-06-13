@@ -90,14 +90,6 @@ function _findLegacyRowForPlanned(frm, plannedRow) {
 }
 
 frappe.ui.form.on('Planning sheet Item', {
-    work_order: function (frm, cdt, cdn) {
-        const row = locals[cdt][cdn];
-        const pr = _findPlannedRowForLegacy(frm, row);
-        if (!pr) return;
-        frappe.model.set_value(pr.doctype, pr.name, 'work_order', row.work_order || '');
-        frm.refresh_field('planned_items');
-        ps_schedule_planning_grid_columns(frm);
-    },
     unit: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
         const pr = _findPlannedRowForLegacy(frm, row);
@@ -131,14 +123,6 @@ frappe.ui.form.on('Planning sheet Item', {
 });
 
 frappe.ui.form.on('Planning Table', {
-    work_order: function (frm, cdt, cdn) {
-        const row = locals[cdt][cdn];
-        const leg = _findLegacyRowForPlanned(frm, row);
-        if (!leg) return;
-        frappe.model.set_value(leg.doctype, leg.name, 'work_order', row.work_order || '');
-        frm.refresh_field('items');
-        ps_schedule_planning_grid_columns(frm);
-    },
     unit: function (frm, cdt, cdn) {
         const row = locals[cdt][cdn];
         const leg = _findLegacyRowForPlanned(frm, row);

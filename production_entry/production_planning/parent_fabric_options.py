@@ -182,7 +182,7 @@ def _clear_field_property_setters(dt, fieldname, properties=None):
 
 
 def repair_planning_child_table_metadata():
-	"""One Parent Fabric field per doctype; Work Order editable on Items + board."""
+	"""One Parent Fabric field per doctype (dedupe Custom Field / DocField duplicates)."""
 	import frappe
 
 	options = parent_fabric_select_options_text()
@@ -203,15 +203,10 @@ def repair_planning_child_table_metadata():
 				row.read_only = 1
 				row.in_list_view = 1
 				changed = True
-			elif row.fieldname == "work_order":
-				row.read_only = 0
-				row.in_list_view = 1
-				changed = True
 		if changed:
 			doc.flags.ignore_validate = True
 			doc.save(ignore_permissions=True)
 
-		_clear_field_property_setters(dt, "work_order", ("read_only",))
 		_clear_field_property_setters(dt, "custom_parent_fabric", ("read_only", "in_list_view", "options"))
 		frappe.clear_cache(doctype=dt)
 
