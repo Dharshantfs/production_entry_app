@@ -33,6 +33,7 @@ from production_entry.production_planning.planning_doctypes import (
 )
 
 WORKSPACE_PRODUCTION_ENTRY_DESK = "Production Entry Desk"
+WORKSPACE_PLANNING = "Planning"
 
 
 def after_install():
@@ -43,6 +44,7 @@ def after_install():
 	_sync_production_queue_custom_block()
 	_ensure_workspace_shows_production_queue()
 	_ensure_learning_page_on_workspace()
+	_ensure_planning_workspace()
 
 
 def after_migrate():
@@ -52,6 +54,7 @@ def after_migrate():
 	_sync_production_queue_custom_block()
 	_ensure_workspace_shows_production_queue()
 	_ensure_learning_page_on_workspace()
+	_ensure_planning_workspace()
 	_ensure_planning_line_unit_docfield_meta()
 	_ensure_parent_fabric_select_options()
 	_warn_if_duplicate_scheduler_app()
@@ -272,6 +275,34 @@ def _ensure_learning_page_on_workspace():
 			},
 		)
 	doc.save(ignore_permissions=True)
+
+
+def _ensure_planning_workspace():
+	"""Ensure Planning workspace has Confirm Orders, Planning Sheet, and Production Plan."""
+	if frappe.flags.in_test:
+		return
+	if not frappe.db.exists("Workspace", WORKSPACE_PLANNING):
+		try:
+			frappe.reload_doc("production_planning", "workspace", "planning")
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				"production_entry: reload Planning workspace",
+			)
+	if not frappe.db.exists("Workspace", WORKSPACE_PLANNING):
+		return
+	try:
+		from production_entry.patches.ensure_planning_workspace import _sync_planning_workspace_doc
+
+		ws = frappe.get_doc("Workspace", WORKSPACE_PLANNING)
+		if _sync_planning_workspace_doc(ws):
+			ws.flags.ignore_links = True
+			ws.save(ignore_permissions=True)
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			"production_entry: ensure Planning workspace links",
+		)
 
 
 def _rename_workspace_that_hijacks_planning_sheet_route():

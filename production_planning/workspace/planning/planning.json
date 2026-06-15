@@ -1,0 +1,102 @@
+{
+	"app": "production_entry",
+	"charts": [],
+	"content": "[{\"id\":\"confirm_orders_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Confirm Orders\",\"shortcut_type\":\"Page\",\"shortcut_url\":\"confirm-orders\",\"label\":\"Confirm Orders\",\"icon\":\"tick\",\"col\":4}},{\"id\":\"planning_sheet_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Planning sheet\",\"shortcut_type\":\"DocType\",\"shortcut_url\":\"Planning sheet\",\"label\":\"Planning Sheet\",\"icon\":\"list\",\"col\":4}},{\"id\":\"production_plan_shortcut\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Production Plan\",\"shortcut_type\":\"DocType\",\"shortcut_url\":\"Production Plan\",\"label\":\"Production Plan\",\"icon\":\"project\",\"col\":4}}]",
+	"creation": "2026-06-15 10:00:00.000000",
+	"custom_blocks": [],
+	"docstatus": 0,
+	"doctype": "Workspace",
+	"for_user": "",
+	"hide_custom": 0,
+	"icon": "project",
+	"idx": 0,
+	"is_hidden": 0,
+	"label": "Planning",
+	"links": [
+		{
+			"dependencies": "",
+			"description": "Review and confirm sales orders for planning",
+			"hidden": 0,
+			"icon": "tick",
+			"is_query_report": 0,
+			"label": "Confirm Orders",
+			"link_count": 0,
+			"link_to": "confirm-orders",
+			"link_type": "Page",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"dependencies": "",
+			"description": "Party-wise planning sheet and line items",
+			"hidden": 0,
+			"icon": "list",
+			"is_query_report": 0,
+			"label": "Planning Sheet",
+			"link_count": 0,
+			"link_to": "Planning sheet",
+			"link_type": "DocType",
+			"onboard": 1,
+			"type": "Link"
+		},
+		{
+			"dependencies": "",
+			"description": "Production plans and work order generation",
+			"hidden": 0,
+			"icon": "project",
+			"is_query_report": 0,
+			"label": "Production Plan",
+			"link_count": 0,
+			"link_to": "Production Plan",
+			"link_type": "DocType",
+			"onboard": 1,
+			"type": "Link"
+		}
+	],
+	"modified": "2026-06-15 10:00:00.000000",
+	"modified_by": "Administrator",
+	"module": "Production Planning",
+	"name": "Planning",
+	"number_cards": [],
+	"owner": "Administrator",
+	"parent_page": "",
+	"public": 1,
+	"quick_lists": [],
+	"restrict_to_domain": "",
+	"roles": [],
+	"sequence_id": 86,
+	"shortcuts": [
+		{
+			"color": "Green",
+			"doc_view": "",
+			"format": "",
+			"icon": "tick",
+			"label": "Confirm Orders",
+			"link_to": "confirm-orders",
+			"stats_filter": "",
+			"type": "Page"
+		},
+		{
+			"color": "Blue",
+			"doc_view": "List",
+			"format": "",
+			"icon": "list",
+			"label": "Planning Sheet",
+			"link_to": "Planning sheet",
+			"stats_filter": "",
+			"type": "DocType"
+		},
+		{
+			"color": "Orange",
+			"doc_view": "List",
+			"format": "",
+			"icon": "project",
+			"label": "Production Plan",
+			"link_to": "Production Plan",
+			"stats_filter": "",
+			"type": "DocType"
+		}
+	],
+	"title": "Planning",
+	"type": "Workspace"
+}

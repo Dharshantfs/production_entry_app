@@ -2847,6 +2847,18 @@ function spr_open_trial_order_dialog(frm) {
 			let trialBomPreviewTimer = null;
 			const sprUnit = ctx.custom_unit || frm.doc.custom_unit || '';
 			const maxShaftInches = flt(ctx.max_shaft_inches || 0);
+			const whRm = ctx.source_warehouse || '';
+			const whWip = ctx.wip_warehouse || '';
+			const whFg = ctx.fg_warehouse || '';
+			const whHint =
+				whRm && whFg
+					? '<br>' +
+					  __('Warehouses: RM {0} → WIP {1} → FG {2}', [
+							whRm,
+							whWip || '—',
+							whFg,
+					  ])
+					: '';
 
 			const d = new frappe.ui.Dialog({
 				title: __('Trail Order'),
@@ -2875,7 +2887,10 @@ function spr_open_trial_order_dialog(frm) {
 							__('Resolve item + BOM, then create Work Order(s) into Available Jobs.') +
 							(sprUnit && maxShaftInches > 0
 								? '<br>' + __('Unit: {0} — max combination width {1}"', [sprUnit, String(maxShaftInches)])
-								: '') +
+								: sprUnit
+									? '<br>' + __('Unit: {0}', [sprUnit])
+									: '') +
+							whHint +
 							'</div></div>',
 					},
 					{ fieldname: 'order_code', fieldtype: 'Data', label: __('Order code'), reqd: 1 },

@@ -8226,14 +8226,304 @@ def _spr_company_from_doc(spr_doc) -> str:
 	return company
 
 
-def _spr_insert_trial_work_order(company: str, item_code: str, qty: float, order_code: str) -> str:
+def _spr_transfer_for_manufacture_type_name() -> str:
+	if frappe.db.exists("Stock Entry Type", "Material Transfer for Manufacture"):
+		p = _cstr(frappe.db.get_value("Stock Entry Type", "Material Transfer for Manufacture", "purpose"))
+		if p == "Material Transfer for Manufacture":
+			return "Material Transfer for Manufacture"
+	name = frappe.db.get_value("Stock Entry Type", {"purpose": "Material Transfer for Manufacture"}, "name")
+	return _cstr(name) if name else "Material Transfer for Manufacture"
+
+
+def _spr_wo_has_submitted_mtfm(wo_name: str) -> bool:
+	if not wo_name:
+		return False
+	return bool(
+		frappe.db.exists(
+			"Stock Entry",
+			{"work_order": wo_name, "purpose": "Material Transfer for Manufacture", "docstatus": 1},
+		)
+	)
+
+
+def _spr_validate_rm_stock_for_wo(bom_no: str, qty: float, source_wh: str, company: str) -> list[tuple]:
+	"""Return shortages as (item_code, required, available, warehouse)."""
+	bom_no = _cstr(bom_no)
+	source_wh = _cstr(source_wh)
+	rm_map, _multi = _bom_rm_stock_qty_map_for_fg(bom_no, flt(qty))
+	shortages: list[tuple] = []
+	for item_code, required in sorted((rm_map or {}).items()):
+		req = _spr_round_rm_stock_qty(required)
+		tol = _spr_rm_wip_shortage_tolerance(req)
+		if req <= tol:
+			continue
+		avl = flt(
+			frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": source_wh}, "actual_qty") or 0
+		)
+		if avl + tol < req:
+			shortages.append((item_code, req, avl, source_wh))
+	return shortages
+
+
+def _spr_throw_trial_rm_stock_shortages(shortages: list[tuple]) -> None:
+	if not shortages:
+		return
+	prec = _spr_rm_stock_qty_precision()
+	lines = []
+	for item_code, req, avl, wh in shortages:
+		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Kg"
+		lines.append(
+			_(
+				"No stock for {0} in {1} (required {2} {3}, available {4} {3}). "
+				"Transfer not done — Work Order not created."
+			).format(item_code, wh, flt(req, prec), stock_uom, flt(avl, prec))
+		)
+	frappe.throw("\n".join(lines), title=_("Raw material stock shortage"))
+
+
+def _spr_assign_batch_for_mtfm_line(sed, source_wh: str) -> None:
+	if sed.get("batch_no"):
+		return
+	has_batch = cint(frappe.db.get_value("Item", sed.item_code, "has_batch_no") or 0)
+	if not has_batch:
+		return
+	batch_rows = frappe.db.sql(
+		"""
+		SELECT sle.batch_no, SUM(sle.actual_qty) AS qty
+		FROM `tabStock Ledger Entry` sle
+		WHERE sle.item_code = %s
+		  AND sle.warehouse = %s
+		  AND sle.is_cancelled = 0
+		  AND sle.batch_no IS NOT NULL
+		  AND sle.batch_no != ''
+		GROUP BY sle.batch_no
+		HAVING SUM(sle.actual_qty) > 0
+		ORDER BY MIN(sle.creation) ASC
+		LIMIT 1
+		""",
+		(sed.item_code, source_wh),
+		as_dict=True,
+	)
+	if batch_rows:
+		sed.batch_no = batch_rows[0].batch_no
+		return
+	fallback = frappe.db.get_value(
+		"Batch",
+		{"item": sed.item_code, "disabled": 0},
+		"name",
+		order_by="creation asc",
+	)
+	if fallback:
+		sed.batch_no = fallback
+
+
+def _spr_create_and_submit_mtfm(wo_doc) -> str:
+	"""Create and submit Material Transfer for Manufacture for a Work Order."""
+	wo_name = _cstr(getattr(wo_doc, "name", None))
+	if not wo_name:
+		frappe.throw(_("Work Order is required for material transfer"))
+	if _spr_wo_has_submitted_mtfm(wo_name):
+		return _cstr(
+			frappe.db.get_value(
+				"Stock Entry",
+				{"work_order": wo_name, "purpose": "Material Transfer for Manufacture", "docstatus": 1},
+				"name",
+			)
+			or ""
+		)
+
+	wo_doc = frappe.get_doc("Work Order", wo_name)
+	source_wh = _cstr(getattr(wo_doc, "source_warehouse", None))
+	wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+	if not source_wh or not wip_wh:
+		frappe.throw(_("Work Order {0} is missing source or WIP warehouse.").format(wo_name))
+
+	se = frappe.new_doc("Stock Entry")
+	se.purpose = "Material Transfer for Manufacture"
+	se.stock_entry_type = _spr_transfer_for_manufacture_type_name()
+	se.work_order = wo_name
+	se.company = wo_doc.company
+	se.from_warehouse = source_wh
+	se.to_warehouse = wip_wh
+	se.wip_warehouse = wip_wh
+	se.fg_completed_qty = flt(getattr(wo_doc, "qty", 0)) or 1.0
+	se.posting_date = today()
+	se.posting_time = nowtime()
+	se.set_posting_time = 1
+	se_meta = frappe.get_meta("Stock Entry")
+	if se_meta.has_field("use_serial_batch_fields"):
+		se.use_serial_batch_fields = 1
+
+	try:
+		se.from_bom = 1
+		se.bom_no = wo_doc.bom_no
+		se.use_multi_level_bom = wo_doc.use_multi_level_bom
+		se.get_items()
+	except Exception:
+		se.from_bom = 0
+		se.items = []
+
+	for sed in se.items or []:
+		if not sed.work_order:
+			sed.work_order = wo_name
+		if not sed.s_warehouse:
+			sed.s_warehouse = source_wh
+		if not sed.t_warehouse:
+			sed.t_warehouse = wip_wh
+		if se_meta.has_field("use_serial_batch_fields"):
+			sed.use_serial_batch_fields = 1
+		_spr_assign_batch_for_mtfm_line(sed, sed.s_warehouse or source_wh)
+
+	if not se.items:
+		for row in wo_doc.get("required_items") or []:
+			item_src = _cstr(getattr(row, "source_warehouse", None)) or source_wh
+			se.append(
+				"items",
+				{
+					"item_code": row.item_code,
+					"qty": row.required_qty,
+					"transfer_qty": row.required_qty,
+					"uom": row.stock_uom,
+					"stock_uom": row.stock_uom,
+					"s_warehouse": item_src,
+					"t_warehouse": wip_wh,
+					"conversion_factor": 1,
+					"work_order": wo_name,
+				},
+			)
+		for sed in se.items or []:
+			_spr_assign_batch_for_mtfm_line(sed, sed.s_warehouse or source_wh)
+
+	if not se.items:
+		frappe.throw(_("No raw material lines to transfer for Work Order {0}.").format(wo_name))
+
+	se.flags.ignore_permissions = True
+	se.insert(ignore_permissions=True)
+	se.submit()
+
+	frappe.db.set_value(
+		"Work Order",
+		wo_name,
+		{
+			"material_transferred_for_manufacturing": wo_doc.qty,
+			"status": "In Process",
+		},
+		update_modified=True,
+	)
+	try:
+		frappe.db.set_value(
+			"Work Order",
+			wo_name,
+			"actual_start_date",
+			frappe.utils.now_datetime(),
+			update_modified=True,
+		)
+	except Exception:
+		pass
+	return se.name
+
+
+def _spr_set_wo_required_item_source_warehouses(wo_name: str, source_wh: str) -> None:
+	source_wh = _cstr(source_wh)
+	if not wo_name or not source_wh:
+		return
+	for req in frappe.get_all(
+		"Work Order Item",
+		filters={"parent": wo_name, "parenttype": "Work Order"},
+		pluck="name",
+	) or []:
+		frappe.db.set_value("Work Order Item", req, "source_warehouse", source_wh, update_modified=False)
+
+
+def _spr_submit_trial_work_order(wo_name: str) -> None:
+	wo = frappe.get_doc("Work Order", wo_name)
+	if wo.docstatus == 0:
+		wo.flags.ignore_permissions = True
+		wo.submit()
+
+
+def _spr_finalize_trial_work_order(
+	wo_name: str,
+	wh_ctx: dict,
+	bom_no: str,
+	qty: float,
+) -> str:
+	"""Ensure trial WO has warehouses, RM transfer, and is submitted."""
+	if not wo_name or not frappe.db.exists("Work Order", wo_name):
+		frappe.throw(_("Work Order {0} not found").format(wo_name or "—"))
+
+	if _spr_wo_has_submitted_mtfm(wo_name):
+		wo = frappe.get_doc("Work Order", wo_name)
+		if wo.docstatus == 0:
+			_spr_submit_trial_work_order(wo_name)
+		return wo_name
+
+	shortages = _spr_validate_rm_stock_for_wo(
+		bom_no,
+		qty,
+		_cstr(wh_ctx.get("source_warehouse")),
+		_cstr(wh_ctx.get("company")),
+	)
+	_spr_throw_trial_rm_stock_shortages(shortages)
+
+	wo = frappe.get_doc("Work Order", wo_name)
+	company = _cstr(wh_ctx.get("company"))
+	source_wh = _cstr(wh_ctx.get("source_warehouse"))
+	wip_wh = _cstr(wh_ctx.get("wip_warehouse"))
+	fg_wh = _cstr(wh_ctx.get("fg_warehouse"))
+
+	if wo.docstatus == 0:
+		updates = {}
+		if company and wo.company != company:
+			updates["company"] = company
+		if source_wh and wo.source_warehouse != source_wh:
+			updates["source_warehouse"] = source_wh
+		if wip_wh and getattr(wo, "wip_warehouse", None) != wip_wh:
+			updates["wip_warehouse"] = wip_wh
+		if fg_wh and wo.fg_warehouse != fg_wh:
+			updates["fg_warehouse"] = fg_wh
+		if updates:
+			frappe.db.set_value("Work Order", wo_name, updates, update_modified=True)
+		_spr_set_wo_required_item_source_warehouses(wo_name, source_wh)
+
+	wo.reload()
+	if wo.docstatus == 0:
+		_spr_submit_trial_work_order(wo_name)
+	wo.reload()
+	try:
+		_spr_create_and_submit_mtfm(wo)
+	except Exception:
+		wo.reload()
+		if wo.docstatus == 1 and not _spr_wo_has_submitted_mtfm(wo_name):
+			try:
+				wo.cancel()
+			except Exception:
+				pass
+		raise
+	return wo_name
+
+
+def _spr_insert_trial_work_order(unit: str, item_code: str, qty: float, order_code: str) -> str:
 	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 		get_default_bom_for_item,
 	)
+	from production_entry.production_planning.spr_unit_warehouses import (
+		resolve_spr_unit_manufacturing_warehouses,
+	)
+
+	wh_ctx = resolve_spr_unit_manufacturing_warehouses(unit)
+	company = _cstr(wh_ctx.get("company"))
+	source_wh = _cstr(wh_ctx.get("source_warehouse"))
+	wip_wh = _cstr(wh_ctx.get("wip_warehouse"))
+	fg_wh = _cstr(wh_ctx.get("fg_warehouse"))
 
 	bom = get_default_bom_for_item(item_code, company)
 	if not bom:
 		frappe.throw(_("No active BOM for item {0}").format(item_code))
+
+	shortages = _spr_validate_rm_stock_for_wo(bom, qty, source_wh, company)
+	_spr_throw_trial_rm_stock_shortages(shortages)
+
 	wo = frappe.new_doc("Work Order")
 	wo.production_item = item_code
 	wo.bom_no = bom
@@ -8245,19 +8535,18 @@ def _spr_insert_trial_work_order(company: str, item_code: str, qty: float, order
 	for fn in ("custom_order_code", "order_code", "custom_party_code"):
 		if meta_wo.has_field(fn) and order_code:
 			wo.set(fn, order_code)
-	wo.source_warehouse = SPR_MANUAL_SOURCE_WH
-	wo.fg_warehouse = SPR_MANUAL_FG_WH
+	wo.source_warehouse = source_wh
+	wo.fg_warehouse = fg_wh
 	if meta_wo.has_field("wip_warehouse"):
-		wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
-		if wip:
-			wo.wip_warehouse = wip
+		wo.wip_warehouse = wip_wh
 	frappe.flags.spr_manual_work_order_insert = True
 	try:
 		wo.insert(ignore_permissions=True)
 	finally:
 		frappe.flags.spr_manual_work_order_insert = False
 	wo_name = wo.name
-	_spr_try_submit_manual_work_order(wo_name)
+	_spr_set_wo_required_item_source_warehouses(wo_name, source_wh)
+	_spr_finalize_trial_work_order(wo_name, wh_ctx, bom, qty)
 	return wo_name
 
 
@@ -8310,16 +8599,24 @@ def _spr_list_reusable_trial_work_orders(item_code: str, order_code: str = "") -
 def spr_get_trial_order_context(shaft_production_run):
 	_spr_require_saved(shaft_production_run)
 	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
-	company = _spr_company_from_doc(spr)
 	unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+	from production_entry.production_planning.spr_unit_warehouses import (
+		resolve_spr_unit_manufacturing_warehouses,
+	)
+
+	wh_ctx = resolve_spr_unit_manufacturing_warehouses(unit)
+	company = _cstr(wh_ctx.get("company")) or _spr_company_from_doc(spr)
 	qualities = frappe.get_all("Quality Master", fields=["name", "quality_name"], order_by="quality_name asc") or []
 	colors = frappe.get_all("Colour Master", fields=["name", "colour_name"], order_by="colour_name asc") or []
 	return {
 		"company": company,
 		"custom_unit": unit,
 		"max_shaft_inches": get_mix_roll_unit_max_shaft_inches(unit),
-		"source_warehouse": SPR_MANUAL_SOURCE_WH,
-		"fg_warehouse": SPR_MANUAL_FG_WH,
+		"source_warehouse": _cstr(wh_ctx.get("source_warehouse")),
+		"wip_warehouse": _cstr(wh_ctx.get("wip_warehouse")),
+		"fg_warehouse": _cstr(wh_ctx.get("fg_warehouse")),
+		"plant_floor": _cstr(wh_ctx.get("plant_floor")),
+		"workstation": _cstr(wh_ctx.get("workstation")),
 		"qualities": qualities,
 		"colors": colors,
 	}
@@ -8418,12 +8715,19 @@ def spr_create_trial_jobs_multi(
 		frappe.throw(_("Add at least one trial fabric line"))
 
 	_spr_require_saved(shaft_production_run)
-	_spr_warehouses_exist()
 	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
+	from production_entry.production_planning.spr_unit_warehouses import (
+		resolve_spr_unit_manufacturing_warehouses,
+	)
+	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
+		get_default_bom_for_item,
+	)
+
+	resolve_spr_unit_manufacturing_warehouses(unit)
 	company = _spr_company_from_doc(spr)
 	combo_raw = _cstr(combination_input).strip()
 	if combo_raw:
-		unit = normalize_planning_unit_for_select(_cstr(getattr(spr, "custom_unit", None)))
 		validate_mix_shaft_width(unit, combo_raw)
 
 	wo_names: list[str] = []
@@ -8451,9 +8755,14 @@ def spr_create_trial_jobs_multi(
 			if candidates and selected_reuse != "__NEW__":
 				wo_name = candidates[0]
 		if not wo_name:
-			wo_name = _spr_insert_trial_work_order(company, item_code, qty, order_code)
+			wo_name = _spr_insert_trial_work_order(unit, item_code, qty, order_code)
 		else:
 			reused_wo_names.append(wo_name)
+			wh_ctx = resolve_spr_unit_manufacturing_warehouses(unit)
+			bom = get_default_bom_for_item(item_code, wh_ctx["company"])
+			if not bom:
+				frappe.throw(_("No active BOM for item {0}").format(item_code))
+			_spr_finalize_trial_work_order(wo_name, wh_ctx, bom, qty)
 		spr.reload()
 		for j in _spr_job_rows(spr):
 			wos = _cstr(getattr(j, "work_orders", None) or "")
