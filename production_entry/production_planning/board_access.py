@@ -32,8 +32,36 @@ BOARD_SLUGS = (
 	"planning",
 )
 
-# Kanban + table are separate board permissions; allowed_units on the parent doc applies to both.
+# Kanban + table share one permission scope: allowing either grants both.
 PRODUCTION_VIEW_SLUGS = ("production-board", "production-table")
+
+_BOARD_SLUG_ALIASES = {
+	"production-board": ("production-table",),
+	"production-table": ("production-board",),
+}
+
+
+def _equivalent_board_slugs(board_slug: str | None) -> set[str]:
+	slug = (board_slug or "").strip().lower()
+	if not slug:
+		return set()
+	out = {slug}
+	for a in _BOARD_SLUG_ALIASES.get(slug, ()) or ():
+		if a:
+			out.add(str(a).strip().lower())
+	return out
+
+
+def _expand_allowed_boards(slugs: list[str]) -> list[str]:
+	"""Expand board list using alias rules while preserving input order."""
+	out: list[str] = []
+	seen: set[str] = set()
+	for s in slugs or []:
+		for eq in _equivalent_board_slugs(s) or {str(s).strip().lower()}:
+			if eq and eq not in seen:
+				seen.add(eq)
+				out.append(eq)
+	return out
 
 API_BOARD_MAP = {
 	"get_color_chart_data": "production-board",
@@ -83,7 +111,8 @@ def get_production_board_user_context(board_slug: str | None = None):
 		if scope.get("unlimited"):
 			permitted = True
 		else:
-			permitted = board_slug in (scope.get("allowed_boards") or [])
+			allowed = set(scope.get("allowed_boards") or [])
+			permitted = bool(_equivalent_board_slugs(board_slug) & allowed)
 	return {
 		"permitted": permitted,
 		"unlimited": bool(scope.get("unlimited")),
@@ -124,6 +153,7 @@ def _scope_from_access_doc(access_name: str) -> dict:
 		b = (row.board or "").strip().lower()
 		if b:
 			allowed_boards.append(b)
+	allowed_boards = _expand_allowed_boards(allowed_boards)
 
 	allowed_units: list[str] = []
 	seen_units: set[str] = set()

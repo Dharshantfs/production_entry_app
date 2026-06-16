@@ -75,7 +75,7 @@
    "fieldtype": "Table",
    "label": "Allowed Boards",
    "options": "Production Board Access Board",
-   "description": "Add one row per view. For fabric planning, add both production-board (Kanban) and production-table (Table)."
+   "description": "Add one row per view. For fabric planning, add either production-board (Kanban) or production-table (Table) — access is shared between them."
   }
  ],
  "links": [],
