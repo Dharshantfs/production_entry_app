@@ -42,6 +42,12 @@ from production_entry.production_planning.planning_doctypes import (
 	validate_mix_shaft_width,
 	resolve_mix_roll_company_and_fg_warehouse,
 )
+from production_entry.production_planning.board_access import (
+	enforce_board_read,
+	enforce_board_write,
+	request_board_slug,
+	board_slug_for_api,
+)
 
 
 def _cstr(value):
@@ -12397,6 +12403,12 @@ def get_color_chart_data(
     lamination_process="104",
 ):
     """Safe wrapper to avoid UI 502s; logs root cause."""
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_color_chart_data")),
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     # Color chart = fabric (100…) rows only unless caller passes a dedicated board scope.
     # Pull / pull_board must keep explicit or unset scope so production-board pull still matches the board.
     mode_lc = str(mode or "").strip().lower()
@@ -12526,6 +12538,17 @@ def get_lamination_order_table_data(
 ):
     """104/107 board rows for Lamination Order Table: booking id, fabric GSM, planned meters, SPR achieved m/kg."""
     bps = (board_process_scope or "lamination_only").strip() or "lamination_only"
+    board_slug = (
+        "printed-bopp-film-board"
+        if bps == "printed_bopp_pb_only"
+        else board_slug_for_api("get_lamination_order_table_data")
+    )
+    enforce_board_read(
+        request_board_slug(board_slug),
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     try:
         rows = _get_color_chart_data_impl(
             date=date,
@@ -13261,6 +13284,13 @@ def _printing_order_table_rows_from_board_source(date=None, start_date=None, end
 @frappe.whitelist()
 def get_printing_order_table_data(date=None, start_date=None, end_date=None, filters=None, planned_only=1, party_code=None, unit=None, process=None):
     """Return Process 105/106 printing rows with transfer/produced metrics."""
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_printing_order_table_data")),
+        unit=unit,
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     try:
         return _get_printing_order_table_data_impl(
             date=date,
@@ -13583,6 +13613,12 @@ def get_slitting_order_table_data(
     Slitting board rows (103/108/109/110) for Slitting Order Table.
     Includes parent-child trace id and child fabric readiness date from linked fabric SPR run date.
     """
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_slitting_order_table_data")),
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     try:
         rows = _get_color_chart_data_impl(
             date=date,
@@ -13780,6 +13816,12 @@ def get_rewinding_order_table_data(
     """
     102-only rows for Rewinding Order Table (same enrichment as slitting table).
     """
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_rewinding_order_table_data")),
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     try:
         rows = _get_color_chart_data_impl(
             date=date,
@@ -13968,6 +14010,12 @@ def get_sheet_cutting_order_table_data(
     process=None,
 ):
     """Sheet cutting board rows (251/252/253/255/254) for Sheet Cutting Order Table."""
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_sheet_cutting_order_table_data")),
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     try:
         sc_sheets = frappe.db.sql(
             """
@@ -18787,6 +18835,7 @@ def update_schedule(item_name, unit, date, index=0, force_move=0, perform_split=
     Moves a specific Planning Sheet Item to a new unit/date.
     If date changes, the item is re-parented to a suitable Planning Sheet for that date.
     """
+    enforce_board_write(request_board_slug("production-board"), unit=unit, date=date)
     force_move = flt(force_move)
     perform_split = flt(perform_split)
     strict_next_day = flt(strict_next_day)
@@ -19556,6 +19605,11 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
 
 @frappe.whitelist()
 def get_kanban_board(start_date, end_date):
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_kanban_board")),
+        start_date=start_date,
+        end_date=end_date,
+    )
     start_date = getdate(start_date)
     end_date = getdate(end_date)
     
@@ -19671,6 +19725,12 @@ def get_color_sequence(date, unit, plan_name="Default"):
 @frappe.whitelist()
 def get_color_sequences_range(start_date, end_date, unit=None, plan_name="__all__"):
     """Fetches all color sequences for a range of dates and units."""
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_color_sequences_range")),
+        unit=unit if unit and str(unit).strip() not in ("", "All Units") else None,
+        start_date=start_date,
+        end_date=end_date,
+    )
     try:
         filters = {
             "date": ["between", [start_date, end_date]]
@@ -19709,6 +19769,9 @@ def get_color_sequences_range(start_date, end_date, unit=None, plan_name="__all_
 @frappe.whitelist()
 def save_color_sequence(date, unit, sequence_data, plan_name="Default", new_date=None):
     """Saves the color arrangement. Handles date changes by renaming the document."""
+    enforce_board_write(request_board_slug("production-board"), unit=unit, date=date)
+    if new_date:
+        enforce_board_write(request_board_slug("production-board"), unit=unit, date=new_date)
     unit = _normalize_unit(unit)
     name = _csa_docname(plan_name, unit, date)
     
@@ -22964,6 +23027,11 @@ def move_orders_to_date(item_names, target_date, target_unit=None, plan_name=Non
     Supports item-level granularity by re-parenting items if necessary.
     Optionally updates the Unit of the moved items.
     """
+    enforce_board_write(
+        request_board_slug("production-board"),
+        unit=target_unit,
+        date=target_date,
+    )
     import json
     if isinstance(item_names, str):
         item_names = json.loads(item_names)
@@ -24257,6 +24325,7 @@ def push_to_pb(item_names, pb_plan_name, target_dates=None, target_date=None, fe
     target_date is the explicit single start date (preferred).
     Items will be sequentially load-balanced into the dates honoring their HARD_LIMITS daily limits.
     """
+    enforce_board_write(request_board_slug("production-board"), date=target_date)
     import json
     if isinstance(item_names, str):
         item_names = json.loads(item_names)
@@ -28144,6 +28213,7 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
     
     Returns: SPR name or error message
     """
+    enforce_board_write(request_board_slug("production-board"))
     if isinstance(planning_sheet_item_names, str):
         planning_sheet_item_names = json.loads(planning_sheet_item_names)
     
@@ -29010,6 +29080,7 @@ def _get_merge_row_name(merged_items):
 @frappe.whitelist()
 def create_merge(date, unit, plan_name, item_names, merge_label=None):
     """Create a new Production Merge record."""
+    enforce_board_write(request_board_slug("production-board"), unit=unit, date=date)
     if isinstance(item_names, str):
         import json
         item_names = json.loads(item_names)
@@ -29105,6 +29176,7 @@ def update_merge(merge_id, merge_label=None, status=None):
 @frappe.whitelist()
 def delete_merge(merge_id):
     """Delete a merge record and revert items to original positions."""
+    enforce_board_write(request_board_slug("production-board"))
     if not frappe.db.exists("Production Merge", merge_id):
         frappe.throw(_("Merge record not found"))
 
@@ -29133,6 +29205,11 @@ def delete_merge(merge_id):
 @frappe.whitelist()
 def get_merges_for_date(date, unit=None, plan_name=None):
     """Fetch all active merges for a specific date/unit/plan."""
+    enforce_board_read(
+        request_board_slug("production-board"),
+        unit=unit,
+        date=date,
+    )
     filters = ["date = %s", "status = 'Active'"]
     params = [date]
     

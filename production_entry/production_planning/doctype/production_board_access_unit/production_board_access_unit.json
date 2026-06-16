@@ -1,0 +1,27 @@
+{
+ "actions": [],
+ "creation": "2026-06-15 16:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["unit"],
+ "fields": [
+  {
+   "fieldname": "unit",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Unit",
+   "options": "Workstation",
+   "reqd": 1
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-06-15 16:00:00.000000",
+ "module": "Production Planning",
+ "name": "Production Board Access Unit",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

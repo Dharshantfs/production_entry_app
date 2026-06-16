@@ -68,6 +68,12 @@ export function maintenanceUnitsEqual(a, b) {
   return normalizeMaintenanceUnit(a) === normalizeMaintenanceUnit(b);
 }
 
+/** True when *boardUnit* is allowed by Production Board Access scope. */
+export function unitAllowedByBoardAccess(boardUnit, allowedUnits) {
+  if (!allowedUnits || !allowedUnits.length) return true;
+  return allowedUnits.some((a) => maintenanceUnitsEqual(a, boardUnit));
+}
+
 export function toLocalDateKey(value) {
   if (!value) return "";
   if (typeof value === "string") {

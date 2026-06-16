@@ -7,7 +7,7 @@
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
-        <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #4f46e5;" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
+        <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser || accessViewScopeLocked" style="font-weight: bold; color: #4f46e5;" :style="(isManufactureUser || accessViewScopeLocked) ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
@@ -16,7 +16,23 @@
       
       <div class="cc-filter-item" v-if="viewScope === 'daily'">
         <label>Planned Date</label>
-        <input type="date" v-model="filterOrderDate" @change="fetchData" :disabled="isManufactureUser" :style="isManufactureUser ? { opacity: '0.5', cursor: 'not-allowed' } : {}" />
+        <select
+          v-if="accessDateUseSelect"
+          v-model="filterOrderDate"
+          @change="fetchData"
+          :disabled="accessDatePickerDisabled"
+          :style="accessDatePickerDisabled ? { opacity: '0.5', cursor: 'not-allowed' } : {}"
+        >
+          <option v-for="d in accessAllowedDates" :key="d" :value="d">{{ formatAccessDateLabel(d) }}</option>
+        </select>
+        <input
+          v-else
+          type="date"
+          v-model="filterOrderDate"
+          @change="fetchData"
+          :disabled="isManufactureUser || accessDatePickerDisabled"
+          :style="(isManufactureUser || accessDatePickerDisabled) ? { opacity: '0.5', cursor: 'not-allowed' } : {}"
+        />
       </div>
       <div class="cc-filter-item" v-else-if="viewScope === 'weekly'">
         <label>Select Week</label>
@@ -434,7 +450,15 @@ import {
   getMaintenanceRecordsForDate,
   getPrimaryMaintenanceRecord,
   normalizeMaintenanceUnit,
+  unitAllowedByBoardAccess,
 } from "./maintenance_utils.js";
+import {
+  applyBoardAccessDateScope,
+  boardAccessDatePickerDisabled,
+  boardAccessDateUseSelect,
+  boardAccessViewScopeLocked,
+  formatAccessDateLabel,
+} from "./board_access_ui.js";
 
 // ===== MAINTENANCE DATA =====
 const maintenanceRecords = ref([]);
@@ -865,10 +889,61 @@ const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
 const viewScope = ref("daily");
+const isManufactureUser = ref(false);
 
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const filterUnit = ref("");
+/** Board slug for Production Table — separate permission from production-board (Kanban). */
+const PRODUCTION_TABLE_BOARD_SLUG = "production-table";
+function tableBoardArgs(extra = {}) {
+  return { board_slug: PRODUCTION_TABLE_BOARD_SLUG, ...extra };
+}
+const boardAccessContext = ref({ unlimited: false, allowed_units: [], loaded: false });
+
+const accessAllowedDates = computed(() => boardAccessContext.value.allowed_dates || []);
+const accessDateUseSelect = computed(() => boardAccessDateUseSelect(boardAccessContext.value));
+const accessDatePickerDisabled = computed(() =>
+  boardAccessDatePickerDisabled(boardAccessContext.value, isManufactureUser.value)
+);
+const accessViewScopeLocked = computed(() =>
+  boardAccessViewScopeLocked(boardAccessContext.value, isManufactureUser.value)
+);
+
+function applyBoardAccessContext(ctx) {
+  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [] };
+  boardAccessContext.value = { ...scope, loaded: true };
+  if (!scope || scope.unlimited) return;
+  applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
+  if (scope.allowed_units && scope.allowed_units.length === 1) {
+    filterUnit.value = scope.allowed_units[0];
+  } else if (scope.allowed_units && scope.allowed_units.length > 1) {
+    filterUnit.value = "";
+  }
+}
+
+async function loadBoardAccessContext() {
+  await new Promise((resolve) => {
+    frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: { board_slug: PRODUCTION_TABLE_BOARD_SLUG },
+      callback: (r) => {
+        const scope = (r && r.message) || { unlimited: false, allowed_units: [] };
+        applyBoardAccessContext(scope);
+        try {
+          window.__production_board_user_context = scope;
+        } catch (e) {
+          /* ignore */
+        }
+        resolve();
+      },
+      error: () => {
+        applyBoardAccessContext({ unlimited: false, allowed_units: [], permitted: false });
+        resolve();
+      },
+    });
+  });
+}
 const transferFilterContext = computed(() => ({
   view_scope: viewScope.value,
   date: filterOrderDate.value,
@@ -981,12 +1056,12 @@ async function saveArrangement() {
       // Save to backend
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-        args: {
+        args: tableBoardArgs({
           date,
           unit,
           sequence_data: JSON.stringify(sequence),
           plan_name: "Default",
-        },
+        }),
       });
 
       // Update local store with the saved sequence
@@ -1038,7 +1113,7 @@ async function restoreLastArrangement() {
     for (const p of pairs) {
       const res = await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: p.date, unit: p.unit, plan_name: "Default" },
+        args: tableBoardArgs({ date: p.date, unit: p.unit, plan_name: "Default" }),
       });
       if (res?.message?.status === "success") restored += 1;
     }
@@ -1107,7 +1182,6 @@ async function toggleTableReorder() {
 }
 
 // ===== ROLE-BASED VISIBILITY CONTROL =====
-const isManufactureUser = ref(false);
 
 const RESTRICTED_ROLE_NAMES = [
   "Manufacturing User",
@@ -1171,15 +1245,20 @@ const canExpandMergedRows = computed(() => {
   return MERGE_EXPAND_ALLOWED_ROLES.some((role) => roles.includes(role.toLowerCase()));
 });
 
-const boardUnits = computed(() =>
-  isRewindingBoard.value
+const boardUnits = computed(() => {
+  let list = isRewindingBoard.value
     ? [...REWINDING_BOARD_UNITS]
     : isLaminationBoard.value
       ? [LAMINATION_UNIT]
       : isSlittingBoard.value
         ? [SLITTING_UNIT]
-        : units
-);
+        : units;
+  const ctx = boardAccessContext.value;
+  if (ctx && ctx.loaded && !ctx.unlimited && (ctx.allowed_units || []).length) {
+    list = list.filter((u) => unitAllowedByBoardAccess(u, ctx.allowed_units || []));
+  }
+  return list;
+});
 
 const visibleUnits = computed(() => {
   if (!filterUnit.value) return boardUnits.value;
@@ -1224,6 +1303,10 @@ const filteredData = computed(() => {
         ""
       ).toLowerCase().includes(search)
     );
+  }
+  const ctx = boardAccessContext.value;
+  if (ctx && ctx.loaded && !ctx.unlimited && (ctx.allowed_units || []).length) {
+    data = data.filter((d) => unitAllowedByBoardAccess(d.unit, ctx.allowed_units || []));
   }
   return data;
 });
@@ -1740,11 +1823,11 @@ async function loadMergesForCurrentData() {
     try {
       const res = await frappe.call({
         method: "production_entry.production_planning.scheduler_api.get_merges_for_date",
-        args: {
+        args: tableBoardArgs({
           date,
           unit: filterUnit.value || null,
           plan_name: "Default",
-        },
+        }),
       });
       if (Array.isArray(res.message)) {
         res.message.forEach((m) => all.push(m));
@@ -1867,13 +1950,13 @@ async function createMergeForItems(selectedItems, label) {
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.create_merge",
-      args: {
+      args: tableBoardArgs({
         date: first.plannedDate,
         unit: first.unit,
         plan_name: "Default",
         item_names: JSON.stringify(selectedItems.map((it) => it.itemName)),
         merge_label: label,
-      },
+      }),
     });
     if (res.message && res.message.status === "success") {
       return true;
@@ -1918,7 +2001,7 @@ async function deleteMerge(mergeId) {
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.delete_merge",
-      args: { merge_id: mergeId },
+      args: tableBoardArgs({ merge_id: mergeId }),
     });
     if (res.message && res.message.status === "success") {
       frappe.show_alert({ message: "Merge removed", indicator: "orange" });
@@ -2557,7 +2640,7 @@ async function fetchData() {
     if (fetchTimeout) clearTimeout(fetchTimeout);
     fetchTimeout = setTimeout(async () => {
       try {
-        let args = { party_code: filterPartyCode.value };
+        let args = tableBoardArgs({ party_code: filterPartyCode.value });
         
         if (viewScope.value === 'monthly') {
             if (!filterMonth.value) return resolve();
@@ -2647,13 +2730,13 @@ async function fetchData() {
         try {
             const seqRes = await frappe.call({
                 method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
-                args: { 
+                args: tableBoardArgs({
                     start_date: seqStart, 
                     end_date: seqEnd, 
                     unit: filterUnit.value || "All Units",
                 // Must match save_color_sequence plan_name to avoid loading stale rows
                 plan_name: "Default" 
-                }
+                }),
             });
             if (seqRes.message) {
                 // Backend returns keys as "unit-date", but unit might have dashes.
@@ -2760,6 +2843,7 @@ onMounted(async () => {
     if (monthParam) filterMonth.value = monthParam;
   }
   
+  await loadBoardAccessContext();
   await fetchMaintenanceRecords();
   await fetchData();
 });

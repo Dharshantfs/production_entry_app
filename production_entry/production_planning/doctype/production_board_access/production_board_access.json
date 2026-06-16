@@ -1,0 +1,106 @@
+{
+ "actions": [],
+ "autoname": "field:user",
+ "creation": "2026-06-15 16:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "user",
+  "active",
+  "column_break_1",
+  "date_mode",
+  "date_window_days",
+  "section_break_units",
+  "allowed_units",
+  "section_break_boards",
+  "allowed_boards"
+ ],
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "User",
+   "options": "User",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "fieldname": "date_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Date Mode",
+   "options": "Today\nLast 24 Hours\nLast N Days\nUnlimited",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "depends_on": "eval:doc.date_mode=='Last N Days'",
+   "fieldname": "date_window_days",
+   "fieldtype": "Int",
+   "label": "Date Window (Days)"
+  },
+  {
+   "fieldname": "section_break_units",
+   "fieldtype": "Section Break",
+   "label": "Allowed Units"
+  },
+  {
+   "fieldname": "allowed_units",
+   "fieldtype": "Table MultiSelect",
+   "label": "Allowed Units",
+   "options": "Production Board Access Unit",
+   "description": "Workstations allowed for this user. Same unit list applies to Production Board (Kanban) and Production Table."
+  },
+  {
+   "fieldname": "section_break_boards",
+   "fieldtype": "Section Break",
+   "label": "Allowed Boards"
+  },
+  {
+   "fieldname": "allowed_boards",
+   "fieldtype": "Table",
+   "label": "Allowed Boards",
+   "options": "Production Board Access Board",
+   "description": "Add one row per view. For fabric planning, add both production-board (Kanban) and production-table (Table)."
+  }
+ ],
+ "links": [],
+ "modified": "2026-06-15 16:00:00.000000",
+ "module": "Production Planning",
+ "name": "Production Board Access",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "user",
+ "track_changes": 1
+}

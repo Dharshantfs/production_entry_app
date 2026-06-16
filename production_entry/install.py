@@ -41,6 +41,7 @@ def after_install():
 	if frappe.flags.in_test:
 		return
 	_sync_app_if_planning_missing()
+	_ensure_board_access_child_doctypes_if_missing()
 	_sync_production_queue_custom_block()
 	_ensure_workspace_shows_production_queue()
 	_ensure_learning_page_on_workspace()
@@ -49,6 +50,8 @@ def after_install():
 
 def after_migrate():
 	_sync_app_if_planning_missing()
+	_ensure_board_access_child_doctypes_if_missing()
+	_sync_board_access_workstation_multiselect_options()
 	_fix_planning_sheet_child_parenttype()
 	_rename_workspace_that_hijacks_planning_sheet_route()
 	_sync_production_queue_custom_block()
@@ -58,6 +61,55 @@ def after_migrate():
 	_ensure_planning_line_unit_docfield_meta()
 	_ensure_parent_fabric_select_options()
 	_warn_if_duplicate_scheduler_app()
+
+
+def _ensure_board_access_child_doctypes_if_missing():
+	"""Create board-access DocTypes only when absent — never overwrite manual/custom rows."""
+	if frappe.flags.in_test:
+		return
+	import os
+
+	from frappe.modules.import_file import import_file_by_path
+
+	app_path = frappe.get_app_path("production_entry")
+	base = os.path.join(app_path, "production_planning", "doctype")
+	specs = (
+		("Production Board Access", "production_board_access"),
+		("Production Board Access Unit", "production_board_access_unit"),
+		("Production Board Access Board", "production_board_access_board"),
+	)
+	for dt_name, folder in specs:
+		if frappe.db.exists("DocType", dt_name):
+			continue
+		path = os.path.join(base, folder, f"{folder}.json")
+		try:
+			if os.path.exists(path):
+				import_file_by_path(path, force=True, ignore_version=True)
+			else:
+				frappe.reload_doc("production_planning", "doctype", folder)
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				f"production_entry: ensure board access DocType {dt_name}",
+			)
+
+
+def _sync_board_access_workstation_multiselect_options():
+	if frappe.flags.in_test:
+		return
+	try:
+		from production_entry.production_planning.board_access_fields import (
+			ensure_board_access_multiselect_fields,
+			repair_board_access_child_table_columns,
+		)
+
+		repair_board_access_child_table_columns()
+		ensure_board_access_multiselect_fields()
+		from production_entry.patches.sync_production_board_access_child_controllers import execute as sync_child_controllers
+
+		sync_child_controllers()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "production_entry: ensure board access multiselect fields")
 
 
 def _ensure_parent_fabric_select_options():

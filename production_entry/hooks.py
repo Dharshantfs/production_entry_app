@@ -56,6 +56,7 @@ doctype_js = {
     "Transfer Approval": "public/js/transfer_approval_form.js",
     "Stock Entry": "public/js/stock_entry_transfer.js",
     "Delivery Note": "public/js/delivery_note_despatch.js",
+    "Production Board Access": "public/js/production_board_access.js",
 }
 doctype_list_js = {
 	"Transfer Approval": "public/js/transfer_approval_list.js",

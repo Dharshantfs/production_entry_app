@@ -1,0 +1,27 @@
+{
+ "actions": [],
+ "creation": "2026-06-15 16:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["board"],
+ "fields": [
+  {
+   "fieldname": "board",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Board",
+   "options": "production-board|Production Board (Kanban)\nproduction-table|Production Table\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning",
+   "reqd": 1
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-06-15 16:00:00.000000",
+ "module": "Production Planning",
+ "name": "Production Board Access Board",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

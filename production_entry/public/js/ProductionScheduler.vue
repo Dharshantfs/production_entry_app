@@ -8,7 +8,7 @@
       </div>
       <div class="cc-filter-item">
         <label>View Scope</label>
-        <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser" style="font-weight: bold; color: #4f46e5;" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
+        <select v-model="viewScope" @change="toggleViewScope" :disabled="isManufactureUser || accessViewScopeLocked" style="font-weight: bold; color: #4f46e5;" :style="(isManufactureUser || accessViewScopeLocked) ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}">
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
@@ -17,7 +17,23 @@
       
       <div class="cc-filter-item" v-if="viewScope === 'daily'">
         <label>Planned Date</label>
-        <input type="date" v-model="filterOrderDate" @change="fetchData" :disabled="isManufactureUser" :style="isManufactureUser ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}" />
+        <select
+          v-if="accessDateUseSelect"
+          v-model="filterOrderDate"
+          @change="fetchData"
+          :disabled="accessDatePickerDisabled"
+          :style="accessDatePickerDisabled ? { opacity: '0.5', cursor: 'not-allowed' } : {}"
+        >
+          <option v-for="d in accessAllowedDates" :key="d" :value="d">{{ formatAccessDateLabel(d) }}</option>
+        </select>
+        <input
+          v-else
+          type="date"
+          v-model="filterOrderDate"
+          @change="fetchData"
+          :disabled="isManufactureUser || accessDatePickerDisabled"
+          :style="(isManufactureUser || accessDatePickerDisabled) ? { opacity: '0.3', cursor: 'not-allowed', pointerEvents: 'none' } : {}"
+        />
       </div>
       <div class="cc-filter-item" v-else-if="viewScope === 'weekly'">
         <label>Select Week</label>
@@ -292,7 +308,19 @@ import {
   buildMaintenanceData,
   getPrimaryMaintenanceRecord,
   normalizeMaintenanceUnit,
+  unitAllowedByBoardAccess,
 } from "./maintenance_utils.js";
+import {
+  applyBoardAccessDateScope,
+  boardAccessDatePickerDisabled,
+  boardAccessDateUseSelect,
+  boardAccessViewScopeLocked,
+  formatAccessDateLabel,
+} from "./board_access_ui.js";
+
+const props = defineProps({
+  boardSlug: { type: String, default: "" },
+});
 
 const isLoading = ref(false);
 
@@ -646,6 +674,31 @@ function detectRestrictedUser() {
 }
 
 /** Detect dedicated board pages from URL before first paint (avoids empty board on first load). */
+function getExplicitBoardSlug() {
+  const fromProp = String(props.boardSlug || "").trim().toLowerCase();
+  if (fromProp) return fromProp;
+  try {
+    return String(window.__production_board_slug || "").trim().toLowerCase();
+  } catch (e) {
+    return "";
+  }
+}
+
+function normalizeBoardPath(path) {
+  return String(path || "").toLowerCase().replace(/_/g, "-");
+}
+
+const BOARD_SLUG_KIND_MAP = {
+  "printing-order-board": { printing: true },
+  "lamination-board": { lamination: true },
+  "slitting-board": { slitting: true },
+  "rewinding-board": { rewinding: true },
+  "sheet-cutting-board": { sheetCutting: true },
+  "box-bag-board": { boxBag: true },
+  "w-cut-d-cut-board": { wCutDCut: true },
+  "printed-bopp-film-board": { printedBopp: true },
+};
+
 function syncBoardKindFromLocation() {
   const flags = {
     lamination: false,
@@ -657,8 +710,13 @@ function syncBoardKindFromLocation() {
     printedBopp: false,
     printing: false,
   };
+  const explicitSlug = getExplicitBoardSlug();
+  if (explicitSlug && BOARD_SLUG_KIND_MAP[explicitSlug]) {
+    Object.assign(flags, BOARD_SLUG_KIND_MAP[explicitSlug]);
+    return flags;
+  }
   try {
-    const path = String(window.location.pathname || "").toLowerCase();
+    const path = normalizeBoardPath(window.location.pathname || "");
     flags.lamination = path.includes("lamination-board");
     flags.slitting = path.includes("slitting-board");
     flags.rewinding = path.includes("rewinding-board");
@@ -670,7 +728,10 @@ function syncBoardKindFromLocation() {
   } catch (e) {}
   try {
     const r = frappe.get_route && frappe.get_route();
-    const routeName = String((r && r[0]) || "").toLowerCase().replace(/-/g, " ");
+    const routeName = String((r && r[0]) || "")
+      .toLowerCase()
+      .replace(/_/g, "-")
+      .replace(/-/g, " ");
     if (routeName === "lamination board") flags.lamination = true;
     if (routeName === "slitting board") flags.slitting = true;
     if (routeName === "rewinding board") flags.rewinding = true;
@@ -681,6 +742,67 @@ function syncBoardKindFromLocation() {
     if (routeName === "printing order board") flags.printing = true;
   } catch (e) {}
   return flags;
+}
+
+function getCurrentBoardSlug() {
+  const explicitSlug = getExplicitBoardSlug();
+  if (explicitSlug) return explicitSlug;
+  const f = syncBoardKindFromLocation();
+  if (f.printing) return "printing-order-board";
+  if (f.lamination) return "lamination-board";
+  if (f.slitting) return "slitting-board";
+  if (f.rewinding) return "rewinding-board";
+  if (f.sheetCutting) return "sheet-cutting-board";
+  if (f.boxBag) return "box-bag-board";
+  if (f.wCutDCut) return "w-cut-d-cut-board";
+  if (f.printedBopp) return "printed-bopp-film-board";
+  return "production-board";
+}
+
+const boardAccessContext = ref({ unlimited: false, allowed_units: [], loaded: false });
+
+const accessAllowedDates = computed(() => boardAccessContext.value.allowed_dates || []);
+const accessDateUseSelect = computed(() => boardAccessDateUseSelect(boardAccessContext.value));
+const accessDatePickerDisabled = computed(() =>
+  boardAccessDatePickerDisabled(boardAccessContext.value, isManufactureUser.value)
+);
+const accessViewScopeLocked = computed(() =>
+  boardAccessViewScopeLocked(boardAccessContext.value, isManufactureUser.value)
+);
+
+function applyBoardAccessContext(ctx) {
+  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [] };
+  boardAccessContext.value = { ...scope, loaded: true };
+  if (!scope || scope.unlimited) return;
+  applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
+  if (scope.allowed_units && scope.allowed_units.length === 1) {
+    filterUnit.value = scope.allowed_units[0];
+  } else if (scope.allowed_units && scope.allowed_units.length > 1) {
+    filterUnit.value = "";
+  }
+}
+
+async function loadBoardAccessContext() {
+  await new Promise((resolve) => {
+    frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: { board_slug: getCurrentBoardSlug() },
+      callback: (r) => {
+        const scope = (r && r.message) || { unlimited: false, allowed_units: [] };
+        applyBoardAccessContext(scope);
+        try {
+          window.__production_board_user_context = scope;
+        } catch (e) {
+          /* ignore */
+        }
+        resolve();
+      },
+      error: () => {
+        applyBoardAccessContext({ unlimited: false, allowed_units: [], permitted: false });
+        resolve();
+      },
+    });
+  });
 }
 
 function applyBoardKindFromLocation() {
@@ -1029,20 +1151,26 @@ function toggleViewScope() {
 }
 
 const boardUnits = computed(() => {
-  if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
-  if (isSlittingBoard.value) return [...SLITTING_BOARD_UNITS];
-  if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
-  if (isBoxBagBoard.value) return [BOX_BAG_UNIT_L1, "VTP-L2 LEADER ZX MACHINE", BOX_BAG_UNIT_L4_SCREEN, "UNASSIGNED BOX BAG MACHINE"];
-  if (isWCutDCutBoard.value) {
+  let list;
+  if (isRewindingBoard.value) list = [...REWINDING_BOARD_UNITS];
+  else if (isSlittingBoard.value) list = [...SLITTING_BOARD_UNITS];
+  else if (isSheetCuttingBoard.value) list = [SHEET_CUTTING_UNIT];
+  else if (isBoxBagBoard.value) list = [BOX_BAG_UNIT_L1, "VTP-L2 LEADER ZX MACHINE", BOX_BAG_UNIT_L4_SCREEN, "UNASSIGNED BOX BAG MACHINE"];
+  else if (isWCutDCutBoard.value) {
     const scope = wCutDCutCompanyScope.value;
-    if (scope === "jve") return [...W_CUT_D_CUT_JVE_UNITS];
-    if (scope === "vtp") return [...W_CUT_D_CUT_VTP_UNITS];
-    return [...W_CUT_D_CUT_ALL_UNITS];
+    if (scope === "jve") list = [...W_CUT_D_CUT_JVE_UNITS];
+    else if (scope === "vtp") list = [...W_CUT_D_CUT_VTP_UNITS];
+    else list = [...W_CUT_D_CUT_ALL_UNITS];
+  } else if (isPrintingBoard.value) list = [...PRINTING_BOARD_UNITS];
+  else if (isLaminationBoard.value) list = [LAMINATION_UNIT];
+  else if (isPrintedBoppFilmBoard.value) list = [PRINTED_BOPP_FILM_UNIT];
+  else list = units;
+
+  const ctx = boardAccessContext.value;
+  if (ctx && ctx.loaded && !ctx.unlimited && (ctx.allowed_units || []).length) {
+    list = list.filter((u) => unitAllowedByBoardAccess(u, ctx.allowed_units || []));
   }
-  if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
-  if (isLaminationBoard.value) return [LAMINATION_UNIT];
-  if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
-  return units;
+  return list;
 });
 
 const visibleUnits = computed(() => {
@@ -2691,7 +2819,7 @@ async function fetchData() {
           filterOrderDate.value = frappe.datetime.get_today();
         }
 
-        let args = { party_code: filterPartyCode.value };
+        let args = { party_code: filterPartyCode.value, board_slug: getCurrentBoardSlug() };
         
         if (viewScope.value === 'monthly') {
             if (!filterMonth.value) return resolve();
@@ -2910,7 +3038,7 @@ function initFlatpickr() {
     });
 }
 
-onMounted(() => {
+onMounted(async () => {
     applyBoardKindFromLocation();
     if (!boardProcessFilter.value) {
       if (isPrintingBoard.value) boardProcessFilter.value = "105";
@@ -3009,6 +3137,9 @@ onMounted(() => {
          const weekNum = Math.ceil(days / 7);
          filterWeek.value = `${d.getFullYear()}-W${String(weekNum).padStart(2,'0')}`;
     }
+
+    // Load board access scope then data (page gate may have set window.__production_board_user_context).
+    await loadBoardAccessContext();
 
     // Load board data immediately (do not wait for flatpickr CDN — empty board if CDN is slow).
     fetchData();
