@@ -945,6 +945,7 @@ async function loadBoardAccessContext() {
   });
 }
 const transferFilterContext = computed(() => ({
+  board_slug: PRODUCTION_TABLE_BOARD_SLUG,
   view_scope: viewScope.value,
   date: filterOrderDate.value,
   week: filterWeek.value,
@@ -1254,8 +1255,10 @@ const boardUnits = computed(() => {
         ? [SLITTING_UNIT]
         : units;
   const ctx = boardAccessContext.value;
-  if (ctx && ctx.loaded && !ctx.unlimited && (ctx.allowed_units || []).length) {
-    list = list.filter((u) => unitAllowedByBoardAccess(u, ctx.allowed_units || []));
+  if (ctx && ctx.loaded && !ctx.unlimited) {
+    const allowed = ctx.allowed_units || [];
+    if (!allowed.length) list = [];
+    else list = list.filter((u) => unitAllowedByBoardAccess(u, allowed));
   }
   return list;
 });
@@ -1305,8 +1308,10 @@ const filteredData = computed(() => {
     );
   }
   const ctx = boardAccessContext.value;
-  if (ctx && ctx.loaded && !ctx.unlimited && (ctx.allowed_units || []).length) {
-    data = data.filter((d) => unitAllowedByBoardAccess(d.unit, ctx.allowed_units || []));
+  if (ctx && ctx.loaded && !ctx.unlimited) {
+    const allowed = ctx.allowed_units || [];
+    if (!allowed.length) data = [];
+    else data = data.filter((d) => unitAllowedByBoardAccess(d.unit, allowed));
   }
   return data;
 });
@@ -2640,6 +2645,10 @@ async function fetchData() {
     if (fetchTimeout) clearTimeout(fetchTimeout);
     fetchTimeout = setTimeout(async () => {
       try {
+        if (boardAccessContext.value.loaded && boardAccessContext.value.permitted === false) {
+          rawData.value = [];
+          return resolve();
+        }
         let args = tableBoardArgs({ party_code: filterPartyCode.value });
         
         if (viewScope.value === 'monthly') {
@@ -2765,7 +2774,10 @@ async function fetchData() {
 
     await loadMergesForCurrentData();
       } catch (e) {
-        frappe.msgprint("Error loading plan data");
+        const msg = e?.message || String(e);
+        if (e?.exc_type !== "PermissionError" && !/not permitted/i.test(msg)) {
+          frappe.msgprint("Error loading plan data");
+        }
         console.error(e);
       }
       await initTableSortables();

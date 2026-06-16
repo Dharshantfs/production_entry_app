@@ -1167,8 +1167,10 @@ const boardUnits = computed(() => {
   else list = units;
 
   const ctx = boardAccessContext.value;
-  if (ctx && ctx.loaded && !ctx.unlimited && (ctx.allowed_units || []).length) {
-    list = list.filter((u) => unitAllowedByBoardAccess(u, ctx.allowed_units || []));
+  if (ctx && ctx.loaded && !ctx.unlimited) {
+    const allowed = ctx.allowed_units || [];
+    if (!allowed.length) list = [];
+    else list = list.filter((u) => unitAllowedByBoardAccess(u, allowed));
   }
   return list;
 });
@@ -1976,7 +1978,7 @@ async function analyzePreviousFlow() {
     if (prevDate) {
       const r = await frappe.call({
         method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-        args: { date: prevDate }
+        args: { date: prevDate, board_slug: getCurrentBoardSlug() }
       });
       const prevData = r.message || [];
       if (prevData.length > 0) {
@@ -2110,6 +2112,7 @@ function buildPullBoardChartArgsForSourceDate(sourceDate) {
     plan_name: "__all__",
     planned_only: 1,
     party_code: filterPartyCode.value || "",
+    board_slug: getCurrentBoardSlug(),
   };
   if (isRewindingBoard.value) {
     args.board_process_scope = "rewinding_only";
@@ -2814,6 +2817,10 @@ async function fetchData() {
     fetchTimeout = setTimeout(async () => {
       isLoading.value = true;
       try {
+        if (boardAccessContext.value.loaded && boardAccessContext.value.permitted === false) {
+          rawData.value = [];
+          return resolve();
+        }
         applyBoardKindFromLocation();
         if (viewScope.value === "daily" && !String(filterOrderDate.value || "").trim()) {
           filterOrderDate.value = frappe.datetime.get_today();
@@ -2923,7 +2930,10 @@ async function fetchData() {
         await nextTick(); // Double tick — Vue needs two ticks for v-for to fully render
         initSortable();
       } catch (e) {
-        frappe.msgprint("Error loading data");
+        const msg = e?.message || String(e);
+        if (e?.exc_type !== "PermissionError" && !/not permitted/i.test(msg)) {
+          frappe.msgprint("Error loading data");
+        }
         console.error(e);
       } finally {
         isLoading.value = false;

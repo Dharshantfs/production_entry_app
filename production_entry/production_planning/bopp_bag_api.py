@@ -617,6 +617,11 @@ def get_bopp_bag_order_table_data(
     planned_only=1,
 ):
     """BOPP Box Bag board rows (222/231/233/241/242) for the Box Bag Order Table."""
+    from production_entry.production_planning.board_access import (
+        board_slug_for_api,
+        enforce_board_read,
+        request_board_slug,
+    )
     from production_entry.production_planning.scheduler_api import (
         _get_color_chart_data_impl,
         _item_process_prefix,
@@ -625,6 +630,13 @@ def get_bopp_bag_order_table_data(
         PLANNING_MOVEMENT_TYPE_FIELD,
     )
     from production_entry.production_planning.box_bag_api import _bag_series_size_map
+
+    enforce_board_read(
+        request_board_slug(board_slug_for_api("get_bopp_bag_order_table_data")),
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     try:
         _force_bopp_bag_unit_on_sheet()

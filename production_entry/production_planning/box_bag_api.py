@@ -615,12 +615,24 @@ def get_box_bag_order_table_data(
 	planned_only=1,
 ):
 	"""Box Bag board rows (process 221) for Box Bag Order Table."""
+	from production_entry.production_planning.board_access import (
+		board_slug_for_api,
+		enforce_board_read,
+		request_board_slug,
+	)
 	from production_entry.production_planning.scheduler_api import (
 		_get_color_chart_data_impl,
 		_item_process_prefix,
 		_normalize_filter_date,
 		_transfer_payload_for_chart_row,
 		PLANNING_MOVEMENT_TYPE_FIELD,
+	)
+
+	enforce_board_read(
+		request_board_slug(board_slug_for_api("get_box_bag_order_table_data")),
+		date=date,
+		start_date=start_date,
+		end_date=end_date,
 	)
 
 	# Ensure any unassigned 221 rows get a box bag unit
@@ -828,11 +840,23 @@ def get_w_cut_d_cut_order_table_data(
 	planned_only=1,
 ):
 	"""W CUT / D CUT table rows (211–213, 217, 200–202)."""
+	from production_entry.production_planning.board_access import (
+		board_slug_for_api,
+		enforce_board_read,
+		request_board_slug,
+	)
 	from production_entry.production_planning.scheduler_api import (
 		_get_color_chart_data_impl,
 		_item_process_prefix,
 		_transfer_payload_for_chart_row,
 		PLANNING_MOVEMENT_TYPE_FIELD,
+	)
+
+	enforce_board_read(
+		request_board_slug(board_slug_for_api("get_w_cut_d_cut_order_table_data")),
+		date=date,
+		start_date=start_date,
+		end_date=end_date,
 	)
 
 	try:

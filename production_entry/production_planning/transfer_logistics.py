@@ -581,7 +581,19 @@ def _parse_chart_rows(raw):
 	return list(raw) if isinstance(raw, list) else []
 
 
-def _chart_fetch_kwargs(view_scope, date=None, week=None, month=None, board_kind=None):
+def _chart_fetch_kwargs(
+	view_scope,
+	date=None,
+	week=None,
+	month=None,
+	board_kind=None,
+	board_slug=None,
+):
+	from production_entry.production_planning.board_access import (
+		_normalize_board_slug,
+		board_slug_for_board_kind,
+	)
+
 	scope = BOARD_KIND_TO_SCOPE.get(_cstr(board_kind)) or "exclude_special"
 	kwargs = {"planned_only": 1, "board_process_scope": scope, "plan_name": "__all__"}
 	vs = _cstr(view_scope).lower() or "daily"
@@ -593,6 +605,11 @@ def _chart_fetch_kwargs(view_scope, date=None, week=None, month=None, board_kind
 		kwargs["date"] = date
 	else:
 		kwargs["date"] = getdate()
+	kwargs["board_slug"] = (
+		_normalize_board_slug(board_slug)
+		or board_slug_for_board_kind(board_kind)
+		or "production-board"
+	)
 	return kwargs
 
 
@@ -706,11 +723,16 @@ def get_transfer_eligible_rows(
 	unit=None,
 	party_code=None,
 	customer=None,
+	board_slug=None,
 ):
 	"""Rows with movement Transport; reuses color-chart WO/SPR flags without altering sync."""
-	kwargs = _chart_fetch_kwargs(view_scope, date, week, month, board_kind)
+	kwargs = _chart_fetch_kwargs(
+		view_scope, date, week, month, board_kind, board_slug=board_slug
+	)
 	try:
 		raw = get_color_chart_data(**kwargs)
+	except frappe.PermissionError:
+		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "get_transfer_eligible_rows")
 		raw = []

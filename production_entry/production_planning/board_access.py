@@ -32,23 +32,54 @@ BOARD_SLUGS = (
 	"planning",
 )
 
-# Kanban + table share one permission scope: allowing either grants both.
+# Kanban + table share one permission scope per process family.
 PRODUCTION_VIEW_SLUGS = ("production-board", "production-table")
 
 _BOARD_SLUG_ALIASES = {
 	"production-board": ("production-table",),
 	"production-table": ("production-board",),
+	"printing-order-board": ("printing-order-table",),
+	"printing-order-table": ("printing-order-board",),
+	"lamination-board": ("lamination-order-table",),
+	"lamination-order-table": ("lamination-board",),
+	"slitting-board": ("slitting-order-table",),
+	"slitting-order-table": ("slitting-board",),
+	"rewinding-board": ("rewinding-order-table",),
+	"rewinding-order-table": ("rewinding-board",),
+	"sheet-cutting-board": ("sheet-cutting-order-table",),
+	"sheet-cutting-order-table": ("sheet-cutting-board",),
+	"printed-bopp-film-board": ("printed-bopp-film-table",),
+	"printed-bopp-film-table": ("printed-bopp-film-board",),
+	"box-bag-board": ("box-bag-order-table",),
+	"box-bag-order-table": ("box-bag-board",),
+	"w-cut-d-cut-board": ("w-cut-d-cut-order-table",),
+	"w-cut-d-cut-order-table": ("w-cut-d-cut-board",),
 }
 
 
+def _normalize_board_slug(raw: str | None) -> str:
+	"""Normalize Select values (slug|Label) and legacy typos like 'box bag-board'."""
+	s = (raw or "").strip().lower()
+	if not s:
+		return ""
+	if "|" in s:
+		s = s.split("|", 1)[0].strip()
+	s = s.replace("_", "-")
+	s = s.replace(" ", "-")
+	while "--" in s:
+		s = s.replace("--", "-")
+	return s.strip("-")
+
+
 def _equivalent_board_slugs(board_slug: str | None) -> set[str]:
-	slug = (board_slug or "").strip().lower()
+	slug = _normalize_board_slug(board_slug)
 	if not slug:
 		return set()
 	out = {slug}
 	for a in _BOARD_SLUG_ALIASES.get(slug, ()) or ():
-		if a:
-			out.add(str(a).strip().lower())
+		norm = _normalize_board_slug(a)
+		if norm:
+			out.add(norm)
 	return out
 
 
@@ -57,7 +88,10 @@ def _expand_allowed_boards(slugs: list[str]) -> list[str]:
 	out: list[str] = []
 	seen: set[str] = set()
 	for s in slugs or []:
-		for eq in _equivalent_board_slugs(s) or {str(s).strip().lower()}:
+		norm = _normalize_board_slug(s)
+		if not norm:
+			continue
+		for eq in _equivalent_board_slugs(norm):
 			if eq and eq not in seen:
 				seen.add(eq)
 				out.append(eq)
@@ -67,6 +101,10 @@ API_BOARD_MAP = {
 	"get_color_chart_data": "production-board",
 	"get_kanban_board": "production-board",
 	"get_color_sequences_range": "production-board",
+	"save_color_sequence": "production-board",
+	"restore_last_color_sequence": "production-board",
+	"get_transfer_eligible_rows": "production-board",
+	"get_despatch_eligible_rows": "production-board",
 	"get_printing_order_table_data": "printing-order-board",
 	"get_lamination_order_table_data": "lamination-board",
 	"get_slitting_order_table_data": "slitting-board",
@@ -75,7 +113,20 @@ API_BOARD_MAP = {
 	"get_printed_bopp_film_table_data": "printed-bopp-film-board",
 	"get_box_bag_order_table_data": "box-bag-board",
 	"get_w_cut_d_cut_order_table_data": "w-cut-d-cut-board",
-	"get_bopp_bag_order_table_data": "printed-bopp-film-board",
+	"get_bopp_bag_order_table_data": "box-bag-board",
+}
+
+# Transfer / despatch toolbar board_kind → page slug (Production Board Access).
+BOARD_KIND_TO_SLUG = {
+	"production": "production-board",
+	"lamination": "lamination-board",
+	"printing_105": "printing-order-board",
+	"printed_bopp_film": "printed-bopp-film-board",
+	"slitting": "slitting-board",
+	"rewinding": "rewinding-board",
+	"sheet_cutting": "sheet-cutting-board",
+	"box_bag": "box-bag-board",
+	"w_cut_d_cut": "w-cut-d-cut-board",
 }
 
 
@@ -105,7 +156,7 @@ def _access_docname_for_user(user: str) -> str | None:
 def get_production_board_user_context(board_slug: str | None = None):
 	"""Return board access scope for the session user (page gate + Vue)."""
 	scope = get_user_board_scope()
-	board_slug = (board_slug or "").strip().lower()
+	board_slug = _normalize_board_slug(board_slug)
 	permitted = True
 	if board_slug:
 		if scope.get("unlimited"):
@@ -150,7 +201,7 @@ def _scope_from_access_doc(access_name: str) -> dict:
 
 	allowed_boards = []
 	for row in doc.get("allowed_boards") or []:
-		b = (row.board or "").strip().lower()
+		b = _normalize_board_slug(row.board)
 		if b:
 			allowed_boards.append(b)
 	allowed_boards = _expand_allowed_boards(allowed_boards)
@@ -273,8 +324,11 @@ def assert_board_allowed(board_slug: str, user: str | None = None) -> None:
 	scope = get_user_board_scope(user)
 	if scope.get("unlimited"):
 		return
-	board_slug = (board_slug or "").strip().lower()
-	if board_slug not in (scope.get("allowed_boards") or []):
+	requested = _equivalent_board_slugs(board_slug)
+	if not requested:
+		return
+	allowed = set(_normalize_board_slug(s) for s in (scope.get("allowed_boards") or []) if s)
+	if not (requested & allowed):
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
 
 
@@ -373,12 +427,56 @@ def enforce_board_write(board_slug: str | None, unit=None, date=None, user: str 
 
 
 def request_board_slug(default: str | None = None) -> str:
-	return (
-		(frappe.form_dict.get("board_slug") or frappe.form_dict.get("board") or default or "")
-		.strip()
-		.lower()
+	raw = (
+		frappe.form_dict.get("board_slug")
+		or frappe.form_dict.get("board")
+		or default
+		or ""
 	)
+	return _normalize_board_slug(raw)
 
 
 def board_slug_for_api(api_name: str) -> str:
 	return API_BOARD_MAP.get(api_name, "production-board")
+
+
+def board_slug_for_board_kind(board_kind: str | None) -> str:
+	kind = (board_kind or "").strip().lower()
+	return BOARD_KIND_TO_SLUG.get(kind) or "production-board"
+
+
+def resolve_board_slug(explicit: str | None = None, api_name: str | None = None) -> str:
+	"""Prefer explicit slug (API arg / internal kwarg), then form_dict, then API default."""
+	norm = _normalize_board_slug(explicit)
+	if norm:
+		return norm
+	return request_board_slug(board_slug_for_api(api_name or ""))
+
+
+@frappe.whitelist()
+def get_production_board_page_options():
+	"""Return Select options (page_id|Title) from Page module for board picker."""
+	seen: set[str] = set()
+	lines: list[str] = []
+
+	def _add(name: str, title: str | None = None) -> None:
+		slug = _normalize_board_slug(name)
+		if not slug or slug in seen:
+			return
+		seen.add(slug)
+		label = (title or name or slug).strip()
+		lines.append(f"{slug}|{label}")
+
+	for row in frappe.get_all(
+		"Page",
+		filters={"module": "Production Planning"},
+		fields=["name", "title"],
+		order_by="title asc",
+	):
+		_add(row.name, row.title)
+
+	for slug in BOARD_SLUGS:
+		if slug not in seen and not frappe.db.exists("Page", slug):
+			_add(slug, slug.replace("-", " ").title())
+
+	return "\n".join(lines)

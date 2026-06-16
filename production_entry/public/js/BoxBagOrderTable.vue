@@ -97,6 +97,7 @@
     </div>
 
     <div class="cc-table-container">
+      <div v-if="accessDenied" class="cc-access-denied">You do not have permission to view this table.</div>
       <div class="cc-table-unit-header lot-header">{{ tableHeader }}</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
@@ -179,7 +180,16 @@ import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
-import { maintenanceUnitsEqual, normalizeMaintenanceUnit } from "./maintenance_utils.js";
+import { maintenanceUnitsEqual, normalizeMaintenanceUnit, unitAllowedByBoardAccess } from "./maintenance_utils.js";
+import {
+  applyBoardAccessDateScope,
+  boardAccessDatePickerDisabled,
+  boardAccessDateUseSelect,
+  boardAccessViewScopeLocked,
+} from "./board_access_ui.js";
+
+const BOX_BAG_TABLE_BOARD_SLUG = "box-bag-order-table";
+const W_CUT_D_CUT_TABLE_BOARD_SLUG = "w-cut-d-cut-order-table";
 
 const BOX_BAG_UNITS = [
   "VTP-L1 LEADER OYANG MACHINE",
@@ -257,12 +267,68 @@ function formatFrappeError(e) {
   if (e.exc_type) return `${e.exc_type}: ${e.message || ""}`;
   try { return JSON.stringify(e); } catch { return String(e); }
 }
+function isPermissionError(e) {
+  if (e?.exc_type === "PermissionError") return true;
+  return /not permitted/i.test(formatFrappeError(e));
+}
+function boardArgs(extra = {}) {
+  const slug = isWCutDCutTable.value ? W_CUT_D_CUT_TABLE_BOARD_SLUG : BOX_BAG_TABLE_BOARD_SLUG;
+  return { board_slug: slug, ...extra };
+}
+function filterListByAccess(list) {
+  const ctx = boardAccessContext.value;
+  if (!ctx || !ctx.loaded || ctx.unlimited) return list;
+  const allowed = ctx.allowed_units || [];
+  if (!allowed.length) return [];
+  return list.filter((u) => unitAllowedByBoardAccess(u, allowed));
+}
+const boardAccessContext = ref({ unlimited: false, allowed_units: [], loaded: false, permitted: true });
+const accessDenied = computed(() => boardAccessContext.value.loaded && boardAccessContext.value.permitted === false);
+
+function applyBoardAccessContext(ctx) {
+  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [] };
+  boardAccessContext.value = { ...scope, loaded: true };
+  if (!scope || scope.unlimited) return;
+  applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
+  if (scope.allowed_units && scope.allowed_units.length === 1) {
+    filterUnit.value = scope.allowed_units[0];
+  } else if (scope.allowed_units && scope.allowed_units.length > 1) {
+    const cur = (filterUnit.value || "").trim();
+    if (cur && !scope.allowed_units.some((u) => maintenanceUnitsEqual(u, cur))) {
+      filterUnit.value = "";
+    }
+  }
+}
+
+async function loadBoardAccessContext() {
+  const slug = isWCutDCutTable.value ? W_CUT_D_CUT_TABLE_BOARD_SLUG : BOX_BAG_TABLE_BOARD_SLUG;
+  await new Promise((resolve) => {
+    frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: { board_slug: slug },
+      callback: (r) => {
+        const scope = (r && r.message) || { unlimited: false, allowed_units: [], permitted: false };
+        applyBoardAccessContext(scope);
+        resolve();
+      },
+      error: () => {
+        applyBoardAccessContext({ unlimited: false, allowed_units: [], permitted: false });
+        resolve();
+      },
+    });
+  });
+}
+
 const ACTIVE_UNITS = computed(() => {
-  if (!isWCutDCutTable.value) return BOX_BAG_UNITS;
-  const scope = wCutDCutCompanyScope.value;
-  if (scope === "jve") return W_CUT_D_CUT_JVE_UNITS;
-  if (scope === "vtp") return W_CUT_D_CUT_VTP_UNITS;
-  return W_CUT_D_CUT_ALL_UNITS;
+  let list;
+  if (!isWCutDCutTable.value) list = BOX_BAG_UNITS;
+  else {
+    const scope = wCutDCutCompanyScope.value;
+    if (scope === "jve") list = W_CUT_D_CUT_JVE_UNITS;
+    else if (scope === "vtp") list = W_CUT_D_CUT_VTP_UNITS;
+    else list = W_CUT_D_CUT_ALL_UNITS;
+  }
+  return filterListByAccess(list);
 });
 const tableTitle = computed(() => {
   if (!isWCutDCutTable.value) return "Box Bag Order Table";
@@ -349,6 +415,7 @@ const showShiftPlanner = computed(() => true);
 const arrangementUnlocked = computed(() => !arrangementLocked.value);
 
 const transferFilterContext = computed(() => ({
+  board_slug: isWCutDCutTable.value ? W_CUT_D_CUT_TABLE_BOARD_SLUG : BOX_BAG_TABLE_BOARD_SLUG,
   view_scope: viewScope.value,
   date: filterOrderDate.value,
   week: filterWeek.value,
@@ -388,6 +455,12 @@ const filteredRows = computed(() => {
   const fp = (filterProcess.value || "all");
   if (fp !== "all") {
     d = d.filter((r) => rowProcessPrefix(r) === fp);
+  }
+  const ctx = boardAccessContext.value;
+  if (ctx && ctx.loaded && !ctx.unlimited) {
+    const allowed = ctx.allowed_units || [];
+    if (!allowed.length) d = [];
+    else d = d.filter((r) => unitAllowedByBoardAccess(r.unit, allowed));
   }
   return sortRowsBySavedSequence(d);
 });
@@ -633,12 +706,12 @@ async function loadSavedArrangement() {
     if (!start_date || !end_date) return;
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
-      args: {
+      args: boardArgs({
         start_date,
         end_date,
         unit: ARRANGEMENT_UNIT.value,
         plan_name: ARRANGEMENT_PLAN_NAME.value,
-      },
+      }),
     });
     const payload = res?.message || {};
     const next = {};
@@ -673,12 +746,12 @@ async function saveArrangement() {
     const anchorDate = filterOrderDate.value || Object.keys(seq)[0] || frappe.datetime.get_today();
     await frappe.call({
       method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-      args: {
+      args: boardArgs({
         date: anchorDate,
         unit: ARRANGEMENT_UNIT.value,
         sequence_data: JSON.stringify(seq),
         plan_name: ARRANGEMENT_PLAN_NAME.value,
-      },
+      }),
     });
     frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3);
   } catch (e) {
@@ -690,11 +763,11 @@ async function restoreArrangement() {
   try {
     const r = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-      args: {
+      args: boardArgs({
         date: filterOrderDate.value || frappe.datetime.get_today(),
         unit: ARRANGEMENT_UNIT.value,
         plan_name: ARRANGEMENT_PLAN_NAME.value,
-      },
+      }),
     });
     const raw = r?.message?.sequence_data;
     const next = parseSavedArrangementPayload(typeof raw === "string" ? JSON.parse(raw || "{}") : raw);
@@ -722,9 +795,13 @@ function setProcessFilter(val) { filterProcess.value = val; updateUrlParams(); }
 
 async function fetchData() {
   if (fetchInProgress) return;
+  if (boardAccessContext.value.loaded && boardAccessContext.value.permitted === false) {
+    rawData.value = [];
+    return;
+  }
   fetchInProgress = true;
   try {
-    let args = { planned_only: 1 };
+    let args = boardArgs({ planned_only: 1 });
     if (viewScope.value === "monthly") {
       if (!filterMonth.value) return;
       const [year, month] = filterMonth.value.split("-");
@@ -770,7 +847,10 @@ async function fetchData() {
     await loadSavedArrangement();
     await fetchMaintenanceRecords();
   } catch (e) {
-    frappe.msgprint(`Error loading ${isWCutDCutTable.value ? "W CUT / D CUT Table" : "Box Bag Order Table"}: ${formatFrappeError(e)}`);
+    if (!isPermissionError(e)) {
+      frappe.msgprint(`Error loading ${isWCutDCutTable.value ? "W CUT / D CUT Table" : "Box Bag Order Table"}: ${formatFrappeError(e)}`);
+    }
+    rawData.value = [];
   } finally {
     fetchInProgress = false;
   }
@@ -800,8 +880,11 @@ onMounted(async () => {
   if (p.get("family") === "w_cut" || p.get("family") === "d_cut" || p.get("family") === "both") wCutDCutFamily.value = p.get("family");
   moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today();
   updateUrlParams();
-  await fetchData();
-  startAutoRefresh();
+  await loadBoardAccessContext();
+  if (!accessDenied.value) {
+    await fetchData();
+    startAutoRefresh();
+  }
 });
 onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 </script>
@@ -947,6 +1030,15 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
   max-width: 100%;
   min-width: 0;
   overflow: visible;
+}
+.cc-access-denied {
+  margin: 12px;
+  padding: 12px 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  border-radius: 8px;
+  font-weight: 600;
 }
 .cc-order-table-scroll {
   width: 100%;

@@ -465,6 +465,7 @@ function loadRows() {
     method: `${API}.get_transfer_eligible_rows`,
     args: {
       board_kind: props.boardKind,
+      board_slug: ctx.board_slug || "",
       view_scope: ctx.view_scope || "daily",
       date: ctx.date || "",
       week: ctx.week || "",

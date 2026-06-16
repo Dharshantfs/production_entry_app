@@ -12401,10 +12401,13 @@ def get_color_chart_data(
     planned_only=0,
     board_process_scope=None,
     lamination_process="104",
+    board_slug=None,
 ):
     """Safe wrapper to avoid UI 502s; logs root cause."""
+    from production_entry.production_planning.board_access import resolve_board_slug
+
     enforce_board_read(
-        request_board_slug(board_slug_for_api("get_color_chart_data")),
+        resolve_board_slug(board_slug, "get_color_chart_data"),
         date=date,
         start_date=start_date,
         end_date=end_date,
@@ -19723,10 +19726,12 @@ def get_color_sequence(date, unit, plan_name="Default"):
         return {"sequence": [], "status": "Draft", "modified": None, "modified_by": None}
 
 @frappe.whitelist()
-def get_color_sequences_range(start_date, end_date, unit=None, plan_name="__all__"):
+def get_color_sequences_range(start_date, end_date, unit=None, plan_name="__all__", board_slug=None):
     """Fetches all color sequences for a range of dates and units."""
+    from production_entry.production_planning.board_access import resolve_board_slug
+
     enforce_board_read(
-        request_board_slug(board_slug_for_api("get_color_sequences_range")),
+        resolve_board_slug(board_slug, "get_color_sequences_range"),
         unit=unit if unit and str(unit).strip() not in ("", "All Units") else None,
         start_date=start_date,
         end_date=end_date,
@@ -19767,11 +19772,14 @@ def get_color_sequences_range(start_date, end_date, unit=None, plan_name="__all_
         return {}
 
 @frappe.whitelist()
-def save_color_sequence(date, unit, sequence_data, plan_name="Default", new_date=None):
+def save_color_sequence(date, unit, sequence_data, plan_name="Default", new_date=None, board_slug=None):
     """Saves the color arrangement. Handles date changes by renaming the document."""
-    enforce_board_write(request_board_slug("production-board"), unit=unit, date=date)
+    from production_entry.production_planning.board_access import resolve_board_slug
+
+    slug = resolve_board_slug(board_slug, "save_color_sequence")
+    enforce_board_write(slug, unit=unit, date=date)
     if new_date:
-        enforce_board_write(request_board_slug("production-board"), unit=unit, date=new_date)
+        enforce_board_write(slug, unit=unit, date=new_date)
     unit = _normalize_unit(unit)
     name = _csa_docname(plan_name, unit, date)
     
@@ -19842,7 +19850,7 @@ def _append_sequence_history(date, unit, plan_name, sequence_data, status=None):
 
 
 @frappe.whitelist()
-def restore_last_color_sequence(date, unit, plan_name="Default"):
+def restore_last_color_sequence(date, unit, plan_name="Default", board_slug=None):
     """
     Restore previous saved sequence snapshot for a specific unit/date/plan.
     """
@@ -19863,6 +19871,7 @@ def restore_last_color_sequence(date, unit, plan_name="Default"):
         unit=unit,
         sequence_data=last.get("sequence_data") or "[]",
         plan_name=plan_name,
+        board_slug=board_slug,
     )
 
 @frappe.whitelist()

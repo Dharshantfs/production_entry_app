@@ -492,11 +492,16 @@ def get_despatch_eligible_rows(
 	party_code=None,
 	customer=None,
 	from_company=None,
+	board_slug=None,
 ):
 	"""Planning rows with movement Despatch and submitted SPR."""
-	kwargs = _chart_fetch_kwargs(view_scope, date, week, month, board_kind)
+	kwargs = _chart_fetch_kwargs(
+		view_scope, date, week, month, board_kind, board_slug=board_slug
+	)
 	try:
 		raw = get_color_chart_data(**kwargs)
+	except frappe.PermissionError:
+		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "get_despatch_eligible_rows")
 		raw = []
