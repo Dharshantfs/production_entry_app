@@ -32,6 +32,47 @@ BOARD_SLUGS = (
 	"planning",
 )
 
+# Boards shown in Production Board Access picker (table pages inherit via alias — do not list here).
+BOARD_PICKER_SLUGS = (
+	"production-board",
+	"printing-order-board",
+	"lamination-board",
+	"slitting-board",
+	"rewinding-board",
+	"sheet-cutting-board",
+	"printed-bopp-film-board",
+	"box-bag-board",
+	"w-cut-d-cut-board",
+	"color-chart",
+	"confirm-orders",
+	"planning",
+	"logistics-kanban",
+	"despatch-approval-dashboard",
+	"transfer-approval-dashboard",
+)
+
+BOARD_PICKER_LABELS = {
+	"production-board": "Production Board (Kanban)",
+	"printing-order-board": "Printing Order Board",
+	"lamination-board": "Lamination Board",
+	"slitting-board": "Slitting Board",
+	"rewinding-board": "Rewinding Board",
+	"sheet-cutting-board": "Sheet Cutting Board",
+	"printed-bopp-film-board": "Printed BOPP Film Board",
+	"box-bag-board": "Box Bag Board",
+	"w-cut-d-cut-board": "W CUT / D CUT Board",
+	"color-chart": "Color Chart",
+	"confirm-orders": "Confirm Orders",
+	"planning": "Planning",
+	"logistics-kanban": "Logistics Kanban",
+	"despatch-approval-dashboard": "Despatch Approval",
+	"transfer-approval-dashboard": "Transfer Approval",
+}
+
+# Table / companion pages — access granted automatically when matching board is allowed.
+_TABLE_PAGE_SUFFIXES = ("-order-table",)
+_TABLE_PAGE_EXACT = frozenset({"production-table", "printed-bopp-film-table"})
+
 # Kanban + table share one permission scope per process family.
 PRODUCTION_VIEW_SLUGS = ("production-board", "production-table")
 
@@ -455,28 +496,99 @@ def resolve_board_slug(explicit: str | None = None, api_name: str | None = None)
 
 @frappe.whitelist()
 def get_production_board_page_options():
-	"""Return Select options (page_id|Title) from Page module for board picker."""
+	"""Return Select options (page_id|Title) for board picker — boards only, not table pages."""
+	return build_board_picker_select_options()
+
+
+def _is_table_page_slug(slug: str) -> bool:
+	if slug in _TABLE_PAGE_EXACT:
+		return True
+	return any(slug.endswith(sfx) for sfx in _TABLE_PAGE_SUFFIXES)
+
+
+def _is_board_picker_page(name: str) -> bool:
+	slug = _normalize_board_slug(name)
+	if not slug or _is_table_page_slug(slug):
+		return False
+	if slug in BOARD_PICKER_SLUGS:
+		return True
+	if slug.endswith("-board"):
+		return True
+	if slug in (
+		"color-chart",
+		"confirm-orders",
+		"planning",
+		"logistics-kanban",
+		"despatch-approval-dashboard",
+		"transfer-approval-dashboard",
+	):
+		return True
+	return False
+
+
+def build_board_picker_select_options() -> str:
+	"""Canonical board list + optional extra *-board pages from Page module."""
 	seen: set[str] = set()
 	lines: list[str] = []
 
-	def _add(name: str, title: str | None = None) -> None:
-		slug = _normalize_board_slug(name)
-		if not slug or slug in seen:
+	def _add(slug: str, title: str | None = None) -> None:
+		norm = _normalize_board_slug(slug)
+		if not norm or norm in seen or _is_table_page_slug(norm):
 			return
-		seen.add(slug)
-		label = (title or name or slug).strip()
-		lines.append(f"{slug}|{label}")
+		seen.add(norm)
+		label = (title or BOARD_PICKER_LABELS.get(norm) or norm.replace("-", " ").title()).strip()
+		lines.append(f"{norm}|{label}")
 
-	for row in frappe.get_all(
-		"Page",
-		filters={"module": "Production Planning"},
-		fields=["name", "title"],
-		order_by="title asc",
-	):
-		_add(row.name, row.title)
+	for slug in BOARD_PICKER_SLUGS:
+		label = BOARD_PICKER_LABELS.get(slug)
+		if frappe.db.exists("Page", slug):
+			label = frappe.db.get_value("Page", slug, "title") or label
+		_add(slug, label)
 
-	for slug in BOARD_SLUGS:
-		if slug not in seen and not frappe.db.exists("Page", slug):
-			_add(slug, slug.replace("-", " ").title())
+	if frappe.db.exists("DocType", "Page"):
+		for row in frappe.get_all(
+			"Page",
+			filters={"module": "Production Planning"},
+			fields=["name", "title"],
+			order_by="title asc",
+		):
+			if _is_board_picker_page(row.name):
+				_add(row.name, row.title)
 
 	return "\n".join(lines)
+
+
+def sync_board_access_board_field_options():
+	"""Update child-table Select options so savedocs validation matches the form dropdown."""
+	options = build_board_picker_select_options()
+	if not options:
+		return
+
+	child_dt = "Production Board Access Board"
+	existing = frappe.db.get_value(
+		"Property Setter",
+		{
+			"doc_type": child_dt,
+			"field_name": "board",
+			"property": "options",
+		},
+		"name",
+	)
+	if existing:
+		frappe.db.set_value("Property Setter", existing, "value", options, update_modified=False)
+	else:
+		try:
+			frappe.make_property_setter(
+				{
+					"doctype": child_dt,
+					"fieldname": "board",
+					"property": "options",
+					"value": options,
+					"property_type": "Text",
+				},
+				ignore_validate=True,
+				is_system_generated=True,
+			)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "sync_board_access_board_field_options")
+	frappe.db.commit()

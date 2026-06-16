@@ -108,6 +108,9 @@ def _sync_board_access_workstation_multiselect_options():
 		from production_entry.patches.sync_production_board_access_child_controllers import execute as sync_child_controllers
 
 		sync_child_controllers()
+		from production_entry.production_planning.board_access import sync_board_access_board_field_options
+
+		sync_board_access_board_field_options()
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "production_entry: ensure board access multiselect fields")
 

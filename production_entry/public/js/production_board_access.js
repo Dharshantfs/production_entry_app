@@ -2,7 +2,6 @@ frappe.provide("production_entry.board_access_form");
 
 const BOARD_SELECT_FALLBACK =
 	"production-board|Production Board (Kanban)\n" +
-	"production-table|Production Table\n" +
 	"printing-order-board|Printing Order Board\n" +
 	"lamination-board|Lamination Board\n" +
 	"slitting-board|Slitting Board\n" +
@@ -10,7 +9,7 @@ const BOARD_SELECT_FALLBACK =
 	"sheet-cutting-board|Sheet Cutting Board\n" +
 	"printed-bopp-film-board|Printed BOPP Film Board\n" +
 	"box-bag-board|Box Bag Board\n" +
-	"w-cut-d-cut-board|W-Cut / D-Cut Board\n" +
+	"w-cut-d-cut-board|W CUT / D CUT Board\n" +
 	"color-chart|Color Chart\n" +
 	"confirm-orders|Confirm Orders\n" +
 	"planning|Planning";
@@ -38,5 +37,12 @@ frappe.ui.form.on("Production Board Access", {
 				}
 			},
 		});
+		frm.set_df_property(
+			"allowed_boards",
+			"description",
+			__(
+				"Add one board per row (page id shown). Table views share the same access — e.g. Rewinding Board also allows Rewinding Order Table. Do not add table rows separately."
+			)
+		);
 	},
 });

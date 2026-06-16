@@ -146,6 +146,7 @@
     </div>
 
     <div class="cc-table-container">
+      <div v-if="accessDenied" class="cc-access-denied">You do not have permission to view this table.</div>
       <div class="cc-table-unit-header lot-header">{{ rewindingTableHeaderTitle }}</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
@@ -290,6 +291,12 @@ import {
   maintenanceUnitsEqual,
   normalizeMaintenanceUnit,
 } from "./maintenance_utils.js";
+import {
+  createOrderTableBoardAccess,
+  isBoardPermissionError,
+} from "./order_table_board_access.js";
+
+const REWINDING_TABLE_BOARD_SLUG = "rewinding-order-table";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_rewinding";
 const sizeDimUnit = ref("inches");
@@ -311,7 +318,24 @@ const filterMonth = ref("");
 const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
+const filterUnit = ref("");
+/** Client-side filter: server rows use shift_label DAY/NIGHT when available */
+const filterShift = ref("all");
+
+const {
+  accessDenied,
+  loadBoardAccessContext,
+  boardArgs,
+  filterListByAccess,
+  filterRowsByAccess,
+} = createOrderTableBoardAccess(REWINDING_TABLE_BOARD_SLUG, {
+  filterOrderDate,
+  viewScope,
+  filterUnit,
+});
+
 const transferFilterContext = computed(() => ({
+  board_slug: REWINDING_TABLE_BOARD_SLUG,
   view_scope: viewScope.value,
   date: filterOrderDate.value,
   week: filterWeek.value,
@@ -320,9 +344,6 @@ const transferFilterContext = computed(() => ({
   party_code: filterPartyCode.value,
   customer: filterCustomer.value,
 }));
-const filterUnit = ref("");
-/** Client-side filter: server rows use shift_label DAY/NIGHT when available */
-const filterShift = ref("all");
 /** Color-sequence + maintenance APIs key off the primary L3 rewinding line. */
 const REWINDING_SEQUENCE_UNIT = "TSNPL - L3 REWINDING MACHINE";
 const REWINDING_PP_PRINT_FORMAT = "Order Sheet format";
@@ -333,8 +354,9 @@ const REWINDING_ASSIGNED_TABLE_UNITS = [
   "JSB - L5 REWINDING MACHINE",
 ];
 const REWINDING_UNASSIGNED_UNIT = "UNASSIGNED REWINDING UNIT";
-const REWINDING_TABLE_UNITS = [...REWINDING_ASSIGNED_TABLE_UNITS, REWINDING_UNASSIGNED_UNIT];
-const REWINDING_MAINT_UNITS = REWINDING_TABLE_UNITS;
+const REWINDING_ALL_TABLE_UNITS = [...REWINDING_ASSIGNED_TABLE_UNITS, REWINDING_UNASSIGNED_UNIT];
+const REWINDING_TABLE_UNITS = computed(() => filterListByAccess(REWINDING_ALL_TABLE_UNITS));
+const REWINDING_MAINT_UNITS = computed(() => REWINDING_TABLE_UNITS.value);
 
 function rewindingUnitLabel(unit) {
   if (unit === "TSNPL - L3 REWINDING MACHINE") return "L3 Rewinding";
@@ -392,7 +414,7 @@ const maintenanceRecords = ref([]);
 const scopedMaintenanceRecords = computed(() =>
   filterMaintenanceRecordsForScope(maintenanceRecords.value, {
     unit: filterUnit.value,
-    allowedUnits: REWINDING_MAINT_UNITS,
+    allowedUnits: REWINDING_MAINT_UNITS.value,
   })
 );
 const moveTargetDate = ref(frappe.datetime.get_today());
@@ -444,7 +466,7 @@ const filteredRows = computed(() => {
   if (cu) {
     d = d.filter((r) => String(r.customer_name || r.customer || "").toLowerCase().includes(cu));
   }
-  d = d.filter((r) => REWINDING_TABLE_UNITS.some((u) => maintenanceUnitsEqual(r.unit, u)));
+  d = d.filter((r) => REWINDING_TABLE_UNITS.value.some((u) => maintenanceUnitsEqual(r.unit, u)));
   if (filterUnit.value) {
     d = d.filter((r) => maintenanceUnitsEqual(r.unit, filterUnit.value));
   }
@@ -454,7 +476,7 @@ const filteredRows = computed(() => {
   } else if (sh === "night") {
     d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
   }
-  return sortRowsBySavedSequence(d);
+  return sortRowsBySavedSequence(filterRowsByAccess(d));
 });
 
 const displayRows = computed(() => {
@@ -672,7 +694,7 @@ async function fetchMaintenanceRecords() {
       args: { start_date, end_date },
     });
     const rows = filterMaintenanceRecordsForScope(res?.message || [], {
-      allowedUnits: REWINDING_MAINT_UNITS,
+      allowedUnits: REWINDING_MAINT_UNITS.value,
     });
     maintenanceRecords.value = rows;
     maintenanceByDate.value = buildMaintenanceByDateMap(rows);
@@ -709,7 +731,7 @@ function scheduleRowsByShift(shift) {
 
 function activeRewindingMaintenanceUnit() {
   const u = (filterUnit.value || "").trim();
-  return REWINDING_TABLE_UNITS.some((x) => maintenanceUnitsEqual(u, x)) ? u : REWINDING_SEQUENCE_UNIT;
+  return REWINDING_TABLE_UNITS.value.some((x) => maintenanceUnitsEqual(u, x)) ? u : REWINDING_SEQUENCE_UNIT;
 }
 
 function activeRewindingSequenceUnit() {
@@ -721,12 +743,12 @@ async function fetchLaminationSequences() {
     const { start_date, end_date } = getScopeDateRange();
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
-      args: {
+      args: boardArgs({
         start_date,
         end_date,
         unit: activeRewindingSequenceUnit(),
         plan_name: "Default",
-      },
+      }),
     });
     const store = {};
     const payload = res?.message || {};
@@ -1241,7 +1263,7 @@ function openAssignShiftDialog() {
     primary_action_label: "Apply",
     primary_action: async (vals) => {
       try {
-        const blockedUnits = REWINDING_TABLE_UNITS.filter((u) => maintenanceTypeForDate(vals.shift_date, u));
+        const blockedUnits = REWINDING_TABLE_UNITS.value.filter((u) => maintenanceTypeForDate(vals.shift_date, u));
         if (blockedUnits.length) {
           frappe.msgprint(`Cannot assign shift on ${vals.shift_date}. Machine is OFF for: ${blockedUnits.map(rewindingUnitLabel).join(", ")}`);
           return;
@@ -1288,7 +1310,7 @@ function openMachineOffDialog() {
         fieldtype: "Select",
         fieldname: "unit",
         label: "Rewinding Unit",
-        options: REWINDING_TABLE_UNITS.join("\n"),
+        options: REWINDING_TABLE_UNITS.value.join("\n"),
         reqd: 1,
         default: defaultUnit,
       },
@@ -1350,9 +1372,13 @@ function toggleViewScope() {
 
 async function fetchData() {
   if (fetchInProgress) return;
+  if (accessDenied.value) {
+    rawData.value = [];
+    return;
+  }
   fetchInProgress = true;
   try {
-    let args = { party_code: filterPartyCode.value, planned_only: 1 };
+    let args = boardArgs({ party_code: filterPartyCode.value, planned_only: 1 });
     if (viewScope.value === "monthly") {
       if (!filterMonth.value) return;
       const [year, month] = filterMonth.value.split("-");
@@ -1395,7 +1421,10 @@ async function fetchData() {
     await fetchMaintenanceRecords();
   } catch (e) {
     console.error(e);
-    frappe.msgprint(`Error loading Rewinding Order Table: ${getErrorText(e)}`);
+    if (!isBoardPermissionError(e)) {
+      frappe.msgprint(`Error loading Rewinding Order Table: ${getErrorText(e)}`);
+    }
+    rawData.value = [];
   } finally {
     fetchInProgress = false;
   }
@@ -1460,8 +1489,11 @@ onMounted(async () => {
     const uq = String(p.get("unit")).trim();
     filterUnit.value = REWINDING_ASSIGNED_TABLE_UNITS.includes(uq) ? uq : "";
   }
-  await fetchData();
-  startAutoRefresh();
+  await loadBoardAccessContext();
+  if (!accessDenied.value) {
+    await fetchData();
+    startAutoRefresh();
+  }
   document.addEventListener("visibilitychange", onVisibilityRefresh);
   if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
     frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
@@ -1587,6 +1619,15 @@ onUnmounted(() => {
   max-width: 100%;
   overflow: visible;
   font-size: 14px;
+}
+.cc-access-denied {
+  margin: 12px;
+  padding: 12px 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  border-radius: 8px;
+  font-weight: 600;
 }
 .cc-order-table-scroll {
   width: 100%;

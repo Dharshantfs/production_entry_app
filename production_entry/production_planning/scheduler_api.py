@@ -12538,16 +12538,25 @@ def get_lamination_order_table_data(
     planned_only=1,
     lamination_process="104",
     board_process_scope="lamination_only",
+    board_slug=None,
 ):
     """104/107 board rows for Lamination Order Table: booking id, fabric GSM, planned meters, SPR achieved m/kg."""
+    from production_entry.production_planning.board_access import resolve_board_slug
+
     bps = (board_process_scope or "lamination_only").strip() or "lamination_only"
-    board_slug = (
+    default_slug = (
         "printed-bopp-film-board"
         if bps == "printed_bopp_pb_only"
         else board_slug_for_api("get_lamination_order_table_data")
     )
+    explicit = (board_slug or "").strip()
+    slug = (
+        resolve_board_slug(explicit, "get_lamination_order_table_data")
+        if explicit
+        else default_slug
+    )
     enforce_board_read(
-        request_board_slug(board_slug),
+        slug,
         date=date,
         start_date=start_date,
         end_date=end_date,
@@ -13611,13 +13620,16 @@ def get_slitting_order_table_data(
     end_date=None,
     planned_only=1,
     process=None,
+    board_slug=None,
 ):
     """
     Slitting board rows (103/108/109/110) for Slitting Order Table.
     Includes parent-child trace id and child fabric readiness date from linked fabric SPR run date.
     """
+    from production_entry.production_planning.board_access import resolve_board_slug
+
     enforce_board_read(
-        request_board_slug(board_slug_for_api("get_slitting_order_table_data")),
+        resolve_board_slug(board_slug, "get_slitting_order_table_data"),
         date=date,
         start_date=start_date,
         end_date=end_date,
@@ -13815,12 +13827,15 @@ def get_rewinding_order_table_data(
     start_date=None,
     end_date=None,
     planned_only=1,
+    board_slug=None,
 ):
     """
     102-only rows for Rewinding Order Table (same enrichment as slitting table).
     """
+    from production_entry.production_planning.board_access import resolve_board_slug
+
     enforce_board_read(
-        request_board_slug(board_slug_for_api("get_rewinding_order_table_data")),
+        resolve_board_slug(board_slug, "get_rewinding_order_table_data"),
         date=date,
         start_date=start_date,
         end_date=end_date,
