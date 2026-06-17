@@ -46,13 +46,13 @@
         </select>
       </div>
       <div class="cc-filter-actions">
-        <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
-        <TransferToolbarBlock board-kind="rewinding" :filter-context="transferFilterContext" @submitted="fetchData" />
-        <DespatchToolbarBlock board-kind="rewinding" :filter-context="transferFilterContext" @submitted="fetchData" />
+        <button type="button" class="cc-maint-btn" :disabled="freezeMaintenance" :style="frozenStyle('maintenance')" @click="openMachineOffDialog">Machine Off</button>
+        <TransferToolbarBlock board-kind="rewinding" :filter-context="transferFilterContext" :disabled="freezeTransfer" @submitted="fetchData" />
+        <DespatchToolbarBlock board-kind="rewinding" :filter-context="transferFilterContext" :disabled="freezeDespatch" @submitted="fetchData" />
         <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
-        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
-        <button type="button" class="cc-clear-btn" @click="saveLaminationArrangement">Save Arrangment</button>
-        <button type="button" class="cc-clear-btn" @click="restoreLaminationArrangement">Restore Arrangment</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="saveLaminationArrangement">Save Arrangment</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="restoreLaminationArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button
@@ -328,10 +328,16 @@ const {
   boardArgs,
   filterListByAccess,
   filterRowsByAccess,
+  freezeMaintenance,
+  freezeTransfer,
+  freezeDespatch,
+  freezeArrangement,
+  frozenStyle,
 } = createOrderTableBoardAccess(REWINDING_TABLE_BOARD_SLUG, {
   filterOrderDate,
   viewScope,
   filterUnit,
+  getBoardUnits: () => REWINDING_ALL_TABLE_UNITS,
 });
 
 const transferFilterContext = computed(() => ({
@@ -434,7 +440,7 @@ let fetchInProgress = false;
 let visibilityRefreshTimer = null;
 let sprRealtimeHandlerRegistered = false;
 const showShiftPlanner = computed(() => viewScope.value !== "monthly");
-const arrangementUnlocked = computed(() => !arrangementLocked.value);
+const arrangementUnlocked = computed(() => !arrangementLocked.value && !freezeArrangement.value);
 
 function getErrorText(err, fallback = "Request failed") {
   try {
@@ -794,6 +800,7 @@ async function fetchLaminationSequences() {
 }
 
 function toggleArrangementLock() {
+  if (freezeArrangement.value) return;
   arrangementLocked.value = !arrangementLocked.value;
   frappe.show_alert(
     { message: arrangementLocked.value ? "Arrangement locked" : "Arrangement unlocked. Drag rows to reorder.", indicator: "blue" },
@@ -855,6 +862,7 @@ function onOrderDragEnd() {
 }
 
 async function saveLaminationArrangement() {
+  if (freezeArrangement.value) return;
   if (arrangementSaving.value) return;
   if (!arrangementDirty.value) {
     frappe.show_alert({ message: "No arrangement changes to save", indicator: "orange" }, 2);
@@ -885,6 +893,7 @@ async function saveLaminationArrangement() {
 }
 
 async function restoreLaminationArrangement() {
+  if (freezeArrangement.value) return;
   try {
     const { start_date, end_date } = getScopeDateRange();
     const start = new Date(start_date);
@@ -1302,6 +1311,7 @@ function getMaintenanceRecordsHTML() {
 }
 
 function openMachineOffDialog() {
+  if (freezeMaintenance.value) return;
   const defaultUnit = activeRewindingMaintenanceUnit();
   const d = new frappe.ui.Dialog({
     title: "Rewinding Machine Off",

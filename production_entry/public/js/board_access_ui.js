@@ -75,16 +75,28 @@ export function boardActionFrozenStyle(ctx, action) {
 	return { opacity: "0.45", cursor: "not-allowed", pointerEvents: "none" };
 }
 
-/** Apply unit scope without clearing user unit filter — many users can share one unit. */
-export function applyBoardAccessUnitScope(scope, filterUnitRef) {
+/**
+ * Apply unit scope for restricted operators.
+ * When boardUnits is given, only units valid on the current page are considered
+ * (e.g. VTP-L1 on box-bag board, Unit 1 on production board).
+ */
+export function applyBoardAccessUnitScope(scope, filterUnitRef, boardUnits = null) {
 	if (!scope || scope.unlimited || !filterUnitRef) return;
 	const allowed = scope.allowed_units || [];
-	if (allowed.length !== 1) return;
+	if (!allowed.length) return;
+
+	const pool = (() => {
+		const list = Array.isArray(boardUnits) ? boardUnits : [];
+		if (!list.length) return allowed;
+		return allowed.filter((u) => list.some((b) => maintenanceUnitsEqual(u, b)));
+	})();
+	if (!pool.length) return;
+
 	const cur = (filterUnitRef.value || "").trim();
 	if (!cur) {
-		filterUnitRef.value = allowed[0];
+		filterUnitRef.value = pool[0];
 		return;
 	}
-	const ok = allowed.some((u) => maintenanceUnitsEqual(u, cur));
-	if (!ok) filterUnitRef.value = allowed[0];
+	const ok = pool.some((u) => maintenanceUnitsEqual(u, cur));
+	if (!ok) filterUnitRef.value = pool[0];
 }

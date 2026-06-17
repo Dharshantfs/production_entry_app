@@ -1,6 +1,11 @@
 /** Shared Production Board Access wiring for *OrderTable.vue pages. */
 import { ref, computed } from "vue";
-import { applyBoardAccessDateScope, applyBoardAccessUnitScope } from "./board_access_ui.js";
+import {
+	applyBoardAccessDateScope,
+	applyBoardAccessUnitScope,
+	boardActionFrozenStyle,
+	isBoardActionFrozen,
+} from "./board_access_ui.js";
 import { unitAllowedByBoardAccess } from "./maintenance_utils.js";
 
 export function formatBoardAccessError(e) {
@@ -38,7 +43,7 @@ export function isBoardPermissionError(e) {
 
 /**
  * @param {string} boardSlug - table page slug (e.g. rewinding-order-table); board alias is resolved server-side
- * @param {{ filterOrderDate: import('vue').Ref, viewScope: import('vue').Ref, filterUnit?: import('vue').Ref }} refs
+ * @param {{ filterOrderDate: import('vue').Ref, viewScope: import('vue').Ref, filterUnit?: import('vue').Ref, getBoardUnits?: () => string[] }} refs
  */
 export function createOrderTableBoardAccess(boardSlug, refs) {
 	const boardAccessContext = ref({
@@ -46,6 +51,7 @@ export function createOrderTableBoardAccess(boardSlug, refs) {
 		allowed_units: [],
 		loaded: false,
 		permitted: true,
+		frozen_actions: {},
 	});
 
 	const accessDenied = computed(
@@ -53,11 +59,23 @@ export function createOrderTableBoardAccess(boardSlug, refs) {
 	);
 
 	function applyBoardAccessContext(ctx) {
-		const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [] };
+		const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
 		boardAccessContext.value = { ...scope, loaded: true };
 		if (!scope || scope.unlimited) return;
 		applyBoardAccessDateScope(scope, refs);
-		applyBoardAccessUnitScope(scope, refs.filterUnit);
+		const boardUnits = refs.getBoardUnits?.() || null;
+		applyBoardAccessUnitScope(scope, refs.filterUnit, boardUnits);
+	}
+
+	const freezeMaintenance = computed(() => isBoardActionFrozen(boardAccessContext.value, "maintenance"));
+	const freezeTransfer = computed(() => isBoardActionFrozen(boardAccessContext.value, "transfer"));
+	const freezeDespatch = computed(() => isBoardActionFrozen(boardAccessContext.value, "despatch"));
+	const freezeArrangement = computed(() => isBoardActionFrozen(boardAccessContext.value, "arrangement"));
+	const freezeMerge = computed(() => isBoardActionFrozen(boardAccessContext.value, "merge"));
+	const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
+
+	function frozenStyle(action) {
+		return boardActionFrozenStyle(boardAccessContext.value, action);
 	}
 
 	async function loadBoardAccessContext() {
@@ -114,5 +132,12 @@ export function createOrderTableBoardAccess(boardSlug, refs) {
 		boardArgs,
 		filterListByAccess,
 		filterRowsByAccess,
+		freezeMaintenance,
+		freezeTransfer,
+		freezeDespatch,
+		freezeArrangement,
+		freezeMerge,
+		freezeReorder,
+		frozenStyle,
 	};
 }

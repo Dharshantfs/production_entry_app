@@ -936,7 +936,7 @@ function applyBoardAccessContext(ctx) {
   boardAccessContext.value = { ...scope, loaded: true };
   if (!scope || scope.unlimited) return;
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  applyBoardAccessUnitScope(scope, filterUnit);
+  applyBoardAccessUnitScope(scope, filterUnit, units);
 }
 
 async function loadBoardAccessContext() {

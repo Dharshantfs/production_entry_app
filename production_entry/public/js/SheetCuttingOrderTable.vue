@@ -35,12 +35,12 @@
       <div class="cc-filter-item"><label>Order Code</label><input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" /></div>
       <div class="cc-filter-item"><label>Customer</label><input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" /></div>
       <div class="cc-filter-actions">
-        <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
-        <TransferToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" @submitted="fetchData" />
-        <DespatchToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" @submitted="fetchData" />
-        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
-        <button type="button" class="cc-clear-btn" @click="saveArrangement">Save Arrangment</button>
-        <button type="button" class="cc-clear-btn" @click="restoreArrangement">Restore Arrangment</button>
+        <button type="button" class="cc-maint-btn" :disabled="freezeMaintenance" :style="frozenStyle('maintenance')" @click="openMachineOffDialog">Machine Off</button>
+        <TransferToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" :disabled="freezeTransfer" @submitted="fetchData" />
+        <DespatchToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" :disabled="freezeDespatch" @submitted="fetchData" />
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="saveArrangement">Save Arrangment</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="restoreArrangement">Restore Arrangment</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-clear-btn" :title="sizeDimUnit === 'inches' ? 'Show roll & sheet size in mm (nearest 5)' : 'Show sizes in inches'" @click="toggleSizeDimUnit">{{ sizeDimUnit === "inches" ? "Sizes: mm" : "Sizes: Inches" }}</button>
@@ -211,15 +211,21 @@ const {
   loadBoardAccessContext,
   boardArgs,
   filterRowsByAccess,
+  freezeMaintenance,
+  freezeTransfer,
+  freezeDespatch,
+  freezeArrangement,
+  frozenStyle,
 } = createOrderTableBoardAccess(SHEET_CUTTING_TABLE_BOARD_SLUG, {
   filterOrderDate,
   viewScope,
+  getBoardUnits: () => [SHEET_CUTTING_UNIT],
 });
 const filterPartyCode = ref(""); const filterCustomer = ref(""); const filterShift = ref("all"); const processFilter = ref("251"); const rawData = ref([]);
 const maintenanceRecords = ref([]); const moveTargetDate = ref(frappe.datetime.get_today()); const dragRow = ref(null); const dragOverShift = ref("");
 const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragOverItemName = ref(""); const customOrderByDate = ref({});
 let fetchTimer = null; let fetchInProgress = false; let autoRefreshTimer = null; const showShiftPlanner = computed(() => viewScope.value !== "monthly");
-const arrangementUnlocked = computed(() => !arrangementLocked.value);
+const arrangementUnlocked = computed(() => !arrangementLocked.value && !freezeArrangement.value);
 const showProcessColumn = computed(() => processFilter.value === "__all__");
 const showDesignColumns = computed(() => ["252", "254", "255", "__all__"].includes(processFilter.value));
 function rowProcessCode(row) {
@@ -419,7 +425,10 @@ async function createSheetCuttingSpr(item) {
   finally { item.__creating_spr = false; }
 }
 function debouncedFetch() { if (fetchTimer) clearTimeout(fetchTimer); fetchTimer = setTimeout(() => fetchData(), 300); }
-function toggleArrangementLock() { arrangementLocked.value = !arrangementLocked.value; }
+function toggleArrangementLock() {
+  if (freezeArrangement.value) return;
+  arrangementLocked.value = !arrangementLocked.value;
+}
 function onOrderDragStart(row, e) { if (!arrangementUnlocked.value || row?.is_maintenance_row || row?.is_maintenance_empty) return; dragOrderRow.value = row; e.dataTransfer.effectAllowed = "move"; }
 function onOrderDragOver(row) { if (!arrangementUnlocked.value || !dragOrderRow.value || row?.is_maintenance_row || row?.is_maintenance_empty) return; dragOverItemName.value = row.itemName; }
 function onOrderDragLeave(row) { if (dragOverItemName.value === row?.itemName) dragOverItemName.value = ""; }
@@ -430,9 +439,9 @@ function onRowDragStart(row) { dragRow.value = row; } function onRowDragEnd() { 
 async function handleShiftDrop(targetShift) { const row = dragRow.value; dragOverShift.value = ""; if (!row?.itemName) return; const dateKey = viewScope.value === "daily" && filterOrderDate.value ? toDateKey(filterOrderDate.value) : toDateKey(moveTargetDate.value); if (!dateKey) return; try { await frappe.call({ method: "production_entry.production_planning.scheduler_api.assign_sheet_cutting_shift", args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName } }); await fetchData(); } catch (e) { frappe.msgprint(`Failed to move row: ${e?.message || e}`); } finally { dragRow.value = null; } }
 function currentShiftDateForDialog() { if (viewScope.value === "daily" && filterOrderDate.value) return filterOrderDate.value; return frappe.datetime.get_today(); }
 function openAssignShiftDialog() { const d = new frappe.ui.Dialog({ title: "Assign Sheet Cutting Shift", fields: [{ fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() }, { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" }], primary_action_label: "Apply", primary_action: async (vals) => { await frappe.call({ method: "production_entry.production_planning.scheduler_api.assign_sheet_cutting_shift", args: { shift_date: vals.shift_date, shift_label: vals.shift_label } }); d.hide(); if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date; await fetchData(); } }); d.show(); }
-async function openMachineOffDialog() { const d = new frappe.ui.Dialog({ title: "Sheet Cutting Machine Off", fields: [{ fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Select", fieldname: "maintenance_type", label: "Type", options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change", default: "Machine Off", reqd: 1 }, { fieldtype: "Small Text", fieldname: "notes", label: "Notes" }], primary_action_label: "Save", primary_action: async (vals) => { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance", args: { unit: SHEET_CUTTING_UNIT, start_date: vals.start_date, end_date: vals.end_date, maintenance_type: vals.maintenance_type, notes: vals.notes || "" } }); if (res?.message?.status === "success") frappe.show_alert({ message: res.message.message || "Maintenance saved", indicator: "green" }, 4); d.hide(); await fetchMaintenanceRecords(); await fetchData(); } }); d.show(); }
-async function saveArrangement() { try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, sequence_data: JSON.stringify(seq), plan_name: "sheet_cutting_table" }) }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
-async function restoreArrangement() { try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, plan_name: "sheet_cutting_table" }) }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }
+async function openMachineOffDialog() { if (freezeMaintenance.value) return; const d = new frappe.ui.Dialog({ title: "Sheet Cutting Machine Off", fields: [{ fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Select", fieldname: "maintenance_type", label: "Type", options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change", default: "Machine Off", reqd: 1 }, { fieldtype: "Small Text", fieldname: "notes", label: "Notes" }], primary_action_label: "Save", primary_action: async (vals) => { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance", args: { unit: SHEET_CUTTING_UNIT, start_date: vals.start_date, end_date: vals.end_date, maintenance_type: vals.maintenance_type, notes: vals.notes || "" } }); if (res?.message?.status === "success") frappe.show_alert({ message: res.message.message || "Maintenance saved", indicator: "green" }, 4); d.hide(); await fetchMaintenanceRecords(); await fetchData(); } }); d.show(); }
+async function saveArrangement() { if (freezeArrangement.value) return; try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, sequence_data: JSON.stringify(seq), plan_name: "sheet_cutting_table" }) }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
+async function restoreArrangement() { if (freezeArrangement.value) return; try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, plan_name: "sheet_cutting_table" }) }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }
 function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.value) { const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` }; } if (viewScope.value === "weekly" && filterWeek.value) { const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { start_date: fmt(ws), end_date: fmt(we) }; } return { start_date: filterOrderDate.value, end_date: filterOrderDate.value }; }
 async function deleteMaintenanceRecord(recordName) {
   if (!recordName) return;

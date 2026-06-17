@@ -317,6 +317,7 @@ import {
   boardAccessDateUseSelect,
   boardAccessViewScopeLocked,
   formatAccessDateLabel,
+  isBoardActionFrozen,
 } from "./board_access_ui.js";
 
 const props = defineProps({
@@ -770,13 +771,31 @@ const accessDatePickerDisabled = computed(() =>
 const accessViewScopeLocked = computed(() =>
   boardAccessViewScopeLocked(boardAccessContext.value, isManufactureUser.value)
 );
+const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
+
+function rawBoardUnitsList() {
+  if (isRewindingBoard.value) return [...REWINDING_BOARD_UNITS];
+  if (isSlittingBoard.value) return [...SLITTING_BOARD_UNITS];
+  if (isSheetCuttingBoard.value) return [SHEET_CUTTING_UNIT];
+  if (isBoxBagBoard.value) return [BOX_BAG_UNIT_L1, "VTP-L2 LEADER ZX MACHINE", BOX_BAG_UNIT_L4_SCREEN, "UNASSIGNED BOX BAG MACHINE"];
+  if (isWCutDCutBoard.value) {
+    const scope = wCutDCutCompanyScope.value;
+    if (scope === "jve") return [...W_CUT_D_CUT_JVE_UNITS];
+    if (scope === "vtp") return [...W_CUT_D_CUT_VTP_UNITS];
+    return [...W_CUT_D_CUT_ALL_UNITS];
+  }
+  if (isPrintingBoard.value) return [...PRINTING_BOARD_UNITS];
+  if (isLaminationBoard.value) return [LAMINATION_UNIT];
+  if (isPrintedBoppFilmBoard.value) return [PRINTED_BOPP_FILM_UNIT];
+  return units;
+}
 
 function applyBoardAccessContext(ctx) {
   const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
   boardAccessContext.value = { ...scope, loaded: true };
   if (!scope || scope.unlimited) return;
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  applyBoardAccessUnitScope(scope, filterUnit);
+  applyBoardAccessUnitScope(scope, filterUnit, rawBoardUnitsList());
 }
 
 async function loadBoardAccessContext() {
@@ -1615,7 +1634,7 @@ async function initSortable() {
       group: "kanban",
       animation: 150,
       ghostClass: "cc-ghost",
-      disabled: isLoading.value,
+      disabled: isLoading.value || freezeReorder.value,
       draggable: ".cc-card",
       onEnd: async (evt) => {
         const itemEl = evt.item;
@@ -3086,6 +3105,7 @@ onMounted(async () => {
     } else if (isWCutDCutBoard.value) {
       const familyParam = qParams.get("family");
       if (familyParam === "w_cut" || familyParam === "d_cut" || familyParam === "both") wCutDCutFamily.value = familyParam;
+      if (!wCutDCutFamily.value) wCutDCutFamily.value = "both";
       if (processParam && (W_CUT_D_CUT_FG_PROCS.includes(processParam) || processParam === "__all__")) {
         boardProcessFilter.value = processParam;
       }

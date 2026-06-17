@@ -61,12 +61,12 @@
       <div class="cc-filter-item"><label>Order Code</label><input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" /></div>
       <div class="cc-filter-item"><label>Customer</label><input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" /></div>
       <div class="cc-filter-actions">
-        <button type="button" class="cc-maint-btn" @click="openMachineOffDialog">Machine Off</button>
-        <TransferToolbarBlock :board-kind="boardKind" :filter-context="transferFilterContext" @submitted="fetchData" />
-        <DespatchToolbarBlock :board-kind="boardKind" :filter-context="transferFilterContext" @submitted="fetchData" />
-        <button type="button" class="cc-clear-btn" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
-        <button type="button" class="cc-clear-btn" @click="saveArrangement">Save Arrangement</button>
-        <button type="button" class="cc-clear-btn" @click="restoreArrangement">Restore Arrangement</button>
+        <button type="button" class="cc-maint-btn" :disabled="freezeMaintenance" :style="frozenStyle('maintenance')" @click="openMachineOffDialog">Machine Off</button>
+        <TransferToolbarBlock :board-kind="boardKind" :filter-context="transferFilterContext" :disabled="freezeTransfer" @submitted="fetchData" />
+        <DespatchToolbarBlock :board-kind="boardKind" :filter-context="transferFilterContext" :disabled="freezeDespatch" @submitted="fetchData" />
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="saveArrangement">Save Arrangement</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="restoreArrangement">Restore Arrangement</button>
         <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">{{ backToBoardLabel }}</button>
@@ -187,6 +187,8 @@ import {
   boardAccessDatePickerDisabled,
   boardAccessDateUseSelect,
   boardAccessViewScopeLocked,
+  boardActionFrozenStyle,
+  isBoardActionFrozen,
 } from "./board_access_ui.js";
 
 const BOX_BAG_TABLE_BOARD_SLUG = "box-bag-order-table";
@@ -291,7 +293,24 @@ function applyBoardAccessContext(ctx) {
   boardAccessContext.value = { ...scope, loaded: true };
   if (!scope || scope.unlimited) return;
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  applyBoardAccessUnitScope(scope, filterUnit);
+  const boardUnits = isWCutDCutTable.value ? wCutDCutUnitsForScope() : BOX_BAG_UNITS;
+  applyBoardAccessUnitScope(scope, filterUnit, boardUnits);
+}
+
+function wCutDCutUnitsForScope() {
+  const scope = wCutDCutCompanyScope.value;
+  if (scope === "jve") return W_CUT_D_CUT_JVE_UNITS;
+  if (scope === "vtp") return W_CUT_D_CUT_VTP_UNITS;
+  return W_CUT_D_CUT_ALL_UNITS;
+}
+
+const freezeMaintenance = computed(() => isBoardActionFrozen(boardAccessContext.value, "maintenance"));
+const freezeTransfer = computed(() => isBoardActionFrozen(boardAccessContext.value, "transfer"));
+const freezeDespatch = computed(() => isBoardActionFrozen(boardAccessContext.value, "despatch"));
+const freezeArrangement = computed(() => isBoardActionFrozen(boardAccessContext.value, "arrangement"));
+const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
+function frozenStyle(action) {
+  return boardActionFrozenStyle(boardAccessContext.value, action);
 }
 
 async function loadBoardAccessContext() {
@@ -406,7 +425,7 @@ let fetchTimer = null;
 let fetchInProgress = false;
 let autoRefreshTimer = null;
 const showShiftPlanner = computed(() => true);
-const arrangementUnlocked = computed(() => !arrangementLocked.value);
+const arrangementUnlocked = computed(() => !arrangementLocked.value && !freezeArrangement.value);
 
 const transferFilterContext = computed(() => ({
   board_slug: isWCutDCutTable.value ? W_CUT_D_CUT_TABLE_BOARD_SLUG : BOX_BAG_TABLE_BOARD_SLUG,
@@ -609,7 +628,10 @@ async function createBoxBagSpr(item) {
 }
 
 function debouncedFetch() { if (fetchTimer) clearTimeout(fetchTimer); fetchTimer = setTimeout(() => fetchData(), 300); }
-function toggleArrangementLock() { arrangementLocked.value = !arrangementLocked.value; }
+function toggleArrangementLock() {
+  if (freezeArrangement.value) return;
+  arrangementLocked.value = !arrangementLocked.value;
+}
 function onOrderDragStart(row, e) { if (!arrangementUnlocked.value || row?.is_maintenance_row || row?.is_maintenance_empty) return; dragOrderRow.value = row; e.dataTransfer.effectAllowed = "move"; }
 function onOrderDragOver(row) { if (!arrangementUnlocked.value || !dragOrderRow.value || row?.is_maintenance_row || row?.is_maintenance_empty) return; dragOverItemName.value = row.itemName; }
 function onOrderDragLeave(row) { if (dragOverItemName.value === row?.itemName) dragOverItemName.value = ""; }
@@ -624,6 +646,7 @@ function currentShiftDateForDialog() { if (viewScope.value === "daily" && filter
 function openAssignShiftDialog() { const d = new frappe.ui.Dialog({ title: isWCutDCutTable.value ? "Assign W CUT / D CUT Shift" : "Assign Box Bag Shift", fields: [{ fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() }, { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" }], primary_action_label: "Apply", primary_action: async (vals) => { await frappe.call({ method: "production_entry.production_planning.box_bag_api.assign_box_bag_shift", args: { shift_date: vals.shift_date, shift_label: vals.shift_label } }); d.hide(); if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date; await fetchData(); } }); d.show(); }
 
 async function openMachineOffDialog() {
+  if (freezeMaintenance.value) return;
   const d = new frappe.ui.Dialog({
     title: isWCutDCutTable.value ? "W CUT / D CUT Machine Off" : "Box Bag Machine Off",
     fields: [
@@ -729,6 +752,7 @@ async function loadSavedArrangement() {
 }
 
 async function saveArrangement() {
+  if (freezeArrangement.value) return;
   try {
     const seq = {};
     Object.keys(customOrderByDate.value || {}).forEach((dateKey) => {
@@ -754,6 +778,7 @@ async function saveArrangement() {
 }
 
 async function restoreArrangement() {
+  if (freezeArrangement.value) return;
   try {
     const r = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
@@ -872,6 +897,7 @@ onMounted(async () => {
   if (p.get("process")) filterProcess.value = p.get("process");
   if (!p.get("process")) filterProcess.value = "all";
   if (p.get("family") === "w_cut" || p.get("family") === "d_cut" || p.get("family") === "both") wCutDCutFamily.value = p.get("family");
+  if (isWCutDCutTable.value && !wCutDCutFamily.value) wCutDCutFamily.value = "both";
   moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today();
   updateUrlParams();
   await loadBoardAccessContext();
