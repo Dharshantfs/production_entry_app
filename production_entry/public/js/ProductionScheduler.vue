@@ -312,6 +312,7 @@ import {
 } from "./maintenance_utils.js";
 import {
   applyBoardAccessDateScope,
+  applyBoardAccessUnitScope,
   boardAccessDatePickerDisabled,
   boardAccessDateUseSelect,
   boardAccessViewScopeLocked,
@@ -771,15 +772,11 @@ const accessViewScopeLocked = computed(() =>
 );
 
 function applyBoardAccessContext(ctx) {
-  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [] };
+  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
   boardAccessContext.value = { ...scope, loaded: true };
   if (!scope || scope.unlimited) return;
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  if (scope.allowed_units && scope.allowed_units.length === 1) {
-    filterUnit.value = scope.allowed_units[0];
-  } else if (scope.allowed_units && scope.allowed_units.length > 1) {
-    filterUnit.value = "";
-  }
+  applyBoardAccessUnitScope(scope, filterUnit);
 }
 
 async function loadBoardAccessContext() {

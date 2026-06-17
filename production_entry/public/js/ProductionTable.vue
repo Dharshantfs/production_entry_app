@@ -68,22 +68,26 @@
       <button
         class="cc-lock-btn"
         @click="toggleTableReorder"
-        :title="tableReorderLocked ? 'Unlock to enable drag and drop reordering' : 'Lock to disable drag and drop reordering'"
+        :disabled="freezeReorder"
+        :style="boardActionFrozenStyle(boardAccessContext, 'reorder')"
+        :title="freezeReorder ? 'Reorder is disabled for your access' : (tableReorderLocked ? 'Unlock to enable drag and drop reordering' : 'Lock to disable drag and drop reordering')"
       >
         {{ tableReorderLocked ? '🔒 Reorder Locked' : '🔓 Reorder Enabled' }}
       </button>
       <button
         class="cc-save-arrange-btn"
         @click="saveArrangement"
-        :disabled="!arrangementDirty || arrangementSaving"
-        :title="arrangementDirty ? 'Save current row arrangement permanently' : 'No pending arrangement changes'"
+        :disabled="freezeArrangement || !arrangementDirty || arrangementSaving"
+        :style="boardActionFrozenStyle(boardAccessContext, 'arrangement')"
+        :title="freezeArrangement ? 'Arrangement is disabled for your access' : (arrangementDirty ? 'Save current row arrangement permanently' : 'No pending arrangement changes')"
       >
         {{ arrangementSaving ? 'Saving Arrangement...' : '💾 Save Arrangement' }}
       </button>
       <button
         class="cc-clear-btn"
         @click="restoreLastArrangement"
-        :disabled="arrangementSaving || arrangementRestoring"
+        :disabled="freezeArrangement || arrangementSaving || arrangementRestoring"
+        :style="boardActionFrozenStyle(boardAccessContext, 'arrangement')"
         title="Restore last saved arrangement snapshot for current table view"
       >
         {{ arrangementRestoring ? 'Restoring...' : '↩ Restore Last' }}
@@ -94,14 +98,21 @@
       <button
         class="cc-lock-btn"
         @click="toggleMergeMode"
-        :title="mergeMode ? 'Disable merge mode' : 'Enable merge mode'"
-        :style="mergeMode ? { background: '#fee2e2', color: '#991b1b', borderColor: '#fca5a5' } : {}"
+        :disabled="freezeMerge"
+        :style="[mergeMode ? { background: '#fee2e2', color: '#991b1b', borderColor: '#fca5a5' } : {}, boardActionFrozenStyle(boardAccessContext, 'merge')]"
+        :title="freezeMerge ? 'Merge is disabled for your access' : (mergeMode ? 'Disable merge mode' : 'Enable merge mode')"
       >
         {{ mergeMode ? '🔗 Merge Mode ON' : '🔗 Merge Mode OFF' }}
       </button>
-      <button class="cc-maint-btn" @click="openMaintenanceDialog" title="Manage equipment maintenance schedules">⚙️ Maintenance</button>
-      <TransferToolbarBlock :board-kind="'production'" :filter-context="transferFilterContext" @submitted="fetchData" />
-      <DespatchToolbarBlock board-kind="production" :filter-context="transferFilterContext" @submitted="fetchData" />
+      <button
+        class="cc-maint-btn"
+        @click="openMaintenanceDialog"
+        :disabled="freezeMaintenance"
+        :style="boardActionFrozenStyle(boardAccessContext, 'maintenance')"
+        title="Manage equipment maintenance schedules"
+      >⚙️ Maintenance</button>
+      <TransferToolbarBlock :board-kind="'production'" :filter-context="transferFilterContext" :disabled="freezeTransfer" @submitted="fetchData" />
+      <DespatchToolbarBlock board-kind="production" :filter-context="transferFilterContext" :disabled="freezeDespatch" @submitted="fetchData" />
       
       <div class="cc-filter-item" style="margin-left: auto;">
           <button class="cc-view-btn" @click="goToBoard">📊 Back to Board</button>
@@ -454,10 +465,13 @@ import {
 } from "./maintenance_utils.js";
 import {
   applyBoardAccessDateScope,
+  applyBoardAccessUnitScope,
   boardAccessDatePickerDisabled,
   boardAccessDateUseSelect,
   boardAccessViewScopeLocked,
+  boardActionFrozenStyle,
   formatAccessDateLabel,
+  isBoardActionFrozen,
 } from "./board_access_ui.js";
 
 // ===== MAINTENANCE DATA =====
@@ -610,6 +624,7 @@ function toLocalDateKeyFromDate(d) {
 }
 
 async function openMaintenanceDialog() {
+  if (freezeMaintenance.value) return;
 	const d = new frappe.ui.Dialog({
 		title: "⚙️ Equipment Maintenance Management",
 		fields: [
@@ -909,17 +924,19 @@ const accessDatePickerDisabled = computed(() =>
 const accessViewScopeLocked = computed(() =>
   boardAccessViewScopeLocked(boardAccessContext.value, isManufactureUser.value)
 );
+const freezeMaintenance = computed(() => isBoardActionFrozen(boardAccessContext.value, "maintenance"));
+const freezeTransfer = computed(() => isBoardActionFrozen(boardAccessContext.value, "transfer"));
+const freezeDespatch = computed(() => isBoardActionFrozen(boardAccessContext.value, "despatch"));
+const freezeArrangement = computed(() => isBoardActionFrozen(boardAccessContext.value, "arrangement"));
+const freezeMerge = computed(() => isBoardActionFrozen(boardAccessContext.value, "merge"));
+const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
 
 function applyBoardAccessContext(ctx) {
-  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [] };
+  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
   boardAccessContext.value = { ...scope, loaded: true };
   if (!scope || scope.unlimited) return;
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  if (scope.allowed_units && scope.allowed_units.length === 1) {
-    filterUnit.value = scope.allowed_units[0];
-  } else if (scope.allowed_units && scope.allowed_units.length > 1) {
-    filterUnit.value = "";
-  }
+  applyBoardAccessUnitScope(scope, filterUnit);
 }
 
 async function loadBoardAccessContext() {
@@ -1035,6 +1052,7 @@ async function persistDateGroupOrder(tbodyEl) {
 }
 
 async function saveArrangement() {
+  if (freezeArrangement.value) return;
   if (!arrangementDirty.value || arrangementSaving.value) return;
 
   const groupedUpdates = Object.entries(pendingArrangementUpdates.value);
@@ -1089,6 +1107,7 @@ async function saveArrangement() {
 }
 
 async function restoreLastArrangement() {
+  if (freezeArrangement.value) return;
   if (arrangementSaving.value || arrangementRestoring.value) return;
   if (!window.confirm("Restore previous saved row arrangement for current view?")) return;
 
@@ -1170,6 +1189,7 @@ async function initTableSortables() {
 }
 
 async function toggleTableReorder() {
+  if (freezeReorder.value) return;
   tableReorderLocked.value = !tableReorderLocked.value;
 
   if (tableReorderLocked.value) {
@@ -1768,6 +1788,7 @@ function getDispatchStatusClass(status) {
 }
 
 function toggleMergeMode() {
+  if (freezeMerge.value) return;
   mergeMode.value = !mergeMode.value;
   if (mergeMode.value) {
     showMergeDialog.value = true;

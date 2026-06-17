@@ -1,5 +1,7 @@
 /** Shared Production Board Access date + scope UI helpers. */
 
+import { maintenanceUnitsEqual } from "./maintenance_utils.js";
+
 export function formatAccessDateLabel(iso) {
 	const s = String(iso || "").trim();
 	if (!s) return s;
@@ -59,4 +61,30 @@ export function boardAccessViewScopeLocked(ctx, isManufactureUser) {
 	if (isManufactureUser) return true;
 	if (!ctx || !ctx.loaded || ctx.unlimited) return false;
 	return !!ctx.view_scope_locked;
+}
+
+/** True when a toolbar action is frozen for the current board (button visible but disabled). */
+export function isBoardActionFrozen(ctx, action) {
+	if (!ctx || !ctx.loaded || ctx.unlimited) return false;
+	const frozen = ctx.frozen_actions || {};
+	return !!frozen[action];
+}
+
+export function boardActionFrozenStyle(ctx, action) {
+	if (!isBoardActionFrozen(ctx, action)) return {};
+	return { opacity: "0.45", cursor: "not-allowed", pointerEvents: "none" };
+}
+
+/** Apply unit scope without clearing user unit filter — many users can share one unit. */
+export function applyBoardAccessUnitScope(scope, filterUnitRef) {
+	if (!scope || scope.unlimited || !filterUnitRef) return;
+	const allowed = scope.allowed_units || [];
+	if (allowed.length !== 1) return;
+	const cur = (filterUnitRef.value || "").trim();
+	if (!cur) {
+		filterUnitRef.value = allowed[0];
+		return;
+	}
+	const ok = allowed.some((u) => maintenanceUnitsEqual(u, cur));
+	if (!ok) filterUnitRef.value = allowed[0];
 }

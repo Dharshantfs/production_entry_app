@@ -183,6 +183,7 @@ import { formatMovementCell } from "./movementDisplay.js";
 import { maintenanceUnitsEqual, normalizeMaintenanceUnit, unitAllowedByBoardAccess } from "./maintenance_utils.js";
 import {
   applyBoardAccessDateScope,
+  applyBoardAccessUnitScope,
   boardAccessDatePickerDisabled,
   boardAccessDateUseSelect,
   boardAccessViewScopeLocked,
@@ -286,18 +287,11 @@ const boardAccessContext = ref({ unlimited: false, allowed_units: [], loaded: fa
 const accessDenied = computed(() => boardAccessContext.value.loaded && boardAccessContext.value.permitted === false);
 
 function applyBoardAccessContext(ctx) {
-  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [] };
+  const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
   boardAccessContext.value = { ...scope, loaded: true };
   if (!scope || scope.unlimited) return;
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  if (scope.allowed_units && scope.allowed_units.length === 1) {
-    filterUnit.value = scope.allowed_units[0];
-  } else if (scope.allowed_units && scope.allowed_units.length > 1) {
-    const cur = (filterUnit.value || "").trim();
-    if (cur && !scope.allowed_units.some((u) => maintenanceUnitsEqual(u, cur))) {
-      filterUnit.value = "";
-    }
-  }
+  applyBoardAccessUnitScope(scope, filterUnit);
 }
 
 async function loadBoardAccessContext() {

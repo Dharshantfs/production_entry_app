@@ -2,6 +2,8 @@
   <button
     type="button"
     class="cc-despatch-btn"
+    :class="{ 'cc-btn-frozen': disabled }"
+    :disabled="disabled"
     title="Despatch rows (movement Despatch, SPR submitted)"
     @click="open"
   >
@@ -24,6 +26,7 @@ import { useDespatchToolbar } from "./despatchToolbar.js";
 const props = defineProps({
   boardKind: { type: String, required: true },
   filterContext: { type: Object, default: () => ({}) },
+  disabled: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(["submitted"]);
@@ -33,6 +36,7 @@ const { showDespatchDialog, despatchPrefill, openDespatchDialog } = useDespatchT
 const filterContext = computed(() => props.filterContext || {});
 
 function open() {
+  if (props.disabled) return;
   openDespatchDialog({});
 }
 
@@ -52,7 +56,12 @@ function onSubmitted() {
   font-size: 12px;
   cursor: pointer;
 }
-.cc-despatch-btn:hover {
+.cc-despatch-btn:hover:not(:disabled) {
   background: #15803d;
+}
+.cc-despatch-btn:disabled,
+.cc-btn-frozen {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 </style>

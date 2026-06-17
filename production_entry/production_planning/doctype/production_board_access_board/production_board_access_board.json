@@ -4,19 +4,75 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "field_order": ["board"],
+ "field_order": [
+  "board",
+  "column_break_freeze",
+  "freeze_maintenance",
+  "freeze_transfer",
+  "freeze_despatch",
+  "freeze_arrangement",
+  "freeze_merge",
+  "freeze_reorder"
+ ],
  "fields": [
   {
    "fieldname": "board",
    "fieldtype": "Select",
    "in_list_view": 1,
-   "label": "Board",
-   "options": "production-board|Production Board (Kanban)\nproduction-table|Production Table\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning",
+   "label": "Board (Page ID)",
+   "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning",
    "reqd": 1
+  },
+  {
+   "fieldname": "column_break_freeze",
+   "fieldtype": "Column Break",
+   "label": "Freeze toolbar (visible but disabled)"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_maintenance",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Maintenance"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_transfer",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Transfer"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_despatch",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Despatch"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_arrangement",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Arrangement"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_merge",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Merge"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_reorder",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Reorder"
   }
  ],
  "istable": 1,
- "modified": "2026-06-15 16:00:00.000000",
+ "modified": "2026-06-17 12:00:00.000000",
  "module": "Production Planning",
  "name": "Production Board Access Board",
  "owner": "Administrator",

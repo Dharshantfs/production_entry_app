@@ -1,5 +1,12 @@
 <template>
-  <button type="button" class="cc-transfer-btn" title="Transfer rows (SPR done)" @click="open">
+  <button
+    type="button"
+    class="cc-transfer-btn"
+    :class="{ 'cc-btn-frozen': disabled }"
+    :disabled="disabled"
+    title="Transfer rows (SPR done)"
+    @click="open"
+  >
     Transfer
   </button>
   <TransferDialog
@@ -19,6 +26,7 @@ import { useTransferToolbar } from "./transferToolbar.js";
 const props = defineProps({
   boardKind: { type: String, required: true },
   filterContext: { type: Object, default: () => ({}) },
+  disabled: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(["submitted"]);
@@ -28,6 +36,7 @@ const { showTransferDialog, transferPrefill, openTransferDialog } = useTransferT
 const filterContext = computed(() => props.filterContext || {});
 
 function open() {
+  if (props.disabled) return;
   openTransferDialog({});
 }
 
@@ -47,7 +56,12 @@ function onSubmitted() {
   font-size: 12px;
   cursor: pointer;
 }
-.cc-transfer-btn:hover {
+.cc-transfer-btn:hover:not(:disabled) {
   background: #0284c7;
+}
+.cc-transfer-btn:disabled,
+.cc-btn-frozen {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 </style>

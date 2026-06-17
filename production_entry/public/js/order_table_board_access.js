@@ -1,7 +1,7 @@
 /** Shared Production Board Access wiring for *OrderTable.vue pages. */
 import { ref, computed } from "vue";
-import { applyBoardAccessDateScope } from "./board_access_ui.js";
-import { unitAllowedByBoardAccess, maintenanceUnitsEqual } from "./maintenance_utils.js";
+import { applyBoardAccessDateScope, applyBoardAccessUnitScope } from "./board_access_ui.js";
+import { unitAllowedByBoardAccess } from "./maintenance_utils.js";
 
 export function formatBoardAccessError(e) {
 	if (!e) return "Unknown error";
@@ -57,16 +57,7 @@ export function createOrderTableBoardAccess(boardSlug, refs) {
 		boardAccessContext.value = { ...scope, loaded: true };
 		if (!scope || scope.unlimited) return;
 		applyBoardAccessDateScope(scope, refs);
-		const fu = refs.filterUnit;
-		if (!fu) return;
-		if (scope.allowed_units && scope.allowed_units.length === 1) {
-			fu.value = scope.allowed_units[0];
-		} else if (scope.allowed_units && scope.allowed_units.length > 1) {
-			const cur = (fu.value || "").trim();
-			if (cur && !scope.allowed_units.some((u) => maintenanceUnitsEqual(u, cur))) {
-				fu.value = "";
-			}
-		}
+		applyBoardAccessUnitScope(scope, refs.filterUnit);
 	}
 
 	async function loadBoardAccessContext() {

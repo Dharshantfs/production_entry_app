@@ -6,7 +6,9 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "section_user",
   "user",
+  "user_full_name",
   "active",
   "column_break_1",
   "date_mode",
@@ -18,13 +20,27 @@
  ],
  "fields": [
   {
+   "fieldname": "section_user",
+   "fieldtype": "Section Break",
+   "label": "User & schedule"
+  },
+  {
    "fieldname": "user",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "User",
+   "label": "User (login email)",
    "options": "User",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "fetch_from": "user.full_name",
+   "fieldname": "user_full_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Full name",
+   "read_only": 1
   },
   {
    "default": "1",
@@ -56,30 +72,30 @@
   {
    "fieldname": "section_break_units",
    "fieldtype": "Section Break",
-   "label": "Allowed Units"
+   "label": "Allowed units (workstations)"
   },
   {
    "fieldname": "allowed_units",
    "fieldtype": "Table MultiSelect",
    "label": "Allowed Units",
    "options": "Production Board Access Unit",
-   "description": "Workstations allowed for this user. Same unit list applies to Production Board (Kanban) and Production Table."
+   "description": "Workstations this user may view. Many users can share the same unit (e.g. Unit 1 day shift + Unit 1 night shift). Same list applies to board and table views."
   },
   {
    "fieldname": "section_break_boards",
    "fieldtype": "Section Break",
-   "label": "Allowed Boards"
+   "label": "Boards & frozen actions"
   },
   {
    "fieldname": "allowed_boards",
    "fieldtype": "Table",
    "label": "Allowed Boards",
    "options": "Production Board Access Board",
-   "description": "Add one row per view. For fabric planning, add either production-board (Kanban) or production-table (Table) — access is shared between them."
+   "description": "One row per board (page id). Table views inherit board access automatically. Tick Freeze columns to show buttons but block clicks for operators."
   }
  ],
  "links": [],
- "modified": "2026-06-15 16:00:00.000000",
+ "modified": "2026-06-17 12:00:00.000000",
  "module": "Production Planning",
  "name": "Production Board Access",
  "naming_rule": "By fieldname",
@@ -101,6 +117,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "user",
+ "title_field": "user_full_name",
  "track_changes": 1
 }

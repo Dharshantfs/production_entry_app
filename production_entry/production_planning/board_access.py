@@ -197,14 +197,18 @@ def _access_docname_for_user(user: str) -> str | None:
 def get_production_board_user_context(board_slug: str | None = None):
 	"""Return board access scope for the session user (page gate + Vue)."""
 	scope = get_user_board_scope()
-	board_slug = _normalize_board_slug(board_slug)
+	board_slug_norm = _normalize_board_slug(board_slug)
 	permitted = True
-	if board_slug:
+	frozen_actions: dict = {}
+	if board_slug_norm:
 		if scope.get("unlimited"):
 			permitted = True
 		else:
 			allowed = set(scope.get("allowed_boards") or [])
-			permitted = bool(_equivalent_board_slugs(board_slug) & allowed)
+			permitted = bool(_equivalent_board_slugs(board_slug_norm) & allowed)
+			access_name = _access_docname_for_user(frappe.session.user)
+			if access_name and permitted:
+				frozen_actions = _frozen_actions_for_board(access_name, board_slug_norm)
 	return {
 		"permitted": permitted,
 		"unlimited": bool(scope.get("unlimited")),
@@ -216,7 +220,52 @@ def get_production_board_user_context(board_slug: str | None = None):
 		"allowed_dates": scope.get("allowed_dates") or [],
 		"date_picker_frozen": bool(scope.get("date_picker_frozen")),
 		"view_scope_locked": bool(scope.get("view_scope_locked")),
+		"frozen_actions": frozen_actions,
 	}
+
+
+def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
+	"""Per-board toolbar freeze flags from Allowed Boards child rows."""
+	from frappe.utils import cint
+
+	doc = frappe.get_doc(DOCTYPE_ACCESS, access_name)
+	requested = _equivalent_board_slugs(board_slug)
+	for row in doc.get("allowed_boards") or []:
+		row_slug = _normalize_board_slug(row.board)
+		if not row_slug:
+			continue
+		if requested & _equivalent_board_slugs(row_slug):
+			return {
+				"maintenance": bool(cint(getattr(row, "freeze_maintenance", 0))),
+				"transfer": bool(cint(getattr(row, "freeze_transfer", 0))),
+				"despatch": bool(cint(getattr(row, "freeze_despatch", 0))),
+				"arrangement": bool(cint(getattr(row, "freeze_arrangement", 0))),
+				"merge": bool(cint(getattr(row, "freeze_merge", 0))),
+				"reorder": bool(cint(getattr(row, "freeze_reorder", 0))),
+			}
+	return {}
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def production_board_access_user_query(doctype, txt, searchfield, start, page_len, filters):
+	"""User link search: show full name + email (assign by name)."""
+	txt = f"%{txt}%"
+	return frappe.db.sql(
+		"""
+		SELECT u.name, CONCAT(IFNULL(u.full_name, ''), ' — ', u.name) AS label
+		FROM `tabUser` u
+		WHERE u.enabled = 1
+		  AND u.name NOT IN ('Guest', 'Administrator')
+		  AND (
+			u.name LIKE %(txt)s
+			OR IFNULL(u.full_name, '') LIKE %(txt)s
+		  )
+		ORDER BY IFNULL(u.full_name, u.name)
+		LIMIT %(start)s, %(page_len)s
+		""",
+		{"txt": txt, "start": start, "page_len": page_len},
+	)
 
 
 def _resolve_allowed_unit_labels(raw: str) -> list[str]:
