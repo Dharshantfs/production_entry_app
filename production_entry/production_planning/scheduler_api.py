@@ -209,6 +209,29 @@ def _has_planning_movement_type_column(doctype="Planning Table"):
 	return bool(frappe.db.has_column(doctype, PLANNING_MOVEMENT_TYPE_FIELD))
 
 
+def _design_prefixed_bag_fg_sort_rank(item_code):
+	"""Design-prefixed W/D-CUT or box-bag FG (e.g. 6000-512-221…) sorts after same-process transfer rows."""
+	ic = _cstr(item_code)
+	if not ic or "-" not in ic:
+		return None
+	try:
+		from production_entry.production_planning.box_bag_api import _parse_box_bag_item_code, _parse_dcut_bag_item_code
+
+		p = _parse_box_bag_item_code(ic) or {}
+		proc = _cstr(p.get("process"))
+		if p.get("design_code") and proc in ALL_BAG_FG_PROCESS_CODES:
+			base = _PRODUCTION_SORT_RANK_BY_PROCESS.get(proc, 500)
+			return base + 1
+		p2 = _parse_dcut_bag_item_code(ic) or {}
+		proc2 = _cstr(p2.get("process"))
+		if p2.get("design_code") and proc2 in W_CUT_D_CUT_FG_PROCESS_CODES:
+			base = _PRODUCTION_SORT_RANK_BY_PROCESS.get(proc2, 500)
+			return base + 1
+	except Exception:
+		pass
+	return None
+
+
 def _production_sort_rank(item_code):
 	"""Sort key tier for production sequence (fabric → PB → mid processes → FG)."""
 	ic = _cstr(item_code)
@@ -216,6 +239,9 @@ def _production_sort_rank(item_code):
 		return 900
 	if _is_printed_bopp_item_code(ic) or ic.upper().startswith("PB-"):
 		return _PRODUCTION_SORT_RANK_BY_PROCESS["PB"]
+	bag_fg_rank = _design_prefixed_bag_fg_sort_rank(ic)
+	if bag_fg_rank is not None:
+		return bag_fg_rank
 	pp = _bom_item_process_code(ic) or _item_process_prefix(ic) or _lamination_process_from_item_code(ic)
 	if pp == "100" or ic.startswith("100"):
 		return _PRODUCTION_SORT_RANK_BY_PROCESS["100"]
@@ -236,10 +262,8 @@ def _production_sort_rank_parent_first(item_code):
 
 
 def _planning_sheet_uses_parent_first_sort(planning_sheet_name):
-	"""Bag/box sheets: FG parent first (232 before 231 RM), then BOM children downstream."""
-	if not planning_sheet_name:
-		return False
-	return _planning_sheet_has_bag_fg(planning_sheet_name)
+	"""All processes use reverse BOM order (upstream first, FG last) — same as fabric/sheet."""
+	return False
 
 
 def _normalize_planning_sheet_workstation_units(planning_sheet_name):
