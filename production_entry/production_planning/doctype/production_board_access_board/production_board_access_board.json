@@ -6,11 +6,14 @@
  "engine": "InnoDB",
  "field_order": [
   "board",
+  "w_cut_d_cut_company",
   "column_break_freeze",
   "freeze_maintenance",
   "freeze_transfer",
   "freeze_despatch",
   "freeze_arrangement",
+  "freeze_assign_shift",
+  "freeze_sync_spr",
   "freeze_merge",
   "freeze_reorder"
  ],
@@ -22,6 +25,15 @@
    "label": "Board (Page ID)",
    "options": "production-board|Production Board (Kanban)\nprinting-order-board|Printing Order Board\nlamination-board|Lamination Board\nslitting-board|Slitting Board\nrewinding-board|Rewinding Board\nsheet-cutting-board|Sheet Cutting Board\nprinted-bopp-film-board|Printed BOPP Film Board\nbox-bag-board|Box Bag Board\nw-cut-d-cut-board|W-Cut / D-Cut Board\ncolor-chart|Color Chart\nconfirm-orders|Confirm Orders\nplanning|Planning",
    "reqd": 1
+  },
+  {
+   "default": "Both",
+   "description": "W CUT / D CUT only — limits which company the operator can view (JVE or VTP). Choose Both when the user works across companies.",
+   "fieldname": "w_cut_d_cut_company",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Company (W/D Cut)",
+   "options": "JVE\nVTP\nBoth"
   },
   {
    "fieldname": "column_break_freeze",
@@ -55,6 +67,20 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Arrangement"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_assign_shift",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Assign Shift"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_sync_spr",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Sync SPR"
   },
   {
    "default": "0",

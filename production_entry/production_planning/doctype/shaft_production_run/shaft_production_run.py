@@ -1840,6 +1840,106 @@ def _spr_collect_roll_planned_tolerance_violations(doc) -> list[tuple]:
 	return out
 
 
+def _spr_unique_text_values(values: list) -> list[str]:
+	seen_upper = set()
+	out = []
+	for v in values:
+		s = _cstr(v).strip()
+		if not s:
+			continue
+		key = s.upper()
+		if key in seen_upper:
+			continue
+		seen_upper.add(key)
+		out.append(key)
+	return out
+
+
+def _spr_unique_gsm_display_values(gsms: list) -> list[str]:
+	seen = set()
+	ordered = []
+	for g in gsms:
+		val = flt(g)
+		if val <= 0:
+			continue
+		key = round(val, 2)
+		if key in seen:
+			continue
+		seen.add(key)
+		if abs(key - int(key)) < 0.001:
+			disp = str(int(key))
+		else:
+			disp = f"{key:.2f}".rstrip("0").rstrip(".")
+		ordered.append((key, disp))
+	ordered.sort(key=lambda x: x[0])
+	return [disp for _, disp in ordered]
+
+
+def _spr_format_gsm_summary(gsms: list) -> str:
+	parts = _spr_unique_gsm_display_values(gsms)
+	if not parts:
+		return ""
+	return ", ".join(parts) + " gsm"
+
+
+def _spr_collect_gsm_from_row(row) -> float:
+	for key in ("gsm", "produced_gsm", "custom_fabric_gsm", "custom_lam_gsm", "custom_bopp_gsm"):
+		g = flt(_spr_row_get(row, key) or 0)
+		if g > 0:
+			return g
+	return 0.0
+
+
+def compute_spr_attribute_summaries(spr_doc) -> dict:
+	"""Build list-view Color / Quality / GSM text from shaft jobs and roll lines."""
+	colors, qualities, gsms = [], [], []
+
+	for row in spr_doc.get("shaft_jobs") or []:
+		q = _cstr(_spr_row_get(row, "quality")).strip()
+		if q:
+			qualities.append(q)
+		g = flt(_spr_row_get(row, "gsm") or 0)
+		if g > 0:
+			gsms.append(g)
+
+	for row in spr_doc.get("items") or []:
+		c = _cstr(_spr_row_get(row, "color")).strip()
+		q = _cstr(_spr_row_get(row, "quality")).strip()
+		g = _spr_collect_gsm_from_row(row)
+		if not c or not q or g <= 0:
+			ic = _cstr(_spr_row_get(row, "item_code")).strip()
+			if ic:
+				specs = _spr_resolve_roll_line_specs_from_item_code(
+					ic, _cstr(_spr_row_get(row, "item_name"))
+				)
+				if not c:
+					c = _cstr(specs.get("color")).strip()
+				if not q:
+					q = _cstr(specs.get("quality")).strip()
+				if g <= 0:
+					g = flt(specs.get("gsm") or 0)
+		if c:
+			colors.append(c)
+		if q:
+			qualities.append(q)
+		if g > 0:
+			gsms.append(g)
+
+	return {
+		"custom_color_summary": ", ".join(_spr_unique_text_values(colors)),
+		"custom_quality_summary": ", ".join(_spr_unique_text_values(qualities)),
+		"custom_gsm_summary": _spr_format_gsm_summary(gsms),
+	}
+
+
+def sync_spr_attribute_summaries_to_doc(spr_doc) -> None:
+	if not spr_doc.meta.has_field("custom_color_summary"):
+		return
+	for fn, val in compute_spr_attribute_summaries(spr_doc).items():
+		if spr_doc.meta.has_field(fn):
+			spr_doc.set(fn, val)
+
+
 class ShaftProductionRun(Document):
 	def before_validate(self):
 		self.sync_company_from_source()
@@ -1865,6 +1965,10 @@ class ShaftProductionRun(Document):
 			sync_bundle_consumed_meter_header(self)
 		self._spr_recalc_total_produced_weight_header()
 		self._spr_recalc_bag_pcs_headers()
+		self.sync_roll_attribute_summaries()
+
+	def sync_roll_attribute_summaries(self):
+		sync_spr_attribute_summaries_to_doc(self)
 
 	def sync_company_from_source(self):
 		"""Show the manufacturing company on SPR from PP first, then linked WO."""

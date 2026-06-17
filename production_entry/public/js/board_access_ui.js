@@ -75,28 +75,69 @@ export function boardActionFrozenStyle(ctx, action) {
 	return { opacity: "0.45", cursor: "not-allowed", pointerEvents: "none" };
 }
 
+/** Intersect operator allowed units with units valid on the current page. */
+export function resolveBoardAccessUnitPool(scope, boardUnits = null) {
+	if (!scope || scope.unlimited) return null;
+	const allowed = scope.allowed_units || [];
+	if (!allowed.length) return [];
+	const list = Array.isArray(boardUnits) ? boardUnits : [];
+	if (!list.length) return [...allowed];
+	return allowed.filter((u) => list.some((b) => maintenanceUnitsEqual(u, b)));
+}
+
 /**
  * Apply unit scope for restricted operators.
- * When boardUnits is given, only units valid on the current page are considered
- * (e.g. VTP-L1 on box-bag board, Unit 1 on production board).
+ * Returns { pool, showUnitFilter, unitLocked } for template binding.
+ */
+export function boardAccessUnitFilterState(scope, filterUnitRef, boardUnits = null) {
+	if (!scope || scope.unlimited || !filterUnitRef) {
+		return { pool: null, showUnitFilter: true, unitLocked: false };
+	}
+	const pool = resolveBoardAccessUnitPool(scope, boardUnits);
+	if (!pool) {
+		return { pool: null, showUnitFilter: true, unitLocked: false };
+	}
+	if (!pool.length) {
+		return { pool: [], showUnitFilter: false, unitLocked: true };
+	}
+	const cur = (filterUnitRef.value || "").trim();
+	if (pool.length === 1) {
+		if (!cur || !maintenanceUnitsEqual(cur, pool[0])) {
+			filterUnitRef.value = pool[0];
+		}
+		return { pool, showUnitFilter: false, unitLocked: true };
+	}
+	if (!cur || !pool.some((u) => maintenanceUnitsEqual(u, cur))) {
+		filterUnitRef.value = "";
+	}
+	return { pool, showUnitFilter: true, unitLocked: false };
+}
+
+/**
+ * Apply unit scope for restricted operators.
+ * When boardUnits is given, only units valid on the current page are considered.
  */
 export function applyBoardAccessUnitScope(scope, filterUnitRef, boardUnits = null) {
-	if (!scope || scope.unlimited || !filterUnitRef) return;
-	const allowed = scope.allowed_units || [];
-	if (!allowed.length) return;
+	return boardAccessUnitFilterState(scope, filterUnitRef, boardUnits);
+}
 
-	const pool = (() => {
-		const list = Array.isArray(boardUnits) ? boardUnits : [];
-		if (!list.length) return allowed;
-		return allowed.filter((u) => list.some((b) => maintenanceUnitsEqual(u, b)));
-	})();
-	if (!pool.length) return;
-
-	const cur = (filterUnitRef.value || "").trim();
-	if (!cur) {
-		filterUnitRef.value = pool[0];
-		return;
+/** Lock W CUT / D CUT company scope from Production Board Access (JVE / VTP / both). */
+export function applyWCutDCutCompanyScopeFromAccess(ctx, companyScopeRef, storageKey = "wCutDCutCompanyScope") {
+	if (!ctx || ctx.unlimited || !companyScopeRef) {
+		return { locked: false, scope: (companyScopeRef?.value || "both").toLowerCase() };
 	}
-	const ok = pool.some((u) => maintenanceUnitsEqual(u, cur));
-	if (!ok) filterUnitRef.value = pool[0];
+	const scope = String(ctx.w_cut_d_cut_company_scope || "").trim().toLowerCase();
+	if (!scope || scope === "both") {
+		return { locked: false, scope: (companyScopeRef.value || "both").toLowerCase() };
+	}
+	if (scope === "jve" || scope === "vtp") {
+		companyScopeRef.value = scope;
+		try {
+			localStorage.setItem(storageKey, scope);
+		} catch (e) {
+			/* ignore */
+		}
+		return { locked: !!ctx.company_scope_locked, scope };
+	}
+	return { locked: false, scope: (companyScopeRef.value || "both").toLowerCase() };
 }

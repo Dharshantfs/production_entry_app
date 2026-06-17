@@ -50,7 +50,7 @@
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search customer..." @input="fetchData" />
       </div>
-      <div class="cc-filter-item">
+      <div v-if="showUnitFilter" class="cc-filter-item">
         <label>Unit</label>
         <select v-model="filterUnit" @change="fetchData">
           <option value="">All Units</option>
@@ -915,6 +915,8 @@ function tableBoardArgs(extra = {}) {
   return { board_slug: PRODUCTION_TABLE_BOARD_SLUG, ...extra };
 }
 const boardAccessContext = ref({ unlimited: false, allowed_units: [], loaded: false });
+const unitFilterState = ref({ pool: null, showUnitFilter: true, unitLocked: false });
+const showUnitFilter = computed(() => unitFilterState.value.showUnitFilter !== false);
 
 const accessAllowedDates = computed(() => boardAccessContext.value.allowed_dates || []);
 const accessDateUseSelect = computed(() => boardAccessDateUseSelect(boardAccessContext.value));
@@ -934,9 +936,12 @@ const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.valu
 function applyBoardAccessContext(ctx) {
   const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
   boardAccessContext.value = { ...scope, loaded: true };
-  if (!scope || scope.unlimited) return;
+  if (!scope || scope.unlimited) {
+    unitFilterState.value = { pool: null, showUnitFilter: true, unitLocked: false };
+    return;
+  }
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  applyBoardAccessUnitScope(scope, filterUnit, units);
+  unitFilterState.value = applyBoardAccessUnitScope(scope, filterUnit, units);
 }
 
 async function loadBoardAccessContext() {

@@ -14,6 +14,34 @@ const BOARD_SELECT_FALLBACK =
 	"confirm-orders|Confirm Orders\n" +
 	"planning|Planning";
 
+function normalizeBoardSlug(raw) {
+	const s = String(raw || "").trim().toLowerCase();
+	if (!s) return "";
+	return (s.includes("|") ? s.split("|")[0] : s).trim();
+}
+
+function isWCutDCutBoardSlug(raw) {
+	const slug = normalizeBoardSlug(raw);
+	return slug === "w-cut-d-cut-board";
+}
+
+function wCutCompaniesFromBoardRows(rows) {
+	const out = new Set();
+	let hasWCut = false;
+	let hasOtherBoards = false;
+	(rows || []).forEach((row) => {
+		if (!row.board) return;
+		if (isWCutDCutBoardSlug(row.board)) {
+			hasWCut = true;
+			const c = String(row.w_cut_d_cut_company || "Both").trim().toUpperCase();
+			out.add(c === "JVE" || c === "VTP" ? c : "BOTH");
+			return;
+		}
+		hasOtherBoards = true;
+	});
+	return { hasWCut, hasOtherBoards, companies: [...out] };
+}
+
 function applyBoardSelectOptions(frm, options) {
 	const boards = frm.fields_dict.allowed_boards;
 	if (boards && boards.grid) {
@@ -23,6 +51,31 @@ function applyBoardSelectOptions(frm, options) {
 			options || BOARD_SELECT_FALLBACK
 		);
 	}
+}
+
+function toggleWCutCompanyFieldVisibility(frm, row) {
+	const boards = frm.fields_dict.allowed_boards;
+	if (!boards || !boards.grid || !row) return;
+	const show = isWCutDCutBoardSlug(row.board);
+	boards.grid.toggle_display("w_cut_d_cut_company", show, row.name);
+	if (show && !row.w_cut_d_cut_company) {
+		frappe.model.set_value(row.doctype, row.name, "w_cut_d_cut_company", "Both");
+	}
+}
+
+function setupAllowedUnitsQuery(frm) {
+	frm.set_query("unit", "allowed_units", () => {
+		const meta = wCutCompaniesFromBoardRows(frm.doc.allowed_boards || []);
+		return {
+			query:
+				"production_entry.production_planning.board_access.production_board_access_workstation_query",
+			filters: {
+				has_w_cut: meta.hasWCut ? 1 : 0,
+				has_other_boards: meta.hasOtherBoards ? 1 : 0,
+				w_cut_companies: meta.companies,
+			},
+		};
+	});
 }
 
 function decorateBoardAccessForm(frm) {
@@ -36,7 +89,8 @@ function decorateBoardAccessForm(frm) {
 				<div style="font-weight:700;font-size:15px;color:#1e3a8a;margin-bottom:6px;">Production Board Access</div>
 				<div style="font-size:12px;color:#334155;line-height:1.5;">
 					Assign by <strong>user name</strong> (search shows name + email). <strong>Many users can share the same unit</strong> (shift-wise).
-					Add <strong>board only</strong> — table view access is automatic. Use <strong>Freeze</strong> columns to lock Maintenance / Transfer / Despatch / Arrangement buttons (visible but disabled).
+					Add <strong>one row per board</strong> — table view access is automatic. Tick <strong>Freeze</strong> columns to disable toolbar buttons (Maintenance, Transfer, Despatch, Arrangement, Assign Shift, Sync SPR, Merge, Reorder).
+					For <strong>W CUT / D CUT</strong>, set <strong>Company</strong> to JVE, VTP, or Both; pick matching workstations under Allowed Units.
 				</div>
 			</div>`
 		);
@@ -56,6 +110,7 @@ frappe.ui.form.on("Production Board Access", {
 			query:
 				"production_entry.production_planning.board_access.production_board_access_user_query",
 		}));
+		setupAllowedUnitsQuery(frm);
 	},
 
 	refresh(frm) {
@@ -70,6 +125,7 @@ frappe.ui.form.on("Production Board Access", {
 			},
 		});
 		decorateBoardAccessForm(frm);
+		setupAllowedUnitsQuery(frm);
 
 		const boards = frm.fields_dict.allowed_boards;
 		if (boards && boards.grid) {
@@ -77,6 +133,7 @@ frappe.ui.form.on("Production Board Access", {
 				background: "#f8fafc",
 				"font-weight": "600",
 			});
+			(frm.doc.allowed_boards || []).forEach((row) => toggleWCutCompanyFieldVisibility(frm, row));
 		}
 	},
 
@@ -88,5 +145,21 @@ frappe.ui.form.on("Production Board Access", {
 				}
 			});
 		}
+	},
+
+	allowed_boards_add(frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		toggleWCutCompanyFieldVisibility(frm, row);
+	},
+});
+
+frappe.ui.form.on("Production Board Access Board", {
+	board(frm, cdt, cdn) {
+		const row = locals[cdt][cdn];
+		toggleWCutCompanyFieldVisibility(frm, row);
+		setupAllowedUnitsQuery(frm);
+	},
+	w_cut_d_cut_company(frm) {
+		setupAllowedUnitsQuery(frm);
 	},
 });

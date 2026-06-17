@@ -61,7 +61,7 @@
           @input="fetchData"
         />
       </div>
-      <div class="cc-filter-item">
+      <div v-if="showUnitFilter" class="cc-filter-item">
         <label>Unit</label>
         <select v-model="filterUnit">
           <option value="">All Units</option>
@@ -98,10 +98,13 @@
       </div>
       <div v-if="isWCutDCutBoard" class="cc-filter-item cc-shift-filter">
         <label>Company</label>
-        <div class="cc-shift-btns">
+        <div v-if="!companyScopeLocked" class="cc-shift-btns">
           <button type="button" :class="{ active: wCutDCutCompanyScope === 'jve' }" @click="setWCutDCutCompanyScope('jve')">JVE</button>
           <button type="button" :class="{ active: wCutDCutCompanyScope === 'vtp' }" @click="setWCutDCutCompanyScope('vtp')">VTP</button>
           <button type="button" :class="{ active: wCutDCutCompanyScope === 'both' }" @click="setWCutDCutCompanyScope('both')">Both</button>
+        </div>
+        <div v-else class="cc-shift-btns">
+          <button type="button" class="active" disabled>{{ String(wCutDCutCompanyScope || "").toUpperCase() }}</button>
         </div>
       </div>
       <button class="cc-clear-btn" @click="clearFilters">✕ Clear</button>
@@ -313,6 +316,7 @@ import {
 import {
   applyBoardAccessDateScope,
   applyBoardAccessUnitScope,
+  applyWCutDCutCompanyScopeFromAccess,
   boardAccessDatePickerDisabled,
   boardAccessDateUseSelect,
   boardAccessViewScopeLocked,
@@ -762,6 +766,9 @@ function getCurrentBoardSlug() {
 }
 
 const boardAccessContext = ref({ unlimited: false, allowed_units: [], loaded: false });
+const unitFilterState = ref({ pool: null, showUnitFilter: true, unitLocked: false });
+const companyScopeLocked = ref(false);
+const showUnitFilter = computed(() => unitFilterState.value.showUnitFilter !== false);
 
 const accessAllowedDates = computed(() => boardAccessContext.value.allowed_dates || []);
 const accessDateUseSelect = computed(() => boardAccessDateUseSelect(boardAccessContext.value));
@@ -793,9 +800,19 @@ function rawBoardUnitsList() {
 function applyBoardAccessContext(ctx) {
   const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
   boardAccessContext.value = { ...scope, loaded: true };
-  if (!scope || scope.unlimited) return;
+  if (!scope || scope.unlimited) {
+    unitFilterState.value = { pool: null, showUnitFilter: true, unitLocked: false };
+    companyScopeLocked.value = false;
+    return;
+  }
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
-  applyBoardAccessUnitScope(scope, filterUnit, rawBoardUnitsList());
+  if (isWCutDCutBoard.value) {
+    const companyMeta = applyWCutDCutCompanyScopeFromAccess(scope, wCutDCutCompanyScope);
+    companyScopeLocked.value = companyMeta.locked;
+  } else {
+    companyScopeLocked.value = false;
+  }
+  unitFilterState.value = applyBoardAccessUnitScope(scope, filterUnit, rawBoardUnitsList());
 }
 
 async function loadBoardAccessContext() {
@@ -861,8 +878,16 @@ try {
   if (_wcs === "jve" || _wcs === "vtp" || _wcs === "both") wCutDCutCompanyScope.value = _wcs;
 } catch (e) { /* ignore */ }
 function setWCutDCutCompanyScope(scope) {
+  if (companyScopeLocked.value) return;
   wCutDCutCompanyScope.value = scope;
   try { localStorage.setItem("wCutDCutCompanyScope", scope); } catch (e) { /* ignore */ }
+  if (boardAccessContext.value.loaded && !boardAccessContext.value.unlimited) {
+    unitFilterState.value = applyBoardAccessUnitScope(
+      boardAccessContext.value,
+      filterUnit,
+      rawBoardUnitsList()
+    );
+  }
   fetchData();
 }
 function setWCutDCutFamily(family) {

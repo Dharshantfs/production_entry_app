@@ -203,18 +203,21 @@
   {
    "fieldname": "custom_quality_summary",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Quality",
    "read_only": 1
   },
   {
    "fieldname": "custom_gsm_summary",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "GSM",
    "read_only": 1
   },
   {
    "fieldname": "custom_color_summary",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Color",
    "read_only": 1
   },

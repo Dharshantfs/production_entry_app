@@ -38,7 +38,7 @@
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
-      <div class="cc-filter-item">
+      <div v-if="unitFilterState.showUnitFilter" class="cc-filter-item">
         <label>Unit</label>
         <select v-model="filterUnit" @change="fetchData">
           <option value="">All Units</option>
@@ -49,11 +49,11 @@
         <button type="button" class="cc-maint-btn" :disabled="freezeMaintenance" :style="frozenStyle('maintenance')" @click="openMachineOffDialog">Machine Off</button>
         <TransferToolbarBlock board-kind="rewinding" :filter-context="transferFilterContext" :disabled="freezeTransfer" @submitted="fetchData" />
         <DespatchToolbarBlock board-kind="rewinding" :filter-context="transferFilterContext" :disabled="freezeDespatch" @submitted="fetchData" />
-        <button type="button" class="cc-clear-btn" @click="syncSprWeightToTable">Sync SPR Data</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeSyncSpr" :style="frozenStyle('sync_spr')" @click="syncSprWeightToTable">Sync SPR Data</button>
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="saveLaminationArrangement">Save Arrangment</button>
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="restoreLaminationArrangement">Restore Arrangment</button>
-        <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeAssignShift" :style="frozenStyle('assign_shift')" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button
           type="button"
@@ -332,7 +332,10 @@ const {
   freezeTransfer,
   freezeDespatch,
   freezeArrangement,
+  freezeAssignShift,
+  freezeSyncSpr,
   frozenStyle,
+  unitFilterState,
 } = createOrderTableBoardAccess(REWINDING_TABLE_BOARD_SLUG, {
   filterOrderDate,
   viewScope,
@@ -1263,6 +1266,7 @@ function currentShiftDateForDialog() {
 }
 
 function openAssignShiftDialog() {
+  if (freezeAssignShift.value) return;
   const d = new frappe.ui.Dialog({
     title: "Assign Rewinding Shift",
     fields: [
@@ -1460,6 +1464,7 @@ function updateUrlParams() {
 }
 
 async function syncSprWeightToTable() {
+  if (freezeSyncSpr.value) return;
   try {
     // Fabric qty / child WO qty now comes from live WO+PP data path in get_rewinding_order_table_data.
     // Keep this button as a manual refresh action without heavy backend sync.

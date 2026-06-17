@@ -41,7 +41,7 @@
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangment" : "Lock Arrangment" }}</button>
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="saveArrangement">Save Arrangment</button>
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="restoreArrangement">Restore Arrangment</button>
-        <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeAssignShift" :style="frozenStyle('assign_shift')" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-clear-btn" :title="sizeDimUnit === 'inches' ? 'Show roll & sheet size in mm (nearest 5)' : 'Show sizes in inches'" @click="toggleSizeDimUnit">{{ sizeDimUnit === "inches" ? "Sizes: mm" : "Sizes: Inches" }}</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">Back to Sheet Cutting Board</button>
@@ -215,6 +215,7 @@ const {
   freezeTransfer,
   freezeDespatch,
   freezeArrangement,
+  freezeAssignShift,
   frozenStyle,
 } = createOrderTableBoardAccess(SHEET_CUTTING_TABLE_BOARD_SLUG, {
   filterOrderDate,
@@ -438,7 +439,27 @@ function scheduleRowsByShift(shift) { return (filteredRows.value || []).filter(r
 function onRowDragStart(row) { dragRow.value = row; } function onRowDragEnd() { dragOverShift.value = ""; }
 async function handleShiftDrop(targetShift) { const row = dragRow.value; dragOverShift.value = ""; if (!row?.itemName) return; const dateKey = viewScope.value === "daily" && filterOrderDate.value ? toDateKey(filterOrderDate.value) : toDateKey(moveTargetDate.value); if (!dateKey) return; try { await frappe.call({ method: "production_entry.production_planning.scheduler_api.assign_sheet_cutting_shift", args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName } }); await fetchData(); } catch (e) { frappe.msgprint(`Failed to move row: ${e?.message || e}`); } finally { dragRow.value = null; } }
 function currentShiftDateForDialog() { if (viewScope.value === "daily" && filterOrderDate.value) return filterOrderDate.value; return frappe.datetime.get_today(); }
-function openAssignShiftDialog() { const d = new frappe.ui.Dialog({ title: "Assign Sheet Cutting Shift", fields: [{ fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() }, { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" }], primary_action_label: "Apply", primary_action: async (vals) => { await frappe.call({ method: "production_entry.production_planning.scheduler_api.assign_sheet_cutting_shift", args: { shift_date: vals.shift_date, shift_label: vals.shift_label } }); d.hide(); if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date; await fetchData(); } }); d.show(); }
+function openAssignShiftDialog() {
+  if (freezeAssignShift.value) return;
+  const d = new frappe.ui.Dialog({
+    title: "Assign Sheet Cutting Shift",
+    fields: [
+      { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
+      { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
+    ],
+    primary_action_label: "Apply",
+    primary_action: async (vals) => {
+      await frappe.call({
+        method: "production_entry.production_planning.scheduler_api.assign_sheet_cutting_shift",
+        args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
+      });
+      d.hide();
+      if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date;
+      await fetchData();
+    },
+  });
+  d.show();
+}
 async function openMachineOffDialog() { if (freezeMaintenance.value) return; const d = new frappe.ui.Dialog({ title: "Sheet Cutting Machine Off", fields: [{ fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Select", fieldname: "maintenance_type", label: "Type", options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change", default: "Machine Off", reqd: 1 }, { fieldtype: "Small Text", fieldname: "notes", label: "Notes" }], primary_action_label: "Save", primary_action: async (vals) => { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance", args: { unit: SHEET_CUTTING_UNIT, start_date: vals.start_date, end_date: vals.end_date, maintenance_type: vals.maintenance_type, notes: vals.notes || "" } }); if (res?.message?.status === "success") frappe.show_alert({ message: res.message.message || "Maintenance saved", indicator: "green" }, 4); d.hide(); await fetchMaintenanceRecords(); await fetchData(); } }); d.show(); }
 async function saveArrangement() { if (freezeArrangement.value) return; try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, sequence_data: JSON.stringify(seq), plan_name: "sheet_cutting_table" }) }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
 async function restoreArrangement() { if (freezeArrangement.value) return; try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, plan_name: "sheet_cutting_table" }) }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }

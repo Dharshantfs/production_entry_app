@@ -10,6 +10,9 @@ from frappe.utils import add_days, getdate, now_datetime, today
 from production_entry.production_planning.planning_doctypes import (
 	maintenance_unit_match_values,
 	normalize_planning_unit_for_select,
+	W_CUT_D_CUT_ALL_UNITS,
+	W_CUT_D_CUT_JVE_UNITS,
+	W_CUT_D_CUT_VTP_UNITS,
 )
 
 DOCTYPE_ACCESS = "Production Board Access"
@@ -200,6 +203,7 @@ def get_production_board_user_context(board_slug: str | None = None):
 	board_slug_norm = _normalize_board_slug(board_slug)
 	permitted = True
 	frozen_actions: dict = {}
+	w_cut_settings = {"company_scope": None, "company_scope_locked": False}
 	if board_slug_norm:
 		if scope.get("unlimited"):
 			permitted = True
@@ -209,6 +213,7 @@ def get_production_board_user_context(board_slug: str | None = None):
 			access_name = _access_docname_for_user(frappe.session.user)
 			if access_name and permitted:
 				frozen_actions = _frozen_actions_for_board(access_name, board_slug_norm)
+				w_cut_settings = _w_cut_d_cut_settings_for_board(access_name, board_slug_norm)
 	return {
 		"permitted": permitted,
 		"unlimited": bool(scope.get("unlimited")),
@@ -221,6 +226,8 @@ def get_production_board_user_context(board_slug: str | None = None):
 		"date_picker_frozen": bool(scope.get("date_picker_frozen")),
 		"view_scope_locked": bool(scope.get("view_scope_locked")),
 		"frozen_actions": frozen_actions,
+		"w_cut_d_cut_company_scope": w_cut_settings.get("company_scope"),
+		"company_scope_locked": bool(w_cut_settings.get("company_scope_locked")),
 	}
 
 
@@ -240,10 +247,89 @@ def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
 				"transfer": bool(cint(getattr(row, "freeze_transfer", 0))),
 				"despatch": bool(cint(getattr(row, "freeze_despatch", 0))),
 				"arrangement": bool(cint(getattr(row, "freeze_arrangement", 0))),
+				"assign_shift": bool(cint(getattr(row, "freeze_assign_shift", 0))),
+				"sync_spr": bool(cint(getattr(row, "freeze_sync_spr", 0))),
 				"merge": bool(cint(getattr(row, "freeze_merge", 0))),
 				"reorder": bool(cint(getattr(row, "freeze_reorder", 0))),
 			}
 	return {}
+
+
+_W_CUT_D_CUT_BOARD_SLUGS = frozenset({"w-cut-d-cut-board", "w-cut-d-cut-order-table"})
+
+
+def _w_cut_d_cut_settings_for_board(access_name: str, board_slug: str) -> dict:
+	"""Company scope for W CUT / D CUT board rows (JVE / VTP / both)."""
+	requested = _equivalent_board_slugs(board_slug)
+	if not (requested & _W_CUT_D_CUT_BOARD_SLUGS):
+		return {"company_scope": None, "company_scope_locked": False}
+
+	doc = frappe.get_doc(DOCTYPE_ACCESS, access_name)
+	for row in doc.get("allowed_boards") or []:
+		row_slug = _normalize_board_slug(row.board)
+		if not row_slug or not (_equivalent_board_slugs(row_slug) & _W_CUT_D_CUT_BOARD_SLUGS):
+			continue
+		if not (requested & _equivalent_board_slugs(row_slug)):
+			continue
+		company = (getattr(row, "w_cut_d_cut_company", None) or "Both").strip()
+		key = company.lower()
+		if key not in ("jve", "vtp", "both"):
+			key = "both"
+		return {
+			"company_scope": key,
+			"company_scope_locked": key in ("jve", "vtp"),
+		}
+	return {"company_scope": None, "company_scope_locked": False}
+
+
+def _workstations_for_w_cut_companies(companies: set[str]) -> set[str]:
+	"""Union of workstation labels for JVE/VTP/Both company picks."""
+	out: set[str] = set()
+	for company in companies or {"both"}:
+		c = (company or "both").strip().lower()
+		if c == "jve":
+			out.update(W_CUT_D_CUT_JVE_UNITS)
+		elif c == "vtp":
+			out.update(W_CUT_D_CUT_VTP_UNITS)
+		else:
+			out.update(W_CUT_D_CUT_ALL_UNITS)
+	return out
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def production_board_access_workstation_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Workstation link search for Allowed Units — optional W/D Cut company filter."""
+	filters = filters or {}
+	txt = f"%{txt}%"
+	w_cut_companies = filters.get("w_cut_companies") or []
+	has_w_cut = bool(filters.get("has_w_cut"))
+	has_other_boards = bool(filters.get("has_other_boards"))
+
+	allowed_names: set[str] | None = None
+	if has_w_cut and not has_other_boards:
+		companies = w_cut_companies or ["BOTH"]
+		allowed_names = _workstations_for_w_cut_companies(set(companies))
+
+	conditions = ["w.name LIKE %(txt)s"]
+	if allowed_names:
+		placeholders = ", ".join([f"%(u{i})s" for i in range(len(allowed_names))])
+		conditions.append(f"w.name IN ({placeholders})")
+		params = {f"u{i}": v for i, v in enumerate(sorted(allowed_names))}
+	else:
+		params = {}
+
+	params.update({"txt": txt, "start": start, "page_len": page_len})
+	return frappe.db.sql(
+		f"""
+		SELECT w.name, w.name AS label
+		FROM `tabWorkstation` w
+		WHERE {" AND ".join(conditions)}
+		ORDER BY w.name
+		LIMIT %(start)s, %(page_len)s
+		""",
+		params,
+	)
 
 
 @frappe.whitelist()

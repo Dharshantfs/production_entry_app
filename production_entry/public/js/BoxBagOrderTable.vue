@@ -45,13 +45,16 @@
       </div>
       <div v-if="isWCutDCutTable" class="cc-filter-item cc-shift-filter">
         <label>Company</label>
-        <div class="cc-shift-btns">
+        <div v-if="!companyScopeLocked" class="cc-shift-btns">
           <button type="button" :class="{ active: wCutDCutCompanyScope === 'jve' }" @click="setWCutDCutCompanyScope('jve')">JVE</button>
           <button type="button" :class="{ active: wCutDCutCompanyScope === 'vtp' }" @click="setWCutDCutCompanyScope('vtp')">VTP</button>
           <button type="button" :class="{ active: wCutDCutCompanyScope === 'both' }" @click="setWCutDCutCompanyScope('both')">Both</button>
         </div>
+        <div v-else class="cc-shift-btns">
+          <button type="button" class="active" disabled>{{ String(wCutDCutCompanyScope || "").toUpperCase() }}</button>
+        </div>
       </div>
-      <div class="cc-filter-item">
+      <div v-if="showUnitFilter" class="cc-filter-item">
         <label>Unit</label>
         <select v-model="filterUnit" @change="debouncedFetch">
           <option value="">All</option>
@@ -67,7 +70,7 @@
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="toggleArrangementLock">{{ arrangementLocked ? "Unlock Arrangement" : "Lock Arrangement" }}</button>
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="saveArrangement">Save Arrangement</button>
         <button type="button" class="cc-clear-btn" :disabled="freezeArrangement" :style="frozenStyle('arrangement')" @click="restoreArrangement">Restore Arrangement</button>
-        <button type="button" class="cc-clear-btn" @click="openAssignShiftDialog">Assign Shift</button>
+        <button type="button" class="cc-clear-btn" :disabled="freezeAssignShift" :style="frozenStyle('assign_shift')" @click="openAssignShiftDialog">Assign Shift</button>
         <button type="button" class="cc-clear-btn" @click="fetchData">Refresh</button>
         <button type="button" class="cc-view-btn" @click="goToBoard">{{ backToBoardLabel }}</button>
       </div>
@@ -184,6 +187,7 @@ import { maintenanceUnitsEqual, normalizeMaintenanceUnit, unitAllowedByBoardAcce
 import {
   applyBoardAccessDateScope,
   applyBoardAccessUnitScope,
+  applyWCutDCutCompanyScopeFromAccess,
   boardAccessDatePickerDisabled,
   boardAccessDateUseSelect,
   boardAccessViewScopeLocked,
@@ -242,8 +246,17 @@ try {
   if (_wf === "w_cut" || _wf === "d_cut" || _wf === "both") wCutDCutFamily.value = _wf;
 } catch (e) { /* ignore */ }
 function setWCutDCutCompanyScope(scope) {
+  if (companyScopeLocked.value) return;
   wCutDCutCompanyScope.value = scope;
   try { localStorage.setItem("wCutDCutCompanyScope", scope); } catch (e) { /* ignore */ }
+  if (boardAccessContext.value.loaded && !boardAccessContext.value.unlimited) {
+    unitFilterState.value = applyBoardAccessUnitScope(
+      boardAccessContext.value,
+      filterUnit,
+      isWCutDCutTable.value ? wCutDCutUnitsForScope() : BOX_BAG_UNITS
+    );
+  }
+  debouncedFetch();
 }
 function setWCutDCutFamily(family) {
   wCutDCutFamily.value = family;
@@ -281,20 +294,37 @@ function boardArgs(extra = {}) {
 function filterListByAccess(list) {
   const ctx = boardAccessContext.value;
   if (!ctx || !ctx.loaded || ctx.unlimited) return list;
+  const pool = unitFilterState.value.pool;
+  if (Array.isArray(pool) && pool.length) {
+    return list.filter((u) => pool.some((p) => unitAllowedByBoardAccess(u, [p])));
+  }
   const allowed = ctx.allowed_units || [];
   if (!allowed.length) return [];
   return list.filter((u) => unitAllowedByBoardAccess(u, allowed));
 }
 const boardAccessContext = ref({ unlimited: false, allowed_units: [], loaded: false, permitted: true });
+const unitFilterState = ref({ pool: null, showUnitFilter: true, unitLocked: false });
+const companyScopeLocked = ref(false);
+const showUnitFilter = computed(() => unitFilterState.value.showUnitFilter !== false);
 const accessDenied = computed(() => boardAccessContext.value.loaded && boardAccessContext.value.permitted === false);
 
 function applyBoardAccessContext(ctx) {
   const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
   boardAccessContext.value = { ...scope, loaded: true };
-  if (!scope || scope.unlimited) return;
+  if (!scope || scope.unlimited) {
+    unitFilterState.value = { pool: null, showUnitFilter: true, unitLocked: false };
+    companyScopeLocked.value = false;
+    return;
+  }
   applyBoardAccessDateScope(scope, { filterOrderDate, viewScope });
+  if (isWCutDCutTable.value) {
+    const companyMeta = applyWCutDCutCompanyScopeFromAccess(scope, wCutDCutCompanyScope);
+    companyScopeLocked.value = companyMeta.locked;
+  } else {
+    companyScopeLocked.value = false;
+  }
   const boardUnits = isWCutDCutTable.value ? wCutDCutUnitsForScope() : BOX_BAG_UNITS;
-  applyBoardAccessUnitScope(scope, filterUnit, boardUnits);
+  unitFilterState.value = applyBoardAccessUnitScope(scope, filterUnit, boardUnits);
 }
 
 function wCutDCutUnitsForScope() {
@@ -308,6 +338,7 @@ const freezeMaintenance = computed(() => isBoardActionFrozen(boardAccessContext.
 const freezeTransfer = computed(() => isBoardActionFrozen(boardAccessContext.value, "transfer"));
 const freezeDespatch = computed(() => isBoardActionFrozen(boardAccessContext.value, "despatch"));
 const freezeArrangement = computed(() => isBoardActionFrozen(boardAccessContext.value, "arrangement"));
+const freezeAssignShift = computed(() => isBoardActionFrozen(boardAccessContext.value, "assign_shift"));
 const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
 function frozenStyle(action) {
   return boardActionFrozenStyle(boardAccessContext.value, action);
@@ -643,7 +674,27 @@ function onRowDragEnd() { dragOverShift.value = ""; }
 async function handleShiftDrop(targetShift) { const row = dragRow.value; dragOverShift.value = ""; if (!row?.itemName) return; const dateKey = viewScope.value === "daily" && filterOrderDate.value ? toDateKey(filterOrderDate.value) : toDateKey(moveTargetDate.value); if (!dateKey) return; try { await frappe.call({ method: "production_entry.production_planning.box_bag_api.assign_box_bag_shift", args: { shift_date: dateKey, shift_label: targetShift, item_name: row.itemName } }); await fetchData(); } catch (e) { frappe.msgprint(`Failed to move row: ${e?.message || e}`); } finally { dragRow.value = null; } }
 
 function currentShiftDateForDialog() { if (viewScope.value === "daily" && filterOrderDate.value) return filterOrderDate.value; return frappe.datetime.get_today(); }
-function openAssignShiftDialog() { const d = new frappe.ui.Dialog({ title: isWCutDCutTable.value ? "Assign W CUT / D CUT Shift" : "Assign Box Bag Shift", fields: [{ fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() }, { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" }], primary_action_label: "Apply", primary_action: async (vals) => { await frappe.call({ method: "production_entry.production_planning.box_bag_api.assign_box_bag_shift", args: { shift_date: vals.shift_date, shift_label: vals.shift_label } }); d.hide(); if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date; await fetchData(); } }); d.show(); }
+function openAssignShiftDialog() {
+  if (freezeAssignShift.value) return;
+  const d = new frappe.ui.Dialog({
+    title: isWCutDCutTable.value ? "Assign W CUT / D CUT Shift" : "Assign Box Bag Shift",
+    fields: [
+      { fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() },
+      { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" },
+    ],
+    primary_action_label: "Apply",
+    primary_action: async (vals) => {
+      await frappe.call({
+        method: "production_entry.production_planning.box_bag_api.assign_box_bag_shift",
+        args: { shift_date: vals.shift_date, shift_label: vals.shift_label },
+      });
+      d.hide();
+      if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date;
+      await fetchData();
+    },
+  });
+  d.show();
+}
 
 async function openMachineOffDialog() {
   if (freezeMaintenance.value) return;
