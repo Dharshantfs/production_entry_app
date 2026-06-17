@@ -2,6 +2,35 @@
 
 import { maintenanceUnitsEqual } from "./maintenance_utils.js";
 
+export const OPERATOR_ROLE_NAMES = ["Operator"];
+
+export function getCurrentUserRoles() {
+	const roleSet = new Set();
+	if (Array.isArray(frappe?.user_roles)) {
+		frappe.user_roles.forEach((r) => roleSet.add(String(r || "").trim()));
+	}
+	const bootRoles = frappe?.boot?.user?.roles;
+	if (Array.isArray(bootRoles)) {
+		bootRoles.forEach((r) => roleSet.add(String(r || "").trim()));
+	}
+	return Array.from(roleSet);
+}
+
+export function isOperatorUser() {
+	const currentUser = String(frappe?.session?.user || "").toLowerCase();
+	if (currentUser === "administrator") return false;
+	const roles = getCurrentUserRoles().map((r) => r.toLowerCase());
+	if (roles.includes("system manager")) return false;
+	return OPERATOR_ROLE_NAMES.some((r) => roles.includes(r.toLowerCase()));
+}
+
+/** Hide party/customer table column + customer search for Operator role. */
+export function shouldHideCustomerColumns(boardAccessContext) {
+	if (isOperatorUser()) return true;
+	if (boardAccessContext?.hide_customer_columns) return true;
+	return false;
+}
+
 export function formatAccessDateLabel(iso) {
 	const s = String(iso || "").trim();
 	if (!s) return s;

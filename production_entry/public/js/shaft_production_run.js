@@ -1363,6 +1363,7 @@ frappe.ui.form.on('Shaft Production Run', {
 			if (frappe.meta.get_docfield('Shaft Production Run', 'company')) {
 				frm.set_value('company', '');
 			}
+			sprResetProcessFlags(frm);
 			frm.clear_table('shaft_jobs');
 			frm.clear_table('bundle_calculation');
 			frm.clear_table('items');
@@ -1375,7 +1376,12 @@ frappe.ui.form.on('Shaft Production Run', {
 
 		// Do not keep old roll lines when switching PP (also blocks client scripts that fill later)
 		frm.clear_table('items');
+		frm.clear_table('shaft_jobs');
+		frm.clear_table('bundle_calculation');
 		frm.refresh_field('items');
+		frm.refresh_field('shaft_jobs');
+		frm.refresh_field('bundle_calculation');
+		sprResetProcessFlags(frm);
 
 		if (!frm.doc.run_date) {
 			frm.set_value('run_date', frappe.datetime.get_today());
@@ -1419,14 +1425,15 @@ frappe.ui.form.on('Shaft Production Run', {
 				if ('custom_total_planned_pcs' in d && frappe.meta.get_docfield('Shaft Production Run', 'custom_total_planned_pcs')) {
 					frm.set_value('custom_total_planned_pcs', flt(d.custom_total_planned_pcs || 0));
 				}
-				if (d.custom_is_sheet_cutting) {
-					frm.set_value('custom_is_sheet_cutting', 1);
-				}
-				if (d.custom_is_box_bag) {
-					frm.set_value('custom_is_box_bag', 1);
-				}
+				sprApplyProcessFlagsFromPp(frm, d);
 				sprToggleSheetCuttingUi(frm);
-				if (sprIsBundlePackagingMode(frm) || (d.bundle_rows && d.bundle_rows.length)) {
+				if (cint(frm.doc.custom_is_slitting)) {
+					if (frm._spr_items_cols_mode) {
+						delete frm._spr_items_cols_mode;
+					}
+					spr_apply_items_grid_columns(frm, true);
+				}
+				if (sprIsBundlePackagingMode(frm)) {
 					sprLoadBundleCalculationFromPp(frm, d.bundle_rows);
 				} else {
 					sprLoadShaftJobsFromPp(frm);
@@ -4665,6 +4672,38 @@ function sprUsesRewindingRollPrompt(frm) {
 
 function sprUsesSheetCuttingRollPrompt(frm) {
 	return sprIsSheetCutting(frm);
+}
+
+const SPR_PROCESS_FLAG_FIELDS = [
+	'custom_is_lamination',
+	'custom_is_rewinding',
+	'custom_is_sheet_cutting',
+	'custom_is_box_bag',
+	'custom_is_bopp_film',
+	'custom_is_printing',
+	'custom_is_slitting',
+];
+
+function sprResetProcessFlags(frm) {
+	if (!frm) {
+		return;
+	}
+	SPR_PROCESS_FLAG_FIELDS.forEach(function (fieldname) {
+		if (frappe.meta.get_docfield('Shaft Production Run', fieldname)) {
+			frm.set_value(fieldname, 0);
+		}
+	});
+}
+
+function sprApplyProcessFlagsFromPp(frm, payload) {
+	if (!frm || !payload) {
+		return;
+	}
+	SPR_PROCESS_FLAG_FIELDS.forEach(function (fieldname) {
+		if (fieldname in payload && frappe.meta.get_docfield('Shaft Production Run', fieldname)) {
+			frm.set_value(fieldname, cint(payload[fieldname]));
+		}
+	});
 }
 
 function sprIsBag(frm) {

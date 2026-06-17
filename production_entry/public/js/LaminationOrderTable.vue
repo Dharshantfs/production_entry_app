@@ -50,7 +50,7 @@
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
       </div>
-      <div class="cc-filter-item">
+      <div v-if="!hideCustomerColumns" class="cc-filter-item">
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
@@ -123,7 +123,7 @@
             <th>DATE</th>
             <th>SHIFT</th>
             <th>ORDER CODE</th>
-            <th>CUSTOMER</th>
+            <th v-if="!hideCustomerColumns">CUSTOMER</th>
             <th v-if="showProcessColumn">PROCESS</th>
             <th v-if="!isPrintedBoppTable">QUALITY</th>
             <th v-if="!isPrintedBoppTable">{{ widthColumnHeader }}</th>
@@ -202,7 +202,7 @@
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.partyCode || row.order_code || "-" }}</td>
-            <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
+            <td v-if="!hideCustomerColumns">{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td v-if="showProcessColumn" class="cell-center font-bold">{{ processLabel(row) }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ row.quality }}</td>
             <td v-if="!isPrintedBoppTable" class="cell-center">{{ formatWidthCell(row) }}</td>
@@ -533,6 +533,7 @@ const {
   freezeSyncSpr,
   frozenStyle,
   unitFilterState,
+  hideCustomerColumns,
 } = createOrderTableBoardAccess(TABLE_BOARD_SLUG, {
   filterOrderDate,
   viewScope,
@@ -641,16 +642,20 @@ const tableColCount = computed(() => {
     let n = 23;
     if (showPrintingAllProcesses.value) n += 1;
     if (showPrintingLamGsmColumn.value) n += 1;
+    if (hideCustomerColumns.value) n -= 1;
     return n;
   }
   if (isPrintedBoppTable.value) {
-    return 21;
+    let n = 21;
+    if (hideCustomerColumns.value) n -= 1;
+    return n;
   }
   let n = 19;
   if (showAllProcesses.value) n += 1;
   if (showDesignNameColumn.value) n += 1;
   if (showCylinderTypeColumn.value) n += 1;
   if (showBoppGsmColumn.value) n += 1;
+  if (hideCustomerColumns.value) n -= 1;
   return n;
 });
 const maintenanceEmptyColspan = computed(() => Math.max(1, tableColCount.value - 3));

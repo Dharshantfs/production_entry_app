@@ -33,7 +33,7 @@
         </div>
       </div>
       <div class="cc-filter-item"><label>Order Code</label><input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" /></div>
-      <div class="cc-filter-item"><label>Customer</label><input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" /></div>
+      <div v-if="!hideCustomerColumns" class="cc-filter-item"><label>Customer</label><input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" /></div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" :disabled="freezeMaintenance" :style="frozenStyle('maintenance')" @click="openMachineOffDialog">Machine Off</button>
         <TransferToolbarBlock board-kind="sheet_cutting" :filter-context="transferFilterContext" :disabled="freezeTransfer" @submitted="fetchData" />
@@ -77,7 +77,7 @@
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilterTitle }})</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:120px;">INPUT MTRS</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY (KGS)</th><th style="min-width:96px;">ACHIEVED QTY (KGS)</th><th style="min-width:120px;">TOTAL PLANNED SHEET (PCS)</th><th style="min-width:120px;">TOTAL PRODUCED SHEET (PCS)</th><th style="min-width:120px;">CONSUMED MTRS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:120px;">ORDER CODE</th><th v-if="!hideCustomerColumns" style="min-width:150px;">CUSTOMER NAME</th><th v-if="showProcessColumn" style="min-width:80px;">PROCESS</th><th v-if="showDesignColumns" style="min-width:90px;">DESIGN CODE</th><th v-if="showDesignColumns" style="min-width:120px;">DESIGN NAME</th><th style="min-width:90px;">QUALITY</th><th style="min-width:64px;">GSM</th><th v-if="showLamGsmColumn" style="min-width:72px;">LAM GSM</th><th v-if="showBoppGsmColumn" style="min-width:80px;">BOPP GSM</th><th style="min-width:96px;">{{ rollSizeHeader }}</th><th style="min-width:120px;">INPUT MTRS</th><th style="min-width:110px;">{{ sheetSizeHeader }}</th><th style="min-width:90px;">PLANNED QTY (KGS)</th><th style="min-width:96px;">ACHIEVED QTY (KGS)</th><th style="min-width:120px;">TOTAL PLANNED SHEET (PCS)</th><th style="min-width:120px;">TOTAL PRODUCED SHEET (PCS)</th><th style="min-width:120px;">CONSUMED MTRS</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="tableColCount" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;"><div style="display:inline-flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;"><span>🔧 MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span><button type="button" @click="deleteMaintenanceRecord(row.record.name)" style="background:#dc2626;color:white;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-weight:600;font-size:11px;">Remove</button></div></td></tr>
@@ -88,7 +88,7 @@
               <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
               <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
-              <td>{{ row.customer_name || row.customer || "-" }}</td>
+              <td v-if="!hideCustomerColumns">{{ row.customer_name || row.customer || "-" }}</td>
               <td v-if="showProcessColumn" class="cell-center font-bold">{{ processLabelForRow(row) }}</td>
               <td v-if="showDesignColumns" class="cell-center font-bold">{{ designCodeForRow(row) }}</td>
               <td v-if="showDesignColumns" class="cell-center font-bold">{{ designNameForRow(row) }}</td>
@@ -217,6 +217,7 @@ const {
   freezeArrangement,
   freezeAssignShift,
   frozenStyle,
+  hideCustomerColumns,
 } = createOrderTableBoardAccess(SHEET_CUTTING_TABLE_BOARD_SLUG, {
   filterOrderDate,
   viewScope,
@@ -247,7 +248,11 @@ function boppGsmForRow(row) {
   return formatNum(row?.custom_bopp_gsm);
 }
 const tableColCount = computed(
-  () => 20 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)
+  () => {
+    let n = 20 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0);
+    if (hideCustomerColumns.value) n -= 1;
+    return n;
+  }
 );
 const transferFilterContext = computed(() => ({
   board_slug: SHEET_CUTTING_TABLE_BOARD_SLUG,

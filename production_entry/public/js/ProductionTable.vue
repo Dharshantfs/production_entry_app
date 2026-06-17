@@ -46,7 +46,7 @@
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search order..." @input="fetchData" />
       </div>
-      <div class="cc-filter-item">
+      <div v-if="!hideCustomerColumns" class="cc-filter-item">
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search customer..." @input="fetchData" />
       </div>
@@ -181,7 +181,7 @@
                         <th style="width: 80px;">DATE</th>
                         <th style="width: 80px;">DAY</th>
                         <th style="width: 100px;">ORDER CODE</th>
-                        <th style="width: 150px;">PARTY NAME</th>
+                        <th v-if="!hideCustomerColumns" style="width: 150px;">PARTY NAME</th>
                         <th style="width: 120px;">PLAN CODE</th>
                         <th style="width: 80px;">QUALITY</th>
                         <th style="width: 100px;">COLOUR</th>
@@ -210,7 +210,7 @@
                 >
                       <!-- Maintenance Row (show once at maintenance start date, centered) -->
                       <tr v-if="getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-                        <td colspan="19" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+                        <td :colspan="emptyMaintenanceColspan" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                           <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                             <span>🔧 MAINTENANCE: {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).type }} ({{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).startDate }} - {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).endDate }})</span>
                             <button @click="deleteMaintenanceRecord(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -232,7 +232,7 @@
                             </td>
                                     
                             <td class="cell-center">{{ row.item.partyCode }}</td>
-                            <td>{{ row.item.customer_name || row.item.party_name || row.item.customer || row.item.partyCode }}</td>
+                            <td v-if="!hideCustomerColumns">{{ row.item.customer_name || row.item.party_name || row.item.customer || row.item.partyCode }}</td>
                             <td class="cell-center font-mono font-bold" style="font-size:11px; color:#4f46e5;">{{ row.item.planCode }}</td>
                             <td class="cell-center">{{ row.item.quality }}</td>
                             <td class="cell-center font-bold">{{ row.item.color }}</td>
@@ -433,12 +433,12 @@
                         <td class="cell-center">-</td>
                         <td class="cell-center font-bold">{{ formatDate(dateGroup.date) }}</td>
                         <td class="cell-center">{{ getDayName(dateGroup.date) }}</td>
-                        <td colspan="15" style="text-align:center; color:#94a3b8; font-style:italic;">No orders (maintenance day)</td>
+                        <td :colspan="emptyDayColspan" style="text-align:center; color:#94a3b8; font-style:italic;">No orders (maintenance day)</td>
                       </tr>
                 </tbody>
                 <tbody>
                     <tr v-if="unitGroup.dates.length === 0">
-                        <td colspan="18" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
+                        <td :colspan="emptyUnitColspan" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
                     </tr>
                 </tbody>
             </table>
@@ -472,6 +472,7 @@ import {
   boardActionFrozenStyle,
   formatAccessDateLabel,
   isBoardActionFrozen,
+  shouldHideCustomerColumns,
 } from "./board_access_ui.js";
 
 // ===== MAINTENANCE DATA =====
@@ -932,6 +933,11 @@ const freezeDespatch = computed(() => isBoardActionFrozen(boardAccessContext.val
 const freezeArrangement = computed(() => isBoardActionFrozen(boardAccessContext.value, "arrangement"));
 const freezeMerge = computed(() => isBoardActionFrozen(boardAccessContext.value, "merge"));
 const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
+const hideCustomerColumns = computed(() => shouldHideCustomerColumns(boardAccessContext.value));
+const customerColHidden = computed(() => (hideCustomerColumns.value ? 1 : 0));
+const emptyMaintenanceColspan = computed(() => 19 - customerColHidden.value);
+const emptyDayColspan = computed(() => 15 - customerColHidden.value);
+const emptyUnitColspan = computed(() => 18 - customerColHidden.value);
 
 function applyBoardAccessContext(ctx) {
   const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };

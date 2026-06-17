@@ -34,7 +34,7 @@
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
       </div>
-      <div class="cc-filter-item">
+      <div v-if="!hideCustomerColumns" class="cc-filter-item">
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
@@ -100,7 +100,7 @@
             <th>DATE</th>
             <th>SHIFT</th>
             <th>CODE</th>
-            <th>CUSTOMER NAME</th>
+            <th v-if="!hideCustomerColumns">CUSTOMER NAME</th>
             <th>QUALITY</th>
             <th>COLOUR</th>
             <th>{{ rollSizeHeader }}</th>
@@ -120,7 +120,7 @@
             <td v-if="row.isFirstOfDate !== false" :rowspan="row.dateRowspan || 1" class="cell-center">{{ formatDate(row.plannedDate || row.planned_date) }}</td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
-            <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
+            <td v-if="!hideCustomerColumns">{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
             <td class="cell-center">{{ formatRollSizeCell(row) }}</td>
@@ -157,7 +157,7 @@
             <th>DATE</th>
             <th>SHIFT</th>
             <th>CODE</th>
-            <th>CUSTOMER NAME</th>
+            <th v-if="!hideCustomerColumns">CUSTOMER NAME</th>
             <th>QUALITY</th>
             <th>COLOUR</th>
             <th style="min-width:120px;">UNIT</th>
@@ -176,7 +176,7 @@
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-              <td colspan="19" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+              <td :colspan="rewindingMaintenanceColspan" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                 <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                   <span>🔧 MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span>
                   <button @click="deleteMaintenanceRecord(row.record.name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -189,7 +189,7 @@
                 <span v-if="!arrangementUnlocked" class="cc-lock-hint">Locked</span>
               </td>
               <td class="cell-center font-bold">{{ formatDate(row.dateKey) }}</td>
-              <td colspan="16" style="text-align:center; color:#94a3b8; font-style:italic;">No rewinding orders (maintenance day)</td>
+              <td :colspan="rewindingEmptyDayColspan" style="text-align:center; color:#94a3b8; font-style:italic;">No rewinding orders (maintenance day)</td>
             </tr>
             <tr v-else
             :draggable="arrangementUnlocked"
@@ -213,7 +213,7 @@
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
-            <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
+            <td v-if="!hideCustomerColumns">{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
             <td class="cell-center" style="font-size:11px;max-width:140px;word-break:break-word;">{{ row.unit || "-" }}</td>
@@ -268,7 +268,7 @@
           </tr>
           </template>
           <tr v-if="!displayRows.length">
-              <td colspan="18" class="cell-center" style="padding:24px;color:#64748b;">No rewinding orders for this view.</td>
+              <td :colspan="rewindingEmptyTableColspan" class="cell-center" style="padding:24px;color:#64748b;">No rewinding orders for this view.</td>
           </tr>
         </tbody>
       </table>
@@ -336,12 +336,17 @@ const {
   freezeSyncSpr,
   frozenStyle,
   unitFilterState,
+  hideCustomerColumns,
 } = createOrderTableBoardAccess(REWINDING_TABLE_BOARD_SLUG, {
   filterOrderDate,
   viewScope,
   filterUnit,
   getBoardUnits: () => REWINDING_ALL_TABLE_UNITS,
 });
+const rewindingCustomerColHidden = computed(() => (hideCustomerColumns.value ? 1 : 0));
+const rewindingMaintenanceColspan = computed(() => 19 - rewindingCustomerColHidden.value);
+const rewindingEmptyDayColspan = computed(() => 16 - rewindingCustomerColHidden.value);
+const rewindingEmptyTableColspan = computed(() => 18 - rewindingCustomerColHidden.value);
 
 const transferFilterContext = computed(() => ({
   board_slug: REWINDING_TABLE_BOARD_SLUG,

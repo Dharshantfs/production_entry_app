@@ -62,7 +62,7 @@
         </select>
       </div>
       <div class="cc-filter-item"><label>Order Code</label><input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" /></div>
-      <div class="cc-filter-item"><label>Customer</label><input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" /></div>
+      <div v-if="!hideCustomerColumns" class="cc-filter-item"><label>Customer</label><input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" /></div>
       <div class="cc-filter-actions">
         <button type="button" class="cc-maint-btn" :disabled="freezeMaintenance" :style="frozenStyle('maintenance')" @click="openMachineOffDialog">Machine Off</button>
         <TransferToolbarBlock :board-kind="boardKind" :filter-context="transferFilterContext" :disabled="freezeTransfer" @submitted="fetchData" />
@@ -104,7 +104,7 @@
       <div class="cc-table-unit-header lot-header">{{ tableHeader }}</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
-        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGEMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:130px;">PROCESS</th><th style="min-width:120px;">UNIT</th><th style="min-width:120px;">ORDER CODE</th><th style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">DESIGN CODE</th><th style="min-width:60px;">NO. COLOURS</th><th style="min-width:100px;">BAG SIZE</th><th style="min-width:90px;">QUALITY</th><th style="min-width:90px;">COLOUR</th><th style="min-width:64px;">GSM</th><th style="min-width:100px;">FINISHING</th><th style="min-width:80px;">PLANNED METERS</th><th style="min-width:100px;">TOTAL ACHIEVED METERS</th><th style="min-width:100px;">PLANNED QTY (PCS)</th><th style="min-width:100px;">ACHIEVED QTY (PCS)</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th><th style="min-width:120px;">DESIGN FILE</th></tr></thead>
+        <thead><tr><th class="th-n">S.NO</th><th style="min-width:84px;">ARRANGEMENT</th><th style="min-width:90px;">DATE</th><th style="min-width:64px;">SHIFT</th><th style="min-width:130px;">PROCESS</th><th style="min-width:120px;">UNIT</th><th style="min-width:120px;">ORDER CODE</th><th v-if="!hideCustomerColumns" style="min-width:150px;">CUSTOMER NAME</th><th style="min-width:90px;">DESIGN CODE</th><th style="min-width:60px;">NO. COLOURS</th><th style="min-width:100px;">BAG SIZE</th><th style="min-width:90px;">QUALITY</th><th style="min-width:90px;">COLOUR</th><th style="min-width:64px;">GSM</th><th style="min-width:100px;">FINISHING</th><th style="min-width:80px;">PLANNED METERS</th><th style="min-width:100px;">TOTAL ACHIEVED METERS</th><th style="min-width:100px;">PLANNED QTY (PCS)</th><th style="min-width:100px;">ACHIEVED QTY (PCS)</th><th style="min-width:120px;">PER DAY PRODUCTION</th><th style="min-width:100px;">MOVEMENT</th><th style="min-width:120px;">PRODUCTION PLAN</th><th style="min-width:160px;">SPR / WO</th><th style="min-width:120px;">DESIGN FILE</th></tr></thead>
         <tbody>
           <template v-for="(row, idx) in displayRows" :key="row.dateKey + (row.is_maintenance_row ? '-maint' : (row.is_maintenance_empty ? '-empty' : ('-item-' + (row.itemName || idx))))">
             <tr v-if="row.is_maintenance_row" class="pt-non-draggable" style="background-color:#fee2e2;border:2px solid #dc2626;"><td :colspan="21" style="padding:8px 12px;font-weight:700;color:#991b1b;text-align:center;"><div style="display:inline-flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;"><span>🔧 MAINTENANCE: {{ row.record.maintenance_type }} ({{ row.record.start_date }} - {{ row.record.end_date }})</span><button type="button" @click="deleteMaintenanceRecord(row.record.name)" style="background:#dc2626;color:white;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-weight:600;font-size:11px;">Remove</button></div></td></tr>
@@ -117,7 +117,7 @@
               <td class="cell-center" :style="['200','201','202','211','212','213','216','217','222','223','225','226','231','232','233','241','242'].includes(String(row.process || '')) ? 'color:#7c3aed;font-weight:700;' : ''">{{ row.process_label || row.process || '-' }}</td>
               <td class="cell-center font-bold">{{ row.unit || "-" }}</td>
               <td class="cell-center">{{ row.partyCode || row.party_code || row.order_code || "-" }}</td>
-              <td>{{ row.customer_name || row.customer || "-" }}</td>
+              <td v-if="!hideCustomerColumns">{{ row.customer_name || row.customer || "-" }}</td>
               <td class="cell-center font-bold">{{ row.design_code || "-" }}</td>
               <td class="cell-center">{{ row.num_colors ? row.num_colors + 'C' : '-' }}</td>
               <td class="cell-center font-bold">{{ row.bag_size_inches || row.bag_size_id || "-" }}</td>
@@ -193,6 +193,7 @@ import {
   boardAccessViewScopeLocked,
   boardActionFrozenStyle,
   isBoardActionFrozen,
+  shouldHideCustomerColumns,
 } from "./board_access_ui.js";
 
 const BOX_BAG_TABLE_BOARD_SLUG = "box-bag-order-table";
@@ -307,6 +308,7 @@ const unitFilterState = ref({ pool: null, showUnitFilter: true, unitLocked: fals
 const companyScopeLocked = ref(false);
 const showUnitFilter = computed(() => unitFilterState.value.showUnitFilter !== false);
 const accessDenied = computed(() => boardAccessContext.value.loaded && boardAccessContext.value.permitted === false);
+const hideCustomerColumns = computed(() => shouldHideCustomerColumns(boardAccessContext.value));
 
 function applyBoardAccessContext(ctx) {
   const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };

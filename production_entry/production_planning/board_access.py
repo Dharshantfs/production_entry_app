@@ -181,6 +181,14 @@ def _is_privileged_user(user: str | None = None) -> bool:
 	return False
 
 
+def _user_has_operator_role(user: str | None = None) -> bool:
+	"""Shop-floor Operator role — hide customer/party columns on board tables."""
+	user = user or frappe.session.user
+	if _is_privileged_user(user):
+		return False
+	return "Operator" in frappe.get_roles(user)
+
+
 def _board_access_schema_ready() -> bool:
 	return bool(frappe.db.exists("DocType", DOCTYPE_ACCESS))
 
@@ -214,6 +222,9 @@ def get_production_board_user_context(board_slug: str | None = None):
 			if access_name and permitted:
 				frozen_actions = _frozen_actions_for_board(access_name, board_slug_norm)
 				w_cut_settings = _w_cut_d_cut_settings_for_board(access_name, board_slug_norm)
+	hide_customer_columns = bool(
+		not scope.get("unlimited") and _user_has_operator_role(frappe.session.user)
+	)
 	return {
 		"permitted": permitted,
 		"unlimited": bool(scope.get("unlimited")),
@@ -228,6 +239,7 @@ def get_production_board_user_context(board_slug: str | None = None):
 		"frozen_actions": frozen_actions,
 		"w_cut_d_cut_company_scope": w_cut_settings.get("company_scope"),
 		"company_scope_locked": bool(w_cut_settings.get("company_scope_locked")),
+		"hide_customer_columns": hide_customer_columns,
 	}
 
 

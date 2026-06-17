@@ -31,6 +31,7 @@ from production_entry.production_planning.planning_doctypes import (
 	SHEET_CUTTING_UNIT,
 	SLITTING_UNIT,
 	SLITTING_UNIT_VTP,
+	SLITTING_UNASSIGNED_UNIT,
 	W_CUT_D_CUT_UNIT_JVE_L1,
 	W_CUT_D_CUT_UNIT_JVE_L2,
 	W_CUT_D_CUT_UNIT_JVE_L3,
@@ -5500,6 +5501,48 @@ class ShaftProductionRun(Document):
 		self.db_set("manufacturing_entries", "")
 
 
+_SLITTING_PP_UNITS = (SLITTING_UNIT, SLITTING_UNIT_VTP, SLITTING_UNASSIGNED_UNIT)
+_REWINDING_PP_UNITS = (REWINDING_UNIT_L3, REWINDING_UNIT_L4, REWINDING_UNIT_L5, REWINDING_UNASSIGNED_UNIT)
+_PRINTING_PP_UNITS = (
+	PRINTING_UNIT_2_COLOUR,
+	PRINTING_UNIT_4_COLOUR,
+	PRINTING_UNIT_TT,
+	PRINTING_UNASSIGNED_UNIT,
+)
+_BAG_BOARD_PP_UNITS = (
+	BOX_BAG_UNIT_L1,
+	BOX_BAG_UNIT_L2,
+	BOX_BAG_UNIT_L4_SCREEN,
+	BOX_BAG_UNASSIGNED_UNIT,
+) + tuple(W_CUT_D_CUT_ALL_UNITS)
+
+
+def _pp_is_bag_board_unit_from_doc(pp_doc) -> bool:
+	"""True when PP workstation is a Box Bag or W/D-CUT bag-board machine."""
+	u = _spr_unit_value_for_current_field(pp_doc.get("custom_unit") if pp_doc else None)
+	return u in _BAG_BOARD_PP_UNITS
+
+
+def _spr_pp_process_flags(pp) -> dict:
+	"""Map PP unit → SPR process checkboxes (unit wins over item/bundle heuristics)."""
+	spr_meta = frappe.get_meta("Shaft Production Run")
+	pp_unit = _spr_unit_value_for_current_field(pp.get("custom_unit"))
+	flags = {}
+
+	def _set_flag(fieldname: str, on: bool) -> None:
+		if spr_meta.has_field(fieldname):
+			flags[fieldname] = 1 if on else 0
+
+	_set_flag("custom_is_box_bag", _pp_is_bag_board_unit_from_doc(pp))
+	_set_flag("custom_is_sheet_cutting", pp_unit == SHEET_CUTTING_UNIT)
+	_set_flag("custom_is_slitting", pp_unit in _SLITTING_PP_UNITS)
+	_set_flag("custom_is_lamination", pp_unit == LAMINATION_UNIT)
+	_set_flag("custom_is_rewinding", pp_unit in _REWINDING_PP_UNITS)
+	_set_flag("custom_is_printing", pp_unit in _PRINTING_PP_UNITS)
+	_set_flag("custom_is_bopp_film", pp_unit == PRINTED_BOPP_FILM_UNIT)
+	return flags
+
+
 @frappe.whitelist()
 def get_production_plan_details(production_plan):
 	"""Fill header fields from Production Plan."""
@@ -5525,18 +5568,12 @@ def get_production_plan_details(production_plan):
 	out["custom_total_planned_qty"] = _production_plan_total_planned_qty(production_plan)
 	if frappe.get_meta("Shaft Production Run").has_field("custom_total_planned_pcs"):
 		out["custom_total_planned_pcs"] = _production_plan_total_planned_pcs(production_plan)
-	is_sc = pp_unit == SHEET_CUTTING_UNIT
+	process_flags = _spr_pp_process_flags(pp)
+	out.update(process_flags)
+	is_sc = bool(cint(process_flags.get("custom_is_sheet_cutting", 0)))
+	is_bb = bool(cint(process_flags.get("custom_is_box_bag", 0)))
 	out["is_sheet_cutting"] = is_sc
-	if is_sc and frappe.get_meta("Shaft Production Run").has_field("custom_is_sheet_cutting"):
-		out["custom_is_sheet_cutting"] = 1
-	is_bb = (
-		pp_unit in (BOX_BAG_UNIT_L1, BOX_BAG_UNIT_L2, BOX_BAG_UNIT_L4_SCREEN, BOX_BAG_UNASSIGNED_UNIT)
-		or pp_unit in W_CUT_D_CUT_ALL_UNITS
-		or _production_plan_uses_bundle_calculation(pp)
-	)
-	if is_bb and frappe.get_meta("Shaft Production Run").has_field("custom_is_box_bag"):
-		out["custom_is_box_bag"] = 1
-	if is_sc or is_bb or _production_plan_uses_bundle_calculation(pp):
+	if is_sc or is_bb:
 		out["bundle_rows"] = get_bundle_calculation_rows_for_production_plan(
 			production_plan,
 			out.get("custom_order_code"),

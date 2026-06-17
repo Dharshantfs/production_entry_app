@@ -5,6 +5,7 @@ import {
 	applyBoardAccessUnitScope,
 	boardActionFrozenStyle,
 	isBoardActionFrozen,
+	shouldHideCustomerColumns,
 } from "./board_access_ui.js";
 import { unitAllowedByBoardAccess } from "./maintenance_utils.js";
 
@@ -59,6 +60,8 @@ export function createOrderTableBoardAccess(boardSlug, refs) {
 	const accessDenied = computed(
 		() => boardAccessContext.value.loaded && boardAccessContext.value.permitted === false
 	);
+
+	const hideCustomerColumns = computed(() => shouldHideCustomerColumns(boardAccessContext.value));
 
 	function applyBoardAccessContext(ctx) {
 		const scope = ctx || { unlimited: false, allowed_units: [], allowed_boards: [], frozen_actions: {} };
@@ -147,6 +150,7 @@ export function createOrderTableBoardAccess(boardSlug, refs) {
 		boardAccessContext,
 		unitFilterState,
 		accessDenied,
+		hideCustomerColumns,
 		loadBoardAccessContext,
 		boardArgs,
 		filterListByAccess,

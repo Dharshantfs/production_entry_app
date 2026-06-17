@@ -51,7 +51,7 @@
         <label>Order Code</label>
         <input type="text" v-model="filterPartyCode" placeholder="Search..." @input="debouncedFetch" />
       </div>
-      <div class="cc-filter-item">
+      <div v-if="!hideCustomerColumns" class="cc-filter-item">
         <label>Customer</label>
         <input type="text" v-model="filterCustomer" placeholder="Search..." @input="debouncedFetch" />
       </div>
@@ -114,7 +114,7 @@
             <th>DATE</th>
             <th>SHIFT</th>
             <th>CODE</th>
-            <th>CUSTOMER NAME</th>
+            <th v-if="!hideCustomerColumns">CUSTOMER NAME</th>
             <th v-if="showProcessColumn">PROCESS</th>
             <th>QUALITY</th>
             <th>COLOUR</th>
@@ -171,7 +171,7 @@
             </td>
             <td class="cell-center">{{ row.shift_label || "DAY" }}</td>
             <td class="cell-center font-mono font-bold" style="font-size:11px;color:#047857;">{{ row.order_code || row.partyCode || "-" }}</td>
-            <td>{{ row.customer_name || row.customer || row.partyCode }}</td>
+            <td v-if="!hideCustomerColumns">{{ row.customer_name || row.customer || row.partyCode }}</td>
             <td v-if="showProcessColumn" class="cell-center font-bold">{{ row.process || inferProcessFromItemCode(row.itemCode || row.item_code) || "-" }}</td>
             <td class="cell-center">{{ row.quality || "-" }}</td>
             <td class="cell-center font-bold">{{ row.color || "-" }}</td>
@@ -309,6 +309,7 @@ const {
   freezeSyncSpr,
   frozenStyle,
   unitFilterState,
+  hideCustomerColumns,
 } = createOrderTableBoardAccess(SLITTING_TABLE_BOARD_SLUG, {
   filterOrderDate,
   viewScope,
@@ -347,7 +348,11 @@ let sprRealtimeHandlerRegistered = false;
 
 const showProcessColumn = computed(() => processFilter.value === "__all__");
 const showLamGsmColumn = computed(() => ["109", "108", "110", "__all__"].includes(processFilter.value));
-const tableColCount = computed(() => 18 + (showProcessColumn.value ? 1 : 0) + (showLamGsmColumn.value ? 1 : 0));
+const tableColCount = computed(() => {
+  let n = 18 + (showProcessColumn.value ? 1 : 0) + (showLamGsmColumn.value ? 1 : 0);
+  if (hideCustomerColumns.value) n -= 1;
+  return n;
+});
 const activeSlittingUnits = computed(() => {
   if (filterSlittingUnit.value) return [filterSlittingUnit.value];
   return [...SLITTING_BOARD_UNITS];
