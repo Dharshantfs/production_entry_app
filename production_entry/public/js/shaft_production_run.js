@@ -501,19 +501,37 @@ function spr_force_grid_realign(frm, fieldname) {
 		}
 	} catch (e) { /* ignore */ }
 	try {
-		if (typeof grid.refresh_header === 'function') {
-			grid.refresh_header();
-		}
-	} catch (e) { /* ignore */ }
-	try {
 		if (typeof grid.refresh === 'function') {
 			grid.refresh();
 		} else {
 			spr_refresh_grid_body_rows(grid);
 		}
 	} catch (e) { /* ignore */ }
+	try {
+		if (typeof grid.refresh_header === 'function') {
+			grid.refresh_header();
+		}
+	} catch (e) { /* ignore */ }
 	spr_sync_grid_header_body_scroll(fd);
 	spr_ensure_child_grid_heights(frm);
+}
+
+/** Debounced full realign — fixes header/body column collapse after save or browser refresh. */
+function spr_schedule_grid_realign(frm, fieldname, delay) {
+	if (!frm || !fieldname) {
+		return;
+	}
+	const key = '_spr_realign_timer_' + fieldname;
+	if (frm[key]) {
+		clearTimeout(frm[key]);
+	}
+	frm[key] = setTimeout(function () {
+		frm[key] = null;
+		if (!frm.fields_dict || !frm.fields_dict[fieldname] || !frm.fields_dict[fieldname].grid) {
+			return;
+		}
+		spr_force_grid_realign(frm, fieldname);
+	}, delay != null ? delay : 80);
 }
 
 function spr_set_grid_col_hidden(grid, fieldname, hidden) {
@@ -1400,9 +1418,14 @@ frappe.ui.form.on('Shaft Production Run', {
 					spr_apply_bundle_calculation_grid_columns(frm, true);
 				}
 				spr_apply_items_grid_columns(frm, true);
+				spr_force_grid_realign(frm, 'items');
+				spr_force_grid_realign(frm, 'shaft_jobs');
 				spr_ensure_child_grid_heights(frm);
 			}, 200);
 		}
+
+		spr_schedule_grid_realign(frm, 'items', 450);
+		spr_schedule_grid_realign(frm, 'shaft_jobs', 450);
 
 		setTimeout(function () {
 			if (!spr_should_skip_desk_auto_sync(frm)) {
@@ -5070,7 +5093,11 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	const grid = fd.grid;
 	let hooked = false;
 	function afterGridPaint() {
-		spr_light_grid_scroll_sync(frm, fieldname);
+		if (fieldname === 'items' || fieldname === 'shaft_jobs') {
+			spr_schedule_grid_realign(frm, fieldname, 60);
+		} else {
+			spr_light_grid_scroll_sync(frm, fieldname);
+		}
 		if (fieldname === 'items') {
 			spr_schedule_grid_ui_debounced(frm, { delay: 160, columns: false });
 		}
@@ -5090,6 +5117,7 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	}
 	wrap('refresh');
 	wrap('render');
+	wrap('refresh_header');
 	if (fieldname === 'items' && grid.wrapper && grid.wrapper.length && !frm._spr_items_grid_click_patched) {
 		frm._spr_items_grid_click_patched = true;
 		grid.wrapper.on('change input blur', 'input, textarea, select', function () {

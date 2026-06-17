@@ -3521,7 +3521,7 @@ class ShaftProductionRun(Document):
 		return [(item_code, wh, short_qty, 0.0, short_qty)]
 
 	def _spr_insert_shortage_transfer_draft(self, se) -> str:
-		"""Insert draft MTFM; persist SPR link and survive outer transaction rollbacks."""
+		"""Insert MTFM for shortages; auto-submit when stock is available."""
 		try:
 			se.flags.ignore_mandatory = True
 			se.flags.ignore_permissions = True
@@ -3529,7 +3529,15 @@ class ShaftProductionRun(Document):
 			se.insert()
 			name = _cstr(se.name)
 			self._persist_stock_entry_spr_reference_db(name)
-			# Commit immediately so draft survives frappe.throw rollback during SPR before_submit.
+			try:
+				se.flags.ignore_permissions = True
+				se.submit()
+			except Exception:
+				frappe.log_error(
+					frappe.get_traceback(),
+					f"SPR shortage transfer auto-submit:{self.name}:{name}",
+				)
+			# Commit immediately so draft/submitted entry survives frappe.throw rollback during SPR before_submit.
 			try:
 				frappe.db.commit()
 			except Exception:
@@ -3561,13 +3569,48 @@ class ShaftProductionRun(Document):
 		except Exception:
 			return wo_doc
 
+	def _spr_company_warehouse_ctx(self) -> dict:
+		"""Strict company RM (source) and WIP (target) warehouses for this SPR."""
+		from production_entry.production_planning.spr_unit_warehouses import (
+			_company_rm_warehouse,
+			_company_wip_warehouse,
+			resolve_spr_unit_manufacturing_warehouses,
+		)
+
+		company = _spr_company_from_doc(self)
+		unit = _cstr(getattr(self, "custom_unit", None) or getattr(self, "unit", None))
+		wh_ctx: dict = {}
+		if unit:
+			try:
+				wh_ctx = resolve_spr_unit_manufacturing_warehouses(unit) or {}
+			except Exception:
+				wh_ctx = {}
+		if not company:
+			company = _cstr(wh_ctx.get("company"))
+		wip_wh = _cstr(wh_ctx.get("wip_warehouse"))
+		source_wh = _cstr(wh_ctx.get("source_warehouse"))
+		if company:
+			if not wip_wh:
+				wip_wh = _company_wip_warehouse(company)
+			if not source_wh:
+				source_wh = _company_rm_warehouse(company, wip_wh=wip_wh)
+		return {
+			"company": company,
+			"wip_warehouse": wip_wh,
+			"source_warehouse": source_wh,
+		}
+
 	def _resolve_rm_source_warehouse_for_transfer(self, wo_doc, item_code: str, wip_wh: str) -> str:
-		"""RM store for MTFM lines (never WIP)."""
+		"""RM store for MTFM lines (never WIP) — prefer SPR company RM warehouse."""
 		item_code = _cstr(item_code).strip()
 		wip_wh = _cstr(wip_wh).strip()
+		ctx = self._spr_company_warehouse_ctx()
+		strict_rm = _cstr(ctx.get("source_warehouse")).strip()
+		if strict_rm and strict_rm != wip_wh:
+			return strict_rm
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)).strip()
-		company = _cstr(getattr(wo_doc, "company", None)).strip()
+		company = _cstr(getattr(wo_doc, "company", None)).strip() or _cstr(ctx.get("company"))
 		src = _spr_wo_rm_source_warehouse(wo_doc, item_code, wip_wh)
 		if src and src != wip_wh:
 			return src
@@ -3581,7 +3624,8 @@ class ShaftProductionRun(Document):
 	def _append_mtfm_shortage_lines(self, se, wo_doc, short_by_item: dict, wip_wh: str) -> int:
 		"""Append RM->WIP lines for shortage qty; returns count of lines added."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
-		wip_wh = _cstr(wip_wh).strip()
+		ctx = self._spr_company_warehouse_ctx()
+		wip_wh = _cstr(ctx.get("wip_warehouse")).strip() or _cstr(wip_wh).strip()
 		is_bag = spr_doc_is_bag_spr(self)
 		added = 0
 		for item_code, short_qty in sorted((short_by_item or {}).items()):
@@ -3621,11 +3665,13 @@ class ShaftProductionRun(Document):
 
 	def _new_mtfm_stock_entry_shell(self, wo_doc, chunk_total_qty: float, transfer_posting_date=None, transfer_posting_time=None):
 		wo_doc = self._reload_work_order_doc(wo_doc)
-		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)) or ""
-		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
+		ctx = self._spr_company_warehouse_ctx()
+		company = _cstr(ctx.get("company")) or _cstr(getattr(wo_doc, "company", None))
+		raw_source_wh = _cstr(ctx.get("source_warehouse")) or _cstr(getattr(wo_doc, "source_warehouse", None)) or ""
+		wip_wh = _cstr(ctx.get("wip_warehouse")) or _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
 		is_bag = spr_doc_is_bag_spr(self)
 		se = frappe.new_doc("Stock Entry")
-		se.company = wo_doc.company
+		se.company = company or wo_doc.company
 		se.posting_date = transfer_posting_date or today()
 		se.posting_time = transfer_posting_time or nowtime()
 		se.set_posting_time = 1
@@ -3947,25 +3993,46 @@ class ShaftProductionRun(Document):
 			title=_("Insufficient stock"),
 		)
 
+	def _consolidated_shortage_lines(self, shortage_events) -> str:
+		"""One line per item across all WOs (RM -> WIP)."""
+		ctx = self._spr_company_warehouse_ctx()
+		rm_wh = _cstr(ctx.get("source_warehouse")) or _("RM warehouse")
+		wip_wh = _cstr(ctx.get("wip_warehouse")) or _("WIP warehouse")
+		prec = _spr_rm_stock_qty_precision()
+		merged: dict[str, dict] = {}
+		for event in shortage_events or []:
+			for item_code, _wh, req, avl, short_qty in event.get("shortages") or []:
+				ic = _cstr(item_code).strip()
+				if not ic:
+					continue
+				row = merged.setdefault(ic, {"req": 0.0, "avl": 0.0, "short": 0.0})
+				row["req"] += flt(req)
+				row["avl"] += flt(avl)
+				row["short"] += flt(short_qty)
+		if not merged:
+			return ""
+		lines = []
+		for ic, row in sorted(merged.items()):
+			lines.append(
+				_(
+					"{0}: move {1} from {2} to {3} (required {4}, available {5}, shortage {6})"
+				).format(
+					ic,
+					flt(row["short"], prec),
+					rm_wh,
+					wip_wh,
+					flt(row["req"], prec),
+					flt(row["avl"], prec),
+					flt(row["short"], prec),
+				)
+			)
+		return "\n".join(lines)
+
 	def _raise_shortage_with_transfer_batch(self, shortage_events):
-		"""Create one combined draft transfer for all shortages, then raise actionable message."""
+		"""Create one combined transfer for all shortages, then raise actionable message."""
 		if not shortage_events:
 			return
-		prec = _spr_rm_stock_qty_precision()
-		sections = []
-		for event in shortage_events:
-			wo_id = _cstr(event.get("wo_id"))
-			shortages = event.get("shortages") or []
-			lines = "\n".join(
-				[
-					_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
-						it, wh or "—", flt(req, prec), flt(avl, prec), flt(sh, prec)
-					)
-					for it, wh, req, avl, sh in shortages[:10]
-				]
-			)
-			if lines:
-				sections.append(_("WO {0}\n{1}").format(wo_id, lines))
+		consolidated = self._consolidated_shortage_lines(shortage_events)
 
 		transfer_name = ""
 		try:
@@ -3981,28 +4048,38 @@ class ShaftProductionRun(Document):
 		if not transfer_name:
 			transfer_name = self._find_open_spr_shortage_transfer_draft()
 
+		transfer_submitted = False
 		if transfer_name:
 			try:
 				frappe.db.commit()
 			except Exception:
 				pass
+			transfer_submitted = cint(frappe.db.get_value("Stock Entry", transfer_name, "docstatus")) == 1
+
+		if transfer_name and transfer_submitted:
 			next_steps = _(
-				'1) Open draft Material Transfer for Manufacture: '
-				'<a href="/app/stock-entry/{0}" target="_blank">{0}</a>\n'
-				"2) Verify each line: source = RM warehouse, target = WIP, qty in Kg.\n"
-				'3) Submit the Stock Entry, then return to SPR '
-				'<a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
+				'Material Transfer for Manufacture <a href="/app/stock-entry/{0}" target="_blank">{0}</a> '
+				"was created and submitted (RM -> WIP).\n"
+				'Return to SPR <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
 			).format(transfer_name, self.name)
+		elif transfer_name:
+			next_steps = _(
+				'1) Open Material Transfer for Manufacture: '
+				'<a href="/app/stock-entry/{0}" target="_blank">{0}</a>\n'
+				"2) Verify each line: source = company RM warehouse, target = company WIP warehouse.\n"
+				"3) Submit the Stock Entry (auto-submit failed — likely insufficient RM stock), then submit SPR again."
+			).format(transfer_name)
 		else:
 			next_steps = _(
-				"Could not auto-create draft transfer on this site. "
-				"Create one 'Material Transfer for Manufacture' (RM -> WIP) with all shortage items, submit it, then submit SPR again."
+				"Could not auto-create transfer on this site. "
+				"Create one 'Material Transfer for Manufacture' (company RM -> company WIP) with all shortage items, submit it, then submit SPR again."
 			)
 
+		body = consolidated or _("No shortage detail available.")
 		frappe.throw(
 			_(
-				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n{2}"
-			).format(len(shortage_events), "\n\n".join(sections), next_steps),
+				"Insufficient stock for {0} work order(s).\n\n{1}\n\n{2}"
+			).format(len(shortage_events), body, next_steps),
 			title=_("Insufficient stock"),
 		)
 
