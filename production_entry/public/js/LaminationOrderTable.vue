@@ -58,7 +58,7 @@
         <label>Unit</label>
         <select v-model="filterUnit" class="cc-select-scope">
           <option value="">All Units</option>
-          <option v-for="u in PRINTING_FILTER_UNITS" :key="u" :value="u">{{ u }}</option>
+          <option v-for="u in PRINTING_TABLE_UNITS" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
       <div class="cc-filter-actions">
@@ -109,6 +109,8 @@
     </div>
 
     <div class="cc-table-container">
+      <div v-if="accessDenied" class="cc-access-denied">You do not have permission to view this table.</div>
+      <template v-else>
       <div class="cc-table-unit-header lot-header">
         {{ tableUnitHeader }}
       </div>
@@ -379,6 +381,7 @@
         </tbody>
       </table>
       </div>
+      </template>
     </div>
   </div>
 </template>
@@ -397,6 +400,14 @@ import {
   maintenanceUnitsEqual,
   normalizeMaintenanceUnit,
 } from "./maintenance_utils.js";
+import { createOrderTableBoardAccess } from "./order_table_board_access.js";
+
+function resolveTableBoardSlug(kind) {
+  const k = (kind || "").trim();
+  if (k === "printing_105") return "printing-order-table";
+  if (k === "printed_bopp_film") return "printed-bopp-film-table";
+  return "lamination-order-table";
+}
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_lamination_printing";
 const sizeDimUnit = ref("inches");
@@ -421,6 +432,8 @@ const props = defineProps({
   /** Render context: `table` or `board` (used for title/back-route labels). */
   tableMode: { type: String, default: "table" },
 });
+
+const TABLE_BOARD_SLUG = resolveTableBoardSlug(props.tableBoardKind);
 
 const PRINTED_BOPP_FILM_UNIT = "VR - 1200MM BOPP PRINTING MACHINE";
 const PRINTING_UNIT_2_COLOUR = "JVE - PRINTING MACHINE 2 COLOUR 1600MM";
@@ -506,6 +519,18 @@ const filterOrderDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
 const viewScope = ref("daily");
+const {
+  accessDenied,
+  loadBoardAccessContext,
+  boardArgs,
+  filterListByAccess,
+  filterRowsByAccess,
+} = createOrderTableBoardAccess(TABLE_BOARD_SLUG, {
+  filterOrderDate,
+  viewScope,
+  filterUnit,
+});
+const PRINTING_TABLE_UNITS = computed(() => filterListByAccess(PRINTING_REAL_MACHINE_UNITS));
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 /** Plain lamination (104) vs BOPP (107) vs All; drives API filter and column layout. */
@@ -582,6 +607,7 @@ const filteredRows = computed(() => {
   } else if (sh === "night") {
     d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
   }
+  d = filterRowsByAccess(d);
   return sortRowsBySavedSequence(d);
 });
 
@@ -591,6 +617,7 @@ const transferBoardKind = computed(() => {
   return "lamination";
 });
 const transferFilterContext = computed(() => ({
+  board_slug: TABLE_BOARD_SLUG,
   view_scope: viewScope.value,
   date: filterOrderDate.value,
   week: filterWeek.value,
@@ -969,12 +996,12 @@ async function fetchLaminationSequences() {
     const { start_date, end_date } = getScopeDateRange();
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
-      args: {
+      args: boardArgs({
         start_date,
         end_date,
         unit: tableMaintenanceUnit.value,
         plan_name: "Default",
-      },
+      }),
     });
     const store = {};
     const payload = res?.message || {};
@@ -1098,12 +1125,12 @@ async function saveLaminationArrangement() {
       } else {
         await frappe.call({
           method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-          args: {
+          args: boardArgs({
             date: dateKey,
             unit: tableMaintenanceUnit.value,
             sequence_data: JSON.stringify(seq),
             plan_name: "Default",
-          },
+          }),
         });
       }
     }
@@ -1142,7 +1169,7 @@ async function restoreLaminationArrangement() {
       } else {
         await frappe.call({
           method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-          args: { date: dateKey, unit: tableMaintenanceUnit.value, plan_name: "Default" },
+          args: boardArgs({ date: dateKey, unit: tableMaintenanceUnit.value, plan_name: "Default" }),
         });
       }
     }
@@ -1785,6 +1812,7 @@ async function fetchData() {
     fetchQueued = true;
     return;
   }
+  if (accessDenied.value) return;
   fetchInProgress = true;
   try {
     let args = {
@@ -1844,7 +1872,7 @@ async function fetchData() {
     let lastErr = null;
     for (const method of tableMethods) {
       try {
-        r = await frappe.call({ method, args });
+        r = await frappe.call({ method, args: boardArgs(args) });
         break;
       } catch (e) {
         lastErr = e;
@@ -2048,8 +2076,11 @@ onMounted(async () => {
     const lp = (p.get("lamination_process") || p.get("lam_proc") || "").trim();
     if (lp === "104" || lp === "107" || lp === "__all__") laminationProcess.value = lp;
   }
-  await fetchData();
-  startAutoRefresh();
+  await loadBoardAccessContext();
+  if (!accessDenied.value) {
+    await fetchData();
+    startAutoRefresh();
+  }
   document.addEventListener("visibilitychange", onVisibilityRefresh);
   if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
     frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
@@ -2528,6 +2559,15 @@ onUnmounted(() => {
   border-color: #5eead4;
   background: #ecfdf5;
   color: #0f766e;
+}
+.cc-access-denied {
+  margin: 12px;
+  padding: 12px 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  border-radius: 8px;
+  font-weight: 600;
 }
 </style>
 

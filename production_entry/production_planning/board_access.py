@@ -410,6 +410,32 @@ def _allowed_dates_for_window(min_date: str | None, max_date: str | None) -> lis
 	return out
 
 
+# Arrangement / color-sequence storage keys — not Workstation names; skip unit ACL.
+_ARRANGEMENT_STORAGE_UNITS = frozenset(
+	{
+		"wcutdcut",
+		"boxbag",
+		"default",
+		"__all__",
+		"allunits",
+	}
+)
+
+
+def _unit_requires_access_check(unit) -> bool:
+	if unit in (None, ""):
+		return False
+	normalized = str(unit).strip()
+	if not normalized:
+		return False
+	if normalized in ("All Units", "__all__"):
+		return False
+	key = normalized.lower().replace(" ", "").replace("_", "").replace("-", "")
+	if key in _ARRANGEMENT_STORAGE_UNITS:
+		return False
+	return True
+
+
 def assert_board_allowed(board_slug: str, user: str | None = None) -> None:
 	scope = get_user_board_scope(user)
 	if scope.get("unlimited"):
@@ -494,7 +520,7 @@ def enforce_board_read(
 	scope = get_user_board_scope(user)
 	if not scope.get("unlimited"):
 		assert_board_allowed(board_slug, user=user)
-		if unit:
+		if _unit_requires_access_check(unit):
 			assert_unit_allowed(unit, user=user, scope=scope)
 		if date not in (None, ""):
 			clamp_date(date, user=user, scope=scope)
@@ -509,7 +535,7 @@ def enforce_board_write(board_slug: str | None, unit=None, date=None, user: str 
 		return scope
 	if board_slug:
 		assert_board_allowed(board_slug, user=user)
-	if unit:
+	if _unit_requires_access_check(unit):
 		assert_unit_allowed(unit, user=user, scope=scope)
 	if date not in (None, ""):
 		clamp_date(date, user=user, scope=scope)

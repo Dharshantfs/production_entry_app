@@ -866,12 +866,12 @@ async function saveLaminationArrangement() {
       if (!Array.isArray(seq) || !seq.length) continue;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-        args: {
+        args: boardArgs({
           date: dateKey,
           unit: activeRewindingSequenceUnit(),
           sequence_data: JSON.stringify(seq),
           plan_name: "Default",
-        },
+        }),
       });
     }
     pendingArrangementUpdates.value = {};
@@ -893,7 +893,7 @@ async function restoreLaminationArrangement() {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: activeRewindingSequenceUnit(), plan_name: "Default" },
+        args: boardArgs({ date: dateKey, unit: activeRewindingSequenceUnit(), plan_name: "Default" }),
       });
     }
     pendingArrangementUpdates.value = {};

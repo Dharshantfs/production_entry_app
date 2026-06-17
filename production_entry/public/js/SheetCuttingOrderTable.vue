@@ -72,6 +72,8 @@
     </div>
 
     <div class="cc-table-container">
+      <div v-if="accessDenied" class="cc-access-denied">You do not have permission to view this table.</div>
+      <template v-else>
       <div class="cc-table-unit-header lot-header">JVE - SHEET CUTTING MACHINE - Planned orders ({{ processFilterTitle }})</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
@@ -138,6 +140,7 @@
         </tbody>
       </table>
       </div>
+      </template>
     </div>
   </div>
 </template>
@@ -150,6 +153,9 @@ import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
 import { filterMaintenanceRecordsForScope } from "./maintenance_utils.js";
+import { createOrderTableBoardAccess } from "./order_table_board_access.js";
+
+const SHEET_CUTTING_TABLE_BOARD_SLUG = "sheet-cutting-order-table";
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_sheet_cutting";
 const sizeDimUnit = ref("inches");
 const rollSizeHeader = computed(() => (sizeDimUnit.value === "mm" ? "ROLL SIZE (mm)" : "ROLL SIZE (Inches)"));
@@ -200,6 +206,15 @@ function processLabelForRow(row) {
 }
 const SHEET_CUTTING_UNIT = "JVE - SHEET CUTTING MACHINE";
 const filterOrderDate = ref(frappe.datetime.get_today()); const filterWeek = ref(""); const filterMonth = ref(""); const viewScope = ref("daily");
+const {
+  accessDenied,
+  loadBoardAccessContext,
+  boardArgs,
+  filterRowsByAccess,
+} = createOrderTableBoardAccess(SHEET_CUTTING_TABLE_BOARD_SLUG, {
+  filterOrderDate,
+  viewScope,
+});
 const filterPartyCode = ref(""); const filterCustomer = ref(""); const filterShift = ref("all"); const processFilter = ref("251"); const rawData = ref([]);
 const maintenanceRecords = ref([]); const moveTargetDate = ref(frappe.datetime.get_today()); const dragRow = ref(null); const dragOverShift = ref("");
 const arrangementLocked = ref(true); const dragOrderRow = ref(null); const dragOverItemName = ref(""); const customOrderByDate = ref({});
@@ -228,6 +243,7 @@ const tableColCount = computed(
   () => 20 + (showProcessColumn.value ? 1 : 0) + (showDesignColumns.value ? 2 : 0) + (showLamGsmColumn.value ? 1 : 0) + (showBoppGsmColumn.value ? 1 : 0)
 );
 const transferFilterContext = computed(() => ({
+  board_slug: SHEET_CUTTING_TABLE_BOARD_SLUG,
   view_scope: viewScope.value,
   date: filterOrderDate.value,
   week: filterWeek.value,
@@ -280,7 +296,7 @@ const filteredRows = computed(() => {
   if (pc) d = d.filter((r) => String(r.partyCode || r.party_code || "").toLowerCase().includes(pc));
   if (cu) d = d.filter((r) => String(r.customer_name || r.customer || "").toLowerCase().includes(cu));
   const sh = (filterShift.value || "all").toLowerCase(); if (sh === "day") d = d.filter((r) => String(r.shift_label || "DAY").toUpperCase() === "DAY"); else if (sh === "night") d = d.filter((r) => String(r.shift_label || "").toUpperCase() === "NIGHT");
-  return sortRowsBySavedSequence(d);
+  return sortRowsBySavedSequence(filterRowsByAccess(d));
 });
 const displayRows = computed(() => {
   const normalRows = filteredRows.value || [];
@@ -415,8 +431,8 @@ async function handleShiftDrop(targetShift) { const row = dragRow.value; dragOve
 function currentShiftDateForDialog() { if (viewScope.value === "daily" && filterOrderDate.value) return filterOrderDate.value; return frappe.datetime.get_today(); }
 function openAssignShiftDialog() { const d = new frappe.ui.Dialog({ title: "Assign Sheet Cutting Shift", fields: [{ fieldname: "shift_date", label: "Planned Date", fieldtype: "Date", reqd: 1, default: currentShiftDateForDialog() }, { fieldname: "shift_label", label: "Shift", fieldtype: "Select", options: "DAY\nNIGHT", reqd: 1, default: "DAY" }], primary_action_label: "Apply", primary_action: async (vals) => { await frappe.call({ method: "production_entry.production_planning.scheduler_api.assign_sheet_cutting_shift", args: { shift_date: vals.shift_date, shift_label: vals.shift_label } }); d.hide(); if (viewScope.value === "daily") filterOrderDate.value = vals.shift_date; await fetchData(); } }); d.show(); }
 async function openMachineOffDialog() { const d = new frappe.ui.Dialog({ title: "Sheet Cutting Machine Off", fields: [{ fieldtype: "Date", fieldname: "start_date", label: "From Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Date", fieldname: "end_date", label: "To Date", reqd: 1, default: filterOrderDate.value || frappe.datetime.get_today() }, { fieldtype: "Select", fieldname: "maintenance_type", label: "Type", options: "Machine Off\nBreakdown - Full\nBreakdown - Partial\nEB Shutdown\nMesh Change\nDie Change", default: "Machine Off", reqd: 1 }, { fieldtype: "Small Text", fieldname: "notes", label: "Notes" }], primary_action_label: "Save", primary_action: async (vals) => { const res = await frappe.call({ method: "production_entry.production_planning.scheduler_api.add_equipment_maintenance", args: { unit: SHEET_CUTTING_UNIT, start_date: vals.start_date, end_date: vals.end_date, maintenance_type: vals.maintenance_type, notes: vals.notes || "" } }); if (res?.message?.status === "success") frappe.show_alert({ message: res.message.message || "Maintenance saved", indicator: "green" }, 4); d.hide(); await fetchMaintenanceRecords(); await fetchData(); } }); d.show(); }
-async function saveArrangement() { try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, sequence_data: JSON.stringify(seq), plan_name: "sheet_cutting_table" } }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
-async function restoreArrangement() { try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: { date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, plan_name: "sheet_cutting_table" } }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }
+async function saveArrangement() { try { const seq = {}; Object.keys(customOrderByDate.value || {}).forEach((dateKey) => { seq[dateKey] = { date: dateKey, sequence: (customOrderByDate.value[dateKey] || []).map((nm, idx) => ({ item_name: nm, idx: idx + 1 })) }; }); await frappe.call({ method: "production_entry.production_planning.scheduler_api.save_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, sequence_data: JSON.stringify(seq), plan_name: "sheet_cutting_table" }) }); frappe.show_alert({ message: "Arrangement saved", indicator: "green" }, 3); } catch (e) { frappe.msgprint(`Save failed: ${e?.message || e}`); } }
+async function restoreArrangement() { try { const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence", args: boardArgs({ date: filterOrderDate.value || frappe.datetime.get_today(), unit: SHEET_CUTTING_UNIT, plan_name: "sheet_cutting_table" }) }); const payload = r?.message?.sequence_data ? JSON.parse(r.message.sequence_data) : {}; const next = {}; Object.keys(payload || {}).forEach((k) => { next[k] = (payload[k]?.sequence || []).map(x => x.item_name).filter(Boolean); }); customOrderByDate.value = next; } catch (e) { frappe.msgprint(`Restore failed: ${e?.message || e}`); } }
 function getScopeDateRange() { if (viewScope.value === "monthly" && filterMonth.value) { const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); return { start_date: `${filterMonth.value}-01`, end_date: `${filterMonth.value}-${lastDay}` }; } if (viewScope.value === "weekly" && filterWeek.value) { const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { start_date: fmt(ws), end_date: fmt(we) }; } return { start_date: filterOrderDate.value, end_date: filterOrderDate.value }; }
 async function deleteMaintenanceRecord(recordName) {
   if (!recordName) return;
@@ -447,11 +463,11 @@ async function fetchMaintenanceRecords() {
   }
 }
 function toggleViewScope() { if (viewScope.value === "monthly" && !filterMonth.value) filterMonth.value = frappe.datetime.get_today().substring(0, 7); updateUrlParams(); fetchData(); }
-async function fetchData() { if (fetchInProgress) return; fetchInProgress = true; try { let args = { planned_only: 1, process: processFilter.value }; if (viewScope.value === "monthly") { if (!filterMonth.value) return; const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); args.start_date = `${filterMonth.value}-01`; args.end_date = `${filterMonth.value}-${lastDay}`; } else if (viewScope.value === "weekly") { if (!filterWeek.value) return; const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; args.start_date = fmt(ws); args.end_date = fmt(we); } else args.date = filterOrderDate.value; const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_sheet_cutting_order_table_data", args }); rawData.value = (r.message || []).map((d) => ({ ...d, itemName: d.itemName || d.item_name || "", plannedDate: d.plannedDate || d.planned_date || "", planningSheet: d.planningSheet || d.planning_sheet || "", process: d.process || inferProcessFromItemCode(d.itemCode || d.item_code || ""), design_code: d.design_code || d.custom_design_code || "", design_name: d.design_name || d.custom_design_name || "", salesOrderItem: d.salesOrderItem || d.sales_order_item || "", custom_lam_gsm: d.custom_lam_gsm ?? d.customLamGsm, custom_bopp_gsm: d.custom_bopp_gsm ?? d.customBoppGsm })); await fetchMaintenanceRecords(); } catch (e) { frappe.msgprint(`Error loading Sheet Cutting Order Table: ${e?.message || e}`); } finally { fetchInProgress = false; } }
+async function fetchData() { if (fetchInProgress) return; if (accessDenied.value) return; fetchInProgress = true; try { let args = { planned_only: 1, process: processFilter.value }; if (viewScope.value === "monthly") { if (!filterMonth.value) return; const [year, month] = filterMonth.value.split("-"); const lastDay = new Date(year, month, 0).getDate(); args.start_date = `${filterMonth.value}-01`; args.end_date = `${filterMonth.value}-${lastDay}`; } else if (viewScope.value === "weekly") { if (!filterWeek.value) return; const [yearStr, weekStr] = filterWeek.value.split("-W"); const y = parseInt(yearStr, 10); const w = parseInt(weekStr, 10); const simple = new Date(y, 0, 1 + (w - 1) * 7); const dow = simple.getDay(); const ws = new Date(simple); if (dow <= 4) ws.setDate(simple.getDate() - simple.getDay() + 1); else ws.setDate(simple.getDate() + 8 - simple.getDay()); const we = new Date(ws); we.setDate(we.getDate() + 6); const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; args.start_date = fmt(ws); args.end_date = fmt(we); } else args.date = filterOrderDate.value; const r = await frappe.call({ method: "production_entry.production_planning.scheduler_api.get_sheet_cutting_order_table_data", args: boardArgs(args) }); rawData.value = (r.message || []).map((d) => ({ ...d, itemName: d.itemName || d.item_name || "", plannedDate: d.plannedDate || d.planned_date || "", planningSheet: d.planningSheet || d.planning_sheet || "", process: d.process || inferProcessFromItemCode(d.itemCode || d.item_code || ""), design_code: d.design_code || d.custom_design_code || "", design_name: d.design_name || d.custom_design_name || "", salesOrderItem: d.salesOrderItem || d.sales_order_item || "", custom_lam_gsm: d.custom_lam_gsm ?? d.customLamGsm, custom_bopp_gsm: d.custom_bopp_gsm ?? d.customBoppGsm })); await fetchMaintenanceRecords(); } catch (e) { frappe.msgprint(`Error loading Sheet Cutting Order Table: ${e?.message || e}`); } finally { fetchInProgress = false; } }
 function updateUrlParams() { const q = new URLSearchParams(); if (viewScope.value === "daily") q.set("date", filterOrderDate.value); if (viewScope.value === "weekly") q.set("week", filterWeek.value); if (viewScope.value === "monthly") q.set("month", filterMonth.value); q.set("scope", viewScope.value); q.set("process", processFilter.value); window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`); }
 function startAutoRefresh() { if (autoRefreshTimer) clearInterval(autoRefreshTimer); autoRefreshTimer = setInterval(() => { if (document.visibilityState === "visible") fetchData(); }, 15000); }
 watch([filterOrderDate, filterWeek, filterMonth], () => { updateUrlParams(); fetchData(); });
-onMounted(async () => { try { const u = localStorage.getItem(DIM_UNIT_LS_KEY); if (u === "mm" || u === "inches") sizeDimUnit.value = u; } catch (_) {} const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); if (["251", "252", "253", "254", "255", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await fetchData(); startAutoRefresh(); });
+onMounted(async () => { try { const u = localStorage.getItem(DIM_UNIT_LS_KEY); if (u === "mm" || u === "inches") sizeDimUnit.value = u; } catch (_) {} const p = new URLSearchParams(window.location.search); if (p.get("scope")) viewScope.value = p.get("scope"); if (p.get("date")) filterOrderDate.value = p.get("date"); if (p.get("week")) filterWeek.value = p.get("week"); if (p.get("month")) filterMonth.value = p.get("month"); if (["251", "252", "253", "254", "255", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process"); moveTargetDate.value = filterOrderDate.value || frappe.datetime.get_today(); updateUrlParams(); await loadBoardAccessContext(); if (!accessDenied.value) { await fetchData(); startAutoRefresh(); } });
 onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 </script>
 
@@ -719,4 +735,13 @@ onUnmounted(() => { if (autoRefreshTimer) clearInterval(autoRefreshTimer); });
 .pt-spr-btn-submitted { background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; }
 .pt-spr-btn-draft { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
 .pt-wo-closed-hint { color: #94a3b8; font-size: 11px; }
+.cc-access-denied {
+  margin: 12px;
+  padding: 12px 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  border-radius: 8px;
+  font-weight: 600;
+}
 </style>

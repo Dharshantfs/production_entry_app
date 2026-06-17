@@ -44,7 +44,7 @@
         <label>Slitting Unit</label>
         <select v-model="filterSlittingUnit" @change="debouncedFetch">
           <option value="">All Units</option>
-          <option v-for="u in SLITTING_BOARD_UNITS" :key="u" :value="u">{{ slittingUnitLabel(u) }}</option>
+          <option v-for="u in SLITTING_TABLE_UNITS" :key="u" :value="u">{{ slittingUnitLabel(u) }}</option>
         </select>
       </div>
       <div class="cc-filter-item">
@@ -102,6 +102,8 @@
     </div>
 
     <div class="cc-table-container">
+      <div v-if="accessDenied" class="cc-access-denied">You do not have permission to view this table.</div>
+      <template v-else>
       <div class="cc-table-unit-header lot-header">{{ tableHeaderLabel }}</div>
       <div class="cc-order-table-scroll">
       <table class="cc-prod-table lot-table">
@@ -223,6 +225,7 @@
         </tbody>
       </table>
       </div>
+      </template>
     </div>
   </div>
 </template>
@@ -240,6 +243,9 @@ import {
   filterMaintenanceRecordsForUnit,
   toLocalDateKey,
 } from "./maintenance_utils.js";
+import { createOrderTableBoardAccess } from "./order_table_board_access.js";
+
+const SLITTING_TABLE_BOARD_SLUG = "slitting-order-table";
 
 /** Must match Workstation name + ``planning_doctypes.SLITTING_UNIT`` */
 const SLITTING_UNIT = "JVE - SLITTING MACHINE";
@@ -277,6 +283,7 @@ const viewScope = ref("daily");
 const filterPartyCode = ref("");
 const filterCustomer = ref("");
 const transferFilterContext = computed(() => ({
+  board_slug: SLITTING_TABLE_BOARD_SLUG,
   view_scope: viewScope.value,
   date: filterOrderDate.value,
   week: filterWeek.value,
@@ -288,6 +295,18 @@ const transferFilterContext = computed(() => ({
 /** Client-side filter: server rows use shift_label DAY/NIGHT when available */
 const filterShift = ref("all");
 const filterSlittingUnit = ref("");
+const {
+  accessDenied,
+  loadBoardAccessContext,
+  boardArgs,
+  filterListByAccess,
+  filterRowsByAccess,
+} = createOrderTableBoardAccess(SLITTING_TABLE_BOARD_SLUG, {
+  filterOrderDate,
+  viewScope,
+  filterUnit: filterSlittingUnit,
+});
+const SLITTING_TABLE_UNITS = computed(() => filterListByAccess(SLITTING_BOARD_UNITS));
 const processFilter = ref("103");
 const rawData = ref([]);
 const filtersReady = ref(false);
@@ -399,7 +418,7 @@ const filteredRows = computed(() => {
   if (filterSlittingUnit.value) {
     d = d.filter((r) => rowSlittingUnit(r) === normalizeMaintenanceUnit(filterSlittingUnit.value));
   }
-  return sortRowsBySavedSequence(d);
+  return sortRowsBySavedSequence(filterRowsByAccess(d));
 });
 
 const displayRows = computed(() => {
@@ -657,12 +676,12 @@ async function fetchLaminationSequences() {
     const { start_date, end_date } = getScopeDateRange();
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_color_sequences_range",
-      args: {
+      args: boardArgs({
         start_date,
         end_date,
         unit: SLITTING_UNIT,
         plan_name: "Default",
-      },
+      }),
     });
     const store = {};
     const payload = res?.message || {};
@@ -780,12 +799,12 @@ async function saveLaminationArrangement() {
       if (!Array.isArray(seq) || !seq.length) continue;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.save_color_sequence",
-        args: {
+        args: boardArgs({
           date: dateKey,
           unit: SLITTING_UNIT,
           sequence_data: JSON.stringify(seq),
           plan_name: "Default",
-        },
+        }),
       });
     }
     pendingArrangementUpdates.value = {};
@@ -807,7 +826,7 @@ async function restoreLaminationArrangement() {
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       await frappe.call({
         method: "production_entry.production_planning.scheduler_api.restore_last_color_sequence",
-        args: { date: dateKey, unit: SLITTING_UNIT, plan_name: "Default" },
+        args: boardArgs({ date: dateKey, unit: SLITTING_UNIT, plan_name: "Default" }),
       });
     }
     pendingArrangementUpdates.value = {};
@@ -1287,6 +1306,7 @@ function toggleViewScope() {
 
 async function fetchData() {
   if (fetchInProgress) return;
+  if (accessDenied.value) return;
   fetchInProgress = true;
   try {
     let args = { party_code: filterPartyCode.value, planned_only: 1, process: processFilter.value };
@@ -1318,7 +1338,7 @@ async function fetchData() {
 
     const r = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_slitting_order_table_data",
-      args,
+      args: boardArgs(args),
     });
     rawData.value = (r.message || []).map((d) => ({
       ...d,
@@ -1390,8 +1410,11 @@ onMounted(async () => {
   if (p.get("week")) filterWeek.value = p.get("week");
   if (p.get("month")) filterMonth.value = p.get("month");
   if (["103", "109", "108", "110", "__all__"].includes(p.get("process"))) processFilter.value = p.get("process");
-  await fetchData();
-  startAutoRefresh();
+  await loadBoardAccessContext();
+  if (!accessDenied.value) {
+    await fetchData();
+    startAutoRefresh();
+  }
   document.addEventListener("visibilitychange", onVisibilityRefresh);
   if (frappe.realtime && frappe.realtime.on && !sprRealtimeHandlerRegistered) {
     frappe.realtime.on("shaft_production_run_updated", handleSprRealtimeUpdate);
@@ -1784,6 +1807,15 @@ onUnmounted(() => {
 }
 .font-mono {
   font-family: ui-monospace, monospace;
+}
+.cc-access-denied {
+  margin: 12px;
+  padding: 12px 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  border-radius: 8px;
+  font-weight: 600;
 }
 </style>
 
