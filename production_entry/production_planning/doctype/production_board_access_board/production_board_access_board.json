@@ -28,6 +28,7 @@
   },
   {
    "default": "Both",
+   "depends_on": "eval:((doc.board || '').split('|')[0].trim().toLowerCase().replace(/\\s+/g, '-').replace(/_/g, '-')) === 'w-cut-d-cut-board'",
    "description": "W CUT / D CUT only — limits which company the operator can view (JVE or VTP). Choose Both when the user works across companies.",
    "fieldname": "w_cut_d_cut_company",
    "fieldtype": "Select",

@@ -60,6 +60,8 @@ function toggleWCutCompanyFieldVisibility(frm, row) {
 	boards.grid.toggle_display("w_cut_d_cut_company", show, row.name);
 	if (show && !row.w_cut_d_cut_company) {
 		frappe.model.set_value(row.doctype, row.name, "w_cut_d_cut_company", "Both");
+	} else if (!show && row.w_cut_d_cut_company) {
+		frappe.model.set_value(row.doctype, row.name, "w_cut_d_cut_company", "");
 	}
 }
 
