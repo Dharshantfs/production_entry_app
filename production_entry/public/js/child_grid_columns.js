@@ -332,7 +332,7 @@ function cg_ensure_grid_rows_from_doc(frm, tableFieldname) {
 		return false;
 	}
 	const gridLen = (grid.grid_rows || []).length;
-	const needsReload = gridLen === 0 || gridLen < docRows.length || cg_grid_rows_look_broken(grid);
+	const needsReload = gridLen === 0 || gridLen < docRows.length;
 	if (!needsReload) {
 		return false;
 	}
@@ -440,6 +440,32 @@ function cg_mirror_grid_docfields_to_rows(grid) {
 	});
 }
 
+function cg_needs_column_fix(grid) {
+	if (!grid) {
+		return false;
+	}
+	return !cg_grid_header_matches_rows(grid) || cg_grid_rows_look_broken(grid);
+}
+
+/** Sync row docfields to header order; remount DOM only when still misaligned. */
+function cg_fix_row_columns(grid, showSet, order) {
+	if (!grid || !order || !order.length) {
+		return false;
+	}
+	cg_sync_grid_to_column_order(grid, order);
+	cg_mirror_grid_docfields_to_rows(grid);
+	if (!cg_needs_column_fix(grid)) {
+		cg_sync_row_docfields(grid, showSet);
+		cg_refresh_grid_body(grid);
+		return false;
+	}
+	cg_remount_grid_rows(grid);
+	cg_mirror_grid_docfields_to_rows(grid);
+	cg_sync_row_docfields(grid, showSet);
+	cg_refresh_grid_body(grid);
+	return cg_needs_column_fix(grid);
+}
+
 function cg_realign_grid(grid, fd, options, columnOrder) {
 	if (!grid) {
 		return;
@@ -488,15 +514,11 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	} catch (e) {
 		cg_refresh_grid_body(grid);
 	}
-	if (order.length) {
+	let needsFullRebuild = false;
+	if ((grid.grid_rows || []).length > 0 && order.length) {
+		needsFullRebuild = cg_fix_row_columns(grid, showSet, order);
+	} else if (order.length) {
 		cg_sync_grid_to_column_order(grid, order);
-		cg_mirror_grid_docfields_to_rows(grid);
-	}
-	if ((grid.grid_rows || []).length > 0) {
-		cg_remount_grid_rows(grid);
-		cg_mirror_grid_docfields_to_rows(grid);
-		cg_sync_row_docfields(grid, showSet);
-		cg_refresh_grid_body(grid);
 	}
 	try {
 		if (typeof grid.refresh_header === 'function') {
@@ -507,8 +529,40 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	}
 	const frm = grid.frm || (fd && fd.frm);
 	const tableField = (fd && fd.df && fd.df.fieldname) || (grid.df && grid.df.fieldname) || '';
-	if (frm && tableField) {
-		cg_ensure_grid_rows_from_doc(frm, tableField);
+	if (frm && tableField && needsFullRebuild && !frm._cg_repopulating_grid) {
+		try {
+			frm._cg_repopulating_grid = tableField;
+			cg_teardown_grid_rows(grid);
+			frm.refresh_field(tableField);
+			setTimeout(function () {
+				delete frm._cg_repopulating_grid;
+				const fd2 = frm.fields_dict && frm.fields_dict[tableField];
+				const g2 = fd2 && fd2.grid;
+				if (g2 && order.length) {
+					cg_sync_grid_to_column_order(g2, order);
+					cg_mirror_grid_docfields_to_rows(g2);
+					if (typeof g2.setup_visible_columns === 'function') {
+						g2.setup_visible_columns();
+					}
+					if (typeof g2.refresh_header === 'function') {
+						g2.refresh_header();
+					}
+					cg_fix_row_columns(g2, showSet, order);
+					if (typeof g2.refresh_header === 'function') {
+						g2.refresh_header();
+					}
+					cg_sync_header_scroll(fd2);
+				}
+			}, 120);
+		} catch (e) {
+			delete frm._cg_repopulating_grid;
+		}
+	} else if (frm && tableField) {
+		const docRows = frm.doc && frm.doc[tableField];
+		const gridLen = (grid.grid_rows || []).length;
+		if (docRows && docRows.length && gridLen === 0) {
+			cg_ensure_grid_rows_from_doc(frm, tableField);
+		}
 	}
 	cg_sync_header_scroll(fd);
 	if (fd && fd.$wrapper && fd.$wrapper.length) {
@@ -593,7 +647,10 @@ production_entry.grid_columns = {
 			cg_reorder_all_row_docfields(grid, ordered);
 			cg_sync_row_docfields(grid, showSet);
 			cg_realign_grid(grid, fd, { fullRefresh: false }, ordered);
-			cg_ensure_grid_rows_from_doc(frm, tableFieldname);
+			const docRows = frm.doc && frm.doc[tableFieldname];
+			if (docRows && docRows.length && !(grid.grid_rows || []).length) {
+				cg_ensure_grid_rows_from_doc(frm, tableFieldname);
+			}
 		} catch (e) {
 			if (typeof console !== 'undefined' && console.warn) {
 				console.warn('grid_columns.apply failed', tableFieldname, e);
@@ -655,15 +712,8 @@ production_entry.grid_columns = {
 			}
 			const ret = origRefresh.apply(this, arguments);
 			try {
-				if (order.length) {
-					cg_sync_grid_to_column_order(grid, order);
-					cg_mirror_grid_docfields_to_rows(grid);
-					if ((grid.grid_rows || []).length > 0) {
-						cg_remount_grid_rows(grid);
-						cg_mirror_grid_docfields_to_rows(grid);
-						cg_sync_row_docfields(grid, cg_build_show_set_from_order(order));
-						cg_refresh_grid_body(grid);
-					}
+				if (order.length && (grid.grid_rows || []).length > 0) {
+					cg_fix_row_columns(grid, cg_build_show_set_from_order(order), order);
 					if (typeof grid.refresh_header === 'function') {
 						grid.refresh_header();
 					}
