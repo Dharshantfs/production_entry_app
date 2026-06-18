@@ -22,6 +22,19 @@ const PS_GRID_META_BY_FIELD = {
 /** Always visible — never toggle off. */
 const PS_CORE_GRID_FIELDS = new Set(['item_code', 'item_name', 'qty', 'uom', 'unit']);
 
+/** Never show in planning sheet child grids (shift / arrangement — board-only). */
+const PS_NEVER_SHOW_GRID_FIELDS = new Set([
+	'custom_printing_shift',
+	'custom_printing_arrangement_seq',
+	'custom_lamination_shift',
+	'custom_slitting_shift',
+	'custom_sheet_cutting_shift',
+]);
+
+function ps_filter_grid_show_fields(fieldnames) {
+	return (fieldnames || []).filter((fn) => fn && !PS_NEVER_SHOW_GRID_FIELDS.has(fn));
+}
+
 /** Fabric 100 / 102 / 103 — canonical grid column order (user-enforced). */
 const PS_CANONICAL_FABRIC_ORDER = [
 	'item_code', 'item_name', 'qty', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
@@ -33,32 +46,30 @@ const PS_ORDER_FABRIC_BASE = PS_CANONICAL_FABRIC_ORDER;
 const PS_ORDER_SHEET_251 = [
 	'item_code', 'item_name', 'qty', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
 	'planned_date', 'custom_parent_child_trace_id', 'custom_parent_fabric',
-	'sheet_size', 'custom_no_of_sheets', 'custom_sheet_cutting_shift',
+	'sheet_size', 'custom_no_of_sheets',
 	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
 ];
 
 const PS_ORDER_SHEET_252 = [
 	'item_code', 'item_name', 'qty', 'custom_design_code', 'custom_design_name',
-	'custom_design_colour', 'custom_design_attachment', 'custom_printing_shift',
-	'custom_printing_arrangement_seq', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
+	'custom_design_colour', 'custom_design_attachment', 'uom', 'gsm', 'quality', 'color', 'width_inch', 'unit',
 	'planned_date', 'custom_parent_child_trace_id', 'custom_parent_fabric',
-	'sheet_size', 'custom_no_of_sheets', 'custom_sheet_cutting_shift',
+	'sheet_size', 'custom_no_of_sheets',
 	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
 ];
 
 const PS_ORDER_SHEET_253 = [
 	'item_code', 'item_name', 'qty', 'uom', 'gsm', 'custom_lam_gsm', 'custom_lam_side',
 	'quality', 'color', 'width_inch', 'unit', 'planned_date', 'custom_parent_child_trace_id',
-	'custom_parent_fabric', 'sheet_size', 'custom_no_of_sheets', 'custom_sheet_cutting_shift',
+	'custom_parent_fabric', 'sheet_size', 'custom_no_of_sheets',
 	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
 ];
 
 const PS_ORDER_SHEET_254 = [
 	'item_code', 'item_name', 'qty', 'custom_design_code', 'custom_design_name',
-	'custom_design_colour', 'custom_design_attachment', 'custom_printing_shift',
-	'custom_printing_arrangement_seq', 'uom', 'gsm', 'custom_lam_gsm', 'custom_lam_side',
+	'custom_design_colour', 'custom_design_attachment', 'uom', 'gsm', 'custom_lam_gsm', 'custom_lam_side',
 	'quality', 'color', 'width_inch', 'unit', 'planned_date', 'custom_parent_child_trace_id',
-	'custom_parent_fabric', 'sheet_size', 'custom_no_of_sheets', 'custom_sheet_cutting_shift',
+	'custom_parent_fabric', 'sheet_size', 'custom_no_of_sheets',
 	'meter', 'meter_per_roll', 'no_of_rolls', 'weight_per_roll', 'order_sheet', 'spr_name',
 ];
 
@@ -95,20 +106,20 @@ const PS_BASE_FIELDS = [
 
 const PS_PRINT_105_FIELDS = [
 	'custom_design_code', 'custom_design_name', 'custom_design_colour',
-	'custom_design_attachment', 'custom_printing_shift', 'custom_printing_arrangement_seq',
+	'custom_design_attachment',
 ];
 
 const PS_BOPP_STACK_FIELDS = [
 	'custom_lam_gsm', 'custom_bopp_gsm', 'custom_finishing', 'custom_white_tint',
 	'custom_design_code', 'custom_design_name', 'custom_design_colour',
-	'custom_design_attachment', 'custom_lamination_shift',
+	'custom_design_attachment',
 	'custom_lam_side', 'custom_lam_side_',
 ];
 
-const PS_SLITTING_FIELDS = ['custom_slitting_shift'];
+const PS_SLITTING_FIELDS = [];
 
 const PS_SHEET_CUT_FIELDS = [
-	'sheet_size', 'custom_no_of_sheets', 'custom_sheet_cutting_shift',
+	'sheet_size', 'custom_no_of_sheets',
 ];
 
 const PS_BAG_FIELDS = [
@@ -185,7 +196,7 @@ function ps_resolve_order_for_table(table_fieldname, logicalOrder) {
 	}
 	const out = [];
 	const seen = {};
-	logicalOrder.forEach((fn) => {
+	ps_filter_grid_show_fields(logicalOrder).forEach((fn) => {
 		const resolved = ps_resolve_field_for_table(table_fieldname, fn);
 		if (seen[resolved]) {
 			return;
@@ -286,7 +297,6 @@ function ps_fields_for_process(code) {
 	}
 	if (code === '108' || code === '109' || code === '110') {
 		PS_BOPP_STACK_FIELDS.forEach((f) => out.add(f));
-		PS_SLITTING_FIELDS.forEach((f) => out.add(f));
 		return out;
 	}
 	if (code === '251') {
@@ -342,18 +352,19 @@ function ps_collect_active_process_codes(frm) {
 function ps_build_logical_field_order(frm) {
 	const codes = ps_collect_active_process_codes(frm);
 	if (!codes.size) {
-		return PS_CANONICAL_FABRIC_ORDER.slice();
+		return ps_filter_grid_show_fields(PS_CANONICAL_FABRIC_ORDER.slice());
 	}
 	const sorted = Array.from(codes).sort();
 	if (sorted.every((c) => PS_FIELD_ORDER_BY_PROCESS[c])) {
-		return ps_merge_process_field_orders(codes);
+		return ps_filter_grid_show_fields(ps_merge_process_field_orders(codes));
 	}
 	const allowed = new Set();
 	codes.forEach((code) => {
 		ps_fields_for_process(code).forEach((f) => allowed.add(f));
 	});
 	PS_CORE_GRID_FIELDS.forEach((f) => allowed.add(f));
-	return ps_merge_fields_into_canonical_order(allowed, PS_CANONICAL_FABRIC_ORDER);
+	PS_NEVER_SHOW_GRID_FIELDS.forEach((f) => allowed.delete(f));
+	return ps_filter_grid_show_fields(ps_merge_fields_into_canonical_order(allowed, PS_CANONICAL_FABRIC_ORDER));
 }
 
 function ps_build_show_fieldnames(frm, table_fieldname) {
@@ -459,6 +470,18 @@ function ps_ensure_both_grids_have_rows(frm) {
 	});
 }
 
+function ps_clear_saved_grid_view_settings(metaDoctype) {
+	try {
+		const key = frappe.scrub(metaDoctype);
+		const us = frappe.model.user_settings && frappe.model.user_settings[key];
+		if (us && us.GridView) {
+			delete us.GridView;
+		}
+	} catch (e) {
+		/* ignore */
+	}
+}
+
 function ps_apply_both_grids(frm) {
 	if (!frm || !frm.fields_dict || frm._ps_applying_grid_visibility) {
 		return;
@@ -480,22 +503,13 @@ function ps_apply_both_grids(frm) {
 				return;
 			}
 			ps_bind_planning_grid_user_settings_hook(frm, t);
+			ps_clear_saved_grid_view_settings(metaDoctype);
 			const fd = frm.fields_dict[t];
 			if (fd && fd.grid) {
 				ps_clear_planning_grid_user_settings(fd.grid);
 			}
 			gc.apply(frm, t, metaDoctype, showFields, { fullRefresh: false });
 		});
-		if (gc && typeof gc.realign === 'function') {
-			PS_GRID_TABLE_FIELDS.forEach((t) => {
-				const order = ps_resolve_order_for_table(t, logicalOrder);
-				try {
-					gc.realign(frm, t, { fullRefresh: false }, order);
-				} catch (e) {
-					/* ignore */
-				}
-			});
-		}
 		ps_ensure_both_grids_have_rows(frm);
 	} catch (e) {
 		if (typeof console !== 'undefined' && console.warn) {
@@ -510,6 +524,26 @@ function apply_process_code_visibility(frm) {
 	ps_apply_both_grids(frm);
 }
 
+function ps_install_grid_setup_visible_columns_hook(frm, tableField) {
+	const grid = frm.fields_dict[tableField] && frm.fields_dict[tableField].grid;
+	const gc = ps_get_grid_columns_module();
+	if (!grid || grid._ps_setup_vc_hooked || !gc || typeof gc.sync_grid_to_column_order !== 'function') {
+		return;
+	}
+	grid._ps_setup_vc_hooked = true;
+	const origSetup = grid.setup_visible_columns && grid.setup_visible_columns.bind(grid);
+	if (typeof origSetup !== 'function') {
+		return;
+	}
+	grid.setup_visible_columns = function psPlanningSetupVisibleColumns() {
+		const order = ps_resolve_order_for_table(tableField, ps_build_logical_field_order(frm));
+		if (order.length) {
+			gc.sync_grid_to_column_order(grid, order);
+		}
+		return origSetup.apply(this, arguments);
+	};
+}
+
 function ps_install_grid_refresh_guards(frm) {
 	if (!frm || !frm.fields_dict) {
 		return;
@@ -520,61 +554,12 @@ function ps_install_grid_refresh_guards(frm) {
 	}
 	PS_GRID_TABLE_FIELDS.forEach((t) => {
 		ps_bind_planning_grid_user_settings_hook(frm, t);
+		ps_install_grid_setup_visible_columns_hook(frm, t);
 		gc.install_refresh_column_guard(frm, t, function psColumnOrderForGuard() {
 			const logicalOrder = ps_build_logical_field_order(frm);
 			return ps_resolve_order_for_table(t, logicalOrder);
 		});
 	});
-}
-
-function ps_run_grid_stabilize_pass(frm, passLabel) {
-	if (!frm || !frm.fields_dict || frm._ps_grid_rebuilding) {
-		return;
-	}
-	try {
-		ps_wrap_planning_grids(frm);
-		ps_install_grid_refresh_guards(frm);
-		ps_ensure_both_grids_have_rows(frm);
-		apply_process_code_visibility(frm);
-		const logicalOrder = ps_build_logical_field_order(frm);
-		const gc = ps_get_grid_columns_module();
-		if (gc && typeof gc.realign === 'function') {
-			PS_GRID_TABLE_FIELDS.forEach(function (t) {
-				try {
-					const order = ps_resolve_order_for_table(t, logicalOrder);
-					gc.realign(frm, t, { fullRefresh: false }, order);
-				} catch (e) {
-					/* ignore */
-				}
-			});
-		}
-		ps_ensure_both_grids_have_rows(frm);
-		// #region agent log
-		const gcLog = ps_get_grid_columns_module();
-		PS_GRID_TABLE_FIELDS.forEach(function (t) {
-			const g = frm.fields_dict[t] && frm.fields_dict[t].grid;
-			if (g && gcLog && typeof gcLog.alignment_snapshot === 'function') {
-				fetch('http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '024dec' },
-					body: JSON.stringify({
-						sessionId: '024dec',
-						hypothesisId: 'E',
-						location: 'planning_sheet_process_grid.js:stabilize_pass',
-						message: 'stabilize_pass_done',
-						data: Object.assign({ passLabel: passLabel }, gcLog.alignment_snapshot(g, t, 'stabilize_' + passLabel)),
-						timestamp: Date.now(),
-						runId: 'post-fix-rows',
-					}),
-				}).catch(() => {});
-			}
-		});
-		// #endregion
-	} catch (e) {
-		if (typeof console !== 'undefined' && console.warn) {
-			console.warn('ps_run_grid_stabilize_pass failed', passLabel, e);
-		}
-	}
 }
 
 function ps_stabilize_planning_grids_after_refresh(frm) {
@@ -583,28 +568,38 @@ function ps_stabilize_planning_grids_after_refresh(frm) {
 	}
 	frm._ps_grid_rebuilding = true;
 	frm._ps_skip_grid_schedule = true;
-	const passes = [0, 120, 400, 900];
-	let done = 0;
-	const finish = function () {
-		done += 1;
-		if (done < passes.length) {
-			return;
-		}
-		frm._ps_grid_rebuilding = false;
-		frm._ps_skip_grid_schedule = false;
-		if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
-			planning_sheet_apply_stock_grid_ui(frm);
-		}
-		if (typeof register_planning_sheet_stock_check_button === 'function') {
-			register_planning_sheet_stock_check_button(frm, { grids_only: true });
+	const run = function () {
+		try {
+			ps_wrap_planning_grids(frm);
+			ps_install_grid_refresh_guards(frm);
+			ps_ensure_both_grids_have_rows(frm);
+			apply_process_code_visibility(frm);
+			ps_ensure_both_grids_have_rows(frm);
+			if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
+				planning_sheet_apply_stock_grid_ui(frm, { skip_reapply: true });
+			}
+		} catch (e) {
+			if (typeof console !== 'undefined' && console.warn) {
+				console.warn('ps_stabilize_planning_grids_after_refresh failed', e);
+			}
+		} finally {
+			frm._ps_grid_rebuilding = false;
+			frm._ps_skip_grid_schedule = false;
+			if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
+				planning_sheet_apply_stock_grid_ui(frm);
+			}
+			if (typeof register_planning_sheet_stock_check_button === 'function') {
+				register_planning_sheet_stock_check_button(frm, { grids_only: true });
+			}
 		}
 	};
-	passes.forEach(function (delay, idx) {
-		setTimeout(function () {
-			ps_run_grid_stabilize_pass(frm, 'pass_' + idx);
-			finish();
-		}, delay);
-	});
+	if (typeof requestAnimationFrame === 'function') {
+		requestAnimationFrame(function () {
+			requestAnimationFrame(run);
+		});
+	} else {
+		run();
+	}
 }
 
 /** After create / regenerate / reload_doc — reload child rows from doc then stabilize columns. */

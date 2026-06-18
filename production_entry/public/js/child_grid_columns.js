@@ -206,60 +206,23 @@ function cg_refresh_grid_body(grid) {
 	}
 }
 
-// #region agent log
-function cg_dbg(hypothesisId, location, message, data) {
-	fetch('http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a', {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '024dec' },
-		body: JSON.stringify({
-			sessionId: '024dec',
-			hypothesisId,
-			location,
-			message,
-			data: data || {},
-			timestamp: Date.now(),
-			runId: data && data.runId ? data.runId : 'pre-fix',
-		}),
-	}).catch(() => {});
-}
-
-function cg_alignment_snapshot(grid, tableField, phase) {
+function cg_grid_header_matches_rows(grid) {
 	if (!grid) {
-		return { tableField, phase, error: 'no_grid' };
+		return true;
 	}
 	const headerOrder = (grid.docfields || [])
 		.filter((df) => df && df.in_list_view && !cg_skip_field(df))
 		.map((df) => df.fieldname);
 	const gr = (grid.grid_rows || [])[0];
-	const rowOrder = gr
-		? (gr.docfields || [])
-			.filter((df) => df && df.in_list_view && !cg_skip_field(df))
-			.map((df) => df.fieldname)
-		: [];
-	const headerMatch =
-		headerOrder.length === rowOrder.length
+	if (!gr) {
+		return true;
+	}
+	const rowOrder = (gr.docfields || [])
+		.filter((df) => df && df.in_list_view && !cg_skip_field(df))
+		.map((df) => df.fieldname);
+	return headerOrder.length === rowOrder.length
 		&& headerOrder.every((fn, i) => rowOrder[i] === fn);
-	const domCols = gr && gr.wrapper && gr.wrapper.length ? gr.wrapper.find('.col, .grid-static-col').length : 0;
-	const docRowCount = grid.frm && grid.frm.doc && grid.df && grid.frm.doc[grid.df.fieldname]
-		? (grid.frm.doc[grid.df.fieldname] || []).length
-		: 0;
-	return {
-		tableField,
-		phase,
-		headerMatch,
-		headerLen: headerOrder.length,
-		rowLen: rowOrder.length,
-		gridRowCount: (grid.grid_rows || []).length,
-		docRowCount,
-		rowsBroken: cg_grid_rows_look_broken(grid),
-		domCols,
-		headerHead: headerOrder.slice(0, 6),
-		rowHead: rowOrder.slice(0, 6),
-		hasDatatable: !!grid.datatable,
-		guardInstalled: !!grid._cg_refresh_guard,
-	};
 }
-// #endregion
 
 /** Rebuild data column DOM only — never empty full row wrapper (removes checkbox/index). */
 function cg_remount_grid_rows(grid) {
@@ -375,14 +338,6 @@ function cg_ensure_grid_rows_from_doc(frm, tableFieldname) {
 	}
 	try {
 		frm._cg_repopulating_grid = tableFieldname;
-		// #region agent log
-		cg_dbg('F', 'child_grid_columns.js:ensure_rows', 'refresh_field', {
-			tableFieldname,
-			docLen: docRows.length,
-			gridLen,
-			broken: cg_grid_rows_look_broken(grid),
-		});
-		// #endregion
 		frm.refresh_field(tableFieldname);
 		return true;
 	} catch (e) {
@@ -463,6 +418,7 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 		(grid.docfields || [])
 			.filter((df) => df && df.in_list_view && !cg_skip_field(df))
 			.map((df) => df.fieldname);
+	const showSet = cg_build_show_set_from_order(order);
 	if (order.length) {
 		cg_sync_grid_to_column_order(grid, order);
 	}
@@ -470,6 +426,8 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 		if (grid.visible_columns) {
 			delete grid.visible_columns;
 		}
+		delete grid.user_settings;
+		grid.user_defined_columns = null;
 	} catch (e) {
 		/* ignore */
 	}
@@ -481,32 +439,7 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 		/* ignore */
 	}
 	if (cg_visible_column_count(grid) < 1) {
-		// #region agent log
-		cg_dbg('B', 'child_grid_columns.js:cg_realign_grid', 'early_exit_no_visible_cols', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'early_exit'));
-		// #endregion
 		return;
-	}
-	// #region agent log
-	cg_dbg('A', 'child_grid_columns.js:cg_realign_grid', 'before_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'before_remount'));
-	// #endregion
-	const frm = grid.frm || (fd && fd.frm);
-	const tableField = (fd && fd.df && fd.df.fieldname) || (grid.df && grid.df.fieldname) || '';
-	const docHasRows = frm && frm.doc && tableField && (frm.doc[tableField] || []).length > 0;
-	if (docHasRows && cg_grid_rows_look_broken(grid)) {
-		try {
-			if (typeof grid.refresh === 'function') {
-				grid.refresh();
-			}
-		} catch (e) {
-			/* ignore */
-		}
-		if (order.length) {
-			cg_sync_grid_to_column_order(grid, order);
-		}
-	}
-	const snapBeforeRemount = cg_alignment_snapshot(grid, tableField, 'pre_remount');
-	if ((grid.grid_rows || []).length > 0 && !snapBeforeRemount.headerMatch) {
-		cg_remount_grid_rows(grid);
 	}
 	try {
 		if (typeof grid.refresh_header === 'function') {
@@ -515,60 +448,35 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	} catch (e) {
 		/* ignore */
 	}
+	try {
+		if (typeof grid.refresh === 'function') {
+			grid.refresh();
+		} else {
+			cg_refresh_grid_body(grid);
+		}
+	} catch (e) {
+		cg_refresh_grid_body(grid);
+	}
+	if (order.length) {
+		cg_sync_grid_to_column_order(grid, order);
+	}
+	if ((grid.grid_rows || []).length > 0 && !cg_grid_header_matches_rows(grid)) {
+		cg_remount_grid_rows(grid);
+	} else if (order.length) {
+		cg_sync_row_docfields(grid, showSet);
+		cg_refresh_grid_body(grid);
+	}
+	try {
+		if (typeof grid.refresh_header === 'function') {
+			grid.refresh_header();
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	const frm = grid.frm || (fd && fd.frm);
+	const tableField = (fd && fd.df && fd.df.fieldname) || (grid.df && grid.df.fieldname) || '';
 	if (frm && tableField) {
 		cg_ensure_grid_rows_from_doc(frm, tableField);
-	}
-	// #region agent log
-	cg_dbg('C', 'child_grid_columns.js:cg_realign_grid', 'after_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'after_remount'));
-	// #endregion
-	// Legacy fullRefresh path kept for reference — never enabled (breaks row rebuild).
-	if (false && (options || {}).fullRefresh === true) {
-		try {
-			if (order.length) {
-				cg_reorder_grid_docfields(grid, null, order);
-			}
-			cg_teardown_grid_rows(grid);
-			if (typeof grid.setup_visible_columns === 'function') {
-				grid.setup_visible_columns();
-			}
-			if (typeof grid.refresh_header === 'function') {
-				grid.refresh_header();
-			}
-			if (typeof grid.refresh === 'function') {
-				grid.refresh();
-			} else {
-				cg_refresh_grid_body(grid);
-			}
-			const repopulated = cg_repopulate_grid_if_empty(grid, fd);
-			if (order.length) {
-				cg_reorder_all_row_docfields(grid, order);
-			}
-			const showSet = {};
-			(grid.docfields || []).forEach((df) => {
-				if (df && df.fieldname && df.in_list_view && !cg_skip_field(df)) {
-					showSet[df.fieldname] = 1;
-				}
-			});
-			if (Object.keys(showSet).length) {
-				cg_sync_row_docfields(grid, showSet);
-				cg_refresh_grid_body(grid);
-			}
-			if (repopulated && order.length) {
-				setTimeout(function () {
-					try {
-						cg_reorder_all_row_docfields(grid, order);
-						cg_sync_row_docfields(grid, showSet);
-						cg_refresh_grid_body(grid);
-						cg_sync_header_scroll(fd);
-					} catch (e) {
-						/* ignore */
-					}
-				}, 80);
-			}
-		} catch (e) {
-			cg_refresh_grid_body(grid);
-			cg_repopulate_grid_if_empty(grid, fd);
-		}
 	}
 	cg_sync_header_scroll(fd);
 	if (fd && fd.$wrapper && fd.$wrapper.length) {
@@ -709,22 +617,24 @@ production_entry.grid_columns = {
 			return;
 		}
 		grid.refresh = function cgGuardedGridRefresh() {
+			const order = columnOrderGetter() || [];
+			if (order.length) {
+				cg_sync_grid_to_column_order(grid, order);
+			}
 			const ret = origRefresh.apply(this, arguments);
 			try {
-				const order = columnOrderGetter() || [];
 				if (order.length) {
 					cg_sync_grid_to_column_order(grid, order);
-					const snap = cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || tableFieldname || '', 'guard_check');
-					if ((grid.grid_rows || []).length > 0 && !snap.headerMatch) {
+					if ((grid.grid_rows || []).length > 0 && !cg_grid_header_matches_rows(grid)) {
 						cg_remount_grid_rows(grid);
+					} else {
+						cg_sync_row_docfields(grid, cg_build_show_set_from_order(order));
+						cg_refresh_grid_body(grid);
 					}
 					if (typeof grid.refresh_header === 'function') {
 						grid.refresh_header();
 					}
 					cg_sync_header_scroll(fd);
-					// #region agent log
-					cg_dbg('D', 'child_grid_columns.js:guard_refresh', 'after_guard', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || tableFieldname || '', 'guard_refresh'));
-					// #endregion
 				}
 			} catch (e) {
 				/* ignore */
@@ -736,6 +646,4 @@ production_entry.grid_columns = {
 	sync_grid_to_column_order: cg_sync_grid_to_column_order,
 
 	remount_grid_rows: cg_remount_grid_rows,
-
-	alignment_snapshot: cg_alignment_snapshot,
 };
