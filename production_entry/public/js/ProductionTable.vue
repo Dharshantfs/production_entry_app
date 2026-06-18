@@ -452,6 +452,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import { openProductionPlanPrintPreview, resolveAndOpenProductionPlanPrintPreview } from "./pp_print_utils.js";
 import { formatKgPlanning, mmDisplayFromInchesWithCodeFallback } from "./planning_table_size_units.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
@@ -2071,8 +2072,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
     // WITHOUT calling API fallback, which might return different PP from Planning Sheet level
     if (ppId) {
       console.log("✅ Using ITEM-LEVEL PP ID directly (NO API fallback):", ppId);
-      const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
-      window.open(printUrl, '_blank');
+      openProductionPlanPrintPreview(ppId);
       return;
     }
     
@@ -2092,8 +2092,7 @@ async function openProductionPlanView(planningSheetName, salesOrderItem = null, 
       console.log("📌 API resolved PP (fallback):", ppId);
       
       if (ppId) {
-        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
-        window.open(printUrl, '_blank');
+        openProductionPlanPrintPreview(ppId);
       } else {
         frappe.msgprint("No Production Plan found for this item");
       }

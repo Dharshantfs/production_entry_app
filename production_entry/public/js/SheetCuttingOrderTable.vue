@@ -149,6 +149,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { formatSheetSizeCell as formatSheetSizeCellMm, formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import { resolveAndOpenProductionPlanPrintPreview } from "./pp_print_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
@@ -387,18 +388,13 @@ async function openResolvedSPR(row) {
 function openPPForm(ppId) { if (ppId) frappe.set_route("Form", "Production Plan", ppId); }
 function openWO(woName) { if (woName) frappe.set_route("Form", "Work Order", woName); }
 function openProductionPlanView(planningSheetName, salesOrderItem, planningSheetItemName, directPpId) {
-  if (directPpId) {
-    const url = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(directPpId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`;
-    window.open(url, "_blank");
-    return;
-  }
-  if (planningSheetName) {
-    frappe.call({ method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id", args: { planning_sheet_name: planningSheetName, sales_order_item: salesOrderItem || null, planning_sheet_item: planningSheetItemName || null } }).then(res => {
-      const ppId = res?.message?.pp_id;
-      if (ppId) { const url = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent("Assembly Item - Raw Material")}&trigger_print=0`; window.open(url, "_blank"); }
-      else { frappe.msgprint("No Production Plan found for this item."); }
-    });
-  }
+  resolveAndOpenProductionPlanPrintPreview({
+    planningSheetName,
+    salesOrderItem,
+    planningSheetItem: planningSheetItemName,
+    directPpId,
+    missingSheetMessage: "No Production Plan found for this item.",
+  });
 }
 function sprPillLabel(row) { if (!row?.spr_name) return ""; if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Draft"; if (Number(row.spr_docstatus) === 1) return "Submitted"; return "SPR"; }
 function sprPillClass(row) { if (!row?.spr_name) return "pt-pill-muted"; if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "pt-pill-draft"; if (Number(row.spr_docstatus) === 1) return "pt-pill-submitted"; return "pt-pill-muted"; }

@@ -234,6 +234,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import { resolveAndOpenProductionPlanPrintPreview } from "./pp_print_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
@@ -252,7 +253,6 @@ const SLITTING_UNIT = "JVE - SLITTING MACHINE";
 const SLITTING_UNIT_VTP = "VTP - SLITTING MACHINE";
 const SLITTING_UNASSIGNED_UNIT = "UNASSIGNED SLITTING MACHINE";
 const SLITTING_BOARD_UNITS = [SLITTING_UNIT, SLITTING_UNIT_VTP, SLITTING_UNASSIGNED_UNIT];
-const SLITTING_PP_PRINT_FORMAT = "Slitting Order Sheet";
 
 const DIM_UNIT_LS_KEY = "pp_planning_table_dim_unit_slitting";
 const sizeDimUnit = ref("inches");
@@ -1010,39 +1010,12 @@ function syncSprNameForSamePP(ppId, sprId, sourceItemName = "") {
 }
 
 async function openProductionPlanView(planningSheetName, salesOrderItem = null, planningSheetItem = null, directPpId = null) {
-  if (!planningSheetName) {
-    frappe.msgprint("Planning Sheet not found");
-    return;
-  }
-  let ppId = String(directPpId || "").trim();
-  if (ppId) {
-    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(SLITTING_PP_PRINT_FORMAT)}&trigger_print=0`;
-    window.open(printUrl, "_blank");
-    return;
-  }
-  try {
-    const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
-      args: {
-        planning_sheet_name: planningSheetName,
-        sales_order_item: salesOrderItem,
-        planning_sheet_item: planningSheetItem,
-      },
-    });
-    if (res.message && res.message.status === "ok") {
-      ppId = String(res.message.pp_id || "").trim();
-      if (ppId) {
-        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(SLITTING_PP_PRINT_FORMAT)}&trigger_print=0`;
-        window.open(printUrl, "_blank");
-      } else {
-        frappe.msgprint("No Production Plan found");
-      }
-    } else {
-      frappe.msgprint(res.message?.message || "Error");
-    }
-  } catch (e) {
-    frappe.msgprint("Error opening Production Plan");
-  }
+  await resolveAndOpenProductionPlanPrintPreview({
+    planningSheetName,
+    salesOrderItem,
+    planningSheetItem,
+    directPpId,
+  });
 }
 
 async function handleStockEntryAction(item) {

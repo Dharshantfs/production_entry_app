@@ -390,6 +390,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { formatSingleDimension } from "./planning_table_size_units.js";
 import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import { resolveAndOpenProductionPlanPrintPreview } from "./pp_print_utils.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
 import DespatchToolbarBlock from "./DespatchToolbarBlock.vue";
 import { formatMovementCell } from "./movementDisplay.js";
@@ -1403,42 +1404,12 @@ function syncSprNameForSamePP(ppId, sprId, sourceItemName = "") {
 }
 
 async function openProductionPlanView(planningSheetName, salesOrderItem = null, planningSheetItem = null, directPpId = null) {
-  if (!planningSheetName) {
-    frappe.msgprint("Planning Sheet not found");
-    return;
-  }
-  let ppId = String(directPpId || "").trim();
-  const ppPrintFormat = isPrinting105Table.value || isPrintedBoppTable.value
-    ? "bopp printing"
-    : "Assembly Item - Raw Material";
-  if (ppId) {
-    const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(ppPrintFormat)}&trigger_print=0`;
-    window.open(printUrl, "_blank");
-    return;
-  }
-  try {
-    const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_planning_sheet_pp_id",
-      args: {
-        planning_sheet_name: planningSheetName,
-        sales_order_item: salesOrderItem,
-        planning_sheet_item: planningSheetItem,
-      },
-    });
-    if (res.message && res.message.status === "ok") {
-      ppId = String(res.message.pp_id || "").trim();
-      if (ppId) {
-        const printUrl = `/printview?doctype=${encodeURIComponent("Production Plan")}&name=${encodeURIComponent(ppId)}&format=${encodeURIComponent(ppPrintFormat)}&trigger_print=0`;
-        window.open(printUrl, "_blank");
-      } else {
-        frappe.msgprint("No Production Plan found");
-      }
-    } else {
-      frappe.msgprint(res.message?.message || "Error");
-    }
-  } catch (e) {
-    frappe.msgprint("Error opening Production Plan");
-  }
+  await resolveAndOpenProductionPlanPrintPreview({
+    planningSheetName,
+    salesOrderItem,
+    planningSheetItem,
+    directPpId,
+  });
 }
 
 async function handleStockEntryAction(item) {
