@@ -34,6 +34,7 @@ PARENT_FABRIC_OPTIONS = (
 	"\nMain 105 Base Fabric"
 	"\nMain 106 Base Fabric"
 	"\nMain 107 Base Fabric"
+	"\nMain 100 Base Fabric"
 	"\nMain 107 PB"
 	"\nLoop 103 Base Fabric"
 	"\nLoop 108 Base Fabric"

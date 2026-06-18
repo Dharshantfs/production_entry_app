@@ -29579,6 +29579,44 @@ def _107_parent_item_for_planning_child(child_ic, soi, pt_rows):
 	return ""
 
 
+def _bag_fabric_100_on_loop_chain(chain_parent_pp, parent_ic, soi, pt_rows, direct_by_soi):
+	"""True when this 100* row belongs to loop slitting / BOPP loop (103 / 108→107 …), not main chain."""
+	cp = _cstr(chain_parent_pp).strip()
+	if cp in _SLITTING_LOOP_FABRIC_PROCESSES and cp != "109":
+		return True
+	if cp == "107" and parent_ic:
+		return bool(_loop_parent_for_107_item(parent_ic, soi, pt_rows, direct_by_soi))
+	return False
+
+
+def _bag_fabric_100_parent_fabric_label(chain_parent_pp, parent_ic, soi, pt_rows, direct_by_soi, bag_fg_context):
+	"""Main-chain bag fabric rows are always Main 100 Base Fabric; loop chains keep Loop {parent} labels."""
+	if not bag_fg_context:
+		cp = _cstr(chain_parent_pp).strip()
+		return f"{cp} Base Fabric" if cp else "100 Base Fabric"
+	if _bag_fabric_100_on_loop_chain(chain_parent_pp, parent_ic, soi, pt_rows, direct_by_soi):
+		return _chain_child_parent_fabric_label(
+			parent_ic, chain_parent_pp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
+		)
+	return "Main 100 Base Fabric"
+
+
+def _bag_main_mid_process_parent_fabric_label(ic, pp, soi, pt_rows, direct_on_fg_bom):
+	"""
+	Bag main-chain mid processes (104/105/106/107):
+	- Direct FG BOM child → Main Fabric
+	- Chained child (e.g. 104 under 106 on 203) → Main {immediate_parent} Base Fabric
+	"""
+	if direct_on_fg_bom:
+		return "Main Fabric"
+	imm_pp = _immediate_parent_process_for_planning_child(ic, soi, pt_rows)
+	if imm_pp:
+		if imm_pp in _SLITTING_LOOP_FABRIC_PROCESSES and imm_pp != "109":
+			return "Loop Fabric"
+		return f"Main {imm_pp} Base Fabric"
+	return f"{pp} Base Fabric"
+
+
 def _chain_child_parent_fabric_label(parent_ic, parent_pp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False):
 	"""Main / Loop label for 100* or PB rows under a mid-chain parent (107 / 104 / 103 …)."""
 	parent_pp = _cstr(parent_pp).strip()
@@ -29637,8 +29675,8 @@ def _resolve_parent_fabric_label(
 				cp = _fabric_parent_process_from_item_code(ic)
 			if cp:
 				parent_ic = _fabric_chain_parent_item_for_child(ic, soi, pt_rows, cp) if pt_rows else ""
-				return _chain_child_parent_fabric_label(
-					parent_ic, cp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
+				return _bag_fabric_100_parent_fabric_label(
+					cp, parent_ic, soi, pt_rows, direct_by_soi, bag_fg_context
 				)
 		if _is_printed_bopp_item_code(ic):
 			parent_107 = _107_parent_item_for_planning_child(ic, soi, pt_rows)
@@ -29681,25 +29719,25 @@ def _resolve_parent_fabric_label(
 		return "FG Fabric"
 
 	if ic.startswith("100"):
-		if direct_on_fg_bom:
-			return "Main Fabric"
+		if bag_fg_context and direct_on_fg_bom:
+			return "Main 100 Base Fabric"
 		cp = _cstr(chain_parent_process).strip() or _infer_fabric_chain_parent_process(ic, soi, pt_rows)
 		if not cp:
 			cp = _fabric_parent_process_from_item_code(ic)
 		if cp:
 			parent_ic = _fabric_chain_parent_item_for_child(ic, soi, pt_rows, cp) if pt_rows else ""
 			if bag_fg_context:
-				return _chain_child_parent_fabric_label(
-					parent_ic, cp, soi, pt_rows, direct_by_soi, bag_fg_context, pb=False
+				return _bag_fabric_100_parent_fabric_label(
+					cp, parent_ic, soi, pt_rows, direct_by_soi, bag_fg_context
 				)
 			return f"{cp} Base Fabric"
 		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
-		return nb or "Main Fabric"
+		return nb or "Main 100 Base Fabric"
 
 	if direct_on_fg_bom and bag_fg_context:
 		if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
 			return "Loop Fabric"
-		if pp in _MAIN_FABRIC_MID_PROCESSES or ic.startswith("100"):
+		if pp in _MAIN_FABRIC_MID_PROCESSES:
 			return "Main Fabric"
 		return ""
 
@@ -29716,13 +29754,16 @@ def _resolve_parent_fabric_label(
 			loop_pp = _loop_parent_for_107_item(ic, soi, pt_rows, direct_by_soi)
 			if loop_pp:
 				return f"Loop {loop_pp} Base Fabric"
-			return "Main Fabric"
+			imm_pp = _immediate_parent_process_for_planning_child(ic, soi, pt_rows)
+			if imm_pp:
+				return f"Main {imm_pp} Base Fabric"
+			return "107 Base Fabric"
 		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
 		return nb or "107 Base Fabric"
 
 	if pp in _MAIN_FABRIC_MID_PROCESSES:
 		if bag_fg_context:
-			return "Main Fabric"
+			return _bag_main_mid_process_parent_fabric_label(ic, pp, soi, pt_rows, direct_on_fg_bom)
 		nb = _non_bag_parent_fabric_label(ic, soi, pt_rows)
 		return nb or f"{pp} Base Fabric"
 	return ""
