@@ -388,6 +388,14 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 			cg_repopulate_grid_if_empty(grid, fd);
 		}
 	} else {
+		if (order.length) {
+			cg_reorder_all_row_docfields(grid, order);
+			const showSet = {};
+			order.forEach((fn) => {
+				showSet[fn] = 1;
+			});
+			cg_sync_row_docfields(grid, showSet);
+		}
 		cg_refresh_grid_body(grid);
 	}
 	cg_sync_header_scroll(fd);
@@ -485,12 +493,17 @@ production_entry.grid_columns = {
 		return cg_ensure_grid_rows_from_doc(frm, tableFieldname);
 	},
 
-	realign(frm, tableFieldname, options) {
+	realign(frm, tableFieldname, options, columnOrder) {
 		const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
 		if (!fd || !fd.grid) {
 			return;
 		}
-		cg_realign_grid(fd.grid, fd, options);
+		const order =
+			columnOrder ||
+			(fd.grid.docfields || [])
+				.filter((df) => df && df.in_list_view && !cg_skip_field(df))
+				.map((df) => df.fieldname);
+		cg_realign_grid(fd.grid, fd, options, order);
 	},
 
 	sync_header_scroll(frm, tableFieldname) {

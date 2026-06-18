@@ -595,3 +595,21 @@ frappe.ui.form.on('Planning sheet', {
         }
     }
 });
+
+frappe.ui.form.on('Planning sheet Item', {
+    item_code: function () {
+        const frm = cur_frm;
+        if (frm && frm.doctype === 'Planning sheet') {
+            ps_schedule_planning_grid_columns(frm);
+        }
+    },
+});
+
+frappe.ui.form.on('Planning Table', {
+    item_code: function () {
+        const frm = cur_frm;
+        if (frm && frm.doctype === 'Planning sheet') {
+            ps_schedule_planning_grid_columns(frm);
+        }
+    },
+});

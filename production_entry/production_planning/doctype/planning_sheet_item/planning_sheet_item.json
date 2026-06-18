@@ -71,7 +71,7 @@
             "label": "Item Code",
             "options": "Item",
             "reqd": 1,
-            "in_list_view": 1
+            "in_list_view": 0
         },
         {
             "fetch_from": "item_code.item_name",
@@ -79,7 +79,7 @@
             "fieldtype": "Data",
             "label": "Item Name",
             "read_only": 1,
-            "in_list_view": 1
+            "in_list_view": 0
         },
         {
             "fieldname": "quality",
@@ -177,7 +177,7 @@
             "fieldtype": "Float",
             "label": "Qty",
             "reqd": 1,
-            "in_list_view": 1
+            "in_list_view": 0
         },
         {
             "fieldname": "uom",
@@ -185,7 +185,7 @@
             "label": "UOM",
             "options": "UOM",
             "reqd": 1,
-            "in_list_view": 1
+            "in_list_view": 0
         },
         {
             "fieldname": "meter",
@@ -293,7 +293,7 @@
             "fieldtype": "Link",
             "label": "Unit",
             "options": "Workstation",
-            "in_list_view": 1
+            "in_list_view": 0
         },
         {
             "fieldname": "custom_item_planned_date",

@@ -6985,6 +6985,81 @@ def get_fabric_item_from_laminated_item(lam_item_code):
 	return _get_fabric_item_from_process_item(item_code, expected_process=proc, process_label="Lamination")
 
 
+# Sheet FG BOM first child before fabric 100 (251 has direct 100 on FG BOM).
+_SHEET_FG_FIRST_CHILD = {
+	"252": "105",
+	"253": "104",
+	"254": "106",
+	"255": "107",
+}
+
+
+def _resolve_fabric_through_bom_chain(item_code, process_code, process_label):
+	"""Resolve fabric 100* for sheet FG items (251 direct; 252–255 via mid-chain BOM)."""
+	item_code = _cstr(item_code).strip()
+	process_code = _cstr(process_code).strip()
+	if not frappe.db.exists("Item", item_code):
+		frappe.throw(_("Item {0} does not exist.").format(item_code))
+
+	if process_code == "251":
+		bom = _resolve_lamination_bom(item_code)
+		if not bom:
+			frappe.throw(_("No active submitted BOM for {0} item {1}.").format(process_label.lower(), item_code))
+		fabric_rows = []
+		for row in bom.items or []:
+			ic = (row.item_code or "").strip()
+			if len(ic) >= 3 and ic[:3] == "100":
+				fabric_rows.append(ic)
+		if not fabric_rows:
+			frappe.throw(
+				_("BOM {0} has no fabric FG row (item code must start with 100). Fix BOM for {1}.").format(
+					bom.name, item_code
+				)
+			)
+		if len(fabric_rows) > 1:
+			frappe.throw(
+				_("BOM {0} has multiple fabric components (100): {1}. Keep exactly one fabric FG.").format(
+					bom.name, ", ".join(fabric_rows)
+				)
+			)
+		fabric_item_code = fabric_rows[0]
+		if not frappe.db.exists("Item", fabric_item_code):
+			frappe.throw(_("Fabric item {0} from BOM does not exist.").format(fabric_item_code))
+		return {"fabric_item_code": fabric_item_code, "bom_no": bom.name}
+
+	first_child = _SHEET_FG_FIRST_CHILD.get(process_code)
+	if not first_child:
+		frappe.throw(_("Unsupported sheet process {0} for fabric chain.").format(process_code))
+
+	mid_res = _get_bom_child_item_from_process_item(item_code, process_code, first_child, process_label)
+	mid_ic = mid_res["child_item_code"]
+	fg_bom_no = mid_res["bom_no"]
+
+	if process_code == "255":
+		res107 = _resolve_107_child_components(mid_ic)
+		fab = res107.get("fabric")
+		if not fab:
+			frappe.throw(
+				_("BOM {0} for {1} has no fabric 100 child through 107 {2}. Fix the 107 BOM.").format(
+					fg_bom_no, item_code, mid_ic
+				)
+			)
+		fabric_item_code = fab[0]
+		if not frappe.db.exists("Item", fabric_item_code):
+			frappe.throw(_("Fabric item {0} from BOM does not exist.").format(fabric_item_code))
+		return {"fabric_item_code": fabric_item_code, "bom_no": fg_bom_no}
+
+	if process_code == "254":
+		mid104_res = _get_bom_child_item_from_process_item(mid_ic, "106", "104", process_label)
+		mid_ic = mid104_res["child_item_code"]
+		fabric_proc = "104"
+	else:
+		fabric_proc = first_child
+
+	fabric_res = _get_fabric_item_from_process_item(mid_ic, expected_process=fabric_proc, process_label=process_label)
+	return {"fabric_item_code": fabric_res["fabric_item_code"], "bom_no": fg_bom_no}
+
+
 def _get_fabric_item_from_process_item(item_code, expected_process, process_label):
 	item_code = (item_code or "").strip()
 	if len(item_code) < 3:
@@ -7011,6 +7086,9 @@ def _get_fabric_item_from_process_item(item_code, expected_process, process_labe
 		)
 	if not frappe.db.exists("Item", item_code):
 		frappe.throw(_("Item {0} does not exist.").format(item_code))
+
+	if expected_process in ("251", "252", "253", "254", "255"):
+		return _resolve_fabric_through_bom_chain(item_code, expected_process, process_label)
 
 	# Use same BOM resolution as lamination sync (default/active BOM on FG or on template via variant_of).
 	bom = _resolve_lamination_bom(item_code)
@@ -7822,38 +7900,45 @@ def _run_planning_sheet_post_sync(planning_sheet_name):
 
 
 def _preflight_bopp_fg_bom_on_sales_order(planning_sheet_name):
-	"""Show a clear desk message when 255/108 SO lines have no usable FG BOM (before sync runs)."""
+	"""Show desk hints when sheet FG SO lines have no usable BOM chain (before sync runs)."""
 	if not planning_sheet_name:
 		return
 	so_name = frappe.db.get_value("Planning sheet", planning_sheet_name, "sales_order")
 	if not so_name:
 		return
+	# process → expected first BOM child before fabric 100
+	_sheet_fg_child_checks = {
+		"252": ("105", _("BOM exists for <b>{0}</b> but has no <b>105</b> child. Add the 105 print item to that BOM.")),
+		"253": ("104", _("BOM exists for <b>{0}</b> but has no <b>104</b> child. Add the 104 lamination item to that BOM.")),
+		"254": ("106", _("BOM exists for <b>{0}</b> but has no <b>106</b> child. Add the 106 lam+print item to that BOM.")),
+		"255": ("107", _("BOM exists for <b>{0}</b> but has no <b>107</b> child. Add the 107 BOPP item to that BOM.")),
+		"108": ("107", _("BOM exists for <b>{0}</b> but has no <b>107</b> child. Add the 107 BOPP item to that BOM.")),
+	}
 	so = frappe.get_doc("Sales Order", so_name)
 	for so_it in so.items or []:
 		fg_ic = _cstr(so_it.item_code).strip()
 		pp = _bom_item_process_code(fg_ic)
-		if pp not in ("255", "108"):
+		if pp not in _sheet_fg_child_checks:
 			continue
+		expected_child, missing_child_msg = _sheet_fg_child_checks[pp]
 		bom = _resolve_lamination_bom(fg_ic)
 		if bom:
-			child_rows = _pick_bom_child_rows_for_process(bom.items or [], "107", fg_ic)
+			child_rows = _pick_bom_child_rows_for_process(bom.items or [], expected_child, fg_ic)
 			if child_rows:
 				continue
 			frappe.msgprint(
-				_("BOM exists for <b>{0}</b> but has no <b>107</b> child line. Add the 107 BOPP item to that BOM.").format(
-					fg_ic
-				),
+				missing_child_msg.format(fg_ic),
 				indicator="red",
-				title=_("BOM Missing 107 Child"),
+				title=_("BOM Missing {0} Child").format(expected_child),
 			)
 			errs = getattr(frappe.flags, "planning_sheet_bom_sync_errors", None) or []
-			errs.append(f"{fg_ic}: BOM has no 107 child")
+			errs.append(f"{fg_ic}: BOM has no {expected_child} child")
 			frappe.flags.planning_sheet_bom_sync_errors = errs
 		else:
 			frappe.msgprint(
 				_bom_sync_diagnosis_message(fg_ic, pp),
 				indicator="red",
-				title=_("BOM Missing (255/108)"),
+				title=_("BOM Missing ({0})").format(pp),
 			)
 			errs = getattr(frappe.flags, "planning_sheet_bom_sync_errors", None) or []
 			errs.append(f"{fg_ic}: no active BOM on FG item")
@@ -29342,10 +29427,6 @@ _BOM_KG_PARENT_PROCESSES = frozenset(
 		"241",
 		"242",
 		"251",
-		"252",
-		"253",
-		"254",
-		"255",
 	}
 )
 
