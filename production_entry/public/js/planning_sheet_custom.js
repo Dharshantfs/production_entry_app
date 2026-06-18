@@ -2,14 +2,14 @@
 // Grid column logic lives in planning_sheet_process_grid.js (loaded before this file).
 
 /** Process-wise grid columns — auto-detected from item_code (see planning_sheet_process_grid.js). */
-function ps_schedule_planning_grid_columns(frm, delay, stabilize) {
+function ps_schedule_planning_grid_columns(frm, delay) {
 	const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
 	if (pg && typeof pg.schedule === 'function') {
-		pg.schedule(frm, delay != null ? delay : 120, stabilize ? { stabilize: true } : undefined);
+		pg.schedule(frm, delay != null ? delay : 80);
 		return;
 	}
 	if (typeof schedule_apply_process_code_visibility === 'function') {
-		schedule_apply_process_code_visibility(frm, delay != null ? delay : 120, stabilize ? { stabilize: true } : undefined);
+		schedule_apply_process_code_visibility(frm, delay != null ? delay : 80);
 	}
 }
 
@@ -23,7 +23,7 @@ function ps_reload_planning_sheet_doc(frm) {
 		if (pg && typeof pg.after_reload === 'function') {
 			pg.after_reload(frm);
 		} else {
-			ps_schedule_planning_grid_columns(frm, 200, true);
+			ps_schedule_planning_grid_columns(frm, 80);
 		}
 	};
 	const p = frm.reload_doc();
@@ -355,28 +355,27 @@ function registerWorkingSheetCuttingChangeBomButton(frm) {
 
 frappe.ui.form.on('Planning sheet', {
     onload: function (frm) {
-        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
+        if (frm._cg_repopulating_grid) {
             return;
         }
         const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
         if (pg && typeof pg.install_guards === 'function') {
             pg.install_guards(frm);
         }
-        ps_schedule_planning_grid_columns(frm, 0, true);
-        ps_schedule_planning_grid_columns(frm, 350, true);
+        ps_schedule_planning_grid_columns(frm, 0);
     },
 
     refresh: function(frm) {
         if (!frm.doc || !frm.doc.name) return;
-        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
+        if (frm._cg_repopulating_grid) {
             return;
         }
         const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
         if (pg && typeof pg.install_guards === 'function') {
             pg.install_guards(frm);
         }
-        ps_schedule_planning_grid_columns(frm, 0, true);
-        ps_schedule_planning_grid_columns(frm, 400, true);
+        ps_schedule_planning_grid_columns(frm, 0);
+        ps_schedule_planning_grid_columns(frm, 300);
         registerWorkingSheetCuttingChangeBomButton(frm);
         // Site Client Scripts may re-add their own non-saving Change BOM button after app scripts.
         setTimeout(function () {
@@ -498,27 +497,27 @@ frappe.ui.form.on('Planning sheet', {
     },
 
     onload_post_render: function (frm) {
-        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
+        if (frm._cg_repopulating_grid) {
             return;
         }
-        ps_schedule_planning_grid_columns(frm, 80, true);
+        ps_schedule_planning_grid_columns(frm, 50);
     },
 
     after_save: function (frm) {
-        ps_schedule_planning_grid_columns(frm, 100, true);
-        ps_schedule_planning_grid_columns(frm, 600, true);
+        ps_schedule_planning_grid_columns(frm, 0);
+        ps_schedule_planning_grid_columns(frm, 250);
     },
 
     on_submit: function (frm) {
-        ps_schedule_planning_grid_columns(frm, 100, true);
-        ps_schedule_planning_grid_columns(frm, 600, true);
+        ps_schedule_planning_grid_columns(frm, 0);
+        ps_schedule_planning_grid_columns(frm, 250);
     },
 
     validate: function (frm) {
-        if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
+        if (frm._cg_repopulating_grid) {
             return;
         }
-        ps_schedule_planning_grid_columns(frm);
+        ps_schedule_planning_grid_columns(frm, 0);
     },
 
     items_add: function (frm) {

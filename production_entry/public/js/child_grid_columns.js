@@ -409,6 +409,37 @@ function cg_sync_grid_to_column_order(grid, order) {
 	cg_sync_row_docfields(grid, cg_build_show_set_from_order(order));
 }
 
+function cg_mirror_grid_docfields_to_rows(grid) {
+	if (!grid || !(grid.grid_rows || []).length) {
+		return;
+	}
+	const masterOrder = (grid.docfields || []).map((df) => df && df.fieldname).filter(Boolean);
+	(grid.grid_rows || []).forEach((gr) => {
+		if (!gr) {
+			return;
+		}
+		const rowByName = {};
+		(gr.docfields || []).forEach((df) => {
+			if (df && df.fieldname) {
+				rowByName[df.fieldname] = df;
+			}
+		});
+		(grid.docfields || []).forEach((gdf) => {
+			if (!gdf || !gdf.fieldname) {
+				return;
+			}
+			const rdf = rowByName[gdf.fieldname];
+			if (rdf) {
+				rdf.in_list_view = gdf.in_list_view;
+				rdf.hidden = gdf.hidden;
+			}
+		});
+		if (masterOrder.length) {
+			gr.docfields = cg_reorder_docfields_array(gr.docfields || [], masterOrder);
+		}
+	});
+}
+
 function cg_realign_grid(grid, fd, options, columnOrder) {
 	if (!grid) {
 		return;
@@ -459,10 +490,11 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	}
 	if (order.length) {
 		cg_sync_grid_to_column_order(grid, order);
+		cg_mirror_grid_docfields_to_rows(grid);
 	}
-	if ((grid.grid_rows || []).length > 0 && !cg_grid_header_matches_rows(grid)) {
+	if ((grid.grid_rows || []).length > 0) {
 		cg_remount_grid_rows(grid);
-	} else if (order.length) {
+		cg_mirror_grid_docfields_to_rows(grid);
 		cg_sync_row_docfields(grid, showSet);
 		cg_refresh_grid_body(grid);
 	}
@@ -534,7 +566,7 @@ production_entry.grid_columns = {
 
 			cg_reset_all_list_view(grid, metaDoctype);
 			cg_reorder_grid_docfields(grid, metaDoctype, preferred);
-			const ordered = cg_ordered_show_fields(metaDoctype, showSet, preferred);
+			const ordered = preferred.slice();
 			ordered.forEach((fn) => {
 				try {
 					grid.update_docfield_property(fn, 'hidden', 0);
@@ -625,9 +657,10 @@ production_entry.grid_columns = {
 			try {
 				if (order.length) {
 					cg_sync_grid_to_column_order(grid, order);
-					if ((grid.grid_rows || []).length > 0 && !cg_grid_header_matches_rows(grid)) {
+					cg_mirror_grid_docfields_to_rows(grid);
+					if ((grid.grid_rows || []).length > 0) {
 						cg_remount_grid_rows(grid);
-					} else {
+						cg_mirror_grid_docfields_to_rows(grid);
 						cg_sync_row_docfields(grid, cg_build_show_set_from_order(order));
 						cg_refresh_grid_body(grid);
 					}
@@ -644,6 +677,10 @@ production_entry.grid_columns = {
 	},
 
 	sync_grid_to_column_order: cg_sync_grid_to_column_order,
+
+	mirror_grid_docfields_to_rows: cg_mirror_grid_docfields_to_rows,
+
+	header_matches_rows: cg_grid_header_matches_rows,
 
 	remount_grid_rows: cg_remount_grid_rows,
 };

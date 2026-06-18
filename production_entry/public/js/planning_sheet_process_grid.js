@@ -482,19 +482,22 @@ function ps_clear_saved_grid_view_settings(metaDoctype) {
 	}
 }
 
-function ps_apply_both_grids(frm) {
-	if (!frm || !frm.fields_dict || frm._ps_applying_grid_visibility) {
+function ps_enforce_planning_sheet_grids(frm) {
+	if (!frm || frm.doctype !== 'Planning sheet' || frm._ps_enforcing_grids) {
 		return;
 	}
-	if (ps_child_tables_empty(frm) && frm._ps_skip_grid_schedule) {
+	if (!frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
 		return;
 	}
-	frm._ps_applying_grid_visibility = true;
+	if (ps_child_tables_empty(frm) && !frm.doc.name) {
+		return;
+	}
+	frm._ps_enforcing_grids = true;
 	try {
-		const logicalOrder = ps_build_logical_field_order(frm);
 		ps_wrap_planning_grids(frm);
 		ps_install_grid_refresh_guards(frm);
 		ps_ensure_both_grids_have_rows(frm);
+		const logicalOrder = ps_build_logical_field_order(frm);
 		const gc = ps_get_grid_columns_module();
 		PS_GRID_TABLE_FIELDS.forEach((t) => {
 			const showFields = ps_resolve_order_for_table(t, logicalOrder);
@@ -513,35 +516,19 @@ function ps_apply_both_grids(frm) {
 		ps_ensure_both_grids_have_rows(frm);
 	} catch (e) {
 		if (typeof console !== 'undefined' && console.warn) {
-			console.warn('ps_apply_both_grids failed', e);
+			console.warn('ps_enforce_planning_sheet_grids failed', e);
 		}
 	} finally {
-		frm._ps_applying_grid_visibility = false;
+		frm._ps_enforcing_grids = false;
 	}
+}
+
+function ps_apply_both_grids(frm) {
+	ps_enforce_planning_sheet_grids(frm);
 }
 
 function apply_process_code_visibility(frm) {
-	ps_apply_both_grids(frm);
-}
-
-function ps_install_grid_setup_visible_columns_hook(frm, tableField) {
-	const grid = frm.fields_dict[tableField] && frm.fields_dict[tableField].grid;
-	const gc = ps_get_grid_columns_module();
-	if (!grid || grid._ps_setup_vc_hooked || !gc || typeof gc.sync_grid_to_column_order !== 'function') {
-		return;
-	}
-	grid._ps_setup_vc_hooked = true;
-	const origSetup = grid.setup_visible_columns && grid.setup_visible_columns.bind(grid);
-	if (typeof origSetup !== 'function') {
-		return;
-	}
-	grid.setup_visible_columns = function psPlanningSetupVisibleColumns() {
-		const order = ps_resolve_order_for_table(tableField, ps_build_logical_field_order(frm));
-		if (order.length) {
-			gc.sync_grid_to_column_order(grid, order);
-		}
-		return origSetup.apply(this, arguments);
-	};
+	ps_enforce_planning_sheet_grids(frm);
 }
 
 function ps_install_grid_refresh_guards(frm) {
@@ -554,7 +541,6 @@ function ps_install_grid_refresh_guards(frm) {
 	}
 	PS_GRID_TABLE_FIELDS.forEach((t) => {
 		ps_bind_planning_grid_user_settings_hook(frm, t);
-		ps_install_grid_setup_visible_columns_hook(frm, t);
 		gc.install_refresh_column_guard(frm, t, function psColumnOrderForGuard() {
 			const logicalOrder = ps_build_logical_field_order(frm);
 			return ps_resolve_order_for_table(t, logicalOrder);
@@ -563,108 +549,52 @@ function ps_install_grid_refresh_guards(frm) {
 }
 
 function ps_stabilize_planning_grids_after_refresh(frm) {
-	if (!frm || !frm.fields_dict || frm._ps_grid_rebuilding) {
-		return;
+	ps_enforce_planning_sheet_grids(frm);
+	if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
+		planning_sheet_apply_stock_grid_ui(frm, { skip_reapply: true });
 	}
-	frm._ps_grid_rebuilding = true;
-	frm._ps_skip_grid_schedule = true;
-	const run = function () {
-		try {
-			ps_wrap_planning_grids(frm);
-			ps_install_grid_refresh_guards(frm);
-			ps_ensure_both_grids_have_rows(frm);
-			apply_process_code_visibility(frm);
-			ps_ensure_both_grids_have_rows(frm);
-			if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
-				planning_sheet_apply_stock_grid_ui(frm, { skip_reapply: true });
-			}
-		} catch (e) {
-			if (typeof console !== 'undefined' && console.warn) {
-				console.warn('ps_stabilize_planning_grids_after_refresh failed', e);
-			}
-		} finally {
-			frm._ps_grid_rebuilding = false;
-			frm._ps_skip_grid_schedule = false;
-			if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
-				planning_sheet_apply_stock_grid_ui(frm);
-			}
-			if (typeof register_planning_sheet_stock_check_button === 'function') {
-				register_planning_sheet_stock_check_button(frm, { grids_only: true });
-			}
-		}
-	};
-	if (typeof requestAnimationFrame === 'function') {
-		requestAnimationFrame(function () {
-			requestAnimationFrame(run);
-		});
-	} else {
-		run();
+	if (typeof register_planning_sheet_stock_check_button === 'function') {
+		register_planning_sheet_stock_check_button(frm, { grids_only: true });
 	}
 }
 
-/** After create / regenerate / reload_doc — reload child rows from doc then stabilize columns. */
+/** After create / regenerate / reload_doc — enforce columns once doc is in memory. */
 function ps_after_planning_sheet_reload(frm) {
 	if (!frm) {
 		return;
 	}
-	frm._ps_skip_grid_schedule = true;
-	ps_install_grid_refresh_guards(frm);
-	const hasData = (frm.doc && ((frm.doc.items || []).length || (frm.doc.planned_items || []).length));
-	if (hasData) {
-		PS_GRID_TABLE_FIELDS.forEach(function (t) {
-			if ((frm.doc[t] || []).length) {
-				try {
-					frm.refresh_field(t);
-				} catch (e) {
-					/* ignore */
-				}
-			}
+	const run = function () {
+		ps_install_grid_refresh_guards(frm);
+		ps_enforce_planning_sheet_grids(frm);
+	};
+	run();
+	if (typeof frappe.after_ajax === 'function') {
+		frappe.after_ajax(run);
+	}
+	if (typeof requestAnimationFrame === 'function') {
+		requestAnimationFrame(function () {
+			requestAnimationFrame(run);
 		});
 	}
-	setTimeout(function () {
-		delete frm._ps_skip_grid_schedule;
-		ps_stabilize_planning_grids_after_refresh(frm);
-	}, 120);
 }
 
 function schedule_apply_process_code_visibility(frm, delay, options) {
 	if (!frm) {
 		return;
 	}
-	const opts = options || {};
-	const stabilize = opts.stabilize === true;
-	const gc = ps_get_grid_columns_module();
 	const run = function () {
 		if (!frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
 			return;
 		}
-		if (stabilize) {
-			ps_stabilize_planning_grids_after_refresh(frm);
-			return;
-		}
-		apply_process_code_visibility(frm);
+		ps_enforce_planning_sheet_grids(frm);
 		if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
 			planning_sheet_apply_stock_grid_ui(frm);
 		}
-		const gc2 = ps_get_grid_columns_module();
-		if (gc2 && typeof gc2.realign === 'function') {
-			setTimeout(function () {
-				const logicalOrder = ps_build_logical_field_order(frm);
-				PS_GRID_TABLE_FIELDS.forEach(function (t) {
-					try {
-						const order = ps_resolve_order_for_table(t, logicalOrder);
-						gc2.realign(frm, t, { fullRefresh: false }, order);
-					} catch (e) {
-						/* ignore */
-					}
-				});
-				ps_ensure_both_grids_have_rows(frm);
-			}, 150);
-		}
 	};
-	const wait = delay != null ? delay : (stabilize ? 200 : 120);
+	const wait = delay != null ? delay : 80;
+	const gc = ps_get_grid_columns_module();
 	if (gc && typeof gc.debounce === 'function') {
-		gc.debounce(frm, stabilize ? 'ps_visibility_stabilize' : 'ps_visibility', run, wait);
+		gc.debounce(frm, 'ps_enforce_grids', run, wait);
 		return;
 	}
 	setTimeout(run, wait);
@@ -673,6 +603,7 @@ function schedule_apply_process_code_visibility(frm, delay, options) {
 production_entry.planning_sheet_process_grid = {
 	apply: apply_process_code_visibility,
 	apply_both: ps_apply_both_grids,
+	enforce: ps_enforce_planning_sheet_grids,
 	schedule: schedule_apply_process_code_visibility,
 	stabilize: ps_stabilize_planning_grids_after_refresh,
 	after_reload: ps_after_planning_sheet_reload,

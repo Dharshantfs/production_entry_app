@@ -352,12 +352,13 @@ function planning_sheet_apply_stock_grid_ui(frm, options) {
 			} catch (e) { /* ignore */ }
 		});
 	});
-	if (opts.skip_reapply) {
-		return;
-	}
-	const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
-	if (pg && typeof pg.apply_both === 'function') {
-		pg.apply_both(frm);
+	if (!opts.skip_reapply) {
+		const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
+		if (pg && typeof pg.enforce === 'function') {
+			pg.enforce(frm);
+		} else if (pg && typeof pg.apply_both === 'function') {
+			pg.apply_both(frm);
+		}
 	}
 }
 
@@ -391,7 +392,7 @@ function planning_sheet_block_manual_stock(frm, cdt, cdn) {
 
 frappe.ui.form.on('Planning sheet', {
 	refresh(frm) {
-		if (frm._ps_skip_grid_schedule || frm._ps_grid_rebuilding) {
+		if (frm._ps_enforcing_grids || frm._cg_repopulating_grid) {
 			return;
 		}
 		setTimeout(() => register_planning_sheet_stock_check_button(frm), 500);
