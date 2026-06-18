@@ -180,6 +180,19 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"203": 116,
 }
 
+# Reverse BOM row order for 232 bag SO lines (top → bottom = inverse of FG-first list).
+# PB → 100 → 108/110 → 103 → 107 → 231 RM → 232 FG (last).
+_PRODUCTION_SORT_RANK_232_BAG_REVERSE = {
+	"PB": 10,
+	"100": 20,
+	"108": 30,
+	"110": 31,
+	"103": 40,
+	"107": 50,
+	"231": 110,
+	"232": 120,
+}
+
 # Parent-first display order for 232 bag sheets (FG 232 → 231 RM → main/loop → fabric/PB).
 _BAG_PARENT_FIRST_RANK = {
 	"211": 10, "212": 10, "213": 10, "214": 10, "216": 10, "217": 10,
@@ -254,6 +267,31 @@ def _production_sort_rank(item_code):
 	return _PRODUCTION_SORT_RANK_BY_PROCESS.get(pp, 500)
 
 
+def _so_line_fg_process(soik, so_fg_by_soi):
+	so_fg = _cstr((so_fg_by_soi or {}).get(_cstr(soik).strip(), "")).strip()
+	if not so_fg:
+		return ""
+	return _bom_item_process_code(so_fg) or _item_process_prefix(so_fg)
+
+
+def _production_sort_rank_232_bag_reverse(item_code):
+	"""Reverse BOM display for process 232 bag lines (upstream first, 232 FG last)."""
+	ic = _cstr(item_code)
+	if not ic:
+		return 900
+	if _is_printed_bopp_item_code(ic) or ic.upper().startswith("PB-"):
+		return _PRODUCTION_SORT_RANK_232_BAG_REVERSE["PB"]
+	pp = _bom_item_process_code(ic) or _item_process_prefix(ic) or _lamination_process_from_item_code(ic)
+	if pp == "100" or (ic.startswith("100") and not ic.startswith("1000")):
+		return _PRODUCTION_SORT_RANK_232_BAG_REVERSE["100"]
+	if pp in _PRODUCTION_SORT_RANK_232_BAG_REVERSE:
+		return _PRODUCTION_SORT_RANK_232_BAG_REVERSE[pp]
+	bag_fg_rank = _design_prefixed_bag_fg_sort_rank(ic)
+	if bag_fg_rank is not None and pp == "232":
+		return _PRODUCTION_SORT_RANK_232_BAG_REVERSE["232"]
+	return 500
+
+
 def _production_sort_rank_parent_first(item_code):
 	"""Bag sheets: FG parent first, then BOM children (106/107/104/100/PB)."""
 	ic = _cstr(item_code)
@@ -268,28 +306,7 @@ def _production_sort_rank_parent_first(item_code):
 
 
 def _planning_sheet_uses_parent_first_sort(planning_sheet_name):
-	"""
-	232 screen-printed bag sheets: display rows parent-first (FG → RM → BOM children).
-
-	Order on sheet (top → bottom) for process 232:
-	  232 Bag FG → 231 RM Bag → 107 → 103 → 108/110 → 100 → PB
-
-	Applied on create, regenerate_planning_sheet, and update_planning_sheet_from_sales_order
-	via ``_run_planning_sheet_post_sync`` → ``_finalize_planning_sheet_row_order_and_movement``.
-	"""
-	if not planning_sheet_name:
-		return False
-	if "232" in _planning_sheet_so_fg_process_codes(planning_sheet_name):
-		return True
-	for r in frappe.get_all(
-		"Planning Table",
-		filters={"parent": planning_sheet_name},
-		fields=["item_code"],
-		limit_page_length=500,
-	) or []:
-		pp = _bom_item_process_code(r.get("item_code")) or _item_process_prefix(r.get("item_code"))
-		if pp == "232":
-			return True
+	"""All bag sheets use reverse BOM; 232 SO lines use ``_production_sort_rank_232_bag_reverse``."""
 	return False
 
 
@@ -314,14 +331,19 @@ def _normalize_planning_sheet_workstation_units(planning_sheet_name):
 				frappe.db.set_value(doctype, r.name, "unit", resolved, update_modified=False)
 
 
-def _planning_row_sort_key(row, so_line_order, parent_first=False):
+def _planning_row_sort_key(row, so_line_order, parent_first=False, so_fg_by_soi=None):
 	"""Group by SO line order, then process rank, then stable idx."""
 	soik = _cstr(row.get("sales_order_item") or row.get("so_item"))
 	ic = _cstr(row.get("item_code"))
-	rank_fn = _production_sort_rank_parent_first if parent_first else _production_sort_rank
+	if _so_line_fg_process(soik, so_fg_by_soi) == "232":
+		rank = _production_sort_rank_232_bag_reverse(ic)
+	elif parent_first:
+		rank = _production_sort_rank_parent_first(ic)
+	else:
+		rank = _production_sort_rank(ic)
 	return (
 		so_line_order.get(soik, 99999),
-		rank_fn(ic),
+		rank,
 		cint(row.get("idx") or 0),
 		_cstr(row.get("name")),
 	)
@@ -477,7 +499,7 @@ def _reorder_planning_sheet_by_production_sequence(planning_sheet_name):
 		return
 
 	parent_first = _planning_sheet_uses_parent_first_sort(planning_sheet_name)
-	pt_rows.sort(key=lambda r: _planning_row_sort_key(r, so_line_order, parent_first))
+	pt_rows.sort(key=lambda r: _planning_row_sort_key(r, so_line_order, parent_first, so_fg_by_soi))
 	for new_idx, r in enumerate(pt_rows, start=1):
 		frappe.db.set_value("Planning Table", r.name, "idx", new_idx, update_modified=False)
 		if _has_planning_movement_type_column("Planning Table"):
@@ -560,7 +582,7 @@ def reorder_planning_sheet_child_tables_in_doc(doc):
 					"name": _cstr(getattr(row, "name", None)),
 				}
 			)
-		payload.sort(key=lambda p: _planning_row_sort_key(p, so_line_order, parent_first))
+		payload.sort(key=lambda p: _planning_row_sort_key(p, so_line_order, parent_first, so_fg_by_soi))
 		for new_idx, p in enumerate(payload, start=1):
 			p["row"].idx = new_idx
 			ic = p["item_code"]

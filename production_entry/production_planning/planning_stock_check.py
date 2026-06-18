@@ -263,7 +263,7 @@ def _build_stock_row_context(row, so_fg_by_soi, so_line_order, parent_first=Fals
 		"stock_locked": cint(row.get("custom_stock_locked") or 0),
 		"batches": batches,
 		"proposed_batch": best,
-		"sort_key": _planning_row_sort_key(row, so_line_order, parent_first),
+		"sort_key": _planning_row_sort_key(row, so_line_order, parent_first, so_fg_by_soi),
 		"production_rank": _production_sort_rank(ic),
 	}
 
