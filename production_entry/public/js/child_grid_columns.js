@@ -240,12 +240,18 @@ function cg_alignment_snapshot(grid, tableField, phase) {
 		headerOrder.length === rowOrder.length
 		&& headerOrder.every((fn, i) => rowOrder[i] === fn);
 	const domCols = gr && gr.wrapper && gr.wrapper.length ? gr.wrapper.find('.col, .grid-static-col').length : 0;
+	const docRowCount = grid.frm && grid.frm.doc && grid.df && grid.frm.doc[grid.df.fieldname]
+		? (grid.frm.doc[grid.df.fieldname] || []).length
+		: 0;
 	return {
 		tableField,
 		phase,
 		headerMatch,
 		headerLen: headerOrder.length,
 		rowLen: rowOrder.length,
+		gridRowCount: (grid.grid_rows || []).length,
+		docRowCount,
+		rowsBroken: cg_grid_rows_look_broken(grid),
 		domCols,
 		headerHead: headerOrder.slice(0, 6),
 		rowHead: rowOrder.slice(0, 6),
@@ -255,16 +261,22 @@ function cg_alignment_snapshot(grid, tableField, phase) {
 }
 // #endregion
 
-/** Rebuild row column DOM from current gr.docfields (refresh() alone keeps stale column slots). */
+/** Rebuild data column DOM only — never empty full row wrapper (removes checkbox/index). */
 function cg_remount_grid_rows(grid) {
-	if (!grid) {
+	if (!grid || !(grid.grid_rows || []).length) {
 		return;
 	}
 	(grid.grid_rows || []).forEach((gr) => {
-		if (!gr) {
+		if (!gr || !gr.wrapper || !gr.wrapper.length) {
 			return;
 		}
 		try {
+			gr.wrapper.find('[data-fieldname]').each(function () {
+				const $col = $(this).closest('.col, .grid-static-col');
+				if ($col.length) {
+					$col.remove();
+				}
+			});
 			if (gr.columns && typeof gr.columns === 'object') {
 				Object.keys(gr.columns).forEach((k) => {
 					try {
@@ -278,9 +290,6 @@ function cg_remount_grid_rows(grid) {
 				});
 				gr.columns = {};
 			}
-			if (gr.wrapper && gr.wrapper.length) {
-				gr.wrapper.empty();
-			}
 			const visible = (gr.docfields || []).filter((df) => df && df.in_list_view && !cg_skip_field(df));
 			if (typeof gr.make_column === 'function') {
 				visible.forEach((df) => {
@@ -290,9 +299,8 @@ function cg_remount_grid_rows(grid) {
 						/* ignore */
 					}
 				});
-			} else if (typeof gr.make === 'function') {
-				gr.make();
-			} else if (typeof gr.refresh === 'function') {
+			}
+			if (typeof gr.refresh === 'function') {
 				gr.refresh();
 			}
 		} catch (e) {
@@ -325,6 +333,27 @@ function cg_sync_header_scroll(fd) {
 	}
 }
 
+function cg_grid_rows_look_broken(grid) {
+	if (!grid) {
+		return true;
+	}
+	const rows = grid.grid_rows || [];
+	if (!rows.length) {
+		return true;
+	}
+	return rows.some((gr) => {
+		if (!gr || !gr.wrapper || !gr.wrapper.length) {
+			return true;
+		}
+		const expected = (gr.docfields || []).filter((df) => df && df.in_list_view && !cg_skip_field(df)).length;
+		if (!expected) {
+			return false;
+		}
+		const dataCols = gr.wrapper.find('[data-fieldname]').length;
+		return dataCols < expected;
+	});
+}
+
 /** frm.doc has child rows but the grid body is empty — reload field from doc. */
 function cg_ensure_grid_rows_from_doc(frm, tableFieldname) {
 	if (!frm || !tableFieldname) {
@@ -339,11 +368,21 @@ function cg_ensure_grid_rows_from_doc(frm, tableFieldname) {
 	if (!grid) {
 		return false;
 	}
-	if ((grid.grid_rows || []).length > 0) {
+	const gridLen = (grid.grid_rows || []).length;
+	const needsReload = gridLen === 0 || gridLen < docRows.length || cg_grid_rows_look_broken(grid);
+	if (!needsReload) {
 		return false;
 	}
 	try {
 		frm._cg_repopulating_grid = tableFieldname;
+		// #region agent log
+		cg_dbg('F', 'child_grid_columns.js:ensure_rows', 'refresh_field', {
+			tableFieldname,
+			docLen: docRows.length,
+			gridLen,
+			broken: cg_grid_rows_look_broken(grid),
+		});
+		// #endregion
 		frm.refresh_field(tableFieldname);
 		return true;
 	} catch (e) {
@@ -450,16 +489,34 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	// #region agent log
 	cg_dbg('A', 'child_grid_columns.js:cg_realign_grid', 'before_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'before_remount'));
 	// #endregion
-	if (order.length) {
-		cg_sync_grid_to_column_order(grid, order);
+	const frm = grid.frm || (fd && fd.frm);
+	const tableField = (fd && fd.df && fd.df.fieldname) || (grid.df && grid.df.fieldname) || '';
+	const docHasRows = frm && frm.doc && tableField && (frm.doc[tableField] || []).length > 0;
+	if (docHasRows && cg_grid_rows_look_broken(grid)) {
+		try {
+			if (typeof grid.refresh === 'function') {
+				grid.refresh();
+			}
+		} catch (e) {
+			/* ignore */
+		}
+		if (order.length) {
+			cg_sync_grid_to_column_order(grid, order);
+		}
 	}
-	cg_remount_grid_rows(grid);
+	const snapBeforeRemount = cg_alignment_snapshot(grid, tableField, 'pre_remount');
+	if ((grid.grid_rows || []).length > 0 && !snapBeforeRemount.headerMatch) {
+		cg_remount_grid_rows(grid);
+	}
 	try {
 		if (typeof grid.refresh_header === 'function') {
 			grid.refresh_header();
 		}
 	} catch (e) {
 		/* ignore */
+	}
+	if (frm && tableField) {
+		cg_ensure_grid_rows_from_doc(frm, tableField);
 	}
 	// #region agent log
 	cg_dbg('C', 'child_grid_columns.js:cg_realign_grid', 'after_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'after_remount'));
@@ -657,13 +714,16 @@ production_entry.grid_columns = {
 				const order = columnOrderGetter() || [];
 				if (order.length) {
 					cg_sync_grid_to_column_order(grid, order);
-					cg_remount_grid_rows(grid);
+					const snap = cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || tableFieldname || '', 'guard_check');
+					if ((grid.grid_rows || []).length > 0 && !snap.headerMatch) {
+						cg_remount_grid_rows(grid);
+					}
 					if (typeof grid.refresh_header === 'function') {
 						grid.refresh_header();
 					}
 					cg_sync_header_scroll(fd);
 					// #region agent log
-					cg_dbg('D', 'child_grid_columns.js:guard_refresh', 'after_guard_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || tableFieldname || '', 'guard_refresh'));
+					cg_dbg('D', 'child_grid_columns.js:guard_refresh', 'after_guard', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || tableFieldname || '', 'guard_refresh'));
 					// #endregion
 				}
 			} catch (e) {

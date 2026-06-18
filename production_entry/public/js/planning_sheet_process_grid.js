@@ -549,30 +549,6 @@ function ps_run_grid_stabilize_pass(frm, passLabel) {
 			});
 		}
 		ps_ensure_both_grids_have_rows(frm);
-		if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
-			planning_sheet_apply_stock_grid_ui(frm, { skip_reapply: true });
-		}
-		// #region agent log
-		const gcLog = ps_get_grid_columns_module();
-		PS_GRID_TABLE_FIELDS.forEach(function (t) {
-			const g = frm.fields_dict[t] && frm.fields_dict[t].grid;
-			if (g && gcLog && typeof gcLog.alignment_snapshot === 'function') {
-				fetch('http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '024dec' },
-					body: JSON.stringify({
-						sessionId: '024dec',
-						hypothesisId: 'E',
-						location: 'planning_sheet_process_grid.js:stabilize_pass',
-						message: 'stabilize_pass_done',
-						data: Object.assign({ passLabel: passLabel }, gcLog.alignment_snapshot(g, t, 'stabilize_' + passLabel)),
-						timestamp: Date.now(),
-						runId: 'pre-fix',
-					}),
-				}).catch(() => {});
-			}
-		});
-		// #endregion
 	} catch (e) {
 		if (typeof console !== 'undefined' && console.warn) {
 			console.warn('ps_run_grid_stabilize_pass failed', passLabel, e);
@@ -610,17 +586,29 @@ function ps_stabilize_planning_grids_after_refresh(frm) {
 	});
 }
 
-/** After create / regenerate / reload_doc — apply columns without tearing down row DOM. */
+/** After create / regenerate / reload_doc — reload child rows from doc then stabilize columns. */
 function ps_after_planning_sheet_reload(frm) {
 	if (!frm) {
 		return;
 	}
 	frm._ps_skip_grid_schedule = true;
 	ps_install_grid_refresh_guards(frm);
+	const hasData = (frm.doc && ((frm.doc.items || []).length || (frm.doc.planned_items || []).length));
+	if (hasData) {
+		PS_GRID_TABLE_FIELDS.forEach(function (t) {
+			if ((frm.doc[t] || []).length) {
+				try {
+					frm.refresh_field(t);
+				} catch (e) {
+					/* ignore */
+				}
+			}
+		});
+	}
 	setTimeout(function () {
 		delete frm._ps_skip_grid_schedule;
 		ps_stabilize_planning_grids_after_refresh(frm);
-	}, 50);
+	}, 120);
 }
 
 function schedule_apply_process_code_visibility(frm, delay, options) {
