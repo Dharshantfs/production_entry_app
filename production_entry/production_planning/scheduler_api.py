@@ -262,7 +262,20 @@ def _production_sort_rank_parent_first(item_code):
 
 
 def _planning_sheet_uses_parent_first_sort(planning_sheet_name):
-	"""All processes use reverse BOM order (upstream first, FG last) — same as fabric/sheet."""
+	"""232 screen-printed bag: FG 232 first, 231 RM next, then downstream BOM children."""
+	if not planning_sheet_name:
+		return False
+	if "232" in _planning_sheet_so_fg_process_codes(planning_sheet_name):
+		return True
+	for r in frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=["item_code"],
+		limit_page_length=500,
+	) or []:
+		pp = _bom_item_process_code(r.get("item_code")) or _item_process_prefix(r.get("item_code"))
+		if pp == "232":
+			return True
 	return False
 
 
@@ -9941,6 +9954,42 @@ def _sync_232_screen_printed_box_bag_planning_rows(planning_sheet_name):
 	)
 
 
+def _sync_232_231_loop_and_downstream(planning_sheet_name):
+	"""232 FG: loop handles 103/108/110 live on 231 RM BOM — not on 232 FG BOM."""
+	if not planning_sheet_name:
+		return
+	_sync_bag_fg_direct_bom_children(
+		planning_sheet_name,
+		("231",),
+		process_label="232 → 231 RM BOM direct children",
+		so_fg_processes=("232",),
+	)
+	so232 = ("232",)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("103",),
+		"100",
+		so_parent_processes=so232,
+		process_label="232 loop fabric (103 → 100)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("108",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=so232,
+		process_label="232 BOPP loop (108 → 107)",
+	)
+	_sync_bom_child_rows_from_planning_rows(
+		planning_sheet_name,
+		("110",),
+		"107",
+		LAMINATION_UNIT,
+		so_parent_processes=so232,
+		process_label="232 BOPP metallic loop (110 → 107)",
+	)
+
+
 def _sync_225_226_box_bag_planning_rows(planning_sheet_name):
 	"""225/226 box bag: 225/226→106→104→100 (loop 103/108/110 via _sync_box_bag_loop_bom_chain)."""
 	if not planning_sheet_name:
@@ -9979,8 +10028,10 @@ def _sync_box_bag_fabric_planning_rows(planning_sheet_name):
 	# 232 FG → 231 semi-finish before loop BOM (103/108/110 on 231 BOM → 107 → 100/PB).
 	_sync_232_screen_printed_box_bag_planning_rows(planning_sheet_name)
 
-	# All bag FGs (box + W-CUT + D-CUT): read loop items from BOM + 103→100, 108→107, 110→107.
-	_sync_box_bag_loop_bom_chain(planning_sheet_name, ALL_BAG_FG_PROCESS_CODES)
+	# Loop BOM: all bag FGs except 232 (232 loop lives on 231 RM — see _sync_232_231_loop_and_downstream).
+	_loop_fg_parents = tuple(p for p in ALL_BAG_FG_PROCESS_CODES if p != "232")
+	_sync_box_bag_loop_bom_chain(planning_sheet_name, _loop_fg_parents)
+	_sync_232_231_loop_and_downstream(planning_sheet_name)
 
 	# 224: main fabric chain (104 → 100) in addition to loop BOM.
 	_sync_bom_child_rows_from_planning_rows(
@@ -29666,8 +29717,6 @@ def _resolve_parent_fabric_label(
 		if pp in _SLITTING_LOOP_FABRIC_PROCESSES and pp != "109":
 			return "231 Loop Fabric"
 		if pp == "107" or _lamination_process_from_item_code(ic) == "107":
-			if direct_on_fg_bom:
-				return "Main Fabric"
 			return "231 Main Fabric"
 		if ic.startswith("100"):
 			cp = _cstr(chain_parent_process).strip() or _infer_fabric_chain_parent_process(ic, soi, pt_rows)
@@ -30172,11 +30221,12 @@ def _sync_box_bag_loop_bom_chain(planning_sheet_name, fg_parent_processes=None):
 	)
 
 
-def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_label="Bag FG direct BOM"):
+def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_label="Bag FG direct BOM", so_fg_processes=None):
 	"""Add planning rows for each line on the FG BOM (104+103 on 224, 103+100 on 221) — not hardcoded 105."""
 	if not planning_sheet_name or not frappe.db.exists("Planning sheet", planning_sheet_name):
 		return 0
 	fg_set = {str(p).strip() for p in (fg_processes or ()) if str(p).strip()}
+	so_fg_set = {str(p).strip() for p in (so_fg_processes or []) if str(p).strip()}
 	if not fg_set:
 		return 0
 	ps = frappe.get_doc("Planning sheet", planning_sheet_name)
@@ -30199,6 +30249,12 @@ def _sync_bag_fg_direct_bom_children(planning_sheet_name, fg_processes, process_
 			continue
 		so_item_key = _cstr(prow.get("sales_order_item") or prow.get("so_item")).strip()
 		so_it = so_by_name.get(so_item_key)
+		if so_fg_set:
+			so_fg_pp = _bom_item_process_code(getattr(so_it, "item_code", "") if so_it else "") or _item_process_prefix(
+				getattr(so_it, "item_code", "") if so_it else ""
+			)
+			if so_fg_pp not in so_fg_set:
+				continue
 		if not so_it:
 			so_it = frappe._dict(
 				{
