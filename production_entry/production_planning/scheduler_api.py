@@ -180,15 +180,21 @@ _PRODUCTION_SORT_RANK_BY_PROCESS = {
 	"203": 116,
 }
 
-# Parent-first display order for bag / W-D-CUT sheets (FG first, then BOM children).
+# Parent-first display order for 232 bag sheets (FG 232 → 231 RM → main/loop → fabric/PB).
 _BAG_PARENT_FIRST_RANK = {
 	"211": 10, "212": 10, "213": 10, "214": 10, "216": 10, "217": 10,
 	"200": 10, "201": 10, "202": 10, "203": 10,
 	"232": 8,
 	"231": 9,
 	"221": 10, "222": 10, "223": 10, "224": 10, "233": 10, "241": 10, "242": 10, "225": 10, "226": 10,
-	"PB": 25,
-	"106": 30, "105": 35, "107": 40, "104": 45, "103": 50, "100": 60,
+	"106": 30, "105": 35,
+	"107": 40,
+	"104": 45,
+	"103": 50,
+	"108": 52,
+	"110": 53,
+	"100": 60,
+	"PB": 65,
 }
 
 BOX_BAG_PROCESS_CODES = ("221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226")
@@ -262,7 +268,15 @@ def _production_sort_rank_parent_first(item_code):
 
 
 def _planning_sheet_uses_parent_first_sort(planning_sheet_name):
-	"""232 screen-printed bag: FG 232 first, 231 RM next, then downstream BOM children."""
+	"""
+	232 screen-printed bag sheets: display rows parent-first (FG → RM → BOM children).
+
+	Order on sheet (top → bottom) for process 232:
+	  232 Bag FG → 231 RM Bag → 107 → 103 → 108/110 → 100 → PB
+
+	Applied on create, regenerate_planning_sheet, and update_planning_sheet_from_sales_order
+	via ``_run_planning_sheet_post_sync`` → ``_finalize_planning_sheet_row_order_and_movement``.
+	"""
 	if not planning_sheet_name:
 		return False
 	if "232" in _planning_sheet_so_fg_process_codes(planning_sheet_name):
