@@ -333,8 +333,9 @@ function open_planning_sheet_stock_check_dialog(frm) {
 	});
 }
 
-function planning_sheet_apply_stock_grid_ui(frm) {
+function planning_sheet_apply_stock_grid_ui(frm, options) {
 	if (!frm || !frm.doc) return;
+	const opts = options || {};
 	['items', 'planned_items'].forEach((table) => {
 		const fd = frm.fields_dict[table];
 		const grid = fd && fd.grid;
@@ -350,26 +351,23 @@ function planning_sheet_apply_stock_grid_ui(frm) {
 				grid.update_docfield_property(fn, 'read_only', 1);
 			} catch (e) { /* ignore */ }
 		});
-		const gc = typeof production_entry !== 'undefined' && production_entry.grid_columns;
-		if (gc && typeof gc.realign === 'function') {
-			try { gc.realign(frm, table, { fullRefresh: false }); } catch (e) { /* ignore */ }
-			if (typeof gc.ensure_rows_from_doc === 'function') {
-				try { gc.ensure_rows_from_doc(frm, table); } catch (e) { /* ignore */ }
-			}
-		} else if (typeof grid.setup_visible_columns === 'function') {
-			try {
-				grid.setup_visible_columns();
-				if (typeof grid.refresh_header === 'function') grid.refresh_header();
-				if (typeof grid.refresh === 'function') grid.refresh();
-			} catch (e) { /* ignore */ }
-		}
 	});
+	if (opts.skip_reapply) {
+		return;
+	}
+	const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
+	if (pg && typeof pg.apply_both === 'function') {
+		pg.apply_both(frm);
+	}
 }
 
-function register_planning_sheet_stock_check_button(frm) {
+function register_planning_sheet_stock_check_button(frm, options) {
 	if (!frm || !frm.doc || !frm.doc.name || frm.is_new()) return;
+	const opts = options || {};
 	planning_sheet_toggle_stock_mode_field(frm);
-	planning_sheet_apply_stock_grid_ui(frm);
+	if (!opts.grids_only) {
+		planning_sheet_apply_stock_grid_ui(frm);
+	}
 	if (!planning_sheet_is_stock_check_eligible(frm)) return;
 	try {
 		frm.remove_custom_button(__('Check Stock'), __('Actions'));
@@ -393,8 +391,10 @@ function planning_sheet_block_manual_stock(frm, cdt, cdn) {
 
 frappe.ui.form.on('Planning sheet', {
 	refresh(frm) {
-		register_planning_sheet_stock_check_button(frm);
-		setTimeout(() => register_planning_sheet_stock_check_button(frm), 400);
+		if (frm._ps_skip_grid_schedule || frm._ps_grid_rebuilding) {
+			return;
+		}
+		setTimeout(() => register_planning_sheet_stock_check_button(frm), 500);
 		setTimeout(() => register_planning_sheet_stock_check_button(frm), 1200);
 	},
 	custom_stock_check_mode() {

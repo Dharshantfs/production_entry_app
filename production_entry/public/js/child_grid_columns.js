@@ -303,17 +303,35 @@ function cg_teardown_grid_rows(grid) {
 	}
 }
 
+function cg_build_show_set_from_order(order) {
+	const showSet = {};
+	(order || []).forEach((fn) => {
+		showSet[fn] = 1;
+	});
+	return showSet;
+}
+
+function cg_sync_grid_to_column_order(grid, order) {
+	if (!grid || !order || !order.length) {
+		return;
+	}
+	cg_reorder_grid_docfields(grid, null, order);
+	cg_reorder_all_row_docfields(grid, order);
+	cg_sync_row_docfields(grid, cg_build_show_set_from_order(order));
+}
+
 function cg_realign_grid(grid, fd, options, columnOrder) {
 	if (!grid) {
 		return;
 	}
-	const opts = options || {};
-	const fullRefresh = opts.fullRefresh === true;
 	const order =
 		columnOrder ||
 		(grid.docfields || [])
 			.filter((df) => df && df.in_list_view && !cg_skip_field(df))
 			.map((df) => df.fieldname);
+	if (order.length) {
+		cg_sync_grid_to_column_order(grid, order);
+	}
 	try {
 		if (grid.visible_columns) {
 			delete grid.visible_columns;
@@ -332,15 +350,27 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 		return;
 	}
 	try {
+		if (typeof grid.refresh === 'function') {
+			grid.refresh();
+		} else {
+			cg_refresh_grid_body(grid);
+		}
+	} catch (e) {
+		cg_refresh_grid_body(grid);
+	}
+	if (order.length) {
+		cg_sync_grid_to_column_order(grid, order);
+		cg_refresh_grid_body(grid);
+	}
+	try {
 		if (typeof grid.refresh_header === 'function') {
 			grid.refresh_header();
 		}
 	} catch (e) {
 		/* ignore */
 	}
-	// fullRefresh teardown breaks Frappe child grids (rows never rebuild from frm.doc).
-	// Planning sheet uses column reorder + body refresh only; SPR never passes fullRefresh.
-	if (false && fullRefresh) {
+	// Legacy fullRefresh path kept for reference — never enabled (breaks row rebuild).
+	if (false && (options || {}).fullRefresh === true) {
 		try {
 			if (order.length) {
 				cg_reorder_grid_docfields(grid, null, order);
@@ -387,16 +417,6 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 			cg_refresh_grid_body(grid);
 			cg_repopulate_grid_if_empty(grid, fd);
 		}
-	} else {
-		if (order.length) {
-			cg_reorder_all_row_docfields(grid, order);
-			const showSet = {};
-			order.forEach((fn) => {
-				showSet[fn] = 1;
-			});
-			cg_sync_row_docfields(grid, showSet);
-		}
-		cg_refresh_grid_body(grid);
 	}
 	cg_sync_header_scroll(fd);
 	if (fd && fd.$wrapper && fd.$wrapper.length) {
@@ -521,4 +541,39 @@ production_entry.grid_columns = {
 			fn();
 		}, delay != null ? delay : 80);
 	},
+
+	/**
+	 * After Frappe grid.refresh() rebuilds rows from meta order, re-sync row docfields to match headers.
+	 */
+	install_refresh_column_guard(frm, tableFieldname, columnOrderGetter) {
+		const fd = frm && frm.fields_dict && frm.fields_dict[tableFieldname];
+		const grid = fd && fd.grid;
+		if (!grid || grid._cg_refresh_guard || typeof columnOrderGetter !== 'function') {
+			return;
+		}
+		grid._cg_refresh_guard = true;
+		const origRefresh = grid.refresh && grid.refresh.bind(grid);
+		if (typeof origRefresh !== 'function') {
+			return;
+		}
+		grid.refresh = function cgGuardedGridRefresh() {
+			const ret = origRefresh.apply(this, arguments);
+			try {
+				const order = columnOrderGetter() || [];
+				if (order.length) {
+					cg_sync_grid_to_column_order(grid, order);
+					cg_refresh_grid_body(grid);
+					if (typeof grid.refresh_header === 'function') {
+						grid.refresh_header();
+					}
+					cg_sync_header_scroll(fd);
+				}
+			} catch (e) {
+				/* ignore */
+			}
+			return ret;
+		};
+	},
+
+	sync_grid_to_column_order: cg_sync_grid_to_column_order,
 };

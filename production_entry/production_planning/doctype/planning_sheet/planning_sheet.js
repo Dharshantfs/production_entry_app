@@ -31,9 +31,6 @@ frappe.ui.form.on('Planning sheet', {
 					},
 				});
 			}, __('Actions'));
-			if (typeof register_planning_sheet_stock_check_button === 'function') {
-				register_planning_sheet_stock_check_button(frm);
-			}
 		}
 	},
 

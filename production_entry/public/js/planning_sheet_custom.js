@@ -358,7 +358,12 @@ frappe.ui.form.on('Planning sheet', {
         if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
             return;
         }
-        ps_schedule_planning_grid_columns(frm, 300, true);
+        const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
+        if (pg && typeof pg.install_guards === 'function') {
+            pg.install_guards(frm);
+        }
+        ps_schedule_planning_grid_columns(frm, 0, true);
+        ps_schedule_planning_grid_columns(frm, 350, true);
     },
 
     refresh: function(frm) {
@@ -366,7 +371,12 @@ frappe.ui.form.on('Planning sheet', {
         if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
             return;
         }
-        ps_schedule_planning_grid_columns(frm, 300, true);
+        const pg = typeof production_entry !== 'undefined' && production_entry.planning_sheet_process_grid;
+        if (pg && typeof pg.install_guards === 'function') {
+            pg.install_guards(frm);
+        }
+        ps_schedule_planning_grid_columns(frm, 0, true);
+        ps_schedule_planning_grid_columns(frm, 400, true);
         registerWorkingSheetCuttingChangeBomButton(frm);
         // Site Client Scripts may re-add their own non-saving Change BOM button after app scripts.
         setTimeout(function () {
@@ -376,9 +386,8 @@ frappe.ui.form.on('Planning sheet', {
             registerWorkingSheetCuttingChangeBomButton(frm);
         }, 1000);
         if (typeof register_planning_sheet_stock_check_button === 'function') {
-            register_planning_sheet_stock_check_button(frm);
-            setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 300);
-            setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 1000);
+            setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 500);
+            setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 1200);
         }
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
@@ -492,7 +501,17 @@ frappe.ui.form.on('Planning sheet', {
         if (frm._ps_skip_grid_schedule || frm._cg_repopulating_grid) {
             return;
         }
-        ps_schedule_planning_grid_columns(frm);
+        ps_schedule_planning_grid_columns(frm, 80, true);
+    },
+
+    after_save: function (frm) {
+        ps_schedule_planning_grid_columns(frm, 100, true);
+        ps_schedule_planning_grid_columns(frm, 600, true);
+    },
+
+    on_submit: function (frm) {
+        ps_schedule_planning_grid_columns(frm, 100, true);
+        ps_schedule_planning_grid_columns(frm, 600, true);
     },
 
     validate: function (frm) {
@@ -525,8 +544,7 @@ frappe.ui.form.on('Planning sheet', {
     },
 
     after_load: function(frm) {
-        // Align ``Planning sheet Item`` + ``Planning Table`` DB Select metadata (rewinding lineup)
-        // with board; clears stale client DocType caches so grids show the full unit list.
+        // Align unit Select metadata; then stabilize grids (no refresh_field — avoids column collapse).
         frappe.call({
             method: 'production_entry.production_planning.scheduler_api.sync_planning_line_unit_options_meta',
             callback: function () {
@@ -541,11 +559,7 @@ frappe.ui.form.on('Planning sheet', {
                         if (pg && typeof pg.after_reload === 'function') {
                             pg.after_reload(frm);
                         } else {
-                            try {
-                                if (frm.fields_dict.items) frm.refresh_field('items');
-                                if (frm.fields_dict.planned_items) frm.refresh_field('planned_items');
-                            } catch (e2) {}
-                            ps_schedule_planning_grid_columns(frm, 200, true);
+                            ps_schedule_planning_grid_columns(frm, 100, true);
                         }
                     });
                 });
