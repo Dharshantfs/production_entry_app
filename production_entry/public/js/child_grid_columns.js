@@ -206,6 +206,101 @@ function cg_refresh_grid_body(grid) {
 	}
 }
 
+// #region agent log
+function cg_dbg(hypothesisId, location, message, data) {
+	fetch('http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '024dec' },
+		body: JSON.stringify({
+			sessionId: '024dec',
+			hypothesisId,
+			location,
+			message,
+			data: data || {},
+			timestamp: Date.now(),
+			runId: data && data.runId ? data.runId : 'pre-fix',
+		}),
+	}).catch(() => {});
+}
+
+function cg_alignment_snapshot(grid, tableField, phase) {
+	if (!grid) {
+		return { tableField, phase, error: 'no_grid' };
+	}
+	const headerOrder = (grid.docfields || [])
+		.filter((df) => df && df.in_list_view && !cg_skip_field(df))
+		.map((df) => df.fieldname);
+	const gr = (grid.grid_rows || [])[0];
+	const rowOrder = gr
+		? (gr.docfields || [])
+			.filter((df) => df && df.in_list_view && !cg_skip_field(df))
+			.map((df) => df.fieldname)
+		: [];
+	const headerMatch =
+		headerOrder.length === rowOrder.length
+		&& headerOrder.every((fn, i) => rowOrder[i] === fn);
+	const domCols = gr && gr.wrapper && gr.wrapper.length ? gr.wrapper.find('.col, .grid-static-col').length : 0;
+	return {
+		tableField,
+		phase,
+		headerMatch,
+		headerLen: headerOrder.length,
+		rowLen: rowOrder.length,
+		domCols,
+		headerHead: headerOrder.slice(0, 6),
+		rowHead: rowOrder.slice(0, 6),
+		hasDatatable: !!grid.datatable,
+		guardInstalled: !!grid._cg_refresh_guard,
+	};
+}
+// #endregion
+
+/** Rebuild row column DOM from current gr.docfields (refresh() alone keeps stale column slots). */
+function cg_remount_grid_rows(grid) {
+	if (!grid) {
+		return;
+	}
+	(grid.grid_rows || []).forEach((gr) => {
+		if (!gr) {
+			return;
+		}
+		try {
+			if (gr.columns && typeof gr.columns === 'object') {
+				Object.keys(gr.columns).forEach((k) => {
+					try {
+						const col = gr.columns[k];
+						if (col && col.$wrapper) {
+							col.$wrapper.remove();
+						}
+					} catch (e) {
+						/* ignore */
+					}
+				});
+				gr.columns = {};
+			}
+			if (gr.wrapper && gr.wrapper.length) {
+				gr.wrapper.empty();
+			}
+			const visible = (gr.docfields || []).filter((df) => df && df.in_list_view && !cg_skip_field(df));
+			if (typeof gr.make_column === 'function') {
+				visible.forEach((df) => {
+					try {
+						gr.make_column(df);
+					} catch (e) {
+						/* ignore */
+					}
+				});
+			} else if (typeof gr.make === 'function') {
+				gr.make();
+			} else if (typeof gr.refresh === 'function') {
+				gr.refresh();
+			}
+		} catch (e) {
+			/* ignore */
+		}
+	});
+}
+
 function cg_sync_header_scroll(fd) {
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
 		return;
@@ -347,21 +442,18 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 		/* ignore */
 	}
 	if (cg_visible_column_count(grid) < 1) {
+		// #region agent log
+		cg_dbg('B', 'child_grid_columns.js:cg_realign_grid', 'early_exit_no_visible_cols', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'early_exit'));
+		// #endregion
 		return;
 	}
-	try {
-		if (typeof grid.refresh === 'function') {
-			grid.refresh();
-		} else {
-			cg_refresh_grid_body(grid);
-		}
-	} catch (e) {
-		cg_refresh_grid_body(grid);
-	}
+	// #region agent log
+	cg_dbg('A', 'child_grid_columns.js:cg_realign_grid', 'before_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'before_remount'));
+	// #endregion
 	if (order.length) {
 		cg_sync_grid_to_column_order(grid, order);
-		cg_refresh_grid_body(grid);
 	}
+	cg_remount_grid_rows(grid);
 	try {
 		if (typeof grid.refresh_header === 'function') {
 			grid.refresh_header();
@@ -369,6 +461,9 @@ function cg_realign_grid(grid, fd, options, columnOrder) {
 	} catch (e) {
 		/* ignore */
 	}
+	// #region agent log
+	cg_dbg('C', 'child_grid_columns.js:cg_realign_grid', 'after_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || '', 'after_remount'));
+	// #endregion
 	// Legacy fullRefresh path kept for reference — never enabled (breaks row rebuild).
 	if (false && (options || {}).fullRefresh === true) {
 		try {
@@ -562,11 +657,14 @@ production_entry.grid_columns = {
 				const order = columnOrderGetter() || [];
 				if (order.length) {
 					cg_sync_grid_to_column_order(grid, order);
-					cg_refresh_grid_body(grid);
+					cg_remount_grid_rows(grid);
 					if (typeof grid.refresh_header === 'function') {
 						grid.refresh_header();
 					}
 					cg_sync_header_scroll(fd);
+					// #region agent log
+					cg_dbg('D', 'child_grid_columns.js:guard_refresh', 'after_guard_remount', cg_alignment_snapshot(grid, (fd && fd.df && fd.df.fieldname) || tableFieldname || '', 'guard_refresh'));
+					// #endregion
 				}
 			} catch (e) {
 				/* ignore */
@@ -576,4 +674,8 @@ production_entry.grid_columns = {
 	},
 
 	sync_grid_to_column_order: cg_sync_grid_to_column_order,
+
+	remount_grid_rows: cg_remount_grid_rows,
+
+	alignment_snapshot: cg_alignment_snapshot,
 };

@@ -552,6 +552,27 @@ function ps_run_grid_stabilize_pass(frm, passLabel) {
 		if (typeof planning_sheet_apply_stock_grid_ui === 'function') {
 			planning_sheet_apply_stock_grid_ui(frm, { skip_reapply: true });
 		}
+		// #region agent log
+		const gcLog = ps_get_grid_columns_module();
+		PS_GRID_TABLE_FIELDS.forEach(function (t) {
+			const g = frm.fields_dict[t] && frm.fields_dict[t].grid;
+			if (g && gcLog && typeof gcLog.alignment_snapshot === 'function') {
+				fetch('http://127.0.0.1:7243/ingest/af933f46-5611-414a-ac86-9735a878ab5a', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '024dec' },
+					body: JSON.stringify({
+						sessionId: '024dec',
+						hypothesisId: 'E',
+						location: 'planning_sheet_process_grid.js:stabilize_pass',
+						message: 'stabilize_pass_done',
+						data: Object.assign({ passLabel: passLabel }, gcLog.alignment_snapshot(g, t, 'stabilize_' + passLabel)),
+						timestamp: Date.now(),
+						runId: 'pre-fix',
+					}),
+				}).catch(() => {});
+			}
+		});
+		// #endregion
 	} catch (e) {
 		if (typeof console !== 'undefined' && console.warn) {
 			console.warn('ps_run_grid_stabilize_pass failed', passLabel, e);
