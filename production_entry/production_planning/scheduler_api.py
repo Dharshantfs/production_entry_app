@@ -18945,11 +18945,23 @@ def _reminder_should_show(month, unit, reminder_type, level, current_tons):
 
 
 @frappe.whitelist()
-def get_maintenance_reminder_status(month=None):
+def get_maintenance_reminder_status(month=None, unit_targets_json=None):
     """Pending mesh/die reminders for Production Table based on MTD total target tons (qty)."""
     month, start_date, end_date = _maintenance_reminder_month_range(month)
-    payload = get_monthly_unit_target_tons(month)
-    units_payload = payload.get("units") or {}
+    if unit_targets_json:
+        try:
+            client_targets = json.loads(unit_targets_json) if isinstance(unit_targets_json, str) else (unit_targets_json or {})
+        except Exception:
+            client_targets = {}
+        units_payload = {}
+        for unit in PRODUCTION_TABLE_MAINTENANCE_UNITS:
+            entry = client_targets.get(unit) if isinstance(client_targets, dict) else {}
+            entry = entry or {}
+            kg = flt(entry.get("kg") or entry.get("target_kg") or (flt(entry.get("tons")) * 1000))
+            units_payload[unit] = {"kg": kg, "tons": flt(kg / 1000.0, 2)}
+    else:
+        payload = get_monthly_unit_target_tons(month)
+        units_payload = payload.get("units") or {}
     reminders = []
     unit_summaries = {}
 

@@ -468,6 +468,9 @@ import {
 import {
   buildMtdHeaderLabel,
   buildReminderDialogBody,
+  buildMaintenanceReminders,
+  computeMtdTargetKgByUnit,
+  filterProductionTableReminderRows,
   UNIT_MAINTENANCE_THRESHOLDS,
 } from "./maintenance_reminder_utils.js";
 import {
@@ -489,6 +492,83 @@ const unitMtdStats = ref({});
 const maintenanceReminderQueue = ref([]);
 const maintenanceReminderShowing = ref(false);
 const pendingMaintenancePrefill = ref(null);
+const mtdMonthRows = ref([]);
+
+function productionTableReminderFilterOpts() {
+  const ctx = boardAccessContext.value || {};
+  const allowed = ctx.loaded && !ctx.unlimited ? ctx.allowed_units || [] : null;
+  return {
+    partyCode: filterPartyCode.value,
+    customer: filterCustomer.value,
+    allowedUnits: allowed,
+    unitAllowedFn: unitAllowedByBoardAccess,
+  };
+}
+
+function normalizeRowsForMtd(messageRows) {
+  return (messageRows || []).map((d) => ({
+    ...d,
+    plannedDate: d.plannedDate || d.planned_date || "",
+    partyCode: d.partyCode || d.party_code || "",
+    itemCode: d.itemCode || d.item_code || "",
+    qty: parseFloat(d.qty) || 0,
+  }));
+}
+
+function rowsForMtdTargetCalculation() {
+  if (viewScope.value === "monthly") {
+    return filteredData.value || [];
+  }
+  if (mtdMonthRows.value && mtdMonthRows.value.length) {
+    return filterProductionTableReminderRows(mtdMonthRows.value, productionTableReminderFilterOpts());
+  }
+  return filteredData.value || [];
+}
+
+async function ensureMtdMonthRowsLoaded() {
+  if (viewScope.value === "monthly") {
+    mtdMonthRows.value = [];
+    return;
+  }
+  const month = getReminderMonth();
+  if (!month) return;
+  const [year, mon] = month.split("-");
+  const lastDay = new Date(parseInt(year, 10), parseInt(mon, 10), 0).getDate();
+  const startDate = `${month}-01`;
+  const endDate = `${month}-${String(lastDay).padStart(2, "0")}`;
+  try {
+    let args = tableBoardArgs({ party_code: filterPartyCode.value, start_date: startDate, end_date: endDate });
+    if (isLaminationBoard.value) {
+      args.board_process_scope = "lamination_only";
+    } else if (isSlittingBoard.value) {
+      args.board_process_scope = "slitting_only";
+    } else if (isRewindingBoard.value) {
+      args.board_process_scope = "rewinding_only";
+    } else {
+      args.board_process_scope = "exclude_special";
+    }
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
+      args,
+    });
+    mtdMonthRows.value = normalizeRowsForMtd(res.message);
+  } catch (e) {
+    console.warn("Failed to load full-month rows for MTD target", e);
+    mtdMonthRows.value = [];
+  }
+}
+
+function recomputeMtdTargetStats() {
+  if (!isMainFabricProductionTable()) {
+    unitMtdStats.value = {};
+    return {};
+  }
+  const month = getReminderMonth();
+  const rows = rowsForMtdTargetCalculation();
+  const stats = computeMtdTargetKgByUnit(rows, month, normalizeUnit);
+  unitMtdStats.value = stats;
+  return stats;
+}
 
 function isMainFabricProductionTable() {
   try {
@@ -530,23 +610,9 @@ async function loadUnitMtdStats() {
     unitMtdStats.value = {};
     return null;
   }
-  const month = getReminderMonth();
-  try {
-    const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_monthly_unit_target_tons",
-      args: { month },
-    });
-    const units = (res.message && res.message.units) || {};
-    const next = {};
-    Object.keys(units).forEach((u) => {
-      next[u] = units[u];
-    });
-    unitMtdStats.value = next;
-    return res.message;
-  } catch (e) {
-    console.warn("Failed to load MTD unit tons", e);
-    return null;
-  }
+  await ensureMtdMonthRowsLoaded();
+  const stats = recomputeMtdTargetStats();
+  return { month: getReminderMonth(), units: stats };
 }
 
 function showNextMaintenanceReminder() {
@@ -597,23 +663,38 @@ async function checkMaintenanceReminders() {
     return;
   }
   const month = getReminderMonth();
+  await ensureMtdMonthRowsLoaded();
+  const unitStats = recomputeMtdTargetStats();
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_maintenance_reminder_status",
-      args: { month },
+      args: {
+        month,
+        unit_targets_json: JSON.stringify(unitStats),
+      },
     });
     const msg = res.message || {};
-    if (msg.units) {
-      const next = {};
-      Object.keys(msg.units).forEach((u) => {
-        next[u] = { tons: msg.units[u].tons, kg: msg.units[u].kg };
-      });
-      unitMtdStats.value = next;
-    }
     maintenanceReminderQueue.value = (msg.reminders || []).slice();
+    if (!maintenanceReminderQueue.value.length) {
+      maintenanceReminderQueue.value = buildMaintenanceReminders(
+        unitStats,
+        month,
+        maintenanceRecords.value,
+        UNIT_MAINTENANCE_THRESHOLDS,
+        normalizeUnit
+      );
+    }
     showNextMaintenanceReminder();
   } catch (e) {
     console.warn("Failed to check maintenance reminders", e);
+    maintenanceReminderQueue.value = buildMaintenanceReminders(
+      unitStats,
+      month,
+      maintenanceRecords.value,
+      UNIT_MAINTENANCE_THRESHOLDS,
+      normalizeUnit
+    );
+    showNextMaintenanceReminder();
   }
 }
 
