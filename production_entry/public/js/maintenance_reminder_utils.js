@@ -15,16 +15,23 @@ export function formatTons(value) {
   return n.toFixed(2);
 }
 
+export function formatKg(value) {
+  const n = parseFloat(value);
+  if (!Number.isFinite(n)) return "0.00";
+  return n.toFixed(2);
+}
+
 export function buildReminderDialogBody(reminder, overdue) {
   const unit = reminder.unit || "";
   const type = reminder.reminder_type || "";
   const current = formatTons(reminder.current_tons);
+  const currentKg = formatKg(reminder.current_kg != null ? reminder.current_kg : (reminder.current_tons || 0) * 1000);
   const threshold = formatTons(reminder.threshold_tons);
   const interval = formatTons(reminder.interval_tons);
   const prefix = overdue ? "<b>Reminder (overdue):</b>" : "<b>Maintenance required:</b>";
   return (
     `${prefix}<br><br>` +
-    `<b>${unit}</b> month-to-date actual production: <b>${current} tons</b>.<br>` +
+    `<b>${unit}</b> month-to-date total target: <b>${current} tons</b> (${currentKg} kg).<br>` +
     `${type} is due at the <b>${threshold} ton</b> threshold ` +
     `(interval: every ${interval} tons this month).<br><br>` +
     `Please log ${type} via the Maintenance button.`
@@ -48,5 +55,5 @@ export function buildMtdHeaderLabel(unitStats, thresholds) {
   const tons = parseFloat(unitStats.tons) || 0;
   const meshHint = nextThresholdHint(unitStats.unit, "mesh", tons, thresholds);
   const dieHint = nextThresholdHint(unitStats.unit, "die", tons, thresholds);
-  return `MTD Actual: ${formatTons(tons)} t` + (meshHint ? ` (${meshHint})` : "");
+  return `MTD Target: ${formatTons(tons)} t` + (meshHint ? ` (${meshHint})` : "");
 }

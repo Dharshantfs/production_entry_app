@@ -18850,32 +18850,18 @@ def _normalize_maintenance_reminder_unit(raw):
     return None
 
 
-def _aggregate_monthly_actual_kg_by_unit(rows):
-    """Sum actual kg per unit with SPR dedupe (max weight per spr_name)."""
-    unit_spr_max = {u: {} for u in PRODUCTION_TABLE_MAINTENANCE_UNITS}
-    unit_no_spr = {u: 0.0 for u in PRODUCTION_TABLE_MAINTENANCE_UNITS}
+def _aggregate_monthly_target_kg_by_unit(rows):
+    """Sum planned target kg (qty) per unit for the month — matches TOTAL TARGET (Kgs) on Production Table."""
+    unit_totals = {u: 0.0 for u in PRODUCTION_TABLE_MAINTENANCE_UNITS}
     for row in rows or []:
         unit = _normalize_maintenance_reminder_unit((row or {}).get("unit"))
         if not unit:
             continue
-        w = flt(
-            (row or {}).get("actual_production_weight_kgs")
-            or (row or {}).get("total_achieved_weight_kgs")
-            or 0
-        )
+        w = flt((row or {}).get("qty") or 0)
         if w <= 0:
             continue
-        spr = str((row or {}).get("spr_name") or "").strip()
-        if spr:
-            unit_spr_max[unit][spr] = max(flt(unit_spr_max[unit].get(spr) or 0), w)
-        else:
-            unit_no_spr[unit] += w
-    out = {}
-    for unit in PRODUCTION_TABLE_MAINTENANCE_UNITS:
-        kg = flt(unit_no_spr.get(unit) or 0)
-        kg += sum(flt(v) for v in (unit_spr_max.get(unit) or {}).values())
-        out[unit] = kg
-    return out
+        unit_totals[unit] += w
+    return unit_totals
 
 
 def _fetch_production_table_month_rows(start_date, end_date):
@@ -18897,16 +18883,22 @@ def _fetch_production_table_month_rows(start_date, end_date):
 
 
 @frappe.whitelist()
-def get_monthly_unit_actual_tons(month=None):
-    """Month-to-date actual production tons per Unit 1–4 for Production Table reminders."""
+def get_monthly_unit_target_tons(month=None):
+    """Month-to-date total target tons (sum of qty kg) per Unit 1–4 for Production Table reminders."""
     month, start_date, end_date = _maintenance_reminder_month_range(month)
     rows = _fetch_production_table_month_rows(start_date, end_date)
-    kg_by_unit = _aggregate_monthly_actual_kg_by_unit(rows)
+    kg_by_unit = _aggregate_monthly_target_kg_by_unit(rows)
     units = {}
     for unit in PRODUCTION_TABLE_MAINTENANCE_UNITS:
         kg = flt(kg_by_unit.get(unit) or 0)
-        units[unit] = {"kg": kg, "tons": flt(kg / 1000.0, 2)}
+        units[unit] = {"kg": kg, "tons": flt(kg / 1000.0, 2), "target_kg": kg, "target_tons": flt(kg / 1000.0, 2)}
     return {"month": month, "start_date": start_date, "end_date": end_date, "units": units}
+
+
+@frappe.whitelist()
+def get_monthly_unit_actual_tons(month=None):
+    """Deprecated alias — reminders use total target kg (qty), not actual production."""
+    return get_monthly_unit_target_tons(month)
 
 
 def _count_unit_maintenance_in_month(month, unit, reminder_type_label):
@@ -18954,9 +18946,9 @@ def _reminder_should_show(month, unit, reminder_type, level, current_tons):
 
 @frappe.whitelist()
 def get_maintenance_reminder_status(month=None):
-    """Pending mesh/die reminders for Production Table based on MTD actual tons."""
+    """Pending mesh/die reminders for Production Table based on MTD total target tons (qty)."""
     month, start_date, end_date = _maintenance_reminder_month_range(month)
-    payload = get_monthly_unit_actual_tons(month)
+    payload = get_monthly_unit_target_tons(month)
     units_payload = payload.get("units") or {}
     reminders = []
     unit_summaries = {}
@@ -19009,6 +19001,7 @@ def get_maintenance_reminder_status(month=None):
                     "interval_tons": interval,
                     "threshold_tons": threshold_tons,
                     "current_tons": current_tons,
+                    "current_kg": flt((units_payload.get(unit) or {}).get("kg") or 0),
                     "pending_levels": pending,
                     "overdue": overdue,
                 }

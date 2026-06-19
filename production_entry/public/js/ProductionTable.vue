@@ -533,7 +533,7 @@ async function loadUnitMtdStats() {
   const month = getReminderMonth();
   try {
     const res = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_monthly_unit_actual_tons",
+      method: "production_entry.production_planning.scheduler_api.get_monthly_unit_target_tons",
       args: { month },
     });
     const units = (res.message && res.message.units) || {};
