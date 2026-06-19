@@ -258,12 +258,7 @@ function spr_bind_spr_grid_column_configure_hook(frm, fieldname) {
 	frm[hookKey] = true;
 	const markUserConfigured = function () {
 		grid._spr_columns_user_locked = true;
-		const gc = spr_get_grid_columns_module();
-		if (gc && typeof gc.realign === 'function') {
-			gc.realign(frm, fieldname, { fullRefresh: false });
-		} else {
-			spr_force_grid_realign(frm, fieldname);
-		}
+		spr_light_realign_field(frm, fieldname);
 	};
 	if (typeof grid.configure_columns === 'function') {
 		const origConfigure = grid.configure_columns.bind(grid);
@@ -458,18 +453,12 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 		spr_sync_grid_header_body_scroll(fd);
 		return;
 	}
-	// JS owns items/shaft_jobs columns — never skip apply for saved user column prefs.
-	if (
-		!force &&
-		gridFieldname !== 'items' &&
-		gridFieldname !== 'shaft_jobs' &&
-		spr_grid_has_user_column_settings(grid)
-	) {
+	if (spr_grid_user_configured(grid)) {
+		spr_light_realign_field(frm, gridFieldname);
 		spr_attach_grid_scroll_sync(fd);
 		spr_sync_grid_header_body_scroll(fd);
 		return;
 	}
-	// Never use shared grid_columns.apply on SPR — cg_reset_all_list_view breaks jobs/rolls display.
 	const showSet = {};
 	visibleCols.forEach(function (fn) {
 		showSet[fn] = 1;
@@ -486,7 +475,7 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 			/* ignore */
 		}
 	});
-	spr_force_grid_realign(frm, gridFieldname);
+	spr_light_sync_grid_columns(grid, visibleCols, showSet);
 	spr_attach_grid_scroll_sync(fd);
 	spr_sync_grid_header_body_scroll(fd);
 }
@@ -520,57 +509,49 @@ function spr_apply_shaft_jobs_create_entry_ui(frm) {
 }
 
 function spr_apply_shaft_jobs_grid_columns(frm, force) {
-	const fd = frm && frm.fields_dict && frm.fields_dict.shaft_jobs;
+	const fd = spr_get_field_dict(frm, 'shaft_jobs');
 	const grid = fd && fd.grid;
 	if (!grid) {
 		return;
 	}
 	spr_bind_spr_grid_column_configure_hook(frm, 'shaft_jobs');
 	if (spr_grid_user_configured(grid)) {
-		spr_force_grid_realign(frm, 'shaft_jobs');
+		spr_light_realign_field(frm, 'shaft_jobs');
 		spr_apply_shaft_jobs_create_entry_ui(frm);
 		spr_ensure_child_grid_heights(frm);
 		return;
 	}
 	const show = spr_build_shaft_jobs_show_list(frm);
-	const gc = spr_get_grid_columns_module();
-	if (gc && typeof gc.apply === 'function' && show.length) {
-		if (force) {
-			spr_reset_shaft_jobs_grid_field_visibility(frm);
-		}
-		gc.apply(frm, 'shaft_jobs', 'Shaft Production Run Job', show, { fullRefresh: false });
-	} else {
-		if (force) {
-			spr_reset_shaft_jobs_grid_field_visibility(frm);
-		}
-		spr_apply_grid_visible_columns(frm, 'shaft_jobs', show, !!force);
+	if (force) {
+		spr_reset_shaft_jobs_grid_field_visibility(frm);
 	}
+	spr_apply_grid_visible_columns(frm, 'shaft_jobs', show, !!force);
 	spr_apply_shaft_jobs_create_entry_ui(frm);
 	spr_ensure_child_grid_heights(frm);
 }
 
 function spr_apply_items_grid_columns(frm, force) {
-	if (!frm || !frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
+	const fd = spr_get_field_dict(frm, 'items');
+	if (!fd || !fd.grid) {
 		return;
 	}
+	const grid = fd.grid;
 	const mode = spr_items_process_mode(frm);
 	if (frm._spr_items_cols_mode !== mode) {
 		force = true;
 		frm._spr_items_cols_mode = mode;
 	}
+	spr_bind_spr_grid_column_configure_hook(frm, 'items');
+	if (spr_grid_user_configured(grid)) {
+		spr_light_realign_field(frm, 'items');
+		return;
+	}
 	const cfg = spr_get_items_list_view_config(frm);
 	const show = cfg.show || [];
-	if (mode === 'fabric100' && show.length) {
-		const gc = spr_get_grid_columns_module();
-		if (force) {
-			spr_reset_items_grid_field_visibility(frm);
-		}
-		if (gc && typeof gc.apply === 'function') {
-			gc.apply(frm, 'items', SPR_SPI_DOCTYPE, show, { fullRefresh: false });
-			return;
-		}
+	if (force) {
+		spr_reset_items_grid_field_visibility(frm);
 	}
-	spr_apply_grid_visible_columns(frm, 'items', show, force);
+	spr_apply_grid_visible_columns(frm, 'items', show, !!force);
 }
 
 /** Emergency: clear hidden flags on all item grid fields (recover from bad column apply). */
@@ -641,29 +622,109 @@ function spr_get_grid_columns_module() {
 	return null;
 }
 
-/**
- * Force full header+body column realignment for a single grid.
- * Deletes cached visible_columns, re-runs setup + header + body refresh.
- */
-function spr_force_grid_realign(frm, fieldname) {
-	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
-	if (!fd || !fd.grid) {
+function spr_get_field_dict(frm, fieldname) {
+	return frm && frm.fields_dict && frm.fields_dict[fieldname];
+}
+
+function spr_reorder_docfields_array(docfields, preferredOrder) {
+	const source = (docfields || []).slice();
+	if (!source.length || !preferredOrder || !preferredOrder.length) {
+		return source;
+	}
+	const byName = {};
+	source.forEach(function (df) {
+		if (df && df.fieldname) {
+			byName[df.fieldname] = df;
+		}
+	});
+	const ordered = [];
+	const seen = {};
+	preferredOrder.forEach(function (fn) {
+		if (byName[fn] && !seen[fn]) {
+			ordered.push(byName[fn]);
+			seen[fn] = 1;
+		}
+	});
+	source.forEach(function (df) {
+		if (df && df.fieldname && !seen[df.fieldname]) {
+			ordered.push(df);
+			seen[df.fieldname] = 1;
+		}
+	});
+	return ordered;
+}
+
+/** Sync header/body column order without grid.refresh() or DOM remount (SPR-safe). */
+function spr_light_sync_grid_columns(grid, order, showSet) {
+	if (!grid || !order || !order.length) {
 		return;
 	}
-	const gc = spr_get_grid_columns_module();
-	if (gc && typeof gc.realign === 'function') {
-		try {
-			gc.realign(frm, fieldname, { fullRefresh: false });
-		} catch (e) {
-			/* ignore */
+	const show = showSet || {};
+	order.forEach(function (fn) {
+		show[fn] = 1;
+	});
+	if ((grid.docfields || []).length) {
+		grid.docfields = spr_reorder_docfields_array(grid.docfields, order);
+	}
+	(grid.docfields || []).forEach(function (df) {
+		if (!df || !df.fieldname) {
+			return;
 		}
-		spr_sync_grid_header_body_scroll(fd);
-		spr_ensure_child_grid_heights(frm);
-		if (typeof requestAnimationFrame === 'function') {
-			requestAnimationFrame(function () {
-				spr_sync_grid_header_body_scroll(fd);
+		const visible = !!show[df.fieldname];
+		df.in_list_view = visible ? 1 : 0;
+		df.hidden = 0;
+	});
+	(grid.grid_rows || []).forEach(function (gr) {
+		if (!gr) {
+			return;
+		}
+		if (gr.docfields && gr.docfields.length) {
+			gr.docfields = spr_reorder_docfields_array(gr.docfields, order);
+			gr.docfields.forEach(function (df) {
+				if (!df || !df.fieldname) {
+					return;
+				}
+				const visible = !!show[df.fieldname];
+				df.in_list_view = visible ? 1 : 0;
+				df.hidden = 0;
 			});
 		}
+	});
+	try {
+		if (grid.visible_columns) {
+			delete grid.visible_columns;
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		if (typeof grid.setup_visible_columns === 'function') {
+			grid.setup_visible_columns();
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		if (typeof grid.refresh_header === 'function') {
+			grid.refresh_header();
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		(grid.grid_rows || []).forEach(function (gr) {
+			if (gr && typeof gr.refresh === 'function') {
+				gr.refresh();
+			}
+		});
+	} catch (e) {
+		/* ignore */
+	}
+}
+
+function spr_light_realign_field(frm, fieldname) {
+	const fd = spr_get_field_dict(frm, fieldname);
+	if (!fd || !fd.grid) {
 		return;
 	}
 	const grid = fd.grid;
@@ -671,26 +732,41 @@ function spr_force_grid_realign(frm, fieldname) {
 		if (grid.visible_columns) {
 			delete grid.visible_columns;
 		}
-	} catch (e) { /* ignore */ }
+	} catch (e) {
+		/* ignore */
+	}
 	try {
 		if (typeof grid.setup_visible_columns === 'function') {
 			grid.setup_visible_columns();
 		}
-	} catch (e) { /* ignore */ }
+	} catch (e) {
+		/* ignore */
+	}
 	try {
 		if (typeof grid.refresh_header === 'function') {
 			grid.refresh_header();
 		}
-	} catch (e) { /* ignore */ }
-	try {
-		if (typeof grid.refresh === 'function') {
-			grid.refresh();
-		} else {
-			spr_refresh_grid_body_rows(grid);
-		}
-	} catch (e) { /* ignore */ }
+	} catch (e) {
+		/* ignore */
+	}
 	spr_sync_grid_header_body_scroll(fd);
-	spr_ensure_child_grid_heights(frm);
+}
+
+/**
+ * Force full header+body column realignment for a single grid.
+ * Deletes cached visible_columns, re-runs setup + header + body refresh.
+ */
+function spr_force_grid_realign(frm, fieldname) {
+	spr_light_realign_field(frm, fieldname);
+	const fd = spr_get_field_dict(frm, fieldname);
+	if (fd) {
+		spr_ensure_child_grid_heights(frm);
+		if (typeof requestAnimationFrame === 'function') {
+			requestAnimationFrame(function () {
+				spr_sync_grid_header_body_scroll(fd);
+			});
+		}
+	}
 }
 
 /** Debounced full realign — fixes header/body column collapse after save or browser refresh. */
@@ -907,7 +983,10 @@ function spr_layout_all_grids(frm, opts) {
 		});
 	}
 	if (settings.styles !== false) {
-		apply_spr_item_row_styles(frm);
+		const itemsFd = spr_get_field_dict(frm, 'items');
+		if (itemsFd && itemsFd.grid) {
+			apply_spr_item_row_styles(frm);
+		}
 	}
 }
 
@@ -1394,6 +1473,9 @@ frappe.ui.form.on('Shaft Production Run', {
 	onload: function (frm) {
 		spr_patch_items_grid_refresh(frm);
 		spr_register_spr_page_buttons(frm);
+		['items', 'shaft_jobs', 'bundle_calculation'].forEach(function (fn) {
+			spr_bind_spr_grid_column_configure_hook(frm, fn);
+		});
 		setTimeout(function () {
 			if (!frm || !frm.doc) {
 				return;
@@ -1496,9 +1578,13 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	custom_unit: function (frm) {
+		if (frm._spr_items_cols_mode) {
+			delete frm._spr_items_cols_mode;
+		}
 		sprApplyLaminationUnitDefaults(frm);
 		sprToggleLaminationRollUi(frm);
 		sprToggleSheetCuttingUi(frm);
+		spr_apply_items_grid_columns(frm, true);
 	},
 	custom_is_sheet_cutting: function (frm) {
 		sprToggleSheetCuttingUi(frm);
@@ -1530,7 +1616,9 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	refresh: function (frm) {
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
-		spr_reset_items_grid_field_visibility(frm);
+		if (spr_get_field_dict(frm, 'items')) {
+			spr_reset_items_grid_field_visibility(frm);
+		}
 		try {
 			frm.set_df_property('company', 'read_only', 1);
 		} catch (e) {
@@ -1587,29 +1675,7 @@ frappe.ui.form.on('Shaft Production Run', {
 			spr_apply_bundle_calculation_grid_columns(frm, true);
 		}
 
-		// One delayed realign after Frappe finishes painting the grids.
-		const gc = spr_get_grid_columns_module();
-		if (gc && typeof gc.debounce === 'function') {
-			gc.debounce(frm, 'spr_refresh_realign', function () {
-				if (!frm || !frm.fields_dict) {
-					return;
-				}
-				spr_apply_shaft_jobs_grid_columns(frm, true);
-				if (sprIsBundlePackagingMode(frm)) {
-					spr_apply_bundle_calculation_grid_columns(frm, true);
-				}
-				spr_apply_items_grid_columns(frm, true);
-				spr_force_grid_realign(frm, 'items');
-				spr_force_grid_realign(frm, 'shaft_jobs');
-				spr_ensure_child_grid_heights(frm);
-			}, 200);
-		}
-
-		spr_schedule_grid_realign(frm, 'items', 450);
-		spr_schedule_grid_realign(frm, 'shaft_jobs', 450);
-		if (sprIsBundlePackagingMode(frm)) {
-			spr_schedule_grid_realign(frm, 'bundle_calculation', 450);
-		}
+		spr_schedule_grid_ui_debounced(frm, { delay: 350, columns: true });
 
 		setTimeout(function () {
 			if (!spr_should_skip_desk_auto_sync(frm)) {
@@ -5031,20 +5097,17 @@ function spr_apply_bundle_calculation_grid_columns(frm, force) {
 	}
 	spr_bind_spr_grid_column_configure_hook(frm, 'bundle_calculation');
 	if (spr_grid_user_configured(grid)) {
-		spr_force_grid_realign(frm, 'bundle_calculation');
+		spr_light_realign_field(frm, 'bundle_calculation');
 		spr_apply_create_entry_buttons_ui(frm);
 		spr_ensure_child_grid_heights(frm);
 		return;
 	}
 	const cfg = spr_get_bundle_list_view_config(frm);
 	const show = cfg.show || [];
-	const gc = spr_get_grid_columns_module();
 	if (force) {
 		spr_reset_bundle_calc_grid_field_visibility(frm);
 	}
-	if (gc && typeof gc.apply === 'function' && show.length) {
-		gc.apply(frm, 'bundle_calculation', 'Bundle Calculation', show, { fullRefresh: false });
-	} else if (show.length) {
+	if (show.length) {
 		spr_apply_grid_visible_columns(frm, 'bundle_calculation', show, !!force);
 	}
 	spr_apply_create_entry_buttons_ui(frm);
@@ -5165,6 +5228,29 @@ function spr_hide_duplicate_produced_gsm_columns(frm) {
 	spr_apply_items_grid_columns(frm);
 }
 
+function spr_has_other_process_flags(frm) {
+	if (!frm || !frm.doc) {
+		return false;
+	}
+	return !!(
+		cint(frm.doc.custom_is_lamination)
+		|| cint(frm.doc.custom_is_slitting)
+		|| cint(frm.doc.custom_is_rewinding)
+		|| cint(frm.doc.custom_is_sheet_cutting)
+		|| cint(frm.doc.custom_is_box_bag)
+		|| cint(frm.doc.custom_is_bopp_film)
+		|| cint(frm.doc.custom_is_printing)
+	);
+}
+
+function spr_is_fabric_unit_spr(frm) {
+	if (!frm || !frm.doc || spr_has_other_process_flags(frm) || sprIsBundlePackagingMode(frm)) {
+		return false;
+	}
+	const u = String(frm.doc.custom_unit || '').trim().toUpperCase().replace(/\s+/g, ' ');
+	return /^(UNIT\s*[1-4]|MIXED|UNASSIGNED)$/.test(u);
+}
+
 function spr_has_fabric100_in_shaft_jobs(frm) {
 	if (!frm || !frm.doc) {
 		return false;
@@ -5208,6 +5294,9 @@ function sprIsFabric100Run(frm) {
 		return false;
 	}
 	if (cint(frm.doc.is_mix_roll)) {
+		return true;
+	}
+	if (spr_is_fabric_unit_spr(frm)) {
 		return true;
 	}
 	if (sprRollProcessPrefix(frm) === '100' || sprHasFabric100Rows(frm)) {
@@ -6070,21 +6159,24 @@ function sprCollectItemRowTargets(frm, doc, idx, $primaryRow, $wrap) {
 }
 
 function apply_spr_item_row_styles(frm) {
+	if (!frm || !frm.doc) {
+		return;
+	}
 	if (frm._spr_applying_row_styles) {
 		return;
 	}
-	frm._spr_applying_row_styles = true;
-	const grid = frm.fields_dict.items.grid;
+	const itemsFd = spr_get_field_dict(frm, 'items');
+	const grid = itemsFd && itemsFd.grid;
 	if (!grid) {
-		frm._spr_applying_row_styles = false;
 		return;
 	}
+	frm._spr_applying_row_styles = true;
 	const bandClasses = ['spr-gsm-band-0', 'spr-gsm-band-1', 'spr-gsm-band-2', 'spr-gsm-band-3'];
 	const baseClasses =
 		'spr-gsm-band-0 spr-gsm-band-1 spr-gsm-band-2 spr-gsm-band-3 spr-gsm-pending';
 	const items = frm.doc.items || [];
 	const $domRows = sprGetItemsDatatableBodyRows(frm);
-	const $wrap = frm.fields_dict.items.$wrapper;
+	const $wrap = itemsFd.$wrapper;
 
 	items.forEach(function (doc, idx) {
 		// Try multiple resolution methods to find row element for DataTable / Frappe grids
