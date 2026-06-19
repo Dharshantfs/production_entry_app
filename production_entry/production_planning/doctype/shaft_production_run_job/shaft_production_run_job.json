@@ -123,19 +123,19 @@
   {
    "fieldname": "work_orders",
    "fieldtype": "Small Text",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Work Orders"
   },
   {
    "fieldname": "is_manual",
    "fieldtype": "Check",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Is Manual"
   },
   {
    "fieldname": "manual_items",
    "fieldtype": "Text",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Manual Items"
   },
   {
@@ -155,7 +155,7 @@
   {
    "fieldname": "notes",
    "fieldtype": "Small Text",
-   "in_list_view": 1,
+   "in_list_view": 0,
    "label": "Notes",
    "read_only": 1
   }
