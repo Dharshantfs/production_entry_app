@@ -469,6 +469,7 @@ import {
   buildMtdHeaderLabel,
   buildReminderDialogBody,
   buildMaintenanceReminders,
+  computeMtdTargetFromProductionTable,
   computeMtdTargetKgByUnit,
   filterProductionTableReminderRows,
   UNIT_MAINTENANCE_THRESHOLDS,
@@ -537,15 +538,30 @@ async function ensureMtdMonthRowsLoaded() {
   const startDate = `${month}-01`;
   const endDate = `${month}-${String(lastDay).padStart(2, "0")}`;
   try {
-    let args = tableBoardArgs({ party_code: filterPartyCode.value, start_date: startDate, end_date: endDate });
-    if (isLaminationBoard.value) {
-      args.board_process_scope = "lamination_only";
+    let args = tableBoardArgs({
+      party_code: filterPartyCode.value,
+      start_date: startDate,
+      end_date: endDate,
+      plan_name: "__all__",
+      planned_only: 1,
+    });
+    if (isRewindingBoard.value) {
+      args.board_process_scope = "rewinding_only";
     } else if (isSlittingBoard.value) {
       args.board_process_scope = "slitting_only";
-    } else if (isRewindingBoard.value) {
-      args.board_process_scope = "rewinding_only";
+    } else if (isLaminationBoard.value) {
+      args.board_process_scope = "lamination_only";
     } else {
-      args.board_process_scope = "exclude_special";
+      try {
+        const sp = new URLSearchParams(window.location.search || "");
+        const b = (sp.get("board") || "").toLowerCase();
+        if (b === "lamination") args.board_process_scope = "lamination_only";
+        else if (b === "slitting") args.board_process_scope = "slitting_only";
+        else if (b === "rewinding") args.board_process_scope = "rewinding_only";
+        else args.board_process_scope = "exclude_special";
+      } catch (e) {
+        args.board_process_scope = "exclude_special";
+      }
     }
     const res = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
@@ -564,6 +580,14 @@ function recomputeMtdTargetStats() {
     return {};
   }
   const month = getReminderMonth();
+
+  // Monthly view: sum exactly what Production Table renders (not Color Chart matrix).
+  if (viewScope.value === "monthly" && tableData.value && tableData.value.length) {
+    const stats = computeMtdTargetFromProductionTable(tableData.value, month, normalizeUnit);
+    unitMtdStats.value = stats;
+    return stats;
+  }
+
   const rows = rowsForMtdTargetCalculation();
   const stats = computeMtdTargetKgByUnit(rows, month, normalizeUnit);
   unitMtdStats.value = stats;

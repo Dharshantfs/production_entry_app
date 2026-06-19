@@ -63,7 +63,40 @@ export function filterProductionTableReminderRows(data, opts = {}) {
   return rows;
 }
 
-/** Sum qty (TOTAL TARGET Kgs) per unit for rows in calendar month YYYY-MM. */
+/** Sum qty from Production Table rendered rows (merges use totalTargetWeight). */
+export function computeMtdTargetFromProductionTable(tableData, month, normalizeUnitFn) {
+  const totals = {};
+  PRODUCTION_TABLE_REMINDER_UNITS.forEach((u) => {
+    totals[u] = { kg: 0, tons: 0 };
+  });
+  const monthKey = String(month || "").slice(0, 7);
+  if (!monthKey || monthKey.length < 7) return totals;
+
+  (tableData || []).forEach((unitGroup) => {
+    const unit = normalizeUnitFn(unitGroup.unit);
+    if (!PRODUCTION_TABLE_REMINDER_UNITS.includes(unit)) return;
+
+    (unitGroup.dates || []).forEach((dateGroup) => {
+      const d = String(dateGroup.date || "");
+      if (!d || d === "No Date" || !d.startsWith(monthKey)) return;
+
+      (dateGroup.rows || []).forEach((row) => {
+        if (row.type === "merge") {
+          totals[unit].kg += parseFloat(row.totalTargetWeight) || 0;
+        } else if (row.item) {
+          totals[unit].kg += parseFloat(row.item.qty) || 0;
+        }
+      });
+    });
+  });
+
+  PRODUCTION_TABLE_REMINDER_UNITS.forEach((u) => {
+    totals[u].tons = totals[u].kg / 1000;
+  });
+  return totals;
+}
+
+/** Fallback: sum qty on filtered rows when full table grid is not loaded (daily/weekly scope). */
 export function computeMtdTargetKgByUnit(rows, month, normalizeUnitFn) {
   const totals = {};
   PRODUCTION_TABLE_REMINDER_UNITS.forEach((u) => {

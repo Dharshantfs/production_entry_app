@@ -18872,7 +18872,7 @@ def _fetch_production_table_month_rows(start_date, end_date):
                 end_date=end_date,
                 plan_name="__all__",
                 mode=None,
-                planned_only=0,
+                planned_only=1,
                 board_process_scope="exclude_special",
             )
             or []
