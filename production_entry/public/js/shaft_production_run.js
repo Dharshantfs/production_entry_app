@@ -78,6 +78,47 @@ function spr_item_process_prefix(item_code) {
 	return '';
 }
 
+function spr_resolve_spi_field_list(fieldnames) {
+	const out = [];
+	const seen = {};
+	(fieldnames || []).forEach(function (fn) {
+		const resolved = spr_resolve_spi_field(fn) || (frappe.meta.get_docfield(SPR_SPI_DOCTYPE, fn) ? fn : null);
+		if (resolved && !seen[resolved]) {
+			seen[resolved] = 1;
+			out.push(resolved);
+		}
+	});
+	return out;
+}
+
+/** Process 100 / mix-roll Roll Production Results — strict column order. */
+function spr_build_fabric100_roll_items_show_list(frm) {
+	return spr_resolve_spi_field_list([
+		'job',
+		'party_code',
+		'item_code',
+		'item_name',
+		'quality',
+		'color',
+		'width_inch',
+		'gsm',
+		'meter_roll',
+		'produced_length_mtrs',
+		'batch_no',
+		'net_weight',
+		'gross_weight',
+		'planned_qty',
+		'custom_core_width_mm',
+		'custom_polybag_kgs',
+		'save_row',
+		'custom_production_label',
+		'custom_qc_approval_label',
+		'custom_diameter_inches',
+		'custom_cbm_cubic_meters',
+		'work_order',
+	]);
+}
+
 function spr_build_roll_items_show_list(frm, opts) {
 	opts = opts || {};
 	const showGsmTrio = opts.gsmTrio !== false;
@@ -144,7 +185,7 @@ function spr_items_process_mode(frm) {
 	if (sprIsSheetCutting(frm)) {
 		return 'sheetcutting';
 	}
-	if (cint(frm.doc.is_mix_roll) || sprIsFabric100Run(frm)) {
+	if (sprIsFabric100Run(frm)) {
 		return 'fabric100';
 	}
 	let prefix = sprRollProcessPrefix(frm);
@@ -518,7 +559,18 @@ function spr_apply_items_grid_columns(frm, force) {
 		frm._spr_items_cols_mode = mode;
 	}
 	const cfg = spr_get_items_list_view_config(frm);
-	spr_apply_grid_visible_columns(frm, 'items', cfg.show || [], force);
+	const show = cfg.show || [];
+	if (mode === 'fabric100' && show.length) {
+		const gc = spr_get_grid_columns_module();
+		if (force) {
+			spr_reset_items_grid_field_visibility(frm);
+		}
+		if (gc && typeof gc.apply === 'function') {
+			gc.apply(frm, 'items', SPR_SPI_DOCTYPE, show, { fullRefresh: false });
+			return;
+		}
+	}
+	spr_apply_grid_visible_columns(frm, 'items', show, force);
 }
 
 /** Emergency: clear hidden flags on all item grid fields (recover from bad column apply). */
@@ -5113,15 +5165,55 @@ function spr_hide_duplicate_produced_gsm_columns(frm) {
 	spr_apply_items_grid_columns(frm);
 }
 
+function spr_has_fabric100_in_shaft_jobs(frm) {
+	if (!frm || !frm.doc) {
+		return false;
+	}
+	return (frm.doc.shaft_jobs || []).some(function (sj) {
+		const mi = String((sj && sj.manual_items) || '').trim();
+		if (!mi) {
+			return false;
+		}
+		let codes = [];
+		if (mi.charAt(0) === '[') {
+			try {
+				const parsed = JSON.parse(mi);
+				if (Array.isArray(parsed)) {
+					codes = parsed;
+				}
+			} catch (e) {
+				/* ignore */
+			}
+		}
+		if (!codes.length) {
+			codes = mi.split(/[,;]/).map(function (s) {
+				return s.trim();
+			}).filter(Boolean);
+		}
+		return codes.some(function (c) {
+			return spr_item_process_prefix(c) === '100';
+		});
+	});
+}
+
 function sprHasFabric100Rows(frm) {
 	return (frm && frm.doc && (frm.doc.items || [])).some(function (row) {
 		const ic = String((row && row.item_code) || '').trim().toUpperCase();
-		return ic.startsWith('100') || /^[A-Z0-9]+-100/.test(ic);
+		return ic.startsWith('100') || /^[A-Z0-9]+-100/.test(ic) || spr_item_process_prefix(row.item_code) === '100';
 	});
 }
 
 function sprIsFabric100Run(frm) {
-	return sprRollProcessPrefix(frm) === '100' || sprHasFabric100Rows(frm);
+	if (!frm || !frm.doc) {
+		return false;
+	}
+	if (cint(frm.doc.is_mix_roll)) {
+		return true;
+	}
+	if (sprRollProcessPrefix(frm) === '100' || sprHasFabric100Rows(frm)) {
+		return true;
+	}
+	return spr_has_fabric100_in_shaft_jobs(frm);
 }
 
 function spr_get_items_list_view_config(frm) {
@@ -5165,7 +5257,7 @@ function spr_get_items_list_view_config(frm) {
 		};
 	}
 	if (mode === 'fabric100') {
-		return { show: spr_build_roll_items_show_list(frm, { gsmTrio: false }), hide: [] };
+		return { show: spr_build_fabric100_roll_items_show_list(frm), hide: [] };
 	}
 	if (mode === 'lamination') {
 		return { show: spr_build_roll_items_show_list(frm, { gsmTrio: true }), hide: [] };
