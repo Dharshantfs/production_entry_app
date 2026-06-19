@@ -2466,7 +2466,7 @@ def _trace_from_221_parent_on_sales_order_line(sales_order_item, planning_sheet_
 	return ""
 
 def _quality_name_from_master(q_code):
-	"""Resolve Quality Master display name from a 3-digit quality code (e.g. 105 → BRONZE)."""
+	"""Resolve Quality Master document name from a 3-digit quality code (e.g. 127 → HARINI BAGS - GOLD)."""
 	qc = _cstr(q_code).strip()
 	if not qc:
 		return ""
@@ -2480,11 +2480,13 @@ def _quality_name_from_master(q_code):
 			return _cstr(qn).strip().upper()
 	except Exception:
 		pass
-	candidates = [qc]
-	if qc.isdigit():
-		candidates.extend([qc.lstrip("0") or "0", (qc.lstrip("0") or "0").zfill(2), qc.zfill(3)])
-	for qc_try in candidates:
-		for fld in ("short_code", "code", "quality_code", "custom_quality_code"):
+	for qc_try in _quality_code_lookup_candidates_py(qc):
+		try:
+			if frappe.db.exists("Quality Master", qc_try):
+				return _cstr(qc_try).strip().upper()
+		except Exception:
+			pass
+		for fld in ("custom_quality_code", "quality_code", "short_code", "code"):
 			try:
 				if not frappe.db.has_column("Quality Master", fld):
 					continue
@@ -2493,12 +2495,27 @@ def _quality_name_from_master(q_code):
 					return _cstr(qual_name).strip().upper()
 			except Exception:
 				pass
-		try:
-			if frappe.db.exists("Quality Master", qc_try):
-				return _cstr(qc_try).strip().upper()
-		except Exception:
-			pass
 	return ""
+
+
+def _quality_code_lookup_candidates_py(q_code):
+	q = _cstr(q_code).strip()
+	if not q:
+		return []
+	out = []
+	seen = set()
+	for v in (
+		q,
+		q.lstrip("0") or "0",
+		q.zfill(2),
+		q.zfill(3),
+		(q.lstrip("0") or "0").zfill(2),
+		(q.lstrip("0") or "0").zfill(3),
+	):
+		if v and v not in seen:
+			seen.add(v)
+			out.append(v)
+	return out
 
 
 def _width_inch_from_105_item_code(item_code):
@@ -16385,22 +16402,15 @@ def _populate_planning_sheet_items(ps, doc):
         if len(after_digits) >= 9 and _lamination_process_from_item_code(item_code_str) not in ("107", "255") and process_prefix not in ("253", "255", "254", "108", "251", "252", "105", "211", "212", "213", "216", "221", "222", "223", "224", "231", "232", "233", "241", "242", "225", "226"):
             q_code = after_digits[3:6]
             c_code = after_digits[6:9]
-            try:
-                qc_stripped = q_code.lstrip("0") or "0"
-                q_candidates = [q_code, qc_stripped, qc_stripped.zfill(2)]
-                for qc in q_candidates:
-                    qual_name = frappe.db.get_value("Quality Master", {"short_code": qc}, "name") or \
-                               frappe.db.get_value("Quality Master", {"code": qc}, "name") or \
-                               frappe.db.get_value("Quality Master", {"quality_code": qc}, "name") or \
-                               frappe.db.get_value("Quality Master", qc, "name")
-                    if qual_name:
-                        qual = qual_name
-                        break
-            except Exception: pass
+            qn = _quality_name_from_master(q_code)
+            if qn:
+                qual = qn
             try:
                 color_result = _get_color_by_code(c_code)
-                if color_result: col = color_result
-            except Exception: pass
+                if color_result:
+                    col = color_result
+            except Exception:
+                pass
         strict_col = _color_from_item_code_6_to_8(item_code_str)
         # 107 BOPP letter codes: colour/quality/fabric GSM come from _parse_107_item_code. The
         # digit-window helper merges all digits in the code and does not match 107 layout, so it

@@ -861,12 +861,18 @@ class Planningsheet(Document):
                 self.estimated_production_days = flt(self.total_weight / capacity, 2)
     
     def parse_item_details(self):
-        """Parse item name to extract quality and color"""
-        for item in self.planned_items:
-            if item.item_name and not item.quality:
-                quality, color = extract_quality_and_color(item.item_name)
-                item.quality = quality
-                item.color = color
+        """Parse quality/color from item code via Quality Master + Colour Master."""
+        for table_key in ("planned_items", "items"):
+            for item in self.get(table_key) or []:
+                item_code = str(getattr(item, "item_code", None) or "").strip()
+                item_name = str(getattr(item, "item_name", None) or "").strip()
+                if not item_code and not item_name:
+                    continue
+                quality, color = extract_quality_and_color(item_name, item_code=item_code)
+                if quality:
+                    item.quality = quality
+                if color:
+                    item.color = color
     
     def allocate_unit_to_sheet(self):
         """Allocate unit based on quality, GSM and capacity"""
@@ -963,8 +969,30 @@ class Planningsheet(Document):
 
 # Utility Functions
 
+def _quality_code_lookup_candidates(q_code: str):
+    """Normalize quality code variants for Quality Master lookup (127, 0127, etc.)."""
+    q = str(q_code or "").strip()
+    if not q:
+        return []
+    out = []
+    seen = set()
+    variants = [
+        q,
+        q.lstrip("0") or "0",
+        q.zfill(2),
+        q.zfill(3),
+        (q.lstrip("0") or "0").zfill(2),
+        (q.lstrip("0") or "0").zfill(3),
+    ]
+    for v in variants:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 def _quality_name_by_code(q_code: str) -> str:
-    """Resolve quality name by code from Quality Master."""
+    """Resolve Quality Master document name from item-code quality segment (e.g. 127 → HARINI BAGS - GOLD)."""
     if not q_code:
         return ""
     q_code = str(q_code).strip()
@@ -986,25 +1014,33 @@ def _quality_name_by_code(q_code: str) -> str:
         "O": "VIRGIN MIX - GOLD MIX",
         "P": "MID MIX - CLASSIC MIX",
         "Q": "ECO MIX",
-        "R": "DELUXE MIX"
+        "R": "DELUXE MIX",
     }
-    for fn in ("custom_quality_code", "quality_code", "short_code", "code", "name"):
-        try:
-            if fn == "name":
-                doc = frappe.db.get_value("Quality Master", {"name": q_code}, ["name", "quality_name", "description"], as_dict=True)
-            else:
-                doc = frappe.db.get_value("Quality Master", {fn: q_code}, ["name", "quality_name", "description"], as_dict=True)
-            if doc:
-                found_name = str(doc.get("quality_name") or doc.get("description") or doc.get("name")).strip().upper()
-                if found_name == q_code.upper() and q_code.upper() in _HARDCODED_QUALITY:
-                    return _HARDCODED_QUALITY[q_code.upper()]
-                return found_name
-        except Exception:
-            continue
-            
-    if q_code.upper() in _HARDCODED_QUALITY:
+    if len(q_code) == 1 and q_code.upper() in _HARDCODED_QUALITY:
         return _HARDCODED_QUALITY[q_code.upper()]
-        
+
+    if not frappe.db.exists("DocType", "Quality Master"):
+        return ""
+
+    code_fields = ("custom_quality_code", "quality_code", "short_code", "code")
+    for cand in _quality_code_lookup_candidates(q_code):
+        try:
+            if frappe.db.exists("Quality Master", cand):
+                master_name = frappe.db.get_value("Quality Master", cand, "name")
+                if master_name:
+                    return str(master_name).strip()
+        except Exception:
+            pass
+        for fn in code_fields:
+            try:
+                if not frappe.db.has_column("Quality Master", fn):
+                    continue
+                master_name = frappe.db.get_value("Quality Master", {fn: cand}, "name")
+                if master_name:
+                    return str(master_name).strip()
+            except Exception:
+                continue
+
     return ""
 
 
@@ -1102,18 +1138,19 @@ def extract_quality_and_color(item_name, item_code=None):
         c_code = digits[6:9]
         quality = _quality_name_by_code(q_code) or quality
         color = _color_name_by_code(c_code) or color
-    
-    # Extract quality
-    for qual in QUAL_LIST:
-        if qual in item_upper:
-            quality = qual
-            break
-    
-    # Extract color
-    for col in COL_LIST:
-        if col in item_upper:
-            color = col
-            break
+
+    # Item-name fallback only when code/master lookup did not resolve.
+    if not quality:
+        for qual in QUAL_LIST:
+            if qual in item_upper:
+                quality = qual
+                break
+
+    if not color:
+        for col in COL_LIST:
+            if col in item_upper:
+                color = col
+                break
     
     return (quality or "").strip().upper(), (color or "").strip().upper()
 
