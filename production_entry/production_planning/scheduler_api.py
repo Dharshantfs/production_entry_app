@@ -18811,6 +18811,254 @@ def get_all_equipment_maintenance(start_date=None, end_date=None):
         frappe.log_error(frappe.get_traceback(), "get_all_equipment_maintenance_failed")
         return []
 
+
+# --- Production Table mesh / die tonnage reminders (Units 1–4 only) ---
+
+PRODUCTION_TABLE_MAINTENANCE_UNITS = ("Unit 1", "Unit 2", "Unit 3", "Unit 4")
+
+UNIT_MAINTENANCE_TONNAGE_THRESHOLDS = {
+    "Unit 1": {"mesh": 30, "die": 90},
+    "Unit 2": {"mesh": 70, "die": 210},
+    "Unit 3": {"mesh": 75, "die": 150},
+    "Unit 4": {"mesh": 40, "die": 120},
+}
+
+
+def _maintenance_reminder_month_range(month):
+    from calendar import monthrange
+
+    month = str(month or "").strip()[:7]
+    if len(month) != 7 or month[4] != "-":
+        today = getdate()
+        month = today.strftime("%Y-%m")
+    year_s, mon_s = month.split("-")
+    year_i, mon_i = int(year_s), int(mon_s)
+    last_day = monthrange(year_i, mon_i)[1]
+    start_date = f"{month}-01"
+    end_date = f"{month}-{last_day:02d}"
+    return month, start_date, end_date
+
+
+def _normalize_maintenance_reminder_unit(raw):
+    from production_entry.production_planning.planning_doctypes import (
+        normalize_planning_unit_for_select,
+    )
+
+    unit = normalize_planning_unit_for_select(raw)
+    if unit in PRODUCTION_TABLE_MAINTENANCE_UNITS:
+        return unit
+    return None
+
+
+def _aggregate_monthly_actual_kg_by_unit(rows):
+    """Sum actual kg per unit with SPR dedupe (max weight per spr_name)."""
+    unit_spr_max = {u: {} for u in PRODUCTION_TABLE_MAINTENANCE_UNITS}
+    unit_no_spr = {u: 0.0 for u in PRODUCTION_TABLE_MAINTENANCE_UNITS}
+    for row in rows or []:
+        unit = _normalize_maintenance_reminder_unit((row or {}).get("unit"))
+        if not unit:
+            continue
+        w = flt(
+            (row or {}).get("actual_production_weight_kgs")
+            or (row or {}).get("total_achieved_weight_kgs")
+            or 0
+        )
+        if w <= 0:
+            continue
+        spr = str((row or {}).get("spr_name") or "").strip()
+        if spr:
+            unit_spr_max[unit][spr] = max(flt(unit_spr_max[unit].get(spr) or 0), w)
+        else:
+            unit_no_spr[unit] += w
+    out = {}
+    for unit in PRODUCTION_TABLE_MAINTENANCE_UNITS:
+        kg = flt(unit_no_spr.get(unit) or 0)
+        kg += sum(flt(v) for v in (unit_spr_max.get(unit) or {}).values())
+        out[unit] = kg
+    return out
+
+
+def _fetch_production_table_month_rows(start_date, end_date):
+    try:
+        return (
+            _get_color_chart_data_impl(
+                start_date=start_date,
+                end_date=end_date,
+                plan_name="__all__",
+                mode=None,
+                planned_only=0,
+                board_process_scope="exclude_special",
+            )
+            or []
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "fetch_production_table_month_rows_failed")
+        return []
+
+
+@frappe.whitelist()
+def get_monthly_unit_actual_tons(month=None):
+    """Month-to-date actual production tons per Unit 1–4 for Production Table reminders."""
+    month, start_date, end_date = _maintenance_reminder_month_range(month)
+    rows = _fetch_production_table_month_rows(start_date, end_date)
+    kg_by_unit = _aggregate_monthly_actual_kg_by_unit(rows)
+    units = {}
+    for unit in PRODUCTION_TABLE_MAINTENANCE_UNITS:
+        kg = flt(kg_by_unit.get(unit) or 0)
+        units[unit] = {"kg": kg, "tons": flt(kg / 1000.0, 2)}
+    return {"month": month, "start_date": start_date, "end_date": end_date, "units": units}
+
+
+def _count_unit_maintenance_in_month(month, unit, reminder_type_label):
+    month, start_date, end_date = _maintenance_reminder_month_range(month)
+    records = get_all_equipment_maintenance(start_date=start_date, end_date=end_date) or []
+    want = str(reminder_type_label or "").strip().upper()
+    count = 0
+    for rec in records:
+        if _normalize_maintenance_reminder_unit(rec.get("unit")) != unit:
+            continue
+        if str(rec.get("maintenance_type") or "").strip().upper() != want:
+            continue
+        count += 1
+    return count
+
+
+def _latest_reminder_ack(month, unit, reminder_type, level):
+    if not frappe.db.exists("DocType", "Maintenance Reminder Ack"):
+        return None
+    rows = frappe.get_all(
+        "Maintenance Reminder Ack",
+        filters={
+            "period_month": month,
+            "unit": unit,
+            "reminder_type": reminder_type,
+            "level": cint(level),
+            "user": frappe.session.user,
+        },
+        fields=["name", "tonnage_at_ack", "creation"],
+        order_by="creation desc",
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
+def _reminder_should_show(month, unit, reminder_type, level, current_tons):
+    ack = _latest_reminder_ack(month, unit, reminder_type, level)
+    if not ack:
+        return True, False
+    ack_tons = flt(ack.get("tonnage_at_ack"))
+    if current_tons > ack_tons + 0.99:
+        return True, True
+    return False, False
+
+
+@frappe.whitelist()
+def get_maintenance_reminder_status(month=None):
+    """Pending mesh/die reminders for Production Table based on MTD actual tons."""
+    month, start_date, end_date = _maintenance_reminder_month_range(month)
+    payload = get_monthly_unit_actual_tons(month)
+    units_payload = payload.get("units") or {}
+    reminders = []
+    unit_summaries = {}
+
+    for unit in PRODUCTION_TABLE_MAINTENANCE_UNITS:
+        thresholds = UNIT_MAINTENANCE_TONNAGE_THRESHOLDS.get(unit) or {}
+        current_tons = flt((units_payload.get(unit) or {}).get("tons") or 0)
+        mesh_interval = flt(thresholds.get("mesh") or 0)
+        die_interval = flt(thresholds.get("die") or 0)
+        mesh_required = int(current_tons // mesh_interval) if mesh_interval > 0 else 0
+        die_required = int(current_tons // die_interval) if die_interval > 0 else 0
+        mesh_logged = _count_unit_maintenance_in_month(month, unit, "Mesh Change")
+        die_logged = _count_unit_maintenance_in_month(month, unit, "Die Change")
+        unit_summaries[unit] = {
+            "kg": flt((units_payload.get(unit) or {}).get("kg") or 0),
+            "tons": current_tons,
+            "mesh_interval": mesh_interval,
+            "die_interval": die_interval,
+            "mesh_required": mesh_required,
+            "die_required": die_required,
+            "mesh_logged": mesh_logged,
+            "die_logged": die_logged,
+            "mesh_pending": max(0, mesh_required - mesh_logged),
+            "die_pending": max(0, die_required - die_logged),
+        }
+
+        for key, reminder_type, interval in (
+            ("mesh", "Mesh Change", mesh_interval),
+            ("die", "Die Change", die_interval),
+        ):
+            if interval <= 0:
+                continue
+            required = int(current_tons // interval)
+            logged = mesh_logged if key == "mesh" else die_logged
+            pending = max(0, required - logged)
+            if pending <= 0:
+                continue
+            level = logged + 1
+            threshold_tons = flt(level * interval, 2)
+            show, overdue = _reminder_should_show(
+                month, unit, reminder_type, level, current_tons
+            )
+            if not show:
+                continue
+            reminders.append(
+                {
+                    "unit": unit,
+                    "reminder_type": reminder_type,
+                    "level": level,
+                    "interval_tons": interval,
+                    "threshold_tons": threshold_tons,
+                    "current_tons": current_tons,
+                    "pending_levels": pending,
+                    "overdue": overdue,
+                }
+            )
+
+    # Mesh reminders before die at same visit
+    reminders.sort(
+        key=lambda r: (
+            PRODUCTION_TABLE_MAINTENANCE_UNITS.index(r.get("unit") or "Unit 1"),
+            0 if r.get("reminder_type") == "Mesh Change" else 1,
+            cint(r.get("level") or 0),
+        )
+    )
+    return {
+        "month": month,
+        "start_date": start_date,
+        "end_date": end_date,
+        "units": unit_summaries,
+        "reminders": reminders,
+    }
+
+
+@frappe.whitelist()
+def ack_maintenance_reminder(month, unit, reminder_type, level, tonnage_at_ack=None):
+    """Record user dismissed a maintenance reminder popup."""
+    month, _, _ = _maintenance_reminder_month_range(month)
+    unit = _normalize_maintenance_reminder_unit(unit)
+    if not unit:
+        frappe.throw("Invalid unit for maintenance reminder")
+    reminder_type = str(reminder_type or "").strip()
+    if reminder_type not in ("Mesh Change", "Die Change"):
+        frappe.throw("Invalid reminder type")
+    if not frappe.db.exists("DocType", "Maintenance Reminder Ack"):
+        return {"status": "skipped", "message": "Ack DocType missing"}
+    doc = frappe.get_doc(
+        {
+            "doctype": "Maintenance Reminder Ack",
+            "period_month": month,
+            "unit": unit,
+            "reminder_type": reminder_type,
+            "level": cint(level),
+            "tonnage_at_ack": flt(tonnage_at_ack),
+            "user": frappe.session.user,
+        }
+    )
+    doc.insert(ignore_permissions=True)
+    frappe.db.commit()
+    return {"status": "success", "name": doc.name}
+
+
 def find_best_slot(item_qty_tons, quality, preferred_unit, start_date, recursion_depth=0):
     """
     Recursive function to find the best available slot (Date/Unit).

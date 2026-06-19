@@ -171,6 +171,7 @@
             <!-- Unit Header -->
             <div class="cc-table-unit-header" :style="{ backgroundColor: getUnitHeaderColor(unitGroup.unit) }">
                 {{ unitGroup.unit.toUpperCase() }} (06:00 am to 06:00 am) - Total: {{ unitGroup.totalWeight.toFixed(2) }} T
+                <span v-if="unitMtdLabel(unitGroup.unit)" class="cc-unit-mtd-label">{{ unitMtdLabel(unitGroup.unit) }}</span>
             </div>
 
             <div class="cc-table-scroll cc-order-table-scroll">
@@ -465,6 +466,11 @@ import {
   unitAllowedByBoardAccess,
 } from "./maintenance_utils.js";
 import {
+  buildMtdHeaderLabel,
+  buildReminderDialogBody,
+  UNIT_MAINTENANCE_THRESHOLDS,
+} from "./maintenance_reminder_utils.js";
+import {
   applyBoardAccessDateScope,
   applyBoardAccessUnitScope,
   boardAccessDatePickerDisabled,
@@ -479,6 +485,137 @@ import {
 // ===== MAINTENANCE DATA =====
 const maintenanceRecords = ref([]);
 const maintenanceData = ref({});
+const unitMtdStats = ref({});
+const maintenanceReminderQueue = ref([]);
+const maintenanceReminderShowing = ref(false);
+const pendingMaintenancePrefill = ref(null);
+
+function isMainFabricProductionTable() {
+  try {
+    const b = (new URLSearchParams(window.location.search || "").get("board") || "").toLowerCase();
+    return b !== "lamination" && b !== "slitting" && b !== "rewinding";
+  } catch (e) {
+    return true;
+  }
+}
+
+function getReminderMonth() {
+  if (viewScope.value === "monthly" && filterMonth.value) {
+    return String(filterMonth.value).slice(0, 7);
+  }
+  if (viewScope.value === "daily" && filterOrderDate.value) {
+    return String(filterOrderDate.value).slice(0, 7);
+  }
+  if (viewScope.value === "weekly" && filterWeek.value) {
+    const [yearStr, weekStr] = String(filterWeek.value).split("-W");
+    const y = parseInt(yearStr, 10);
+    const w = parseInt(weekStr, 10);
+    if (Number.isFinite(y) && Number.isFinite(w)) {
+      const simple = new Date(y, 0, 1 + (w - 1) * 7);
+      return `${simple.getFullYear()}-${String(simple.getMonth() + 1).padStart(2, "0")}`;
+    }
+  }
+  return frappe.datetime.get_today().slice(0, 7);
+}
+
+function unitMtdLabel(unit) {
+  const norm = normalizeUnit(unit);
+  const stats = unitMtdStats.value[norm];
+  if (!stats) return "";
+  return buildMtdHeaderLabel({ unit: norm, tons: stats.tons }, UNIT_MAINTENANCE_THRESHOLDS);
+}
+
+async function loadUnitMtdStats() {
+  if (!isMainFabricProductionTable()) {
+    unitMtdStats.value = {};
+    return null;
+  }
+  const month = getReminderMonth();
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.get_monthly_unit_actual_tons",
+      args: { month },
+    });
+    const units = (res.message && res.message.units) || {};
+    const next = {};
+    Object.keys(units).forEach((u) => {
+      next[u] = units[u];
+    });
+    unitMtdStats.value = next;
+    return res.message;
+  } catch (e) {
+    console.warn("Failed to load MTD unit tons", e);
+    return null;
+  }
+}
+
+function showNextMaintenanceReminder() {
+  if (maintenanceReminderShowing.value) return;
+  const next = maintenanceReminderQueue.value.shift();
+  if (!next) return;
+  maintenanceReminderShowing.value = true;
+  const d = new frappe.ui.Dialog({
+    title: next.overdue ? `Maintenance Overdue — ${next.unit}` : `Maintenance Required — ${next.unit}`,
+    fields: [{ fieldtype: "HTML", fieldname: "body", options: buildReminderDialogBody(next, !!next.overdue) }],
+    primary_action_label: "OK",
+    primary_action: async () => {
+      try {
+        await frappe.call({
+          method: "production_entry.production_planning.scheduler_api.ack_maintenance_reminder",
+          args: {
+            month: getReminderMonth(),
+            unit: next.unit,
+            reminder_type: next.reminder_type,
+            level: next.level,
+            tonnage_at_ack: next.current_tons,
+          },
+        });
+      } catch (e) {
+        console.warn("Failed to ack maintenance reminder", e);
+      }
+      d.hide();
+      maintenanceReminderShowing.value = false;
+      showNextMaintenanceReminder();
+    },
+    secondary_action_label: "Add Maintenance",
+    secondary_action: () => {
+      pendingMaintenancePrefill.value = {
+        unit: next.unit,
+        maint_type: next.reminder_type,
+      };
+      d.hide();
+      maintenanceReminderShowing.value = false;
+      openMaintenanceDialog();
+    },
+  });
+  d.show();
+}
+
+async function checkMaintenanceReminders() {
+  if (!isMainFabricProductionTable()) {
+    maintenanceReminderQueue.value = [];
+    return;
+  }
+  const month = getReminderMonth();
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.get_maintenance_reminder_status",
+      args: { month },
+    });
+    const msg = res.message || {};
+    if (msg.units) {
+      const next = {};
+      Object.keys(msg.units).forEach((u) => {
+        next[u] = { tons: msg.units[u].tons, kg: msg.units[u].kg };
+      });
+      unitMtdStats.value = next;
+    }
+    maintenanceReminderQueue.value = (msg.reminders || []).slice();
+    showNextMaintenanceReminder();
+  } catch (e) {
+    console.warn("Failed to check maintenance reminders", e);
+  }
+}
 
 const widthDimUnit = ref("inches"); // 'inches' | 'mm'
 const WIDTH_UNIT_LS_KEY = "pp_production_table_width_unit";
@@ -627,6 +764,7 @@ function toLocalDateKeyFromDate(d) {
 
 async function openMaintenanceDialog() {
   if (freezeMaintenance.value) return;
+  const prefill = pendingMaintenancePrefill.value;
 	const d = new frappe.ui.Dialog({
 		title: "⚙️ Equipment Maintenance Management",
 		fields: [
@@ -639,14 +777,16 @@ async function openMaintenanceDialog() {
 				fieldname: "new_unit",
 				label: "Unit",
 				options: "Unit 1\nUnit 2\nUnit 3\nUnit 4",
-				reqd: 1
+				reqd: 1,
+        default: prefill && prefill.unit ? prefill.unit : undefined,
 			},
 			{
 				fieldtype: "Select",
 				fieldname: "maint_type",
 				label: "Maintenance Type",
         options: "Mesh Change\nDie Change\nBreakdown - Partial\nBreakdown - Full\nEB Shutdown\nMachine Off",
-				reqd: 1
+				reqd: 1,
+        default: prefill && prefill.maint_type ? prefill.maint_type : undefined,
 			},
 			{
 				fieldtype: "Date",
@@ -696,6 +836,7 @@ async function openMaintenanceDialog() {
 					frappe.show_alert({ message: res.message.message, indicator: 'green' });
 					await fetchMaintenanceRecords();
           await fetchData();
+          pendingMaintenancePrefill.value = null;
           d.hide();
 				}
 			} catch (e) {
@@ -705,6 +846,7 @@ async function openMaintenanceDialog() {
 		}
 	});
 	d.show();
+  pendingMaintenancePrefill.value = null;
 	await fetchMaintenanceRecords();
 }
 
@@ -2804,6 +2946,8 @@ async function fetchData() {
     }
 
     await loadMergesForCurrentData();
+    await loadUnitMtdStats();
+    await checkMaintenanceReminders();
       } catch (e) {
         const msg = e?.message || String(e);
         if (e?.exc_type !== "PermissionError" && !/not permitted/i.test(msg)) {
@@ -3033,12 +3177,25 @@ onBeforeUnmount(() => {
     -webkit-overflow-scrolling: touch;
 }
 .cc-table-unit-header {
-    padding: 10px 15px;
-    font-weight: 800;
-    font-size: 14px;
-    border-radius: 8px 8px 0 0;
-    border: 1px solid #e5e7eb;
-    border-bottom: none;
+  padding: 10px 15px;
+  font-weight: 800;
+  font-size: 14px;
+  border-radius: 8px 8px 0 0;
+  border: 1px solid #e5e7eb;
+  border-bottom: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.cc-unit-mtd-label {
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: auto;
 }
 .cc-prod-table {
     width: 100%;
