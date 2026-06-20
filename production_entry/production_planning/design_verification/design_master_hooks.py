@@ -161,10 +161,19 @@ def run_verification_now(design_master: str, doctype: str | None = None, force: 
 	dt = doctype or get_design_master_doctype()
 	if not dt:
 		frappe.throw("Design Master DocType not found on this site.")
-	if not frappe.db.exists(dt, design_master):
-		frappe.throw(f"Document {design_master} not found in {dt}.")
 
-	doc = frappe.get_doc(dt, design_master)
+	from production_entry.production_planning.design_verification.verification_engine import (
+		_resolve_design_master_name,
+	)
+
+	doc_name = _resolve_design_master_name(dt, design_master)
+	if not doc_name:
+		frappe.throw(
+			f"Document {design_master} not found in {dt}. "
+			"Use the document name or design_code (e.g. 6126)."
+		)
+
+	doc = frappe.get_doc(dt, doc_name)
 	frappe.flags.in_design_verification = False
 	frappe.flags.force_design_verification = bool(int(force or 0))
 	run_design_verification(doc, method="on_update")

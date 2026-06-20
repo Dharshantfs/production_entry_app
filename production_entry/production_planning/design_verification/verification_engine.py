@@ -110,6 +110,34 @@ def _detect_bag_type(doc, analysis, override: str | None) -> str:
 	return "Box Bag"
 
 
+def _resolve_design_master_name(dt: str, design_master: str) -> str | None:
+	"""Find doc by name or design_code (6126 vs PDF filename 6216 does not matter)."""
+	if not design_master:
+		return None
+	if frappe.db.exists(dt, design_master):
+		return design_master
+	meta = frappe.get_meta(dt)
+	if meta.has_field("design_code"):
+		name = frappe.db.get_value(dt, {"design_code": design_master}, "name")
+		if name:
+			return name
+	return None
+
+
+def _dimension_name_sources(doc, file_url: str, filename_hint: str, design_name: str) -> list[str]:
+	sources = [
+		filename_hint,
+		resolve_original_filename(file_url),
+		file_url,
+		design_name,
+	]
+	for field in ("design_code", "name"):
+		val = getattr(doc, field, None)
+		if val and not str(val).startswith("new-"):
+			sources.append(str(val))
+	return sources
+
+
 def _filename_from_url(file_url: str) -> str:
 	if not file_url:
 		return ""
@@ -224,19 +252,28 @@ def verify_design(doc, file_url: str | None = None, image_field: str | None = No
 
 	design_name = getattr(doc, "design_name", None) or doc.name or ""
 	filename_hint = resolve_original_filename(file_url) or _filename_from_url(file_url)
+	name_sources = _dimension_name_sources(doc, file_url, filename_hint, design_name)
 	analysis = analyze_pdf(
 		file_url,
 		design_name=design_name,
 		filename_hint=filename_hint,
+		name_sources=name_sources,
 		mm_tolerance=float(settings.mm_tolerance or 2.0),
 		ocr_enabled=bool(getattr(settings, "ocr_enabled", 1)),
 		ocr_dpi=int(getattr(settings, "ocr_dpi", None) or 300),
 	)
 	if not analysis.file_path:
-		msg = (
-			f"Could not read PDF at {file_url}. "
-			"Ensure file is saved and pymupdf is installed on the server."
-		)
+		if getattr(analysis, "pymupdf_missing", False):
+			msg = (
+				"PyMuPDF (pymupdf) is NOT installed on this server. "
+				"Redeploy the site after requirements.txt is updated, or run: "
+				"bench pip install pymupdf Pillow opencv-python-headless rapidocr-onnxruntime"
+			)
+		else:
+			msg = (
+				f"Could not read PDF at {file_url}. "
+				"Ensure file is saved and pymupdf is installed on the server."
+			)
 		if doc.meta.has_field("ai_remarks"):
 			doc.ai_remarks = msg
 		frappe.log_error(msg, "Design Verification PDF Path")

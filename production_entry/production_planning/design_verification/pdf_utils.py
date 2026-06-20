@@ -46,6 +46,7 @@ class PDFAnalysis:
 	dimension_context: object | None = None
 	bag_size_inches_str: str = ""
 	text_layer_missing: bool = False
+	pymupdf_missing: bool = False
 	ocr_text: str = ""
 	ocr_method: str = ""
 
@@ -178,6 +179,7 @@ def analyze_pdf(
 	render_dpi: int = 150,
 	design_name: str = "",
 	filename_hint: str = "",
+	name_sources: list[str] | None = None,
 	mm_tolerance: float = 2.0,
 	ocr_enabled: bool = True,
 	ocr_dpi: int = 300,
@@ -192,6 +194,8 @@ def analyze_pdf(
 		import fitz
 	except ImportError:
 		frappe.log_error("PyMuPDF (pymupdf) is not installed", "Design Verification PDF")
+		analysis.file_path = ""
+		analysis.pymupdf_missing = True
 		return analysis
 
 	doc = fitz.open(path)
@@ -244,8 +248,12 @@ def analyze_pdf(
 		build_dimension_context,
 	)
 
-	name_sources = [filename_hint, resolve_original_filename(file_url), file_url, design_name]
-	ctx = build_dimension_context(analysis, *name_sources, tolerance=mm_tolerance)
+	sources = list(name_sources or [])
+	if filename_hint and filename_hint not in sources:
+		sources.insert(0, filename_hint)
+	if not sources:
+		sources = [filename_hint, resolve_original_filename(file_url), file_url, design_name]
+	ctx = build_dimension_context(analysis, *sources, tolerance=mm_tolerance)
 	analysis.found_mm_values = ctx.found_mm_values
 	analysis.dimension_context = ctx
 	analysis.bag_size_inches_str = ctx.bag_size_inches_str
@@ -279,7 +287,7 @@ def analyze_pdf(
 		if ocr_result.text:
 			merge_ocr_into_analysis(analysis, ocr_result)
 			analysis.text_layer_missing = False
-			ctx = build_dimension_context(analysis, *name_sources, tolerance=mm_tolerance)
+			ctx = build_dimension_context(analysis, *sources, tolerance=mm_tolerance)
 			analysis.found_mm_values = ctx.found_mm_values
 			analysis.dimension_context = ctx
 			analysis.bag_size_inches_str = ctx.bag_size_inches_str
