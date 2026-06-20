@@ -39,6 +39,8 @@ class _FallbackSettings:
 	review_threshold = 70
 	mm_tolerance = 2.0
 	color_detection_mode = "Hybrid"
+	ocr_enabled = 1
+	ocr_dpi = 300
 	check_rules = []
 	logo_phrases = []
 	mandatory_government_text = []
@@ -91,6 +93,10 @@ def _build_settings_from_defaults(existing):
 	settings.review_threshold = getattr(settings, "review_threshold", None) or 70
 	settings.mm_tolerance = getattr(settings, "mm_tolerance", None) or 2.0
 	settings.color_detection_mode = getattr(settings, "color_detection_mode", None) or "Hybrid"
+	settings.ocr_enabled = getattr(settings, "ocr_enabled", None)
+	if settings.ocr_enabled is None:
+		settings.ocr_enabled = 1
+	settings.ocr_dpi = getattr(settings, "ocr_dpi", None) or 300
 	return settings
 
 
@@ -223,6 +229,8 @@ def verify_design(doc, file_url: str | None = None, image_field: str | None = No
 		design_name=design_name,
 		filename_hint=filename_hint,
 		mm_tolerance=float(settings.mm_tolerance or 2.0),
+		ocr_enabled=bool(getattr(settings, "ocr_enabled", 1)),
+		ocr_dpi=int(getattr(settings, "ocr_dpi", None) or 300),
 	)
 	if not analysis.file_path:
 		msg = (
@@ -263,7 +271,10 @@ def verify_design(doc, file_url: str | None = None, image_field: str | None = No
 	if colors and doc.meta.has_field("dominant_colors"):
 		doc.dominant_colors = ", ".join(colors)
 	if doc.meta.has_field("extracted_pdf_text"):
-		doc.extracted_pdf_text = (analysis.full_text or "")[:65000]
+		combined = (analysis.full_text or "")
+		if getattr(analysis, "ocr_text", None):
+			combined = f"{combined}\n\n--- OCR ({analysis.ocr_method}) ---\n{analysis.ocr_text}"
+		doc.extracted_pdf_text = combined[:65000]
 
 	rules = _filter_rules(settings, bag_type)
 	if not rules:

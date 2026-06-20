@@ -115,6 +115,9 @@ def _apply_outlined_pdf_fallback(ctx: DimensionContext, analysis, found: set[flo
 		return
 	if not no_text and len(found) >= 3:
 		return
+	# Skip filename-only seed when OCR already extracted useful text
+	if len(getattr(analysis, "ocr_text", "") or "") > 80:
+		return
 
 	for field, mm_val in FILENAME_BAG_MM.items():
 		found.add(float(mm_val))

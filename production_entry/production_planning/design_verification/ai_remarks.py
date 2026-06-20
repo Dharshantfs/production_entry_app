@@ -67,15 +67,20 @@ def generate_ai_remarks(
 	if analysis is not None:
 		found_count = len(getattr(analysis, "found_mm_values", None) or [])
 		text_len = len(getattr(analysis, "full_text", None) or "")
-		if getattr(analysis, "text_layer_missing", False):
+		ocr_method = getattr(analysis, "ocr_method", "") or ""
+		ocr_len = len(getattr(analysis, "ocr_text", "") or "")
+		if ocr_len > 0:
 			parts.append(
-				f"PDF has no extractable text layer (0 chars) — outlined artwork. "
-				f"Using bag size from filename ({found_count} mm values seeded for checklist matching)."
+				f"OCR ({ocr_method}): extracted {ocr_len} chars — "
+				f"{found_count} mm values used for checklist matching."
+			)
+		elif getattr(analysis, "text_layer_missing", False):
+			parts.append(
+				"PDF has no text layer and OCR did not return text — "
+				"check Error Log (Design Verification OCR) or enable OCR in Settings."
 			)
 		elif found_count < 8:
-			parts.append(
-				f"PDF text scan: {found_count} mm values from {text_len} chars of extracted text."
-			)
+			parts.append(f"PDF text scan: {found_count} mm values from {text_len} chars.")
 
 	failed = [
 		r.get("particulars") or r.get("sub_particular") or r.get("check_item")

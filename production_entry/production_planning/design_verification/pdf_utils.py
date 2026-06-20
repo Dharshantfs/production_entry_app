@@ -46,6 +46,8 @@ class PDFAnalysis:
 	dimension_context: object | None = None
 	bag_size_inches_str: str = ""
 	text_layer_missing: bool = False
+	ocr_text: str = ""
+	ocr_method: str = ""
 
 
 def resolve_original_filename(file_url: str) -> str:
@@ -177,6 +179,8 @@ def analyze_pdf(
 	design_name: str = "",
 	filename_hint: str = "",
 	mm_tolerance: float = 2.0,
+	ocr_enabled: bool = True,
+	ocr_dpi: int = 300,
 ) -> PDFAnalysis:
 	analysis = PDFAnalysis()
 	path = resolve_pdf_path(file_url)
@@ -247,27 +251,51 @@ def analyze_pdf(
 	analysis.bag_size_inches_str = ctx.bag_size_inches_str
 	analysis.text_layer_missing = not (analysis.full_text or "").strip()
 
-	if doc.page_count:
-		page = doc[0]
-		pix = page.get_pixmap(dpi=render_dpi, alpha=False)
+	ocr_page = doc[0] if doc.page_count else None
+	ocr_dpi_use = int(ocr_dpi or 300)
+	preview_dpi = max(int(render_dpi or 150), ocr_dpi_use if ocr_enabled else 0)
+
+	if ocr_page is not None:
+		pix = ocr_page.get_pixmap(dpi=preview_dpi, alpha=False)
 		analysis.rendered_image_path = _preview_image_path(path)
 		pix.save(analysis.rendered_image_path)
 
-	doc.close()
-
-	# Re-scan after render: OCR fallback when PDF text layer is missing or sparse
-	if len(analysis.found_mm_values or []) < 8 and analysis.rendered_image_path:
-		from production_entry.production_planning.design_verification.ocr_fallback import (
-			ocr_text_from_image,
+	needs_ocr = ocr_enabled and (
+		analysis.text_layer_missing or len(analysis.found_mm_values or []) < 8
+	)
+	if needs_ocr and analysis.rendered_image_path:
+		from production_entry.production_planning.design_verification.ocr_engine import (
+			merge_ocr_into_analysis,
+			run_ocr,
 		)
 
-		ocr_text = ocr_text_from_image(analysis.rendered_image_path)
-		if ocr_text:
-			analysis.full_text = (analysis.full_text or "") + "\n" + ocr_text
+		ocr_result = run_ocr(
+			analysis.rendered_image_path,
+			fitz_page=ocr_page,
+			existing_text=analysis.full_text or "",
+			dpi=ocr_dpi_use,
+			enabled=ocr_enabled,
+		)
+		if ocr_result.text:
+			merge_ocr_into_analysis(analysis, ocr_result)
+			analysis.text_layer_missing = False
 			ctx = build_dimension_context(analysis, *name_sources, tolerance=mm_tolerance)
 			analysis.found_mm_values = ctx.found_mm_values
 			analysis.dimension_context = ctx
 			analysis.bag_size_inches_str = ctx.bag_size_inches_str
+			analysis.cmyk_codes = []
+			analysis.pantone_hits = []
+			for match in CMYK_RE.finditer(analysis.full_text or ""):
+				analysis.cmyk_codes.append(match.group(0))
+			for match in PANTONE_RE.finditer(analysis.full_text or ""):
+				analysis.pantone_hits.append(match.group(0))
+		elif ocr_result.error and ocr_enabled:
+			frappe.log_error(
+				f"Design Verification OCR: {ocr_result.error}",
+				"Design Verification OCR",
+			)
+
+	doc.close()
 
 	return analysis
 

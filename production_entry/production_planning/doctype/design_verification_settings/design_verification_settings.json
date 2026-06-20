@@ -11,6 +11,8 @@
   "review_threshold",
   "mm_tolerance",
   "color_detection_mode",
+  "ocr_enabled",
+  "ocr_dpi",
   "section_break_rules",
   "check_rules",
   "section_break_logo",
@@ -61,6 +63,18 @@
    "fieldtype": "Select",
    "label": "Color Detection Mode",
    "options": "Hybrid\nText Only\nManual"
+  },
+  {
+   "default": "1",
+   "fieldname": "ocr_enabled",
+   "fieldtype": "Check",
+   "label": "OCR Enabled (Outlined PDFs)"
+  },
+  {
+   "default": "300",
+   "fieldname": "ocr_dpi",
+   "fieldtype": "Int",
+   "label": "OCR Render DPI"
   },
   {
    "fieldname": "section_break_rules",
