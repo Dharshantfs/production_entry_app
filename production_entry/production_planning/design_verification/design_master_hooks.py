@@ -5,13 +5,18 @@ from __future__ import annotations
 
 import frappe
 
+from production_entry.production_planning.design_verification.doctype_utils import (
+	get_design_master_doctype,
+	is_design_master_doc,
+)
+
 
 def run_design_verification(doc, method=None):
 	"""Run PDF verification on Design Master save/update."""
 	if getattr(frappe.flags, "in_design_verification", False):
 		return
 
-	if doc.doctype != "Design Master" and not frappe.db.exists("DocType", "Design Master"):
+	if not is_design_master_doc(doc):
 		return
 
 	image_field = _get_image_field(doc)
@@ -33,7 +38,6 @@ def run_design_verification(doc, method=None):
 
 		verify_design(doc, file_url=file_url, image_field=image_field)
 
-		# on_update: persist results without triggering another full save loop
 		if method == "on_update" and doc.name and not doc.get("__islocal"):
 			_persist_verification(doc)
 	except Exception:
@@ -71,7 +75,6 @@ def _should_run(doc, image_field: str) -> bool:
 	if doc.has_value_changed(image_field):
 		return True
 
-	# First-time verification or previous run produced nothing
 	if not getattr(doc, "last_verified_on", None):
 		return True
 
@@ -86,7 +89,6 @@ def _should_run(doc, image_field: str) -> bool:
 
 
 def _persist_verification(doc):
-	"""Write verification output after on_update without re-entering hooks."""
 	fields = {}
 	for fn in (
 		"width", "height", "gusset", "top_folding", "file_name", "file_type", "cdr_version",
@@ -98,26 +100,32 @@ def _persist_verification(doc):
 			fields[fn] = doc.get(fn)
 
 	if fields:
-		frappe.db.set_value("Design Master", doc.name, fields, update_modified=False)
+		frappe.db.set_value(doc.doctype, doc.name, fields, update_modified=False)
 
-	# Replace child table rows
 	if doc.meta.has_field("design_verification_checklist"):
 		frappe.db.delete("Design Verification Checklist", {"parent": doc.name})
 		for row in doc.get("design_verification_checklist") or []:
 			row.parent = doc.name
-			row.parenttype = "Design Master"
+			row.parenttype = doc.doctype
 			row.parentfield = "design_verification_checklist"
 			row.db_insert()
 
 
 @frappe.whitelist()
-def run_verification_now(design_master: str):
-	"""Manual re-run from desk (browser console or custom button)."""
-	doc = frappe.get_doc("Design Master", design_master)
+def run_verification_now(design_master: str, doctype: str | None = None):
+	"""Manual re-run from desk."""
+	dt = doctype or get_design_master_doctype()
+	if not dt:
+		frappe.throw("Design Master DocType not found on this site.")
+	if not frappe.db.exists(dt, design_master):
+		frappe.throw(f"Document {design_master} not found in {dt}.")
+
+	doc = frappe.get_doc(dt, design_master)
 	frappe.flags.in_design_verification = False
 	run_design_verification(doc, method="on_update")
 	return {
 		"verification_score": doc.get("verification_score"),
 		"verification_status": doc.get("verification_status"),
 		"ai_remarks": doc.get("ai_remarks"),
+		"doctype": dt,
 	}

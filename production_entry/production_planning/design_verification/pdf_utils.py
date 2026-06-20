@@ -69,13 +69,13 @@ def resolve_pdf_path(file_url: str) -> str | None:
 
 	# 3) Site path public/private
 	rel = clean.lstrip("/")
-	for prefix in ("", "public/"):
-		candidate = frappe.get_site_path(prefix, rel)
-		if os.path.isfile(candidate):
-			return candidate
+	site_path = frappe.get_site_path()
+	candidate = os.path.normpath(os.path.join(site_path, rel.replace("/", os.sep)))
+	if os.path.isfile(candidate):
+		return candidate
 
-	if rel.startswith("files/"):
-		for prefix in ("public", "private"):
+	for prefix in ("public", "private"):
+		if rel.startswith("files/"):
 			candidate = frappe.get_site_path(prefix, rel)
 			if os.path.isfile(candidate):
 				return candidate
@@ -204,8 +204,8 @@ def save_preview_to_design(doc, local_png_path: str, design_name: str) -> str | 
 		ret = save_file(
 			f"{frappe.scrub(design_name or 'design')}_preview.png",
 			content,
-			"Design Master",
-			doc.name or "New Design Master",
+			doc.doctype,
+			doc.name or f"New {doc.doctype}",
 			is_private=0,
 		)
 		return ret.file_url if ret else None

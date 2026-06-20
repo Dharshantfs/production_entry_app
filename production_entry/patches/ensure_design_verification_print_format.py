@@ -14,16 +14,22 @@ PRINT_HTML = """
 
 
 def execute():
-	if not frappe.db.exists("DocType", "Design Master"):
+	dt = None
+	for candidate in ("DESIGN MASTER", "Design Master", "Design master"):
+		if frappe.db.exists("DocType", candidate):
+			dt = candidate
+			break
+	if not dt:
 		return
 	name = "Design Verification Checklist"
 	if frappe.db.exists("Print Format", name):
+		frappe.db.set_value("Print Format", name, "doc_type", dt, update_modified=False)
 		return
 	doc = frappe.get_doc(
 		{
 			"doctype": "Print Format",
 			"name": name,
-			"doc_type": "Design Master",
+			"doc_type": dt,
 			"module": "Production Planning",
 			"print_format_type": "Jinja",
 			"standard": "No",

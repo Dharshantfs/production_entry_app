@@ -119,6 +119,11 @@ override_doctype_class = {
 # ---------------
 # Hook on document methods and events
 
+_DESIGN_MASTER_HOOKS = {
+    "before_save": "production_entry.production_planning.design_verification.design_master_hooks.run_design_verification",
+    "on_update": "production_entry.production_planning.design_verification.design_master_hooks.run_design_verification",
+}
+
 doc_events = {
     "Sales Order": {
         "on_submit": "production_entry.production_planning.scheduler_api.auto_create_planning_sheet",
@@ -155,10 +160,8 @@ doc_events = {
         "before_submit": "production_entry.production_planning.transfer_logistics.stock_entry_validate_logistics_scan",
         "on_submit": "production_entry.production_planning.transfer_logistics.stock_entry_on_submit",
     },
-    "Design Master": {
-        "before_save": "production_entry.production_planning.design_verification.design_master_hooks.run_design_verification",
-        "on_update": "production_entry.production_planning.design_verification.design_master_hooks.run_design_verification",
-    },
+    "Design Master": _DESIGN_MASTER_HOOKS,
+    "DESIGN MASTER": _DESIGN_MASTER_HOOKS,
 }
 
 # Scheduled Tasks

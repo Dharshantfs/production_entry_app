@@ -7,10 +7,15 @@ import io
 
 import frappe
 
+from production_entry.production_planning.design_verification.doctype_utils import get_design_master_doctype
+
 
 @frappe.whitelist()
-def download_design_checklist_xlsx(design_master: str):
-	doc = frappe.get_doc("Design Master", design_master)
+def download_design_checklist_xlsx(design_master: str, doctype: str | None = None):
+	dt = doctype or get_design_master_doctype()
+	if not dt:
+		frappe.throw("Design Master DocType not found on this site.")
+	doc = frappe.get_doc(dt, design_master)
 	try:
 		from openpyxl import Workbook
 		from openpyxl.styles import Font

@@ -15,11 +15,15 @@ def _add_field(docdict):
 
 
 def execute():
-	if not frappe.db.exists("DocType", "Design Master"):
+	dt = None
+	for candidate in ("DESIGN MASTER", "Design Master", "Design master"):
+		if frappe.db.exists("DocType", candidate):
+			dt = candidate
+			break
+	if not dt:
 		return
 
-	dt = "Design Master"
-	meta = frappe.get_meta("Design Master")
+	meta = frappe.get_meta(dt)
 	anchor = "design_image" if meta.has_field("design_image") else "design_name"
 	fields = [
 		{"label": "Bag Type", "fieldname": "bag_type", "fieldtype": "Select", "options": "Auto\nBox Bag\nD Cut", "insert_after": "design_name", "default": "Auto"},
