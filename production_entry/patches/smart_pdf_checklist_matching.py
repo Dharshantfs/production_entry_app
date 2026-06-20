@@ -87,6 +87,9 @@ def execute():
 	if frappe.db.exists("DocType", "Design Verification Checklist"):
 		frappe.reload_doc("Production Planning", "doctype", "design_verification_checklist")
 
+	if frappe.db.exists("DocType", "Design Verification Check Rule"):
+		frappe.reload_doc("Production Planning", "doctype", "design_verification_check_rule")
+
 	if frappe.db.exists("DocType", "Design Verification Settings"):
 		frappe.reload_doc("Production Planning", "doctype", "design_verification_settings")
 		_refresh_check_rules()

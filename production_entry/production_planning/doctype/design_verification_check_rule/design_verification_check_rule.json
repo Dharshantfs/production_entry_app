@@ -62,7 +62,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Check Method",
-   "options": "TextMatch\nDimensionRegex\nSpatialGap\nZoneEmpty\nZonePresent\nQRDetect\nShapeDetect\nCMYKPattern\nColorDetect\nPantonePattern\nSafeZone\nEqualSpacing\nProductCode"
+   "options": "TextMatch\nDimensionRegex\nDimensionMatch\nMmAnnotationPresent\nSpatialGap\nZoneEmpty\nZonePresent\nQRDetect\nShapeDetect\nCMYKPattern\nColorDetect\nPantonePattern\nSafeZone\nEqualSpacing\nProductCode"
   },
   {
    "fieldname": "rule_config",
