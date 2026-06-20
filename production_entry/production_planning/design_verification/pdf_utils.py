@@ -174,6 +174,15 @@ def analyze_pdf(file_url: str, render_dpi: int = 150, design_name: str = "", mm_
 				y1 = max(s["bbox"][3] for s in spans)
 				analysis.text_blocks.append(TextBlock(text, x0, y0, x1, y1, page_index))
 
+		for word in page.get_text("words") or []:
+			if len(word) < 5:
+				continue
+			text = (word[4] or "").strip()
+			if not text:
+				continue
+			x0, y0, x1, y1 = word[0], word[1], word[2], word[3]
+			analysis.text_blocks.append(TextBlock(text, x0, y0, x1, y1, page_index))
+
 	analysis.full_text = "\n".join(parts)
 	_parse_regex_dimensions(analysis.full_text, analysis)
 	_parse_label_dimensions(analysis.full_text, analysis)
@@ -202,6 +211,21 @@ def analyze_pdf(file_url: str, render_dpi: int = 150, design_name: str = "", mm_
 		pix.save(analysis.rendered_image_path)
 
 	doc.close()
+
+	# Re-scan after render: OCR fallback when PDF text layer is missing or sparse
+	if len(analysis.found_mm_values or []) < 8 and analysis.rendered_image_path:
+		from production_entry.production_planning.design_verification.ocr_fallback import (
+			ocr_text_from_image,
+		)
+
+		ocr_text = ocr_text_from_image(analysis.rendered_image_path)
+		if ocr_text:
+			analysis.full_text = (analysis.full_text or "") + "\n" + ocr_text
+			ctx = build_dimension_context(analysis, file_url, design_name, mm_tolerance)
+			analysis.found_mm_values = ctx.found_mm_values
+			analysis.dimension_context = ctx
+			analysis.bag_size_inches_str = ctx.bag_size_inches_str
+
 	return analysis
 
 

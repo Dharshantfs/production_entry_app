@@ -278,7 +278,7 @@ def verify_design(doc, file_url: str | None = None, image_field: str | None = No
 			"particulars": rule.particulars,
 			"sub_item": rule.sub_item,
 			"sub_particular": rule.sub_particular,
-			"measurement": outcome.get("measurement") or rule.expected_measurement or "",
+			"measurement": outcome.get("measurement") or "",
 			"checklist": outcome.get("checklist") or "0",
 			"result": outcome.get("result") or "Fail",
 			"remarks": outcome.get("remarks") or "",

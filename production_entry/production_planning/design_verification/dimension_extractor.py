@@ -13,6 +13,8 @@ from production_entry.production_planning.design_verification.constants import (
 )
 
 MM_TOKEN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*mm\b", re.I)
+MM_LOOSE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*mm", re.I)
+PLAIN_NUMBER_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
 INCH_BAG_RE = re.compile(
 	r"(\d+(?:\.\d+)?)\s*[\"']?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*[\"']?\s*[xX×]\s*(\d+(?:\.\d+)?)",
 	re.I,
@@ -47,15 +49,39 @@ def _find_nearest_in_set(found: set[float], candidates: tuple, tolerance: float)
 
 
 def _collect_mm_from_text(text: str, found: set[float], annotations: list, block=None):
-	for match in MM_TOKEN_RE.finditer(text or ""):
+	for pattern in (MM_TOKEN_RE, MM_LOOSE_RE):
+		for match in pattern.finditer(text or ""):
+			val = float(match.group(1))
+			found.add(val)
+			annotations.append({
+				"value": val,
+				"text": match.group(0),
+				"x": block.x0 if block else 0,
+				"y": block.y0 if block else 0,
+			})
+
+
+def _collect_plain_numbers_from_text(text: str, found: set[float], annotations: list, block=None):
+	for match in PLAIN_NUMBER_RE.finditer(text or ""):
 		val = float(match.group(1))
-		found.add(val)
-		annotations.append({
-			"value": val,
-			"text": match.group(0),
-			"x": block.x0 if block else 0,
-			"y": block.y0 if block else 0,
-		})
+		if 5 <= val <= 2000:
+			found.add(val)
+			annotations.append({
+				"value": val,
+				"text": match.group(0),
+				"x": block.x0 if block else 0,
+				"y": block.y0 if block else 0,
+			})
+
+
+def _sync_analysis_dims_to_found(analysis, found: set[float]) -> None:
+	for field in ("width", "height", "gusset", "top_folding"):
+		val = getattr(analysis, field, None)
+		if val not in (None, 0, 0.0):
+			found.add(float(val))
+			rounded = round(float(val))
+			if abs(float(val) - rounded) < 1.5:
+				found.add(float(rounded))
 
 
 def parse_inch_bag_size(*sources: str) -> tuple[float, float, float] | None:
@@ -82,8 +108,9 @@ def build_dimension_context(analysis, file_url: str = "", design_name: str = "",
 		_collect_mm_from_text(block.text, found, annotations, block)
 
 	_collect_mm_from_text(analysis.full_text or "", found, annotations)
+	_collect_plain_numbers_from_text(analysis.full_text or "", found, annotations)
 
-	# Plain numbers in dimension range from blocks (layout PDFs show "305" without mm suffix)
+	# Plain numbers from individual text blocks (layout PDFs show "305" without mm suffix)
 	for block in analysis.text_blocks or []:
 		text = (block.text or "").strip()
 		if re.fullmatch(r"\d+(?:\.\d+)?", text):
@@ -91,6 +118,8 @@ def build_dimension_context(analysis, file_url: str = "", design_name: str = "",
 			if 5 <= val <= 2000:
 				found.add(val)
 				annotations.append({"value": val, "text": text, "x": block.x0, "y": block.y0})
+		else:
+			_collect_plain_numbers_from_text(text, found, annotations, block)
 
 	ctx.found_mm_values = found
 	ctx.mm_annotations = annotations
@@ -140,6 +169,8 @@ def build_dimension_context(analysis, file_url: str = "", design_name: str = "",
 	if not analysis.gusset and ctx.expected_mm.get("gusset"):
 		analysis.gusset = ctx.expected_mm["gusset"]
 
+	_sync_analysis_dims_to_found(analysis, found)
+
 	analysis.found_mm_values = found
 	analysis.dimension_context = ctx
 	return ctx
@@ -174,12 +205,18 @@ def match_dimension_field(field: str, found: set[float], tolerance: float = 2.0)
 	return False, ""
 
 
-def match_dimension_config(config: dict, found: set[float], tolerance: float = 2.0) -> tuple[bool, str]:
+def match_dimension_config(
+	config: dict, found: set[float], tolerance: float = 2.0, analysis=None
+) -> tuple[bool, str]:
 	field = (config or {}).get("field")
 	if field == "top_folding":
 		ok, val = mm_value_present(found, list(TOP_FOLDING_CANDIDATES), tolerance)
 	elif field:
-		return match_dimension_field(field, found, tolerance)
+		ok, val = match_dimension_field(field, found, tolerance)
+		if not ok and analysis is not None:
+			dim_val = getattr(analysis, field, None)
+			if dim_val not in (None, 0, 0.0):
+				ok, val = match_dimension_field(field, {float(dim_val)}, tolerance + 3)
 	else:
 		expected = (config or {}).get("expected_mm")
 		if expected is not None:

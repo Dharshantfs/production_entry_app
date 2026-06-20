@@ -66,7 +66,7 @@ def run_rule(
 	found_mm = _found_mm(analysis)
 
 	if method == "DimensionMatch":
-		passed, measurement = match_dimension_config(config or {}, found_mm, tolerance)
+		passed, measurement = match_dimension_config(config or {}, found_mm, tolerance, analysis)
 		if passed:
 			remarks = f"Found {measurement} mm on layout"
 		else:

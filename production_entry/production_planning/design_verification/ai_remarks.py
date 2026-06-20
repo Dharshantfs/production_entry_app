@@ -54,6 +54,15 @@ def generate_ai_remarks(
 	if color_note:
 		parts.append(color_note)
 
+	if analysis is not None:
+		found_count = len(getattr(analysis, "found_mm_values", None) or [])
+		text_len = len(getattr(analysis, "full_text", None) or "")
+		if found_count < 8:
+			parts.append(
+				f"PDF text scan: {found_count} mm values from {text_len} chars of extracted text. "
+				"Layout dimensions use filename inch size + detected numbers."
+			)
+
 	failed = [
 		r.get("particulars") or r.get("sub_particular") or r.get("check_item")
 		for r in checklist_rows
