@@ -1,0 +1,122 @@
+{
+ "actions": [],
+ "creation": "2026-06-20 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "customer_field_source",
+  "column_break_1",
+  "approved_threshold",
+  "review_threshold",
+  "mm_tolerance",
+  "section_break_rules",
+  "check_rules",
+  "section_break_logo",
+  "logo_phrases",
+  "section_break_gov",
+  "mandatory_government_text"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "default": "Design Name",
+   "fieldname": "customer_field_source",
+   "fieldtype": "Select",
+   "label": "Customer Field Source",
+   "options": "Customer Link\nDesign Name"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "90",
+   "fieldname": "approved_threshold",
+   "fieldtype": "Int",
+   "label": "Approved Threshold (%)"
+  },
+  {
+   "default": "70",
+   "fieldname": "review_threshold",
+   "fieldtype": "Int",
+   "label": "Review Threshold (%)"
+  },
+  {
+   "default": "2",
+   "fieldname": "mm_tolerance",
+   "fieldtype": "Float",
+   "label": "MM Tolerance",
+   "precision": "1"
+  },
+  {
+   "fieldname": "section_break_rules",
+   "fieldtype": "Section Break",
+   "label": "Check Rules"
+  },
+  {
+   "fieldname": "check_rules",
+   "fieldtype": "Table",
+   "label": "Check Rules",
+   "options": "Design Verification Check Rule"
+  },
+  {
+   "fieldname": "section_break_logo",
+   "fieldtype": "Section Break",
+   "label": "Logo Phrases"
+  },
+  {
+   "fieldname": "logo_phrases",
+   "fieldtype": "Table",
+   "label": "Logo Phrases",
+   "options": "Design Verification Logo Phrase"
+  },
+  {
+   "fieldname": "section_break_gov",
+   "fieldtype": "Section Break",
+   "label": "Mandatory Government Text"
+  },
+  {
+   "fieldname": "mandatory_government_text",
+   "fieldtype": "Table",
+   "label": "Mandatory Government Text",
+   "options": "Design Verification Gov Text"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-06-20 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "Design Verification Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

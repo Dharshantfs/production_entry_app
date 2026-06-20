@@ -1,0 +1,91 @@
+{
+ "actions": [],
+ "creation": "2026-06-20 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sno",
+  "particulars",
+  "sub_item",
+  "sub_particular",
+  "measurement",
+  "checklist",
+  "result",
+  "remarks",
+  "check_method",
+  "is_group_header"
+ ],
+ "fields": [
+  {
+   "fieldname": "sno",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "S.No"
+  },
+  {
+   "fieldname": "particulars",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Particulars"
+  },
+  {
+   "fieldname": "sub_item",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Sub Item"
+  },
+  {
+   "fieldname": "sub_particular",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Sub Particular"
+  },
+  {
+   "fieldname": "measurement",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Measurement"
+  },
+  {
+   "fieldname": "checklist",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Checklist",
+   "options": "1\n0"
+  },
+  {
+   "fieldname": "result",
+   "fieldtype": "Select",
+   "label": "Result",
+   "options": "Pass\nFail\nManual Review"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  },
+  {
+   "fieldname": "check_method",
+   "fieldtype": "Data",
+   "label": "Check Method",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_group_header",
+   "fieldtype": "Check",
+   "label": "Is Group Header"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-20 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "Design Verification Checklist",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

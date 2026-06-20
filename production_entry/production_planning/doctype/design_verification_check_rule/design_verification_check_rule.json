@@ -1,0 +1,94 @@
+{
+ "actions": [],
+ "creation": "2026-06-20 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "bag_type",
+  "sno",
+  "particulars",
+  "sub_item",
+  "sub_particular",
+  "check_item",
+  "expected_measurement",
+  "check_method",
+  "rule_config",
+  "required_for_score",
+  "sort_order"
+ ],
+ "fields": [
+  {
+   "fieldname": "bag_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Bag Type",
+   "options": "Box Bag\nD Cut\nBoth"
+  },
+  {
+   "fieldname": "sno",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "S.No"
+  },
+  {
+   "fieldname": "particulars",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Particulars"
+  },
+  {
+   "fieldname": "sub_item",
+   "fieldtype": "Data",
+   "label": "Sub Item"
+  },
+  {
+   "fieldname": "sub_particular",
+   "fieldtype": "Data",
+   "label": "Sub Particular"
+  },
+  {
+   "fieldname": "check_item",
+   "fieldtype": "Data",
+   "label": "Check Item"
+  },
+  {
+   "fieldname": "expected_measurement",
+   "fieldtype": "Data",
+   "label": "Expected Measurement"
+  },
+  {
+   "fieldname": "check_method",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Check Method",
+   "options": "TextMatch\nDimensionRegex\nSpatialGap\nZoneEmpty\nZonePresent\nQRDetect\nShapeDetect\nCMYKPattern\nColorDetect\nPantonePattern\nSafeZone\nEqualSpacing\nProductCode"
+  },
+  {
+   "fieldname": "rule_config",
+   "fieldtype": "JSON",
+   "label": "Rule Config"
+  },
+  {
+   "default": "1",
+   "fieldname": "required_for_score",
+   "fieldtype": "Check",
+   "label": "Required For Score"
+  },
+  {
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "label": "Sort Order"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-20 12:00:00.000000",
+ "module": "Production Planning",
+ "name": "Design Verification Check Rule",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

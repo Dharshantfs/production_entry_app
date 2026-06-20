@@ -155,6 +155,9 @@ doc_events = {
         "before_submit": "production_entry.production_planning.transfer_logistics.stock_entry_validate_logistics_scan",
         "on_submit": "production_entry.production_planning.transfer_logistics.stock_entry_on_submit",
     },
+    "Design Master": {
+        "before_save": "production_entry.production_planning.design_verification.design_master_hooks.run_design_verification",
+    },
 }
 
 # Scheduled Tasks
