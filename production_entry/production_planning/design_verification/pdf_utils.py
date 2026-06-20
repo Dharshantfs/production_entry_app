@@ -45,14 +45,47 @@ class PDFAnalysis:
 
 
 def resolve_pdf_path(file_url: str) -> str | None:
+	file_url = (file_url or "").strip()
 	if not file_url:
 		return None
+
+	# 1) File doctype by exact URL
 	try:
-		file_doc = frappe.get_doc("File", {"file_url": file_url})
-		return file_doc.get_full_path()
+		file_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+		if file_name:
+			return frappe.get_doc("File", file_name).get_full_path()
 	except Exception:
-		path = frappe.get_site_path("public", file_url.lstrip("/"))
-		return path if os.path.isfile(path) else None
+		pass
+
+	# 2) Strip query string and retry
+	clean = file_url.split("?")[0]
+	if clean != file_url:
+		try:
+			file_name = frappe.db.get_value("File", {"file_url": clean}, "name")
+			if file_name:
+				return frappe.get_doc("File", file_name).get_full_path()
+		except Exception:
+			pass
+
+	# 3) Site path public/private
+	rel = clean.lstrip("/")
+	for prefix in ("", "public/"):
+		candidate = frappe.get_site_path(prefix, rel)
+		if os.path.isfile(candidate):
+			return candidate
+
+	if rel.startswith("files/"):
+		for prefix in ("public", "private"):
+			candidate = frappe.get_site_path(prefix, rel)
+			if os.path.isfile(candidate):
+				return candidate
+
+	return None
+
+
+def _parse_filename_dimensions(file_url: str, analysis: PDFAnalysis) -> None:
+	name = os.path.basename((file_url or "").split("?")[0])
+	_parse_regex_dimensions(name, analysis)
 
 
 def _points_to_mm(points: float) -> float:
@@ -141,6 +174,7 @@ def analyze_pdf(file_url: str, render_dpi: int = 150) -> PDFAnalysis:
 	analysis.full_text = "\n".join(parts)
 	_parse_regex_dimensions(analysis.full_text, analysis)
 	_parse_label_dimensions(analysis.full_text, analysis)
+	_parse_filename_dimensions(file_url, analysis)
 
 	from production_entry.production_planning.design_verification.constants import CMYK_RE, PANTONE_RE
 

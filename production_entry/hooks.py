@@ -157,6 +157,7 @@ doc_events = {
     },
     "Design Master": {
         "before_save": "production_entry.production_planning.design_verification.design_master_hooks.run_design_verification",
+        "on_update": "production_entry.production_planning.design_verification.design_master_hooks.run_design_verification",
     },
 }
 
