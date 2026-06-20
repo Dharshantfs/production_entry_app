@@ -67,10 +67,14 @@ def generate_ai_remarks(
 	if analysis is not None:
 		found_count = len(getattr(analysis, "found_mm_values", None) or [])
 		text_len = len(getattr(analysis, "full_text", None) or "")
-		if found_count < 8:
+		if getattr(analysis, "text_layer_missing", False):
 			parts.append(
-				f"PDF text scan: {found_count} mm values from {text_len} chars of extracted text. "
-				"Layout dimensions use filename inch size + detected numbers."
+				f"PDF has no extractable text layer (0 chars) — outlined artwork. "
+				f"Using bag size from filename ({found_count} mm values seeded for checklist matching)."
+			)
+		elif found_count < 8:
+			parts.append(
+				f"PDF text scan: {found_count} mm values from {text_len} chars of extracted text."
 			)
 
 	failed = [

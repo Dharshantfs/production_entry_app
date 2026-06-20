@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from production_entry.production_planning.design_verification.constants import CMYK_RE, PANTONE_RE
+from production_entry.production_planning.design_verification.constants import CMYK_RE
 
 # Compact CMYK e.g. C5M90Y100K24 or C5 M90 Y100 K24
 CMYK_COMPACT_RE = re.compile(r"C\s*(\d+)\s*M\s*(\d+)\s*Y\s*(\d+)\s*K\s*(\d+)", re.I)

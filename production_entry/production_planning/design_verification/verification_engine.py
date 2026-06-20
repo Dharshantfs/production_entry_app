@@ -21,7 +21,11 @@ from production_entry.production_planning.design_verification.constants import (
 	get_all_default_rules,
 )
 from production_entry.production_planning.design_verification import image_utils
-from production_entry.production_planning.design_verification.pdf_utils import analyze_pdf, save_preview_to_design
+from production_entry.production_planning.design_verification.pdf_utils import (
+	analyze_pdf,
+	resolve_original_filename,
+	save_preview_to_design,
+)
 from production_entry.production_planning.design_verification.rule_runner import run_rule
 from production_entry.production_planning.design_verification.spatial_engine import build_spatial_context
 
@@ -45,13 +49,18 @@ def _get_settings():
 		if frappe.db.exists("DocType", "Design Verification Settings"):
 			settings = frappe.get_single("Design Verification Settings")
 			if settings.enabled:
-				if settings.check_rules:
+				if settings.check_rules and _settings_have_smart_rules(settings):
 					return settings
 				return _build_settings_from_defaults(settings)
 			# disabled — still allow run with defaults if explicitly triggered
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Design Verification Settings Load")
 	return _build_settings_from_defaults(None)
+
+
+def _settings_have_smart_rules(settings) -> bool:
+	methods = {getattr(r, "check_method", "") for r in (settings.check_rules or [])}
+	return "DimensionMatch" in methods or "MmAnnotationPresent" in methods
 
 
 def _build_settings_from_defaults(existing):
@@ -208,9 +217,11 @@ def verify_design(doc, file_url: str | None = None, image_field: str | None = No
 		return
 
 	design_name = getattr(doc, "design_name", None) or doc.name or ""
+	filename_hint = resolve_original_filename(file_url) or _filename_from_url(file_url)
 	analysis = analyze_pdf(
 		file_url,
 		design_name=design_name,
+		filename_hint=filename_hint,
 		mm_tolerance=float(settings.mm_tolerance or 2.0),
 	)
 	if not analysis.file_path:
@@ -238,7 +249,7 @@ def verify_design(doc, file_url: str | None = None, image_field: str | None = No
 	doc.height = analysis.height or 0
 	doc.gusset = analysis.gusset or 0
 	doc.top_folding = analysis.top_folding or 0
-	doc.file_name = _filename_from_url(file_url)
+	doc.file_name = filename_hint or _filename_from_url(file_url)
 	if doc.meta.has_field("bag_size_inches") and analysis.bag_size_inches_str:
 		doc.bag_size_inches = analysis.bag_size_inches_str
 	if doc.meta.has_field("file_type") and not doc.get("file_type"):

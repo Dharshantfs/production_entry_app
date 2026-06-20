@@ -45,6 +45,41 @@ class PDFAnalysis:
 	found_mm_values: set[float] = field(default_factory=set)
 	dimension_context: object | None = None
 	bag_size_inches_str: str = ""
+	text_layer_missing: bool = False
+
+
+def resolve_original_filename(file_url: str) -> str:
+	"""Original upload name from File doctype (may differ from file_url basename)."""
+	file_url = (file_url or "").strip()
+	if not file_url:
+		return ""
+	clean = file_url.split("?")[0]
+	try:
+		for url in (file_url, clean):
+			name = frappe.db.get_value("File", {"file_url": url}, "file_name")
+			if name:
+				return name
+	except Exception:
+		pass
+	return os.path.basename(clean)
+
+
+def _preview_image_path(pdf_path: str) -> str:
+	"""Write preview PNG to a writable temp path (Frappe Cloud private files may be read-only)."""
+	import tempfile
+
+	base = os.path.basename(pdf_path or "design")
+	safe = re.sub(r"[^\w.-]+", "_", base)[:80]
+	try:
+		site_tmp = frappe.get_site_path("private", "files")
+		os.makedirs(site_tmp, exist_ok=True)
+		fd, path = tempfile.mkstemp(suffix=".png", prefix=f"dv_{safe}_", dir=site_tmp)
+		os.close(fd)
+		return path
+	except Exception:
+		fd, path = tempfile.mkstemp(suffix=".png", prefix="dv_")
+		os.close(fd)
+		return path
 
 
 def resolve_pdf_path(file_url: str) -> str | None:
@@ -136,7 +171,13 @@ def _parse_regex_dimensions(text: str, analysis: PDFAnalysis) -> None:
 			break
 
 
-def analyze_pdf(file_url: str, render_dpi: int = 150, design_name: str = "", mm_tolerance: float = 2.0) -> PDFAnalysis:
+def analyze_pdf(
+	file_url: str,
+	render_dpi: int = 150,
+	design_name: str = "",
+	filename_hint: str = "",
+	mm_tolerance: float = 2.0,
+) -> PDFAnalysis:
 	analysis = PDFAnalysis()
 	path = resolve_pdf_path(file_url)
 	if not path or not os.path.isfile(path):
@@ -186,7 +227,7 @@ def analyze_pdf(file_url: str, render_dpi: int = 150, design_name: str = "", mm_
 	analysis.full_text = "\n".join(parts)
 	_parse_regex_dimensions(analysis.full_text, analysis)
 	_parse_label_dimensions(analysis.full_text, analysis)
-	_parse_filename_dimensions(file_url, analysis)
+	_parse_filename_dimensions(filename_hint or file_url, analysis)
 
 	from production_entry.production_planning.design_verification.constants import CMYK_RE, PANTONE_RE
 
@@ -199,15 +240,17 @@ def analyze_pdf(file_url: str, render_dpi: int = 150, design_name: str = "", mm_
 		build_dimension_context,
 	)
 
-	ctx = build_dimension_context(analysis, file_url, design_name, mm_tolerance)
+	name_sources = [filename_hint, resolve_original_filename(file_url), file_url, design_name]
+	ctx = build_dimension_context(analysis, *name_sources, tolerance=mm_tolerance)
 	analysis.found_mm_values = ctx.found_mm_values
 	analysis.dimension_context = ctx
 	analysis.bag_size_inches_str = ctx.bag_size_inches_str
+	analysis.text_layer_missing = not (analysis.full_text or "").strip()
 
 	if doc.page_count:
 		page = doc[0]
 		pix = page.get_pixmap(dpi=render_dpi, alpha=False)
-		analysis.rendered_image_path = path + ".preview.png"
+		analysis.rendered_image_path = _preview_image_path(path)
 		pix.save(analysis.rendered_image_path)
 
 	doc.close()
@@ -221,7 +264,7 @@ def analyze_pdf(file_url: str, render_dpi: int = 150, design_name: str = "", mm_
 		ocr_text = ocr_text_from_image(analysis.rendered_image_path)
 		if ocr_text:
 			analysis.full_text = (analysis.full_text or "") + "\n" + ocr_text
-			ctx = build_dimension_context(analysis, file_url, design_name, mm_tolerance)
+			ctx = build_dimension_context(analysis, *name_sources, tolerance=mm_tolerance)
 			analysis.found_mm_values = ctx.found_mm_values
 			analysis.dimension_context = ctx
 			analysis.bag_size_inches_str = ctx.bag_size_inches_str

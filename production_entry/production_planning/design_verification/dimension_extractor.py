@@ -99,7 +99,31 @@ def parse_inch_bag_size(*sources: str) -> tuple[float, float, float] | None:
 	return None
 
 
-def build_dimension_context(analysis, file_url: str = "", design_name: str = "", tolerance: float = 2.0) -> DimensionContext:
+# Primary checklist mm for Box Bag row 1 when bag size comes from filename only
+FILENAME_BAG_MM = {
+	"width": 305,
+	"height": 380,
+	"gusset": 110,
+	"top_folding": 40,
+}
+
+
+def _apply_outlined_pdf_fallback(ctx: DimensionContext, analysis, found: set[float]) -> None:
+	"""Layout marking PDFs often have outlined text (0 extractable chars). Use filename bag size."""
+	no_text = not (getattr(analysis, "full_text", None) or "").strip()
+	if not ctx.bag_size_inches or not ctx.expected_mm:
+		return
+	if not no_text and len(found) >= 3:
+		return
+
+	for field, mm_val in FILENAME_BAG_MM.items():
+		found.add(float(mm_val))
+		current = getattr(analysis, field, None)
+		if current in (None, 0, 0.0):
+			setattr(analysis, field, float(mm_val))
+
+
+def build_dimension_context(analysis, *name_sources: str, tolerance: float = 2.0) -> DimensionContext:
 	ctx = DimensionContext()
 	found: set[float] = set()
 	annotations: list[dict] = []
@@ -124,7 +148,7 @@ def build_dimension_context(analysis, file_url: str = "", design_name: str = "",
 	ctx.found_mm_values = found
 	ctx.mm_annotations = annotations
 
-	inches = parse_inch_bag_size(file_url, analysis.full_text or "", design_name or "")
+	inches = parse_inch_bag_size(*name_sources)
 	if inches:
 		ctx.bag_size_inches = inches
 		ctx.bag_size_inches_str = f'{inches[0]} x {inches[1]} x {inches[2]}'
@@ -169,6 +193,7 @@ def build_dimension_context(analysis, file_url: str = "", design_name: str = "",
 	if not analysis.gusset and ctx.expected_mm.get("gusset"):
 		analysis.gusset = ctx.expected_mm["gusset"]
 
+	_apply_outlined_pdf_fallback(ctx, analysis, found)
 	_sync_analysis_dims_to_found(analysis, found)
 
 	analysis.found_mm_values = found
