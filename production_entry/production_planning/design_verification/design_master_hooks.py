@@ -11,6 +11,34 @@ from production_entry.production_planning.design_verification.doctype_utils impo
 )
 
 
+def _mark_manual_checklist_edits(doc) -> None:
+	if doc.get("__islocal") or not doc.name:
+		return
+	if not doc.meta.has_field("design_verification_checklist"):
+		return
+	try:
+		old = frappe.get_doc(doc.doctype, doc.name)
+	except Exception:
+		return
+
+	old_map = {}
+	for row in old.get("design_verification_checklist") or []:
+		key = (row.particulars or "", row.sub_item or "", row.sub_particular or "")
+		old_map[key] = row
+
+	for row in doc.get("design_verification_checklist") or []:
+		key = (row.particulars or "", row.sub_item or "", row.sub_particular or "")
+		old_row = old_map.get(key)
+		if not old_row:
+			continue
+		if (
+			(row.checklist or "") != (old_row.checklist or "")
+			or (row.measurement or "") != (old_row.measurement or "")
+			or (row.remarks or "") != (old_row.remarks or "")
+		):
+			row.manually_edited = 1
+
+
 def run_design_verification(doc, method=None):
 	"""Run PDF verification on Design Master save/update."""
 	if getattr(frappe.flags, "in_design_verification", False):
@@ -23,20 +51,29 @@ def run_design_verification(doc, method=None):
 	if not image_field:
 		return
 
-	if not _should_run(doc, image_field):
-		return
-
 	file_url = getattr(doc, image_field, None)
 	if not file_url or not _is_pdf_url(file_url):
 		return
 
 	try:
 		frappe.flags.in_design_verification = True
+		_mark_manual_checklist_edits(doc)
 		from production_entry.production_planning.design_verification.verification_engine import (
+			recalculate_score_from_checklist,
 			verify_design,
 		)
 
-		verify_design(doc, file_url=file_url, image_field=image_field)
+		pdf_changed = doc.has_value_changed(image_field)
+		has_checklist = bool(doc.get("design_verification_checklist"))
+		has_manual = _has_manual_edits(doc)
+		force = bool(getattr(frappe.flags, "force_design_verification", False))
+
+		if pdf_changed or force or not has_checklist:
+			verify_design(doc, file_url=file_url, image_field=image_field, replace_checklist=True)
+		elif has_manual or has_checklist:
+			recalculate_score_from_checklist(doc, manual_override=True)
+		elif _should_run(doc, image_field):
+			verify_design(doc, file_url=file_url, image_field=image_field, replace_checklist=True)
 
 		if method == "on_update" and doc.name and not doc.get("__islocal"):
 			_persist_verification(doc)
@@ -53,6 +90,13 @@ def run_design_verification(doc, method=None):
 			_persist_verification(doc)
 	finally:
 		frappe.flags.in_design_verification = False
+
+
+def _has_manual_edits(doc) -> bool:
+	for row in doc.get("design_verification_checklist") or []:
+		if getattr(row, "manually_edited", 0):
+			return True
+	return False
 
 
 def _get_image_field(doc):
@@ -91,7 +135,7 @@ def _should_run(doc, image_field: str) -> bool:
 def _persist_verification(doc):
 	fields = {}
 	for fn in (
-		"width", "height", "gusset", "top_folding", "file_name", "file_type", "cdr_version",
+		"width", "height", "gusset", "top_folding", "bag_size_inches", "file_name", "file_type", "cdr_version",
 		"pdf_page_preview", "dominant_colors", "extracted_pdf_text", "verification_score",
 		"verification_status", "ai_remarks", "checklist_view_html", "last_verified_on",
 		"checked_by_name", "checked_by_date",
@@ -112,8 +156,8 @@ def _persist_verification(doc):
 
 
 @frappe.whitelist()
-def run_verification_now(design_master: str, doctype: str | None = None):
-	"""Manual re-run from desk."""
+def run_verification_now(design_master: str, doctype: str | None = None, force: int | str = 0):
+	"""Manual re-run from desk. Pass force=1 to replace checklist even if manually edited."""
 	dt = doctype or get_design_master_doctype()
 	if not dt:
 		frappe.throw("Design Master DocType not found on this site.")
@@ -122,7 +166,9 @@ def run_verification_now(design_master: str, doctype: str | None = None):
 
 	doc = frappe.get_doc(dt, design_master)
 	frappe.flags.in_design_verification = False
+	frappe.flags.force_design_verification = bool(int(force or 0))
 	run_design_verification(doc, method="on_update")
+	frappe.flags.force_design_verification = False
 	return {
 		"verification_score": doc.get("verification_score"),
 		"verification_status": doc.get("verification_status"),

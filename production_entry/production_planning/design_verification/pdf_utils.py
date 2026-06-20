@@ -42,6 +42,9 @@ class PDFAnalysis:
 	rendered_image_path: str | None = None
 	cmyk_codes: list[str] = field(default_factory=list)
 	pantone_hits: list[str] = field(default_factory=list)
+	found_mm_values: set[float] = field(default_factory=set)
+	dimension_context: object | None = None
+	bag_size_inches_str: str = ""
 
 
 def resolve_pdf_path(file_url: str) -> str | None:
@@ -133,7 +136,7 @@ def _parse_regex_dimensions(text: str, analysis: PDFAnalysis) -> None:
 			break
 
 
-def analyze_pdf(file_url: str, render_dpi: int = 150) -> PDFAnalysis:
+def analyze_pdf(file_url: str, render_dpi: int = 150, design_name: str = "", mm_tolerance: float = 2.0) -> PDFAnalysis:
 	analysis = PDFAnalysis()
 	path = resolve_pdf_path(file_url)
 	if not path or not os.path.isfile(path):
@@ -182,6 +185,15 @@ def analyze_pdf(file_url: str, render_dpi: int = 150) -> PDFAnalysis:
 		analysis.cmyk_codes.append(match.group(0))
 	for match in PANTONE_RE.finditer(analysis.full_text):
 		analysis.pantone_hits.append(match.group(0))
+
+	from production_entry.production_planning.design_verification.dimension_extractor import (
+		build_dimension_context,
+	)
+
+	ctx = build_dimension_context(analysis, file_url, design_name, mm_tolerance)
+	analysis.found_mm_values = ctx.found_mm_values
+	analysis.dimension_context = ctx
+	analysis.bag_size_inches_str = ctx.bag_size_inches_str
 
 	if doc.page_count:
 		page = doc[0]

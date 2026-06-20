@@ -10,6 +10,7 @@
   "approved_threshold",
   "review_threshold",
   "mm_tolerance",
+  "color_detection_mode",
   "section_break_rules",
   "check_rules",
   "section_break_logo",
@@ -53,6 +54,13 @@
    "fieldtype": "Float",
    "label": "MM Tolerance",
    "precision": "1"
+  },
+  {
+   "default": "Hybrid",
+   "fieldname": "color_detection_mode",
+   "fieldtype": "Select",
+   "label": "Color Detection Mode",
+   "options": "Hybrid\nText Only\nManual"
   },
   {
    "fieldname": "section_break_rules",
