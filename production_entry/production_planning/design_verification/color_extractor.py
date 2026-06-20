@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 from production_entry.production_planning.design_verification.constants import CMYK_RE, PANTONE_RE
 
+# Compact CMYK e.g. C5M90Y100K24 or C5 M90 Y100 K24
+CMYK_COMPACT_RE = re.compile(r"C\s*(\d+)\s*M\s*(\d+)\s*Y\s*(\d+)\s*K\s*(\d+)", re.I)
 CMYK_NAMED_RE = re.compile(
 	r"(?P<name>[A-Za-z][A-Za-z ]{2,30}?)\s+(?P<cmyk>C\s*\d+\s+M\s*\d+\s+Y\s*\d+\s+K\s*\d+)",
 	re.I,
@@ -38,28 +40,33 @@ def extract_colors_from_text(full_text: str) -> ColorExtraction:
 		if not any(e.get("cmyk") == code for e in out.cmyk_entries):
 			out.cmyk_entries.append({"name": "", "cmyk": code})
 
+	for match in CMYK_COMPACT_RE.finditer(text):
+		c, m, y, k = match.groups()
+		code = f"C{c} M{m} Y{y} K{k}"
+		if not any(e.get("cmyk") == code for e in out.cmyk_entries):
+			out.cmyk_entries.append({"name": "", "cmyk": code})
+
 	for match in PANTONE_CODE_RE.finditer(text):
 		code = (match.group(1) or match.group(2) or "").strip()
-		if code:
+		if code and code.isdigit():
 			out.pantone_entries.append(f"PANTONE {code}")
-
-	for match in PANTONE_RE.finditer(text):
-		if match.group(0) not in out.pantone_entries:
-			out.pantone_entries.append(match.group(0))
 
 	return out
 
 
 def apply_image_fallback(extraction: ColorExtraction, hex_colors: list[str], mode: str = "Hybrid") -> ColorExtraction:
 	extraction.dominant_hex = hex_colors or []
-	if mode == "Manual":
+	if mode in ("Manual", "Text Only"):
 		return extraction
-	if extraction.cmyk_entries or extraction.pantone_entries:
+	if extraction.cmyk_entries:
 		return extraction
-	if mode in ("Hybrid", "Text Only") and hex_colors:
+	if mode == "Hybrid" and hex_colors:
 		for hx in hex_colors[:5]:
-			extraction.cmyk_entries.append({"name": "Detected color", "cmyk": hx})
-		extraction.mode_note = "CMYK/Pantone not in PDF text — dominant colors from image; confirm manually."
+			extraction.cmyk_entries.append({"name": "Detected color (hex)", "cmyk": hx})
+		extraction.mode_note = (
+			"CMYK not found in PDF text — dominant print colors from page image (hex). "
+			"Confirm Pantone/CMYK codes manually in checklist rows 27–28."
+		)
 	return extraction
 
 

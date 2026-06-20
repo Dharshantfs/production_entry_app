@@ -38,12 +38,23 @@ def detect_dominant_colors(image_path: str, count: int = 5) -> list[str]:
 		from PIL import Image
 
 		img = Image.open(image_path).convert("RGB")
-		img = img.resize((120, 120))
+		img = img.resize((200, 200))
 		pixels = list(img.getdata())
-		# quantize to reduce noise
-		quantized = [(r // 16 * 16, g // 16 * 16, b // 16 * 16) for r, g, b in pixels]
-		common = Counter(quantized).most_common(count)
-		return ["#%02x%02x%02x" % rgb for rgb, _ in common]
+		quantized = []
+		for r, g, b in pixels:
+			# Skip near-white background / paper
+			if r > 240 and g > 240 and b > 240:
+				continue
+			quantized.append((r // 16 * 16, g // 16 * 16, b // 16 * 16))
+		common = Counter(quantized).most_common(count * 3)
+		out = []
+		for rgb, _ in common:
+			hx = "#%02x%02x%02x" % rgb
+			if hx not in out:
+				out.append(hx)
+			if len(out) >= count:
+				break
+		return out
 	except Exception:
 		return []
 

@@ -328,6 +328,7 @@ def verify_design(doc, file_url: str | None = None, image_field: str | None = No
 			analysis=analysis,
 			color_mode=color_mode,
 			color_note=color_extraction.mode_note,
+			color_extraction=color_extraction,
 		)
 	if doc.meta.has_field("checklist_view_html"):
 		doc.checklist_view_html = render_checklist_html(doc)

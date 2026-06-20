@@ -13,6 +13,7 @@ def generate_ai_remarks(
 	analysis=None,
 	color_mode: str = "Hybrid",
 	color_note: str = "",
+	color_extraction=None,
 	manual_override: bool = False,
 ) -> str:
 	design = getattr(doc, "design_name", None) or doc.name or ""
@@ -53,6 +54,15 @@ def generate_ai_remarks(
 		parts.append(f"Color detection: {color_mode}")
 	if color_note:
 		parts.append(color_note)
+	elif color_extraction is not None:
+		cmyk_n = len(getattr(color_extraction, "cmyk_entries", None) or [])
+		pms_n = len(getattr(color_extraction, "pantone_entries", None) or [])
+		if cmyk_n or pms_n:
+			parts.append(f"Colors found: {cmyk_n} CMYK slot(s), {pms_n} Pantone ref(s) from PDF text/image.")
+		elif color_mode == "Hybrid":
+			parts.append(
+				"No CMYK/Pantone in PDF text — Hybrid mode will use page image hex colors after re-verify."
+			)
 
 	if analysis is not None:
 		found_count = len(getattr(analysis, "found_mm_values", None) or [])
