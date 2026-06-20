@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """Smart PDF checklist matching: show editable checklist, bag_size_inches, unhide grid."""
 
+import json
+
 import frappe
+
+from production_entry.production_planning.design_verification.constants import get_all_default_rules
 
 
 def _add_field(docdict):
@@ -25,6 +29,33 @@ def _update_field(dt, fieldname, updates):
 		doc.save(ignore_permissions=True)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), f"smart_pdf_update_{fieldname}")
+
+
+def _refresh_check_rules():
+	if not frappe.db.exists("DocType", "Design Verification Settings"):
+		return
+	settings = frappe.get_single("Design Verification Settings")
+	settings.set("check_rules", [])
+	for rule in get_all_default_rules():
+		settings.append(
+			"check_rules",
+			{
+				"bag_type": rule["bag_type"],
+				"sno": rule["sno"],
+				"particulars": rule["particulars"],
+				"sub_item": rule["sub_item"],
+				"sub_particular": rule["sub_particular"],
+				"check_item": rule["check_item"],
+				"expected_measurement": rule["expected_measurement"],
+				"check_method": rule["check_method"],
+				"rule_config": json.dumps(rule["rule_config"]) if rule["rule_config"] else "{}",
+				"required_for_score": rule["required_for_score"],
+				"sort_order": rule["sort_order"],
+			},
+		)
+	if not getattr(settings, "color_detection_mode", None):
+		settings.color_detection_mode = "Hybrid"
+	settings.save(ignore_permissions=True)
 
 
 def execute():
@@ -58,3 +89,4 @@ def execute():
 
 	if frappe.db.exists("DocType", "Design Verification Settings"):
 		frappe.reload_doc("Production Planning", "doctype", "design_verification_settings")
+		_refresh_check_rules()
