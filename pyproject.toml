@@ -11,7 +11,14 @@ authors = [
 description = "Production Planning and Queuing System for Manufacturing Units"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "pymupdf>=1.24.0",
+  "Pillow>=10.0.0",
+  "opencv-python-headless>=4.8.0",
+  "openpyxl>=3.1.0",
+  "pytesseract>=0.3.10",
+  "rapidocr-onnxruntime>=1.3.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/Dharshantfs/production_entry"
