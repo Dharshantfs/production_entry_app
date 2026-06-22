@@ -2880,6 +2880,83 @@ class ShaftProductionRun(Document):
 			)
 		return sorted({_cstr(x).strip() for x in (names or []) if _cstr(x).strip()})
 
+	def _filter_shortages_by_wo_transfer_remaining(
+		self, wo_doc, shortages: list[tuple[str, str, float, float, float]]
+	) -> list[tuple[str, str, float, float, float]]:
+		"""Drop/cap RM shortages when Work Order required_items already show full transfer."""
+		if not wo_doc or not shortages:
+			return []
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		out = []
+		for item_code, wh, req, avl, short_qty in shortages:
+			ic = _cstr(item_code).strip()
+			if not ic:
+				continue
+			still = _spr_wo_rm_transfer_remaining(wo_doc, ic)
+			tol = _spr_rm_wip_shortage_tolerance(flt(short_qty))
+			if still <= tol:
+				continue
+			capped = min(_spr_round_rm_stock_qty(flt(short_qty)), _spr_round_rm_stock_qty(still))
+			if capped > tol:
+				out.append((ic, wh, flt(req), flt(avl), capped))
+		return out
+
+	def _filter_shortage_events_by_wo_transfer(self, shortage_events) -> list:
+		"""Remove shortage lines that WO already transferred — prevents duplicate MTFM STE."""
+		filtered = []
+		for event in shortage_events or []:
+			wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
+			shortages = self._filter_shortages_by_wo_transfer_remaining(
+				wo_doc, event.get("shortages") or []
+			)
+			if not shortages:
+				continue
+			filtered.append(
+				{
+					"wo_id": _cstr(event.get("wo_id")),
+					"wo_doc": wo_doc,
+					"chunk_total_qty": flt(event.get("chunk_total_qty")),
+					"shortages": shortages,
+				}
+			)
+		return filtered
+
+	def _throw_wip_stock_wo_transfer_mismatch(self, wo_doc, original_exc=None):
+		"""WO shows RM transferred but WIP bin cannot satisfy Manufacture — do not create more MTFM."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		wo_id = _cstr(getattr(wo_doc, "name", None))
+		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+		prec = _spr_rm_stock_qty_precision()
+		lines = []
+		for req in getattr(wo_doc, "required_items", None) or []:
+			ic = _cstr(getattr(req, "item_code", None)).strip()
+			if not ic:
+				continue
+			transferred = flt(getattr(req, "transferred_qty", 0))
+			required = flt(getattr(req, "required_qty", 0))
+			wip_qty = flt(
+				frappe.db.get_value("Bin", {"item_code": ic, "warehouse": wip_wh}, "actual_qty") or 0
+			)
+			lines.append(
+				_("{0}: WO transferred {1} / required {2} Kg; WIP bin {3} Kg").format(
+					ic, flt(transferred, prec), flt(required, prec), flt(wip_qty, prec)
+				)
+			)
+		err_tail = ""
+		if original_exc:
+			err_tail = _("\n\nERPNext error:\n{0}").format(_cstr(original_exc))
+		frappe.throw(
+			_(
+				"Work Order {0} already shows raw materials transferred, but Work In Progress "
+				"warehouse does not have enough stock to complete Manufacture.\n\n"
+				"{1}\n\n"
+				"Do not submit another Material Transfer for Manufacture for this WO. "
+				"Cancel duplicate MTFM entries if any, then ask admin to reconcile WIP stock "
+				"(or adjust WO transferred qty after cancelling wrong STEs)."
+			).format(wo_id, "\n".join(lines[:15]), err_tail),
+			title=_("WIP stock mismatch"),
+		)
+
 	def _rm_shortages_for_se(self, se, wo_doc=None) -> list[tuple[str, str, float, float, float]]:
 		"""Return RM shortages as (item_code, s_warehouse, required, available, shortage)."""
 		out = []
@@ -2901,6 +2978,8 @@ class ShaftProductionRun(Document):
 				# MTFM already submitted — WIP Bin may differ from BOM preview by fractions of a gram.
 				continue
 			out.append((_cstr(d.item_code), wh, required, available, shortage))
+		if wo_doc:
+			return self._filter_shortages_by_wo_transfer_remaining(wo_doc, out)
 		return out
 
 	def _best_available_batch_for_rm(self, item_code: str, warehouse: str, required_qty: float) -> str:
@@ -4190,6 +4269,9 @@ class ShaftProductionRun(Document):
 		"""Create one combined transfer for all shortages, then raise actionable message."""
 		if not shortage_events:
 			return
+		shortage_events = self._filter_shortage_events_by_wo_transfer(shortage_events)
+		if not shortage_events:
+			return
 		consolidated = self._consolidated_shortage_lines(shortage_events)
 
 		transfer_name = ""
@@ -5313,6 +5395,9 @@ class ShaftProductionRun(Document):
 					shortages = self._rm_shortages_for_se(se, wo_doc)
 					if not shortages:
 						shortages = self._rm_shortages_from_exception(e)
+						shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
+					if not shortages:
+						self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
 					if shortages:
 						# Build one combined shortage response for all WO chunks in this submit attempt.
 						submit_shortage_events = [
