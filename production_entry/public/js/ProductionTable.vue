@@ -1655,8 +1655,9 @@ const autoMergeSuggestions = computed(() => {
 });
 
 /**
- * Merged board rows often point at the same Shaft Production Run; each row then carries the
- * full SPR produced kg. Sum once per distinct spr_name instead of multiplying by merge width.
+ * Merged board rows often point at the same Shaft Production Run; each row may carry the
+ * full SPR produced kg OR per-item-code WO/SPR weights (e.g. 29" + 2" on one SPR).
+ * When weights differ under the same SPR, sum them; when identical duplicates, count once.
  */
 function dedupeMergedActualProductionKg(items) {
   if (!items || !items.length) return 0;
@@ -1666,13 +1667,24 @@ function dedupeMergedActualProductionKg(items) {
     const w = parseFloat(it.actual_production_weight_kgs) || 0;
     const spr = String(it.spr_name || "").trim();
     if (spr) {
-      bySpr.set(spr, Math.max(bySpr.get(spr) || 0, w));
+      if (!bySpr.has(spr)) {
+        bySpr.set(spr, []);
+      }
+      bySpr.get(spr).push(w);
     } else {
       noSprSum += w;
     }
   }
   let total = noSprSum;
-  for (const v of bySpr.values()) total += v;
+  for (const weights of bySpr.values()) {
+    const rounded = weights.map((w) => Math.round(w * 100) / 100);
+    const uniq = [...new Set(rounded.filter((w) => w > 0))];
+    if (uniq.length <= 1) {
+      total += uniq[0] || 0;
+    } else {
+      total += rounded.reduce((s, w) => s + w, 0);
+    }
+  }
   return total;
 }
 

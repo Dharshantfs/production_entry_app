@@ -21353,6 +21353,8 @@ def _get_color_chart_data_impl(
 
     # Fetch SPR production via spr_name field on Planning Table (board rows)
     spr_psi_achieved_weight_map = {}  # Map PSI to SPR achieved weight
+    spr_item_kg_by_code = {}  # spr_name -> {item_code: net_weight sum}
+    psi_item_code_map = {}
     try:
         if frappe.db.has_column("Planning Table", "spr_name") and frappe.db.exists("DocType", "Shaft Production Run"):
             spr_cols_pt = frappe.db.get_table_columns("Shaft Production Run") or []
@@ -21380,7 +21382,7 @@ def _get_color_chart_data_impl(
                 fmt_psi = ",".join(["%s"] * len(sheet_names))
                 psi_spr_rows = frappe.db.sql(
                     f"""
-                    SELECT name AS psi_name, spr_name
+                    SELECT name AS psi_name, spr_name, item_code
                     FROM `tabPlanning Table`
                     WHERE parent IN ({fmt_psi})
                       AND spr_name IS NOT NULL
@@ -21397,8 +21399,29 @@ def _get_color_chart_data_impl(
                 spr_ids_row = _expand_spr_name_tokens(pr.get("spr_name"))
                 if pname and spr_ids_row:
                     psi_to_spr_ids[pname] = spr_ids_row
+                    psi_item_code_map[pname] = str(pr.get("item_code") or "").strip()
                     for sid in spr_ids_row:
                         all_spr_ids.add(sid)
+
+            if all_spr_ids and frappe.db.exists("DocType", "Shaft Production Run Item"):
+                spi_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
+                if "item_code" in spi_cols and "net_weight" in spi_cols:
+                    ids_list = list(all_spr_ids)
+                    sf_spi = ",".join(["%s"] * len(ids_list))
+                    for spi_row in frappe.db.sql(
+                        f"""
+                        SELECT parent, item_code, SUM(IFNULL(net_weight, 0)) AS kgs
+                        FROM `tabShaft Production Run Item`
+                        WHERE parent IN ({sf_spi})
+                        GROUP BY parent, item_code
+                        """,
+                        tuple(ids_list),
+                        as_dict=True,
+                    ):
+                        sid = str(spi_row.get("parent") or "").strip()
+                        ic = str(spi_row.get("item_code") or "").strip()
+                        if sid and ic:
+                            spr_item_kg_by_code.setdefault(sid, {})[ic] = flt(spi_row.get("kgs"))
 
             spr_metrics = {}
             if all_spr_ids:
@@ -21423,7 +21446,14 @@ def _get_color_chart_data_impl(
                 total_eff = 0.0
                 total_prod = 0.0
                 spr_with_prod = 0
+                item_code = psi_item_code_map.get(psi_name, "")
                 for sid in spr_ids:
+                    item_kg = flt((spr_item_kg_by_code.get(sid) or {}).get(item_code, 0)) if item_code else 0
+                    if item_kg > 0:
+                        total_eff += item_kg
+                        total_prod += item_kg
+                        spr_with_prod += 1
+                        continue
                     m = spr_metrics.get(sid)
                     if not m:
                         continue
@@ -22089,6 +22119,12 @@ def _get_color_chart_data_impl(
                 if pp_item_key in pp_item_code_produced_map:
                     wo_item_level_produced = flt(pp_item_code_produced_map.get(pp_item_key, 0))
                     item_level_wo_count = max(item_level_wo_count, cint(pp_item_code_wo_count_map.get(pp_item_key, 0)))
+            if wo_item_level_produced is None and row_spr and row_item_code:
+                for sid in _expand_spr_name_tokens(row_spr):
+                    spi_kg = flt((spr_item_kg_by_code.get(sid) or {}).get(row_item_code, 0))
+                    if spi_kg > 0:
+                        wo_item_level_produced = spi_kg
+                        break
 
             total_achieved_weight_kgs = 0
             if wo_item_level_produced is not None:

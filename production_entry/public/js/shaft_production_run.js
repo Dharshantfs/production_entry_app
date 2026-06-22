@@ -1120,15 +1120,18 @@ function spr_apply_grid_wrap_classes(frm) {
 			return;
 		}
 		fd.$wrapper.addClass('spr-grid-wrap');
+		const isSubmitted = frm.doc && cint(frm.doc.docstatus) === 1;
 		if (fn === 'items') {
 			fd.$wrapper.addClass('spr-items-wrap');
-			fd.$wrapper.toggleClass('spr-doc-submitted', frm.doc && cint(frm.doc.docstatus) === 1);
+			fd.$wrapper.toggleClass('spr-doc-submitted', isSubmitted);
 		}
 		if (fn === 'shaft_jobs') {
 			fd.$wrapper.addClass('spr-shaft-jobs-wrap');
+			fd.$wrapper.toggleClass('spr-doc-submitted', isSubmitted);
 		}
 		if (fn === 'bundle_calculation') {
 			fd.$wrapper.addClass('spr-bundle-calc-wrap');
+			fd.$wrapper.toggleClass('spr-doc-submitted', isSubmitted);
 		}
 	});
 	spr_ensure_child_grid_heights(frm);
@@ -1139,6 +1142,10 @@ function spr_ensure_child_grid_heights(frm) {
 	if (!frm || !frm.fields_dict) {
 		return;
 	}
+	const isSubmitted = frm.doc && cint(frm.doc.docstatus) === 1;
+	const minGrid = isSubmitted ? '200px' : '120px';
+	const minRows = isSubmitted ? '88px' : '52px';
+	const minRow = isSubmitted ? '42px' : '38px';
 	['shaft_jobs', 'items', 'bundle_calculation'].forEach(function (fn) {
 		const fd = frm.fields_dict[fn];
 		if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
@@ -1146,15 +1153,15 @@ function spr_ensure_child_grid_heights(frm) {
 		}
 		const $w = fd.$wrapper;
 		$w.find('.form-grid-container, .form-grid').css({
-			'min-height': '120px',
+			'min-height': minGrid,
 			'overflow-x': 'auto',
 			'max-width': '100%',
 		});
 		const $rows = $w.find('.grid-body .rows');
 		if ($rows.length) {
-			$rows.css({ 'min-height': '52px', display: 'block' });
+			$rows.css({ 'min-height': minRows, display: 'block' });
 		}
-		$w.find('.grid-row').css({ 'min-height': '38px' });
+		$w.find('.grid-row').css({ 'min-height': minRow });
 		$w.find('.grid-heading-row').css({ 'min-height': '32px' });
 	});
 }
@@ -1934,6 +1941,15 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_schedule_grid_ui_debounced(frm, { delay: 350, columns: false });
 
 		spr_stabilize_spr_child_grids(frm, { delay: 400 });
+
+		if (frm.doc && cint(frm.doc.docstatus) === 1) {
+			setTimeout(function () {
+				spr_ensure_child_grid_heights(frm);
+			}, 650);
+			setTimeout(function () {
+				spr_ensure_child_grid_heights(frm);
+			}, 1400);
+		}
 
 		setTimeout(function () {
 			if (!spr_should_skip_desk_auto_sync(frm)) {
@@ -5941,7 +5957,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '33';
+	const sprItemsCssVer = '34';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -6081,6 +6097,19 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap.spr-doc-submitted tbody tr.spr-gsm-pending td { background-color: #f3f4f6 !important; }
 		/* Let Frappe own column widths — flex overrides desync header vs body scroll. */
 		.spr-grid-wrap .form-grid-container,
+		.spr-grid-wrap.spr-doc-submitted .form-grid-container,
+		.spr-grid-wrap.spr-doc-submitted .form-grid,
+		.spr-items-wrap.spr-doc-submitted .form-grid-container,
+		.spr-shaft-jobs-wrap.spr-doc-submitted .form-grid-container,
+		.spr-bundle-calc-wrap.spr-doc-submitted .form-grid-container {
+			min-height: 200px !important;
+		}
+		.spr-grid-wrap.spr-doc-submitted .grid-body .rows,
+		.spr-items-wrap.spr-doc-submitted .grid-body .rows,
+		.spr-shaft-jobs-wrap.spr-doc-submitted .grid-body .rows {
+			min-height: 88px !important;
+			display: block !important;
+		}
 		.spr-items-wrap .form-grid-container,
 		.spr-shaft-jobs-wrap .form-grid-container,
 		.spr-bundle-calc-wrap .form-grid-container {
