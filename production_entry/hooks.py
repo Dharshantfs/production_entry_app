@@ -113,6 +113,7 @@ after_migrate = ["production_entry.install.after_migrate"]
 
 override_doctype_class = {
 	"Stock Entry": "production_entry.stock_entry_override.SPRStockEntryOverride",
+	"Work Order": "production_entry.work_order_override.SPRWorkOrderOverride",
 }
 
 # Document Events

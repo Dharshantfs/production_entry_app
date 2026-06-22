@@ -8,9 +8,42 @@ class SPRStockEntryOverride(StockEntry):
 
 	def _is_spr_generated_entry(self) -> bool:
 		meta = frappe.get_meta("Stock Entry")
-		if not meta.has_field("shaft_production_run"):
+		if meta.has_field("shaft_production_run") and (self.get("shaft_production_run") or "").strip():
+			return True
+		if frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+			return bool((self.get("custom_spr_reference") or "").strip())
+		return False
+
+	def _spr_should_skip_wo_transfer_cap_on_cancel(self) -> bool:
+		"""Skip WO over-transfer validation when cancelling duplicate SPR MTFM or already-over WO."""
+		if (self.purpose or "").strip() != "Material Transfer for Manufacture":
 			return False
-		return bool((self.get("shaft_production_run") or "").strip())
+		if self._is_spr_generated_entry():
+			return True
+		wo_name = (self.work_order or "").strip()
+		if not wo_name or not frappe.db.exists("Work Order", wo_name):
+			return False
+		wo = frappe.get_doc("Work Order", wo_name)
+		allowance = flt(
+			frappe.db.get_single_value("Manufacturing Settings", "overproduction_percentage_for_work_order")
+		)
+		if not allowance:
+			allowance = flt(
+				frappe.db.get_single_value("Manufacturing Settings", "transfer_extra_materials_percentage")
+			)
+		cap = flt(wo.qty) + (allowance / 100.0 * flt(wo.qty))
+		current = flt(wo.material_transferred_for_manufacturing)
+		return current > cap + 1e-9
+
+	def on_cancel(self):
+		skip_cap = self._spr_should_skip_wo_transfer_cap_on_cancel()
+		if skip_cap:
+			frappe.flags.spr_skip_wo_transfer_qty_validation = True
+		try:
+			super().on_cancel()
+		finally:
+			if skip_cap:
+				frappe.flags.spr_skip_wo_transfer_qty_validation = False
 
 	def _manufacture_type_name(self) -> str:
 		if frappe.db.exists("Stock Entry Type", "Manufacture"):
