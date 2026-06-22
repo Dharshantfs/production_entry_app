@@ -256,6 +256,62 @@ function spr_grid_user_configured(grid) {
 	return false;
 }
 
+function spr_items_grid_is_editing(frm) {
+	if (!frm) {
+		return false;
+	}
+	if (frm._spr_items_grid_editing) {
+		return true;
+	}
+	const grid = frm.fields_dict && frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (grid && grid.grid_form && grid.grid_form.display) {
+		return true;
+	}
+	return false;
+}
+
+function spr_bind_items_grid_edit_guard(frm) {
+	if (!frm || frm._spr_items_edit_guard_bound) {
+		return;
+	}
+	const fd = frm.fields_dict && frm.fields_dict.items;
+	const grid = fd && fd.grid;
+	if (!grid || !grid.wrapper || !grid.wrapper.length) {
+		return;
+	}
+	frm._spr_items_edit_guard_bound = true;
+	grid.wrapper.on('focusin.sprGridEdit', 'input, textarea, select', function () {
+		frm._spr_items_grid_editing = true;
+	});
+	grid.wrapper.on('focusout.sprGridEdit', 'input, textarea, select', function () {
+		setTimeout(function () {
+			if (!frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
+				return;
+			}
+			const active = document.activeElement;
+			const wrap = frm.fields_dict.items.grid.wrapper && frm.fields_dict.items.grid.wrapper[0];
+			if (!wrap || !active || !wrap.contains(active)) {
+				frm._spr_items_grid_editing = false;
+			}
+		}, 120);
+	});
+}
+
+function spr_install_items_grid_column_guard(frm) {
+	const cg = spr_get_grid_columns_module();
+	if (!cg || typeof cg.install_refresh_column_guard !== 'function') {
+		return;
+	}
+	if (frm._spr_items_cg_guard_installed) {
+		return;
+	}
+	frm._spr_items_cg_guard_installed = true;
+	cg.install_refresh_column_guard(frm, 'items', function () {
+		const cfg = spr_get_items_list_view_config(frm);
+		return (cfg && cfg.show) || [];
+	});
+}
+
 function spr_bind_spr_grid_column_configure_hook(frm, fieldname) {
 	if (!frm || !fieldname) {
 		return;
@@ -271,7 +327,6 @@ function spr_bind_spr_grid_column_configure_hook(frm, fieldname) {
 	frm[hookKey] = true;
 	const markUserConfigured = function () {
 		grid._spr_columns_user_locked = true;
-		spr_light_realign_field(frm, fieldname);
 	};
 	if (typeof grid.configure_columns === 'function') {
 		const origConfigure = grid.configure_columns.bind(grid);
@@ -467,30 +522,9 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 		return;
 	}
 	if (grid._spr_columns_user_locked) {
-		spr_light_realign_field(frm, gridFieldname);
+		spr_mirror_grid_docfields_to_rows(grid);
 		spr_attach_grid_scroll_sync(fd);
 		spr_sync_grid_header_body_scroll(fd);
-		return;
-	}
-	const cg = spr_get_grid_columns_module();
-	if (cg && typeof cg.apply === 'function' && (gridFieldname === 'items' || gridFieldname === 'shaft_jobs')) {
-		if (force && gridFieldname === 'items') {
-			spr_reset_items_grid_field_visibility(frm);
-		}
-		if (force && gridFieldname === 'shaft_jobs') {
-			spr_reset_shaft_jobs_grid_field_visibility(frm);
-		}
-		cg.apply(frm, gridFieldname, metaDoctype, visibleCols, { fullRefresh: false });
-		spr_sync_meta_list_view_flags(metaDoctype, visibleCols.reduce(function (acc, fn) {
-			acc[fn] = 1;
-			return acc;
-		}, {}));
-		spr_attach_grid_scroll_sync(fd);
-		if (typeof cg.sync_header_scroll === 'function') {
-			cg.sync_header_scroll(frm, gridFieldname);
-		} else {
-			spr_sync_grid_header_body_scroll(fd);
-		}
 		return;
 	}
 	const showSet = {};
@@ -509,7 +543,10 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 			/* ignore */
 		}
 	});
-	spr_light_sync_grid_columns(grid, visibleCols, showSet);
+	const refreshRows =
+		!!force &&
+		!(gridFieldname === 'items' && spr_items_grid_is_editing(frm));
+	spr_light_sync_grid_columns(grid, visibleCols, showSet, { refreshRows: refreshRows });
 	spr_sync_meta_list_view_flags(metaDoctype, showSet);
 	spr_attach_grid_scroll_sync(fd);
 	spr_sync_grid_header_body_scroll(fd);
@@ -572,13 +609,21 @@ function spr_apply_items_grid_columns(frm, force) {
 	}
 	const grid = fd.grid;
 	const mode = spr_items_process_mode(frm);
-	if (frm._spr_items_cols_mode !== mode) {
+	const modeChanged = frm._spr_items_cols_mode !== mode;
+	if (modeChanged) {
 		force = true;
 		frm._spr_items_cols_mode = mode;
+		grid._spr_columns_user_locked = false;
 	}
+	spr_bind_items_grid_edit_guard(frm);
+	spr_install_items_grid_column_guard(frm);
 	spr_bind_spr_grid_column_configure_hook(frm, 'items');
-	if (grid._spr_columns_user_locked) {
-		spr_light_realign_field(frm, 'items');
+	if (!force && spr_items_grid_is_editing(frm)) {
+		return;
+	}
+	if (grid._spr_columns_user_locked && !force) {
+		spr_mirror_grid_docfields_to_rows(grid);
+		spr_light_grid_scroll_sync(frm, 'items');
 		return;
 	}
 	const cfg = spr_get_items_list_view_config(frm);
@@ -743,10 +788,11 @@ function spr_reorder_docfields_array(docfields, preferredOrder) {
 }
 
 /** Sync header/body column order without grid.refresh() or DOM remount (SPR-safe). */
-function spr_light_sync_grid_columns(grid, order, showSet) {
+function spr_light_sync_grid_columns(grid, order, showSet, opts) {
 	if (!grid || !order || !order.length) {
 		return;
 	}
+	const settings = opts || {};
 	const show = showSet || {};
 	order.forEach(function (fn) {
 		show[fn] = 1;
@@ -800,6 +846,9 @@ function spr_light_sync_grid_columns(grid, order, showSet) {
 		/* ignore */
 	}
 	spr_mirror_grid_docfields_to_rows(grid);
+	if (!settings.refreshRows) {
+		return;
+	}
 	try {
 		(grid.grid_rows || []).forEach(function (gr) {
 			if (gr && typeof gr.refresh === 'function') {
@@ -858,7 +907,7 @@ function spr_force_grid_realign(frm, fieldname) {
 	}
 }
 
-/** Debounced full column apply after grid refresh/render — fixes post-refresh misalignment. */
+/** Debounced column apply after grid refresh/render — skipped while operator is editing. */
 function spr_schedule_grid_column_apply(frm, fieldname, delay) {
 	if (!frm || !fieldname) {
 		return;
@@ -872,12 +921,20 @@ function spr_schedule_grid_column_apply(frm, fieldname, delay) {
 		if (!frm.fields_dict || !frm.fields_dict[fieldname] || !frm.fields_dict[fieldname].grid) {
 			return;
 		}
+		if (fieldname === 'items' && spr_items_grid_is_editing(frm)) {
+			const fd = spr_get_field_dict(frm, 'items');
+			if (fd && fd.grid) {
+				spr_mirror_grid_docfields_to_rows(fd.grid);
+			}
+			spr_light_grid_scroll_sync(frm, 'items');
+			return;
+		}
 		if (fieldname === 'items') {
-			spr_apply_items_grid_columns(frm, true);
+			spr_apply_items_grid_columns(frm, false);
 		} else if (fieldname === 'shaft_jobs') {
-			spr_apply_shaft_jobs_grid_columns(frm, true);
+			spr_apply_shaft_jobs_grid_columns(frm, false);
 		} else if (fieldname === 'bundle_calculation') {
-			spr_apply_bundle_calculation_grid_columns(frm, true);
+			spr_apply_bundle_calculation_grid_columns(frm, false);
 		}
 		spr_ensure_child_grid_heights(frm);
 		spr_light_grid_scroll_sync(frm, fieldname);
@@ -1013,6 +1070,14 @@ function spr_show_all_grid_columns(frm, fieldname) {
  */
 function spr_sync_grid_columns_visible(frm, fieldname) {
 	if (fieldname === 'items') {
+		if (spr_items_grid_is_editing(frm)) {
+			const fd = spr_get_field_dict(frm, 'items');
+			if (fd && fd.grid) {
+				spr_mirror_grid_docfields_to_rows(fd.grid);
+			}
+			spr_light_grid_scroll_sync(frm, 'items');
+			return;
+		}
 		spr_apply_items_grid_columns(frm);
 		return;
 	}
@@ -1116,35 +1181,30 @@ function spr_stabilize_spr_child_grids(frm, opts) {
 	}
 	const settings = opts || {};
 	const run = function () {
-		if (!frm.fields_dict) {
+		if (!frm.fields_dict || spr_items_grid_is_editing(frm)) {
 			return;
 		}
 		spr_apply_grid_wrap_classes(frm);
-		[
-			['shaft_jobs', 'Shaft Production Run Job'],
-			['items', SPR_SPI_DOCTYPE],
-			['bundle_calculation', 'Bundle Calculation'],
-		].forEach(function (pair) {
-			const fd = frm.fields_dict[pair[0]];
-			if (fd && fd.grid) {
-				spr_clear_spr_grid_saved_columns(fd.grid, pair[1]);
-			}
-		});
+		const forceCols = !!settings.forceColumns;
 		if (!sprIsBundlePackagingMode(frm)) {
-			spr_apply_shaft_jobs_grid_columns(frm, true);
+			spr_apply_shaft_jobs_grid_columns(frm, forceCols);
 		}
-		spr_apply_items_grid_columns(frm, true);
+		spr_apply_items_grid_columns(frm, forceCols);
 		if (sprIsBundlePackagingMode(frm)) {
-			spr_apply_bundle_calculation_grid_columns(frm, true);
+			spr_apply_bundle_calculation_grid_columns(frm, forceCols);
 		}
 		spr_apply_create_entry_buttons_ui(frm);
 		spr_ensure_child_grid_heights(frm);
 		['shaft_jobs', 'items', 'bundle_calculation'].forEach(function (fn) {
+			const fd = frm.fields_dict[fn];
+			if (fd && fd.grid) {
+				spr_mirror_grid_docfields_to_rows(fd.grid);
+			}
 			spr_light_grid_scroll_sync(frm, fn);
 		});
 	};
-	run();
-	if (settings.delayed === false) {
+	if (settings.immediate) {
+		run();
 		return;
 	}
 	const key = '_spr_stabilize_timer';
@@ -1155,7 +1215,6 @@ function spr_stabilize_spr_child_grids(frm, opts) {
 		frm[key] = null;
 		run();
 	}, settings.delay != null ? settings.delay : 220);
-	setTimeout(run, 480);
 }
 
 /** One-shot column sync after open / refresh — light touch, no grid.refresh(). */
@@ -1214,14 +1273,13 @@ function spr_after_child_table_refresh(frm) {
 				if (!frm || !frm.fields_dict) {
 					return;
 				}
-				spr_apply_items_grid_columns(frm, true);
-				spr_apply_shaft_jobs_grid_columns(frm, true);
-				if (sprIsBundlePackagingMode(frm)) {
-					spr_apply_bundle_calculation_grid_columns(frm, true);
-				}
-				spr_light_grid_scroll_sync(frm, 'items');
-				spr_light_grid_scroll_sync(frm, 'shaft_jobs');
-				spr_light_grid_scroll_sync(frm, 'bundle_calculation');
+				['items', 'shaft_jobs', 'bundle_calculation'].forEach(function (fn) {
+					const fd = frm.fields_dict[fn];
+					if (fd && fd.grid) {
+						spr_mirror_grid_docfields_to_rows(fd.grid);
+					}
+					spr_light_grid_scroll_sync(frm, fn);
+				});
 				spr_ensure_child_grid_heights(frm);
 			});
 		});
@@ -1854,6 +1912,8 @@ frappe.ui.form.on('Shaft Production Run', {
 			sprLoadBundleCalculationFromPp(frm, null);
 		}
 		spr_patch_items_grid_refresh(frm);
+		spr_bind_items_grid_edit_guard(frm);
+		spr_install_items_grid_column_guard(frm);
 		spr_register_spr_page_buttons(frm);
 		spr_layout_all_grids(frm, { toggleUi: false });
 
@@ -1867,9 +1927,7 @@ frappe.ui.form.on('Shaft Production Run', {
 			spr_apply_bundle_calculation_grid_columns(frm, true);
 		}
 
-		spr_schedule_grid_ui_debounced(frm, { delay: 350, columns: true });
-
-		spr_stabilize_spr_child_grids(frm, { delay: 300 });
+		spr_schedule_grid_ui_debounced(frm, { delay: 350, columns: false });
 
 		setTimeout(function () {
 			if (!spr_should_skip_desk_auto_sync(frm)) {
@@ -1889,7 +1947,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	onload_post_render: function (frm) {
-		spr_stabilize_spr_child_grids(frm, { delay: 180 });
+		spr_stabilize_spr_child_grids(frm, { delay: 180, forceColumns: false });
 	},
 
 	before_submit: function (frm) {
@@ -1924,7 +1982,18 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_mark_just_saved(frm);
 		spr_register_spr_page_buttons_after_save(frm);
 		spr_sync_no_of_rolls_created(frm, { silent: true });
-		spr_stabilize_spr_child_grids(frm, { delay: 200 });
+		spr_schedule_grid_ui_debounced(frm, { delay: 200, columns: false });
+		setTimeout(function () {
+			if (!frm || !frm.fields_dict) {
+				return;
+			}
+			const fd = frm.fields_dict.items;
+			if (fd && fd.grid) {
+				spr_mirror_grid_docfields_to_rows(fd.grid);
+			}
+			spr_light_grid_scroll_sync(frm, 'items');
+			spr_ensure_child_grid_heights(frm);
+		}, 250);
 	},
 
 	on_submit: function (frm) {
@@ -4512,7 +4581,10 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		let width = flt(row.width_inch);
 		let gw = flt(row.gross_weight);
 		if (gw <= 0) {
-			// Operator cleared gross weight: clear dependent computed values immediately.
+			if (spr_items_grid_is_editing(frm)) {
+				return;
+			}
+			// Operator cleared gross weight: clear dependent computed values.
 			frappe.model.set_value(cdt, cdn, 'net_weight', 0);
 			frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
 			update_shaft_job_achieved_from_items(frm);
@@ -5665,17 +5737,19 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	const grid = fd.grid;
 	let hooked = false;
 	function afterGridPaint() {
+		const g = fd && fd.grid;
 		if (fieldname === 'items' || fieldname === 'shaft_jobs' || fieldname === 'bundle_calculation') {
-			if (grid._spr_columns_user_locked) {
-				spr_mirror_grid_docfields_to_rows(grid);
-				spr_force_grid_realign(frm, fieldname);
-			} else {
-				spr_schedule_grid_column_apply(frm, fieldname, 40);
+			if (g) {
+				spr_mirror_grid_docfields_to_rows(g);
+			}
+			spr_light_grid_scroll_sync(frm, fieldname);
+			if (fieldname === 'items') {
+				spr_bind_items_grid_edit_guard(frm);
 			}
 		} else {
 			spr_light_grid_scroll_sync(frm, fieldname);
 		}
-		if (fieldname === 'items') {
+		if (fieldname === 'items' && !spr_items_grid_is_editing(frm)) {
 			spr_schedule_grid_ui_debounced(frm, { delay: 160, columns: false });
 		}
 	}
@@ -5852,7 +5926,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '31';
+	const sprItemsCssVer = '32';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -6013,7 +6087,12 @@ function ensure_spr_item_stylesheet() {
 		.spr-items-wrap .grid-heading-row .configure-columns {
 			pointer-events: auto !important;
 			position: relative;
-			z-index: 4;
+			z-index: 6;
+			min-width: 28px;
+		}
+		.spr-items-wrap .grid-heading-row .grid-static-col:last-child {
+			min-width: 32px;
+			flex: 0 0 32px;
 		}
 	`;
 	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);
