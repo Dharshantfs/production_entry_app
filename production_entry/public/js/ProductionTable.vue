@@ -327,7 +327,7 @@
                               {{ getDayName(dateGroup.date) }}
                             </td>
                             <td class="cell-center font-bold">{{ row.partyCode }}</td>
-                            <td>
+                            <td v-if="!hideCustomerColumns">
                               <button v-if="canExpandMergedRows" class="pt-merge-expand-btn" @click="toggleMergeExpanded(row.mergeId)">
                                 {{ isMergeExpanded(row.mergeId) ? '▼' : '▶' }} {{ row.displayLabel }}
                               </button>
@@ -374,6 +374,7 @@
                                 {{ formatDispatchStatus(row.mergeDispatchStatus) }}
                               </span>
                             </td>
+                            <td class="cell-center" style="font-size:11px;">{{ formatMovementCell(row) }}</td>
                             <td class="cell-center pt-pp-sticky-cell" style="position: sticky; right: 200px; background: white; z-index: 9; width: 90px; min-width: 90px;">
                               <button v-if="row.pp_id" @click="openMergedProductionPlan(row)" class="cc-pp-btn" :title="`View PP for merged row`">
                                 📋 View
