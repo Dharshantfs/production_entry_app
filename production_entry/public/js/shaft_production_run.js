@@ -472,6 +472,27 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 		spr_sync_grid_header_body_scroll(fd);
 		return;
 	}
+	const cg = spr_get_grid_columns_module();
+	if (cg && typeof cg.apply === 'function' && (gridFieldname === 'items' || gridFieldname === 'shaft_jobs')) {
+		if (force && gridFieldname === 'items') {
+			spr_reset_items_grid_field_visibility(frm);
+		}
+		if (force && gridFieldname === 'shaft_jobs') {
+			spr_reset_shaft_jobs_grid_field_visibility(frm);
+		}
+		cg.apply(frm, gridFieldname, metaDoctype, visibleCols, { fullRefresh: false });
+		spr_sync_meta_list_view_flags(metaDoctype, visibleCols.reduce(function (acc, fn) {
+			acc[fn] = 1;
+			return acc;
+		}, {}));
+		spr_attach_grid_scroll_sync(fd);
+		if (typeof cg.sync_header_scroll === 'function') {
+			cg.sync_header_scroll(frm, gridFieldname);
+		} else {
+			spr_sync_grid_header_body_scroll(fd);
+		}
+		return;
+	}
 	const showSet = {};
 	visibleCols.forEach(function (fn) {
 		showSet[fn] = 1;

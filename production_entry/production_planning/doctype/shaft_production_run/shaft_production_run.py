@@ -3768,7 +3768,113 @@ class ShaftProductionRun(Document):
 			added += 1
 		return added
 
-	def _new_mtfm_stock_entry_shell(self, wo_doc, chunk_total_qty: float, transfer_posting_date=None, transfer_posting_time=None):
+	def _mtfm_fg_qty_for_shortage_transfer(
+		self, wo_doc, short_by_item: dict, chunk_total_qty: float
+	) -> float:
+		"""Cap MTFM fg_completed_qty so over-produced SPR runs do not exceed WO transfer allowance."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		chunk_total_qty = flt(chunk_total_qty)
+		remaining_fg, _allowed_total, _already, _over_pct = self._wo_allowed_remaining_qty(wo_doc)
+		wo_base = flt(getattr(wo_doc, "qty", 0))
+		cap = remaining_fg if remaining_fg > 0 else wo_base
+		if cap <= 0:
+			cap = chunk_total_qty or 1.0
+
+		fg_from_short = 0.0
+		bom_no = _cstr(getattr(wo_doc, "bom_no", None))
+		if bom_no and short_by_item and wo_base > 0:
+			full_rm_map, _multi = _bom_rm_stock_qty_map_for_fg(bom_no, wo_base)
+			for ic, short_qty in (short_by_item or {}).items():
+				full_need = flt(full_rm_map.get(_cstr(ic)))
+				if full_need > 0 and flt(short_qty) > 0:
+					fg_from_short = max(fg_from_short, (flt(short_qty) / full_need) * wo_base)
+
+		target = chunk_total_qty if chunk_total_qty > 0 else cap
+		if fg_from_short > 0:
+			target = min(target, flt(fg_from_short) * 1.02)
+		target = min(target, cap)
+		if target <= 0:
+			target = min(chunk_total_qty, cap) if cap > 0 else (chunk_total_qty or 1.0)
+		return max(flt(target), 0.001)
+
+	def _prune_short_by_item_to_wo_transfer_remaining(self, wo_doc, short_by_item: dict) -> dict:
+		"""Keep only RM lines that still need transfer on the WO (prevents duplicate MTFM per item)."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		out: dict[str, float] = {}
+		for ic, qty in (short_by_item or {}).items():
+			code = _cstr(ic).strip()
+			if not code:
+				continue
+			still = _spr_wo_rm_transfer_remaining(wo_doc, code)
+			tol = _spr_rm_wip_shortage_tolerance(flt(qty))
+			if still <= tol:
+				continue
+			need = min(_spr_round_rm_stock_qty(flt(qty)), _spr_round_rm_stock_qty(still))
+			if need > tol:
+				out[code] = need
+		return out
+
+	def _spr_mtfm_stock_entry_filters(self) -> dict:
+		filters = {"purpose": "Material Transfer for Manufacture"}
+		meta = frappe.get_meta("Stock Entry")
+		if meta.has_field("shaft_production_run"):
+			filters["shaft_production_run"] = self.name
+		elif frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+			filters["custom_spr_reference"] = self.name
+		else:
+			return {}
+		return filters
+
+	def _find_recent_spr_wo_mtfm_transfer(self, wo_name: str, docstatus=None) -> str:
+		"""Latest MTFM for this SPR + WO (draft or submitted) — avoids duplicate transfers on retry."""
+		wo_name = _cstr(wo_name).strip()
+		base = self._spr_mtfm_stock_entry_filters()
+		if not wo_name or not base:
+			return ""
+		filters = dict(base)
+		filters["work_order"] = wo_name
+		if docstatus is not None:
+			filters["docstatus"] = docstatus
+		names = frappe.get_all(
+			"Stock Entry",
+			filters=filters,
+			pluck="name",
+			order_by="modified desc",
+			limit=1,
+		)
+		return _cstr(names[0]) if names else ""
+
+	def _shortage_events_still_blocking(self, shortage_events) -> list:
+		"""Re-check WIP RM availability after MTFM — skip throw when transfers already satisfied need."""
+		blocking = []
+		for event in shortage_events or []:
+			wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
+			if not wo_doc:
+				continue
+			chunk_total_qty = flt(event.get("chunk_total_qty"))
+			if chunk_total_qty <= 0:
+				continue
+			preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
+			shortages = self._rm_shortages_for_se(preview_se, wo_doc)
+			if shortages:
+				blocking.append(
+					{
+						"wo_id": _cstr(event.get("wo_id")),
+						"wo_doc": wo_doc,
+						"chunk_total_qty": chunk_total_qty,
+						"shortages": shortages,
+					}
+				)
+		return blocking
+
+	def _new_mtfm_stock_entry_shell(
+		self,
+		wo_doc,
+		chunk_total_qty: float,
+		transfer_posting_date=None,
+		transfer_posting_time=None,
+		short_by_item=None,
+	):
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		ctx = self._spr_company_warehouse_ctx()
 		company = _cstr(ctx.get("company")) or _cstr(getattr(wo_doc, "company", None))
@@ -3784,7 +3890,12 @@ class ShaftProductionRun(Document):
 		se.stock_entry_type = self._transfer_for_manufacture_type_name()
 		se.work_order = wo_doc.name
 		se.production_item = wo_doc.production_item
-		se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
+		if short_by_item:
+			se.fg_completed_qty = self._mtfm_fg_qty_for_shortage_transfer(
+				wo_doc, short_by_item, chunk_total_qty
+			)
+		else:
+			se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
 		se.from_warehouse = None if is_bag else (raw_source_wh or None)
 		se.wip_warehouse = wip_wh
 		se.to_warehouse = wip_wh
@@ -3796,15 +3907,14 @@ class ShaftProductionRun(Document):
 		if not wo_doc or not shortages:
 			return ""
 		wo_doc = self._reload_work_order_doc(wo_doc)
-		is_bag = spr_doc_is_bag_spr(self)
 		# Use current day/time for shortage transfers to avoid backdated ledger insufficiency on old run dates.
 		transfer_posting_date = today()
 		transfer_posting_time = nowtime()
+		wo_id = _cstr(getattr(wo_doc, "name", None))
 		# Reuse existing draft for same WO + SPR to avoid duplicate drafts on retry.
-		existing = self._find_open_wip_shortage_transfer_draft(_cstr(getattr(wo_doc, "name", None)))
+		existing = self._find_open_wip_shortage_transfer_draft(wo_id)
 		if existing:
 			return existing
-		raw_source_wh = _cstr(getattr(wo_doc, "source_warehouse", None)) or ""
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
 		if not wip_wh:
 			return ""
@@ -3822,85 +3932,21 @@ class ShaftProductionRun(Document):
 				short_by_item.pop(ic, None)
 				continue
 			short_by_item[ic] = qty
-			if is_bag:
-				still = _spr_wo_rm_transfer_remaining(wo_doc, ic)
-				if still <= tol:
-					short_by_item.pop(ic, None)
-				elif still > 0:
-					short_by_item[ic] = min(flt(short_by_item[ic]), _spr_round_rm_stock_qty(still))
+		short_by_item = self._prune_short_by_item_to_wo_transfer_remaining(wo_doc, dict(short_by_item))
 		if not short_by_item:
-			return ""
+			return self._find_recent_spr_wo_mtfm_transfer(wo_id) or ""
 
-		def _item_source_wh(item_code: str) -> str:
-			return self._resolve_rm_source_warehouse_for_transfer(wo_doc, item_code, wip_wh) or raw_source_wh
-
-		# Path 0 (preferred): WO required_items / RM warehouse map — reliable for PP, LD, fabric, etc.
-		try:
-			se0, _wip0 = self._new_mtfm_stock_entry_shell(
-				wo_doc, chunk_total_qty, transfer_posting_date, transfer_posting_time
-			)
-			se0.from_bom = 0
-			if self._append_mtfm_shortage_lines(se0, wo_doc, dict(short_by_item), wip_wh):
-				name = self._spr_insert_shortage_transfer_draft(se0)
-				if name:
-					return name
-		except Exception:
-			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (WO path) failed")
-
-		# Path A: BOM-driven draft (best when site config supports it)
-		try:
-			se = frappe.new_doc("Stock Entry")
-			se.company = wo_doc.company
-			se.posting_date = transfer_posting_date
-			se.posting_time = transfer_posting_time
-			se.set_posting_time = 1
-			se.purpose = "Material Transfer for Manufacture"
-			se.stock_entry_type = self._transfer_for_manufacture_type_name()
-			se.work_order = wo_doc.name
-			se.from_bom = 1
-			se.bom_no = wo_doc.bom_no
-			se.use_multi_level_bom = wo_doc.use_multi_level_bom
-			se.from_warehouse = None if is_bag else (raw_source_wh or None)
-			se.wip_warehouse = wip_wh
-			se.to_warehouse = wip_wh
-			se.fg_completed_qty = flt(chunk_total_qty) if flt(chunk_total_qty) > 0 else 1.0
-			self._set_stock_entry_spr_link(se)
-			se.get_items()
-			if is_bag:
-				_spr_apply_bag_rm_qty_from_bom(se, wo_doc.bom_no, se.fg_completed_qty)
-
-			for i in range(len(se.items or []) - 1, -1, -1):
-				d = se.items[i]
-				if not d.item_code or d.get("t_warehouse"):
-					continue
-				short_qty = flt(short_by_item.get(_cstr(d.item_code)))
-				if short_qty <= 0:
-					se.items.pop(i)
-					continue
-				item_src = _item_source_wh(d.item_code)
-				cf = flt(d.get("conversion_factor") or 1.0) or 1.0
-				d.transfer_qty = flt(short_qty)
-				d.qty = flt(short_qty / cf)
-				if item_src:
-					d.s_warehouse = item_src
-				elif raw_source_wh:
-					d.s_warehouse = raw_source_wh
-				if not d.t_warehouse:
-					d.t_warehouse = wip_wh
-			if any(d.item_code and not d.get("t_warehouse") for d in (se.items or [])):
-				name = self._spr_insert_shortage_transfer_draft(se)
-				if name:
-					return name
-		except Exception:
-			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (BOM path) failed")
-
-		# Path B (fallback): manual rows directly from shortage map
+		# One manual MTFM with all shortage RM lines (never BOM-driven — avoids per-item STE loops).
 		se, _wip_b = self._new_mtfm_stock_entry_shell(
-			wo_doc, chunk_total_qty, transfer_posting_date, transfer_posting_time
+			wo_doc,
+			chunk_total_qty,
+			transfer_posting_date,
+			transfer_posting_time,
+			short_by_item=short_by_item,
 		)
 		se.from_bom = 0
 		if not self._append_mtfm_shortage_lines(se, wo_doc, dict(short_by_item), wip_wh):
-			return ""
+			return self._find_recent_spr_wo_mtfm_transfer(wo_id) or ""
 		return self._spr_insert_shortage_transfer_draft(se)
 
 	def _find_open_spr_shortage_transfer_draft(self) -> str:
@@ -3950,10 +3996,38 @@ class ShaftProductionRun(Document):
 		if not short_map or not primary_wo_doc:
 			return ""
 
-		# Combined manual STE: all shortage RM lines in one draft (PP + LD + fabric, etc.).
+		pruned_map: dict[str, float] = {}
+		item_wo_pruned: dict[str, object] = {}
+		for ic, qty in short_map.items():
+			wo_for_ic = item_wo.get(ic) or primary_wo_doc
+			wo_ref = self._reload_work_order_doc(wo_for_ic)
+			pruned = self._prune_short_by_item_to_wo_transfer_remaining(wo_ref, {ic: flt(qty)})
+			if pruned.get(ic):
+				pruned_map[ic] = pruned[ic]
+				item_wo_pruned[ic] = wo_ref
+		if not pruned_map:
+			wo_ids = sorted(
+				{
+					_cstr(getattr(item_wo.get(ic) or primary_wo_doc, "name", None))
+					for ic in short_map.keys()
+				}
+			)
+			for wo_id in wo_ids:
+				if wo_id:
+					found = self._find_recent_spr_wo_mtfm_transfer(wo_id)
+					if found:
+						return found
+			return ""
+
+		short_map = pruned_map
+		item_wo = item_wo_pruned
+
+		# Combined manual STE: all shortage RM lines in one entry (PP + LD + fabric, etc.).
 		try:
 			se, wip_wh = self._new_mtfm_stock_entry_shell(
-				primary_wo_doc, chunk_max if chunk_max > 0 else 1.0
+				primary_wo_doc,
+				chunk_max if chunk_max > 0 else 1.0,
+				short_by_item=short_map,
 			)
 			se.from_bom = 0
 			per_wo_short: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -3977,32 +4051,11 @@ class ShaftProductionRun(Document):
 			(ic, item_meta[ic][0], item_meta[ic][1], item_meta[ic][2], short_map[ic])
 			for ic in sorted(short_map.keys())
 		]
-		name = self._create_wip_shortage_transfer_draft(
+		return self._create_wip_shortage_transfer_draft(
 			primary_wo_doc,
 			chunk_max if chunk_max > 0 else 1.0,
 			agg_shortages,
 		)
-		if name:
-			return name
-
-		seen_wo: set[str] = set()
-		for event in shortage_events or []:
-			wo_doc = event.get("wo_doc")
-			wo_id = _cstr(event.get("wo_id"))
-			if not wo_doc or not wo_id or wo_id in seen_wo:
-				continue
-			seen_wo.add(wo_id)
-			ev_shortages = event.get("shortages") or []
-			if not ev_shortages:
-				continue
-			name = self._create_wip_shortage_transfer_draft(
-				wo_doc,
-				flt(event.get("chunk_total_qty")) or 1.0,
-				ev_shortages,
-			)
-			if name:
-				return name
-		return ""
 
 	def _find_open_wip_shortage_transfer_draft(self, wo_name: str) -> str:
 		"""Find latest draft transfer-for-manufacture for this WO and SPR."""
@@ -4152,13 +4205,25 @@ class ShaftProductionRun(Document):
 			transfer_name = ""
 		if not transfer_name:
 			transfer_name = self._find_open_spr_shortage_transfer_draft()
+		if not transfer_name:
+			wo_ids = sorted({_cstr(e.get("wo_id")) for e in shortage_events if _cstr(e.get("wo_id"))})
+			for wo_id in wo_ids:
+				transfer_name = self._find_recent_spr_wo_mtfm_transfer(wo_id)
+				if transfer_name:
+					break
+
+		try:
+			frappe.db.commit()
+		except Exception:
+			pass
+
+		# After MTFM insert/submit, reload WO + WIP bins — do not block if shortage is already resolved.
+		still_blocking = self._shortage_events_still_blocking(shortage_events)
+		if not still_blocking:
+			return
 
 		transfer_submitted = False
 		if transfer_name:
-			try:
-				frappe.db.commit()
-			except Exception:
-				pass
 			transfer_submitted = cint(frappe.db.get_value("Stock Entry", transfer_name, "docstatus")) == 1
 
 		if transfer_name and transfer_submitted:
@@ -4184,7 +4249,7 @@ class ShaftProductionRun(Document):
 		frappe.throw(
 			_(
 				"Insufficient stock for {0} work order(s).\n\n{1}\n\n{2}"
-			).format(len(shortage_events), body, next_steps),
+			).format(len(still_blocking), body, next_steps),
 			title=_("Insufficient stock"),
 		)
 
