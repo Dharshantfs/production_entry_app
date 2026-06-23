@@ -8213,10 +8213,33 @@ def _spr_pp_and_company(spr_name: str):
 	return pp_name, company, doc
 
 
-def _spr_warehouses_exist():
+def _spr_warehouses_exist(spr_doc=None):
+	unit = ""
+	if spr_doc:
+		unit = _cstr(getattr(spr_doc, "custom_unit", None) or getattr(spr_doc, "unit", None))
+	if unit:
+		from production_entry.production_planning.spr_unit_warehouses import (
+			resolve_spr_unit_manufacturing_warehouses,
+		)
+
+		resolve_spr_unit_manufacturing_warehouses(unit)
+		return
 	for wh in (SPR_MANUAL_SOURCE_WH, SPR_MANUAL_FG_WH):
 		if not frappe.db.exists("Warehouse", wh):
 			frappe.throw(_("Warehouse {0} not found. Create it or update SPR_MANUAL_* constants.").format(wh))
+
+
+def _spr_work_orders_linked_to_spr(spr_doc) -> set[str]:
+	linked: set[str] = set()
+	if not spr_doc:
+		return linked
+	for j in _spr_job_rows(spr_doc):
+		wos = _cstr(getattr(j, "work_orders", None) or "")
+		for part in wos.replace("\n", ",").split(","):
+			p = part.strip()
+			if p:
+				linked.add(p)
+	return linked
 
 
 def _spr_is_manual_shaft_job(sj) -> bool:
@@ -8325,10 +8348,11 @@ def _spr_find_reusable_manual_work_order(
 		or []
 	)
 	ppi_tag = _cstr(production_plan_item)
+	linked = _spr_work_orders_linked_to_spr(spr_doc) if spr_doc else set()
 	fallback: list[str] = []
 	for r in rows:
 		wo_name = _cstr(r.get("name"))
-		if not wo_name:
+		if not wo_name or wo_name in linked:
 			continue
 		desc = _cstr(r.get("description"))
 		# Prefer explicit SPR-manual WO with matching PP-line tag when available.
@@ -8388,6 +8412,37 @@ def _spr_list_reusable_manual_work_orders(pp_name: str, item_code: str, producti
 	return out
 
 
+def _spr_resolve_manual_job_work_order(
+	pp,
+	company: str,
+	pp_name: str,
+	item_code: str,
+	production_plan_item: str,
+	ppi_row,
+	qty: float,
+	selected_reuse_work_order,
+	spr_doc,
+) -> tuple[str, bool]:
+	"""Return (wo_name, reused). __NEW__ forces insert; blank auto-reuses; name reuses if candidate."""
+	selected = _cstr(selected_reuse_work_order)
+	reused = False
+	wo_name = ""
+	if selected and selected != "__NEW__":
+		candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
+		if selected in candidates:
+			wo_name = selected
+			reused = True
+	if not wo_name and selected != "__NEW__":
+		wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr_doc) or ""
+		if wo_name:
+			reused = True
+	if not wo_name:
+		wo_name = _spr_insert_manual_work_order(
+			pp, company, item_code, production_plan_item, ppi_row, qty, spr_doc=spr_doc
+		)
+	return wo_name, reused
+
+
 def _spr_insert_manual_work_order(
 	pp,
 	company: str,
@@ -8395,11 +8450,28 @@ def _spr_insert_manual_work_order(
 	production_plan_item: str,
 	ppi_row,
 	qty: float,
+	spr_doc=None,
 ) -> str:
 	"""Insert a new Work Order for manual job flow."""
 	from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 		get_default_bom_for_item,
 	)
+
+	source_wh = SPR_MANUAL_SOURCE_WH
+	fg_wh = SPR_MANUAL_FG_WH
+	wip_wh = ""
+	unit = _cstr(getattr(spr_doc, "custom_unit", None) or getattr(spr_doc, "unit", None)) if spr_doc else ""
+	if unit:
+		from production_entry.production_planning.spr_unit_warehouses import (
+			resolve_spr_unit_manufacturing_warehouses,
+		)
+
+		wh_ctx = resolve_spr_unit_manufacturing_warehouses(unit)
+		source_wh = _cstr(wh_ctx.get("source_warehouse"))
+		fg_wh = _cstr(wh_ctx.get("fg_warehouse"))
+		wip_wh = _cstr(wh_ctx.get("wip_warehouse"))
+		if wh_ctx.get("company"):
+			company = _cstr(wh_ctx["company"])
 
 	bom = get_default_bom_for_item(item_code, company)
 	if not bom:
@@ -8421,18 +8493,22 @@ def _spr_insert_manual_work_order(
 		wo.sales_order = pp.sales_order
 	if frappe.get_meta("Work Order").has_field("sales_order_item"):
 		wo.sales_order_item = getattr(ppi_row, "sales_order_item", None) or None
-	wo.source_warehouse = SPR_MANUAL_SOURCE_WH
-	wo.fg_warehouse = SPR_MANUAL_FG_WH
-	if frappe.get_meta("Work Order").has_field("wip_warehouse"):
-		wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
-		if wip:
-			wo.wip_warehouse = wip
+	wo.source_warehouse = source_wh
+	wo.fg_warehouse = fg_wh
+	if meta_wo.has_field("wip_warehouse"):
+		if wip_wh:
+			wo.wip_warehouse = wip_wh
+		else:
+			wip = frappe.db.get_value("Stock Settings", None, "default_wip_warehouse")
+			if wip:
+				wo.wip_warehouse = wip
 	frappe.flags.spr_manual_work_order_insert = True
 	try:
 		wo.insert(ignore_permissions=True)
 	finally:
 		frappe.flags.spr_manual_work_order_insert = False
 	wo_name = wo.name
+	_spr_set_wo_required_item_source_warehouses(wo_name, source_wh)
 	try:
 		wo.reload()
 		wo.add_comment("Comment", _("SPR manual — Production Plan line {0}").format(production_plan_item))
@@ -8547,7 +8623,7 @@ def spr_create_manual_job(
 
 	_spr_require_saved(shaft_production_run)
 	pp_name, company, spr = _spr_pp_and_company(shaft_production_run)
-	_spr_warehouses_exist()
+	_spr_warehouses_exist(spr)
 
 	pp = frappe.get_doc("Production Plan", pp_name)
 	ppi_row = None
@@ -8562,19 +8638,17 @@ def spr_create_manual_job(
 	if qty is None or qty <= 0:
 		qty = flt(getattr(ppi_row, "planned_qty", None) or 0) or 1.0
 
-	reused = False
-	wo_name = ""
-	if selected_reuse_work_order:
-		candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
-		if selected_reuse_work_order in candidates:
-			wo_name = selected_reuse_work_order
-			reused = True
-	if not wo_name:
-		wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
-		if wo_name:
-			reused = True
-	if not wo_name:
-		wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
+	wo_name, reused = _spr_resolve_manual_job_work_order(
+		pp,
+		company,
+		pp_name,
+		item_code,
+		production_plan_item,
+		ppi_row,
+		qty,
+		selected_reuse_work_order,
+		spr,
+	)
 
 	spr.reload()
 	for j in _spr_job_rows(spr):
@@ -8665,7 +8739,7 @@ def spr_create_manual_jobs_multi(
 
 	_spr_require_saved(shaft_production_run)
 	pp_name, company, spr = _spr_pp_and_company(shaft_production_run)
-	_spr_warehouses_exist()
+	_spr_warehouses_exist(spr)
 	pp = frappe.get_doc("Production Plan", pp_name)
 	combo_raw = _cstr(combination_input).strip()
 	if combo_raw:
@@ -8696,16 +8770,18 @@ def spr_create_manual_jobs_multi(
 				break
 		if not ppi_row:
 			frappe.throw(_("Production Plan item line not found for {0}").format(item_code))
-		wo_name = ""
-		if selected_reuse_work_order:
-			candidates = _spr_list_reusable_manual_work_orders(pp_name, item_code, production_plan_item)
-			if selected_reuse_work_order in candidates:
-				wo_name = selected_reuse_work_order
-		if not wo_name:
-			wo_name = _spr_find_reusable_manual_work_order(pp_name, item_code, production_plan_item, spr_doc=spr)
-		if not wo_name:
-			wo_name = _spr_insert_manual_work_order(pp, company, item_code, production_plan_item, ppi_row, qty)
-		else:
+		wo_name, reused = _spr_resolve_manual_job_work_order(
+			pp,
+			company,
+			pp_name,
+			item_code,
+			production_plan_item,
+			ppi_row,
+			qty,
+			selected_reuse_work_order,
+			spr,
+		)
+		if reused:
 			reused_wo_names.append(wo_name)
 		spr.reload()
 		for j in _spr_job_rows(spr):
