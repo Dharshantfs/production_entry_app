@@ -797,6 +797,17 @@ def _spr_rm_wip_shortage_tolerance(required_qty: float) -> float:
 	return max(base, req * 0.001)
 
 
+def _spr_wip_topup_bump_qty(shortage_qty: float) -> float:
+	"""Round micro WIP gaps up so auto RM->WIP transfer still posts (e.g. 0.009 -> 0.01 Kg)."""
+	qty = flt(shortage_qty)
+	if qty <= 0:
+		return 0.0
+	tol = _spr_rm_wip_shortage_tolerance(qty)
+	if qty <= tol:
+		qty = tol
+	return _spr_round_rm_stock_qty(qty)
+
+
 def _spr_wo_rm_transfer_remaining(wo_doc, item_code: str) -> float:
 	"""Qty still to transfer to WIP for one RM item on the WO."""
 	item_code = _cstr(item_code).strip()
@@ -3012,12 +3023,10 @@ class ShaftProductionRun(Document):
 		out: dict[str, float] = {}
 		for ic, _wh, _req, _avl, sq in parsed:
 			code = _cstr(ic).strip()
-			qty = _spr_round_rm_stock_qty(sq)
+			qty = _spr_wip_topup_bump_qty(sq)
 			if not code or qty <= 0:
 				continue
 			tol = _spr_rm_wip_shortage_tolerance(qty)
-			if qty <= tol:
-				continue
 			if _spr_wo_rm_transfer_remaining(wo_doc, code) > tol:
 				# Normal RM->WIP shortage path should handle items still to transfer on the WO.
 				continue
@@ -3026,13 +3035,40 @@ class ShaftProductionRun(Document):
 			out[code] = out.get(code, 0.0) + qty
 		return out
 
+	def _spr_wip_topup_from_manufacture_se(self, se, wo_doc) -> dict:
+		"""Derive WIP top-up qty from failed Manufacture STE when WO RM transfer is already complete."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		if not se or not wo_doc:
+			return {}
+		out: dict[str, float] = {}
+		for d in se.items or []:
+			if not d.item_code or d.get("t_warehouse"):
+				continue
+			ic = _cstr(d.item_code).strip()
+			required = _spr_round_rm_stock_qty(d.get("qty") or d.get("transfer_qty"))
+			wh = _cstr(d.get("s_warehouse"))
+			if not ic or required <= 0 or not wh:
+				continue
+			tol = _spr_rm_wip_shortage_tolerance(required)
+			if _spr_wo_rm_transfer_remaining(wo_doc, ic) > tol:
+				continue
+			available = _spr_round_rm_stock_qty(
+				frappe.db.get_value("Bin", {"item_code": ic, "warehouse": wh}, "actual_qty") or 0
+			)
+			gap = _spr_wip_topup_bump_qty(required - available)
+			if gap > 0:
+				out[ic] = out.get(ic, 0.0) + gap
+		return out
+
 	def _spr_try_wip_topup_transfer_and_retry_manufacture(
-		self, wo_doc, exc, allow_wip_topup_retry: bool, mfg_submit_savepoint: str
+		self, wo_doc, exc, allow_wip_topup_retry: bool, mfg_submit_savepoint: str, mfg_se=None
 	) -> None:
 		"""Create one RM->WIP MTFM for parsed WIP shortage, auto-submit, then retry Manufacture."""
 		if not allow_wip_topup_retry:
 			return
 		topup = self._spr_wip_topup_short_by_item_from_exception(wo_doc, exc)
+		if not topup and mfg_se:
+			topup = self._spr_wip_topup_from_manufacture_se(mfg_se, wo_doc)
 		if not topup:
 			return
 		transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup)
@@ -3103,7 +3139,7 @@ class ShaftProductionRun(Document):
 		if not wip_wh:
 			return ""
 		short_by_item = {
-			_cstr(k).strip(): _spr_round_rm_stock_qty(v)
+			_cstr(k).strip(): _spr_wip_topup_bump_qty(v)
 			for k, v in (short_by_item or {}).items()
 			if _cstr(k).strip() and flt(v) > 0
 		}
@@ -4040,11 +4076,17 @@ class ShaftProductionRun(Document):
 		added = 0
 		for item_code, short_qty in sorted((short_by_item or {}).items()):
 			ic = _cstr(item_code).strip()
-			qty = _spr_round_rm_stock_qty(short_qty)
-			tol = _spr_rm_wip_shortage_tolerance(qty)
-			if not ic or qty <= tol:
+			if ignore_wo_transfer:
+				qty = _spr_wip_topup_bump_qty(short_qty)
+			else:
+				qty = _spr_round_rm_stock_qty(short_qty)
+				tol = _spr_rm_wip_shortage_tolerance(qty)
+				if not ic or qty <= tol:
+					continue
+			if not ic or qty <= 0:
 				continue
 			if not ignore_wo_transfer:
+				tol = _spr_rm_wip_shortage_tolerance(qty)
 				still = _spr_wo_rm_transfer_remaining(wo_doc, ic)
 				if still > tol:
 					qty = min(qty, _spr_round_rm_stock_qty(still))
@@ -5474,7 +5516,7 @@ class ShaftProductionRun(Document):
 			# WO already shows RM transferred — auto RM->WIP transfer then retry Manufacture once.
 			try:
 				self._spr_try_wip_topup_transfer_and_retry_manufacture(
-					wo_doc, e, allow_wip_topup_retry, mfg_submit_savepoint
+					wo_doc, e, allow_wip_topup_retry, mfg_submit_savepoint, mfg_se=se
 				)
 			except _SprWipTopupRetry:
 				raise
