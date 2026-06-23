@@ -404,21 +404,23 @@
                                 >
                                   {{ mergeProductionStatusLine(row) }}
                                 </div>
+                              <div class="pt-spr-btn-row" v-if="canShowMergedStockEntry(row) || shouldShowMergedViewSpr(row)">
                               <button 
                                 v-if="canShowMergedStockEntry(row)" 
-                                @click="createMergedStockEntry(row)" 
+                                @click="handleMergedStockEntryAction(row)" 
                                 class="cc-pp-btn pt-btn-entry" 
                                 :title="mergedStockPrimaryTitle(row)">
                                 {{ mergedStockPrimaryLabel(row) }}
                               </button>
                               <button 
-                                v-else-if="row.spr_name" 
+                                v-if="shouldShowMergedViewSpr(row)" 
                                 @click="openMergedSPR(row.spr_name, row)" 
                                 class="cc-pp-btn pt-btn-entry"
                                 :class="Number(row.spr_docstatus) === 1 && row.mergeAllWoTerminal ? 'pt-spr-btn-done' : Number(row.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                                 :title="mergedSprPrimaryButtonTitle(row)">
                                 {{ mergedSprPrimaryButtonLabel(row) }}
                               </button>
+                              </div>
                               <span
                                 v-else-if="row.pp_id && Number(row.pp_docstatus) !== 1"
                                 class="pt-wo-closed-hint"
@@ -1785,9 +1787,17 @@ const tableData = computed(() => {
               const spr_docstatus = sprItem != null ? sprItem.spr_docstatus : null;
               const mergeAnyWoOpen = mergeItems.some((it) => it.wo_open);
               const mergeAllWoTerminal = mergeItems.length > 0 && mergeItems.every((it) => it.wo_terminal);
-              const mergeMaxPendingKg = mergeItems.reduce(
-                (m, it) => Math.max(m, parseFloat(it.pending_qty ?? it.item_pending_qty ?? 0) || 0),
-                0
+              const gapKg = Math.max(totalTargetWeight - totalActualWeight, 0);
+              const mergeMaxPendingKg = Math.max(
+                mergeItems.reduce(
+                  (m, it) =>
+                    Math.max(
+                      m,
+                      parseFloat(it.pp_pending_qty ?? it.pending_qty ?? it.item_pending_qty ?? 0) || 0
+                    ),
+                  0
+                ),
+                gapKg
               );
               rows.push({
                 type: "merge",
@@ -1984,20 +1994,22 @@ function mergeProductionStatusTitle(row) {
 
 function mergedStockPrimaryLabel(row) {
   if (!row || row.type !== "merge") return "New SPR";
-  if (!row.spr_name) return "New SPR";
-  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") return "Continue SPR";
-  return "View SPR";
+  const isDraftSpr = !!row.spr_name && (row.spr_docstatus === 0 || row.spr_docstatus === "0");
+  if (isDraftSpr) return "Continue SPR";
+  return "New SPR";
 }
 
 function mergedStockPrimaryTitle(row) {
   if (!row || row.type !== "merge") return "";
+  const pending = mergedRemainingKg(row);
+  const isDraftSpr = !!row.spr_name && (row.spr_docstatus === 0 || row.spr_docstatus === "0");
   if (!row.spr_name) {
     return "Create the first Shaft Production Run for this merged group (one SPR can cover all merged lines).";
   }
-  if (row.spr_docstatus === 0 || row.spr_docstatus === "0") {
-    return "Open draft SPR — add rolls, Submit when finished for the day. Come back tomorrow for more production on the same SPR if needed.";
+  if (isDraftSpr) {
+    return `Open draft SPR — add rolls, Submit when finished. Pending: ${formatKg2(pending)} kg.`;
   }
-  return "Open submitted SPR (read-only). If you still need to record more weight and WO/PP allow it, system may link a new run — check pending qty.";
+  return `Start another Shaft Production Run for remaining production (e.g. next shift). Pending: ${formatKg2(pending)} kg. Night shift SPR stays submitted — this creates a new run for morning balance.`;
 }
 
 /** Primary action when pending Stock Entry column is hidden (no pending PP qty). */
@@ -2387,15 +2399,38 @@ function canShowStockEntry(item) {
 
 function canShowMergedStockEntry(row) {
   if (!row || row.type !== "merge") return false;
-  if (row.spr_name) return false;
   if (Number(row.pp_docstatus) !== 1) return false;
   if (row.mergeAllWoTerminal) return false;
+
+  const isDraftSpr = !!row.spr_name && (row.spr_docstatus === 0 || row.spr_docstatus === "0");
+  if (isDraftSpr) return true;
+
+  const remainingKg = mergedRemainingKg(row);
+  return remainingKg > 0.5;
+}
+
+function mergedRemainingKg(row) {
+  if (!row || row.type !== "merge") return 0;
   const pendingKg = Number(row.mergeMaxPendingKg ?? 0);
-  if (!(pendingKg > 0)) return false;
-  const targetKg = Number(row.totalTargetWeight ?? 0);
-  const actualKg = Number(row.totalActualWeight ?? 0);
-  if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
-  return true;
+  const gap = mergeTargetGapKg(row);
+  if (gap > 0.5) return Math.max(pendingKg, gap);
+  return pendingKg;
+}
+
+function shouldShowMergedViewSpr(row) {
+  if (!row?.spr_name) return false;
+  const isDraft = row.spr_docstatus === 0 || row.spr_docstatus === "0";
+  return !isDraft;
+}
+
+async function handleMergedStockEntryAction(row) {
+  if (!row) return;
+  const isDraftSpr = !!row.spr_name && (row.spr_docstatus === 0 || row.spr_docstatus === "0");
+  if (isDraftSpr) {
+    await openMergedSPR(row.spr_name, row);
+    return;
+  }
+  createMergedStockEntry(row);
 }
 
 function getStockEntryLabel(item) {
@@ -3417,6 +3452,17 @@ td.pt-pp-sticky-cell {
   background-color: #f5f5f5 !important;
 }
 
+.pt-spr-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+  width: 100%;
+}
+.pt-spr-btn-row .pt-btn-entry {
+  max-width: 96px;
+  flex: 1 1 88px;
+}
 .pt-stock-cell {
   display: flex;
   flex-direction: column;

@@ -1967,6 +1967,10 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_schedule_grid_ui_debounced(frm, { delay: 280, columns: false });
 		spr_reapply_item_row_styles_with_retries(frm);
 
+		if (frm.doc && cint(frm.doc.docstatus) === 1) {
+			spr_force_submitted_items_grid_realign(frm);
+		}
+
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 
@@ -2015,7 +2019,9 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_apply_shaft_jobs_grid_columns(frm, true);
 		spr_apply_items_grid_columns(frm, true);
 		spr_apply_create_entry_buttons_ui(frm);
-		spr_schedule_grid_ui_debounced(frm, { delay: 200, columns: false });
+		spr_schedule_item_row_styles_after_doc_write(frm);
+		spr_force_submitted_items_grid_realign(frm);
+		spr_reapply_item_row_styles_with_retries(frm);
 		if (frm.doc && frm.doc.production_plan) {
 			frappe.call({
 				method:
@@ -6240,6 +6246,36 @@ function schedule_spr_item_row_styles(frm) {
 	spr_apply_grid_wrap_classes(frm);
 	ensure_spr_item_stylesheet();
 	spr_schedule_grid_ui_debounced(frm, { delay: 120 });
+}
+
+/** Submitted SPR: rebuild Roll Production Results columns so headers match row data. */
+function spr_force_submitted_items_grid_realign(frm) {
+	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 1) {
+		return;
+	}
+	const cg = spr_get_grid_columns_module();
+	if (!cg || typeof cg.apply !== 'function') {
+		return;
+	}
+	const cfg = spr_get_items_list_view_config(frm);
+	const cols = (cfg && cfg.show) || [];
+	if (!cols.length) {
+		return;
+	}
+	[0, 300, 700, 1400].forEach(function (ms) {
+		setTimeout(function () {
+			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
+				return;
+			}
+			if (spr_items_grid_is_editing(frm)) {
+				return;
+			}
+			spr_reset_items_grid_field_visibility(frm);
+			cg.apply(frm, 'items', SPR_SPI_DOCTYPE, cols, { fullRefresh: false });
+			spr_apply_grid_wrap_classes(frm);
+			spr_reapply_item_row_styles_with_retries(frm, [80, 280]);
+		}, ms);
+	});
 }
 
 /** Re-apply GSM row colours after grid DOM rebuild (save / reopen / column sync). */
