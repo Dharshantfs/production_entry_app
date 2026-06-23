@@ -12,7 +12,6 @@ from production_entry.production_planning.planning_doctypes import (
     PLANNING_SHEET as PLANNING_SHEET_DOCTYPE,
     PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY,
     normalize_planning_unit_for_select,
-    normalize_allocated_to_unit_for_select,
     resolve_planning_workstation_name,
     ensure_planning_workstation_record,
     ensure_planning_unit_field_links_workstation,
@@ -454,7 +453,7 @@ class Planningsheet(Document):
                     )
 
     def _sync_submitted_board_units_to_legacy(self):
-        """Mirror board unit (+ allocated_to_unit) onto linked Planning sheet Item after admin save."""
+        """Mirror board unit onto linked Planning sheet Item after admin save."""
         from production_entry.production_planning.scheduler_api import (
             _force_sync_unit_both_planning_tables,
         )
@@ -1036,10 +1035,6 @@ class Planningsheet(Document):
                 self.allocated_unit = allocated_unit
                 self.unit_capacity_day = capacity_info.day_shift_capacity_kg
                 self.unit_capacity_night = capacity_info.night_shift_capacity_kg
-                
-                # Update item allocation
-                for item in self.planned_items:
-                    item.allocated_to_unit = allocated_unit
         
         return allocated_unit
     

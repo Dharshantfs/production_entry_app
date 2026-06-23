@@ -10,7 +10,6 @@ from production_entry.production_planning.planning_doctypes import (
 	ensure_planning_line_unit_docfield_options,
 	ensure_planning_unit_field_links_workstation,
 	normalize_planning_unit_for_select,
-	normalize_allocated_to_unit_for_select,
 	resolve_planning_workstation_name,
 	maintenance_unit_match_values,
 	maintenance_units_equal,
@@ -19603,11 +19602,8 @@ def _sync_legacy_planning_sheet_item_unit(source_item, unit, plan_code=None):
         return
     updates = {}
     norm_unit = normalize_planning_unit_for_select(unit)
-    alloc_unit = normalize_allocated_to_unit_for_select(unit)
     if frappe.db.has_column("Planning sheet Item", "unit"):
         updates["unit"] = norm_unit
-    if frappe.db.has_column("Planning sheet Item", "allocated_to_unit"):
-        updates["allocated_to_unit"] = alloc_unit
     if plan_code and frappe.db.has_column("Planning sheet Item", "custom_plan_code"):
         updates["custom_plan_code"] = plan_code
     if not updates:
@@ -19673,12 +19669,9 @@ def _force_sync_unit_both_planning_tables(item_doc, unit, plan_code=None):
         return None
 
     norm_unit = normalize_planning_unit_for_select(unit)
-    alloc_unit = normalize_allocated_to_unit_for_select(unit)
     plan_code = _cstr(plan_code).strip() or None
 
     pt_updates = {"unit": norm_unit}
-    if frappe.db.has_column("Planning Table", "allocated_to_unit"):
-        pt_updates["allocated_to_unit"] = alloc_unit
     if plan_code:
         if frappe.db.has_column("Planning Table", "custom_plan_code"):
             pt_updates["custom_plan_code"] = plan_code
@@ -19964,8 +19957,6 @@ def _move_item_to_slot(item_doc, unit, date, new_idx=None, plan_name=None):
                 new_legacy_doc.name = None
                 new_legacy_doc.qty = flt(item_doc.qty)
                 new_legacy_doc.unit = unit
-                if hasattr(new_legacy_doc, "allocated_to_unit"):
-                    new_legacy_doc.allocated_to_unit = normalize_allocated_to_unit_for_select(unit)
                 new_legacy_doc.insert(ignore_permissions=True)
                 new_orig_qty = max(0, flt(old_legacy_doc.qty) - flt(item_doc.qty))
                 frappe.db.set_value(legacy_table, old_legacy_doc.name, "qty", new_orig_qty)

@@ -5346,7 +5346,6 @@ class ShaftProductionRun(Document):
 					)
 			elif item.t_warehouse != wo_doc.fg_warehouse:
 				item.t_warehouse = wo_doc.fg_warehouse
-		actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
 		fg_templates = self._strip_finished_goods_from_stock_entry(se)
 		self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows, fg_templates)
 		self._assign_rm_batches_for_stock_entry(se, wo_id)
@@ -5450,6 +5449,8 @@ class ShaftProductionRun(Document):
 			),
 			alert=True,
 		)
+		# Merge RM map AFTER successful submit to prevent double-counting on retry
+		actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
 		return {"actual_rm_map": actual_rm_map, "se_name": se.name}
 
 	def create_manufacturing_stock_entries(self):

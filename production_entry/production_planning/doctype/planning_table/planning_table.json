@@ -62,7 +62,6 @@
         "custom_sheet_cutting_shift",
         "custom_printing_shift",
         "custom_printing_arrangement_seq",
-        "allocated_to_unit",
         "custom_design_attachment",
         "custom_split_metadata",
         "section_split",
@@ -452,14 +451,6 @@
             "fieldname": "custom_printing_arrangement_seq",
             "fieldtype": "Int",
             "label": "Printing Arrangement Seq",
-            "in_list_view": 0
-        },
-        {
-            "fieldname": "allocated_to_unit",
-            "fieldtype": "Select",
-            "label": "Allocated to Unit",
-            "options": "\nUnit 1\nUnit 2\nUnit 3\nUnit 4",
-            "read_only": 1,
             "in_list_view": 0
         },
         {
