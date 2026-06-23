@@ -3039,8 +3039,60 @@ class ShaftProductionRun(Document):
 		if not transfer:
 			return
 		if cint(frappe.db.get_value("Stock Entry", transfer, "docstatus")) == 1:
+			# Force stock ledger sync: recompute bin actual_qty for transferred items
+			self._force_sync_stock_bins_after_transfer(transfer, wo_doc)
 			frappe.db.savepoint(mfg_submit_savepoint)
 			raise _SprWipTopupRetry()
+
+	def _force_sync_stock_bins_after_transfer(self, se_name: str, wo_doc) -> None:
+		"""Force immediate stock bin synchronization after MTFM submit to avoid stale reads."""
+		try:
+			wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+			if not wip_wh:
+				return
+			# Get items from the submitted Stock Entry
+			items = frappe.get_all(
+				"Stock Entry Detail",
+				filters={"parent": se_name, "t_warehouse": wip_wh},
+				fields=["item_code"],
+			)
+			if not items:
+				return
+			# Force recompute bin actual_qty from stock ledger for each item
+			from erpnext.stock.utils import update_bin_qty
+			for row in items:
+				ic = _cstr(row.get("item_code"))
+				if not ic:
+					continue
+				# update_bin_qty recalculates actual_qty from Stock Ledger Entry
+				update_bin_qty(ic, wip_wh)
+			# Clear any query cache
+			frappe.clear_cache(doctype="Bin")
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR force bin sync")
+
+	def _force_sync_bins_for_stock_entry(self, se_name: str) -> None:
+		"""Force immediate bin sync for all items in a Stock Entry (source and target warehouses)."""
+		try:
+			from erpnext.stock.utils import update_bin_qty
+			items = frappe.get_all(
+				"Stock Entry Detail",
+				filters={"parent": se_name},
+				fields=["item_code", "s_warehouse", "t_warehouse"],
+			)
+			seen = set()
+			for row in items:
+				ic = _cstr(row.get("item_code"))
+				if not ic:
+					continue
+				for wh in (row.get("s_warehouse"), row.get("t_warehouse")):
+					wh = _cstr(wh)
+					if wh and (ic, wh) not in seen:
+						seen.add((ic, wh))
+						update_bin_qty(ic, wh)
+			frappe.clear_cache(doctype="Bin")
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "SPR force bin sync (SE)")
 
 	def _create_wip_topup_mtfm_for_manufacture(self, wo_doc, short_by_item: dict) -> str:
 		"""One RM->WIP transfer when Manufacture cannot consume WIP (batch/ledger gap after WO transfer)."""
@@ -3884,7 +3936,12 @@ class ShaftProductionRun(Document):
 				frappe.db.commit()
 			except Exception:
 				pass
+			# Force bin sync after commit to ensure stock is immediately queryable
 			if name and frappe.db.exists("Stock Entry", name):
+				try:
+					self._force_sync_bins_for_stock_entry(name)
+				except Exception:
+					pass
 				return name
 		except Exception as exc:
 			if "Expense Account" in _cstr(exc):
