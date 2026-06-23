@@ -12,6 +12,7 @@ from production_entry.production_planning.planning_doctypes import (
     PLANNING_SHEET as PLANNING_SHEET_DOCTYPE,
     PLANNING_SHEET_SUBMIT_LINKS_WORK_ORDERS_ONLY,
     normalize_planning_unit_for_select,
+    normalize_allocated_to_unit_for_select,
     resolve_planning_workstation_name,
     ensure_planning_workstation_record,
     ensure_planning_unit_field_links_workstation,
@@ -353,6 +354,18 @@ class Planningsheet(Document):
 
     def validate(self):
         """Validate planning sheet before saving"""
+        if cint(self.docstatus) == 1:
+            from production_entry.production_planning.board_access import _is_privileged_user
+
+            if not _is_privileged_user():
+                frappe.throw(
+                    _("Submitted Planning Sheet cannot be modified. Cancel the document to make changes."),
+                    title=_("Not allowed"),
+                )
+            self._enforce_admin_submitted_board_unit_only_edit()
+            self._sync_linked_planning_units()
+            self._sync_submitted_board_units_to_legacy()
+            return
         self._sync_linked_planning_units()
         self.validate_items()
         self.calculate_totals()
@@ -363,6 +376,98 @@ class Planningsheet(Document):
         self._ensure_parent_child_trace_ids_on_rows()
         self._ensure_107_extras_on_rows()
         # Removed reorder_planning_sheet_child_tables_in_doc to preserve user's manual row order in child tables
+
+    def _enforce_admin_submitted_board_unit_only_edit(self):
+        """After submit, privileged users may only change ``planned_items.unit`` (board POC testing)."""
+        prev = self.get_doc_before_save()
+        if not prev:
+            return
+        skip = {
+            "name",
+            "owner",
+            "creation",
+            "modified",
+            "modified_by",
+            "docstatus",
+            "idx",
+            "parent",
+            "parenttype",
+            "parentfield",
+            "doctype",
+            "__islocal",
+            "__unsaved",
+            "__unedited",
+        }
+
+        def _parent_changed():
+            for df in self.meta.fields:
+                if df.fieldtype in ("Table", "Section Break", "Column Break", "Tab Break", "HTML"):
+                    continue
+                if (self.get(df.fieldname) or "") != (prev.get(df.fieldname) or ""):
+                    return True
+            return False
+
+        if _parent_changed():
+            frappe.throw(
+                _("Only board Unit may be changed on a submitted Planning Sheet (testing)."),
+                title=_("Not allowed"),
+            )
+
+        if len(self.items or []) != len(prev.items or []):
+            frappe.throw(
+                _("Cannot add or remove legacy Items rows on a submitted Planning Sheet."),
+                title=_("Not allowed"),
+            )
+
+        prev_items = {r.name: r for r in (prev.items or [])}
+        for row in self.items or []:
+            old = prev_items.get(row.name)
+            if not old:
+                frappe.throw(_("Cannot add legacy Items rows on a submitted Planning Sheet."))
+            for k, v in row.as_dict().items():
+                if k in skip or k == "unit":
+                    continue
+                if (old.get(k) or "") != (v or ""):
+                    frappe.throw(
+                        _("Only board Unit may be changed on a submitted Planning Sheet (testing)."),
+                        title=_("Not allowed"),
+                    )
+
+        if len(self.planned_items or []) != len(prev.planned_items or []):
+            frappe.throw(
+                _("Cannot add or remove board rows on a submitted Planning Sheet."),
+                title=_("Not allowed"),
+            )
+
+        prev_board = {r.name: r for r in (prev.planned_items or [])}
+        for row in self.planned_items or []:
+            old = prev_board.get(row.name)
+            if not old:
+                frappe.throw(_("Cannot add board rows on a submitted Planning Sheet."))
+            for k, v in row.as_dict().items():
+                if k in skip or k == "unit":
+                    continue
+                if (old.get(k) or "") != (v or ""):
+                    frappe.throw(
+                        _("Only board Unit may be changed on a submitted Planning Sheet (testing)."),
+                        title=_("Not allowed"),
+                    )
+
+    def _sync_submitted_board_units_to_legacy(self):
+        """Mirror board unit (+ allocated_to_unit) onto linked Planning sheet Item after admin save."""
+        from production_entry.production_planning.scheduler_api import (
+            _force_sync_unit_both_planning_tables,
+        )
+
+        for row in self.planned_items or []:
+            if not row.name:
+                continue
+            unit = normalize_planning_unit_for_select(getattr(row, "unit", None))
+            plan_code = (getattr(row, "custom_plan_code", None) or getattr(row, "plan_name", None) or "").strip() or None
+            try:
+                _force_sync_unit_both_planning_tables(row, unit, plan_code)
+            except Exception:
+                frappe.log_error(frappe.get_traceback(), f"planning_sheet:sync board unit:{row.name}")
 
     def _enrich_rows_from_item_codes(self):
         """Fill quality/colour/GSM, sheet size, 255 trace, PB design from item_code on desk save."""

@@ -350,6 +350,7 @@
             "fieldtype": "Link",
             "label": "Unit",
             "options": "Workstation",
+            "allow_on_submit": 1,
             "in_list_view": 0
         },
         {

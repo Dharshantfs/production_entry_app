@@ -2921,6 +2921,63 @@ class ShaftProductionRun(Document):
 			)
 		return filtered
 
+	def _spr_wip_topup_max_kg(self) -> float:
+		try:
+			return max(0.01, flt(frappe.conf.get("spr_wip_topup_max_kg") or 2.0))
+		except (TypeError, ValueError):
+			return 2.0
+
+	def _spr_wip_topup_short_by_item_from_exception(self, wo_doc, exc) -> dict:
+		"""Parse manufacture NegativeStockError into RM->WIP top-up qty when WO transfer is already complete."""
+		parsed = self._rm_shortages_from_exception(exc)
+		if not parsed:
+			return {}
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+		max_topup = self._spr_wip_topup_max_kg()
+		out: dict[str, float] = {}
+		for ic, _wh, _req, _avl, sq in parsed:
+			code = _cstr(ic).strip()
+			qty = _spr_round_rm_stock_qty(sq)
+			if not code or qty <= 0 or qty > max_topup:
+				return {}
+			tol = _spr_rm_wip_shortage_tolerance(qty)
+			if qty <= tol:
+				continue
+			if _spr_wo_rm_transfer_remaining(wo_doc, code) > tol:
+				return {}
+			out[code] = out.get(code, 0.0) + qty
+		return out
+
+	def _create_wip_topup_mtfm_for_manufacture(self, wo_doc, short_by_item: dict) -> str:
+		"""One RM->WIP transfer for micro-shortages after WO shows full transfer (batch/rounding gaps)."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		if not wo_doc or not short_by_item:
+			return ""
+		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None)) or ""
+		if not wip_wh:
+			return ""
+		short_by_item = {
+			_cstr(k).strip(): _spr_round_rm_stock_qty(v)
+			for k, v in (short_by_item or {}).items()
+			if _cstr(k).strip() and flt(v) > 0
+		}
+		if not short_by_item:
+			return ""
+		se, _wip_b = self._new_mtfm_stock_entry_shell(
+			wo_doc,
+			0.001,
+			today(),
+			nowtime(),
+			short_by_item=short_by_item,
+		)
+		se.from_bom = 0
+		if not self._append_mtfm_shortage_lines(
+			se, wo_doc, short_by_item, wip_wh, ignore_wo_transfer=True
+		):
+			return ""
+		return self._spr_insert_shortage_transfer_draft(se)
+
 	def _throw_wip_stock_wo_transfer_mismatch(self, wo_doc, original_exc=None):
 		"""WO shows RM transferred but WIP bin cannot satisfy Manufacture — do not create more MTFM."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
@@ -3805,7 +3862,9 @@ class ShaftProductionRun(Document):
 			return co_rm
 		return ""
 
-	def _append_mtfm_shortage_lines(self, se, wo_doc, short_by_item: dict, wip_wh: str) -> int:
+	def _append_mtfm_shortage_lines(
+		self, se, wo_doc, short_by_item: dict, wip_wh: str, ignore_wo_transfer: bool = False
+	) -> int:
 		"""Append RM->WIP lines for shortage qty; returns count of lines added."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		ctx = self._spr_company_warehouse_ctx()
@@ -3818,11 +3877,12 @@ class ShaftProductionRun(Document):
 			tol = _spr_rm_wip_shortage_tolerance(qty)
 			if not ic or qty <= tol:
 				continue
-			still = _spr_wo_rm_transfer_remaining(wo_doc, ic)
-			if still > tol:
-				qty = min(qty, _spr_round_rm_stock_qty(still))
-			elif is_bag and still <= tol:
-				continue
+			if not ignore_wo_transfer:
+				still = _spr_wo_rm_transfer_remaining(wo_doc, ic)
+				if still > tol:
+					qty = min(qty, _spr_round_rm_stock_qty(still))
+				elif is_bag and still <= tol:
+					continue
 			item_src = self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
 			if not item_src:
 				frappe.log_error(
@@ -5397,6 +5457,31 @@ class ShaftProductionRun(Document):
 						shortages = self._rm_shortages_from_exception(e)
 						shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
 					if not shortages:
+						topup = self._spr_wip_topup_short_by_item_from_exception(wo_doc, e)
+						if topup:
+							transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup)
+							if transfer:
+								submitted = cint(
+									frappe.db.get_value("Stock Entry", transfer, "docstatus")
+								) == 1
+								prec = _spr_rm_stock_qty_precision()
+								detail = ", ".join(
+									_("{0}: {1} Kg").format(ic, flt(q, prec))
+									for ic, q in sorted(topup.items())
+								)
+								frappe.throw(
+									_(
+										"Work Order {0} needed a small WIP top-up before Manufacture could post.\n\n"
+										"{1}\n\n"
+										"Material Transfer {2} was {3}. Submit this SPR again to complete manufacture."
+									).format(
+										wo_id,
+										detail,
+										transfer,
+										_("submitted") if submitted else _("saved as draft — submit it first"),
+									),
+									title=_("WIP topped up — submit SPR again"),
+								)
 						self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
 					if shortages:
 						# Build one combined shortage response for all WO chunks in this submit attempt.

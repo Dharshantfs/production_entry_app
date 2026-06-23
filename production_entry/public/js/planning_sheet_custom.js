@@ -40,6 +40,31 @@ function _norm(v) {
     return String(v || "").trim();
 }
 
+/** Administrator / System Manager: edit board Unit on submitted Planning Sheet (POC testing). */
+function ps_enable_admin_submitted_board_unit_edit(frm) {
+    if (!frm || !frm.doc || Number(frm.doc.docstatus) !== 1) {
+        return;
+    }
+    const roles = frappe.boot && frappe.boot.user && frappe.boot.user.roles;
+    const privileged =
+        frappe.session.user === 'Administrator' ||
+        (roles && (roles.includes('System Manager') || roles.includes('Administrator')));
+    if (!privileged) {
+        return;
+    }
+    const grid = frm.fields_dict.planned_items && frm.fields_dict.planned_items.grid;
+    if (grid && typeof grid.update_docfield_property === 'function') {
+        grid.update_docfield_property('unit', 'read_only', 0);
+    }
+    if (!frm._ps_admin_board_unit_hint) {
+        frm._ps_admin_board_unit_hint = true;
+        frappe.show_alert({
+            message: __('Testing: you can edit board Unit on this submitted sheet (Save to apply).'),
+            indicator: 'blue',
+        }, 8);
+    }
+}
+
 function _rowSoKey(row) {
     // Planning sheet Item uses `so_item`; board rows can be `so_item` or `sales_order_item`
     return _norm(row?.so_item || row?.sales_order_item || row?.salesOrderItem);
@@ -388,6 +413,7 @@ frappe.ui.form.on('Planning sheet', {
             setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 500);
             setTimeout(function () { register_planning_sheet_stock_check_button(frm); }, 1200);
         }
+        ps_enable_admin_submitted_board_unit_edit(frm);
         frm.add_custom_button(__('Update Colors'), function() {
             frappe.call({
                 method: 'production_entry.production_planning.scheduler_api.refresh_planning_sheet_colors',

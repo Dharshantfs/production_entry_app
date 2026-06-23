@@ -247,6 +247,21 @@ def normalize_planning_unit_for_select(raw, _depth=0):
     return "UNASSIGNED"
 
 
+FABRIC_BOARD_ALLOCATED_UNITS = ("Unit 1", "Unit 2", "Unit 3", "Unit 4")
+
+
+def normalize_allocated_to_unit_for_select(raw) -> str:
+    """Map board ``unit`` to Planning sheet Item ``allocated_to_unit`` Select (Unit 1–4 or blank).
+
+    The board uses UNASSIGNED / Mixed for the Unassigned column; ``allocated_to_unit`` only allows
+    Unit 1–4 or empty — never the literal UNASSIGNED label.
+    """
+    norm = normalize_planning_unit_for_select(raw)
+    if norm in FABRIC_BOARD_ALLOCATED_UNITS:
+        return norm
+    return ""
+
+
 def resolve_planning_workstation_name(raw):
 	"""Map planning row ``unit`` to an existing ``Workstation.name`` (exact match)."""
 	import frappe
