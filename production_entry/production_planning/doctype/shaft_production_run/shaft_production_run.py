@@ -813,6 +813,77 @@ def _spr_round_rm_stock_qty(qty: float) -> float:
 	return flt(qty, _spr_rm_stock_qty_precision())
 
 
+class _SprWipTopupRetry(Exception):
+	"""Signal manufacture chunk should rebuild after auto WIP top-up transfer."""
+
+
+def _spr_resolve_expense_account(item_code: str, company: str, warehouse: str | None = None) -> str:
+	"""Resolve expense_account for Stock Entry lines (perpetual inventory sites)."""
+	item_code = _cstr(item_code).strip()
+	company = _cstr(company).strip()
+	if not item_code or not company:
+		return ""
+	acc = frappe.db.get_value(
+		"Item Default",
+		{"parent": item_code, "company": company},
+		"expense_account",
+	)
+	if acc:
+		return _cstr(acc)
+	try:
+		from erpnext.stock.get_item_details import get_item_details
+
+		row = get_item_details(
+			{
+				"item_code": item_code,
+				"company": company,
+				"warehouse": warehouse or "",
+				"qty": 1,
+				"doctype": "Stock Entry",
+			}
+		)
+		acc = (row or {}).get("expense_account")
+		if acc:
+			return _cstr(acc)
+	except Exception:
+		pass
+	item_meta = frappe.get_meta("Item")
+	if item_meta.has_field("expense_account"):
+		acc = frappe.db.get_value("Item", item_code, "expense_account")
+		if acc:
+			return _cstr(acc)
+	company_meta = frappe.get_meta("Company")
+	for fld in ("stock_adjustment_account", "default_expense_account"):
+		if company_meta.has_field(fld):
+			acc = frappe.db.get_value("Company", company, fld)
+			if acc:
+				return _cstr(acc)
+	return ""
+
+
+def _spr_apply_stock_entry_item_accounts(se) -> None:
+	"""Fill expense_account / cost_center on Stock Entry item lines before insert/submit."""
+	company = _cstr(getattr(se, "company", None)).strip()
+	if not company or not se:
+		return
+	line_meta = frappe.get_meta("Stock Entry Detail")
+	has_expense = line_meta.has_field("expense_account")
+	has_cc = line_meta.has_field("cost_center")
+	if not has_expense and not has_cc:
+		return
+	default_cc = frappe.db.get_value("Company", company, "cost_center") if has_cc else None
+	for d in se.items or []:
+		if not d.item_code:
+			continue
+		wh = _cstr(d.get("s_warehouse") or d.get("t_warehouse") or getattr(se, "wip_warehouse", None))
+		if has_expense and not _cstr(d.get("expense_account")):
+			acc = _spr_resolve_expense_account(d.item_code, company, wh)
+			if acc:
+				d.expense_account = acc
+		if has_cc and not _cstr(d.get("cost_center")) and default_cc:
+			d.cost_center = default_cc
+
+
 def _spr_apply_bag_rm_qty_from_bom(se, bom_no: str, fg_qty: float) -> None:
 	"""Replace RM line qty on Stock Entry with BOM×FG using Meter→Kg divide (matches WO/PP)."""
 	fg_qty = flt(fg_qty)
@@ -2978,6 +3049,9 @@ class ShaftProductionRun(Document):
 			return ""
 		return self._spr_insert_shortage_transfer_draft(se)
 
+	def _spr_apply_stock_entry_item_accounts(self, se) -> None:
+		_spr_apply_stock_entry_item_accounts(se)
+
 	def _throw_wip_stock_wo_transfer_mismatch(self, wo_doc, original_exc=None):
 		"""WO shows RM transferred but WIP bin cannot satisfy Manufacture — do not create more MTFM."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
@@ -3764,20 +3838,25 @@ class ShaftProductionRun(Document):
 	def _spr_insert_shortage_transfer_draft(self, se) -> str:
 		"""Insert MTFM for shortages; auto-submit when stock is available."""
 		try:
+			self._spr_apply_stock_entry_item_accounts(se)
 			se.flags.ignore_mandatory = True
 			se.flags.ignore_permissions = True
-			se.flags.ignore_validate = True
 			se.insert()
 			name = _cstr(se.name)
 			self._persist_stock_entry_spr_reference_db(name)
 			try:
 				se.flags.ignore_permissions = True
 				se.submit()
-			except Exception:
-				frappe.log_error(
-					frappe.get_traceback(),
-					f"SPR shortage transfer auto-submit:{self.name}:{name}",
-				)
+			except Exception as submit_exc:
+				# Retry once after filling accounts (expense_account is mandatory on some sites).
+				if "Expense Account" in _cstr(submit_exc):
+					se.reload()
+					self._spr_apply_stock_entry_item_accounts(se)
+					se.flags.ignore_permissions = True
+					se.save()
+					se.submit()
+				else:
+					raise
 			# Commit immediately so draft/submitted entry survives frappe.throw rollback during SPR before_submit.
 			try:
 				frappe.db.commit()
@@ -3785,7 +3864,16 @@ class ShaftProductionRun(Document):
 				pass
 			if name and frappe.db.exists("Stock Entry", name):
 				return name
-		except Exception:
+		except Exception as exc:
+			if "Expense Account" in _cstr(exc):
+				frappe.throw(
+					_(
+						"Material Transfer could not be submitted: expense account is missing on one or more "
+						"raw materials. Open each Item → Defaults and set Expense Account for company {0}, "
+						"or set Company → Stock Adjustment Account, then submit SPR again."
+					).format(_cstr(getattr(se, "company", None))),
+					title=_("Expense Account required"),
+				)
 			frappe.log_error(
 				frappe.get_traceback(),
 				f"SPR shortage draft insert failed:{self.name}",
@@ -3891,19 +3979,24 @@ class ShaftProductionRun(Document):
 				)
 				continue
 			stock_uom = frappe.db.get_value("Item", ic, "stock_uom") or "Nos"
-			se.append(
-				"items",
-				{
-					"item_code": ic,
-					"s_warehouse": item_src,
-					"t_warehouse": wip_wh,
-					"uom": stock_uom,
-					"stock_uom": stock_uom,
-					"conversion_factor": 1.0,
-					"qty": qty,
-					"transfer_qty": qty,
-				},
-			)
+			line = {
+				"item_code": ic,
+				"s_warehouse": item_src,
+				"t_warehouse": wip_wh,
+				"uom": stock_uom,
+				"stock_uom": stock_uom,
+				"conversion_factor": 1.0,
+				"qty": qty,
+				"transfer_qty": qty,
+			}
+			company = _cstr(getattr(se, "company", None)).strip()
+			exp_acc = _spr_resolve_expense_account(ic, company, item_src) if company else ""
+			if exp_acc:
+				line["expense_account"] = exp_acc
+			cc = frappe.db.get_value("Company", company, "cost_center") if company else None
+			if cc:
+				line["cost_center"] = cc
+			se.append("items", line)
 			added += 1
 		return added
 
@@ -5163,6 +5256,156 @@ class ShaftProductionRun(Document):
 				if abs(cur - total_produced) > 1e-9:
 					frappe.db.set_value("Production Plan", pp, f, total_produced, update_modified=False)
 
+	def _spr_run_manufacture_chunk_attempt(
+		self,
+		wo_id,
+		wo_doc,
+		chunk_rows,
+		chunk_total_qty,
+		chunk_idx,
+		chunk_count,
+		mfg_submit_savepoint,
+		planned_wo_posts,
+		actual_rm_map,
+		created_entries,
+		created_entries_by_wo,
+		allow_wip_topup_retry: bool = True,
+	):
+		"""Build + submit one Manufacture Stock Entry; auto WIP top-up + retry when allowed."""
+		se = frappe.new_doc("Stock Entry")
+		se.flags.ignore_duplicate_for_work_order = True
+		se.company = wo_doc.company
+		se.posting_date = today()
+		se.posting_time = nowtime()
+		se.set_posting_time = 1
+		se.stock_entry_type = self._manufacture_stock_entry_type_name()
+		se.purpose = "Manufacture"
+		se.work_order = None
+		se.production_item = wo_doc.production_item
+		se.fg_completed_qty = chunk_total_qty
+		se.from_bom = 1
+		se.bom_no = wo_doc.bom_no
+		se.use_multi_level_bom = wo_doc.use_multi_level_bom
+		se.wip_warehouse = wo_doc.wip_warehouse
+		se.to_warehouse = wo_doc.fg_warehouse
+		self._set_stock_entry_spr_link(se)
+		self._set_stock_entry_unit(se, wo_doc)
+		se.get_items()
+		if spr_doc_is_bag_spr(self):
+			_spr_apply_bag_rm_qty_from_bom(se, wo_doc.bom_no, chunk_total_qty)
+		wip_warehouse = wo_doc.wip_warehouse
+		for item in se.items or []:
+			if not item.item_code:
+				continue
+			if not item.get("t_warehouse"):
+				item.s_warehouse = wip_warehouse
+				if item.s_warehouse != wip_warehouse:
+					frappe.throw(
+						_("Raw material {0} source warehouse is {1}, not {2}. ABORT.").format(
+							item.item_code, item.s_warehouse, wip_warehouse
+						),
+						title=_("Warehouse Mismatch"),
+					)
+			elif item.t_warehouse != wo_doc.fg_warehouse:
+				item.t_warehouse = wo_doc.fg_warehouse
+		actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
+		fg_templates = self._strip_finished_goods_from_stock_entry(se)
+		self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows, fg_templates)
+		self._assign_rm_batches_for_stock_entry(se, wo_id)
+		self._spr_apply_stock_entry_item_accounts(se)
+		se.stock_entry_type = self._manufacture_stock_entry_type_name()
+		se.purpose = "Manufacture"
+		se.insert()
+		self._persist_stock_entry_spr_reference_db(se.name)
+		if _cstr(se.purpose) != "Manufacture":
+			frappe.throw(
+				_("Stock Entry {0} resolved to purpose {1}; expected Manufacture.").format(
+					se.name, _cstr(se.purpose) or "—"
+				),
+				title=_("Invalid Stock Entry purpose"),
+			)
+		se.reload()
+		se.flags.ignore_duplicate_for_work_order = True
+		self._set_stock_entry_spr_link(se)
+		self._set_stock_entry_unit(se, wo_doc)
+		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
+		if _cstr(se.purpose) != "Manufacture":
+			frappe.throw(
+				_("Stock Entry {0} changed to purpose {1} after insert; expected Manufacture.").format(
+					se.name, _cstr(se.purpose) or "—"
+				),
+				title=_("Invalid Stock Entry purpose"),
+			)
+		try:
+			se.flags.ignore_duplicate_for_work_order = True
+			se.submit()
+		except Exception as e:
+			try:
+				frappe.db.rollback(save_point=mfg_submit_savepoint)
+			except Exception:
+				pass
+			shortages = self._rm_shortages_for_se(se, wo_doc)
+			if not shortages:
+				shortages = self._rm_shortages_from_exception(e)
+				shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
+			if not shortages:
+				topup = self._spr_wip_topup_short_by_item_from_exception(wo_doc, e)
+				if topup and allow_wip_topup_retry:
+					transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup)
+					if transfer and cint(frappe.db.get_value("Stock Entry", transfer, "docstatus")) == 1:
+						frappe.db.savepoint(mfg_submit_savepoint)
+						raise _SprWipTopupRetry()
+				if topup and not allow_wip_topup_retry:
+					frappe.throw(
+						_("WIP top-up transfer was created but Manufacture still failed. Check stock and retry."),
+						title=_("Manufacture failed after WIP top-up"),
+					)
+				self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
+			if shortages:
+				submit_shortage_events = [
+					{
+						"wo_id": wo_id,
+						"wo_doc": wo_doc,
+						"chunk_total_qty": chunk_total_qty,
+						"shortages": shortages,
+					}
+				]
+				for p2 in planned_wo_posts:
+					wo_id2 = p2["wo_id"]
+					wo_doc2 = p2["wo_doc"]
+					for chunk_rows2 in p2["row_chunks"]:
+						chunk_total_qty2 = sum(self._row_fg_qty(r2) for r2 in chunk_rows2)
+						if chunk_total_qty2 <= 0:
+							continue
+						preview_se2 = self._build_shortage_preview_for_chunk(wo_doc2, chunk_total_qty2)
+						shortages2 = self._rm_shortages_for_se(preview_se2, wo_doc2)
+						if shortages2:
+							submit_shortage_events.append(
+								{
+									"wo_id": wo_id2,
+									"wo_doc": wo_doc2,
+									"chunk_total_qty": chunk_total_qty2,
+									"shortages": shortages2,
+								}
+							)
+				self._raise_shortage_with_transfer_batch(submit_shortage_events)
+			raise
+		frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
+		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
+		self._apply_order_code_to_submitted_stock_entry(se.name)
+		self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
+		self._sync_work_order_required_item_progress(wo_id)
+		self._sync_production_plan_progress_from_work_orders(_cstr(getattr(wo_doc, "production_plan", None)))
+		created_entries.append(se.name)
+		created_entries_by_wo[wo_id].append(se.name)
+		frappe.msgprint(
+			_("WO {0}: Created {1}/{2} Manufacture entry {3} ({4} Kg).").format(
+				wo_id, chunk_idx, chunk_count, se.name, flt(chunk_total_qty, 3)
+			),
+			alert=True,
+		)
+		return {"actual_rm_map": actual_rm_map, "se_name": se.name}
+
 	def create_manufacturing_stock_entries(self):
 		"""Create submitted Manufacture Stock Entries from Roll Production Results (per WO / chunk).
 
@@ -5342,234 +5585,28 @@ class ShaftProductionRun(Document):
 				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
 				if chunk_total_qty <= 0:
 					continue
-				se = frappe.new_doc("Stock Entry")
-				# ERPNext blocks a second Manufacture against the same WO once cumulative FG >= WO qty.
-				# We submit with work_order blank then link after submit; still set flag so validation
-				# never blocks partial multi-day / multi-SPR manufacture for the same WO.
-				se.flags.ignore_duplicate_for_work_order = True
-				se.company = wo_doc.company
-				se.posting_date = today()
-				se.posting_time = nowtime()
-				se.set_posting_time = 1
-				# Keep explicit type + purpose for sites where Stock Entry Type is mandatory.
-				se.stock_entry_type = self._manufacture_stock_entry_type_name()
-				# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
-				se.purpose = "Manufacture"
-				# Keep empty while inserting/submitting to avoid transfer-duplicate blocker (MAT-STE).
-				# We link back to WO immediately after submit.
-				se.work_order = None
-				se.production_item = wo_doc.production_item
-				se.fg_completed_qty = chunk_total_qty
-				se.from_bom = 1
-				se.bom_no = wo_doc.bom_no
-				se.use_multi_level_bom = wo_doc.use_multi_level_bom
-				se.wip_warehouse = wo_doc.wip_warehouse
-				se.to_warehouse = wo_doc.fg_warehouse
-
-				self._set_stock_entry_spr_link(se)
-				self._set_stock_entry_unit(se, wo_doc)
-
-				# get_items() clears `items` and rebuilds from BOM + finished good; do not append rows before it.
-				se.get_items()
-				if spr_doc_is_bag_spr(self):
-					_spr_apply_bag_rm_qty_from_bom(se, wo_doc.bom_no, chunk_total_qty)
-
-				# ≡ƒöÆ ENFORCE: ALL RM items MUST use WIP warehouse ONLY - NO OTHER WAREHOUSE
-				# This prevents double consumption (materials already transferred to WIP)
-				wip_warehouse = wo_doc.wip_warehouse
-				rm_count = 0
-
-				for item in se.items or []:
-					if item.item_code:
-						# Check if this is a RM item (no t_warehouse means it's a raw material)
-						if not item.get("t_warehouse"):
-							rm_count += 1
-							# ≡ƒöÆ ENFORCE: Set source warehouse to WIP ONLY
-							item.s_warehouse = wip_warehouse
-
-							# ≡ƒöÆ VALIDATE: Ensure warehouse was set correctly
-							if item.s_warehouse != wip_warehouse:
-								frappe.throw(
-									_("Raw material {0} source warehouse is {1}, not {2}. ABORT.").format(
-										item.item_code, item.s_warehouse, wip_warehouse
-									),
-									title=_("Warehouse Mismatch")
-								)
-						else:
-							# This is a finished good item - target warehouse should be FG warehouse
-							if item.t_warehouse != wo_doc.fg_warehouse:
-								item.t_warehouse = wo_doc.fg_warehouse
-
-				# Log for verification
-				if rm_count > 0:
-					frappe.msgprint(
-						_("Confirmed: {0} RM items set to use WIP warehouse: {1}").format(rm_count, wip_warehouse),
-						alert=False
-					)
-				actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
-
-				# Default FG line has no batch; batch-mandatory items require batch_no per ERPNext validation.
-				fg_templates = self._strip_finished_goods_from_stock_entry(se)
-				self._append_manufacture_fg_from_spr_rolls(se, wo_doc, chunk_rows, fg_templates)
-				self._assign_rm_batches_for_stock_entry(se, wo_id)
-
-				# Hard guard: submit path must always be Manufacture (never Material Transfer).
-				se.stock_entry_type = self._manufacture_stock_entry_type_name()
-				se.purpose = "Manufacture"
-				se.insert()
-				self._persist_stock_entry_spr_reference_db(se.name)
-				if _cstr(se.purpose) != "Manufacture":
-					frappe.throw(
-						_(
-							"Stock Entry {0} resolved to purpose {1}; expected Manufacture. "
-							"Check Stock Entry Type/site customization remapping and retry."
-						).format(
-							se.name, _cstr(se.purpose) or "—"
-						),
-						title=_("Invalid Stock Entry purpose"),
-					)
-				# If entry type remaps purpose during validate hooks, block before submit.
-				se.reload()
-				# reload() drops in-memory flags; submit() must see this again or ERPNext duplicate-WO check runs.
-				se.flags.ignore_duplicate_for_work_order = True
-				self._set_stock_entry_spr_link(se)
-				self._set_stock_entry_unit(se, wo_doc)
-				self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
-				if _cstr(se.purpose) != "Manufacture":
-					frappe.throw(
-						_(
-							"Stock Entry {0} changed to purpose {1} after insert; expected Manufacture. "
-							"Fix Stock Entry Type mapping/custom script and retry."
-						).format(se.name, _cstr(se.purpose) or "—"),
-						title=_("Invalid Stock Entry purpose"),
-					)
-				try:
-					se.flags.ignore_duplicate_for_work_order = True
-					se.submit()
-				except Exception as e:
-					# Prevent partial Manufacture commits when shortage/submit failure happens mid-run.
+				for _spr_mfg_try in range(2):
 					try:
-						frappe.db.rollback(save_point=mfg_submit_savepoint)
-					except Exception:
-						pass
-					shortages = self._rm_shortages_for_se(se, wo_doc)
-					if not shortages:
-						shortages = self._rm_shortages_from_exception(e)
-						shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
-					if not shortages:
-						topup = self._spr_wip_topup_short_by_item_from_exception(wo_doc, e)
-						if topup:
-							transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup)
-							if transfer:
-								submitted = cint(
-									frappe.db.get_value("Stock Entry", transfer, "docstatus")
-								) == 1
-								prec = _spr_rm_stock_qty_precision()
-								detail = ", ".join(
-									_("{0}: {1} Kg").format(ic, flt(q, prec))
-									for ic, q in sorted(topup.items())
-								)
-								frappe.throw(
-									_(
-										"Work Order {0} needed a small WIP top-up before Manufacture could post.\n\n"
-										"{1}\n\n"
-										"Material Transfer {2} was {3}. Submit this SPR again to complete manufacture."
-									).format(
-										wo_id,
-										detail,
-										transfer,
-										_("submitted") if submitted else _("saved as draft — submit it first"),
-									),
-									title=_("WIP topped up — submit SPR again"),
-								)
-						self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
-					if shortages:
-						# Build one combined shortage response for all WO chunks in this submit attempt.
-						submit_shortage_events = [
-							{
-								"wo_id": wo_id,
-								"wo_doc": wo_doc,
-								"chunk_total_qty": chunk_total_qty,
-								"shortages": shortages,
-							}
-						]
-						for p2 in planned_wo_posts:
-							wo_id2 = p2["wo_id"]
-							wo_doc2 = p2["wo_doc"]
-							for chunk_rows2 in p2["row_chunks"]:
-								chunk_total_qty2 = sum(self._row_fg_qty(r2) for r2 in chunk_rows2)
-								if chunk_total_qty2 <= 0:
-									continue
-								preview_se2 = self._build_shortage_preview_for_chunk(wo_doc2, chunk_total_qty2)
-								shortages2 = self._rm_shortages_for_se(preview_se2, wo_doc2)
-								if not shortages2:
-									continue
-								submit_shortage_events.append(
-									{
-										"wo_id": wo_id2,
-										"wo_doc": wo_doc2,
-										"chunk_total_qty": chunk_total_qty2,
-										"shortages": shortages2,
-									}
-								)
-						# Fallback for ERPNext future-SLE shortages: propagate same RM item shortages to all WO plans.
-						# This avoids one-WO-at-a-time draft generation loops for the same missing RM item.
-						short_item_codes = sorted({_cstr(it) for it, _wh, _req, _avl, _sh in shortages if _cstr(it)})
-						if short_item_codes:
-							for p2 in planned_wo_posts:
-								wo_id2 = p2["wo_id"]
-								wo_doc2 = p2["wo_doc"]
-								expected_rm2 = p2.get("expected_rm_map") or {}
-								wip_wh2 = _cstr(getattr(wo_doc2, "wip_warehouse", None))
-								extra_shortages = []
-								for ic in short_item_codes:
-									req2 = flt(expected_rm2.get(ic, 0))
-									if req2 <= 0:
-										continue
-									avl2 = flt(
-										frappe.db.get_value(
-											"Bin",
-											{"item_code": ic, "warehouse": wip_wh2},
-											"actual_qty",
-										)
-										or 0
-									)
-									req2 = _spr_round_rm_stock_qty(req2)
-									avl2 = _spr_round_rm_stock_qty(avl2)
-									sh2 = req2 - avl2
-									tol2 = _spr_rm_wip_shortage_tolerance(req2)
-									if sh2 <= tol2:
-										continue
-									if _spr_wo_rm_transfer_remaining(wo_doc2, ic) <= tol2:
-										continue
-									extra_shortages.append((ic, wip_wh2, req2, avl2, sh2))
-								if extra_shortages:
-									submit_shortage_events.append(
-										{
-											"wo_id": wo_id2,
-											"wo_doc": wo_doc2,
-											"chunk_total_qty": flt(p2.get("total_qty") or 0),
-											"shortages": extra_shortages,
-										}
-									)
-						self._raise_shortage_with_transfer_batch(submit_shortage_events)
-					raise
-				# Link back to WO after successful submit, then sync WO produced qty.
-				frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
-				self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
-				self._apply_order_code_to_submitted_stock_entry(se.name)
-				self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
-				self._sync_work_order_required_item_progress(wo_id)
-				self._sync_production_plan_progress_from_work_orders(_cstr(getattr(wo_doc, "production_plan", None)))
-				created_entries.append(se.name)
-				created_entries_by_wo[wo_id].append(se.name)
-
-				frappe.msgprint(
-					_("WO {0}: Created {1}/{2} Manufacture entry {3} ({4} Kg).").format(
-						wo_id, idx, len(row_chunks), se.name, flt(chunk_total_qty, 3)
-					),
-					alert=True,
-				)
+						chunk_done = self._spr_run_manufacture_chunk_attempt(
+							wo_id=wo_id,
+							wo_doc=wo_doc,
+							chunk_rows=chunk_rows,
+							chunk_total_qty=chunk_total_qty,
+							chunk_idx=idx,
+							chunk_count=len(row_chunks),
+							mfg_submit_savepoint=mfg_submit_savepoint,
+							planned_wo_posts=planned_wo_posts,
+							actual_rm_map=actual_rm_map,
+							created_entries=created_entries,
+							created_entries_by_wo=created_entries_by_wo,
+							allow_wip_topup_retry=(_spr_mfg_try == 0),
+						)
+						actual_rm_map = chunk_done["actual_rm_map"]
+						break
+					except _SprWipTopupRetry:
+						if _spr_mfg_try == 0:
+							continue
+						raise
 			self._validate_rm_split_variance(wo_id, total_qty, expected_rm_map, actual_rm_map)
 			self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
 
