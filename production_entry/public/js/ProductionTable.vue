@@ -286,6 +286,7 @@
                                 >
                                   {{ itemProductionStatusLine(row.item) }}
                                 </div>
+                              <div class="pt-spr-btn-row" v-if="canShowStockEntry(row.item) || shouldShowItemViewSpr(row.item)">
                               <button 
                                 v-if="canShowStockEntry(row.item)" 
                                 @click="handleStockEntryAction(row.item)" 
@@ -294,13 +295,14 @@
                                 {{ getStockEntryLabel(row.item) }}
                               </button>
                               <button 
-                                v-else-if="row.item.spr_name" 
+                                v-if="shouldShowItemViewSpr(row.item)" 
                                 @click="openItemSPR(row.item.spr_name, row.item)" 
                                 class="cc-pp-btn pt-btn-entry" 
                                 :class="Number(row.item.spr_docstatus) === 1 && row.item.wo_terminal ? 'pt-spr-btn-done' : Number(row.item.spr_docstatus) === 1 ? 'pt-spr-btn-submitted' : 'pt-spr-btn-draft'"
                                 :title="itemSprPrimaryButtonTitle(row.item)">
                                 {{ itemSprPrimaryButtonLabel(row.item) }}
                               </button>
+                              </div>
                               <span
                                 v-else-if="row.item.pp_id && Number(row.item.pp_docstatus) !== 1"
                                 class="pt-wo-closed-hint"
@@ -1958,12 +1960,26 @@ function itemProductionStatusLine(item) {
 
 function itemProductionStatusTitle(item) {
   const line = itemProductionStatusLine(item);
-  const p = Number(item.pending_qty ?? item.item_pending_qty ?? 0);
+  const p = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
   const extra =
     p > 0
       ? ` System pending (PP): ${formatKg2(p)} kg. Buttons open or create a Shaft Production Run — not a generic Stock Entry list.`
       : " No pending qty on this line; check PP/SPR if you need more production.";
   return (line || "Production vs target") + extra;
+}
+
+function itemTargetGapKg(item) {
+  const t = parseFloat(item?.qty) || 0;
+  const a = parseFloat(item?.actual_production_weight_kgs ?? item?.total_achieved_weight_kgs) || 0;
+  return t - a;
+}
+
+function itemRemainingKg(item) {
+  if (!item) return 0;
+  const pendingKg = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
+  const gap = itemTargetGapKg(item);
+  if (gap > 0.5) return Math.max(pendingKg, gap);
+  return pendingKg;
 }
 
 function mergeTargetGapKg(row) {
@@ -2382,19 +2398,19 @@ function canShowStockEntry(item) {
   if (!item || !item.pp_id) return false;
   if (Number(item.pp_docstatus) !== 1) return false;
 
-  const pendingQty = Number(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty ?? 0);
-  if (!(pendingQty > 0)) return false;
+  const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
+  if (isDraftSpr) return true;
 
-  // Guard against stale backend pending: if this row is already at/over target, do not allow New SPR.
-  const targetKg = Number(item.qty ?? 0);
-  const actualKg = Number(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs ?? 0);
-  if (targetKg > 0 && actualKg >= targetKg - 1e-6) return false;
+  if (item.wo_terminal) return false;
 
-  const woTerminal = !!item.wo_terminal;
-  if (woTerminal) return false;
+  const remainingKg = itemRemainingKg(item);
+  return remainingKg > 0.5;
+}
 
-  // Strict remaining rule: continue entry only while pending qty exists and WO is non-terminal.
-  return true;
+function shouldShowItemViewSpr(item) {
+  if (!item?.spr_name) return false;
+  const isDraft = item.spr_docstatus === 0 || item.spr_docstatus === "0";
+  return !isDraft;
 }
 
 function canShowMergedStockEntry(row) {
@@ -2445,11 +2461,11 @@ function getStockEntryLabel(item) {
 function getStockEntryTitle(item) {
   if (!item) return "Create a Shaft Production Run for this line";
   const isDraftSpr = !!item.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
-  const pendingQty = Number(item.pending_qty || 0);
+  const pending = itemRemainingKg(item);
   if (isDraftSpr) {
-    return `Open the draft SPR and continue recording rolls. Pending (PP): ${pendingQty.toFixed(0)} Kg.`;
+    return `Open draft SPR — add rolls, Submit when finished. Pending: ${formatKg2(pending)} kg.`;
   }
-  return `Start a new Shaft Production Run for this submitted Production Plan. Pending (PP): ${pendingQty.toFixed(0)} Kg.`;
+  return `Start another Shaft Production Run for remaining production (e.g. next shift). Pending: ${formatKg2(pending)} kg.`;
 }
 
 async function handleStockEntryAction(item) {
