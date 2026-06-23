@@ -2993,10 +2993,14 @@ class ShaftProductionRun(Document):
 		return filtered
 
 	def _spr_wip_topup_max_kg(self) -> float:
+		"""Optional per-item cap for WIP top-up (0 = unlimited)."""
 		try:
-			return max(0.01, flt(frappe.conf.get("spr_wip_topup_max_kg") or 2.0))
+			val = frappe.conf.get("spr_wip_topup_max_kg")
+			if val is None:
+				return 0.0
+			return max(0.0, flt(val))
 		except (TypeError, ValueError):
-			return 2.0
+			return 0.0
 
 	def _spr_wip_topup_short_by_item_from_exception(self, wo_doc, exc) -> dict:
 		"""Parse manufacture NegativeStockError into RM->WIP top-up qty when WO transfer is already complete."""
@@ -3004,24 +3008,42 @@ class ShaftProductionRun(Document):
 		if not parsed:
 			return {}
 		wo_doc = self._reload_work_order_doc(wo_doc)
-		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
 		max_topup = self._spr_wip_topup_max_kg()
 		out: dict[str, float] = {}
 		for ic, _wh, _req, _avl, sq in parsed:
 			code = _cstr(ic).strip()
 			qty = _spr_round_rm_stock_qty(sq)
-			if not code or qty <= 0 or qty > max_topup:
-				return {}
+			if not code or qty <= 0:
+				continue
 			tol = _spr_rm_wip_shortage_tolerance(qty)
 			if qty <= tol:
 				continue
 			if _spr_wo_rm_transfer_remaining(wo_doc, code) > tol:
-				return {}
+				# Normal RM->WIP shortage path should handle items still to transfer on the WO.
+				continue
+			if max_topup > 0 and qty > max_topup:
+				qty = max_topup
 			out[code] = out.get(code, 0.0) + qty
 		return out
 
+	def _spr_try_wip_topup_transfer_and_retry_manufacture(
+		self, wo_doc, exc, allow_wip_topup_retry: bool, mfg_submit_savepoint: str
+	) -> None:
+		"""Create one RM->WIP MTFM for parsed WIP shortage, auto-submit, then retry Manufacture."""
+		if not allow_wip_topup_retry:
+			return
+		topup = self._spr_wip_topup_short_by_item_from_exception(wo_doc, exc)
+		if not topup:
+			return
+		transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup)
+		if not transfer:
+			return
+		if cint(frappe.db.get_value("Stock Entry", transfer, "docstatus")) == 1:
+			frappe.db.savepoint(mfg_submit_savepoint)
+			raise _SprWipTopupRetry()
+
 	def _create_wip_topup_mtfm_for_manufacture(self, wo_doc, short_by_item: dict) -> str:
-		"""One RM->WIP transfer for micro-shortages after WO shows full transfer (batch/rounding gaps)."""
+		"""One RM->WIP transfer when Manufacture cannot consume WIP (batch/ledger gap after WO transfer)."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		if not wo_doc or not short_by_item:
 			return ""
@@ -3081,9 +3103,9 @@ class ShaftProductionRun(Document):
 				"Work Order {0} already shows raw materials transferred, but Work In Progress "
 				"warehouse does not have enough stock to complete Manufacture.\n\n"
 				"{1}\n\n"
-				"Do not submit another Material Transfer for Manufacture for this WO. "
-				"Cancel duplicate MTFM entries if any, then ask admin to reconcile WIP stock "
-				"(or adjust WO transferred qty after cancelling wrong STEs)."
+				"An automatic RM → WIP transfer could not be created or submitted. "
+				"Check RM store stock for the shortage item(s), cancel duplicate MTFM entries "
+				"if any, then submit SPR again."
 			).format(wo_id, "\n".join(lines[:15]), err_tail),
 			title=_("WIP stock mismatch"),
 		)
@@ -4197,7 +4219,9 @@ class ShaftProductionRun(Document):
 		names = frappe.get_all("Stock Entry", filters=filters, pluck="name", order_by="modified desc", limit=1)
 		return _cstr(names[0]) if names else ""
 
-	def _create_combined_spr_shortage_transfer_draft(self, shortage_events) -> str:
+	def _create_combined_spr_shortage_transfer_draft(
+		self, shortage_events, ignore_wo_transfer_prune: bool = False
+	) -> str:
 		"""One draft Material Transfer for Manufacture with all RM shortages (PP, LD, fabric, etc.)."""
 		if not shortage_events:
 			return ""
@@ -4228,31 +4252,34 @@ class ShaftProductionRun(Document):
 		if not short_map or not primary_wo_doc:
 			return ""
 
-		pruned_map: dict[str, float] = {}
-		item_wo_pruned: dict[str, object] = {}
-		for ic, qty in short_map.items():
-			wo_for_ic = item_wo.get(ic) or primary_wo_doc
-			wo_ref = self._reload_work_order_doc(wo_for_ic)
-			pruned = self._prune_short_by_item_to_wo_transfer_remaining(wo_ref, {ic: flt(qty)})
-			if pruned.get(ic):
-				pruned_map[ic] = pruned[ic]
-				item_wo_pruned[ic] = wo_ref
-		if not pruned_map:
-			wo_ids = sorted(
-				{
-					_cstr(getattr(item_wo.get(ic) or primary_wo_doc, "name", None))
-					for ic in short_map.keys()
-				}
-			)
-			for wo_id in wo_ids:
-				if wo_id:
-					found = self._find_recent_spr_wo_mtfm_transfer(wo_id)
-					if found:
-						return found
-			return ""
+		if ignore_wo_transfer_prune:
+			pruned_map = {_cstr(ic): _spr_round_rm_stock_qty(qty) for ic, qty in short_map.items()}
+		else:
+			pruned_map: dict[str, float] = {}
+			item_wo_pruned: dict[str, object] = {}
+			for ic, qty in short_map.items():
+				wo_for_ic = item_wo.get(ic) or primary_wo_doc
+				wo_ref = self._reload_work_order_doc(wo_for_ic)
+				pruned = self._prune_short_by_item_to_wo_transfer_remaining(wo_ref, {ic: flt(qty)})
+				if pruned.get(ic):
+					pruned_map[ic] = pruned[ic]
+					item_wo_pruned[ic] = wo_ref
+			if not pruned_map:
+				wo_ids = sorted(
+					{
+						_cstr(getattr(item_wo.get(ic) or primary_wo_doc, "name", None))
+						for ic in short_map.keys()
+					}
+				)
+				for wo_id in wo_ids:
+					if wo_id:
+						found = self._find_recent_spr_wo_mtfm_transfer(wo_id)
+						if found:
+							return found
+				return ""
+			item_wo = item_wo_pruned
 
 		short_map = pruned_map
-		item_wo = item_wo_pruned
 
 		# Combined manual STE: all shortage RM lines in one entry (PP + LD + fabric, etc.).
 		try:
@@ -4271,7 +4298,13 @@ class ShaftProductionRun(Document):
 			for _wo_key, ic_map in per_wo_short.items():
 				sample_ic = next(iter(ic_map.keys()), "")
 				wo_ref = item_wo.get(sample_ic) or primary_wo_doc
-				added_total += self._append_mtfm_shortage_lines(se, wo_ref, dict(ic_map), wip_wh)
+				added_total += self._append_mtfm_shortage_lines(
+					se,
+					wo_ref,
+					dict(ic_map),
+					wip_wh,
+					ignore_wo_transfer=ignore_wo_transfer_prune,
+				)
 			if added_total > 0:
 				name = self._spr_insert_shortage_transfer_draft(se)
 				if name:
@@ -4418,13 +4451,16 @@ class ShaftProductionRun(Document):
 			)
 		return "\n".join(lines)
 
-	def _raise_shortage_with_transfer_batch(self, shortage_events):
+	def _raise_shortage_with_transfer_batch(
+		self, shortage_events, ignore_wo_transfer_prune: bool = False
+	):
 		"""Create one combined transfer for all shortages, then raise actionable message."""
 		if not shortage_events:
 			return
-		shortage_events = self._filter_shortage_events_by_wo_transfer(shortage_events)
-		if not shortage_events:
-			return
+		if not ignore_wo_transfer_prune:
+			shortage_events = self._filter_shortage_events_by_wo_transfer(shortage_events)
+			if not shortage_events:
+				return
 		consolidated = self._consolidated_shortage_lines(shortage_events)
 
 		transfer_name = ""
@@ -4434,7 +4470,9 @@ class ShaftProductionRun(Document):
 		except Exception:
 			pass
 		try:
-			transfer_name = self._create_combined_spr_shortage_transfer_draft(shortage_events)
+			transfer_name = self._create_combined_spr_shortage_transfer_draft(
+				shortage_events, ignore_wo_transfer_prune=ignore_wo_transfer_prune
+			)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR combined shortage draft:{self.name}")
 			transfer_name = ""
@@ -5347,20 +5385,8 @@ class ShaftProductionRun(Document):
 			shortages = self._rm_shortages_for_se(se, wo_doc)
 			if not shortages:
 				shortages = self._rm_shortages_from_exception(e)
-				shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
-			if not shortages:
-				topup = self._spr_wip_topup_short_by_item_from_exception(wo_doc, e)
-				if topup and allow_wip_topup_retry:
-					transfer = self._create_wip_topup_mtfm_for_manufacture(wo_doc, topup)
-					if transfer and cint(frappe.db.get_value("Stock Entry", transfer, "docstatus")) == 1:
-						frappe.db.savepoint(mfg_submit_savepoint)
-						raise _SprWipTopupRetry()
-				if topup and not allow_wip_topup_retry:
-					frappe.throw(
-						_("WIP top-up transfer was created but Manufacture still failed. Check stock and retry."),
-						title=_("Manufacture failed after WIP top-up"),
-					)
-				self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
+				if shortages:
+					shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
 			if shortages:
 				submit_shortage_events = [
 					{
@@ -5389,7 +5415,27 @@ class ShaftProductionRun(Document):
 								}
 							)
 				self._raise_shortage_with_transfer_batch(submit_shortage_events)
-			raise
+			# WO already shows RM transferred — auto RM->WIP transfer then retry Manufacture once.
+			try:
+				self._spr_try_wip_topup_transfer_and_retry_manufacture(
+					wo_doc, e, allow_wip_topup_retry, mfg_submit_savepoint
+				)
+			except _SprWipTopupRetry:
+				raise
+			parsed_wip = self._rm_shortages_from_exception(e)
+			if parsed_wip:
+				self._raise_shortage_with_transfer_batch(
+					[
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": parsed_wip,
+						}
+					],
+					ignore_wo_transfer_prune=True,
+				)
+			self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
 		frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
 		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
 		self._apply_order_code_to_submitted_stock_entry(se.name)
