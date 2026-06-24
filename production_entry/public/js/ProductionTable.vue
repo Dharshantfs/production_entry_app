@@ -1677,19 +1677,28 @@ function dedupeMergedActualProductionKg(items) {
         ),
       0
     );
+    const partialWeights = items.map((it) => parseFloat(it.actual_production_weight_kgs) || 0);
+    const partialSum = partialWeights.reduce((s, w) => s + (w > 0 ? w : 0), 0);
+    const rounded = partialWeights.filter((w) => w > 0).map((w) => Math.round(w * 100) / 100);
+    const uniqPartial = [...new Set(rounded)];
+
     if (headerTotal > 0) {
-      const partialSum = items.reduce(
-        (s, it) => s + (parseFloat(it.actual_production_weight_kgs) || 0),
-        0
-      );
+      // Split/merged rows may each carry the full SPR produced kg — count SPR once.
+      if (partialSum > headerTotal * 1.01) {
+        return headerTotal;
+      }
+      if (uniqPartial.length <= 1 && uniqPartial[0] > 0) {
+        return Math.max(uniqPartial[0], headerTotal);
+      }
       if (partialSum + 0.05 < headerTotal) {
         return headerTotal;
       }
-      if (partialSum > 0) {
-        return partialSum;
-      }
-      return headerTotal;
+      return partialSum;
     }
+    if (uniqPartial.length <= 1) {
+      return uniqPartial[0] || 0;
+    }
+    return partialSum;
   }
   const bySpr = new Map();
   let noSprSum = 0;

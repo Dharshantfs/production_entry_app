@@ -6519,6 +6519,45 @@ def _spr_header_produced_total_kg(spr_raw, spr_id_produced_map=None, spr_metrics
 	return flt(best)
 
 
+def _spr_split_row_produced_share(
+	sheet_items,
+	current_item,
+	spr_raw,
+	item_code,
+	spr_id_produced_map=None,
+	spr_metrics=None,
+	spr_item_kg_by_code=None,
+):
+	"""
+	When multiple Planning Table rows share the same SPR + item_code (split/merge family),
+	return this row's share of the SPR produced kg — never the full header on every row.
+	"""
+	ic = (item_code or "").strip()
+	spr_tokens = _expand_spr_name_tokens(spr_raw)
+	if not ic or not spr_tokens:
+		return None
+	siblings = []
+	for it in sheet_items or []:
+		if (it.get("item_code") or "").strip() != ic:
+			continue
+		if _expand_spr_name_tokens(it.get("spr_name")) != spr_tokens:
+			continue
+		siblings.append(it)
+	if len(siblings) <= 1:
+		return None
+	header_kg = _spr_header_produced_total_kg(spr_raw, spr_id_produced_map, spr_metrics)
+	if header_kg <= 0:
+		for sid in spr_tokens:
+			header_kg = max(header_kg, flt((spr_item_kg_by_code or {}).get(sid, {}).get(ic, 0)))
+	if header_kg <= 0:
+		return None
+	total_qty = sum(flt(it.get("qty", 0)) for it in siblings)
+	if total_qty <= 0:
+		return flt(header_kg) / len(siblings)
+	row_qty = flt(current_item.get("qty", 0))
+	return flt(header_kg) * row_qty / total_qty
+
+
 def _fabric_ready_date_from_child_sprs(run_date_map, raw_child_spr):
 	"""Pick a single display date from mapped submitted SPR run dates (CSV on child fabric link)."""
 	best = None
@@ -22273,6 +22312,20 @@ def _get_color_chart_data_impl(
                 split_so_item_produced_alloc_map[alloc_bucket] = already_alloc + row_alloc
                 item_level_produced = row_alloc
 
+            split_spr_share_kg = None
+            if row_spr_for_produced and (cint(item.get("is_split")) or split_group):
+                split_spr_share_kg = _spr_split_row_produced_share(
+                    items,
+                    item,
+                    row_spr_for_produced,
+                    item.get("item_code"),
+                    spr_id_produced_map,
+                    spr_metrics,
+                    spr_item_kg_by_code,
+                )
+                if split_spr_share_kg is not None:
+                    item_level_produced = split_spr_share_kg
+
             # Prefer `spr_name`, but allow Production Plan fallback so rows still show values
             # when the SPR link has not been backfilled yet.
             spr_name = (item.get("spr_name") or "").strip()
@@ -22339,7 +22392,9 @@ def _get_color_chart_data_impl(
                         break
 
             total_achieved_weight_kgs = 0
-            if spr_row_produced_kg is not None and spr_row_produced_kg > 0:
+            if split_spr_share_kg is not None:
+                total_achieved_weight_kgs = split_spr_share_kg
+            elif spr_row_produced_kg is not None and spr_row_produced_kg > 0:
                 total_achieved_weight_kgs = spr_row_produced_kg
             elif wo_item_level_produced is not None:
                 total_achieved_weight_kgs = wo_item_level_produced
@@ -22357,7 +22412,7 @@ def _get_color_chart_data_impl(
             # Production Table shows actual_production_weight_kgs from this field.
             # Split rows: keep per-row SPR weight when this Planning Table row is linked to an SPR
             # (spr_psi_* maps); only use allocated item_level_produced when no SPR weight exists.
-            if cint(item.get("is_split")) or split_group:
+            if split_spr_share_kg is None and (cint(item.get("is_split")) or split_group):
                 has_psi_spr_weight = row_spr and psi_name and (
                     (psi_name in spr_psi_achieved_weight_map and flt(spr_psi_achieved_weight_map.get(psi_name)) > 0)
                     or (psi_name in spr_psi_produced_map and flt(spr_psi_produced_map.get(psi_name)) > 0)
