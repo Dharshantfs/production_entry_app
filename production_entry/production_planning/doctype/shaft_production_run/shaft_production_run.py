@@ -6169,8 +6169,10 @@ def _spr_resolve_roll_line_specs_from_item_code(item_code: str, item_name: str =
 		q2, c2 = extract_quality_and_color(item_name or "", item_code=ic)
 		if not out["quality"]:
 			out["quality"] = _cstr(q2).strip().upper()
-		if not out["color"]:
-			out["color"] = _cstr(c2).strip().upper()
+	if not out["color"]:
+		out["color"] = _cstr(c2).strip().upper()
+	if flt(out["width_inch"]) <= 0:
+		out["width_inch"] = _spr_nominal_roll_width_inch(ic, item_name)
 	return out
 
 
@@ -8282,12 +8284,37 @@ def parse_item_code(item_code):
 	try:
 		if len(item_code) >= 16:
 			gsm = int(item_code[9:12])
-			width_mm = int(item_code[12:16])
-			width_inch = round(width_mm / 25.4, 1)
-			return gsm, width_inch
+			width_inch = _spr_nominal_roll_width_inch(item_code)
+			if width_inch > 0:
+				return gsm, width_inch
 	except Exception:
 		pass
 	return 0, 0
+
+
+def _spr_nominal_roll_width_inch(item_code, item_name=None) -> float:
+	"""Roll width in inches: prefer item-name W - X.X, else 4-digit mm tail rounded to nearest 0.5\"."""
+	ic = _cstr(item_code).strip()
+	if not ic:
+		return 0.0
+	inm = _cstr(item_name).strip() if item_name else _cstr(frappe.db.get_value("Item", ic, "item_name") or "")
+	try:
+		from production_entry.production_planning.scheduler_api import _parse_gsm_width_from_item_text
+
+		_, w_name = _parse_gsm_width_from_item_text(f"{ic} {inm}")
+		if w_name > 0:
+			rw = round(flt(w_name), 1)
+			return float(int(rw)) if abs(rw - round(rw)) < 1e-9 else rw
+	except Exception:
+		pass
+	try:
+		if len(ic) >= 16 and ic[12:16].isdigit():
+			width_mm = int(ic[12:16])
+			if width_mm > 0:
+				return round(round(width_mm / 25.4 * 2) / 2, 1)
+	except Exception:
+		pass
+	return 0.0
 
 
 def _item_stock_uom_for_spr(item_code: str) -> str:
@@ -8659,6 +8686,8 @@ def spr_get_manual_job_catalog(shaft_production_run):
 			continue
 		item_name = frappe.db.get_value("Item", ic, "item_name")
 		gsm, width_inch = parse_item_code(ic)
+		if flt(width_inch) <= 0:
+			width_inch = _spr_nominal_roll_width_inch(ic, item_name)
 		first_seg_kg = None
 		for sj in _spr_job_rows(spr):
 			if _cstr(getattr(sj, "production_plan_item", None)) == _cstr(row.name):
@@ -8726,6 +8755,7 @@ def spr_create_manual_job(
 	production_plan_item,
 	no_of_shafts,
 	wo_qty=None,
+	width_inch=None,
 ):
 	"""Create draft Work Order + append manual Shaft Production Run Job row."""
 	item_code = _cstr(item_code)
@@ -8784,7 +8814,17 @@ def spr_create_manual_job(
 			break
 		job_id = f"MAN-{frappe.generate_hash(length=6).upper()}"
 
-	gsm, width_inch = parse_item_code(item_code)
+	gsm, parsed_width = parse_item_code(item_code)
+	w_override = flt(width_inch) if width_inch is not None and str(width_inch).strip() != "" else flt(
+		frappe.form_dict.get("width_inch")
+	)
+	if w_override > 0:
+		width_inch = w_override
+	elif flt(parsed_width) > 0:
+		width_inch = flt(parsed_width)
+	else:
+		item_name_tmp = frappe.db.get_value("Item", item_code, "item_name")
+		width_inch = _spr_nominal_roll_width_inch(item_code, item_name_tmp)
 	item_name = frappe.db.get_value("Item", item_code, "item_name")
 	quality, color = extract_quality_and_color(item_name or "", item_code=item_code)
 	order_code = ""
@@ -8914,8 +8954,15 @@ def spr_create_manual_jobs_multi(
 		qtys.append(qty)
 		item_codes_list.append(item_code)
 		ppi_rows.append(ppi_row)
-		_gsm, w_in = parse_item_code(item_code)
-		widths_list.append(flt(w_in))
+		w_override = flt(raw.get("width_inch"))
+		if w_override > 0:
+			widths_list.append(w_override)
+		else:
+			_gsm, w_in = parse_item_code(item_code)
+			if flt(w_in) <= 0:
+				inm = frappe.db.get_value("Item", item_code, "item_name")
+				w_in = _spr_nominal_roll_width_inch(item_code, inm)
+			widths_list.append(flt(w_in))
 		if meter_roll_from_popup is None and raw.get("meter_roll") not in (None, ""):
 			mr = flt(raw.get("meter_roll"))
 			if mr > 0:
@@ -8971,7 +9018,8 @@ def spr_create_manual_jobs_multi(
 		if len(widths_list) > 1 and comb_str:
 			row["combination"] = comb_str
 		else:
-			cb = _format_shaft_combination_inches(width_inch_one)
+			single_w = flt(widths_list[0]) if widths_list else flt(width_inch_one)
+			cb = _format_shaft_combination_inches(single_w)
 			if cb:
 				row["combination"] = cb
 	if meta.has_field("total_width"):

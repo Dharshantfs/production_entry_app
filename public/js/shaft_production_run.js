@@ -643,6 +643,31 @@ function sprManualDefaultWoQty(line, noShafts, noRolls) {
 	return pq > 0 ? pq : 1;
 }
 
+function sprWidthInchFromItemCode(itemCode) {
+	const code = String(itemCode || '').trim();
+	if (!/^\d+$/.test(code) || code.length < 16) {
+		return 0;
+	}
+	const mm = parseInt(code.substring(12, 16), 10);
+	if (isNaN(mm) || mm <= 0) {
+		return 0;
+	}
+	return Math.round(Math.round((mm / 25.4) * 2) / 2 * 10) / 10;
+}
+
+function sprParseWidthFromItemName(itemName) {
+	const text = String(itemName || '');
+	let m = text.match(/W\s*-\s*(\d+(?:\.\d+)?)/i);
+	if (m) {
+		return flt(m[1]);
+	}
+	m = text.match(/(\d+(?:\.\d+)?)\s*(?:''|"|″)/);
+	if (m) {
+		return flt(m[1]);
+	}
+	return 0;
+}
+
 function sprManualNormalizeWidthToken(token) {
 	const raw = String(token || '')
 		.replace(/inch|inches|in/gi, '')
@@ -809,6 +834,7 @@ function spr_open_manual_job_dialog(frm) {
 							production_plan_item: line.production_plan_item,
 							wo_qty: q,
 							meter_roll: mr,
+							width_inch: getManualLineWidth(idx),
 							roll_count_per_shaft: comboMode ? cint(line.__combo_roll_count_per_shaft || 1) : cint(d.get_value('no_of_rolls')) || 1,
 							selected_reuse_work_order:
 								d.$wrapper.find('.spr-manual-reuse-wo[data-idx="' + idx + '"]').val() || '',
@@ -832,6 +858,7 @@ function spr_open_manual_job_dialog(frm) {
 									production_plan_item: it.production_plan_item,
 									wo_qty: 0,
 									meter_roll: it.meter_roll,
+									width_inch: it.width_inch,
 									roll_count_per_shaft: 0,
 									selected_reuse_work_order: it.selected_reuse_work_order || '',
 								});
@@ -898,6 +925,25 @@ function spr_open_manual_job_dialog(frm) {
 				},
 			});
 
+			function getManualLineWidth(idx) {
+				const inp = d.$wrapper.find('.spr-manual-width[data-idx="' + idx + '"]');
+				if (inp.length) {
+					const v = flt(inp.val());
+					if (v > 0) {
+						return v;
+					}
+				}
+				const line = lines[idx];
+				if (!line) {
+					return 0;
+				}
+				const fromName = sprParseWidthFromItemName(line.item_name);
+				if (fromName > 0) {
+					return fromName;
+				}
+				return flt(line.width_inch) || sprWidthInchFromItemCode(line.item_code);
+			}
+
 			function renderManualLinesTable() {
 				const nShafts = cint(d.get_value('no_of_shafts'));
 				const nRolls = cint(d.get_value('no_of_rolls')) || 1;
@@ -925,7 +971,10 @@ function spr_open_manual_job_dialog(frm) {
 					__('WO qty (Kg)') +
 					'</th></tr></thead><tbody>';
 				lines.forEach(function (line, idx) {
-					const wIn = flt(line.width_inch);
+					const wIn =
+						sprParseWidthFromItemName(line.item_name) ||
+						flt(line.width_inch) ||
+						sprWidthInchFromItemCode(line.item_code);
 					const nps =
 						line.net_per_shaft_kg != null && line.net_per_shaft_kg !== ''
 							? flt(line.net_per_shaft_kg)
@@ -954,7 +1003,12 @@ function spr_open_manual_job_dialog(frm) {
 						frappe.utils.escape_html(label) +
 						'</td>';
 					html += '<td>' + frappe.utils.escape_html(line.order_code || '') + '</td>';
-					html += '<td>' + wIn.toFixed(1) + '</td>';
+					html +=
+						'<td><input type="number" class="input-with-feedback spr-manual-width" data-idx="' +
+						idx +
+						'" value="' +
+						wIn.toFixed(1) +
+						'" step="0.1" min="0" style="width:70px"/></td>';
 					html +=
 						'<td><input type="number" class="input-with-feedback spr-manual-meter-roll" data-idx="' +
 						idx +
@@ -1057,7 +1111,7 @@ function spr_open_manual_job_dialog(frm) {
 					for (let j = 0; j < lines.length; j++) {
 						const line = lines[j];
 						if (cint(line.gsm) !== comboGsm) continue;
-						if (Math.abs(flt(line.width_inch) - targetWidth) > 0.05) continue;
+						if (Math.abs(getManualLineWidth(j) - targetWidth) > 0.05) continue;
 						matchIdx = j;
 						break;
 					}
@@ -1108,7 +1162,7 @@ function spr_open_manual_job_dialog(frm) {
 				d.$wrapper.find('.spr-manual-inc').prop('checked', false);
 				updateManualSelectionSummary();
 			});
-			d.$wrapper.on('change input', '.spr-manual-inc, .spr-manual-qty', function () {
+			d.$wrapper.on('change input', '.spr-manual-inc, .spr-manual-qty, .spr-manual-width', function () {
 				updateManualSelectionSummary();
 			});
 			const ns = d.fields_dict.no_of_shafts;
