@@ -6461,6 +6461,42 @@ def _expand_spr_name_tokens(*raw_values):
 	return out
 
 
+def _resolve_spr_produced_weight_kg(
+	spr_raw,
+	item_code=None,
+	spr_id_produced_map=None,
+	spr_item_kg_by_code=None,
+	spr_metrics=None,
+):
+	"""Produced kg for one Planning Table row's SPR link — never PP-aggregated totals."""
+	total = 0.0
+	found = False
+	item_code = (item_code or "").strip()
+	spr_id_produced_map = spr_id_produced_map or {}
+	spr_item_kg_by_code = spr_item_kg_by_code or {}
+	spr_metrics = spr_metrics or {}
+	for sid in _expand_spr_name_tokens(spr_raw):
+		if item_code:
+			spi_kg = flt((spr_item_kg_by_code.get(sid) or {}).get(item_code, 0))
+			if spi_kg > 0:
+				total += spi_kg
+				found = True
+				continue
+		if sid in spr_id_produced_map:
+			qty = flt(spr_id_produced_map.get(sid) or 0)
+			if qty > 0:
+				total += qty
+				found = True
+			continue
+		m = spr_metrics.get(sid)
+		if m:
+			produced = flt(m.get("total_produced", 0))
+			if produced > 0:
+				total += produced
+				found = True
+	return flt(total) if found else None
+
+
 def _fabric_ready_date_from_child_sprs(run_date_map, raw_child_spr):
 	"""Pick a single display date from mapped submitted SPR run dates (CSV on child fabric link)."""
 	best = None
@@ -10951,6 +10987,94 @@ def _remove_duplicate_slitting_pt_rows_on_sheet(planning_sheet_name):
 	return removed
 
 
+def _pt_row_dedupe_signature(row):
+	"""Fingerprint identical board rows (accidental duplicates, not intentional splits)."""
+	so_col = "sales_order_item"
+	if not frappe.db.has_column("Planning Table", so_col):
+		so_col = "so_item" if frappe.db.has_column("Planning Table", "so_item") else ""
+	soi = _cstr(row.get(so_col)).strip() if so_col else ""
+	pp_field = _psi_production_plan_field()
+	pp_val = _cstr(row.get(pp_field)).strip() if pp_field else ""
+	return (
+		_cstr(row.get("item_code")).strip(),
+		soi,
+		round(flt(row.get("qty") or 0), 3),
+		round(flt(row.get("width_inch") or row.get("width") or 0), 3),
+		cint(row.get("gsm") or 0),
+		_cstr(row.get("color")).strip().upper(),
+		_cstr(row.get("custom_quality") or row.get("quality")).strip().upper(),
+		normalize_planning_unit_for_select(row.get("unit")),
+		_cstr(row.get("planned_date") or "").strip(),
+		pp_val,
+	)
+
+
+def _pt_row_dedupe_rank(row):
+	"""Prefer rows that already have production links (SPR / PP)."""
+	pp_field = _psi_production_plan_field()
+	has_pp = bool(pp_field and _cstr(row.get(pp_field)).strip())
+	has_spr = bool(frappe.db.has_column("Planning Table", "spr_name") and _cstr(row.get("spr_name")).strip())
+	is_split = cint(row.get("is_split") or row.get("custom_is_split") or 0)
+	return (has_spr, has_pp, -is_split, cint(row.get("idx") or 0))
+
+
+def _remove_exact_duplicate_pt_rows_on_sheet(planning_sheet_name):
+	"""Remove accidental duplicate Planning Table rows (same item line fingerprint)."""
+	if not planning_sheet_name:
+		return 0
+	fields = [
+		"name",
+		"item_code",
+		"qty",
+		"width_inch",
+		"width",
+		"gsm",
+		"color",
+		"quality",
+		"custom_quality",
+		"unit",
+		"planned_date",
+		"idx",
+		"is_split",
+		"custom_is_split",
+	]
+	if frappe.db.has_column("Planning Table", "sales_order_item"):
+		fields.append("sales_order_item")
+	elif frappe.db.has_column("Planning Table", "so_item"):
+		fields.append("so_item")
+	pp_field = _psi_production_plan_field()
+	if pp_field and frappe.db.has_column("Planning Table", pp_field):
+		fields.append(pp_field)
+	if frappe.db.has_column("Planning Table", "spr_name"):
+		fields.append("spr_name")
+
+	rows = frappe.get_all(
+		"Planning Table",
+		filters={"parent": planning_sheet_name},
+		fields=fields,
+		limit_page_length=0,
+	) or []
+	groups = {}
+	for r in rows:
+		if cint(r.get("is_split") or r.get("custom_is_split") or 0):
+			continue
+		key = _pt_row_dedupe_signature(r)
+		groups.setdefault(key, []).append(r)
+
+	removed = 0
+	for _key, lst in groups.items():
+		if len(lst) <= 1:
+			continue
+		lst.sort(key=_pt_row_dedupe_rank, reverse=True)
+		for extra in lst[1:]:
+			try:
+				frappe.delete_doc("Planning Table", extra["name"], force=1)
+				removed += 1
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), f"dedupe exact PT:{extra.get('name')}")
+	return removed
+
+
 def _deduplicate_slitting_board_rows(rows):
 	"""API-level dedupe when duplicate PT rows still exist in DB."""
 	out = []
@@ -11054,6 +11178,10 @@ def _force_slitting_unit_on_sheet(planning_sheet_name):
 		_remove_duplicate_slitting_pt_rows_on_sheet(planning_sheet_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "_remove_duplicate_slitting_pt_rows_on_sheet")
+	try:
+		_remove_exact_duplicate_pt_rows_on_sheet(planning_sheet_name)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "_remove_exact_duplicate_pt_rows_on_sheet")
 	return updated
 
 
@@ -20819,6 +20947,8 @@ def _get_color_chart_data_impl(
     pp_wo_produced_qty_map = {}
     spr_pp_produced_map = {}
     spr_pp_count_map = {}
+    spr_id_produced_map = {}
+    spr_metrics = {}
     spr_psi_produced_map = {}
     spr_psi_count_map = {}
     spr_so_item_produced_map = {}
@@ -21212,6 +21342,9 @@ def _get_color_chart_data_impl(
                         qty = flt(r.get("produced_qty"))
                         is_submitted = (r.get("docstatus") == 1)
 
+                        if spr_name and is_submitted and qty > 0:
+                            spr_id_produced_map[str(spr_name).strip()] = qty
+
                         pp_key = (r.get("pp_key") or "").strip()
                         if pp_key:
                             # Always take newest name (since ordered DESC)
@@ -21419,7 +21552,6 @@ def _get_color_chart_data_impl(
                         if sid and ic:
                             spr_item_kg_by_code.setdefault(sid, {})[ic] = flt(spi_row.get("kgs"))
 
-            spr_metrics = {}
             if all_spr_ids:
                 ids_list = list(all_spr_ids)
                 sf = ",".join(["%s"] * len(ids_list))
@@ -21999,10 +22131,23 @@ def _get_color_chart_data_impl(
             # Strict per-item production mapping (no header/plan total fallback).
             item_level_produced = None
             item_level_wo_count = 0
+            row_spr_for_produced = (item.get("spr_name") or "").strip()
 
             if psi_name and psi_name in spr_psi_produced_map:
                 item_level_produced = spr_psi_produced_map.get(psi_name, 0)
                 item_level_wo_count = max(item_level_wo_count, spr_psi_count_map.get(psi_name, 0))
+
+            if item_level_produced is None and row_spr_for_produced:
+                spr_row_kg = _resolve_spr_produced_weight_kg(
+                    row_spr_for_produced,
+                    item.get("item_code"),
+                    spr_id_produced_map,
+                    spr_item_kg_by_code,
+                    spr_metrics,
+                )
+                if spr_row_kg is not None:
+                    item_level_produced = spr_row_kg
+                    item_level_wo_count = max(item_level_wo_count, len(_expand_spr_name_tokens(row_spr_for_produced)))
 
             if item_level_produced is None and so_item_key:
                 if so_item_key in so_item_produced_map:
@@ -22018,7 +22163,7 @@ def _get_color_chart_data_impl(
             if item_level_produced is None and item_pp and not so_item_key and not cint(item.get("is_split")):
                 item_level_produced = pp_produced_map.get(item_pp)
                 item_level_wo_count = max(item_level_wo_count, pp_wo_count_map.get(item_pp, 0))
-                if item_level_produced is None:
+                if item_level_produced is None and spr_pp_count_map.get(item_pp, 0) <= 1:
                     item_level_produced = spr_pp_produced_map.get(item_pp)
                     item_level_wo_count = max(item_level_wo_count, spr_pp_count_map.get(item_pp, 0))
 
@@ -22109,8 +22254,18 @@ def _get_color_chart_data_impl(
 
             row_spr = (item.get("spr_name") or "").strip()
             row_item_code = (item.get("item_code") or "").strip()
+            spr_row_produced_kg = None
+            if row_spr:
+                spr_row_produced_kg = _resolve_spr_produced_weight_kg(
+                    row_spr,
+                    row_item_code,
+                    spr_id_produced_map,
+                    spr_item_kg_by_code,
+                    spr_metrics,
+                )
+
             wo_item_level_produced = None
-            if item_pp and row_item_code:
+            if not row_spr and item_pp and row_item_code:
                 pp_item_key = f"{item_pp}::{row_item_code}"
                 if pp_item_key in pp_item_code_produced_map:
                     wo_item_level_produced = flt(pp_item_code_produced_map.get(pp_item_key, 0))
@@ -22123,7 +22278,9 @@ def _get_color_chart_data_impl(
                         break
 
             total_achieved_weight_kgs = 0
-            if wo_item_level_produced is not None:
+            if spr_row_produced_kg is not None and spr_row_produced_kg > 0:
+                total_achieved_weight_kgs = spr_row_produced_kg
+            elif wo_item_level_produced is not None:
                 total_achieved_weight_kgs = wo_item_level_produced
             elif row_spr and psi_name and psi_name in spr_psi_achieved_weight_map:
                 total_achieved_weight_kgs = spr_psi_achieved_weight_map[psi_name]
@@ -27363,6 +27520,18 @@ def validate_planning_sheet_duplicates(doc, method=None):
                 "Delete the existing sheet first before creating a new one."
             )
         )
+
+    if doc.name and cint(getattr(doc, "docstatus", 0)) == 0:
+        try:
+            removed = _remove_exact_duplicate_pt_rows_on_sheet(doc.name)
+            if removed:
+                frappe.msgprint(
+                    _("Removed {0} duplicate planning board row(s).").format(removed),
+                    indicator="orange",
+                    alert=True,
+                )
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "validate_planning_sheet_duplicates:dedupe_pt")
 
 
 def sync_work_order_custom_production_plan(doc, method=None):
