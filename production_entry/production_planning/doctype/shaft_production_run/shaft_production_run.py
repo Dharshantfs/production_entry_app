@@ -7401,7 +7401,50 @@ def _spr_item_line_from_manual_item(job_row, job_id, item_code, planned_qty, wid
 	return row
 
 
-def _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=None):
+def _spr_job_max_roll_lines(job_row, spr_doc=None) -> int:
+	"""Max Roll Production Result lines allowed for one Available Jobs row."""
+	comb = getattr(job_row, "combination", None) or ""
+	segs = _count_combination_segments(comb)
+	no_shafts = max(1, cint(getattr(job_row, "no_of_shafts", 0) or 0))
+	rolls_per_shaft = max(1, cint(getattr(job_row, "no_of_rolls", 0) or 0))
+
+	if spr_doc and spr_doc_is_mix_roll(spr_doc):
+		widths = _parse_combination_widths_inches(comb)
+		item_codes = _spr_parse_manual_item_codes(job_row)
+		n_items = len(item_codes) if item_codes else 0
+		if widths:
+			return max(1, max(len(widths), n_items) * rolls_per_shaft)
+		return max(1, max(no_shafts, n_items) * rolls_per_shaft)
+
+	if segs <= 1:
+		return max(1, no_shafts * rolls_per_shaft)
+	return max(1, no_shafts * segs * rolls_per_shaft)
+
+
+def _spr_count_roll_lines_for_job(spr_doc, job_id) -> int:
+	job_key = _cstr(job_id).strip()
+	if not job_key:
+		return 0
+	cnt = 0
+	for it in spr_doc.get("items") or []:
+		if _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
+			cnt += 1
+	return cnt
+
+
+def _spr_throw_roll_quota_exceeded(job_id, max_rolls: int, current_rolls: int) -> None:
+	frappe.throw(
+		_(
+			"Maximum {0} roll lines allowed for job {1} ({2} already created). "
+			"Use Manual Job for additional production."
+		).format(max_rolls, job_id, current_rolls),
+		title=_("Roll line limit reached"),
+	)
+
+
+def _build_mix_roll_result_lines_for_job(
+	spr_doc, job_row, exact_roll_lines=None, roll_start_index=None
+):
 	"""Build roll lines for mix-roll SPR from manual_items (no Work Order)."""
 	job_id = _spr_job_id(job_row)
 	item_codes = _spr_parse_manual_item_codes(job_row)
@@ -7413,16 +7456,26 @@ def _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=None
 	no_shafts = max(1, cint(getattr(job_row, "no_of_shafts", 0) or 0))
 	rolls_per_shaft = max(1, cint(getattr(job_row, "no_of_rolls", 0) or 0))
 	exact_n = cint(exact_roll_lines or 0)
+	start_idx = max(0, cint(roll_start_index or 0))
+	max_job_rolls = _spr_job_max_roll_lines(job_row, spr_doc)
 
 	if exact_n > 0:
+		current = _spr_count_roll_lines_for_job(spr_doc, job_id)
+		if current + exact_n > max_job_rolls:
+			_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current)
 		n_rolls = max(1, exact_n)
+		planned_total_rolls = max_job_rolls
 	elif widths:
 		n_rolls = max(len(widths), len(item_codes)) * rolls_per_shaft
+		planned_total_rolls = n_rolls
+		start_idx = 0
 	else:
 		n_rolls = max(no_shafts, len(item_codes)) * rolls_per_shaft
+		planned_total_rolls = n_rolls
+		start_idx = 0
 
 	total_weight = flt(getattr(job_row, "total_weight", None) or 0)
-	fallback_planned_each = flt(total_weight / n_rolls) if total_weight > 0 else 0
+	fallback_planned_each = flt(total_weight / planned_total_rolls) if total_weight > 0 else 0
 
 	meter_roll_job = None
 	mr_attr = getattr(job_row, "meter_roll_mtrs", None)
@@ -7430,7 +7483,8 @@ def _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=None
 		meter_roll_job = flt(mr_attr)
 
 	lines = []
-	for idx in range(n_rolls):
+	for i in range(n_rolls):
+		idx = start_idx + i
 		item_code = item_codes[idx % len(item_codes)]
 		width_inch = widths[idx % len(widths)] if widths else None
 		row = _spr_item_line_from_manual_item(
@@ -7460,6 +7514,7 @@ def build_spr_roll_result_lines_for_job(
 	lamination_rolls_per_combination=None,
 	lamination_exact_roll_lines=None,
 	exact_roll_lines=None,
+	roll_start_index=None,
 ):
 	"""
 	Build Roll Production Result (SPR Item) lines for one job.
@@ -7495,7 +7550,12 @@ def build_spr_roll_result_lines_for_job(
 			and not _cstr(getattr(spr_doc, "production_plan", None))
 		)
 	):
-		return _build_mix_roll_result_lines_for_job(spr_doc, job_row, exact_roll_lines=exact_roll_lines)
+		return _build_mix_roll_result_lines_for_job(
+			spr_doc,
+			job_row,
+			exact_roll_lines=exact_roll_lines,
+			roll_start_index=roll_start_index,
+		)
 
 	pp_name = get_pp_from_spr(shaft_production_run)
 	if not pp_name and has_pinned_wos:
@@ -7541,6 +7601,20 @@ def build_spr_roll_result_lines_for_job(
 	else:
 		n_rolls = max(1, no_shafts * segs * rolls_per_shaft)
 
+	start_idx = max(0, cint(roll_start_index or 0))
+	max_job_rolls = _spr_job_max_roll_lines(job_row, spr_doc)
+	use_quota_append = exact_n > 0 and not spr_doc_is_lamination(spr_doc) and not lam_exact_n and lam_n <= 0
+	if use_quota_append:
+		current = _spr_count_roll_lines_for_job(spr_doc, job_id)
+		if current + exact_n > max_job_rolls:
+			_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current)
+		planned_total_rolls = max_job_rolls
+		roll_indices = range(start_idx, start_idx + exact_n)
+	else:
+		planned_total_rolls = n_rolls
+		roll_indices = range(n_rolls)
+		start_idx = 0
+
 	shaft_combination = get_shaft_combination(pp_name, job_id)
 	if getattr(job_row, "combination", None) and not shaft_combination:
 		shaft_combination = job_row.combination
@@ -7570,7 +7644,7 @@ def build_spr_roll_result_lines_for_job(
 	fabric_gsm = _fabric_gsm_from_planning_for_pp(pp_name) if spr_doc_is_lamination(spr_doc) else 0
 
 	lines = []
-	for idx in range(n_rolls):
+	for roll_i, idx in enumerate(roll_indices):
 		individual_width = None
 		if individual_widths:
 			individual_width = individual_widths[idx % len(individual_widths)]
@@ -7600,7 +7674,7 @@ def build_spr_roll_result_lines_for_job(
 		if spr_doc_is_lamination(spr_doc):
 			planned_qty = 0.0
 		else:
-			planned_qty = _planned_kg_for_spr_result_roll(job_row, idx, n_rolls, segs)
+			planned_qty = _planned_kg_for_spr_result_roll(job_row, idx, planned_total_rolls, segs)
 		row = _spr_item_line_from_wo(pp_name, job_id, shaft_combination, planned_qty, wo)
 		if not _cstr(row.get("party_code")) and _cstr(getattr(job_row, "party_code", None)):
 			row["party_code"] = _cstr(job_row.party_code)

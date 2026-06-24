@@ -1658,6 +1658,63 @@ function sprRecalcBundlePlannedPcs(frm, cdt, cdn) {
 	frappe.model.set_value(cdt, cdn, 'total_pcs_per_bundle', tpb > 0 ? tpb : 0);
 }
 
+function sprJobMaxRollLines(row, frm) {
+	const shafts = cint((row && row.no_of_shafts) || 0) || 1;
+	const rollsPerShaft = cint((row && row.no_of_rolls) || 0) || 1;
+	const comb = String((row && row.combination) || '');
+	const segments = comb
+		? comb
+				.split('+')
+				.map(function (s) {
+					return s.trim();
+				})
+				.filter(Boolean).length
+		: 1;
+	const segCount = Math.max(1, segments);
+	if (frm && frm.doc && cint(frm.doc.is_mix_roll)) {
+		if (segCount > 1) {
+			return Math.max(segCount, 1) * rollsPerShaft;
+		}
+		return Math.max(shafts, 1) * rollsPerShaft;
+	}
+	if (segCount <= 1) {
+		return shafts * rollsPerShaft;
+	}
+	return shafts * segCount * rollsPerShaft;
+}
+
+function sprCountRollLinesForJob(frm, jobId) {
+	return (frm.doc.items || []).filter(function (d) {
+		return String(d.job) === String(jobId);
+	}).length;
+}
+
+function sprUsesOneRollPerCreateEntry(frm, row) {
+	if (frm && frm.doc && cint(frm.doc.is_mix_roll)) {
+		return true;
+	}
+	return !sprRollPromptMeta(frm, row);
+}
+
+function sprSaveBeforeCreateEntry(frm) {
+	return new Promise(function (resolve, reject) {
+		if (!frm || frm.is_new() || cint(frm.doc.docstatus) !== 0) {
+			resolve();
+			return;
+		}
+		if (!frm.is_dirty || !frm.is_dirty()) {
+			resolve();
+			return;
+		}
+		const p = frm.save();
+		if (p && typeof p.then === 'function') {
+			p.then(resolve).catch(reject);
+		} else {
+			resolve();
+		}
+	});
+}
+
 function sprAutoSaveAfterCreateEntry(frm) {
 	if (!frm || frm.is_new() || frm.doc.docstatus !== 0) return;
 	if (!frm.is_dirty || !frm.is_dirty()) return;
@@ -4426,7 +4483,14 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			frappe.msgprint(__('Save the Shaft Production Run before creating roll lines.'));
 			return;
 		}
-		function invokeBuildRollLines(laminationRollsPerCombo, laminationExactRollLines, appendMode, exactRollLines) {
+		function invokeBuildRollLines(
+			laminationRollsPerCombo,
+			laminationExactRollLines,
+			appendMode,
+			exactRollLines,
+			rollStartIndex,
+			quotaMeta
+		) {
 			const args = {
 				shaft_production_run: frm.doc.name,
 				job_id: String(job_id),
@@ -4442,6 +4506,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			const ex = cint(exactRollLines);
 			if (ex > 0) {
 				args.exact_roll_lines = ex;
+			}
+			if (rollStartIndex !== undefined && rollStartIndex !== null && rollStartIndex !== '') {
+				args.roll_start_index = cint(rollStartIndex);
 			}
 			frappe.call({
 			method:
@@ -4497,8 +4564,13 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					spr_stabilize_spr_child_grids(frm, { delay: 120 });
 					spr_after_child_table_refresh(frm);
 					sprAutoSaveAfterCreateEntry(frm);
+					let alertMsg = __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]);
+					if (quotaMeta && quotaMeta.max) {
+						const addedIdx = cint(quotaMeta.current) + lines.length;
+						alertMsg = __('Added roll {0} of {1} for job {2}.', [addedIdx, quotaMeta.max, job_id]);
+					}
 					frappe.show_alert({
-						message: __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]),
+						message: alertMsg,
 						indicator: 'green',
 					});
 				}
@@ -4540,6 +4612,45 @@ frappe.ui.form.on('Shaft Production Run Job', {
 		});
 		}
 
+		if (sprUsesOneRollPerCreateEntry(frm, row)) {
+			const maxRolls = sprJobMaxRollLines(row, frm);
+			const curRolls = sprCountRollLinesForJob(frm, job_id);
+			if (curRolls >= maxRolls) {
+				frappe.msgprint(
+					__(
+						'Maximum {0} roll lines allowed for job {1} ({2} already created). Use Manual Job for additional production.',
+						[maxRolls, job_id, curRolls]
+					)
+				);
+				return;
+			}
+			sprSaveBeforeCreateEntry(frm)
+				.then(function () {
+					const curAfterSave = sprCountRollLinesForJob(frm, job_id);
+					if (curAfterSave >= maxRolls) {
+						frappe.msgprint(
+							__(
+								'Maximum {0} roll lines allowed for job {1} ({2} already created). Use Manual Job for additional production.',
+								[maxRolls, job_id, curAfterSave]
+							)
+						);
+						return;
+					}
+					invokeBuildRollLines(0, 0, true, 1, curAfterSave, {
+						max: maxRolls,
+						current: curAfterSave,
+					});
+				})
+				.catch(function (err) {
+					frappe.msgprint({
+						title: __('Save failed'),
+						indicator: 'red',
+						message: err && err.message ? err.message : __('Could not save Shaft Production Run.'),
+					});
+				});
+			return;
+		}
+
 		const rollPromptMeta = sprRollPromptMeta(frm, row);
 		if (rollPromptMeta) {
 			frappe.prompt(
@@ -4562,8 +4673,6 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				if (sprUsesLaminationRollPrompt(frm)) {
 					invokeBuildRollLines(0, n, true, 0);
 				} else if (sprUsesPrintingRollPrompt(frm)) {
-					invokeBuildRollLines(0, 0, true, n);
-				} else if (cint(frm.doc.is_mix_roll)) {
 					invokeBuildRollLines(0, 0, true, n);
 				} else {
 					// Slitting, Rewinding, Sheet Cutting, BOPP Film — exact roll lines
