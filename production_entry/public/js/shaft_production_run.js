@@ -2076,8 +2076,11 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_apply_shaft_jobs_grid_columns(frm, true);
 		spr_apply_items_grid_columns(frm, true);
 		spr_apply_create_entry_buttons_ui(frm);
+		spr_apply_grid_wrap_classes(frm);
+		spr_ensure_child_grid_heights(frm);
+		spr_force_submitted_child_grids_realign(frm);
 		spr_schedule_item_row_styles_after_doc_write(frm);
-		spr_force_submitted_items_grid_realign(frm);
+		spr_stabilize_spr_child_grids(frm, { immediate: true });
 		spr_reapply_item_row_styles_with_retries(frm);
 		if (frm.doc && frm.doc.production_plan) {
 			frappe.call({
@@ -6228,6 +6231,13 @@ function ensure_spr_item_stylesheet() {
 			max-width: 100%;
 			min-height: 120px;
 		}
+		.spr-shaft-jobs-wrap.spr-doc-submitted .form-grid-container,
+		.spr-shaft-jobs-wrap.spr-doc-submitted .grid-body .rows {
+			min-height: 88px !important;
+		}
+		.spr-shaft-jobs-wrap.spr-doc-submitted .grid-row {
+			min-height: 42px !important;
+		}
 		.spr-grid-wrap .grid-body .rows,
 		.spr-items-wrap .grid-body .rows,
 		.spr-shaft-jobs-wrap .grid-body .rows,
@@ -6357,8 +6367,8 @@ function schedule_spr_item_row_styles(frm) {
 	spr_schedule_grid_ui_debounced(frm, { delay: 120 });
 }
 
-/** Submitted SPR: rebuild Roll Production Results columns so headers match row data. */
-function spr_force_submitted_items_grid_realign(frm) {
+/** Submitted SPR: rebuild child grid columns so headers match row data (items + Available Jobs). */
+function spr_force_submitted_child_grids_realign(frm) {
 	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 1) {
 		return;
 	}
@@ -6366,25 +6376,40 @@ function spr_force_submitted_items_grid_realign(frm) {
 	if (!cg || typeof cg.apply !== 'function') {
 		return;
 	}
-	const cfg = spr_get_items_list_view_config(frm);
-	const cols = (cfg && cfg.show) || [];
-	if (!cols.length) {
+	const itemCols = (spr_get_items_list_view_config(frm) && spr_get_items_list_view_config(frm).show) || [];
+	const jobCols = spr_build_shaft_jobs_show_list(frm) || [];
+	if (!itemCols.length && !jobCols.length) {
 		return;
 	}
 	[0, 300, 700, 1400].forEach(function (ms) {
 		setTimeout(function () {
-			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
+			if (!frm || !frm.fields_dict) {
 				return;
 			}
 			if (spr_items_grid_is_editing(frm)) {
 				return;
 			}
 			spr_reset_items_grid_field_visibility(frm);
-			cg.apply(frm, 'items', SPR_SPI_DOCTYPE, cols, { fullRefresh: false });
+			spr_reset_shaft_jobs_grid_field_visibility(frm);
+			if (itemCols.length) {
+				cg.apply(frm, 'items', SPR_SPI_DOCTYPE, itemCols, { fullRefresh: true });
+			}
+			if (jobCols.length && frm.fields_dict.shaft_jobs) {
+				cg.apply(frm, 'shaft_jobs', 'Shaft Production Run Job', jobCols, { fullRefresh: true });
+			}
 			spr_apply_grid_wrap_classes(frm);
+			spr_ensure_child_grid_heights(frm);
 			spr_reapply_item_row_styles_with_retries(frm, [80, 280]);
+			['shaft_jobs', 'items'].forEach(function (fn) {
+				spr_light_grid_scroll_sync(frm, fn);
+			});
 		}, ms);
 	});
+}
+
+/** @deprecated use spr_force_submitted_child_grids_realign */
+function spr_force_submitted_items_grid_realign(frm) {
+	spr_force_submitted_child_grids_realign(frm);
 }
 
 /** Re-apply GSM row colours after grid DOM rebuild (save / reopen / column sync). */

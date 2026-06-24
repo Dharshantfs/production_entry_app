@@ -1665,6 +1665,32 @@ const autoMergeSuggestions = computed(() => {
  */
 function dedupeMergedActualProductionKg(items) {
   if (!items || !items.length) return 0;
+  const sprNames = [
+    ...new Set(items.map((it) => String(it.spr_name || "").trim()).filter(Boolean)),
+  ];
+  if (sprNames.length === 1) {
+    const headerTotal = items.reduce(
+      (m, it) =>
+        Math.max(
+          m,
+          parseFloat(it.spr_produced_total_kg ?? it.spr_total_produced_kg ?? 0) || 0
+        ),
+      0
+    );
+    if (headerTotal > 0) {
+      const partialSum = items.reduce(
+        (s, it) => s + (parseFloat(it.actual_production_weight_kgs) || 0),
+        0
+      );
+      if (partialSum + 0.05 < headerTotal) {
+        return headerTotal;
+      }
+      if (partialSum > 0) {
+        return partialSum;
+      }
+      return headerTotal;
+    }
+  }
   const bySpr = new Map();
   let noSprSum = 0;
   for (const it of items) {

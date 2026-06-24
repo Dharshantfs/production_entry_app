@@ -6467,19 +6467,29 @@ def _resolve_spr_produced_weight_kg(
 	spr_id_produced_map=None,
 	spr_item_kg_by_code=None,
 	spr_metrics=None,
+	width_inch=None,
+	spr_item_kg_by_width=None,
 ):
 	"""Produced kg for one Planning Table row's SPR link — never PP-aggregated totals."""
 	total = 0.0
 	found = False
 	item_code = (item_code or "").strip()
+	width_key = round(flt(width_inch or 0), 1)
 	spr_id_produced_map = spr_id_produced_map or {}
 	spr_item_kg_by_code = spr_item_kg_by_code or {}
+	spr_item_kg_by_width = spr_item_kg_by_width or {}
 	spr_metrics = spr_metrics or {}
 	for sid in _expand_spr_name_tokens(spr_raw):
 		if item_code:
 			spi_kg = flt((spr_item_kg_by_code.get(sid) or {}).get(item_code, 0))
 			if spi_kg > 0:
 				total += spi_kg
+				found = True
+				continue
+		if width_key > 0:
+			w_kg = flt((spr_item_kg_by_width.get(sid) or {}).get(width_key, 0))
+			if w_kg > 0:
+				total += w_kg
 				found = True
 				continue
 		if sid in spr_id_produced_map:
@@ -6495,6 +6505,18 @@ def _resolve_spr_produced_weight_kg(
 				total += produced
 				found = True
 	return flt(total) if found else None
+
+
+def _spr_header_produced_total_kg(spr_raw, spr_id_produced_map=None, spr_metrics=None) -> float:
+	"""Full submitted SPR header produced kg (for merged rows sharing one SPR)."""
+	best = 0.0
+	for sid in _expand_spr_name_tokens(spr_raw):
+		if spr_id_produced_map and sid in spr_id_produced_map:
+			best = max(best, flt(spr_id_produced_map.get(sid) or 0))
+		m = (spr_metrics or {}).get(sid)
+		if m:
+			best = max(best, flt(m.get("total_produced", 0)))
+	return flt(best)
 
 
 def _fabric_ready_date_from_child_sprs(run_date_map, raw_child_spr):
@@ -21483,6 +21505,7 @@ def _get_color_chart_data_impl(
     # Fetch SPR production via spr_name field on Planning Table (board rows)
     spr_psi_achieved_weight_map = {}  # Map PSI to SPR achieved weight
     spr_item_kg_by_code = {}  # spr_name -> {item_code: net_weight sum}
+    spr_item_kg_by_width = {}  # spr_name -> {width_inch: net_weight sum}
     psi_item_code_map = {}
     try:
         if frappe.db.has_column("Planning Table", "spr_name") and frappe.db.exists("DocType", "Shaft Production Run"):
@@ -21532,6 +21555,9 @@ def _get_color_chart_data_impl(
                     for sid in spr_ids_row:
                         all_spr_ids.add(sid)
 
+            for sid in (spr_id_produced_map or {}):
+                all_spr_ids.add(sid)
+
             if all_spr_ids and frappe.db.exists("DocType", "Shaft Production Run Item"):
                 spi_cols = frappe.db.get_table_columns("Shaft Production Run Item") or []
                 if "item_code" in spi_cols and "net_weight" in spi_cols:
@@ -21551,6 +21577,21 @@ def _get_color_chart_data_impl(
                         ic = str(spi_row.get("item_code") or "").strip()
                         if sid and ic:
                             spr_item_kg_by_code.setdefault(sid, {})[ic] = flt(spi_row.get("kgs"))
+                    if "width_inch" in spi_cols:
+                        for spi_row in frappe.db.sql(
+                            f"""
+                            SELECT parent, width_inch, SUM(IFNULL(net_weight, 0)) AS kgs
+                            FROM `tabShaft Production Run Item`
+                            WHERE parent IN ({sf_spi})
+                            GROUP BY parent, width_inch
+                            """,
+                            tuple(ids_list),
+                            as_dict=True,
+                        ):
+                            sid = str(spi_row.get("parent") or "").strip()
+                            w_key = round(flt(spi_row.get("width_inch") or 0), 1)
+                            if sid and w_key > 0:
+                                spr_item_kg_by_width.setdefault(sid, {})[w_key] = flt(spi_row.get("kgs"))
 
             if all_spr_ids:
                 ids_list = list(all_spr_ids)
@@ -22138,12 +22179,17 @@ def _get_color_chart_data_impl(
                 item_level_wo_count = max(item_level_wo_count, spr_psi_count_map.get(psi_name, 0))
 
             if item_level_produced is None and row_spr_for_produced:
+                row_width_for_spr = flt(
+                    item.get("width_inch") or item.get("width") or item.get("custom_width") or 0
+                )
                 spr_row_kg = _resolve_spr_produced_weight_kg(
                     row_spr_for_produced,
                     item.get("item_code"),
                     spr_id_produced_map,
                     spr_item_kg_by_code,
                     spr_metrics,
+                    width_inch=row_width_for_spr,
+                    spr_item_kg_by_width=spr_item_kg_by_width,
                 )
                 if spr_row_kg is not None:
                     item_level_produced = spr_row_kg
@@ -22254,6 +22300,9 @@ def _get_color_chart_data_impl(
 
             row_spr = (item.get("spr_name") or "").strip()
             row_item_code = (item.get("item_code") or "").strip()
+            row_width_inch = flt(
+                item.get("width_inch") or item.get("width") or item.get("custom_width") or 0
+            )
             spr_row_produced_kg = None
             if row_spr:
                 spr_row_produced_kg = _resolve_spr_produced_weight_kg(
@@ -22262,7 +22311,12 @@ def _get_color_chart_data_impl(
                     spr_id_produced_map,
                     spr_item_kg_by_code,
                     spr_metrics,
+                    width_inch=row_width_inch,
+                    spr_item_kg_by_width=spr_item_kg_by_width,
                 )
+            spr_produced_total_kg = (
+                _spr_header_produced_total_kg(row_spr, spr_id_produced_map, spr_metrics) if row_spr else 0.0
+            )
 
             wo_item_level_produced = None
             if not row_spr and item_pp and row_item_code:
@@ -22275,6 +22329,13 @@ def _get_color_chart_data_impl(
                     spi_kg = flt((spr_item_kg_by_code.get(sid) or {}).get(row_item_code, 0))
                     if spi_kg > 0:
                         wo_item_level_produced = spi_kg
+                        break
+            if wo_item_level_produced is None and row_spr and row_width_inch > 0:
+                w_key = round(row_width_inch, 1)
+                for sid in _expand_spr_name_tokens(row_spr):
+                    w_kg = flt((spr_item_kg_by_width.get(sid) or {}).get(w_key, 0))
+                    if w_kg > 0:
+                        wo_item_level_produced = w_kg
                         break
 
             total_achieved_weight_kgs = 0
@@ -22444,6 +22505,7 @@ def _get_color_chart_data_impl(
                 "pp_id": item_pp or "",  # Item-level production plan ID for direct PP view routing
                 "pp_docstatus": pp_docstatus,
                 "spr_name": spr_name,  # SPR linked to PP (validated)
+                "spr_produced_total_kg": flt(spr_produced_total_kg),
                 "spr_docstatus": spr_docstatus,
                 "spr_unit": spr_unit,
                 **_transfer_payload_for_chart_row(item, wo_terminal, spr_docstatus),
