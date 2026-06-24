@@ -646,7 +646,14 @@ production_entry.grid_columns = {
 			});
 			cg_reorder_all_row_docfields(grid, ordered);
 			cg_sync_row_docfields(grid, showSet);
-			cg_realign_grid(grid, fd, { fullRefresh: false }, ordered);
+			cg_realign_grid(grid, fd, options, ordered);
+			if (cg_needs_column_fix(grid) && order.length) {
+				cg_fix_row_columns(grid, showSet, ordered);
+				if (typeof grid.refresh_header === 'function') {
+					grid.refresh_header();
+				}
+				cg_sync_header_scroll(fd);
+			}
 			const docRows = frm.doc && frm.doc[tableFieldname];
 			if (docRows && docRows.length && !(grid.grid_rows || []).length) {
 				cg_ensure_grid_rows_from_doc(frm, tableFieldname);

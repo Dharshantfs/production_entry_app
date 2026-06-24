@@ -586,6 +586,20 @@ function spr_apply_create_entry_buttons_ui(frm) {
 	}
 }
 
+function spr_install_shaft_jobs_grid_column_guard(frm) {
+	const cg = spr_get_grid_columns_module();
+	if (!cg || typeof cg.install_refresh_column_guard !== 'function') {
+		return;
+	}
+	if (frm._spr_shaft_jobs_cg_guard_installed) {
+		return;
+	}
+	frm._spr_shaft_jobs_cg_guard_installed = true;
+	cg.install_refresh_column_guard(frm, 'shaft_jobs', function () {
+		return spr_build_shaft_jobs_show_list(frm) || [];
+	});
+}
+
 function spr_apply_shaft_jobs_create_entry_ui(frm) {
 	spr_apply_create_entry_buttons_ui(frm);
 }
@@ -597,6 +611,7 @@ function spr_apply_shaft_jobs_grid_columns(frm, force) {
 		return;
 	}
 	spr_bind_spr_grid_column_configure_hook(frm, 'shaft_jobs');
+	spr_install_shaft_jobs_grid_column_guard(frm);
 	if (grid._spr_columns_user_locked) {
 		spr_light_realign_field(frm, 'shaft_jobs');
 		spr_apply_shaft_jobs_create_entry_ui(frm);
@@ -2037,9 +2052,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_schedule_grid_ui_debounced(frm, { delay: 280, columns: false });
 		spr_reapply_item_row_styles_with_retries(frm);
 
-		if (frm.doc && cint(frm.doc.docstatus) === 1) {
-			spr_force_submitted_items_grid_realign(frm);
-		}
+		spr_schedule_child_grids_realign(frm, [200, 600, 1200]);
 
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
@@ -2082,6 +2095,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_register_spr_page_buttons_after_save(frm);
 		spr_sync_no_of_rolls_created(frm, { silent: true });
 		spr_stabilize_spr_child_grids(frm, { delay: 200 });
+		spr_schedule_child_grids_realign(frm, [120, 400, 900]);
 		spr_reapply_item_row_styles_with_retries(frm);
 	},
 
@@ -5929,6 +5943,18 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 				if (fieldname === 'items') {
 					spr_bind_items_grid_edit_guard(frm);
 				}
+				if (fieldname === 'shaft_jobs') {
+					spr_install_shaft_jobs_grid_column_guard(frm);
+				}
+				var cgMod = spr_get_grid_columns_module();
+				if (
+					cgMod &&
+					typeof cgMod.header_matches_rows === 'function' &&
+					!cgMod.header_matches_rows(g) &&
+					(fieldname === 'items' || fieldname === 'shaft_jobs')
+				) {
+					spr_schedule_child_grids_realign(frm, [60, 280]);
+				}
 			} else {
 				spr_light_grid_scroll_sync(frm, fieldname);
 			}
@@ -6409,9 +6435,12 @@ function schedule_spr_item_row_styles(frm) {
 	spr_schedule_grid_ui_debounced(frm, { delay: 120 });
 }
 
-/** Submitted SPR: rebuild child grid columns so headers match row data (items + Available Jobs). */
-function spr_force_submitted_child_grids_realign(frm) {
-	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 1) {
+/** Rebuild child grid columns so headers match row data (draft + submitted). */
+function spr_force_child_grids_realign(frm) {
+	if (!frm || !frm.fields_dict) {
+		return;
+	}
+	if (spr_items_grid_is_editing(frm)) {
 		return;
 	}
 	const cg = spr_get_grid_columns_module();
@@ -6423,30 +6452,51 @@ function spr_force_submitted_child_grids_realign(frm) {
 	if (!itemCols.length && !jobCols.length) {
 		return;
 	}
-	[0, 300, 700, 1400].forEach(function (ms) {
+	spr_reset_items_grid_field_visibility(frm);
+	spr_reset_shaft_jobs_grid_field_visibility(frm);
+	if (itemCols.length && frm.fields_dict.items) {
+		spr_install_items_grid_column_guard(frm);
+		cg.apply(frm, 'items', SPR_SPI_DOCTYPE, itemCols, { fullRefresh: true });
+	}
+	if (jobCols.length && frm.fields_dict.shaft_jobs) {
+		spr_install_shaft_jobs_grid_column_guard(frm);
+		cg.apply(frm, 'shaft_jobs', 'Shaft Production Run Job', jobCols, { fullRefresh: true });
+	}
+	spr_apply_grid_wrap_classes(frm);
+	spr_ensure_child_grid_heights(frm);
+	['shaft_jobs', 'items'].forEach(function (fn) {
+		spr_force_grid_realign(frm, fn);
+		if (cg.sync_header_scroll) {
+			cg.sync_header_scroll(frm, fn);
+		} else {
+			spr_light_grid_scroll_sync(frm, fn);
+		}
+	});
+	spr_reapply_item_row_styles_with_retries(frm, [80, 280]);
+}
+
+/** Staggered realign after save / row save — fixes header collapse on draft SPR. */
+function spr_schedule_child_grids_realign(frm, delays) {
+	if (!frm) {
+		return;
+	}
+	const times = delays || [0, 250, 600, 1200];
+	const key = '_spr_child_realign_gen';
+	const gen = (frm[key] || 0) + 1;
+	frm[key] = gen;
+	times.forEach(function (ms) {
 		setTimeout(function () {
-			if (!frm || !frm.fields_dict) {
+			if (!frm || frm[key] !== gen) {
 				return;
 			}
-			if (spr_items_grid_is_editing(frm)) {
-				return;
-			}
-			spr_reset_items_grid_field_visibility(frm);
-			spr_reset_shaft_jobs_grid_field_visibility(frm);
-			if (itemCols.length) {
-				cg.apply(frm, 'items', SPR_SPI_DOCTYPE, itemCols, { fullRefresh: true });
-			}
-			if (jobCols.length && frm.fields_dict.shaft_jobs) {
-				cg.apply(frm, 'shaft_jobs', 'Shaft Production Run Job', jobCols, { fullRefresh: true });
-			}
-			spr_apply_grid_wrap_classes(frm);
-			spr_ensure_child_grid_heights(frm);
-			spr_reapply_item_row_styles_with_retries(frm, [80, 280]);
-			['shaft_jobs', 'items'].forEach(function (fn) {
-				spr_light_grid_scroll_sync(frm, fn);
-			});
+			spr_force_child_grids_realign(frm);
 		}, ms);
 	});
+}
+
+/** Submitted SPR: extra staggered passes after docstatus change. */
+function spr_force_submitted_child_grids_realign(frm) {
+	spr_schedule_child_grids_realign(frm, [0, 300, 700, 1400]);
 }
 
 /** @deprecated use spr_force_submitted_child_grids_realign */
@@ -6497,13 +6547,15 @@ function spr_schedule_item_row_styles_after_doc_write(frm) {
 		}
 		spr_layout_all_grids(frm, { toggleUi: false });
 		spr_ensure_child_grid_heights(frm);
+		spr_force_child_grids_realign(frm);
 		spr_reapply_item_row_styles_with_retries(frm, [0, 120, 350, 750]);
 	};
 	if (gc && typeof gc.debounce === 'function') {
-		gc.debounce(frm, 'spr_submitted_realign', run, 220);
+		gc.debounce(frm, 'spr_doc_write_realign', run, 180);
 	} else {
-		setTimeout(run, 220);
+		setTimeout(run, 180);
 	}
+	spr_schedule_child_grids_realign(frm, [350, 850]);
 }
 
 function sprResolveItemsRowElement(frm, doc, grid, idx) {
