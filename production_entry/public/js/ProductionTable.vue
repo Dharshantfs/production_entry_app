@@ -457,7 +457,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, reactive } from "vue";
 import Sortable from "sortablejs";
-import { mergeSprCsv, resolveSprNavigationTarget } from "./spr_csv_utils.js";
+import { mergeSprCsv, resolveSprNavigationTarget, parseSprIds } from "./spr_csv_utils.js";
 import { openProductionPlanPrintPreview, resolveAndOpenProductionPlanPrintPreview } from "./pp_print_utils.js";
 import { formatKgPlanning, mmDisplayFromInchesWithCodeFallback } from "./planning_table_size_units.js";
 import TransferToolbarBlock from "./TransferToolbarBlock.vue";
@@ -1665,10 +1665,33 @@ const autoMergeSuggestions = computed(() => {
  */
 function dedupeMergedActualProductionKg(items) {
   if (!items || !items.length) return 0;
-  const sprNames = [
-    ...new Set(items.map((it) => String(it.spr_name || "").trim()).filter(Boolean)),
-  ];
-  if (sprNames.length === 1) {
+
+  const allSprIds = new Set();
+  items.forEach((it) => parseSprIds(it.spr_name).forEach((id) => allSprIds.add(id)));
+  const sprIds = [...allSprIds];
+
+  // Multiple distinct SPRs on merged group (e.g. SPR-A + SPR-B) — sum each SPR once.
+  if (sprIds.length > 1) {
+    const headerMax = Math.max(
+      ...items.map((it) => parseFloat(it.spr_produced_total_kg ?? it.spr_total_produced_kg ?? 0) || 0),
+      0
+    );
+    if (headerMax > 0) {
+      return headerMax;
+    }
+    let total = 0;
+    for (const sid of sprIds) {
+      let best = 0;
+      for (const it of items) {
+        if (!parseSprIds(it.spr_name).includes(sid)) continue;
+        best = Math.max(best, parseFloat(it.actual_production_weight_kgs) || 0);
+      }
+      total += best;
+    }
+    return total;
+  }
+
+  if (sprIds.length === 1) {
     const headerTotal = items.reduce(
       (m, it) =>
         Math.max(
@@ -1683,7 +1706,7 @@ function dedupeMergedActualProductionKg(items) {
     const uniqPartial = [...new Set(rounded)];
 
     if (headerTotal > 0) {
-      // Split/merged rows may each carry the full SPR produced kg — count SPR once.
+      // Split rows sharing one SPR may each carry the full produced kg — count SPR once.
       if (partialSum > headerTotal * 1.01) {
         return headerTotal;
       }
@@ -1704,12 +1727,14 @@ function dedupeMergedActualProductionKg(items) {
   let noSprSum = 0;
   for (const it of items) {
     const w = parseFloat(it.actual_production_weight_kgs) || 0;
-    const spr = String(it.spr_name || "").trim();
-    if (spr) {
-      if (!bySpr.has(spr)) {
-        bySpr.set(spr, []);
+    const ids = parseSprIds(it.spr_name);
+    if (ids.length) {
+      for (const spr of ids) {
+        if (!bySpr.has(spr)) {
+          bySpr.set(spr, []);
+        }
+        bySpr.get(spr).push(w);
       }
-      bySpr.get(spr).push(w);
     } else {
       noSprSum += w;
     }
@@ -1816,11 +1841,12 @@ const tableData = computed(() => {
                 .sort((a, b) => Number(a) - Number(b))
                 .join(",");
               const displayLabel = `${customer}(${mergeItems.length}items)`;
-              const sprNames = mergeItems.map((it) => String(it.spr_name || "").trim()).filter(Boolean);
-              const uniqueSprs = [...new Set(sprNames)];
-              const spr_name =
-                uniqueSprs.length === 1 ? uniqueSprs[0] : uniqueSprs.length > 1 ? uniqueSprs[0] : "";
-              const sprItem = spr_name ? mergeItems.find((it) => String(it.spr_name || "").trim() === spr_name) : null;
+              const sprIdSet = new Set();
+              mergeItems.forEach((it) => parseSprIds(it.spr_name).forEach((id) => sprIdSet.add(id)));
+              const spr_name = [...sprIdSet].join(", ");
+              const sprItem = spr_name
+                ? mergeItems.find((it) => parseSprIds(it.spr_name).length > 0) || mergeItems[0]
+                : null;
               const spr_docstatus = sprItem != null ? sprItem.spr_docstatus : null;
               const mergeAnyWoOpen = mergeItems.some((it) => it.wo_open);
               const mergeAllWoTerminal = mergeItems.length > 0 && mergeItems.every((it) => it.wo_terminal);
@@ -2875,35 +2901,67 @@ async function openItemSPR(sprName, item = null) {
   }
 }
 
-function openMergedSPR(sprName, mergedRow) {
+async function openMergedSPR(sprName, mergedRow) {
   if (!sprName) {
     frappe.msgprint("No SPR linked");
     return;
   }
-  
-  // Verify SPR still exists
-  frappe.call({
-    method: "frappe.client.get",
-    args: { doctype: "Shaft Production Run", name: sprName },
-    callback: (r) => {
-      if (r.message) {
-        // SPR exists, open it
-        frappe.set_route('Form', 'Shaft Production Run', sprName);
-      } else {
-        // SPR was deleted, allow creating new one
-        if (mergedRow) {
-          mergedRow.spr_name = "";
-          frappe.show_alert({
-            message: '⚠️ SPR was deleted. You can create a new one.',
-            indicator: 'orange'
-          }, 3);
-          createMergedStockEntry(mergedRow);
-        } else {
-          frappe.msgprint("SPR not found. It may have been deleted.");
-        }
+  const ids = parseSprIds(sprName);
+  if (!ids.length) {
+    frappe.msgprint("No SPR linked");
+    return;
+  }
+  const target = await resolveSprNavigationTarget(sprName, mergedRow?.spr_docstatus);
+  if (!target) {
+    frappe.msgprint("No SPR linked");
+    return;
+  }
+  try {
+    const r = await frappe.call({
+      method: "frappe.client.get",
+      args: { doctype: "Shaft Production Run", name: target },
+    });
+    if (r.message) {
+      if (ids.length > 1) {
+        frappe.show_alert(
+          {
+            message: `Opening ${target} (${ids.length} SPR(s) linked: ${ids.join(", ")})`,
+            indicator: "blue",
+          },
+          5
+        );
       }
+      frappe.set_route("Form", "Shaft Production Run", target);
+      return;
     }
-  });
+    if (mergedRow) {
+      mergedRow.spr_name = "";
+      frappe.show_alert(
+        {
+          message: "SPR was deleted. You can create a new one.",
+          indicator: "orange",
+        },
+        3
+      );
+      createMergedStockEntry(mergedRow);
+    } else {
+      frappe.msgprint("SPR not found. It may have been deleted.");
+    }
+  } catch (e) {
+    if (mergedRow) {
+      mergedRow.spr_name = "";
+      frappe.show_alert(
+        {
+          message: "SPR was deleted. You can create a new one.",
+          indicator: "orange",
+        },
+        3
+      );
+      createMergedStockEntry(mergedRow);
+    } else {
+      frappe.msgprint("SPR not found.");
+    }
+  }
 }
 
 function showLinkedWorkOrdersPopup(ppId) {

@@ -6469,6 +6469,7 @@ def _resolve_spr_produced_weight_kg(
 	spr_metrics=None,
 	width_inch=None,
 	spr_item_kg_by_width=None,
+	use_width_slice=True,
 ):
 	"""Produced kg for one Planning Table row's SPR link — never PP-aggregated totals."""
 	total = 0.0
@@ -6480,24 +6481,25 @@ def _resolve_spr_produced_weight_kg(
 	spr_item_kg_by_width = spr_item_kg_by_width or {}
 	spr_metrics = spr_metrics or {}
 	for sid in _expand_spr_name_tokens(spr_raw):
-		if item_code:
-			spi_kg = flt((spr_item_kg_by_code.get(sid) or {}).get(item_code, 0))
-			if spi_kg > 0:
-				total += spi_kg
-				found = True
-				continue
-		if width_key > 0:
-			w_kg = flt((spr_item_kg_by_width.get(sid) or {}).get(width_key, 0))
-			if w_kg > 0:
-				total += w_kg
-				found = True
-				continue
+		if use_width_slice:
+			if item_code:
+				spi_kg = flt((spr_item_kg_by_code.get(sid) or {}).get(item_code, 0))
+				if spi_kg > 0:
+					total += spi_kg
+					found = True
+					continue
+			if width_key > 0:
+				w_kg = flt((spr_item_kg_by_width.get(sid) or {}).get(width_key, 0))
+				if w_kg > 0:
+					total += w_kg
+					found = True
+					continue
 		if sid in spr_id_produced_map:
 			qty = flt(spr_id_produced_map.get(sid) or 0)
 			if qty > 0:
 				total += qty
 				found = True
-			continue
+				continue
 		m = spr_metrics.get(sid)
 		if m:
 			produced = flt(m.get("total_produced", 0))
@@ -6507,16 +6509,54 @@ def _resolve_spr_produced_weight_kg(
 	return flt(total) if found else None
 
 
+def _should_use_spr_width_slice(sheet_items, item, spr_raw) -> bool:
+	"""Per-width roll kg only when multiple board rows share one SPR at different widths."""
+	spr_tokens = _expand_spr_name_tokens(spr_raw)
+	if not spr_tokens:
+		return False
+	width_key = round(
+		flt(
+			(item or {}).get("width_inch")
+			or (item or {}).get("width")
+			or (item or {}).get("custom_width")
+			or 0
+		),
+		1,
+	)
+	if width_key <= 0:
+		return False
+	siblings = []
+	for it in sheet_items or []:
+		if _expand_spr_name_tokens(it.get("spr_name")) != spr_tokens:
+			continue
+		siblings.append(it)
+	if len(siblings) <= 1:
+		return False
+	positive_widths = set()
+	for s in siblings:
+		w = round(flt(s.get("width_inch") or s.get("width") or s.get("custom_width") or 0), 1)
+		if w > 0:
+			positive_widths.add(w)
+	return len(positive_widths) > 1
+
+
 def _spr_header_produced_total_kg(spr_raw, spr_id_produced_map=None, spr_metrics=None) -> float:
-	"""Full submitted SPR header produced kg (for merged rows sharing one SPR)."""
-	best = 0.0
+	"""Sum produced kg across all SPR ids in a Planning row spr_name field (comma-separated)."""
+	total = 0.0
+	seen = set()
 	for sid in _expand_spr_name_tokens(spr_raw):
+		if sid in seen:
+			continue
+		seen.add(sid)
+		part = 0.0
 		if spr_id_produced_map and sid in spr_id_produced_map:
-			best = max(best, flt(spr_id_produced_map.get(sid) or 0))
-		m = (spr_metrics or {}).get(sid)
-		if m:
-			best = max(best, flt(m.get("total_produced", 0)))
-	return flt(best)
+			part = flt(spr_id_produced_map.get(sid) or 0)
+		if part <= 0:
+			m = (spr_metrics or {}).get(sid)
+			if m:
+				part = flt(m.get("total_produced", 0))
+		total += part
+	return flt(total)
 
 
 def _spr_split_row_produced_share(
@@ -22229,6 +22269,7 @@ def _get_color_chart_data_impl(
                     spr_metrics,
                     width_inch=row_width_for_spr,
                     spr_item_kg_by_width=spr_item_kg_by_width,
+                    use_width_slice=_should_use_spr_width_slice(items, item, row_spr_for_produced),
                 )
                 if spr_row_kg is not None:
                     item_level_produced = spr_row_kg
@@ -22366,6 +22407,7 @@ def _get_color_chart_data_impl(
                     spr_metrics,
                     width_inch=row_width_inch,
                     spr_item_kg_by_width=spr_item_kg_by_width,
+                    use_width_slice=_should_use_spr_width_slice(items, item, row_spr),
                 )
             spr_produced_total_kg = (
                 _spr_header_produced_total_kg(row_spr, spr_id_produced_map, spr_metrics) if row_spr else 0.0
