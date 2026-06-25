@@ -657,6 +657,21 @@ production_entry.grid_columns = {
 				cg_mirror_grid_docfields_to_rows(grid);
 				cg_sync_row_docfields(grid, showSet);
 			}
+			if (
+				options &&
+				options.fullRefresh &&
+				ordered.length &&
+				(grid.grid_rows || []).length
+			) {
+				cg_remount_grid_rows(grid);
+				cg_mirror_grid_docfields_to_rows(grid);
+				cg_sync_row_docfields(grid, showSet);
+				cg_refresh_grid_body(grid);
+				if (typeof grid.refresh_header === 'function') {
+					grid.refresh_header();
+				}
+				cg_sync_header_scroll(fd);
+			}
 			const docRows = frm.doc && frm.doc[tableFieldname];
 			if (docRows && docRows.length && !(grid.grid_rows || []).length) {
 				cg_ensure_grid_rows_from_doc(frm, tableFieldname);
