@@ -6701,7 +6701,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '46';
+	const sprItemsCssVer = '47';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -6902,113 +6902,123 @@ function ensure_spr_item_stylesheet() {
 			overflow-x: visible !important;
 			overflow-y: visible !important;
 		}
-		/* TABLE LAYOUT - forces header and body columns to align perfectly */
-		.spr-grid-wrap .form-grid,
-		.spr-items-wrap .form-grid,
-		.spr-shaft-jobs-wrap .form-grid {
-			display: table !important;
-			table-layout: fixed !important;
-			width: 100% !important;
-			border-collapse: collapse !important;
-		}
+		/* STICKY HEADER */
 		.spr-grid-wrap .grid-heading-row,
 		.spr-items-wrap .grid-heading-row,
 		.spr-shaft-jobs-wrap .grid-heading-row {
-			display: table-row !important;
-			overflow: visible !important;
+			position: sticky !important;
+			top: 0 !important;
+			z-index: 10 !important;
+			background: #f8fafc !important;
 		}
-		.spr-grid-wrap .grid-body,
-		.spr-items-wrap .grid-body,
-		.spr-shaft-jobs-wrap .grid-body {
-			display: table-row-group !important;
-			overflow: visible !important;
-		}
-		.spr-grid-wrap .grid-body .rows,
-		.spr-items-wrap .grid-body .rows,
-		.spr-shaft-jobs-wrap .grid-body .rows {
-			display: contents !important;
-		}
+		/* FLEXBOX ALIGNMENT - same widths for header and body columns */
+		.spr-grid-wrap .grid-heading-row,
 		.spr-grid-wrap .grid-row,
+		.spr-items-wrap .grid-heading-row,
 		.spr-items-wrap .grid-row,
+		.spr-shaft-jobs-wrap .grid-heading-row,
 		.spr-shaft-jobs-wrap .grid-row {
-			display: table-row !important;
+			display: flex !important;
+			flex-wrap: nowrap !important;
+			align-items: stretch !important;
 		}
-		.spr-grid-wrap .grid-heading-row > .grid-static-col,
-		.spr-grid-wrap .grid-heading-row > .col,
-		.spr-grid-wrap .grid-row > .col,
-		.spr-grid-wrap .grid-row > .grid-static-col,
-		.spr-items-wrap .grid-heading-row > .grid-static-col,
-		.spr-items-wrap .grid-heading-row > .col,
-		.spr-items-wrap .grid-row > .col,
-		.spr-items-wrap .grid-row > .grid-static-col,
-		.spr-shaft-jobs-wrap .grid-heading-row > .grid-static-col,
-		.spr-shaft-jobs-wrap .grid-heading-row > .col,
-		.spr-shaft-jobs-wrap .grid-row > .col,
-		.spr-shaft-jobs-wrap .grid-row > .grid-static-col {
-			display: table-cell !important;
-			vertical-align: middle !important;
+		.spr-grid-wrap .grid-heading-row > *,
+		.spr-grid-wrap .grid-row > *,
+		.spr-items-wrap .grid-heading-row > *,
+		.spr-items-wrap .grid-row > *,
+		.spr-shaft-jobs-wrap .grid-heading-row > *,
+		.spr-shaft-jobs-wrap .grid-row > * {
 			box-sizing: border-box !important;
-			padding: 4px 6px !important;
+			flex-shrink: 0 !important;
+			flex-grow: 0 !important;
+			padding: 6px 8px !important;
+			display: flex !important;
+			align-items: center !important;
 			border-bottom: 1px solid #e5e7eb !important;
+			overflow: hidden !important;
+			text-overflow: ellipsis !important;
 		}
-		.spr-grid-wrap .grid-heading-row > .row-check,
-		.spr-grid-wrap .grid-row > .row-check,
-		.spr-items-wrap .grid-heading-row > .row-check,
-		.spr-items-wrap .grid-row > .row-check,
-		.spr-shaft-jobs-wrap .grid-heading-row > .row-check,
-		.spr-shaft-jobs-wrap .grid-row > .row-check {
-			width: 36px !important;
-			min-width: 36px !important;
-			max-width: 36px !important;
+		/* Row checkbox and index columns - fixed small widths */
+		.spr-grid-wrap .row-check, .spr-items-wrap .row-check, .spr-shaft-jobs-wrap .row-check {
+			flex: 0 0 36px !important; width: 36px !important; min-width: 36px !important; max-width: 36px !important;
 		}
-		.spr-grid-wrap .grid-heading-row > .row-index,
-		.spr-grid-wrap .grid-row > .row-index,
-		.spr-items-wrap .grid-heading-row > .row-index,
-		.spr-items-wrap .grid-row > .row-index,
-		.spr-shaft-jobs-wrap .grid-heading-row > .row-index,
-		.spr-shaft-jobs-wrap .grid-row > .row-index {
-			width: 44px !important;
-			min-width: 44px !important;
-			max-width: 44px !important;
+		.spr-grid-wrap .row-index, .spr-items-wrap .row-index, .spr-shaft-jobs-wrap .row-index {
+			flex: 0 0 44px !important; width: 44px !important; min-width: 44px !important; max-width: 44px !important;
 		}
-		/* Fixed column widths for items table */
-		.spr-items-wrap [data-fieldname="job"] { width: 50px !important; }
-		.spr-items-wrap [data-fieldname="party_code"] { width: 95px !important; }
-		.spr-items-wrap [data-fieldname="item_code"] { width: 110px !important; }
-		.spr-items-wrap [data-fieldname="item_name"] { width: 120px !important; }
-		.spr-items-wrap [data-fieldname="quality"] { width: 75px !important; }
-		.spr-items-wrap [data-fieldname="color"] { width: 115px !important; }
-		.spr-items-wrap [data-fieldname="width_inch"] { width: 75px !important; }
-		.spr-items-wrap [data-fieldname="gsm"] { width: 65px !important; }
-		.spr-items-wrap [data-fieldname="produced_gsm"] { width: 80px !important; }
-		.spr-items-wrap [data-fieldname="meter_roll"] { width: 75px !important; }
-		.spr-items-wrap [data-fieldname="produced_length_mtrs"] { width: 90px !important; }
-		.spr-items-wrap [data-fieldname="batch_no"] { width: 110px !important; }
-		.spr-items-wrap [data-fieldname="net_weight"] { width: 85px !important; }
-		.spr-items-wrap [data-fieldname="gross_weight"] { width: 90px !important; }
-		.spr-items-wrap [data-fieldname="planned_qty"] { width: 85px !important; }
-		.spr-items-wrap [data-fieldname="uom"] { width: 50px !important; }
-		.spr-items-wrap [data-fieldname="custom_core_width_mm"] { width: 90px !important; }
-		.spr-items-wrap [data-fieldname="custom_polybag_kgs"] { width: 90px !important; }
-		.spr-items-wrap [data-fieldname="save_row"] { width: 90px !important; }
-		.spr-items-wrap [data-fieldname="custom_production_label"] { width: 110px !important; }
-		.spr-items-wrap [data-fieldname="edit_row"] { width: 90px !important; }
-		.spr-items-wrap [data-fieldname="work_order"] { width: 110px !important; }
-		/* Fixed column widths for shaft_jobs table */
-		.spr-shaft-jobs-wrap [data-fieldname="job_id"] { width: 50px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="gsm"] { width: 65px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="quality"] { width: 75px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="combination"] { width: 145px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="total_width"] { width: 90px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="meter_roll_mtrs"] { width: 90px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="net_weight"] { width: 95px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="total_weight"] { width: 95px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_weight"] { width: 105px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_meter"] { width: 105px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="no_of_shafts"] { width: 75px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="no_of_rolls"] { width: 75px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="party_code"] { width: 95px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] { width: 120px !important; }
+		/* ===== ITEMS TABLE COLUMN WIDTHS ===== */
+		.spr-items-wrap [data-fieldname="job"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="job"]) { flex: 0 0 50px !important; width: 50px !important; min-width: 50px !important; }
+		.spr-items-wrap [data-fieldname="party_code"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="party_code"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
+		.spr-items-wrap [data-fieldname="item_code"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="item_code"]) { flex: 0 0 110px !important; width: 110px !important; min-width: 110px !important; }
+		.spr-items-wrap [data-fieldname="item_name"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="item_name"]) { flex: 0 0 120px !important; width: 120px !important; min-width: 120px !important; }
+		.spr-items-wrap [data-fieldname="quality"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="quality"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
+		.spr-items-wrap [data-fieldname="color"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="color"]) { flex: 0 0 115px !important; width: 115px !important; min-width: 115px !important; }
+		.spr-items-wrap [data-fieldname="width_inch"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="width_inch"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
+		.spr-items-wrap [data-fieldname="gsm"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="gsm"]) { flex: 0 0 65px !important; width: 65px !important; min-width: 65px !important; }
+		.spr-items-wrap [data-fieldname="produced_gsm"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="produced_gsm"]) { flex: 0 0 80px !important; width: 80px !important; min-width: 80px !important; }
+		.spr-items-wrap [data-fieldname="meter_roll"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="meter_roll"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
+		.spr-items-wrap [data-fieldname="produced_length_mtrs"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="produced_length_mtrs"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-items-wrap [data-fieldname="batch_no"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="batch_no"]) { flex: 0 0 115px !important; width: 115px !important; min-width: 115px !important; }
+		.spr-items-wrap [data-fieldname="net_weight"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="net_weight"]) { flex: 0 0 85px !important; width: 85px !important; min-width: 85px !important; }
+		.spr-items-wrap [data-fieldname="gross_weight"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="gross_weight"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-items-wrap [data-fieldname="planned_qty"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="planned_qty"]) { flex: 0 0 85px !important; width: 85px !important; min-width: 85px !important; }
+		.spr-items-wrap [data-fieldname="uom"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="uom"]) { flex: 0 0 50px !important; width: 50px !important; min-width: 50px !important; }
+		.spr-items-wrap [data-fieldname="custom_core_width_mm"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="custom_core_width_mm"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-items-wrap [data-fieldname="custom_polybag_kgs"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="custom_polybag_kgs"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-items-wrap [data-fieldname="save_row"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="save_row"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-items-wrap [data-fieldname="custom_production_label"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="custom_production_label"]) { flex: 0 0 110px !important; width: 110px !important; min-width: 110px !important; }
+		.spr-items-wrap [data-fieldname="edit_row"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="edit_row"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-items-wrap [data-fieldname="work_order"],
+		.spr-items-wrap .grid-static-col:has([data-fieldname="work_order"]) { flex: 0 0 110px !important; width: 110px !important; min-width: 110px !important; }
+		/* ===== SHAFT_JOBS TABLE COLUMN WIDTHS ===== */
+		.spr-shaft-jobs-wrap [data-fieldname="job_id"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="job_id"]) { flex: 0 0 50px !important; width: 50px !important; min-width: 50px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="gsm"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="gsm"]) { flex: 0 0 65px !important; width: 65px !important; min-width: 65px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="quality"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="quality"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="combination"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="combination"]) { flex: 0 0 145px !important; width: 145px !important; min-width: 145px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="total_width"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="total_width"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="meter_roll_mtrs"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="meter_roll_mtrs"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="net_weight"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="net_weight"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="total_weight"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="total_weight"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_weight"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="custom_total_achieved_weight"]) { flex: 0 0 105px !important; width: 105px !important; min-width: 105px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_meter"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="custom_total_achieved_meter"]) { flex: 0 0 105px !important; width: 105px !important; min-width: 105px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="no_of_shafts"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="no_of_shafts"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="no_of_rolls"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="no_of_rolls"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="party_code"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="party_code"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"],
+		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="create_roll_entry"]) { flex: 0 0 120px !important; width: 120px !important; min-width: 120px !important; }
 		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] .btn {
 			width: 100% !important;
 			font-size: 11px !important;
