@@ -395,57 +395,90 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
  * so a mismatch in structural cells doesn't shift every data column.
  * Only touches header cells — no body row loop, no hang.
  */
-function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
-	const fd = spr_get_field_dict(frm, fieldname);
+/**
+ * THE REAL FIX: inject CSS `order` on every body [data-fieldname] cell
+ * so they VISUALLY appear in our desired column order, matching the header.
+ * This works even when Frappe renders body cells in its own docfield order.
+ * No body-row DOM loop — just one CSS <style> tag, very fast.
+ */
+function spr_inject_column_order_css(frm, fieldname) {
+	var fd = spr_get_field_dict(frm, fieldname);
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
 		return;
 	}
-	const $wrap = fd.$wrapper;
-	const $headRow = $wrap.find('.grid-heading-row').first();
-	const $bodyRow = $wrap.find('.grid-body .grid-row').first();
+	// Resolve the desired column list
+	var colList = [];
+	if (fieldname === 'items') {
+		var cfg = spr_get_items_list_view_config(frm);
+		colList = (cfg && cfg.show) || [];
+	} else if (fieldname === 'shaft_jobs') {
+		colList = spr_build_shaft_jobs_show_list(frm) || [];
+	}
+	if (!colList.length) {
+		return;
+	}
+	var wrapClass = fieldname === 'items' ? '.spr-items-wrap' : '.spr-shaft-jobs-wrap';
+	var styleId = 'spr-col-order-' + fieldname;
+	var css = '';
+	// Rows must be flex (Frappe already makes them flex, but ensure it)
+	css += wrapClass + ' .grid-row,' + wrapClass + ' .grid-heading-row{display:flex!important;flex-wrap:nowrap!important;}\n';
+	// Structural cells
+	css += wrapClass + ' .grid-row>.row-check,' + wrapClass + ' .grid-heading-row>.row-check{order:0!important;flex:0 0 36px!important;min-width:36px!important;}\n';
+	css += wrapClass + ' .grid-row>.row-index,' + wrapClass + ' .grid-heading-row>.row-index{order:1!important;flex:0 0 44px!important;min-width:44px!important;}\n';
+	// Data columns — body cells ordered by data-fieldname
+	colList.forEach(function (fn, i) {
+		css += wrapClass + ' .grid-row>[data-fieldname="' + fn + '"]{order:' + (i + 2) + '!important;}\n';
+	});
+	$('style#' + styleId).remove();
+	$('<style id="' + styleId + '">' + css + '</style>').appendTo('head');
+
+	// Header cells: stamp order by current DOM position (header is already in correct order)
+	var $headRow = fd.$wrapper.find('.grid-heading-row').first();
+	$headRow.children('.row-check').css('order', '0');
+	$headRow.children('.row-index').css('order', '1');
+	$headRow.children(':not(.row-check):not(.row-index)').each(function (i) {
+		$(this).css('order', String(i + 2));
+	});
+}
+
+/**
+ * After order CSS is injected, also sync header cell WIDTHS to body cell widths.
+ * Reads first body row widths, stamps them on header cols by matching order index.
+ */
+function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
+	var fd = spr_get_field_dict(frm, fieldname);
+	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+		return;
+	}
+	var $wrap = fd.$wrapper;
+	var $headRow = $wrap.find('.grid-heading-row').first();
+	var $bodyRow = $wrap.find('.grid-body .grid-row').first();
 	if (!$headRow.length || !$bodyRow.length) {
 		return;
 	}
-
-	// Safety: abort if body hasn't painted yet
-	const $firstData = $bodyRow.children(':not(.row-check):not(.row-index)').first();
+	// Safety: abort if body hasn't painted
+	var $firstData = $bodyRow.children(':not(.row-check):not(.row-index)').first();
 	if (!$firstData.length || ($firstData.outerWidth() || 0) < 20) {
 		setTimeout(function () {
 			spr_lock_grid_column_widths(frm, fieldname, widthMap);
 		}, 150);
 		return;
 	}
-
-	// ---- structural columns (row-check, row-index) ----
-	var fixedCss = { 'box-sizing': 'border-box', 'flex-shrink': '0', 'flex-grow': '0' };
-	$headRow.children('.row-check').css(Object.assign({}, fixedCss,
-		{ 'min-width': '36px', 'width': '36px', 'max-width': '36px', 'flex': '0 0 36px' }));
-	$headRow.children('.row-index').css(Object.assign({}, fixedCss,
-		{ 'min-width': '44px', 'width': '44px', 'max-width': '44px', 'flex': '0 0 44px' }));
-
-	// ---- data columns aligned by index (skipping structural) ----
+	// Structural cells
+	$headRow.children('.row-check').css({ 'min-width': '36px', 'width': '36px', 'max-width': '36px', 'flex': '0 0 36px' });
+	$headRow.children('.row-index').css({ 'min-width': '44px', 'width': '44px', 'max-width': '44px', 'flex': '0 0 44px' });
+	// Data columns — match header[i] width to body[i] width (both in desired order now due to CSS order)
 	var $headDataCols = $headRow.children(':not(.row-check):not(.row-index)');
 	var $bodyDataCols = $bodyRow.children(':not(.row-check):not(.row-index)');
 	var n = Math.min($headDataCols.length, $bodyDataCols.length);
-
 	for (var i = 0; i < n; i++) {
 		var $h = $headDataCols.eq(i);
 		var $b = $bodyDataCols.eq(i);
-		var fn =
-			$b.attr('data-fieldname') ||
-			($b.find('[data-fieldname]').first().attr('data-fieldname') || '');
+		var fn = $b.attr('data-fieldname') || ($b.find('[data-fieldname]').first().attr('data-fieldname') || '');
 		var minPx = (fn && widthMap && widthMap[fn]) || SPR_GRID_DEFAULT_COL_MIN_PX;
 		var bodyW = Math.ceil($b.outerWidth() || 0);
 		var w = bodyW >= 24 ? bodyW : minPx;
-		$h.css({
-			'min-width': w + 'px',
-			'width': w + 'px',
-			'max-width': w + 'px',
-			'flex': '0 0 ' + w + 'px',
-			'box-sizing': 'border-box',
-			'flex-shrink': '0',
-			'flex-grow': '0',
-		});
+		$h.css({ 'min-width': w + 'px', 'width': w + 'px', 'max-width': w + 'px', 'flex': '0 0 ' + w + 'px', 'box-sizing': 'border-box', 'flex-shrink': '0', 'flex-grow': '0' });
 	}
 }
 
@@ -453,7 +486,7 @@ function spr_debounced_lock_grid_column_widths(frm, fieldname) {
 	if (!frm || !fieldname) {
 		return;
 	}
-	const key = '_spr_lock_cols_timer_' + fieldname;
+	var key = '_spr_lock_cols_timer_' + fieldname;
 	if (frm[key]) {
 		clearTimeout(frm[key]);
 	}
@@ -462,17 +495,15 @@ function spr_debounced_lock_grid_column_widths(frm, fieldname) {
 		if (!frm.fields_dict || !frm.fields_dict[fieldname]) {
 			return;
 		}
-		const widthMap =
-			fieldname === 'items'
-				? SPR_ITEMS_COL_MIN_PX
-				: fieldname === 'shaft_jobs'
-					? SPR_SHAFT_JOBS_COL_MIN_PX
-					: null;
+		var widthMap = fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX
+			: fieldname === 'shaft_jobs' ? SPR_SHAFT_JOBS_COL_MIN_PX : null;
 		if (!widthMap) {
 			return;
 		}
+		// Inject order CSS first, then sync widths
+		spr_inject_column_order_css(frm, fieldname);
 		spr_lock_grid_column_widths(frm, fieldname, widthMap);
-		const fd2 = spr_get_field_dict(frm, fieldname);
+		var fd2 = spr_get_field_dict(frm, fieldname);
 		if (fd2) {
 			spr_sync_grid_header_body_scroll(fd2);
 		}
@@ -819,10 +850,13 @@ function spr_enforce_spr_grid_columns(frm, fieldname) {
 		ensure_spr_item_stylesheet();
 		apply_spr_item_row_styles(frm);
 	}
-	// Lock column widths after DOM has painted — run at 2 timing points
+	// Inject order CSS + sync widths after DOM has painted
 	if (fieldname === 'items' || fieldname === 'shaft_jobs') {
 		const _wm2 = fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
 		spr_apply_grid_column_min_widths(frm, fieldname, _wm2);
+		// Order CSS can be injected immediately (it's pure CSS, no measuring needed)
+		spr_inject_column_order_css(frm, fieldname);
+		// Width sync needs DOM to be painted — use rAF x2
 		requestAnimationFrame(function () {
 			requestAnimationFrame(function () {
 				spr_lock_grid_column_widths(frm, fieldname, _wm2);
@@ -1149,6 +1183,7 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 		if (gridFieldname === 'items' || gridFieldname === 'shaft_jobs') {
 			const _wm = gridFieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
 			spr_apply_grid_column_min_widths(frm, gridFieldname, _wm);
+			spr_inject_column_order_css(frm, gridFieldname);
 			requestAnimationFrame(function () {
 				requestAnimationFrame(function () {
 					spr_lock_grid_column_widths(frm, gridFieldname, _wm);
@@ -6798,7 +6833,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '50';
+	const sprItemsCssVer = '51';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
