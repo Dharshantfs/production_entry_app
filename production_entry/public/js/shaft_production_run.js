@@ -389,96 +389,15 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 	});
 }
 
-function spr_grid_row_cols($row) {
-	if (!$row || !$row.length) {
-		return $();
-	}
-	return $row.children('.grid-static-col, .col, .row-check, .row-index');
-}
-
-/** Lock header + body column widths by index (fixes zig-zag without grid refresh). */
+/** Simplified - CSS table layout handles alignment, no JS needed */
 function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
-	const fd = spr_get_field_dict(frm, fieldname);
-	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
-		return;
-	}
-	const $wrap = fd.$wrapper;
-	const $headRow = $wrap.find('.grid-heading-row').first();
-	const $bodyRow = $wrap.find('.grid-body .grid-row').first();
-	if (!$headRow.length || !$bodyRow.length) {
-		return;
-	}
-	const $headCols = spr_grid_row_cols($headRow);
-	const $bodyCols = spr_grid_row_cols($bodyRow);
-	const n = Math.min($headCols.length, $bodyCols.length);
-	if (n < 1) {
-		return;
-	}
-	for (let i = 0; i < n; i++) {
-		const $h = $($headCols[i]);
-		const $b = $($bodyCols[i]);
-		const fn =
-			$b.attr('data-fieldname') ||
-			$b.find('[data-fieldname]').first().attr('data-fieldname') ||
-			$h.attr('data-fieldname') ||
-			$h.find('[data-fieldname]').first().attr('data-fieldname');
-		let minPx = (fn && widthMap && widthMap[fn]) || SPR_GRID_DEFAULT_COL_MIN_PX;
-		if ($h.hasClass('row-check') || $b.hasClass('row-check')) {
-			minPx = 36;
-		}
-		if ($h.hasClass('row-index') || $b.hasClass('row-index')) {
-			minPx = 40;
-		}
-		if (fn === 'create_roll_entry') {
-			minPx = Math.max(minPx, 118);
-		}
-		const w = Math.ceil(Math.max(minPx, $h.outerWidth() || 0, $b.outerWidth() || 0));
-		const css = {
-			minWidth: w + 'px',
-			width: w + 'px',
-			maxWidth: w + 'px',
-			flex: '0 0 ' + w + 'px',
-			boxSizing: 'border-box',
-		};
-		$h.css(css);
-		$wrap.find('.grid-body .grid-row').each(function () {
-			const $c = spr_grid_row_cols($(this)).eq(i);
-			if ($c.length) {
-				$c.css(css);
-			}
-		});
-	}
+	// CSS table-layout: fixed handles column alignment automatically
+	// No JS manipulation needed - prevents form hanging
 }
 
 function spr_debounced_lock_grid_column_widths(frm, fieldname) {
-	if (!frm || !fieldname) {
-		return;
-	}
-	const key = '_spr_lock_cols_timer_' + fieldname;
-	if (frm[key]) {
-		clearTimeout(frm[key]);
-	}
-	frm[key] = setTimeout(function () {
-		frm[key] = null;
-		if (!frm.fields_dict || !frm.fields_dict[fieldname]) {
-			return;
-		}
-		const widthMap =
-			fieldname === 'items'
-				? SPR_ITEMS_COL_MIN_PX
-				: fieldname === 'shaft_jobs'
-					? SPR_SHAFT_JOBS_COL_MIN_PX
-					: null;
-		if (!widthMap) {
-			return;
-		}
-		spr_apply_grid_column_min_widths(frm, fieldname, widthMap);
-		spr_lock_grid_column_widths(frm, fieldname, widthMap);
-		const fd = spr_get_field_dict(frm, fieldname);
-		if (fd) {
-			spr_sync_grid_header_body_scroll(fd);
-		}
-	}, 90);
+	// CSS table-layout: fixed handles column alignment automatically
+	// No JS manipulation needed - prevents form hanging
 }
 
 /** Match header column min-widths to first body row (by fieldname). */
@@ -663,7 +582,7 @@ function spr_repair_child_grid_alignment(frm, fieldname) {
 	}
 }
 
-/** Submitted + draft: staggered enforce so headers match body (fabric100 / mix roll order). */
+/** Submitted + draft: apply CSS classes and styles - table layout handles alignment. */
 function spr_stabilize_submitted_spr_grids_once(frm) {
 	if (!frm || !frm.fields_dict) {
 		return;
@@ -671,22 +590,15 @@ function spr_stabilize_submitted_spr_grids_once(frm) {
 	const key = '_spr_submitted_stabilize_gen';
 	const gen = (frm[key] || 0) + 1;
 	frm[key] = gen;
-	[400].forEach(function (ms) {
-		setTimeout(function () {
-			if (!frm || !frm.fields_dict || frm[key] !== gen) {
-				return;
-			}
-			spr_apply_grid_wrap_classes(frm);
-			ensure_spr_item_stylesheet();
-			spr_enforce_spr_grid_columns(frm, 'items');
-			spr_enforce_spr_grid_columns(frm, 'shaft_jobs');
-			spr_ensure_child_grid_heights(frm);
-			['items', 'shaft_jobs'].forEach(function (fn) {
-				spr_debounced_lock_grid_column_widths(frm, fn);
-			});
-			spr_reapply_item_row_styles_with_retries(frm, [0, 150]);
-		}, ms);
-	});
+	setTimeout(function () {
+		if (!frm || !frm.fields_dict || frm[key] !== gen) {
+			return;
+		}
+		spr_apply_grid_wrap_classes(frm);
+		ensure_spr_item_stylesheet();
+		spr_ensure_child_grid_heights(frm);
+		apply_spr_item_row_styles(frm);
+	}, 300);
 }
 
 function spr_install_post_save_grid_health_watch(frm) {
@@ -696,37 +608,16 @@ function spr_install_post_save_grid_health_watch(frm) {
 	const key = '_spr_post_save_grid_watch_gen';
 	const gen = (frm[key] || 0) + 1;
 	frm[key] = gen;
-	const checks = [0, 200, 500, 900, 1400, 2200, 3500, 5000, 7000];
-	checks.forEach(function (ms) {
-		setTimeout(function () {
-			if (!frm || frm[key] !== gen || !frm.fields_dict) {
-				return;
-			}
-			if (!frm._spr_just_saved || Date.now() - frm._spr_just_saved > 12000) {
-				return;
-			}
-			let collapsed = false;
-			let misaligned = false;
-			['items', 'shaft_jobs'].forEach(function (fn) {
-				if (spr_grid_party_code_looks_collapsed(frm, fn)) {
-					collapsed = true;
-				}
-				if (spr_child_grid_needs_repair(frm, fn)) {
-					misaligned = true;
-				}
-			});
-			spr_apply_spr_child_grid_min_widths(frm);
-			['items', 'shaft_jobs'].forEach(function (fn) {
-				spr_light_grid_scroll_sync(frm, fn);
-			});
-			if (collapsed || misaligned) {
-				spr_force_child_grids_realign(frm);
-				['items', 'shaft_jobs'].forEach(function (fn) {
-					spr_repair_child_grid_alignment(frm, fn);
-				});
-			}
-		}, ms);
-	});
+	// Simplified: just one check at 500ms - CSS table layout handles alignment
+	setTimeout(function () {
+		if (!frm || frm[key] !== gen || !frm.fields_dict) {
+			return;
+		}
+		spr_apply_grid_wrap_classes(frm);
+		['items', 'shaft_jobs'].forEach(function (fn) {
+			spr_light_grid_scroll_sync(frm, fn);
+		});
+	}, 500);
 }
 
 function spr_bind_items_grid_edit_guard(frm) {
@@ -6810,7 +6701,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '45';
+	const sprItemsCssVer = '46';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -7011,45 +6902,118 @@ function ensure_spr_item_stylesheet() {
 			overflow-x: visible !important;
 			overflow-y: visible !important;
 		}
-		.spr-grid-wrap .grid-heading-row,
-		.spr-grid-wrap .grid-body,
-		.spr-items-wrap .grid-heading-row,
-		.spr-items-wrap .grid-body,
-		.spr-shaft-jobs-wrap .grid-heading-row,
-		.spr-shaft-jobs-wrap .grid-body,
-		.spr-bundle-calc-wrap .grid-heading-row,
-		.spr-bundle-calc-wrap .grid-body {
-			overflow-x: hidden !important;
-			overflow-y: visible !important;
+		/* TABLE LAYOUT - forces header and body columns to align perfectly */
+		.spr-grid-wrap .form-grid,
+		.spr-items-wrap .form-grid,
+		.spr-shaft-jobs-wrap .form-grid {
+			display: table !important;
+			table-layout: fixed !important;
+			width: 100% !important;
+			border-collapse: collapse !important;
 		}
 		.spr-grid-wrap .grid-heading-row,
-		.spr-grid-wrap .grid-body .grid-row,
-		.spr-shaft-jobs-wrap .grid-heading-row,
-		.spr-shaft-jobs-wrap .grid-body .grid-row,
 		.spr-items-wrap .grid-heading-row,
-		.spr-items-wrap .grid-body .grid-row {
-			flex-wrap: nowrap !important;
-		}
-		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"],
-		.spr-shaft-jobs-wrap .col[data-fieldname="create_roll_entry"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="create_roll_entry"]) {
-			position: static !important;
-			right: auto !important;
-			left: auto !important;
-			min-width: 118px !important;
-			max-width: none !important;
-			z-index: 1 !important;
+		.spr-shaft-jobs-wrap .grid-heading-row {
+			display: table-row !important;
 			overflow: visible !important;
 		}
-		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] .btn,
-		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] button {
-			width: 100% !important;
-			max-width: 112px !important;
+		.spr-grid-wrap .grid-body,
+		.spr-items-wrap .grid-body,
+		.spr-shaft-jobs-wrap .grid-body {
+			display: table-row-group !important;
+			overflow: visible !important;
+		}
+		.spr-grid-wrap .grid-body .rows,
+		.spr-items-wrap .grid-body .rows,
+		.spr-shaft-jobs-wrap .grid-body .rows {
+			display: contents !important;
+		}
+		.spr-grid-wrap .grid-row,
+		.spr-items-wrap .grid-row,
+		.spr-shaft-jobs-wrap .grid-row {
+			display: table-row !important;
+		}
+		.spr-grid-wrap .grid-heading-row > .grid-static-col,
+		.spr-grid-wrap .grid-heading-row > .col,
+		.spr-grid-wrap .grid-row > .col,
+		.spr-grid-wrap .grid-row > .grid-static-col,
+		.spr-items-wrap .grid-heading-row > .grid-static-col,
+		.spr-items-wrap .grid-heading-row > .col,
+		.spr-items-wrap .grid-row > .col,
+		.spr-items-wrap .grid-row > .grid-static-col,
+		.spr-shaft-jobs-wrap .grid-heading-row > .grid-static-col,
+		.spr-shaft-jobs-wrap .grid-heading-row > .col,
+		.spr-shaft-jobs-wrap .grid-row > .col,
+		.spr-shaft-jobs-wrap .grid-row > .grid-static-col {
+			display: table-cell !important;
+			vertical-align: middle !important;
 			box-sizing: border-box !important;
-			white-space: nowrap !important;
+			padding: 4px 6px !important;
+			border-bottom: 1px solid #e5e7eb !important;
+		}
+		.spr-grid-wrap .grid-heading-row > .row-check,
+		.spr-grid-wrap .grid-row > .row-check,
+		.spr-items-wrap .grid-heading-row > .row-check,
+		.spr-items-wrap .grid-row > .row-check,
+		.spr-shaft-jobs-wrap .grid-heading-row > .row-check,
+		.spr-shaft-jobs-wrap .grid-row > .row-check {
+			width: 36px !important;
+			min-width: 36px !important;
+			max-width: 36px !important;
+		}
+		.spr-grid-wrap .grid-heading-row > .row-index,
+		.spr-grid-wrap .grid-row > .row-index,
+		.spr-items-wrap .grid-heading-row > .row-index,
+		.spr-items-wrap .grid-row > .row-index,
+		.spr-shaft-jobs-wrap .grid-heading-row > .row-index,
+		.spr-shaft-jobs-wrap .grid-row > .row-index {
+			width: 44px !important;
+			min-width: 44px !important;
+			max-width: 44px !important;
+		}
+		/* Fixed column widths for items table */
+		.spr-items-wrap [data-fieldname="job"] { width: 50px !important; }
+		.spr-items-wrap [data-fieldname="party_code"] { width: 95px !important; }
+		.spr-items-wrap [data-fieldname="item_code"] { width: 110px !important; }
+		.spr-items-wrap [data-fieldname="item_name"] { width: 120px !important; }
+		.spr-items-wrap [data-fieldname="quality"] { width: 75px !important; }
+		.spr-items-wrap [data-fieldname="color"] { width: 115px !important; }
+		.spr-items-wrap [data-fieldname="width_inch"] { width: 75px !important; }
+		.spr-items-wrap [data-fieldname="gsm"] { width: 65px !important; }
+		.spr-items-wrap [data-fieldname="produced_gsm"] { width: 80px !important; }
+		.spr-items-wrap [data-fieldname="meter_roll"] { width: 75px !important; }
+		.spr-items-wrap [data-fieldname="produced_length_mtrs"] { width: 90px !important; }
+		.spr-items-wrap [data-fieldname="batch_no"] { width: 110px !important; }
+		.spr-items-wrap [data-fieldname="net_weight"] { width: 85px !important; }
+		.spr-items-wrap [data-fieldname="gross_weight"] { width: 90px !important; }
+		.spr-items-wrap [data-fieldname="planned_qty"] { width: 85px !important; }
+		.spr-items-wrap [data-fieldname="uom"] { width: 50px !important; }
+		.spr-items-wrap [data-fieldname="custom_core_width_mm"] { width: 90px !important; }
+		.spr-items-wrap [data-fieldname="custom_polybag_kgs"] { width: 90px !important; }
+		.spr-items-wrap [data-fieldname="save_row"] { width: 90px !important; }
+		.spr-items-wrap [data-fieldname="custom_production_label"] { width: 110px !important; }
+		.spr-items-wrap [data-fieldname="edit_row"] { width: 90px !important; }
+		.spr-items-wrap [data-fieldname="work_order"] { width: 110px !important; }
+		/* Fixed column widths for shaft_jobs table */
+		.spr-shaft-jobs-wrap [data-fieldname="job_id"] { width: 50px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="gsm"] { width: 65px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="quality"] { width: 75px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="combination"] { width: 145px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="total_width"] { width: 90px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="meter_roll_mtrs"] { width: 90px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="net_weight"] { width: 95px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="total_weight"] { width: 95px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_weight"] { width: 105px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_meter"] { width: 105px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="no_of_shafts"] { width: 75px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="no_of_rolls"] { width: 75px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="party_code"] { width: 95px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] { width: 120px !important; }
+		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] .btn {
+			width: 100% !important;
 			font-size: 11px !important;
-			padding-left: 6px !important;
-			padding-right: 6px !important;
+			padding: 4px 8px !important;
+			white-space: nowrap !important;
 		}
 		.spr-shaft-jobs-wrap.spr-doc-submitted .form-grid-container,
 		.spr-shaft-jobs-wrap.spr-doc-submitted .grid-body .rows {
@@ -7232,13 +7196,11 @@ function spr_reapply_item_row_styles_with_retries(frm, delays) {
 	}
 	ensure_spr_item_stylesheet();
 	spr_apply_grid_wrap_classes(frm);
-	const times = delays || [0, 80, 200, 450, 800, 1200];
+	// Simplified: just two passes to avoid performance issues
+	const times = [0, 200];
 	times.forEach(function (ms) {
 		setTimeout(function () {
 			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
-				return;
-			}
-			if (spr_items_grid_is_editing(frm)) {
 				return;
 			}
 			apply_spr_item_row_styles(frm);
@@ -7246,40 +7208,20 @@ function spr_reapply_item_row_styles_with_retries(frm, delays) {
 	});
 }
 
-/** After save/submit when grid DOM is rebuilt — force full column realignment on all grids. */
+/** After save/submit - simplified to avoid hanging. CSS table layout handles alignment. */
 function spr_schedule_item_row_styles_after_doc_write(frm) {
 	if (!frm || !frm.fields_dict) {
 		return;
 	}
 	spr_apply_grid_wrap_classes(frm);
 	ensure_spr_item_stylesheet();
-	const gc = spr_get_grid_columns_module();
-	const run = function () {
+	setTimeout(function () {
 		if (!frm || !frm.fields_dict) {
 			return;
 		}
-		spr_reset_items_grid_field_visibility(frm);
-		spr_reset_shaft_jobs_grid_field_visibility(frm);
-		spr_reset_bundle_calc_grid_field_visibility(frm);
-		spr_apply_items_grid_columns(frm, true);
-		spr_apply_shaft_jobs_grid_columns(frm, true);
-		if (sprIsBundlePackagingMode(frm)) {
-			spr_apply_bundle_calculation_grid_columns(frm, true);
-		}
-		spr_layout_all_grids(frm, { toggleUi: false });
 		spr_ensure_child_grid_heights(frm);
-		spr_force_child_grids_realign(frm);
-		['items', 'shaft_jobs'].forEach(function (fn) {
-			spr_repair_child_grid_alignment(frm, fn);
-		});
-		spr_reapply_item_row_styles_with_retries(frm, [0, 120, 350, 750]);
-	};
-	if (gc && typeof gc.debounce === 'function') {
-		gc.debounce(frm, 'spr_doc_write_realign', run, 180);
-	} else {
-		setTimeout(run, 180);
-	}
-	spr_schedule_child_grids_realign(frm, [350, 850]);
+		apply_spr_item_row_styles(frm);
+	}, 200);
 }
 
 function sprResolveItemsRowElement(frm, doc, grid, idx) {
