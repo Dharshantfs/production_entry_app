@@ -660,18 +660,19 @@ production_entry.grid_columns = {
 				ordered.length &&
 				(grid.grid_rows || []).length
 			) {
-				cg_remount_grid_rows(grid);
-				cg_mirror_grid_docfields_to_rows(grid);
-				cg_sync_row_docfields(grid, showSet);
-				cg_refresh_grid_body(grid);
+				cg_fix_row_columns(grid, showSet, ordered);
 				if (typeof grid.refresh_header === 'function') {
 					grid.refresh_header();
 				}
 				cg_sync_header_scroll(fd);
 			}
 			const docRows = frm.doc && frm.doc[tableFieldname];
-			if (docRows && docRows.length && !(grid.grid_rows || []).length) {
-				cg_ensure_grid_rows_from_doc(frm, tableFieldname);
+			if (docRows && docRows.length) {
+				if (!(grid.grid_rows || []).length) {
+					cg_ensure_grid_rows_from_doc(frm, tableFieldname);
+				} else if (cg_grid_rows_look_broken(grid)) {
+					cg_ensure_grid_rows_from_doc(frm, tableFieldname);
+				}
 			}
 		} catch (e) {
 			if (typeof console !== 'undefined' && console.warn) {
