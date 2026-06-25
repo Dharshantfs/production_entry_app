@@ -318,6 +318,15 @@ const SPR_SHAFT_JOBS_COL_MIN_PX = {
 	color: 112,
 	gsm: 64,
 	manual_items: 100,
+	create_roll_entry: 100,
+	meter_roll_mtrs: 88,
+	net_weight: 80,
+	total_weight: 88,
+	custom_total_achieved_weight: 100,
+	custom_total_achieved_meter: 100,
+	no_of_shafts: 72,
+	no_of_rolls: 72,
+	job_id: 48,
 };
 
 const SPR_GRID_DEFAULT_COL_MIN_PX = 72;
@@ -338,12 +347,14 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 	const $headerCols = $wrap.find('.grid-heading-row .grid-static-col').filter(function () {
 		return !$(this).hasClass('row-check') && !$(this).hasClass('row-index');
 	});
-	visible.forEach(function (df, i) {
+	visible.forEach(function (df) {
 		const px = widthMap[df.fieldname] || SPR_GRID_DEFAULT_COL_MIN_PX;
-		// min-width only — flex on header/body separately desyncs scroll and causes zig-zag.
 		const css = { minWidth: px + 'px' };
-		let $hc = $headerCols.eq(i);
-		if (!$hc.length || i >= $headerCols.length) {
+		let $hc = $wrap
+			.find('.grid-heading-row [data-fieldname="' + df.fieldname + '"]')
+			.closest('.grid-static-col, .col')
+			.first();
+		if (!$hc.length) {
 			const label = String(df.label || df.fieldname || '').trim().toLowerCase();
 			$hc = $headerCols.filter(function () {
 				const t = String($(this).text() || '').trim().toLowerCase();
@@ -353,6 +364,9 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 		if ($hc.length) {
 			$hc.css(css);
 		}
+		$wrap.find('.grid-heading-row .grid-static-col').filter(function () {
+			return $(this).find('[data-fieldname="' + df.fieldname + '"]').length;
+		}).css(css);
 		$wrap.find('.grid-row').each(function () {
 			const $col = $(this)
 				.find('[data-fieldname="' + df.fieldname + '"]')
@@ -362,6 +376,56 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 				$col.css(css);
 			}
 		});
+	});
+}
+
+/** Match header column min-widths to first body row (by fieldname). */
+function spr_align_grid_header_to_body(frm, fieldname) {
+	const fd = spr_get_field_dict(frm, fieldname);
+	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+		return;
+	}
+	const $wrap = fd.$wrapper;
+	const $row = $wrap.find('.grid-body .grid-row').first();
+	if (!$row.length) {
+		return;
+	}
+	$row.find('[data-fieldname]').each(function () {
+		const fn = $(this).attr('data-fieldname');
+		const $bodyCol = $(this).closest('.col, .grid-static-col').first();
+		const w = $bodyCol.outerWidth();
+		if (!fn || !w || w < 24) {
+			return;
+		}
+		const px = Math.ceil(w) + 'px';
+		const $headCol = $wrap
+			.find('.grid-heading-row [data-fieldname="' + fn + '"]')
+			.closest('.grid-static-col, .col')
+			.first();
+		if ($headCol.length) {
+			$headCol.css({ minWidth: px });
+		}
+	});
+}
+
+/** One horizontal scrollbar on the container; header/body move together. */
+function spr_fix_grid_single_scroll(fd) {
+	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+		return;
+	}
+	const $w = fd.$wrapper;
+	$w.find('.form-grid-container').css({
+		'overflow-x': 'auto',
+		'overflow-y': 'visible',
+		'max-width': '100%',
+	});
+	$w.find('.form-grid').css({
+		'overflow-x': 'visible',
+		'overflow-y': 'visible',
+	});
+	$w.find('.grid-heading-row, .grid-body, .grid-body .rows').css({
+		'overflow-x': 'hidden',
+		'overflow-y': 'visible',
 	});
 }
 
@@ -662,7 +726,9 @@ function spr_enforce_spr_grid_columns(frm, fieldname) {
 			fieldname,
 			fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX
 		);
+		spr_align_grid_header_to_body(frm, fieldname);
 	}
+	spr_fix_grid_single_scroll(fd);
 	spr_attach_grid_scroll_sync(fd);
 	if (cg.sync_header_scroll) {
 		cg.sync_header_scroll(frm, fieldname);
@@ -759,7 +825,7 @@ function spr_attach_grid_scroll_sync(fd) {
 	const $w = fd.$wrapper;
 	if (!$w.data('spr-scroll-sync')) {
 		$w.data('spr-scroll-sync', 1);
-		$w.on('scroll.sprGridAlign', '.dt-scrollable, .form-grid .grid-body, .grid-heading-row', function () {
+		$w.on('scroll.sprGridAlign', '.form-grid-container', function () {
 			spr_sync_grid_header_body_scroll(fd);
 		});
 	}
@@ -1460,28 +1526,31 @@ function spr_set_grid_col_hidden(grid, fieldname, hidden) {
 	}
 }
 
-/** Keep grid header horizontally aligned with body when DataTable scrolls or columns toggle. */
+/** Keep grid header aligned — single container scroll only. */
 function spr_sync_grid_header_body_scroll(fd) {
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
 		return;
 	}
 	const $w = fd.$wrapper;
-	const $bodyScroll = $w.find('.dt-scrollable, .form-grid .grid-body').first();
+	const $container = $w.find('.form-grid-container').first();
 	const $head = $w.find('.grid-heading-row, .dt-row-header, .dt-header').first();
-	if (!$bodyScroll.length || !$head.length) {
+	const $body = $w.find('.dt-scrollable, .form-grid .grid-body').first();
+	if ($container.length) {
+		if ($head.length && ($head.scrollLeft() || 0) !== 0) {
+			$head.scrollLeft(0);
+		}
+		if ($body.length && $body[0] !== $container[0] && ($body.scrollLeft() || 0) !== 0) {
+			$body.scrollLeft(0);
+		}
 		return;
 	}
-	const bodySl = $bodyScroll.scrollLeft() || 0;
+	if (!$body.length || !$head.length) {
+		return;
+	}
+	const bodySl = $body.scrollLeft() || 0;
 	const headSl = $head.scrollLeft() || 0;
 	if (Math.abs(headSl - bodySl) > 0.5) {
-		// Sync whichever side the user scrolled.
-		const active = document.activeElement;
-		const headScrolled = active && $head.has(active).length;
-		if (headScrolled) {
-			$bodyScroll.scrollLeft(headSl);
-		} else {
-			$head.scrollLeft(bodySl);
-		}
+		$head.scrollLeft(bodySl);
 	}
 }
 
@@ -1532,7 +1601,12 @@ function spr_apply_grid_list_view_config(grid, metaDoctype, cfg) {
 function spr_light_grid_scroll_sync(frm, fieldname) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
 	if (fd) {
+		spr_fix_grid_single_scroll(fd);
+		spr_attach_grid_scroll_sync(fd);
 		spr_sync_grid_header_body_scroll(fd);
+		if (fieldname === 'items' || fieldname === 'shaft_jobs') {
+			spr_align_grid_header_to_body(frm, fieldname);
+		}
 	}
 }
 
@@ -1622,17 +1696,16 @@ function spr_ensure_child_grid_heights(frm) {
 			return;
 		}
 		const $w = fd.$wrapper;
-		$w.find('.form-grid-container, .form-grid').css({
-			'min-height': minGrid,
-			'overflow-x': 'auto',
-			'max-width': '100%',
-		});
+		spr_fix_grid_single_scroll(fd);
 		const $rows = $w.find('.grid-body .rows');
 		if ($rows.length) {
 			$rows.css({ 'min-height': minRows, display: 'block' });
 		}
 		$w.find('.grid-row').css({ 'min-height': minRow });
+		$w.find('.form-grid-container').css({ 'min-height': minGrid });
+		$w.find('.form-grid').css({ 'min-height': minGrid });
 		$w.find('.grid-heading-row').css({ 'min-height': '32px' });
+		spr_attach_grid_scroll_sync(fd);
 	});
 }
 
@@ -6616,7 +6689,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '43';
+	const sprItemsCssVer = '44';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -6803,10 +6876,30 @@ function ensure_spr_item_stylesheet() {
 		}
 		.spr-items-wrap .form-grid-container,
 		.spr-shaft-jobs-wrap .form-grid-container,
-		.spr-bundle-calc-wrap .form-grid-container {
-			overflow-x: auto;
+		.spr-bundle-calc-wrap .form-grid-container,
+		.spr-grid-wrap .form-grid-container {
+			overflow-x: auto !important;
+			overflow-y: visible !important;
 			max-width: 100%;
 			min-height: 120px;
+		}
+		.spr-grid-wrap .form-grid,
+		.spr-items-wrap .form-grid,
+		.spr-shaft-jobs-wrap .form-grid,
+		.spr-bundle-calc-wrap .form-grid {
+			overflow-x: visible !important;
+			overflow-y: visible !important;
+		}
+		.spr-grid-wrap .grid-heading-row,
+		.spr-grid-wrap .grid-body,
+		.spr-items-wrap .grid-heading-row,
+		.spr-items-wrap .grid-body,
+		.spr-shaft-jobs-wrap .grid-heading-row,
+		.spr-shaft-jobs-wrap .grid-body,
+		.spr-bundle-calc-wrap .grid-heading-row,
+		.spr-bundle-calc-wrap .grid-body {
+			overflow-x: hidden !important;
+			overflow-y: visible !important;
 		}
 		.spr-shaft-jobs-wrap.spr-doc-submitted .form-grid-container,
 		.spr-shaft-jobs-wrap.spr-doc-submitted .grid-body .rows {

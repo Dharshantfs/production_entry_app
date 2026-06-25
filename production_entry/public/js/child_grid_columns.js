@@ -280,18 +280,19 @@ function cg_sync_header_scroll(fd) {
 	const $scroller = $w.find('.form-grid-container').first();
 	const $body = $w.find('.dt-scrollable, .form-grid .grid-body').first();
 	const $head = $w.find('.grid-heading-row, .dt-row-header, .dt-header').first();
-	const sl = ($scroller.length ? $scroller.scrollLeft() : $body.scrollLeft()) || 0;
 	if ($scroller.length) {
-		if (Math.abs(($scroller.scrollLeft() || 0) - sl) > 0.5) {
-			$scroller.scrollLeft(sl);
+		if ($head.length && ($head.scrollLeft() || 0) !== 0) {
+			$head.scrollLeft(0);
 		}
+		if ($body.length && $body[0] !== $scroller[0] && ($body.scrollLeft() || 0) !== 0) {
+			$body.scrollLeft(0);
+		}
+		return;
 	}
+	const sl = ($body.scrollLeft()) || 0;
 	if ($body.length && $head.length) {
 		if (Math.abs(($head.scrollLeft() || 0) - sl) > 0.5) {
 			$head.scrollLeft(sl);
-		}
-		if (Math.abs(($body.scrollLeft() || 0) - sl) > 0.5) {
-			$body.scrollLeft(sl);
 		}
 	}
 }
