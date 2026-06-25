@@ -647,12 +647,15 @@ production_entry.grid_columns = {
 			cg_reorder_all_row_docfields(grid, ordered);
 			cg_sync_row_docfields(grid, showSet);
 			cg_realign_grid(grid, fd, options, ordered);
-			if (cg_needs_column_fix(grid) && order.length) {
+			if (cg_needs_column_fix(grid) && ordered.length) {
 				cg_fix_row_columns(grid, showSet, ordered);
 				if (typeof grid.refresh_header === 'function') {
 					grid.refresh_header();
 				}
 				cg_sync_header_scroll(fd);
+			} else if (ordered.length && (grid.grid_rows || []).length) {
+				cg_mirror_grid_docfields_to_rows(grid);
+				cg_sync_row_docfields(grid, showSet);
 			}
 			const docRows = frm.doc && frm.doc[tableFieldname];
 			if (docRows && docRows.length && !(grid.grid_rows || []).length) {

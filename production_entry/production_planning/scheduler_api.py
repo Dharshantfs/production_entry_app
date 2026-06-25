@@ -6559,6 +6559,47 @@ def _spr_header_produced_total_kg(spr_raw, spr_id_produced_map=None, spr_metrics
 	return flt(total)
 
 
+SPR_SHIFT_PILOT_UNIT = "Unit 4"
+SPR_SHIFT_PILOT_DATES = frozenset({"2026-06-23", "2026-06-24"})
+
+
+def _normalize_spr_shift_label(shift_raw) -> str:
+	s = str(shift_raw or "").strip().lower()
+	if "night" in s:
+		return "night"
+	return "day"
+
+
+def _spr_shift_runs_for_row(row_spr, spr_id_run_meta=None) -> tuple[list, list]:
+	"""Build day/night SPR run lists for Production Table shift columns."""
+	spr_id_run_meta = spr_id_run_meta or {}
+	day_runs: list = []
+	night_runs: list = []
+	seen: set = set()
+	for sid in _expand_spr_name_tokens(row_spr):
+		if sid in seen:
+			continue
+		seen.add(sid)
+		meta = spr_id_run_meta.get(sid) or {}
+		if cint(meta.get("docstatus")) != 1:
+			continue
+		kg = flt(meta.get("produced_kg") or 0)
+		if kg <= 0:
+			continue
+		run = {
+			"spr_name": sid,
+			"run_date": str(meta.get("run_date") or ""),
+			"kg": kg,
+		}
+		if _normalize_spr_shift_label(meta.get("shift")) == "night":
+			night_runs.append(run)
+		else:
+			day_runs.append(run)
+	day_runs.sort(key=lambda r: r.get("run_date") or "")
+	night_runs.sort(key=lambda r: r.get("run_date") or "")
+	return day_runs, night_runs
+
+
 def _spr_split_row_produced_share(
 	sheet_items,
 	current_item,
@@ -21049,6 +21090,7 @@ def _get_color_chart_data_impl(
     spr_pp_produced_map = {}
     spr_pp_count_map = {}
     spr_id_produced_map = {}
+    spr_id_run_meta = {}
     spr_metrics = {}
     spr_psi_produced_map = {}
     spr_psi_count_map = {}
@@ -21675,12 +21717,16 @@ def _get_color_chart_data_impl(
             if all_spr_ids:
                 ids_list = list(all_spr_ids)
                 sf = ",".join(["%s"] * len(ids_list))
+                shift_col_sql = "IFNULL(spr.shift, '') AS shift" if "shift" in spr_cols_pt else "'' AS shift"
+                run_col_sql = "spr.run_date AS run_date" if "run_date" in spr_cols_pt else "NULL AS run_date"
                 for mrow in frappe.db.sql(
                     f"""
                     SELECT spr.name AS spr_name,
                            {produced_col_sql} AS total_produced,
                            {achieved_col_sql} AS total_achieved,
-                           spr.docstatus AS spr_docstatus
+                           spr.docstatus AS spr_docstatus,
+                           {shift_col_sql},
+                           {run_col_sql}
                     FROM `tabShaft Production Run` spr
                     WHERE spr.name IN ({sf})
                       AND spr.docstatus < 2
@@ -21688,7 +21734,17 @@ def _get_color_chart_data_impl(
                     tuple(ids_list),
                     as_dict=True,
                 ):
-                    spr_metrics[str(mrow.get("spr_name") or "").strip()] = mrow
+                    sid = str(mrow.get("spr_name") or "").strip()
+                    spr_metrics[sid] = mrow
+                    if cint(mrow.get("spr_docstatus")) == 1:
+                        produced = flt(mrow.get("total_produced") or 0)
+                        if produced > 0:
+                            spr_id_run_meta[sid] = {
+                                "produced_kg": produced,
+                                "shift": mrow.get("shift"),
+                                "run_date": str(mrow.get("run_date") or ""),
+                                "docstatus": 1,
+                            }
 
             for psi_name, spr_ids in psi_to_spr_ids.items():
                 total_eff = 0.0
@@ -22545,6 +22601,13 @@ def _get_color_chart_data_impl(
                 except Exception:
                     pass
 
+            _day_shift_runs: list = []
+            _night_shift_runs: list = []
+            _unit_norm = str(unit or "").strip()
+            _planned_norm = str(row_planned_date or "").strip()[:10]
+            if _unit_norm == SPR_SHIFT_PILOT_UNIT and _planned_norm in SPR_SHIFT_PILOT_DATES and row_spr:
+                _day_shift_runs, _night_shift_runs = _spr_shift_runs_for_row(row_spr, spr_id_run_meta)
+
             data.append({
                 "name": "{}-{}".format(sheet.name, item.get("idx", 0)),
                 "itemName": item.name,
@@ -22605,6 +22668,8 @@ def _get_color_chart_data_impl(
                 "spr_produced_total_kg": flt(spr_produced_total_kg),
                 "spr_docstatus": spr_docstatus,
                 "spr_unit": spr_unit,
+                "day_shift_runs": _day_shift_runs,
+                "night_shift_runs": _night_shift_runs,
                 **_transfer_payload_for_chart_row(item, wo_terminal, spr_docstatus),
             })
 

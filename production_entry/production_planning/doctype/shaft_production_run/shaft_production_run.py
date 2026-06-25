@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from collections import defaultdict
 
@@ -822,6 +823,54 @@ def _spr_wo_rm_transfer_remaining(wo_doc, item_code: str) -> float:
 
 def _spr_round_rm_stock_qty(qty: float) -> float:
 	return flt(qty, _spr_rm_stock_qty_precision())
+
+
+def _spr_floor_rm_stock_qty(qty: float) -> float:
+	"""Floor to site RM precision so transfer qty never exceeds bin actual."""
+	prec = _spr_rm_stock_qty_precision()
+	factor = 10**prec
+	return math.floor(flt(qty) * factor + 1e-12) / factor
+
+
+def _spr_rm_available_qty(item_code: str, warehouse: str) -> float:
+	"""Bin actual_qty for item in source warehouse (full ledger precision)."""
+	item_code = _cstr(item_code).strip()
+	warehouse = _cstr(warehouse).strip()
+	if not item_code or not warehouse:
+		return 0.0
+	return flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0)
+
+
+def _spr_cap_qty_to_rm_available(qty: float, item_code: str, warehouse: str) -> float:
+	"""Cap MTFM qty to RM bin stock without rounding above available (fixes 7.554 vs 7.553997)."""
+	qty = flt(qty)
+	if qty <= 0:
+		return 0.0
+	rm_avl = _spr_rm_available_qty(item_code, warehouse)
+	if rm_avl <= 0:
+		return 0.0
+	capped = min(qty, rm_avl)
+	floored = _spr_floor_rm_stock_qty(capped)
+	if floored > rm_avl + 1e-9:
+		floored = _spr_floor_rm_stock_qty(rm_avl)
+	return max(floored, 0.0)
+
+
+def _spr_cap_stock_entry_lines_to_max_transferable(se) -> None:
+	"""Cap each outbound line on a Stock Entry to available source-warehouse qty."""
+	if not se:
+		return
+	for d in se.items or []:
+		if not d.item_code or not d.get("s_warehouse"):
+			continue
+		capped = _spr_cap_qty_to_rm_available(
+			flt(d.get("transfer_qty") or d.get("qty")),
+			d.item_code,
+			d.s_warehouse,
+		)
+		if capped > 0:
+			d.qty = capped
+			d.transfer_qty = capped
 
 
 class _SprWipTopupRetry(Exception):
@@ -3947,7 +3996,9 @@ class ShaftProductionRun(Document):
 
 	def _spr_insert_shortage_transfer_draft(self, se) -> str:
 		"""Insert MTFM for shortages; auto-submit when stock is available."""
+		self._spr_last_mtfm_error = ""
 		try:
+			_spr_cap_stock_entry_lines_to_max_transferable(se)
 			self._spr_apply_stock_entry_item_accounts(se)
 			se.flags.ignore_mandatory = True
 			se.flags.ignore_permissions = True
@@ -3958,9 +4009,20 @@ class ShaftProductionRun(Document):
 				se.flags.ignore_permissions = True
 				se.submit()
 			except Exception as submit_exc:
+				submit_msg = _cstr(submit_exc)
 				# Retry once after filling accounts (expense_account is mandatory on some sites).
-				if "Expense Account" in _cstr(submit_exc):
+				if "Expense Account" in submit_msg:
 					se.reload()
+					self._spr_apply_stock_entry_item_accounts(se)
+					se.flags.ignore_permissions = True
+					se.save()
+					se.submit()
+				elif "Maximum transferable" in submit_msg or "Cannot transfer" in submit_msg:
+					se.reload()
+					_spr_cap_stock_entry_lines_to_max_transferable(se)
+					for d in se.items or []:
+						if d.item_code and d.get("s_warehouse"):
+							_spr_assign_batch_for_mtfm_line(d, d.s_warehouse)
 					self._spr_apply_stock_entry_item_accounts(se)
 					se.flags.ignore_permissions = True
 					se.save()
@@ -3980,6 +4042,7 @@ class ShaftProductionRun(Document):
 					pass
 				return name
 		except Exception as exc:
+			self._spr_last_mtfm_error = _cstr(exc)
 			if "Expense Account" in _cstr(exc):
 				frappe.throw(
 					_(
@@ -4099,6 +4162,17 @@ class ShaftProductionRun(Document):
 					f"SPR MTFM draft no source:{self.name}",
 				)
 				continue
+			qty = _spr_cap_qty_to_rm_available(qty, ic, item_src)
+			tol = _spr_rm_wip_shortage_tolerance(qty)
+			if qty <= tol:
+				frappe.log_error(
+					_(
+						"No RM stock for {0} in {1} (need {2} Kg for WIP transfer). "
+						"Transfer raw material to RM warehouse first."
+					).format(ic, item_src, _spr_round_rm_stock_qty(short_qty)),
+					f"SPR MTFM RM shortage:{self.name}",
+				)
+				continue
 			stock_uom = frappe.db.get_value("Item", ic, "stock_uom") or "Nos"
 			line = {
 				"item_code": ic,
@@ -4118,6 +4192,8 @@ class ShaftProductionRun(Document):
 			if cc:
 				line["cost_center"] = cc
 			se.append("items", line)
+			if se.items:
+				_spr_assign_batch_for_mtfm_line(se.items[-1], item_src)
 			added += 1
 		return added
 
@@ -4612,10 +4688,18 @@ class ShaftProductionRun(Document):
 				"3) Submit the Stock Entry (auto-submit failed — likely insufficient RM stock), then submit SPR again."
 			).format(transfer_name)
 		else:
-			next_steps = _(
-				"Could not auto-create transfer on this site. "
-				"Create one 'Material Transfer for Manufacture' (company RM -> company WIP) with all shortage items, submit it, then submit SPR again."
-			)
+			last_err = _cstr(getattr(self, "_spr_last_mtfm_error", None)).strip()
+			if last_err:
+				next_steps = _(
+					"Auto-transfer failed: {0}\n\n"
+					"Create one 'Material Transfer for Manufacture' (company RM -> company WIP) "
+					"with all shortage items, submit it, then submit SPR again."
+				).format(last_err[:800])
+			else:
+				next_steps = _(
+					"Could not auto-create transfer on this site. "
+					"Create one 'Material Transfer for Manufacture' (company RM -> company WIP) with all shortage items, submit it, then submit SPR again."
+				)
 
 		body = consolidated or _("No shortage detail available.")
 		frappe.throw(

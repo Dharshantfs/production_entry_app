@@ -190,6 +190,14 @@
                         <th style="width: 90px;">WIDTH ({{ widthDimUnit === 'mm' ? 'MM' : 'Inches' }})</th>
                         <th style="width: 120px;">TARGET WEIGHT (Kgs)</th>
                         <th style="width: 100px;">TOTAL TARGET (Kgs)</th>
+                        <th v-if="unitHasShiftView(unitGroup.unit, unitGroup.dates)" style="width: 110px; line-height: 1.2;">
+                          DAY SHIFT
+                          <div style="font-size: 9px; font-weight: 500; color: #64748b;">Run date · Kg</div>
+                        </th>
+                        <th v-if="unitHasShiftView(unitGroup.unit, unitGroup.dates)" style="width: 110px; line-height: 1.2;">
+                          NIGHT SHIFT
+                          <div style="font-size: 9px; font-weight: 500; color: #64748b;">Run date · Kg</div>
+                        </th>
                         <th style="width: 150px;">ACTUAL PRODUCTION WEIGHT (Kgs)</th>
                         <th style="width: 100px;">TOTAL ACTUAL (Kgs)</th>
                         <th style="width: 110px;">MERGE ACTION</th>
@@ -211,7 +219,7 @@
                 >
                       <!-- Maintenance Row (show once at maintenance start date, centered) -->
                       <tr v-if="getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit)" class="pt-non-draggable" style="background-color: #fee2e2; border: 2px solid #dc2626;">
-                        <td :colspan="emptyMaintenanceColspan" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
+                        <td :colspan="tableColCount(unitGroup.unit, unitGroup.dates)" style="padding: 8px 12px; font-weight: 700; color: #991b1b; text-align: center;">
                           <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                             <span>🔧 MAINTENANCE: {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).type }} ({{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).startDate }} - {{ getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).endDate }})</span>
                             <button @click="deleteMaintenanceRecord(getMaintenanceBannerForDate(dateGroup.date, unitGroup.unit).name)" style="background: #dc2626; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 11px;">Remove</button>
@@ -244,6 +252,40 @@
                             <td class="cell-right font-bold">{{ formatKg(row.item.qty) }}</td>
                             <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-right font-bold bg-blue-50">
                               {{ formatKg(dateGroup.dailyTotal) }}
+                            </td>
+                            <td
+                              v-if="unitHasShiftView(unitGroup.unit, unitGroup.dates)"
+                              class="cell-right pt-shift-cell"
+                            >
+                              <template v-if="showShiftRunColumns(unitGroup.unit, dateGroup.date)">
+                                <div
+                                  v-for="run in (row.item.day_shift_runs || [])"
+                                  :key="run.spr_name"
+                                  class="pt-shift-run"
+                                >
+                                  <div class="pt-shift-run-date">{{ formatDate(run.run_date) }}</div>
+                                  <div class="pt-shift-run-kg">{{ formatKg2(run.kg) }} kg</div>
+                                </div>
+                                <span v-if="!(row.item.day_shift_runs || []).length">—</span>
+                              </template>
+                              <span v-else>—</span>
+                            </td>
+                            <td
+                              v-if="unitHasShiftView(unitGroup.unit, unitGroup.dates)"
+                              class="cell-right pt-shift-cell"
+                            >
+                              <template v-if="showShiftRunColumns(unitGroup.unit, dateGroup.date)">
+                                <div
+                                  v-for="run in (row.item.night_shift_runs || [])"
+                                  :key="run.spr_name"
+                                  class="pt-shift-run"
+                                >
+                                  <div class="pt-shift-run-date">{{ formatDate(run.run_date) }}</div>
+                                  <div class="pt-shift-run-kg">{{ formatKg2(run.kg) }} kg</div>
+                                </div>
+                                <span v-if="!(row.item.night_shift_runs || []).length">—</span>
+                              </template>
+                              <span v-else>—</span>
                             </td>
                             <td class="cell-right font-bold">{{ formatKg2(row.item.actual_production_weight_kgs) }}</td>
                             <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-right font-bold bg-yellow-50">
@@ -356,6 +398,32 @@
                             <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-right font-bold bg-blue-50">
                               {{ formatKg(dateGroup.dailyTotal) }}
                             </td>
+                            <td
+                              v-if="unitHasShiftView(unitGroup.unit, unitGroup.dates)"
+                              class="cell-right pt-shift-cell"
+                            >
+                              <template v-if="showShiftRunColumns(unitGroup.unit, dateGroup.date)">
+                                <div v-for="run in (row.dayShiftRuns || [])" :key="run.spr_name" class="pt-shift-run">
+                                  <div class="pt-shift-run-date">{{ formatDate(run.run_date) }}</div>
+                                  <div class="pt-shift-run-kg">{{ formatKg2(run.kg) }} kg</div>
+                                </div>
+                                <span v-if="!(row.dayShiftRuns || []).length">—</span>
+                              </template>
+                              <span v-else>—</span>
+                            </td>
+                            <td
+                              v-if="unitHasShiftView(unitGroup.unit, unitGroup.dates)"
+                              class="cell-right pt-shift-cell"
+                            >
+                              <template v-if="showShiftRunColumns(unitGroup.unit, dateGroup.date)">
+                                <div v-for="run in (row.nightShiftRuns || [])" :key="run.spr_name" class="pt-shift-run">
+                                  <div class="pt-shift-run-date">{{ formatDate(run.run_date) }}</div>
+                                  <div class="pt-shift-run-kg">{{ formatKg2(run.kg) }} kg</div>
+                                </div>
+                                <span v-if="!(row.nightShiftRuns || []).length">—</span>
+                              </template>
+                              <span v-else>—</span>
+                            </td>
                             <td class="cell-right font-bold">{{ formatKg2(row.totalActualWeight) }}</td>
                             <td v-if="idx === 0" :rowspan="dateGroup.rows.length" class="cell-right font-bold bg-yellow-50">
                               {{ formatKg2(dateGroup.dailyActualTotal) }}
@@ -439,12 +507,12 @@
                         <td class="cell-center">-</td>
                         <td class="cell-center font-bold">{{ formatDate(dateGroup.date) }}</td>
                         <td class="cell-center">{{ getDayName(dateGroup.date) }}</td>
-                        <td :colspan="emptyDayColspan" style="text-align:center; color:#94a3b8; font-style:italic;">No orders (maintenance day)</td>
+                        <td :colspan="emptyDayColspanFor(unitGroup.unit, unitGroup.dates)" style="text-align:center; color:#94a3b8; font-style:italic;">No orders (maintenance day)</td>
                       </tr>
                 </tbody>
                 <tbody>
                     <tr v-if="unitGroup.dates.length === 0">
-                        <td :colspan="emptyUnitColspan" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
+                        <td :colspan="emptyUnitColspanFor(unitGroup.unit, unitGroup.dates)" style="text-align:center; padding: 20px; color:#999;">No production planned for this unit</td>
                     </tr>
                 </tbody>
             </table>
@@ -1188,6 +1256,53 @@ const freezeMerge = computed(() => isBoardActionFrozen(boardAccessContext.value,
 const freezeReorder = computed(() => isBoardActionFrozen(boardAccessContext.value, "reorder"));
 const hideCustomerColumns = computed(() => shouldHideCustomerColumns(boardAccessContext.value));
 const customerColHidden = computed(() => (hideCustomerColumns.value ? 1 : 0));
+const SHIFT_VIEW_PILOT_DATES = new Set(["2026-06-23", "2026-06-24"]);
+
+function showShiftRunColumns(unit, date) {
+  const d = String(date || "").trim().slice(0, 10);
+  return normalizeUnit(unit) === "Unit 4" && SHIFT_VIEW_PILOT_DATES.has(d);
+}
+
+function unitHasShiftView(unit, dates) {
+  if (normalizeUnit(unit) !== "Unit 4") return false;
+  return (dates || []).some((dg) => showShiftRunColumns(unit, dg.date));
+}
+
+function shiftColExtra(unit, dates) {
+  return unitHasShiftView(unit, dates) ? 2 : 0;
+}
+
+function tableColCount(unit, dates) {
+  return 19 - customerColHidden.value + shiftColExtra(unit, dates);
+}
+
+function emptyDayColspanFor(unit, dates) {
+  return 15 - customerColHidden.value + shiftColExtra(unit, dates);
+}
+
+function emptyUnitColspanFor(unit, dates) {
+  return 18 - customerColHidden.value + shiftColExtra(unit, dates);
+}
+
+function mergeShiftRuns(items) {
+  const dayMap = new Map();
+  const nightMap = new Map();
+  for (const it of items || []) {
+    for (const run of it.day_shift_runs || []) {
+      if (run?.spr_name && !dayMap.has(run.spr_name)) dayMap.set(run.spr_name, run);
+    }
+    for (const run of it.night_shift_runs || []) {
+      if (run?.spr_name && !nightMap.has(run.spr_name)) nightMap.set(run.spr_name, run);
+    }
+  }
+  const sortRuns = (arr) =>
+    [...arr].sort((a, b) => String(a.run_date || "").localeCompare(String(b.run_date || "")));
+  return {
+    dayShiftRuns: sortRuns([...dayMap.values()]),
+    nightShiftRuns: sortRuns([...nightMap.values()]),
+  };
+}
+
 const emptyMaintenanceColspan = computed(() => 19 - customerColHidden.value);
 const emptyDayColspan = computed(() => 15 - customerColHidden.value);
 const emptyUnitColspan = computed(() => 18 - customerColHidden.value);
@@ -1862,6 +1977,7 @@ const tableData = computed(() => {
                 ),
                 gapKg
               );
+              const { dayShiftRuns, nightShiftRuns } = mergeShiftRuns(mergeItems);
               rows.push({
                 type: "merge",
                 rowKey: `merge-${mergeId}`,
@@ -1885,6 +2001,8 @@ const tableData = computed(() => {
                 mergeAnyWoOpen,
                 mergeAllWoTerminal,
                 mergeMaxPendingKg,
+                dayShiftRuns,
+                nightShiftRuns,
               });
             });
 
@@ -3834,5 +3952,27 @@ td.pt-pp-sticky-cell {
   font-size: 12px;
   padding: 2px 0;
   color: #334155;
+}
+
+.pt-shift-cell {
+  font-size: 11px;
+  line-height: 1.35;
+  vertical-align: middle;
+}
+
+.pt-shift-run + .pt-shift-run {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.pt-shift-run-date {
+  font-weight: 600;
+  color: #475569;
+}
+
+.pt-shift-run-kg {
+  font-weight: 700;
+  color: #0f172a;
 }
 </style>
