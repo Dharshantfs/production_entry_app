@@ -841,36 +841,93 @@ def _spr_rm_available_qty(item_code: str, warehouse: str) -> float:
 	return flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0)
 
 
-def _spr_cap_qty_to_rm_available(qty: float, item_code: str, warehouse: str) -> float:
-	"""Cap MTFM qty to RM bin stock without rounding above available (fixes 7.554 vs 7.553997)."""
+def _spr_batch_available_qty(item_code: str, warehouse: str, batch_no: str) -> float:
+	"""Batch qty in warehouse (SLE sum / ERPNext helper)."""
+	item_code = _cstr(item_code).strip()
+	warehouse = _cstr(warehouse).strip()
+	batch_no = _cstr(batch_no).strip()
+	if not item_code or not warehouse or not batch_no:
+		return 0.0
+	try:
+		from erpnext.stock.utils import get_batch_qty
+
+		return flt(get_batch_qty(batch_no, warehouse, item_code))
+	except Exception:
+		pass
+	row = frappe.db.sql(
+		"""
+		SELECT COALESCE(SUM(actual_qty), 0)
+		FROM `tabStock Ledger Entry`
+		WHERE item_code = %s AND warehouse = %s AND batch_no = %s AND is_cancelled = 0
+		""",
+		(item_code, warehouse, batch_no),
+	)
+	return flt(row[0][0] if row else 0)
+
+
+def _spr_parse_max_transferable_kg(exc_msg: str) -> float:
+	"""Parse ERPNext 'Maximum transferable quantity is X Kg' from submit validation."""
+	msg = _cstr(exc_msg)
+	m = re.search(
+		r"Maximum transferable quantity is\s+([\d.]+)",
+		msg,
+		flags=re.IGNORECASE,
+	)
+	return flt(m.group(1)) if m else 0.0
+
+
+def _spr_cap_qty_to_rm_available(
+	qty: float, item_code: str, warehouse: str, batch_no: str | None = None
+) -> float:
+	"""Cap MTFM qty to RM/bin or batch stock — never round above available (7.554 vs 7.553997)."""
 	qty = flt(qty)
 	if qty <= 0:
 		return 0.0
-	rm_avl = _spr_rm_available_qty(item_code, warehouse)
-	if rm_avl <= 0:
+	batch_no = _cstr(batch_no).strip() if batch_no else ""
+	if batch_no:
+		avl = _spr_batch_available_qty(item_code, warehouse, batch_no)
+	else:
+		avl = _spr_rm_available_qty(item_code, warehouse)
+	if avl <= 0:
 		return 0.0
-	capped = min(qty, rm_avl)
+	capped = min(qty, avl)
 	floored = _spr_floor_rm_stock_qty(capped)
-	if floored > rm_avl + 1e-9:
-		floored = _spr_floor_rm_stock_qty(rm_avl)
+	if floored > avl + 1e-9:
+		floored = _spr_floor_rm_stock_qty(avl)
+	if floored > avl + 1e-9:
+		floored = avl
 	return max(floored, 0.0)
 
 
+def _spr_finalize_mtfm_line_qty(sed, source_wh: str, requested_qty: float) -> float:
+	"""Assign batch (if item is batched) then cap line qty to true transferable stock."""
+	if not sed or not sed.item_code or not source_wh:
+		return 0.0
+	_spr_assign_batch_for_mtfm_line(sed, source_wh)
+	qty = _spr_cap_qty_to_rm_available(
+		flt(requested_qty),
+		sed.item_code,
+		source_wh,
+		sed.get("batch_no"),
+	)
+	if qty > 0:
+		sed.qty = qty
+		sed.transfer_qty = qty
+	return qty
+
+
 def _spr_cap_stock_entry_lines_to_max_transferable(se) -> None:
-	"""Cap each outbound line on a Stock Entry to available source-warehouse qty."""
+	"""Cap each outbound line on a Stock Entry to available source-warehouse / batch qty."""
 	if not se:
 		return
 	for d in se.items or []:
 		if not d.item_code or not d.get("s_warehouse"):
 			continue
-		capped = _spr_cap_qty_to_rm_available(
-			flt(d.get("transfer_qty") or d.get("qty")),
-			d.item_code,
+		_spr_finalize_mtfm_line_qty(
+			d,
 			d.s_warehouse,
+			flt(d.get("transfer_qty") or d.get("qty")),
 		)
-		if capped > 0:
-			d.qty = capped
-			d.transfer_qty = capped
 
 
 class _SprWipTopupRetry(Exception):
@@ -4019,10 +4076,17 @@ class ShaftProductionRun(Document):
 					se.submit()
 				elif "Maximum transferable" in submit_msg or "Cannot transfer" in submit_msg:
 					se.reload()
-					_spr_cap_stock_entry_lines_to_max_transferable(se)
-					for d in se.items or []:
-						if d.item_code and d.get("s_warehouse"):
-							_spr_assign_batch_for_mtfm_line(d, d.s_warehouse)
+					plain_msg = re.sub(r"<[^>]+>", "", submit_msg)
+					max_kg = _spr_parse_max_transferable_kg(plain_msg)
+					row_m = re.search(r"Row #(\d+)", plain_msg, flags=re.IGNORECASE)
+					row_idx = int(row_m.group(1)) - 1 if row_m else 0
+					for i, d in enumerate(se.items or []):
+						if not d.item_code or not d.get("s_warehouse"):
+							continue
+						req = flt(d.get("transfer_qty") or d.get("qty"))
+						if max_kg > 0 and i == row_idx:
+							req = min(req, max_kg)
+						_spr_finalize_mtfm_line_qty(d, d.s_warehouse, req)
 					self._spr_apply_stock_entry_item_accounts(se)
 					se.flags.ignore_permissions = True
 					se.save()
@@ -4162,17 +4226,6 @@ class ShaftProductionRun(Document):
 					f"SPR MTFM draft no source:{self.name}",
 				)
 				continue
-			qty = _spr_cap_qty_to_rm_available(qty, ic, item_src)
-			tol = _spr_rm_wip_shortage_tolerance(qty)
-			if qty <= tol:
-				frappe.log_error(
-					_(
-						"No RM stock for {0} in {1} (need {2} Kg for WIP transfer). "
-						"Transfer raw material to RM warehouse first."
-					).format(ic, item_src, _spr_round_rm_stock_qty(short_qty)),
-					f"SPR MTFM RM shortage:{self.name}",
-				)
-				continue
 			stock_uom = frappe.db.get_value("Item", ic, "stock_uom") or "Nos"
 			line = {
 				"item_code": ic,
@@ -4193,7 +4246,18 @@ class ShaftProductionRun(Document):
 				line["cost_center"] = cc
 			se.append("items", line)
 			if se.items:
-				_spr_assign_batch_for_mtfm_line(se.items[-1], item_src)
+				qty = _spr_finalize_mtfm_line_qty(se.items[-1], item_src, qty)
+			tol = _spr_rm_wip_shortage_tolerance(qty)
+			if qty <= tol:
+				se.items.pop()
+				frappe.log_error(
+					_(
+						"No RM stock for {0} in {1} (need {2} Kg for WIP transfer). "
+						"Transfer raw material to RM warehouse first."
+					).format(ic, item_src, _spr_round_rm_stock_qty(short_qty)),
+					f"SPR MTFM RM shortage:{self.name}",
+				)
+				continue
 			added += 1
 		return added
 
@@ -9290,7 +9354,7 @@ def _spr_create_and_submit_mtfm(wo_doc) -> str:
 			sed.t_warehouse = wip_wh
 		if se_meta.has_field("use_serial_batch_fields"):
 			sed.use_serial_batch_fields = 1
-		_spr_assign_batch_for_mtfm_line(sed, sed.s_warehouse or source_wh)
+		_spr_finalize_mtfm_line_qty(sed, sed.s_warehouse or source_wh, flt(sed.qty))
 
 	if not se.items:
 		for row in wo_doc.get("required_items") or []:
@@ -9310,7 +9374,7 @@ def _spr_create_and_submit_mtfm(wo_doc) -> str:
 				},
 			)
 		for sed in se.items or []:
-			_spr_assign_batch_for_mtfm_line(sed, sed.s_warehouse or source_wh)
+			_spr_finalize_mtfm_line_qty(sed, sed.s_warehouse or source_wh, flt(sed.qty))
 
 	if not se.items:
 		frappe.throw(_("No raw material lines to transfer for Work Order {0}.").format(wo_name))
