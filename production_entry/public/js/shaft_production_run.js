@@ -389,15 +389,102 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 	});
 }
 
-/** Simplified - CSS table layout handles alignment, no JS needed */
+/**
+ * Sync header columns to body columns by index.
+ * Only touches the header row (~15 cells) – no body row loops, so no hang.
+ * Also injects a <style> to keep all body cols at the measured width.
+ */
 function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
-	// CSS table-layout: fixed handles column alignment automatically
-	// No JS manipulation needed - prevents form hanging
+	const fd = spr_get_field_dict(frm, fieldname);
+	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+		return;
+	}
+	const $wrap = fd.$wrapper;
+	const $headRow = $wrap.find('.grid-heading-row').first();
+	const $bodyRow = $wrap.find('.grid-body .grid-row').first();
+	if (!$headRow.length || !$bodyRow.length) {
+		return;
+	}
+	const headCols = $headRow.children().toArray();
+	const bodyCols = $bodyRow.children().toArray();
+	const n = Math.min(headCols.length, bodyCols.length);
+	if (n < 1) {
+		return;
+	}
+	const wrapClass =
+		fieldname === 'items'
+			? '.spr-items-wrap'
+			: fieldname === 'shaft_jobs'
+				? '.spr-shaft-jobs-wrap'
+				: null;
+	const styleId = 'spr-col-lock-' + fieldname;
+	let dynamicCss = '';
+
+	for (let i = 0; i < n; i++) {
+		const $h = $(headCols[i]);
+		const $b = $(bodyCols[i]);
+		const fn =
+			$b.attr('data-fieldname') ||
+			$b.find('[data-fieldname]').first().attr('data-fieldname');
+		let minPx = (fn && widthMap && widthMap[fn]) || SPR_GRID_DEFAULT_COL_MIN_PX;
+		if ($h.hasClass('row-check') || $b.hasClass('row-check')) {
+			minPx = 36;
+		} else if ($h.hasClass('row-index') || $b.hasClass('row-index')) {
+			minPx = 44;
+		}
+		const bodyW = Math.ceil($b.outerWidth() || 0);
+		const w = Math.max(minPx, bodyW, 36);
+		const css = {
+			'min-width': w + 'px',
+			'width': w + 'px',
+			'max-width': w + 'px',
+			'flex': '0 0 ' + w + 'px',
+			'box-sizing': 'border-box',
+		};
+		$h.css(css);
+		if (fn && wrapClass) {
+			dynamicCss +=
+				wrapClass + ' .col[data-fieldname="' + fn + '"],' +
+				wrapClass + ' [data-fieldname="' + fn + '"]' +
+				'{ flex:0 0 ' + w + 'px !important;width:' + w + 'px !important;' +
+				'min-width:' + w + 'px !important;max-width:' + w + 'px !important;' +
+				'box-sizing:border-box !important; }';
+		}
+	}
+	if (dynamicCss) {
+		$('style#' + styleId).remove();
+		$('<style id="' + styleId + '">' + dynamicCss + '</style>').appendTo('head');
+	}
 }
 
 function spr_debounced_lock_grid_column_widths(frm, fieldname) {
-	// CSS table-layout: fixed handles column alignment automatically
-	// No JS manipulation needed - prevents form hanging
+	if (!frm || !fieldname) {
+		return;
+	}
+	const key = '_spr_lock_cols_timer_' + fieldname;
+	if (frm[key]) {
+		clearTimeout(frm[key]);
+	}
+	frm[key] = setTimeout(function () {
+		frm[key] = null;
+		if (!frm.fields_dict || !frm.fields_dict[fieldname]) {
+			return;
+		}
+		const widthMap =
+			fieldname === 'items'
+				? SPR_ITEMS_COL_MIN_PX
+				: fieldname === 'shaft_jobs'
+					? SPR_SHAFT_JOBS_COL_MIN_PX
+					: null;
+		if (!widthMap) {
+			return;
+		}
+		spr_lock_grid_column_widths(frm, fieldname, widthMap);
+		const fd2 = spr_get_field_dict(frm, fieldname);
+		if (fd2) {
+			spr_sync_grid_header_body_scroll(fd2);
+		}
+	}, 160);
 }
 
 /** Match header column min-widths to first body row (by fieldname). */
@@ -729,11 +816,6 @@ function spr_enforce_spr_grid_columns(frm, fieldname) {
 	spr_clear_spr_grid_saved_columns(grid, metaDoctype, true);
 	grid._spr_desired_column_order = cols;
 	cg.apply(frm, fieldname, metaDoctype, cols, { fullRefresh: true });
-	if (fieldname === 'items' || fieldname === 'shaft_jobs') {
-		const widthMap = fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
-		spr_apply_grid_column_min_widths(frm, fieldname, widthMap);
-		spr_lock_grid_column_widths(frm, fieldname, widthMap);
-	}
 	spr_fix_grid_single_scroll(fd);
 	spr_attach_grid_scroll_sync(fd);
 	if (cg.sync_header_scroll) {
@@ -744,6 +826,18 @@ function spr_enforce_spr_grid_columns(frm, fieldname) {
 	if (fieldname === 'items') {
 		ensure_spr_item_stylesheet();
 		apply_spr_item_row_styles(frm);
+	}
+	// Lock column widths after DOM has painted
+	if (fieldname === 'items' || fieldname === 'shaft_jobs') {
+		const widthMap = fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
+		spr_apply_grid_column_min_widths(frm, fieldname, widthMap);
+		// Delay so grid DOM is fully rendered before measuring widths
+		requestAnimationFrame(function () {
+			requestAnimationFrame(function () {
+				spr_lock_grid_column_widths(frm, fieldname, widthMap);
+				spr_sync_grid_header_body_scroll(fd);
+			});
+		});
 	}
 }
 
@@ -1058,10 +1152,14 @@ function spr_apply_grid_visible_columns(frm, gridFieldname, columnFieldList, for
 			spr_sync_grid_header_body_scroll(fd);
 		}
 		if (gridFieldname === 'items' || gridFieldname === 'shaft_jobs') {
-			const widthMap =
-				gridFieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
-			spr_apply_grid_column_min_widths(frm, gridFieldname, widthMap);
-			spr_lock_grid_column_widths(frm, gridFieldname, widthMap);
+			const _wm = gridFieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
+			spr_apply_grid_column_min_widths(frm, gridFieldname, _wm);
+			requestAnimationFrame(function () {
+				requestAnimationFrame(function () {
+					spr_lock_grid_column_widths(frm, gridFieldname, _wm);
+					spr_sync_grid_header_body_scroll(fd);
+				});
+			});
 		}
 		return;
 	}
@@ -1615,10 +1713,14 @@ function spr_apply_grid_list_view_config(grid, metaDoctype, cfg) {
  */
 function spr_light_grid_scroll_sync(frm, fieldname) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
-	if (fd) {
-		spr_fix_grid_single_scroll(fd);
-		spr_attach_grid_scroll_sync(fd);
-		spr_sync_grid_header_body_scroll(fd);
+	if (!fd) {
+		return;
+	}
+	spr_fix_grid_single_scroll(fd);
+	spr_attach_grid_scroll_sync(fd);
+	spr_sync_grid_header_body_scroll(fd);
+	if (fieldname === 'items' || fieldname === 'shaft_jobs') {
+		spr_debounced_lock_grid_column_widths(frm, fieldname);
 	}
 }
 
@@ -6701,7 +6803,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '47';
+	const sprItemsCssVer = '48';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -6902,123 +7004,38 @@ function ensure_spr_item_stylesheet() {
 			overflow-x: visible !important;
 			overflow-y: visible !important;
 		}
-		/* STICKY HEADER */
+		/* Prevent header and body from independently scrolling */
 		.spr-grid-wrap .grid-heading-row,
+		.spr-grid-wrap .grid-body,
 		.spr-items-wrap .grid-heading-row,
-		.spr-shaft-jobs-wrap .grid-heading-row {
-			position: sticky !important;
-			top: 0 !important;
-			z-index: 10 !important;
-			background: #f8fafc !important;
+		.spr-items-wrap .grid-body,
+		.spr-shaft-jobs-wrap .grid-heading-row,
+		.spr-shaft-jobs-wrap .grid-body,
+		.spr-bundle-calc-wrap .grid-heading-row,
+		.spr-bundle-calc-wrap .grid-body {
+			overflow-x: hidden !important;
 		}
-		/* FLEXBOX ALIGNMENT - same widths for header and body columns */
-		.spr-grid-wrap .grid-heading-row,
-		.spr-grid-wrap .grid-row,
+		/* Ensure each row and header use nowrap flex so columns line up */
 		.spr-items-wrap .grid-heading-row,
 		.spr-items-wrap .grid-row,
 		.spr-shaft-jobs-wrap .grid-heading-row,
 		.spr-shaft-jobs-wrap .grid-row {
-			display: flex !important;
 			flex-wrap: nowrap !important;
-			align-items: stretch !important;
+			flex-shrink: 0 !important;
 		}
-		.spr-grid-wrap .grid-heading-row > *,
-		.spr-grid-wrap .grid-row > *,
-		.spr-items-wrap .grid-heading-row > *,
-		.spr-items-wrap .grid-row > *,
-		.spr-shaft-jobs-wrap .grid-heading-row > *,
-		.spr-shaft-jobs-wrap .grid-row > * {
-			box-sizing: border-box !important;
+		/* col cells: no-grow, no-shrink – width set by JS lock or Frappe */
+		.spr-items-wrap .grid-heading-row > .grid-static-col,
+		.spr-items-wrap .grid-row > .col,
+		.spr-items-wrap .grid-row > .grid-static-col,
+		.spr-shaft-jobs-wrap .grid-heading-row > .grid-static-col,
+		.spr-shaft-jobs-wrap .grid-row > .col,
+		.spr-shaft-jobs-wrap .grid-row > .grid-static-col {
 			flex-shrink: 0 !important;
 			flex-grow: 0 !important;
-			padding: 6px 8px !important;
-			display: flex !important;
-			align-items: center !important;
-			border-bottom: 1px solid #e5e7eb !important;
+			box-sizing: border-box !important;
 			overflow: hidden !important;
-			text-overflow: ellipsis !important;
 		}
-		/* Row checkbox and index columns - fixed small widths */
-		.spr-grid-wrap .row-check, .spr-items-wrap .row-check, .spr-shaft-jobs-wrap .row-check {
-			flex: 0 0 36px !important; width: 36px !important; min-width: 36px !important; max-width: 36px !important;
-		}
-		.spr-grid-wrap .row-index, .spr-items-wrap .row-index, .spr-shaft-jobs-wrap .row-index {
-			flex: 0 0 44px !important; width: 44px !important; min-width: 44px !important; max-width: 44px !important;
-		}
-		/* ===== ITEMS TABLE COLUMN WIDTHS ===== */
-		.spr-items-wrap [data-fieldname="job"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="job"]) { flex: 0 0 50px !important; width: 50px !important; min-width: 50px !important; }
-		.spr-items-wrap [data-fieldname="party_code"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="party_code"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
-		.spr-items-wrap [data-fieldname="item_code"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="item_code"]) { flex: 0 0 110px !important; width: 110px !important; min-width: 110px !important; }
-		.spr-items-wrap [data-fieldname="item_name"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="item_name"]) { flex: 0 0 120px !important; width: 120px !important; min-width: 120px !important; }
-		.spr-items-wrap [data-fieldname="quality"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="quality"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
-		.spr-items-wrap [data-fieldname="color"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="color"]) { flex: 0 0 115px !important; width: 115px !important; min-width: 115px !important; }
-		.spr-items-wrap [data-fieldname="width_inch"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="width_inch"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
-		.spr-items-wrap [data-fieldname="gsm"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="gsm"]) { flex: 0 0 65px !important; width: 65px !important; min-width: 65px !important; }
-		.spr-items-wrap [data-fieldname="produced_gsm"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="produced_gsm"]) { flex: 0 0 80px !important; width: 80px !important; min-width: 80px !important; }
-		.spr-items-wrap [data-fieldname="meter_roll"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="meter_roll"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
-		.spr-items-wrap [data-fieldname="produced_length_mtrs"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="produced_length_mtrs"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-items-wrap [data-fieldname="batch_no"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="batch_no"]) { flex: 0 0 115px !important; width: 115px !important; min-width: 115px !important; }
-		.spr-items-wrap [data-fieldname="net_weight"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="net_weight"]) { flex: 0 0 85px !important; width: 85px !important; min-width: 85px !important; }
-		.spr-items-wrap [data-fieldname="gross_weight"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="gross_weight"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-items-wrap [data-fieldname="planned_qty"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="planned_qty"]) { flex: 0 0 85px !important; width: 85px !important; min-width: 85px !important; }
-		.spr-items-wrap [data-fieldname="uom"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="uom"]) { flex: 0 0 50px !important; width: 50px !important; min-width: 50px !important; }
-		.spr-items-wrap [data-fieldname="custom_core_width_mm"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="custom_core_width_mm"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-items-wrap [data-fieldname="custom_polybag_kgs"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="custom_polybag_kgs"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-items-wrap [data-fieldname="save_row"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="save_row"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-items-wrap [data-fieldname="custom_production_label"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="custom_production_label"]) { flex: 0 0 110px !important; width: 110px !important; min-width: 110px !important; }
-		.spr-items-wrap [data-fieldname="edit_row"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="edit_row"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-items-wrap [data-fieldname="work_order"],
-		.spr-items-wrap .grid-static-col:has([data-fieldname="work_order"]) { flex: 0 0 110px !important; width: 110px !important; min-width: 110px !important; }
-		/* ===== SHAFT_JOBS TABLE COLUMN WIDTHS ===== */
-		.spr-shaft-jobs-wrap [data-fieldname="job_id"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="job_id"]) { flex: 0 0 50px !important; width: 50px !important; min-width: 50px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="gsm"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="gsm"]) { flex: 0 0 65px !important; width: 65px !important; min-width: 65px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="quality"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="quality"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="combination"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="combination"]) { flex: 0 0 145px !important; width: 145px !important; min-width: 145px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="total_width"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="total_width"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="meter_roll_mtrs"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="meter_roll_mtrs"]) { flex: 0 0 90px !important; width: 90px !important; min-width: 90px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="net_weight"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="net_weight"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="total_weight"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="total_weight"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_weight"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="custom_total_achieved_weight"]) { flex: 0 0 105px !important; width: 105px !important; min-width: 105px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="custom_total_achieved_meter"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="custom_total_achieved_meter"]) { flex: 0 0 105px !important; width: 105px !important; min-width: 105px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="no_of_shafts"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="no_of_shafts"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="no_of_rolls"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="no_of_rolls"]) { flex: 0 0 75px !important; width: 75px !important; min-width: 75px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="party_code"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="party_code"]) { flex: 0 0 95px !important; width: 95px !important; min-width: 95px !important; }
-		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"],
-		.spr-shaft-jobs-wrap .grid-static-col:has([data-fieldname="create_roll_entry"]) { flex: 0 0 120px !important; width: 120px !important; min-width: 120px !important; }
+		/* Create Entry button */
 		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] .btn {
 			width: 100% !important;
 			font-size: 11px !important;
