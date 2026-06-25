@@ -390,9 +390,10 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 }
 
 /**
- * Sync header column widths to match body columns by index.
- * Only touches header cells (~15 elements) — no body row loop, no hang.
- * NEVER injects max-width on body cells (that caused data to vanish).
+ * Sync header column widths to match body columns.
+ * KEY: align DATA columns separately from structural (row-check / row-index)
+ * so a mismatch in structural cells doesn't shift every data column.
+ * Only touches header cells — no body row loop, no hang.
  */
 function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
 	const fd = spr_get_field_dict(frm, fieldname);
@@ -405,45 +406,45 @@ function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
 	if (!$headRow.length || !$bodyRow.length) {
 		return;
 	}
-	const headCols = $headRow.children().toArray();
-	const bodyCols = $bodyRow.children().toArray();
-	const n = Math.min(headCols.length, bodyCols.length);
-	if (n < 1) {
-		return;
-	}
 
-	// Safety: abort if body cells haven't rendered yet (widths all 0)
-	const firstBodyW = $(bodyCols[Math.min(1, n - 1)]).outerWidth() || 0;
-	if (firstBodyW < 20) {
-		// Grid not painted yet — defer
+	// Safety: abort if body hasn't painted yet
+	const $firstData = $bodyRow.children(':not(.row-check):not(.row-index)').first();
+	if (!$firstData.length || ($firstData.outerWidth() || 0) < 20) {
 		setTimeout(function () {
 			spr_lock_grid_column_widths(frm, fieldname, widthMap);
-		}, 120);
+		}, 150);
 		return;
 	}
 
-	for (let i = 0; i < n; i++) {
-		const $h = $(headCols[i]);
-		const $b = $(bodyCols[i]);
-		const fn =
+	// ---- structural columns (row-check, row-index) ----
+	var fixedCss = { 'box-sizing': 'border-box', 'flex-shrink': '0', 'flex-grow': '0' };
+	$headRow.children('.row-check').css(Object.assign({}, fixedCss,
+		{ 'min-width': '36px', 'width': '36px', 'max-width': '36px', 'flex': '0 0 36px' }));
+	$headRow.children('.row-index').css(Object.assign({}, fixedCss,
+		{ 'min-width': '44px', 'width': '44px', 'max-width': '44px', 'flex': '0 0 44px' }));
+
+	// ---- data columns aligned by index (skipping structural) ----
+	var $headDataCols = $headRow.children(':not(.row-check):not(.row-index)');
+	var $bodyDataCols = $bodyRow.children(':not(.row-check):not(.row-index)');
+	var n = Math.min($headDataCols.length, $bodyDataCols.length);
+
+	for (var i = 0; i < n; i++) {
+		var $h = $headDataCols.eq(i);
+		var $b = $bodyDataCols.eq(i);
+		var fn =
 			$b.attr('data-fieldname') ||
-			$b.find('[data-fieldname]').first().attr('data-fieldname');
-		let minPx = (fn && widthMap && widthMap[fn]) || SPR_GRID_DEFAULT_COL_MIN_PX;
-		if ($h.hasClass('row-check') || $b.hasClass('row-check')) {
-			minPx = 36;
-		} else if ($h.hasClass('row-index') || $b.hasClass('row-index')) {
-			minPx = 44;
-		}
-		const bodyW = Math.ceil($b.outerWidth() || 0);
-		// Use body width as authoritative; fall back to minPx if not rendered
-		const w = bodyW >= 24 ? bodyW : minPx;
-		// Only set header width — do NOT constrain body cells (causes blank cells)
+			($b.find('[data-fieldname]').first().attr('data-fieldname') || '');
+		var minPx = (fn && widthMap && widthMap[fn]) || SPR_GRID_DEFAULT_COL_MIN_PX;
+		var bodyW = Math.ceil($b.outerWidth() || 0);
+		var w = bodyW >= 24 ? bodyW : minPx;
 		$h.css({
 			'min-width': w + 'px',
 			'width': w + 'px',
 			'max-width': w + 'px',
 			'flex': '0 0 ' + w + 'px',
 			'box-sizing': 'border-box',
+			'flex-shrink': '0',
+			'flex-grow': '0',
 		});
 	}
 }
@@ -818,17 +819,20 @@ function spr_enforce_spr_grid_columns(frm, fieldname) {
 		ensure_spr_item_stylesheet();
 		apply_spr_item_row_styles(frm);
 	}
-	// Lock column widths after DOM has painted
+	// Lock column widths after DOM has painted — run at 2 timing points
 	if (fieldname === 'items' || fieldname === 'shaft_jobs') {
-		const widthMap = fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
-		spr_apply_grid_column_min_widths(frm, fieldname, widthMap);
-		// Delay so grid DOM is fully rendered before measuring widths
+		const _wm2 = fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX : SPR_SHAFT_JOBS_COL_MIN_PX;
+		spr_apply_grid_column_min_widths(frm, fieldname, _wm2);
 		requestAnimationFrame(function () {
 			requestAnimationFrame(function () {
-				spr_lock_grid_column_widths(frm, fieldname, widthMap);
+				spr_lock_grid_column_widths(frm, fieldname, _wm2);
 				spr_sync_grid_header_body_scroll(fd);
 			});
 		});
+		setTimeout(function () {
+			spr_lock_grid_column_widths(frm, fieldname, _wm2);
+			spr_sync_grid_header_body_scroll(fd);
+		}, 400);
 	}
 }
 
@@ -6794,7 +6798,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '49';
+	const sprItemsCssVer = '50';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
