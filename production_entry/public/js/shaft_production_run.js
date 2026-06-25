@@ -390,9 +390,9 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 }
 
 /**
- * Sync header columns to body columns by index.
- * Only touches the header row (~15 cells) – no body row loops, so no hang.
- * Also injects a <style> to keep all body cols at the measured width.
+ * Sync header column widths to match body columns by index.
+ * Only touches header cells (~15 elements) — no body row loop, no hang.
+ * NEVER injects max-width on body cells (that caused data to vanish).
  */
 function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
 	const fd = spr_get_field_dict(frm, fieldname);
@@ -411,14 +411,16 @@ function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
 	if (n < 1) {
 		return;
 	}
-	const wrapClass =
-		fieldname === 'items'
-			? '.spr-items-wrap'
-			: fieldname === 'shaft_jobs'
-				? '.spr-shaft-jobs-wrap'
-				: null;
-	const styleId = 'spr-col-lock-' + fieldname;
-	let dynamicCss = '';
+
+	// Safety: abort if body cells haven't rendered yet (widths all 0)
+	const firstBodyW = $(bodyCols[Math.min(1, n - 1)]).outerWidth() || 0;
+	if (firstBodyW < 20) {
+		// Grid not painted yet — defer
+		setTimeout(function () {
+			spr_lock_grid_column_widths(frm, fieldname, widthMap);
+		}, 120);
+		return;
+	}
 
 	for (let i = 0; i < n; i++) {
 		const $h = $(headCols[i]);
@@ -433,27 +435,16 @@ function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
 			minPx = 44;
 		}
 		const bodyW = Math.ceil($b.outerWidth() || 0);
-		const w = Math.max(minPx, bodyW, 36);
-		const css = {
+		// Use body width as authoritative; fall back to minPx if not rendered
+		const w = bodyW >= 24 ? bodyW : minPx;
+		// Only set header width — do NOT constrain body cells (causes blank cells)
+		$h.css({
 			'min-width': w + 'px',
 			'width': w + 'px',
 			'max-width': w + 'px',
 			'flex': '0 0 ' + w + 'px',
 			'box-sizing': 'border-box',
-		};
-		$h.css(css);
-		if (fn && wrapClass) {
-			dynamicCss +=
-				wrapClass + ' .col[data-fieldname="' + fn + '"],' +
-				wrapClass + ' [data-fieldname="' + fn + '"]' +
-				'{ flex:0 0 ' + w + 'px !important;width:' + w + 'px !important;' +
-				'min-width:' + w + 'px !important;max-width:' + w + 'px !important;' +
-				'box-sizing:border-box !important; }';
-		}
-	}
-	if (dynamicCss) {
-		$('style#' + styleId).remove();
-		$('<style id="' + styleId + '">' + dynamicCss + '</style>').appendTo('head');
+		});
 	}
 }
 
@@ -6803,7 +6794,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '48';
+	const sprItemsCssVer = '49';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -7025,15 +7016,10 @@ function ensure_spr_item_stylesheet() {
 		}
 		/* col cells: no-grow, no-shrink – width set by JS lock or Frappe */
 		.spr-items-wrap .grid-heading-row > .grid-static-col,
-		.spr-items-wrap .grid-row > .col,
-		.spr-items-wrap .grid-row > .grid-static-col,
-		.spr-shaft-jobs-wrap .grid-heading-row > .grid-static-col,
-		.spr-shaft-jobs-wrap .grid-row > .col,
-		.spr-shaft-jobs-wrap .grid-row > .grid-static-col {
+		.spr-shaft-jobs-wrap .grid-heading-row > .grid-static-col {
 			flex-shrink: 0 !important;
 			flex-grow: 0 !important;
 			box-sizing: border-box !important;
-			overflow: hidden !important;
 		}
 		/* Create Entry button */
 		.spr-shaft-jobs-wrap [data-fieldname="create_roll_entry"] .btn {
