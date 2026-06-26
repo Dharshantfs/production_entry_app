@@ -5789,6 +5789,11 @@ class ShaftProductionRun(Document):
 			return
 		se_doc = frappe.get_doc("Stock Entry", se_name)
 		item_code = _cstr(se_doc.get("production_item") or getattr(wo_doc, "production_item", None))
+		
+		# If the item cannot have a batch, skip batch generation entirely to prevent ERPNext ValidationError
+		if item_code and not cint(frappe.db.get_value("Item", item_code, "has_batch_no")):
+			return
+
 		company = _cstr(se_doc.get("company") or getattr(wo_doc, "company", None))
 		fg_lines = [d for d in (se_doc.items or []) if cint(d.get("is_finished_item")) == 1]
 		if not fg_lines:
