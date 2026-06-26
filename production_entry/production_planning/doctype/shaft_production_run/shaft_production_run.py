@@ -4524,6 +4524,10 @@ class ShaftProductionRun(Document):
 			name = _cstr(se.name)
 			self._persist_stock_entry_spr_reference_db(name)
 			try:
+				frappe.db.commit()
+			except Exception:
+				pass
+			try:
 				se.flags.ignore_permissions = True
 				se.flags.ignore_validate = True
 				se.submit()
@@ -4547,6 +4551,8 @@ class ShaftProductionRun(Document):
 					plain_msg = re.sub(r"<[^>]+>", "", submit_msg)
 					max_kg = _spr_parse_max_transferable_kg(plain_msg)
 					if max_kg <= 0:
+						se.work_order = None
+						se.purpose = "Material Transfer"
 						for d in se.items or []:
 							if d.get("s_warehouse"):
 								d.batch_no = ""
@@ -4572,7 +4578,11 @@ class ShaftProductionRun(Document):
 							self._spr_last_mtfm_error = plain_msg
 							return ""
 						se.flags.ignore_validate = True
-						se.submit()
+						try:
+							se.submit()
+						except Exception as inner_exc:
+							self._spr_last_mtfm_error = _cstr(inner_exc)
+							return name
 					else:
 						row_m = re.search(r"Row #(\d+)", plain_msg, flags=re.IGNORECASE)
 						row_idx = int(row_m.group(1)) - 1 if row_m else 0
