@@ -1177,6 +1177,7 @@ function spr_apply_items_grid_columns(frm, force) {
 	spr_install_items_grid_column_guard(frm);
 	spr_bind_spr_grid_column_configure_hook(frm, 'items');
 	if (!force && spr_should_block_grid_realign(frm)) {
+		spr_restore_cached_grid_columns(frm, 'items');
 		return;
 	}
 	if (grid._spr_columns_user_locked && !force) {
@@ -1343,6 +1344,34 @@ function spr_reorder_docfields_array(docfields, preferredOrder) {
 		}
 	});
 	return ordered;
+}
+
+/** Re-apply cached column order without reset (Save Row / save refresh path). */
+function spr_restore_cached_grid_columns(frm, fieldname) {
+	const fd = spr_get_field_dict(frm, fieldname);
+	if (!fd || !fd.grid) {
+		return false;
+	}
+	const grid = fd.grid;
+	let order = grid._spr_desired_column_order;
+	if (!order || !order.length) {
+		if (fieldname === 'items') {
+			const cfg = spr_get_items_list_view_config(frm);
+			order = (cfg && cfg.show) || [];
+		} else if (fieldname === 'shaft_jobs') {
+			order = spr_build_shaft_jobs_show_list(frm) || [];
+		}
+	}
+	if (!order || !order.length) {
+		return false;
+	}
+	const showSet = {};
+	order.forEach(function (fn) {
+		showSet[fn] = 1;
+	});
+	spr_light_sync_grid_columns(grid, order, showSet, { refreshRows: false });
+	spr_light_grid_scroll_sync(frm, fieldname);
+	return true;
 }
 
 /** Sync header/body column order without grid.refresh() or DOM remount (SPR-safe). */
@@ -2922,8 +2951,9 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		const lightGridPass = spr_should_use_lightweight_grid_pass(frm);
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
-		if (spr_get_field_dict(frm, 'items')) {
+		if (!lightGridPass && spr_get_field_dict(frm, 'items')) {
 			spr_reset_items_grid_field_visibility(frm);
 		}
 		try {
@@ -2980,15 +3010,21 @@ frappe.ui.form.on('Shaft Production Run', {
 		}
 
 		// Clear stale hidden flags, then apply column lists (JS owns in_list_view).
-		spr_reset_items_grid_field_visibility(frm);
-		spr_reset_shaft_jobs_grid_field_visibility(frm);
-		spr_reset_bundle_calc_grid_field_visibility(frm);
-		if (!spr_is_submitted_spr(frm)) {
-			spr_sync_grid_columns_visible(frm, 'items');
-			spr_sync_grid_columns_visible(frm, 'shaft_jobs');
+		// During Save Row / save refresh: never reset in_list_view — apply is blocked and grid collapses.
+		if (!lightGridPass) {
+			spr_reset_items_grid_field_visibility(frm);
+			spr_reset_shaft_jobs_grid_field_visibility(frm);
+			spr_reset_bundle_calc_grid_field_visibility(frm);
+			if (!spr_is_submitted_spr(frm)) {
+				spr_sync_grid_columns_visible(frm, 'items');
+				spr_sync_grid_columns_visible(frm, 'shaft_jobs');
+			} else {
+				spr_apply_items_grid_columns(frm, true);
+				spr_apply_shaft_jobs_grid_columns(frm, true);
+			}
 		} else {
-			spr_apply_items_grid_columns(frm, true);
-			spr_apply_shaft_jobs_grid_columns(frm, true);
+			spr_restore_cached_grid_columns(frm, 'items');
+			spr_restore_cached_grid_columns(frm, 'shaft_jobs');
 		}
 		if (sprIsBundlePackagingMode(frm)) {
 			spr_apply_bundle_calculation_grid_columns(frm, true);

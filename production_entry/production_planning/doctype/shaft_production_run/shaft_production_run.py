@@ -789,13 +789,13 @@ def _spr_rm_stock_qty_precision() -> int:
 def _spr_rm_wip_shortage_tolerance(required_qty: float) -> float:
 	"""Ignore float/rounding gaps when comparing WIP Bin vs BOM RM need (Kg)."""
 	try:
-		base = flt(frappe.conf.get("spr_rm_wip_shortage_tolerance_kg") or 0.01)
+		base = flt(frappe.conf.get("spr_rm_wip_shortage_tolerance_kg") or 0.05)
 	except (TypeError, ValueError):
-		base = 0.01
+		base = 0.05
 	req = flt(required_qty)
 	if req <= 0:
 		return base
-	return max(base, req * 0.001)
+	return max(base, req * 0.002)
 
 
 def _spr_wip_topup_bump_qty(shortage_qty: float) -> float:
@@ -3243,14 +3243,14 @@ class ShaftProductionRun(Document):
 			else:
 				avl = _spr_rm_available_qty(ic, wip_wh)
 			avl = _spr_floor_rm_stock_qty(avl)
-			if req <= avl + tol:
+			if req <= avl:
 				continue
 			gap = req - avl
 			if gap > tol:
 				# Meaningful WIP shortage — preflight auto-transfer must top up RM store -> WIP.
 				continue
 			cap = _spr_floor_rm_stock_qty(avl)
-			if cap <= tol:
+			if cap <= 0:
 				continue
 			cf = flt(d.get("conversion_factor") or 1) or 1
 			d.transfer_qty = cap
