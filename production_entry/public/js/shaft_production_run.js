@@ -353,7 +353,7 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 		if ($hc.length) {
 			$hc.css(css);
 		}
-		$wrap.find('.grid-row').each(function () {
+		$wrap.find('.grid-body .rows > .grid-row').not('.grid-form-row').each(function () {
 			const $col = $(this)
 				.find('[data-fieldname="' + df.fieldname + '"]')
 				.closest('.col, .grid-static-col')
@@ -363,6 +363,129 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
 			}
 		});
 	});
+	spr_sync_header_body_alignment(frm, fieldname);
+}
+
+/**
+ * Align header with body: widen header row-check/row-index when body has extra
+ * leading width (edit pencil), then match each header col min-width to body by fieldname.
+ * Header only — never touches body rows or grid-form-row.
+ */
+function spr_sync_header_body_alignment(frm, fieldname) {
+	if (fieldname === 'items' && spr_should_block_grid_realign(frm)) {
+		return;
+	}
+	const fd = spr_get_field_dict(frm, fieldname);
+	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
+		return;
+	}
+	if (fieldname !== 'items' && fieldname !== 'shaft_jobs') {
+		return;
+	}
+	const $wrap = fd.$wrapper;
+	const $headRow = $wrap.find('.grid-heading-row').first();
+	const $bodyRow = $wrap.find('.grid-body .rows > .grid-row').not('.grid-form-row').first();
+	if (!$headRow.length || !$bodyRow.length) {
+		return;
+	}
+
+	function leadingWidthBeforeData($row) {
+		let w = 0;
+		let done = false;
+		$row.children().each(function () {
+			if (done) {
+				return false;
+			}
+			const $c = $(this);
+			if ($c.hasClass('row-check') || $c.hasClass('row-index')) {
+				w += $c.outerWidth() || 0;
+				return;
+			}
+			const fn =
+				$c.attr('data-fieldname') ||
+				($c.find('[data-fieldname]').first().attr('data-fieldname') || '');
+			if (fn) {
+				done = true;
+				return false;
+			}
+			if ($c.hasClass('col') || $c.hasClass('grid-static-col')) {
+				done = true;
+				return false;
+			}
+			w += $c.outerWidth() || 0;
+		});
+		return w;
+	}
+
+	const headLead = leadingWidthBeforeData($headRow);
+	const bodyLead = leadingWidthBeforeData($bodyRow);
+	const delta = bodyLead - headLead;
+
+	const $hc = $headRow.children('.row-check').first();
+	const $bc = $bodyRow.children('.row-check').first();
+	if ($hc.length && $bc.length) {
+		const w = Math.ceil($bc.outerWidth() || 36);
+		const px = w + 'px';
+		$hc.css({ minWidth: px, width: px, maxWidth: px });
+	}
+
+	const $hi = $headRow.children('.row-index').first();
+	const $bi = $bodyRow.children('.row-index').first();
+	if ($hi.length && $bi.length) {
+		let idxW = Math.ceil($bi.outerWidth() || 44);
+		if (delta > 2) {
+			idxW = Math.ceil(idxW + delta);
+		}
+		const px = idxW + 'px';
+		$hi.css({ minWidth: px, width: px, maxWidth: px });
+	} else if (delta > 2 && $hi.length) {
+		const px = Math.ceil(($hi.outerWidth() || 44) + delta) + 'px';
+		$hi.css({ minWidth: px, width: px, maxWidth: px });
+	}
+
+	$bodyRow.children().each(function () {
+		const $b = $(this);
+		if ($b.hasClass('row-check') || $b.hasClass('row-index')) {
+			return;
+		}
+		const fn =
+			$b.attr('data-fieldname') ||
+			($b.find('[data-fieldname]').first().attr('data-fieldname') || '');
+		if (!fn) {
+			return;
+		}
+		const bw = $b.outerWidth();
+		if (!bw || bw < 16) {
+			return;
+		}
+		const $h = $wrap
+			.find('.grid-heading-row [data-fieldname="' + fn + '"]')
+			.closest('.grid-static-col, .col')
+			.first();
+		if ($h.length) {
+			$h.css({ minWidth: Math.ceil(bw) + 'px' });
+		}
+	});
+}
+
+function spr_debounced_sync_header_body_alignment(frm, fieldname) {
+	if (!frm || !fieldname) {
+		return;
+	}
+	const key = '_spr_hdr_align_' + fieldname;
+	if (frm[key]) {
+		clearTimeout(frm[key]);
+	}
+	frm[key] = setTimeout(function () {
+		frm[key] = null;
+		requestAnimationFrame(function () {
+			spr_sync_header_body_alignment(frm, fieldname);
+			const fd = spr_get_field_dict(frm, fieldname);
+			if (fd) {
+				spr_sync_grid_header_body_scroll(fd);
+			}
+		});
+	}, 100);
 }
 
 function cg_skip_field_spr(df) {
@@ -574,6 +697,7 @@ function spr_stabilize_submitted_spr_grids_once(frm) {
 			if (fd) {
 				spr_sync_grid_header_body_scroll(fd);
 			}
+			spr_debounced_sync_header_body_alignment(frm, fn);
 		});
 	}, 280);
 }
@@ -702,9 +826,13 @@ function spr_attach_grid_scroll_sync(fd) {
 	const $w = fd.$wrapper;
 	if (!$w.data('spr-scroll-sync')) {
 		$w.data('spr-scroll-sync', 1);
-		$w.on('scroll.sprGridAlign', '.dt-scrollable, .form-grid .grid-body, .grid-heading-row', function () {
-			spr_sync_grid_header_body_scroll(fd);
-		});
+		$w.on(
+			'scroll.sprGridAlign',
+			'.form-grid-container, .dt-scrollable, .form-grid .grid-body, .grid-heading-row',
+			function () {
+				spr_sync_grid_header_body_scroll(fd);
+			}
+		);
 	}
 }
 
@@ -1395,15 +1523,22 @@ function spr_sync_grid_header_body_scroll(fd) {
 		return;
 	}
 	const $w = fd.$wrapper;
-	const $bodyScroll = $w.find('.dt-scrollable, .form-grid .grid-body').first();
+	const $container = $w.find('.form-grid-container').first();
 	const $head = $w.find('.grid-heading-row, .dt-row-header, .dt-header').first();
+	if ($container.length && $head.length) {
+		const sl = $container.scrollLeft() || 0;
+		if (Math.abs(($head.scrollLeft() || 0) - sl) > 0.5) {
+			$head.scrollLeft(sl);
+		}
+		return;
+	}
+	const $bodyScroll = $w.find('.dt-scrollable, .form-grid .grid-body').first();
 	if (!$bodyScroll.length || !$head.length) {
 		return;
 	}
 	const bodySl = $bodyScroll.scrollLeft() || 0;
 	const headSl = $head.scrollLeft() || 0;
 	if (Math.abs(headSl - bodySl) > 0.5) {
-		// Sync whichever side the user scrolled.
 		const active = document.activeElement;
 		const headScrolled = active && $head.has(active).length;
 		if (headScrolled) {
@@ -1462,6 +1597,9 @@ function spr_light_grid_scroll_sync(frm, fieldname) {
 	const fd = frm && frm.fields_dict && frm.fields_dict[fieldname];
 	if (fd) {
 		spr_sync_grid_header_body_scroll(fd);
+	}
+	if (fieldname === 'items' || fieldname === 'shaft_jobs') {
+		spr_debounced_sync_header_body_alignment(frm, fieldname);
 	}
 }
 
@@ -6532,7 +6670,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '56';
+	const sprItemsCssVer = '57';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -6750,6 +6888,35 @@ function ensure_spr_item_stylesheet() {
 		}
 		.spr-items-wrap .grid-heading-row .grid-static-col:last-child {
 			min-width: 32px;
+		}
+		/* Header/body structural cols — body row-index includes edit icon, header must match */
+		.spr-items-wrap .grid-heading-row > .row-check,
+		.spr-shaft-jobs-wrap .grid-heading-row > .row-check {
+			flex: 0 0 36px;
+			min-width: 36px;
+			max-width: 36px;
+		}
+		.spr-items-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-check,
+		.spr-shaft-jobs-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-check {
+			flex: 0 0 36px;
+			min-width: 36px;
+			max-width: 36px;
+		}
+		.spr-items-wrap .grid-heading-row > .row-index,
+		.spr-shaft-jobs-wrap .grid-heading-row > .row-index {
+			flex: 0 0 52px;
+			min-width: 52px;
+		}
+		.spr-items-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-index,
+		.spr-shaft-jobs-wrap .grid-body .rows > .grid-row:not(.grid-form-row) > .row-index {
+			flex: 0 0 52px;
+			min-width: 52px;
+		}
+		.spr-items-wrap .grid-heading-row,
+		.spr-shaft-jobs-wrap .grid-heading-row,
+		.spr-items-wrap .grid-body .rows > .grid-row:not(.grid-form-row),
+		.spr-shaft-jobs-wrap .grid-body .rows > .grid-row:not(.grid-form-row) {
+			flex-wrap: nowrap;
 		}
 	`;
 	$('head').append(`<style data-spr-items="${sprItemsCssVer}">${css}</style>`);
