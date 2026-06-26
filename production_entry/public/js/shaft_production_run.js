@@ -270,6 +270,18 @@ function spr_items_grid_is_editing(frm) {
 	return false;
 }
 
+/** Batch prefix (before ``/``) from existing roll lines — reuse same shift series on Create Entry. */
+function spr_existing_series_prefix_before_idx(frm, beforeIdx) {
+	const all = (frm && frm.doc && frm.doc.items) || [];
+	for (let i = 0; i < beforeIdx; i++) {
+		const bn = all[i] && all[i].batch_no;
+		if (bn && String(bn).indexOf('/') !== -1) {
+			return String(bn).split('/')[0];
+		}
+	}
+	return null;
+}
+
 /** Block column realign while inline row editor is open — except right after Save. */
 function spr_should_block_grid_realign(frm) {
 	if (!frm) {
@@ -5027,7 +5039,11 @@ frappe.ui.form.on('Bundle Calculation', {
 						args: {
 							shaft_production_run: frm.doc.name,
 							count: n,
-							start_roll_no: maxRollBeforeNew() + 1,
+							client_max_roll: maxRollBeforeNew(),
+							client_series_prefix: spr_existing_series_prefix_before_idx(frm, startIdx),
+							run_date: frm.doc.run_date,
+							custom_unit: frm.doc.custom_unit,
+							shift: frm.doc.shift,
 						},
 						callback: function (br) {
 							const batches = br.message || [];
@@ -5146,6 +5162,17 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					return maxRoll;
 				}
 
+				function existingSeriesPrefixBeforeNew() {
+					const all = frm.doc.items || [];
+					for (let i = 0; i < startIdx; i++) {
+						const bn = all[i] && all[i].batch_no;
+						if (bn && String(bn).indexOf('/') !== -1) {
+							return String(bn).split('/')[0];
+						}
+					}
+					return null;
+				}
+
 				function finishCreateEntry() {
 					spr_apply_mix_roll_planned_qty(frm);
 					update_shaft_job_achieved_from_items(frm);
@@ -5173,6 +5200,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 							shaft_production_run: frm.doc.name,
 							count: n,
 							client_max_roll: maxRollBeforeNew(),
+							client_series_prefix: spr_existing_series_prefix_before_idx(frm, startIdx),
 							run_date: frm.doc.run_date,
 							custom_unit: frm.doc.custom_unit,
 							shift: frm.doc.shift,

@@ -1553,8 +1553,41 @@ class ShaftProductionRun(Document):
 				row.custom_shift = batch_shift_value(self.shift)
 			next_roll += 1
 
+	def _spr_series_prefix_from_batches(self, root_5: str, batch_nos) -> str | None:
+		for bn in batch_nos or []:
+			bn = _cstr(bn)
+			if not bn or "/" not in bn:
+				continue
+			pref = bn.split("/", 1)[0].strip()
+			if pref.startswith(root_5) and len(pref) >= len(root_5):
+				return pref
+		return None
+
 	def _resolve_series_prefix(self, root_5: str) -> str:
 		"""Reuse series for same run_date + shift + unit when batches already exist."""
+		on_doc = self._spr_series_prefix_from_batches(
+			root_5, [getattr(r, "batch_no", None) for r in (self.items or [])]
+		)
+		if on_doc:
+			return on_doc
+
+		if self.name:
+			own_rows = frappe.db.sql(
+				"""
+				SELECT spi.batch_no
+				FROM `tabShaft Production Run Item` spi
+				WHERE spi.parent = %(cur)s
+				  AND IFNULL(spi.batch_no, '') != ''
+				  AND spi.batch_no LIKE CONCAT(%(root)s, '%%')
+				ORDER BY spi.idx ASC
+				LIMIT 50
+				""",
+				{"cur": self.name, "root": root_5},
+			)
+			on_doc = self._spr_series_prefix_from_batches(root_5, [r[0] for r in own_rows or []])
+			if on_doc:
+				return on_doc
+
 		existing = frappe.db.sql(
 			"""
 			SELECT spi.batch_no
@@ -1580,7 +1613,7 @@ class ShaftProductionRun(Document):
 		for (bn,) in existing or []:
 			if bn and "/" in bn:
 				pref = bn.split("/")[0].strip()
-				if pref.startswith(root_5) and len(pref) >= 6:
+				if pref.startswith(root_5) and len(pref) >= len(root_5):
 					return pref
 
 		next_s = self._next_shift_suffix_num(root_5)
@@ -3751,6 +3784,7 @@ def get_next_spr_batch_numbers(
 	run_date=None,
 	custom_unit=None,
 	shift=None,
+	client_series_prefix=None,
 ):
 	"""
 	Preview batch/roll numbers for new rows (e.g. after Create Entry) without submitting SPR.
@@ -3779,7 +3813,11 @@ def get_next_spr_batch_numbers(
 	rd = getdate(rd_val)
 	unit_d = doc._unit_digit()
 	root_5 = f"{rd.month:02d}{unit_d}{rd.year % 100:02d}"
-	series_prefix = doc._resolve_series_prefix(root_5)
+	csp = _cstr(client_series_prefix).strip()
+	if csp and csp.startswith(root_5):
+		series_prefix = csp
+	else:
+		series_prefix = doc._resolve_series_prefix(root_5)
 	next_roll = doc._next_roll_starting(series_prefix)
 	try:
 		if client_max_roll is not None and cint(client_max_roll) >= 0:
