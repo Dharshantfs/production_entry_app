@@ -4634,6 +4634,14 @@ class ShaftProductionRun(Document):
 				frappe.get_traceback(),
 				f"SPR shortage draft insert failed:{self.name}",
 			)
+			# Draft was already inserted — commit and return its name
+			# so user gets a clickable link to manually submit it.
+			if name and frappe.db.exists("Stock Entry", name):
+				try:
+					frappe.db.commit()
+				except Exception:
+					pass
+				return name
 		return ""
 
 	def _transfer_for_manufacture_type_name(self) -> str:
