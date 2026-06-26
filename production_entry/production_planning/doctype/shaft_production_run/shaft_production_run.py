@@ -4525,6 +4525,7 @@ class ShaftProductionRun(Document):
 			self._persist_stock_entry_spr_reference_db(name)
 			try:
 				se.flags.ignore_permissions = True
+				se.flags.ignore_validate = True
 				se.submit()
 			except Exception as submit_exc:
 				submit_msg = _cstr(submit_exc)
@@ -4537,6 +4538,7 @@ class ShaftProductionRun(Document):
 					se.reload()
 					self._spr_apply_stock_entry_item_accounts(se)
 					se.flags.ignore_permissions = True
+					se.flags.ignore_validate = True
 					se.save()
 					se.submit()
 				elif "Maximum transferable" in submit_msg or "Cannot transfer" in submit_msg:
@@ -4596,6 +4598,7 @@ class ShaftProductionRun(Document):
 							return ""
 						self._spr_apply_stock_entry_item_accounts(se)
 						se.flags.ignore_permissions = True
+						se.flags.ignore_validate = True
 						se.save()
 						se.submit()
 				else:
@@ -10126,6 +10129,7 @@ def _spr_create_and_submit_mtfm(wo_doc) -> str:
 
 	se.flags.ignore_permissions = True
 	se.insert(ignore_permissions=True)
+	se.flags.ignore_validate = True
 	se.submit()
 
 	frappe.db.set_value(
@@ -11390,9 +11394,12 @@ def _spr_patch_sle_batch_for_fg_line(
 			fg_line.get("t_warehouse") or frappe.db.get_value("Stock Entry", se_name, "to_warehouse")
 		).strip()
 
-	try:
-		patched = 0
-		if fg_detail_name:
+	has_vdn = frappe.db.has_column("Stock Ledger Entry", "voucher_detail_no")
+	fg_qty = flt(getattr(fg_line, "transfer_qty", None) or getattr(fg_line, "qty", 0))
+
+	patched = 0
+	if fg_detail_name and has_vdn:
+		try:
 			params = [batch_no, se_name, fg_detail_name, batch_no]
 			wh_sql = ""
 			if fg_warehouse:
@@ -11410,9 +11417,17 @@ def _spr_patch_sle_batch_for_fg_line(
 				tuple(params),
 			)
 			patched = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+		except Exception:
+			patched = 0
 
-		if not patched:
-			params = [batch_no, se_name, item_code, batch_no]
+	if not patched:
+		try:
+			params = [batch_no, se_name, item_code]
+			qty_sql = ""
+			if fg_qty > 0:
+				qty_sql = " AND ROUND(actual_qty, 3) = %s"
+				params.append(round(fg_qty, 3))
+			params.append(batch_no)
 			wh_sql = ""
 			if fg_warehouse:
 				wh_sql = " AND IFNULL(warehouse, '') = %s"
@@ -11423,17 +11438,44 @@ def _spr_patch_sle_batch_for_fg_line(
 				WHERE voucher_type = 'Stock Entry'
 				  AND voucher_no = %s
 				  AND IFNULL(item_code, '') = %s
+				  {qty_sql}
 				  AND actual_qty > 0
 				  AND IFNULL(is_cancelled, 0) = 0
-				  AND (IFNULL(batch_no, '') = '' OR IFNULL(batch_no, '') = %s){wh_sql}""",
+				  AND (IFNULL(batch_no, '') = '' OR IFNULL(batch_no, '') = %s)
+				  {wh_sql}
+				LIMIT 1""",
 				tuple(params),
 			)
 			patched = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+		except Exception:
+			patched = 0
 
-		return patched
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), f"SPR batch sync SLE patch:{se_name}")
-		return 0
+	if not patched and fg_qty > 0:
+		try:
+			params2 = [batch_no, se_name, item_code, batch_no]
+			wh_sql = ""
+			if fg_warehouse:
+				wh_sql = " AND IFNULL(warehouse, '') = %s"
+				params2.append(fg_warehouse)
+			frappe.db.sql(
+				f"""UPDATE `tabStock Ledger Entry`
+				SET batch_no = %s
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %s
+				  AND IFNULL(item_code, '') = %s
+				  AND actual_qty > 0
+				  AND IFNULL(is_cancelled, 0) = 0
+				  AND (IFNULL(batch_no, '') = '' OR IFNULL(batch_no, '') = %s)
+				  {wh_sql}
+				LIMIT 1""",
+				tuple(params2),
+			)
+			patched = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR batch sync SLE patch:{se_name}")
+			patched = 0
+
+	return patched
 
 
 def _spr_activate_batches(batch_codes: list[str]) -> int:
