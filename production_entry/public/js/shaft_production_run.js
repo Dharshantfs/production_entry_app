@@ -282,7 +282,7 @@ function spr_existing_series_prefix_before_idx(frm, beforeIdx) {
 	return null;
 }
 
-/** Block column realign while inline row editor is open — except right after Save. */
+/** Block column realign while inline row editor is open or during lightweight save pass. */
 function spr_should_block_grid_realign(frm) {
 	if (!frm) {
 		return false;
@@ -291,10 +291,21 @@ function spr_should_block_grid_realign(frm) {
 	if (itemsGrid && itemsGrid.grid_form && itemsGrid.grid_form.display) {
 		return true;
 	}
-	if (frm._spr_just_saved && Date.now() - frm._spr_just_saved < 12000) {
-		return false;
+	if (spr_should_use_lightweight_grid_pass(frm)) {
+		return true;
 	}
 	return spr_items_grid_is_editing(frm);
+}
+
+/** After Save / Save Row — repair-only path; no full column mirror (prevents blink/collapse). */
+function spr_should_use_lightweight_grid_pass(frm) {
+	if (!frm) {
+		return false;
+	}
+	if (frm._spr_row_save_in_progress) {
+		return true;
+	}
+	return !!(frm._spr_just_saved && Date.now() - frm._spr_just_saved < 6000);
 }
 
 /**
@@ -717,6 +728,30 @@ function spr_bind_items_grid_edit_guard(frm) {
 	frm._spr_items_edit_guard_bound = true;
 	grid.wrapper.on('focusin.sprGridEdit', 'input, textarea, select', function () {
 		frm._spr_items_grid_editing = true;
+	});
+	grid.wrapper.on('paste.sprGridPaste', 'input', function (e) {
+		const oe = e.originalEvent;
+		const text = oe && oe.clipboardData && oe.clipboardData.getData('text');
+		if (!text) {
+			return;
+		}
+		const $col = $(this).closest('[data-fieldname]');
+		const fn = $col.attr('data-fieldname');
+		if (fn !== 'gross_weight') {
+			return;
+		}
+		const norm = spr_normalize_gross_weight_input(text);
+		if (!(norm > 0)) {
+			return;
+		}
+		e.preventDefault();
+		this.value = String(norm);
+		const $row = $(this).closest('.grid-row');
+		const cdn = $row.attr('data-name') || $row.attr('data-docname');
+		if (cdn && locals['Shaft Production Run Item'] && locals['Shaft Production Run Item'][cdn]) {
+			locals['Shaft Production Run Item'][cdn].gross_weight = norm;
+		}
+		$(this).trigger('change');
 	});
 	grid.wrapper.on('focusout.sprGridEdit', 'input, textarea, select', function () {
 		setTimeout(function () {
@@ -2093,10 +2128,20 @@ function spr_normalize_gross_weight_input(val) {
 		return flt(val);
 	}
 	let s = String(val).trim().replace(/,/g, '');
+	// Paste from Excel / clipboard: use first numeric token only.
+	const firstNum = s.match(/-?\d+(?:\.\d+)?/);
+	if (firstNum) {
+		s = firstNum[0];
+	}
 	// Grid editor glitch: duplicated fragment e.g. 23.4023.40 → 23.40
 	const dup = s.match(/^(\d+\.\d{1,4})\1+$/);
 	if (dup) {
 		s = dup[1];
+	}
+	// Two decimals glued: 36.4036.40 → 36.40
+	const glued = s.match(/^(\d+\.\d{1,4})(\d+\.\d{1,4})$/);
+	if (glued && glued[1] === glued[2]) {
+		s = glued[1];
 	}
 	return flt(s);
 }
@@ -2907,7 +2952,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		
 		sprScheduleTotalProducedSync(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
-		if (!sprIsBundlePackagingMode(frm)) {
+		if (!sprIsBundlePackagingMode(frm) && !spr_should_use_lightweight_grid_pass(frm)) {
 			try {
 				update_shaft_job_achieved_from_items(frm);
 			} catch (e) {
@@ -2928,7 +2973,11 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_bind_items_grid_edit_guard(frm);
 		spr_install_items_grid_column_guard(frm);
 		spr_register_spr_page_buttons(frm);
-		spr_layout_all_grids(frm, { toggleUi: false });
+		if (!spr_should_use_lightweight_grid_pass(frm)) {
+			spr_layout_all_grids(frm, { toggleUi: false });
+		} else {
+			spr_apply_grid_wrap_classes(frm);
+		}
 
 		// Clear stale hidden flags, then apply column lists (JS owns in_list_view).
 		spr_reset_items_grid_field_visibility(frm);
@@ -2976,7 +3025,19 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_inject_gsm_legend(frm);
 		spr_apply_shaft_jobs_create_entry_ui(frm);
 		spr_schedule_grid_ui_debounced(frm, { delay: 280, columns: false });
-		spr_reapply_item_row_styles_with_retries(frm);
+		if (spr_should_use_lightweight_grid_pass(frm)) {
+			setTimeout(function () {
+				if (!frm || !frm.fields_dict) {
+					return;
+				}
+				spr_refresh_draft_child_grids_light(frm);
+				apply_spr_item_row_styles(frm);
+				spr_apply_items_row_lock_ui(frm);
+				frm._spr_row_save_in_progress = false;
+			}, 320);
+		} else {
+			spr_reapply_item_row_styles_with_retries(frm);
+		}
 
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
@@ -5741,8 +5802,11 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		let width = flt(row.width_inch);
 		let gw = spr_normalize_gross_weight_input(row.gross_weight);
 		if (gw > 0 && Math.abs(flt(row.gross_weight) - gw) > 1e-6) {
-			frappe.model.set_value(cdt, cdn, 'gross_weight', gw);
-			return;
+			row.gross_weight = gw;
+			if (!spr_items_grid_is_editing(frm)) {
+				frappe.model.set_value(cdt, cdn, 'gross_weight', gw);
+				return;
+			}
 		}
 		if (gw <= 0) {
 			spr_clear_roll_weight_dependents(frm, cdt, cdn);
@@ -5956,18 +6020,32 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.show_alert({ message: __('This row is already locked. Click Edit Row to change.'), indicator: 'blue' });
 			return;
 		}
-		update_shaft_job_achieved_from_items(frm);
-		frappe.model.set_value(cdt, cdn, 'row_locked', 1);
-		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 1);
+		frm._spr_items_grid_editing = false;
+		frm._spr_row_save_in_progress = true;
+		spr_flush_deferred_grid_side_effects(frm);
+		const gw = spr_normalize_gross_weight_input(row.gross_weight);
+		if (gw > 0) {
+			row.gross_weight = gw;
+			try {
+				frappe.ui.form.trigger('Shaft Production Run Item', 'gross_weight', cdn);
+			} catch (e) {
+				/* ignore */
+			}
 		}
+		update_shaft_job_achieved_from_items(frm, { force: true, skipGridRefresh: true });
+		row.row_locked = 1;
+		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
+			row.row_ready_for_print = 1;
+		}
+		spr_mark_just_saved(frm);
 		const save_promise = frm.save();
 		function afterSprRowSave() {
-			spr_schedule_item_row_styles_after_doc_write(frm);
 			frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
 		}
 		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(afterSprRowSave);
+			save_promise.then(afterSprRowSave).catch(function () {
+				frm._spr_row_save_in_progress = false;
+			});
 		} else {
 			setTimeout(afterSprRowSave, 400);
 		}
@@ -5987,17 +6065,22 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (frm.is_new() || (frm.doc.docstatus && frm.doc.docstatus !== 0)) {
 			return;
 		}
-		frappe.model.set_value(cdt, cdn, 'row_locked', 0);
+		frm._spr_items_grid_editing = false;
+		frm._spr_row_save_in_progress = true;
+		const row = locals[cdt][cdn];
+		row.row_locked = 0;
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 0);
+			row.row_ready_for_print = 0;
 		}
+		spr_mark_just_saved(frm);
 		const save_promise = frm.save();
 		function afterSprEditSave() {
-			spr_schedule_item_row_styles_after_doc_write(frm);
 			frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
 		}
 		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(afterSprEditSave);
+			save_promise.then(afterSprEditSave).catch(function () {
+				frm._spr_row_save_in_progress = false;
+			});
 		} else {
 			setTimeout(afterSprEditSave, 400);
 		}
@@ -6917,13 +7000,17 @@ function update_shaft_job_achieved_from_items(frm, opts) {
 	}
 	if (jobGridDirty) {
 		try {
-			frm.refresh_field('shaft_jobs');
+			if (!settings.skipGridRefresh) {
+				frm.refresh_field('shaft_jobs');
+			}
 		} catch (e) {
 			/* ignore */
 		}
-		setTimeout(function () {
-			spr_apply_shaft_jobs_grid_columns(frm, true);
-		}, 60);
+		if (!settings.skipGridRefresh && !spr_should_use_lightweight_grid_pass(frm)) {
+			setTimeout(function () {
+				spr_apply_shaft_jobs_grid_columns(frm, true);
+			}, 60);
+		}
 	}
 	if (hasHdrM) {
 		const curH = flt(frm.doc.custom_total_achieved_meter);
@@ -7639,6 +7726,9 @@ function spr_force_submitted_items_grid_realign(frm) {
 function spr_reapply_item_row_styles_with_retries(frm, delays) {
 	if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
 		return;
+	}
+	if (spr_should_use_lightweight_grid_pass(frm)) {
+		delays = [320];
 	}
 	ensure_spr_item_stylesheet();
 	spr_apply_grid_wrap_classes(frm);
