@@ -1992,11 +1992,114 @@ function spr_apply_mix_roll_planned_qty(frm) {
 	});
 }
 
+function spr_is_meaningful_roll_row(row) {
+	if (!row) {
+		return false;
+	}
+	if (String((row.item_code || '')).trim()) {
+		return true;
+	}
+	if (String((row.job || '')).trim() && (flt(row.gross_weight) > 0 || flt(row.net_weight) > 0)) {
+		return true;
+	}
+	if (String((row.batch_no || '')).trim()) {
+		return true;
+	}
+	return false;
+}
+
+function spr_is_blank_roll_row(row) {
+	if (!row || spr_is_meaningful_roll_row(row)) {
+		return false;
+	}
+	return !(
+		flt(row.gross_weight) > 0 ||
+		flt(row.net_weight) > 0 ||
+		flt(row.planned_qty) > 0 ||
+		String(row.batch_no || '').trim()
+	);
+}
+
+function spr_normalize_gross_weight_input(val) {
+	if (val === undefined || val === null || val === '') {
+		return 0;
+	}
+	if (typeof val === 'number') {
+		return flt(val);
+	}
+	let s = String(val).trim().replace(/,/g, '');
+	// Grid editor glitch: duplicated fragment e.g. 23.4023.40 → 23.40
+	const dup = s.match(/^(\d+\.\d{1,4})\1+$/);
+	if (dup) {
+		s = dup[1];
+	}
+	return flt(s);
+}
+
+function spr_prune_trailing_blank_roll_rows(frm) {
+	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 0) {
+		return 0;
+	}
+	if (spr_items_grid_is_editing(frm)) {
+		return 0;
+	}
+	const items = frm.doc.items || [];
+	if (!items.length) {
+		return 0;
+	}
+	let removed = 0;
+	for (let i = items.length - 1; i >= 0; i--) {
+		if (!spr_is_blank_roll_row(items[i])) {
+			break;
+		}
+		const row = items[i];
+		const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+		if (grid && row && row.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[row.name]) {
+			grid.grid_rows_by_docname[row.name].remove();
+		} else if (grid && grid.grid_rows && grid.grid_rows[i]) {
+			grid.grid_rows[i].remove();
+		} else {
+			items.splice(i, 1);
+		}
+		removed++;
+	}
+	if (removed > 0) {
+		spr_sync_no_of_rolls_created(frm, { silent: true });
+	}
+	return removed;
+}
+
+function spr_enforce_roll_line_grid_policy(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid || !frm || !frm.doc || cint(frm.doc.docstatus) !== 0) {
+		return;
+	}
+	spr_prune_trailing_blank_roll_rows(frm);
+	const jobs = frm.doc.shaft_jobs || [];
+	if (!jobs.length) {
+		grid.cannot_add_rows = false;
+		return;
+	}
+	let blockAdd = true;
+	jobs.forEach(function (jobRow) {
+		const jid = String(jobRow.job_id || jobRow.job_no || '').trim();
+		if (!jid) {
+			return;
+		}
+		const maxRolls = sprJobMaxRollLines(jobRow, frm);
+		const curRolls = sprCountRollLinesForJob(frm, jid);
+		if (maxRolls <= 0 || curRolls < maxRolls) {
+			blockAdd = false;
+		}
+	});
+	grid.cannot_add_rows = blockAdd;
+}
+
 function spr_count_created_roll_lines(frm) {
 	if (!frm || !frm.doc) {
 		return 0;
 	}
-	return (frm.doc.items || []).filter((r) => String((r && r.item_code) || '').trim()).length;
+	return (frm.doc.items || []).filter((r) => spr_is_meaningful_roll_row(r)).length;
 }
 
 function spr_sync_no_of_rolls_created(frm, opts) {
@@ -2200,7 +2303,7 @@ function sprJobMaxRollLines(row, frm) {
 
 function sprCountRollLinesForJob(frm, jobId) {
 	return (frm.doc.items || []).filter(function (d) {
-		return String(d.job) === String(jobId);
+		return String(d.job) === String(jobId) && spr_is_meaningful_roll_row(d);
 	}).length;
 }
 
@@ -2475,6 +2578,9 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_sync_total_planned_qty_from_jobs(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_planned_qty sync');
 		spr_sync_no_of_rolls_created(frm, { silent: true });
+		setTimeout(function () {
+			spr_enforce_roll_line_grid_policy(frm);
+		}, 500);
 		
 		sprScheduleTotalProducedSync(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
@@ -2631,11 +2737,15 @@ frappe.ui.form.on('Shaft Production Run', {
 			sprLog('[SPR DEBUG] items_add: schedule total_produced_weight sync with', (frm.doc.items || []).length, 'items');
 			sprScheduleTotalProducedSync(frm);
 			schedule_spr_item_row_styles(frm);
+			setTimeout(function () {
+				spr_enforce_roll_line_grid_policy(frm);
+			}, 0);
 		},
 		items_remove: function (frm) {
 			spr_sync_no_of_rolls_created(frm);
 			update_shaft_job_achieved_from_items(frm);
 			schedule_spr_item_row_styles(frm);
+			spr_enforce_roll_line_grid_policy(frm);
 		},
 	},
 });
@@ -5141,6 +5251,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					spr_apply_fabric100_item_grid_columns(frm);
 					spr_stabilize_spr_child_grids(frm, { delay: 120 });
 					spr_after_child_table_refresh(frm);
+					spr_enforce_roll_line_grid_policy(frm);
 					sprAutoSaveAfterCreateEntry(frm);
 					let alertMsg = __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]);
 					if (quotaMeta && quotaMeta.max) {
@@ -5288,7 +5399,11 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		// Calculate net_weight instantly when gross_weight changes
 		const row = locals[cdt][cdn];
 		let width = flt(row.width_inch);
-		let gw = flt(row.gross_weight);
+		let gw = spr_normalize_gross_weight_input(row.gross_weight);
+		if (gw > 0 && Math.abs(flt(row.gross_weight) - gw) > 1e-6) {
+			frappe.model.set_value(cdt, cdn, 'gross_weight', gw);
+			return;
+		}
 		if (gw <= 0) {
 			if (spr_items_grid_is_editing(frm)) {
 				return;
@@ -5299,6 +5414,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			update_shaft_job_achieved_from_items(frm);
 			sprScheduleTotalProducedSync(frm);
 			schedule_spr_item_row_styles(frm);
+			spr_enforce_roll_line_grid_policy(frm);
 			return;
 		}
 		
@@ -5346,6 +5462,16 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		update_shaft_job_achieved_from_items(frm);
 		sprScheduleTotalProducedSync(frm);
+		if (!spr_items_grid_is_editing(frm)) {
+			spr_enforce_roll_line_grid_policy(frm);
+		} else if (!frm._spr_roll_prune_timer) {
+			frm._spr_roll_prune_timer = setTimeout(function () {
+				frm._spr_roll_prune_timer = null;
+				if (!spr_items_grid_is_editing(frm)) {
+					spr_enforce_roll_line_grid_policy(frm);
+				}
+			}, 350);
+		}
 	},
 	gsm: function (frm, cdt, cdn) {
 		spr_update_mix_roll_planned_qty(frm, cdt, cdn);
