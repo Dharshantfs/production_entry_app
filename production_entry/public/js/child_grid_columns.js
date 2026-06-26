@@ -280,17 +280,18 @@ function cg_sync_header_scroll(fd) {
 	const $scroller = $w.find('.form-grid-container').first();
 	const $body = $w.find('.dt-scrollable, .form-grid .grid-body').first();
 	const $head = $w.find('.grid-heading-row, .dt-row-header, .dt-header').first();
+	const sl = ($scroller.length ? $scroller.scrollLeft() : $body.scrollLeft()) || 0;
 	if ($scroller.length) {
-		const sl = $scroller.scrollLeft() || 0;
-		if ($head.length && Math.abs(($head.scrollLeft() || 0) - sl) > 0.5) {
-			$head.scrollLeft(sl);
+		if (Math.abs(($scroller.scrollLeft() || 0) - sl) > 0.5) {
+			$scroller.scrollLeft(sl);
 		}
-		return;
 	}
-	const sl = ($body.scrollLeft()) || 0;
 	if ($body.length && $head.length) {
 		if (Math.abs(($head.scrollLeft() || 0) - sl) > 0.5) {
 			$head.scrollLeft(sl);
+		}
+		if (Math.abs(($body.scrollLeft() || 0) - sl) > 0.5) {
+			$body.scrollLeft(sl);
 		}
 	}
 }
@@ -655,21 +656,6 @@ production_entry.grid_columns = {
 			} else if (ordered.length && (grid.grid_rows || []).length) {
 				cg_mirror_grid_docfields_to_rows(grid);
 				cg_sync_row_docfields(grid, showSet);
-			}
-			if (
-				options &&
-				options.fullRefresh &&
-				ordered.length &&
-				(grid.grid_rows || []).length
-			) {
-				cg_remount_grid_rows(grid);
-				cg_mirror_grid_docfields_to_rows(grid);
-				cg_sync_row_docfields(grid, showSet);
-				cg_refresh_grid_body(grid);
-				if (typeof grid.refresh_header === 'function') {
-					grid.refresh_header();
-				}
-				cg_sync_header_scroll(fd);
 			}
 			const docRows = frm.doc && frm.doc[tableFieldname];
 			if (docRows && docRows.length && !(grid.grid_rows || []).length) {
