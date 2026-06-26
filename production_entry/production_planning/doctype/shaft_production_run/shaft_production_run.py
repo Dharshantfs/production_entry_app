@@ -3701,7 +3701,9 @@ class ShaftProductionRun(Document):
 				continue
 			bump = _spr_wip_topup_bump_qty(shortage)
 			item_src = self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
-			rm_wh, _rm_avl = _spr_find_rm_warehouse_with_stock(company, ic, wip_wh, item_src, bump)
+			rm_wh, rm_avl = _spr_find_rm_warehouse_with_stock(company, ic, wip_wh, item_src, bump)
+			if rm_avl <= _spr_rm_wip_shortage_tolerance(bump):
+				continue
 			if not rm_wh:
 				rm_wh = item_src or _spr_company_rm_warehouse(company, wip_wh) or _("RM warehouse")
 			out.append((ic, rm_wh, required, available, bump))
@@ -4445,6 +4447,10 @@ class ShaftProductionRun(Document):
 				se.submit()
 			except Exception as submit_exc:
 				submit_msg = _cstr(submit_exc)
+				if "DocType" in submit_msg and "not found" in submit_msg:
+					frappe.log_error(frappe.get_traceback(), f"SPR MTFM DocType-not-found:{self.name}")
+					self._spr_last_mtfm_error = submit_msg
+					return name
 				# Retry once after filling accounts (expense_account is mandatory on some sites).
 				if "Expense Account" in submit_msg:
 					se.reload()
@@ -11029,9 +11035,9 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		for fg in fg_lines:
 			existing_bn = _cstr(fg.get("batch_no")).strip()
 			if existing_bn:
-				_spr_patch_sle_batch_for_fg_line(se_name, fg, existing_bn)
+				sle_patched = _spr_patch_sle_batch_for_fg_line(se_name, fg, existing_bn)
 				all_batch_codes.add(existing_bn)
-				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "reason": "already_has_batch"})
+				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "reason": "already_has_batch", "sle_patched": sle_patched})
 				continue
 
 			fg_qty = flt(fg.get("qty"))
@@ -11072,14 +11078,18 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 					batch_link,
 					update_modified=False,
 				)
-				_spr_patch_sle_batch_for_fg_line(se_name, fg, batch_link)
-				updated_lines.append({"stock_entry": se_name, "line_idx": fg.idx, "batch_no": batch_link})
+				sle_p = _spr_patch_sle_batch_for_fg_line(se_name, fg, batch_link)
+				updated_lines.append({"stock_entry": se_name, "line_idx": fg.idx, "batch_no": batch_link, "sle_patched": sle_p})
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), f"SPR batch sync line update:{spr_name}")
 
 	spr.sync_batch_custom_fields()
-	_spr_activate_batches(list(all_batch_codes))
+	activated_count = _spr_activate_batches(list(all_batch_codes))
 	spr._refresh_batch_qty_for_codes(list(all_batch_codes))
+
+	total_sle_patched = sum(s.get("sle_patched", 0) for s in skipped if isinstance(s, dict))
+	total_sle_patched += sum(u.get("sle_patched", 0) for u in updated_lines if isinstance(u, dict))
+
 	try:
 		frappe.db.commit()
 	except Exception:
@@ -11090,73 +11100,95 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		"shaft_production_run": spr_name,
 		"created_batches": len(created_batches),
 		"updated_fg_lines": len(updated_lines),
+		"sle_patched": total_sle_patched,
+		"activated_batches": activated_count,
 		"updated_details": updated_lines[:200],
 		"skipped_count": len(skipped),
 		"skipped": skipped[:100],
 	}
 
 
-def _spr_patch_sle_batch_for_fg_line(se_name: str, fg_line, batch_no: str) -> None:
+def _spr_patch_sle_batch_for_fg_line(se_name: str, fg_line, batch_no: str) -> int:
 	"""Update Stock Ledger Entry rows for this FG line to include batch_no.
 
 	The Manufacture STE was submitted without batch — SLE rows exist with
 	empty batch_no.  We patch them so Batch Qty reflects the stock correctly.
+	Returns count of SLE rows patched.
 	"""
 	if not se_name or not fg_line or not batch_no:
-		return
+		return 0
 	item_code = _cstr(fg_line.get("item_code")).strip()
-	qty = flt(fg_line.get("qty"))
-	if not item_code or qty <= 0:
-		return
+	if not item_code:
+		return 0
+	fg_detail_name = _cstr(getattr(fg_line, "name", None) or fg_line.get("name", "")).strip()
+
 	try:
-		sle_names = frappe.db.sql_list(
-			"""
-			SELECT name FROM `tabStock Ledger Entry`
-			WHERE voucher_type = 'Stock Entry'
-			  AND voucher_no = %(voucher)s
-			  AND IFNULL(item_code, '') = %(item)s
-			  AND actual_qty > 0
-			  AND (IFNULL(batch_no, '') = '' OR IFNULL(batch_no, '') = %(batch)s)
-			  AND IFNULL(is_cancelled, 0) = 0
-			ORDER BY ABS(actual_qty - %(qty)s) ASC
-			LIMIT 1
-			""",
-			{"voucher": se_name, "item": item_code, "qty": qty, "batch": batch_no},
-		)
-		if not sle_names:
-			sle_names = frappe.db.sql_list(
-				"""
-				SELECT name FROM `tabStock Ledger Entry`
+		patched = 0
+		if fg_detail_name:
+			patched = frappe.db.sql(
+				"""UPDATE `tabStock Ledger Entry`
+				SET batch_no = %s
 				WHERE voucher_type = 'Stock Entry'
-				  AND voucher_no = %(voucher)s
-				  AND IFNULL(item_code, '') = %(item)s
+				  AND voucher_no = %s
+				  AND voucher_detail_no = %s
+				  AND (IFNULL(batch_no, '') = '' OR IFNULL(batch_no, '') = %s)
+				  AND IFNULL(is_cancelled, 0) = 0""",
+				(batch_no, se_name, fg_detail_name, batch_no),
+			)
+			patched = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+
+		if not patched:
+			patched = frappe.db.sql(
+				"""UPDATE `tabStock Ledger Entry`
+				SET batch_no = %s
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %s
+				  AND IFNULL(item_code, '') = %s
 				  AND actual_qty > 0
-				  AND IFNULL(is_cancelled, 0) = 0
-				ORDER BY ABS(actual_qty - %(qty)s) ASC
-				""",
-				{"voucher": se_name, "item": item_code, "qty": qty},
+				  AND (IFNULL(batch_no, '') = '' OR IFNULL(batch_no, '') = %s)
+				  AND IFNULL(is_cancelled, 0) = 0""",
+				(batch_no, se_name, item_code, batch_no),
 			)
-		patched = set()
-		for sle_name in sle_names or []:
-			if sle_name in patched:
-				continue
-			current_bn = _cstr(
-				frappe.db.get_value("Stock Ledger Entry", sle_name, "batch_no")
-			).strip()
-			if current_bn and current_bn != batch_no:
-				continue
-			frappe.db.sql(
-				"""UPDATE `tabStock Ledger Entry` SET batch_no = %s WHERE name = %s""",
-				(batch_no, sle_name),
+			patched = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+
+		if not patched:
+			patched = frappe.db.sql(
+				"""UPDATE `tabStock Ledger Entry`
+				SET batch_no = %s
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %s
+				  AND IFNULL(item_code, '') = %s
+				  AND actual_qty > 0
+				  AND IFNULL(is_cancelled, 0) = 0""",
+				(batch_no, se_name, item_code),
 			)
-			patched.add(sle_name)
-			break
+			patched = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+
+		if not patched:
+			all_sle = frappe.db.sql(
+				"""SELECT name, item_code, batch_no, actual_qty, warehouse, voucher_detail_no, is_cancelled
+				FROM `tabStock Ledger Entry`
+				WHERE voucher_type = 'Stock Entry' AND voucher_no = %s
+				ORDER BY actual_qty DESC""",
+				(se_name,),
+				as_dict=True,
+			)
+			frappe.log_error(
+				f"SLE patch found 0 rows to update.\n"
+				f"se_name={se_name}, item_code={item_code}, batch_no={batch_no}, "
+				f"fg_detail_name={fg_detail_name}\n"
+				f"ALL SLE rows for voucher: {all_sle}",
+				f"SPR batch sync SLE debug:{se_name}",
+			)
+		return patched
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), f"SPR batch sync SLE patch:{se_name}")
+		return 0
 
 
-def _spr_activate_batches(batch_codes: list[str]) -> None:
-	"""Set Batch status to Active and recompute batch_qty from SLE."""
+def _spr_activate_batches(batch_codes: list[str]) -> int:
+	"""Set Batch status to Active and recompute batch_qty from SLE. Returns count activated."""
+	activated = 0
 	for bn in {_cstr(x).strip() for x in (batch_codes or []) if _cstr(x).strip()}:
 		if not frappe.db.exists("Batch", bn):
 			continue
@@ -11172,12 +11204,16 @@ def _spr_activate_batches(batch_codes: list[str]) -> None:
 					(bn,),
 				)[0][0] or 0
 			)
+			new_status = "Active" if qty > 0 else "Empty"
 			frappe.db.sql(
 				"""UPDATE `tabBatch` SET batch_qty = %s, status = %s WHERE name = %s""",
-				(qty, "Active" if qty > 0 else "Empty", bn),
+				(qty, new_status, bn),
 			)
+			if new_status == "Active":
+				activated += 1
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR batch activate:{bn}")
+	return activated
 
 
 @frappe.whitelist()

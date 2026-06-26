@@ -3921,13 +3921,17 @@ function spr_register_spr_page_buttons(frm) {
 								freeze_message: __('Syncing batches...'),
 								callback: function (r) {
 									const d = r.message || {};
+									let msg = __(
+										'Created {0} batch(es), updated {1} FG line(s), SLE patched {2}, skipped {3}.',
+										[d.created_batches || 0, d.updated_fg_lines || 0, d.sle_patched || 0, d.skipped_count || 0]
+									);
+									if (d.activated_batches) {
+										msg += '<br>' + __('Activated {0} batch(es).', [d.activated_batches]);
+									}
 									frappe.msgprint({
 										title: __('Batch Sync Result'),
-										message: __(
-											'Created {0} batch(es), updated {1} FG line(s), skipped {2}.',
-											[d.created_batches || 0, d.updated_fg_lines || 0, d.skipped_count || 0]
-										),
-										indicator: (d.created_batches || d.updated_fg_lines) ? 'green' : 'orange',
+										message: msg,
+										indicator: (d.created_batches || d.updated_fg_lines || d.sle_patched) ? 'green' : 'orange',
 									});
 									frm.reload_doc();
 								},
