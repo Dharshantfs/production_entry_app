@@ -432,62 +432,86 @@ function spr_stamp_grid_cell_fieldnames($wrap) {
 }
 
 /**
- * Reorder HEADER cells in DOM to match BODY cell order.
- * Body is never touched — so row-click edit form works normally.
- * Frappe renders body cells in docfield order; we just mirror that order
- * in the header so headers visually sit above the right data column.
- *
- * Also removes any leftover order/style tags + observers from earlier attempts.
+ * Configured visible column order for items / shaft_jobs grids.
+ */
+function spr_get_grid_column_order(frm, fieldname) {
+	if (fieldname === 'items') {
+		var cfg = spr_get_items_list_view_config(frm);
+		return (cfg && cfg.show) || [];
+	}
+	if (fieldname === 'shaft_jobs') {
+		return spr_build_shaft_jobs_show_list(frm) || [];
+	}
+	return [];
+}
+
+/**
+ * Align header + list-view body cells to the configured column order.
+ * Uses CSS flex `order` on list rows only — NEVER on .grid-form-row (row edit form).
+ * Also reorders header DOM to match configured order.
  */
 function spr_inject_column_order_css(frm, fieldname) {
+	if (!frm || !fieldname) {
+		return;
+	}
+	if (fieldname === 'items' && spr_should_block_grid_realign(frm)) {
+		return;
+	}
 	var fd = spr_get_field_dict(frm, fieldname);
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
 		return;
 	}
-	var $wrap = fd.$wrapper;
+	var colList = spr_get_grid_column_order(frm, fieldname);
+	if (!colList.length) {
+		return;
+	}
 
-	// Defensive cleanup: kill any prior observer/style from earlier builds
+	var $wrap = fd.$wrapper;
+	var wrapClass = fieldname === 'items' ? '.spr-items-wrap' : '.spr-shaft-jobs-wrap';
+	var styleId = 'spr-col-order-' + fieldname;
+
+	// Defensive cleanup from earlier builds
 	var obsKey = '_spr_order_obs_' + fieldname;
 	if (frm[obsKey]) {
 		try { frm[obsKey].disconnect(); } catch (e) { /* noop */ }
 		frm[obsKey] = null;
 	}
-	$('style#spr-col-order-' + fieldname).remove();
+	$('style#' + styleId).remove();
 
-	// Stamp data-spr-fn on header + body cells (one shot)
 	spr_stamp_grid_cell_fieldnames($wrap);
 
+	// Reorder header cells to configured column order (not body DOM order)
 	var $headRow = $wrap.find('.grid-heading-row').first();
-	var $bodyRow = $wrap.find('.grid-body .rows > .grid-row').not('.grid-form-row').first();
-	if (!$headRow.length || !$bodyRow.length) {
-		return;
+	if ($headRow.length) {
+		var $rowCheck = $headRow.children('.row-check').detach();
+		var $rowIndex = $headRow.children('.row-index').detach();
+		colList.forEach(function (fn) {
+			var $hCell = $headRow.children('[data-spr-fn="' + fn + '"]').first();
+			if ($hCell.length) {
+				$hCell.detach().appendTo($headRow);
+			}
+		});
+		if ($rowIndex.length) { $headRow.prepend($rowIndex); }
+		if ($rowCheck.length) { $headRow.prepend($rowCheck); }
 	}
 
-	// Build the desired header order from body cell sequence
-	var bodyFnSeq = [];
-	$bodyRow.children().each(function () {
-		var $c = $(this);
-		if ($c.hasClass('row-check') || $c.hasClass('row-index')) { return; }
-		var fn = $c.attr('data-spr-fn');
-		if (fn) { bodyFnSeq.push(fn); }
+	// CSS: list rows + header use flex order; edit form row stays block layout
+	var dataSel = wrapClass + ' .grid-body .rows > .grid-row:not(.grid-form-row)';
+	var headSel = wrapClass + ' .grid-heading-row';
+	var formSel = wrapClass + ' .grid-body .grid-form-row';
+	var css = '';
+	css += formSel + '{display:block!important;flex-wrap:wrap!important;height:auto!important;min-height:80px!important;overflow:visible!important;position:relative!important;}\n';
+	css += formSel + ' .form-section,.form-in-grid{display:block!important;}\n';
+	css += dataSel + ',' + headSel + '{display:flex!important;flex-wrap:nowrap!important;}\n';
+	css += dataSel + '>.row-check,' + headSel + '>.row-check{order:0!important;flex:0 0 36px!important;}\n';
+	css += dataSel + '>.row-index,' + headSel + '>.row-index{order:1!important;flex:0 0 44px!important;}\n';
+	colList.forEach(function (fn, i) {
+		var o = i + 2;
+		css += dataSel + '>[data-spr-fn="' + fn + '"],' +
+			headSel + '>[data-spr-fn="' + fn + '"]' +
+			'{order:' + o + '!important;}\n';
 	});
-	if (!bodyFnSeq.length) { return; }
-
-	// Detach structural cells first so they stay at the front after reordering
-	var $rowCheck = $headRow.children('.row-check').detach();
-	var $rowIndex = $headRow.children('.row-index').detach();
-
-	// Reorder header DOM to match body order
-	bodyFnSeq.forEach(function (fn) {
-		var $hCell = $headRow.children('[data-spr-fn="' + fn + '"]').first();
-		if ($hCell.length) {
-			$hCell.detach().appendTo($headRow);
-		}
-	});
-
-	// Re-insert structural cells at the front
-	if ($rowIndex.length) { $headRow.prepend($rowIndex); }
-	if ($rowCheck.length) { $headRow.prepend($rowCheck); }
+	$('<style id="' + styleId + '">' + css + '</style>').appendTo('head');
 }
 
 /**
@@ -495,6 +519,9 @@ function spr_inject_column_order_css(frm, fieldname) {
  * Reads first body row widths, stamps them on header cols by matching order index.
  */
 function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
+	if (fieldname === 'items' && spr_should_block_grid_realign(frm)) {
+		return;
+	}
 	var fd = spr_get_field_dict(frm, fieldname);
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
 		return;
@@ -561,6 +588,9 @@ function spr_debounced_lock_grid_column_widths(frm, fieldname) {
 	frm[key] = setTimeout(function () {
 		frm[key] = null;
 		if (!frm.fields_dict || !frm.fields_dict[fieldname]) {
+			return;
+		}
+		if (fieldname === 'items' && spr_should_block_grid_realign(frm)) {
 			return;
 		}
 		var widthMap = fieldname === 'items' ? SPR_ITEMS_COL_MIN_PX
@@ -808,6 +838,14 @@ function spr_bind_items_grid_edit_guard(frm) {
 		return;
 	}
 	frm._spr_items_edit_guard_bound = true;
+	// Block column realign the moment user clicks a list row (before form opens)
+	grid.wrapper.on(
+		'mousedown.sprGridEdit touchstart.sprGridEdit',
+		'.grid-body .grid-row:not(.grid-form-row)',
+		function () {
+			frm._spr_items_grid_editing = true;
+		}
+	);
 	grid.wrapper.on('focusin.sprGridEdit', 'input, textarea, select', function () {
 		frm._spr_items_grid_editing = true;
 	});
@@ -816,13 +854,25 @@ function spr_bind_items_grid_edit_guard(frm) {
 			if (!frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {
 				return;
 			}
+			const g = frm.fields_dict.items.grid;
+			if (g.grid_form && g.grid_form.display) {
+				return;
+			}
 			const active = document.activeElement;
-			const wrap = frm.fields_dict.items.grid.wrapper && frm.fields_dict.items.grid.wrapper[0];
+			const wrap = g.wrapper && g.wrapper[0];
 			if (!wrap || !active || !wrap.contains(active)) {
 				frm._spr_items_grid_editing = false;
 			}
 		}, 120);
 	});
+	if (!grid._spr_toggle_row_wrapped && typeof grid.toggle_row === 'function') {
+		grid._spr_toggle_row_wrapped = true;
+		const origToggle = grid.toggle_row.bind(grid);
+		grid.toggle_row = function () {
+			frm._spr_items_grid_editing = true;
+			return origToggle.apply(grid, arguments);
+		};
+	}
 }
 
 function spr_install_items_grid_column_guard(frm) {
@@ -878,6 +928,9 @@ function spr_clear_spr_grid_saved_columns(grid, metaDoctype, force) {
 /** Full column rebuild + GSM colours — draft, submitted, after save, reset-to-default. */
 function spr_enforce_spr_grid_columns(frm, fieldname) {
 	if (!frm || !fieldname || !frm.fields_dict) {
+		return;
+	}
+	if (fieldname === 'items' && spr_should_block_grid_realign(frm)) {
 		return;
 	}
 	const fd = frm.fields_dict[fieldname];
@@ -5348,7 +5401,12 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					update_shaft_job_achieved_from_items(frm);
 					sprScheduleTotalProducedSync(frm);
 					spr_apply_fabric100_item_grid_columns(frm);
-					spr_stabilize_spr_child_grids(frm, { delay: 120 });
+					apply_spr_item_row_styles(frm);
+					spr_apply_create_entry_buttons_ui(frm);
+					spr_ensure_child_grid_heights(frm);
+					['items', 'shaft_jobs'].forEach(function (fn) {
+						spr_light_grid_scroll_sync(frm, fn);
+					});
 					spr_after_child_table_refresh(frm);
 					sprAutoSaveAfterCreateEntry(frm);
 					let alertMsg = __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]);
@@ -6901,7 +6959,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '54';
+	const sprItemsCssVer = '55';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -7113,13 +7171,22 @@ function ensure_spr_item_stylesheet() {
 		.spr-bundle-calc-wrap .grid-body {
 			overflow-x: hidden !important;
 		}
-		/* Ensure each row and header use nowrap flex so columns line up */
+		/* Ensure each row and header use nowrap flex so columns line up — NEVER the edit form row */
 		.spr-items-wrap .grid-heading-row,
-		.spr-items-wrap .grid-row,
+		.spr-items-wrap .grid-body .rows > .grid-row:not(.grid-form-row),
 		.spr-shaft-jobs-wrap .grid-heading-row,
-		.spr-shaft-jobs-wrap .grid-row {
+		.spr-shaft-jobs-wrap .grid-body .rows > .grid-row:not(.grid-form-row) {
 			flex-wrap: nowrap !important;
 			flex-shrink: 0 !important;
+		}
+		/* Row edit form must stay block layout so fields are usable */
+		.spr-items-wrap .grid-body .grid-form-row,
+		.spr-shaft-jobs-wrap .grid-body .grid-form-row {
+			display: block !important;
+			flex-wrap: wrap !important;
+			height: auto !important;
+			min-height: 80px !important;
+			overflow: visible !important;
 		}
 		/* col cells: no-grow, no-shrink – width set by JS lock or Frappe */
 		.spr-items-wrap .grid-heading-row > .grid-static-col,
