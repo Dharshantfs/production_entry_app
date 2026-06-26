@@ -741,6 +741,7 @@ function spr_bind_items_grid_edit_guard(frm) {
 						spr_clear_roll_weight_dependents(frm, 'Shaft Production Run Item', row.name);
 					}
 				});
+				spr_enforce_roll_line_grid_policy(frm);
 			}
 		}, 120);
 	});
@@ -1712,6 +1713,17 @@ function spr_stabilize_spr_child_grids(frm, opts) {
 			return;
 		}
 		spr_apply_grid_wrap_classes(frm);
+		if (settings.light) {
+			spr_apply_spr_child_grid_min_widths(frm);
+			['shaft_jobs', 'items', 'bundle_calculation'].forEach(function (fn) {
+				spr_sync_grid_columns_visible(frm, fn);
+				spr_light_grid_scroll_sync(frm, fn);
+			});
+			spr_refresh_draft_child_grids_light(frm);
+			spr_enforce_roll_line_grid_policy(frm);
+			spr_reapply_item_row_styles_with_retries(frm, [80, 280]);
+			return;
+		}
 		if (!sprIsBundlePackagingMode(frm)) {
 			spr_apply_shaft_jobs_grid_columns(frm, true);
 		}
@@ -1725,6 +1737,7 @@ function spr_stabilize_spr_child_grids(frm, opts) {
 		['shaft_jobs', 'items', 'bundle_calculation'].forEach(function (fn) {
 			spr_light_grid_scroll_sync(frm, fn);
 		});
+		spr_enforce_roll_line_grid_policy(frm);
 		spr_reapply_item_row_styles_with_retries(frm, [80, 280, 650]);
 	};
 	if (settings.immediate) {
@@ -1739,6 +1752,25 @@ function spr_stabilize_spr_child_grids(frm, opts) {
 		frm[key] = null;
 		run();
 	}, settings.delay != null ? settings.delay : 220);
+}
+
+/** Lightweight grid pass after save / reopen — repair only when misaligned (no full rebuild). */
+function spr_refresh_draft_child_grids_light(frm) {
+	if (!frm || !frm.fields_dict || spr_is_submitted_spr(frm)) {
+		return;
+	}
+	spr_apply_grid_wrap_classes(frm);
+	spr_apply_spr_child_grid_min_widths(frm);
+	['items', 'shaft_jobs'].forEach(function (fn) {
+		if (spr_child_grid_needs_repair(frm, fn)) {
+			spr_repair_child_grid_alignment(frm, fn);
+		} else {
+			spr_light_grid_scroll_sync(frm, fn);
+		}
+	});
+	if (!spr_items_grid_is_editing(frm)) {
+		apply_spr_item_row_styles(frm);
+	}
 }
 
 /** One-shot column sync after open / refresh — light touch, no grid.refresh(). */
@@ -1800,12 +1832,17 @@ function spr_after_child_table_refresh(frm) {
 				if (spr_items_grid_is_editing(frm)) {
 					return;
 				}
-				spr_apply_items_grid_columns(frm, true);
-				spr_apply_shaft_jobs_grid_columns(frm, true);
-				if (sprIsBundlePackagingMode(frm)) {
-					spr_apply_bundle_calculation_grid_columns(frm, true);
+				if (spr_is_submitted_spr(frm)) {
+					spr_apply_items_grid_columns(frm, true);
+					spr_apply_shaft_jobs_grid_columns(frm, true);
+					if (sprIsBundlePackagingMode(frm)) {
+						spr_apply_bundle_calculation_grid_columns(frm, true);
+					}
+					spr_ensure_child_grid_heights(frm);
+				} else {
+					spr_refresh_draft_child_grids_light(frm);
+					spr_enforce_roll_line_grid_policy(frm);
 				}
-				spr_ensure_child_grid_heights(frm);
 				['items', 'shaft_jobs', 'bundle_calculation'].forEach(function (fn) {
 					spr_light_grid_scroll_sync(frm, fn);
 				});
@@ -2118,23 +2155,117 @@ function spr_clear_roll_weight_dependents(frm, cdt, cdn) {
 	persist();
 }
 
+function spr_run_programmatic_item_adds(frm, fn) {
+	if (!frm) {
+		return fn && fn();
+	}
+	frm._spr_programmatic_item_adds = cint(frm._spr_programmatic_item_adds) + 1;
+	try {
+		return fn && fn();
+	} finally {
+		frm._spr_programmatic_item_adds = Math.max(0, cint(frm._spr_programmatic_item_adds) - 1);
+	}
+}
+
+function spr_sync_items_add_row_ui(frm, blockAdd) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return;
+	}
+	try {
+		frm.set_df_property('items', 'cannot_add_rows', blockAdd ? 1 : 0);
+	} catch (e) {
+		/* ignore */
+	}
+	grid.cannot_add_rows = !!blockAdd;
+	if (grid.df) {
+		grid.df.cannot_add_rows = blockAdd ? 1 : 0;
+	}
+	if (grid.wrapper && grid.wrapper.length) {
+		grid.wrapper.find('.grid-add-row, .grid-add-multiple-rows').toggle(!blockAdd);
+	}
+}
+
+function spr_should_block_item_row_autocreate(frm) {
+	if (!frm || cint(frm._spr_programmatic_item_adds) > 0) {
+		return false;
+	}
+	return spr_should_block_manual_item_rows(frm);
+}
+
+function spr_get_items_grid_focus_cdn(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid) {
+		return null;
+	}
+	if (grid.grid_form && grid.grid_form.doc && grid.grid_form.doc.name) {
+		return grid.grid_form.doc.name;
+	}
+	const wrap = grid.wrapper && grid.wrapper[0];
+	if (!wrap) {
+		return null;
+	}
+	const active = document.activeElement;
+	if (!active || !wrap.contains(active)) {
+		return null;
+	}
+	const rowEl = active.closest && active.closest('.grid-row');
+	if (!rowEl) {
+		return null;
+	}
+	return rowEl.getAttribute('data-name') || rowEl.getAttribute('data-docname') || null;
+}
+
+/** Block Frappe auto-adding a blank row when tabbing out of the last roll line. */
+function spr_install_items_grid_row_add_block(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid || grid._spr_row_add_block_installed) {
+		return;
+	}
+	grid._spr_row_add_block_installed = true;
+	['add_new_row', 'add_multiple_rows'].forEach(function (method) {
+		if (typeof grid[method] !== 'function' || grid['_spr_orig_' + method]) {
+			return;
+		}
+		grid['_spr_orig_' + method] = grid[method];
+		grid[method] = function () {
+			if (spr_should_block_item_row_autocreate(frm)) {
+				return;
+			}
+			return grid['_spr_orig_' + method].apply(grid, arguments);
+		};
+	});
+	spr_sync_items_add_row_ui(frm, spr_should_block_item_row_autocreate(frm));
+}
+
+function spr_should_block_manual_item_rows(frm) {
+	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 0) {
+		return false;
+	}
+	if (cint(frm.doc.is_mix_roll)) {
+		return false;
+	}
+	return (frm.doc.shaft_jobs || []).length > 0;
+}
+
 function spr_prune_trailing_blank_roll_rows(frm) {
 	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 0) {
-		return 0;
-	}
-	if (spr_items_grid_is_editing(frm)) {
 		return 0;
 	}
 	const items = frm.doc.items || [];
 	if (!items.length) {
 		return 0;
 	}
+	const focusCdn = spr_get_items_grid_focus_cdn(frm);
 	let removed = 0;
 	for (let i = items.length - 1; i >= 0; i--) {
 		if (!spr_is_blank_roll_row(items[i])) {
 			break;
 		}
 		const row = items[i];
+		if (focusCdn && row && row.name === focusCdn) {
+			break;
+		}
 		const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
 		if (grid && row && row.name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[row.name]) {
 			grid.grid_rows_by_docname[row.name].remove();
@@ -2157,9 +2288,15 @@ function spr_enforce_roll_line_grid_policy(frm) {
 		return;
 	}
 	spr_prune_trailing_blank_roll_rows(frm);
+	if (spr_should_block_manual_item_rows(frm)) {
+		spr_install_items_grid_row_add_block(frm);
+		spr_sync_items_add_row_ui(frm, true);
+		spr_prune_trailing_blank_roll_rows(frm);
+		return;
+	}
 	const jobs = frm.doc.shaft_jobs || [];
 	if (!jobs.length) {
-		grid.cannot_add_rows = false;
+		spr_sync_items_add_row_ui(frm, false);
 		return;
 	}
 	let blockAdd = true;
@@ -2174,7 +2311,41 @@ function spr_enforce_roll_line_grid_policy(frm) {
 			blockAdd = false;
 		}
 	});
-	grid.cannot_add_rows = blockAdd;
+	spr_sync_items_add_row_ui(frm, blockAdd);
+}
+
+function spr_reject_unauthorized_blank_item_row(frm, cdt, cdn) {
+	if (!frm || !cdt || !cdn) {
+		return false;
+	}
+	if (cint(frm._spr_programmatic_item_adds) > 0 || !spr_should_block_manual_item_rows(frm)) {
+		return false;
+	}
+	const row = locals[cdt] && locals[cdt][cdn];
+	if (!row || !spr_is_blank_roll_row(row)) {
+		return false;
+	}
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (grid && grid.grid_rows_by_docname && grid.grid_rows_by_docname[cdn]) {
+		grid.grid_rows_by_docname[cdn].remove();
+	} else {
+		frappe.model.clear_doc(cdt, cdn);
+	}
+	spr_prune_trailing_blank_roll_rows(frm);
+	return true;
+}
+
+function spr_debounced_enforce_roll_line_grid_policy(frm) {
+	if (!frm) {
+		return;
+	}
+	if (frm._spr_roll_policy_timer) {
+		clearTimeout(frm._spr_roll_policy_timer);
+	}
+	frm._spr_roll_policy_timer = setTimeout(function () {
+		frm._spr_roll_policy_timer = null;
+		spr_enforce_roll_line_grid_policy(frm);
+	}, 120);
 }
 
 function spr_count_created_roll_lines(frm) {
@@ -2494,6 +2665,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		['items', 'shaft_jobs', 'bundle_calculation'].forEach(function (fn) {
 			spr_bind_spr_grid_column_configure_hook(frm, fn);
 		});
+		spr_enforce_roll_line_grid_policy(frm);
 		setTimeout(function () {
 			if (!frm || !frm.doc) {
 				return;
@@ -2502,7 +2674,8 @@ frappe.ui.form.on('Shaft Production Run', {
 			sprToggleLaminationRollUi(frm);
 			spr_inject_gsm_legend(frm);
 			spr_layout_all_grids(frm);
-			spr_stabilize_spr_child_grids(frm);
+			spr_stabilize_spr_child_grids(frm, { light: true });
+			spr_enforce_roll_line_grid_policy(frm);
 			schedule_spr_item_row_styles(frm);
 			sprEnsureBundleRowsFromPp(frm);
 		}, 120);
@@ -2660,9 +2833,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_sync_total_planned_qty_from_jobs(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_planned_qty sync');
 		spr_sync_no_of_rolls_created(frm, { silent: true });
-		setTimeout(function () {
-			spr_enforce_roll_line_grid_policy(frm);
-		}, 500);
+		spr_enforce_roll_line_grid_policy(frm);
 		
 		sprScheduleTotalProducedSync(frm, { silent: true });
 		sprLog('[SPR REFRESH] After total_produced_weight sync (scheduled)');
@@ -2693,20 +2864,33 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_reset_items_grid_field_visibility(frm);
 		spr_reset_shaft_jobs_grid_field_visibility(frm);
 		spr_reset_bundle_calc_grid_field_visibility(frm);
-		spr_apply_items_grid_columns(frm, true);
-		spr_apply_shaft_jobs_grid_columns(frm, true);
+		if (!spr_is_submitted_spr(frm)) {
+			spr_sync_grid_columns_visible(frm, 'items');
+			spr_sync_grid_columns_visible(frm, 'shaft_jobs');
+		} else {
+			spr_apply_items_grid_columns(frm, true);
+			spr_apply_shaft_jobs_grid_columns(frm, true);
+		}
 		if (sprIsBundlePackagingMode(frm)) {
 			spr_apply_bundle_calculation_grid_columns(frm, true);
 		}
 
 		spr_schedule_grid_ui_debounced(frm, { delay: 350, columns: false });
 
-		spr_stabilize_spr_child_grids(frm, { delay: 400 });
+		spr_stabilize_spr_child_grids(frm, { delay: 280, light: true });
 
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_stabilize_submitted_spr_grids_once(frm);
 		} else {
-			spr_schedule_child_grids_realign(frm, [200, 600, 1200]);
+			const refreshAlignKey = '_spr_refresh_align';
+			if (frm[refreshAlignKey]) {
+				clearTimeout(frm[refreshAlignKey]);
+			}
+			frm[refreshAlignKey] = setTimeout(function () {
+				frm[refreshAlignKey] = null;
+				spr_refresh_draft_child_grids_light(frm);
+				spr_enforce_roll_line_grid_policy(frm);
+			}, 320);
 		}
 
 		setTimeout(function () {
@@ -2724,15 +2908,12 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_schedule_grid_ui_debounced(frm, { delay: 280, columns: false });
 		spr_reapply_item_row_styles_with_retries(frm);
 
-		if (!spr_is_submitted_spr(frm)) {
-			spr_schedule_child_grids_realign(frm, [200, 600, 1200]);
-		}
-
 		sprLog('[SPR REFRESH] === REFRESH HOOK END ===');
 	},
 
 	onload_post_render: function (frm) {
-		spr_stabilize_spr_child_grids(frm, { delay: 180 });
+		spr_stabilize_spr_child_grids(frm, { delay: 180, light: true });
+		spr_enforce_roll_line_grid_policy(frm);
 		spr_reapply_item_row_styles_with_retries(frm, [200, 500, 900, 1400]);
 	},
 
@@ -2781,14 +2962,8 @@ frappe.ui.form.on('Shaft Production Run', {
 			if (!frm || !frm.fields_dict) {
 				return;
 			}
-			['items', 'shaft_jobs'].forEach(function (fn) {
-				if (spr_child_grid_needs_repair(frm, fn)) {
-					spr_repair_child_grid_alignment(frm, fn);
-				} else {
-					spr_light_grid_scroll_sync(frm, fn);
-				}
-			});
-			apply_spr_item_row_styles(frm);
+			spr_refresh_draft_child_grids_light(frm);
+			spr_enforce_roll_line_grid_policy(frm);
 		}, 280);
 	},
 
@@ -2812,7 +2987,16 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	items: {
-		items_add: function (frm) {
+		items_add: function (frm, cdt, cdn) {
+			if (spr_reject_unauthorized_blank_item_row(frm, cdt, cdn)) {
+				return;
+			}
+			if (spr_should_block_item_row_autocreate(frm)) {
+				setTimeout(function () {
+					spr_prune_trailing_blank_roll_rows(frm);
+					spr_sync_items_add_row_ui(frm, true);
+				}, 0);
+			}
 			sprLog('[SPR DEBUG] items_add fired');
 			spr_sync_no_of_rolls_created(frm);
 			update_shaft_job_achieved_from_items(frm);
@@ -5103,43 +5287,44 @@ frappe.ui.form.on('Bundle Calculation', {
 			freeze_message: __('Creating roll lines for this bundle...'),
 			callback: function (r) {
 				const lines = r.message || [];
-				lines.forEach(function (line) {
-					const it = frm.add_child('items');
-					Object.keys(line).forEach(function (k) {
-						if (line[k] !== undefined && line[k] !== null) {
-							it[k] = line[k];
+				spr_run_programmatic_item_adds(frm, function () {
+					lines.forEach(function (line) {
+						const it = frm.add_child('items');
+						Object.keys(line).forEach(function (k) {
+							if (line[k] !== undefined && line[k] !== null) {
+								it[k] = line[k];
+							}
+						});
+						if (line.quality) {
+							it.quality = line.quality;
+						}
+						if (line.color) {
+							it.color = line.color;
+						}
+						if (line.gsm != null && line.gsm !== '') {
+							it.gsm = cint(line.gsm);
+						}
+						if (line.custom_bag_size) {
+							it.custom_bag_size = line.custom_bag_size;
+						} else if (line.custom_sheet_size && sprIsBag(frm)) {
+							it.custom_bag_size = line.custom_sheet_size;
+						}
+						if (line.custom_sheet_size && !sprIsBag(frm)) {
+							it.custom_sheet_size = line.custom_sheet_size;
+						}
+						if (line.custom_planned_sheets_pcs != null) {
+							it.custom_planned_sheets_pcs = flt(line.custom_planned_sheets_pcs);
+						}
+						if (line.custom_planned_bag_pcs != null) {
+							it.custom_planned_bag_pcs = flt(line.custom_planned_bag_pcs);
 						}
 					});
-					if (line.quality) {
-						it.quality = line.quality;
-					}
-					if (line.color) {
-						it.color = line.color;
-					}
-					if (line.gsm != null && line.gsm !== '') {
-						it.gsm = cint(line.gsm);
-					}
-					if (line.custom_bag_size) {
-						it.custom_bag_size = line.custom_bag_size;
-					} else if (line.custom_sheet_size && sprIsBag(frm)) {
-						it.custom_bag_size = line.custom_sheet_size;
-					}
-					if (line.custom_sheet_size && !sprIsBag(frm)) {
-						it.custom_sheet_size = line.custom_sheet_size;
-					}
-					if (line.custom_planned_sheets_pcs != null) {
-						it.custom_planned_sheets_pcs = flt(line.custom_planned_sheets_pcs);
-					}
-					if (line.custom_planned_bag_pcs != null) {
-						it.custom_planned_bag_pcs = flt(line.custom_planned_bag_pcs);
-					}
-				});
-				frm.refresh_field('items');
-				sprToggleSheetCuttingRollUi(frm);
-				const n = lines.length;
-				const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
+					frm.refresh_field('items');
+					sprToggleSheetCuttingRollUi(frm);
+					const n = lines.length;
+					const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
 
-				function maxRollBeforeNew() {
+					function maxRollBeforeNew() {
 					let maxRoll = 0;
 					const all = frm.doc.items || [];
 					for (let i = 0; i < startIdx; i++) {
@@ -5178,6 +5363,7 @@ frappe.ui.form.on('Bundle Calculation', {
 					}
 					spr_schedule_grid_ui_debounced(frm, { delay: 300 });
 					spr_after_child_table_refresh(frm);
+					spr_enforce_roll_line_grid_policy(frm);
 					sprAutoSaveAfterCreateEntry(frm);
 					frappe.show_alert({
 						message: __('Added {0} roll line(s) for bundle.', [lines.length]),
@@ -5221,6 +5407,7 @@ frappe.ui.form.on('Bundle Calculation', {
 				} else {
 					finishCreateEntry();
 				}
+				});
 			},
 		});
 	},
@@ -5280,12 +5467,14 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				if (!appendMode) {
 					remove_spr_items_for_job(frm, job_id);
 				}
-				lines.forEach(function (line) {
-					let it = frm.add_child('items');
-					Object.keys(line).forEach(function (k) {
-						if (line[k] !== undefined && line[k] !== null) {
-							it[k] = line[k];
-						}
+				spr_run_programmatic_item_adds(frm, function () {
+					lines.forEach(function (line) {
+						let it = frm.add_child('items');
+						Object.keys(line).forEach(function (k) {
+							if (line[k] !== undefined && line[k] !== null) {
+								it[k] = line[k];
+							}
+						});
 					});
 				});
 				frm.refresh_field('items');
@@ -5331,7 +5520,7 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					update_shaft_job_achieved_from_items(frm);
 					sprScheduleTotalProducedSync(frm);
 					spr_apply_fabric100_item_grid_columns(frm);
-					spr_stabilize_spr_child_grids(frm, { delay: 120 });
+					spr_stabilize_spr_child_grids(frm, { delay: 120, light: true });
 					spr_after_child_table_refresh(frm);
 					spr_enforce_roll_line_grid_policy(frm);
 					sprAutoSaveAfterCreateEntry(frm);
@@ -6688,6 +6877,7 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 			}
 			if (fieldname === 'items' && !spr_should_block_grid_realign(frm)) {
 				spr_schedule_grid_ui_debounced(frm, { delay: 220, columns: false });
+				spr_debounced_enforce_roll_line_grid_policy(frm);
 			}
 		} finally {
 			_afterGridPaintRunning = false;
@@ -6711,6 +6901,7 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	// Do not wrap refresh_header — it re-enters afterGridPaint and causes header zig-zag.
 	if (fieldname === 'items' && grid.wrapper && grid.wrapper.length && !frm._spr_items_grid_click_patched) {
 		frm._spr_items_grid_click_patched = true;
+		spr_install_items_grid_row_add_block(frm);
 		grid.wrapper.on('change input blur', 'input, textarea, select', function () {
 			if (frm._spr_grid_input_debounce) {
 				clearTimeout(frm._spr_grid_input_debounce);
@@ -6718,8 +6909,12 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 			frm._spr_grid_input_debounce = setTimeout(function () {
 				frm._spr_grid_input_debounce = null;
 				spr_schedule_grid_ui_debounced(frm, { delay: 280, columns: false });
+				spr_debounced_enforce_roll_line_grid_policy(frm);
 			}, 200);
 		});
+	}
+	if (fieldname === 'items') {
+		spr_install_items_grid_row_add_block(frm);
 	}
 	if (hooked) {
 		frm[patchKey] = true;
@@ -6730,6 +6925,7 @@ function spr_patch_items_grid_refresh(frm) {
 	SPR_SPR_CHILD_TABLE_FIELDS.forEach(function (fn) {
 		spr_patch_child_grid_refresh(frm, fn);
 	});
+	spr_install_items_grid_row_add_block(frm);
 }
 
 /** Legend for |Sticker GSM vs Produced GSM| bands (above Roll Production Results grid). */
