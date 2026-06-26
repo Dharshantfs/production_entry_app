@@ -11068,12 +11068,15 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 					batch_link,
 					update_modified=False,
 				)
+				_spr_patch_sle_batch_for_fg_line(se_name, fg, batch_link)
 				updated_lines.append({"stock_entry": se_name, "line_idx": fg.idx, "batch_no": batch_link})
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), f"SPR batch sync line update:{spr_name}")
 
 	spr.sync_batch_custom_fields()
-	spr._refresh_batch_qty_for_codes([c["batch_no"] for c in created_batches])
+	all_batch_codes = [c["batch_no"] for c in created_batches]
+	_spr_activate_batches(all_batch_codes)
+	spr._refresh_batch_qty_for_codes(all_batch_codes)
 	try:
 		frappe.db.commit()
 	except Exception:
@@ -11088,6 +11091,71 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		"skipped_count": len(skipped),
 		"skipped": skipped[:100],
 	}
+
+
+def _spr_patch_sle_batch_for_fg_line(se_name: str, fg_line, batch_no: str) -> None:
+	"""Update Stock Ledger Entry rows for this FG line to include batch_no.
+
+	The Manufacture STE was submitted without batch — SLE rows exist with
+	empty batch_no.  We patch them so Batch Qty reflects the stock correctly.
+	"""
+	if not se_name or not fg_line or not batch_no:
+		return
+	item_code = _cstr(fg_line.get("item_code")).strip()
+	warehouse = _cstr(fg_line.get("t_warehouse")).strip()
+	qty = flt(fg_line.get("qty"))
+	if not item_code or not warehouse or qty <= 0:
+		return
+	try:
+		sle_names = frappe.db.sql_list(
+			"""
+			SELECT name FROM `tabStock Ledger Entry`
+			WHERE voucher_type = 'Stock Entry'
+			  AND voucher_no = %(voucher)s
+			  AND IFNULL(item_code, '') = %(item)s
+			  AND IFNULL(warehouse, '') = %(wh)s
+			  AND actual_qty > 0
+			  AND IFNULL(batch_no, '') = ''
+			  AND IFNULL(is_cancelled, 0) = 0
+			ORDER BY ABS(actual_qty - %(qty)s) ASC
+			LIMIT 1
+			""",
+			{"voucher": se_name, "item": item_code, "wh": warehouse, "qty": qty},
+		)
+		for sle_name in sle_names or []:
+			frappe.db.set_value(
+				"Stock Ledger Entry", sle_name, "batch_no", batch_no, update_modified=False
+			)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"SPR batch sync SLE patch:{se_name}")
+
+
+def _spr_activate_batches(batch_codes: list[str]) -> None:
+	"""Set Batch status to Active and recompute batch_qty from SLE."""
+	for bn in {_cstr(x).strip() for x in (batch_codes or []) if _cstr(x).strip()}:
+		if not frappe.db.exists("Batch", bn):
+			continue
+		try:
+			qty = flt(
+				frappe.db.sql(
+					"""
+					SELECT IFNULL(SUM(actual_qty), 0)
+					FROM `tabStock Ledger Entry`
+					WHERE IFNULL(is_cancelled, 0) = 0
+					  AND IFNULL(batch_no, '') = %s
+					""",
+					(bn,),
+				)[0][0] or 0
+			)
+			updates = {}
+			if frappe.db.has_column("Batch", "batch_qty"):
+				updates["batch_qty"] = qty
+			if frappe.db.has_column("Batch", "status"):
+				updates["status"] = "Active" if qty > 0 else "Empty"
+			if updates:
+				frappe.db.set_value("Batch", bn, updates, update_modified=False)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR batch activate:{bn}")
 
 
 @frappe.whitelist()
