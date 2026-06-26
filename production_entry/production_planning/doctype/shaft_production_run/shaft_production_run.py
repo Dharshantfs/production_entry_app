@@ -11105,9 +11105,8 @@ def _spr_patch_sle_batch_for_fg_line(se_name: str, fg_line, batch_no: str) -> No
 	if not se_name or not fg_line or not batch_no:
 		return
 	item_code = _cstr(fg_line.get("item_code")).strip()
-	warehouse = _cstr(fg_line.get("t_warehouse")).strip()
 	qty = flt(fg_line.get("qty"))
-	if not item_code or not warehouse or qty <= 0:
+	if not item_code or qty <= 0:
 		return
 	try:
 		sle_names = frappe.db.sql_list(
@@ -11116,19 +11115,42 @@ def _spr_patch_sle_batch_for_fg_line(se_name: str, fg_line, batch_no: str) -> No
 			WHERE voucher_type = 'Stock Entry'
 			  AND voucher_no = %(voucher)s
 			  AND IFNULL(item_code, '') = %(item)s
-			  AND IFNULL(warehouse, '') = %(wh)s
 			  AND actual_qty > 0
-			  AND IFNULL(batch_no, '') = ''
+			  AND (IFNULL(batch_no, '') = '' OR IFNULL(batch_no, '') = %(batch)s)
 			  AND IFNULL(is_cancelled, 0) = 0
 			ORDER BY ABS(actual_qty - %(qty)s) ASC
 			LIMIT 1
 			""",
-			{"voucher": se_name, "item": item_code, "wh": warehouse, "qty": qty},
+			{"voucher": se_name, "item": item_code, "qty": qty, "batch": batch_no},
 		)
-		for sle_name in sle_names or []:
-			frappe.db.set_value(
-				"Stock Ledger Entry", sle_name, "batch_no", batch_no, update_modified=False
+		if not sle_names:
+			sle_names = frappe.db.sql_list(
+				"""
+				SELECT name FROM `tabStock Ledger Entry`
+				WHERE voucher_type = 'Stock Entry'
+				  AND voucher_no = %(voucher)s
+				  AND IFNULL(item_code, '') = %(item)s
+				  AND actual_qty > 0
+				  AND IFNULL(is_cancelled, 0) = 0
+				ORDER BY ABS(actual_qty - %(qty)s) ASC
+				""",
+				{"voucher": se_name, "item": item_code, "qty": qty},
 			)
+		patched = set()
+		for sle_name in sle_names or []:
+			if sle_name in patched:
+				continue
+			current_bn = _cstr(
+				frappe.db.get_value("Stock Ledger Entry", sle_name, "batch_no")
+			).strip()
+			if current_bn and current_bn != batch_no:
+				continue
+			frappe.db.sql(
+				"""UPDATE `tabStock Ledger Entry` SET batch_no = %s WHERE name = %s""",
+				(batch_no, sle_name),
+			)
+			patched.add(sle_name)
+			break
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), f"SPR batch sync SLE patch:{se_name}")
 
@@ -11150,13 +11172,10 @@ def _spr_activate_batches(batch_codes: list[str]) -> None:
 					(bn,),
 				)[0][0] or 0
 			)
-			updates = {}
-			if frappe.db.has_column("Batch", "batch_qty"):
-				updates["batch_qty"] = qty
-			if frappe.db.has_column("Batch", "status"):
-				updates["status"] = "Active" if qty > 0 else "Empty"
-			if updates:
-				frappe.db.set_value("Batch", bn, updates, update_modified=False)
+			frappe.db.sql(
+				"""UPDATE `tabBatch` SET batch_qty = %s, status = %s WHERE name = %s""",
+				(qty, "Active" if qty > 0 else "Empty", bn),
+			)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR batch activate:{bn}")
 
