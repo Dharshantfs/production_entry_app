@@ -3198,9 +3198,12 @@ class ShaftProductionRun(Document):
 		return out
 
 	def _filter_shortage_events_by_wo_transfer(self, shortage_events) -> list:
-		"""Remove shortage lines that WO already transferred — prevents duplicate MTFM STE."""
+		"""Remove shortage lines that WO already transferred — prevents duplicate MTFM per item."""
 		filtered = []
 		for event in shortage_events or []:
+			if event.get("wip_topup"):
+				filtered.append(event)
+				continue
 			wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
 			shortages = self._filter_shortages_by_wo_transfer_remaining(
 				wo_doc, event.get("shortages") or []
@@ -3218,7 +3221,7 @@ class ShaftProductionRun(Document):
 		return filtered
 
 	def _spr_cap_manufacture_rm_lines_to_wip_available(self, se, wo_doc) -> bool:
-		"""When WO RM is already in WIP, cap consume lines to actual bin/batch qty (BOM rounding gaps)."""
+		"""Nudge consume lines only for sub-tolerance WIP/bin float drift — never cap meaningful shortages."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
 		if not se or not wip_wh or not _spr_wo_rm_fully_transferred(wo_doc):
@@ -3242,7 +3245,11 @@ class ShaftProductionRun(Document):
 			avl = _spr_floor_rm_stock_qty(avl)
 			if req <= avl + tol:
 				continue
-			cap = _spr_floor_rm_stock_qty(min(req, avl))
+			gap = req - avl
+			if gap > tol:
+				# Meaningful WIP shortage — preflight auto-transfer must top up RM store -> WIP.
+				continue
+			cap = _spr_floor_rm_stock_qty(avl)
 			if cap <= tol:
 				continue
 			cf = flt(d.get("conversion_factor") or 1) or 1
@@ -3469,6 +3476,38 @@ class ShaftProductionRun(Document):
 			out.append((_cstr(d.item_code), wh, required, available, shortage))
 		if wo_doc:
 			return self._filter_shortages_by_wo_transfer_remaining(wo_doc, out)
+		return out
+
+	def _spr_wip_topup_shortages_for_se(self, se, wo_doc) -> list[tuple[str, str, float, float, float]]:
+		"""WIP bin shortfall when WO already shows RM transferred — needs company RM -> WIP top-up."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+		if not se or not wip_wh:
+			return []
+		company = _cstr(getattr(wo_doc, "company", None))
+		out = []
+		for d in se.items or []:
+			if not d.item_code or d.get("t_warehouse"):
+				continue
+			if _cstr(d.get("s_warehouse")) != wip_wh:
+				continue
+			ic = _cstr(d.item_code).strip()
+			required = _spr_round_rm_stock_qty(d.get("transfer_qty") or d.get("qty"))
+			if required <= 0:
+				continue
+			tol = _spr_rm_wip_shortage_tolerance(required)
+			if _spr_wo_rm_transfer_remaining(wo_doc, ic) > tol:
+				continue
+			available = _spr_round_rm_stock_qty(_spr_rm_available_qty(ic, wip_wh))
+			shortage = required - available
+			if shortage <= tol:
+				continue
+			bump = _spr_wip_topup_bump_qty(shortage)
+			item_src = self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
+			rm_wh, _rm_avl = _spr_find_rm_warehouse_with_stock(company, ic, wip_wh, item_src, bump)
+			if not rm_wh:
+				rm_wh = item_src or _spr_company_rm_warehouse(company, wip_wh) or _("RM warehouse")
+			out.append((ic, rm_wh, required, available, bump))
 		return out
 
 	def _best_available_batch_for_rm(self, item_code: str, warehouse: str, required_qty: float) -> str:
@@ -4511,6 +4550,7 @@ class ShaftProductionRun(Document):
 				continue
 			preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
 			shortages = self._rm_shortages_for_se(preview_se, wo_doc)
+			wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
 			if shortages:
 				blocking.append(
 					{
@@ -4518,6 +4558,16 @@ class ShaftProductionRun(Document):
 						"wo_doc": wo_doc,
 						"chunk_total_qty": chunk_total_qty,
 						"shortages": shortages,
+					}
+				)
+			if wip_topup:
+				blocking.append(
+					{
+						"wo_id": _cstr(event.get("wo_id")),
+						"wo_doc": wo_doc,
+						"chunk_total_qty": chunk_total_qty,
+						"shortages": wip_topup,
+						"wip_topup": True,
 					}
 				)
 		return blocking
@@ -4633,11 +4683,13 @@ class ShaftProductionRun(Document):
 		short_map: dict[str, float] = defaultdict(float)
 		item_meta: dict[str, tuple] = {}
 		item_wo: dict[str, object] = {}
+		item_wip_topup: dict[str, bool] = {}
 		primary_wo_doc = None
 		chunk_max = 0.0
 
 		for event in shortage_events or []:
 			wo_doc = event.get("wo_doc")
+			is_wip_topup = bool(event.get("wip_topup"))
 			if wo_doc and not primary_wo_doc:
 				primary_wo_doc = self._reload_work_order_doc(wo_doc)
 			chunk_max = max(chunk_max, flt(event.get("chunk_total_qty")))
@@ -4647,6 +4699,7 @@ class ShaftProductionRun(Document):
 					continue
 				short_map[ic] += flt(short_qty)
 				item_wo[ic] = self._reload_work_order_doc(wo_doc)
+				item_wip_topup[ic] = item_wip_topup.get(ic) or is_wip_topup
 				if ic not in item_meta:
 					item_meta[ic] = (_cstr(wh), flt(req), flt(avl))
 
@@ -4661,6 +4714,12 @@ class ShaftProductionRun(Document):
 			for ic, qty in short_map.items():
 				wo_for_ic = item_wo.get(ic) or primary_wo_doc
 				wo_ref = self._reload_work_order_doc(wo_for_ic)
+				if item_wip_topup.get(ic):
+					bumped = _spr_wip_topup_bump_qty(flt(qty))
+					if bumped > _spr_rm_wip_shortage_tolerance(bumped):
+						pruned_map[ic] = bumped
+						item_wo_pruned[ic] = wo_ref
+					continue
 				pruned = self._prune_short_by_item_to_wo_transfer_remaining(wo_ref, {ic: flt(qty)})
 				if pruned.get(ic):
 					pruned_map[ic] = pruned[ic]
@@ -4704,7 +4763,9 @@ class ShaftProductionRun(Document):
 					wo_ref,
 					dict(ic_map),
 					wip_wh,
-					ignore_wo_transfer=ignore_wo_transfer_prune,
+					ignore_wo_transfer=bool(
+						ignore_wo_transfer_prune or item_wip_topup.get(sample_ic)
+					),
 				)
 			if added_total > 0:
 				name = self._spr_insert_shortage_transfer_draft(se)
@@ -4770,7 +4831,6 @@ class ShaftProductionRun(Document):
 		for item in se.items or []:
 			if item.item_code and not item.get("t_warehouse"):
 				item.s_warehouse = wip_warehouse
-		self._spr_cap_manufacture_rm_lines_to_wip_available(se, wo_doc)
 		return se
 
 	def _raise_shortage_with_transfer(self, wo_id: str, wo_doc, chunk_total_qty: float, shortages):
@@ -4853,6 +4913,38 @@ class ShaftProductionRun(Document):
 			)
 		return "\n".join(lines)
 
+	def _spr_no_rm_stock_lines_for_shortage_events(self, shortage_events) -> str:
+		"""Items with WIP shortage but zero RM warehouse stock — operator must receive RM first."""
+		prec = _spr_rm_stock_qty_precision()
+		lines = []
+		seen: set[str] = set()
+		for event in shortage_events or []:
+			wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
+			if not wo_doc:
+				continue
+			company = _cstr(getattr(wo_doc, "company", None))
+			wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+			for item_code, wh, _req, _avl, short_qty in event.get("shortages") or []:
+				ic = _cstr(item_code).strip()
+				if not ic or ic in seen:
+					continue
+				need = _spr_wip_topup_bump_qty(short_qty)
+				tol = _spr_rm_wip_shortage_tolerance(need)
+				item_src = self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
+				rm_wh, rm_avl = _spr_find_rm_warehouse_with_stock(company, ic, wip_wh, item_src, need)
+				if rm_avl + tol >= need:
+					continue
+				seen.add(ic)
+				lines.append(
+					_("{0}: need {1} Kg in RM store ({2}) — available {3} Kg").format(
+						ic,
+						flt(need, prec),
+						rm_wh or wh or _("RM warehouse"),
+						flt(rm_avl, prec),
+					)
+				)
+		return "\n".join(lines[:20])
+
 	def _raise_shortage_with_transfer_batch(
 		self, shortage_events, ignore_wo_transfer_prune: bool = False
 	):
@@ -4929,6 +5021,11 @@ class ShaftProductionRun(Document):
 				)
 
 		body = consolidated or _("No shortage detail available.")
+		no_stock_lines = self._spr_no_rm_stock_lines_for_shortage_events(shortage_events)
+		if no_stock_lines and not transfer_submitted:
+			body = _("{0}\n\nNo stock in RM warehouse until you transfer:\n{1}").format(
+				body, no_stock_lines
+			)
 		frappe.throw(
 			_(
 				"Insufficient stock for {0} work order(s).\n\n{1}\n\n{2}"
@@ -5464,16 +5561,56 @@ class ShaftProductionRun(Document):
 			target[item_code] = flt(target.get(item_code)) + flt(qty)
 		return target
 
-	def _validate_rm_split_variance(self, wo_id: str, fg_total_qty: float, expected_rm: dict[str, float], actual_rm: dict[str, float]):
+	def _validate_rm_split_variance(
+		self,
+		wo_id: str,
+		fg_total_qty: float,
+		expected_rm: dict[str, float],
+		actual_rm: dict[str, float],
+		wo_doc=None,
+	):
 		"""Ensure split-entry RM consumption matches BOM-expected RM for this FG qty (same path as phantom SE)."""
+		under_consume: dict[str, float] = {}
 		issues = []
 		for item_code in sorted(set(expected_rm or {}) | set(actual_rm or {})):
 			exp = flt((expected_rm or {}).get(item_code))
 			act = flt((actual_rm or {}).get(item_code))
 			diff = abs(act - exp)
 			threshold = max(0.01, abs(exp) * 0.001)  # 0.1% or 0.01 qty floor
-			if diff > threshold + 1e-9:
+			if diff <= threshold + 1e-9:
+				continue
+			if act < exp - threshold:
+				under_consume[_cstr(item_code).strip()] = _spr_wip_topup_bump_qty(exp - act)
+			else:
 				issues.append((item_code, exp, act, act - exp, threshold))
+		if under_consume and wo_doc:
+			shortage_events = [
+				{
+					"wo_id": wo_id,
+					"wo_doc": wo_doc,
+					"chunk_total_qty": fg_total_qty,
+					"shortages": [
+						(
+							ic,
+							self._resolve_rm_source_warehouse_for_transfer(
+								wo_doc, ic, _cstr(getattr(wo_doc, "wip_warehouse", None))
+							)
+							or _spr_company_rm_warehouse(
+								_cstr(getattr(wo_doc, "company", None)),
+								_cstr(getattr(wo_doc, "wip_warehouse", None)),
+							)
+							or _("RM warehouse"),
+							flt((expected_rm or {}).get(ic)),
+							flt((actual_rm or {}).get(ic)),
+							qty,
+						)
+						for ic, qty in under_consume.items()
+						if ic and qty > 0
+					],
+					"wip_topup": True,
+				}
+			]
+			self._raise_shortage_with_transfer_batch(shortage_events, ignore_wo_transfer_prune=True)
 		if not issues:
 			return
 		details = "\n".join(
@@ -5825,6 +5962,17 @@ class ShaftProductionRun(Document):
 									"shortages": shortages2,
 								}
 							)
+						wip_topup2 = self._spr_wip_topup_shortages_for_se(preview_se2, wo_doc2)
+						if wip_topup2:
+							submit_shortage_events.append(
+								{
+									"wo_id": wo_id2,
+									"wo_doc": wo_doc2,
+									"chunk_total_qty": chunk_total_qty2,
+									"shortages": wip_topup2,
+									"wip_topup": True,
+								}
+							)
 				self._raise_shortage_with_transfer_batch(submit_shortage_events)
 			# WO already shows RM transferred — auto RM->WIP transfer then retry Manufacture once.
 			try:
@@ -5833,87 +5981,54 @@ class ShaftProductionRun(Document):
 				)
 			except _SprWipTopupRetry:
 				raise
-			# RM top-up failed (e.g. no RM stock) but WIP has material — cap BOM consume to WIP bin and retry once.
-			if allow_wip_topup_retry and _spr_wo_rm_fully_transferred(wo_doc):
-				rebuild = frappe.new_doc("Stock Entry")
-				rebuild.flags.ignore_duplicate_for_work_order = True
-				rebuild.company = wo_doc.company
-				rebuild.posting_date = today()
-				rebuild.posting_time = nowtime()
-				rebuild.set_posting_time = 1
-				rebuild.stock_entry_type = self._manufacture_stock_entry_type_name()
-				rebuild.purpose = "Manufacture"
-				rebuild.production_item = wo_doc.production_item
-				rebuild.fg_completed_qty = chunk_total_qty
-				rebuild.from_bom = 1
-				rebuild.bom_no = wo_doc.bom_no
-				rebuild.use_multi_level_bom = wo_doc.use_multi_level_bom
-				rebuild.wip_warehouse = wo_doc.wip_warehouse
-				rebuild.to_warehouse = wo_doc.fg_warehouse
-				self._set_stock_entry_spr_link(rebuild)
-				self._set_stock_entry_unit(rebuild, wo_doc)
-				rebuild.get_items()
-				if spr_doc_is_bag_spr(self):
-					_spr_apply_bag_rm_qty_from_bom(rebuild, wo_doc.bom_no, chunk_total_qty)
-				wip_warehouse = wo_doc.wip_warehouse
-				for item in rebuild.items or []:
-					if not item.item_code:
-						continue
-					if not item.get("t_warehouse"):
-						item.s_warehouse = wip_warehouse
-					elif item.t_warehouse != wo_doc.fg_warehouse:
-						item.t_warehouse = wo_doc.fg_warehouse
-				fg_templates2 = self._strip_finished_goods_from_stock_entry(rebuild)
-				self._append_manufacture_fg_from_spr_rolls(rebuild, wo_doc, chunk_rows, fg_templates2)
-				self._spr_cap_manufacture_rm_lines_to_wip_available(rebuild, wo_doc)
-				self._assign_rm_batches_for_stock_entry(rebuild, wo_id)
-				self._spr_cap_manufacture_rm_lines_to_wip_available(rebuild, wo_doc)
-				self._spr_apply_stock_entry_item_accounts(rebuild)
-				rebuild.stock_entry_type = self._manufacture_stock_entry_type_name()
-				rebuild.purpose = "Manufacture"
-				rebuild.insert()
-				self._persist_stock_entry_spr_reference_db(rebuild.name)
-				rebuild.reload()
-				rebuild.flags.ignore_duplicate_for_work_order = True
-				self._set_stock_entry_spr_link(rebuild)
-				self._set_stock_entry_unit(rebuild, wo_doc)
-				self._apply_unit_to_submitted_stock_entry(rebuild.name, wo_doc)
-				rebuild.flags.ignore_duplicate_for_work_order = True
-				try:
-					rebuild.submit()
-					se = rebuild
-				except Exception:
-					parsed_wip = self._rm_shortages_from_exception(e)
-					if parsed_wip:
-						self._raise_shortage_with_transfer_batch(
-							[
-								{
-									"wo_id": wo_id,
-									"wo_doc": wo_doc,
-									"chunk_total_qty": chunk_total_qty,
-									"shortages": parsed_wip,
-								}
-							],
-							ignore_wo_transfer_prune=True,
+			# WIP top-up could not auto-submit — raise transfer / no-stock message (never cap below BOM).
+			wip_topup = self._spr_wip_topup_shortages_for_se(se, wo_doc)
+			if not wip_topup:
+				wip_topup = self._spr_wip_topup_from_manufacture_se(se, wo_doc)
+				if wip_topup:
+					company = _cstr(getattr(wo_doc, "company", None))
+					wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+					wip_topup = [
+						(
+							ic,
+							self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
+							or _spr_company_rm_warehouse(company, wip_wh)
+							or _("RM warehouse"),
+							flt(qty),
+							0.0,
+							flt(qty),
 						)
-					self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
-					return
-			else:
-				parsed_wip = self._rm_shortages_from_exception(e)
-				if parsed_wip:
-					self._raise_shortage_with_transfer_batch(
-						[
-							{
-								"wo_id": wo_id,
-								"wo_doc": wo_doc,
-								"chunk_total_qty": chunk_total_qty,
-								"shortages": parsed_wip,
-							}
-						],
-						ignore_wo_transfer_prune=True,
-					)
-				self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
-				return
+						for ic, qty in wip_topup.items()
+						if ic and flt(qty) > 0
+					]
+			if wip_topup:
+				self._raise_shortage_with_transfer_batch(
+					[
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": wip_topup,
+							"wip_topup": True,
+						}
+					],
+					ignore_wo_transfer_prune=True,
+				)
+			parsed_wip = self._rm_shortages_from_exception(e)
+			if parsed_wip:
+				self._raise_shortage_with_transfer_batch(
+					[
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": parsed_wip,
+						}
+					],
+					ignore_wo_transfer_prune=True,
+				)
+			self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
+			return
 		frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
 		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
 		self._apply_order_code_to_submitted_stock_entry(se.name)
@@ -6091,6 +6206,17 @@ class ShaftProductionRun(Document):
 							"shortages": shortages,
 						}
 					)
+				wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
+				if wip_topup:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": wip_topup,
+							"wip_topup": True,
+						}
+					)
 		if shortage_events:
 			self._raise_shortage_with_transfer_batch(shortage_events)
 
@@ -6133,7 +6259,9 @@ class ShaftProductionRun(Document):
 						if _spr_mfg_try == 0:
 							continue
 						raise
-			self._validate_rm_split_variance(wo_id, total_qty, expected_rm_map, actual_rm_map)
+			self._validate_rm_split_variance(
+				wo_id, total_qty, expected_rm_map, actual_rm_map, wo_doc=wo_doc
+			)
 			self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
 
 		if created_entries:
