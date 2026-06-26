@@ -3500,10 +3500,10 @@ class ShaftProductionRun(Document):
 		return filtered
 
 	def _spr_cap_manufacture_rm_lines_to_wip_available(self, se, wo_doc) -> bool:
-		"""Nudge consume lines to actual WIP bin qty to prevent over-consumption."""
+		"""Nudge consume lines only for sub-tolerance WIP/bin float drift — never cap real shortages."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
-		if not se or not wip_wh:
+		if not se or not wip_wh or not _spr_wo_rm_fully_transferred(wo_doc):
 			return False
 		changed = False
 		for d in se.items or []:
@@ -3515,6 +3515,7 @@ class ShaftProductionRun(Document):
 			req = flt(d.get("transfer_qty") or d.get("qty"))
 			if req <= 0:
 				continue
+			tol = _spr_rm_wip_shortage_tolerance(req)
 			batch_no = _cstr(d.get("batch_no")).strip()
 			if batch_no:
 				avl = _spr_batch_available_qty(ic, wip_wh, batch_no)
@@ -3522,6 +3523,9 @@ class ShaftProductionRun(Document):
 				avl = _spr_rm_available_qty(ic, wip_wh)
 			avl = _spr_floor_rm_stock_qty(avl)
 			if req <= avl:
+				continue
+			gap = req - avl
+			if gap > tol:
 				continue
 			cap = _spr_floor_rm_stock_qty(avl)
 			if cap <= 0:
