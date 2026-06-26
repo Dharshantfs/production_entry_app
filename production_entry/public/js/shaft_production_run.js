@@ -432,59 +432,62 @@ function spr_stamp_grid_cell_fieldnames($wrap) {
 }
 
 /**
- * Inject ONE static <style> tag that orders header + body cells by data-spr-fn.
- * Plus a one-shot DOM pass to stamp data-spr-fn and inline `order` on EXISTING
- * data rows only. No MutationObserver, no re-stamping on hover/edit.
- * IMPORTANT: scope `display:flex` to .grid-body data rows and the heading row only,
- * NEVER to .grid-form-row (the edit form Frappe inserts when you click a row).
+ * Reorder HEADER cells in DOM to match BODY cell order.
+ * Body is never touched — so row-click edit form works normally.
+ * Frappe renders body cells in docfield order; we just mirror that order
+ * in the header so headers visually sit above the right data column.
+ *
+ * Also removes any leftover order/style tags + observers from earlier attempts.
  */
 function spr_inject_column_order_css(frm, fieldname) {
 	var fd = spr_get_field_dict(frm, fieldname);
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
 		return;
 	}
-	var colList = [];
-	if (fieldname === 'items') {
-		var cfg = spr_get_items_list_view_config(frm);
-		colList = (cfg && cfg.show) || [];
-	} else if (fieldname === 'shaft_jobs') {
-		colList = spr_build_shaft_jobs_show_list(frm) || [];
-	}
-	if (!colList.length) { return; }
-
 	var $wrap = fd.$wrapper;
-	var wrapClass = fieldname === 'items' ? '.spr-items-wrap' : '.spr-shaft-jobs-wrap';
-	var styleId = 'spr-col-order-' + fieldname;
 
-	var orderMap = {};
-	colList.forEach(function (fn, i) { orderMap[fn] = i + 2; });
-
-	// Kill any leftover observer from earlier code paths (defensive)
+	// Defensive cleanup: kill any prior observer/style from earlier builds
 	var obsKey = '_spr_order_obs_' + fieldname;
 	if (frm[obsKey]) {
 		try { frm[obsKey].disconnect(); } catch (e) { /* noop */ }
 		frm[obsKey] = null;
 	}
+	$('style#spr-col-order-' + fieldname).remove();
 
-	// CSS rules — only target data rows + heading. Explicitly skip grid-form-row.
-	// Use data-spr-fn (stamped below). data rows live under .grid-body .rows .grid-row
-	var dataSel = wrapClass + ' .grid-body .rows > .grid-row:not(.grid-form-row)';
-	var headSel = wrapClass + ' .grid-heading-row';
-	var css = '';
-	css += dataSel + ',' + headSel + '{display:flex!important;flex-wrap:nowrap!important;}\n';
-	css += dataSel + '>.row-check,' + headSel + '>.row-check{order:0;flex:0 0 36px;}\n';
-	css += dataSel + '>.row-index,' + headSel + '>.row-index{order:1;flex:0 0 44px;}\n';
-	colList.forEach(function (fn, i) {
-		var o = i + 2;
-		css += dataSel + '>[data-spr-fn="' + fn + '"],' +
-			headSel + '>[data-spr-fn="' + fn + '"]' +
-			'{order:' + o + ';}\n';
-	});
-	$('style#' + styleId).remove();
-	$('<style id="' + styleId + '">' + css + '</style>').appendTo('head');
-
-	// One-shot stamp on currently rendered rows
+	// Stamp data-spr-fn on header + body cells (one shot)
 	spr_stamp_grid_cell_fieldnames($wrap);
+
+	var $headRow = $wrap.find('.grid-heading-row').first();
+	var $bodyRow = $wrap.find('.grid-body .rows > .grid-row').not('.grid-form-row').first();
+	if (!$headRow.length || !$bodyRow.length) {
+		return;
+	}
+
+	// Build the desired header order from body cell sequence
+	var bodyFnSeq = [];
+	$bodyRow.children().each(function () {
+		var $c = $(this);
+		if ($c.hasClass('row-check') || $c.hasClass('row-index')) { return; }
+		var fn = $c.attr('data-spr-fn');
+		if (fn) { bodyFnSeq.push(fn); }
+	});
+	if (!bodyFnSeq.length) { return; }
+
+	// Detach structural cells first so they stay at the front after reordering
+	var $rowCheck = $headRow.children('.row-check').detach();
+	var $rowIndex = $headRow.children('.row-index').detach();
+
+	// Reorder header DOM to match body order
+	bodyFnSeq.forEach(function (fn) {
+		var $hCell = $headRow.children('[data-spr-fn="' + fn + '"]').first();
+		if ($hCell.length) {
+			$hCell.detach().appendTo($headRow);
+		}
+	});
+
+	// Re-insert structural cells at the front
+	if ($rowIndex.length) { $headRow.prepend($rowIndex); }
+	if ($rowCheck.length) { $headRow.prepend($rowCheck); }
 }
 
 /**
@@ -6898,7 +6901,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '53';
+	const sprItemsCssVer = '54';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
