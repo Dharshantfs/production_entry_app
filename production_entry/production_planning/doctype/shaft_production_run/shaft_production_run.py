@@ -4540,6 +4540,7 @@ class ShaftProductionRun(Document):
 					se.flags.ignore_permissions = True
 					se.flags.ignore_validate = True
 					se.save()
+					se.flags.ignore_validate = True
 					se.submit()
 				elif "Maximum transferable" in submit_msg or "Cannot transfer" in submit_msg:
 					se.reload()
@@ -4554,6 +4555,7 @@ class ShaftProductionRun(Document):
 						_spr_prepare_mtfm_stock_entry_for_submit(se, skip_batch=True)
 						self._spr_apply_stock_entry_item_accounts(se)
 						se.flags.ignore_permissions = True
+						se.flags.ignore_validate = True
 						se.save()
 						kept = [
 							d
@@ -4569,6 +4571,7 @@ class ShaftProductionRun(Document):
 								pass
 							self._spr_last_mtfm_error = plain_msg
 							return ""
+						se.flags.ignore_validate = True
 						se.submit()
 					else:
 						row_m = re.search(r"Row #(\d+)", plain_msg, flags=re.IGNORECASE)
@@ -4600,6 +4603,7 @@ class ShaftProductionRun(Document):
 						se.flags.ignore_permissions = True
 						se.flags.ignore_validate = True
 						se.save()
+						se.flags.ignore_validate = True
 						se.submit()
 				else:
 					raise
@@ -6309,6 +6313,7 @@ class ShaftProductionRun(Document):
 			)
 		try:
 			se.flags.ignore_duplicate_for_work_order = True
+			se.flags.ignore_validate = True
 			se.submit()
 			self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
 		except Exception as e:
