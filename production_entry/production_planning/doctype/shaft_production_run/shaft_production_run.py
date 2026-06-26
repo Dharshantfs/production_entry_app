@@ -11004,6 +11004,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	created_batches = []
 	updated_lines = []
 	skipped = []
+	all_batch_codes: set = set()
 
 	for se_name in se_names:
 		if not frappe.db.exists("Stock Entry", se_name):
@@ -11028,6 +11029,8 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		for fg in fg_lines:
 			existing_bn = _cstr(fg.get("batch_no")).strip()
 			if existing_bn:
+				_spr_patch_sle_batch_for_fg_line(se_name, fg, existing_bn)
+				all_batch_codes.add(existing_bn)
 				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "reason": "already_has_batch"})
 				continue
 
@@ -11060,6 +11063,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 				continue
 
 			created_batches.append({"batch_no": batch_link, "item_code": item_code})
+			all_batch_codes.add(batch_link)
 			try:
 				frappe.db.set_value(
 					"Stock Entry Detail",
@@ -11074,9 +11078,8 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 				frappe.log_error(frappe.get_traceback(), f"SPR batch sync line update:{spr_name}")
 
 	spr.sync_batch_custom_fields()
-	all_batch_codes = [c["batch_no"] for c in created_batches]
-	_spr_activate_batches(all_batch_codes)
-	spr._refresh_batch_qty_for_codes(all_batch_codes)
+	_spr_activate_batches(list(all_batch_codes))
+	spr._refresh_batch_qty_for_codes(list(all_batch_codes))
 	try:
 		frappe.db.commit()
 	except Exception:
