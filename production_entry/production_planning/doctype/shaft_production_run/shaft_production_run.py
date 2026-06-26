@@ -833,21 +833,22 @@ def _spr_floor_rm_stock_qty(qty: float) -> float:
 
 
 def _spr_rm_available_qty(item_code: str, warehouse: str) -> float:
-	"""Transferable qty in warehouse (Bin actual minus reserved; matches STE validation)."""
+	"""Actual qty in warehouse Bin for MTFM transfers.
+
+	Use actual_qty (not actual - reserved) because reserved_qty includes the
+	same Work Order we are transferring for.  ERPNext validates the real SLE
+	balance on submit, so capping to actual_qty is safe and prevents the
+	'Maximum transferable quantity is 0.0 Kg' false-block.
+	"""
 	item_code = _cstr(item_code).strip()
 	warehouse = _cstr(warehouse).strip()
 	if not item_code or not warehouse:
 		return 0.0
-	row = frappe.db.get_value(
-		"Bin",
-		{"item_code": item_code, "warehouse": warehouse},
-		["actual_qty", "reserved_qty"],
-		as_dict=True,
+	actual = flt(
+		frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0
 	)
-	if row:
-		avail = flt(row.get("actual_qty")) - flt(row.get("reserved_qty"))
-		if avail > 0:
-			return avail
+	if actual > 0:
+		return actual
 	try:
 		from erpnext.stock.utils import get_stock_balance
 
@@ -856,9 +857,7 @@ def _spr_rm_available_qty(item_code: str, warehouse: str) -> float:
 			return bal
 	except Exception:
 		pass
-	if row:
-		return max(0.0, flt(row.get("actual_qty")) - flt(row.get("reserved_qty")))
-	return 0.0
+	return max(actual, 0.0)
 
 
 def _spr_batches_in_warehouse(item_code: str, warehouse: str) -> list[dict]:
@@ -3091,22 +3090,31 @@ class ShaftProductionRun(Document):
 	def sync_batch_custom_fields(self):
 		batch_meta = frappe.get_meta("Batch")
 		is_bag = spr_doc_is_bag_spr(self)
+		company = _spr_company_from_doc(self)
 		for row in self.items or []:
 			if not row.batch_no:
 				continue
 			bn = _cstr(row.batch_no)
+			ic = _cstr(row.get("item_code")).strip()
 			batch_name = bn
-			if not frappe.db.exists("Batch", batch_name) and row.get("item_code"):
+			if not frappe.db.exists("Batch", batch_name) and ic:
 				batch_name = (
 					frappe.db.get_value(
 						"Batch",
-						{"item": row.item_code, "batch_id": bn},
+						{"item": ic, "batch_id": bn},
 						"name",
 					)
 					or batch_name
 				)
 			if not batch_name or not frappe.db.exists("Batch", batch_name):
-				continue
+				if ic:
+					try:
+						batch_name = self._get_batch_link_name_for_stock_entry(bn, ic, company, row)
+					except Exception:
+						frappe.log_error(frappe.get_traceback(), f"SPR Batch auto-create:{self.name}")
+						continue
+				if not batch_name or not frappe.db.exists("Batch", batch_name):
+					continue
 			data = dict(_batch_fields_from_spr_row(batch_meta, row, is_bag_spr=is_bag))
 			if batch_meta.has_field("custom_gross_weight") and row.get("gross_weight") is not None:
 				data["custom_gross_weight"] = flt(row.gross_weight)
@@ -10959,6 +10967,126 @@ def spr_repair_broken_fg_batch_stock(shaft_production_run: str, submit_entry: in
 		"repaired_batches": repair_rows[:200],
 		"skipped_count": len(skipped),
 		"skipped": skipped[:200],
+	}
+
+
+@frappe.whitelist()
+def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
+	"""Create Batch masters from SPR roll lines and patch submitted Manufacture FG lines with batch_no.
+
+	For submitted SPRs where Manufacture entries were posted without batch numbers:
+	1. Create tabBatch for each roll line batch_no (via _get_batch_link_name_for_stock_entry).
+	2. Update submitted Manufacture STE FG lines to include batch_no.
+	3. Refresh Batch qty from SLE.
+	"""
+	spr_name = _cstr(shaft_production_run)
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if cint(spr.docstatus) != 1:
+		frappe.throw(_("SPR {0} must be submitted.").format(spr_name))
+
+	se_names = [
+		x.strip() for x in _cstr(getattr(spr, "manufacturing_entries", "")).split(",") if x and x.strip()
+	]
+	if not se_names:
+		se_names = spr._get_existing_submitted_manufacture_entries_for_spr()
+	if not se_names:
+		frappe.throw(_("No Manufacture entries found for SPR {0}.").format(spr_name))
+
+	roll_batch_map: dict[str, dict] = {}
+	for row in spr.items or []:
+		bn = _cstr(getattr(row, "batch_no", "")).strip()
+		ic = _cstr(getattr(row, "item_code", "")).strip()
+		if bn and ic:
+			roll_batch_map.setdefault(ic, {})[bn] = row
+
+	created_batches = []
+	updated_lines = []
+	skipped = []
+
+	for se_name in se_names:
+		if not frappe.db.exists("Stock Entry", se_name):
+			skipped.append({"stock_entry": se_name, "reason": "not_found"})
+			continue
+		se_doc = frappe.get_doc("Stock Entry", se_name)
+		if _cstr(se_doc.get("purpose")) != "Manufacture" or cint(se_doc.get("docstatus")) != 1:
+			skipped.append({"stock_entry": se_name, "reason": "not_submitted_manufacture"})
+			continue
+
+		item_code = _cstr(se_doc.get("production_item"))
+		company = _cstr(se_doc.get("company"))
+		fg_lines = [d for d in (se_doc.items or []) if cint(d.get("is_finished_item")) == 1]
+		item_batches = roll_batch_map.get(item_code) or {}
+
+		roll_rows_by_qty: dict[str, list] = {}
+		for bn, row in item_batches.items():
+			qty_key = f"{flt(spr._row_fg_qty(row), 6)}"
+			roll_rows_by_qty.setdefault(qty_key, []).append((bn, row))
+
+		used_batches: set = set()
+		for fg in fg_lines:
+			existing_bn = _cstr(fg.get("batch_no")).strip()
+			if existing_bn:
+				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "reason": "already_has_batch"})
+				continue
+
+			fg_qty = flt(fg.get("qty"))
+			qty_key = f"{flt(fg_qty, 6)}"
+			candidates = roll_rows_by_qty.get(qty_key) or []
+			matched_bn = ""
+			matched_row = None
+			for bn, row in candidates:
+				if bn not in used_batches:
+					matched_bn = bn
+					matched_row = row
+					break
+			if not matched_bn:
+				for bn, row in item_batches.items():
+					if bn not in used_batches:
+						matched_bn = bn
+						matched_row = row
+						break
+			if not matched_bn:
+				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "reason": "no_matching_roll_batch"})
+				continue
+
+			used_batches.add(matched_bn)
+			batch_link = spr._get_batch_link_name_for_stock_entry(
+				matched_bn, item_code, company, matched_row
+			)
+			if not batch_link:
+				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "batch_no": matched_bn, "reason": "batch_create_failed"})
+				continue
+
+			created_batches.append({"batch_no": batch_link, "item_code": item_code})
+			try:
+				frappe.db.set_value(
+					"Stock Entry Detail",
+					fg.name,
+					"batch_no",
+					batch_link,
+					update_modified=False,
+				)
+				updated_lines.append({"stock_entry": se_name, "line_idx": fg.idx, "batch_no": batch_link})
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), f"SPR batch sync line update:{spr_name}")
+
+	spr.sync_batch_custom_fields()
+	spr._refresh_batch_qty_for_codes([c["batch_no"] for c in created_batches])
+	try:
+		frappe.db.commit()
+	except Exception:
+		pass
+
+	return {
+		"status": "ok",
+		"shaft_production_run": spr_name,
+		"created_batches": len(created_batches),
+		"updated_fg_lines": len(updated_lines),
+		"updated_details": updated_lines[:200],
+		"skipped_count": len(skipped),
+		"skipped": skipped[:100],
 	}
 
 

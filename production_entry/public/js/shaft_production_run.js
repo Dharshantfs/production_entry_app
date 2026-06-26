@@ -3905,6 +3905,40 @@ function spr_register_spr_page_buttons(frm) {
 			);
 		}
 	});
+	addInner(function () {
+		if (!frm.is_new() && cint(frm.doc.docstatus) === 1 && frm.doc.manufacturing_entries) {
+			frm.page.add_inner_button(
+				__('SPR — Sync Batches'),
+				function () {
+					frappe.confirm(
+						__('Create Batch masters from roll lines and assign them to Manufacture entry FG rows?'),
+						function () {
+							frappe.call({
+								method:
+									'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_sync_batches_to_manufacture_entries',
+								args: { shaft_production_run: frm.doc.name },
+								freeze: true,
+								freeze_message: __('Syncing batches...'),
+								callback: function (r) {
+									const d = r.message || {};
+									frappe.msgprint({
+										title: __('Batch Sync Result'),
+										message: __(
+											'Created {0} batch(es), updated {1} FG line(s), skipped {2}.',
+											[d.created_batches || 0, d.updated_fg_lines || 0, d.skipped_count || 0]
+										),
+										indicator: (d.created_batches || d.updated_fg_lines) ? 'green' : 'orange',
+									});
+									frm.reload_doc();
+								},
+							});
+						}
+					);
+				},
+				tg
+			);
+		}
+	});
 	setTimeout(function () {
 		spr_move_existing_top_buttons_to_tools(frm);
 	}, 80);
