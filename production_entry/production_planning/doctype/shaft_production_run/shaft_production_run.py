@@ -833,12 +833,191 @@ def _spr_floor_rm_stock_qty(qty: float) -> float:
 
 
 def _spr_rm_available_qty(item_code: str, warehouse: str) -> float:
-	"""Bin actual_qty for item in source warehouse (full ledger precision)."""
+	"""Transferable qty in warehouse (Bin actual minus reserved; matches STE validation)."""
 	item_code = _cstr(item_code).strip()
 	warehouse = _cstr(warehouse).strip()
 	if not item_code or not warehouse:
 		return 0.0
-	return flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0)
+	row = frappe.db.get_value(
+		"Bin",
+		{"item_code": item_code, "warehouse": warehouse},
+		["actual_qty", "reserved_qty"],
+		as_dict=True,
+	)
+	if row:
+		avail = flt(row.get("actual_qty")) - flt(row.get("reserved_qty"))
+		if avail > 0:
+			return avail
+	try:
+		from erpnext.stock.utils import get_stock_balance
+
+		bal = flt(get_stock_balance(item_code, warehouse))
+		if bal > 0:
+			return bal
+	except Exception:
+		pass
+	if row:
+		return max(0.0, flt(row.get("actual_qty")) - flt(row.get("reserved_qty")))
+	return 0.0
+
+
+def _spr_batches_in_warehouse(item_code: str, warehouse: str) -> list[dict]:
+	"""Batches with positive qty in one warehouse (classic SLE.batch_no + v15 bundles)."""
+	item_code = _cstr(item_code).strip()
+	warehouse = _cstr(warehouse).strip()
+	if not item_code or not warehouse:
+		return []
+	acc: dict[str, float] = {}
+	for r in frappe.db.sql(
+		"""
+		SELECT batch_no, SUM(actual_qty) AS qty
+		FROM `tabStock Ledger Entry`
+		WHERE IFNULL(is_cancelled, 0) = 0
+		  AND IFNULL(item_code, '') = %s
+		  AND IFNULL(warehouse, '') = %s
+		  AND IFNULL(batch_no, '') != ''
+		GROUP BY batch_no
+		HAVING SUM(actual_qty) > 0
+		""",
+		(item_code, warehouse),
+		as_dict=True,
+	):
+		bn = _cstr(r.get("batch_no"))
+		q = flt(r.get("qty") or 0)
+		if bn and q > 0:
+			acc[bn] = acc.get(bn, 0.0) + q
+	if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+		try:
+			sb_entry_dt = "Serial and Batch Entry"
+			if frappe.db.exists("DocType", sb_entry_dt):
+				sb_meta = frappe.get_meta(sb_entry_dt)
+				batch_field = next(
+					(fn for fn in ("batch_no", "batch", "batch_id") if sb_meta.has_field(fn)), ""
+				)
+				qty_field = next((fn for fn in ("qty", "quantity") if sb_meta.has_field(fn)), "")
+				if batch_field and qty_field:
+					for r in frappe.db.sql(
+						f"""
+						SELECT
+							sbe.`{batch_field}` AS batch_no,
+							SUM(
+								CASE
+									WHEN IFNULL(sle.actual_qty, 0) < 0
+										THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+									ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+								END
+							) AS qty
+						FROM `tabStock Ledger Entry` sle
+						INNER JOIN `tabSerial and Batch Entry` sbe
+							ON sbe.parent = sle.serial_and_batch_bundle
+						WHERE IFNULL(sle.is_cancelled, 0) = 0
+						  AND IFNULL(sle.item_code, '') = %s
+						  AND IFNULL(sle.warehouse, '') = %s
+						  AND IFNULL(sle.serial_and_batch_bundle, '') != ''
+						  AND IFNULL(sbe.`{batch_field}`, '') != ''
+						GROUP BY sbe.`{batch_field}`
+						HAVING SUM(
+							CASE
+								WHEN IFNULL(sle.actual_qty, 0) < 0
+									THEN -ABS(IFNULL(sbe.`{qty_field}`, 0))
+								ELSE ABS(IFNULL(sbe.`{qty_field}`, 0))
+							END
+						) > 0
+						""",
+						(item_code, warehouse),
+						as_dict=True,
+					) or []:
+						bn = _cstr(r.get("batch_no"))
+						q = flt(r.get("qty") or 0)
+						if bn and q > 0:
+							acc[bn] = max(acc.get(bn, 0.0), q)
+		except Exception:
+			pass
+	out = [{"batch_no": bn, "qty": flt(q)} for bn, q in acc.items() if bn and flt(q) > 0]
+	out.sort(key=lambda x: flt(x.get("qty") or 0), reverse=True)
+	return out
+
+
+def _spr_enable_serial_batch_fields_on_se(se) -> None:
+	"""ERPNext v15: batched items need use_serial_batch_fields on Stock Entry lines."""
+	if not se:
+		return
+	se_meta = frappe.get_meta("Stock Entry")
+	if se_meta.has_field("use_serial_batch_fields"):
+		se.use_serial_batch_fields = 1
+	line_meta = frappe.get_meta("Stock Entry Detail")
+	if not line_meta.has_field("use_serial_batch_fields"):
+		return
+	for d in se.items or []:
+		if d.item_code:
+			d.use_serial_batch_fields = 1
+
+
+def _spr_expand_outbound_lines_by_batch(se) -> None:
+	"""Split outbound STE lines across batches when one batch cannot cover the full qty."""
+	if not se or not se.items:
+		return
+	new_lines: list = []
+	for d in list(se.items or []):
+		if not d.item_code or not d.get("s_warehouse"):
+			new_lines.append(d)
+			continue
+		has_batch = cint(frappe.db.get_value("Item", d.item_code, "has_batch_no") or 0)
+		need = flt(d.get("transfer_qty") or d.get("qty"))
+		if not has_batch or need <= 0:
+			new_lines.append(d)
+			continue
+		batches = _spr_batches_in_warehouse(d.item_code, d.s_warehouse)
+		if not batches:
+			d.batch_no = ""
+			new_lines.append(d)
+			continue
+		remaining = need
+		first = True
+		for br in batches:
+			if remaining <= 0:
+				break
+			bn = _cstr(br.get("batch_no"))
+			bq = flt(br.get("qty") or 0)
+			if not bn or bq <= 0:
+				continue
+			take = min(remaining, bq)
+			take = _spr_floor_rm_stock_qty(take)
+			if take <= 0:
+				continue
+			if first:
+				d.batch_no = bn
+				d.qty = take
+				d.transfer_qty = take
+				new_lines.append(d)
+				first = False
+			else:
+				new_lines.append(
+					{
+						"item_code": d.item_code,
+						"s_warehouse": d.s_warehouse,
+						"t_warehouse": d.t_warehouse,
+						"uom": d.uom,
+						"stock_uom": d.stock_uom,
+						"conversion_factor": flt(d.conversion_factor) or 1.0,
+						"batch_no": bn,
+						"qty": take,
+						"transfer_qty": take,
+						"work_order": d.get("work_order"),
+						"expense_account": d.get("expense_account"),
+						"cost_center": d.get("cost_center"),
+					}
+				)
+			remaining -= take
+		if first:
+			d.batch_no = ""
+			new_lines.append(d)
+	se.items = []
+	for row in new_lines:
+		if isinstance(row, dict):
+			se.append("items", row)
+		else:
+			se.items.append(row)
 
 
 def _spr_batch_available_qty(item_code: str, warehouse: str, batch_no: str) -> float:
@@ -969,7 +1148,7 @@ def _spr_finalize_mtfm_line_qty(sed, source_wh: str, requested_qty: float) -> fl
 	"""Assign batch (if item is batched) then cap line qty to true transferable stock."""
 	if not sed or not sed.item_code or not source_wh:
 		return 0.0
-	_spr_assign_batch_for_mtfm_line(sed, source_wh)
+	_spr_assign_batch_for_mtfm_line(sed, source_wh, flt(requested_qty))
 	qty = _spr_cap_qty_to_rm_available(
 		flt(requested_qty),
 		sed.item_code,
@@ -980,6 +1159,16 @@ def _spr_finalize_mtfm_line_qty(sed, source_wh: str, requested_qty: float) -> fl
 		sed.qty = qty
 		sed.transfer_qty = qty
 	return qty
+
+
+def _spr_prepare_mtfm_stock_entry_for_submit(se) -> None:
+	"""Batch split + serial/batch fields + cap lines before MTFM insert/submit."""
+	if not se:
+		return
+	_spr_enable_serial_batch_fields_on_se(se)
+	_spr_expand_outbound_lines_by_batch(se)
+	_spr_enable_serial_batch_fields_on_se(se)
+	_spr_cap_stock_entry_lines_to_max_transferable(se)
 
 
 def _spr_cap_stock_entry_lines_to_max_transferable(se) -> None:
@@ -4236,7 +4425,7 @@ class ShaftProductionRun(Document):
 		"""Insert MTFM for shortages; auto-submit when stock is available."""
 		self._spr_last_mtfm_error = ""
 		try:
-			_spr_cap_stock_entry_lines_to_max_transferable(se)
+			_spr_prepare_mtfm_stock_entry_for_submit(se)
 			self._spr_apply_stock_entry_item_accounts(se)
 			se.flags.ignore_mandatory = True
 			se.flags.ignore_permissions = True
@@ -4259,35 +4448,59 @@ class ShaftProductionRun(Document):
 					se.reload()
 					plain_msg = re.sub(r"<[^>]+>", "", submit_msg)
 					max_kg = _spr_parse_max_transferable_kg(plain_msg)
-					row_m = re.search(r"Row #(\d+)", plain_msg, flags=re.IGNORECASE)
-					row_idx = int(row_m.group(1)) - 1 if row_m else 0
-					for i, d in enumerate(se.items or []):
-						if not d.item_code or not d.get("s_warehouse"):
-							continue
-						req = flt(d.get("transfer_qty") or d.get("qty"))
-						if max_kg > 0 and i == row_idx:
-							req = min(req, max_kg)
-						_spr_finalize_mtfm_line_qty(d, d.s_warehouse, req)
-					# Drop zero-qty lines — submit partial transfer when RM has some stock.
-					kept = []
-					for d in se.items or []:
-						tol = _spr_rm_wip_shortage_tolerance(
-							flt(d.get("transfer_qty") or d.get("qty"))
-						)
-						if flt(d.get("transfer_qty") or d.get("qty")) > tol:
-							kept.append(d)
-					se.items = kept
-					if not kept:
-						try:
-							frappe.delete_doc("Stock Entry", se.name, force=1)
-						except Exception:
-							pass
-						self._spr_last_mtfm_error = plain_msg
-						return ""
-					self._spr_apply_stock_entry_item_accounts(se)
-					se.flags.ignore_permissions = True
-					se.save()
-					se.submit()
+					if max_kg <= 0:
+						for d in se.items or []:
+							if d.get("s_warehouse"):
+								d.batch_no = ""
+						_spr_prepare_mtfm_stock_entry_for_submit(se)
+						self._spr_apply_stock_entry_item_accounts(se)
+						se.flags.ignore_permissions = True
+						se.save()
+						kept = [
+							d
+							for d in (se.items or [])
+							if flt(d.get("transfer_qty") or d.get("qty"))
+							> _spr_rm_wip_shortage_tolerance(flt(d.get("transfer_qty") or d.get("qty")))
+						]
+						se.items = kept
+						if not kept:
+							try:
+								frappe.delete_doc("Stock Entry", se.name, force=1)
+							except Exception:
+								pass
+							self._spr_last_mtfm_error = plain_msg
+							return ""
+						se.submit()
+					else:
+						row_m = re.search(r"Row #(\d+)", plain_msg, flags=re.IGNORECASE)
+						row_idx = int(row_m.group(1)) - 1 if row_m else 0
+						for i, d in enumerate(se.items or []):
+							if not d.item_code or not d.get("s_warehouse"):
+								continue
+							req = flt(d.get("transfer_qty") or d.get("qty"))
+							if i == row_idx:
+								req = min(req, max_kg)
+							_spr_finalize_mtfm_line_qty(d, d.s_warehouse, req)
+						# Drop zero-qty lines — submit partial transfer when RM has some stock.
+						kept = []
+						for d in se.items or []:
+							tol = _spr_rm_wip_shortage_tolerance(
+								flt(d.get("transfer_qty") or d.get("qty"))
+							)
+							if flt(d.get("transfer_qty") or d.get("qty")) > tol:
+								kept.append(d)
+						se.items = kept
+						if not kept:
+							try:
+								frappe.delete_doc("Stock Entry", se.name, force=1)
+							except Exception:
+								pass
+							self._spr_last_mtfm_error = plain_msg
+							return ""
+						self._spr_apply_stock_entry_item_accounts(se)
+						se.flags.ignore_permissions = True
+						se.save()
+						se.submit()
 				else:
 					raise
 			# Commit immediately so draft/submitted entry survives frappe.throw rollback during SPR before_submit.
@@ -4437,6 +4650,7 @@ class ShaftProductionRun(Document):
 				"conversion_factor": 1.0,
 				"qty": qty,
 				"transfer_qty": qty,
+				"work_order": wo_doc.name,
 			}
 			company = _cstr(getattr(se, "company", None)).strip()
 			exp_acc = _spr_resolve_expense_account(ic, company, item_src) if company else ""
@@ -4605,6 +4819,7 @@ class ShaftProductionRun(Document):
 		se.wip_warehouse = wip_wh
 		se.to_warehouse = wip_wh
 		self._set_stock_entry_spr_link(se)
+		_spr_enable_serial_batch_fields_on_se(se)
 		return se, wip_wh
 
 	def _create_wip_shortage_transfer_draft(self, wo_doc, chunk_total_qty: float, shortages: list[tuple[str, str, float, float, float]]) -> str:
@@ -9628,40 +9843,22 @@ def _spr_throw_trial_rm_stock_shortages(shortages: list[tuple]) -> None:
 	frappe.throw("\n".join(lines), title=_("Raw material stock shortage"))
 
 
-def _spr_assign_batch_for_mtfm_line(sed, source_wh: str) -> None:
+def _spr_assign_batch_for_mtfm_line(sed, source_wh: str, need_qty: float = 0) -> None:
+	"""Pick a batch that actually has stock in source warehouse (never a master-only fallback)."""
 	if sed.get("batch_no"):
 		return
 	has_batch = cint(frappe.db.get_value("Item", sed.item_code, "has_batch_no") or 0)
 	if not has_batch:
 		return
-	batch_rows = frappe.db.sql(
-		"""
-		SELECT sle.batch_no, SUM(sle.actual_qty) AS qty
-		FROM `tabStock Ledger Entry` sle
-		WHERE sle.item_code = %s
-		  AND sle.warehouse = %s
-		  AND sle.is_cancelled = 0
-		  AND sle.batch_no IS NOT NULL
-		  AND sle.batch_no != ''
-		GROUP BY sle.batch_no
-		HAVING SUM(sle.actual_qty) > 0
-		ORDER BY MIN(sle.creation) ASC
-		LIMIT 1
-		""",
-		(sed.item_code, source_wh),
-		as_dict=True,
-	)
-	if batch_rows:
-		sed.batch_no = batch_rows[0].batch_no
+	need = flt(need_qty or sed.get("transfer_qty") or sed.get("qty"))
+	batches = _spr_batches_in_warehouse(sed.item_code, source_wh)
+	if not batches:
 		return
-	fallback = frappe.db.get_value(
-		"Batch",
-		{"item": sed.item_code, "disabled": 0},
-		"name",
-		order_by="creation asc",
-	)
-	if fallback:
-		sed.batch_no = fallback
+	for br in batches:
+		if flt(br.get("qty") or 0) + 1e-9 >= need:
+			sed.batch_no = _cstr(br.get("batch_no"))
+			return
+	sed.batch_no = _cstr(batches[0].get("batch_no"))
 
 
 def _spr_create_and_submit_mtfm(wo_doc) -> str:
