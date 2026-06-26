@@ -3300,6 +3300,16 @@ class ShaftProductionRun(Document):
 				except Exception:
 					pass
 
+	def _spr_roll_net_weight_for_batch(self, batch_no: str) -> float:
+		"""FG qty from SPR roll line for a batch id."""
+		bn = _cstr(batch_no).strip()
+		if not bn:
+			return 0.0
+		for row in self.items or []:
+			if _cstr(row.get("batch_no")).strip() == bn:
+				return flt(self._row_fg_qty(row))
+		return 0.0
+
 	def _refresh_batch_qty_for_codes(self, batch_codes: list[str]):
 		"""Force-refresh Batch.batch_qty for given batch ids from stock ledger."""
 		for bn in {_cstr(x).strip() for x in (batch_codes or []) if _cstr(x).strip()}:
@@ -3363,8 +3373,15 @@ class ShaftProductionRun(Document):
 								)
 					except Exception:
 						pass
+				if abs(qty) <= 1e-9:
+					roll_qty = self._spr_roll_net_weight_for_batch(bn)
+					if roll_qty > 0:
+						qty = roll_qty
 				if frappe.db.has_column("Batch", "batch_qty"):
-					frappe.db.set_value("Batch", bn, "batch_qty", qty, update_modified=False)
+					frappe.db.sql(
+						"UPDATE `tabBatch` SET batch_qty = %s WHERE name = %s",
+						(qty, bn),
+					)
 				if frappe.db.has_column("Batch", "status"):
 					status = "Empty" if abs(qty) <= 1e-9 else "Active"
 					frappe.db.set_value("Batch", bn, "status", status, update_modified=False)
@@ -3423,7 +3440,7 @@ class ShaftProductionRun(Document):
 	def _spr_prune_wip_topup_when_rm_transferred(
 		self, wo_doc, shortages: list[tuple[str, str, float, float, float]]
 	) -> list[tuple[str, str, float, float, float]]:
-		"""Drop WIP top-up lines when that RM item is already transferred on the WO."""
+		"""Drop WIP top-up only for micro-shortages when that RM is already on WO transfer."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		if not wo_doc or not shortages:
 			return []
@@ -3432,9 +3449,10 @@ class ShaftProductionRun(Document):
 			ic = _cstr(item_code).strip()
 			if not ic:
 				continue
-			tol = _spr_rm_wip_shortage_tolerance(flt(req))
-			if _spr_wo_rm_transfer_remaining(wo_doc, ic) <= tol:
-				continue
+			req_tol = _spr_rm_wip_shortage_tolerance(flt(req))
+			if _spr_wo_rm_transfer_remaining(wo_doc, ic) <= req_tol:
+				if flt(short_qty) <= req_tol:
+					continue
 			out.append((item_code, wh, req, avl, short_qty))
 		return out
 
@@ -3482,7 +3500,7 @@ class ShaftProductionRun(Document):
 		return filtered
 
 	def _spr_cap_manufacture_rm_lines_to_wip_available(self, se, wo_doc) -> bool:
-		"""Cap WIP consume lines to available stock when WO RM transfer is already complete."""
+		"""Nudge consume lines only for sub-tolerance WIP/bin float drift — never cap real shortages."""
 		wo_doc = self._reload_work_order_doc(wo_doc)
 		wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
 		if not se or not wip_wh or not _spr_wo_rm_fully_transferred(wo_doc):
@@ -3507,7 +3525,7 @@ class ShaftProductionRun(Document):
 			if req <= avl:
 				continue
 			gap = req - avl
-			if gap > tol and not _spr_wo_rm_fully_transferred(wo_doc):
+			if gap > tol:
 				continue
 			cap = _spr_floor_rm_stock_qty(avl)
 			if cap <= 0:
@@ -5322,20 +5340,6 @@ class ShaftProductionRun(Document):
 			body = _("{0}\n\nNo stock in RM warehouse until you transfer:\n{1}").format(
 				body, no_stock_lines
 			)
-		has_real_block = False
-		for event in shortage_events or []:
-			if event.get("wip_topup"):
-				wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
-				if self._spr_prune_wip_topup_when_rm_transferred(
-					wo_doc, event.get("shortages") or []
-				):
-					has_real_block = True
-					break
-			else:
-				has_real_block = True
-				break
-		if not has_real_block:
-			return
 		frappe.throw(
 			_(
 				"Insufficient stock for {0} work order(s).\n\n{1}\n\n{2}"
@@ -5746,9 +5750,76 @@ class ShaftProductionRun(Document):
 			)
 			if has_batch and se_batch:
 				row["batch_no"] = se_batch
+				line_meta = frappe.get_meta("Stock Entry Detail")
+				if line_meta.has_field("use_serial_batch_fields"):
+					row["use_serial_batch_fields"] = 1
 			elif "batch_no" in row:
 				row["batch_no"] = ""
 			se.append("items", row)
+		_spr_enable_serial_batch_fields_on_se(se)
+
+	def _spr_backfill_manufacture_fg_batches(self, se_name: str, wo_doc, spr_rows: list) -> None:
+		"""Patch batch_no onto submitted Manufacture FG lines + SLE when ERPNext dropped them."""
+		if not se_name or not frappe.db.exists("Stock Entry", se_name):
+			return
+		se_doc = frappe.get_doc("Stock Entry", se_name)
+		item_code = _cstr(se_doc.get("production_item") or getattr(wo_doc, "production_item", None))
+		company = _cstr(se_doc.get("company") or getattr(wo_doc, "company", None))
+		fg_lines = [d for d in (se_doc.items or []) if cint(d.get("is_finished_item")) == 1]
+		if not fg_lines:
+			return
+
+		roll_by_qty: dict[str, list] = {}
+		for row in spr_rows or []:
+			bn = _cstr(getattr(row, "batch_no", "")).strip()
+			if not bn:
+				continue
+			qty_key = f"{flt(self._row_fg_qty(row), 6)}"
+			roll_by_qty.setdefault(qty_key, []).append(row)
+
+		used_batches: set = set()
+		for fg in fg_lines:
+			existing_bn = _cstr(fg.get("batch_no")).strip()
+			if existing_bn:
+				_spr_activate_batch_from_manufacture(
+					existing_bn, fg, se_doc, fallback_qty=flt(fg.get("qty"))
+				)
+				continue
+			fg_qty = flt(fg.get("qty"))
+			candidates = roll_by_qty.get(f"{flt(fg_qty, 6)}") or []
+			matched_row = None
+			for row in candidates:
+				bn = _cstr(getattr(row, "batch_no", "")).strip()
+				if bn and bn not in used_batches:
+					matched_row = row
+					break
+			if not matched_row:
+				for row in spr_rows or []:
+					bn = _cstr(getattr(row, "batch_no", "")).strip()
+					if bn and bn not in used_batches:
+						matched_row = row
+						break
+			if not matched_row:
+				continue
+			bn_raw = _cstr(getattr(matched_row, "batch_no", "")).strip()
+			used_batches.add(bn_raw)
+			batch_link = self._get_batch_link_name_for_stock_entry(
+				bn_raw, item_code, company, matched_row
+			)
+			if not batch_link:
+				continue
+			try:
+				updates = {"batch_no": batch_link}
+				line_meta = frappe.get_meta("Stock Entry Detail")
+				if line_meta.has_field("use_serial_batch_fields"):
+					updates["use_serial_batch_fields"] = 1
+				frappe.db.set_value("Stock Entry Detail", fg.name, updates, update_modified=False)
+				fg.batch_no = batch_link
+				_spr_activate_batch_from_manufacture(
+					batch_link, fg, se_doc, fallback_qty=fg_qty or self._row_fg_qty(matched_row)
+				)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), f"SPR manufacture FG batch backfill:{se_name}")
 
 	def _wo_submitted_manufacture_fg_qty(self, wo_id: str) -> float:
 		"""Submitted Manufacture FG qty already posted against this WO."""
@@ -6208,6 +6279,7 @@ class ShaftProductionRun(Document):
 		self._spr_cap_manufacture_rm_lines_to_wip_available(se, wo_doc)
 		self._assign_rm_batches_for_stock_entry(se, wo_id)
 		self._spr_cap_manufacture_rm_lines_to_wip_available(se, wo_doc)
+		_spr_enable_serial_batch_fields_on_se(se)
 		self._spr_apply_stock_entry_item_accounts(se)
 		se.stock_entry_type = self._manufacture_stock_entry_type_name()
 		se.purpose = "Manufacture"
@@ -6235,6 +6307,7 @@ class ShaftProductionRun(Document):
 		try:
 			se.flags.ignore_duplicate_for_work_order = True
 			se.submit()
+			self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
 		except Exception as e:
 			try:
 				frappe.db.rollback(save_point=mfg_submit_savepoint)
@@ -11222,13 +11295,19 @@ def _spr_set_batch_qty_on_master(batch_no: str, qty: float) -> None:
 	if not batch_no or not frappe.db.exists("Batch", batch_no):
 		return
 	qty = flt(qty)
-	updates: dict = {}
 	if frappe.db.has_column("Batch", "batch_qty"):
-		updates["batch_qty"] = qty
+		frappe.db.sql(
+			"UPDATE `tabBatch` SET batch_qty = %s WHERE name = %s",
+			(qty, batch_no),
+		)
 	if frappe.db.has_column("Batch", "status"):
-		updates["status"] = "Active" if qty > 0 else "Empty"
-	if updates:
-		frappe.db.set_value("Batch", batch_no, updates, update_modified=False)
+		frappe.db.set_value(
+			"Batch",
+			batch_no,
+			"status",
+			"Active" if qty > 0 else "Empty",
+			update_modified=False,
+		)
 
 
 def _spr_batch_is_active(batch_no: str) -> bool:
