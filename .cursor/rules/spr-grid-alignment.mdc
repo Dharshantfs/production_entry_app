@@ -1,0 +1,32 @@
+---
+description: Permanent SPR Roll Production Results grid alignment — do not regress
+globs: production_entry/public/js/shaft_production_run.js,production_entry/public/js/child_grid_columns.js
+alwaysApply: false
+---
+
+# SPR child-grid alignment (Roll Production Results / items)
+
+**Status:** Fixed in `cae2c52`. Available Jobs (`shaft_jobs`) stays aligned; `items` had zig-zag, blink on save, and header offset.
+
+## Required behavior
+
+1. **Header/body column widths** — match by `data-fieldname` via `spr_find_grid_header_col`, never by header column index.
+2. **Misalignment detection** — use `spr_grid_dom_columns_misaligned` + `spr_child_grid_needs_repair`; call `spr_repair_child_grid_alignment` only when needed.
+3. **`after_save` / Save Row** — lightweight pass: min-widths, GSM colours, one deferred repair at ~280ms. **No** staggered full rebuilds.
+4. **`spr_light_grid_scroll_sync`** — horizontal scroll sync only. **No** dynamic header width mutation.
+5. **Structural CSS** — `row-check` 36px, `row-index` 60px (header + body). Bump `sprItemsCssVer` when changing grid CSS.
+6. **Row edit** — never apply `display:flex` + `order` on `.grid-form-row` or body rows; never use `MutationObserver` on grid body.
+
+## Forbidden (causes zig-zag / blink / broken entry)
+
+- `spr_sync_header_body_alignment` or debounced variants
+- `spr_schedule_child_grids_realign` on save / Save Row / `spr_schedule_item_row_styles_after_doc_write`
+- `spr_force_child_grids_realign` in `after_save` or post-save health watch
+- Index-based header min-width (`$headerCols.eq(i)`)
+- `spr_inject_column_order`, flex hacks on grid rows, repeated `grid.refresh()` after save
+
+## When changing grid code
+
+- Test draft SPR: headers align with data, horizontal scroll, Create Entry / row edit still opens.
+- Test save + Save Row: no blink, alignment unchanged.
+- If CSS changes: increment `sprItemsCssVer` in `ensure_spr_item_stylesheet()`.

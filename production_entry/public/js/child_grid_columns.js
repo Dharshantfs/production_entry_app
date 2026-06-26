@@ -6,6 +6,9 @@
  * - Child doctype JSON should set every field in_list_view: 0 (JS owns columns).
  * - Never set hidden=1 on grid fields — only toggle in_list_view.
  * - Always reset all columns, apply ordered show list, then realign header + body.
+ *
+ * SPR Shaft Production Run: see .cursor/rules/spr-grid-alignment.mdc — use cg.apply / cg_fix_row_columns;
+ * do not add index-based header width hacks in shaft_production_run.js.
  */
 frappe.provide('production_entry.grid_columns');
 

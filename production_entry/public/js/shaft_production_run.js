@@ -297,6 +297,18 @@ function spr_should_block_grid_realign(frm) {
 	return spr_items_grid_is_editing(frm);
 }
 
+/**
+ * SPR child-grid alignment contract — do not regress (fixed cae2c52).
+ * Cursor rule: .cursor/rules/spr-grid-alignment.mdc
+ *
+ * - Min-widths: fieldname via spr_find_grid_header_col (never header index).
+ * - after_save / Save Row: light pass only — no staggered spr_force_child_grids_realign.
+ * - spr_light_grid_scroll_sync: scroll only — no dynamic header width hacks.
+ * - row-index 60px in CSS (sprItemsCssVer); repair via spr_child_grid_needs_repair only.
+ * - Never: flex+order on grid rows, MutationObserver on grid body, spr_sync_header_body_alignment.
+ */
+const SPR_GRID_ALIGNMENT_CONTRACT_VER = '1';
+
 const SPR_ITEMS_COL_MIN_PX = {
 	party_code: 92,
 	work_order: 108,
@@ -2565,6 +2577,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	after_save: function (frm) {
+		// SPR_GRID_ALIGNMENT_CONTRACT_VER — keep lightweight; see .cursor/rules/spr-grid-alignment.mdc
 		spr_mark_just_saved(frm);
 		spr_register_spr_page_buttons_after_save(frm);
 		spr_sync_no_of_rolls_created(frm, { silent: true });
