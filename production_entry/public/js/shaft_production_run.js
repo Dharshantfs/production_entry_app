@@ -396,17 +396,50 @@ function spr_apply_grid_column_min_widths(frm, fieldname, widthMap) {
  * Only touches header cells — no body row loop, no hang.
  */
 /**
- * THE REAL FIX: inject CSS `order` on every body [data-fieldname] cell
- * so they VISUALLY appear in our desired column order, matching the header.
- * This works even when Frappe renders body cells in its own docfield order.
- * No body-row DOM loop — just one CSS <style> tag, very fast.
+ * Resolve fieldname of a grid cell wrapper. data-fieldname lives either on the
+ * wrapper itself OR on a nested element (Frappe varies). Returns '' if none.
+ */
+function spr_cell_fieldname($cell) {
+	if (!$cell || !$cell.length) { return ''; }
+	var fn = $cell.attr('data-fieldname');
+	if (fn) { return fn; }
+	var $inner = $cell.find('[data-fieldname]').first();
+	if ($inner.length) { return $inner.attr('data-fieldname') || ''; }
+	return '';
+}
+
+/**
+ * Stamp data-spr-fn="X" on every direct-child cell of every grid-row + heading-row.
+ * Required because data-fieldname is often nested, so CSS `> [data-fieldname]` fails.
+ * Also stamps each header cell with its index-based desired position.
+ */
+function spr_stamp_grid_cell_fieldnames($wrap) {
+	if (!$wrap || !$wrap.length) { return; }
+	$wrap.find('.grid-row, .grid-heading-row').each(function () {
+		var $row = $(this);
+		$row.children().each(function () {
+			var $c = $(this);
+			if ($c.hasClass('row-check') || $c.hasClass('row-index')) { return; }
+			if ($c.attr('data-spr-fn')) { return; }
+			var fn = spr_cell_fieldname($c);
+			if (fn) { $c.attr('data-spr-fn', fn); }
+		});
+	});
+}
+
+/**
+ * THE REAL FIX: stamp `data-spr-fn` then apply CSS `order` by fieldname so body
+ * cells appear in the same visual order as header cells. Two-pronged:
+ *  1) Inject a <style> tag with order rules keyed by [data-spr-fn="X"] (covers future rows).
+ *  2) Walk current body rows and set inline `style.order` immediately (covers current rows
+ *     even before stamping completes / for cells that already have data-fieldname directly).
+ *  3) Install a MutationObserver on .grid-body to re-stamp + re-order on row add/render.
  */
 function spr_inject_column_order_css(frm, fieldname) {
 	var fd = spr_get_field_dict(frm, fieldname);
 	if (!fd || !fd.$wrapper || !fd.$wrapper.length) {
 		return;
 	}
-	// Resolve the desired column list
 	var colList = [];
 	if (fieldname === 'items') {
 		var cfg = spr_get_items_list_view_config(frm);
@@ -414,31 +447,76 @@ function spr_inject_column_order_css(frm, fieldname) {
 	} else if (fieldname === 'shaft_jobs') {
 		colList = spr_build_shaft_jobs_show_list(frm) || [];
 	}
-	if (!colList.length) {
-		return;
-	}
+	if (!colList.length) { return; }
+
+	var $wrap = fd.$wrapper;
 	var wrapClass = fieldname === 'items' ? '.spr-items-wrap' : '.spr-shaft-jobs-wrap';
 	var styleId = 'spr-col-order-' + fieldname;
+
+	// Build position map fieldname -> order
+	var orderMap = {};
+	colList.forEach(function (fn, i) { orderMap[fn] = i + 2; });
+
+	// 1) CSS — covers future rows
 	var css = '';
-	// Rows must be flex (Frappe already makes them flex, but ensure it)
 	css += wrapClass + ' .grid-row,' + wrapClass + ' .grid-heading-row{display:flex!important;flex-wrap:nowrap!important;}\n';
-	// Structural cells
-	css += wrapClass + ' .grid-row>.row-check,' + wrapClass + ' .grid-heading-row>.row-check{order:0!important;flex:0 0 36px!important;min-width:36px!important;}\n';
-	css += wrapClass + ' .grid-row>.row-index,' + wrapClass + ' .grid-heading-row>.row-index{order:1!important;flex:0 0 44px!important;min-width:44px!important;}\n';
-	// Data columns — body cells ordered by data-fieldname
+	css += wrapClass + ' .grid-row>.row-check,' + wrapClass + ' .grid-heading-row>.row-check{order:0!important;flex:0 0 36px!important;}\n';
+	css += wrapClass + ' .grid-row>.row-index,' + wrapClass + ' .grid-heading-row>.row-index{order:1!important;flex:0 0 44px!important;}\n';
 	colList.forEach(function (fn, i) {
-		css += wrapClass + ' .grid-row>[data-fieldname="' + fn + '"]{order:' + (i + 2) + '!important;}\n';
+		var o = i + 2;
+		css += wrapClass + ' .grid-row>[data-spr-fn="' + fn + '"],' +
+			wrapClass + ' .grid-heading-row>[data-spr-fn="' + fn + '"]' +
+			'{order:' + o + '!important;}\n';
 	});
 	$('style#' + styleId).remove();
 	$('<style id="' + styleId + '">' + css + '</style>').appendTo('head');
 
-	// Header cells: stamp order by current DOM position (header is already in correct order)
-	var $headRow = fd.$wrapper.find('.grid-heading-row').first();
-	$headRow.children('.row-check').css('order', '0');
-	$headRow.children('.row-index').css('order', '1');
-	$headRow.children(':not(.row-check):not(.row-index)').each(function (i) {
-		$(this).css('order', String(i + 2));
+	// 2) Stamp + apply inline order to current rows
+	spr_stamp_grid_cell_fieldnames($wrap);
+	$wrap.find('.grid-row, .grid-heading-row').each(function () {
+		var $row = $(this);
+		$row.children().each(function () {
+			var $c = $(this);
+			if ($c.hasClass('row-check')) { $c.css('order', '0'); return; }
+			if ($c.hasClass('row-index')) { $c.css('order', '1'); return; }
+			var fn = $c.attr('data-spr-fn') || spr_cell_fieldname($c);
+			if (fn && orderMap[fn] != null) {
+				$c.css('order', String(orderMap[fn]));
+			}
+		});
 	});
+
+	// 3) MutationObserver — keep new rows in order
+	var obsKey = '_spr_order_obs_' + fieldname;
+	if (frm[obsKey]) {
+		try { frm[obsKey].disconnect(); } catch (e) { /* noop */ }
+	}
+	var $body = $wrap.find('.grid-body').first();
+	if ($body.length && typeof MutationObserver !== 'undefined') {
+		var bodyEl = $body[0];
+		var pending = null;
+		var observer = new MutationObserver(function () {
+			if (pending) { return; }
+			pending = setTimeout(function () {
+				pending = null;
+				spr_stamp_grid_cell_fieldnames($wrap);
+				$wrap.find('.grid-row').each(function () {
+					var $row = $(this);
+					$row.children().each(function () {
+						var $c = $(this);
+						if ($c.hasClass('row-check')) { $c.css('order', '0'); return; }
+						if ($c.hasClass('row-index')) { $c.css('order', '1'); return; }
+						var fn = $c.attr('data-spr-fn');
+						if (fn && orderMap[fn] != null) {
+							$c.css('order', String(orderMap[fn]));
+						}
+					});
+				});
+			}, 80);
+		});
+		observer.observe(bodyEl, { childList: true, subtree: true });
+		frm[obsKey] = observer;
+	}
 }
 
 /**
@@ -467,19 +545,36 @@ function spr_lock_grid_column_widths(frm, fieldname, widthMap) {
 	// Structural cells
 	$headRow.children('.row-check').css({ 'min-width': '36px', 'width': '36px', 'max-width': '36px', 'flex': '0 0 36px' });
 	$headRow.children('.row-index').css({ 'min-width': '44px', 'width': '44px', 'max-width': '44px', 'flex': '0 0 44px' });
-	// Data columns — match header[i] width to body[i] width (both in desired order now due to CSS order)
-	var $headDataCols = $headRow.children(':not(.row-check):not(.row-index)');
-	var $bodyDataCols = $bodyRow.children(':not(.row-check):not(.row-index)');
-	var n = Math.min($headDataCols.length, $bodyDataCols.length);
-	for (var i = 0; i < n; i++) {
-		var $h = $headDataCols.eq(i);
-		var $b = $bodyDataCols.eq(i);
-		var fn = $b.attr('data-fieldname') || ($b.find('[data-fieldname]').first().attr('data-fieldname') || '');
-		var minPx = (fn && widthMap && widthMap[fn]) || SPR_GRID_DEFAULT_COL_MIN_PX;
-		var bodyW = Math.ceil($b.outerWidth() || 0);
-		var w = bodyW >= 24 ? bodyW : minPx;
-		$h.css({ 'min-width': w + 'px', 'width': w + 'px', 'max-width': w + 'px', 'flex': '0 0 ' + w + 'px', 'box-sizing': 'border-box', 'flex-shrink': '0', 'flex-grow': '0' });
-	}
+
+	// Build body cell map: fieldname -> measured width
+	var bodyWidthByFn = {};
+	$bodyRow.children().each(function () {
+		var $c = $(this);
+		if ($c.hasClass('row-check') || $c.hasClass('row-index')) { return; }
+		var fn = $c.attr('data-spr-fn') || spr_cell_fieldname($c);
+		if (!fn) { return; }
+		var w = Math.ceil($c.outerWidth() || 0);
+		if (w >= 24) { bodyWidthByFn[fn] = w; }
+	});
+
+	// Match each header cell to its body cell BY FIELDNAME
+	$headRow.children().each(function () {
+		var $h = $(this);
+		if ($h.hasClass('row-check') || $h.hasClass('row-index')) { return; }
+		var fn = $h.attr('data-spr-fn') || spr_cell_fieldname($h);
+		if (!fn) { return; }
+		var minPx = (widthMap && widthMap[fn]) || SPR_GRID_DEFAULT_COL_MIN_PX;
+		var w = bodyWidthByFn[fn] || minPx;
+		$h.css({
+			'min-width': w + 'px',
+			'width': w + 'px',
+			'max-width': w + 'px',
+			'flex': '0 0 ' + w + 'px',
+			'box-sizing': 'border-box',
+			'flex-shrink': '0',
+			'flex-grow': '0',
+		});
+	});
 }
 
 function spr_debounced_lock_grid_column_widths(frm, fieldname) {
@@ -6833,7 +6928,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '51';
+	const sprItemsCssVer = '52';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
