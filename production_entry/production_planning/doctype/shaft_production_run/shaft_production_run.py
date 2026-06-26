@@ -1174,9 +1174,21 @@ def _spr_finalize_mtfm_line_qty(sed, source_wh: str, requested_qty: float) -> fl
 	return qty
 
 
-def _spr_prepare_mtfm_stock_entry_for_submit(se) -> None:
+def _spr_prepare_mtfm_stock_entry_for_submit(se, skip_batch: bool = False) -> None:
 	"""Batch split + serial/batch fields + cap lines before MTFM insert/submit."""
 	if not se:
+		return
+	if skip_batch:
+		line_meta = frappe.get_meta("Stock Entry Detail")
+		se_meta = frappe.get_meta("Stock Entry")
+		for d in se.items or []:
+			if d.get("s_warehouse"):
+				d.batch_no = ""
+			if line_meta.has_field("use_serial_batch_fields"):
+				d.use_serial_batch_fields = 0
+		if se_meta.has_field("use_serial_batch_fields"):
+			se.use_serial_batch_fields = 0
+		_spr_cap_stock_entry_lines_to_max_transferable(se)
 		return
 	_spr_enable_serial_batch_fields_on_se(se)
 	_spr_expand_outbound_lines_by_batch(se)
@@ -3408,6 +3420,24 @@ class ShaftProductionRun(Document):
 				out.append((ic, wh, flt(req), flt(avl), capped))
 		return out
 
+	def _spr_prune_wip_topup_when_rm_transferred(
+		self, wo_doc, shortages: list[tuple[str, str, float, float, float]]
+	) -> list[tuple[str, str, float, float, float]]:
+		"""Drop WIP top-up lines when that RM item is already transferred on the WO."""
+		wo_doc = self._reload_work_order_doc(wo_doc)
+		if not wo_doc or not shortages:
+			return []
+		out = []
+		for item_code, wh, req, avl, short_qty in shortages:
+			ic = _cstr(item_code).strip()
+			if not ic:
+				continue
+			tol = _spr_rm_wip_shortage_tolerance(flt(req))
+			if _spr_wo_rm_transfer_remaining(wo_doc, ic) <= tol:
+				continue
+			out.append((item_code, wh, req, avl, short_qty))
+		return out
+
 	def _spr_filter_preflight_shortage_events(self, shortage_events) -> list:
 		"""Drop WIP top-up blocks when WO RM is already fully transferred (cap at manufacture)."""
 		filtered = []
@@ -3416,9 +3446,11 @@ class ShaftProductionRun(Document):
 				filtered.append(event)
 				continue
 			wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
-			if wo_doc and _spr_wo_rm_fully_transferred(wo_doc):
-				continue
-			filtered.append(event)
+			pruned = self._spr_prune_wip_topup_when_rm_transferred(
+				wo_doc, event.get("shortages") or []
+			)
+			if pruned:
+				filtered.append({**event, "shortages": pruned})
 		return filtered
 
 	def _filter_shortage_events_by_wo_transfer(self, shortage_events) -> list:
@@ -3426,7 +3458,12 @@ class ShaftProductionRun(Document):
 		filtered = []
 		for event in shortage_events or []:
 			if event.get("wip_topup"):
-				filtered.append(event)
+				wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
+				pruned = self._spr_prune_wip_topup_when_rm_transferred(
+					wo_doc, event.get("shortages") or []
+				)
+				if pruned:
+					filtered.append({**event, "shortages": pruned})
 				continue
 			wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
 			shortages = self._filter_shortages_by_wo_transfer_remaining(
@@ -3678,6 +3715,8 @@ class ShaftProductionRun(Document):
 
 	def _rm_shortages_for_se(self, se, wo_doc=None) -> list[tuple[str, str, float, float, float]]:
 		"""Return RM shortages as (item_code, s_warehouse, required, available, shortage)."""
+		if wo_doc:
+			wo_doc = self._reload_work_order_doc(wo_doc)
 		out = []
 		for d in se.items or []:
 			if not d.item_code or d.get("t_warehouse"):
@@ -4490,7 +4529,9 @@ class ShaftProductionRun(Document):
 						for d in se.items or []:
 							if d.get("s_warehouse"):
 								d.batch_no = ""
-						_spr_prepare_mtfm_stock_entry_for_submit(se)
+								if frappe.get_meta("Stock Entry Detail").has_field("use_serial_batch_fields"):
+									d.use_serial_batch_fields = 0
+						_spr_prepare_mtfm_stock_entry_for_submit(se, skip_batch=True)
 						self._spr_apply_stock_entry_item_accounts(se)
 						se.flags.ignore_permissions = True
 						se.save()
@@ -4801,8 +4842,10 @@ class ShaftProductionRun(Document):
 			if chunk_total_qty <= 0:
 				continue
 			preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
+			self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
 			shortages = self._rm_shortages_for_se(preview_se, wo_doc)
 			wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
+			wip_topup = self._spr_prune_wip_topup_when_rm_transferred(wo_doc, wip_topup)
 			if shortages:
 				blocking.append(
 					{
@@ -5279,6 +5322,20 @@ class ShaftProductionRun(Document):
 			body = _("{0}\n\nNo stock in RM warehouse until you transfer:\n{1}").format(
 				body, no_stock_lines
 			)
+		has_real_block = False
+		for event in shortage_events or []:
+			if event.get("wip_topup"):
+				wo_doc = self._reload_work_order_doc(event.get("wo_doc"))
+				if self._spr_prune_wip_topup_when_rm_transferred(
+					wo_doc, event.get("shortages") or []
+				):
+					has_real_block = True
+					break
+			else:
+				has_real_block = True
+				break
+		if not has_real_block:
+			return
 		frappe.throw(
 			_(
 				"Insufficient stock for {0} work order(s).\n\n{1}\n\n{2}"
@@ -11136,10 +11193,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 				frappe.log_error(frappe.get_traceback(), f"SPR batch sync line update:{spr_name}")
 
 	spr.sync_batch_custom_fields()
-	activated_count = sum(
-		1 for bn in all_batch_codes
-		if _cstr(frappe.db.get_value("Batch", bn, "status")) == "Active"
-	)
+	activated_count = sum(1 for bn in all_batch_codes if _spr_batch_is_active(bn))
 
 	total_sle_patched = sum(s.get("sle_patched", 0) for s in skipped if isinstance(s, dict))
 	total_sle_patched += sum(u.get("sle_patched", 0) for u in updated_lines if isinstance(u, dict))
@@ -11160,6 +11214,33 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		"skipped_count": len(skipped),
 		"skipped": skipped[:100],
 	}
+
+
+def _spr_set_batch_qty_on_master(batch_no: str, qty: float) -> None:
+	"""Update Batch.batch_qty (and status when the column exists on this site)."""
+	batch_no = _cstr(batch_no).strip()
+	if not batch_no or not frappe.db.exists("Batch", batch_no):
+		return
+	qty = flt(qty)
+	updates: dict = {}
+	if frappe.db.has_column("Batch", "batch_qty"):
+		updates["batch_qty"] = qty
+	if frappe.db.has_column("Batch", "status"):
+		updates["status"] = "Active" if qty > 0 else "Empty"
+	if updates:
+		frappe.db.set_value("Batch", batch_no, updates, update_modified=False)
+
+
+def _spr_batch_is_active(batch_no: str) -> bool:
+	"""True when batch master shows positive qty (status column optional)."""
+	batch_no = _cstr(batch_no).strip()
+	if not batch_no or not frappe.db.exists("Batch", batch_no):
+		return False
+	if frappe.db.has_column("Batch", "batch_qty"):
+		return flt(frappe.db.get_value("Batch", batch_no, "batch_qty") or 0) > 0
+	if frappe.db.has_column("Batch", "status"):
+		return _cstr(frappe.db.get_value("Batch", batch_no, "status")) == "Active"
+	return False
 
 
 def _spr_batch_sle_qty(batch_no: str, item_code: str = "", warehouse: str = "") -> float:
@@ -11211,12 +11292,8 @@ def _spr_activate_batch_from_manufacture(batch_no: str, fg_line, se_doc, fallbac
 		sle_qty = _spr_batch_sle_qty(batch_no)
 
 	final_qty = sle_qty if sle_qty > 0 else fg_qty
-	status = "Active" if final_qty > 0 else "Empty"
-	frappe.db.sql(
-		"""UPDATE `tabBatch` SET batch_qty = %s, status = %s WHERE name = %s""",
-		(final_qty, status, batch_no),
-	)
-	return final_qty if status == "Active" else 0.0
+	_spr_set_batch_qty_on_master(batch_no, final_qty)
+	return final_qty if final_qty > 0 else 0.0
 
 
 def _spr_patch_sle_batch_for_fg_line(
@@ -11299,10 +11376,7 @@ def _spr_activate_batches(batch_codes: list[str]) -> int:
 				)[0][0] or 0
 			)
 			new_status = "Active" if qty > 0 else "Empty"
-			frappe.db.sql(
-				"""UPDATE `tabBatch` SET batch_qty = %s, status = %s WHERE name = %s""",
-				(qty, new_status, bn),
-			)
+			_spr_set_batch_qty_on_master(bn, qty)
 			if new_status == "Active":
 				activated += 1
 		except Exception:
