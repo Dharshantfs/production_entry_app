@@ -726,6 +726,7 @@ function spr_bind_items_grid_edit_guard(frm) {
 		return;
 	}
 	frm._spr_items_edit_guard_bound = true;
+	spr_install_items_row_action_handlers(frm);
 	grid.wrapper.on('focusin.sprGridEdit', 'input, textarea, select', function () {
 		frm._spr_items_grid_editing = true;
 	});
@@ -807,6 +808,22 @@ function spr_install_items_grid_column_guard(frm) {
 	});
 }
 
+function spr_after_items_grid_columns_changed(frm) {
+	if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
+		return;
+	}
+	ensure_spr_item_stylesheet();
+	spr_apply_grid_wrap_classes(frm);
+	spr_reapply_item_row_styles_with_retries(frm, [0, 80, 200, 450, 800, 1200, 1800]);
+	[0, 120, 350, 700].forEach(function (ms) {
+		setTimeout(function () {
+			if (frm && frm.fields_dict && frm.fields_dict.items) {
+				spr_apply_items_row_lock_ui(frm);
+			}
+		}, ms);
+	});
+}
+
 function spr_bind_spr_grid_column_configure_hook(frm, fieldname) {
 	if (!frm || !fieldname) {
 		return;
@@ -823,11 +840,25 @@ function spr_bind_spr_grid_column_configure_hook(frm, fieldname) {
 	const markUserConfigured = function () {
 		grid._spr_columns_user_locked = true;
 	};
+	const afterColumnsChanged = function () {
+		if (fieldname === 'items') {
+			spr_after_items_grid_columns_changed(frm);
+		}
+	};
 	if (typeof grid.configure_columns === 'function') {
 		const origConfigure = grid.configure_columns.bind(grid);
 		grid.configure_columns = function () {
 			const ret = origConfigure.apply(grid, arguments);
 			setTimeout(markUserConfigured, 80);
+			return ret;
+		};
+	}
+	if (typeof grid.setup_visible_columns === 'function' && !grid._spr_setup_visible_columns_wrapped) {
+		grid._spr_setup_visible_columns_wrapped = true;
+		const origSetup = grid.setup_visible_columns.bind(grid);
+		grid.setup_visible_columns = function () {
+			const ret = origSetup.apply(grid, arguments);
+			setTimeout(afterColumnsChanged, 40);
 			return ret;
 		};
 	}
@@ -838,6 +869,32 @@ function spr_bind_spr_grid_column_configure_hook(frm, fieldname) {
 					markUserConfigured();
 				}
 			}, 400);
+		});
+	}
+	if (fieldname === 'items' && !frm._spr_items_col_modal_hook) {
+		frm._spr_items_col_modal_hook = true;
+		$(document).on(
+			'click.sprItemsColModal',
+			'.modal.show .btn-modal-primary, .modal.show .reset-grid, .modal.show .reset-to-default',
+			function () {
+				const $modal = $(this).closest('.modal');
+				if (!$modal.length) {
+					return;
+				}
+				const title = ($modal.find('.modal-title').text() || '').trim();
+				if (title.indexOf('Configure Columns') === -1 && title.indexOf('Configure Grid') === -1) {
+					return;
+				}
+				setTimeout(afterColumnsChanged, 120);
+			}
+		);
+		$(document).on('hidden.bs.modal.sprItemsColModal', '.modal', function () {
+			const $modal = $(this);
+			const title = ($modal.find('.modal-title').text() || '').trim();
+			if (title.indexOf('Configure Columns') === -1 && title.indexOf('Configure Grid') === -1) {
+				return;
+			}
+			afterColumnsChanged();
 		});
 	}
 }
@@ -2339,35 +2396,34 @@ function spr_get_items_grid_focus_cdn(frm) {
 	return rowEl.getAttribute('data-name') || rowEl.getAttribute('data-docname') || null;
 }
 
-/** Resolve child row name from a grid Button click (Frappe often passes wrong cdn). */
+/** Resolve child row name from a grid Button click (Frappe 16 DataTable often has no data-docname on rows). */
 function spr_cdn_from_items_grid_button($btn, frm) {
-	if (!$btn || !$btn.length) {
+	if (!$btn || !$btn.length || !frm || !frm.doc) {
 		return '';
 	}
-	const $row = $btn.closest('.grid-row, .dt-row, tbody tr[data-idx], .editable-row');
-	if ($row.length) {
-		const fromAttr = $row.attr('data-docname') || $row.attr('data-name');
-		if (fromAttr) {
-			return fromAttr;
+	const cdt = SPR_SPI_DOCTYPE;
+	const items = frm.doc.items || [];
+	const $domRows = sprGetItemsDatatableBodyRows(frm);
+	if ($domRows && $domRows.length) {
+		for (let i = 0; i < $domRows.length; i++) {
+			const node = $domRows.get(i);
+			if (node && $.contains(node, $btn[0]) && items[i] && items[i].name) {
+				return items[i].name;
+			}
 		}
-	}
-	if (frm && frm.fields_dict && frm.fields_dict.items) {
-		const $domRows = sprGetItemsDatatableBodyRows(frm);
-		const items = frm.doc.items || [];
-		const $clicked = $btn.closest('.dt-row, .grid-row, tbody tr[data-idx]');
-		if ($domRows && $domRows.length && $clicked.length) {
+		const $clicked = $btn.closest('.dt-row, .grid-row, tbody tr[data-idx]').not('.grid-form-row, .dt-row-filter');
+		if ($clicked.length) {
 			const idx = $domRows.index($clicked);
 			if (idx >= 0 && items[idx] && items[idx].name) {
 				return items[idx].name;
 			}
 		}
-		if ($domRows && $domRows.length) {
-			for (let i = 0; i < $domRows.length; i++) {
-				const node = $domRows.get(i);
-				if (node && $.contains(node, $btn[0]) && items[i] && items[i].name) {
-					return items[i].name;
-				}
-			}
+	}
+	const $row = $btn.closest('.grid-row, .dt-row, tbody tr[data-idx], .editable-row').not('.grid-form-row, .dt-row-filter');
+	if ($row.length) {
+		const fromAttr = $row.attr('data-docname') || $row.attr('data-name');
+		if (fromAttr && locals[cdt] && locals[cdt][fromAttr]) {
+			return fromAttr;
 		}
 	}
 	return '';
@@ -2375,12 +2431,12 @@ function spr_cdn_from_items_grid_button($btn, frm) {
 
 function spr_resolve_items_row_cdn(frm, cdt, cdn) {
 	cdt = cdt || SPR_SPI_DOCTYPE;
-	if (cdn && locals[cdt] && locals[cdt][cdn]) {
-		return cdn;
-	}
 	const fromBtn = frm && frm._spr_row_action_cdn;
 	if (fromBtn && locals[cdt] && locals[cdt][fromBtn]) {
 		return fromBtn;
+	}
+	if (cdn && locals[cdt] && locals[cdt][cdn]) {
+		return cdn;
 	}
 	const fromFocus = spr_get_items_grid_focus_cdn(frm);
 	if (fromFocus && locals[cdt] && locals[cdt][fromFocus]) {
@@ -2389,24 +2445,76 @@ function spr_resolve_items_row_cdn(frm, cdt, cdn) {
 	return cdn || '';
 }
 
-function spr_install_items_row_action_cdn_capture(frm) {
-	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
-	if (!grid || !grid.wrapper || grid._spr_row_action_cdn_installed) {
+function spr_invoke_items_row_action(frm, action, cdn) {
+	if (!frm || !cdn) {
 		return;
 	}
-	grid._spr_row_action_cdn_installed = true;
-	const selector = [
-		'[data-fieldname="save_row"] button',
-		'[data-fieldname="edit_row"] button',
-		'[data-fieldname="print_sticker"] button',
-		'[data-fieldname="custom_production_label"] button',
-	].join(', ');
-	grid.wrapper.on('mousedown.sprRowAction click.sprRowAction', selector, function () {
-		const cdn = spr_cdn_from_items_grid_button($(this), frm);
-		if (cdn) {
-			frm._spr_row_action_cdn = cdn;
-		}
-	});
+	const handlers =
+		frappe.ui.form.handlers &&
+		frappe.ui.form.handlers[SPR_SPI_DOCTYPE] &&
+		frappe.ui.form.handlers[SPR_SPI_DOCTYPE][action];
+	if (typeof handlers !== 'function') {
+		return;
+	}
+	frm._spr_row_action_cdn = cdn;
+	try {
+		handlers(frm, SPR_SPI_DOCTYPE, cdn);
+	} finally {
+		setTimeout(function () {
+			if (frm) {
+				delete frm._spr_row_action_cdn;
+			}
+		}, 0);
+	}
+}
+
+/** Capture Save Row / Edit Row / Label clicks before Frappe (wrong cdn on row 2+). */
+function spr_install_items_row_action_handlers(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid || !grid.wrapper || !grid.wrapper.length || grid._spr_row_action_handlers_installed) {
+		return;
+	}
+	grid._spr_row_action_handlers_installed = true;
+	const wrapEl = grid.wrapper[0];
+	const selector =
+		'[data-fieldname="save_row"] button,' +
+		'[data-fieldname="edit_row"] button,' +
+		'[data-fieldname="print_sticker"] button,' +
+		'[data-fieldname="custom_production_label"] button';
+	const fieldToAction = {
+		save_row: 'save_row',
+		edit_row: 'edit_row',
+		print_sticker: 'print_sticker',
+		custom_production_label: 'print_sticker',
+	};
+	wrapEl.addEventListener(
+		'click',
+		function (e) {
+			const btn = e.target && e.target.closest ? e.target.closest(selector) : null;
+			if (!btn) {
+				return;
+			}
+			const cell = btn.closest('[data-fieldname]');
+			const fieldname = cell && cell.getAttribute('data-fieldname');
+			const action = fieldname && fieldToAction[fieldname];
+			if (!action) {
+				return;
+			}
+			const cdn = spr_cdn_from_items_grid_button($(btn), frm);
+			if (!cdn) {
+				return;
+			}
+			e.preventDefault();
+			e.stopPropagation();
+			e.stopImmediatePropagation();
+			spr_invoke_items_row_action(frm, action, cdn);
+		},
+		true
+	);
+}
+
+function spr_install_items_row_action_cdn_capture(frm) {
+	spr_install_items_row_action_handlers(frm);
 }
 
 function spr_after_items_row_lock_doc_save(frm, alertMsg, alertIndicator) {
@@ -7267,6 +7375,12 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 			}
 			if (fieldname === 'items' && !spr_should_block_grid_realign(frm)) {
 				spr_schedule_grid_ui_debounced(frm, { delay: 220, columns: false });
+				setTimeout(function () {
+					if (!frm || !frm.fields_dict || !frm.fields_dict.items || spr_items_grid_is_editing(frm)) {
+						return;
+					}
+					apply_spr_item_row_styles(frm);
+				}, 80);
 			}
 		} finally {
 			_afterGridPaintRunning = false;
@@ -7463,7 +7577,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="${sprLockCssVer}">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '59';
+	const sprItemsCssVer = '60';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
