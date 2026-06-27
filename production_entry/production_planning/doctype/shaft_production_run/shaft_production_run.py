@@ -11491,7 +11491,9 @@ def _spr_create_missing_bundle_for_fg(se_doc, fg_line, batch_no: str, fg_qty: fl
 		bundle.flags.ignore_mandatory = True
 		bundle.flags.ignore_validate = True
 		bundle.insert()
-		bundle.submit()
+		
+		frappe.db.sql("UPDATE `tabSerial and Batch Bundle` SET docstatus=1 WHERE name=%s", bundle.name)
+		frappe.db.sql("UPDATE `tabSerial and Batch Entry` SET docstatus=1 WHERE parent=%s", bundle.name)
 
 		frappe.db.set_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle", bundle.name, update_modified=False)
 		
