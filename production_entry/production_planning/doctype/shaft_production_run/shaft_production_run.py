@@ -11355,12 +11355,22 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 				se_doc.cancel()
 				frappe.db.set_value("Stock Entry", se_to_resubmit, "docstatus", 0, update_modified=False)
 				se_doc.docstatus = 0
-				se_doc.submit()
+				
+				# Temporarily allow negative stock to bypass chronological shortage errors
+				allow_negative_stock = cint(frappe.db.get_single_value("Stock Settings", "allow_negative_stock"))
+				try:
+					if not allow_negative_stock:
+						frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 1)
+					se_doc.submit()
+				finally:
+					if not allow_negative_stock:
+						frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 0)
 			frappe.db.commit()
 		except Exception as e:
 			frappe.db.rollback(save_point="se_resubmit")
 			frappe.log_error(frappe.get_traceback(), f"SPR batch sync se resubmit failed:{se_to_resubmit}")
 			frappe.msgprint(f"Failed to automatically reactivate batches in Stock Entry {se_to_resubmit}. Please cancel and amend {se_to_resubmit} manually to activate its batches. Error: {str(e)}")
+
 
 	activated_count = sum(1 for bn in all_batch_codes if flt(_get_batch_qty(bn)) > 0)
 	# Include any batches that became active due to the backfill above
