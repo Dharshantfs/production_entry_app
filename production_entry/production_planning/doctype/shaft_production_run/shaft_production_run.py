@@ -11342,35 +11342,9 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 						bn = frappe.db.get_value("Stock Entry Detail", {"parent": se_name, "idx": line_idx}, "batch_no")
 					except Exception:
 						pass
-			if bn:
-				if flt(_get_batch_qty(bn)) <= 0:
-					se_docs_to_resubmit.add(s["stock_entry"])
-	
-	for se_to_resubmit in se_docs_to_resubmit:
-		try:
-			frappe.db.savepoint("se_resubmit")
-			se_doc = frappe.get_doc("Stock Entry", se_to_resubmit)
-			se_doc.flags.ignore_permissions = True
-			if se_doc.docstatus == 1:
-				se_doc.cancel()
-				frappe.db.set_value("Stock Entry", se_to_resubmit, "docstatus", 0, update_modified=False)
-				se_doc.docstatus = 0
-				
-				# Temporarily allow negative stock to bypass chronological shortage errors
-				allow_negative_stock = cint(frappe.db.get_single_value("Stock Settings", "allow_negative_stock"))
-				try:
-					if not allow_negative_stock:
-						frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 1)
-					se_doc.submit()
-				finally:
-					if not allow_negative_stock:
-						frappe.db.set_single_value("Stock Settings", "allow_negative_stock", 0)
-			frappe.db.commit()
-		except Exception as e:
-			frappe.db.rollback(save_point="se_resubmit")
-			frappe.log_error(frappe.get_traceback(), f"SPR batch sync se resubmit failed:{se_to_resubmit}")
-			frappe.msgprint(f"Failed to automatically reactivate batches in Stock Entry {se_to_resubmit}. Please cancel and amend {se_to_resubmit} manually to activate its batches. Error: {str(e)}")
-
+	# We no longer cancel/submit the Stock Entry because doing so cancels Raw Material bundles 
+	# and causes "Serial No / Batch No are mandatory" errors for RM items.
+	# Instead, we directly generate the Serial and Batch Bundle for the FG lines natively.
 
 	activated_count = sum(1 for bn in all_batch_codes if flt(_get_batch_qty(bn)) > 0)
 	# Include any batches that became active due to the backfill above
@@ -11468,6 +11442,9 @@ def _spr_activate_batch_from_manufacture(batch_no: str, fg_line, se_doc, fallbac
 
 	_spr_patch_sle_batch_for_fg_line(se_name, fg_line, batch_no, fg_wh)
 
+	if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+		_spr_create_missing_bundle_for_fg(se_doc, fg_line, batch_no, fg_qty, fg_wh)
+
 	sle_qty = _spr_batch_sle_qty(batch_no, item_code=item_code, warehouse=fg_wh)
 	if sle_qty <= 0:
 		sle_qty = _spr_batch_sle_qty(batch_no, item_code=item_code)
@@ -11477,6 +11454,56 @@ def _spr_activate_batch_from_manufacture(batch_no: str, fg_line, se_doc, fallbac
 	final_qty = sle_qty if sle_qty > 0 else fg_qty
 	_spr_set_batch_qty_on_master(batch_no, final_qty)
 	return final_qty if final_qty > 0 else 0.0
+
+
+def _spr_create_missing_bundle_for_fg(se_doc, fg_line, batch_no: str, fg_qty: float, fg_wh: str) -> None:
+	"""Manually create and link a Serial and Batch Bundle for the FG line to avoid resubmitting the Stock Entry."""
+	try:
+		fg_detail_name = getattr(fg_line, "name", None) or fg_line.get("name", "")
+		existing_bundle = frappe.db.get_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle")
+		if existing_bundle:
+			return
+
+		# Force enable use_serial_batch_fields to suppress Frappe warnings during any future validations
+		frappe.db.set_value("Stock Entry Detail", fg_detail_name, "use_serial_batch_fields", 1, update_modified=False)
+
+		bundle = frappe.get_doc({
+			"doctype": "Serial and Batch Bundle",
+			"item_code": fg_line.get("item_code"),
+			"warehouse": fg_wh,
+			"voucher_type": "Stock Entry",
+			"voucher_no": se_doc.name,
+			"voucher_detail_no": fg_detail_name,
+			"type_of_transaction": "Inward",
+			"posting_date": se_doc.posting_date,
+			"posting_time": se_doc.posting_time,
+			"has_batch_no": 1,
+			"company": getattr(se_doc, "company", ""),
+			"entries": [
+				{
+					"batch_no": batch_no,
+					"qty": fg_qty,
+					"warehouse": fg_wh
+				}
+			]
+		})
+		bundle.flags.ignore_permissions = True
+		bundle.flags.ignore_mandatory = True
+		bundle.flags.ignore_validate = True
+		bundle.insert()
+		bundle.submit()
+
+		frappe.db.set_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle", bundle.name, update_modified=False)
+		
+		frappe.db.sql("""UPDATE `tabStock Ledger Entry` 
+			SET serial_and_batch_bundle = %s 
+			WHERE voucher_type = 'Stock Entry' 
+			  AND voucher_no = %s 
+			  AND voucher_detail_no = %s
+			  AND actual_qty > 0
+			  AND IFNULL(is_cancelled, 0) = 0""", (bundle.name, se_doc.name, fg_detail_name))
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "SPR bundle creation failed")
 
 
 def _spr_patch_sle_batch_for_fg_line(
