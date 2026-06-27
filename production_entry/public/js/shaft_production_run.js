@@ -6095,10 +6095,14 @@ frappe.ui.form.on('Shaft Production Run Job', {
 					update_shaft_job_achieved_from_items(frm);
 					sprScheduleTotalProducedSync(frm);
 					spr_apply_fabric100_item_grid_columns(frm);
-					spr_stabilize_spr_child_grids(frm, { delay: 120, light: true });
-					spr_after_child_table_refresh(frm);
-					spr_enforce_roll_line_grid_policy(frm);
-					sprAutoSaveAfterCreateEntry(frm);
+					// Delay heavy grid work so the browser unfreezes first
+					setTimeout(function () {
+						if (!frm || !frm.fields_dict) return;
+						spr_stabilize_spr_child_grids(frm, { delay: 120, light: true });
+						spr_after_child_table_refresh(frm);
+						spr_enforce_roll_line_grid_policy(frm);
+						sprAutoSaveAfterCreateEntry(frm);
+					}, 100);
 					let alertMsg = __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]);
 					if (quotaMeta && quotaMeta.max) {
 						const addedIdx = cint(quotaMeta.current) + lines.length;
@@ -6251,7 +6255,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (!row) {
 			return;
 		}
-		// Skip if another gross_weight event is already processing this row (prevent re-trigger loop)
+		// Skip re-entry guard (prevent event loop)
 		if (frm._spr_gw_processing && frm._spr_gw_processing === cdn) {
 			return;
 		}
@@ -6260,15 +6264,23 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			spr_clear_roll_weight_dependents(frm, cdt, cdn);
 			return;
 		}
-		// Directly update the locals row value for normalized weight (no set_value re-trigger)
+		// Directly update the locals row (no set_value, no cascading field events, no focus steal)
 		row.gross_weight = gw;
 		const calc = spr_recalc_roll_weights_from_gross(frm, cdt, cdn);
-		// Mutate locals directly so no cascading field events fire
 		row.net_weight = calc.net;
 		row.produced_gsm = calc.gsm;
-		// Update grid display for the changed cells
-		spr_refresh_items_grid_row_display(frm, cdn, ['gross_weight', 'net_weight', 'produced_gsm']);
-		schedule_spr_item_row_styles(frm);
+		// Only refresh net_weight and produced_gsm cells (NOT gross_weight - would steal focus)
+		// Use a short debounce so we don't fire on every keystroke during active editing
+		if (frm._spr_gw_display_timer) clearTimeout(frm._spr_gw_display_timer);
+		frm._spr_gw_display_timer = setTimeout(function () {
+			frm._spr_gw_display_timer = null;
+			if (!frm || !frm.fields_dict) return;
+			// Only refresh if user is no longer focused on this specific row
+			if (!spr_items_grid_is_editing(frm)) {
+				spr_refresh_items_grid_row_display(frm, cdn, ['net_weight', 'produced_gsm']);
+				schedule_spr_item_row_styles(frm);
+			}
+		}, 250);
 		update_shaft_job_achieved_from_items(frm);
 		sprScheduleTotalProducedSync(frm);
 	},
