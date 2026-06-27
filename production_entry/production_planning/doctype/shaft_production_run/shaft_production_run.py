@@ -11322,6 +11322,41 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	except Exception:
 		pass
 
+	# Resubmit updated stock entries so Frappe generates the correct Stock Balances & Bundles
+	se_docs_to_resubmit = set()
+	for u in updated_lines:
+		if isinstance(u, dict) and u.get("stock_entry"):
+			se_docs_to_resubmit.add(u["stock_entry"])
+			
+	# Also resubmit entries that already had the batch number but the batch is mysteriously still not active
+	for s in skipped:
+		if isinstance(s, dict) and s.get("reason") == "already_has_batch" and s.get("stock_entry"):
+			# Check if the batch is active
+			bn = _cstr(s.get("batch_no") or "")
+			if not bn:
+				# Try to get batch_no from the FG line if it wasn't saved in the skipped dict
+				se_name = s.get("stock_entry")
+				line_idx = s.get("line_idx")
+				if se_name and line_idx:
+					try:
+						bn = frappe.db.get_value("Stock Entry Detail", {"parent": se_name, "idx": line_idx}, "batch_no")
+					except Exception:
+						pass
+			if bn and not _spr_batch_is_active(bn):
+				se_docs_to_resubmit.add(s["stock_entry"])
+	
+	for se_to_resubmit in se_docs_to_resubmit:
+		try:
+			frappe.db.savepoint("se_resubmit")
+			se_doc = frappe.get_doc("Stock Entry", se_to_resubmit)
+			se_doc.flags.ignore_permissions = True
+			se_doc.cancel()
+			se_doc.submit()
+			frappe.db.commit()
+		except Exception:
+			frappe.db.rollback(save_point="se_resubmit")
+			frappe.log_error(frappe.get_traceback(), f"SPR batch sync se resubmit failed:{se_to_resubmit}")
+
 	return {
 		"status": "ok",
 		"shaft_production_run": spr_name,
