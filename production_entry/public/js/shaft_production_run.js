@@ -7554,27 +7554,32 @@ function ensure_spr_item_stylesheet() {
 		window.__sprspr_lock_style_ver = sprLockCssVer;
 		$('head style[data-spr-row-lock]').remove();
 		const lockCss = `
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]),
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]),
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) {
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]),
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) {
 			pointer-events: none;
 			opacity: 0.94;
 		}
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select {
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) input,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) textarea,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]) select {
 			pointer-events: none !important;
 			background-color: transparent !important;
 		}
 		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button,
 		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button,
 		.fieldname-items .grid-row.spr-spr-row-locked .col[data-fieldname="save_row"] button {
+			display: none !important;
+		}
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-locked) .col[data-fieldname="edit_row"] button,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-locked) .col[data-fieldname="edit_row"] button,
+		.fieldname-items .grid-row:not(.spr-spr-row-locked) .col[data-fieldname="edit_row"] button {
 			display: none !important;
 		}
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
@@ -7894,9 +7899,9 @@ function spr_apply_items_row_lock_ui(frm) {
 	const items = frm.doc.items || [];
 	const $domRows = sprGetItemsDatatableBodyRows(frm);
 	items.forEach(function (doc, idx) {
-		let $wrap = sprFindItemsRowDomByDocname(frm, doc);
+		let $wrap = sprFindItemsRowDomByDocname(frm, doc, idx);
 		if (!$wrap || !$wrap.length) {
-			if ($domRows && $domRows.length > idx) {
+			if ($domRows && $domRows.length > idx && frm.page_length && idx < frm.page_length) {
 				$wrap = $($domRows.get(idx));
 			}
 		}
@@ -8289,8 +8294,15 @@ function sprResolveItemsRowWrapper(frm, doc, grid, idx) {
 }
 
 /** Resolve the visible row node for a child row (Frappe 16 DataTable uses .dt-row; index order can diverge). */
-function sprFindItemsRowDomByDocname(frm, doc) {
+function sprFindItemsRowDomByDocname(frm, doc, idx) {
 	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	const $wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
+	
+	if ($wrap && $wrap.length && idx !== undefined && idx !== null) {
+		const $byRowIdx = $wrap.find('.dt-row[data-row-index="' + idx + '"]');
+		if ($byRowIdx.length) return $byRowIdx.first();
+	}
+	
 	if (grid && grid.grid_rows && grid.grid_rows.length) {
 		for (let i = 0; i < grid.grid_rows.length; i++) {
 			const gr = grid.grid_rows[i];
@@ -8390,14 +8402,15 @@ function apply_spr_item_row_styles(frm) {
 		// Try multiple resolution methods to find row element for DataTable / Frappe grids
 		let $row = null;
 		
-		// Method 1: Try by docname first (works when grid_rows_by_docname is populated)
+		// Method 1: Try by index or docname first
 		if (!$row || !$row.length) {
-			$row = sprFindItemsRowDomByDocname(frm, doc);
+			$row = sprFindItemsRowDomByDocname(frm, doc, idx);
 		}
 		
 		
 		// Method 2: Use DOM rows array by index (DataTable body rows in order)
-		if ((!$row || !$row.length) && $domRows && $domRows.length > idx) {
+		// WARNING: This is unsafe for paginated grids if idx > visible rows, so only use if idx matches visible length
+		if ((!$row || !$row.length) && $domRows && $domRows.length > idx && frm.page_length && idx < frm.page_length) {
 			$row = $($domRows.get(idx));
 		}
 		
