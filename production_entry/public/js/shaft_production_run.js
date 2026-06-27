@@ -730,10 +730,16 @@ function spr_bind_items_grid_edit_guard(frm) {
 	grid.wrapper.on('focusin.sprGridEdit', 'input, textarea, select', function () {
 		frm._spr_items_grid_editing = true;
 	});
-	grid.wrapper.on('input.sprGrossWeightLive', 'input', function () {
+	grid.wrapper.on('input.sprGrossWeightLive', 'input', function (e) {
+		if (cint(frm._spr_programmatic_item_adds) > 0) {
+			return;
+		}
 		const $input = $(this);
 		const $col = $input.closest('[data-fieldname]');
 		if (!$col.length || $col.attr('data-fieldname') !== 'gross_weight') {
+			return;
+		}
+		if (!e.originalEvent) {
 			return;
 		}
 		const cdt = SPR_SPI_DOCTYPE;
@@ -6476,9 +6482,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			row.produced_gsm = calc.gsm;
 		}
 		update_shaft_job_achieved_from_items(frm, { force: true, skipGridRefresh: true });
-		row.row_locked = 1;
+		frappe.model.set_value(cdt, cdn, 'row_locked', 1);
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-			row.row_ready_for_print = 1;
+			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 1);
 		}
 		spr_mark_just_saved(frm);
 		const save_promise = frm.save();
@@ -6521,9 +6527,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		}
 		frm._spr_items_grid_editing = false;
 		frm._spr_row_save_in_progress = true;
-		row.row_locked = 0;
+		frappe.model.set_value(cdt, cdn, 'row_locked', 0);
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-			row.row_ready_for_print = 0;
+			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 0);
 		}
 		spr_mark_just_saved(frm);
 		const save_promise = frm.save();
