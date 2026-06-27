@@ -12208,3 +12208,32 @@ def spr_save_fabric_batch_picks(spr_name: str | None = None, picks_json=None):
 	return {"status": "ok", "name": doc.name, "count": len(doc.fabric_batch_picks or [])}
 
 
+@frappe.whitelist()
+def spr_set_item_row_lock(spr_name, row_name, locked, gross_weight=None, net_weight=None, produced_gsm=None):
+	"""Lightweight API: update row_locked (and optionally weights) on a single SPR Item row.
+	Uses direct DB update to avoid the full doc.save() / after_save cycle that freezes the UI."""
+	locked = cint(locked)
+	spr_doc = frappe.get_doc("Shaft Production Run", spr_name)
+	if cint(spr_doc.docstatus) != 0:
+		frappe.throw(_("Cannot update a submitted Shaft Production Run."))
+	if not frappe.has_permission("Shaft Production Run", "write", spr_name):
+		frappe.throw(_("You do not have permission to edit this document."), frappe.PermissionError)
+
+	fields = {"row_locked": locked}
+	if gross_weight is not None:
+		fields["gross_weight"] = flt(gross_weight)
+	if net_weight is not None:
+		fields["net_weight"] = flt(net_weight)
+	if produced_gsm is not None:
+		fields["produced_gsm"] = flt(produced_gsm)
+
+	has_row_ready = frappe.db.has_column("Shaft Production Run Item", "row_ready_for_print")
+	if has_row_ready:
+		fields["row_ready_for_print"] = locked
+
+	frappe.db.set_value("Shaft Production Run Item", row_name, fields, update_modified=False)
+	frappe.db.set_value("Shaft Production Run", spr_name, "modified", frappe.utils.now(), update_modified=False)
+	frappe.db.commit()
+	return {"status": "ok", "row_name": row_name, "locked": locked}
+
+

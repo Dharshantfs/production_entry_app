@@ -6251,21 +6251,24 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (!row) {
 			return;
 		}
-		let gw = spr_normalize_gross_weight_input(row.gross_weight);
-		if (gw > 0 && Math.abs(flt(row.gross_weight) - gw) > 1e-6) {
-			frappe.model.set_value(cdt, cdn, 'gross_weight', gw);
-			return; // The set_value will re-trigger this event
+		// Skip if another gross_weight event is already processing this row (prevent re-trigger loop)
+		if (frm._spr_gw_processing && frm._spr_gw_processing === cdn) {
+			return;
 		}
+		let gw = spr_normalize_gross_weight_input(row.gross_weight);
 		if (gw <= 0) {
 			spr_clear_roll_weight_dependents(frm, cdt, cdn);
 			return;
 		}
-		
+		// Directly update the locals row value for normalized weight (no set_value re-trigger)
+		row.gross_weight = gw;
 		const calc = spr_recalc_roll_weights_from_gross(frm, cdt, cdn);
-		frappe.model.set_value(cdt, cdn, 'net_weight', calc.net);
-		frappe.model.set_value(cdt, cdn, 'produced_gsm', calc.gsm);
-		spr_update_produced_gsm_with_retry(frm, cdt, cdn);
-
+		// Mutate locals directly so no cascading field events fire
+		row.net_weight = calc.net;
+		row.produced_gsm = calc.gsm;
+		// Update grid display for the changed cells
+		spr_refresh_items_grid_row_display(frm, cdn, ['gross_weight', 'net_weight', 'produced_gsm']);
+		schedule_spr_item_row_styles(frm);
 		update_shaft_job_achieved_from_items(frm);
 		sprScheduleTotalProducedSync(frm);
 	},
@@ -6413,37 +6416,57 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.show_alert({ message: __('This row is already locked. Click Edit Row to change.'), indicator: 'blue' });
 			return;
 		}
-		frm._spr_items_grid_editing = false;
-		frm._spr_row_save_in_progress = true;
-		spr_flush_deferred_grid_side_effects(frm);
+		// Compute final weights before locking
 		const gw = spr_normalize_gross_weight_input(row.gross_weight);
+		let finalNet = flt(row.net_weight);
+		let finalGsm = flt(row.produced_gsm);
 		if (gw > 0) {
 			row.gross_weight = gw;
 			const calc = spr_recalc_roll_weights_from_gross(frm, cdt, cdn);
-			row.net_weight = calc.net;
-			row.produced_gsm = calc.gsm;
+			finalNet = calc.net;
+			finalGsm = calc.gsm;
+			row.net_weight = finalNet;
+			row.produced_gsm = finalGsm;
 		}
-		update_shaft_job_achieved_from_items(frm, { force: true, skipGridRefresh: true });
-		frappe.model.set_value(cdt, cdn, 'row_locked', 1);
+		// Update in-memory model directly (no field events, no form dirty cascade)
+		row.row_locked = 1;
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 1);
+			row.row_ready_for_print = 1;
 		}
-		spr_mark_just_saved(frm);
-		const save_promise = frm.save();
-		function afterSprRowSave() {
-			spr_after_items_row_lock_doc_save(
-				frm,
-				__('Row saved. Print Label is available.'),
-				'green'
-			);
-		}
-		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(afterSprRowSave).catch(function () {
-				frm._spr_row_save_in_progress = false;
-			});
-		} else {
-			setTimeout(afterSprRowSave, 400);
-		}
+		// Apply CSS lock immediately so UI feels instant
+		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
+		update_shaft_job_achieved_from_items(frm, { force: true, skipGridRefresh: true });
+		// Persist via lightweight API — no full doc.save(), no after_save freeze
+		frappe.call({
+			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
+			args: {
+				spr_name: frm.doc.name,
+				row_name: row.name,
+				locked: 1,
+				gross_weight: gw > 0 ? gw : row.gross_weight,
+				net_weight: finalNet,
+				produced_gsm: finalGsm,
+			},
+			freeze: false,
+			callback: function (r) {
+				if (r && r.exc) {
+					// Revert in-memory on failure
+					row.row_locked = 0;
+					if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
+						row.row_ready_for_print = 0;
+					}
+					try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
+					frappe.msgprint(__('Could not save row. Please try again.'));
+					return;
+				}
+				// Mark frm as clean (saved) so dirty indicator goes away
+				frm.doc.modified = (r.message && r.message.modified) || frm.doc.modified;
+				try { frm.page && frm.page.set_indicator(__('Saved'), 'green'); } catch(e) {}
+				spr_apply_items_row_lock_ui(frm);
+				apply_spr_item_row_styles(frm);
+				frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
+			},
+		});
 	},
 	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
@@ -6467,24 +6490,40 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.msgprint(__('Could not find roll line to edit.'));
 			return;
 		}
-		frm._spr_items_grid_editing = false;
-		frm._spr_row_save_in_progress = true;
-		frappe.model.set_value(cdt, cdn, 'row_locked', 0);
+		// Update in-memory model directly (no field events, no form dirty cascade)
+		row.row_locked = 0;
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 0);
+			row.row_ready_for_print = 0;
 		}
-		spr_mark_just_saved(frm);
-		const save_promise = frm.save();
-		function afterSprEditSave() {
-			spr_after_items_row_lock_doc_save(frm, __('Row unlocked for editing.'), 'blue');
-		}
-		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(afterSprEditSave).catch(function () {
-				frm._spr_row_save_in_progress = false;
-			});
-		} else {
-			setTimeout(afterSprEditSave, 400);
-		}
+		// Apply CSS unlock immediately so inputs become editable right away
+		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
+		// Persist via lightweight API — no full doc.save(), no after_save freeze
+		frappe.call({
+			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
+			args: {
+				spr_name: frm.doc.name,
+				row_name: row.name,
+				locked: 0,
+			},
+			freeze: false,
+			callback: function (r) {
+				if (r && r.exc) {
+					// Revert in-memory on failure
+					row.row_locked = 1;
+					if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
+						row.row_ready_for_print = 1;
+					}
+					try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
+					frappe.msgprint(__('Could not unlock row. Please try again.'));
+					return;
+				}
+				// Mark frm as clean
+				try { frm.page && frm.page.set_indicator(__('Saved'), 'green'); } catch(e) {}
+				spr_apply_items_row_lock_ui(frm);
+				apply_spr_item_row_styles(frm);
+				frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
+			},
+		});
 	},
 });
 
