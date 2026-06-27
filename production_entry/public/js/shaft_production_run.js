@@ -2339,6 +2339,96 @@ function spr_get_items_grid_focus_cdn(frm) {
 	return rowEl.getAttribute('data-name') || rowEl.getAttribute('data-docname') || null;
 }
 
+/** Resolve child row name from a grid Button click (Frappe often passes wrong cdn). */
+function spr_cdn_from_items_grid_button($btn, frm) {
+	if (!$btn || !$btn.length) {
+		return '';
+	}
+	const $row = $btn.closest('.grid-row, .dt-row, tbody tr[data-idx], .editable-row');
+	if ($row.length) {
+		const fromAttr = $row.attr('data-docname') || $row.attr('data-name');
+		if (fromAttr) {
+			return fromAttr;
+		}
+	}
+	if (frm && frm.fields_dict && frm.fields_dict.items) {
+		const $domRows = sprGetItemsDatatableBodyRows(frm);
+		const items = frm.doc.items || [];
+		const $clicked = $btn.closest('.dt-row, .grid-row, tbody tr[data-idx]');
+		if ($domRows && $domRows.length && $clicked.length) {
+			const idx = $domRows.index($clicked);
+			if (idx >= 0 && items[idx] && items[idx].name) {
+				return items[idx].name;
+			}
+		}
+		if ($domRows && $domRows.length) {
+			for (let i = 0; i < $domRows.length; i++) {
+				const node = $domRows.get(i);
+				if (node && $.contains(node, $btn[0]) && items[i] && items[i].name) {
+					return items[i].name;
+				}
+			}
+		}
+	}
+	return '';
+}
+
+function spr_resolve_items_row_cdn(frm, cdt, cdn) {
+	cdt = cdt || SPR_SPI_DOCTYPE;
+	if (cdn && locals[cdt] && locals[cdt][cdn]) {
+		return cdn;
+	}
+	const fromBtn = frm && frm._spr_row_action_cdn;
+	if (fromBtn && locals[cdt] && locals[cdt][fromBtn]) {
+		return fromBtn;
+	}
+	const fromFocus = spr_get_items_grid_focus_cdn(frm);
+	if (fromFocus && locals[cdt] && locals[cdt][fromFocus]) {
+		return fromFocus;
+	}
+	return cdn || '';
+}
+
+function spr_install_items_row_action_cdn_capture(frm) {
+	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
+	if (!grid || !grid.wrapper || grid._spr_row_action_cdn_installed) {
+		return;
+	}
+	grid._spr_row_action_cdn_installed = true;
+	const selector = [
+		'[data-fieldname="save_row"] button',
+		'[data-fieldname="edit_row"] button',
+		'[data-fieldname="print_sticker"] button',
+		'[data-fieldname="custom_production_label"] button',
+	].join(', ');
+	grid.wrapper.on('mousedown.sprRowAction click.sprRowAction', selector, function () {
+		const cdn = spr_cdn_from_items_grid_button($(this), frm);
+		if (cdn) {
+			frm._spr_row_action_cdn = cdn;
+		}
+	});
+}
+
+function spr_after_items_row_lock_doc_save(frm, alertMsg, alertIndicator) {
+	if (!frm) {
+		return;
+	}
+	frm.refresh_field('items');
+	spr_schedule_item_row_styles_after_doc_write(frm);
+	[0, 50, 200, 500].forEach(function (ms) {
+		setTimeout(function () {
+			if (!frm || !frm.fields_dict) {
+				return;
+			}
+			spr_apply_items_row_lock_ui(frm);
+			apply_spr_item_row_styles(frm);
+		}, ms);
+	});
+	if (alertMsg) {
+		frappe.show_alert({ message: alertMsg, indicator: alertIndicator || 'green' });
+	}
+}
+
 /** Block Frappe auto-adding a blank row when tabbing out of the last roll line. */
 function spr_install_items_grid_row_add_block(frm) {
 	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
@@ -5875,7 +5965,10 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	},
 	gross_weight: function (frm, cdt, cdn) {
 		// Calculate net_weight instantly when gross_weight changes
-		const row = locals[cdt][cdn];
+		const row = locals[cdt] && locals[cdt][cdn];
+		if (!row) {
+			return;
+		}
 		let width = flt(row.width_inch);
 		let gw = spr_normalize_gross_weight_input(row.gross_weight);
 		if (gw > 0 && Math.abs(flt(row.gross_weight) - gw) > 1e-6) {
@@ -6092,7 +6185,12 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.show_alert({ message: __('Submitted document cannot be edited from Save Row.'), indicator: 'orange' });
 			return;
 		}
-		const row = locals[cdt][cdn];
+		cdn = spr_resolve_items_row_cdn(frm, cdt, cdn);
+		const row = locals[cdt] && locals[cdt][cdn];
+		if (!row) {
+			frappe.msgprint(__('Could not find roll line to save.'));
+			return;
+		}
 		if (cint(row.row_locked)) {
 			frappe.show_alert({ message: __('This row is already locked. Click Edit Row to change.'), indicator: 'blue' });
 			return;
@@ -6103,10 +6201,12 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const gw = spr_normalize_gross_weight_input(row.gross_weight);
 		if (gw > 0) {
 			row.gross_weight = gw;
-			try {
-				frappe.ui.form.trigger('Shaft Production Run Item', 'gross_weight', cdn);
-			} catch (e) {
-				/* ignore */
+			const gwHandler =
+				frappe.ui.form.handlers &&
+				frappe.ui.form.handlers['Shaft Production Run Item'] &&
+				frappe.ui.form.handlers['Shaft Production Run Item'].gross_weight;
+			if (typeof gwHandler === 'function') {
+				gwHandler(frm, cdt, cdn);
 			}
 		}
 		update_shaft_job_achieved_from_items(frm, { force: true, skipGridRefresh: true });
@@ -6117,7 +6217,11 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		spr_mark_just_saved(frm);
 		const save_promise = frm.save();
 		function afterSprRowSave() {
-			frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
+			spr_after_items_row_lock_doc_save(
+				frm,
+				__('Row saved. Print Label is available.'),
+				'green'
+			);
 		}
 		if (save_promise && typeof save_promise.then === 'function') {
 			save_promise.then(afterSprRowSave).catch(function () {
@@ -6129,8 +6233,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 	},
 	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
-		const row = locals[cdt][cdn];
-		if (!cint(row.row_ready_for_print) || !cint(row.row_locked)) {
+		cdn = spr_resolve_items_row_cdn(frm, cdt, cdn);
+		const row = locals[cdt] && locals[cdt][cdn];
+		if (!row || !cint(row.row_ready_for_print) || !cint(row.row_locked)) {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
 			return;
 		}
@@ -6142,9 +6247,14 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (frm.is_new() || (frm.doc.docstatus && frm.doc.docstatus !== 0)) {
 			return;
 		}
+		cdn = spr_resolve_items_row_cdn(frm, cdt, cdn);
+		const row = locals[cdt] && locals[cdt][cdn];
+		if (!row) {
+			frappe.msgprint(__('Could not find roll line to edit.'));
+			return;
+		}
 		frm._spr_items_grid_editing = false;
 		frm._spr_row_save_in_progress = true;
-		const row = locals[cdt][cdn];
 		row.row_locked = 0;
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
 			row.row_ready_for_print = 0;
@@ -6152,7 +6262,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		spr_mark_just_saved(frm);
 		const save_promise = frm.save();
 		function afterSprEditSave() {
-			frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
+			spr_after_items_row_lock_doc_save(frm, __('Row unlocked for editing.'), 'blue');
 		}
 		if (save_promise && typeof save_promise.then === 'function') {
 			save_promise.then(afterSprEditSave).catch(function () {
@@ -7181,6 +7291,7 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	if (fieldname === 'items' && grid.wrapper && grid.wrapper.length && !frm._spr_items_grid_click_patched) {
 		frm._spr_items_grid_click_patched = true;
 		spr_install_items_grid_row_add_block(frm);
+		spr_install_items_row_action_cdn_capture(frm);
 		grid.wrapper.on('change input blur', 'input, textarea, select', function () {
 			if (frm._spr_grid_input_debounce) {
 				clearTimeout(frm._spr_grid_input_debounce);
@@ -7193,6 +7304,7 @@ function spr_patch_child_grid_refresh(frm, fieldname) {
 	}
 	if (fieldname === 'items') {
 		spr_install_items_grid_row_add_block(frm);
+		spr_install_items_row_action_cdn_capture(frm);
 	}
 	if (hooked) {
 		frm[patchKey] = true;
@@ -7289,24 +7401,26 @@ function sprEffectiveProducedGsm(doc, frm) {
 }
 
 function ensure_spr_item_stylesheet() {
-	if (!window.__sprspr_lock_style) {
-		window.__sprspr_lock_style = true;
+	const sprLockCssVer = '2';
+	if (window.__sprspr_lock_style_ver !== sprLockCssVer) {
+		window.__sprspr_lock_style_ver = sprLockCssVer;
+		$('head style[data-spr-row-lock]').remove();
 		const lockCss = `
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]),
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]),
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) {
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]),
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]),
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) {
 			pointer-events: none;
 			opacity: 0.94;
 		}
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
-		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
-		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
-		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select {
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
+		.form-group[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
+		.frappe-control[data-fieldname="items"] .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) input,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) textarea,
+		.fieldname-items .grid-row.spr-spr-row-locked .col:not([data-fieldname="print_sticker"]):not([data-fieldname="custom_production_label"]):not([data-fieldname="custom_approval_label"]):not([data-fieldname="edit_row"]):not([data-fieldname="save_row"]):not([data-fieldname="produced_length_mtrs"]) select {
 			pointer-events: none !important;
 			background-color: transparent !important;
 		}
@@ -7318,12 +7432,21 @@ function ensure_spr_item_stylesheet() {
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] button,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] .btn,
+		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] a,
 		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
 		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
 		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] button,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] .btn,
+		.frappe-control[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] a,
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] button,
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] .btn,
 		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="print_sticker"] a,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] button,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] .btn,
+		.fieldname-items .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_production_label"] a,
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] button,
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] .btn,
 		.form-group[data-fieldname="items"] .grid-row:not(.spr-spr-row-label-ready) .col[data-fieldname="custom_approval_label"] a,
@@ -7338,9 +7461,9 @@ function ensure_spr_item_stylesheet() {
 			pointer-events: none !important;
 		}
 	`;
-		$('head').append(`<style data-spr-row-lock="1">${lockCss}</style>`);
+		$('head').append(`<style data-spr-row-lock="${sprLockCssVer}">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '58';
+	const sprItemsCssVer = '59';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
@@ -7634,6 +7757,12 @@ function spr_apply_items_row_lock_ui(frm) {
 		}
 		if (!$wrap || !$wrap.length) {
 			return;
+		}
+		if (doc.name) {
+			$wrap.attr('data-spr-row-name', doc.name);
+			if (!$wrap.attr('data-docname')) {
+				$wrap.attr('data-docname', doc.name);
+			}
 		}
 		const locked = cint(doc.row_locked);
 		const labelReady = cint(doc.row_ready_for_print) && locked;
