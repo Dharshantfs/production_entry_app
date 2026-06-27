@@ -730,6 +730,32 @@ function spr_bind_items_grid_edit_guard(frm) {
 	grid.wrapper.on('focusin.sprGridEdit', 'input, textarea, select', function () {
 		frm._spr_items_grid_editing = true;
 	});
+	grid.wrapper.on('input.sprGrossWeightLive', 'input', function () {
+		const $input = $(this);
+		const $col = $input.closest('[data-fieldname]');
+		if (!$col.length || $col.attr('data-fieldname') !== 'gross_weight') {
+			return;
+		}
+		const cdt = SPR_SPI_DOCTYPE;
+		const cdn = spr_cdn_from_grid_input($input, frm);
+		if (!cdn || !locals[cdt] || !locals[cdt][cdn]) {
+			return;
+		}
+		const row = locals[cdt][cdn];
+		const gw = spr_normalize_gross_weight_input($input.val());
+		row.gross_weight = gw;
+		frm._spr_items_grid_editing = true;
+		if (gw <= 0) {
+			spr_clear_roll_weight_dependents(frm, cdt, cdn);
+			return;
+		}
+		const calc = spr_recalc_roll_weights_from_gross(frm, cdt, cdn);
+		row.net_weight = calc.net;
+		row.produced_gsm = calc.gsm;
+		spr_refresh_items_grid_row_display(frm, cdn, ['net_weight', 'produced_gsm']);
+		schedule_spr_item_row_styles(frm);
+		update_shaft_job_achieved_from_items(frm);
+	});
 	grid.wrapper.on('paste.sprGridPaste', 'input', function (e) {
 		const oe = e.originalEvent;
 		const text = oe && oe.clipboardData && oe.clipboardData.getData('text');
@@ -812,8 +838,26 @@ function spr_after_items_grid_columns_changed(frm) {
 	if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
 		return;
 	}
+	const grid = frm.fields_dict.items.grid;
+	if (grid) {
+		grid._spr_columns_user_locked = false;
+		try {
+			delete grid.user_defined_columns;
+			delete grid.user_settings;
+			if (grid.visible_columns) {
+				delete grid.visible_columns;
+			}
+		} catch (e) {
+			/* ignore */
+		}
+	}
+	spr_apply_items_grid_columns(frm, true);
 	ensure_spr_item_stylesheet();
 	spr_apply_grid_wrap_classes(frm);
+	if (grid && grid.wrapper && grid.wrapper[0]) {
+		delete grid.wrapper[0]._spr_row_action_cdn_installed;
+	}
+	spr_install_items_row_action_handlers(frm);
 	spr_reapply_item_row_styles_with_retries(frm, [0, 80, 200, 450, 800, 1200, 1800]);
 	[0, 120, 350, 700].forEach(function (ms) {
 		setTimeout(function () {
@@ -2232,6 +2276,162 @@ function spr_normalize_gross_weight_input(val) {
 	return flt(s);
 }
 
+function spr_resolve_row_width_inch(frm, row) {
+	let width = flt(row && row.width_inch);
+	if (width > 0 && width < 500) {
+		return width;
+	}
+	width = flt(row && row.width);
+	if (width > 0 && width < 500) {
+		return width;
+	}
+	const resolved = sprResolveWidthInchForGsm(frm, row);
+	return resolved > 0 ? resolved : 0;
+}
+
+/** Net weight + produced GSM from gross weight (shared by field handler and live input). */
+function spr_recalc_roll_weights_from_gross(frm, cdt, cdn) {
+	const row = locals[cdt] && locals[cdt][cdn];
+	if (!row) {
+		return { net: 0, gsm: 0 };
+	}
+	const gw = spr_normalize_gross_weight_input(row.gross_weight);
+	if (gw <= 0) {
+		return { net: 0, gsm: 0 };
+	}
+	const width = spr_resolve_row_width_inch(frm, row);
+	if (!(width > 0 && gw > 0)) {
+		return { net: 0, gsm: 0 };
+	}
+	const width_in_meter = width * 0.0254;
+	const gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
+	const raw_weight = (gsm_val * width_in_meter * gw) / 1000;
+	const standard_widths = [63, 85, 90, 118, 126];
+	const is_standard = standard_widths.some(function (w) {
+		return Math.abs(width - w) < 0.01;
+	});
+	let core_weight = 0;
+	if (is_standard) {
+		let base_weight_of_core = 1.3;
+		if (raw_weight >= 50 && raw_weight <= 100) {
+			base_weight_of_core = 1.8;
+		} else if (raw_weight > 100) {
+			base_weight_of_core = 2.5;
+		}
+		const numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
+		core_weight = (base_weight_of_core / 1600) * numeric_core_width;
+	} else {
+		let core_width;
+		let prorate;
+		if (width < 63) {
+			core_width = 63;
+			prorate = 1.3;
+		} else if (width < 85) {
+			core_width = 85;
+			prorate = 1.75;
+		} else if (width < 90) {
+			core_width = 90;
+			prorate = 1.86;
+		} else if (width < 118) {
+			core_width = 118;
+			prorate = 2.43;
+		} else {
+			core_width = 126;
+			prorate = 2.6;
+		}
+		core_weight = (width / core_width) * prorate;
+	}
+	const calc_net = gw - core_weight;
+	let net_val = calc_net > 0 ? calc_net : gw;
+	net_val = spr_round_net_weight_kg(net_val);
+	const mr = sprResolveLengthMetersForProducedGsm(frm, row) || 0;
+	let newGsm = 0;
+	if (net_val > 0 && width > 0 && mr > 0) {
+		newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
+	}
+	return { net: net_val, gsm: newGsm };
+}
+
+function spr_cdn_from_grid_input($input, frm) {
+	if (!$input || !$input.length || !frm || !frm.doc) {
+		return '';
+	}
+	const $row = $input.closest('.dt-row, .grid-row, tbody tr[data-idx]').not('.grid-form-row, .dt-row-filter');
+	if ($row.length) {
+		const fromAttr = $row.attr('data-docname') || $row.attr('data-name');
+		if (fromAttr && locals[SPR_SPI_DOCTYPE] && locals[SPR_SPI_DOCTYPE][fromAttr]) {
+			return fromAttr;
+		}
+		const items = frm.doc.items || [];
+		const $domRows = sprGetItemsDatatableBodyRows(frm);
+		if ($domRows && $domRows.length) {
+			for (let i = 0; i < $domRows.length; i++) {
+				const node = $domRows.get(i);
+				if (node && $.contains(node, $input[0]) && items[i] && items[i].name) {
+					return items[i].name;
+				}
+			}
+			const idx = $domRows.index($row);
+			if (idx >= 0 && items[idx] && items[idx].name) {
+				return items[idx].name;
+			}
+		}
+	}
+	return spr_get_items_grid_focus_cdn(frm) || '';
+}
+
+function spr_format_grid_display_value(val, fieldname) {
+	if (val === undefined || val === null || val === '') {
+		return '';
+	}
+	if (fieldname === 'net_weight' || fieldname === 'gross_weight' || fieldname === 'produced_gsm') {
+		return String(val);
+	}
+	return String(val);
+}
+
+/** Refresh calculated cells in DataTable / classic grid (grid_rows_by_docname often missing on cloud). */
+function spr_refresh_items_grid_row_display(frm, cdn, fieldnames) {
+	spr_refresh_grid_row_cells(frm, cdn, fieldnames);
+	if (!frm || !cdn || !frm.fields_dict || !frm.fields_dict.items) {
+		return;
+	}
+	const row = locals[SPR_SPI_DOCTYPE] && locals[SPR_SPI_DOCTYPE][cdn];
+	if (!row) {
+		return;
+	}
+	const items = frm.doc.items || [];
+	let idx = -1;
+	for (let i = 0; i < items.length; i++) {
+		if (items[i] && items[i].name === cdn) {
+			idx = i;
+			break;
+		}
+	}
+	let $rowEl = sprFindItemsRowDomByDocname(frm, row);
+	if ((!$rowEl || !$rowEl.length) && idx >= 0) {
+		$rowEl = sprGetPrimaryItemsRowTarget(frm, idx);
+	}
+	if (!$rowEl || !$rowEl.length) {
+		return;
+	}
+	(fieldnames || []).forEach(function (fn) {
+		const display = spr_format_grid_display_value(row[fn], fn);
+		const $cells = $rowEl.find('[data-fieldname="' + fn + '"]');
+		$cells.each(function () {
+			const $cell = $(this);
+			$cell.find('input, textarea').val(display);
+			$cell.find('.static-area, .static-value, .dt-cell__content, .field-area').each(function () {
+				const $t = $(this);
+				if ($t.find('input, textarea, button, select').length) {
+					return;
+				}
+				$t.text(display);
+			});
+		});
+	});
+}
+
 /** When gross weight is cleared, zero net weight + produced GSM (works during inline grid edit). */
 function spr_refresh_grid_row_cells(frm, cdn, fieldnames) {
 	const grid = frm.fields_dict && frm.fields_dict.items && frm.fields_dict.items.grid;
@@ -2263,7 +2463,7 @@ function spr_clear_roll_weight_dependents(frm, cdt, cdn) {
 	}
 	row.net_weight = 0;
 	row.produced_gsm = 0;
-	spr_refresh_grid_row_cells(frm, cdn, ['net_weight', 'produced_gsm']);
+	spr_refresh_items_grid_row_display(frm, cdn, ['net_weight', 'produced_gsm']);
 	schedule_spr_item_row_styles(frm);
 	update_shaft_job_achieved_from_items(frm);
 	sprScheduleTotalProducedSync(frm);
@@ -2278,7 +2478,7 @@ function spr_clear_roll_weight_dependents(frm, cdt, cdn) {
 		if (flt(r.produced_gsm) !== 0) {
 			frappe.model.set_value(cdt, cdn, 'produced_gsm', 0);
 		}
-		spr_refresh_grid_row_cells(frm, cdn, ['net_weight', 'produced_gsm']);
+		spr_refresh_items_grid_row_display(frm, cdn, ['net_weight', 'produced_gsm']);
 		update_shaft_job_achieved_from_items(frm);
 		sprScheduleTotalProducedSync(frm);
 		schedule_spr_item_row_styles(frm);
@@ -2446,19 +2646,26 @@ function spr_resolve_items_row_cdn(frm, cdt, cdn) {
 }
 
 function spr_invoke_items_row_action(frm, action, cdn) {
-	if (!frm || !cdn) {
+	if (!frm || !cdn || !action) {
 		return;
 	}
-	const handlers =
-		frappe.ui.form.handlers &&
-		frappe.ui.form.handlers[SPR_SPI_DOCTYPE] &&
-		frappe.ui.form.handlers[SPR_SPI_DOCTYPE][action];
-	if (typeof handlers !== 'function') {
+	const cdt = SPR_SPI_DOCTYPE;
+	let handler = null;
+	if (frappe.ui.form.handlers && frappe.ui.form.handlers[cdt]) {
+		handler = frappe.ui.form.handlers[cdt][action];
+	}
+	if (typeof handler !== 'function' && frm.script_manager && frm.script_manager.trigger) {
+		frm._spr_row_action_cdn = cdn;
+		frm.script_manager.trigger(action, cdt, cdn);
+		delete frm._spr_row_action_cdn;
+		return;
+	}
+	if (typeof handler !== 'function') {
 		return;
 	}
 	frm._spr_row_action_cdn = cdn;
 	try {
-		handlers(frm, SPR_SPI_DOCTYPE, cdn);
+		handler(frm, cdt, cdn);
 	} finally {
 		setTimeout(function () {
 			if (frm) {
@@ -2468,49 +2675,43 @@ function spr_invoke_items_row_action(frm, action, cdn) {
 	}
 }
 
-/** Capture Save Row / Edit Row / Label clicks before Frappe (wrong cdn on row 2+). */
+/** Mousedown sets row id before Frappe button handler (wrong cdn on row 2+); do not block Frappe click. */
 function spr_install_items_row_action_handlers(frm) {
 	const grid = frm.fields_dict.items && frm.fields_dict.items.grid;
-	if (!grid || !grid.wrapper || !grid.wrapper.length || grid._spr_row_action_handlers_installed) {
+	if (!grid || !grid.wrapper || !grid.wrapper.length) {
 		return;
 	}
-	grid._spr_row_action_handlers_installed = true;
 	const wrapEl = grid.wrapper[0];
+	if (wrapEl._spr_row_action_cdn_installed) {
+		return;
+	}
+	wrapEl._spr_row_action_cdn_installed = true;
 	const selector =
 		'[data-fieldname="save_row"] button,' +
 		'[data-fieldname="edit_row"] button,' +
 		'[data-fieldname="print_sticker"] button,' +
 		'[data-fieldname="custom_production_label"] button';
-	const fieldToAction = {
-		save_row: 'save_row',
-		edit_row: 'edit_row',
-		print_sticker: 'print_sticker',
-		custom_production_label: 'print_sticker',
-	};
 	wrapEl.addEventListener(
-		'click',
+		'mousedown',
 		function (e) {
 			const btn = e.target && e.target.closest ? e.target.closest(selector) : null;
 			if (!btn) {
 				return;
 			}
-			const cell = btn.closest('[data-fieldname]');
-			const fieldname = cell && cell.getAttribute('data-fieldname');
-			const action = fieldname && fieldToAction[fieldname];
-			if (!action) {
-				return;
-			}
 			const cdn = spr_cdn_from_items_grid_button($(btn), frm);
-			if (!cdn) {
-				return;
+			if (cdn) {
+				frm._spr_row_action_cdn = cdn;
 			}
-			e.preventDefault();
-			e.stopPropagation();
-			e.stopImmediatePropagation();
-			spr_invoke_items_row_action(frm, action, cdn);
 		},
 		true
 	);
+	grid.wrapper.on('click.sprRowActionClear', selector, function () {
+		setTimeout(function () {
+			if (frm) {
+				delete frm._spr_row_action_cdn;
+			}
+		}, 1000);
+	});
 }
 
 function spr_install_items_row_action_cdn_capture(frm) {
@@ -6072,12 +6273,10 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		sprScheduleTotalProducedSync(frm);
 	},
 	gross_weight: function (frm, cdt, cdn) {
-		// Calculate net_weight instantly when gross_weight changes
 		const row = locals[cdt] && locals[cdt][cdn];
 		if (!row) {
 			return;
 		}
-		let width = flt(row.width_inch);
 		let gw = spr_normalize_gross_weight_input(row.gross_weight);
 		if (gw > 0 && Math.abs(flt(row.gross_weight) - gw) > 1e-6) {
 			row.gross_weight = gw;
@@ -6090,53 +6289,16 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			spr_clear_roll_weight_dependents(frm, cdt, cdn);
 			return;
 		}
-		
-		if (width > 0 && gw > 0) {
-			let width_in_meter = width * 0.0254;
-			let gsm_val = flt(row.gsm) || flt(row.sticker_gsm) || 90;
-			let raw_weight = (gsm_val * width_in_meter * gw) / 1000;
-			const standard_widths = [63, 85, 90, 118, 126];
-			let is_standard = standard_widths.some(w => Math.abs(width - w) < 0.01);
-			
-			let core_weight = 0;
-			if (is_standard) {
-				let base_weight_of_core = 1.3;
-				if (raw_weight >= 50 && raw_weight <= 100) {
-					base_weight_of_core = 1.8;
-				} else if (raw_weight > 100) {
-					base_weight_of_core = 2.5;
-				}
-				let numeric_core_width = parseFloat(row.custom_core_width_mm) || 1600;
-				core_weight = (base_weight_of_core / 1600) * numeric_core_width;
-			} else {
-				let core_width, prorate;
-				if (width < 63) { core_width = 63; prorate = 1.30; }
-				else if (width < 85) { core_width = 85; prorate = 1.75; }
-				else if (width < 90) { core_width = 90; prorate = 1.86; }
-				else if (width < 118) { core_width = 118; prorate = 2.43; }
-				else { core_width = 126; prorate = 2.60; }
-				core_weight = (width / core_width) * prorate;
-			}
-			
-			let calc_net = gw - core_weight;
-			let net_val = calc_net > 0 ? calc_net : gw;
-			net_val = spr_round_net_weight_kg(net_val);
-
-			// Also calculate produced_gsm immediately
-			let mr = sprResolveLengthMetersForProducedGsm(frm, row) || 0;
-			let newGsm = 0;
-			if (net_val > 0 && width > 0 && mr > 0) {
-				newGsm = Math.round((net_val * 1000) / (width * mr * 0.0254) * 100) / 100;
-			}
-
-			if (spr_items_grid_is_editing(frm)) {
-				row.net_weight = net_val;
-				row.produced_gsm = newGsm;
-			} else {
-				frappe.model.set_value(cdt, cdn, 'net_weight', net_val);
-				frappe.model.set_value(cdt, cdn, 'produced_gsm', newGsm);
-				spr_update_produced_gsm_with_retry(frm, cdt, cdn);
-			}
+		const calc = spr_recalc_roll_weights_from_gross(frm, cdt, cdn);
+		if (spr_items_grid_is_editing(frm)) {
+			row.net_weight = calc.net;
+			row.produced_gsm = calc.gsm;
+			spr_refresh_items_grid_row_display(frm, cdn, ['net_weight', 'produced_gsm']);
+			schedule_spr_item_row_styles(frm);
+		} else {
+			frappe.model.set_value(cdt, cdn, 'net_weight', calc.net);
+			frappe.model.set_value(cdt, cdn, 'produced_gsm', calc.gsm);
+			spr_update_produced_gsm_with_retry(frm, cdt, cdn);
 		}
 
 		if (!spr_items_grid_is_editing(frm)) {
@@ -6309,13 +6471,9 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		const gw = spr_normalize_gross_weight_input(row.gross_weight);
 		if (gw > 0) {
 			row.gross_weight = gw;
-			const gwHandler =
-				frappe.ui.form.handlers &&
-				frappe.ui.form.handlers['Shaft Production Run Item'] &&
-				frappe.ui.form.handlers['Shaft Production Run Item'].gross_weight;
-			if (typeof gwHandler === 'function') {
-				gwHandler(frm, cdt, cdn);
-			}
+			const calc = spr_recalc_roll_weights_from_gross(frm, cdt, cdn);
+			row.net_weight = calc.net;
+			row.produced_gsm = calc.gsm;
 		}
 		update_shaft_job_achieved_from_items(frm, { force: true, skipGridRefresh: true });
 		row.row_locked = 1;
@@ -7577,7 +7735,7 @@ function ensure_spr_item_stylesheet() {
 	`;
 		$('head').append(`<style data-spr-row-lock="${sprLockCssVer}">${lockCss}</style>`);
 	}
-	const sprItemsCssVer = '60';
+	const sprItemsCssVer = '61';
 	if (window.__sprspr_items_css_ver === sprItemsCssVer) {
 		return;
 	}
