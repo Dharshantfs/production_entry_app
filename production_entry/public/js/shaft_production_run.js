@@ -2449,16 +2449,18 @@ function spr_invoke_items_row_action(frm, action, cdn) {
 	if (!frm || !cdn) {
 		return;
 	}
-	const handlers =
-		frappe.ui.form.handlers &&
-		frappe.ui.form.handlers[SPR_SPI_DOCTYPE] &&
-		frappe.ui.form.handlers[SPR_SPI_DOCTYPE][action];
-	if (typeof handlers !== 'function') {
-		return;
-	}
 	frm._spr_row_action_cdn = cdn;
 	try {
-		handlers(frm, SPR_SPI_DOCTYPE, cdn);
+		if (frm.script_manager) {
+			frm.script_manager.trigger(action, SPR_SPI_DOCTYPE, cdn);
+		} else {
+			let handlers = frappe.ui.form.handlers && frappe.ui.form.handlers[SPR_SPI_DOCTYPE] && frappe.ui.form.handlers[SPR_SPI_DOCTYPE][action];
+			if (Array.isArray(handlers)) {
+				handlers.forEach(function (h) { if (typeof h === 'function') h(frm, SPR_SPI_DOCTYPE, cdn); });
+			} else if (typeof handlers === 'function') {
+				handlers(frm, SPR_SPI_DOCTYPE, cdn);
+			}
+		}
 	} finally {
 		setTimeout(function () {
 			if (frm) {

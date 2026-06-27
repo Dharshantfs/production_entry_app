@@ -11193,6 +11193,13 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	if cint(spr.docstatus) != 1:
 		frappe.throw(_("SPR {0} must be submitted.").format(spr_name))
 
+	def _get_batch_qty(bn):
+		if not bn: return 0.0
+		qty = frappe.db.sql("""select sum(actual_qty) from `tabStock Ledger Entry` 
+			where batch_no=%s and is_cancelled=0""", bn)
+		return qty[0][0] if qty and qty[0][0] else 0.0
+
+
 	se_names = [
 		x.strip() for x in _cstr(getattr(spr, "manufacturing_entries", "")).split(",") if x and x.strip()
 	]
@@ -11336,8 +11343,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 					except Exception:
 						pass
 			if bn:
-				from erpnext.stock.utils import get_batch_qty
-				if flt(get_batch_qty(bn)) <= 0:
+				if flt(_get_batch_qty(bn)) <= 0:
 					se_docs_to_resubmit.add(s["stock_entry"])
 	
 	for se_to_resubmit in se_docs_to_resubmit:
@@ -11353,12 +11359,11 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 			frappe.log_error(frappe.get_traceback(), f"SPR batch sync se resubmit failed:{se_to_resubmit}")
 			frappe.msgprint(f"Failed to automatically reactivate batches in Stock Entry {se_to_resubmit}. Please cancel and submit {se_to_resubmit} manually to activate its batches. Error: {str(e)}")
 
-	from erpnext.stock.utils import get_batch_qty
-	activated_count = sum(1 for bn in all_batch_codes if flt(get_batch_qty(bn)) > 0)
+	activated_count = sum(1 for bn in all_batch_codes if flt(_get_batch_qty(bn)) > 0)
 	# Include any batches that became active due to the backfill above
 	for r in spr.items or []:
 		bn = _cstr(getattr(r, "batch_no", ""))
-		if bn and bn not in all_batch_codes and flt(get_batch_qty(bn)) > 0:
+		if bn and bn not in all_batch_codes and flt(_get_batch_qty(bn)) > 0:
 			activated_count += 1
 
 	return {
