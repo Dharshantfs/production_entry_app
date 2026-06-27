@@ -11460,50 +11460,52 @@ def _spr_create_missing_bundle_for_fg(se_doc, fg_line, batch_no: str, fg_qty: fl
 	"""Manually create and link a Serial and Batch Bundle for the FG line to avoid resubmitting the Stock Entry."""
 	try:
 		fg_detail_name = getattr(fg_line, "name", None) or fg_line.get("name", "")
-		existing_bundle = frappe.db.get_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle")
-		if existing_bundle:
-			return
-
-		# Force enable use_serial_batch_fields to suppress Frappe warnings during any future validations
-		frappe.db.set_value("Stock Entry Detail", fg_detail_name, "use_serial_batch_fields", 1, update_modified=False)
-
-		bundle = frappe.get_doc({
-			"doctype": "Serial and Batch Bundle",
-			"item_code": fg_line.get("item_code"),
-			"warehouse": fg_wh,
-			"voucher_type": "Stock Entry",
-			"voucher_no": se_doc.name,
-			"voucher_detail_no": fg_detail_name,
-			"type_of_transaction": "Inward",
-			"posting_date": se_doc.posting_date,
-			"posting_time": se_doc.posting_time,
-			"has_batch_no": 1,
-			"company": getattr(se_doc, "company", ""),
-			"entries": [
-				{
-					"batch_no": batch_no,
-					"qty": fg_qty,
-					"warehouse": fg_wh
-				}
-			]
-		})
-		bundle.flags.ignore_permissions = True
-		bundle.flags.ignore_mandatory = True
-		bundle.flags.ignore_validate = True
-		bundle.insert()
+		bundle_name = frappe.db.get_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle")
 		
-		frappe.db.sql("UPDATE `tabSerial and Batch Bundle` SET docstatus=1 WHERE name=%s", bundle.name)
-		frappe.db.sql("UPDATE `tabSerial and Batch Entry` SET docstatus=1 WHERE parent=%s", bundle.name)
-
-		frappe.db.set_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle", bundle.name, update_modified=False)
-		
+		if bundle_name:
+			docstatus = frappe.db.get_value("Serial and Batch Bundle", bundle_name, "docstatus")
+			if not docstatus:
+				frappe.db.sql("UPDATE `tabSerial and Batch Bundle` SET docstatus=1 WHERE name=%s", bundle_name)
+				frappe.db.sql("UPDATE `tabSerial and Batch Entry` SET docstatus=1 WHERE parent=%s", bundle_name)
+		else:
+			frappe.db.set_value("Stock Entry Detail", fg_detail_name, "use_serial_batch_fields", 1, update_modified=False)
+			bundle = frappe.get_doc({
+				"doctype": "Serial and Batch Bundle",
+				"item_code": fg_line.get("item_code"),
+				"warehouse": fg_wh,
+				"voucher_type": "Stock Entry",
+				"voucher_no": se_doc.name,
+				"voucher_detail_no": fg_detail_name,
+				"type_of_transaction": "Inward",
+				"posting_date": se_doc.posting_date,
+				"posting_time": se_doc.posting_time,
+				"has_batch_no": 1,
+				"company": getattr(se_doc, "company", ""),
+				"entries": [
+					{
+						"batch_no": batch_no,
+						"qty": fg_qty,
+						"warehouse": fg_wh
+					}
+				]
+			})
+			bundle.flags.ignore_permissions = True
+			bundle.flags.ignore_mandatory = True
+			bundle.flags.ignore_validate = True
+			bundle.insert()
+			
+			bundle_name = bundle.name
+			frappe.db.sql("UPDATE `tabSerial and Batch Bundle` SET docstatus=1 WHERE name=%s", bundle_name)
+			frappe.db.sql("UPDATE `tabSerial and Batch Entry` SET docstatus=1 WHERE parent=%s", bundle_name)
+			frappe.db.set_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle", bundle_name, update_modified=False)
+			
 		frappe.db.sql("""UPDATE `tabStock Ledger Entry` 
 			SET serial_and_batch_bundle = %s 
 			WHERE voucher_type = 'Stock Entry' 
 			  AND voucher_no = %s 
 			  AND voucher_detail_no = %s
 			  AND actual_qty > 0
-			  AND IFNULL(is_cancelled, 0) = 0""", (bundle.name, se_doc.name, fg_detail_name))
+			  AND IFNULL(is_cancelled, 0) = 0""", (bundle_name, se_doc.name, fg_detail_name))
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "SPR bundle creation failed")
 
