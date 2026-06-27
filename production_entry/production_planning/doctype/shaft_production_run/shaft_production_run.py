@@ -12258,10 +12258,12 @@ def spr_set_item_row_lock(spr_name, row_name, locked, gross_weight=None, net_wei
 	"""Lightweight API: update row_locked (and optionally weights) on a single SPR Item row.
 	Uses direct DB update to avoid the full doc.save() / after_save cycle that freezes the UI."""
 	locked = cint(locked)
-	spr_doc = frappe.get_doc("Shaft Production Run", spr_name)
-	if cint(spr_doc.docstatus) != 0:
+	docstatus = frappe.db.get_value("Shaft Production Run", spr_name, "docstatus")
+	if docstatus is None:
+		frappe.throw(_("Shaft Production Run not found."))
+	if cint(docstatus) != 0:
 		frappe.throw(_("Cannot update a submitted Shaft Production Run."))
-	if not frappe.has_permission("Shaft Production Run", "write", spr_name):
+	if not frappe.has_permission("Shaft Production Run", "write"):
 		frappe.throw(_("You do not have permission to edit this document."), frappe.PermissionError)
 
 	fields = {"row_locked": locked}

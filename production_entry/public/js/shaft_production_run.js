@@ -1946,6 +1946,8 @@ function spr_schedule_grid_ui_debounced(frm, opts) {
 			return;
 		}
 		if (settings.styles !== false) {
+			sprEnsureItemsGridObserver(frm);
+			try { spr_apply_items_row_lock_ui(frm); } catch (e) {}
 			apply_spr_item_row_styles(frm);
 		}
 		if (settings.columns !== false) {
@@ -7981,7 +7983,29 @@ function sprClearRowBg($row) {
 }
 
 function sprEnsureItemsGridObserver(frm) {
-	/* MutationObserver removed — it re-fired on every GSM colour paint and froze the form. */
+	if (!frm || !frm.fields_dict || !frm.fields_dict.items) return;
+	const $wrap = frm.fields_dict.items.$wrapper;
+	if (!$wrap || !$wrap.length) return;
+	
+	if (frm.__spr_items_grid_observer) return;
+	const MutationObserver = window.MutationObserver || window.WebKitMutationObserver;
+	if (!MutationObserver) return;
+	
+	const observer = new MutationObserver(function (mutations) {
+		let shouldUpdate = false;
+		for (let i = 0; i < mutations.length; i++) {
+			if (mutations[i].type === 'childList' && mutations[i].addedNodes.length > 0) {
+				shouldUpdate = true;
+				break;
+			}
+		}
+		if (shouldUpdate && !spr_items_grid_is_editing(frm)) {
+			spr_schedule_grid_ui_debounced(frm, { delay: 150, columns: false });
+		}
+	});
+	
+	observer.observe($wrap.get(0), { childList: true, subtree: true, attributes: false });
+	frm.__spr_items_grid_observer = observer;
 }
 
 function schedule_spr_item_row_styles(frm) {
