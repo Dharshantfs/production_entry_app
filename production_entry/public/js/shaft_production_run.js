@@ -4330,11 +4330,20 @@ function spr_register_spr_page_buttons(frm) {
 /** After Save the toolbar is rebuilt asynchronously — retry so Manual job / Bundle packaging stay visible. */
 function spr_register_spr_page_buttons_after_save(frm) {
 	spr_register_spr_page_buttons(frm);
-	[120, 300, 600, 1200, 2000, 3500, 5000].forEach(function (ms) {
+	// Only retry twice: once at 300ms (after Frappe rebuilds the header), once at 1500ms (safety net).
+	// The previous 7-timeout pattern hammered the DOM after every auto-save from Create Entry.
+	if (frm._spr_page_btn_after_save_timer) {
+		clearTimeout(frm._spr_page_btn_after_save_timer);
+	}
+	frm._spr_page_btn_after_save_timer = setTimeout(function () {
+		frm._spr_page_btn_after_save_timer = null;
+		if (!frm || !frm.fields_dict) return;
+		spr_register_spr_page_buttons(frm);
 		setTimeout(function () {
+			if (!frm || !frm.fields_dict) return;
 			spr_register_spr_page_buttons(frm);
-		}, ms);
-	});
+		}, 1200);
+	}, 300);
 }
 
 /** Default WO qty (Kg): net per roll × rolls per shaft × number of shafts (deck positions). */
