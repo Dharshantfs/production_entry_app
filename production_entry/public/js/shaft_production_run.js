@@ -3925,6 +3925,9 @@ function spr_register_spr_page_buttons(frm) {
 										'Created {0} batch(es), updated {1} FG line(s), activated {2}, skipped {3}.',
 										[d.created_batches || 0, d.updated_fg_lines || 0, d.activated_batches || 0, d.skipped_count || 0]
 									);
+									if (d.backfilled_entries) {
+										msg += '<br>' + __('Auto-created {0} missing Manufacture entries.', [d.backfilled_entries]);
+									}
 									if (d.sle_patched) {
 										msg += '<br>' + __('SLE rows patched: {0}', [d.sle_patched]);
 									}

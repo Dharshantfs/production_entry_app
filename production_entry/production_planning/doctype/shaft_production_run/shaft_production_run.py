@@ -11298,7 +11298,21 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 				frappe.log_error(frappe.get_traceback(), f"SPR batch sync line update:{spr_name}")
 
 	spr.sync_batch_custom_fields()
+	
+	backfill_created = []
+	try:
+		# Also attempt to auto-create missing manufacture stock entries for skipped rolls
+		backfill_res = spr_backfill_missing_manufacture_from_spr(spr_name, submit_entries=1)
+		backfill_created = backfill_res.get("created") or []
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"SPR batch sync backfill failed:{spr_name}")
+
 	activated_count = sum(1 for bn in all_batch_codes if _spr_batch_is_active(bn))
+	# Include any batches that became active due to the backfill above
+	for r in spr.items or []:
+		bn = _cstr(getattr(r, "batch_no", ""))
+		if bn and bn not in all_batch_codes and _spr_batch_is_active(bn):
+			activated_count += 1
 
 	total_sle_patched = sum(s.get("sle_patched", 0) for s in skipped if isinstance(s, dict))
 	total_sle_patched += sum(u.get("sle_patched", 0) for u in updated_lines if isinstance(u, dict))
@@ -11315,6 +11329,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		"updated_fg_lines": len(updated_lines),
 		"sle_patched": total_sle_patched,
 		"activated_batches": activated_count,
+		"backfilled_entries": len(backfill_created),
 		"updated_details": updated_lines[:200],
 		"skipped_count": len(skipped),
 		"skipped": skipped[:100],
