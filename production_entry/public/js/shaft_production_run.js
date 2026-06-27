@@ -8326,7 +8326,6 @@ function sprFindItemsRowDomByDocname(frm, doc, idx) {
 			return grByName.row;
 		}
 	}
-	const $wrap = frm.fields_dict.items && frm.fields_dict.items.$wrapper;
 	if (!$wrap || !$wrap.length || !doc || !doc.name) {
 		return null;
 	}
