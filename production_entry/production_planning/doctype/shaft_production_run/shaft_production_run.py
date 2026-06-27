@@ -11353,9 +11353,10 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 			se_doc.cancel()
 			se_doc.submit()
 			frappe.db.commit()
-		except Exception:
+		except Exception as e:
 			frappe.db.rollback(save_point="se_resubmit")
 			frappe.log_error(frappe.get_traceback(), f"SPR batch sync se resubmit failed:{se_to_resubmit}")
+			frappe.msgprint(f"Failed to automatically reactivate batches in Stock Entry {se_to_resubmit}. Please cancel and submit {se_to_resubmit} manually to activate its batches. Error: {str(e)}")
 
 	return {
 		"status": "ok",
