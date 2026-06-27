@@ -11307,13 +11307,6 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), f"SPR batch sync backfill failed:{spr_name}")
 
-	activated_count = sum(1 for bn in all_batch_codes if _spr_batch_is_active(bn))
-	# Include any batches that became active due to the backfill above
-	for r in spr.items or []:
-		bn = _cstr(getattr(r, "batch_no", ""))
-		if bn and bn not in all_batch_codes and _spr_batch_is_active(bn):
-			activated_count += 1
-
 	total_sle_patched = sum(s.get("sle_patched", 0) for s in skipped if isinstance(s, dict))
 	total_sle_patched += sum(u.get("sle_patched", 0) for u in updated_lines if isinstance(u, dict))
 
@@ -11331,7 +11324,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	# Also resubmit entries that already had the batch number but the batch is mysteriously still not active
 	for s in skipped:
 		if isinstance(s, dict) and s.get("reason") == "already_has_batch" and s.get("stock_entry"):
-			# Check if the batch is active
+			# Check if the batch is active natively
 			bn = _cstr(s.get("batch_no") or "")
 			if not bn:
 				# Try to get batch_no from the FG line if it wasn't saved in the skipped dict
@@ -11342,8 +11335,10 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 						bn = frappe.db.get_value("Stock Entry Detail", {"parent": se_name, "idx": line_idx}, "batch_no")
 					except Exception:
 						pass
-			if bn and not _spr_batch_is_active(bn):
-				se_docs_to_resubmit.add(s["stock_entry"])
+			if bn:
+				from erpnext.stock.utils import get_batch_qty
+				if flt(get_batch_qty(bn)) <= 0:
+					se_docs_to_resubmit.add(s["stock_entry"])
 	
 	for se_to_resubmit in se_docs_to_resubmit:
 		try:
@@ -11357,6 +11352,14 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 			frappe.db.rollback(save_point="se_resubmit")
 			frappe.log_error(frappe.get_traceback(), f"SPR batch sync se resubmit failed:{se_to_resubmit}")
 			frappe.msgprint(f"Failed to automatically reactivate batches in Stock Entry {se_to_resubmit}. Please cancel and submit {se_to_resubmit} manually to activate its batches. Error: {str(e)}")
+
+	from erpnext.stock.utils import get_batch_qty
+	activated_count = sum(1 for bn in all_batch_codes if flt(get_batch_qty(bn)) > 0)
+	# Include any batches that became active due to the backfill above
+	for r in spr.items or []:
+		bn = _cstr(getattr(r, "batch_no", ""))
+		if bn and bn not in all_batch_codes and flt(get_batch_qty(bn)) > 0:
+			activated_count += 1
 
 	return {
 		"status": "ok",
