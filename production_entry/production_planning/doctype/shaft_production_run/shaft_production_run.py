@@ -5341,7 +5341,7 @@ class ShaftProductionRun(Document):
 						se.append("items", {
 							"item_code": it,
 							"qty": need,
-							"s_warehouse": wo.source_warehouse,
+							"s_warehouse": wo.source_warehouse or wh or wo.wip_warehouse,
 							"t_warehouse": wo.wip_warehouse,
 							"uom": stock_uom,
 							"stock_uom": stock_uom,
