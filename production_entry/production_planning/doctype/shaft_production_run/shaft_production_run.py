@@ -5371,6 +5371,10 @@ class ShaftProductionRun(Document):
 			frappe.throw("\n\n".join(errors), title=_("Shortage Transfer Failed"))
 			
 		if submitted_ses:
+			try:
+				frappe.db.commit()
+			except Exception:
+				pass
 			msg = _("Shortages automatically handled via Material Transfers:\n\n{0}").format("\n".join(["- " + d for d in submitted_ses]))
 			frappe.msgprint(msg, alert=True, indicator="green")
 
