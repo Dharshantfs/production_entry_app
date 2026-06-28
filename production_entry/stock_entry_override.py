@@ -65,6 +65,14 @@ class SPRStockEntryOverride(StockEntry):
 
 	def validate(self):
 		self._normalize_spr_manufacture_context()
+		if getattr(self.flags, "ignore_validate_work_order", False) or frappe.flags.get("spr_skip_wo_transfer_qty_validation"):
+			_wo = self.work_order
+			self.work_order = None
+			try:
+				super().validate()
+			finally:
+				self.work_order = _wo
+			return
 		super().validate()
 
 	def validate_work_order(self):
