@@ -4515,11 +4515,15 @@ class ShaftProductionRun(Document):
 	def _spr_insert_shortage_transfer_draft(self, se) -> str:
 		"""Insert MTFM for shortages; auto-submit when stock is available."""
 		self._spr_last_mtfm_error = ""
+		name = None
+		skip_cap_flag_backup = frappe.flags.get("spr_skip_wo_transfer_qty_validation")
 		try:
 			_spr_prepare_mtfm_stock_entry_for_submit(se)
 			self._spr_apply_stock_entry_item_accounts(se)
 			se.flags.ignore_mandatory = True
 			se.flags.ignore_permissions = True
+			frappe.flags.spr_skip_wo_transfer_qty_validation = True
+			se.flags.ignore_validate_work_order = True
 			se.insert()
 			name = _cstr(se.name)
 			self._persist_stock_entry_spr_reference_db(name)
@@ -4652,6 +4656,9 @@ class ShaftProductionRun(Document):
 				except Exception:
 					pass
 				return name
+		finally:
+			frappe.flags.spr_skip_wo_transfer_qty_validation = skip_cap_flag_backup
+
 		return ""
 
 	def _transfer_for_manufacture_type_name(self) -> str:
