@@ -1941,6 +1941,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 						frm.doc.modified = r.message.modified;
 					}
 				}
+				frappe.show_alert({ message: __('Row state updated.'), indicator: 'green' }, 2);
 			},
 		});
 	},
@@ -1995,6 +1996,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 						frm.doc.modified = r.message.modified;
 					}
 				}
+				frappe.show_alert({ message: __('Row state updated.'), indicator: 'green' }, 2);
 			},
 		});
 	},
@@ -3171,3 +3173,4 @@ function spr_sync_total_produced_weight(frm, opts) {
 		}
 	}
 }
+
