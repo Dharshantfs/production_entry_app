@@ -5309,7 +5309,7 @@ class ShaftProductionRun(Document):
 			return
 
 		errors = []
-		drafts = []
+		submitted_ses = []
 		for wo_name, events in shortage_events.items():
 			added_items = []
 			try:
@@ -5352,8 +5352,8 @@ class ShaftProductionRun(Document):
 				
 				if added_items:
 					se.insert()
-					# Leave as Draft. User will submit manually.
-					drafts.append(f"<a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for WO {wo_name}")
+					se.submit()
+					submitted_ses.append(f"<a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for WO {wo_name}")
 			except Exception as e:
 				error_msg = f"Failed to create Stock Entry for Work Order {wo_name}: {str(e)}"
 				item_codes = ", ".join(list(set([str(i) for i in added_items])))
@@ -5362,9 +5362,9 @@ class ShaftProductionRun(Document):
 		if errors:
 			frappe.throw("\n\n".join(errors), title=_("Shortage Transfer Failed"))
 			
-		if drafts:
-			msg = _("Insufficient WIP stock. The following Draft Material Transfers were created for shortages:\n\n{0}\n\nPlease open them, review, submit them, and then return here to submit the Shaft Production Run again.").format("\n".join(["- " + d for d in drafts]))
-			frappe.throw(msg, title=_("Insufficient Stock - Action Required"))
+		if submitted_ses:
+			msg = _("Insufficient WIP stock. The following Material Transfers were automatically created and submitted for the shortages:\n\n{0}\n\nPlease verify them if needed, and then return here to submit the Shaft Production Run again to complete manufacturing.").format("\n".join(["- " + d for d in submitted_ses]))
+			frappe.throw(msg, title=_("Shortage Transfers Submitted - Please Re-Submit SPR"))
 
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""

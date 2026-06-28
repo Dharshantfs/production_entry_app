@@ -2372,10 +2372,8 @@ class ShaftProductionRun(Document):
 		)
 		if transfer_name:
 			next_steps = _(
-				'1) Open draft transfer: <a href="/app/stock-entry/{0}" target="_blank">{0}</a> '
-				'(/app/stock-entry/{0})\n'
-				"2) Verify source warehouse = Raw Materials and target warehouse = WIP, then submit.\n"
-				'3) Return to SPR: <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
+				'1) Auto-submitted transfer: <a href="/app/stock-entry/{0}" target="_blank">{0}</a>\n'
+				'2) Return to SPR: <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
 			).format(transfer_name, self.name)
 		elif transfer_err:
 			next_steps = _(
@@ -2392,7 +2390,7 @@ class ShaftProductionRun(Document):
 		if not shortage_events:
 			return
 		sections = []
-		did_create_or_reuse = False
+		submitted_ses = []
 		for event in shortage_events:
 			wo_id = _cstr(event.get("wo_id"))
 			wo_doc = event.get("wo_doc")
