@@ -1859,6 +1859,33 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			}, ms);
 		});
 
+		frappe.call({
+			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
+			args: {
+				spr_name: frm.doc.name,
+				row_name: row.name,
+				locked: 1,
+				gross_weight: row.gross_weight,
+				net_weight: row.net_weight,
+				produced_gsm: row.produced_gsm,
+			},
+			freeze: false,
+			callback: function (r) {
+				if (r && r.exc) {
+					frappe.model.set_value(cdt, cdn, 'row_locked', 0);
+					if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
+						frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 0);
+					}
+					frappe.msgprint(__('Could not save row. Please try again.'));
+					return;
+				}
+				if (r.message && r.message.modified) {
+					if (r.message.modified > frm.doc.modified) {
+						frm.doc.modified = r.message.modified;
+					}
+				}
+			},
+		});
 	},
 	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
@@ -1887,6 +1914,31 @@ frappe.ui.form.on('Shaft Production Run Item', {
 				spr_apply_items_row_lock_ui(frm);
 				apply_spr_item_row_styles(frm);
 			}, ms);
+		});
+
+		frappe.call({
+			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
+			args: {
+				spr_name: frm.doc.name,
+				row_name: cdn,
+				locked: 0,
+			},
+			freeze: false,
+			callback: function (r) {
+				if (r && r.exc) {
+					frappe.model.set_value(cdt, cdn, 'row_locked', 1);
+					if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
+						frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 1);
+					}
+					frappe.msgprint(__('Could not unlock row. Please try again.'));
+					return;
+				}
+				if (r.message && r.message.modified) {
+					if (r.message.modified > frm.doc.modified) {
+						frm.doc.modified = r.message.modified;
+					}
+				}
+			},
 		});
 
 	},

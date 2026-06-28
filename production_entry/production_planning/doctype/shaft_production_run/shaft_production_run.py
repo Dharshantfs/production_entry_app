@@ -12261,9 +12261,10 @@ def spr_set_item_row_lock(spr_name, row_name, locked, gross_weight=None, net_wei
 	if has_row_ready:
 		fields["row_ready_for_print"] = locked
 
+	now_str = frappe.utils.now()
 	frappe.db.set_value("Shaft Production Run Item", row_name, fields, update_modified=False)
-	frappe.db.set_value("Shaft Production Run", spr_name, "modified", frappe.utils.now(), update_modified=False)
+	frappe.db.set_value("Shaft Production Run", spr_name, "modified", now_str, update_modified=False)
 	frappe.db.commit()
-	return {"status": "ok", "row_name": row_name, "locked": locked}
+	return {"status": "ok", "row_name": row_name, "locked": locked, "modified": now_str}
 
 
