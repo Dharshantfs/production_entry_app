@@ -5287,90 +5287,62 @@ class ShaftProductionRun(Document):
 	def _raise_shortage_with_transfer_batch(
 		self, shortage_events, ignore_wo_transfer_prune: bool = False
 	):
-		"""Create one combined transfer for all shortages, then raise actionable message."""
+		"""Create one Stock Entry per Work Order for shortages."""
 		if not shortage_events:
 			return
-		if not ignore_wo_transfer_prune:
-			shortage_events = self._filter_shortage_events_by_wo_transfer(shortage_events)
-			if not shortage_events:
-				return
-		consolidated = self._consolidated_shortage_lines(shortage_events)
 
-		transfer_name = ""
-		try:
-			# Clear rolled-back Manufacture state so draft insert can commit cleanly.
-			frappe.db.commit()
-		except Exception:
-			pass
-		try:
-			transfer_name = self._create_combined_spr_shortage_transfer_draft(
-				shortage_events, ignore_wo_transfer_prune=ignore_wo_transfer_prune
-			)
-		except Exception:
-			frappe.log_error(frappe.get_traceback(), f"SPR combined shortage draft:{self.name}")
-			transfer_name = ""
-		if not transfer_name:
-			transfer_name = self._find_open_spr_shortage_transfer_draft()
-		if not transfer_name:
-			wo_ids = sorted({_cstr(e.get("wo_id")) for e in shortage_events if _cstr(e.get("wo_id"))})
-			for wo_id in wo_ids:
-				transfer_name = self._find_recent_spr_wo_mtfm_transfer(wo_id)
-				if transfer_name:
-					break
+		if isinstance(shortage_events, list):
+			if not ignore_wo_transfer_prune:
+				shortage_events = self._filter_shortage_events_by_wo_transfer(shortage_events)
+			
+			grouped = {}
+			for e in (shortage_events or []):
+				wo = e.get("wo_id") or e.get("work_order")
+				if not wo:
+					continue
+				if wo not in grouped:
+					grouped[wo] = []
+				grouped[wo].append(e)
+			shortage_events = grouped
 
-		try:
-			frappe.db.commit()
-		except Exception:
-			pass
-
-		# After MTFM insert/submit, reload WO + WIP bins — do not block if shortage is already resolved.
-		still_blocking = self._shortage_events_still_blocking(shortage_events)
-		if not still_blocking:
+		if not shortage_events:
 			return
 
-		transfer_submitted = False
-		if transfer_name:
-			transfer_submitted = cint(frappe.db.get_value("Stock Entry", transfer_name, "docstatus")) == 1
+		errors = []
+		for wo_name, items in shortage_events.items():
+			try:
+				wo = frappe.get_doc("Work Order", wo_name)
+				
+				try:
+					se_type = self._manufacture_stock_entry_type_name()
+				except Exception:
+					se_type = "Material Transfer for Manufacture"
+				
+				se = frappe.new_doc("Stock Entry")
+				se.purpose = "Material Transfer for Manufacture"
+				se.stock_entry_type = se_type
+				se.work_order = wo_name
+				se.company = wo.company
+				se.from_warehouse = wo.source_warehouse
+				se.to_warehouse = wo.wip_warehouse
+				
+				for item in items:
+					se.append("items", {
+						"item_code": item.get("item_code"),
+						"qty": item.get("shortage_qty") or item.get("qty"),
+						"s_warehouse": wo.source_warehouse,
+						"t_warehouse": wo.wip_warehouse,
+					})
+				
+				se.insert()
+				se.submit()
+			except Exception as e:
+				error_msg = f"Failed to create Stock Entry for Work Order {wo_name}: {str(e)}"
+				item_codes = ", ".join(list(set([str(i.get("item_code")) for i in items if i.get("item_code")])))
+				errors.append(f"{error_msg} (Items: {item_codes})")
 
-		if transfer_name and transfer_submitted:
-			next_steps = _(
-				'Material Transfer for Manufacture <a href="/app/stock-entry/{0}" target="_blank">{0}</a> '
-				"was created and submitted (RM -> WIP).\n"
-				'Return to SPR <a href="/app/shaft-production-run/{1}" target="_blank">{1}</a> and submit again.'
-			).format(transfer_name, self.name)
-		elif transfer_name:
-			next_steps = _(
-				'1) Open Material Transfer for Manufacture: '
-				'<a href="/app/stock-entry/{0}" target="_blank">{0}</a>\n'
-				"2) Verify each line: source = company RM warehouse, target = company WIP warehouse.\n"
-				"3) Submit the Stock Entry (auto-submit failed — likely insufficient RM stock), then submit SPR again."
-			).format(transfer_name)
-		else:
-			last_err = _cstr(getattr(self, "_spr_last_mtfm_error", None)).strip()
-			if last_err:
-				next_steps = _(
-					"Auto-transfer failed: {0}\n\n"
-					"Create one 'Material Transfer for Manufacture' (company RM -> company WIP) "
-					"with all shortage items, submit it, then submit SPR again."
-				).format(last_err[:800])
-			else:
-				next_steps = _(
-					"Could not auto-create transfer on this site. "
-					"Create one 'Material Transfer for Manufacture' (company RM -> company WIP) with all shortage items, submit it, then submit SPR again."
-				)
-
-		body = consolidated or _("No shortage detail available.")
-		no_stock_lines = self._spr_no_rm_stock_lines_for_shortage_events(shortage_events)
-		if no_stock_lines and not transfer_submitted:
-			body = _("{0}\n\nNo stock in RM warehouse until you transfer:\n{1}").format(
-				body, no_stock_lines
-			)
-		frappe.throw(
-			_(
-				"Insufficient stock for {0} work order(s).\n\n{1}\n\n{2}"
-			).format(len(still_blocking), body, next_steps),
-			title=_("Insufficient stock"),
-		)
+		if errors:
+			frappe.throw("\n\n".join(errors), title=_("Shortage Transfer Failed"))
 
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
