@@ -2258,9 +2258,18 @@ class ShaftProductionRun(Document):
 					d.s_warehouse = raw_source_wh
 				if not d.t_warehouse:
 					d.t_warehouse = wip_wh
-			if any(d.item_code and d.get("t_warehouse") for d in (se.items or [])):
+			if not any(d.item_code and d.get("t_warehouse") for d in (se.items or [])):
+				return ""
+
+			skip_cap_flag_backup = frappe.flags.get("spr_skip_wo_transfer_qty_validation")
+			try:
+				frappe.flags.spr_skip_wo_transfer_qty_validation = True
+				se.flags.ignore_validate_work_order = True
 				se.insert()
-				return se.name
+				se.submit()
+			finally:
+				frappe.flags.spr_skip_wo_transfer_qty_validation = skip_cap_flag_backup
+			return se.name
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "SPR shortage draft transfer (BOM path) failed")
 

@@ -5351,9 +5351,17 @@ class ShaftProductionRun(Document):
 						added_items.append(it)
 				
 				if added_items:
-					se.insert()
-					se.submit()
-					submitted_ses.append(f"<a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for WO {wo_name}")
+					skip_cap_flag_backup = frappe.flags.get("spr_skip_wo_transfer_qty_validation")
+					try:
+						frappe.flags.spr_skip_wo_transfer_qty_validation = True
+						se.flags.ignore_validate_work_order = True
+						se.insert()
+						se.submit()
+						submitted_ses.append(f"<a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for WO {wo_name}")
+					except Exception as e:
+						errors.append(f"Failed to create Stock Entry for Work Order {wo_name}: {e}")
+					finally:
+						frappe.flags.spr_skip_wo_transfer_qty_validation = skip_cap_flag_backup
 			except Exception as e:
 				error_msg = f"Failed to create Stock Entry for Work Order {wo_name}: {str(e)}"
 				item_codes = ", ".join(list(set([str(i) for i in added_items])))

@@ -67,6 +67,12 @@ class SPRStockEntryOverride(StockEntry):
 		self._normalize_spr_manufacture_context()
 		super().validate()
 
+	def validate_work_order(self):
+		if getattr(self.flags, "ignore_validate_work_order", False) or frappe.flags.get("spr_skip_wo_transfer_qty_validation"):
+			return
+		if hasattr(super(), "validate_work_order"):
+			return super().validate_work_order()
+
 	def check_duplicate_entry_for_work_order(self):
 		# Skipping this check does not change RM consumption: Manufacture lines still come from
 		# get_items()/BOM; Stock Ledger posts whatever transfer_qty is on each RM row.
