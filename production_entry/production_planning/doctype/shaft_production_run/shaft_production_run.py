@@ -5309,7 +5309,8 @@ class ShaftProductionRun(Document):
 			return
 
 		errors = []
-		for wo_name, items in shortage_events.items():
+		for wo_name, events in shortage_events.items():
+			added_items = []
 			try:
 				wo = frappe.get_doc("Work Order", wo_name)
 				
@@ -5326,19 +5327,25 @@ class ShaftProductionRun(Document):
 				se.from_warehouse = wo.source_warehouse
 				se.to_warehouse = wo.wip_warehouse
 				
-				for item in items:
-					se.append("items", {
-						"item_code": item.get("item_code"),
-						"qty": item.get("shortage_qty") or item.get("qty"),
-						"s_warehouse": wo.source_warehouse,
-						"t_warehouse": wo.wip_warehouse,
-					})
+				for event in events:
+					shortages = event.get("shortages") or []
+					for it, wh, req, avl, need in shortages:
+						if not it:
+							continue
+						se.append("items", {
+							"item_code": it,
+							"qty": need,
+							"s_warehouse": wo.source_warehouse,
+							"t_warehouse": wo.wip_warehouse,
+						})
+						added_items.append(it)
 				
-				se.insert()
-				se.submit()
+				if added_items:
+					se.insert()
+					se.submit()
 			except Exception as e:
 				error_msg = f"Failed to create Stock Entry for Work Order {wo_name}: {str(e)}"
-				item_codes = ", ".join(list(set([str(i.get("item_code")) for i in items if i.get("item_code")])))
+				item_codes = ", ".join(list(set([str(i) for i in added_items])))
 				errors.append(f"{error_msg} (Items: {item_codes})")
 
 		if errors:
