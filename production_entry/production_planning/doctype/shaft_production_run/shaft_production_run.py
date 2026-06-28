@@ -5309,6 +5309,7 @@ class ShaftProductionRun(Document):
 			return
 
 		errors = []
+		drafts = []
 		for wo_name, events in shortage_events.items():
 			added_items = []
 			try:
@@ -5334,19 +5335,25 @@ class ShaftProductionRun(Document):
 				for event in events:
 					shortages = event.get("shortages") or []
 					for it, wh, req, avl, need in shortages:
-						if not it:
+						if not it or flt(need) <= 0:
 							continue
+						stock_uom = frappe.db.get_value("Item", it, "stock_uom") or "Nos"
 						se.append("items", {
 							"item_code": it,
 							"qty": need,
 							"s_warehouse": wo.source_warehouse,
 							"t_warehouse": wo.wip_warehouse,
+							"uom": stock_uom,
+							"stock_uom": stock_uom,
+							"conversion_factor": 1.0,
+							"transfer_qty": need,
 						})
 						added_items.append(it)
 				
 				if added_items:
 					se.insert()
-					se.submit()
+					# Leave as Draft. User will submit manually.
+					drafts.append(f"<a href='/app/stock-entry/{se.name}' target='_blank'><b>{se.name}</b></a> for WO {wo_name}")
 			except Exception as e:
 				error_msg = f"Failed to create Stock Entry for Work Order {wo_name}: {str(e)}"
 				item_codes = ", ".join(list(set([str(i) for i in added_items])))
@@ -5354,6 +5361,10 @@ class ShaftProductionRun(Document):
 
 		if errors:
 			frappe.throw("\n\n".join(errors), title=_("Shortage Transfer Failed"))
+			
+		if drafts:
+			msg = _("Insufficient WIP stock. The following Draft Material Transfers were created for shortages:\n\n{0}\n\nPlease open them, review, submit them, and then return here to submit the Shaft Production Run again.").format("\n".join(["- " + d for d in drafts]))
+			frappe.throw(msg, title=_("Insufficient Stock - Action Required"))
 
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
