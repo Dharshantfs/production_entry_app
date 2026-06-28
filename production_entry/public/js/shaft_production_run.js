@@ -6330,7 +6330,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		try { spr_schedule_item_row_styles_after_doc_write(frm); } catch(e) {}
 		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
 		try { apply_spr_item_row_styles(frm); } catch(e) {}
-		frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
+
 	},
 	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
@@ -6364,7 +6364,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		try { spr_schedule_item_row_styles_after_doc_write(frm); } catch(e) {}
 		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
 		try { apply_spr_item_row_styles(frm); } catch(e) {}
-		frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
+
 	},
 });
 

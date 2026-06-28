@@ -1915,7 +1915,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 				apply_spr_item_row_styles(frm);
 			}, ms);
 		});
-		frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
+
 	},
 	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
@@ -1945,7 +1945,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 				apply_spr_item_row_styles(frm);
 			}, ms);
 		});
-		frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
+
 	},
 });
 
