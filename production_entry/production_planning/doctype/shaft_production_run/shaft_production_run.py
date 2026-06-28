@@ -5326,6 +5326,10 @@ class ShaftProductionRun(Document):
 				se.company = wo.company
 				se.from_warehouse = wo.source_warehouse
 				se.to_warehouse = wo.wip_warehouse
+				se.from_bom = 0
+				
+				chunk_total = sum(flt(e.get("chunk_total_qty")) for e in events)
+				se.fg_completed_qty = chunk_total if chunk_total > 0 else 1.0
 				
 				for event in events:
 					shortages = event.get("shortages") or []
