@@ -5316,7 +5316,7 @@ class ShaftProductionRun(Document):
 				wo = frappe.get_doc("Work Order", wo_name)
 				
 				try:
-					se_type = self._manufacture_stock_entry_type_name()
+					se_type = self._transfer_for_manufacture_type_name()
 				except Exception:
 					se_type = "Material Transfer for Manufacture"
 				

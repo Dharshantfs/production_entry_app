@@ -3367,7 +3367,11 @@ class ShaftProductionRun(Document):
 				se.posting_date = today()
 				se.posting_time = nowtime()
 				se.set_posting_time = 1
-				# Keep explicit type + purpose for sites where Stock Entry Type is mandatory.
+				# Keep explicit type + 
+				try:
+					se_type = self._transfer_for_manufacture_type_name()
+				except Exception:
+					se_type = "Material Transfer for Manufacture"
 				se.stock_entry_type = self._manufacture_stock_entry_type_name()
 				# ERPNext get_items() runs before validate; purpose must be set here or BOM + FG lines are never built.
 				se.purpose = "Manufacture"
