@@ -6309,8 +6309,6 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		}
 		
 		const gw = spr_normalize_gross_weight_input(row.gross_weight);
-		let finalNet = flt(row.net_weight);
-		let finalGsm = flt(row.produced_gsm);
 		if (gw > 0) {
 			row.gross_weight = gw;
 			const gwHandler =
@@ -6320,8 +6318,6 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			if (typeof gwHandler === 'function') {
 				gwHandler(frm, cdt, cdn);
 			}
-			finalNet = flt(row.net_weight);
-			finalGsm = flt(row.produced_gsm);
 		}
 		update_shaft_job_achieved_from_items(frm, { force: true, skipGridRefresh: true });
 		
@@ -6329,36 +6325,12 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
 			row.row_ready_for_print = 1;
 		}
-		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
 		
-		frappe.call({
-			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
-			args: {
-				spr_name: frm.doc.name,
-				row_name: row.name,
-				locked: 1,
-				gross_weight: gw > 0 ? gw : row.gross_weight,
-				net_weight: finalNet,
-				produced_gsm: finalGsm,
-			},
-			freeze: false,
-			callback: function (r) {
-				if (r && r.exc) {
-					row.row_locked = 0;
-					if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-						row.row_ready_for_print = 0;
-					}
-					try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
-					frappe.msgprint(__('Could not save row. Please try again.'));
-					return;
-				}
-				frm.doc.modified = (r.message && r.message.modified) || frm.doc.modified;
-				try { frm.page && frm.page.set_indicator(__('Saved'), 'green'); } catch(e) {}
-				spr_apply_items_row_lock_ui(frm);
-				apply_spr_item_row_styles(frm);
-				frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
-			},
-		});
+		frm.refresh_field('items');
+		try { spr_schedule_item_row_styles_after_doc_write(frm); } catch(e) {}
+		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
+		try { apply_spr_item_row_styles(frm); } catch(e) {}
+		frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
 	},
 	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
@@ -6387,32 +6359,12 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
 			row.row_ready_for_print = 0;
 		}
-		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
 		
-		frappe.call({
-			method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock',
-			args: {
-				spr_name: frm.doc.name,
-				row_name: row.name,
-				locked: 0,
-			},
-			freeze: false,
-			callback: function (r) {
-				if (r && r.exc) {
-					row.row_locked = 1;
-					if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
-						row.row_ready_for_print = 1;
-					}
-					try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
-					frappe.msgprint(__('Could not unlock row. Please try again.'));
-					return;
-				}
-				try { frm.page && frm.page.set_indicator(__('Saved'), 'green'); } catch(e) {}
-				spr_apply_items_row_lock_ui(frm);
-				apply_spr_item_row_styles(frm);
-				frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
-			},
-		});
+		frm.refresh_field('items');
+		try { spr_schedule_item_row_styles_after_doc_write(frm); } catch(e) {}
+		try { spr_apply_items_row_lock_ui(frm); } catch(e) {}
+		try { apply_spr_item_row_styles(frm); } catch(e) {}
+		frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
 	},
 });
 

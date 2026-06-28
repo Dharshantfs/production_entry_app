@@ -1849,23 +1849,16 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
 			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 1);
 		}
-		const save_promise = frm.save();
-		function afterSprRowSave() {
-			frm.refresh_field('items');
-			spr_schedule_item_row_styles_after_doc_write(frm);
-			[0, 50, 200, 500].forEach(function (ms) {
-				setTimeout(function () {
-					spr_apply_items_row_lock_ui(frm);
-					apply_spr_item_row_styles(frm);
-				}, ms);
-			});
-			frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
-		}
-		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(afterSprRowSave);
-		} else {
-			setTimeout(afterSprRowSave, 400);
-		}
+		
+		frm.refresh_field('items');
+		spr_schedule_item_row_styles_after_doc_write(frm);
+		[0, 50, 200, 500].forEach(function (ms) {
+			setTimeout(function () {
+				spr_apply_items_row_lock_ui(frm);
+				apply_spr_item_row_styles(frm);
+			}, ms);
+		});
+		frappe.show_alert({ message: __('Row saved. Print Label is available.'), indicator: 'green' });
 	},
 	/** Print roll label (after Save Row). */
 	print_sticker: function (frm, cdt, cdn) {
@@ -1886,23 +1879,16 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		if (frappe.meta.get_docfield(cdt, 'row_ready_for_print')) {
 			frappe.model.set_value(cdt, cdn, 'row_ready_for_print', 0);
 		}
-		const save_promise = frm.save();
-		function afterSprEditSave() {
-			frm.refresh_field('items');
-			spr_schedule_item_row_styles_after_doc_write(frm);
-			[0, 50, 200].forEach(function (ms) {
-				setTimeout(function () {
-					spr_apply_items_row_lock_ui(frm);
-					apply_spr_item_row_styles(frm);
-				}, ms);
-			});
-			frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
-		}
-		if (save_promise && typeof save_promise.then === 'function') {
-			save_promise.then(afterSprEditSave);
-		} else {
-			setTimeout(afterSprEditSave, 400);
-		}
+		
+		frm.refresh_field('items');
+		spr_schedule_item_row_styles_after_doc_write(frm);
+		[0, 50, 200].forEach(function (ms) {
+			setTimeout(function () {
+				spr_apply_items_row_lock_ui(frm);
+				apply_spr_item_row_styles(frm);
+			}, ms);
+		});
+		frappe.show_alert({ message: __('Row unlocked for editing.'), indicator: 'blue' });
 	},
 });
 
