@@ -5371,8 +5371,8 @@ class ShaftProductionRun(Document):
 			frappe.throw("\n\n".join(errors), title=_("Shortage Transfer Failed"))
 			
 		if submitted_ses:
-			msg = _("Insufficient WIP stock. The following Material Transfers were automatically created and submitted for the shortages:\n\n{0}\n\nPlease verify them if needed, and then return here to submit the Shaft Production Run again to complete manufacturing.").format("\n".join(["- " + d for d in submitted_ses]))
-			frappe.throw(msg, title=_("Shortage Transfers Submitted - Please Re-Submit SPR"))
+			msg = _("Shortages automatically handled via Material Transfers:\n\n{0}").format("\n".join(["- " + d for d in submitted_ses]))
+			frappe.msgprint(msg, alert=True, indicator="green")
 
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""
