@@ -1645,13 +1645,26 @@ class ShaftProductionRun(Document):
 		)
 		for (bid,) in rows or []:
 			max_s = max(max_s, self._suffix_after_root(bid, root_5))
+
+		rd_val = self.run_date
+		start_date = "2000-01-01"
+		end_date = "2100-01-01"
+		if rd_val:
+			rd = getdate(rd_val)
+			start_date = f"{rd.year}-{rd.month:02d}-01"
+			next_mo = rd.month % 12 + 1
+			next_yr = rd.year + (1 if rd.month == 12 else 0)
+			end_date = f"{next_yr}-{next_mo:02d}-01"
+
 		rows2 = frappe.db.sql(
 			"""
 			SELECT spi.batch_no FROM `tabShaft Production Run Item` spi
+			INNER JOIN `tabShaft Production Run` spr ON spr.name = spi.parent
 			WHERE IFNULL(spi.batch_no,'') != ''
 			  AND spi.batch_no LIKE CONCAT(%(root)s, '%%')
+			  AND spr.run_date >= %(sd)s AND spr.run_date < %(ed)s
 			""",
-			{"root": root_5},
+			{"root": root_5, "sd": start_date, "ed": end_date},
 		)
 		for (bn,) in rows2 or []:
 			max_s = max(max_s, self._suffix_after_root(bn, root_5))
@@ -1680,12 +1693,26 @@ class ShaftProductionRun(Document):
 		)
 		for (bid,) in rows or []:
 			mx = max(mx, self._roll_no_from_batch(bid, series_prefix))
+
+		rd_val = self.run_date
+		start_date = "2000-01-01"
+		end_date = "2100-01-01"
+		if rd_val:
+			rd = getdate(rd_val)
+			start_date = f"{rd.year}-{rd.month:02d}-01"
+			next_mo = rd.month % 12 + 1
+			next_yr = rd.year + (1 if rd.month == 12 else 0)
+			end_date = f"{next_yr}-{next_mo:02d}-01"
+
 		rows2 = frappe.db.sql(
 			"""
-			SELECT batch_no FROM `tabShaft Production Run Item`
-			WHERE IFNULL(batch_no,'') != '' AND batch_no LIKE %(pat)s
+			SELECT spi.batch_no FROM `tabShaft Production Run Item` spi
+			INNER JOIN `tabShaft Production Run` spr ON spr.name = spi.parent
+			WHERE IFNULL(spi.batch_no,'') != '' 
+			  AND spi.batch_no LIKE %(pat)s
+			  AND spr.run_date >= %(sd)s AND spr.run_date < %(ed)s
 			""",
-			{"pat": f"{series_prefix}/%"},
+			{"pat": f"{series_prefix}/%", "sd": start_date, "ed": end_date},
 		)
 		for (bn,) in rows2 or []:
 			mx = max(mx, self._roll_no_from_batch(bn, series_prefix))
