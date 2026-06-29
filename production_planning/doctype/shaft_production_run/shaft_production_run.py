@@ -2832,7 +2832,14 @@ class ShaftProductionRun(Document):
 		for spr in self._fg_posting_units_for_rows(spr_rows, wo_doc):
 			qty = self._row_fg_qty(spr)
 			if qty <= 0:
-				continue
+				# Never silently skip rolls during manufacture entry creation! Throw an error.
+				item_c = _cstr(spr.get("item_code")) or item_code
+				batch_n = _cstr(spr.get("batch_no")) or "Unknown"
+				frappe.throw(
+					_("Cannot create Manufacture entry: Roll (Batch {0} - Item {1}) has 0 quantity/weight. "
+					  "Please ensure all rolls have valid Net/Gross Weight entered before submitting.").format(batch_n, item_c),
+					title=_("Zero Quantity Roll")
+				)
 			bn_raw = spr.get("batch_no")
 			bn = _cstr(bn_raw) if bn_raw is not None else ""
 			if has_batch:
