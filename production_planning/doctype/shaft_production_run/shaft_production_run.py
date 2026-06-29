@@ -2495,12 +2495,14 @@ class ShaftProductionRun(Document):
 					frappe.db.commit()
 				except Exception:
 					pass
-			frappe.throw(
+			frappe.msgprint(
 				_(
 					"Material shortage detected for {0} WO(s). Auto-transfers were successfully created and submitted.\n\n{1}\n\n"
 					"Please try submitting the SPR again now that the material has been transferred."
 				).format(len(shortage_events), "\n\n".join(sections)),
-				title=_("Material Shortage - Auto Transferred")
+				title=_("Material Transferred Automatically"),
+				indicator="green",
+				raise_exception=True
 			)
 
 	def _manufacture_stock_entry_type_name(self) -> str:
