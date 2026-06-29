@@ -5355,8 +5355,8 @@ function spr_open_trial_order_dialog(frm) {
 
 /** Actions ΓåÆ Bundle packaging: Job + Width from Available Jobs / roll widths; gross applied to all matching rolls. */
 function spr_open_bundle_packaging_dialog(frm) {
-	if (frm.is_new() || !frm.doc.name) {
-		frappe.msgprint(__('Save the Shaft Production Run first.'));
+	if (frm.is_new() || !frm.doc.name || frm.is_dirty()) {
+		frappe.msgprint(__('Save the Shaft Production Run first (you have unsaved changes).'));
 		return;
 	}
 	if (frm.doc.docstatus && frm.doc.docstatus !== 0) {
