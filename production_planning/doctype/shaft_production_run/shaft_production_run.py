@@ -2490,12 +2490,17 @@ class ShaftProductionRun(Document):
 				title=_("Insufficient stock")
 			)
 		else:
-			frappe.msgprint(
+			if did_create_or_reuse:
+				try:
+					frappe.db.commit()
+				except Exception:
+					pass
+			frappe.throw(
 				_(
-					"Material shortage detected for {0} WO(s). Auto-transfers were successfully created and submitted.\n\n{1}"
+					"Material shortage detected for {0} WO(s). Auto-transfers were successfully created and submitted.\n\n{1}\n\n"
+					"Please try submitting the SPR again now that the material has been transferred."
 				).format(len(shortage_events), "\n\n".join(sections)),
-				title=_("Material Transferred Automatically"),
-				indicator="green"
+				title=_("Material Shortage - Auto Transferred")
 			)
 
 	def _manufacture_stock_entry_type_name(self) -> str:
@@ -3282,24 +3287,27 @@ class ShaftProductionRun(Document):
 				title=_("Submit required"),
 			)
 		self._validate_no_pending_wo_width_rows()
+		unmapped_positive_rows = []
 		wo_groups = {}
 		for row in self.items or []:
 			wo_name = row.get("work_order") or row.get("wo_id")
 			if not wo_name:
+				if flt(row.get("net_weight") or row.get("gross_weight") or 0) > 0:
+					unmapped_positive_rows.append(row)
 				continue
 			wo_groups.setdefault(wo_name, []).append(row)
+
+		if unmapped_positive_rows:
+			missing_widths = sorted(list({_cstr(r.get("width_inch")) for r in unmapped_positive_rows}))
+			frappe.throw(
+				_(
+					"SPR has produced rows that are not linked to a Work Order (Widths: {0}). "
+					"Map Work Order in Roll Production Results and submit again."
+				).format(", ".join(missing_widths) if missing_widths else "Unknown"),
+				title=_("Missing Work Order mapping"),
+			)
+
 		if not wo_groups:
-			positive_rows = [
-				r for r in (self.items or []) if flt(r.get("net_weight") or r.get("gross_weight") or 0) > 0
-			]
-			if positive_rows:
-				frappe.throw(
-					_(
-						"SPR has produced rows, but none are linked to a Work Order. "
-						"Map Work Order in Roll Production Results and submit again."
-					),
-					title=_("Missing Work Order mapping"),
-				)
 			frappe.throw(
 				_(
 					"Cannot submit SPR without any Work Order-linked production rows. "
@@ -3345,8 +3353,10 @@ class ShaftProductionRun(Document):
 			)
 
 			if total_qty <= 0:
-				frappe.msgprint(_("Skipping WO {0} — net/gross weight is 0").format(wo_id), alert=True)
-				continue
+				frappe.throw(
+					_("Cannot skip Work Order {0} because net/gross weight is 0. Please enter valid weights for all rolls before submitting.").format(wo_id),
+					title=_("Zero Weight Error")
+				)
 
 			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
 			row_chunks = [rows]
