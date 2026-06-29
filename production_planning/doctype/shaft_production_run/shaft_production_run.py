@@ -1217,6 +1217,20 @@ class ShaftProductionRun(Document):
 		self.generate_batch_numbers()
 		self._spr_recalc_total_produced_weight_header()
 
+	def before_submit(self):
+		self._validate_fg_items_have_batch()
+
+	def _validate_fg_items_have_batch(self):
+		"""Ensure all produced items have 'has_batch_no' enabled in Item Master."""
+		for row in self.items or []:
+			if row.item_code:
+				has_batch = frappe.db.get_value("Item", row.item_code, "has_batch_no")
+				if not has_batch:
+					frappe.throw(
+						_("Row {0}: FG Item {1} does not have 'Has Batch No' enabled. Cannot submit SPR.").format(row.idx, row.item_code),
+						title=_("Missing Batch Config")
+					)
+
 	def on_update(self):
 		try:
 			frappe.publish_realtime("shaft_production_run_updated", {"name": self.name})
@@ -2399,7 +2413,8 @@ class ShaftProductionRun(Document):
 		if not shortage_events:
 			return
 		sections = []
-		submitted_ses = []
+		did_create_or_reuse = False
+		failed_any = False
 		for event in shortage_events:
 			wo_id = _cstr(event.get("wo_id"))
 			wo_doc = event.get("wo_doc")
@@ -2412,6 +2427,10 @@ class ShaftProductionRun(Document):
 					did_create_or_reuse = True
 			except Exception:
 				transfer_name = ""
+			
+			if not transfer_name:
+				failed_any = True
+
 			lines = "\n".join(
 				[
 					_("{0} @ {1}: required {2}, available {3}, shortage {4}").format(
@@ -2422,25 +2441,35 @@ class ShaftProductionRun(Document):
 			)
 			if transfer_name:
 				sections.append(
-					_("WO {0}\n{1}\nDraft Transfer: <a href=\"/app/stock-entry/{2}\" target=\"_blank\">{2}</a>").format(
+					_("WO {0}\n{1}\nAuto-Transfer: <a href=\"/app/stock-entry/{2}\" target=\"_blank\">{2}</a>").format(
 						wo_id, lines, transfer_name
 					)
 				)
 			else:
-				sections.append(_("WO {0}\n{1}\nDraft Transfer: could not auto-create").format(wo_id, lines))
-		# Persist auto-created draft transfers before throwing, else request rollback can hide them.
-		if did_create_or_reuse:
-			try:
-				frappe.db.commit()
-			except Exception:
-				pass
-		frappe.throw(
-			_(
-				"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
-				"Submit all listed draft transfer(s), then return to SPR {2} and submit once."
-			).format(len(shortage_events), "\n\n".join(sections), self.name),
-			title=_("Insufficient stock"),
-		)
+				sections.append(_("WO {0}\n{1}\nAuto-Transfer: FAILED").format(wo_id, lines))
+
+		if failed_any:
+			# Persist auto-created draft transfers before throwing, else request rollback can hide them.
+			if did_create_or_reuse:
+				try:
+					frappe.db.commit()
+				except Exception:
+					pass
+			frappe.throw(
+				_(
+					"Insufficient WIP stock detected for {0} WO(s).\n\n{1}\n\n"
+					"Some transfers failed to create. Please fix the issues and submit SPR again."
+				).format(len(shortage_events), "\n\n".join(sections)),
+				title=_("Insufficient stock")
+			)
+		else:
+			frappe.msgprint(
+				_(
+					"Material shortage detected for {0} WO(s). Auto-transfers were successfully created and submitted.\n\n{1}"
+				).format(len(shortage_events), "\n\n".join(sections)),
+				title=_("Material Transferred Automatically"),
+				indicator="green"
+			)
 
 	def _manufacture_stock_entry_type_name(self) -> str:
 		"""Resolve a valid Stock Entry Type name for Manufacture purpose."""

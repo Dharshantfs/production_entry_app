@@ -730,30 +730,7 @@ function spr_bind_items_grid_edit_guard(frm) {
 	grid.wrapper.on('focusin.sprGridEdit', 'input, textarea, select', function () {
 		frm._spr_items_grid_editing = true;
 	});
-	grid.wrapper.on('paste.sprGridPaste', 'input', function (e) {
-		const oe = e.originalEvent;
-		const text = oe && oe.clipboardData && oe.clipboardData.getData('text');
-		if (!text) {
-			return;
-		}
-		const $col = $(this).closest('[data-fieldname]');
-		const fn = $col.attr('data-fieldname');
-		if (fn !== 'gross_weight') {
-			return;
-		}
-		const norm = spr_normalize_gross_weight_input(text);
-		if (!(norm > 0)) {
-			return;
-		}
-		e.preventDefault();
-		this.value = String(norm);
-		const $row = $(this).closest('.grid-row');
-		const cdn = $row.attr('data-name') || $row.attr('data-docname');
-		if (cdn && locals['Shaft Production Run Item'] && locals['Shaft Production Run Item'][cdn]) {
-			locals['Shaft Production Run Item'][cdn].gross_weight = norm;
-		}
-		$(this).trigger('change');
-	});
+
 	grid.wrapper.on('focusout.sprGridEdit', 'input, textarea, select', function () {
 		setTimeout(function () {
 			if (!frm.fields_dict || !frm.fields_dict.items || !frm.fields_dict.items.grid) {

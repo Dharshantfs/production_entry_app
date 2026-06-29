@@ -6544,6 +6544,16 @@ class ShaftProductionRun(Document):
 			if spr_doc_is_bag_spr(self):
 				self._spr_validate_bag_fg_qty_for_wo(wo_doc, total_qty)
 
+			# Ensure the produced item is batch managed
+			if wo_item and not cint(frappe.db.get_value("Item", wo_item, "has_batch_no")):
+				frappe.throw(
+					_(
+						"Item {0} for Work Order {1} is not batch-managed. "
+						"Please enable 'Has Batch No' in the Item master before submitting the Shaft Production Run."
+					).format(wo_item, wo_id),
+					title=_("Item Not Batch Managed")
+				)
+
 			# Hard safety: one WO must not receive rows of other finished items.
 			mismatch_items = sorted(
 				{
@@ -11256,6 +11266,19 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		for fg in fg_lines:
 			existing_bn = _cstr(fg.get("batch_no")).strip()
 			if existing_bn:
+				if not frappe.db.exists("Batch", existing_bn):
+					# Batch master is missing despite FG line having it. Create it now.
+					matched_row = None
+					for bn, row in item_batches.items():
+						if bn == existing_bn:
+							matched_row = row
+							break
+					
+					if matched_row:
+						batch_link = spr._get_batch_link_name_for_stock_entry(existing_bn, item_code, company, matched_row)
+						if batch_link:
+							created_batches.append({"batch_no": batch_link, "item_code": item_code})
+
 				activated = _spr_activate_batch_from_manufacture(existing_bn, fg, se_doc)
 				all_batch_codes.add(existing_bn)
 				skipped.append({
