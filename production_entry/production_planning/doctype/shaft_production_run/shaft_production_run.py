@@ -5809,6 +5809,14 @@ class ShaftProductionRun(Document):
 
 		company = _cstr(se_doc.get("company") or getattr(wo_doc, "company", None))
 		fg_lines = [d for d in (se_doc.items or []) if cint(d.get("is_finished_item")) == 1]
+		# region agent log - hypothesis C
+		_spr_row_batch_nos = [_cstr(getattr(r, "batch_no", "")).strip() for r in (spr_rows or [])]
+		_fg_batch_nos = [_cstr(fg.get("batch_no")).strip() for fg in fg_lines]
+		frappe.log_error(
+			f"[SPR_DBG f44820] _spr_backfill se={se_name} item={item_code} fg_lines={len(fg_lines)} fg_batches={_fg_batch_nos} spr_row_batches={_spr_row_batch_nos}",
+			"SPR_DBG_BACKFILL"
+		)
+		# endregion
 		if not fg_lines:
 			return
 
@@ -5842,27 +5850,33 @@ class ShaftProductionRun(Document):
 					if bn and bn not in used_batches:
 						matched_row = row
 						break
-			if not matched_row:
-				continue
-			bn_raw = _cstr(getattr(matched_row, "batch_no", "")).strip()
-			used_batches.add(bn_raw)
-			batch_link = self._get_batch_link_name_for_stock_entry(
-				bn_raw, item_code, company, matched_row
+		if not matched_row:
+			# region agent log - hypothesis C
+			frappe.log_error(
+				f"[SPR_DBG f44820] backfill NO MATCH for fg_line={fg.name} fg_qty={fg_qty} roll_by_qty_keys={list(roll_by_qty.keys())} used_batches={used_batches}",
+				"SPR_DBG_BACKFILL_NOMATCH"
 			)
-			if not batch_link:
-				continue
-			try:
-				updates = {"batch_no": batch_link}
-				line_meta = frappe.get_meta("Stock Entry Detail")
-				if line_meta.has_field("use_serial_batch_fields"):
-					updates["use_serial_batch_fields"] = 1
-				frappe.db.set_value("Stock Entry Detail", fg.name, updates, update_modified=False)
-				fg.batch_no = batch_link
-				_spr_activate_batch_from_manufacture(
-					batch_link, fg, se_doc, fallback_qty=fg_qty or self._row_fg_qty(matched_row)
-				)
-			except Exception:
-				frappe.log_error(frappe.get_traceback(), f"SPR manufacture FG batch backfill:{se_name}")
+			# endregion
+			continue
+		bn_raw = _cstr(getattr(matched_row, "batch_no", "")).strip()
+		used_batches.add(bn_raw)
+		batch_link = self._get_batch_link_name_for_stock_entry(
+			bn_raw, item_code, company, matched_row
+		)
+		if not batch_link:
+			continue
+		try:
+			updates = {"batch_no": batch_link}
+			line_meta = frappe.get_meta("Stock Entry Detail")
+			if line_meta.has_field("use_serial_batch_fields"):
+				updates["use_serial_batch_fields"] = 1
+			frappe.db.set_value("Stock Entry Detail", fg.name, updates, update_modified=False)
+			fg.batch_no = batch_link
+			_spr_activate_batch_from_manufacture(
+				batch_link, fg, se_doc, fallback_qty=fg_qty or self._row_fg_qty(matched_row)
+			)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR manufacture FG batch backfill:{se_name}")
 
 	def _wo_submitted_manufacture_fg_qty(self, wo_id: str) -> float:
 		"""Submitted Manufacture FG qty already posted against this WO."""
@@ -6533,19 +6547,45 @@ class ShaftProductionRun(Document):
 			)
 
 		created_entries = []
-		created_entries_by_wo = defaultdict(list)
-		planned_wo_posts = []
+	created_entries_by_wo = defaultdict(list)
+	planned_wo_posts = []
 
-		# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
-		for wo_id, rows in wo_groups.items():
-			wo_doc = frappe.get_doc("Work Order", wo_id)
-			total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
-			wo_item = _cstr(getattr(wo_doc, "production_item", None))
-			if spr_doc_is_bag_spr(self):
-				self._spr_validate_bag_fg_qty_for_wo(wo_doc, total_qty)
+	# region agent log - hypotheses A/B/E
+	_spr_dbg_wo_summary = {
+		wo: {"rows": len(rs), "row_batch_nos": [_cstr(r.get("batch_no")) for r in rs], "net_weights": [flt(_spr_row_get(r, "net_weight")) for r in rs]}
+		for wo, rs in wo_groups.items()
+	}
+	frappe.log_error(
+		f"[SPR_DBG f44820] SPR={self.name} wo_groups={list(wo_groups.keys())} detail={_spr_dbg_wo_summary}",
+		"SPR_DBG_WO_GROUPS"
+	)
+	frappe.msgprint(
+		f"[SPR_DBG] WOs in submit: {list(wo_groups.keys())}",
+		alert=True
+	)
+	# endregion
 
-			# Ensure the produced item is batch managed
-			if wo_item and not cint(frappe.db.get_value("Item", wo_item, "has_batch_no")):
+	# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
+	for wo_id, rows in wo_groups.items():
+		wo_doc = frappe.get_doc("Work Order", wo_id)
+		total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
+		wo_item = _cstr(getattr(wo_doc, "production_item", None))
+		# region agent log - hypothesis B/E
+		_already = self._wo_submitted_manufacture_fg_qty(wo_doc.name)
+		frappe.log_error(
+			f"[SPR_DBG f44820] WO={wo_id} item={wo_item} total_qty={total_qty} produced_qty={getattr(wo_doc,'produced_qty',0)} already_submitted={_already} wo_qty={getattr(wo_doc,'qty',0)} wo_status={getattr(wo_doc,'status','')} row_count={len(rows)}",
+			"SPR_DBG_WO_QTY"
+		)
+		frappe.msgprint(
+			f"[SPR_DBG] WO={wo_id} item={wo_item} total_qty={total_qty} already_submitted={_already} wo_status={getattr(wo_doc,'status','')}",
+			alert=True
+		)
+		# endregion
+		if spr_doc_is_bag_spr(self):
+			self._spr_validate_bag_fg_qty_for_wo(wo_doc, total_qty)
+
+		# Ensure the produced item is batch managed
+		if wo_item and not cint(frappe.db.get_value("Item", wo_item, "has_batch_no")):
 				frappe.throw(
 					_(
 						"Item {0} for Work Order {1} is not batch-managed. "
