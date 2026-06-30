@@ -3226,7 +3226,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		
 		spr_inject_gsm_legend(frm);
 		spr_apply_shaft_jobs_create_entry_ui(frm);
-		spr_schedule_grid_ui_debounced(frm, { delay: 280, columns: false });
+		// Removed duplicate spr_schedule_grid_ui_debounced call — already scheduled at line 3199
 		if (spr_should_use_lightweight_grid_pass(frm)) {
 			setTimeout(function () {
 				if (!frm || !frm.fields_dict) {
@@ -3326,13 +3326,18 @@ frappe.ui.form.on('Shaft Production Run', {
 			}
 			sprLog('[SPR DEBUG] items_add fired');
 			spr_sync_no_of_rolls_created(frm);
-			update_shaft_job_achieved_from_items(frm);
+			// Defer heavy job-achieved recalc to avoid lag during rapid row adds
+			update_shaft_job_achieved_from_items(frm, { deferRefresh: true, skipGridRefresh: true });
 			sprLog('[SPR DEBUG] items_add: schedule total_produced_weight sync with', (frm.doc.items || []).length, 'items');
-			sprScheduleTotalProducedSync(frm);
-			schedule_spr_item_row_styles(frm);
-			setTimeout(function () {
-				spr_enforce_roll_line_grid_policy(frm);
-			}, 0);
+			sprScheduleTotalProducedSync(frm, { silent: true });
+			// Only schedule styles if not rapidly adding rows
+			if (!frm.__spr_items_add_style_timer) {
+				frm.__spr_items_add_style_timer = setTimeout(function () {
+					frm.__spr_items_add_style_timer = null;
+					schedule_spr_item_row_styles(frm);
+					spr_enforce_roll_line_grid_policy(frm);
+				}, 600);
+			}
 		},
 		items_remove: function (frm) {
 			spr_sync_no_of_rolls_created(frm);
@@ -8082,7 +8087,7 @@ function spr_reapply_item_row_styles_with_retries(frm, delays) {
 	}
 	ensure_spr_item_stylesheet();
 	spr_apply_grid_wrap_classes(frm);
-	const times = delays || [0, 80, 200, 450, 800, 1200];
+	const times = delays || [0, 500];
 	times.forEach(function (ms) {
 		setTimeout(function () {
 			if (!frm || !frm.fields_dict || !frm.fields_dict.items) {
@@ -8388,7 +8393,8 @@ function apply_spr_item_row_styles(frm) {
 		}
 		
 		// Method 4: Direct selector search if other methods fail
-		if ((!$row || !$row.length) && $wrap && $wrap.length && doc && doc.name) {
+		// Skip for large grids (>20 rows) — this DOM scan is O(N²) and causes major lag
+		if ((!$row || !$row.length) && $wrap && $wrap.length && doc && doc.name && items.length <= 20) {
 			$row = $wrap
 				.find('.dt-row, .grid-row, tbody tr')
 				.filter(function (i) {
