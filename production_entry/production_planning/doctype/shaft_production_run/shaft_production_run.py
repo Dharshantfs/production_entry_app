@@ -6367,7 +6367,23 @@ class ShaftProductionRun(Document):
 				if shortages:
 					shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
 		if _submit_exc is None:
-			return True  # submit succeeded — chunk done
+			# SUCCESS PATH — run all post-submit bookkeeping then return.
+			frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
+			self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
+			self._apply_order_code_to_submitted_stock_entry(se.name)
+			self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
+			self._sync_work_order_required_item_progress(wo_id)
+			self._sync_production_plan_progress_from_work_orders(_cstr(getattr(wo_doc, "production_plan", None)))
+			created_entries.append(se.name)
+			created_entries_by_wo[wo_id].append(se.name)
+			frappe.msgprint(
+				_("WO {0}: Created {1}/{2} Manufacture entry {3} ({4} Kg).").format(
+					wo_id, chunk_idx, chunk_count, se.name, flt(chunk_total_qty, 3)
+				),
+				alert=True,
+			)
+			actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
+			return {"actual_rm_map": actual_rm_map, "se_name": se.name}
 		if shortages:
 			submit_shortage_events = [
 				{
@@ -6472,24 +6488,6 @@ class ShaftProductionRun(Document):
 				frappe.db.savepoint(mfg_submit_savepoint)
 				raise _SprWipTopupRetry()
 		self._throw_wip_stock_wo_transfer_mismatch(wo_doc, _submit_exc)
-		return
-		frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
-		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
-		self._apply_order_code_to_submitted_stock_entry(se.name)
-		self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
-		self._sync_work_order_required_item_progress(wo_id)
-		self._sync_production_plan_progress_from_work_orders(_cstr(getattr(wo_doc, "production_plan", None)))
-		created_entries.append(se.name)
-		created_entries_by_wo[wo_id].append(se.name)
-		frappe.msgprint(
-			_("WO {0}: Created {1}/{2} Manufacture entry {3} ({4} Kg).").format(
-				wo_id, chunk_idx, chunk_count, se.name, flt(chunk_total_qty, 3)
-			),
-			alert=True,
-		)
-		# Merge RM map AFTER successful submit to prevent double-counting on retry
-		actual_rm_map = self._merge_rm_maps(actual_rm_map, self._collect_rm_map_from_se(se))
-		return {"actual_rm_map": actual_rm_map, "se_name": se.name}
 
 	def create_manufacturing_stock_entries(self):
 		"""Create submitted Manufacture Stock Entries from Roll Production Results (per WO / chunk).
