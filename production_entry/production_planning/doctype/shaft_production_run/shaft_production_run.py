@@ -6055,7 +6055,9 @@ class ShaftProductionRun(Document):
 		)
 
 	def _validate_fg_roll_coverage_for_wo(self, wo_doc, spr_rows: list, se_names: list[str]):
-		"""Hard guard: every produced SPR FG roll must be represented in submitted Manufacture entries."""
+		"""Guard: every produced SPR FG roll must be represented in submitted Manufacture entries.
+		Only raises when actual FG posted is LESS than expected (missed rolls).
+		Excess FG (e.g. BOM FG line surviving alongside SPR rolls) is silently ignored."""
 		if not wo_doc or not se_names:
 			return
 		item_code = _cstr(getattr(wo_doc, "production_item", None))
@@ -6098,13 +6100,23 @@ class ShaftProductionRun(Document):
 			b = _cstr(r.get("batch_no"))
 			if b:
 				actual_by_batch[b] += q
-		if abs(expected_total - actual_total) > 1e-6:
+		# Only block when rolls are MISSED (actual < expected).
+		# When actual > expected the BOM-generated FG line survived alongside SPR rolls —
+		# that is a duplicate posting issue logged separately; do not stop the submit here.
+		if actual_total < expected_total - 1e-6:
 			frappe.throw(
 				_(
-					"WO {0}: SPR roll total {1} Kg but submitted Manufacture entries total {2} Kg. "
-					"Rollback to prevent missed roll posting."
+					"WO {0}: SPR roll total {1} Kg but only {2} Kg was posted to Manufacture entries. "
+					"Some rolls may have been missed — please check and retry."
 				).format(wo_doc.name, flt(expected_total, 3), flt(actual_total, 3)),
 				title=_("FG roll coverage mismatch"),
+			)
+		if actual_total > expected_total + 1e-6:
+			frappe.log_error(
+				f"SPR {self.name} WO {wo_doc.name}: Manufacture FG total {flt(actual_total,3)} Kg "
+				f"> SPR roll total {flt(expected_total,3)} Kg (BOM FG line may have survived alongside "
+				f"SPR roll lines in SEs: {se_names}). Submit continues.",
+				"SPR FG overshoot"
 			)
 		if has_batch:
 			missing_batches = []
@@ -6266,6 +6278,39 @@ class ShaftProductionRun(Document):
 				if abs(cur - total_produced) > 1e-9:
 					frappe.db.set_value("Production Plan", pp, f, total_produced, update_modified=False)
 
+	def _spr_remove_bom_fg_duplicates_from_se_db(self, se_name: str, production_item: str) -> int:
+		"""After SE insert, delete any FG lines whose batch_no is NULL / empty
+		(BOM-generated ghost line) when SPR-roll lines with batch_no already exist.
+		Returns the number of rows deleted."""
+		if not se_name or not production_item:
+			return 0
+		try:
+			batch_lines = frappe.db.sql(
+				"""SELECT name FROM `tabStock Entry Detail`
+				WHERE parent = %s AND is_finished_item = 1
+				  AND item_code = %s AND IFNULL(batch_no, '') != ''""",
+				(se_name, production_item),
+			)
+			if not batch_lines:
+				return 0
+			deleted = frappe.db.sql(
+				"""DELETE FROM `tabStock Entry Detail`
+				WHERE parent = %s AND is_finished_item = 1
+				  AND item_code = %s AND IFNULL(batch_no, '') = ''""",
+				(se_name, production_item),
+			)
+			count = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+			if count:
+				frappe.log_error(
+					f"SPR: removed {count} BOM-FG ghost line(s) from SE {se_name} "
+					f"(item {production_item}) to prevent FG qty doubling.",
+					"SPR BOM FG duplicate removed"
+				)
+			return cint(count)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR BOM FG dedup:{se_name}")
+			return 0
+
 	def _spr_run_manufacture_chunk_attempt(
 		self,
 		wo_id,
@@ -6337,6 +6382,9 @@ class ShaftProductionRun(Document):
 				title=_("Invalid Stock Entry purpose"),
 			)
 		se.reload()
+		# ERPNext validate() may re-add the BOM FG line during insert; strip it again so
+		# we don't end up with both a BOM FG line and the per-roll SPR FG lines.
+		self._spr_remove_bom_fg_duplicates_from_se_db(se.name, wo_doc.production_item)
 		se.flags.ignore_duplicate_for_work_order = True
 		self._set_stock_entry_spr_link(se)
 		self._set_stock_entry_unit(se, wo_doc)
@@ -6804,17 +6852,20 @@ class ShaftProductionRun(Document):
 
 		if ses:
 			from urllib.parse import quote as _url_quote
-			se_links = " ".join(
-				f"<a href='/app/stock-entry/{_url_quote(se, safe=\"\")}' target='_blank' "
-				f"style='color:#1a73e8;font-size:11px;'>{frappe.utils.escape_html(se)}</a>"
-				for se in ses
-			)
+			_se_link_parts = []
+			for se in ses:
+				_se_url = "/app/stock-entry/" + _url_quote(se, safe="")
+				_se_label = frappe.utils.escape_html(se)
+				_se_link_parts.append(
+					f"<a href='{_se_url}' target='_blank' style='color:#1a73e8;font-size:11px;'>{_se_label}</a>"
+				)
+			se_links = " ".join(_se_link_parts)
 		else:
 			se_links = "<span style='color:#e74c3c;font-style:italic;'>Not created</span>"
 			all_active = False
 
 		from urllib.parse import quote as _url_quote
-		wo_url = f"/app/work-order/{_url_quote(_cstr(wo_id), safe='')}"
+		wo_url = "/app/work-order/" + _url_quote(_cstr(wo_id), safe="")
 		rows_html += (
 			f"<tr style='border-bottom:1px solid #f0f0f0;'>"
 			f"<td style='padding:8px 10px;font-size:12px;'>"
