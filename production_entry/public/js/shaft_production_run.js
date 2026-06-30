@@ -5355,6 +5355,13 @@ function spr_open_bundle_packaging_dialog(frm) {
 		frappe.msgprint(__('This document is submitted and cannot be edited.'));
 		return;
 	}
+	if (frm.is_dirty()) {
+		frappe.show_alert({ message: __('Saving document...'), indicator: 'blue' });
+		frm.save().then(function () {
+			spr_open_bundle_packaging_dialog(frm);
+		});
+		return;
+	}
 	frappe.call({
 		method:
 			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_bundle_packaging_catalog',
@@ -5501,7 +5508,15 @@ function spr_open_bundle_packaging_dialog(frm) {
 					return;
 				}
 				const segs = jp.segments || [];
-				const arr = widthsByJob[jp.job_id] || [];
+				const arr = (widthsByJob[jp.job_id] || []).slice();
+				// Include unsaved item widths from the client
+				(frm.doc.items || []).forEach(function (it) {
+					const j_match = String(it.job_no || it.job_id || it.job || '').trim();
+					const fw = flt(it.width_inch);
+					if (fw > 0 && spr_job_keys_match(j_match, jp.job_id) && arr.indexOf(fw) === -1) {
+						arr.push(fw);
+					}
+				});
 				if (segs.length) {
 					const uniqueSegs = [];
 					const seenWidths = new Set();
