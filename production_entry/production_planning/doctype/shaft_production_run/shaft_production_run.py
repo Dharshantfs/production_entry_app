@@ -6802,21 +6802,24 @@ class ShaftProductionRun(Document):
 			batch_badge_color = "#27ae60" if batch_ok else "#e74c3c"
 			batch_label = f"{batch_count} / {roll_count}"
 
-			if ses:
-				se_links = " ".join(
-					f"<a href='/app/stock-entry/{se}' target='_blank' "
-					f"style='color:#1a73e8;font-size:11px;'>{se}</a>"
-					for se in ses
-				)
-			else:
-				se_links = "<span style='color:#e74c3c;font-style:italic;'>Not created</span>"
-				all_active = False
+		if ses:
+			from urllib.parse import quote as _url_quote
+			se_links = " ".join(
+				f"<a href='/app/stock-entry/{_url_quote(se, safe=\"\")}' target='_blank' "
+				f"style='color:#1a73e8;font-size:11px;'>{frappe.utils.escape_html(se)}</a>"
+				for se in ses
+			)
+		else:
+			se_links = "<span style='color:#e74c3c;font-style:italic;'>Not created</span>"
+			all_active = False
 
-			rows_html += (
-				f"<tr style='border-bottom:1px solid #f0f0f0;'>"
-				f"<td style='padding:8px 10px;font-size:12px;'>"
-				f"<a href='/app/work-order/{frappe.utils.escape_html(wo_id)}' target='_blank' "
-				f"style='color:#333;font-weight:600;'>{frappe.utils.escape_html(wo_id)}</a></td>"
+		from urllib.parse import quote as _url_quote
+		wo_url = f"/app/work-order/{_url_quote(_cstr(wo_id), safe='')}"
+		rows_html += (
+			f"<tr style='border-bottom:1px solid #f0f0f0;'>"
+			f"<td style='padding:8px 10px;font-size:12px;'>"
+			f"<a href='{wo_url}' target='_blank' "
+			f"style='color:#333;font-weight:600;'>{frappe.utils.escape_html(wo_id)}</a></td>"
 				f"<td style='padding:8px 10px;text-align:center;font-size:13px;font-weight:600;'>{roll_count}</td>"
 				f"<td style='padding:8px 10px;text-align:center;'>"
 				f"<span style='background:{batch_badge_color};color:white;padding:2px 8px;"
@@ -11409,7 +11412,10 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 						if batch_link:
 							created_batches.append({"batch_no": batch_link, "item_code": item_code})
 
-				activated = _spr_activate_batch_from_manufacture(existing_bn, fg, se_doc)
+				activated = _spr_activate_batch_from_manufacture(
+					existing_bn, fg, se_doc,
+					fallback_qty=flt(fg.get("qty") or fg.get("transfer_qty") or 0),
+				)
 				all_batch_codes.add(existing_bn)
 				skipped.append({
 					"stock_entry": se_name,
@@ -11534,23 +11540,29 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 
 
 def _spr_set_batch_qty_on_master(batch_no: str, qty: float) -> None:
-	"""Update Batch.batch_qty (and status when the column exists on this site)."""
+	"""Update Batch.batch_qty and status using direct SQL to bypass any Frappe hook that
+	recomputes and resets those fields back to Empty from the stock ledger."""
 	batch_no = _cstr(batch_no).strip()
 	if not batch_no or not frappe.db.exists("Batch", batch_no):
 		return
 	qty = flt(qty)
-	if frappe.db.has_column("Batch", "batch_qty"):
+	status = "Active" if qty > 0 else "Empty"
+	has_qty = frappe.db.has_column("Batch", "batch_qty")
+	has_status = frappe.db.has_column("Batch", "status")
+	if has_qty and has_status:
+		frappe.db.sql(
+			"UPDATE `tabBatch` SET batch_qty = %s, status = %s WHERE name = %s",
+			(qty, status, batch_no),
+		)
+	elif has_qty:
 		frappe.db.sql(
 			"UPDATE `tabBatch` SET batch_qty = %s WHERE name = %s",
 			(qty, batch_no),
 		)
-	if frappe.db.has_column("Batch", "status"):
-		frappe.db.set_value(
-			"Batch",
-			batch_no,
-			"status",
-			"Active" if qty > 0 else "Empty",
-			update_modified=False,
+	elif has_status:
+		frappe.db.sql(
+			"UPDATE `tabBatch` SET status = %s WHERE name = %s",
+			(status, batch_no),
 		)
 
 
@@ -11567,10 +11579,14 @@ def _spr_batch_is_active(batch_no: str) -> bool:
 
 
 def _spr_batch_sle_qty(batch_no: str, item_code: str = "", warehouse: str = "") -> float:
-	"""Sum positive SLE qty for a batch (optional item/warehouse filters)."""
+	"""Sum positive SLE qty for a batch (optional item/warehouse filters).
+	Tries SLE.batch_no first (ERPNext v14 style), then falls back to
+	Serial and Batch Bundle entries (ERPNext v15 style)."""
 	batch_no = _cstr(batch_no).strip()
 	if not batch_no:
 		return 0.0
+
+	# --- v14 path: SLE.batch_no column ---
 	clauses = [
 		"IFNULL(is_cancelled, 0) = 0",
 		"IFNULL(batch_no, '') = %s",
@@ -11583,7 +11599,7 @@ def _spr_batch_sle_qty(batch_no: str, item_code: str = "", warehouse: str = "") 
 	if warehouse:
 		clauses.append("IFNULL(warehouse, '') = %s")
 		params.append(_cstr(warehouse).strip())
-	return flt(
+	sle_qty = flt(
 		frappe.db.sql(
 			f"""
 			SELECT IFNULL(SUM(actual_qty), 0)
@@ -11594,6 +11610,31 @@ def _spr_batch_sle_qty(batch_no: str, item_code: str = "", warehouse: str = "") 
 		)[0][0]
 		or 0
 	)
+	if sle_qty > 0:
+		return sle_qty
+
+	# --- v15 path: Serial and Batch Bundle ---
+	if not frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
+		return 0.0
+	try:
+		bundle_clauses = ["sbe.batch_no = %s", "sbb.docstatus = 1"]
+		bundle_params: list = [batch_no]
+		if item_code:
+			bundle_clauses.append("sbb.item_code = %s")
+			bundle_params.append(_cstr(item_code).strip())
+		if warehouse:
+			bundle_clauses.append("sbe.warehouse = %s")
+			bundle_params.append(_cstr(warehouse).strip())
+		bundle_qty = frappe.db.sql(
+			f"""SELECT IFNULL(SUM(sbe.qty), 0)
+			FROM `tabSerial and Batch Entry` sbe
+			JOIN `tabSerial and Batch Bundle` sbb ON sbe.parent = sbb.name
+			WHERE {' AND '.join(bundle_clauses)}""",
+			tuple(bundle_params),
+		)
+		return flt((bundle_qty or [[0]])[0][0])
+	except Exception:
+		return 0.0
 
 
 def _spr_activate_batch_from_manufacture(batch_no: str, fg_line, se_doc, fallback_qty: float = 0) -> float:
