@@ -11680,8 +11680,15 @@ def spr_get_submit_summary(shaft_production_run: str):
 		if wo:
 			created_by_wo[wo].append(se)
 		elif wo_groups:
-			# Fallback: attach orphan SE to first WO with same production item
-			pi = _cstr(frappe.db.get_value("Stock Entry", se, "production_item"))
+			# Fallback: attach orphan SE to WO via FG line item_code (v16 has no production_item on Stock Entry)
+			pi = _cstr(
+				frappe.db.get_value(
+					"Stock Entry Detail",
+					{"parent": se, "is_finished_item": 1},
+					"item_code",
+					order_by="idx asc",
+				)
+			)
 			for w, rows in wo_groups.items():
 				if rows and _cstr(rows[0].get("item_code")) == pi:
 					created_by_wo[w].append(se)
@@ -11745,9 +11752,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		       IFNULL(sed.qty, 0) AS qty,
 		       IFNULL(sed.t_warehouse, '') AS t_warehouse,
 		       IFNULL(se.work_order, '') AS work_order,
-		       IFNULL(se.production_item, '') AS production_item,
-		       IFNULL(se.company, '') AS company,
-		       IFNULL(se.to_warehouse, '') AS to_warehouse
+		       IFNULL(se.company, '') AS company
 		FROM `tabStock Entry Detail` sed
 		INNER JOIN `tabStock Entry` se ON se.name = sed.parent
 		WHERE sed.parent IN %(parents)s
@@ -11785,7 +11790,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 				"item_code": fg_row["item_code"],
 				"qty": fg_row["qty"],
 				"transfer_qty": fg_row["qty"],
-				"t_warehouse": fg_row["t_warehouse"] or fg_row["to_warehouse"],
+				"t_warehouse": fg_row["t_warehouse"],
 				"batch_no": batch_link,
 			}
 		)
@@ -11811,7 +11816,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	for fg in fg_rows:
 		se_name = fg["parent"]
 		wo = _cstr(fg.get("work_order"))
-		item_code = _cstr(fg.get("production_item") or fg.get("item_code"))
+		item_code = _cstr(fg.get("item_code"))
 		company = _cstr(fg.get("company"))
 		existing_bn = _cstr(fg.get("batch_no")).strip()
 		batch_map = wo_batch_rows.get(wo) or {}
