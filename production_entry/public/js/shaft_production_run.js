@@ -5590,6 +5590,10 @@ function spr_open_bundle_packaging_dialog(frm) {
 					wf.df.options = uniqueArr.map(function (x) { return String(x); }).join('\n');
 				}
 				wf.df.hidden = 0;
+				// Use set_df_property so Frappe v15 Select control actually rebuilds its
+				// <option> list; direct wf.df.options mutation alone is not enough.
+				d.set_df_property('width_inch', 'options', wf.df.options);
+				d.set_df_property('width_inch', 'hidden', 0);
 				wf.refresh();
 				const firstW = wf.df.options ? flt(String(wf.df.options).split('\n')[0]) : 0;
 				if (firstW > 0) {
