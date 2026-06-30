@@ -5845,24 +5845,24 @@ class ShaftProductionRun(Document):
 			if not matched_row:
 				continue
 		bn_raw = _cstr(getattr(matched_row, "batch_no", "")).strip()
-			used_batches.add(bn_raw)
-			batch_link = self._get_batch_link_name_for_stock_entry(
-				bn_raw, item_code, company, matched_row
+		used_batches.add(bn_raw)
+		batch_link = self._get_batch_link_name_for_stock_entry(
+			bn_raw, item_code, company, matched_row
+		)
+		if not batch_link:
+			continue
+		try:
+			updates = {"batch_no": batch_link}
+			line_meta = frappe.get_meta("Stock Entry Detail")
+			if line_meta.has_field("use_serial_batch_fields"):
+				updates["use_serial_batch_fields"] = 1
+			frappe.db.set_value("Stock Entry Detail", fg.name, updates, update_modified=False)
+			fg.batch_no = batch_link
+			_spr_activate_batch_from_manufacture(
+				batch_link, fg, se_doc, fallback_qty=fg_qty or self._row_fg_qty(matched_row)
 			)
-			if not batch_link:
-				continue
-			try:
-				updates = {"batch_no": batch_link}
-				line_meta = frappe.get_meta("Stock Entry Detail")
-				if line_meta.has_field("use_serial_batch_fields"):
-					updates["use_serial_batch_fields"] = 1
-				frappe.db.set_value("Stock Entry Detail", fg.name, updates, update_modified=False)
-				fg.batch_no = batch_link
-				_spr_activate_batch_from_manufacture(
-					batch_link, fg, se_doc, fallback_qty=fg_qty or self._row_fg_qty(matched_row)
-				)
-			except Exception:
-				frappe.log_error(frappe.get_traceback(), f"SPR manufacture FG batch backfill:{se_name}")
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR manufacture FG batch backfill:{se_name}")
 
 	def _wo_submitted_manufacture_fg_qty(self, wo_id: str) -> float:
 		"""Submitted Manufacture FG qty already posted against this WO."""
