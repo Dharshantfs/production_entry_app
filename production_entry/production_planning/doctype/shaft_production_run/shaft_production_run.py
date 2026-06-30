@@ -6349,12 +6349,14 @@ class ShaftProductionRun(Document):
 				title=_("Invalid Stock Entry purpose"),
 			)
 		shortages: list = []
+		_submit_exc: Exception | None = None
 		try:
 			se.flags.ignore_duplicate_for_work_order = True
 			se.flags.ignore_validate = True
 			se.submit()
 			self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
 		except Exception as e:
+			_submit_exc = e  # persist before Python 3.12 deletes the except-clause variable
 			try:
 				frappe.db.rollback(save_point=mfg_submit_savepoint)
 			except Exception:
@@ -6364,6 +6366,8 @@ class ShaftProductionRun(Document):
 				shortages = self._rm_shortages_from_exception(e)
 				if shortages:
 					shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
+		if _submit_exc is None:
+			return True  # submit succeeded — chunk done
 		if shortages:
 			submit_shortage_events = [
 				{
@@ -6410,9 +6414,9 @@ class ShaftProductionRun(Document):
 			# Second attempt still failing — fall through to mismatch error.
 		# WO already shows RM transferred — auto RM->WIP transfer then retry Manufacture once.
 		try:
-			self._spr_try_wip_topup_transfer_and_retry_manufacture(
-				wo_doc, e, allow_wip_topup_retry, mfg_submit_savepoint, mfg_se=se
-			)
+		self._spr_try_wip_topup_transfer_and_retry_manufacture(
+			wo_doc, _submit_exc, allow_wip_topup_retry, mfg_submit_savepoint, mfg_se=se
+		)
 		except _SprWipTopupRetry:
 			raise
 		# WIP top-up could not auto-submit — raise transfer / no-stock message (never cap below BOM).
@@ -6451,7 +6455,7 @@ class ShaftProductionRun(Document):
 			if allow_wip_topup_retry:
 				frappe.db.savepoint(mfg_submit_savepoint)
 				raise _SprWipTopupRetry()
-		parsed_wip = self._rm_shortages_from_exception(e)
+		parsed_wip = self._rm_shortages_from_exception(_submit_exc)
 		if parsed_wip:
 			self._raise_shortage_with_transfer_batch(
 				[
@@ -6467,7 +6471,7 @@ class ShaftProductionRun(Document):
 			if allow_wip_topup_retry:
 				frappe.db.savepoint(mfg_submit_savepoint)
 				raise _SprWipTopupRetry()
-		self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
+		self._throw_wip_stock_wo_transfer_mismatch(wo_doc, _submit_exc)
 		return
 		frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
 		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
