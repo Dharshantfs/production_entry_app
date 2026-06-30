@@ -5809,14 +5809,6 @@ class ShaftProductionRun(Document):
 
 		company = _cstr(se_doc.get("company") or getattr(wo_doc, "company", None))
 		fg_lines = [d for d in (se_doc.items or []) if cint(d.get("is_finished_item")) == 1]
-		# region agent log - hypothesis C
-		_spr_row_batch_nos = [_cstr(getattr(r, "batch_no", "")).strip() for r in (spr_rows or [])]
-		_fg_batch_nos = [_cstr(fg.get("batch_no")).strip() for fg in fg_lines]
-		frappe.log_error(
-			f"[SPR_DBG f44820] _spr_backfill se={se_name} item={item_code} fg_lines={len(fg_lines)} fg_batches={_fg_batch_nos} spr_row_batches={_spr_row_batch_nos}",
-			"SPR_DBG_BACKFILL"
-		)
-		# endregion
 		if not fg_lines:
 			return
 
@@ -5850,14 +5842,8 @@ class ShaftProductionRun(Document):
 					if bn and bn not in used_batches:
 						matched_row = row
 						break
-			if not matched_row:
-				# region agent log - hypothesis C
-				frappe.log_error(
-					f"[SPR_DBG f44820] backfill NO MATCH for fg_line={fg.name} fg_qty={fg_qty} roll_by_qty_keys={list(roll_by_qty.keys())} used_batches={used_batches}",
-					"SPR_DBG_BACKFILL_NOMATCH"
-				)
-				# endregion
-				continue
+		if not matched_row:
+			continue
 			bn_raw = _cstr(getattr(matched_row, "batch_no", "")).strip()
 			used_batches.add(bn_raw)
 			batch_link = self._get_batch_link_name_for_stock_entry(
@@ -6376,100 +6362,111 @@ class ShaftProductionRun(Document):
 				shortages = self._rm_shortages_from_exception(e)
 				if shortages:
 					shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
-			if shortages:
-				submit_shortage_events = [
+		if shortages:
+			submit_shortage_events = [
+				{
+					"wo_id": wo_id,
+					"wo_doc": wo_doc,
+					"chunk_total_qty": chunk_total_qty,
+					"shortages": shortages,
+				}
+			]
+			for p2 in planned_wo_posts:
+				wo_id2 = p2["wo_id"]
+				wo_doc2 = p2["wo_doc"]
+				for chunk_rows2 in p2["row_chunks"]:
+					chunk_total_qty2 = sum(self._row_fg_qty(r2) for r2 in chunk_rows2)
+					if chunk_total_qty2 <= 0:
+						continue
+					preview_se2 = self._build_shortage_preview_for_chunk(wo_doc2, chunk_total_qty2)
+					shortages2 = self._rm_shortages_for_se(preview_se2, wo_doc2)
+					if shortages2:
+						submit_shortage_events.append(
+							{
+								"wo_id": wo_id2,
+								"wo_doc": wo_doc2,
+								"chunk_total_qty": chunk_total_qty2,
+								"shortages": shortages2,
+							}
+						)
+					wip_topup2 = self._spr_wip_topup_shortages_for_se(preview_se2, wo_doc2)
+					if wip_topup2:
+						submit_shortage_events.append(
+							{
+								"wo_id": wo_id2,
+								"wo_doc": wo_doc2,
+								"chunk_total_qty": chunk_total_qty2,
+								"shortages": wip_topup2,
+								"wip_topup": True,
+							}
+						)
+			self._raise_shortage_with_transfer_batch(submit_shortage_events)
+			# Auto-transfers committed — reset savepoint and retry this WO's manufacture entry.
+			if allow_wip_topup_retry:
+				frappe.db.savepoint(mfg_submit_savepoint)
+				raise _SprWipTopupRetry()
+			# Second attempt still failing — fall through to mismatch error.
+		# WO already shows RM transferred — auto RM->WIP transfer then retry Manufacture once.
+		try:
+			self._spr_try_wip_topup_transfer_and_retry_manufacture(
+				wo_doc, e, allow_wip_topup_retry, mfg_submit_savepoint, mfg_se=se
+			)
+		except _SprWipTopupRetry:
+			raise
+		# WIP top-up could not auto-submit — raise transfer / no-stock message (never cap below BOM).
+		wip_topup = self._spr_wip_topup_shortages_for_se(se, wo_doc)
+		if not wip_topup:
+			wip_topup = self._spr_wip_topup_from_manufacture_se(se, wo_doc)
+			if wip_topup:
+				company = _cstr(getattr(wo_doc, "company", None))
+				wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
+				wip_topup = [
+					(
+						ic,
+						self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
+						or _spr_company_rm_warehouse(company, wip_wh)
+						or _("RM warehouse"),
+						flt(qty),
+						0.0,
+						flt(qty),
+					)
+					for ic, qty in wip_topup.items()
+					if ic and flt(qty) > 0
+				]
+		if wip_topup:
+			self._raise_shortage_with_transfer_batch(
+				[
 					{
 						"wo_id": wo_id,
 						"wo_doc": wo_doc,
 						"chunk_total_qty": chunk_total_qty,
-						"shortages": shortages,
+						"shortages": wip_topup,
+						"wip_topup": True,
 					}
-				]
-				for p2 in planned_wo_posts:
-					wo_id2 = p2["wo_id"]
-					wo_doc2 = p2["wo_doc"]
-					for chunk_rows2 in p2["row_chunks"]:
-						chunk_total_qty2 = sum(self._row_fg_qty(r2) for r2 in chunk_rows2)
-						if chunk_total_qty2 <= 0:
-							continue
-						preview_se2 = self._build_shortage_preview_for_chunk(wo_doc2, chunk_total_qty2)
-						shortages2 = self._rm_shortages_for_se(preview_se2, wo_doc2)
-						if shortages2:
-							submit_shortage_events.append(
-								{
-									"wo_id": wo_id2,
-									"wo_doc": wo_doc2,
-									"chunk_total_qty": chunk_total_qty2,
-									"shortages": shortages2,
-								}
-							)
-						wip_topup2 = self._spr_wip_topup_shortages_for_se(preview_se2, wo_doc2)
-						if wip_topup2:
-							submit_shortage_events.append(
-								{
-									"wo_id": wo_id2,
-									"wo_doc": wo_doc2,
-									"chunk_total_qty": chunk_total_qty2,
-									"shortages": wip_topup2,
-									"wip_topup": True,
-								}
-							)
-				self._raise_shortage_with_transfer_batch(submit_shortage_events)
-			# WO already shows RM transferred — auto RM->WIP transfer then retry Manufacture once.
-			try:
-				self._spr_try_wip_topup_transfer_and_retry_manufacture(
-					wo_doc, e, allow_wip_topup_retry, mfg_submit_savepoint, mfg_se=se
-				)
-			except _SprWipTopupRetry:
-				raise
-			# WIP top-up could not auto-submit — raise transfer / no-stock message (never cap below BOM).
-			wip_topup = self._spr_wip_topup_shortages_for_se(se, wo_doc)
-			if not wip_topup:
-				wip_topup = self._spr_wip_topup_from_manufacture_se(se, wo_doc)
-				if wip_topup:
-					company = _cstr(getattr(wo_doc, "company", None))
-					wip_wh = _cstr(getattr(wo_doc, "wip_warehouse", None))
-					wip_topup = [
-						(
-							ic,
-							self._resolve_rm_source_warehouse_for_transfer(wo_doc, ic, wip_wh)
-							or _spr_company_rm_warehouse(company, wip_wh)
-							or _("RM warehouse"),
-							flt(qty),
-							0.0,
-							flt(qty),
-						)
-						for ic, qty in wip_topup.items()
-						if ic and flt(qty) > 0
-					]
-			if wip_topup:
-				self._raise_shortage_with_transfer_batch(
-					[
-						{
-							"wo_id": wo_id,
-							"wo_doc": wo_doc,
-							"chunk_total_qty": chunk_total_qty,
-							"shortages": wip_topup,
-							"wip_topup": True,
-						}
-					],
-					ignore_wo_transfer_prune=True,
-				)
-			parsed_wip = self._rm_shortages_from_exception(e)
-			if parsed_wip:
-				self._raise_shortage_with_transfer_batch(
-					[
-						{
-							"wo_id": wo_id,
-							"wo_doc": wo_doc,
-							"chunk_total_qty": chunk_total_qty,
-							"shortages": parsed_wip,
-						}
-					],
-					ignore_wo_transfer_prune=True,
-				)
-			self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
-			return
+				],
+				ignore_wo_transfer_prune=True,
+			)
+			if allow_wip_topup_retry:
+				frappe.db.savepoint(mfg_submit_savepoint)
+				raise _SprWipTopupRetry()
+		parsed_wip = self._rm_shortages_from_exception(e)
+		if parsed_wip:
+			self._raise_shortage_with_transfer_batch(
+				[
+					{
+						"wo_id": wo_id,
+						"wo_doc": wo_doc,
+						"chunk_total_qty": chunk_total_qty,
+						"shortages": parsed_wip,
+					}
+				],
+				ignore_wo_transfer_prune=True,
+			)
+			if allow_wip_topup_retry:
+				frappe.db.savepoint(mfg_submit_savepoint)
+				raise _SprWipTopupRetry()
+		self._throw_wip_stock_wo_transfer_mismatch(wo_doc, e)
+		return
 		frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
 		self._apply_unit_to_submitted_stock_entry(se.name, wo_doc)
 		self._apply_order_code_to_submitted_stock_entry(se.name)
@@ -6550,38 +6547,12 @@ class ShaftProductionRun(Document):
 		created_entries_by_wo = defaultdict(list)
 		planned_wo_posts = []
 
-		# region agent log - hypotheses A/B/E
-		_spr_dbg_wo_summary = {
-			wo: {"rows": len(rs), "row_batch_nos": [_cstr(r.get("batch_no")) for r in rs], "net_weights": [flt(_spr_row_get(r, "net_weight")) for r in rs]}
-			for wo, rs in wo_groups.items()
-		}
-		frappe.log_error(
-			f"[SPR_DBG f44820] SPR={self.name} wo_groups={list(wo_groups.keys())} detail={_spr_dbg_wo_summary}",
-			"SPR_DBG_WO_GROUPS"
-		)
-		frappe.msgprint(
-			f"[SPR_DBG] WOs in submit: {list(wo_groups.keys())}",
-			alert=True
-		)
-		# endregion
-
-		# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
-		for wo_id, rows in wo_groups.items():
-			wo_doc = frappe.get_doc("Work Order", wo_id)
-			total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
-			wo_item = _cstr(getattr(wo_doc, "production_item", None))
-			# region agent log - hypothesis B/E
-			_already = self._wo_submitted_manufacture_fg_qty(wo_doc.name)
-			frappe.log_error(
-				f"[SPR_DBG f44820] WO={wo_id} item={wo_item} total_qty={total_qty} produced_qty={getattr(wo_doc,'produced_qty',0)} already_submitted={_already} wo_qty={getattr(wo_doc,'qty',0)} wo_status={getattr(wo_doc,'status','')} row_count={len(rows)}",
-				"SPR_DBG_WO_QTY"
-			)
-			frappe.msgprint(
-				f"[SPR_DBG] WO={wo_id} item={wo_item} total_qty={total_qty} already_submitted={_already} wo_status={getattr(wo_doc,'status','')}",
-				alert=True
-			)
-			# endregion
-			if spr_doc_is_bag_spr(self):
+	# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
+	for wo_id, rows in wo_groups.items():
+		wo_doc = frappe.get_doc("Work Order", wo_id)
+		total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
+		wo_item = _cstr(getattr(wo_doc, "production_item", None))
+		if spr_doc_is_bag_spr(self):
 				self._spr_validate_bag_fg_qty_for_wo(wo_doc, total_qty)
 
 			# Ensure the produced item is batch managed
@@ -6744,15 +6715,11 @@ class ShaftProductionRun(Document):
 			)
 			self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
 
-		if created_entries:
-			self.db_set("manufacturing_entries", ", ".join(created_entries))
-			self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
-			self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
-			frappe.msgprint(
-				_("Created {0} Manufacturing Entries: {1}").format(
-					len(created_entries), ", ".join(created_entries)
-				)
-			)
+	if created_entries:
+		self.db_set("manufacturing_entries", ", ".join(created_entries))
+		self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
+		self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
+		self._spr_show_submit_summary(wo_groups, created_entries_by_wo)
 		else:
 			# Recovery-safe path: if old bug already posted Manufacture entries for this SPR, reuse them.
 			existing_submitted = self._get_existing_submitted_manufacture_entries_for_spr()
@@ -6775,6 +6742,132 @@ class ShaftProductionRun(Document):
 					),
 					title=_("No stock entry created"),
 				)
+
+	def _spr_show_submit_summary(self, wo_groups: dict, created_entries_by_wo: dict) -> None:
+		"""Display a clean post-submit summary popup per Work Order."""
+		quality = _cstr(
+			getattr(self, "custom_quality_summary", None)
+			or getattr(self, "custom_quality", None)
+			or getattr(self, "quality", None)
+			or ""
+		).strip()
+		color = _cstr(
+			getattr(self, "custom_color_summary", None)
+			or getattr(self, "custom_color", None)
+			or getattr(self, "color", None)
+			or ""
+		).strip()
+		gsm_val = _cstr(
+			getattr(self, "custom_gsm_summary", None)
+			or getattr(self, "custom_gsm", None)
+			or getattr(self, "gsm", None)
+			or ""
+		).strip()
+
+		header_chips = []
+		if quality:
+			header_chips.append(f"<span style='background:#e3f2fd;padding:2px 8px;border-radius:12px;font-size:12px;'>{frappe.utils.escape_html(quality)}</span>")
+		if color:
+			header_chips.append(f"<span style='background:#fce4ec;padding:2px 8px;border-radius:12px;font-size:12px;'>{frappe.utils.escape_html(color)}</span>")
+		if gsm_val:
+			header_chips.append(f"<span style='background:#e8f5e9;padding:2px 8px;border-radius:12px;font-size:12px;'>{frappe.utils.escape_html(gsm_val)} GSM</span>")
+
+		rows_html = ""
+		total_rolls = 0
+		total_batches = 0
+		all_active = True
+
+		for wo_id, rows in wo_groups.items():
+			ses = created_entries_by_wo.get(wo_id) or []
+			roll_count = len(rows)
+			total_rolls += roll_count
+
+			# Count FG lines with batch_no (activated batches) across this WO's SEs
+			batch_count = 0
+			if ses:
+				try:
+					res = frappe.db.sql(
+						"""
+						SELECT COUNT(*) FROM `tabStock Entry Detail`
+						WHERE parent IN %s AND is_finished_item = 1
+						  AND IFNULL(batch_no, '') != ''
+						""",
+						[tuple(ses)],
+					)
+					batch_count = cint((res or [[0]])[0][0])
+				except Exception:
+					batch_count = 0
+			total_batches += batch_count
+
+			batch_ok = ses and batch_count >= roll_count
+			if not batch_ok:
+				all_active = False
+			batch_badge_color = "#27ae60" if batch_ok else "#e74c3c"
+			batch_label = f"{batch_count} / {roll_count}"
+
+			if ses:
+				se_links = " ".join(
+					f"<a href='/app/stock-entry/{se}' target='_blank' "
+					f"style='color:#1a73e8;font-size:11px;'>{se}</a>"
+					for se in ses
+				)
+			else:
+				se_links = "<span style='color:#e74c3c;font-style:italic;'>Not created</span>"
+				all_active = False
+
+			rows_html += (
+				f"<tr style='border-bottom:1px solid #f0f0f0;'>"
+				f"<td style='padding:8px 10px;font-size:12px;'>"
+				f"<a href='/app/work-order/{frappe.utils.escape_html(wo_id)}' target='_blank' "
+				f"style='color:#333;font-weight:600;'>{frappe.utils.escape_html(wo_id)}</a></td>"
+				f"<td style='padding:8px 10px;text-align:center;font-size:13px;font-weight:600;'>{roll_count}</td>"
+				f"<td style='padding:8px 10px;text-align:center;'>"
+				f"<span style='background:{batch_badge_color};color:white;padding:2px 8px;"
+				f"border-radius:10px;font-size:12px;font-weight:600;'>{batch_label}</span></td>"
+				f"<td style='padding:8px 10px;font-size:11px;'>{se_links}</td>"
+				f"</tr>"
+			)
+
+		status_bg = "#e8f5e9" if all_active else "#fff3e0"
+		status_color = "#2e7d32" if all_active else "#e65100"
+		status_text = "All batches activated" if all_active else "Some batches may be inactive — please verify"
+
+		html = (
+			f"<div style='font-family:var(--font-stack);'>"
+			f"<div style='background:{status_bg};border-radius:6px;padding:8px 12px;"
+			f"margin-bottom:12px;display:flex;align-items:center;gap:8px;'>"
+			f"<span style='font-size:16px;'>{'✅' if all_active else '⚠️'}</span>"
+			f"<span style='color:{status_color};font-weight:600;font-size:13px;'>{status_text}</span>"
+			f"</div>"
+			f"<div style='margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>"
+			f"<span style='font-size:13px;font-weight:700;color:#333;'>{frappe.utils.escape_html(self.name)}</span>"
+			f"{''.join(header_chips)}"
+			f"</div>"
+			f"<table style='width:100%;border-collapse:collapse;background:#fff;"
+			f"border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;'>"
+			f"<thead><tr style='background:#f5f5f5;'>"
+			f"<th style='padding:8px 10px;text-align:left;font-size:12px;color:#555;'>Work Order</th>"
+			f"<th style='padding:8px 10px;text-align:center;font-size:12px;color:#555;'>Rolls</th>"
+			f"<th style='padding:8px 10px;text-align:center;font-size:12px;color:#555;'>Batches Active</th>"
+			f"<th style='padding:8px 10px;text-align:left;font-size:12px;color:#555;'>Manufacture Entry</th>"
+			f"</tr></thead>"
+			f"<tbody>{rows_html}</tbody>"
+			f"<tfoot><tr style='background:#fafafa;border-top:2px solid #e0e0e0;'>"
+			f"<td style='padding:8px 10px;font-size:12px;font-weight:700;'>Total</td>"
+			f"<td style='padding:8px 10px;text-align:center;font-size:13px;font-weight:700;'>{total_rolls}</td>"
+			f"<td style='padding:8px 10px;text-align:center;font-size:13px;font-weight:700;color:{status_color};'>"
+			f"{total_batches} / {total_rolls}</td>"
+			f"<td></td>"
+			f"</tr></tfoot>"
+			f"</table>"
+			f"</div>"
+		)
+
+		frappe.msgprint(
+			html,
+			title=_("Manufacture Summary — {0}").format(self.name),
+			wide=True,
+		)
 
 	def create_mix_roll_material_receipts(self):
 		"""Post mix roll FG via Material Receipt (no Work Order / Manufacture)."""
