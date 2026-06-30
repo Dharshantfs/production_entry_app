@@ -3309,6 +3309,28 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_ensure_child_grid_heights(frm);
 		spr_stabilize_submitted_spr_grids_once(frm);
 		spr_reapply_item_row_styles_with_retries(frm);
+		// Show manufacture summary after reload (server msgprint during submit is often lost).
+		setTimeout(function () {
+			if (!frm || !frm.doc || !frm.doc.name) {
+				return;
+			}
+			frappe.call({
+				method:
+					'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_submit_summary',
+				args: { shaft_production_run: frm.doc.name },
+				freeze: false,
+				callback: function (r) {
+					const d = (r && r.message) || {};
+					if (d.html) {
+						frappe.msgprint({
+							title: d.title || __('Manufacture Summary'),
+							message: d.html,
+							wide: true,
+						});
+					}
+				},
+			});
+		}, 600);
 		if (frm.doc && frm.doc.production_plan) {
 			frappe.call({
 				method:
@@ -4088,24 +4110,31 @@ function spr_register_spr_page_buttons(frm) {
 								method:
 									'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_sync_batches_to_manufacture_entries',
 								args: { shaft_production_run: frm.doc.name },
-								freeze: true,
-								freeze_message: __('Syncing batches...'),
+								freeze: false,
 								callback: function (r) {
 									const d = r.message || {};
 									let msg = __(
-										'Created {0} batch(es), updated {1} FG line(s), activated {2}, skipped {3}.',
-										[d.created_batches || 0, d.updated_fg_lines || 0, d.activated_batches || 0, d.skipped_count || 0]
+										'Updated {0} FG line(s), activated {1}, repaired {2}, backfilled {3} manufacture entries.',
+										[
+											d.updated_fg_lines || 0,
+											d.activated_batches || 0,
+											d.repaired_batches || 0,
+											d.backfilled_entries || 0,
+										]
 									);
-									if (d.backfilled_entries) {
-										msg += '<br>' + __('Auto-created {0} missing Manufacture entries.', [d.backfilled_entries]);
+									if (d.force_activated) {
+										msg += '<br>' + __('Force-activated {0} empty batch(es) from roll weights.', [d.force_activated]);
 									}
-									if (d.sle_patched) {
-										msg += '<br>' + __('SLE rows patched: {0}', [d.sle_patched]);
+									if (d.skipped_count) {
+										msg += '<br>' + __('Skipped {0} line(s) — see Error Log if batches still empty.', [d.skipped_count]);
+									}
+									if (d.backfill_errors && d.backfill_errors.length) {
+										msg += '<br><span style="color:#e65100;">' + __('Some WOs could not backfill — RM transfer may be needed.') + '</span>';
 									}
 									frappe.msgprint({
 										title: __('Batch Sync Result'),
 										message: msg,
-										indicator: (d.created_batches || d.updated_fg_lines || d.activated_batches) ? 'green' : 'orange',
+										indicator: (d.activated_batches || d.updated_fg_lines || d.repaired_batches) ? 'green' : 'orange',
 									});
 									frm.reload_doc();
 								},

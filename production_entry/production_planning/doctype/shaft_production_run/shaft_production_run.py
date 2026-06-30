@@ -6333,6 +6333,143 @@ class ShaftProductionRun(Document):
 				title=_("Missing Manufacture entries"),
 			)
 
+	def _spr_sync_backfill_missing_manufacture(self) -> list[str]:
+		"""Create/submit missing Manufacture entries for SPR rolls with auto RM transfer. Never throws."""
+		wo_rows: dict[str, list] = defaultdict(list)
+		for r in self.items or []:
+			wo = _cstr(r.get("work_order") or r.get("wo_id"))
+			if wo and flt(self._row_fg_qty(r)) > 0:
+				wo_rows[wo].append(r)
+		if not wo_rows:
+			return []
+
+		created_se: list[str] = []
+		self.flags._spr_allow_manufacture_posting = True
+		try:
+			for wo_id, rows in wo_rows.items():
+				if not frappe.db.exists("Work Order", wo_id):
+					continue
+				wo_doc = frappe.get_doc("Work Order", wo_id)
+				item_code = _cstr(getattr(wo_doc, "production_item", None))
+				posted_batches: set[str] = set()
+				se_has_spr = frappe.db.has_column("Stock Entry", "custom_spr_reference")
+				if se_has_spr:
+					existing = frappe.db.sql(
+						"""
+						SELECT IFNULL(sed.batch_no, '') AS batch_no
+						FROM `tabStock Entry` se
+						INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+						WHERE IFNULL(se.custom_spr_reference, '') = %s
+						  AND IFNULL(se.work_order, '') = %s
+						  AND IFNULL(se.purpose, '') = 'Manufacture'
+						  AND IFNULL(se.docstatus, 0) = 1
+						  AND IFNULL(sed.is_finished_item, 0) = 1
+						  AND IFNULL(sed.batch_no, '') != ''
+						""",
+						(self.name, wo_id),
+					) or []
+					posted_batches = {_cstr(x[0]) for x in existing if x and x[0]}
+
+				missing_rows = []
+				for r in rows:
+					bn_raw = _cstr(r.get("batch_no")).strip()
+					b_link = ""
+					if bn_raw:
+						try:
+							b_link = _cstr(
+								self._get_batch_link_name_for_stock_entry(
+									bn_raw, item_code, wo_doc.company, r
+								)
+							)
+						except Exception:
+							b_link = bn_raw
+					if b_link and b_link in posted_batches:
+						continue
+					missing_rows.append(r)
+				if not missing_rows:
+					continue
+
+				chunk_total = self._fg_posting_qty_for_rows(missing_rows, wo_doc)
+				if chunk_total <= 0:
+					continue
+
+				shortage_events: list = []
+				preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total)
+				self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
+				shortages = self._rm_shortages_for_se(preview_se, wo_doc)
+				if shortages:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total,
+							"shortages": shortages,
+						}
+					)
+				wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
+				if wip_topup:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total,
+							"shortages": wip_topup,
+							"wip_topup": True,
+						}
+					)
+				if shortage_events:
+					shortage_events = self._spr_filter_preflight_shortage_events(shortage_events)
+					try:
+						self._raise_shortage_with_transfer_batch(shortage_events)
+					except Exception:
+						frappe.log_error(
+							frappe.get_traceback(),
+							f"SPR sync backfill shortage transfer:{self.name}:{wo_id}",
+						)
+						continue
+
+				mfg_sp = f"spr_sync_mfg_{wo_id}"
+				frappe.db.savepoint(mfg_sp)
+				actual_rm_map: dict = {}
+				try:
+					done = self._spr_run_manufacture_chunk_attempt(
+						wo_id=wo_id,
+						wo_doc=wo_doc,
+						chunk_rows=missing_rows,
+						chunk_total_qty=chunk_total,
+						chunk_idx=1,
+						chunk_count=1,
+						mfg_submit_savepoint=mfg_sp,
+						planned_wo_posts=[],
+						actual_rm_map=actual_rm_map,
+						created_entries=created_se,
+						created_entries_by_wo=defaultdict(list),
+						allow_wip_topup_retry=True,
+					)
+					if done.get("se_name"):
+						created_se.append(done["se_name"])
+				except Exception:
+					try:
+						frappe.db.rollback(save_point=mfg_sp)
+					except Exception:
+						pass
+					frappe.log_error(
+						frappe.get_traceback(),
+						f"SPR sync backfill manufacture:{self.name}:{wo_id}",
+					)
+		finally:
+			self.flags._spr_allow_manufacture_posting = False
+
+		if created_se:
+			existing = [
+				x.strip()
+				for x in _cstr(self.get("manufacturing_entries")).split(",")
+				if x and x.strip()
+			]
+			merged = sorted(set(existing + created_se))
+			self.db_set("manufacturing_entries", ", ".join(merged))
+		return created_se
+
 	def _spr_remove_bom_fg_duplicates_from_se_db(self, se, production_item: str, spr_rows: list | None = None) -> int:
 		"""After SE insert + reload, delete BOM-generated ghost FG lines from DB and in-memory se.items.
 
@@ -6869,6 +7006,7 @@ class ShaftProductionRun(Document):
 			self.db_set("manufacturing_entries", ", ".join(created_entries))
 			self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
 			self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
+			self._spr_activate_all_roll_batches_after_manufacture(created_entries_by_wo)
 			self._spr_show_submit_summary(wo_groups, created_entries_by_wo)
 		else:
 			# Recovery-safe path: if old bug already posted Manufacture entries for this SPR, reuse them.
@@ -6893,8 +7031,38 @@ class ShaftProductionRun(Document):
 					title=_("No stock entry created"),
 				)
 
-	def _spr_show_submit_summary(self, wo_groups: dict, created_entries_by_wo: dict) -> None:
-		"""Display a clean post-submit summary popup per Work Order."""
+	def _spr_activate_all_roll_batches_after_manufacture(self, created_entries_by_wo: dict) -> None:
+		"""Activate every SPR roll batch from manufacture FG lines or roll weight."""
+		company = _spr_company_from_doc(self)
+		for wo_id, ses in (created_entries_by_wo or {}).items():
+			for se_name in ses or []:
+				if not frappe.db.exists("Stock Entry", se_name):
+					continue
+				se_doc = frappe.get_doc("Stock Entry", se_name)
+				for fg in se_doc.items or []:
+					if cint(fg.get("is_finished_item")) != 1:
+						continue
+					bn = _cstr(fg.get("batch_no")).strip()
+					if bn:
+						_spr_activate_batch_from_manufacture(
+							bn, fg, se_doc, fallback_qty=flt(fg.get("qty"))
+						)
+		for row in self.items or []:
+			bn_raw = _cstr(row.get("batch_no")).strip()
+			ic = _cstr(row.get("item_code")).strip()
+			if not bn_raw or not ic:
+				continue
+			try:
+				link = _cstr(self._get_batch_link_name_for_stock_entry(bn_raw, ic, company, row))
+			except Exception:
+				link = bn_raw
+			if link and not _spr_batch_is_active(link):
+				qty = flt(self._row_fg_qty(row))
+				if qty > 0:
+					_spr_set_batch_qty_on_master(link, qty)
+
+	def _spr_build_submit_summary_html(self, wo_groups: dict, created_entries_by_wo: dict) -> str:
+		"""Build post-submit summary HTML (all WOs, manufacture links, batch counts)."""
 		quality = _cstr(
 			getattr(self, "custom_quality_summary", None)
 			or getattr(self, "custom_quality", None)
@@ -6955,27 +7123,27 @@ class ShaftProductionRun(Document):
 			batch_badge_color = "#27ae60" if batch_ok else "#e74c3c"
 			batch_label = f"{batch_count} / {roll_count}"
 
-		if ses:
-			from urllib.parse import quote as _url_quote
-			_se_link_parts = []
-			for se in ses:
-				_se_url = "/app/stock-entry/" + _url_quote(se, safe="")
-				_se_label = frappe.utils.escape_html(se)
-				_se_link_parts.append(
-					f"<a href='{_se_url}' target='_blank' style='color:#1a73e8;font-size:11px;'>{_se_label}</a>"
-				)
-			se_links = " ".join(_se_link_parts)
-		else:
-			se_links = "<span style='color:#e74c3c;font-style:italic;'>Not created</span>"
-			all_active = False
+			if ses:
+				from urllib.parse import quote as _url_quote
+				_se_link_parts = []
+				for se in ses:
+					_se_url = "/app/stock-entry/" + _url_quote(se, safe="")
+					_se_label = frappe.utils.escape_html(se)
+					_se_link_parts.append(
+						f"<a href='{_se_url}' target='_blank' style='color:#1a73e8;font-size:11px;'>{_se_label}</a>"
+					)
+				se_links = " ".join(_se_link_parts)
+			else:
+				se_links = "<span style='color:#e74c3c;font-style:italic;'>Not created</span>"
+				all_active = False
 
-		from urllib.parse import quote as _url_quote
-		wo_url = "/app/work-order/" + _url_quote(_cstr(wo_id), safe="")
-		rows_html += (
-			f"<tr style='border-bottom:1px solid #f0f0f0;'>"
-			f"<td style='padding:8px 10px;font-size:12px;'>"
-			f"<a href='{wo_url}' target='_blank' "
-			f"style='color:#333;font-weight:600;'>{frappe.utils.escape_html(wo_id)}</a></td>"
+			from urllib.parse import quote as _url_quote
+			wo_url = "/app/work-order/" + _url_quote(_cstr(wo_id), safe="")
+			rows_html += (
+				f"<tr style='border-bottom:1px solid #f0f0f0;'>"
+				f"<td style='padding:8px 10px;font-size:12px;'>"
+				f"<a href='{wo_url}' target='_blank' "
+				f"style='color:#333;font-weight:600;'>{frappe.utils.escape_html(wo_id)}</a></td>"
 				f"<td style='padding:8px 10px;text-align:center;font-size:13px;font-weight:600;'>{roll_count}</td>"
 				f"<td style='padding:8px 10px;text-align:center;'>"
 				f"<span style='background:{batch_badge_color};color:white;padding:2px 8px;"
@@ -7018,12 +7186,15 @@ class ShaftProductionRun(Document):
 			f"</table>"
 			f"</div>"
 		)
+		return html
 
-		frappe.msgprint(
-			html,
-			title=_("Manufacture Summary — {0}").format(self.name),
-			wide=True,
-		)
+	def _spr_show_submit_summary(self, wo_groups: dict, created_entries_by_wo: dict) -> None:
+		"""Store summary HTML for client display after submit (avoid server dialog during save)."""
+		html = self._spr_build_submit_summary_html(wo_groups, created_entries_by_wo)
+		try:
+			frappe.response["spr_submit_summary"] = html
+		except Exception:
+			pass
 
 	def create_mix_roll_material_receipts(self):
 		"""Post mix roll FG via Material Receipt (no Work Order / Manufacture)."""
@@ -11490,13 +11661,45 @@ def spr_repair_broken_fg_batch_stock(shaft_production_run: str, submit_entry: in
 
 
 @frappe.whitelist()
-def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
-	"""Create Batch masters from SPR roll lines and patch submitted Manufacture FG lines with batch_no.
+def spr_get_submit_summary(shaft_production_run: str):
+	"""Return post-submit manufacture summary HTML for client display after reload."""
+	spr_name = _cstr(shaft_production_run)
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run {0} not found").format(spr_name))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if cint(spr.docstatus) != 1:
+		return {"html": "", "title": ""}
+	wo_groups: dict = {}
+	for row in spr.items or []:
+		wo = _cstr(row.get("work_order") or row.get("wo_id"))
+		if wo:
+			wo_groups.setdefault(wo, []).append(row)
+	created_by_wo: dict = defaultdict(list)
+	for se in spr._get_existing_submitted_manufacture_entries_for_spr():
+		wo = _cstr(frappe.db.get_value("Stock Entry", se, "work_order"))
+		if wo:
+			created_by_wo[wo].append(se)
+		elif wo_groups:
+			# Fallback: attach orphan SE to first WO with same production item
+			pi = _cstr(frappe.db.get_value("Stock Entry", se, "production_item"))
+			for w, rows in wo_groups.items():
+				if rows and _cstr(rows[0].get("item_code")) == pi:
+					created_by_wo[w].append(se)
+					break
+	html = spr._spr_build_submit_summary_html(wo_groups, dict(created_by_wo))
+	return {
+		"html": html,
+		"title": _("Manufacture Summary — {0}").format(spr_name),
+	}
 
-	For submitted SPRs where Manufacture entries were posted without batch numbers:
-	1. Create tabBatch for each roll line batch_no (via _get_batch_link_name_for_stock_entry).
-	2. Update submitted Manufacture STE FG lines to include batch_no.
-	3. Refresh Batch qty from SLE.
+
+@frappe.whitelist()
+def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
+	"""Sync SPR roll batches to Manufacture FG lines and activate Batch masters.
+
+	Optimized for large SPRs: uses SQL bulk reads, batch-by-batch matching, auto RM
+	transfer when backfill needs stock, and Material Receipt repair for empty batches.
+	Never blocks the whole sync on one WO shortage — logs and continues.
 	"""
 	spr_name = _cstr(shaft_production_run)
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
@@ -11505,193 +11708,246 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	if cint(spr.docstatus) != 1:
 		frappe.throw(_("SPR {0} must be submitted.").format(spr_name))
 
-	def _get_batch_qty(bn):
-		if not bn: return 0.0
-		qty = frappe.db.sql("""select sum(actual_qty) from `tabStock Ledger Entry` 
-			where batch_no=%s and is_cancelled=0""", bn)
-		return qty[0][0] if qty and qty[0][0] else 0.0
+	frappe.db.auto_commit_on_many_writes = 1
 
+	# 1) Ensure Batch masters exist with WO / weight custom fields from SPR rows.
+	spr.sync_batch_custom_fields()
 
-	se_names = [
-		x.strip() for x in _cstr(getattr(spr, "manufacturing_entries", "")).split(",") if x and x.strip()
-	]
-	if not se_names:
-		se_names = spr._get_existing_submitted_manufacture_entries_for_spr()
-	if not se_names:
-		frappe.throw(_("No Manufacture entries found for SPR {0}.").format(spr_name))
-
-	roll_batch_map: dict[str, dict] = {}
+	# WO → batch_id → SPR row (primary match key)
+	wo_batch_rows: dict[str, dict[str, object]] = defaultdict(dict)
+	wo_item_rows: dict[str, list] = defaultdict(list)
 	for row in spr.items or []:
+		wo = _cstr(row.get("work_order") or row.get("wo_id"))
 		bn = _cstr(getattr(row, "batch_no", "")).strip()
-		ic = _cstr(getattr(row, "item_code", "")).strip()
-		if bn and ic:
-			roll_batch_map.setdefault(ic, {})[bn] = row
+		if not wo or flt(spr._row_fg_qty(row)) <= 0:
+			continue
+		wo_item_rows[wo].append(row)
+		if bn:
+			wo_batch_rows[wo][bn] = row
 
-	created_batches = []
-	updated_lines = []
-	skipped = []
+	se_names = spr._get_existing_submitted_manufacture_entries_for_spr()
+	if not se_names:
+		frappe.throw(
+			_("No Manufacture entries linked to SPR {0}. Submit SPR first or use backfill.").format(spr_name)
+		)
+
+	created_batches: list = []
+	updated_lines: list = []
+	skipped: list = []
 	all_batch_codes: set = set()
+	posted_batch_keys: set = set()  # (wo, batch_link) already on a manufacture FG line
 
-	for se_name in se_names:
-		if not frappe.db.exists("Stock Entry", se_name):
-			skipped.append({"stock_entry": se_name, "reason": "not_found"})
+	# Bulk-load FG lines (avoid get_doc per SE on large SPRs)
+	fg_rows = frappe.db.sql(
+		"""
+		SELECT sed.name, sed.parent, sed.idx, sed.item_code,
+		       IFNULL(sed.batch_no, '') AS batch_no,
+		       IFNULL(sed.qty, 0) AS qty,
+		       IFNULL(sed.t_warehouse, '') AS t_warehouse,
+		       IFNULL(se.work_order, '') AS work_order,
+		       IFNULL(se.production_item, '') AS production_item,
+		       IFNULL(se.company, '') AS company,
+		       IFNULL(se.to_warehouse, '') AS to_warehouse
+		FROM `tabStock Entry Detail` sed
+		INNER JOIN `tabStock Entry` se ON se.name = sed.parent
+		WHERE sed.parent IN %(parents)s
+		  AND IFNULL(se.docstatus, 0) = 1
+		  AND IFNULL(se.purpose, '') = 'Manufacture'
+		  AND IFNULL(sed.is_finished_item, 0) = 1
+		ORDER BY se.work_order, sed.parent, sed.idx
+		""",
+		{"parents": tuple(se_names)},
+		as_dict=True,
+	) or []
+
+	se_meta_cache: dict = {}
+
+	def _se_doc_light(se_name: str):
+		if se_name not in se_meta_cache:
+			se_meta_cache[se_name] = frappe.get_doc("Stock Entry", se_name)
+		return se_meta_cache[se_name]
+
+	def _resolve_batch_link(bn_raw: str, item_code: str, company: str, spr_row) -> str:
+		if not bn_raw:
+			return ""
+		if frappe.db.exists("Batch", bn_raw):
+			return bn_raw
+		try:
+			return _cstr(spr._get_batch_link_name_for_stock_entry(bn_raw, item_code, company, spr_row))
+		except Exception:
+			return bn_raw
+
+	def _activate_fg_line(fg_row: dict, batch_link: str, spr_row=None) -> float:
+		se_doc = _se_doc_light(fg_row["parent"])
+		fg_line = frappe._dict(
+			{
+				"name": fg_row["name"],
+				"item_code": fg_row["item_code"],
+				"qty": fg_row["qty"],
+				"transfer_qty": fg_row["qty"],
+				"t_warehouse": fg_row["t_warehouse"] or fg_row["to_warehouse"],
+				"batch_no": batch_link,
+			}
+		)
+		fallback = flt(fg_row["qty"])
+		if spr_row is not None:
+			fallback = flt(spr._row_fg_qty(spr_row)) or fallback
+		return _spr_activate_batch_from_manufacture(batch_link, fg_line, se_doc, fallback_qty=fallback)
+
+	# Index existing posted batches per WO
+	for fg in fg_rows:
+		wo = _cstr(fg.get("work_order"))
+		bn = _cstr(fg.get("batch_no")).strip()
+		if wo and bn:
+			posted_batch_keys.add((wo, bn))
+
+	# 2) Patch FG lines: match by batch_no first, then qty fallback per WO
+	used_batches_by_wo: dict[str, set] = defaultdict(set)
+	for wo, batch_map in wo_batch_rows.items():
+		used_batches_by_wo[wo] = {
+			bn for (w, bn) in posted_batch_keys if w == wo
+		}
+
+	for fg in fg_rows:
+		se_name = fg["parent"]
+		wo = _cstr(fg.get("work_order"))
+		item_code = _cstr(fg.get("production_item") or fg.get("item_code"))
+		company = _cstr(fg.get("company"))
+		existing_bn = _cstr(fg.get("batch_no")).strip()
+		batch_map = wo_batch_rows.get(wo) or {}
+
+		if existing_bn:
+			spr_row = batch_map.get(existing_bn)
+			if not spr_row:
+				for bn_raw, row in batch_map.items():
+					link = _resolve_batch_link(bn_raw, item_code, company, row)
+					if link == existing_bn or bn_raw == existing_bn:
+						spr_row = row
+						break
+			activated = _activate_fg_line(fg, existing_bn, spr_row)
+			all_batch_codes.add(existing_bn)
+			used_batches_by_wo[wo].add(existing_bn)
+			if activated <= 0 and spr_row is not None:
+				_spr_set_batch_qty_on_master(existing_bn, flt(spr._row_fg_qty(spr_row)))
+			skipped.append({
+				"stock_entry": se_name,
+				"line_idx": fg["idx"],
+				"reason": "already_has_batch",
+				"batch_no": existing_bn,
+				"batch_qty": activated or flt(spr._row_fg_qty(spr_row) if spr_row else 0),
+			})
 			continue
-		se_doc = frappe.get_doc("Stock Entry", se_name)
-		if _cstr(se_doc.get("purpose")) != "Manufacture" or cint(se_doc.get("docstatus")) != 1:
-			skipped.append({"stock_entry": se_name, "reason": "not_submitted_manufacture"})
-			continue
 
-		item_code = _cstr(se_doc.get("production_item"))
-		company = _cstr(se_doc.get("company"))
-		fg_lines = [d for d in (se_doc.items or []) if cint(d.get("is_finished_item")) == 1]
-		item_batches = roll_batch_map.get(item_code) or {}
-
-		roll_rows_by_qty: dict[str, list] = {}
-		for bn, row in item_batches.items():
-			qty_key = f"{flt(spr._row_fg_qty(row), 6)}"
-			roll_rows_by_qty.setdefault(qty_key, []).append((bn, row))
-
-		used_batches: set = set()
-		for fg in fg_lines:
-			existing_bn = _cstr(fg.get("batch_no")).strip()
-			if existing_bn:
-				if not frappe.db.exists("Batch", existing_bn):
-					# Batch master is missing despite FG line having it. Create it now.
-					matched_row = None
-					for bn, row in item_batches.items():
-						if bn == existing_bn:
-							matched_row = row
-							break
-					
-					if matched_row:
-						batch_link = spr._get_batch_link_name_for_stock_entry(existing_bn, item_code, company, matched_row)
-						if batch_link:
-							created_batches.append({"batch_no": batch_link, "item_code": item_code})
-
-				activated = _spr_activate_batch_from_manufacture(
-					existing_bn, fg, se_doc,
-					fallback_qty=flt(fg.get("qty") or fg.get("transfer_qty") or 0),
-				)
-				all_batch_codes.add(existing_bn)
-				skipped.append({
-					"stock_entry": se_name,
-					"line_idx": fg.idx,
-					"reason": "already_has_batch",
-					"sle_patched": 1 if activated > 0 else 0,
-					"batch_qty": activated,
-				})
+		fg_qty = flt(fg.get("qty"))
+		matched_bn = ""
+		matched_row = None
+		# Prefer unmatched SPR batch with same qty for this WO
+		qty_key = f"{flt(fg_qty, 6)}"
+		for bn_raw, row in batch_map.items():
+			if bn_raw in used_batches_by_wo.get(wo, set()):
 				continue
-
-			fg_qty = flt(fg.get("qty"))
-			qty_key = f"{flt(fg_qty, 6)}"
-			candidates = roll_rows_by_qty.get(qty_key) or []
-			matched_bn = ""
-			matched_row = None
-			for bn, row in candidates:
-				if bn not in used_batches:
-					matched_bn = bn
+			link = _resolve_batch_link(bn_raw, item_code, company, row)
+			if link in used_batches_by_wo.get(wo, set()):
+				continue
+			if f"{flt(spr._row_fg_qty(row), 6)}" == qty_key:
+				matched_bn = bn_raw
+				matched_row = row
+				break
+		if not matched_row:
+			for bn_raw, row in batch_map.items():
+				link = _resolve_batch_link(bn_raw, item_code, company, row)
+				if bn_raw not in used_batches_by_wo.get(wo, set()) and link not in used_batches_by_wo.get(wo, set()):
+					matched_bn = bn_raw
 					matched_row = row
 					break
-			if not matched_bn:
-				for bn, row in item_batches.items():
-					if bn not in used_batches:
-						matched_bn = bn
-						matched_row = row
-						break
-			if not matched_bn:
-				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "reason": "no_matching_roll_batch"})
-				continue
+		if not matched_row:
+			skipped.append({"stock_entry": se_name, "line_idx": fg["idx"], "reason": "no_matching_roll_batch"})
+			continue
 
-			used_batches.add(matched_bn)
-			batch_link = spr._get_batch_link_name_for_stock_entry(
-				matched_bn, item_code, company, matched_row
-			)
-			if not batch_link:
-				skipped.append({"stock_entry": se_name, "line_idx": fg.idx, "batch_no": matched_bn, "reason": "batch_create_failed"})
-				continue
+		batch_link = _resolve_batch_link(matched_bn, item_code, company, matched_row)
+		if not batch_link:
+			skipped.append({"stock_entry": se_name, "line_idx": fg["idx"], "batch_no": matched_bn, "reason": "batch_create_failed"})
+			continue
 
-			created_batches.append({"batch_no": batch_link, "item_code": item_code})
-			all_batch_codes.add(batch_link)
-			try:
-				frappe.db.set_value(
-					"Stock Entry Detail",
-					fg.name,
-					"batch_no",
-					batch_link,
-					update_modified=False,
-				)
-				fg.batch_no = batch_link
-				activated = _spr_activate_batch_from_manufacture(batch_link, fg, se_doc)
-				updated_lines.append({
-					"stock_entry": se_name,
-					"line_idx": fg.idx,
-					"batch_no": batch_link,
-					"sle_patched": 1 if activated > 0 else 0,
-					"batch_qty": activated,
-				})
-			except Exception:
-				frappe.log_error(frappe.get_traceback(), f"SPR batch sync line update:{spr_name}")
+		created_batches.append({"batch_no": batch_link, "item_code": item_code})
+		all_batch_codes.add(batch_link)
+		used_batches_by_wo[wo].add(batch_link)
+		used_batches_by_wo[wo].add(matched_bn)
+		try:
+			updates = {"batch_no": batch_link}
+			line_meta = frappe.get_meta("Stock Entry Detail")
+			if line_meta.has_field("use_serial_batch_fields"):
+				updates["use_serial_batch_fields"] = 1
+			frappe.db.set_value("Stock Entry Detail", fg["name"], updates, update_modified=False)
+			activated = _activate_fg_line(fg, batch_link, matched_row)
+			if activated <= 0:
+				_spr_set_batch_qty_on_master(batch_link, flt(spr._row_fg_qty(matched_row)))
+			updated_lines.append({
+				"stock_entry": se_name,
+				"line_idx": fg["idx"],
+				"batch_no": batch_link,
+				"batch_qty": activated or flt(spr._row_fg_qty(matched_row)),
+			})
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR batch sync line:{spr_name}")
 
-	spr.sync_batch_custom_fields()
-	
-	backfill_created = []
+	# 3) Repair FG batches that have manufacture lines but no positive SLE (no RM re-consumed)
+	repair_res = {}
 	try:
-		# Also attempt to auto-create missing manufacture stock entries for skipped rolls
-		backfill_res = spr_backfill_missing_manufacture_from_spr(spr_name, submit_entries=1)
-		backfill_created = backfill_res.get("created") or []
+		repair_res = spr_repair_broken_fg_batch_stock(spr_name, submit_entry=1) or {}
 	except Exception:
-		frappe.log_error(frappe.get_traceback(), f"SPR batch sync backfill failed:{spr_name}")
+		frappe.log_error(frappe.get_traceback(), f"SPR batch sync repair:{spr_name}")
 
-	total_sle_patched = sum(s.get("sle_patched", 0) for s in skipped if isinstance(s, dict))
-	total_sle_patched += sum(u.get("sle_patched", 0) for u in updated_lines if isinstance(u, dict))
+	# 4) Backfill missing manufacture rows — auto RM transfer, never abort whole sync
+	backfill_created: list = []
+	backfill_errors: list = []
+	try:
+		backfill_created = spr._spr_sync_backfill_missing_manufacture() or []
+	except Exception as exc:
+		backfill_errors.append(_cstr(exc))
+		frappe.log_error(frappe.get_traceback(), f"SPR batch sync backfill:{spr_name}")
+
+	# 5) Force-activate any SPR batch still Empty (set master qty from roll weight)
+	activated_force = 0
+	company = _spr_company_from_doc(spr)
+	for row in spr.items or []:
+		bn_raw = _cstr(getattr(row, "batch_no", "")).strip()
+		ic = _cstr(getattr(row, "item_code", "")).strip()
+		if not bn_raw or not ic:
+			continue
+		link = _resolve_batch_link(bn_raw, ic, company, row)
+		if not link:
+			continue
+		all_batch_codes.add(link)
+		if _spr_batch_is_active(link):
+			continue
+		row_qty = flt(spr._row_fg_qty(row))
+		if row_qty > 0:
+			_spr_set_batch_qty_on_master(link, row_qty)
+			activated_force += 1
+
+	spr._refresh_batch_qty_for_codes(list(all_batch_codes))
+
+	activated_count = sum(1 for bn in all_batch_codes if _spr_batch_is_active(bn))
 
 	try:
 		frappe.db.commit()
 	except Exception:
 		pass
 
-	# Resubmit updated stock entries so Frappe generates the correct Stock Balances & Bundles
-	se_docs_to_resubmit = set()
-	for u in updated_lines:
-		if isinstance(u, dict) and u.get("stock_entry"):
-			se_docs_to_resubmit.add(u["stock_entry"])
-			
-	# Also resubmit entries that already had the batch number but the batch is mysteriously still not active
-	for s in skipped:
-		if isinstance(s, dict) and s.get("reason") == "already_has_batch" and s.get("stock_entry"):
-			# Check if the batch is active natively
-			bn = _cstr(s.get("batch_no") or "")
-			if not bn:
-				# Try to get batch_no from the FG line if it wasn't saved in the skipped dict
-				se_name = s.get("stock_entry")
-				line_idx = s.get("line_idx")
-				if se_name and line_idx:
-					try:
-						bn = frappe.db.get_value("Stock Entry Detail", {"parent": se_name, "idx": line_idx}, "batch_no")
-					except Exception:
-						pass
-	# We no longer cancel/submit the Stock Entry because doing so cancels Raw Material bundles 
-	# and causes "Serial No / Batch No are mandatory" errors for RM items.
-	# Instead, we directly generate the Serial and Batch Bundle for the FG lines natively.
-
-	activated_count = sum(1 for bn in all_batch_codes if flt(_get_batch_qty(bn)) > 0)
-	# Include any batches that became active due to the backfill above
-	for r in spr.items or []:
-		bn = _cstr(getattr(r, "batch_no", ""))
-		if bn and bn not in all_batch_codes and flt(_get_batch_qty(bn)) > 0:
-			activated_count += 1
-
 	return {
 		"status": "ok",
 		"shaft_production_run": spr_name,
 		"created_batches": len(created_batches),
 		"updated_fg_lines": len(updated_lines),
-		"sle_patched": total_sle_patched,
 		"activated_batches": activated_count,
+		"force_activated": activated_force,
+		"repaired_batches": cint((repair_res or {}).get("repaired_batch_count") or 0),
 		"backfilled_entries": len(backfill_created),
-		"updated_details": updated_lines[:200],
+		"backfill_errors": backfill_errors[:5],
+		"updated_details": updated_lines[:100],
 		"skipped_count": len(skipped),
-		"skipped": skipped[:100],
+		"skipped": skipped[:50],
 	}
 
 
