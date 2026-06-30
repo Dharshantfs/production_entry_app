@@ -5355,13 +5355,6 @@ function spr_open_bundle_packaging_dialog(frm) {
 		frappe.msgprint(__('This document is submitted and cannot be edited.'));
 		return;
 	}
-	if (frm.is_dirty()) {
-		frappe.show_alert({ message: __('Saving document...'), indicator: 'blue' });
-		frm.save().then(function () {
-			spr_open_bundle_packaging_dialog(frm);
-		});
-		return;
-	}
 	frappe.call({
 		method:
 			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_bundle_packaging_catalog',
@@ -5378,12 +5371,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 			}
 			const jobOpts = jobs
 				.map(function (j) {
-					return j.job_id;
+					return String(j.label || j.job_id);
 				})
 				.join('\n');
 			const jobByLabel = {};
 			jobs.forEach(function (j) {
-				jobByLabel[j.job_id] = j;
+				jobByLabel[String(j.label || j.job_id)] = j;
 			});
 			const d = new frappe.ui.Dialog({
 				title: __('Bundle packaging'),
@@ -5466,40 +5459,61 @@ function spr_open_bundle_packaging_dialog(frm) {
 						return;
 					}
 					d.hide();
-					frappe.call({
-						method:
-							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_apply_bundle_packaging_for_job_width',
-						args: {
-							shaft_production_run: frm.doc.name,
-							job_id: jp.job_id,
-							width_inch: w,
-							no_of_packaging: n,
-							whole_gross_kg: whole,
-							produced_length_mtrs: producedLength,
-						},
-						freeze: true,
-						freeze_message: __('Applying bundle packaging...'),
-						callback: function (r2) {
-							const m = r2.message || {};
-							frappe.show_alert({
-								message: __(
-									'Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} Inches, bundle net {3} Kg.',
-									[
-										String(m.updated_rolls != null ? m.updated_rolls : ''),
-										String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
-										String(m.total_width_inch != null ? m.total_width_inch : ''),
-										String(m.sticker_bundle_weight_kg != null ? m.sticker_bundle_weight_kg : ''),
-										String(m.remaining_unpacked_rolls != null ? m.remaining_unpacked_rolls : ''),
-									]
-								),
-								indicator: 'green',
-							});
-							// Keep UI stable: single reload only (avoid heavy loops that cause hanging).
-							frm.reload_doc();
-						},
-					});
+					
+					function execute_apply() {
+						frappe.call({
+							method:
+								'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_apply_bundle_packaging_for_job_width',
+							args: {
+								shaft_production_run: frm.doc.name,
+								job_id: jp.job_id,
+								width_inch: w,
+								no_of_packaging: n,
+								whole_gross_kg: whole,
+								produced_length_mtrs: producedLength,
+							},
+							freeze: true,
+							freeze_message: __('Applying bundle packaging...'),
+							callback: function (r2) {
+								const m = r2.message || {};
+								frappe.show_alert({
+									message: __(
+										'Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} Inches, bundle net {3} Kg.',
+										[
+											String(m.updated_rolls != null ? m.updated_rolls : ''),
+											String(m.single_roll_gross_kg != null ? m.single_roll_gross_kg : ''),
+											String(m.total_width_inch != null ? m.total_width_inch : ''),
+											String(m.sticker_bundle_weight_kg != null ? m.sticker_bundle_weight_kg : ''),
+											String(m.remaining_unpacked_rolls != null ? m.remaining_unpacked_rolls : ''),
+										]
+									),
+									indicator: 'green',
+								});
+								frm.reload_doc();
+							},
+						});
+					}
+
+					if (frm.is_dirty()) {
+						frappe.show_alert({ message: __('Saving document before apply...'), indicator: 'blue' });
+						frm.save().then(execute_apply);
+					} else {
+						execute_apply();
+					}
 				},
 			});
+			function spr_job_keys_match_js(a, b) {
+				const na = String(a || '').trim();
+				const nb = String(b || '').trim();
+				if (na === nb) return true;
+				if (!na || !nb) return false;
+				const fa = parseFloat(na);
+				const fb = parseFloat(nb);
+				if (!isNaN(fa) && !isNaN(fb)) {
+					return fa === fb;
+				}
+				return false;
+			}
 			function refreshWidthOptions() {
 				const jp = jobByLabel[d.get_value('job_pick')];
 				const wf = d.fields_dict.width_inch;
@@ -5513,7 +5527,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 				(frm.doc.items || []).forEach(function (it) {
 					const j_match = String(it.job_no || it.job_id || it.job || '').trim();
 					const fw = flt(it.width_inch);
-					if (fw > 0 && spr_job_keys_match(j_match, jp.job_id) && arr.indexOf(fw) === -1) {
+					if (fw > 0 && spr_job_keys_match_js(j_match, jp.job_id) && arr.indexOf(fw) === -1) {
 						arr.push(fw);
 					}
 				});
@@ -5564,6 +5578,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 					);
 					if (!arr.length) {
 						wf.df.options = '';
+						wf.df.hidden = 1;
 						wf.refresh();
 						return;
 					}
@@ -5583,6 +5598,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 						})
 						.join('\n');
 				}
+				wf.df.hidden = 0;
 				wf.refresh();
 				const firstW =
 					wf.df.options ? flt(String(wf.df.options).split('\n')[0]) : 0;
