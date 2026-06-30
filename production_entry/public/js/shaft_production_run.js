@@ -5514,16 +5514,11 @@ function spr_open_bundle_packaging_dialog(frm) {
 				}
 				return false;
 			}
-			function refreshWidthOptions() {
-				const jp = jobByLabel[d.get_value('job_pick')];
+			function applySegsToDialog(jp, segs) {
 				const wf = d.fields_dict.width_inch;
 				const det = d.$wrapper.find('.spr-bundle-job-detail');
-				if (!jp || !wf) {
-					return;
-				}
-				const segs = jp.segments || [];
+				if (!wf) return;
 				const arr = (widthsByJob[jp.job_id] || []).slice();
-				// Include unsaved item widths from the client
 				(frm.doc.items || []).forEach(function (it) {
 					const j_match = String(it.job_no || it.job_id || it.job || '').trim();
 					const fw = flt(it.width_inch);
@@ -5531,7 +5526,7 @@ function spr_open_bundle_packaging_dialog(frm) {
 						arr.push(fw);
 					}
 				});
-				if (segs.length) {
+				if (segs && segs.length) {
 					const uniqueSegs = [];
 					const seenWidths = new Set();
 					segs.forEach(function (s) {
@@ -5563,19 +5558,19 @@ function spr_open_bundle_packaging_dialog(frm) {
 							'</td></tr>';
 					});
 					html += '</tbody></table>';
-					det.html(html);
+					if (det.length) det.html(html);
 					wf.df.options = uniqueSegs
-						.map(function (s) {
-							return String(flt(s.width_inch));
-						})
+						.map(function (s) { return String(flt(s.width_inch)); })
 						.join('\n');
 				} else {
 					const comb = jp.combination_text || '';
-					det.html(
-						comb
-							? '<p class="small">' + frappe.utils.escape_html(comb) + '</p>'
-							: '<p class="small text-muted">' + __('No segment breakdown — use width list.') + '</p>'
-					);
+					if (det.length) {
+						det.html(
+							comb
+								? '<p class="small">' + frappe.utils.escape_html(comb) + '</p>'
+								: '<p class="small text-muted">' + __('No segment breakdown — use width list.') + '</p>'
+						);
+					}
 					if (!arr.length) {
 						wf.df.options = '';
 						wf.df.hidden = 1;
@@ -5592,19 +5587,41 @@ function spr_open_bundle_packaging_dialog(frm) {
 						seenArr.add(key);
 						uniqueArr.push(x);
 					});
-					wf.df.options = uniqueArr
-						.map(function (x) {
-							return String(x);
-						})
-						.join('\n');
+					wf.df.options = uniqueArr.map(function (x) { return String(x); }).join('\n');
 				}
 				wf.df.hidden = 0;
 				wf.refresh();
-				const firstW =
-					wf.df.options ? flt(String(wf.df.options).split('\n')[0]) : 0;
+				const firstW = wf.df.options ? flt(String(wf.df.options).split('\n')[0]) : 0;
 				if (firstW > 0) {
 					d.set_value('width_inch', String(firstW));
 				}
+				recalc();
+			}
+			function refreshWidthOptions() {
+				const jp = jobByLabel[d.get_value('job_pick')];
+				const wf = d.fields_dict.width_inch;
+				const det = d.$wrapper.find('.spr-bundle-job-detail');
+				if (!jp || !wf) {
+					return;
+				}
+				// If segments were already loaded for this job, apply immediately.
+				if (jp.segments && jp.segments.length) {
+					applySegsToDialog(jp, jp.segments);
+					return;
+				}
+				// Lazy-load segments for this job then apply.
+				if (det.length) det.html('<span class="text-muted small">' + __('Loading...') + '</span>');
+				frappe.call({
+					method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_job_segments',
+					args: { shaft_production_run: frm.doc.name, job_id: jp.job_id },
+					callback: function (r) {
+						jp.segments = r.message || [];
+						applySegsToDialog(jp, jp.segments);
+					},
+					error: function () {
+						applySegsToDialog(jp, []);
+					},
+				});
 			}
 			function recalc() {
 				const jp = jobByLabel[d.get_value('job_pick')];
@@ -5625,6 +5642,17 @@ function spr_open_bundle_packaging_dialog(frm) {
 				);
 			}
 			d.show();
+			// Explicitly initialise the job_pick Select: in Frappe v15 the Select control
+			// does not auto-select the first option, leaving the dropdown visually blank.
+			// Re-set options + force a value so the user sees the first job immediately.
+			if (jobs.length > 0) {
+				const firstLabel = String(jobs[0].label || jobs[0].job_id);
+				d.set_df_property('job_pick', 'options', jobOpts);
+				if (d.fields_dict.job_pick) {
+					d.fields_dict.job_pick.refresh();
+				}
+				d.set_value('job_pick', firstLabel);
+			}
 			refreshWidthOptions();
 			recalc();
 			if (d.fields_dict.job_pick && d.fields_dict.job_pick.$input) {

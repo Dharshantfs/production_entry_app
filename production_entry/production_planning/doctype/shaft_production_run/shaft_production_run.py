@@ -11839,12 +11839,32 @@ def spr_get_bundle_packaging_on_submit_status(shaft_production_run):
 
 @frappe.whitelist()
 def spr_get_bundle_packaging_catalog(shaft_production_run):
-	"""Jobs from Available Jobs; width options use per-segment widths (combination/WO), then roll widths."""
+	"""Jobs from Available Jobs; width options use combination widths then roll widths.
+
+	Avoids loading the full SPR document (which includes all roll-item rows) to keep
+	the response fast.  Segment detail (WO-item mapping) is computed lazily via the
+	separate ``spr_get_job_segments`` endpoint when the user actually selects a job.
+	"""
 	_spr_require_saved(shaft_production_run)
-	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+
+	# Fetch only the shaft_jobs child rows — much faster than frappe.get_doc() which
+	# would also load every roll-item row.
+	sj_rows = frappe.db.sql(
+		"""
+		SELECT name, job_id, gsm, quality, combination, total_width,
+		       production_plan_item, work_orders, is_manual
+		FROM `tabShaft Production Run Job`
+		WHERE parent = %(spr)s AND parentfield = 'shaft_jobs'
+		ORDER BY idx ASC
+		""",
+		{"spr": shaft_production_run},
+		as_dict=True,
+	)
+
 	jobs_out = []
 	seen = set()
-	for sj in _spr_job_rows(spr):
+	for sj in sj_rows:
+		sj = frappe._dict(sj)
 		jid = _cstr(_spr_job_id(sj))
 		if not jid or jid in seen:
 			continue
@@ -11853,18 +11873,69 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 			{
 				"job_id": jid,
 				"label": _spr_bundle_job_label(sj),
-				"total_width_available": flt(getattr(sj, "total_width", None)),
-				"combination_text": _cstr(getattr(sj, "combination", None) or ""),
-				"segments": _spr_bundle_job_segments_detail(spr, sj),
+				"total_width_available": flt(sj.get("total_width")),
+				"combination_text": _cstr(sj.get("combination") or ""),
+				"segments": [],  # lazy-loaded per job via spr_get_job_segments
 			}
 		)
+
+	# Build widths_by_job without loading spr.items:
+	# 1) parse combination string  2) fallback to a single aggregate DB query for roll widths
+	if jobs_out:
+		# One query for all roll widths grouped by job
+		roll_width_rows = frappe.db.sql(
+			"""
+			SELECT IFNULL(job, '') AS job_key,
+			       ROUND(width_inch, 2) AS w
+			FROM `tabShaft Production Run Item`
+			WHERE parent = %(spr)s AND width_inch > 0
+			  AND IFNULL(job, '') != ''
+			GROUP BY job_key, w
+			ORDER BY job_key, w
+			""",
+			{"spr": shaft_production_run},
+			as_dict=True,
+		)
+		roll_widths_by_job: dict[str, list] = {}
+		for row in roll_width_rows:
+			k = _cstr(row.job_key)
+			roll_widths_by_job.setdefault(k, []).append(flt(row.w))
+
 	widths_by_job: dict[str, list] = {j["job_id"]: [] for j in jobs_out}
-	for j in jobs_out:
-		jid = j["job_id"]
-		sj = _spr_shaft_job_for_roll(spr, jid)
-		if sj:
-			widths_by_job[jid] = _spr_bundle_segment_widths_for_job(spr, sj)
+	for sj in sj_rows:
+		sj = frappe._dict(sj)
+		jid = _cstr(_spr_job_id(sj))
+		if not jid or jid not in widths_by_job:
+			continue
+		comb = _cstr(sj.get("combination") or "")
+		widths: list[float] = []
+		for w in _parse_combination_widths_inches(comb):
+			fw = flt(w)
+			if fw > 0 and fw not in widths:
+				widths.append(fw)
+		if not widths:
+			# Fallback: roll widths for this job from the aggregate query above
+			for fw in roll_widths_by_job.get(jid, []):
+				if fw > 0 and fw not in widths:
+					widths.append(fw)
+		widths_by_job[jid] = widths
+
 	return {"jobs": jobs_out, "widths_by_job": widths_by_job}
+
+
+@frappe.whitelist()
+def spr_get_job_segments(shaft_production_run, job_id):
+	"""Lazy-load segment detail (Width / Net/shaft / WO item) for one job.
+
+	Called client-side when the user selects a job in the Bundle packaging dialog,
+	so the initial catalog load stays fast.
+	"""
+	_spr_require_saved(shaft_production_run)
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	sj = _spr_shaft_job_for_roll(spr, _cstr(job_id))
+	if not sj:
+		return []
+	return _spr_bundle_job_segments_detail(spr, sj)
 
 
 @frappe.whitelist()
