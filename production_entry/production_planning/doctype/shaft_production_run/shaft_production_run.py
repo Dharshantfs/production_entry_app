@@ -5831,7 +5831,14 @@ class ShaftProductionRun(Document):
 			qty_key = f"{flt(self._row_fg_qty(row), 6)}"
 			roll_by_qty.setdefault(qty_key, []).append(row)
 
-		used_batches: set = set()
+		# Pre-seed used_batches with every batch already assigned to a real FG line so
+		# any ghost (BOM-generated) FG line — which has no batch_no yet — cannot steal
+		# one of those batches and create a duplicate SE detail row.
+		used_batches: set = {
+			_cstr(fg.get("batch_no")).strip()
+			for fg in fg_lines
+			if _cstr(fg.get("batch_no")).strip()
+		}
 		for fg in fg_lines:
 			existing_bn = _cstr(fg.get("batch_no")).strip()
 			if existing_bn:
@@ -6130,11 +6137,26 @@ class ShaftProductionRun(Document):
 				"SPR FG overshoot"
 			)
 		if has_batch:
-			missing_batches = []
+			missing_batches = []   # batches where actual < expected (truly missed)
+			excess_batches  = []   # batches where actual > expected (ghost duplication)
 			for b, exp in expected_by_batch.items():
 				act = flt(actual_by_batch.get(b))
-				if abs(exp - act) > 1e-6:
+				if act < exp - 1e-6:
 					missing_batches.append((b, exp, act))
+				elif act > exp + 1e-6:
+					excess_batches.append((b, exp, act))
+			if excess_batches:
+				frappe.log_error(
+					"SPR {0} WO {1}: batch quantities are higher than expected (BOM ghost FG line "
+					"may have been back-filled with an SPR batch). Batches: {2}".format(
+						self.name, wo_doc.name,
+						"; ".join(
+							"Batch {0}: expected {1} got {2}".format(b, flt(e,3), flt(a,3))
+							for b, e, a in excess_batches[:10]
+						),
+					),
+					"SPR batch overshoot",
+				)
 			if missing_batches:
 				details = "\n".join(
 					[_("Batch {0}: expected {1} Kg, posted {2} Kg").format(b, flt(e, 3), flt(a, 3)) for b, e, a in missing_batches[:20]]
