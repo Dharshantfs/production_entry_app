@@ -6547,234 +6547,234 @@ class ShaftProductionRun(Document):
 			)
 
 		created_entries = []
-	created_entries_by_wo = defaultdict(list)
-	planned_wo_posts = []
+		created_entries_by_wo = defaultdict(list)
+		planned_wo_posts = []
 
-	# region agent log - hypotheses A/B/E
-	_spr_dbg_wo_summary = {
-		wo: {"rows": len(rs), "row_batch_nos": [_cstr(r.get("batch_no")) for r in rs], "net_weights": [flt(_spr_row_get(r, "net_weight")) for r in rs]}
-		for wo, rs in wo_groups.items()
-	}
-	frappe.log_error(
-		f"[SPR_DBG f44820] SPR={self.name} wo_groups={list(wo_groups.keys())} detail={_spr_dbg_wo_summary}",
-		"SPR_DBG_WO_GROUPS"
-	)
-	frappe.msgprint(
-		f"[SPR_DBG] WOs in submit: {list(wo_groups.keys())}",
-		alert=True
-	)
-	# endregion
-
-	# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
-	for wo_id, rows in wo_groups.items():
-		wo_doc = frappe.get_doc("Work Order", wo_id)
-		total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
-		wo_item = _cstr(getattr(wo_doc, "production_item", None))
-		# region agent log - hypothesis B/E
-		_already = self._wo_submitted_manufacture_fg_qty(wo_doc.name)
+		# region agent log - hypotheses A/B/E
+		_spr_dbg_wo_summary = {
+			wo: {"rows": len(rs), "row_batch_nos": [_cstr(r.get("batch_no")) for r in rs], "net_weights": [flt(_spr_row_get(r, "net_weight")) for r in rs]}
+			for wo, rs in wo_groups.items()
+		}
 		frappe.log_error(
-			f"[SPR_DBG f44820] WO={wo_id} item={wo_item} total_qty={total_qty} produced_qty={getattr(wo_doc,'produced_qty',0)} already_submitted={_already} wo_qty={getattr(wo_doc,'qty',0)} wo_status={getattr(wo_doc,'status','')} row_count={len(rows)}",
-			"SPR_DBG_WO_QTY"
+			f"[SPR_DBG f44820] SPR={self.name} wo_groups={list(wo_groups.keys())} detail={_spr_dbg_wo_summary}",
+			"SPR_DBG_WO_GROUPS"
 		)
 		frappe.msgprint(
-			f"[SPR_DBG] WO={wo_id} item={wo_item} total_qty={total_qty} already_submitted={_already} wo_status={getattr(wo_doc,'status','')}",
+			f"[SPR_DBG] WOs in submit: {list(wo_groups.keys())}",
 			alert=True
 		)
 		# endregion
-		if spr_doc_is_bag_spr(self):
-			self._spr_validate_bag_fg_qty_for_wo(wo_doc, total_qty)
 
-		# Ensure the produced item is batch managed
-		if wo_item and not cint(frappe.db.get_value("Item", wo_item, "has_batch_no")):
-			frappe.throw(
-				_(
-					"Item {0} for Work Order {1} is not batch-managed. "
-					"Please enable 'Has Batch No' in the Item master before submitting the Shaft Production Run."
-				).format(wo_item, wo_id),
-				title=_("Item Not Batch Managed")
+		# Phase 1: validate all WO groups first (no Stock Entry insert/submit here).
+		for wo_id, rows in wo_groups.items():
+			wo_doc = frappe.get_doc("Work Order", wo_id)
+			total_qty = self._fg_posting_qty_for_rows(rows, wo_doc)
+			wo_item = _cstr(getattr(wo_doc, "production_item", None))
+			# region agent log - hypothesis B/E
+			_already = self._wo_submitted_manufacture_fg_qty(wo_doc.name)
+			frappe.log_error(
+				f"[SPR_DBG f44820] WO={wo_id} item={wo_item} total_qty={total_qty} produced_qty={getattr(wo_doc,'produced_qty',0)} already_submitted={_already} wo_qty={getattr(wo_doc,'qty',0)} wo_status={getattr(wo_doc,'status','')} row_count={len(rows)}",
+				"SPR_DBG_WO_QTY"
 			)
-
-		# Hard safety: one WO must not receive rows of other finished items.
-		mismatch_items = sorted(
-			{
-				_cstr(r.get("item_code"))
-				for r in rows
-				if _cstr(r.get("item_code")) and _cstr(r.get("item_code")) != wo_item
-			}
-		)
-		if mismatch_items:
-			frappe.throw(
-				_(
-					"Work Order {0} produces item {1}, but this SPR has roll lines mapped to this WO with "
-					"different item(s): {2}. Correct Available Jobs ΓåÆ Work Orders mapping before submit."
-				).format(wo_id, wo_item or "—", ", ".join(mismatch_items)),
-				title=_("Wrong WO mapping"),
-			)
-
-		# ≡ƒôè DEBUG: Log WO and total quantity
-		frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
-		
-		# Show in UI
-		qty_label = "PCS" if spr_doc_is_bag_spr(self) else "KG"
-		frappe.msgprint(
-			_(f"Creating Manufacturing Entry for WO: {wo_id} | Total Quantity: {total_qty} {qty_label} | WO Authorized: {wo_doc.qty} {qty_label}"),
-			alert=False
-		)
-
-		if total_qty <= 0:
-			skip_msg = _("Skipping WO {0} — achieved bag PCS is 0").format(wo_id) if spr_doc_is_bag_spr(self) else _("Skipping WO {0} — net/gross weight is 0").format(wo_id)
-			frappe.msgprint(skip_msg, alert=True)
-			continue
-
-		allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
-		row_chunks = [rows]
-		expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
-		if len(row_chunks) > 1:
 			frappe.msgprint(
-				_(
-					"WO {0}: SPR quantity {1} Kg exceeds per-entry limit {2} Kg "
-					"(overproduction {3}%). Creating {4} Manufacture entries."
-				).format(
-					wo_id,
-					flt(total_qty, 3),
-					flt(allowed_entry_qty, 3),
-					flt(over_pct, 3),
-					len(row_chunks),
-				),
-				alert=False,
+				f"[SPR_DBG] WO={wo_id} item={wo_item} total_qty={total_qty} already_submitted={_already} wo_status={getattr(wo_doc,'status','')}",
+				alert=True
+			)
+			# endregion
+			if spr_doc_is_bag_spr(self):
+				self._spr_validate_bag_fg_qty_for_wo(wo_doc, total_qty)
+
+			# Ensure the produced item is batch managed
+			if wo_item and not cint(frappe.db.get_value("Item", wo_item, "has_batch_no")):
+				frappe.throw(
+					_(
+						"Item {0} for Work Order {1} is not batch-managed. "
+						"Please enable 'Has Batch No' in the Item master before submitting the Shaft Production Run."
+					).format(wo_item, wo_id),
+					title=_("Item Not Batch Managed")
+				)
+
+			# Hard safety: one WO must not receive rows of other finished items.
+			mismatch_items = sorted(
+				{
+					_cstr(r.get("item_code"))
+					for r in rows
+					if _cstr(r.get("item_code")) and _cstr(r.get("item_code")) != wo_item
+				}
+			)
+			if mismatch_items:
+				frappe.throw(
+					_(
+						"Work Order {0} produces item {1}, but this SPR has roll lines mapped to this WO with "
+						"different item(s): {2}. Correct Available Jobs ΓåÆ Work Orders mapping before submit."
+					).format(wo_id, wo_item or "—", ", ".join(mismatch_items)),
+					title=_("Wrong WO mapping"),
+				)
+
+			# ≡ƒôè DEBUG: Log WO and total quantity
+			frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
+			
+			# Show in UI
+			qty_label = "PCS" if spr_doc_is_bag_spr(self) else "KG"
+			frappe.msgprint(
+				_(f"Creating Manufacturing Entry for WO: {wo_id} | Total Quantity: {total_qty} {qty_label} | WO Authorized: {wo_doc.qty} {qty_label}"),
+				alert=False
 			)
 
-		# ≡ƒöÆ VALIDATION: Ensure WIP warehouse exists
-		if not wo_doc.wip_warehouse:
-			frappe.throw(
-				_("Work Order {0} has no WIP warehouse set. Raw materials cannot be fetched.").format(wo_id),
-				title=_("Missing WIP Warehouse")
+			if total_qty <= 0:
+				skip_msg = _("Skipping WO {0} — achieved bag PCS is 0").format(wo_id) if spr_doc_is_bag_spr(self) else _("Skipping WO {0} — net/gross weight is 0").format(wo_id)
+				frappe.msgprint(skip_msg, alert=True)
+				continue
+
+			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
+			row_chunks = [rows]
+			expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
+			if len(row_chunks) > 1:
+				frappe.msgprint(
+					_(
+						"WO {0}: SPR quantity {1} Kg exceeds per-entry limit {2} Kg "
+						"(overproduction {3}%). Creating {4} Manufacture entries."
+					).format(
+						wo_id,
+						flt(total_qty, 3),
+						flt(allowed_entry_qty, 3),
+						flt(over_pct, 3),
+						len(row_chunks),
+					),
+					alert=False,
+				)
+
+			# ≡ƒöÆ VALIDATION: Ensure WIP warehouse exists
+			if not wo_doc.wip_warehouse:
+				frappe.throw(
+					_("Work Order {0} has no WIP warehouse set. Raw materials cannot be fetched.").format(wo_id),
+					title=_("Missing WIP Warehouse")
+				)
+
+			planned_wo_posts.append(
+				{
+					"wo_id": wo_id,
+					"wo_doc": wo_doc,
+					"rows": rows,
+					"total_qty": total_qty,
+					"row_chunks": row_chunks,
+					"expected_rm_map": expected_rm_map,
+				}
 			)
 
-		planned_wo_posts.append(
-			{
-				"wo_id": wo_id,
-				"wo_doc": wo_doc,
-				"rows": rows,
-				"total_qty": total_qty,
-				"row_chunks": row_chunks,
-				"expected_rm_map": expected_rm_map,
-			}
-		)
-
-	# Phase 2: after all WO groups are valid, create/submit Manufacture entries.
-	# Preflight shortage check first so submit cannot partially create entries for only some WOs.
-	shortage_events = []
-	for plan in planned_wo_posts:
-		wo_id = plan["wo_id"]
-		wo_doc = plan["wo_doc"]
-		for chunk_rows in plan["row_chunks"]:
-			chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
-			if chunk_total_qty <= 0:
-				continue
-			preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
-			self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
-			shortages = self._rm_shortages_for_se(preview_se, wo_doc)
-			if shortages:
-				shortage_events.append(
-					{
-						"wo_id": wo_id,
-						"wo_doc": wo_doc,
-						"chunk_total_qty": chunk_total_qty,
-						"shortages": shortages,
-					}
-				)
-			wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
-			if wip_topup:
-				shortage_events.append(
-					{
-						"wo_id": wo_id,
-						"wo_doc": wo_doc,
-						"chunk_total_qty": chunk_total_qty,
-						"shortages": wip_topup,
-						"wip_topup": True,
-					}
-				)
-	if shortage_events:
-		shortage_events = self._spr_filter_preflight_shortage_events(shortage_events)
-	if shortage_events:
-		self._raise_shortage_with_transfer_batch(shortage_events)
-
-	self._spr_init_manual_fabric_batch_pools(planned_wo_posts)
-
-	# Phase 2: create/submit Manufacture entries after preflight passes for all WO chunks.
-	# Savepoint ensures we can roll back partial Manufacture submits if any later WO fails.
-	mfg_submit_savepoint = "spr_mfg_submit"
-	frappe.db.savepoint(mfg_submit_savepoint)
-	for plan in planned_wo_posts:
-		wo_id = plan["wo_id"]
-		wo_doc = plan["wo_doc"]
-		row_chunks = plan["row_chunks"]
-		total_qty = plan["total_qty"]
-		expected_rm_map = plan["expected_rm_map"]
-		actual_rm_map = {}
-		for idx, chunk_rows in enumerate(row_chunks, start=1):
-			chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
-			if chunk_total_qty <= 0:
-				continue
-			for _spr_mfg_try in range(2):
-				try:
-					chunk_done = self._spr_run_manufacture_chunk_attempt(
-						wo_id=wo_id,
-						wo_doc=wo_doc,
-						chunk_rows=chunk_rows,
-						chunk_total_qty=chunk_total_qty,
-						chunk_idx=idx,
-						chunk_count=len(row_chunks),
-						mfg_submit_savepoint=mfg_submit_savepoint,
-						planned_wo_posts=planned_wo_posts,
-						actual_rm_map=actual_rm_map,
-						created_entries=created_entries,
-						created_entries_by_wo=created_entries_by_wo,
-						allow_wip_topup_retry=(_spr_mfg_try == 0),
+		# Phase 2: after all WO groups are valid, create/submit Manufacture entries.
+		# Preflight shortage check first so submit cannot partially create entries for only some WOs.
+		shortage_events = []
+		for plan in planned_wo_posts:
+			wo_id = plan["wo_id"]
+			wo_doc = plan["wo_doc"]
+			for chunk_rows in plan["row_chunks"]:
+				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
+				if chunk_total_qty <= 0:
+					continue
+				preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
+				self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
+				shortages = self._rm_shortages_for_se(preview_se, wo_doc)
+				if shortages:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": shortages,
+						}
 					)
-					actual_rm_map = chunk_done["actual_rm_map"]
-					break
-				except _SprWipTopupRetry:
-					if _spr_mfg_try == 0:
-						continue
-					raise
-		self._validate_rm_split_variance(
-			wo_id, total_qty, expected_rm_map, actual_rm_map, wo_doc=wo_doc
-		)
-		self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
+				wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
+				if wip_topup:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": wip_topup,
+							"wip_topup": True,
+						}
+					)
+		if shortage_events:
+			shortage_events = self._spr_filter_preflight_shortage_events(shortage_events)
+		if shortage_events:
+			self._raise_shortage_with_transfer_batch(shortage_events)
 
-	if created_entries:
-		self.db_set("manufacturing_entries", ", ".join(created_entries))
-		self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
-		self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
-		frappe.msgprint(
-			_("Created {0} Manufacturing Entries: {1}").format(
-				len(created_entries), ", ".join(created_entries)
+		self._spr_init_manual_fabric_batch_pools(planned_wo_posts)
+
+		# Phase 2: create/submit Manufacture entries after preflight passes for all WO chunks.
+		# Savepoint ensures we can roll back partial Manufacture submits if any later WO fails.
+		mfg_submit_savepoint = "spr_mfg_submit"
+		frappe.db.savepoint(mfg_submit_savepoint)
+		for plan in planned_wo_posts:
+			wo_id = plan["wo_id"]
+			wo_doc = plan["wo_doc"]
+			row_chunks = plan["row_chunks"]
+			total_qty = plan["total_qty"]
+			expected_rm_map = plan["expected_rm_map"]
+			actual_rm_map = {}
+			for idx, chunk_rows in enumerate(row_chunks, start=1):
+				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
+				if chunk_total_qty <= 0:
+					continue
+				for _spr_mfg_try in range(2):
+					try:
+						chunk_done = self._spr_run_manufacture_chunk_attempt(
+							wo_id=wo_id,
+							wo_doc=wo_doc,
+							chunk_rows=chunk_rows,
+							chunk_total_qty=chunk_total_qty,
+							chunk_idx=idx,
+							chunk_count=len(row_chunks),
+							mfg_submit_savepoint=mfg_submit_savepoint,
+							planned_wo_posts=planned_wo_posts,
+							actual_rm_map=actual_rm_map,
+							created_entries=created_entries,
+							created_entries_by_wo=created_entries_by_wo,
+							allow_wip_topup_retry=(_spr_mfg_try == 0),
+						)
+						actual_rm_map = chunk_done["actual_rm_map"]
+						break
+					except _SprWipTopupRetry:
+						if _spr_mfg_try == 0:
+							continue
+						raise
+			self._validate_rm_split_variance(
+				wo_id, total_qty, expected_rm_map, actual_rm_map, wo_doc=wo_doc
 			)
-		)
-	else:
-		# Recovery-safe path: if old bug already posted Manufacture entries for this SPR, reuse them.
-		existing_submitted = self._get_existing_submitted_manufacture_entries_for_spr()
-		if existing_submitted:
-			self.db_set("manufacturing_entries", ", ".join(existing_submitted))
+			self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
+
+		if created_entries:
+			self.db_set("manufacturing_entries", ", ".join(created_entries))
 			self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
 			self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
 			frappe.msgprint(
-				_("No new Manufacture entry needed; reusing existing submitted entries: {0}").format(
-					", ".join(existing_submitted[:20])
-				),
-				alert=True,
+				_("Created {0} Manufacturing Entries: {1}").format(
+					len(created_entries), ", ".join(created_entries)
+				)
 			)
 		else:
-			frappe.throw(
-				_(
-					"SPR submit blocked: no Manufacture Stock Entry was created. "
-					"Check Work Order mapping and produced quantity "
-					"(weight for roll runs, achieved bag PCS for bag runs), then retry."
-				),
-				title=_("No stock entry created"),
-			)
+			# Recovery-safe path: if old bug already posted Manufacture entries for this SPR, reuse them.
+			existing_submitted = self._get_existing_submitted_manufacture_entries_for_spr()
+			if existing_submitted:
+				self.db_set("manufacturing_entries", ", ".join(existing_submitted))
+				self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
+				self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
+				frappe.msgprint(
+					_("No new Manufacture entry needed; reusing existing submitted entries: {0}").format(
+						", ".join(existing_submitted[:20])
+					),
+					alert=True,
+				)
+			else:
+				frappe.throw(
+					_(
+						"SPR submit blocked: no Manufacture Stock Entry was created. "
+						"Check Work Order mapping and produced quantity "
+						"(weight for roll runs, achieved bag PCS for bag runs), then retry."
+					),
+					title=_("No stock entry created"),
+				)
 
 	def create_mix_roll_material_receipts(self):
 		"""Post mix roll FG via Material Receipt (no Work Order / Manufacture)."""
