@@ -5839,9 +5839,13 @@ class ShaftProductionRun(Document):
 			for fg in fg_lines
 			if _cstr(fg.get("batch_no")).strip()
 		}
+		activated_batches: set = set()
 		for fg in fg_lines:
 			existing_bn = _cstr(fg.get("batch_no")).strip()
 			if existing_bn:
+				if existing_bn in activated_batches:
+					continue
+				activated_batches.add(existing_bn)
 				_spr_activate_batch_from_manufacture(
 					existing_bn, fg, se_doc, fallback_qty=flt(fg.get("qty"))
 				)
@@ -6311,46 +6315,90 @@ class ShaftProductionRun(Document):
 				if abs(cur - total_produced) > 1e-9:
 					frappe.db.set_value("Production Plan", pp, f, total_produced, update_modified=False)
 
-	def _spr_remove_bom_fg_duplicates_from_se_db(self, se, production_item: str) -> int:
-		"""After SE insert + reload, delete any FG lines whose batch_no is NULL/empty
-		(BOM-generated ghost line) from BOTH the DB and the in-memory se.items so that
-		Frappe's save() inside submit() cannot re-add them.
+	def _validate_all_planned_wos_manufactured(self, planned_wo_posts: list, created_entries_by_wo: dict) -> None:
+		"""Ensure every planned WO received at least one submitted Manufacture entry."""
+		missing = []
+		for plan in planned_wo_posts or []:
+			wo_id = _cstr(plan.get("wo_id"))
+			if not wo_id:
+				continue
+			if not created_entries_by_wo.get(wo_id):
+				missing.append(wo_id)
+		if missing:
+			frappe.throw(
+				_(
+					"SPR submit blocked: Manufacture Stock Entry was not created for Work Order(s): {0}. "
+					"All SPR rows mapped to a WO must post to Manufacture — check shortages and retry."
+				).format(", ".join(missing)),
+				title=_("Missing Manufacture entries"),
+			)
+
+	def _spr_remove_bom_fg_duplicates_from_se_db(self, se, production_item: str, spr_rows: list | None = None) -> int:
+		"""After SE insert + reload, delete BOM-generated ghost FG lines from DB and in-memory se.items.
+
+		Removes: (1) FG lines with empty batch_no when batched SPR roll lines exist;
+		(2) duplicate FG lines sharing the same batch_no (keep lowest idx);
+		(3) extra unbatched FG lines when batched line count already matches SPR roll count.
 		Returns the number of rows deleted."""
 		se_name = _cstr(getattr(se, "name", None) or se).strip()
 		if not se_name or not production_item:
 			return 0
 		try:
-			batch_lines = frappe.db.sql(
-				"""SELECT name FROM `tabStock Entry Detail`
-				WHERE parent = %s AND is_finished_item = 1
-				  AND item_code = %s AND IFNULL(batch_no, '') != ''""",
+			fg_rows = frappe.db.sql(
+				"""SELECT name, idx, IFNULL(batch_no, '') AS batch_no
+				FROM `tabStock Entry Detail`
+				WHERE parent = %s AND is_finished_item = 1 AND item_code = %s
+				ORDER BY idx ASC""",
 				(se_name, production_item),
-			)
-			if not batch_lines:
+				as_dict=True,
+			) or []
+			if not fg_rows:
 				return 0
+
+			expected_count = len(
+				[r for r in (spr_rows or []) if flt(self._row_fg_qty(r)) > 0]
+			) or len(fg_rows)
+			to_delete: set[str] = set()
+			seen_batch: set[str] = set()
+			batched_kept = 0
+
+			for row in fg_rows:
+				bn = _cstr(row.get("batch_no")).strip()
+				if bn:
+					if bn in seen_batch:
+						to_delete.add(row["name"])
+					else:
+						seen_batch.add(bn)
+						batched_kept += 1
+					continue
+				# Empty batch: ghost when SPR already has batched roll lines.
+				if batched_kept >= expected_count:
+					to_delete.add(row["name"])
+				elif seen_batch:
+					to_delete.add(row["name"])
+
+			# Drop any remaining unbatched extras beyond expected roll count.
+			unbatched = [r for r in fg_rows if not _cstr(r.get("batch_no")).strip() and r["name"] not in to_delete]
+			while unbatched and (len(fg_rows) - len(to_delete)) > expected_count:
+				to_delete.add(unbatched.pop(0)["name"])
+
+			if not to_delete:
+				return 0
+
 			frappe.db.sql(
-				"""DELETE FROM `tabStock Entry Detail`
-				WHERE parent = %s AND is_finished_item = 1
-				  AND item_code = %s AND IFNULL(batch_no, '') = ''""",
-				(se_name, production_item),
+				"DELETE FROM `tabStock Entry Detail` WHERE name IN %s",
+				(tuple(to_delete),),
 			)
-			count = cint(frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0)
-			if count:
-				frappe.log_error(
-					f"SPR: removed {count} BOM-FG ghost line(s) from SE {se_name} "
-					f"(item {production_item}) to prevent FG qty doubling.",
-					"SPR BOM FG duplicate removed"
-				)
-			# CRITICAL: also remove from in-memory se.items so Frappe's save()
-			# during submit() does not re-insert the ghost line.
-			if count and hasattr(se, "items"):
+			count = len(to_delete)
+			frappe.log_error(
+				f"SPR: removed {count} BOM-FG ghost/duplicate line(s) from SE {se_name} "
+				f"(item {production_item}, expected {expected_count} roll lines).",
+				"SPR BOM FG duplicate removed",
+			)
+			if hasattr(se, "items"):
 				se.items = [
 					d for d in (se.items or [])
-					if not (
-						cint(d.get("is_finished_item")) == 1
-						and _cstr(d.get("item_code")).strip() == _cstr(production_item).strip()
-						and not _cstr(d.get("batch_no")).strip()
-					)
+					if _cstr(getattr(d, "name", None)) not in to_delete
 				]
 			return count
 		except Exception:
@@ -6430,7 +6478,7 @@ class ShaftProductionRun(Document):
 		se.reload()
 		# ERPNext validate() may re-add the BOM FG line during insert; strip it again so
 		# we don't end up with both a BOM FG line and the per-roll SPR FG lines.
-		self._spr_remove_bom_fg_duplicates_from_se_db(se.name, wo_doc.production_item)
+		self._spr_remove_bom_fg_duplicates_from_se_db(se, wo_doc.production_item, chunk_rows)
 		se.flags.ignore_duplicate_for_work_order = True
 		self._set_stock_entry_spr_link(se)
 		self._set_stock_entry_unit(se, wo_doc)
@@ -6690,7 +6738,7 @@ class ShaftProductionRun(Document):
 				continue
 	
 			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
-			row_chunks = [rows]
+			row_chunks = self._split_rows_by_qty_limit(rows, allowed_entry_qty) or [rows]
 			expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
 			if len(row_chunks) > 1:
 				frappe.msgprint(
@@ -6723,89 +6771,100 @@ class ShaftProductionRun(Document):
 					"expected_rm_map": expected_rm_map,
 				}
 			)
-	
-			# Phase 2: after all WO groups are valid, create/submit Manufacture entries.
-			# Preflight shortage check first so submit cannot partially create entries for only some WOs.
-			shortage_events = []
-			for plan in planned_wo_posts:
-				wo_id = plan["wo_id"]
-				wo_doc = plan["wo_doc"]
-				for chunk_rows in plan["row_chunks"]:
-					chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
-					if chunk_total_qty <= 0:
-						continue
-					preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
-					self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
-					shortages = self._rm_shortages_for_se(preview_se, wo_doc)
-					if shortages:
-						shortage_events.append(
-							{
-								"wo_id": wo_id,
-								"wo_doc": wo_doc,
-								"chunk_total_qty": chunk_total_qty,
-								"shortages": shortages,
-							}
+
+		if not planned_wo_posts:
+			frappe.throw(
+				_(
+					"SPR submit blocked: no Work Order has producible quantity. "
+					"Check roll weights / bag PCS and Work Order mapping."
+				),
+				title=_("No manufacturing rows"),
+			)
+
+		# Phase 2: after ALL WO groups are validated, create/submit Manufacture entries once.
+		# Preflight shortage check first so submit cannot partially create entries for only some WOs.
+		shortage_events = []
+		for plan in planned_wo_posts:
+			wo_id = plan["wo_id"]
+			wo_doc = plan["wo_doc"]
+			for chunk_rows in plan["row_chunks"]:
+				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
+				if chunk_total_qty <= 0:
+					continue
+				preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
+				self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
+				shortages = self._rm_shortages_for_se(preview_se, wo_doc)
+				if shortages:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": shortages,
+						}
+					)
+				wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
+				if wip_topup:
+					shortage_events.append(
+						{
+							"wo_id": wo_id,
+							"wo_doc": wo_doc,
+							"chunk_total_qty": chunk_total_qty,
+							"shortages": wip_topup,
+							"wip_topup": True,
+						}
+					)
+		if shortage_events:
+			shortage_events = self._spr_filter_preflight_shortage_events(shortage_events)
+		if shortage_events:
+			self._raise_shortage_with_transfer_batch(shortage_events)
+
+		self._spr_init_manual_fabric_batch_pools(planned_wo_posts)
+
+		# Create/submit Manufacture entries after preflight passes for all WO chunks.
+		# Savepoint ensures we can roll back partial Manufacture submits if any later WO fails.
+		mfg_submit_savepoint = "spr_mfg_submit"
+		frappe.db.savepoint(mfg_submit_savepoint)
+		for plan in planned_wo_posts:
+			wo_id = plan["wo_id"]
+			wo_doc = plan["wo_doc"]
+			row_chunks = plan["row_chunks"]
+			total_qty = plan["total_qty"]
+			expected_rm_map = plan["expected_rm_map"]
+			actual_rm_map = {}
+			for idx, chunk_rows in enumerate(row_chunks, start=1):
+				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
+				if chunk_total_qty <= 0:
+					continue
+				for _spr_mfg_try in range(2):
+					try:
+						chunk_done = self._spr_run_manufacture_chunk_attempt(
+							wo_id=wo_id,
+							wo_doc=wo_doc,
+							chunk_rows=chunk_rows,
+							chunk_total_qty=chunk_total_qty,
+							chunk_idx=idx,
+							chunk_count=len(row_chunks),
+							mfg_submit_savepoint=mfg_submit_savepoint,
+							planned_wo_posts=planned_wo_posts,
+							actual_rm_map=actual_rm_map,
+							created_entries=created_entries,
+							created_entries_by_wo=created_entries_by_wo,
+							allow_wip_topup_retry=(_spr_mfg_try == 0),
 						)
-					wip_topup = self._spr_wip_topup_shortages_for_se(preview_se, wo_doc)
-					if wip_topup:
-						shortage_events.append(
-							{
-								"wo_id": wo_id,
-								"wo_doc": wo_doc,
-								"chunk_total_qty": chunk_total_qty,
-								"shortages": wip_topup,
-								"wip_topup": True,
-							}
-						)
-			if shortage_events:
-				shortage_events = self._spr_filter_preflight_shortage_events(shortage_events)
-			if shortage_events:
-				self._raise_shortage_with_transfer_batch(shortage_events)
-	
-			self._spr_init_manual_fabric_batch_pools(planned_wo_posts)
-	
-			# Phase 2: create/submit Manufacture entries after preflight passes for all WO chunks.
-			# Savepoint ensures we can roll back partial Manufacture submits if any later WO fails.
-			mfg_submit_savepoint = "spr_mfg_submit"
-			frappe.db.savepoint(mfg_submit_savepoint)
-			for plan in planned_wo_posts:
-				wo_id = plan["wo_id"]
-				wo_doc = plan["wo_doc"]
-				row_chunks = plan["row_chunks"]
-				total_qty = plan["total_qty"]
-				expected_rm_map = plan["expected_rm_map"]
-				actual_rm_map = {}
-				for idx, chunk_rows in enumerate(row_chunks, start=1):
-					chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
-					if chunk_total_qty <= 0:
-						continue
-					for _spr_mfg_try in range(2):
-						try:
-							chunk_done = self._spr_run_manufacture_chunk_attempt(
-								wo_id=wo_id,
-								wo_doc=wo_doc,
-								chunk_rows=chunk_rows,
-								chunk_total_qty=chunk_total_qty,
-								chunk_idx=idx,
-								chunk_count=len(row_chunks),
-								mfg_submit_savepoint=mfg_submit_savepoint,
-								planned_wo_posts=planned_wo_posts,
-								actual_rm_map=actual_rm_map,
-								created_entries=created_entries,
-								created_entries_by_wo=created_entries_by_wo,
-								allow_wip_topup_retry=(_spr_mfg_try == 0),
-							)
-							actual_rm_map = chunk_done["actual_rm_map"]
-							break
-						except _SprWipTopupRetry:
-							if _spr_mfg_try == 0:
-								continue
-							raise
-				self._validate_rm_split_variance(
-					wo_id, total_qty, expected_rm_map, actual_rm_map, wo_doc=wo_doc
-				)
-				self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
-	
+						actual_rm_map = chunk_done["actual_rm_map"]
+						break
+					except _SprWipTopupRetry:
+						if _spr_mfg_try == 0:
+							continue
+						raise
+			self._validate_rm_split_variance(
+				wo_id, total_qty, expected_rm_map, actual_rm_map, wo_doc=wo_doc
+			)
+			self._validate_fg_roll_coverage_for_wo(wo_doc, plan["rows"], created_entries_by_wo.get(wo_id, []))
+
+		self._validate_all_planned_wos_manufactured(planned_wo_posts, created_entries_by_wo)
+
 		if created_entries:
 			self.db_set("manufacturing_entries", ", ".join(created_entries))
 			self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
