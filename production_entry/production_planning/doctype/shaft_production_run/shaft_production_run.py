@@ -6414,9 +6414,9 @@ class ShaftProductionRun(Document):
 			# Second attempt still failing — fall through to mismatch error.
 		# WO already shows RM transferred — auto RM->WIP transfer then retry Manufacture once.
 		try:
-		self._spr_try_wip_topup_transfer_and_retry_manufacture(
-			wo_doc, _submit_exc, allow_wip_topup_retry, mfg_submit_savepoint, mfg_se=se
-		)
+			self._spr_try_wip_topup_transfer_and_retry_manufacture(
+				wo_doc, _submit_exc, allow_wip_topup_retry, mfg_submit_savepoint, mfg_se=se
+			)
 		except _SprWipTopupRetry:
 			raise
 		# WIP top-up could not auto-submit — raise transfer / no-stock message (never cap below BOM).
