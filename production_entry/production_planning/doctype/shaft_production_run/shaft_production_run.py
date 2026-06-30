@@ -6713,7 +6713,7 @@ class ShaftProductionRun(Document):
 		self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
 		self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
 		self._spr_show_submit_summary(wo_groups, created_entries_by_wo)
-		else:
+	else:
 			# Recovery-safe path: if old bug already posted Manufacture entries for this SPR, reuse them.
 			existing_submitted = self._get_existing_submitted_manufacture_entries_for_spr()
 			if existing_submitted:
@@ -11874,6 +11874,7 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 
 	# Build widths_by_job without loading spr.items:
 	# 1) parse combination string  2) fallback to a single aggregate DB query for roll widths
+	roll_widths_by_job: dict[str, list] = {}
 	if jobs_out:
 		# One query for all roll widths grouped by job
 		roll_width_rows = frappe.db.sql(
