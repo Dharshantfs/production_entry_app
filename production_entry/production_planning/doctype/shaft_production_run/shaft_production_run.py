@@ -5836,15 +5836,15 @@ class ShaftProductionRun(Document):
 				if bn and bn not in used_batches:
 					matched_row = row
 					break
-			if not matched_row:
-				for row in spr_rows or []:
-					bn = _cstr(getattr(row, "batch_no", "")).strip()
-					if bn and bn not in used_batches:
-						matched_row = row
-						break
 		if not matched_row:
-			continue
-			bn_raw = _cstr(getattr(matched_row, "batch_no", "")).strip()
+			for row in spr_rows or []:
+				bn = _cstr(getattr(row, "batch_no", "")).strip()
+				if bn and bn not in used_batches:
+					matched_row = row
+					break
+			if not matched_row:
+				continue
+		bn_raw = _cstr(getattr(matched_row, "batch_no", "")).strip()
 			used_batches.add(bn_raw)
 			batch_link = self._get_batch_link_name_for_stock_entry(
 				bn_raw, item_code, company, matched_row
