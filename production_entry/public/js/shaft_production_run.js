@@ -2891,21 +2891,8 @@ function sprUsesOneRollPerCreateEntry(frm, row) {
 }
 
 function sprSaveBeforeCreateEntry(frm) {
-	return new Promise(function (resolve, reject) {
-		if (!frm || frm.is_new() || cint(frm.doc.docstatus) !== 0) {
-			resolve();
-			return;
-		}
-		if (!frm.is_dirty || !frm.is_dirty()) {
-			resolve();
-			return;
-		}
-		const p = frm.save();
-		if (p && typeof p.then === 'function') {
-			p.then(resolve).catch(reject);
-		} else {
-			resolve();
-		}
+	return new Promise(function (resolve) {
+		resolve(); // Disabled to avoid lag
 	});
 }
 
@@ -2937,7 +2924,7 @@ function sprAutoSaveAfterCreateEntry(frm) {
 			frm.__spr_auto_save_in_progress = false;
 		}
 		frm.__spr_auto_save_timer = null;
-	}, 1200);
+	}, 4000); // 4-second debounce to reduce lag when adding multiple rows
 }
 
 /** Sum job-level planned weights into header when shaft rows have explicit totals; keep PP/WO value when jobs are blank. */
@@ -5355,8 +5342,8 @@ function spr_open_trial_order_dialog(frm) {
 
 /** Actions ΓåÆ Bundle packaging: Job + Width from Available Jobs / roll widths; gross applied to all matching rolls. */
 function spr_open_bundle_packaging_dialog(frm) {
-	if (frm.is_new() || !frm.doc.name || frm.is_dirty()) {
-		frappe.msgprint(__('Save the Shaft Production Run first (you have unsaved changes).'));
+	if (frm.is_new() || !frm.doc.name) {
+		frappe.msgprint(__('Save the Shaft Production Run first.'));
 		return;
 	}
 	if (frm.doc.docstatus && frm.doc.docstatus !== 0) {
