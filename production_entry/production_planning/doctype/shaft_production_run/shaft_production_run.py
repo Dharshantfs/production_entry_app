@@ -6348,23 +6348,23 @@ class ShaftProductionRun(Document):
 				),
 				title=_("Invalid Stock Entry purpose"),
 			)
-	shortages: list = []
-	try:
-		se.flags.ignore_duplicate_for_work_order = True
-		se.flags.ignore_validate = True
-		se.submit()
-		self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
-	except Exception as e:
+		shortages: list = []
 		try:
-			frappe.db.rollback(save_point=mfg_submit_savepoint)
-		except Exception:
-			pass
-		shortages = self._rm_shortages_for_se(se, wo_doc)
-		if not shortages:
-			shortages = self._rm_shortages_from_exception(e)
-			if shortages:
-				shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
-	if shortages:
+			se.flags.ignore_duplicate_for_work_order = True
+			se.flags.ignore_validate = True
+			se.submit()
+			self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
+		except Exception as e:
+			try:
+				frappe.db.rollback(save_point=mfg_submit_savepoint)
+			except Exception:
+				pass
+			shortages = self._rm_shortages_for_se(se, wo_doc)
+			if not shortages:
+				shortages = self._rm_shortages_from_exception(e)
+				if shortages:
+					shortages = self._filter_shortages_by_wo_transfer_remaining(wo_doc, shortages)
+		if shortages:
 			submit_shortage_events = [
 				{
 					"wo_id": wo_id,
