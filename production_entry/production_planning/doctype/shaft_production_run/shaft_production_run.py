@@ -6586,81 +6586,81 @@ class ShaftProductionRun(Document):
 
 		# Ensure the produced item is batch managed
 		if wo_item and not cint(frappe.db.get_value("Item", wo_item, "has_batch_no")):
-				frappe.throw(
-					_(
-						"Item {0} for Work Order {1} is not batch-managed. "
-						"Please enable 'Has Batch No' in the Item master before submitting the Shaft Production Run."
-					).format(wo_item, wo_id),
-					title=_("Item Not Batch Managed")
-				)
-
-			# Hard safety: one WO must not receive rows of other finished items.
-			mismatch_items = sorted(
-				{
-					_cstr(r.get("item_code"))
-					for r in rows
-					if _cstr(r.get("item_code")) and _cstr(r.get("item_code")) != wo_item
-				}
+			frappe.throw(
+				_(
+					"Item {0} for Work Order {1} is not batch-managed. "
+					"Please enable 'Has Batch No' in the Item master before submitting the Shaft Production Run."
+				).format(wo_item, wo_id),
+				title=_("Item Not Batch Managed")
 			)
-			if mismatch_items:
-				frappe.throw(
-					_(
-						"Work Order {0} produces item {1}, but this SPR has roll lines mapped to this WO with "
-						"different item(s): {2}. Correct Available Jobs ΓåÆ Work Orders mapping before submit."
-					).format(wo_id, wo_item or "—", ", ".join(mismatch_items)),
-					title=_("Wrong WO mapping"),
-				)
 
-			# ≡ƒôè DEBUG: Log WO and total quantity
-			frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
-			
-			# Show in UI
-			qty_label = "PCS" if spr_doc_is_bag_spr(self) else "KG"
+		# Hard safety: one WO must not receive rows of other finished items.
+		mismatch_items = sorted(
+			{
+				_cstr(r.get("item_code"))
+				for r in rows
+				if _cstr(r.get("item_code")) and _cstr(r.get("item_code")) != wo_item
+			}
+		)
+		if mismatch_items:
+			frappe.throw(
+				_(
+					"Work Order {0} produces item {1}, but this SPR has roll lines mapped to this WO with "
+					"different item(s): {2}. Correct Available Jobs ΓåÆ Work Orders mapping before submit."
+				).format(wo_id, wo_item or "—", ", ".join(mismatch_items)),
+				title=_("Wrong WO mapping"),
+			)
+
+		# ≡ƒôè DEBUG: Log WO and total quantity
+		frappe.logger().info(f"[SPR CREATE] Processing WO: {wo_id}, SPR Total Qty: {total_qty} KG, WO Authorized Qty: {wo_doc.qty} KG")
+		
+		# Show in UI
+		qty_label = "PCS" if spr_doc_is_bag_spr(self) else "KG"
+		frappe.msgprint(
+			_(f"Creating Manufacturing Entry for WO: {wo_id} | Total Quantity: {total_qty} {qty_label} | WO Authorized: {wo_doc.qty} {qty_label}"),
+			alert=False
+		)
+
+		if total_qty <= 0:
+			skip_msg = _("Skipping WO {0} — achieved bag PCS is 0").format(wo_id) if spr_doc_is_bag_spr(self) else _("Skipping WO {0} — net/gross weight is 0").format(wo_id)
+			frappe.msgprint(skip_msg, alert=True)
+			continue
+
+		allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
+		row_chunks = [rows]
+		expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
+		if len(row_chunks) > 1:
 			frappe.msgprint(
-				_(f"Creating Manufacturing Entry for WO: {wo_id} | Total Quantity: {total_qty} {qty_label} | WO Authorized: {wo_doc.qty} {qty_label}"),
-				alert=False
+				_(
+					"WO {0}: SPR quantity {1} Kg exceeds per-entry limit {2} Kg "
+					"(overproduction {3}%). Creating {4} Manufacture entries."
+				).format(
+					wo_id,
+					flt(total_qty, 3),
+					flt(allowed_entry_qty, 3),
+					flt(over_pct, 3),
+					len(row_chunks),
+				),
+				alert=False,
 			)
 
-			if total_qty <= 0:
-				skip_msg = _("Skipping WO {0} — achieved bag PCS is 0").format(wo_id) if spr_doc_is_bag_spr(self) else _("Skipping WO {0} — net/gross weight is 0").format(wo_id)
-				frappe.msgprint(skip_msg, alert=True)
-				continue
-
-			allowed_entry_qty, over_pct = self._wo_allowed_entry_qty(wo_doc)
-			row_chunks = [rows]
-			expected_rm_map = self._build_expected_rm_map_for_qty(wo_doc, total_qty)
-			if len(row_chunks) > 1:
-				frappe.msgprint(
-					_(
-						"WO {0}: SPR quantity {1} Kg exceeds per-entry limit {2} Kg "
-						"(overproduction {3}%). Creating {4} Manufacture entries."
-					).format(
-						wo_id,
-						flt(total_qty, 3),
-						flt(allowed_entry_qty, 3),
-						flt(over_pct, 3),
-						len(row_chunks),
-					),
-					alert=False,
-				)
-
-			# ≡ƒöÆ VALIDATION: Ensure WIP warehouse exists
-			if not wo_doc.wip_warehouse:
-				frappe.throw(
-					_("Work Order {0} has no WIP warehouse set. Raw materials cannot be fetched.").format(wo_id),
-					title=_("Missing WIP Warehouse")
-				)
-
-			planned_wo_posts.append(
-				{
-					"wo_id": wo_id,
-					"wo_doc": wo_doc,
-					"rows": rows,
-					"total_qty": total_qty,
-					"row_chunks": row_chunks,
-					"expected_rm_map": expected_rm_map,
-				}
+		# ≡ƒöÆ VALIDATION: Ensure WIP warehouse exists
+		if not wo_doc.wip_warehouse:
+			frappe.throw(
+				_("Work Order {0} has no WIP warehouse set. Raw materials cannot be fetched.").format(wo_id),
+				title=_("Missing WIP Warehouse")
 			)
+
+		planned_wo_posts.append(
+			{
+				"wo_id": wo_id,
+				"wo_doc": wo_doc,
+				"rows": rows,
+				"total_qty": total_qty,
+				"row_chunks": row_chunks,
+				"expected_rm_map": expected_rm_map,
+			}
+		)
 
 		# Phase 2: after all WO groups are valid, create/submit Manufacture entries.
 		# Preflight shortage check first so submit cannot partially create entries for only some WOs.
