@@ -5427,11 +5427,22 @@ class ShaftProductionRun(Document):
 		return ""
 
 	def _strip_finished_goods_from_stock_entry(self, se):
-		"""Remove FG rows from BOM-generated Stock Entry and return them as templates."""
+		"""Remove FG rows from BOM-generated Stock Entry and return them as templates.
+		Catches FG items both via is_finished_item flag and via production_item match
+		(ERPNext v15 may not set is_finished_item until validate() runs)."""
 		items = se.get("items") or []
+		production_item = _cstr(getattr(se, "production_item", None)).strip()
 		fg_templates = []
 		for i in range(len(items) - 1, -1, -1):
-			if getattr(items[i], "is_finished_item", 0):
+			item = items[i]
+			is_fg = bool(getattr(item, "is_finished_item", 0))
+			if not is_fg and production_item:
+				# Fallback: treat as FG when item_code matches production_item AND
+				# there is no source warehouse (FG lines go TO warehouse only).
+				ic = _cstr(item.get("item_code")).strip()
+				sw = _cstr(item.get("s_warehouse")).strip()
+				is_fg = (ic == production_item and not sw)
+			if is_fg:
 				try:
 					fg_templates.append(items[i].as_dict(no_default_fields=False))
 				except Exception:
@@ -6278,10 +6289,12 @@ class ShaftProductionRun(Document):
 				if abs(cur - total_produced) > 1e-9:
 					frappe.db.set_value("Production Plan", pp, f, total_produced, update_modified=False)
 
-	def _spr_remove_bom_fg_duplicates_from_se_db(self, se_name: str, production_item: str) -> int:
-		"""After SE insert, delete any FG lines whose batch_no is NULL / empty
-		(BOM-generated ghost line) when SPR-roll lines with batch_no already exist.
+	def _spr_remove_bom_fg_duplicates_from_se_db(self, se, production_item: str) -> int:
+		"""After SE insert + reload, delete any FG lines whose batch_no is NULL/empty
+		(BOM-generated ghost line) from BOTH the DB and the in-memory se.items so that
+		Frappe's save() inside submit() cannot re-add them.
 		Returns the number of rows deleted."""
+		se_name = _cstr(getattr(se, "name", None) or se).strip()
 		if not se_name or not production_item:
 			return 0
 		try:
@@ -6293,20 +6306,31 @@ class ShaftProductionRun(Document):
 			)
 			if not batch_lines:
 				return 0
-			deleted = frappe.db.sql(
+			frappe.db.sql(
 				"""DELETE FROM `tabStock Entry Detail`
 				WHERE parent = %s AND is_finished_item = 1
 				  AND item_code = %s AND IFNULL(batch_no, '') = ''""",
 				(se_name, production_item),
 			)
-			count = frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0
+			count = cint(frappe.db.sql("SELECT ROW_COUNT()")[0][0] or 0)
 			if count:
 				frappe.log_error(
 					f"SPR: removed {count} BOM-FG ghost line(s) from SE {se_name} "
 					f"(item {production_item}) to prevent FG qty doubling.",
 					"SPR BOM FG duplicate removed"
 				)
-			return cint(count)
+			# CRITICAL: also remove from in-memory se.items so Frappe's save()
+			# during submit() does not re-insert the ghost line.
+			if count and hasattr(se, "items"):
+				se.items = [
+					d for d in (se.items or [])
+					if not (
+						cint(d.get("is_finished_item")) == 1
+						and _cstr(d.get("item_code")).strip() == _cstr(production_item).strip()
+						and not _cstr(d.get("batch_no")).strip()
+					)
+				]
+			return count
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR BOM FG dedup:{se_name}")
 			return 0
