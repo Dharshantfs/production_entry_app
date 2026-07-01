@@ -3309,28 +3309,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_ensure_child_grid_heights(frm);
 		spr_stabilize_submitted_spr_grids_once(frm);
 		spr_reapply_item_row_styles_with_retries(frm);
-		// Show manufacture summary after reload (server msgprint during submit is often lost).
-		setTimeout(function () {
-			if (!frm || !frm.doc || !frm.doc.name) {
-				return;
-			}
-			frappe.call({
-				method:
-					'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_submit_summary',
-				args: { shaft_production_run: frm.doc.name },
-				freeze: false,
-				callback: function (r) {
-					const d = (r && r.message) || {};
-					if (d.html) {
-						frappe.msgprint({
-							title: d.title || __('Manufacture Summary'),
-							message: d.html,
-							wide: true,
-						});
-					}
-				},
-			});
-		}, 600);
+		spr_show_submit_summary_with_retries(frm);
 		if (frm.doc && frm.doc.production_plan) {
 			frappe.call({
 				method:
@@ -8167,6 +8146,39 @@ function spr_force_submitted_child_grids_realign(frm) {
 /** @deprecated use spr_force_submitted_child_grids_realign */
 function spr_force_submitted_items_grid_realign(frm) {
 	spr_force_submitted_child_grids_realign(frm);
+}
+
+/** Show manufacture summary after submit — retries until HTML is ready (reload timing). */
+function spr_show_submit_summary_with_retries(frm, delays) {
+	if (!frm || !frm.doc || !frm.doc.name || cint(frm.doc.docstatus) !== 1) {
+		return;
+	}
+	const times = delays || [600, 1500, 3000];
+	times.forEach(function (ms) {
+		setTimeout(function () {
+			if (!frm || !frm.doc || !frm.doc.name || frm._spr_summary_shown) {
+				return;
+			}
+			frappe.call({
+				method:
+					'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_submit_summary',
+				args: { shaft_production_run: frm.doc.name },
+				freeze: false,
+				callback: function (r) {
+					const d = (r && r.message) || {};
+					if (!d.html || frm._spr_summary_shown) {
+						return;
+					}
+					frm._spr_summary_shown = true;
+					frappe.msgprint({
+						title: d.title || __('Manufacture Summary'),
+						message: d.html,
+						wide: true,
+					});
+				},
+			});
+		}, ms);
+	});
 }
 
 /** Re-apply GSM row colours after grid DOM rebuild (save / reopen / column sync). */
