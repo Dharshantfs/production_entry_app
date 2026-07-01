@@ -282,6 +282,113 @@ function spr_existing_series_prefix_before_idx(frm, beforeIdx) {
 	return null;
 }
 
+/** Roll suffix from batch_no or roll_no on one item row. */
+function spr_roll_suffix_from_row(row) {
+	if (!row) {
+		return 0;
+	}
+	let max = 0;
+	const bn = row.batch_no;
+	if (bn && String(bn).indexOf('/') !== -1) {
+		const p = parseInt(String(bn).split('/').pop(), 10);
+		if (!isNaN(p)) {
+			max = Math.max(max, p);
+		}
+	}
+	if (row.roll_no !== undefined && row.roll_no !== null && row.roll_no !== '') {
+		const p = parseInt(String(row.roll_no), 10);
+		if (!isNaN(p)) {
+			max = Math.max(max, p);
+		}
+	}
+	return max;
+}
+
+/** Highest roll suffix among items[0 .. beforeIdx-1] — incremental cache for Create Entry speed. */
+function spr_max_roll_before_idx(frm, beforeIdx) {
+	const all = (frm && frm.doc && frm.doc.items) || [];
+	const limit = beforeIdx != null ? beforeIdx : all.length;
+	if (limit <= 0) {
+		if (frm) {
+			frm._spr_max_roll_cache = 0;
+			frm._spr_max_roll_cache_before_idx = 0;
+		}
+		return 0;
+	}
+	const prev = frm._spr_max_roll_cache_before_idx;
+	let maxRoll =
+		frm._spr_max_roll_cache != null && prev != null && prev <= limit ? frm._spr_max_roll_cache : 0;
+	const start = prev != null && prev < limit && frm._spr_max_roll_cache != null ? prev : 0;
+	for (let i = start; i < limit; i++) {
+		maxRoll = Math.max(maxRoll, spr_roll_suffix_from_row(all[i]));
+	}
+	frm._spr_max_roll_cache = maxRoll;
+	frm._spr_max_roll_cache_before_idx = limit;
+	return maxRoll;
+}
+
+function spr_bump_roll_suffix_cache(frm, rollNo) {
+	const n = parseInt(rollNo, 10);
+	if (!frm || isNaN(n)) {
+		return;
+	}
+	const len = (frm.doc.items || []).length;
+	spr_max_roll_before_idx(frm, len);
+	frm._spr_max_roll_cache = Math.max(cint(frm._spr_max_roll_cache), n);
+	frm._spr_max_roll_cache_before_idx = len;
+}
+
+/** Shared post–Create Entry UI pass (single grid refresh, defer heavy styling on large grids). */
+function spr_finish_create_entry(frm, opts) {
+	opts = opts || {};
+	if (!frm) {
+		return;
+	}
+	const lineCount = cint(opts.lineCount) || 0;
+	const startIdx =
+		opts.startIdx != null ? opts.startIdx : Math.max(0, (frm.doc.items || []).length - lineCount);
+	const totalRows = (frm.doc.items || []).length;
+	const heavyGrid = totalRows > 25;
+	if (opts.bundle) {
+		sprSyncBundleProducedSheets(frm, { silent: true });
+		for (let i = startIdx; i < totalRows; i++) {
+			const it = (frm.doc.items || [])[i];
+			if (it && it.name) {
+				spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', it.name);
+			}
+		}
+	} else {
+		spr_apply_mix_roll_planned_qty(frm);
+	}
+	update_shaft_job_achieved_from_items(frm, { deferRefresh: true, skipGridRefresh: true });
+	spr_sync_no_of_rolls_created(frm);
+	sprScheduleTotalProducedSync(frm, { silent: true });
+	if (!heavyGrid && !opts.bundle) {
+		spr_apply_fabric100_item_grid_columns(frm);
+	}
+	spr_stabilize_spr_child_grids(frm, {
+		delay: heavyGrid ? 500 : 120,
+		light: true,
+		skipRowStyles: heavyGrid,
+	});
+	if (!heavyGrid) {
+		spr_after_child_table_refresh(frm);
+	} else {
+		spr_apply_grid_wrap_classes(frm);
+		if (!frm.__spr_items_add_style_timer) {
+			frm.__spr_items_add_style_timer = setTimeout(function () {
+				frm.__spr_items_add_style_timer = null;
+				schedule_spr_item_row_styles(frm);
+			}, 2000);
+		}
+	}
+	spr_enforce_roll_line_grid_policy(frm);
+	sprAutoSaveAfterCreateEntry(frm, { heavy: heavyGrid });
+	if (opts.alertMsg) {
+		frappe.show_alert({ message: opts.alertMsg, indicator: 'green' });
+	}
+}
+
 /** Block column realign while inline row editor is open or during lightweight save pass. */
 function spr_should_block_grid_realign(frm) {
 	if (!frm) {
@@ -1829,7 +1936,9 @@ function spr_stabilize_spr_child_grids(frm, opts) {
 			});
 			spr_refresh_draft_child_grids_light(frm);
 			spr_enforce_roll_line_grid_policy(frm);
-			spr_reapply_item_row_styles_with_retries(frm, [80, 280]);
+			if (!settings.skipRowStyles) {
+				spr_reapply_item_row_styles_with_retries(frm, [80, 280]);
+			}
 			return;
 		}
 		if (!sprIsBundlePackagingMode(frm)) {
@@ -2896,9 +3005,14 @@ function sprSaveBeforeCreateEntry(frm) {
 	});
 }
 
-function sprAutoSaveAfterCreateEntry(frm) {
+function sprAutoSaveAfterCreateEntry(frm, opts) {
+	opts = opts || {};
 	if (!frm || frm.is_new() || frm.doc.docstatus !== 0) return;
 	if (!frm.is_dirty || !frm.is_dirty()) return;
+	// Large grids: skip autosave — full validate() on 50+ rows is the main lag source.
+	if (opts.heavy) {
+		return;
+	}
 	// Debounce auto-save bursts when Create Entry appends many rows.
 	if (frm.__spr_auto_save_timer) {
 		clearTimeout(frm.__spr_auto_save_timer);
@@ -3325,6 +3439,9 @@ frappe.ui.form.on('Shaft Production Run', {
 			if (spr_reject_unauthorized_blank_item_row(frm, cdt, cdn)) {
 				return;
 			}
+			if (cint(frm._spr_programmatic_item_adds) > 0) {
+				return;
+			}
 			sprLog('[SPR DEBUG] items_add fired');
 			spr_sync_no_of_rolls_created(frm);
 			// Defer heavy job-achieved recalc to avoid lag during rapid row adds
@@ -3341,6 +3458,8 @@ frappe.ui.form.on('Shaft Production Run', {
 			}
 		},
 		items_remove: function (frm) {
+			delete frm._spr_max_roll_cache;
+			delete frm._spr_max_roll_cache_before_idx;
 			spr_sync_no_of_rolls_created(frm);
 			update_shaft_job_achieved_from_items(frm);
 			schedule_spr_item_row_styles(frm);
@@ -5763,57 +5882,10 @@ frappe.ui.form.on('Bundle Calculation', {
 							it.custom_planned_bag_pcs = flt(line.custom_planned_bag_pcs);
 						}
 					});
-					frm.refresh_field('items');
-					sprToggleSheetCuttingRollUi(frm);
-					const n = lines.length;
-					const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
-
-					function maxRollBeforeNew() {
-					let maxRoll = 0;
-					const all = frm.doc.items || [];
-					for (let i = 0; i < startIdx; i++) {
-						const prev = all[i];
-						if (prev.batch_no && String(prev.batch_no).indexOf('/') !== -1) {
-							const parts = String(prev.batch_no).split('/');
-							const p = parts[parts.length - 1];
-							const num = parseInt(p, 10);
-							if (!isNaN(num)) {
-								maxRoll = Math.max(maxRoll, num);
-							}
-						}
-						if (prev.roll_no !== undefined && prev.roll_no !== null && prev.roll_no !== '') {
-							const num = parseInt(String(prev.roll_no), 10);
-							if (!isNaN(num)) {
-								maxRoll = Math.max(maxRoll, num);
-							}
-						}
-					}
-					return maxRoll;
-				}
-
-				function finishCreateEntry() {
-					sprSyncBundleProducedSheets(frm, { silent: true });
-					sprScheduleTotalProducedSync(frm);
-					const totalRows = (frm.doc.items || []).length;
-					const start = Math.max(0, totalRows - n);
-					for (let i = start; i < totalRows; i++) {
-						const it = (frm.doc.items || [])[i];
-						if (it && it.name) {
-							spr_update_produced_gsm_with_retry(frm, 'Shaft Production Run Item', it.name);
-						}
-					}
-					if (totalRows <= 250) {
-						schedule_spr_item_row_styles(frm);
-					}
-					spr_schedule_grid_ui_debounced(frm, { delay: 300 });
-					spr_after_child_table_refresh(frm);
-					spr_enforce_roll_line_grid_policy(frm);
-					sprAutoSaveAfterCreateEntry(frm);
-					frappe.show_alert({
-						message: __('Added {0} roll line(s) for bundle.', [lines.length]),
-						indicator: 'green',
-					});
-				}
+				});
+				sprToggleSheetCuttingRollUi(frm);
+				const n = lines.length;
+				const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
 
 				if (n > 0) {
 					frappe.call({
@@ -5822,12 +5894,14 @@ frappe.ui.form.on('Bundle Calculation', {
 						args: {
 							shaft_production_run: frm.doc.name,
 							count: n,
-							client_max_roll: maxRollBeforeNew(),
+							client_max_roll: spr_max_roll_before_idx(frm, startIdx),
 							client_series_prefix: spr_existing_series_prefix_before_idx(frm, startIdx),
 							run_date: frm.doc.run_date,
 							custom_unit: frm.doc.custom_unit,
 							shift: frm.doc.shift,
 						},
+						freeze: n > 3,
+						freeze_message: n > 3 ? __('Assigning batch numbers...') : undefined,
 						callback: function (br) {
 							const batches = br.message || [];
 							const all = frm.doc.items || [];
@@ -5840,18 +5914,31 @@ frappe.ui.form.on('Bundle Calculation', {
 									it.batch_no = batches[i].batch_no || batches[i];
 									if (batches[i].roll_no != null) {
 										it.roll_no = batches[i].roll_no;
+										spr_bump_roll_suffix_cache(frm, batches[i].roll_no);
 									}
 								}
 							}
 							frm.refresh_field('items');
-							finishCreateEntry();
+							spr_finish_create_entry(frm, {
+								bundle: true,
+								lineCount: n,
+								startIdx: startIdx,
+								alertMsg: __('Added {0} roll line(s) for bundle.', [lines.length]),
+							});
 						},
-						error: finishCreateEntry,
+						error: function () {
+							frm.refresh_field('items');
+							spr_finish_create_entry(frm, {
+								bundle: true,
+								lineCount: n,
+								startIdx: startIdx,
+								alertMsg: __('Added {0} roll line(s) for bundle.', [lines.length]),
+							});
+						},
 					});
 				} else {
-					finishCreateEntry();
+					spr_finish_create_entry(frm, { bundle: true, lineCount: 0 });
 				}
-				});
 			},
 		});
 	},
@@ -5910,6 +5997,8 @@ frappe.ui.form.on('Shaft Production Run Job', {
 				const lines = r.message || [];
 				if (!appendMode) {
 					remove_spr_items_for_job(frm, job_id);
+					delete frm._spr_max_roll_cache;
+					delete frm._spr_max_roll_cache_before_idx;
 				}
 				spr_run_programmatic_item_adds(frm, function () {
 					lines.forEach(function (line) {
@@ -5921,61 +6010,19 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						});
 					});
 				});
-				frm.refresh_field('items');
 				const n = lines.length;
 				const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
-
-				function maxRollBeforeNew() {
-					let maxRoll = 0;
-					const all = frm.doc.items || [];
-					for (let i = 0; i < startIdx; i++) {
-						const row = all[i];
-						if (row.batch_no && String(row.batch_no).indexOf('/') !== -1) {
-							const parts = String(row.batch_no).split('/');
-							const p = parts[parts.length - 1];
-							const num = parseInt(p, 10);
-							if (!isNaN(num)) {
-								maxRoll = Math.max(maxRoll, num);
-							}
-						}
-						if (row.roll_no !== undefined && row.roll_no !== null && row.roll_no !== '') {
-							const num = parseInt(String(row.roll_no), 10);
-							if (!isNaN(num)) {
-								maxRoll = Math.max(maxRoll, num);
-							}
-						}
-					}
-					return maxRoll;
+				let alertMsg = __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]);
+				if (quotaMeta && quotaMeta.max) {
+					const addedIdx = cint(quotaMeta.current) + lines.length;
+					alertMsg = __('Added roll {0} of {1} for job {2}.', [addedIdx, quotaMeta.max, job_id]);
 				}
 
-				function existingSeriesPrefixBeforeNew() {
-					const all = frm.doc.items || [];
-					for (let i = 0; i < startIdx; i++) {
-						const bn = all[i] && all[i].batch_no;
-						if (bn && String(bn).indexOf('/') !== -1) {
-							return String(bn).split('/')[0];
-						}
-					}
-					return null;
-				}
-
-				function finishCreateEntry() {
-					spr_apply_mix_roll_planned_qty(frm);
-					update_shaft_job_achieved_from_items(frm);
-					sprScheduleTotalProducedSync(frm);
-					spr_apply_fabric100_item_grid_columns(frm);
-					spr_stabilize_spr_child_grids(frm, { delay: 120, light: true });
-					spr_after_child_table_refresh(frm);
-					spr_enforce_roll_line_grid_policy(frm);
-					sprAutoSaveAfterCreateEntry(frm);
-					let alertMsg = __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]);
-					if (quotaMeta && quotaMeta.max) {
-						const addedIdx = cint(quotaMeta.current) + lines.length;
-						alertMsg = __('Added roll {0} of {1} for job {2}.', [addedIdx, quotaMeta.max, job_id]);
-					}
-					frappe.show_alert({
-						message: alertMsg,
-						indicator: 'green',
+				function assignBatchesAndFinish() {
+					spr_finish_create_entry(frm, {
+						lineCount: n,
+						startIdx: startIdx,
+						alertMsg: alertMsg,
 					});
 				}
 
@@ -5986,32 +6033,37 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						args: {
 							shaft_production_run: frm.doc.name,
 							count: n,
-							client_max_roll: maxRollBeforeNew(),
+							client_max_roll: spr_max_roll_before_idx(frm, startIdx),
 							client_series_prefix: spr_existing_series_prefix_before_idx(frm, startIdx),
 							run_date: frm.doc.run_date,
 							custom_unit: frm.doc.custom_unit,
 							shift: frm.doc.shift,
 						},
+						freeze: n > 3,
+						freeze_message: n > 3 ? __('Assigning batch numbers...') : undefined,
 						callback: function (r2) {
 							const nums = r2.message || [];
 							const fresh = frm.doc.items || [];
 							for (let i = 0; i < nums.length; i++) {
 								const row = fresh[startIdx + i];
 								if (row && nums[i]) {
-									// Direct assignment is much faster than model.set_value (which triggers grid events per row).
 									if (nums[i].batch_no) row.batch_no = nums[i].batch_no;
-									if (nums[i].roll_no !== undefined && nums[i].roll_no !== null) row.roll_no = nums[i].roll_no;
+									if (nums[i].roll_no !== undefined && nums[i].roll_no !== null) {
+										row.roll_no = nums[i].roll_no;
+										spr_bump_roll_suffix_cache(frm, nums[i].roll_no);
+									}
 								}
 							}
 							frm.refresh_field('items');
-							finishCreateEntry();
+							assignBatchesAndFinish();
 						},
 						error: function () {
-							finishCreateEntry();
+							frm.refresh_field('items');
+							assignBatchesAndFinish();
 						},
 					});
 				} else {
-					finishCreateEntry();
+					assignBatchesAndFinish();
 				}
 			},
 		});

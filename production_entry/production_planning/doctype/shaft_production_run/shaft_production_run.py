@@ -3044,28 +3044,66 @@ class ShaftProductionRun(Document):
 		next_s = self._next_shift_suffix_num(root_5)
 		return f"{root_5}{next_s}"
 
+	def _spr_max_roll_suffix_for_prefix(self, series_prefix: str) -> int:
+		"""Fast MAX(roll suffix) for a batch series prefix (replaces full-table row loops)."""
+		series_prefix = _cstr(series_prefix).strip()
+		if not series_prefix:
+			return 0
+		pat = f"{series_prefix}/%"
+		mx = 0
+		queries = (
+			("Batch", "batch_id"),
+			("Shaft Production Run Item", "batch_no"),
+		)
+		for table, col in queries:
+			try:
+				row = frappe.db.sql(
+					f"""
+					SELECT MAX(CAST(SUBSTRING_INDEX(`{col}`, '/', -1) AS UNSIGNED)) AS mx
+					FROM `tab{table}`
+					WHERE `{col}` LIKE %(pat)s
+					""",
+					{"pat": pat},
+					as_dict=True,
+				)
+				if row and row[0].get("mx") is not None:
+					mx = max(mx, cint(row[0].mx))
+			except Exception:
+				for (val,) in frappe.db.sql(
+					f"SELECT `{col}` FROM `tab{table}` WHERE `{col}` LIKE %(pat)s LIMIT 500",
+					{"pat": pat},
+				) or []:
+					mx = max(mx, self._roll_no_from_batch(val, series_prefix))
+		return mx
+
+	def _spr_max_shift_suffix_for_root(self, root_5: str) -> int:
+		"""Fast MAX(shift series digit) after root_5 in batch prefix (before ``/``)."""
+		root_5 = _cstr(root_5).strip()
+		if not root_5:
+			return 0
+		pat = f"{root_5}%"
+		root_len = len(root_5)
+		mx = 0
+		for table, col in (("Batch", "batch_id"), ("Shaft Production Run Item", "batch_no")):
+			try:
+				rows = frappe.db.sql(
+					f"""
+					SELECT `{col}` AS val
+					FROM `tab{table}`
+					WHERE `{col}` LIKE %(pat)s AND `{col}` LIKE '%%/%%'
+					LIMIT 800
+					""",
+					{"pat": pat},
+				)
+				for (val,) in rows or []:
+					mx = max(mx, self._suffix_after_root(val, root_5))
+			except Exception:
+				pass
+		return mx
+
 	def _next_shift_suffix_num(self, root_5: str) -> int:
 		"""Pick next S digit(s) after scanning Batch + SPR items for this month/unit/year root."""
-		max_s = 0
-		rows = frappe.db.sql(
-			"""
-			SELECT batch_id FROM `tabBatch`
-			WHERE batch_id LIKE CONCAT(%(root)s, '%%')
-			""",
-			{"root": root_5},
-		)
-		for (bid,) in rows or []:
-			max_s = max(max_s, self._suffix_after_root(bid, root_5))
-		rows2 = frappe.db.sql(
-			"""
-			SELECT spi.batch_no FROM `tabShaft Production Run Item` spi
-			WHERE IFNULL(spi.batch_no,'') != ''
-			  AND spi.batch_no LIKE CONCAT(%(root)s, '%%')
-			""",
-			{"root": root_5},
-		)
-		for (bn,) in rows2 or []:
-			max_s = max(max_s, self._suffix_after_root(bn, root_5))
+		max_s = self._spr_max_shift_suffix_for_root(root_5)
 		return max_s + 1 if max_s >= 0 else 1
 
 	def _suffix_after_root(self, batch_id: str, root_5: str) -> int:
@@ -3081,26 +3119,8 @@ class ShaftProductionRun(Document):
 			return 0
 
 	def _next_roll_starting(self, series_prefix: str) -> int:
-		mx = 0
-		rows = frappe.db.sql(
-			"""
-			SELECT batch_id FROM `tabBatch`
-			WHERE batch_id LIKE %(pat)s
-			""",
-			{"pat": f"{series_prefix}/%"},
-		)
-		for (bid,) in rows or []:
-			mx = max(mx, self._roll_no_from_batch(bid, series_prefix))
-		rows2 = frappe.db.sql(
-			"""
-			SELECT batch_no FROM `tabShaft Production Run Item`
-			WHERE IFNULL(batch_no,'') != '' AND batch_no LIKE %(pat)s
-			""",
-			{"pat": f"{series_prefix}/%"},
-		)
-		for (bn,) in rows2 or []:
-			mx = max(mx, self._roll_no_from_batch(bn, series_prefix))
-		return mx + 1
+		mx = self._spr_max_roll_suffix_for_prefix(series_prefix)
+		return (mx + 1) if mx > 0 else 1
 
 	def _roll_no_from_batch(self, batch_id: str, series_prefix: str) -> int:
 		if not batch_id or "/" not in batch_id:
