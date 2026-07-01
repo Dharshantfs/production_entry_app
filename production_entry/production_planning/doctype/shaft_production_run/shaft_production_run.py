@@ -287,6 +287,13 @@ def _cstr(v) -> str:
 	return str(v).strip() if v is not None else ""
 
 
+def _spr_db_savepoint_name(prefix: str, key: str = "") -> str:
+	"""MariaDB savepoint identifiers cannot contain hyphens (e.g. MFG-WO-2026-00917)."""
+	safe_key = re.sub(r"[^0-9a-zA-Z_]", "_", _cstr(key))
+	name = f"{prefix}_{safe_key}" if safe_key else _cstr(prefix)
+	return name[:64]
+
+
 def _compact_unit_key(value) -> str:
 	return re.sub(r"[^A-Z0-9]", "", _cstr(value).upper())
 
@@ -6574,7 +6581,7 @@ class ShaftProductionRun(Document):
 				missing_rows,
 				created_entries,
 				created_entries_by_wo,
-				savepoint_name=f"spr_mfg_backfill_{wo_id}",
+				savepoint_name=_spr_db_savepoint_name("spr_mfg_backfill", wo_id),
 			)
 
 	def _spr_sync_backfill_missing_manufacture(self) -> list[str]:
@@ -6604,7 +6611,7 @@ class ShaftProductionRun(Document):
 					missing_rows,
 					created_se,
 					created_entries_by_wo,
-					savepoint_name=f"spr_sync_mfg_{wo_id}",
+					savepoint_name=_spr_db_savepoint_name("spr_sync_mfg", wo_id),
 				)
 				if se_name and se_name not in created_se:
 					created_se.append(se_name)
