@@ -45,6 +45,7 @@ import TransferApproval from "./TransferApproval.vue";
 import LogisticsKanban from "./LogisticsKanban.vue";
 import ProductionLearning from "./ProductionLearning.vue";
 import DespatchApproval from "./DespatchApproval.vue";
+import GsmProductionEntry from "./GsmProductionEntry.vue";
 
 production_scheduler.ConfirmedOrderController = class {
     constructor(wrapper) {
@@ -135,5 +136,11 @@ production_scheduler.ProductionLearningController = class {
 production_scheduler.DespatchApprovalController = class {
     constructor(wrapper) {
         safeMount(DespatchApproval, wrapper, "Despatch Approval");
+    }
+};
+
+production_scheduler.GsmProductionEntryController = class {
+    constructor(wrapper) {
+        safeMount(GsmProductionEntry, wrapper, "GSM Production Entry");
     }
 };
