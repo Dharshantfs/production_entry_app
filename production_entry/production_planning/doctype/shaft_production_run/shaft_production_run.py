@@ -6361,7 +6361,14 @@ class ShaftProductionRun(Document):
 			parts.append(f"IFNULL({se_alias}.shaft_production_run, '') = %(spr)s")
 		if parts:
 			return "(" + " OR ".join(parts) + ")", params
-		names = self._get_existing_submitted_manufacture_entries_for_spr()
+		# Fallback: use manufacturing_entries on this SPR (do not call
+		# _get_existing_submitted_manufacture_entries_for_spr — that method
+		# delegates here and would recurse infinitely).
+		names = [
+			x.strip()
+			for x in _cstr(self.get("manufacturing_entries")).split(",")
+			if x and x.strip()
+		]
 		if names:
 			params["spr_se_names"] = tuple(names)
 			return f"{se_alias}.name IN %(spr_se_names)s", params
