@@ -1,10 +1,16 @@
 <template>
   <div class="gpe-root">
-    <div class="gpe-banner">
-      UI test mode — entries save locally only. Production Table and SPR flow are unchanged. Submit Entry disabled.
+    <div class="gpe-info-strip">
+      Phase 1 — entries save locally. Submit Entry and label print connect in Phase 2.
     </div>
 
-    <div class="gpe-filters">
+    <div class="gpe-page-tabs">
+      <button type="button" :class="{ active: pageTab === 'entry' }" @click="pageTab = 'entry'">Entry</button>
+      <button type="button" :class="{ active: pageTab === 'summary' }" @click="pageTab = 'summary'">Summary</button>
+      <button type="button" :class="{ active: pageTab === 'shift' }" @click="pageTab = 'shift'; loadShiftEntries()">Shift Entries</button>
+    </div>
+
+    <div class="gpe-filters gpe-card">
       <div class="gpe-filter">
         <label>View</label>
         <select v-model="viewScope" @change="fetchOrders">
@@ -36,16 +42,47 @@
         <label>Search</label>
         <input v-model="searchText" type="text" placeholder="Order / party..." />
       </div>
-      <button class="gpe-btn" @click="fetchOrders">Refresh</button>
+      <button type="button" class="gpe-btn" @click="fetchOrders">Refresh</button>
     </div>
 
-    <div class="gpe-layout">
-      <aside class="gpe-sidebar">
+    <!-- Entry tab -->
+    <div v-show="pageTab === 'entry'" class="gpe-layout">
+      <aside class="gpe-sidebar gpe-card">
         <h3>Orders &amp; GSM</h3>
-        <p class="gpe-hint">PP submitted only. Select GSM lines, then Add Roll Row.</p>
+        <p class="gpe-hint">PP-submitted lines. Confirm selection, then add roll rows.</p>
         <div v-if="loadingOrders" class="gpe-muted">Loading…</div>
-        <div v-else-if="!orderGroups.length" class="gpe-muted">No PP-submitted orders for this date/unit.</div>
-        <div v-for="grp in filteredOrderGroups" :key="grp.key" class="gpe-order-group">
+        <div v-else-if="!orderGroups.length && !mergeSidebarRows.length" class="gpe-muted">
+          No PP-submitted orders for this date/unit.
+        </div>
+
+        <div v-if="mergeSidebarRows.length" class="gpe-sidebar-section">
+          <div class="gpe-section-title">Merged groups</div>
+          <div
+            v-for="merge in mergeSidebarRows"
+            :key="merge.mergeId"
+            class="gpe-order-group gpe-card-inner"
+          >
+            <label
+              class="gpe-line"
+              :class="lineRowClass(merge)"
+              :title="merge.tooltip"
+            >
+              <input
+                type="checkbox"
+                :checked="isMergeSelected(merge)"
+                :disabled="!merge.selectable || selectionLocked"
+                @change="toggleMerge(merge, $event)"
+              />
+              <span>
+                <span class="gpe-merge-label">{{ merge.label }}</span>
+                · Rem {{ formatKg(merge.remainingKg) }} Kg
+                <span v-if="merge.chip" :class="['gpe-chip', merge.chipClass]">{{ merge.chip }}</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div v-for="grp in filteredActiveGroups" :key="grp.key" class="gpe-order-group gpe-card-inner">
           <div class="gpe-order-head">
             <strong>{{ grp.orderCode }}</strong>
             <span class="gpe-party">{{ grp.partyName }}</span>
@@ -60,33 +97,86 @@
             v-for="line in grp.lines"
             :key="line.id"
             class="gpe-line"
-            :class="{ active: activeLineId === line.id, selected: selectedLineIds.has(line.id) }"
+            :class="lineRowClass(line)"
+            :title="line.tooltip"
           >
             <input
               type="checkbox"
               :checked="selectedLineIds.has(line.id)"
+              :disabled="!line.selectable || selectionLocked"
               @change="toggleLine(line.id, $event)"
             />
-            <span @click.prevent="setActiveLine(line.id)">
+            <span @click.prevent="onLineLabelClick(line)">
               {{ line.gsm }} GSM · {{ line.widthLabel }} · Rem {{ formatKg(line.remainingKg) }} Kg
+              <span v-if="line.quotaLabel" class="gpe-quota">{{ line.quotaLabel }}</span>
+              <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
             </span>
           </label>
         </div>
+
+        <div v-if="filteredCompletedGroups.length" class="gpe-sidebar-section">
+          <button type="button" class="gpe-collapse-btn" @click="showCompletedOrders = !showCompletedOrders">
+            {{ showCompletedOrders ? "▼" : "▶" }} Completed orders ({{ completedLineCount }})
+          </button>
+          <div v-show="showCompletedOrders">
+            <div v-for="grp in filteredCompletedGroups" :key="'c-' + grp.key" class="gpe-order-group gpe-card-inner gpe-completed">
+              <div class="gpe-order-head">
+                <strong>{{ grp.orderCode }}</strong>
+                <span class="gpe-party">{{ grp.partyName }}</span>
+              </div>
+              <label
+                v-for="line in grp.lines"
+                :key="line.id"
+                class="gpe-line gpe-line-disabled"
+                :title="line.tooltip"
+              >
+                <input type="checkbox" disabled />
+                <span>
+                  {{ line.gsm }} GSM · {{ line.widthLabel }} · Rem {{ formatKg(line.remainingKg) }} Kg
+                  <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
         <div v-if="selectedSummary" class="gpe-selected-box">
           <div>Selected: {{ selectedSummary.count }} GSM line(s)</div>
           <div>Total remaining: {{ formatKg(selectedSummary.remaining) }} Kg</div>
-          <button type="button" class="gpe-link-btn" @click="clearSelection">Clear</button>
+          <div class="gpe-selection-actions">
+            <button
+              v-if="!selectionLocked"
+              type="button"
+              class="gpe-btn primary sm"
+              :disabled="!selectedLineIds.size"
+              @click="openConfirmSelection"
+            >Confirm selection</button>
+            <button
+              v-else
+              type="button"
+              class="gpe-btn sm"
+              @click="unlockSelection"
+            >Unlock selection</button>
+            <button type="button" class="gpe-link-btn" @click="clearSelection">Clear</button>
+          </div>
+          <div v-if="selectionLocked" class="gpe-lock-badge">Selection locked</div>
         </div>
       </aside>
 
-      <main class="gpe-main">
-        <div class="gpe-header">
+      <main class="gpe-main gpe-card">
+        <div class="gpe-header gpe-card-inner">
           <div class="gpe-tags">
             <span v-for="t in headerTags" :key="t" class="gpe-tag">{{ t }}</span>
           </div>
           <div class="gpe-header-fields">
             <label>Run Date <input type="date" v-model="runDate" /></label>
-            <label>Shift <input v-model="shift" type="text" placeholder="e.g. 1" /></label>
+            <label>
+              Shift
+              <select v-model="shift">
+                <option value="Day Shift">Day Shift</option>
+                <option value="Night Shift">Night Shift</option>
+              </select>
+            </label>
             <label>Unit <input v-model="headerUnit" type="text" readonly /></label>
             <label>Operator <input v-model="operator" type="text" /></label>
             <label>Supervisor <input v-model="supervisor" type="text" /></label>
@@ -101,10 +191,29 @@
         </div>
 
         <div class="gpe-toolbar">
-          <button type="button" class="gpe-btn primary" :disabled="!canAddRow" @click="addRollRow">Add Roll Row</button>
-          <button type="button" class="gpe-btn" :disabled="!rollLines.length" @click="removeTopRow">Remove Top Row</button>
+          <div class="gpe-toolbar-left">
+            <button type="button" class="gpe-btn primary" :disabled="!canAddRow" @click="addRollRow">Add Roll Row</button>
+            <button type="button" class="gpe-btn" :disabled="!rollLines.length" @click="removeTopRow">Remove Top Row</button>
+          </div>
           <span class="gpe-save-status">{{ saveStatus }}</span>
-          <button type="button" class="gpe-btn disabled" disabled title="Phase 1B">Submit Entry (disabled)</button>
+          <div class="gpe-toolbar-right">
+            <div class="gpe-tools-wrap" v-click-outside="closeToolsMenu">
+              <button
+                type="button"
+                class="gpe-btn"
+                :disabled="!toolsEnabled"
+                :title="toolsHint"
+                @click="toolsMenuOpen = !toolsMenuOpen"
+              >Tools ▾</button>
+              <div v-if="toolsMenuOpen && toolsEnabled" class="gpe-tools-menu">
+                <button type="button" @click="runTool('manual')">SPR — Manual job</button>
+                <button type="button" @click="runTool('trail')">SPR — Trail Order</button>
+                <button type="button" @click="runTool('bundle')">SPR — Bundle packaging</button>
+                <button type="button" @click="runTool('rmbatches')">SPR — Select RM batches</button>
+              </div>
+            </div>
+            <button type="button" class="gpe-btn disabled" disabled title="Phase 2">Submit Entry</button>
+          </div>
         </div>
 
         <div class="gpe-grid-wrap">
@@ -113,36 +222,34 @@
               <tr>
                 <th>#</th>
                 <th>Order</th>
-                <th>Item</th>
-                <th>GSM</th>
-                <th>Batch</th>
                 <th>Quality</th>
                 <th>Color</th>
+                <th>Sticker GSM</th>
                 <th>Width</th>
                 <th>Ord Len</th>
                 <th>Prod Len</th>
-                <th>Sticker GSM</th>
                 <th>Prod GSM</th>
+                <th>Batch</th>
                 <th>Net</th>
                 <th>Gross</th>
+                <th>UOM</th>
+                <th>WO</th>
                 <th>Core mm</th>
-                <th>Dia in</th>
-                <th>CBM</th>
+                <th>Polybag</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               <tr
                 v-for="(row, idx) in rollLines"
                 :key="row._id"
-                :class="rowBandClass(row)"
+                :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked }]"
               >
                 <td>{{ rollLines.length - idx }}</td>
                 <td>{{ row.party_code }}</td>
-                <td :title="row.item_name">{{ row.item_code }}</td>
-                <td>{{ row.gsm }}</td>
-                <td>{{ row.batch_no }}</td>
                 <td>{{ row.quality }}</td>
                 <td>{{ row.color }}</td>
+                <td>{{ row.gsm }}</td>
                 <td>{{ row.width_inch }}</td>
                 <td>{{ row.meter_roll }}</td>
                 <td>
@@ -151,19 +258,30 @@
                     type="number"
                     step="0.01"
                     class="gpe-inp"
+                    :disabled="row.row_locked"
                     @input="onRowEdit(row)"
                   />
                 </td>
-                <td>{{ row.gsm }}</td>
                 <td>{{ row.produced_gsm }}</td>
+                <td>{{ row.batch_no }}</td>
                 <td>{{ row.net_weight }}</td>
                 <td>
                   <input
                     v-model="row.gross_weight"
                     type="text"
                     class="gpe-inp"
+                    :disabled="row.row_locked"
                     @input="onRowEdit(row)"
                   />
+                </td>
+                <td>{{ row.uom || "Kg" }}</td>
+                <td>
+                  <a
+                    v-if="row.work_order"
+                    href="#"
+                    class="gpe-wo-link"
+                    @click.prevent="openWorkOrder(row.work_order)"
+                  >{{ row.work_order }}</a>
                 </td>
                 <td>
                   <input
@@ -171,119 +289,246 @@
                     type="number"
                     step="1"
                     class="gpe-inp"
+                    :disabled="row.row_locked"
                     @input="onRowEdit(row)"
                   />
                 </td>
-                <td>
-                  <input
-                    v-model.number="row.custom_diameter_inches"
-                    type="number"
-                    step="0.01"
-                    class="gpe-inp"
-                  />
-                </td>
-                <td>
-                  <input
-                    v-model.number="row.custom_cbm_cubic_meters"
-                    type="number"
-                    step="0.001"
-                    class="gpe-inp"
-                  />
+                <td>{{ row.custom_polybag_kgs }}</td>
+                <td class="gpe-actions">
+                  <button
+                    v-if="!row.row_locked"
+                    type="button"
+                    class="gpe-btn sm"
+                    @click="saveRow(row)"
+                  >Save Row</button>
+                  <button
+                    v-else
+                    type="button"
+                    class="gpe-btn sm"
+                    @click="editRow(row)"
+                  >Edit Row</button>
+                  <button
+                    type="button"
+                    class="gpe-btn sm"
+                    :disabled="!row.row_locked"
+                    :title="row.row_locked ? 'Label stub until Phase 2' : 'Save Row first'"
+                    @click="printLabel(row)"
+                  >Label</button>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
-
-        <div class="gpe-summaries">
-          <div class="gpe-tabs">
-            <button :class="{ active: summaryTab === 'summary' }" @click="summaryTab = 'summary'">Summary</button>
-            <button :class="{ active: summaryTab === 'linked' }" @click="summaryTab = 'linked'">Linked Orders</button>
-          </div>
-          <div v-show="summaryTab === 'summary'" class="gpe-summary-panels">
-            <div class="gpe-panel">
-              <h4>Linked Orders{{ primaryGsmLabel }}</h4>
-              <table>
-                <thead>
-                  <tr><th>Order</th><th>Party</th><th>Required</th><th>Produced</th><th>Remaining</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="r in linkedOrderSummary" :key="r.orderCode">
-                    <td>{{ r.orderCode }}</td>
-                    <td>{{ r.partyName }}</td>
-                    <td>{{ formatKg(r.required) }}</td>
-                    <td>{{ formatKg(r.produced) }}</td>
-                    <td>{{ formatKg(r.remaining) }}</td>
-                  </tr>
-                  <tr class="total">
-                    <td colspan="2">Total</td>
-                    <td>{{ formatKg(linkedTotals.required) }}</td>
-                    <td>{{ formatKg(linkedTotals.produced) }}</td>
-                    <td>{{ formatKg(linkedTotals.remaining) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="gpe-panel">
-              <h4>Batch Summary (session)</h4>
-              <table>
-                <thead>
-                  <tr><th>Batch</th><th>Rolls</th><th>Total Kg</th><th>Net Kg</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="b in batchSummary" :key="b.batch_no">
-                    <td>{{ b.batch_no }}</td>
-                    <td>{{ b.rolls }}</td>
-                    <td>{{ formatKg(b.totalGross) }}</td>
-                    <td>{{ formatKg(b.totalNet) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="gpe-panel">
-              <h4>GSM-wise Summary</h4>
-              <table>
-                <thead>
-                  <tr><th>GSM</th><th>Required</th><th>Produced</th><th>Remaining</th><th>Progress</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="g in gsmSummary" :key="g.gsm">
-                    <td>{{ g.gsm }}</td>
-                    <td>{{ formatKg(g.required) }}</td>
-                    <td>{{ formatKg(g.produced) }}</td>
-                    <td>{{ formatKg(g.remaining) }}</td>
-                    <td>
-                      <div class="gpe-progress"><div :style="{ width: g.pct + '%' }"></div></div>
-                      {{ g.pct.toFixed(1) }}%
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <p v-if="summaryTab === 'summary'" class="gpe-note">
-            Note: Entries are captured roll-wise with batch reference. Backend SPR submit not connected in this phase.
-          </p>
-          <div v-show="summaryTab === 'linked'" class="gpe-panel wide">
-            <table>
-              <thead>
-                <tr><th>Order</th><th>Party</th><th>GSM</th><th>Width</th><th>Required</th><th>Session Kg</th><th>PT Achieved</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="line in selectedLinesDetail" :key="line.id">
-                  <td>{{ line.orderCode }}</td>
-                  <td>{{ line.partyName }}</td>
-                  <td>{{ line.gsm }}</td>
-                  <td>{{ line.width_inch }}</td>
-                  <td>{{ formatKg(line.requiredKg) }}</td>
-                  <td>{{ formatKg(line.sessionKg) }}</td>
-                  <td>{{ formatKg(line.achievedKg) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
       </main>
+    </div>
+
+    <!-- Summary tab -->
+    <div v-show="pageTab === 'summary'" class="gpe-main gpe-card gpe-summary-tab">
+      <div class="gpe-tabs">
+        <button :class="{ active: summaryTab === 'summary' }" @click="summaryTab = 'summary'">Summary</button>
+        <button :class="{ active: summaryTab === 'linked' }" @click="summaryTab = 'linked'">Linked Orders</button>
+      </div>
+      <div v-show="summaryTab === 'summary'" class="gpe-summary-panels">
+        <div class="gpe-panel gpe-card-inner">
+          <h4>Linked Orders{{ primaryGsmLabel }}</h4>
+          <table>
+            <thead>
+              <tr><th>Order</th><th>Party</th><th>Required</th><th>Produced</th><th>Remaining</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in linkedOrderSummary" :key="r.orderCode">
+                <td>{{ r.orderCode }}</td>
+                <td>{{ r.partyName }}</td>
+                <td>{{ formatKg(r.required) }}</td>
+                <td>{{ formatKg(r.produced) }}</td>
+                <td>{{ formatKg(r.remaining) }}</td>
+              </tr>
+              <tr class="total">
+                <td colspan="2">Total</td>
+                <td>{{ formatKg(linkedTotals.required) }}</td>
+                <td>{{ formatKg(linkedTotals.produced) }}</td>
+                <td>{{ formatKg(linkedTotals.remaining) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="gpe-panel gpe-card-inner">
+          <h4>Batch Summary (session)</h4>
+          <table>
+            <thead>
+              <tr><th>Batch</th><th>Rolls</th><th>Total Kg</th><th>Net Kg</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="b in batchSummary" :key="b.batch_no">
+                <td>{{ b.batch_no }}</td>
+                <td>{{ b.rolls }}</td>
+                <td>{{ formatKg(b.totalGross) }}</td>
+                <td>{{ formatKg(b.totalNet) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="gpe-panel gpe-card-inner">
+          <h4>GSM-wise Summary</h4>
+          <table>
+            <thead>
+              <tr><th>GSM</th><th>Required</th><th>Produced</th><th>Remaining</th><th>Progress</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="g in gsmSummary" :key="g.gsm">
+                <td>{{ g.gsm }}</td>
+                <td>{{ formatKg(g.required) }}</td>
+                <td>{{ formatKg(g.produced) }}</td>
+                <td>{{ formatKg(g.remaining) }}</td>
+                <td>
+                  <div class="gpe-progress"><div :style="{ width: g.pct + '%' }"></div></div>
+                  {{ g.pct.toFixed(1) }}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p v-if="summaryTab === 'summary'" class="gpe-note">
+        Entries are captured roll-wise with batch reference. Backend SPR submit connects in Phase 2.
+      </p>
+      <div v-show="summaryTab === 'linked'" class="gpe-panel wide gpe-card-inner">
+        <table>
+          <thead>
+            <tr><th>Order</th><th>Party</th><th>GSM</th><th>Width</th><th>Required</th><th>Session Kg</th><th>PT Achieved</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="line in selectedLinesDetail" :key="line.id">
+              <td>{{ line.orderCode }}</td>
+              <td>{{ line.partyName }}</td>
+              <td>{{ line.gsm }}</td>
+              <td>{{ line.width_inch }}</td>
+              <td>{{ formatKg(line.requiredKg) }}</td>
+              <td>{{ formatKg(line.sessionKg) }}</td>
+              <td>{{ formatKg(line.achievedKg) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Shift Entries tab -->
+    <div v-show="pageTab === 'shift'" class="gpe-shift-layout">
+      <div class="gpe-shift-filters gpe-card">
+        <label>Date <input type="date" v-model="shiftFilterDate" /></label>
+        <label>
+          Shift
+          <select v-model="shiftFilterShift">
+            <option value="Day Shift">Day Shift</option>
+            <option value="Night Shift">Night Shift</option>
+          </select>
+        </label>
+        <label>
+          Unit
+          <select v-model="shiftFilterUnit">
+            <option value="">All units</option>
+            <option v-for="u in unitOptions" :key="'su-' + u" :value="u">{{ u }}</option>
+          </select>
+        </label>
+        <button type="button" class="gpe-btn primary" @click="loadShiftEntries">Refresh</button>
+      </div>
+
+      <div v-if="shiftLoading" class="gpe-muted gpe-card">Loading shift entries…</div>
+      <div v-else-if="!shiftEntries.length" class="gpe-empty-state gpe-card">
+        <h3>No submitted entries for this shift</h3>
+        <p>Submitted SPRs for the selected date, shift, and unit appear here.</p>
+      </div>
+      <div v-else class="gpe-shift-split">
+        <aside class="gpe-shift-sidebar gpe-card">
+          <div
+            v-for="entry in shiftEntries"
+            :key="entry.spr_name"
+            class="gpe-shift-card"
+            :class="{ active: selectedShiftEntry?.spr_name === entry.spr_name }"
+            @click="selectedShiftEntry = entry"
+          >
+            <div class="gpe-shift-card-title">{{ entry.spr_name }}</div>
+            <div class="gpe-shift-card-meta">
+              {{ entry.order_codes?.join(", ") || "—" }}
+            </div>
+            <div class="gpe-shift-card-stats">
+              {{ entry.roll_count }} rolls · {{ formatKg(entry.total_net_kg) }} Kg net
+            </div>
+            <span class="gpe-chip gpe-chip-submitted">Submitted</span>
+          </div>
+        </aside>
+        <div v-if="selectedShiftEntry" class="gpe-shift-detail gpe-card">
+          <div class="gpe-shift-detail-head">
+            <h3>{{ selectedShiftEntry.spr_name }}</h3>
+            <button type="button" class="gpe-btn sm" @click="openSpr(selectedShiftEntry.spr_name)">Open SPR</button>
+          </div>
+          <p class="gpe-shift-meta">
+            PP: <a href="#" @click.prevent="viewPP(selectedShiftEntry.production_plan)">{{ selectedShiftEntry.production_plan }}</a>
+            · Operator: {{ selectedShiftEntry.operator || "—" }}
+            · Supervisor: {{ selectedShiftEntry.supervisor || "—" }}
+          </p>
+          <div v-if="selectedShiftEntry.wo_status?.length" class="gpe-wo-chips">
+            <span
+              v-for="wo in selectedShiftEntry.wo_status"
+              :key="wo.name"
+              :class="['gpe-chip', wo.status === 'Completed' ? 'gpe-chip-done' : 'gpe-chip-draft']"
+            >{{ wo.name }} ({{ wo.status }})</span>
+          </div>
+          <table class="gpe-grid">
+            <thead>
+              <tr>
+                <th>Batch</th><th>GSM</th><th>Width</th><th>Net</th><th>Gross</th><th>Order</th><th>WO</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, i) in selectedShiftEntry.rolls" :key="i">
+                <td>{{ r.batch_no }}</td>
+                <td>{{ r.gsm }}</td>
+                <td>{{ r.width_inch }}</td>
+                <td>{{ formatKg(r.net_weight) }}</td>
+                <td>{{ formatKg(r.gross_weight) }}</td>
+                <td>{{ r.party_code }}</td>
+                <td>{{ r.work_order }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="gpe-shift-detail gpe-card gpe-muted">Select an entry to view rolls.</div>
+      </div>
+    </div>
+
+    <!-- Confirm selection dialog -->
+    <div v-if="showConfirmDialog" class="gpe-dialog-overlay" @click.self="showConfirmDialog = false">
+      <div class="gpe-dialog gpe-card">
+        <h3>Confirm GSM selection</h3>
+        <p>Lock these lines for roll entry? You can unlock later.</p>
+        <ul class="gpe-confirm-list">
+          <li v-for="line in confirmLines" :key="line.id">
+            {{ line.orderCode }} · {{ line.gsm }} GSM · {{ line.widthLabel }} · Rem {{ formatKg(line.remainingKg) }} Kg
+          </li>
+        </ul>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn" @click="showConfirmDialog = false">Cancel</button>
+          <button type="button" class="gpe-btn primary" @click="confirmSelection">Lock selection</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Width picker dialog -->
+    <div v-if="showWidthPicker" class="gpe-dialog-overlay" @click.self="showWidthPicker = false">
+      <div class="gpe-dialog gpe-card">
+        <h3>Choose GSM line for new roll</h3>
+        <div class="gpe-picker-list">
+          <label v-for="line in widthPickerLines" :key="line.id" class="gpe-picker-row">
+            <input v-model="widthPickerChoice" type="radio" :value="line.id" />
+            {{ line.orderCode }} · {{ line.gsm }} GSM · {{ line.widthLabel }}
+          </label>
+        </div>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn" @click="showWidthPicker = false">Cancel</button>
+          <button type="button" class="gpe-btn primary" :disabled="!widthPickerChoice" @click="proceedAddRow">Add row</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -291,6 +536,13 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { openProductionPlanPrintPreview } from "./pp_print_utils.js";
+import {
+  gsmOpenManualJob,
+  gsmOpenRmBatches,
+  gsmOpenTrailOrder,
+  gsmToggleBundlePackaging,
+  openSprForm,
+} from "./spr_gsm_tools.js";
 import {
   sprCalcNetFromGross,
   sprCalcProducedGsm,
@@ -301,7 +553,7 @@ import {
   sprRecalcRollRow,
 } from "./spr_roll_entry_utils.js";
 
-const STORAGE_KEY = "gsm_production_entry_draft_v1";
+const STORAGE_KEY = "gsm_production_entry_draft_v2";
 const BOARD_SLUG = "production-table";
 
 const viewScope = ref("daily");
@@ -312,42 +564,151 @@ const filterUnit = ref("");
 const searchText = ref("");
 const loadingOrders = ref(false);
 const rawOrders = ref([]);
+const merges = ref([]);
+const quotaByLineId = ref({});
 
+const pageTab = ref("entry");
 const runDate = ref(frappe.datetime.get_today());
-const shift = ref("1");
+const shift = ref("Day Shift");
 const headerUnit = ref("");
 const operator = ref("");
 const supervisor = ref("");
 
 const rollLines = ref([]);
 const selectedLineIds = ref(new Set());
-const activeLineId = ref("");
+const selectionLocked = ref(false);
+const showCompletedOrders = ref(false);
+const showConfirmDialog = ref(false);
+const showWidthPicker = ref(false);
+const widthPickerLines = ref([]);
+const widthPickerChoice = ref("");
+let pendingAddRowResolve = null;
+
 const seriesPrefix = ref("");
 const maxRollSuffix = ref(0);
 const creationSeq = ref(0);
 
 const summaryTab = ref("summary");
 const saveStatus = ref("");
-let saveTimer = null;
+const toolsMenuOpen = ref(false);
+
+const shiftFilterDate = ref(frappe.datetime.get_today());
+const shiftFilterShift = ref("Day Shift");
+const shiftFilterUnit = ref("");
+const shiftEntries = ref([]);
+const shiftLoading = ref(false);
+const selectedShiftEntry = ref(null);
+
 let autosaveTimer = null;
+
+const vClickOutside = {
+  mounted(el, binding) {
+    el._gpeClickOutside = (e) => {
+      if (!el.contains(e.target)) {
+        binding.value();
+      }
+    };
+    document.addEventListener("click", el._gpeClickOutside);
+  },
+  unmounted(el) {
+    document.removeEventListener("click", el._gpeClickOutside);
+  },
+};
 
 function formatKg(v) {
   return sprFormatKg(v);
 }
 
+function isDraftSpr(item) {
+  return !!item?.spr_name && (item.spr_docstatus === 0 || item.spr_docstatus === "0");
+}
+
+function itemTargetGapKg(item) {
+  const t = sprFlt(item?.qty);
+  const a = sprFlt(item?.actual_production_weight_kgs ?? item?.total_achieved_weight_kgs);
+  return t - a;
+}
+
 function itemRemainingKg(item) {
-  const target = sprFlt(item.pp_target_qty || item.qty);
-  const achieved = sprFlt(item.actual_production_weight_kgs);
-  const pending = sprFlt(item.pending_qty);
-  if (pending > 0) {
-    return pending;
+  if (!item) {
+    return 0;
   }
-  return Math.max(0, target - achieved);
+  const pendingKg = sprFlt(item.pp_pending_qty ?? item.pending_qty ?? item.item_pending_qty);
+  const gap = itemTargetGapKg(item);
+  if (gap > 0.5) {
+    return Math.max(pendingKg, gap);
+  }
+  return pendingKg;
+}
+
+function lineEligibility(item, lineId) {
+  if (!item?.pp_id || Number(item.pp_docstatus) !== 1) {
+    return { selectable: false, chip: "", chipClass: "", tooltip: "PP not submitted" };
+  }
+  if (isDraftSpr(item)) {
+    return {
+      selectable: true,
+      chip: "Draft SPR",
+      chipClass: "gpe-chip-draft",
+      tooltip: `Draft SPR ${item.spr_name} — continue entry`,
+    };
+  }
+  const quota = quotaByLineId.value[lineId];
+  if (quota?.max_rolls > 0 && !quota.can_add_roll) {
+    return {
+      selectable: false,
+      chip: "Quota full",
+      chipClass: "gpe-chip-quota",
+      tooltip: `Roll limit reached (${quota.current_rolls}/${quota.max_rolls}) — use Manual Job`,
+    };
+  }
+  if (item.wo_terminal) {
+    return {
+      selectable: false,
+      chip: "WO Closed",
+      chipClass: "gpe-chip-closed",
+      tooltip: "All work orders closed — no further entry",
+    };
+  }
+  const rem = itemRemainingKg(item);
+  if (rem <= 0.5) {
+    return {
+      selectable: false,
+      chip: "Completed",
+      chipClass: "gpe-chip-done",
+      tooltip: "Production target met for this line",
+    };
+  }
+  if (Number(item.spr_docstatus) === 1 && !item.wo_terminal) {
+    return {
+      selectable: true,
+      chip: "SPR Submitted",
+      chipClass: "gpe-chip-submitted",
+      tooltip: "Submitted SPR — more production allowed while WO open",
+    };
+  }
+  return { selectable: true, chip: "", chipClass: "", tooltip: "Select to add roll rows" };
+}
+
+function quotaLabelForLine(lineId) {
+  const q = quotaByLineId.value[lineId];
+  if (!q || q.max_rolls <= 0) {
+    return "";
+  }
+  return `· Rolls ${q.current_rolls}/${q.max_rolls}`;
 }
 
 const ppSubmittedRows = computed(() =>
   (rawOrders.value || []).filter((r) => r.pp_id && Number(r.pp_docstatus) === 1)
 );
+
+const mergedItemIds = computed(() => {
+  const s = new Set();
+  (merges.value || []).forEach((m) => {
+    (m.merged_items || []).forEach((id) => s.add(id));
+  });
+  return s;
+});
 
 const unitOptions = computed(() => {
   const s = new Set();
@@ -359,6 +720,28 @@ const unitOptions = computed(() => {
   return [...s].sort();
 });
 
+function buildLineFromItem(item) {
+  const id = item.itemName || item.name;
+  const w = sprFlt(item.width_inch || item.width);
+  const elig = lineEligibility(item, id);
+  return {
+    id,
+    source: item,
+    gsm: item.gsm,
+    width_inch: w,
+    widthLabel: w ? `${w}"` : "—",
+    remainingKg: itemRemainingKg(item),
+    orderCode: item.partyCode || item.party_code || "",
+    partyName: item.customer_name || item.customer || "",
+    ppId: item.pp_id,
+    selectable: elig.selectable,
+    chip: elig.chip,
+    chipClass: elig.chipClass,
+    tooltip: elig.tooltip,
+    quotaLabel: quotaLabelForLine(id),
+  };
+}
+
 const orderGroups = computed(() => {
   const map = new Map();
   let rows = ppSubmittedRows.value;
@@ -366,6 +749,9 @@ const orderGroups = computed(() => {
     rows = rows.filter((r) => r.unit === filterUnit.value);
   }
   rows.forEach((item) => {
+    if (mergedItemIds.value.has(item.itemName || item.name)) {
+      return;
+    }
     const orderCode = item.partyCode || item.party_code || "";
     const key = `${orderCode}::${item.customer_name || item.customer || ""}`;
     if (!map.has(key)) {
@@ -377,27 +763,35 @@ const orderGroups = computed(() => {
         lines: [],
       });
     }
-    const w = sprFlt(item.width_inch || item.width);
-    map.get(key).lines.push({
-      id: item.itemName || item.name,
-      source: item,
-      gsm: item.gsm,
-      width_inch: w,
-      widthLabel: w ? `${w}"` : "—",
-      remainingKg: itemRemainingKg(item),
-      orderCode,
-      partyName: item.customer_name || item.customer || "",
-    });
+    map.get(key).lines.push(buildLineFromItem(item));
   });
   return [...map.values()].sort((a, b) => a.orderCode.localeCompare(b.orderCode));
 });
 
-const filteredOrderGroups = computed(() => {
+const activeOrderGroups = computed(() =>
+  orderGroups.value
+    .map((g) => ({ ...g, lines: g.lines.filter((l) => l.selectable) }))
+    .filter((g) => g.lines.length)
+);
+
+const completedOrderGroups = computed(() =>
+  orderGroups.value
+    .map((g) => ({ ...g, lines: g.lines.filter((l) => !l.selectable) }))
+    .filter((g) => g.lines.length)
+);
+
+const filteredActiveGroups = computed(() => filterGroups(activeOrderGroups.value));
+const filteredCompletedGroups = computed(() => filterGroups(completedOrderGroups.value));
+const completedLineCount = computed(() =>
+  completedOrderGroups.value.reduce((n, g) => n + g.lines.length, 0)
+);
+
+function filterGroups(groups) {
   const q = (searchText.value || "").trim().toLowerCase();
   if (!q) {
-    return orderGroups.value;
+    return groups;
   }
-  return orderGroups.value
+  return groups
     .map((g) => ({
       ...g,
       lines: g.lines.filter(
@@ -408,6 +802,60 @@ const filteredOrderGroups = computed(() => {
       ),
     }))
     .filter((g) => g.lines.length);
+}
+
+const mergeSidebarRows = computed(() => {
+  const q = (searchText.value || "").trim().toLowerCase();
+  return (merges.value || [])
+    .map((m) => {
+      const itemNames = m.merged_items || [];
+      const items = itemNames
+        .map((name) => ppSubmittedRows.value.find((r) => (r.itemName || r.name) === name))
+        .filter(Boolean);
+      if (!items.length) {
+        return null;
+      }
+      if (filterUnit.value && items.some((it) => it.unit !== filterUnit.value)) {
+        return null;
+      }
+      const remainingKg = items.reduce((s, it) => s + itemRemainingKg(it), 0);
+      const anyDraft = items.some((it) => isDraftSpr(it));
+      const allTerminal = items.length > 0 && items.every((it) => it.wo_terminal);
+      const selectable =
+        anyDraft || (!allTerminal && remainingKg > 0.5 && items.some((it) => lineEligibility(it, it.itemName || it.name).selectable));
+      let chip = "";
+      let chipClass = "";
+      let tooltip = "Merged production group";
+      if (anyDraft) {
+        chip = "Draft SPR";
+        chipClass = "gpe-chip-draft";
+      } else if (allTerminal) {
+        chip = "WO Closed";
+        chipClass = "gpe-chip-closed";
+        selectable = false;
+      } else if (remainingKg <= 0.5) {
+        chip = "Completed";
+        chipClass = "gpe-chip-done";
+        selectable = false;
+      }
+      const label = m.merge_label || `Merge ${m.name}`;
+      if (q && !label.toLowerCase().includes(q) && !items.some((it) => (it.partyCode || "").toLowerCase().includes(q))) {
+        return null;
+      }
+      return {
+        mergeId: m.name,
+        label,
+        itemIds: itemNames,
+        items,
+        remainingKg,
+        selectable,
+        chip,
+        chipClass,
+        tooltip,
+        ppId: items[0]?.pp_id,
+      };
+    })
+    .filter(Boolean);
 });
 
 const lineById = computed(() => {
@@ -415,19 +863,34 @@ const lineById = computed(() => {
   orderGroups.value.forEach((g) => {
     g.lines.forEach((l) => m.set(l.id, { ...l, ppId: g.ppId }));
   });
+  mergeSidebarRows.value.forEach((merge) => {
+    merge.items.forEach((item) => {
+      const line = buildLineFromItem(item);
+      m.set(line.id, { ...line, ppId: item.pp_id });
+    });
+  });
   return m;
 });
 
 const selectedSummary = computed(() => {
+  if (!selectedLineIds.value.size) {
+    return null;
+  }
   let remaining = 0;
+  let count = 0;
   selectedLineIds.value.forEach((id) => {
     const line = lineById.value.get(id);
-    if (line) {
+    if (line?.selectable !== false) {
       remaining += line.remainingKg;
+      count += 1;
     }
   });
-  return { count: selectedLineIds.value.size, remaining };
+  return { count, remaining };
 });
+
+const confirmLines = computed(() =>
+  [...selectedLineIds.value].map((id) => lineById.value.get(id)).filter(Boolean)
+);
 
 const headerTags = computed(() => {
   const tags = [];
@@ -439,6 +902,43 @@ const headerTags = computed(() => {
   });
   return tags.slice(0, 8);
 });
+
+const toolsContext = computed(() => {
+  if (!selectionLocked.value || !selectedLineIds.value.size) {
+    return null;
+  }
+  const ppIds = new Set();
+  const planningNames = [];
+  let orderKey = null;
+  for (const id of selectedLineIds.value) {
+    const line = lineById.value.get(id);
+    if (!line) {
+      continue;
+    }
+    ppIds.add(line.ppId);
+    planningNames.push(id);
+    const ok = `${line.orderCode}::${line.partyName}`;
+    if (orderKey && orderKey !== ok) {
+      return null;
+    }
+    orderKey = ok;
+  }
+  if (ppIds.size !== 1) {
+    return null;
+  }
+  return {
+    ppId: [...ppIds][0],
+    planningNames,
+    orderKey,
+  };
+});
+
+const toolsEnabled = computed(() => !!toolsContext.value);
+const toolsHint = computed(() =>
+  toolsEnabled.value
+    ? "SPR tools for locked selection"
+    : "Lock a single order group to enable Tools"
+);
 
 const primaryGsmLabel = computed(() => {
   const gsms = new Set();
@@ -479,13 +979,12 @@ const metrics = computed(() => {
 const linkedOrderSummary = computed(() => {
   const byOrder = new Map();
   const addReq = (orderCode, partyName, required) => {
-    const k = orderCode;
-    if (!byOrder.has(k)) {
-      byOrder.set(k, { orderCode, partyName, required: 0, produced: 0, achieved: 0 });
+    if (!byOrder.has(orderCode)) {
+      byOrder.set(orderCode, { orderCode, partyName, required: 0, produced: 0, achieved: 0 });
     }
-    byOrder.get(k).required += required;
+    byOrder.get(orderCode).required += required;
     if (partyName) {
-      byOrder.get(k).partyName = partyName;
+      byOrder.get(orderCode).partyName = partyName;
     }
   };
   selectedLineIds.value.forEach((id) => {
@@ -494,7 +993,7 @@ const linkedOrderSummary = computed(() => {
       return;
     }
     const src = line.source;
-    addReq(line.orderCode, line.partyName, sprFlt(src.pp_target_qty || src.qty));
+    addReq(line.orderCode, line.partyName, sprFlt(src.qty));
     byOrder.get(line.orderCode).achieved += sprFlt(src.actual_production_weight_kgs);
   });
   rollLines.value.forEach((r) => {
@@ -550,7 +1049,7 @@ const gsmSummary = computed(() => {
       m.set(g, { gsm: g, required: 0, session: 0, achieved: 0 });
     }
     const src = line.source;
-    m.get(g).required += sprFlt(src.pp_target_qty || src.qty);
+    m.get(g).required += sprFlt(src.qty);
     m.get(g).achieved += sprFlt(src.actual_production_weight_kgs);
   });
   rollLines.value.forEach((r) => {
@@ -584,7 +1083,7 @@ const selectedLinesDetail = computed(() => {
       partyName: line.partyName,
       gsm: line.gsm,
       width_inch: line.width_inch,
-      requiredKg: sprFlt(line.source.pp_target_qty || line.source.qty),
+      requiredKg: sprFlt(line.source.qty),
       sessionKg,
       achievedKg: sprFlt(line.source.actual_production_weight_kgs),
     });
@@ -593,39 +1092,147 @@ const selectedLinesDetail = computed(() => {
 });
 
 const canAddRow = computed(
-  () => !!(activeLineId.value || selectedLineIds.value.size) && headerUnit.value && runDate.value && shift.value
+  () =>
+    selectionLocked.value &&
+    selectedLineIds.value.size > 0 &&
+    headerUnit.value &&
+    runDate.value &&
+    shift.value
 );
 
+function lineRowClass(line) {
+  return {
+    selected: selectedLineIds.value.has(line.id),
+    "gpe-line-disabled": !line.selectable,
+  };
+}
+
+function isMergeSelected(merge) {
+  return merge.itemIds.length > 0 && merge.itemIds.every((id) => selectedLineIds.value.has(id));
+}
+
 function toggleLine(id, ev) {
+  if (selectionLocked.value) {
+    return;
+  }
+  const line = lineById.value.get(id);
+  if (!line?.selectable && ev.target.checked) {
+    ev.target.checked = false;
+    return;
+  }
   const next = new Set(selectedLineIds.value);
   if (ev.target.checked) {
     next.add(id);
-    activeLineId.value = id;
   } else {
     next.delete(id);
-    if (activeLineId.value === id) {
-      activeLineId.value = next.size ? [...next][0] : "";
-    }
   }
   selectedLineIds.value = next;
   scheduleAutosave();
 }
 
-function setActiveLine(id) {
-  activeLineId.value = id;
+function toggleMerge(merge, ev) {
+  if (selectionLocked.value) {
+    return;
+  }
   const next = new Set(selectedLineIds.value);
-  next.add(id);
+  if (ev.target.checked) {
+    merge.itemIds.forEach((id) => {
+      const line = lineById.value.get(id);
+      if (line?.selectable) {
+        next.add(id);
+      }
+    });
+  } else {
+    merge.itemIds.forEach((id) => next.delete(id));
+  }
   selectedLineIds.value = next;
+  scheduleAutosave();
+}
+
+function onLineLabelClick(line) {
+  if (selectionLocked.value || !line.selectable) {
+    return;
+  }
+  const next = new Set(selectedLineIds.value);
+  if (next.has(line.id)) {
+    next.delete(line.id);
+  } else {
+    next.add(line.id);
+  }
+  selectedLineIds.value = next;
+  scheduleAutosave();
+}
+
+function openConfirmSelection() {
+  if (!selectedLineIds.value.size) {
+    return;
+  }
+  showConfirmDialog.value = true;
+}
+
+function confirmSelection() {
+  selectionLocked.value = true;
+  showConfirmDialog.value = false;
+  scheduleAutosave();
+}
+
+function unlockSelection() {
+  if (rollLines.value.length) {
+    frappe.confirm("Unlock selection? Existing roll rows stay in the grid.", () => {
+      selectionLocked.value = false;
+      scheduleAutosave();
+    });
+    return;
+  }
+  selectionLocked.value = false;
+  scheduleAutosave();
 }
 
 function clearSelection() {
+  if (selectionLocked.value) {
+    frappe.msgprint("Unlock selection first.");
+    return;
+  }
   selectedLineIds.value = new Set();
-  activeLineId.value = "";
+  scheduleAutosave();
+}
+
+function closeToolsMenu() {
+  toolsMenuOpen.value = false;
+}
+
+async function runTool(kind) {
+  closeToolsMenu();
+  const ctx = toolsContext.value;
+  if (!ctx) {
+    return;
+  }
+  const { ppId, planningNames } = ctx;
+  const onSuccess = () => fetchOrders();
+  if (kind === "manual") {
+    await gsmOpenManualJob(ppId, planningNames, headerUnit.value, runDate.value, shift.value, onSuccess);
+  } else if (kind === "trail") {
+    await gsmOpenTrailOrder(ppId, planningNames, headerUnit.value, runDate.value, shift.value);
+  } else if (kind === "bundle") {
+    await gsmToggleBundlePackaging(ppId, planningNames, headerUnit.value, runDate.value, shift.value);
+  } else if (kind === "rmbatches") {
+    await gsmOpenRmBatches(ppId, planningNames, headerUnit.value, runDate.value, shift.value);
+  }
 }
 
 function viewPP(ppId) {
   if (ppId) {
     openProductionPlanPrintPreview(ppId);
+  }
+}
+
+function openSpr(name) {
+  openSprForm(name);
+}
+
+function openWorkOrder(wo) {
+  if (wo) {
+    frappe.set_route("Form", "Work Order", wo);
   }
 }
 
@@ -635,9 +1242,36 @@ function rowBandClass(row) {
 }
 
 function onRowEdit(row) {
+  if (row.row_locked) {
+    return;
+  }
   const updated = sprRecalcRollRow(row);
   Object.assign(row, updated);
   scheduleAutosave();
+}
+
+function saveRow(row) {
+  row.row_locked = 1;
+  row.row_ready_for_print = 1;
+  scheduleAutosave();
+  frappe.show_alert({ message: __("Row saved locally"), indicator: "green" });
+}
+
+function editRow(row) {
+  row.row_locked = 0;
+  row.row_ready_for_print = 0;
+  scheduleAutosave();
+}
+
+function printLabel(row) {
+  if (!row.row_locked) {
+    frappe.msgprint(__("Save Row first to enable the label."));
+    return;
+  }
+  frappe.show_alert({
+    message: __("Production label print connects in Phase 2."),
+    indicator: "blue",
+  });
 }
 
 function buildFetchArgs() {
@@ -671,6 +1305,62 @@ function buildFetchArgs() {
   return args;
 }
 
+function mergeFetchDate() {
+  if (viewScope.value === "daily") {
+    return filterDate.value;
+  }
+  const args = buildFetchArgs();
+  return args.date || args.start_date || filterDate.value;
+}
+
+async function fetchMerges() {
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.scheduler_api.get_merges_for_date",
+      args: {
+        date: mergeFetchDate(),
+        unit: filterUnit.value || null,
+        plan_name: "Default",
+      },
+    });
+    merges.value = Array.isArray(res.message) ? res.message : [];
+  } catch (e) {
+    console.warn("merge fetch failed", e);
+    merges.value = [];
+  }
+}
+
+async function loadQuotaForLines() {
+  const cache = {};
+  const seen = new Set();
+  const rows = ppSubmittedRows.value;
+  const tasks = rows.map(async (item) => {
+    const lineId = item.itemName || item.name;
+    const key = `${item.pp_id}::${lineId}::${item.gsm}::${item.width_inch}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    try {
+      const res = await frappe.call({
+        method: "production_entry.production_planning.unified_production_entry_api.get_pt_line_roll_quota_status",
+        args: {
+          pp_id: item.pp_id,
+          production_plan_item: lineId,
+          gsm: item.gsm,
+          width_inch: sprFlt(item.width_inch || item.width),
+          item_code: item.itemCode || item.item_code,
+        },
+      });
+      cache[lineId] = res.message || {};
+    } catch (e) {
+      console.warn("quota fetch", lineId, e);
+    }
+  });
+  await Promise.all(tasks);
+  quotaByLineId.value = cache;
+}
+
 async function fetchOrders() {
   loadingOrders.value = true;
   try {
@@ -690,6 +1380,7 @@ async function fetchOrders() {
       filterUnit.value = unitOptions.value[0];
       headerUnit.value = filterUnit.value;
     }
+    await Promise.all([fetchMerges(), loadQuotaForLines()]);
   } catch (e) {
     console.error(e);
     frappe.msgprint("Failed to load orders");
@@ -700,6 +1391,172 @@ async function fetchOrders() {
 
 function onUnitChange() {
   headerUnit.value = filterUnit.value;
+  fetchMerges();
+  scheduleAutosave();
+}
+
+async function loadCurrentShift() {
+  try {
+    const r = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_current_shift",
+    });
+    if (r.message) {
+      shift.value = r.message;
+      shiftFilterShift.value = r.message;
+    }
+  } catch (e) {
+    console.warn("shift default", e);
+  }
+}
+
+async function fetchQuotaForLine(line) {
+  try {
+    const src = line.source;
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_pt_line_roll_quota_status",
+      args: {
+        pp_id: line.ppId || src.pp_id,
+        production_plan_item: line.id,
+        gsm: line.gsm,
+        width_inch: line.width_inch,
+        item_code: src.itemCode || src.item_code,
+      },
+    });
+    return res.message || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+async function resolveOrderLength(line) {
+  const src = line.source;
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_order_length_for_pt_line",
+      args: {
+        pp_id: line.ppId || src.pp_id,
+        gsm: line.gsm,
+        width_inch: line.width_inch,
+        item_code: src.itemCode || src.item_code,
+        production_plan_item: line.id,
+      },
+    });
+    return sprFlt(res.message?.meter_roll_mtrs);
+  } catch (e) {
+    return sprFlt(src.meter || src.meter_roll);
+  }
+}
+
+async function resolveWorkOrder(line) {
+  const src = line.source;
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.resolve_work_order_for_roll_line",
+      args: {
+        pp_id: line.ppId || src.pp_id,
+        gsm: line.gsm,
+        width_inch: line.width_inch,
+        item_code: src.itemCode || src.item_code,
+        production_plan_item: line.id,
+      },
+    });
+    return res.message?.work_order || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function pickLineForRow() {
+  const lines = [...selectedLineIds.value].map((id) => lineById.value.get(id)).filter(Boolean);
+  if (lines.length <= 1) {
+    return Promise.resolve(lines[0] || null);
+  }
+  widthPickerLines.value = lines;
+  widthPickerChoice.value = lines[0]?.id || "";
+  showWidthPicker.value = true;
+  return new Promise((resolve) => {
+    pendingAddRowResolve = resolve;
+  });
+}
+
+async function proceedAddRow() {
+  const line = lineById.value.get(widthPickerChoice.value);
+  showWidthPicker.value = false;
+  if (pendingAddRowResolve) {
+    pendingAddRowResolve(line || null);
+    pendingAddRowResolve = null;
+  }
+}
+
+async function addRollRow() {
+  if (!selectionLocked.value) {
+    frappe.msgprint("Confirm and lock your GSM selection first.");
+    return;
+  }
+  if (!headerUnit.value) {
+    frappe.msgprint("Select a unit filter first.");
+    return;
+  }
+  const line = await pickLineForRow();
+  if (!line) {
+    return;
+  }
+  const quota = await fetchQuotaForLine(line);
+  if (quota.max_rolls > 0 && !quota.can_add_roll) {
+    frappe.confirm(
+      __("Roll limit reached for this width — use Manual Job. Open Manual Job now?"),
+      async () => {
+        const ctx = toolsContext.value;
+        if (ctx) {
+          await gsmOpenManualJob(
+            ctx.ppId,
+            ctx.planningNames,
+            headerUnit.value,
+            runDate.value,
+            shift.value,
+            () => fetchOrders()
+          );
+        }
+      }
+    );
+    return;
+  }
+  const src = line.source;
+  const [batchInfo, ordLen, wo] = await Promise.all([
+    previewNextBatch(),
+    resolveOrderLength(line),
+    resolveWorkOrder(line),
+  ]);
+  creationSeq.value += 1;
+  const newRow = sprRecalcRollRow({
+    _id: `row-${Date.now()}-${creationSeq.value}`,
+    creation_seq: creationSeq.value,
+    planning_table_row: line.id,
+    pp_id: line.ppId || src.pp_id,
+    party_code: line.orderCode,
+    item_code: src.itemCode || src.item_code,
+    item_name: src.description || src.item_name || "",
+    quality: src.quality || "",
+    color: src.color || src.fabric_colour || "",
+    gsm: src.gsm,
+    batch_no: batchInfo.batch_no || "",
+    roll_no: batchInfo.roll_no || "",
+    width_inch: line.width_inch,
+    meter_roll: ordLen,
+    produced_length_mtrs: "",
+    produced_gsm: 0,
+    net_weight: 0,
+    gross_weight: "",
+    uom: src.uom || src.stock_uom || "Kg",
+    custom_core_width_mm: 1600,
+    custom_polybag_kgs: sprFlt(src.custom_polybag_kgs ?? src.polybag_kgs ?? 0),
+    custom_diameter_inches: "",
+    custom_cbm_cubic_meters: "",
+    work_order: wo,
+    row_locked: 0,
+    row_ready_for_print: 0,
+  });
+  rollLines.value.unshift(newRow);
   scheduleAutosave();
 }
 
@@ -727,54 +1584,36 @@ async function previewNextBatch() {
   return row || { batch_no: "", roll_no: "" };
 }
 
-async function addRollRow() {
-  const lineId = activeLineId.value || [...selectedLineIds.value][0];
-  const line = lineById.value.get(lineId);
-  if (!line) {
-    frappe.msgprint("Select an order GSM line on the left.");
-    return;
-  }
-  if (!headerUnit.value) {
-    frappe.msgprint("Select a unit filter first.");
-    return;
-  }
-  const src = line.source;
-  const batchInfo = await previewNextBatch();
-  creationSeq.value += 1;
-  const newRow = sprRecalcRollRow({
-    _id: `row-${Date.now()}-${creationSeq.value}`,
-    creation_seq: creationSeq.value,
-    planning_table_row: lineId,
-    pp_id: line.ppId || src.pp_id,
-    party_code: line.orderCode,
-    item_code: src.itemCode || src.item_code,
-    item_name: src.description || src.item_name || "",
-    quality: src.quality || "",
-    color: src.color || src.fabric_colour || "",
-    gsm: src.gsm,
-    batch_no: batchInfo.batch_no || "",
-    roll_no: batchInfo.roll_no || "",
-    width_inch: line.width_inch,
-    meter_roll: sprFlt(src.meter || src.meter_roll),
-    produced_length_mtrs: sprFlt(src.meter || src.meter_roll),
-    produced_gsm: 0,
-    net_weight: 0,
-    gross_weight: "",
-    custom_core_width_mm: 1600,
-    custom_diameter_inches: "",
-    custom_cbm_cubic_meters: "",
-    work_order: "",
-  });
-  rollLines.value.unshift(newRow);
-  scheduleAutosave();
-}
-
 function removeTopRow() {
   if (!rollLines.value.length) {
     return;
   }
   rollLines.value.shift();
   scheduleAutosave();
+}
+
+async function loadShiftEntries() {
+  shiftLoading.value = true;
+  selectedShiftEntry.value = null;
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_submitted_entries",
+      args: {
+        run_date: shiftFilterDate.value,
+        shift: shiftFilterShift.value,
+        unit: shiftFilterUnit.value || undefined,
+      },
+    });
+    shiftEntries.value = res.message || [];
+    if (shiftEntries.value.length) {
+      selectedShiftEntry.value = shiftEntries.value[0];
+    }
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint("Failed to load shift entries");
+  } finally {
+    shiftLoading.value = false;
+  }
 }
 
 function persistDraft() {
@@ -788,7 +1627,7 @@ function persistDraft() {
       filterUnit: filterUnit.value,
       filterDate: filterDate.value,
       selectedLineIds: [...selectedLineIds.value],
-      activeLineId: activeLineId.value,
+      selectionLocked: selectionLocked.value,
       rollLines: rollLines.value,
       seriesPrefix: seriesPrefix.value,
       maxRollSuffix: maxRollSuffix.value,
@@ -824,7 +1663,7 @@ function restoreDraft() {
       filterDate.value = d.filterDate;
     }
     selectedLineIds.value = new Set(d.selectedLineIds || []);
-    activeLineId.value = d.activeLineId || "";
+    selectionLocked.value = !!d.selectionLocked;
     rollLines.value = d.rollLines || [];
     seriesPrefix.value = d.seriesPrefix || "";
     maxRollSuffix.value = d.maxRollSuffix || 0;
@@ -849,15 +1688,15 @@ watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
 
 onMounted(async () => {
   restoreDraft();
+  await loadCurrentShift();
+  shiftFilterDate.value = runDate.value;
+  shiftFilterUnit.value = filterUnit.value;
   await fetchOrders();
 });
 
 onUnmounted(() => {
   if (autosaveTimer) {
     clearTimeout(autosaveTimer);
-  }
-  if (saveTimer) {
-    clearTimeout(saveTimer);
   }
 });
 </script>
@@ -871,14 +1710,44 @@ onUnmounted(() => {
   background: #f8fafc;
   min-height: 100vh;
 }
-.gpe-banner {
-  background: #fef3c7;
-  border: 1px solid #f59e0b;
-  color: #92400e;
+.gpe-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.gpe-card-inner {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+.gpe-info-strip {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
   padding: 8px 12px;
-  border-radius: 8px;
+  border-radius: 12px;
   margin-bottom: 12px;
-  font-weight: 600;
+  font-size: 12px;
+}
+.gpe-page-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.gpe-page-tabs button {
+  padding: 8px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  font-weight: 500;
+}
+.gpe-page-tabs button.active {
+  background: #4f46e5;
+  color: #fff;
+  border-color: #4f46e5;
 }
 .gpe-filters {
   display: flex;
@@ -886,10 +1755,7 @@ onUnmounted(() => {
   gap: 12px;
   align-items: flex-end;
   margin-bottom: 12px;
-  background: #fff;
   padding: 12px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
 }
 .gpe-filter label {
   display: block;
@@ -901,11 +1767,11 @@ onUnmounted(() => {
 .gpe-filter select {
   padding: 6px 8px;
   border: 1px solid #cbd5e1;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 .gpe-layout {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: 12px;
   align-items: start;
 }
@@ -915,11 +1781,8 @@ onUnmounted(() => {
   }
 }
 .gpe-sidebar {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
   padding: 12px;
-  max-height: calc(100vh - 200px);
+  max-height: calc(100vh - 220px);
   overflow: auto;
 }
 .gpe-sidebar h3 {
@@ -931,9 +1794,26 @@ onUnmounted(() => {
   color: #64748b;
   margin: 0 0 10px;
 }
+.gpe-sidebar-section {
+  margin-bottom: 10px;
+}
+.gpe-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.gpe-collapse-btn {
+  border: none;
+  background: none;
+  color: #4f46e5;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  margin-bottom: 8px;
+}
 .gpe-order-group {
-  border-top: 1px solid #f1f5f9;
-  padding-top: 8px;
   margin-top: 8px;
 }
 .gpe-order-head {
@@ -950,28 +1830,80 @@ onUnmounted(() => {
 .gpe-line {
   display: flex;
   gap: 6px;
-  padding: 4px 6px;
-  border-radius: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 12px;
-}
-.gpe-line.active {
-  background: #eef2ff;
+  align-items: flex-start;
 }
 .gpe-line.selected {
+  background: #eef2ff;
   font-weight: 600;
+}
+.gpe-line-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.gpe-completed .gpe-order-head {
+  opacity: 0.7;
+}
+.gpe-merge-label {
+  font-weight: 600;
+  color: #7c3aed;
+}
+.gpe-quota {
+  color: #b45309;
+  font-size: 11px;
+}
+.gpe-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 4px;
+}
+.gpe-chip-draft {
+  background: #fef3c7;
+  color: #92400e;
+}
+.gpe-chip-done {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.gpe-chip-closed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.gpe-chip-quota {
+  background: #ffedd5;
+  color: #c2410c;
+}
+.gpe-chip-submitted {
+  background: #dcfce7;
+  color: #166534;
 }
 .gpe-selected-box {
   margin-top: 12px;
-  padding: 8px;
+  padding: 10px;
   background: #f1f5f9;
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 12px;
 }
+.gpe-selection-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.gpe-lock-badge {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #4f46e5;
+  font-weight: 600;
+}
 .gpe-main {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
   padding: 12px;
 }
 .gpe-header-fields {
@@ -986,6 +1918,12 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 2px;
 }
+.gpe-header-fields input,
+.gpe-header-fields select {
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
 .gpe-tags {
   display: flex;
   flex-wrap: wrap;
@@ -994,7 +1932,7 @@ onUnmounted(() => {
 .gpe-tag {
   background: #e0e7ff;
   color: #3730a3;
-  padding: 2px 8px;
+  padding: 2px 10px;
   border-radius: 999px;
   font-size: 11px;
 }
@@ -1005,40 +1943,49 @@ onUnmounted(() => {
   margin: 12px 0;
 }
 .gpe-metric {
-  padding: 10px;
-  border-radius: 8px;
+  padding: 12px;
+  border-radius: 12px;
   text-align: center;
   font-size: 11px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 .gpe-metric strong {
-  font-size: 18px;
+  font-size: 20px;
   display: block;
   margin-top: 4px;
 }
-.gpe-metric.blue {
-  background: #dbeafe;
-}
-.gpe-metric.green {
-  background: #dcfce7;
-}
-.gpe-metric.orange {
-  background: #ffedd5;
-}
-.gpe-metric.grey {
-  background: #f1f5f9;
-}
+.gpe-metric.blue { background: #dbeafe; }
+.gpe-metric.green { background: #dcfce7; }
+.gpe-metric.orange { background: #ffedd5; }
+.gpe-metric.grey { background: #f1f5f9; }
 .gpe-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.gpe-toolbar-left {
+  display: flex;
+  gap: 8px;
+}
+.gpe-toolbar-right {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 .gpe-btn {
   padding: 6px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid #cbd5e1;
   background: #fff;
   cursor: pointer;
+  font-size: 12px;
+}
+.gpe-btn.sm {
+  padding: 3px 8px;
+  font-size: 11px;
 }
 .gpe-btn.primary {
   background: #4f46e5;
@@ -1058,15 +2005,43 @@ onUnmounted(() => {
   text-decoration: underline;
 }
 .gpe-save-status {
-  margin-left: auto;
   font-size: 11px;
   color: #64748b;
 }
+.gpe-tools-wrap {
+  position: relative;
+}
+.gpe-tools-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  z-index: 20;
+  min-width: 200px;
+  overflow: hidden;
+}
+.gpe-tools-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+.gpe-tools-menu button:hover {
+  background: #f8fafc;
+}
 .gpe-grid-wrap {
   overflow: auto;
-  max-height: 360px;
+  max-height: 420px;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border-radius: 10px;
 }
 .gpe-grid {
   width: 100%;
@@ -1076,7 +2051,7 @@ onUnmounted(() => {
 .gpe-grid th,
 .gpe-grid td {
   border-bottom: 1px solid #f1f5f9;
-  padding: 4px 6px;
+  padding: 6px 8px;
   white-space: nowrap;
 }
 .gpe-grid th {
@@ -1085,35 +2060,45 @@ onUnmounted(() => {
   top: 0;
   z-index: 1;
 }
+.gpe-grid tbody tr:nth-child(even) {
+  background: #fafbfc;
+}
+.gpe-row-locked {
+  background: #f0fdf4 !important;
+}
 .gpe-inp {
   width: 72px;
-  padding: 2px 4px;
+  padding: 3px 5px;
   border: 1px solid #cbd5e1;
-  border-radius: 4px;
+  border-radius: 6px;
 }
-.gpe-gsm-band-0 {
-  background: #ecfdf5;
+.gpe-inp:disabled {
+  background: #f1f5f9;
+  color: #64748b;
 }
-.gpe-gsm-band-1 {
-  background: #fefce8;
+.gpe-actions {
+  display: flex;
+  gap: 4px;
 }
-.gpe-gsm-band-2 {
-  background: #fff7ed;
+.gpe-wo-link {
+  color: #4f46e5;
+  text-decoration: none;
+  font-size: 11px;
 }
-.gpe-gsm-band-3 {
-  background: #fef2f2;
-}
-.gpe-gsm-incomplete {
-  background: #f8fafc;
-}
-.gpe-summaries {
-  margin-top: 16px;
+.gpe-gsm-band-0 { background: #ecfdf5; }
+.gpe-gsm-band-1 { background: #fefce8; }
+.gpe-gsm-band-2 { background: #fff7ed; }
+.gpe-gsm-band-3 { background: #fef2f2; }
+.gpe-gsm-incomplete { background: #f8fafc; }
+.gpe-summary-tab {
+  margin-top: 0;
 }
 .gpe-tabs button {
   padding: 6px 12px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
   cursor: pointer;
+  border-radius: 8px 8px 0 0;
 }
 .gpe-tabs button.active {
   background: #4f46e5;
@@ -1132,9 +2117,6 @@ onUnmounted(() => {
   }
 }
 .gpe-panel {
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 8px;
   overflow: auto;
 }
 .gpe-panel.wide {
@@ -1185,5 +2167,125 @@ onUnmounted(() => {
 .gpe-muted {
   color: #94a3b8;
   font-size: 12px;
+  padding: 16px;
+}
+.gpe-shift-layout {
+  margin-top: 0;
+}
+.gpe-shift-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.gpe-shift-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #64748b;
+}
+.gpe-shift-split {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 12px;
+  min-height: 400px;
+}
+@media (max-width: 1000px) {
+  .gpe-shift-split {
+    grid-template-columns: 1fr;
+  }
+}
+.gpe-shift-sidebar {
+  padding: 8px;
+  max-height: 520px;
+  overflow: auto;
+}
+.gpe-shift-card {
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  background: #fff;
+}
+.gpe-shift-card.active {
+  border-color: #4f46e5;
+  background: #eef2ff;
+}
+.gpe-shift-card-title {
+  font-weight: 700;
+  font-size: 12px;
+}
+.gpe-shift-card-meta {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 4px;
+}
+.gpe-shift-card-stats {
+  font-size: 11px;
+  margin-top: 4px;
+}
+.gpe-shift-detail {
+  padding: 12px;
+}
+.gpe-shift-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.gpe-shift-meta {
+  font-size: 12px;
+  color: #64748b;
+}
+.gpe-wo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.gpe-empty-state {
+  padding: 32px;
+  text-align: center;
+}
+.gpe-empty-state h3 {
+  margin: 0 0 8px;
+}
+.gpe-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.gpe-dialog {
+  width: min(480px, 92vw);
+  padding: 16px;
+}
+.gpe-dialog h3 {
+  margin: 0 0 8px;
+}
+.gpe-confirm-list {
+  margin: 12px 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+.gpe-picker-list {
+  margin: 12px 0;
+}
+.gpe-picker-row {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.gpe-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>
