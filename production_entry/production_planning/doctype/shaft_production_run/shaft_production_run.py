@@ -9221,6 +9221,36 @@ def _spr_operation_lock_key(spr_name: str, operation: str = "write") -> str:
 	return f"spr_lock:{_cstr(spr_name)}:{_cstr(operation)}"
 
 
+def _spr_acquire_cache_lock(key: str, ttl_sec: int = 120) -> bool:
+	"""Best-effort distributed lock using Frappe cache (Frappe 16 compatible)."""
+	cache = frappe.cache()
+	if cache.get_value(key):
+		return False
+	owner = _cstr(frappe.session.user or "system")
+	ttl_sec = max(cint(ttl_sec), 30)
+	try:
+		redis_key = cache.make_key(key)
+		acquired = cache.set(redis_key, owner.encode("utf-8"), nx=True, ex=ttl_sec)
+		if acquired is not None:
+			return bool(acquired)
+	except Exception:
+		pass
+	try:
+		if cache.get_value(key):
+			return False
+		cache.set_value(key, owner, expires_in_sec=ttl_sec)
+		return _cstr(cache.get_value(key)) == owner
+	except Exception:
+		return False
+
+
+def _spr_release_cache_lock(key: str) -> None:
+	try:
+		frappe.cache().delete_value(key)
+	except Exception:
+		pass
+
+
 @contextmanager
 def _spr_operation_lock(spr_name: str, operation: str = "write", ttl_sec: int = 120):
 	"""Block concurrent Create Entry / batch assignment on the same SPR."""
@@ -9228,22 +9258,7 @@ def _spr_operation_lock(spr_name: str, operation: str = "write", ttl_sec: int = 
 		yield
 		return
 	key = _spr_operation_lock_key(spr_name, operation)
-	acquired = False
-	try:
-		acquired = bool(
-			frappe.cache().set(
-				key,
-				frappe.session.user or "system",
-				expires_in_sec=ttl_sec,
-				nx=True,
-			)
-		)
-	except TypeError:
-		if frappe.cache().get(key):
-			acquired = False
-		else:
-			frappe.cache().set(key, frappe.session.user or "system", expires_in_sec=ttl_sec)
-			acquired = True
+	acquired = _spr_acquire_cache_lock(key, ttl_sec=ttl_sec)
 	if not acquired:
 		frappe.throw(
 			_(
@@ -9256,10 +9271,7 @@ def _spr_operation_lock(spr_name: str, operation: str = "write", ttl_sec: int = 
 		yield
 	finally:
 		if acquired:
-			try:
-				frappe.cache().delete(key)
-			except Exception:
-				pass
+			_spr_release_cache_lock(key)
 
 
 def _spr_used_batch_numbers_on_spr(spr_name: str | None, in_memory_items=None) -> set[str]:
