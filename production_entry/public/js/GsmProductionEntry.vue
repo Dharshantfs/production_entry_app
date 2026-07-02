@@ -51,55 +51,8 @@
         <h3>Orders &amp; GSM</h3>
         <p class="gpe-hint">PP-submitted lines. Confirm selection, then add roll rows.</p>
         <div v-if="loadingOrders" class="gpe-muted">Loading…</div>
-        <div v-else-if="!orderGroups.length && !mergeSidebarRows.length" class="gpe-muted">
+        <div v-else-if="!orderGroups.length" class="gpe-muted">
           No PP-submitted orders for this date/unit.
-        </div>
-
-        <div v-if="mergeSidebarRows.length" class="gpe-sidebar-section">
-          <div class="gpe-section-title">Merged groups</div>
-          <div
-            v-for="merge in mergeSidebarRows"
-            :key="merge.mergeId"
-            class="gpe-order-card"
-          >
-            <div class="gpe-order-head">
-              <span class="gpe-order-code">{{ merge.orderCode }}</span>
-              <button
-                v-if="merge.ppId"
-                type="button"
-                class="gpe-link-btn"
-                @click.stop="viewPP(merge.ppId)"
-              >View PP</button>
-            </div>
-            <label
-              class="gpe-line-card"
-              :class="{ selected: isMergeSelected(merge), 'gpe-line-disabled': !merge.selectable }"
-              :title="merge.tooltip"
-            >
-              <input
-                type="checkbox"
-                class="gpe-line-check"
-                :checked="isMergeSelected(merge)"
-                :disabled="!merge.selectable || selectionLocked"
-                @change="toggleMerge(merge, $event)"
-              />
-              <div class="gpe-line-body">
-                <div class="gpe-line-meta">
-                  <span class="gpe-quality">{{ merge.quality }}</span>
-                  <span class="gpe-color">{{ merge.color }}</span>
-                </div>
-                <div class="gpe-line-spec">
-                  <strong class="gpe-gsm">{{ merge.gsmLabel }}</strong>
-                  <span>{{ merge.widthLabel }}</span>
-                  <span class="gpe-day-target">Plan {{ formatKg(merge.dayTargetKg) }} Kg</span>
-                </div>
-                <div v-if="merge.quotaLabel || merge.chip" class="gpe-line-foot">
-                  <span v-if="merge.quotaLabel" class="gpe-quota" :title="merge.quotaTooltip">{{ merge.quotaLabel }}</span>
-                  <span v-if="merge.chip" :class="['gpe-chip', merge.chipClass]">{{ merge.chip }}</span>
-                </div>
-              </div>
-            </label>
-          </div>
         </div>
 
         <div v-for="grp in filteredActiveGroups" :key="grp.key" class="gpe-order-card">
@@ -134,9 +87,11 @@
               <div class="gpe-line-spec">
                 <strong class="gpe-gsm">{{ line.gsm }} GSM</strong>
                 <span>{{ line.widthLabel }}</span>
-                <span class="gpe-day-target">Plan {{ formatKg(line.dayTargetKg) }} Kg</span>
+                <span class="gpe-day-target">Tgt {{ formatKg(line.dayTargetKg) }} Kg</span>
+                <span class="gpe-day-rem">Rem {{ formatKg(line.dayRemKg) }} Kg</span>
               </div>
-              <div v-if="line.quotaLabel || line.chip" class="gpe-line-foot">
+              <div v-if="line.mergeBadge || line.quotaLabel || line.chip" class="gpe-line-foot">
+                <span v-if="line.mergeBadge" class="gpe-chip gpe-chip-merge">{{ line.mergeBadge }}</span>
                 <span v-if="line.quotaLabel" class="gpe-quota" :title="line.quotaTooltip">{{ line.quotaLabel }}</span>
                 <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
               </div>
@@ -174,9 +129,11 @@
                   <div class="gpe-line-spec">
                     <strong class="gpe-gsm">{{ line.gsm }} GSM</strong>
                     <span>{{ line.widthLabel }}</span>
-                    <span class="gpe-day-target">Plan {{ formatKg(line.dayTargetKg) }} Kg</span>
+                    <span class="gpe-day-target">Tgt {{ formatKg(line.dayTargetKg) }} Kg</span>
+                    <span class="gpe-day-rem">Rem {{ formatKg(line.dayRemKg) }} Kg</span>
                   </div>
-                  <div v-if="line.chip" class="gpe-line-foot">
+                  <div v-if="line.mergeBadge || line.chip" class="gpe-line-foot">
+                    <span v-if="line.mergeBadge" class="gpe-chip gpe-chip-merge">{{ line.mergeBadge }}</span>
                     <span :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
                   </div>
                 </div>
@@ -564,7 +521,7 @@
         <p>Lock these lines for roll entry? You can unlock later.</p>
         <ul class="gpe-confirm-list">
           <li v-for="line in confirmLines" :key="line.id">
-            {{ line.orderCode }} · {{ line.quality }} · {{ line.color }} · {{ line.gsm }} GSM · {{ line.widthLabel }} · Plan {{ formatKg(line.dayTargetKg) }} Kg
+            {{ line.orderCode }} · {{ line.quality }} · {{ line.color }} · {{ line.gsm }} GSM · {{ line.widthLabel }} · Tgt {{ formatKg(line.dayTargetKg) }} Kg · Rem {{ formatKg(line.dayRemKg) }} Kg
           </li>
         </ul>
         <div class="gpe-dialog-actions">
@@ -717,7 +674,7 @@ function quotaTooltipForLine(lineId) {
   if (!q || q.max_rolls <= 0) {
     return "";
   }
-  return `${q.current_rolls} roll line(s) on SPR for this GSM+width · max ${q.max_rolls} for this shaft job`;
+  return `${q.current_rolls} roll(s) on SPR for this planned date/shift · max ${q.max_rolls} for shaft job`;
 }
 
 function lineEligibility(item, lineId) {
@@ -792,22 +749,39 @@ const mergedItemIds = computed(() => {
   return s;
 });
 
-const unitOptions = computed(() => {
-  const s = new Set();
-  ppSubmittedRows.value.forEach((r) => {
-    if (r.unit && isFabricUnit(r.unit)) {
-      s.add(r.unit);
-    }
+const mergeBadgeByItemId = computed(() => {
+  const m = {};
+  (merges.value || []).forEach((merge) => {
+    const label = merge.merge_label || "Merged";
+    (merge.merged_items || []).forEach((id) => {
+      m[id] = label;
+    });
   });
-  return FABRIC_UNITS.filter((u) => s.has(u));
+  return m;
 });
 
-const fabricUnitOptions = computed(() => unitOptions.value);
+function quotaContextArgs() {
+  return {
+    run_date: quotaPlannedDate(),
+    shift: shift.value,
+    unit: filterUnit.value || headerUnit.value || undefined,
+  };
+}
+
+function quotaPlannedDate() {
+  if (viewScope.value === "daily" && filterDate.value) {
+    return filterDate.value;
+  }
+  const args = buildFetchArgs();
+  return args.date || args.start_date || filterDate.value;
+}
 
 function buildLineFromItem(item) {
   const id = item.itemName || item.name;
   const w = sprFlt(item.width_inch || item.width);
   const elig = lineEligibility(item, id);
+  const achieved = sprFlt(item.actual_production_weight_kgs ?? item.total_achieved_weight_kgs);
+  const dayTarget = sprFlt(item.qty);
   return {
     id,
     source: item,
@@ -816,8 +790,10 @@ function buildLineFromItem(item) {
     color: item.color || item.fabric_colour || "",
     width_inch: w,
     widthLabel: w ? `${w}"` : "—",
-    dayTargetKg: sprFlt(item.qty),
+    dayTargetKg: dayTarget,
+    dayRemKg: Math.max(0, dayTarget - achieved),
     remainingKg: itemRemainingKg(item),
+    mergeBadge: mergeBadgeByItemId.value[id] || "",
     orderCode: item.partyCode || item.party_code || "",
     partyName: item.customer_name || item.customer || "",
     ppId: item.pp_id,
@@ -830,6 +806,18 @@ function buildLineFromItem(item) {
   };
 }
 
+const unitOptions = computed(() => {
+  const s = new Set();
+  ppSubmittedRows.value.forEach((r) => {
+    if (r.unit && isFabricUnit(r.unit)) {
+      s.add(r.unit);
+    }
+  });
+  return FABRIC_UNITS.filter((u) => s.has(u));
+});
+
+const fabricUnitOptions = computed(() => unitOptions.value);
+
 const orderGroups = computed(() => {
   const map = new Map();
   let rows = ppSubmittedRows.value;
@@ -837,9 +825,6 @@ const orderGroups = computed(() => {
     rows = rows.filter((r) => r.unit === filterUnit.value);
   }
   rows.forEach((item) => {
-    if (mergedItemIds.value.has(item.itemName || item.name)) {
-      return;
-    }
     const orderCode = item.partyCode || item.party_code || "";
     const key = `${orderCode}::${item.customer_name || item.customer || ""}`;
     if (!map.has(key)) {
@@ -893,95 +878,10 @@ function filterGroups(groups) {
     .filter((g) => g.lines.length);
 }
 
-const mergeSidebarRows = computed(() => {
-  const q = (searchText.value || "").trim().toLowerCase();
-  return (merges.value || [])
-    .map((m) => {
-      const itemNames = m.merged_items || [];
-      const items = itemNames
-        .map((name) => ppSubmittedRows.value.find((r) => (r.itemName || r.name) === name))
-        .filter(Boolean);
-      if (!items.length) {
-        return null;
-      }
-      if (filterUnit.value && items.some((it) => it.unit !== filterUnit.value)) {
-        return null;
-      }
-      const dayTargetKg = items.reduce((s, it) => s + sprFlt(it.qty), 0);
-      const anyDraft = items.some((it) => isDraftSpr(it));
-      const allTerminal = items.length > 0 && items.every((it) => it.wo_terminal);
-      let selectable =
-        anyDraft || (!allTerminal && dayTargetKg > 0.5 && items.some((it) => lineEligibility(it, it.itemName || it.name).selectable));
-      let chip = "";
-      let chipClass = "";
-      let tooltip = "Merged production group — select to cover all lines in merge";
-      if (anyDraft) {
-        chip = "Draft SPR";
-        chipClass = "gpe-chip-draft";
-      } else if (allTerminal) {
-        chip = "WO Closed";
-        chipClass = "gpe-chip-closed";
-        selectable = false;
-        tooltip = "All Work Orders closed for every line in this merge — frozen";
-      } else if (dayTargetKg <= 0.5) {
-        chip = "Completed";
-        chipClass = "gpe-chip-done";
-        selectable = false;
-        tooltip = "No planned kg remaining for this merge on the board";
-      }
-      const orderCode = [...new Set(items.map((it) => it.partyCode || it.party_code || ""))].filter(Boolean).join(", ");
-      const gsms = [...new Set(items.map((it) => it.gsm).filter(Boolean))];
-      const widths = [...new Set(items.map((it) => sprFlt(it.width_inch || it.width)).filter((w) => w > 0))];
-      const first = items[0];
-      const label = m.merge_label || orderCode;
-      if (
-        q &&
-        !label.toLowerCase().includes(q) &&
-        !orderCode.toLowerCase().includes(q) &&
-        !items.some((it) => String(it.gsm || "").includes(q))
-      ) {
-        return null;
-      }
-      const quotaParts = items
-        .map((it) => {
-          const lid = it.itemName || it.name;
-          const ql = quotaLabelForLine(lid);
-          return ql ? `${sprFlt(it.width_inch || it.width)}" ${ql}` : "";
-        })
-        .filter(Boolean);
-      return {
-        mergeId: m.name,
-        label,
-        orderCode: orderCode || label,
-        quality: first?.quality || "",
-        color: first?.color || first?.fabric_colour || "",
-        gsmLabel: gsms.length > 1 ? `${gsms.join(", ")} GSM` : `${gsms[0] || "—"} GSM`,
-        widthLabel: widths.length > 1 ? `${widths.join('", "')}"` : widths[0] ? `${widths[0]}"` : "—",
-        dayTargetKg,
-        itemIds: itemNames,
-        items,
-        selectable,
-        chip,
-        chipClass,
-        tooltip,
-        ppId: items[0]?.pp_id,
-        quotaLabel: quotaParts[0] || "",
-        quotaTooltip: quotaParts.join(" · "),
-      };
-    })
-    .filter(Boolean);
-});
-
 const lineById = computed(() => {
   const m = new Map();
   orderGroups.value.forEach((g) => {
     g.lines.forEach((l) => m.set(l.id, { ...l, ppId: g.ppId }));
-  });
-  mergeSidebarRows.value.forEach((merge) => {
-    merge.items.forEach((item) => {
-      const line = buildLineFromItem(item);
-      m.set(line.id, { ...line, ppId: item.pp_id });
-    });
   });
   return m;
 });
@@ -1046,12 +946,12 @@ const toolsContext = computed(() => {
 const toolsEnabled = computed(() => !!toolsContext.value);
 const toolsHint = computed(() => {
   if (!selectionLocked.value) {
-    return "Confirm & lock lines from one order first (Tools create/open draft SPR in Phase 1)";
+    return "Confirm & lock lines from one order first";
   }
   if (!toolsContext.value) {
-    return "Lock lines from a single order / PP only — Tools need one draft SPR context";
+    return "Lock lines from a single order / PP only";
   }
-  return "SPR tools — opens or creates draft SPR for locked order";
+  return "SPR tools — opens existing SPR from Production Table (does not create SPR)";
 });
 
 const primaryGsmLabel = computed(() => {
@@ -1229,8 +1129,28 @@ function lineRowClass(line) {
   };
 }
 
-function isMergeSelected(merge) {
-  return merge.itemIds.length > 0 && merge.itemIds.every((id) => selectedLineIds.value.has(id));
+function pruneInvalidSelection() {
+  const valid = new Set();
+  ppSubmittedRows.value.forEach((item) => {
+    valid.add(item.itemName || item.name);
+  });
+  let changed = false;
+  const next = new Set();
+  selectedLineIds.value.forEach((id) => {
+    if (valid.has(id)) {
+      next.add(id);
+    } else {
+      changed = true;
+    }
+  });
+  if (!changed) {
+    return;
+  }
+  selectedLineIds.value = next;
+  if (!next.size) {
+    selectionLocked.value = false;
+  }
+  scheduleAutosave();
 }
 
 function toggleLine(id, ev) {
@@ -1247,25 +1167,6 @@ function toggleLine(id, ev) {
     next.add(id);
   } else {
     next.delete(id);
-  }
-  selectedLineIds.value = next;
-  scheduleAutosave();
-}
-
-function toggleMerge(merge, ev) {
-  if (selectionLocked.value) {
-    return;
-  }
-  const next = new Set(selectedLineIds.value);
-  if (ev.target.checked) {
-    merge.itemIds.forEach((id) => {
-      const line = lineById.value.get(id);
-      if (line?.selectable) {
-        next.add(id);
-      }
-    });
-  } else {
-    merge.itemIds.forEach((id) => next.delete(id));
   }
   selectedLineIds.value = next;
   scheduleAutosave();
@@ -1342,11 +1243,11 @@ async function runTool(kind) {
   if (kind === "manual") {
     await gsmOpenManualJob(ppId, planningNames, headerUnit.value, runDate.value, shift.value, onSuccess);
   } else if (kind === "trail") {
-    await gsmOpenTrailOrder(ppId, planningNames, headerUnit.value, runDate.value, shift.value);
+    await gsmOpenTrailOrder(ppId);
   } else if (kind === "bundle") {
-    await gsmToggleBundlePackaging(ppId, planningNames, headerUnit.value, runDate.value, shift.value);
+    await gsmToggleBundlePackaging(ppId);
   } else if (kind === "rmbatches") {
-    await gsmOpenRmBatches(ppId, planningNames, headerUnit.value, runDate.value, shift.value);
+    await gsmOpenRmBatches(ppId);
   }
 }
 
@@ -1464,9 +1365,10 @@ async function loadQuotaForLines() {
   const cache = {};
   const seen = new Set();
   const rows = ppSubmittedRows.value;
+  const quotaArgs = quotaContextArgs();
   const tasks = rows.map(async (item) => {
     const lineId = item.itemName || item.name;
-    const key = `${item.pp_id}::${lineId}::${item.gsm}::${item.width_inch}`;
+    const key = `${item.pp_id}::${lineId}::${item.gsm}::${item.width_inch}::${quotaArgs.run_date}::${quotaArgs.shift}`;
     if (seen.has(key)) {
       return;
     }
@@ -1480,6 +1382,9 @@ async function loadQuotaForLines() {
           gsm: item.gsm,
           width_inch: sprFlt(item.width_inch || item.width),
           item_code: item.itemCode || item.item_code,
+          run_date: quotaArgs.run_date,
+          shift: quotaArgs.shift,
+          unit: quotaArgs.unit,
         },
       });
       cache[lineId] = res.message || {};
@@ -1511,6 +1416,7 @@ async function fetchOrders() {
       headerUnit.value = filterUnit.value;
     }
     await Promise.all([fetchMerges(), loadQuotaForLines()]);
+    pruneInvalidSelection();
   } catch (e) {
     console.error(e);
     frappe.msgprint("Failed to load orders");
@@ -1521,7 +1427,7 @@ async function fetchOrders() {
 
 function onUnitChange() {
   headerUnit.value = filterUnit.value;
-  fetchMerges();
+  fetchMerges().then(() => loadQuotaForLines());
   scheduleAutosave();
 }
 
@@ -1542,6 +1448,7 @@ async function loadCurrentShift() {
 async function fetchQuotaForLine(line) {
   try {
     const src = line.source;
+    const quotaArgs = quotaContextArgs();
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.get_pt_line_roll_quota_status",
       args: {
@@ -1550,6 +1457,9 @@ async function fetchQuotaForLine(line) {
         gsm: line.gsm,
         width_inch: line.width_inch,
         item_code: src.itemCode || src.item_code,
+        run_date: quotaArgs.run_date,
+        shift: quotaArgs.shift,
+        unit: quotaArgs.unit,
       },
     });
     return res.message || {};
@@ -2063,6 +1973,10 @@ onUnmounted(() => {
   color: #0f766e;
   font-weight: 600;
 }
+.gpe-day-rem {
+  color: #c2410c;
+  font-weight: 600;
+}
 .gpe-line-foot {
   margin-top: 6px;
   display: flex;
@@ -2178,6 +2092,10 @@ onUnmounted(() => {
 .gpe-chip-submitted {
   background: #dcfce7;
   color: #166534;
+}
+.gpe-chip-merge {
+  background: #ede9fe;
+  color: #6d28d9;
 }
 .gpe-selected-box {
   margin-top: 12px;

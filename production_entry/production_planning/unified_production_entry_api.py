@@ -305,8 +305,27 @@ def resolve_work_order_for_roll_line(pp_id, gsm=None, width_inch=None, item_code
 
 
 @frappe.whitelist()
-def get_pt_line_roll_quota_status(pp_id, production_plan_item=None, gsm=None, width_inch=None, item_code=None):
-	"""Roll line quota for one PP line / GSM+width (SPR Create Entry limit)."""
+def get_spr_for_pp(pp_id, prefer_draft=1):
+	"""Read-only: return existing SPR for PP (never creates)."""
+	pp_id = _cstr(pp_id).strip()
+	if not pp_id:
+		return {"spr_name": ""}
+	name = _find_spr_for_pp(pp_id, prefer_draft=cint(prefer_draft) != 0)
+	return {"spr_name": name or ""}
+
+
+@frappe.whitelist()
+def get_pt_line_roll_quota_status(
+	pp_id,
+	production_plan_item=None,
+	gsm=None,
+	width_inch=None,
+	item_code=None,
+	run_date=None,
+	shift=None,
+	unit=None,
+):
+	"""Roll line quota for one PP line / GSM+width. current_rolls scoped to run_date+shift when given."""
 	pp_id = _cstr(pp_id).strip()
 	if not pp_id:
 		return {
@@ -317,49 +336,88 @@ def get_pt_line_roll_quota_status(pp_id, production_plan_item=None, gsm=None, wi
 			"job_id": "",
 		}
 
-	spr_name = _find_spr_for_pp(pp_id, prefer_draft=True) or ""
 	max_rolls = 0
 	current_rolls = 0
 	job_id = ""
+	spr_name = ""
 
-	if spr_name:
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
-		job_row = _match_shaft_job_for_line(
-			spr,
-			pp_id,
-			gsm=gsm,
-			width_inch=width_inch,
-			production_plan_item=production_plan_item,
+	pp = frappe.get_doc("Production Plan", pp_id)
+	pp_shafts = pp.get("custom_shaft_details") or pp.get("shaft_details") or []
+	target_gsm = cint(gsm) if gsm is not None else 0
+	target_w = flt(width_inch) if width_inch is not None else 0.0
+	for idx, shaft in enumerate(pp_shafts, start=1):
+		if target_gsm and _shaft_gsm(shaft) != target_gsm:
+			continue
+		sw = _shaft_width_inch(shaft)
+		comb = _cstr(_pick_value(shaft, ["combination", "combined_width", "shaft", "shaft_details"], ""))
+		widths = _parse_combination_widths_inches(comb) if comb else []
+		width_match = target_w <= 0 or abs(sw - target_w) < 0.05
+		if widths and not width_match:
+			width_match = any(abs(flt(w) - target_w) < 0.05 for w in widths)
+		if not width_match:
+			continue
+		no_shafts = max(1, cint(_pick_value(shaft, ["no_of_shafts", "no_of_shaft", "no_of_sh"], 1)))
+		rolls_per = max(1, cint(_pick_value(shaft, ["no_of_rolls", "rolls_per_shaft"], 1)))
+		segs = max(1, _count_combination_segments(comb) if comb else 1)
+		if segs <= 1:
+			max_rolls = no_shafts * rolls_per
+		else:
+			max_rolls = no_shafts * segs * rolls_per
+		job_id = str(idx)
+		break
+
+	if run_date and shift:
+		spr_filters = {
+			"production_plan": pp_id,
+			"docstatus": ["<", 2],
+			"run_date": getdate(run_date),
+			"shift": _cstr(shift).strip(),
+		}
+		if unit:
+			spr_filters["custom_unit"] = _cstr(unit).strip()
+		sprs = frappe.get_all(
+			"Shaft Production Run",
+			filters=spr_filters,
+			fields=["name"],
+			order_by="modified desc",
+			limit=10,
 		)
-		if job_row:
-			job_id = _cstr(getattr(job_row, "job_id", None) or getattr(job_row, "job_no", None))
-			max_rolls = cint(_spr_job_max_roll_lines(job_row, spr))
-			current_rolls = cint(_spr_count_roll_lines_for_job(spr, job_id))
+		for spr_row in sprs:
+			spr = frappe.get_doc("Shaft Production Run", spr_row.name)
+			if not spr_name:
+				spr_name = spr_row.name
+			job_row = _match_shaft_job_for_line(
+				spr,
+				pp_id,
+				gsm=gsm,
+				width_inch=width_inch,
+				production_plan_item=production_plan_item,
+			)
+			if job_row:
+				jid = _cstr(getattr(job_row, "job_id", None) or getattr(job_row, "job_no", None))
+				if not job_id:
+					job_id = jid
+				mx = cint(_spr_job_max_roll_lines(job_row, spr))
+				if mx > 0:
+					max_rolls = max(max_rolls, mx)
+				current_rolls += cint(_spr_count_roll_lines_for_job(spr, jid))
 	else:
-		pp = frappe.get_doc("Production Plan", pp_id)
-		pp_shafts = pp.get("custom_shaft_details") or pp.get("shaft_details") or []
-		target_gsm = cint(gsm) if gsm is not None else 0
-		target_w = flt(width_inch) if width_inch is not None else 0.0
-		for idx, shaft in enumerate(pp_shafts, start=1):
-			if target_gsm and _shaft_gsm(shaft) != target_gsm:
-				continue
-			sw = _shaft_width_inch(shaft)
-			comb = _cstr(_pick_value(shaft, ["combination", "combined_width", "shaft", "shaft_details"], ""))
-			widths = _parse_combination_widths_inches(comb) if comb else []
-			width_match = target_w <= 0 or abs(sw - target_w) < 0.05
-			if widths and not width_match:
-				width_match = any(abs(flt(w) - target_w) < 0.05 for w in widths)
-			if not width_match:
-				continue
-			no_shafts = max(1, cint(_pick_value(shaft, ["no_of_shafts", "no_of_shaft", "no_of_sh"], 1)))
-			rolls_per = max(1, cint(_pick_value(shaft, ["no_of_rolls", "rolls_per_shaft"], 1)))
-			segs = max(1, _count_combination_segments(comb) if comb else 1)
-			if segs <= 1:
-				max_rolls = no_shafts * rolls_per
-			else:
-				max_rolls = no_shafts * segs * rolls_per
-			job_id = str(idx)
-			break
+		spr_name = _find_spr_for_pp(pp_id, prefer_draft=True) or ""
+		if spr_name:
+			spr = frappe.get_doc("Shaft Production Run", spr_name)
+			job_row = _match_shaft_job_for_line(
+				spr,
+				pp_id,
+				gsm=gsm,
+				width_inch=width_inch,
+				production_plan_item=production_plan_item,
+			)
+			if job_row:
+				job_id = _cstr(getattr(job_row, "job_id", None) or getattr(job_row, "job_no", None))
+				mx = cint(_spr_job_max_roll_lines(job_row, spr))
+				if mx > 0:
+					max_rolls = mx
+				current_rolls = cint(_spr_count_roll_lines_for_job(spr, job_id))
 
 	can_add = max_rolls <= 0 or current_rolls < max_rolls
 	return {
