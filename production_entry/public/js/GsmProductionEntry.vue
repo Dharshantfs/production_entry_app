@@ -821,7 +821,7 @@ const mergeSidebarRows = computed(() => {
       const remainingKg = items.reduce((s, it) => s + itemRemainingKg(it), 0);
       const anyDraft = items.some((it) => isDraftSpr(it));
       const allTerminal = items.length > 0 && items.every((it) => it.wo_terminal);
-      const selectable =
+      let selectable =
         anyDraft || (!allTerminal && remainingKg > 0.5 && items.some((it) => lineEligibility(it, it.itemName || it.name).selectable));
       let chip = "";
       let chipClass = "";
