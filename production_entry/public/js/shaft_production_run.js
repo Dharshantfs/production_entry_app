@@ -414,6 +414,12 @@ function spr_should_use_lightweight_grid_pass(frm) {
 	if (frm._spr_light_reload) {
 		return true;
 	}
+	if (frm._spr_submit_in_progress) {
+		return true;
+	}
+	if (frm._spr_just_submitted && Date.now() - frm._spr_just_submitted < 12000) {
+		return true;
+	}
 	if (frm._spr_row_save_in_progress) {
 		return true;
 	}
@@ -3445,6 +3451,7 @@ frappe.ui.form.on('Shaft Production Run', {
 		if (!frm || !frm.doc) {
 			return;
 		}
+		frm._spr_submit_in_progress = true;
 		if (cint(frm.doc.docstatus) !== 0) {
 			return;
 		}
@@ -3492,6 +3499,8 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	on_submit: function (frm) {
+		frm._spr_submit_in_progress = false;
+		frm._spr_just_submitted = Date.now();
 		frm._spr_submitted_grids_stable = false;
 		spr_apply_shaft_jobs_grid_columns(frm, true);
 		spr_apply_items_grid_columns(frm, true);
@@ -3499,15 +3508,19 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_apply_grid_wrap_classes(frm);
 		spr_ensure_child_grid_heights(frm);
 		spr_stabilize_submitted_spr_grids_once(frm);
-		spr_reapply_item_row_styles_with_retries(frm);
-		spr_show_submit_summary_with_retries(frm);
+		spr_show_submit_summary_with_retries(frm, [900]);
 		if (frm.doc && frm.doc.production_plan) {
-			frappe.call({
-				method:
-					'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_resync_production_plan_progress',
-				args: { production_plan: frm.doc.production_plan },
-				freeze: false,
-			});
+			setTimeout(function () {
+				if (!frm || !frm.doc || !frm.doc.production_plan) {
+					return;
+				}
+				frappe.call({
+					method:
+						'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_resync_production_plan_progress',
+					args: { production_plan: frm.doc.production_plan },
+					freeze: false,
+				});
+			}, 2500);
 		}
 	},
 
@@ -3649,6 +3662,9 @@ function spr_show_tolerance_override_dialog(frm, violations, opts) {
 		title: __('Tolerance — approval required'),
 		onhide: function () {
 			window.sprTolDialogOpen = false;
+			if (frm) {
+				frm._spr_submit_in_progress = false;
+			}
 		},
 		fields: [
 			{ fieldname: 'h', fieldtype: 'HTML', options: html },
