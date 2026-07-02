@@ -5925,7 +5925,12 @@ function spr_parse_combination_widths_inches(comb) {
 	if (!comb) {
 		return [];
 	}
-	return String(comb)
+	const text = String(comb)
+		.replace(/\u201c/g, '"')
+		.replace(/\u201d/g, '"')
+		.replace(/\u2033/g, '"')
+		.replace(/\u2032/g, "'");
+	return text
 		.split('+')
 		.map(function (part) {
 			const m = part.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
@@ -5934,6 +5939,70 @@ function spr_parse_combination_widths_inches(comb) {
 		.filter(function (w) {
 			return w > 0;
 		});
+}
+
+function spr_bundle_job_select_label(j) {
+	return __('Job') + ' ' + String(j.job_id || '');
+}
+
+function spr_bundle_width_select_el(dialog) {
+	return dialog.$wrapper.find('select.spr-bundle-width-select');
+}
+
+function spr_bundle_set_width_options(dialog, widthValues) {
+	const $sel = spr_bundle_width_select_el(dialog);
+	if (!$sel.length) {
+		return [];
+	}
+	const seen = new Set();
+	const labels = [];
+	(widthValues || []).forEach(function (v) {
+		const fw = flt(v);
+		if (fw <= 0) {
+			return;
+		}
+		const key = String(Math.round(fw * 1000) / 1000);
+		if (seen.has(key)) {
+			return;
+		}
+		seen.add(key);
+		labels.push(spr_format_width_inch_label(fw));
+	});
+	labels.sort(function (a, b) {
+		return flt(a) - flt(b);
+	});
+	$sel.empty();
+	if (!labels.length) {
+		$sel.append($('<option>').val('').text(__('Select width')));
+	} else {
+		labels.forEach(function (lbl) {
+			$sel.append($('<option>').val(lbl).text(lbl + '"'));
+		});
+		$sel.val(labels[0]);
+	}
+	return labels;
+}
+
+function spr_bundle_get_width(dialog) {
+	return flt(spr_bundle_width_select_el(dialog).val());
+}
+
+function spr_bundle_resolve_job(jobPickVal, jobById, jobByLabel) {
+	const raw = String(jobPickVal || '').trim();
+	if (!raw) {
+		return null;
+	}
+	if (jobById[raw]) {
+		return jobById[raw];
+	}
+	if (jobByLabel[raw]) {
+		return jobByLabel[raw];
+	}
+	const m = raw.match(/Job\s+(\S+)/i);
+	if (m && jobById[m[1]]) {
+		return jobById[m[1]];
+	}
+	return null;
 }
 
 function spr_job_keys_match_js(a, b) {
@@ -5961,54 +6030,9 @@ function spr_format_width_inch_label(w) {
 	return Math.abs(fw - Math.round(fw)) < 0.001 ? String(Math.round(fw)) : fw.toFixed(1);
 }
 
-/** Force Frappe Dialog Select to show options (v15 set_df_property alone is unreliable). */
+/** Force Frappe Dialog Select to show options (legacy helper — prefer spr_bundle_set_width_options). */
 function spr_dialog_select_set_options(dialog, fieldname, widthValues) {
-	const field = dialog.fields_dict[fieldname];
-	if (!field) {
-		return [];
-	}
-	const seen = new Set();
-	const labels = [];
-	(widthValues || []).forEach(function (v) {
-		const fw = flt(v);
-		if (fw <= 0) {
-			return;
-		}
-		const key = String(Math.round(fw * 1000) / 1000);
-		if (seen.has(key)) {
-			return;
-		}
-		seen.add(key);
-		labels.push(spr_format_width_inch_label(fw));
-	});
-	labels.sort(function (a, b) {
-		return flt(a) - flt(b);
-	});
-	const optsStr = labels.join('\n');
-	field.df.options = optsStr;
-	dialog.set_df_property(fieldname, 'options', optsStr);
-	dialog.set_df_property(fieldname, 'hidden', labels.length ? 0 : 1);
-	if (typeof field.set_options === 'function') {
-		field.set_options(labels);
-	}
-	if (field.$input && field.$input.is('select')) {
-		const cur = field.get_value ? field.get_value() : '';
-		field.$input.empty();
-		if (!labels.length) {
-			field.$input.append($('<option>').val('').text(__('Select width')));
-		} else {
-			labels.forEach(function (lbl) {
-				field.$input.append($('<option>').val(lbl).text(lbl + '"'));
-			});
-		}
-		if (cur && labels.indexOf(String(cur)) >= 0) {
-			field.set_value(cur);
-		} else if (labels.length) {
-			field.set_value(labels[0]);
-		}
-	}
-	field.refresh();
-	return labels;
+	return spr_bundle_set_width_options(dialog, widthValues);
 }
 
 function spr_collect_bundle_width_options(jp, widthsByJob, frm, segs) {
@@ -6081,19 +6105,22 @@ function spr_open_bundle_packaging_dialog(frm) {
 				frappe.msgprint(__('Add Available Jobs (shaft jobs) first.'));
 				return;
 			}
-			const jobOpts = jobs
-				.map(function (j) {
-					return String(j.label || j.job_id);
-				})
-				.join('\n');
+			const jobById = {};
 			const jobByLabel = {};
 			jobs.forEach(function (j) {
-				const lbl = String(j.label || j.job_id);
-				jobByLabel[lbl] = j;
-				if (!j.widths && widthsByJob[j.job_id]) {
-					j.widths = widthsByJob[j.job_id];
+				const jid = String(j.job_id);
+				j.widths = j.widths || widthsByJob[j.job_id] || [];
+				jobById[jid] = j;
+				const shortLbl = spr_bundle_job_select_label(j);
+				jobByLabel[shortLbl] = j;
+				jobByLabel[jid] = j;
+				if (j.label) {
+					jobByLabel[String(j.label)] = j;
 				}
 			});
+			const jobOpts = jobs.map(function (j) {
+				return spr_bundle_job_select_label(j);
+			}).join('\n');
 			const d = new frappe.ui.Dialog({
 				title: __('Bundle packaging'),
 				fields: [
@@ -6105,7 +6132,9 @@ function spr_open_bundle_packaging_dialog(frm) {
 							'.spr-bundle-seg-table{font-size:13px;margin:8px 0;width:100%;}' +
 							'.spr-bundle-seg-table th{background:#f1f5f9;font-weight:700;padding:6px 8px;}' +
 							'.spr-bundle-seg-table td{padding:6px 8px;}' +
-							'.modal-body [data-fieldname="width_inch"] select{font-size:15px;font-weight:600;min-height:36px;}' +
+							'.spr-bundle-width-wrap{margin:8px 0 12px;}' +
+							'.spr-bundle-width-wrap label{font-weight:600;font-size:12px;color:#334155;display:block;margin-bottom:4px;}' +
+							'.spr-bundle-width-select{font-size:15px;font-weight:600;min-height:38px;width:100%;}' +
 							'</style>' +
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
@@ -6126,11 +6155,18 @@ function spr_open_bundle_packaging_dialog(frm) {
 						options: '<div class="spr-bundle-job-detail text-muted small"></div>',
 					},
 					{
-						fieldname: 'width_inch',
-						fieldtype: 'Select',
-						label: __('Width / segment (Inches) - pick one row from the table above'),
-						options: '',
-						reqd: 1,
+						fieldname: 'bundle_width_wrap',
+						fieldtype: 'HTML',
+						options:
+							'<div class="spr-bundle-width-wrap">' +
+							'<label>' +
+							__('Width / segment (Inches) - pick one row from the table above') +
+							'</label>' +
+							'<select class="form-control spr-bundle-width-select">' +
+							'<option value="">' +
+							__('Select width') +
+							'</option>' +
+							'</select></div>',
 					},
 					{
 						fieldname: 'calc_html',
@@ -6159,8 +6195,8 @@ function spr_open_bundle_packaging_dialog(frm) {
 				],
 				primary_action_label: __('Apply'),
 				primary_action: function (values) {
-					const jp = jobByLabel[values.job_pick];
-					const w = flt(values.width_inch);
+					const jp = spr_bundle_resolve_job(values.job_pick, jobById, jobByLabel);
+					const w = spr_bundle_get_width(d);
 					const n = cint(values.no_of_packaging);
 					const whole = flt(values.whole_gross_kg);
 					const producedLength = flt(values.produced_length_mtrs);
@@ -6225,12 +6261,11 @@ function spr_open_bundle_packaging_dialog(frm) {
 				},
 			});
 			function applySegsToDialog(jp, segs) {
-				const wf = d.fields_dict.width_inch;
 				const det = d.$wrapper.find('.spr-bundle-job-detail');
-				if (!wf || !jp) {
+				if (!jp) {
 					return;
 				}
-				const widthOpts = spr_collect_bundle_width_options(jp, widthsByJob, frm, segs);
+				let widthOpts = spr_collect_bundle_width_options(jp, widthsByJob, frm, segs);
 				if (segs && segs.length) {
 					const uniqueSegs = [];
 					const seenWidths = new Set();
@@ -6273,39 +6308,59 @@ function spr_open_bundle_packaging_dialog(frm) {
 				} else {
 					const comb = jp.combination_text || '';
 					if (det.length) {
+						let head =
+							'<p class="small"><strong>' +
+							frappe.utils.escape_html(spr_bundle_job_select_label(jp)) +
+							'</strong></p>';
 						if (comb) {
-							det.html(
+							head +=
 								'<p class="small text-muted" style="margin:4px 0 8px;">' +
-									frappe.utils.escape_html(comb) +
-									'</p>'
-							);
-						} else if (!widthOpts.length) {
-							det.html(
-								'<p class="small text-muted">' + __('No widths found for this job.') + '</p>'
-							);
-						} else {
-							det.html('');
+								frappe.utils.escape_html(comb) +
+								'</p>';
 						}
+						det.html(head);
 					}
 				}
-				const labels = spr_dialog_select_set_options(d, 'width_inch', widthOpts);
-				if (!labels.length) {
-					frappe.msgprint(__('No width options for this job. Check combination / roll lines.'));
+				function finishWidthSelect() {
+					const labels = spr_bundle_set_width_options(d, widthOpts);
+					if (!labels.length) {
+						frappe.msgprint(__('No width options for this job. Check combination / roll lines.'));
+					}
+					recalc();
 				}
-				recalc();
-			}
-			function refreshWidthOptions() {
-				const jp = jobByLabel[d.get_value('job_pick')];
-				const det = d.$wrapper.find('.spr-bundle-job-detail');
-				if (!jp) {
+				if (widthOpts.length) {
+					finishWidthSelect();
 					return;
 				}
-				// Sync: populate width dropdown immediately from catalog + combination.
+				frappe.call({
+					method:
+						'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_bundle_width_options',
+					args: { shaft_production_run: frm.doc.name, job_id: jp.job_id },
+					callback: function (r) {
+						const apiWidths = (r.message || {}).widths || [];
+						if (apiWidths.length) {
+							jp.widths = apiWidths;
+							widthOpts = spr_collect_bundle_width_options(jp, widthsByJob, frm, segs);
+						}
+						finishWidthSelect();
+					},
+					error: function () {
+						finishWidthSelect();
+					},
+				});
+			}
+			function refreshWidthOptions() {
+				const jp = spr_bundle_resolve_job(d.get_value('job_pick'), jobById, jobByLabel);
+				const det = d.$wrapper.find('.spr-bundle-job-detail');
+				if (!jp) {
+					spr_bundle_set_width_options(d, []);
+					return;
+				}
 				applySegsToDialog(jp, jp.segments || []);
 				if (jp.segments && jp.segments.length) {
 					return;
 				}
-				if (det.length) {
+				if (det.length && !jp.combination_text) {
 					det.html('<span class="text-muted small">' + __('Loading segment detail...') + '</span>');
 				}
 				frappe.call({
@@ -6322,8 +6377,8 @@ function spr_open_bundle_packaging_dialog(frm) {
 				});
 			}
 			function recalc() {
-				const jp = jobByLabel[d.get_value('job_pick')];
-				const wsel = d.get_value('width_inch');
+				const jp = spr_bundle_resolve_job(d.get_value('job_pick'), jobById, jobByLabel);
+				const wsel = spr_bundle_get_width(d);
 				const n = cint(d.get_value('no_of_packaging'));
 				const whole = flt(d.get_value('whole_gross_kg'));
 				const el = d.$wrapper.find('.spr-bundle-calc');
@@ -6340,26 +6395,30 @@ function spr_open_bundle_packaging_dialog(frm) {
 				);
 			}
 			d.show();
-			// Explicitly initialise the job_pick Select: in Frappe v15 the Select control
-			// does not auto-select the first option, leaving the dropdown visually blank.
-			// Re-set options + force a value so the user sees the first job immediately.
 			if (jobs.length > 0) {
-				const firstLabel = String(jobs[0].label || jobs[0].job_id);
+				const firstLbl = spr_bundle_job_select_label(jobs[0]);
 				d.set_df_property('job_pick', 'options', jobOpts);
 				if (d.fields_dict.job_pick) {
 					d.fields_dict.job_pick.refresh();
 				}
-				d.set_value('job_pick', firstLabel);
+				d.set_value('job_pick', firstLbl);
 			}
-			refreshWidthOptions();
-			recalc();
+			setTimeout(function () {
+				refreshWidthOptions();
+				recalc();
+			}, 50);
 			if (d.fields_dict.job_pick && d.fields_dict.job_pick.$input) {
 				d.fields_dict.job_pick.$input.on('change', function () {
+					const sel = spr_bundle_resolve_job(d.get_value('job_pick'), jobById, jobByLabel);
+					if (sel) {
+						sel.segments = [];
+					}
 					refreshWidthOptions();
 					recalc();
 				});
 			}
-			['width_inch', 'no_of_packaging', 'whole_gross_kg'].forEach(function (fn) {
+			spr_bundle_width_select_el(d).on('change input', recalc);
+			['no_of_packaging', 'whole_gross_kg'].forEach(function (fn) {
 				const f = d.fields_dict[fn];
 				if (f && f.$input) {
 					f.$input.on('change input', recalc);

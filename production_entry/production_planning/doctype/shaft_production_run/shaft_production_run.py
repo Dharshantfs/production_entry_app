@@ -1872,10 +1872,13 @@ def _get_all_work_orders_for_production_plan(pp_name: str) -> list:
 
 
 def _parse_combination_widths_inches(combination) -> list[float]:
-	"""Numeric widths per '+' segment, aligned with _count_combination_segments (e.g. 39\" + 24\" ΓåÆ [39, 24])."""
+	"""Numeric widths per '+' segment, aligned with _count_combination_segments (e.g. 39\" + 24\" → [39, 24])."""
 	if not combination:
 		return []
-	parts = [p.strip() for p in re.split(r"\+", str(combination)) if p.strip()]
+	text = _cstr(combination)
+	# Normalize fancy inch quotes so 7.8" / 7.8″ / 7.8' all parse the same.
+	text = text.replace("\u201c", '"').replace("\u201d", '"').replace("\u2033", '"').replace("′", "'")
+	parts = [p.strip() for p in re.split(r"\+", text) if p.strip()]
 	out: list[float] = []
 	for part in parts:
 		m = re.search(r"(\d+(?:\.\d+)?)", part.replace(",", ""))
@@ -13266,6 +13269,50 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 		j["widths"] = widths_by_job.get(j["job_id"], [])
 
 	return {"jobs": jobs_out, "widths_by_job": widths_by_job}
+
+
+@frappe.whitelist()
+def spr_get_bundle_width_options(shaft_production_run, job_id):
+	"""Width inch options for one job — used by Bundle packaging dialog."""
+	_spr_require_saved(shaft_production_run)
+	job_id = _cstr(job_id).strip()
+	cat = spr_get_bundle_packaging_catalog(shaft_production_run)
+	widths = (cat.get("widths_by_job") or {}).get(job_id) or []
+	if widths:
+		return {"widths": widths, "job_id": job_id}
+	pp_name = frappe.db.get_value("Shaft Production Run", shaft_production_run, "production_plan")
+	sj_rows = frappe.db.sql(
+		"""
+		SELECT name, job_id, gsm, quality, combination, total_width,
+		       production_plan_item, work_orders, is_manual
+		FROM `tabShaft Production Run Job`
+		WHERE parent = %(spr)s AND parentfield = 'shaft_jobs'
+		ORDER BY idx ASC
+		""",
+		{"spr": shaft_production_run},
+		as_dict=True,
+	)
+	roll_widths: list = []
+	roll_rows = frappe.db.sql(
+		"""
+		SELECT IFNULL(job, '') AS job_key, ROUND(width_inch, 2) AS w
+		FROM `tabShaft Production Run Item`
+		WHERE parent = %(spr)s AND width_inch > 0
+		GROUP BY job_key, w
+		""",
+		{"spr": shaft_production_run},
+		as_dict=True,
+	)
+	for row in roll_rows:
+		if _spr_job_keys_match(_cstr(row.job_key), job_id):
+			roll_widths.append(flt(row.w))
+	for sj in sj_rows:
+		sj = frappe._dict(sj)
+		if not _spr_job_keys_match(_cstr(_spr_job_id(sj)), job_id):
+			continue
+		widths = _spr_catalog_widths_for_job_row(sj, roll_widths, pp_name=pp_name)
+		break
+	return {"widths": widths or [], "job_id": job_id}
 
 
 @frappe.whitelist()
