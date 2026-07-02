@@ -7398,6 +7398,8 @@ class ShaftProductionRun(Document):
 				self._refresh_batch_qty_for_codes(
 					[_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))]
 				)
+				created_entries_by_wo = self._spr_group_manufacture_entries_by_wo(existing_submitted, wo_groups)
+				self._spr_show_submit_summary(wo_groups, created_entries_by_wo)
 				frappe.msgprint(
 					_("Manufacture already posted for all rolls — linked entries: {0}").format(
 						", ".join(existing_submitted[:20])
@@ -7511,6 +7513,8 @@ class ShaftProductionRun(Document):
 				self.db_set("manufacturing_entries", ", ".join(existing_submitted))
 				self._sync_production_plan_progress_from_work_orders(_cstr(self.get("production_plan")))
 				self._refresh_batch_qty_for_codes([_cstr(r.get("batch_no")) for r in (self.items or []) if _cstr(r.get("batch_no"))])
+				created_entries_by_wo = self._spr_group_manufacture_entries_by_wo(existing_submitted, wo_groups)
+				self._spr_show_submit_summary(wo_groups, created_entries_by_wo)
 				frappe.msgprint(
 					_("No new Manufacture entry needed; reusing existing submitted entries: {0}").format(
 						", ".join(existing_submitted[:20])
@@ -7677,6 +7681,28 @@ class ShaftProductionRun(Document):
 			frappe.response["spr_submit_summary"] = html
 		except Exception:
 			pass
+
+	def _spr_group_manufacture_entries_by_wo(self, se_names: list[str], wo_groups: dict) -> dict:
+		"""Map submitted Manufacture Stock Entry names to Work Orders for summary display."""
+		created_by_wo: dict = defaultdict(list)
+		for se in se_names or []:
+			wo = _cstr(frappe.db.get_value("Stock Entry", se, "work_order"))
+			if wo:
+				created_by_wo[wo].append(se)
+				continue
+			pi = _cstr(
+				frappe.db.get_value(
+					"Stock Entry Detail",
+					{"parent": se, "is_finished_item": 1},
+					"item_code",
+					order_by="idx asc",
+				)
+			)
+			for w, rows in (wo_groups or {}).items():
+				if rows and _cstr(rows[0].get("item_code")) == pi:
+					created_by_wo[w].append(se)
+					break
+		return dict(created_by_wo)
 
 	def create_mix_roll_material_receipts(self):
 		"""Post mix roll FG via Material Receipt (no Work Order / Manufacture)."""
@@ -12469,26 +12495,10 @@ def spr_get_submit_summary(shaft_production_run: str):
 		wo = _cstr(row.get("work_order") or row.get("wo_id"))
 		if wo:
 			wo_groups.setdefault(wo, []).append(row)
-	created_by_wo: dict = defaultdict(list)
-	for se in spr._get_existing_submitted_manufacture_entries_for_spr():
-		wo = _cstr(frappe.db.get_value("Stock Entry", se, "work_order"))
-		if wo:
-			created_by_wo[wo].append(se)
-		elif wo_groups:
-			# Fallback: attach orphan SE to WO via FG line item_code (v16 has no production_item on Stock Entry)
-			pi = _cstr(
-				frappe.db.get_value(
-					"Stock Entry Detail",
-					{"parent": se, "is_finished_item": 1},
-					"item_code",
-					order_by="idx asc",
-				)
-			)
-			for w, rows in wo_groups.items():
-				if rows and _cstr(rows[0].get("item_code")) == pi:
-					created_by_wo[w].append(se)
-					break
-	html = spr._spr_build_submit_summary_html(wo_groups, dict(created_by_wo))
+	created_by_wo = spr._spr_group_manufacture_entries_by_wo(
+		spr._get_existing_submitted_manufacture_entries_for_spr(), wo_groups
+	)
+	html = spr._spr_build_submit_summary_html(wo_groups, created_by_wo)
 	return {
 		"html": html,
 		"title": _("Manufacture Summary — {0}").format(spr_name),

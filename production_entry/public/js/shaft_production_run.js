@@ -3173,6 +3173,189 @@ function spr_sync_total_planned_qty_from_jobs(frm, opts) {
 	}
 }
 
+/** Visible progress while Save/Submit runs — updates message so operators know the system is working. */
+function spr_begin_save_submit_progress(frm, mode, rollCount) {
+	if (!frm) {
+		return;
+	}
+	spr_clear_save_submit_progress(frm, false);
+	frm._spr_progress_mode = mode || 'save';
+	frm._spr_progress_start = Date.now();
+	frm._spr_progress_roll_count = cint(rollCount) || 0;
+	const rc = frm._spr_progress_roll_count;
+	const firstMsg =
+		mode === 'submit'
+			? __('Submitting SPR — validating rolls and batches...')
+			: rc > 15
+				? __('Saving SPR ({0} rolls) — please wait...', [rc])
+				: __('Saving SPR...');
+	frappe.dom.freeze(firstMsg);
+	frm._spr_progress_timer = setInterval(function () {
+		if (!frm || !frm._spr_progress_start) {
+			return;
+		}
+		const sec = Math.round((Date.now() - frm._spr_progress_start) / 1000);
+		let msg = firstMsg;
+		if (mode === 'submit') {
+			if (sec >= 60) {
+				msg = __('Submitting {0} rolls — {1}s elapsed. Still working, do not reload.', [rc, sec]);
+			} else if (sec >= 30) {
+				msg = __('Creating manufacture entries for {0} rolls — {1}s. Do not reload.', [rc, sec]);
+			} else if (sec >= 10) {
+				msg = __('Checking stock and posting manufacture entries — please wait...');
+			}
+		} else if (sec >= 15) {
+			msg = __('Saving {0} roll lines — {1}s elapsed. Do not reload.', [rc, sec]);
+		} else if (sec >= 5 && rc > 15) {
+			msg = __('Saving large SPR ({0} rolls) — please wait...', [rc]);
+		}
+		const el = document.querySelector('.freeze-message');
+		if (el) {
+			el.textContent = msg;
+		}
+	}, 2000);
+}
+
+function spr_clear_save_submit_progress(frm, do_unfreeze) {
+	if (do_unfreeze !== false) {
+		try {
+			frappe.dom.unfreeze();
+		} catch (e) {
+			/* ignore */
+		}
+	}
+	if (!frm) {
+		return;
+	}
+	if (frm._spr_progress_timer) {
+		clearInterval(frm._spr_progress_timer);
+		frm._spr_progress_timer = null;
+	}
+	frm._spr_progress_start = null;
+}
+
+function spr_wrap_frm_save_for_progress(frm) {
+	if (!frm || frm._spr_save_progress_wrapped) {
+		return;
+	}
+	frm._spr_save_progress_wrapped = true;
+	const origSave = frm.save.bind(frm);
+	frm.save = function (action, callback, btn, on_error) {
+		const isSubmit = action === 'Submit';
+		const rollCount = (frm.doc.items || []).length;
+		let progressStarted = false;
+		let progressFinished = false;
+		function finishProgress() {
+			if (!progressStarted || progressFinished) {
+				return;
+			}
+			progressFinished = true;
+			spr_clear_save_submit_progress(frm);
+		}
+		if (isSubmit) {
+			frm._spr_summary_shown = false;
+			spr_begin_save_submit_progress(frm, 'submit', rollCount);
+			progressStarted = true;
+		} else if (rollCount > 15) {
+			spr_begin_save_submit_progress(frm, 'save', rollCount);
+			progressStarted = true;
+		}
+		function wrappedCallback(r) {
+			finishProgress();
+			if (isSubmit) {
+				spr_handle_submit_response_summary(frm, r);
+			}
+			if (typeof callback === 'function') {
+				callback(r);
+			}
+		}
+		function wrappedOnError() {
+			finishProgress();
+			frm._spr_submit_in_progress = false;
+			if (typeof on_error === 'function') {
+				on_error.apply(this, arguments);
+			}
+		}
+		const result = origSave(action, wrappedCallback, btn, wrappedOnError);
+		if (result && typeof result.then === 'function') {
+			result
+				.then(function (r) {
+					finishProgress();
+					if (isSubmit) {
+						spr_handle_submit_response_summary(frm, r);
+					}
+					return r;
+				})
+				.catch(function () {
+					finishProgress();
+					frm._spr_submit_in_progress = false;
+				});
+		}
+		return result;
+	};
+}
+
+function spr_show_manufacture_summary_dialog(frm, html, title) {
+	if (!html) {
+		return;
+	}
+	frappe.msgprint({
+		title: title || __('Manufacture Summary — {0}', [frm.doc.name]),
+		message: html,
+		wide: true,
+	});
+}
+
+function spr_extract_submit_summary_html(r) {
+	return (
+		(r && r.spr_submit_summary) ||
+		(r && r.message && typeof r.message === 'object' && r.message.spr_submit_summary) ||
+		(typeof frappe !== 'undefined' && frappe.response && frappe.response.spr_submit_summary) ||
+		''
+	);
+}
+
+function spr_handle_submit_response_summary(frm, r) {
+	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 1) {
+		return;
+	}
+	const html = spr_extract_submit_summary_html(r);
+	if (html && !frm._spr_summary_shown) {
+		frm._spr_summary_shown = true;
+		spr_show_manufacture_summary_dialog(frm, html);
+		return;
+	}
+	if (!frm._spr_summary_shown) {
+		frm._spr_pending_summary = true;
+		spr_show_submit_summary_with_retries(frm, [400, 1200, 2500, 5000, 9000, 15000]);
+	}
+}
+
+function spr_open_manufacture_summary(frm) {
+	if (!frm || !frm.doc || !frm.doc.name) {
+		return;
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_submit_summary',
+		args: { shaft_production_run: frm.doc.name },
+		freeze: true,
+		freeze_message: __('Loading manufacture summary...'),
+		callback: function (r) {
+			const d = (r && r.message) || {};
+			if (d.html) {
+				spr_show_manufacture_summary_dialog(frm, d.html, d.title);
+			} else {
+				frappe.msgprint({
+					title: __('Manufacture Summary'),
+					indicator: 'orange',
+					message: __('No manufacture summary is available for this SPR yet.'),
+				});
+			}
+		},
+	});
+}
+
 frappe.ui.form.on('Shaft Production Run', {
 	setup: function (frm) {
 		// Buttons registered in refresh — see spr_register_spr_page_buttons (Frappe skips duplicate labels if setup runs too early)
@@ -3180,6 +3363,7 @@ frappe.ui.form.on('Shaft Production Run', {
 
 	onload: function (frm) {
 		spr_patch_items_grid_refresh(frm);
+		spr_wrap_frm_save_for_progress(frm);
 		spr_register_spr_page_buttons(frm);
 		['items', 'shaft_jobs', 'bundle_calculation'].forEach(function (fn) {
 			spr_bind_spr_grid_column_configure_hook(frm, fn);
@@ -3411,6 +3595,9 @@ frappe.ui.form.on('Shaft Production Run', {
 
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
 			spr_stabilize_submitted_spr_grids_once(frm);
+			if (frm._spr_pending_summary && !frm._spr_summary_shown) {
+				spr_show_submit_summary_with_retries(frm, [300, 1200, 3000]);
+			}
 		} else {
 			const refreshAlignKey = '_spr_refresh_align';
 			if (frm[refreshAlignKey]) {
@@ -3464,6 +3651,8 @@ frappe.ui.form.on('Shaft Production Run', {
 			return;
 		}
 		frm._spr_submit_in_progress = true;
+		frm._spr_summary_shown = false;
+		frm._spr_pending_summary = false;
 		if (cint(frm.doc.docstatus) !== 0) {
 			return;
 		}
@@ -3511,6 +3700,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	on_submit: function (frm) {
+		spr_clear_save_submit_progress(frm);
 		frm._spr_submit_in_progress = false;
 		frm._spr_just_submitted = Date.now();
 		frm._spr_submitted_grids_stable = false;
@@ -3520,7 +3710,10 @@ frappe.ui.form.on('Shaft Production Run', {
 		spr_apply_grid_wrap_classes(frm);
 		spr_ensure_child_grid_heights(frm);
 		spr_stabilize_submitted_spr_grids_once(frm);
-		spr_show_submit_summary_with_retries(frm, [900]);
+		if (!frm._spr_summary_shown) {
+			frm._spr_pending_summary = true;
+			spr_show_submit_summary_with_retries(frm, [600, 1800, 4000, 8000, 15000]);
+		}
 		if (frm.doc && frm.doc.production_plan) {
 			setTimeout(function () {
 				if (!frm || !frm.doc || !frm.doc.production_plan) {
@@ -4127,6 +4320,17 @@ function spr_register_spr_page_buttons(frm) {
 			fn();
 		} catch (e) {}
 	}
+	addInner(function () {
+		if (cint(frm.doc.docstatus) === 1 && frm.doc.name) {
+			frm.add_custom_button(
+				__('Manufacture Summary'),
+				function () {
+					spr_open_manufacture_summary(frm);
+				},
+				__('View')
+			);
+		}
+	});
 	addInner(function () {
 		if (
 			frappe.meta.get_docfield('Shaft Production Run', 'custom_use_bundle_packaging_on_submit') &&
@@ -8219,7 +8423,7 @@ function spr_show_submit_summary_with_retries(frm, delays) {
 	if (!frm || !frm.doc || !frm.doc.name || cint(frm.doc.docstatus) !== 1) {
 		return;
 	}
-	const times = delays || [600, 1500, 3000];
+	const times = delays || [600, 1500, 3000, 6000, 12000];
 	times.forEach(function (ms) {
 		setTimeout(function () {
 			if (!frm || !frm.doc || !frm.doc.name || frm._spr_summary_shown) {
@@ -8236,11 +8440,8 @@ function spr_show_submit_summary_with_retries(frm, delays) {
 						return;
 					}
 					frm._spr_summary_shown = true;
-					frappe.msgprint({
-						title: d.title || __('Manufacture Summary'),
-						message: d.html,
-						wide: true,
-					});
+					frm._spr_pending_summary = false;
+					spr_show_manufacture_summary_dialog(frm, d.html, d.title);
 				},
 			});
 		}, ms);
