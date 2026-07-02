@@ -3051,6 +3051,14 @@ function invokeAppendRollLinesViaServer(
 		quotaMeta,
 	} = {}
 ) {
+	if (frm._spr_create_entry_in_progress) {
+		frappe.show_alert({
+			message: __('Create Entry already running — please wait, do not click again.'),
+			indicator: 'orange',
+		});
+		return;
+	}
+	frm._spr_create_entry_in_progress = true;
 	const args = {
 		shaft_production_run: frm.doc.name,
 		job_id: String(job_id),
@@ -3083,7 +3091,11 @@ function invokeAppendRollLinesViaServer(
 		freeze: true,
 		freeze_message: ex > 1 ? __('Creating roll lines...') : __('Creating roll line...'),
 		callback: function (r) {
+			frm._spr_create_entry_in_progress = false;
 			spr_finish_server_roll_append(frm, r.message, { alertMsg: alertMsg });
+		},
+		error: function () {
+			frm._spr_create_entry_in_progress = false;
 		},
 	});
 }

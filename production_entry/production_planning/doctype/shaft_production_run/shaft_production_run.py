@@ -2,11 +2,12 @@ import json
 import math
 import re
 from collections import defaultdict
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, flt, getdate, nowtime, today
+from frappe.utils import cint, flt, get_link_to_form, getdate, nowtime, today
 
 from production_entry.production_planning.doctype.planning_sheet.planning_sheet import (
 	extract_quality_and_color,
@@ -2447,17 +2448,44 @@ class ShaftProductionRun(Document):
 	def validate(self):
 		self.sync_company_from_source()
 		self.normalize_custom_unit()
+		submitting = self._spr_is_submit_action()
+		incremental = cint(getattr(self.flags, "_spr_incremental_roll_save", 0))
+		item_count = len(self.items or [])
+		self._validate_no_duplicate_roll_batches()
+		if self.name:
+			self._validate_batch_numbers_not_on_other_sprs()
+
+		# One-roll Create Entry save: skip full-grid validate (server already assigned batch).
+		if incremental and item_count > 15 and not submitting:
+			self.calculate_produced_gsm(missing_only=True)
+			self._spr_recalc_total_produced_weight_header()
+			return
+
+		# Large draft saves: avoid reprocessing every roll line on each Save click.
+		large_draft = item_count > 50 and not submitting and not incremental
+		if large_draft:
+			self.sync_shaft_job_work_orders_from_plan()
+			self._spr_round_item_net_weights()
+			self.calculate_produced_gsm(missing_only=True)
+			self.recalculate_job_achieved_weights()
+			self.recalculate_job_achieved_meters()
+			self.generate_batch_numbers()
+			self._spr_recalc_total_produced_weight_header()
+			self._spr_recalc_bag_pcs_headers()
+			return
+
 		self.sync_shaft_job_work_orders_from_plan()
 		self._spr_round_item_net_weights()
 		self._spr_stamp_bag_sizes_on_roll_lines()
 		self._spr_stamp_sheet_sizes_on_roll_lines()
 		self._spr_recalc_mix_roll_planned_qty()
-		submitting = self._spr_is_submit_action()
 		if submitting:
 			self.flags._spr_force_roll_summaries = True
-		incremental = cint(getattr(self.flags, "_spr_incremental_roll_save", 0))
-		item_count = len(self.items or [])
-		if incremental or (submitting and self._spr_rows_already_have_produced_gsm()):
+		if submitting:
+			self.calculate_produced_gsm(missing_only=False)
+		elif incremental or (submitting and self._spr_rows_already_have_produced_gsm()) or (
+			not submitting and item_count > 15
+		):
 			self.calculate_produced_gsm(missing_only=True)
 		else:
 			self.calculate_produced_gsm(missing_only=False)
@@ -2474,6 +2502,107 @@ class ShaftProductionRun(Document):
 		self._spr_recalc_bag_pcs_headers()
 		if item_count <= 15 or cint(getattr(self.flags, "_spr_force_roll_summaries", 0)):
 			self.sync_roll_attribute_summaries()
+		if submitting:
+			self._validate_production_submit_readiness()
+
+	def _validate_production_submit_readiness(self):
+		"""Hard gates before manufacture posting — batch numbers, WO mapping, no cross-SPR batch reuse."""
+		self._validate_no_duplicate_roll_batches()
+		self._validate_produced_rows_have_batch_numbers()
+		self._validate_batch_numbers_not_on_other_sprs()
+		self._validate_no_pending_wo_width_rows()
+
+	def _validate_produced_rows_have_batch_numbers(self):
+		"""Every produced roll line on a batch-managed FG item must have batch_no before submit."""
+		missing: list[str] = []
+		for row in self.items or []:
+			if flt(self._row_fg_qty(row)) <= 0:
+				continue
+			ic = _cstr(getattr(row, "item_code", None)).strip()
+			if ic and not _spr_item_has_batch_no(ic):
+				continue
+			bn = _cstr(getattr(row, "batch_no", None)).strip()
+			if bn:
+				continue
+			roll = getattr(row, "roll_no", None)
+			idx = cint(getattr(row, "idx", 0) or 0)
+			missing.append(_("{0} (row {1})").format(roll if roll not in (None, "") else _("no roll"), idx))
+		if missing:
+			frappe.throw(
+				_(
+					"Produced roll line(s) missing batch number: {0}. "
+					"Save the document or use Create Entry to assign batches before submit."
+				).format(", ".join(missing[:12])),
+				title=_("Missing batch numbers"),
+			)
+
+	def _validate_batch_numbers_not_on_other_sprs(self):
+		"""A roll batch (full string e.g. JS-0206261/1) must not exist on another SPR."""
+		if not self.name:
+			return
+		batches = list(
+			{
+				_cstr(getattr(r, "batch_no", None)).strip()
+				for r in (self.items or [])
+				if _cstr(getattr(r, "batch_no", None)).strip()
+			}
+		)
+		if not batches:
+			return
+		conflicts = frappe.db.sql(
+			"""
+			SELECT spi.batch_no, spi.parent, spi.idx
+			FROM `tabShaft Production Run Item` spi
+			WHERE spi.batch_no IN %(batches)s
+			  AND spi.parent != %(spr)s
+			ORDER BY spi.batch_no ASC, spi.parent ASC
+			LIMIT 8
+			""",
+			{"batches": tuple(batches), "spr": self.name},
+			as_dict=True,
+		)
+		if not conflicts:
+			return
+		lines = []
+		seen_pairs: set[tuple[str, str]] = set()
+		for c in conflicts:
+			bn = _cstr(c.batch_no)
+			parent = _cstr(c.parent)
+			pair = (bn, parent)
+			if pair in seen_pairs:
+				continue
+			seen_pairs.add(pair)
+			spr_link = get_link_to_form("Shaft Production Run", parent)
+			lines.append(
+				_("Batch <b>{0}</b> is already on {1} (row {2})").format(
+					bn, spr_link, cint(c.idx)
+				)
+			)
+		frappe.throw(
+			_(
+				"Each roll batch must be unique across all Shaft Production Runs.<br><br>{0}"
+				"<br><br>Open the linked SPR above, fix or remove that batch line, then save/submit this SPR again."
+			).format("<br>".join(lines)),
+			title=_("Batch already used on another SPR"),
+		)
+
+	def _validate_no_duplicate_roll_batches(self):
+		"""Reject duplicate batch_no on the same SPR — prevents qty mismatch on submit."""
+		seen: dict[str, int] = {}
+		for row in self.items or []:
+			bn = _cstr(getattr(row, "batch_no", None) or row.get("batch_no")).strip()
+			if not bn:
+				continue
+			idx = cint(getattr(row, "idx", 0) or row.get("idx") or 0)
+			if bn in seen:
+				frappe.throw(
+					_(
+						"Duplicate roll batch <b>{0}</b> on rows {1} and {2}. "
+						"Delete the duplicate line, refresh the page, then save again."
+					).format(bn, seen[bn], idx),
+					title=_("Duplicate batch not allowed"),
+				)
+			seen[bn] = idx
 
 	def sync_roll_attribute_summaries(self):
 		sync_spr_attribute_summaries_to_doc(self)
@@ -2649,6 +2778,7 @@ class ShaftProductionRun(Document):
 	def before_submit(self):
 		self.flags._spr_force_roll_summaries = True
 		self.sync_roll_attribute_summaries()
+		self._validate_production_submit_readiness()
 		if spr_doc_is_mix_roll(self):
 			self.create_mix_roll_material_receipts()
 			return
@@ -3001,10 +3131,17 @@ class ShaftProductionRun(Document):
 		series_prefix = self._resolve_series_prefix(root_5)
 		next_roll = self._next_roll_starting(series_prefix)
 		item_meta = frappe.get_meta("Shaft Production Run Item")
+		used_batches = _spr_used_batch_numbers_on_spr(self.name, self.items)
 		for row in rows:
-			if row.batch_no:
+			bn = _cstr(getattr(row, "batch_no", None)).strip()
+			if bn:
+				used_batches.add(bn)
 				continue
-			row.batch_no = f"{series_prefix}/{next_roll}"
+			bn, next_roll = _spr_next_available_batch_no(
+				series_prefix, next_roll, used_batches, exclude_spr=self.name
+			)
+			row.batch_no = bn
+			used_batches.add(bn)
 			if item_meta.has_field("roll_no"):
 				rf = item_meta.get_field("roll_no")
 				row.roll_no = int(next_roll) if rf and rf.fieldtype == "Int" else str(next_roll)
@@ -7134,7 +7271,7 @@ class ShaftProductionRun(Document):
 				),
 				title=_("Submit required"),
 			)
-		self._validate_no_pending_wo_width_rows()
+		self._validate_production_submit_readiness()
 		wo_groups = {}
 		for row in self.items or []:
 			wo_name = row.get("work_order") or row.get("wo_id")
@@ -9054,6 +9191,107 @@ def _planned_kg_for_spr_result_roll(job_row, roll_index: int, n_rolls: int, segs
 	return 0.0
 
 
+def _spr_operation_lock_key(spr_name: str, operation: str = "write") -> str:
+	return f"spr_lock:{_cstr(spr_name)}:{_cstr(operation)}"
+
+
+@contextmanager
+def _spr_operation_lock(spr_name: str, operation: str = "write", ttl_sec: int = 120):
+	"""Block concurrent Create Entry / batch assignment on the same SPR."""
+	if not spr_name:
+		yield
+		return
+	key = _spr_operation_lock_key(spr_name, operation)
+	acquired = False
+	try:
+		acquired = bool(
+			frappe.cache().set(
+				key,
+				frappe.session.user or "system",
+				expires_in_sec=ttl_sec,
+				nx=True,
+			)
+		)
+	except TypeError:
+		if frappe.cache().get(key):
+			acquired = False
+		else:
+			frappe.cache().set(key, frappe.session.user or "system", expires_in_sec=ttl_sec)
+			acquired = True
+	if not acquired:
+		frappe.throw(
+			_(
+				"Create Entry or Save is already running for {0}. "
+				"Wait for it to finish and refresh — do not click again or reload."
+			).format(spr_name),
+			title=_("Please wait"),
+		)
+	try:
+		yield
+	finally:
+		if acquired:
+			try:
+				frappe.cache().delete(key)
+			except Exception:
+				pass
+
+
+def _spr_used_batch_numbers_on_spr(spr_name: str | None, in_memory_items=None) -> set[str]:
+	"""All batch_no values on this SPR (DB + in-memory rows)."""
+	used: set[str] = set()
+	if spr_name:
+		for bn in frappe.db.sql_list(
+			"""
+			SELECT DISTINCT batch_no
+			FROM `tabShaft Production Run Item`
+			WHERE parent = %s AND IFNULL(batch_no, '') != ''
+			""",
+			spr_name,
+		):
+			bn = _cstr(bn).strip()
+			if bn:
+				used.add(bn)
+	for row in in_memory_items or []:
+		bn = _cstr(getattr(row, "batch_no", None) or (row.get("batch_no") if isinstance(row, dict) else "")).strip()
+		if bn:
+			used.add(bn)
+	return used
+
+
+def _spr_batch_exists_on_other_spr(batch_no: str, exclude_spr: str | None = None) -> bool:
+	"""True when batch_no is already saved on another Shaft Production Run."""
+	batch_no = _cstr(batch_no).strip()
+	if not batch_no:
+		return False
+	if exclude_spr:
+		return bool(
+			frappe.db.sql(
+				"""
+				SELECT name
+				FROM `tabShaft Production Run Item`
+				WHERE batch_no = %s AND parent != %s
+				LIMIT 1
+				""",
+				(batch_no, exclude_spr),
+			)
+		)
+	return bool(frappe.db.exists("Shaft Production Run Item", {"batch_no": batch_no}))
+
+
+def _spr_next_available_batch_no(
+	series_prefix: str,
+	next_roll: int,
+	used_batches: set[str],
+	exclude_spr: str | None = None,
+) -> tuple[str, int]:
+	"""Next batch string for series that is not used on this SPR or any other SPR."""
+	while True:
+		candidate = f"{series_prefix}/{next_roll}"
+		if candidate not in used_batches and not _spr_batch_exists_on_other_spr(candidate, exclude_spr):
+			return candidate, next_roll
+		next_roll += 1
+
+
 @frappe.whitelist()
 def get_next_spr_batch_numbers(
 	shaft_production_run,
@@ -9076,6 +9314,27 @@ def get_next_spr_batch_numbers(
 		return []
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save the Shaft Production Run first"))
+	with _spr_operation_lock(shaft_production_run, "write", ttl_sec=60):
+		return _get_next_spr_batch_numbers_unlocked(
+			shaft_production_run=shaft_production_run,
+			count=count,
+			client_max_roll=client_max_roll,
+			run_date=run_date,
+			custom_unit=custom_unit,
+			shift=shift,
+			client_series_prefix=client_series_prefix,
+		)
+
+
+def _get_next_spr_batch_numbers_unlocked(
+	shaft_production_run,
+	count,
+	client_max_roll=None,
+	run_date=None,
+	custom_unit=None,
+	shift=None,
+	client_series_prefix=None,
+):
 	doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if run_date not in (None, ""):
 		doc.run_date = run_date
@@ -9103,16 +9362,12 @@ def get_next_spr_batch_numbers(
 	except Exception:
 		pass
 	item_meta = frappe.get_meta("Shaft Production Run Item")
-	used_batches: set[str] = set()
-	for r in doc.items or []:
-		bn = _cstr(r.get("batch_no")).strip()
-		if bn:
-			used_batches.add(bn)
+	used_batches = _spr_used_batch_numbers_on_spr(shaft_production_run, doc.items)
 	out = []
 	for _i in range(count):
-		while f"{series_prefix}/{next_roll}" in used_batches:
-			next_roll += 1
-		bn = f"{series_prefix}/{next_roll}"
+		bn, next_roll = _spr_next_available_batch_no(
+			series_prefix, next_roll, used_batches, exclude_spr=shaft_production_run
+		)
 		used_batches.add(bn)
 		rf = item_meta.get_field("roll_no")
 		rn = int(next_roll) if rf and rf.fieldtype == "Int" else str(next_roll)
@@ -9515,69 +9770,71 @@ def append_roll_lines_for_job_and_save(
 	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
 		frappe.throw(_("Save Shaft Production Run first"))
 
-	lines = build_spr_roll_result_lines_for_job(
-		shaft_production_run=shaft_production_run,
-		job_id=job_id,
-		lamination_rolls_per_combination=lamination_rolls_per_combination,
-		lamination_exact_roll_lines=lamination_exact_roll_lines,
-		exact_roll_lines=exact_roll_lines,
-		roll_start_index=roll_start_index,
-	)
-	if not lines:
-		return {"added": 0, "job_id": _cstr(job_id), "total_items": 0, "lines": []}
+	with _spr_operation_lock(shaft_production_run, "write", ttl_sec=120):
+		lines = build_spr_roll_result_lines_for_job(
+			shaft_production_run=shaft_production_run,
+			job_id=job_id,
+			lamination_rolls_per_combination=lamination_rolls_per_combination,
+			lamination_exact_roll_lines=lamination_exact_roll_lines,
+			exact_roll_lines=exact_roll_lines,
+			roll_start_index=roll_start_index,
+		)
+		if not lines:
+			return {"added": 0, "job_id": _cstr(job_id), "total_items": 0, "lines": []}
 
-	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
-	if cint(spr.docstatus) != 0:
-		frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
+		spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
 
-	if cint(replace_job_lines):
-		for row in list(spr.items or []):
-			if _cstr(getattr(row, "job", None)) == _cstr(job_id):
-				spr.remove(row)
+		if cint(replace_job_lines):
+			for row in list(spr.items or []):
+				if _cstr(getattr(row, "job", None)) == _cstr(job_id):
+					spr.remove(row)
 
-	client_max_roll = _spr_max_roll_suffix_for_job(spr, job_id)
-	if roll_start_index not in (None, ""):
-		try:
-			client_max_roll = max(client_max_roll, cint(roll_start_index))
-		except Exception:
-			pass
+		client_max_roll = _spr_max_roll_suffix_for_job(spr, job_id)
+		if roll_start_index not in (None, ""):
+			try:
+				client_max_roll = max(client_max_roll, cint(roll_start_index))
+			except Exception:
+				pass
 
-	batch_rows = get_next_spr_batch_numbers(
-		shaft_production_run=shaft_production_run,
-		count=len(lines),
-		client_max_roll=client_max_roll,
-		run_date=spr.run_date,
-		custom_unit=spr.get("custom_unit"),
-		shift=spr.shift,
-		client_series_prefix=_spr_existing_series_prefix_for_job(spr, job_id) or None,
-	)
-
-	added_rows: list[dict] = []
-	for idx, line in enumerate(lines):
-		row = spr.append("items", line)
-		if idx < len(batch_rows or []):
-			br = batch_rows[idx] or {}
-			if br.get("batch_no"):
-				row.batch_no = br.get("batch_no")
-			if br.get("roll_no") is not None:
-				row.roll_no = br.get("roll_no")
-		added_rows.append(
-			{
-				"batch_no": _cstr(getattr(row, "batch_no", "")),
-				"roll_no": getattr(row, "roll_no", None),
-				"job": _cstr(getattr(row, "job", None)),
-			}
+		batch_rows = _get_next_spr_batch_numbers_unlocked(
+			shaft_production_run=shaft_production_run,
+			count=len(lines),
+			client_max_roll=client_max_roll,
+			run_date=spr.run_date,
+			custom_unit=spr.get("custom_unit"),
+			shift=spr.shift,
+			client_series_prefix=_spr_existing_series_prefix_for_job(spr, job_id) or None,
 		)
 
-	spr.flags._spr_incremental_roll_save = True
-	spr.save()
+		added_rows: list[dict] = []
+		for idx, line in enumerate(lines):
+			row = spr.append("items", line)
+			if idx < len(batch_rows or []):
+				br = batch_rows[idx] or {}
+				if br.get("batch_no"):
+					row.batch_no = br.get("batch_no")
+				if br.get("roll_no") is not None:
+					row.roll_no = br.get("roll_no")
+			added_rows.append(
+				{
+					"batch_no": _cstr(getattr(row, "batch_no", "")),
+					"roll_no": getattr(row, "roll_no", None),
+					"job": _cstr(getattr(row, "job", None)),
+				}
+			)
 
-	return {
-		"added": len(added_rows),
-		"job_id": _cstr(job_id),
-		"total_items": len(spr.items or []),
-		"lines": added_rows,
-	}
+		spr._validate_no_duplicate_roll_batches()
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
+
+		return {
+			"added": len(added_rows),
+			"job_id": _cstr(job_id),
+			"total_items": len(spr.items or []),
+			"lines": added_rows,
+		}
 
 
 def _build_gsm_width_to_wo_map_from_item_names(wo_list: list) -> dict:
