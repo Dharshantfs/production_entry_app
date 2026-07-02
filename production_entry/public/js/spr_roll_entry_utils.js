@@ -106,11 +106,17 @@ export function sprCalcProducedGsm(row) {
 export function sprRecalcRollRow(row) {
 	const net = sprCalcNetFromGross(row);
 	const produced = sprCalcProducedGsm({ ...row, net_weight: net });
+	const lengthM = sprResolveLengthMeters(row);
+	const planned =
+		sprFlt(row.planned_qty) > 0
+			? sprFlt(row.planned_qty)
+			: sprComputePlannedQtyKg(row.gsm, row.width_inch, lengthM || row.meter_roll);
 	return {
 		...row,
 		gross_weight: sprNormalizeGrossWeightInput(row.gross_weight) || row.gross_weight,
 		net_weight: net,
 		produced_gsm: produced,
+		planned_qty: planned > 0 ? planned : row.planned_qty,
 	};
 }
 
@@ -141,6 +147,16 @@ export function sprGsmBandClass(stickerGsm, producedGsm, hasWeight) {
 		return 'gpe-gsm-band-2';
 	}
 	return 'gpe-gsm-band-3';
+}
+
+export function sprComputePlannedQtyKg(gsm, widthInch, lengthM) {
+	const g = sprFlt(gsm);
+	const w = sprFlt(widthInch);
+	const ln = sprFlt(lengthM);
+	if (g <= 0 || w <= 0 || ln <= 0) {
+		return 0;
+	}
+	return Math.round((g * w * ln * 0.0254) / 1000 * 100) / 100;
 }
 
 export function sprFormatKg(v) {

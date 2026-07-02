@@ -7,10 +7,10 @@
     <div class="gpe-page-tabs">
       <button type="button" :class="{ active: pageTab === 'entry' }" @click="pageTab = 'entry'">Entry</button>
       <button type="button" :class="{ active: pageTab === 'summary' }" @click="pageTab = 'summary'">Summary</button>
-      <button type="button" :class="{ active: pageTab === 'shift' }" @click="pageTab = 'shift'; loadShiftEntries()">Shift Entries</button>
+      <button type="button" :class="{ active: pageTab === 'shift' }" @click="openShiftTab">Shift Entries</button>
     </div>
 
-    <div class="gpe-filters gpe-card">
+    <div v-if="pageTab !== 'shift'" class="gpe-filters gpe-card">
       <div class="gpe-filter">
         <label>View</label>
         <select v-model="viewScope" @change="fetchOrders">
@@ -34,7 +34,7 @@
       <div class="gpe-filter">
         <label>Unit</label>
         <select v-model="filterUnit" @change="onUnitChange">
-          <option value="">All units</option>
+          <option value="">Select unit</option>
           <option v-for="u in unitOptions" :key="u" :value="u">{{ u }}</option>
         </select>
       </div>
@@ -60,32 +60,51 @@
           <div
             v-for="merge in mergeSidebarRows"
             :key="merge.mergeId"
-            class="gpe-order-group gpe-card-inner"
+            class="gpe-order-card"
           >
+            <div class="gpe-order-head">
+              <span class="gpe-order-code">{{ merge.orderCode }}</span>
+              <button
+                v-if="merge.ppId"
+                type="button"
+                class="gpe-link-btn"
+                @click.stop="viewPP(merge.ppId)"
+              >View PP</button>
+            </div>
             <label
-              class="gpe-line"
-              :class="lineRowClass(merge)"
+              class="gpe-line-card"
+              :class="{ selected: isMergeSelected(merge), 'gpe-line-disabled': !merge.selectable }"
               :title="merge.tooltip"
             >
               <input
                 type="checkbox"
+                class="gpe-line-check"
                 :checked="isMergeSelected(merge)"
                 :disabled="!merge.selectable || selectionLocked"
                 @change="toggleMerge(merge, $event)"
               />
-              <span>
-                <span class="gpe-merge-label">{{ merge.label }}</span>
-                · Rem {{ formatKg(merge.remainingKg) }} Kg
-                <span v-if="merge.chip" :class="['gpe-chip', merge.chipClass]">{{ merge.chip }}</span>
-              </span>
+              <div class="gpe-line-body">
+                <div class="gpe-line-meta">
+                  <span class="gpe-quality">{{ merge.quality }}</span>
+                  <span class="gpe-color">{{ merge.color }}</span>
+                </div>
+                <div class="gpe-line-spec">
+                  <strong class="gpe-gsm">{{ merge.gsmLabel }}</strong>
+                  <span>{{ merge.widthLabel }}</span>
+                  <span class="gpe-day-target">Plan {{ formatKg(merge.dayTargetKg) }} Kg</span>
+                </div>
+                <div v-if="merge.quotaLabel || merge.chip" class="gpe-line-foot">
+                  <span v-if="merge.quotaLabel" class="gpe-quota" :title="merge.quotaTooltip">{{ merge.quotaLabel }}</span>
+                  <span v-if="merge.chip" :class="['gpe-chip', merge.chipClass]">{{ merge.chip }}</span>
+                </div>
+              </div>
             </label>
           </div>
         </div>
 
-        <div v-for="grp in filteredActiveGroups" :key="grp.key" class="gpe-order-group gpe-card-inner">
+        <div v-for="grp in filteredActiveGroups" :key="grp.key" class="gpe-order-card">
           <div class="gpe-order-head">
-            <strong>{{ grp.orderCode }}</strong>
-            <span class="gpe-party">{{ grp.partyName }}</span>
+            <span class="gpe-order-code">{{ grp.orderCode }}</span>
             <button
               v-if="grp.ppId"
               type="button"
@@ -96,21 +115,32 @@
           <label
             v-for="line in grp.lines"
             :key="line.id"
-            class="gpe-line"
+            class="gpe-line-card"
             :class="lineRowClass(line)"
             :title="line.tooltip"
           >
             <input
               type="checkbox"
+              class="gpe-line-check"
               :checked="selectedLineIds.has(line.id)"
               :disabled="!line.selectable || selectionLocked"
               @change="toggleLine(line.id, $event)"
             />
-            <span @click.prevent="onLineLabelClick(line)">
-              {{ line.gsm }} GSM · {{ line.widthLabel }} · Rem {{ formatKg(line.remainingKg) }} Kg
-              <span v-if="line.quotaLabel" class="gpe-quota">{{ line.quotaLabel }}</span>
-              <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
-            </span>
+            <div class="gpe-line-body" @click.prevent="onLineLabelClick(line)">
+              <div class="gpe-line-meta">
+                <span class="gpe-quality">{{ line.quality }}</span>
+                <span class="gpe-color">{{ line.color }}</span>
+              </div>
+              <div class="gpe-line-spec">
+                <strong class="gpe-gsm">{{ line.gsm }} GSM</strong>
+                <span>{{ line.widthLabel }}</span>
+                <span class="gpe-day-target">Plan {{ formatKg(line.dayTargetKg) }} Kg</span>
+              </div>
+              <div v-if="line.quotaLabel || line.chip" class="gpe-line-foot">
+                <span v-if="line.quotaLabel" class="gpe-quota" :title="line.quotaTooltip">{{ line.quotaLabel }}</span>
+                <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
+              </div>
+            </div>
           </label>
         </div>
 
@@ -119,47 +149,40 @@
             {{ showCompletedOrders ? "▼" : "▶" }} Completed orders ({{ completedLineCount }})
           </button>
           <div v-show="showCompletedOrders">
-            <div v-for="grp in filteredCompletedGroups" :key="'c-' + grp.key" class="gpe-order-group gpe-card-inner gpe-completed">
+            <div v-for="grp in filteredCompletedGroups" :key="'c-' + grp.key" class="gpe-order-card gpe-completed">
               <div class="gpe-order-head">
-                <strong>{{ grp.orderCode }}</strong>
-                <span class="gpe-party">{{ grp.partyName }}</span>
+                <span class="gpe-order-code">{{ grp.orderCode }}</span>
+                <button
+                  v-if="grp.ppId"
+                  type="button"
+                  class="gpe-link-btn"
+                  @click="viewPP(grp.ppId)"
+                >View PP</button>
               </div>
               <label
                 v-for="line in grp.lines"
                 :key="line.id"
-                class="gpe-line gpe-line-disabled"
+                class="gpe-line-card gpe-line-disabled"
                 :title="line.tooltip"
               >
-                <input type="checkbox" disabled />
-                <span>
-                  {{ line.gsm }} GSM · {{ line.widthLabel }} · Rem {{ formatKg(line.remainingKg) }} Kg
-                  <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
-                </span>
+                <input type="checkbox" class="gpe-line-check" disabled />
+                <div class="gpe-line-body">
+                  <div class="gpe-line-meta">
+                    <span class="gpe-quality">{{ line.quality }}</span>
+                    <span class="gpe-color">{{ line.color }}</span>
+                  </div>
+                  <div class="gpe-line-spec">
+                    <strong class="gpe-gsm">{{ line.gsm }} GSM</strong>
+                    <span>{{ line.widthLabel }}</span>
+                    <span class="gpe-day-target">Plan {{ formatKg(line.dayTargetKg) }} Kg</span>
+                  </div>
+                  <div v-if="line.chip" class="gpe-line-foot">
+                    <span :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
+                  </div>
+                </div>
               </label>
             </div>
           </div>
-        </div>
-
-        <div v-if="selectedSummary" class="gpe-selected-box">
-          <div>Selected: {{ selectedSummary.count }} GSM line(s)</div>
-          <div>Total remaining: {{ formatKg(selectedSummary.remaining) }} Kg</div>
-          <div class="gpe-selection-actions">
-            <button
-              v-if="!selectionLocked"
-              type="button"
-              class="gpe-btn primary sm"
-              :disabled="!selectedLineIds.size"
-              @click="openConfirmSelection"
-            >Confirm selection</button>
-            <button
-              v-else
-              type="button"
-              class="gpe-btn sm"
-              @click="unlockSelection"
-            >Unlock selection</button>
-            <button type="button" class="gpe-link-btn" @click="clearSelection">Clear</button>
-          </div>
-          <div v-if="selectionLocked" class="gpe-lock-badge">Selection locked</div>
         </div>
       </aside>
 
@@ -181,12 +204,37 @@
             <label>Operator <input v-model="operator" type="text" /></label>
             <label>Supervisor <input v-model="supervisor" type="text" /></label>
           </div>
+          <div v-if="selectedSummary || selectedLineIds.size" class="gpe-selection-strip">
+            <div class="gpe-selection-text">
+              <strong>{{ selectedSummary?.count || 0 }}</strong> line(s) ·
+              Day plan <strong>{{ formatKg(selectedSummary?.dayPlanned || 0) }}</strong> Kg ·
+              Session rem <strong>{{ formatKg(metrics.dayRemaining) }}</strong> Kg
+              <span v-if="selectionLocked" class="gpe-lock-badge inline">Locked</span>
+            </div>
+            <div class="gpe-selection-actions">
+              <button
+                v-if="!selectionLocked"
+                type="button"
+                class="gpe-btn primary sm"
+                :disabled="!selectedLineIds.size"
+                @click="openConfirmSelection"
+              >Confirm selection</button>
+              <button
+                v-else
+                type="button"
+                class="gpe-btn sm"
+                @click="unlockSelection"
+              >Unlock</button>
+              <button type="button" class="gpe-link-btn" @click="clearSelection">Clear</button>
+            </div>
+          </div>
         </div>
 
         <div class="gpe-metrics">
+          <div class="gpe-metric slate">Board plan (Kg)<br /><strong>{{ formatKg(boardDayTotalKg) }}</strong></div>
           <div class="gpe-metric blue">Total Entry (Kg)<br /><strong>{{ formatKg(metrics.totalGross) }}</strong></div>
           <div class="gpe-metric green">Net Production (Kg)<br /><strong>{{ formatKg(metrics.totalNet) }}</strong></div>
-          <div class="gpe-metric orange">Remaining (Kg)<br /><strong>{{ formatKg(metrics.remaining) }}</strong></div>
+          <div class="gpe-metric orange">Day remaining (Kg)<br /><strong>{{ formatKg(metrics.dayRemaining) }}</strong></div>
           <div class="gpe-metric grey">Rolls<br /><strong>{{ rollLines.length }}</strong></div>
         </div>
 
@@ -216,6 +264,15 @@
           </div>
         </div>
 
+        <div class="gpe-gsm-legend">
+          <span class="gpe-legend-title">GSM diff (Sticker vs Produced):</span>
+          <span class="gpe-legend-chip gpe-gsm-band-0">|diff| &lt; 1</span>
+          <span class="gpe-legend-chip gpe-gsm-band-1">1 – 2</span>
+          <span class="gpe-legend-chip gpe-gsm-band-2">2 – 3</span>
+          <span class="gpe-legend-chip gpe-gsm-band-3">≥ 3</span>
+          <span class="gpe-legend-chip gpe-gsm-incomplete">Awaiting / incomplete</span>
+        </div>
+
         <div class="gpe-grid-wrap">
           <table class="gpe-grid">
             <thead>
@@ -232,6 +289,7 @@
                 <th>Batch</th>
                 <th>Net</th>
                 <th>Gross</th>
+                <th>Planned Qty</th>
                 <th>UOM</th>
                 <th>WO</th>
                 <th>Core mm</th>
@@ -274,6 +332,7 @@
                     @input="onRowEdit(row)"
                   />
                 </td>
+                <td>{{ formatKg(row.planned_qty) }}</td>
                 <td>{{ row.uom || "Kg" }}</td>
                 <td>
                   <a
@@ -284,16 +343,16 @@
                   >{{ row.work_order }}</a>
                 </td>
                 <td>
-                  <input
+                  <select
                     v-model.number="row.custom_core_width_mm"
-                    type="number"
-                    step="1"
-                    class="gpe-inp"
+                    class="gpe-inp gpe-inp-wide"
                     :disabled="row.row_locked"
-                    @input="onRowEdit(row)"
-                  />
+                    @change="onRowEdit(row)"
+                  >
+                    <option v-for="opt in coreWidthOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                  </select>
                 </td>
-                <td>{{ row.custom_polybag_kgs }}</td>
+                <td>{{ formatKg(row.custom_polybag_kgs) }}</td>
                 <td class="gpe-actions">
                   <button
                     v-if="!row.row_locked"
@@ -415,6 +474,7 @@
     <!-- Shift Entries tab -->
     <div v-show="pageTab === 'shift'" class="gpe-shift-layout">
       <div class="gpe-shift-filters gpe-card">
+        <span class="gpe-shift-filter-title">Submitted SPRs for shift</span>
         <label>Date <input type="date" v-model="shiftFilterDate" /></label>
         <label>
           Shift
@@ -426,8 +486,8 @@
         <label>
           Unit
           <select v-model="shiftFilterUnit">
-            <option value="">All units</option>
-            <option v-for="u in unitOptions" :key="'su-' + u" :value="u">{{ u }}</option>
+            <option value="">All fabric units</option>
+            <option v-for="u in fabricUnitOptions" :key="'su-' + u" :value="u">{{ u }}</option>
           </select>
         </label>
         <button type="button" class="gpe-btn primary" @click="loadShiftEntries">Refresh</button>
@@ -504,7 +564,7 @@
         <p>Lock these lines for roll entry? You can unlock later.</p>
         <ul class="gpe-confirm-list">
           <li v-for="line in confirmLines" :key="line.id">
-            {{ line.orderCode }} · {{ line.gsm }} GSM · {{ line.widthLabel }} · Rem {{ formatKg(line.remainingKg) }} Kg
+            {{ line.orderCode }} · {{ line.quality }} · {{ line.color }} · {{ line.gsm }} GSM · {{ line.widthLabel }} · Plan {{ formatKg(line.dayTargetKg) }} Kg
           </li>
         </ul>
         <div class="gpe-dialog-actions">
@@ -546,6 +606,7 @@ import {
 import {
   sprCalcNetFromGross,
   sprCalcProducedGsm,
+  sprComputePlannedQtyKg,
   sprFlt,
   sprFormatKg,
   sprGsmBandClass,
@@ -555,6 +616,7 @@ import {
 
 const STORAGE_KEY = "gsm_production_entry_draft_v2";
 const BOARD_SLUG = "production-table";
+const FABRIC_UNITS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4"];
 
 const viewScope = ref("daily");
 const filterDate = ref(frappe.datetime.get_today());
@@ -598,6 +660,7 @@ const shiftFilterUnit = ref("");
 const shiftEntries = ref([]);
 const shiftLoading = ref(false);
 const selectedShiftEntry = ref(null);
+const coreWidthOptions = ref([{ value: 1600, label: "1600 mm" }]);
 
 let autosaveTimer = null;
 
@@ -641,6 +704,22 @@ function itemRemainingKg(item) {
   return pendingKg;
 }
 
+function isFabricUnit(unit) {
+  const u = (unit || "").trim();
+  if (!u || u.toUpperCase().includes("UNASSIGNED")) {
+    return false;
+  }
+  return FABRIC_UNITS.includes(u);
+}
+
+function quotaTooltipForLine(lineId) {
+  const q = quotaByLineId.value[lineId];
+  if (!q || q.max_rolls <= 0) {
+    return "";
+  }
+  return `${q.current_rolls} roll line(s) on SPR for this GSM+width · max ${q.max_rolls} for this shaft job`;
+}
+
 function lineEligibility(item, lineId) {
   if (!item?.pp_id || Number(item.pp_docstatus) !== 1) {
     return { selectable: false, chip: "", chipClass: "", tooltip: "PP not submitted" };
@@ -659,7 +738,7 @@ function lineEligibility(item, lineId) {
       selectable: false,
       chip: "Quota full",
       chipClass: "gpe-chip-quota",
-      tooltip: `Roll limit reached (${quota.current_rolls}/${quota.max_rolls}) — use Manual Job`,
+      tooltip: `${quotaTooltipForLine(lineId)} — use Manual Job`,
     };
   }
   if (item.wo_terminal) {
@@ -667,7 +746,8 @@ function lineEligibility(item, lineId) {
       selectable: false,
       chip: "WO Closed",
       chipClass: "gpe-chip-closed",
-      tooltip: "All work orders closed — no further entry",
+      tooltip:
+        "All Work Orders on this PP are closed (Completed / Stopped / Cancelled). Frozen until a new WO or Draft SPR exists.",
     };
   }
   const rem = itemRemainingKg(item);
@@ -676,7 +756,7 @@ function lineEligibility(item, lineId) {
       selectable: false,
       chip: "Completed",
       chipClass: "gpe-chip-done",
-      tooltip: "Production target met for this line",
+      tooltip: "PP line target met (remaining ≤ 0.5 Kg)",
     };
   }
   if (Number(item.spr_docstatus) === 1 && !item.wo_terminal) {
@@ -684,10 +764,10 @@ function lineEligibility(item, lineId) {
       selectable: true,
       chip: "SPR Submitted",
       chipClass: "gpe-chip-submitted",
-      tooltip: "Submitted SPR — more production allowed while WO open",
+      tooltip: "Submitted SPR — more production allowed while WO is open",
     };
   }
-  return { selectable: true, chip: "", chipClass: "", tooltip: "Select to add roll rows" };
+  return { selectable: true, chip: "", chipClass: "", tooltip: "Select for today's planned production" };
 }
 
 function quotaLabelForLine(lineId) {
@@ -695,11 +775,13 @@ function quotaLabelForLine(lineId) {
   if (!q || q.max_rolls <= 0) {
     return "";
   }
-  return `· Rolls ${q.current_rolls}/${q.max_rolls}`;
+  return `Rolls ${q.current_rolls}/${q.max_rolls}`;
 }
 
 const ppSubmittedRows = computed(() =>
-  (rawOrders.value || []).filter((r) => r.pp_id && Number(r.pp_docstatus) === 1)
+  (rawOrders.value || []).filter(
+    (r) => r.pp_id && Number(r.pp_docstatus) === 1 && isFabricUnit(r.unit)
+  )
 );
 
 const mergedItemIds = computed(() => {
@@ -713,12 +795,14 @@ const mergedItemIds = computed(() => {
 const unitOptions = computed(() => {
   const s = new Set();
   ppSubmittedRows.value.forEach((r) => {
-    if (r.unit) {
+    if (r.unit && isFabricUnit(r.unit)) {
       s.add(r.unit);
     }
   });
-  return [...s].sort();
+  return FABRIC_UNITS.filter((u) => s.has(u));
 });
+
+const fabricUnitOptions = computed(() => unitOptions.value);
 
 function buildLineFromItem(item) {
   const id = item.itemName || item.name;
@@ -728,8 +812,11 @@ function buildLineFromItem(item) {
     id,
     source: item,
     gsm: item.gsm,
+    quality: item.quality || "",
+    color: item.color || item.fabric_colour || "",
     width_inch: w,
     widthLabel: w ? `${w}"` : "—",
+    dayTargetKg: sprFlt(item.qty),
     remainingKg: itemRemainingKg(item),
     orderCode: item.partyCode || item.party_code || "",
     partyName: item.customer_name || item.customer || "",
@@ -739,6 +826,7 @@ function buildLineFromItem(item) {
     chipClass: elig.chipClass,
     tooltip: elig.tooltip,
     quotaLabel: quotaLabelForLine(id),
+    quotaTooltip: quotaTooltipForLine(id),
   };
 }
 
@@ -797,7 +885,8 @@ function filterGroups(groups) {
       lines: g.lines.filter(
         (l) =>
           g.orderCode.toLowerCase().includes(q) ||
-          g.partyName.toLowerCase().includes(q) ||
+          (l.quality || "").toLowerCase().includes(q) ||
+          (l.color || "").toLowerCase().includes(q) ||
           String(l.gsm).toLowerCase().includes(q)
       ),
     }))
@@ -818,14 +907,14 @@ const mergeSidebarRows = computed(() => {
       if (filterUnit.value && items.some((it) => it.unit !== filterUnit.value)) {
         return null;
       }
-      const remainingKg = items.reduce((s, it) => s + itemRemainingKg(it), 0);
+      const dayTargetKg = items.reduce((s, it) => s + sprFlt(it.qty), 0);
       const anyDraft = items.some((it) => isDraftSpr(it));
       const allTerminal = items.length > 0 && items.every((it) => it.wo_terminal);
       let selectable =
-        anyDraft || (!allTerminal && remainingKg > 0.5 && items.some((it) => lineEligibility(it, it.itemName || it.name).selectable));
+        anyDraft || (!allTerminal && dayTargetKg > 0.5 && items.some((it) => lineEligibility(it, it.itemName || it.name).selectable));
       let chip = "";
       let chipClass = "";
-      let tooltip = "Merged production group";
+      let tooltip = "Merged production group — select to cover all lines in merge";
       if (anyDraft) {
         chip = "Draft SPR";
         chipClass = "gpe-chip-draft";
@@ -833,26 +922,51 @@ const mergeSidebarRows = computed(() => {
         chip = "WO Closed";
         chipClass = "gpe-chip-closed";
         selectable = false;
-      } else if (remainingKg <= 0.5) {
+        tooltip = "All Work Orders closed for every line in this merge — frozen";
+      } else if (dayTargetKg <= 0.5) {
         chip = "Completed";
         chipClass = "gpe-chip-done";
         selectable = false;
+        tooltip = "No planned kg remaining for this merge on the board";
       }
-      const label = m.merge_label || `Merge ${m.name}`;
-      if (q && !label.toLowerCase().includes(q) && !items.some((it) => (it.partyCode || "").toLowerCase().includes(q))) {
+      const orderCode = [...new Set(items.map((it) => it.partyCode || it.party_code || ""))].filter(Boolean).join(", ");
+      const gsms = [...new Set(items.map((it) => it.gsm).filter(Boolean))];
+      const widths = [...new Set(items.map((it) => sprFlt(it.width_inch || it.width)).filter((w) => w > 0))];
+      const first = items[0];
+      const label = m.merge_label || orderCode;
+      if (
+        q &&
+        !label.toLowerCase().includes(q) &&
+        !orderCode.toLowerCase().includes(q) &&
+        !items.some((it) => String(it.gsm || "").includes(q))
+      ) {
         return null;
       }
+      const quotaParts = items
+        .map((it) => {
+          const lid = it.itemName || it.name;
+          const ql = quotaLabelForLine(lid);
+          return ql ? `${sprFlt(it.width_inch || it.width)}" ${ql}` : "";
+        })
+        .filter(Boolean);
       return {
         mergeId: m.name,
         label,
+        orderCode: orderCode || label,
+        quality: first?.quality || "",
+        color: first?.color || first?.fabric_colour || "",
+        gsmLabel: gsms.length > 1 ? `${gsms.join(", ")} GSM` : `${gsms[0] || "—"} GSM`,
+        widthLabel: widths.length > 1 ? `${widths.join('", "')}"` : widths[0] ? `${widths[0]}"` : "—",
+        dayTargetKg,
         itemIds: itemNames,
         items,
-        remainingKg,
         selectable,
         chip,
         chipClass,
         tooltip,
         ppId: items[0]?.pp_id,
+        quotaLabel: quotaParts[0] || "",
+        quotaTooltip: quotaParts.join(" · "),
       };
     })
     .filter(Boolean);
@@ -876,16 +990,16 @@ const selectedSummary = computed(() => {
   if (!selectedLineIds.value.size) {
     return null;
   }
-  let remaining = 0;
+  let dayPlanned = 0;
   let count = 0;
   selectedLineIds.value.forEach((id) => {
     const line = lineById.value.get(id);
     if (line?.selectable !== false) {
-      remaining += line.remainingKg;
+      dayPlanned += sprFlt(line.dayTargetKg);
       count += 1;
     }
   });
-  return { count, remaining };
+  return { count, dayPlanned };
 });
 
 const confirmLines = computed(() =>
@@ -908,8 +1022,8 @@ const toolsContext = computed(() => {
     return null;
   }
   const ppIds = new Set();
+  const orderCodes = new Set();
   const planningNames = [];
-  let orderKey = null;
   for (const id of selectedLineIds.value) {
     const line = lineById.value.get(id);
     if (!line) {
@@ -917,28 +1031,28 @@ const toolsContext = computed(() => {
     }
     ppIds.add(line.ppId);
     planningNames.push(id);
-    const ok = `${line.orderCode}::${line.partyName}`;
-    if (orderKey && orderKey !== ok) {
-      return null;
-    }
-    orderKey = ok;
+    orderCodes.add(line.orderCode);
   }
-  if (ppIds.size !== 1) {
+  if (ppIds.size !== 1 || orderCodes.size !== 1) {
     return null;
   }
   return {
     ppId: [...ppIds][0],
     planningNames,
-    orderKey,
+    orderCode: [...orderCodes][0],
   };
 });
 
 const toolsEnabled = computed(() => !!toolsContext.value);
-const toolsHint = computed(() =>
-  toolsEnabled.value
-    ? "SPR tools for locked selection"
-    : "Lock a single order group to enable Tools"
-);
+const toolsHint = computed(() => {
+  if (!selectionLocked.value) {
+    return "Confirm & lock lines from one order first (Tools create/open draft SPR in Phase 1)";
+  }
+  if (!toolsContext.value) {
+    return "Lock lines from a single order / PP only — Tools need one draft SPR context";
+  }
+  return "SPR tools — opens or creates draft SPR for locked order";
+});
 
 const primaryGsmLabel = computed(() => {
   const gsms = new Set();
@@ -953,6 +1067,17 @@ const primaryGsmLabel = computed(() => {
   return "";
 });
 
+const boardDayTotalKg = computed(() => {
+  let rows = ppSubmittedRows.value;
+  if (filterUnit.value) {
+    rows = rows.filter((r) => r.unit === filterUnit.value);
+  }
+  if (viewScope.value === "daily" && filterDate.value) {
+    rows = rows.filter((r) => String(r.plannedDate || "").slice(0, 10) === filterDate.value);
+  }
+  return rows.reduce((s, r) => s + sprFlt(r.qty), 0);
+});
+
 const metrics = computed(() => {
   let totalGross = 0;
   let totalNet = 0;
@@ -960,20 +1085,17 @@ const metrics = computed(() => {
     totalGross += sprNormalizeGrossWeightInput(r.gross_weight);
     totalNet += sprFlt(r.net_weight);
   });
-  let remaining = 0;
+  let dayPlanned = 0;
   selectedLineIds.value.forEach((id) => {
     const line = lineById.value.get(id);
     if (line) {
-      remaining += line.remainingKg;
+      dayPlanned += sprFlt(line.dayTargetKg);
     }
   });
   rollLines.value.forEach((r) => {
-    const line = lineById.value.get(r.planning_table_row);
-    if (line) {
-      remaining -= sprFlt(r.net_weight);
-    }
+    dayPlanned -= sprFlt(r.net_weight);
   });
-  return { totalGross, totalNet, remaining: Math.max(0, remaining) };
+  return { totalGross, totalNet, dayRemaining: Math.max(0, dayPlanned) };
 });
 
 const linkedOrderSummary = computed(() => {
@@ -1197,6 +1319,14 @@ function clearSelection() {
   scheduleAutosave();
 }
 
+function openShiftTab() {
+  pageTab.value = "shift";
+  shiftFilterDate.value = runDate.value;
+  shiftFilterShift.value = shift.value;
+  shiftFilterUnit.value = filterUnit.value || headerUnit.value || shiftFilterUnit.value;
+  loadShiftEntries();
+}
+
 function closeToolsMenu() {
   toolsMenuOpen.value = false;
 }
@@ -1376,7 +1506,7 @@ async function fetchOrders() {
       itemName: d.itemName || d.item_name || d.name,
       width_inch: sprFlt(d.width_inch || d.width),
     }));
-    if (!filterUnit.value && unitOptions.value.length === 1) {
+    if (!filterUnit.value && unitOptions.value.length) {
       filterUnit.value = unitOptions.value[0];
       headerUnit.value = filterUnit.value;
     }
@@ -1466,6 +1596,44 @@ async function resolveWorkOrder(line) {
   }
 }
 
+async function fetchRollRowExtras(line, lengthM) {
+  const src = line.source;
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_roll_row_extras",
+      args: {
+        gsm: line.gsm,
+        width_inch: line.width_inch,
+        length_m: lengthM || sprFlt(src.meter || src.meter_roll),
+        item_code: src.itemCode || src.item_code,
+      },
+    });
+    return res.message || {};
+  } catch (e) {
+    return {
+      planned_qty: sprComputePlannedQtyKg(line.gsm, line.width_inch, lengthM),
+      custom_polybag_kgs: 0,
+    };
+  }
+}
+
+async function loadCoreWidthOptions() {
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_core_width_options",
+    });
+    const rows = res.message || [];
+    if (rows.length) {
+      coreWidthOptions.value = rows.map((r) => ({
+        value: sprFlt(r.width_mm) || 1600,
+        label: r.label || `${r.width_mm} mm`,
+      }));
+    }
+  } catch (e) {
+    console.warn("core width options", e);
+  }
+}
+
 function pickLineForRow() {
   const lines = [...selectedLineIds.value].map((id) => lineById.value.get(id)).filter(Boolean);
   if (lines.length <= 1) {
@@ -1522,11 +1690,13 @@ async function addRollRow() {
     return;
   }
   const src = line.source;
-  const [batchInfo, ordLen, wo] = await Promise.all([
+  const [batchInfo, ordLen, wo, extras] = await Promise.all([
     previewNextBatch(),
     resolveOrderLength(line),
     resolveWorkOrder(line),
+    fetchRollRowExtras(line, 0),
   ]);
+  const defaultCore = coreWidthOptions.value[0]?.value || 1600;
   creationSeq.value += 1;
   const newRow = sprRecalcRollRow({
     _id: `row-${Date.now()}-${creationSeq.value}`,
@@ -1547,9 +1717,10 @@ async function addRollRow() {
     produced_gsm: 0,
     net_weight: 0,
     gross_weight: "",
+    planned_qty: extras.planned_qty || sprComputePlannedQtyKg(src.gsm, line.width_inch, ordLen),
     uom: src.uom || src.stock_uom || "Kg",
-    custom_core_width_mm: 1600,
-    custom_polybag_kgs: sprFlt(src.custom_polybag_kgs ?? src.polybag_kgs ?? 0),
+    custom_core_width_mm: defaultCore,
+    custom_polybag_kgs: extras.custom_polybag_kgs || 0,
     custom_diameter_inches: "",
     custom_cbm_cubic_meters: "",
     work_order: wo,
@@ -1689,9 +1860,15 @@ watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
 onMounted(async () => {
   restoreDraft();
   await loadCurrentShift();
+  await loadCoreWidthOptions();
   shiftFilterDate.value = runDate.value;
-  shiftFilterUnit.value = filterUnit.value;
+  shiftFilterShift.value = shift.value;
+  shiftFilterUnit.value = filterUnit.value || headerUnit.value;
   await fetchOrders();
+  if (!filterUnit.value && unitOptions.value.length) {
+    filterUnit.value = unitOptions.value[0];
+    headerUnit.value = filterUnit.value;
+  }
 });
 
 onUnmounted(() => {
@@ -1704,7 +1881,7 @@ onUnmounted(() => {
 <style scoped>
 .gpe-root {
   font-family: system-ui, sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   color: #1e293b;
   padding: 12px;
   background: #f8fafc;
@@ -1771,7 +1948,7 @@ onUnmounted(() => {
 }
 .gpe-layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 340px 1fr;
   gap: 12px;
   align-items: start;
 }
@@ -1813,19 +1990,138 @@ onUnmounted(() => {
   padding: 0;
   margin-bottom: 8px;
 }
-.gpe-order-group {
-  margin-top: 8px;
+.gpe-order-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 10px;
+  background: #fff;
+}
+.gpe-order-code {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
 }
 .gpe-order-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.gpe-line-card {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  margin-bottom: 6px;
+  align-items: flex-start;
+}
+.gpe-line-card:hover {
+  background: #f8fafc;
+}
+.gpe-line-card.selected {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+.gpe-line-check {
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.gpe-line-body {
+  flex: 1;
+  min-width: 0;
+}
+.gpe-line-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.gpe-line-spec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 4px;
+  font-size: 13px;
+}
+.gpe-gsm {
+  font-size: 15px;
+  color: #312e81;
+}
+.gpe-day-target {
+  color: #0f766e;
+  font-weight: 600;
+}
+.gpe-line-foot {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 4px;
+  align-items: center;
+}
+.gpe-selection-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+}
+.gpe-selection-text {
+  font-size: 13px;
+}
+.gpe-lock-badge.inline {
+  margin-left: 8px;
+  display: inline-block;
+  margin-top: 0;
+}
+.gpe-gsm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.gpe-legend-title {
+  font-weight: 600;
+  color: #475569;
+}
+.gpe-legend-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  font-weight: 600;
+}
+.gpe-shift-filter-title {
+  font-weight: 600;
+  color: #334155;
+  margin-right: 8px;
+}
+.gpe-inp-wide {
+  width: 140px;
+  max-width: 160px;
+}
+.gpe-order-group {
+  margin-top: 8px;
 }
 .gpe-party {
-  font-size: 11px;
-  color: #64748b;
+  display: none;
 }
 .gpe-line {
   display: flex;
@@ -1833,7 +2129,7 @@ onUnmounted(() => {
   padding: 6px 8px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   align-items: flex-start;
 }
 .gpe-line.selected {
@@ -1938,9 +2234,14 @@ onUnmounted(() => {
 }
 .gpe-metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 8px;
   margin: 12px 0;
+}
+@media (max-width: 1100px) {
+  .gpe-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 .gpe-metric {
   padding: 12px;
@@ -1954,10 +2255,11 @@ onUnmounted(() => {
   display: block;
   margin-top: 4px;
 }
-.gpe-metric.blue { background: #dbeafe; }
-.gpe-metric.green { background: #dcfce7; }
-.gpe-metric.orange { background: #ffedd5; }
-.gpe-metric.grey { background: #f1f5f9; }
+.gpe-metric.slate { background: #e2e8f0; color: #1e293b; }
+.gpe-metric.blue { background: #93c5fd; color: #1e3a8a; }
+.gpe-metric.green { background: #86efac; color: #14532d; }
+.gpe-metric.orange { background: #fdba74; color: #9a3412; }
+.gpe-metric.grey { background: #cbd5e1; color: #334155; }
 .gpe-toolbar {
   display: flex;
   align-items: center;
@@ -2046,7 +2348,7 @@ onUnmounted(() => {
 .gpe-grid {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: 12px;
 }
 .gpe-grid th,
 .gpe-grid td {
@@ -2085,11 +2387,11 @@ onUnmounted(() => {
   text-decoration: none;
   font-size: 11px;
 }
-.gpe-gsm-band-0 { background: #ecfdf5; }
-.gpe-gsm-band-1 { background: #fefce8; }
-.gpe-gsm-band-2 { background: #fff7ed; }
-.gpe-gsm-band-3 { background: #fef2f2; }
-.gpe-gsm-incomplete { background: #f8fafc; }
+.gpe-gsm-band-0 { background: #6ee7b7 !important; color: #064e3b; }
+.gpe-gsm-band-1 { background: #fde047 !important; color: #713f12; }
+.gpe-gsm-band-2 { background: #fdba74 !important; color: #9a3412; }
+.gpe-gsm-band-3 { background: #fca5a5 !important; color: #7f1d1d; }
+.gpe-gsm-incomplete { background: #e2e8f0 !important; color: #475569; }
 .gpe-summary-tab {
   margin-top: 0;
 }

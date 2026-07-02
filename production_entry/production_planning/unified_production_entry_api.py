@@ -16,6 +16,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_spr_count_roll_lines_for_job,
 	_spr_job_max_roll_lines,
 	_spr_job_rows,
+	compute_mix_roll_planned_qty_kg,
 	parse_item_code,
 )
 from production_entry.production_planning.scheduler_api import create_item_spr, get_current_shift
@@ -418,6 +419,106 @@ def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_dat
 	return {"status": "error", "message": _("Could not create SPR")}
 
 
+def _spr_doc_fields(*names):
+	"""Return field names that exist on Shaft Production Run (site custom fields vary)."""
+	out = []
+	for n in names:
+		if frappe.db.has_column("Shaft Production Run", n):
+			out.append(n)
+	return out
+
+
+def _spr_pick_doc_field(doc, *candidates, default=""):
+	for key in candidates:
+		if frappe.db.has_column("Shaft Production Run", key):
+			val = doc.get(key)
+			if val is not None and str(val).strip() != "":
+				return _cstr(val)
+	return _cstr(default)
+
+
+def _extract_core_width_mm_from_item(item_name: str, item_code: str = "") -> float:
+	"""Best-effort mm from paper-core Item name / custom fields."""
+	for key in ("custom_core_width_mm", "core_width_mm", "custom_width_mm"):
+		if item_code and frappe.db.has_column("Item", key):
+			v = frappe.db.get_value("Item", item_code, key)
+			if v and flt(v) > 0:
+				return flt(v)
+	name = _cstr(item_name)
+	import re
+
+	m = re.search(r"(\d{3,4})\s*mm", name, re.I)
+	if m:
+		return flt(m.group(1))
+	m = re.search(r'(\d+(?:\.\d+)?)\s*["\u201d]', name)
+	if m:
+		# Inch label on core item — common stock sizes map to mm presets
+		inch = flt(m.group(1))
+		preset = {63: 1500, 85: 1600, 90: 1700, 118: 1800, 126: 1900}
+		for k, mm in preset.items():
+			if abs(inch - k) < 0.6:
+				return float(mm)
+	return 1600.0
+
+
+@frappe.whitelist()
+def get_gsm_roll_row_extras(gsm=None, width_inch=None, length_m=None, item_code=None):
+	"""Planned qty + polybag for a GSM roll line (SPR mix-roll parity)."""
+	gsm_val = cint(gsm) if gsm is not None else 0
+	w_in = flt(width_inch) if width_inch is not None else 0.0
+	ln = flt(length_m) if length_m is not None else 0.0
+	item_code = _cstr(item_code).strip()
+	if not gsm_val and item_code:
+		try:
+			g, w = parse_item_code(item_code)
+			if g > 0:
+				gsm_val = int(g)
+			if w > 0 and w_in <= 0:
+				w_in = flt(w)
+		except Exception:
+			pass
+	planned_qty = compute_mix_roll_planned_qty_kg(gsm_val, w_in, ln) if gsm_val and w_in > 0 and ln > 0 else 0.0
+	polybag = 0.0
+	if item_code and frappe.db.exists("Item", item_code):
+		for key in ("custom_polybag_kgs", "polybag_kgs", "custom_polybag_weight"):
+			if frappe.db.has_column("Item", key):
+				polybag = flt(frappe.db.get_value("Item", item_code, key) or 0)
+				if polybag > 0:
+					break
+	return {"planned_qty": planned_qty, "custom_polybag_kgs": polybag}
+
+
+@frappe.whitelist()
+def get_gsm_core_width_options():
+	"""Paper-core Item options for Core Width select (SPR desk parity)."""
+	rows = frappe.db.sql(
+		"""
+		SELECT name, item_name
+		FROM `tabItem`
+		WHERE disabled = 0
+		  AND (item_name LIKE %s OR item_name LIKE %s OR name LIKE %s)
+		ORDER BY item_name
+		LIMIT 200
+		""",
+		('%" PC%', '% PC -%', '%PC%'),
+		as_dict=True,
+	)
+	out = []
+	seen_mm = set()
+	for row in rows or []:
+		mm = _extract_core_width_mm_from_item(row.get("item_name") or "", row.get("name") or "")
+		label = _cstr(row.get("item_name") or row.get("name"))
+		out.append({"item_code": row.get("name"), "label": label, "width_mm": mm})
+		seen_mm.add(int(mm))
+	# Standard fallbacks when Item master has no paper-core rows
+	for mm in (1500, 1600, 1700, 1800, 1900):
+		if mm not in seen_mm:
+			out.append({"item_code": "", "label": f"{mm} mm", "width_mm": mm})
+			seen_mm.add(mm)
+	out.sort(key=lambda x: (flt(x.get("width_mm")), x.get("label") or ""))
+	return out
+
+
 @frappe.whitelist()
 def get_gsm_shift_submitted_entries(run_date, shift, unit=None):
 	"""Submitted SPRs for a shift — GSM admin Shift Entries tab."""
@@ -429,19 +530,30 @@ def get_gsm_shift_submitted_entries(run_date, shift, unit=None):
 	if unit:
 		filters["custom_unit"] = unit
 
+	list_fields = [
+		"name",
+		"production_plan",
+		"run_date",
+		"shift",
+		"custom_unit",
+		"modified",
+	]
+	list_fields.extend(
+		_spr_doc_fields(
+			"operator",
+			"supervisor",
+			"custom_operator",
+			"custom_supervisor",
+			"custom_shift_operator",
+			"custom_shift_supervisor",
+		)
+	)
+	list_fields = list(dict.fromkeys(list_fields))
+
 	sprs = frappe.get_all(
 		"Shaft Production Run",
 		filters=filters,
-		fields=[
-			"name",
-			"production_plan",
-			"run_date",
-			"shift",
-			"custom_unit",
-			"operator",
-			"supervisor",
-			"modified",
-		],
+		fields=list_fields,
 		order_by="modified desc",
 		limit=100,
 	)
@@ -485,8 +597,18 @@ def get_gsm_shift_submitted_entries(run_date, shift, unit=None):
 				"run_date": str(row.run_date),
 				"shift": row.shift,
 				"unit": row.custom_unit,
-				"operator": row.operator,
-				"supervisor": row.supervisor,
+				"operator": _spr_pick_doc_field(
+					spr,
+					"operator",
+					"custom_operator",
+					"custom_shift_operator",
+				),
+				"supervisor": _spr_pick_doc_field(
+					spr,
+					"supervisor",
+					"custom_supervisor",
+					"custom_shift_supervisor",
+				),
 				"roll_count": len(rolls),
 				"total_net_kg": round(total_net, 2),
 				"total_gross_kg": round(total_gross, 2),
