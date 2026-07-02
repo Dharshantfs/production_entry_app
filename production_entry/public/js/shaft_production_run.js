@@ -5920,6 +5920,143 @@ function spr_open_trial_order_dialog(frm) {
 	});
 }
 
+/** Parse combination string into inch widths (mirrors server _parse_combination_widths_inches). */
+function spr_parse_combination_widths_inches(comb) {
+	if (!comb) {
+		return [];
+	}
+	return String(comb)
+		.split('+')
+		.map(function (part) {
+			const m = part.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+			return m ? flt(m[1]) : 0;
+		})
+		.filter(function (w) {
+			return w > 0;
+		});
+}
+
+function spr_job_keys_match_js(a, b) {
+	const na = String(a || '').trim();
+	const nb = String(b || '').trim();
+	if (na === nb) {
+		return true;
+	}
+	if (!na || !nb) {
+		return false;
+	}
+	const fa = parseFloat(na);
+	const fb = parseFloat(nb);
+	if (!isNaN(fa) && !isNaN(fb)) {
+		return fa === fb;
+	}
+	return false;
+}
+
+function spr_format_width_inch_label(w) {
+	const fw = flt(w);
+	if (fw <= 0) {
+		return '';
+	}
+	return Math.abs(fw - Math.round(fw)) < 0.001 ? String(Math.round(fw)) : fw.toFixed(1);
+}
+
+/** Force Frappe Dialog Select to show options (v15 set_df_property alone is unreliable). */
+function spr_dialog_select_set_options(dialog, fieldname, widthValues) {
+	const field = dialog.fields_dict[fieldname];
+	if (!field) {
+		return [];
+	}
+	const seen = new Set();
+	const labels = [];
+	(widthValues || []).forEach(function (v) {
+		const fw = flt(v);
+		if (fw <= 0) {
+			return;
+		}
+		const key = String(Math.round(fw * 1000) / 1000);
+		if (seen.has(key)) {
+			return;
+		}
+		seen.add(key);
+		labels.push(spr_format_width_inch_label(fw));
+	});
+	labels.sort(function (a, b) {
+		return flt(a) - flt(b);
+	});
+	const optsStr = labels.join('\n');
+	field.df.options = optsStr;
+	dialog.set_df_property(fieldname, 'options', optsStr);
+	dialog.set_df_property(fieldname, 'hidden', labels.length ? 0 : 1);
+	if (typeof field.set_options === 'function') {
+		field.set_options(labels);
+	}
+	if (field.$input && field.$input.is('select')) {
+		const cur = field.get_value ? field.get_value() : '';
+		field.$input.empty();
+		if (!labels.length) {
+			field.$input.append($('<option>').val('').text(__('Select width')));
+		} else {
+			labels.forEach(function (lbl) {
+				field.$input.append($('<option>').val(lbl).text(lbl + '"'));
+			});
+		}
+		if (cur && labels.indexOf(String(cur)) >= 0) {
+			field.set_value(cur);
+		} else if (labels.length) {
+			field.set_value(labels[0]);
+		}
+	}
+	field.refresh();
+	return labels;
+}
+
+function spr_collect_bundle_width_options(jp, widthsByJob, frm, segs) {
+	const out = [];
+	const seen = new Set();
+	function add(w) {
+		const fw = flt(w);
+		if (fw <= 0) {
+			return;
+		}
+		const key = String(Math.round(fw * 1000) / 1000);
+		if (seen.has(key)) {
+			return;
+		}
+		seen.add(key);
+		out.push(fw);
+	}
+	(jp.widths || widthsByJob[jp.job_id] || []).forEach(add);
+	spr_parse_combination_widths_inches(jp.combination_text).forEach(add);
+	if (jp.total_width_available) {
+		add(jp.total_width_available);
+	}
+	(segs || []).forEach(function (s) {
+		add(s.width_inch);
+	});
+	(frm.doc.items || []).forEach(function (it) {
+		const jMatch = String(it.job_no || it.job_id || it.job || '').trim();
+		if (spr_job_keys_match_js(jMatch, jp.job_id)) {
+			add(it.width_inch);
+			if (it.item_code) {
+				const parsed = spr_parse_item_width_from_code(it.item_code);
+				if (parsed > 0) {
+					add(parsed);
+				}
+			}
+		}
+	});
+	return out.sort(function (a, b) {
+		return a - b;
+	});
+}
+
+function spr_parse_item_width_from_code(itemCode) {
+	const s = String(itemCode || '');
+	const m = s.match(/(\d+(?:\.\d+)?)\s*(?:IN|INCH|"|''|INCHES)\b/i) || s.match(/-(\d+(?:\.\d+)?)-(?:MM|IN)/i);
+	return m ? flt(m[1]) : 0;
+}
+
 /** Actions ΓåÆ Bundle packaging: Job + Width from Available Jobs / roll widths; gross applied to all matching rolls. */
 function spr_open_bundle_packaging_dialog(frm) {
 	if (frm.is_new() || !frm.doc.name) {
@@ -5951,7 +6088,11 @@ function spr_open_bundle_packaging_dialog(frm) {
 				.join('\n');
 			const jobByLabel = {};
 			jobs.forEach(function (j) {
-				jobByLabel[String(j.label || j.job_id)] = j;
+				const lbl = String(j.label || j.job_id);
+				jobByLabel[lbl] = j;
+				if (!j.widths && widthsByJob[j.job_id]) {
+					j.widths = widthsByJob[j.job_id];
+				}
 			});
 			const d = new frappe.ui.Dialog({
 				title: __('Bundle packaging'),
@@ -5960,6 +6101,12 @@ function spr_open_bundle_packaging_dialog(frm) {
 						fieldname: 'spr_bundle_hint',
 						fieldtype: 'HTML',
 						options:
+							'<style>' +
+							'.spr-bundle-seg-table{font-size:13px;margin:8px 0;width:100%;}' +
+							'.spr-bundle-seg-table th{background:#f1f5f9;font-weight:700;padding:6px 8px;}' +
+							'.spr-bundle-seg-table td{padding:6px 8px;}' +
+							'.modal-body [data-fieldname="width_inch"] select{font-size:15px;font-weight:600;min-height:36px;}' +
+							'</style>' +
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
 								'Step 1: pick Job ID. Step 2: pick width for that segment (combination widths and WO items are shown below). Same single-roll gross applies to all roll lines for that job and width. Sticker width = selected width × number of packaging.'
@@ -6077,43 +6224,30 @@ function spr_open_bundle_packaging_dialog(frm) {
 					}
 				},
 			});
-			function spr_job_keys_match_js(a, b) {
-				const na = String(a || '').trim();
-				const nb = String(b || '').trim();
-				if (na === nb) return true;
-				if (!na || !nb) return false;
-				const fa = parseFloat(na);
-				const fb = parseFloat(nb);
-				if (!isNaN(fa) && !isNaN(fb)) {
-					return fa === fb;
-				}
-				return false;
-			}
 			function applySegsToDialog(jp, segs) {
 				const wf = d.fields_dict.width_inch;
 				const det = d.$wrapper.find('.spr-bundle-job-detail');
-				if (!wf) return;
-				const arr = (widthsByJob[jp.job_id] || []).slice();
-				(frm.doc.items || []).forEach(function (it) {
-					const j_match = String(it.job_no || it.job_id || it.job || '').trim();
-					const fw = flt(it.width_inch);
-					if (fw > 0 && spr_job_keys_match_js(j_match, jp.job_id) && arr.indexOf(fw) === -1) {
-						arr.push(fw);
-					}
-				});
+				if (!wf || !jp) {
+					return;
+				}
+				const widthOpts = spr_collect_bundle_width_options(jp, widthsByJob, frm, segs);
 				if (segs && segs.length) {
 					const uniqueSegs = [];
 					const seenWidths = new Set();
 					segs.forEach(function (s) {
 						const w = flt(s.width_inch);
-						if (w <= 0) return;
+						if (w <= 0) {
+							return;
+						}
 						const key = (Math.round(w * 1000) / 1000).toString();
-						if (seenWidths.has(key)) return;
+						if (seenWidths.has(key)) {
+							return;
+						}
 						seenWidths.add(key);
 						uniqueSegs.push(s);
 					});
 					let html =
-						'<table class="table table-bordered table-condensed" style="font-size:11px;margin:4px 0;"><thead><tr><th>' +
+						'<table class="table table-bordered table-condensed spr-bundle-seg-table"><thead><tr><th>' +
 						__('Width') +
 						'</th><th>' +
 						__('Net/shaft (Kg)') +
@@ -6124,74 +6258,59 @@ function spr_open_bundle_packaging_dialog(frm) {
 						const net = s.net_kg_per_shaft != null ? flt(s.net_kg_per_shaft).toFixed(2) : '—';
 						const ic = [s.item_code || '', (s.item_name || '').substring(0, 28)].join(' ').trim();
 						html +=
-							'<tr><td>' +
+							'<tr><td><strong>' +
 							flt(s.width_inch).toFixed(1) +
-							'</td><td>' +
+							'"</strong></td><td>' +
 							net +
 							'</td><td>' +
 							frappe.utils.escape_html(ic) +
 							'</td></tr>';
 					});
 					html += '</tbody></table>';
-					if (det.length) det.html(html);
-					wf.df.options = uniqueSegs
-						.map(function (s) { return String(flt(s.width_inch)); })
-						.join('\n');
+					if (det.length) {
+						det.html(html);
+					}
 				} else {
 					const comb = jp.combination_text || '';
 					if (det.length) {
-						det.html(
-							comb
-								? '<p class="small">' + frappe.utils.escape_html(comb) + '</p>'
-								: '<p class="small text-muted">' + __('No segment breakdown — use width list.') + '</p>'
-						);
+						if (comb) {
+							det.html(
+								'<p class="small text-muted" style="margin:4px 0 8px;">' +
+									frappe.utils.escape_html(comb) +
+									'</p>'
+							);
+						} else if (!widthOpts.length) {
+							det.html(
+								'<p class="small text-muted">' + __('No widths found for this job.') + '</p>'
+							);
+						} else {
+							det.html('');
+						}
 					}
-					if (!arr.length) {
-						wf.df.options = '';
-						wf.df.hidden = 1;
-						wf.refresh();
-						return;
-					}
-					const uniqueArr = [];
-					const seenArr = new Set();
-					arr.forEach(function (x) {
-						const w = flt(x);
-						if (w <= 0) return;
-						const key = (Math.round(w * 1000) / 1000).toString();
-						if (seenArr.has(key)) return;
-						seenArr.add(key);
-						uniqueArr.push(x);
-					});
-					wf.df.options = uniqueArr.map(function (x) { return String(x); }).join('\n');
 				}
-				wf.df.hidden = 0;
-				// Use set_df_property so Frappe v15 Select control actually rebuilds its
-				// <option> list; direct wf.df.options mutation alone is not enough.
-				d.set_df_property('width_inch', 'options', wf.df.options);
-				d.set_df_property('width_inch', 'hidden', 0);
-				wf.refresh();
-				const firstW = wf.df.options ? flt(String(wf.df.options).split('\n')[0]) : 0;
-				if (firstW > 0) {
-					d.set_value('width_inch', String(firstW));
+				const labels = spr_dialog_select_set_options(d, 'width_inch', widthOpts);
+				if (!labels.length) {
+					frappe.msgprint(__('No width options for this job. Check combination / roll lines.'));
 				}
 				recalc();
 			}
 			function refreshWidthOptions() {
 				const jp = jobByLabel[d.get_value('job_pick')];
-				const wf = d.fields_dict.width_inch;
 				const det = d.$wrapper.find('.spr-bundle-job-detail');
-				if (!jp || !wf) {
+				if (!jp) {
 					return;
 				}
-				// If segments were already loaded for this job, apply immediately.
+				// Sync: populate width dropdown immediately from catalog + combination.
+				applySegsToDialog(jp, jp.segments || []);
 				if (jp.segments && jp.segments.length) {
-					applySegsToDialog(jp, jp.segments);
 					return;
 				}
-				// Lazy-load segments for this job then apply.
-				if (det.length) det.html('<span class="text-muted small">' + __('Loading...') + '</span>');
+				if (det.length) {
+					det.html('<span class="text-muted small">' + __('Loading segment detail...') + '</span>');
+				}
 				frappe.call({
-					method: 'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_job_segments',
+					method:
+						'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_job_segments',
 					args: { shaft_production_run: frm.doc.name, job_id: jp.job_id },
 					callback: function (r) {
 						jp.segments = r.message || [];

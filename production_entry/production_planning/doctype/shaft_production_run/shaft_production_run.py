@@ -13132,6 +13132,59 @@ def spr_get_bundle_packaging_on_submit_status(shaft_production_run):
 	return {"enabled": enabled, "available": True}
 
 
+def _spr_catalog_widths_for_job_row(sj, roll_widths: list | None = None, pp_name: str | None = None) -> list[float]:
+	"""Width options for bundle catalog without loading full SPR + all roll rows."""
+	widths: list[float] = []
+	sj = frappe._dict(sj) if sj else frappe._dict()
+	comb = _cstr(sj.get("combination") or "")
+	for w in _parse_combination_widths_inches(comb):
+		fw = flt(w)
+		if fw > 0 and fw not in widths:
+			widths.append(fw)
+	for fw in roll_widths or []:
+		fw = flt(fw)
+		if fw > 0 and fw not in widths:
+			widths.append(fw)
+	explicit = _cstr(sj.get("work_orders") or "")
+	if explicit:
+		for raw in explicit.replace("\n", ",").split(","):
+			wo_name = _cstr(raw).strip()
+			if not wo_name or not frappe.db.exists("Work Order", wo_name):
+				continue
+			ic = frappe.db.get_value("Work Order", wo_name, "production_item")
+			if not ic:
+				continue
+			_g, w_item = parse_item_code(ic)
+			fw = flt(w_item)
+			if fw > 0 and fw not in widths:
+				widths.append(fw)
+	if not widths and pp_name:
+		try:
+			wos = _resolve_wos_for_pp_job_row(
+				pp_name,
+				ppi=_cstr(sj.get("production_plan_item") or "") or None,
+				job_id=_cstr(_spr_job_id(sj)) or None,
+				row_index=None,
+				combination=comb or None,
+				job_gsm=cint(sj.get("gsm")) if sj.get("gsm") else None,
+			) or []
+			for wo in wos:
+				ic = wo.get("production_item") if isinstance(wo, dict) else None
+				if not ic:
+					continue
+				_g, w_item = parse_item_code(ic)
+				fw = flt(w_item)
+				if fw > 0 and fw not in widths:
+					widths.append(fw)
+		except Exception:
+			pass
+	if not widths:
+		tw = flt(sj.get("total_width"))
+		if tw > 0:
+			widths.append(tw)
+	return sorted({round(w, 4) for w in widths if w > 0})
+
+
 @frappe.whitelist()
 def spr_get_bundle_packaging_catalog(shaft_production_run):
 	"""Jobs from Available Jobs; width options use combination widths then roll widths.
@@ -13141,6 +13194,8 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 	separate ``spr_get_job_segments`` endpoint when the user actually selects a job.
 	"""
 	_spr_require_saved(shaft_production_run)
+
+	pp_name = frappe.db.get_value("Shaft Production Run", shaft_production_run, "production_plan")
 
 	# Fetch only the shaft_jobs child rows — much faster than frappe.get_doc() which
 	# would also load every roll-item row.
@@ -13171,6 +13226,7 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 				"total_width_available": flt(sj.get("total_width")),
 				"combination_text": _cstr(sj.get("combination") or ""),
 				"segments": [],  # lazy-loaded per job via spr_get_job_segments
+				"widths": [],
 			}
 		)
 
@@ -13203,18 +13259,11 @@ def spr_get_bundle_packaging_catalog(shaft_production_run):
 		jid = _cstr(_spr_job_id(sj))
 		if not jid or jid not in widths_by_job:
 			continue
-		comb = _cstr(sj.get("combination") or "")
-		widths: list[float] = []
-		for w in _parse_combination_widths_inches(comb):
-			fw = flt(w)
-			if fw > 0 and fw not in widths:
-				widths.append(fw)
-		if not widths:
-			# Fallback: roll widths for this job from the aggregate query above
-			for fw in roll_widths_by_job.get(jid, []):
-				if fw > 0 and fw not in widths:
-					widths.append(fw)
+		widths = _spr_catalog_widths_for_job_row(sj, roll_widths_by_job.get(jid, []), pp_name=pp_name)
 		widths_by_job[jid] = widths
+
+	for j in jobs_out:
+		j["widths"] = widths_by_job.get(j["job_id"], [])
 
 	return {"jobs": jobs_out, "widths_by_job": widths_by_job}
 
