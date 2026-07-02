@@ -6052,9 +6052,6 @@ function spr_collect_bundle_width_options(jp, widthsByJob, frm, segs) {
 	}
 	(jp.widths || widthsByJob[jp.job_id] || []).forEach(add);
 	spr_parse_combination_widths_inches(jp.combination_text).forEach(add);
-	if (jp.total_width_available) {
-		add(jp.total_width_available);
-	}
 	(segs || []).forEach(function (s) {
 		add(s.width_inch);
 	});

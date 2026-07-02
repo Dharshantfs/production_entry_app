@@ -3163,6 +3163,26 @@ class ShaftProductionRun(Document):
 				return pref
 		return None
 
+	def _current_batch_shift_label(self) -> str:
+		return batch_shift_value(self.shift)
+
+	def _spr_batch_nos_for_current_shift(self) -> list[str]:
+		"""Batch numbers on this doc that belong to the current shift only."""
+		cur = self._current_batch_shift_label()
+		item_meta = frappe.get_meta("Shaft Production Run Item")
+		has_shift = item_meta.has_field("custom_shift")
+		out: list[str] = []
+		for row in self.items or []:
+			bn = _cstr(getattr(row, "batch_no", None)).strip()
+			if not bn:
+				continue
+			if has_shift and cur:
+				row_shift = batch_shift_value(getattr(row, "custom_shift", None))
+				if not row_shift or row_shift != cur:
+					continue
+			out.append(bn)
+		return out
+
 	def _resolve_series_prefix(self, root_5: str) -> str:
 		"""Reuse series for same run_date + shift + unit when batches already exist.
 
@@ -3171,26 +3191,40 @@ class ShaftProductionRun(Document):
 		allocated only when no batch exists yet for this shift on this date/unit.
 		"""
 		# 1) Rows already on this document (in-memory during save / preview)
-		on_doc = self._spr_series_prefix_from_batches(
-			root_5, [getattr(r, "batch_no", None) for r in (self.items or [])]
-		)
+		on_doc = self._spr_series_prefix_from_batches(root_5, self._spr_batch_nos_for_current_shift())
 		if on_doc:
 			return on_doc
 
 		# 2) Rows saved on this SPR in DB (was excluded before — caused new S per row)
 		if self.name:
-			own_rows = frappe.db.sql(
-				"""
-				SELECT spi.batch_no
-				FROM `tabShaft Production Run Item` spi
-				WHERE spi.parent = %(cur)s
-				  AND IFNULL(spi.batch_no, '') != ''
-				  AND spi.batch_no LIKE CONCAT(%(root)s, '%%')
-				ORDER BY spi.idx ASC
-				LIMIT 50
-				""",
-				{"cur": self.name, "root": root_5},
-			)
+			shift_val = self._current_batch_shift_label()
+			if shift_val and frappe.db.has_column("Shaft Production Run Item", "custom_shift"):
+				own_rows = frappe.db.sql(
+					"""
+					SELECT spi.batch_no
+					FROM `tabShaft Production Run Item` spi
+					WHERE spi.parent = %(cur)s
+					  AND IFNULL(spi.batch_no, '') != ''
+					  AND spi.batch_no LIKE CONCAT(%(root)s, '%%')
+					  AND spi.custom_shift = %(shift_val)s
+					ORDER BY spi.idx ASC
+					LIMIT 50
+					""",
+					{"cur": self.name, "root": root_5, "shift_val": shift_val},
+				)
+			else:
+				own_rows = frappe.db.sql(
+					"""
+					SELECT spi.batch_no
+					FROM `tabShaft Production Run Item` spi
+					WHERE spi.parent = %(cur)s
+					  AND IFNULL(spi.batch_no, '') != ''
+					  AND spi.batch_no LIKE CONCAT(%(root)s, '%%')
+					ORDER BY spi.idx ASC
+					LIMIT 50
+					""",
+					{"cur": self.name, "root": root_5},
+				)
 			on_doc = self._spr_series_prefix_from_batches(root_5, [r[0] for r in own_rows or []])
 			if on_doc:
 				return on_doc
@@ -13181,10 +13215,6 @@ def _spr_catalog_widths_for_job_row(sj, roll_widths: list | None = None, pp_name
 					widths.append(fw)
 		except Exception:
 			pass
-	if not widths:
-		tw = flt(sj.get("total_width"))
-		if tw > 0:
-			widths.append(tw)
 	return sorted({round(w, 4) for w in widths if w > 0})
 
 

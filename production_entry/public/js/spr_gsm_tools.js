@@ -1,5 +1,6 @@
 /** GSM Production Entry — SPR Tools helpers (read-only: never creates SPR). */
 
+import { openSprBundlePackagingDialog } from "./spr_bundle_packaging_dialog.js";
 import { openSprManualJobDialog } from "./spr_manual_job_dialog.js";
 
 export async function findSprForGsm(ppId, preferDraft = true) {
@@ -54,7 +55,25 @@ export async function gsmOpenTrailOrder(ppId) {
 	});
 }
 
-export async function gsmToggleBundlePackaging(ppId) {
+/** Open real Bundle packaging dialog (job + width + gross/length apply). */
+export async function gsmOpenBundlePackaging(ppId, onSuccess) {
+	const sprName = await findSprForGsm(ppId, true);
+	if (!sprName) {
+		noSprMessage();
+		return;
+	}
+	openSprBundlePackagingDialog({
+		sprName,
+		onSuccess: () => {
+			if (typeof onSuccess === "function") {
+				onSuccess(sprName);
+			}
+		},
+	});
+}
+
+/** Toggle SPR custom_use_bundle_packaging_on_submit (Manufacture SE on submit). */
+export async function gsmToggleBundleSeOnSubmit(ppId) {
 	const sprName = await findSprForGsm(ppId, true);
 	if (!sprName) {
 		noSprMessage();

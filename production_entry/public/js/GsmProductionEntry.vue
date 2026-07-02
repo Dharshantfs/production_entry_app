@@ -244,6 +244,7 @@
                 <button type="button" @click="runTool('manual')">SPR — Manual job</button>
                 <button type="button" @click="runTool('trail')">SPR — Trail Order</button>
                 <button type="button" @click="runTool('bundle')">SPR — Bundle packaging</button>
+                <button type="button" @click="runTool('bundlese')">SPR — Bundle SE on Submit</button>
                 <button type="button" @click="runTool('rmbatches')">SPR — Select RM batches</button>
               </div>
             </div>
@@ -584,10 +585,11 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { openProductionPlanPrintPreview } from "./pp_print_utils.js";
 import {
+  gsmOpenBundlePackaging,
   gsmOpenManualJob,
   gsmOpenRmBatches,
   gsmOpenTrailOrder,
-  gsmToggleBundlePackaging,
+  gsmToggleBundleSeOnSubmit,
   openSprForm,
 } from "./spr_gsm_tools.js";
 import {
@@ -635,6 +637,16 @@ let pendingAddRowResolve = null;
 
 const seriesPrefix = ref("");
 const maxRollSuffix = ref(0);
+const batchContextKey = ref("");
+
+function currentBatchContextKey() {
+  return `${runDate.value}|${shift.value}|${headerUnit.value}`;
+}
+
+function resetBatchSeriesCache() {
+  seriesPrefix.value = "";
+  maxRollSuffix.value = 0;
+}
 const creationSeq = ref(0);
 
 const summaryTab = ref("summary");
@@ -1308,7 +1320,9 @@ async function runTool(kind) {
   } else if (kind === "trail") {
     await gsmOpenTrailOrder(ppId);
   } else if (kind === "bundle") {
-    await gsmToggleBundlePackaging(ppId);
+    await gsmOpenBundlePackaging(ppId, onSuccess);
+  } else if (kind === "bundlese") {
+    await gsmToggleBundleSeOnSubmit(ppId);
   } else if (kind === "rmbatches") {
     await gsmOpenRmBatches(ppId);
   }
@@ -1803,6 +1817,7 @@ function persistDraft() {
       seriesPrefix: seriesPrefix.value,
       maxRollSuffix: maxRollSuffix.value,
       creationSeq: creationSeq.value,
+      batchContextKey: currentBatchContextKey(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     saveStatus.value = "Saved locally";
@@ -1836,8 +1851,14 @@ function restoreDraft() {
     selectedLineIds.value = new Set(d.selectedLineIds || []);
     selectionLocked.value = !!d.selectionLocked;
     rollLines.value = d.rollLines || [];
-    seriesPrefix.value = d.seriesPrefix || "";
-    maxRollSuffix.value = d.maxRollSuffix || 0;
+    const ctxKey = currentBatchContextKey();
+    if (d.batchContextKey && d.batchContextKey === ctxKey) {
+      seriesPrefix.value = d.seriesPrefix || "";
+      maxRollSuffix.value = d.maxRollSuffix || 0;
+    } else {
+      resetBatchSeriesCache();
+    }
+    batchContextKey.value = ctxKey;
     creationSeq.value = d.creationSeq || 0;
     saveStatus.value = "Draft restored";
   } catch (e) {
@@ -1855,7 +1876,12 @@ function scheduleAutosave() {
   }, 5000);
 }
 
-watch([runDate, shift], () => {
+watch([runDate, shift, headerUnit], () => {
+  const key = currentBatchContextKey();
+  if (batchContextKey.value && batchContextKey.value !== key) {
+    resetBatchSeriesCache();
+  }
+  batchContextKey.value = key;
   if (ppSubmittedRows.value.length) {
     loadQuotaForLines();
   }
@@ -1875,6 +1901,7 @@ onMounted(async () => {
     filterUnit.value = unitOptions.value[0];
     headerUnit.value = filterUnit.value;
   }
+  batchContextKey.value = currentBatchContextKey();
 });
 
 onUnmounted(() => {
