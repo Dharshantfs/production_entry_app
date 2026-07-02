@@ -325,12 +325,20 @@ def get_pt_line_roll_quota_status(
 	shift=None,
 	unit=None,
 ):
-	"""Roll line quota for one PP line / GSM+width. current_rolls scoped to run_date+shift when given."""
+	"""Roll line quota for one PP line / GSM+width.
+
+	When run_date is set: current_rolls = this shift only; shift_max_rolls = job max minus
+	rolls already recorded on other shifts the same day (e.g. Night 0/67 after Day 100/167).
+	"""
 	pp_id = _cstr(pp_id).strip()
 	if not pp_id:
 		return {
 			"max_rolls": 0,
 			"current_rolls": 0,
+			"shift_max_rolls": 0,
+			"day_rolls_total": 0,
+			"other_shifts_rolls": 0,
+			"prior_shifts": [],
 			"can_add_roll": False,
 			"spr_name": "",
 			"job_id": "",
@@ -366,26 +374,28 @@ def get_pt_line_roll_quota_status(
 		job_id = str(idx)
 		break
 
-	if run_date and shift:
+	if run_date:
+		run_d = getdate(run_date)
+		cur_shift = _cstr(shift).strip() if shift else ""
 		spr_filters = {
 			"production_plan": pp_id,
 			"docstatus": ["<", 2],
-			"run_date": getdate(run_date),
-			"shift": _cstr(shift).strip(),
+			"run_date": run_d,
 		}
 		if unit:
 			spr_filters["custom_unit"] = _cstr(unit).strip()
 		sprs = frappe.get_all(
 			"Shaft Production Run",
 			filters=spr_filters,
-			fields=["name"],
+			fields=["name", "shift"],
 			order_by="modified desc",
-			limit=10,
+			limit=50,
 		)
+		day_rolls_total = 0
+		shift_rolls = 0
+		prior_by_shift = {}
 		for spr_row in sprs:
 			spr = frappe.get_doc("Shaft Production Run", spr_row.name)
-			if not spr_name:
-				spr_name = spr_row.name
 			job_row = _match_shaft_job_for_line(
 				spr,
 				pp_id,
@@ -393,15 +403,44 @@ def get_pt_line_roll_quota_status(
 				width_inch=width_inch,
 				production_plan_item=production_plan_item,
 			)
-			if job_row:
-				jid = _cstr(getattr(job_row, "job_id", None) or getattr(job_row, "job_no", None))
-				if not job_id:
-					job_id = jid
-				mx = cint(_spr_job_max_roll_lines(job_row, spr))
-				if mx > 0:
-					max_rolls = max(max_rolls, mx)
-				current_rolls += cint(_spr_count_roll_lines_for_job(spr, jid))
+			if not job_row:
+				continue
+			jid = _cstr(getattr(job_row, "job_id", None) or getattr(job_row, "job_no", None))
+			if not job_id:
+				job_id = jid
+			mx = cint(_spr_job_max_roll_lines(job_row, spr))
+			if mx > 0:
+				max_rolls = max(max_rolls, mx)
+			cnt = cint(_spr_count_roll_lines_for_job(spr, jid))
+			if cnt <= 0:
+				continue
+			if not spr_name:
+				spr_name = spr_row.name
+			day_rolls_total += cnt
+			spr_shift = _cstr(getattr(spr, "shift", None) or spr_row.get("shift") or "").strip()
+			if cur_shift and spr_shift == cur_shift:
+				shift_rolls += cnt
+			elif spr_shift:
+				prior_by_shift[spr_shift] = prior_by_shift.get(spr_shift, 0) + cnt
+			else:
+				prior_by_shift["Other"] = prior_by_shift.get("Other", 0) + cnt
+
+		other_shifts_rolls = max(0, day_rolls_total - shift_rolls)
+		if not cur_shift:
+			shift_rolls = day_rolls_total
+			other_shifts_rolls = 0
+			prior_by_shift = {}
+		shift_max_rolls = max(0, max_rolls - other_shifts_rolls) if max_rolls > 0 else 0
+		current_rolls = shift_rolls
+		prior_shifts = [
+			{"shift": k, "rolls": v} for k, v in sorted(prior_by_shift.items(), key=lambda x: x[0])
+		]
+		can_add = max_rolls <= 0 or day_rolls_total < max_rolls
 	else:
+		day_rolls_total = 0
+		shift_max_rolls = max_rolls
+		other_shifts_rolls = 0
+		prior_shifts = []
 		spr_name = _find_spr_for_pp(pp_id, prefer_draft=True) or ""
 		if spr_name:
 			spr = frappe.get_doc("Shaft Production Run", spr_name)
@@ -418,11 +457,17 @@ def get_pt_line_roll_quota_status(
 				if mx > 0:
 					max_rolls = mx
 				current_rolls = cint(_spr_count_roll_lines_for_job(spr, job_id))
+				day_rolls_total = current_rolls
+				shift_max_rolls = max_rolls
+		can_add = max_rolls <= 0 or current_rolls < max_rolls
 
-	can_add = max_rolls <= 0 or current_rolls < max_rolls
 	return {
 		"max_rolls": max_rolls,
 		"current_rolls": current_rolls,
+		"shift_max_rolls": shift_max_rolls,
+		"day_rolls_total": day_rolls_total,
+		"other_shifts_rolls": other_shifts_rolls,
+		"prior_shifts": prior_shifts,
 		"can_add_roll": can_add,
 		"spr_name": spr_name,
 		"job_id": job_id,

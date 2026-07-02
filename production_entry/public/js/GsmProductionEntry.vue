@@ -90,9 +90,26 @@
                 <span class="gpe-day-target">Tgt {{ formatKg(line.dayTargetKg) }} Kg</span>
                 <span class="gpe-day-rem">Rem {{ formatKg(line.dayRemKg) }} Kg</span>
               </div>
-              <div v-if="line.mergeBadge || line.quotaLabel || line.chip" class="gpe-line-foot">
+              <div v-if="line.rollQuota || line.mergeBadge || line.chip" class="gpe-line-foot">
+                <div v-if="line.rollQuota" class="gpe-roll-meter" :class="{ 'gpe-roll-meter-full': line.rollQuota.isFull }" :title="line.rollQuota.tooltip">
+                  <div class="gpe-roll-meter-head">
+                    <span class="gpe-roll-meter-title">Rolls · {{ shift }}</span>
+                    <span class="gpe-roll-meter-frac">
+                      <em>{{ line.rollQuota.current }}</em>
+                      <span>/</span>
+                      <strong>{{ line.rollQuota.shiftMax }}</strong>
+                    </span>
+                  </div>
+                  <div v-if="line.rollQuota.priorShifts.length || line.rollQuota.dayTotal > line.rollQuota.current" class="gpe-roll-meter-sub">
+                    <span
+                      v-for="ps in line.rollQuota.priorShifts"
+                      :key="ps.shift"
+                      class="gpe-roll-prior"
+                    >{{ ps.shift }} {{ ps.rolls }} done</span>
+                    <span class="gpe-roll-day">Day {{ line.rollQuota.dayTotal }}/{{ line.rollQuota.jobMax }}</span>
+                  </div>
+                </div>
                 <span v-if="line.mergeBadge" class="gpe-chip gpe-chip-merge">{{ line.mergeBadge }}</span>
-                <span v-if="line.quotaLabel" class="gpe-quota" :title="line.quotaTooltip">{{ line.quotaLabel }}</span>
                 <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
               </div>
             </div>
@@ -132,7 +149,20 @@
                     <span class="gpe-day-target">Tgt {{ formatKg(line.dayTargetKg) }} Kg</span>
                     <span class="gpe-day-rem">Rem {{ formatKg(line.dayRemKg) }} Kg</span>
                   </div>
-                  <div v-if="line.mergeBadge || line.chip" class="gpe-line-foot">
+                  <div v-if="line.rollQuota || line.mergeBadge || line.chip" class="gpe-line-foot">
+                    <div v-if="line.rollQuota" class="gpe-roll-meter gpe-roll-meter-done" :title="line.rollQuota.tooltip">
+                      <div class="gpe-roll-meter-head">
+                        <span class="gpe-roll-meter-title">Rolls</span>
+                        <span class="gpe-roll-meter-frac">
+                          <em>{{ line.rollQuota.current }}</em>
+                          <span>/</span>
+                          <strong>{{ line.rollQuota.shiftMax }}</strong>
+                        </span>
+                      </div>
+                      <div v-if="line.rollQuota.dayTotal" class="gpe-roll-meter-sub">
+                        <span class="gpe-roll-day">Day {{ line.rollQuota.dayTotal }}/{{ line.rollQuota.jobMax }}</span>
+                      </div>
+                    </div>
                     <span v-if="line.mergeBadge" class="gpe-chip gpe-chip-merge">{{ line.mergeBadge }}</span>
                     <span :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
                   </div>
@@ -669,12 +699,43 @@ function isFabricUnit(unit) {
   return FABRIC_UNITS.includes(u);
 }
 
-function quotaTooltipForLine(lineId) {
+function buildRollQuotaDisplay(lineId) {
   const q = quotaByLineId.value[lineId];
   if (!q || q.max_rolls <= 0) {
-    return "";
+    return null;
   }
-  return `${q.current_rolls} roll(s) on SPR for this planned date/shift · max ${q.max_rolls} for shaft job`;
+  const jobMax = cint(q.max_rolls);
+  const current = cint(q.current_rolls);
+  const shiftMax = Math.max(
+    0,
+    cint(q.shift_max_rolls) || Math.max(0, jobMax - cint(q.other_shifts_rolls))
+  );
+  const dayTotal = cint(q.day_rolls_total);
+  const priorShifts = Array.isArray(q.prior_shifts) ? q.prior_shifts : [];
+  const priorParts = priorShifts.map((ps) => `${ps.shift}: ${ps.rolls} done`);
+  let tooltip = `${current} produced this shift · ${shiftMax} allowed this shift · ${dayTotal}/${jobMax} rolls today`;
+  if (priorParts.length) {
+    tooltip += ` · Earlier: ${priorParts.join(", ")}`;
+  }
+  return {
+    current,
+    shiftMax,
+    jobMax,
+    dayTotal,
+    priorShifts,
+    tooltip,
+    isFull: q.can_add_roll === false || q.can_add_roll === 0,
+  };
+}
+
+function cint(v) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function quotaTooltipForLine(lineId) {
+  const rq = buildRollQuotaDisplay(lineId);
+  return rq?.tooltip || "";
 }
 
 function lineEligibility(item, lineId) {
@@ -728,11 +789,11 @@ function lineEligibility(item, lineId) {
 }
 
 function quotaLabelForLine(lineId) {
-  const q = quotaByLineId.value[lineId];
-  if (!q || q.max_rolls <= 0) {
+  const rq = buildRollQuotaDisplay(lineId);
+  if (!rq) {
     return "";
   }
-  return `Rolls ${q.current_rolls}/${q.max_rolls}`;
+  return `Rolls ${rq.current}/${rq.shiftMax}`;
 }
 
 const ppSubmittedRows = computed(() =>
@@ -762,7 +823,7 @@ const mergeBadgeByItemId = computed(() => {
 
 function quotaContextArgs() {
   return {
-    run_date: quotaPlannedDate(),
+    run_date: runDate.value || quotaPlannedDate(),
     shift: shift.value,
     unit: filterUnit.value || headerUnit.value || undefined,
   };
@@ -801,6 +862,7 @@ function buildLineFromItem(item) {
     chip: elig.chip,
     chipClass: elig.chipClass,
     tooltip: elig.tooltip,
+    rollQuota: buildRollQuotaDisplay(id),
     quotaLabel: quotaLabelForLine(id),
     quotaTooltip: quotaTooltipForLine(id),
   };
@@ -1582,7 +1644,10 @@ async function addRollRow() {
   const quota = await fetchQuotaForLine(line);
   if (quota.max_rolls > 0 && !quota.can_add_roll) {
     frappe.confirm(
-      __("Roll limit reached for this width — use Manual Job. Open Manual Job now?"),
+      __("Roll limit reached for today ({0}/{1}) — use Manual Job. Open Manual Job now?", [
+        quota.day_rolls_total || quota.current_rolls,
+        quota.max_rolls,
+      ]),
       async () => {
         const ctx = toolsContext.value;
         if (ctx) {
@@ -1765,6 +1830,12 @@ function scheduleAutosave() {
   }, 5000);
 }
 
+watch([runDate, shift], () => {
+  if (ppSubmittedRows.value.length) {
+    loadQuotaForLines();
+  }
+});
+
 watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
 
 onMounted(async () => {
@@ -1790,18 +1861,19 @@ onUnmounted(() => {
 
 <style scoped>
 .gpe-root {
-  font-family: system-ui, sans-serif;
-  font-size: 14px;
-  color: #1e293b;
-  padding: 12px;
-  background: #f8fafc;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  color: #0f172a;
+  padding: 16px;
+  background: linear-gradient(160deg, #f1f5f9 0%, #e2e8f0 100%);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 .gpe-card {
   background: #fff;
   border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
 }
 .gpe-card-inner {
   border: 1px solid #e2e8f0;
@@ -1902,15 +1974,17 @@ onUnmounted(() => {
 }
 .gpe-order-card {
   border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 10px;
-  margin-bottom: 10px;
-  background: #fff;
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 .gpe-order-code {
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 800;
   color: #0f172a;
+  letter-spacing: -0.02em;
 }
 .gpe-order-head {
   display: flex;
@@ -1924,20 +1998,25 @@ onUnmounted(() => {
 }
 .gpe-line-card {
   display: flex;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 10px;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
   cursor: pointer;
-  border: 1px solid transparent;
-  margin-bottom: 6px;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 8px;
   align-items: flex-start;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 .gpe-line-card:hover {
   background: #f8fafc;
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
 }
 .gpe-line-card.selected {
-  background: #eef2ff;
-  border-color: #c7d2fe;
+  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+  border-color: #818cf8;
+  box-shadow: 0 0 0 1px #c7d2fe;
 }
 .gpe-line-check {
   margin-top: 4px;
@@ -1950,39 +2029,121 @@ onUnmounted(() => {
 .gpe-line-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #475569;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
+}
+.gpe-quality {
+  color: #1e3a8a;
+}
+.gpe-color {
+  color: #6b21a8;
 }
 .gpe-line-spec {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   align-items: baseline;
-  margin-top: 4px;
-  font-size: 13px;
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #475569;
 }
 .gpe-gsm {
-  font-size: 15px;
+  font-size: 18px;
+  font-weight: 800;
   color: #312e81;
+  letter-spacing: -0.02em;
 }
 .gpe-day-target {
   color: #0f766e;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 14px;
 }
 .gpe-day-rem {
   color: #c2410c;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 14px;
 }
 .gpe-line-foot {
-  margin-top: 6px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+}
+.gpe-roll-meter {
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+  border: 1px solid #fdba74;
+}
+.gpe-roll-meter-full {
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+  border-color: #fca5a5;
+}
+.gpe-roll-meter-done {
+  opacity: 0.85;
+}
+.gpe-roll-meter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.gpe-roll-meter-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9a3412;
+}
+.gpe-roll-meter-frac {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 22px;
+  font-weight: 800;
+  color: #7c2d12;
+  line-height: 1;
+}
+.gpe-roll-meter-frac em {
+  font-style: normal;
+  font-size: 26px;
+  color: #c2410c;
+}
+.gpe-roll-meter-frac span {
+  font-weight: 600;
+  color: #9a3412;
+  font-size: 18px;
+}
+.gpe-roll-meter-frac strong {
+  font-size: 22px;
+  color: #431407;
+}
+.gpe-roll-meter-sub {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(154, 52, 18, 0.25);
+  font-size: 12px;
+  font-weight: 600;
+}
+.gpe-roll-prior {
+  background: #fff;
+  color: #1d4ed8;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid #bfdbfe;
+}
+.gpe-roll-day {
+  color: #64748b;
+  font-weight: 700;
 }
 .gpe-selection-strip {
   display: flex;
@@ -2066,12 +2227,14 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .gpe-chip {
-  display: inline-block;
-  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
   border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
-  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  align-self: flex-start;
 }
 .gpe-chip-draft {
   background: #fef3c7;
