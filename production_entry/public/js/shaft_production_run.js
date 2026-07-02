@@ -348,7 +348,7 @@ function spr_finish_create_entry(frm, opts) {
 	const startIdx =
 		opts.startIdx != null ? opts.startIdx : Math.max(0, (frm.doc.items || []).length - lineCount);
 	const totalRows = (frm.doc.items || []).length;
-	const heavyGrid = totalRows > 25;
+	const heavyGrid = totalRows > 15;
 	if (opts.bundle) {
 		sprSyncBundleProducedSheets(frm, { silent: true });
 		for (let i = startIdx; i < totalRows; i++) {
@@ -383,7 +383,9 @@ function spr_finish_create_entry(frm, opts) {
 		}
 	}
 	spr_enforce_roll_line_grid_policy(frm);
-	sprAutoSaveAfterCreateEntry(frm, { heavy: heavyGrid });
+	if (!opts.serverSaved) {
+		sprAutoSaveAfterCreateEntry(frm, { heavy: heavyGrid });
+	}
 	if (opts.alertMsg) {
 		frappe.show_alert({ message: opts.alertMsg, indicator: 'green' });
 	}
@@ -408,6 +410,9 @@ function spr_should_block_grid_realign(frm) {
 function spr_should_use_lightweight_grid_pass(frm) {
 	if (!frm) {
 		return false;
+	}
+	if (frm._spr_light_reload) {
+		return true;
 	}
 	if (frm._spr_row_save_in_progress) {
 		return true;
@@ -3002,6 +3007,78 @@ function sprUsesOneRollPerCreateEntry(frm, row) {
 function sprSaveBeforeCreateEntry(frm) {
 	return new Promise(function (resolve) {
 		resolve(); // Disabled to avoid lag
+	});
+}
+
+function spr_finish_server_roll_append(frm, msg, opts) {
+	opts = opts || {};
+	msg = msg || {};
+	const added = cint(msg.added) || 0;
+	frm._spr_light_reload = true;
+	const reload = frm.reload_doc();
+	const done = function () {
+		frm._spr_light_reload = false;
+		spr_mark_just_saved(frm);
+		spr_finish_create_entry(frm, {
+			lineCount: added,
+			startIdx: Math.max(0, (frm.doc.items || []).length - added),
+			alertMsg: opts.alertMsg,
+			serverSaved: true,
+		});
+	};
+	if (reload && typeof reload.then === 'function') {
+		reload.then(done).catch(done);
+	} else {
+		done();
+	}
+}
+
+function invokeAppendRollLinesViaServer(
+	frm,
+	job_id,
+	{
+		laminationRollsPerCombo,
+		laminationExactRollLines,
+		appendMode,
+		exactRollLines,
+		rollStartIndex,
+		quotaMeta,
+	} = {}
+) {
+	const args = {
+		shaft_production_run: frm.doc.name,
+		job_id: String(job_id),
+		replace_job_lines: appendMode ? 0 : 1,
+	};
+	const lrc = cint(laminationRollsPerCombo);
+	if (lrc > 0) {
+		args.lamination_rolls_per_combination = lrc;
+	}
+	const lex = cint(laminationExactRollLines);
+	if (lex > 0) {
+		args.lamination_exact_roll_lines = lex;
+	}
+	const ex = cint(exactRollLines);
+	if (ex > 0) {
+		args.exact_roll_lines = ex;
+	}
+	if (rollStartIndex !== undefined && rollStartIndex !== null && rollStartIndex !== '') {
+		args.roll_start_index = cint(rollStartIndex);
+	}
+	let alertMsg = __('Added {0} roll line(s) for job {1}.', [ex || lex || lrc || 1, job_id]);
+	if (quotaMeta && quotaMeta.max) {
+		const addedIdx = cint(quotaMeta.current) + (ex || 1);
+		alertMsg = __('Added roll {0} of {1} for job {2}.', [addedIdx, quotaMeta.max, job_id]);
+	}
+	frappe.call({
+		method:
+			'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.append_roll_lines_for_job_and_save',
+		args: args,
+		freeze: true,
+		freeze_message: ex > 1 ? __('Creating roll lines...') : __('Creating roll line...'),
+		callback: function (r) {
+			spr_finish_server_roll_append(frm, r.message, { alertMsg: alertMsg });
+		},
 	});
 }
 
@@ -5968,105 +6045,14 @@ frappe.ui.form.on('Shaft Production Run Job', {
 			rollStartIndex,
 			quotaMeta
 		) {
-			const args = {
-				shaft_production_run: frm.doc.name,
-				job_id: String(job_id),
-			};
-			const lrc = cint(laminationRollsPerCombo);
-			if (lrc > 0) {
-				args.lamination_rolls_per_combination = lrc;
-			}
-			const lex = cint(laminationExactRollLines);
-			if (lex > 0) {
-				args.lamination_exact_roll_lines = lex;
-			}
-			const ex = cint(exactRollLines);
-			if (ex > 0) {
-				args.exact_roll_lines = ex;
-			}
-			if (rollStartIndex !== undefined && rollStartIndex !== null && rollStartIndex !== '') {
-				args.roll_start_index = cint(rollStartIndex);
-			}
-			frappe.call({
-			method:
-				'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.build_spr_roll_result_lines_for_job',
-			args: args,
-			freeze: true,
-			freeze_message: __('Creating roll lines for this job...'),
-			callback: function (r) {
-				const lines = r.message || [];
-				if (!appendMode) {
-					remove_spr_items_for_job(frm, job_id);
-					delete frm._spr_max_roll_cache;
-					delete frm._spr_max_roll_cache_before_idx;
-				}
-				spr_run_programmatic_item_adds(frm, function () {
-					lines.forEach(function (line) {
-						let it = frm.add_child('items');
-						Object.keys(line).forEach(function (k) {
-							if (line[k] !== undefined && line[k] !== null) {
-								it[k] = line[k];
-							}
-						});
-					});
-				});
-				const n = lines.length;
-				const startIdx = n > 0 ? (frm.doc.items || []).length - n : 0;
-				let alertMsg = __('Added {0} roll line(s) for job {1}.', [lines.length, job_id]);
-				if (quotaMeta && quotaMeta.max) {
-					const addedIdx = cint(quotaMeta.current) + lines.length;
-					alertMsg = __('Added roll {0} of {1} for job {2}.', [addedIdx, quotaMeta.max, job_id]);
-				}
-
-				function assignBatchesAndFinish() {
-					spr_finish_create_entry(frm, {
-						lineCount: n,
-						startIdx: startIdx,
-						alertMsg: alertMsg,
-					});
-				}
-
-				if (n > 0) {
-					frappe.call({
-						method:
-							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_next_spr_batch_numbers',
-						args: {
-							shaft_production_run: frm.doc.name,
-							count: n,
-							client_max_roll: spr_max_roll_before_idx(frm, startIdx),
-							client_series_prefix: spr_existing_series_prefix_before_idx(frm, startIdx),
-							run_date: frm.doc.run_date,
-							custom_unit: frm.doc.custom_unit,
-							shift: frm.doc.shift,
-						},
-						freeze: n > 3,
-						freeze_message: n > 3 ? __('Assigning batch numbers...') : undefined,
-						callback: function (r2) {
-							const nums = r2.message || [];
-							const fresh = frm.doc.items || [];
-							for (let i = 0; i < nums.length; i++) {
-								const row = fresh[startIdx + i];
-								if (row && nums[i]) {
-									if (nums[i].batch_no) row.batch_no = nums[i].batch_no;
-									if (nums[i].roll_no !== undefined && nums[i].roll_no !== null) {
-										row.roll_no = nums[i].roll_no;
-										spr_bump_roll_suffix_cache(frm, nums[i].roll_no);
-									}
-								}
-							}
-							frm.refresh_field('items');
-							assignBatchesAndFinish();
-						},
-						error: function () {
-							frm.refresh_field('items');
-							assignBatchesAndFinish();
-						},
-					});
-				} else {
-					assignBatchesAndFinish();
-				}
-			},
-		});
+			invokeAppendRollLinesViaServer(frm, job_id, {
+				laminationRollsPerCombo,
+				laminationExactRollLines,
+				appendMode,
+				exactRollLines,
+				rollStartIndex,
+				quotaMeta,
+			});
 		}
 
 		if (sprUsesOneRollPerCreateEntry(frm, row)) {

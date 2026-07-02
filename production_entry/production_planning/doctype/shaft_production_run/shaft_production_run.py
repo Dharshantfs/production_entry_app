@@ -2429,7 +2429,9 @@ class ShaftProductionRun(Document):
 		self._spr_stamp_bag_sizes_on_roll_lines()
 		self._spr_stamp_sheet_sizes_on_roll_lines()
 		self._spr_recalc_mix_roll_planned_qty()
-		self.calculate_produced_gsm()
+		incremental = cint(getattr(self.flags, "_spr_incremental_roll_save", 0))
+		item_count = len(self.items or [])
+		self.calculate_produced_gsm(missing_only=incremental)
 		self.recalculate_job_achieved_weights()
 		self.recalculate_job_achieved_meters()
 		self.generate_batch_numbers()
@@ -2441,7 +2443,8 @@ class ShaftProductionRun(Document):
 			sync_bundle_consumed_meter_header(self)
 		self._spr_recalc_total_produced_weight_header()
 		self._spr_recalc_bag_pcs_headers()
-		self.sync_roll_attribute_summaries()
+		if item_count <= 15 or cint(getattr(self.flags, "_spr_force_roll_summaries", 0)):
+			self.sync_roll_attribute_summaries()
 
 	def sync_roll_attribute_summaries(self):
 		sync_spr_attribute_summaries_to_doc(self)
@@ -2615,6 +2618,8 @@ class ShaftProductionRun(Document):
 		return False
 
 	def before_submit(self):
+		self.flags._spr_force_roll_summaries = True
+		self.sync_roll_attribute_summaries()
 		if spr_doc_is_mix_roll(self):
 			self.create_mix_roll_material_receipts()
 			return
@@ -2819,7 +2824,7 @@ class ShaftProductionRun(Document):
 			if pq > 0:
 				row.planned_qty = pq
 
-	def calculate_produced_gsm(self):
+	def calculate_produced_gsm(self, missing_only: bool = False):
 		"""Set produced_gsm on each roll line from effective weight (net, else gross), width, length (m)."""
 		meta = frappe.get_meta("Shaft Production Run Item")
 		if not meta.has_field("produced_gsm"):
@@ -2829,6 +2834,8 @@ class ShaftProductionRun(Document):
 		is_mix = spr_doc_is_mix_roll(self)
 		is_bb = cint(getattr(self, "custom_is_box_bag", 0))
 		for row in self.items or []:
+			if missing_only and flt(getattr(row, "produced_gsm", 0)) > 0:
+				continue
 			if lam or is_mix:
 				ln = 0.0
 				for key in ("produced_length_mtrs", "custom_produced_length_mtrs"):
@@ -9386,6 +9393,118 @@ def build_spr_roll_result_lines_for_job(
 		row["roll_no"] = idx + 1
 		lines.append(row)
 	return lines
+
+
+def _spr_max_roll_suffix_for_job(spr_doc, job_id: str) -> int:
+	"""Highest roll suffix already on this job's lines (batch /N or roll_no)."""
+	job_id = _cstr(job_id)
+	mx = 0
+	for row in spr_doc.items or []:
+		if _cstr(getattr(row, "job", None)) != job_id:
+			continue
+		bn = _cstr(getattr(row, "batch_no", "")).strip()
+		if "/" in bn:
+			try:
+				mx = max(mx, cint(bn.rsplit("/", 1)[-1]))
+			except Exception:
+				pass
+		rn = cint(getattr(row, "roll_no", 0) or 0)
+		if rn > mx:
+			mx = rn
+	return mx
+
+
+def _spr_existing_series_prefix_for_job(spr_doc, job_id: str) -> str:
+	"""Batch prefix (before /) from an existing roll line on this job."""
+	job_id = _cstr(job_id)
+	for row in spr_doc.items or []:
+		if _cstr(getattr(row, "job", None)) != job_id:
+			continue
+		bn = _cstr(getattr(row, "batch_no", "")).strip()
+		if "/" in bn:
+			return bn.split("/", 1)[0].strip()
+	return ""
+
+
+@frappe.whitelist()
+def append_roll_lines_for_job_and_save(
+	shaft_production_run,
+	job_id,
+	lamination_rolls_per_combination=None,
+	lamination_exact_roll_lines=None,
+	exact_roll_lines=None,
+	roll_start_index=None,
+	replace_job_lines=0,
+):
+	"""Build roll lines on the server, assign batches, save once — avoids slow client grid append/save."""
+	if not job_id:
+		frappe.throw(_("Job ID is required"))
+	if not shaft_production_run or not frappe.db.exists("Shaft Production Run", shaft_production_run):
+		frappe.throw(_("Save Shaft Production Run first"))
+
+	lines = build_spr_roll_result_lines_for_job(
+		shaft_production_run=shaft_production_run,
+		job_id=job_id,
+		lamination_rolls_per_combination=lamination_rolls_per_combination,
+		lamination_exact_roll_lines=lamination_exact_roll_lines,
+		exact_roll_lines=exact_roll_lines,
+		roll_start_index=roll_start_index,
+	)
+	if not lines:
+		return {"added": 0, "job_id": _cstr(job_id), "total_items": 0, "lines": []}
+
+	spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+	if cint(spr.docstatus) != 0:
+		frappe.throw(_("Cannot add roll lines to a submitted Shaft Production Run"))
+
+	if cint(replace_job_lines):
+		for row in list(spr.items or []):
+			if _cstr(getattr(row, "job", None)) == _cstr(job_id):
+				spr.remove(row)
+
+	client_max_roll = _spr_max_roll_suffix_for_job(spr, job_id)
+	if roll_start_index not in (None, ""):
+		try:
+			client_max_roll = max(client_max_roll, cint(roll_start_index))
+		except Exception:
+			pass
+
+	batch_rows = get_next_spr_batch_numbers(
+		shaft_production_run=shaft_production_run,
+		count=len(lines),
+		client_max_roll=client_max_roll,
+		run_date=spr.run_date,
+		custom_unit=spr.get("custom_unit"),
+		shift=spr.shift,
+		client_series_prefix=_spr_existing_series_prefix_for_job(spr, job_id) or None,
+	)
+
+	added_rows: list[dict] = []
+	for idx, line in enumerate(lines):
+		row = spr.append("items", line)
+		if idx < len(batch_rows or []):
+			br = batch_rows[idx] or {}
+			if br.get("batch_no"):
+				row.batch_no = br.get("batch_no")
+			if br.get("roll_no") is not None:
+				row.roll_no = br.get("roll_no")
+		added_rows.append(
+			{
+				"batch_no": _cstr(getattr(row, "batch_no", "")),
+				"roll_no": getattr(row, "roll_no", None),
+				"job": _cstr(getattr(row, "job", None)),
+			}
+		)
+
+	spr.flags._spr_incremental_roll_save = True
+	spr.save()
+
+	return {
+		"added": len(added_rows),
+		"job_id": _cstr(job_id),
+		"total_items": len(spr.items or []),
+		"lines": added_rows,
+	}
 
 
 def _build_gsm_width_to_wo_map_from_item_names(wo_list: list) -> dict:
