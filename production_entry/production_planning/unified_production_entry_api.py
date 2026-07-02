@@ -13,9 +13,11 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_count_combination_segments,
 	_parse_combination_widths_inches,
 	_resolve_wos_for_pp_job_row,
+	_segment_weights_kg,
 	_spr_count_roll_lines_for_job,
 	_spr_job_max_roll_lines,
 	_spr_job_rows,
+	_spr_net_kg_per_shaft_for_pp_line_width,
 	compute_mix_roll_planned_qty_kg,
 	parse_item_code,
 )
@@ -564,13 +566,145 @@ def _extract_core_width_mm_from_item(item_name: str, item_code: str = "") -> flo
 	return 1600.0
 
 
+def _preset_core_mm_for_fabric_width(width_inch: float) -> float:
+	"""Map fabric roll width (inches) to stock core mm — SPR desk parity."""
+	w = flt(width_inch)
+	if w <= 0:
+		return 1600.0
+	preset = {63: 1500.0, 85: 1600.0, 90: 1700.0, 118: 1800.0, 126: 1900.0}
+	for k, mm in preset.items():
+		if abs(w - k) < 0.6:
+			return mm
+	if w < 63:
+		return 1500.0
+	if w < 85:
+		return 1600.0
+	if w < 90:
+		return 1700.0
+	if w < 118:
+		return 1800.0
+	return 1900.0
+
+
+def _normalize_pp_shaft_job_row(shaft) -> frappe._dict:
+	"""Align PP shaft detail field names with Shaft Production Run Job for weight helpers."""
+	row = frappe._dict(shaft) if shaft else frappe._dict()
+	if not _cstr(row.get("net_weight") or "").strip():
+		nw = _pick_value(
+			row,
+			["net_weight_shaft_kgs", "net_weight_shaft", "custom_net_weight_shaft_kgs", "net_weight"],
+			"",
+		)
+		if nw:
+			row.net_weight = nw
+	if not flt(row.get("total_weight")):
+		tw = _pick_value(row, ["total_weight_kgs", "total_weight", "weight", "planned_qty"], 0)
+		if tw:
+			row.total_weight = tw
+	return row
+
+
+def _planned_qty_kg_from_pp_shaft(
+	pp_id: str,
+	width_inch=None,
+	gsm=None,
+	production_plan_item=None,
+) -> float:
+	"""Per-roll planned kg from PP shaft net weight (SPR Create Entry parity), not GSM formula."""
+	pp_id = _cstr(pp_id).strip()
+	wx = flt(width_inch)
+	if not pp_id or wx <= 0:
+		return 0.0
+	ppi = _cstr(production_plan_item).strip()
+	target_gsm = cint(gsm) if gsm is not None else 0
+
+	spr_name = _find_spr_for_pp(pp_id, prefer_draft=True)
+	if spr_name:
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		net_ps, _jid = _spr_net_kg_per_shaft_for_pp_line_width(spr, wx, ppi or None)
+		if net_ps is not None and flt(net_ps) > 0:
+			return round(flt(net_ps), 3)
+
+	if not frappe.db.exists("Production Plan", pp_id):
+		return 0.0
+	pp = frappe.get_doc("Production Plan", pp_id)
+	for shaft in pp.get("custom_shaft_details") or pp.get("shaft_details") or []:
+		row = _normalize_pp_shaft_job_row(shaft)
+		if target_gsm and _shaft_gsm(row) != target_gsm:
+			continue
+		comb = _cstr(_pick_value(row, ["combination", "combined_width", "shaft", "shaft_details"], ""))
+		segs = max(1, _count_combination_segments(comb))
+		widths = _parse_combination_widths_inches(comb) if comb else []
+		weights = _segment_weights_kg(row, segs)
+		if segs > 1 and len(widths) >= segs:
+			for i in range(segs):
+				if abs(flt(widths[i]) - wx) <= 0.75 and i < len(weights) and flt(weights[i]) > 0:
+					return round(flt(weights[i]), 3)
+			continue
+		tw = flt(row.get("total_width"))
+		if tw > 0 and abs(tw - wx) <= 0.75 and weights:
+			return round(flt(weights[0]), 3)
+		if not comb and weights and flt(weights[0]) > 0:
+			sw = _shaft_width_inch(row)
+			if sw <= 0 or abs(sw - wx) <= 0.75:
+				return round(flt(weights[0]), 3)
+	return 0.0
+
+
+def _resolve_core_mm_for_fabric_width(width_inch: float) -> float:
+	"""Pick paper-core mm from Item master for fabric width (inch label or closest preset)."""
+	import re
+
+	w = flt(width_inch)
+	target_mm = _preset_core_mm_for_fabric_width(w)
+	rows = frappe.db.sql(
+		"""
+		SELECT name, item_name
+		FROM `tabItem`
+		WHERE disabled = 0
+		  AND (item_name LIKE %s OR item_name LIKE %s OR name LIKE %s)
+		ORDER BY item_name
+		LIMIT 200
+		""",
+		('%" PC%', '% PC -%', '%PC%'),
+		as_dict=True,
+	)
+	w_label = str(int(w)) if abs(w - round(w)) < 0.01 else f"{w:.1f}".rstrip("0").rstrip(".")
+	for row in rows or []:
+		name = _cstr(row.get("item_name") or "")
+		if re.match(rf"^{re.escape(w_label)}\s*['\"\u201d″]", name):
+			mm = _extract_core_width_mm_from_item(name, row.get("name") or "")
+			if mm > 0:
+				return mm
+	best_mm = target_mm
+	best_diff = 999999.0
+	for row in rows or []:
+		mm = _extract_core_width_mm_from_item(row.get("item_name") or "", row.get("name") or "")
+		if mm <= 0:
+			continue
+		diff = abs(mm - target_mm)
+		if diff < best_diff:
+			best_diff = diff
+			best_mm = mm
+	return flt(best_mm) if best_mm > 0 else target_mm
+
+
 @frappe.whitelist()
-def get_gsm_roll_row_extras(gsm=None, width_inch=None, length_m=None, item_code=None):
-	"""Planned qty + polybag for a GSM roll line (SPR mix-roll parity)."""
+def get_gsm_roll_row_extras(
+	gsm=None,
+	width_inch=None,
+	length_m=None,
+	item_code=None,
+	pp_id=None,
+	production_plan_item=None,
+):
+	"""Planned qty (PP shaft net kg) + polybag + auto core mm for a GSM roll line."""
 	gsm_val = cint(gsm) if gsm is not None else 0
 	w_in = flt(width_inch) if width_inch is not None else 0.0
 	ln = flt(length_m) if length_m is not None else 0.0
 	item_code = _cstr(item_code).strip()
+	pp_id = _cstr(pp_id).strip()
+	ppi = _cstr(production_plan_item).strip()
 	if not gsm_val and item_code:
 		try:
 			g, w = parse_item_code(item_code)
@@ -580,7 +714,14 @@ def get_gsm_roll_row_extras(gsm=None, width_inch=None, length_m=None, item_code=
 				w_in = flt(w)
 		except Exception:
 			pass
-	planned_qty = compute_mix_roll_planned_qty_kg(gsm_val, w_in, ln) if gsm_val and w_in > 0 and ln > 0 else 0.0
+
+	planned_qty = 0.0
+	if pp_id and w_in > 0:
+		planned_qty = _planned_qty_kg_from_pp_shaft(pp_id, w_in, gsm_val, ppi or None)
+	if planned_qty <= 0 and gsm_val and w_in > 0 and ln > 0:
+		planned_qty = compute_mix_roll_planned_qty_kg(gsm_val, w_in, ln)
+
+	core_mm = _resolve_core_mm_for_fabric_width(w_in) if w_in > 0 else 1600.0
 	polybag = 0.0
 	if item_code and frappe.db.exists("Item", item_code):
 		for key in ("custom_polybag_kgs", "polybag_kgs", "custom_polybag_weight"):
@@ -588,7 +729,11 @@ def get_gsm_roll_row_extras(gsm=None, width_inch=None, length_m=None, item_code=
 				polybag = flt(frappe.db.get_value("Item", item_code, key) or 0)
 				if polybag > 0:
 					break
-	return {"planned_qty": planned_qty, "custom_polybag_kgs": polybag}
+	return {
+		"planned_qty": planned_qty,
+		"custom_polybag_kgs": polybag,
+		"custom_core_width_mm": core_mm,
+	}
 
 
 @frappe.whitelist()

@@ -956,10 +956,11 @@ const selectedSummary = computed(() => {
   let count = 0;
   selectedLineIds.value.forEach((id) => {
     const line = lineById.value.get(id);
-    if (line?.selectable !== false) {
-      dayPlanned += sprFlt(line.dayTargetKg);
-      count += 1;
+    if (!line) {
+      return;
     }
+    dayPlanned += sprFlt(line.dayTargetKg);
+    count += 1;
   });
   return { count, dayPlanned };
 });
@@ -1568,6 +1569,27 @@ async function resolveWorkOrder(line) {
   }
 }
 
+function pickCoreMmForWidth(widthInch, apiMm) {
+  const target = sprFlt(apiMm);
+  const opts = coreWidthOptions.value || [];
+  if (!opts.length) {
+    return target > 0 ? target : 1600;
+  }
+  if (target > 0) {
+    let best = opts[0];
+    let bestDiff = Math.abs(sprFlt(best.value) - target);
+    opts.forEach((o) => {
+      const diff = Math.abs(sprFlt(o.value) - target);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = o;
+      }
+    });
+    return sprFlt(best.value) || target;
+  }
+  return sprFlt(opts[0].value) || 1600;
+}
+
 async function fetchRollRowExtras(line, lengthM) {
   const src = line.source;
   try {
@@ -1578,13 +1600,16 @@ async function fetchRollRowExtras(line, lengthM) {
         width_inch: line.width_inch,
         length_m: lengthM || sprFlt(src.meter || src.meter_roll),
         item_code: src.itemCode || src.item_code,
+        pp_id: line.ppId || src.pp_id,
+        production_plan_item: line.id,
       },
     });
     return res.message || {};
   } catch (e) {
     return {
-      planned_qty: sprComputePlannedQtyKg(line.gsm, line.width_inch, lengthM),
+      planned_qty: 0,
       custom_polybag_kgs: 0,
+      custom_core_width_mm: pickCoreMmForWidth(line.width_inch, 0),
     };
   }
 }
@@ -1665,13 +1690,13 @@ async function addRollRow() {
     return;
   }
   const src = line.source;
-  const [batchInfo, ordLen, wo, extras] = await Promise.all([
+  const [batchInfo, ordLen, wo] = await Promise.all([
     previewNextBatch(),
     resolveOrderLength(line),
     resolveWorkOrder(line),
-    fetchRollRowExtras(line, 0),
   ]);
-  const defaultCore = coreWidthOptions.value[0]?.value || 1600;
+  const extras = await fetchRollRowExtras(line, ordLen);
+  const coreMm = pickCoreMmForWidth(line.width_inch, extras.custom_core_width_mm);
   creationSeq.value += 1;
   const newRow = sprRecalcRollRow({
     _id: `row-${Date.now()}-${creationSeq.value}`,
@@ -1692,9 +1717,9 @@ async function addRollRow() {
     produced_gsm: 0,
     net_weight: 0,
     gross_weight: "",
-    planned_qty: extras.planned_qty || sprComputePlannedQtyKg(src.gsm, line.width_inch, ordLen),
+    planned_qty: sprFlt(extras.planned_qty),
     uom: src.uom || src.stock_uom || "Kg",
-    custom_core_width_mm: defaultCore,
+    custom_core_width_mm: coreMm,
     custom_polybag_kgs: extras.custom_polybag_kgs || 0,
     custom_diameter_inches: "",
     custom_cbm_cubic_meters: "",
