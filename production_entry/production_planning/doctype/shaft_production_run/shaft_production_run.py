@@ -3195,7 +3195,7 @@ class ShaftProductionRun(Document):
 		if on_doc:
 			return on_doc
 
-		# 2) Rows saved on this SPR in DB (was excluded before — caused new S per row)
+		# 2) Rows saved on this SPR in DB — same shift only (day vs night get different S digit)
 		if self.name:
 			shift_val = self._current_batch_shift_label()
 			if shift_val and frappe.db.has_column("Shaft Production Run Item", "custom_shift"):
@@ -9425,14 +9425,15 @@ def _get_next_spr_batch_numbers_unlocked(
 	rd = getdate(rd_val)
 	comp_id, unit_num = doc._batch_prefix_parts()
 	root_5 = f"{comp_id}-{unit_num}{rd.month:02d}{rd.year % 100:02d}"
+	fresh_prefix = doc._resolve_series_prefix(root_5)
 	csp = _cstr(client_series_prefix).strip()
-	if csp and csp.startswith(root_5):
+	if csp and csp.startswith(root_5) and csp == fresh_prefix:
 		series_prefix = csp
 	else:
-		series_prefix = doc._resolve_series_prefix(root_5)
+		series_prefix = fresh_prefix
 	next_roll = doc._next_roll_starting(series_prefix)
 	try:
-		if client_max_roll is not None and cint(client_max_roll) >= 0:
+		if client_max_roll is not None and cint(client_max_roll) >= 0 and csp == series_prefix:
 			next_roll = max(int(next_roll), cint(client_max_roll) + 1)
 	except Exception:
 		pass

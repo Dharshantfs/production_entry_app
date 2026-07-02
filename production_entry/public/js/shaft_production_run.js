@@ -270,14 +270,44 @@ function spr_items_grid_is_editing(frm) {
 	return false;
 }
 
-/** Batch prefix (before ``/``) from existing roll lines — reuse same shift series on Create Entry. */
+function spr_reset_batch_roll_cache(frm) {
+	if (!frm) {
+		return;
+	}
+	delete frm._spr_max_roll_cache;
+	delete frm._spr_max_roll_cache_before_idx;
+	delete frm._spr_batch_shift_cache;
+}
+
+/** Normalize shift for batch reuse (matches server batch_shift_value). */
+function spr_batch_shift_label(shift) {
+	const s = String(shift || '').toLowerCase();
+	if (s.includes('night')) {
+		return 'Night';
+	}
+	if (s.includes('day')) {
+		return 'Day';
+	}
+	return String(shift || '').trim();
+}
+
+/** Batch prefix (before ``/``) from existing roll lines — same shift only. */
 function spr_existing_series_prefix_before_idx(frm, beforeIdx) {
+	const curShift = spr_batch_shift_label(frm && frm.doc && frm.doc.shift);
 	const all = (frm && frm.doc && frm.doc.items) || [];
 	for (let i = 0; i < beforeIdx; i++) {
-		const bn = all[i] && all[i].batch_no;
-		if (bn && String(bn).indexOf('/') !== -1) {
-			return String(bn).split('/')[0];
+		const row = all[i];
+		const bn = row && row.batch_no;
+		if (!bn || String(bn).indexOf('/') === -1) {
+			continue;
 		}
+		if (curShift) {
+			const rowShift = spr_batch_shift_label(row.custom_shift);
+			if (rowShift && rowShift !== curShift) {
+				continue;
+			}
+		}
+		return String(bn).split('/')[0];
 	}
 	return null;
 }
@@ -304,8 +334,9 @@ function spr_roll_suffix_from_row(row) {
 	return max;
 }
 
-/** Highest roll suffix among items[0 .. beforeIdx-1] — incremental cache for Create Entry speed. */
+/** Highest roll suffix among items[0 .. beforeIdx-1] for the current shift only. */
 function spr_max_roll_before_idx(frm, beforeIdx) {
+	const curShift = spr_batch_shift_label(frm && frm.doc && frm.doc.shift);
 	const all = (frm && frm.doc && frm.doc.items) || [];
 	const limit = beforeIdx != null ? beforeIdx : all.length;
 	if (limit <= 0) {
@@ -320,7 +351,14 @@ function spr_max_roll_before_idx(frm, beforeIdx) {
 		frm._spr_max_roll_cache != null && prev != null && prev <= limit ? frm._spr_max_roll_cache : 0;
 	const start = prev != null && prev < limit && frm._spr_max_roll_cache != null ? prev : 0;
 	for (let i = start; i < limit; i++) {
-		maxRoll = Math.max(maxRoll, spr_roll_suffix_from_row(all[i]));
+		const row = all[i];
+		if (curShift) {
+			const rowShift = spr_batch_shift_label(row.custom_shift);
+			if (rowShift && rowShift !== curShift) {
+				continue;
+			}
+		}
+		maxRoll = Math.max(maxRoll, spr_roll_suffix_from_row(row));
 	}
 	frm._spr_max_roll_cache = maxRoll;
 	frm._spr_max_roll_cache_before_idx = limit;
@@ -3610,10 +3648,17 @@ frappe.ui.form.on('Shaft Production Run', {
 		if (frm._spr_items_cols_mode) {
 			delete frm._spr_items_cols_mode;
 		}
+		spr_reset_batch_roll_cache(frm);
 		sprApplyLaminationUnitDefaults(frm);
 		sprToggleLaminationRollUi(frm);
 		sprToggleSheetCuttingUi(frm);
 		spr_apply_items_grid_columns(frm, true);
+	},
+	shift: function (frm) {
+		spr_reset_batch_roll_cache(frm);
+	},
+	run_date: function (frm) {
+		spr_reset_batch_roll_cache(frm);
 	},
 	custom_is_sheet_cutting: function (frm) {
 		sprToggleSheetCuttingUi(frm);

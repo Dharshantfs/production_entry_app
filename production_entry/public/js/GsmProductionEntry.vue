@@ -647,6 +647,7 @@ function resetBatchSeriesCache() {
   seriesPrefix.value = "";
   maxRollSuffix.value = 0;
 }
+
 const creationSeq = ref(0);
 
 const summaryTab = ref("summary");
