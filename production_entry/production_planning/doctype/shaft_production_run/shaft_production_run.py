@@ -3421,13 +3421,42 @@ class ShaftProductionRun(Document):
 		if names:
 			return sorted({_cstr(x).strip() for x in names if _cstr(x).strip()})
 		spr_clause, params = self._spr_stock_entry_spr_link_clause("se")
-		if spr_clause == "1=0":
+		if spr_clause != "1=0":
+			names = frappe.db.sql_list(
+				f"""
+				SELECT se.name
+				FROM `tabStock Entry` se
+				WHERE {spr_clause}
+				  AND IFNULL(se.purpose, '') = 'Manufacture'
+				  AND IFNULL(se.docstatus, 0) = 1
+				""",
+				params,
+			)
+			return sorted({_cstr(x).strip() for x in (names or []) if _cstr(x).strip()})
+		wo_ids = sorted(
+			{
+				_cstr(r.get("work_order") or r.get("wo_id"))
+				for r in (self.items or [])
+				if _cstr(r.get("work_order") or r.get("wo_id"))
+			}
+		)
+		if not wo_ids:
 			return []
+		params = {"wo_ids": tuple(wo_ids)}
+		where = "IFNULL(se.work_order, '') IN %(wo_ids)s"
+		oc = self._resolve_spr_order_code()
+		if oc:
+			meta = frappe.get_meta("Stock Entry")
+			for fn in ("order_code", "custom_order_code", "custom_party_code", "party_code"):
+				if meta.has_field(fn):
+					params["spr_order_code"] = oc
+					where += f" AND IFNULL(se.{fn}, '') = %(spr_order_code)s"
+					break
 		names = frappe.db.sql_list(
 			f"""
 			SELECT se.name
 			FROM `tabStock Entry` se
-			WHERE {spr_clause}
+			WHERE {where}
 			  AND IFNULL(se.purpose, '') = 'Manufacture'
 			  AND IFNULL(se.docstatus, 0) = 1
 			""",
@@ -6374,6 +6403,39 @@ class ShaftProductionRun(Document):
 			return f"{se_alias}.name IN %(spr_se_names)s", params
 		return "1=0", params
 
+	def _spr_manufacture_se_where_clause(
+		self,
+		se_alias: str,
+		wo_id: str,
+		extra_se_names: list | tuple | None = None,
+	) -> tuple[str, dict]:
+		"""WHERE fragment for submitted Manufacture Stock Entry rows for this SPR + WO."""
+		spr_clause, params = self._spr_stock_entry_spr_link_clause(se_alias)
+		params["wo"] = _cstr(wo_id)
+		extra = [x for x in (extra_se_names or []) if _cstr(x).strip()]
+		if extra:
+			params["extra_se"] = tuple(extra)
+			wo_clause = (
+				f"(IFNULL({se_alias}.work_order, '') = %(wo)s OR {se_alias}.name IN %(extra_se)s)"
+			)
+		else:
+			wo_clause = f"IFNULL({se_alias}.work_order, '') = %(wo)s"
+		if spr_clause == "1=0":
+			link_clause = wo_clause
+			oc = self._resolve_spr_order_code()
+			if oc:
+				meta = frappe.get_meta("Stock Entry")
+				for fn in ("order_code", "custom_order_code", "custom_party_code", "party_code"):
+					if meta.has_field(fn):
+						params["spr_order_code"] = oc
+						link_clause = (
+							f"({wo_clause}) AND IFNULL({se_alias}.{fn}, '') = %(spr_order_code)s"
+						)
+						break
+		else:
+			link_clause = f"({spr_clause}) AND {wo_clause}"
+		return link_clause, params
+
 	def _validate_all_planned_wos_manufactured(self, planned_wo_posts: list, created_entries_by_wo: dict) -> None:
 		"""Ensure every planned WO has manufacture posting for all its SPR rows."""
 		missing = []
@@ -6396,7 +6458,9 @@ class ShaftProductionRun(Document):
 						)
 					)
 			elif not created_entries_by_wo.get(wo_id):
-				missing.append(wo_id)
+				# Rolls may already be posted from a prior submit attempt (no SPR link on Stock Entry).
+				if self._spr_rows_needing_manufacture(wo_doc, rows, extra_se_names=None):
+					missing.append(wo_id)
 			if backfill_errors.get(wo_id):
 				hints.append(f"{wo_id}: {_cstr(backfill_errors[wo_id])[:500]}")
 		if missing:
@@ -6417,21 +6481,13 @@ class ShaftProductionRun(Document):
 		if not wo_id:
 			return {}
 		out: dict[str, float] = defaultdict(float)
-		spr_clause, params = self._spr_stock_entry_spr_link_clause("se")
-		params["wo"] = wo_id
-		extra = [x for x in (extra_se_names or []) if _cstr(x).strip()]
-		if extra:
-			params["extra_se"] = tuple(extra)
-			wo_clause = "(IFNULL(se.work_order, '') = %(wo)s OR se.name IN %(extra_se)s)"
-		else:
-			wo_clause = "IFNULL(se.work_order, '') = %(wo)s"
+		link_clause, params = self._spr_manufacture_se_where_clause("se", wo_id, extra_se_names)
 		rows = frappe.db.sql(
 			f"""
 			SELECT IFNULL(sed.batch_no, '') AS batch_no, IFNULL(SUM(sed.qty), 0) AS qty
 			FROM `tabStock Entry` se
 			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-			WHERE {spr_clause}
-			  AND {wo_clause}
+			WHERE {link_clause}
 			  AND IFNULL(se.purpose, '') = 'Manufacture'
 			  AND IFNULL(se.docstatus, 0) = 1
 			  AND IFNULL(sed.is_finished_item, 0) = 1
@@ -6598,10 +6654,15 @@ class ShaftProductionRun(Document):
 			rows = plan.get("rows") or []
 			if not wo_id or not wo_doc:
 				continue
+			existing_this_pass = created_entries_by_wo.get(wo_id) or []
 			missing_rows = self._spr_rows_needing_manufacture(
-				wo_doc, rows, extra_se_names=created_entries_by_wo.get(wo_id) or []
+				wo_doc, rows, extra_se_names=existing_this_pass
 			)
 			if not missing_rows:
+				continue
+			# Main loop already submitted manufacture — never backfill (MTFM commit would
+			# persist those entries then post duplicates).
+			if existing_this_pass:
 				continue
 			self._spr_run_backfill_manufacture_for_wo(
 				wo_id,
@@ -7139,6 +7200,8 @@ class ShaftProductionRun(Document):
 				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
 				if chunk_total_qty <= 0:
 					continue
+				if not self._spr_rows_needing_manufacture(wo_doc, chunk_rows, extra_se_names=None):
+					continue
 				preview_se = self._build_shortage_preview_for_chunk(wo_doc, chunk_total_qty)
 				self._spr_cap_manufacture_rm_lines_to_wip_available(preview_se, wo_doc)
 				shortages = self._rm_shortages_for_se(preview_se, wo_doc)
@@ -7183,6 +7246,8 @@ class ShaftProductionRun(Document):
 			for idx, chunk_rows in enumerate(row_chunks, start=1):
 				chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
 				if chunk_total_qty <= 0:
+					continue
+				if not self._spr_rows_needing_manufacture(wo_doc, chunk_rows, extra_se_names=None):
 					continue
 				for _spr_mfg_try in range(2):
 					try:
