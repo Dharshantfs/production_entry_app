@@ -11442,6 +11442,79 @@ def spr_cancel_duplicate_mtfm_entries(stock_entries, work_order=None):
 
 
 @frappe.whitelist()
+def spr_cancel_duplicate_manufacture_entries(stock_entries, work_order=None):
+	"""Cancel duplicate Manufacture Stock Entries (newest first) and resync WO produced qty."""
+	frappe.only_for(("System Manager", "Manufacturing Manager", "Administrator"))
+
+	if isinstance(stock_entries, str):
+		try:
+			stock_entries = json.loads(stock_entries)
+		except Exception:
+			stock_entries = [x.strip() for x in stock_entries.split(",") if x.strip()]
+	names = [_cstr(x).strip() for x in (stock_entries or []) if _cstr(x).strip()]
+	if not names:
+		frappe.throw(_("Select at least one Stock Entry to cancel"))
+
+	wo = _cstr(work_order).strip()
+	if not wo:
+		wo = _cstr(frappe.db.get_value("Stock Entry", names[0], "work_order"))
+	if not wo:
+		frappe.throw(_("Work Order is required"))
+
+	entries = []
+	for name in names:
+		if not frappe.db.exists("Stock Entry", name):
+			frappe.throw(_("Stock Entry {0} not found").format(name))
+		se = frappe.get_doc("Stock Entry", name)
+		if cint(se.docstatus) != 1:
+			continue
+		if _cstr(se.purpose) != "Manufacture":
+			frappe.throw(_("Stock Entry {0} is not Manufacture").format(name))
+		if _cstr(se.work_order) and _cstr(se.work_order) != wo:
+			frappe.throw(_("Stock Entry {0} belongs to a different Work Order").format(name))
+		entries.append(se)
+
+	if not entries:
+		frappe.throw(_("No submitted Manufacture entries to cancel"))
+
+	entries.sort(
+		key=lambda s: (
+			getdate(s.posting_date),
+			_cstr(s.posting_time),
+			s.creation,
+		),
+		reverse=True,
+	)
+
+	cancelled = []
+	frappe.flags.spr_skip_wo_transfer_qty_validation = True
+	try:
+		for se in entries:
+			se.flags.ignore_validate = True
+			se.cancel()
+			cancelled.append(se.name)
+	finally:
+		frappe.flags.spr_skip_wo_transfer_qty_validation = False
+
+	dummy = frappe.new_doc("Shaft Production Run")
+	dummy._sync_work_order_produced_qty_from_submitted_manufacture(wo)
+	dummy._sync_work_order_required_item_progress(wo)
+	try:
+		frappe.db.commit()
+	except Exception:
+		pass
+
+	return {
+		"status": "ok",
+		"work_order": wo,
+		"cancelled": cancelled,
+		"message": _("Cancelled {0} manufacture entry/entries. Work Order {1} produced qty resynced.").format(
+			len(cancelled), wo
+		),
+	}
+
+
+@frappe.whitelist()
 def spr_resync_work_order_consumption(work_order: str):
 	"""Manual utility: recompute consumed/transferred qty on WO required items from submitted Stock Entries."""
 	wo = _cstr(work_order)

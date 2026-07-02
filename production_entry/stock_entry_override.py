@@ -1,4 +1,5 @@
 import frappe
+from frappe.utils import cstr, flt
 
 from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 
@@ -11,19 +12,13 @@ class SPRStockEntryOverride(StockEntry):
 		if meta.has_field("shaft_production_run") and (self.get("shaft_production_run") or "").strip():
 			return True
 		if frappe.db.has_column("Stock Entry", "custom_spr_reference"):
-			return bool((self.get("custom_spr_reference") or "").strip())
+			ref = (self.get("custom_spr_reference") or "").strip()
+			if not ref and self.name:
+				ref = cstr(frappe.db.get_value("Stock Entry", self.name, "custom_spr_reference")).strip()
+			return bool(ref)
 		return False
 
-	def _spr_should_skip_wo_transfer_cap_on_cancel(self) -> bool:
-		"""Skip WO over-transfer validation when cancelling duplicate SPR MTFM or already-over WO."""
-		if (self.purpose or "").strip() != "Material Transfer for Manufacture":
-			return False
-		if self._is_spr_generated_entry():
-			return True
-		wo_name = (self.work_order or "").strip()
-		if not wo_name or not frappe.db.exists("Work Order", wo_name):
-			return False
-		wo = frappe.get_doc("Work Order", wo_name)
+	def _spr_wo_overproduction_cap(self, wo) -> float:
 		allowance = flt(
 			frappe.db.get_single_value("Manufacturing Settings", "overproduction_percentage_for_work_order")
 		)
@@ -31,9 +26,25 @@ class SPRStockEntryOverride(StockEntry):
 			allowance = flt(
 				frappe.db.get_single_value("Manufacturing Settings", "transfer_extra_materials_percentage")
 			)
-		cap = flt(wo.qty) + (allowance / 100.0 * flt(wo.qty))
-		current = flt(wo.material_transferred_for_manufacturing)
-		return current > cap + 1e-9
+		return flt(wo.qty) + (allowance / 100.0 * flt(wo.qty))
+
+	def _spr_should_skip_wo_transfer_cap_on_cancel(self) -> bool:
+		"""Skip WO cap validation when cancelling duplicate SPR entries or cleaning an over-posted WO."""
+		purpose = (self.purpose or "").strip()
+		if self._is_spr_generated_entry():
+			return True
+		wo_name = (self.work_order or "").strip()
+		if not wo_name or not frappe.db.exists("Work Order", wo_name):
+			return False
+		wo = frappe.get_doc("Work Order", wo_name)
+		if purpose == "Material Transfer for Manufacture":
+			cap = self._spr_wo_overproduction_cap(wo)
+			current = flt(wo.material_transferred_for_manufacturing)
+			return current > cap + 1e-9
+		if purpose == "Manufacture":
+			cap = self._spr_wo_overproduction_cap(wo)
+			return flt(wo.produced_qty) > cap + 1e-9
+		return False
 
 	def on_cancel(self):
 		skip_cap = self._spr_should_skip_wo_transfer_cap_on_cancel()
