@@ -3173,6 +3173,112 @@ function spr_sync_total_planned_qty_from_jobs(frm, opts) {
 	}
 }
 
+function spr_force_unfreeze_dom() {
+	try {
+		for (let i = 0; i < 6; i++) {
+			frappe.dom.unfreeze();
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		document.querySelectorAll('.freeze').forEach(function (el) {
+			el.remove();
+		});
+	} catch (e2) {
+		/* ignore */
+	}
+}
+
+function spr_stop_submit_watchdog(frm) {
+	if (!frm) {
+		return;
+	}
+	if (frm._spr_submit_watchdog) {
+		clearInterval(frm._spr_submit_watchdog);
+		frm._spr_submit_watchdog = null;
+	}
+	if (frm._spr_submit_max_timer) {
+		clearTimeout(frm._spr_submit_max_timer);
+		frm._spr_submit_max_timer = null;
+	}
+}
+
+/** When savedocs times out (502) but server already submitted, recover UI + summary. */
+function spr_try_recover_submitted_spr(frm, opts) {
+	opts = opts || {};
+	if (!frm || !frm.doc || !frm.doc.name) {
+		return;
+	}
+	const name = frm.doc.name;
+	frappe.db.get_value('Shaft Production Run', name, 'docstatus').then(function (r) {
+		const ds = cint(r && r.message && r.message.docstatus);
+		if (ds !== 1) {
+			return;
+		}
+		spr_stop_submit_watchdog(frm);
+		spr_clear_save_submit_progress(frm);
+		frm._spr_submit_in_progress = false;
+		const afterReload = function () {
+			if (!frm._spr_summary_shown) {
+				frm._spr_pending_summary = true;
+				spr_show_submit_summary_with_retries(frm, [300, 1200, 3000, 6000]);
+			}
+			if (opts.alert !== false && !frm._spr_recovery_alerted) {
+				frm._spr_recovery_alerted = true;
+				frappe.show_alert({
+					message: __('SPR submitted successfully.'),
+					indicator: 'green',
+				});
+			}
+		};
+		if (cint(frm.doc.docstatus) !== 1) {
+			const reload = frm.reload_doc();
+			if (reload && typeof reload.then === 'function') {
+				reload.then(afterReload).catch(afterReload);
+			} else {
+				afterReload();
+			}
+		} else {
+			afterReload();
+		}
+	});
+}
+
+function spr_start_submit_recovery_watchdog(frm) {
+	spr_stop_submit_watchdog(frm);
+	if (!frm || !frm.doc || !frm.doc.name) {
+		return;
+	}
+	let polls = 0;
+	frm._spr_submit_watchdog = setInterval(function () {
+		if (!frm || !frm._spr_progress_start) {
+			spr_stop_submit_watchdog(frm);
+			return;
+		}
+		polls += 1;
+		spr_try_recover_submitted_spr(frm, { alert: polls === 1 });
+		if (polls >= 48) {
+			spr_stop_submit_watchdog(frm);
+			spr_clear_save_submit_progress(frm);
+			frm._spr_submit_in_progress = false;
+			frappe.msgprint({
+				title: __('Submit timed out'),
+				indicator: 'orange',
+				message: __(
+					'The browser lost contact with the server. Refresh the page — if SPR shows Submitted, manufacturing may already be done.'
+				),
+			});
+		}
+	}, 15000);
+	frm._spr_submit_max_timer = setTimeout(function () {
+		if (!frm || !frm._spr_progress_start) {
+			return;
+		}
+		spr_try_recover_submitted_spr(frm);
+	}, 120000);
+}
+
 /** Visible progress while Save/Submit runs — updates message so operators know the system is working. */
 function spr_begin_save_submit_progress(frm, mode, rollCount) {
 	if (!frm) {
@@ -3190,6 +3296,9 @@ function spr_begin_save_submit_progress(frm, mode, rollCount) {
 				? __('Saving SPR ({0} rolls) — please wait...', [rc])
 				: __('Saving SPR...');
 	frappe.dom.freeze(firstMsg);
+	if (mode === 'submit') {
+		spr_start_submit_recovery_watchdog(frm);
+	}
 	frm._spr_progress_timer = setInterval(function () {
 		if (!frm || !frm._spr_progress_start) {
 			return;
@@ -3218,15 +3327,12 @@ function spr_begin_save_submit_progress(frm, mode, rollCount) {
 
 function spr_clear_save_submit_progress(frm, do_unfreeze) {
 	if (do_unfreeze !== false) {
-		try {
-			frappe.dom.unfreeze();
-		} catch (e) {
-			/* ignore */
-		}
+		spr_force_unfreeze_dom();
 	}
 	if (!frm) {
 		return;
 	}
+	spr_stop_submit_watchdog(frm);
 	if (frm._spr_progress_timer) {
 		clearInterval(frm._spr_progress_timer);
 		frm._spr_progress_timer = null;
@@ -3254,6 +3360,7 @@ function spr_wrap_frm_save_for_progress(frm) {
 		}
 		if (isSubmit) {
 			frm._spr_summary_shown = false;
+			frm._spr_recovery_alerted = false;
 			spr_begin_save_submit_progress(frm, 'submit', rollCount);
 			progressStarted = true;
 		} else if (rollCount > 15) {
@@ -3263,17 +3370,34 @@ function spr_wrap_frm_save_for_progress(frm) {
 		function wrappedCallback(r) {
 			finishProgress();
 			if (isSubmit) {
-				spr_handle_submit_response_summary(frm, r);
+				spr_handle_submit_response_summary(frm, r || {});
 			}
 			if (typeof callback === 'function') {
-				callback(r);
+				try {
+					callback(r);
+				} catch (cbErr) {
+					if (isSubmit) {
+						setTimeout(function () {
+							spr_try_recover_submitted_spr(frm);
+						}, 1500);
+					}
+				}
 			}
 		}
-		function wrappedOnError() {
+		function wrappedOnError(err) {
 			finishProgress();
 			frm._spr_submit_in_progress = false;
+			if (isSubmit) {
+				setTimeout(function () {
+					spr_try_recover_submitted_spr(frm);
+				}, 2000);
+			}
 			if (typeof on_error === 'function') {
-				on_error.apply(this, arguments);
+				try {
+					on_error.apply(this, arguments);
+				} catch (e) {
+					/* ignore broken error handlers */
+				}
 			}
 		}
 		const result = origSave(action, wrappedCallback, btn, wrappedOnError);
@@ -3282,13 +3406,18 @@ function spr_wrap_frm_save_for_progress(frm) {
 				.then(function (r) {
 					finishProgress();
 					if (isSubmit) {
-						spr_handle_submit_response_summary(frm, r);
+						spr_handle_submit_response_summary(frm, r || {});
 					}
 					return r;
 				})
 				.catch(function () {
 					finishProgress();
 					frm._spr_submit_in_progress = false;
+					if (isSubmit) {
+						setTimeout(function () {
+							spr_try_recover_submitted_spr(frm);
+						}, 2000);
+					}
 				});
 		}
 		return result;
@@ -3316,7 +3445,11 @@ function spr_extract_submit_summary_html(r) {
 }
 
 function spr_handle_submit_response_summary(frm, r) {
-	if (!frm || !frm.doc || cint(frm.doc.docstatus) !== 1) {
+	r = r || {};
+	if (!frm || !frm.doc) {
+		return;
+	}
+	if (cint(frm.doc.docstatus) !== 1) {
 		return;
 	}
 	const html = spr_extract_submit_summary_html(r);
@@ -3383,6 +3516,7 @@ frappe.ui.form.on('Shaft Production Run', {
 			sprEnsureBundleRowsFromPp(frm);
 		}, 120);
 		if (frm.doc && cint(frm.doc.docstatus) === 1) {
+			spr_clear_save_submit_progress(frm);
 			spr_stabilize_submitted_spr_grids_once(frm);
 		}
 	},
@@ -3510,6 +3644,10 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	refresh: function (frm) {
+		if (frm && frm._spr_progress_start && frm.doc && cint(frm.doc.docstatus) === 1) {
+			spr_clear_save_submit_progress(frm);
+			frm._spr_submit_in_progress = false;
+		}
 		const lightGridPass = spr_should_use_lightweight_grid_pass(frm);
 		// Enforce read-only UI controls dynamically since we removed them from JSON to allow backend save
 		if (!lightGridPass && spr_get_field_dict(frm, 'items')) {
@@ -3700,6 +3838,7 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	on_submit: function (frm) {
+		spr_stop_submit_watchdog(frm);
 		spr_clear_save_submit_progress(frm);
 		frm._spr_submit_in_progress = false;
 		frm._spr_just_submitted = Date.now();
