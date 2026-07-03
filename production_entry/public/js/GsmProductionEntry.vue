@@ -2650,7 +2650,7 @@ async function removeTopRow() {
     saveStatus.value = wasSaved ? "Removed from SPR" : "Row removed";
   };
 
-  if (wasSaved && sprName) || (row.is_bundle_row && row.child_roll_batches?.length) {
+  if ((wasSaved && sprName) || (row.is_bundle_row && row.child_roll_batches?.length)) {
     frappe.confirm(
       __("Remove this row from the grid and delete it from {0}?", [sprName]),
       () => {
