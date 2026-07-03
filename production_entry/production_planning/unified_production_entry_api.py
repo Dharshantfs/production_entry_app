@@ -999,9 +999,16 @@ def _gsm_pp_shaft_rows(pp) -> list[dict]:
 		meter_roll = flt(_pick_value(row, meter_keys, 0))
 		no_of_shafts = _pick_value(
 			row,
-			["no_of_shafts", "custom_no_of_shafts", "shaft_count", "number_of_shafts"],
+			["no_of_shafts", "no_of_shaft", "custom_no_of_shafts", "shaft_count", "number_of_shafts"],
 			"",
 		)
+		if not no_of_shafts and comb:
+			try:
+				seg = _count_combination_segments(comb)
+				if seg > 0:
+					no_of_shafts = seg
+			except Exception:
+				pass
 		net_weight = _pick_value(
 			row,
 			["net_weight", "net_weight_shaft_kgs", "net_weight_shaft", "custom_net_weight_shaft_kgs"],

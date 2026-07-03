@@ -185,7 +185,7 @@ frappe.run_print_logic = function (row_name, final_width_display, final_gsm, fin
             width_val: final_width_display,
             item_code: row.item_code || "",
             barcode_data: row.batch_no || "",
-            length: row.custom_produced_length_mtrs || "0",
+            length: row.custom_produced_length_mtrs || row.produced_length_mtrs || "0",
             gw: (flt(row.gross_weight) || flt(row.net_weight)).toFixed(2),
             nw: flt(row.net_weight).toFixed(2),
             batch_no: row.batch_no || "",
@@ -449,7 +449,7 @@ function scandinavian_from_so_line(line, so_doc, fallbacks) {
 
 function build_customer_4x6_data(row, base_data, callback) {
     var order_code = scandinavian_order_code(row);
-    var length_per_roll = String(row.custom_produced_length_mtrs || "").trim();
+    var length_per_roll = String(row.custom_produced_length_mtrs || row.produced_length_mtrs || "").trim();
     var width_mm_disp = scandinavian_width_mm_display(row);
     var m2_calc = compute_scandinavian_m2(row, length_per_roll);
     var fallbacks = {

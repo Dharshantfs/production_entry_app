@@ -111,7 +111,7 @@ export async function gsmOpenRmBatches(ppId) {
 }
 
 /** Print production label for a saved SPR item row (same flow as desk SPR). */
-export async function gsmPrintRollLabel(sprName, sprItemRowName) {
+export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null) {
 	if (!sprName) {
 		frappe.msgprint(__("Create SPRs first."));
 		return;
@@ -125,8 +125,19 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName) {
 	}
 	await frappe.model.with_doc("Shaft Production Run", sprName);
 	const doc = frappe.get_doc("Shaft Production Run", sprName);
-	(doc.items || []).forEach((row) => {
-		frappe.model.add_to_locals(row);
+	(doc.items || []).forEach((itemRow) => {
+		const isTarget = itemRow.name === sprItemRowName;
+		const len =
+			itemRow.custom_produced_length_mtrs ||
+			itemRow.produced_length_mtrs ||
+			(isTarget && gridRow ? gridRow.produced_length_mtrs : null);
+		if (len && !itemRow.custom_produced_length_mtrs) {
+			itemRow.custom_produced_length_mtrs = len;
+		}
+		if (len && !itemRow.produced_length_mtrs) {
+			itemRow.produced_length_mtrs = len;
+		}
+		frappe.model.add_to_locals(itemRow);
 	});
 	const frm = { doc };
 	if (typeof frappe.generate_sticker_flow === "function") {

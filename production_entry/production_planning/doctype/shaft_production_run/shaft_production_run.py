@@ -10005,6 +10005,8 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
 			row.set(dst, cint(val) if val not in (None, "") else 0)
 		elif dst == "gsm":
 			row.set(dst, cint(val))
+		elif dst == "produced_length_mtrs":
+			row.set(dst, flt(val))
 		else:
 			row.set(dst, _cstr(val))
 
@@ -10041,6 +10043,10 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
 		row.row_locked = cint(payload.get("row_locked") or 0)
 	if spi_meta.has_field("row_ready_for_print"):
 		row.row_ready_for_print = cint(payload.get("row_ready_for_print") or payload.get("row_locked") or 0)
+
+	pl_m = payload.get("produced_length_mtrs")
+	if pl_m not in (None, "") and spi_meta.has_field("custom_produced_length_mtrs"):
+		row.custom_produced_length_mtrs = flt(pl_m)
 
 
 def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> dict:

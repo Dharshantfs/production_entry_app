@@ -188,35 +188,37 @@
           <div class="gpe-tags">
             <span v-for="t in headerTags" :key="t" class="gpe-tag">{{ t }}</span>
           </div>
-          <div class="gpe-header-fields gpe-header-fields-lg">
-            <label>Run Date <input type="date" v-model="runDate" /></label>
-            <label>
-              Shift
-              <select v-model="shift">
-                <option value="Day Shift">Day Shift</option>
-                <option value="Night Shift">Night Shift</option>
-              </select>
-            </label>
-            <label>Unit <input v-model="headerUnit" type="text" readonly /></label>
-            <label>Operator <input v-model="operator" type="text" /></label>
-            <label>Supervisor <input v-model="supervisor" type="text" /></label>
-          </div>
-          <div v-if="sessionSprList.length" class="gpe-spr-table-wrap">
-            <div class="gpe-spr-table-title">Order · Label Type · SPR</div>
-            <table class="gpe-spr-table">
-              <thead>
-                <tr><th>Order Code</th><th>Label Type</th><th>SPR</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="s in sessionSprList" :key="s.pp_id">
-                  <td>{{ s.order_code }}</td>
-                  <td>{{ s.label_type || "Default" }}</td>
-                  <td>
-                    <button type="button" class="gpe-link-btn" @click="openSpr(s.spr_name)">{{ s.spr_name }}</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          <div class="gpe-header-session-row">
+            <div class="gpe-header-fields gpe-header-fields-lg">
+              <label>Run Date <input type="date" v-model="runDate" /></label>
+              <label>
+                Shift
+                <select v-model="shift">
+                  <option value="Day Shift">Day Shift</option>
+                  <option value="Night Shift">Night Shift</option>
+                </select>
+              </label>
+              <label>Unit <input v-model="headerUnit" type="text" readonly /></label>
+              <label>Operator <input v-model="operator" type="text" /></label>
+              <label>Supervisor <input v-model="supervisor" type="text" /></label>
+            </div>
+            <div v-if="sessionSprList.length" class="gpe-spr-table-wrap gpe-spr-inline">
+              <div class="gpe-spr-table-title">Order · Label Type · SPR</div>
+              <table class="gpe-spr-table">
+                <thead>
+                  <tr><th>Order Code</th><th>Label Type</th><th>SPR</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in sessionSprList" :key="s.pp_id">
+                    <td>{{ s.order_code }}</td>
+                    <td>{{ s.label_type || "Default" }}</td>
+                    <td>
+                      <button type="button" class="gpe-link-btn" @click="openSpr(s.spr_name)">{{ s.spr_name }}</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
           <div v-if="selectedSummary || selectedEntries.length" class="gpe-selection-strip gpe-selection-strip-lg">
             <div class="gpe-selection-text">
@@ -244,7 +246,8 @@
           </div>
         </div>
 
-        <div class="gpe-metrics">
+        <div class="gpe-entry-workspace">
+        <div class="gpe-metrics gpe-metrics-compact">
           <div class="gpe-metric slate">Board plan (Kg)<br /><strong>{{ formatKg(boardDayTotalKg) }}</strong></div>
           <div class="gpe-metric blue">Total Entry (Kg)<br /><strong>{{ formatKg(metrics.totalGross) }}</strong></div>
           <div class="gpe-metric green">Net Production (Kg)<br /><strong>{{ formatKg(metrics.totalNet) }}</strong></div>
@@ -276,7 +279,8 @@
               </div>
             </div>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="openShaftDetails">Shaft Details</button>
-            <button type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
+            <button v-if="!allSprsCreated" type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
+            <span v-else class="gpe-spr-ready-badge" title="All selected orders have draft SPRs">SPRs ready</span>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="submitEntry">Submit Entry</button>
           </div>
         </div>
@@ -290,18 +294,18 @@
           <span class="gpe-legend-chip gpe-gsm-incomplete">Awaiting / incomplete</span>
         </div>
 
-        <div class="gpe-grid-wrap">
-          <table class="gpe-grid">
+        <div class="gpe-grid-wrap gpe-grid-wrap-entry">
+          <table class="gpe-grid gpe-grid-entry">
             <thead>
               <tr>
-                <th>#</th>
-                <th>Order</th>
+                <th class="gpe-sticky-col gpe-sticky-0">#</th>
+                <th class="gpe-sticky-col gpe-sticky-1">Order</th>
                 <th>Quality</th>
                 <th>Color</th>
                 <th>Sticker GSM</th>
                 <th>Width</th>
-                <th>Ordered Length</th>
-                <th>Produced Length</th>
+                <th>Ordered Length (m)</th>
+                <th>Produced Length (m)</th>
                 <th>Prod GSM</th>
                 <th>Batch</th>
                 <th>Net (Kgs)</th>
@@ -320,22 +324,23 @@
                 :key="row._id"
                 :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked }]"
               >
-                <td>{{ rollLines.length - idx }}</td>
-                <td>{{ row.party_code }}</td>
+                <td class="gpe-sticky-col gpe-sticky-0">{{ rollLines.length - idx }}</td>
+                <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code }}</td>
                 <td>{{ row.quality }}</td>
                 <td>{{ row.color }}</td>
                 <td>{{ row.gsm }}</td>
                 <td>{{ row.width_inch }}</td>
                 <td>{{ row.meter_roll }}</td>
-                <td>
+                <td class="gpe-len-cell">
                   <input
                     v-model.number="row.produced_length_mtrs"
                     type="number"
                     step="0.01"
-                    class="gpe-inp"
+                    class="gpe-inp gpe-inp-len"
                     :disabled="row.row_locked"
                     @input="onRowEdit(row)"
                   />
+                  <span class="gpe-unit-suffix">m</span>
                 </td>
                 <td>{{ row.produced_gsm }}</td>
                 <td>{{ row.batch_no }}</td>
@@ -385,15 +390,16 @@
                   >Edit Row</button>
                   <button
                     type="button"
-                    class="gpe-btn sm"
-                    :disabled="!row.row_locked"
-                    :title="row.row_locked ? 'Print production label' : 'Save Row first'"
+                    class="gpe-btn sm gpe-btn-label"
+                    :disabled="!isRowLabelReady(row)"
+                    :title="isRowLabelReady(row) ? 'Print production label' : 'Save Row first'"
                     @click="printLabel(row)"
                   >Label</button>
                 </td>
               </tr>
             </tbody>
           </table>
+        </div>
         </div>
       </main>
     </div>
@@ -1194,37 +1200,58 @@ const headerTags = computed(() => {
   return tags.slice(0, 12);
 });
 
-const toolsContext = computed(() => {
-  if (!selectionLocked.value || !selectedEntries.value.length) {
-    return null;
-  }
-  const ppIds = new Set();
-  const orderCodes = new Set();
-  const planningNames = [];
+const toolsPpOptions = computed(() => {
+  const map = new Map();
   for (const entry of selectedEntries.value) {
-    ppIds.add(entry.ppId);
-    planningNames.push(entry.lineId);
-    orderCodes.add(entry.orderCode);
+    const ppId = entry.ppId;
+    if (!ppId || !sessionSprs.value[ppId]?.spr_name) {
+      continue;
+    }
+    if (!map.has(ppId)) {
+      map.set(ppId, {
+        ppId,
+        orderCode: entry.orderCode,
+        spr_name: sessionSprs.value[ppId].spr_name,
+        lineIds: [],
+      });
+    }
+    map.get(ppId).lineIds.push(entry.lineId);
   }
-  if (ppIds.size !== 1 || orderCodes.size !== 1) {
-    return null;
-  }
-  return {
-    ppId: [...ppIds][0],
-    planningNames,
-    orderCode: [...orderCodes][0],
-  };
+  return [...map.values()];
 });
 
-const toolsEnabled = computed(() => !!toolsContext.value);
+const toolsContext = computed(() => {
+  const options = toolsPpOptions.value;
+  if (!selectionLocked.value || !options.length) {
+    return null;
+  }
+  if (options.length === 1) {
+    const o = options[0];
+    return { ppId: o.ppId, planningNames: o.lineIds, orderCode: o.orderCode };
+  }
+  return { multi: true, options };
+});
+
+const allSprsCreated = computed(() => {
+  const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
+  if (!ppIds.size) {
+    return false;
+  }
+  return [...ppIds].every((id) => sessionSprs.value[id]?.spr_name);
+});
+
+const toolsEnabled = computed(() => !!toolsPpOptions.value.length && selectionLocked.value);
 const toolsHint = computed(() => {
   if (!selectionLocked.value) {
-    return "Confirm & lock lines from one order first";
+    return "Confirm & lock lines first";
   }
-  if (!toolsContext.value) {
-    return "Lock lines from a single order / PP only";
+  if (!toolsPpOptions.value.length) {
+    return "Create SPRs first, then use Tools";
   }
-  return "SPR tools — opens existing SPR from Production Table (does not create SPR)";
+  if (toolsPpOptions.value.length > 1) {
+    return "Tools — pick which order/SPR to open";
+  }
+  return "SPR tools for this order";
 });
 
 const primaryGsmLabel = computed(() => {
@@ -1384,7 +1411,13 @@ const canAddRow = computed(
 const sessionSprList = computed(() => Object.values(sessionSprs.value || {}));
 
 const canCreateSprs = computed(
-  () => selectionLocked.value && selectedEntries.value.length > 0 && headerUnit.value && runDate.value && shift.value
+  () =>
+    !allSprsCreated.value &&
+    selectionLocked.value &&
+    selectedEntries.value.length > 0 &&
+    headerUnit.value &&
+    runDate.value &&
+    shift.value
 );
 
 const canSubmitEntry = computed(
@@ -1534,9 +1567,46 @@ function closeToolsMenu() {
   toolsMenuOpen.value = false;
 }
 
+function pickToolOrder(options) {
+  return new Promise((resolve) => {
+    frappe.prompt(
+      [
+        {
+          fieldtype: "Select",
+          fieldname: "pp_id",
+          label: __("Order / SPR"),
+          options: options.map((o) => ({ value: o.ppId, label: `${o.orderCode} · ${o.spr_name}` })),
+          reqd: 1,
+        },
+      ],
+      (values) => {
+        const chosen = options.find((o) => o.ppId === values.pp_id);
+        resolve(chosen || options[0]);
+      },
+      __("Choose order for SPR Tools"),
+      __("Open")
+    );
+  });
+}
+
+async function resolveToolContext() {
+  const ctx = toolsContext.value;
+  if (!ctx) {
+    return null;
+  }
+  if (!ctx.multi) {
+    return ctx;
+  }
+  const chosen = await pickToolOrder(ctx.options);
+  if (!chosen) {
+    return null;
+  }
+  return { ppId: chosen.ppId, planningNames: chosen.lineIds, orderCode: chosen.orderCode };
+}
+
 async function runTool(kind) {
   closeToolsMenu();
-  const ctx = toolsContext.value;
+  const ctx = await resolveToolContext();
   if (!ctx) {
     return;
   }
@@ -1842,14 +1912,50 @@ function editRow(row) {
   scheduleAutosave();
 }
 
+function isRowLabelReady(row) {
+  return !!(row.row_locked || row.row_ready_for_print || row.spr_item_name);
+}
+
+async function resolveSprItemRowName(row) {
+  if (row.spr_item_name) {
+    return row.spr_item_name;
+  }
+  const sprName = sprNameForPp(row.pp_id);
+  if (!sprName || !row.batch_no) {
+    return "";
+  }
+  try {
+    const res = await frappe.db.get_list("Shaft Production Run Item", {
+      filters: { parent: sprName, batch_no: row.batch_no },
+      fields: ["name"],
+      limit: 1,
+    });
+    const name = res?.[0]?.name || "";
+    if (name) {
+      row.spr_item_name = name;
+      row.row_locked = 1;
+      row.row_ready_for_print = 1;
+      scheduleAutosave();
+    }
+    return name;
+  } catch (e) {
+    return "";
+  }
+}
+
 async function printLabel(row) {
-  if (!row.row_locked) {
+  if (!isRowLabelReady(row)) {
     frappe.msgprint(__("Save Row first to enable the label."));
     return;
   }
   const sprName = sprNameForPp(row.pp_id);
+  let itemName = row.spr_item_name || (await resolveSprItemRowName(row));
+  if (!itemName) {
+    frappe.msgprint(__("Save Row first to enable the label."));
+    return;
+  }
   try {
-    await gsmPrintRollLabel(sprName, row.spr_item_name);
+    await gsmPrintRollLabel(sprName, itemName, row);
   } catch (e) {
     console.error(e);
     frappe.msgprint(__("Could not open label print."));
@@ -2449,7 +2555,11 @@ function restoreDraft() {
       selectedEntries.value = [];
     }
     selectionLocked.value = !!d.selectionLocked;
-    rollLines.value = d.rollLines || [];
+    rollLines.value = (d.rollLines || []).map((r) => ({
+      ...r,
+      row_locked: !!r.row_locked,
+      row_ready_for_print: !!r.row_ready_for_print,
+    }));
     const ctxKey = currentBatchContextKey();
     if (d.batchContextKey && d.batchContextKey === ctxKey) {
       seriesPrefix.value = d.seriesPrefix || "";
@@ -2583,7 +2693,7 @@ onUnmounted(() => {
 }
 .gpe-layout {
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: 12px;
   align-items: start;
 }
@@ -3032,7 +3142,49 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .gpe-main {
-  padding: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 200px);
+}
+.gpe-entry-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.gpe-header-session-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 16px;
+  margin-top: 6px;
+}
+.gpe-spr-inline {
+  flex: 1 1 320px;
+  min-width: 280px;
+  margin-top: 0 !important;
+}
+.gpe-spr-ready-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid #86efac;
+}
+.gpe-metrics-compact {
+  margin: 6px 0 !important;
+}
+.gpe-metrics-compact .gpe-metric {
+  padding: 8px;
+  font-size: 12px;
+}
+.gpe-metrics-compact .gpe-metric strong {
+  font-size: 18px;
 }
 .gpe-header-fields {
   display: flex;
@@ -3192,6 +3344,70 @@ onUnmounted(() => {
 .gpe-tools-menu button:hover {
   background: #f8fafc;
 }
+.gpe-grid-wrap-entry {
+  overflow: auto;
+  flex: 1;
+  min-height: 280px;
+  max-height: calc(100vh - 300px);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: inset -8px 0 12px -8px rgba(15, 23, 42, 0.12);
+}
+.gpe-grid-entry {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+.gpe-grid-entry th,
+.gpe-grid-entry td {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 10px 12px;
+  white-space: nowrap;
+}
+.gpe-grid-entry th {
+  background: #f8fafc;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  font-size: 13px;
+  font-weight: 700;
+}
+.gpe-sticky-col {
+  position: sticky;
+  z-index: 3;
+  background: inherit;
+}
+.gpe-sticky-0 {
+  left: 0;
+  min-width: 36px;
+}
+.gpe-sticky-1 {
+  left: 36px;
+  min-width: 88px;
+  box-shadow: 2px 0 4px -2px rgba(15, 23, 42, 0.08);
+}
+.gpe-grid-entry thead .gpe-sticky-col {
+  background: #f8fafc;
+  z-index: 4;
+}
+.gpe-len-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.gpe-inp-len {
+  width: 72px;
+}
+.gpe-unit-suffix {
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+}
+.gpe-btn-label {
+  font-size: 13px;
+  padding: 6px 10px;
+}
 .gpe-grid-wrap {
   overflow: auto;
   max-height: 420px;
@@ -3223,11 +3439,19 @@ onUnmounted(() => {
 }
 .gpe-inp {
   width: 88px;
-  min-height: 36px;
+  min-height: 42px;
   padding: 8px 10px;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 16px;
+}
+.gpe-grid-entry .gpe-inp {
+  min-height: 42px;
+  font-size: 16px;
+}
+.gpe-grid-entry .gpe-btn.sm {
+  font-size: 13px;
+  padding: 8px 12px;
 }
 .gpe-inp:disabled {
   background: #f1f5f9;
@@ -3240,7 +3464,7 @@ onUnmounted(() => {
 .gpe-wo-link {
   color: #4f46e5;
   text-decoration: none;
-  font-size: 11px;
+  font-size: 14px;
 }
 .gpe-gsm-band-0 { background: #6ee7b7 !important; color: #064e3b; }
 .gpe-gsm-band-1 { background: #fde047 !important; color: #713f12; }
