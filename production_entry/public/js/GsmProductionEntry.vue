@@ -50,6 +50,15 @@
       <aside class="gpe-sidebar gpe-card">
         <h3>Orders &amp; GSM</h3>
         <p class="gpe-hint">PP-submitted lines. Confirm selection, then add roll rows.</p>
+        <div v-if="selectionLocked && selectedEntries.length" class="gpe-session-panel">
+          <div class="gpe-session-panel-head">Locked session · {{ selectedEntries.length }} line(s)</div>
+          <div v-for="e in selectedEntries" :key="e.key" class="gpe-session-entry">
+            <span class="gpe-session-date">{{ formatPlannedDate(e.plannedDate) }}</span>
+            <strong>{{ e.orderCode }}</strong>
+            <span>{{ e.gsm }} GSM · {{ e.widthLabel }}</span>
+          </div>
+          <p class="gpe-session-hint">Change planned date above to add more lines — session stays locked.</p>
+        </div>
         <div v-if="loadingOrders" class="gpe-muted">Loading…</div>
         <div v-else-if="!orderGroups.length" class="gpe-muted">
           No PP-submitted orders for this date/unit.
@@ -75,9 +84,9 @@
             <input
               type="checkbox"
               class="gpe-line-check"
-              :checked="selectedLineIds.has(line.id)"
-              :disabled="!line.selectable || selectionLocked"
-              @change="toggleLine(line.id, $event)"
+              :checked="isEntrySelected(line)"
+              :disabled="!line.selectable || (selectionLocked && isEntrySelected(line))"
+              @change="toggleLine(line, $event)"
             />
             <div class="gpe-line-body" @click.prevent="onLineLabelClick(line)">
               <div class="gpe-line-meta">
@@ -174,11 +183,12 @@
       </aside>
 
       <main class="gpe-main gpe-card">
-        <div class="gpe-header gpe-card-inner">
+        <div class="gpe-header gpe-session-panel-main gpe-card-inner">
+          <h3 class="gpe-session-title">Production Session</h3>
           <div class="gpe-tags">
             <span v-for="t in headerTags" :key="t" class="gpe-tag">{{ t }}</span>
           </div>
-          <div class="gpe-header-fields">
+          <div class="gpe-header-fields gpe-header-fields-lg">
             <label>Run Date <input type="date" v-model="runDate" /></label>
             <label>
               Shift
@@ -192,6 +202,7 @@
             <label>Supervisor <input v-model="supervisor" type="text" /></label>
           </div>
           <div v-if="sessionSprList.length" class="gpe-spr-table-wrap">
+            <div class="gpe-spr-table-title">Order · Label Type · SPR</div>
             <table class="gpe-spr-table">
               <thead>
                 <tr><th>Order Code</th><th>Label Type</th><th>SPR</th></tr>
@@ -207,10 +218,10 @@
               </tbody>
             </table>
           </div>
-          <div v-if="selectedSummary || selectedLineIds.size" class="gpe-selection-strip">
+          <div v-if="selectedSummary || selectedEntries.length" class="gpe-selection-strip gpe-selection-strip-lg">
             <div class="gpe-selection-text">
               <strong>{{ selectedSummary?.count || 0 }}</strong> line(s) ·
-              Day plan <strong>{{ formatKg(selectedSummary?.dayPlanned || 0) }}</strong> Kg ·
+              Session plan <strong>{{ formatKg(selectedSummary?.dayPlanned || 0) }}</strong> Kg ·
               Session rem <strong>{{ formatKg(metrics.dayRemaining) }}</strong> Kg
               <span v-if="selectionLocked" class="gpe-lock-badge inline">Locked</span>
             </div>
@@ -218,14 +229,14 @@
               <button
                 v-if="!selectionLocked"
                 type="button"
-                class="gpe-btn primary sm"
-                :disabled="!selectedLineIds.size"
+                class="gpe-btn primary"
+                :disabled="!selectedEntries.length"
                 @click="openConfirmSelection"
               >Confirm selection</button>
               <button
                 v-else
                 type="button"
-                class="gpe-btn sm"
+                class="gpe-btn"
                 @click="unlockSelection"
               >Unlock</button>
               <button type="button" class="gpe-link-btn" @click="clearSelection">Clear</button>
@@ -264,6 +275,7 @@
                 <button type="button" @click="runTool('rmbatches')">SPR — Select RM batches</button>
               </div>
             </div>
+            <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="openShaftDetails">Shaft Details</button>
             <button type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="submitEntry">Submit Entry</button>
           </div>
@@ -288,13 +300,13 @@
                 <th>Color</th>
                 <th>Sticker GSM</th>
                 <th>Width</th>
-                <th>Ord Len</th>
-                <th>Prod Len</th>
+                <th>Ordered Length</th>
+                <th>Produced Length</th>
                 <th>Prod GSM</th>
                 <th>Batch</th>
-                <th>Net</th>
-                <th>Gross</th>
-                <th>Planned Qty</th>
+                <th>Net (Kgs)</th>
+                <th>Gross (Kgs)</th>
+                <th>Planned Qty (Kgs)</th>
                 <th>UOM</th>
                 <th>WO</th>
                 <th>Core mm</th>
@@ -574,13 +586,13 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="line in confirmLines" :key="line.id">
+            <tr v-for="line in confirmLines" :key="line.key">
               <td>{{ line.orderCode }}</td>
               <td>{{ line.quality }}</td>
               <td>{{ line.color }}</td>
               <td>{{ line.gsm }}</td>
               <td>{{ line.widthLabel }}</td>
-              <td>{{ filterDate }}</td>
+              <td>{{ formatPlannedDate(line.plannedDate) }}</td>
             </tr>
           </tbody>
         </table>
@@ -646,6 +658,41 @@
         </div>
       </div>
     </div>
+    <!-- Shaft details dialog -->
+    <div v-if="showShaftDetailsDialog" class="gpe-dialog-overlay" @click.self="showShaftDetailsDialog = false">
+      <div class="gpe-dialog gpe-dialog-wide gpe-card">
+        <h3>Shaft Details</h3>
+        <p v-if="shaftDetailsLoading" class="gpe-muted">Loading…</p>
+        <div v-for="block in shaftDetailsBlocks" :key="block.pp_id" class="gpe-shaft-block">
+          <div class="gpe-shaft-block-head">
+            <strong>{{ block.order_code || block.pp_id }}</strong>
+            <span v-if="block.label_type">· {{ block.label_type }}</span>
+          </div>
+          <table v-if="block.shaft_rows?.length" class="gpe-grid gpe-shaft-grid">
+            <thead>
+              <tr>
+                <th>Job</th><th>No of Shafts</th><th>GSM</th><th>Combination</th><th>Total Width</th><th>Meter/Roll</th><th>Net Weight</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, ri) in block.shaft_rows" :key="ri">
+                <td>{{ row.job }}</td>
+                <td>{{ row.no_of_shafts }}</td>
+                <td>{{ row.gsm }}</td>
+                <td>{{ row.combination }}</td>
+                <td>{{ row.total_width }}</td>
+                <td>{{ row.meter_roll }}</td>
+                <td>{{ formatKg(row.net_weight) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="gpe-muted">{{ block.message || "No shaft rows on this PP." }}</p>
+        </div>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn primary" @click="showShaftDetailsDialog = false">Close</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -694,7 +741,7 @@ const operator = ref("");
 const supervisor = ref("");
 
 const rollLines = ref([]);
-const selectedLineIds = ref(new Set());
+const selectedEntries = ref([]);
 const selectionLocked = ref(false);
 const showCompletedOrders = ref(false);
 const showConfirmDialog = ref(false);
@@ -736,7 +783,96 @@ const shiftLoading = ref(false);
 const selectedShiftEntry = ref(null);
 const coreWidthOptions = ref([]);
 
+const showShaftDetailsDialog = ref(false);
+const shaftDetailsLoading = ref(false);
+const shaftDetailsBlocks = ref([]);
+
 let autosaveTimer = null;
+
+function entryKey(plannedDate, lineId) {
+  return `${plannedDate}::${lineId}`;
+}
+
+function linePlannedDate(item) {
+  return String(item?.plannedDate || item?.planned_date || filterDate.value || "").slice(0, 10);
+}
+
+function formatPlannedDate(d) {
+  if (!d) {
+    return "—";
+  }
+  const parts = String(d).slice(0, 10).split("-");
+  if (parts.length === 3) {
+    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  }
+  return d;
+}
+
+function snapshotFromLine(line) {
+  const src = line.source || {};
+  const plannedDate = line.plannedDate || linePlannedDate(src);
+  return {
+    key: entryKey(plannedDate, line.id),
+    lineId: line.id,
+    plannedDate,
+    ppId: line.ppId || src.pp_id,
+    orderCode: line.orderCode,
+    partyName: line.partyName,
+    quality: line.quality,
+    color: line.color,
+    gsm: line.gsm,
+    width_inch: line.width_inch,
+    widthLabel: line.widthLabel,
+    dayTargetKg: line.dayTargetKg,
+    sourceSnapshot: {
+      pp_id: line.ppId || src.pp_id,
+      item_code: src.itemCode || src.item_code,
+      itemCode: src.itemCode || src.item_code,
+      item_name: src.description || src.item_name,
+      description: src.description || src.item_name,
+      uom: src.uom || src.stock_uom,
+      stock_uom: src.stock_uom,
+      qty: src.qty,
+      actual_production_weight_kgs: src.actual_production_weight_kgs,
+      gsm: line.gsm,
+    },
+  };
+}
+
+function entryToRollLine(entry) {
+  const live = lineById.value.get(entry.lineId);
+  if (live) {
+    const livePd = live.plannedDate || linePlannedDate(live.source || {});
+    if (livePd === entry.plannedDate) {
+      return { ...live, ppId: entry.ppId || live.ppId, plannedDate: entry.plannedDate, source: live.source };
+    }
+  }
+  const src = entry.sourceSnapshot || {};
+  return {
+    id: entry.lineId,
+    ppId: entry.ppId,
+    orderCode: entry.orderCode,
+    partyName: entry.partyName,
+    quality: entry.quality,
+    color: entry.color,
+    gsm: entry.gsm,
+    width_inch: entry.width_inch,
+    widthLabel: entry.widthLabel,
+    dayTargetKg: entry.dayTargetKg,
+    plannedDate: entry.plannedDate,
+    source: src,
+    selectable: true,
+  };
+}
+
+const selectedEntryKeys = computed(() => new Set(selectedEntries.value.map((e) => e.key)));
+
+const entryLinesForSession = computed(() => selectedEntries.value.map((e) => entryToRollLine(e)));
+
+function isEntrySelected(line) {
+  const pd = line.plannedDate || linePlannedDate(line.source || {});
+  return selectedEntryKeys.value.has(entryKey(pd, line.id));
+}
 
 const vClickOutside = {
   mounted(el, binding) {
@@ -942,6 +1078,7 @@ function buildLineFromItem(item) {
     dayRemKg: Math.max(0, dayTarget - achieved),
     remainingKg: itemRemainingKg(item),
     mergeBadge: mergeBadgeByItemId.value[id] || "",
+    plannedDate: linePlannedDate(item),
     orderCode: item.partyCode || item.party_code || "",
     partyName: item.customer_name || item.customer || "",
     ppId: item.pp_id,
@@ -1036,52 +1173,37 @@ const lineById = computed(() => {
 });
 
 const selectedSummary = computed(() => {
-  if (!selectedLineIds.value.size) {
+  if (!selectedEntries.value.length) {
     return null;
   }
   let dayPlanned = 0;
-  let count = 0;
-  selectedLineIds.value.forEach((id) => {
-    const line = lineById.value.get(id);
-    if (!line) {
-      return;
-    }
-    dayPlanned += sprFlt(line.dayTargetKg);
-    count += 1;
-  });
-  return { count, dayPlanned };
+  for (const entry of selectedEntries.value) {
+    dayPlanned += sprFlt(entry.dayTargetKg);
+  }
+  return { count: selectedEntries.value.length, dayPlanned };
 });
 
-const confirmLines = computed(() =>
-  [...selectedLineIds.value].map((id) => lineById.value.get(id)).filter(Boolean)
-);
+const confirmLines = computed(() => selectedEntries.value);
 
 const headerTags = computed(() => {
   const tags = [];
-  selectedLineIds.value.forEach((id) => {
-    const line = lineById.value.get(id);
-    if (line) {
-      tags.push(`${line.orderCode} / ${line.gsm} GSM`);
-    }
+  selectedEntries.value.forEach((entry) => {
+    tags.push(`${entry.orderCode} / ${entry.gsm} GSM · ${formatPlannedDate(entry.plannedDate)}`);
   });
-  return tags.slice(0, 8);
+  return tags.slice(0, 12);
 });
 
 const toolsContext = computed(() => {
-  if (!selectionLocked.value || !selectedLineIds.value.size) {
+  if (!selectionLocked.value || !selectedEntries.value.length) {
     return null;
   }
   const ppIds = new Set();
   const orderCodes = new Set();
   const planningNames = [];
-  for (const id of selectedLineIds.value) {
-    const line = lineById.value.get(id);
-    if (!line) {
-      continue;
-    }
-    ppIds.add(line.ppId);
-    planningNames.push(id);
-    orderCodes.add(line.orderCode);
+  for (const entry of selectedEntries.value) {
+    ppIds.add(entry.ppId);
+    planningNames.push(entry.lineId);
+    orderCodes.add(entry.orderCode);
   }
   if (ppIds.size !== 1 || orderCodes.size !== 1) {
     return null;
@@ -1136,11 +1258,8 @@ const metrics = computed(() => {
     totalNet += sprFlt(r.net_weight);
   });
   let dayPlanned = 0;
-  selectedLineIds.value.forEach((id) => {
-    const line = lineById.value.get(id);
-    if (line) {
-      dayPlanned += sprFlt(line.dayTargetKg);
-    }
+  selectedEntries.value.forEach((entry) => {
+    dayPlanned += sprFlt(entry.dayTargetKg);
   });
   rollLines.value.forEach((r) => {
     dayPlanned -= sprFlt(r.net_weight);
@@ -1159,14 +1278,10 @@ const linkedOrderSummary = computed(() => {
       byOrder.get(orderCode).partyName = partyName;
     }
   };
-  selectedLineIds.value.forEach((id) => {
-    const line = lineById.value.get(id);
-    if (!line) {
-      return;
-    }
-    const src = line.source;
-    addReq(line.orderCode, line.partyName, sprFlt(src.qty));
-    byOrder.get(line.orderCode).achieved += sprFlt(src.actual_production_weight_kgs);
+  selectedEntries.value.forEach((entry) => {
+    const src = entry.sourceSnapshot || {};
+    addReq(entry.orderCode, entry.partyName, sprFlt(src.qty));
+    byOrder.get(entry.orderCode).achieved += sprFlt(src.actual_production_weight_kgs);
   });
   rollLines.value.forEach((r) => {
     const k = r.party_code;
@@ -1211,16 +1326,12 @@ const batchSummary = computed(() => {
 
 const gsmSummary = computed(() => {
   const m = new Map();
-  selectedLineIds.value.forEach((id) => {
-    const line = lineById.value.get(id);
-    if (!line) {
-      return;
-    }
-    const g = String(line.gsm);
+  selectedEntries.value.forEach((entry) => {
+    const g = String(entry.gsm);
     if (!m.has(g)) {
       m.set(g, { gsm: g, required: 0, session: 0, achieved: 0 });
     }
-    const src = line.source;
+    const src = entry.sourceSnapshot || {};
     m.get(g).required += sprFlt(src.qty);
     m.get(g).achieved += sprFlt(src.actual_production_weight_kgs);
   });
@@ -1239,34 +1350,30 @@ const gsmSummary = computed(() => {
   });
 });
 
-const selectedLinesDetail = computed(() => {
-  const out = [];
-  selectedLineIds.value.forEach((id) => {
-    const line = lineById.value.get(id);
-    if (!line) {
-      return;
-    }
+const selectedLinesDetail = computed(() =>
+  selectedEntries.value.map((entry) => {
     const sessionKg = rollLines.value
-      .filter((r) => r.planning_table_row === id)
+      .filter((r) => r.planning_table_row === entry.lineId)
       .reduce((s, r) => s + sprFlt(r.net_weight), 0);
-    out.push({
-      id,
-      orderCode: line.orderCode,
-      partyName: line.partyName,
-      gsm: line.gsm,
-      width_inch: line.width_inch,
-      requiredKg: sprFlt(line.source.qty),
+    const src = entry.sourceSnapshot || {};
+    return {
+      id: entry.lineId,
+      orderCode: entry.orderCode,
+      partyName: entry.partyName,
+      gsm: entry.gsm,
+      width_inch: entry.width_inch,
+      plannedDate: entry.plannedDate,
+      requiredKg: sprFlt(src.qty),
       sessionKg,
-      achievedKg: sprFlt(line.source.actual_production_weight_kgs),
-    });
-  });
-  return out;
-});
+      achievedKg: sprFlt(src.actual_production_weight_kgs),
+    };
+  })
+);
 
 const canAddRow = computed(
   () =>
     selectionLocked.value &&
-    selectedLineIds.value.size > 0 &&
+    selectedEntries.value.length > 0 &&
     headerUnit.value &&
     runDate.value &&
     shift.value &&
@@ -1276,7 +1383,7 @@ const canAddRow = computed(
 const sessionSprList = computed(() => Object.values(sessionSprs.value || {}));
 
 const canCreateSprs = computed(
-  () => selectionLocked.value && selectedLineIds.value.size > 0 && headerUnit.value && runDate.value && shift.value
+  () => selectionLocked.value && selectedEntries.value.length > 0 && headerUnit.value && runDate.value && shift.value
 );
 
 const canSubmitEntry = computed(
@@ -1300,70 +1407,65 @@ const toleranceFormComplete = computed(() => {
 
 function lineRowClass(line) {
   return {
-    selected: selectedLineIds.value.has(line.id),
+    selected: isEntrySelected(line),
     "gpe-line-disabled": !line.selectable,
   };
 }
 
-function pruneInvalidSelection() {
-  const valid = new Set();
-  ppSubmittedRows.value.forEach((item) => {
-    valid.add(item.itemName || item.name);
-  });
-  let changed = false;
-  const next = new Set();
-  selectedLineIds.value.forEach((id) => {
-    if (valid.has(id)) {
-      next.add(id);
-    } else {
-      changed = true;
-    }
-  });
-  if (!changed) {
-    return;
-  }
-  selectedLineIds.value = next;
-  if (!next.size) {
-    selectionLocked.value = false;
-  }
-  scheduleAutosave();
-}
-
-function toggleLine(id, ev) {
-  if (selectionLocked.value) {
-    return;
-  }
-  const line = lineById.value.get(id);
+function toggleLine(line, ev) {
   if (!line?.selectable && ev.target.checked) {
     ev.target.checked = false;
     return;
   }
-  const next = new Set(selectedLineIds.value);
-  if (ev.target.checked) {
-    next.add(id);
-  } else {
-    next.delete(id);
+  const snap = snapshotFromLine(line);
+  const checked = ev.target.checked;
+
+  if (selectionLocked.value) {
+    if (!checked) {
+      ev.target.checked = true;
+      return;
+    }
+    if (!selectedEntryKeys.value.has(snap.key)) {
+      selectedEntries.value = [...selectedEntries.value, snap];
+      scheduleAutosave();
+    }
+    return;
   }
-  selectedLineIds.value = next;
+
+  const next = selectedEntries.value.filter((e) => e.key !== snap.key);
+  if (checked) {
+    next.push(snap);
+  }
+  selectedEntries.value = next;
   scheduleAutosave();
 }
 
 function onLineLabelClick(line) {
-  if (selectionLocked.value || !line.selectable) {
+  if (!line.selectable) {
     return;
   }
-  const next = new Set(selectedLineIds.value);
-  if (next.has(line.id)) {
-    next.delete(line.id);
-  } else {
-    next.add(line.id);
+  if (selectionLocked.value) {
+    if (isEntrySelected(line)) {
+      return;
+    }
+    const snap = snapshotFromLine(line);
+    if (!selectedEntryKeys.value.has(snap.key)) {
+      selectedEntries.value = [...selectedEntries.value, snap];
+      scheduleAutosave();
+    }
+    return;
   }
-  selectedLineIds.value = next;
+  const snap = snapshotFromLine(line);
+  const next = selectedEntries.value.filter((e) => e.key !== snap.key);
+  if (!isEntrySelected(line)) {
+    next.push(snap);
+  }
+  selectedEntries.value = next;
   scheduleAutosave();
 }
 
 function openConfirmSelection() {
-  if (!selectedLineIds.value.size) {
+  if (!selectedEntries.value.length) {
     return;
   }
   showConfirmDialog.value = true;
@@ -1392,8 +1494,31 @@ function clearSelection() {
     frappe.msgprint("Unlock selection first.");
     return;
   }
-  selectedLineIds.value = new Set();
+  selectedEntries.value = [];
   scheduleAutosave();
+}
+
+async function openShaftDetails() {
+  const ppIds = [...new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean))];
+  if (!ppIds.length) {
+    frappe.msgprint(__("Select orders first."));
+    return;
+  }
+  showShaftDetailsDialog.value = true;
+  shaftDetailsLoading.value = true;
+  shaftDetailsBlocks.value = [];
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_pp_shaft_details",
+      args: { pp_ids: JSON.stringify(ppIds) },
+    });
+    shaftDetailsBlocks.value = (res.message || []).filter((b) => b.status === "ok");
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint(__("Could not load shaft details."));
+  } finally {
+    shaftDetailsLoading.value = false;
+  }
 }
 
 function openShiftTab() {
@@ -1460,24 +1585,16 @@ function onRowEdit(row) {
 }
 
 function buildSessionEntries() {
-  const entries = [];
-  for (const id of selectedLineIds.value) {
-    const line = lineById.value.get(id);
-    if (!line) {
-      continue;
-    }
-    entries.push({
-      pp_id: line.ppId,
-      lineId: line.id,
-      orderCode: line.orderCode,
-      quality: line.quality,
-      color: line.color,
-      gsm: line.gsm,
-      width_inch: line.width_inch,
-      plannedDate: filterDate.value,
-    });
-  }
-  return entries;
+  return selectedEntries.value.map((entry) => ({
+    pp_id: entry.ppId,
+    lineId: entry.lineId,
+    orderCode: entry.orderCode,
+    quality: entry.quality,
+    color: entry.color,
+    gsm: entry.gsm,
+    width_inch: entry.width_inch,
+    plannedDate: entry.plannedDate,
+  }));
 }
 
 function sprNameForPp(ppId) {
@@ -1826,6 +1943,29 @@ async function loadQuotaForLines() {
   quotaByLineId.value = cache;
 }
 
+function enrichSelectedEntriesFromBoard() {
+  if (!selectedEntries.value.length) {
+    return;
+  }
+  let changed = false;
+  const next = selectedEntries.value.map((entry) => {
+    const live = lineById.value.get(entry.lineId);
+    if (!live) {
+      return entry;
+    }
+    const livePd = live.plannedDate || linePlannedDate(live.source || {});
+    if (entry.ppId && entry.orderCode && entry.plannedDate === livePd) {
+      return entry;
+    }
+    changed = true;
+    return snapshotFromLine({ ...live, plannedDate: entry.plannedDate || livePd });
+  });
+  if (changed) {
+    selectedEntries.value = next;
+    scheduleAutosave();
+  }
+}
+
 async function fetchOrders() {
   loadingOrders.value = true;
   try {
@@ -1846,7 +1986,7 @@ async function fetchOrders() {
       headerUnit.value = filterUnit.value;
     }
     await Promise.all([fetchMerges(), loadQuotaForLines()]);
-    pruneInvalidSelection();
+    enrichSelectedEntriesFromBoard();
   } catch (e) {
     console.error(e);
     frappe.msgprint("Failed to load orders");
@@ -2027,7 +2167,7 @@ async function loadCoreWidthOptions() {
 }
 
 function pickLineForRow() {
-  const lines = [...selectedLineIds.value].map((id) => lineById.value.get(id)).filter(Boolean);
+  const lines = entryLinesForSession.value;
   if (lines.length <= 1) {
     return Promise.resolve(lines[0] || null);
   }
@@ -2204,7 +2344,7 @@ function persistDraft() {
       supervisor: supervisor.value,
       filterUnit: filterUnit.value,
       filterDate: filterDate.value,
-      selectedLineIds: [...selectedLineIds.value],
+      selectedEntries: selectedEntries.value,
       selectionLocked: selectionLocked.value,
       rollLines: rollLines.value,
       seriesPrefix: seriesPrefix.value,
@@ -2247,7 +2387,27 @@ function restoreDraft() {
     if (d.filterDate) {
       filterDate.value = d.filterDate;
     }
-    selectedLineIds.value = new Set(d.selectedLineIds || []);
+    if (d.selectedEntries?.length) {
+      selectedEntries.value = d.selectedEntries;
+    } else if (d.selectedLineIds?.length) {
+      const pd = d.filterDate || filterDate.value;
+      selectedEntries.value = d.selectedLineIds.map((id) => ({
+        key: entryKey(pd, id),
+        lineId: id,
+        plannedDate: pd,
+        ppId: "",
+        orderCode: "",
+        quality: "",
+        color: "",
+        gsm: 0,
+        width_inch: 0,
+        widthLabel: "",
+        dayTargetKg: 0,
+        sourceSnapshot: {},
+      }));
+    } else {
+      selectedEntries.value = [];
+    }
     selectionLocked.value = !!d.selectionLocked;
     rollLines.value = d.rollLines || [];
     const ctxKey = currentBatchContextKey();
@@ -2400,6 +2560,44 @@ onUnmounted(() => {
 .gpe-sidebar h3 {
   margin: 0 0 8px;
   font-size: 15px;
+}
+.gpe-session-panel {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+  font-size: 12px;
+}
+.gpe-session-panel-head {
+  font-weight: 700;
+  color: #3730a3;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.gpe-session-entry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #e0e7ff;
+  align-items: center;
+}
+.gpe-session-entry:last-of-type {
+  border-bottom: none;
+}
+.gpe-session-date {
+  background: #dbeafe;
+  color: #1e40af;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 11px;
+}
+.gpe-session-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #64748b;
 }
 .gpe-hint {
   font-size: 11px;
@@ -2603,14 +2801,74 @@ onUnmounted(() => {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-top: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px 16px;
   background: #eef2ff;
   border: 1px solid #c7d2fe;
-  border-radius: 10px;
+  border-radius: 12px;
+}
+.gpe-selection-strip-lg {
+  padding: 16px 18px;
 }
 .gpe-selection-text {
+  font-size: 15px;
+  line-height: 1.5;
+}
+.gpe-session-title {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1e293b;
+}
+.gpe-session-panel-main {
+  padding: 16px 18px !important;
+}
+.gpe-header-fields-lg label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.gpe-header-fields-lg input,
+.gpe-header-fields-lg select {
+  min-height: 36px;
+  font-size: 14px;
+  padding: 8px 10px;
+}
+.gpe-spr-table-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 6px;
+}
+.gpe-spr-table-wrap {
+  margin-top: 12px;
+  overflow-x: auto;
+}
+.gpe-spr-table {
+  width: 100%;
+  max-width: 640px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.gpe-spr-table th,
+.gpe-spr-table td {
+  border: 1px solid #e2e8f0;
+  padding: 10px 14px;
+  text-align: left;
+}
+.gpe-spr-table th {
+  background: #f8fafc;
+  font-weight: 600;
+  color: #475569;
+}
+.gpe-shaft-block {
+  margin-bottom: 16px;
+}
+.gpe-shaft-block-head {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.gpe-shaft-grid {
   font-size: 13px;
 }
 .gpe-lock-badge.inline {
@@ -2642,8 +2900,8 @@ onUnmounted(() => {
   margin-right: 8px;
 }
 .gpe-inp-wide {
-  width: 140px;
-  max-width: 160px;
+  width: 160px;
+  max-width: 180px;
 }
 .gpe-order-group {
   margin-top: 8px;
@@ -2924,10 +3182,12 @@ onUnmounted(() => {
   background: #f0fdf4 !important;
 }
 .gpe-inp {
-  width: 72px;
-  padding: 3px 5px;
+  width: 88px;
+  min-height: 36px;
+  padding: 8px 10px;
   border: 1px solid #cbd5e1;
-  border-radius: 6px;
+  border-radius: 8px;
+  font-size: 14px;
 }
 .gpe-inp:disabled {
   background: #f1f5f9;
