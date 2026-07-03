@@ -1,7 +1,7 @@
 <template>
   <div class="gpe-root">
     <div class="gpe-info-strip">
-      Phase 1 — entries save locally. Submit Entry and label print connect in Phase 2.
+      Create SPRs for selected orders, enter rolls, Save Row saves to server. Submit Entry pushes to SPR and submits.
     </div>
 
     <div class="gpe-page-tabs">
@@ -191,6 +191,13 @@
             <label>Operator <input v-model="operator" type="text" /></label>
             <label>Supervisor <input v-model="supervisor" type="text" /></label>
           </div>
+          <div v-if="sessionSprList.length" class="gpe-spr-strip">
+            <span v-for="s in sessionSprList" :key="s.pp_id" class="gpe-spr-chip">
+              {{ s.order_code }} →
+              <button type="button" class="gpe-link-btn" @click="openSpr(s.spr_name)">{{ s.spr_name }}</button>
+              <span v-if="s.label_type" class="gpe-label-type">{{ s.label_type }}</span>
+            </span>
+          </div>
           <div v-if="selectedSummary || selectedLineIds.size" class="gpe-selection-strip">
             <div class="gpe-selection-text">
               <strong>{{ selectedSummary?.count || 0 }}</strong> line(s) ·
@@ -248,7 +255,8 @@
                 <button type="button" @click="runTool('rmbatches')">SPR — Select RM batches</button>
               </div>
             </div>
-            <button type="button" class="gpe-btn disabled" disabled title="Phase 2">Submit Entry</button>
+            <button type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
+            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="submitEntry">Submit Entry</button>
           </div>
         </div>
 
@@ -437,7 +445,7 @@
         </div>
       </div>
       <p v-if="summaryTab === 'summary'" class="gpe-note">
-        Entries are captured roll-wise with batch reference. Backend SPR submit connects in Phase 2.
+        Save Row writes to draft SPR on server. Submit Entry imports and submits SPR(s) for selected orders.
       </p>
       <div v-show="summaryTab === 'linked'" class="gpe-panel wide gpe-card-inner">
         <table>
@@ -550,11 +558,23 @@
       <div class="gpe-dialog gpe-card">
         <h3>Confirm GSM selection</h3>
         <p>Lock these lines for roll entry? You can unlock later.</p>
-        <ul class="gpe-confirm-list">
-          <li v-for="line in confirmLines" :key="line.id">
-            {{ line.orderCode }} · {{ line.quality }} · {{ line.color }} · {{ line.gsm }} GSM · {{ line.widthLabel }} · Tgt {{ formatKg(line.dayTargetKg) }} Kg · Rem {{ formatKg(line.dayRemKg) }} Kg
-          </li>
-        </ul>
+        <table class="gpe-confirm-grid">
+          <thead>
+            <tr>
+              <th>Order</th><th>Quality</th><th>Color</th><th>GSM</th><th>Width</th><th>Planned Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="line in confirmLines" :key="line.id">
+              <td>{{ line.orderCode }}</td>
+              <td>{{ line.quality }}</td>
+              <td>{{ line.color }}</td>
+              <td>{{ line.gsm }}</td>
+              <td>{{ line.widthLabel }}</td>
+              <td>{{ filterDate }}</td>
+            </tr>
+          </tbody>
+        </table>
         <div class="gpe-dialog-actions">
           <button type="button" class="gpe-btn" @click="showConfirmDialog = false">Cancel</button>
           <button type="button" class="gpe-btn primary" @click="confirmSelection">Lock selection</button>
@@ -575,6 +595,45 @@
         <div class="gpe-dialog-actions">
           <button type="button" class="gpe-btn" @click="showWidthPicker = false">Cancel</button>
           <button type="button" class="gpe-btn primary" :disabled="!widthPickerChoice" @click="proceedAddRow">Add row</button>
+        </div>
+      </div>
+    </div>
+    <!-- Tolerance approval dialog (multi-order) -->
+    <div v-if="showToleranceDialog" class="gpe-dialog-overlay" @click.self="showToleranceDialog = false">
+      <div class="gpe-dialog gpe-dialog-wide gpe-card">
+        <h3>Tolerance approval required</h3>
+        <p class="gpe-muted">{{ toleranceOrders.length }} order(s) need approval before submit.</p>
+        <div v-for="order in toleranceOrders" :key="order.spr_name" class="gpe-tol-card">
+          <div class="gpe-tol-card-head">
+            <strong>{{ order.order_code || "—" }}</strong>
+            <span>{{ order.spr_name }}</span>
+          </div>
+          <table class="gpe-grid gpe-tol-table">
+            <thead>
+              <tr><th>Job</th><th>Roll</th><th>Planned (Kg)</th><th>Net/Gross (Kg)</th><th>Variance</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(v, vi) in order.violations" :key="vi">
+                <td>{{ v.job }}</td>
+                <td>{{ v.roll_no }}</td>
+                <td>{{ formatKg(v.planned) }}</td>
+                <td>{{ formatKg(v.actual) }}</td>
+                <td>{{ v.dev_pct }}%</td>
+              </tr>
+            </tbody>
+          </table>
+          <label class="gpe-tol-reason">
+            Reason for override
+            <textarea v-model="toleranceForm[order.spr_name].reason" rows="2" />
+          </label>
+          <label class="gpe-tol-check">
+            <input v-model="toleranceForm[order.spr_name].approved" type="checkbox" />
+            I approve this deviation
+          </label>
+        </div>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn" @click="showToleranceDialog = false">Cancel</button>
+          <button type="button" class="gpe-btn primary" :disabled="!toleranceFormComplete" @click="submitWithTolerance">Submit all with approval</button>
         </div>
       </div>
     </div>
@@ -603,7 +662,7 @@ import {
   sprRecalcRollRow,
 } from "./spr_roll_entry_utils.js";
 
-const STORAGE_KEY = "gsm_production_entry_draft_v2";
+const STORAGE_KEY = "gsm_production_entry_draft_v3";
 const BOARD_SLUG = "production-table";
 const FABRIC_UNITS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4"];
 
@@ -647,6 +706,12 @@ function resetBatchSeriesCache() {
   seriesPrefix.value = "";
   maxRollSuffix.value = 0;
 }
+
+const sessionSprs = ref({});
+const showToleranceDialog = ref(false);
+const toleranceOrders = ref([]);
+const toleranceForm = ref({});
+const submitInProgress = ref(false);
 
 const creationSeq = ref(0);
 
@@ -1195,8 +1260,34 @@ const canAddRow = computed(
     selectedLineIds.value.size > 0 &&
     headerUnit.value &&
     runDate.value &&
-    shift.value
+    shift.value &&
+    sessionSprList.value.length > 0
 );
+
+const sessionSprList = computed(() => Object.values(sessionSprs.value || {}));
+
+const canCreateSprs = computed(
+  () => selectionLocked.value && selectedLineIds.value.size > 0 && headerUnit.value && runDate.value && shift.value
+);
+
+const canSubmitEntry = computed(
+  () =>
+    !submitInProgress.value &&
+    selectionLocked.value &&
+    sessionSprList.value.length > 0 &&
+    rollLines.value.length > 0 &&
+    rollLines.value.every((r) => r.row_locked && r.batch_no && sprNormalizeGrossWeightInput(r.gross_weight) > 0)
+);
+
+const toleranceFormComplete = computed(() => {
+  if (!toleranceOrders.value.length) {
+    return false;
+  }
+  return toleranceOrders.value.every((o) => {
+    const f = toleranceForm.value[o.spr_name] || {};
+    return (f.reason || "").trim() && f.approved;
+  });
+});
 
 function lineRowClass(line) {
   return {
@@ -1359,11 +1450,263 @@ function onRowEdit(row) {
   scheduleAutosave();
 }
 
-function saveRow(row) {
-  row.row_locked = 1;
-  row.row_ready_for_print = 1;
-  scheduleAutosave();
-  frappe.show_alert({ message: __("Row saved locally"), indicator: "green" });
+function buildSessionEntries() {
+  const entries = [];
+  for (const id of selectedLineIds.value) {
+    const line = lineById.value.get(id);
+    if (!line) {
+      continue;
+    }
+    entries.push({
+      pp_id: line.ppId,
+      lineId: line.id,
+      orderCode: line.orderCode,
+      quality: line.quality,
+      color: line.color,
+      gsm: line.gsm,
+      width_inch: line.width_inch,
+      plannedDate: filterDate.value,
+    });
+  }
+  return entries;
+}
+
+function sprNameForPp(ppId) {
+  return sessionSprs.value[ppId]?.spr_name || "";
+}
+
+function buildRollPayload(row) {
+  return {
+    pp_id: row.pp_id,
+    planning_table_row: row.planning_table_row,
+    party_code: row.party_code,
+    item_code: row.item_code,
+    item_name: row.item_name,
+    quality: row.quality,
+    color: row.color,
+    gsm: row.gsm,
+    batch_no: row.batch_no,
+    roll_no: row.roll_no,
+    width_inch: row.width_inch,
+    meter_roll: row.meter_roll,
+    produced_length_mtrs: row.produced_length_mtrs,
+    produced_gsm: row.produced_gsm,
+    net_weight: row.net_weight,
+    gross_weight: row.gross_weight,
+    planned_qty: row.planned_qty,
+    work_order: row.work_order,
+    uom: row.uom || "Kg",
+    custom_core_width_mm: row.custom_core_width_mm,
+    custom_polybag_kgs: row.custom_polybag_kgs,
+    custom_diameter_inches: row.custom_diameter_inches,
+    custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
+    row_locked: row.row_locked ? 1 : 0,
+    row_ready_for_print: row.row_ready_for_print ? 1 : 0,
+  };
+}
+
+function buildSessionSprsPayload() {
+  return sessionSprList.value.map((s) => ({
+    pp_id: s.pp_id,
+    spr_name: s.spr_name,
+    order_code: s.order_code,
+  }));
+}
+
+async function createSprs() {
+  if (!canCreateSprs.value) {
+    return;
+  }
+  const entries = buildSessionEntries();
+  if (!entries.length) {
+    frappe.msgprint(__("Select at least one line."));
+    return;
+  }
+  saveStatus.value = "Creating SPRs…";
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.create_gsm_sprs_for_session",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+        operator: operator.value,
+        supervisor: supervisor.value,
+        entries: JSON.stringify(entries),
+      },
+    });
+    const sprs = (res.message || {}).sprs || [];
+    const next = { ...sessionSprs.value };
+    const errors = [];
+    for (const row of sprs) {
+      if (row.status === "ok" && row.spr_name) {
+        next[row.pp_id] = {
+          pp_id: row.pp_id,
+          spr_name: row.spr_name,
+          order_code: row.order_code,
+          label_type: row.label_type,
+          reused: row.reused,
+        };
+      } else {
+        errors.push(row.message || row.pp_id);
+      }
+    }
+    sessionSprs.value = next;
+    scheduleAutosave();
+    if (errors.length) {
+      frappe.msgprint({
+        title: __("Some SPRs failed"),
+        message: errors.join("<br>"),
+        indicator: "orange",
+      });
+    }
+    const okCount = sprs.filter((s) => s.status === "ok").length;
+    if (okCount) {
+      frappe.show_alert({ message: __("{0} SPR(s) ready", [okCount]), indicator: "green" });
+    }
+    saveStatus.value = "SPRs created";
+  } catch (e) {
+    console.error(e);
+    saveStatus.value = "SPR create failed";
+    frappe.msgprint(__("Could not create SPRs. Check console."));
+  }
+}
+
+function openToleranceDialog(orders) {
+  toleranceOrders.value = orders || [];
+  const form = {};
+  for (const o of toleranceOrders.value) {
+    form[o.spr_name] = { reason: "", approved: false };
+  }
+  toleranceForm.value = form;
+  showToleranceDialog.value = true;
+}
+
+async function callSubmitGsm(overrides = []) {
+  return frappe.call({
+    method: "production_entry.production_planning.unified_production_entry_api.submit_gsm_production_entry",
+    args: {
+      run_date: runDate.value,
+      shift: shift.value,
+      unit: headerUnit.value,
+      operator: operator.value,
+      supervisor: supervisor.value,
+      rolls: JSON.stringify(rollLines.value.map(buildRollPayload)),
+      session_sprs: JSON.stringify(buildSessionSprsPayload()),
+      tolerance_overrides: JSON.stringify(overrides),
+    },
+  });
+}
+
+async function submitEntry(overrides = []) {
+  if (!canSubmitEntry.value && !overrides.length) {
+    frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
+    return;
+  }
+  const missingSpr = [...new Set(rollLines.value.map((r) => r.pp_id))].filter((pp) => !sprNameForPp(pp));
+  if (missingSpr.length) {
+    frappe.msgprint(__("Create SPRs for all selected orders first."));
+    return;
+  }
+  submitInProgress.value = true;
+  saveStatus.value = "Submitting…";
+  try {
+    const res = await callSubmitGsm(overrides);
+    const msg = res.message || {};
+    if (msg.status === "tolerance_required") {
+      openToleranceDialog(msg.orders || []);
+      saveStatus.value = "Tolerance approval needed";
+      return;
+    }
+    if (msg.status === "import_failed" || msg.status === "failed") {
+      const errs = (msg.failed || []).map((f) => `${f.spr_name || f.pp_id}: ${f.error}`).join("<br>");
+      frappe.msgprint({ title: __("Submit failed"), message: errs || __("Unknown error"), indicator: "red" });
+      saveStatus.value = "Submit failed";
+      return;
+    }
+    showToleranceDialog.value = false;
+    const submitted = msg.submitted || [];
+    const partial = (msg.failed || []).length;
+    if (partial) {
+      frappe.msgprint({
+        title: __("Partial submit"),
+        message: (msg.failed || []).map((f) => `${f.spr_name}: ${f.error}`).join("<br>"),
+        indicator: "orange",
+      });
+    }
+    if (submitted.length) {
+      const links = submitted.map((s) => `<a href="/app/shaft-production-run/${s.spr_name}">${s.spr_name}</a>`).join(", ");
+      frappe.msgprint({
+        title: __("Submitted"),
+        message: __("{0} SPR(s) submitted: {1}", [submitted.length, links]),
+        indicator: "green",
+      });
+    }
+    saveStatus.value = "Submitted";
+    fetchOrders();
+  } catch (e) {
+    console.error(e);
+    saveStatus.value = "Submit failed";
+    frappe.msgprint(__("Submit failed. Check console."));
+  } finally {
+    submitInProgress.value = false;
+  }
+}
+
+function submitWithTolerance() {
+  if (!toleranceFormComplete.value) {
+    frappe.msgprint(__("Enter reason and approve for every order."));
+    return;
+  }
+  const overrides = toleranceOrders.value.map((o) => ({
+    spr_name: o.spr_name,
+    reason: (toleranceForm.value[o.spr_name]?.reason || "").trim(),
+    approved: toleranceForm.value[o.spr_name]?.approved ? 1 : 0,
+  }));
+  submitEntry(overrides);
+}
+
+async function saveRow(row) {
+  const sprName = sprNameForPp(row.pp_id);
+  if (!sprName) {
+    frappe.msgprint(__("Click Create SPRs first, then Save Row."));
+    return;
+  }
+  if (!row.batch_no) {
+    frappe.msgprint(__("Batch number is required."));
+    return;
+  }
+  const gross = sprNormalizeGrossWeightInput(row.gross_weight);
+  if (gross <= 0) {
+    frappe.msgprint(__("Enter gross weight before saving."));
+    return;
+  }
+  const updated = sprRecalcRollRow(row);
+  Object.assign(row, updated);
+  saveStatus.value = "Saving row…";
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.save_gsm_roll_line",
+      args: {
+        spr_name: sprName,
+        shift: shift.value,
+        roll_payload: JSON.stringify(buildRollPayload({ ...row, row_locked: 1, row_ready_for_print: 1 })),
+      },
+    });
+    const msg = res.message || {};
+    row.row_locked = 1;
+    row.row_ready_for_print = 1;
+    if (msg.row_name) {
+      row.spr_item_name = msg.row_name;
+    }
+    scheduleAutosave();
+    saveStatus.value = "Saved to SPR";
+    frappe.show_alert({ message: __("Row saved to {0}", [sprName]), indicator: "green" });
+  } catch (e) {
+    console.error(e);
+    saveStatus.value = "Save failed";
+    frappe.msgprint(__("Could not save row to server."));
+  }
 }
 
 function editRow(row) {
@@ -1378,7 +1721,7 @@ function printLabel(row) {
     return;
   }
   frappe.show_alert({
-    message: __("Production label print connects in Phase 2."),
+    message: __("Production Label ready to print"),
     indicator: "blue",
   });
 }
@@ -1673,6 +2016,10 @@ async function addRollRow() {
     frappe.msgprint("Confirm and lock your GSM selection first.");
     return;
   }
+  if (!sessionSprList.value.length) {
+    frappe.msgprint(__("Click Create SPRs before adding roll rows."));
+    return;
+  }
   if (!headerUnit.value) {
     frappe.msgprint("Select a unit filter first.");
     return;
@@ -1817,11 +2164,14 @@ function persistDraft() {
       rollLines: rollLines.value,
       seriesPrefix: seriesPrefix.value,
       maxRollSuffix: maxRollSuffix.value,
+      sessionSprs: sessionSprs.value,
       creationSeq: creationSeq.value,
       batchContextKey: currentBatchContextKey(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    saveStatus.value = "Saved locally";
+    if (!saveStatus.value || saveStatus.value === "Saved locally") {
+      saveStatus.value = "Draft saved";
+    }
   } catch (e) {
     saveStatus.value = "Save failed";
   }
@@ -1829,7 +2179,10 @@ function persistDraft() {
 
 function restoreDraft() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    let raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      raw = localStorage.getItem("gsm_production_entry_draft_v2");
+    }
     if (!raw) {
       return;
     }
@@ -1860,6 +2213,7 @@ function restoreDraft() {
       resetBatchSeriesCache();
     }
     batchContextKey.value = ctxKey;
+    sessionSprs.value = d.sessionSprs || {};
     creationSeq.value = d.creationSeq || 0;
     saveStatus.value = "Draft restored";
   } catch (e) {
@@ -2708,6 +3062,75 @@ onUnmounted(() => {
 .gpe-confirm-list {
   margin: 12px 0;
   padding-left: 18px;
+  font-size: 12px;
+}
+.gpe-confirm-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 12px 0;
+}
+.gpe-confirm-grid th,
+.gpe-confirm-grid td {
+  border: 1px solid #e2e8f0;
+  padding: 8px 10px;
+  text-align: left;
+}
+.gpe-confirm-grid th {
+  background: #f8fafc;
+}
+.gpe-dialog-wide {
+  width: min(720px, 94vw);
+  max-height: 85vh;
+  overflow: auto;
+}
+.gpe-spr-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.gpe-spr-chip {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.gpe-label-type {
+  margin-left: 6px;
+  color: #64748b;
+  font-size: 11px;
+}
+.gpe-tol-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+}
+.gpe-tol-card-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.gpe-tol-table {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.gpe-tol-reason {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.gpe-tol-reason textarea {
+  width: 100%;
+  margin-top: 4px;
+}
+.gpe-tol-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
 }
 .gpe-picker-list {

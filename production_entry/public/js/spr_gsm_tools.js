@@ -21,7 +21,7 @@ export function openSprForm(sprName) {
 function noSprMessage() {
 	frappe.msgprint(
 		__(
-			"No SPR found for this Production Plan. Create/open SPR from Production Table — GSM Production Entry does not create SPR."
+			"No SPR found for this Production Plan. Use Create SPRs in GSM Production Entry, or create from Production Table."
 		)
 	);
 }

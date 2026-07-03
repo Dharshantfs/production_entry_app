@@ -593,7 +593,14 @@ def _preset_core_mm_for_fabric_width(width_inch: float) -> float:
 
 def _normalize_pp_shaft_job_row(shaft) -> frappe._dict:
 	"""Align PP shaft detail field names with Shaft Production Run Job for weight helpers."""
-	row = frappe._dict(shaft) if shaft else frappe._dict()
+	if not shaft:
+		return frappe._dict()
+	if isinstance(shaft, dict):
+		row = frappe._dict(shaft)
+	elif hasattr(shaft, "as_dict"):
+		row = frappe._dict(shaft.as_dict())
+	else:
+		row = frappe._dict()
 	if not _cstr(row.get("net_weight") or "").strip():
 		nw = _pick_value(
 			row,
