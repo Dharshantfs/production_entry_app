@@ -156,8 +156,13 @@ def preview_spr_batch_numbers_for_entry(
 	client_max_roll=None,
 	client_series_prefix=None,
 	existing_batches=None,
+	session_local=None,
 ):
-	"""Read-only batch/roll preview for GSM Production Entry (no SPR document required)."""
+	"""Read-only batch/roll preview for GSM Production Entry (no SPR document required).
+
+	When session_local=1, roll suffix is based only on existing_batches + client_max_roll
+	(not global DB max) so unsaved GSM grid rows start at /1 and removed rows do not skip numbers.
+	"""
 	count = cint(count)
 	if count < 1:
 		return []
@@ -198,11 +203,24 @@ def preview_spr_batch_numbers_for_entry(
 		series_prefix = fresh_prefix
 
 	next_roll = doc._next_roll_starting(series_prefix)
-	try:
-		if client_max_roll is not None and cint(client_max_roll) >= 0 and csp == series_prefix:
-			next_roll = max(int(next_roll), cint(client_max_roll) + 1)
-	except Exception:
-		pass
+	if cint(session_local):
+		mx = 0
+		for row in doc.items or []:
+			bn = _cstr(getattr(row, "batch_no", "")).strip()
+			if bn:
+				mx = max(mx, doc._roll_no_from_batch(bn, series_prefix))
+		try:
+			if client_max_roll is not None and cint(client_max_roll) >= 0:
+				mx = max(mx, cint(client_max_roll))
+		except Exception:
+			pass
+		next_roll = (mx + 1) if mx > 0 else 1
+	else:
+		try:
+			if client_max_roll is not None and cint(client_max_roll) >= 0 and csp == series_prefix:
+				next_roll = max(int(next_roll), cint(client_max_roll) + 1)
+		except Exception:
+			pass
 
 	used_batches = set(existing)
 	out = []
@@ -591,6 +609,54 @@ def _preset_core_mm_for_fabric_width(width_inch: float) -> float:
 	return 1900.0
 
 
+def _resolve_core_item_code_for_mm(mm: float) -> str:
+	"""Paper-core Item name/code for a preset mm width (SPR Link field on roll lines)."""
+	mm = flt(mm)
+	if mm <= 0:
+		return ""
+	for row in get_gsm_core_width_options():
+		if abs(flt(row.get("width_mm")) - mm) < 0.01:
+			return _cstr(row.get("item_code")).strip()
+	# Closest preset
+	best = ""
+	best_diff = 1e9
+	for row in get_gsm_core_width_options():
+		wm = flt(row.get("width_mm"))
+		if wm <= 0:
+			continue
+		diff = abs(wm - mm)
+		if diff < best_diff:
+			best_diff = diff
+			best = _cstr(row.get("item_code")).strip()
+	return best
+
+
+def _gsm_core_width_value_for_spr_item(payload: dict) -> str:
+	"""Map GSM payload core width to SPR Item custom_core_width_mm (Link or numeric field)."""
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	if not spi_meta.has_field("custom_core_width_mm"):
+		return ""
+	df = spi_meta.get_field("custom_core_width_mm")
+	raw = payload.get("custom_core_width_mm")
+	if raw in (None, ""):
+		return ""
+	if df.fieldtype == "Link":
+		s = _cstr(raw).strip()
+		if frappe.db.exists(df.options, s):
+			return s
+		# Numeric mm from GSM grid — resolve to paper-core Item
+		try:
+			mm = flt(s)
+			if mm > 0:
+				code = _resolve_core_item_code_for_mm(mm)
+				if code and frappe.db.exists(df.options, code):
+					return code
+		except Exception:
+			pass
+		return ""
+	return _cstr(raw).strip() if df.fieldtype in ("Data", "Small Text") else _cstr(flt(raw))
+
+
 def _normalize_pp_shaft_job_row(shaft) -> frappe._dict:
 	"""Align PP shaft detail field names with Shaft Production Run Job for weight helpers."""
 	if not shaft:
@@ -734,6 +800,7 @@ def get_gsm_roll_row_extras(
 		planned_qty = compute_mix_roll_planned_qty_kg(gsm_val, w_in, ln)
 
 	core_mm = _resolve_core_mm_for_fabric_width(w_in) if w_in > 0 else 1600.0
+	core_item = _resolve_core_item_code_for_mm(core_mm)
 	polybag = 0.0
 	if item_code and frappe.db.exists("Item", item_code):
 		for key in ("custom_polybag_kgs", "polybag_kgs", "custom_polybag_weight"):
@@ -744,7 +811,8 @@ def get_gsm_roll_row_extras(
 	return {
 		"planned_qty": planned_qty,
 		"custom_polybag_kgs": polybag,
-		"custom_core_width_mm": core_mm,
+		"custom_core_width_mm": core_item or "",
+		"core_width_mm": core_mm,
 	}
 
 

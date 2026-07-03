@@ -191,12 +191,21 @@
             <label>Operator <input v-model="operator" type="text" /></label>
             <label>Supervisor <input v-model="supervisor" type="text" /></label>
           </div>
-          <div v-if="sessionSprList.length" class="gpe-spr-strip">
-            <span v-for="s in sessionSprList" :key="s.pp_id" class="gpe-spr-chip">
-              {{ s.order_code }} →
-              <button type="button" class="gpe-link-btn" @click="openSpr(s.spr_name)">{{ s.spr_name }}</button>
-              <span v-if="s.label_type" class="gpe-label-type">{{ s.label_type }}</span>
-            </span>
+          <div v-if="sessionSprList.length" class="gpe-spr-table-wrap">
+            <table class="gpe-spr-table">
+              <thead>
+                <tr><th>Order Code</th><th>Label Type</th><th>SPR</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="s in sessionSprList" :key="s.pp_id">
+                  <td>{{ s.order_code }}</td>
+                  <td>{{ s.label_type || "Default" }}</td>
+                  <td>
+                    <button type="button" class="gpe-link-btn" @click="openSpr(s.spr_name)">{{ s.spr_name }}</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
           <div v-if="selectedSummary || selectedLineIds.size" class="gpe-selection-strip">
             <div class="gpe-selection-text">
@@ -340,7 +349,7 @@
                 </td>
                 <td>
                   <select
-                    v-model.number="row.custom_core_width_mm"
+                    v-model="row.custom_core_width_mm"
                     class="gpe-inp gpe-inp-wide"
                     :disabled="row.row_locked"
                     @change="onRowEdit(row)"
@@ -725,7 +734,7 @@ const shiftFilterUnit = ref("");
 const shiftEntries = ref([]);
 const shiftLoading = ref(false);
 const selectedShiftEntry = ref(null);
-const coreWidthOptions = ref([{ value: 1600, label: "1600 mm" }]);
+const coreWidthOptions = ref([]);
 
 let autosaveTimer = null;
 
@@ -1445,7 +1454,7 @@ function onRowEdit(row) {
   if (row.row_locked) {
     return;
   }
-  const updated = sprRecalcRollRow(row);
+  const updated = sprRecalcRollRow({ ...row, core_width_options: coreWidthOptions.value });
   Object.assign(row, updated);
   scheduleAutosave();
 }
@@ -1681,7 +1690,7 @@ async function saveRow(row) {
     frappe.msgprint(__("Enter gross weight before saving."));
     return;
   }
-  const updated = sprRecalcRollRow(row);
+  const updated = sprRecalcRollRow({ ...row, core_width_options: coreWidthOptions.value });
   Object.assign(row, updated);
   saveStatus.value = "Saving row…";
   try {
@@ -1927,25 +1936,50 @@ async function resolveWorkOrder(line) {
   }
 }
 
-function pickCoreMmForWidth(widthInch, apiMm) {
-  const target = sprFlt(apiMm);
+function syncBatchCounterFromGrid() {
+  let mx = 0;
+  for (const r of rollLines.value) {
+    const rn = parseInt(r.roll_no, 10);
+    if (!Number.isNaN(rn)) {
+      mx = Math.max(mx, rn);
+    }
+    const bn = _cstr(r.batch_no || "");
+    if (bn.includes("/")) {
+      const suf = parseInt(bn.split("/").pop(), 10);
+      if (!Number.isNaN(suf)) {
+        mx = Math.max(mx, suf);
+      }
+    }
+  }
+  maxRollSuffix.value = mx;
+}
+
+function _cstr(v) {
+  return v == null ? "" : String(v).trim();
+}
+
+function pickCoreItemForWidth(widthInch, apiItemCode, apiMm) {
   const opts = coreWidthOptions.value || [];
   if (!opts.length) {
-    return target > 0 ? target : 1600;
+    return apiItemCode || "";
   }
+  if (apiItemCode && opts.some((o) => o.value === apiItemCode)) {
+    return apiItemCode;
+  }
+  const target = sprFlt(apiMm);
   if (target > 0) {
     let best = opts[0];
-    let bestDiff = Math.abs(sprFlt(best.value) - target);
+    let bestDiff = Math.abs(sprFlt(best.width_mm) - target);
     opts.forEach((o) => {
-      const diff = Math.abs(sprFlt(o.value) - target);
+      const diff = Math.abs(sprFlt(o.width_mm) - target);
       if (diff < bestDiff) {
         bestDiff = diff;
         best = o;
       }
     });
-    return sprFlt(best.value) || target;
+    return best.value || "";
   }
-  return sprFlt(opts[0].value) || 1600;
+  return opts[0].value || "";
 }
 
 async function fetchRollRowExtras(line, lengthM) {
@@ -1967,7 +2001,8 @@ async function fetchRollRowExtras(line, lengthM) {
     return {
       planned_qty: 0,
       custom_polybag_kgs: 0,
-      custom_core_width_mm: pickCoreMmForWidth(line.width_inch, 0),
+      custom_core_width_mm: pickCoreItemForWidth(line.width_inch, "", 0),
+      core_width_mm: 0,
     };
   }
 }
@@ -1980,8 +2015,10 @@ async function loadCoreWidthOptions() {
     const rows = res.message || [];
     if (rows.length) {
       coreWidthOptions.value = rows.map((r) => ({
-        value: sprFlt(r.width_mm) || 1600,
+        value: r.item_code || "",
+        item_code: r.item_code || "",
         label: r.label || `${r.width_mm} mm`,
+        width_mm: sprFlt(r.width_mm) || 1600,
       }));
     }
   } catch (e) {
@@ -2058,7 +2095,11 @@ async function addRollRow() {
     resolveWorkOrder(line),
   ]);
   const extras = await fetchRollRowExtras(line, ordLen);
-  const coreMm = pickCoreMmForWidth(line.width_inch, extras.custom_core_width_mm);
+  const coreItem = pickCoreItemForWidth(
+    line.width_inch,
+    extras.custom_core_width_mm,
+    extras.core_width_mm
+  );
   creationSeq.value += 1;
   const newRow = sprRecalcRollRow({
     _id: `row-${Date.now()}-${creationSeq.value}`,
@@ -2081,19 +2122,21 @@ async function addRollRow() {
     gross_weight: "",
     planned_qty: sprFlt(extras.planned_qty),
     uom: src.uom || src.stock_uom || "Kg",
-    custom_core_width_mm: coreMm,
+    custom_core_width_mm: coreItem,
     custom_polybag_kgs: extras.custom_polybag_kgs || 0,
     custom_diameter_inches: "",
     custom_cbm_cubic_meters: "",
     work_order: wo,
     row_locked: 0,
     row_ready_for_print: 0,
+    core_width_options: coreWidthOptions.value,
   });
   rollLines.value.unshift(newRow);
   scheduleAutosave();
 }
 
 async function previewNextBatch() {
+  syncBatchCounterFromGrid();
   const existing = rollLines.value.map((r) => r.batch_no).filter(Boolean);
   const res = await frappe.call({
     method: "production_entry.production_planning.unified_production_entry_api.preview_spr_batch_numbers_for_entry",
@@ -2105,6 +2148,7 @@ async function previewNextBatch() {
       client_max_roll: maxRollSuffix.value,
       client_series_prefix: seriesPrefix.value || undefined,
       existing_batches: JSON.stringify(existing),
+      session_local: 1,
     },
   });
   const row = (res.message || [])[0];
@@ -2122,6 +2166,7 @@ function removeTopRow() {
     return;
   }
   rollLines.value.shift();
+  syncBatchCounterFromGrid();
   scheduleAutosave();
 }
 
@@ -2215,6 +2260,7 @@ function restoreDraft() {
     batchContextKey.value = ctxKey;
     sessionSprs.value = d.sessionSprs || {};
     creationSeq.value = d.creationSeq || 0;
+    syncBatchCounterFromGrid();
     saveStatus.value = "Draft restored";
   } catch (e) {
     console.warn("draft restore failed", e);
@@ -2719,6 +2765,27 @@ onUnmounted(() => {
   padding: 2px 10px;
   border-radius: 999px;
   font-size: 11px;
+}
+.gpe-spr-table-wrap {
+  margin-top: 10px;
+  overflow-x: auto;
+}
+.gpe-spr-table {
+  width: 100%;
+  max-width: 520px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.gpe-spr-table th,
+.gpe-spr-table td {
+  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  text-align: left;
+}
+.gpe-spr-table th {
+  background: #f8fafc;
+  font-weight: 600;
+  color: #475569;
 }
 .gpe-metrics {
   display: grid;

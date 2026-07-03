@@ -29,11 +29,18 @@ export function sprResolveLengthMeters(row) {
 	return sprFlt(row?.meter_roll);
 }
 
-export function sprCalcCoreWeightKg(width, grossWeight, coreWidthMm) {
+export function sprCalcCoreWeightKg(width, grossWeight, coreWidthMmOrItem, coreOptions) {
 	const widthInch = sprFlt(width);
 	const gw = sprFlt(grossWeight);
 	if (widthInch <= 0 || gw <= 0) {
 		return 0;
+	}
+	let numericCoreWidth = parseFloat(coreWidthMmOrItem);
+	if (!Number.isFinite(numericCoreWidth) || numericCoreWidth < 100) {
+		const opts = coreOptions || [];
+		const key = coreWidthMmOrItem != null ? String(coreWidthMmOrItem) : "";
+		const opt = opts.find((o) => String(o.value) === key || String(o.item_code) === key);
+		numericCoreWidth = opt ? sprFlt(opt.width_mm) : 1600;
 	}
 	const widthInMeter = widthInch * 0.0254;
 	const gsmVal = 90;
@@ -47,7 +54,6 @@ export function sprCalcCoreWeightKg(width, grossWeight, coreWidthMm) {
 		} else if (rawWeight > 100) {
 			baseWeightOfCore = 2.5;
 		}
-		const numericCoreWidth = parseFloat(coreWidthMm) || 1600;
 		return (baseWeightOfCore / 1600) * numericCoreWidth;
 	}
 	let coreW;
@@ -80,7 +86,7 @@ export function sprCalcNetFromGross(row) {
 	if (width <= 0) {
 		return 0;
 	}
-	const coreWeight = sprCalcCoreWeightKg(width, gw, row?.custom_core_width_mm);
+	const coreWeight = sprCalcCoreWeightKg(width, gw, row?.custom_core_width_mm, row?.core_width_options);
 	const calcNet = gw - coreWeight;
 	const netVal = calcNet > 0 ? calcNet : gw;
 	return sprRoundNetWeightKg(netVal);

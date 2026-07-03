@@ -9916,6 +9916,61 @@ def _gsm_find_item_row_by_batch(spr, batch_no: str):
 	return None
 
 
+def _gsm_resolve_core_width_for_item_row(payload: dict) -> str:
+	"""SPR Item custom_core_width_mm is a Link to Item — never store float mm."""
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	if not spi_meta.has_field("custom_core_width_mm"):
+		return ""
+	df = spi_meta.get_field("custom_core_width_mm")
+	raw = payload.get("custom_core_width_mm")
+	if raw in (None, ""):
+		return ""
+	if df.fieldtype != "Link":
+		return _cstr(raw).strip()
+	link_dt = _cstr(df.options or "Item").strip() or "Item"
+	s = _cstr(raw).strip()
+	if frappe.db.exists(link_dt, s):
+		return s
+	try:
+		mm = flt(s)
+	except Exception:
+		mm = 0.0
+	if mm <= 0:
+		return ""
+	rows = frappe.db.sql(
+		"""
+		SELECT name, item_name
+		FROM `tabItem`
+		WHERE disabled = 0
+		  AND (item_name LIKE %s OR item_name LIKE %s OR name LIKE %s)
+		ORDER BY item_name
+		LIMIT 200
+		""",
+		('%" PC%', '% PC -%', '%PC%'),
+		as_dict=True,
+	)
+	best_code = ""
+	best_diff = 1e9
+	for row in rows or []:
+		name = _cstr(row.get("item_name") or "")
+		code = _cstr(row.get("name") or "")
+		item_mm = 0.0
+		import re
+
+		m = re.search(r"(\d{3,4})\s*mm", name, re.I)
+		if m:
+			item_mm = flt(m.group(1))
+		if item_mm <= 0:
+			continue
+		diff = abs(item_mm - mm)
+		if diff < best_diff:
+			best_diff = diff
+			best_code = code
+	if best_code and frappe.db.exists(link_dt, best_code):
+		return best_code
+	return ""
+
+
 def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
 	"""Map GSM Production Entry roll payload onto an SPR Item row (additive fields only)."""
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
@@ -9957,7 +10012,6 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
 		row.job = job_id
 
 	optional_map = {
-		"custom_core_width_mm": "custom_core_width_mm",
 		"custom_polybag_kgs": "custom_polybag_kgs",
 		"custom_diameter_inches": "custom_diameter_inches",
 		"custom_cbm_cubic_meters": "custom_cbm_cubic_meters",
@@ -9971,12 +10025,17 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
 			if dst == "custom_shift" and shift:
 				row.set(dst, _cstr(shift))
 			continue
-		if dst in ("custom_polybag_kgs", "custom_core_width_mm", "custom_diameter_inches", "custom_cbm_cubic_meters"):
+		if dst in ("custom_polybag_kgs", "custom_diameter_inches", "custom_cbm_cubic_meters"):
 			row.set(dst, flt(val))
 		else:
 			row.set(dst, _cstr(val))
 	if shift and spi_meta.has_field("custom_shift") and not _cstr(getattr(row, "custom_shift", "")):
 		row.custom_shift = _cstr(shift)
+
+	if spi_meta.has_field("custom_core_width_mm"):
+		core_link = _gsm_resolve_core_width_for_item_row(payload)
+		if core_link:
+			row.custom_core_width_mm = core_link
 
 	if spi_meta.has_field("row_locked"):
 		row.row_locked = cint(payload.get("row_locked") or 0)

@@ -3010,19 +3010,32 @@ function sprRecalcBundlePlannedPcs(frm, cdt, cdn) {
 	frappe.model.set_value(cdt, cdn, 'total_pcs_per_bundle', tpb > 0 ? tpb : 0);
 }
 
+function sprCombinationSegmentCount(row) {
+	const comb = String((row && row.combination) || '');
+	if (!comb) {
+		return 1;
+	}
+	const segments = comb
+		.split('+')
+		.map(function (s) {
+			return s.trim();
+		})
+		.filter(Boolean);
+	return Math.max(1, segments.length);
+}
+
+/** Normal desk Create Entry: one click adds one row per combination width (e.g. 43+33 → 2 rows). */
+function sprCreateEntryRowsPerClick(row, frm) {
+	if (frm && frm.doc && cint(frm.doc.is_mix_roll)) {
+		return 1;
+	}
+	return sprCombinationSegmentCount(row);
+}
+
 function sprJobMaxRollLines(row, frm) {
 	const shafts = cint((row && row.no_of_shafts) || 0) || 1;
 	const rollsPerShaft = cint((row && row.no_of_rolls) || 0) || 1;
-	const comb = String((row && row.combination) || '');
-	const segments = comb
-		? comb
-				.split('+')
-				.map(function (s) {
-					return s.trim();
-				})
-				.filter(Boolean).length
-		: 1;
-	const segCount = Math.max(1, segments);
+	const segCount = sprCombinationSegmentCount(row);
 	if (frm && frm.doc && cint(frm.doc.is_mix_roll)) {
 		if (segCount > 1) {
 			return Math.max(segCount, 1) * rollsPerShaft;
@@ -3119,8 +3132,12 @@ function invokeAppendRollLinesViaServer(
 	}
 	let alertMsg = __('Added {0} roll line(s) for job {1}.', [ex || lex || lrc || 1, job_id]);
 	if (quotaMeta && quotaMeta.max) {
-		const addedIdx = cint(quotaMeta.current) + (ex || 1);
-		alertMsg = __('Added roll {0} of {1} for job {2}.', [addedIdx, quotaMeta.max, job_id]);
+		const addCount = cint(quotaMeta.addCount) || ex || 1;
+		const addedIdx = cint(quotaMeta.current) + addCount;
+		alertMsg =
+			addCount > 1
+				? __('Added {0} roll lines ({1} of {2}) for job {3}.', [addCount, addedIdx, quotaMeta.max, job_id])
+				: __('Added roll {0} of {1} for job {2}.', [addedIdx, quotaMeta.max, job_id]);
 	}
 	frappe.call({
 		method:
@@ -6649,11 +6666,21 @@ frappe.ui.form.on('Shaft Production Run Job', {
 		if (sprUsesOneRollPerCreateEntry(frm, row)) {
 			const maxRolls = sprJobMaxRollLines(row, frm);
 			const curRolls = sprCountRollLinesForJob(frm, job_id);
+			const rowsToAdd = sprCreateEntryRowsPerClick(row, frm);
 			if (curRolls >= maxRolls) {
 				frappe.msgprint(
 					__(
 						'Maximum {0} roll lines allowed for job {1} ({2} already created). Use Manual Job for additional production.',
 						[maxRolls, job_id, curRolls]
+					)
+				);
+				return;
+			}
+			if (curRolls + rowsToAdd > maxRolls) {
+				frappe.msgprint(
+					__(
+						'Cannot add {0} roll line(s) — only {1} of {2} remaining for job {3}. Use Manual Job for additional production.',
+						[rowsToAdd, maxRolls - curRolls, maxRolls, job_id]
 					)
 				);
 				return;
@@ -6670,9 +6697,20 @@ frappe.ui.form.on('Shaft Production Run Job', {
 						);
 						return;
 					}
-					invokeBuildRollLines(0, 0, true, 1, curAfterSave, {
+					const rowsNow = Math.min(rowsToAdd, maxRolls - curAfterSave);
+					if (rowsNow < 1) {
+						frappe.msgprint(
+							__(
+								'Maximum {0} roll lines allowed for job {1} ({2} already created). Use Manual Job for additional production.',
+								[maxRolls, job_id, curAfterSave]
+							)
+						);
+						return;
+					}
+					invokeBuildRollLines(0, 0, true, rowsNow, curAfterSave, {
 						max: maxRolls,
 						current: curAfterSave,
+						addCount: rowsNow,
 					});
 				})
 				.catch(function (err) {
