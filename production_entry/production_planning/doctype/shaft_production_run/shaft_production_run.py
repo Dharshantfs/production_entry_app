@@ -378,6 +378,24 @@ def _spr_next_bundle_batch_no(spr, source_prefix: str) -> str:
 	return f"{source_prefix}-B{max_no + 1}"
 
 
+def _spr_is_bundle_summary_batch(batch_no: str) -> bool:
+	"""True for GSM/SPR summary batches like JS-0307262-B1 (not real roll suffix /N)."""
+	return bool(re.search(r"-B\d+(?:-\d+-\d+)?$", _cstr(batch_no)))
+
+
+def _spr_is_real_roll_item_row(item_row) -> bool:
+	bn = _cstr(getattr(item_row, "batch_no", "") or "")
+	return bool(bn) and not _spr_is_bundle_summary_batch(bn)
+
+
+def _gsm_payload_is_bundle_summary(payload: dict) -> bool:
+	if not isinstance(payload, dict):
+		return False
+	if cint(payload.get("is_bundle_row") or 0):
+		return True
+	return _spr_is_bundle_summary_batch(_cstr(payload.get("batch_no")))
+
+
 def _spr_row_get(spr_row, key: str):
 	if spr_row is None:
 		return None
@@ -9526,8 +9544,11 @@ def _spr_count_roll_lines_for_job(spr_doc, job_id) -> int:
 		return 0
 	cnt = 0
 	for it in spr_doc.get("items") or []:
-		if _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
-			cnt += 1
+		if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
+			continue
+		if not _spr_is_real_roll_item_row(it):
+			continue
+		cnt += 1
 	return cnt
 
 
@@ -10051,6 +10072,12 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
 
 def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> dict:
 	"""Insert or update one GSM roll line on a draft SPR (batch_no dedup)."""
+	if _gsm_payload_is_bundle_summary(payload):
+		return {
+			"action": "skipped",
+			"batch_no": _cstr(payload.get("batch_no")),
+			"reason": "bundle_summary",
+		}
 	batch_no = _cstr(payload.get("batch_no")).strip()
 	if not batch_no:
 		frappe.throw(_("Batch number is required for GSM roll import"))
@@ -10156,6 +10183,64 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 
 
 @frappe.whitelist()
+def delete_gsm_bundle_packaging_from_spr(spr_name, bundle_batch_no, child_roll_batches=None):
+	"""GSM Remove bundle row — delete child rolls, bundle sticker, and any -B1 summary line."""
+	spr_name = _cstr(spr_name).strip()
+	bundle_batch_no = _cstr(bundle_batch_no).strip()
+	if isinstance(child_roll_batches, str):
+		try:
+			child_roll_batches = json.loads(child_roll_batches)
+		except Exception:
+			child_roll_batches = []
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	if not bundle_batch_no and not child_roll_batches:
+		frappe.throw(_("Bundle batch number or child roll batches are required"))
+
+	batches_to_remove = {_cstr(b).strip() for b in (child_roll_batches or []) if _cstr(b).strip()}
+	if bundle_batch_no:
+		batches_to_remove.add(bundle_batch_no)
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot delete bundle packaging from a submitted Shaft Production Run"))
+
+		removed_items = []
+		for row in list(spr.items or []):
+			bn = _cstr(getattr(row, "batch_no", "")).strip()
+			if bn and bn in batches_to_remove:
+				removed_items.append(bn)
+				spr.remove(row)
+
+		removed_stickers = []
+		for row in list(spr.bundle_stickers or []):
+			bn = _cstr(getattr(row, "batch_no", "")).strip()
+			if bundle_batch_no and bn == bundle_batch_no:
+				removed_stickers.append(bn)
+				spr.remove(row)
+
+		if not removed_items and not removed_stickers:
+			return {
+				"status": "not_found",
+				"spr_name": spr_name,
+				"bundle_batch_no": bundle_batch_no,
+			}
+
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"bundle_batch_no": bundle_batch_no,
+			"removed_item_batches": removed_items,
+			"removed_sticker_batches": removed_stickers,
+			"total_items": len(spr.items or []),
+			"total_stickers": len(spr.bundle_stickers or []),
+		}
+
+
+@frappe.whitelist()
 def delete_gsm_roll_line_from_spr(spr_name, batch_no=None, row_name=None):
 	"""GSM Remove Row — delete one roll line from draft SPR (by batch_no or child row name)."""
 	spr_name = _cstr(spr_name).strip()
@@ -10224,6 +10309,9 @@ def import_gsm_roll_lines_to_spr(spr_name, roll_payloads, shift=None):
 			if not isinstance(payload, dict):
 				continue
 			res = _gsm_upsert_roll_line_on_spr(spr, pp_id, payload, shift=shift)
+			if res.get("action") == "skipped":
+				lines.append(res)
+				continue
 			if res.get("action") == "updated":
 				updated += 1
 			else:

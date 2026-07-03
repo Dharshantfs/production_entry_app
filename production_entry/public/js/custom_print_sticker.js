@@ -864,3 +864,114 @@ function normalize_custom_fields(custom_fields) {
         show_barcode: as_bool(custom_fields.show_barcode, 1)
     };
 }
+
+/** Bundle sticker label (desk Bundle Stickers → Print Label). */
+frappe.generate_bundle_sticker_flow = function (sticker_row, frm, gridRow) {
+    var f = frm || cur_frm;
+    var doc = (f && f.doc) || {};
+    var sticker = sticker_row || {};
+    var row = gridRow || {};
+    var combination = String(sticker.combination || row.combination || "").trim();
+    var packCount = parseInt(sticker.rolls_per_bundle || row.pack_count || 0, 10) || 0;
+    var segW = flt(row.segment_width || 0);
+    if (!segW && combination) {
+        var cm = combination.match(/(\d+(?:\.\d+)?)\s*\*/);
+        if (cm) {
+            segW = flt(cm[1]);
+        }
+    }
+    var widthDisplay = combination;
+    if (!widthDisplay && packCount > 0 && segW > 0) {
+        widthDisplay = packCount + " * " + segW + " Inches";
+    }
+    var rollNumbers = String(sticker.roll_numbers || row.roll_numbers || "").trim();
+    var lengthVal = sticker.produced_length_mtrs || sticker.custom_produced_length_mtrs
+        || row.produced_length_mtrs || row.meter_roll || "0";
+    var gw = flt(sticker.sticker_bundle_gross_weight_kg || row.gross_weight || 0);
+    var nw = flt(sticker.sticker_bundle_weight || row.net_weight || 0);
+    var batchNo = String(sticker.batch_no || row.batch_no || "").trim();
+    var quality = String(row.quality || "").trim();
+    var color = String(row.color || "").trim();
+    var gsm = String(row.gsm || sticker.gsm || "").trim();
+    var partyCode = String(row.party_code || doc.custom_order_code || "").trim();
+    var qualityAndOrder = [quality, partyCode].filter(function (s) { return !!s; }).join(" | ");
+
+    var d = {
+        company: "JAYASHREE SPUN BOND",
+        email: "enquiry@jayashreespunbond.com",
+        quality_order: qualityAndOrder,
+        gsm: gsm,
+        color: color,
+        width_val: widthDisplay,
+        length: lengthVal,
+        gw: gw.toFixed(2),
+        nw: nw.toFixed(2),
+        batch_no: batchNo,
+        roll_numbers: rollNumbers,
+        barcode_data: batchNo
+    };
+
+    var htmlContent = get_bundle_label_format(d);
+    var printWindow = window.open("", "_blank", "height=650,width=500");
+    if (printWindow) {
+        printWindow.document.write(htmlContent);
+        printWindow.document.close();
+    }
+};
+
+function get_bundle_label_format(d) {
+    var rows = [];
+    if (d.gsm) {
+        rows.push('<tr><td><span class="lbl">GSM</span></td><td class="colon">:</td><td><span class="val">' + escape_html(d.gsm) + '</span></td></tr>');
+    }
+    if (d.color) {
+        rows.push('<tr><td><span class="lbl">COLOR</span></td><td class="colon">:</td><td><span class="val">' + escape_html(d.color) + '</span></td></tr>');
+    }
+    if (d.length) {
+        rows.push('<tr><td><span class="lbl">LENGTH</span></td><td class="colon">:</td><td><span class="val">' + escape_html(String(d.length)) + ' MTRS</span></td></tr>');
+    }
+    if (d.width_val) {
+        rows.push('<tr><td><span class="lbl">WIDTH</span></td><td class="colon">:</td><td><span class="val">' + escape_html(String(d.width_val).toUpperCase()) + '</span></td></tr>');
+    }
+    rows.push('<tr><td><span class="lbl">GROSS WEIGHT</span></td><td class="colon">:</td><td><span class="val">' + escape_html(d.gw) + ' KGS</span></td></tr>');
+    rows.push('<tr><td><span class="lbl">NET WEIGHT</span></td><td class="colon">:</td><td><span class="val">' + escape_html(d.nw) + ' KGS</span></td></tr>');
+    if (d.batch_no) {
+        rows.push('<tr><td><span class="lbl">BATCH NO</span></td><td class="colon">:</td><td><span class="val">' + escape_html(d.batch_no) + '</span></td></tr>');
+    }
+    if (d.roll_numbers) {
+        rows.push('<tr><td><span class="lbl">ROLL NO</span></td><td class="colon">:</td><td><span class="val">' + escape_html(d.roll_numbers) + '</span></td></tr>');
+    }
+
+    return '<html><head><title>Bundle Label Preview</title><style>' +
+        '@media print { .btn-panel { display: none !important; } @page { size: 4in 4in; margin: 0; } body { margin: 0; } }' +
+        'body { font-family: "Arial", sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; }' +
+        '.btn-panel { padding: 10px; background: #eee; }' +
+        '.sticker { width: 4in; height: 4in; margin: 20px auto; border: 2px solid black; background: white; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
+        '.inner-border { border: 2px solid black; margin: 6px; padding: 6px 10px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }' +
+        '.header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 4px; margin-bottom: 4px; }' +
+        '.company { font-size: 24px; font-weight: 900; }' +
+        '.email { font-size: 12px; font-weight: bold; color: #444; }' +
+        '.subheader { font-size: 17px; font-weight: 900; margin-top: 2px; }' +
+        'table { width: 100%; border-collapse: collapse; margin: 2px auto; }' +
+        'td { padding: 4px 0; text-align: left; vertical-align: middle; }' +
+        'td:nth-child(1) { width: 44%; padding-left: 8px; }' +
+        'td.colon { width: 5%; text-align: center; font-weight: bold; }' +
+        '.lbl { font-size: 15px; font-weight: 900; color: #333; }' +
+        '.val { font-size: 15px; font-weight: 900; color: #000; }' +
+        '.barcode-container { display: flex; justify-content: center; align-items: center; padding: 3px 0 2px 0; }' +
+        '#barcode { max-width: 100%; height: 55px; }' +
+        '</style></head><body>' +
+        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px; font-weight:bold; cursor:pointer;">PRINT</button><button onclick="window.close()" style="padding:10px 20px; margin-left:10px;">CLOSE</button></div>' +
+        '<div class="sticker"><div class="inner-border">' +
+        '<div class="header">' +
+            '<div class="company">' + escape_html(d.company) + '</div>' +
+            '<div class="email">' + escape_html(d.email) + '</div>' +
+            (d.quality_order ? '<div class="subheader">' + escape_html(d.quality_order) + '</div>' : '') +
+        '</div>' +
+        '<div class="table-container"><table>' + rows.join('') + '</table></div>' +
+        '<div class="barcode-container"><svg id="barcode"></svg></div>' +
+        '</div></div>' +
+        '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"><\/script>' +
+        (d.barcode_data ? ('<script>JsBarcode("#barcode", "' + d.barcode_data + '", { format: "CODE128", displayValue: true, fontSize: 12, textMargin: 1, height: 55, width: 2.0, margin: 0 });<\/script>') : '') +
+        '</body></html>';
+}

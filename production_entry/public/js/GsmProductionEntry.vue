@@ -727,6 +727,7 @@ import {
   gsmOpenRmBatches,
   gsmOpenTrailOrder,
   gsmPrintRollLabel,
+  gsmPrintBundleLabel,
   gsmToggleBundleSeOnSubmit,
   openSprForm,
 } from "./spr_gsm_tools.js";
@@ -1728,6 +1729,8 @@ function handleBundleApplyResult(m, ppId) {
     segment_width: m.segment_width || 0,
     batch_no: m.bundle_batch_no || "",
     roll_no: "",
+    roll_numbers: m.roll_numbers || "",
+    combination: m.combination || "",
     meter_roll: m.meter_roll || 0,
     produced_length_mtrs: m.produced_length_mtrs || 0,
     produced_gsm: 0,
@@ -1738,7 +1741,7 @@ function handleBundleApplyResult(m, ppId) {
     work_order: m.work_order || "",
     child_roll_batches: m.child_roll_batches || [],
     child_spr_item_names: m.child_spr_item_names || [],
-    spr_item_name: (m.child_spr_item_names || [])[0] || "",
+    spr_item_name: "",
     row_locked: 1,
     row_ready_for_print: 1,
     core_width_options: coreWidthOptions.value,
@@ -1838,6 +1841,7 @@ function buildRollPayload(row) {
     custom_diameter_inches: row.custom_diameter_inches,
     custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
     job_id: row.job_id || row.job || "",
+    is_bundle_row: row.is_bundle_row ? 1 : 0,
     row_locked: row.row_locked ? 1 : 0,
     row_ready_for_print: row.row_ready_for_print ? 1 : 0,
   };
@@ -1949,7 +1953,7 @@ async function callSubmitGsm(overrides = []) {
       unit: headerUnit.value,
       operator: operator.value,
       supervisor: supervisor.value,
-      rolls: JSON.stringify(rollLines.value.map(buildRollPayload)),
+      rolls: JSON.stringify(rollLines.value.filter((r) => !r.is_bundle_row).map(buildRollPayload)),
       session_sprs: JSON.stringify(buildSessionSprsPayload()),
       tolerance_overrides: JSON.stringify(overrides),
     },
@@ -2110,6 +2114,19 @@ async function printLabel(row) {
     return;
   }
   const sprName = sprNameForPp(row.pp_id);
+  if (!sprName) {
+    frappe.msgprint(__("Create SPRs first."));
+    return;
+  }
+  if (row.is_bundle_row) {
+    try {
+      await gsmPrintBundleLabel(sprName, row);
+    } catch (e) {
+      console.error(e);
+      frappe.msgprint(__("Could not open bundle label print."));
+    }
+    return;
+  }
   let itemName = row.spr_item_name || (await resolveSprItemRowName(row));
   if (!itemName) {
     frappe.msgprint(__("Save Row first to enable the label."));
@@ -2614,17 +2631,22 @@ async function removeTopRow() {
   const wasSaved = !!(row.spr_item_name || (row.row_locked && row.batch_no));
 
   const doRemove = async () => {
-    if (row.is_bundle_row && row.child_roll_batches?.length && sprName) {
-      saveStatus.value = "Deleting bundle rolls…";
-      for (const bn of row.child_roll_batches) {
-        try {
-          await frappe.call({
-            method: "production_entry.production_planning.unified_production_entry_api.delete_gsm_roll_line",
-            args: { spr_name: sprName, batch_no: bn },
-          });
-        } catch (e) {
-          console.error(e);
-        }
+    if (row.is_bundle_row && sprName && (row.batch_no || row.child_roll_batches?.length)) {
+      saveStatus.value = "Deleting bundle from SPR…";
+      try {
+        await frappe.call({
+          method: "production_entry.production_planning.unified_production_entry_api.delete_gsm_bundle_packaging",
+          args: {
+            spr_name: sprName,
+            bundle_batch_no: row.batch_no || "",
+            child_roll_batches: JSON.stringify(row.child_roll_batches || []),
+          },
+        });
+      } catch (e) {
+        console.error(e);
+        saveStatus.value = "Delete failed";
+        frappe.msgprint(__("Could not remove bundle from {0}.", [sprName]));
+        return;
       }
     } else if (wasSaved && sprName && row.batch_no) {
       saveStatus.value = "Deleting from SPR…";

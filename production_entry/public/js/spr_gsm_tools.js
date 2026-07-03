@@ -149,6 +149,43 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null)
 	frappe.msgprint(__("Label print module could not be loaded."));
 }
 
+/** Print bundle sticker label (Bundle Stickers row — not single-roll label). */
+export async function gsmPrintBundleLabel(sprName, gridRow = null) {
+	if (!sprName) {
+		frappe.msgprint(__("Create SPRs first."));
+		return;
+	}
+	if (!gridRow || !gridRow.batch_no) {
+		frappe.msgprint(__("Bundle batch is missing."));
+		return;
+	}
+	if (typeof frappe.generate_bundle_sticker_flow !== "function") {
+		await import("./custom_print_sticker.js");
+	}
+	await frappe.model.with_doc("Shaft Production Run", sprName);
+	const doc = frappe.get_doc("Shaft Production Run", sprName);
+	const bundleBatch = String(gridRow.batch_no || "").trim();
+	let sticker = (doc.bundle_stickers || []).find((bs) => String(bs.batch_no || "").trim() === bundleBatch);
+	if (!sticker && bundleBatch) {
+		try {
+			const res = await frappe.db.get_list("Bundle Stickers", {
+				filters: { parent: sprName, batch_no: bundleBatch },
+				fields: ["name", "batch_no", "combination", "roll_numbers", "rolls_per_bundle", "produced_length_mtrs", "sticker_width", "sticker_bundle_gross_weight_kg", "sticker_bundle_weight"],
+				limit: 1,
+			});
+			sticker = res?.[0] || null;
+		} catch (e) {
+			sticker = null;
+		}
+	}
+	const frm = { doc };
+	if (typeof frappe.generate_bundle_sticker_flow === "function") {
+		frappe.generate_bundle_sticker_flow(sticker, frm, gridRow);
+		return;
+	}
+	frappe.msgprint(__("Bundle label print module could not be loaded."));
+}
+
 function cint(v) {
 	const n = parseInt(v, 10);
 	return Number.isFinite(n) ? n : 0;

@@ -20,6 +20,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_spr_net_kg_per_shaft_for_pp_line_width,
 	compute_mix_roll_planned_qty_kg,
 	delete_gsm_roll_line_from_spr,
+	delete_gsm_bundle_packaging_from_spr,
 	import_gsm_roll_lines_to_spr,
 	parse_item_code,
 	resolve_label_from_pp_doc,
@@ -1194,6 +1195,16 @@ def delete_gsm_roll_line(spr_name, batch_no=None, row_name=None):
 
 
 @frappe.whitelist()
+def delete_gsm_bundle_packaging(spr_name, bundle_batch_no, child_roll_batches=None):
+	"""GSM Remove bundle — child rolls, bundle sticker row, and -B1 summary line."""
+	return delete_gsm_bundle_packaging_from_spr(
+		spr_name,
+		bundle_batch_no=bundle_batch_no,
+		child_roll_batches=child_roll_batches,
+	)
+
+
+@frappe.whitelist()
 def submit_gsm_production_entry(
 	run_date=None,
 	shift=None,
@@ -1244,6 +1255,8 @@ def submit_gsm_production_entry(
 	rolls_by_pp: dict[str, list] = {}
 	for roll in rolls:
 		if not isinstance(roll, dict):
+			continue
+		if cint(roll.get("is_bundle_row") or 0):
 			continue
 		pp_id = _cstr(roll.get("pp_id")).strip()
 		if not pp_id:
