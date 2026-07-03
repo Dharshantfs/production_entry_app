@@ -9830,6 +9830,309 @@ def _spr_existing_series_prefix_for_job(spr_doc, job_id: str) -> str:
 	return ""
 
 
+def _gsm_shaft_width_inch(shaft_row) -> float:
+	w = flt(_spr_row_get(shaft_row, "total_width") or _spr_row_get(shaft_row, "combined_width") or 0)
+	if w > 0:
+		return w
+	comb = _cstr(
+		_spr_row_get(shaft_row, "combination")
+		or _spr_row_get(shaft_row, "combined_width")
+		or _spr_row_get(shaft_row, "shaft")
+		or _spr_row_get(shaft_row, "shaft_details")
+	)
+	if comb and "+" not in comb:
+		try:
+			return flt(comb)
+		except Exception:
+			pass
+	widths = _parse_combination_widths_inches(comb) if comb else []
+	return flt(widths[0]) if widths else 0.0
+
+
+def _gsm_shaft_gsm(shaft_row) -> int:
+	try:
+		return int(flt(_spr_row_get(shaft_row, "gsm") or 0))
+	except Exception:
+		return 0
+
+
+def _gsm_resolve_job_id_for_roll(spr, pp_id: str, payload: dict) -> str:
+	"""Resolve shaft job id for a GSM roll line — mirrors unified_production_entry_api matching."""
+	ppi = _cstr(payload.get("planning_table_row") or payload.get("production_plan_item")).strip()
+	target_gsm = cint(payload.get("gsm") or 0)
+	target_w = flt(payload.get("width_inch") or 0)
+
+	for sj in _spr_job_rows(spr):
+		if ppi and _cstr(getattr(sj, "production_plan_item", None)) == ppi:
+			return _cstr(_spr_job_id(sj))
+		jg = cint(getattr(sj, "gsm", 0) or 0)
+		if target_gsm and jg and jg != target_gsm:
+			continue
+		comb = _cstr(getattr(sj, "combination", None))
+		if target_w > 0:
+			widths = _parse_combination_widths_inches(comb) if comb else []
+			if widths:
+				if any(abs(flt(w) - target_w) < 0.05 for w in widths):
+					return _cstr(_spr_job_id(sj))
+			elif abs(_gsm_shaft_width_inch(sj) - target_w) < 0.05:
+				return _cstr(_spr_job_id(sj))
+			elif comb and abs(flt(comb) - target_w) < 0.05:
+				return _cstr(_spr_job_id(sj))
+
+	if not pp_id or not frappe.db.exists("Production Plan", pp_id):
+		return ""
+	pp = frappe.get_doc("Production Plan", pp_id)
+	pp_shafts = pp.get("custom_shaft_details") or pp.get("shaft_details") or []
+	for idx, shaft in enumerate(pp_shafts, start=1):
+		if target_gsm and _gsm_shaft_gsm(shaft) != target_gsm:
+			continue
+		if target_w > 0:
+			comb = _cstr(
+				_spr_row_get(shaft, "combination")
+				or _spr_row_get(shaft, "combined_width")
+				or _spr_row_get(shaft, "shaft")
+				or _spr_row_get(shaft, "shaft_details")
+			)
+			widths = _parse_combination_widths_inches(comb) if comb else []
+			width_match = abs(_gsm_shaft_width_inch(shaft) - target_w) < 0.05
+			if widths and not width_match:
+				width_match = any(abs(flt(w) - target_w) < 0.05 for w in widths)
+			if not width_match:
+				continue
+		for sj in _spr_job_rows(spr):
+			jid = _cstr(_spr_job_id(sj))
+			if jid == str(idx):
+				return jid
+	return ""
+
+
+def _gsm_find_item_row_by_batch(spr, batch_no: str):
+	bn = _cstr(batch_no).strip()
+	if not bn:
+		return None
+	for row in spr.items or []:
+		if _cstr(getattr(row, "batch_no", "")).strip() == bn:
+			return row
+	return None
+
+
+def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
+	"""Map GSM Production Entry roll payload onto an SPR Item row (additive fields only)."""
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	field_map = {
+		"work_order": "work_order",
+		"item_code": "item_code",
+		"item_name": "item_name",
+		"quality": "quality",
+		"color": "color",
+		"gsm": "gsm",
+		"batch_no": "batch_no",
+		"roll_no": "roll_no",
+		"width_inch": "width_inch",
+		"meter_roll": "meter_roll",
+		"produced_length_mtrs": "produced_length_mtrs",
+		"produced_gsm": "produced_gsm",
+		"net_weight": "net_weight",
+		"gross_weight": "gross_weight",
+		"planned_qty": "planned_qty",
+		"party_code": "party_code",
+		"uom": "uom",
+	}
+	for src, dst in field_map.items():
+		if not spi_meta.has_field(dst):
+			continue
+		val = payload.get(src)
+		if val is None or val == "":
+			continue
+		if dst in ("net_weight", "gross_weight", "planned_qty", "produced_gsm", "width_inch", "meter_roll"):
+			row.set(dst, flt(val))
+		elif dst == "roll_no":
+			row.set(dst, cint(val) if val not in (None, "") else 0)
+		elif dst == "gsm":
+			row.set(dst, cint(val))
+		else:
+			row.set(dst, _cstr(val))
+
+	if spi_meta.has_field("job") and job_id:
+		row.job = job_id
+
+	optional_map = {
+		"custom_core_width_mm": "custom_core_width_mm",
+		"custom_polybag_kgs": "custom_polybag_kgs",
+		"custom_diameter_inches": "custom_diameter_inches",
+		"custom_cbm_cubic_meters": "custom_cbm_cubic_meters",
+		"custom_shift": "custom_shift",
+	}
+	for src, dst in optional_map.items():
+		if not spi_meta.has_field(dst):
+			continue
+		val = payload.get(src)
+		if val is None or val == "":
+			if dst == "custom_shift" and shift:
+				row.set(dst, _cstr(shift))
+			continue
+		if dst in ("custom_polybag_kgs", "custom_core_width_mm", "custom_diameter_inches", "custom_cbm_cubic_meters"):
+			row.set(dst, flt(val))
+		else:
+			row.set(dst, _cstr(val))
+	if shift and spi_meta.has_field("custom_shift") and not _cstr(getattr(row, "custom_shift", "")):
+		row.custom_shift = _cstr(shift)
+
+	if spi_meta.has_field("row_locked"):
+		row.row_locked = cint(payload.get("row_locked") or 0)
+	if spi_meta.has_field("row_ready_for_print"):
+		row.row_ready_for_print = cint(payload.get("row_ready_for_print") or payload.get("row_locked") or 0)
+
+
+def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> dict:
+	"""Insert or update one GSM roll line on a draft SPR (batch_no dedup)."""
+	batch_no = _cstr(payload.get("batch_no")).strip()
+	if not batch_no:
+		frappe.throw(_("Batch number is required for GSM roll import"))
+
+	job_id = _gsm_resolve_job_id_for_roll(spr, pp_id, payload)
+	existing = _gsm_find_item_row_by_batch(spr, batch_no)
+	action = "updated" if existing else "added"
+	if existing:
+		row = existing
+	else:
+		row = spr.append("items", {})
+		row.batch_no = batch_no
+
+	_gsm_apply_payload_to_item_row(row, payload, job_id, shift=shift)
+	return {
+		"action": action,
+		"batch_no": batch_no,
+		"job": job_id,
+		"row_name": _cstr(getattr(row, "name", "")),
+	}
+
+
+def _gsm_spr_skips_tolerance(doc) -> bool:
+	return bool(
+		cint(getattr(doc, "custom_is_box_bag", 0))
+		or cint(getattr(doc, "custom_is_sheet_cutting", 0))
+	)
+
+
+def _gsm_format_tolerance_violations(doc) -> list[dict]:
+	out = []
+	for jb, rn, pq, act, dp in _spr_collect_roll_planned_tolerance_violations(doc):
+		out.append(
+			{
+				"job": jb or "—",
+				"roll_no": rn if rn is not None and rn != "" else "—",
+				"planned": flt(pq, 3),
+				"actual": flt(act, 3),
+				"dev_pct": flt(dp, 2),
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def spr_get_tolerance_violations(spr_name):
+	"""GSM / desk helper — expose existing SPR tolerance check without changing submit flow."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if _gsm_spr_skips_tolerance(spr):
+		return {
+			"spr_name": spr_name,
+			"order_code": _cstr(spr.get("custom_order_code") or ""),
+			"skipped": True,
+			"tolerance_percent": _spr_net_weight_tolerance_percent(),
+			"violations": [],
+		}
+	return {
+		"spr_name": spr_name,
+		"order_code": _cstr(spr.get("custom_order_code") or ""),
+		"skipped": False,
+		"tolerance_percent": _spr_net_weight_tolerance_percent(),
+		"violations": _gsm_format_tolerance_violations(spr),
+		"override_approved": cint(spr.get("tolerance_override_approved") or 0),
+		"override_reason": _cstr(spr.get("tolerance_override_reason") or ""),
+	}
+
+
+@frappe.whitelist()
+def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
+	"""Real-time GSM Save Row — upsert one roll line on draft SPR (server, not local only)."""
+	spr_name = _cstr(spr_name).strip()
+	if isinstance(roll_payload, str):
+		try:
+			roll_payload = json.loads(roll_payload)
+		except Exception:
+			frappe.throw(_("Invalid roll payload"))
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	if not roll_payload or not isinstance(roll_payload, dict):
+		frappe.throw(_("Roll payload is required"))
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
+		pp_id = _cstr(spr.get("production_plan")).strip()
+		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
+		spr._validate_no_duplicate_roll_batches()
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
+		result.update(
+			{
+				"status": "ok",
+				"spr_name": spr_name,
+				"total_items": len(spr.items or []),
+				"modified": spr.modified,
+			}
+		)
+		return result
+
+
+@frappe.whitelist()
+def import_gsm_roll_lines_to_spr(spr_name, roll_payloads, shift=None):
+	"""Bulk import GSM roll grid rows onto a draft SPR (batch_no dedup — safe to re-submit)."""
+	spr_name = _cstr(spr_name).strip()
+	if isinstance(roll_payloads, str):
+		try:
+			roll_payloads = json.loads(roll_payloads)
+		except Exception:
+			frappe.throw(_("Invalid roll payloads"))
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	if not roll_payloads:
+		return {"status": "ok", "spr_name": spr_name, "added": 0, "updated": 0, "lines": []}
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=180):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot import roll lines to a submitted Shaft Production Run"))
+		pp_id = _cstr(spr.get("production_plan")).strip()
+		lines = []
+		added = updated = 0
+		for payload in roll_payloads:
+			if not isinstance(payload, dict):
+				continue
+			res = _gsm_upsert_roll_line_on_spr(spr, pp_id, payload, shift=shift)
+			if res.get("action") == "updated":
+				updated += 1
+			else:
+				added += 1
+			lines.append(res)
+		spr._validate_no_duplicate_roll_batches()
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"added": added,
+			"updated": updated,
+			"total_items": len(spr.items or []),
+			"lines": lines,
+		}
+
+
 @frappe.whitelist()
 def append_roll_lines_for_job_and_save(
 	shaft_production_run,

@@ -19,7 +19,11 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_spr_job_rows,
 	_spr_net_kg_per_shaft_for_pp_line_width,
 	compute_mix_roll_planned_qty_kg,
+	import_gsm_roll_lines_to_spr,
 	parse_item_code,
+	resolve_label_from_pp_doc,
+	save_gsm_roll_line_to_spr,
+	spr_get_tolerance_violations,
 )
 from production_entry.production_planning.scheduler_api import create_item_spr, get_current_shift
 
@@ -867,3 +871,360 @@ def get_gsm_shift_submitted_entries(run_date, shift, unit=None):
 			}
 		)
 	return out
+
+
+def _parse_json_arg(val, default=None):
+	if val is None:
+		return default if default is not None else []
+	if isinstance(val, str):
+		try:
+			return json.loads(val)
+		except Exception:
+			return default if default is not None else []
+	return val
+
+
+def _apply_gsm_session_header_to_spr(spr, run_date=None, shift=None, unit=None, operator=None, supervisor=None):
+	"""Set GSM session header fields on draft SPR without touching desk SPR flows."""
+	changed = False
+	if unit and _cstr(spr.get("custom_unit")) != _cstr(unit):
+		spr.custom_unit = unit
+		changed = True
+	if run_date and str(spr.get("run_date") or "") != str(run_date):
+		spr.run_date = run_date
+		changed = True
+	if shift and _cstr(spr.get("shift")) != _cstr(shift):
+		spr.shift = shift
+		changed = True
+	for value, candidates in (
+		(operator, ("operator", "custom_operator", "custom_shift_operator")),
+		(supervisor, ("supervisor", "custom_supervisor", "custom_shift_supervisor")),
+	):
+		val = _cstr(value).strip()
+		if not val:
+			continue
+		for key in candidates:
+			if frappe.db.has_column("Shaft Production Run", key) and _cstr(spr.get(key)) != val:
+				spr.set(key, val)
+				changed = True
+				break
+	return changed
+
+
+def _gsm_pp_shaft_rows(pp) -> list[dict]:
+	"""Read-only PP shaft details for GSM Shaft Details popup."""
+	meter_keys = _meter_keys()
+	out = []
+	for idx, shaft in enumerate(pp.get("custom_shaft_details") or pp.get("shaft_details") or [], start=1):
+		row = _normalize_pp_shaft_job_row(shaft)
+		comb = _cstr(
+			_pick_value(row, ["combination", "combined_width", "shaft", "shaft_details"], "")
+		)
+		meter_roll = flt(_pick_value(row, meter_keys, 0))
+		no_of_shafts = _pick_value(
+			row,
+			["no_of_shafts", "custom_no_of_shafts", "shaft_count", "number_of_shafts"],
+			"",
+		)
+		net_weight = _pick_value(
+			row,
+			["net_weight", "net_weight_shaft_kgs", "net_weight_shaft", "custom_net_weight_shaft_kgs"],
+			0,
+		)
+		out.append(
+			{
+				"job": _cstr(_pick_value(row, ["job_id", "job", "job_no"], str(idx))),
+				"no_of_shafts": no_of_shafts,
+				"gsm": _shaft_gsm(row),
+				"combination": comb,
+				"total_width": flt(_pick_value(row, ["total_width", "combined_width", "width"], 0))
+				or _shaft_width_inch(row),
+				"meter_roll": meter_roll,
+				"net_weight": flt(net_weight),
+			}
+		)
+	return out
+
+
+def _gsm_order_code_for_pp(pp_id: str) -> str:
+	if not pp_id or not frappe.db.exists("Production Plan", pp_id):
+		return ""
+	pp = frappe.get_doc("Production Plan", pp_id)
+	if frappe.get_meta("Production Plan").has_field("custom_party_code"):
+		return _cstr(pp.get("custom_party_code") or "")
+	return _cstr(pp.get("custom_order_code") or "")
+
+
+@frappe.whitelist()
+def create_gsm_sprs_for_session(
+	run_date=None,
+	shift=None,
+	unit=None,
+	operator=None,
+	supervisor=None,
+	entries=None,
+):
+	"""GSM Step 1 — create/reuse one draft SPR per PP (same as Production Table create_item_spr)."""
+	entries = _parse_json_arg(entries, [])
+	if not entries:
+		frappe.throw(_("Select at least one planning line"))
+
+	pp_groups: dict[str, list] = {}
+	for entry in entries:
+		if not isinstance(entry, dict):
+			continue
+		pp_id = _cstr(entry.get("pp_id") or entry.get("ppId")).strip()
+		line_id = _cstr(entry.get("lineId") or entry.get("planning_table_row") or entry.get("id")).strip()
+		if not pp_id or not line_id:
+			continue
+		pp_groups.setdefault(pp_id, [])
+		if line_id not in pp_groups[pp_id]:
+			pp_groups[pp_id].append(line_id)
+
+	if not pp_groups:
+		frappe.throw(_("No valid Production Plan rows in selection"))
+
+	sprs_out = []
+	for pp_id, psi_names in pp_groups.items():
+		result = ensure_draft_spr_for_pp(pp_id, psi_names, unit=unit, run_date=run_date, shift=shift)
+		if not isinstance(result, dict) or result.get("status") != "ok" or not result.get("spr_name"):
+			sprs_out.append(
+				{
+					"pp_id": pp_id,
+					"status": "error",
+					"message": _cstr(result.get("message") if isinstance(result, dict) else result) or _("Could not create SPR"),
+				}
+			)
+			continue
+		spr_name = result["spr_name"]
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor):
+			spr.save(ignore_permissions=True)
+		label_type = resolve_label_from_pp_doc(frappe.get_doc("Production Plan", pp_id)) if frappe.db.exists(
+			"Production Plan", pp_id
+		) else ""
+		sprs_out.append(
+			{
+				"pp_id": pp_id,
+				"status": "ok",
+				"spr_name": spr_name,
+				"order_code": _cstr(spr.get("custom_order_code") or _gsm_order_code_for_pp(pp_id)),
+				"label_type": label_type or _cstr(spr.get("custom_label") or ""),
+				"reused": cint(result.get("reused") or 0),
+				"shaft_job_count": len(_spr_job_rows(spr)),
+			}
+		)
+	return {"status": "ok", "sprs": sprs_out}
+
+
+@frappe.whitelist()
+def get_gsm_pp_shaft_details(pp_ids=None):
+	"""GSM Shaft Details popup — read PP shaft table (no SPR required)."""
+	pp_ids = _parse_json_arg(pp_ids, [])
+	if isinstance(pp_ids, str):
+		pp_ids = [x.strip() for x in pp_ids.split(",") if x.strip()]
+	if not pp_ids:
+		frappe.throw(_("Production Plan id(s) required"))
+	out = []
+	for pp_id in pp_ids:
+		pp_id = _cstr(pp_id).strip()
+		if not pp_id or not frappe.db.exists("Production Plan", pp_id):
+			out.append({"pp_id": pp_id, "status": "error", "message": _("Production Plan not found")})
+			continue
+		pp = frappe.get_doc("Production Plan", pp_id)
+		out.append(
+			{
+				"pp_id": pp_id,
+				"status": "ok",
+				"order_code": _gsm_order_code_for_pp(pp_id),
+				"label_type": resolve_label_from_pp_doc(pp) or "",
+				"shaft_rows": _gsm_pp_shaft_rows(pp),
+			}
+		)
+	return out
+
+
+def _gsm_tolerance_orders_from_sprs(spr_names: list[str]) -> list[dict]:
+	orders = []
+	for spr_name in spr_names:
+		check = spr_get_tolerance_violations(spr_name)
+		if check.get("skipped") or not check.get("violations"):
+			continue
+		orders.append(
+			{
+				"spr_name": spr_name,
+				"order_code": check.get("order_code") or "",
+				"tolerance_percent": check.get("tolerance_percent"),
+				"violations": check.get("violations") or [],
+			}
+		)
+	return orders
+
+
+def _gsm_apply_tolerance_override(spr_name: str, reason: str, approved: int):
+	"""Set SPR tolerance override fields — same fields desk submit dialog uses."""
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	meta = frappe.get_meta("Shaft Production Run")
+	if not meta.has_field("tolerance_override_approved") or not meta.has_field("tolerance_override_reason"):
+		return
+	spr.tolerance_override_approved = cint(approved)
+	spr.tolerance_override_reason = _cstr(reason).strip()
+	spr.save(ignore_permissions=True)
+
+
+@frappe.whitelist()
+def save_gsm_roll_line(spr_name, roll_payload, shift=None):
+	"""GSM real-time Save Row — thin wrapper for Vue."""
+	return save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=shift)
+
+
+@frappe.whitelist()
+def submit_gsm_production_entry(
+	run_date=None,
+	shift=None,
+	unit=None,
+	operator=None,
+	supervisor=None,
+	rolls=None,
+	session_sprs=None,
+	tolerance_overrides=None,
+	submit_sprs=True,
+):
+	"""
+	GSM Step 2 — import rolls to draft SPRs, check existing SPR tolerance rules, submit.
+
+	Does not change desk SPR flows. Uses the same tolerance_override_* fields and doc.submit()
+	pipeline (manufacturing entries included).
+	"""
+	rolls = _parse_json_arg(rolls, [])
+	session_sprs = _parse_json_arg(session_sprs, [])
+	tolerance_overrides = _parse_json_arg(tolerance_overrides, [])
+	submit_sprs = cint(submit_sprs)
+
+	if not rolls:
+		frappe.throw(_("No roll lines to submit"))
+	if not session_sprs:
+		frappe.throw(_("Create SPRs first"))
+
+	pp_to_spr = {}
+	for row in session_sprs:
+		if not isinstance(row, dict):
+			continue
+		pp_id = _cstr(row.get("pp_id") or row.get("ppId")).strip()
+		spr_name = _cstr(row.get("spr_name")).strip()
+		if pp_id and spr_name:
+			pp_to_spr[pp_id] = spr_name
+
+	if not pp_to_spr:
+		frappe.throw(_("No SPR mapping in session"))
+
+	override_by_spr = {}
+	for ov in tolerance_overrides:
+		if not isinstance(ov, dict):
+			continue
+		sn = _cstr(ov.get("spr_name")).strip()
+		if sn:
+			override_by_spr[sn] = ov
+
+	rolls_by_pp: dict[str, list] = {}
+	for roll in rolls:
+		if not isinstance(roll, dict):
+			continue
+		pp_id = _cstr(roll.get("pp_id")).strip()
+		if not pp_id:
+			continue
+		rolls_by_pp.setdefault(pp_id, []).append(roll)
+
+	imported = []
+	import_failed = []
+	for pp_id, spr_name in pp_to_spr.items():
+		payloads = rolls_by_pp.get(pp_id) or []
+		if not payloads:
+			continue
+		try:
+			spr = frappe.get_doc("Shaft Production Run", spr_name)
+			if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor):
+				spr.save(ignore_permissions=True)
+			res = import_gsm_roll_lines_to_spr(spr_name, payloads, shift=shift)
+			imported.append({"pp_id": pp_id, "spr_name": spr_name, **res})
+		except Exception as e:
+			import_failed.append({"pp_id": pp_id, "spr_name": spr_name, "error": _cstr(e)})
+
+	if import_failed:
+		return {
+			"status": "import_failed",
+			"imported": imported,
+			"failed": import_failed,
+		}
+
+	spr_names = list(pp_to_spr.values())
+	tolerance_orders = _gsm_tolerance_orders_from_sprs(spr_names)
+
+	if tolerance_orders and submit_sprs:
+		missing_override = []
+		for order in tolerance_orders:
+			sn = order["spr_name"]
+			ov = override_by_spr.get(sn) or {}
+			reason = _cstr(ov.get("reason") or ov.get("tolerance_override_reason")).strip()
+			approved = cint(ov.get("approved") or ov.get("tolerance_override_approved"))
+			if not (approved and reason):
+				missing_override.append(sn)
+		if missing_override:
+			return {
+				"status": "tolerance_required",
+				"imported": imported,
+				"orders": tolerance_orders,
+				"message": _("Tolerance approval required for one or more orders"),
+			}
+
+	if not submit_sprs:
+		return {
+			"status": "imported",
+			"imported": imported,
+			"orders": tolerance_orders,
+		}
+
+	submitted = []
+	submit_failed = []
+	for pp_id, spr_name in pp_to_spr.items():
+		try:
+			ov = override_by_spr.get(spr_name) or {}
+			reason = _cstr(ov.get("reason") or ov.get("tolerance_override_reason")).strip()
+			approved = cint(ov.get("approved") or ov.get("tolerance_override_approved"))
+			if reason and approved:
+				_gsm_apply_tolerance_override(spr_name, reason, approved)
+			doc = frappe.get_doc("Shaft Production Run", spr_name)
+			if cint(doc.docstatus) == 0:
+				doc.submit()
+			submitted.append(
+				{
+					"pp_id": pp_id,
+					"spr_name": spr_name,
+					"order_code": _cstr(doc.get("custom_order_code") or ""),
+					"roll_count": len(doc.items or []),
+				}
+			)
+		except Exception as e:
+			submit_failed.append({"pp_id": pp_id, "spr_name": spr_name, "error": _cstr(e)})
+
+	status = "ok"
+	if submit_failed and submitted:
+		status = "partial"
+	elif submit_failed and not submitted:
+		status = "failed"
+
+	total_kg = 0.0
+	for row in submitted:
+		try:
+			doc = frappe.get_doc("Shaft Production Run", row["spr_name"])
+			total_kg += sum(flt(getattr(it, "net_weight", 0)) for it in (doc.items or []))
+		except Exception:
+			pass
+
+	return {
+		"status": status,
+		"imported": imported,
+		"submitted": submitted,
+		"failed": submit_failed,
+		"total_kg": round(total_kg, 2),
+	}
