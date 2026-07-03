@@ -15696,15 +15696,56 @@ def _psi_order_sheet_field():
     return None
 
 
+def _pick_valid_pp_id(raw) -> str:
+    """Return first valid Production Plan id from a scalar or comma-separated value."""
+    txt = str(raw or "").strip()
+    if not txt:
+        return ""
+    for token in [x.strip() for x in txt.split(",") if x and x.strip()]:
+        if frappe.db.exists("Production Plan", token):
+            return token
+    return ""
+
+
+def _row_order_sheet_pp(row_name=None, row_dict=None) -> str:
+    """Authoritative row-level PP link (order_sheet) before generic production_plan fields."""
+    row_dict = row_dict or {}
+    for fieldname in ("order_sheet", "custom_order_sheet", "custom_order_plan"):
+        if frappe.db.has_column("Planning Table", fieldname):
+            raw = row_dict.get(fieldname)
+            if raw is None and row_name:
+                raw = frappe.db.get_value("Planning Table", row_name, fieldname)
+            pp = _pick_valid_pp_id(raw)
+            if pp:
+                return pp
+    return ""
+
+
+def _spr_belongs_to_pp(spr_id: str, pp_id: str) -> bool:
+    spr_id = str(spr_id or "").strip()
+    pp_id = str(pp_id or "").strip()
+    if not spr_id or not pp_id or not frappe.db.exists("Shaft Production Run", spr_id):
+        return False
+    spr_pp = str(frappe.db.get_value("Shaft Production Run", spr_id, "production_plan") or "").strip()
+    return spr_pp == pp_id
+
+
 def _get_item_level_production_plan(item_name):
     """Read item-level Production Plan link using all known candidate fields."""
     if not item_name:
         return None
 
+    row_pp = _row_order_sheet_pp(row_name=item_name)
+    if row_pp:
+        return row_pp
+
     for fieldname in _psi_production_plan_fields():
+        if fieldname in ("order_sheet", "custom_order_sheet", "custom_order_plan"):
+            continue
         pp = frappe.db.get_value("Planning Table", item_name, fieldname)
         if not pp and frappe.db.has_column("Planning sheet Item", fieldname):
             pp = frappe.db.get_value("Planning sheet Item", item_name, fieldname)
+        pp = _pick_valid_pp_id(pp)
         if pp:
             return pp
     return None
@@ -17764,13 +17805,7 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
         return {"status": "error", "message": "Planning sheet not found", "updated_order_sheet": 0, "updated_spr": 0}
 
     def _pick_valid_pp(raw) -> str:
-        txt = str(raw or "").strip()
-        if not txt:
-            return ""
-        for token in [x.strip() for x in txt.split(",") if x and x.strip()]:
-            if frappe.db.exists("Production Plan", token):
-                return token
-        return ""
+        return _pick_valid_pp_id(raw)
 
     sheet_pp = (
         frappe.db.get_value("Planning sheet", planning_sheet, "custom_production_plan")
@@ -17839,7 +17874,7 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
         raw = str(frappe.db.get_value("Production Plan", pp_id, "custom_shaft_production_run_id") or "").strip()
         if raw:
             for p in [x.strip() for x in raw.split(",") if x and x.strip()]:
-                if frappe.db.exists("Shaft Production Run", p):
+                if frappe.db.exists("Shaft Production Run", p) and _spr_belongs_to_pp(p, pp_id):
                     spr_name = p
                     break
         if not spr_name:
@@ -17852,11 +17887,15 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
                 )
                 or ""
             )
+            if spr_name and not _spr_belongs_to_pp(spr_name, pp_id):
+                spr_name = ""
         pp_to_spr[pp_id] = spr_name
         return spr_name
 
     for r in rows:
-        row_pp = _pick_valid_pp(_get_item_level_production_plan(r.name))
+        row_pp = _row_order_sheet_pp(row_name=r.get("name"), row_dict=r)
+        if not row_pp:
+            row_pp = _pick_valid_pp(_get_item_level_production_plan(r.name))
         if not row_pp:
             item_code = (r.get("item_code") or "").strip()
             choices = pp_by_item_code.get(item_code) or []
@@ -17864,23 +17903,39 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
                 row_pp = choices[0]
             elif len(choices) > 1:
                 existing = _pick_valid_pp(r.get("order_sheet"))
-                row_pp = existing if existing in choices else choices[0]
+                row_pp = existing if existing in choices else ""
         if not row_pp:
             row_pp = _pick_valid_pp(r.get("order_sheet"))
         if not row_pp:
             row_pp = sheet_pp
-        if row_pp and (r.get("order_sheet") or "").strip() != row_pp:
-            frappe.db.set_value("Planning Table", r["name"], "order_sheet", row_pp, update_modified=False)
-            updated_order_sheet += 1
+        os_field = _psi_order_sheet_field() or "order_sheet"
+        cur_os = _pick_valid_pp(r.get("order_sheet"))
+        if row_pp and cur_os and cur_os != row_pp:
+            row_pp = cur_os
+        if row_pp and cur_os != row_pp:
+            if frappe.db.has_column("Planning Table", os_field):
+                frappe.db.set_value("Planning Table", r["name"], os_field, row_pp, update_modified=False)
+                updated_order_sheet += 1
 
         row_spr_single = _pick_spr_for_pp(row_pp) if row_pp else ""
-        if row_spr_single:
-            cur_raw = str((r.get("spr_name") or "")).strip()
-            cur_ids = _expand_spr_name_tokens(cur_raw)
-            if row_spr_single not in cur_ids:
-                merged_spr = ", ".join(cur_ids + [row_spr_single]) if cur_ids else row_spr_single
-                frappe.db.set_value("Planning Table", r["name"], "spr_name", merged_spr, update_modified=False)
-                updated_spr += 1
+        if row_spr_single and not _spr_belongs_to_pp(row_spr_single, row_pp):
+            row_spr_single = ""
+        cur_raw = str((r.get("spr_name") or "")).strip()
+        cur_ids = _expand_spr_name_tokens(cur_raw)
+        valid_ids = []
+        seen_local = set()
+        for sid in cur_ids:
+            if row_pp and not _spr_belongs_to_pp(sid, row_pp):
+                continue
+            if sid not in seen_local:
+                seen_local.add(sid)
+                valid_ids.append(sid)
+        if row_spr_single and row_spr_single not in seen_local:
+            valid_ids.append(row_spr_single)
+        new_spr_val = ", ".join(valid_ids)
+        if new_spr_val != cur_raw:
+            frappe.db.set_value("Planning Table", r["name"], "spr_name", new_spr_val, update_modified=False)
+            updated_spr += 1
 
     return {
         "status": "ok",
@@ -29132,24 +29187,37 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
         return {"status": "error", "message": f"Production Plan {pp_id} not found"}
     
     try:
-        def _ensure_spr_links_on_planning_rows(spr_nm, psi_names_list):
+        def _ensure_spr_links_on_planning_rows(spr_nm, psi_names_list, link_pp_id=None):
             """Append SPR to Planning Table row (comma-separated); never overwrite prior runs."""
             try:
                 if not spr_nm or not psi_names_list:
                     return
                 if not frappe.db.has_column("Planning Table", "spr_name"):
                     return
+                link_pp_id = str(link_pp_id or pp_id or "").strip()
+                os_field = _psi_order_sheet_field()
                 for pname in psi_names_list:
                     if not frappe.db.exists("Planning Table", pname):
                         continue
+                    if link_pp_id and os_field:
+                        row_pp = _row_order_sheet_pp(row_name=pname)
+                        if row_pp and row_pp != link_pp_id:
+                            continue
+                        if not row_pp:
+                            frappe.db.set_value(
+                                "Planning Table", pname, os_field, link_pp_id, update_modified=False
+                            )
                     cur = str(frappe.db.get_value("Planning Table", pname, "spr_name") or "").strip()
                     parts = []
                     seen_local = set()
                     for segment in cur.replace(";", ",").split(","):
                         x = segment.strip()
-                        if x and x not in seen_local:
-                            seen_local.add(x)
-                            parts.append(x)
+                        if not x or x in seen_local:
+                            continue
+                        if link_pp_id and not _spr_belongs_to_pp(x, link_pp_id):
+                            continue
+                        seen_local.add(x)
+                        parts.append(x)
                     if spr_nm not in seen_local:
                         parts.append(spr_nm)
                     frappe.db.set_value("Planning Table", pname, "spr_name", ", ".join(parts))

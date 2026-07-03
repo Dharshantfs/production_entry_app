@@ -185,7 +185,7 @@
       <main class="gpe-main gpe-card">
         <div class="gpe-header gpe-session-panel-main gpe-card-inner">
           <h3 class="gpe-session-title">Production Session</h3>
-          <div class="gpe-tags">
+          <div class="gpe-tags" v-if="!selectionLocked && headerTags.length">
             <span v-for="t in headerTags" :key="t" class="gpe-tag">{{ t }}</span>
           </div>
           <div class="gpe-header-session-row">
@@ -259,6 +259,13 @@
           <div class="gpe-toolbar-left">
             <button type="button" class="gpe-btn primary" :disabled="!canAddRow" @click="addRollRow">Add Roll Row</button>
             <button type="button" class="gpe-btn" :disabled="!rollLines.length" @click="removeTopRow">Remove Top Row</button>
+            <button
+              type="button"
+              class="gpe-btn gpe-btn-warn"
+              :disabled="!rollLines.length && !sessionSprList.length"
+              title="Clear grid for another entry same date/shift — then Create SPRs again"
+              @click="clearGridEntries"
+            >Clear Entries</button>
           </div>
           <span class="gpe-save-status">{{ saveStatus }}</span>
           <div class="gpe-toolbar-right">
@@ -280,6 +287,13 @@
             </div>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="openShaftDetails">Shaft Details</button>
             <button v-if="!allSprsCreated" type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
+            <button
+              v-else-if="forceNewSprSession"
+              type="button"
+              class="gpe-btn primary"
+              :disabled="!canCreateSprs"
+              @click="createSprs"
+            >Create new SPRs</button>
             <span v-else class="gpe-spr-ready-badge" title="All selected orders have draft SPRs">SPRs ready</span>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="submitEntry">Submit Entry</button>
           </div>
@@ -771,6 +785,7 @@ function resetBatchSeriesCache() {
 }
 
 const sessionSprs = ref({});
+const forceNewSprSession = ref(false);
 const showToleranceDialog = ref(false);
 const toleranceOrders = ref([]);
 const toleranceForm = ref({});
@@ -1710,6 +1725,24 @@ function buildSessionSprsPayload() {
   }));
 }
 
+async function clearGridEntries() {
+  if (!rollLines.value.length && !sessionSprList.value.length) {
+    return;
+  }
+  frappe.confirm(
+    __("Clear all roll rows from this screen? Server SPRs are kept — click Create new SPRs for another entry on the same shift."),
+    () => {
+      rollLines.value = [];
+      sessionSprs.value = {};
+      forceNewSprSession.value = true;
+      resetBatchSeriesCache();
+      saveStatus.value = "Cleared — create new SPRs";
+      scheduleAutosave();
+      frappe.show_alert({ message: __("Grid cleared"), indicator: "blue" });
+    }
+  );
+}
+
 async function createSprs() {
   if (!canCreateSprs.value) {
     return;
@@ -1730,6 +1763,7 @@ async function createSprs() {
         operator: operator.value,
         supervisor: supervisor.value,
         entries: JSON.stringify(entries),
+        force_new_session: forceNewSprSession.value ? 1 : 0,
       },
     });
     const sprs = (res.message || {}).sprs || [];
@@ -1749,6 +1783,7 @@ async function createSprs() {
       }
     }
     sessionSprs.value = next;
+    forceNewSprSession.value = false;
     scheduleAutosave();
     if (errors.length) {
       frappe.msgprint({
@@ -2627,9 +2662,11 @@ onUnmounted(() => {
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   font-size: 15px;
   color: #0f172a;
-  padding: 16px;
+  padding: 10px 12px;
   background: linear-gradient(160deg, #f1f5f9 0%, #e2e8f0 100%);
   min-height: 100vh;
+  box-sizing: border-box;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
 }
 .gpe-card {
@@ -2693,18 +2730,23 @@ onUnmounted(() => {
 }
 .gpe-layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 12px;
-  align-items: start;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+  height: calc(100vh - 168px);
+  min-height: 520px;
 }
 @media (max-width: 1100px) {
   .gpe-layout {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
   }
 }
 .gpe-sidebar {
-  padding: 12px;
-  max-height: calc(100vh - 220px);
+  padding: 10px;
+  max-height: none;
+  height: 100%;
   overflow: auto;
 }
 .gpe-sidebar h3 {
@@ -3142,16 +3184,26 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .gpe-main {
-  padding: 10px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 200px);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 .gpe-entry-workspace {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+}
+.gpe-session-panel-main {
+  flex-shrink: 0;
+}
+.gpe-header.gpe-session-panel-main {
+  padding: 8px;
+  margin-bottom: 6px;
 }
 .gpe-header-session-row {
   display: flex;
@@ -3177,14 +3229,20 @@ onUnmounted(() => {
   border: 1px solid #86efac;
 }
 .gpe-metrics-compact {
-  margin: 6px 0 !important;
+  margin: 4px 0 !important;
+  flex-shrink: 0;
 }
 .gpe-metrics-compact .gpe-metric {
-  padding: 8px;
-  font-size: 12px;
+  padding: 6px 8px;
+  font-size: 13px;
 }
 .gpe-metrics-compact .gpe-metric strong {
-  font-size: 18px;
+  font-size: 20px;
+}
+.gpe-gsm-legend {
+  flex-shrink: 0;
+  margin: 2px 0 4px;
+  font-size: 13px;
 }
 .gpe-header-fields {
   display: flex;
@@ -3267,28 +3325,32 @@ onUnmounted(() => {
 .gpe-metric.grey { background: #cbd5e1; color: #334155; }
 .gpe-toolbar {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0;
+  flex-shrink: 0;
 }
 .gpe-toolbar-left {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .gpe-toolbar-right {
   margin-left: auto;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
 .gpe-btn {
-  padding: 6px 12px;
+  padding: 8px 14px;
   border-radius: 8px;
   border: 1px solid #cbd5e1;
   background: #fff;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14px;
 }
 .gpe-btn.sm {
   padding: 3px 8px;
@@ -3298,6 +3360,14 @@ onUnmounted(() => {
   background: #4f46e5;
   color: #fff;
   border-color: #4f46e5;
+}
+.gpe-btn-warn {
+  border-color: #f59e0b;
+  color: #92400e;
+  background: #fffbeb;
+}
+.gpe-btn-warn:hover:not(:disabled) {
+  background: #fef3c7;
 }
 .gpe-btn.disabled {
   opacity: 0.5;
@@ -3346,23 +3416,24 @@ onUnmounted(() => {
 }
 .gpe-grid-wrap-entry {
   overflow: auto;
-  flex: 1;
-  min-height: 280px;
-  max-height: calc(100vh - 300px);
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: none;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   box-shadow: inset -8px 0 12px -8px rgba(15, 23, 42, 0.12);
+  -webkit-overflow-scrolling: touch;
 }
 .gpe-grid-entry {
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 15px;
+  font-size: 16px;
 }
 .gpe-grid-entry th,
 .gpe-grid-entry td {
   border-bottom: 1px solid #f1f5f9;
-  padding: 10px 12px;
+  padding: 8px 10px;
   white-space: nowrap;
 }
 .gpe-grid-entry th {
@@ -3370,7 +3441,7 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 2;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
 }
 .gpe-sticky-col {

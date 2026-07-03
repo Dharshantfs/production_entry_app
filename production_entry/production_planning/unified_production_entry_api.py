@@ -84,6 +84,19 @@ def _shaft_gsm(shaft_row) -> int:
 		return 0
 
 
+def _find_draft_spr_for_pp(pp_id: str) -> str | None:
+	"""Return draft (docstatus=0) SPR for PP, or None."""
+	if not pp_id:
+		return None
+	row = frappe.db.get_value(
+		"Shaft Production Run",
+		{"production_plan": pp_id, "docstatus": 0},
+		"name",
+		order_by="modified desc",
+	)
+	return _cstr(row).strip() or None
+
+
 def _find_spr_for_pp(pp_id: str, prefer_draft: bool = True) -> str | None:
 	if not pp_id:
 		return None
@@ -100,6 +113,7 @@ def _find_spr_for_pp(pp_id: str, prefer_draft: bool = True) -> str | None:
 		for row in sprs:
 			if cint(row.docstatus) == 0:
 				return row.name
+		return None
 	return sprs[0].name
 
 
@@ -501,7 +515,7 @@ def get_pt_line_roll_quota_status(
 
 
 @frappe.whitelist()
-def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_date=None, shift=None):
+def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_date=None, shift=None, force_new=0):
 	"""Return draft SPR for PP; create via create_item_spr when missing."""
 	pp_id = _cstr(pp_id).strip()
 	if isinstance(planning_sheet_item_names, str):
@@ -514,9 +528,10 @@ def ensure_draft_spr_for_pp(pp_id, planning_sheet_item_names, unit=None, run_dat
 	if not planning_sheet_item_names:
 		frappe.throw(_("Planning Table row name(s) required"))
 
-	existing = _find_spr_for_pp(pp_id, prefer_draft=True)
-	if existing:
-		return {"status": "ok", "spr_name": existing, "reused": 1}
+	if not cint(force_new):
+		existing = _find_draft_spr_for_pp(pp_id)
+		if existing:
+			return {"status": "ok", "spr_name": existing, "reused": 1}
 
 	result = create_item_spr(pp_id, planning_sheet_item_names)
 	if isinstance(result, dict):
@@ -1046,6 +1061,7 @@ def create_gsm_sprs_for_session(
 	operator=None,
 	supervisor=None,
 	entries=None,
+	force_new_session=0,
 ):
 	"""GSM Step 1 — create/reuse one draft SPR per PP (same as Production Table create_item_spr)."""
 	entries = _parse_json_arg(entries, [])
@@ -1069,7 +1085,14 @@ def create_gsm_sprs_for_session(
 
 	sprs_out = []
 	for pp_id, psi_names in pp_groups.items():
-		result = ensure_draft_spr_for_pp(pp_id, psi_names, unit=unit, run_date=run_date, shift=shift)
+		result = ensure_draft_spr_for_pp(
+			pp_id,
+			psi_names,
+			unit=unit,
+			run_date=run_date,
+			shift=shift,
+			force_new=cint(force_new_session),
+		)
 		if not isinstance(result, dict) or result.get("status") != "ok" or not result.get("spr_name"):
 			sprs_out.append(
 				{
