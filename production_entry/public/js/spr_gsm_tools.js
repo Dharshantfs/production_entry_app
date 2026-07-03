@@ -55,8 +55,8 @@ export async function gsmOpenTrailOrder(ppId) {
 	});
 }
 
-/** Open real Bundle packaging dialog (job + width + gross/length apply). */
-export async function gsmOpenBundlePackaging(ppId, onSuccess) {
+/** Open Bundle packaging for GSM — creates fresh SPR rolls + one GSM summary row. */
+export async function gsmOpenBundlePackaging(ppId, onSuccess, options = {}) {
 	const sprName = await findSprForGsm(ppId, true);
 	if (!sprName) {
 		noSprMessage();
@@ -64,9 +64,11 @@ export async function gsmOpenBundlePackaging(ppId, onSuccess) {
 	}
 	openSprBundlePackagingDialog({
 		sprName,
-		onSuccess: () => {
+		gsmMode: true,
+		ppId,
+		onSuccess: (result) => {
 			if (typeof onSuccess === "function") {
-				onSuccess(sprName);
+				onSuccess(result, sprName);
 			}
 		},
 	});

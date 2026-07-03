@@ -175,8 +175,8 @@ def preview_spr_batch_numbers_for_entry(
 ):
 	"""Read-only batch/roll preview for GSM Production Entry (no SPR document required).
 
-	When session_local=1, roll suffix is based only on existing_batches + client_max_roll
-	(not global DB max) so unsaved GSM grid rows start at /1 and removed rows do not skip numbers.
+	When session_local=1, roll suffix uses max(DB global max, grid max + 1) so GSM continues
+	from desk SPR rolls already saved (e.g. /1 /2 in DB → next /3).
 	"""
 	count = cint(count)
 	if count < 1:
@@ -217,7 +217,8 @@ def preview_spr_batch_numbers_for_entry(
 	else:
 		series_prefix = fresh_prefix
 
-	next_roll = doc._next_roll_starting(series_prefix)
+	db_start = doc._next_roll_starting(series_prefix)
+	next_roll = db_start
 	if cint(session_local):
 		mx = 0
 		for row in doc.items or []:
@@ -229,13 +230,15 @@ def preview_spr_batch_numbers_for_entry(
 				mx = max(mx, cint(client_max_roll))
 		except Exception:
 			pass
-		next_roll = (mx + 1) if mx > 0 else 1
+		grid_next = (mx + 1) if mx > 0 else 0
+		next_roll = max(db_start, grid_next if grid_next > 0 else db_start)
 	else:
 		try:
 			if client_max_roll is not None and cint(client_max_roll) >= 0 and csp == series_prefix:
 				next_roll = max(int(next_roll), cint(client_max_roll) + 1)
 		except Exception:
 			pass
+		next_roll = max(int(next_roll), int(db_start))
 
 	used_batches = set(existing)
 	out = []
@@ -1340,3 +1343,29 @@ def submit_gsm_production_entry(
 		"failed": submit_failed,
 		"total_kg": round(total_kg, 2),
 	}
+
+
+@frappe.whitelist()
+def gsm_apply_bundle_packaging(
+	shaft_production_run,
+	job_id,
+	width_inch,
+	no_of_packaging,
+	whole_gross_kg,
+	produced_length_mtrs=None,
+	pp_id=None,
+):
+	"""GSM Tools → Bundle packaging (fresh rolls + bundle sticker on SPR)."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		gsm_apply_bundle_packaging as _gsm_bundle,
+	)
+
+	return _gsm_bundle(
+		shaft_production_run,
+		job_id,
+		width_inch,
+		no_of_packaging,
+		whole_gross_kg,
+		produced_length_mtrs=produced_length_mtrs,
+		pp_id=pp_id,
+	)

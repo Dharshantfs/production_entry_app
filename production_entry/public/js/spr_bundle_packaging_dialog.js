@@ -147,7 +147,7 @@ function _bpCollectWidthOptions(jp, widthsByJob, rollItems, segs) {
 		add(s.width_inch);
 	});
 	(rollItems || []).forEach((it) => {
-		const jMatch = String(it.job_no || it.job_id || it.job || "").trim();
+		const jMatch = String(it.job || it.job_no || it.job_id || "").trim();
 		if (_bpJobKeysMatch(jMatch, jp.job_id)) {
 			add(it.width_inch);
 			if (it.item_code) {
@@ -162,11 +162,13 @@ function _bpCollectWidthOptions(jp, widthsByJob, rollItems, segs) {
 }
 
 /**
- * @param {{ sprName: string, onSuccess?: () => void }} opts
+ * @param {{ sprName: string, gsmMode?: boolean, ppId?: string, onSuccess?: (result?: object) => void }} opts
  */
 export function openSprBundlePackagingDialog(opts) {
 	opts = opts || {};
 	const sprName = opts.sprName;
+	const gsmMode = !!opts.gsmMode;
+	const ppId = opts.ppId || "";
 	if (!sprName) {
 		frappe.msgprint(__("Save or select a Shaft Production Run first."));
 		return;
@@ -288,21 +290,47 @@ export function openSprBundlePackagingDialog(opts) {
 						return;
 					}
 					d.hide();
+					const applyMethod = gsmMode
+						? "production_entry.production_planning.unified_production_entry_api.gsm_apply_bundle_packaging"
+						: "production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_apply_bundle_packaging_for_job_width";
+					const applyArgs = gsmMode
+						? {
+								shaft_production_run: sprName,
+								job_id: jp.job_id,
+								width_inch: w,
+								no_of_packaging: n,
+								whole_gross_kg: whole,
+								produced_length_mtrs: producedLength,
+								pp_id: ppId || undefined,
+						  }
+						: {
+								shaft_production_run: sprName,
+								job_id: jp.job_id,
+								width_inch: w,
+								no_of_packaging: n,
+								whole_gross_kg: whole,
+								produced_length_mtrs: producedLength,
+						  };
 					frappe.call({
-						method:
-							"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_apply_bundle_packaging_for_job_width",
-						args: {
-							shaft_production_run: sprName,
-							job_id: jp.job_id,
-							width_inch: w,
-							no_of_packaging: n,
-							whole_gross_kg: whole,
-							produced_length_mtrs: producedLength,
-						},
+						method: applyMethod,
+						args: applyArgs,
 						freeze: true,
 						freeze_message: __("Applying bundle packaging..."),
 						callback(r3) {
 							const m = r3.message || {};
+							if (gsmMode) {
+								frappe.show_alert({
+									message: __(
+										"Bundle created: {0} roll(s), sticker {1}",
+										[String(m.updated_rolls || ""), String(m.bundle_batch_no || "")]
+									),
+									indicator: "green",
+								});
+								if (typeof opts.onSuccess === "function") {
+									opts.onSuccess(m);
+								}
+								return;
+							}
 							frappe.show_alert({
 								message: __(
 									"Updated {0} roll(s). Remaining unpacked: {4}. Single gross {1} Kg, sticker width {2} Inches, bundle net {3} Kg.",
@@ -503,21 +531,7 @@ export function openSprBundlePackagingDialog(opts) {
 			const cat = r.message || {};
 			const jobs = cat.jobs || [];
 			const widthsByJob = cat.widths_by_job || {};
-			frappe.call({
-				method: "frappe.client.get_list",
-				args: {
-					doctype: "Shaft Production Run Item",
-					filters: { parent: sprName },
-					fields: ["job", "job_no", "job_id", "width_inch", "item_code"],
-					limit_page_length: 500,
-				},
-				callback(r2) {
-					openBundleDialog(jobs, widthsByJob, r2.message || []);
-				},
-				error() {
-					openBundleDialog(jobs, widthsByJob, []);
-				},
-			});
+			openBundleDialog(jobs, widthsByJob, []);
 		},
 	});
 }

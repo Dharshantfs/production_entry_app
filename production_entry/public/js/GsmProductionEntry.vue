@@ -314,12 +314,13 @@
               <tr>
                 <th class="gpe-sticky-col gpe-sticky-0">#</th>
                 <th class="gpe-sticky-col gpe-sticky-1">Order</th>
+                <th class="gpe-num">Job</th>
                 <th>Quality</th>
                 <th>Color</th>
-                <th>Sticker GSM</th>
-                <th>Width</th>
-                <th>Ordered Length (m)</th>
-                <th>Produced Length (m)</th>
+                <th class="gpe-num">Sticker GSM</th>
+                <th class="gpe-num">Width</th>
+                <th class="gpe-num">Ordered Length (M)</th>
+                <th class="gpe-num">Produced Length (M)</th>
                 <th>Prod GSM</th>
                 <th>Batch</th>
                 <th>Net (Kgs)</th>
@@ -340,35 +341,36 @@
               >
                 <td class="gpe-sticky-col gpe-sticky-0">{{ rollLines.length - idx }}</td>
                 <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code }}</td>
+                <td class="gpe-num">{{ row.job_id || row.job || "—" }}</td>
                 <td>{{ row.quality }}</td>
                 <td>{{ row.color }}</td>
-                <td>{{ row.gsm }}</td>
-                <td>{{ row.width_inch }}</td>
-                <td>{{ row.meter_roll }}</td>
-                <td class="gpe-len-cell">
+                <td class="gpe-num">{{ row.gsm }}</td>
+                <td class="gpe-num">{{ widthDisplay(row) }}</td>
+                <td class="gpe-num">{{ row.meter_roll }}</td>
+                <td class="gpe-len-cell gpe-num">
                   <input
                     v-model.number="row.produced_length_mtrs"
                     type="number"
                     step="0.01"
                     class="gpe-inp gpe-inp-len"
-                    :disabled="row.row_locked"
+                    :disabled="row.row_locked || row.is_bundle_row"
                     @input="onRowEdit(row)"
                   />
-                  <span class="gpe-unit-suffix">m</span>
+                  <span class="gpe-unit-suffix">M</span>
                 </td>
-                <td>{{ row.produced_gsm }}</td>
-                <td>{{ row.batch_no }}</td>
-                <td>{{ row.net_weight }}</td>
-                <td>
+                <td class="gpe-num">{{ row.produced_gsm }}</td>
+                <td class="gpe-num">{{ row.batch_no }}</td>
+                <td class="gpe-num">{{ formatKg(row.net_weight) }}</td>
+                <td class="gpe-num">
                   <input
                     v-model="row.gross_weight"
                     type="text"
                     class="gpe-inp"
-                    :disabled="row.row_locked"
+                    :disabled="row.row_locked || row.is_bundle_row"
                     @input="onRowEdit(row)"
                   />
                 </td>
-                <td>{{ formatKg(row.planned_qty) }}</td>
+                <td class="gpe-num">{{ formatKg(row.planned_qty) }}</td>
                 <td>{{ row.uom || "Kg" }}</td>
                 <td>
                   <a
@@ -1632,7 +1634,10 @@ async function runTool(kind) {
   } else if (kind === "trail") {
     await gsmOpenTrailOrder(ppId);
   } else if (kind === "bundle") {
-    await gsmOpenBundlePackaging(ppId, onSuccess);
+    await gsmOpenBundlePackaging(ppId, (m) => {
+      handleBundleApplyResult(m, ppId);
+      fetchOrders();
+    });
   } else if (kind === "bundlese") {
     await gsmToggleBundleSeOnSubmit(ppId);
   } else if (kind === "rmbatches") {
@@ -1687,6 +1692,126 @@ function sprNameForPp(ppId) {
   return sessionSprs.value[ppId]?.spr_name || "";
 }
 
+function widthDisplay(row) {
+  if (!row) {
+    return "";
+  }
+  if (row.width_label) {
+    return row.width_label;
+  }
+  if (row.is_bundle_row && row.pack_count > 1 && row.segment_width) {
+    const w = row.segment_width;
+    const lbl = Number.isInteger(w) ? String(w) : String(w);
+    return `${lbl}" × ${row.pack_count}`;
+  }
+  return row.width_inch != null && row.width_inch !== "" ? row.width_inch : "";
+}
+
+function handleBundleApplyResult(m, ppId) {
+  if (!m || m.status !== "ok") {
+    return;
+  }
+  creationSeq.value += 1;
+  const bundleRow = sprRecalcRollRow({
+    _id: `bundle-${Date.now()}-${creationSeq.value}`,
+    creation_seq: creationSeq.value,
+    is_bundle_row: true,
+    pp_id: m.pp_id || ppId,
+    party_code: m.order_code || "",
+    job_id: m.job_id || "",
+    quality: m.quality || "",
+    color: m.color || "",
+    gsm: m.gsm || "",
+    width_inch: m.segment_width || 0,
+    width_label: m.width_label || "",
+    pack_count: m.pack_count || 0,
+    segment_width: m.segment_width || 0,
+    batch_no: m.bundle_batch_no || "",
+    roll_no: "",
+    meter_roll: m.meter_roll || 0,
+    produced_length_mtrs: m.produced_length_mtrs || 0,
+    produced_gsm: 0,
+    net_weight: m.sticker_bundle_weight_kg || 0,
+    gross_weight: m.whole_gross_kg || 0,
+    planned_qty: m.planned_qty || 0,
+    uom: m.uom || "Kg",
+    work_order: m.work_order || "",
+    child_roll_batches: m.child_roll_batches || [],
+    child_spr_item_names: m.child_spr_item_names || [],
+    spr_item_name: (m.child_spr_item_names || [])[0] || "",
+    row_locked: 1,
+    row_ready_for_print: 1,
+    core_width_options: coreWidthOptions.value,
+  });
+  rollLines.value.unshift(bundleRow);
+  if (m.child_roll_batches?.length) {
+    syncBatchCounterFromGrid();
+  }
+  saveStatus.value = __("Bundle applied — {0} roll(s)", [m.updated_rolls || 0]);
+  scheduleAutosave();
+  frappe.show_alert({
+    message: __("Bundle row added ({0})", [m.width_label || m.bundle_batch_no]),
+    indicator: "green",
+  });
+}
+
+async function fetchShaftJobsForPp(ppId) {
+  if (!ppId) {
+    return [];
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_pp_shaft_details",
+      args: { pp_ids: JSON.stringify([ppId]) },
+    });
+    const rows = res.message || [];
+    const hit = rows.find((r) => r.pp_id === ppId);
+    return hit?.shaft_rows || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function pickJobIdForLine(line) {
+  const ppId = line?.ppId;
+  if (!ppId) {
+    return Promise.resolve("");
+  }
+  return fetchShaftJobsForPp(ppId).then((jobs) => {
+    const ids = [
+      ...new Set(
+        (jobs || [])
+          .map((j) => String(j.job || "").trim())
+          .filter(Boolean)
+      ),
+    ];
+    if (ids.length <= 1) {
+      return ids[0] || "";
+    }
+    return new Promise((resolve) => {
+      const d = new frappe.ui.Dialog({
+        title: __("Select Job ID"),
+        fields: [
+          {
+            fieldname: "job_id",
+            fieldtype: "Select",
+            label: __("Job ID"),
+            options: ids.join("\n"),
+            reqd: 1,
+            default: ids[0],
+          },
+        ],
+        primary_action_label: __("Continue"),
+        primary_action(values) {
+          d.hide();
+          resolve(values.job_id || ids[0]);
+        },
+      });
+      d.show();
+    });
+  });
+}
+
 function buildRollPayload(row) {
   return {
     pp_id: row.pp_id,
@@ -1712,6 +1837,7 @@ function buildRollPayload(row) {
     custom_polybag_kgs: row.custom_polybag_kgs,
     custom_diameter_inches: row.custom_diameter_inches,
     custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
+    job_id: row.job_id || row.job || "",
     row_locked: row.row_locked ? 1 : 0,
     row_ready_for_print: row.row_ready_for_print ? 1 : 0,
   };
@@ -2350,6 +2476,7 @@ async function addRollRow() {
   if (!line) {
     return;
   }
+  const jobId = await pickJobIdForLine(line);
   const quota = await fetchQuotaForLine(line);
   if (quota.max_rolls > 0 && !quota.can_add_roll) {
     frappe.confirm(
@@ -2375,7 +2502,7 @@ async function addRollRow() {
   }
   const src = line.source;
   const [batchInfo, ordLen, wo] = await Promise.all([
-    previewNextBatch(),
+    previewNextBatch(line.ppId),
     resolveOrderLength(line),
     resolveWorkOrder(line),
   ]);
@@ -2412,6 +2539,7 @@ async function addRollRow() {
     custom_diameter_inches: "",
     custom_cbm_cubic_meters: "",
     work_order: wo,
+    job_id: jobId,
     row_locked: 0,
     row_ready_for_print: 0,
     core_width_options: coreWidthOptions.value,
@@ -2420,9 +2548,40 @@ async function addRollRow() {
   scheduleAutosave();
 }
 
-async function previewNextBatch() {
+async function previewNextBatch(ppId) {
   syncBatchCounterFromGrid();
   const existing = rollLines.value.map((r) => r.batch_no).filter(Boolean);
+  const sprName = ppId ? sprNameForPp(ppId) : "";
+  if (sprName) {
+    try {
+      const res = await frappe.call({
+        method:
+          "production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_next_spr_batch_numbers",
+        args: {
+          shaft_production_run: sprName,
+          count: 1,
+          client_max_roll: maxRollSuffix.value,
+          run_date: runDate.value,
+          custom_unit: headerUnit.value,
+          shift: shift.value,
+          client_series_prefix: seriesPrefix.value || undefined,
+        },
+      });
+      const row = (res.message || [])[0];
+      if (row?.batch_no) {
+        const prefix = String(row.batch_no).split("/")[0];
+        if (prefix) {
+          seriesPrefix.value = prefix;
+        }
+      }
+      if (row?.roll_no) {
+        maxRollSuffix.value = Math.max(maxRollSuffix.value, parseInt(row.roll_no, 10));
+      }
+      return row || { batch_no: "", roll_no: "" };
+    } catch (e) {
+      console.warn("get_next_spr_batch_numbers", e);
+    }
+  }
   const res = await frappe.call({
     method: "production_entry.production_planning.unified_production_entry_api.preview_spr_batch_numbers_for_entry",
     args: {
@@ -2455,7 +2614,19 @@ async function removeTopRow() {
   const wasSaved = !!(row.spr_item_name || (row.row_locked && row.batch_no));
 
   const doRemove = async () => {
-    if (wasSaved && sprName && row.batch_no) {
+    if (row.is_bundle_row && row.child_roll_batches?.length && sprName) {
+      saveStatus.value = "Deleting bundle rolls…";
+      for (const bn of row.child_roll_batches) {
+        try {
+          await frappe.call({
+            method: "production_entry.production_planning.unified_production_entry_api.delete_gsm_roll_line",
+            args: { spr_name: sprName, batch_no: bn },
+          });
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    } else if (wasSaved && sprName && row.batch_no) {
       saveStatus.value = "Deleting from SPR…";
       try {
         await frappe.call({
@@ -2479,7 +2650,7 @@ async function removeTopRow() {
     saveStatus.value = wasSaved ? "Removed from SPR" : "Row removed";
   };
 
-  if (wasSaved && sprName) {
+  if (wasSaved && sprName) || (row.is_bundle_row && row.child_roll_batches?.length) {
     frappe.confirm(
       __("Remove this row from the grid and delete it from {0}?", [sprName]),
       () => {
@@ -3435,6 +3606,10 @@ onUnmounted(() => {
   border-bottom: 1px solid #f1f5f9;
   padding: 8px 10px;
   white-space: nowrap;
+}
+.gpe-grid-entry td.gpe-num,
+.gpe-grid-entry th.gpe-num {
+  text-align: center;
 }
 .gpe-grid-entry th {
   background: #f8fafc;

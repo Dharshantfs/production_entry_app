@@ -14006,6 +14006,223 @@ def spr_apply_bundle_packaging_for_job_width(
 	}
 
 
+def _spr_append_bundle_sticker_row(
+	spr,
+	job_id,
+	width_inch,
+	no_of_packaging,
+	whole_gross_kg,
+	produced_length_mtrs,
+	single_gross,
+	total_width_inch,
+	bundle_net,
+	selected_items,
+):
+	"""Append one Bundle Stickers child row from packed roll lines."""
+	bundle_batch_no = ""
+	roll_numbers_list = []
+	for it in selected_items or []:
+		bn = _cstr(getattr(it, "batch_no", "") or "")
+		rn = _cstr(getattr(it, "roll_no", "") or "")
+		if bn and "/" in bn:
+			prefix = bn.rsplit("/", 1)[0]
+			if not bundle_batch_no:
+				bundle_batch_no = prefix
+		elif bn and not bundle_batch_no:
+			bundle_batch_no = bn
+		if rn:
+			roll_numbers_list.append(rn)
+		elif bn and "/" in bn:
+			roll_numbers_list.append(bn.rsplit("/", 1)[1])
+	roll_numbers_str = ", ".join(roll_numbers_list)
+	comb_calculated = f"{no_of_packaging} * {width_inch} Inches"
+	if bundle_batch_no:
+		bundle_batch_no = _spr_next_bundle_batch_no(spr, bundle_batch_no)
+	bs = {
+		"combination": comb_calculated,
+		"rolls_per_bundle": no_of_packaging,
+		"single_roll_gross_weight_kg": single_gross,
+		"sticker_width": total_width_inch,
+		"sticker_bundle_gross_weight_kg": round(whole_gross_kg, 2),
+		"sticker_bundle_weight": bundle_net,
+	}
+	bs_meta = frappe.get_meta("Bundle Stickers")
+	if bs_meta.has_field("produced_length_mtrs"):
+		bs["produced_length_mtrs"] = produced_length_mtrs
+	if bs_meta.has_field("custom_produced_length_mtrs"):
+		bs["custom_produced_length_mtrs"] = produced_length_mtrs
+	if bs_meta.has_field("job_id"):
+		bs["job_id"] = job_id or None
+	if bs_meta.has_field("batch_no"):
+		bs["batch_no"] = bundle_batch_no or None
+	if bs_meta.has_field("roll_numbers"):
+		bs["roll_numbers"] = roll_numbers_str or None
+	spr.append("bundle_stickers", bs)
+	return bundle_batch_no, roll_numbers_str, comb_calculated
+
+
+@frappe.whitelist()
+def gsm_apply_bundle_packaging(
+	shaft_production_run,
+	job_id,
+	width_inch,
+	no_of_packaging,
+	whole_gross_kg,
+	produced_length_mtrs=None,
+	pp_id=None,
+):
+	"""GSM bundle flow: create N fresh roll lines + Bundle Stickers row (no pre-existing rolls required)."""
+	_spr_require_saved(shaft_production_run)
+	job_id = _cstr(job_id).strip()
+	width_inch = flt(width_inch)
+	no_of_packaging = cint(no_of_packaging)
+	whole_gross_kg = flt(whole_gross_kg)
+	produced_length_mtrs = flt(produced_length_mtrs)
+	pp_id = _cstr(pp_id).strip()
+
+	if no_of_packaging < 1:
+		frappe.throw(_("Number of packaging must be at least 1"))
+	if whole_gross_kg <= 0:
+		frappe.throw(_("Whole gross weight must be greater than zero"))
+	if produced_length_mtrs <= 0:
+		frappe.throw(_("Produced length must be greater than zero"))
+	if not job_id:
+		frappe.throw(_("Select a job from Available Jobs"))
+	if width_inch <= 0:
+		frappe.throw(_("Select a width (in)"))
+
+	with _spr_operation_lock(shaft_production_run, "write", ttl_sec=180):
+		spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot apply bundle packaging to a submitted Shaft Production Run"))
+
+		sj = _spr_shaft_job_for_roll(spr, job_id)
+		if not sj:
+			frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
+
+		current_rolls = _spr_count_roll_lines_for_job(spr, job_id)
+		max_job_rolls = _spr_job_max_roll_lines(sj, spr)
+		if max_job_rolls > 0 and current_rolls + no_of_packaging > max_job_rolls:
+			_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current_rolls)
+
+		line_dicts = build_spr_roll_result_lines_for_job(
+			shaft_production_run=shaft_production_run,
+			job_id=job_id,
+			exact_roll_lines=no_of_packaging,
+		)
+		if len(line_dicts) < no_of_packaging:
+			frappe.throw(_("Could not build {0} roll line(s) for job {1}").format(no_of_packaging, job_id))
+
+		for ld in line_dicts:
+			ld["width_inch"] = width_inch
+
+		client_max_roll = _spr_max_roll_suffix_for_job(spr, job_id)
+		batch_rows = _get_next_spr_batch_numbers_unlocked(
+			shaft_production_run=shaft_production_run,
+			count=len(line_dicts),
+			client_max_roll=client_max_roll,
+			run_date=spr.run_date,
+			custom_unit=spr.get("custom_unit"),
+			shift=spr.shift,
+			client_series_prefix=_spr_existing_series_prefix_for_job(spr, job_id) or None,
+		)
+
+		single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
+		total_width_inch = round(width_inch * float(no_of_packaging), 4)
+		item_meta = frappe.get_meta("Shaft Production Run Item")
+		can_set_net = item_meta.has_field("net_weight")
+		can_set_len = item_meta.has_field("produced_length_mtrs")
+
+		item_meta_spi = frappe.get_meta("Shaft Production Run Item")
+		selected = []
+		for idx, ld in enumerate(line_dicts):
+			row = spr.append("items", {})
+			for key, val in (ld or {}).items():
+				if val in (None, "") or not item_meta_spi.has_field(key):
+					continue
+				row.set(key, val)
+			row.width_inch = width_inch
+			row.job = job_id
+			if idx < len(batch_rows or []):
+				br = batch_rows[idx] or {}
+				if br.get("batch_no"):
+					row.batch_no = br.get("batch_no")
+				if br.get("roll_no") is not None:
+					row.roll_no = br.get("roll_no")
+			row.gross_weight = single_gross
+			if can_set_len:
+				row.produced_length_mtrs = produced_length_mtrs
+			if can_set_net:
+				row.net_weight = _spr_calc_net_weight_from_gross_for_bundle(row, single_gross)
+			if item_meta.has_field("custom_produced_length_mtrs"):
+				row.custom_produced_length_mtrs = produced_length_mtrs
+			selected.append(row)
+
+		bundle_net = round(sum(flt(getattr(it, "net_weight", None)) for it in selected), 2)
+		bundle_batch_no, roll_numbers_str, comb_calculated = _spr_append_bundle_sticker_row(
+			spr,
+			job_id,
+			width_inch,
+			no_of_packaging,
+			whole_gross_kg,
+			produced_length_mtrs,
+			single_gross,
+			total_width_inch,
+			bundle_net,
+			selected,
+		)
+
+		spr._validate_no_duplicate_roll_batches()
+		spr.save(ignore_permissions=True)
+
+		pp_resolved = pp_id or _cstr(spr.get("production_plan")).strip()
+		order_code = _cstr(spr.get("custom_order_code") or "")
+		if not order_code and pp_resolved and frappe.db.exists("Production Plan", pp_resolved):
+			pp_doc = frappe.get_doc("Production Plan", pp_resolved)
+			order_code = _cstr(
+				pp_doc.get("custom_party_code") or pp_doc.get("custom_order_code") or ""
+			)
+
+		width_label = f'{_bp_format_width_label_static(width_inch)}" × {no_of_packaging}'
+		child_batches = [_cstr(getattr(it, "batch_no", "")) for it in selected if _cstr(getattr(it, "batch_no", ""))]
+
+		return {
+			"status": "ok",
+			"spr_name": spr.name,
+			"pp_id": pp_resolved,
+			"updated_rolls": len(selected),
+			"single_roll_gross_kg": single_gross,
+			"total_width_inch": total_width_inch,
+			"sticker_bundle_weight_kg": bundle_net,
+			"whole_gross_kg": round(whole_gross_kg, 2),
+			"bundle_batch_no": bundle_batch_no,
+			"roll_numbers": roll_numbers_str,
+			"combination": comb_calculated,
+			"width_label": width_label,
+			"job_id": job_id,
+			"segment_width": width_inch,
+			"pack_count": no_of_packaging,
+			"produced_length_mtrs": produced_length_mtrs,
+			"child_roll_batches": child_batches,
+			"child_spr_item_names": [_cstr(getattr(it, "name", "")) for it in selected],
+			"order_code": order_code,
+			"quality": _cstr(getattr(selected[0], "quality", "") if selected else ""),
+			"color": _cstr(getattr(selected[0], "color", "") if selected else ""),
+			"gsm": cint(getattr(selected[0], "gsm", 0) if selected else 0),
+			"meter_roll": flt(getattr(selected[0], "meter_roll", 0) if selected else 0),
+			"planned_qty": flt(getattr(selected[0], "planned_qty", 0) if selected else 0),
+			"work_order": _cstr(getattr(selected[0], "work_order", "") if selected else ""),
+			"uom": _cstr(getattr(selected[0], "uom", "Kg") if selected else "Kg"),
+		}
+
+
+def _bp_format_width_label_static(w):
+	fw = flt(w)
+	if fw <= 0:
+		return ""
+	return str(int(round(fw))) if abs(fw - round(fw)) < 0.001 else f"{fw:.1f}"
+
+
 @frappe.whitelist()
 def spr_apply_bundle_packaging(
 	shaft_production_run,
