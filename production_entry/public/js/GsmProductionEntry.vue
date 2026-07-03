@@ -387,7 +387,7 @@
                     type="button"
                     class="gpe-btn sm"
                     :disabled="!row.row_locked"
-                    :title="row.row_locked ? 'Label stub until Phase 2' : 'Save Row first'"
+                    :title="row.row_locked ? 'Print production label' : 'Save Row first'"
                     @click="printLabel(row)"
                   >Label</button>
                 </td>
@@ -704,6 +704,7 @@ import {
   gsmOpenManualJob,
   gsmOpenRmBatches,
   gsmOpenTrailOrder,
+  gsmPrintRollLabel,
   gsmToggleBundleSeOnSubmit,
   openSprForm,
 } from "./spr_gsm_tools.js";
@@ -1841,15 +1842,18 @@ function editRow(row) {
   scheduleAutosave();
 }
 
-function printLabel(row) {
+async function printLabel(row) {
   if (!row.row_locked) {
     frappe.msgprint(__("Save Row first to enable the label."));
     return;
   }
-  frappe.show_alert({
-    message: __("Production Label ready to print"),
-    indicator: "blue",
-  });
+  const sprName = sprNameForPp(row.pp_id);
+  try {
+    await gsmPrintRollLabel(sprName, row.spr_item_name);
+  } catch (e) {
+    console.error(e);
+    frappe.msgprint(__("Could not open label print."));
+  }
 }
 
 function buildFetchArgs() {
@@ -2301,13 +2305,49 @@ async function previewNextBatch() {
   return row || { batch_no: "", roll_no: "" };
 }
 
-function removeTopRow() {
+async function removeTopRow() {
   if (!rollLines.value.length) {
     return;
   }
-  rollLines.value.shift();
-  syncBatchCounterFromGrid();
-  scheduleAutosave();
+  const row = rollLines.value[0];
+  const sprName = sprNameForPp(row.pp_id);
+  const wasSaved = !!(row.spr_item_name || (row.row_locked && row.batch_no));
+
+  const doRemove = async () => {
+    if (wasSaved && sprName && row.batch_no) {
+      saveStatus.value = "Deleting from SPR…";
+      try {
+        await frappe.call({
+          method: "production_entry.production_planning.unified_production_entry_api.delete_gsm_roll_line",
+          args: {
+            spr_name: sprName,
+            batch_no: row.batch_no,
+            row_name: row.spr_item_name || undefined,
+          },
+        });
+      } catch (e) {
+        console.error(e);
+        saveStatus.value = "Delete failed";
+        frappe.msgprint(__("Could not remove row from {0}.", [sprName]));
+        return;
+      }
+    }
+    rollLines.value.shift();
+    syncBatchCounterFromGrid();
+    scheduleAutosave();
+    saveStatus.value = wasSaved ? "Removed from SPR" : "Row removed";
+  };
+
+  if (wasSaved && sprName) {
+    frappe.confirm(
+      __("Remove this row from the grid and delete it from {0}?", [sprName]),
+      () => {
+        doRemove();
+      }
+    );
+    return;
+  }
+  await doRemove();
 }
 
 async function loadShiftEntries() {

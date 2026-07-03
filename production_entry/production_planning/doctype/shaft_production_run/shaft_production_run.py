@@ -10150,6 +10150,50 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 
 
 @frappe.whitelist()
+def delete_gsm_roll_line_from_spr(spr_name, batch_no=None, row_name=None):
+	"""GSM Remove Row — delete one roll line from draft SPR (by batch_no or child row name)."""
+	spr_name = _cstr(spr_name).strip()
+	batch_no = _cstr(batch_no).strip()
+	row_name = _cstr(row_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	if not batch_no and not row_name:
+		frappe.throw(_("Batch number or SPR item row name is required"))
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot delete roll lines from a submitted Shaft Production Run"))
+
+		removed_batch = ""
+		removed_row = ""
+		for row in list(spr.items or []):
+			match = False
+			if batch_no and _cstr(getattr(row, "batch_no", "")).strip() == batch_no:
+				match = True
+			elif row_name and _cstr(getattr(row, "name", "")).strip() == row_name:
+				match = True
+			if match:
+				removed_batch = _cstr(getattr(row, "batch_no", "")).strip()
+				removed_row = _cstr(getattr(row, "name", "")).strip()
+				spr.remove(row)
+				break
+
+		if not removed_batch and not removed_row:
+			return {"status": "not_found", "spr_name": spr_name, "batch_no": batch_no, "row_name": row_name}
+
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"batch_no": removed_batch,
+			"row_name": removed_row,
+			"total_items": len(spr.items or []),
+		}
+
+
+@frappe.whitelist()
 def import_gsm_roll_lines_to_spr(spr_name, roll_payloads, shift=None):
 	"""Bulk import GSM roll grid rows onto a draft SPR (batch_no dedup — safe to re-submit)."""
 	spr_name = _cstr(spr_name).strip()

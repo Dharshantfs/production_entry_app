@@ -19,6 +19,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_spr_job_rows,
 	_spr_net_kg_per_shaft_for_pp_line_width,
 	compute_mix_roll_planned_qty_kg,
+	delete_gsm_roll_line_from_spr,
 	import_gsm_roll_lines_to_spr,
 	parse_item_code,
 	resolve_label_from_pp_doc,
@@ -1151,6 +1152,12 @@ def _gsm_apply_tolerance_override(spr_name: str, reason: str, approved: int):
 def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 	"""GSM real-time Save Row — thin wrapper for Vue."""
 	return save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=shift)
+
+
+@frappe.whitelist()
+def delete_gsm_roll_line(spr_name, batch_no=None, row_name=None):
+	"""GSM Remove Row — delete one saved roll line from draft SPR."""
+	return delete_gsm_roll_line_from_spr(spr_name, batch_no=batch_no, row_name=row_name)
 
 
 @frappe.whitelist()

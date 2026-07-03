@@ -110,6 +110,32 @@ export async function gsmOpenRmBatches(ppId) {
 	});
 }
 
+/** Print production label for a saved SPR item row (same flow as desk SPR). */
+export async function gsmPrintRollLabel(sprName, sprItemRowName) {
+	if (!sprName) {
+		frappe.msgprint(__("Create SPRs first."));
+		return;
+	}
+	if (!sprItemRowName) {
+		frappe.msgprint(__("Save Row first to enable the label."));
+		return;
+	}
+	if (typeof frappe.generate_sticker_flow !== "function") {
+		await import("./custom_print_sticker.js");
+	}
+	await frappe.model.with_doc("Shaft Production Run", sprName);
+	const doc = frappe.get_doc("Shaft Production Run", sprName);
+	(doc.items || []).forEach((row) => {
+		frappe.model.add_to_locals(row);
+	});
+	const frm = { doc };
+	if (typeof frappe.generate_sticker_flow === "function") {
+		frappe.generate_sticker_flow(sprItemRowName, frm);
+		return;
+	}
+	frappe.msgprint(__("Label print module could not be loaded."));
+}
+
 function cint(v) {
 	const n = parseInt(v, 10);
 	return Number.isFinite(n) ? n : 0;
