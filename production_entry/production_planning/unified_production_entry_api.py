@@ -1127,6 +1127,7 @@ def _gsm_job_production_stats(
 	job_rolls = 0
 	today_rolls = 0
 	shift_rolls = 0
+	job_produced_kg = 0.0
 	width_counts: dict[float, int] = {w: 0 for w in width_segments}
 	spr_names: list[str] = []
 	active_spr_names: list[str] = []
@@ -1150,6 +1151,7 @@ def _gsm_job_production_stats(
 			if not _spr_is_real_roll_item_row(it):
 				continue
 			job_rolls += 1
+			job_produced_kg += flt(getattr(it, "net_weight", None) or 0)
 			if run_d and spr_run == run_d:
 				today_rolls += 1
 				if cur_shift and spr_shift == cur_shift:
@@ -1174,6 +1176,7 @@ def _gsm_job_production_stats(
 	return {
 		"job_rolls_produced": job_rolls,
 		"job_shafts_produced": job_shafts,
+		"job_produced_kg": job_produced_kg,
 		"today_rolls": today_rolls,
 		"shift_rolls": shift_rolls,
 		"width_counts": width_counts,
@@ -1237,6 +1240,10 @@ def _gsm_build_job_board_entry(
 
 	quota_full = rem_rolls <= 0 or job_shafts >= max_shafts or wo_terminal
 	comb = _cstr(shaft_row.get("combination") or "")
+	net_per_roll = flt(shaft_row.get("net_weight") or 0)
+	job_target_kg = round(net_per_roll * max_rolls, 2) if net_per_roll > 0 else 0.0
+	job_produced_kg = flt(stats.get("job_produced_kg") or 0)
+	job_remaining_kg = max(0.0, round(job_target_kg - job_produced_kg, 2)) if job_target_kg > 0 else 0.0
 	return {
 		"pp_id": pp_id,
 		"job_id": job_id,
@@ -1246,6 +1253,9 @@ def _gsm_build_job_board_entry(
 		"combination_label": _gsm_combination_label(comb),
 		"meter_roll": flt(shaft_row.get("meter_roll") or 0),
 		"net_weight": flt(shaft_row.get("net_weight") or 0),
+		"job_target_kg": job_target_kg,
+		"job_produced_kg": job_produced_kg,
+		"job_remaining_kg": job_remaining_kg,
 		"max_shafts": max_shafts,
 		"max_rolls": max_rolls,
 		"rolls_per_shaft": rolls_per_shaft,

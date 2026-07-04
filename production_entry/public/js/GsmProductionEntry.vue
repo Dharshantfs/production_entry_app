@@ -74,6 +74,10 @@
               @click="viewPP(grp.ppId)"
             >View PP</button>
           </div>
+          <div v-if="grp.dayTargetKg > 0" class="gpe-order-target">
+            <span class="gpe-day-target">Order Tgt {{ formatKg(grp.dayTargetKg) }} Kg</span>
+            <span class="gpe-day-rem">Rem {{ formatKg(grp.dayRemKg) }} Kg</span>
+          </div>
           <label
             v-for="job in grp.jobs"
             :key="job.job_key"
@@ -93,6 +97,10 @@
               <div class="gpe-job-spec">
                 <strong>{{ job.combination_label || "—" }}</strong>
                 <span>· {{ job.gsm }} GSM</span>
+              </div>
+              <div v-if="job.job_target_kg > 0" class="gpe-job-target">
+                <span class="gpe-day-target">Job Tgt {{ formatKg(job.job_target_kg) }} Kg</span>
+                <span class="gpe-day-rem">Rem {{ formatKg(job.job_remaining_kg) }} Kg</span>
               </div>
               <div class="gpe-dual-meter" :class="{ 'gpe-dual-meter-full': job.quota_full }">
                 <div class="gpe-meter-col">
@@ -134,6 +142,10 @@
                   @click="viewPP(grp.ppId)"
                 >View PP</button>
               </div>
+              <div v-if="grp.dayTargetKg > 0" class="gpe-order-target">
+                <span class="gpe-day-target">Order Tgt {{ formatKg(grp.dayTargetKg) }} Kg</span>
+                <span class="gpe-day-rem">Rem {{ formatKg(grp.dayRemKg) }} Kg</span>
+              </div>
               <label
                 v-for="job in grp.jobs"
                 :key="job.job_key"
@@ -146,6 +158,10 @@
                   <div class="gpe-job-spec">
                     <strong>{{ job.combination_label || "—" }}</strong>
                     <span>· {{ job.gsm }} GSM</span>
+                  </div>
+                  <div v-if="job.job_target_kg > 0" class="gpe-job-target">
+                    <span class="gpe-day-target">Job Tgt {{ formatKg(job.job_target_kg) }} Kg</span>
+                    <span class="gpe-day-rem">Rem {{ formatKg(job.job_remaining_kg) }} Kg</span>
                   </div>
                   <div class="gpe-dual-meter gpe-dual-meter-done">
                     <div class="gpe-meter-col">
@@ -851,6 +867,25 @@ function orderMetaForPp(ppId) {
   };
 }
 
+function orderDayStatsForPp(ppId) {
+  let rows = ppSubmittedRows.value.filter((r) => r.pp_id === ppId);
+  if (filterUnit.value) {
+    rows = rows.filter((r) => r.unit === filterUnit.value);
+  }
+  if (viewScope.value === "daily" && filterDate.value) {
+    rows = rows.filter((r) => String(r.plannedDate || r.planned_date || "").slice(0, 10) === filterDate.value);
+  }
+  const dayTargetKg = rows.reduce((s, r) => s + sprFlt(r.qty), 0);
+  const achievedKg = rows.reduce(
+    (s, r) => s + sprFlt(r.actual_production_weight_kgs ?? r.total_achieved_weight_kgs),
+    0
+  );
+  return {
+    dayTargetKg,
+    dayRemKg: Math.max(0, dayTargetKg - achievedKg),
+  };
+}
+
 function enrichJobCard(job) {
   const meta = orderMetaForPp(job.pp_id);
   const selectable = !job.quota_full && !job.wo_terminal;
@@ -902,6 +937,7 @@ function snapshotFromJob(job) {
     widthLabel: job.combination_label || "",
     max_shafts: job.max_shafts,
     max_rolls: job.max_rolls,
+    dayTargetKg: orderDayStatsForPp(job.pp_id).dayTargetKg,
     sourceSnapshot: {
       pp_id: job.pp_id,
       gsm: job.gsm,
@@ -1292,11 +1328,14 @@ const jobOrderGroups = computed(() => {
     const enriched = enrichJobCard(job);
     const key = `${enriched.orderCode}::${job.pp_id}`;
     if (!map.has(key)) {
+      const dayStats = orderDayStatsForPp(job.pp_id);
       map.set(key, {
         key,
         orderCode: enriched.orderCode,
         partyName: enriched.partyName,
         ppId: job.pp_id,
+        dayTargetKg: dayStats.dayTargetKg,
+        dayRemKg: dayStats.dayRemKg,
         jobs: [],
       });
     }
@@ -3425,6 +3464,28 @@ onUnmounted(() => {
   margin-bottom: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid #f1f5f9;
+}
+.gpe-order-target,
+.gpe-job-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.gpe-order-target {
+  padding: 0 2px 4px;
+}
+.gpe-job-target {
+  margin-bottom: 6px;
+}
+.gpe-day-target {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+.gpe-day-rem {
+  color: #b45309;
+  font-weight: 600;
 }
 .gpe-job-card {
   display: flex;
