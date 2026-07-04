@@ -110,7 +110,7 @@
               </div>
               <div class="gpe-meter-context">{{ shift }} · {{ formatPlannedDate(runDate) }}</div>
               <div v-if="job.rem_shafts > 0 || job.rem_rolls > 0" class="gpe-job-remaining">
-                Remaining: {{ job.rem_shafts }} shaft{{ job.rem_shafts === 1 ? "" : "s" }} · {{ job.rem_rolls }} roll{{ job.rem_rolls === 1 ? "" : "s" }}
+                Remaining: {{ jobRemainingText(job) }}
               </div>
               <div v-if="job.chip" class="gpe-job-foot">
                 <span :class="['gpe-chip', job.chipClass]">{{ job.chip }}</span>
@@ -865,10 +865,10 @@ function enrichJobCard(job) {
     chip = "Completed";
     chipClass = "gpe-chip-done";
     tooltip = "Job shaft/roll quota met";
-  } else if ((job.spr_names || []).length) {
+  } else if ((job.active_spr_names || []).length || sessionSprs.value[job.pp_id]?.spr_name) {
     chip = "SPR Active";
     chipClass = "gpe-chip-submitted";
-    tooltip = "Draft or submitted SPR exists for this PP";
+    tooltip = "Draft SPR exists for this run date and shift";
   }
   return {
     ...job,
@@ -930,6 +930,37 @@ function confirmLineProgress(entry) {
     return "—";
   }
   return `${job.job_shafts_produced}/${job.max_shafts} shafts · ${job.job_rolls_produced}/${job.max_rolls} rolls`;
+}
+
+function plural(n, one, many) {
+  return Number(n) === 1 ? one : many;
+}
+
+function jobRemainingText(job) {
+  const remRolls = cint(job.rem_rolls);
+  const remShafts = cint(job.rem_shafts);
+  const rollsPerShaft = Math.max(1, cint(job.rolls_per_shaft));
+  if (remRolls <= 0) {
+    return "0 rolls";
+  }
+  const pieces = [];
+  let remainingShafts = remShafts;
+  const currentNeed = cint(job.current_shaft_remaining_rolls);
+  if (currentNeed > 0) {
+    const shaftNo = cint(job.job_shafts_produced) + 1;
+    pieces.push(`Shaft ${shaftNo}: ${currentNeed} ${plural(currentNeed, "roll", "rolls")}`);
+    remainingShafts = Math.max(0, remainingShafts - 1);
+  }
+  if (remainingShafts === 1) {
+    const shaftNo = cint(job.max_shafts) - remainingShafts + 1;
+    pieces.push(`Shaft ${shaftNo}: ${rollsPerShaft} ${plural(rollsPerShaft, "roll", "rolls")}`);
+  } else if (remainingShafts > 1) {
+    pieces.push(`${remainingShafts} full ${plural(remainingShafts, "shaft", "shafts")}`);
+  }
+  if (!pieces.length) {
+    pieces.push(`${remShafts} ${plural(remShafts, "shaft", "shafts")} · ${remRolls} ${plural(remRolls, "roll", "rolls")}`);
+  }
+  return `${pieces.join(" · ")} (${remRolls} ${plural(remRolls, "roll", "rolls")} total)`;
 }
 
 function linePlannedDate(item) {

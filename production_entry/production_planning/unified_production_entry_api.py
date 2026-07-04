@@ -1082,12 +1082,21 @@ def _gsm_job_limits_from_shaft_row(shaft_row: dict) -> dict:
 	no_shafts = max(1, cint(shaft_row.get("no_of_shafts") or 0))
 	rolls_per_shaft = max(1, len(widths)) if len(widths) > 1 else 1
 	max_rolls = no_shafts * rolls_per_shaft
+	width_caps: dict[float, int] = {}
+	width_requirements: dict[float, int] = {}
+	for w in widths:
+		fw = round(flt(w), 4)
+		if fw > 0:
+			width_requirements[fw] = width_requirements.get(fw, 0) + 1
+	for fw, req in width_requirements.items():
+		width_caps[fw] = req * no_shafts
 	return {
 		"max_shafts": no_shafts,
 		"max_rolls": max_rolls,
 		"rolls_per_shaft": rolls_per_shaft,
-		"width_segments": [round(flt(w), 4) for w in widths],
-		"per_width_max": no_shafts,
+		"width_segments": sorted(width_caps.keys()),
+		"width_caps": width_caps,
+		"width_requirements": width_requirements,
 	}
 
 
@@ -1108,6 +1117,8 @@ def _gsm_job_production_stats(
 	spr_docs: list,
 	job_id: str,
 	width_segments: list,
+	rolls_per_shaft: int,
+	width_requirements: dict | None = None,
 	run_date=None,
 	shift: str | None = None,
 ) -> dict:
@@ -1118,6 +1129,7 @@ def _gsm_job_production_stats(
 	shift_rolls = 0
 	width_counts: dict[float, int] = {w: 0 for w in width_segments}
 	spr_names: list[str] = []
+	active_spr_names: list[str] = []
 	run_d = getdate(run_date) if run_date else None
 	cur_shift = _cstr(shift).strip()
 
@@ -1130,6 +1142,8 @@ def _gsm_job_production_stats(
 			spr_names.append(sn)
 		spr_run = getdate(spr.run_date) if spr.get("run_date") else None
 		spr_shift = _cstr(spr.get("shift") or "").strip()
+		if run_d and spr_run == run_d and cur_shift and spr_shift == cur_shift and cint(spr.docstatus) == 0:
+			active_spr_names.append(sn)
 		for it in spr.get("items") or []:
 			if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
 				continue
@@ -1146,10 +1160,14 @@ def _gsm_job_production_stats(
 					width_counts[seg_w] = width_counts.get(seg_w, 0) + 1
 					break
 
+	width_requirements = width_requirements or {w: 1 for w in width_segments}
 	if width_segments:
-		job_shafts = min(width_counts.get(w, 0) for w in width_segments)
+		job_shafts = min(
+			cint(width_counts.get(w, 0)) // max(1, cint(width_requirements.get(w) or 1))
+			for w in width_segments
+		)
 	else:
-		job_shafts = 0
+		job_shafts = job_rolls // max(1, cint(rolls_per_shaft))
 
 	segment_stats = [{"width_inch": w, "current": width_counts.get(w, 0)} for w in width_segments]
 
@@ -1161,6 +1179,7 @@ def _gsm_job_production_stats(
 		"width_counts": width_counts,
 		"segment_stats": segment_stats,
 		"spr_names": spr_names,
+		"active_spr_names": active_spr_names,
 	}
 
 
@@ -1175,31 +1194,43 @@ def _gsm_build_job_board_entry(
 	job_id = _cstr(shaft_row.get("job") or "")
 	limits = _gsm_job_limits_from_shaft_row(shaft_row)
 	width_segments = limits["width_segments"]
-	per_width_max = limits["per_width_max"]
+	width_caps = limits["width_caps"]
+	width_requirements = limits["width_requirements"]
 	max_shafts = limits["max_shafts"]
 	max_rolls = limits["max_rolls"]
 	rolls_per_shaft = limits["rolls_per_shaft"]
 
 	spr_list = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit)
 	stats = _gsm_job_production_stats(
-		spr_list, job_id, width_segments, run_date=run_date, shift=shift
+		spr_list,
+		job_id,
+		width_segments,
+		rolls_per_shaft,
+		width_requirements,
+		run_date=run_date,
+		shift=shift,
 	)
 	job_rolls = cint(stats["job_rolls_produced"])
-	job_shafts = cint(stats["job_shafts_produced"])
+	job_shafts = min(max_shafts, cint(stats["job_shafts_produced"]))
 	rem_shafts = max(0, max_shafts - job_shafts)
 	rem_rolls = max(0, max_rolls - job_rolls)
+	current_shaft_rolls = job_rolls % max(1, rolls_per_shaft)
+	current_shaft_remaining_rolls = (
+		max(0, rolls_per_shaft - current_shaft_rolls) if rem_rolls > 0 and current_shaft_rolls else 0
+	)
 
 	segments_out = []
 	can_add_any = not wo_terminal and rem_rolls > 0
 	for seg in stats["segment_stats"]:
 		w = flt(seg["width_inch"])
 		cur = cint(seg["current"])
-		seg_can = cur < per_width_max and rem_rolls > 0 and not wo_terminal
+		seg_max = cint(width_caps.get(w) or max_shafts)
+		seg_can = cur < seg_max and rem_rolls > 0 and not wo_terminal
 		segments_out.append(
 			{
 				"width_inch": w,
 				"current": cur,
-				"max": per_width_max,
+				"max": seg_max,
 				"can_add": seg_can,
 			}
 		)
@@ -1222,6 +1253,8 @@ def _gsm_build_job_board_entry(
 		"job_rolls_produced": job_rolls,
 		"rem_shafts": rem_shafts,
 		"rem_rolls": rem_rolls,
+		"current_shaft_rolls": current_shaft_rolls,
+		"current_shaft_remaining_rolls": current_shaft_remaining_rolls,
 		"today_rolls": cint(stats["today_rolls"]),
 		"shift_rolls": cint(stats["shift_rolls"]),
 		"width_segments": segments_out,
@@ -1229,6 +1262,7 @@ def _gsm_build_job_board_entry(
 		"quota_full": quota_full,
 		"wo_terminal": bool(wo_terminal),
 		"spr_names": stats.get("spr_names") or [],
+		"active_spr_names": stats.get("active_spr_names") or [],
 		"run_date": str(run_date or ""),
 		"shift": _cstr(shift or ""),
 	}
