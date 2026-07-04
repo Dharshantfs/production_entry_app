@@ -929,10 +929,17 @@ function allGridRollRowsForJob(ppId, jobId) {
 }
 
 function effectiveJobRollCount(job) {
-  ensureJobApiBaseline(job);
-  const key = entryKeyJob(job.pp_id, job.job_id);
-  const baseline = cint(sessionJobApiBaseline.value[key]);
-  return baseline + allGridRollRowsForJob(job.pp_id, job.job_id).length;
+  const savedOnServer = cint(job.job_rolls_produced);
+  const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
+  return savedOnServer + pending;
+}
+
+function effectiveWidthRollCount(job, widthInch) {
+  const target = sprFlt(widthInch);
+  const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - target) < 0.05);
+  const savedAtWidth = cint(seg?.current || 0);
+  const pendingAtWidth = localPendingWidthCountForJob(job.pp_id, job.job_id, widthInch);
+  return savedAtWidth + pendingAtWidth;
 }
 
 function canJobAddOneMoreRoll(job) {
@@ -944,6 +951,19 @@ function canJobAddOneMoreRoll(job) {
     return true;
   }
   return effectiveJobRollCount(job) < maxRolls;
+}
+
+function canJobAddWidthRoll(job, widthInch) {
+  if (!job || job.wo_terminal) {
+    return false;
+  }
+  const target = sprFlt(widthInch);
+  const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - target) < 0.05);
+  const max = cint(seg?.max || job.max_rolls);
+  if (max <= 0) {
+    return canJobAddOneMoreRoll(job);
+  }
+  return effectiveWidthRollCount(job, widthInch) < max && canJobAddOneMoreRoll(job);
 }
 
 function recordJobApiBaselines(jobs) {
@@ -981,11 +1001,9 @@ function localPendingWidthCountForJob(ppId, jobId, widthInch) {
 }
 
 function withLocalPendingQuota(job) {
-  ensureJobApiBaseline(job);
-  const key = entryKeyJob(job.pp_id, job.job_id);
-  const baseline = cint(sessionJobApiBaseline.value[key]);
-  const gridTotal = allGridRollRowsForJob(job.pp_id, job.job_id).length;
-  const jobRolls = baseline + gridTotal;
+  const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
+  const savedOnServer = cint(job.job_rolls_produced);
+  const jobRolls = savedOnServer + pending;
   const rollsPerShaft = Math.max(1, cint(job.rolls_per_shaft));
   const jobShafts = Math.min(cint(job.max_shafts), Math.floor(jobRolls / rollsPerShaft));
   const remRolls = Math.max(0, cint(job.max_rolls) - jobRolls);
@@ -994,11 +1012,13 @@ function withLocalPendingQuota(job) {
   const currentShaftRemainingRolls =
     remRolls > 0 && currentShaftRolls ? Math.max(0, rollsPerShaft - currentShaftRolls) : 0;
   const widthSegments = (job.width_segments || []).map((seg) => {
+    const savedAtWidth = cint(seg.current);
     const pendingAtWidth = localPendingWidthCountForJob(job.pp_id, job.job_id, seg.width_inch);
-    const current = cint(seg.current) + pendingAtWidth;
+    const current = savedAtWidth + pendingAtWidth;
     const max = cint(seg.max);
     return {
       ...seg,
+      api_current: savedAtWidth,
       current,
       can_add: current < max && remRolls > 0 && !job.wo_terminal,
     };
@@ -1006,9 +1026,8 @@ function withLocalPendingQuota(job) {
   const quotaFull = remRolls <= 0 || jobShafts >= cint(job.max_shafts) || job.wo_terminal;
   return {
     ...job,
-    api_job_rolls_produced: baseline,
-    local_pending_rolls: localPendingRollCountForJob(job.pp_id, job.job_id),
-    local_grid_rolls: gridTotal,
+    api_job_rolls_produced: savedOnServer,
+    local_pending_rolls: pending,
     job_rolls_produced: jobRolls,
     job_shafts_produced: jobShafts,
     rem_rolls: remRolls,
@@ -3109,12 +3128,11 @@ function proceedAddRollWizard() {
   }
   const key = addRollJobChoice.value;
   const rawJob = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
-  const job = rawJob ? withLocalPendingQuota(rawJob) : null;
   const widthInch = sprFlt(addRollWidthChoice.value);
   showAddRollWizard.value = false;
   addRollWizardStep.value = 1;
   if (pendingAddRowResolve) {
-    pendingAddRowResolve(job && widthInch > 0 ? { job, widthInch } : null);
+    pendingAddRowResolve(rawJob && widthInch > 0 ? { job: rawJob, widthInch } : null);
     pendingAddRowResolve = null;
   }
 }
@@ -3136,12 +3154,16 @@ async function addRollRow() {
   if (!pick) {
     return;
   }
-  const { widthInch } = pick;
-  const job = withLocalPendingQuota(pick.job);
+  const { widthInch, job: pickedJob } = pick;
+  const rawJob =
+    jobBoardJobs.value.find(
+      (j) => j.pp_id === pickedJob.pp_id && String(j.job_id) === String(pickedJob.job_id)
+    ) || pickedJob;
+  const job = withLocalPendingQuota(rawJob);
   if (!canJobAddOneMoreRoll(job)) {
     frappe.confirm(
       __("Job roll limit reached ({0}/{1}) — use Manual Job. Open Manual Job now?", [
-        job.job_rolls_produced,
+        effectiveJobRollCount(job),
         job.max_rolls,
       ]),
       async () => {
@@ -3160,13 +3182,13 @@ async function addRollRow() {
     );
     return;
   }
-  const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - widthInch) < 0.05);
-  if (seg && !seg.can_add) {
+  if (!canJobAddWidthRoll(job, widthInch)) {
+    const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - widthInch) < 0.05);
     frappe.confirm(
       __("Width {0}\" is full ({1}/{2}) — use Manual Job. Open Manual Job now?", [
         widthInch,
-        seg.current,
-        seg.max,
+        effectiveWidthRollCount(job, widthInch),
+        seg?.max || job.max_rolls,
       ]),
       async () => {
         const ctx = toolsContext.value;
