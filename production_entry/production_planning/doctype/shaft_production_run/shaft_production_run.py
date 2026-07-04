@@ -14361,8 +14361,11 @@ def gsm_apply_bundle_packaging(
 		if not sj:
 			frappe.throw(_("Job {0} not found in Available Jobs").format(job_id))
 
-		current_rolls = _spr_count_roll_lines_for_job(spr, job_id)
-		max_job_rolls = _spr_job_max_roll_lines(sj, spr)
+		pp_resolved = pp_id or _cstr(spr.get("production_plan")).strip()
+		unit = _cstr(spr.get("custom_unit") or "").strip()
+		limits = _gsm_job_roll_limits_from_job_row(sj)
+		max_job_rolls = cint(limits.get("max_rolls") or 0)
+		current_rolls = _gsm_count_job_rolls_all_sprs(pp_resolved, job_id, unit=unit or None)
 		if max_job_rolls > 0 and current_rolls + no_of_packaging > max_job_rolls:
 			_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current_rolls)
 

@@ -257,7 +257,7 @@
           <div class="gpe-metric blue">Total Entry (Kg)<br /><strong>{{ formatKg(metrics.totalGross) }}</strong></div>
           <div class="gpe-metric green">Net Production (Kg)<br /><strong>{{ formatKg(metrics.totalNet) }}</strong></div>
           <div class="gpe-metric orange">Day remaining (Kg)<br /><strong>{{ formatKg(metrics.dayRemaining) }}</strong></div>
-          <div class="gpe-metric grey">Rolls<br /><strong>{{ rollLines.length }}</strong></div>
+          <div class="gpe-metric grey">Rolls<br /><strong>{{ sessionRollCount }}</strong></div>
         </div>
 
         <div class="gpe-toolbar">
@@ -928,8 +928,28 @@ function allGridRollRowsForJob(ppId, jobId) {
   );
 }
 
+function gridBundleRollCountForJob(ppId, jobId, widthInch = null) {
+  const jid = String(jobId || "");
+  const target = widthInch == null ? null : sprFlt(widthInch);
+  return rollLines.value
+    .filter((row) => {
+      if (!row.is_bundle_row || row.pp_id !== ppId || String(row.job_id || row.job || "") !== jid) {
+        return false;
+      }
+      if (target == null) {
+        return true;
+      }
+      const w = sprFlt(row.segment_width || row.width_inch);
+      return Math.abs(w - target) < 0.05;
+    })
+    .reduce((sum, row) => sum + Math.max(1, cint(row.pack_count || 0)), 0);
+}
+
 function effectiveJobRollCount(job) {
-  const savedOnServer = cint(job.job_rolls_produced);
+  const savedOnServer = Math.max(
+    cint(job.job_rolls_produced),
+    gridBundleRollCountForJob(job.pp_id, job.job_id)
+  );
   const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
   return savedOnServer + pending;
 }
@@ -937,7 +957,10 @@ function effectiveJobRollCount(job) {
 function effectiveWidthRollCount(job, widthInch) {
   const target = sprFlt(widthInch);
   const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - target) < 0.05);
-  const savedAtWidth = cint(seg?.current || 0);
+  const savedAtWidth = Math.max(
+    cint(seg?.current || 0),
+    gridBundleRollCountForJob(job.pp_id, job.job_id, widthInch)
+  );
   const pendingAtWidth = localPendingWidthCountForJob(job.pp_id, job.job_id, widthInch);
   return savedAtWidth + pendingAtWidth;
 }
@@ -1002,7 +1025,10 @@ function localPendingWidthCountForJob(ppId, jobId, widthInch) {
 
 function withLocalPendingQuota(job) {
   const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
-  const savedOnServer = cint(job.job_rolls_produced);
+  const savedOnServer = Math.max(
+    cint(job.job_rolls_produced),
+    gridBundleRollCountForJob(job.pp_id, job.job_id)
+  );
   const jobRolls = savedOnServer + pending;
   const rollsPerShaft = Math.max(1, cint(job.rolls_per_shaft));
   const jobShafts = Math.min(cint(job.max_shafts), Math.floor(jobRolls / rollsPerShaft));
@@ -1012,7 +1038,10 @@ function withLocalPendingQuota(job) {
   const currentShaftRemainingRolls =
     remRolls > 0 && currentShaftRolls ? Math.max(0, rollsPerShaft - currentShaftRolls) : 0;
   const widthSegments = (job.width_segments || []).map((seg) => {
-    const savedAtWidth = cint(seg.current);
+    const savedAtWidth = Math.max(
+      cint(seg.current),
+      gridBundleRollCountForJob(job.pp_id, job.job_id, seg.width_inch)
+    );
     const pendingAtWidth = localPendingWidthCountForJob(job.pp_id, job.job_id, seg.width_inch);
     const current = savedAtWidth + pendingAtWidth;
     const max = cint(seg.max);
@@ -1769,6 +1798,34 @@ const metrics = computed(() => {
   return { totalGross, totalNet, dayRemaining: Math.max(0, dayPlanned) };
 });
 
+const sessionRollCount = computed(() => {
+  if (selectedEntries.value.length) {
+    let total = 0;
+    const seen = new Set();
+    for (const entry of selectedEntries.value) {
+      const jid = entry.jobId || entry.job_id;
+      const key = entryKeyJob(entry.ppId, jid);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const raw = jobBoardJobs.value.find(
+        (j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid)
+      );
+      if (raw) {
+        total += effectiveJobRollCount(withLocalPendingQuota(raw));
+      }
+    }
+    if (total > 0) {
+      return total;
+    }
+  }
+  return rollLines.value.reduce(
+    (sum, r) => sum + (r.is_bundle_row ? Math.max(1, cint(r.pack_count || 0)) : 1),
+    0
+  );
+});
+
 const linkedOrderSummary = computed(() => {
   const byOrder = new Map();
   const addReq = (orderCode, partyName, required) => {
@@ -2166,9 +2223,9 @@ async function runTool(kind) {
   } else if (kind === "trail") {
     await gsmOpenTrailOrder(ppId);
   } else if (kind === "bundle") {
-    await gsmOpenBundlePackaging(ppId, (m) => {
-      handleBundleApplyResult(m, ppId);
-      fetchOrders();
+    await gsmOpenBundlePackaging(ppId, async (m) => {
+      await handleBundleApplyResult(m, ppId);
+      await fetchOrders();
     });
   } else if (kind === "bundlese") {
     await gsmToggleBundleSeOnSubmit(ppId);
@@ -2241,7 +2298,7 @@ function widthDisplay(row) {
   return row.width_inch != null && row.width_inch !== "" ? row.width_inch : "";
 }
 
-function handleBundleApplyResult(m, ppId) {
+async function handleBundleApplyResult(m, ppId) {
   if (!m || m.status !== "ok") {
     return;
   }
@@ -2283,8 +2340,9 @@ function handleBundleApplyResult(m, ppId) {
   if (m.child_roll_batches?.length) {
     syncBatchCounterFromGrid();
   }
-  saveStatus.value = __("Bundle applied — {0} roll(s)", [m.updated_rolls || 0]);
+  saveStatus.value = __("Bundle applied — {0} roll(s)", [m.updated_rolls || m.pack_count || 0]);
   scheduleAutosave();
+  await loadJobBoard();
   frappe.show_alert({
     message: __("Bundle row added ({0})", [m.width_label || m.bundle_batch_no]),
     indicator: "green",
