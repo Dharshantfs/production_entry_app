@@ -117,6 +117,14 @@
                 </div>
               </div>
               <div class="gpe-meter-context">{{ shift }} · {{ formatPlannedDate(runDate) }}</div>
+              <div v-if="cint(job.today_rolls) > 0" class="gpe-shift-breakdown">
+                Today: {{ job.today_rolls }} {{ plural(job.today_rolls, "roll", "rolls") }}
+                <span
+                  v-for="part in shiftBreakdownParts(job)"
+                  :key="part.shift"
+                  :class="['gpe-shift-part', { 'gpe-shift-current': part.shift === shift }]"
+                > · {{ part.shift }}: {{ part.count }}</span>
+              </div>
               <div v-if="job.rem_shafts > 0 || job.rem_rolls > 0" class="gpe-job-remaining">
                 Remaining: {{ jobRemainingText(job) }}
               </div>
@@ -330,8 +338,8 @@
                 <th>Color</th>
                 <th class="gpe-num">Sticker GSM</th>
                 <th class="gpe-num">Width</th>
-                <th class="gpe-num">Ordered Length (M)</th>
-                <th class="gpe-num">Produced Length (M)</th>
+                <th class="gpe-num">Ordered Length (MTR)</th>
+                <th class="gpe-num">Produced Length (MTR)</th>
                 <th>Prod GSM</th>
                 <th>Batch</th>
                 <th>Net (Kgs)</th>
@@ -367,7 +375,7 @@
                     :disabled="row.row_locked || row.is_bundle_row"
                     @input="onRowEdit(row)"
                   />
-                  <span class="gpe-unit-suffix">M</span>
+                  <span class="gpe-unit-suffix">MTR</span>
                 </td>
                 <td class="gpe-num">{{ row.produced_gsm }}</td>
                 <td class="gpe-num">{{ row.batch_no }}</td>
@@ -639,7 +647,7 @@
     <div v-if="showAddRollWizard" class="gpe-dialog-overlay" @click.self="cancelAddRollWizard">
       <div class="gpe-dialog gpe-card">
         <h3>{{ addRollWizardStep === 1 ? "Choose job for new roll" : "Choose width" }}</h3>
-        <div v-if="addRollWizardStep === 1" class="gpe-picker-list">
+        <div v-if="addRollWizardStep === 1 && !addRollWizardSkipJobStep" class="gpe-picker-list">
           <label
             v-for="entry in wizardJobChoices"
             :key="entry.key"
@@ -677,8 +685,12 @@
           </label>
         </div>
         <div class="gpe-dialog-actions">
-          <button type="button" class="gpe-btn" @click="addRollWizardStep === 1 ? cancelAddRollWizard() : (addRollWizardStep = 1)">
-            {{ addRollWizardStep === 1 ? "Cancel" : "Back" }}
+          <button
+            type="button"
+            class="gpe-btn"
+            @click="addRollWizardStep === 1 || addRollWizardSkipJobStep ? cancelAddRollWizard() : (addRollWizardStep = 1)"
+          >
+            {{ addRollWizardStep === 1 || addRollWizardSkipJobStep ? "Cancel" : "Back" }}
           </button>
           <button
             v-if="wizardSelectedJobMaxed"
@@ -826,6 +838,7 @@ const showCompletedOrders = ref(false);
 const showConfirmDialog = ref(false);
 const showAddRollWizard = ref(false);
 const addRollWizardStep = ref(1);
+const addRollWizardSkipJobStep = ref(false);
 const addRollJobChoice = ref("");
 const addRollWidthChoice = ref(null);
 let pendingAddRowResolve = null;
@@ -1154,6 +1167,18 @@ function confirmLineProgress(entry) {
 
 function plural(n, one, many) {
   return Number(n) === 1 ? one : many;
+}
+
+function shiftBreakdownParts(job) {
+  const byShift = job?.rolls_by_shift_today || {};
+  const known = ["Day Shift", "Night Shift"];
+  const parts = known.map((sh) => ({ shift: sh, count: cint(byShift[sh]) }));
+  for (const [sh, cnt] of Object.entries(byShift)) {
+    if (!known.includes(sh)) {
+      parts.push({ shift: sh, count: cint(cnt) });
+    }
+  }
+  return parts;
 }
 
 function jobRemainingText(job) {
@@ -1950,7 +1975,30 @@ const canAddRow = computed(() => {
   });
 });
 
-const sessionSprList = computed(() => Object.values(sessionSprs.value || {}));
+const sessionSprList = computed(() => {
+  const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
+  if (!ppIds.size) {
+    return [];
+  }
+  return Object.values(sessionSprs.value || {}).filter((s) => ppIds.has(s.pp_id));
+});
+
+function pruneSessionSprsToSelection() {
+  if (selectionLocked.value) {
+    return;
+  }
+  const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
+  const next = {};
+  for (const [k, v] of Object.entries(sessionSprs.value || {})) {
+    if (ppIds.has(k)) {
+      next[k] = v;
+    }
+  }
+  if (Object.keys(next).length !== Object.keys(sessionSprs.value || {}).length) {
+    sessionSprs.value = next;
+    scheduleAutosave();
+  }
+}
 
 const canCreateSprs = computed(
   () =>
@@ -2017,6 +2065,7 @@ function toggleJob(job, ev) {
     next.push(snap);
   }
   selectedEntries.value = next;
+  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -2041,6 +2090,7 @@ function onJobLabelClick(job) {
     next.push(snap);
   }
   selectedEntries.value = next;
+  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -2076,6 +2126,7 @@ function toggleLine(line, ev) {
     next.push(snap);
   }
   selectedEntries.value = next;
+  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -2100,6 +2151,7 @@ function onLineLabelClick(line) {
     next.push(snap);
   }
   selectedEntries.value = next;
+  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -2121,11 +2173,13 @@ function unlockSelection() {
   if (rollLines.value.length) {
     frappe.confirm("Unlock selection? Existing roll rows stay in the grid.", () => {
       selectionLocked.value = false;
+      pruneSessionSprsToSelection();
       scheduleAutosave();
     });
     return;
   }
   selectionLocked.value = false;
+  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -2135,6 +2189,7 @@ function clearSelection() {
     return;
   }
   selectedEntries.value = [];
+  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -3088,8 +3143,33 @@ function pickJobAndWidthForRow() {
   if (!selectedEntries.value.length) {
     return Promise.resolve(null);
   }
+  const entries = selectedEntries.value;
+  if (entries.length === 1) {
+    const entry = entries[0];
+    const key = entry.key || entryKeyJob(entry.ppId, entry.jobId || entry.job_id);
+    addRollJobChoice.value = key;
+    const rawJob = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+    if (!rawJob) {
+      return Promise.resolve(null);
+    }
+    const job = withLocalPendingQuota(rawJob);
+    const addable = (job.width_segments || []).filter((s) => s.can_add);
+    const maxed = !canJobAddOneMoreRoll(job);
+    if (!maxed && addable.length === 1) {
+      return Promise.resolve({ job: rawJob, widthInch: addable[0].width_inch });
+    }
+    addRollWizardSkipJobStep.value = true;
+    addRollWizardStep.value = 2;
+    addRollWidthChoice.value =
+      addable[0]?.width_inch ?? job.width_segments?.[0]?.width_inch ?? null;
+    showAddRollWizard.value = true;
+    return new Promise((resolve) => {
+      pendingAddRowResolve = resolve;
+    });
+  }
+  addRollWizardSkipJobStep.value = false;
   addRollWizardStep.value = 1;
-  const first = selectedEntries.value[0];
+  const first = entries[0];
   addRollJobChoice.value = first.key || entryKeyJob(first.ppId, first.jobId || first.job_id);
   addRollWidthChoice.value = null;
   showAddRollWizard.value = true;
@@ -3101,6 +3181,7 @@ function pickJobAndWidthForRow() {
 function cancelAddRollWizard() {
   showAddRollWizard.value = false;
   addRollWizardStep.value = 1;
+  addRollWizardSkipJobStep.value = false;
   if (pendingAddRowResolve) {
     pendingAddRowResolve(null);
     pendingAddRowResolve = null;
@@ -3189,6 +3270,7 @@ function proceedAddRollWizard() {
   const widthInch = sprFlt(addRollWidthChoice.value);
   showAddRollWizard.value = false;
   addRollWizardStep.value = 1;
+  addRollWizardSkipJobStep.value = false;
   if (pendingAddRowResolve) {
     pendingAddRowResolve(rawJob && widthInch > 0 ? { job: rawJob, widthInch } : null);
     pendingAddRowResolve = null;
@@ -3827,6 +3909,7 @@ onUnmounted(() => {
   margin-bottom: 6px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
+  overflow: hidden;
 }
 .gpe-job-card:hover {
   border-color: #93c5fd;
@@ -3849,6 +3932,9 @@ onUnmounted(() => {
   font-size: 12px;
   color: #475569;
   margin-bottom: 6px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 .gpe-dual-meter {
   display: grid;
@@ -3892,14 +3978,34 @@ onUnmounted(() => {
   color: #0f172a;
 }
 .gpe-meter-context {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   color: #64748b;
   margin-bottom: 4px;
 }
+.gpe-shift-breakdown {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+.gpe-shift-part {
+  color: #94a3b8;
+}
+.gpe-shift-current {
+  color: #2563eb;
+  font-weight: 700;
+}
 .gpe-job-remaining {
-  font-size: 11px;
+  font-size: 14px;
   color: #b45309;
-  font-weight: 500;
+  font-weight: 700;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #fff7ed;
+  border-radius: 6px;
+  line-height: 1.35;
 }
 .gpe-job-foot {
   margin-top: 4px;
@@ -4527,13 +4633,17 @@ onUnmounted(() => {
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 16px;
+  font-size: 17px;
 }
 .gpe-grid-entry th,
 .gpe-grid-entry td {
   border-bottom: 1px solid #f1f5f9;
   padding: 8px 10px;
   white-space: nowrap;
+}
+.gpe-grid-entry tbody td {
+  font-size: 17px;
+  font-weight: 600;
 }
 .gpe-grid-entry td.gpe-num,
 .gpe-grid-entry th.gpe-num {
@@ -4544,7 +4654,7 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 2;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 .gpe-sticky-col {

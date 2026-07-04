@@ -1127,6 +1127,7 @@ def _gsm_job_production_stats(
 	job_rolls = 0
 	today_rolls = 0
 	shift_rolls = 0
+	rolls_by_shift_today: dict[str, int] = {}
 	job_produced_kg = 0.0
 	width_counts: dict[float, int] = {w: 0 for w in width_segments}
 	spr_names: list[str] = []
@@ -1154,6 +1155,8 @@ def _gsm_job_production_stats(
 			job_produced_kg += flt(getattr(it, "net_weight", None) or 0)
 			if run_d and spr_run == run_d:
 				today_rolls += 1
+				if spr_shift:
+					rolls_by_shift_today[spr_shift] = rolls_by_shift_today.get(spr_shift, 0) + 1
 				if cur_shift and spr_shift == cur_shift:
 					shift_rolls += 1
 			w = flt(getattr(it, "width_inch", None) or 0)
@@ -1179,6 +1182,7 @@ def _gsm_job_production_stats(
 		"job_produced_kg": job_produced_kg,
 		"today_rolls": today_rolls,
 		"shift_rolls": shift_rolls,
+		"rolls_by_shift_today": rolls_by_shift_today,
 		"width_counts": width_counts,
 		"segment_stats": segment_stats,
 		"spr_names": spr_names,
@@ -1267,6 +1271,7 @@ def _gsm_build_job_board_entry(
 		"current_shaft_remaining_rolls": current_shaft_remaining_rolls,
 		"today_rolls": cint(stats["today_rolls"]),
 		"shift_rolls": cint(stats["shift_rolls"]),
+		"rolls_by_shift_today": stats.get("rolls_by_shift_today") or {},
 		"width_segments": segments_out,
 		"can_add_roll": can_add_any and not quota_full,
 		"quota_full": quota_full,
