@@ -934,7 +934,9 @@ function entryKeyJob(ppId, jobId) {
 }
 
 function orderMetaForPp(ppId) {
-  const row = ppSubmittedRows.value.find((r) => r.pp_id === ppId);
+  const row =
+    filteredPpSubmittedRows.value.find((r) => r.pp_id === ppId) ||
+    ppSubmittedRows.value.find((r) => r.pp_id === ppId);
   return {
     orderCode: row?.partyCode || row?.party_code || ppId,
     partyName: row?.customer_name || row?.customer || "",
@@ -944,14 +946,18 @@ function orderMetaForPp(ppId) {
   };
 }
 
+function ppChartMetaForPp(ppId) {
+  const rows = filteredPpSubmittedRows.value.filter((r) => r.pp_id === ppId);
+  const row = rows[0];
+  return {
+    wo_terminal: !!(row?.wo_terminal === true || row?.wo_terminal === 1),
+    spr_docstatus: Number(row?.spr_docstatus ?? 0),
+    pp_docstatus: Number(row?.pp_docstatus ?? 1),
+  };
+}
+
 function orderDayStatsForPp(ppId) {
-  let rows = ppSubmittedRows.value.filter((r) => r.pp_id === ppId);
-  if (filterUnit.value) {
-    rows = rows.filter((r) => r.unit === filterUnit.value);
-  }
-  if (viewScope.value === "daily" && filterDate.value) {
-    rows = rows.filter((r) => String(r.plannedDate || r.planned_date || "").slice(0, 10) === filterDate.value);
-  }
+  const rows = filteredPpSubmittedRows.value.filter((r) => r.pp_id === ppId);
   const dayTargetKg = rows.reduce((s, r) => s + sprFlt(r.qty), 0);
   const achievedKg = rows.reduce(
     (s, r) => s + sprFlt(r.actual_production_weight_kgs ?? r.total_achieved_weight_kgs),
@@ -1142,11 +1148,14 @@ function withLocalPendingQuota(job) {
 function enrichJobCard(job) {
   job = withLocalPendingQuota(job);
   const meta = orderMetaForPp(job.pp_id);
-  const selectable = !job.quota_full && !job.wo_terminal;
+  const chartMeta = ppChartMetaForPp(job.pp_id);
+  const woTerminal = !!(job.wo_terminal || chartMeta.wo_terminal);
+  const quotaFull = job.quota_full || woTerminal;
+  const selectable = !quotaFull && !woTerminal;
   let chip = "";
   let chipClass = "";
   let tooltip = "Select for production";
-  if (job.wo_terminal) {
+  if (woTerminal) {
     chip = "WO Closed";
     chipClass = "gpe-chip-closed";
     tooltip = "Work Orders closed on this PP";
@@ -1154,9 +1163,13 @@ function enrichJobCard(job) {
     chip = "Completed";
     chipClass = "gpe-chip-done";
     tooltip = "Job shaft/roll quota met";
+  } else if (chartMeta.spr_docstatus === 1) {
+    chip = "SPR Submitted";
+    chipClass = "gpe-chip-submitted";
+    tooltip = "Submitted SPR — more production allowed while WO is open";
   } else if ((job.active_spr_names || []).length || sessionSprs.value[job.pp_id]?.spr_name) {
     chip = "SPR Active";
-    chipClass = "gpe-chip-submitted";
+    chipClass = "gpe-chip-draft";
     tooltip = "Draft SPR exists for this run date and shift";
   }
   return {
@@ -1509,6 +1522,34 @@ const ppSubmittedRows = computed(() =>
   )
 );
 
+function rowMatchesFilterDate(row) {
+  const pd = String(row.plannedDate || row.planned_date || "").slice(0, 10);
+  if (!pd) {
+    return false;
+  }
+  if (viewScope.value === "daily") {
+    return pd === filterDate.value;
+  }
+  const args = buildFetchArgs();
+  if (args.start_date && args.end_date) {
+    return pd >= args.start_date && pd <= args.end_date;
+  }
+  return true;
+}
+
+const filteredPpSubmittedRows = computed(() => {
+  let rows = ppSubmittedRows.value;
+  if (filterUnit.value) {
+    rows = rows.filter((r) => r.unit === filterUnit.value);
+  }
+  rows = rows.filter((r) => rowMatchesFilterDate(r));
+  return rows;
+});
+
+const filteredPpIdSet = computed(
+  () => new Set(filteredPpSubmittedRows.value.map((r) => r.pp_id).filter(Boolean))
+);
+
 const mergedItemIds = computed(() => {
   const s = new Set();
   (merges.value || []).forEach((m) => {
@@ -1590,7 +1631,11 @@ const fabricUnitOptions = computed(() => unitOptions.value);
 
 const jobOrderGroups = computed(() => {
   const map = new Map();
+  const allowedPpIds = filteredPpIdSet.value;
   for (const job of jobBoardJobs.value) {
+    if (!allowedPpIds.has(job.pp_id)) {
+      continue;
+    }
     const enriched = enrichJobCard(job);
     const key = `${enriched.orderCode}::${job.pp_id}`;
     if (!map.has(key)) {
@@ -1697,11 +1742,7 @@ const wizardWidthSegments = computed(() => {
 
 const orderGroups = computed(() => {
   const map = new Map();
-  let rows = ppSubmittedRows.value;
-  if (filterUnit.value) {
-    rows = rows.filter((r) => r.unit === filterUnit.value);
-  }
-  rows.forEach((item) => {
+  filteredPpSubmittedRows.value.forEach((item) => {
     const orderCode = item.partyCode || item.party_code || "";
     const key = `${orderCode}::${item.customer_name || item.customer || ""}`;
     if (!map.has(key)) {
@@ -1852,16 +1893,9 @@ const primaryGsmLabel = computed(() => {
   return "";
 });
 
-const boardDayTotalKg = computed(() => {
-  let rows = ppSubmittedRows.value;
-  if (filterUnit.value) {
-    rows = rows.filter((r) => r.unit === filterUnit.value);
-  }
-  if (viewScope.value === "daily" && filterDate.value) {
-    rows = rows.filter((r) => String(r.plannedDate || "").slice(0, 10) === filterDate.value);
-  }
-  return rows.reduce((s, r) => s + sprFlt(r.qty), 0);
-});
+const boardDayTotalKg = computed(() =>
+  filteredPpSubmittedRows.value.reduce((s, r) => s + sprFlt(r.qty), 0)
+);
 
 const metrics = computed(() => {
   let totalGross = 0;
@@ -2055,6 +2089,26 @@ function pruneSessionSprsToSelection() {
     sessionSprs.value = next;
     scheduleAutosave();
   }
+}
+
+function pruneSelectedEntriesToFilter() {
+  const allowedPpIds = filteredPpIdSet.value;
+  if (!selectedEntries.value.length || !allowedPpIds.size) {
+    return;
+  }
+  const next = selectedEntries.value.filter((e) => allowedPpIds.has(e.ppId));
+  if (next.length === selectedEntries.value.length) {
+    return;
+  }
+  selectedEntries.value = next;
+  if (!next.length) {
+    selectionLocked.value = false;
+    rollLines.value = [];
+    sessionSprs.value = {};
+  } else {
+    pruneSessionSprsToSelection();
+  }
+  scheduleAutosave();
 }
 
 const canCreateSprs = computed(
@@ -2905,7 +2959,7 @@ async function fetchMerges() {
 async function loadQuotaForLines() {
   const cache = {};
   const seen = new Set();
-  const rows = ppSubmittedRows.value;
+  const rows = filteredPpSubmittedRows.value;
   const quotaArgs = quotaContextArgs();
   const tasks = rows.map(async (item) => {
     const lineId = item.itemName || item.name;
@@ -2938,7 +2992,7 @@ async function loadQuotaForLines() {
 }
 
 async function loadJobBoard() {
-  const ppIds = [...new Set(ppSubmittedRows.value.map((r) => r.pp_id).filter(Boolean))];
+  const ppIds = [...filteredPpIdSet.value];
   if (!ppIds.length) {
     jobBoardJobs.value = [];
     return;
@@ -3016,6 +3070,7 @@ async function fetchOrders() {
       headerUnit.value = filterUnit.value;
     }
     await Promise.all([fetchMerges(), loadQuotaForLines(), loadJobBoard()]);
+    pruneSelectedEntriesToFilter();
     enrichSelectedEntriesFromBoard();
   } catch (e) {
     console.error(e);
@@ -3027,7 +3082,13 @@ async function fetchOrders() {
 
 function onUnitChange() {
   headerUnit.value = filterUnit.value;
-  fetchMerges().then(() => Promise.all([loadQuotaForLines(), loadJobBoard()]));
+  pruneSelectedEntriesToFilter();
+  fetchMerges().then(() =>
+    Promise.all([loadQuotaForLines(), loadJobBoard()]).then(() => {
+      pruneSelectedEntriesToFilter();
+      enrichSelectedEntriesFromBoard();
+    })
+  );
   scheduleAutosave();
 }
 

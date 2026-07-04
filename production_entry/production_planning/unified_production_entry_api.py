@@ -1309,6 +1309,32 @@ def _gsm_build_job_board_entry(
 	}
 
 
+_GSM_WO_TERMINAL_STATUSES = frozenset(
+	{"completed", "stopped", "cancelled", "canceled", "closed", "close"}
+)
+
+
+def _gsm_pp_wo_terminal(pp_id: str) -> bool:
+	"""True when the PP has Work Order(s) and none are still open (matches Production Table)."""
+	wo_rows = frappe.db.sql(
+		"""
+		SELECT status, docstatus
+		FROM `tabWork Order`
+		WHERE production_plan = %(pp)s AND docstatus != 2
+		""",
+		{"pp": pp_id},
+		as_dict=True,
+	)
+	if not wo_rows:
+		return False
+	for w in wo_rows:
+		if cint(w.get("docstatus") or 0) == 0:
+			return False
+		if str(w.get("status") or "").strip().lower() not in _GSM_WO_TERMINAL_STATUSES:
+			return False
+	return True
+
+
 @frappe.whitelist()
 def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 	"""GSM sidebar — per PP job shaft+roll progress, remaining, per-width caps."""
@@ -1324,7 +1350,7 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 		pp_id = _cstr(pp_id).strip()
 		if not pp_id or not frappe.db.exists("Production Plan", pp_id):
 			continue
-		wo_terminal = False
+		wo_terminal = _gsm_pp_wo_terminal(pp_id)
 		pp_jobs = []
 		for shaft_row in _gsm_pp_shaft_rows(frappe.get_doc("Production Plan", pp_id)):
 			entry = _gsm_build_job_board_entry(
