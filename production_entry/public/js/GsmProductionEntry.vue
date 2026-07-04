@@ -959,47 +959,59 @@ function gridBundleRollCountForJob(ppId, jobId, widthInch = null) {
 }
 
 function effectiveJobRollCount(job) {
+  if (job?.api_job_rolls_produced != null) {
+    return cint(job.api_job_rolls_produced) + cint(job.local_pending_rolls || 0);
+  }
   const savedOnServer = Math.max(
     cint(job.job_rolls_produced),
     gridBundleRollCountForJob(job.pp_id, job.job_id)
   );
-  const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
-  return savedOnServer + pending;
+  return savedOnServer + localPendingRollCountForJob(job.pp_id, job.job_id);
 }
 
 function effectiveWidthRollCount(job, widthInch) {
   const target = sprFlt(widthInch);
   const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - target) < 0.05);
+  if (seg?.api_current != null) {
+    return cint(seg.api_current) + localPendingWidthCountForJob(job.pp_id, job.job_id, widthInch);
+  }
   const savedAtWidth = Math.max(
     cint(seg?.current || 0),
     gridBundleRollCountForJob(job.pp_id, job.job_id, widthInch)
   );
-  const pendingAtWidth = localPendingWidthCountForJob(job.pp_id, job.job_id, widthInch);
-  return savedAtWidth + pendingAtWidth;
+  return savedAtWidth + localPendingWidthCountForJob(job.pp_id, job.job_id, widthInch);
 }
 
 function canJobAddOneMoreRoll(job) {
   if (!job || job.wo_terminal) {
     return false;
   }
-  const maxRolls = cint(job.max_rolls);
+  const j = job.api_job_rolls_produced != null ? job : withLocalPendingQuota(job);
+  if (j.quota_full) {
+    return false;
+  }
+  const maxRolls = cint(j.max_rolls);
   if (maxRolls <= 0) {
     return true;
   }
-  return effectiveJobRollCount(job) < maxRolls;
+  return cint(j.rem_rolls) > 0;
 }
 
 function canJobAddWidthRoll(job, widthInch) {
   if (!job || job.wo_terminal) {
     return false;
   }
-  const target = sprFlt(widthInch);
-  const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - target) < 0.05);
-  const max = cint(seg?.max || job.max_rolls);
-  if (max <= 0) {
-    return canJobAddOneMoreRoll(job);
+  const j = job.api_job_rolls_produced != null ? job : withLocalPendingQuota(job);
+  if (!canJobAddOneMoreRoll(j)) {
+    return false;
   }
-  return effectiveWidthRollCount(job, widthInch) < max && canJobAddOneMoreRoll(job);
+  const target = sprFlt(widthInch);
+  const seg = (j.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - target) < 0.05);
+  const max = cint(seg?.max || j.max_rolls);
+  if (max <= 0) {
+    return true;
+  }
+  return effectiveWidthRollCount(j, widthInch) < max;
 }
 
 function recordJobApiBaselines(jobs) {
@@ -1838,7 +1850,7 @@ const sessionRollCount = computed(() => {
         (j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid)
       );
       if (raw) {
-        total += effectiveJobRollCount(withLocalPendingQuota(raw));
+        total += withLocalPendingQuota(raw).job_rolls_produced;
       }
     }
     if (total > 0) {
