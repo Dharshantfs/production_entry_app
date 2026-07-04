@@ -118,12 +118,12 @@
               </div>
               <div class="gpe-meter-context">{{ shift }} · {{ formatPlannedDate(runDate) }}</div>
               <div v-if="cint(job.today_rolls) > 0" class="gpe-shift-breakdown">
-                Today: {{ job.today_rolls }} {{ plural(job.today_rolls, "roll", "rolls") }}
+                <span class="gpe-shift-today">Today: {{ job.today_rolls }} {{ plural(job.today_rolls, "roll", "rolls") }}</span>
                 <span
                   v-for="part in shiftBreakdownParts(job)"
                   :key="part.shift"
-                  :class="['gpe-shift-part', { 'gpe-shift-current': part.shift === shift }]"
-                > · {{ part.shift }}: {{ part.count }}</span>
+                  :class="['gpe-shift-part', part.shift === shift ? 'gpe-shift-current' : 'gpe-shift-other']"
+                > · {{ part.shift }}: <strong>{{ part.count }}</strong></span>
               </div>
               <div v-if="job.rem_shafts > 0 || job.rem_rolls > 0" class="gpe-job-remaining">
                 Remaining: {{ jobRemainingText(job) }}
@@ -276,7 +276,9 @@
               class="gpe-btn warn"
               @click="openManualJobForAllMaxed"
             >All jobs at max — Manual Job</button>
-            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow" @click="addRollRow">Add Roll Row</button>
+            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow || addRollInProgress" @click="addRollRow">
+              {{ addRollInProgress ? "Adding…" : "Add Roll Row" }}
+            </button>
             <button type="button" class="gpe-btn" :disabled="!rollLines.length" @click="removeTopRow">Remove Top Row</button>
             <button
               type="button"
@@ -848,6 +850,8 @@ const sessionJobApiBaseline = ref({});
 
 const seriesPrefix = ref("");
 const maxRollSuffix = ref(0);
+const reservedBatchNos = ref(new Set());
+const addRollInProgress = ref(false);
 const batchContextKey = ref("");
 
 function currentBatchContextKey() {
@@ -857,6 +861,39 @@ function currentBatchContextKey() {
 function resetBatchSeriesCache() {
   seriesPrefix.value = "";
   maxRollSuffix.value = 0;
+  reservedBatchNos.value = new Set();
+}
+
+function allExistingBatchNos() {
+  const seen = new Set(reservedBatchNos.value);
+  for (const r of rollLines.value) {
+    const bn = _cstr(r.batch_no || "");
+    if (bn) {
+      seen.add(bn);
+    }
+  }
+  return [...seen];
+}
+
+function reserveBatchNo(batchNo, rollNo) {
+  const bn = _cstr(batchNo || "");
+  if (!bn) {
+    return;
+  }
+  reservedBatchNos.value = new Set([...reservedBatchNos.value, bn]);
+  const prefix = bn.split("/")[0];
+  if (prefix) {
+    seriesPrefix.value = prefix;
+  }
+  const rn = parseInt(rollNo, 10);
+  if (!Number.isNaN(rn)) {
+    maxRollSuffix.value = Math.max(maxRollSuffix.value, rn);
+  } else {
+    const suf = parseInt(bn.split("/").pop(), 10);
+    if (!Number.isNaN(suf)) {
+      maxRollSuffix.value = Math.max(maxRollSuffix.value, suf);
+    }
+  }
 }
 
 const sessionSprs = ref({});
@@ -3062,7 +3099,15 @@ async function resolveWorkOrder(line) {
 }
 
 function syncBatchCounterFromGrid() {
-  let mx = 0;
+  let mx = maxRollSuffix.value;
+  for (const bn of reservedBatchNos.value) {
+    if (bn.includes("/")) {
+      const suf = parseInt(bn.split("/").pop(), 10);
+      if (!Number.isNaN(suf)) {
+        mx = Math.max(mx, suf);
+      }
+    }
+  }
   for (const r of rollLines.value) {
     const rn = parseInt(r.roll_no, 10);
     if (!Number.isNaN(rn)) {
@@ -3290,6 +3335,9 @@ function proceedAddRollWizard() {
 }
 
 async function addRollRow() {
+  if (addRollInProgress.value) {
+    return;
+  }
   if (!selectionLocked.value) {
     frappe.msgprint("Confirm and lock your GSM selection first.");
     return;
@@ -3302,6 +3350,8 @@ async function addRollRow() {
     frappe.msgprint("Select a unit filter first.");
     return;
   }
+  addRollInProgress.value = true;
+  try {
   const pick = await pickJobAndWidthForRow();
   if (!pick) {
     return;
@@ -3376,6 +3426,14 @@ async function addRollRow() {
     resolveOrderLength(line),
     resolveWorkOrder(line),
   ]);
+  let batch = batchInfo;
+  if (batch?.batch_no && rollLines.value.some((r) => r.batch_no === batch.batch_no)) {
+    batch = await previewNextBatch(line.ppId);
+  }
+  if (!batch?.batch_no || rollLines.value.some((r) => r.batch_no === batch.batch_no)) {
+    frappe.msgprint(__("Could not assign a unique batch number. Try again."));
+    return;
+  }
   const extras = await fetchRollRowExtras(line, ordLen);
   const coreItem = pickCoreItemForWidth(
     line.width_inch,
@@ -3394,8 +3452,8 @@ async function addRollRow() {
     quality: src.quality || "",
     color: src.color || src.fabric_colour || "",
     gsm: src.gsm,
-    batch_no: batchInfo.batch_no || "",
-    roll_no: batchInfo.roll_no || "",
+    batch_no: batch.batch_no || "",
+    roll_no: batch.roll_no || "",
     width_inch: line.width_inch,
     meter_roll: ordLen,
     produced_length_mtrs: "",
@@ -3416,11 +3474,14 @@ async function addRollRow() {
   });
   rollLines.value.unshift(newRow);
   scheduleAutosave();
+  } finally {
+    addRollInProgress.value = false;
+  }
 }
 
 async function previewNextBatch(ppId) {
   syncBatchCounterFromGrid();
-  const existing = rollLines.value.map((r) => r.batch_no).filter(Boolean);
+  const existing = allExistingBatchNos();
   const sprName = ppId ? sprNameForPp(ppId) : "";
   if (sprName) {
     try {
@@ -3435,17 +3496,12 @@ async function previewNextBatch(ppId) {
           custom_unit: headerUnit.value,
           shift: shift.value,
           client_series_prefix: seriesPrefix.value || undefined,
+          existing_batches: JSON.stringify(existing),
         },
       });
       const row = (res.message || [])[0];
       if (row?.batch_no) {
-        const prefix = String(row.batch_no).split("/")[0];
-        if (prefix) {
-          seriesPrefix.value = prefix;
-        }
-      }
-      if (row?.roll_no) {
-        maxRollSuffix.value = Math.max(maxRollSuffix.value, parseInt(row.roll_no, 10));
+        reserveBatchNo(row.batch_no, row.roll_no);
       }
       return row || { batch_no: "", roll_no: "" };
     } catch (e) {
@@ -3466,11 +3522,10 @@ async function previewNextBatch(ppId) {
     },
   });
   const row = (res.message || [])[0];
-  if (row?.series_prefix) {
+  if (row?.batch_no) {
+    reserveBatchNo(row.batch_no, row.roll_no);
+  } else if (row?.series_prefix) {
     seriesPrefix.value = row.series_prefix;
-  }
-  if (row?.roll_no) {
-    maxRollSuffix.value = Math.max(maxRollSuffix.value, parseInt(row.roll_no, 10));
   }
   return row || { batch_no: "", roll_no: "" };
 }
@@ -3997,17 +4052,32 @@ onUnmounted(() => {
 }
 .gpe-shift-breakdown {
   font-size: 13px;
-  font-weight: 600;
-  color: #475569;
+  font-weight: 700;
+  color: #1e293b;
   margin-bottom: 6px;
-  line-height: 1.4;
+  line-height: 1.45;
+}
+.gpe-shift-today {
+  font-weight: 800;
+  color: #0f172a;
 }
 .gpe-shift-part {
-  color: #94a3b8;
+  font-weight: 700;
+}
+.gpe-shift-other {
+  color: #c2410c;
+}
+.gpe-shift-other strong {
+  color: #9a3412;
+  font-weight: 800;
 }
 .gpe-shift-current {
   color: #2563eb;
-  font-weight: 700;
+  font-weight: 800;
+}
+.gpe-shift-current strong {
+  color: #1d4ed8;
+  font-weight: 800;
 }
 .gpe-job-remaining {
   font-size: 14px;

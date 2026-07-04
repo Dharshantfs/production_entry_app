@@ -9414,6 +9414,7 @@ def get_next_spr_batch_numbers(
 	custom_unit=None,
 	shift=None,
 	client_series_prefix=None,
+	existing_batches=None,
 ):
 	"""
 	Preview batch/roll numbers for new rows (e.g. after Create Entry) without submitting SPR.
@@ -9436,6 +9437,7 @@ def get_next_spr_batch_numbers(
 			custom_unit=custom_unit,
 			shift=shift,
 			client_series_prefix=client_series_prefix,
+			existing_batches=existing_batches,
 		)
 
 
@@ -9447,6 +9449,7 @@ def _get_next_spr_batch_numbers_unlocked(
 	custom_unit=None,
 	shift=None,
 	client_series_prefix=None,
+	existing_batches=None,
 ):
 	doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if run_date not in (None, ""):
@@ -9477,6 +9480,20 @@ def _get_next_spr_batch_numbers_unlocked(
 		pass
 	item_meta = frappe.get_meta("Shaft Production Run Item")
 	used_batches = _spr_used_batch_numbers_on_spr(shaft_production_run, doc.items)
+	if existing_batches:
+		if isinstance(existing_batches, str):
+			try:
+				extra = json.loads(existing_batches) or []
+			except Exception:
+				extra = [x.strip() for x in existing_batches.split(",") if x.strip()]
+		elif isinstance(existing_batches, (list, tuple)):
+			extra = list(existing_batches)
+		else:
+			extra = []
+		for bn in extra:
+			bn = _cstr(bn).strip()
+			if bn:
+				used_batches.add(bn)
 	out = []
 	for _i in range(count):
 		bn, next_roll = _spr_next_available_batch_no(
