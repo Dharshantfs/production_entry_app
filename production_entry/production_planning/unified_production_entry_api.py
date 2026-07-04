@@ -1125,11 +1125,13 @@ def _gsm_job_production_stats(
 	job_key = _cstr(job_id).strip()
 	width_segments = [flt(w) for w in (width_segments or []) if flt(w) > 0]
 	job_rolls = 0
+	submitted_rolls = 0
 	today_rolls = 0
 	shift_rolls = 0
 	rolls_by_shift_today: dict[str, int] = {}
 	job_produced_kg = 0.0
 	width_counts: dict[float, int] = {w: 0 for w in width_segments}
+	submitted_width_counts: dict[float, int] = {w: 0 for w in width_segments}
 	spr_names: list[str] = []
 	active_spr_names: list[str] = []
 	run_d = getdate(run_date) if run_date else None
@@ -1144,6 +1146,7 @@ def _gsm_job_production_stats(
 			spr_names.append(sn)
 		spr_run = getdate(spr.run_date) if spr.get("run_date") else None
 		spr_shift = _cstr(spr.get("shift") or "").strip()
+		is_submitted = cint(spr.docstatus) == 1
 		if run_d and spr_run == run_d and cur_shift and spr_shift == cur_shift and cint(spr.docstatus) == 0:
 			active_spr_names.append(sn)
 		for it in spr.get("items") or []:
@@ -1153,6 +1156,8 @@ def _gsm_job_production_stats(
 				continue
 			job_rolls += 1
 			job_produced_kg += flt(getattr(it, "net_weight", None) or 0)
+			if is_submitted:
+				submitted_rolls += 1
 			if run_d and spr_run == run_d:
 				today_rolls += 1
 				if spr_shift:
@@ -1163,9 +1168,18 @@ def _gsm_job_production_stats(
 			for seg_w in width_segments:
 				if abs(w - seg_w) < 0.05:
 					width_counts[seg_w] = width_counts.get(seg_w, 0) + 1
+					if is_submitted:
+						submitted_width_counts[seg_w] = submitted_width_counts.get(seg_w, 0) + 1
 					break
 
 	width_requirements = width_requirements or {w: 1 for w in width_segments}
+	if width_segments:
+		submitted_shafts = min(
+			cint(submitted_width_counts.get(w, 0)) // max(1, cint(width_requirements.get(w) or 1))
+			for w in width_segments
+		)
+	else:
+		submitted_shafts = submitted_rolls // max(1, cint(rolls_per_shaft))
 	if width_segments:
 		job_shafts = min(
 			cint(width_counts.get(w, 0)) // max(1, cint(width_requirements.get(w) or 1))
@@ -1179,6 +1193,8 @@ def _gsm_job_production_stats(
 	return {
 		"job_rolls_produced": job_rolls,
 		"job_shafts_produced": job_shafts,
+		"submitted_rolls": submitted_rolls,
+		"submitted_shafts": submitted_shafts,
 		"job_produced_kg": job_produced_kg,
 		"today_rolls": today_rolls,
 		"shift_rolls": shift_rolls,
@@ -1219,6 +1235,8 @@ def _gsm_build_job_board_entry(
 	)
 	job_rolls = cint(stats["job_rolls_produced"])
 	job_shafts = min(max_shafts, cint(stats["job_shafts_produced"]))
+	submitted_rolls = cint(stats.get("submitted_rolls") or 0)
+	submitted_shafts = min(max_shafts, cint(stats.get("submitted_shafts") or 0))
 	rem_shafts = max(0, max_shafts - job_shafts)
 	rem_rolls = max(0, max_rolls - job_rolls)
 	current_shaft_rolls = job_rolls % max(1, rolls_per_shaft)
@@ -1242,7 +1260,12 @@ def _gsm_build_job_board_entry(
 			}
 		)
 
-	quota_full = rem_rolls <= 0 or job_shafts >= max_shafts or wo_terminal
+	# A job is only "complete" once its rolls are SUBMITTED (docstatus 1) to the
+	# full planned quota, or the Work Order is terminal. Draft/planned rolls still
+	# count toward can_add limits but must not mark the job Completed.
+	roll_limit_reached = rem_rolls <= 0 or job_shafts >= max_shafts
+	submitted_complete = submitted_rolls >= max_rolls and max_rolls > 0
+	quota_full = wo_terminal or submitted_complete
 	comb = _cstr(shaft_row.get("combination") or "")
 	net_per_roll = flt(shaft_row.get("net_weight") or 0)
 	job_target_kg = round(net_per_roll * max_rolls, 2) if net_per_roll > 0 else 0.0
@@ -1265,6 +1288,8 @@ def _gsm_build_job_board_entry(
 		"rolls_per_shaft": rolls_per_shaft,
 		"job_shafts_produced": job_shafts,
 		"job_rolls_produced": job_rolls,
+		"submitted_rolls": submitted_rolls,
+		"submitted_shafts": submitted_shafts,
 		"rem_shafts": rem_shafts,
 		"rem_rolls": rem_rolls,
 		"current_shaft_rolls": current_shaft_rolls,
@@ -1273,7 +1298,8 @@ def _gsm_build_job_board_entry(
 		"shift_rolls": cint(stats["shift_rolls"]),
 		"rolls_by_shift_today": stats.get("rolls_by_shift_today") or {},
 		"width_segments": segments_out,
-		"can_add_roll": can_add_any and not quota_full,
+		"can_add_roll": can_add_any and not roll_limit_reached,
+		"roll_limit_reached": roll_limit_reached,
 		"quota_full": quota_full,
 		"wo_terminal": bool(wo_terminal),
 		"spr_names": stats.get("spr_names") or [],

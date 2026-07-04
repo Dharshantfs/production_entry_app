@@ -93,11 +93,11 @@
               @change="toggleJob(job, $event)"
             />
             <div class="gpe-job-body" @click.prevent="onJobLabelClick(job)">
-              <div class="gpe-job-title">Job {{ job.job_id }}</div>
-              <div class="gpe-job-spec">
-                <strong>{{ job.combination_label || "—" }}</strong>
-                <span>· {{ job.gsm }} GSM</span>
+              <div class="gpe-job-head">
+                <span class="gpe-job-title">Job {{ job.job_id }}</span>
+                <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
               </div>
+              <div class="gpe-job-combination">{{ job.combination_label || "—" }}</div>
               <div v-if="job.job_target_kg > 0" class="gpe-job-target">
                 <span class="gpe-day-target">Job Tgt {{ formatKg(job.job_target_kg) }} Kg</span>
                 <span class="gpe-day-rem">Rem {{ formatKg(job.job_remaining_kg) }} Kg</span>
@@ -162,11 +162,11 @@
               >
                 <input type="checkbox" class="gpe-line-check" disabled />
                 <div class="gpe-job-body">
-                  <div class="gpe-job-title">Job {{ job.job_id }}</div>
-                  <div class="gpe-job-spec">
-                    <strong>{{ job.combination_label || "—" }}</strong>
-                    <span>· {{ job.gsm }} GSM</span>
+                  <div class="gpe-job-head">
+                    <span class="gpe-job-title">Job {{ job.job_id }}</span>
+                    <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
                   </div>
+                  <div class="gpe-job-combination">{{ job.combination_label || "—" }}</div>
                   <div v-if="job.job_target_kg > 0" class="gpe-job-target">
                     <span class="gpe-day-target">Job Tgt {{ formatKg(job.job_target_kg) }} Kg</span>
                     <span class="gpe-day-rem">Rem {{ formatKg(job.job_remaining_kg) }} Kg</span>
@@ -1024,7 +1024,7 @@ function canJobAddOneMoreRoll(job) {
     return false;
   }
   const j = job.api_job_rolls_produced != null ? job : withLocalPendingQuota(job);
-  if (j.quota_full) {
+  if (j.roll_limit_reached) {
     return false;
   }
   const maxRolls = cint(j.max_rolls);
@@ -1114,7 +1114,12 @@ function withLocalPendingQuota(job) {
       can_add: current < max && remRolls > 0 && !job.wo_terminal,
     };
   });
-  const quotaFull = remRolls <= 0 || jobShafts >= cint(job.max_shafts) || job.wo_terminal;
+  // Roll limit gates Add Roll (drafts + saved count). A job is only "Completed"
+  // (quota_full) once its rolls are SUBMITTED to the full quota, or the WO is done.
+  const rollLimitReached = remRolls <= 0 || jobShafts >= cint(job.max_shafts);
+  const submittedRolls = cint(job.submitted_rolls);
+  const submittedComplete = cint(job.max_rolls) > 0 && submittedRolls >= cint(job.max_rolls);
+  const quotaFull = !!job.wo_terminal || submittedComplete;
   return {
     ...job,
     api_job_rolls_produced: savedOnServer,
@@ -1126,8 +1131,9 @@ function withLocalPendingQuota(job) {
     current_shaft_rolls: currentShaftRolls,
     current_shaft_remaining_rolls: currentShaftRemainingRolls,
     width_segments: widthSegments,
+    roll_limit_reached: rollLimitReached,
     quota_full: quotaFull,
-    can_add_roll: !quotaFull && jobRolls < cint(job.max_rolls),
+    can_add_roll: !rollLimitReached && jobRolls < cint(job.max_rolls),
   };
 }
 
@@ -3990,18 +3996,42 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
 }
-.gpe-job-title {
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: 2px;
-}
-.gpe-job-spec {
-  font-size: 12px;
-  color: #475569;
+.gpe-job-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 10px;
   margin-bottom: 6px;
+}
+.gpe-job-title {
+  font-weight: 800;
+  font-size: 15px;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+.gpe-job-gsm {
+  font-weight: 800;
+  font-size: 14px;
+  color: #1d4ed8;
+  white-space: nowrap;
+}
+.gpe-job-combination {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.4;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
   word-break: break-word;
   overflow-wrap: anywhere;
-  line-height: 1.35;
+}
+.gpe-job-card.selected .gpe-job-combination {
+  background: #dbeafe;
+  border-color: #bfdbfe;
 }
 .gpe-dual-meter {
   display: grid;
