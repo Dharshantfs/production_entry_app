@@ -95,6 +95,7 @@
             <div class="gpe-job-body" @click.prevent="onJobLabelClick(job)">
               <div class="gpe-job-head">
                 <span class="gpe-job-title">Job {{ job.job_id }}</span>
+                <span class="gpe-job-head-dot">·</span>
                 <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
               </div>
               <div class="gpe-job-combination">{{ job.combination_label || "—" }}</div>
@@ -164,6 +165,7 @@
                 <div class="gpe-job-body">
                   <div class="gpe-job-head">
                     <span class="gpe-job-title">Job {{ job.job_id }}</span>
+                    <span class="gpe-job-head-dot">·</span>
                     <span class="gpe-job-gsm">{{ job.gsm }} GSM</span>
                   </div>
                   <div class="gpe-job-combination">{{ job.combination_label || "—" }}</div>
@@ -3957,12 +3959,10 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 8px 12px;
   font-size: 11px;
-  margin-bottom: 6px;
+  width: 100%;
 }
 .gpe-order-target {
   padding: 0 2px 4px;
-}
-.gpe-job-target {
   margin-bottom: 6px;
 }
 .gpe-day-target {
@@ -3975,6 +3975,7 @@ onUnmounted(() => {
 }
 .gpe-job-card {
   display: flex;
+  align-items: flex-start;
   gap: 8px;
   padding: 10px;
   border: 1px solid #e2e8f0;
@@ -3995,14 +3996,22 @@ onUnmounted(() => {
 .gpe-job-body {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 .gpe-job-head {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px 10px;
-  margin-bottom: 6px;
+  gap: 6px;
+  line-height: 1.3;
+}
+.gpe-job-head-dot {
+  color: #94a3b8;
+  font-weight: 700;
+  font-size: 14px;
 }
 .gpe-job-title {
   font-weight: 800;
@@ -4012,22 +4021,29 @@ onUnmounted(() => {
 }
 .gpe-job-gsm {
   font-weight: 800;
-  font-size: 14px;
+  font-size: 13px;
   color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 5px;
+  padding: 2px 8px;
   white-space: nowrap;
+  line-height: 1.35;
 }
 .gpe-job-combination {
   font-size: 13px;
   font-weight: 700;
   color: #0f172a;
   line-height: 1.4;
-  margin-bottom: 8px;
   padding: 7px 9px;
   background: #f1f5f9;
   border-radius: 6px;
   border: 1px solid #e2e8f0;
   word-break: break-word;
   overflow-wrap: anywhere;
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
 }
 .gpe-job-card.selected .gpe-job-combination {
   background: #dbeafe;
@@ -4040,7 +4056,8 @@ onUnmounted(() => {
   padding: 8px;
   background: #f1f5f9;
   border-radius: 8px;
-  margin-bottom: 4px;
+  width: 100%;
+  box-sizing: border-box;
 }
 .gpe-dual-meter-full {
   background: #fef3c7;
@@ -4078,14 +4095,16 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 600;
   color: #64748b;
-  margin-bottom: 4px;
+  width: 100%;
+  text-align: left;
 }
 .gpe-shift-breakdown {
   font-size: 13px;
   font-weight: 700;
   color: #1e293b;
-  margin-bottom: 6px;
   line-height: 1.45;
+  width: 100%;
+  text-align: left;
 }
 .gpe-shift-today {
   font-weight: 800;
@@ -4113,14 +4132,16 @@ onUnmounted(() => {
   font-size: 14px;
   color: #b45309;
   font-weight: 700;
-  margin-top: 4px;
   padding: 6px 8px;
   background: #fff7ed;
   border-radius: 6px;
   line-height: 1.35;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
 }
 .gpe-job-foot {
-  margin-top: 4px;
+  width: 100%;
 }
 .gpe-picker-sub {
   display: block;
