@@ -48,23 +48,23 @@
     <!-- Entry tab -->
     <div v-show="pageTab === 'entry'" class="gpe-layout">
       <aside class="gpe-sidebar gpe-card">
-        <h3>Orders &amp; GSM</h3>
-        <p class="gpe-hint">PP-submitted lines. Confirm selection, then add roll rows.</p>
+        <h3>Orders &amp; Jobs</h3>
+        <p class="gpe-hint">PP shaft jobs. Confirm selection, then add roll rows.</p>
         <div v-if="selectionLocked && selectedEntries.length" class="gpe-session-panel">
-          <div class="gpe-session-panel-head">Locked session · {{ selectedEntries.length }} line(s)</div>
+          <div class="gpe-session-panel-head">Locked session · {{ selectedEntries.length }} job(s)</div>
           <div v-for="e in selectedEntries" :key="e.key" class="gpe-session-entry">
-            <span class="gpe-session-date">{{ formatPlannedDate(e.plannedDate) }}</span>
             <strong>{{ e.orderCode }}</strong>
-            <span>{{ e.gsm }} GSM · {{ e.widthLabel }}</span>
+            <span>Job {{ e.jobId || e.job_id }} · {{ e.gsm }} GSM</span>
+            <span v-if="e.combination_label">{{ e.combination_label }}</span>
           </div>
-          <p class="gpe-session-hint">Change planned date above to add more lines — session stays locked.</p>
+          <p class="gpe-session-hint">Change run date above to add more jobs — session stays locked.</p>
         </div>
         <div v-if="loadingOrders" class="gpe-muted">Loading…</div>
-        <div v-else-if="!orderGroups.length" class="gpe-muted">
-          No PP-submitted orders for this date/unit.
+        <div v-else-if="!jobOrderGroups.length" class="gpe-muted">
+          No PP-submitted jobs for this date/unit.
         </div>
 
-        <div v-for="grp in filteredActiveGroups" :key="grp.key" class="gpe-order-card">
+        <div v-for="grp in filteredActiveJobGroups" :key="grp.key" class="gpe-order-card">
           <div class="gpe-order-head">
             <span class="gpe-order-code">{{ grp.orderCode }}</span>
             <button
@@ -75,62 +75,56 @@
             >View PP</button>
           </div>
           <label
-            v-for="line in grp.lines"
-            :key="line.id"
-            class="gpe-line-card"
-            :class="lineRowClass(line)"
-            :title="line.tooltip"
+            v-for="job in grp.jobs"
+            :key="job.job_key"
+            class="gpe-job-card"
+            :class="jobRowClass(job)"
+            :title="job.tooltip"
           >
             <input
               type="checkbox"
               class="gpe-line-check"
-              :checked="isEntrySelected(line)"
-              :disabled="!line.selectable || (selectionLocked && isEntrySelected(line))"
-              @change="toggleLine(line, $event)"
+              :checked="isJobSelected(job)"
+              :disabled="!job.selectable || (selectionLocked && isJobSelected(job))"
+              @change="toggleJob(job, $event)"
             />
-            <div class="gpe-line-body" @click.prevent="onLineLabelClick(line)">
-              <div class="gpe-line-meta">
-                <span class="gpe-quality">{{ line.quality }}</span>
-                <span class="gpe-color">{{ line.color }}</span>
+            <div class="gpe-job-body" @click.prevent="onJobLabelClick(job)">
+              <div class="gpe-job-title">Job {{ job.job_id }}</div>
+              <div class="gpe-job-spec">
+                <strong>{{ job.combination_label || "—" }}</strong>
+                <span>· {{ job.gsm }} GSM</span>
               </div>
-              <div class="gpe-line-spec">
-                <strong class="gpe-gsm">{{ line.gsm }} GSM</strong>
-                <span>{{ line.widthLabel }}</span>
-                <span class="gpe-day-target">Tgt {{ formatKg(line.dayTargetKg) }} Kg</span>
-                <span class="gpe-day-rem">Rem {{ formatKg(line.dayRemKg) }} Kg</span>
-              </div>
-              <div v-if="line.rollQuota || line.mergeBadge || line.chip" class="gpe-line-foot">
-                <div v-if="line.rollQuota" class="gpe-roll-meter" :class="{ 'gpe-roll-meter-full': line.rollQuota.isFull }" :title="line.rollQuota.tooltip">
-                  <div class="gpe-roll-meter-head">
-                    <span class="gpe-roll-meter-title">Rolls · {{ shift }}</span>
-                    <span class="gpe-roll-meter-frac">
-                      <em>{{ line.rollQuota.current }}</em>
-                      <span>/</span>
-                      <strong>{{ line.rollQuota.shiftMax }}</strong>
-                    </span>
-                  </div>
-                  <div v-if="line.rollQuota.priorShifts.length || line.rollQuota.dayTotal > line.rollQuota.current" class="gpe-roll-meter-sub">
-                    <span
-                      v-for="ps in line.rollQuota.priorShifts"
-                      :key="ps.shift"
-                      class="gpe-roll-prior"
-                    >{{ ps.shift }} {{ ps.rolls }} done</span>
-                    <span class="gpe-roll-day">Day {{ line.rollQuota.dayTotal }}/{{ line.rollQuota.jobMax }}</span>
-                  </div>
+              <div class="gpe-dual-meter" :class="{ 'gpe-dual-meter-full': job.quota_full }">
+                <div class="gpe-meter-col">
+                  <span class="gpe-meter-label">Shafts</span>
+                  <span class="gpe-meter-frac">
+                    <em>{{ job.job_shafts_produced }}</em><span>/</span><strong>{{ job.max_shafts }}</strong>
+                  </span>
                 </div>
-                <span v-if="line.mergeBadge" class="gpe-chip gpe-chip-merge">{{ line.mergeBadge }}</span>
-                <span v-if="line.chip" :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
+                <div class="gpe-meter-col">
+                  <span class="gpe-meter-label">Rolls</span>
+                  <span class="gpe-meter-frac">
+                    <em>{{ job.job_rolls_produced }}</em><span>/</span><strong>{{ job.max_rolls }}</strong>
+                  </span>
+                </div>
+              </div>
+              <div class="gpe-meter-context">{{ shift }} · {{ formatPlannedDate(runDate) }}</div>
+              <div v-if="job.rem_shafts > 0 || job.rem_rolls > 0" class="gpe-job-remaining">
+                Remaining: {{ job.rem_shafts }} shaft{{ job.rem_shafts === 1 ? "" : "s" }} · {{ job.rem_rolls }} roll{{ job.rem_rolls === 1 ? "" : "s" }}
+              </div>
+              <div v-if="job.chip" class="gpe-job-foot">
+                <span :class="['gpe-chip', job.chipClass]">{{ job.chip }}</span>
               </div>
             </div>
           </label>
         </div>
 
-        <div v-if="filteredCompletedGroups.length" class="gpe-sidebar-section">
+        <div v-if="filteredCompletedJobGroups.length" class="gpe-sidebar-section">
           <button type="button" class="gpe-collapse-btn" @click="showCompletedOrders = !showCompletedOrders">
-            {{ showCompletedOrders ? "▼" : "▶" }} Completed orders ({{ completedLineCount }})
+            {{ showCompletedOrders ? "▼" : "▶" }} Completed jobs ({{ completedJobCount }})
           </button>
           <div v-show="showCompletedOrders">
-            <div v-for="grp in filteredCompletedGroups" :key="'c-' + grp.key" class="gpe-order-card gpe-completed">
+            <div v-for="grp in filteredCompletedJobGroups" :key="'c-' + grp.key" class="gpe-order-card gpe-completed">
               <div class="gpe-order-head">
                 <span class="gpe-order-code">{{ grp.orderCode }}</span>
                 <button
@@ -141,39 +135,34 @@
                 >View PP</button>
               </div>
               <label
-                v-for="line in grp.lines"
-                :key="line.id"
-                class="gpe-line-card gpe-line-disabled"
-                :title="line.tooltip"
+                v-for="job in grp.jobs"
+                :key="job.job_key"
+                class="gpe-job-card gpe-line-disabled"
+                :title="job.tooltip"
               >
                 <input type="checkbox" class="gpe-line-check" disabled />
-                <div class="gpe-line-body">
-                  <div class="gpe-line-meta">
-                    <span class="gpe-quality">{{ line.quality }}</span>
-                    <span class="gpe-color">{{ line.color }}</span>
+                <div class="gpe-job-body">
+                  <div class="gpe-job-title">Job {{ job.job_id }}</div>
+                  <div class="gpe-job-spec">
+                    <strong>{{ job.combination_label || "—" }}</strong>
+                    <span>· {{ job.gsm }} GSM</span>
                   </div>
-                  <div class="gpe-line-spec">
-                    <strong class="gpe-gsm">{{ line.gsm }} GSM</strong>
-                    <span>{{ line.widthLabel }}</span>
-                    <span class="gpe-day-target">Tgt {{ formatKg(line.dayTargetKg) }} Kg</span>
-                    <span class="gpe-day-rem">Rem {{ formatKg(line.dayRemKg) }} Kg</span>
-                  </div>
-                  <div v-if="line.rollQuota || line.mergeBadge || line.chip" class="gpe-line-foot">
-                    <div v-if="line.rollQuota" class="gpe-roll-meter gpe-roll-meter-done" :title="line.rollQuota.tooltip">
-                      <div class="gpe-roll-meter-head">
-                        <span class="gpe-roll-meter-title">Rolls</span>
-                        <span class="gpe-roll-meter-frac">
-                          <em>{{ line.rollQuota.current }}</em>
-                          <span>/</span>
-                          <strong>{{ line.rollQuota.shiftMax }}</strong>
-                        </span>
-                      </div>
-                      <div v-if="line.rollQuota.dayTotal" class="gpe-roll-meter-sub">
-                        <span class="gpe-roll-day">Day {{ line.rollQuota.dayTotal }}/{{ line.rollQuota.jobMax }}</span>
-                      </div>
+                  <div class="gpe-dual-meter gpe-dual-meter-done">
+                    <div class="gpe-meter-col">
+                      <span class="gpe-meter-label">Shafts</span>
+                      <span class="gpe-meter-frac">
+                        <em>{{ job.job_shafts_produced }}</em><span>/</span><strong>{{ job.max_shafts }}</strong>
+                      </span>
                     </div>
-                    <span v-if="line.mergeBadge" class="gpe-chip gpe-chip-merge">{{ line.mergeBadge }}</span>
-                    <span :class="['gpe-chip', line.chipClass]">{{ line.chip }}</span>
+                    <div class="gpe-meter-col">
+                      <span class="gpe-meter-label">Rolls</span>
+                      <span class="gpe-meter-frac">
+                        <em>{{ job.job_rolls_produced }}</em><span>/</span><strong>{{ job.max_rolls }}</strong>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="gpe-job-foot">
+                    <span :class="['gpe-chip', job.chipClass]">{{ job.chip }}</span>
                   </div>
                 </div>
               </label>
@@ -599,22 +588,21 @@
     <!-- Confirm selection dialog -->
     <div v-if="showConfirmDialog" class="gpe-dialog-overlay" @click.self="showConfirmDialog = false">
       <div class="gpe-dialog gpe-card">
-        <h3>Confirm GSM selection</h3>
-        <p>Lock these lines for roll entry? You can unlock later.</p>
+        <h3>Confirm job selection</h3>
+        <p>Lock these jobs for roll entry? You can unlock later.</p>
         <table class="gpe-confirm-grid">
           <thead>
             <tr>
-              <th>Order</th><th>Quality</th><th>Color</th><th>GSM</th><th>Width</th><th>Planned Date</th>
+              <th>Order</th><th>Job</th><th>GSM</th><th>Combination</th><th>Progress</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="line in confirmLines" :key="line.key">
               <td>{{ line.orderCode }}</td>
-              <td>{{ line.quality }}</td>
-              <td>{{ line.color }}</td>
+              <td>{{ line.jobId || line.job_id }}</td>
               <td>{{ line.gsm }}</td>
-              <td>{{ line.widthLabel }}</td>
-              <td>{{ formatPlannedDate(line.plannedDate) }}</td>
+              <td>{{ line.combination_label || line.widthLabel }}</td>
+              <td>{{ confirmLineProgress(line) }}</td>
             </tr>
           </tbody>
         </table>
@@ -625,19 +613,46 @@
       </div>
     </div>
 
-    <!-- Width picker dialog -->
-    <div v-if="showWidthPicker" class="gpe-dialog-overlay" @click.self="showWidthPicker = false">
+    <!-- Add Roll wizard: Job → Width -->
+    <div v-if="showAddRollWizard" class="gpe-dialog-overlay" @click.self="cancelAddRollWizard">
       <div class="gpe-dialog gpe-card">
-        <h3>Choose GSM line for new roll</h3>
-        <div class="gpe-picker-list">
-          <label v-for="line in widthPickerLines" :key="line.id" class="gpe-picker-row">
-            <input v-model="widthPickerChoice" type="radio" :value="line.id" />
-            {{ line.orderCode }} · {{ line.gsm }} GSM · {{ line.widthLabel }}
+        <h3>{{ addRollWizardStep === 1 ? "Choose job for new roll" : "Choose width" }}</h3>
+        <div v-if="addRollWizardStep === 1" class="gpe-picker-list">
+          <label v-for="entry in wizardJobChoices" :key="entry.key" class="gpe-picker-row">
+            <input v-model="addRollJobChoice" type="radio" :value="entry.key" />
+            <span>
+              {{ entry.orderCode }} · Job {{ entry.jobId || entry.job_id }} · {{ entry.gsm }} GSM
+              <em v-if="entry.board" class="gpe-picker-sub">
+                {{ entry.board.job_shafts_produced }}/{{ entry.board.max_shafts }} shafts ·
+                {{ entry.board.job_rolls_produced }}/{{ entry.board.max_rolls }} rolls
+              </em>
+            </span>
+          </label>
+        </div>
+        <div v-else class="gpe-picker-list">
+          <label v-for="seg in wizardWidthSegments" :key="seg.width_inch" class="gpe-picker-row" :class="{ 'gpe-picker-disabled': !seg.can_add }">
+            <input
+              v-model="addRollWidthChoice"
+              type="radio"
+              :value="seg.width_inch"
+              :disabled="!seg.can_add"
+            />
+            <span>
+              {{ seg.width_inch }}" · {{ seg.current }}/{{ seg.max }} rolls
+              <em v-if="!seg.can_add" class="gpe-picker-sub">(full)</em>
+            </span>
           </label>
         </div>
         <div class="gpe-dialog-actions">
-          <button type="button" class="gpe-btn" @click="showWidthPicker = false">Cancel</button>
-          <button type="button" class="gpe-btn primary" :disabled="!widthPickerChoice" @click="proceedAddRow">Add row</button>
+          <button type="button" class="gpe-btn" @click="addRollWizardStep === 1 ? cancelAddRollWizard() : (addRollWizardStep = 1)">
+            {{ addRollWizardStep === 1 ? "Cancel" : "Back" }}
+          </button>
+          <button
+            type="button"
+            class="gpe-btn primary"
+            :disabled="addRollWizardStep === 1 ? !addRollJobChoice : addRollWidthChoice == null"
+            @click="proceedAddRollWizard"
+          >{{ addRollWizardStep === 1 ? "Next" : "Add row" }}</button>
         </div>
       </div>
     </div>
@@ -769,10 +784,13 @@ const selectedEntries = ref([]);
 const selectionLocked = ref(false);
 const showCompletedOrders = ref(false);
 const showConfirmDialog = ref(false);
-const showWidthPicker = ref(false);
-const widthPickerLines = ref([]);
-const widthPickerChoice = ref("");
+const showAddRollWizard = ref(false);
+const addRollWizardStep = ref(1);
+const addRollJobChoice = ref("");
+const addRollWidthChoice = ref(null);
 let pendingAddRowResolve = null;
+
+const jobBoardJobs = ref([]);
 
 const seriesPrefix = ref("");
 const maxRollSuffix = ref(0);
@@ -816,6 +834,102 @@ let autosaveTimer = null;
 
 function entryKey(plannedDate, lineId) {
   return `${plannedDate}::${lineId}`;
+}
+
+function entryKeyJob(ppId, jobId) {
+  return `${ppId}::${jobId}`;
+}
+
+function orderMetaForPp(ppId) {
+  const row = ppSubmittedRows.value.find((r) => r.pp_id === ppId);
+  return {
+    orderCode: row?.partyCode || row?.party_code || ppId,
+    partyName: row?.customer_name || row?.customer || "",
+    quality: row?.quality || "",
+    color: row?.color || row?.fabric_colour || "",
+    planningLineId: row?.itemName || row?.name || "",
+  };
+}
+
+function enrichJobCard(job) {
+  const meta = orderMetaForPp(job.pp_id);
+  const selectable = !job.quota_full && !job.wo_terminal;
+  let chip = "";
+  let chipClass = "";
+  let tooltip = "Select for production";
+  if (job.wo_terminal) {
+    chip = "WO Closed";
+    chipClass = "gpe-chip-closed";
+    tooltip = "Work Orders closed on this PP";
+  } else if (job.quota_full) {
+    chip = "Completed";
+    chipClass = "gpe-chip-done";
+    tooltip = "Job shaft/roll quota met";
+  } else if ((job.spr_names || []).length) {
+    chip = "SPR Active";
+    chipClass = "gpe-chip-submitted";
+    tooltip = "Draft or submitted SPR exists for this PP";
+  }
+  return {
+    ...job,
+    orderCode: meta.orderCode,
+    partyName: meta.partyName,
+    quality: meta.quality,
+    color: meta.color,
+    planningLineId: meta.planningLineId,
+    selectable,
+    chip,
+    chipClass,
+    tooltip,
+  };
+}
+
+function snapshotFromJob(job) {
+  const meta = orderMetaForPp(job.pp_id);
+  return {
+    key: entryKeyJob(job.pp_id, job.job_id),
+    jobId: job.job_id,
+    lineId: meta.planningLineId,
+    plannedDate: filterDate.value || runDate.value,
+    ppId: job.pp_id,
+    orderCode: meta.orderCode,
+    partyName: meta.partyName,
+    quality: meta.quality,
+    color: meta.color,
+    gsm: job.gsm,
+    combination_label: job.combination_label,
+    width_inch: null,
+    widthLabel: job.combination_label || "",
+    max_shafts: job.max_shafts,
+    max_rolls: job.max_rolls,
+    sourceSnapshot: {
+      pp_id: job.pp_id,
+      gsm: job.gsm,
+      meter_roll: job.meter_roll,
+      net_weight: job.net_weight,
+    },
+  };
+}
+
+function firstPtLineForPp(ppId, gsm) {
+  let rows = ppSubmittedRows.value.filter((r) => r.pp_id === ppId);
+  if (gsm) {
+    const hit = rows.find((r) => String(r.gsm) === String(gsm));
+    if (hit) {
+      return buildLineFromItem(hit);
+    }
+  }
+  return rows[0] ? buildLineFromItem(rows[0]) : null;
+}
+
+function confirmLineProgress(entry) {
+  const job = jobBoardJobs.value.find(
+    (j) => j.pp_id === entry.ppId && String(j.job_id) === String(entry.jobId || entry.job_id)
+  );
+  if (!job) {
+    return "—";
+  }
+  return `${job.job_shafts_produced}/${job.max_shafts} shafts · ${job.job_rolls_produced}/${job.max_rolls} rolls`;
 }
 
 function linePlannedDate(item) {
@@ -865,6 +979,18 @@ function snapshotFromLine(line) {
 }
 
 function entryToRollLine(entry) {
+  if (entry.jobId || entry.job_id) {
+    const line = firstPtLineForPp(entry.ppId, entry.gsm);
+    if (line) {
+      return {
+        ...line,
+        ppId: entry.ppId,
+        jobId: entry.jobId || entry.job_id,
+        plannedDate: entry.plannedDate,
+        source: line.source,
+      };
+    }
+  }
   const live = lineById.value.get(entry.lineId);
   if (live) {
     const livePd = live.plannedDate || linePlannedDate(live.source || {});
@@ -1129,6 +1255,79 @@ const unitOptions = computed(() => {
 
 const fabricUnitOptions = computed(() => unitOptions.value);
 
+const jobOrderGroups = computed(() => {
+  const map = new Map();
+  for (const job of jobBoardJobs.value) {
+    const enriched = enrichJobCard(job);
+    const key = `${enriched.orderCode}::${job.pp_id}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        orderCode: enriched.orderCode,
+        partyName: enriched.partyName,
+        ppId: job.pp_id,
+        jobs: [],
+      });
+    }
+    map.get(key).jobs.push(enriched);
+  }
+  return [...map.values()].sort((a, b) => a.orderCode.localeCompare(b.orderCode));
+});
+
+const activeJobOrderGroups = computed(() =>
+  jobOrderGroups.value
+    .map((g) => ({ ...g, jobs: g.jobs.filter((j) => j.selectable) }))
+    .filter((g) => g.jobs.length)
+);
+
+const completedJobOrderGroups = computed(() =>
+  jobOrderGroups.value
+    .map((g) => ({ ...g, jobs: g.jobs.filter((j) => !j.selectable) }))
+    .filter((g) => g.jobs.length)
+);
+
+function filterJobGroups(groups) {
+  const q = (searchText.value || "").trim().toLowerCase();
+  if (!q) {
+    return groups;
+  }
+  return groups
+    .map((g) => ({
+      ...g,
+      jobs: g.jobs.filter(
+        (j) =>
+          g.orderCode.toLowerCase().includes(q) ||
+          String(j.job_id).toLowerCase().includes(q) ||
+          (j.combination_label || "").toLowerCase().includes(q) ||
+          String(j.gsm).toLowerCase().includes(q)
+      ),
+    }))
+    .filter((g) => g.jobs.length);
+}
+
+const filteredActiveJobGroups = computed(() => filterJobGroups(activeJobOrderGroups.value));
+const filteredCompletedJobGroups = computed(() => filterJobGroups(completedJobOrderGroups.value));
+const completedJobCount = computed(() =>
+  completedJobOrderGroups.value.reduce((n, g) => n + g.jobs.length, 0)
+);
+
+const wizardJobChoices = computed(() =>
+  selectedEntries.value.map((entry) => {
+    const jid = entry.jobId || entry.job_id;
+    const board = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
+    return { ...entry, board };
+  })
+);
+
+const wizardWidthSegments = computed(() => {
+  const key = addRollJobChoice.value;
+  if (!key) {
+    return [];
+  }
+  const job = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+  return job?.width_segments || [];
+});
+
 const orderGroups = computed(() => {
   const map = new Map();
   let rows = ppSubmittedRows.value;
@@ -1213,7 +1412,8 @@ const confirmLines = computed(() => selectedEntries.value);
 const headerTags = computed(() => {
   const tags = [];
   selectedEntries.value.forEach((entry) => {
-    tags.push(`${entry.orderCode} / ${entry.gsm} GSM · ${formatPlannedDate(entry.plannedDate)}`);
+    const jid = entry.jobId || entry.job_id;
+    tags.push(`${entry.orderCode} / Job ${jid} · ${entry.gsm} GSM`);
   });
   return tags.slice(0, 12);
 });
@@ -1457,6 +1657,69 @@ const toleranceFormComplete = computed(() => {
   });
 });
 
+function jobRowClass(job) {
+  return {
+    selected: isJobSelected(job),
+    "gpe-line-disabled": !job.selectable,
+  };
+}
+
+function isJobSelected(job) {
+  return selectedEntryKeys.value.has(entryKeyJob(job.pp_id, job.job_id));
+}
+
+function toggleJob(job, ev) {
+  if (!job?.selectable && ev.target.checked) {
+    ev.target.checked = false;
+    return;
+  }
+  const snap = snapshotFromJob(job);
+  const checked = ev.target.checked;
+
+  if (selectionLocked.value) {
+    if (!checked) {
+      ev.target.checked = true;
+      return;
+    }
+    if (!selectedEntryKeys.value.has(snap.key)) {
+      selectedEntries.value = [...selectedEntries.value, snap];
+      scheduleAutosave();
+    }
+    return;
+  }
+
+  const next = selectedEntries.value.filter((e) => e.key !== snap.key);
+  if (checked) {
+    next.push(snap);
+  }
+  selectedEntries.value = next;
+  scheduleAutosave();
+}
+
+function onJobLabelClick(job) {
+  if (!job.selectable) {
+    return;
+  }
+  if (selectionLocked.value) {
+    if (isJobSelected(job)) {
+      return;
+    }
+    const snap = snapshotFromJob(job);
+    if (!selectedEntryKeys.value.has(snap.key)) {
+      selectedEntries.value = [...selectedEntries.value, snap];
+      scheduleAutosave();
+    }
+    return;
+  }
+  const snap = snapshotFromJob(job);
+  const next = selectedEntries.value.filter((e) => e.key !== snap.key);
+  if (!isJobSelected(job)) {
+    next.push(snap);
+  }
+  selectedEntries.value = next;
+  scheduleAutosave();
+}
+
 function lineRowClass(line) {
   return {
     selected: isEntrySelected(line),
@@ -1679,6 +1942,8 @@ function onRowEdit(row) {
 function buildSessionEntries() {
   return selectedEntries.value.map((entry) => ({
     pp_id: entry.ppId,
+    job_id: entry.jobId || entry.job_id,
+    jobId: entry.jobId || entry.job_id,
     lineId: entry.lineId,
     orderCode: entry.orderCode,
     quality: entry.quality,
@@ -2005,7 +2270,7 @@ async function submitEntry(overrides = []) {
       });
     }
     saveStatus.value = "Submitted";
-    fetchOrders();
+    await fetchOrders();
   } catch (e) {
     console.error(e);
     saveStatus.value = "Submit failed";
@@ -2064,6 +2329,7 @@ async function saveRow(row) {
     scheduleAutosave();
     saveStatus.value = "Saved to SPR";
     frappe.show_alert({ message: __("Row saved to {0}", [sprName]), indicator: "green" });
+    await loadJobBoard();
   } catch (e) {
     console.error(e);
     saveStatus.value = "Save failed";
@@ -2231,12 +2497,47 @@ async function loadQuotaForLines() {
   quotaByLineId.value = cache;
 }
 
+async function loadJobBoard() {
+  const ppIds = [...new Set(ppSubmittedRows.value.map((r) => r.pp_id).filter(Boolean))];
+  if (!ppIds.length) {
+    jobBoardJobs.value = [];
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_pp_job_board",
+      args: {
+        pp_ids: JSON.stringify(ppIds),
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: filterUnit.value || headerUnit.value || undefined,
+      },
+    });
+    jobBoardJobs.value = res.message?.jobs || [];
+  } catch (e) {
+    console.warn("job board", e);
+    jobBoardJobs.value = [];
+  }
+}
+
 function enrichSelectedEntriesFromBoard() {
   if (!selectedEntries.value.length) {
     return;
   }
   let changed = false;
   const next = selectedEntries.value.map((entry) => {
+    const jid = entry.jobId || entry.job_id;
+    if (jid && entry.ppId) {
+      const job = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
+      if (job) {
+        const snap = snapshotFromJob(job);
+        if (entry.key !== snap.key || entry.combination_label !== snap.combination_label) {
+          changed = true;
+          return { ...entry, ...snap, key: entry.key };
+        }
+      }
+      return entry;
+    }
     const live = lineById.value.get(entry.lineId);
     if (!live) {
       return entry;
@@ -2273,7 +2574,7 @@ async function fetchOrders() {
       filterUnit.value = unitOptions.value[0];
       headerUnit.value = filterUnit.value;
     }
-    await Promise.all([fetchMerges(), loadQuotaForLines()]);
+    await Promise.all([fetchMerges(), loadQuotaForLines(), loadJobBoard()]);
     enrichSelectedEntriesFromBoard();
   } catch (e) {
     console.error(e);
@@ -2285,7 +2586,7 @@ async function fetchOrders() {
 
 function onUnitChange() {
   headerUnit.value = filterUnit.value;
-  fetchMerges().then(() => loadQuotaForLines());
+  fetchMerges().then(() => Promise.all([loadQuotaForLines(), loadJobBoard()]));
   scheduleAutosave();
 }
 
@@ -2454,24 +2755,47 @@ async function loadCoreWidthOptions() {
   }
 }
 
-function pickLineForRow() {
-  const lines = entryLinesForSession.value;
-  if (lines.length <= 1) {
-    return Promise.resolve(lines[0] || null);
+function pickJobAndWidthForRow() {
+  if (!selectedEntries.value.length) {
+    return Promise.resolve(null);
   }
-  widthPickerLines.value = lines;
-  widthPickerChoice.value = lines[0]?.id || "";
-  showWidthPicker.value = true;
+  addRollWizardStep.value = 1;
+  const first = selectedEntries.value[0];
+  addRollJobChoice.value = first.key || entryKeyJob(first.ppId, first.jobId || first.job_id);
+  addRollWidthChoice.value = null;
+  showAddRollWizard.value = true;
   return new Promise((resolve) => {
     pendingAddRowResolve = resolve;
   });
 }
 
-async function proceedAddRow() {
-  const line = lineById.value.get(widthPickerChoice.value);
-  showWidthPicker.value = false;
+function cancelAddRollWizard() {
+  showAddRollWizard.value = false;
+  addRollWizardStep.value = 1;
   if (pendingAddRowResolve) {
-    pendingAddRowResolve(line || null);
+    pendingAddRowResolve(null);
+    pendingAddRowResolve = null;
+  }
+}
+
+function proceedAddRollWizard() {
+  if (addRollWizardStep.value === 1) {
+    if (!addRollJobChoice.value) {
+      return;
+    }
+    addRollWizardStep.value = 2;
+    const segs = wizardWidthSegments.value;
+    const pick = segs.find((s) => s.can_add) || segs[0];
+    addRollWidthChoice.value = pick?.width_inch ?? null;
+    return;
+  }
+  const key = addRollJobChoice.value;
+  const job = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+  const widthInch = sprFlt(addRollWidthChoice.value);
+  showAddRollWizard.value = false;
+  addRollWizardStep.value = 1;
+  if (pendingAddRowResolve) {
+    pendingAddRowResolve(job && widthInch > 0 ? { job, widthInch } : null);
     pendingAddRowResolve = null;
   }
 }
@@ -2489,17 +2813,16 @@ async function addRollRow() {
     frappe.msgprint("Select a unit filter first.");
     return;
   }
-  const line = await pickLineForRow();
-  if (!line) {
+  const pick = await pickJobAndWidthForRow();
+  if (!pick) {
     return;
   }
-  const jobId = await pickJobIdForLine(line);
-  const quota = await fetchQuotaForLine(line);
-  if (quota.max_rolls > 0 && !quota.can_add_roll) {
+  const { job, widthInch } = pick;
+  if (!job.can_add_roll) {
     frappe.confirm(
-      __("Roll limit reached for today ({0}/{1}) — use Manual Job. Open Manual Job now?", [
-        quota.day_rolls_total || quota.current_rolls,
-        quota.max_rolls,
+      __("Job roll limit reached ({0}/{1}) — use Manual Job. Open Manual Job now?", [
+        job.job_rolls_produced,
+        job.max_rolls,
       ]),
       async () => {
         const ctx = toolsContext.value;
@@ -2510,13 +2833,49 @@ async function addRollRow() {
             headerUnit.value,
             runDate.value,
             shift.value,
-            () => fetchOrders()
+            () => Promise.all([fetchOrders(), loadJobBoard()])
           );
         }
       }
     );
     return;
   }
+  const seg = (job.width_segments || []).find((s) => Math.abs(sprFlt(s.width_inch) - widthInch) < 0.05);
+  if (seg && !seg.can_add) {
+    frappe.confirm(
+      __("Width {0}\" is full ({1}/{2}) — use Manual Job. Open Manual Job now?", [
+        widthInch,
+        seg.current,
+        seg.max,
+      ]),
+      async () => {
+        const ctx = toolsContext.value;
+        if (ctx) {
+          await gsmOpenManualJob(
+            ctx.ppId,
+            ctx.planningNames,
+            headerUnit.value,
+            runDate.value,
+            shift.value,
+            () => Promise.all([fetchOrders(), loadJobBoard()])
+          );
+        }
+      }
+    );
+    return;
+  }
+  const baseLine = firstPtLineForPp(job.pp_id, job.gsm);
+  if (!baseLine) {
+    frappe.msgprint(__("No planning line found for this order."));
+    return;
+  }
+  const line = {
+    ...baseLine,
+    ppId: job.pp_id,
+    width_inch: widthInch,
+    widthLabel: `${widthInch}"`,
+  };
+  const jobId = job.job_id;
   const src = line.source;
   const [batchInfo, ordLen, wo] = await Promise.all([
     previewNextBatch(line.ppId),
@@ -2670,6 +3029,7 @@ async function removeTopRow() {
     syncBatchCounterFromGrid();
     scheduleAutosave();
     saveStatus.value = wasSaved ? "Removed from SPR" : "Row removed";
+    await loadJobBoard();
   };
 
   if ((wasSaved && sprName) || (row.is_bundle_row && row.child_roll_batches?.length)) {
@@ -2819,9 +3179,12 @@ watch([runDate, shift, headerUnit], () => {
   const key = currentBatchContextKey();
   if (batchContextKey.value && batchContextKey.value !== key) {
     resetBatchSeriesCache();
+    sessionSprs.value = {};
+    forceNewSprSession.value = false;
   }
   batchContextKey.value = key;
   if (ppSubmittedRows.value.length) {
+    loadJobBoard();
     loadQuotaForLines();
   }
 });
@@ -3031,6 +3394,102 @@ onUnmounted(() => {
   margin-bottom: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid #f1f5f9;
+}
+.gpe-job-card {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.gpe-job-card:hover {
+  border-color: #93c5fd;
+  background: #f8fafc;
+}
+.gpe-job-card.selected {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+.gpe-job-body {
+  flex: 1;
+  min-width: 0;
+}
+.gpe-job-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.gpe-job-spec {
+  font-size: 12px;
+  color: #475569;
+  margin-bottom: 6px;
+}
+.gpe-dual-meter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 8px;
+  background: #f1f5f9;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+.gpe-dual-meter-full {
+  background: #fef3c7;
+}
+.gpe-dual-meter-done {
+  background: #ecfdf5;
+}
+.gpe-meter-col {
+  text-align: center;
+}
+.gpe-meter-label {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  margin-bottom: 2px;
+}
+.gpe-meter-frac {
+  font-size: 16px;
+  font-weight: 600;
+}
+.gpe-meter-frac em {
+  font-style: normal;
+  color: #2563eb;
+}
+.gpe-meter-frac span {
+  margin: 0 2px;
+  color: #94a3b8;
+}
+.gpe-meter-frac strong {
+  color: #0f172a;
+}
+.gpe-meter-context {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+.gpe-job-remaining {
+  font-size: 11px;
+  color: #b45309;
+  font-weight: 500;
+}
+.gpe-job-foot {
+  margin-top: 4px;
+}
+.gpe-picker-sub {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  font-style: normal;
+  margin-top: 2px;
+}
+.gpe-picker-disabled {
+  opacity: 0.55;
 }
 .gpe-line-card {
   display: flex;

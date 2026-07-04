@@ -9279,27 +9279,47 @@ def _spr_operation_lock_key(spr_name: str, operation: str = "write") -> str:
 def _spr_acquire_cache_lock(key: str, ttl_sec: int = 120) -> bool:
 	"""Best-effort distributed lock using Frappe cache (Frappe 16 compatible)."""
 	cache = frappe.cache()
-	if cache.get_value(key):
-		return False
 	owner = _cstr(frappe.session.user or "system")
 	ttl_sec = max(cint(ttl_sec), 30)
+	redis_key = cache.make_key(key)
+
+	def _lock_held() -> bool:
+		try:
+			val = cache.get(redis_key)
+			if val is None:
+				return False
+			if isinstance(val, bytes):
+				return bool(val)
+			return bool(_cstr(val))
+		except Exception:
+			try:
+				cache.delete_value(key)
+				cache.delete_value(redis_key)
+			except Exception:
+				pass
+			return False
+
+	if _lock_held():
+		return False
+
 	try:
-		redis_key = cache.make_key(key)
-		acquired = cache.set(redis_key, owner.encode("utf-8"), nx=True, ex=ttl_sec)
+		acquired = cache.set(redis_key, owner, nx=True, ex=ttl_sec)
 		if acquired is not None:
 			return bool(acquired)
 	except Exception:
 		pass
-	try:
-		if cache.get_value(key):
-			return False
-		cache.set_value(key, owner, expires_in_sec=ttl_sec)
-		return _cstr(cache.get_value(key)) == owner
-	except Exception:
+
+	if _lock_held():
 		return False
+	return True
 
 
 def _spr_release_cache_lock(key: str) -> None:
+	try:
+		cache = frappe.cache()
+		cache.delete_value(cache.make_key(key))
+	except Exception:
+		pass
 	try:
 		frappe.cache().delete_value(key)
 	except Exception:
@@ -9549,6 +9569,24 @@ def _spr_count_roll_lines_for_job(spr_doc, job_id) -> int:
 		if not _spr_is_real_roll_item_row(it):
 			continue
 		cnt += 1
+	return cnt
+
+
+def _spr_count_roll_lines_for_job_width(spr_doc, job_id, width_inch) -> int:
+	"""Count real roll lines for one job + width segment (within 0.05 inch)."""
+	job_key = _cstr(job_id).strip()
+	target_w = flt(width_inch)
+	if not job_key or target_w <= 0:
+		return 0
+	cnt = 0
+	for it in spr_doc.get("items") or []:
+		if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
+			continue
+		if not _spr_is_real_roll_item_row(it):
+			continue
+		w = flt(getattr(it, "width_inch", None) or 0)
+		if abs(w - target_w) < 0.05:
+			cnt += 1
 	return cnt
 
 

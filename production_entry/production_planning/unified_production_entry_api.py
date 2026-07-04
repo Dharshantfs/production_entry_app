@@ -15,6 +15,9 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_resolve_wos_for_pp_job_row,
 	_segment_weights_kg,
 	_spr_count_roll_lines_for_job,
+	_spr_count_roll_lines_for_job_width,
+	_spr_is_real_roll_item_row,
+	_spr_job_keys_match,
 	_spr_job_max_roll_lines,
 	_spr_job_rows,
 	_spr_net_kg_per_shaft_for_pp_line_width,
@@ -414,7 +417,8 @@ def get_pt_line_roll_quota_status(
 		if segs <= 1:
 			max_rolls = no_shafts * rolls_per
 		else:
-			max_rolls = no_shafts * segs * rolls_per
+			# Per width segment: one roll per shaft (not shafts × segs)
+			max_rolls = no_shafts * rolls_per
 		job_id = str(idx)
 		break
 
@@ -1057,6 +1061,218 @@ def _gsm_order_code_for_pp(pp_id: str) -> str:
 	return _cstr(pp.get("custom_order_code") or "")
 
 
+def _gsm_combination_label(comb: str) -> str:
+	widths = _parse_combination_widths_inches(_cstr(comb))
+	if not widths:
+		return _cstr(comb).strip()
+	parts = []
+	for w in widths:
+		fw = flt(w)
+		parts.append(str(int(fw)) if fw == int(fw) else str(fw))
+	return "+".join(parts)
+
+
+def _gsm_job_limits_from_shaft_row(shaft_row: dict) -> dict:
+	comb = _cstr(shaft_row.get("combination") or "")
+	widths = _parse_combination_widths_inches(comb) if comb else []
+	if not widths:
+		tw = flt(shaft_row.get("total_width") or 0)
+		if tw > 0:
+			widths = [tw]
+	no_shafts = max(1, cint(shaft_row.get("no_of_shafts") or 0))
+	rolls_per_shaft = max(1, len(widths)) if len(widths) > 1 else 1
+	max_rolls = no_shafts * rolls_per_shaft
+	return {
+		"max_shafts": no_shafts,
+		"max_rolls": max_rolls,
+		"rolls_per_shaft": rolls_per_shaft,
+		"width_segments": [round(flt(w), 4) for w in widths],
+		"per_width_max": no_shafts,
+	}
+
+
+def _gsm_sprs_for_pp_job_counts(pp_id: str, unit: str | None = None) -> list:
+	filters = {"production_plan": pp_id, "docstatus": ["<", 2]}
+	if unit:
+		filters["custom_unit"] = _cstr(unit).strip()
+	return frappe.get_all(
+		"Shaft Production Run",
+		filters=filters,
+		fields=["name", "shift", "run_date", "docstatus"],
+		order_by="modified desc",
+		limit=100,
+	)
+
+
+def _gsm_job_production_stats(
+	spr_docs: list,
+	job_id: str,
+	width_segments: list,
+	run_date=None,
+	shift: str | None = None,
+) -> dict:
+	job_key = _cstr(job_id).strip()
+	width_segments = [flt(w) for w in (width_segments or []) if flt(w) > 0]
+	job_rolls = 0
+	today_rolls = 0
+	shift_rolls = 0
+	width_counts: dict[float, int] = {w: 0 for w in width_segments}
+	spr_names: list[str] = []
+	run_d = getdate(run_date) if run_date else None
+	cur_shift = _cstr(shift).strip()
+
+	for spr_row in spr_docs or []:
+		sn = _cstr(spr_row.get("name") if isinstance(spr_row, dict) else spr_row)
+		if not sn:
+			continue
+		spr = frappe.get_doc("Shaft Production Run", sn)
+		if sn not in spr_names:
+			spr_names.append(sn)
+		spr_run = getdate(spr.run_date) if spr.get("run_date") else None
+		spr_shift = _cstr(spr.get("shift") or "").strip()
+		for it in spr.get("items") or []:
+			if not _spr_job_keys_match(_cstr(getattr(it, "job", None)), job_key):
+				continue
+			if not _spr_is_real_roll_item_row(it):
+				continue
+			job_rolls += 1
+			if run_d and spr_run == run_d:
+				today_rolls += 1
+				if cur_shift and spr_shift == cur_shift:
+					shift_rolls += 1
+			w = flt(getattr(it, "width_inch", None) or 0)
+			for seg_w in width_segments:
+				if abs(w - seg_w) < 0.05:
+					width_counts[seg_w] = width_counts.get(seg_w, 0) + 1
+					break
+
+	if width_segments:
+		job_shafts = min(width_counts.get(w, 0) for w in width_segments)
+	else:
+		job_shafts = 0
+
+	segment_stats = [{"width_inch": w, "current": width_counts.get(w, 0)} for w in width_segments]
+
+	return {
+		"job_rolls_produced": job_rolls,
+		"job_shafts_produced": job_shafts,
+		"today_rolls": today_rolls,
+		"shift_rolls": shift_rolls,
+		"width_counts": width_counts,
+		"segment_stats": segment_stats,
+		"spr_names": spr_names,
+	}
+
+
+def _gsm_build_job_board_entry(
+	pp_id: str,
+	shaft_row: dict,
+	run_date=None,
+	shift: str | None = None,
+	unit: str | None = None,
+	wo_terminal: bool = False,
+) -> dict:
+	job_id = _cstr(shaft_row.get("job") or "")
+	limits = _gsm_job_limits_from_shaft_row(shaft_row)
+	width_segments = limits["width_segments"]
+	per_width_max = limits["per_width_max"]
+	max_shafts = limits["max_shafts"]
+	max_rolls = limits["max_rolls"]
+	rolls_per_shaft = limits["rolls_per_shaft"]
+
+	spr_list = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit)
+	stats = _gsm_job_production_stats(
+		spr_list, job_id, width_segments, run_date=run_date, shift=shift
+	)
+	job_rolls = cint(stats["job_rolls_produced"])
+	job_shafts = cint(stats["job_shafts_produced"])
+	rem_shafts = max(0, max_shafts - job_shafts)
+	rem_rolls = max(0, max_rolls - job_rolls)
+
+	segments_out = []
+	can_add_any = not wo_terminal and rem_rolls > 0
+	for seg in stats["segment_stats"]:
+		w = flt(seg["width_inch"])
+		cur = cint(seg["current"])
+		seg_can = cur < per_width_max and rem_rolls > 0 and not wo_terminal
+		segments_out.append(
+			{
+				"width_inch": w,
+				"current": cur,
+				"max": per_width_max,
+				"can_add": seg_can,
+			}
+		)
+
+	quota_full = rem_rolls <= 0 or job_shafts >= max_shafts or wo_terminal
+	comb = _cstr(shaft_row.get("combination") or "")
+	return {
+		"pp_id": pp_id,
+		"job_id": job_id,
+		"job_key": f"{pp_id}::{job_id}",
+		"gsm": cint(shaft_row.get("gsm") or 0),
+		"combination": comb,
+		"combination_label": _gsm_combination_label(comb),
+		"meter_roll": flt(shaft_row.get("meter_roll") or 0),
+		"net_weight": flt(shaft_row.get("net_weight") or 0),
+		"max_shafts": max_shafts,
+		"max_rolls": max_rolls,
+		"rolls_per_shaft": rolls_per_shaft,
+		"job_shafts_produced": job_shafts,
+		"job_rolls_produced": job_rolls,
+		"rem_shafts": rem_shafts,
+		"rem_rolls": rem_rolls,
+		"today_rolls": cint(stats["today_rolls"]),
+		"shift_rolls": cint(stats["shift_rolls"]),
+		"width_segments": segments_out,
+		"can_add_roll": can_add_any and not quota_full,
+		"quota_full": quota_full,
+		"wo_terminal": bool(wo_terminal),
+		"spr_names": stats.get("spr_names") or [],
+		"run_date": str(run_date or ""),
+		"shift": _cstr(shift or ""),
+	}
+
+
+@frappe.whitelist()
+def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
+	"""GSM sidebar — per PP job shaft+roll progress, remaining, per-width caps."""
+	pp_ids = _parse_json_arg(pp_ids, [])
+	if isinstance(pp_ids, str):
+		pp_ids = [x.strip() for x in pp_ids.split(",") if x.strip()]
+	if not pp_ids:
+		return {"jobs": [], "by_pp": {}}
+
+	out_jobs = []
+	by_pp: dict[str, list] = {}
+	for pp_id in pp_ids:
+		pp_id = _cstr(pp_id).strip()
+		if not pp_id or not frappe.db.exists("Production Plan", pp_id):
+			continue
+		wo_terminal = False
+		pp_jobs = []
+		for shaft_row in _gsm_pp_shaft_rows(frappe.get_doc("Production Plan", pp_id)):
+			entry = _gsm_build_job_board_entry(
+				pp_id,
+				shaft_row,
+				run_date=run_date,
+				shift=shift,
+				unit=unit,
+				wo_terminal=wo_terminal,
+			)
+			pp_jobs.append(entry)
+			out_jobs.append(entry)
+		by_pp[pp_id] = pp_jobs
+
+	return {
+		"jobs": out_jobs,
+		"by_pp": by_pp,
+		"run_date": str(run_date or ""),
+		"shift": _cstr(shift or ""),
+		"unit": _cstr(unit or ""),
+	}
+
+
 @frappe.whitelist()
 def create_gsm_sprs_for_session(
 	run_date=None,
@@ -1077,9 +1293,16 @@ def create_gsm_sprs_for_session(
 		if not isinstance(entry, dict):
 			continue
 		pp_id = _cstr(entry.get("pp_id") or entry.get("ppId")).strip()
-		line_id = _cstr(entry.get("lineId") or entry.get("planning_table_row") or entry.get("id")).strip()
-		if not pp_id or not line_id:
+		line_id = _cstr(
+			entry.get("lineId")
+			or entry.get("planning_table_row")
+			or entry.get("planning_line_id")
+			or entry.get("id")
+		).strip()
+		if not pp_id:
 			continue
+		if not line_id:
+			line_id = _cstr(entry.get("job_id") or entry.get("jobId") or "gsm-job")
 		pp_groups.setdefault(pp_id, [])
 		if line_id not in pp_groups[pp_id]:
 			pp_groups[pp_id].append(line_id)
