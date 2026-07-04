@@ -807,6 +807,7 @@ const addRollWidthChoice = ref(null);
 let pendingAddRowResolve = null;
 
 const jobBoardJobs = ref([]);
+const sessionJobApiBaseline = ref({});
 
 const seriesPrefix = ref("");
 const maxRollSuffix = ref(0);
@@ -886,6 +887,52 @@ function orderDayStatsForPp(ppId) {
   };
 }
 
+function ensureJobApiBaseline(job) {
+  const key = entryKeyJob(job.pp_id, job.job_id);
+  if (sessionJobApiBaseline.value[key] == null) {
+    sessionJobApiBaseline.value[key] = cint(job.job_rolls_produced);
+  }
+}
+
+function allGridRollRowsForJob(ppId, jobId) {
+  const jid = String(jobId || "");
+  return rollLines.value.filter(
+    (row) =>
+      !row.is_bundle_row &&
+      row.pp_id === ppId &&
+      String(row.job_id || row.job || "") === jid
+  );
+}
+
+function effectiveJobRollCount(job) {
+  ensureJobApiBaseline(job);
+  const key = entryKeyJob(job.pp_id, job.job_id);
+  const baseline = cint(sessionJobApiBaseline.value[key]);
+  return baseline + allGridRollRowsForJob(job.pp_id, job.job_id).length;
+}
+
+function canJobAddOneMoreRoll(job) {
+  if (!job || job.wo_terminal) {
+    return false;
+  }
+  const maxRolls = cint(job.max_rolls);
+  if (maxRolls <= 0) {
+    return true;
+  }
+  return effectiveJobRollCount(job) < maxRolls;
+}
+
+function recordJobApiBaselines(jobs) {
+  const next = { ...sessionJobApiBaseline.value };
+  for (const job of jobs || []) {
+    const key = entryKeyJob(job.pp_id, job.job_id);
+    if (next[key] == null) {
+      next[key] = cint(job.job_rolls_produced);
+    }
+  }
+  sessionJobApiBaseline.value = next;
+}
+
 function localPendingRollRowsForJob(ppId, jobId) {
   const jid = String(jobId || "");
   return rollLines.value.filter(
@@ -910,12 +957,12 @@ function localPendingWidthCountForJob(ppId, jobId, widthInch) {
 }
 
 function withLocalPendingQuota(job) {
-  const pendingRolls = localPendingRollCountForJob(job.pp_id, job.job_id);
-  if (!pendingRolls) {
-    return job;
-  }
+  ensureJobApiBaseline(job);
+  const key = entryKeyJob(job.pp_id, job.job_id);
+  const baseline = cint(sessionJobApiBaseline.value[key]);
+  const gridTotal = allGridRollRowsForJob(job.pp_id, job.job_id).length;
+  const jobRolls = baseline + gridTotal;
   const rollsPerShaft = Math.max(1, cint(job.rolls_per_shaft));
-  const jobRolls = cint(job.job_rolls_produced) + pendingRolls;
   const jobShafts = Math.min(cint(job.max_shafts), Math.floor(jobRolls / rollsPerShaft));
   const remRolls = Math.max(0, cint(job.max_rolls) - jobRolls);
   const remShafts = Math.max(0, cint(job.max_shafts) - jobShafts);
@@ -923,7 +970,8 @@ function withLocalPendingQuota(job) {
   const currentShaftRemainingRolls =
     remRolls > 0 && currentShaftRolls ? Math.max(0, rollsPerShaft - currentShaftRolls) : 0;
   const widthSegments = (job.width_segments || []).map((seg) => {
-    const current = cint(seg.current) + localPendingWidthCountForJob(job.pp_id, job.job_id, seg.width_inch);
+    const pendingAtWidth = localPendingWidthCountForJob(job.pp_id, job.job_id, seg.width_inch);
+    const current = cint(seg.current) + pendingAtWidth;
     const max = cint(seg.max);
     return {
       ...seg,
@@ -934,7 +982,9 @@ function withLocalPendingQuota(job) {
   const quotaFull = remRolls <= 0 || jobShafts >= cint(job.max_shafts) || job.wo_terminal;
   return {
     ...job,
-    local_pending_rolls: pendingRolls,
+    api_job_rolls_produced: baseline,
+    local_pending_rolls: localPendingRollCountForJob(job.pp_id, job.job_id),
+    local_grid_rolls: gridTotal,
     job_rolls_produced: jobRolls,
     job_shafts_produced: jobShafts,
     rem_rolls: remRolls,
@@ -943,7 +993,7 @@ function withLocalPendingQuota(job) {
     current_shaft_remaining_rolls: currentShaftRemainingRolls,
     width_segments: widthSegments,
     quota_full: quotaFull,
-    can_add_roll: !quotaFull,
+    can_add_roll: !quotaFull && jobRolls < cint(job.max_rolls),
   };
 }
 
@@ -1750,15 +1800,26 @@ const selectedLinesDetail = computed(() =>
   })
 );
 
-const canAddRow = computed(
-  () =>
-    selectionLocked.value &&
-    selectedEntries.value.length > 0 &&
-    headerUnit.value &&
-    runDate.value &&
-    shift.value &&
-    sessionSprList.value.length > 0
-);
+const canAddRow = computed(() => {
+  if (
+    !selectionLocked.value ||
+    !selectedEntries.value.length ||
+    !headerUnit.value ||
+    !runDate.value ||
+    !shift.value ||
+    !sessionSprList.value.length
+  ) {
+    return false;
+  }
+  return selectedEntries.value.some((entry) => {
+    const jid = entry.jobId || entry.job_id;
+    const raw = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
+    if (!raw) {
+      return true;
+    }
+    return canJobAddOneMoreRoll(withLocalPendingQuota(raw));
+  });
+});
 
 const sessionSprList = computed(() => Object.values(sessionSprs.value || {}));
 
@@ -1921,6 +1982,7 @@ function openConfirmSelection() {
 }
 
 function confirmSelection() {
+  recordJobApiBaselines(jobBoardJobs.value);
   selectionLocked.value = true;
   showConfirmDialog.value = false;
   scheduleAutosave();
@@ -2263,6 +2325,7 @@ async function clearGridEntries() {
     () => {
       rollLines.value = [];
       sessionSprs.value = {};
+      sessionJobApiBaseline.value = {};
       forceNewSprSession.value = true;
       resetBatchSeriesCache();
       saveStatus.value = "Cleared — create new SPRs";
@@ -2313,6 +2376,7 @@ async function createSprs() {
     }
     sessionSprs.value = next;
     forceNewSprSession.value = false;
+    recordJobApiBaselines(jobBoardJobs.value);
     scheduleAutosave();
     if (errors.length) {
       frappe.msgprint({
@@ -2648,6 +2712,7 @@ async function loadJobBoard() {
       },
     });
     jobBoardJobs.value = res.message?.jobs || [];
+    recordJobApiBaselines(jobBoardJobs.value);
   } catch (e) {
     console.warn("job board", e);
     jobBoardJobs.value = [];
@@ -2954,7 +3019,7 @@ async function addRollRow() {
   }
   const { widthInch } = pick;
   const job = withLocalPendingQuota(pick.job);
-  if (!job.can_add_roll) {
+  if (!canJobAddOneMoreRoll(job)) {
     frappe.confirm(
       __("Job roll limit reached ({0}/{1}) — use Manual Job. Open Manual Job now?", [
         job.job_rolls_produced,
@@ -3316,6 +3381,7 @@ watch([runDate, shift, headerUnit], () => {
   if (batchContextKey.value && batchContextKey.value !== key) {
     resetBatchSeriesCache();
     sessionSprs.value = {};
+    sessionJobApiBaseline.value = {};
     forceNewSprSession.value = false;
   }
   batchContextKey.value = key;

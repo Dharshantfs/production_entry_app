@@ -9590,6 +9590,133 @@ def _spr_count_roll_lines_for_job_width(spr_doc, job_id, width_inch) -> int:
 	return cnt
 
 
+def _gsm_job_roll_limits_from_job_row(job_row) -> dict:
+	"""GSM job max rolls + per-width caps (matches get_gsm_pp_job_board)."""
+	comb = _cstr(getattr(job_row, "combination", None) or "")
+	widths = _parse_combination_widths_inches(comb) if comb else []
+	if not widths:
+		tw = flt(getattr(job_row, "total_width", None) or getattr(job_row, "width", None) or 0)
+		if tw > 0:
+			widths = [tw]
+	no_shafts = max(1, cint(getattr(job_row, "no_of_shafts", 0) or 0))
+	rolls_per_shaft = max(1, len(widths)) if len(widths) > 1 else 1
+	max_rolls = no_shafts * rolls_per_shaft
+	width_caps: dict[float, int] = {}
+	width_requirements: dict[float, int] = {}
+	for w in widths:
+		fw = round(flt(w), 4)
+		if fw > 0:
+			width_requirements[fw] = width_requirements.get(fw, 0) + 1
+	for fw, req in width_requirements.items():
+		width_caps[fw] = req * no_shafts
+	return {
+		"max_rolls": max_rolls,
+		"max_shafts": no_shafts,
+		"rolls_per_shaft": rolls_per_shaft,
+		"width_caps": width_caps,
+		"width_requirements": width_requirements,
+	}
+
+
+def _gsm_job_row_for_quota(spr, pp_id: str, job_id: str):
+	job_key = _cstr(job_id).strip()
+	if not job_key:
+		return None
+	for sj in _spr_job_rows(spr):
+		if _spr_job_keys_match(_spr_job_id(sj), job_key):
+			return sj
+	if pp_id and frappe.db.exists("Production Plan", pp_id):
+		pp = frappe.get_doc("Production Plan", pp_id)
+		for idx, shaft in enumerate(pp.get("custom_shaft_details") or pp.get("shaft_details") or [], start=1):
+			row_job = _cstr(
+				_spr_row_get(shaft, "job_id")
+				or _spr_row_get(shaft, "job")
+				or _spr_row_get(shaft, "job_no")
+				or str(idx)
+			)
+			if _spr_job_keys_match(row_job, job_key):
+				return shaft
+	return None
+
+
+def _gsm_spr_names_for_pp_job_counts(pp_id: str, unit: str | None = None) -> list[str]:
+	filters = {"production_plan": pp_id, "docstatus": ["<", 2]}
+	if unit:
+		filters["custom_unit"] = _cstr(unit).strip()
+	rows = frappe.get_all(
+		"Shaft Production Run",
+		filters=filters,
+		fields=["name"],
+		order_by="modified desc",
+		limit=200,
+	)
+	return [_cstr(r.get("name")) for r in rows if _cstr(r.get("name"))]
+
+
+def _gsm_count_job_rolls_all_sprs(pp_id: str, job_id: str, unit: str | None = None) -> int:
+	job_key = _cstr(job_id).strip()
+	if not job_key:
+		return 0
+	total = 0
+	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
+		spr = frappe.get_doc("Shaft Production Run", sn)
+		total += _spr_count_roll_lines_for_job(spr, job_key)
+	return total
+
+
+def _gsm_count_job_width_rolls_all_sprs(
+	pp_id: str, job_id: str, width_inch, unit: str | None = None
+) -> int:
+	job_key = _cstr(job_id).strip()
+	if not job_key:
+		return 0
+	total = 0
+	for sn in _gsm_spr_names_for_pp_job_counts(pp_id, unit=unit):
+		spr = frappe.get_doc("Shaft Production Run", sn)
+		total += _spr_count_roll_lines_for_job_width(spr, job_key, width_inch)
+	return total
+
+
+def _gsm_enforce_job_roll_quota_on_add(
+	spr,
+	pp_id: str,
+	job_id: str,
+	width_inch,
+	batch_no: str,
+) -> None:
+	"""Block new GSM roll lines past PP job max rolls / per-width caps."""
+	if _gsm_find_item_row_by_batch(spr, batch_no):
+		return
+	job_row = _gsm_job_row_for_quota(spr, pp_id, job_id)
+	if not job_row:
+		return
+	limits = _gsm_job_roll_limits_from_job_row(job_row)
+	max_rolls = cint(limits.get("max_rolls") or 0)
+	if max_rolls <= 0:
+		return
+	unit = _cstr(spr.get("custom_unit") or "").strip()
+	current_rolls = _gsm_count_job_rolls_all_sprs(pp_id, job_id, unit=unit or None)
+	if current_rolls >= max_rolls:
+		_spr_throw_roll_quota_exceeded(job_id, max_rolls, current_rolls)
+	target_w = flt(width_inch)
+	if target_w <= 0:
+		return
+	width_caps = limits.get("width_caps") or {}
+	for fw, cap in width_caps.items():
+		if abs(target_w - flt(fw)) >= 0.05:
+			continue
+		cur = _gsm_count_job_width_rolls_all_sprs(pp_id, job_id, fw, unit=unit or None)
+		if cint(cap) > 0 and cur >= cint(cap):
+			frappe.throw(
+				_(
+					"Maximum {0} roll lines allowed at width {1}\" for job {2} ({3} already created). "
+					"Use Manual Job for additional production."
+				).format(cap, fw, job_id, cur),
+				title=_("Width roll limit reached"),
+			)
+		break
+
+
 def _spr_throw_roll_quota_exceeded(job_id, max_rolls: int, current_rolls: int) -> None:
 	frappe.throw(
 		_(
@@ -10123,6 +10250,14 @@ def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> 
 	job_id = _gsm_resolve_job_id_for_roll(spr, pp_id, payload)
 	existing = _gsm_find_item_row_by_batch(spr, batch_no)
 	action = "updated" if existing else "added"
+	if not existing:
+		_gsm_enforce_job_roll_quota_on_add(
+			spr,
+			pp_id,
+			job_id,
+			payload.get("width_inch"),
+			batch_no,
+		)
 	if existing:
 		row = existing
 	else:
