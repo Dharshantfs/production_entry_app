@@ -262,7 +262,13 @@
 
         <div class="gpe-toolbar">
           <div class="gpe-toolbar-left">
-            <button type="button" class="gpe-btn primary" :disabled="!canAddRow" @click="addRollRow">Add Roll Row</button>
+            <button
+              v-if="allSelectedJobsMaxed && selectedEntries.length"
+              type="button"
+              class="gpe-btn warn"
+              @click="openManualJobForAllMaxed"
+            >All jobs at max — Manual Job</button>
+            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow" @click="addRollRow">Add Roll Row</button>
             <button type="button" class="gpe-btn" :disabled="!rollLines.length" @click="removeTopRow">Remove Top Row</button>
             <button
               type="button"
@@ -634,18 +640,29 @@
       <div class="gpe-dialog gpe-card">
         <h3>{{ addRollWizardStep === 1 ? "Choose job for new roll" : "Choose width" }}</h3>
         <div v-if="addRollWizardStep === 1" class="gpe-picker-list">
-          <label v-for="entry in wizardJobChoices" :key="entry.key" class="gpe-picker-row">
+          <label
+            v-for="entry in wizardJobChoices"
+            :key="entry.key"
+            class="gpe-picker-row"
+            :class="{ 'gpe-picker-maxed': entry.maxed }"
+          >
             <input v-model="addRollJobChoice" type="radio" :value="entry.key" />
             <span>
               {{ entry.orderCode }} · Job {{ entry.jobId || entry.job_id }} · {{ entry.gsm }} GSM
               <em v-if="entry.board" class="gpe-picker-sub">
                 {{ entry.board.job_shafts_produced }}/{{ entry.board.max_shafts }} shafts ·
                 {{ entry.board.job_rolls_produced }}/{{ entry.board.max_rolls }} rolls
+                <strong v-if="entry.maxed" class="gpe-picker-maxed-tag"> · MAX — Manual Job only</strong>
               </em>
             </span>
           </label>
         </div>
         <div v-else class="gpe-picker-list">
+          <div v-if="wizardSelectedJobMaxed" class="gpe-picker-maxed-note">
+            This job reached its planned max rolls
+            ({{ wizardSelectedJob?.job_rolls_produced }}/{{ wizardSelectedJob?.max_rolls }}).
+            Extra production must go through Manual Job.
+          </div>
           <label v-for="seg in wizardWidthSegments" :key="seg.width_inch" class="gpe-picker-row" :class="{ 'gpe-picker-disabled': !seg.can_add }">
             <input
               v-model="addRollWidthChoice"
@@ -664,6 +681,13 @@
             {{ addRollWizardStep === 1 ? "Cancel" : "Back" }}
           </button>
           <button
+            v-if="wizardSelectedJobMaxed"
+            type="button"
+            class="gpe-btn warn"
+            @click="openManualJobFromWizard"
+          >Manual Job</button>
+          <button
+            v-else
             type="button"
             class="gpe-btn primary"
             :disabled="addRollWizardStep === 1 ? !addRollJobChoice : addRollWidthChoice == null"
@@ -1498,9 +1522,38 @@ const wizardJobChoices = computed(() =>
     const jid = entry.jobId || entry.job_id;
     const boardRaw = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
     const board = boardRaw ? withLocalPendingQuota(boardRaw) : null;
-    return { ...entry, board };
+    const maxed = board ? !canJobAddOneMoreRoll(board) : false;
+    return { ...entry, board, maxed };
   })
 );
+
+const wizardSelectedJob = computed(() => {
+  const key = addRollJobChoice.value;
+  if (!key) {
+    return null;
+  }
+  const raw = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+  return raw ? withLocalPendingQuota(raw) : null;
+});
+
+const wizardSelectedJobMaxed = computed(() => {
+  const job = wizardSelectedJob.value;
+  return job ? !canJobAddOneMoreRoll(job) : false;
+});
+
+const allSelectedJobsMaxed = computed(() => {
+  if (!selectedEntries.value.length) {
+    return false;
+  }
+  return selectedEntries.value.every((entry) => {
+    const jid = entry.jobId || entry.job_id;
+    const raw = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
+    if (!raw) {
+      return false;
+    }
+    return !canJobAddOneMoreRoll(withLocalPendingQuota(raw));
+  });
+});
 
 const wizardWidthSegments = computed(() => {
   const key = addRollJobChoice.value;
@@ -2977,6 +3030,72 @@ function cancelAddRollWizard() {
   }
 }
 
+function manualJobContextForPp(ppId) {
+  const lineIds = [
+    ...new Set(
+      selectedEntries.value
+        .filter((e) => e.ppId === ppId)
+        .map((e) => e.lineId)
+        .filter(Boolean)
+    ),
+  ];
+  return { ppId, planningNames: lineIds };
+}
+
+async function openManualJobForPp(ppId) {
+  if (!ppId) {
+    frappe.msgprint(__("No order selected for Manual Job."));
+    return;
+  }
+  const ctx = manualJobContextForPp(ppId);
+  await gsmOpenManualJob(
+    ctx.ppId,
+    ctx.planningNames,
+    headerUnit.value,
+    runDate.value,
+    shift.value,
+    () => Promise.all([fetchOrders(), loadJobBoard()])
+  );
+}
+
+async function openManualJobFromWizard() {
+  const job = wizardSelectedJob.value;
+  cancelAddRollWizard();
+  if (job) {
+    await openManualJobForPp(job.pp_id);
+  }
+}
+
+async function openManualJobForAllMaxed() {
+  const ppIds = [...new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean))];
+  if (!ppIds.length) {
+    return;
+  }
+  if (ppIds.length === 1) {
+    await openManualJobForPp(ppIds[0]);
+    return;
+  }
+  const options = ppIds.map((ppId) => {
+    const meta = orderMetaForPp(ppId);
+    return { value: ppId, label: meta.orderCode || ppId };
+  });
+  frappe.prompt(
+    [
+      {
+        fieldtype: "Select",
+        fieldname: "pp_id",
+        label: __("Order for Manual Job"),
+        options,
+        reqd: 1,
+        default: ppIds[0],
+      },
+    ],
+    (values) => openManualJobForPp(values.pp_id),
+    __("Choose order for Manual Job"),
+    __("Open")
+  );
+}
+
 function proceedAddRollWizard() {
   if (addRollWizardStep.value === 1) {
     if (!addRollJobChoice.value) {
@@ -3714,6 +3833,30 @@ onUnmounted(() => {
 }
 .gpe-picker-disabled {
   opacity: 0.55;
+}
+.gpe-picker-maxed {
+  background: #fffbeb;
+  border-radius: 6px;
+}
+.gpe-picker-maxed-tag {
+  color: #b45309;
+}
+.gpe-picker-maxed-note {
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  color: #92400e;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.gpe-btn.warn {
+  border-color: #f59e0b;
+  color: #92400e;
+  background: #fffbeb;
+}
+.gpe-btn.warn:hover:not(:disabled) {
+  background: #fef3c7;
 }
 .gpe-line-card {
   display: flex;
