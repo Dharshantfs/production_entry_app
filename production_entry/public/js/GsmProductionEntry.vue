@@ -886,7 +886,69 @@ function orderDayStatsForPp(ppId) {
   };
 }
 
+function localPendingRollRowsForJob(ppId, jobId) {
+  const jid = String(jobId || "");
+  return rollLines.value.filter(
+    (row) =>
+      !row.is_bundle_row &&
+      row.pp_id === ppId &&
+      String(row.job_id || row.job || "") === jid &&
+      !row.spr_item_name &&
+      !row.row_locked
+  );
+}
+
+function localPendingRollCountForJob(ppId, jobId) {
+  return localPendingRollRowsForJob(ppId, jobId).length;
+}
+
+function localPendingWidthCountForJob(ppId, jobId, widthInch) {
+  const target = sprFlt(widthInch);
+  return localPendingRollRowsForJob(ppId, jobId).filter(
+    (row) => Math.abs(sprFlt(row.width_inch) - target) < 0.05
+  ).length;
+}
+
+function withLocalPendingQuota(job) {
+  const pendingRolls = localPendingRollCountForJob(job.pp_id, job.job_id);
+  if (!pendingRolls) {
+    return job;
+  }
+  const rollsPerShaft = Math.max(1, cint(job.rolls_per_shaft));
+  const jobRolls = cint(job.job_rolls_produced) + pendingRolls;
+  const jobShafts = Math.min(cint(job.max_shafts), Math.floor(jobRolls / rollsPerShaft));
+  const remRolls = Math.max(0, cint(job.max_rolls) - jobRolls);
+  const remShafts = Math.max(0, cint(job.max_shafts) - jobShafts);
+  const currentShaftRolls = jobRolls % rollsPerShaft;
+  const currentShaftRemainingRolls =
+    remRolls > 0 && currentShaftRolls ? Math.max(0, rollsPerShaft - currentShaftRolls) : 0;
+  const widthSegments = (job.width_segments || []).map((seg) => {
+    const current = cint(seg.current) + localPendingWidthCountForJob(job.pp_id, job.job_id, seg.width_inch);
+    const max = cint(seg.max);
+    return {
+      ...seg,
+      current,
+      can_add: current < max && remRolls > 0 && !job.wo_terminal,
+    };
+  });
+  const quotaFull = remRolls <= 0 || jobShafts >= cint(job.max_shafts) || job.wo_terminal;
+  return {
+    ...job,
+    local_pending_rolls: pendingRolls,
+    job_rolls_produced: jobRolls,
+    job_shafts_produced: jobShafts,
+    rem_rolls: remRolls,
+    rem_shafts: remShafts,
+    current_shaft_rolls: currentShaftRolls,
+    current_shaft_remaining_rolls: currentShaftRemainingRolls,
+    width_segments: widthSegments,
+    quota_full: quotaFull,
+    can_add_roll: !quotaFull,
+  };
+}
+
 function enrichJobCard(job) {
+  job = withLocalPendingQuota(job);
   const meta = orderMetaForPp(job.pp_id);
   const selectable = !job.quota_full && !job.wo_terminal;
   let chip = "";
@@ -1384,7 +1446,8 @@ const completedJobCount = computed(() =>
 const wizardJobChoices = computed(() =>
   selectedEntries.value.map((entry) => {
     const jid = entry.jobId || entry.job_id;
-    const board = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
+    const boardRaw = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
+    const board = boardRaw ? withLocalPendingQuota(boardRaw) : null;
     return { ...entry, board };
   })
 );
@@ -1394,7 +1457,8 @@ const wizardWidthSegments = computed(() => {
   if (!key) {
     return [];
   }
-  const job = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+  const rawJob = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+  const job = rawJob ? withLocalPendingQuota(rawJob) : null;
   return job?.width_segments || [];
 });
 
@@ -2860,7 +2924,8 @@ function proceedAddRollWizard() {
     return;
   }
   const key = addRollJobChoice.value;
-  const job = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+  const rawJob = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+  const job = rawJob ? withLocalPendingQuota(rawJob) : null;
   const widthInch = sprFlt(addRollWidthChoice.value);
   showAddRollWizard.value = false;
   addRollWizardStep.value = 1;
@@ -2887,7 +2952,8 @@ async function addRollRow() {
   if (!pick) {
     return;
   }
-  const { job, widthInch } = pick;
+  const { widthInch } = pick;
+  const job = withLocalPendingQuota(pick.job);
   if (!job.can_add_roll) {
     frappe.confirm(
       __("Job roll limit reached ({0}/{1}) — use Manual Job. Open Manual Job now?", [
