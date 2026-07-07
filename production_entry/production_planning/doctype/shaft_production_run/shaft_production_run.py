@@ -2776,6 +2776,10 @@ class ShaftProductionRun(Document):
 			self.total_produced_weight = flt(total, 2)
 		if meta.has_field("custom_total_produced_weight"):
 			self.custom_total_produced_weight = flt(self.total_produced_weight, 2 if not cint(getattr(self, "custom_is_box_bag", 0)) else 0)
+		if meta.has_field("custom_no_of_rolls_created"):
+			real_rolls = sum(1 for r in (self.items or []) if _spr_is_real_roll_item_row(r))
+			if real_rolls > 0:
+				self.custom_no_of_rolls_created = real_rolls
 
 	def _spr_needs_job_work_order_resync(self) -> bool:
 		"""True when PP-driven WO list on jobs should be recomputed (saves DB work on routine saves)."""
@@ -14587,7 +14591,7 @@ def gsm_apply_bundle_packaging(
 				pp_doc.get("custom_party_code") or pp_doc.get("custom_order_code") or ""
 			)
 
-		width_label = f'{_bp_format_width_label_static(width_inch)}" × {no_of_packaging}'
+		width_label = f'{_bp_format_width_label_static(width_inch)}" ({no_of_packaging} rolls)'
 		child_batches = [_cstr(getattr(it, "batch_no", "")) for it in selected if _cstr(getattr(it, "batch_no", ""))]
 
 		return {

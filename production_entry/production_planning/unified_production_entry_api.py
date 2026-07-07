@@ -1645,6 +1645,15 @@ def _apply_gsm_session_header_to_spr(spr, run_date=None, shift=None, unit=None, 
 	return changed
 
 
+def _gsm_spr_has_submittable_rolls(spr_name: str) -> bool:
+	"""True when draft SPR already has real roll item rows (e.g. bundle packaging saved on server)."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		return False
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	return any(_spr_is_real_roll_item_row(it) for it in (spr.items or []))
+
+
 def _gsm_pp_shaft_rows(pp) -> list[dict]:
 	"""Read-only PP shaft details for GSM Shaft Details popup."""
 	meter_keys = _meter_keys()
@@ -2190,8 +2199,6 @@ def submit_gsm_production_entry(
 	tolerance_overrides = _parse_json_arg(tolerance_overrides, [])
 	submit_sprs = cint(submit_sprs)
 
-	if not rolls:
-		frappe.throw(_("No roll lines to submit"))
 	if not session_sprs:
 		frappe.throw(_("Create SPRs first"))
 
@@ -2206,6 +2213,10 @@ def submit_gsm_production_entry(
 
 	if not pp_to_spr:
 		frappe.throw(_("No SPR mapping in session"))
+
+	# Bundle packaging saves child rolls on SPR immediately; GSM grid may only show bundle summary rows.
+	if not rolls and not any(_gsm_spr_has_submittable_rolls(sn) for sn in pp_to_spr.values()):
+		frappe.throw(_("No roll lines to submit"))
 
 	override_by_spr = {}
 	for ov in tolerance_overrides:
@@ -2231,6 +2242,16 @@ def submit_gsm_production_entry(
 	for pp_id, spr_name in pp_to_spr.items():
 		payloads = rolls_by_pp.get(pp_id) or []
 		if not payloads:
+			if _gsm_spr_has_submittable_rolls(spr_name):
+				imported.append(
+					{
+						"pp_id": pp_id,
+						"spr_name": spr_name,
+						"added": 0,
+						"updated": 0,
+						"skipped": "rolls_already_on_spr",
+					}
+				)
 			continue
 		try:
 			spr = frappe.get_doc("Shaft Production Run", spr_name)

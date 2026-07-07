@@ -738,12 +738,13 @@
         <table class="gpe-confirm-grid">
           <thead>
             <tr>
-              <th>Batch</th><th>Order</th><th>Job</th><th>Net Kg</th><th>Gross Kg</th>
+              <th>Batch</th><th>Width</th><th>Order</th><th>Job</th><th>Net Kg</th><th>Gross Kg</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="r in submitConfirmRolls" :key="r._id">
               <td>{{ r.batch_no }}</td>
+              <td>{{ widthDisplay(r) }}</td>
               <td>{{ r.party_code }}</td>
               <td>{{ r.job_id || r.job }}</td>
               <td>{{ formatKg(r.net_weight) }}</td>
@@ -2358,9 +2359,7 @@ const canConfirmShiftOpen = computed(() => {
   return true;
 });
 
-const submitConfirmRolls = computed(() =>
-  rollLines.value.filter((r) => !r.is_bundle_row)
-);
+const submitConfirmRolls = computed(() => rollLines.value);
 
 const shiftStatusChips = computed(() => {
   const map = shiftStatusByShift.value || {};
@@ -2743,7 +2742,7 @@ function widthDisplay(row) {
   if (row.is_bundle_row && row.pack_count > 1 && row.segment_width) {
     const w = row.segment_width;
     const lbl = Number.isInteger(w) ? String(w) : String(w);
-    return `${lbl}" × ${row.pack_count}`;
+    return `${lbl}" (${row.pack_count} rolls)`;
   }
   return row.width_inch != null && row.width_inch !== "" ? row.width_inch : "";
 }
