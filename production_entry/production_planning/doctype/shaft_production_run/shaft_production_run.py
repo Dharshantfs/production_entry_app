@@ -11714,6 +11714,40 @@ def _format_shaft_combination_inches(width_inch) -> str:
 	return f'{s}"'
 
 
+def _format_combination_from_input(combo_raw: str) -> str:
+	"""Preserve every segment from user input (e.g. 2+2+6 → 2\" + 2\" + 6\")."""
+	widths = _parse_combination_widths_inches(combo_raw)
+	if not widths:
+		return _cstr(combo_raw).strip()
+
+	def _fmt_w(w):
+		w = flt(w)
+		return str(int(w)) if w == int(w) else str(w)
+
+	return " + ".join([f'{_fmt_w(w)}"' for w in widths])
+
+
+def _net_weight_string_for_combination_segments(combo_raw: str, net_by_width: dict) -> str:
+	"""Build job net_weight display: one kg value per combination segment."""
+	widths = _parse_combination_widths_inches(combo_raw)
+	if not widths:
+		return ""
+	parts: list[str] = []
+	for w in widths:
+		key = round(flt(w), 4)
+		val = net_by_width.get(key)
+		if val is None:
+			for nk, nv in net_by_width.items():
+				if abs(flt(nk) - flt(w)) < 0.06:
+					val = nv
+					break
+		if val is not None and flt(val) > 0:
+			parts.append(f"{flt(val):.2f}")
+		else:
+			parts.append("0")
+	return " + ".join(parts) if parts else ""
+
+
 @frappe.whitelist()
 def spr_create_manual_job(
 	shaft_production_run,
@@ -11875,6 +11909,7 @@ def spr_create_manual_jobs_multi(
 	item_codes_list: list[str] = []
 	ppi_rows = []
 	meter_roll_from_popup: float | None = None
+	net_by_width: dict[float, float] = {}
 
 	for raw in items:
 		if not isinstance(raw, dict):
@@ -11929,6 +11964,11 @@ def spr_create_manual_jobs_multi(
 				inm = frappe.db.get_value("Item", item_code, "item_name")
 				w_in = _spr_nominal_roll_width_inch(item_code, inm)
 			widths_list.append(flt(w_in))
+		w_key = round(flt(widths_list[-1]), 4)
+		if w_key > 0 and w_key not in net_by_width:
+			nps, _mj = _spr_net_kg_per_shaft_for_pp_line_width(spr, w_key, production_plan_item)
+			if nps is not None and flt(nps) > 0:
+				net_by_width[w_key] = flt(nps)
 		if meter_roll_from_popup is None and raw.get("meter_roll") not in (None, ""):
 			mr = flt(raw.get("meter_roll"))
 			if mr > 0:
@@ -11956,10 +11996,18 @@ def spr_create_manual_jobs_multi(
 		w = flt(w)
 		return str(int(w)) if w == int(w) else str(w)
 
+	combo_seg_widths = _parse_combination_widths_inches(combo_raw) if combo_raw else []
 	comb_str = ""
-	if len(widths_list) > 1:
+	job_no_of_rolls = no_of_rolls
+	if combo_raw and combo_seg_widths:
+		comb_str = _format_combination_from_input(combo_raw)
+		total_w = sum(combo_seg_widths)
+		job_no_of_rolls = 1
+	elif len(widths_list) > 1:
 		comb_str = " + ".join([f'{_fmt_w(w)}"' for w in widths_list])
-	total_w = sum(widths_list) if widths_list else width_inch_one
+		total_w = sum(widths_list)
+	else:
+		total_w = sum(widths_list) if widths_list else width_inch_one
 	total_qty = sum(qtys)
 
 	row = {
@@ -11972,7 +12020,7 @@ def spr_create_manual_jobs_multi(
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
 	if meta.has_field("no_of_rolls"):
-		row["no_of_rolls"] = no_of_rolls
+		row["no_of_rolls"] = job_no_of_rolls
 	if meta.has_field("gsm") and gsm:
 		try:
 			row["gsm"] = int(gsm)
@@ -11981,13 +12029,17 @@ def spr_create_manual_jobs_multi(
 	if meta.has_field("quality") and quality:
 		row["quality"] = quality
 	if meta.has_field("combination"):
-		if len(widths_list) > 1 and comb_str:
+		if comb_str:
 			row["combination"] = comb_str
 		else:
 			single_w = flt(widths_list[0]) if widths_list else flt(width_inch_one)
 			cb = _format_shaft_combination_inches(single_w)
 			if cb:
 				row["combination"] = cb
+	if meta.has_field("net_weight") and combo_raw and combo_seg_widths:
+		nw_str = _net_weight_string_for_combination_segments(combo_raw, net_by_width)
+		if nw_str:
+			row["net_weight"] = nw_str
 	if meta.has_field("total_width"):
 		row["total_width"] = total_w
 	if meta.has_field("manual_items"):
@@ -12595,11 +12647,17 @@ def spr_create_trial_jobs_multi(
 		return str(int(w)) if w == int(w) else str(w)
 
 	comb_str = ""
-	if len(widths_list) > 1:
+	combo_seg_widths = _parse_combination_widths_inches(combo_raw) if combo_raw else []
+	job_no_of_rolls = no_of_rolls
+	if combo_raw and combo_seg_widths:
+		comb_str = _format_combination_from_input(combo_raw)
+		total_w = sum(combo_seg_widths)
+		job_no_of_rolls = 1
+	elif len(widths_list) > 1:
 		comb_str = " + ".join([f'{_fmt_w(w)}"' for w in widths_list])
-	elif combo_raw:
-		comb_str = combo_raw.replace("+", " + ")
-	total_w = sum(widths_list) if widths_list else width_inch_one
+		total_w = sum(widths_list)
+	else:
+		total_w = sum(widths_list) if widths_list else width_inch_one
 	total_qty = sum(qtys)
 
 	row = {
@@ -12611,7 +12669,7 @@ def spr_create_trial_jobs_multi(
 	}
 	meta = frappe.get_meta("Shaft Production Run Job")
 	if meta.has_field("no_of_rolls"):
-		row["no_of_rolls"] = no_of_rolls
+		row["no_of_rolls"] = job_no_of_rolls
 	if meta.has_field("gsm") and gsm:
 		try:
 			row["gsm"] = int(gsm)
@@ -12622,7 +12680,7 @@ def spr_create_trial_jobs_multi(
 	if meta.has_field("color") and color:
 		row["color"] = color
 	if meta.has_field("combination"):
-		if len(widths_list) > 1 and comb_str:
+		if comb_str:
 			row["combination"] = comb_str
 		else:
 			cb = _format_shaft_combination_inches(width_inch_one)

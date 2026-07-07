@@ -4935,7 +4935,7 @@ function spr_open_manual_job_dialog(frm) {
 						fieldname: 'combination_input',
 						fieldtype: 'Data',
 						label: __('Combination widths (Inches)'),
-						description: __('Example: 34+34+42. Same GSM only. One segment = one roll per shaft.'),
+						description: __('Example: 34+34+42. Same GSM only. Total rolls = segments × shafts.'),
 					},
 					{
 						fieldname: 'combination_status_html',
@@ -5044,7 +5044,7 @@ function spr_open_manual_job_dialog(frm) {
 						args: {
 							shaft_production_run: frm.doc.name,
 							no_of_shafts: no_of_shafts,
-							no_of_rolls: cint(d.get_value('no_of_rolls')) || 1,
+							no_of_rolls: comboMode ? 1 : cint(d.get_value('no_of_rolls')) || 1,
 							items: finalItems,
 							combination_input: comboRaw,
 						},
@@ -5331,7 +5331,7 @@ function spr_open_manual_job_dialog(frm) {
 							sprManualDefaultWoQty(
 								lines[idx],
 								cint(d.get_value('no_of_shafts')) || 1,
-								rollCount * nRollsHdr
+								rollCount
 							).toFixed(2)
 						);
 				});

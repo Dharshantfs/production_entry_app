@@ -167,7 +167,7 @@ export function openSprManualJobDialog(opts) {
 						fieldname: "combination_input",
 						fieldtype: "Data",
 						label: __("Combination widths (Inches)"),
-						description: __("Example: 34+34+42. Same GSM only. One segment = one roll per shaft."),
+						description: __("Example: 34+34+42. Same GSM only. Total rolls = segments × shafts."),
 					},
 					{
 						fieldname: "combination_status_html",
@@ -274,7 +274,7 @@ export function openSprManualJobDialog(opts) {
 						args: {
 							shaft_production_run: sprName,
 							no_of_shafts,
-							no_of_rolls: _mjCint(d.get_value("no_of_rolls")) || 1,
+							no_of_rolls: comboMode ? 1 : _mjCint(d.get_value("no_of_rolls")) || 1,
 							items: finalItems,
 							combination_input: comboRaw,
 						},
@@ -539,14 +539,13 @@ export function openSprManualJobDialog(opts) {
 					const rollCount = _mjCint(countsByIdx[idx] || 1);
 					lines[idx].__combo_roll_count_per_shaft = rollCount;
 					d.$wrapper.find('.spr-manual-inc[data-idx="' + idx + '"]').prop("checked", true);
-					const nRollsHdr = _mjCint(d.get_value("no_of_rolls")) || 1;
 					d.$wrapper
 						.find('.spr-manual-qty[data-idx="' + idx + '"]')
 						.val(
 							_mjManualDefaultWoQty(
 								lines[idx],
 								_mjCint(d.get_value("no_of_shafts")) || 1,
-								rollCount * nRollsHdr
+								rollCount
 							).toFixed(2)
 						);
 				});

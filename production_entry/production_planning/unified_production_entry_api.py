@@ -1709,14 +1709,18 @@ def _gsm_combination_label(comb: str) -> str:
 
 def _gsm_job_limits_from_shaft_row(shaft_row: dict) -> dict:
 	comb = _cstr(shaft_row.get("combination") or "")
+	segs = max(1, _count_combination_segments(comb))
 	widths = _parse_combination_widths_inches(comb) if comb else []
 	if not widths:
 		tw = flt(shaft_row.get("total_width") or 0)
 		if tw > 0:
 			widths = [tw]
 	no_shafts = max(1, cint(shaft_row.get("no_of_shafts") or 0))
-	rolls_per_shaft = max(1, len(widths)) if len(widths) > 1 else 1
-	max_rolls = no_shafts * rolls_per_shaft
+	rolls_per_shaft = max(1, cint(shaft_row.get("no_of_rolls") or 1))
+	if segs > 1:
+		max_rolls = no_shafts * segs * rolls_per_shaft
+	else:
+		max_rolls = no_shafts * rolls_per_shaft
 	width_caps: dict[float, int] = {}
 	width_requirements: dict[float, int] = {}
 	for w in widths:
@@ -1728,7 +1732,7 @@ def _gsm_job_limits_from_shaft_row(shaft_row: dict) -> dict:
 	return {
 		"max_shafts": no_shafts,
 		"max_rolls": max_rolls,
-		"rolls_per_shaft": rolls_per_shaft,
+		"rolls_per_shaft": rolls_per_shaft if segs <= 1 else segs * rolls_per_shaft,
 		"width_segments": sorted(width_caps.keys()),
 		"width_caps": width_caps,
 		"width_requirements": width_requirements,
