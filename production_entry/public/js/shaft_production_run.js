@@ -4535,18 +4535,28 @@ function spr_register_spr_page_buttons(frm) {
 	addInner(function () {
 		if (cint(frm.doc.docstatus) === 1 && frm.doc.name) {
 			frm.add_custom_button(__('Transfer'), function () {
-				if (
-					typeof production_entry !== 'undefined' &&
-					production_entry.spr_transfer &&
-					typeof production_entry.spr_transfer.open === 'function'
-				) {
-					production_entry.spr_transfer.open(frm);
-				} else if (typeof production_scheduler.openSprTransferDialog === 'function') {
-					production_scheduler.openSprTransferDialog(frm.doc.name);
-				} else {
+				try {
+					if (
+						typeof production_entry !== 'undefined' &&
+						production_entry.spr_transfer &&
+						typeof production_entry.spr_transfer.open === 'function'
+					) {
+						production_entry.spr_transfer.open(frm);
+						return;
+					}
+					if (
+						typeof production_scheduler !== 'undefined' &&
+						typeof production_scheduler.openSprTransferDialog === 'function'
+					) {
+						production_scheduler.openSprTransferDialog(frm.doc.name);
+						return;
+					}
 					frappe.msgprint(
-						__('Transfer dialog not loaded. Run bench build --app production_entry and refresh.')
+						__('Transfer dialog not loaded. Run bench build --app production_entry and hard-refresh (Ctrl+Shift+R).')
 					);
+				} catch (e) {
+					console.error('SPR Transfer button', e);
+					frappe.msgprint(__('Transfer failed to open. Check browser console.'));
 				}
 			});
 		}

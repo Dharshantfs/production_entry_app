@@ -168,7 +168,9 @@ production_scheduler.openSprTransferDialog = function (sprName) {
     document.body.appendChild(el);
     const cleanup = () => {
         try {
-            app.unmount();
+            if (_sprTransferDialogMount && _sprTransferDialogMount.app) {
+                _sprTransferDialogMount.app.unmount();
+            }
         } catch (e) {
             /* ignore */
         }
@@ -177,18 +179,19 @@ production_scheduler.openSprTransferDialog = function (sprName) {
         }
         _sprTransferDialogMount = null;
     };
-    const app = createApp({
-        components: { SprTransferDialog },
-        setup() {
-            return { sprName };
-        },
-        template: '<SprTransferDialog :spr-name="sprName" @close="onClose" @submitted="onClose" />',
-        methods: {
-            onClose() {
-                cleanup();
-            },
-        },
-    });
-    app.mount(el);
-    _sprTransferDialogMount = { app, el };
+    try {
+        const app = createApp(SprTransferDialog, {
+            sprName,
+            onClose: cleanup,
+            onSubmitted: cleanup,
+        });
+        app.mount(el);
+        _sprTransferDialogMount = { app, el };
+    } catch (e) {
+        console.error("openSprTransferDialog failed", e);
+        cleanup();
+        frappe.msgprint(
+            __("Transfer dialog failed to open. Run bench build --app production_entry, hard-refresh, and try again.")
+        );
+    }
 };
