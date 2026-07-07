@@ -336,7 +336,7 @@
             <thead>
               <tr>
                 <th class="gpe-sticky-col gpe-sticky-0">#</th>
-                <th class="gpe-sticky-col gpe-sticky-1">Order</th>
+                <th class="gpe-sticky-col gpe-sticky-1">Order Code</th>
                 <th class="gpe-num">Job</th>
                 <th>Quality</th>
                 <th>Color</th>
@@ -351,7 +351,7 @@
                 <th>Planned Qty (Kgs)</th>
                 <th>UOM</th>
                 <th>WO</th>
-                <th>Core mm</th>
+                <th>Core</th>
                 <th>Polybag</th>
                 <th>Actions</th>
               </tr>
@@ -2468,6 +2468,25 @@ async function handleBundleApplyResult(m, ppId) {
   if (!m || m.status !== "ok") {
     return;
   }
+  let coreItem = "";
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_roll_row_extras",
+      args: {
+        gsm: m.gsm,
+        width_inch: m.segment_width || 0,
+        length_m: m.produced_length_mtrs || m.meter_roll || 0,
+        pp_id: m.pp_id || ppId,
+      },
+    });
+    const extras = res.message || {};
+    coreItem = pickCoreForFabricWidth(
+      m.segment_width || 0,
+      extras.custom_core_width_mm || extras.core_size || ""
+    );
+  } catch (e) {
+    coreItem = pickCoreForFabricWidth(m.segment_width || 0, "");
+  }
   creationSeq.value += 1;
   const bundleRow = sprRecalcRollRow({
     _id: `bundle-${Date.now()}-${creationSeq.value}`,
@@ -2500,6 +2519,7 @@ async function handleBundleApplyResult(m, ppId) {
     spr_item_name: "",
     row_locked: 1,
     row_ready_for_print: 1,
+    custom_core_width_mm: coreItem,
     core_width_options: coreWidthOptions.value,
   });
   rollLines.value.unshift(bundleRow);
@@ -3197,28 +3217,51 @@ function _cstr(v) {
   return v == null ? "" : String(v).trim();
 }
 
-function pickCoreItemForWidth(widthInch, apiItemCode, apiMm) {
+function fabricWidthToStockCoreInch(widthInch) {
+  const w = sprFlt(widthInch);
+  if (w <= 0) {
+    return 63;
+  }
+  for (const k of [63, 85, 90, 118, 126]) {
+    if (Math.abs(w - k) < 0.6) {
+      return k;
+    }
+  }
+  if (w < 63) {
+    return 63;
+  }
+  if (w < 85) {
+    return 85;
+  }
+  if (w < 90) {
+    return 90;
+  }
+  if (w < 118) {
+    return 118;
+  }
+  return 126;
+}
+
+function pickCoreForFabricWidth(widthInch, apiCoreValue) {
   const opts = coreWidthOptions.value || [];
-  if (!opts.length) {
-    return apiItemCode || "";
+  const raw = _cstr(apiCoreValue);
+  if (raw && opts.some((o) => o.value === raw)) {
+    return raw;
   }
-  if (apiItemCode && opts.some((o) => o.value === apiItemCode)) {
-    return apiItemCode;
+  const targetInch = fabricWidthToStockCoreInch(widthInch);
+  const byInch = opts.find((o) => Math.abs(sprFlt(o.core_inch) - targetInch) < 0.6);
+  if (byInch?.value) {
+    return byInch.value;
   }
-  const target = sprFlt(apiMm);
-  if (target > 0) {
-    let best = opts[0];
-    let bestDiff = Math.abs(sprFlt(best.width_mm) - target);
-    opts.forEach((o) => {
-      const diff = Math.abs(sprFlt(o.width_mm) - target);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = o;
-      }
-    });
-    return best.value || "";
+  const labelMatch = opts.find(
+    (o) =>
+      _cstr(o.label).startsWith(String(targetInch)) ||
+      _cstr(o.value).startsWith(String(targetInch))
+  );
+  if (labelMatch?.value) {
+    return labelMatch.value;
   }
-  return opts[0].value || "";
+  return raw || opts[0]?.value || "";
 }
 
 async function fetchRollRowExtras(line, lengthM) {
@@ -3240,7 +3283,7 @@ async function fetchRollRowExtras(line, lengthM) {
     return {
       planned_qty: 0,
       custom_polybag_kgs: 0,
-      custom_core_width_mm: pickCoreItemForWidth(line.width_inch, "", 0),
+      custom_core_width_mm: pickCoreForFabricWidth(line.width_inch, ""),
       core_width_mm: 0,
     };
   }
@@ -3254,10 +3297,12 @@ async function loadCoreWidthOptions() {
     const rows = res.message || [];
     if (rows.length) {
       coreWidthOptions.value = rows.map((r) => ({
-        value: r.item_code || "",
+        value: r.core_size || r.value || r.item_code || "",
+        core_size: r.core_size || r.value || "",
         item_code: r.item_code || "",
-        label: r.label || `${r.width_mm} mm`,
+        label: r.label || r.core_size || r.value || `${r.width_mm} mm`,
         width_mm: sprFlt(r.width_mm) || 1600,
+        core_inch: sprFlt(r.core_inch) || 0,
       }));
     }
   } catch (e) {
@@ -3504,10 +3549,9 @@ async function addRollRow() {
     return;
   }
   const extras = await fetchRollRowExtras(line, ordLen);
-  const coreItem = pickCoreItemForWidth(
+  const coreItem = pickCoreForFabricWidth(
     line.width_inch,
-    extras.custom_core_width_mm,
-    extras.core_width_mm
+    extras.custom_core_width_mm || extras.core_size || ""
   );
   creationSeq.value += 1;
   const newRow = sprRecalcRollRow({

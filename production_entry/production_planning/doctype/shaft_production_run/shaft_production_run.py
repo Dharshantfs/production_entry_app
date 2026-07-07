@@ -10120,13 +10120,20 @@ def _gsm_find_item_row_by_batch(spr, batch_no: str):
 
 
 def _gsm_resolve_core_width_for_item_row(payload: dict) -> str:
-	"""SPR Item custom_core_width_mm is a Link to Item — never store float mm."""
+	"""SPR Item custom_core_width_mm — Core Size name or paper-core Item link."""
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	if not spi_meta.has_field("custom_core_width_mm"):
 		return ""
 	df = spi_meta.get_field("custom_core_width_mm")
 	raw = payload.get("custom_core_width_mm")
+	width_inch = flt(payload.get("width_inch") or 0)
 	if raw in (None, ""):
+		if width_inch > 0:
+			from production_entry.production_planning.unified_production_entry_api import (
+				_gsm_resolve_core_link_for_fabric_width,
+			)
+
+			return _gsm_resolve_core_link_for_fabric_width(width_inch, "")
 		return ""
 	if df.fieldtype != "Link":
 		return _cstr(raw).strip()
@@ -10134,6 +10141,12 @@ def _gsm_resolve_core_width_for_item_row(payload: dict) -> str:
 	s = _cstr(raw).strip()
 	if frappe.db.exists(link_dt, s):
 		return s
+	if width_inch > 0:
+		from production_entry.production_planning.unified_production_entry_api import (
+			_gsm_resolve_core_link_for_fabric_width,
+		)
+
+		return _gsm_resolve_core_link_for_fabric_width(width_inch, s)
 	try:
 		mm = flt(s)
 	except Exception:

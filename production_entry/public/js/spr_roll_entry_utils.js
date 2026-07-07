@@ -29,6 +29,19 @@ export function sprResolveLengthMeters(row) {
 	return sprFlt(row?.meter_roll);
 }
 
+/** Fabric width used for GSM / net formulas (bundle rows: segment × pack count). */
+export function sprEffectiveWidthInch(row) {
+	if (row?.is_bundle_row && cint(row?.pack_count) > 1 && sprFlt(row?.segment_width) > 0) {
+		return sprFlt(row.segment_width) * cint(row.pack_count);
+	}
+	return sprFlt(row?.width_inch);
+}
+
+function cint(v) {
+	const n = parseInt(v, 10);
+	return Number.isFinite(n) ? n : 0;
+}
+
 export function sprCalcCoreWeightKg(width, grossWeight, coreWidthMmOrItem, coreOptions) {
 	const widthInch = sprFlt(width);
 	const gw = sprFlt(grossWeight);
@@ -39,7 +52,12 @@ export function sprCalcCoreWeightKg(width, grossWeight, coreWidthMmOrItem, coreO
 	if (!Number.isFinite(numericCoreWidth) || numericCoreWidth < 100) {
 		const opts = coreOptions || [];
 		const key = coreWidthMmOrItem != null ? String(coreWidthMmOrItem) : "";
-		const opt = opts.find((o) => String(o.value) === key || String(o.item_code) === key);
+		const opt = opts.find(
+			(o) =>
+				String(o.value) === key ||
+				String(o.item_code) === key ||
+				String(o.core_size) === key
+		);
 		numericCoreWidth = opt ? sprFlt(opt.width_mm) : 1600;
 	}
 	const widthInMeter = widthInch * 0.0254;
@@ -82,7 +100,7 @@ export function sprCalcNetFromGross(row) {
 	if (gw <= 0) {
 		return 0;
 	}
-	const width = sprFlt(row?.width_inch);
+	const width = sprEffectiveWidthInch(row);
 	if (width <= 0) {
 		return 0;
 	}
@@ -101,7 +119,7 @@ export function sprCalcProducedGsm(row) {
 	if (nw <= 0) {
 		nw = gw;
 	}
-	const wi = sprFlt(row?.width_inch);
+	const wi = sprEffectiveWidthInch(row);
 	const mr = sprResolveLengthMeters(row);
 	if (nw <= 0 || wi <= 0 || mr <= 0) {
 		return 0;
@@ -110,7 +128,8 @@ export function sprCalcProducedGsm(row) {
 }
 
 export function sprRecalcRollRow(row) {
-	const net = sprCalcNetFromGross(row);
+	const preserveNet = row?.is_bundle_row && sprFlt(row?.net_weight) > 0;
+	const net = preserveNet ? sprFlt(row.net_weight) : sprCalcNetFromGross(row);
 	const produced = sprCalcProducedGsm({ ...row, net_weight: net });
 	const lengthM = sprResolveLengthMeters(row);
 	const planned =

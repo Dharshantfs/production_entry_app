@@ -613,6 +613,135 @@ def _extract_core_width_mm_from_item(item_name: str, item_code: str = "") -> flo
 	return 1600.0
 
 
+def _fabric_width_to_stock_core_inch(width_inch: float) -> float:
+	"""Map fabric roll width to stock core diameter (inches) — SPR desk parity."""
+	w = flt(width_inch)
+	if w <= 0:
+		return 63.0
+	for k in (63, 85, 90, 118, 126):
+		if abs(w - k) < 0.6:
+			return float(k)
+	if w < 63:
+		return 63.0
+	if w < 85:
+		return 85.0
+	if w < 90:
+		return 90.0
+	if w < 118:
+		return 118.0
+	return 126.0
+
+
+def _core_size_meta_fieldnames() -> dict:
+	"""Best-effort Core Size field names (doctype may vary by site)."""
+	meta = frappe.get_meta("Core Size") if frappe.db.table_exists("Core Size") else None
+	if not meta:
+		return {}
+	out = {}
+	for fn in ("core_inch", "core", "core_inches", "core_width_inch"):
+		if meta.has_field(fn):
+			out["inch"] = fn
+			break
+	for fn in ("item_code",):
+		if meta.has_field(fn):
+			out["item_code"] = fn
+			break
+	for fn in ("base_weight_kgs", "base_weight", "base_weight_kg"):
+		if meta.has_field(fn):
+			out["base_weight"] = fn
+			break
+	return out
+
+
+def _parse_core_inch_from_name(name: str) -> float:
+	import re
+
+	m = re.search(r"(\d+(?:\.\d+)?)", _cstr(name))
+	return flt(m.group(1)) if m else 0.0
+
+
+def _core_size_name_for_inch(core_inch: float) -> str:
+	"""Format Core Size document name (e.g. 63\")."""
+	ci = flt(core_inch)
+	if ci <= 0:
+		return ""
+	if abs(ci - round(ci)) < 0.01:
+		return f'{int(round(ci))}"'
+	return f'{ci}"'
+
+
+def _resolve_core_size_for_fabric_width(width_inch: float) -> dict:
+	"""Resolve Core Size master row for a fabric roll width."""
+	target_inch = _fabric_width_to_stock_core_inch(width_inch)
+	default = {
+		"core_size": "",
+		"core_inch": target_inch,
+		"item_code": "",
+		"base_weight_kgs": 0.0,
+		"width_mm": _preset_core_mm_for_fabric_width(target_inch),
+		"label": _core_size_name_for_inch(target_inch),
+	}
+	if not frappe.db.table_exists("Core Size"):
+		item_code = _resolve_core_item_code_for_mm(default["width_mm"])
+		if item_code:
+			default["item_code"] = item_code
+		return default
+
+	fields = _core_size_meta_fieldnames()
+	select_fields = ["name"]
+	for key in ("inch", "item_code", "base_weight"):
+		fn = fields.get(key)
+		if fn and fn not in select_fields:
+			select_fields.append(fn)
+
+	candidates = [_core_size_name_for_inch(target_inch)]
+	if abs(target_inch - round(target_inch)) >= 0.01:
+		candidates.append(f'{target_inch:g}"')
+
+	for name in candidates:
+		if name and frappe.db.exists("Core Size", name):
+			row = frappe.get_doc("Core Size", name)
+			inch = target_inch
+			if fields.get("inch"):
+				inch = flt(row.get(fields["inch"])) or inch
+			if inch <= 0:
+				inch = _parse_core_inch_from_name(name) or target_inch
+			return {
+				"core_size": name,
+				"core_inch": inch,
+				"item_code": _cstr(row.get(fields.get("item_code") or "item_code") or "").strip(),
+				"base_weight_kgs": flt(row.get(fields.get("base_weight") or "base_weight_kgs") or 0),
+				"width_mm": _preset_core_mm_for_fabric_width(inch),
+				"label": name,
+			}
+
+	inch_field = fields.get("inch")
+	if inch_field:
+		rows = frappe.get_all(
+			"Core Size",
+			filters={inch_field: target_inch},
+			fields=select_fields,
+			limit=1,
+		)
+		if rows:
+			row = rows[0]
+			name = _cstr(row.get("name")).strip()
+			inch = flt(row.get(inch_field)) or target_inch
+			return {
+				"core_size": name,
+				"core_inch": inch,
+				"item_code": _cstr(row.get(fields.get("item_code") or "item_code") or "").strip(),
+				"base_weight_kgs": flt(row.get(fields.get("base_weight") or "base_weight_kgs") or 0),
+				"width_mm": _preset_core_mm_for_fabric_width(inch),
+				"label": name or _core_size_name_for_inch(inch),
+			}
+
+	item_code = _resolve_core_item_code_for_mm(default["width_mm"])
+	if item_code:
+		default["item_code"] = item_code
+	return default
+
+
 def _preset_core_mm_for_fabric_width(width_inch: float) -> float:
 	"""Map fabric roll width (inches) to stock core mm — SPR desk parity."""
 	w = flt(width_inch)
@@ -663,17 +792,24 @@ def _gsm_core_width_value_for_spr_item(payload: dict) -> str:
 	df = spi_meta.get_field("custom_core_width_mm")
 	raw = payload.get("custom_core_width_mm")
 	if raw in (None, ""):
+		width_inch = flt(payload.get("width_inch") or 0)
+		if width_inch > 0:
+			return _gsm_resolve_core_link_for_fabric_width(width_inch, "")
 		return ""
 	if df.fieldtype == "Link":
+		link_dt = _cstr(df.options or "Item").strip() or "Item"
 		s = _cstr(raw).strip()
-		if frappe.db.exists(df.options, s):
+		if frappe.db.exists(link_dt, s):
 			return s
-		# Numeric mm from GSM grid — resolve to paper-core Item
+		width_inch = flt(payload.get("width_inch") or 0)
+		if width_inch > 0:
+			return _gsm_resolve_core_link_for_fabric_width(width_inch, s)
+		# Numeric mm from GSM grid — resolve to paper-core Item (legacy)
 		try:
 			mm = flt(s)
 			if mm > 0:
 				code = _resolve_core_item_code_for_mm(mm)
-				if code and frappe.db.exists(df.options, code):
+				if code and frappe.db.exists(link_dt, code):
 					return code
 		except Exception:
 			pass
@@ -824,7 +960,9 @@ def get_gsm_roll_row_extras(
 		planned_qty = compute_mix_roll_planned_qty_kg(gsm_val, w_in, ln)
 
 	core_mm = _resolve_core_mm_for_fabric_width(w_in) if w_in > 0 else 1600.0
-	core_item = _resolve_core_item_code_for_mm(core_mm)
+	core_info = _resolve_core_size_for_fabric_width(w_in) if w_in > 0 else {}
+	core_size = _cstr(core_info.get("core_size")).strip()
+	core_item = core_size or _resolve_core_item_code_for_mm(core_mm)
 	polybag = 0.0
 	if item_code and frappe.db.exists("Item", item_code):
 		for key in ("custom_polybag_kgs", "polybag_kgs", "custom_polybag_weight"):
@@ -837,12 +975,50 @@ def get_gsm_roll_row_extras(
 		"custom_polybag_kgs": polybag,
 		"custom_core_width_mm": core_item or "",
 		"core_width_mm": core_mm,
+		"core_size": core_size,
+		"core_inch": flt(core_info.get("core_inch") or 0),
+		"core_label": _cstr(core_info.get("label") or core_size).strip(),
 	}
 
 
 @frappe.whitelist()
 def get_gsm_core_width_options():
-	"""Paper-core Item options for Core Width select (SPR desk parity)."""
+	"""Core Size options for GSM grid (falls back to paper-core Items when Core Size absent)."""
+	if frappe.db.table_exists("Core Size"):
+		fields = _core_size_meta_fieldnames()
+		select_fields = ["name"]
+		for key in ("inch", "item_code", "base_weight"):
+			fn = fields.get(key)
+			if fn and fn not in select_fields:
+				select_fields.append(fn)
+		rows = frappe.get_all("Core Size", fields=select_fields, order_by="name", limit=200)
+		out = []
+		seen = set()
+		for row in rows or []:
+			name = _cstr(row.get("name")).strip()
+			if not name:
+				continue
+			inch_field = fields.get("inch")
+			inch = flt(row.get(inch_field)) if inch_field else 0.0
+			if inch <= 0:
+				inch = _parse_core_inch_from_name(name)
+			mm = _preset_core_mm_for_fabric_width(inch) if inch > 0 else 1600.0
+			out.append(
+				{
+					"value": name,
+					"core_size": name,
+					"item_code": _cstr(row.get(fields.get("item_code") or "item_code") or "").strip(),
+					"label": name,
+					"width_mm": mm,
+					"core_inch": inch,
+					"base_weight_kgs": flt(row.get(fields.get("base_weight") or "base_weight_kgs") or 0),
+				}
+			)
+			seen.add(name)
+		if out:
+			out.sort(key=lambda x: (flt(x.get("core_inch")), x.get("label") or ""))
+			return out
+
 	rows = frappe.db.sql(
 		"""
 		SELECT name, item_name
@@ -869,6 +1045,32 @@ def get_gsm_core_width_options():
 			seen_mm.add(mm)
 	out.sort(key=lambda x: (flt(x.get("width_mm")), x.get("label") or ""))
 	return out
+
+
+def _gsm_resolve_core_link_for_fabric_width(width_inch: float, raw_value: str = "") -> str:
+	"""Resolve SPR custom_core_width_mm link value from Core Size master or legacy Item."""
+	raw = _cstr(raw_value).strip()
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	if not spi_meta.has_field("custom_core_width_mm"):
+		return raw
+	df = spi_meta.get_field("custom_core_width_mm")
+	link_dt = _cstr(df.options or "Item").strip() or "Item"
+	if raw and frappe.db.exists(link_dt, raw):
+		return raw
+	core_info = _resolve_core_size_for_fabric_width(flt(width_inch))
+	core_size = _cstr(core_info.get("core_size")).strip()
+	if link_dt == "Core Size" and core_size and frappe.db.exists("Core Size", core_size):
+		return core_size
+	if df.fieldtype == "Link" and link_dt == "Item":
+		item_code = _cstr(core_info.get("item_code")).strip()
+		if item_code and frappe.db.exists("Item", item_code):
+			return item_code
+		mm = flt(core_info.get("width_mm") or 0)
+		if mm > 0:
+			code = _resolve_core_item_code_for_mm(mm)
+			if code and frappe.db.exists("Item", code):
+				return code
+	return raw
 
 
 @frappe.whitelist()
