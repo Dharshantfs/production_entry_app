@@ -9391,16 +9391,26 @@ def _spr_batch_exists_on_other_spr(batch_no: str, exclude_spr: str | None = None
 	return bool(frappe.db.exists("Shaft Production Run Item", {"batch_no": batch_no}))
 
 
+def _spr_batch_exists_globally(batch_no: str, exclude_spr: str | None = None) -> bool:
+	"""True when batch_no exists on another SPR row or in Batch master."""
+	batch_no = _cstr(batch_no).strip()
+	if not batch_no:
+		return False
+	if _spr_batch_exists_on_other_spr(batch_no, exclude_spr):
+		return True
+	return bool(frappe.db.exists("Batch", {"batch_id": batch_no}))
+
+
 def _spr_next_available_batch_no(
 	series_prefix: str,
 	next_roll: int,
 	used_batches: set[str],
 	exclude_spr: str | None = None,
 ) -> tuple[str, int]:
-	"""Next batch string for series that is not used on this SPR or any other SPR."""
+	"""Next batch string for series that is not used on this SPR or in Batch master."""
 	while True:
 		candidate = f"{series_prefix}/{next_roll}"
-		if candidate not in used_batches and not _spr_batch_exists_on_other_spr(candidate, exclude_spr):
+		if candidate not in used_batches and not _spr_batch_exists_globally(candidate, exclude_spr):
 			return candidate, next_roll
 		next_roll += 1
 
@@ -9425,28 +9435,13 @@ def _spr_roll_starting_for_gsm_session(
 	existing_batches=None,
 	client_max_roll=None,
 ) -> int:
-	"""Next roll suffix for GSM shift session — scoped to current SPR + grid only."""
+	"""Next roll suffix for GSM — based on saved SPR rows only (not grid counter)."""
 	series_prefix = _cstr(series_prefix).strip()
 	mx = 0
 	if spr_name:
 		for bn in _spr_used_batch_numbers_on_spr(spr_name):
 			mx = max(mx, _spr_roll_suffix_from_batch(bn, series_prefix))
-	extra: list = []
-	if existing_batches:
-		if isinstance(existing_batches, str):
-			try:
-				extra = json.loads(existing_batches) or []
-			except Exception:
-				extra = [x.strip() for x in existing_batches.split(",") if x.strip()]
-		elif isinstance(existing_batches, (list, tuple)):
-			extra = list(existing_batches)
-	for bn in extra:
-		mx = max(mx, _spr_roll_suffix_from_batch(_cstr(bn).strip(), series_prefix))
-	try:
-		if client_max_roll is not None and cint(client_max_roll) >= 0:
-			mx = max(mx, cint(client_max_roll))
-	except Exception:
-		pass
+	# existing_batches / client_max_roll intentionally ignored — GSM increments from DB only.
 	return (mx + 1) if mx > 0 else 1
 
 

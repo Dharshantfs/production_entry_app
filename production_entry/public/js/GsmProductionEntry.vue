@@ -965,6 +965,24 @@ function allExistingBatchNos() {
   return [...seen];
 }
 
+function isRowSavedToDb(row) {
+  return !!row?.spr_item_name;
+}
+
+function unsavedGridBatchNos() {
+  const seen = new Set();
+  for (const r of rollLines.value) {
+    if (isRowSavedToDb(r)) {
+      continue;
+    }
+    const bn = _cstr(r.batch_no || "");
+    if (bn) {
+      seen.add(bn);
+    }
+  }
+  return [...seen];
+}
+
 function reserveBatchNo(batchNo, rollNo) {
   const bn = _cstr(batchNo || "");
   if (!bn) {
@@ -3612,13 +3630,15 @@ async function resolveWorkOrder(line) {
 }
 
 function syncBatchCounterFromGrid() {
-  const prefix = _cstr(seriesPrefix.value || shiftBatchPrefix.value);
   let mx = 0;
   const reserved = new Set();
   for (const r of rollLines.value) {
     const bn = _cstr(r.batch_no || "");
     if (bn) {
       reserved.add(bn);
+    }
+    if (!isRowSavedToDb(r)) {
+      continue;
     }
     const rn = parseInt(r.roll_no, 10);
     if (!Number.isNaN(rn)) {
@@ -4015,13 +4035,15 @@ async function addRollRow() {
 }
 
 async function previewNextBatch(ppId) {
-  syncBatchCounterFromGrid();
-  const existing = allExistingBatchNos();
   const gsmPrefix = _cstr(seriesPrefix.value || shiftBatchPrefix.value);
-  const gsmBatchArgs =
-    shiftOpened.value && gsmPrefix
-      ? { gsm_shift_prefix: 1, client_series_prefix: gsmPrefix }
-      : {};
+  const gsmMode = shiftOpened.value && !!gsmPrefix;
+  if (!gsmMode) {
+    syncBatchCounterFromGrid();
+  }
+  const existing = gsmMode ? unsavedGridBatchNos() : allExistingBatchNos();
+  const gsmBatchArgs = gsmMode
+    ? { gsm_shift_prefix: 1, client_series_prefix: gsmPrefix }
+    : {};
   const sprName = ppId ? sprNameForPp(ppId) : "";
   if (sprName) {
     try {
@@ -4031,7 +4053,7 @@ async function previewNextBatch(ppId) {
         args: {
           shaft_production_run: sprName,
           count: 1,
-          client_max_roll: maxRollSuffix.value,
+          client_max_roll: gsmMode ? 0 : maxRollSuffix.value,
           run_date: runDate.value,
           custom_unit: headerUnit.value,
           shift: shift.value,
@@ -4056,7 +4078,7 @@ async function previewNextBatch(ppId) {
       run_date: runDate.value,
       shift: shift.value,
       count: 1,
-      client_max_roll: maxRollSuffix.value,
+      client_max_roll: gsmMode ? 0 : maxRollSuffix.value,
       client_series_prefix: gsmPrefix || undefined,
       existing_batches: JSON.stringify(existing),
       session_local: 1,
