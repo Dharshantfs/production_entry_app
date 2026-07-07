@@ -46,6 +46,7 @@ import LogisticsKanban from "./LogisticsKanban.vue";
 import ProductionLearning from "./ProductionLearning.vue";
 import DespatchApproval from "./DespatchApproval.vue";
 import GsmProductionEntry from "./GsmProductionEntry.vue";
+import SprTransferDialog from "./SprTransferDialog.vue";
 
 production_scheduler.ConfirmedOrderController = class {
     constructor(wrapper) {
@@ -143,4 +144,51 @@ production_scheduler.GsmProductionEntryController = class {
     constructor(wrapper) {
         safeMount(GsmProductionEntry, wrapper, "GSM Production Entry");
     }
+};
+
+let _sprTransferDialogMount = null;
+
+production_scheduler.openSprTransferDialog = function (sprName) {
+    if (!sprName) {
+        frappe.msgprint(__("Save and submit the SPR first."));
+        return;
+    }
+    if (_sprTransferDialogMount) {
+        try {
+            _sprTransferDialogMount.app.unmount();
+        } catch (e) {
+            /* ignore */
+        }
+        if (_sprTransferDialogMount.el && _sprTransferDialogMount.el.parentNode) {
+            _sprTransferDialogMount.el.parentNode.removeChild(_sprTransferDialogMount.el);
+        }
+        _sprTransferDialogMount = null;
+    }
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    const cleanup = () => {
+        try {
+            app.unmount();
+        } catch (e) {
+            /* ignore */
+        }
+        if (el.parentNode) {
+            el.parentNode.removeChild(el);
+        }
+        _sprTransferDialogMount = null;
+    };
+    const app = createApp({
+        components: { SprTransferDialog },
+        setup() {
+            return { sprName };
+        },
+        template: '<SprTransferDialog :spr-name="sprName" @close="onClose" @submitted="onClose" />',
+        methods: {
+            onClose() {
+                cleanup();
+            },
+        },
+    });
+    app.mount(el);
+    _sprTransferDialogMount = { app, el };
 };

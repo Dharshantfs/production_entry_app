@@ -4533,6 +4533,25 @@ function spr_register_spr_page_buttons(frm) {
 		}
 	});
 	addInner(function () {
+		if (cint(frm.doc.docstatus) === 1 && frm.doc.name) {
+			frm.add_custom_button(__('Transfer'), function () {
+				if (
+					typeof production_entry !== 'undefined' &&
+					production_entry.spr_transfer &&
+					typeof production_entry.spr_transfer.open === 'function'
+				) {
+					production_entry.spr_transfer.open(frm);
+				} else if (typeof production_scheduler.openSprTransferDialog === 'function') {
+					production_scheduler.openSprTransferDialog(frm.doc.name);
+				} else {
+					frappe.msgprint(
+						__('Transfer dialog not loaded. Run bench build --app production_entry and refresh.')
+					);
+				}
+			});
+		}
+	});
+	addInner(function () {
 		if (
 			frappe.meta.get_docfield('Shaft Production Run', 'custom_use_bundle_packaging_on_submit') &&
 			cint(frm.doc.docstatus) === 0

@@ -898,6 +898,218 @@ def _user_can_approve_transfer():
 	return bool(roles & TRANSFER_APPROVER_ROLES)
 
 
+def _spr_name_in_planning_row(spr_name: str, row_spr_field: str) -> bool:
+	sn = _cstr(spr_name).strip()
+	if not sn:
+		return False
+	raw = _cstr(row_spr_field).strip()
+	if not raw:
+		return False
+	for segment in raw.replace(";", ",").split(","):
+		if segment.strip() == sn:
+			return True
+	return False
+
+
+def _resolve_planning_table_row_for_spr(spr_name: str, item_code: str = "", party_code: str = "") -> dict:
+	"""SPR-only: map roll line to Planning Table row for transfer approval lines."""
+	sn = _cstr(spr_name).strip()
+	ic = _cstr(item_code).strip()
+	pc = _cstr(party_code).strip()
+	if not sn or not frappe.db.table_exists("Planning Table"):
+		return {}
+	if not frappe.db.has_column("Planning Table", "spr_name"):
+		return {}
+
+	fields = ["name", "parent", "item_code", "spr_name"]
+	if frappe.db.has_column("Planning Table", PLANNING_MOVEMENT_TYPE_FIELD):
+		fields.append(PLANNING_MOVEMENT_TYPE_FIELD)
+	if frappe.db.has_column("Planning Table", "party_code"):
+		fields.append("party_code")
+	if frappe.db.has_column("Planning Table", "custom_party_code"):
+		fields.append("custom_party_code")
+
+	rows = frappe.get_all(
+		"Planning Table",
+		filters={"spr_name": ["like", f"%{sn}%"]},
+		fields=list(dict.fromkeys(fields)),
+		limit_page_length=500,
+	)
+	candidates = []
+	for row in rows or []:
+		if not _spr_name_in_planning_row(sn, row.get("spr_name")):
+			continue
+		row_ic = _cstr(row.get("item_code")).strip()
+		if ic and row_ic and row_ic != ic:
+			continue
+		mt = normalize_movement_type(row.get(PLANNING_MOVEMENT_TYPE_FIELD) or "")
+		score = 2 if is_transfer_movement(mt) else (1 if not mt else 0)
+		if pc:
+			row_pc = _cstr(row.get("party_code") or row.get("custom_party_code") or "")
+			if row_pc and row_pc != pc:
+				continue
+		candidates.append((score, row))
+
+	candidates.sort(key=lambda x: (-x[0], _cstr(x[1].get("name"))))
+	if not candidates:
+		return {}
+	best = candidates[0][1]
+	return {
+		"planning_table_row": best.get("name"),
+		"planning_sheet": best.get("parent"),
+	}
+
+
+def _spr_auto_approve_transfer_approval(ta_name: str) -> dict:
+	"""SPR-only auto-approve path (same steps as approve_transfer_approval, no role gate)."""
+	if not ta_name or not frappe.db.exists("Transfer Approval", ta_name):
+		frappe.throw(_("Transfer Approval not found."))
+	ta = frappe.get_doc("Transfer Approval", ta_name)
+	if ta.status == "Approved":
+		return {"ok": True, "name": ta_name, "stock_entry": ta.stock_entry}
+	if ta.status == "Rejected":
+		frappe.throw(_("This transfer was rejected."))
+	ste = _create_draft_transfer_stock_entry(ta)
+	ta.stock_entry = ste
+	ta.status = "Approved"
+	ta.approved_by = frappe.session.user
+	ta.save(ignore_permissions=True)
+	_finalize_planning_rows_after_approval(ta)
+	frappe.db.commit()
+	return {"ok": True, "name": ta_name, "stock_entry": ste}
+
+
+@frappe.whitelist()
+def get_spr_transfer_context(spr_name=None):
+	"""Bootstrap data for SPR Transfer dialog."""
+	sn = _cstr(spr_name).strip()
+	if not sn or not frappe.db.exists("Shaft Production Run", sn):
+		frappe.throw(_("Shaft Production Run not found."))
+	if cint(frappe.db.get_value("Shaft Production Run", sn, "docstatus") or 0) != 1:
+		frappe.throw(_("SPR {0} must be submitted before transfer.").format(sn))
+
+	spr = frappe.get_doc("Shaft Production Run", sn)
+	from_company = _cstr(spr.company)
+	customer = _cstr(getattr(spr, "customer", None) or "")
+	unit = _cstr(getattr(spr, "custom_unit", None))
+
+	rolls = []
+	for row in spr.get("items") or []:
+		bn = _cstr(getattr(row, "batch_no", None) or "")
+		if not bn:
+			continue
+		ic = _cstr(getattr(row, "item_code", None) or "")
+		pc = _cstr(
+			getattr(row, "party_code", None)
+			or getattr(row, "order_code", None)
+			or getattr(row, "custom_order_code", None)
+			or ""
+		)
+		pt = _resolve_planning_table_row_for_spr(sn, ic, pc)
+		rolls.append(
+			{
+				"batch_no": bn,
+				"item_code": ic,
+				"item_name": _cstr(row.get("item_name")),
+				"party_code": pc,
+				"qty": flt(row.get("net_weight") or row.get("gross_weight") or 0),
+				"planning_table_row": pt.get("planning_table_row") or "",
+				"planning_sheet": pt.get("planning_sheet") or "",
+			}
+		)
+
+	companies = get_logistics_companies()
+	to_options = [c for c in companies if c.get("name") != from_company]
+
+	return {
+		"spr_name": sn,
+		"from_company": from_company,
+		"customer": customer,
+		"unit": unit,
+		"production_plan": _cstr(spr.production_plan),
+		"rolls": rolls,
+		"to_company_options": to_options,
+	}
+
+
+@frappe.whitelist()
+def create_and_approve_transfer_from_spr(
+	spr_name=None,
+	from_company=None,
+	to_company=None,
+	to_destination_label=None,
+	lines=None,
+	nature_of_processing=None,
+):
+	"""SPR-only: create Transfer Approval then auto-approve to draft Stock Entry."""
+	sn = _cstr(spr_name).strip()
+	if not sn:
+		frappe.throw(_("SPR is required."))
+	if cint(frappe.db.get_value("Shaft Production Run", sn, "docstatus") or 0) != 1:
+		frappe.throw(_("SPR {0} must be submitted before transfer.").format(sn))
+
+	parsed = json.loads(lines) if isinstance(lines, str) else (lines or [])
+	if not parsed:
+		frappe.throw(_("Select at least one batch."))
+
+	spr_doc = frappe.get_doc("Shaft Production Run", sn)
+	customer = _cstr(getattr(spr_doc, "customer", None) or "")
+	unit = _cstr(getattr(spr_doc, "custom_unit", None))
+	built_lines = []
+
+	for line in parsed:
+		ic = _cstr(line.get("item_code"))
+		pc = _cstr(line.get("party_code") or "")
+		bn = _cstr(line.get("batch_no"))
+		if not bn:
+			frappe.throw(_("Batch is required for each line."))
+		pt_info = _resolve_planning_table_row_for_spr(sn, ic, pc)
+		ptr = _cstr(line.get("planning_table_row") or pt_info.get("planning_table_row"))
+		if not ptr or not frappe.db.exists("Planning Table", ptr):
+			frappe.throw(
+				_("No Planning Table row linked to SPR {0} for item {1}. Link SPR on planning sheet first.").format(
+					sn, ic or bn
+				)
+			)
+		qty = flt(line.get("qty") or 0)
+		if qty <= 0:
+			qty = 1.0
+		built_lines.append(
+			{
+				"planning_table_row": ptr,
+				"planning_sheet": line.get("planning_sheet") or pt_info.get("planning_sheet"),
+				"party_code": pc,
+				"customer_name": line.get("customer_name") or customer,
+				"item_code": ic,
+				"unit": line.get("unit") or unit,
+				"spr_name": sn,
+				"batch_no": bn,
+				"qty": qty,
+				"uom": line.get("uom") or "Kg",
+			}
+		)
+
+	fc = _cstr(from_company)
+	tc = _cstr(to_company)
+	label = _cstr(to_destination_label) or (_("Transfer to {0}").format(tc) if tc else "")
+
+	created = create_transfer_approval_request(
+		from_company=fc,
+		to_company=tc,
+		to_destination_label=label,
+		lines=built_lines,
+		nature_of_processing=nature_of_processing,
+	)
+	ta_name = _cstr(created.get("name"))
+	approved = _spr_auto_approve_transfer_approval(ta_name)
+	return {
+		"ok": True,
+		"transfer_approval": ta_name,
+		"stock_entry": approved.get("stock_entry"),
+		"status": "Approved",
+	}
+
+
 @frappe.whitelist()
 def create_transfer_approval_request(
 	from_company=None,
