@@ -47,45 +47,6 @@
 
     <!-- Entry tab -->
     <div v-show="pageTab === 'entry'" class="gpe-layout gpe-layout-entry">
-      <div v-if="showShiftOpeningPanel" class="gpe-shift-open-overlay gpe-card">
-        <div class="gpe-shift-open-card">
-          <h3>Open {{ shift }}</h3>
-          <p class="gpe-hint">Start this shift before selecting jobs or entering rolls. Day and Night are separate sessions.</p>
-          <div v-if="shiftStatusChips.length" class="gpe-shift-status-strip">
-            <span v-for="chip in shiftStatusChips" :key="chip.shift" :class="['gpe-shift-chip', chip.tone]">
-              {{ chip.shift }}: {{ chip.label }}
-            </span>
-          </div>
-          <div class="gpe-shift-open-fields">
-            <label class="gpe-emp-link">
-              Operator
-              <div class="gpe-emp-link-row">
-                <input :value="operator" type="text" readonly placeholder="Select employee" />
-                <button type="button" class="gpe-btn" @click="pickEmployeeLink('operator', 'Operator')">Pick</button>
-              </div>
-            </label>
-            <label class="gpe-emp-link">
-              Supervisor
-              <div class="gpe-emp-link-row">
-                <input :value="supervisor" type="text" readonly placeholder="Select employee" />
-                <button type="button" class="gpe-btn" @click="pickEmployeeLink('supervisor', 'Supervisor')">Pick</button>
-              </div>
-            </label>
-            <div class="gpe-shift-batch-preview">
-              <span class="gpe-shift-batch-label">Shift batch</span>
-              <strong class="gpe-batch-badge">{{ shiftPreviewBatch || "…" }}</strong>
-            </div>
-          </div>
-          <button
-            type="button"
-            class="gpe-btn primary gpe-shift-start-btn"
-            :disabled="shiftOpeningBusy || !operator || !supervisor || !shiftPreviewBatch"
-            @click="startShift"
-          >
-            {{ shiftOpeningBusy ? "Starting…" : "Start Shift" }}
-          </button>
-        </div>
-      </div>
       <aside class="gpe-sidebar gpe-card">
         <h3>Orders &amp; Jobs</h3>
         <p class="gpe-hint">PP shaft jobs. Confirm selection, then add roll rows.</p>
@@ -258,6 +219,13 @@
               {{ chip.shift }}: {{ chip.label }}
             </span>
           </div>
+          <div v-if="shiftOpenPromptVisible" class="gpe-shift-not-started-banner">
+            <span>
+              <strong>{{ shift }}</strong> not started for {{ formatPlannedDate(runDate) }} · Unit {{ headerUnit }}.
+              Change Run Date or Shift above, then click Start Shift.
+            </span>
+            <button type="button" class="gpe-btn primary" @click="openShiftDialog">Start Shift</button>
+          </div>
           <div class="gpe-tags" v-if="!selectionLocked && headerTags.length">
             <span v-for="t in headerTags" :key="t" class="gpe-tag">{{ t }}</span>
           </div>
@@ -376,7 +344,7 @@
               @click="createSprs"
             >Create new SPRs</button>
             <span v-else class="gpe-spr-ready-badge" title="All selected orders have draft SPRs">SPRs ready</span>
-            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="submitEntry">Submit Entry</button>
+            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="openSubmitConfirmDialog">Submit Entry</button>
           </div>
         </div>
 
@@ -677,6 +645,127 @@
       </div>
     </div>
 
+    <!-- Shift open dialog -->
+    <div v-if="showShiftOpenDialog" class="gpe-dialog-overlay" @click.self="closeShiftDialog">
+      <div class="gpe-dialog gpe-card gpe-shift-open-dialog">
+        <h3>Open {{ shift }}</h3>
+        <p class="gpe-hint">Start this shift before selecting jobs or entering rolls.</p>
+        <div v-if="shiftReopenRequired" class="gpe-reopen-notice">
+          This shift was closed earlier (batch <strong>{{ shiftReopenClosedBatch }}</strong>).
+          A new batch will be allocated. Please state why you are re-opening.
+        </div>
+        <div class="gpe-shift-open-fields">
+          <label class="gpe-emp-link">
+            Operator
+            <div class="gpe-emp-link-row">
+              <input :value="operator" type="text" readonly placeholder="Select employee" />
+              <button type="button" class="gpe-btn" @click="pickEmployeeLink('operator', 'Operator')">Pick</button>
+            </div>
+          </label>
+          <label class="gpe-emp-link">
+            Supervisor
+            <div class="gpe-emp-link-row">
+              <input :value="supervisor" type="text" readonly placeholder="Select employee" />
+              <button type="button" class="gpe-btn" @click="pickEmployeeLink('supervisor', 'Supervisor')">Pick</button>
+            </div>
+          </label>
+          <div v-if="shiftReopenRequired" class="gpe-shift-reopen-fields">
+            <label>
+              Re-open reason
+              <select v-model="shiftReopenReason">
+                <option value="">Select reason…</option>
+                <option v-for="r in gsmReopenReasons" :key="r" :value="r">{{ r }}</option>
+              </select>
+            </label>
+            <label>
+              Remarks
+              <textarea
+                v-model="shiftReopenRemarks"
+                rows="2"
+                :placeholder="shiftReopenReason === 'Other' ? 'Required for Other' : 'Optional'"
+              ></textarea>
+            </label>
+          </div>
+          <div class="gpe-shift-batch-preview">
+            <span class="gpe-shift-batch-label">Shift batch</span>
+            <strong class="gpe-batch-badge">{{ shiftPreviewBatch || "…" }}</strong>
+          </div>
+        </div>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn" @click="closeShiftDialog">Cancel</button>
+          <button
+            type="button"
+            class="gpe-btn primary"
+            :disabled="shiftOpeningBusy || !canConfirmShiftOpen"
+            @click="startShift"
+          >
+            {{ shiftOpeningBusy ? "Starting…" : "Start Shift" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Submit entry confirm -->
+    <div v-if="showSubmitConfirmDialog" class="gpe-dialog-overlay" @click.self="showSubmitConfirmDialog = false">
+      <div class="gpe-dialog gpe-card gpe-submit-confirm-dialog">
+        <h3>Confirm submit</h3>
+        <p class="gpe-hint">
+          {{ shift }} · {{ formatPlannedDate(runDate) }} · Batch {{ shiftBatchPrefix || seriesPrefix || "—" }}
+          · Operator {{ operator || "—" }} · Supervisor {{ supervisor || "—" }}
+        </p>
+        <div class="gpe-submit-summary-totals">
+          <span><strong>{{ sessionRollCount }}</strong> roll(s)</span>
+          <span>Net <strong>{{ formatKg(metrics.totalNet) }}</strong> Kg</span>
+          <span>Gross <strong>{{ formatKg(metrics.totalGross) }}</strong> Kg</span>
+        </div>
+        <h4 class="gpe-submit-section-title">Orders</h4>
+        <table class="gpe-confirm-grid">
+          <thead>
+            <tr>
+              <th>Order</th><th>Required Kg</th><th>Session Kg</th><th>Remaining Kg</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="o in linkedOrderSummary" :key="o.orderCode">
+              <td>{{ o.orderCode }}</td>
+              <td>{{ formatKg(o.required) }}</td>
+              <td>{{ formatKg(o.produced) }}</td>
+              <td>{{ formatKg(o.remaining) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <h4 class="gpe-submit-section-title">Rolls</h4>
+        <table class="gpe-confirm-grid">
+          <thead>
+            <tr>
+              <th>Batch</th><th>Order</th><th>Job</th><th>Net Kg</th><th>Gross Kg</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in submitConfirmRolls" :key="r._id">
+              <td>{{ r.batch_no }}</td>
+              <td>{{ r.party_code }}</td>
+              <td>{{ r.job_id || r.job }}</td>
+              <td>{{ formatKg(r.net_weight) }}</td>
+              <td>{{ formatKg(sprNormalizeGrossWeightInput(r.gross_weight)) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <h4 class="gpe-submit-section-title">SPRs</h4>
+        <ul class="gpe-submit-spr-list">
+          <li v-for="s in sessionSprList" :key="s.pp_id">
+            {{ s.order_code }} · {{ s.label_type || "Default" }} · {{ s.spr_name }}
+          </li>
+        </ul>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn" @click="showSubmitConfirmDialog = false">Cancel</button>
+          <button type="button" class="gpe-btn primary" :disabled="submitInProgress" @click="confirmSubmitEntry">
+            {{ submitInProgress ? "Submitting…" : "Confirm Submit" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Shift ending reminder -->
     <div v-if="showShiftReminder" class="gpe-dialog-overlay">
       <div class="gpe-dialog gpe-card">
@@ -910,6 +999,8 @@ const selectedEntries = ref([]);
 const selectionLocked = ref(false);
 const showCompletedOrders = ref(false);
 const showConfirmDialog = ref(false);
+const showSubmitConfirmDialog = ref(false);
+const showShiftOpenDialog = ref(false);
 const showAddRollWizard = ref(false);
 const addRollWizardStep = ref(1);
 const addRollWizardSkipJobStep = ref(false);
@@ -1032,6 +1123,17 @@ const shiftPreviewBatch = ref("");
 const shiftStatusByShift = ref({});
 const shiftOpeningBusy = ref(false);
 const shiftClosingBusy = ref(false);
+const shiftReopenRequired = ref(false);
+const shiftReopenPreviousSession = ref("");
+const shiftReopenClosedBatch = ref("");
+const shiftReopenReason = ref("");
+const shiftReopenRemarks = ref("");
+const gsmReopenReasons = [
+  "Accidental submit",
+  "Missed rolls / incomplete entry",
+  "Wrong data entered",
+  "Other",
+];
 const showShiftReminder = ref(false);
 let shiftReminderTimer = null;
 let shiftReminderInterval = null;
@@ -2239,6 +2341,27 @@ const showShiftOpeningPanel = computed(
   () => pageTab.value === "entry" && !!headerUnit.value && shiftSessionReady.value && !shiftOpened.value
 );
 
+const shiftOpenPromptVisible = computed(() => showShiftOpeningPanel.value);
+
+const canConfirmShiftOpen = computed(() => {
+  if (!operator.value || !supervisor.value || !shiftPreviewBatch.value) {
+    return false;
+  }
+  if (shiftReopenRequired.value) {
+    if (!shiftReopenReason.value) {
+      return false;
+    }
+    if (shiftReopenReason.value === "Other" && !shiftReopenRemarks.value.trim()) {
+      return false;
+    }
+  }
+  return true;
+});
+
+const submitConfirmRolls = computed(() =>
+  rollLines.value.filter((r) => !r.is_bundle_row)
+);
+
 const shiftStatusChips = computed(() => {
   const map = shiftStatusByShift.value || {};
   return ["Day Shift", "Night Shift"].map((shiftName) => {
@@ -2887,6 +3010,55 @@ function openToleranceDialog(orders) {
   showToleranceDialog.value = true;
 }
 
+async function openSubmitConfirmDialog() {
+  if (!canSubmitEntry.value) {
+    frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
+    return;
+  }
+  showSubmitConfirmDialog.value = true;
+}
+
+function confirmSubmitEntry() {
+  showSubmitConfirmDialog.value = false;
+  submitEntry();
+}
+
+async function openShiftDialog() {
+  if (!headerUnit.value || !runDate.value || !shift.value) {
+    frappe.msgprint(__("Select unit, run date, and shift first."));
+    return;
+  }
+  shiftReopenReason.value = "";
+  shiftReopenRemarks.value = "";
+  shiftReopenRequired.value = false;
+  shiftReopenPreviousSession.value = "";
+  shiftReopenClosedBatch.value = "";
+  await previewShiftBatchPrefix();
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.check_gsm_shift_reopen_required",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+      },
+    });
+    const msg = res.message || {};
+    shiftReopenRequired.value = !!msg.required;
+    shiftReopenPreviousSession.value = msg.previous_session || "";
+    shiftReopenClosedBatch.value = msg.closed_batch || "";
+  } catch (e) {
+    console.warn("shift reopen check", e);
+  }
+  showShiftOpenDialog.value = true;
+}
+
+function closeShiftDialog() {
+  showShiftOpenDialog.value = false;
+  shiftReopenReason.value = "";
+  shiftReopenRemarks.value = "";
+}
+
 async function callSubmitGsm(overrides = []) {
   return frappe.call({
     method: "production_entry.production_planning.unified_production_entry_api.submit_gsm_production_entry",
@@ -3383,10 +3555,10 @@ async function refreshShiftSession() {
     const session = res.message?.session || null;
     applyShiftSessionHydration(session);
     await loadShiftStatusForDate();
-    if (!session) {
-      await previewShiftBatchPrefix();
-    } else {
+    if (session) {
       shiftPreviewBatch.value = session.batch_series_prefix || "";
+    } else {
+      shiftPreviewBatch.value = "";
     }
   } catch (e) {
     console.warn("shift session", e);
@@ -3397,8 +3569,8 @@ async function refreshShiftSession() {
 }
 
 async function startShift() {
-  if (!operator.value || !supervisor.value) {
-    frappe.msgprint(__("Select Operator and Supervisor."));
+  if (!canConfirmShiftOpen.value) {
+    frappe.msgprint(__("Complete operator, supervisor, and re-open reason if required."));
     return;
   }
   shiftOpeningBusy.value = true;
@@ -3411,6 +3583,8 @@ async function startShift() {
         unit: headerUnit.value,
         operator: operator.value,
         supervisor: supervisor.value,
+        reopen_reason: shiftReopenRequired.value ? shiftReopenReason.value : undefined,
+        reopen_remarks: shiftReopenRequired.value ? shiftReopenRemarks.value : undefined,
       },
     });
     applyShiftSessionHydration(res.message?.session || null);
@@ -3422,6 +3596,9 @@ async function startShift() {
     resetBatchSeriesForShiftOpen();
     await loadShiftStatusForDate();
     scheduleAutosave();
+    showShiftOpenDialog.value = false;
+    shiftReopenReason.value = "";
+    shiftReopenRemarks.value = "";
     frappe.show_alert({ message: __("Shift opened"), indicator: "green" });
   } catch (e) {
     console.error(e);
@@ -3550,6 +3727,8 @@ async function closeShift() {
 }
 
 function onShiftHeaderChange() {
+  shiftReopenReason.value = "";
+  shiftReopenRemarks.value = "";
   refreshShiftSession();
   scheduleAutosave();
 }
@@ -4413,22 +4592,71 @@ onUnmounted(() => {
 .gpe-layout-entry {
   position: relative;
 }
-.gpe-shift-open-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
+.gpe-shift-not-started-banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  background: rgba(15, 23, 42, 0.45);
-  padding: 16px;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+  font-size: 13px;
 }
-.gpe-shift-open-card {
-  width: min(440px, 100%);
-  padding: 20px 22px;
+.gpe-shift-open-dialog {
+  width: min(480px, 92vw);
 }
-.gpe-shift-open-card h3 {
-  margin: 0 0 6px;
+.gpe-shift-reopen-fields {
+  display: grid;
+  gap: 10px;
+}
+.gpe-shift-reopen-fields label {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+}
+.gpe-shift-reopen-fields select,
+.gpe-shift-reopen-fields textarea {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+.gpe-reopen-notice {
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  font-size: 12px;
+}
+.gpe-submit-confirm-dialog {
+  width: min(720px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+}
+.gpe-submit-summary-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 10px 0 14px;
+  font-size: 13px;
+}
+.gpe-submit-section-title {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  color: #334155;
+}
+.gpe-submit-spr-list {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 12px;
 }
 .gpe-shift-open-fields {
   display: grid;

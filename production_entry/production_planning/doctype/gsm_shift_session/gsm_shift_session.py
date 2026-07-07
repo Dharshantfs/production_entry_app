@@ -6,13 +6,22 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import getdate, now_datetime
+from frappe.utils import cint, getdate, now_datetime
 
 
 class GSMShiftSession(Document):
 	def validate(self):
 		self._normalize_shift()
 		self._enforce_single_open_session()
+		self._validate_reopen_fields()
+
+	def _validate_reopen_fields(self):
+		if cint(self.is_reopen or 0):
+			reason = (self.reopen_reason or "").strip()
+			if not reason:
+				frappe.throw(_("Re-open reason is required."))
+			if reason == "Other" and not (self.reopen_remarks or "").strip():
+				frappe.throw(_("Re-open remarks are required when reason is Other."))
 
 	def _normalize_shift(self):
 		shift = (self.shift or "").strip()

@@ -170,6 +170,12 @@ def get_gsm_current_shift():
 _GSM_SHIFT_SESSION_DOCTYPE = "GSM Shift Session"
 _SHIFT_WISE_ENTRY_DOCTYPE = "Shift Wise Production Entry"
 _GSM_SHIFT_LABELS = ("Day Shift", "Night Shift")
+_GSM_REOPEN_REASONS = (
+	"Accidental submit",
+	"Missed rolls / incomplete entry",
+	"Wrong data entered",
+	"Other",
+)
 
 
 def _gsm_shift_session_table_exists() -> bool:
@@ -206,6 +212,10 @@ def _serialize_gsm_shift_session(doc) -> dict:
 		"status": row.get("status") or "",
 		"opened_at": str(row.get("opened_at") or ""),
 		"closed_at": str(row.get("closed_at") or ""),
+		"is_reopen": cint(row.get("is_reopen") or 0),
+		"reopen_reason": row.get("reopen_reason") or "",
+		"reopen_remarks": row.get("reopen_remarks") or "",
+		"previous_session": row.get("previous_session") or "",
 	}
 
 
@@ -274,6 +284,70 @@ def _gsm_validate_employee_link(employee: str, label: str):
 	if not frappe.db.exists("Employee", employee):
 		frappe.throw(_("{0} {1} not found.").format(label, employee))
 	return employee
+
+
+def _gsm_latest_closed_session(run_date, shift, unit):
+	if not _gsm_shift_session_table_exists():
+		return None
+	rows = frappe.get_all(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		filters={
+			"run_date": getdate(run_date),
+			"shift": _normalize_gsm_shift_label(shift),
+			"custom_unit": _cstr(unit).strip(),
+			"status": "Closed",
+		},
+		fields=["name", "batch_series_prefix", "closed_at"],
+		order_by="closed_at desc, modified desc",
+		limit=1,
+	)
+	return rows[0] if rows else None
+
+
+def _gsm_validate_reopen_reason(reopen_reason, reopen_remarks, required: bool):
+	reopen_reason = _cstr(reopen_reason).strip()
+	reopen_remarks = _cstr(reopen_remarks).strip()
+	if not required:
+		return reopen_reason, reopen_remarks
+	if not reopen_reason:
+		frappe.throw(_("Select a reason for re-opening this shift."))
+	if reopen_reason not in _GSM_REOPEN_REASONS:
+		frappe.throw(_("Invalid re-open reason."))
+	if reopen_reason == "Other" and not reopen_remarks:
+		frappe.throw(_("Enter remarks when re-open reason is Other."))
+	return reopen_reason, reopen_remarks
+
+
+@frappe.whitelist()
+def check_gsm_shift_reopen_required(run_date=None, shift=None, unit=None):
+	"""Return whether opening this shift requires a re-open reason (prior Closed session exists)."""
+	if not _gsm_shift_session_table_exists():
+		return {"required": False}
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		return {"required": False}
+	open_name = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"status": "Open",
+		},
+		"name",
+	)
+	if open_name:
+		return {"required": False, "already_open": True}
+	closed = _gsm_latest_closed_session(run_date, shift, unit)
+	if not closed:
+		return {"required": False}
+	return {
+		"required": True,
+		"previous_session": closed.name,
+		"closed_batch": closed.batch_series_prefix or "",
+		"reason_options": list(_GSM_REOPEN_REASONS),
+	}
 
 
 @frappe.whitelist()
@@ -353,7 +427,15 @@ def get_gsm_shift_sessions_for_date(run_date=None, unit=None):
 
 
 @frappe.whitelist()
-def open_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None):
+def open_gsm_shift_session(
+	run_date=None,
+	shift=None,
+	unit=None,
+	operator=None,
+	supervisor=None,
+	reopen_reason=None,
+	reopen_remarks=None,
+):
 	"""Open a GSM shift session for run_date + shift + unit (Day and Night are separate)."""
 	if not _gsm_shift_session_table_exists():
 		frappe.throw(_("GSM Shift Session DocType is not installed. Run bench migrate."))
@@ -400,6 +482,11 @@ def open_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, 
 			)
 		)
 
+	closed_prior = _gsm_latest_closed_session(run_date, shift, unit)
+	reopen_reason, reopen_remarks = _gsm_validate_reopen_reason(
+		reopen_reason, reopen_remarks, required=bool(closed_prior)
+	)
+
 	prefix_info = _gsm_shift_batch_prefix(run_date, shift, unit)
 	prefix = prefix_info.get("series_prefix") or ""
 	if not prefix:
@@ -417,6 +504,10 @@ def open_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, 
 			"status": "Open",
 			"opened_by": frappe.session.user,
 			"opened_at": now_datetime(),
+			"is_reopen": 1 if closed_prior else 0,
+			"reopen_reason": reopen_reason if closed_prior else "",
+			"reopen_remarks": reopen_remarks if closed_prior else "",
+			"previous_session": closed_prior.name if closed_prior else "",
 		}
 	)
 	doc.insert(ignore_permissions=True)
