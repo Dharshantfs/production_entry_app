@@ -6,7 +6,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, getdate
+from frappe.utils import cint, flt, getdate, now_datetime
 
 from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 	_cstr,
@@ -164,6 +164,338 @@ def _match_shaft_job_for_line(spr_doc, pp_id: str, gsm=None, width_inch=None, pr
 @frappe.whitelist()
 def get_gsm_current_shift():
 	return get_current_shift()
+
+
+_GSM_SHIFT_SESSION_DOCTYPE = "GSM Shift Session"
+_SHIFT_WISE_ENTRY_DOCTYPE = "Shift Wise Production Entry"
+_GSM_SHIFT_LABELS = ("Day Shift", "Night Shift")
+
+
+def _gsm_shift_session_table_exists() -> bool:
+	return bool(frappe.db.table_exists(_GSM_SHIFT_SESSION_DOCTYPE))
+
+
+def _normalize_gsm_shift_label(shift) -> str:
+	s = _cstr(shift).strip()
+	if not s:
+		return ""
+	low = s.lower()
+	if "night" in low:
+		return "Night Shift"
+	if "day" in low:
+		return "Day Shift"
+	return s
+
+
+def _serialize_gsm_shift_session(doc) -> dict:
+	if not doc:
+		return {}
+	if isinstance(doc, dict):
+		row = doc
+	else:
+		row = doc.as_dict() if hasattr(doc, "as_dict") else {}
+	return {
+		"name": row.get("name"),
+		"run_date": str(row.get("run_date") or ""),
+		"shift": row.get("shift") or "",
+		"unit": row.get("custom_unit") or "",
+		"operator": row.get("operator") or "",
+		"supervisor": row.get("supervisor") or "",
+		"batch_series_prefix": row.get("batch_series_prefix") or "",
+		"status": row.get("status") or "",
+		"opened_at": str(row.get("opened_at") or ""),
+		"closed_at": str(row.get("closed_at") or ""),
+	}
+
+
+def _gsm_shift_suffix_from_prefix(prefix: str, root_5: str, doc) -> int:
+	"""Extract shift digit(s) after root_5 from a series prefix (with or without /roll)."""
+	prefix = _cstr(prefix).strip()
+	if not prefix or not root_5 or not prefix.startswith(root_5):
+		return 0
+	if "/" in prefix:
+		return doc._suffix_after_root(prefix, root_5)
+	s_part = prefix[len(root_5) :]
+	try:
+		return int(s_part) if s_part else 0
+	except ValueError:
+		return 0
+
+
+def _gsm_allocate_fresh_batch_prefix(run_date, shift, unit) -> str:
+	"""Allocate next batch series prefix for a new GSM shift session.
+
+	Always increments the shift digit — never reuses an existing same-shift SPR
+	prefix. Considers Batch/SPR rows and GSM Shift Session history (open + closed).
+	"""
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		return ""
+	doc = frappe.new_doc("Shaft Production Run")
+	doc.run_date = getdate(run_date)
+	doc.custom_unit = unit
+	doc.shift = shift
+	rd = getdate(run_date)
+	comp_id, unit_num = doc._batch_prefix_parts()
+	root_5 = f"{comp_id}-{unit_num}{rd.month:02d}{rd.year % 100:02d}"
+	max_s = doc._spr_max_shift_suffix_for_root(root_5)
+	if _gsm_shift_session_table_exists():
+		session_prefixes = frappe.get_all(
+			_GSM_SHIFT_SESSION_DOCTYPE,
+			filters={
+				"run_date": rd,
+				"custom_unit": unit,
+				"batch_series_prefix": ["like", f"{root_5}%"],
+			},
+			pluck="batch_series_prefix",
+		)
+		for pref in session_prefixes or []:
+			max_s = max(max_s, _gsm_shift_suffix_from_prefix(pref, root_5, doc))
+	next_s = (max_s + 1) if max_s >= 0 else 1
+	return f"{root_5}{next_s}"
+
+
+def _gsm_shift_batch_prefix(run_date, shift, unit) -> dict:
+	series_prefix = _gsm_allocate_fresh_batch_prefix(run_date, shift, unit)
+	if not series_prefix:
+		return {"series_prefix": "", "sample_batch_no": ""}
+	return {
+		"series_prefix": series_prefix,
+		"sample_batch_no": f"{series_prefix}/1",
+	}
+
+
+def _gsm_validate_employee_link(employee: str, label: str):
+	employee = _cstr(employee).strip()
+	if not employee:
+		frappe.throw(_("{0} is required.").format(label))
+	if not frappe.db.exists("Employee", employee):
+		frappe.throw(_("{0} {1} not found.").format(label, employee))
+	return employee
+
+
+@frappe.whitelist()
+def preview_gsm_shift_batch_prefix(run_date=None, shift=None, unit=None):
+	"""Preview batch series prefix for a shift before opening."""
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		frappe.throw(_("Set Run Date, Unit, and Shift to preview batch."))
+	return _gsm_shift_batch_prefix(run_date, shift, unit)
+
+
+@frappe.whitelist()
+def get_gsm_shift_session(run_date=None, shift=None, unit=None):
+	"""Return the Open GSM shift session for run_date + shift + unit, if any."""
+	if not _gsm_shift_session_table_exists():
+		return {"ready": False, "session": None}
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		return {"ready": True, "session": None}
+	name = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"status": "Open",
+		},
+		"name",
+	)
+	if not name:
+		return {"ready": True, "session": None}
+	doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, name)
+	return {"ready": True, "session": _serialize_gsm_shift_session(doc)}
+
+
+@frappe.whitelist()
+def get_gsm_shift_sessions_for_date(run_date=None, unit=None):
+	"""Day/Night status chips for GSM header."""
+	if not _gsm_shift_session_table_exists():
+		return {"ready": False, "shifts": {}}
+	unit = _cstr(unit).strip()
+	if not unit or not run_date:
+		return {"ready": True, "shifts": {}}
+	rd = getdate(run_date)
+	out = {}
+	for shift in _GSM_SHIFT_LABELS:
+		open_row = frappe.db.get_value(
+			_GSM_SHIFT_SESSION_DOCTYPE,
+			{"run_date": rd, "shift": shift, "custom_unit": unit, "status": "Open"},
+			["name", "status", "batch_series_prefix", "operator", "supervisor"],
+			as_dict=True,
+		)
+		if open_row:
+			row = open_row
+		else:
+			closed_rows = frappe.get_all(
+				_GSM_SHIFT_SESSION_DOCTYPE,
+				filters={"run_date": rd, "shift": shift, "custom_unit": unit, "status": "Closed"},
+				fields=["name", "status", "batch_series_prefix", "operator", "supervisor"],
+				order_by="modified desc",
+				limit=1,
+			)
+			row = closed_rows[0] if closed_rows else None
+		if not row:
+			out[shift] = {"status": "Not started", "batch_series_prefix": ""}
+		else:
+			out[shift] = {
+				"name": row.name,
+				"status": row.status or "Open",
+				"batch_series_prefix": row.batch_series_prefix or "",
+				"operator": row.operator or "",
+				"supervisor": row.supervisor or "",
+			}
+	return {"ready": True, "shifts": out}
+
+
+@frappe.whitelist()
+def open_gsm_shift_session(run_date=None, shift=None, unit=None, operator=None, supervisor=None):
+	"""Open a GSM shift session for run_date + shift + unit (Day and Night are separate)."""
+	if not _gsm_shift_session_table_exists():
+		frappe.throw(_("GSM Shift Session DocType is not installed. Run bench migrate."))
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		frappe.throw(_("Run Date, Unit, and Shift are required."))
+	operator = _gsm_validate_employee_link(operator, _("Operator"))
+	supervisor = _gsm_validate_employee_link(supervisor, _("Supervisor"))
+
+	existing_name = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"status": "Open",
+		},
+		"name",
+	)
+	if existing_name:
+		doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, existing_name)
+		changed = False
+		if doc.operator != operator:
+			doc.operator = operator
+			changed = True
+		if doc.supervisor != supervisor:
+			doc.supervisor = supervisor
+			changed = True
+		if changed:
+			doc.save(ignore_permissions=True)
+		return {"session": _serialize_gsm_shift_session(doc), "reused": True}
+
+	other_open = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{"custom_unit": unit, "status": "Open"},
+		["name", "shift"],
+		as_dict=True,
+	)
+	if other_open and other_open.name:
+		frappe.throw(
+			_("Close the open {0} session ({1}) before opening {2}.").format(
+				other_open.shift or _("shift"), other_open.name, shift
+			)
+		)
+
+	prefix_info = _gsm_shift_batch_prefix(run_date, shift, unit)
+	prefix = prefix_info.get("series_prefix") or ""
+	if not prefix:
+		frappe.throw(_("Could not allocate a batch series prefix for this shift."))
+
+	doc = frappe.get_doc(
+		{
+			"doctype": _GSM_SHIFT_SESSION_DOCTYPE,
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"operator": operator,
+			"supervisor": supervisor,
+			"batch_series_prefix": prefix,
+			"status": "Open",
+			"opened_by": frappe.session.user,
+			"opened_at": now_datetime(),
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return {"session": _serialize_gsm_shift_session(doc), "reused": False}
+
+
+@frappe.whitelist()
+def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=None):
+	"""Ensure shift can close — submitted SPRs, no draft rolls blocking."""
+	if not _gsm_shift_session_table_exists():
+		return {"ok": True, "errors": []}
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	session_sprs = _parse_json_arg(session_sprs, [])
+	errors = []
+	name = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"status": "Open",
+		},
+		"name",
+	)
+	if not name:
+		errors.append(_("No open shift session found for {0} on {1}.").format(shift, unit))
+	for row in session_sprs or []:
+		if not isinstance(row, dict):
+			continue
+		spr_name = _cstr(row.get("spr_name")).strip()
+		if not spr_name:
+			continue
+		if not frappe.db.exists("Shaft Production Run", spr_name):
+			continue
+		ds = cint(frappe.db.get_value("Shaft Production Run", spr_name, "docstatus") or 0)
+		if ds != 1:
+			errors.append(_("SPR {0} is not submitted.").format(spr_name))
+	return {"ok": not errors, "errors": errors}
+
+
+@frappe.whitelist()
+def close_gsm_shift_session(run_date=None, shift=None, unit=None):
+	"""Close the open GSM shift session and return Shift Wise redirect payload."""
+	if not _gsm_shift_session_table_exists():
+		frappe.throw(_("GSM Shift Session DocType is not installed. Run bench migrate."))
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	name = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"status": "Open",
+		},
+		"name",
+	)
+	if not name:
+		frappe.throw(_("No open shift session found."))
+	doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, name)
+	doc.status = "Closed"
+	doc.closed_at = now_datetime()
+	doc.save(ignore_permissions=True)
+	next_shift = "Night Shift" if shift == "Day Shift" else "Day Shift"
+	return {
+		"session": _serialize_gsm_shift_session(doc),
+		"next_shift": next_shift,
+		"redirect": {
+			"doctype": _SHIFT_WISE_ENTRY_DOCTYPE,
+			"route_options": {
+				"posting_date": str(doc.run_date),
+				"shift": doc.shift,
+				"unit": doc.custom_unit,
+				"batch_no": doc.batch_series_prefix,
+				"operator": doc.operator,
+				"supervisor": doc.supervisor,
+			},
+		},
+	}
 
 
 @frappe.whitelist()

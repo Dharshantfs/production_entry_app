@@ -46,7 +46,46 @@
     </div>
 
     <!-- Entry tab -->
-    <div v-show="pageTab === 'entry'" class="gpe-layout">
+    <div v-show="pageTab === 'entry'" class="gpe-layout gpe-layout-entry">
+      <div v-if="showShiftOpeningPanel" class="gpe-shift-open-overlay gpe-card">
+        <div class="gpe-shift-open-card">
+          <h3>Open {{ shift }}</h3>
+          <p class="gpe-hint">Start this shift before selecting jobs or entering rolls. Day and Night are separate sessions.</p>
+          <div v-if="shiftStatusChips.length" class="gpe-shift-status-strip">
+            <span v-for="chip in shiftStatusChips" :key="chip.shift" :class="['gpe-shift-chip', chip.tone]">
+              {{ chip.shift }}: {{ chip.label }}
+            </span>
+          </div>
+          <div class="gpe-shift-open-fields">
+            <label class="gpe-emp-link">
+              Operator
+              <div class="gpe-emp-link-row">
+                <input :value="operator" type="text" readonly placeholder="Select employee" />
+                <button type="button" class="gpe-btn" @click="pickEmployeeLink('operator', 'Operator')">Pick</button>
+              </div>
+            </label>
+            <label class="gpe-emp-link">
+              Supervisor
+              <div class="gpe-emp-link-row">
+                <input :value="supervisor" type="text" readonly placeholder="Select employee" />
+                <button type="button" class="gpe-btn" @click="pickEmployeeLink('supervisor', 'Supervisor')">Pick</button>
+              </div>
+            </label>
+            <div class="gpe-shift-batch-preview">
+              <span class="gpe-shift-batch-label">Shift batch</span>
+              <strong class="gpe-batch-badge">{{ shiftPreviewBatch || "…" }}</strong>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="gpe-btn primary gpe-shift-start-btn"
+            :disabled="shiftOpeningBusy || !operator || !supervisor || !shiftPreviewBatch"
+            @click="startShift"
+          >
+            {{ shiftOpeningBusy ? "Starting…" : "Start Shift" }}
+          </button>
+        </div>
+      </div>
       <aside class="gpe-sidebar gpe-card">
         <h3>Orders &amp; Jobs</h3>
         <p class="gpe-hint">PP shaft jobs. Confirm selection, then add roll rows.</p>
@@ -89,7 +128,7 @@
               type="checkbox"
               class="gpe-line-check"
               :checked="isJobSelected(job)"
-              :disabled="!job.selectable || (selectionLocked && isJobSelected(job))"
+              :disabled="!shiftOpened || !job.selectable || (selectionLocked && isJobSelected(job))"
               @change="toggleJob(job, $event)"
             />
             <div class="gpe-job-body" @click.prevent="onJobLabelClick(job)">
@@ -199,23 +238,42 @@
 
       <main class="gpe-main gpe-card">
         <div class="gpe-header gpe-session-panel-main gpe-card-inner">
-          <h3 class="gpe-session-title">Production Session</h3>
+          <div class="gpe-session-head-row">
+            <h3 class="gpe-session-title">Production Session</h3>
+            <div v-if="shiftOpened && shiftBatchPrefix" class="gpe-batch-badge-wrap">
+              <span class="gpe-batch-badge">{{ shift }} · {{ shiftBatchPrefix }}</span>
+            </div>
+            <button
+              v-if="shiftOpened"
+              type="button"
+              class="gpe-btn gpe-btn-warn gpe-close-shift-btn"
+              :disabled="shiftClosingBusy"
+              @click="closeShift"
+            >
+              {{ shiftClosingBusy ? "Closing…" : "Close Shift" }}
+            </button>
+          </div>
+          <div v-if="shiftStatusChips.length" class="gpe-shift-status-strip gpe-shift-status-strip-compact">
+            <span v-for="chip in shiftStatusChips" :key="'h-' + chip.shift" :class="['gpe-shift-chip', chip.tone]">
+              {{ chip.shift }}: {{ chip.label }}
+            </span>
+          </div>
           <div class="gpe-tags" v-if="!selectionLocked && headerTags.length">
             <span v-for="t in headerTags" :key="t" class="gpe-tag">{{ t }}</span>
           </div>
           <div class="gpe-header-session-row">
             <div class="gpe-header-fields gpe-header-fields-lg">
-              <label>Run Date <input type="date" v-model="runDate" /></label>
+              <label>Run Date <input type="date" v-model="runDate" :disabled="shiftOpened" /></label>
               <label>
                 Shift
-                <select v-model="shift">
+                <select v-model="shift" :disabled="shiftOpened" @change="onShiftHeaderChange">
                   <option value="Day Shift">Day Shift</option>
                   <option value="Night Shift">Night Shift</option>
                 </select>
               </label>
               <label>Unit <input v-model="headerUnit" type="text" readonly /></label>
-              <label>Operator <input v-model="operator" type="text" /></label>
-              <label>Supervisor <input v-model="supervisor" type="text" /></label>
+              <label>Operator <input :value="operator" type="text" readonly /></label>
+              <label>Supervisor <input :value="supervisor" type="text" readonly /></label>
             </div>
             <div v-if="sessionSprList.length" class="gpe-spr-table-wrap gpe-spr-inline">
               <div class="gpe-spr-table-title">Order · Label Type · SPR</div>
@@ -247,7 +305,7 @@
                 v-if="!selectionLocked"
                 type="button"
                 class="gpe-btn primary"
-                :disabled="!selectedEntries.length"
+                :disabled="!shiftOpened || !selectedEntries.length"
                 @click="openConfirmSelection"
               >Confirm selection</button>
               <button
@@ -619,6 +677,18 @@
       </div>
     </div>
 
+    <!-- Shift ending reminder -->
+    <div v-if="showShiftReminder" class="gpe-dialog-overlay">
+      <div class="gpe-dialog gpe-card">
+        <h3>Shift ending reminder</h3>
+        <p>It is time to close the shift. You will be redirected to Shift Wise Production Entry.</p>
+        <div class="gpe-dialog-actions">
+          <button type="button" class="gpe-btn" @click="dismissShiftReminder">Later</button>
+          <button type="button" class="gpe-btn primary" @click="closeShiftFromReminder">Go to Shift Wise Entry</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Confirm selection dialog -->
     <div v-if="showConfirmDialog" class="gpe-dialog-overlay" @click.self="showConfirmDialog = false">
       <div class="gpe-dialog gpe-card">
@@ -918,6 +988,18 @@ const shiftEntries = ref([]);
 const shiftLoading = ref(false);
 const selectedShiftEntry = ref(null);
 const coreWidthOptions = ref([]);
+
+const shiftSession = ref(null);
+const shiftSessionReady = ref(false);
+const shiftBatchPrefix = ref("");
+const shiftPreviewBatch = ref("");
+const shiftStatusByShift = ref({});
+const shiftOpeningBusy = ref(false);
+const shiftClosingBusy = ref(false);
+const showShiftReminder = ref(false);
+let shiftReminderTimer = null;
+let shiftReminderInterval = null;
+let shiftReminderDismissedAt = 0;
 
 const showShaftDetailsDialog = ref(false);
 const shaftDetailsLoading = ref(false);
@@ -2047,6 +2129,7 @@ const selectedLinesDetail = computed(() =>
 
 const canAddRow = computed(() => {
   if (
+    !shiftOpened.value ||
     !selectionLocked.value ||
     !selectedEntries.value.length ||
     !headerUnit.value ||
@@ -2111,8 +2194,36 @@ function pruneSelectedEntriesToFilter() {
   scheduleAutosave();
 }
 
+const shiftOpened = computed(() => {
+  const s = shiftSession.value;
+  return !!(s && s.status === "Open");
+});
+
+const showShiftOpeningPanel = computed(
+  () => pageTab.value === "entry" && !!headerUnit.value && shiftSessionReady.value && !shiftOpened.value
+);
+
+const shiftStatusChips = computed(() => {
+  const map = shiftStatusByShift.value || {};
+  return ["Day Shift", "Night Shift"].map((shiftName) => {
+    const row = map[shiftName] || {};
+    const status = row.status || "Not started";
+    let tone = "muted";
+    let label = status;
+    if (status === "Open") {
+      tone = shiftName === shift.value ? "open" : "other-open";
+      label = row.batch_series_prefix ? `Open · ${row.batch_series_prefix}` : "Open";
+    } else if (status === "Closed") {
+      tone = "closed";
+      label = row.batch_series_prefix ? `Closed · ${row.batch_series_prefix}` : "Closed";
+    }
+    return { shift: shiftName, label, tone };
+  });
+});
+
 const canCreateSprs = computed(
   () =>
+    shiftOpened.value &&
     !allSprsCreated.value &&
     selectionLocked.value &&
     selectedEntries.value.length > 0 &&
@@ -2123,6 +2234,7 @@ const canCreateSprs = computed(
 
 const canSubmitEntry = computed(
   () =>
+    shiftOpened.value &&
     !submitInProgress.value &&
     selectionLocked.value &&
     sessionSprList.value.length > 0 &&
@@ -2152,6 +2264,11 @@ function isJobSelected(job) {
 }
 
 function toggleJob(job, ev) {
+  if (!shiftOpened.value && ev.target.checked) {
+    ev.target.checked = false;
+    frappe.msgprint(__("Start the shift before selecting jobs."));
+    return;
+  }
   if (!job?.selectable && ev.target.checked) {
     ev.target.checked = false;
     return;
@@ -2181,6 +2298,10 @@ function toggleJob(job, ev) {
 }
 
 function onJobLabelClick(job) {
+  if (!shiftOpened.value) {
+    frappe.msgprint(__("Start the shift before selecting jobs."));
+    return;
+  }
   if (!job.selectable) {
     return;
   }
@@ -2267,6 +2388,10 @@ function onLineLabelClick(line) {
 }
 
 function openConfirmSelection() {
+  if (!shiftOpened.value) {
+    frappe.msgprint(__("Start the shift before confirming job selection."));
+    return;
+  }
   if (!selectedEntries.value.length) {
     return;
   }
@@ -3101,6 +3226,11 @@ async function fetchOrders() {
 }
 
 function onUnitChange() {
+  if (shiftOpened.value && filterUnit.value !== headerUnit.value) {
+    frappe.msgprint(__("Close the current shift before changing unit."));
+    filterUnit.value = headerUnit.value;
+    return;
+  }
   headerUnit.value = filterUnit.value;
   pruneSelectedEntriesToFilter();
   fetchMerges().then(() =>
@@ -3109,6 +3239,273 @@ function onUnitChange() {
       enrichSelectedEntriesFromBoard();
     })
   );
+  refreshShiftSession();
+  scheduleAutosave();
+}
+
+function pickEmployeeLink(fieldKey, label) {
+  const targetRef = fieldKey === "supervisor" ? supervisor : operator;
+  const d = new frappe.ui.Dialog({
+    title: label,
+    fields: [
+      {
+        fieldtype: "Link",
+        fieldname: "employee",
+        label,
+        options: "Employee",
+        reqd: 1,
+        default: targetRef.value || "",
+      },
+    ],
+    primary_action_label: __("Select"),
+    primary_action(values) {
+      if (values.employee) {
+        targetRef.value = values.employee;
+      }
+      d.hide();
+    },
+  });
+  d.show();
+}
+
+function applyShiftSessionHydration(session) {
+  shiftSession.value = session || null;
+  if (session && session.status === "Open") {
+    operator.value = session.operator || "";
+    supervisor.value = session.supervisor || "";
+    shiftBatchPrefix.value = session.batch_series_prefix || "";
+    if (session.batch_series_prefix) {
+      seriesPrefix.value = session.batch_series_prefix;
+    }
+    startShiftReminderTimers();
+  } else {
+    shiftBatchPrefix.value = "";
+    stopShiftReminderTimers();
+  }
+}
+
+async function loadShiftStatusForDate() {
+  if (!headerUnit.value || !runDate.value) {
+    shiftStatusByShift.value = {};
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_sessions_for_date",
+      args: {
+        run_date: runDate.value,
+        unit: headerUnit.value,
+      },
+    });
+    shiftStatusByShift.value = res.message?.shifts || {};
+  } catch (e) {
+    console.warn("shift status", e);
+    shiftStatusByShift.value = {};
+  }
+}
+
+async function previewShiftBatchPrefix() {
+  if (!headerUnit.value || !runDate.value || !shift.value || shiftOpened.value) {
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.preview_gsm_shift_batch_prefix",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+      },
+    });
+    shiftPreviewBatch.value = res.message?.series_prefix || "";
+  } catch (e) {
+    console.warn("shift batch preview", e);
+    shiftPreviewBatch.value = "";
+  }
+}
+
+async function refreshShiftSession() {
+  if (!headerUnit.value || !runDate.value || !shift.value) {
+    shiftSessionReady.value = true;
+    shiftSession.value = null;
+    shiftPreviewBatch.value = "";
+    await loadShiftStatusForDate();
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_session",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+      },
+    });
+    const session = res.message?.session || null;
+    applyShiftSessionHydration(session);
+    await loadShiftStatusForDate();
+    if (!session) {
+      await previewShiftBatchPrefix();
+    } else {
+      shiftPreviewBatch.value = session.batch_series_prefix || "";
+    }
+  } catch (e) {
+    console.warn("shift session", e);
+    applyShiftSessionHydration(null);
+  } finally {
+    shiftSessionReady.value = true;
+  }
+}
+
+async function startShift() {
+  if (!operator.value || !supervisor.value) {
+    frappe.msgprint(__("Select Operator and Supervisor."));
+    return;
+  }
+  shiftOpeningBusy.value = true;
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.open_gsm_shift_session",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+        operator: operator.value,
+        supervisor: supervisor.value,
+      },
+    });
+    applyShiftSessionHydration(res.message?.session || null);
+    await loadShiftStatusForDate();
+    scheduleAutosave();
+    frappe.show_alert({ message: __("Shift opened"), indicator: "green" });
+  } catch (e) {
+    console.error(e);
+  } finally {
+    shiftOpeningBusy.value = false;
+  }
+}
+
+function clearGsmAfterClose() {
+  selectionLocked.value = false;
+  selectedEntries.value = [];
+  rollLines.value = [];
+  sessionSprs.value = {};
+  sessionJobApiBaseline.value = {};
+  forceNewSprSession.value = true;
+  resetBatchSeriesCache();
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem("gsm_production_entry_draft_v2");
+  } catch (e) {
+    console.warn("draft clear", e);
+  }
+  saveStatus.value = "";
+}
+
+function redirectToShiftWise(redirect) {
+  const payload = redirect || {};
+  const opts = payload.route_options || {};
+  frappe.route_options = { ...opts };
+  const doctype = payload.doctype || "Shift Wise Production Entry";
+  frappe.set_route("Form", doctype, "new");
+}
+
+function dismissShiftReminder() {
+  showShiftReminder.value = false;
+  shiftReminderDismissedAt = Date.now();
+}
+
+function closeShiftFromReminder() {
+  showShiftReminder.value = false;
+  closeShift();
+}
+
+function stopShiftReminderTimers() {
+  if (shiftReminderTimer) {
+    clearTimeout(shiftReminderTimer);
+    shiftReminderTimer = null;
+  }
+  if (shiftReminderInterval) {
+    clearInterval(shiftReminderInterval);
+    shiftReminderInterval = null;
+  }
+  showShiftReminder.value = false;
+}
+
+function startShiftReminderTimers() {
+  stopShiftReminderTimers();
+  const thirtyMin = 30 * 60 * 1000;
+  shiftReminderTimer = setTimeout(() => {
+    if (shiftOpened.value) {
+      showShiftReminder.value = true;
+    }
+  }, thirtyMin);
+  shiftReminderInterval = setInterval(() => {
+    if (!shiftOpened.value) {
+      return;
+    }
+    const sinceDismiss = Date.now() - shiftReminderDismissedAt;
+    if (sinceDismiss >= thirtyMin) {
+      showShiftReminder.value = true;
+    }
+  }, thirtyMin);
+}
+
+async function closeShift() {
+  if (!shiftOpened.value || shiftClosingBusy.value) {
+    return;
+  }
+  shiftClosingBusy.value = true;
+  try {
+    const validation = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.validate_gsm_shift_close",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+        session_sprs: sessionSprList.value,
+      },
+    });
+    const errors = validation.message?.errors || [];
+    if (errors.length) {
+      frappe.msgprint(errors.join("<br>"));
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      frappe.confirm(
+        __("Close shift? This will clear GSM entries and open Shift Wise Production Entry."),
+        () => resolve(),
+        () => reject(new Error("cancelled"))
+      );
+    });
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.close_gsm_shift_session",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+      },
+    });
+    const nextShift = res.message?.next_shift;
+    clearGsmAfterClose();
+    applyShiftSessionHydration(null);
+    if (nextShift) {
+      shift.value = nextShift;
+      shiftFilterShift.value = nextShift;
+    }
+    await refreshShiftSession();
+    redirectToShiftWise(res.message?.redirect);
+  } catch (e) {
+    if (e?.message !== "cancelled") {
+      console.error(e);
+    }
+  } finally {
+    shiftClosingBusy.value = false;
+  }
+}
+
+function onShiftHeaderChange() {
+  refreshShiftSession();
   scheduleAutosave();
 }
 
@@ -3850,6 +4247,7 @@ watch([runDate, shift, headerUnit], () => {
     loadJobBoard();
     loadQuotaForLines();
   }
+  refreshShiftSession();
 });
 
 watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
@@ -3867,12 +4265,14 @@ onMounted(async () => {
     headerUnit.value = filterUnit.value;
   }
   batchContextKey.value = currentBatchContextKey();
+  await refreshShiftSession();
 });
 
 onUnmounted(() => {
   if (autosaveTimer) {
     clearTimeout(autosaveTimer);
   }
+  stopShiftReminderTimers();
 });
 </script>
 
@@ -3954,6 +4354,117 @@ onUnmounted(() => {
   align-items: stretch;
   height: calc(100vh - 168px);
   min-height: 520px;
+}
+.gpe-layout-entry {
+  position: relative;
+}
+.gpe-shift-open-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  padding: 16px;
+}
+.gpe-shift-open-card {
+  width: min(440px, 100%);
+  padding: 20px 22px;
+}
+.gpe-shift-open-card h3 {
+  margin: 0 0 6px;
+}
+.gpe-shift-open-fields {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 16px;
+}
+.gpe-emp-link label {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+.gpe-emp-link-row {
+  display: flex;
+  gap: 8px;
+}
+.gpe-emp-link-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+}
+.gpe-shift-batch-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gpe-shift-batch-label {
+  font-size: 11px;
+  color: #64748b;
+}
+.gpe-batch-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+.gpe-batch-badge-wrap {
+  flex: 1;
+}
+.gpe-session-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.gpe-session-head-row .gpe-session-title {
+  margin: 0;
+}
+.gpe-close-shift-btn {
+  margin-left: auto;
+}
+.gpe-shift-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.gpe-shift-status-strip-compact {
+  margin-top: -4px;
+}
+.gpe-shift-chip {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+}
+.gpe-shift-chip.open {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #047857;
+}
+.gpe-shift-chip.other-open {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #c2410c;
+}
+.gpe-shift-chip.closed {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.gpe-shift-start-btn {
+  width: 100%;
 }
 @media (max-width: 1100px) {
   .gpe-layout {
