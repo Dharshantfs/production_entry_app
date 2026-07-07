@@ -214,6 +214,10 @@
               {{ shiftClosingBusy ? "Closing…" : "Close Shift" }}
             </button>
           </div>
+          <div v-if="shiftResumeBanner" class="gpe-resume-banner">{{ shiftResumeBanner }}</div>
+          <div v-if="shiftOpened && shiftOpenedBy" class="gpe-shift-opened-by">
+            Opened by {{ shiftOpenedBy }}
+          </div>
           <div v-if="shiftStatusChips.length" class="gpe-shift-status-strip gpe-shift-status-strip-compact">
             <span v-for="chip in shiftStatusChips" :key="'h-' + chip.shift" :class="['gpe-shift-chip', chip.tone]">
               {{ chip.shift }}: {{ chip.label }}
@@ -1124,6 +1128,7 @@ const shiftPreviewBatch = ref("");
 const shiftStatusByShift = ref({});
 const shiftOpeningBusy = ref(false);
 const shiftClosingBusy = ref(false);
+const shiftResumeBanner = ref("");
 const shiftReopenRequired = ref(false);
 const shiftReopenPreviousSession = ref("");
 const shiftReopenClosedBatch = ref("");
@@ -2338,6 +2343,8 @@ const shiftOpened = computed(() => {
   return !!(s && s.status === "Open");
 });
 
+const shiftOpenedBy = computed(() => _cstr(shiftSession.value?.opened_by || ""));
+
 const showShiftOpeningPanel = computed(
   () => pageTab.value === "entry" && !!headerUnit.value && shiftSessionReady.value && !shiftOpened.value
 );
@@ -3490,7 +3497,170 @@ function applyShiftSessionHydration(session) {
     startShiftReminderTimers();
   } else {
     shiftBatchPrefix.value = "";
+    shiftResumeBanner.value = "";
     stopShiftReminderTimers();
+  }
+}
+
+function shouldResumeFromServer() {
+  if (!shiftOpened.value) {
+    return false;
+  }
+  if (!rollLines.value.length) {
+    return true;
+  }
+  const serverPrefix = shiftBatchPrefix.value || "";
+  if (serverPrefix && seriesPrefix.value && seriesPrefix.value !== serverPrefix) {
+    return true;
+  }
+  return false;
+}
+
+function rebuildSelectedEntriesFromResume(jobSelections) {
+  const entries = [];
+  for (const row of jobSelections || []) {
+    const ppId = row.pp_id || row.ppId;
+    const jobId = row.job_id || row.jobId;
+    if (!ppId || jobId == null || jobId === "") {
+      continue;
+    }
+    const job = jobBoardJobs.value.find(
+      (j) => j.pp_id === ppId && String(j.job_id) === String(jobId)
+    );
+    if (job) {
+      entries.push(snapshotFromJob(job));
+      continue;
+    }
+    const meta = orderMetaForPp(ppId);
+    entries.push({
+      key: entryKeyJob(ppId, jobId),
+      jobId,
+      lineId: meta.planningLineId,
+      plannedDate: runDate.value,
+      ppId,
+      orderCode: meta.orderCode,
+      partyName: meta.partyName,
+      quality: meta.quality,
+      color: meta.color,
+      gsm: 0,
+      width_inch: null,
+      widthLabel: "",
+      dayTargetKg: orderDayStatsForPp(ppId).dayTargetKg,
+      sourceSnapshot: { pp_id: ppId },
+    });
+  }
+  if (entries.length) {
+    selectedEntries.value = entries;
+  }
+}
+
+function applyResumePayload(msg) {
+  if (!msg || msg.status !== "ok") {
+    return 0;
+  }
+  const sprMap = {};
+  for (const s of msg.session_sprs || []) {
+    const ppId = s.pp_id || s.ppId;
+    if (ppId && s.spr_name) {
+      sprMap[ppId] = {
+        spr_name: s.spr_name,
+        order_code: s.order_code || "",
+        label_type: s.label_type || "",
+      };
+    }
+  }
+  if (Object.keys(sprMap).length) {
+    sessionSprs.value = sprMap;
+  }
+  rollLines.value = (msg.roll_lines || []).map((r, idx) => ({
+    ...r,
+    _id: r._id || `resume-${idx}-${Date.now()}`,
+    is_bundle_row: !!cint(r.is_bundle_row),
+    row_locked: r.row_locked != null ? !!cint(r.row_locked) : true,
+    row_ready_for_print: r.row_ready_for_print != null ? !!cint(r.row_ready_for_print) : true,
+  }));
+  rebuildSelectedEntriesFromResume(msg.job_selections || []);
+  if ((msg.roll_lines || []).length || Object.keys(sprMap).length) {
+    selectionLocked.value = true;
+    recordJobApiBaselines(jobBoardJobs.value);
+  }
+  creationSeq.value = Math.max(creationSeq.value, rollLines.value.length);
+  syncBatchCounterFromGrid();
+  scheduleAutosave();
+  return (msg.roll_lines || []).length;
+}
+
+async function resumeActiveShiftFromServer(options = {}) {
+  if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
+    return 0;
+  }
+  try {
+    if (!jobBoardJobs.value.length) {
+      await loadJobBoard();
+    }
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_active_shift_resume",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+      },
+    });
+    const count = applyResumePayload(res.message || {});
+    if (count > 0) {
+      shiftResumeBanner.value = __("Resumed {0} roll line(s) from server — safe to continue on this machine.", [count]);
+      if (!options.quiet) {
+        frappe.show_alert({ message: shiftResumeBanner.value, indicator: "green" });
+      }
+      await loadJobBoard();
+      enrichSelectedEntriesFromBoard();
+    }
+    return count;
+  } catch (e) {
+    console.warn("resume shift", e);
+    return 0;
+  }
+}
+
+async function syncOpenShiftForUnit() {
+  if (!headerUnit.value) {
+    return false;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_open_gsm_shift_for_unit",
+      args: { unit: headerUnit.value },
+    });
+    const sess = res.message?.session;
+    if (!sess || sess.status !== "Open") {
+      return false;
+    }
+    const sessDate = String(sess.run_date || "").slice(0, 10);
+    const sessShift = sess.shift || shift.value;
+    if (sessDate === runDate.value && sessShift === shift.value) {
+      return false;
+    }
+    return await new Promise((resolve) => {
+      frappe.confirm(
+        __("{0} is already open on {1} for Unit {2}. Switch to that session?", [
+          sessShift,
+          sessDate,
+          headerUnit.value,
+        ]),
+        () => {
+          runDate.value = sessDate;
+          filterDate.value = sessDate;
+          shift.value = sessShift;
+          shiftFilterDate.value = sessDate;
+          shiftFilterShift.value = sessShift;
+          resolve(true);
+        },
+        () => resolve(false)
+      );
+    });
+  } catch (e) {
+    console.warn("open shift for unit", e);
+    return false;
   }
 }
 
@@ -3559,6 +3729,9 @@ async function refreshShiftSession() {
     } else {
       shiftPreviewBatch.value = "";
     }
+    if (session && session.status === "Open" && shouldResumeFromServer()) {
+      await resumeActiveShiftFromServer({ quiet: true });
+    }
   } catch (e) {
     console.warn("shift session", e);
     applyShiftSessionHydration(null);
@@ -3587,12 +3760,21 @@ async function startShift() {
       },
     });
     applyShiftSessionHydration(res.message?.session || null);
-    rollLines.value = [];
-    sessionSprs.value = {};
-    selectionLocked.value = false;
-    selectedEntries.value = [];
-    forceNewSprSession.value = true;
-    resetBatchSeriesForShiftOpen();
+    const reused = !!(res.message?.reused);
+    if (reused) {
+      await resumeActiveShiftFromServer({ quiet: true });
+      if (!rollLines.value.length && !Object.keys(sessionSprs.value || {}).length) {
+        selectionLocked.value = false;
+        selectedEntries.value = [];
+      }
+    } else {
+      rollLines.value = [];
+      sessionSprs.value = {};
+      selectionLocked.value = false;
+      selectedEntries.value = [];
+      forceNewSprSession.value = true;
+      resetBatchSeriesForShiftOpen();
+    }
     await loadShiftStatusForDate();
     scheduleAutosave();
     showShiftOpenDialog.value = false;
@@ -4446,6 +4628,10 @@ function restoreDraft() {
       maxRollSuffix.value = d.maxRollSuffix || 0;
     } else {
       resetBatchSeriesCache();
+      rollLines.value = [];
+      sessionSprs.value = {};
+      selectedEntries.value = [];
+      selectionLocked.value = false;
     }
     batchContextKey.value = ctxKey;
     sessionSprs.value = d.sessionSprs || {};
@@ -4498,7 +4684,14 @@ onMounted(async () => {
     headerUnit.value = filterUnit.value;
   }
   batchContextKey.value = currentBatchContextKey();
+  const switched = await syncOpenShiftForUnit();
+  if (switched) {
+    await fetchOrders();
+  }
   await refreshShiftSession();
+  if (shouldResumeFromServer()) {
+    await resumeActiveShiftFromServer();
+  }
 });
 
 onUnmounted(() => {
@@ -4541,6 +4734,20 @@ onUnmounted(() => {
   border-radius: 12px;
   margin-bottom: 12px;
   font-size: 12px;
+}
+.gpe-resume-banner {
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  color: #065f46;
+  padding: 8px 12px;
+  border-radius: 10px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.gpe-shift-opened-by {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 8px;
 }
 .gpe-page-tabs {
   display: flex;

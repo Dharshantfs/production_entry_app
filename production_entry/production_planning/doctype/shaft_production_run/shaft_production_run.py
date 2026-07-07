@@ -10407,6 +10407,163 @@ def spr_get_tolerance_violations(spr_name):
 	}
 
 
+def _gsm_parse_bundle_sticker_roll_numbers(raw_value) -> list[str]:
+	out = []
+	seen = set()
+	for part in re.split(r"[,;\s]+", _cstr(raw_value)):
+		val = part.strip()
+		if not val:
+			continue
+		if val.isdigit():
+			val = str(cint(val))
+		if val not in seen:
+			seen.add(val)
+			out.append(val)
+	return out
+
+
+def _gsm_bundle_child_items_for_sticker(spr, sticker) -> list:
+	"""Match SPR item rows packed into one bundle sticker."""
+	job_id = _cstr(getattr(sticker, "job_id", ""))
+	roll_nums = _gsm_parse_bundle_sticker_roll_numbers(getattr(sticker, "roll_numbers", ""))
+	children = []
+	for it in spr.items or []:
+		if not _spr_is_real_roll_item_row(it):
+			continue
+		if job_id and _cstr(getattr(it, "job", "")) != job_id:
+			continue
+		bn = _cstr(getattr(it, "batch_no", ""))
+		rn = _cstr(getattr(it, "roll_no", ""))
+		suffix = bn.rsplit("/", 1)[-1].strip() if "/" in bn else rn
+		if roll_nums and (bn in roll_nums or rn in roll_nums or suffix in roll_nums):
+			children.append(it)
+	pack = cint(getattr(sticker, "rolls_per_bundle", 0))
+	if not children and pack > 0 and job_id:
+		comb = _cstr(getattr(sticker, "combination", ""))
+		m = re.match(r"(\d+)\s*\*\s*([\d.]+)", comb)
+		seg_w = flt(m.group(2)) if m else 0.0
+		candidates = [
+			it
+			for it in (spr.items or [])
+			if _spr_is_real_roll_item_row(it)
+			and _cstr(getattr(it, "job", "")) == job_id
+			and (seg_w <= 0 or abs(flt(getattr(it, "width_inch", 0)) - seg_w) < 0.05)
+		]
+		children = candidates[:pack]
+	return children
+
+
+def _gsm_segment_width_from_bundle_sticker(sticker, pack_count: int) -> float:
+	comb = _cstr(getattr(sticker, "combination", ""))
+	m = re.match(r"(\d+)\s*\*\s*([\d.]+)", comb)
+	if m:
+		return flt(m.group(2))
+	sw = flt(getattr(sticker, "sticker_width", 0))
+	pc = max(1, cint(pack_count))
+	if sw > 0:
+		return round(sw / pc, 4)
+	return 0.0
+
+
+def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
+	return {
+		"pp_id": pp_id,
+		"party_code": _cstr(getattr(it, "party_code", None) or getattr(it, "custom_order_code", None)),
+		"item_code": _cstr(getattr(it, "item_code", None)),
+		"item_name": _cstr(getattr(it, "item_name", None)),
+		"quality": _cstr(getattr(it, "quality", None)),
+		"color": _cstr(getattr(it, "color", None)),
+		"gsm": cint(getattr(it, "gsm", 0) or 0),
+		"batch_no": _cstr(getattr(it, "batch_no", None)),
+		"roll_no": cint(getattr(it, "roll_no", 0) or 0),
+		"width_inch": flt(getattr(it, "width_inch", 0) or 0),
+		"meter_roll": flt(getattr(it, "meter_roll", 0) or 0),
+		"produced_length_mtrs": flt(getattr(it, "produced_length_mtrs", 0) or 0),
+		"produced_gsm": flt(getattr(it, "produced_gsm", 0) or 0),
+		"net_weight": flt(getattr(it, "net_weight", 0) or 0),
+		"gross_weight": flt(getattr(it, "gross_weight", 0) or 0),
+		"planned_qty": flt(getattr(it, "planned_qty", 0) or 0),
+		"work_order": _cstr(getattr(it, "work_order", None)),
+		"uom": _cstr(getattr(it, "uom", None) or "Kg"),
+		"custom_core_width_mm": _cstr(getattr(it, "custom_core_width_mm", None)),
+		"custom_polybag_kgs": flt(getattr(it, "custom_polybag_kgs", 0) or 0),
+		"job_id": _cstr(getattr(it, "job", None)),
+		"spr_item_name": _cstr(getattr(it, "name", None)),
+		"is_bundle_row": 0,
+		"row_locked": 1,
+		"row_ready_for_print": 1,
+	}
+
+
+def _gsm_serialize_bundle_sticker_for_grid(spr, sticker, pp_id: str) -> dict:
+	children = _gsm_bundle_child_items_for_sticker(spr, sticker)
+	pack_count = cint(getattr(sticker, "rolls_per_bundle", 0)) or len(children)
+	seg_w = _gsm_segment_width_from_bundle_sticker(sticker, pack_count)
+	if not seg_w and children:
+		seg_w = flt(getattr(children[0], "width_inch", 0))
+	first = children[0] if children else None
+	width_label = (
+		f'{_bp_format_width_label_static(seg_w)}" ({pack_count} rolls)' if seg_w and pack_count else ""
+	)
+	return {
+		"pp_id": pp_id,
+		"party_code": _cstr(
+			getattr(first, "party_code", None) if first else spr.get("custom_order_code") or ""
+		),
+		"item_code": _cstr(getattr(first, "item_code", None) if first else ""),
+		"item_name": _cstr(getattr(first, "item_name", None) if first else ""),
+		"quality": _cstr(getattr(first, "quality", None) if first else ""),
+		"color": _cstr(getattr(first, "color", None) if first else ""),
+		"gsm": cint(getattr(first, "gsm", 0) if first else 0),
+		"width_inch": seg_w,
+		"width_label": width_label,
+		"pack_count": pack_count,
+		"segment_width": seg_w,
+		"batch_no": _cstr(getattr(sticker, "batch_no", "")),
+		"roll_no": "",
+		"roll_numbers": _cstr(getattr(sticker, "roll_numbers", "")),
+		"combination": _cstr(getattr(sticker, "combination", "")),
+		"meter_roll": flt(getattr(first, "meter_roll", 0) if first else 0),
+		"produced_length_mtrs": flt(getattr(sticker, "produced_length_mtrs", 0) or 0),
+		"produced_gsm": flt(getattr(first, "produced_gsm", 0) if first else 0),
+		"net_weight": flt(getattr(sticker, "sticker_bundle_weight", 0) or 0),
+		"gross_weight": flt(getattr(sticker, "sticker_bundle_gross_weight_kg", 0) or 0),
+		"planned_qty": flt(getattr(first, "planned_qty", 0) if first else 0),
+		"work_order": _cstr(getattr(first, "work_order", None) if first else ""),
+		"uom": _cstr(getattr(first, "uom", None) if first else "Kg"),
+		"custom_core_width_mm": _cstr(getattr(first, "custom_core_width_mm", None) if first else ""),
+		"job_id": _cstr(getattr(sticker, "job_id", "")),
+		"child_roll_batches": [
+			_cstr(getattr(c, "batch_no", "")) for c in children if _cstr(getattr(c, "batch_no", ""))
+		],
+		"child_spr_item_names": [_cstr(getattr(c, "name", "")) for c in children if _cstr(getattr(c, "name", ""))],
+		"is_bundle_row": 1,
+		"row_locked": 1,
+		"row_ready_for_print": 1,
+	}
+
+
+def _gsm_serialize_spr_roll_lines_for_grid(spr) -> list[dict]:
+	"""Map draft SPR items + bundle stickers to GSM Production Entry grid rows."""
+	pp_id = _cstr(spr.get("production_plan")).strip()
+	bundled_batches = set()
+	lines = []
+	for sticker in spr.bundle_stickers or []:
+		bundle_row = _gsm_serialize_bundle_sticker_for_grid(spr, sticker, pp_id)
+		for bn in bundle_row.get("child_roll_batches") or []:
+			bundled_batches.add(bn)
+		if bundle_row.get("batch_no") or bundle_row.get("child_roll_batches"):
+			lines.append(bundle_row)
+	for it in spr.items or []:
+		if not _spr_is_real_roll_item_row(it):
+			continue
+		bn = _cstr(getattr(it, "batch_no", ""))
+		if bn and bn in bundled_batches:
+			continue
+		lines.append(_gsm_serialize_item_row_for_grid(it, pp_id))
+	return lines
+
+
 @frappe.whitelist()
 def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 	"""Real-time GSM Save Row — upsert one roll line on draft SPR (server, not local only)."""

@@ -29,6 +29,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	resolve_label_from_pp_doc,
 	save_gsm_roll_line_to_spr,
 	spr_get_tolerance_violations,
+	_gsm_serialize_spr_roll_lines_for_grid,
 	_spr_roll_starting_for_gsm_session,
 )
 from production_entry.production_planning.scheduler_api import create_item_spr, get_current_shift
@@ -216,6 +217,7 @@ def _serialize_gsm_shift_session(doc) -> dict:
 		"reopen_reason": row.get("reopen_reason") or "",
 		"reopen_remarks": row.get("reopen_remarks") or "",
 		"previous_session": row.get("previous_session") or "",
+		"opened_by": row.get("opened_by") or "",
 	}
 
 
@@ -588,6 +590,122 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None):
 				"supervisor": doc.supervisor,
 			},
 		},
+	}
+
+
+@frappe.whitelist()
+def get_open_gsm_shift_for_unit(unit=None):
+	"""Return the single open GSM shift session for a unit (any run_date/shift)."""
+	if not _gsm_shift_session_table_exists():
+		return {"ready": False, "session": None}
+	unit = _cstr(unit).strip()
+	if not unit:
+		return {"ready": True, "session": None}
+	row = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{"custom_unit": unit, "status": "Open"},
+		["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status"],
+		as_dict=True,
+	)
+	if not row:
+		return {"ready": True, "session": None}
+	return {"ready": True, "session": _serialize_gsm_shift_session(row)}
+
+
+def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
+	"""Draft SPR headers for an active GSM shift (run_date + shift + unit)."""
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		return []
+	filters = {
+		"docstatus": 0,
+		"run_date": getdate(run_date),
+		"shift": shift,
+		"custom_unit": unit,
+	}
+	fields = ["name", "production_plan", "custom_order_code", "modified"]
+	if frappe.db.has_column("Shaft Production Run", "custom_party_code"):
+		fields.append("custom_party_code")
+	rows = frappe.get_all(
+		"Shaft Production Run",
+		filters=filters,
+		fields=fields,
+		order_by="modified desc",
+		limit=50,
+	)
+	out = []
+	for row in rows or []:
+		pp_id = _cstr(row.get("production_plan")).strip()
+		order_code = _cstr(row.get("custom_order_code") or row.get("custom_party_code") or "")
+		if not order_code and pp_id:
+			order_code = _gsm_order_code_for_pp(pp_id)
+		out.append(
+			{
+				"pp_id": pp_id,
+				"spr_name": row.name,
+				"order_code": order_code,
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
+def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
+	"""Hydrate GSM grid from server — draft SPR roll lines for an open shift session."""
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		frappe.throw(_("Run Date, Unit, and Shift are required."))
+
+	session_name = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"status": "Open",
+		},
+		"name",
+	)
+	if not session_name:
+		return {
+			"status": "no_open_session",
+			"session": None,
+			"session_sprs": [],
+			"roll_lines": [],
+			"job_selections": [],
+		}
+
+	session_doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, session_name)
+	session_sprs = _gsm_draft_sprs_for_session(run_date, shift, unit)
+	roll_lines = []
+	job_keys = set()
+	seq = 0
+	for spr_row in session_sprs:
+		spr_name = spr_row.get("spr_name")
+		pp_id = spr_row.get("pp_id")
+		if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+			continue
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		for line in _gsm_serialize_spr_roll_lines_for_grid(spr):
+			seq += 1
+			line["_id"] = f"resume-{spr_name}-{seq}"
+			line["creation_seq"] = seq
+			roll_lines.append(line)
+			jid = _cstr(line.get("job_id") or "")
+			if jid and pp_id:
+				job_keys.add((pp_id, jid))
+
+	job_selections = [{"pp_id": pp, "job_id": jid} for pp, jid in sorted(job_keys)]
+
+	return {
+		"status": "ok",
+		"session": _serialize_gsm_shift_session(session_doc),
+		"session_sprs": session_sprs,
+		"roll_lines": roll_lines,
+		"job_selections": job_selections,
+		"roll_count": len(roll_lines),
 	}
 
 
