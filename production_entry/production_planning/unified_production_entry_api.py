@@ -29,6 +29,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	resolve_label_from_pp_doc,
 	save_gsm_roll_line_to_spr,
 	spr_get_tolerance_violations,
+	_spr_roll_starting_for_gsm_session,
 )
 from production_entry.production_planning.scheduler_api import create_item_spr, get_current_shift
 
@@ -508,6 +509,7 @@ def preview_spr_batch_numbers_for_entry(
 	client_series_prefix=None,
 	existing_batches=None,
 	session_local=None,
+	gsm_shift_prefix=None,
 ):
 	"""Read-only batch/roll preview for GSM Production Entry (no SPR document required).
 
@@ -555,7 +557,14 @@ def preview_spr_batch_numbers_for_entry(
 
 	db_start = doc._next_roll_starting(series_prefix)
 	next_roll = db_start
-	if cint(session_local):
+	if cint(gsm_shift_prefix) and csp:
+		next_roll = _spr_roll_starting_for_gsm_session(
+			series_prefix,
+			spr_name=None,
+			existing_batches=existing,
+			client_max_roll=client_max_roll,
+		)
+	elif cint(session_local):
 		mx = 0
 		for row in doc.items or []:
 			bn = _cstr(getattr(row, "batch_no", "")).strip()

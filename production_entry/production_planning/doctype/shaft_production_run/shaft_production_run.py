@@ -9405,6 +9405,51 @@ def _spr_next_available_batch_no(
 		next_roll += 1
 
 
+def _spr_roll_suffix_from_batch(batch_no: str, series_prefix: str) -> int:
+	batch_no = _cstr(batch_no).strip()
+	series_prefix = _cstr(series_prefix).strip()
+	if not batch_no or not series_prefix or "/" not in batch_no:
+		return 0
+	pref, roll = batch_no.split("/", 1)
+	if pref.strip() != series_prefix:
+		return 0
+	try:
+		return int(roll.strip())
+	except ValueError:
+		return 0
+
+
+def _spr_roll_starting_for_gsm_session(
+	series_prefix: str,
+	spr_name: str | None = None,
+	existing_batches=None,
+	client_max_roll=None,
+) -> int:
+	"""Next roll suffix for GSM shift session — scoped to current SPR + grid only."""
+	series_prefix = _cstr(series_prefix).strip()
+	mx = 0
+	if spr_name:
+		for bn in _spr_used_batch_numbers_on_spr(spr_name):
+			mx = max(mx, _spr_roll_suffix_from_batch(bn, series_prefix))
+	extra: list = []
+	if existing_batches:
+		if isinstance(existing_batches, str):
+			try:
+				extra = json.loads(existing_batches) or []
+			except Exception:
+				extra = [x.strip() for x in existing_batches.split(",") if x.strip()]
+		elif isinstance(existing_batches, (list, tuple)):
+			extra = list(existing_batches)
+	for bn in extra:
+		mx = max(mx, _spr_roll_suffix_from_batch(_cstr(bn).strip(), series_prefix))
+	try:
+		if client_max_roll is not None and cint(client_max_roll) >= 0:
+			mx = max(mx, cint(client_max_roll))
+	except Exception:
+		pass
+	return (mx + 1) if mx > 0 else 1
+
+
 @frappe.whitelist()
 def get_next_spr_batch_numbers(
 	shaft_production_run,
@@ -9415,6 +9460,7 @@ def get_next_spr_batch_numbers(
 	shift=None,
 	client_series_prefix=None,
 	existing_batches=None,
+	gsm_shift_prefix=None,
 ):
 	"""
 	Preview batch/roll numbers for new rows (e.g. after Create Entry) without submitting SPR.
@@ -9438,6 +9484,7 @@ def get_next_spr_batch_numbers(
 			shift=shift,
 			client_series_prefix=client_series_prefix,
 			existing_batches=existing_batches,
+			gsm_shift_prefix=gsm_shift_prefix,
 		)
 
 
@@ -9450,6 +9497,7 @@ def _get_next_spr_batch_numbers_unlocked(
 	shift=None,
 	client_series_prefix=None,
 	existing_batches=None,
+	gsm_shift_prefix=None,
 ):
 	doc = frappe.get_doc("Shaft Production Run", shaft_production_run)
 	if run_date not in (None, ""):
@@ -9472,12 +9520,21 @@ def _get_next_spr_batch_numbers_unlocked(
 		series_prefix = csp
 	else:
 		series_prefix = fresh_prefix
-	next_roll = doc._next_roll_starting(series_prefix)
-	try:
-		if client_max_roll is not None and cint(client_max_roll) >= 0 and csp == series_prefix:
-			next_roll = max(int(next_roll), cint(client_max_roll) + 1)
-	except Exception:
-		pass
+	if cint(gsm_shift_prefix) and csp:
+		series_prefix = csp
+		next_roll = _spr_roll_starting_for_gsm_session(
+			series_prefix,
+			spr_name=shaft_production_run,
+			existing_batches=existing_batches,
+			client_max_roll=client_max_roll,
+		)
+	else:
+		next_roll = doc._next_roll_starting(series_prefix)
+		try:
+			if client_max_roll is not None and cint(client_max_roll) >= 0 and csp == series_prefix:
+				next_roll = max(int(next_roll), cint(client_max_roll) + 1)
+		except Exception:
+			pass
 	item_meta = frappe.get_meta("Shaft Production Run Item")
 	used_batches = _spr_used_batch_numbers_on_spr(shaft_production_run, doc.items)
 	if existing_batches:

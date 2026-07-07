@@ -936,6 +936,24 @@ function resetBatchSeriesCache() {
   reservedBatchNos.value = new Set();
 }
 
+function resetBatchSeriesForShiftOpen() {
+  maxRollSuffix.value = 0;
+  reservedBatchNos.value = new Set();
+  if (shiftBatchPrefix.value) {
+    seriesPrefix.value = shiftBatchPrefix.value;
+  }
+}
+
+function releaseBatchNo(batchNo) {
+  const bn = _cstr(batchNo || "");
+  if (!bn) {
+    return;
+  }
+  const next = new Set(reservedBatchNos.value);
+  next.delete(bn);
+  reservedBatchNos.value = next;
+}
+
 function allExistingBatchNos() {
   const seen = new Set(reservedBatchNos.value);
   for (const r of rollLines.value) {
@@ -2769,6 +2787,9 @@ async function clearGridEntries() {
       sessionJobApiBaseline.value = {};
       forceNewSprSession.value = true;
       resetBatchSeriesCache();
+      if (shiftBatchPrefix.value) {
+        seriesPrefix.value = shiftBatchPrefix.value;
+      }
       saveStatus.value = "Cleared — create new SPRs";
       scheduleAutosave();
       frappe.show_alert({ message: __("Grid cleared"), indicator: "blue" });
@@ -3375,6 +3396,12 @@ async function startShift() {
       },
     });
     applyShiftSessionHydration(res.message?.session || null);
+    rollLines.value = [];
+    sessionSprs.value = {};
+    selectionLocked.value = false;
+    selectedEntries.value = [];
+    forceNewSprSession.value = true;
+    resetBatchSeriesForShiftOpen();
     await loadShiftStatusForDate();
     scheduleAutosave();
     frappe.show_alert({ message: __("Shift opened"), indicator: "green" });
@@ -3585,21 +3612,18 @@ async function resolveWorkOrder(line) {
 }
 
 function syncBatchCounterFromGrid() {
-  let mx = maxRollSuffix.value;
-  for (const bn of reservedBatchNos.value) {
-    if (bn.includes("/")) {
-      const suf = parseInt(bn.split("/").pop(), 10);
-      if (!Number.isNaN(suf)) {
-        mx = Math.max(mx, suf);
-      }
-    }
-  }
+  const prefix = _cstr(seriesPrefix.value || shiftBatchPrefix.value);
+  let mx = 0;
+  const reserved = new Set();
   for (const r of rollLines.value) {
+    const bn = _cstr(r.batch_no || "");
+    if (bn) {
+      reserved.add(bn);
+    }
     const rn = parseInt(r.roll_no, 10);
     if (!Number.isNaN(rn)) {
       mx = Math.max(mx, rn);
     }
-    const bn = _cstr(r.batch_no || "");
     if (bn.includes("/")) {
       const suf = parseInt(bn.split("/").pop(), 10);
       if (!Number.isNaN(suf)) {
@@ -3608,6 +3632,7 @@ function syncBatchCounterFromGrid() {
     }
   }
   maxRollSuffix.value = mx;
+  reservedBatchNos.value = reserved;
 }
 
 function _cstr(v) {
@@ -3992,6 +4017,11 @@ async function addRollRow() {
 async function previewNextBatch(ppId) {
   syncBatchCounterFromGrid();
   const existing = allExistingBatchNos();
+  const gsmPrefix = _cstr(seriesPrefix.value || shiftBatchPrefix.value);
+  const gsmBatchArgs =
+    shiftOpened.value && gsmPrefix
+      ? { gsm_shift_prefix: 1, client_series_prefix: gsmPrefix }
+      : {};
   const sprName = ppId ? sprNameForPp(ppId) : "";
   if (sprName) {
     try {
@@ -4005,8 +4035,9 @@ async function previewNextBatch(ppId) {
           run_date: runDate.value,
           custom_unit: headerUnit.value,
           shift: shift.value,
-          client_series_prefix: seriesPrefix.value || undefined,
+          client_series_prefix: gsmPrefix || undefined,
           existing_batches: JSON.stringify(existing),
+          ...gsmBatchArgs,
         },
       });
       const row = (res.message || [])[0];
@@ -4026,9 +4057,10 @@ async function previewNextBatch(ppId) {
       shift: shift.value,
       count: 1,
       client_max_roll: maxRollSuffix.value,
-      client_series_prefix: seriesPrefix.value || undefined,
+      client_series_prefix: gsmPrefix || undefined,
       existing_batches: JSON.stringify(existing),
       session_local: 1,
+      ...gsmBatchArgs,
     },
   });
   const row = (res.message || [])[0];
@@ -4084,6 +4116,7 @@ async function removeTopRow() {
         return;
       }
     }
+    releaseBatchNo(row.batch_no);
     rollLines.value.shift();
     syncBatchCounterFromGrid();
     scheduleAutosave();
