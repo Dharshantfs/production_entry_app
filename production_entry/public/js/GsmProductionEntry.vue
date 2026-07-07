@@ -244,8 +244,8 @@
                 </select>
               </label>
               <label>Unit <input v-model="headerUnit" type="text" readonly /></label>
-              <label>Operator <input :value="operator" type="text" readonly /></label>
-              <label>Supervisor <input :value="supervisor" type="text" readonly /></label>
+              <label v-if="shiftOpened">Operator <input :value="operator" type="text" readonly /></label>
+              <label v-if="shiftOpened">Supervisor <input :value="supervisor" type="text" readonly /></label>
             </div>
             <div v-if="sessionSprList.length" class="gpe-spr-table-wrap gpe-spr-inline">
               <div class="gpe-spr-table-title">Order · Label Type · SPR</div>
@@ -3034,6 +3034,8 @@ async function openShiftDialog() {
     frappe.msgprint(__("Select unit, run date, and shift first."));
     return;
   }
+  operator.value = "";
+  supervisor.value = "";
   shiftReopenReason.value = "";
   shiftReopenRemarks.value = "";
   shiftReopenRequired.value = false;
@@ -3496,6 +3498,8 @@ function applyShiftSessionHydration(session) {
     }
     startShiftReminderTimers();
   } else {
+    operator.value = "";
+    supervisor.value = "";
     shiftBatchPrefix.value = "";
     shiftResumeBanner.value = "";
     stopShiftReminderTimers();
@@ -3794,6 +3798,8 @@ function clearGsmAfterClose() {
   rollLines.value = [];
   sessionSprs.value = {};
   sessionJobApiBaseline.value = {};
+  operator.value = "";
+  supervisor.value = "";
   forceNewSprSession.value = true;
   resetBatchSeriesCache();
   try {
@@ -3910,6 +3916,10 @@ async function closeShift() {
 function onShiftHeaderChange() {
   shiftReopenReason.value = "";
   shiftReopenRemarks.value = "";
+  if (!shiftOpened.value) {
+    operator.value = "";
+    supervisor.value = "";
+  }
   refreshShiftSession();
   scheduleAutosave();
 }
@@ -4590,8 +4600,6 @@ function restoreDraft() {
       headerUnit.value = d.headerUnit;
       filterUnit.value = d.filterUnit || d.headerUnit;
     }
-    operator.value = d.operator || "";
-    supervisor.value = d.supervisor || "";
     if (d.filterDate) {
       filterDate.value = d.filterDate;
     }
