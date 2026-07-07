@@ -252,10 +252,11 @@ def _gsm_allocate_fresh_batch_prefix(run_date, shift, unit) -> str:
 	root_5 = f"{comp_id}-{unit_num}{rd.month:02d}{rd.year % 100:02d}"
 	max_s = doc._spr_max_shift_suffix_for_root(root_5)
 	if _gsm_shift_session_table_exists():
+		# All sessions for this unit + month root (not only same run_date) — closed
+		# batches from prior days must still advance the shift digit.
 		session_prefixes = frappe.get_all(
 			_GSM_SHIFT_SESSION_DOCTYPE,
 			filters={
-				"run_date": rd,
 				"custom_unit": unit,
 				"batch_series_prefix": ["like", f"{root_5}%"],
 			},
