@@ -27,6 +27,10 @@ TRANSFER_WAREHOUSE_BY_COMPANY = {
 		"s_warehouse": "Finished Goods Warehouse  - JVE",
 		"t_warehouse": "Goods In Transit Warehouse  - JVE",
 	},
+	"Thusma SMS Nonwovens Private Limited - 1Z0": {
+		"s_warehouse": "Finished Goods Warehouse  - TSNPL",
+		"t_warehouse": "Goods In Transit Warehouse  - TSNPL",
+	},
 }
 
 BOARD_KIND_TO_SCOPE = {
