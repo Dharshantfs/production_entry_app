@@ -3271,6 +3271,7 @@ function spr_try_recover_submitted_spr(frm, opts) {
 		if (ds !== 1) {
 			return;
 		}
+		spr_force_unfreeze_dom();
 		spr_stop_submit_watchdog(frm);
 		spr_clear_save_submit_progress(frm);
 		frm._spr_submit_in_progress = false;
@@ -3325,7 +3326,7 @@ function spr_start_submit_recovery_watchdog(frm) {
 				),
 			});
 		}
-	}, 15000);
+	}, 5000);
 	frm._spr_submit_max_timer = setTimeout(function () {
 		if (!frm || !frm._spr_progress_start) {
 			return;
@@ -3367,6 +3368,8 @@ function spr_begin_save_submit_progress(frm, mode, rollCount) {
 				msg = __('Creating manufacture entries for {0} rolls — {1}s. Do not reload.', [rc, sec]);
 			} else if (sec >= 10) {
 				msg = __('Checking stock and posting manufacture entries — please wait...');
+			} else if (sec >= 5 && rc > 15) {
+				msg = __('Submitting {0} rolls — {1}s. Please wait...', [rc, sec]);
 			}
 		} else if (sec >= 15) {
 			msg = __('Saving {0} roll lines — {1}s elapsed. Do not reload.', [rc, sec]);
@@ -3395,6 +3398,37 @@ function spr_clear_save_submit_progress(frm, do_unfreeze) {
 	frm._spr_progress_start = null;
 }
 
+function spr_desk_submit_roll_stats(frm) {
+	const items = (frm && frm.doc && frm.doc.items) || [];
+	let net = 0;
+	items.forEach(function (it) {
+		net += flt(it.net_weight);
+	});
+	return {
+		rollCount: items.length,
+		netKg: net,
+		orderCode: cstr(frm.doc.custom_order_code || frm.doc.party_code || ''),
+	};
+}
+
+function spr_show_desk_submit_confirm(frm, onYes) {
+	const stats = spr_desk_submit_roll_stats(frm);
+	const msg = __(
+		'Submit <strong>{0}</strong> roll(s) · <strong>{1}</strong> Kg net<br>Order: <strong>{2}</strong><br>SPR: <strong>{3}</strong><br><br>Yes to submit, No to stay on this document.',
+		[
+			stats.rollCount,
+			stats.netKg.toFixed(2),
+			stats.orderCode || '—',
+			frm.doc.name,
+		]
+	);
+	frappe.confirm(msg, function () {
+		if (typeof onYes === 'function') {
+			onYes();
+		}
+	});
+}
+
 function spr_wrap_frm_save_for_progress(frm) {
 	if (!frm || frm._spr_save_progress_wrapped) {
 		return;
@@ -3413,69 +3447,84 @@ function spr_wrap_frm_save_for_progress(frm) {
 			progressFinished = true;
 			spr_clear_save_submit_progress(frm);
 		}
-		if (isSubmit) {
-			frm._spr_summary_shown = false;
-			frm._spr_recovery_alerted = false;
-			spr_begin_save_submit_progress(frm, 'submit', rollCount);
-			progressStarted = true;
-		} else if (rollCount > 15) {
-			spr_begin_save_submit_progress(frm, 'save', rollCount);
-			progressStarted = true;
-		}
-		function wrappedCallback(r) {
-			finishProgress();
+		function runSave() {
 			if (isSubmit) {
-				spr_handle_submit_response_summary(frm, r || {});
+				frm._spr_summary_shown = false;
+				frm._spr_recovery_alerted = false;
+				spr_begin_save_submit_progress(frm, 'submit', rollCount);
+				progressStarted = true;
+			} else if (rollCount > 15) {
+				spr_begin_save_submit_progress(frm, 'save', rollCount);
+				progressStarted = true;
 			}
-			if (typeof callback === 'function') {
-				try {
-					callback(r);
-				} catch (cbErr) {
-					if (isSubmit) {
-						setTimeout(function () {
-							spr_try_recover_submitted_spr(frm);
-						}, 1500);
+			function wrappedCallback(r) {
+				finishProgress();
+				if (isSubmit) {
+					spr_handle_submit_response_summary(frm, r || {});
+				}
+				if (typeof callback === 'function') {
+					try {
+						callback(r);
+					} catch (cbErr) {
+						if (isSubmit) {
+							setTimeout(function () {
+								spr_try_recover_submitted_spr(frm);
+							}, 1500);
+						}
 					}
 				}
 			}
-		}
-		function wrappedOnError(err) {
-			finishProgress();
-			frm._spr_submit_in_progress = false;
-			if (isSubmit) {
-				setTimeout(function () {
-					spr_try_recover_submitted_spr(frm);
-				}, 2000);
-			}
-			if (typeof on_error === 'function') {
-				try {
-					on_error.apply(this, arguments);
-				} catch (e) {
-					/* ignore broken error handlers */
+			function wrappedOnError(err) {
+				finishProgress();
+				frm._spr_submit_in_progress = false;
+				if (isSubmit) {
+					setTimeout(function () {
+						spr_try_recover_submitted_spr(frm);
+					}, 2000);
+				}
+				if (typeof on_error === 'function') {
+					try {
+						on_error.apply(this, arguments);
+					} catch (e) {
+						/* ignore broken error handlers */
+					}
 				}
 			}
+			const result = origSave(action, wrappedCallback, btn, wrappedOnError);
+			if (result && typeof result.then === 'function') {
+				result
+					.then(function (r) {
+						finishProgress();
+						if (isSubmit) {
+							spr_handle_submit_response_summary(frm, r || {});
+						}
+						return r;
+					})
+					.catch(function () {
+						finishProgress();
+						frm._spr_submit_in_progress = false;
+						if (isSubmit) {
+							setTimeout(function () {
+								spr_try_recover_submitted_spr(frm);
+							}, 2000);
+						}
+					})
+					.finally(function () {
+						finishProgress();
+						frm._spr_submit_in_progress = false;
+					});
+			}
+			return result;
 		}
-		const result = origSave(action, wrappedCallback, btn, wrappedOnError);
-		if (result && typeof result.then === 'function') {
-			result
-				.then(function (r) {
-					finishProgress();
-					if (isSubmit) {
-						spr_handle_submit_response_summary(frm, r || {});
-					}
-					return r;
-				})
-				.catch(function () {
-					finishProgress();
-					frm._spr_submit_in_progress = false;
-					if (isSubmit) {
-						setTimeout(function () {
-							spr_try_recover_submitted_spr(frm);
-						}, 2000);
-					}
-				});
+		if (isSubmit && !frm._spr_submit_confirmed && cint(frm.doc.docstatus) === 0 && rollCount > 0) {
+			spr_show_desk_submit_confirm(frm, function () {
+				frm._spr_submit_confirmed = true;
+				runSave();
+				frm._spr_submit_confirmed = false;
+			});
+			return;
 		}
-		return result;
+		return runSave();
 	};
 }
 

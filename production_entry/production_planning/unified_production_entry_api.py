@@ -1393,6 +1393,61 @@ def _normalize_pp_shaft_job_row(shaft) -> frappe._dict:
 	return row
 
 
+def _gsm_pp_net_weight_fallback(pp) -> float:
+	"""PP-level net / weight-per-roll fallback (SPR create-entry parity)."""
+	return flt(
+		_pick_value(
+			pp,
+			[
+				"custom_net_weight",
+				"net_weight",
+				"custom_net_weight_kgs",
+				"net_weight_kgs",
+				"custom_weight_per_roll",
+				"weight_per_roll",
+			],
+			0,
+		)
+	)
+
+
+def _gsm_resolve_pp_shaft_net_weight(pp, shaft_row, shaft_idx: int = 1):
+	"""Resolve shaft net weight for GSM Shaft Details — same chain as planned qty."""
+	row = _normalize_pp_shaft_job_row(shaft_row)
+	nw = flt(row.get("net_weight") or 0)
+	if nw > 0:
+		return round(nw, 2)
+
+	pp_net = _gsm_pp_net_weight_fallback(pp)
+	if pp_net > 0:
+		return round(pp_net, 2)
+
+	pp_po_items = pp.get("po_items") or []
+	if shaft_idx > 0 and shaft_idx <= len(pp_po_items):
+		poi_nw = flt(
+			_pick_value(
+				pp_po_items[shaft_idx - 1],
+				["net_weight", "weight_per_roll", "weight_roll", "stock_qty"],
+				0,
+			)
+		)
+		if poi_nw > 0:
+			return round(poi_nw, 2)
+
+	comb = _cstr(_pick_value(row, ["combination", "combined_width", "shaft", "shaft_details"], ""))
+	segs = max(1, _count_combination_segments(comb))
+	weights = _segment_weights_kg(row, segs)
+	positive = [flt(w) for w in weights if flt(w) > 0]
+	if not positive:
+		return 0.0
+	if len(positive) == 1 or (len(set(round(w, 2) for w in positive)) == 1):
+		return round(positive[0], 2)
+	parts = []
+	for w in positive:
+		parts.append(str(int(w)) if abs(w - int(w)) < 0.01 else f"{w:.2f}".rstrip("0").rstrip("."))
+	return "+".join(parts)
+
+
 def _planned_qty_kg_from_pp_shaft(
 	pp_id: str,
 	width_inch=None,
@@ -1763,6 +1818,9 @@ def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
 		limit=200,
 	)
 	spr_list = []
+	roll_lines = []
+	roll_lines_truncated = False
+	_max_roll_lines = 500
 	submitted_count = draft_count = 0
 	total_rolls = 0
 	total_net = total_gross = 0.0
@@ -1810,6 +1868,24 @@ def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
 				by_batch_series[prefix]["rolls"] += 1
 				by_batch_series[prefix]["net_kg"] += flt(roll.get("net_weight") or 0)
 
+		if not roll_lines_truncated:
+			for grid_row in _gsm_serialize_spr_roll_lines_for_grid(spr):
+				if len(roll_lines) >= _max_roll_lines:
+					roll_lines_truncated = True
+					break
+				roll_lines.append(
+					{
+						**grid_row,
+						"spr_name": entry["spr_name"],
+						"spr_status": entry["spr_status"],
+						"operator": entry.get("operator") or "",
+						"supervisor": entry.get("supervisor") or "",
+						"run_date": str(run_date),
+						"shift": shift,
+						"unit": unit,
+					}
+				)
+
 	shift_session = None
 	if _gsm_shift_session_table_exists() and unit and shift:
 		sess_filters = {
@@ -1842,6 +1918,8 @@ def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
 	session_status = "Not started"
 	if shift_session:
 		session_status = shift_session.get("status") or "Closed"
+
+	roll_lines.sort(key=lambda r: _cstr(r.get("batch_no")))
 
 	return {
 		"run_date": str(run_date),
@@ -1877,6 +1955,8 @@ def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
 			key=lambda r: _cstr(r.get("batch_series")),
 		),
 		"spr_list": spr_list,
+		"roll_lines": roll_lines,
+		"roll_lines_truncated": roll_lines_truncated,
 	}
 
 
@@ -1949,11 +2029,8 @@ def _gsm_pp_shaft_rows(pp) -> list[dict]:
 					no_of_shafts = seg
 			except Exception:
 				pass
-		net_weight = _pick_value(
-			row,
-			["net_weight", "net_weight_shaft_kgs", "net_weight_shaft", "custom_net_weight_shaft_kgs"],
-			0,
-		)
+		net_weight = _gsm_resolve_pp_shaft_net_weight(pp, shaft, idx)
+		display_nw = net_weight if isinstance(net_weight, str) else flt(net_weight)
 		out.append(
 			{
 				"job": _cstr(_pick_value(row, ["job_id", "job", "job_no"], str(idx))),
@@ -1963,7 +2040,7 @@ def _gsm_pp_shaft_rows(pp) -> list[dict]:
 				"total_width": flt(_pick_value(row, ["total_width", "combined_width", "width"], 0))
 				or _shaft_width_inch(row),
 				"meter_roll": meter_roll,
-				"net_weight": flt(net_weight),
+				"net_weight": display_nw,
 			}
 		)
 	return out

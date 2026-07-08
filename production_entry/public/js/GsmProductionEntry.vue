@@ -570,7 +570,7 @@
           <p>Draft and submitted SPRs for the selected date, shift, and unit appear here.</p>
         </div>
         <template v-else>
-          <div class="gpe-shift-kpi-row gpe-card-inner">
+          <div class="gpe-shift-kpi-grid gpe-card-inner">
             <div class="gpe-kpi">
               <span class="gpe-kpi-label">Session</span>
               <span :class="['gpe-chip', shiftSessionStatusClass(summaryShiftSummary.session_status)]">
@@ -597,7 +597,7 @@
               <strong>{{ formatKg(summaryShiftSummary.totals.gross_kg) }}</strong>
             </div>
           </div>
-          <div class="gpe-summary-panels">
+          <div class="gpe-summary-panels gpe-shift-summary-cards">
             <div class="gpe-panel gpe-card-inner">
               <h4>By Order</h4>
               <table>
@@ -664,6 +664,65 @@
               </tbody>
             </table>
           </div>
+          <div class="gpe-shift-roll-section gpe-card-inner">
+            <div class="gpe-shift-roll-head">
+              <h4>Shift roll entries</h4>
+              <span class="gpe-roll-count-badge">{{ shiftRollLines(summaryShiftSummary).length }} rolls</span>
+              <span v-if="summaryShiftSummary.roll_lines_truncated" class="gpe-muted gpe-trunc-hint">First 500 rows shown</span>
+            </div>
+            <div class="gpe-grid-wrap gpe-grid-wrap-shift">
+              <table class="gpe-grid gpe-grid-entry gpe-grid-readonly">
+                <thead>
+                  <tr>
+                    <th class="gpe-sticky-col gpe-sticky-0">#</th>
+                    <th class="gpe-sticky-col gpe-sticky-1">Order</th>
+                    <th class="gpe-num">Job</th>
+                    <th>Quality</th>
+                    <th>Color</th>
+                    <th class="gpe-num">GSM</th>
+                    <th class="gpe-num">Width</th>
+                    <th class="gpe-num">Ord MTR</th>
+                    <th class="gpe-num">Prod MTR</th>
+                    <th>Prod GSM</th>
+                    <th>Batch</th>
+                    <th>Net</th>
+                    <th>Gross</th>
+                    <th>Planned</th>
+                    <th>SPR</th>
+                    <th>Status</th>
+                    <th>WO</th>
+                    <th>Core</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(row, sidx) in shiftRollLines(summaryShiftSummary)"
+                    :key="(row.batch_no || '') + '-' + sidx"
+                    :class="rowBandClass(row)"
+                  >
+                    <td class="gpe-sticky-col gpe-sticky-0">{{ shiftRollLines(summaryShiftSummary).length - sidx }}</td>
+                    <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code || "—" }}</td>
+                    <td class="gpe-num">{{ row.job_id || "—" }}</td>
+                    <td>{{ row.quality || "—" }}</td>
+                    <td>{{ row.color || "—" }}</td>
+                    <td class="gpe-num">{{ row.gsm }}</td>
+                    <td class="gpe-num">{{ widthDisplay(row) }}</td>
+                    <td class="gpe-num">{{ row.meter_roll }}</td>
+                    <td class="gpe-num">{{ row.produced_length_mtrs }}</td>
+                    <td>{{ row.produced_gsm }}</td>
+                    <td>{{ row.batch_no }}</td>
+                    <td>{{ formatKg(row.net_weight) }}</td>
+                    <td>{{ formatKg(sprNormalizeGrossWeightInput(row.gross_weight)) }}</td>
+                    <td>{{ formatKg(row.planned_qty) }}</td>
+                    <td><a href="#" @click.prevent="openSpr(row.spr_name)">{{ row.spr_name }}</a></td>
+                    <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
+                    <td>{{ row.work_order || "—" }}</td>
+                    <td>{{ row.custom_core_width_mm ? row.custom_core_width_mm + ' mm' : "—" }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </template>
       </div>
       <div v-show="summaryTab === 'linked'" class="gpe-panel wide gpe-card-inner">
@@ -727,7 +786,7 @@
           <p>Draft and submitted SPRs for the selected date, shift, and unit appear here.</p>
         </div>
         <div v-else class="gpe-shift-consolidated">
-          <div class="gpe-shift-kpi-row gpe-card">
+          <div class="gpe-shift-kpi-grid gpe-card">
             <div class="gpe-kpi">
               <span class="gpe-kpi-label">Session</span>
               <span :class="['gpe-chip', shiftSessionStatusClass(shiftConsolidated.session_status)]">
@@ -754,7 +813,7 @@
               <strong>{{ formatKg(shiftConsolidated.totals.gross_kg) }}</strong>
             </div>
           </div>
-          <div class="gpe-summary-panels">
+          <div class="gpe-summary-panels gpe-shift-summary-cards">
             <div class="gpe-panel gpe-card">
               <h4>By Order</h4>
               <table>
@@ -809,13 +868,8 @@
                 <tr><th>SPR</th><th>Status</th><th>Orders</th><th>Rolls</th><th>Net Kg</th><th>Operator</th></tr>
               </thead>
               <tbody>
-                <tr
-                  v-for="spr in shiftConsolidated.spr_list"
-                  :key="spr.spr_name"
-                  class="gpe-clickable-row"
-                  @click="selectedShiftEntry = spr"
-                >
-                  <td>{{ spr.spr_name }}</td>
+                <tr v-for="spr in shiftConsolidated.spr_list" :key="spr.spr_name">
+                  <td><a href="#" @click.prevent="openSpr(spr.spr_name)">{{ spr.spr_name }}</a></td>
                   <td><span :class="['gpe-chip', sprStatusChipClass(spr.spr_status)]">{{ spr.spr_status }}</span></td>
                   <td>{{ spr.order_codes?.join(", ") || "—" }}</td>
                   <td>{{ spr.roll_count }}</td>
@@ -825,36 +879,64 @@
               </tbody>
             </table>
           </div>
-          <div v-if="selectedShiftEntry" class="gpe-shift-detail gpe-card">
-            <div class="gpe-shift-detail-head">
-              <h3>{{ selectedShiftEntry.spr_name }}</h3>
-              <button type="button" class="gpe-btn sm" @click="openSpr(selectedShiftEntry.spr_name)">Open SPR</button>
+          <div class="gpe-shift-roll-section gpe-card">
+            <div class="gpe-shift-roll-head">
+              <h4>Shift roll entries</h4>
+              <span class="gpe-roll-count-badge">{{ shiftRollLines(shiftConsolidated).length }} rolls</span>
+              <span v-if="shiftConsolidated.roll_lines_truncated" class="gpe-muted gpe-trunc-hint">First 500 rows shown</span>
             </div>
-            <p class="gpe-shift-meta">
-              <span :class="['gpe-chip', sprStatusChipClass(selectedShiftEntry.spr_status)]">
-                {{ selectedShiftEntry.spr_status || "Submitted" }}
-              </span>
-              · Operator: {{ selectedShiftEntry.operator || "—" }}
-              · Supervisor: {{ selectedShiftEntry.supervisor || "—" }}
-            </p>
-            <table class="gpe-grid">
-              <thead>
-                <tr>
-                  <th>Batch</th><th>GSM</th><th>Width</th><th>Net</th><th>Gross</th><th>Order</th><th>WO</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(r, i) in selectedShiftEntry.rolls" :key="i">
-                  <td>{{ r.batch_no }}</td>
-                  <td>{{ r.gsm }}</td>
-                  <td>{{ r.width_inch }}</td>
-                  <td>{{ formatKg(r.net_weight) }}</td>
-                  <td>{{ formatKg(r.gross_weight) }}</td>
-                  <td>{{ r.party_code }}</td>
-                  <td>{{ r.work_order }}</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="gpe-grid-wrap gpe-grid-wrap-shift">
+              <table class="gpe-grid gpe-grid-entry gpe-grid-readonly">
+                <thead>
+                  <tr>
+                    <th class="gpe-sticky-col gpe-sticky-0">#</th>
+                    <th class="gpe-sticky-col gpe-sticky-1">Order</th>
+                    <th class="gpe-num">Job</th>
+                    <th>Quality</th>
+                    <th>Color</th>
+                    <th class="gpe-num">GSM</th>
+                    <th class="gpe-num">Width</th>
+                    <th class="gpe-num">Ord MTR</th>
+                    <th class="gpe-num">Prod MTR</th>
+                    <th>Prod GSM</th>
+                    <th>Batch</th>
+                    <th>Net</th>
+                    <th>Gross</th>
+                    <th>Planned</th>
+                    <th>SPR</th>
+                    <th>Status</th>
+                    <th>WO</th>
+                    <th>Core</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(row, sidx) in shiftRollLines(shiftConsolidated)"
+                    :key="(row.batch_no || '') + '-' + sidx"
+                    :class="rowBandClass(row)"
+                  >
+                    <td class="gpe-sticky-col gpe-sticky-0">{{ shiftRollLines(shiftConsolidated).length - sidx }}</td>
+                    <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code || "—" }}</td>
+                    <td class="gpe-num">{{ row.job_id || "—" }}</td>
+                    <td>{{ row.quality || "—" }}</td>
+                    <td>{{ row.color || "—" }}</td>
+                    <td class="gpe-num">{{ row.gsm }}</td>
+                    <td class="gpe-num">{{ widthDisplay(row) }}</td>
+                    <td class="gpe-num">{{ row.meter_roll }}</td>
+                    <td class="gpe-num">{{ row.produced_length_mtrs }}</td>
+                    <td>{{ row.produced_gsm }}</td>
+                    <td>{{ row.batch_no }}</td>
+                    <td>{{ formatKg(row.net_weight) }}</td>
+                    <td>{{ formatKg(sprNormalizeGrossWeightInput(row.gross_weight)) }}</td>
+                    <td>{{ formatKg(row.planned_qty) }}</td>
+                    <td><a href="#" @click.prevent="openSpr(row.spr_name)">{{ row.spr_name }}</a></td>
+                    <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
+                    <td>{{ row.work_order || "—" }}</td>
+                    <td>{{ row.custom_core_width_mm ? row.custom_core_width_mm + ' mm' : "—" }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </template>
@@ -982,64 +1064,103 @@
     </div>
 
     <!-- Submit entry confirm -->
-    <div v-if="showSubmitConfirmDialog" class="gpe-dialog-overlay" @click.self="showSubmitConfirmDialog = false">
+    <div
+      v-if="showSubmitConfirmDialog"
+      class="gpe-dialog-overlay"
+      @click.self="submitDialogPhase === 'review' ? closeSubmitDialog() : null"
+    >
       <div class="gpe-dialog gpe-card gpe-submit-confirm-dialog">
-        <h3>Confirm submit</h3>
-        <p class="gpe-hint">
-          {{ shift }} · {{ formatPlannedDate(runDate) }} · Batch {{ shiftBatchPrefix || seriesPrefix || "—" }}
-          · Operator {{ operator || "—" }} · Supervisor {{ supervisor || "—" }}
-        </p>
-        <div class="gpe-submit-summary-totals">
-          <span><strong>{{ sessionRollCount }}</strong> roll(s)</span>
-          <span>Net <strong>{{ formatKg(metrics.totalNet) }}</strong> Kg</span>
-          <span>Gross <strong>{{ formatKg(metrics.totalGross) }}</strong> Kg</span>
-        </div>
-        <h4 class="gpe-submit-section-title">Orders</h4>
-        <table class="gpe-confirm-grid">
-          <thead>
-            <tr>
-              <th>Order</th><th>Required Kg</th><th>Session Kg</th><th>Remaining Kg</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="o in linkedOrderSummary" :key="o.orderCode">
-              <td>{{ o.orderCode }}</td>
-              <td>{{ formatKg(o.required) }}</td>
-              <td>{{ formatKg(o.produced) }}</td>
-              <td>{{ formatKg(o.remaining) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <h4 class="gpe-submit-section-title">Rolls</h4>
-        <table class="gpe-confirm-grid">
-          <thead>
-            <tr>
-              <th>Batch</th><th>Width</th><th>Order</th><th>Job</th><th>Net Kg</th><th>Gross Kg</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in submitConfirmRolls" :key="r._id">
-              <td>{{ r.batch_no }}</td>
-              <td>{{ widthDisplay(r) }}</td>
-              <td>{{ r.party_code }}</td>
-              <td>{{ r.job_id || r.job }}</td>
-              <td>{{ formatKg(r.net_weight) }}</td>
-              <td>{{ formatKg(sprNormalizeGrossWeightInput(r.gross_weight)) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <h4 class="gpe-submit-section-title">SPRs</h4>
-        <ul class="gpe-submit-spr-list">
-          <li v-for="s in sessionSprList" :key="s.pp_id">
-            {{ s.order_code }} · {{ s.label_type || "Default" }} · {{ s.spr_name }}
-          </li>
-        </ul>
-        <div class="gpe-dialog-actions">
-          <button type="button" class="gpe-btn" @click="showSubmitConfirmDialog = false">Cancel</button>
-          <button type="button" class="gpe-btn primary" :disabled="submitInProgress" @click="confirmSubmitEntry">
-            {{ submitInProgress ? "Submitting…" : "Confirm Submit" }}
-          </button>
-        </div>
+        <template v-if="submitDialogPhase === 'review'">
+          <h3>Submit entry — review</h3>
+          <p class="gpe-hint">
+            {{ shift }} · {{ formatPlannedDate(runDate) }} · Batch {{ shiftBatchPrefix || seriesPrefix || "—" }}
+            · Operator {{ operator || "—" }} · Supervisor {{ supervisor || "—" }}
+          </p>
+          <div class="gpe-submit-summary-totals">
+            <span><strong>{{ submitConfirmRolls.length }}</strong> roll(s)</span>
+            <span>Net <strong>{{ formatKg(metrics.totalNet) }}</strong> Kg</span>
+            <span>Gross <strong>{{ formatKg(metrics.totalGross) }}</strong> Kg</span>
+          </div>
+          <h4 class="gpe-submit-section-title">Orders</h4>
+          <table class="gpe-confirm-grid">
+            <thead>
+              <tr>
+                <th>Order</th><th>Required Kg</th><th>Session Kg</th><th>Remaining Kg</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="o in linkedOrderSummary" :key="o.orderCode">
+                <td>{{ o.orderCode }}</td>
+                <td>{{ formatKg(o.required) }}</td>
+                <td>{{ formatKg(o.produced) }}</td>
+                <td>{{ formatKg(o.remaining) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <h4 class="gpe-submit-section-title">Rolls</h4>
+          <table class="gpe-confirm-grid">
+            <thead>
+              <tr>
+                <th>Batch</th><th>Width</th><th>Order</th><th>Job</th><th>Net Kg</th><th>Gross Kg</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in submitConfirmRolls" :key="r._id">
+                <td>{{ r.batch_no }}</td>
+                <td>{{ widthDisplay(r) }}</td>
+                <td>{{ r.party_code }}</td>
+                <td>{{ r.job_id || r.job }}</td>
+                <td>{{ formatKg(r.net_weight) }}</td>
+                <td>{{ formatKg(sprNormalizeGrossWeightInput(r.gross_weight)) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <h4 class="gpe-submit-section-title">SPRs</h4>
+          <ul class="gpe-submit-spr-list">
+            <li v-for="s in sessionSprList" :key="s.pp_id">
+              {{ s.order_code }} · {{ s.label_type || "Default" }} · {{ s.spr_name }}
+            </li>
+          </ul>
+          <p class="gpe-hint">Submit {{ submitConfirmRolls.length }} roll(s) across {{ sessionSprList.length }} SPR(s)?</p>
+          <div class="gpe-dialog-actions">
+            <button type="button" class="gpe-btn" @click="closeSubmitDialog">No, stay here</button>
+            <button type="button" class="gpe-btn primary" @click="confirmSubmitEntry">Yes, submit entry</button>
+          </div>
+        </template>
+
+        <template v-else-if="submitDialogPhase === 'submitting'">
+          <h3>Submitting entry…</h3>
+          <div class="gpe-submit-progress">
+            <div class="gpe-submit-spinner"></div>
+            <p class="gpe-submit-progress-msg">{{ submitProgressMessage }}</p>
+            <p class="gpe-hint">Do not reload or close this window.</p>
+          </div>
+        </template>
+
+        <template v-else-if="submitDialogPhase === 'success'">
+          <h3 class="gpe-submit-success-title">Successfully submitted</h3>
+          <p class="gpe-submit-success-msg">
+            {{ submitSuccessResult?.count || 0 }} SPR(s) submitted
+            · {{ submitSuccessResult?.rollCount || submitConfirmRolls.length }} roll(s)
+            <span v-if="submitSuccessResult?.totalKg"> · {{ formatKg(submitSuccessResult.totalKg) }} Kg net</span>
+          </p>
+          <ul v-if="submitSuccessResult?.sprNames?.length" class="gpe-submit-spr-list">
+            <li v-for="sn in submitSuccessResult.sprNames" :key="sn">
+              <a href="#" @click.prevent="openSpr(sn)">{{ sn }}</a>
+            </li>
+          </ul>
+          <div class="gpe-dialog-actions">
+            <button type="button" class="gpe-btn primary" @click="closeSubmitDialog">OK</button>
+          </div>
+        </template>
+
+        <template v-else-if="submitDialogPhase === 'error'">
+          <h3>Submit could not be confirmed</h3>
+          <p class="gpe-submit-error-msg">{{ submitErrorMessage }}</p>
+          <div class="gpe-dialog-actions">
+            <button type="button" class="gpe-btn primary" @click="closeSubmitDialog">Stay on entry</button>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -1211,7 +1332,7 @@
                 <td>{{ row.combination }}</td>
                 <td>{{ row.total_width }}</td>
                 <td>{{ row.meter_roll }}</td>
-                <td>{{ formatKg(row.net_weight) }}</td>
+                <td>{{ formatNetWeightDisplay(row.net_weight) }}</td>
               </tr>
             </tbody>
           </table>
@@ -1277,6 +1398,12 @@ const selectionLocked = ref(false);
 const showCompletedOrders = ref(false);
 const showConfirmDialog = ref(false);
 const showSubmitConfirmDialog = ref(false);
+const submitDialogPhase = ref("review");
+const submitProgressMessage = ref("");
+const submitSuccessResult = ref(null);
+const submitErrorMessage = ref("");
+let submitProgressTimer = null;
+let submitProgressStart = 0;
 const showShiftOpenDialog = ref(false);
 const showAddRollWizard = ref(false);
 const addRollWizardStep = ref(1);
@@ -2645,7 +2772,43 @@ const canConfirmShiftOpen = computed(() => {
   return true;
 });
 
-const submitConfirmRolls = computed(() => rollLines.value);
+const submitConfirmRolls = computed(() =>
+  rollLines.value.filter((r) => !r.is_bundle_row)
+);
+
+function shiftRollLines(summary) {
+  if (!summary) {
+    return [];
+  }
+  if (summary.roll_lines?.length) {
+    return summary.roll_lines;
+  }
+  const lines = [];
+  for (const spr of summary.spr_list || []) {
+    for (const r of spr.rolls || []) {
+      lines.push({
+        ...r,
+        spr_name: spr.spr_name,
+        spr_status: spr.spr_status,
+        party_code: r.party_code,
+        job_id: r.job_id || "",
+        quality: r.quality || "",
+        color: r.color || "",
+      });
+    }
+  }
+  return lines;
+}
+
+function formatNetWeightDisplay(val) {
+  if (val === null || val === undefined || val === "") {
+    return "—";
+  }
+  if (typeof val === "string" && val.includes("+")) {
+    return val;
+  }
+  return formatKg(val);
+}
 
 const shiftStatusChips = computed(() => {
   const map = shiftStatusByShift.value || {};
@@ -3322,12 +3485,88 @@ async function openSubmitConfirmDialog() {
     frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
     return;
   }
+  submitDialogPhase.value = "review";
+  submitSuccessResult.value = null;
+  submitErrorMessage.value = "";
   showSubmitConfirmDialog.value = true;
 }
 
-function confirmSubmitEntry() {
+function stopSubmitProgressTimer() {
+  if (submitProgressTimer) {
+    clearInterval(submitProgressTimer);
+    submitProgressTimer = null;
+  }
+}
+
+function startSubmitProgressTimer(rollCount) {
+  stopSubmitProgressTimer();
+  submitProgressStart = Date.now();
+  const rc = rollCount || submitConfirmRolls.value.length;
+  const updateMsg = () => {
+    const sec = Math.round((Date.now() - submitProgressStart) / 1000);
+    if (sec >= 60) {
+      submitProgressMessage.value = __(
+        "Submitting {0} rolls — {1}s elapsed. Still working, do not reload.",
+        [rc, sec]
+      );
+    } else if (sec >= 30) {
+      submitProgressMessage.value = __("Creating manufacture entries for {0} rolls — {1}s. Do not reload.", [rc, sec]);
+    } else if (sec >= 10) {
+      submitProgressMessage.value = __("Checking stock and posting manufacture entries — please wait...");
+    } else {
+      submitProgressMessage.value = __("Submitting {0} roll(s) — validating and posting…", [rc]);
+    }
+  };
+  updateMsg();
+  submitProgressTimer = setInterval(updateMsg, 2000);
+}
+
+function closeSubmitDialog() {
+  stopSubmitProgressTimer();
   showSubmitConfirmDialog.value = false;
-  submitEntry();
+  submitDialogPhase.value = "review";
+  submitSuccessResult.value = null;
+  submitErrorMessage.value = "";
+}
+
+async function pollGsmSubmitRecovery(sprNames) {
+  const names = (sprNames || []).filter(Boolean);
+  if (!names.length) {
+    return false;
+  }
+  for (let i = 0; i < 24; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    let allSubmitted = true;
+    for (const name of names) {
+      const r = await frappe.db.get_value("Shaft Production Run", name, "docstatus");
+      if (cint(r?.message?.docstatus) !== 1) {
+        allSubmitted = false;
+        break;
+      }
+    }
+    if (allSubmitted) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function showSubmitSuccess(submitted, totalKg) {
+  const sprNames = (submitted || []).map((s) => s.spr_name).filter(Boolean);
+  submitSuccessResult.value = {
+    count: sprNames.length,
+    sprNames,
+    rollCount: submitConfirmRolls.value.length,
+    totalKg: totalKg || metrics.value.totalNet,
+  };
+  submitDialogPhase.value = "success";
+  frappe.show_alert({ message: __("Successfully submitted"), indicator: "green" });
+}
+
+async function confirmSubmitEntry() {
+  submitDialogPhase.value = "submitting";
+  startSubmitProgressTimer(submitConfirmRolls.value.length);
+  await submitEntry();
 }
 
 async function openShiftDialog() {
@@ -3394,19 +3633,28 @@ async function submitEntry(overrides = []) {
     frappe.msgprint(__("Create SPRs for all selected orders first."));
     return;
   }
+  const sprNamesToSubmit = sessionSprList.value.map((s) => s.spr_name).filter(Boolean);
   submitInProgress.value = true;
   saveStatus.value = "Submitting…";
+  if (!showSubmitConfirmDialog.value) {
+    submitDialogPhase.value = "submitting";
+    startSubmitProgressTimer(submitConfirmRolls.value.length);
+    showSubmitConfirmDialog.value = true;
+  }
   try {
     const res = await callSubmitGsm(overrides);
     const msg = res.message || {};
     if (msg.status === "tolerance_required") {
+      stopSubmitProgressTimer();
+      showSubmitConfirmDialog.value = false;
       openToleranceDialog(msg.orders || []);
       saveStatus.value = "Tolerance approval needed";
       return;
     }
     if (msg.status === "import_failed" || msg.status === "failed") {
       const errs = (msg.failed || []).map((f) => `${f.spr_name || f.pp_id}: ${f.error}`).join("<br>");
-      frappe.msgprint({ title: __("Submit failed"), message: errs || __("Unknown error"), indicator: "red" });
+      submitErrorMessage.value = errs || __("Unknown error");
+      submitDialogPhase.value = "error";
       saveStatus.value = "Submit failed";
       return;
     }
@@ -3421,20 +3669,32 @@ async function submitEntry(overrides = []) {
       });
     }
     if (submitted.length) {
-      const links = submitted.map((s) => `<a href="/app/shaft-production-run/${s.spr_name}">${s.spr_name}</a>`).join(", ");
-      frappe.msgprint({
-        title: __("Submitted"),
-        message: __("{0} SPR(s) submitted: {1}", [submitted.length, links]),
-        indicator: "green",
-      });
+      showSubmitSuccess(submitted, msg.total_kg);
+      saveStatus.value = "Submitted";
+      await fetchOrders();
+      return;
     }
-    saveStatus.value = "Submitted";
-    await fetchOrders();
+    saveStatus.value = "Submit failed";
+    submitErrorMessage.value = __("No SPRs were submitted.");
+    submitDialogPhase.value = "error";
   } catch (e) {
     console.error(e);
+    const recovered = await pollGsmSubmitRecovery(sprNamesToSubmit);
+    if (recovered) {
+      showSubmitSuccess(
+        sprNamesToSubmit.map((sn) => ({ spr_name: sn })),
+        metrics.value.totalNet
+      );
+      saveStatus.value = "Submitted";
+      await fetchOrders();
+      return;
+    }
     saveStatus.value = "Submit failed";
-    frappe.msgprint(__("Submit failed. Check console."));
+    submitErrorMessage.value = __("Submit failed. The server may still be processing — refresh and check SPR status.");
+    submitDialogPhase.value = "error";
+    frappe.msgprint(__("Submit failed. Check console or refresh SPR status."));
   } finally {
+    stopSubmitProgressTimer();
     submitInProgress.value = false;
   }
 }
@@ -3449,6 +3709,10 @@ function submitWithTolerance() {
     reason: (toleranceForm.value[o.spr_name]?.reason || "").trim(),
     approved: toleranceForm.value[o.spr_name]?.approved ? 1 : 0,
   }));
+  showToleranceDialog.value = false;
+  submitDialogPhase.value = "submitting";
+  showSubmitConfirmDialog.value = true;
+  startSubmitProgressTimer(submitConfirmRolls.value.length);
   submitEntry(overrides);
 }
 
@@ -5049,6 +5313,7 @@ onUnmounted(() => {
     clearTimeout(autosaveTimer);
   }
   stopShiftReminderTimers();
+  stopSubmitProgressTimer();
 });
 </script>
 
@@ -5907,6 +6172,98 @@ onUnmounted(() => {
   gap: 16px 24px;
   padding: 12px;
   margin-bottom: 12px;
+}
+.gpe-shift-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px 16px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.gpe-shift-summary-cards .gpe-panel {
+  padding: 12px 14px;
+  overflow: visible;
+  min-height: 120px;
+}
+.gpe-shift-summary-cards .gpe-panel h4 {
+  margin: 0 0 8px;
+  line-height: 1.35;
+  font-size: 13px;
+}
+.gpe-shift-summary-cards .gpe-table-wrap,
+.gpe-shift-summary-cards table {
+  width: 100%;
+}
+.gpe-shift-roll-section {
+  margin-top: 12px;
+  padding: 12px 14px;
+}
+.gpe-shift-roll-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.gpe-shift-roll-head h4 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.gpe-roll-count-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 700;
+}
+.gpe-trunc-hint {
+  font-size: 11px;
+}
+.gpe-grid-wrap-shift {
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.gpe-grid-readonly td,
+.gpe-grid-readonly th {
+  white-space: nowrap;
+}
+.gpe-submit-progress {
+  text-align: center;
+  padding: 24px 12px;
+}
+.gpe-submit-spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 16px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #4f46e5;
+  border-radius: 50%;
+  animation: gpe-spin 0.9s linear infinite;
+}
+@keyframes gpe-spin {
+  to { transform: rotate(360deg); }
+}
+.gpe-submit-progress-msg {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+  margin: 0 0 8px;
+}
+.gpe-submit-success-title {
+  color: #166534;
+  margin-bottom: 8px;
+}
+.gpe-submit-success-msg {
+  font-size: 13px;
+  color: #334155;
+}
+.gpe-submit-error-msg {
+  color: #991b1b;
+  font-size: 13px;
 }
 .gpe-kpi {
   display: flex;
