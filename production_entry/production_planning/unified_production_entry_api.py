@@ -2716,3 +2716,315 @@ def gsm_apply_bundle_packaging(
 		produced_length_mtrs=produced_length_mtrs,
 		pp_id=pp_id,
 	)
+
+
+# ---------------------------------------------------------------------------
+# GSM Wastage / Recycle (SPR child tables — desk Client Script handles inventory)
+# ---------------------------------------------------------------------------
+
+_GSM_WASTAGE_CHILD_SPECS = (
+	("custom_running_patty_wastage", "Running Patty Wastage Row"),
+	("custom_roll_waste", "Roll Waste Row"),
+	("custom_recycled_wastage_details", "Recycled Wastage Detail Row"),
+)
+
+_PATTY_STOCK_METHOD_CANDIDATES = (
+	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_available_patty_stock",
+	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_available_patty_stock",
+	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_patty_stock_for_spr",
+)
+
+
+def _gsm_child_table_columns(child_doctype: str) -> list[dict]:
+	meta = frappe.get_meta(child_doctype)
+	cols: list[dict] = []
+	seen: set[str] = set()
+	for df in meta.fields:
+		if df.fieldtype in ("Section Break", "Column Break", "Table", "HTML", "Button"):
+			continue
+		if df.fieldname in seen:
+			continue
+		if df.in_list_view or df.fieldtype in (
+			"Data",
+			"Float",
+			"Int",
+			"Check",
+			"Link",
+			"Select",
+			"Currency",
+			"Date",
+		):
+			seen.add(df.fieldname)
+			cols.append({"fieldname": df.fieldname, "label": df.label, "fieldtype": df.fieldtype})
+	return cols
+
+
+def _gsm_child_row_dict(row, columns: list[dict]) -> dict:
+	out = {"name": row.name}
+	for col in columns:
+		fn = col["fieldname"]
+		val = getattr(row, fn, None)
+		if val is not None and hasattr(val, "isoformat"):
+			val = str(val)
+		out[fn] = val
+	return out
+
+
+def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) -> dict:
+	columns = _gsm_child_table_columns(child_doctype)
+	rows = getattr(spr_doc, fieldname, None) or []
+	return {
+		"fieldname": fieldname,
+		"child_doctype": child_doctype,
+		"columns": columns,
+		"rows": [_gsm_child_row_dict(r, columns) for r in rows],
+	}
+
+
+def _gsm_map_to_recycled_row(src) -> dict:
+	if not isinstance(src, dict):
+		src = src.as_dict() if hasattr(src, "as_dict") else {}
+	qty = flt(
+		_pick_value(
+			src,
+			["recycled", "wastage", "available_kg", "available", "net_weight"],
+			0,
+		)
+	)
+	return {
+		"job_id": _cstr(_pick_value(src, ["job_id", "job"], "")),
+		"quality": _cstr(_pick_value(src, ["quality"], "")),
+		"color": _cstr(_pick_value(src, ["color"], "")),
+		"gsm": cint(_pick_value(src, ["gsm"], 0)),
+		"width_inch": flt(_pick_value(src, ["width_inch", "width"], 0)),
+		"meter_per_roll": flt(_pick_value(src, ["meter_per_roll", "meter", "meter_roll"], 0)),
+		"no_of_shafts": cint(_pick_value(src, ["no_of_shafts", "shafts"], 0)),
+		"wastage": qty,
+		"recycled": qty,
+	}
+
+
+def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = None) -> dict:
+	roll_payload = roll_payload if isinstance(roll_payload, dict) else {}
+	return {
+		"job_id": _cstr(
+			_pick_value(roll_payload, ["job_id", "job"])
+			or getattr(item_row, "job_id", None)
+			or getattr(item_row, "job", None)
+			or ""
+		),
+		"quality": _cstr(
+			_pick_value(roll_payload, ["quality"]) or getattr(item_row, "quality", None) or ""
+		),
+		"color": _cstr(_pick_value(roll_payload, ["color"]) or getattr(item_row, "color", None) or ""),
+		"gsm": cint(_pick_value(roll_payload, ["gsm"]) or getattr(item_row, "gsm", None) or 0),
+		"width_inch": flt(
+			_pick_value(roll_payload, ["width_inch", "width"])
+			or getattr(item_row, "width_inch", None)
+			or 0
+		),
+		"meter_per_roll": flt(
+			_pick_value(roll_payload, ["meter_per_roll", "meter_roll", "produced_length_mtrs"])
+			or getattr(item_row, "meter_per_roll", None)
+			or getattr(item_row, "produced_length_mtrs", None)
+			or 0
+		),
+		"no_of_shafts": cint(
+			_pick_value(roll_payload, ["no_of_shafts"]) or getattr(item_row, "no_of_shafts", None) or 0
+		),
+		"wastage": flt(
+			_pick_value(roll_payload, ["wastage", "net_weight"])
+			or getattr(item_row, "net_weight", None)
+			or getattr(item_row, "gross_weight", None)
+			or 0
+		),
+		"batch_no": _cstr(
+			_pick_value(roll_payload, ["batch_no"]) or getattr(item_row, "batch_no", None) or ""
+		),
+		"spr_item_name": _cstr(getattr(item_row, "name", "") or ""),
+		"source_roll": _cstr(
+			_pick_value(roll_payload, ["batch_no", "source_roll"])
+			or getattr(item_row, "batch_no", None)
+			or ""
+		),
+	}
+
+
+@frappe.whitelist()
+def get_gsm_spr_wastage_context(spr_name):
+	"""Read running patty, roll waste, and recycled child tables for GSM dialogs."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	spr_meta = frappe.get_meta("Shaft Production Run")
+	tables = {}
+	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
+		if not spr_meta.has_field(fieldname):
+			tables[fieldname] = {
+				"fieldname": fieldname,
+				"child_doctype": child_doctype,
+				"columns": _gsm_child_table_columns(child_doctype),
+				"rows": [],
+				"configured": False,
+			}
+			continue
+		payload = _gsm_spr_child_table_payload(spr, fieldname, child_doctype)
+		payload["configured"] = True
+		tables[fieldname] = payload
+
+	return {
+		"spr_name": spr_name,
+		"order_code": _cstr(getattr(spr, "order_code", "") or ""),
+		"tables": tables,
+	}
+
+
+@frappe.whitelist()
+def get_gsm_available_patty_stock(spr_name):
+	"""Mirror desk View Patty Stock — delegates to site RPC when present."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name:
+		frappe.throw(_("SPR is required"))
+
+	for path in _PATTY_STOCK_METHOD_CANDIDATES:
+		try:
+			fn = frappe.get_attr(path)
+		except Exception:
+			continue
+		if not callable(fn):
+			continue
+		try:
+			result = fn(spr_name)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"GSM patty stock: {path}")
+			continue
+		if isinstance(result, list):
+			return {"stock": result, "source": path}
+		if isinstance(result, dict):
+			if "stock" in result or "message" in result:
+				return result
+			return {"stock": result.get("rows") or result.get("data") or [], "source": path, **result}
+
+	return {
+		"stock": [],
+		"source": "none",
+		"message": _("Patty stock provider not found on this site."),
+	}
+
+
+@frappe.whitelist()
+def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=None):
+	"""Mark a production roll as waste — append Roll Waste row and remove SPR items row."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_operation_lock,
+	)
+
+	spr_name = _cstr(spr_name).strip()
+	roll_payload = _parse_json_arg(roll_payload, {})
+	batch_no = _cstr(batch_no or roll_payload.get("batch_no") or "").strip()
+	row_name = _cstr(
+		row_name or roll_payload.get("spr_item_name") or roll_payload.get("row_name") or ""
+	).strip()
+
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	if not batch_no and not row_name:
+		frappe.throw(_("Batch number or SPR item row name is required"))
+
+	spr_meta = frappe.get_meta("Shaft Production Run")
+	if not spr_meta.has_field("custom_roll_waste"):
+		frappe.throw(_("Roll Waste table is not configured on Shaft Production Run"))
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot mark roll waste on a submitted Shaft Production Run"))
+
+		target_item = None
+		for row in list(spr.items or []):
+			if batch_no and _cstr(getattr(row, "batch_no", "")).strip() == batch_no:
+				target_item = row
+				break
+			if row_name and _cstr(getattr(row, "name", "")).strip() == row_name:
+				target_item = row
+				break
+		if not target_item:
+			frappe.throw(_("Roll line not found on SPR"))
+
+		waste_row = _gsm_build_roll_waste_row_from_item(target_item, roll_payload)
+		spr.append("custom_roll_waste", waste_row)
+		spr.remove(target_item)
+		spr.flags._spr_incremental_roll_save = True
+		spr.save()
+
+		roll_waste_child = (spr.custom_roll_waste or [])[-1]
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"batch_no": waste_row.get("batch_no"),
+			"removed_row_name": _cstr(getattr(target_item, "name", "")),
+			"roll_waste_row_name": roll_waste_child.name,
+			"roll_waste": _gsm_child_row_dict(
+				roll_waste_child, _gsm_child_table_columns("Roll Waste Row")
+			),
+			"total_items": len(spr.items or []),
+		}
+
+
+@frappe.whitelist()
+def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row_names=None):
+	"""Append Recycled Wastage Details from patty stock and/or roll waste selections."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_operation_lock,
+	)
+
+	spr_name = _cstr(spr_name).strip()
+	patty_selections = _parse_json_arg(patty_selections, [])
+	roll_waste_row_names = _parse_json_arg(roll_waste_row_names, [])
+
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	if not patty_selections and not roll_waste_row_names:
+		frappe.throw(_("Select patty stock and/or roll waste rows to recycle"))
+
+	spr_meta = frappe.get_meta("Shaft Production Run")
+	if not spr_meta.has_field("custom_recycled_wastage_details"):
+		frappe.throw(_("Recycled Wastage Details is not configured on Shaft Production Run"))
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot add recycled rows to a submitted Shaft Production Run"))
+
+		added = 0
+		for sel in patty_selections:
+			if not isinstance(sel, dict):
+				continue
+			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(sel))
+			added += 1
+
+		roll_waste_by_name = {r.name: r for r in (spr.custom_roll_waste or [])}
+		for rn in roll_waste_row_names:
+			rn = _cstr(rn).strip()
+			if not rn:
+				continue
+			rw = roll_waste_by_name.get(rn)
+			if not rw:
+				continue
+			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(rw))
+			added += 1
+
+		if not added:
+			frappe.throw(_("No recycled rows were added"))
+
+		spr.save()
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"added": added,
+			"recycled": _gsm_spr_child_table_payload(
+				spr, "custom_recycled_wastage_details", "Recycled Wastage Detail Row"
+			),
+		}

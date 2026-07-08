@@ -244,6 +244,20 @@
                 </select>
               </label>
               <label>Unit <input v-model="headerUnit" type="text" readonly /></label>
+              <div v-if="shiftOpened && sessionSprList.length" class="gpe-wastage-recycle-btns">
+                <button
+                  type="button"
+                  class="gpe-btn warn"
+                  :disabled="!canOpenWastageRecycle"
+                  @click="openWastageDialog"
+                >Wastage</button>
+                <button
+                  type="button"
+                  class="gpe-btn"
+                  :disabled="!canOpenWastageRecycle"
+                  @click="openRecycleDialog"
+                >Recycle</button>
+              </div>
               <label v-if="shiftOpened">Operator <input :value="operator" type="text" readonly /></label>
               <label v-if="shiftOpened">Supervisor <input :value="supervisor" type="text" readonly /></label>
             </div>
@@ -390,7 +404,7 @@
               <tr
                 v-for="(row, idx) in rollLines"
                 :key="row._id"
-                :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked }]"
+                :class="[rowBandClass(row), { 'gpe-row-locked': row.row_locked, 'gpe-row-wasted': row.is_wasted }]"
               >
                 <td class="gpe-sticky-col gpe-sticky-0">{{ rollLines.length - idx }}</td>
                 <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code }}</td>
@@ -570,35 +584,35 @@
           <p>Draft and submitted SPRs for the selected date, shift, and unit appear here.</p>
         </div>
         <template v-else>
-          <div class="gpe-shift-kpi-grid gpe-card-inner">
-            <div class="gpe-kpi">
+          <div class="gpe-shift-kpi-grid gpe-card-inner gpe-board-animate">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 0ms">
               <span class="gpe-kpi-label">Session</span>
               <span :class="['gpe-chip', shiftSessionStatusClass(summaryShiftSummary.session_status)]">
                 {{ summaryShiftSummary.session_status }}
               </span>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 60ms">
               <span class="gpe-kpi-label">SPRs</span>
               <strong>{{ summaryShiftSummary.totals.submitted_spr_count }} submitted</strong>
               <span v-if="summaryShiftSummary.totals.draft_spr_count" class="gpe-kpi-sub">
                 · {{ summaryShiftSummary.totals.draft_spr_count }} draft
               </span>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 120ms">
               <span class="gpe-kpi-label">Rolls</span>
               <strong>{{ summaryShiftSummary.totals.roll_count }}</strong>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 180ms">
               <span class="gpe-kpi-label">Net Kg</span>
               <strong>{{ formatKg(summaryShiftSummary.totals.net_kg) }}</strong>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 240ms">
               <span class="gpe-kpi-label">Gross Kg</span>
               <strong>{{ formatKg(summaryShiftSummary.totals.gross_kg) }}</strong>
             </div>
           </div>
-          <div class="gpe-summary-panels gpe-shift-summary-cards">
-            <div class="gpe-panel gpe-card-inner">
+          <div class="gpe-summary-panels gpe-shift-summary-cards gpe-board-animate">
+            <div class="gpe-panel gpe-card-inner gpe-board-card" style="--gpe-delay: 80ms">
               <h4>By Order</h4>
               <table>
                 <thead>
@@ -615,7 +629,7 @@
                 </tbody>
               </table>
             </div>
-            <div class="gpe-panel gpe-card-inner">
+            <div class="gpe-panel gpe-card-inner gpe-board-card" style="--gpe-delay: 160ms">
               <h4>By GSM</h4>
               <table>
                 <thead>
@@ -630,7 +644,7 @@
                 </tbody>
               </table>
             </div>
-            <div class="gpe-panel gpe-card-inner">
+            <div class="gpe-panel gpe-card-inner gpe-board-card" style="--gpe-delay: 240ms">
               <h4>By Batch Series</h4>
               <table>
                 <thead>
@@ -786,35 +800,35 @@
           <p>Draft and submitted SPRs for the selected date, shift, and unit appear here.</p>
         </div>
         <div v-else class="gpe-shift-consolidated">
-          <div class="gpe-shift-kpi-grid gpe-card">
-            <div class="gpe-kpi">
+          <div class="gpe-shift-kpi-grid gpe-card gpe-board-animate">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 0ms">
               <span class="gpe-kpi-label">Session</span>
               <span :class="['gpe-chip', shiftSessionStatusClass(shiftConsolidated.session_status)]">
                 {{ shiftConsolidated.session_status }}
               </span>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 60ms">
               <span class="gpe-kpi-label">SPRs</span>
               <strong>{{ shiftConsolidated.totals.submitted_spr_count }} submitted</strong>
               <span v-if="shiftConsolidated.totals.draft_spr_count" class="gpe-kpi-sub">
                 · {{ shiftConsolidated.totals.draft_spr_count }} draft
               </span>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 120ms">
               <span class="gpe-kpi-label">Rolls</span>
               <strong>{{ shiftConsolidated.totals.roll_count }}</strong>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 180ms">
               <span class="gpe-kpi-label">Net Kg</span>
               <strong>{{ formatKg(shiftConsolidated.totals.net_kg) }}</strong>
             </div>
-            <div class="gpe-kpi">
+            <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 240ms">
               <span class="gpe-kpi-label">Gross Kg</span>
               <strong>{{ formatKg(shiftConsolidated.totals.gross_kg) }}</strong>
             </div>
           </div>
-          <div class="gpe-summary-panels gpe-shift-summary-cards">
-            <div class="gpe-panel gpe-card">
+          <div class="gpe-summary-panels gpe-shift-summary-cards gpe-board-animate">
+            <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 80ms">
               <h4>By Order</h4>
               <table>
                 <thead>
@@ -830,7 +844,7 @@
                 </tbody>
               </table>
             </div>
-            <div class="gpe-panel gpe-card">
+            <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 160ms">
               <h4>By GSM</h4>
               <table>
                 <thead>
@@ -845,7 +859,7 @@
                 </tbody>
               </table>
             </div>
-            <div class="gpe-panel gpe-card">
+            <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 240ms">
               <h4>By Batch Series</h4>
               <table>
                 <thead>
@@ -1349,6 +1363,10 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { openProductionPlanPrintPreview } from "./pp_print_utils.js";
+import {
+  openGsmWastageDialog,
+  openGsmRecycleDialog,
+} from "./gsm_wastage_recycle_dialog.js";
 import {
   gsmOpenBundlePackaging,
   gsmOpenManualJob,
@@ -2533,6 +2551,9 @@ const metrics = computed(() => {
   let totalGross = 0;
   let totalNet = 0;
   rollLines.value.forEach((r) => {
+    if (r.is_wasted) {
+      return;
+    }
     totalGross += sprNormalizeGrossWeightInput(r.gross_weight);
     totalNet += sprFlt(r.net_weight);
   });
@@ -2541,6 +2562,9 @@ const metrics = computed(() => {
     dayPlanned += sprFlt(entry.dayTargetKg);
   });
   rollLines.value.forEach((r) => {
+    if (r.is_wasted) {
+      return;
+    }
     dayPlanned -= sprFlt(r.net_weight);
   });
   return { totalGross, totalNet, dayRemaining: Math.max(0, dayPlanned) };
@@ -2569,7 +2593,12 @@ const sessionRollCount = computed(() => {
     }
   }
   return rollLines.value.reduce(
-    (sum, r) => sum + (r.is_bundle_row ? Math.max(1, cint(r.pack_count || 0)) : 1),
+    (sum, r) => {
+      if (r.is_wasted) {
+        return sum;
+      }
+      return sum + (r.is_bundle_row ? Math.max(1, cint(r.pack_count || 0)) : 1);
+    },
     0
   );
 });
@@ -2591,6 +2620,9 @@ const linkedOrderSummary = computed(() => {
     byOrder.get(entry.orderCode).achieved += sprFlt(src.actual_production_weight_kgs);
   });
   rollLines.value.forEach((r) => {
+    if (r.is_wasted) {
+      return;
+    }
     const k = r.party_code;
     if (!byOrder.has(k)) {
       byOrder.set(k, { orderCode: k, partyName: "", required: 0, produced: 0, achieved: 0 });
@@ -2619,6 +2651,9 @@ const linkedTotals = computed(() => {
 const batchSummary = computed(() => {
   const m = new Map();
   rollLines.value.forEach((r) => {
+    if (r.is_wasted) {
+      return;
+    }
     const bn = r.batch_no || "(pending)";
     if (!m.has(bn)) {
       m.set(bn, { batch_no: bn, rolls: 0, totalGross: 0, totalNet: 0 });
@@ -2643,6 +2678,9 @@ const gsmSummary = computed(() => {
     m.get(g).achieved += sprFlt(src.actual_production_weight_kgs);
   });
   rollLines.value.forEach((r) => {
+    if (r.is_wasted) {
+      return;
+    }
     const g = String(r.gsm);
     if (!m.has(g)) {
       m.set(g, { gsm: g, required: 0, session: 0, achieved: 0 });
@@ -2773,8 +2811,40 @@ const canConfirmShiftOpen = computed(() => {
 });
 
 const submitConfirmRolls = computed(() =>
-  rollLines.value.filter((r) => !r.is_bundle_row)
+  rollLines.value.filter((r) => !r.is_bundle_row && !r.is_wasted)
 );
+
+const canOpenWastageRecycle = computed(
+  () => shiftOpened.value && sessionSprList.value.length > 0
+);
+
+function handleRollWasted(roll, sprRow) {
+  const batch = roll?.batch_no;
+  const row = rollLines.value.find(
+    (r) =>
+      (batch && r.batch_no === batch) ||
+      (roll?.spr_item_name && r.spr_item_name === roll.spr_item_name)
+  );
+  if (row) {
+    row.is_wasted = true;
+    row.row_locked = true;
+    scheduleAutosave();
+  }
+}
+
+function openWastageDialog() {
+  openGsmWastageDialog({
+    sessionSprList: sessionSprList.value,
+    rollLines: rollLines.value,
+    onRollWasted: handleRollWasted,
+  });
+}
+
+function openRecycleDialog() {
+  openGsmRecycleDialog({
+    sessionSprList: sessionSprList.value,
+  });
+}
 
 function shiftRollLines(summary) {
   if (!summary) {
@@ -3616,7 +3686,9 @@ async function callSubmitGsm(overrides = []) {
       unit: headerUnit.value,
       operator: operator.value,
       supervisor: supervisor.value,
-      rolls: JSON.stringify(rollLines.value.filter((r) => !r.is_bundle_row).map(buildRollPayload)),
+      rolls: JSON.stringify(
+        rollLines.value.filter((r) => !r.is_bundle_row && !r.is_wasted).map(buildRollPayload)
+      ),
       session_sprs: JSON.stringify(buildSessionSprsPayload()),
       tolerance_overrides: JSON.stringify(overrides),
     },
@@ -7020,5 +7092,42 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+.gpe-wastage-recycle-btns {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.gpe-row-wasted td {
+  text-decoration: line-through;
+  color: #94a3b8;
+  background: repeating-linear-gradient(
+    -45deg,
+    #f8fafc,
+    #f8fafc 6px,
+    #f1f5f9 6px,
+    #f1f5f9 12px
+  );
+  opacity: 0.85;
+}
+.gpe-board-animate .gpe-board-card {
+  animation: gpeBoardFadeIn 0.45s ease both;
+  animation-delay: var(--gpe-delay, 0ms);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.gpe-board-animate .gpe-board-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+@keyframes gpeBoardFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 </style>

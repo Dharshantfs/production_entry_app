@@ -186,6 +186,58 @@ export async function gsmPrintBundleLabel(sprName, gridRow = null) {
 	frappe.msgprint(__("Bundle label print module could not be loaded."));
 }
 
+const _WASTAGE_LABEL_FN_CANDIDATES = [
+	"print_wastage_label_flow",
+	"generate_wastage_sticker_flow",
+	"print_patty_wastage_label",
+];
+
+/** Print wastage label for Running Patty or Roll Waste child row on SPR. */
+export async function gsmPrintWastageLabel(sprName, childRowName, tableField) {
+	if (!sprName) {
+		frappe.msgprint(__("Create SPRs first."));
+		return;
+	}
+	if (!childRowName) {
+		frappe.msgprint(__("Save the wastage row first."));
+		return;
+	}
+	tableField = tableField || "custom_running_patty_wastage";
+
+	for (const fnName of _WASTAGE_LABEL_FN_CANDIDATES) {
+		if (typeof frappe[fnName] === "function") {
+			await frappe.model.with_doc("Shaft Production Run", sprName);
+			const doc = frappe.get_doc("Shaft Production Run", sprName);
+			frappe[fnName](childRowName, { doc }, tableField);
+			return;
+		}
+	}
+
+	if (typeof frappe.generate_sticker_flow !== "function") {
+		await import("./custom_print_sticker.js");
+	}
+	await frappe.model.with_doc("Shaft Production Run", sprName);
+	const doc = frappe.get_doc("Shaft Production Run", sprName);
+	const rows = doc[tableField] || [];
+	const row = rows.find((r) => r.name === childRowName);
+	if (!row) {
+		frappe.msgprint(__("Wastage row not found on SPR."));
+		return;
+	}
+	if (typeof frappe.generate_sticker_flow === "function" && row.batch_no) {
+		const linkedItem = (doc.items || []).find((it) => it.batch_no === row.batch_no);
+		if (linkedItem) {
+			frappe.generate_sticker_flow(linkedItem.name, { doc });
+			return;
+		}
+	}
+	frappe.msgprint(
+		__(
+			"Wastage label print is not available in GSM yet. Open desk SPR for Print Label on this row."
+		)
+	);
+}
+
 function cint(v) {
 	const n = parseInt(v, 10);
 	return Number.isFinite(n) ? n : 0;
