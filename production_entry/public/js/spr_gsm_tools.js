@@ -125,6 +125,15 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null)
 	if (typeof frappe.generate_sticker_flow !== "function") {
 		await import("./custom_print_sticker.js");
 	}
+	// Avoid stale cached SPR docs on GSM (desk uses the same sticker flow).
+	// Reload ensures `custom_label`, row weights, and produced length are current.
+	try {
+		if (frappe?.model?.clear_doc && typeof frappe.model.clear_doc === "function") {
+			frappe.model.clear_doc("Shaft Production Run", sprName);
+		}
+	} catch (e) {
+		// ignore cache-clear issues
+	}
 	await frappe.model.with_doc("Shaft Production Run", sprName);
 	const doc = frappe.get_doc("Shaft Production Run", sprName);
 	(doc.items || []).forEach((itemRow) => {

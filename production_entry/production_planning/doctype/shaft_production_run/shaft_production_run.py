@@ -10378,6 +10378,18 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
 	if spi_meta.has_field("job") and job_id:
 		row.job = job_id
 
+	# Safety: if GSM payload includes a Work Order, force item_code/item_name to match
+	# that Work Order's `production_item`. This prevents item/WO mismatch on submit
+	# when the client had stale planning-line item selection.
+	wo_name = _cstr(payload.get("work_order") or "").strip()
+	if wo_name and frappe.db.exists("Work Order", wo_name):
+		prod_item = _cstr(frappe.db.get_value("Work Order", wo_name, "production_item") or "").strip()
+		if prod_item:
+			if spi_meta.has_field("item_code"):
+				row.item_code = prod_item
+			if spi_meta.has_field("item_name"):
+				row.item_name = _cstr(frappe.db.get_value("Item", prod_item, "item_name") or "")
+
 	optional_map = {
 		"custom_polybag_kgs": "custom_polybag_kgs",
 		"custom_diameter_inches": "custom_diameter_inches",

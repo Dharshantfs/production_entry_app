@@ -4673,9 +4673,14 @@ async function resolveWorkOrder(line) {
         production_plan_item: line.id,
       },
     });
-    return res.message?.work_order || "";
+    const msg = res.message || {};
+    return {
+      work_order: msg.work_order || "",
+      production_item: msg.production_item || "",
+      production_item_name: msg.production_item_name || "",
+    };
   } catch (e) {
-    return "";
+    return { work_order: "", production_item: "", production_item_name: "" };
   }
 }
 
@@ -5027,7 +5032,7 @@ async function addRollRow() {
   };
   const jobId = job.job_id;
   const src = line.source;
-  const [batchInfo, ordLen, wo] = await Promise.all([
+  const [batchInfo, ordLen, woInfo] = await Promise.all([
     previewNextBatch(line.ppId),
     resolveOrderLength(line),
     resolveWorkOrder(line),
@@ -5045,6 +5050,8 @@ async function addRollRow() {
     line.width_inch,
     extras.custom_core_width_mm || extras.core_size || ""
   );
+  const itemCode = woInfo?.production_item || src.itemCode || src.item_code;
+  const itemName = woInfo?.production_item_name || src.description || src.item_name || "";
   creationSeq.value += 1;
   const newRow = {
     _id: `row-${Date.now()}-${creationSeq.value}`,
@@ -5052,8 +5059,8 @@ async function addRollRow() {
     planning_table_row: line.id,
     pp_id: line.ppId || src.pp_id,
     party_code: line.orderCode,
-    item_code: src.itemCode || src.item_code,
-    item_name: src.description || src.item_name || "",
+    item_code: itemCode,
+    item_name: itemName,
     quality: src.quality || "",
     color: src.color || src.fabric_colour || "",
     gsm: src.gsm,
@@ -5071,7 +5078,7 @@ async function addRollRow() {
     custom_polybag_kgs: extras.custom_polybag_kgs || 0,
     custom_diameter_inches: "",
     custom_cbm_cubic_meters: "",
-    work_order: wo,
+    work_order: woInfo?.work_order || "",
     job_id: jobId,
     row_locked: 0,
     row_ready_for_print: 0,
@@ -6737,11 +6744,18 @@ onUnmounted(() => {
   text-align: center;
   font-size: 11px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .gpe-metric strong {
   font-size: 20px;
   display: block;
   margin-top: 4px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .gpe-metric.slate { background: #e2e8f0; color: #1e293b; }
 .gpe-metric.blue { background: #93c5fd; color: #1e3a8a; }
@@ -7150,6 +7164,8 @@ onUnmounted(() => {
 .gpe-dialog {
   width: min(480px, 92vw);
   padding: 16px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .gpe-dialog h3 {
   margin: 0 0 8px;

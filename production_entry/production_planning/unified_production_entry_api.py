@@ -619,7 +619,10 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	if not unit or not run_date or not shift:
 		return []
 	filters = {
-		"docstatus": 0,
+		# Include both draft and submitted SPRs for an open GSM shift session.
+		# Users can switch computers / reopen the entry screen without losing
+		# already-posted (submitted) roll rows.
+		"docstatus": ["in", [0, 1]],
 		"run_date": getdate(run_date),
 		"shift": shift,
 		"custom_unit": unit,
@@ -882,7 +885,7 @@ def resolve_work_order_for_roll_line(pp_id, gsm=None, width_inch=None, item_code
 	"""Resolve primary Work Order name for a GSM+width roll line."""
 	pp_id = _cstr(pp_id).strip()
 	if not pp_id:
-		return {"work_order": "", "work_orders": []}
+		return {"work_order": "", "work_orders": [], "production_item": "", "production_item_name": ""}
 	job_gsm = cint(gsm) if gsm is not None else None
 	if not job_gsm and item_code:
 		try:
@@ -899,7 +902,16 @@ def resolve_work_order_for_roll_line(pp_id, gsm=None, width_inch=None, item_code
 		combination=_cstr(width_inch) if flt(width_inch) > 0 else None,
 	)
 	names = [_cstr(w.get("name")) for w in (wos or []) if w.get("name")]
-	return {"work_order": names[0] if names else "", "work_orders": names}
+	chosen = (wos or [None])[0] if wos else None
+	prod_item = _cstr(getattr(chosen, "get", lambda k, d=None: None)("production_item", None) or "") if chosen else ""
+	prod_item_name = _cstr(frappe.db.get_value("Item", prod_item, "item_name") or "") if prod_item else ""
+	return {
+		"work_order": names[0] if names else "",
+		"work_orders": names,
+		# Authoritative item for the GSM+width roll line (prevents item/WO mismatch).
+		"production_item": prod_item,
+		"production_item_name": prod_item_name,
+	}
 
 
 @frappe.whitelist()
@@ -2605,6 +2617,19 @@ def submit_gsm_production_entry(
 			continue
 		try:
 			spr = frappe.get_doc("Shaft Production Run", spr_name)
+			# Resume can include already-submitted SPRs (docstatus=1).
+			# Import is only allowed for draft SPRs (docstatus=0), so skip import for submitted SPRs.
+			if cint(spr.docstatus) != 0:
+				imported.append(
+					{
+						"pp_id": pp_id,
+						"spr_name": spr_name,
+						"added": 0,
+						"updated": 0,
+						"skipped": "spr_already_submitted",
+					}
+				)
+				continue
 			if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor):
 				spr.save(ignore_permissions=True)
 			res = import_gsm_roll_lines_to_spr(spr_name, payloads, shift=shift)
