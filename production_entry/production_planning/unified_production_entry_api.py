@@ -1662,67 +1662,222 @@ def get_gsm_shift_submitted_entries(run_date, shift, unit=None):
 		order_by="modified desc",
 		limit=100,
 	)
-	out = []
-	for row in sprs:
-		spr = frappe.get_doc("Shaft Production Run", row.name)
-		rolls = spr.get("items") or []
-		total_net = sum(flt(getattr(it, "net_weight", 0)) for it in rolls)
-		total_gross = sum(flt(getattr(it, "gross_weight", 0)) for it in rolls)
-		order_codes = set()
-		for it in rolls:
-			oc = _cstr(getattr(it, "party_code", None) or getattr(it, "custom_order_code", None))
-			if oc:
-				order_codes.add(oc)
-		wo_status = []
-		for sj in _spr_job_rows(spr):
-			wos_raw = _cstr(getattr(sj, "work_orders", None) or getattr(sj, "work_order", None))
-			for part in wos_raw.replace("\n", ",").split(","):
-				wn = part.strip()
-				if not wn:
-					continue
-				st = frappe.db.get_value("Work Order", wn, "status") or ""
-				wo_status.append({"name": wn, "status": st})
-		roll_rows = []
-		for it in rolls:
-			roll_rows.append(
-				{
-					"batch_no": _cstr(getattr(it, "batch_no", None)),
-					"gsm": getattr(it, "gsm", None) or getattr(it, "custom_fabric_gsm", None),
-					"width_inch": getattr(it, "width_inch", None) or getattr(it, "custom_width_inch", None),
-					"net_weight": flt(getattr(it, "net_weight", 0)),
-					"gross_weight": flt(getattr(it, "gross_weight", 0)),
-					"party_code": _cstr(getattr(it, "party_code", None)),
-					"work_order": _cstr(getattr(it, "work_order", None)),
-				}
-			)
-		out.append(
+	return [_gsm_build_shift_spr_entry(frappe.get_doc("Shaft Production Run", row.name)) for row in sprs]
+
+
+def _gsm_roll_batch_series_prefix(batch_no: str) -> str:
+	bn = _cstr(batch_no).strip()
+	if not bn:
+		return ""
+	if "/" in bn:
+		return bn.rsplit("/", 1)[0].strip()
+	return bn
+
+
+def _gsm_build_shift_spr_entry(spr) -> dict:
+	"""Serialize one SPR for GSM shift views (submitted or draft)."""
+	real_rolls = [it for it in (spr.get("items") or []) if _spr_is_real_roll_item_row(it)]
+	total_net = sum(flt(getattr(it, "net_weight", 0)) for it in real_rolls)
+	total_gross = sum(flt(getattr(it, "gross_weight", 0)) for it in real_rolls)
+	order_codes = set()
+	for it in real_rolls:
+		oc = _cstr(getattr(it, "party_code", None) or getattr(it, "custom_order_code", None))
+		if oc:
+			order_codes.add(oc)
+	if not order_codes:
+		oc_hdr = _cstr(spr.get("custom_order_code") or "")
+		if oc_hdr:
+			order_codes.add(oc_hdr)
+	wo_status = []
+	seen_wo = set()
+	for sj in _spr_job_rows(spr):
+		wos_raw = _cstr(getattr(sj, "work_orders", None) or getattr(sj, "work_order", None))
+		for part in wos_raw.replace("\n", ",").split(","):
+			wn = part.strip()
+			if not wn or wn in seen_wo:
+				continue
+			seen_wo.add(wn)
+			st = frappe.db.get_value("Work Order", wn, "status") or ""
+			wo_status.append({"name": wn, "status": st})
+	roll_rows = []
+	for it in real_rolls:
+		roll_rows.append(
 			{
-				"spr_name": row.name,
-				"production_plan": row.production_plan,
-				"run_date": str(row.run_date),
-				"shift": row.shift,
-				"unit": row.custom_unit,
-				"operator": _spr_pick_doc_field(
-					spr,
-					"operator",
-					"custom_operator",
-					"custom_shift_operator",
-				),
-				"supervisor": _spr_pick_doc_field(
-					spr,
-					"supervisor",
-					"custom_supervisor",
-					"custom_shift_supervisor",
-				),
-				"roll_count": len(rolls),
-				"total_net_kg": round(total_net, 2),
-				"total_gross_kg": round(total_gross, 2),
-				"order_codes": sorted(order_codes),
-				"wo_status": wo_status,
-				"rolls": roll_rows,
+				"batch_no": _cstr(getattr(it, "batch_no", None)),
+				"gsm": getattr(it, "gsm", None) or getattr(it, "custom_fabric_gsm", None),
+				"width_inch": getattr(it, "width_inch", None) or getattr(it, "custom_width_inch", None),
+				"net_weight": flt(getattr(it, "net_weight", 0)),
+				"gross_weight": flt(getattr(it, "gross_weight", 0)),
+				"party_code": _cstr(getattr(it, "party_code", None)),
+				"work_order": _cstr(getattr(it, "work_order", None)),
 			}
 		)
-	return out
+	docstatus = cint(spr.docstatus)
+	return {
+		"spr_name": spr.name,
+		"production_plan": spr.get("production_plan"),
+		"run_date": str(spr.get("run_date") or ""),
+		"shift": spr.get("shift") or "",
+		"unit": spr.get("custom_unit") or "",
+		"operator": _spr_pick_doc_field(
+			spr,
+			"operator",
+			"custom_operator",
+			"custom_shift_operator",
+		),
+		"supervisor": _spr_pick_doc_field(
+			spr,
+			"supervisor",
+			"custom_supervisor",
+			"custom_shift_supervisor",
+		),
+		"docstatus": docstatus,
+		"spr_status": "Submitted" if docstatus == 1 else "Draft",
+		"roll_count": len(real_rolls),
+		"total_net_kg": round(total_net, 2),
+		"total_gross_kg": round(total_gross, 2),
+		"order_codes": sorted(order_codes),
+		"wo_status": wo_status,
+		"rolls": roll_rows,
+	}
+
+
+@frappe.whitelist()
+def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
+	"""Consolidated shift production — submitted + draft SPRs, session status, aggregates."""
+	run_date = getdate(run_date)
+	shift = _normalize_gsm_shift_label(shift)
+	unit = _cstr(unit).strip()
+
+	filters = {"run_date": run_date, "docstatus": ["<", 2]}
+	if shift:
+		filters["shift"] = shift
+	if unit:
+		filters["custom_unit"] = unit
+
+	spr_names = frappe.get_all(
+		"Shaft Production Run",
+		filters=filters,
+		pluck="name",
+		order_by="modified desc",
+		limit=200,
+	)
+	spr_list = []
+	submitted_count = draft_count = 0
+	total_rolls = 0
+	total_net = total_gross = 0.0
+	by_order = {}
+	by_gsm = {}
+	by_batch_series = {}
+
+	for spr_name in spr_names or []:
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		entry = _gsm_build_shift_spr_entry(spr)
+		spr_list.append(entry)
+		if entry["spr_status"] == "Submitted":
+			submitted_count += 1
+		else:
+			draft_count += 1
+		total_rolls += cint(entry.get("roll_count") or 0)
+		total_net += flt(entry.get("total_net_kg") or 0)
+		total_gross += flt(entry.get("total_gross_kg") or 0)
+
+		order_key = ", ".join(entry.get("order_codes") or []) or "—"
+		if order_key not in by_order:
+			by_order[order_key] = {
+				"order_codes": entry.get("order_codes") or [],
+				"spr_name": entry["spr_name"],
+				"spr_status": entry["spr_status"],
+				"rolls": 0,
+				"net_kg": 0.0,
+				"gross_kg": 0.0,
+				"wo_status": entry.get("wo_status") or [],
+			}
+		by_order[order_key]["rolls"] += cint(entry.get("roll_count") or 0)
+		by_order[order_key]["net_kg"] += flt(entry.get("total_net_kg") or 0)
+		by_order[order_key]["gross_kg"] += flt(entry.get("total_gross_kg") or 0)
+
+		for roll in entry.get("rolls") or []:
+			gsm_key = _cstr(roll.get("gsm") or "—")
+			if gsm_key not in by_gsm:
+				by_gsm[gsm_key] = {"gsm": gsm_key, "rolls": 0, "net_kg": 0.0}
+			by_gsm[gsm_key]["rolls"] += 1
+			by_gsm[gsm_key]["net_kg"] += flt(roll.get("net_weight") or 0)
+			prefix = _gsm_roll_batch_series_prefix(roll.get("batch_no"))
+			if prefix:
+				if prefix not in by_batch_series:
+					by_batch_series[prefix] = {"batch_series": prefix, "rolls": 0, "net_kg": 0.0}
+				by_batch_series[prefix]["rolls"] += 1
+				by_batch_series[prefix]["net_kg"] += flt(roll.get("net_weight") or 0)
+
+	shift_session = None
+	if _gsm_shift_session_table_exists() and unit and shift:
+		sess_filters = {
+			"run_date": run_date,
+			"shift": shift,
+			"custom_unit": unit,
+		}
+		open_name = frappe.db.get_value(
+			_GSM_SHIFT_SESSION_DOCTYPE,
+			{**sess_filters, "status": "Open"},
+			"name",
+		)
+		if open_name:
+			shift_session = _serialize_gsm_shift_session(
+				frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, open_name)
+			)
+		else:
+			closed = frappe.get_all(
+				_GSM_SHIFT_SESSION_DOCTYPE,
+				filters={**sess_filters, "status": "Closed"},
+				fields=["name"],
+				order_by="modified desc",
+				limit=1,
+			)
+			if closed:
+				shift_session = _serialize_gsm_shift_session(
+					frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, closed[0].name)
+				)
+
+	session_status = "Not started"
+	if shift_session:
+		session_status = shift_session.get("status") or "Closed"
+
+	return {
+		"run_date": str(run_date),
+		"shift": shift,
+		"unit": unit,
+		"shift_session": shift_session,
+		"session_status": session_status,
+		"totals": {
+			"spr_count": len(spr_list),
+			"submitted_spr_count": submitted_count,
+			"draft_spr_count": draft_count,
+			"roll_count": total_rolls,
+			"net_kg": round(total_net, 2),
+			"gross_kg": round(total_gross, 2),
+		},
+		"by_order": sorted(
+			[
+				{
+					**row,
+					"net_kg": round(flt(row["net_kg"]), 2),
+					"gross_kg": round(flt(row["gross_kg"]), 2),
+				}
+				for row in by_order.values()
+			],
+			key=lambda r: _cstr(r.get("order_codes", [""])[0]),
+		),
+		"by_gsm": sorted(
+			[{**row, "net_kg": round(flt(row["net_kg"]), 2)} for row in by_gsm.values()],
+			key=lambda r: _cstr(r.get("gsm")),
+		),
+		"by_batch_series": sorted(
+			[{**row, "net_kg": round(flt(row["net_kg"]), 2)} for row in by_batch_series.values()],
+			key=lambda r: _cstr(r.get("batch_series")),
+		),
+		"spr_list": spr_list,
+	}
 
 
 def _parse_json_arg(val, default=None):

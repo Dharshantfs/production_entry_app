@@ -477,6 +477,7 @@
     <div v-show="pageTab === 'summary'" class="gpe-main gpe-card gpe-summary-tab">
       <div class="gpe-tabs">
         <button :class="{ active: summaryTab === 'summary' }" @click="summaryTab = 'summary'">Summary</button>
+        <button :class="{ active: summaryTab === 'shiftSummary' }" @click="openSummaryShiftTab">Shift Summary</button>
         <button :class="{ active: summaryTab === 'linked' }" @click="summaryTab = 'linked'">Linked Orders</button>
       </div>
       <div v-show="summaryTab === 'summary'" class="gpe-summary-panels">
@@ -543,6 +544,128 @@
       <p v-if="summaryTab === 'summary'" class="gpe-note">
         Save Row writes to draft SPR on server. Submit Entry imports and submits SPR(s) for selected orders.
       </p>
+      <div v-show="summaryTab === 'shiftSummary'" class="gpe-shift-summary-panel">
+        <div class="gpe-shift-filters gpe-card-inner">
+          <span class="gpe-shift-filter-title">Shift production (Run Date + Shift + Unit)</span>
+          <label>Date <input type="date" v-model="summaryShiftDate" /></label>
+          <label>
+            Shift
+            <select v-model="summaryShiftShift">
+              <option value="Day Shift">Day Shift</option>
+              <option value="Night Shift">Night Shift</option>
+            </select>
+          </label>
+          <label>
+            Unit
+            <select v-model="summaryShiftUnit">
+              <option value="">All fabric units</option>
+              <option v-for="u in fabricUnitOptions" :key="'ssu-' + u" :value="u">{{ u }}</option>
+            </select>
+          </label>
+          <button type="button" class="gpe-btn primary" @click="loadSummaryShiftSummary">Refresh</button>
+        </div>
+        <div v-if="summaryShiftLoading" class="gpe-muted gpe-card-inner">Loading shift summary…</div>
+        <div v-else-if="!summaryShiftSummary?.totals?.spr_count" class="gpe-empty-state gpe-card-inner">
+          <h3>No production for this shift</h3>
+          <p>Draft and submitted SPRs for the selected date, shift, and unit appear here.</p>
+        </div>
+        <template v-else>
+          <div class="gpe-shift-kpi-row gpe-card-inner">
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Session</span>
+              <span :class="['gpe-chip', shiftSessionStatusClass(summaryShiftSummary.session_status)]">
+                {{ summaryShiftSummary.session_status }}
+              </span>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">SPRs</span>
+              <strong>{{ summaryShiftSummary.totals.submitted_spr_count }} submitted</strong>
+              <span v-if="summaryShiftSummary.totals.draft_spr_count" class="gpe-kpi-sub">
+                · {{ summaryShiftSummary.totals.draft_spr_count }} draft
+              </span>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Rolls</span>
+              <strong>{{ summaryShiftSummary.totals.roll_count }}</strong>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Net Kg</span>
+              <strong>{{ formatKg(summaryShiftSummary.totals.net_kg) }}</strong>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Gross Kg</span>
+              <strong>{{ formatKg(summaryShiftSummary.totals.gross_kg) }}</strong>
+            </div>
+          </div>
+          <div class="gpe-summary-panels">
+            <div class="gpe-panel gpe-card-inner">
+              <h4>By Order</h4>
+              <table>
+                <thead>
+                  <tr><th>Order</th><th>Status</th><th>Rolls</th><th>Net Kg</th><th>Gross Kg</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in summaryShiftSummary.by_order" :key="row.order_codes?.join('-') || row.spr_name">
+                    <td>{{ row.order_codes?.join(", ") || "—" }}</td>
+                    <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
+                    <td>{{ row.rolls }}</td>
+                    <td>{{ formatKg(row.net_kg) }}</td>
+                    <td>{{ formatKg(row.gross_kg) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="gpe-panel gpe-card-inner">
+              <h4>By GSM</h4>
+              <table>
+                <thead>
+                  <tr><th>GSM</th><th>Rolls</th><th>Net Kg</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in summaryShiftSummary.by_gsm" :key="row.gsm">
+                    <td>{{ row.gsm }}</td>
+                    <td>{{ row.rolls }}</td>
+                    <td>{{ formatKg(row.net_kg) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="gpe-panel gpe-card-inner">
+              <h4>By Batch Series</h4>
+              <table>
+                <thead>
+                  <tr><th>Batch</th><th>Rolls</th><th>Net Kg</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in summaryShiftSummary.by_batch_series" :key="row.batch_series">
+                    <td>{{ row.batch_series }}</td>
+                    <td>{{ row.rolls }}</td>
+                    <td>{{ formatKg(row.net_kg) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="gpe-panel wide gpe-card-inner">
+            <h4>All SPRs (submitted + draft)</h4>
+            <table>
+              <thead>
+                <tr><th>SPR</th><th>Status</th><th>Orders</th><th>Rolls</th><th>Net Kg</th><th>Operator</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="spr in summaryShiftSummary.spr_list" :key="spr.spr_name">
+                  <td><a href="#" @click.prevent="openSpr(spr.spr_name)">{{ spr.spr_name }}</a></td>
+                  <td><span :class="['gpe-chip', sprStatusChipClass(spr.spr_status)]">{{ spr.spr_status }}</span></td>
+                  <td>{{ spr.order_codes?.join(", ") || "—" }}</td>
+                  <td>{{ spr.roll_count }}</td>
+                  <td>{{ formatKg(spr.total_net_kg) }}</td>
+                  <td>{{ spr.operator || "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
       <div v-show="summaryTab === 'linked'" class="gpe-panel wide gpe-card-inner">
         <table>
           <thead>
@@ -566,7 +689,7 @@
     <!-- Shift Entries tab -->
     <div v-show="pageTab === 'shift'" class="gpe-shift-layout">
       <div class="gpe-shift-filters gpe-card">
-        <span class="gpe-shift-filter-title">Submitted SPRs for shift</span>
+        <span class="gpe-shift-filter-title">Shift production</span>
         <label>Date <input type="date" v-model="shiftFilterDate" /></label>
         <label>
           Shift
@@ -582,10 +705,159 @@
             <option v-for="u in fabricUnitOptions" :key="'su-' + u" :value="u">{{ u }}</option>
           </select>
         </label>
+        <div class="gpe-shift-view-toggle">
+          <button
+            type="button"
+            :class="{ active: shiftEntriesView === 'spr' }"
+            @click="shiftEntriesView = 'spr'"
+          >SPR-wise</button>
+          <button
+            type="button"
+            :class="{ active: shiftEntriesView === 'consolidated' }"
+            @click="shiftEntriesView = 'consolidated'"
+          >Shift summary</button>
+        </div>
         <button type="button" class="gpe-btn primary" @click="loadShiftEntries">Refresh</button>
       </div>
 
       <div v-if="shiftLoading" class="gpe-muted gpe-card">Loading shift entries…</div>
+      <template v-else-if="shiftEntriesView === 'consolidated'">
+        <div v-if="!shiftConsolidated?.totals?.spr_count" class="gpe-empty-state gpe-card">
+          <h3>No production for this shift</h3>
+          <p>Draft and submitted SPRs for the selected date, shift, and unit appear here.</p>
+        </div>
+        <div v-else class="gpe-shift-consolidated">
+          <div class="gpe-shift-kpi-row gpe-card">
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Session</span>
+              <span :class="['gpe-chip', shiftSessionStatusClass(shiftConsolidated.session_status)]">
+                {{ shiftConsolidated.session_status }}
+              </span>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">SPRs</span>
+              <strong>{{ shiftConsolidated.totals.submitted_spr_count }} submitted</strong>
+              <span v-if="shiftConsolidated.totals.draft_spr_count" class="gpe-kpi-sub">
+                · {{ shiftConsolidated.totals.draft_spr_count }} draft
+              </span>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Rolls</span>
+              <strong>{{ shiftConsolidated.totals.roll_count }}</strong>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Net Kg</span>
+              <strong>{{ formatKg(shiftConsolidated.totals.net_kg) }}</strong>
+            </div>
+            <div class="gpe-kpi">
+              <span class="gpe-kpi-label">Gross Kg</span>
+              <strong>{{ formatKg(shiftConsolidated.totals.gross_kg) }}</strong>
+            </div>
+          </div>
+          <div class="gpe-summary-panels">
+            <div class="gpe-panel gpe-card">
+              <h4>By Order</h4>
+              <table>
+                <thead>
+                  <tr><th>Order</th><th>Status</th><th>Rolls</th><th>Net Kg</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in shiftConsolidated.by_order" :key="row.order_codes?.join('-') || row.spr_name">
+                    <td>{{ row.order_codes?.join(", ") || "—" }}</td>
+                    <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
+                    <td>{{ row.rolls }}</td>
+                    <td>{{ formatKg(row.net_kg) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="gpe-panel gpe-card">
+              <h4>By GSM</h4>
+              <table>
+                <thead>
+                  <tr><th>GSM</th><th>Rolls</th><th>Net Kg</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in shiftConsolidated.by_gsm" :key="row.gsm">
+                    <td>{{ row.gsm }}</td>
+                    <td>{{ row.rolls }}</td>
+                    <td>{{ formatKg(row.net_kg) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="gpe-panel gpe-card">
+              <h4>By Batch Series</h4>
+              <table>
+                <thead>
+                  <tr><th>Batch</th><th>Rolls</th><th>Net Kg</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in shiftConsolidated.by_batch_series" :key="row.batch_series">
+                    <td>{{ row.batch_series }}</td>
+                    <td>{{ row.rolls }}</td>
+                    <td>{{ formatKg(row.net_kg) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="gpe-panel wide gpe-card">
+            <h4>All SPRs (submitted + draft)</h4>
+            <table>
+              <thead>
+                <tr><th>SPR</th><th>Status</th><th>Orders</th><th>Rolls</th><th>Net Kg</th><th>Operator</th></tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="spr in shiftConsolidated.spr_list"
+                  :key="spr.spr_name"
+                  class="gpe-clickable-row"
+                  @click="selectedShiftEntry = spr"
+                >
+                  <td>{{ spr.spr_name }}</td>
+                  <td><span :class="['gpe-chip', sprStatusChipClass(spr.spr_status)]">{{ spr.spr_status }}</span></td>
+                  <td>{{ spr.order_codes?.join(", ") || "—" }}</td>
+                  <td>{{ spr.roll_count }}</td>
+                  <td>{{ formatKg(spr.total_net_kg) }}</td>
+                  <td>{{ spr.operator || "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="selectedShiftEntry" class="gpe-shift-detail gpe-card">
+            <div class="gpe-shift-detail-head">
+              <h3>{{ selectedShiftEntry.spr_name }}</h3>
+              <button type="button" class="gpe-btn sm" @click="openSpr(selectedShiftEntry.spr_name)">Open SPR</button>
+            </div>
+            <p class="gpe-shift-meta">
+              <span :class="['gpe-chip', sprStatusChipClass(selectedShiftEntry.spr_status)]">
+                {{ selectedShiftEntry.spr_status || "Submitted" }}
+              </span>
+              · Operator: {{ selectedShiftEntry.operator || "—" }}
+              · Supervisor: {{ selectedShiftEntry.supervisor || "—" }}
+            </p>
+            <table class="gpe-grid">
+              <thead>
+                <tr>
+                  <th>Batch</th><th>GSM</th><th>Width</th><th>Net</th><th>Gross</th><th>Order</th><th>WO</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in selectedShiftEntry.rolls" :key="i">
+                  <td>{{ r.batch_no }}</td>
+                  <td>{{ r.gsm }}</td>
+                  <td>{{ r.width_inch }}</td>
+                  <td>{{ formatKg(r.net_weight) }}</td>
+                  <td>{{ formatKg(r.gross_weight) }}</td>
+                  <td>{{ r.party_code }}</td>
+                  <td>{{ r.work_order }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
       <div v-else-if="!shiftEntries.length" class="gpe-empty-state gpe-card">
         <h3>No submitted entries for this shift</h3>
         <p>Submitted SPRs for the selected date, shift, and unit appear here.</p>
@@ -1117,8 +1389,15 @@ const shiftFilterDate = ref(frappe.datetime.get_today());
 const shiftFilterShift = ref("Day Shift");
 const shiftFilterUnit = ref("");
 const shiftEntries = ref([]);
+const shiftEntriesView = ref("spr");
+const shiftConsolidated = ref(null);
 const shiftLoading = ref(false);
 const selectedShiftEntry = ref(null);
+const summaryShiftDate = ref(frappe.datetime.get_today());
+const summaryShiftShift = ref("Day Shift");
+const summaryShiftUnit = ref("");
+const summaryShiftSummary = ref(null);
+const summaryShiftLoading = ref(false);
 const coreWidthOptions = ref([]);
 
 const shiftSession = ref(null);
@@ -2623,6 +2902,28 @@ function openShiftTab() {
   shiftFilterShift.value = shift.value;
   shiftFilterUnit.value = filterUnit.value || headerUnit.value || shiftFilterUnit.value;
   loadShiftEntries();
+}
+
+function openSummaryShiftTab() {
+  summaryTab.value = "shiftSummary";
+  summaryShiftDate.value = runDate.value;
+  summaryShiftShift.value = shift.value;
+  summaryShiftUnit.value = filterUnit.value || headerUnit.value || summaryShiftUnit.value;
+  loadSummaryShiftSummary();
+}
+
+function shiftSessionStatusClass(status) {
+  if (status === "Open") {
+    return "gpe-chip-submitted";
+  }
+  if (status === "Closed") {
+    return "gpe-chip-closed";
+  }
+  return "gpe-chip-draft";
+}
+
+function sprStatusChipClass(status) {
+  return status === "Submitted" ? "gpe-chip-submitted" : "gpe-chip-draft";
 }
 
 function closeToolsMenu() {
@@ -4528,19 +4829,60 @@ async function removeTopRow() {
   await doRemove();
 }
 
-async function loadShiftEntries() {
-  shiftLoading.value = true;
-  selectedShiftEntry.value = null;
+async function loadShiftConsolidatedSummary() {
   try {
     const res = await frappe.call({
-      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_submitted_entries",
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_consolidated_summary",
       args: {
         run_date: shiftFilterDate.value,
         shift: shiftFilterShift.value,
         unit: shiftFilterUnit.value || undefined,
       },
     });
-    shiftEntries.value = res.message || [];
+    shiftConsolidated.value = res.message || null;
+  } catch (e) {
+    console.error(e);
+    shiftConsolidated.value = null;
+  }
+}
+
+async function loadSummaryShiftSummary() {
+  summaryShiftLoading.value = true;
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_consolidated_summary",
+      args: {
+        run_date: summaryShiftDate.value,
+        shift: summaryShiftShift.value,
+        unit: summaryShiftUnit.value || undefined,
+      },
+    });
+    summaryShiftSummary.value = res.message || null;
+  } catch (e) {
+    console.error(e);
+    summaryShiftSummary.value = null;
+    frappe.msgprint("Failed to load shift summary");
+  } finally {
+    summaryShiftLoading.value = false;
+  }
+}
+
+async function loadShiftEntries() {
+  shiftLoading.value = true;
+  selectedShiftEntry.value = null;
+  try {
+    const [entriesRes] = await Promise.all([
+      frappe.call({
+        method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_submitted_entries",
+        args: {
+          run_date: shiftFilterDate.value,
+          shift: shiftFilterShift.value,
+          unit: shiftFilterUnit.value || undefined,
+        },
+      }),
+      loadShiftConsolidatedSummary(),
+    ]);
+    shiftEntries.value = entriesRes.message || [];
     if (shiftEntries.value.length) {
       selectedShiftEntry.value = shiftEntries.value[0];
     }
@@ -5541,6 +5883,60 @@ onUnmounted(() => {
   font-weight: 600;
   color: #334155;
   margin-right: 8px;
+}
+.gpe-shift-view-toggle {
+  display: flex;
+  gap: 4px;
+}
+.gpe-shift-view-toggle button {
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.gpe-shift-view-toggle button.active {
+  background: #4f46e5;
+  color: #fff;
+  border-color: #4f46e5;
+}
+.gpe-shift-kpi-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.gpe-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.gpe-kpi-label {
+  font-size: 10px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gpe-kpi-sub {
+  font-size: 11px;
+  color: #64748b;
+}
+.gpe-shift-consolidated {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.gpe-shift-summary-panel {
+  margin-top: 10px;
+}
+.gpe-clickable-row {
+  cursor: pointer;
+}
+.gpe-clickable-row:hover {
+  background: #f8fafc;
 }
 .gpe-inp-wide {
   width: 160px;
