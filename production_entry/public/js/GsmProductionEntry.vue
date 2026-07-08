@@ -432,6 +432,7 @@
                   <input
                     v-model="row.gross_weight"
                     type="text"
+                    inputmode="decimal"
                     class="gpe-inp"
                     :disabled="row.row_locked || row.is_bundle_row"
                     @input="onRowEdit(row)"
@@ -3449,7 +3450,7 @@ function buildRollPayload(row) {
     produced_length_mtrs: row.produced_length_mtrs,
     produced_gsm: row.produced_gsm,
     net_weight: row.net_weight,
-    gross_weight: row.gross_weight,
+    gross_weight: sprNormalizeGrossWeightInput(row.gross_weight),
     planned_qty: row.planned_qty,
     work_order: row.work_order,
     uom: row.uom || "Kg",
@@ -3821,6 +3822,7 @@ async function saveRow(row) {
   }
   const updated = sprRecalcRollRow({ ...row, core_width_options: coreWidthOptions.value });
   Object.assign(row, updated);
+  row.gross_weight = gross;
   saveStatus.value = "Saving row…";
   try {
     const res = await frappe.call({

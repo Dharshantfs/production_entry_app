@@ -12,9 +12,33 @@ export function sprNormalizeGrossWeightInput(val) {
 	if (val === null || val === undefined || val === '') {
 		return 0;
 	}
-	const s = String(val).replace(/,/g, '').trim();
+	if (typeof val === 'number') {
+		return Number.isFinite(val) && val > 0 ? val : 0;
+	}
+	let s = String(val).replace(/,/g, '').trim();
+	const firstNum = s.match(/-?\d+(?:\.\d+)?/);
+	if (firstNum) {
+		s = firstNum[0];
+	}
+	const dup = s.match(/^(\d+\.\d{1,4})\1+$/);
+	if (dup) {
+		s = dup[1];
+	}
+	const glued = s.match(/^(\d+\.\d{1,4})(\d+\.\d{1,4})$/);
+	if (glued && glued[1] === glued[2]) {
+		s = glued[1];
+	}
 	const n = parseFloat(s);
 	return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Keep partial decimal typing (e.g. "45.") while still parsing for calculations. */
+export function sprGrossWeightInputLooksValid(val) {
+	if (val === null || val === undefined || val === '') {
+		return false;
+	}
+	const s = String(val).replace(/,/g, '').trim();
+	return /^-?\d*\.?\d*$/.test(s) && s !== '' && s !== '.' && s !== '-';
 }
 
 export function sprRoundNetWeightKg(v) {
@@ -129,8 +153,10 @@ export function sprCalcProducedGsm(row) {
 
 export function sprRecalcRollRow(row) {
 	const preserveNet = row?.is_bundle_row && sprFlt(row?.net_weight) > 0;
-	const net = preserveNet ? sprFlt(row.net_weight) : sprCalcNetFromGross(row);
-	const produced = sprCalcProducedGsm({ ...row, net_weight: net });
+	const gwForCalc = sprNormalizeGrossWeightInput(row.gross_weight);
+	const rowForCalc = { ...row, gross_weight: gwForCalc };
+	const net = preserveNet ? sprFlt(row.net_weight) : sprCalcNetFromGross(rowForCalc);
+	const produced = sprCalcProducedGsm({ ...rowForCalc, net_weight: net });
 	const lengthM = sprResolveLengthMeters(row);
 	const planned =
 		sprFlt(row.planned_qty) > 0
@@ -138,7 +164,6 @@ export function sprRecalcRollRow(row) {
 			: sprComputePlannedQtyKg(row.gsm, row.width_inch, lengthM || row.meter_roll);
 	return {
 		...row,
-		gross_weight: sprNormalizeGrossWeightInput(row.gross_weight) || row.gross_weight,
 		net_weight: net,
 		produced_gsm: produced,
 		planned_qty: planned > 0 ? planned : row.planned_qty,
