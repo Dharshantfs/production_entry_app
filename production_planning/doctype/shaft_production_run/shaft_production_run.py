@@ -392,6 +392,13 @@ def normalize_label_template_link(value: str) -> str:
 	for name in frappe.get_all("Label Template", pluck="name"):
 		if _cstr(name).lower() == lower:
 			return name
+	lt_meta = frappe.get_meta("Label Template")
+	for fn in ("label_name", "template_name", "label"):
+		if not lt_meta.has_field(fn):
+			continue
+		for row in frappe.get_all("Label Template", fields=["name", fn]):
+			if _cstr(row.get(fn)).lower() == lower:
+				return row.name
 	return v
 
 
