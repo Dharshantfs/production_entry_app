@@ -2734,6 +2734,67 @@ _PATTY_STOCK_METHOD_CANDIDATES = (
 	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_patty_stock_for_spr",
 )
 
+# Logical child-row keys → possible DocField names on live sites (repo scaffolds differ).
+_GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+	"job_id": ("job_id", "job"),
+	"quality": ("quality",),
+	"color": ("color",),
+	"gsm": ("gsm",),
+	"width_inch": ("width_inch", "width", "w"),
+	"width": ("width", "width_inch", "w"),
+	"meter_per_roll": (
+		"meter_per_roll",
+		"meter_roll",
+		"meter",
+		"produced_length_mtrs",
+		"produced_length_mtr",
+		"meter__roll",
+	),
+	"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
+	"wastage": (
+		"wastage",
+		"wastage_qty",
+		"wastage_qt",
+		"net_wastage",
+		"net_wastage_kg",
+		"net_weight",
+		"available_kg",
+		"available",
+		"available_qty",
+	),
+	"wastage_qty": ("wastage_qty", "wastage_qt", "wastage", "net_wastage", "net_wastage_kg"),
+	"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage"),
+	"recycled": ("recycled", "recycled_qty", "recycled_kg"),
+	"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
+	"available": ("available", "available_qty", "available_kg", "wastage", "net_wastage"),
+	"available_qty": ("available_qty", "available", "available_kg"),
+	"batch_no": ("batch_no", "batch", "source_roll"),
+	"source_roll": ("source_roll", "batch_no", "batch"),
+	"source_roll_waste_row": ("source_roll_waste_row", "roll_waste_row", "spr_item_name"),
+	"spr_item_name": ("spr_item_name", "source_roll_waste_row"),
+}
+
+
+def _gsm_write_child_row(child_doctype: str, logical: dict) -> dict:
+	"""Write child row values using whichever fieldnames exist on the live child DocType."""
+	meta = frappe.get_meta(child_doctype)
+	existing = {df.fieldname for df in meta.fields}
+	out: dict = {}
+	for logical_key, val in (logical or {}).items():
+		if val is None:
+			continue
+		if isinstance(val, str) and not val.strip():
+			continue
+		aliases = _GSM_CHILD_FIELD_ALIASES.get(logical_key, (logical_key,))
+		wrote = False
+		for fn in aliases:
+			if fn in existing:
+				out[fn] = val
+				wrote = True
+		if not wrote and logical_key in existing:
+			out[logical_key] = val
+	return out
+
 
 def _gsm_child_table_columns(child_doctype: str) -> list[dict]:
 	meta = frappe.get_meta(child_doctype)
@@ -2771,35 +2832,17 @@ def _gsm_child_row_dict(row, columns: list[dict]) -> dict:
 
 	# Field fallbacks for "db-only" columns that may have different stored fieldnames
 	# on the live site vs the repo scaffolds.
-	FALLBACKS = {
-		"width_inch": ("width_inch", "width", "w"),
-		"meter_per_roll": ("meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"),
-		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
-		"wastage": (
-			"wastage",
-			"wastage_qty",
-			"wastage_qt",
-			"net_wastage",
-			"net_wastage_kg",
-			"net_weight",
-			"available_kg",
-			"available",
-			"wastage_kg",
-		),
-		"gsm": ("gsm",),
-		"color": ("color",),
-		"quality": ("quality",),
-	}
+	FALLBACKS = {k: v for k, v in _GSM_CHILD_FIELD_ALIASES.items()}
 
 	for col in columns:
 		fn = col["fieldname"]
 		val = _get(fn)
-		if val is None and fn in FALLBACKS:
+		if (val is None or (isinstance(val, str) and not str(val).strip())) and fn in FALLBACKS:
 			for alt in FALLBACKS[fn]:
 				if alt == fn:
 					continue
 				val = _get(alt)
-				if val is not None:
+				if val is not None and not (isinstance(val, str) and not str(val).strip()):
 					break
 		if val is not None and hasattr(val, "isoformat"):
 			val = str(val)
@@ -2818,34 +2861,62 @@ def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) ->
 	}
 
 
-def _gsm_map_to_recycled_row(src) -> dict:
+def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
 	if not isinstance(src, dict):
 		src = src.as_dict() if hasattr(src, "as_dict") else {}
-	# Running/draft values can be stored under different fieldnames on the live site
-	# (repo scaffolds may be missing some db-only columns).
-	qty = flt(_pick_value(src, ["recycled", "wastage", "wastage_qty", "wastage_qt", "available_kg", "available", "net_weight"], 0))
-	wastage_qty = flt(_pick_value(src, ["wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight"], 0))
-	recycled_qty = flt(_pick_value(src, ["recycled", "recycled_qty", "recycled_kg"], None))
+
+	available_qty = flt(_pick_value(src, ["available_kg", "available", "available_qty"], 0))
+	wastage_qty = flt(
+		_pick_value(
+			src,
+			["wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight"],
+			0,
+		)
+	)
+	recycled_qty = flt(_pick_value(src, ["recycled", "recycled_qty", "recycled_kg"], 0))
+	consume_kg = available_qty or wastage_qty
+	if from_roll_waste and consume_kg <= 0:
+		consume_kg = wastage_qty
 	if wastage_qty <= 0:
-		wastage_qty = qty
-	if recycled_qty is None:
-		recycled_qty = qty
-	return {
+		wastage_qty = consume_kg
+	if recycled_qty <= 0:
+		recycled_qty = consume_kg
+
+	batch_no = _cstr(_pick_value(src, ["batch_no", "batch", "source_roll"], ""))
+	logical = {
 		"job_id": _cstr(_pick_value(src, ["job_id", "job"], "")),
 		"quality": _cstr(_pick_value(src, ["quality"], "")),
 		"color": _cstr(_pick_value(src, ["color"], "")),
 		"gsm": cint(_pick_value(src, ["gsm"], 0)),
-		"width_inch": flt(_pick_value(src, ["width_inch", "width"], 0)),
-		"meter_per_roll": flt(_pick_value(src, ["meter_per_roll", "meter", "meter_roll", "produced_length_mtrs", "produced_length_mtr"], 0)),
-		"no_of_shafts": cint(_pick_value(src, ["no_of_shafts", "shafts"], 0)),
+		"width_inch": flt(_pick_value(src, ["width_inch", "width", "w"], 0)),
+		"meter_per_roll": flt(
+			_pick_value(
+				src,
+				["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"],
+				0,
+			)
+		),
+		"no_of_shafts": cint(_pick_value(src, ["no_of_shafts", "shafts", "no_of_shaft"], 0)),
 		"wastage": wastage_qty,
+		"wastage_qty": wastage_qty,
+		"net_wastage": wastage_qty,
 		"recycled": recycled_qty,
+		"recycled_qty": recycled_qty,
+		"available": consume_kg,
+		"available_qty": consume_kg,
+		"batch_no": batch_no,
+		"source_roll": batch_no,
 	}
+	if from_roll_waste:
+		row_name = _cstr(_pick_value(src, ["name"], ""))
+		if row_name:
+			logical["source_roll_waste_row"] = row_name
+	return _gsm_write_child_row("Recycled Wastage Detail Row", logical)
 
 
 def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = None) -> dict:
 	roll_payload = roll_payload if isinstance(roll_payload, dict) else {}
-	return {
+	logical = {
 		"job_id": _cstr(
 			_pick_value(roll_payload, ["job_id", "job"])
 			or getattr(item_row, "job_id", None)
@@ -2887,6 +2958,7 @@ def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = No
 			or ""
 		),
 	}
+	return _gsm_write_child_row("Roll Waste Row", logical)
 
 
 @frappe.whitelist()
@@ -3087,10 +3159,11 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 		for sel in patty_selections:
 			if not isinstance(sel, dict):
 				continue
-			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(sel))
+			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(sel, from_roll_waste=False))
 			added += 1
 
 		roll_waste_by_name = {r.name: r for r in (spr.custom_roll_waste or [])}
+		roll_waste_to_remove = []
 		for rn in roll_waste_row_names:
 			rn = _cstr(rn).strip()
 			if not rn:
@@ -3098,8 +3171,12 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 			rw = roll_waste_by_name.get(rn)
 			if not rw:
 				continue
-			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(rw))
+			spr.append("custom_recycled_wastage_details", _gsm_map_to_recycled_row(rw, from_roll_waste=True))
+			roll_waste_to_remove.append(rw)
 			added += 1
+
+		for rw in roll_waste_to_remove:
+			spr.remove(rw)
 
 		if not added:
 			frappe.throw(_("No recycled rows were added"))

@@ -2455,6 +2455,76 @@ def sync_spr_attribute_summaries_to_doc(spr_doc) -> None:
 
 
 class ShaftProductionRun(Document):
+	def before_save(self):
+		self._spr_prune_recycled_when_waste_removed()
+
+	def _spr_prune_recycled_when_waste_removed(self):
+		"""When roll-waste / patty-waste child rows are deleted on desk, drop linked recycled rows."""
+		if self.is_new() or not self.name:
+			return
+		try:
+			old = self.get_doc_before_save()
+		except Exception:
+			return
+		if not old:
+			return
+
+		recycled_field = "custom_recycled_wastage_details"
+		if not frappe.get_meta("Shaft Production Run").has_field(recycled_field):
+			return
+		if not (getattr(old, recycled_field, None) or getattr(self, recycled_field, None)):
+			return
+
+		recycled_meta = frappe.get_meta("Recycled Wastage Detail Row")
+		link_fields = [
+			f
+			for f in ("source_roll_waste_row", "roll_waste_row", "spr_item_name")
+			if recycled_meta.has_field(f)
+		]
+
+		def _removed_rows(fieldname: str):
+			old_names = {r.name for r in (getattr(old, fieldname, None) or [])}
+			new_names = {r.name for r in (getattr(self, fieldname, None) or [])}
+			removed = old_names - new_names
+			if not removed:
+				return [], set()
+			old_by_name = {r.name: r for r in (getattr(old, fieldname, None) or [])}
+			batches: set[str] = set()
+			for rn in removed:
+				row = old_by_name.get(rn)
+				if not row:
+					continue
+				b = _cstr(getattr(row, "batch_no", "") or getattr(row, "source_roll", "")).strip()
+				if b:
+					batches.add(b)
+			return removed, batches
+
+		removed_roll_waste, roll_batches = _removed_rows("custom_roll_waste")
+		removed_patty, patty_batches = _removed_rows("custom_running_patty_wastage")
+		if not removed_roll_waste and not removed_patty:
+			return
+
+		drop_batches = roll_batches | patty_batches
+		keep = []
+		for row in getattr(self, recycled_field, None) or []:
+			drop = False
+			for lf in link_fields:
+				val = _cstr(getattr(row, lf, "") or "").strip()
+				if val and val in removed_roll_waste:
+					drop = True
+					break
+			if not drop and drop_batches:
+				row_batch = _cstr(
+					getattr(row, "batch_no", "") or getattr(row, "source_roll", "") or ""
+				).strip()
+				if row_batch and row_batch in drop_batches:
+					drop = True
+			if not drop:
+				keep.append(row)
+
+		if len(keep) != len(getattr(self, recycled_field, None) or []):
+			self.set(recycled_field, keep)
+
 	def before_validate(self):
 		self.sync_company_from_source()
 		self.normalize_custom_unit()

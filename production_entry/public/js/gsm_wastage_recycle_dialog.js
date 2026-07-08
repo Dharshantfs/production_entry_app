@@ -27,6 +27,20 @@ const DESK_RECYCLED_COLS = [
 	{ field: "recycled", label: __("Recycled"), num: true },
 ];
 
+const DESK_ROLL_WASTE_COLS = [
+	{ field: "batch_no", label: __("Batch No") },
+	{ field: "job_id", label: __("Job ID") },
+	{ field: "quality", label: __("Quality") },
+	{ field: "color", label: __("Color") },
+	{ field: "gsm", label: __("GSM"), num: true },
+	{ field: "width_inch", label: __("Width (Inch)"), num: true },
+	{ field: "meter_per_roll", label: __("Meter / Roll"), num: true },
+	{ field: "no_of_shafts", label: __("No of Shafts"), num: true },
+	{ field: "wastage", label: __("Wastage"), num: true },
+	{ field: "spr_item_name", label: __("SPR Item Row") },
+	{ field: "source_roll", label: __("Source Roll") },
+];
+
 const DESK_PATTY_COLS = [
 	{ field: "job_id", label: __("Job ID") },
 	{ field: "quality", label: __("Quality") },
@@ -189,6 +203,28 @@ function _injectGwmStyles() {
 .gwm-desk-table tbody tr.gwm-selected { background: #eef2ff; }
 .gwm-desk-table .gwm-num { text-align: right; font-variant-numeric: tabular-nums; }
 .gwm-desk-table .gwm-check { width: 36px; text-align: center; }
+.gwm-desk-table th.gwm-print-col,
+.gwm-desk-table td.gwm-print-col {
+  width: 104px;
+  min-width: 104px;
+  max-width: 104px;
+  text-align: center;
+  white-space: nowrap;
+  position: sticky;
+  right: 0;
+  background: #fff;
+  box-shadow: -4px 0 8px rgba(15, 23, 42, 0.05);
+  z-index: 1;
+}
+.gwm-desk-table thead th.gwm-print-col { background: #f1f5f9; z-index: 2; }
+.gwm-print-btn {
+  white-space: nowrap;
+  max-width: 100%;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-radius: 6px !important;
+  font-weight: 600 !important;
+}
 .gwm-filter-input {
   width: 100%;
   box-sizing: border-box;
@@ -206,10 +242,6 @@ function _injectGwmStyles() {
   border: 1px dashed #cbd5e1;
   border-radius: 10px;
   background: #f8fafc;
-}
-.gwm-print-btn {
-  border-radius: 6px !important;
-  font-weight: 600 !important;
 }
 `;
 	document.head.appendChild(style);
@@ -233,21 +265,58 @@ function _fmtNum(v, decimals = 3) {
 	return n.toFixed(decimals);
 }
 
+function _apiColsToDesk(apiCols, fallbackCols) {
+	if (!Array.isArray(apiCols) || !apiCols.length) {
+		return fallbackCols;
+	}
+	const numericTypes = new Set(["Float", "Int", "Currency"]);
+	return apiCols
+		.filter((c) => c.fieldname && !["name", "parent", "parentfield", "parenttype", "idx", "docstatus"].includes(c.fieldname))
+		.map((c) => ({
+			field: c.fieldname,
+			label: c.label || c.fieldname,
+			num:
+				numericTypes.has(c.fieldtype) ||
+				/width|meter|wastage|recycled|available|shaft|gsm|qty|kg/i.test(c.fieldname),
+		}));
+}
+
+function _cellValue(row, field) {
+	const aliases = {
+		batch_no: ["batch_no", "batch", "source_roll"],
+		width_inch: ["width_inch", "width", "w"],
+		width: ["width", "width_inch", "w"],
+		meter_per_roll: ["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"],
+		wastage: ["wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg", "net_wastage"],
+		net_wastage: ["net_wastage", "net_wastage_kg", "wastage_qty", "wastage", "available", "available_qty"],
+		recycled: ["recycled", "recycled_qty", "recycled_kg"],
+		available_kg: ["available_kg", "available", "available_qty", "wastage", "net_wastage"],
+	};
+	return _val(row, ...(aliases[field] || [field]));
+}
+
 function _normalizePattyRow(row) {
-	return {
+	const normalized = {
 		...row,
 		batch_no: _val(row, "batch_no", "batch", "source_roll"),
 		quality: _val(row, "quality"),
 		color: _val(row, "color"),
 		gsm: _val(row, "gsm"),
 		width_inch: _val(row, "width_inch", "width", "w"),
-		meter_per_roll: _val(row, "meter_per_roll", "meter_roll", "meter", "produced_length_mtrs"),
-		no_of_shafts: _val(row, "no_of_shafts", "shafts"),
-		wastage: _val(row, "wastage", "wastage_qty", "wastage_qt"),
-		net_wastage: _val(row, "net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage"),
+		width: _val(row, "width", "width_inch", "w"),
+		meter_per_roll: _val(row, "meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"),
+		no_of_shafts: _val(row, "no_of_shafts", "shafts", "no_of_shaft"),
+		wastage: _val(row, "wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg"),
+		wastage_qty: _val(row, "wastage_qty", "wastage_qt", "wastage", "net_wastage"),
+		net_wastage: _val(row, "net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage", "available", "available_qty"),
 		recycled: _val(row, "recycled", "recycled_qty", "recycled_kg"),
-		available_kg: _val(row, "available_kg", "available", "net_wastage", "wastage"),
+		recycled_qty: _val(row, "recycled_qty", "recycled", "recycled_kg"),
+		available: _val(row, "available", "available_qty", "available_kg", "wastage", "net_wastage"),
+		available_kg: _val(row, "available_kg", "available", "available_qty", "wastage", "net_wastage"),
+		spr_item_name: _val(row, "spr_item_name", "source_roll_waste_row"),
+		source_roll: _val(row, "source_roll", "batch_no", "batch"),
 	};
+	return normalized;
 }
 
 function _deskTableHtml(cols, rows, opts = {}) {
@@ -260,7 +329,7 @@ function _deskTableHtml(cols, rows, opts = {}) {
 		})
 		.join("");
 	if (showPrint) {
-		head += `<th>${__("Print")}</th>`;
+		head += `<th class="gwm-print-col">${__("Print")}</th>`;
 	}
 	let body = "";
 	if (!rows.length) {
@@ -273,7 +342,7 @@ function _deskTableHtml(cols, rows, opts = {}) {
 				const row = _normalizePattyRow(raw);
 				const cells = cols
 					.map((c) => {
-						let v = row[c.field];
+						let v = _cellValue(row, c.field);
 						if (c.num) {
 							v = _fmtNum(v, c.field === "gsm" || c.field === "no_of_shafts" ? 0 : 3);
 						}
@@ -282,7 +351,7 @@ function _deskTableHtml(cols, rows, opts = {}) {
 					})
 					.join("");
 				const printBtn = showPrint
-					? `<td><button type="button" class="btn btn-xs btn-default gwm-print-btn" data-row="${_esc(
+					? `<td class="gwm-print-col"><button type="button" class="btn btn-xs btn-default gwm-print-btn" data-row="${_esc(
 							row.name
 					  )}">${__("Print Label")}</button></td>`
 					: "";
@@ -549,6 +618,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 	const ctx = await _loadWastageContext(sprName);
 	const table = (ctx.tables || {}).custom_running_patty_wastage || {};
 	const rows = (table.rows || []).map(_normalizePattyRow);
+	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
 
 	const content =
 		rows.length > 0
@@ -559,7 +629,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 				</div>
 				<div class="gwm-card" style="margin-top:12px;">
 					<div class="gwm-section-title">${__("Table View")}</div>
-					${_deskTableHtml(DESK_PATTY_COLS, rows, { showPrint: true })}
+					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
 				</div>
 			</div>`
 			: `<div class="gwm-empty">${__(
@@ -669,10 +739,15 @@ async function _showRollWasteGrid(sprName, sprRow) {
 	const ctx = await _loadWastageContext(sprName);
 	const table = (ctx.tables || {}).custom_roll_waste || {};
 	const rows = (table.rows || []).map(_normalizePattyRow);
+	const rollCols = _apiColsToDesk(table.columns, DESK_ROLL_WASTE_COLS);
 	const content = `<div class="gwm-shell">
 		<div class="gwm-card">
 			<div class="gwm-section-title">${__("Roll Waste")}</div>
 			${_dataCardsHtml(rows, { kind: "roll", showPrint: true })}
+		</div>
+		<div class="gwm-card" style="margin-top:12px;">
+			<div class="gwm-section-title">${__("Table View")}</div>
+			${_deskTableHtml(rollCols, rows, { showPrint: true })}
 		</div>
 	</div>`;
 
@@ -704,6 +779,7 @@ async function _openRecycleMain(sprName, sprRow, opts) {
 	const ctx = await _loadWastageContext(sprName);
 	const recycled = (ctx.tables || {}).custom_recycled_wastage_details || {};
 	const rows = (recycled.rows || []).map(_normalizePattyRow);
+	const recycledCols = _apiColsToDesk(recycled.columns, DESK_RECYCLED_COLS);
 
 	const content = `<div class="gwm-shell">
 		<div class="gwm-actions">
@@ -716,7 +792,7 @@ async function _openRecycleMain(sprName, sprRow, opts) {
 			<div class="gwm-section-title">${__("Recycled Wastage Details")}</div>
 			${
 				rows.length
-					? _deskTableHtml(DESK_RECYCLED_COLS, rows)
+					? _deskTableHtml(recycledCols, rows)
 					: `<div class="gwm-empty">${__(
 							"No recycled rows yet. Use View Patty Stock or Roll Waste to consume."
 					  )}</div>`

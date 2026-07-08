@@ -13,7 +13,10 @@
   "meter_per_roll",
   "no_of_shafts",
   "wastage",
-  "recycled"
+  "recycled",
+  "batch_no",
+  "source_roll",
+  "source_roll_waste_row"
  ],
  "fields": [
   {"fieldname": "job_id", "fieldtype": "Data", "in_list_view": 1, "label": "Job ID"},
@@ -24,7 +27,10 @@
   {"fieldname": "meter_per_roll", "fieldtype": "Float", "label": "Meter / Roll"},
   {"fieldname": "no_of_shafts", "fieldtype": "Int", "label": "No of Shafts"},
   {"fieldname": "wastage", "fieldtype": "Float", "label": "Wastage"},
-  {"fieldname": "recycled", "fieldtype": "Float", "label": "Recycled"}
+  {"fieldname": "recycled", "fieldtype": "Float", "label": "Recycled"},
+  {"fieldname": "batch_no", "fieldtype": "Data", "label": "Batch No"},
+  {"fieldname": "source_roll", "fieldtype": "Data", "label": "Source Roll"},
+  {"fieldname": "source_roll_waste_row", "fieldtype": "Data", "hidden": 1, "label": "Source Roll Waste Row"}
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
