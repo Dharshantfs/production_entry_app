@@ -275,9 +275,9 @@
   },
   {
    "fieldname": "custom_label",
-   "fieldtype": "Select",
+   "fieldtype": "Link",
    "label": "Label Type",
-   "options": "Default\nReliance\nPerfect\nPlain CC\nPlain\nCustomized"
+   "options": "Label Template"
   },
   {
    "fieldname": "custom_batch_width",

@@ -379,6 +379,22 @@ def _looks_like_frappe_row_name(s: str) -> bool:
 	return t.isalnum()
 
 
+def normalize_label_template_link(value: str) -> str:
+	"""Map legacy Select / free-text label values to a Label Template link name."""
+	v = _cstr(value).strip()
+	if not v:
+		return ""
+	if not frappe.db.exists("DocType", "Label Template"):
+		return v
+	if frappe.db.exists("Label Template", v):
+		return v
+	lower = v.lower()
+	for name in frappe.get_all("Label Template", pluck="name"):
+		if _cstr(name).lower() == lower:
+			return name
+	return v
+
+
 def resolve_label_from_pp_doc(pp_doc) -> str:
 	"""Label / label type from Production Plan header or first shaft detail row (sites use different field names)."""
 	if not pp_doc:
@@ -398,7 +414,7 @@ def resolve_label_from_pp_doc(pp_doc) -> str:
 			if meta.has_field(fn):
 				v = _cstr(pp_doc.get(fn))
 				if v:
-					return v
+					return normalize_label_template_link(v)
 		for tbl in ("custom_shaft_details", "shaft_details"):
 			if not meta.has_field(tbl):
 				continue
@@ -413,7 +429,7 @@ def resolve_label_from_pp_doc(pp_doc) -> str:
 					raw = None
 				v = _cstr(raw)
 				if v:
-					return v
+					return normalize_label_template_link(v)
 	except Exception:
 		pass
 	return ""
@@ -436,7 +452,7 @@ def resolve_label_from_planning_sheet_doc(sheet_doc) -> str:
 			if meta.has_field(fn):
 				v = _cstr(sheet_doc.get(fn))
 				if v:
-					return v
+					return normalize_label_template_link(v)
 	except Exception:
 		pass
 	return ""
