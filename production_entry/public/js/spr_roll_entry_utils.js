@@ -32,13 +32,23 @@ export function sprNormalizeGrossWeightInput(val) {
 	return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** Keep partial decimal typing (e.g. "45.") while still parsing for calculations. */
-export function sprGrossWeightInputLooksValid(val) {
-	if (val === null || val === undefined || val === '') {
-		return false;
+/** Allow free decimal typing in GSM/SPR gross weight fields (digits + one dot). */
+export function sprSanitizeGrossWeightTyping(val) {
+	let s = String(val ?? '').replace(/,/g, '');
+	const negative = s.startsWith('-');
+	s = s.replace(/[^\d.]/g, '');
+	const dot = s.indexOf('.');
+	if (dot >= 0) {
+		s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
 	}
-	const s = String(val).replace(/,/g, '').trim();
-	return /^-?\d*\.?\d*$/.test(s) && s !== '' && s !== '.' && s !== '-';
+	return negative && s ? `-${s}` : s;
+}
+
+export function sprGrossWeightDisplay(val) {
+	if (val === null || val === undefined || val === '') {
+		return '';
+	}
+	return sprSanitizeGrossWeightTyping(val);
 }
 
 export function sprRoundNetWeightKg(v) {
@@ -163,7 +173,6 @@ export function sprRecalcRollRow(row) {
 			? sprFlt(row.planned_qty)
 			: sprComputePlannedQtyKg(row.gsm, row.width_inch, lengthM || row.meter_roll);
 	return {
-		...row,
 		net_weight: net,
 		produced_gsm: produced,
 		planned_qty: planned > 0 ? planned : row.planned_qty,

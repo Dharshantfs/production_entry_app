@@ -430,12 +430,13 @@
                 <td class="gpe-num">{{ formatKg(row.net_weight) }}</td>
                 <td class="gpe-num">
                   <input
-                    v-model="row.gross_weight"
+                    :value="sprGrossWeightDisplay(row.gross_weight)"
                     type="text"
                     inputmode="decimal"
+                    autocomplete="off"
                     class="gpe-inp"
                     :disabled="row.row_locked || row.is_bundle_row"
-                    @input="onRowEdit(row)"
+                    @input="onGrossWeightInput(row, $event)"
                   />
                 </td>
                 <td class="gpe-num">{{ formatKg(row.planned_qty) }}</td>
@@ -1401,8 +1402,10 @@ import {
   sprFlt,
   sprFormatKg,
   sprGsmBandClass,
+  sprGrossWeightDisplay,
   sprNormalizeGrossWeightInput,
   sprRecalcRollRow,
+  sprSanitizeGrossWeightTyping,
 } from "./spr_roll_entry_utils.js";
 
 const STORAGE_KEY = "gsm_production_entry_draft_v3";
@@ -3262,12 +3265,27 @@ function rowBandClass(row) {
   return sprGsmBandClass(row.gsm, row.produced_gsm, hasWeight);
 }
 
+function applyRollRowRecalc(row) {
+  const updated = sprRecalcRollRow({ ...row, core_width_options: coreWidthOptions.value });
+  row.net_weight = updated.net_weight;
+  row.produced_gsm = updated.produced_gsm;
+  row.planned_qty = updated.planned_qty;
+}
+
+function onGrossWeightInput(row, event) {
+  if (row.row_locked) {
+    return;
+  }
+  row.gross_weight = sprSanitizeGrossWeightTyping(event?.target?.value);
+  applyRollRowRecalc(row);
+  scheduleAutosave();
+}
+
 function onRowEdit(row) {
   if (row.row_locked) {
     return;
   }
-  const updated = sprRecalcRollRow({ ...row, core_width_options: coreWidthOptions.value });
-  Object.assign(row, updated);
+  applyRollRowRecalc(row);
   scheduleAutosave();
 }
 
@@ -3329,7 +3347,7 @@ async function handleBundleApplyResult(m, ppId) {
     coreItem = pickCoreForFabricWidth(m.segment_width || 0, "");
   }
   creationSeq.value += 1;
-  const bundleRow = sprRecalcRollRow({
+  const bundleRow = {
     _id: `bundle-${Date.now()}-${creationSeq.value}`,
     creation_seq: creationSeq.value,
     is_bundle_row: true,
@@ -3351,7 +3369,7 @@ async function handleBundleApplyResult(m, ppId) {
     produced_length_mtrs: m.produced_length_mtrs || 0,
     produced_gsm: 0,
     net_weight: m.sticker_bundle_weight_kg || 0,
-    gross_weight: m.whole_gross_kg || 0,
+    gross_weight: m.whole_gross_kg != null && m.whole_gross_kg !== "" ? String(m.whole_gross_kg) : "",
     planned_qty: m.planned_qty || 0,
     uom: m.uom || "Kg",
     work_order: m.work_order || "",
@@ -3362,7 +3380,11 @@ async function handleBundleApplyResult(m, ppId) {
     row_ready_for_print: 1,
     custom_core_width_mm: coreItem,
     core_width_options: coreWidthOptions.value,
-  });
+  };
+  const bundleRecalc = sprRecalcRollRow(bundleRow);
+  bundleRow.net_weight = bundleRecalc.net_weight;
+  bundleRow.produced_gsm = bundleRecalc.produced_gsm;
+  bundleRow.planned_qty = bundleRecalc.planned_qty;
   rollLines.value.unshift(bundleRow);
   if (m.child_roll_batches?.length) {
     syncBatchCounterFromGrid();
@@ -3821,8 +3843,10 @@ async function saveRow(row) {
     return;
   }
   const updated = sprRecalcRollRow({ ...row, core_width_options: coreWidthOptions.value });
-  Object.assign(row, updated);
-  row.gross_weight = gross;
+  row.net_weight = updated.net_weight;
+  row.produced_gsm = updated.produced_gsm;
+  row.planned_qty = updated.planned_qty;
+  row.gross_weight = String(gross);
   saveStatus.value = "Saving row…";
   try {
     const res = await frappe.call({
@@ -4233,6 +4257,7 @@ function applyResumePayload(msg) {
   }
   rollLines.value = (msg.roll_lines || []).map((r, idx) => ({
     ...r,
+    gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
     _id: r._id || `resume-${idx}-${Date.now()}`,
     is_bundle_row: !!cint(r.is_bundle_row),
     row_locked: r.row_locked != null ? !!cint(r.row_locked) : true,
@@ -5021,7 +5046,7 @@ async function addRollRow() {
     extras.custom_core_width_mm || extras.core_size || ""
   );
   creationSeq.value += 1;
-  const newRow = sprRecalcRollRow({
+  const newRow = {
     _id: `row-${Date.now()}-${creationSeq.value}`,
     creation_seq: creationSeq.value,
     planning_table_row: line.id,
@@ -5051,7 +5076,11 @@ async function addRollRow() {
     row_locked: 0,
     row_ready_for_print: 0,
     core_width_options: coreWidthOptions.value,
-  });
+  };
+  const newRecalc = sprRecalcRollRow(newRow);
+  newRow.net_weight = newRecalc.net_weight;
+  newRow.produced_gsm = newRecalc.produced_gsm;
+  newRow.planned_qty = newRecalc.planned_qty;
   rollLines.value.unshift(newRow);
   scheduleAutosave();
   } finally {
@@ -5323,6 +5352,7 @@ function restoreDraft() {
     selectionLocked.value = !!d.selectionLocked;
     rollLines.value = (d.rollLines || []).map((r) => ({
       ...r,
+      gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
       row_locked: !!r.row_locked,
       row_ready_for_print: !!r.row_ready_for_print,
     }));
