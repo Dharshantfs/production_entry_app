@@ -1,8 +1,43 @@
 /**
- * GSM Wastage + Recycle dialogs — mirror desk SPR child tables.
+ * GSM Wastage + Recycle dialogs — desk-style cards and Available Patty Stock picker.
  */
 
 import { gsmPrintWastageLabel } from "./spr_gsm_tools.js";
+
+const GWM_STYLE_ID = "gsm-wastage-recycle-styles";
+
+const DESK_STOCK_COLS = [
+	{ key: "batch_no", label: __("Batch No"), filter: true },
+	{ key: "quality", label: __("Quality"), filter: true },
+	{ key: "color", label: __("Color"), filter: true },
+	{ key: "gsm", label: __("GSM"), filter: true, num: true },
+	{ key: "width_inch", label: __("Width"), filter: true, num: true },
+	{ key: "available_kg", label: __("Available (Kg)"), filter: false, num: true },
+];
+
+const DESK_RECYCLED_COLS = [
+	{ field: "job_id", label: __("Job ID") },
+	{ field: "quality", label: __("Quality") },
+	{ field: "color", label: __("Color") },
+	{ field: "gsm", label: __("GSM"), num: true },
+	{ field: "width_inch", label: __("Width (Inch)"), num: true },
+	{ field: "meter_per_roll", label: __("Meter / Roll"), num: true },
+	{ field: "no_of_shafts", label: __("No of Shafts"), num: true },
+	{ field: "wastage", label: __("Wastage"), num: true },
+	{ field: "recycled", label: __("Recycled"), num: true },
+];
+
+const DESK_PATTY_COLS = [
+	{ field: "job_id", label: __("Job ID") },
+	{ field: "quality", label: __("Quality") },
+	{ field: "color", label: __("Color") },
+	{ field: "gsm", label: __("GSM"), num: true },
+	{ field: "width_inch", label: __("Width (Inch)"), num: true },
+	{ field: "meter_per_roll", label: __("Meter / Roll"), num: true },
+	{ field: "no_of_shafts", label: __("No of Shafts"), num: true },
+	{ field: "wastage", label: __("Wastage Qty"), num: true },
+	{ field: "net_wastage", label: __("Net Wastage (Kgs)"), num: true },
+];
 
 function _flt(v) {
 	return typeof flt === "function" ? flt(v) : parseFloat(v) || 0;
@@ -12,28 +47,238 @@ function _esc(s) {
 	return frappe.utils.escape_html(String(s ?? ""));
 }
 
-function _tableHtml(columns, rows, opts = {}) {
-	const cols = columns && columns.length ? columns : Object.keys(rows[0] || {}).filter((k) => k !== "name");
+function _injectGwmStyles() {
+	if (document.getElementById(GWM_STYLE_ID)) {
+		return;
+	}
+	const style = document.createElement("style");
+	style.id = GWM_STYLE_ID;
+	style.textContent = `
+.gwm-shell { font-family: inherit; color: #1e293b; }
+.gwm-section-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+  letter-spacing: 0.02em;
+}
+.gwm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.gwm-actions .btn {
+  border-radius: 8px;
+  font-weight: 600;
+  padding: 8px 14px;
+}
+.gwm-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.gwm-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+.gwm-data-card {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+.gwm-data-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.gwm-data-card-head strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+.gwm-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
+}
+.gwm-kv-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.gwm-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.gwm-kv span {
+  font-size: 10px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gwm-kv strong {
+  font-size: 13px;
+  color: #0f172a;
+  word-break: break-word;
+}
+.gwm-kv.gwm-kv-wide { grid-column: 1 / -1; }
+.gwm-card-foot {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+}
+.gwm-table-wrap {
+  overflow: auto;
+  max-height: min(52vh, 420px);
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+}
+.gwm-desk-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  min-width: 720px;
+}
+.gwm-desk-table th,
+.gwm-desk-table td {
+  border-bottom: 1px solid #e2e8f0;
+  border-right: 1px solid #f1f5f9;
+  padding: 8px 10px;
+  vertical-align: middle;
+  text-align: left;
+}
+.gwm-desk-table th:last-child,
+.gwm-desk-table td:last-child { border-right: none; }
+.gwm-desk-table thead th {
+  background: #f1f5f9;
+  font-weight: 700;
+  color: #334155;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.gwm-desk-table thead tr.gwm-filter-row th {
+  top: 36px;
+  background: #f8fafc;
+  padding: 4px 6px;
+  z-index: 1;
+}
+.gwm-desk-table tbody tr:hover { background: #f8fafc; }
+.gwm-desk-table tbody tr.gwm-selected { background: #eef2ff; }
+.gwm-desk-table .gwm-num { text-align: right; font-variant-numeric: tabular-nums; }
+.gwm-desk-table .gwm-check { width: 36px; text-align: center; }
+.gwm-filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: #fff;
+}
+.gwm-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: #64748b;
+  font-size: 13px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.gwm-print-btn {
+  border-radius: 6px !important;
+  font-weight: 600 !important;
+}
+`;
+	document.head.appendChild(style);
+}
+
+function _val(row, ...keys) {
+	for (const k of keys) {
+		const v = row?.[k];
+		if (v !== undefined && v !== null && String(v).trim() !== "") {
+			return v;
+		}
+	}
+	return "";
+}
+
+function _fmtNum(v, decimals = 3) {
+	const n = _flt(v);
+	if (!n && n !== 0) {
+		return "";
+	}
+	return n.toFixed(decimals);
+}
+
+function _normalizePattyRow(row) {
+	return {
+		...row,
+		batch_no: _val(row, "batch_no", "batch", "source_roll"),
+		quality: _val(row, "quality"),
+		color: _val(row, "color"),
+		gsm: _val(row, "gsm"),
+		width_inch: _val(row, "width_inch", "width", "w"),
+		meter_per_roll: _val(row, "meter_per_roll", "meter_roll", "meter", "produced_length_mtrs"),
+		no_of_shafts: _val(row, "no_of_shafts", "shafts"),
+		wastage: _val(row, "wastage", "wastage_qty", "wastage_qt"),
+		net_wastage: _val(row, "net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage"),
+		recycled: _val(row, "recycled", "recycled_qty", "recycled_kg"),
+		available_kg: _val(row, "available_kg", "available", "net_wastage", "wastage"),
+	};
+}
+
+function _deskTableHtml(cols, rows, opts = {}) {
 	const showPrint = !!opts.showPrint;
-	let head = cols.map((c) => {
-		const label = typeof c === "string" ? c : c.label || c.fieldname;
-		return `<th>${_esc(label)}</th>`;
-	});
+	const tableClass = opts.tableClass || "gwm-desk-table";
+	let head = cols
+		.map((c) => {
+			const cls = c.num ? "gwm-num" : "";
+			return `<th class="${cls}">${_esc(c.label)}</th>`;
+		})
+		.join("");
 	if (showPrint) {
-		head.push(`<th>${__("Print")}</th>`);
+		head += `<th>${__("Print")}</th>`;
 	}
 	let body = "";
 	if (!rows.length) {
-		body = `<tr><td colspan="${cols.length + (showPrint ? 1 : 0)}" class="text-muted">${__(
+		body = `<tr><td colspan="${cols.length + (showPrint ? 1 : 0)}" class="gwm-empty">${__(
 			"No rows"
 		)}</td></tr>`;
 	} else {
 		body = rows
-			.map((row) => {
+			.map((raw) => {
+				const row = _normalizePattyRow(raw);
 				const cells = cols
 					.map((c) => {
-						const fn = typeof c === "string" ? c : c.fieldname;
-						return `<td>${_esc(row[fn] ?? "")}</td>`;
+						let v = row[c.field];
+						if (c.num) {
+							v = _fmtNum(v, c.field === "gsm" || c.field === "no_of_shafts" ? 0 : 3);
+						}
+						const cls = c.num ? "gwm-num" : "";
+						return `<td class="${cls}">${_esc(v)}</td>`;
 					})
 					.join("");
 				const printBtn = showPrint
@@ -45,44 +290,166 @@ function _tableHtml(columns, rows, opts = {}) {
 			})
 			.join("");
 	}
-	return `<table class="table table-bordered table-condensed gwm-grid"><thead><tr>${head.join(
-		""
-	)}</tr></thead><tbody>${body}</tbody></table>`;
+	return `<div class="gwm-table-wrap"><table class="${tableClass}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
-function _stockPickerHtml(stock, selected = new Set()) {
-	if (!stock.length) {
-		return `<p class="text-muted">${__("No patty stock available.")}</p>`;
+function _dataCardsHtml(rows, opts = {}) {
+	const kind = opts.kind || "waste";
+	if (!rows.length) {
+		return `<div class="gwm-empty">${opts.emptyText || __("No rows")}</div>`;
 	}
-	const head = `<tr>
-		<th><input type="checkbox" class="gwm-select-all" /></th>
-		<th>${__("Batch No")}</th>
-		<th>${__("Quality")}</th>
-		<th>${__("Color")}</th>
-		<th>${__("GSM")}</th>
-		<th>${__("Width")}</th>
-		<th>${__("Available (Kg)")}</th>
-	</tr>`;
+	const cards = rows
+		.map((raw) => {
+			const row = _normalizePattyRow(raw);
+			const title =
+				kind === "roll"
+					? _val(row, "batch_no") || __("Roll Waste")
+					: `${__("Job")} ${_val(row, "job_id") || "—"}`;
+			const badge =
+				kind === "roll"
+					? __("Roll Waste")
+					: row.net_wastage
+						? `${_fmtNum(row.net_wastage)} Kg`
+						: __("Patty Wastage");
+			const printAttr = row.name ? `data-row="${_esc(row.name)}"` : "";
+			return `<div class="gwm-data-card">
+				<div class="gwm-data-card-head">
+					<strong>${_esc(title)}</strong>
+					<span class="gwm-badge">${_esc(badge)}</span>
+				</div>
+				<div class="gwm-kv-grid">
+					<div class="gwm-kv"><span>${__("Quality")}</span><strong>${_esc(row.quality)}</strong></div>
+					<div class="gwm-kv"><span>${__("Color")}</span><strong>${_esc(row.color)}</strong></div>
+					<div class="gwm-kv"><span>${__("GSM")}</span><strong>${_esc(row.gsm)}</strong></div>
+					<div class="gwm-kv"><span>${__("Width")}</span><strong>${_esc(row.width_inch)}</strong></div>
+					<div class="gwm-kv"><span>${__("Meter / Roll")}</span><strong>${_esc(row.meter_per_roll)}</strong></div>
+					<div class="gwm-kv"><span>${__("Shafts")}</span><strong>${_esc(row.no_of_shafts)}</strong></div>
+					<div class="gwm-kv"><span>${__("Wastage Qty")}</span><strong>${_esc(_fmtNum(row.wastage))}</strong></div>
+					<div class="gwm-kv"><span>${__("Net Wastage")}</span><strong>${_esc(_fmtNum(row.net_wastage || row.wastage))} Kg</strong></div>
+					${row.recycled ? `<div class="gwm-kv"><span>${__("Recycled")}</span><strong>${_esc(_fmtNum(row.recycled))} Kg</strong></div>` : ""}
+				</div>
+				${
+					opts.showPrint && row.name
+						? `<div class="gwm-card-foot"><button type="button" class="btn btn-xs btn-default gwm-print-btn" ${printAttr}>${__(
+								"Print Label"
+						  )}</button></div>`
+						: ""
+				}
+			</div>`;
+		})
+		.join("");
+	return `<div class="gwm-card-grid">${cards}</div>`;
+}
+
+function _stockPickerHtml(stock) {
+	_injectGwmStyles();
+	if (!stock.length) {
+		return `<div class="gwm-empty">${__("No patty stock available for this SPR.")}</div>`;
+	}
+
+	const headCells = DESK_STOCK_COLS.map(
+		(c) => `<th class="${c.num ? "gwm-num" : ""}">${_esc(c.label)}</th>`
+	).join("");
+	const filterCells = DESK_STOCK_COLS.map((c, i) => {
+		if (!c.filter) {
+			return "<th></th>";
+		}
+		return `<th><input type="text" class="gwm-filter-input" data-filter-col="${i}" placeholder="${__(
+			"Filter"
+		)}" /></th>`;
+	}).join("");
+
 	const body = stock
-		.map((row, idx) => {
-			const batch = row.batch_no || row.batch || "";
+		.map((raw, idx) => {
+			const row = _normalizePattyRow(raw);
+			const batch = row.batch_no || "";
 			const key = row.name || batch || String(idx);
-			const checked = selected.has(key) ? "checked" : "";
-			return `<tr data-stock-key="${_esc(key)}">
-				<td><input type="checkbox" class="gwm-stock-cb" data-key="${_esc(key)}" ${checked} /></td>
-				<td>${_esc(batch)}</td>
-				<td>${_esc(row.quality || "")}</td>
-				<td>${_esc(row.color || "")}</td>
-				<td>${_esc(row.gsm ?? "")}</td>
-				<td>${_esc(row.width_inch ?? row.width ?? "")}</td>
-				<td>${_flt(row.available_kg ?? row.available ?? row.wastage).toFixed(3)}</td>
+			const cells = DESK_STOCK_COLS.map((c) => {
+				let v = row[c.key];
+				if (c.key === "width_inch") {
+					v = row.width_inch;
+				}
+				if (c.num) {
+					v = c.key === "gsm" ? _fmtNum(v, 0) : _fmtNum(v, 3);
+				}
+				return `<td class="${c.num ? "gwm-num" : ""}">${_esc(v)}</td>`;
+			}).join("");
+			const searchParts = DESK_STOCK_COLS.map((c) => {
+				if (c.key === "width_inch") {
+					return String(row.width_inch || "");
+				}
+				if (c.key === "available_kg") {
+					return String(row.available_kg || "");
+				}
+				return String(row[c.key] || "");
+			});
+			return `<tr class="gwm-stock-row" data-stock-key="${_esc(key)}" data-search="${_esc(
+				searchParts.join("|")
+			)}">
+				<td class="gwm-check"><input type="checkbox" class="gwm-stock-cb" data-key="${_esc(key)}" /></td>
+				${cells}
 			</tr>`;
 		})
 		.join("");
-	return `<table class="table table-bordered table-condensed gwm-stock-grid"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+	return `<div class="gwm-shell gwm-card">
+		<div class="gwm-section-title">${__("Available Patty Stock")}</div>
+		<div class="gwm-table-wrap gwm-desk-stock-wrap">
+			<table class="gwm-desk-table gwm-desk-stock">
+				<thead>
+					<tr>
+						<th class="gwm-check"><input type="checkbox" class="gwm-select-all" title="${__(
+							"Select all"
+						)}" /></th>
+						${headCells}
+					</tr>
+					<tr class="gwm-filter-row">
+						<th></th>
+						${filterCells}
+					</tr>
+				</thead>
+				<tbody>${body}</tbody>
+			</table>
+		</div>
+	</div>`;
+}
+
+function _wireStockFilters($wrapper) {
+	$wrapper.on("input", ".gwm-filter-input", function () {
+		const filters = [];
+		$wrapper.find(".gwm-filter-input").each(function () {
+			filters.push({
+				col: parseInt($(this).data("filter-col"), 10),
+				val: String($(this).val() || "").trim().toLowerCase(),
+			});
+		});
+		$wrapper.find(".gwm-stock-row").each(function () {
+			const parts = String($(this).data("search") || "").split("|");
+			let show = true;
+			for (const f of filters) {
+				if (!f.val && f.val !== "0") {
+					continue;
+				}
+				const cell = String(parts[f.col] || "").toLowerCase();
+				if (!cell.includes(f.val)) {
+					show = false;
+					break;
+				}
+			}
+			$(this).toggle(show);
+		});
+	});
+}
+
+function _wireSelectAll($wrapper, rowCb, allCb) {
+	$wrapper.on("change", allCb, function () {
+		const on = $(this).prop("checked");
+		$wrapper.find(rowCb).prop("checked", on);
+	});
 }
 
 export function pickSessionSpr(sessionSprList) {
+	_injectGwmStyles();
 	const list = (sessionSprList || []).filter((s) => s && s.spr_name);
 	if (!list.length) {
 		frappe.msgprint(__("Create SPRs first."));
@@ -130,7 +497,7 @@ async function _loadPattyStock(sprName) {
 		args: { spr_name: sprName },
 	});
 	const msg = res.message || {};
-	return msg.stock || msg.rows || msg.data || [];
+	return (msg.stock || msg.rows || msg.data || []).map(_normalizePattyRow);
 }
 
 function _rollsForSpr(rollLines, sprRow) {
@@ -146,6 +513,7 @@ function _rollsForSpr(rollLines, sprRow) {
 }
 
 export async function openGsmWastageDialog(opts = {}) {
+	_injectGwmStyles();
 	const sprRow = await pickSessionSpr(opts.sessionSprList);
 	if (!sprRow) {
 		return;
@@ -158,9 +526,9 @@ export async function openGsmWastageDialog(opts = {}) {
 			{
 				fieldname: "hint",
 				fieldtype: "HTML",
-				options: `<p>${__(
+				options: `<div class="gwm-shell"><p>${__(
 					"Choose wastage type. Running Patty Wastage is auto-filled on desk SPR when rolls are saved."
-				)}</p>`,
+				)}</p></div>`,
 			},
 		],
 		primary_action_label: __("Running Patty Wasteage"),
@@ -180,24 +548,28 @@ export async function openGsmWastageDialog(opts = {}) {
 async function _openRunningPattyWastage(sprName, sprRow) {
 	const ctx = await _loadWastageContext(sprName);
 	const table = (ctx.tables || {}).custom_running_patty_wastage || {};
-	const rows = table.rows || [];
-	const cols = table.columns || [];
+	const rows = (table.rows || []).map(_normalizePattyRow);
+
+	const content =
+		rows.length > 0
+			? `<div class="gwm-shell">
+				<div class="gwm-card">
+					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
+					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
+				</div>
+				<div class="gwm-card" style="margin-top:12px;">
+					<div class="gwm-section-title">${__("Table View")}</div>
+					${_deskTableHtml(DESK_PATTY_COLS, rows, { showPrint: true })}
+				</div>
+			</div>`
+			: `<div class="gwm-empty">${__(
+					"No running patty wastage yet. Save roll entries first — desk SPR adds rows automatically."
+			  )}</div>`;
 
 	const d = new frappe.ui.Dialog({
 		title: __("Running Patty Wasteage") + ` · ${sprRow.order_code || ""}`,
-		size: "large",
-		fields: [
-			{
-				fieldname: "grid_html",
-				fieldtype: "HTML",
-				options:
-					rows.length > 0
-						? _tableHtml(cols, rows, { showPrint: true })
-						: `<p class="text-muted">${__(
-								"No running patty wastage yet. Save roll entries first — desk SPR adds rows automatically."
-						  )}</p>`,
-			},
-		],
+		size: "extra-large",
+		fields: [{ fieldname: "grid_html", fieldtype: "HTML", options: content }],
 		primary_action_label: __("Refresh"),
 		primary_action() {
 			d.hide();
@@ -206,8 +578,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 	});
 	d.show();
 	d.$wrapper.on("click", ".gwm-print-btn", async function () {
-		const rowName = $(this).data("row");
-		await gsmPrintWastageLabel(sprName, rowName, "custom_running_patty_wastage");
+		await gsmPrintWastageLabel(sprName, $(this).data("row"), "custom_running_patty_wastage");
 	});
 }
 
@@ -218,24 +589,30 @@ async function _openRollWastage(sprName, sprRow, opts) {
 		return;
 	}
 
-	const rollHtml = `<table class="table table-bordered table-condensed">
-		<thead><tr>
-			<th><input type="checkbox" class="gwm-roll-all" /></th>
-			<th>${__("Batch")}</th><th>${__("Job")}</th><th>${__("Quality")}</th>
-			<th>${__("GSM")}</th><th>${__("Width")}</th><th>${__("Net Kg")}</th>
-		</tr></thead>
-		<tbody>${rolls
-			.map(
-				(r) => `<tr>
-			<td><input type="checkbox" class="gwm-roll-cb" data-batch="${_esc(r.batch_no)}" data-row="${_esc(
-					r.spr_item_name || ""
-				)}" /></td>
-			<td>${_esc(r.batch_no)}</td><td>${_esc(r.job_id || r.job || "")}</td>
-			<td>${_esc(r.quality || "")}</td><td>${_esc(r.gsm || "")}</td>
-			<td>${_esc(r.width_inch || "")}</td><td>${_flt(r.net_weight).toFixed(3)}</td>
-		</tr>`
-			)
-			.join("")}</tbody></table>`;
+	const rollHtml = `<div class="gwm-shell gwm-card">
+		<div class="gwm-section-title">${__("Select rolls to mark as waste")}</div>
+		<div class="gwm-table-wrap">
+			<table class="gwm-desk-table">
+				<thead><tr>
+					<th class="gwm-check"><input type="checkbox" class="gwm-roll-all" /></th>
+					<th>${__("Batch")}</th><th>${__("Job")}</th><th>${__("Quality")}</th>
+					<th>${__("GSM")}</th><th class="gwm-num">${__("Width")}</th><th class="gwm-num">${__("Net Kg")}</th>
+				</tr></thead>
+				<tbody>${rolls
+					.map(
+						(r) => `<tr>
+					<td class="gwm-check"><input type="checkbox" class="gwm-roll-cb" data-batch="${_esc(
+						r.batch_no
+					)}" data-row="${_esc(r.spr_item_name || "")}" /></td>
+					<td>${_esc(r.batch_no)}</td><td>${_esc(r.job_id || r.job || "")}</td>
+					<td>${_esc(r.quality || "")}</td><td>${_esc(r.gsm || "")}</td>
+					<td class="gwm-num">${_esc(r.width_inch || "")}</td><td class="gwm-num">${_flt(r.net_weight).toFixed(3)}</td>
+				</tr>`
+					)
+					.join("")}</tbody>
+			</table>
+		</div>
+	</div>`;
 
 	const d = new frappe.ui.Dialog({
 		title: __("Roll Wasteage") + ` · ${sprRow.order_code || ""}`,
@@ -285,25 +662,24 @@ async function _openRollWastage(sprName, sprRow, opts) {
 		},
 	});
 	d.show();
-	d.$wrapper.on("change", ".gwm-roll-all", function () {
-		const on = $(this).prop("checked");
-		d.$wrapper.find(".gwm-roll-cb").prop("checked", on);
-	});
+	_wireSelectAll(d.$wrapper, ".gwm-roll-cb", ".gwm-roll-all");
 }
 
 async function _showRollWasteGrid(sprName, sprRow) {
 	const ctx = await _loadWastageContext(sprName);
 	const table = (ctx.tables || {}).custom_roll_waste || {};
+	const rows = (table.rows || []).map(_normalizePattyRow);
+	const content = `<div class="gwm-shell">
+		<div class="gwm-card">
+			<div class="gwm-section-title">${__("Roll Waste")}</div>
+			${_dataCardsHtml(rows, { kind: "roll", showPrint: true })}
+		</div>
+	</div>`;
+
 	const d = new frappe.ui.Dialog({
 		title: __("Roll Waste") + ` · ${sprRow.order_code || ""}`,
-		size: "large",
-		fields: [
-			{
-				fieldname: "grid_html",
-				fieldtype: "HTML",
-				options: _tableHtml(table.columns || [], table.rows || [], { showPrint: true }),
-			},
-		],
+		size: "extra-large",
+		fields: [{ fieldname: "grid_html", fieldtype: "HTML", options: content }],
 		primary_action_label: __("Close"),
 		primary_action() {
 			d.hide();
@@ -311,47 +687,47 @@ async function _showRollWasteGrid(sprName, sprRow) {
 	});
 	d.show();
 	d.$wrapper.on("click", ".gwm-print-btn", async function () {
-		const rowName = $(this).data("row");
-		await gsmPrintWastageLabel(sprName, rowName, "custom_roll_waste");
+		await gsmPrintWastageLabel(sprName, $(this).data("row"), "custom_roll_waste");
 	});
 }
 
 export async function openGsmRecycleDialog(opts = {}) {
+	_injectGwmStyles();
 	const sprRow = await pickSessionSpr(opts.sessionSprList);
 	if (!sprRow) {
 		return;
 	}
-	const sprName = sprRow.spr_name;
-	await _openRecycleMain(sprName, sprRow, opts);
+	await _openRecycleMain(sprRow.spr_name, sprRow, opts);
 }
 
 async function _openRecycleMain(sprName, sprRow, opts) {
 	const ctx = await _loadWastageContext(sprName);
 	const recycled = (ctx.tables || {}).custom_recycled_wastage_details || {};
+	const rows = (recycled.rows || []).map(_normalizePattyRow);
+
+	const content = `<div class="gwm-shell">
+		<div class="gwm-actions">
+			<button type="button" class="btn btn-default gwm-btn-patty">
+				<span class="fa fa-eye" style="margin-right:6px;"></span>${__("View Patty Stock")}
+			</button>
+			<button type="button" class="btn btn-default gwm-btn-roll-waste">${__("Roll Waste")}</button>
+		</div>
+		<div class="gwm-card">
+			<div class="gwm-section-title">${__("Recycled Wastage Details")}</div>
+			${
+				rows.length
+					? _deskTableHtml(DESK_RECYCLED_COLS, rows)
+					: `<div class="gwm-empty">${__(
+							"No recycled rows yet. Use View Patty Stock or Roll Waste to consume."
+					  )}</div>`
+			}
+		</div>
+	</div>`;
 
 	const d = new frappe.ui.Dialog({
 		title: __("Recycle") + ` · ${sprRow.order_code || ""} · ${sprName}`,
 		size: "extra-large",
-		fields: [
-			{
-				fieldname: "actions_html",
-				fieldtype: "HTML",
-				options: `<div class="gwm-recycle-actions" style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;">
-					<button type="button" class="btn btn-default gwm-btn-patty">${__("View Patty Wastage")}</button>
-					<button type="button" class="btn btn-default gwm-btn-roll-waste">${__("Roll Waste")}</button>
-				</div>`,
-			},
-			{
-				fieldname: "recycled_title",
-				fieldtype: "HTML",
-				options: `<h5 style="margin:8px 0;">${__("Recycled Wastage Details")}</h5>`,
-			},
-			{
-				fieldname: "recycled_html",
-				fieldtype: "HTML",
-				options: _tableHtml(recycled.columns || [], recycled.rows || []),
-			},
-		],
+		fields: [{ fieldname: "body_html", fieldtype: "HTML", options: content }],
 		primary_action_label: __("Refresh"),
 		primary_action() {
 			d.hide();
@@ -376,12 +752,11 @@ async function _openRecycleMain(sprName, sprRow, opts) {
 
 async function _openPattyStockPicker(sprName, sprRow, onDone) {
 	const stock = await _loadPattyStock(sprName);
-	const selected = new Set();
 
 	const d = new frappe.ui.Dialog({
-		title: __("Available Patty Stock") + ` · ${sprRow.order_code || ""}`,
+		title: __("Available Patty Stock"),
 		size: "extra-large",
-		fields: [{ fieldname: "stock_html", fieldtype: "HTML", options: _stockPickerHtml(stock, selected) }],
+		fields: [{ fieldname: "stock_html", fieldtype: "HTML", options: _stockPickerHtml(stock) }],
 		primary_action_label: __("Consume Selected"),
 		async primary_action() {
 			const picks = [];
@@ -419,37 +794,41 @@ async function _openPattyStockPicker(sprName, sprRow, onDone) {
 		},
 	});
 	d.show();
-	d.$wrapper.on("change", ".gwm-select-all", function () {
-		const on = $(this).prop("checked");
-		d.$wrapper.find(".gwm-stock-cb").prop("checked", on);
-	});
+	_wireStockFilters(d.$wrapper);
+	_wireSelectAll(d.$wrapper, ".gwm-stock-cb", ".gwm-select-all");
 }
 
 async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {
 	const ctx = await _loadWastageContext(sprName);
-	const table = (ctx.tables || {}).custom_roll_waste || {};
-	const rows = table.rows || [];
+	const rows = ((ctx.tables || {}).custom_roll_waste || {}).rows || [];
 	if (!rows.length) {
 		frappe.msgprint(__("No roll waste rows on this SPR."));
 		return;
 	}
 
-	const html = `<table class="table table-bordered table-condensed">
-		<thead><tr>
-			<th><input type="checkbox" class="gwm-rw-all" /></th>
-			<th>${__("Batch")}</th><th>${__("Job")}</th><th>${__("Quality")}</th>
-			<th>${__("GSM")}</th><th>${__("Width")}</th><th>${__("Wastage Kg")}</th>
-		</tr></thead>
-		<tbody>${rows
-			.map(
-				(r) => `<tr>
-			<td><input type="checkbox" class="gwm-rw-cb" data-name="${_esc(r.name)}" /></td>
-			<td>${_esc(r.batch_no || "")}</td><td>${_esc(r.job_id || "")}</td>
-			<td>${_esc(r.quality || "")}</td><td>${_esc(r.gsm || "")}</td>
-			<td>${_esc(r.width_inch || "")}</td><td>${_flt(r.wastage).toFixed(3)}</td>
-		</tr>`
-			)
-			.join("")}</tbody></table>`;
+	const html = `<div class="gwm-shell gwm-card">
+		<div class="gwm-section-title">${__("Roll Waste — select to recycle")}</div>
+		<div class="gwm-table-wrap">
+			<table class="gwm-desk-table">
+				<thead><tr>
+					<th class="gwm-check"><input type="checkbox" class="gwm-rw-all" /></th>
+					<th>${__("Batch")}</th><th>${__("Job")}</th><th>${__("Quality")}</th>
+					<th>${__("GSM")}</th><th class="gwm-num">${__("Width")}</th><th class="gwm-num">${__("Wastage Kg")}</th>
+				</tr></thead>
+				<tbody>${rows
+					.map((r) => {
+						const row = _normalizePattyRow(r);
+						return `<tr>
+					<td class="gwm-check"><input type="checkbox" class="gwm-rw-cb" data-name="${_esc(r.name)}" /></td>
+					<td>${_esc(row.batch_no)}</td><td>${_esc(row.job_id)}</td>
+					<td>${_esc(row.quality)}</td><td>${_esc(row.gsm)}</td>
+					<td class="gwm-num">${_esc(row.width_inch)}</td><td class="gwm-num">${_fmtNum(row.wastage)}</td>
+				</tr>`;
+					})
+					.join("")}</tbody>
+			</table>
+		</div>
+	</div>`;
 
 	const d = new frappe.ui.Dialog({
 		title: __("Roll Waste — Recycle") + ` · ${sprRow.order_code || ""}`,
@@ -488,8 +867,5 @@ async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {
 		},
 	});
 	d.show();
-	d.$wrapper.on("change", ".gwm-rw-all", function () {
-		const on = $(this).prop("checked");
-		d.$wrapper.find(".gwm-rw-cb").prop("checked", on);
-	});
+	_wireSelectAll(d.$wrapper, ".gwm-rw-cb", ".gwm-rw-all");
 }

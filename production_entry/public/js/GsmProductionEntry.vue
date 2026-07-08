@@ -614,6 +614,7 @@
           <div class="gpe-summary-panels gpe-shift-summary-cards gpe-board-animate">
             <div class="gpe-panel gpe-card-inner gpe-board-card" style="--gpe-delay: 80ms">
               <h4>By Order</h4>
+              <div class="gpe-table-wrap">
               <table>
                 <thead>
                   <tr><th>Order</th><th>Status</th><th>Rolls</th><th>Net Kg</th><th>Gross Kg</th></tr>
@@ -628,9 +629,11 @@
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
             <div class="gpe-panel gpe-card-inner gpe-board-card" style="--gpe-delay: 160ms">
               <h4>By GSM</h4>
+              <div class="gpe-table-wrap">
               <table>
                 <thead>
                   <tr><th>GSM</th><th>Rolls</th><th>Net Kg</th></tr>
@@ -643,9 +646,11 @@
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
             <div class="gpe-panel gpe-card-inner gpe-board-card" style="--gpe-delay: 240ms">
               <h4>By Batch Series</h4>
+              <div class="gpe-table-wrap">
               <table>
                 <thead>
                   <tr><th>Batch</th><th>Rolls</th><th>Net Kg</th></tr>
@@ -658,10 +663,12 @@
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
           <div class="gpe-panel wide gpe-card-inner">
             <h4>All SPRs (submitted + draft)</h4>
+            <div class="gpe-table-wrap">
             <table>
               <thead>
                 <tr><th>SPR</th><th>Status</th><th>Orders</th><th>Rolls</th><th>Net Kg</th><th>Operator</th></tr>
@@ -677,6 +684,7 @@
                 </tr>
               </tbody>
             </table>
+            </div>
           </div>
           <div class="gpe-shift-roll-section gpe-card-inner">
             <div class="gpe-shift-roll-head">
@@ -830,6 +838,7 @@
           <div class="gpe-summary-panels gpe-shift-summary-cards gpe-board-animate">
             <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 80ms">
               <h4>By Order</h4>
+              <div class="gpe-table-wrap">
               <table>
                 <thead>
                   <tr><th>Order</th><th>Status</th><th>Rolls</th><th>Net Kg</th></tr>
@@ -843,9 +852,11 @@
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
             <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 160ms">
               <h4>By GSM</h4>
+              <div class="gpe-table-wrap">
               <table>
                 <thead>
                   <tr><th>GSM</th><th>Rolls</th><th>Net Kg</th></tr>
@@ -858,9 +869,11 @@
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
             <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 240ms">
               <h4>By Batch Series</h4>
+              <div class="gpe-table-wrap">
               <table>
                 <thead>
                   <tr><th>Batch</th><th>Rolls</th><th>Net Kg</th></tr>
@@ -873,10 +886,12 @@
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
-          <div class="gpe-panel wide gpe-card">
+          <div class="gpe-panel wide gpe-card gpe-board-card">
             <h4>All SPRs (submitted + draft)</h4>
+            <div class="gpe-table-wrap">
             <table>
               <thead>
                 <tr><th>SPR</th><th>Status</th><th>Orders</th><th>Rolls</th><th>Net Kg</th><th>Operator</th></tr>
@@ -892,6 +907,7 @@
                 </tr>
               </tbody>
             </table>
+            </div>
           </div>
           <div class="gpe-shift-roll-section gpe-card">
             <div class="gpe-shift-roll-head">
@@ -6253,18 +6269,119 @@ onUnmounted(() => {
   margin-bottom: 12px;
 }
 .gpe-shift-summary-cards .gpe-panel {
-  padding: 12px 14px;
+  padding: 14px 16px;
   overflow: visible;
   min-height: 120px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
 }
 .gpe-shift-summary-cards .gpe-panel h4 {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   line-height: 1.35;
   font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
 }
 .gpe-shift-summary-cards .gpe-table-wrap,
 .gpe-shift-summary-cards table {
   width: 100%;
+}
+.gpe-shift-summary-cards table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.gpe-shift-summary-cards table th,
+.gpe-shift-summary-cards table td {
+  border-bottom: 1px solid #e2e8f0;
+  border-right: 1px solid #f1f5f9;
+  padding: 8px 10px;
+  text-align: left;
+}
+.gpe-shift-summary-cards table th:last-child,
+.gpe-shift-summary-cards table td:last-child {
+  border-right: none;
+}
+.gpe-shift-summary-cards table thead th {
+  background: #f1f5f9;
+  font-weight: 700;
+  color: #475569;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.gpe-shift-summary-cards table tbody tr:hover {
+  background: #f8fafc;
+}
+.gpe-panel.wide.gpe-card h4,
+.gpe-panel.wide.gpe-card-inner h4 {
+  margin: 0 0 10px;
+  line-height: 1.35;
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.gpe-panel.wide .gpe-table-wrap table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.gpe-panel.wide .gpe-table-wrap table th,
+.gpe-panel.wide .gpe-table-wrap table td {
+  border-bottom: 1px solid #e2e8f0;
+  border-right: 1px solid #f1f5f9;
+  padding: 8px 10px;
+  text-align: left;
+}
+.gpe-panel.wide .gpe-table-wrap table th:last-child,
+.gpe-panel.wide .gpe-table-wrap table td:last-child {
+  border-right: none;
+}
+.gpe-panel.wide .gpe-table-wrap table thead th {
+  background: #f1f5f9;
+  font-weight: 700;
+  color: #475569;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.gpe-panel.wide .gpe-table-wrap table tbody tr:hover {
+  background: #f8fafc;
+}
+.gpe-panel.wide .gpe-table-wrap table td:nth-child(4),
+.gpe-panel.wide .gpe-table-wrap table td:nth-child(5) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.gpe-shift-summary-cards table td:nth-child(n+3) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.gpe-shift-kpi-grid.gpe-card-inner,
+.gpe-shift-kpi-grid.gpe-card {
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+.gpe-kpi.gpe-board-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #f8fafc;
 }
 .gpe-shift-roll-section {
   margin-top: 12px;
