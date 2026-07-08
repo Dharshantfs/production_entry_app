@@ -2760,10 +2760,47 @@ def _gsm_child_table_columns(child_doctype: str) -> list[dict]:
 
 
 def _gsm_child_row_dict(row, columns: list[dict]) -> dict:
-	out = {"name": row.name}
+	# Prefer `as_dict()` since Frappe child rows may expose values via doc dict.
+	src = row.as_dict() if hasattr(row, "as_dict") else {}
+	out = {"name": getattr(row, "name", None) or src.get("name")}
+
+	def _get(k: str):
+		if isinstance(src, dict) and k in src:
+			return src.get(k)
+		return getattr(row, k, None)
+
+	# Field fallbacks for "db-only" columns that may have different stored fieldnames
+	# on the live site vs the repo scaffolds.
+	FALLBACKS = {
+		"width_inch": ("width_inch", "width", "w"),
+		"meter_per_roll": ("meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"),
+		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
+		"wastage": (
+			"wastage",
+			"wastage_qty",
+			"wastage_qt",
+			"net_wastage",
+			"net_wastage_kg",
+			"net_weight",
+			"available_kg",
+			"available",
+			"wastage_kg",
+		),
+		"gsm": ("gsm",),
+		"color": ("color",),
+		"quality": ("quality",),
+	}
+
 	for col in columns:
 		fn = col["fieldname"]
-		val = getattr(row, fn, None)
+		val = _get(fn)
+		if val is None and fn in FALLBACKS:
+			for alt in FALLBACKS[fn]:
+				if alt == fn:
+					continue
+				val = _get(alt)
+				if val is not None:
+					break
 		if val is not None and hasattr(val, "isoformat"):
 			val = str(val)
 		out[fn] = val
@@ -2784,23 +2821,25 @@ def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) ->
 def _gsm_map_to_recycled_row(src) -> dict:
 	if not isinstance(src, dict):
 		src = src.as_dict() if hasattr(src, "as_dict") else {}
-	qty = flt(
-		_pick_value(
-			src,
-			["recycled", "wastage", "available_kg", "available", "net_weight"],
-			0,
-		)
-	)
+	# Running/draft values can be stored under different fieldnames on the live site
+	# (repo scaffolds may be missing some db-only columns).
+	qty = flt(_pick_value(src, ["recycled", "wastage", "wastage_qty", "wastage_qt", "available_kg", "available", "net_weight"], 0))
+	wastage_qty = flt(_pick_value(src, ["wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight"], 0))
+	recycled_qty = flt(_pick_value(src, ["recycled", "recycled_qty", "recycled_kg"], None))
+	if wastage_qty <= 0:
+		wastage_qty = qty
+	if recycled_qty is None:
+		recycled_qty = qty
 	return {
 		"job_id": _cstr(_pick_value(src, ["job_id", "job"], "")),
 		"quality": _cstr(_pick_value(src, ["quality"], "")),
 		"color": _cstr(_pick_value(src, ["color"], "")),
 		"gsm": cint(_pick_value(src, ["gsm"], 0)),
 		"width_inch": flt(_pick_value(src, ["width_inch", "width"], 0)),
-		"meter_per_roll": flt(_pick_value(src, ["meter_per_roll", "meter", "meter_roll"], 0)),
+		"meter_per_roll": flt(_pick_value(src, ["meter_per_roll", "meter", "meter_roll", "produced_length_mtrs", "produced_length_mtr"], 0)),
 		"no_of_shafts": cint(_pick_value(src, ["no_of_shafts", "shafts"], 0)),
-		"wastage": qty,
-		"recycled": qty,
+		"wastage": wastage_qty,
+		"recycled": recycled_qty,
 	}
 
 
@@ -2907,11 +2946,57 @@ def get_gsm_available_patty_stock(spr_name):
 				return result
 			return {"stock": result.get("rows") or result.get("data") or [], "source": path, **result}
 
+	fallback_stock = _gsm_fallback_patty_stock_from_spr(spr_name)
+	if fallback_stock:
+		return {
+			"stock": fallback_stock,
+			"source": "fallback_from_spr_wastage_rows",
+		}
+
 	return {
 		"stock": [],
-		"source": "none",
+		"source": "fallback-none",
 		"message": _("Patty stock provider not found on this site."),
 	}
+
+
+def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
+	"""When site RPC is unavailable, derive a minimal patty-stock list from existing wastage rows."""
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	out: list[dict] = []
+
+	# Prefer running patty wastage rows (these commonly represent the wastage batches).
+	for fieldname in ("custom_running_patty_wastage", "custom_roll_waste"):
+		rows = getattr(spr, fieldname, None) or []
+		for r in rows:
+			d = r.as_dict() if hasattr(r, "as_dict") else {}
+			waste_qty = flt(
+				_pick_value(
+					d,
+					["wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight", "available_kg", "available", "recycled"],
+					0,
+				)
+			)
+			recycled_qty = flt(_pick_value(d, ["recycled", "recycled_qty", "recycled_kg"], 0))
+			available = max(0.0, waste_qty - recycled_qty)
+			if available <= 0:
+				continue
+
+			out.append(
+				{
+					"name": r.name,
+					"batch_no": _cstr(_pick_value(d, ["batch_no", "source_roll"], "")),
+					"quality": _cstr(_pick_value(d, ["quality"], "")),
+					"color": _cstr(_pick_value(d, ["color"], "")),
+					"gsm": cint(_pick_value(d, ["gsm"], 0)),
+					"width_inch": flt(_pick_value(d, ["width_inch", "width"], 0)),
+					"meter_per_roll": flt(_pick_value(d, ["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"], 0)),
+					"no_of_shafts": cint(_pick_value(d, ["no_of_shafts", "shafts"], 0)),
+					"available_kg": available,
+				}
+			)
+
+	return out
 
 
 @frappe.whitelist()

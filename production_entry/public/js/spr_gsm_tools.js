@@ -213,9 +213,6 @@ export async function gsmPrintWastageLabel(sprName, childRowName, tableField) {
 		}
 	}
 
-	if (typeof frappe.generate_sticker_flow !== "function") {
-		await import("./custom_print_sticker.js");
-	}
 	await frappe.model.with_doc("Shaft Production Run", sprName);
 	const doc = frappe.get_doc("Shaft Production Run", sprName);
 	const rows = doc[tableField] || [];
@@ -224,18 +221,101 @@ export async function gsmPrintWastageLabel(sprName, childRowName, tableField) {
 		frappe.msgprint(__("Wastage row not found on SPR."));
 		return;
 	}
-	if (typeof frappe.generate_sticker_flow === "function" && row.batch_no) {
-		const linkedItem = (doc.items || []).find((it) => it.batch_no === row.batch_no);
-		if (linkedItem) {
-			frappe.generate_sticker_flow(linkedItem.name, { doc });
-			return;
-		}
+
+	const esc = (s) => frappe.utils.escape_html(String(s ?? ""));
+	const toNum = (v) => {
+		const n = parseFloat(v);
+		return Number.isFinite(n) ? n : 0;
+	};
+
+	const title =
+		tableField === "custom_roll_waste" ? "ROLL WASTE" : tableField === "custom_running_patty_wastage" ? "PATTY WASTE" : "WASTE";
+
+	const runDate = doc.run_date ? String(doc.run_date) : frappe.datetime.get_today();
+	const quality = row.quality || "";
+	const color = row.color || "";
+	const gsm = row.gsm || "";
+	const widthInch = row.width_inch ?? row.width ?? "";
+	const meterPerRoll = row.meter_per_roll ?? row.meter_roll ?? "";
+	const noOfShafts = row.no_of_shafts ?? row.shafts ?? "";
+	const netWeight = row.wastage ?? row.net_wastage ?? row.wastage_qty ?? row.net_weight ?? "";
+	const netWeightKg = toNum(netWeight);
+	const batchNo = row.batch_no || row.source_roll || "";
+
+	const barcodeText = String(batchNo || "").trim();
+	const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${esc(title)}</title>
+    <style>
+      @media print { .btn-panel { display:none !important; } @page { size: 4in 4in; margin:0; } }
+      body { font-family: Arial, sans-serif; margin:0; padding:0; text-align:center; background:#eee; }
+      .sticker { width:4in; height:4in; margin:16px auto; border:2px solid #000; background:#fff; box-sizing:border-box; }
+      .inner { border:1px solid #000; margin:8px; padding:8px; height: calc(100% - 16px); display:flex; flex-direction:column; justify-content:space-between; }
+      .hdr { font-size:26px; font-weight:900; color:#c1121f; border-bottom:2px solid #000; padding-bottom:6px; }
+      table { width:100%; border-collapse:collapse; font-size:13px; text-align:left; }
+      td { padding:4px 6px; }
+      td.lbl { width:42%; font-weight:700; }
+      td.val { font-weight:700; }
+      .foot { display:flex; flex-direction:column; align-items:center; gap:6px; }
+      #barcode { width: 100%; }
+      .btn-panel { padding:10px; background:#eee; margin-top:8px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"></script>
+  </head>
+  <body>
+    <div class="sticker">
+      <div class="inner">
+        <div>
+          <div class="hdr">${esc(title)}</div>
+          <table>
+            <tr><td class="lbl">Date</td><td class="val">: ${esc(runDate)}</td></tr>
+            <tr><td class="lbl">Quality</td><td class="val">: ${esc(quality)}</td></tr>
+            <tr><td class="lbl">Color</td><td class="val">: ${esc(color)}</td></tr>
+            <tr><td class="lbl">GSM</td><td class="val">: ${esc(gsm)}</td></tr>
+            <tr><td class="lbl">Width</td><td class="val">: ${esc(widthInch)} Inches</td></tr>
+            ${meterPerRoll ? `<tr><td class="lbl">Meter / Roll</td><td class="val">: ${esc(meterPerRoll)}</td></tr>` : ``}
+            ${noOfShafts ? `<tr><td class="lbl">No of Shafts</td><td class="val">: ${esc(noOfShafts)}</td></tr>` : ``}
+            <tr><td class="lbl">Net Weight</td><td class="val">: ${esc(netWeightKg.toFixed(2))} Kg</td></tr>
+            ${barcodeText ? `<tr><td class="lbl">Batch No</td><td class="val">: ${esc(barcodeText)}</td></tr>` : ``}
+          </table>
+        </div>
+        <div class="foot">
+          ${barcodeText ? `<svg id="barcode"></svg>` : `<div style="height:20px;"></div>`}
+        </div>
+      </div>
+    </div>
+    <div class="btn-panel">
+      <button onclick="window.print()" style="padding:10px 20px;font-weight:bold;cursor:pointer;">PRINT</button>
+      <button onclick="window.close()" style="padding:10px 20px; margin-left:10px; font-weight:bold; cursor:pointer;">CLOSE</button>
+    </div>
+    <script>
+      (function(){
+        const text = ${JSON.stringify(barcodeText)};
+        if (!text) return;
+        try {
+          JsBarcode("#barcode", text, {
+            format: "CODE128",
+            displayValue: true,
+            fontSize: 12,
+            textMargin: 0,
+            height: 55,
+            width: 2
+          });
+        } catch(e) {}
+      })();
+    </script>
+  </body>
+</html>`;
+
+	const win = window.open("", "_blank", "height=650,width=500");
+	if (!win) {
+		frappe.msgprint(__("Popup blocked. Allow popups to print the label."));
+		return;
 	}
-	frappe.msgprint(
-		__(
-			"Wastage label print is not available in GSM yet. Open desk SPR for Print Label on this row."
-		)
-	);
+	win.document.write(html);
+	win.document.close();
 }
 
 function cint(v) {
