@@ -60,11 +60,17 @@
             <span>Job {{ e.jobId || e.job_id }} · {{ e.gsm }} GSM</span>
             <span v-if="e.combination_label">{{ e.combination_label }}</span>
           </div>
-          <p class="gpe-session-hint">Change run date above to add more jobs — session stays locked.</p>
+          <p class="gpe-session-hint">
+            <template v-if="shiftOpened">Tick more jobs below to add them to this shift.</template>
+            <template v-else>Change run date above to add more jobs — session stays locked.</template>
+          </p>
+        </div>
+        <div v-if="shiftOpened && filterDate !== runDate" class="gpe-sidebar-date-note">
+          Showing jobs for session run date {{ formatPlannedDate(runDate) }} (not filter {{ formatPlannedDate(filterDate) }}).
         </div>
         <div v-if="loadingOrders" class="gpe-muted">Loading…</div>
         <div v-else-if="!jobOrderGroups.length" class="gpe-muted">
-          No PP-submitted jobs for this date/unit.
+          No PP-submitted jobs for {{ formatPlannedDate(ordersBrowseDate()) }} / {{ headerUnit || filterUnit || "unit" }}.
         </div>
 
         <div v-for="grp in filteredActiveJobGroups" :key="grp.key" class="gpe-order-card">
@@ -1661,12 +1667,13 @@ function orderMetaForPp(ppId) {
   const row =
     filteredPpSubmittedRows.value.find((r) => r.pp_id === ppId) ||
     ppSubmittedRows.value.find((r) => r.pp_id === ppId);
+  const boardJob = jobBoardJobs.value.find((j) => j.pp_id === ppId);
   return {
-    orderCode: row?.partyCode || row?.party_code || ppId,
-    partyName: row?.customer_name || row?.customer || "",
-    quality: row?.quality || "",
-    color: row?.color || row?.fabric_colour || "",
-    gsm: row?.gsm || 0,
+    orderCode: boardJob?.order_code || row?.partyCode || row?.party_code || ppId,
+    partyName: boardJob?.party_name || row?.customer_name || row?.customer || "",
+    quality: boardJob?.quality || row?.quality || "",
+    color: boardJob?.color || row?.color || row?.fabric_colour || "",
+    gsm: boardJob?.gsm || row?.gsm || 0,
     planningLineId: row?.itemName || row?.name || "",
   };
 }
@@ -2278,13 +2285,20 @@ const ppSubmittedRows = computed(() =>
   )
 );
 
+function ordersBrowseDate() {
+  if (shiftOpened.value && runDate.value) {
+    return runDate.value;
+  }
+  return filterDate.value;
+}
+
 function rowMatchesFilterDate(row) {
   const pd = String(row.plannedDate || row.planned_date || "").slice(0, 10);
   if (!pd) {
     return false;
   }
   if (viewScope.value === "daily") {
-    return pd === filterDate.value;
+    return pd === ordersBrowseDate();
   }
   const args = buildFetchArgs();
   if (args.start_date && args.end_date) {
@@ -2295,8 +2309,9 @@ function rowMatchesFilterDate(row) {
 
 const filteredPpSubmittedRows = computed(() => {
   let rows = ppSubmittedRows.value;
-  if (filterUnit.value) {
-    rows = rows.filter((r) => r.unit === filterUnit.value);
+  const unit = shiftOpened.value ? headerUnit.value || filterUnit.value : filterUnit.value;
+  if (unit) {
+    rows = rows.filter((r) => r.unit === unit);
   }
   rows = rows.filter((r) => rowMatchesFilterDate(r));
   return rows;
@@ -2305,6 +2320,29 @@ const filteredPpSubmittedRows = computed(() => {
 const filteredPpIdSet = computed(
   () => new Set(filteredPpSubmittedRows.value.map((r) => r.pp_id).filter(Boolean))
 );
+
+const sidebarAllowedPpIds = computed(() => {
+  const ids = new Set(filteredPpIdSet.value);
+  if (!shiftOpened.value) {
+    return ids;
+  }
+  for (const entry of selectedEntries.value) {
+    if (entry.ppId) {
+      ids.add(entry.ppId);
+    }
+  }
+  for (const row of rollLines.value) {
+    if (row.pp_id) {
+      ids.add(row.pp_id);
+    }
+  }
+  for (const job of jobBoardJobs.value) {
+    if (job.pp_id) {
+      ids.add(job.pp_id);
+    }
+  }
+  return ids;
+});
 
 const mergedItemIds = computed(() => {
   const s = new Set();
@@ -2387,7 +2425,7 @@ const fabricUnitOptions = computed(() => unitOptions.value);
 
 const jobOrderGroups = computed(() => {
   const map = new Map();
-  const allowedPpIds = filteredPpIdSet.value;
+  const allowedPpIds = sidebarAllowedPpIds.value;
   for (const job of jobBoardJobs.value) {
     if (!allowedPpIds.has(job.pp_id)) {
       continue;
@@ -4090,7 +4128,7 @@ function buildFetchArgs() {
     args.start_date = fmt(start);
     args.end_date = fmt(end);
   } else {
-    args.date = filterDate.value;
+    args.date = ordersBrowseDate();
   }
   return args;
 }
@@ -4156,7 +4194,7 @@ async function loadQuotaForLines() {
 }
 
 async function loadJobBoard() {
-  const ppIds = new Set([...filteredPpIdSet.value]);
+  const ppIds = new Set([...sidebarAllowedPpIds.value]);
   if (shiftOpened.value) {
     for (const entry of selectedEntries.value) {
       if (entry.ppId) {
@@ -4202,9 +4240,14 @@ function enrichSelectedEntriesFromBoard() {
       const job = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
       if (job) {
         const snap = snapshotFromJob(job);
-        if (entry.key !== snap.key || entry.combination_label !== snap.combination_label) {
+        if (
+          entry.key !== snap.key ||
+          entry.combination_label !== snap.combination_label ||
+          !entry.gsm ||
+          entry.orderCode === entry.ppId
+        ) {
           changed = true;
-          return { ...entry, ...snap, key: entry.key };
+          return { ...entry, ...snap, key: entry.key || snap.key };
         }
       }
       return entry;
@@ -5650,6 +5693,24 @@ function scheduleAutosave() {
   }, 5000);
 }
 
+async function ensureSidebarForOpenShift() {
+  if (!shiftOpened.value || !runDate.value) {
+    return;
+  }
+  if (filterDate.value !== runDate.value) {
+    filterDate.value = runDate.value;
+  }
+  await fetchOrders();
+  await loadJobBoard();
+  enrichSelectedEntriesFromBoard();
+}
+
+watch([shiftOpened, runDate], () => {
+  if (shiftOpened.value && runDate.value) {
+    ensureSidebarForOpenShift();
+  }
+});
+
 watch([runDate, shift, headerUnit], () => {
   const key = currentBatchContextKey();
   if (batchContextKey.value && batchContextKey.value !== key) {
@@ -6031,6 +6092,15 @@ onUnmounted(() => {
   margin: 8px 0 0;
   font-size: 11px;
   color: #64748b;
+}
+.gpe-sidebar-date-note {
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  margin: 8px 0;
 }
 .gpe-hint {
   font-size: 11px;
