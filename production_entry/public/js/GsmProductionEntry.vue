@@ -1047,6 +1047,9 @@
           This shift was closed earlier (batch <strong>{{ shiftReopenClosedBatch }}</strong>).
           A new batch will be allocated. Please state why you are re-opening.
         </div>
+        <div v-else-if="shiftBatchReuseNotice" class="gpe-reopen-notice gpe-reuse-notice">
+          {{ shiftBatchReuseNotice }}
+        </div>
         <div class="gpe-shift-open-fields">
           <label class="gpe-emp-link">
             Operator
@@ -1704,6 +1707,7 @@ const shiftResumeBanner = ref("");
 const shiftReopenRequired = ref(false);
 const shiftReopenPreviousSession = ref("");
 const shiftReopenClosedBatch = ref("");
+const shiftBatchReuseNotice = ref("");
 const shiftReopenReason = ref("");
 const shiftReopenRemarks = ref("");
 const gsmReopenReasons = [
@@ -2511,7 +2515,12 @@ function ordersBrowseDate() {
 }
 
 function rowMatchesFilterDate(row) {
-  const pd = String(row.plannedDate || row.planned_date || "").slice(0, 10);
+  let pd = String(row.plannedDate || row.planned_date || "").slice(0, 10);
+  if (!pd && Number(row.pp_docstatus) === 1 && row.pp_id) {
+    pd = String(
+      row.ordered_date || row.custom_planned_date || ordersBrowseDate() || ""
+    ).slice(0, 10);
+  }
   if (!pd) {
     return false;
   }
@@ -4158,6 +4167,7 @@ async function openShiftDialog() {
   shiftReopenRequired.value = false;
   shiftReopenPreviousSession.value = "";
   shiftReopenClosedBatch.value = "";
+  shiftBatchReuseNotice.value = "";
   await previewShiftBatchPrefix();
   try {
     const res = await frappe.call({
@@ -4172,6 +4182,13 @@ async function openShiftDialog() {
     shiftReopenRequired.value = !!msg.required;
     shiftReopenPreviousSession.value = msg.previous_session || "";
     shiftReopenClosedBatch.value = msg.closed_batch || "";
+    if (!shiftReopenRequired.value && msg.reused_batch) {
+      const fromShift = msg.reused_from_shift || __("prior shift");
+      shiftBatchReuseNotice.value = __(
+        "Reusing unused batch {0} from {1} — no rolls were entered on that session.",
+        [msg.reused_batch, fromShift]
+      );
+    }
   } catch (e) {
     console.warn("shift reopen check", e);
   }
@@ -4615,13 +4632,36 @@ async function fetchSessionSupplementalOrders() {
   rawOrders.value = merged;
 }
 
+async function fetchPpOrdersSupplement() {
+  const browse = ordersBrowseDate();
+  const unit = filterUnit.value || headerUnit.value;
+  if (!browse) {
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_pp_orders_for_date",
+      args: { planned_date: browse, unit: unit || undefined },
+    });
+    const extra = (res.message || []).map(normalizeChartRow);
+    if (extra.length) {
+      rawOrders.value = mergeChartOrders(rawOrders.value, extra);
+    }
+  } catch (e) {
+    console.warn("PP orders supplement", e);
+  }
+}
+
 async function fetchOrders() {
   loadingOrders.value = true;
   try {
     rawOrders.value = await fetchColorChartForDate(ordersBrowseDate());
+    await fetchPpOrdersSupplement();
     if (!filterUnit.value && unitOptions.value.length) {
       filterUnit.value = unitOptions.value[0];
       headerUnit.value = filterUnit.value;
+    } else if (!filterUnit.value && headerUnit.value) {
+      filterUnit.value = headerUnit.value;
     }
     await fetchSessionSupplementalOrders();
     await Promise.all([fetchMerges(), loadQuotaForLines(), loadJobBoard()]);
@@ -5092,6 +5132,12 @@ async function previewShiftBatchPrefix() {
       },
     });
     shiftPreviewBatch.value = res.message?.series_prefix || "";
+    if (res.message?.reused && res.message?.reused_from_shift) {
+      shiftBatchReuseNotice.value = __(
+        "Reusing unused batch {0} from {1}.",
+        [res.message.series_prefix, res.message.reused_from_shift]
+      );
+    }
   } catch (e) {
     console.warn("shift batch preview", e);
     shiftPreviewBatch.value = "";

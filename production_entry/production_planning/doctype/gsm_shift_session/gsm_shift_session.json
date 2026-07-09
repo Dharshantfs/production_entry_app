@@ -12,11 +12,13 @@
   "column_break_1",
   "status",
   "batch_series_prefix",
+  "zero_production_close",
   "section_break_reopen",
   "is_reopen",
   "reopen_reason",
   "reopen_remarks",
   "previous_session",
+  "reused_from_session",
   "section_break_people",
   "operator",
   "supervisor",
@@ -81,6 +83,13 @@
    "reqd": 1
   },
   {
+   "default": "0",
+   "fieldname": "zero_production_close",
+   "fieldtype": "Check",
+   "label": "Zero Production Close",
+   "read_only": 1
+  },
+  {
    "fieldname": "section_break_reopen",
    "fieldtype": "Section Break",
    "label": "Re-open Audit"
@@ -110,6 +119,13 @@
    "fieldname": "previous_session",
    "fieldtype": "Link",
    "label": "Previous Session",
+   "options": "GSM Shift Session",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reused_from_session",
+   "fieldtype": "Link",
+   "label": "Reused From Session",
    "options": "GSM Shift Session",
    "read_only": 1
   },

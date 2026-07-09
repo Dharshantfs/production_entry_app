@@ -22749,6 +22749,16 @@ def _get_color_chart_data_impl(
             if bps == "box_bag_only":
                 row_planned_date = str(item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or "")
 
+            if not row_planned_date and bps in (
+                "only_100",
+                "exclude_special",
+                "",
+                None,
+            ):
+                row_planned_date = str(
+                    item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or ""
+                )
+
             row_gsm = item.get("gsm") or ""
             if _item_process_prefix(_ic_row) in BOPP_BOX_BAG_PROCESS_CODES:
                 try:

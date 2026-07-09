@@ -10175,6 +10175,7 @@ def _build_mix_roll_result_lines_for_job(
 		meter_roll_job = flt(mr_attr)
 
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	segs = max(1, len(widths)) if widths else max(1, _count_combination_segments(comb))
 	lines = []
 	for i in range(n_rolls):
 		idx = start_idx + i
@@ -10197,7 +10198,9 @@ def _build_mix_roll_result_lines_for_job(
 		row["planned_qty"] = planned_each
 		row["roll_no"] = idx + 1
 		if spi_meta.has_field("custom_no_of_shaft"):
-			row["custom_no_of_shaft"] = _spr_shaft_no_for_roll_index(idx, no_shafts, rolls_per_shaft)
+			row["custom_no_of_shaft"] = _spr_shaft_no_for_roll_index(
+				idx, no_shafts, rolls_per_shaft, segs=segs
+			)
 		lines.append(row)
 	return lines
 
@@ -10392,16 +10395,22 @@ def build_spr_roll_result_lines_for_job(
 
 		row["roll_no"] = idx + 1
 		if spi_meta.has_field("custom_no_of_shaft"):
-			row["custom_no_of_shaft"] = _spr_shaft_no_for_roll_index(idx, no_shafts, rolls_per_shaft)
+			row["custom_no_of_shaft"] = _spr_shaft_no_for_roll_index(
+				idx, no_shafts, rolls_per_shaft, segs=segs
+			)
 		lines.append(row)
 	return lines
 
 
-def _spr_shaft_no_for_roll_index(idx: int, no_shafts: int, rolls_per_shaft: int) -> int:
+def _spr_shaft_no_for_roll_index(
+	idx: int, no_shafts: int, rolls_per_shaft: int, segs: int = 1
+) -> int:
 	"""1-based shaft number for a roll at zero-based index idx within a job."""
 	no_shafts = max(1, cint(no_shafts or 0))
 	rolls_per_shaft = max(1, cint(rolls_per_shaft or 0))
-	return min(no_shafts, idx // rolls_per_shaft + 1)
+	segs = max(1, cint(segs or 1))
+	effective_rolls = rolls_per_shaft * segs if segs > 1 else rolls_per_shaft
+	return min(no_shafts, idx // effective_rolls + 1)
 
 
 def _spr_max_roll_suffix_for_job(spr_doc, job_id: str) -> int:

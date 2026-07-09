@@ -220,6 +220,8 @@ def _serialize_gsm_shift_session(doc) -> dict:
 		"reopen_remarks": row.get("reopen_remarks") or "",
 		"previous_session": row.get("previous_session") or "",
 		"opened_by": row.get("opened_by") or "",
+		"zero_production_close": cint(row.get("zero_production_close") or 0),
+		"reused_from_session": row.get("reused_from_session") or "",
 	}
 
 
@@ -272,14 +274,128 @@ def _gsm_allocate_fresh_batch_prefix(run_date, shift, unit) -> str:
 	return f"{root_5}{next_s}"
 
 
+def _gsm_batch_prefix_has_rolls(prefix: str) -> bool:
+	"""True when any SPR roll line exists under this batch series prefix."""
+	prefix = _cstr(prefix).strip()
+	if not prefix:
+		return False
+	row = frappe.db.sql(
+		"""
+		SELECT 1
+		FROM `tabShaft Production Run Item`
+		WHERE IFNULL(batch_no, '') LIKE %s
+		LIMIT 1
+		""",
+		(f"{prefix}/%",),
+	)
+	return bool(row)
+
+
+def _gsm_session_prefix_sort_key(prefix: str, run_date, unit: str) -> int:
+	prefix = _cstr(prefix).strip()
+	if not prefix:
+		return 10**9
+	doc = frappe.new_doc("Shaft Production Run")
+	doc.run_date = getdate(run_date)
+	doc.custom_unit = _cstr(unit).strip()
+	comp_id, unit_num = doc._batch_prefix_parts()
+	root_5 = f"{comp_id}-{unit_num}{getdate(run_date).month:02d}{getdate(run_date).year % 100:02d}"
+	return _gsm_shift_suffix_from_prefix(prefix, root_5, doc)
+
+
+def _gsm_find_reusable_batch_prefix(run_date, unit) -> dict | None:
+	"""Oldest unused batch prefix from zero-production closed sessions (any shift, same run_date + unit)."""
+	if not _gsm_shift_session_table_exists():
+		return None
+	unit = _cstr(unit).strip()
+	rd = getdate(run_date)
+	if not unit or not rd:
+		return None
+	open_prefixes = {
+		_cstr(p).strip()
+		for p in frappe.get_all(
+			_GSM_SHIFT_SESSION_DOCTYPE,
+			filters={"custom_unit": unit, "status": "Open"},
+			pluck="batch_series_prefix",
+		)
+		if _cstr(p).strip()
+	}
+	fields = ["name", "batch_series_prefix", "shift", "zero_production_close"]
+	if not frappe.get_meta(_GSM_SHIFT_SESSION_DOCTYPE).has_field("zero_production_close"):
+		fields = ["name", "batch_series_prefix", "shift"]
+	closed = frappe.get_all(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		filters={"run_date": rd, "custom_unit": unit, "status": "Closed"},
+		fields=fields,
+		limit_page_length=100,
+	) or []
+	candidates = []
+	for row in closed:
+		prefix = _cstr(row.get("batch_series_prefix")).strip()
+		if not prefix or prefix in open_prefixes:
+			continue
+		if _gsm_batch_prefix_has_rolls(prefix):
+			continue
+		candidates.append(row)
+	if not candidates:
+		return None
+	candidates.sort(key=lambda r: _gsm_session_prefix_sort_key(r.get("batch_series_prefix"), rd, unit))
+	best = candidates[0]
+	return {
+		"prefix": _cstr(best.get("batch_series_prefix")).strip(),
+		"from_session": best.get("name"),
+		"from_shift": best.get("shift") or "",
+	}
+
+
 def _gsm_shift_batch_prefix(run_date, shift, unit) -> dict:
+	reusable = _gsm_find_reusable_batch_prefix(run_date, unit)
+	if reusable and reusable.get("prefix"):
+		prefix = reusable["prefix"]
+		return {
+			"series_prefix": prefix,
+			"sample_batch_no": f"{prefix}/1",
+			"reused": True,
+			"reused_from_session": reusable.get("from_session") or "",
+			"reused_from_shift": reusable.get("from_shift") or "",
+		}
 	series_prefix = _gsm_allocate_fresh_batch_prefix(run_date, shift, unit)
 	if not series_prefix:
-		return {"series_prefix": "", "sample_batch_no": ""}
+		return {"series_prefix": "", "sample_batch_no": "", "reused": False}
 	return {
 		"series_prefix": series_prefix,
 		"sample_batch_no": f"{series_prefix}/1",
+		"reused": False,
 	}
+
+
+def _gsm_cleanup_empty_session_sprs(run_date, shift, unit) -> list[str]:
+	"""Delete draft SPRs with no roll lines for this shift session."""
+	removed = []
+	for row in frappe.get_all(
+		"Shaft Production Run",
+		filters={
+			"run_date": getdate(run_date),
+			"shift": _normalize_gsm_shift_label(shift),
+			"custom_unit": _cstr(unit).strip(),
+			"docstatus": 0,
+		},
+		pluck="name",
+		limit_page_length=50,
+	) or []:
+		try:
+			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+				_spr_is_real_roll_item_row,
+			)
+
+			spr = frappe.get_doc("Shaft Production Run", row)
+			if any(_spr_is_real_roll_item_row(it) for it in (spr.items or [])):
+				continue
+			spr.delete(ignore_permissions=True)
+			removed.append(row)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"GSM cleanup empty SPR:{row}")
+	return removed
 
 
 def _gsm_validate_employee_link(employee: str, label: str):
@@ -346,12 +462,28 @@ def check_gsm_shift_reopen_required(run_date=None, shift=None, unit=None):
 		return {"required": False, "already_open": True}
 	closed = _gsm_latest_closed_session(run_date, shift, unit)
 	if not closed:
+		reusable = _gsm_find_reusable_batch_prefix(run_date, unit)
+		if reusable:
+			return {
+				"required": False,
+				"reused_batch": reusable.get("prefix") or "",
+				"reused_from_shift": reusable.get("from_shift") or "",
+			}
 		return {"required": False}
+	if _gsm_batch_prefix_has_rolls(_cstr(closed.batch_series_prefix)):
+		return {
+			"required": True,
+			"previous_session": closed.name,
+			"closed_batch": closed.batch_series_prefix or "",
+			"reason_options": list(_GSM_REOPEN_REASONS),
+		}
+	reusable = _gsm_find_reusable_batch_prefix(run_date, unit)
 	return {
-		"required": True,
+		"required": False,
 		"previous_session": closed.name,
 		"closed_batch": closed.batch_series_prefix or "",
-		"reason_options": list(_GSM_REOPEN_REASONS),
+		"reused_batch": (reusable or {}).get("prefix") or closed.batch_series_prefix or "",
+		"reused_from_shift": (reusable or {}).get("from_shift") or closed.shift or "",
 	}
 
 
@@ -488,12 +620,18 @@ def open_gsm_shift_session(
 		)
 
 	closed_prior = _gsm_latest_closed_session(run_date, shift, unit)
-	reopen_reason, reopen_remarks = _gsm_validate_reopen_reason(
-		reopen_reason, reopen_remarks, required=bool(closed_prior)
-	)
-
 	prefix_info = _gsm_shift_batch_prefix(run_date, shift, unit)
 	prefix = prefix_info.get("series_prefix") or ""
+	batch_reused = cint(prefix_info.get("reused") or 0)
+	prior_had_production = bool(
+		closed_prior
+		and _gsm_batch_prefix_has_rolls(_cstr(closed_prior.batch_series_prefix))
+	)
+	reopen_reason, reopen_remarks = _gsm_validate_reopen_reason(
+		reopen_reason,
+		reopen_remarks,
+		required=bool(prior_had_production and not batch_reused),
+	)
 	if not prefix:
 		frappe.throw(_("Could not allocate a batch series prefix for this shift."))
 
@@ -509,14 +647,24 @@ def open_gsm_shift_session(
 			"status": "Open",
 			"opened_by": frappe.session.user,
 			"opened_at": now_datetime(),
-			"is_reopen": 1 if closed_prior else 0,
-			"reopen_reason": reopen_reason if closed_prior else "",
-			"reopen_remarks": reopen_remarks if closed_prior else "",
-			"previous_session": closed_prior.name if closed_prior else "",
+			"is_reopen": 1 if (closed_prior or batch_reused) else 0,
+			"reopen_reason": reopen_reason if prior_had_production else "",
+			"reopen_remarks": reopen_remarks if prior_had_production else "",
+			"previous_session": (
+				(prefix_info.get("reused_from_session") or "")
+				if batch_reused
+				else (closed_prior.name if closed_prior else "")
+			),
 		}
 	)
+	if batch_reused and frappe.get_meta(_GSM_SHIFT_SESSION_DOCTYPE).has_field("reused_from_session"):
+		doc.reused_from_session = prefix_info.get("reused_from_session") or ""
 	doc.insert(ignore_permissions=True)
-	return {"session": _serialize_gsm_shift_session(doc), "reused": False}
+	return {
+		"session": _serialize_gsm_shift_session(doc),
+		"reused": batch_reused,
+		"batch_reused_from_shift": prefix_info.get("reused_from_shift") or "",
+	}
 
 
 @frappe.whitelist()
@@ -576,12 +724,21 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None):
 	if not name:
 		frappe.throw(_("No open shift session found."))
 	doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, name)
+	prefix = _cstr(doc.batch_series_prefix).strip()
+	zero_prod = not _gsm_batch_prefix_has_rolls(prefix)
+	if frappe.get_meta(_GSM_SHIFT_SESSION_DOCTYPE).has_field("zero_production_close"):
+		doc.zero_production_close = 1 if zero_prod else 0
 	doc.status = "Closed"
 	doc.closed_at = now_datetime()
 	doc.save(ignore_permissions=True)
+	removed_sprs = []
+	if zero_prod:
+		removed_sprs = _gsm_cleanup_empty_session_sprs(doc.run_date, doc.shift, doc.custom_unit)
 	next_shift = "Night Shift" if shift == "Day Shift" else "Day Shift"
 	return {
 		"session": _serialize_gsm_shift_session(doc),
+		"zero_production_close": zero_prod,
+		"removed_empty_sprs": removed_sprs,
 		"next_shift": next_shift,
 		"redirect": {
 			"doctype": _SHIFT_WISE_ENTRY_DOCTYPE,
@@ -614,6 +771,59 @@ def get_open_gsm_shift_for_unit(unit=None):
 	if not row:
 		return {"ready": True, "session": None}
 	return {"ready": True, "session": _serialize_gsm_shift_session(row)}
+
+
+@frappe.whitelist()
+def get_gsm_pp_orders_for_date(planned_date=None, unit=None):
+	"""PP-submitted fabric rows for GSM sidebar — supplements color chart when planned_date was missing."""
+	planned_date = getdate(planned_date) if planned_date else None
+	unit = _cstr(unit).strip()
+	if not planned_date:
+		return []
+	try:
+		from production_entry.production_planning.scheduler_api import get_color_chart_data
+
+		rows = get_color_chart_data(
+			date=str(planned_date),
+			board_process_scope="only_100",
+		) or []
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "get_gsm_pp_orders_for_date")
+		return []
+	out = []
+	seen_pp = set()
+	pd_str = str(planned_date)
+	for r in rows:
+		if cint(r.get("pp_docstatus") or 0) != 1:
+			continue
+		row_unit = _cstr(r.get("unit") or "").strip()
+		if unit and row_unit and row_unit != unit:
+			continue
+		pp_id = _cstr(r.get("pp_id") or "").strip()
+		if not pp_id or pp_id in seen_pp:
+			continue
+		seen_pp.add(pp_id)
+		planned = _cstr(r.get("plannedDate") or r.get("planned_date") or pd_str).strip()
+		if planned and planned != pd_str:
+			continue
+		out.append(
+			{
+				"pp_id": pp_id,
+				"pp_docstatus": 1,
+				"partyCode": _cstr(r.get("partyCode") or r.get("party_code") or ""),
+				"party_code": _cstr(r.get("partyCode") or r.get("party_code") or ""),
+				"customer_name": _cstr(r.get("customer_name") or r.get("customer") or ""),
+				"unit": row_unit,
+				"plannedDate": planned or pd_str,
+				"planned_date": planned or pd_str,
+				"itemName": _cstr(r.get("itemName") or r.get("name") or ""),
+				"name": _cstr(r.get("name") or r.get("itemName") or ""),
+				"gsm": r.get("gsm"),
+				"width_inch": r.get("width_inch") or r.get("width"),
+				"qty": r.get("qty"),
+			}
+		)
+	return out
 
 
 def _gsm_label_type_display(raw: str) -> str:
