@@ -3,6 +3,92 @@
 import { openSprBundlePackagingDialog } from "./spr_bundle_packaging_dialog.js";
 import { openSprManualJobDialog } from "./spr_manual_job_dialog.js";
 
+function gsmLocals() {
+	if (typeof locals !== "undefined" && locals) {
+		return locals;
+	}
+	if (typeof window !== "undefined") {
+		window.locals = window.locals || {};
+		return window.locals;
+	}
+	return {};
+}
+
+function promisifyFrappeModel(method, ...args) {
+	return new Promise((resolve) => {
+		if (!frappe.model || typeof frappe.model[method] !== "function") {
+			resolve();
+			return;
+		}
+		frappe.model[method](...args, () => resolve());
+	});
+}
+
+async function loadSprDocForGsm(sprName) {
+	const spr = _cstr(sprName).trim();
+	if (!spr) {
+		return null;
+	}
+	let doc = null;
+	try {
+		doc = frappe.get_doc("Shaft Production Run", spr);
+	} catch (e) {
+		doc = null;
+	}
+	if (doc && Array.isArray(doc.items)) {
+		return doc;
+	}
+	await promisifyFrappeModel("with_doc", "Shaft Production Run", spr);
+	try {
+		doc = frappe.get_doc("Shaft Production Run", spr);
+	} catch (e) {
+		doc = null;
+	}
+	if (doc && Array.isArray(doc.items)) {
+		return doc;
+	}
+	const res = await frappe.call({
+		method: "frappe.client.get",
+		args: { doctype: "Shaft Production Run", name: spr },
+	});
+	doc = res.message || null;
+	if (!doc) {
+		return null;
+	}
+	const loc = gsmLocals();
+	if (!loc["Shaft Production Run"]) {
+		loc["Shaft Production Run"] = {};
+	}
+	loc["Shaft Production Run"][spr] = doc;
+	return doc;
+}
+
+function mergeGridRowForLabel(rowDoc, gridRow) {
+	if (!gridRow) {
+		return rowDoc;
+	}
+	return {
+		...rowDoc,
+		produced_length_mtrs: gridRow.produced_length_mtrs ?? rowDoc.produced_length_mtrs,
+		custom_produced_length_mtrs:
+			gridRow.produced_length_mtrs ?? rowDoc.custom_produced_length_mtrs ?? rowDoc.produced_length_mtrs,
+		produced_gsm: gridRow.produced_gsm ?? rowDoc.produced_gsm,
+		gross_weight: gridRow.gross_weight ?? rowDoc.gross_weight,
+		net_weight: gridRow.net_weight ?? rowDoc.net_weight,
+		batch_no: gridRow.batch_no || rowDoc.batch_no,
+		width_inch: gridRow.width_inch ?? rowDoc.width_inch,
+		party_code: gridRow.party_code || rowDoc.party_code,
+		item_code: gridRow.item_code || rowDoc.item_code,
+		quality: gridRow.quality || rowDoc.quality,
+		color: gridRow.color || rowDoc.color,
+		gsm: gridRow.gsm ?? rowDoc.gsm,
+	};
+}
+
+function _cstr(v) {
+	return v == null ? "" : String(v).trim();
+}
+
 export async function findSprForGsm(ppId, preferDraft = true) {
 	const res = await frappe.call({
 		method: "production_entry.production_planning.unified_production_entry_api.get_spr_for_pp",
@@ -142,38 +228,40 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null)
 		}
 	}
 	try {
-		await frappe.model.with_doctype("Shaft Production Run Item");
-		await frappe.model.withDoc("Shaft Production Run", sprName);
+		await promisifyFrappeModel("with_doctype", "Shaft Production Run Item");
+		const doc = await loadSprDocForGsm(sprName);
+		if (!doc) {
+			frappe.msgprint(__("Could not load SPR for label print."));
+			return;
+		}
+		let rowDoc = (doc.items || []).find((r) => r.name === sprItemRowName);
+		if (!rowDoc) {
+			frappe.msgprint(__("Roll row not found on SPR."));
+			return;
+		}
+		rowDoc = mergeGridRowForLabel(rowDoc, gridRow);
+		const loc = gsmLocals();
+		if (!loc["Shaft Production Run Item"]) {
+			loc["Shaft Production Run Item"] = {};
+		}
+		loc["Shaft Production Run Item"][sprItemRowName] = rowDoc;
+		const frm = { doc, doctype: "Shaft Production Run" };
+		if (typeof frappe.generate_sticker_flow === "function") {
+			frappe.generate_sticker_flow(sprItemRowName, frm);
+			return;
+		}
+		if (
+			production_entry.spr_roll_label_print &&
+			typeof production_entry.spr_roll_label_print.open === "function"
+		) {
+			production_entry.spr_roll_label_print.open(sprName, sprItemRowName);
+			return;
+		}
+		frappe.msgprint(__("Label print helper not loaded."));
 	} catch (e) {
-		console.warn("gsmPrintRollLabel withDoc", e);
+		console.error("gsmPrintRollLabel", e);
+		frappe.msgprint(__("Could not open label print."));
 	}
-	const doc = frappe.get_doc("Shaft Production Run", sprName);
-	const rowDoc = (doc.items || []).find((r) => r.name === sprItemRowName);
-	if (!rowDoc) {
-		frappe.msgprint(__("Roll row not found on SPR."));
-		return;
-	}
-	const loc =
-		(typeof locals !== "undefined" && locals) ||
-		(typeof window !== "undefined" && window.locals) ||
-		{};
-	if (!loc["Shaft Production Run Item"]) {
-		loc["Shaft Production Run Item"] = {};
-	}
-	loc["Shaft Production Run Item"][sprItemRowName] = rowDoc;
-	const frm = { doc, doctype: "Shaft Production Run" };
-	if (typeof frappe.generate_sticker_flow === "function") {
-		frappe.generate_sticker_flow(sprItemRowName, frm);
-		return;
-	}
-	if (
-		production_entry.spr_roll_label_print &&
-		typeof production_entry.spr_roll_label_print.open === "function"
-	) {
-		production_entry.spr_roll_label_print.open(sprName, sprItemRowName);
-		return;
-	}
-	frappe.msgprint(__("Label print helper not loaded."));
 }
 
 /** Print bundle sticker label (Bundle Stickers row — not single-roll label). */
@@ -189,8 +277,11 @@ export async function gsmPrintBundleLabel(sprName, gridRow = null) {
 	if (typeof frappe.generate_bundle_sticker_flow !== "function") {
 		await import("./custom_print_sticker.js");
 	}
-	await frappe.model.with_doc("Shaft Production Run", sprName);
-	const doc = frappe.get_doc("Shaft Production Run", sprName);
+	const doc = await loadSprDocForGsm(sprName);
+	if (!doc) {
+		frappe.msgprint(__("Could not load SPR for bundle label print."));
+		return;
+	}
 	const bundleBatch = String(gridRow.batch_no || "").trim();
 	let sticker = (doc.bundle_stickers || []).find((bs) => String(bs.batch_no || "").trim() === bundleBatch);
 	if (!sticker && bundleBatch) {
@@ -233,15 +324,21 @@ export async function gsmPrintWastageLabel(sprName, childRowName, tableField) {
 
 	for (const fnName of _WASTAGE_LABEL_FN_CANDIDATES) {
 		if (typeof frappe[fnName] === "function") {
-			await frappe.model.with_doc("Shaft Production Run", sprName);
-			const doc = frappe.get_doc("Shaft Production Run", sprName);
+			const doc = await loadSprDocForGsm(sprName);
+			if (!doc) {
+				frappe.msgprint(__("Could not load SPR for wastage label print."));
+				return;
+			}
 			frappe[fnName](childRowName, { doc }, tableField);
 			return;
 		}
 	}
 
-	await frappe.model.with_doc("Shaft Production Run", sprName);
-	const doc = frappe.get_doc("Shaft Production Run", sprName);
+	const doc = await loadSprDocForGsm(sprName);
+	if (!doc) {
+		frappe.msgprint(__("Could not load SPR for wastage label print."));
+		return;
+	}
 	const rows = doc[tableField] || [];
 	const row = rows.find((r) => r.name === childRowName);
 	if (!row) {
