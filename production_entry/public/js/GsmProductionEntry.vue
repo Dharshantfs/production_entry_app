@@ -290,8 +290,9 @@
           </div>
           <div v-if="selectedSummary || selectedEntries.length" class="gpe-selection-strip gpe-selection-strip-lg">
             <div class="gpe-selection-text">
-              <strong>{{ selectedSummary?.count || 0 }}</strong> line(s) ·
-              Session plan <strong>{{ formatKg(selectedSummary?.dayPlanned || 0) }}</strong> Kg ·
+              <strong>{{ selectedSummary?.count || 0 }}</strong> job(s)
+              <template v-if="selectedSummary?.orderCount > 1"> · {{ selectedSummary.orderCount }} orders</template>
+              · Session plan <strong>{{ formatKg(selectedSummary?.dayPlanned || 0) }}</strong> Kg ·
               Session rem <strong>{{ formatKg(metrics.dayRemaining) }}</strong> Kg
               <span v-if="selectionLocked" class="gpe-lock-badge inline">Locked</span>
             </div>
@@ -1701,6 +1702,20 @@ function orderDayStatsForPp(ppId) {
   };
 }
 
+function selectedSessionOrderPlanKg() {
+  const ppIds = new Set();
+  let total = 0;
+  for (const entry of selectedEntries.value) {
+    const ppId = entry.ppId;
+    if (!ppId || ppIds.has(ppId)) {
+      continue;
+    }
+    ppIds.add(ppId);
+    total += orderDayStatsForPp(ppId).dayTargetKg;
+  }
+  return total;
+}
+
 function ensureJobApiBaseline(job) {
   const key = entryKeyJob(job.pp_id, job.job_id);
   if (sessionJobApiBaseline.value[key] == null) {
@@ -1936,7 +1951,7 @@ function snapshotFromJob(job) {
     widthLabel: job.combination_label || "",
     max_shafts: job.max_shafts,
     max_rolls: job.max_rolls,
-    dayTargetKg: orderDayStatsForPp(job.pp_id).dayTargetKg,
+    dayTargetKg: sprFlt(job.job_target_kg) || orderDayStatsForPp(job.pp_id).dayTargetKg,
     sourceSnapshot: {
       pp_id: job.pp_id,
       gsm: job.gsm,
@@ -2602,11 +2617,12 @@ const selectedSummary = computed(() => {
   if (!selectedEntries.value.length) {
     return null;
   }
-  let dayPlanned = 0;
-  for (const entry of selectedEntries.value) {
-    dayPlanned += sprFlt(entry.dayTargetKg);
-  }
-  return { count: selectedEntries.value.length, dayPlanned };
+  const orderCount = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean)).size;
+  return {
+    count: selectedEntries.value.length,
+    orderCount,
+    dayPlanned: selectedSessionOrderPlanKg(),
+  };
 });
 
 const confirmLines = computed(() => selectedEntries.value);
@@ -2701,10 +2717,7 @@ const metrics = computed(() => {
     totalGross += sprNormalizeGrossWeightInput(r.gross_weight);
     totalNet += sprFlt(r.net_weight);
   });
-  let dayPlanned = 0;
-  selectedEntries.value.forEach((entry) => {
-    dayPlanned += sprFlt(entry.dayTargetKg);
-  });
+  let dayPlanned = selectedSessionOrderPlanKg();
   rollLines.value.forEach((r) => {
     if (r.is_wasted) {
       return;
