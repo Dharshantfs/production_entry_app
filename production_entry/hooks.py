@@ -51,6 +51,7 @@ doctype_js = {
         "public/js/child_grid_columns.js",
         "public/js/spr_trial_smart_bom.js",
         "public/js/spr_transfer_dialog.js",
+        "public/js/spr_roll_label_print.js",
         "public/js/shaft_production_run.js",
     ],
     "Roll Production Entry": "public/js/roll_production_entry.js",

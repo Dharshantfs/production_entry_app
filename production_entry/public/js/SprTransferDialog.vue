@@ -188,38 +188,24 @@ function clearAll() {
 async function loadContext() {
   loading.value = true;
   try {
-    const ctxRes = await frappe.call({
-      method: `${API}.get_spr_transfer_context`,
+    const res = await frappe.call({
+      method: `${API}.get_spr_transfer_bootstrap`,
       args: { spr_name: props.sprName },
     });
-    const ctx = ctxRes.message || {};
+    const ctx = res.message || {};
     fromCompany.value = ctx.from_company || "";
     customer.value = ctx.customer || "";
     unit.value = ctx.unit || "";
     toCompanyOptions.value = ctx.to_company_options || [];
 
-    const batchRes = await frappe.call({
-      method: `${API}.get_spr_produced_batches`,
-      args: {
-        spr_name: props.sprName,
-        from_company: fromCompany.value,
-      },
-    });
-    const produced = batchRes.message || [];
-    const rollMap = {};
-    (ctx.rolls || []).forEach((r) => {
-      rollMap[r.batch_no] = r;
-    });
-
-    batchOptions.value = produced.map((b) => {
-      const meta = rollMap[b.batch_no] || {};
-      const avail = ltn(b.qty) || ltn(meta.qty) || 1;
+    batchOptions.value = (ctx.batches || []).map((b) => {
+      const avail = ltn(b.available_qty ?? b.qty) || 1;
       return {
         batch_no: b.batch_no,
-        item_code: b.item_code || meta.item_code,
-        party_code: meta.party_code || b.party_code || "",
-        planning_table_row: meta.planning_table_row || "",
-        planning_sheet: meta.planning_sheet || "",
+        item_code: b.item_code,
+        party_code: b.party_code || "",
+        planning_table_row: b.planning_table_row || "",
+        planning_sheet: b.planning_sheet || "",
         available_qty: avail,
         qty: avail,
         selected: false,

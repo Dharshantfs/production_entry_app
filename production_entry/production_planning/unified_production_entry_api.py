@@ -702,6 +702,9 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 
 	job_selections = [{"pp_id": pp, "job_id": jid} for pp, jid in sorted(job_keys)]
 
+	# Newest roll first — matches GSM grid unshift order on active entry machine.
+	roll_lines.reverse()
+
 	return {
 		"status": "ok",
 		"session": _serialize_gsm_shift_session(session_doc),
@@ -709,7 +712,55 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 		"roll_lines": roll_lines,
 		"job_selections": job_selections,
 		"roll_count": len(roll_lines),
+		"server_modified": str(session_doc.modified or ""),
 	}
+
+
+@frappe.whitelist()
+def get_gsm_session_full_state(unit=None):
+	"""Server-first GSM bootstrap — open shift session + rolls + job selections (cross-device recovery)."""
+	if not _gsm_shift_session_table_exists():
+		return {"status": "no_open_session"}
+	unit = _cstr(unit).strip()
+	filters = {"status": "Open"}
+	if unit:
+		filters["custom_unit"] = unit
+	row = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		filters,
+		["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status", "modified"],
+		as_dict=True,
+	)
+	if not row and unit:
+		return {"status": "no_open_session"}
+	if not row:
+		row = frappe.db.get_value(
+			_GSM_SHIFT_SESSION_DOCTYPE,
+			{"status": "Open"},
+			["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status", "modified"],
+			as_dict=True,
+			order_by="modified desc",
+		)
+	if not row:
+		return {"status": "no_open_session"}
+
+	run_date = row.run_date
+	shift = row.shift
+	unit = _cstr(row.custom_unit)
+	resume = get_gsm_active_shift_resume(run_date=run_date, shift=shift, unit=unit)
+	if resume.get("status") != "ok":
+		return resume
+
+	pp_ids = list({_cstr(s.get("pp_id")).strip() for s in resume.get("session_sprs") or [] if _cstr(s.get("pp_id")).strip()})
+	job_board = {}
+	if pp_ids:
+		job_board = get_gsm_pp_job_board(pp_ids=pp_ids, run_date=run_date, shift=shift, unit=unit)
+
+	resume["unit"] = unit
+	resume["run_date"] = str(run_date)
+	resume["shift"] = shift
+	resume["job_board"] = job_board
+	return resume
 
 
 @frappe.whitelist()

@@ -7145,7 +7145,7 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			},
 		});
 	},
-	/** Print roll label (after Save Row). */
+	/** Print roll label (after Save Row) — same Print Format as site Roll Production Label. */
 	print_sticker: function (frm, cdt, cdn) {
 		cdn = spr_resolve_items_row_cdn(frm, cdt, cdn);
 		const row = locals[cdt] && locals[cdt][cdn];
@@ -7153,7 +7153,13 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
 			return;
 		}
-		// Button control only - user manages label format
+		if (
+			production_entry.spr_roll_label_print &&
+			typeof production_entry.spr_roll_label_print.open === 'function'
+		) {
+			production_entry.spr_roll_label_print.open(frm.doc.name, row.name);
+			return;
+		}
 		frappe.msgprint(__('Production Label ready to print'));
 	},
 	/** Unlock this row for editing; hide Print Label until Save Row again. */

@@ -1006,6 +1006,211 @@ def _spr_auto_approve_transfer_approval(ta_name: str) -> dict:
 	return {"ok": True, "name": ta_name, "stock_entry": ste}
 
 
+def _bulk_planning_ptr_map_for_spr(spr_name: str) -> dict:
+	"""Map (item_code, party_code) -> planning row for all rolls on an SPR (one query)."""
+	sn = _cstr(spr_name).strip()
+	out: dict = {}
+	if not sn or not frappe.db.table_exists("Planning Table"):
+		return out
+	if not frappe.db.has_column("Planning Table", "spr_name"):
+		return out
+
+	fields = ["name", "parent", "item_code", "spr_name"]
+	if frappe.db.has_column("Planning Table", PLANNING_MOVEMENT_TYPE_FIELD):
+		fields.append(PLANNING_MOVEMENT_TYPE_FIELD)
+	if frappe.db.has_column("Planning Table", "party_code"):
+		fields.append("party_code")
+	if frappe.db.has_column("Planning Table", "custom_party_code"):
+		fields.append("custom_party_code")
+
+	rows = frappe.get_all(
+		"Planning Table",
+		filters={"spr_name": ["like", f"%{sn}%"]},
+		fields=list(dict.fromkeys(fields)),
+		limit_page_length=500,
+	)
+	candidates: dict = {}
+	for row in rows or []:
+		if not _spr_name_in_planning_row(sn, row.get("spr_name")):
+			continue
+		ic = _cstr(row.get("item_code")).strip()
+		pc = _cstr(row.get("party_code") or row.get("custom_party_code") or "").strip()
+		mt = normalize_movement_type(row.get(PLANNING_MOVEMENT_TYPE_FIELD) or "")
+		score = 2 if is_transfer_movement(mt) else (1 if not mt else 0)
+		for key in ((ic, pc), (ic, ""), ("", pc), ("", "")):
+			prev = candidates.get(key)
+			if not prev or score > prev[0]:
+				candidates[key] = (
+					score,
+					{
+						"planning_table_row": row.get("name"),
+						"planning_sheet": row.get("parent"),
+					},
+				)
+	for key, (_, val) in candidates.items():
+		out[key] = val
+	return out
+
+
+def _bulk_batch_sle_qty_map(batch_nos: list) -> dict:
+	"""batch_no -> positive SLE qty sum."""
+	bns = [_cstr(b).strip() for b in (batch_nos or []) if _cstr(b).strip()]
+	if not bns:
+		return {}
+	placeholders = ", ".join(["%s"] * len(bns))
+	rows = frappe.db.sql(
+		f"""
+		SELECT batch_no, IFNULL(SUM(actual_qty), 0) AS qty
+		FROM `tabStock Ledger Entry`
+		WHERE IFNULL(is_cancelled, 0) = 0
+		  AND batch_no IN ({placeholders})
+		GROUP BY batch_no
+		""",
+		tuple(bns),
+		as_dict=True,
+	) or []
+	return {_cstr(r.batch_no): flt(r.qty) for r in rows if _cstr(r.batch_no)}
+
+
+def _transferred_batch_set(batch_nos: list) -> set:
+	bns = [_cstr(b).strip() for b in (batch_nos or []) if _cstr(b).strip()]
+	if not bns:
+		return set()
+	placeholders = ", ".join(["%s"] * len(bns))
+	rows = frappe.db.sql(
+		f"""
+		SELECT DISTINCT tl.batch_no
+		FROM `tabTransfer Approval Line` tl
+		INNER JOIN `tabTransfer Approval` ta ON ta.name = tl.parent
+		WHERE ta.status != 'Rejected'
+		  AND tl.batch_no IN ({placeholders})
+		""",
+		tuple(bns),
+		as_dict=True,
+	) or []
+	return {_cstr(r.batch_no) for r in rows if _cstr(r.batch_no)}
+
+
+def _get_spr_produced_batches_fast(spr_name: str, from_company: str = "") -> list:
+	"""Transfer dialog batches — bulk SLE + filtered transferred set."""
+	sn = _cstr(spr_name)
+	if not sn:
+		return []
+	ic_filter = ""
+	pc_filter = ""
+	rows = frappe.get_all(
+		"Shaft Production Run Item",
+		filters={"parent": sn},
+		fields=["batch_no", "item_code", "item_name", "net_weight", "gross_weight", "party_code", "work_order"],
+		order_by="idx asc",
+		limit_page_length=0,
+	) or []
+	batch_nos = [_cstr(r.get("batch_no")).strip() for r in rows if _cstr(r.get("batch_no")).strip()]
+	if not batch_nos:
+		return []
+	transferred = _transferred_batch_set(batch_nos)
+	sle_qty = _bulk_batch_sle_qty_map(batch_nos)
+	batches = []
+	seen = set()
+	for row in rows:
+		bn = _cstr(row.get("batch_no")).strip()
+		if not bn or bn in seen or bn in transferred:
+			continue
+		seen.add(bn)
+		qty = flt(row.get("net_weight") or row.get("gross_weight") or 0)
+		if qty <= 0:
+			qty = flt(sle_qty.get(bn) or 0)
+		if qty <= 0:
+			continue
+		batches.append(
+			{
+				"batch_no": bn,
+				"item_code": row.get("item_code") or ic_filter,
+				"item_name": row.get("item_name") or "",
+				"qty": qty,
+				"party_code": row.get("party_code") or pc_filter,
+				"work_order": row.get("work_order"),
+			}
+		)
+	return batches
+
+
+@frappe.whitelist()
+def get_spr_transfer_bootstrap(spr_name=None):
+	"""Single fast API for SPR transfer dialog — companies, rolls, batches."""
+	sn = _cstr(spr_name).strip()
+	if not sn or not frappe.db.exists("Shaft Production Run", sn):
+		frappe.throw(_("Shaft Production Run not found."))
+	if cint(frappe.db.get_value("Shaft Production Run", sn, "docstatus") or 0) != 1:
+		frappe.throw(_("SPR {0} must be submitted before transfer.").format(sn))
+
+	from_company = _cstr(frappe.db.get_value("Shaft Production Run", sn, "company"))
+	customer = _cstr(frappe.db.get_value("Shaft Production Run", sn, "customer") or "")
+	unit = _cstr(frappe.db.get_value("Shaft Production Run", sn, "custom_unit") or "")
+	ptr_map = _bulk_planning_ptr_map_for_spr(sn)
+
+	rolls = []
+	for row in frappe.get_all(
+		"Shaft Production Run Item",
+		filters={"parent": sn},
+		fields=["batch_no", "item_code", "item_name", "party_code", "order_code", "custom_order_code", "net_weight", "gross_weight"],
+		order_by="idx asc",
+		limit_page_length=0,
+	):
+		bn = _cstr(row.get("batch_no")).strip()
+		if not bn:
+			continue
+		ic = _cstr(row.get("item_code")).strip()
+		pc = _cstr(
+			row.get("party_code")
+			or row.get("order_code")
+			or row.get("custom_order_code")
+			or ""
+		).strip()
+		pt = ptr_map.get((ic, pc)) or ptr_map.get((ic, "")) or ptr_map.get(("", pc)) or {}
+		rolls.append(
+			{
+				"batch_no": bn,
+				"item_code": ic,
+				"item_name": _cstr(row.get("item_name")),
+				"party_code": pc,
+				"qty": flt(row.get("net_weight") or row.get("gross_weight") or 0),
+				"planning_table_row": pt.get("planning_table_row") or "",
+				"planning_sheet": pt.get("planning_sheet") or "",
+			}
+		)
+
+	companies = get_logistics_companies()
+	to_options = [c for c in companies if c.get("name") != from_company]
+	batches = _get_spr_produced_batches_fast(sn, from_company)
+	roll_map = {r["batch_no"]: r for r in rolls}
+	batch_options = []
+	for b in batches:
+		meta = roll_map.get(b["batch_no"]) or {}
+		avail = flt(b.get("qty") or meta.get("qty") or 1)
+		batch_options.append(
+			{
+				"batch_no": b["batch_no"],
+				"item_code": b.get("item_code") or meta.get("item_code"),
+				"party_code": meta.get("party_code") or b.get("party_code") or "",
+				"planning_table_row": meta.get("planning_table_row") or "",
+				"planning_sheet": meta.get("planning_sheet") or "",
+				"available_qty": avail,
+				"qty": avail,
+			}
+		)
+
+	return {
+		"spr_name": sn,
+		"from_company": from_company,
+		"customer": customer,
+		"unit": unit,
+		"to_company_options": to_options,
+		"rolls": rolls,
+		"batches": batch_options,
+	}
+
+
 @frappe.whitelist()
 def get_spr_transfer_context(spr_name=None):
 	"""Bootstrap data for SPR Transfer dialog."""
@@ -1019,6 +1224,7 @@ def get_spr_transfer_context(spr_name=None):
 	from_company = _cstr(spr.company)
 	customer = _cstr(getattr(spr, "customer", None) or "")
 	unit = _cstr(getattr(spr, "custom_unit", None))
+	ptr_map = _bulk_planning_ptr_map_for_spr(sn)
 
 	rolls = []
 	for row in spr.get("items") or []:
@@ -1032,7 +1238,7 @@ def get_spr_transfer_context(spr_name=None):
 			or getattr(row, "custom_order_code", None)
 			or ""
 		)
-		pt = _resolve_planning_table_row_for_spr(sn, ic, pc)
+		pt = ptr_map.get((ic, pc)) or ptr_map.get((ic, "")) or ptr_map.get(("", pc)) or {}
 		rolls.append(
 			{
 				"batch_no": bn,
@@ -1090,8 +1296,11 @@ def create_and_approve_transfer_from_spr(
 		bn = _cstr(line.get("batch_no"))
 		if not bn:
 			frappe.throw(_("Batch is required for each line."))
-		pt_info = _resolve_planning_table_row_for_spr(sn, ic, pc)
-		ptr = _cstr(line.get("planning_table_row") or pt_info.get("planning_table_row"))
+		ptr = _cstr(line.get("planning_table_row"))
+		pt_info = {}
+		if not ptr:
+			pt_info = _resolve_planning_table_row_for_spr(sn, ic, pc)
+			ptr = _cstr(pt_info.get("planning_table_row"))
 		if not ptr or not frappe.db.exists("Planning Table", ptr):
 			frappe.throw(
 				_("No Planning Table row linked to SPR {0} for item {1}. Link SPR on planning sheet first.").format(

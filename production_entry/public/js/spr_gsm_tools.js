@@ -122,40 +122,33 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null)
 		frappe.msgprint(__("Save Row first to enable the label."));
 		return;
 	}
-	if (typeof frappe.generate_sticker_flow !== "function") {
-		await import("./custom_print_sticker.js");
+	if (gridRow && gridRow.produced_length_mtrs) {
+		try {
+			await frappe.call({
+				method:
+					"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_set_item_row_lock",
+				args: {
+					spr_name: sprName,
+					row_name: sprItemRowName,
+					locked: 1,
+					produced_length_mtrs: gridRow.produced_length_mtrs,
+					produced_gsm: gridRow.produced_gsm,
+					gross_weight: gridRow.gross_weight,
+					net_weight: gridRow.net_weight,
+				},
+			});
+		} catch (e) {
+			// printview uses saved SPR row via _row_name
+		}
 	}
-	// Avoid stale cached SPR docs on GSM (desk uses the same sticker flow).
-	// Reload ensures `custom_label`, row weights, and produced length are current.
-	try {
-		if (frappe?.model?.clear_doc && typeof frappe.model.clear_doc === "function") {
-			frappe.model.clear_doc("Shaft Production Run", sprName);
-		}
-	} catch (e) {
-		// ignore cache-clear issues
-	}
-	await frappe.model.with_doc("Shaft Production Run", sprName);
-	const doc = frappe.get_doc("Shaft Production Run", sprName);
-	(doc.items || []).forEach((itemRow) => {
-		const isTarget = itemRow.name === sprItemRowName;
-		const len =
-			itemRow.custom_produced_length_mtrs ||
-			itemRow.produced_length_mtrs ||
-			(isTarget && gridRow ? gridRow.produced_length_mtrs : null);
-		if (len && !itemRow.custom_produced_length_mtrs) {
-			itemRow.custom_produced_length_mtrs = len;
-		}
-		if (len && !itemRow.produced_length_mtrs) {
-			itemRow.produced_length_mtrs = len;
-		}
-		frappe.model.add_to_locals(itemRow);
-	});
-	const frm = { doc };
-	if (typeof frappe.generate_sticker_flow === "function") {
-		frappe.generate_sticker_flow(sprItemRowName, frm);
+	if (
+		production_entry.spr_roll_label_print &&
+		typeof production_entry.spr_roll_label_print.open === "function"
+	) {
+		production_entry.spr_roll_label_print.open(sprName, sprItemRowName);
 		return;
 	}
-	frappe.msgprint(__("Label print module could not be loaded."));
+	frappe.msgprint(__("Label print helper not loaded."));
 }
 
 /** Print bundle sticker label (Bundle Stickers row — not single-roll label). */

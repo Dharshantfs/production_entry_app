@@ -1,4 +1,5 @@
 import { createApp } from "vue";
+import "./spr_roll_label_print.js";
 import ProductionScheduler from "./ProductionScheduler.vue";
 import ColorChart from "./ColorChart.vue";
 

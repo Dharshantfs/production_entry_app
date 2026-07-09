@@ -10235,7 +10235,18 @@ def _gsm_shaft_gsm(shaft_row) -> int:
 
 
 def _gsm_resolve_job_id_for_roll(spr, pp_id: str, payload: dict) -> str:
-	"""Resolve shaft job id for a GSM roll line — mirrors unified_production_entry_api matching."""
+	"""Resolve shaft job id for a GSM roll line — honors explicit job_id from operator."""
+	explicit_job = _cstr(payload.get("job_id") or payload.get("job")).strip()
+	if explicit_job:
+		if _spr_shaft_job_for_roll(spr, explicit_job):
+			return explicit_job
+		if pp_id and frappe.db.exists("Production Plan", pp_id):
+			pp = frappe.get_doc("Production Plan", pp_id)
+			pp_shafts = pp.get("custom_shaft_details") or pp.get("shaft_details") or []
+			for idx, shaft in enumerate(pp_shafts, start=1):
+				if _spr_job_keys_match(str(idx), explicit_job):
+					return explicit_job
+
 	ppi = _cstr(payload.get("planning_table_row") or payload.get("production_plan_item")).strip()
 	target_gsm = cint(payload.get("gsm") or 0)
 	target_w = flt(payload.get("width_inch") or 0)
@@ -10695,6 +10706,24 @@ def _gsm_serialize_spr_roll_lines_for_grid(spr) -> list[dict]:
 	return lines
 
 
+def _gsm_publish_session_update(spr) -> None:
+	"""Notify GSM clients on same site to refresh session grid."""
+	try:
+		frappe.publish_realtime(
+			"gsm_production_entry_updated",
+			{
+				"run_date": str(spr.run_date or ""),
+				"shift": _cstr(spr.shift),
+				"unit": _cstr(spr.custom_unit),
+				"spr_name": spr.name,
+				"roll_count": len(spr.items or []),
+				"modified": str(spr.modified or ""),
+			},
+		)
+	except Exception:
+		pass
+
+
 @frappe.whitelist()
 def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 	"""Real-time GSM Save Row — upsert one roll line on draft SPR (server, not local only)."""
@@ -10726,6 +10755,7 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 				"modified": spr.modified,
 			}
 		)
+		_gsm_publish_session_update(spr)
 		return result
 
 
@@ -10822,6 +10852,7 @@ def delete_gsm_roll_line_from_spr(spr_name, batch_no=None, row_name=None):
 
 		spr.flags._spr_incremental_roll_save = True
 		spr.save()
+		_gsm_publish_session_update(spr)
 		return {
 			"status": "ok",
 			"spr_name": spr_name,

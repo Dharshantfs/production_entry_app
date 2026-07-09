@@ -33,7 +33,10 @@
       </div>
       <div class="gpe-filter">
         <label>Unit</label>
-        <select v-model="filterUnit" @change="onUnitChange">
+        <template v-if="shiftOpened && headerUnit">
+          <span class="gpe-unit-locked">{{ headerUnit }} (locked)</span>
+        </template>
+        <select v-else v-model="filterUnit" @change="onUnitChange">
           <option value="">Select unit</option>
           <option v-for="u in unitOptions" :key="u" :value="u">{{ u }}</option>
         </select>
@@ -1449,6 +1452,57 @@ const addRollWizardSkipJobStep = ref(false);
 const addRollJobChoice = ref("");
 const addRollWidthChoice = ref(null);
 let pendingAddRowResolve = null;
+const lastAddRollJobKey = ref("");
+const lastServerSyncAt = ref("");
+const liveSyncLabel = ref("");
+let gsmPollTimer = null;
+let gsmRealtimeBound = false;
+
+function onGsmProductionEntryUpdated(data) {
+  if (!data || !shiftOpened.value) {
+    return;
+  }
+  const u = data.unit || "";
+  const rd = String(data.run_date || "").slice(0, 10);
+  const sh = data.shift || "";
+  if (u && headerUnit.value && u !== headerUnit.value) {
+    return;
+  }
+  if (rd && runDate.value && rd !== runDate.value) {
+    return;
+  }
+  if (sh && shift.value && sh !== shift.value) {
+    return;
+  }
+  refreshSessionFromServer({ quiet: true });
+}
+
+function setupGsmLiveSync() {
+  if (gsmRealtimeBound || !frappe.realtime?.on) {
+    return;
+  }
+  frappe.realtime.on("gsm_production_entry_updated", onGsmProductionEntryUpdated);
+  gsmRealtimeBound = true;
+  if (gsmPollTimer) {
+    clearInterval(gsmPollTimer);
+  }
+  gsmPollTimer = setInterval(() => {
+    if (shiftOpened.value) {
+      refreshSessionFromServer({ quiet: true });
+    }
+  }, 15000);
+}
+
+function teardownGsmLiveSync() {
+  if (gsmRealtimeBound && frappe.realtime?.off) {
+    frappe.realtime.off("gsm_production_entry_updated", onGsmProductionEntryUpdated);
+  }
+  gsmRealtimeBound = false;
+  if (gsmPollTimer) {
+    clearInterval(gsmPollTimer);
+    gsmPollTimer = null;
+  }
+}
 
 const jobBoardJobs = ref([]);
 const sessionJobApiBaseline = ref({});
@@ -1884,8 +1938,19 @@ function snapshotFromJob(job) {
   };
 }
 
-function firstPtLineForPp(ppId, gsm) {
+function firstPtLineForPp(ppId, gsm, jobId) {
   let rows = ppSubmittedRows.value.filter((r) => r.pp_id === ppId);
+  if (jobId != null && jobId !== "") {
+    const entry = selectedEntries.value.find(
+      (e) => e.ppId === ppId && String(e.jobId || e.job_id) === String(jobId)
+    );
+    if (entry?.lineId) {
+      const live = lineById.value.get(entry.lineId);
+      if (live) {
+        return buildLineFromItem(live);
+      }
+    }
+  }
   if (gsm) {
     const hit = rows.find((r) => String(r.gsm) === String(gsm));
     if (hit) {
@@ -1893,6 +1958,26 @@ function firstPtLineForPp(ppId, gsm) {
     }
   }
   return rows[0] ? buildLineFromItem(rows[0]) : null;
+}
+
+function defaultAddRollJobKey(entries) {
+  const list = entries || [];
+  const last = lastAddRollJobKey.value;
+  if (last) {
+    const rawLast = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === last);
+    if (rawLast && canJobAddOneMoreRoll(withLocalPendingQuota(rawLast))) {
+      return last;
+    }
+  }
+  for (const e of list) {
+    const key = e.key || entryKeyJob(e.ppId, e.jobId || e.job_id);
+    const rawJob = jobBoardJobs.value.find((j) => entryKeyJob(j.pp_id, j.job_id) === key);
+    if (rawJob && canJobAddOneMoreRoll(withLocalPendingQuota(rawJob))) {
+      return key;
+    }
+  }
+  const first = list[0];
+  return first ? first.key || entryKeyJob(first.ppId, first.jobId || first.job_id) : "";
 }
 
 function confirmLineProgress(entry) {
@@ -1996,7 +2081,7 @@ function snapshotFromLine(line) {
 
 function entryToRollLine(entry) {
   if (entry.jobId || entry.job_id) {
-    const line = firstPtLineForPp(entry.ppId, entry.gsm);
+    const line = firstPtLineForPp(entry.ppId, entry.gsm, entry.jobId || entry.job_id);
     if (line) {
       return {
         ...line,
@@ -4196,7 +4281,8 @@ function shouldResumeFromServer() {
   if (serverPrefix && seriesPrefix.value && seriesPrefix.value !== serverPrefix) {
     return true;
   }
-  return false;
+  // Always merge when shift is open so laptop / second browser gets server rolls.
+  return true;
 }
 
 function rebuildSelectedEntriesFromResume(jobSelections) {
@@ -4237,10 +4323,11 @@ function rebuildSelectedEntriesFromResume(jobSelections) {
   }
 }
 
-function applyResumePayload(msg) {
+function applyResumePayload(msg, options = {}) {
   if (!msg || msg.status !== "ok") {
     return 0;
   }
+  const merge = !!options.merge;
   const sprMap = {};
   for (const s of msg.session_sprs || []) {
     const ppId = s.pp_id || s.ppId;
@@ -4253,9 +4340,9 @@ function applyResumePayload(msg) {
     }
   }
   if (Object.keys(sprMap).length) {
-    sessionSprs.value = sprMap;
+    sessionSprs.value = { ...sessionSprs.value, ...sprMap };
   }
-  rollLines.value = (msg.roll_lines || []).map((r, idx) => ({
+  const serverRows = (msg.roll_lines || []).map((r, idx) => ({
     ...r,
     gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
     _id: r._id || `resume-${idx}-${Date.now()}`,
@@ -4263,18 +4350,98 @@ function applyResumePayload(msg) {
     row_locked: r.row_locked != null ? !!cint(r.row_locked) : true,
     row_ready_for_print: r.row_ready_for_print != null ? !!cint(r.row_ready_for_print) : true,
   }));
+  if (merge && rollLines.value.length) {
+    const byKey = new Map();
+    for (const r of rollLines.value) {
+      const k = r.batch_no || r.spr_item_name || r._id;
+      if (k) {
+        byKey.set(k, r);
+      }
+    }
+    for (const sr of serverRows) {
+      const k = sr.batch_no || sr.spr_item_name || sr._id;
+      if (k && !byKey.has(k)) {
+        byKey.set(k, sr);
+      } else if (k && byKey.has(k)) {
+        const local = byKey.get(k);
+        if (!local.row_locked && sr.row_locked) {
+          byKey.set(k, { ...local, ...sr });
+        }
+      }
+    }
+    rollLines.value = Array.from(byKey.values()).sort(
+      (a, b) => cint(b.creation_seq || 0) - cint(a.creation_seq || 0)
+    );
+  } else {
+    rollLines.value = serverRows;
+  }
   rebuildSelectedEntriesFromResume(msg.job_selections || []);
   if ((msg.roll_lines || []).length || Object.keys(sprMap).length) {
     selectionLocked.value = true;
     recordJobApiBaselines(jobBoardJobs.value);
   }
+  if (msg.session?.operator) {
+    operator.value = msg.session.operator;
+  }
+  if (msg.session?.supervisor) {
+    supervisor.value = msg.session.supervisor;
+  }
+  if (msg.session?.batch_series_prefix) {
+    shiftBatchPrefix.value = msg.session.batch_series_prefix;
+    if (!seriesPrefix.value) {
+      seriesPrefix.value = msg.session.batch_series_prefix;
+    }
+  }
   creationSeq.value = Math.max(creationSeq.value, rollLines.value.length);
   syncBatchCounterFromGrid();
+  lastServerSyncAt.value = msg.server_modified || new Date().toISOString();
   scheduleAutosave();
-  return (msg.roll_lines || []).length;
+  return serverRows.length;
 }
 
-async function resumeActiveShiftFromServer(options = {}) {
+async function bootstrapFromServerSession() {
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_session_full_state",
+      args: { unit: filterUnit.value || headerUnit.value || null },
+    });
+    const msg = res.message || {};
+    if (msg.status !== "ok") {
+      return false;
+    }
+    const sess = msg.session || {};
+    runDate.value = String(msg.run_date || sess.run_date || runDate.value).slice(0, 10);
+    filterDate.value = runDate.value;
+    shift.value = msg.shift || sess.shift || shift.value;
+    headerUnit.value = msg.unit || sess.custom_unit || headerUnit.value;
+    filterUnit.value = headerUnit.value;
+    shiftOpened.value = true;
+    shiftSessionReady.value = true;
+    if (sess.batch_series_prefix) {
+      shiftBatchPrefix.value = sess.batch_series_prefix;
+      seriesPrefix.value = sess.batch_series_prefix;
+    }
+    await fetchOrders();
+    if (msg.job_board?.jobs?.length) {
+      jobBoardJobs.value = msg.job_board.jobs;
+    } else {
+      await loadJobBoard();
+    }
+    const count = applyResumePayload(msg, { merge: false });
+    enrichSelectedEntriesFromBoard();
+    if (count > 0) {
+      shiftResumeBanner.value = __("Resumed {0} roll line(s) from server.", [count]);
+      frappe.show_alert({ message: shiftResumeBanner.value, indicator: "green" });
+    }
+    setupGsmLiveSync();
+    return true;
+  } catch (e) {
+    console.warn("bootstrap session", e);
+    return false;
+  }
+}
+
+async function refreshSessionFromServer(options = {}) {
   if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
     return 0;
   }
@@ -4290,20 +4457,27 @@ async function resumeActiveShiftFromServer(options = {}) {
         unit: headerUnit.value,
       },
     });
-    const count = applyResumePayload(res.message || {});
+    const count = applyResumePayload(res.message || {}, { merge: !!options.merge });
     if (count > 0) {
-      shiftResumeBanner.value = __("Resumed {0} roll line(s) from server — safe to continue on this machine.", [count]);
+      liveSyncLabel.value = __("Live sync · {0} rolls", [rollLines.value.length]);
       if (!options.quiet) {
-        frappe.show_alert({ message: shiftResumeBanner.value, indicator: "green" });
+        frappe.show_alert({ message: __("Synced {0} roll(s) from server", [count]), indicator: "blue" });
       }
       await loadJobBoard();
       enrichSelectedEntriesFromBoard();
     }
     return count;
   } catch (e) {
-    console.warn("resume shift", e);
+    console.warn("refresh session", e);
     return 0;
   }
+}
+
+async function resumeActiveShiftFromServer(options = {}) {
+  if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
+    return 0;
+  }
+  return refreshSessionFromServer({ ...options, merge: false });
 }
 
 async function syncOpenShiftForUnit() {
@@ -4837,8 +5011,7 @@ function pickJobAndWidthForRow() {
   }
   addRollWizardSkipJobStep.value = false;
   addRollWizardStep.value = 1;
-  const first = entries[0];
-  addRollJobChoice.value = first.key || entryKeyJob(first.ppId, first.jobId || first.job_id);
+  addRollJobChoice.value = defaultAddRollJobKey(entries);
   addRollWidthChoice.value = null;
   showAddRollWizard.value = true;
   return new Promise((resolve) => {
@@ -5019,11 +5192,12 @@ async function addRollRow() {
     );
     return;
   }
-  const baseLine = firstPtLineForPp(job.pp_id, job.gsm);
+  const baseLine = firstPtLineForPp(job.pp_id, job.gsm, jobId);
   if (!baseLine) {
     frappe.msgprint(__("No planning line found for this order."));
     return;
   }
+  lastAddRollJobKey.value = entryKeyJob(job.pp_id, jobId);
   const line = {
     ...baseLine,
     ppId: job.pp_id,
@@ -5413,25 +5587,35 @@ watch([runDate, shift, headerUnit], () => {
 watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
 
 onMounted(async () => {
-  restoreDraft();
   await loadCurrentShift();
   await loadCoreWidthOptions();
   shiftFilterDate.value = runDate.value;
   shiftFilterShift.value = shift.value;
-  shiftFilterUnit.value = filterUnit.value || headerUnit.value;
   await fetchOrders();
   if (!filterUnit.value && unitOptions.value.length) {
     filterUnit.value = unitOptions.value[0];
     headerUnit.value = filterUnit.value;
   }
+  shiftFilterUnit.value = filterUnit.value || headerUnit.value;
   batchContextKey.value = currentBatchContextKey();
-  const switched = await syncOpenShiftForUnit();
-  if (switched) {
-    await fetchOrders();
-  }
-  await refreshShiftSession();
-  if (shouldResumeFromServer()) {
-    await resumeActiveShiftFromServer();
+
+  const booted = await bootstrapFromServerSession();
+  if (!booted) {
+    restoreDraft();
+    if (filterUnit.value) {
+      headerUnit.value = filterUnit.value;
+    }
+    const switched = await syncOpenShiftForUnit();
+    if (switched) {
+      await fetchOrders();
+    }
+    await refreshShiftSession();
+    if (shiftOpened.value && shouldResumeFromServer()) {
+      await refreshSessionFromServer({ merge: true });
+    }
+    if (shiftOpened.value) {
+      setupGsmLiveSync();
+    }
   }
 });
 
@@ -5441,6 +5625,7 @@ onUnmounted(() => {
   }
   stopShiftReminderTimers();
   stopSubmitProgressTimer();
+  teardownGsmLiveSync();
 });
 </script>
 
@@ -5528,6 +5713,17 @@ onUnmounted(() => {
   padding: 6px 8px;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
+}
+.gpe-unit-locked {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  font-weight: 600;
+  font-size: 13px;
 }
 .gpe-layout {
   display: grid;
