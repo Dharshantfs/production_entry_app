@@ -325,7 +325,7 @@
               class="gpe-btn warn"
               @click="openManualJobForAllMaxed"
             >All jobs at max — Manual Job</button>
-            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow || addRollInProgress" @click="addRollRow">
+            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow || addRollInProgress" :title="addRollDisabledHint" @click="addRollRow">
               {{ addRollInProgress ? "Adding…" : "Add Roll Row" }}
             </button>
             <button type="button" class="gpe-btn" :disabled="!rollLines.length" @click="removeTopRow">Remove Top Row</button>
@@ -1474,7 +1474,7 @@ function onGsmProductionEntryUpdated(data) {
   if (sh && shift.value && sh !== shift.value) {
     return;
   }
-  refreshSessionFromServer({ quiet: true });
+  refreshSessionFromServer({ quiet: true, merge: true });
 }
 
 function setupGsmLiveSync() {
@@ -1488,7 +1488,7 @@ function setupGsmLiveSync() {
   }
   gsmPollTimer = setInterval(() => {
     if (shiftOpened.value) {
-      refreshSessionFromServer({ quiet: true });
+      refreshSessionFromServer({ quiet: true, merge: true });
     }
   }, 15000);
 }
@@ -1666,6 +1666,7 @@ function orderMetaForPp(ppId) {
     partyName: row?.customer_name || row?.customer || "",
     quality: row?.quality || "",
     color: row?.color || row?.fabric_colour || "",
+    gsm: row?.gsm || 0,
     planningLineId: row?.itemName || row?.name || "",
   };
 }
@@ -2842,12 +2843,40 @@ const canAddRow = computed(() => {
   });
 });
 
+const addRollDisabledHint = computed(() => {
+  if (canAddRow.value) {
+    return "";
+  }
+  if (!shiftOpened.value) {
+    return __("Start the shift first");
+  }
+  if (!selectionLocked.value) {
+    return __("Click Confirm selection to lock jobs before adding rows");
+  }
+  if (!sessionSprList.value.length) {
+    return __("Create SPRs first");
+  }
+  if (!selectedEntries.value.some((entry) => {
+    const jid = entry.jobId || entry.job_id;
+    const raw = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
+    return raw ? canJobAddOneMoreRoll(withLocalPendingQuota(raw)) : true;
+  })) {
+    return __("All selected jobs are at roll limit");
+  }
+  return __("Cannot add row yet");
+});
+
 const sessionSprList = computed(() => {
   const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
   if (!ppIds.size) {
     return [];
   }
-  return Object.values(sessionSprs.value || {}).filter((s) => ppIds.has(s.pp_id));
+  return [...ppIds]
+    .filter((ppId) => sessionSprs.value[ppId]?.spr_name)
+    .map((ppId) => ({
+      pp_id: ppId,
+      ...sessionSprs.value[ppId],
+    }));
 });
 
 function pruneSessionSprsToSelection() {
@@ -2868,6 +2897,9 @@ function pruneSessionSprsToSelection() {
 }
 
 function pruneSelectedEntriesToFilter() {
+  if (shiftOpened.value) {
+    return;
+  }
   const allowedPpIds = filteredPpIdSet.value;
   if (!selectedEntries.value.length || !allowedPpIds.size) {
     return;
@@ -3065,6 +3097,7 @@ function toggleJob(job, ev) {
     }
     if (!selectedEntryKeys.value.has(snap.key)) {
       selectedEntries.value = [...selectedEntries.value, snap];
+      loadJobBoard().then(() => enrichSelectedEntriesFromBoard());
       scheduleAutosave();
     }
     return;
@@ -3094,6 +3127,7 @@ function onJobLabelClick(job) {
     const snap = snapshotFromJob(job);
     if (!selectedEntryKeys.value.has(snap.key)) {
       selectedEntries.value = [...selectedEntries.value, snap];
+      loadJobBoard().then(() => enrichSelectedEntriesFromBoard());
       scheduleAutosave();
     }
     return;
@@ -3189,11 +3223,14 @@ function confirmSelection() {
 
 function unlockSelection() {
   if (rollLines.value.length) {
-    frappe.confirm("Unlock selection? Existing roll rows stay in the grid.", () => {
-      selectionLocked.value = false;
-      pruneSessionSprsToSelection();
-      scheduleAutosave();
-    });
+    frappe.confirm(
+      __("Unlock selection? Existing roll rows stay in the grid. Click <b>Confirm selection</b> again before adding new rows."),
+      () => {
+        selectionLocked.value = false;
+        pruneSessionSprsToSelection();
+        scheduleAutosave();
+      }
+    );
     return;
   }
   selectionLocked.value = false;
@@ -3585,17 +3622,16 @@ async function clearGridEntries() {
     return;
   }
   frappe.confirm(
-    __("Clear all roll rows from this screen? Server SPRs are kept — click Create new SPRs for another entry on the same shift."),
+    __("Clear all roll rows from this screen? Server SPRs are kept — you can add new rows without creating SPRs again."),
     () => {
       rollLines.value = [];
-      sessionSprs.value = {};
       sessionJobApiBaseline.value = {};
-      forceNewSprSession.value = true;
+      forceNewSprSession.value = false;
       resetBatchSeriesCache();
       if (shiftBatchPrefix.value) {
         seriesPrefix.value = shiftBatchPrefix.value;
       }
-      saveStatus.value = "Cleared — create new SPRs";
+      saveStatus.value = "Cleared — add new roll rows";
       scheduleAutosave();
       frappe.show_alert({ message: __("Grid cleared"), indicator: "blue" });
     }
@@ -4120,8 +4156,20 @@ async function loadQuotaForLines() {
 }
 
 async function loadJobBoard() {
-  const ppIds = [...filteredPpIdSet.value];
-  if (!ppIds.length) {
+  const ppIds = new Set([...filteredPpIdSet.value]);
+  if (shiftOpened.value) {
+    for (const entry of selectedEntries.value) {
+      if (entry.ppId) {
+        ppIds.add(entry.ppId);
+      }
+    }
+    for (const row of rollLines.value) {
+      if (row.pp_id) {
+        ppIds.add(row.pp_id);
+      }
+    }
+  }
+  if (!ppIds.size) {
     jobBoardJobs.value = [];
     return;
   }
@@ -4129,7 +4177,7 @@ async function loadJobBoard() {
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.get_gsm_pp_job_board",
       args: {
-        pp_ids: JSON.stringify(ppIds),
+        pp_ids: JSON.stringify([...ppIds]),
         run_date: runDate.value,
         shift: shift.value,
         unit: filterUnit.value || headerUnit.value || undefined,
@@ -4285,24 +4333,36 @@ function shouldResumeFromServer() {
   return true;
 }
 
-function rebuildSelectedEntriesFromResume(jobSelections) {
-  const entries = [];
+function rebuildSelectedEntriesFromResume(jobSelections, options = {}) {
+  const replaceAll = !!options.replaceAll;
+  const serverKeys = new Set();
+  const merged = [];
+  const existingByKey = new Map(
+    selectedEntries.value.map((e) => [e.key || entryKeyJob(e.ppId, e.jobId || e.job_id), e])
+  );
+
   for (const row of jobSelections || []) {
     const ppId = row.pp_id || row.ppId;
     const jobId = row.job_id || row.jobId;
     if (!ppId || jobId == null || jobId === "") {
       continue;
     }
+    const key = entryKeyJob(ppId, jobId);
+    serverKeys.add(key);
     const job = jobBoardJobs.value.find(
       (j) => j.pp_id === ppId && String(j.job_id) === String(jobId)
     );
     if (job) {
-      entries.push(snapshotFromJob(job));
+      merged.push(snapshotFromJob(job));
+      continue;
+    }
+    if (existingByKey.has(key)) {
+      merged.push(existingByKey.get(key));
       continue;
     }
     const meta = orderMetaForPp(ppId);
-    entries.push({
-      key: entryKeyJob(ppId, jobId),
+    merged.push({
+      key,
       jobId,
       lineId: meta.planningLineId,
       plannedDate: runDate.value,
@@ -4311,15 +4371,25 @@ function rebuildSelectedEntriesFromResume(jobSelections) {
       partyName: meta.partyName,
       quality: meta.quality,
       color: meta.color,
-      gsm: 0,
+      gsm: meta.gsm || 0,
       width_inch: null,
       widthLabel: "",
       dayTargetKg: orderDayStatsForPp(ppId).dayTargetKg,
       sourceSnapshot: { pp_id: ppId },
     });
   }
-  if (entries.length) {
-    selectedEntries.value = entries;
+
+  if (!replaceAll) {
+    for (const entry of selectedEntries.value) {
+      const key = entry.key || entryKeyJob(entry.ppId, entry.jobId || entry.job_id);
+      if (!serverKeys.has(key) && !merged.some((m) => (m.key || entryKeyJob(m.ppId, m.jobId || m.job_id)) === key)) {
+        merged.push(entry);
+      }
+    }
+  }
+
+  if (merged.length) {
+    selectedEntries.value = merged;
   }
 }
 
@@ -4328,11 +4398,16 @@ function applyResumePayload(msg, options = {}) {
     return 0;
   }
   const merge = !!options.merge;
+  const serverModified = msg.server_modified || "";
+  if (merge && serverModified && lastServerSyncAt.value === serverModified) {
+    return 0;
+  }
   const sprMap = {};
   for (const s of msg.session_sprs || []) {
     const ppId = s.pp_id || s.ppId;
     if (ppId && s.spr_name) {
       sprMap[ppId] = {
+        pp_id: ppId,
         spr_name: s.spr_name,
         order_code: s.order_code || "",
         label_type: s.label_type || "",
@@ -4366,6 +4441,8 @@ function applyResumePayload(msg, options = {}) {
         const local = byKey.get(k);
         if (!local.row_locked && sr.row_locked) {
           byKey.set(k, { ...local, ...sr });
+        } else if (local.row_locked && sr.row_locked) {
+          byKey.set(k, { ...sr, ...local, gross_weight: local.gross_weight || sr.gross_weight });
         }
       }
     }
@@ -4375,9 +4452,11 @@ function applyResumePayload(msg, options = {}) {
   } else {
     rollLines.value = serverRows;
   }
-  rebuildSelectedEntriesFromResume(msg.job_selections || []);
-  if ((msg.roll_lines || []).length || Object.keys(sprMap).length) {
+  rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
+  if (!merge && ((msg.roll_lines || []).length || Object.keys(sprMap).length)) {
     selectionLocked.value = true;
+    recordJobApiBaselines(jobBoardJobs.value);
+  } else if (!merge && (msg.job_selections || []).length) {
     recordJobApiBaselines(jobBoardJobs.value);
   }
   if (msg.session?.operator) {
@@ -4457,15 +4536,18 @@ async function refreshSessionFromServer(options = {}) {
         unit: headerUnit.value,
       },
     });
-    const count = applyResumePayload(res.message || {}, { merge: !!options.merge });
-    if (count > 0) {
-      liveSyncLabel.value = __("Live sync · {0} rolls", [rollLines.value.length]);
-      if (!options.quiet) {
-        frappe.show_alert({ message: __("Synced {0} roll(s) from server", [count]), indicator: "blue" });
-      }
-      await loadJobBoard();
-      enrichSelectedEntriesFromBoard();
+    const merge = options.merge !== false;
+    const msg = res.message || {};
+    if (msg.status !== "ok") {
+      return 0;
     }
+    const count = applyResumePayload(msg, { merge });
+    liveSyncLabel.value = __("Live sync · {0} rolls", [rollLines.value.length]);
+    if (count > 0 && !options.quiet) {
+      frappe.show_alert({ message: __("Synced {0} roll(s) from server", [count]), indicator: "blue" });
+    }
+    await loadJobBoard();
+    enrichSelectedEntriesFromBoard();
     return count;
   } catch (e) {
     console.warn("refresh session", e);
@@ -4477,7 +4559,7 @@ async function resumeActiveShiftFromServer(options = {}) {
   if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
     return 0;
   }
-  return refreshSessionFromServer({ ...options, merge: false });
+  return refreshSessionFromServer({ ...options, merge: options.merge !== false });
 }
 
 async function syncOpenShiftForUnit() {
@@ -5146,6 +5228,7 @@ async function addRollRow() {
       (j) => j.pp_id === pickedJob.pp_id && String(j.job_id) === String(pickedJob.job_id)
     ) || pickedJob;
   const job = withLocalPendingQuota(rawJob);
+  const jobId = job.job_id;
   if (!canJobAddOneMoreRoll(job)) {
     frappe.confirm(
       __("Job roll limit reached ({0}/{1}) — use Manual Job. Open Manual Job now?", [
@@ -5204,7 +5287,6 @@ async function addRollRow() {
     width_inch: widthInch,
     widthLabel: `${widthInch}"`,
   };
-  const jobId = job.job_id;
   const src = line.source;
   const [batchInfo, ordLen, woInfo] = await Promise.all([
     previewNextBatch(line.ppId),
@@ -5572,9 +5654,11 @@ watch([runDate, shift, headerUnit], () => {
   const key = currentBatchContextKey();
   if (batchContextKey.value && batchContextKey.value !== key) {
     resetBatchSeriesCache();
-    sessionSprs.value = {};
-    sessionJobApiBaseline.value = {};
-    forceNewSprSession.value = false;
+    if (!shiftOpened.value) {
+      sessionSprs.value = {};
+      sessionJobApiBaseline.value = {};
+      forceNewSprSession.value = false;
+    }
   }
   batchContextKey.value = key;
   if (ppSubmittedRows.value.length) {

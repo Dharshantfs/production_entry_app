@@ -246,6 +246,36 @@ function _scan_locally(frm, barcode) {
 	});
 }
 
+function _syncManualScannedQty(frm, cdt, cdn, sourceField) {
+	if (!_is_logistics_material_transfer(frm)) return;
+	const row = frappe.get_doc(cdt, cdn);
+	const val = flt(row[sourceField] || 0);
+	const updates = {};
+	if (frappe.meta.has_field("Stock Entry Detail", "scanned_qty")) {
+		updates.scanned_qty = val;
+	}
+	if (frappe.meta.has_field("Stock Entry Detail", "custom_scanned_qty")) {
+		updates.custom_scanned_qty = val;
+	}
+	Object.keys(updates).forEach((field) => {
+		if (flt(row[field]) !== updates[field]) {
+			frappe.model.set_value(cdt, cdn, field, updates[field]);
+		}
+	});
+}
+
+function _normalizeTransferScanRows(frm) {
+	if (!_is_logistics_material_transfer(frm) || !frm.doc.items) return;
+	(frm.doc.items || []).forEach((row) => {
+		const qty = flt(row.qty);
+		const scanned = flt(row.scanned_qty || row.custom_scanned_qty);
+		if (qty > 0 && scanned >= qty - 0.01) {
+			row.scanned_qty = qty;
+			row.custom_scanned_qty = qty;
+		}
+	});
+}
+
 frappe.ui.form.on("Stock Entry", {
 	setup(frm) {
 		_disable_native_barcode_scanner(frm);
@@ -376,6 +406,7 @@ frappe.ui.form.on("Stock Entry", {
 		if (!_is_logistics_material_transfer(frm) || !frm.doc.items) {
 			return;
 		}
+		_normalizeTransferScanRows(frm);
 		const pending = frm.doc.items.filter(
 			(r) => (r.qty || 0) > ((r.scanned_qty || r.custom_scanned_qty) || 0) + 0.01
 		);
@@ -403,6 +434,12 @@ frappe.ui.form.on("Stock Entry", {
 });
 
 frappe.ui.form.on("Stock Entry Detail", {
+	scanned_qty(frm, cdt, cdn) {
+		_syncManualScannedQty(frm, cdt, cdn, "scanned_qty");
+	},
+	custom_scanned_qty(frm, cdt, cdn) {
+		_syncManualScannedQty(frm, cdt, cdn, "custom_scanned_qty");
+	},
 	qty: function (frm, cdt, cdn) {
 		let row = frappe.get_doc(cdt, cdn);
 		if (

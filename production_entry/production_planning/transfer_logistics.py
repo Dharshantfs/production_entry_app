@@ -2102,7 +2102,16 @@ def stock_entry_validate_logistics_scan(doc, method=None):
 	pending = []
 	for row in doc.items or []:
 		qty = flt(row.qty)
-		scanned = flt(row.get("scanned_qty") or row.get("custom_scanned_qty") or 0)
+		scanned = max(
+			flt(row.get("scanned_qty") or 0),
+			flt(row.get("custom_scanned_qty") or 0),
+		)
+		if qty > 0 and scanned >= qty - 0.01:
+			if frappe.db.has_column("Stock Entry Detail", "scanned_qty"):
+				row.scanned_qty = qty
+			if frappe.db.has_column("Stock Entry Detail", "custom_scanned_qty"):
+				row.custom_scanned_qty = qty
+			continue
 		if qty > scanned + 0.01:
 			pending.append(row.item_code)
 	if pending:
