@@ -550,7 +550,9 @@ def validate_gsm_shift_close(run_date=None, shift=None, unit=None, session_sprs=
 			continue
 		ds = cint(frappe.db.get_value("Shaft Production Run", spr_name, "docstatus") or 0)
 		if ds != 1:
-			errors.append(_("SPR {0} is not submitted.").format(spr_name))
+			if not _gsm_spr_has_submittable_rolls(spr_name):
+				continue
+			errors.append(_("SPR {0} has rolls but is not submitted.").format(spr_name))
 	return {"ok": not errors, "errors": errors}
 
 
@@ -2634,6 +2636,17 @@ def delete_gsm_bundle_packaging(spr_name, bundle_batch_no, child_roll_batches=No
 	)
 
 
+def _gsm_submittable_pp_to_spr(pp_to_spr: dict, rolls_by_pp: dict) -> dict:
+	"""SPRs with grid rolls and/or rolls already saved on the draft SPR."""
+	out = {}
+	for pp_id, spr_name in (pp_to_spr or {}).items():
+		if rolls_by_pp.get(pp_id):
+			out[pp_id] = spr_name
+		elif _gsm_spr_has_submittable_rolls(spr_name):
+			out[pp_id] = spr_name
+	return out
+
+
 @frappe.whitelist()
 def submit_gsm_production_entry(
 	run_date=None,
@@ -2667,23 +2680,23 @@ def submit_gsm_production_entry(
 		pp_id = _cstr(row.get("pp_id") or row.get("ppId")).strip()
 		spr_name = _cstr(row.get("spr_name")).strip()
 		if pp_id and spr_name:
+			spr_pp = _cstr(
+				frappe.db.get_value("Shaft Production Run", spr_name, "production_plan") or ""
+			).strip()
+			if spr_pp and spr_pp != pp_id:
+				frappe.throw(
+					_("SPR {0} belongs to production plan {1}, not {2}").format(
+						spr_name, spr_pp, pp_id
+					)
+				)
 			pp_to_spr[pp_id] = spr_name
 
 	if not pp_to_spr:
 		frappe.throw(_("No SPR mapping in session"))
 
+	pp_to_spr_all = dict(pp_to_spr)
+
 	# Bundle packaging saves child rolls on SPR immediately; GSM grid may only show bundle summary rows.
-	if not rolls and not any(_gsm_spr_has_submittable_rolls(sn) for sn in pp_to_spr.values()):
-		frappe.throw(_("No roll lines to submit"))
-
-	override_by_spr = {}
-	for ov in tolerance_overrides:
-		if not isinstance(ov, dict):
-			continue
-		sn = _cstr(ov.get("spr_name")).strip()
-		if sn:
-			override_by_spr[sn] = ov
-
 	rolls_by_pp: dict[str, list] = {}
 	for roll in rolls:
 		if not isinstance(roll, dict):
@@ -2694,6 +2707,24 @@ def submit_gsm_production_entry(
 		if not pp_id:
 			continue
 		rolls_by_pp.setdefault(pp_id, []).append(roll)
+
+	pp_to_spr = _gsm_submittable_pp_to_spr(pp_to_spr, rolls_by_pp)
+	if not pp_to_spr and not any(_gsm_spr_has_submittable_rolls(sn) for sn in pp_to_spr_all.values()):
+		frappe.throw(_("No roll lines to submit"))
+
+	skipped_empty = [
+		{"pp_id": pp_id, "spr_name": spr_name}
+		for pp_id, spr_name in pp_to_spr_all.items()
+		if pp_id not in pp_to_spr
+	]
+
+	override_by_spr = {}
+	for ov in tolerance_overrides:
+		if not isinstance(ov, dict):
+			continue
+		sn = _cstr(ov.get("spr_name")).strip()
+		if sn:
+			override_by_spr[sn] = ov
 
 	imported = []
 	import_failed = []
@@ -2809,6 +2840,7 @@ def submit_gsm_production_entry(
 		"imported": imported,
 		"submitted": submitted,
 		"failed": submit_failed,
+		"skipped_empty": skipped_empty,
 		"total_kg": round(total_kg, 2),
 	}
 

@@ -7,47 +7,47 @@
           <button type="button" class="tl-close" @click="close">✕</button>
         </div>
 
-        <div v-if="loading" class="tl-muted" style="padding: 20px">Loading…</div>
-        <template v-else>
-          <div class="tl-company-row">
-            <label>From company</label>
-            <span class="tl-readonly">{{ fromCompany || "—" }}</span>
-            <label>To company</label>
-            <select v-model="toCompany" class="tl-select">
-              <option value="">Select destination…</option>
-              <option v-for="c in toCompanyOptions" :key="c.name" :value="c.name">{{ c.label }}</option>
-            </select>
-          </div>
+        <div v-if="batchesLoading" class="tl-muted" style="padding: 8px 20px 0">Loading batches…</div>
 
-          <div class="tl-nature-panel">
-            <div class="tl-nature-grid">
-              <div class="tl-nature-field">
-                <label class="tl-nature-label">Nature of Processing <span class="tl-req">*</span></label>
-                <select v-model="natureOfProcessing" class="tl-nature-select">
-                  <option value="">— Select —</option>
-                  <option value="Lamination">Lamination</option>
-                  <option value="Printing">Printing</option>
-                  <option value="Slitting">Slitting</option>
-                  <option value="Rewinding">Rewinding</option>
-                  <option value="Sheet Cutting">Sheet Cutting</option>
-                  <option value="FG Transfer">FG Transfer</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-              <div v-if="natureOfProcessing === 'Other'" class="tl-nature-field">
-                <label class="tl-nature-label">Specify</label>
-                <input v-model="natureOther" type="text" class="tl-input-nature" placeholder="Enter nature of processing" />
-              </div>
+        <div class="tl-company-row">
+          <label>From company</label>
+          <span class="tl-readonly">{{ fromCompany || "—" }}</span>
+          <label>To company</label>
+          <select v-model="toCompany" class="tl-select" :disabled="batchesLoading && !toCompanyOptions.length">
+            <option value="">Select destination…</option>
+            <option v-for="c in toCompanyOptions" :key="c.name" :value="c.name">{{ c.label }}</option>
+          </select>
+        </div>
+
+        <div class="tl-nature-panel">
+          <div class="tl-nature-grid">
+            <div class="tl-nature-field">
+              <label class="tl-nature-label">Nature of Processing <span class="tl-req">*</span></label>
+              <select v-model="natureOfProcessing" class="tl-nature-select">
+                <option value="">— Select —</option>
+                <option value="Lamination">Lamination</option>
+                <option value="Printing">Printing</option>
+                <option value="Slitting">Slitting</option>
+                <option value="Rewinding">Rewinding</option>
+                <option value="Sheet Cutting">Sheet Cutting</option>
+                <option value="FG Transfer">FG Transfer</option>
+                <option value="Other">Other</option>
+              </select>
             </div>
-            <p v-if="toCompany" class="tl-party-hint">
-              Party on Stock Entry: <strong>{{ toCompany }}</strong>
-            </p>
+            <div v-if="natureOfProcessing === 'Other'" class="tl-nature-field">
+              <label class="tl-nature-label">Specify</label>
+              <input v-model="natureOther" type="text" class="tl-input-nature" placeholder="Enter nature of processing" />
+            </div>
           </div>
-
-          <p v-if="!batchOptions.length" class="tl-muted" style="padding: 12px 20px">
-            No transferable batches on this SPR (or all already in transfer).
+          <p v-if="toCompany" class="tl-party-hint">
+            Party on Stock Entry: <strong>{{ toCompany }}</strong>
           </p>
-          <div v-else class="tl-batch-table-wrap" style="margin: 0 20px 12px">
+        </div>
+
+        <p v-if="!batchesLoading && !batchOptions.length" class="tl-muted" style="padding: 12px 20px">
+          No transferable batches on this SPR (or all already in transfer).
+        </p>
+        <div v-else-if="batchOptions.length" class="tl-batch-table-wrap" style="margin: 0 20px 12px">
             <div class="tl-batch-panel-head" style="margin-bottom: 8px">
               <strong>Select batches</strong>
               <div class="tl-batch-head-actions">
@@ -100,7 +100,6 @@
               Rows without a Planning Table link cannot be transferred. Link this SPR on the planning sheet first.
             </p>
           </div>
-        </template>
 
         <div class="tl-footer">
           <button type="button" class="cc-clear-btn" @click="close">Cancel</button>
@@ -125,7 +124,7 @@ const emit = defineEmits(["close", "submitted"]);
 const API = "production_entry.production_planning.transfer_logistics";
 
 const open = ref(true);
-const loading = ref(true);
+const batchesLoading = ref(true);
 const submitting = ref(false);
 const fromCompany = ref("");
 const toCompany = ref("");
@@ -186,7 +185,7 @@ function clearAll() {
 }
 
 async function loadContext() {
-  loading.value = true;
+  batchesLoading.value = true;
   try {
     const res = await frappe.call({
       method: `${API}.get_spr_transfer_bootstrap`,
@@ -216,7 +215,7 @@ async function loadContext() {
     frappe.msgprint(__("Failed to load transfer data for this SPR."));
     close();
   } finally {
-    loading.value = false;
+    batchesLoading.value = false;
   }
 }
 

@@ -979,3 +979,100 @@ function get_bundle_label_format(d) {
         (d.barcode_data ? ('<script>JsBarcode("#barcode", "' + d.barcode_data + '", { format: "CODE128", displayValue: true, fontSize: 12, textMargin: 1, height: 55, width: 2.0, margin: 0 });<\/script>') : '') +
         '</body></html>';
 }
+
+// ===== WASTAGE / PATTY LABEL (desk SPR + GSM Production Entry) =====
+
+function _wastage_row_from_frm(row_name, frm, table_field) {
+    var f = frm || (typeof cur_frm !== "undefined" ? cur_frm : null);
+    if (!f || !f.doc) return null;
+    table_field = table_field || "custom_running_patty_wastage";
+    var rows = f.doc[table_field] || [];
+    var row = (rows || []).find(function (r) { return r.name === row_name; });
+    if (!row && typeof locals !== "undefined" && locals) {
+        var cdt = table_field === "custom_roll_waste" ? "Roll Waste Row" : "Running Patty Wastage Row";
+        row = (locals[cdt] || {})[row_name];
+    }
+    return row || null;
+}
+
+function _wastage_label_html(row, frm) {
+    var f = frm || {};
+    var doc = f.doc || {};
+    var company = (doc.company || frappe.boot.sysdefaults.company || "THUSMA SMS NONWOVENS PVT LTD").toUpperCase();
+    var job = String(row.job_id || "").trim();
+    var quality = String(row.quality || "").trim();
+    var color = String(row.color || "").trim();
+    var gsm = row.gsm != null && row.gsm !== "" ? String(row.gsm) : "";
+    var width = row.width_inch != null && row.width_inch !== "" ? parseFloat(row.width_inch) : "";
+    var meters = row.meter_per_roll != null && row.meter_per_roll !== "" ? parseFloat(row.meter_per_roll) : "";
+    var shafts = row.no_of_shafts != null && row.no_of_shafts !== "" ? String(row.no_of_shafts) : "";
+    var wastage = row.net_wastage != null && row.net_wastage !== "" ? parseFloat(row.net_wastage) : parseFloat(row.wastage || 0);
+    var recycled = row.recycled != null && row.recycled !== "" ? parseFloat(row.recycled) : "";
+    var batch = String(row.batch_no || row.patty_batch || "").trim();
+    var barcode = batch || job || "WASTAGE";
+
+    function esc(s) { return frappe.utils.escape_html(String(s == null ? "" : s)); }
+    function rowHtml(lbl, val) {
+        if (val === "" || val === null || val === undefined || (typeof val === "number" && !isFinite(val))) return "";
+        return "<tr><td class=\"lbl\">" + esc(lbl) + "</td><td class=\"colon\">:</td><td class=\"val\">" + esc(val) + "</td></tr>";
+    }
+
+    var body = [
+        rowHtml("JOB", job),
+        rowHtml("QUALITY", quality),
+        rowHtml("COLOR", color),
+        rowHtml("GSM", gsm),
+        rowHtml("WIDTH", isFinite(width) ? width + " IN" : ""),
+        rowHtml("METER/ROLL", isFinite(meters) ? meters : ""),
+        rowHtml("SHAFTS", shafts),
+        rowHtml("WASTAGE", isFinite(wastage) ? wastage.toFixed(3) + " Kg" : ""),
+        rowHtml("RECYCLED", isFinite(recycled) ? recycled.toFixed(3) + " Kg" : ""),
+        rowHtml("BATCH", batch),
+    ].join("");
+
+    return '<html><head><title>Wastage Label</title><style>' +
+        '@media print { .btn-panel { display: none !important; } @page { size: 4in 4in; margin: 0; } body { margin: 0; } }' +
+        'body { font-family: Arial, sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; }' +
+        '.btn-panel { padding: 10px; background: #eee; }' +
+        '.sticker { width: 4in; height: 4in; margin: 20px auto; border: 2px solid #111; background: #fff; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
+        '.inner-border { border: 2px solid #111; margin: 6px; padding: 6px 10px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; }' +
+        '.header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 4px; margin-bottom: 4px; }' +
+        '.title { font-size: 22px; font-weight: 900; letter-spacing: 1px; }' +
+        '.company { font-size: 13px; font-weight: 700; color: #333; margin-top: 2px; }' +
+        'table { width: 100%; border-collapse: collapse; }' +
+        'td { padding: 4px 0; text-align: left; vertical-align: middle; }' +
+        'td:nth-child(1) { width: 44%; padding-left: 8px; }' +
+        'td.colon { width: 5%; text-align: center; font-weight: bold; }' +
+        '.lbl { font-size: 15px; font-weight: 900; color: #333; }' +
+        '.val { font-size: 15px; font-weight: 900; color: #000; }' +
+        '.barcode-container { display: flex; justify-content: center; align-items: center; padding: 4px 0 2px; }' +
+        '#barcode { max-width: 100%; height: 50px; }' +
+        '</style></head><body>' +
+        '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px;font-weight:bold;cursor:pointer;">PRINT</button>' +
+        '<button onclick="window.close()" style="padding:10px 20px;margin-left:10px;">CLOSE</button></div>' +
+        '<div class="sticker"><div class="inner-border">' +
+        '<div class="header"><div class="title">WASTAGE</div><div class="company">' + esc(company) + '</div></div>' +
+        '<table>' + body + '</table>' +
+        '<div class="barcode-container"><svg id="barcode"></svg></div>' +
+        '</div></div>' +
+        '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"><\/script>' +
+        '<script>JsBarcode("#barcode", ' + JSON.stringify(barcode) + ', { format: "CODE128", displayValue: true, fontSize: 11, textMargin: 1, height: 50, width: 1.9, margin: 0 });<\/script>' +
+        '</body></html>';
+}
+
+frappe.print_wastage_label_flow = function (row_name, frm, table_field) {
+    var row = _wastage_row_from_frm(row_name, frm, table_field);
+    if (!row) {
+        frappe.msgprint(__("Wastage row not found."));
+        return;
+    }
+    var html = _wastage_label_html(row, frm);
+    var pw = window.open("", "_blank", "height=650,width=500");
+    if (pw) {
+        pw.document.write(html);
+        pw.document.close();
+    }
+};
+
+frappe.generate_wastage_sticker_flow = frappe.print_wastage_label_flow;
+frappe.print_patty_wastage_label = frappe.print_wastage_label_flow;

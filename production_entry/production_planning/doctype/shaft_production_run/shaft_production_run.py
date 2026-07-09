@@ -5547,6 +5547,81 @@ class ShaftProductionRun(Document):
 		names = frappe.get_all("Stock Entry", filters=filters, pluck="name", order_by="modified desc", limit=1)
 		return _cstr(names[0]) if names else ""
 
+	def _find_open_manufacture_draft_for_wo(self, wo_id: str) -> str:
+		"""Find latest draft Manufacture Stock Entry for this WO + SPR (avoid duplicate STE on retry)."""
+		wo_id = _cstr(wo_id)
+		if not wo_id:
+			return ""
+		filters: dict = {"docstatus": 0, "purpose": "Manufacture"}
+		meta = frappe.get_meta("Stock Entry")
+		has_spr_link = False
+		if meta.has_field("shaft_production_run"):
+			filters["shaft_production_run"] = self.name
+			has_spr_link = True
+		elif frappe.db.has_column("Stock Entry", "custom_spr_reference"):
+			filters["custom_spr_reference"] = self.name
+			has_spr_link = True
+		if has_spr_link:
+			filters["work_order"] = ["in", [wo_id, ""]]
+		else:
+			filters["work_order"] = wo_id
+		names = frappe.get_all(
+			"Stock Entry", filters=filters, pluck="name", order_by="modified desc", limit=1
+		)
+		if names:
+			return _cstr(names[0])
+		if has_spr_link:
+			names = frappe.get_all(
+				"Stock Entry",
+				filters={"docstatus": 0, "purpose": "Manufacture", "work_order": wo_id},
+				pluck="name",
+				order_by="modified desc",
+				limit=1,
+			)
+			return _cstr(names[0]) if names else ""
+		return ""
+
+	def _spr_submit_all_draft_manufactures_for_spr(self) -> list[str]:
+		"""Submit open Manufacture drafts linked to this SPR instead of creating duplicates."""
+		spr_clause, params = self._spr_stock_entry_spr_link_clause("se")
+		if spr_clause == "1=0":
+			return []
+		names = frappe.db.sql_list(
+			f"""
+			SELECT se.name
+			FROM `tabStock Entry` se
+			WHERE {spr_clause}
+			  AND IFNULL(se.purpose, '') = 'Manufacture'
+			  AND IFNULL(se.docstatus, 0) = 0
+			ORDER BY se.modified DESC
+			""",
+			params,
+		) or []
+		submitted: list[str] = []
+		for se_name in names:
+			se_name = _cstr(se_name).strip()
+			if not se_name:
+				continue
+			try:
+				se = frappe.get_doc("Stock Entry", se_name)
+				if cint(se.docstatus) != 0 or _cstr(se.purpose) != "Manufacture":
+					continue
+				wo_id = _cstr(se.work_order).strip()
+				self._set_stock_entry_spr_link(se)
+				self._spr_ensure_manufacture_fg_bundles(se_name)
+				se.flags.ignore_duplicate_for_work_order = True
+				se.flags.ignore_validate = True
+				se.submit()
+				if wo_id:
+					frappe.db.set_value("Stock Entry", se.name, "work_order", wo_id, update_modified=False)
+				submitted.append(se.name)
+			except Exception:
+				frappe.log_error(
+					frappe.get_traceback(),
+					f"SPR submit draft manufacture:{self.name}:{se_name}",
+				)
+		return submitted
+
 	def _build_shortage_preview_for_chunk(self, wo_doc, chunk_total_qty: float):
 		"""Build a transient Manufacture entry for shortage pre-check without insert/submit."""
 		posting_date = today()
@@ -6824,10 +6899,37 @@ class ShaftProductionRun(Document):
 				msg += "\n\n" + "\n".join(hints[:8])
 			frappe.throw(msg, title=_("Missing Manufacture entries"))
 
+	def _spr_manufacture_total_fg_qty_for_wo(
+		self, wo_id: str, item_code: str, extra_se_names: list | tuple | None = None
+	) -> float:
+		"""Total FG qty on draft/submitted Manufacture entries for this SPR + WO."""
+		wo_id = _cstr(wo_id)
+		item_code = _cstr(item_code)
+		if not wo_id or not item_code:
+			return 0.0
+		link_clause, params = self._spr_manufacture_se_where_clause("se", wo_id, extra_se_names)
+		params["item_code"] = item_code
+		return flt(
+			frappe.db.sql(
+				f"""
+				SELECT IFNULL(SUM(sed.qty), 0)
+				FROM `tabStock Entry` se
+				INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+				WHERE {link_clause}
+				  AND IFNULL(se.purpose, '') = 'Manufacture'
+				  AND IFNULL(se.docstatus, 0) < 2
+				  AND IFNULL(sed.is_finished_item, 0) = 1
+				  AND IFNULL(sed.item_code, '') = %(item_code)s
+				""",
+				params,
+			)[0][0]
+			or 0
+		)
+
 	def _spr_manufacture_batch_qty_map_for_wo(
 		self, wo_id: str, extra_se_names: list | tuple | None = None
 	) -> dict[str, float]:
-		"""Sum submitted Manufacture FG qty per batch for this SPR + WO (no duplicates)."""
+		"""Sum draft/submitted Manufacture FG qty per batch for this SPR + WO (no duplicates)."""
 		wo_id = _cstr(wo_id)
 		if not wo_id:
 			return {}
@@ -6840,7 +6942,7 @@ class ShaftProductionRun(Document):
 			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
 			WHERE {link_clause}
 			  AND IFNULL(se.purpose, '') = 'Manufacture'
-			  AND IFNULL(se.docstatus, 0) = 1
+			  AND IFNULL(se.docstatus, 0) < 2
 			  AND IFNULL(sed.is_finished_item, 0) = 1
 			  AND IFNULL(sed.batch_no, '') != ''
 			GROUP BY IFNULL(sed.batch_no, '')
@@ -6862,6 +6964,30 @@ class ShaftProductionRun(Document):
 				pass
 		return dict(out)
 
+	def _spr_roll_has_active_manufacture_stock(self, row, wo_doc) -> bool:
+		"""True when roll batch is active with FG stock posted — sync must not create another Manufacture STE."""
+		rq = flt(self._row_fg_qty(row))
+		if rq <= 0 or not wo_doc:
+			return False
+		bn_raw = _cstr(row.get("batch_no")).strip()
+		if not bn_raw:
+			return False
+		item_code = _cstr(getattr(wo_doc, "production_item", None))
+		if not item_code:
+			return False
+		try:
+			b_link = _cstr(
+				self._get_batch_link_name_for_stock_entry(bn_raw, item_code, wo_doc.company, row)
+			)
+		except Exception:
+			b_link = bn_raw
+		key = b_link or bn_raw
+		if not _spr_batch_is_active(key):
+			return False
+		fg_wh = _cstr(getattr(wo_doc, "fg_warehouse", None))
+		sle_qty = _spr_batch_sle_qty(key, item_code, fg_wh) or _spr_batch_sle_qty(key, item_code, "")
+		return sle_qty + 1e-6 >= rq
+
 	def _spr_rows_needing_manufacture(
 		self, wo_doc, rows: list, extra_se_names: list | tuple | None = None
 	) -> list:
@@ -6876,6 +7002,8 @@ class ShaftProductionRun(Document):
 		for r in rows:
 			rq = flt(self._row_fg_qty(r))
 			if rq <= 0:
+				continue
+			if self._spr_roll_has_active_manufacture_stock(r, wo_doc):
 				continue
 			bn_raw = _cstr(r.get("batch_no")).strip()
 			b_link = ""
@@ -6899,6 +7027,15 @@ class ShaftProductionRun(Document):
 				need.append(r)
 			else:
 				need.append(r)
+		if need:
+			expected_total = flt(
+				sum(flt(self._row_fg_qty(r)) for r in rows if flt(self._row_fg_qty(r)) > 0)
+			)
+			posted_total = self._spr_manufacture_total_fg_qty_for_wo(
+				wo_id, item_code, extra_se_names=extra_se_names
+			)
+			if posted_total + 1e-6 >= expected_total:
+				return []
 		return need
 
 	def _spr_run_backfill_manufacture_for_wo(
@@ -7025,16 +7162,42 @@ class ShaftProductionRun(Document):
 			)
 
 	def _spr_sync_backfill_missing_manufacture(self) -> list[str]:
-		"""Create/submit missing Manufacture entries for SPR rolls with auto RM transfer. Never throws."""
+		"""Create/submit missing Manufacture entries for SPR rolls with auto RM transfer. Never throws.
+
+		When called from Sync Batch: if Manufacture STE already exists, only repair serial/batch
+		bundles on those entries — never create a duplicate Manufacture STE.
+		"""
+		submitted_drafts = self._spr_submit_all_draft_manufactures_for_spr() or []
+		existing_submitted = self._get_existing_submitted_manufacture_entries_for_spr()
+		all_existing = sorted(set(existing_submitted + submitted_drafts))
+		if all_existing:
+			for se_name in all_existing:
+				try:
+					self._spr_ensure_manufacture_fg_bundles(se_name)
+				except Exception:
+					frappe.log_error(
+						frappe.get_traceback(),
+						f"SPR sync bundle repair:{self.name}:{se_name}",
+					)
+			merged = [
+				x.strip()
+				for x in _cstr(self.get("manufacturing_entries")).split(",")
+				if x and x.strip()
+			]
+			merged = sorted(set(merged + all_existing))
+			if merged:
+				self.db_set("manufacturing_entries", ", ".join(merged))
+			return []
+
 		wo_rows: dict[str, list] = defaultdict(list)
 		for r in self.items or []:
 			wo = _cstr(r.get("work_order") or r.get("wo_id"))
 			if wo and flt(self._row_fg_qty(r)) > 0:
 				wo_rows[wo].append(r)
 		if not wo_rows:
-			return []
+			return submitted_drafts
 
-		created_se: list[str] = []
+		created_se: list[str] = list(submitted_drafts)
 		created_entries_by_wo: dict[str, list] = defaultdict(list)
 		self.flags._spr_allow_manufacture_posting = True
 		try:
@@ -7180,6 +7343,45 @@ class ShaftProductionRun(Document):
 		chunk_total_qty = self._fg_posting_qty_for_rows(chunk_rows, wo_doc)
 		if chunk_total_qty <= 0:
 			return {"actual_rm_map": actual_rm_map, "se_name": None}
+
+		draft_se_name = self._find_open_manufacture_draft_for_wo(wo_id)
+		if draft_se_name:
+			try:
+				draft_se = frappe.get_doc("Stock Entry", draft_se_name)
+				if cint(draft_se.docstatus) == 0 and _cstr(draft_se.purpose) == "Manufacture":
+					self._set_stock_entry_spr_link(draft_se)
+					self._set_stock_entry_unit(draft_se, wo_doc)
+					self._spr_ensure_manufacture_fg_bundles(draft_se_name)
+					draft_se.flags.ignore_duplicate_for_work_order = True
+					draft_se.flags.ignore_validate = True
+					draft_se.submit()
+					self._spr_backfill_manufacture_fg_batches(draft_se.name, wo_doc, chunk_rows)
+					self._spr_ensure_manufacture_fg_bundles(draft_se.name)
+					frappe.db.set_value("Stock Entry", draft_se.name, "work_order", wo_id, update_modified=False)
+					self._apply_unit_to_submitted_stock_entry(draft_se.name, wo_doc)
+					self._apply_order_code_to_submitted_stock_entry(draft_se.name)
+					self._sync_work_order_produced_qty_from_submitted_manufacture(wo_id)
+					self._sync_work_order_required_item_progress(wo_id)
+					self._sync_production_plan_progress_from_work_orders(
+						_cstr(getattr(wo_doc, "production_plan", None))
+					)
+					created_entries.append(draft_se.name)
+					created_entries_by_wo[wo_id].append(draft_se.name)
+					frappe.msgprint(
+						_("WO {0}: Submitted existing draft Manufacture entry {1} ({2} Kg).").format(
+							wo_id, draft_se.name, flt(chunk_total_qty, 3)
+						),
+						alert=True,
+					)
+					actual_rm_map = self._merge_rm_maps(
+						actual_rm_map, self._collect_rm_map_from_se(draft_se)
+					)
+					return {"actual_rm_map": actual_rm_map, "se_name": draft_se.name}
+			except Exception:
+				frappe.log_error(
+					frappe.get_traceback(),
+					f"SPR submit draft manufacture retry:{self.name}:{draft_se_name}",
+				)
 
 		se = frappe.new_doc("Stock Entry")
 		se.flags.ignore_duplicate_for_work_order = True
@@ -7603,6 +7805,13 @@ class ShaftProductionRun(Document):
 
 		self._spr_init_manual_fabric_batch_pools(planned_wo_posts)
 
+		for draft_se in self._spr_submit_all_draft_manufactures_for_spr():
+			if draft_se not in created_entries:
+				created_entries.append(draft_se)
+			wo = _cstr(frappe.db.get_value("Stock Entry", draft_se, "work_order"))
+			if wo:
+				created_entries_by_wo[wo].append(draft_se)
+
 		# Create/submit Manufacture entries after preflight passes for all WO chunks.
 		# Savepoint ensures we can roll back partial Manufacture submits if any later WO fails.
 		mfg_submit_savepoint = "spr_mfg_submit"
@@ -7685,11 +7894,11 @@ class ShaftProductionRun(Document):
 				)
 
 	def _spr_ensure_manufacture_fg_bundles(self, se_name: str) -> None:
-		"""Ensure every submitted manufacture FG line has batch + Serial and Batch Bundle stock."""
+		"""Ensure manufacture FG lines have batch + Serial and Batch Bundle (draft or submitted)."""
 		if not se_name or not frappe.db.exists("Stock Entry", se_name):
 			return
 		se_doc = frappe.get_doc("Stock Entry", se_name)
-		if _cstr(se_doc.get("purpose")) != "Manufacture" or cint(se_doc.get("docstatus")) != 1:
+		if _cstr(se_doc.get("purpose")) != "Manufacture" or cint(se_doc.get("docstatus")) >= 2:
 			return
 		for fg in se_doc.items or []:
 			if cint(fg.get("is_finished_item")) != 1:
@@ -10481,6 +10690,30 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 		row.custom_produced_length_mtrs = flt(pl_m)
 
 
+def _gsm_validate_roll_for_spr(spr, spr_pp_id: str, payload: dict) -> None:
+	"""Ensure GSM roll payload maps to the correct SPR production plan and work order."""
+	spr_pp = _cstr(spr_pp_id or spr.get("production_plan")).strip()
+	payload_pp = _cstr(payload.get("pp_id")).strip()
+	if payload_pp and spr_pp and payload_pp != spr_pp:
+		frappe.throw(
+			_("Roll production plan {0} does not match SPR {1} (production plan {2})").format(
+				payload_pp, spr.name, spr_pp
+			)
+		)
+	wo_name = _cstr(payload.get("work_order")).strip()
+	if not wo_name or not frappe.db.exists("Work Order", wo_name):
+		return
+	wo_pp = _cstr(frappe.db.get_value("Work Order", wo_name, "production_plan") or "").strip()
+	if not wo_pp and frappe.db.has_column("Work Order", "custom_production_plan"):
+		wo_pp = _cstr(frappe.db.get_value("Work Order", wo_name, "custom_production_plan") or "").strip()
+	if wo_pp and spr_pp and wo_pp != spr_pp:
+		frappe.throw(
+			_("Work Order {0} belongs to production plan {1}, not SPR plan {2}").format(
+				wo_name, wo_pp, spr_pp
+			)
+		)
+
+
 def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> dict:
 	"""Insert or update one GSM roll line on a draft SPR (batch_no dedup)."""
 	if _gsm_payload_is_bundle_summary(payload):
@@ -10492,6 +10725,8 @@ def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> 
 	batch_no = _cstr(payload.get("batch_no")).strip()
 	if not batch_no:
 		frappe.throw(_("Batch number is required for GSM roll import"))
+
+	_gsm_validate_roll_for_spr(spr, pp_id, payload)
 
 	job_id = _gsm_resolve_job_id_for_roll(spr, pp_id, payload)
 	existing = _gsm_find_item_row_by_batch(spr, batch_no)
@@ -13990,6 +14225,9 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 			wo_batch_rows[wo][bn] = row
 
 	se_names = spr._get_existing_submitted_manufacture_entries_for_spr()
+	submitted_drafts = spr._spr_submit_all_draft_manufactures_for_spr() or []
+	if submitted_drafts:
+		se_names = sorted(set(list(se_names) + submitted_drafts))
 	early_backfill: list = []
 	if not se_names:
 		try:
@@ -14194,6 +14432,16 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), f"SPR batch sync line:{spr_name}")
 
+	# 2b) Ensure Serial and Batch Bundle on every existing Manufacture FG line.
+	for se_name in se_names:
+		try:
+			spr._spr_ensure_manufacture_fg_bundles(se_name)
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				f"SPR batch sync bundle:{spr_name}:{se_name}",
+			)
+
 	# 3) Repair FG batches that have manufacture lines but no positive SLE (no RM re-consumed)
 	repair_res = {}
 	try:
@@ -14201,7 +14449,7 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), f"SPR batch sync repair:{spr_name}")
 
-	# 4) Backfill missing manufacture rows — auto RM transfer, never abort whole sync
+	# 4) Bundle repair / legacy backfill only when no Manufacture STE exists yet.
 	backfill_created: list = []
 	backfill_errors: list = []
 	try:

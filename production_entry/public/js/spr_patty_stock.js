@@ -5,13 +5,30 @@ const _PATTY_STOCK_RPC =
 	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_available_patty_stock";
 
 const _STOCK_COLS = [
-	{ key: "batch_no", label: "Batch No", filter: true },
-	{ key: "quality", label: "Quality", filter: true },
-	{ key: "color", label: "Color", filter: true },
-	{ key: "gsm", label: "GSM", filter: true, num: true },
-	{ key: "width_inch", label: "Width", filter: true, num: true },
-	{ key: "available_kg", label: "Available (Kg)", filter: false, num: true },
+	{ key: "batch_no", label: "Batch No", filter: true, minW: "108px" },
+	{ key: "quality", label: "Quality", filter: true, minW: "88px" },
+	{ key: "color", label: "Color", filter: true, minW: "88px" },
+	{ key: "gsm", label: "GSM", filter: true, num: true, minW: "52px" },
+	{ key: "width_inch", label: "Width", filter: true, num: true, minW: "64px" },
+	{ key: "available_kg", label: "Avail (Kg)", filter: false, num: true, minW: "72px" },
 ];
+
+const _PATTY_STOCK_CSS = `
+<style>
+.spr-patty-dialog .modal-dialog { max-width: min(96vw, 920px); margin: 1.2rem auto; }
+.spr-patty-dialog .modal-body { padding: 12px 16px 8px; overflow: hidden; }
+.spr-patty-stock-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.spr-patty-section { font-weight: 700; font-size: 13px; color: #334155; }
+.spr-patty-scroll { overflow: auto; max-height: min(58vh, 480px); border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+.spr-patty-table { width: 100%; min-width: 640px; margin: 0; table-layout: fixed; font-size: 12px; }
+.spr-patty-table thead th { position: sticky; top: 0; z-index: 2; background: #f8fafc; vertical-align: top; }
+.spr-patty-table th, .spr-patty-table td { padding: 6px 8px; word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+.spr-patty-table .spr-patty-check { width: 36px; min-width: 36px; text-align: center; }
+.spr-patty-num { text-align: right; font-variant-numeric: tabular-nums; }
+.spr-patty-filter { width: 100%; max-width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 6px; }
+.spr-patty-empty { padding: 24px; text-align: center; color: #64748b; }
+.spr-patty-row:hover { background: #f1f5f9; }
+</style>`;
 
 function _esc(s) {
 	return frappe.utils.escape_html(String(s ?? ""));
@@ -56,13 +73,16 @@ production_entry.spr_patty_stock.fetch = async function (sprName) {
 
 function _stockTableHtml(stock) {
 	if (!stock.length) {
-		return `<div class="spr-patty-empty">${__("No patty stock available.")}</div>`;
+		return `${_PATTY_STOCK_CSS}<div class="spr-patty-empty">${__("No patty stock available.")}</div>`;
 	}
-	const head = _STOCK_COLS.map((c) => `<th class="${c.num ? "spr-patty-num" : ""}">${__(c.label)}</th>`).join("");
+	const head = _STOCK_COLS.map(
+		(c) =>
+			`<th class="${c.num ? "spr-patty-num" : ""}" style="min-width:${c.minW}">${__(c.label)}</th>`
+	).join("");
 	const filters = _STOCK_COLS.map((c, i) =>
 		c.filter
-			? `<th><input type="text" class="spr-patty-filter" data-col="${i}" placeholder="${__("Filter")}" /></th>`
-			: "<th></th>"
+			? `<th style="min-width:${c.minW}"><input type="text" class="spr-patty-filter" data-col="${i}" placeholder="${__("Filter")}" /></th>`
+			: `<th style="min-width:${c.minW}"></th>`
 	).join("");
 	const body = stock
 		.map((raw, idx) => {
@@ -82,15 +102,18 @@ function _stockTableHtml(stock) {
 			</tr>`;
 		})
 		.join("");
-	return `<div class="spr-patty-stock-wrap">
+	return `${_PATTY_STOCK_CSS}
+	<div class="spr-patty-stock-wrap">
 		<div class="spr-patty-section">${__("Stock List")}</div>
-		<table class="table table-bordered spr-patty-table">
-			<thead>
-				<tr><th class="spr-patty-check"><input type="checkbox" class="spr-patty-all" title="${__("Select all")}" /></th>${head}</tr>
-				<tr><th></th>${filters}</tr>
-			</thead>
-			<tbody>${body}</tbody>
-		</table>
+		<div class="spr-patty-scroll">
+			<table class="table table-bordered spr-patty-table">
+				<thead>
+					<tr><th class="spr-patty-check"><input type="checkbox" class="spr-patty-all" title="${__("Select all")}" /></th>${head}</tr>
+					<tr><th></th>${filters}</tr>
+				</thead>
+				<tbody>${body}</tbody>
+			</table>
+		</div>
 	</div>`;
 }
 
@@ -129,9 +152,10 @@ production_entry.spr_patty_stock.open_dialog = async function (sprName, options)
 	const stock = await production_entry.spr_patty_stock.fetch(sprName);
 	const d = new frappe.ui.Dialog({
 		title: __("Available Patty Stock"),
-		size: "extra-large",
+		size: "large",
 		fields: [{ fieldname: "stock_html", fieldtype: "HTML", options: _stockTableHtml(stock) }],
 	});
+	d.$wrapper.addClass("spr-patty-dialog");
 	if (typeof options.on_consume === "function") {
 		d.set_primary_action(__("Consume Selected"), async () => {
 			const picks = [];

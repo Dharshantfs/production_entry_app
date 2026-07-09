@@ -1127,15 +1127,13 @@
           <table class="gpe-confirm-grid">
             <thead>
               <tr>
-                <th>Order</th><th>Required Kg</th><th>Session Kg</th><th>Remaining Kg</th>
+                <th>Order</th><th>Net Kg (submitting)</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="o in linkedOrderSummary" :key="o.orderCode">
+              <tr v-for="o in submitOrderSummary" :key="o.orderCode">
                 <td>{{ o.orderCode }}</td>
-                <td>{{ formatKg(o.required) }}</td>
                 <td>{{ formatKg(o.produced) }}</td>
-                <td>{{ formatKg(o.remaining) }}</td>
               </tr>
             </tbody>
           </table>
@@ -1159,11 +1157,11 @@
           </table>
           <h4 class="gpe-submit-section-title">SPRs</h4>
           <ul class="gpe-submit-spr-list">
-            <li v-for="s in sessionSprList" :key="s.pp_id">
+            <li v-for="s in submitSprList" :key="s.pp_id">
               {{ s.order_code }} · {{ s.label_type || "Default" }} · {{ s.spr_name }}
             </li>
           </ul>
-          <p class="gpe-hint">Submit {{ submitConfirmRolls.length }} roll(s) across {{ sessionSprList.length }} SPR(s)?</p>
+          <p class="gpe-hint">Submit {{ submitConfirmRolls.length }} roll(s) across {{ submitSprList.length }} SPR(s)?</p>
           <div class="gpe-dialog-actions">
             <button type="button" class="gpe-btn" @click="closeSubmitDialog">No, stay here</button>
             <button type="button" class="gpe-btn primary" @click="confirmSubmitEntry">Yes, submit entry</button>
@@ -1248,7 +1246,7 @@
 
     <!-- Add Roll wizard: Job → Width -->
     <div v-if="showAddRollWizard" class="gpe-dialog-overlay" @click.self="cancelAddRollWizard">
-      <div class="gpe-dialog gpe-card">
+      <div class="gpe-dialog gpe-card gpe-add-roll-wizard">
         <h3>{{ addRollWizardStep === 1 ? "Choose job for new roll" : "Choose width" }}</h3>
         <div v-if="addRollWizardStep === 1 && !addRollWizardSkipJobStep" class="gpe-picker-list">
           <label
@@ -3014,7 +3012,7 @@ const canAddRow = computed(() => {
     !headerUnit.value ||
     !runDate.value ||
     !shift.value ||
-    !sessionSprList.value.length
+    !selectedSessionSprList.value.length
   ) {
     return false;
   }
@@ -3038,7 +3036,7 @@ const addRollDisabledHint = computed(() => {
   if (!selectionLocked.value) {
     return __("Click Confirm selection to lock jobs before adding rows");
   }
-  if (!sessionSprList.value.length) {
+  if (!selectedSessionSprList.value.length) {
     return __("Create SPRs first");
   }
   if (!selectedEntries.value.some((entry) => {
@@ -3051,7 +3049,15 @@ const addRollDisabledHint = computed(() => {
   return __("Cannot add row yet");
 });
 
-const sessionSprList = computed(() => {
+/** All SPRs created this shift — kept until Close Shift (not pruned on unlock). */
+const shiftSessionSprList = computed(() =>
+  Object.entries(sessionSprs.value || {})
+    .filter(([ppId, v]) => ppId && v?.spr_name)
+    .map(([pp_id, v]) => ({ pp_id, ...v }))
+);
+
+/** SPRs for currently selected production plans (add-row / create SPR flow). */
+const selectedSessionSprList = computed(() => {
   const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
   if (!ppIds.size) {
     return [];
@@ -3064,22 +3070,22 @@ const sessionSprList = computed(() => {
     }));
 });
 
-function pruneSessionSprsToSelection() {
-  if (selectionLocked.value) {
-    return;
-  }
-  const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
-  const next = {};
-  for (const [k, v] of Object.entries(sessionSprs.value || {})) {
-    if (ppIds.has(k)) {
-      next[k] = v;
+/** SPRs that will be submitted — at least one saved roll in the grid for that pp_id. */
+const submitSprList = computed(() => {
+  const ppWithRolls = new Set();
+  for (const r of rollLines.value) {
+    if (r.is_bundle_row || r.is_wasted) {
+      continue;
+    }
+    if (r.pp_id && r.row_locked && r.batch_no) {
+      ppWithRolls.add(r.pp_id);
     }
   }
-  if (Object.keys(next).length !== Object.keys(sessionSprs.value || {}).length) {
-    sessionSprs.value = next;
-    scheduleAutosave();
-  }
-}
+  return shiftSessionSprList.value.filter((s) => ppWithRolls.has(s.pp_id));
+});
+
+/** @deprecated alias — use shiftSessionSprList / selectedSessionSprList / submitSprList */
+const sessionSprList = shiftSessionSprList;
 
 function pruneSelectedEntriesToFilter() {
   if (shiftOpened.value) {
@@ -3098,8 +3104,6 @@ function pruneSelectedEntriesToFilter() {
     selectionLocked.value = false;
     rollLines.value = [];
     sessionSprs.value = {};
-  } else {
-    pruneSessionSprsToSelection();
   }
   scheduleAutosave();
 }
@@ -3133,11 +3137,23 @@ const canConfirmShiftOpen = computed(() => {
 });
 
 const submitConfirmRolls = computed(() =>
-  rollLines.value.filter((r) => !r.is_bundle_row && !r.is_wasted)
+  rollLines.value.filter((r) => !r.is_bundle_row && !r.is_wasted && r.row_locked && r.batch_no)
 );
 
+const submitOrderSummary = computed(() => {
+  const byOrder = new Map();
+  for (const r of submitConfirmRolls.value) {
+    const k = r.party_code || r.order_code || r.pp_id || "—";
+    if (!byOrder.has(k)) {
+      byOrder.set(k, { orderCode: k, produced: 0 });
+    }
+    byOrder.get(k).produced += sprFlt(r.net_weight);
+  }
+  return [...byOrder.values()];
+});
+
 const canOpenWastageRecycle = computed(
-  () => shiftOpened.value && sessionSprList.value.length > 0
+  () => shiftOpened.value && shiftSessionSprList.value.length > 0
 );
 
 function handleRollWasted(roll, sprRow) {
@@ -3231,15 +3247,21 @@ const canCreateSprs = computed(
     shift.value
 );
 
-const canSubmitEntry = computed(
-  () =>
-    shiftOpened.value &&
-    !submitInProgress.value &&
-    selectionLocked.value &&
-    sessionSprList.value.length > 0 &&
-    rollLines.value.length > 0 &&
-    rollLines.value.every((r) => r.row_locked && r.batch_no && sprNormalizeGrossWeightInput(r.gross_weight) > 0)
-);
+const canSubmitEntry = computed(() => {
+  if (!shiftOpened.value || submitInProgress.value) {
+    return false;
+  }
+  if (!submitSprList.value.length || !submitConfirmRolls.value.length) {
+    return false;
+  }
+  return submitConfirmRolls.value.every(
+    (r) =>
+      sprNameForPp(r.pp_id) &&
+      r.row_locked &&
+      r.batch_no &&
+      sprNormalizeGrossWeightInput(r.gross_weight) > 0
+  );
+});
 
 const toleranceFormComplete = computed(() => {
   if (!toleranceOrders.value.length) {
@@ -3293,7 +3315,6 @@ function toggleJob(job, ev) {
     next.push(snap);
   }
   selectedEntries.value = next;
-  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -3323,7 +3344,6 @@ function onJobLabelClick(job) {
     next.push(snap);
   }
   selectedEntries.value = next;
-  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -3359,7 +3379,6 @@ function toggleLine(line, ev) {
     next.push(snap);
   }
   selectedEntries.value = next;
-  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -3384,7 +3403,6 @@ function onLineLabelClick(line) {
     next.push(snap);
   }
   selectedEntries.value = next;
-  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -3412,14 +3430,12 @@ function unlockSelection() {
       __("Unlock selection? Existing roll rows stay in the grid. Click <b>Confirm selection</b> again before adding new rows."),
       () => {
         selectionLocked.value = false;
-        pruneSessionSprsToSelection();
         scheduleAutosave();
       }
     );
     return;
   }
   selectionLocked.value = false;
-  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -3429,7 +3445,6 @@ function clearSelection() {
     return;
   }
   selectedEntries.value = [];
-  pruneSessionSprsToSelection();
   scheduleAutosave();
 }
 
@@ -3795,11 +3810,25 @@ function buildRollPayload(row) {
 }
 
 function buildSessionSprsPayload() {
-  return sessionSprList.value.map((s) => ({
+  return submitSprList.value.map((s) => ({
     pp_id: s.pp_id,
     spr_name: s.spr_name,
     order_code: s.order_code,
   }));
+}
+
+function buildSubmitRollsPayload() {
+  const submitPpIds = new Set(submitSprList.value.map((s) => s.pp_id));
+  return rollLines.value
+    .filter(
+      (r) =>
+        !r.is_bundle_row &&
+        !r.is_wasted &&
+        r.row_locked &&
+        r.batch_no &&
+        submitPpIds.has(r.pp_id)
+    )
+    .map(buildRollPayload);
 }
 
 async function clearGridEntries() {
@@ -4031,9 +4060,7 @@ async function callSubmitGsm(overrides = []) {
       unit: headerUnit.value,
       operator: operator.value,
       supervisor: supervisor.value,
-      rolls: JSON.stringify(
-        rollLines.value.filter((r) => !r.is_bundle_row && !r.is_wasted).map(buildRollPayload)
-      ),
+      rolls: JSON.stringify(buildSubmitRollsPayload()),
       session_sprs: JSON.stringify(buildSessionSprsPayload()),
       tolerance_overrides: JSON.stringify(overrides),
     },
@@ -4045,12 +4072,14 @@ async function submitEntry(overrides = []) {
     frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
     return;
   }
-  const missingSpr = [...new Set(rollLines.value.map((r) => r.pp_id))].filter((pp) => !sprNameForPp(pp));
+  const missingSpr = [...new Set(submitConfirmRolls.value.map((r) => r.pp_id))].filter(
+    (pp) => !sprNameForPp(pp)
+  );
   if (missingSpr.length) {
-    frappe.msgprint(__("Create SPRs for all selected orders first."));
+    frappe.msgprint(__("Create SPRs for all orders with saved rolls first."));
     return;
   }
-  const sprNamesToSubmit = sessionSprList.value.map((s) => s.spr_name).filter(Boolean);
+  const sprNamesToSubmit = submitSprList.value.map((s) => s.spr_name).filter(Boolean);
   submitInProgress.value = true;
   saveStatus.value = "Submitting…";
   if (!showSubmitConfirmDialog.value) {
@@ -4134,9 +4163,18 @@ function submitWithTolerance() {
 }
 
 async function saveRow(row) {
+  if (!row?.pp_id) {
+    frappe.msgprint(__("Roll is missing production plan — re-add the row."));
+    return;
+  }
   const sprName = sprNameForPp(row.pp_id);
   if (!sprName) {
     frappe.msgprint(__("Click Create SPRs first, then Save Row."));
+    return;
+  }
+  const mapped = sessionSprs.value[row.pp_id];
+  if (!mapped?.spr_name || mapped.spr_name !== sprName) {
+    frappe.msgprint(__("Roll order does not match shift SPR mapping. Create or refresh SPRs."));
     return;
   }
   if (!row.batch_no) {
@@ -5075,7 +5113,7 @@ async function closeShift() {
         run_date: runDate.value,
         shift: shift.value,
         unit: headerUnit.value,
-        session_sprs: sessionSprList.value,
+        session_sprs: shiftSessionSprList.value,
       },
     });
     const errors = validation.message?.errors || [];
@@ -5475,7 +5513,7 @@ async function addRollRow() {
     frappe.msgprint("Confirm and lock your GSM selection first.");
     return;
   }
-  if (!sessionSprList.value.length) {
+  if (!selectedSessionSprList.value.length) {
     frappe.msgprint(__("Click Create SPRs before adding roll rows."));
     return;
   }
@@ -6564,20 +6602,23 @@ onUnmounted(() => {
 }
 .gpe-picker-sub {
   display: block;
-  font-size: 11px;
-  color: #64748b;
+  font-size: 12px;
+  color: #475569;
   font-style: normal;
-  margin-top: 2px;
-}
-.gpe-picker-disabled {
-  opacity: 0.55;
-}
-.gpe-picker-maxed {
-  background: #fffbeb;
-  border-radius: 6px;
+  font-weight: 600;
+  margin-top: 4px;
 }
 .gpe-picker-maxed-tag {
   color: #b45309;
+  font-weight: 800;
+}
+.gpe-picker-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.gpe-picker-maxed {
+  background: #fffbeb;
+  border-color: #fcd34d;
 }
 .gpe-picker-maxed-note {
   background: #fef3c7;
@@ -7740,7 +7781,14 @@ onUnmounted(() => {
   word-break: break-word;
 }
 .gpe-dialog h3 {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
+  font-size: 17px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+.gpe-add-roll-wizard {
+  width: min(560px, 94vw);
 }
 .gpe-confirm-list {
   margin: 12px 0;
@@ -7821,9 +7869,28 @@ onUnmounted(() => {
 }
 .gpe-picker-row {
   display: flex;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: 12px;
+  gap: 10px;
+  padding: 10px 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  align-items: flex-start;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 6px;
+  cursor: pointer;
+  line-height: 1.35;
+}
+.gpe-picker-row:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+.gpe-picker-row input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.gpe-picker-row > span {
+  font-weight: 700;
 }
 .gpe-dialog-actions {
   display: flex;
