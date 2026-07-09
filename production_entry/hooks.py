@@ -53,6 +53,8 @@ doctype_js = {
         "public/js/spr_transfer_dialog.js",
         "public/js/custom_print_sticker.js",
         "public/js/spr_roll_label_print.js",
+        "public/js/spr_label.js",
+        "public/js/spr_patty_stock.js",
         "public/js/shaft_production_run.js",
     ],
     "Roll Production Entry": "public/js/roll_production_entry.js",

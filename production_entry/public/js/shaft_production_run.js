@@ -4470,6 +4470,7 @@ function spr_move_existing_top_buttons_to_tools(frm) {
 	const tg = __('Tools');
 	const labels = [
 		__('View Party Stock'),
+		__('View Patty Stock'),
 		__('Bora Weight'),
 		__('Mixing Sheet'),
 	];
@@ -4579,6 +4580,13 @@ function spr_register_spr_page_buttons(frm) {
 				},
 				__('View')
 			);
+		}
+	});
+	addInner(function () {
+		if (frm.doc.name && production_entry.spr_patty_stock && typeof production_entry.spr_patty_stock.open_dialog === 'function') {
+			frm.add_custom_button(__('View Patty Stock'), function () {
+				production_entry.spr_patty_stock.open_dialog(frm.doc.name);
+			});
 		}
 	});
 	addInner(function () {
@@ -7165,6 +7173,13 @@ frappe.ui.form.on('Shaft Production Run Item', {
 		_sprLastPrintAt = now;
 		if (typeof frappe.generate_sticker_flow === 'function') {
 			frappe.generate_sticker_flow(row.name, frm);
+			return;
+		}
+		if (
+			production_entry.spr_label &&
+			typeof production_entry.spr_label.print_roll === 'function'
+		) {
+			production_entry.spr_label.print_roll(frm.doc.name, row.name);
 			return;
 		}
 		if (

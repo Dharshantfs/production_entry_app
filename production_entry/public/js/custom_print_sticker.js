@@ -588,18 +588,19 @@ function get_grid_format(d, type, custom_fields) {
 
     var qualityText = fields.show_quality ? String(d.quality || "").trim() : "";
     var orderCodeText = fields.show_order_code ? String(d.party_code || "").trim() : "";
-    var qualityAndOrder = [qualityText, orderCodeText].filter(function (s) { return !!s; }).join(" / ");
+    var joinSep = (isPlain || isPlainCC || isDefault) ? " | " : " / ";
+    var qualityAndOrder = [qualityText, orderCodeText].filter(function (s) { return !!s; }).join(joinSep);
 
     if (isDefault || isCustom) {
         header = fields.show_company ? "JayaShree Spun Bond" : "";
         sub1 = fields.show_email ? "enquiry@jayashreespunbond.com" : "";
         sub2 = qualityAndOrder;
     } else if (isPlainCC) {
-        header = fields.show_company ? "Non Woven Fabrics" : "";
+        header = fields.show_company ? "NON WOVEN FABRICS" : "";
         sub1 = qualityAndOrder;
         sub2 = "";
     } else {
-        header = fields.show_company ? "Non Woven Fabrics" : "";
+        header = fields.show_company ? "NON WOVEN FABRICS" : "";
         sub1 = qualityAndOrder;
         sub2 = "";
     }
@@ -612,21 +613,24 @@ function get_grid_format(d, type, custom_fields) {
     if (fields.show_gsm) {
         rows.push('<tr><td><span class="lbl">GSM</span></td><td class="colon">:</td><td><span class="val">' + d.gsm + '</span></td></tr>');
     }
+    if (d.color && (isPlain || isPlainCC || isDefault)) {
+        rows.push('<tr><td><span class="lbl">COLOR</span></td><td class="colon">:</td><td><span class="val">' + escape_html(d.color) + '</span></td></tr>');
+    }
 
     var widthUnit = " Inches";
     var wValLower = String(d.width_val || "").toLowerCase();
     if (wValLower.includes("inches") || wValLower.includes("inch") || wValLower.includes("cm") || wValLower.includes('"')) {
         widthUnit = ""; 
     }
-    if (fields.show_width) {
-        rows.push('<tr><td><span class="lbl">Width</span></td><td class="colon">:</td><td><span class="val">' + d.width_val + widthUnit + '</span></td></tr>');
-    }
 
     var lengthUnit = " Mtrs";
     var lValStr = String(d.length || "");
     if (lValStr.toLowerCase().includes("mtr")) lengthUnit = "";
     if (fields.show_length) {
-        rows.push('<tr><td><span class="lbl">Length</span></td><td class="colon">:</td><td><span class="val">' + d.length + lengthUnit + '</span></td></tr>');
+        rows.push('<tr><td><span class="lbl">LENGTH</span></td><td class="colon">:</td><td><span class="val">' + d.length + lengthUnit + '</span></td></tr>');
+    }
+    if (fields.show_width) {
+        rows.push('<tr><td><span class="lbl">WIDTH</span></td><td class="colon">:</td><td><span class="val">' + d.width_val + widthUnit + '</span></td></tr>');
     }
 
     if (fields.show_gw) {

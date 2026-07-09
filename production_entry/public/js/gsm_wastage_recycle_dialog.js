@@ -1,8 +1,9 @@
 /**
- * GSM Wastage + Recycle dialogs — desk-style cards and Available Patty Stock picker.
+ * GSM Wastage + Recycle dialogs — uses shared SPR patty stock + label modules.
  */
 
 import { gsmPrintWastageLabel } from "./spr_gsm_tools.js";
+import "./spr_patty_stock.js";
 
 const GWM_STYLE_ID = "gsm-wastage-recycle-styles";
 
@@ -583,16 +584,6 @@ function _pattyWastageTable(ctx) {
 	return direct || { rows: [], columns: [] };
 }
 
-async function _loadPattyStock(sprName) {
-	const res = await frappe.call({
-		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_available_patty_stock",
-		args: { spr_name: sprName },
-	});
-	const msg = res.message || {};
-	const stock = msg.stock || msg.rows || msg.data || [];
-	return stock.map(_normalizePattyRow);
-}
-
 function _rollsForSpr(rollLines, sprRow) {
 	const ppId = sprRow.pp_id;
 	return (rollLines || []).filter(
@@ -870,51 +861,29 @@ async function _openRecycleMain(sprName, sprRow, opts) {
 }
 
 async function _openPattyStockPicker(sprName, sprRow, onDone) {
-	const stock = await _loadPattyStock(sprName);
-
-	const d = new frappe.ui.Dialog({
-		title: __("Available Patty Stock"),
-		size: "extra-large",
-		fields: [{ fieldname: "stock_html", fieldtype: "HTML", options: _stockPickerHtml(stock) }],
-		primary_action_label: __("Consume Selected"),
-		async primary_action() {
-			const picks = [];
-			d.$wrapper.find(".gwm-stock-cb:checked").each(function () {
-				const key = $(this).data("key");
-				const idx = stock.findIndex((r, i) => (r.name || r.batch_no || String(i)) === key);
-				if (idx >= 0) {
-					picks.push(stock[idx]);
-				}
+	if (!production_entry.spr_patty_stock || typeof production_entry.spr_patty_stock.open_dialog !== "function") {
+		frappe.msgprint(__("Patty stock dialog not loaded."));
+		return;
+	}
+	await production_entry.spr_patty_stock.open_dialog(sprName, {
+		on_consume: async (picks, dialog) => {
+			await frappe.call({
+				method:
+					"production_entry.production_planning.unified_production_entry_api.consume_gsm_recycled_wastage",
+				args: {
+					spr_name: sprName,
+					patty_selections: JSON.stringify(picks),
+				},
 			});
-			if (!picks.length) {
-				frappe.msgprint(__("Select at least one row."));
-				return;
+			frappe.show_alert({ message: __("Added to Recycled Wastage Details"), indicator: "green" });
+			if (dialog) {
+				dialog.hide();
 			}
-			d.get_primary_btn().prop("disabled", true);
-			try {
-				await frappe.call({
-					method:
-						"production_entry.production_planning.unified_production_entry_api.consume_gsm_recycled_wastage",
-					args: {
-						spr_name: sprName,
-						patty_selections: JSON.stringify(picks),
-					},
-				});
-				frappe.show_alert({ message: __("Added to Recycled Wastage Details"), indicator: "green" });
-				d.hide();
-				if (typeof onDone === "function") {
-					onDone();
-				}
-			} catch (e) {
-				frappe.msgprint(e.message || __("Consume failed"));
-			} finally {
-				d.get_primary_btn().prop("disabled", false);
+			if (typeof onDone === "function") {
+				onDone();
 			}
 		},
 	});
-	d.show();
-	_wireStockFilters(d.$wrapper);
-	_wireSelectAll(d.$wrapper, ".gwm-stock-cb", ".gwm-select-all");
 }
 
 async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {

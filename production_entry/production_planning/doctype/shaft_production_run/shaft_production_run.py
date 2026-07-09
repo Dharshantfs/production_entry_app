@@ -10743,14 +10743,31 @@ def _gsm_patty_stock_from_batch_doc(batch_doc: dict, item_code: str, available_k
 		m = re.search(r"(\d{2,3})\s*mm", item_name, re.I)
 		if m:
 			width = round(flt(m.group(1)) / 25.4, 2)
+	quality = _cstr(batch_doc.get("custom_quality") or batch_doc.get("quality") or "")
+	color = _cstr(batch_doc.get("custom_color") or batch_doc.get("color") or "")
+	gsm = cint(batch_doc.get("custom_gsm") or batch_doc.get("gsm") or 0)
+	if item_code and (not quality or not color or gsm <= 0 or width <= 0):
+		specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+		if not quality:
+			quality = _cstr(specs.get("quality") or "")
+		if not color:
+			color = _cstr(specs.get("color") or "")
+		if gsm <= 0:
+			gsm = cint(specs.get("gsm") or 0)
+		if width <= 0:
+			width = flt(specs.get("width_inch") or 0)
+	if width <= 0 and item_code:
+		_pg, parsed_w = parse_item_code(item_code)
+		if parsed_w > 0:
+			width = flt(parsed_w)
 	return {
 		"name": _cstr(batch_doc.get("name") or ""),
 		"batch_no": _cstr(batch_doc.get("name") or ""),
 		"item_code": item_code,
 		"item_name": item_name,
-		"quality": _cstr(batch_doc.get("custom_quality") or batch_doc.get("quality") or ""),
-		"color": _cstr(batch_doc.get("custom_color") or batch_doc.get("color") or ""),
-		"gsm": cint(batch_doc.get("custom_gsm") or batch_doc.get("gsm") or 0),
+		"quality": quality,
+		"color": color,
+		"gsm": gsm,
 		"width_inch": width,
 		"available_kg": flt(available_kg or 0),
 	}
