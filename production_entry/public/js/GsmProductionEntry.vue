@@ -1733,13 +1733,31 @@ function mergeChartOrders(base, extra) {
   return out;
 }
 
+function resolveOrderCodeForPp(ppId) {
+  const spr = sessionSprs.value?.[ppId];
+  if (spr?.order_code) {
+    return spr.order_code;
+  }
+  for (const entry of selectedEntries.value) {
+    if (entry.ppId === ppId && entry.orderCode && entry.orderCode !== ppId) {
+      return entry.orderCode;
+    }
+  }
+  const row =
+    filteredPpSubmittedRows.value.find((r) => r.pp_id === ppId) ||
+    ppSubmittedRows.value.find((r) => r.pp_id === ppId);
+  const boardJob = jobBoardJobs.value.find((j) => j.pp_id === ppId);
+  return boardJob?.order_code || row?.partyCode || row?.party_code || "";
+}
+
 function orderMetaForPp(ppId) {
   const row =
     filteredPpSubmittedRows.value.find((r) => r.pp_id === ppId) ||
     ppSubmittedRows.value.find((r) => r.pp_id === ppId);
   const boardJob = jobBoardJobs.value.find((j) => j.pp_id === ppId);
+  const orderCode = resolveOrderCodeForPp(ppId) || boardJob?.order_code || row?.partyCode || row?.party_code || ppId;
   return {
-    orderCode: boardJob?.order_code || row?.partyCode || row?.party_code || ppId,
+    orderCode,
     partyName: boardJob?.party_name || row?.customer_name || row?.customer || "",
     quality: boardJob?.quality || row?.quality || "",
     color: boardJob?.color || row?.color || row?.fabric_colour || "",
@@ -4659,6 +4677,12 @@ function applyResumePayload(msg, options = {}) {
       seriesPrefix.value = msg.session.batch_series_prefix;
     }
   }
+  rollLines.value = rollLines.value.map((r) => {
+    if (!r.party_code && r.pp_id) {
+      return { ...r, party_code: resolveOrderCodeForPp(r.pp_id) };
+    }
+    return r;
+  });
   creationSeq.value = Math.max(creationSeq.value, rollLines.value.length);
   syncBatchCounterFromGrid();
   lastServerSyncAt.value = msg.server_modified || new Date().toISOString();
@@ -5521,7 +5545,7 @@ async function addRollRow() {
     creation_seq: creationSeq.value,
     planning_table_row: line.id,
     pp_id: line.ppId || src.pp_id,
-    party_code: line.orderCode,
+    party_code: line.orderCode || resolveOrderCodeForPp(line.ppId || src.pp_id),
     item_code: itemCode,
     item_name: itemName,
     quality: src.quality || "",

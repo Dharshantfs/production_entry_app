@@ -145,7 +145,17 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null)
 		await import("./custom_print_sticker.js");
 	}
 	await frappe.model.withDoc("Shaft Production Run", sprName);
-	const frm = { doc: frappe.get_doc("Shaft Production Run", sprName) };
+	const doc = frappe.get_doc("Shaft Production Run", sprName);
+	const rowDoc = (doc.items || []).find((r) => r.name === sprItemRowName);
+	if (!rowDoc) {
+		frappe.msgprint(__("Roll row not found on SPR."));
+		return;
+	}
+	if (!locals["Shaft Production Run Item"]) {
+		locals["Shaft Production Run Item"] = {};
+	}
+	locals["Shaft Production Run Item"][sprItemRowName] = rowDoc;
+	const frm = { doc, doctype: "Shaft Production Run" };
 	if (typeof frappe.generate_sticker_flow === "function") {
 		frappe.generate_sticker_flow(sprItemRowName, frm);
 		return;

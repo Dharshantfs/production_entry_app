@@ -2332,8 +2332,11 @@ def _gsm_build_job_board_entry(
 	job_target_kg = round(net_per_roll * max_rolls, 2) if net_per_roll > 0 else 0.0
 	job_produced_kg = flt(stats.get("job_produced_kg") or 0)
 	job_remaining_kg = max(0.0, round(job_target_kg - job_produced_kg, 2)) if job_target_kg > 0 else 0.0
+	order_code = _gsm_order_code_for_pp(pp_id)
 	return {
 		"pp_id": pp_id,
+		"order_code": order_code,
+		"party_name": "",
 		"job_id": job_id,
 		"job_key": f"{pp_id}::{job_id}",
 		"gsm": cint(shaft_row.get("gsm") or 0),
@@ -2804,6 +2807,15 @@ _GSM_WASTAGE_CHILD_SPECS = (
 	("custom_recycled_wastage_details", "Recycled Wastage Detail Row"),
 )
 
+
+def _gsm_resolve_spr_child_field(spr_meta, preferred_fieldname: str, child_doctype: str) -> str | None:
+	if spr_meta.has_field(preferred_fieldname):
+		return preferred_fieldname
+	for df in spr_meta.fields or []:
+		if df.fieldtype == "Table" and _cstr(df.options) == child_doctype:
+			return df.fieldname
+	return None
+
 _PATTY_STOCK_METHOD_CANDIDATES = (
 	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_available_patty_stock",
 	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_available_patty_stock",
@@ -3048,7 +3060,8 @@ def get_gsm_spr_wastage_context(spr_name):
 	spr_meta = frappe.get_meta("Shaft Production Run")
 	tables = {}
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
-		if not spr_meta.has_field(fieldname):
+		resolved_field = _gsm_resolve_spr_child_field(spr_meta, fieldname, child_doctype)
+		if not resolved_field:
 			tables[fieldname] = {
 				"fieldname": fieldname,
 				"child_doctype": child_doctype,
@@ -3057,13 +3070,23 @@ def get_gsm_spr_wastage_context(spr_name):
 				"configured": False,
 			}
 			continue
-		payload = _gsm_spr_child_table_payload(spr, fieldname, child_doctype)
+		payload = _gsm_spr_child_table_payload(spr, resolved_field, child_doctype)
+		payload["fieldname"] = fieldname
+		payload["resolved_fieldname"] = resolved_field
 		payload["configured"] = True
 		tables[fieldname] = payload
 
+	order_code = _cstr(
+		getattr(spr, "custom_order_code", None)
+		or getattr(spr, "order_code", None)
+		or ""
+	)
+	if not order_code and spr.get("production_plan"):
+		order_code = _gsm_order_code_for_pp(_cstr(spr.get("production_plan")))
+
 	return {
 		"spr_name": spr_name,
-		"order_code": _cstr(getattr(spr, "order_code", "") or ""),
+		"order_code": order_code,
 		"tables": tables,
 	}
 
@@ -3121,13 +3144,13 @@ def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
 			waste_qty = flt(
 				_pick_value(
 					d,
-					["wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight", "available_kg", "available", "recycled"],
+					["wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg", "net_weight", "available_kg", "available"],
 					0,
 				)
 			)
 			recycled_qty = flt(_pick_value(d, ["recycled", "recycled_qty", "recycled_kg"], 0))
-			available = max(0.0, waste_qty - recycled_qty)
-			if available <= 0:
+			available = max(0.0, waste_qty - recycled_qty) if waste_qty > 0 else waste_qty
+			if available <= 0 and waste_qty <= 0:
 				continue
 
 			out.append(

@@ -566,7 +566,13 @@ async function _loadPattyStock(sprName) {
 		args: { spr_name: sprName },
 	});
 	const msg = res.message || {};
-	return (msg.stock || msg.rows || msg.data || []).map(_normalizePattyRow);
+	const stock = msg.stock || msg.rows || msg.data || [];
+	if (stock.length) {
+		return stock.map(_normalizePattyRow);
+	}
+	const ctx = await _loadWastageContext(sprName);
+	const patty = _pattyWastageTable(ctx);
+	return (patty.rows || []).map(_normalizePattyRow);
 }
 
 function _rollsForSpr(rollLines, sprRow) {
@@ -614,9 +620,28 @@ export async function openGsmWastageDialog(opts = {}) {
 	typeD.show();
 }
 
+def _pattyWastageTable(ctx) {
+	const tables = ctx?.tables || {};
+	const direct = tables.custom_running_patty_wastage;
+	if ((direct?.rows || []).length) {
+		return direct;
+	}
+	for (const [key, table] of Object.entries(tables)) {
+		if (!table || key === "custom_roll_waste" || key === "custom_recycled_wastage_details") {
+			continue;
+		}
+		if (/patty/i.test(key) || /patty/i.test(table.child_doctype || "")) {
+			if ((table.rows || []).length) {
+				return table;
+			}
+		}
+	}
+	return direct || { rows: [], columns: [] };
+}
+
 async function _openRunningPattyWastage(sprName, sprRow) {
 	const ctx = await _loadWastageContext(sprName);
-	const table = (ctx.tables || {}).custom_running_patty_wastage || {};
+	const table = _pattyWastageTable(ctx);
 	const rows = (table.rows || []).map(_normalizePattyRow);
 	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
 
@@ -766,6 +791,25 @@ async function _showRollWasteGrid(sprName, sprRow) {
 	});
 }
 
+function _recycledWastageTable(ctx) {
+	const tables = ctx?.tables || {};
+	const direct = tables.custom_recycled_wastage_details;
+	if ((direct?.rows || []).length) {
+		return direct;
+	}
+	for (const [key, table] of Object.entries(tables)) {
+		if (!table) {
+			continue;
+		}
+		if (/recycl/i.test(key) || /recycl/i.test(table.child_doctype || "")) {
+			if ((table.rows || []).length) {
+				return table;
+			}
+		}
+	}
+	return direct || { rows: [], columns: [] };
+}
+
 export async function openGsmRecycleDialog(opts = {}) {
 	_injectGwmStyles();
 	const sprRow = await pickSessionSpr(opts.sessionSprList);
@@ -777,7 +821,7 @@ export async function openGsmRecycleDialog(opts = {}) {
 
 async function _openRecycleMain(sprName, sprRow, opts) {
 	const ctx = await _loadWastageContext(sprName);
-	const recycled = (ctx.tables || {}).custom_recycled_wastage_details || {};
+	const recycled = _recycledWastageTable(ctx);
 	const rows = (recycled.rows || []).map(_normalizePattyRow);
 	const recycledCols = _apiColsToDesk(recycled.columns, DESK_RECYCLED_COLS);
 

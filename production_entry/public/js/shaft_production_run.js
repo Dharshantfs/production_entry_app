@@ -6838,6 +6838,9 @@ frappe.ui.form.on('Shaft Production Run Job', {
 	},
 });
 
+let _sprLastPrintKey = "";
+let _sprLastPrintAt = 0;
+
 frappe.ui.form.on('Shaft Production Run Item', {
 	custom_total_produced_sheets: function (frm) {
 		sprSyncBundleProducedSheets(frm);
@@ -7153,6 +7156,13 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
 			return;
 		}
+		const printKey = (frm.doc.name || '') + '::' + (row.name || cdn);
+		const now = Date.now();
+		if (_sprLastPrintKey === printKey && now - _sprLastPrintAt < 800) {
+			return;
+		}
+		_sprLastPrintKey = printKey;
+		_sprLastPrintAt = now;
 		if (typeof frappe.generate_sticker_flow === 'function') {
 			frappe.generate_sticker_flow(row.name, frm);
 			return;

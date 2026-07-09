@@ -10373,9 +10373,27 @@ def _gsm_resolve_core_width_for_item_row(payload: dict) -> str:
 	return ""
 
 
-def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None):
+def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, spr=None):
 	"""Map GSM Production Entry roll payload onto an SPR Item row (additive fields only)."""
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	if not _cstr(payload.get("party_code") or "").strip() and spr is not None:
+		pp_id = _cstr(spr.get("production_plan")).strip()
+		fallback_pc = _cstr(
+			spr.get("custom_order_code")
+			or spr.get("order_code")
+			or ""
+		)
+		if not fallback_pc and pp_id:
+			try:
+				from production_entry.production_planning.unified_production_entry_api import (
+					_gsm_order_code_for_pp,
+				)
+
+				fallback_pc = _gsm_order_code_for_pp(pp_id)
+			except Exception:
+				fallback_pc = ""
+		if fallback_pc:
+			payload = {**payload, "party_code": fallback_pc}
 	field_map = {
 		"work_order": "work_order",
 		"item_code": "item_code",
@@ -10492,7 +10510,7 @@ def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> 
 		row = spr.append("items", {})
 		row.batch_no = batch_no
 
-	_gsm_apply_payload_to_item_row(row, payload, job_id, shift=shift)
+	_gsm_apply_payload_to_item_row(row, payload, job_id, shift=shift, spr=spr)
 	return {
 		"action": action,
 		"batch_no": batch_no,
@@ -10704,6 +10722,63 @@ def _gsm_serialize_spr_roll_lines_for_grid(spr) -> list[dict]:
 			continue
 		lines.append(_gsm_serialize_item_row_for_grid(it, pp_id))
 	return lines
+
+
+def _gsm_patty_stock_from_batch_doc(batch_doc: dict, item_code: str, available_kg: float) -> dict:
+	batch_doc = batch_doc or {}
+	item_name = ""
+	if item_code:
+		item_name = _cstr(frappe.db.get_value("Item", item_code, "item_name") or "")
+	return {
+		"name": _cstr(batch_doc.get("name") or ""),
+		"batch_no": _cstr(batch_doc.get("name") or ""),
+		"item_code": item_code,
+		"item_name": item_name,
+		"quality": _cstr(batch_doc.get("custom_quality") or batch_doc.get("quality") or ""),
+		"color": _cstr(batch_doc.get("custom_color") or batch_doc.get("color") or ""),
+		"gsm": cint(batch_doc.get("custom_gsm") or batch_doc.get("gsm") or 0),
+		"width_inch": flt(batch_doc.get("custom_width_inch") or batch_doc.get("width_inch") or 0),
+		"available_kg": flt(available_kg or 0),
+	}
+
+
+@frappe.whitelist()
+def get_available_patty_stock(spr_name=None):
+	"""Patty wastage batches with positive stock (batch no contains W/)."""
+	_ = _cstr(spr_name).strip()
+	rows = frappe.db.sql(
+		"""
+		SELECT sle.batch_no, sle.item_code, SUM(sle.actual_qty) AS available_kg
+		FROM `tabStock Ledger Entry` sle
+		WHERE IFNULL(sle.is_cancelled, 0) = 0
+		  AND IFNULL(sle.batch_no, '') != ''
+		  AND sle.batch_no LIKE '%%W/%%'
+		GROUP BY sle.batch_no, sle.item_code
+		HAVING SUM(sle.actual_qty) > 0.001
+		ORDER BY sle.batch_no DESC
+		LIMIT 500
+		""",
+		as_dict=True,
+	) or []
+	out = []
+	for r in rows:
+		bn = _cstr(r.get("batch_no")).strip()
+		if not bn:
+			continue
+		item_code = _cstr(r.get("item_code")).strip()
+		batch_doc = frappe.db.get_value("Batch", bn, "*", as_dict=True) if frappe.db.exists("Batch", bn) else {}
+		out.append(_gsm_patty_stock_from_batch_doc(batch_doc, item_code, flt(r.get("available_kg") or 0)))
+	return out
+
+
+@frappe.whitelist()
+def spr_get_available_patty_stock(spr_name=None):
+	return get_available_patty_stock(spr_name)
+
+
+@frappe.whitelist()
+def get_patty_stock_for_spr(spr_name=None):
+	return get_available_patty_stock(spr_name)
 
 
 def _gsm_publish_session_update(spr) -> None:
