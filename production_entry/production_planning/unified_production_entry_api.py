@@ -2938,14 +2938,101 @@ def _gsm_child_row_dict(row, columns: list[dict]) -> dict:
 	return out
 
 
+def _gsm_pick_row_val(row_dict: dict, *keys):
+	for k in keys:
+		if k not in row_dict:
+			continue
+		v = row_dict.get(k)
+		if v is None:
+			continue
+		if isinstance(v, str) and not v.strip():
+			continue
+		return v
+	return None
+
+
+def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str = "") -> dict:
+	"""Fill width/meter/batch/recycled aliases from SPR roll lines when live child fields differ."""
+	if not isinstance(row_dict, dict):
+		return row_dict or {}
+	out = dict(row_dict)
+	job_id = _cstr(_gsm_pick_row_val(out, "job_id", "job"))
+	items = list(getattr(spr_doc, "items", None) or [])
+	job_items = [it for it in items if _cstr(getattr(it, "job", "")) == job_id] if job_id else items
+
+	width = flt(_gsm_pick_row_val(out, "width_inch", "width", "w") or 0)
+	if width <= 0:
+		for it in job_items:
+			width = flt(getattr(it, "width_inch", 0) or 0)
+			if width > 0:
+				out["width_inch"] = width
+				out["width"] = width
+				break
+
+	meter = flt(
+		_gsm_pick_row_val(
+			out,
+			"meter_per_roll",
+			"meter_roll",
+			"meter",
+			"produced_length_mtrs",
+			"produced_length_mtr",
+		)
+		or 0
+	)
+	if meter <= 0:
+		for it in job_items:
+			meter = flt(getattr(it, "meter_roll", 0) or getattr(it, "produced_length_mtrs", 0) or 0)
+			if meter > 0:
+				out["meter_per_roll"] = meter
+				out["meter_roll"] = meter
+				break
+
+	batch_no = _cstr(_gsm_pick_row_val(out, "batch_no", "batch", "source_roll", "source_batch") or "")
+	if not batch_no:
+		for it in job_items:
+			batch_no = _cstr(getattr(it, "batch_no", "") or "")
+			if batch_no:
+				out["batch_no"] = batch_no
+				out["source_roll"] = batch_no
+				break
+
+	recycled_qty = flt(_gsm_pick_row_val(out, "recycled_qty", "recycled", "recycled_kg") or 0)
+	available_qty = flt(
+		_gsm_pick_row_val(out, "available_qty", "available", "available_kg", "wastage_qty", "wastage", "net_wastage")
+		or 0
+	)
+	if "recycled" in child_doctype.lower() or "recycled" in _cstr(out.get("parentfield") or ""):
+		if recycled_qty <= 0 and available_qty > 0:
+			recycled_qty = available_qty
+		if recycled_qty > 0:
+			out["recycled"] = recycled_qty
+			out["recycled_qty"] = recycled_qty
+			if available_qty <= 0:
+				out["available_qty"] = recycled_qty
+				out["available"] = recycled_qty
+
+	wastage_qty = flt(_gsm_pick_row_val(out, "wastage_qty", "wastage", "wastage_qt", "net_wastage") or 0)
+	if wastage_qty > 0:
+		out["wastage"] = wastage_qty
+		if not out.get("net_wastage"):
+			out["net_wastage"] = wastage_qty
+
+	return out
+
+
 def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) -> dict:
 	columns = _gsm_child_table_columns(child_doctype)
 	rows = getattr(spr_doc, fieldname, None) or []
+	enriched_rows = []
+	for r in rows:
+		row_dict = _gsm_child_row_dict(r, columns)
+		enriched_rows.append(_gsm_enrich_child_row_from_spr(spr_doc, row_dict, child_doctype))
 	return {
 		"fieldname": fieldname,
 		"child_doctype": child_doctype,
 		"columns": columns,
-		"rows": [_gsm_child_row_dict(r, columns) for r in rows],
+		"rows": enriched_rows,
 	}
 
 
@@ -3111,7 +3198,7 @@ def get_gsm_available_patty_stock(spr_name):
 			frappe.log_error(frappe.get_traceback(), f"GSM patty stock: {path}")
 			continue
 		if isinstance(result, list):
-			return {"stock": result, "source": path}
+			return {"stock": result, "source": path, "spr_name": spr_name}
 		if isinstance(result, dict):
 			if "stock" in result or "message" in result:
 				return result

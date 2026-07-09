@@ -24,7 +24,9 @@ const DESK_RECYCLED_COLS = [
 	{ field: "meter_per_roll", label: __("Meter / Roll"), num: true },
 	{ field: "no_of_shafts", label: __("No of Shafts"), num: true },
 	{ field: "wastage", label: __("Wastage"), num: true },
+	{ field: "recycled_qty", label: __("Recycled Qty"), num: true },
 	{ field: "recycled", label: __("Recycled"), num: true },
+	{ field: "available_qty", label: __("Available Qty"), num: true },
 ];
 
 const DESK_ROLL_WASTE_COLS = [
@@ -289,7 +291,9 @@ function _cellValue(row, field) {
 		meter_per_roll: ["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs", "produced_length_mtr"],
 		wastage: ["wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg", "net_wastage"],
 		net_wastage: ["net_wastage", "net_wastage_kg", "wastage_qty", "wastage", "available", "available_qty"],
-		recycled: ["recycled", "recycled_qty", "recycled_kg"],
+		recycled: ["recycled_qty", "recycled", "recycled_kg", "available_qty", "available"],
+		recycled_qty: ["recycled_qty", "recycled", "recycled_kg", "available_qty", "available"],
+		available_qty: ["available_qty", "available", "available_kg", "wastage_qty", "wastage", "net_wastage"],
 		available_kg: ["available_kg", "available", "available_qty", "wastage", "net_wastage"],
 	};
 	return _val(row, ...(aliases[field] || [field]));
@@ -309,8 +313,8 @@ function _normalizePattyRow(row) {
 		wastage: _val(row, "wastage", "wastage_qty", "wastage_qt", "available", "available_qty", "available_kg"),
 		wastage_qty: _val(row, "wastage_qty", "wastage_qt", "wastage", "net_wastage"),
 		net_wastage: _val(row, "net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage", "available", "available_qty"),
-		recycled: _val(row, "recycled", "recycled_qty", "recycled_kg"),
-		recycled_qty: _val(row, "recycled_qty", "recycled", "recycled_kg"),
+		recycled: _val(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available"),
+		recycled_qty: _val(row, "recycled_qty", "recycled", "recycled_kg", "available_qty", "available"),
 		available: _val(row, "available", "available_qty", "available_kg", "wastage", "net_wastage"),
 		available_kg: _val(row, "available_kg", "available", "available_qty", "wastage", "net_wastage"),
 		spr_item_name: _val(row, "spr_item_name", "source_roll_waste_row"),
@@ -586,12 +590,7 @@ async function _loadPattyStock(sprName) {
 	});
 	const msg = res.message || {};
 	const stock = msg.stock || msg.rows || msg.data || [];
-	if (stock.length) {
-		return stock.map(_normalizePattyRow);
-	}
-	const ctx = await _loadWastageContext(sprName);
-	const patty = _pattyWastageTable(ctx);
-	return (patty.rows || []).map(_normalizePattyRow);
+	return stock.map(_normalizePattyRow);
 }
 
 function _rollsForSpr(rollLines, sprRow) {

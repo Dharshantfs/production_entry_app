@@ -141,20 +141,26 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null)
 			// sticker flow uses saved SPR row
 		}
 	}
-	if (typeof frappe.generate_sticker_flow !== "function") {
-		await import("./custom_print_sticker.js");
+	try {
+		await frappe.model.with_doctype("Shaft Production Run Item");
+		await frappe.model.withDoc("Shaft Production Run", sprName);
+	} catch (e) {
+		console.warn("gsmPrintRollLabel withDoc", e);
 	}
-	await frappe.model.withDoc("Shaft Production Run", sprName);
 	const doc = frappe.get_doc("Shaft Production Run", sprName);
 	const rowDoc = (doc.items || []).find((r) => r.name === sprItemRowName);
 	if (!rowDoc) {
 		frappe.msgprint(__("Roll row not found on SPR."));
 		return;
 	}
-	if (!locals["Shaft Production Run Item"]) {
-		locals["Shaft Production Run Item"] = {};
+	const loc =
+		(typeof locals !== "undefined" && locals) ||
+		(typeof window !== "undefined" && window.locals) ||
+		{};
+	if (!loc["Shaft Production Run Item"]) {
+		loc["Shaft Production Run Item"] = {};
 	}
-	locals["Shaft Production Run Item"][sprItemRowName] = rowDoc;
+	loc["Shaft Production Run Item"][sprItemRowName] = rowDoc;
 	const frm = { doc, doctype: "Shaft Production Run" };
 	if (typeof frappe.generate_sticker_flow === "function") {
 		frappe.generate_sticker_flow(sprItemRowName, frm);
