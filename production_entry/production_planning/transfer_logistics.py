@@ -859,7 +859,7 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 	for row in frappe.get_all(
 		"Shaft Production Run Item",
 		filters={"parent": sn},
-		fields=["batch_no", "item_code", "item_name", "net_weight", "gross_weight", "party_code", "work_order"],
+		fields=_spr_item_query_fields("party_code", "work_order"),
 		order_by="idx asc",
 		limit_page_length=0,
 	):
@@ -987,6 +987,15 @@ def _resolve_planning_table_row_for_spr(spr_name: str, item_code: str = "", part
 	}
 
 
+def _spr_item_query_fields(*optional_fields) -> list[str]:
+	meta = frappe.get_meta("Shaft Production Run Item")
+	fields = {"batch_no", "item_code", "item_name", "net_weight", "gross_weight"}
+	for fieldname in optional_fields:
+		if meta.has_field(fieldname):
+			fields.add(fieldname)
+	return sorted(fields)
+
+
 def _spr_auto_approve_transfer_approval(ta_name: str) -> dict:
 	"""SPR-only auto-approve path (same steps as approve_transfer_approval, no role gate)."""
 	if not ta_name or not frappe.db.exists("Transfer Approval", ta_name):
@@ -1101,7 +1110,7 @@ def _get_spr_produced_batches_fast(spr_name: str, from_company: str = "") -> lis
 	rows = frappe.get_all(
 		"Shaft Production Run Item",
 		filters={"parent": sn},
-		fields=["batch_no", "item_code", "item_name", "net_weight", "gross_weight", "party_code", "work_order"],
+		fields=_spr_item_query_fields("party_code", "work_order"),
 		order_by="idx asc",
 		limit_page_length=0,
 	) or []
@@ -1153,7 +1162,7 @@ def get_spr_transfer_bootstrap(spr_name=None):
 	for row in frappe.get_all(
 		"Shaft Production Run Item",
 		filters={"parent": sn},
-		fields=["batch_no", "item_code", "item_name", "party_code", "order_code", "custom_order_code", "net_weight", "gross_weight"],
+		fields=_spr_item_query_fields("party_code", "order_code", "custom_order_code"),
 		order_by="idx asc",
 		limit_page_length=0,
 	):
