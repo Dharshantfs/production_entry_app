@@ -4599,6 +4599,41 @@ function rebuildSelectedEntriesFromResume(jobSelections, options = {}) {
   }
 }
 
+async function backfillSessionSprLabelTypes() {
+  const entries = Object.entries(sessionSprs.value || {});
+  const missing = entries.filter(([, s]) => s?.spr_name && !s?.label_type);
+  if (!missing.length) {
+    return;
+  }
+  const next = { ...sessionSprs.value };
+  let changed = false;
+  await Promise.all(
+    missing.map(async ([ppId, s]) => {
+      try {
+        const res = await frappe.call({
+          method: "frappe.client.get_value",
+          args: {
+            doctype: "Shaft Production Run",
+            filters: { name: s.spr_name },
+            fieldname: "custom_label",
+          },
+        });
+        const lt = res.message?.custom_label;
+        if (lt) {
+          next[ppId] = { ...s, pp_id: ppId, label_type: lt };
+          changed = true;
+        }
+      } catch (e) {
+        console.warn("label backfill", ppId, e);
+      }
+    })
+  );
+  if (changed) {
+    sessionSprs.value = next;
+    scheduleAutosave();
+  }
+}
+
 function applyResumePayload(msg, options = {}) {
   if (!msg || msg.status !== "ok") {
     return 0;
@@ -4687,6 +4722,7 @@ function applyResumePayload(msg, options = {}) {
   syncBatchCounterFromGrid();
   lastServerSyncAt.value = msg.server_modified || new Date().toISOString();
   scheduleAutosave();
+  void backfillSessionSprLabelTypes();
   return serverRows.length;
 }
 
@@ -5863,6 +5899,7 @@ function restoreDraft() {
     }
     batchContextKey.value = ctxKey;
     sessionSprs.value = d.sessionSprs || {};
+    void backfillSessionSprLabelTypes();
     creationSeq.value = d.creationSeq || 0;
     syncBatchCounterFromGrid();
     saveStatus.value = "Draft restored";

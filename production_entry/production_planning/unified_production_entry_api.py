@@ -27,6 +27,8 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	import_gsm_roll_lines_to_spr,
 	parse_item_code,
 	resolve_label_from_pp_doc,
+	resolve_label_from_planning_sheet_doc,
+	normalize_label_template_link,
 	save_gsm_roll_line_to_spr,
 	spr_get_tolerance_violations,
 	_gsm_serialize_spr_roll_lines_for_grid,
@@ -612,6 +614,44 @@ def get_open_gsm_shift_for_unit(unit=None):
 	return {"ready": True, "session": _serialize_gsm_shift_session(row)}
 
 
+def _gsm_label_type_display(raw: str) -> str:
+	"""Human-readable label type for GSM header (Label Template link or free text)."""
+	v = normalize_label_template_link(_cstr(raw))
+	if not v:
+		return ""
+	if frappe.db.exists("DocType", "Label Template") and frappe.db.exists("Label Template", v):
+		lt_meta = frappe.get_meta("Label Template")
+		for fn in ("label_name", "template_name", "label"):
+			if lt_meta.has_field(fn):
+				disp = frappe.db.get_value("Label Template", v, fn)
+				if _cstr(disp).strip():
+					return _cstr(disp).strip()
+	return v
+
+
+def _gsm_label_type_for_pp_spr(pp_id: str | None = None, spr_name: str | None = None) -> str:
+	"""Resolve label type for GSM — Production Plan header, then SPR custom_label."""
+	pp_id = _cstr(pp_id).strip()
+	spr_name = _cstr(spr_name).strip()
+	label = ""
+	if pp_id and frappe.db.exists("Production Plan", pp_id):
+		pp = frappe.get_doc("Production Plan", pp_id)
+		label = resolve_label_from_pp_doc(pp)
+		if not label:
+			pp_meta = frappe.get_meta("Production Plan")
+			for sheet_fn in ("custom_planning_sheet", "planning_sheet", "custom_planning_sheet_name"):
+				if not pp_meta.has_field(sheet_fn):
+					continue
+				sheet_name = _cstr(pp.get(sheet_fn)).strip()
+				if sheet_name and frappe.db.exists("Planning sheet", sheet_name):
+					label = resolve_label_from_planning_sheet_doc(frappe.get_doc("Planning sheet", sheet_name))
+					if label:
+						break
+	if not label and spr_name and frappe.db.exists("Shaft Production Run", spr_name):
+		label = _spr_pick_doc_field(frappe.get_doc("Shaft Production Run", spr_name), "custom_label")
+	return _gsm_label_type_display(label)
+
+
 def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	"""Draft SPR headers for an active GSM shift (run_date + shift + unit)."""
 	unit = _cstr(unit).strip()
@@ -630,6 +670,8 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	fields = ["name", "production_plan", "custom_order_code", "modified"]
 	if frappe.db.has_column("Shaft Production Run", "custom_party_code"):
 		fields.append("custom_party_code")
+	if frappe.db.has_column("Shaft Production Run", "custom_label"):
+		fields.append("custom_label")
 	rows = frappe.get_all(
 		"Shaft Production Run",
 		filters=filters,
@@ -648,6 +690,8 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 				"pp_id": pp_id,
 				"spr_name": row.name,
 				"order_code": order_code,
+				"label_type": _gsm_label_type_for_pp_spr(pp_id, row.name)
+				or _gsm_label_type_display(row.get("custom_label") or ""),
 			}
 		)
 	return out
@@ -2498,16 +2542,14 @@ def create_gsm_sprs_for_session(
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		if _apply_gsm_session_header_to_spr(spr, run_date, shift, unit, operator, supervisor):
 			spr.save(ignore_permissions=True)
-		label_type = resolve_label_from_pp_doc(frappe.get_doc("Production Plan", pp_id)) if frappe.db.exists(
-			"Production Plan", pp_id
-		) else ""
+		label_type = _gsm_label_type_for_pp_spr(pp_id, spr_name)
 		sprs_out.append(
 			{
 				"pp_id": pp_id,
 				"status": "ok",
 				"spr_name": spr_name,
 				"order_code": _cstr(spr.get("custom_order_code") or _gsm_order_code_for_pp(pp_id)),
-				"label_type": label_type or _cstr(spr.get("custom_label") or ""),
+				"label_type": label_type,
 				"reused": cint(result.get("reused") or 0),
 				"shaft_job_count": len(_spr_job_rows(spr)),
 			}
@@ -2535,7 +2577,7 @@ def get_gsm_pp_shaft_details(pp_ids=None):
 				"pp_id": pp_id,
 				"status": "ok",
 				"order_code": _gsm_order_code_for_pp(pp_id),
-				"label_type": resolve_label_from_pp_doc(pp) or "",
+				"label_type": _gsm_label_type_for_pp_spr(pp_id) or "",
 				"shaft_rows": _gsm_pp_shaft_rows(pp),
 			}
 		)
