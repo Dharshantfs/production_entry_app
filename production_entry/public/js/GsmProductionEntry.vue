@@ -66,7 +66,7 @@
           </p>
         </div>
         <div v-if="shiftOpened && filterDate !== runDate" class="gpe-sidebar-date-note">
-          Showing jobs for session run date {{ formatPlannedDate(runDate) }} (not filter {{ formatPlannedDate(filterDate) }}).
+          Shift runs on {{ formatPlannedDate(runDate) }} · order plan from {{ formatPlannedDate(filterDate) }}.
         </div>
         <div v-if="loadingOrders" class="gpe-muted">Loading…</div>
         <div v-else-if="!jobOrderGroups.length" class="gpe-muted">
@@ -1664,6 +1664,75 @@ function entryKeyJob(ppId, jobId) {
   return `${ppId}::${jobId}`;
 }
 
+function sessionPpIds() {
+  const ids = new Set();
+  for (const entry of selectedEntries.value) {
+    if (entry.ppId) {
+      ids.add(entry.ppId);
+    }
+  }
+  for (const row of rollLines.value) {
+    if (row.pp_id) {
+      ids.add(row.pp_id);
+    }
+  }
+  for (const pp of Object.keys(sessionSprs.value || {})) {
+    if (pp) {
+      ids.add(pp);
+    }
+  }
+  return ids;
+}
+
+function sessionPlannedDates() {
+  const dates = new Set();
+  for (const entry of selectedEntries.value) {
+    const pd = String(entry.plannedDate || "").slice(0, 10);
+    if (pd) {
+      dates.add(pd);
+    }
+  }
+  for (const row of rollLines.value) {
+    const pd = String(row.plannedDate || row.planned_date || "").slice(0, 10);
+    if (pd) {
+      dates.add(pd);
+    }
+  }
+  if (filterDate.value) {
+    dates.add(filterDate.value);
+  }
+  return [...dates];
+}
+
+function normalizeChartRow(d) {
+  return {
+    ...d,
+    plannedDate: d.plannedDate || d.planned_date || "",
+    partyCode: d.partyCode || d.party_code || "",
+    customer_name: d.customer_name || d.party_name || d.customer || "",
+    itemName: d.itemName || d.item_name || d.name,
+    width_inch: sprFlt(d.width_inch || d.width),
+  };
+}
+
+function chartOrderKey(row) {
+  return `${row.pp_id}::${row.itemName || row.name}::${String(row.plannedDate || row.planned_date || "").slice(0, 10)}`;
+}
+
+function mergeChartOrders(base, extra) {
+  const seen = new Set((base || []).map(chartOrderKey));
+  const out = [...(base || [])];
+  for (const d of extra || []) {
+    const row = normalizeChartRow(d);
+    const key = chartOrderKey(row);
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(row);
+    }
+  }
+  return out;
+}
+
 function orderMetaForPp(ppId) {
   const row =
     filteredPpSubmittedRows.value.find((r) => r.pp_id === ppId) ||
@@ -1690,8 +1759,21 @@ function ppChartMetaForPp(ppId) {
 }
 
 function orderDayStatsForPp(ppId) {
-  const rows = filteredPpSubmittedRows.value.filter((r) => r.pp_id === ppId);
-  const dayTargetKg = rows.reduce((s, r) => s + sprFlt(r.qty), 0);
+  let rows = filteredPpSubmittedRows.value.filter((r) => r.pp_id === ppId);
+  let dayTargetKg = rows.reduce((s, r) => s + sprFlt(r.qty), 0);
+  if (dayTargetKg <= 0 && shiftOpened.value) {
+    const sessionDates = new Set(sessionPlannedDates());
+    rows = ppSubmittedRows.value.filter((r) => r.pp_id === ppId);
+    if (sessionDates.size) {
+      rows = rows.filter((r) => sessionDates.has(String(r.plannedDate || r.planned_date || "").slice(0, 10)));
+    }
+    dayTargetKg = rows.reduce((s, r) => s + sprFlt(r.qty), 0);
+  }
+  if (dayTargetKg <= 0) {
+    dayTargetKg = jobBoardJobs.value
+      .filter((j) => j.pp_id === ppId)
+      .reduce((s, j) => s + sprFlt(j.job_target_kg), 0);
+  }
   const achievedKg = rows.reduce(
     (s, r) => s + sprFlt(r.actual_production_weight_kgs ?? r.total_achieved_weight_kgs),
     0
@@ -1939,7 +2021,7 @@ function snapshotFromJob(job) {
     key: entryKeyJob(job.pp_id, job.job_id),
     jobId: job.job_id,
     lineId: meta.planningLineId,
-    plannedDate: filterDate.value || runDate.value,
+    plannedDate: filterDate.value,
     ppId: job.pp_id,
     orderCode: meta.orderCode,
     partyName: meta.partyName,
@@ -1961,6 +2043,27 @@ function snapshotFromJob(job) {
   };
 }
 
+function buildLineFromJob(job) {
+  const meta = orderMetaForPp(job.pp_id);
+  const lineId = meta.planningLineId || `job-${job.job_id}`;
+  const fakeItem = {
+    pp_id: job.pp_id,
+    gsm: job.gsm,
+    quality: meta.quality,
+    color: meta.color,
+    fabric_colour: meta.color,
+    partyCode: meta.orderCode,
+    party_code: meta.orderCode,
+    customer_name: meta.partyName,
+    itemName: lineId,
+    name: lineId,
+    qty: job.job_target_kg,
+    uom: "Kg",
+    stock_uom: "Kg",
+  };
+  return buildLineFromItem(fakeItem);
+}
+
 function firstPtLineForPp(ppId, gsm, jobId) {
   let rows = ppSubmittedRows.value.filter((r) => r.pp_id === ppId);
   if (jobId != null && jobId !== "") {
@@ -1973,6 +2076,12 @@ function firstPtLineForPp(ppId, gsm, jobId) {
         return buildLineFromItem(live);
       }
     }
+    const boardJob = jobBoardJobs.value.find(
+      (j) => j.pp_id === ppId && String(j.job_id) === String(jobId)
+    );
+    if (boardJob) {
+      return buildLineFromJob(boardJob);
+    }
   }
   if (gsm) {
     const hit = rows.find((r) => String(r.gsm) === String(gsm));
@@ -1980,7 +2089,11 @@ function firstPtLineForPp(ppId, gsm, jobId) {
       return buildLineFromItem(hit);
     }
   }
-  return rows[0] ? buildLineFromItem(rows[0]) : null;
+  if (rows[0]) {
+    return buildLineFromItem(rows[0]);
+  }
+  const anyJob = jobBoardJobs.value.find((j) => j.pp_id === ppId);
+  return anyJob ? buildLineFromJob(anyJob) : null;
 }
 
 function defaultAddRollJobKey(entries) {
@@ -2301,9 +2414,6 @@ const ppSubmittedRows = computed(() =>
 );
 
 function ordersBrowseDate() {
-  if (shiftOpened.value && runDate.value) {
-    return runDate.value;
-  }
   return filterDate.value;
 }
 
@@ -2311,6 +2421,12 @@ function rowMatchesFilterDate(row) {
   const pd = String(row.plannedDate || row.planned_date || "").slice(0, 10);
   if (!pd) {
     return false;
+  }
+  if (shiftOpened.value && sessionPpIds().has(row.pp_id)) {
+    const sessionDates = sessionPlannedDates();
+    if (sessionDates.includes(pd)) {
+      return true;
+    }
   }
   if (viewScope.value === "daily") {
     return pd === ordersBrowseDate();
@@ -4282,25 +4398,41 @@ function enrichSelectedEntriesFromBoard() {
   }
 }
 
+async function fetchColorChartForDate(date) {
+  const args = { ...buildFetchArgs(), date };
+  const r = await frappe.call({
+    method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
+    args,
+  });
+  return (r.message || []).map(normalizeChartRow);
+}
+
+async function fetchSessionSupplementalOrders() {
+  if (!shiftOpened.value) {
+    return;
+  }
+  const browse = ordersBrowseDate();
+  const extraDates = sessionPlannedDates().filter((d) => d && d !== browse);
+  if (!extraDates.length) {
+    return;
+  }
+  let merged = rawOrders.value;
+  for (const d of extraDates) {
+    const extra = await fetchColorChartForDate(d);
+    merged = mergeChartOrders(merged, extra);
+  }
+  rawOrders.value = merged;
+}
+
 async function fetchOrders() {
   loadingOrders.value = true;
   try {
-    const r = await frappe.call({
-      method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
-      args: buildFetchArgs(),
-    });
-    rawOrders.value = (r.message || []).map((d) => ({
-      ...d,
-      plannedDate: d.plannedDate || d.planned_date || "",
-      partyCode: d.partyCode || d.party_code || "",
-      customer_name: d.customer_name || d.party_name || d.customer || "",
-      itemName: d.itemName || d.item_name || d.name,
-      width_inch: sprFlt(d.width_inch || d.width),
-    }));
+    rawOrders.value = await fetchColorChartForDate(ordersBrowseDate());
     if (!filterUnit.value && unitOptions.value.length) {
       filterUnit.value = unitOptions.value[0];
       headerUnit.value = filterUnit.value;
     }
+    await fetchSessionSupplementalOrders();
     await Promise.all([fetchMerges(), loadQuotaForLines(), loadJobBoard()]);
     pruneSelectedEntriesToFilter();
     enrichSelectedEntriesFromBoard();
@@ -4421,7 +4553,7 @@ function rebuildSelectedEntriesFromResume(jobSelections, options = {}) {
       key,
       jobId,
       lineId: meta.planningLineId,
-      plannedDate: runDate.value,
+      plannedDate: existingByKey.get(key)?.plannedDate || filterDate.value || "",
       ppId,
       orderCode: meta.orderCode,
       partyName: meta.partyName,
@@ -4534,6 +4666,19 @@ function applyResumePayload(msg, options = {}) {
   return serverRows.length;
 }
 
+function peekDraftFilterDate() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("gsm_production_entry_draft_v2");
+    if (!raw) {
+      return null;
+    }
+    const d = JSON.parse(raw);
+    return d.filterDate || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function bootstrapFromServerSession() {
   try {
     const res = await frappe.call({
@@ -4546,7 +4691,6 @@ async function bootstrapFromServerSession() {
     }
     const sess = msg.session || {};
     runDate.value = String(msg.run_date || sess.run_date || runDate.value).slice(0, 10);
-    filterDate.value = runDate.value;
     shift.value = msg.shift || sess.shift || shift.value;
     headerUnit.value = msg.unit || sess.custom_unit || headerUnit.value;
     filterUnit.value = headerUnit.value;
@@ -4556,6 +4700,10 @@ async function bootstrapFromServerSession() {
       shiftBatchPrefix.value = sess.batch_series_prefix;
       seriesPrefix.value = sess.batch_series_prefix;
     }
+    const draftFilter = peekDraftFilterDate();
+    if (draftFilter) {
+      filterDate.value = draftFilter;
+    }
     await fetchOrders();
     if (msg.job_board?.jobs?.length) {
       jobBoardJobs.value = msg.job_board.jobs;
@@ -4563,6 +4711,8 @@ async function bootstrapFromServerSession() {
       await loadJobBoard();
     }
     const count = applyResumePayload(msg, { merge: false });
+    await fetchSessionSupplementalOrders();
+    await loadJobBoard();
     enrichSelectedEntriesFromBoard();
     if (count > 0) {
       shiftResumeBanner.value = __("Resumed {0} roll line(s) from server.", [count]);
@@ -4602,6 +4752,7 @@ async function refreshSessionFromServer(options = {}) {
     if (count > 0 && !options.quiet) {
       frappe.show_alert({ message: __("Synced {0} roll(s) from server", [count]), indicator: "blue" });
     }
+    await fetchSessionSupplementalOrders();
     await loadJobBoard();
     enrichSelectedEntriesFromBoard();
     return count;
@@ -5709,9 +5860,6 @@ function scheduleAutosave() {
 async function ensureSidebarForOpenShift() {
   if (!shiftOpened.value || !runDate.value) {
     return;
-  }
-  if (filterDate.value !== runDate.value) {
-    filterDate.value = runDate.value;
   }
   await fetchOrders();
   await loadJobBoard();

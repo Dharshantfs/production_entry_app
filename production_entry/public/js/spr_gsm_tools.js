@@ -138,8 +138,17 @@ export async function gsmPrintRollLabel(sprName, sprItemRowName, gridRow = null)
 				},
 			});
 		} catch (e) {
-			// printview uses saved SPR row via _row_name
+			// sticker flow uses saved SPR row
 		}
+	}
+	if (typeof frappe.generate_sticker_flow !== "function") {
+		await import("./custom_print_sticker.js");
+	}
+	await frappe.model.withDoc("Shaft Production Run", sprName);
+	const frm = { doc: frappe.get_doc("Shaft Production Run", sprName) };
+	if (typeof frappe.generate_sticker_flow === "function") {
+		frappe.generate_sticker_flow(sprItemRowName, frm);
+		return;
 	}
 	if (
 		production_entry.spr_roll_label_print &&

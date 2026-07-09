@@ -7145,12 +7145,16 @@ frappe.ui.form.on('Shaft Production Run Item', {
 			},
 		});
 	},
-	/** Print roll label (after Save Row) — same Print Format as site Roll Production Label. */
+	/** Print roll label (after Save Row) — custom sticker HTML flow. */
 	print_sticker: function (frm, cdt, cdn) {
 		cdn = spr_resolve_items_row_cdn(frm, cdt, cdn);
 		const row = locals[cdt] && locals[cdt][cdn];
 		if (!row || !cint(row.row_ready_for_print) || !cint(row.row_locked)) {
 			frappe.msgprint(__('Save Row first to lock the line and enable the label.'));
+			return;
+		}
+		if (typeof frappe.generate_sticker_flow === 'function') {
+			frappe.generate_sticker_flow(row.name, frm);
 			return;
 		}
 		if (
