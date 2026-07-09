@@ -1099,15 +1099,15 @@ def _bulk_planning_ptr_map_for_spr(spr_name: str) -> dict:
 					as_dict=True,
 				) or []
 				for row in fallback_rows:
-				ic = _cstr(row.get("item_code")).strip()
-				pc = _cstr(row.get("party_code") or row.get("custom_party_code") or "").strip()
-				val = {
-					"planning_table_row": row.get("name"),
-					"planning_sheet": row.get("parent"),
-				}
-				for key in ((ic, pc), (ic, ""), ("", pc)):
-					if key not in out:
-						out[key] = val
+					ic = _cstr(row.get("item_code")).strip()
+					pc = _cstr(row.get("party_code") or row.get("custom_party_code") or "").strip()
+					val = {
+						"planning_table_row": row.get("name"),
+						"planning_sheet": row.get("parent"),
+					}
+					for key in ((ic, pc), (ic, ""), ("", pc)):
+						if key not in out:
+							out[key] = val
 	return out
 
 
