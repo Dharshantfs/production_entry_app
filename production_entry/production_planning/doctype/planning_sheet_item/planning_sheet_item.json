@@ -330,12 +330,14 @@
             "fieldname": "custom_transfer_destination",
             "fieldtype": "Data",
             "label": "Transfer Destination",
+            "length": 500,
             "in_list_view": 0
         },
         {
             "fieldname": "custom_transfer_status",
             "fieldtype": "Data",
             "label": "Transfer Status",
+            "length": 500,
             "in_list_view": 0
         },
         {

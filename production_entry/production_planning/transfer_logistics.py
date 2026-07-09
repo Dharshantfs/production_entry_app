@@ -59,6 +59,29 @@ def _cstr(v):
 	return str(v or "").strip()
 
 
+_PLANNING_TRANSFER_FIELD_MAX_LEN = 500
+
+
+def _truncate_planning_transfer_field(value, max_len: int = _PLANNING_TRANSFER_FIELD_MAX_LEN) -> str:
+	text = _cstr(value)
+	if not text or len(text) <= max_len:
+		return text
+	if max_len <= 3:
+		return text[:max_len]
+	return text[: max_len - 3] + "..."
+
+
+def _compact_transfer_destination_label(label: str, company: str = "") -> str:
+	"""Store a shorter destination label on planning rows (company name preferred)."""
+	company = _cstr(company)
+	label = _cstr(label)
+	if company:
+		return company
+	if label.lower().startswith("transfer to "):
+		return label[12:].strip() or label
+	return label
+
+
 def _stock_entry_external_transfer_fieldname():
 	"""Resolve Stock Entry checkbox field for External Transfer (site may use custom fieldname)."""
 	for fn in _EXTERNAL_TRANSFER_FIELD_CANDIDATES:
@@ -1219,7 +1242,10 @@ def update_planning_row_transfer_status(ptr):
 		statuses = []
 		total_transferred = 0
 		for r in rows:
-			lbl = r.to_destination_label or r.to_company or ""
+			lbl = _compact_transfer_destination_label(
+				r.to_destination_label or "",
+				r.to_company or "",
+			)
 			rc = cint(r.roll_count)
 			total_transferred += rc
 			if lbl and rc:
@@ -1251,11 +1277,11 @@ def update_planning_row_transfer_status(ptr):
 			)
 		else:
 			final_status = "Transferred"
-		final_dest = " | ".join(dests)
+		final_dest = _truncate_planning_transfer_field(" | ".join(dests))
 		
 		updates = {
 			"custom_transfer_destination": final_dest,
-			"custom_transfer_status": final_status
+			"custom_transfer_status": _truncate_planning_transfer_field(final_status)
 		}
 		
 	if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
@@ -1265,9 +1291,12 @@ def update_planning_row_transfer_status(ptr):
 
 def _stamp_planning_rows_for_transfer_request(approval_name, label):
 	ta = frappe.get_doc("Transfer Approval", approval_name)
+	seen_ptrs: set[str] = set()
 	for ln in ta.lines or []:
-		if ln.planning_table_row:
-			update_planning_row_transfer_status(ln.planning_table_row)
+		ptr = _cstr(ln.planning_table_row)
+		if ptr and ptr not in seen_ptrs:
+			seen_ptrs.add(ptr)
+			update_planning_row_transfer_status(ptr)
 
 
 def _sync_psi_transfer_fields(pt_name, updates):
@@ -1299,9 +1328,12 @@ def _transfer_submitted_status_text(ta):
 
 
 def _stamp_planning_rows_after_transfer_submit(ta):
+	seen_ptrs: set[str] = set()
 	for ln in ta.lines or []:
-		if ln.planning_table_row:
-			update_planning_row_transfer_status(ln.planning_table_row)
+		ptr = _cstr(ln.planning_table_row)
+		if ptr and ptr not in seen_ptrs:
+			seen_ptrs.add(ptr)
+			update_planning_row_transfer_status(ptr)
 
 
 def _resolved_planning_row_transfer_status(pt_name, fallback_status=""):
@@ -1588,7 +1620,12 @@ def _finalize_planning_rows_after_approval(ta):
 		if frappe.db.has_column("Planning Table", "custom_transfer_status"):
 			updates["custom_transfer_status"] = "Draft STE Created"
 		if frappe.db.has_column("Planning Table", "custom_transfer_destination"):
-			updates["custom_transfer_destination"] = ta.to_destination_label
+			updates["custom_transfer_destination"] = _truncate_planning_transfer_field(
+				_compact_transfer_destination_label(
+					_cstr(ta.to_destination_label),
+					_cstr(ta.to_company),
+				)
+			)
 		if updates:
 			frappe.db.set_value("Planning Table", ptr, updates, update_modified=False)
 			_sync_psi_transfer_fields(ptr, updates)

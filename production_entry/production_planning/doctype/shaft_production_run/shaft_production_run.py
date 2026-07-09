@@ -7257,6 +7257,7 @@ class ShaftProductionRun(Document):
 			se.flags.ignore_validate = True
 			se.submit()
 			self._spr_backfill_manufacture_fg_batches(se.name, wo_doc, chunk_rows)
+			self._spr_ensure_manufacture_fg_bundles(se.name)
 		except Exception as e:
 			_submit_exc = e  # persist before Python 3.12 deletes the except-clause variable
 			try:
@@ -7683,6 +7684,24 @@ class ShaftProductionRun(Document):
 					title=_("No stock entry created"),
 				)
 
+	def _spr_ensure_manufacture_fg_bundles(self, se_name: str) -> None:
+		"""Ensure every submitted manufacture FG line has batch + Serial and Batch Bundle stock."""
+		if not se_name or not frappe.db.exists("Stock Entry", se_name):
+			return
+		se_doc = frappe.get_doc("Stock Entry", se_name)
+		if _cstr(se_doc.get("purpose")) != "Manufacture" or cint(se_doc.get("docstatus")) != 1:
+			return
+		for fg in se_doc.items or []:
+			if cint(fg.get("is_finished_item")) != 1:
+				continue
+			bn = _cstr(fg.get("batch_no")).strip()
+			if not bn:
+				continue
+			fg_wh = _cstr(fg.get("t_warehouse") or se_doc.get("to_warehouse")).strip()
+			fg_qty = flt(fg.get("transfer_qty") or fg.get("qty"))
+			_spr_activate_batch_from_manufacture(bn, fg, se_doc, fallback_qty=fg_qty)
+			_spr_ensure_fg_serial_batch_bundle(se_doc, fg, bn, fg_qty, fg_wh)
+
 	def _spr_activate_all_roll_batches_after_manufacture(self, created_entries_by_wo: dict) -> None:
 		"""Activate SPR roll batches only from submitted Manufacture FG lines (real SLE)."""
 		for wo_id, ses in (created_entries_by_wo or {}).items():
@@ -7697,6 +7716,13 @@ class ShaftProductionRun(Document):
 					if bn:
 						_spr_activate_batch_from_manufacture(
 							bn, fg, se_doc, fallback_qty=flt(fg.get("qty"))
+						)
+						_spr_ensure_fg_serial_batch_bundle(
+							se_doc,
+							fg,
+							bn,
+							flt(fg.get("transfer_qty") or fg.get("qty")),
+							_cstr(fg.get("t_warehouse") or se_doc.get("to_warehouse")),
 						)
 
 	def _spr_build_submit_summary_html(self, wo_groups: dict, created_entries_by_wo: dict) -> str:
@@ -13470,6 +13496,117 @@ def spr_backfill_missing_manufacture_from_spr(shaft_production_run: str, submit_
 	}
 
 
+def _spr_manufacture_fg_line_posted_qty(se_name: str, fg_line, item_code: str = "", warehouse: str = "") -> float:
+	"""Positive FG qty already posted for a manufacture Stock Entry line (v14 + v16 bundle paths)."""
+	se_name = _cstr(se_name).strip()
+	if not se_name or not fg_line:
+		return 0.0
+	item_code = _cstr(item_code or fg_line.get("item_code")).strip()
+	warehouse = _cstr(warehouse or fg_line.get("t_warehouse")).strip()
+	fg_detail_name = _cstr(getattr(fg_line, "name", None) or fg_line.get("name", "")).strip()
+	if not item_code:
+		return 0.0
+
+	clauses = [
+		"IFNULL(is_cancelled, 0) = 0",
+		"voucher_type = 'Stock Entry'",
+		"voucher_no = %s",
+		"IFNULL(item_code, '') = %s",
+		"actual_qty > 0",
+	]
+	params: list = [se_name, item_code]
+	if warehouse:
+		clauses.append("IFNULL(warehouse, '') = %s")
+		params.append(warehouse)
+	if fg_detail_name and frappe.db.has_column("Stock Ledger Entry", "voucher_detail_no"):
+		clauses.append("IFNULL(voucher_detail_no, '') = %s")
+		params.append(fg_detail_name)
+	try:
+		return flt(
+			frappe.db.sql(
+				f"""
+				SELECT IFNULL(SUM(actual_qty), 0)
+				FROM `tabStock Ledger Entry`
+				WHERE {' AND '.join(clauses)}
+				""",
+				tuple(params),
+			)[0][0]
+			or 0
+		)
+	except Exception:
+		return 0.0
+
+
+def _spr_ensure_fg_serial_batch_bundle(se_doc, fg_line, batch_no: str, fg_qty: float, fg_wh: str) -> str:
+	"""Ensure submitted manufacture FG line has a populated Serial and Batch Bundle."""
+	batch_no = _cstr(batch_no).strip()
+	if not batch_no or not se_doc or not fg_line:
+		return ""
+	if not frappe.db.has_column("Stock Entry Detail", "serial_and_batch_bundle"):
+		return ""
+	fg_detail_name = _cstr(getattr(fg_line, "name", None) or fg_line.get("name", "")).strip()
+	if not fg_detail_name:
+		return ""
+	fg_qty = flt(fg_qty or fg_line.get("transfer_qty") or fg_line.get("qty"))
+	fg_wh = _cstr(fg_wh or fg_line.get("t_warehouse") or se_doc.get("to_warehouse")).strip()
+	item_code = _cstr(fg_line.get("item_code")).strip()
+	if not item_code or fg_qty <= 0:
+		return ""
+
+	_spr_create_missing_bundle_for_fg(se_doc, fg_line, batch_no, fg_qty, fg_wh)
+	bundle_name = _cstr(
+		frappe.db.get_value("Stock Entry Detail", fg_detail_name, "serial_and_batch_bundle")
+	).strip()
+	if not bundle_name:
+		return ""
+
+	entry_qty = flt(
+		frappe.db.sql(
+			"""
+			SELECT IFNULL(SUM(qty), 0)
+			FROM `tabSerial and Batch Entry`
+			WHERE parent = %s AND IFNULL(batch_no, '') = %s
+			""",
+			(bundle_name, batch_no),
+		)[0][0]
+		or 0
+	)
+	if entry_qty <= 0:
+		try:
+			child = frappe.get_doc(
+				{
+					"doctype": "Serial and Batch Entry",
+					"parent": bundle_name,
+					"parenttype": "Serial and Batch Bundle",
+					"parentfield": "entries",
+					"batch_no": batch_no,
+					"qty": fg_qty,
+					"warehouse": fg_wh,
+				}
+			)
+			child.flags.ignore_permissions = True
+			child.flags.ignore_mandatory = True
+			child.insert(ignore_permissions=True)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR bundle entry repair:{bundle_name}")
+
+	if not cint(frappe.db.get_value("Serial and Batch Bundle", bundle_name, "docstatus") or 0):
+		frappe.db.sql("UPDATE `tabSerial and Batch Bundle` SET docstatus=1 WHERE name=%s", bundle_name)
+		frappe.db.sql("UPDATE `tabSerial and Batch Entry` SET docstatus=1 WHERE parent=%s", bundle_name)
+
+	frappe.db.sql(
+		"""UPDATE `tabStock Ledger Entry`
+		SET serial_and_batch_bundle = %s
+		WHERE voucher_type = 'Stock Entry'
+		  AND voucher_no = %s
+		  AND voucher_detail_no = %s
+		  AND actual_qty > 0
+		  AND IFNULL(is_cancelled, 0) = 0""",
+		(bundle_name, se_doc.name, fg_detail_name),
+	)
+	return bundle_name
+
+
 @frappe.whitelist()
 def spr_repair_broken_fg_batch_stock(shaft_production_run: str, submit_entry: int = 1):
 	"""
@@ -13511,28 +13648,7 @@ def spr_repair_broken_fg_batch_stock(shaft_production_run: str, submit_entry: in
 			qty = flt(row.get("qty"))
 			if not batch_no or not item_code or qty <= 0 or not target_wh:
 				continue
-			posted_qty = flt(
-				frappe.db.sql(
-					"""
-					SELECT IFNULL(SUM(actual_qty), 0)
-					FROM `tabStock Ledger Entry`
-					WHERE IFNULL(is_cancelled, 0) = 0
-					  AND voucher_type = 'Stock Entry'
-					  AND voucher_no = %(voucher_no)s
-					  AND IFNULL(batch_no, '') = %(batch_no)s
-					  AND IFNULL(item_code, '') = %(item_code)s
-					  AND IFNULL(warehouse, '') = %(warehouse)s
-					  AND actual_qty > 0
-					""",
-					{
-						"voucher_no": se.name,
-						"batch_no": batch_no,
-						"item_code": item_code,
-						"warehouse": target_wh,
-					},
-				)[0][0]
-				or 0
-			)
+			posted_qty = _spr_manufacture_fg_line_posted_qty(se.name, row, item_code, target_wh)
 			missing_qty = flt(qty - posted_qty, 6)
 			if missing_qty <= 1e-6:
 				skipped.append({"stock_entry": se.name, "batch_no": batch_no, "reason": "already_has_fg_sle"})
@@ -13798,15 +13914,25 @@ def spr_sync_batches_to_manufacture_entries(shaft_production_run: str):
 					if link == existing_bn or bn_raw == existing_bn:
 						spr_row = row
 						break
+			posted_qty = _spr_manufacture_fg_line_posted_qty(se_name, fg, item_code, _cstr(fg.get("t_warehouse")))
 			activated = _activate_fg_line(fg, existing_bn, spr_row)
 			all_batch_codes.add(existing_bn)
 			used_batches_by_wo[wo].add(existing_bn)
-			skipped.append({
+			if posted_qty > 0:
+				skipped.append({
+					"stock_entry": se_name,
+					"line_idx": fg["idx"],
+					"reason": "already_has_batch",
+					"batch_no": existing_bn,
+					"batch_qty": activated or flt(spr._row_fg_qty(spr_row) if spr_row else 0),
+				})
+				continue
+			updated_lines.append({
 				"stock_entry": se_name,
 				"line_idx": fg["idx"],
-				"reason": "already_has_batch",
 				"batch_no": existing_bn,
 				"batch_qty": activated or flt(spr._row_fg_qty(spr_row) if spr_row else 0),
+				"reason": "repaired_missing_sle",
 			})
 			continue
 
@@ -14025,6 +14151,7 @@ def _spr_activate_batch_from_manufacture(batch_no: str, fg_line, se_doc, fallbac
 
 	if frappe.db.has_column("Stock Ledger Entry", "serial_and_batch_bundle"):
 		_spr_create_missing_bundle_for_fg(se_doc, fg_line, batch_no, fg_qty, fg_wh)
+		_spr_ensure_fg_serial_batch_bundle(se_doc, fg_line, batch_no, fg_qty, fg_wh)
 
 	sle_qty = _spr_batch_sle_qty(batch_no, item_code=item_code, warehouse=fg_wh)
 	if sle_qty <= 0:
