@@ -12,10 +12,13 @@ from frappe.utils import cint, flt, getdate, now_datetime
 
 from production_entry.production_planning.scheduler_api import (
 	PLANNING_MOVEMENT_TYPE_FIELD,
+	_psi_order_sheet_field,
+	_row_order_sheet_pp,
 	get_color_chart_data,
 	is_stock_movement,
 	is_transfer_movement,
 	normalize_movement_type,
+	sync_spr_planning_table_links,
 )
 
 TRANSFER_WAREHOUSE_BY_COMPANY = {
@@ -1058,6 +1061,53 @@ def _bulk_planning_ptr_map_for_spr(spr_name: str) -> dict:
 				)
 	for key, (_, val) in candidates.items():
 		out[key] = val
+
+	# Fallback: map by PP + item_code when spr_name CSV exists on other rows but item match failed.
+	spr_pp = _cstr(frappe.db.get_value("Shaft Production Run", sn, "production_plan") or "").strip()
+	if spr_pp:
+		os_field = _psi_order_sheet_field()
+		item_codes = {
+			_cstr(r.get("item_code")).strip()
+			for r in frappe.get_all(
+				"Shaft Production Run Item",
+				filters={"parent": sn},
+				fields=["item_code"],
+				limit_page_length=0,
+			)
+			if _cstr(r.get("item_code")).strip()
+		}
+		if item_codes and pp_filters:
+			pp_clause_parts = []
+			pp_vals = []
+			if os_field:
+				pp_clause_parts.append(f"IFNULL(`{os_field}`, '') = %s")
+				pp_vals.append(spr_pp)
+			for col in ("order_sheet", "custom_order_sheet"):
+				if col != os_field and frappe.db.has_column("Planning Table", col):
+					pp_clause_parts.append(f"IFNULL(`{col}`, '') = %s")
+					pp_vals.append(spr_pp)
+			if pp_clause_parts:
+				fmt_items = ", ".join(["%s"] * len(item_codes))
+				fallback_rows = frappe.db.sql(
+					f"""
+					SELECT name, parent, item_code, party_code, custom_party_code, spr_name
+					FROM `tabPlanning Table`
+					WHERE item_code IN ({fmt_items})
+					  AND ({' OR '.join(pp_clause_parts)})
+					""",
+					tuple(list(item_codes) + pp_vals),
+					as_dict=True,
+				) or []
+				for row in fallback_rows:
+				ic = _cstr(row.get("item_code")).strip()
+				pc = _cstr(row.get("party_code") or row.get("custom_party_code") or "").strip()
+				val = {
+					"planning_table_row": row.get("name"),
+					"planning_sheet": row.get("parent"),
+				}
+				for key in ((ic, pc), (ic, ""), ("", pc)):
+					if key not in out:
+						out[key] = val
 	return out
 
 
@@ -1157,6 +1207,12 @@ def get_spr_transfer_bootstrap(spr_name=None):
 	customer = _cstr(frappe.db.get_value("Shaft Production Run", sn, "customer") or "")
 	unit = _cstr(frappe.db.get_value("Shaft Production Run", sn, "custom_unit") or "")
 	ptr_map = _bulk_planning_ptr_map_for_spr(sn)
+	if not ptr_map:
+		try:
+			sync_spr_planning_table_links(sn)
+			ptr_map = _bulk_planning_ptr_map_for_spr(sn)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR transfer bootstrap link repair:{sn}")
 
 	rolls = []
 	for row in frappe.get_all(

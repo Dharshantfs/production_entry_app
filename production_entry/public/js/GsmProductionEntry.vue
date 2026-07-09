@@ -73,7 +73,7 @@
           No PP-submitted jobs for {{ formatPlannedDate(ordersBrowseDate()) }} / {{ headerUnit || filterUnit || "unit" }}.
         </div>
 
-        <div v-for="grp in filteredActiveJobGroups" :key="grp.key" class="gpe-order-card">
+        <div v-for="grp in displayJobOrderGroups" :key="grp.key" class="gpe-order-card">
           <div class="gpe-order-head">
             <span class="gpe-order-code">{{ grp.orderCode }}</span>
             <button
@@ -363,15 +363,8 @@
               </div>
             </div>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="openShaftDetails">Shaft Details</button>
-            <button v-if="!allSprsCreated" type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
-            <button
-              v-else-if="forceNewSprSession"
-              type="button"
-              class="gpe-btn primary"
-              :disabled="!canCreateSprs"
-              @click="createSprs"
-            >Create new SPRs</button>
-            <span v-else class="gpe-spr-ready-badge" title="All selected orders have draft SPRs">SPRs ready</span>
+            <button v-if="needsCreateSprs" type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
+            <span v-else class="gpe-spr-ready-badge" title="Draft SPRs exist for selected orders">SPRs ready</span>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="openSubmitConfirmDialog">Submit Entry</button>
           </div>
         </div>
@@ -1462,9 +1455,59 @@ const lastServerSyncAt = ref("");
 const liveSyncLabel = ref("");
 let gsmPollTimer = null;
 let gsmRealtimeBound = false;
+let gsmRefreshInFlight = false;
+let gsmRefreshQueued = false;
+
+let gsmRefreshDebounceTimer = null;
+let gsmVisibilityBound = false;
+
+function gsmPageIsVisible() {
+  return typeof document === "undefined" || document.visibilityState !== "hidden";
+}
+
+function sessionSprRow(ppId) {
+  return sessionSprs.value[ppId] || null;
+}
+
+function sessionSprIsSubmitted(ppId) {
+  const row = sessionSprRow(ppId);
+  return !!(row && (row.submitted || cint(row.docstatus) === 1));
+}
+
+function draftSprNameForPp(ppId) {
+  const row = sessionSprRow(ppId);
+  if (!row?.spr_name || sessionSprIsSubmitted(ppId)) {
+    return "";
+  }
+  return row.spr_name;
+}
+
+function ppNeedsNewSpr(ppId) {
+  if (!ppId) {
+    return false;
+  }
+  if (forceNewSprByPp.value[ppId]) {
+    return true;
+  }
+  return !draftSprNameForPp(ppId);
+}
+
+function currentShaftNoForJob(job) {
+  if (!job) {
+    return 1;
+  }
+  const maxShafts = Math.max(1, cint(job.max_shafts));
+  const rollsPerShaft = Math.max(
+    1,
+    cint(job.rolls_per_shaft) || Math.ceil(cint(job.max_rolls) / maxShafts)
+  );
+  const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
+  const totalRolls = cint(job.job_rolls_produced) + pending;
+  return Math.min(maxShafts, Math.floor(totalRolls / rollsPerShaft) + 1);
+}
 
 function onGsmProductionEntryUpdated(data) {
-  if (!data || !shiftOpened.value) {
+  if (!data || !shiftOpened.value || !gsmPageIsVisible()) {
     return;
   }
   const u = data.unit || "";
@@ -1479,7 +1522,13 @@ function onGsmProductionEntryUpdated(data) {
   if (sh && shift.value && sh !== shift.value) {
     return;
   }
-  refreshSessionFromServer({ quiet: true, merge: true });
+  if (gsmRefreshDebounceTimer) {
+    clearTimeout(gsmRefreshDebounceTimer);
+  }
+  gsmRefreshDebounceTimer = setTimeout(() => {
+    gsmRefreshDebounceTimer = null;
+    refreshSessionFromServer({ quiet: true, merge: true });
+  }, 1200);
 }
 
 function setupGsmLiveSync() {
@@ -1492,10 +1541,21 @@ function setupGsmLiveSync() {
     clearInterval(gsmPollTimer);
   }
   gsmPollTimer = setInterval(() => {
-    if (shiftOpened.value) {
+    if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight) {
       refreshSessionFromServer({ quiet: true, merge: true });
     }
-  }, 15000);
+  }, 30000);
+  if (typeof document !== "undefined" && !gsmVisibilityBound) {
+    document.addEventListener("visibilitychange", onGsmVisibilityChange);
+    gsmVisibilityBound = true;
+  }
+}
+
+function onGsmVisibilityChange() {
+  if (!gsmPageIsVisible() && gsmRefreshDebounceTimer) {
+    clearTimeout(gsmRefreshDebounceTimer);
+    gsmRefreshDebounceTimer = null;
+  }
 }
 
 function teardownGsmLiveSync() {
@@ -1506,6 +1566,14 @@ function teardownGsmLiveSync() {
   if (gsmPollTimer) {
     clearInterval(gsmPollTimer);
     gsmPollTimer = null;
+  }
+  if (gsmRefreshDebounceTimer) {
+    clearTimeout(gsmRefreshDebounceTimer);
+    gsmRefreshDebounceTimer = null;
+  }
+  if (gsmVisibilityBound && typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onGsmVisibilityChange);
+    gsmVisibilityBound = false;
   }
 }
 
@@ -1598,6 +1666,7 @@ function reserveBatchNo(batchNo, rollNo) {
 
 const sessionSprs = ref({});
 const forceNewSprSession = ref(false);
+const forceNewSprByPp = ref({});
 const showToleranceDialog = ref(false);
 const toleranceOrders = ref([]);
 const toleranceForm = ref({});
@@ -1996,7 +2065,11 @@ function enrichJobCard(job) {
   const chartMeta = ppChartMetaForPp(job.pp_id);
   const woTerminal = !!(job.wo_terminal || chartMeta.wo_terminal);
   const quotaFull = job.quota_full || woTerminal;
-  const selectable = !quotaFull && !woTerminal;
+  const submittedComplete = cint(job.max_rolls) > 0 && cint(job.submitted_rolls) >= cint(job.max_rolls);
+  const sessionDone = sessionSprIsSubmitted(job.pp_id) && submittedComplete;
+  const selectable =
+    !woTerminal &&
+    (!sessionDone || (!selectionLocked.value && sessionSprIsSubmitted(job.pp_id)));
   let chip = "";
   let chipClass = "";
   let tooltip = "Select for production";
@@ -2008,11 +2081,15 @@ function enrichJobCard(job) {
     chip = "Completed";
     chipClass = "gpe-chip-done";
     tooltip = "Job shaft/roll quota met";
+  } else if (sessionDone) {
+    chip = "SPR Submitted";
+    chipClass = "gpe-chip-submitted";
+    tooltip = "Submitted for this session — select again to start a new SPR";
   } else if (chartMeta.spr_docstatus === 1) {
     chip = "SPR Submitted";
     chipClass = "gpe-chip-submitted";
     tooltip = "Submitted SPR — more production allowed while WO is open";
-  } else if ((job.active_spr_names || []).length || sessionSprs.value[job.pp_id]?.spr_name) {
+  } else if ((job.active_spr_names || []).length || draftSprNameForPp(job.pp_id)) {
     chip = "SPR Active";
     chipClass = "gpe-chip-draft";
     tooltip = "Draft SPR exists for this run date and shift";
@@ -2596,6 +2673,8 @@ const jobOrderGroups = computed(() => {
   return [...map.values()].sort((a, b) => a.orderCode.localeCompare(b.orderCode));
 });
 
+const displayJobOrderGroups = computed(() => filterJobGroups(jobOrderGroups.value));
+
 const activeJobOrderGroups = computed(() =>
   jobOrderGroups.value
     .map((g) => ({ ...g, jobs: g.jobs.filter((j) => j.selectable) }))
@@ -2800,13 +2879,15 @@ const toolsContext = computed(() => {
   return { multi: true, options };
 });
 
-const allSprsCreated = computed(() => {
-  const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
-  if (!ppIds.size) {
+const needsCreateSprs = computed(() => {
+  const ppIds = [...new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean))];
+  if (!ppIds.length) {
     return false;
   }
-  return [...ppIds].every((id) => sessionSprs.value[id]?.spr_name);
+  return ppIds.some((ppId) => ppNeedsNewSpr(ppId));
 });
+
+const allSprsCreated = computed(() => !needsCreateSprs.value);
 
 const toolsEnabled = computed(() => !!toolsPpOptions.value.length && selectionLocked.value);
 const toolsHint = computed(() => {
@@ -3056,14 +3137,14 @@ const shiftSessionSprList = computed(() =>
     .map(([pp_id, v]) => ({ pp_id, ...v }))
 );
 
-/** SPRs for currently selected production plans (add-row / create SPR flow). */
+/** SPRs for currently selected production plans with draft SPR only. */
 const selectedSessionSprList = computed(() => {
   const ppIds = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
   if (!ppIds.size) {
     return [];
   }
   return [...ppIds]
-    .filter((ppId) => sessionSprs.value[ppId]?.spr_name)
+    .filter((ppId) => draftSprNameForPp(ppId))
     .map((ppId) => ({
       pp_id: ppId,
       ...sessionSprs.value[ppId],
@@ -3313,6 +3394,9 @@ function toggleJob(job, ev) {
   const next = selectedEntries.value.filter((e) => e.key !== snap.key);
   if (checked) {
     next.push(snap);
+    if (sessionSprIsSubmitted(snap.ppId)) {
+      forceNewSprByPp.value = { ...forceNewSprByPp.value, [snap.ppId]: true };
+    }
   }
   selectedEntries.value = next;
   scheduleAutosave();
@@ -3342,6 +3426,9 @@ function onJobLabelClick(job) {
   const next = selectedEntries.value.filter((e) => e.key !== snap.key);
   if (!isJobSelected(job)) {
     next.push(snap);
+    if (sessionSprIsSubmitted(snap.ppId)) {
+      forceNewSprByPp.value = { ...forceNewSprByPp.value, [snap.ppId]: true };
+    }
   }
   selectedEntries.value = next;
   scheduleAutosave();
@@ -3627,7 +3714,38 @@ function buildSessionEntries() {
 }
 
 function sprNameForPp(ppId) {
-  return sessionSprs.value[ppId]?.spr_name || "";
+  return draftSprNameForPp(ppId);
+}
+
+function markSessionSprsSubmitted(submittedRows) {
+  const next = { ...sessionSprs.value };
+  for (const row of submittedRows || []) {
+    const sprName = row.spr_name;
+    if (!sprName) {
+      continue;
+    }
+    let ppId = row.pp_id;
+    if (!ppId) {
+      for (const [k, v] of Object.entries(next)) {
+        if (v?.spr_name === sprName) {
+          ppId = k;
+          break;
+        }
+      }
+    }
+    if (!ppId) {
+      continue;
+    }
+    next[ppId] = {
+      ...(next[ppId] || { pp_id: ppId }),
+      spr_name: sprName,
+      submitted: true,
+      docstatus: 1,
+    };
+    forceNewSprByPp.value = { ...forceNewSprByPp.value, [ppId]: false };
+  }
+  sessionSprs.value = next;
+  scheduleAutosave();
 }
 
 function widthDisplay(row) {
@@ -3803,6 +3921,7 @@ function buildRollPayload(row) {
     custom_diameter_inches: row.custom_diameter_inches,
     custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
     job_id: row.job_id || row.job || "",
+    custom_no_of_shaft: row.custom_no_of_shaft || row.no_of_shaft || 0,
     is_bundle_row: row.is_bundle_row ? 1 : 0,
     row_locked: row.row_locked ? 1 : 0,
     row_ready_for_print: row.row_ready_for_print ? 1 : 0,
@@ -3872,7 +3991,12 @@ async function createSprs() {
         operator: operator.value,
         supervisor: supervisor.value,
         entries: JSON.stringify(entries),
-        force_new_session: forceNewSprSession.value ? 1 : 0,
+        force_new_session:
+          forceNewSprSession.value ||
+          entries.some((e) => ppNeedsNewSpr(e.ppId || e.pp_id)) ||
+          selectedEntries.value.some((e) => ppNeedsNewSpr(e.ppId))
+            ? 1
+            : 0,
       },
     });
     const sprs = (res.message || {}).sprs || [];
@@ -3886,12 +4010,21 @@ async function createSprs() {
           order_code: row.order_code,
           label_type: row.label_type,
           reused: row.reused,
+          submitted: false,
+          docstatus: 0,
         };
       } else {
         errors.push(row.message || row.pp_id);
       }
     }
     sessionSprs.value = next;
+    for (const row of sprs) {
+      if (row.status === "ok" && row.pp_id) {
+        const cleared = { ...forceNewSprByPp.value };
+        delete cleared[row.pp_id];
+        forceNewSprByPp.value = cleared;
+      }
+    }
     forceNewSprSession.value = false;
     recordJobApiBaselines(jobBoardJobs.value);
     scheduleAutosave();
@@ -4115,6 +4248,7 @@ async function submitEntry(overrides = []) {
       });
     }
     if (submitted.length) {
+      markSessionSprsSubmitted(submitted);
       showSubmitSuccess(submitted, msg.total_kg);
       saveStatus.value = "Submitted";
       await fetchOrders();
@@ -4127,6 +4261,7 @@ async function submitEntry(overrides = []) {
     console.error(e);
     const recovered = await pollGsmSubmitRecovery(sprNamesToSubmit);
     if (recovered) {
+      markSessionSprsSubmitted(sprNamesToSubmit.map((sn) => ({ spr_name: sn })));
       showSubmitSuccess(
         sprNamesToSubmit.map((sn) => ({ spr_name: sn })),
         metrics.value.totalNet
@@ -4828,6 +4963,14 @@ async function refreshSessionFromServer(options = {}) {
   if (!headerUnit.value || !runDate.value || !shift.value || !shiftOpened.value) {
     return 0;
   }
+  if (!gsmPageIsVisible() && options.quiet) {
+    return 0;
+  }
+  if (gsmRefreshInFlight) {
+    gsmRefreshQueued = true;
+    return 0;
+  }
+  gsmRefreshInFlight = true;
   try {
     if (!jobBoardJobs.value.length) {
       await loadJobBoard();
@@ -4857,6 +5000,12 @@ async function refreshSessionFromServer(options = {}) {
   } catch (e) {
     console.warn("refresh session", e);
     return 0;
+  } finally {
+    gsmRefreshInFlight = false;
+    if (gsmRefreshQueued && gsmPageIsVisible()) {
+      gsmRefreshQueued = false;
+      setTimeout(() => refreshSessionFromServer({ quiet: true, merge: true }), 300);
+    }
   }
 }
 
@@ -5641,6 +5790,7 @@ async function addRollRow() {
     custom_cbm_cubic_meters: "",
     work_order: woInfo?.work_order || "",
     job_id: jobId,
+    custom_no_of_shaft: currentShaftNoForJob(job),
     row_locked: 0,
     row_ready_for_print: 0,
     core_width_options: coreWidthOptions.value,

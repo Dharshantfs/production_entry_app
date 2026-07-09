@@ -95,6 +95,7 @@ function spr_resolve_spi_field_list(fieldnames) {
 function spr_build_fabric100_roll_items_show_list(frm) {
 	const ordered = [
 		'job',
+		'custom_no_of_shaft',
 		'party_code',
 		'item_code',
 		'item_name',
@@ -134,6 +135,7 @@ function spr_build_roll_items_show_list(frm, opts) {
 	const showGsmTrio = opts.gsmTrio !== false;
 	const ordered = [
 		'job',
+		'custom_no_of_shaft',
 		'party_code',
 		'item_code',
 		'item_name',
@@ -788,6 +790,27 @@ function spr_repair_child_grid_alignment(frm, fieldname) {
 			}
 		}, 200);
 	}
+}
+
+function spr_is_large_submitted_grid(frm) {
+	return spr_is_submitted_spr(frm) && ((frm.doc.items || []).length > 15);
+}
+
+function spr_apply_item_row_styles_light(frm) {
+	if (!frm || !frm.fields_dict) {
+		return;
+	}
+	const key = '_spr_light_style_timer';
+	if (frm[key]) {
+		clearTimeout(frm[key]);
+	}
+	frm[key] = setTimeout(function () {
+		frm[key] = null;
+		if (!frm || !frm.fields_dict) {
+			return;
+		}
+		apply_spr_item_row_styles(frm);
+	}, 450);
 }
 
 /** Submitted SPR: one-shot column sync — no repeated paint hooks (stops header zig-zag). */
@@ -3882,6 +3905,8 @@ frappe.ui.form.on('Shaft Production Run', {
 				spr_apply_items_row_lock_ui(frm);
 				frm._spr_row_save_in_progress = false;
 			}, 320);
+		} else if (spr_is_large_submitted_grid(frm)) {
+			spr_apply_item_row_styles_light(frm);
 		} else {
 			spr_reapply_item_row_styles_with_retries(frm);
 		}
@@ -3890,9 +3915,14 @@ frappe.ui.form.on('Shaft Production Run', {
 	},
 
 	onload_post_render: function (frm) {
-		spr_stabilize_spr_child_grids(frm, { delay: 180, light: true });
+		const heavy = spr_is_large_submitted_grid(frm);
+		spr_stabilize_spr_child_grids(frm, { delay: heavy ? 400 : 180, light: true });
 		spr_enforce_roll_line_grid_policy(frm);
-		spr_reapply_item_row_styles_with_retries(frm, [200, 500, 900, 1400]);
+		if (heavy) {
+			spr_apply_item_row_styles_light(frm);
+		} else {
+			spr_reapply_item_row_styles_with_retries(frm, [200, 500, 900, 1400]);
+		}
 	},
 
 	before_submit: function (frm) {
@@ -9251,8 +9281,12 @@ function apply_spr_item_row_styles(frm) {
 	const items = frm.doc.items || [];
 	const $domRows = sprGetItemsDatatableBodyRows(frm);
 	const $wrap = itemsFd.$wrapper;
+	const styleCap = spr_is_submitted_spr(frm) && items.length > 25 ? 25 : items.length;
 
 	items.forEach(function (doc, idx) {
+		if (idx >= styleCap) {
+			return;
+		}
 		// Try multiple resolution methods to find row element for DataTable / Frappe grids
 		let $row = null;
 		

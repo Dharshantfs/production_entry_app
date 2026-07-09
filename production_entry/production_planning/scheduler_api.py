@@ -17798,6 +17798,30 @@ def refresh_planning_sheet_colors(planning_sheet: str):
     return {"status": "ok", "updated": updated, "message": f"Updated color on {updated} row(s)."}
 
 
+def _spr_names_for_pp_item(pp_id: str, item_code: str = "") -> list:
+	"""All SPRs (draft + submitted) for a PP that contain roll lines for item_code."""
+	pp_id = _cstr(pp_id).strip()
+	ic = _cstr(item_code).strip()
+	if not pp_id:
+		return []
+	names = frappe.get_all(
+		"Shaft Production Run",
+		filters={"production_plan": pp_id, "docstatus": ["<", 2]},
+		pluck="name",
+		order_by="modified desc",
+		limit_page_length=0,
+	) or []
+	if not ic:
+		return [n for n in names if _spr_belongs_to_pp(n, pp_id)]
+	out = []
+	for sn in names:
+		if not _spr_belongs_to_pp(sn, pp_id):
+			continue
+		if frappe.db.exists("Shaft Production Run Item", {"parent": sn, "item_code": ic}):
+			out.append(sn)
+	return out
+
+
 @frappe.whitelist()
 def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
     """Backfill Planning Table `order_sheet` and `spr_name` for a sheet even after submit."""
@@ -17917,9 +17941,11 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
                 frappe.db.set_value("Planning Table", r["name"], os_field, row_pp, update_modified=False)
                 updated_order_sheet += 1
 
-        row_spr_single = _pick_spr_for_pp(row_pp) if row_pp else ""
-        if row_spr_single and not _spr_belongs_to_pp(row_spr_single, row_pp):
-            row_spr_single = ""
+        row_spr_ids = _spr_names_for_pp_item(row_pp, r.get("item_code")) if row_pp else []
+        if not row_spr_ids and row_pp:
+            row_spr_single = _pick_spr_for_pp(row_pp)
+            if row_spr_single:
+                row_spr_ids = [row_spr_single]
         cur_raw = str((r.get("spr_name") or "")).strip()
         cur_ids = _expand_spr_name_tokens(cur_raw)
         valid_ids = []
@@ -17930,8 +17956,10 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
             if sid not in seen_local:
                 seen_local.add(sid)
                 valid_ids.append(sid)
-        if row_spr_single and row_spr_single not in seen_local:
-            valid_ids.append(row_spr_single)
+        for sid in row_spr_ids:
+            if sid and sid not in seen_local:
+                seen_local.add(sid)
+                valid_ids.append(sid)
         new_spr_val = ", ".join(valid_ids)
         if new_spr_val != cur_raw:
             frappe.db.set_value("Planning Table", r["name"], "spr_name", new_spr_val, update_modified=False)
@@ -17943,6 +17971,95 @@ def refresh_planning_sheet_spr_and_order_sheet(planning_sheet: str):
         "updated_spr": updated_spr,
         "message": f"Updated Order Sheet on {updated_order_sheet} row(s), SPR on {updated_spr} row(s).",
     }
+
+
+def sync_spr_planning_table_links(spr_name: str) -> dict:
+	"""Link SPR to Planning Table rows by production plan + item_code (enables transfer + board sync)."""
+	sn = _cstr(spr_name).strip()
+	if not sn or not frappe.db.exists("Shaft Production Run", sn):
+		return {"status": "error", "message": _("SPR not found"), "linked_rows": 0}
+	if not frappe.db.table_exists("Planning Table") or not frappe.db.has_column("Planning Table", "spr_name"):
+		return {"status": "skipped", "linked_rows": 0}
+
+	spr = frappe.get_doc("Shaft Production Run", sn)
+	pp_id = _cstr(spr.get("production_plan")).strip()
+	if not pp_id:
+		return {"status": "skipped", "linked_rows": 0, "message": _("SPR has no production plan")}
+
+	item_codes = {
+		_cstr(getattr(it, "item_code", "")).strip()
+		for it in (spr.items or [])
+		if _cstr(getattr(it, "item_code", "")).strip()
+	}
+	if not item_codes:
+		return {"status": "skipped", "linked_rows": 0}
+
+	os_field = _psi_order_sheet_field()
+	linked = 0
+	planning_sheets = set()
+	rows_by_name = {}
+
+	if item_codes:
+		pp_clauses = []
+		pp_params = []
+		if os_field:
+			pp_clauses.append(f"IFNULL(pt.`{os_field}`, '') = %s")
+			pp_params.append(pp_id)
+		for col in ("order_sheet", "custom_order_sheet", "custom_order_plan"):
+			if col != os_field and frappe.db.has_column("Planning Table", col):
+				pp_clauses.append(f"IFNULL(pt.`{col}`, '') = %s")
+				pp_params.append(pp_id)
+		if pp_clauses:
+			fmt_items = ", ".join(["%s"] * len(item_codes))
+			rows = frappe.db.sql(
+				f"""
+				SELECT pt.name, pt.parent, pt.item_code, pt.spr_name
+				FROM `tabPlanning Table` pt
+				WHERE pt.item_code IN ({fmt_items})
+				  AND ({' OR '.join(pp_clauses)})
+				""",
+				tuple(list(item_codes) + pp_params),
+				as_dict=True,
+			) or []
+			for batch in rows:
+				rows_by_name[batch["name"]] = batch
+
+	for row in frappe.get_all(
+		"Planning Table",
+		filters={"spr_name": ["like", f"%{sn}%"]},
+		fields=["name", "parent", "item_code", "spr_name"],
+		limit_page_length=500,
+	) or []:
+		cur_ids = _expand_spr_name_tokens(row.get("spr_name"))
+		if sn in cur_ids:
+			rows_by_name[row["name"]] = row
+
+	for row_name, row in rows_by_name.items():
+		if os_field and pp_id and not _row_order_sheet_pp(row_name=row_name, row_dict=row):
+			frappe.db.set_value("Planning Table", row_name, os_field, pp_id, update_modified=False)
+		cur = str(row.get("spr_name") or "").strip()
+		cur_ids = _expand_spr_name_tokens(cur)
+		if sn in cur_ids:
+			continue
+		new_val = ", ".join([*cur_ids, sn]) if cur_ids else sn
+		frappe.db.set_value("Planning Table", row_name, "spr_name", new_val, update_modified=False)
+		linked += 1
+		if row.get("parent"):
+			planning_sheets.add(row["parent"])
+
+	for sheet in planning_sheets:
+		try:
+			refresh_planning_sheet_spr_and_order_sheet(sheet)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"sync_spr_planning_table_links:{sn}:{sheet}")
+
+	return {"status": "ok", "linked_rows": linked, "spr_name": sn, "planning_sheets": list(planning_sheets)}
+
+
+@frappe.whitelist()
+def repair_spr_planning_table_links(spr_name=None):
+	"""Desk/GSM helper — backfill Planning Table spr_name + order_sheet for one SPR."""
+	return sync_spr_planning_table_links(spr_name)
 
 
 @frappe.whitelist()
@@ -29738,6 +29855,10 @@ def create_item_spr(pp_id, planning_sheet_item_names, num_rolls=None, process_ty
             new_link = f"{existing_spr_link}, {spr.name}".strip(", ") if existing_spr_link else spr.name
             frappe.db.set_value("Production Plan", pp_id, "custom_shaft_production_run_id", new_link)
         _ensure_spr_links_on_planning_rows(spr.name, planning_sheet_item_names)
+        try:
+            sync_spr_planning_table_links(spr.name)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), f"create_item_spr planning link:{spr.name}")
         
         frappe.db.commit()
         

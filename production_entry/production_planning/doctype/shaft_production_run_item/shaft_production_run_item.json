@@ -24,6 +24,7 @@
   "gross_weight",
   "planned_qty",
   "job",
+  "custom_no_of_shaft",
   "custom_sheet_size",
   "custom_planned_sheets_pcs",
   "custom_total_produced_sheets",
@@ -173,6 +174,12 @@
    "in_list_view": 0,
    "label": "Job",
    "read_only": 1
+  },
+  {
+   "fieldname": "custom_no_of_shaft",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "No. of Shaft"
   },
   {
    "fieldname": "custom_sheet_size",

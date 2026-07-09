@@ -3140,6 +3140,12 @@ class ShaftProductionRun(Document):
 	def on_submit(self):
 		self.sync_batch_custom_fields()
 		self.update_work_order_statuses()
+		try:
+			from production_entry.production_planning.scheduler_api import sync_spr_planning_table_links
+
+			sync_spr_planning_table_links(self.name)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"SPR on_submit planning link:{self.name}")
 
 	def on_cancel(self):
 		self.cancel_manufacturing_stock_entries()
@@ -10168,6 +10174,7 @@ def _build_mix_roll_result_lines_for_job(
 	if mr_attr not in (None, "", 0):
 		meter_roll_job = flt(mr_attr)
 
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
 	lines = []
 	for i in range(n_rolls):
 		idx = start_idx + i
@@ -10189,6 +10196,8 @@ def _build_mix_roll_result_lines_for_job(
 			planned_each = fallback_planned_each
 		row["planned_qty"] = planned_each
 		row["roll_no"] = idx + 1
+		if spi_meta.has_field("custom_no_of_shaft"):
+			row["custom_no_of_shaft"] = _spr_shaft_no_for_roll_index(idx, no_shafts, rolls_per_shaft)
 		lines.append(row)
 	return lines
 
@@ -10382,8 +10391,17 @@ def build_spr_roll_result_lines_for_job(
 			row["custom_fabric_gsm"] = int(eff_fabric_gsm)
 
 		row["roll_no"] = idx + 1
+		if spi_meta.has_field("custom_no_of_shaft"):
+			row["custom_no_of_shaft"] = _spr_shaft_no_for_roll_index(idx, no_shafts, rolls_per_shaft)
 		lines.append(row)
 	return lines
+
+
+def _spr_shaft_no_for_roll_index(idx: int, no_shafts: int, rolls_per_shaft: int) -> int:
+	"""1-based shaft number for a roll at zero-based index idx within a job."""
+	no_shafts = max(1, cint(no_shafts or 0))
+	rolls_per_shaft = max(1, cint(rolls_per_shaft or 0))
+	return min(no_shafts, idx // rolls_per_shaft + 1)
 
 
 def _spr_max_roll_suffix_for_job(spr_doc, job_id: str) -> int:
@@ -10659,6 +10677,8 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 		"custom_diameter_inches": "custom_diameter_inches",
 		"custom_cbm_cubic_meters": "custom_cbm_cubic_meters",
 		"custom_shift": "custom_shift",
+		"custom_no_of_shaft": "custom_no_of_shaft",
+		"no_of_shaft": "custom_no_of_shaft",
 	}
 	for src, dst in optional_map.items():
 		if not spi_meta.has_field(dst):
@@ -10670,6 +10690,8 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 			continue
 		if dst in ("custom_polybag_kgs", "custom_diameter_inches", "custom_cbm_cubic_meters"):
 			row.set(dst, flt(val))
+		elif dst == "custom_no_of_shaft":
+			row.set(dst, cint(val) if val not in (None, "") else 0)
 		else:
 			row.set(dst, _cstr(val))
 	if shift and spi_meta.has_field("custom_shift") and not _cstr(getattr(row, "custom_shift", "")):
