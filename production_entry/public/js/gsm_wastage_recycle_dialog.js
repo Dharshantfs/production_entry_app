@@ -560,6 +560,25 @@ async function _loadWastageContext(sprName) {
 	return res.message || {};
 }
 
+function _pattyWastageTable(ctx) {
+	const tables = ctx?.tables || {};
+	const direct = tables.custom_running_patty_wastage;
+	if ((direct?.rows || []).length) {
+		return direct;
+	}
+	for (const [key, table] of Object.entries(tables)) {
+		if (!table || key === "custom_roll_waste" || key === "custom_recycled_wastage_details") {
+			continue;
+		}
+		if (/patty/i.test(key) || /patty/i.test(table.child_doctype || "")) {
+			if ((table.rows || []).length) {
+				return table;
+			}
+		}
+	}
+	return direct || { rows: [], columns: [] };
+}
+
 async function _loadPattyStock(sprName) {
 	const res = await frappe.call({
 		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_available_patty_stock",
@@ -618,25 +637,6 @@ export async function openGsmWastageDialog(opts = {}) {
 		},
 	});
 	typeD.show();
-}
-
-def _pattyWastageTable(ctx) {
-	const tables = ctx?.tables || {};
-	const direct = tables.custom_running_patty_wastage;
-	if ((direct?.rows || []).length) {
-		return direct;
-	}
-	for (const [key, table] of Object.entries(tables)) {
-		if (!table || key === "custom_roll_waste" || key === "custom_recycled_wastage_details") {
-			continue;
-		}
-		if (/patty/i.test(key) || /patty/i.test(table.child_doctype || "")) {
-			if ((table.rows || []).length) {
-				return table;
-			}
-		}
-	}
-	return direct || { rows: [], columns: [] };
 }
 
 async function _openRunningPattyWastage(sprName, sprRow) {
