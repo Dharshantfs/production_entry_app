@@ -32,6 +32,7 @@ const DESK_RECYCLED_COLS = [
 
 const DESK_ROLL_WASTE_COLS = [
 	{ field: "batch_no", label: __("Batch No") },
+	{ field: "roll_number", label: __("Roll No"), num: true },
 	{ field: "item_code", label: __("Item Code") },
 	{ field: "item_name", label: __("Item Name") },
 	{ field: "job_id", label: __("Job ID") },
@@ -298,14 +299,26 @@ function _cellValue(row, field) {
 		recycled_qty: ["recycled_qty", "recycled", "recycled_kg", "available_qty", "available"],
 		available_qty: ["available_qty", "available", "available_kg", "wastage_qty", "wastage", "net_wastage"],
 		available_kg: ["available_kg", "available", "available_qty", "wastage", "net_wastage"],
+		roll_number: ["roll_number", "roll_no"],
 	};
 	return _val(row, ...(aliases[field] || [field]));
+}
+
+function _rollNoFromBatch(batchNo) {
+	const bn = String(batchNo || "").trim();
+	if (!bn || !bn.includes("/")) {
+		return "";
+	}
+	const suffix = bn.split("/").pop();
+	const n = parseInt(suffix, 10);
+	return Number.isFinite(n) ? String(n) : "";
 }
 
 function _normalizePattyRow(row) {
 	const normalized = {
 		...row,
 		batch_no: _val(row, "batch_no", "batch", "source_roll"),
+		roll_number: _val(row, "roll_number", "roll_no") || _rollNoFromBatch(_val(row, "batch_no", "batch", "source_roll")),
 		quality: _val(row, "quality"),
 		color: _val(row, "color"),
 		gsm: _val(row, "gsm"),
@@ -528,7 +541,7 @@ export function pickSessionSpr(sessionSprList) {
 	_injectGwmStyles();
 	const list = (sessionSprList || []).filter((s) => s && s.spr_name);
 	if (!list.length) {
-		frappe.msgprint(__("Create SPRs first."));
+		frappe.msgprint(__("No produced rolls for wastage/recycle on this shift yet."));
 		return Promise.resolve(null);
 	}
 	if (list.length === 1) {

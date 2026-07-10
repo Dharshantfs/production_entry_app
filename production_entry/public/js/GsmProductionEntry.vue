@@ -3189,6 +3189,23 @@ const submitSprList = computed(() => {
   return shiftSessionSprList.value.filter((s) => ppWithRolls.has(s.pp_id));
 });
 
+/** Wastage / Recycle — only orders with at least one produced roll in the grid this shift. */
+const wastageRecycleSprList = computed(() => {
+  const ppWithProduction = new Set();
+  for (const r of rollLines.value) {
+    if (r.is_bundle_row) {
+      continue;
+    }
+    if (!r.pp_id || !r.batch_no) {
+      continue;
+    }
+    if (r.row_locked || r.spr_item_name || r.is_wasted) {
+      ppWithProduction.add(r.pp_id);
+    }
+  }
+  return shiftSessionSprList.value.filter((s) => ppWithProduction.has(s.pp_id));
+});
+
 /** @deprecated alias — use shiftSessionSprList / selectedSessionSprList / submitSprList */
 const sessionSprList = shiftSessionSprList;
 
@@ -3258,7 +3275,7 @@ const submitOrderSummary = computed(() => {
 });
 
 const canOpenWastageRecycle = computed(
-  () => shiftOpened.value && shiftSessionSprList.value.length > 0
+  () => shiftOpened.value && wastageRecycleSprList.value.length > 0
 );
 
 const MIXING_EXCLUDED_UNITS = [
@@ -3310,16 +3327,24 @@ function handleRollWasted(roll, sprRow) {
 }
 
 function openWastageDialog() {
+  if (!wastageRecycleSprList.value.length) {
+    frappe.msgprint(__("Produce at least one roll before opening Wastage."));
+    return;
+  }
   openGsmWastageDialog({
-    sessionSprList: sessionSprList.value,
+    sessionSprList: wastageRecycleSprList.value,
     rollLines: rollLines.value,
     onRollWasted: handleRollWasted,
   });
 }
 
 function openRecycleDialog() {
+  if (!wastageRecycleSprList.value.length) {
+    frappe.msgprint(__("Produce at least one roll before opening Recycle."));
+    return;
+  }
   openGsmRecycleDialog({
-    sessionSprList: sessionSprList.value,
+    sessionSprList: wastageRecycleSprList.value,
   });
 }
 

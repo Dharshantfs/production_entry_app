@@ -2094,6 +2094,17 @@ def _gsm_roll_batch_series_prefix(batch_no: str) -> str:
 	return bn
 
 
+def _gsm_roll_number_from_batch(batch_no: str) -> int:
+	"""Roll suffix after ``/`` in batch id (e.g. JS-0305264/2 → 2)."""
+	bn = _cstr(batch_no).strip()
+	if not bn or "/" not in bn:
+		return 0
+	try:
+		return cint(bn.rsplit("/", 1)[-1].strip())
+	except Exception:
+		return 0
+
+
 def _gsm_build_shift_spr_entry(spr) -> dict:
 	"""Serialize one SPR for GSM shift views (submitted or draft)."""
 	real_rolls = [it for it in (spr.get("items") or []) if _spr_is_real_roll_item_row(it)]
@@ -3347,6 +3358,13 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 			if not out.get("source_roll"):
 				out["source_roll"] = batch_no
 
+	if child_doctype == "Roll Waste Row" or "roll_waste" in _cstr(out.get("parentfield") or "").lower():
+		rn = cint(_gsm_pick_row_val(out, "roll_number", "roll_no") or 0)
+		if rn <= 0 and batch_no:
+			rn = _gsm_roll_number_from_batch(batch_no)
+		if rn > 0:
+			out["roll_number"] = rn
+
 	recycled_qty = flt(_gsm_pick_row_val(out, "recycled_qty", "recycled", "recycled_kg") or 0)
 	available_qty = flt(
 		_gsm_pick_row_val(out, "available_qty", "available", "available_kg", "wastage_qty", "wastage", "net_wastage")
@@ -3546,6 +3564,9 @@ def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = No
 		),
 		"batch_no": _cstr(
 			_pick_value(roll_payload, ["batch_no"]) or getattr(item_row, "batch_no", None) or ""
+		),
+		"roll_number": _gsm_roll_number_from_batch(
+			_cstr(_pick_value(roll_payload, ["batch_no"]) or getattr(item_row, "batch_no", None) or "")
 		),
 		"spr_item_name": _cstr(getattr(item_row, "name", "") or ""),
 		"source_roll": _cstr(

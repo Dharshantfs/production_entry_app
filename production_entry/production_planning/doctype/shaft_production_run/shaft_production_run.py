@@ -11062,6 +11062,16 @@ def _gsm_serialize_spr_roll_lines_for_grid(spr) -> list[dict]:
 	return lines
 
 
+def _gsm_roll_suffix_from_batch_no(batch_no: str) -> int:
+	bn = _cstr(batch_no).strip()
+	if not bn or "/" not in bn:
+		return 0
+	try:
+		return cint(bn.rsplit("/", 1)[-1].strip())
+	except Exception:
+		return 0
+
+
 def _gsm_serialize_roll_waste_for_grid(spr, waste_row, pp_id: str) -> dict:
 	"""Map SPR Roll Waste child row to GSM grid row (read-only strike-through)."""
 	specs = _gsm_resolve_item_row_display_specs(waste_row)
@@ -11072,6 +11082,9 @@ def _gsm_serialize_roll_waste_for_grid(spr, waste_row, pp_id: str) -> dict:
 	gsm = specs["gsm"] or cint(getattr(waste_row, "gsm", 0) or 0)
 	wastage = flt(getattr(waste_row, "wastage", 0) or 0)
 	batch_no = _cstr(getattr(waste_row, "batch_no", None) or "")
+	roll_no = cint(getattr(waste_row, "roll_number", 0) or 0)
+	if roll_no <= 0:
+		roll_no = _gsm_roll_suffix_from_batch_no(batch_no)
 	return {
 		"pp_id": pp_id,
 		"party_code": _cstr(spr.get("custom_order_code") or ""),
@@ -11081,7 +11094,7 @@ def _gsm_serialize_roll_waste_for_grid(spr, waste_row, pp_id: str) -> dict:
 		"color": color,
 		"gsm": gsm,
 		"batch_no": batch_no,
-		"roll_no": 0,
+		"roll_no": roll_no,
 		"width_inch": flt(getattr(waste_row, "width_inch", 0) or 0),
 		"meter_roll": flt(getattr(waste_row, "meter_per_roll", 0) or 0),
 		"produced_length_mtrs": flt(getattr(waste_row, "meter_per_roll", 0) or 0),

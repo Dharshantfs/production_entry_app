@@ -16,6 +16,7 @@
   "no_of_shafts",
   "wastage",
   "batch_no",
+  "roll_number",
   "spr_item_name",
   "source_roll"
  ],
@@ -31,6 +32,7 @@
   {"fieldname": "no_of_shafts", "fieldtype": "Int", "label": "No of Shafts"},
   {"fieldname": "wastage", "fieldtype": "Float", "in_list_view": 1, "label": "Wastage"},
   {"fieldname": "batch_no", "fieldtype": "Data", "in_list_view": 1, "label": "Batch No"},
+  {"fieldname": "roll_number", "fieldtype": "Int", "in_list_view": 1, "label": "Roll No", "read_only": 1},
   {"fieldname": "spr_item_name", "fieldtype": "Data", "label": "SPR Item Row"},
   {"fieldname": "source_roll", "fieldtype": "Data", "label": "Source Roll"}
  ],
