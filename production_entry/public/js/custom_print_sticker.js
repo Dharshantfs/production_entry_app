@@ -1042,17 +1042,18 @@ function _wastage_label_html(row, frm) {
         if (!color && specs.color) color = specs.color;
         if (!gsm && specs.gsm) gsm = String(specs.gsm);
     }
-    var width = row.width_inch != null && row.width_inch !== "" ? parseFloat(row.width_inch) : "";
-    var meters = row.meter_per_roll != null && row.meter_per_roll !== "" ? parseFloat(row.meter_per_roll) : "";
+    var width = row.width_inch != null && row.width_inch !== "" ? parseFloat(row.width_inch) : NaN;
+    var meters = row.meter_per_roll != null && row.meter_per_roll !== "" ? parseFloat(row.meter_per_roll) : NaN;
     var shafts = row.no_of_shafts != null && row.no_of_shafts !== "" ? String(row.no_of_shafts) : "";
     var wastage = row.net_wastage != null && row.net_wastage !== "" ? parseFloat(row.net_wastage) : parseFloat(row.wastage || 0);
-    var recycled = row.recycled != null && row.recycled !== "" ? parseFloat(row.recycled) : "";
+    var recycled = row.recycled != null && row.recycled !== "" ? parseFloat(row.recycled) : NaN;
     var batch = String(row.batch_no || row.patty_batch || "").trim();
     var barcode = batch || job || "WASTAGE";
 
     function esc(s) { return frappe.utils.escape_html(String(s == null ? "" : s)); }
+    function finiteNum(v) { return typeof v === "number" && Number.isFinite(v); }
     function rowHtml(lbl, val) {
-        if (val === "" || val === null || val === undefined || (typeof val === "number" && !isFinite(val))) return "";
+        if (val === "" || val === null || val === undefined || (typeof val === "number" && !finiteNum(val))) return "";
         return "<tr><td class=\"lbl\">" + esc(lbl) + "</td><td class=\"colon\">:</td><td class=\"val\">" + esc(val) + "</td></tr>";
     }
 
@@ -1062,11 +1063,11 @@ function _wastage_label_html(row, frm) {
         rowHtml("QUALITY", quality),
         rowHtml("COLOR", color),
         rowHtml("GSM", gsm),
-        rowHtml("WIDTH", isFinite(width) ? width + " IN" : ""),
-        rowHtml("METER/ROLL", isFinite(meters) ? meters : ""),
+        rowHtml("WIDTH", finiteNum(width) ? width + " IN" : ""),
+        rowHtml("METER/ROLL", finiteNum(meters) ? meters : ""),
         rowHtml("SHAFTS", shafts),
-        rowHtml("WASTAGE", isFinite(wastage) ? wastage.toFixed(3) + " Kg" : ""),
-        rowHtml("RECYCLED", isFinite(recycled) ? recycled.toFixed(3) + " Kg" : ""),
+        rowHtml("WASTAGE", finiteNum(wastage) ? wastage.toFixed(3) + " Kg" : ""),
+        rowHtml("RECYCLED", finiteNum(recycled) ? recycled.toFixed(3) + " Kg" : ""),
         rowHtml("BATCH", batch),
     ].join("");
 

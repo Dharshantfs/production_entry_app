@@ -709,43 +709,60 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 }
 
 async function _openRollWastage(sprName, sprRow, opts) {
+	const ctx = await _loadWastageContext(sprName);
+	const wasteTable = _rollWasteTable(ctx);
+	const wasteRows = (wasteTable.rows || []).map(_normalizePattyRow);
+	const rollWasteCols = _apiColsToDesk(wasteTable.columns, DESK_ROLL_WASTE_COLS);
 	const rolls = _rollsForSpr(opts.rollLines, sprRow);
-	if (!rolls.length) {
-		frappe.msgprint(__("No saved roll lines available to mark as waste."));
-		return;
-	}
-
-	const rollHtml = `<div class="gwm-shell gwm-card">
-		<div class="gwm-section-title">${__("Select rolls to mark as waste")}</div>
-		<div class="gwm-table-wrap">
-			<table class="gwm-desk-table">
-				<thead><tr>
-					<th class="gwm-check"><input type="checkbox" class="gwm-roll-all" /></th>
-					<th>${__("Batch")}</th><th>${__("Job")}</th><th>${__("Quality")}</th>
-					<th>${__("GSM")}</th><th class="gwm-num">${__("Width")}</th><th class="gwm-num">${__("Net Kg")}</th>
-				</tr></thead>
-				<tbody>${rolls
-					.map(
-						(r) => `<tr>
-					<td class="gwm-check"><input type="checkbox" class="gwm-roll-cb" data-batch="${_esc(
-						r.batch_no
-					)}" data-row="${_esc(r.spr_item_name || "")}" /></td>
-					<td>${_esc(r.batch_no)}</td><td>${_esc(r.job_id || r.job || "")}</td>
-					<td>${_esc(r.quality || "")}</td><td>${_esc(r.gsm || "")}</td>
-					<td class="gwm-num">${_esc(r.width_inch || "")}</td><td class="gwm-num">${_flt(r.net_weight).toFixed(3)}</td>
-				</tr>`
-					)
-					.join("")}</tbody>
-			</table>
-		</div>
+	const selectRollHtml = rolls.length
+		? `<div class="gwm-card">
+			<div class="gwm-section-title">${__("Select rolls to mark as waste")}</div>
+			<div class="gwm-table-wrap">
+				<table class="gwm-desk-table">
+					<thead><tr>
+						<th class="gwm-check"><input type="checkbox" class="gwm-roll-all" /></th>
+						<th>${__("Batch")}</th><th>${__("Job")}</th><th>${__("Quality")}</th>
+						<th>${__("GSM")}</th><th class="gwm-num">${__("Width")}</th><th class="gwm-num">${__("Net Kg")}</th>
+					</tr></thead>
+					<tbody>${rolls
+						.map(
+							(r) => `<tr>
+						<td class="gwm-check"><input type="checkbox" class="gwm-roll-cb" data-batch="${_esc(
+							r.batch_no
+						)}" data-row="${_esc(r.spr_item_name || "")}" /></td>
+						<td>${_esc(r.batch_no)}</td><td>${_esc(r.job_id || r.job || "")}</td>
+						<td>${_esc(r.quality || "")}</td><td>${_esc(r.gsm || "")}</td>
+						<td class="gwm-num">${_esc(r.width_inch || "")}</td><td class="gwm-num">${_flt(r.net_weight).toFixed(3)}</td>
+					</tr>`
+						)
+						.join("")}</tbody>
+				</table>
+			</div>
+		</div>`
+		: `<div class="gwm-card"><div class="gwm-empty">${__(
+				"No active saved roll lines available to mark as waste."
+		  )}</div></div>`;
+	const existingWasteHtml = `<div class="gwm-card" style="margin-top:12px;">
+		<div class="gwm-section-title">${__("Already Marked Roll Waste")}</div>
+		${_dataCardsHtml(wasteRows, { kind: "roll", showPrint: true })}
+	</div>
+	<div class="gwm-card" style="margin-top:12px;">
+		<div class="gwm-section-title">${__("Roll Waste Table")}</div>
+		${_deskTableHtml(rollWasteCols, wasteRows, { showPrint: true })}
 	</div>`;
+	const rollHtml = `<div class="gwm-shell">${selectRollHtml}${existingWasteHtml}</div>`;
 
 	const d = new frappe.ui.Dialog({
 		title: __("Roll Wasteage") + ` · ${sprRow.order_code || ""}`,
-		size: "large",
+		size: "extra-large",
 		fields: [{ fieldname: "rolls_html", fieldtype: "HTML", options: rollHtml }],
-		primary_action_label: __("Mark as Waste"),
+		primary_action_label: rolls.length ? __("Mark as Waste") : __("Refresh"),
 		async primary_action() {
+			if (!rolls.length) {
+				d.hide();
+				_openRollWastage(sprName, sprRow, opts);
+				return;
+			}
 			const selected = [];
 			d.$wrapper.find(".gwm-roll-cb:checked").each(function () {
 				selected.push({
@@ -779,7 +796,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 				}
 				frappe.show_alert({ message: __("Roll(s) marked as waste"), indicator: "green" });
 				d.hide();
-				_showRollWasteGrid(sprName, sprRow);
+				_openRollWastage(sprName, sprRow, opts);
 			} catch (e) {
 				frappe.msgprint(e.message || __("Failed to mark roll waste"));
 			} finally {
@@ -789,6 +806,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 	});
 	d.show();
 	_wireSelectAll(d.$wrapper, ".gwm-roll-cb", ".gwm-roll-all");
+	_bindWastagePrint(d.$wrapper, sprName, wasteTable.resolved_fieldname || "custom_roll_waste", wasteRows);
 }
 
 async function _showRollWasteGrid(sprName, sprRow) {
