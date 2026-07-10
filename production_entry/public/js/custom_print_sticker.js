@@ -1004,12 +1004,12 @@ function _wastage_row_from_frm(row_name, frm, table_field) {
     return row || null;
 }
 
-frappe.print_wastage_row_direct = function (row, frm) {
+frappe.print_wastage_row_direct = function (row, frm, table_field) {
     if (!row) {
         frappe.msgprint(__("Wastage row not found."));
         return;
     }
-    var html = _wastage_label_html(row, frm);
+    var html = _wastage_label_html(row, frm, table_field);
     var pw = window.open("", "_blank", "height=650,width=500");
     if (pw) {
         pw.document.write(html);
@@ -1023,14 +1023,125 @@ frappe.print_wastage_label_flow = function (row_name, frm, table_field) {
         frappe.msgprint(__("Wastage row not found."));
         return;
     }
-    frappe.print_wastage_row_direct(row, frm);
+    frappe.print_wastage_row_direct(row, frm, table_field);
 };
 
-function _wastage_label_html(row, frm) {
+function _patty_batch_from_roll_batch(rollBatch) {
+    var s = String(rollBatch || "").trim();
+    var idx = s.lastIndexOf("/");
+    if (idx <= 0) {
+        return "";
+    }
+    return s.slice(0, idx) + "W" + s.slice(idx);
+}
+
+function _wastage_label_date(doc) {
+    var raw = (doc && (doc.run_date || doc.posting_date)) || "";
+    if (!raw && typeof frappe !== "undefined" && frappe.datetime && frappe.datetime.get_today) {
+        raw = frappe.datetime.get_today();
+    }
+    raw = String(raw || "").trim();
+    if (!raw) {
+        return "";
+    }
+    var parts = raw.split(/[-/]/);
+    if (parts.length === 3 && parts[0].length === 4) {
+        return String(parts[2]).padStart(2, "0") + "-" + String(parts[1]).padStart(2, "0") + "-" + parts[0];
+    }
+    return raw;
+}
+
+function _wastage_width_display(row) {
+    var w = row.width_inch != null && row.width_inch !== "" ? row.width_inch : row.width;
+    var ws = String(w == null ? "" : w).trim();
+    if (!ws) {
+        return "";
+    }
+    var lower = ws.toLowerCase();
+    if (lower.indexOf("inch") !== -1) {
+        return ws;
+    }
+    return ws + " Inches";
+}
+
+function _wastage_resolve_order(row, doc) {
+    doc = doc || {};
+    var order = String(
+        doc.custom_order_code || doc.order_code || row.order_code || row.party_code || ""
+    ).trim();
+    if (order) {
+        return order;
+    }
+    var job = String(row.job_id || row.job || "").trim();
+    var items = doc.items || [];
+    for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (job && String(it.job || "") !== job) {
+            continue;
+        }
+        var pc = String(it.party_code || it.custom_party_code || "").trim();
+        if (pc) {
+            return pc;
+        }
+    }
+    return "";
+}
+
+function _wastage_resolve_batch(row, doc, table_field) {
+    var batch = String(row.batch_no || row.patty_batch || row.source_roll || "").trim();
+    if (batch) {
+        return batch;
+    }
+    doc = doc || {};
+    var job = String(row.job_id || row.job || "").trim();
+    var items = doc.items || [];
+    if (table_field === "custom_roll_waste") {
+        for (var i = 0; i < items.length; i++) {
+            var rollIt = items[i];
+            if (job && String(rollIt.job || "") !== job) {
+                continue;
+            }
+            var rollBn = String(rollIt.batch_no || "").trim();
+            if (rollBn) {
+                return rollBn;
+            }
+        }
+        return "";
+    }
+    for (var j = 0; j < items.length; j++) {
+        var pattyIt = items[j];
+        if (job && String(pattyIt.job || "") !== job) {
+            continue;
+        }
+        var pattyBn = String(pattyIt.batch_no || "").trim();
+        if (pattyBn.indexOf("W/") !== -1) {
+            return pattyBn;
+        }
+    }
+    for (var k = 0; k < items.length; k++) {
+        var srcIt = items[k];
+        if (job && String(srcIt.job || "") !== job) {
+            continue;
+        }
+        var rb = String(srcIt.batch_no || "").trim();
+        if (rb) {
+            return _patty_batch_from_roll_batch(rb);
+        }
+    }
+    return "";
+}
+
+function _wastage_label_html(row, frm, table_field) {
     var f = frm || {};
     var doc = f.doc || {};
-    var company = (doc.company || frappe.boot.sysdefaults.company || "THUSMA SMS NONWOVENS PVT LTD").toUpperCase();
-    var job = String(row.job_id || "").trim();
+    table_field = table_field || row.parentfield || "custom_running_patty_wastage";
+    var title =
+        table_field === "custom_roll_waste"
+            ? "ROLL WASTE"
+            : table_field === "custom_running_patty_wastage"
+              ? "PATTY WASTE"
+              : "WASTE";
+
     var item_code = String(row.item_code || "").trim();
     var item_name = String(row.item_name || "").trim();
     var quality = String(row.quality || "").trim();
@@ -1042,62 +1153,77 @@ function _wastage_label_html(row, frm) {
         if (!color && specs.color) color = specs.color;
         if (!gsm && specs.gsm) gsm = String(specs.gsm);
     }
-    var width = row.width_inch != null && row.width_inch !== "" ? parseFloat(row.width_inch) : NaN;
-    var meters = row.meter_per_roll != null && row.meter_per_roll !== "" ? parseFloat(row.meter_per_roll) : NaN;
-    var shafts = row.no_of_shafts != null && row.no_of_shafts !== "" ? String(row.no_of_shafts) : "";
-    var wastage = row.net_wastage != null && row.net_wastage !== "" ? parseFloat(row.net_wastage) : parseFloat(row.wastage || 0);
-    var recycled = row.recycled != null && row.recycled !== "" ? parseFloat(row.recycled) : NaN;
-    var batch = String(row.batch_no || row.patty_batch || "").trim();
-    var barcode = batch || job || "WASTAGE";
+
+    var runDate = _wastage_label_date(doc);
+    var widthDisplay = _wastage_width_display(row);
+    var netRaw =
+        row.net_wastage != null && row.net_wastage !== ""
+            ? row.net_wastage
+            : row.wastage != null && row.wastage !== ""
+              ? row.wastage
+              : row.wastage_qty;
+    var netKg = parseFloat(netRaw);
+    if (!Number.isFinite(netKg)) {
+        netKg = 0;
+    }
+    var batch = _wastage_resolve_batch(row, doc, table_field);
+    var orderCode = _wastage_resolve_order(row, doc);
+    var barcode = String(batch || "").trim();
 
     function esc(s) { return frappe.utils.escape_html(String(s == null ? "" : s)); }
-    function finiteNum(v) { return typeof v === "number" && Number.isFinite(v); }
     function rowHtml(lbl, val) {
-        if (val === "" || val === null || val === undefined || (typeof val === "number" && !finiteNum(val))) return "";
+        if (val === "" || val === null || val === undefined) return "";
         return "<tr><td class=\"lbl\">" + esc(lbl) + "</td><td class=\"colon\">:</td><td class=\"val\">" + esc(val) + "</td></tr>";
     }
 
     var body = [
-        rowHtml("JOB", job),
-        rowHtml("ITEM", item_code ? (item_name ? item_code + " - " + item_name : item_code) : item_name),
-        rowHtml("QUALITY", quality),
-        rowHtml("COLOR", color),
+        rowHtml("Date", runDate),
+        rowHtml("Quality", quality),
+        rowHtml("Color", color),
         rowHtml("GSM", gsm),
-        rowHtml("WIDTH", finiteNum(width) ? width + " IN" : ""),
-        rowHtml("METER/ROLL", finiteNum(meters) ? meters : ""),
-        rowHtml("SHAFTS", shafts),
-        rowHtml("WASTAGE", finiteNum(wastage) ? wastage.toFixed(3) + " Kg" : ""),
-        rowHtml("RECYCLED", finiteNum(recycled) ? recycled.toFixed(3) + " Kg" : ""),
-        rowHtml("BATCH", batch),
+        rowHtml("Width", widthDisplay),
+        rowHtml("Net Weight", netKg.toFixed(2) + " Kgs"),
     ].join("");
 
-    return '<html><head><title>Wastage Label</title><style>' +
+    var btmRows = "";
+    if (batch) {
+        btmRows += '<div class="btm-line"><span class="lbl">BATCH No</span><span class="colon">:</span><span class="batch-val">' + esc(batch) + "</span></div>";
+    }
+    if (orderCode) {
+        btmRows += '<div class="btm-line"><span class="lbl">Order</span><span class="colon">:</span><span class="val">' + esc(orderCode) + "</span></div>";
+    }
+
+    return '<html><head><title>Wastage Label Preview</title><style>' +
         '@media print { .btn-panel { display: none !important; } @page { size: 4in 4in; margin: 0; } body { margin: 0; } }' +
         'body { font-family: Arial, sans-serif; margin: 0; padding: 0; text-align: center; background: #eee; }' +
         '.btn-panel { padding: 10px; background: #eee; }' +
-        '.sticker { width: 4in; height: 4in; margin: 20px auto; border: 2px solid #111; background: #fff; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
-        '.inner-border { border: 2px solid #111; margin: 6px; padding: 6px 10px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; }' +
-        '.header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 4px; margin-bottom: 4px; }' +
-        '.title { font-size: 22px; font-weight: 900; letter-spacing: 1px; }' +
-        '.company { font-size: 13px; font-weight: 700; color: #333; margin-top: 2px; }' +
-        'table { width: 100%; border-collapse: collapse; }' +
-        'td { padding: 4px 0; text-align: left; vertical-align: middle; }' +
-        'td:nth-child(1) { width: 44%; padding-left: 8px; }' +
-        'td.colon { width: 5%; text-align: center; font-weight: bold; }' +
-        '.lbl { font-size: 15px; font-weight: 900; color: #333; }' +
-        '.val { font-size: 15px; font-weight: 900; color: #000; }' +
-        '.barcode-container { display: flex; justify-content: center; align-items: center; padding: 4px 0 2px; }' +
-        '#barcode { max-width: 100%; height: 50px; }' +
+        '.sticker { width: 4in; height: 4in; margin: 16px auto; border: 2px solid #000; background: #fff; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }' +
+        '.inner { border: 1px solid #000; margin: 8px; padding: 8px 10px; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box; }' +
+        '.hdr { font-size: 26px; font-weight: 900; color: #c1121f; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 6px; }' +
+        'table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }' +
+        'td { padding: 4px 6px; vertical-align: middle; }' +
+        'td.lbl { width: 42%; font-weight: 700; color: #333; }' +
+        'td.colon { width: 4%; text-align: center; font-weight: 700; }' +
+        'td.val { font-weight: 700; color: #000; }' +
+        '.foot { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 4px; }' +
+        '.btm-block { width: 100%; border-top: 2px dashed #666; padding-top: 6px; margin-top: 4px; text-align: center; }' +
+        '.btm-line { font-size: 14px; font-weight: 700; margin: 2px 0; }' +
+        '.btm-line .batch-val { font-size: 16px; font-weight: 900; }' +
+        '.btm-line .colon { margin: 0 4px; }' +
+        '#barcode { max-width: 100%; height: 55px; }' +
         '</style></head><body>' +
         '<div class="btn-panel"><button onclick="window.print()" style="padding:10px 20px;font-weight:bold;cursor:pointer;">PRINT</button>' +
-        '<button onclick="window.close()" style="padding:10px 20px;margin-left:10px;">CLOSE</button></div>' +
-        '<div class="sticker"><div class="inner-border">' +
-        '<div class="header"><div class="title">WASTAGE</div><div class="company">' + esc(company) + '</div></div>' +
-        '<table>' + body + '</table>' +
-        '<div class="barcode-container"><svg id="barcode"></svg></div>' +
-        '</div></div>' +
+        '<button onclick="window.close()" style="padding:10px 20px;margin-left:10px;font-weight:bold;cursor:pointer;">CLOSE</button></div>' +
+        '<div class="sticker"><div class="inner">' +
+        '<div><div class="hdr">' + esc(title) + '</div><table>' + body + '</table></div>' +
+        '<div class="foot">' +
+        (btmRows ? '<div class="btm-block">' + btmRows + '</div>' : '') +
+        (barcode ? '<svg id="barcode"></svg>' : '<div style="height:20px;"></div>') +
+        '</div></div></div>' +
         '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"><\/script>' +
-        '<script>JsBarcode("#barcode", ' + JSON.stringify(barcode) + ', { format: "CODE128", displayValue: true, fontSize: 11, textMargin: 1, height: 50, width: 1.9, margin: 0 });<\/script>' +
+        (barcode
+            ? ('<script>try{JsBarcode("#barcode",' + JSON.stringify(barcode) + ',{format:"CODE128",displayValue:true,fontSize:12,textMargin:0,height:55,width:2,margin:0});}catch(e){}<\/script>')
+            : '') +
         '</body></html>';
 }
 

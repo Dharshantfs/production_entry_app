@@ -205,7 +205,7 @@ production_entry.spr_label.print_wastage = async function (sprName, childRowName
 	}
 	const frm = production_entry.spr_label.build_frm(doc);
 	if (wastageRow && typeof frappe.print_wastage_row_direct === "function") {
-		frappe.print_wastage_row_direct(wastageRow, frm);
+		frappe.print_wastage_row_direct(wastageRow, frm, tableField);
 		return;
 	}
 	for (const fnName of _WASTAGE_LABEL_FN_CANDIDATES) {
@@ -215,7 +215,7 @@ production_entry.spr_label.print_wastage = async function (sprName, childRowName
 		}
 	}
 	if (wastageRow && typeof frappe.print_wastage_row_direct === "function") {
-		frappe.print_wastage_row_direct(wastageRow, frm);
+		frappe.print_wastage_row_direct(wastageRow, frm, tableField);
 		return;
 	}
 	frappe.msgprint(

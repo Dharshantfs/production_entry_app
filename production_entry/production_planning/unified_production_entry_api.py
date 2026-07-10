@@ -3319,13 +3319,33 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 				break
 
 	batch_no = _cstr(_gsm_pick_row_val(out, "batch_no", "batch", "source_roll", "source_batch") or "")
+	is_patty_wastage = "patty" in child_doctype.lower() or "patty" in _cstr(
+		out.get("parentfield") or ""
+	).lower()
 	if not batch_no:
-		for it in job_items:
-			batch_no = _cstr(getattr(it, "batch_no", "") or "")
-			if batch_no:
-				out["batch_no"] = batch_no
+		if is_patty_wastage:
+			for it in job_items:
+				candidate = _cstr(getattr(it, "batch_no", "") or "")
+				if candidate and "W/" in candidate:
+					batch_no = candidate
+					break
+			if not batch_no:
+				for it in job_items:
+					roll_batch = _cstr(getattr(it, "batch_no", "") or "")
+					if roll_batch and "/" in roll_batch:
+						idx = roll_batch.rfind("/")
+						if idx > 0:
+							batch_no = f"{roll_batch[:idx]}W{roll_batch[idx:]}"
+							break
+		else:
+			for it in job_items:
+				batch_no = _cstr(getattr(it, "batch_no", "") or "")
+				if batch_no:
+					break
+		if batch_no:
+			out["batch_no"] = batch_no
+			if not out.get("source_roll"):
 				out["source_roll"] = batch_no
-				break
 
 	recycled_qty = flt(_gsm_pick_row_val(out, "recycled_qty", "recycled", "recycled_kg") or 0)
 	available_qty = flt(
