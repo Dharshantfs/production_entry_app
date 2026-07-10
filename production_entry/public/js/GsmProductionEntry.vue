@@ -1556,7 +1556,7 @@ function setupGsmLiveSync() {
     if (shiftOpened.value && gsmPageIsVisible() && !gsmRefreshInFlight) {
       refreshSessionFromServer({ quiet: true, merge: true });
     }
-  }, 30000);
+  }, 15000);
   if (typeof document !== "undefined" && !gsmVisibilityBound) {
     document.addEventListener("visibilitychange", onGsmVisibilityChange);
     gsmVisibilityBound = true;
@@ -1564,9 +1564,15 @@ function setupGsmLiveSync() {
 }
 
 function onGsmVisibilityChange() {
-  if (!gsmPageIsVisible() && gsmRefreshDebounceTimer) {
-    clearTimeout(gsmRefreshDebounceTimer);
-    gsmRefreshDebounceTimer = null;
+  if (!gsmPageIsVisible()) {
+    if (gsmRefreshDebounceTimer) {
+      clearTimeout(gsmRefreshDebounceTimer);
+      gsmRefreshDebounceTimer = null;
+    }
+    return;
+  }
+  if (shiftOpened.value && !gsmRefreshInFlight) {
+    refreshSessionFromServer({ quiet: true, merge: true });
   }
 }
 
@@ -3298,8 +3304,9 @@ function handleRollWasted(roll, sprRow) {
   if (row) {
     row.is_wasted = true;
     row.row_locked = true;
-    scheduleAutosave();
+    row.row_readonly = true;
   }
+  refreshSessionFromServer({ quiet: true, merge: false });
 }
 
 function openWastageDialog() {
@@ -4357,6 +4364,10 @@ function submitWithTolerance() {
 }
 
 async function saveRow(row) {
+  if (row?.is_wasted || row?.row_readonly) {
+    frappe.msgprint(__("Wasted rolls are read-only."));
+    return;
+  }
   if (!row?.pp_id) {
     frappe.msgprint(__("Roll is missing production plan — re-add the row."));
     return;
@@ -4889,13 +4900,23 @@ async function backfillSessionSprLabelTypes() {
   }
 }
 
+function rollRowSyncKey(row) {
+  if (!row) {
+    return "";
+  }
+  if (cint(row.is_wasted) && row.batch_no) {
+    return `waste:${row.batch_no}`;
+  }
+  return row.batch_no || row.spr_item_name || row.roll_waste_row_name || row._id || "";
+}
+
 function applyResumePayload(msg, options = {}) {
   if (!msg || msg.status !== "ok") {
     return 0;
   }
   const merge = !!options.merge;
-  const serverModified = msg.server_modified || "";
-  if (merge && serverModified && lastServerSyncAt.value === serverModified) {
+  const serverRevision = msg.server_revision || msg.server_modified || "";
+  if (merge && serverRevision && lastServerSyncAt.value === serverRevision) {
     return 0;
   }
   const sprMap = {};
@@ -4918,31 +4939,36 @@ function applyResumePayload(msg, options = {}) {
     gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
     _id: r._id || `resume-${idx}-${Date.now()}`,
     is_bundle_row: !!cint(r.is_bundle_row),
+    is_wasted: !!cint(r.is_wasted),
+    row_readonly: !!cint(r.row_readonly),
     row_locked: r.row_locked != null ? !!cint(r.row_locked) : true,
-    row_ready_for_print: r.row_ready_for_print != null ? !!cint(r.row_ready_for_print) : true,
+    row_ready_for_print:
+      r.row_ready_for_print != null ? !!cint(r.row_ready_for_print) : !cint(r.is_wasted),
   }));
   if (merge && rollLines.value.length) {
-    const byKey = new Map();
-    for (const r of rollLines.value) {
-      const k = r.batch_no || r.spr_item_name || r._id;
-      if (k) {
-        byKey.set(k, r);
-      }
-    }
+    const serverByKey = new Map();
     for (const sr of serverRows) {
-      const k = sr.batch_no || sr.spr_item_name || sr._id;
-      if (k && !byKey.has(k)) {
-        byKey.set(k, sr);
-      } else if (k && byKey.has(k)) {
-        const local = byKey.get(k);
-        if (!local.row_locked && sr.row_locked) {
-          byKey.set(k, { ...local, ...sr });
-        } else if (local.row_locked && sr.row_locked) {
-          byKey.set(k, { ...sr, ...local, gross_weight: local.gross_weight || sr.gross_weight });
-        }
+      const k = rollRowSyncKey(sr);
+      if (k) {
+        serverByKey.set(k, sr);
       }
     }
-    rollLines.value = Array.from(byKey.values()).sort(
+    const merged = serverRows.map((sr) => ({ ...sr }));
+    for (const local of rollLines.value) {
+      if (local.row_locked || local.is_wasted) {
+        continue;
+      }
+      const k = rollRowSyncKey(local);
+      if (!k || serverByKey.has(k)) {
+        continue;
+      }
+      const wasteKey = local.batch_no ? `waste:${local.batch_no}` : "";
+      if (wasteKey && serverByKey.has(wasteKey)) {
+        continue;
+      }
+      merged.push(local);
+    }
+    rollLines.value = merged.sort(
       (a, b) => cint(b.creation_seq || 0) - cint(a.creation_seq || 0)
     );
   } else {
@@ -4975,7 +5001,7 @@ function applyResumePayload(msg, options = {}) {
   });
   creationSeq.value = Math.max(creationSeq.value, rollLines.value.length);
   syncBatchCounterFromGrid();
-  lastServerSyncAt.value = msg.server_modified || new Date().toISOString();
+  lastServerSyncAt.value = serverRevision || new Date().toISOString();
   scheduleAutosave();
   void backfillSessionSprLabelTypes();
   return serverRows.length;
@@ -6095,13 +6121,15 @@ function persistDraft() {
       filterDate: filterDate.value,
       selectedEntries: selectedEntries.value,
       selectionLocked: selectionLocked.value,
-      rollLines: rollLines.value,
       seriesPrefix: seriesPrefix.value,
       maxRollSuffix: maxRollSuffix.value,
-      sessionSprs: sessionSprs.value,
       creationSeq: creationSeq.value,
       batchContextKey: currentBatchContextKey(),
     };
+    if (!shiftOpened.value) {
+      payload.rollLines = rollLines.value;
+      payload.sessionSprs = sessionSprs.value;
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     if (!saveStatus.value || saveStatus.value === "Saved locally") {
       saveStatus.value = "Draft saved";
@@ -6111,7 +6139,8 @@ function persistDraft() {
   }
 }
 
-function restoreDraft() {
+function restoreDraft(options = {}) {
+  const skipRollGrid = !!options.skipRollGrid;
   try {
     let raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
@@ -6156,17 +6185,19 @@ function restoreDraft() {
       selectedEntries.value = [];
     }
     selectionLocked.value = !!d.selectionLocked;
-    rollLines.value = (d.rollLines || []).map((r) => ({
-      ...r,
-      gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
-      row_locked: !!r.row_locked,
-      row_ready_for_print: !!r.row_ready_for_print,
-    }));
+    if (!skipRollGrid) {
+      rollLines.value = (d.rollLines || []).map((r) => ({
+        ...r,
+        gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
+        row_locked: !!r.row_locked,
+        row_ready_for_print: !!r.row_ready_for_print,
+      }));
+    }
     const ctxKey = currentBatchContextKey();
     if (d.batchContextKey && d.batchContextKey === ctxKey) {
       seriesPrefix.value = d.seriesPrefix || "";
       maxRollSuffix.value = d.maxRollSuffix || 0;
-    } else {
+    } else if (!skipRollGrid) {
       resetBatchSeriesCache();
       rollLines.value = [];
       sessionSprs.value = {};
@@ -6174,7 +6205,9 @@ function restoreDraft() {
       selectionLocked.value = false;
     }
     batchContextKey.value = ctxKey;
-    sessionSprs.value = d.sessionSprs || {};
+    if (!skipRollGrid) {
+      sessionSprs.value = d.sessionSprs || {};
+    }
     void backfillSessionSprLabelTypes();
     creationSeq.value = d.creationSeq || 0;
     syncBatchCounterFromGrid();
@@ -6244,7 +6277,7 @@ onMounted(async () => {
 
   const booted = await bootstrapFromServerSession();
   if (!booted) {
-    restoreDraft();
+    restoreDraft({ skipRollGrid: true });
     if (filterUnit.value) {
       headerUnit.value = filterUnit.value;
     }

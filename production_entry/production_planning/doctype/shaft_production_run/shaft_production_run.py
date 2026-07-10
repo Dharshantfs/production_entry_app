@@ -10990,6 +10990,56 @@ def _gsm_serialize_spr_roll_lines_for_grid(spr) -> list[dict]:
 	return lines
 
 
+def _gsm_serialize_roll_waste_for_grid(spr, waste_row, pp_id: str) -> dict:
+	"""Map SPR Roll Waste child row to GSM grid row (read-only strike-through)."""
+	item_code = _cstr(getattr(waste_row, "item_code", None) or "")
+	item_name = _cstr(getattr(waste_row, "item_name", None) or "")
+	if item_code and not item_name:
+		item_name = _cstr(frappe.db.get_value("Item", item_code, "item_name") or "")
+	quality = _cstr(getattr(waste_row, "quality", None) or "")
+	color = _cstr(getattr(waste_row, "color", None) or "")
+	gsm = cint(getattr(waste_row, "gsm", 0) or 0)
+	if item_code and (not quality or not color or gsm <= 0):
+		specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+		if not quality:
+			quality = _cstr(specs.get("quality") or "")
+		if not color:
+			color = _cstr(specs.get("color") or "")
+		if gsm <= 0:
+			gsm = cint(specs.get("gsm") or 0)
+	wastage = flt(getattr(waste_row, "wastage", 0) or 0)
+	batch_no = _cstr(getattr(waste_row, "batch_no", None) or "")
+	return {
+		"pp_id": pp_id,
+		"party_code": _cstr(spr.get("custom_order_code") or ""),
+		"item_code": item_code,
+		"item_name": item_name,
+		"quality": quality,
+		"color": color,
+		"gsm": gsm,
+		"batch_no": batch_no,
+		"roll_no": 0,
+		"width_inch": flt(getattr(waste_row, "width_inch", 0) or 0),
+		"meter_roll": flt(getattr(waste_row, "meter_per_roll", 0) or 0),
+		"produced_length_mtrs": flt(getattr(waste_row, "meter_per_roll", 0) or 0),
+		"produced_gsm": gsm,
+		"net_weight": wastage,
+		"gross_weight": wastage,
+		"planned_qty": 0,
+		"work_order": "",
+		"uom": "Kg",
+		"job_id": _cstr(getattr(waste_row, "job_id", None) or ""),
+		"spr_item_name": _cstr(getattr(waste_row, "spr_item_name", None) or ""),
+		"roll_waste_row_name": _cstr(getattr(waste_row, "name", None) or ""),
+		"spr_name": spr.name,
+		"is_bundle_row": 0,
+		"is_wasted": 1,
+		"row_locked": 1,
+		"row_readonly": 1,
+		"row_ready_for_print": 0,
+	}
+
+
 def _gsm_patty_stock_from_batch_doc(batch_doc: dict, item_code: str, available_kg: float) -> dict:
 	batch_doc = batch_doc or {}
 	item_code = _cstr(item_code or batch_doc.get("item") or batch_doc.get("item_code") or "").strip()

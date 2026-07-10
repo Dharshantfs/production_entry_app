@@ -4,8 +4,10 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "field_order": [
+  "field_order": [
   "job_id",
+  "item_code",
+  "item_name",
   "quality",
   "color",
   "gsm",
@@ -19,6 +21,8 @@
  ],
  "fields": [
   {"fieldname": "job_id", "fieldtype": "Data", "in_list_view": 1, "label": "Job ID"},
+  {"fieldname": "item_code", "fieldtype": "Link", "in_list_view": 1, "label": "Item Code", "options": "Item"},
+  {"fieldname": "item_name", "fieldtype": "Data", "fetch_from": "item_code.item_name", "in_list_view": 1, "label": "Item Name", "read_only": 1},
   {"fieldname": "quality", "fieldtype": "Data", "in_list_view": 1, "label": "Quality"},
   {"fieldname": "color", "fieldtype": "Data", "in_list_view": 1, "label": "Color"},
   {"fieldname": "gsm", "fieldtype": "Int", "in_list_view": 1, "label": "GSM"},

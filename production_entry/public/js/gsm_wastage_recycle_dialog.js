@@ -32,6 +32,8 @@ const DESK_RECYCLED_COLS = [
 
 const DESK_ROLL_WASTE_COLS = [
 	{ field: "batch_no", label: __("Batch No") },
+	{ field: "item_code", label: __("Item Code") },
+	{ field: "item_name", label: __("Item Name") },
 	{ field: "job_id", label: __("Job ID") },
 	{ field: "quality", label: __("Quality") },
 	{ field: "color", label: __("Color") },

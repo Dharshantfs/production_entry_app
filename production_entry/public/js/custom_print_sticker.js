@@ -1000,9 +1000,17 @@ function _wastage_label_html(row, frm) {
     var doc = f.doc || {};
     var company = (doc.company || frappe.boot.sysdefaults.company || "THUSMA SMS NONWOVENS PVT LTD").toUpperCase();
     var job = String(row.job_id || "").trim();
+    var item_code = String(row.item_code || "").trim();
+    var item_name = String(row.item_name || "").trim();
     var quality = String(row.quality || "").trim();
     var color = String(row.color || "").trim();
     var gsm = row.gsm != null && row.gsm !== "" ? String(row.gsm) : "";
+    if ((!quality || !color || !gsm) && (item_code || item_name)) {
+        var specs = extract_details_enhanced(item_name, item_code);
+        if (!quality && specs.quality) quality = specs.quality;
+        if (!color && specs.color) color = specs.color;
+        if (!gsm && specs.gsm) gsm = String(specs.gsm);
+    }
     var width = row.width_inch != null && row.width_inch !== "" ? parseFloat(row.width_inch) : "";
     var meters = row.meter_per_roll != null && row.meter_per_roll !== "" ? parseFloat(row.meter_per_roll) : "";
     var shafts = row.no_of_shafts != null && row.no_of_shafts !== "" ? String(row.no_of_shafts) : "";
@@ -1019,6 +1027,7 @@ function _wastage_label_html(row, frm) {
 
     var body = [
         rowHtml("JOB", job),
+        rowHtml("ITEM", item_code ? (item_name ? item_code + " - " + item_name : item_code) : item_name),
         rowHtml("QUALITY", quality),
         rowHtml("COLOR", color),
         rowHtml("GSM", gsm),

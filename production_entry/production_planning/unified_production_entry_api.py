@@ -32,6 +32,8 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	save_gsm_roll_line_to_spr,
 	spr_get_tolerance_violations,
 	_gsm_serialize_spr_roll_lines_for_grid,
+	_gsm_serialize_roll_waste_for_grid,
+	_spr_resolve_roll_line_specs_from_item_code,
 	_spr_roll_starting_for_gsm_session,
 )
 from production_entry.production_planning.scheduler_api import create_item_spr, get_current_shift
@@ -909,6 +911,37 @@ def _gsm_draft_sprs_for_session(run_date, shift, unit) -> list[dict]:
 	return out
 
 
+def _gsm_session_roll_revision(session_doc, session_sprs: list) -> str:
+	"""Revision token that changes when any session SPR roll or waste row changes."""
+	parts = [_cstr(getattr(session_doc, "name", "")), str(getattr(session_doc, "modified", "") or "")]
+	roll_count = 0
+	waste_count = 0
+	batch_tokens = []
+	for spr_row in session_sprs or []:
+		spr_name = _cstr(spr_row.get("spr_name") if isinstance(spr_row, dict) else "").strip()
+		if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+			continue
+		spr_mod = frappe.db.get_value("Shaft Production Run", spr_name, "modified")
+		parts.append(f"{spr_name}:{spr_mod or ''}")
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		for it in spr.items or []:
+			if not _spr_is_real_roll_item_row(it):
+				continue
+			roll_count += 1
+			bn = _cstr(getattr(it, "batch_no", ""))
+			if bn:
+				batch_tokens.append(f"A:{bn}")
+		for waste in spr.get("custom_roll_waste") or []:
+			waste_count += 1
+			bn = _cstr(getattr(waste, "batch_no", ""))
+			if bn:
+				batch_tokens.append(f"W:{bn}")
+	parts.append(f"rolls={roll_count}")
+	parts.append(f"waste={waste_count}")
+	parts.append("batches=" + ",".join(sorted(batch_tokens)))
+	return "|".join(parts)
+
+
 @frappe.whitelist()
 def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 	"""Hydrate GSM grid from server — draft SPR roll lines for an open shift session."""
@@ -951,6 +984,16 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			seq += 1
 			line["_id"] = f"resume-{spr_name}-{seq}"
 			line["creation_seq"] = seq
+			line["spr_name"] = spr_name
+			roll_lines.append(line)
+			jid = _cstr(line.get("job_id") or "")
+			if jid and pp_id:
+				job_keys.add((pp_id, jid))
+		for waste in spr.get("custom_roll_waste") or []:
+			line = _gsm_serialize_roll_waste_for_grid(spr, waste, pp_id)
+			seq += 1
+			line["_id"] = f"resume-waste-{spr_name}-{seq}"
+			line["creation_seq"] = seq
 			roll_lines.append(line)
 			jid = _cstr(line.get("job_id") or "")
 			if jid and pp_id:
@@ -961,6 +1004,8 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 	# Newest roll first — matches GSM grid unshift order on active entry machine.
 	roll_lines.reverse()
 
+	server_revision = _gsm_session_roll_revision(session_doc, session_sprs)
+
 	return {
 		"status": "ok",
 		"session": _serialize_gsm_shift_session(session_doc),
@@ -969,6 +1014,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 		"job_selections": job_selections,
 		"roll_count": len(roll_lines),
 		"server_modified": str(session_doc.modified or ""),
+		"server_revision": server_revision,
 	}
 
 
@@ -3375,6 +3421,33 @@ def _gsm_map_to_recycled_row(src, from_roll_waste: bool = False) -> dict:
 
 def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = None) -> dict:
 	roll_payload = roll_payload if isinstance(roll_payload, dict) else {}
+	item_code = _cstr(
+		_pick_value(roll_payload, ["item_code"]) or getattr(item_row, "item_code", None) or ""
+	)
+	item_name = _cstr(
+		_pick_value(roll_payload, ["item_name"]) or getattr(item_row, "item_name", None) or ""
+	)
+	if item_code and not item_name:
+		item_name = _cstr(frappe.db.get_value("Item", item_code, "item_name") or "")
+	quality = _cstr(
+		_pick_value(roll_payload, ["quality"]) or getattr(item_row, "quality", None) or ""
+	)
+	color = _cstr(_pick_value(roll_payload, ["color"]) or getattr(item_row, "color", None) or "")
+	gsm = cint(_pick_value(roll_payload, ["gsm"]) or getattr(item_row, "gsm", None) or 0)
+	if item_code and (not quality or not color or gsm <= 0):
+		specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+		if not quality:
+			quality = _cstr(specs.get("quality") or "")
+		if not color:
+			color = _cstr(specs.get("color") or "")
+		if gsm <= 0:
+			gsm = cint(specs.get("gsm") or 0)
+	no_shafts = cint(
+		_pick_value(roll_payload, ["no_of_shafts", "custom_no_of_shaft"])
+		or getattr(item_row, "no_of_shafts", None)
+		or getattr(item_row, "custom_no_of_shaft", None)
+		or 0
+	)
 	logical = {
 		"job_id": _cstr(
 			_pick_value(roll_payload, ["job_id", "job"])
@@ -3382,11 +3455,11 @@ def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = No
 			or getattr(item_row, "job", None)
 			or ""
 		),
-		"quality": _cstr(
-			_pick_value(roll_payload, ["quality"]) or getattr(item_row, "quality", None) or ""
-		),
-		"color": _cstr(_pick_value(roll_payload, ["color"]) or getattr(item_row, "color", None) or ""),
-		"gsm": cint(_pick_value(roll_payload, ["gsm"]) or getattr(item_row, "gsm", None) or 0),
+		"item_code": item_code,
+		"item_name": item_name,
+		"quality": quality,
+		"color": color,
+		"gsm": gsm,
 		"width_inch": flt(
 			_pick_value(roll_payload, ["width_inch", "width"])
 			or getattr(item_row, "width_inch", None)
@@ -3398,9 +3471,7 @@ def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = No
 			or getattr(item_row, "produced_length_mtrs", None)
 			or 0
 		),
-		"no_of_shafts": cint(
-			_pick_value(roll_payload, ["no_of_shafts"]) or getattr(item_row, "no_of_shafts", None) or 0
-		),
+		"no_of_shafts": no_shafts,
 		"wastage": flt(
 			_pick_value(roll_payload, ["wastage", "net_weight"])
 			or getattr(item_row, "net_weight", None)
@@ -3585,6 +3656,12 @@ def mark_gsm_roll_waste(spr_name, roll_payload=None, batch_no=None, row_name=Non
 		spr.remove(target_item)
 		spr.flags._spr_incremental_roll_save = True
 		spr.save()
+
+		from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+			_gsm_publish_session_update,
+		)
+
+		_gsm_publish_session_update(spr)
 
 		roll_waste_child = (spr.custom_roll_waste or [])[-1]
 		return {
