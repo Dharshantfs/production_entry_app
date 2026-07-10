@@ -3392,6 +3392,7 @@ class ShaftProductionRun(Document):
 		queries = (
 			("Batch", "batch_id"),
 			("Shaft Production Run Item", "batch_no"),
+			("Roll Waste Row", "batch_no"),
 		)
 		for table, col in queries:
 			try:
@@ -9688,7 +9689,11 @@ def _spr_operation_lock(spr_name: str, operation: str = "write", ttl_sec: int = 
 
 
 def _spr_used_batch_numbers_on_spr(spr_name: str | None, in_memory_items=None) -> set[str]:
-	"""All batch_no values on this SPR (DB + in-memory rows)."""
+	"""All batch_no values on this SPR (DB + in-memory rows).
+
+	Includes Roll Waste rows — wasted rolls keep their batch number, so the
+	next-batch preview must not re-issue it (GSM: mark waste then Add Roll).
+	"""
 	used: set[str] = set()
 	if spr_name:
 		for bn in frappe.db.sql_list(
@@ -9702,6 +9707,21 @@ def _spr_used_batch_numbers_on_spr(spr_name: str | None, in_memory_items=None) -
 			bn = _cstr(bn).strip()
 			if bn:
 				used.add(bn)
+		try:
+			for bn, src in frappe.db.sql(
+				"""
+				SELECT batch_no, source_roll
+				FROM `tabRoll Waste Row`
+				WHERE parent = %s
+				""",
+				spr_name,
+			):
+				for val in (bn, src):
+					val = _cstr(val).strip()
+					if val:
+						used.add(val)
+		except Exception:
+			pass
 	for row in in_memory_items or []:
 		bn = _cstr(getattr(row, "batch_no", None) or (row.get("batch_no") if isinstance(row, dict) else "")).strip()
 		if bn:
@@ -9730,12 +9750,28 @@ def _spr_batch_exists_on_other_spr(batch_no: str, exclude_spr: str | None = None
 
 
 def _spr_batch_exists_globally(batch_no: str, exclude_spr: str | None = None) -> bool:
-	"""True when batch_no exists on another SPR row or in Batch master."""
+	"""True when batch_no exists on another SPR row, a roll waste row, or in Batch master."""
 	batch_no = _cstr(batch_no).strip()
 	if not batch_no:
 		return False
 	if _spr_batch_exists_on_other_spr(batch_no, exclude_spr):
 		return True
+	try:
+		if exclude_spr:
+			if frappe.db.sql(
+				"""
+				SELECT name
+				FROM `tabRoll Waste Row`
+				WHERE batch_no = %s AND parent != %s
+				LIMIT 1
+				""",
+				(batch_no, exclude_spr),
+			):
+				return True
+		elif frappe.db.exists("Roll Waste Row", {"batch_no": batch_no}):
+			return True
+	except Exception:
+		pass
 	return bool(frappe.db.exists("Batch", {"batch_id": batch_no}))
 
 
