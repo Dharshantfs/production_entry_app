@@ -3954,14 +3954,15 @@ function pickJobIdForLine(line) {
 }
 
 function buildRollPayload(row) {
+  const meta = orderMetaForPp(row.pp_id);
   return {
     pp_id: row.pp_id,
     planning_table_row: row.planning_table_row,
     party_code: row.party_code,
     item_code: row.item_code,
     item_name: row.item_name,
-    quality: row.quality,
-    color: row.color,
+    quality: row.quality || meta.quality || "",
+    color: row.color || row.fabric_colour || meta.color || "",
     gsm: row.gsm,
     batch_no: row.batch_no,
     roll_no: row.roll_no,
@@ -4910,6 +4911,24 @@ function rollRowSyncKey(row) {
   return row.batch_no || row.spr_item_name || row.roll_waste_row_name || row._id || "";
 }
 
+function enrichRollLinesDisplayMeta() {
+  for (const row of rollLines.value) {
+    const meta = orderMetaForPp(row.pp_id);
+    if (!row.quality) {
+      row.quality = meta.quality || "";
+    }
+    if (!row.color) {
+      row.color = meta.color || row.fabric_colour || "";
+    }
+    if (!row.gsm && meta.gsm) {
+      row.gsm = meta.gsm;
+    }
+    if (!row.party_code && meta.orderCode) {
+      row.party_code = meta.orderCode;
+    }
+  }
+}
+
 function applyResumePayload(msg, options = {}) {
   if (!msg || msg.status !== "ok") {
     return 0;
@@ -4999,6 +5018,7 @@ function applyResumePayload(msg, options = {}) {
     }
     return r;
   });
+  enrichRollLinesDisplayMeta();
   creationSeq.value = Math.max(creationSeq.value, rollLines.value.length);
   syncBatchCounterFromGrid();
   lastServerSyncAt.value = serverRevision || new Date().toISOString();
@@ -5877,6 +5897,7 @@ async function addRollRow() {
   const itemCode = woInfo?.production_item || src.itemCode || src.item_code;
   const itemName = woInfo?.production_item_name || src.description || src.item_name || "";
   creationSeq.value += 1;
+  const meta = orderMetaForPp(job.pp_id);
   const newRow = {
     _id: `row-${Date.now()}-${creationSeq.value}`,
     creation_seq: creationSeq.value,
@@ -5885,8 +5906,8 @@ async function addRollRow() {
     party_code: line.orderCode || resolveOrderCodeForPp(line.ppId || src.pp_id),
     item_code: itemCode,
     item_name: itemName,
-    quality: src.quality || "",
-    color: src.color || src.fabric_colour || "",
+    quality: src.quality || meta.quality || "",
+    color: src.color || src.fabric_colour || meta.color || "",
     gsm: src.gsm,
     batch_no: batch.batch_no || "",
     roll_no: batch.roll_no || "",

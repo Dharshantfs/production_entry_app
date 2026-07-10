@@ -567,23 +567,64 @@ async function _loadWastageContext(sprName) {
 	return res.message || {};
 }
 
-function _pattyWastageTable(ctx) {
+function _bestChildTable(ctx, preferredKey, matchRe, skipKeys = []) {
 	const tables = ctx?.tables || {};
-	const direct = tables.custom_running_patty_wastage;
-	if ((direct?.rows || []).length) {
-		return direct;
+	const candidates = [];
+	const direct = tables[preferredKey];
+	if (direct) {
+		candidates.push(direct);
 	}
 	for (const [key, table] of Object.entries(tables)) {
-		if (!table || key === "custom_roll_waste" || key === "custom_recycled_wastage_details") {
+		if (!table || skipKeys.includes(key)) {
 			continue;
 		}
-		if (/patty/i.test(key) || /patty/i.test(table.child_doctype || "")) {
-			if ((table.rows || []).length) {
-				return table;
-			}
+		if (matchRe.test(key) || matchRe.test(table.child_doctype || "")) {
+			candidates.push(table);
 		}
 	}
-	return direct || { rows: [], columns: [] };
+	return candidates.reduce(
+		(best, table) => ((table?.rows || []).length > (best?.rows || []).length ? table : best),
+		direct || { rows: [], columns: [] }
+	);
+}
+
+function _pattyWastageTable(ctx) {
+	return _bestChildTable(
+		ctx,
+		"custom_running_patty_wastage",
+		/patty/i,
+		["custom_roll_waste", "custom_recycled_wastage_details"]
+	);
+}
+
+function _rollWasteTable(ctx) {
+	return _bestChildTable(
+		ctx,
+		"custom_roll_waste",
+		/roll.?waste|waste/i,
+		["custom_running_patty_wastage", "custom_recycled_wastage_details"]
+	);
+}
+
+function _rowDataFromPrintBtn($btn, rows) {
+	const rowName = String($btn.attr("data-row") || "").trim();
+	if (!rowName) {
+		return null;
+	}
+	return (rows || []).find((r) => r && r.name === rowName) || null;
+}
+
+async function _bindWastagePrint($wrapper, sprName, tableField, rows) {
+	$wrapper.off("click.gwmPrint").on("click.gwmPrint", ".gwm-print-btn", async function () {
+		const $btn = $(this);
+		const rowData = _rowDataFromPrintBtn($btn, rows);
+		await gsmPrintWastageLabel(
+			sprName,
+			String($btn.attr("data-row") || "").trim(),
+			tableField,
+			rowData
+		);
+	});
 }
 
 function _rollsForSpr(rollLines, sprRow) {
@@ -664,9 +705,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		},
 	});
 	d.show();
-	d.$wrapper.on("click", ".gwm-print-btn", async function () {
-		await gsmPrintWastageLabel(sprName, $(this).data("row"), "custom_running_patty_wastage");
-	});
+	_bindWastagePrint(d.$wrapper, sprName, table.resolved_fieldname || "custom_running_patty_wastage", rows);
 }
 
 async function _openRollWastage(sprName, sprRow, opts) {
@@ -754,7 +793,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 
 async function _showRollWasteGrid(sprName, sprRow) {
 	const ctx = await _loadWastageContext(sprName);
-	const table = (ctx.tables || {}).custom_roll_waste || {};
+	const table = _rollWasteTable(ctx);
 	const rows = (table.rows || []).map(_normalizePattyRow);
 	const rollCols = _apiColsToDesk(table.columns, DESK_ROLL_WASTE_COLS);
 	const content = `<div class="gwm-shell">
@@ -778,9 +817,7 @@ async function _showRollWasteGrid(sprName, sprRow) {
 		},
 	});
 	d.show();
-	d.$wrapper.on("click", ".gwm-print-btn", async function () {
-		await gsmPrintWastageLabel(sprName, $(this).data("row"), "custom_roll_waste");
-	});
+	_bindWastagePrint(d.$wrapper, sprName, table.resolved_fieldname || "custom_roll_waste", rows);
 }
 
 function _recycledWastageTable(ctx) {

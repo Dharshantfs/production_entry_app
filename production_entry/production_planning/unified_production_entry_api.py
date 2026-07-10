@@ -3155,8 +3155,8 @@ _PATTY_STOCK_METHOD_CANDIDATES = (
 # Logical child-row keys → possible DocField names on live sites (repo scaffolds differ).
 _GSM_CHILD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 	"job_id": ("job_id", "job"),
-	"quality": ("quality",),
-	"color": ("color",),
+	"quality": ("quality", "custom_quality"),
+	"color": ("color", "fabric_colour", "custom_color"),
 	"gsm": ("gsm",),
 	"width_inch": ("width_inch", "width", "w"),
 	"width": ("width", "width_inch", "w"),
@@ -3347,6 +3347,52 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 		out["wastage"] = wastage_qty
 		if not out.get("net_wastage"):
 			out["net_wastage"] = wastage_qty
+
+	quality = _cstr(_gsm_pick_row_val(out, "quality", "custom_quality") or "")
+	color = _cstr(_gsm_pick_row_val(out, "color", "fabric_colour", "custom_color") or "")
+	gsm = cint(_gsm_pick_row_val(out, "gsm") or 0)
+	item_code = _cstr(_gsm_pick_row_val(out, "item_code") or "")
+	item_name = _cstr(_gsm_pick_row_val(out, "item_name") or "")
+	for it in job_items:
+		if not item_code:
+			item_code = _cstr(getattr(it, "item_code", "") or "")
+		if not item_name:
+			item_name = _cstr(getattr(it, "item_name", "") or "")
+		if not quality:
+			quality = _cstr(getattr(it, "quality", "") or "")
+		if not color:
+			color = _cstr(
+				getattr(it, "color", None) or getattr(it, "fabric_colour", None) or ""
+			)
+		if gsm <= 0:
+			gsm = cint(getattr(it, "gsm", 0) or 0)
+		if quality and color and gsm > 0:
+			break
+	if item_code and (not quality or not color or gsm <= 0):
+		try:
+			from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+				_spr_resolve_roll_line_specs_from_item_code,
+			)
+
+			specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+			if not quality:
+				quality = _cstr(specs.get("quality") or "")
+			if not color:
+				color = _cstr(specs.get("color") or "")
+			if gsm <= 0:
+				gsm = cint(specs.get("gsm") or 0)
+		except Exception:
+			pass
+	if quality:
+		out["quality"] = quality
+	if color:
+		out["color"] = color
+	if gsm > 0:
+		out["gsm"] = gsm
+	if item_code and not out.get("item_code"):
+		out["item_code"] = item_code
+	if item_name and not out.get("item_name"):
+		out["item_name"] = item_name
 
 	return out
 

@@ -10630,6 +10630,14 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 				fallback_pc = ""
 		if fallback_pc:
 			payload = {**payload, "party_code": fallback_pc}
+	payload = dict(payload or {})
+	specs = _gsm_resolve_item_row_display_specs({**payload, **{k: getattr(row, k, None) for k in ("item_code", "item_name", "quality", "color", "gsm")}})
+	if not _cstr(payload.get("quality") or "").strip():
+		payload["quality"] = specs.get("quality") or ""
+	if not _cstr(payload.get("color") or "").strip():
+		payload["color"] = specs.get("color") or ""
+	if cint(payload.get("gsm") or 0) <= 0 and cint(specs.get("gsm") or 0) > 0:
+		payload["gsm"] = specs.get("gsm")
 	field_map = {
 		"work_order": "work_order",
 		"item_code": "item_code",
@@ -10891,15 +10899,42 @@ def _gsm_segment_width_from_bundle_sticker(sticker, pack_count: int) -> float:
 	return 0.0
 
 
+def _gsm_resolve_item_row_display_specs(row_like) -> dict:
+	"""Fill quality, color, gsm from item row fields or item code parsing."""
+	quality = _cstr(getattr(row_like, "quality", None) or (row_like.get("quality") if isinstance(row_like, dict) else "") or "")
+	color = _cstr(
+		getattr(row_like, "color", None)
+		or getattr(row_like, "fabric_colour", None)
+		or (row_like.get("color") if isinstance(row_like, dict) else "")
+		or (row_like.get("fabric_colour") if isinstance(row_like, dict) else "")
+		or ""
+	)
+	gsm = cint(getattr(row_like, "gsm", 0) or (row_like.get("gsm") if isinstance(row_like, dict) else 0) or 0)
+	item_code = _cstr(getattr(row_like, "item_code", None) or (row_like.get("item_code") if isinstance(row_like, dict) else "") or "")
+	item_name = _cstr(getattr(row_like, "item_name", None) or (row_like.get("item_name") if isinstance(row_like, dict) else "") or "")
+	if item_code and not item_name:
+		item_name = _cstr(frappe.db.get_value("Item", item_code, "item_name") or "")
+	if item_code and (not quality or not color or gsm <= 0):
+		specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
+		if not quality:
+			quality = _cstr(specs.get("quality") or "")
+		if not color:
+			color = _cstr(specs.get("color") or "")
+		if gsm <= 0:
+			gsm = cint(specs.get("gsm") or 0)
+	return {"quality": quality, "color": color, "gsm": gsm, "item_code": item_code, "item_name": item_name}
+
+
 def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
+	specs = _gsm_resolve_item_row_display_specs(it)
 	return {
 		"pp_id": pp_id,
 		"party_code": _cstr(getattr(it, "party_code", None) or getattr(it, "custom_order_code", None)),
-		"item_code": _cstr(getattr(it, "item_code", None)),
-		"item_name": _cstr(getattr(it, "item_name", None)),
-		"quality": _cstr(getattr(it, "quality", None)),
-		"color": _cstr(getattr(it, "color", None)),
-		"gsm": cint(getattr(it, "gsm", 0) or 0),
+		"item_code": specs["item_code"] or _cstr(getattr(it, "item_code", None)),
+		"item_name": specs["item_name"] or _cstr(getattr(it, "item_name", None)),
+		"quality": specs["quality"],
+		"color": specs["color"],
+		"gsm": specs["gsm"] or cint(getattr(it, "gsm", 0) or 0),
 		"batch_no": _cstr(getattr(it, "batch_no", None)),
 		"roll_no": cint(getattr(it, "roll_no", 0) or 0),
 		"width_inch": flt(getattr(it, "width_inch", 0) or 0),
@@ -10928,6 +10963,7 @@ def _gsm_serialize_bundle_sticker_for_grid(spr, sticker, pp_id: str) -> dict:
 	if not seg_w and children:
 		seg_w = flt(getattr(children[0], "width_inch", 0))
 	first = children[0] if children else None
+	first_specs = _gsm_resolve_item_row_display_specs(first) if first else {"quality": "", "color": "", "gsm": 0}
 	width_label = (
 		f'{_bp_format_width_label_static(seg_w)}" ({pack_count} rolls)' if seg_w and pack_count else ""
 	)
@@ -10938,9 +10974,9 @@ def _gsm_serialize_bundle_sticker_for_grid(spr, sticker, pp_id: str) -> dict:
 		),
 		"item_code": _cstr(getattr(first, "item_code", None) if first else ""),
 		"item_name": _cstr(getattr(first, "item_name", None) if first else ""),
-		"quality": _cstr(getattr(first, "quality", None) if first else ""),
-		"color": _cstr(getattr(first, "color", None) if first else ""),
-		"gsm": cint(getattr(first, "gsm", 0) if first else 0),
+		"quality": first_specs["quality"] or _cstr(getattr(first, "quality", None) if first else ""),
+		"color": first_specs["color"] or _cstr(getattr(first, "color", None) if first else ""),
+		"gsm": first_specs["gsm"] or cint(getattr(first, "gsm", 0) if first else 0),
 		"width_inch": seg_w,
 		"width_label": width_label,
 		"pack_count": pack_count,
@@ -10992,21 +11028,12 @@ def _gsm_serialize_spr_roll_lines_for_grid(spr) -> list[dict]:
 
 def _gsm_serialize_roll_waste_for_grid(spr, waste_row, pp_id: str) -> dict:
 	"""Map SPR Roll Waste child row to GSM grid row (read-only strike-through)."""
-	item_code = _cstr(getattr(waste_row, "item_code", None) or "")
-	item_name = _cstr(getattr(waste_row, "item_name", None) or "")
-	if item_code and not item_name:
-		item_name = _cstr(frappe.db.get_value("Item", item_code, "item_name") or "")
-	quality = _cstr(getattr(waste_row, "quality", None) or "")
-	color = _cstr(getattr(waste_row, "color", None) or "")
-	gsm = cint(getattr(waste_row, "gsm", 0) or 0)
-	if item_code and (not quality or not color or gsm <= 0):
-		specs = _spr_resolve_roll_line_specs_from_item_code(item_code, item_name)
-		if not quality:
-			quality = _cstr(specs.get("quality") or "")
-		if not color:
-			color = _cstr(specs.get("color") or "")
-		if gsm <= 0:
-			gsm = cint(specs.get("gsm") or 0)
+	specs = _gsm_resolve_item_row_display_specs(waste_row)
+	item_code = specs["item_code"]
+	item_name = specs["item_name"]
+	quality = specs["quality"]
+	color = specs["color"]
+	gsm = specs["gsm"] or cint(getattr(waste_row, "gsm", 0) or 0)
 	wastage = flt(getattr(waste_row, "wastage", 0) or 0)
 	batch_no = _cstr(getattr(waste_row, "batch_no", None) or "")
 	return {

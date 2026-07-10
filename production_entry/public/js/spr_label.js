@@ -7,6 +7,11 @@ const _WASTAGE_LABEL_FN_CANDIDATES = [
 	"print_patty_wastage_label",
 ];
 
+const _WASTAGE_CHILD_DOCTYPES = {
+	custom_running_patty_wastage: "Running Patty Wastage Row",
+	custom_roll_waste: "Roll Waste Row",
+};
+
 function _sprLocals() {
 	if (typeof locals !== "undefined" && locals) {
 		return locals;
@@ -28,19 +33,30 @@ function _promisifyModel(method, ...args) {
 	});
 }
 
-production_entry.spr_label.load_spr_doc = async function (sprName) {
+function _docMissingChildTables(doc, requireTables) {
+	if (!doc || !requireTables || !requireTables.length) {
+		return false;
+	}
+	return requireTables.some((fieldname) => fieldname && !Array.isArray(doc[fieldname]));
+}
+
+production_entry.spr_label.load_spr_doc = async function (sprName, options = {}) {
 	const spr = String(sprName || "").trim();
 	if (!spr) {
 		return null;
 	}
+	const forceRefresh = !!(options && options.forceRefresh);
+	const requireTables = (options && options.requireTables) || [];
 	let doc = null;
-	try {
-		doc = frappe.get_doc("Shaft Production Run", spr);
-	} catch (e) {
-		doc = null;
-	}
-	if (doc && Array.isArray(doc.items)) {
-		return doc;
+	if (!forceRefresh) {
+		try {
+			doc = frappe.get_doc("Shaft Production Run", spr);
+		} catch (e) {
+			doc = null;
+		}
+		if (doc && Array.isArray(doc.items) && !_docMissingChildTables(doc, requireTables)) {
+			return doc;
+		}
 	}
 	await _promisifyModel("with_doc", "Shaft Production Run", spr);
 	try {
@@ -48,7 +64,7 @@ production_entry.spr_label.load_spr_doc = async function (sprName) {
 	} catch (e) {
 		doc = null;
 	}
-	if (doc && Array.isArray(doc.items)) {
+	if (doc && Array.isArray(doc.items) && !forceRefresh && !_docMissingChildTables(doc, requireTables)) {
 		return doc;
 	}
 	const res = await frappe.call({
@@ -65,6 +81,55 @@ production_entry.spr_label.load_spr_doc = async function (sprName) {
 	}
 	loc["Shaft Production Run"][spr] = doc;
 	return doc;
+};
+
+production_entry.spr_label.find_child_row = function (doc, rowName, preferredField) {
+	const child = String(rowName || "").trim();
+	if (!doc || !child) {
+		return null;
+	}
+	const preferred = String(preferredField || "").trim();
+	if (preferred && Array.isArray(doc[preferred])) {
+		const hit = doc[preferred].find((r) => r && r.name === child);
+		if (hit) {
+			return { row: hit, tableField: preferred };
+		}
+	}
+	for (const [fieldname, rows] of Object.entries(doc)) {
+		if (!Array.isArray(rows)) {
+			continue;
+		}
+		const hit = rows.find((r) => r && r.name === child);
+		if (hit) {
+			return { row: hit, tableField: fieldname };
+		}
+	}
+	return null;
+};
+
+production_entry.spr_label.sync_child_row_locals = function (doc, rowName, tableField) {
+	const loc = _sprLocals();
+	const found = production_entry.spr_label.find_child_row(doc, rowName, tableField);
+	if (!found) {
+		return null;
+	}
+	const childDoctype =
+		_WASTAGE_CHILD_DOCTYPES[found.tableField] ||
+		(tableField === "custom_roll_waste" ? "Roll Waste Row" : "Running Patty Wastage Row");
+	if (!loc[childDoctype]) {
+		loc[childDoctype] = {};
+	}
+	loc[childDoctype][rowName] = found.row;
+	if (doc && found.tableField && !Array.isArray(doc[found.tableField])) {
+		doc[found.tableField] = [];
+	}
+	if (doc && found.tableField) {
+		const rows = doc[found.tableField];
+		if (!rows.find((r) => r && r.name === rowName)) {
+			rows.push(found.row);
+		}
+	}
+	return found.row;
 };
 
 production_entry.spr_label.sync_item_row_locals = function (doc, rowName) {
@@ -117,8 +182,8 @@ production_entry.spr_label.print_roll = async function (sprName, rowName) {
 	frappe.msgprint(__("Label print helper not loaded."));
 };
 
-/** Running patty / roll waste labels — site SPR functions only (no GSM fallback HTML). */
-production_entry.spr_label.print_wastage = async function (sprName, childRowName, tableField) {
+/** Running patty / roll waste labels — desk SPR flow with GSM-safe doc load. */
+production_entry.spr_label.print_wastage = async function (sprName, childRowName, tableField, rowData) {
 	const spr = String(sprName || "").trim();
 	const child = String(childRowName || "").trim();
 	tableField = tableField || "custom_running_patty_wastage";
@@ -126,17 +191,32 @@ production_entry.spr_label.print_wastage = async function (sprName, childRowName
 		frappe.msgprint(__("SPR and wastage row are required."));
 		return;
 	}
-	const doc = await production_entry.spr_label.load_spr_doc(spr);
+	const doc = await production_entry.spr_label.load_spr_doc(spr, {
+		forceRefresh: true,
+		requireTables: [tableField],
+	});
 	if (!doc) {
 		frappe.msgprint(__("Could not load SPR for wastage label print."));
 		return;
 	}
+	let wastageRow = production_entry.spr_label.sync_child_row_locals(doc, child, tableField);
+	if (!wastageRow && rowData && typeof rowData === "object") {
+		wastageRow = rowData;
+	}
 	const frm = production_entry.spr_label.build_frm(doc);
+	if (wastageRow && typeof frappe.print_wastage_row_direct === "function") {
+		frappe.print_wastage_row_direct(wastageRow, frm);
+		return;
+	}
 	for (const fnName of _WASTAGE_LABEL_FN_CANDIDATES) {
 		if (typeof frappe[fnName] === "function") {
 			frappe[fnName](child, frm, tableField);
 			return;
 		}
+	}
+	if (wastageRow && typeof frappe.print_wastage_row_direct === "function") {
+		frappe.print_wastage_row_direct(wastageRow, frm);
+		return;
 	}
 	frappe.msgprint(
 		__(

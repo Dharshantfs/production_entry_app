@@ -206,12 +206,12 @@ export async function gsmPrintBundleLabel(sprName, gridRow = null) {
 }
 
 /** Print wastage label — shared desk SPR wastage print functions only. */
-export async function gsmPrintWastageLabel(sprName, childRowName, tableField) {
+export async function gsmPrintWastageLabel(sprName, childRowName, tableField, rowData) {
 	if (!production_entry.spr_label || typeof production_entry.spr_label.print_wastage !== "function") {
 		frappe.msgprint(__("Wastage label print helper not loaded."));
 		return;
 	}
-	await production_entry.spr_label.print_wastage(sprName, childRowName, tableField);
+	await production_entry.spr_label.print_wastage(sprName, childRowName, tableField, rowData);
 }
 
 function cint(v) {

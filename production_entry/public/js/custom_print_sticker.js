@@ -992,8 +992,39 @@ function _wastage_row_from_frm(row_name, frm, table_field) {
         var cdt = table_field === "custom_roll_waste" ? "Roll Waste Row" : "Running Patty Wastage Row";
         row = (locals[cdt] || {})[row_name];
     }
+    if (!row && f.doc) {
+        var tableFields = [table_field, "custom_running_patty_wastage", "custom_roll_waste"];
+        for (var i = 0; i < tableFields.length; i++) {
+            var tf = tableFields[i];
+            var altRows = f.doc[tf] || [];
+            row = (altRows || []).find(function (r) { return r && r.name === row_name; });
+            if (row) break;
+        }
+    }
     return row || null;
 }
+
+frappe.print_wastage_row_direct = function (row, frm) {
+    if (!row) {
+        frappe.msgprint(__("Wastage row not found."));
+        return;
+    }
+    var html = _wastage_label_html(row, frm);
+    var pw = window.open("", "_blank", "height=650,width=500");
+    if (pw) {
+        pw.document.write(html);
+        pw.document.close();
+    }
+};
+
+frappe.print_wastage_label_flow = function (row_name, frm, table_field) {
+    var row = _wastage_row_from_frm(row_name, frm, table_field);
+    if (!row) {
+        frappe.msgprint(__("Wastage row not found."));
+        return;
+    }
+    frappe.print_wastage_row_direct(row, frm);
+};
 
 function _wastage_label_html(row, frm) {
     var f = frm || {};
@@ -1068,20 +1099,6 @@ function _wastage_label_html(row, frm) {
         '<script>JsBarcode("#barcode", ' + JSON.stringify(barcode) + ', { format: "CODE128", displayValue: true, fontSize: 11, textMargin: 1, height: 50, width: 1.9, margin: 0 });<\/script>' +
         '</body></html>';
 }
-
-frappe.print_wastage_label_flow = function (row_name, frm, table_field) {
-    var row = _wastage_row_from_frm(row_name, frm, table_field);
-    if (!row) {
-        frappe.msgprint(__("Wastage row not found."));
-        return;
-    }
-    var html = _wastage_label_html(row, frm);
-    var pw = window.open("", "_blank", "height=650,width=500");
-    if (pw) {
-        pw.document.write(html);
-        pw.document.close();
-    }
-};
 
 frappe.generate_wastage_sticker_flow = frappe.print_wastage_label_flow;
 frappe.print_patty_wastage_label = frappe.print_wastage_label_flow;
