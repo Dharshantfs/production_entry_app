@@ -3,6 +3,7 @@ import "./custom_print_sticker.js";
 import "./spr_roll_label_print.js";
 import "./spr_label.js";
 import "./spr_patty_stock.js";
+import "./spr_mixing_sheet.js";
 import ProductionScheduler from "./ProductionScheduler.vue";
 import ColorChart from "./ColorChart.vue";
 

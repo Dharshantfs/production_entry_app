@@ -1,0 +1,775 @@
+/* global frappe, __ */
+
+const MIXING_API = "production_entry.production_planning.mixing_sheet_api";
+
+const PRINTING_MACHINES = [
+	"VR - 1200MM BOPP PRINTING MACHINE",
+	"JVE - PRINTING MACHINE 2 COLOUR 1600MM",
+	"JVE - PRINTING MACHINE 4 COLOUR 1600MM",
+	"TT - PRINTING MACHINE 4 COLOUR 1200MM",
+];
+
+const SOLVENT_MACHINES = ["VR - 1200MM BOPP PRINTING MACHINE"];
+
+const EXCLUDED_MACHINES = [
+	"TTT- L3 - OYANG C900 BAG MAKING LINE",
+	"TTT- L2 - OYANG C700 BAG MAKING LINE",
+	"TTT- L1 - OYANG C700 BAG MAKING LINE",
+	"VTP-L1 LEADER OYANG MACHINE",
+	"VTP-L2 LEADER ZX MACHINE",
+	"JVE-L3 B700 BAG MAKING MACHINE",
+	"JVE-L2 B700 BAG MAKING MACHINE",
+	"JVE-L1 B700 BAG MAKING MACHINE",
+];
+
+let _mix_dialog = null;
+
+function mixing_api_args(ctx) {
+	return {
+		mixing_sheet_name: ctx.mixing_sheet_name || "",
+		spr_name: ctx.spr_name || "",
+		gsm_shift_session: ctx.gsm_shift_session || "",
+		run_date: ctx.run_date || "",
+		shift: ctx.shift || "",
+		custom_unit: ctx.custom_unit || "",
+		order_code: ctx.order_code || "",
+	};
+}
+
+function make_empty_set() {
+	return { materials: {}, extras: [], rows: [], item_names: {} };
+}
+
+function make_empty_row(custom_unit) {
+	const is_printing = PRINTING_MACHINES.includes(custom_unit);
+	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
+	if (is_printing) {
+		const row = { ink_qty: 0, consumed: false, consumed_by: null, consumed_at: null };
+		if (uses_solvent) {
+			row.ea_qty = 0;
+			row.tol_qty = 0;
+			row.iso_qty = 0;
+		}
+		return row;
+	}
+	return {
+		pp_qty: 0,
+		filler_qty: 0,
+		mb_qty: 0,
+		anti_qty: 0,
+		ppa_qty: 0,
+		consumed: false,
+		consumed_by: null,
+		consumed_at: null,
+	};
+}
+
+function build_rows(set_obj, custom_unit) {
+	set_obj.rows = [make_empty_row(custom_unit)];
+}
+
+function isMixingExcludedUnit(unit) {
+	return EXCLUDED_MACHINES.includes((unit || "").trim());
+}
+
+async function openSprMixingSheet(ctx = {}) {
+	const unit = (ctx.custom_unit || "").trim();
+	if (!unit) {
+		frappe.msgprint(__("Unit is required to open Mixing Sheet."));
+		return;
+	}
+	if (isMixingExcludedUnit(unit)) {
+		frappe.msgprint(__("Mixing Sheet is not available for this machine."));
+		return;
+	}
+
+	const res = await frappe.call({
+		method: `${MIXING_API}.get_mixing_sheet`,
+		args: mixing_api_args(ctx),
+	});
+	const msg = res.message || {};
+	const sheetCtx = {
+		...ctx,
+		custom_unit: msg.custom_unit || unit,
+		run_date: msg.run_date || ctx.run_date || "",
+		shift: msg.shift || ctx.shift || "",
+		gsm_shift_session: msg.gsm_shift_session || ctx.gsm_shift_session || "",
+		spr_name: msg.shaft_production_run || ctx.spr_name || "",
+		mixing_sheet_name: msg.mixing_sheet_name || ctx.mixing_sheet_name || "",
+		order_code: msg.order_code || ctx.order_code || "",
+	};
+	let existing = null;
+	try {
+		existing = msg.existing_mixing_data ? JSON.parse(msg.existing_mixing_data) : null;
+	} catch (e) {
+		existing = null;
+	}
+	show_dialog(sheetCtx, existing, ctx.frm || null);
+}
+
+function open_mixing_sheet_desk(frm) {
+	if (frm.doc.docstatus !== 0) {
+		frappe.msgprint({
+			title: __("Action Restricted"),
+			indicator: "orange",
+			message: __(
+				"The Mixing Sheet cannot be opened because this Shaft Production Run is already submitted or cancelled."
+			),
+		});
+		return;
+	}
+	openSprMixingSheet({
+		frm,
+		spr_name: frm.doc.name,
+		custom_unit: frm.doc.custom_unit,
+		run_date: frm.doc.run_date || frm.doc.posting_date || "",
+		shift: frm.doc.shift || "",
+		order_code: frm.doc.custom_order_code || "",
+		title_label: frm.doc.name,
+	});
+}
+
+function show_dialog(ctx, existing, frm) {
+	const custom_unit = ctx.custom_unit;
+	const is_printing = PRINTING_MACHINES.includes(custom_unit);
+	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
+	if (_mix_dialog) _mix_dialog.hide();
+
+	const state = existing || { mixing_type: "", sets: [make_empty_set()], completed: false };
+	if (state.completed || ctx.read_only) {
+		frappe.msgprint({
+			title: __("Mixing Completed"),
+			indicator: "green",
+			message: __("This Mixing Sheet is completed and read-only."),
+		});
+	}
+
+	const title =
+		ctx.title_label ||
+		ctx.order_code ||
+		ctx.spr_name ||
+		`${ctx.run_date || ""} · ${ctx.shift || ""} · ${custom_unit}`;
+
+	const fields = [];
+	if (!is_printing) {
+		fields.push({
+			fieldname: "mixing_type",
+			label: __("Mixing Type"),
+			fieldtype: "Select",
+			options: "\nFull Mixing\nHalf Mixing",
+			reqd: 1,
+			default: state.mixing_type,
+		});
+	}
+	fields.push({ fieldtype: "Section Break", label: __("Raw Materials") });
+
+	if (is_printing) {
+		fields.push(
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "ink_item",
+				label: __("BOPP Ink"),
+				fieldtype: "Link",
+				options: "Item",
+				get_query: () => ({ filters: { item_code: ["like", "INK -%"] } }),
+			}
+		);
+		if (uses_solvent) {
+			fields.push(
+				{ fieldtype: "Column Break" },
+				{ fieldname: "ethyl_acetate_item", label: __("Ethyl Acetate"), fieldtype: "Link", options: "Item" },
+				{ fieldtype: "Column Break" },
+				{ fieldname: "toluene_item", label: __("Toluene"), fieldtype: "Link", options: "Item" },
+				{ fieldtype: "Column Break" },
+				{
+					fieldname: "iso_butanol_item",
+					label: __("Iso Butanol (Optional)"),
+					fieldtype: "Link",
+					options: "Item",
+				}
+			);
+		}
+	} else {
+		fields.push(
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "pp_item",
+				label: __("Polypropylene"),
+				fieldtype: "Link",
+				options: "Item",
+				get_query: () => ({ filters: { item_code: ["like", "PP -%"] } }),
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "filler_item",
+				label: __("Filler"),
+				fieldtype: "Link",
+				options: "Item",
+				get_query: () => ({ filters: { item_code: ["like", "FL -%"] } }),
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "masterbatch_item",
+				label: __("Masterbatch"),
+				fieldtype: "Link",
+				options: "Item",
+				get_query: () => ({ filters: { item_code: ["like", "MB -%"] } }),
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "antistatic_item",
+				label: __("Antistatic"),
+				fieldtype: "Link",
+				options: "Item",
+				get_query: () => ({ filters: { item_code: ["like", "SA -%"] } }),
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "ppa_item",
+				label: __("Modifier (PPA)"),
+				fieldtype: "Link",
+				options: "Item",
+				get_query: () => ({ filters: { item_code: ["like", "SA -%"] } }),
+			}
+		);
+	}
+	fields.push({ fieldtype: "Section Break" }, { fieldname: "main_html", fieldtype: "HTML" });
+
+	const d = new frappe.ui.Dialog({
+		title: `${__("Mixing Sheet")} — ${title}`,
+		size: "extra-large",
+		fields,
+	});
+	const readOnly = !!(state.completed || ctx.read_only);
+
+	d.footer.empty().append(`
+		<div style="display:flex;justify-content:space-between;width:100%;flex-wrap:wrap;gap:6px">
+			<button class="btn btn-sm btn-default" id="btn_add_set" ${readOnly ? "disabled" : ""}>➕ ${__("Add Second Raw Material Set")}</button>
+			<div style="display:flex;gap:8px;flex-wrap:wrap">
+				<button class="btn btn-sm btn-warning" id="btn_print">🖨 ${__("Print Sheet")}</button>
+				${is_printing ? `<button class="btn btn-sm btn-info" id="btn_add_ink" ${readOnly ? "disabled" : ""}>➕ ${__("Add Ink")}</button>` : `<button class="btn btn-sm btn-info" id="btn_add_additive" ${readOnly ? "disabled" : ""}>➕ ${__("Add Special Item")}</button>`}
+				<button class="btn btn-sm btn-success" id="btn_save_rm" ${readOnly ? "disabled" : ""}>💾 ${__("Save Raw Materials")}</button>
+				<button class="btn btn-sm btn-primary" id="btn_save_all" ${readOnly ? "disabled" : ""}>✅ ${__("Save Mixing Sheet")}</button>
+				<button class="btn btn-sm btn-primary" id="btn_submit_mixing" style="background:#2e7d32;border:none;" ${readOnly ? "disabled" : ""}>🚩 ${__("Finish & Submit")}</button>
+			</div>
+		</div>`);
+
+	d.show();
+	_mix_dialog = d;
+	d.footer.removeClass("hide").show();
+
+	const m0 = state.sets[0]?.materials || {};
+	if (is_printing) {
+		d.set_value("ink_item", m0.Ink || "");
+		if (uses_solvent) {
+			d.set_value("ethyl_acetate_item", m0.EthylAcetate || "");
+			d.set_value("toluene_item", m0.Toluene || "");
+			d.set_value("iso_butanol_item", m0.IsoButanol || "");
+		}
+	} else {
+		d.set_value("pp_item", m0.PP || "");
+		d.set_value("filler_item", m0.Filler || "");
+		d.set_value("masterbatch_item", m0.Masterbatch || "");
+		d.set_value("antistatic_item", m0.Antistatic || "");
+		d.set_value("ppa_item", m0.PPA || "");
+		if (state.mixing_type) d.set_value("mixing_type", state.mixing_type);
+	}
+
+	render_all(d, ctx, state, frm);
+
+	d.footer.find("#btn_save_rm").on("click", () => save_raw_materials(d, ctx, state, frm));
+	if (state.sets.length >= 2) d.footer.find("#btn_add_set").prop("disabled", true);
+	d.footer.find("#btn_add_set").on("click", () => {
+		if (state.sets.length >= 2) {
+			frappe.msgprint(__("Maximum two raw material sets allowed."));
+			return;
+		}
+		state.sets.push(make_empty_set());
+		render_all(d, ctx, state, frm);
+		d.footer.find("#btn_add_set").prop("disabled", true);
+	});
+	d.footer.find("#btn_print").on("click", () => print_mixing_sheet(state, ctx));
+
+	const add_extra_item = (item_code) => {
+		const active_idx = state.sets.length - 1;
+		if (!state.sets[active_idx].extras) state.sets[active_idx].extras = [];
+		frappe.db.get_value("Item", item_code, "item_name").then((r) => {
+			state.sets[active_idx].extras.push({
+				item_code,
+				item_name: r.message?.item_name || item_code,
+			});
+			state.sets[active_idx].rows.forEach((row) => {
+				if (row.extras === undefined) row.extras = {};
+				row.extras[item_code] = 0;
+			});
+			render_all(d, ctx, state, frm);
+		});
+	};
+
+	d.footer.find("#btn_add_additive").on("click", () => {
+		if (state.completed) return;
+		const last = state.sets[state.sets.length - 1];
+		if (!last.materials?.PP) {
+			frappe.msgprint(__("Select raw materials and click <b>Save Raw Materials</b> first."));
+			return;
+		}
+		frappe.prompt(
+			[{ label: __("Select Item"), fieldname: "item_code", fieldtype: "Link", options: "Item", reqd: 1 }],
+			(v) => add_extra_item(v.item_code),
+			__("Add Dana / Special Additive")
+		);
+	});
+	d.footer.find("#btn_add_ink").on("click", () => {
+		if (state.completed) return;
+		const last = state.sets[state.sets.length - 1];
+		if (!last.materials?.Ink) {
+			frappe.msgprint(__("Select ink and click <b>Save Raw Materials</b> first."));
+			return;
+		}
+		frappe.prompt(
+			[
+				{
+					label: __("Select Ink"),
+					fieldname: "item_code",
+					fieldtype: "Link",
+					options: "Item",
+					reqd: 1,
+					get_query: () => ({ filters: { item_code: ["like", "INK -%"] } }),
+				},
+			],
+			(v) => add_extra_item(v.item_code),
+			__("Add Ink Item")
+		);
+	});
+
+	const persist = (done) => {
+		frappe.call({
+			method: `${MIXING_API}.save_shift_mixing_sheet`,
+			args: {
+				...mixing_api_args(ctx),
+				mixing_sheet_json: JSON.stringify(state),
+			},
+			callback(r) {
+				if (!r.exc && r.message) {
+					ctx.mixing_sheet_name = r.message.mixing_sheet_name || ctx.mixing_sheet_name;
+					if (done) done(r);
+				}
+			},
+		});
+	};
+
+	const on_submit_mixing = () => {
+		if (state.completed) return;
+		frappe.confirm(
+			__("<b>Finish and submit this Mixing Sheet?</b><br><br>This will lock the sheet."),
+			() => {
+				collect_row_qtys(d, state);
+				if (!is_printing) state.mixing_type = d.get_value("mixing_type");
+				state.completed = true;
+				persist(() => {
+					frappe.msgprint(__("Mixing Sheet submitted successfully."));
+					d.hide();
+					if (frm) frm.reload_doc();
+					if (ctx.on_saved) ctx.on_saved();
+				});
+			}
+		);
+	};
+	d.footer.find("#btn_submit_mixing").on("click", on_submit_mixing);
+	d.wrapper.on("click", ".btn-submit-mixing-inline", on_submit_mixing);
+
+	d.footer.find("#btn_save_all").on("click", () => {
+		collect_row_qtys(d, state);
+		if (!is_printing) state.mixing_type = d.get_value("mixing_type");
+		persist(() => {
+			frappe.show_alert({ message: __("Mixing Sheet saved."), indicator: "green" });
+			if (frm) frm.reload_doc();
+			if (ctx.on_saved) ctx.on_saved();
+		});
+	});
+
+	if (!is_printing) {
+		d.fields_dict.mixing_type.$input.on("change", () => {
+			state.mixing_type = d.get_value("mixing_type");
+		});
+	}
+}
+
+function save_raw_materials(d, ctx, state, frm) {
+	const custom_unit = ctx.custom_unit;
+	const is_printing = PRINTING_MACHINES.includes(custom_unit);
+	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
+	const v = d.get_values();
+	if (!is_printing && !v.mixing_type) {
+		frappe.msgprint(__("Please select Mixing Type first."));
+		return;
+	}
+
+	let selected = {};
+	if (is_printing) {
+		if (!v.ink_item) {
+			frappe.msgprint(__("Please select Ink before saving."));
+			return;
+		}
+		selected = { Ink: v.ink_item };
+		if (uses_solvent) {
+			if (!v.ethyl_acetate_item || !v.toluene_item) {
+				frappe.msgprint(__("Please select Ethyl Acetate and Toluene. Iso Butanol is optional."));
+				return;
+			}
+			selected.EthylAcetate = v.ethyl_acetate_item;
+			selected.Toluene = v.toluene_item;
+			selected.IsoButanol = v.iso_butanol_item || "";
+		}
+	} else {
+		if (!v.pp_item || !v.filler_item || !v.masterbatch_item || !v.antistatic_item || !v.ppa_item) {
+			frappe.msgprint(__("Please select all 5 raw materials before saving."));
+			return;
+		}
+		selected = {
+			PP: v.pp_item,
+			Filler: v.filler_item,
+			Masterbatch: v.masterbatch_item,
+			Antistatic: v.antistatic_item,
+			PPA: v.ppa_item,
+		};
+	}
+
+	const apply_to_set = (index) => {
+		if (!is_printing) state.mixing_type = v.mixing_type;
+		state.sets[index].materials = selected;
+		state.sets[index].rows = [];
+		build_rows(state.sets[index], custom_unit);
+
+		const fetches = is_printing
+			? [
+					frappe.db.get_value("Item", selected.Ink, "item_name"),
+					uses_solvent ? frappe.db.get_value("Item", selected.EthylAcetate, "item_name") : null,
+					uses_solvent ? frappe.db.get_value("Item", selected.Toluene, "item_name") : null,
+					uses_solvent && selected.IsoButanol
+						? frappe.db.get_value("Item", selected.IsoButanol, "item_name")
+						: null,
+				].filter(Boolean)
+			: [
+					frappe.db.get_value("Item", selected.PP, "item_name"),
+					frappe.db.get_value("Item", selected.Filler, "item_name"),
+					frappe.db.get_value("Item", selected.Masterbatch, "item_name"),
+					frappe.db.get_value("Item", selected.Antistatic, "item_name"),
+					frappe.db.get_value("Item", selected.PPA, "item_name"),
+				];
+
+		Promise.all(fetches).then((results) => {
+			if (is_printing) {
+				state.sets[index].item_names = { Ink: results[0]?.message?.item_name || selected.Ink };
+				if (uses_solvent) {
+					let ri = 1;
+					state.sets[index].item_names.EthylAcetate =
+						results[ri]?.message?.item_name || selected.EthylAcetate;
+					ri += 1;
+					state.sets[index].item_names.Toluene = results[ri]?.message?.item_name || selected.Toluene;
+					if (selected.IsoButanol) {
+						ri += 1;
+						state.sets[index].item_names.IsoButanol =
+							results[ri]?.message?.item_name || selected.IsoButanol;
+					}
+				}
+			} else {
+				state.sets[index].item_names = {
+					PP: results[0]?.message?.item_name || selected.PP,
+					Filler: results[1]?.message?.item_name || selected.Filler,
+					Masterbatch: results[2]?.message?.item_name || selected.Masterbatch,
+					Antistatic: results[3]?.message?.item_name || selected.Antistatic,
+					PPA: results[4]?.message?.item_name || selected.PPA,
+				};
+			}
+			render_all(d, ctx, state, frm);
+			frappe.call({
+				method: `${MIXING_API}.save_shift_mixing_sheet`,
+				args: {
+					...mixing_api_args(ctx),
+					mixing_sheet_json: JSON.stringify(state),
+				},
+				callback(r) {
+					if (!r.exc) {
+						if (r.message?.mixing_sheet_name) ctx.mixing_sheet_name = r.message.mixing_sheet_name;
+						frappe.show_alert({
+							message: __(`Mixing grid — Set ${index + 1} created.`),
+							indicator: "green",
+						});
+					}
+				},
+			});
+		});
+	};
+
+	const last_idx = state.sets.length - 1;
+	apply_to_set(last_idx);
+}
+
+function render_all(d, ctx, state, frm) {
+	const $wrap = d.fields_dict.main_html.$wrapper;
+	$wrap.empty();
+	const custom_unit = ctx.custom_unit;
+	const is_printing = PRINTING_MACHINES.includes(custom_unit);
+	const readOnly = !!(state.completed || ctx.read_only);
+
+	state.sets.forEach((set, si) => {
+		if (!set.materials || (!set.materials.PP && !set.materials.Ink)) {
+			$wrap.append(
+				`<div style="padding:30px;text-align:center;color:#888;font-style:italic;border:1px dashed #ccc;margin-top:20px;border-radius:4px;">
+					${__("Select raw materials, then click <b>Save Raw Materials</b> to generate the grid.")}
+				</div>`
+			);
+			return;
+		}
+		if (!set.rows.length) build_rows(set, custom_unit);
+		$wrap.append(render_set_html(set, si, ctx, state, readOnly));
+	});
+
+	if (!readOnly) {
+		$wrap.append(`
+			<div style="margin-top:40px;padding:30px 0;border-top:1px solid #eee;display:flex;justify-content:center;">
+				<button class="btn btn-md btn-primary btn-submit-mixing-inline" style="background:#2e7d32;border:none;width:280px;font-weight:bold;height:45px;">
+					🚩 ${__("Finish & Submit Mixing")}
+				</button>
+			</div>
+			<div style="height:60px"></div>
+		`);
+	}
+
+	$wrap.find(".btn-consume").on("click", function () {
+		consume_row(ctx, state, parseInt($(this).data("set"), 10), parseInt($(this).data("row"), 10), d, frm);
+	});
+	$wrap.find(".btn-add-row").on("click", function () {
+		const si = parseInt($(this).data("set"), 10);
+		state.sets[si].rows.push(make_empty_row(custom_unit));
+		render_all(d, ctx, state, frm);
+	});
+	$wrap.find(".btn-del-row").on("click", function () {
+		const si = parseInt($(this).data("set"), 10);
+		const rows = state.sets[si].rows;
+		if (rows.length > 1) {
+			collect_row_qtys(d, state);
+			rows.pop();
+			render_all(d, ctx, state, frm);
+		} else {
+			frappe.show_alert({ message: __("At least one row required."), indicator: "orange" });
+		}
+	});
+}
+
+function render_set_html(set, si, ctx, state, readOnly) {
+	const custom_unit = ctx.custom_unit;
+	const is_printing = PRINTING_MACHINES.includes(custom_unit);
+	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
+	const m = set.materials || {};
+	const names = set.item_names || {};
+	const label = si === 0 ? __("Set 1") : __("Set 2 (Alternate)");
+
+	let rows_html = "";
+	set.rows.forEach((row, ri) => {
+		const status_badge = row.consumed
+			? `<span style="color:green;font-size:11px">✅ ${(row.consumed_by || "").split("@")[0]} @ ${(row.consumed_at || "").slice(11, 16)}</span>`
+			: readOnly
+				? ""
+				: `<button class="btn btn-xs btn-primary btn-consume" data-set="${si}" data-row="${ri}">${__("Consume")}</button>`;
+
+		const extras_cols = (set.extras || [])
+			.map((ex) => {
+				const val = (row.extras && row.extras[ex.item_code]) || 0;
+				const dis = readOnly || row.consumed ? "disabled" : "";
+				return `<td><input class="form-control form-control-sm row-qty-extra" data-set="${si}" data-row="${ri}" data-item="${ex.item_code}" value="${val}" style="width:70px;text-align:center" ${dis}></td>`;
+			})
+			.join("");
+
+		const dis = readOnly || row.consumed ? "disabled" : "";
+		if (is_printing) {
+			const solvent_cols = uses_solvent
+				? `
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="ea_qty" value="${row.ea_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="tol_qty" value="${row.tol_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="iso_qty" value="${row.iso_qty || 0}" style="width:70px;text-align:center" ${dis}></td>`
+				: "";
+			rows_html += `<tr style="${row.consumed ? "background:#f0fff0" : ""}">
+				<td style="text-align:center;width:40px">${ri + 1}</td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="ink_qty" value="${row.ink_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				${extras_cols}${solvent_cols}
+				<td style="text-align:center">${status_badge}</td>
+			</tr>`;
+		} else {
+			rows_html += `<tr style="${row.consumed ? "background:#f0fff0" : ""}">
+				<td style="text-align:center;width:40px">${ri + 1}</td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="pp_qty" value="${row.pp_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="filler_qty" value="${row.filler_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="mb_qty" value="${row.mb_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="anti_qty" value="${row.anti_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				<td><input class="form-control form-control-sm row-qty" data-set="${si}" data-row="${ri}" data-field="ppa_qty" value="${row.ppa_qty || 0}" style="width:70px;text-align:center" ${dis}></td>
+				${extras_cols}
+				<td style="text-align:center">${status_badge}</td>
+			</tr>`;
+		}
+	});
+
+	let table = "";
+	if (is_printing) {
+		const solvent_headers = uses_solvent
+			? `<th>${names.EthylAcetate || m.EthylAcetate || __("Ethyl Acetate")} (kg)</th>
+			   <th>${names.Toluene || m.Toluene || __("Toluene")} (kg)</th>
+			   <th>${names.IsoButanol || m.IsoButanol || __("Iso Butanol")} (kg)</th>`
+			: "";
+		table = `<table class="table table-bordered table-sm" style="margin-top:8px;font-size:13px">
+			<thead><tr>
+				<th>#</th><th>${names.Ink || m.Ink || __("BOPP Ink")} (kg)</th>
+				${(set.extras || []).map((ex) => `<th>${ex.item_name} (kg)</th>`).join("")}
+				${solvent_headers}<th>${__("Status")}</th>
+			</tr></thead><tbody>${rows_html}</tbody></table>`;
+	} else {
+		table = `<table class="table table-bordered table-sm" style="margin-top:8px;font-size:13px">
+			<thead><tr>
+				<th>#</th>
+				<th>${names.PP || m.PP || "PP"} (kg)</th>
+				<th>${names.Filler || m.Filler || __("Filler")} (kg)</th>
+				<th>${names.Masterbatch || m.Masterbatch || __("Masterbatch")} (kg)</th>
+				<th>${names.Antistatic || m.Antistatic || __("Antistatic")} (kg)</th>
+				<th>${names.PPA || m.PPA || __("Modifier")} (kg)</th>
+				${(set.extras || []).map((ex) => `<th>${ex.item_name} (kg)</th>`).join("")}
+				<th>${__("Status")}</th>
+			</tr></thead><tbody>${rows_html}</tbody></table>`;
+	}
+
+	const rowBtns = readOnly
+		? ""
+		: `<button class="btn btn-xs btn-default btn-add-row" data-set="${si}">➕ ${__("Add Row")}</button>
+		   <button class="btn btn-xs btn-danger btn-del-row" data-set="${si}">🗑 ${__("Remove Last Row")}</button>`;
+
+	return `
+		<div style="margin-top:${si > 0 ? "24px" : "0"};padding:8px 0 4px;font-weight:600;color:#5e35b1;border-bottom:2px solid #ede7f6">
+			🧪 ${__("Mixing Grid")} — ${label}
+		</div>
+		${table}
+		<div style="display:flex;gap:8px;margin-bottom:4px;align-items:center">
+			${rowBtns}
+			<span style="margin-left:auto;font-size:12px;color:#888">
+				${__("Rows")}: ${set.rows.length} | ${__("Consumed")}: ${set.rows.filter((r) => r.consumed).length}
+			</span>
+		</div>`;
+}
+
+function consume_row(ctx, state, si, ri, d, frm) {
+	collect_row_qtys(d, state);
+	frappe.confirm(__("Confirm consumption for Mixing #{0}?", [ri + 1]), () => {
+		frappe.call({
+			method: `${MIXING_API}.record_mixing_consumption`,
+			args: {
+				...mixing_api_args(ctx),
+				set_index: si,
+				row_index: ri,
+				state_json: JSON.stringify(state),
+			},
+			callback(r) {
+				if (!r.exc && r.message?.sets) {
+					state.sets = r.message.sets;
+					render_all(d, ctx, state, frm);
+					frappe.show_alert({ message: __("Consumption recorded."), indicator: "green" });
+				}
+			},
+		});
+	});
+}
+
+function collect_row_qtys(d, state) {
+	d.fields_dict.main_html.$wrapper.find(".row-qty").each(function () {
+		const el = $(this);
+		const si = parseInt(el.data("set"), 10);
+		const ri = parseInt(el.data("row"), 10);
+		const field = el.data("field");
+		if (state.sets[si]?.rows[ri]) {
+			state.sets[si].rows[ri][field] = parseFloat(el.val()) || 0;
+		}
+	});
+	d.fields_dict.main_html.$wrapper.find(".row-qty-extra").each(function () {
+		const el = $(this);
+		const si = parseInt(el.data("set"), 10);
+		const ri = parseInt(el.data("row"), 10);
+		const item_code = el.data("item");
+		if (state.sets[si]?.rows[ri]) {
+			if (!state.sets[si].rows[ri].extras) state.sets[si].rows[ri].extras = {};
+			state.sets[si].rows[ri].extras[item_code] = parseFloat(el.val()) || 0;
+		}
+	});
+}
+
+function print_mixing_sheet(state, ctx) {
+	const custom_unit = ctx.custom_unit;
+	const is_printing = PRINTING_MACHINES.includes(custom_unit);
+	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
+	const title =
+		ctx.title_label ||
+		ctx.order_code ||
+		ctx.spr_name ||
+		`${ctx.run_date || ""} · ${ctx.shift || ""}`;
+
+	const rows_html = (set) =>
+		set.rows
+			.map((r, i) => {
+				const extras_cols = (set.extras || [])
+					.map((ex) => `<td style="text-align:center">${(r.extras && r.extras[ex.item_code]) || 0}</td>`)
+					.join("");
+				if (is_printing) {
+					const solvent_cols = uses_solvent
+						? `<td>${r.ea_qty || 0}</td><td>${r.tol_qty || 0}</td><td>${r.iso_qty || 0}</td>`
+						: "";
+					return `<tr><td>${i + 1}</td><td>${r.ink_qty || 0}</td>${extras_cols}${solvent_cols}
+						<td>${r.consumed ? "✅ " + (r.consumed_at || "").slice(11, 16) : ""}</td><td style="height:28px"></td></tr>`;
+				}
+				return `<tr><td>${i + 1}</td><td>${r.pp_qty || 0}</td><td>${r.filler_qty || 0}</td>
+					<td>${r.mb_qty || 0}</td><td>${r.anti_qty || 0}</td><td>${r.ppa_qty || 0}</td>${extras_cols}
+					<td>${r.consumed ? "✅ " + (r.consumed_at || "").slice(11, 16) : ""}</td><td style="height:28px"></td></tr>`;
+			})
+			.join("");
+
+	const sets_html = state.sets
+		.map((set, si) => {
+			const m = set.materials || {};
+			const extras_headers = (set.extras || []).map((ex) => `<th>${ex.item_name} (kg)</th>`).join("");
+			if (is_printing) {
+				const solvent_headers = uses_solvent
+					? "<th>Ethyl Acetate (kg)</th><th>Toluene (kg)</th><th>Iso Butanol (kg)</th>"
+					: "";
+				return `<h3>Raw Material Set ${si + 1}</h3><p>BOPP Ink: <b>${m.Ink || "-"}</b></p>
+					<table border="1" cellpadding="6" style="width:100%;font-size:12px;border-collapse:collapse;text-align:center">
+					<thead><tr><th>#</th><th>BOPP Ink (kg)</th>${extras_headers}${solvent_headers}<th>Time</th><th>Signature</th></tr></thead>
+					<tbody>${rows_html(set)}</tbody></table>`;
+			}
+			return `<h3>Raw Material Set ${si + 1}</h3>
+				<p>PP: <b>${m.PP || "-"}</b> | Filler: <b>${m.Filler || "-"}</b> | MB: <b>${m.Masterbatch || "-"}</b></p>
+				<table border="1" cellpadding="6" style="width:100%;font-size:12px;border-collapse:collapse">
+				<thead><tr><th>#</th><th>PP</th><th>Filler</th><th>MB</th><th>Anti</th><th>Modifier</th>${extras_headers}<th>Time</th><th>Signature</th></tr></thead>
+				<tbody>${rows_html(set)}</tbody></table>`;
+		})
+		.join("");
+
+	const win = window.open("", "_blank");
+	win.document.write(`<!DOCTYPE html><html><head><title>Mixing Sheet — ${title}</title>
+		<style>body{font-family:Arial,sans-serif;padding:20px}h2{text-align:center}</style></head><body>
+		<h2>MIXING SHEET</h2>
+		<p style="text-align:center"><b>${title}</b> | Type: <b>${state.mixing_type || ""}</b> | ${frappe.datetime.now_datetime()}</p>
+		${sets_html}
+		<script>window.print();</script></body></html>`);
+	win.document.close();
+}
+
+frappe.provide("production_entry.spr_mixing_sheet");
+
+production_entry.spr_mixing_sheet.openSprMixingSheet = openSprMixingSheet;
+production_entry.spr_mixing_sheet.isMixingExcludedUnit = isMixingExcludedUnit;
+production_entry.spr_mixing_sheet.EXCLUDED_MACHINES = EXCLUDED_MACHINES;
+
+frappe.ui.form.on("Shaft Production Run", {
+	refresh(frm) {
+		if (!frm.doc.custom_unit || isMixingExcludedUnit(frm.doc.custom_unit)) return;
+		if (frm.doc.docstatus === 0) {
+			frm.add_custom_button(__("Mixing Sheet"), () => open_mixing_sheet_desk(frm));
+		}
+	},
+});

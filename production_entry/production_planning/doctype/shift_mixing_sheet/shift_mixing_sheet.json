@@ -1,0 +1,177 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-07-10 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "run_date",
+  "shift",
+  "custom_unit",
+  "column_break_1",
+  "status",
+  "mixing_type",
+  "section_break_links",
+  "gsm_shift_session",
+  "shaft_production_run",
+  "order_code",
+  "section_break_data",
+  "mixing_sheet_data",
+  "section_break_audit",
+  "completed_by",
+  "completed_on"
+ ],
+ "fields": [
+  {
+   "default": "SMS-.YYYY.-",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "SMS-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fieldname": "run_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Run Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "shift",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Shift",
+   "options": "Day Shift\nNight Shift",
+   "reqd": 1
+  },
+  {
+   "fieldname": "custom_unit",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Unit",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "In Progress",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "In Progress\nCompleted",
+   "reqd": 1
+  },
+  {
+   "fieldname": "mixing_type",
+   "fieldtype": "Select",
+   "label": "Mixing Type",
+   "options": "\nFull Mixing\nHalf Mixing"
+  },
+  {
+   "fieldname": "section_break_links",
+   "fieldtype": "Section Break",
+   "label": "Links"
+  },
+  {
+   "fieldname": "gsm_shift_session",
+   "fieldtype": "Link",
+   "label": "GSM Shift Session",
+   "options": "GSM Shift Session"
+  },
+  {
+   "fieldname": "shaft_production_run",
+   "fieldtype": "Link",
+   "label": "Shaft Production Run",
+   "options": "Shaft Production Run"
+  },
+  {
+   "fieldname": "order_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Order Code"
+  },
+  {
+   "fieldname": "section_break_data",
+   "fieldtype": "Section Break",
+   "label": "Mixing Data"
+  },
+  {
+   "fieldname": "mixing_sheet_data",
+   "fieldtype": "Long Text",
+   "label": "Mixing Sheet Data"
+  },
+  {
+   "fieldname": "section_break_audit",
+   "fieldtype": "Section Break",
+   "label": "Completion"
+  },
+  {
+   "fieldname": "completed_by",
+   "fieldtype": "Link",
+   "label": "Completed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_on",
+   "fieldtype": "Datetime",
+   "label": "Completed On",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-07-10 10:00:00.000000",
+ "module": "Production Planning",
+ "name": "Shift Mixing Sheet",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

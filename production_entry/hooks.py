@@ -55,6 +55,7 @@ doctype_js = {
         "public/js/spr_roll_label_print.js",
         "public/js/spr_label.js",
         "public/js/spr_patty_stock.js",
+        "public/js/spr_mixing_sheet.js",
         "public/js/shaft_production_run.js",
     ],
     "Roll Production Entry": "public/js/roll_production_entry.js",

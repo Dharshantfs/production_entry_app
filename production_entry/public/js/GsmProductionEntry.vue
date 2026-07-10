@@ -253,6 +253,14 @@
                 </select>
               </label>
               <label>Unit <input v-model="headerUnit" type="text" readonly /></label>
+              <div v-if="(headerUnit || filterUnit) && !isMixingExcluded" class="gpe-wastage-recycle-btns">
+                <button
+                  type="button"
+                  class="gpe-btn"
+                  :disabled="!canOpenMixingSheet"
+                  @click="openMixingDialog"
+                >Mixing Sheet</button>
+              </div>
               <div v-if="shiftOpened && sessionSprList.length" class="gpe-wastage-recycle-btns">
                 <button
                   type="button"
@@ -1389,6 +1397,7 @@ import {
   openGsmWastageDialog,
   openGsmRecycleDialog,
 } from "./gsm_wastage_recycle_dialog.js";
+import { openGsmMixingSheetDialog } from "./gsm_mixing_sheet_dialog.js";
 import {
   gsmOpenBundlePackaging,
   gsmOpenManualJob,
@@ -3245,6 +3254,39 @@ const submitOrderSummary = computed(() => {
 const canOpenWastageRecycle = computed(
   () => shiftOpened.value && shiftSessionSprList.value.length > 0
 );
+
+const MIXING_EXCLUDED_UNITS = [
+  "TTT- L3 - OYANG C900 BAG MAKING LINE",
+  "TTT- L2 - OYANG C700 BAG MAKING LINE",
+  "TTT- L1 - OYANG C700 BAG MAKING LINE",
+  "VTP-L1 LEADER OYANG MACHINE",
+  "VTP-L2 LEADER ZX MACHINE",
+  "JVE-L3 B700 BAG MAKING MACHINE",
+  "JVE-L2 B700 BAG MAKING MACHINE",
+  "JVE-L1 B700 BAG MAKING MACHINE",
+];
+
+const isMixingExcluded = computed(() =>
+  MIXING_EXCLUDED_UNITS.includes((headerUnit.value || filterUnit.value || "").trim())
+);
+
+const canOpenMixingSheet = computed(
+  () =>
+    !!(headerUnit.value || filterUnit.value) &&
+    !!runDate.value &&
+    !!shift.value &&
+    !isMixingExcluded.value
+);
+
+function openMixingDialog() {
+  openGsmMixingSheetDialog({
+    headerUnit: headerUnit.value || filterUnit.value,
+    runDate: runDate.value,
+    shift: shift.value,
+    shiftSessionId: shiftSession.value?.name || "",
+    sessionSprList: sessionSprList.value,
+  });
+}
 
 function handleRollWasted(roll, sprRow) {
   const batch = roll?.batch_no;
