@@ -537,18 +537,45 @@ function _wireSelectAll($wrapper, rowCb, allCb) {
 	});
 }
 
-export function pickSessionSpr(sessionSprList) {
+export function pickSessionSpr(sessionSprList, opts = {}) {
 	_injectGwmStyles();
 	const list = (sessionSprList || []).filter((s) => s && s.spr_name);
 	if (!list.length) {
-		frappe.msgprint(__("No produced rolls for wastage/recycle on this shift yet."));
+		frappe.msgprint(__("No SPR found for this shift."));
 		return Promise.resolve(null);
+	}
+	const preferPpId = opts.pp_id || opts.ppId || "";
+	if (preferPpId) {
+		const preferred = list.find((s) => s.pp_id === preferPpId);
+		if (preferred) {
+			return Promise.resolve(preferred);
+		}
+	}
+	const preferSpr = _cstr(opts.spr_name || opts.sprName);
+	if (preferSpr) {
+		const preferred = list.find((s) => s.spr_name === preferSpr);
+		if (preferred) {
+			return Promise.resolve(preferred);
+		}
 	}
 	if (list.length === 1) {
 		return Promise.resolve(list[0]);
 	}
 	return new Promise((resolve) => {
-		const options = list.map((s) => `${s.order_code || "—"} · ${s.spr_name}`).join("\n");
+		const optionLines = list.map((s) => `${s.order_code || "—"} · ${s.spr_name}`);
+		const options = optionLines.join("\n");
+		let defaultIdx = 0;
+		if (preferPpId) {
+			const idx = list.findIndex((s) => s.pp_id === preferPpId);
+			if (idx >= 0) {
+				defaultIdx = idx;
+			}
+		} else if (preferSpr) {
+			const idx = list.findIndex((s) => s.spr_name === preferSpr);
+			if (idx >= 0) {
+				defaultIdx = idx;
+			}
+		}
 		const d = new frappe.ui.Dialog({
 			title: __("Select Order / SPR"),
 			fields: [
@@ -558,18 +585,23 @@ export function pickSessionSpr(sessionSprList) {
 					label: __("Order · SPR"),
 					options,
 					reqd: 1,
+					default: optionLines[defaultIdx],
 				},
 			],
 			primary_action_label: __("Continue"),
 			primary_action() {
 				const v = d.get_value("spr_pick");
-				const idx = options.split("\n").indexOf(v);
+				const idx = optionLines.indexOf(v);
 				d.hide();
 				resolve(idx >= 0 ? list[idx] : list[0]);
 			},
 		});
 		d.show();
 	});
+}
+
+function _cstr(v) {
+	return String(v ?? "").trim();
 }
 
 async function _loadWastageContext(sprName) {
@@ -602,6 +634,11 @@ function _bestChildTable(ctx, preferredKey, matchRe, skipKeys = []) {
 }
 
 function _pattyWastageTable(ctx) {
+	const tables = ctx?.tables || {};
+	const direct = tables.custom_running_patty_wastage;
+	if ((direct?.rows || []).length) {
+		return direct;
+	}
 	return _bestChildTable(
 		ctx,
 		"custom_running_patty_wastage",
@@ -654,7 +691,7 @@ function _rollsForSpr(rollLines, sprRow) {
 
 export async function openGsmWastageDialog(opts = {}) {
 	_injectGwmStyles();
-	const sprRow = await pickSessionSpr(opts.sessionSprList);
+	const sprRow = await pickSessionSpr(opts.sessionSprList, opts);
 	if (!sprRow) {
 		return;
 	}
@@ -704,7 +741,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 				</div>
 			</div>`
 			: `<div class="gwm-empty">${__(
-					"No running patty wastage yet. Save roll entries first — desk SPR adds rows automatically."
+					"No running patty wastage yet. Save roll entries first — desk SPR adds rows automatically. If wastage shows on the SPR form, save that SPR on desk first."
 			  )}</div>`;
 
 	const d = new frappe.ui.Dialog({
@@ -872,7 +909,7 @@ function _recycledWastageTable(ctx) {
 
 export async function openGsmRecycleDialog(opts = {}) {
 	_injectGwmStyles();
-	const sprRow = await pickSessionSpr(opts.sessionSprList);
+	const sprRow = await pickSessionSpr(opts.sessionSprList, opts);
 	if (!sprRow) {
 		return;
 	}

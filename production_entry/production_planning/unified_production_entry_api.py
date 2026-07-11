@@ -3304,6 +3304,40 @@ def _gsm_resolve_spr_child_field(spr_meta, preferred_fieldname: str, child_docty
 			return df.fieldname
 	return None
 
+
+def _gsm_load_spr_child_rows(spr_doc, preferred_fieldname: str, child_doctype: str) -> tuple[str | None, list]:
+	"""Return (resolved_fieldname, rows) with DB fallback when meta/Doc child cache is empty."""
+	spr_meta = frappe.get_meta("Shaft Production Run")
+	resolved = _gsm_resolve_spr_child_field(spr_meta, preferred_fieldname, child_doctype)
+
+	for fieldname in dict.fromkeys(
+		[f for f in (resolved, preferred_fieldname) if f]
+		+ [
+			df.fieldname
+			for df in spr_meta.fields or []
+			if df.fieldtype == "Table" and _cstr(df.options) == child_doctype
+		]
+	):
+		rows = list(getattr(spr_doc, fieldname, None) or [])
+		if rows:
+			return fieldname, rows
+
+	if not frappe.db.table_exists(child_doctype):
+		return resolved, []
+
+	db_rows = frappe.get_all(
+		child_doctype,
+		filters={"parent": spr_doc.name, "parenttype": "Shaft Production Run"},
+		fields=["*"],
+		order_by="idx asc",
+		limit=500,
+	)
+	if not db_rows:
+		return resolved, []
+
+	parentfield = _cstr(db_rows[0].get("parentfield") or resolved or preferred_fieldname)
+	return parentfield or resolved, [frappe._dict(r) for r in db_rows]
+
 _PATTY_STOCK_METHOD_CANDIDATES = (
 	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.get_available_patty_stock",
 	"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.spr_get_available_patty_stock",
@@ -3583,14 +3617,17 @@ def _gsm_enrich_child_row_from_spr(spr_doc, row_dict: dict, child_doctype: str =
 
 
 def _gsm_spr_child_table_payload(spr_doc, fieldname: str, child_doctype: str) -> dict:
+	resolved_field, rows = _gsm_load_spr_child_rows(spr_doc, fieldname, child_doctype)
 	columns = _gsm_child_table_columns(child_doctype)
-	rows = getattr(spr_doc, fieldname, None) or []
 	enriched_rows = []
 	for r in rows:
 		row_dict = _gsm_child_row_dict(r, columns)
+		if resolved_field:
+			row_dict["parentfield"] = resolved_field
 		enriched_rows.append(_gsm_enrich_child_row_from_spr(spr_doc, row_dict, child_doctype))
 	return {
-		"fieldname": fieldname,
+		"fieldname": resolved_field or fieldname,
+		"resolved_fieldname": resolved_field or fieldname,
 		"child_doctype": child_doctype,
 		"columns": columns,
 		"rows": enriched_rows,
@@ -3736,8 +3773,8 @@ def get_gsm_spr_wastage_context(spr_name):
 	spr_meta = frappe.get_meta("Shaft Production Run")
 	tables = {}
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
-		resolved_field = _gsm_resolve_spr_child_field(spr_meta, fieldname, child_doctype)
-		if not resolved_field:
+		resolved_field, rows = _gsm_load_spr_child_rows(spr, fieldname, child_doctype)
+		if not resolved_field and not rows:
 			tables[fieldname] = {
 				"fieldname": fieldname,
 				"child_doctype": child_doctype,
@@ -3746,7 +3783,7 @@ def get_gsm_spr_wastage_context(spr_name):
 				"configured": False,
 			}
 			continue
-		payload = _gsm_spr_child_table_payload(spr, resolved_field, child_doctype)
+		payload = _gsm_spr_child_table_payload(spr, fieldname, child_doctype)
 		payload["fieldname"] = fieldname
 		payload["resolved_fieldname"] = resolved_field
 		payload["configured"] = True

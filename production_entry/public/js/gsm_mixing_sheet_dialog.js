@@ -8,7 +8,7 @@ function mixingApi() {
 
 /**
  * Open mixing sheet from GSM Production Entry.
- * Available before or after shift start.
+ * Always links to a specific SPR when session SPRs exist (per-order sheets).
  */
 export async function openGsmMixingSheetDialog(opts = {}) {
 	const unit = (opts.custom_unit || opts.headerUnit || "").trim();
@@ -34,39 +34,16 @@ export async function openGsmMixingSheetDialog(opts = {}) {
 		return;
 	}
 
-	let sprRow = null;
 	const sessionList = (opts.sessionSprList || []).filter((s) => s && s.spr_name);
-	if (sessionList.length > 1) {
-		sprRow = await new Promise((resolve) => {
-			const options = ["Shift (no order)", ...sessionList.map((s) => `${s.order_code || "—"} · ${s.spr_name}`)];
-			const d = new frappe.ui.Dialog({
-				title: __("Mixing Sheet"),
-				fields: [
-					{
-						fieldname: "scope",
-						fieldtype: "Select",
-						label: __("Sheet for"),
-						options: options.join("\n"),
-						reqd: 1,
-						default: "Shift (no order)",
-					},
-				],
-				primary_action_label: __("Continue"),
-				primary_action() {
-					const v = d.get_value("scope");
-					d.hide();
-					if (v === "Shift (no order)") {
-						resolve(null);
-						return;
-					}
-					const idx = options.indexOf(v) - 1;
-					resolve(idx >= 0 ? sessionList[idx] : null);
-				},
-			});
-			d.show();
-		});
-	} else if (sessionList.length === 1 && opts.preferSprLink) {
+	let sprRow = null;
+
+	if (sessionList.length === 1) {
 		sprRow = sessionList[0];
+	} else if (sessionList.length > 1) {
+		sprRow = await pickSessionSpr(sessionList, opts);
+		if (!sprRow) {
+			return;
+		}
 	}
 
 	await openSprMixingSheet({

@@ -58,6 +58,10 @@ def _find_mixing_sheet(
 
 	spr = _cstr(spr_name)
 	if spr:
+		if frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
+			linked = frappe.db.get_value("Shaft Production Run", spr, "custom_shift_mixing_sheet")
+			if linked and frappe.db.exists("Shift Mixing Sheet", linked):
+				return linked
 		found = frappe.db.get_value(
 			"Shift Mixing Sheet",
 			{"shaft_production_run": spr, "status": "In Progress"},
@@ -80,45 +84,27 @@ def _find_mixing_sheet(
 	shift_n = _normalize_shift(shift)
 	rd = getdate(run_date) if run_date else None
 
-	if session:
+	if session and not spr:
 		filters = {"gsm_shift_session": session, "status": "In Progress"}
-		if spr:
-			filters["shaft_production_run"] = spr
-		elif unit:
+		if unit:
 			filters["custom_unit"] = unit
 		found = frappe.db.get_value("Shift Mixing Sheet", filters, "name", order_by="modified desc")
 		if found:
 			return found
 
-	if rd and shift_n and unit:
-		if spr:
-			found = frappe.db.get_value(
-				"Shift Mixing Sheet",
-				{
-					"run_date": rd,
-					"shift": shift_n,
-					"custom_unit": unit,
-					"shaft_production_run": spr,
-					"status": "In Progress",
-				},
-				"name",
-				order_by="modified desc",
-			)
-			if found:
-				return found
-		else:
-			rows = frappe.db.sql(
-				"""
-				SELECT name FROM `tabShift Mixing Sheet`
-				WHERE run_date = %s AND shift = %s AND custom_unit = %s
-				  AND status = 'In Progress'
-				  AND (shaft_production_run IS NULL OR shaft_production_run = '')
-				ORDER BY modified DESC LIMIT 1
-				""",
-				(rd, shift_n, unit),
-			)
-			if rows:
-				return rows[0][0]
+	if rd and shift_n and unit and not spr:
+		rows = frappe.db.sql(
+			"""
+			SELECT name FROM `tabShift Mixing Sheet`
+			WHERE run_date = %s AND shift = %s AND custom_unit = %s
+			  AND status = 'In Progress'
+			  AND (shaft_production_run IS NULL OR shaft_production_run = '')
+			ORDER BY modified DESC LIMIT 1
+			""",
+			(rd, shift_n, unit),
+		)
+		if rows:
+			return rows[0][0]
 
 	return None
 
