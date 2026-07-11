@@ -56,7 +56,12 @@ def _find_mixing_sheet(
 	if name and frappe.db.exists("Shift Mixing Sheet", name):
 		return name
 
+	session = _cstr(gsm_shift_session)
+	unit = _cstr(custom_unit)
+	shift_n = _normalize_shift(shift)
+	rd = getdate(run_date) if run_date else None
 	spr = _cstr(spr_name)
+
 	if spr:
 		if frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
 			linked = frappe.db.get_value("Shaft Production Run", spr, "custom_shift_mixing_sheet")
@@ -79,10 +84,34 @@ def _find_mixing_sheet(
 		if found:
 			return found
 
-	session = _cstr(gsm_shift_session)
-	unit = _cstr(custom_unit)
-	shift_n = _normalize_shift(shift)
-	rd = getdate(run_date) if run_date else None
+		oc = _cstr(frappe.db.get_value("Shaft Production Run", spr, "custom_order_code"))
+		if oc:
+			filters = {"order_code": oc}
+			if rd:
+				filters["run_date"] = rd
+			if shift_n:
+				filters["shift"] = shift_n
+			if unit:
+				filters["custom_unit"] = unit
+			found = frappe.db.get_value(
+				"Shift Mixing Sheet",
+				filters,
+				"name",
+				order_by="modified desc",
+			)
+			if found:
+				return found
+			session_filters = {"order_code": oc}
+			if session:
+				session_filters["gsm_shift_session"] = session
+			found = frappe.db.get_value(
+				"Shift Mixing Sheet",
+				session_filters,
+				"name",
+				order_by="modified desc",
+			)
+			if found:
+				return found
 
 	if session and not spr:
 		filters = {"gsm_shift_session": session, "status": "In Progress"}
@@ -145,6 +174,17 @@ def get_mixing_sheet(
 	)
 	if found:
 		doc = frappe.get_doc("Shift Mixing Sheet", found)
+		spr = _cstr(spr_name)
+		if spr and not _cstr(doc.shaft_production_run):
+			doc.shaft_production_run = spr
+			if not _cstr(doc.order_code):
+				doc.order_code = _cstr(
+					frappe.db.get_value("Shaft Production Run", spr, "custom_order_code")
+				)
+			doc.save(ignore_permissions=True)
+			if frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
+				frappe.db.set_value("Shaft Production Run", spr, "custom_shift_mixing_sheet", doc.name)
+			frappe.db.commit()
 		return _sheet_payload(doc)
 
 	unit = _cstr(custom_unit)

@@ -545,19 +545,7 @@ export function pickSessionSpr(sessionSprList, opts = {}) {
 		return Promise.resolve(null);
 	}
 	const preferPpId = opts.pp_id || opts.ppId || "";
-	if (preferPpId) {
-		const preferred = list.find((s) => s.pp_id === preferPpId);
-		if (preferred) {
-			return Promise.resolve(preferred);
-		}
-	}
 	const preferSpr = _cstr(opts.spr_name || opts.sprName);
-	if (preferSpr) {
-		const preferred = list.find((s) => s.spr_name === preferSpr);
-		if (preferred) {
-			return Promise.resolve(preferred);
-		}
-	}
 	if (list.length === 1) {
 		return Promise.resolve(list[0]);
 	}

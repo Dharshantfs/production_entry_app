@@ -11460,6 +11460,203 @@ def _gsm_publish_session_update(spr) -> None:
 		pass
 
 
+def _spr_patty_wastage_fieldname() -> str | None:
+	meta = frappe.get_meta("Shaft Production Run")
+	for cand in ("custom_running_patty_wastage", "running_patty_wastage"):
+		if meta.has_field(cand):
+			return cand
+	for df in meta.fields or []:
+		if df.fieldtype != "Table":
+			continue
+		label = _cstr(df.label or "").lower()
+		fname = _cstr(df.fieldname or "").lower()
+		options = _cstr(df.options or "")
+		if "patty" in fname or "patty" in label or "Patty" in options:
+			return df.fieldname
+	return None
+
+
+def _spr_write_patty_child_row(logical: dict) -> dict:
+	"""Map logical patty keys to whichever fieldnames exist on the live child DocType."""
+	child_dt = "Running Patty Wastage Row"
+	if not frappe.db.exists("DocType", child_dt):
+		return logical
+	meta = frappe.get_meta(child_dt)
+	existing = {df.fieldname for df in meta.fields}
+	aliases = {
+		"job_id": ("job_id", "job"),
+		"quality": ("quality", "custom_quality"),
+		"color": ("color", "fabric_colour", "custom_color"),
+		"gsm": ("gsm",),
+		"width_inch": ("width_inch", "width", "w"),
+		"meter_per_roll": (
+			"meter_per_roll",
+			"meter_roll",
+			"meter",
+			"produced_length_mtrs",
+			"produced_length_mtr",
+			"meter__roll",
+		),
+		"no_of_shafts": ("no_of_shafts", "shafts", "no_of_shaft"),
+		"wastage": ("wastage", "wastage_qty", "wastage_qt", "net_wastage", "net_wastage_kg"),
+		"wastage_qty": ("wastage_qty", "wastage_qt", "wastage", "net_wastage", "net_wastage_kg"),
+		"net_wastage": ("net_wastage", "net_wastage_kg", "net_wastage_kgs", "wastage_qty", "wastage"),
+		"recycled": ("recycled", "recycled_qty", "recycled_kg"),
+		"recycled_qty": ("recycled_qty", "recycled", "recycled_kg"),
+	}
+	out: dict = {}
+	for key, val in (logical or {}).items():
+		if val is None:
+			continue
+		if isinstance(val, str) and not val.strip():
+			continue
+		wrote = False
+		for fn in aliases.get(key, (key,)):
+			if fn in existing:
+				out[fn] = val
+				wrote = True
+		if not wrote and key in existing:
+			out[key] = val
+	return out
+
+
+def _spr_patty_row_dict(row) -> dict:
+	return row.as_dict() if hasattr(row, "as_dict") else dict(row or {})
+
+
+def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
+	"""Derive running patty wastage per job from saved roll lines (GSM parity with desk)."""
+	job_rolls: dict[str, list] = {}
+	for it in spr.items or []:
+		if not _spr_is_real_roll_item_row(it):
+			continue
+		jid = _cstr(getattr(it, "job", None) or getattr(it, "job_id", None))
+		if not jid:
+			continue
+		job_rolls.setdefault(jid, []).append(it)
+	if not job_rolls:
+		return {}
+
+	out: dict[str, dict] = {}
+	for jid, rolls in job_rolls.items():
+		job_row = None
+		for sj in spr.shaft_jobs or []:
+			if _cstr(_spr_job_id(sj)) == jid:
+				job_row = sj
+				break
+
+		specs = _gsm_resolve_item_row_display_specs(rolls[0])
+		wastage_total = 0.0
+		for r in rolls:
+			sticker_gsm = flt(getattr(r, "gsm", 0) or specs.get("gsm") or 0)
+			produced_gsm = flt(getattr(r, "produced_gsm", 0) or 0)
+			net_w = flt(getattr(r, "net_weight", 0) or 0)
+			if net_w <= 0:
+				continue
+			if produced_gsm <= 0:
+				produced_gsm = sticker_gsm
+			if sticker_gsm <= 0:
+				sticker_gsm = produced_gsm
+			if sticker_gsm > 0 and produced_gsm > 0:
+				wastage_total += abs(produced_gsm - sticker_gsm) / sticker_gsm * net_w
+
+		if wastage_total <= 0:
+			continue
+
+		width = flt(getattr(rolls[0], "width_inch", 0) or 0)
+		meter = flt(
+			getattr(rolls[0], "produced_length_mtrs", 0)
+			or getattr(rolls[0], "meter_roll", 0)
+			or 0
+		)
+		max_shaft = max(
+			cint(getattr(r, "custom_no_of_shaft", 0) or getattr(r, "no_of_shaft", 0) or 0) for r in rolls
+		)
+		if job_row:
+			width = width or flt(
+				getattr(job_row, "width_inch", 0)
+				or getattr(job_row, "combined_width", 0)
+				or getattr(job_row, "sticker_width", 0)
+			)
+			meter = meter or flt(
+				getattr(job_row, "meter_roll", 0)
+				or getattr(job_row, "meter__roll", 0)
+				or getattr(job_row, "produced_length_mtrs", 0)
+			)
+			max_shaft = max_shaft or cint(
+				getattr(job_row, "no_of_shafts", 0) or getattr(job_row, "no_of_shaft", 0)
+			)
+
+		out[jid] = {
+			"job_id": jid,
+			"quality": _cstr(specs.get("quality") or getattr(job_row, "quality", None) or ""),
+			"color": _cstr(specs.get("color") or getattr(job_row, "color", None) or ""),
+			"gsm": cint(specs.get("gsm") or getattr(rolls[0], "gsm", 0) or 0),
+			"width_inch": width,
+			"meter_per_roll": meter,
+			"no_of_shafts": max_shaft,
+			"wastage": flt(wastage_total, 3),
+			"wastage_qty": flt(wastage_total, 3),
+			"net_wastage": flt(wastage_total, 3),
+		}
+	return out
+
+
+def sync_running_patty_wastage_from_items(spr, *, persist: bool = False) -> bool:
+	"""Rebuild Running Patty Wastage child rows from SPR roll lines."""
+	field = _spr_patty_wastage_fieldname()
+	if not field:
+		return False
+
+	by_job = _spr_compute_patty_wastage_by_job(spr)
+	if not by_job:
+		return False
+
+	if not persist:
+		return True
+
+	existing_by_job: dict[str, dict] = {}
+	for row in getattr(spr, field, None) or []:
+		d = _spr_patty_row_dict(row)
+		jid = _cstr(d.get("job_id") or d.get("job"))
+		if jid:
+			existing_by_job[jid] = d
+
+	spr.set(field, [])
+	for jid, logical in sorted(by_job.items(), key=lambda kv: kv[0]):
+		prev = existing_by_job.get(jid) or {}
+		recycled = flt(prev.get("recycled_qty") or prev.get("recycled") or 0)
+		if recycled > 0:
+			logical["recycled"] = recycled
+			logical["recycled_qty"] = recycled
+		spr.append(field, _spr_write_patty_child_row(logical))
+	return True
+
+
+@frappe.whitelist()
+def sync_spr_running_patty_wastage(spr_name, persist=1):
+	"""GSM / desk helper — persist running patty wastage rows from roll lines."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot sync patty wastage on a submitted Shaft Production Run"))
+		changed = sync_running_patty_wastage_from_items(spr, persist=cint(persist))
+		if changed:
+			spr.flags._spr_incremental_roll_save = True
+			spr.save(ignore_permissions=True)
+		field = _spr_patty_wastage_fieldname()
+		rows = getattr(spr, field, None) or [] if field else []
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"synced": bool(changed),
+			"row_count": len(rows),
+		}
+
+
 @frappe.whitelist()
 def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 	"""Real-time GSM Save Row — upsert one roll line on draft SPR (server, not local only)."""
@@ -11481,6 +11678,7 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		pp_id = _cstr(spr.get("production_plan")).strip()
 		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
 		spr._validate_no_duplicate_roll_batches()
+		sync_running_patty_wastage_from_items(spr, persist=True)
 		spr.flags._spr_incremental_roll_save = True
 		spr.save()
 		result.update(

@@ -3323,6 +3323,30 @@ def _gsm_load_spr_child_rows(spr_doc, preferred_fieldname: str, child_doctype: s
 			return fieldname, rows
 
 	if not frappe.db.table_exists(child_doctype):
+		# Live sites may use a renamed child DocType — scan SPR table fields.
+		for df in spr_meta.fields or []:
+			if df.fieldtype != "Table":
+				continue
+			if preferred_fieldname and df.fieldname == preferred_fieldname:
+				continue
+			if child_doctype.lower() not in _cstr(df.options or "").lower() and "patty" not in _cstr(
+				df.fieldname or ""
+			).lower():
+				if "recycl" not in child_doctype.lower() and "roll waste" not in child_doctype.lower():
+					continue
+			alt_dt = _cstr(df.options)
+			if not alt_dt or not frappe.db.table_exists(alt_dt):
+				continue
+			alt_rows = frappe.get_all(
+				alt_dt,
+				filters={"parent": spr_doc.name, "parenttype": "Shaft Production Run"},
+				fields=["*"],
+				order_by="idx asc",
+				limit=500,
+			)
+			if alt_rows:
+				parentfield = _cstr(alt_rows[0].get("parentfield") or df.fieldname)
+				return parentfield or df.fieldname, [frappe._dict(r) for r in alt_rows]
 		return resolved, []
 
 	db_rows = frappe.get_all(
@@ -3765,12 +3789,29 @@ def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = No
 @frappe.whitelist()
 def get_gsm_spr_wastage_context(spr_name):
 	"""Read running patty, roll waste, and recycled child tables for GSM dialogs."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_compute_patty_wastage_by_job,
+		_spr_patty_wastage_fieldname,
+		sync_running_patty_wastage_from_items,
+	)
+
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
 
 	spr = frappe.get_doc("Shaft Production Run", spr_name)
-	spr_meta = frappe.get_meta("Shaft Production Run")
+	patty_field = _spr_patty_wastage_fieldname()
+	if patty_field:
+		_, patty_rows = _gsm_load_spr_child_rows(
+			spr, "custom_running_patty_wastage", "Running Patty Wastage Row"
+		)
+		if not patty_rows:
+			if sync_running_patty_wastage_from_items(spr, persist=True):
+				spr.flags._spr_incremental_roll_save = True
+				spr.save(ignore_permissions=True)
+				frappe.db.commit()
+				spr = frappe.get_doc("Shaft Production Run", spr_name)
+
 	tables = {}
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
 		resolved_field, rows = _gsm_load_spr_child_rows(spr, fieldname, child_doctype)
@@ -3788,6 +3829,27 @@ def get_gsm_spr_wastage_context(spr_name):
 		payload["resolved_fieldname"] = resolved_field
 		payload["configured"] = True
 		tables[fieldname] = payload
+
+	# Virtual fallback when child table exists but rows are still empty (unsaved desk-only state).
+	patty_payload = tables.get("custom_running_patty_wastage") or {}
+	if patty_field and not (patty_payload.get("rows") or []):
+		computed = _spr_compute_patty_wastage_by_job(spr)
+		if computed:
+			columns = patty_payload.get("columns") or _gsm_child_table_columns("Running Patty Wastage Row")
+			enriched = []
+			for logical in computed.values():
+				row_dict = dict(logical)
+				row_dict["parentfield"] = patty_field
+				enriched.append(_gsm_enrich_child_row_from_spr(spr, row_dict, "Running Patty Wastage Row"))
+			tables["custom_running_patty_wastage"] = {
+				"fieldname": patty_field,
+				"resolved_fieldname": patty_field,
+				"child_doctype": "Running Patty Wastage Row",
+				"columns": columns,
+				"rows": enriched,
+				"configured": True,
+				"source": "computed_from_roll_lines",
+			}
 
 	order_code = _cstr(
 		getattr(spr, "custom_order_code", None)
