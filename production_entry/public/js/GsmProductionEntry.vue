@@ -274,14 +274,14 @@
                   :disabled="!canOpenWastageRecycle"
                   @click="openRecycleDialog"
                 >Recycle</button>
-                <div class="gpe-quality-check-wrap">
+                <div class="gpe-quality-check-wrap" v-click-outside="closeQualityMenu">
                   <button
                     type="button"
                     class="gpe-btn"
                     :disabled="!canOpenQualityCheck"
-                    @click="qualityMenuOpen = !qualityMenuOpen"
+                    @click.stop="toggleQualityMenu"
                   >Quality Check ▾</button>
-                  <div v-if="qualityMenuOpen && canOpenQualityCheck" class="gpe-tools-menu gpe-quality-menu">
+                  <div v-if="qualityMenuOpen && canOpenQualityCheck" class="gpe-quality-menu">
                     <button type="button" @click="runQualityCheck('gsm')">Start GSM Testing</button>
                     <button type="button" @click="runQualityCheck('tensile')">Start Tensile Testing</button>
                   </div>
@@ -3798,7 +3798,15 @@ function sprStatusChipClass(status) {
 
 function closeToolsMenu() {
   toolsMenuOpen.value = false;
+}
+
+function closeQualityMenu() {
   qualityMenuOpen.value = false;
+}
+
+function toggleQualityMenu() {
+  qualityMenuOpen.value = !qualityMenuOpen.value;
+  toolsMenuOpen.value = false;
 }
 
 function pickToolOrder(options) {
@@ -3866,8 +3874,7 @@ async function runTool(kind) {
 }
 
 async function runQualityCheck(kind) {
-  closeToolsMenu();
-  qualityMenuOpen.value = false;
+  closeQualityMenu();
   const ctx = await resolveToolContext();
   if (!ctx) {
     return;
@@ -7774,6 +7781,8 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: 12px 16px;
   margin-top: 6px;
+  position: relative;
+  z-index: 4;
 }
 .gpe-spr-inline {
   flex: 1 1 320px;
@@ -8428,8 +8437,26 @@ onUnmounted(() => {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  z-index: 30;
-  min-width: 180px;
+  z-index: 50;
+  min-width: 200px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+}
+.gpe-quality-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+.gpe-quality-menu button:hover {
+  background: #f8fafc;
 }
 .gpe-row-wasted td {
   text-decoration: line-through;
