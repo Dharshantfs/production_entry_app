@@ -74,6 +74,21 @@ def _meter_keys():
 	]
 
 
+def _planning_table_meter_select_fields():
+	"""Planning Table meter columns vary by site — only SELECT fields that exist."""
+	fields = ["name"]
+	try:
+		meta = frappe.get_meta("Planning Table")
+		for fn in _meter_keys():
+			if meta.has_field(fn):
+				fields.append(fn)
+	except Exception:
+		for fn in _meter_keys():
+			if frappe.db.has_column("Planning Table", fn):
+				fields.append(fn)
+	return list(dict.fromkeys(fields))
+
+
 def _shaft_width_inch(shaft_row) -> float:
 	w = flt(_pick_value(shaft_row, ["total_width", "combined_width", "width", "total_width_inches"], 0))
 	if w > 0:
@@ -1320,15 +1335,41 @@ def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=Non
 		except Exception:
 			pass
 
-	for psi_name in frappe.get_all(
-		"Planning Table",
-		filters={"production_plan": pp_id} if frappe.db.has_column("Planning Table", "production_plan") else {},
-		fields=["name", "meter", "meter_roll", "planned_length"],
-		limit=50,
-	):
-		raw_meter = flt(_pick_value(psi_name, meter_keys, 0))
-		if raw_meter > 0:
-			return {"meter_roll_mtrs": raw_meter, "source": "planning_table"}
+	if frappe.db.exists("DocType", "Planning Table"):
+		pt_fields = _planning_table_meter_select_fields()
+		pt_filters = (
+			{"production_plan": pp_id}
+			if frappe.db.has_column("Planning Table", "production_plan")
+			else {}
+		)
+		if target_gsm and frappe.db.has_column("Planning Table", "gsm"):
+			pt_filters["gsm"] = target_gsm
+		if target_w > 0 and frappe.db.has_column("Planning Table", "width_inch"):
+			pt_filters["width_inch"] = target_w
+		for psi_row in frappe.get_all(
+			"Planning Table",
+			filters=pt_filters,
+			fields=pt_fields,
+			limit=50,
+		):
+			raw_meter = flt(_pick_value(psi_row, meter_keys, 0))
+			if raw_meter > 0:
+				return {"meter_roll_mtrs": raw_meter, "source": "planning_table"}
+		if pt_filters.get("gsm") or pt_filters.get("width_inch"):
+			relaxed = {
+				k: v
+				for k, v in pt_filters.items()
+				if k in ("production_plan",)
+			}
+			for psi_row in frappe.get_all(
+				"Planning Table",
+				filters=relaxed,
+				fields=pt_fields,
+				limit=50,
+			):
+				raw_meter = flt(_pick_value(psi_row, meter_keys, 0))
+				if raw_meter > 0:
+					return {"meter_roll_mtrs": raw_meter, "source": "planning_table"}
 
 	fallback = flt(
 		pp.get("meter__roll")
