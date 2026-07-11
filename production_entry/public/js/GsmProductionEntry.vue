@@ -1548,21 +1548,24 @@ function rollBatchSuffix(batchNo) {
 }
 
 function lifoSortKey(row) {
-  const seq = cint(row?.creation_seq);
-  if (seq > 0) {
-    return seq;
-  }
-  return rollBatchSuffix(row?.batch_no);
+  return cint(row?.creation_seq);
 }
 
 function sortRollLinesLifo(rows) {
-  return [...rows].sort((a, b) => lifoSortKey(b) - lifoSortKey(a));
+  return [...rows].sort((a, b) => {
+    const keyA = lifoSortKey(a);
+    const keyB = lifoSortKey(b);
+    if (keyA !== keyB) {
+      return keyB - keyA;
+    }
+    return rollBatchSuffix(b?.batch_no) - rollBatchSuffix(a?.batch_no);
+  });
 }
 
 function syncCreationSeqFromGrid() {
   let maxSeq = cint(creationSeq.value);
   for (const row of rollLines.value) {
-    maxSeq = Math.max(maxSeq, lifoSortKey(row));
+    maxSeq = Math.max(maxSeq, cint(row?.creation_seq), rollBatchSuffix(row?.batch_no));
   }
   creationSeq.value = maxSeq;
 }
@@ -5199,7 +5202,7 @@ function applyResumePayload(msg, options = {}) {
     ...r,
     gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
     _id: r._id || `resume-${idx}-${Date.now()}`,
-    creation_seq: cint(r.creation_seq) || lifoSortKey(r) || msg.roll_lines.length - idx,
+    creation_seq: cint(r.creation_seq) || msg.roll_lines.length - idx,
     is_bundle_row: !!cint(r.is_bundle_row),
     is_wasted: !!cint(r.is_wasted),
     row_readonly: !!cint(r.row_readonly),
@@ -5230,7 +5233,7 @@ function applyResumePayload(msg, options = {}) {
       }
       merged.unshift({
         ...local,
-        creation_seq: Math.max(lifoSortKey(local), nextCreationSeq()),
+        creation_seq: Math.max(cint(local.creation_seq), nextCreationSeq()),
       });
     }
     rollLines.value = sortRollLinesLifo(merged);

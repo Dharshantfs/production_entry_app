@@ -30,8 +30,18 @@ def _parse_mixing_json(raw) -> dict:
 		return _empty_mixing_state()
 	if not isinstance(data, dict):
 		return _empty_mixing_state()
-	if not data.get("sets"):
+	sets = data.get("sets")
+	if isinstance(sets, dict):
+		# Legacy / corrupt saves stored a single set object instead of an array.
+		data["sets"] = [sets]
+	elif not isinstance(sets, list) or not sets:
 		data["sets"] = [{"materials": {}, "extras": [], "rows": []}]
+	else:
+		normalized = []
+		for s in sets:
+			if isinstance(s, dict):
+				normalized.append(s)
+		data["sets"] = normalized or [{"materials": {}, "extras": [], "rows": []}]
 	return data
 
 
@@ -51,6 +61,7 @@ def _find_mixing_sheet(
 	run_date=None,
 	shift=None,
 	custom_unit=None,
+	order_code=None,
 ):
 	name = _cstr(mixing_sheet_name)
 	if name and frappe.db.exists("Shift Mixing Sheet", name):
@@ -61,6 +72,17 @@ def _find_mixing_sheet(
 	shift_n = _normalize_shift(shift)
 	rd = getdate(run_date) if run_date else None
 	spr = _cstr(spr_name)
+	oc = _cstr(order_code)
+
+	if oc and session:
+		found = frappe.db.get_value(
+			"Shift Mixing Sheet",
+			{"gsm_shift_session": session, "order_code": oc},
+			"name",
+			order_by="modified desc",
+		)
+		if found:
+			return found
 
 	if spr:
 		if frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
@@ -162,6 +184,7 @@ def get_mixing_sheet(
 	run_date=None,
 	shift=None,
 	custom_unit=None,
+	order_code=None,
 ):
 	"""Load existing Shift Mixing Sheet or return empty template."""
 	found = _find_mixing_sheet(
@@ -171,18 +194,27 @@ def get_mixing_sheet(
 		run_date=run_date,
 		shift=shift,
 		custom_unit=custom_unit,
+		order_code=order_code,
 	)
 	if found:
 		doc = frappe.get_doc("Shift Mixing Sheet", found)
 		spr = _cstr(spr_name)
+		oc = _cstr(order_code)
+		changed = False
 		if spr and not _cstr(doc.shaft_production_run):
 			doc.shaft_production_run = spr
-			if not _cstr(doc.order_code):
-				doc.order_code = _cstr(
-					frappe.db.get_value("Shaft Production Run", spr, "custom_order_code")
-				)
+			changed = True
+		if spr and not _cstr(doc.order_code):
+			doc.order_code = _cstr(
+				oc or frappe.db.get_value("Shaft Production Run", spr, "custom_order_code")
+			)
+			changed = True
+		elif oc and not _cstr(doc.order_code):
+			doc.order_code = oc
+			changed = True
+		if changed:
 			doc.save(ignore_permissions=True)
-			if frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
+			if spr and frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
 				frappe.db.set_value("Shaft Production Run", spr, "custom_shift_mixing_sheet", doc.name)
 			frappe.db.commit()
 		return _sheet_payload(doc)
@@ -201,7 +233,7 @@ def get_mixing_sheet(
 		"custom_unit": unit,
 		"shaft_production_run": _cstr(spr_name),
 		"gsm_shift_session": _cstr(gsm_shift_session),
-		"order_code": "",
+		"order_code": _cstr(order_code),
 	}
 
 
@@ -225,6 +257,7 @@ def _upsert_mixing_sheet(
 		run_date=run_date,
 		shift=shift,
 		custom_unit=custom_unit,
+		order_code=order_code,
 	)
 
 	unit = _cstr(custom_unit)
@@ -252,10 +285,14 @@ def _upsert_mixing_sheet(
 
 	if spr:
 		doc.shaft_production_run = spr
+	elif oc:
+		doc.order_code = oc
 	if session:
 		doc.gsm_shift_session = session
 	if oc:
 		doc.order_code = oc
+	elif spr:
+		doc.order_code = _cstr(frappe.db.get_value("Shaft Production Run", spr, "custom_order_code"))
 	if data.get("mixing_type"):
 		doc.mixing_type = data.get("mixing_type")
 

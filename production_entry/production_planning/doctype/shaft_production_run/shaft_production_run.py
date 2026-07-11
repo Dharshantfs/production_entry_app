@@ -11154,6 +11154,8 @@ def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 		"job_id": _cstr(getattr(it, "job", None)),
 		"custom_no_of_shaft": cint(getattr(it, "custom_no_of_shaft", 0) or 0),
 		"spr_item_name": _cstr(getattr(it, "name", None)),
+		"row_modified": _cstr(getattr(it, "modified", None) or getattr(it, "creation", None) or ""),
+		"child_idx": cint(getattr(it, "idx", 0) or 0),
 		"is_bundle_row": 0,
 		"row_locked": 1,
 		"row_ready_for_print": 1,
@@ -11524,6 +11526,38 @@ def _spr_patty_row_dict(row) -> dict:
 	return row.as_dict() if hasattr(row, "as_dict") else dict(row or {})
 
 
+def _spr_patty_row_wastage_kg(row_dict: dict) -> float:
+	for key in (
+		"wastage",
+		"wastage_qty",
+		"wastage_qt",
+		"net_wastage",
+		"net_wastage_kg",
+		"net_wastage_kgs",
+	):
+		val = row_dict.get(key)
+		if val is not None and flt(val) > 0:
+			return flt(val)
+	return 0.0
+
+
+def _spr_existing_patty_rows(spr, field: str) -> list[dict]:
+	rows = []
+	for row in getattr(spr, field, None) or []:
+		rows.append(_spr_patty_row_dict(row))
+	if rows:
+		return rows
+	if not frappe.db.table_exists("Running Patty Wastage Row"):
+		return []
+	return frappe.get_all(
+		"Running Patty Wastage Row",
+		filters={"parent": spr.name, "parenttype": "Shaft Production Run"},
+		fields=["*"],
+		order_by="idx asc",
+		limit=500,
+	)
+
+
 def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 	"""Derive running patty wastage per job from saved roll lines (GSM parity with desk)."""
 	job_rolls: dict[str, list] = {}
@@ -11551,14 +11585,21 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 			sticker_gsm = flt(getattr(r, "gsm", 0) or specs.get("gsm") or 0)
 			produced_gsm = flt(getattr(r, "produced_gsm", 0) or 0)
 			net_w = flt(getattr(r, "net_weight", 0) or 0)
+			gross_w = flt(getattr(r, "gross_weight", 0) or 0)
+			polybag = flt(getattr(r, "custom_polybag_kgs", 0) or 0)
 			if net_w <= 0:
 				continue
 			if produced_gsm <= 0:
 				produced_gsm = sticker_gsm
 			if sticker_gsm <= 0:
 				sticker_gsm = produced_gsm
+			roll_waste = 0.0
 			if sticker_gsm > 0 and produced_gsm > 0:
-				wastage_total += abs(produced_gsm - sticker_gsm) / sticker_gsm * net_w
+				roll_waste = abs(produced_gsm - sticker_gsm) / sticker_gsm * net_w
+			trim_waste = max(0.0, gross_w - net_w - polybag)
+			if roll_waste <= 0 and trim_waste > 0:
+				roll_waste = trim_waste
+			wastage_total += roll_waste
 
 		if wastage_total <= 0:
 			continue
@@ -11608,27 +11649,20 @@ def sync_running_patty_wastage_from_items(spr, *, persist: bool = False) -> bool
 	if not field:
 		return False
 
-	by_job = _spr_compute_patty_wastage_by_job(spr)
-	if not by_job:
-		return False
-
-	if not persist:
+	existing_rows = _spr_existing_patty_rows(spr, field)
+	if existing_rows:
+		# Desk / prior save owns patty rows — never overwrite from GSM roll sync.
 		return True
 
-	existing_by_job: dict[str, dict] = {}
-	for row in getattr(spr, field, None) or []:
-		d = _spr_patty_row_dict(row)
-		jid = _cstr(d.get("job_id") or d.get("job"))
-		if jid:
-			existing_by_job[jid] = d
+	by_job = _spr_compute_patty_wastage_by_job(spr)
+
+	if not persist:
+		return bool(by_job)
 
 	spr.set(field, [])
 	for jid, logical in sorted(by_job.items(), key=lambda kv: kv[0]):
-		prev = existing_by_job.get(jid) or {}
-		recycled = flt(prev.get("recycled_qty") or prev.get("recycled") or 0)
-		if recycled > 0:
-			logical["recycled"] = recycled
-			logical["recycled_qty"] = recycled
+		if flt(logical.get("wastage") or 0) <= 0:
+			continue
 		spr.append(field, _spr_write_patty_child_row(logical))
 	return True
 
@@ -11678,7 +11712,6 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		pp_id = _cstr(spr.get("production_plan")).strip()
 		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
 		spr._validate_no_duplicate_roll_batches()
-		sync_running_patty_wastage_from_items(spr, persist=True)
 		spr.flags._spr_incremental_roll_save = True
 		spr.save()
 		result.update(

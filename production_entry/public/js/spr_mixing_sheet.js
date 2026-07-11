@@ -129,13 +129,31 @@ function open_mixing_sheet_desk(frm) {
 	});
 }
 
+function normalizeMixingState(raw) {
+	const state = raw || { mixing_type: "", sets: [make_empty_set()], completed: false };
+	if (state.sets && typeof state.sets === "object" && !Array.isArray(state.sets)) {
+		state.sets = [state.sets];
+	}
+	if (!Array.isArray(state.sets) || !state.sets.length) {
+		state.sets = [make_empty_set()];
+	}
+	state.sets = state.sets.map((setObj) => {
+		const set = setObj && typeof setObj === "object" ? { ...setObj } : make_empty_set();
+		if (!Array.isArray(set.extras)) set.extras = [];
+		if (!Array.isArray(set.rows)) set.rows = [];
+		if (!set.materials || typeof set.materials !== "object") set.materials = {};
+		return set;
+	});
+	return state;
+}
+
 function show_dialog(ctx, existing, frm) {
 	const custom_unit = ctx.custom_unit;
 	const is_printing = PRINTING_MACHINES.includes(custom_unit);
 	const uses_solvent = SOLVENT_MACHINES.includes(custom_unit);
 	if (_mix_dialog) _mix_dialog.hide();
 
-	const state = existing || { mixing_type: "", sets: [make_empty_set()], completed: false };
+	const state = normalizeMixingState(existing);
 	if (state.completed || ctx.read_only) {
 		frappe.msgprint({
 			title: __("Mixing Completed"),

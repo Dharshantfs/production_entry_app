@@ -33,6 +33,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	spr_get_tolerance_violations,
 	_gsm_serialize_spr_roll_lines_for_grid,
 	_gsm_serialize_roll_waste_for_grid,
+	_gsm_roll_suffix_from_batch_no,
 	_spr_resolve_roll_line_specs_from_item_code,
 	_spr_roll_starting_for_gsm_session,
 )
@@ -1066,7 +1067,9 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 	session_sprs = _gsm_draft_sprs_for_session(run_date, shift, unit)
 	roll_lines = []
 	job_keys = set()
-	seq = 0
+
+	# Global LIFO: newest saved roll line first (by child row modified), not per-SPR batch order.
+	staged: list[tuple] = []
 	for spr_row in session_sprs:
 		spr_name = spr_row.get("spr_name")
 		pp_id = spr_row.get("pp_id")
@@ -1074,30 +1077,38 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			continue
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		for line in _gsm_serialize_spr_roll_lines_for_grid(spr):
-			seq += 1
-			line["_id"] = f"resume-{spr_name}-{seq}"
-			line["creation_seq"] = seq
-			line["spr_name"] = spr_name
-			roll_lines.append(line)
+			sort_ts = _cstr(line.get("row_modified") or line.get("modified") or "")
+			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
+			child_idx = cint(line.get("child_idx") or 0)
+			staged.append((sort_ts, batch_suffix, child_idx, spr_name, pp_id, line, False))
 			jid = _cstr(line.get("job_id") or "")
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
 		for waste in spr.get("custom_roll_waste") or []:
 			line = _gsm_serialize_roll_waste_for_grid(spr, waste, pp_id)
-			seq += 1
-			line["_id"] = f"resume-waste-{spr_name}-{seq}"
-			line["creation_seq"] = seq
-			roll_lines.append(line)
+			sort_ts = _cstr(getattr(waste, "modified", None) or "")
+			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
+			child_idx = cint(getattr(waste, "idx", 0) or 0)
+			staged.append((sort_ts, batch_suffix, child_idx, spr_name, pp_id, line, True))
 			jid = _cstr(line.get("job_id") or "")
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
+
+	staged.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+	total = len(staged)
+	for idx, (_ts, _suffix, _child_idx, spr_name, pp_id, line, is_waste) in enumerate(staged):
+		seq = total - idx
+		prefix = "resume-waste" if is_waste else "resume"
+		line["_id"] = f"{prefix}-{spr_name}-{seq}"
+		line["creation_seq"] = seq
+		line["spr_name"] = spr_name
+		roll_lines.append(line)
 
 	for locked in _gsm_locked_jobs_from_session(session_doc):
 		job_keys.add((locked["pp_id"], locked["job_id"]))
 	job_selections = [{"pp_id": pp, "job_id": jid} for pp, jid in sorted(job_keys)]
 
-	# Newest roll first — matches GSM grid unshift order on active entry machine.
-	roll_lines.reverse()
+	# roll_lines already newest-first via creation_seq descending assignment above.
 
 	server_revision = _gsm_session_roll_revision(session_doc, session_sprs)
 
@@ -3792,7 +3803,6 @@ def get_gsm_spr_wastage_context(spr_name):
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
 		_spr_compute_patty_wastage_by_job,
 		_spr_patty_wastage_fieldname,
-		sync_running_patty_wastage_from_items,
 	)
 
 	spr_name = _cstr(spr_name).strip()
@@ -3801,16 +3811,6 @@ def get_gsm_spr_wastage_context(spr_name):
 
 	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	patty_field = _spr_patty_wastage_fieldname()
-	if patty_field:
-		_, patty_rows = _gsm_load_spr_child_rows(
-			spr, "custom_running_patty_wastage", "Running Patty Wastage Row"
-		)
-		if not patty_rows:
-			if sync_running_patty_wastage_from_items(spr, persist=True):
-				spr.flags._spr_incremental_roll_save = True
-				spr.save(ignore_permissions=True)
-				frappe.db.commit()
-				spr = frappe.get_doc("Shaft Production Run", spr_name)
 
 	tables = {}
 	for fieldname, child_doctype in _GSM_WASTAGE_CHILD_SPECS:
