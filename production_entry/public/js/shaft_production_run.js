@@ -4767,6 +4767,38 @@ function spr_register_spr_page_buttons(frm) {
 	addInner(function () {
 		if (!frm.is_new() && cint(frm.doc.docstatus) === 0) {
 			frm.page.add_inner_button(
+				__('GSM Testing'),
+				function () {
+					const qc = production_entry.spr_quality_check;
+					if (qc && typeof qc.openSprGsmTesting === 'function') {
+						qc.openSprGsmTesting(frm.doc.name);
+					} else {
+						frappe.msgprint(__('Quality Check helper not loaded.'));
+					}
+				},
+				tg
+			);
+		}
+	});
+	addInner(function () {
+		if (!frm.is_new() && cint(frm.doc.docstatus) === 0) {
+			frm.page.add_inner_button(
+				__('Tensile Testing'),
+				function () {
+					const qc = production_entry.spr_quality_check;
+					if (qc && typeof qc.openSprTensileTesting === 'function') {
+						qc.openSprTensileTesting(frm.doc.name);
+					} else {
+						frappe.msgprint(__('Quality Check helper not loaded.'));
+					}
+				},
+				tg
+			);
+		}
+	});
+	addInner(function () {
+		if (!frm.is_new() && cint(frm.doc.docstatus) === 0) {
+			frm.page.add_inner_button(
 				__('SPR — Diagnose save'),
 				function () {
 					frappe.call({

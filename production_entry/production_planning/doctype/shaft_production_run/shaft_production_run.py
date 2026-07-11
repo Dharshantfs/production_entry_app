@@ -11644,51 +11644,22 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 
 
 def sync_running_patty_wastage_from_items(spr, *, persist: bool = False) -> bool:
-	"""Rebuild Running Patty Wastage child rows from SPR roll lines."""
-	field = _spr_patty_wastage_fieldname()
-	if not field:
-		return False
-
-	existing_rows = _spr_existing_patty_rows(spr, field)
-	if existing_rows:
-		# Desk / prior save owns patty rows — never overwrite from GSM roll sync.
-		return True
-
-	by_job = _spr_compute_patty_wastage_by_job(spr)
-
-	if not persist:
-		return bool(by_job)
-
-	spr.set(field, [])
-	for jid, logical in sorted(by_job.items(), key=lambda kv: kv[0]):
-		if flt(logical.get("wastage") or 0) <= 0:
-			continue
-		spr.append(field, _spr_write_patty_child_row(logical))
-	return True
+	"""Patty wastage is desk-manual only — GSM never auto-syncs running patty rows."""
+	return False
 
 
 @frappe.whitelist()
 def sync_spr_running_patty_wastage(spr_name, persist=1):
-	"""GSM / desk helper — persist running patty wastage rows from roll lines."""
+	"""GSM / desk helper — patty wastage is not auto-synced from roll lines."""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
-		if cint(spr.docstatus) != 0:
-			frappe.throw(_("Cannot sync patty wastage on a submitted Shaft Production Run"))
-		changed = sync_running_patty_wastage_from_items(spr, persist=cint(persist))
-		if changed:
-			spr.flags._spr_incremental_roll_save = True
-			spr.save(ignore_permissions=True)
-		field = _spr_patty_wastage_fieldname()
-		rows = getattr(spr, field, None) or [] if field else []
-		return {
-			"status": "ok",
-			"spr_name": spr_name,
-			"synced": bool(changed),
-			"row_count": len(rows),
-		}
+	return {
+		"status": "ok",
+		"spr_name": spr_name,
+		"synced": False,
+		"message": _("Patty wastage is not auto-synced"),
+	}
 
 
 @frappe.whitelist()

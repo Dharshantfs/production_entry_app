@@ -683,31 +683,7 @@ export async function openGsmWastageDialog(opts = {}) {
 	if (!sprRow) {
 		return;
 	}
-	const sprName = sprRow.spr_name;
-
-	const typeD = new frappe.ui.Dialog({
-		title: __("Wastage") + ` · ${sprRow.order_code || ""} · ${sprName}`,
-		fields: [
-			{
-				fieldname: "hint",
-				fieldtype: "HTML",
-				options: `<div class="gwm-shell"><p>${__(
-					"Choose wastage type. Running Patty Wastage is auto-filled on desk SPR when rolls are saved."
-				)}</p></div>`,
-			},
-		],
-		primary_action_label: __("Running Patty Wasteage"),
-		primary_action() {
-			typeD.hide();
-			_openRunningPattyWastage(sprName, sprRow);
-		},
-		secondary_action_label: __("Roll Wasteage"),
-		secondary_action() {
-			typeD.hide();
-			_openRollWastage(sprName, sprRow, opts);
-		},
-	});
-	typeD.show();
+	await _openRollWastage(sprRow.spr_name, sprRow, opts);
 }
 
 async function _openRunningPattyWastage(sprName, sprRow) {
@@ -720,6 +696,9 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		rows.length > 0
 			? `<div class="gwm-shell">
 				<div class="gwm-card">
+					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${__(
+						"Desk manual entry only — GSM does not write running patty wastage."
+					)}</p>
 					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
 					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
 				</div>
@@ -729,7 +708,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 				</div>
 			</div>`
 			: `<div class="gwm-empty">${__(
-					"No running patty wastage yet. Save roll entries first — desk SPR adds rows automatically. If wastage shows on the SPR form, save that SPR on desk first."
+					"No running patty wastage saved on this SPR. Enter patty wastage on the desk SPR form only."
 			  )}</div>`;
 
 	const d = new frappe.ui.Dialog({
@@ -788,12 +767,19 @@ async function _openRollWastage(sprName, sprRow, opts) {
 		<div class="gwm-section-title">${__("Roll Waste Table")}</div>
 		${_deskTableHtml(rollWasteCols, wasteRows, { showPrint: true })}
 	</div>`;
-	const rollHtml = `<div class="gwm-shell">${selectRollHtml}${existingWasteHtml}</div>`;
+	const rollHtml = `<div class="gwm-shell"><p style="margin:0 0 12px;color:#64748b;font-size:13px">${__(
+		"Mark roll waste here. Running patty wastage is desk manual entry only."
+	)}</p>${selectRollHtml}${existingWasteHtml}</div>`;
 
 	const d = new frappe.ui.Dialog({
 		title: __("Roll Wasteage") + ` · ${sprRow.order_code || ""}`,
 		size: "extra-large",
 		fields: [{ fieldname: "rolls_html", fieldtype: "HTML", options: rollHtml }],
+		secondary_action_label: __("View Patty Wastage"),
+		secondary_action() {
+			d.hide();
+			_openRunningPattyWastage(sprName, sprRow);
+		},
 		primary_action_label: rolls.length ? __("Mark as Waste") : __("Refresh"),
 		async primary_action() {
 			if (!rolls.length) {

@@ -3471,8 +3471,6 @@ function openMixingDialog() {
     runDate: runDate.value,
     shift: shift.value,
     shiftSessionId: shiftSession.value?.name || "",
-    sessionSprList: sessionSprList.value,
-    ...preferredSprPickContext(),
   });
 }
 

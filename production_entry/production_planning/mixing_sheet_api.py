@@ -63,6 +63,7 @@ def _find_mixing_sheet(
 	custom_unit=None,
 	order_code=None,
 ):
+	"""One In Progress sheet per shift session + unit (or run_date + shift + unit)."""
 	name = _cstr(mixing_sheet_name)
 	if name and frappe.db.exists("Shift Mixing Sheet", name):
 		return name
@@ -71,91 +72,31 @@ def _find_mixing_sheet(
 	unit = _cstr(custom_unit)
 	shift_n = _normalize_shift(shift)
 	rd = getdate(run_date) if run_date else None
-	spr = _cstr(spr_name)
-	oc = _cstr(order_code)
 
-	if oc and session:
+	if session and unit:
 		found = frappe.db.get_value(
 			"Shift Mixing Sheet",
-			{"gsm_shift_session": session, "order_code": oc},
+			{"gsm_shift_session": session, "custom_unit": unit, "status": "In Progress"},
 			"name",
 			order_by="modified desc",
 		)
 		if found:
 			return found
 
-	if spr:
-		if frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
-			linked = frappe.db.get_value("Shaft Production Run", spr, "custom_shift_mixing_sheet")
-			if linked and frappe.db.exists("Shift Mixing Sheet", linked):
-				return linked
+	if rd and shift_n and unit:
 		found = frappe.db.get_value(
 			"Shift Mixing Sheet",
-			{"shaft_production_run": spr, "status": "In Progress"},
+			{
+				"run_date": rd,
+				"shift": shift_n,
+				"custom_unit": unit,
+				"status": "In Progress",
+			},
 			"name",
 			order_by="modified desc",
 		)
 		if found:
 			return found
-		found = frappe.db.get_value(
-			"Shift Mixing Sheet",
-			{"shaft_production_run": spr},
-			"name",
-			order_by="modified desc",
-		)
-		if found:
-			return found
-
-		oc = _cstr(frappe.db.get_value("Shaft Production Run", spr, "custom_order_code"))
-		if oc:
-			filters = {"order_code": oc}
-			if rd:
-				filters["run_date"] = rd
-			if shift_n:
-				filters["shift"] = shift_n
-			if unit:
-				filters["custom_unit"] = unit
-			found = frappe.db.get_value(
-				"Shift Mixing Sheet",
-				filters,
-				"name",
-				order_by="modified desc",
-			)
-			if found:
-				return found
-			session_filters = {"order_code": oc}
-			if session:
-				session_filters["gsm_shift_session"] = session
-			found = frappe.db.get_value(
-				"Shift Mixing Sheet",
-				session_filters,
-				"name",
-				order_by="modified desc",
-			)
-			if found:
-				return found
-
-	if session and not spr:
-		filters = {"gsm_shift_session": session, "status": "In Progress"}
-		if unit:
-			filters["custom_unit"] = unit
-		found = frappe.db.get_value("Shift Mixing Sheet", filters, "name", order_by="modified desc")
-		if found:
-			return found
-
-	if rd and shift_n and unit and not spr:
-		rows = frappe.db.sql(
-			"""
-			SELECT name FROM `tabShift Mixing Sheet`
-			WHERE run_date = %s AND shift = %s AND custom_unit = %s
-			  AND status = 'In Progress'
-			  AND (shaft_production_run IS NULL OR shaft_production_run = '')
-			ORDER BY modified DESC LIMIT 1
-			""",
-			(rd, shift_n, unit),
-		)
-		if rows:
-			return rows[0][0]
 
 	return None
 
@@ -197,31 +138,9 @@ def get_mixing_sheet(
 		order_code=order_code,
 	)
 	if found:
-		doc = frappe.get_doc("Shift Mixing Sheet", found)
-		spr = _cstr(spr_name)
-		oc = _cstr(order_code)
-		changed = False
-		if spr and not _cstr(doc.shaft_production_run):
-			doc.shaft_production_run = spr
-			changed = True
-		if spr and not _cstr(doc.order_code):
-			doc.order_code = _cstr(
-				oc or frappe.db.get_value("Shaft Production Run", spr, "custom_order_code")
-			)
-			changed = True
-		elif oc and not _cstr(doc.order_code):
-			doc.order_code = oc
-			changed = True
-		if changed:
-			doc.save(ignore_permissions=True)
-			if spr and frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
-				frappe.db.set_value("Shaft Production Run", spr, "custom_shift_mixing_sheet", doc.name)
-			frappe.db.commit()
-		return _sheet_payload(doc)
+		return _sheet_payload(frappe.get_doc("Shift Mixing Sheet", found))
 
 	unit = _cstr(custom_unit)
-	if spr_name and not unit:
-		unit = _cstr(frappe.db.get_value("Shaft Production Run", spr_name, "custom_unit"))
 
 	return {
 		"mixing_sheet_name": "",
@@ -231,9 +150,9 @@ def get_mixing_sheet(
 		"run_date": str(run_date or ""),
 		"shift": _normalize_shift(shift),
 		"custom_unit": unit,
-		"shaft_production_run": _cstr(spr_name),
+		"shaft_production_run": "",
 		"gsm_shift_session": _cstr(gsm_shift_session),
-		"order_code": _cstr(order_code),
+		"order_code": "",
 	}
 
 
@@ -263,15 +182,7 @@ def _upsert_mixing_sheet(
 	unit = _cstr(custom_unit)
 	shift_n = _normalize_shift(shift)
 	rd = getdate(run_date) if run_date else None
-	spr = _cstr(spr_name)
 	session = _cstr(gsm_shift_session)
-	oc = _cstr(order_code)
-
-	if spr:
-		if not unit:
-			unit = _cstr(frappe.db.get_value("Shaft Production Run", spr, "custom_unit"))
-		if not oc:
-			oc = _cstr(frappe.db.get_value("Shaft Production Run", spr, "custom_order_code"))
 
 	if found:
 		doc = frappe.get_doc("Shift Mixing Sheet", found)
@@ -283,16 +194,8 @@ def _upsert_mixing_sheet(
 		doc.shift = shift_n
 		doc.custom_unit = unit
 
-	if spr:
-		doc.shaft_production_run = spr
-	elif oc:
-		doc.order_code = oc
 	if session:
 		doc.gsm_shift_session = session
-	if oc:
-		doc.order_code = oc
-	elif spr:
-		doc.order_code = _cstr(frappe.db.get_value("Shaft Production Run", spr, "custom_order_code"))
 	if data.get("mixing_type"):
 		doc.mixing_type = data.get("mixing_type")
 
@@ -302,10 +205,6 @@ def _upsert_mixing_sheet(
 		doc.completed_by = frappe.session.user
 		doc.completed_on = now_datetime()
 	doc.save(ignore_permissions=True)
-
-	if spr and frappe.db.has_column("Shaft Production Run", "custom_shift_mixing_sheet"):
-		frappe.db.set_value("Shaft Production Run", spr, "custom_shift_mixing_sheet", doc.name)
-
 	frappe.db.commit()
 	return _sheet_payload(doc)
 

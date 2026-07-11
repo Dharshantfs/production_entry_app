@@ -25,15 +25,18 @@ const EXCLUDED_MACHINES = [
 let _mix_dialog = null;
 
 function mixing_api_args(ctx) {
-	return {
+	const args = {
 		mixing_sheet_name: ctx.mixing_sheet_name || "",
-		spr_name: ctx.spr_name || "",
 		gsm_shift_session: ctx.gsm_shift_session || "",
 		run_date: ctx.run_date || "",
 		shift: ctx.shift || "",
 		custom_unit: ctx.custom_unit || "",
-		order_code: ctx.order_code || "",
 	};
+	if (!ctx.shift_only) {
+		args.spr_name = ctx.spr_name || "";
+		args.order_code = ctx.order_code || "";
+	}
+	return args;
 }
 
 function make_empty_set() {
@@ -120,10 +123,12 @@ function open_mixing_sheet_desk(frm) {
 	}
 	openSprMixingSheet({
 		frm,
+		shift_only: true,
 		spr_name: frm.doc.name,
 		custom_unit: frm.doc.custom_unit,
 		run_date: frm.doc.run_date || frm.doc.posting_date || "",
 		shift: frm.doc.shift || "",
+		gsm_shift_session: frm.doc.gsm_shift_session || "",
 		order_code: frm.doc.custom_order_code || "",
 		title_label: frm.doc.name,
 	});
@@ -411,6 +416,27 @@ function show_dialog(ctx, existing, frm) {
 			state.mixing_type = d.get_value("mixing_type");
 		});
 	}
+
+	let mixAutosaveTimer = null;
+	const scheduleMixAutosave = () => {
+		if (readOnly || state.completed) return;
+		if (mixAutosaveTimer) clearTimeout(mixAutosaveTimer);
+		mixAutosaveTimer = setTimeout(() => {
+			mixAutosaveTimer = null;
+			collect_row_qtys(d, state);
+			if (!is_printing) state.mixing_type = d.get_value("mixing_type");
+			persist();
+		}, 5000);
+	};
+	d.wrapper.on("input change", ".row-qty, .row-qty-extra", scheduleMixAutosave);
+	if (!is_printing) {
+		d.fields_dict.mixing_type.$input.on("change", scheduleMixAutosave);
+	}
+	const prevOnhide = d.onhide;
+	d.onhide = () => {
+		if (mixAutosaveTimer) clearTimeout(mixAutosaveTimer);
+		if (typeof prevOnhide === "function") prevOnhide();
+	};
 }
 
 function save_raw_materials(d, ctx, state, frm) {

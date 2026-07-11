@@ -65,25 +65,98 @@ function pickSprJobRow(spr, jobId) {
 	return (spr.shaft_jobs || []).find((j) => String(j.job_id || j.job || "").trim() === jid) || null;
 }
 
-function latestRollForSprJob(spr, jobId) {
-	const jid = String(jobId || "").trim();
-	let best = null;
-	let bestSuffix = -1;
-	for (const row of spr.items || []) {
-		if (String(row.job || "").trim() !== jid) {
-			continue;
-		}
-		const batch = String(row.batch_no || "");
-		const suffix = batch.includes("/") ? cint(batch.split("/").pop()) : cint(row.roll_no);
-		if (suffix >= bestSuffix) {
-			bestSuffix = suffix;
-			best = row;
-		}
+function rollSuffix(row) {
+	const batch = String(row?.batch_no || "");
+	if (batch.includes("/")) {
+		return cint(batch.split("/").pop());
 	}
-	return best;
+	return cint(row?.roll_no);
 }
 
-async function openQualityCheckingDoc(sprName, testType, jobId) {
+function rollsForSprJob(spr, jobId) {
+	const jid = String(jobId || "").trim();
+	return (spr.items || []).filter((row) => {
+		if (String(row.job || "").trim() !== jid) {
+			return false;
+		}
+		if (cint(row.is_wasted) || cint(row.is_bundle_row)) {
+			return false;
+		}
+		return Boolean(String(row.batch_no || "").trim() || cint(row.roll_no));
+	});
+}
+
+async function promptRollForSprJob(spr, jobId) {
+	const rolls = rollsForSprJob(spr, jobId);
+	if (!rolls.length) {
+		return null;
+	}
+	if (rolls.length === 1) {
+		return rolls[0];
+	}
+	const options = rolls.map((row) => {
+		const batch = String(row.batch_no || "").trim();
+		const suffix = rollSuffix(row);
+		const label = batch || `Roll ${suffix || row.idx || ""}`;
+		return { value: batch || String(row.name || row.idx || suffix), label };
+	});
+	return new Promise((resolve) => {
+		frappe.prompt(
+			[
+				{
+					fieldtype: "Select",
+					fieldname: "batch_no",
+					label: __("Batch"),
+					options,
+					reqd: 1,
+				},
+			],
+			(values) => {
+				const picked =
+					rolls.find((r) => String(r.batch_no || "").trim() === values.batch_no) ||
+					rolls.find((r) => String(r.name || "") === values.batch_no);
+				resolve(picked || rolls[0]);
+			},
+			__("Select Batch"),
+			__("Continue")
+		);
+	});
+}
+
+async function findExistingQcDraft(sprName, testingType, selectedRoll) {
+	const batchNo = String(selectedRoll?.batch_no || "").trim();
+	const rollNo = cint(selectedRoll?.roll_no) || rollSuffix(selectedRoll);
+	const baseFilters = {
+		shaft_production_run: sprName,
+		testing_type: testingType,
+		docstatus: 0,
+	};
+	if (batchNo) {
+		const byBatch = await frappe.db.get_list(QC_DOCTYPE, {
+			filters: { ...baseFilters, batch_no: batchNo },
+			fields: ["name"],
+			limit: 1,
+			order_by: "modified desc",
+		});
+		if (byBatch?.[0]?.name) {
+			return byBatch[0].name;
+		}
+	}
+	if (rollNo) {
+		const byRoll = await frappe.db.get_list(QC_DOCTYPE, {
+			filters: { ...baseFilters, roll_no: rollNo },
+			fields: ["name"],
+			limit: 1,
+			order_by: "modified desc",
+		});
+		if (byRoll?.[0]?.name) {
+			return byRoll[0].name;
+		}
+	}
+	return "";
+}
+
+async function openQualityCheckingDoc(sprName, testType, jobId, rollRow) {
 	if (!(await frappe.db.exists("DocType", QC_DOCTYPE))) {
 		frappe.msgprint(
 			__(
@@ -96,20 +169,15 @@ async function openQualityCheckingDoc(sprName, testType, jobId) {
 	const testingType = TESTING_TYPES[testType] || testType;
 	const spr = await loadSprDoc(sprName);
 	const jobRow = pickSprJobRow(spr, jobId);
-	const latestRoll = latestRollForSprJob(spr, jobId);
+	const selectedRoll = rollRow || (await promptRollForSprJob(spr, jobId));
+	if (!selectedRoll) {
+		frappe.msgprint(__("No rolls found for this job."));
+		return;
+	}
 
-	const existing = await frappe.db.get_list(QC_DOCTYPE, {
-		filters: {
-			shaft_production_run: sprName,
-			testing_type: testingType,
-			docstatus: 0,
-		},
-		fields: ["name"],
-		limit: 1,
-		order_by: "modified desc",
-	});
-	if (existing?.[0]?.name) {
-		frappe.set_route("Form", QC_DOCTYPE, existing[0].name);
+	const existingName = await findExistingQcDraft(sprName, testingType, selectedRoll);
+	if (existingName) {
+		frappe.set_route("Form", QC_DOCTYPE, existingName);
 		return;
 	}
 
@@ -119,10 +187,10 @@ async function openQualityCheckingDoc(sprName, testType, jobId) {
 		unit: spr.custom_unit || spr.unit || "",
 		shift: spr.shift || "",
 		order_code: spr.custom_order_code || spr.order_code || "",
-		quality: jobRow?.quality || latestRoll?.quality || "",
-		color: jobRow?.color || latestRoll?.color || "",
-		batch_no: latestRoll?.batch_no || "",
-		roll_no: cint(latestRoll?.roll_no) || 0,
+		quality: selectedRoll?.quality || jobRow?.quality || "",
+		color: selectedRoll?.color || jobRow?.color || "",
+		batch_no: selectedRoll?.batch_no || "",
+		roll_no: cint(selectedRoll?.roll_no) || rollSuffix(selectedRoll) || 0,
 	};
 
 	await new Promise((resolve, reject) => {
@@ -153,7 +221,13 @@ async function openSprQualityCheck(sprName, testType, jobId) {
 		frappe.msgprint(__("No jobs on this SPR — add a job first."));
 		return;
 	}
-	await openQualityCheckingDoc(sprName, testType, resolvedJob);
+	const spr = await loadSprDoc(sprName);
+	const selectedRoll = await promptRollForSprJob(spr, resolvedJob);
+	if (!selectedRoll) {
+		frappe.msgprint(__("No rolls found for this job."));
+		return;
+	}
+	await openQualityCheckingDoc(sprName, testType, resolvedJob, selectedRoll);
 }
 
 frappe.provide("production_entry.spr_quality_check");
