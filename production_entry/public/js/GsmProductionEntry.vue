@@ -1500,8 +1500,6 @@ const lastAddRollJobKey = ref("");
 const lastServerSyncAt = ref("");
 const liveSyncLabel = ref("");
 let gsmPollTimer = null;
-let sprAutosaveTimer = null;
-let sprAutosaveInFlight = false;
 let gsmRealtimeBound = false;
 let gsmRefreshInFlight = false;
 let gsmRefreshQueued = false;
@@ -1694,7 +1692,6 @@ function setupGsmLiveSync() {
       refreshSessionFromServer({ quiet: true, merge: true });
     }
   }, 15000);
-  startSprAutosave();
   if (typeof document !== "undefined" && !gsmVisibilityBound) {
     document.addEventListener("visibilitychange", onGsmVisibilityChange);
     gsmVisibilityBound = true;
@@ -1715,7 +1712,6 @@ function onGsmVisibilityChange() {
 }
 
 function teardownGsmLiveSync() {
-  stopSprAutosave();
   if (gsmRealtimeBound && frappe.realtime?.off) {
     frappe.realtime.off("gsm_production_entry_updated", onGsmProductionEntryUpdated);
   }
@@ -1731,46 +1727,6 @@ function teardownGsmLiveSync() {
   if (gsmVisibilityBound && typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", onGsmVisibilityChange);
     gsmVisibilityBound = false;
-  }
-}
-
-async function autosaveSessionSprs() {
-  const names = wastageRecycleSprList.value
-    .map((s) => s?.spr_name)
-    .filter(Boolean);
-  if (!names.length || sprAutosaveInFlight) {
-    return;
-  }
-  sprAutosaveInFlight = true;
-  try {
-    await frappe.call({
-      method:
-        "production_entry.production_planning.unified_production_entry_api.autosave_gsm_session_sprs",
-      args: { spr_names: JSON.stringify(names) },
-    });
-  } catch (e) {
-    console.warn("SPR autosave", e);
-  } finally {
-    sprAutosaveInFlight = false;
-  }
-}
-
-function startSprAutosave() {
-  stopSprAutosave();
-  if (!shiftOpened.value) {
-    return;
-  }
-  sprAutosaveTimer = setInterval(() => {
-    if (shiftOpened.value && gsmPageIsVisible() && wastageRecycleSprList.value.length) {
-      autosaveSessionSprs();
-    }
-  }, 10000);
-}
-
-function stopSprAutosave() {
-  if (sprAutosaveTimer) {
-    clearInterval(sprAutosaveTimer);
-    sprAutosaveTimer = null;
   }
 }
 
@@ -4705,7 +4661,6 @@ async function saveRow(row) {
     saveStatus.value = "Saved to SPR";
     frappe.show_alert({ message: __("Row saved to {0}", [sprName]), indicator: "green" });
     await loadJobBoard();
-    autosaveSessionSprs();
   } catch (e) {
     console.error(e);
     saveStatus.value = "Save failed";
@@ -6608,18 +6563,6 @@ watch([runDate, shift, headerUnit], () => {
   }
   refreshShiftSession();
 });
-
-watch(
-  () => shiftOpened.value && wastageRecycleSprList.value.length > 0,
-  (active) => {
-    if (active) {
-      startSprAutosave();
-      autosaveSessionSprs();
-    } else {
-      stopSprAutosave();
-    }
-  }
-);
 
 watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
 

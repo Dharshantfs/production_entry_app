@@ -3047,56 +3047,6 @@ def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 
 
 @frappe.whitelist()
-def autosave_gsm_session_sprs(spr_names=None):
-	"""Periodic GSM autosave — persist patty wastage from roll lines on draft session SPRs."""
-	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
-		_spr_operation_lock,
-		sync_running_patty_wastage_from_items,
-	)
-
-	names = _parse_json_arg(spr_names, [])
-	if not isinstance(names, list):
-		names = [names] if names else []
-	names = list(dict.fromkeys(_cstr(n).strip() for n in names if _cstr(n).strip()))
-
-	results = []
-	for spr_name in names:
-		if not frappe.db.exists("Shaft Production Run", spr_name):
-			results.append({"spr_name": spr_name, "saved": False, "error": "not_found"})
-			continue
-		try:
-			with _spr_operation_lock(spr_name, "write", ttl_sec=60):
-				spr = frappe.get_doc("Shaft Production Run", spr_name)
-				if cint(spr.docstatus) != 0:
-					results.append({"spr_name": spr_name, "saved": False, "skipped": "submitted"})
-					continue
-				sync_running_patty_wastage_from_items(
-					spr, persist=True, refresh_zero_rows=True
-				)
-				spr.flags._spr_incremental_roll_save = True
-				spr.save(ignore_permissions=True)
-				results.append(
-					{
-						"spr_name": spr_name,
-						"saved": True,
-						"modified": str(spr.modified or ""),
-					}
-				)
-		except Exception as exc:
-			frappe.log_error(frappe.get_traceback(), f"GSM autosave SPR:{spr_name}")
-			results.append({"spr_name": spr_name, "saved": False, "error": _cstr(exc)})
-
-	if any(r.get("saved") for r in results):
-		frappe.db.commit()
-
-	return {
-		"status": "ok",
-		"count": sum(1 for r in results if r.get("saved")),
-		"results": results,
-	}
-
-
-@frappe.whitelist()
 def delete_gsm_roll_line(spr_name, batch_no=None, row_name=None):
 	"""GSM Remove Row — delete one saved roll line from draft SPR."""
 	return delete_gsm_roll_line_from_spr(spr_name, batch_no=batch_no, row_name=row_name)
@@ -3848,6 +3798,58 @@ def _gsm_build_roll_waste_row_from_item(item_row, roll_payload: dict | None = No
 	return _gsm_write_child_row("Roll Waste Row", logical)
 
 
+def _gsm_patty_rows_have_saved_wastage(rows) -> bool:
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_patty_row_wastage_kg,
+	)
+
+	for row in rows or []:
+		row_dict = row if isinstance(row, dict) else (row.as_dict() if hasattr(row, "as_dict") else {})
+		if _spr_patty_row_wastage_kg(row_dict) > 0:
+			return True
+	return False
+
+
+def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | None:
+	"""Read-only patty preview from saved roll lines — never written to SPR."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_compute_patty_wastage_by_job,
+		_spr_patty_wastage_fieldname,
+	)
+
+	field = _spr_patty_wastage_fieldname()
+	if not field:
+		return None
+
+	computed = _spr_compute_patty_wastage_by_job(spr)
+	if not computed:
+		return None
+
+	base = base_payload or {}
+	columns = base.get("columns") or _gsm_child_table_columns("Running Patty Wastage Row")
+	preview_rows = []
+	for logical in computed.values():
+		if flt(logical.get("wastage") or 0) <= 0:
+			continue
+		row_dict = dict(logical)
+		row_dict["parentfield"] = field
+		preview_rows.append(_gsm_enrich_child_row_from_spr(spr, row_dict, "Running Patty Wastage Row"))
+
+	if not preview_rows:
+		return None
+
+	return {
+		"fieldname": field,
+		"resolved_fieldname": base.get("resolved_fieldname") or field,
+		"child_doctype": "Running Patty Wastage Row",
+		"columns": columns,
+		"rows": preview_rows,
+		"configured": True,
+		"source": "gsm_preview_from_roll_lines",
+		"read_only": True,
+	}
+
+
 @frappe.whitelist()
 def get_gsm_spr_wastage_context(spr_name):
 	"""Read running patty, roll waste, and recycled child tables for GSM dialogs."""
@@ -3874,6 +3876,13 @@ def get_gsm_spr_wastage_context(spr_name):
 		payload["resolved_fieldname"] = resolved_field
 		payload["configured"] = True
 		tables[fieldname] = payload
+
+	patty_payload = tables.get("custom_running_patty_wastage") or {}
+	patty_rows = patty_payload.get("rows") or []
+	if not _gsm_patty_rows_have_saved_wastage(patty_rows):
+		preview = _gsm_patty_preview_payload(spr, patty_payload)
+		if preview:
+			tables["custom_running_patty_wastage"] = preview
 
 	order_code = _cstr(
 		getattr(spr, "custom_order_code", None)
@@ -3931,11 +3940,10 @@ def get_gsm_available_patty_stock(spr_name):
 
 
 def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
-	"""When site RPC is unavailable, derive a minimal patty-stock list from existing wastage rows."""
+	"""When site RPC is unavailable, derive patty-stock from saved wastage rows or GSM preview."""
 	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	out: list[dict] = []
 
-	# Prefer running patty wastage rows (these commonly represent the wastage batches).
 	for fieldname in ("custom_running_patty_wastage", "custom_roll_waste"):
 		rows = getattr(spr, fieldname, None) or []
 		for r in rows:
@@ -3965,6 +3973,29 @@ def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
 					"available_kg": available,
 				}
 			)
+
+	if out:
+		return out
+
+	preview = _gsm_patty_preview_payload(spr)
+	for row in (preview or {}).get("rows") or []:
+		waste_qty = flt(_pick_value(row, ["wastage", "wastage_qty", "net_wastage"], 0))
+		if waste_qty <= 0:
+			continue
+		out.append(
+			{
+				"name": "",
+				"batch_no": _cstr(_pick_value(row, ["batch_no", "source_roll"], "")),
+				"quality": _cstr(_pick_value(row, ["quality"], "")),
+				"color": _cstr(_pick_value(row, ["color"], "")),
+				"gsm": cint(_pick_value(row, ["gsm"], 0)),
+				"width_inch": flt(_pick_value(row, ["width_inch", "width"], 0)),
+				"meter_per_roll": flt(_pick_value(row, ["meter_per_roll", "meter_roll", "meter"], 0)),
+				"no_of_shafts": cint(_pick_value(row, ["no_of_shafts", "shafts"], 0)),
+				"available_kg": waste_qty,
+				"preview_only": True,
+			}
+		)
 
 	return out
 
