@@ -2573,6 +2573,7 @@ class ShaftProductionRun(Document):
 		if incremental and item_count > 15 and not submitting:
 			self.calculate_produced_gsm(missing_only=True)
 			self._spr_recalc_total_produced_weight_header()
+			self._spr_sync_patty_on_gsm_roll_save(submitting, incremental)
 			return
 
 		# Large draft saves: avoid reprocessing every roll line on each Save click.
@@ -2618,6 +2619,13 @@ class ShaftProductionRun(Document):
 			self.sync_roll_attribute_summaries()
 		if submitting:
 			self._validate_production_submit_readiness()
+		self._spr_sync_patty_on_gsm_roll_save(submitting, incremental)
+
+	def _spr_sync_patty_on_gsm_roll_save(self, submitting: bool, incremental: bool) -> None:
+		"""GSM Save Row sets _spr_incremental_roll_save — persist patty from roll lines then."""
+		if submitting or not incremental:
+			return
+		sync_running_patty_wastage_from_items(self, persist=True, refresh_zero_rows=True)
 
 	def _validate_production_submit_readiness(self):
 		"""Hard gates before manufacture posting — batch numbers, WO mapping, no cross-SPR batch reuse."""
@@ -11646,22 +11654,92 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 def sync_running_patty_wastage_from_items(
 	spr, *, persist: bool = False, refresh_zero_rows: bool = False
 ) -> bool:
-	"""Patty wastage is desk-manual only — GSM never persists patty rows."""
-	return False
+	"""Rebuild Running Patty Wastage child rows from SPR roll lines (GSM incremental save)."""
+	field = _spr_patty_wastage_fieldname()
+	if not field:
+		return False
+
+	existing_rows = _spr_existing_patty_rows(spr, field)
+	if existing_rows and not refresh_zero_rows:
+		if all(_spr_patty_row_wastage_kg(r) > 0 for r in existing_rows):
+			return True
+
+	by_job = _spr_compute_patty_wastage_by_job(spr)
+
+	if not persist:
+		return bool(by_job)
+
+	if refresh_zero_rows and existing_rows and not by_job:
+		if all(_spr_patty_row_wastage_kg(r) <= 0 for r in existing_rows):
+			spr.set(field, [])
+			return True
+		return False
+
+	if refresh_zero_rows and existing_rows:
+		existing_by_job: dict[str, dict] = {}
+		for row in existing_rows:
+			jid = _cstr(row.get("job_id") or row.get("job")).strip()
+			if jid:
+				existing_by_job[jid] = row
+
+		new_rows: list[dict] = []
+		seen_jobs: set[str] = set()
+		for jid, logical in sorted(by_job.items(), key=lambda kv: kv[0]):
+			if flt(logical.get("wastage") or 0) <= 0:
+				continue
+			seen_jobs.add(jid)
+			old = existing_by_job.get(jid)
+			if old and _spr_patty_row_wastage_kg(old) > 0:
+				new_rows.append(_spr_write_patty_child_row(old))
+				continue
+			new_rows.append(_spr_write_patty_child_row(logical))
+
+		for jid, old in existing_by_job.items():
+			if jid in seen_jobs:
+				continue
+			if _spr_patty_row_wastage_kg(old) > 0:
+				new_rows.append(_spr_write_patty_child_row(old))
+
+		if not new_rows:
+			return False
+		spr.set(field, [])
+		for row in new_rows:
+			spr.append(field, row)
+		return True
+
+	spr.set(field, [])
+	for jid, logical in sorted(by_job.items(), key=lambda kv: kv[0]):
+		if flt(logical.get("wastage") or 0) <= 0:
+			continue
+		spr.append(field, _spr_write_patty_child_row(logical))
+	return bool(by_job)
 
 
 @frappe.whitelist()
 def sync_spr_running_patty_wastage(spr_name, persist=1):
-	"""GSM / desk helper — patty wastage is not auto-synced from roll lines."""
+	"""GSM helper — persist running patty wastage rows from roll lines."""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	return {
-		"status": "ok",
-		"spr_name": spr_name,
-		"synced": False,
-		"message": _("Patty wastage is not auto-synced — save on desk SPR or use GSM preview."),
-	}
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot sync patty wastage on a submitted Shaft Production Run"))
+		spr.calculate_produced_gsm(missing_only=True)
+		changed = sync_running_patty_wastage_from_items(
+			spr, persist=cint(persist), refresh_zero_rows=True
+		)
+		if changed:
+			spr.flags._spr_incremental_roll_save = True
+			spr.save(ignore_permissions=True)
+		field = _spr_patty_wastage_fieldname()
+		rows = getattr(spr, field, None) or [] if field else []
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"synced": bool(changed),
+			"row_count": len(rows),
+		}
 
 
 @frappe.whitelist()

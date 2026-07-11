@@ -593,6 +593,15 @@ function _cstr(v) {
 }
 
 async function _loadWastageContext(sprName) {
+	try {
+		await frappe.call({
+			method:
+				"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.sync_spr_running_patty_wastage",
+			args: { spr_name: sprName, persist: 1 },
+		});
+	} catch (e) {
+		console.warn("patty sync", e);
+	}
 	const res = await frappe.call({
 		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_wastage_context",
 		args: { spr_name: sprName },
@@ -629,28 +638,25 @@ async function _renderPattyWastageView(sprName) {
 	const table = _pattyWastageTable(ctx);
 	const rows = (table.rows || []).map(_normalizePattyRow);
 	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
-	const isPreview = table.source === "gsm_preview_from_roll_lines";
-	const hint = isPreview
-		? __("Preview from saved roll lines — not saved on SPR. Save SPR on desk for official patty rows.")
-		: __("Saved on SPR — official running patty wastage.");
-	const showPrint = !isPreview && !table.read_only;
 	const content =
 		rows.length > 0
 			? `<div class="gwm-shell">
 				<div class="gwm-card">
-					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${hint}</p>
+					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${__(
+						"From SPR — updated when you Save Row on GSM."
+					)}</p>
 					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
-					${_dataCardsHtml(rows, { kind: "patty", showPrint })}
+					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
 				</div>
 				<div class="gwm-card" style="margin-top:12px;">
 					<div class="gwm-section-title">${__("Table View")}</div>
-					${_deskTableHtml(pattyCols, rows, { showPrint })}
+					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
 				</div>
 			</div>`
 			: `<div class="gwm-empty">${__(
-					"No patty wastage yet. Save roll rows on GSM, then open again — preview calculates from roll lines."
+					"No patty wastage yet. Save roll rows on GSM first — patty is calculated automatically on SPR."
 			  )}</div>`;
-	return { content, table, rows, showPrint: !isPreview };
+	return { content, table, rows };
 }
 
 function _bestChildTable(ctx, preferredKey, matchRe, skipKeys = []) {
@@ -756,7 +762,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		d.$wrapper,
 		sprName,
 		initial.table.resolved_fieldname || "custom_running_patty_wastage",
-		initial.showPrint === false ? [] : initial.rows
+		initial.rows
 	);
 	_bindGwmLiveRefresh(d, async (dialog) => {
 		const view = await _renderPattyWastageView(sprName);
@@ -765,7 +771,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 			dialog.$wrapper,
 			sprName,
 			view.table.resolved_fieldname || "custom_running_patty_wastage",
-			view.showPrint === false ? [] : view.rows
+			view.rows
 		);
 	});
 }
@@ -815,7 +821,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 	</div>
 	</div>`;
 	const rollHtml = `<div class="gwm-shell"><p style="margin:0 0 12px;color:#64748b;font-size:13px">${__(
-		"Mark roll waste here. Recycled rows appear after you consume patty stock or roll waste."
+		"Roll waste saves to SPR immediately. Recycle uses saved patty / roll waste rows."
 	)}</p>${selectRollHtml}${existingWasteHtml}</div>`;
 
 	const d = new frappe.ui.Dialog({

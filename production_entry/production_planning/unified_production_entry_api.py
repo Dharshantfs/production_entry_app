@@ -3877,13 +3877,6 @@ def get_gsm_spr_wastage_context(spr_name):
 		payload["configured"] = True
 		tables[fieldname] = payload
 
-	patty_payload = tables.get("custom_running_patty_wastage") or {}
-	patty_rows = patty_payload.get("rows") or []
-	if not _gsm_patty_rows_have_saved_wastage(patty_rows):
-		preview = _gsm_patty_preview_payload(spr, patty_payload)
-		if preview:
-			tables["custom_running_patty_wastage"] = preview
-
 	order_code = _cstr(
 		getattr(spr, "custom_order_code", None)
 		or getattr(spr, "order_code", None)
