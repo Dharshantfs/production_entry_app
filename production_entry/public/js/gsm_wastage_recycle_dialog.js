@@ -592,7 +592,15 @@ function _cstr(v) {
 	return String(v ?? "").trim();
 }
 
-async function _loadWastageContext(sprName) {
+async function _fetchWastageContext(sprName) {
+	const res = await frappe.call({
+		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_wastage_context",
+		args: { spr_name: sprName },
+	});
+	return res.message || {};
+}
+
+async function _syncPattyAndFetchContext(sprName) {
 	try {
 		await frappe.call({
 			method:
@@ -602,14 +610,10 @@ async function _loadWastageContext(sprName) {
 	} catch (e) {
 		console.warn("patty sync", e);
 	}
-	const res = await frappe.call({
-		method: "production_entry.production_planning.unified_production_entry_api.get_gsm_spr_wastage_context",
-		args: { spr_name: sprName },
-	});
-	return res.message || {};
+	return _fetchWastageContext(sprName);
 }
 
-function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 8000) {
+function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 15000) {
 	let busy = false;
 	const timer = setInterval(async () => {
 		if (!dialog.$wrapper?.is(":visible") || busy) {
@@ -633,8 +637,8 @@ function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 8000) {
 	};
 }
 
-async function _renderPattyWastageView(sprName) {
-	const ctx = await _loadWastageContext(sprName);
+async function _renderPattyWastageView(sprName, { sync = false } = {}) {
+	const ctx = sync ? await _syncPattyAndFetchContext(sprName) : await _fetchWastageContext(sprName);
 	const table = _pattyWastageTable(ctx);
 	const rows = (table.rows || []).map(_normalizePattyRow);
 	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
@@ -745,8 +749,8 @@ export async function openGsmWastageDialog(opts = {}) {
 	await _openRollWastage(sprRow.spr_name, sprRow, opts);
 }
 
-async function _openRunningPattyWastage(sprName, sprRow) {
-	const initial = await _renderPattyWastageView(sprName);
+async function _openRunningPattyWastage(sprName, sprRow, opts = {}) {
+	const initial = await _renderPattyWastageView(sprName, { sync: !!opts.sync });
 	const d = new frappe.ui.Dialog({
 		title: __("Running Patty Wasteage") + ` · ${sprRow.order_code || ""}`,
 		size: "extra-large",
@@ -754,7 +758,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		primary_action_label: __("Refresh"),
 		primary_action() {
 			d.hide();
-			_openRunningPattyWastage(sprName, sprRow);
+			_openRunningPattyWastage(sprName, sprRow, { sync: true });
 		},
 	});
 	d.show();
@@ -765,7 +769,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		initial.rows
 	);
 	_bindGwmLiveRefresh(d, async (dialog) => {
-		const view = await _renderPattyWastageView(sprName);
+		const view = await _renderPattyWastageView(sprName, { sync: false });
 		dialog.fields_dict.grid_html.$wrapper.html(view.content);
 		_bindWastagePrint(
 			dialog.$wrapper,
@@ -777,7 +781,7 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 }
 
 async function _openRollWastage(sprName, sprRow, opts) {
-	const ctx = await _loadWastageContext(sprName);
+	const ctx = await _fetchWastageContext(sprName);
 	const wasteTable = _rollWasteTable(ctx);
 	const wasteRows = (wasteTable.rows || []).map(_normalizePattyRow);
 	const rollWasteCols = _apiColsToDesk(wasteTable.columns, DESK_ROLL_WASTE_COLS);
@@ -885,7 +889,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 	_wireSelectAll(d.$wrapper, ".gwm-roll-cb", ".gwm-roll-all");
 	_bindWastagePrint(d.$wrapper, sprName, wasteTable.resolved_fieldname || "custom_roll_waste", wasteRows);
 	_bindGwmLiveRefresh(d, async (dialog) => {
-		const ctx = await _loadWastageContext(sprName);
+		const ctx = await _fetchWastageContext(sprName);
 		const wasteTableLive = _rollWasteTable(ctx);
 		const wasteRowsLive = (wasteTableLive.rows || []).map(_normalizePattyRow);
 		const rollWasteColsLive = _apiColsToDesk(wasteTableLive.columns, DESK_ROLL_WASTE_COLS);
@@ -908,7 +912,7 @@ async function _openRollWastage(sprName, sprRow, opts) {
 }
 
 async function _showRollWasteGrid(sprName, sprRow) {
-	const ctx = await _loadWastageContext(sprName);
+	const ctx = await _fetchWastageContext(sprName);
 	const table = _rollWasteTable(ctx);
 	const rows = (table.rows || []).map(_normalizePattyRow);
 	const rollCols = _apiColsToDesk(table.columns, DESK_ROLL_WASTE_COLS);
@@ -965,7 +969,7 @@ export async function openGsmRecycleDialog(opts = {}) {
 }
 
 async function _renderRecycleMainBody(sprName) {
-	const ctx = await _loadWastageContext(sprName);
+	const ctx = await _fetchWastageContext(sprName);
 	const recycled = _recycledWastageTable(ctx);
 	const rows = (recycled.rows || []).map(_normalizePattyRow);
 	const recycledCols = _apiColsToDesk(recycled.columns, DESK_RECYCLED_COLS);
@@ -1049,7 +1053,7 @@ async function _openPattyStockPicker(sprName, sprRow, onDone) {
 }
 
 async function _openRollWasteRecyclePicker(sprName, sprRow, onDone) {
-	const ctx = await _loadWastageContext(sprName);
+	const ctx = await _fetchWastageContext(sprName);
 	const rows = ((ctx.tables || {}).custom_roll_waste || {}).rows || [];
 	if (!rows.length) {
 		frappe.msgprint(__("No roll waste rows on this SPR."));
