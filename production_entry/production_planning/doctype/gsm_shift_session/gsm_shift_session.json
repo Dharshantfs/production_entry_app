@@ -22,6 +22,9 @@
   "section_break_people",
   "operator",
   "supervisor",
+  "section_break_selection",
+  "selection_locked",
+  "locked_jobs",
   "section_break_audit",
   "opened_by",
   "opened_at",
@@ -147,6 +150,23 @@
    "label": "Supervisor",
    "options": "Employee",
    "reqd": 1
+  },
+  {
+   "fieldname": "section_break_selection",
+   "fieldtype": "Section Break",
+   "label": "Job Selection"
+  },
+  {
+   "default": "0",
+   "fieldname": "selection_locked",
+   "fieldtype": "Check",
+   "label": "Selection Locked"
+  },
+  {
+   "fieldname": "locked_jobs",
+   "fieldtype": "Table",
+   "label": "Locked Jobs",
+   "options": "GSM Shift Session Job"
   },
   {
    "fieldname": "section_break_audit",

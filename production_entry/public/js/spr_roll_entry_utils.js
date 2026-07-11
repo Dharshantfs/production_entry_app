@@ -78,20 +78,28 @@ function cint(v) {
 
 export function sprCalcCoreWeightKg(width, grossWeight, coreWidthMmOrItem, coreOptions) {
 	const widthInch = sprFlt(width);
+	if (widthInch <= 0) {
+		return 0;
+	}
+	const opts = coreOptions || [];
+	const key = coreWidthMmOrItem != null ? String(coreWidthMmOrItem) : "";
+	const opt = opts.find(
+		(o) =>
+			String(o.value) === key ||
+			String(o.item_code) === key ||
+			String(o.core_size) === key ||
+			String(o.label) === key
+	);
+	if (opt && sprFlt(opt.core_inch) > 0 && sprFlt(opt.base_weight_kgs) > 0) {
+		return (widthInch / sprFlt(opt.core_inch)) * sprFlt(opt.base_weight_kgs);
+	}
+	// Legacy fallback when Core Size master data is unavailable
 	const gw = sprFlt(grossWeight);
-	if (widthInch <= 0 || gw <= 0) {
+	if (gw <= 0) {
 		return 0;
 	}
 	let numericCoreWidth = parseFloat(coreWidthMmOrItem);
 	if (!Number.isFinite(numericCoreWidth) || numericCoreWidth < 100) {
-		const opts = coreOptions || [];
-		const key = coreWidthMmOrItem != null ? String(coreWidthMmOrItem) : "";
-		const opt = opts.find(
-			(o) =>
-				String(o.value) === key ||
-				String(o.item_code) === key ||
-				String(o.core_size) === key
-		);
 		numericCoreWidth = opt ? sprFlt(opt.width_mm) : 1600;
 	}
 	const widthInMeter = widthInch * 0.0254;
@@ -129,6 +137,19 @@ export function sprCalcCoreWeightKg(width, grossWeight, coreWidthMmOrItem, coreO
 	return (widthInch / coreW) * prorate;
 }
 
+export function sprCoreBaseWeightKgs(coreWidthMmOrItem, coreOptions) {
+	const opts = coreOptions || [];
+	const key = coreWidthMmOrItem != null ? String(coreWidthMmOrItem) : "";
+	const opt = opts.find(
+		(o) =>
+			String(o.value) === key ||
+			String(o.item_code) === key ||
+			String(o.core_size) === key ||
+			String(o.label) === key
+	);
+	return opt ? sprFlt(opt.base_weight_kgs) : 0;
+}
+
 export function sprCalcNetFromGross(row) {
 	const gw = sprNormalizeGrossWeightInput(row?.gross_weight);
 	if (gw <= 0) {
@@ -139,8 +160,9 @@ export function sprCalcNetFromGross(row) {
 		return 0;
 	}
 	const coreWeight = sprCalcCoreWeightKg(width, gw, row?.custom_core_width_mm, row?.core_width_options);
-	const calcNet = gw - coreWeight;
-	const netVal = calcNet > 0 ? calcNet : gw;
+	const polybag = sprFlt(row?.custom_polybag_kgs);
+	const calcNet = gw - coreWeight - polybag;
+	const netVal = calcNet > 0 ? calcNet : gw - polybag > 0 ? gw - polybag : gw;
 	return sprRoundNetWeightKg(netVal);
 }
 

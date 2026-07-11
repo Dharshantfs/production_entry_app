@@ -224,6 +224,7 @@ def _serialize_gsm_shift_session(doc) -> dict:
 		"opened_by": row.get("opened_by") or "",
 		"zero_production_close": cint(row.get("zero_production_close") or 0),
 		"reused_from_session": row.get("reused_from_session") or "",
+		"selection_locked": cint(row.get("selection_locked") or 0),
 	}
 
 
@@ -939,7 +940,98 @@ def _gsm_session_roll_revision(session_doc, session_sprs: list) -> str:
 	parts.append(f"rolls={roll_count}")
 	parts.append(f"waste={waste_count}")
 	parts.append("batches=" + ",".join(sorted(batch_tokens)))
+	locked = _gsm_locked_jobs_from_session(session_doc)
+	if locked:
+		parts.append(
+			"locked="
+			+ ",".join(sorted(f"{j['pp_id']}:{j['job_id']}" for j in locked))
+		)
+	parts.append(f"sel_lock={cint(getattr(session_doc, 'selection_locked', 0) or 0)}")
 	return "|".join(parts)
+
+
+def _gsm_locked_jobs_from_session(session_doc) -> list[dict]:
+	out = []
+	if not session_doc:
+		return out
+	for row in getattr(session_doc, "locked_jobs", None) or []:
+		pp_id = _cstr(getattr(row, "pp_id", None)).strip()
+		job_id = _cstr(getattr(row, "job_id", None)).strip()
+		if pp_id and job_id:
+			out.append({"pp_id": pp_id, "job_id": job_id})
+	return out
+
+
+def _gsm_open_shift_session_doc(run_date, shift, unit):
+	unit = _cstr(unit).strip()
+	shift = _normalize_gsm_shift_label(shift)
+	if not unit or not run_date or not shift:
+		return None
+	name = frappe.db.get_value(
+		_GSM_SHIFT_SESSION_DOCTYPE,
+		{
+			"run_date": getdate(run_date),
+			"shift": shift,
+			"custom_unit": unit,
+			"status": "Open",
+		},
+		"name",
+	)
+	if not name:
+		return None
+	return frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, name)
+
+
+def _gsm_publish_session_selection_update(session_doc) -> None:
+	try:
+		frappe.publish_realtime(
+			"gsm_production_entry_updated",
+			{
+				"run_date": str(session_doc.run_date or ""),
+				"shift": _cstr(session_doc.shift),
+				"unit": _cstr(session_doc.custom_unit),
+				"selection_updated": True,
+				"modified": str(session_doc.modified or ""),
+			},
+		)
+	except Exception:
+		pass
+
+
+@frappe.whitelist()
+def save_gsm_session_job_selections(
+	run_date=None, shift=None, unit=None, entries=None, selection_locked=0
+):
+	"""Persist GSM locked job picks on the open shift session (cross-device sync)."""
+	entries = _parse_json_arg(entries, [])
+	session_doc = _gsm_open_shift_session_doc(run_date, shift, unit)
+	if not session_doc:
+		frappe.throw(_("No open GSM shift session for this run date, shift, and unit."))
+
+	session_doc.locked_jobs = []
+	seen = set()
+	for entry in entries or []:
+		if not isinstance(entry, dict):
+			continue
+		pp_id = _cstr(entry.get("pp_id") or entry.get("ppId")).strip()
+		job_id = _cstr(entry.get("job_id") or entry.get("jobId")).strip()
+		if not pp_id or not job_id:
+			continue
+		key = (pp_id, job_id)
+		if key in seen:
+			continue
+		seen.add(key)
+		session_doc.append("locked_jobs", {"pp_id": pp_id, "job_id": job_id})
+
+	session_doc.selection_locked = cint(selection_locked)
+	session_doc.save(ignore_permissions=True)
+	_gsm_publish_session_selection_update(session_doc)
+	return {
+		"status": "ok",
+		"selection_locked": cint(session_doc.selection_locked),
+		"job_count": len(session_doc.locked_jobs or []),
+		"session": _serialize_gsm_shift_session(session_doc),
+	}
 
 
 @frappe.whitelist()
@@ -967,6 +1059,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			"session_sprs": [],
 			"roll_lines": [],
 			"job_selections": [],
+			"selection_locked": 0,
 		}
 
 	session_doc = frappe.get_doc(_GSM_SHIFT_SESSION_DOCTYPE, session_name)
@@ -999,6 +1092,8 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
 
+	for locked in _gsm_locked_jobs_from_session(session_doc):
+		job_keys.add((locked["pp_id"], locked["job_id"]))
 	job_selections = [{"pp_id": pp, "job_id": jid} for pp, jid in sorted(job_keys)]
 
 	# Newest roll first — matches GSM grid unshift order on active entry machine.
@@ -1012,6 +1107,7 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 		"session_sprs": session_sprs,
 		"roll_lines": roll_lines,
 		"job_selections": job_selections,
+		"selection_locked": cint(getattr(session_doc, "selection_locked", 0) or 0),
 		"roll_count": len(roll_lines),
 		"server_modified": str(session_doc.modified or ""),
 		"server_revision": server_revision,
@@ -2042,6 +2138,57 @@ def _gsm_resolve_core_link_for_fabric_width(width_inch: float, raw_value: str = 
 			if code and frappe.db.exists("Item", code):
 				return code
 	return raw
+
+
+def _gsm_core_info_from_link(core_link: str, width_inch: float = 0) -> dict:
+	"""Resolve Core Size master row from link name / item code / GSM option value."""
+	core_link = _cstr(core_link).strip()
+	if core_link:
+		for row in get_gsm_core_width_options():
+			if core_link in (
+				_cstr(row.get("core_size")),
+				_cstr(row.get("value")),
+				_cstr(row.get("item_code")),
+			):
+				return {
+					"core_size": row.get("core_size") or row.get("value"),
+					"core_inch": flt(row.get("core_inch")),
+					"base_weight_kgs": flt(row.get("base_weight_kgs")),
+				}
+		if frappe.db.table_exists("Core Size") and frappe.db.exists("Core Size", core_link):
+			row = frappe.get_doc("Core Size", core_link)
+			fields = _core_size_meta_fieldnames()
+			inch_field = fields.get("inch")
+			inch = flt(row.get(inch_field)) if inch_field else _parse_core_inch_from_name(core_link)
+			bw_field = fields.get("base_weight") or "base_weight_kgs"
+			return {
+				"core_size": core_link,
+				"core_inch": inch,
+				"base_weight_kgs": flt(row.get(bw_field) or 0),
+			}
+	if flt(width_inch) > 0:
+		return _resolve_core_size_for_fabric_width(flt(width_inch))
+	return {"core_size": core_link, "core_inch": 0.0, "base_weight_kgs": 0.0}
+
+
+def _gsm_calc_roll_net_weight_kg(gross_kg, width_inch, core_link, polybag_kgs=0) -> float:
+	"""Desk SPR parity: deduct (width/core_inch)*base_weight and polybag from gross."""
+	gw = flt(gross_kg)
+	wi = flt(width_inch)
+	if gw <= 0 or wi <= 0:
+		return 0.0
+	info = _gsm_core_info_from_link(core_link, wi)
+	core_inch = flt(info.get("core_inch"))
+	base_bw = flt(info.get("base_weight_kgs"))
+	if core_inch > 0 and base_bw > 0:
+		core_weight = (wi / core_inch) * base_bw
+	else:
+		core_weight = 0.0
+	poly = flt(polybag_kgs)
+	net = gw - core_weight - poly
+	if net <= 0:
+		net = gw - poly if gw > poly else gw
+	return flt(net, 2)
 
 
 @frappe.whitelist()

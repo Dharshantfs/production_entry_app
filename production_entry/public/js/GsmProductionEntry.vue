@@ -407,6 +407,7 @@
                 <th>UOM</th>
                 <th>WO</th>
                 <th>Core</th>
+                <th class="gpe-num">Core Base Wt (Kg)</th>
                 <th>Polybag</th>
                 <th>Actions</th>
               </tr>
@@ -470,7 +471,18 @@
                     <option v-for="opt in coreWidthOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                   </select>
                 </td>
-                <td>{{ formatKg(row.custom_polybag_kgs) }}</td>
+                <td class="gpe-num">{{ coreBaseWeightDisplay(row) }}</td>
+                <td class="gpe-num">
+                  <input
+                    v-model.number="row.custom_polybag_kgs"
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    class="gpe-inp gpe-inp-narrow"
+                    :disabled="row.row_locked || row.is_bundle_row"
+                    @input="onPolybagInput(row)"
+                  />
+                </td>
                 <td class="gpe-actions">
                   <button
                     v-if="!row.row_locked"
@@ -727,6 +739,7 @@
                     <th>Status</th>
                     <th>WO</th>
                     <th>Core</th>
+                    <th class="gpe-num">Core Base Wt (Kg)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -752,7 +765,8 @@
                     <td><a href="#" @click.prevent="openSpr(row.spr_name)">{{ row.spr_name }}</a></td>
                     <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
                     <td>{{ row.work_order || "—" }}</td>
-                    <td>{{ row.custom_core_width_mm ? row.custom_core_width_mm + ' mm' : "—" }}</td>
+                    <td>{{ row.custom_core_width_mm || "—" }}</td>
+                    <td class="gpe-num">{{ coreBaseWeightDisplay(row) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -950,6 +964,7 @@
                     <th>Status</th>
                     <th>WO</th>
                     <th>Core</th>
+                    <th class="gpe-num">Core Base Wt (Kg)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -975,7 +990,8 @@
                     <td><a href="#" @click.prevent="openSpr(row.spr_name)">{{ row.spr_name }}</a></td>
                     <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
                     <td>{{ row.work_order || "—" }}</td>
-                    <td>{{ row.custom_core_width_mm ? row.custom_core_width_mm + ' mm' : "—" }}</td>
+                    <td>{{ row.custom_core_width_mm || "—" }}</td>
+                    <td class="gpe-num">{{ coreBaseWeightDisplay(row) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1419,6 +1435,7 @@ import {
   sprNormalizeGrossWeightInput,
   sprRecalcRollRow,
   sprSanitizeGrossWeightTyping,
+  sprCoreBaseWeightKgs,
 } from "./spr_roll_entry_utils.js";
 
 const STORAGE_KEY = "gsm_production_entry_draft_v3";
@@ -1741,6 +1758,7 @@ const shaftDetailsLoading = ref(false);
 const shaftDetailsBlocks = ref([]);
 
 let autosaveTimer = null;
+let jobSelectionSaveTimer = null;
 
 function entryKey(plannedDate, lineId) {
   return `${plannedDate}::${lineId}`;
@@ -2390,6 +2408,23 @@ const vClickOutside = {
 
 function formatKg(v) {
   return sprFormatKg(v);
+}
+
+function coreBaseWeightForRow(row) {
+  return sprCoreBaseWeightKgs(row?.custom_core_width_mm, coreWidthOptions.value);
+}
+
+function coreBaseWeightDisplay(row) {
+  const bw = coreBaseWeightForRow(row);
+  return bw > 0 ? formatKg(bw) : "—";
+}
+
+function onPolybagInput(row) {
+  if (row.row_locked) {
+    return;
+  }
+  applyRollRowRecalc(row);
+  scheduleAutosave();
 }
 
 function isDraftSpr(item) {
@@ -3470,6 +3505,7 @@ function toggleJob(job, ev) {
       selectedEntries.value = [...selectedEntries.value, snap];
       loadJobBoard().then(() => enrichSelectedEntriesFromBoard());
       scheduleAutosave();
+      scheduleJobSelectionSave();
     }
     return;
   }
@@ -3502,6 +3538,7 @@ function onJobLabelClick(job) {
       selectedEntries.value = [...selectedEntries.value, snap];
       loadJobBoard().then(() => enrichSelectedEntriesFromBoard());
       scheduleAutosave();
+      scheduleJobSelectionSave();
     }
     return;
   }
@@ -3592,6 +3629,7 @@ function confirmSelection() {
   selectionLocked.value = true;
   showConfirmDialog.value = false;
   scheduleAutosave();
+  scheduleJobSelectionSave();
 }
 
 function unlockSelection() {
@@ -3601,12 +3639,14 @@ function unlockSelection() {
       () => {
         selectionLocked.value = false;
         scheduleAutosave();
+        scheduleJobSelectionSave();
       }
     );
     return;
   }
   selectionLocked.value = false;
   scheduleAutosave();
+  scheduleJobSelectionSave();
 }
 
 function clearSelection() {
@@ -3616,6 +3656,7 @@ function clearSelection() {
   }
   selectedEntries.value = [];
   scheduleAutosave();
+  scheduleJobSelectionSave();
 }
 
 async function openShaftDetails() {
@@ -4112,6 +4153,7 @@ async function createSprs() {
     forceNewSprSession.value = false;
     recordJobApiBaselines(jobBoardJobs.value);
     scheduleAutosave();
+    scheduleJobSelectionSave();
     if (errors.length) {
       frappe.msgprint({
         title: __("Some SPRs failed"),
@@ -4437,6 +4479,22 @@ async function saveRow(row) {
     row.row_ready_for_print = 1;
     if (msg.row_name) {
       row.spr_item_name = msg.row_name;
+    }
+    const saved = msg.roll_line || {};
+    if (saved.net_weight != null) {
+      row.net_weight = saved.net_weight;
+    }
+    if (saved.produced_gsm != null) {
+      row.produced_gsm = saved.produced_gsm;
+    }
+    if (saved.gross_weight != null && saved.gross_weight !== "") {
+      row.gross_weight = String(saved.gross_weight);
+    }
+    if (saved.custom_core_width_mm != null) {
+      row.custom_core_width_mm = saved.custom_core_width_mm;
+    }
+    if (saved.custom_polybag_kgs != null) {
+      row.custom_polybag_kgs = saved.custom_polybag_kgs;
     }
     scheduleAutosave();
     saveStatus.value = "Saved to SPR";
@@ -4886,7 +4944,7 @@ function rebuildSelectedEntriesFromResume(jobSelections, options = {}) {
     }
   }
 
-  if (merged.length) {
+  if (merged.length || replaceAll || !selectedEntries.value.length) {
     selectedEntries.value = merged;
   }
 }
@@ -5019,10 +5077,12 @@ function applyResumePayload(msg, options = {}) {
     rollLines.value = serverRows;
   }
   rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
-  if (!merge && ((msg.roll_lines || []).length || Object.keys(sprMap).length)) {
+  if (msg.selection_locked != null) {
+    selectionLocked.value = !!cint(msg.selection_locked);
+  } else if (!merge && ((msg.roll_lines || []).length || Object.keys(sprMap).length)) {
     selectionLocked.value = true;
-    recordJobApiBaselines(jobBoardJobs.value);
-  } else if (!merge && (msg.job_selections || []).length) {
+  }
+  if (!merge && (selectionLocked.value || (msg.job_selections || []).length)) {
     recordJobApiBaselines(jobBoardJobs.value);
   }
   if (msg.session?.operator) {
@@ -5669,6 +5729,7 @@ async function loadCoreWidthOptions() {
         label: r.label || r.core_size || r.value || `${r.width_mm} mm`,
         width_mm: sprFlt(r.width_mm) || 1600,
         core_inch: sprFlt(r.core_inch) || 0,
+        base_weight_kgs: sprFlt(r.base_weight_kgs) || 0,
       }));
     }
   } catch (e) {
@@ -6243,7 +6304,7 @@ function restoreDraft(options = {}) {
     if (d.batchContextKey && d.batchContextKey === ctxKey) {
       seriesPrefix.value = d.seriesPrefix || "";
       maxRollSuffix.value = d.maxRollSuffix || 0;
-    } else if (!skipRollGrid) {
+    } else if (!skipRollGrid && !shiftOpened.value) {
       resetBatchSeriesCache();
       rollLines.value = [];
       sessionSprs.value = {};
@@ -6271,6 +6332,38 @@ function scheduleAutosave() {
   autosaveTimer = setTimeout(() => {
     persistDraft();
   }, 5000);
+}
+
+function scheduleJobSelectionSave() {
+  if (!shiftOpened.value || !headerUnit.value) {
+    return;
+  }
+  if (jobSelectionSaveTimer) {
+    clearTimeout(jobSelectionSaveTimer);
+  }
+  jobSelectionSaveTimer = setTimeout(() => {
+    persistJobSelectionToServer();
+  }, 500);
+}
+
+async function persistJobSelectionToServer() {
+  if (!shiftOpened.value || !runDate.value || !shift.value || !headerUnit.value) {
+    return;
+  }
+  try {
+    await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.save_gsm_session_job_selections",
+      args: {
+        run_date: runDate.value,
+        shift: shift.value,
+        unit: headerUnit.value,
+        entries: JSON.stringify(buildSessionEntries()),
+        selection_locked: selectionLocked.value ? 1 : 0,
+      },
+    });
+  } catch (e) {
+    console.warn("job selection save", e);
+  }
 }
 
 async function ensureSidebarForOpenShift() {

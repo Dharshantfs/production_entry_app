@@ -10764,6 +10764,20 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 	if pl_m not in (None, "") and spi_meta.has_field("custom_produced_length_mtrs"):
 		row.custom_produced_length_mtrs = flt(pl_m)
 
+	is_bundle = cint(payload.get("is_bundle_row") or 0)
+	preserve_net = is_bundle and flt(getattr(row, "net_weight", 0) or payload.get("net_weight")) > 0
+	if not preserve_net and spi_meta.has_field("net_weight"):
+		gw = flt(payload.get("gross_weight") or getattr(row, "gross_weight", 0))
+		wi = flt(payload.get("width_inch") or getattr(row, "width_inch", 0))
+		core_link = _cstr(getattr(row, "custom_core_width_mm", "") or payload.get("custom_core_width_mm"))
+		poly = flt(payload.get("custom_polybag_kgs") or getattr(row, "custom_polybag_kgs", 0))
+		if gw > 0 and wi > 0:
+			from production_entry.production_planning.unified_production_entry_api import (
+				_gsm_calc_roll_net_weight_kg,
+			)
+
+			row.net_weight = _gsm_calc_roll_net_weight_kg(gw, wi, core_link, poly)
+
 
 def _gsm_validate_roll_for_spr(spr, spr_pp_id: str, payload: dict) -> None:
 	"""Ensure GSM roll payload maps to the correct SPR production plan and work order."""
@@ -10821,11 +10835,14 @@ def _gsm_upsert_roll_line_on_spr(spr, pp_id: str, payload: dict, shift=None) -> 
 		row.batch_no = batch_no
 
 	_gsm_apply_payload_to_item_row(row, payload, job_id, shift=shift, spr=spr)
+	pp_id_out = _cstr(spr.get("production_plan")).strip()
+	roll_line = _gsm_serialize_item_row_for_grid(row, pp_id_out)
 	return {
 		"action": action,
 		"batch_no": batch_no,
 		"job": job_id,
 		"row_name": _cstr(getattr(row, "name", "")),
+		"roll_line": roll_line,
 	}
 
 
