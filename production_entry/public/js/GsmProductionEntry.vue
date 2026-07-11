@@ -2316,20 +2316,27 @@ function buildLineFromJob(job) {
 function firstPtLineForPp(ppId, gsm, jobId) {
   let rows = ppSubmittedRows.value.filter((r) => r.pp_id === ppId);
   if (jobId != null && jobId !== "") {
-    const entry = selectedEntries.value.find(
-      (e) => e.ppId === ppId && String(e.jobId || e.job_id) === String(jobId)
-    );
-    if (entry?.lineId) {
-      const live = lineById.value.get(entry.lineId);
-      if (live) {
-        return buildLineFromItem(live);
-      }
-    }
     const boardJob = jobBoardJobs.value.find(
       (j) => j.pp_id === ppId && String(j.job_id) === String(jobId)
     );
     if (boardJob) {
       return buildLineFromJob(boardJob);
+    }
+    const entry = selectedEntries.value.find(
+      (e) => e.ppId === ppId && String(e.jobId || e.job_id) === String(jobId)
+    );
+    if (entry?.lineId) {
+      const live = lineById.value.get(entry.lineId);
+      const liveGsm = live?.gsm ?? live?.source?.gsm;
+      if (live && (!gsm || String(liveGsm) === String(gsm))) {
+        return buildLineFromItem(live);
+      }
+    }
+    if (entry?.gsm) {
+      const hit = rows.find((r) => String(r.gsm) === String(entry.gsm));
+      if (hit) {
+        return buildLineFromItem(hit);
+      }
     }
   }
   if (gsm) {
@@ -5733,7 +5740,7 @@ async function fetchQuotaForLine(line) {
   }
 }
 
-async function resolveOrderLength(line) {
+async function resolveOrderLength(line, jobId = null) {
   const src = line.source;
   try {
     const res = await frappe.call({
@@ -5744,6 +5751,7 @@ async function resolveOrderLength(line) {
         width_inch: line.width_inch,
         item_code: src.itemCode || src.item_code,
         production_plan_item: line.id,
+        job_id: jobId != null && jobId !== "" ? String(jobId) : undefined,
       },
     });
     return sprFlt(res.message?.meter_roll_mtrs);
@@ -5752,7 +5760,7 @@ async function resolveOrderLength(line) {
   }
 }
 
-async function resolveWorkOrder(line) {
+async function resolveWorkOrder(line, jobId = null) {
   const src = line.source;
   try {
     const res = await frappe.call({
@@ -5763,6 +5771,7 @@ async function resolveWorkOrder(line) {
         width_inch: line.width_inch,
         item_code: src.itemCode || src.item_code,
         production_plan_item: line.id,
+        job_id: jobId != null && jobId !== "" ? String(jobId) : undefined,
       },
     });
     const msg = res.message || {};
@@ -6118,18 +6127,28 @@ async function addRollRow() {
     return;
   }
   lastAddRollJobKey.value = entryKeyJob(job.pp_id, jobId);
+  const srcBase = baseLine.source || {};
   const line = {
     ...baseLine,
     ppId: job.pp_id,
+    gsm: job.gsm,
     width_inch: widthInch,
     widthLabel: `${widthInch}"`,
+    source: {
+      ...srcBase,
+      pp_id: job.pp_id,
+      gsm: job.gsm,
+      meter_roll: job.meter_roll,
+      meter: job.meter_roll,
+    },
   };
   const src = line.source;
-  const [batchInfo, ordLen, woInfo] = await Promise.all([
+  const [batchInfo, ordLenFromApi, woInfo] = await Promise.all([
     previewNextBatch(line.ppId),
-    resolveOrderLength(line),
-    resolveWorkOrder(line),
+    job.meter_roll ? Promise.resolve(0) : resolveOrderLength(line, jobId),
+    resolveWorkOrder(line, jobId),
   ]);
+  const ordLen = sprFlt(job.meter_roll) || sprFlt(ordLenFromApi);
   let batch = batchInfo;
   if (batch?.batch_no && rollLines.value.some((r) => r.batch_no === batch.batch_no)) {
     batch = await previewNextBatch(line.ppId);
@@ -6157,7 +6176,7 @@ async function addRollRow() {
     item_name: itemName,
     quality: src.quality || meta.quality || "",
     color: src.color || src.fabric_colour || meta.color || "",
-    gsm: src.gsm,
+    gsm: job.gsm,
     batch_no: batch.batch_no || "",
     roll_no: batch.roll_no || "",
     width_inch: line.width_inch,

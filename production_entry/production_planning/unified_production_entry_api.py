@@ -1287,7 +1287,7 @@ def preview_spr_batch_numbers_for_entry(
 
 
 @frappe.whitelist()
-def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=None, production_plan_item=None):
+def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=None, production_plan_item=None, job_id=None):
 	"""Order length (meters per roll) from PP shaft details for a GSM+width line."""
 	pp_id = _cstr(pp_id).strip()
 	if not pp_id or not frappe.db.exists("Production Plan", pp_id):
@@ -1295,12 +1295,17 @@ def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=Non
 	target_gsm = cint(gsm) if gsm is not None else 0
 	target_w = flt(width_inch) if width_inch is not None else 0.0
 	item_code = _cstr(item_code).strip()
+	target_job = _cstr(job_id).strip()
 
 	pp = frappe.get_doc("Production Plan", pp_id)
 	pp_shafts = pp.get("custom_shaft_details") or pp.get("shaft_details") or []
 	meter_keys = _meter_keys()
 
-	for shaft in pp_shafts:
+	for idx, shaft in enumerate(pp_shafts, start=1):
+		if target_job:
+			shaft_job = _cstr(_pick_value(shaft, ["job_id", "job", "job_no"], str(idx)))
+			if shaft_job != target_job:
+				continue
 		sg = _shaft_gsm(shaft)
 		sw = _shaft_width_inch(shaft)
 		if target_gsm and sg and sg != target_gsm:
@@ -1355,11 +1360,11 @@ def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=Non
 			raw_meter = flt(_pick_value(psi_row, meter_keys, 0))
 			if raw_meter > 0:
 				return {"meter_roll_mtrs": raw_meter, "source": "planning_table"}
-		if pt_filters.get("gsm") or pt_filters.get("width_inch"):
+		if pt_filters.get("width_inch"):
 			relaxed = {
 				k: v
 				for k, v in pt_filters.items()
-				if k in ("production_plan",)
+				if k != "width_inch"
 			}
 			for psi_row in frappe.get_all(
 				"Planning Table",
@@ -1383,7 +1388,9 @@ def get_order_length_for_pt_line(pp_id, gsm=None, width_inch=None, item_code=Non
 
 
 @frappe.whitelist()
-def resolve_work_order_for_roll_line(pp_id, gsm=None, width_inch=None, item_code=None, production_plan_item=None):
+def resolve_work_order_for_roll_line(
+	pp_id, gsm=None, width_inch=None, item_code=None, production_plan_item=None, job_id=None
+):
 	"""Resolve primary Work Order name for a GSM+width roll line."""
 	pp_id = _cstr(pp_id).strip()
 	if not pp_id:
@@ -1396,12 +1403,31 @@ def resolve_work_order_for_roll_line(pp_id, gsm=None, width_inch=None, item_code
 				job_gsm = int(g)
 		except Exception:
 			pass
+	jid = _cstr(job_id).strip() or None
 	ppi = _cstr(production_plan_item).strip() or None
+	if jid:
+		ppi = None
+	row_index = None
+	if jid:
+		try:
+			row_index = int(jid) - 1
+		except Exception:
+			row_index = None
+	combination = None
+	if jid and frappe.db.exists("Production Plan", pp_id):
+		for sr in _gsm_pp_shaft_rows(frappe.get_doc("Production Plan", pp_id)):
+			if _cstr(sr.get("job")) == jid:
+				combination = _cstr(sr.get("combination") or "")
+				break
+	if not combination and flt(width_inch) > 0:
+		combination = _cstr(width_inch)
 	wos = _resolve_wos_for_pp_job_row(
 		pp_id,
 		ppi=ppi,
+		job_id=jid,
+		row_index=row_index,
 		job_gsm=job_gsm,
-		combination=_cstr(width_inch) if flt(width_inch) > 0 else None,
+		combination=combination or None,
 	)
 	names = [_cstr(w.get("name")) for w in (wos or []) if w.get("name")]
 	chosen = (wos or [None])[0] if wos else None
