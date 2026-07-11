@@ -62,13 +62,24 @@ production_entry.spr_patty_stock.fetch = async function (sprName) {
 		args: { spr_name: sprName || "" },
 	});
 	const rows = res.message;
+	let parsed = [];
 	if (Array.isArray(rows)) {
-		return rows.map(_normalizeStockRow);
+		parsed = rows.map(_normalizeStockRow);
+	} else if (rows && Array.isArray(rows.stock)) {
+		parsed = rows.stock.map(_normalizeStockRow);
 	}
-	if (rows && Array.isArray(rows.stock)) {
-		return rows.stock.map(_normalizeStockRow);
+	parsed = parsed.filter((r) => parseFloat(r.available_kg) > 0);
+	if (parsed.length) {
+		return parsed;
 	}
-	return [];
+
+	const gsmRes = await frappe.call({
+		method:
+			"production_entry.production_planning.unified_production_entry_api.get_gsm_available_patty_stock",
+		args: { spr_name: sprName || "" },
+	});
+	const gsmRows = gsmRes.message?.stock || [];
+	return gsmRows.map(_normalizeStockRow).filter((r) => parseFloat(r.available_kg) > 0);
 };
 
 function _stockTableHtml(stock) {

@@ -600,19 +600,6 @@ async function _fetchWastageContext(sprName) {
 	return res.message || {};
 }
 
-async function _syncPattyAndFetchContext(sprName) {
-	try {
-		await frappe.call({
-			method:
-				"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.sync_spr_running_patty_wastage",
-			args: { spr_name: sprName, persist: 1 },
-		});
-	} catch (e) {
-		console.warn("patty sync", e);
-	}
-	return _fetchWastageContext(sprName);
-}
-
 function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 15000) {
 	let busy = false;
 	const timer = setInterval(async () => {
@@ -637,28 +624,30 @@ function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 15000) {
 	};
 }
 
-async function _renderPattyWastageView(sprName, { sync = false } = {}) {
-	const ctx = sync ? await _syncPattyAndFetchContext(sprName) : await _fetchWastageContext(sprName);
+async function _renderPattyWastageView(sprName) {
+	const ctx = await _fetchWastageContext(sprName);
 	const table = _pattyWastageTable(ctx);
 	const rows = (table.rows || []).map(_normalizePattyRow);
 	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
+	const isPreview = table.source === "gsm_preview_from_roll_lines";
+	const hint = isPreview
+		? __("Calculated from saved GSM roll lines — not written to desk SPR.")
+		: __("Saved on SPR.");
 	const content =
 		rows.length > 0
 			? `<div class="gwm-shell">
 				<div class="gwm-card">
-					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${__(
-						"From SPR — updated when you Save Row on GSM."
-					)}</p>
+					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${hint}</p>
 					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
-					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
+					${_dataCardsHtml(rows, { kind: "patty", showPrint: !isPreview })}
 				</div>
 				<div class="gwm-card" style="margin-top:12px;">
 					<div class="gwm-section-title">${__("Table View")}</div>
-					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
+					${_deskTableHtml(pattyCols, rows, { showPrint: !isPreview })}
 				</div>
 			</div>`
 			: `<div class="gwm-empty">${__(
-					"No patty wastage yet. Save roll rows on GSM first — patty is calculated automatically on SPR."
+					"No patty wastage yet. Save roll rows on GSM first."
 			  )}</div>`;
 	return { content, table, rows };
 }
@@ -749,8 +738,8 @@ export async function openGsmWastageDialog(opts = {}) {
 	await _openRollWastage(sprRow.spr_name, sprRow, opts);
 }
 
-async function _openRunningPattyWastage(sprName, sprRow, opts = {}) {
-	const initial = await _renderPattyWastageView(sprName, { sync: !!opts.sync });
+async function _openRunningPattyWastage(sprName, sprRow) {
+	const initial = await _renderPattyWastageView(sprName);
 	const d = new frappe.ui.Dialog({
 		title: __("Running Patty Wasteage") + ` · ${sprRow.order_code || ""}`,
 		size: "extra-large",
@@ -758,7 +747,7 @@ async function _openRunningPattyWastage(sprName, sprRow, opts = {}) {
 		primary_action_label: __("Refresh"),
 		primary_action() {
 			d.hide();
-			_openRunningPattyWastage(sprName, sprRow, { sync: true });
+			_openRunningPattyWastage(sprName, sprRow);
 		},
 	});
 	d.show();
@@ -769,7 +758,7 @@ async function _openRunningPattyWastage(sprName, sprRow, opts = {}) {
 		initial.rows
 	);
 	_bindGwmLiveRefresh(d, async (dialog) => {
-		const view = await _renderPattyWastageView(sprName, { sync: false });
+		const view = await _renderPattyWastageView(sprName);
 		dialog.fields_dict.grid_html.$wrapper.html(view.content);
 		_bindWastagePrint(
 			dialog.$wrapper,

@@ -3821,6 +3821,11 @@ def _gsm_patty_preview_payload(spr, base_payload: dict | None = None) -> dict | 
 	if not field:
 		return None
 
+	try:
+		spr.calculate_produced_gsm(missing_only=True)
+	except Exception:
+		pass
+
 	computed = _spr_compute_patty_wastage_by_job(spr)
 	if not computed:
 		return None
@@ -3877,6 +3882,12 @@ def get_gsm_spr_wastage_context(spr_name):
 		payload["configured"] = True
 		tables[fieldname] = payload
 
+	patty_payload = tables.get("custom_running_patty_wastage") or {}
+	if not _gsm_patty_rows_have_saved_wastage(patty_payload.get("rows") or []):
+		preview = _gsm_patty_preview_payload(spr, patty_payload)
+		if preview:
+			tables["custom_running_patty_wastage"] = preview
+
 	order_code = _cstr(
 		getattr(spr, "custom_order_code", None)
 		or getattr(spr, "order_code", None)
@@ -3894,10 +3905,18 @@ def get_gsm_spr_wastage_context(spr_name):
 
 @frappe.whitelist()
 def get_gsm_available_patty_stock(spr_name):
-	"""Mirror desk View Patty Stock — delegates to site RPC when present."""
+	"""Patty stock for GSM recycle — SPR wastage rows, then computed preview from roll lines."""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name:
 		frappe.throw(_("SPR is required"))
+
+	fallback_stock = _gsm_fallback_patty_stock_from_spr(spr_name)
+	if fallback_stock:
+		return {
+			"stock": fallback_stock,
+			"source": "spr_wastage_or_roll_preview",
+			"spr_name": spr_name,
+		}
 
 	for path in _PATTY_STOCK_METHOD_CANDIDATES:
 		try:
@@ -3918,17 +3937,10 @@ def get_gsm_available_patty_stock(spr_name):
 				return result
 			return {"stock": result.get("rows") or result.get("data") or [], "source": path, **result}
 
-	fallback_stock = _gsm_fallback_patty_stock_from_spr(spr_name)
-	if fallback_stock:
-		return {
-			"stock": fallback_stock,
-			"source": "fallback_from_spr_wastage_rows",
-		}
-
 	return {
 		"stock": [],
 		"source": "fallback-none",
-		"message": _("Patty stock provider not found on this site."),
+		"message": _("No patty stock available for this SPR."),
 	}
 
 
@@ -3983,8 +3995,14 @@ def _gsm_fallback_patty_stock_from_spr(spr_name: str) -> list[dict]:
 				"color": _cstr(_pick_value(row, ["color"], "")),
 				"gsm": cint(_pick_value(row, ["gsm"], 0)),
 				"width_inch": flt(_pick_value(row, ["width_inch", "width"], 0)),
-				"meter_per_roll": flt(_pick_value(row, ["meter_per_roll", "meter_roll", "meter"], 0)),
-				"no_of_shafts": cint(_pick_value(row, ["no_of_shafts", "shafts"], 0)),
+				"meter_per_roll": flt(
+					_pick_value(row, ["meter_per_roll", "meter_roll", "meter", "produced_length_mtrs"], 0)
+				),
+				"no_of_shafts": cint(_pick_value(row, ["no_of_shafts", "shafts", "no_of_shaft"], 0)),
+				"job_id": _cstr(_pick_value(row, ["job_id", "job"], "")),
+				"wastage": waste_qty,
+				"wastage_qty": waste_qty,
+				"net_wastage": waste_qty,
 				"available_kg": waste_qty,
 				"preview_only": True,
 			}

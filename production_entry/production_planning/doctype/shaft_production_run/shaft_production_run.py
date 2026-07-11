@@ -2573,7 +2573,6 @@ class ShaftProductionRun(Document):
 		if incremental and item_count > 15 and not submitting:
 			self.calculate_produced_gsm(missing_only=True)
 			self._spr_recalc_total_produced_weight_header()
-			self._spr_sync_patty_on_gsm_roll_save(submitting, incremental)
 			return
 
 		# Large draft saves: avoid reprocessing every roll line on each Save click.
@@ -2619,13 +2618,10 @@ class ShaftProductionRun(Document):
 			self.sync_roll_attribute_summaries()
 		if submitting:
 			self._validate_production_submit_readiness()
-		self._spr_sync_patty_on_gsm_roll_save(submitting, incremental)
 
 	def _spr_sync_patty_on_gsm_roll_save(self, submitting: bool, incremental: bool) -> None:
-		"""GSM Save Row sets _spr_incremental_roll_save — persist patty from roll lines then."""
-		if submitting or not incremental:
-			return
-		sync_running_patty_wastage_from_items(self, persist=True, refresh_zero_rows=True)
+		"""Disabled — GSM uses read-only patty preview; desk SPR owns saved patty rows."""
+		return
 
 	def _validate_production_submit_readiness(self):
 		"""Hard gates before manufacture posting — batch numbers, WO mapping, no cross-SPR batch reuse."""
@@ -11651,120 +11647,25 @@ def _spr_compute_patty_wastage_by_job(spr) -> dict[str, dict]:
 	return out
 
 
-def _spr_patty_job_wastage_totals(rows) -> dict[str, float]:
-	out: dict[str, float] = {}
-	for row in rows or []:
-		row_dict = row if isinstance(row, dict) else _spr_patty_row_dict(row)
-		jid = _cstr(row_dict.get("job_id") or row_dict.get("job")).strip()
-		if not jid:
-			continue
-		out[jid] = flt(_spr_patty_row_wastage_kg(row_dict), 3)
-	return out
-
-
 def sync_running_patty_wastage_from_items(
 	spr, *, persist: bool = False, refresh_zero_rows: bool = False
 ) -> bool:
-	"""Rebuild Running Patty Wastage child rows from SPR roll lines (GSM incremental save)."""
-	field = _spr_patty_wastage_fieldname()
-	if not field:
-		return False
-
-	existing_rows = _spr_existing_patty_rows(spr, field)
-	by_job = _spr_compute_patty_wastage_by_job(spr)
-
-	if not persist:
-		return bool(by_job)
-
-	computed_totals = {
-		jid: flt(logical.get("wastage") or 0, 3)
-		for jid, logical in by_job.items()
-		if flt(logical.get("wastage") or 0) > 0
-	}
-	if existing_rows and computed_totals:
-		existing_totals = _spr_patty_job_wastage_totals(existing_rows)
-		if existing_totals == computed_totals and all(v > 0 for v in existing_totals.values()):
-			return False
-
-	if existing_rows and not refresh_zero_rows:
-		if all(_spr_patty_row_wastage_kg(r) > 0 for r in existing_rows):
-			return False
-
-	if refresh_zero_rows and existing_rows and not by_job:
-		if all(_spr_patty_row_wastage_kg(r) <= 0 for r in existing_rows):
-			spr.set(field, [])
-			return True
-		return False
-
-	if refresh_zero_rows and existing_rows:
-		existing_by_job: dict[str, dict] = {}
-		for row in existing_rows:
-			jid = _cstr(row.get("job_id") or row.get("job")).strip()
-			if jid:
-				existing_by_job[jid] = row
-
-		new_rows: list[dict] = []
-		seen_jobs: set[str] = set()
-		for jid, logical in sorted(by_job.items(), key=lambda kv: kv[0]):
-			if flt(logical.get("wastage") or 0) <= 0:
-				continue
-			seen_jobs.add(jid)
-			old = existing_by_job.get(jid)
-			if old and _spr_patty_row_wastage_kg(old) > 0:
-				new_rows.append(_spr_write_patty_child_row(old))
-				continue
-			new_rows.append(_spr_write_patty_child_row(logical))
-
-		for jid, old in existing_by_job.items():
-			if jid in seen_jobs:
-				continue
-			if _spr_patty_row_wastage_kg(old) > 0:
-				new_rows.append(_spr_write_patty_child_row(old))
-
-		if not new_rows:
-			return False
-		spr.set(field, [])
-		for row in new_rows:
-			spr.append(field, row)
-		return True
-
-	if not by_job:
-		return False
-
-	spr.set(field, [])
-	for jid, logical in sorted(by_job.items(), key=lambda kv: kv[0]):
-		if flt(logical.get("wastage") or 0) <= 0:
-			continue
-		spr.append(field, _spr_write_patty_child_row(logical))
-	return True
+	"""Desk manual / explicit sync only — GSM does not auto-persist patty rows."""
+	return False
 
 
 @frappe.whitelist()
 def sync_spr_running_patty_wastage(spr_name, persist=1):
-	"""GSM manual refresh — sync patty from roll lines (optional, not on every Save Row)."""
+	"""No-op — GSM uses read-only preview from roll lines."""
 	spr_name = _cstr(spr_name).strip()
 	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 		frappe.throw(_("Shaft Production Run not found"))
-	with _spr_operation_lock(spr_name, "write", ttl_sec=60):
-		spr = frappe.get_doc("Shaft Production Run", spr_name)
-		if cint(spr.docstatus) != 0:
-			frappe.throw(_("Cannot sync patty wastage on a submitted Shaft Production Run"))
-		if cint(persist):
-			spr.flags._spr_incremental_roll_save = True
-			spr.calculate_produced_gsm(missing_only=True)
-		changed = sync_running_patty_wastage_from_items(
-			spr, persist=cint(persist), refresh_zero_rows=True
-		)
-		if changed and cint(persist):
-			spr.save(ignore_permissions=True)
-		field = _spr_patty_wastage_fieldname()
-		rows = getattr(spr, field, None) or [] if field else []
-		return {
-			"status": "ok",
-			"spr_name": spr_name,
-			"synced": bool(changed),
-			"row_count": len(rows),
-		}
+	return {
+		"status": "ok",
+		"spr_name": spr_name,
+		"synced": False,
+		"message": _("Patty preview is computed on read — not auto-saved to SPR."),
+	}
 
 
 @frappe.whitelist()
