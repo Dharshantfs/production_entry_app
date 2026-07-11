@@ -1548,7 +1548,8 @@ function rollBatchSuffix(batchNo) {
 }
 
 function lifoSortKey(row) {
-  return cint(row?.creation_seq);
+  const batchSeq = rollBatchSuffix(row?.batch_no);
+  return batchSeq > 0 ? batchSeq : cint(row?.creation_seq);
 }
 
 function sortRollLinesLifo(rows) {
@@ -1558,7 +1559,7 @@ function sortRollLinesLifo(rows) {
     if (keyA !== keyB) {
       return keyB - keyA;
     }
-    return rollBatchSuffix(b?.batch_no) - rollBatchSuffix(a?.batch_no);
+    return cint(b?.creation_seq) - cint(a?.creation_seq);
   });
 }
 

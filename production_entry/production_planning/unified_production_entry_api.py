@@ -1068,7 +1068,10 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 	roll_lines = []
 	job_keys = set()
 
-	# Global LIFO: newest saved roll line first (by child row modified), not per-SPR batch order.
+	# Global LIFO must be stable across edits. Child ``modified`` timestamps can
+	# change for every row in an SPR when one row is saved, which moves that
+	# order's rows as a block. The shift batch suffix is assigned globally when
+	# the roll is created, so it is the durable creation order across all SPRs.
 	staged: list[tuple] = []
 	for spr_row in session_sprs:
 		spr_name = spr_row.get("spr_name")
@@ -1077,26 +1080,24 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 			continue
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
 		for line in _gsm_serialize_spr_roll_lines_for_grid(spr):
-			sort_ts = _cstr(line.get("row_modified") or line.get("modified") or "")
 			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
 			child_idx = cint(line.get("child_idx") or 0)
-			staged.append((sort_ts, batch_suffix, child_idx, spr_name, pp_id, line, False))
+			staged.append((batch_suffix, child_idx, spr_name, pp_id, line, False))
 			jid = _cstr(line.get("job_id") or "")
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
 		for waste in spr.get("custom_roll_waste") or []:
 			line = _gsm_serialize_roll_waste_for_grid(spr, waste, pp_id)
-			sort_ts = _cstr(getattr(waste, "modified", None) or "")
 			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
 			child_idx = cint(getattr(waste, "idx", 0) or 0)
-			staged.append((sort_ts, batch_suffix, child_idx, spr_name, pp_id, line, True))
+			staged.append((batch_suffix, child_idx, spr_name, pp_id, line, True))
 			jid = _cstr(line.get("job_id") or "")
 			if jid and pp_id:
 				job_keys.add((pp_id, jid))
 
-	staged.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+	staged.sort(key=lambda t: (t[0], t[1]), reverse=True)
 	total = len(staged)
-	for idx, (_ts, _suffix, _child_idx, spr_name, pp_id, line, is_waste) in enumerate(staged):
+	for idx, (_suffix, _child_idx, spr_name, pp_id, line, is_waste) in enumerate(staged):
 		seq = total - idx
 		prefix = "resume-waste" if is_waste else "resume"
 		line["_id"] = f"{prefix}-{spr_name}-{seq}"
