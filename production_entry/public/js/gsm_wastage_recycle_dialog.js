@@ -600,6 +600,56 @@ async function _loadWastageContext(sprName) {
 	return res.message || {};
 }
 
+function _bindGwmLiveRefresh(dialog, refreshFn, intervalMs = 8000) {
+	let busy = false;
+	const timer = setInterval(async () => {
+		if (!dialog.$wrapper?.is(":visible") || busy) {
+			return;
+		}
+		busy = true;
+		try {
+			await refreshFn(dialog);
+		} catch (e) {
+			console.warn("GWM live refresh", e);
+		} finally {
+			busy = false;
+		}
+	}, intervalMs);
+	const prevOnhide = dialog.onhide;
+	dialog.onhide = () => {
+		clearInterval(timer);
+		if (typeof prevOnhide === "function") {
+			prevOnhide();
+		}
+	};
+}
+
+async function _renderPattyWastageView(sprName) {
+	const ctx = await _loadWastageContext(sprName);
+	const table = _pattyWastageTable(ctx);
+	const rows = (table.rows || []).map(_normalizePattyRow);
+	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
+	const content =
+		rows.length > 0
+			? `<div class="gwm-shell">
+				<div class="gwm-card">
+					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${__(
+						"Synced from SPR roll lines — auto-saves every 10 seconds."
+					)}</p>
+					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
+					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
+				</div>
+				<div class="gwm-card" style="margin-top:12px;">
+					<div class="gwm-section-title">${__("Table View")}</div>
+					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
+				</div>
+			</div>`
+			: `<div class="gwm-empty">${__(
+					"No running patty wastage yet. Save roll rows on GSM — patty syncs automatically within 10 seconds."
+			  )}</div>`;
+	return { content, table, rows };
+}
+
 function _bestChildTable(ctx, preferredKey, matchRe, skipKeys = []) {
 	const tables = ctx?.tables || {};
 	const candidates = [];
@@ -687,34 +737,11 @@ export async function openGsmWastageDialog(opts = {}) {
 }
 
 async function _openRunningPattyWastage(sprName, sprRow) {
-	const ctx = await _loadWastageContext(sprName);
-	const table = _pattyWastageTable(ctx);
-	const rows = (table.rows || []).map(_normalizePattyRow);
-	const pattyCols = _apiColsToDesk(table.columns, DESK_PATTY_COLS);
-
-	const content =
-		rows.length > 0
-			? `<div class="gwm-shell">
-				<div class="gwm-card">
-					<p style="margin:0 0 10px;color:#64748b;font-size:13px">${__(
-						"Desk manual entry only — GSM does not write running patty wastage."
-					)}</p>
-					<div class="gwm-section-title">${__("Running Patty Wastage")}</div>
-					${_dataCardsHtml(rows, { kind: "patty", showPrint: true })}
-				</div>
-				<div class="gwm-card" style="margin-top:12px;">
-					<div class="gwm-section-title">${__("Table View")}</div>
-					${_deskTableHtml(pattyCols, rows, { showPrint: true })}
-				</div>
-			</div>`
-			: `<div class="gwm-empty">${__(
-					"No running patty wastage saved on this SPR. Enter patty wastage on the desk SPR form only."
-			  )}</div>`;
-
+	const initial = await _renderPattyWastageView(sprName);
 	const d = new frappe.ui.Dialog({
 		title: __("Running Patty Wasteage") + ` · ${sprRow.order_code || ""}`,
 		size: "extra-large",
-		fields: [{ fieldname: "grid_html", fieldtype: "HTML", options: content }],
+		fields: [{ fieldname: "grid_html", fieldtype: "HTML", options: initial.content }],
 		primary_action_label: __("Refresh"),
 		primary_action() {
 			d.hide();
@@ -722,7 +749,22 @@ async function _openRunningPattyWastage(sprName, sprRow) {
 		},
 	});
 	d.show();
-	_bindWastagePrint(d.$wrapper, sprName, table.resolved_fieldname || "custom_running_patty_wastage", rows);
+	_bindWastagePrint(
+		d.$wrapper,
+		sprName,
+		initial.table.resolved_fieldname || "custom_running_patty_wastage",
+		initial.rows
+	);
+	_bindGwmLiveRefresh(d, async (dialog) => {
+		const view = await _renderPattyWastageView(sprName);
+		dialog.fields_dict.grid_html.$wrapper.html(view.content);
+		_bindWastagePrint(
+			dialog.$wrapper,
+			sprName,
+			view.table.resolved_fieldname || "custom_running_patty_wastage",
+			view.rows
+		);
+	});
 }
 
 async function _openRollWastage(sprName, sprRow, opts) {
@@ -759,16 +801,18 @@ async function _openRollWastage(sprName, sprRow, opts) {
 		: `<div class="gwm-card"><div class="gwm-empty">${__(
 				"No active saved roll lines available to mark as waste."
 		  )}</div></div>`;
-	const existingWasteHtml = `<div class="gwm-card" style="margin-top:12px;">
+	const existingWasteHtml = `<div class="gwm-roll-waste-existing">
+	<div class="gwm-card" style="margin-top:12px;">
 		<div class="gwm-section-title">${__("Already Marked Roll Waste")}</div>
 		${_dataCardsHtml(wasteRows, { kind: "roll", showPrint: true })}
 	</div>
 	<div class="gwm-card" style="margin-top:12px;">
 		<div class="gwm-section-title">${__("Roll Waste Table")}</div>
 		${_deskTableHtml(rollWasteCols, wasteRows, { showPrint: true })}
+	</div>
 	</div>`;
 	const rollHtml = `<div class="gwm-shell"><p style="margin:0 0 12px;color:#64748b;font-size:13px">${__(
-		"Mark roll waste here. Running patty wastage is desk manual entry only."
+		"Mark roll waste here. Patty wastage syncs from roll lines every 10 seconds."
 	)}</p>${selectRollHtml}${existingWasteHtml}</div>`;
 
 	const d = new frappe.ui.Dialog({
@@ -831,6 +875,27 @@ async function _openRollWastage(sprName, sprRow, opts) {
 	d.show();
 	_wireSelectAll(d.$wrapper, ".gwm-roll-cb", ".gwm-roll-all");
 	_bindWastagePrint(d.$wrapper, sprName, wasteTable.resolved_fieldname || "custom_roll_waste", wasteRows);
+	_bindGwmLiveRefresh(d, async (dialog) => {
+		const ctx = await _loadWastageContext(sprName);
+		const wasteTableLive = _rollWasteTable(ctx);
+		const wasteRowsLive = (wasteTableLive.rows || []).map(_normalizePattyRow);
+		const rollWasteColsLive = _apiColsToDesk(wasteTableLive.columns, DESK_ROLL_WASTE_COLS);
+		const html = `<div class="gwm-card" style="margin-top:12px;">
+			<div class="gwm-section-title">${__("Already Marked Roll Waste")}</div>
+			${_dataCardsHtml(wasteRowsLive, { kind: "roll", showPrint: true })}
+		</div>
+		<div class="gwm-card" style="margin-top:12px;">
+			<div class="gwm-section-title">${__("Roll Waste Table")}</div>
+			${_deskTableHtml(rollWasteColsLive, wasteRowsLive, { showPrint: true })}
+		</div>`;
+		dialog.$wrapper.find(".gwm-roll-waste-existing").html(html);
+		_bindWastagePrint(
+			dialog.$wrapper,
+			sprName,
+			wasteTableLive.resolved_fieldname || "custom_roll_waste",
+			wasteRowsLive
+		);
+	});
 }
 
 async function _showRollWasteGrid(sprName, sprRow) {
@@ -890,11 +955,20 @@ export async function openGsmRecycleDialog(opts = {}) {
 	await _openRecycleMain(sprRow.spr_name, sprRow, opts);
 }
 
-async function _openRecycleMain(sprName, sprRow, opts) {
+async function _renderRecycleMainBody(sprName) {
 	const ctx = await _loadWastageContext(sprName);
 	const recycled = _recycledWastageTable(ctx);
 	const rows = (recycled.rows || []).map(_normalizePattyRow);
 	const recycledCols = _apiColsToDesk(recycled.columns, DESK_RECYCLED_COLS);
+	return rows.length
+		? _deskTableHtml(recycledCols, rows)
+		: `<div class="gwm-empty">${__(
+				"No recycled rows yet. Use View Patty Stock or Roll Waste to consume."
+		  )}</div>`;
+}
+
+async function _openRecycleMain(sprName, sprRow, opts) {
+	const recycledBody = await _renderRecycleMainBody(sprName);
 
 	const content = `<div class="gwm-shell">
 		<div class="gwm-actions">
@@ -905,13 +979,7 @@ async function _openRecycleMain(sprName, sprRow, opts) {
 		</div>
 		<div class="gwm-card">
 			<div class="gwm-section-title">${__("Recycled Wastage Details")}</div>
-			${
-				rows.length
-					? _deskTableHtml(recycledCols, rows)
-					: `<div class="gwm-empty">${__(
-							"No recycled rows yet. Use View Patty Stock or Roll Waste to consume."
-					  )}</div>`
-			}
+			<div class="gwm-recycle-body">${recycledBody}</div>
 		</div>
 	</div>`;
 
@@ -938,6 +1006,10 @@ async function _openRecycleMain(sprName, sprRow, opts) {
 			d.hide();
 			_openRecycleMain(sprName, sprRow, opts);
 		});
+	});
+	_bindGwmLiveRefresh(d, async (dialog) => {
+		const body = await _renderRecycleMainBody(sprName);
+		dialog.$wrapper.find(".gwm-recycle-body").html(body);
 	});
 }
 

@@ -3047,6 +3047,56 @@ def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 
 
 @frappe.whitelist()
+def autosave_gsm_session_sprs(spr_names=None):
+	"""Periodic GSM autosave — persist patty wastage from roll lines on draft session SPRs."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_spr_operation_lock,
+		sync_running_patty_wastage_from_items,
+	)
+
+	names = _parse_json_arg(spr_names, [])
+	if not isinstance(names, list):
+		names = [names] if names else []
+	names = list(dict.fromkeys(_cstr(n).strip() for n in names if _cstr(n).strip()))
+
+	results = []
+	for spr_name in names:
+		if not frappe.db.exists("Shaft Production Run", spr_name):
+			results.append({"spr_name": spr_name, "saved": False, "error": "not_found"})
+			continue
+		try:
+			with _spr_operation_lock(spr_name, "write", ttl_sec=60):
+				spr = frappe.get_doc("Shaft Production Run", spr_name)
+				if cint(spr.docstatus) != 0:
+					results.append({"spr_name": spr_name, "saved": False, "skipped": "submitted"})
+					continue
+				sync_running_patty_wastage_from_items(
+					spr, persist=True, refresh_zero_rows=True
+				)
+				spr.flags._spr_incremental_roll_save = True
+				spr.save(ignore_permissions=True)
+				results.append(
+					{
+						"spr_name": spr_name,
+						"saved": True,
+						"modified": str(spr.modified or ""),
+					}
+				)
+		except Exception as exc:
+			frappe.log_error(frappe.get_traceback(), f"GSM autosave SPR:{spr_name}")
+			results.append({"spr_name": spr_name, "saved": False, "error": _cstr(exc)})
+
+	if any(r.get("saved") for r in results):
+		frappe.db.commit()
+
+	return {
+		"status": "ok",
+		"count": sum(1 for r in results if r.get("saved")),
+		"results": results,
+	}
+
+
+@frappe.whitelist()
 def delete_gsm_roll_line(spr_name, batch_no=None, row_name=None):
 	"""GSM Remove Row — delete one saved roll line from draft SPR."""
 	return delete_gsm_roll_line_from_spr(spr_name, batch_no=batch_no, row_name=row_name)
