@@ -4575,6 +4575,7 @@ function spr_register_spr_page_buttons(frm) {
 			__('Bundle SE on Submit: ON'),
 			__('Bundle SE on Submit: OFF'),
 			__('Select RM batches'),
+			__('Fix Shaft Numbers'),
 		].forEach(function (lbl) {
 			try {
 				rm.call(frm.page, lbl);
@@ -4585,6 +4586,7 @@ function spr_register_spr_page_buttons(frm) {
 			__('SPR — Trail Order'),
 			__('SPR — Bundle packaging'),
 			__('SPR — Select RM batches'),
+			__('Fix Shaft Numbers'),
 			spr_bundle_packaging_toggle_label(0),
 			spr_bundle_packaging_toggle_label(1),
 		].forEach(function (lbl) {
@@ -4726,6 +4728,37 @@ function spr_register_spr_page_buttons(frm) {
 				__('SPR — Select RM batches'),
 				function () {
 					spr_open_fabric_batch_pick_dialog(frm);
+				},
+				tg
+			);
+		}
+	});
+	addInner(function () {
+		if (!frm.is_new() && cint(frm.doc.docstatus) === 0 && (frm.doc.items || []).length) {
+			frm.page.add_inner_button(
+				__('Fix Shaft Numbers'),
+				function () {
+					frappe.call({
+						method:
+							'production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.backfill_spr_roll_shaft_numbers',
+						args: { spr_name: frm.doc.name },
+						freeze: true,
+						callback: function (r) {
+							if (r.exc) {
+								return;
+							}
+							const fixed = cint((r.message || {}).rows_fixed);
+							frappe.show_alert({
+								message: fixed
+									? __('Fixed {0} roll row(s)', [fixed])
+									: __('No shaft numbers needed fixing'),
+								indicator: fixed ? 'green' : 'blue',
+							});
+							if (fixed) {
+								frm.reload_doc();
+							}
+						},
+					});
 				},
 				tg
 			);

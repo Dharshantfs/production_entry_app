@@ -243,3 +243,25 @@ export function sprComputePlannedQtyKg(gsm, widthInch, lengthM) {
 export function sprFormatKg(v) {
 	return sprFlt(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+/** Combo segment count from combination string (e.g. 58+58 → 2). */
+export function sprComboSegmentCount(combination) {
+	const comb = String(combination || '').trim();
+	if (!comb) {
+		return 1;
+	}
+	return comb.split('+').map((s) => s.trim()).filter(Boolean).length || 1;
+}
+
+/**
+ * 1-based shaft number for a roll at zero-based index idx within a job.
+ * Matches desk SPR / _spr_shaft_no_for_roll_index in shaft_production_run.py.
+ */
+export function sprShaftNoForRollIndex(idx, noShafts, rollsPerShaft, segs = 1) {
+	const shafts = Math.max(1, cint(noShafts));
+	const rps = Math.max(1, cint(rollsPerShaft));
+	const segments = Math.max(1, cint(segs));
+	const effectiveRolls = segments > 1 ? rps * segments : rps;
+	const index = Math.max(0, cint(idx));
+	return Math.min(shafts, Math.floor(index / effectiveRolls) + 1);
+}

@@ -274,6 +274,18 @@
                   :disabled="!canOpenWastageRecycle"
                   @click="openRecycleDialog"
                 >Recycle</button>
+                <div class="gpe-quality-check-wrap">
+                  <button
+                    type="button"
+                    class="gpe-btn"
+                    :disabled="!canOpenQualityCheck"
+                    @click="qualityMenuOpen = !qualityMenuOpen"
+                  >Quality Check ▾</button>
+                  <div v-if="qualityMenuOpen && canOpenQualityCheck" class="gpe-tools-menu gpe-quality-menu">
+                    <button type="button" @click="runQualityCheck('gsm')">Start GSM Testing</button>
+                    <button type="button" @click="runQualityCheck('tensile')">Start Tensile Testing</button>
+                  </div>
+                </div>
               </div>
               <label v-if="shiftOpened">Operator <input :value="operator" type="text" readonly /></label>
               <label v-if="shiftOpened">Supervisor <input :value="supervisor" type="text" readonly /></label>
@@ -368,6 +380,7 @@
                 <button type="button" @click="runTool('bundle')">SPR — Bundle packaging</button>
                 <button type="button" @click="runTool('bundlese')">SPR — Bundle SE on Submit</button>
                 <button type="button" @click="runTool('rmbatches')">SPR — Select RM batches</button>
+                <button type="button" @click="runTool('fixshaft')">Fix Shaft Numbers</button>
               </div>
             </div>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="openShaftDetails">Shaft Details</button>
@@ -1419,6 +1432,9 @@ import {
   gsmOpenManualJob,
   gsmOpenRmBatches,
   gsmOpenTrailOrder,
+  gsmOpenGsmTesting,
+  gsmOpenTensileTesting,
+  gsmBackfillShaftNumbers,
   gsmPrintRollLabel,
   gsmPrintBundleLabel,
   gsmToggleBundleSeOnSubmit,
@@ -1436,6 +1452,7 @@ import {
   sprRecalcRollRow,
   sprSanitizeGrossWeightTyping,
   sprCoreBaseWeightKgs,
+  sprShaftNoForRollIndex,
 } from "./spr_roll_entry_utils.js";
 
 const STORAGE_KEY = "gsm_production_entry_draft_v3";
@@ -1525,14 +1542,76 @@ function currentShaftNoForJob(job) {
   if (!job) {
     return 1;
   }
-  const maxShafts = Math.max(1, cint(job.max_shafts));
-  const rollsPerShaft = Math.max(
-    1,
-    cint(job.rolls_per_shaft) || Math.ceil(cint(job.max_rolls) / maxShafts)
+  const rollIndex = gridRollCountForJob(job.pp_id, job.job_id);
+  return sprShaftNoForRollIndex(
+    rollIndex,
+    Math.max(1, cint(job.max_shafts)),
+    Math.max(1, cint(job.rolls_per_shaft) || 1),
+    1
   );
-  const pending = localPendingRollCountForJob(job.pp_id, job.job_id);
-  const totalRolls = cint(job.job_rolls_produced) + pending;
-  return Math.min(maxShafts, Math.floor(totalRolls / rollsPerShaft) + 1);
+}
+
+function gridRollCountForJob(ppId, jobId) {
+  const jid = String(jobId || "");
+  return rollLines.value.filter(
+    (row) =>
+      !row.is_bundle_row &&
+      !row.is_wasted &&
+      row.pp_id === ppId &&
+      String(row.job_id || row.job || "") === jid
+  ).length;
+}
+
+function jobBoardJobForRollRow(row) {
+  if (!row?.pp_id) {
+    return null;
+  }
+  const jid = String(row.job_id || row.job || "");
+  return (
+    jobBoardJobs.value.find(
+      (j) => j.pp_id === row.pp_id && String(j.job_id) === jid
+    ) || null
+  );
+}
+
+function rollIndexForJobRow(row) {
+  const ppId = row?.pp_id;
+  const jid = String(row.job_id || row.job || "");
+  const peers = rollLines.value
+    .filter(
+      (r) =>
+        !r.is_bundle_row &&
+        !r.is_wasted &&
+        r.pp_id === ppId &&
+        String(r.job_id || r.job || "") === jid
+    )
+    .sort((a, b) => {
+      const seqA = cint(a.creation_seq);
+      const seqB = cint(b.creation_seq);
+      if (seqA !== seqB) {
+        return seqA - seqB;
+      }
+      return String(a._id || "").localeCompare(String(b._id || ""));
+    });
+  const idx = peers.findIndex((r) => r._id === row._id);
+  return idx >= 0 ? idx : Math.max(0, peers.length - 1);
+}
+
+function resolveRowShaftNo(row) {
+  let shaft = cint(row?.custom_no_of_shaft || row?.no_of_shaft || 0);
+  if (shaft > 0) {
+    return shaft;
+  }
+  const job = jobBoardJobForRollRow(row);
+  if (!job) {
+    return 0;
+  }
+  return sprShaftNoForRollIndex(
+    rollIndexForJobRow(row),
+    Math.max(1, cint(job.max_shafts)),
+    Math.max(1, cint(job.rolls_per_shaft) || 1),
+    1
+  );
 }
 
 function onGsmProductionEntryUpdated(data) {
@@ -1712,6 +1791,7 @@ const creationSeq = ref(0);
 const summaryTab = ref("summary");
 const saveStatus = ref("");
 const toolsMenuOpen = ref(false);
+const qualityMenuOpen = ref(false);
 
 const shiftFilterDate = ref(frappe.datetime.get_today());
 const shiftFilterShift = ref("Day Shift");
@@ -3313,6 +3393,10 @@ const canOpenWastageRecycle = computed(
   () => shiftOpened.value && wastageRecycleSprList.value.length > 0
 );
 
+const canOpenQualityCheck = computed(
+  () => shiftOpened.value && sessionSprList.value.length > 0
+);
+
 const MIXING_EXCLUDED_UNITS = [
   "TTT- L3 - OYANG C900 BAG MAKING LINE",
   "TTT- L2 - OYANG C700 BAG MAKING LINE",
@@ -3714,6 +3798,7 @@ function sprStatusChipClass(status) {
 
 function closeToolsMenu() {
   toolsMenuOpen.value = false;
+  qualityMenuOpen.value = false;
 }
 
 function pickToolOrder(options) {
@@ -3774,6 +3859,26 @@ async function runTool(kind) {
     await gsmToggleBundleSeOnSubmit(ppId);
   } else if (kind === "rmbatches") {
     await gsmOpenRmBatches(ppId);
+  } else if (kind === "fixshaft") {
+    await gsmBackfillShaftNumbers(ppId);
+    await refreshSessionFromServer({ quiet: true, merge: true });
+  }
+}
+
+async function runQualityCheck(kind) {
+  closeToolsMenu();
+  qualityMenuOpen.value = false;
+  const ctx = await resolveToolContext();
+  if (!ctx) {
+    return;
+  }
+  const { ppId } = ctx;
+  const job = jobBoardJobs.value.find((j) => j.pp_id === ppId);
+  const jobId = job?.job_id || "";
+  if (kind === "gsm") {
+    await gsmOpenGsmTesting(ppId, jobId);
+  } else if (kind === "tensile") {
+    await gsmOpenTensileTesting(ppId, jobId);
   }
 }
 
@@ -4046,7 +4151,7 @@ function buildRollPayload(row) {
     custom_diameter_inches: row.custom_diameter_inches,
     custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
     job_id: row.job_id || row.job || "",
-    custom_no_of_shaft: row.custom_no_of_shaft || row.no_of_shaft || 0,
+    custom_no_of_shaft: resolveRowShaftNo(row),
     is_bundle_row: row.is_bundle_row ? 1 : 0,
     row_locked: row.row_locked ? 1 : 0,
     row_ready_for_print: row.row_ready_for_print ? 1 : 0,
@@ -4495,6 +4600,9 @@ async function saveRow(row) {
     }
     if (saved.custom_polybag_kgs != null) {
       row.custom_polybag_kgs = saved.custom_polybag_kgs;
+    }
+    if (saved.custom_no_of_shaft != null && cint(saved.custom_no_of_shaft) > 0) {
+      row.custom_no_of_shaft = cint(saved.custom_no_of_shaft);
     }
     scheduleAutosave();
     saveStatus.value = "Saved to SPR";
@@ -8312,6 +8420,16 @@ onUnmounted(() => {
   gap: 8px;
   align-items: flex-end;
   flex-wrap: wrap;
+}
+.gpe-quality-check-wrap {
+  position: relative;
+}
+.gpe-quality-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 180px;
 }
 .gpe-row-wasted td {
   text-decoration: line-through;

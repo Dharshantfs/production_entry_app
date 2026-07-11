@@ -10449,6 +10449,149 @@ def _spr_shaft_no_for_roll_index(
 	return min(no_shafts, idx // effective_rolls + 1)
 
 
+def _spr_job_shaft_limits(job_row) -> tuple[int, int, int]:
+	"""Return (no_shafts, rolls_per_shaft, segs) for a shaft_jobs row."""
+	no_shafts = max(1, cint(getattr(job_row, "no_of_shafts", 0) or getattr(job_row, "no_of_shaft", 0) or 0))
+	rolls_per_shaft = max(1, cint(getattr(job_row, "no_of_rolls", 0) or 0))
+	comb = _cstr(getattr(job_row, "combination", None) or "")
+	segs = max(1, _count_combination_segments(comb))
+	return no_shafts, rolls_per_shaft, segs
+
+
+def _gsm_roll_sort_key_for_shaft(item_row) -> int:
+	rn = cint(getattr(item_row, "roll_no", 0) or 0)
+	if rn > 0:
+		return rn
+	return _gsm_roll_suffix_from_batch_no(_cstr(getattr(item_row, "batch_no", "")))
+
+
+def _gsm_sorted_job_roll_items(spr, job_id: str) -> list:
+	"""Real roll item rows for one job, sorted by roll_no / batch suffix."""
+	job_id = _cstr(job_id).strip()
+	rows = []
+	for it in spr.items or []:
+		if not _spr_is_real_roll_item_row(it):
+			continue
+		if _cstr(getattr(it, "job", "")).strip() != job_id:
+			continue
+		rows.append(it)
+	rows.sort(key=_gsm_roll_sort_key_for_shaft)
+	return rows
+
+
+def _gsm_roll_index_for_item(spr, job_id: str, item_row) -> int:
+	"""Zero-based roll index for an item row within its job."""
+	sorted_rows = _gsm_sorted_job_roll_items(spr, job_id)
+	target = _cstr(getattr(item_row, "name", "")).strip()
+	batch = _cstr(getattr(item_row, "batch_no", "")).strip()
+	for idx, row in enumerate(sorted_rows):
+		if target and _cstr(getattr(row, "name", "")).strip() == target:
+			return idx
+		if batch and _cstr(getattr(row, "batch_no", "")).strip() == batch:
+			return idx
+	payload_idx = cint(getattr(item_row, "roll_no", 0) or 0)
+	if payload_idx > 0:
+		return max(0, payload_idx - 1)
+	suffix = _gsm_roll_suffix_from_batch_no(batch)
+	if suffix > 0:
+		return max(0, suffix - 1)
+	return len(sorted_rows)
+
+
+def _gsm_resolve_shaft_no_for_roll(spr, job_id: str, item_row=None, payload: dict | None = None) -> int:
+	"""Compute 1-based shaft number for a GSM/SPR roll line."""
+	job_id = _cstr(job_id).strip()
+	if not job_id:
+		return 0
+	job_row = _spr_shaft_job_for_roll(spr, job_id)
+	if not job_row:
+		return 0
+	no_shafts, rolls_per_shaft, segs = _spr_job_shaft_limits(job_row)
+	idx = 0
+	if item_row is not None:
+		idx = _gsm_roll_index_for_item(spr, job_id, item_row)
+	elif isinstance(payload, dict):
+		pseudo = frappe._dict(
+			name=_cstr(payload.get("spr_item_name") or ""),
+			batch_no=_cstr(payload.get("batch_no") or ""),
+			roll_no=cint(payload.get("roll_no") or 0),
+		)
+		idx = _gsm_roll_index_for_item(spr, job_id, pseudo)
+		if idx <= 0 and payload.get("roll_no"):
+			idx = max(0, cint(payload.get("roll_no")) - 1)
+		elif idx <= 0:
+			idx = len(_gsm_sorted_job_roll_items(spr, job_id))
+	return _spr_shaft_no_for_roll_index(idx, no_shafts, rolls_per_shaft, segs)
+
+
+def _backfill_spr_roll_shaft_numbers_for_doc(spr, save: bool = True) -> dict:
+	"""Fix custom_no_of_shaft=0 on draft SPR roll lines using job roll order."""
+	if cint(getattr(spr, "docstatus", 0)) != 0:
+		return {"status": "skipped", "reason": "submitted", "rows_fixed": 0, "details": []}
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	if not spi_meta.has_field("custom_no_of_shaft"):
+		return {"status": "skipped", "reason": "no_field", "rows_fixed": 0, "details": []}
+
+	details = []
+	rows_fixed = 0
+	jobs_seen = set()
+	for it in spr.items or []:
+		if not _spr_is_real_roll_item_row(it):
+			continue
+		job_id = _cstr(getattr(it, "job", "")).strip()
+		if not job_id:
+			continue
+		current = cint(getattr(it, "custom_no_of_shaft", 0) or 0)
+		if current > 0:
+			continue
+		jobs_seen.add(job_id)
+
+	for job_id in jobs_seen:
+		for idx, it in enumerate(_gsm_sorted_job_roll_items(spr, job_id)):
+			current = cint(getattr(it, "custom_no_of_shaft", 0) or 0)
+			if current > 0:
+				continue
+			job_row = _spr_shaft_job_for_roll(spr, job_id)
+			if not job_row:
+				continue
+			no_shafts, rolls_per_shaft, segs = _spr_job_shaft_limits(job_row)
+			new_shaft = _spr_shaft_no_for_roll_index(idx, no_shafts, rolls_per_shaft, segs)
+			if new_shaft <= 0:
+				continue
+			it.custom_no_of_shaft = new_shaft
+			rows_fixed += 1
+			details.append(
+				{
+					"batch_no": _cstr(getattr(it, "batch_no", "")),
+					"job": job_id,
+					"old_shaft": current,
+					"new_shaft": new_shaft,
+					"row_name": _cstr(getattr(it, "name", "")),
+				}
+			)
+
+	if rows_fixed and save:
+		spr.flags._spr_incremental_roll_save = True
+		spr.save(ignore_permissions=True)
+
+	return {
+		"status": "ok",
+		"spr_name": spr.name,
+		"rows_fixed": rows_fixed,
+		"details": details,
+	}
+
+
+@frappe.whitelist()
+def backfill_spr_roll_shaft_numbers(spr_name=None):
+	"""Manual / GSM button — recompute No. of Shaft on draft SPR roll lines."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	return _backfill_spr_roll_shaft_numbers_for_doc(spr, save=True)
+
+
 def _spr_max_roll_suffix_for_job(spr_doc, job_id: str) -> int:
 	"""Highest roll suffix already on this job's lines (batch /N or roll_no)."""
 	job_id = _cstr(job_id)
@@ -10778,6 +10921,13 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 
 			row.net_weight = _gsm_calc_roll_net_weight_kg(gw, wi, core_link, poly)
 
+	if spi_meta.has_field("custom_no_of_shaft"):
+		current_shaft = cint(getattr(row, "custom_no_of_shaft", 0) or 0)
+		if current_shaft <= 0 and job_id:
+			resolved = _gsm_resolve_shaft_no_for_roll(spr, job_id, item_row=row, payload=payload)
+			if resolved > 0:
+				row.custom_no_of_shaft = resolved
+
 
 def _gsm_validate_roll_for_spr(spr, spr_pp_id: str, payload: dict) -> None:
 	"""Ensure GSM roll payload maps to the correct SPR production plan and work order."""
@@ -11002,6 +11152,7 @@ def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 		"custom_core_width_mm": _cstr(getattr(it, "custom_core_width_mm", None)),
 		"custom_polybag_kgs": flt(getattr(it, "custom_polybag_kgs", 0) or 0),
 		"job_id": _cstr(getattr(it, "job", None)),
+		"custom_no_of_shaft": cint(getattr(it, "custom_no_of_shaft", 0) or 0),
 		"spr_item_name": _cstr(getattr(it, "name", None)),
 		"is_bundle_row": 0,
 		"row_locked": 1,

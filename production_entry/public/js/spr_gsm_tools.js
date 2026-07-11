@@ -214,6 +214,58 @@ export async function gsmPrintWastageLabel(sprName, childRowName, tableField, ro
 	await production_entry.spr_label.print_wastage(sprName, childRowName, tableField, rowData);
 }
 
+/** Start GSM Testing — same redirect as desk SPR Quality Check. */
+export async function gsmOpenGsmTesting(ppId, jobId) {
+	const sprName = await findSprForGsm(ppId, true);
+	if (!sprName) {
+		noSprMessage();
+		return;
+	}
+	const qc = production_entry.spr_quality_check;
+	if (qc && typeof qc.openSprGsmTesting === "function") {
+		await qc.openSprGsmTesting(sprName, jobId);
+		return;
+	}
+	frappe.msgprint(__("Quality Check helper not loaded."));
+}
+
+/** Start Tensile Testing — same redirect as desk SPR Quality Check. */
+export async function gsmOpenTensileTesting(ppId, jobId) {
+	const sprName = await findSprForGsm(ppId, true);
+	if (!sprName) {
+		noSprMessage();
+		return;
+	}
+	const qc = production_entry.spr_quality_check;
+	if (qc && typeof qc.openSprTensileTesting === "function") {
+		await qc.openSprTensileTesting(sprName, jobId);
+		return;
+	}
+	frappe.msgprint(__("Quality Check helper not loaded."));
+}
+
+/** Fix No. of Shaft = 0 on draft SPR roll lines. */
+export async function gsmBackfillShaftNumbers(ppId) {
+	const sprName = await findSprForGsm(ppId, true);
+	if (!sprName) {
+		noSprMessage();
+		return null;
+	}
+	const res = await frappe.call({
+		method:
+			"production_entry.production_planning.doctype.shaft_production_run.shaft_production_run.backfill_spr_roll_shaft_numbers",
+		args: { spr_name: sprName },
+	});
+	const fixed = cint(res?.message?.rows_fixed);
+	frappe.show_alert({
+		message: fixed
+			? __("Fixed {0} roll row(s) on {1}", [fixed, sprName])
+			: __("No shaft numbers needed fixing on {0}", [sprName]),
+		indicator: fixed ? "green" : "blue",
+	});
+	return res.message || {};
+}
+
 function cint(v) {
 	const n = parseInt(v, 10);
 	return Number.isFinite(n) ? n : 0;
