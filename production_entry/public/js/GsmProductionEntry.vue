@@ -419,8 +419,8 @@
               </div>
             </div>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="openShaftDetails">Shaft Details</button>
-            <button v-if="needsCreateSprs" type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
-            <span v-else class="gpe-spr-ready-badge" title="Draft SPRs exist for selected orders">SPRs ready</span>
+            <button v-if="needsCreateSprs && !mixSprReady" type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
+            <span v-else class="gpe-spr-ready-badge" title="Draft SPRs exist for selected orders or active mix roll">SPRs ready</span>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="openSubmitConfirmDialog">Submit Entry</button>
           </div>
         </div>
@@ -445,11 +445,11 @@
               <thead>
                 <tr>
                   <th>#</th><th>Item</th><th>GSM</th><th>Width</th><th>Produced Length</th><th>Batch</th>
-                  <th>Net</th><th>Gross</th><th>Planned Qty</th><th>Actions</th>
+                  <th>Net</th><th>Gross</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!mixRollLines.length"><td colspan="10" class="gpe-muted">Add roll rows to start.</td></tr>
+                <tr v-if="!mixRollLines.length"><td colspan="8" class="gpe-muted">Add roll rows to start.</td></tr>
                 <tr v-for="(row, midx) in mixRollLines" :key="row._id">
                   <td>{{ mixRollLines.length - midx }}</td>
                   <td>{{ row.item_code }}</td>
@@ -463,7 +463,6 @@
                   <td>
                     <input v-model="row.gross_weight" type="text" class="gpe-inp" :disabled="row.row_locked" @input="onMixRowEdit(row)" />
                   </td>
-                  <td>{{ formatKg(row.planned_qty) }}</td>
                   <td class="gpe-actions">
                     <button v-if="!row.row_locked" type="button" class="gpe-btn gpe-btn-sm" @click="saveMixRollRow(row)">Save</button>
                     <button v-else type="button" class="gpe-btn gpe-btn-sm" @click="editRow(row)">Edit</button>
@@ -551,7 +550,7 @@
                     @input="onGrossWeightInput(row, $event)"
                   />
                 </td>
-                <td class="gpe-num">{{ formatKg(row.planned_qty) }}</td>
+                <td class="gpe-num">{{ row.is_mix_roll_row ? "—" : formatKg(row.planned_qty) }}</td>
                 <td>{{ row.uom || "Kg" }}</td>
                 <td>
                   <a
@@ -3240,6 +3239,8 @@ const needsCreateSprs = computed(() => {
 
 const allSprsCreated = computed(() => !needsCreateSprs.value);
 
+const mixSprReady = computed(() => !!(activeMixRoll.value?.spr_name));
+
 const toolsEnabled = computed(() => !!toolsPpOptions.value.length && selectionLocked.value);
 const toolsHint = computed(() => {
   if (!selectionLocked.value) {
@@ -3721,7 +3722,11 @@ function copyMixRollValues(target, source) {
     produced_gsm: source.produced_gsm,
     net_weight: source.net_weight,
     gross_weight: source.gross_weight,
-    planned_qty: source.planned_qty,
+    planned_qty: source.is_mix_roll_row ? 0 : source.planned_qty,
+    custom_core_width_mm: source.custom_core_width_mm,
+    custom_polybag_kgs: source.custom_polybag_kgs,
+    custom_diameter_inches: source.custom_diameter_inches,
+    custom_cbm_cubic_meters: source.custom_cbm_cubic_meters,
     row_locked: source.row_locked,
     row_ready_for_print: source.row_ready_for_print,
     spr_item_name: source.spr_item_name,
@@ -3957,6 +3962,19 @@ async function saveMixRollRow(row) {
     if (saved.gross_weight != null && saved.gross_weight !== "") {
       row.gross_weight = String(saved.gross_weight);
     }
+    if (saved.custom_diameter_inches != null) {
+      row.custom_diameter_inches = saved.custom_diameter_inches;
+    }
+    if (saved.custom_cbm_cubic_meters != null) {
+      row.custom_cbm_cubic_meters = saved.custom_cbm_cubic_meters;
+    }
+    if (saved.custom_core_width_mm != null) {
+      row.custom_core_width_mm = saved.custom_core_width_mm;
+    }
+    if (saved.custom_polybag_kgs != null) {
+      row.custom_polybag_kgs = saved.custom_polybag_kgs;
+    }
+    row.planned_qty = 0;
     syncMixRollRowViews(row);
     scheduleAutosave();
     frappe.show_alert({ message: __("Mix roll row saved"), indicator: "green" });
@@ -4487,7 +4505,11 @@ function applyRollRowRecalc(row) {
   const updated = sprRecalcRollRow({ ...row, core_width_options: coreWidthOptions.value });
   row.net_weight = updated.net_weight;
   row.produced_gsm = updated.produced_gsm;
-  row.planned_qty = updated.planned_qty;
+  if (!row.is_mix_roll_row) {
+    row.planned_qty = updated.planned_qty;
+  } else {
+    row.planned_qty = 0;
+  }
   row.custom_cbm_cubic_meters = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
 }
 
@@ -4496,6 +4518,11 @@ function onDiameterInput(row) {
     return;
   }
   row.custom_cbm_cubic_meters = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
+  if (row.is_mix_roll_row) {
+    syncMixRollRowViews(row);
+  } else {
+    applyRollRowRecalc(row);
+  }
   scheduleAutosave();
 }
 
@@ -4758,11 +4785,18 @@ function buildRollPayload(row) {
 }
 
 function buildSessionSprsPayload() {
-  return submitSprList.value.map((s) => ({
+  const fabric = submitSprList.value.map((s) => ({
     pp_id: s.pp_id,
     spr_name: s.spr_name,
     order_code: s.order_code,
   }));
+  const mix = mixSubmitSprList.value.map((s) => ({
+    pp_id: "",
+    spr_name: s.spr_name,
+    order_code: s.order_code,
+    is_mix_roll: 1,
+  }));
+  return [...fabric, ...mix];
 }
 
 function buildSubmitRollsPayload() {
@@ -4891,7 +4925,12 @@ function openToleranceDialog(orders) {
 
 async function openSubmitConfirmDialog() {
   if (!canSubmitEntry.value) {
-    frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
+    const hasMix = submitConfirmRolls.value.some((r) => r.is_mix_roll_row);
+    frappe.msgprint(
+      hasMix
+        ? __("Save each mix roll row, then submit.")
+        : __("Create SPRs, enter rolls, and Save Row on each line before submit.")
+    );
     return;
   }
   submitDialogPhase.value = "review";
@@ -5229,6 +5268,16 @@ async function saveRow(row) {
     if (saved.custom_no_of_shaft != null && cint(saved.custom_no_of_shaft) > 0) {
       row.custom_no_of_shaft = cint(saved.custom_no_of_shaft);
     }
+    if (saved.custom_diameter_inches != null) {
+      row.custom_diameter_inches = saved.custom_diameter_inches;
+    }
+    if (saved.custom_cbm_cubic_meters != null) {
+      row.custom_cbm_cubic_meters = saved.custom_cbm_cubic_meters;
+    }
+    if (row.is_mix_roll_row) {
+      row.planned_qty = 0;
+      syncMixRollRowViews(row);
+    }
     scheduleAutosave();
     saveStatus.value = "Saved to SPR";
     frappe.show_alert({ message: __("Row saved to {0}", [sprName]), indicator: "green" });
@@ -5283,7 +5332,9 @@ async function printLabel(row) {
     frappe.msgprint(__("Save Row first to enable the label."));
     return;
   }
-  const sprName = sprNameForPp(row.pp_id);
+  const sprName = row.is_mix_roll_row
+    ? row.spr_name || activeMixRoll.value?.spr_name
+    : sprNameForPp(row.pp_id);
   if (!sprName) {
     frappe.msgprint(__("Create SPRs first."));
     return;
@@ -5927,6 +5978,7 @@ function applyResumePayload(msg, options = {}) {
       is_bundle_row: !!cint(r.is_bundle_row),
       is_wasted: !!cint(r.is_wasted),
       is_mix_roll_row: isMix,
+      planned_qty: isMix ? 0 : r.planned_qty,
       row_readonly: !!cint(r.row_readonly),
       row_locked: isMix
         ? hasMixProduction && !!cint(r.row_locked)
@@ -7385,7 +7437,7 @@ onUnmounted(() => {
 <style scoped>
 .gpe-root {
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  font-size: 16px;
+  font-size: 17px;
   color: #0f172a;
   padding: 10px 12px;
   background: linear-gradient(160deg, #f1f5f9 0%, #e2e8f0 100%);
@@ -7781,19 +7833,21 @@ onUnmounted(() => {
   font-size: 10px;
 }
 .gpe-mix-grid-wrap {
-  max-height: 116px;
+  max-height: 140px;
   overflow: auto;
 }
 .gpe-mix-grid-wrap .gpe-grid th,
 .gpe-mix-grid-wrap .gpe-grid td {
-  padding-top: 3px;
-  padding-bottom: 3px;
-  font-size: 10px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-size: 17px;
+  font-weight: 600;
 }
 .gpe-mix-grid-wrap .gpe-inp {
-  min-height: 24px;
-  padding-top: 2px;
-  padding-bottom: 2px;
+  min-height: 40px;
+  font-size: 17px;
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 .gpe-mix-roll-workspace-actions {
   display: flex;
@@ -7828,7 +7882,7 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 .gpe-order-code {
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 800;
   color: #0f172a;
   letter-spacing: -0.02em;
@@ -7905,7 +7959,7 @@ onUnmounted(() => {
 }
 .gpe-job-title {
   font-weight: 800;
-  font-size: 16px;
+  font-size: 17px;
   color: #0f172a;
   letter-spacing: -0.01em;
 }
@@ -8718,11 +8772,11 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .gpe-metrics-compact .gpe-metric {
-  padding: 7px 10px;
-  font-size: 14px;
+  padding: 8px 12px;
+  font-size: 15px;
 }
 .gpe-metrics-compact .gpe-metric strong {
-  font-size: 22px;
+  font-size: 24px;
 }
 .gpe-gsm-legend {
   flex-shrink: 0;
@@ -8920,16 +8974,16 @@ onUnmounted(() => {
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 18px;
+  font-size: 19px;
 }
 .gpe-grid-entry th,
 .gpe-grid-entry td {
   border-bottom: 1px solid #f1f5f9;
-  padding: 9px 11px;
+  padding: 10px 12px;
   white-space: nowrap;
 }
 .gpe-grid-entry tbody td {
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 600;
 }
 .gpe-grid-entry td.gpe-num,
@@ -8941,7 +8995,7 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 2;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 800;
 }
 .gpe-sticky-col {
@@ -9009,16 +9063,16 @@ onUnmounted(() => {
   background: #f0fdf4 !important;
 }
 .gpe-inp {
-  width: 88px;
-  min-height: 44px;
-  padding: 8px 10px;
+  width: 92px;
+  min-height: 46px;
+  padding: 9px 11px;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
-  font-size: 17px;
+  font-size: 18px;
 }
 .gpe-grid-entry .gpe-inp {
-  min-height: 44px;
-  font-size: 17px;
+  min-height: 46px;
+  font-size: 18px;
 }
 .gpe-grid-entry .gpe-btn.sm {
   font-size: 13px;

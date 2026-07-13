@@ -1,6 +1,7 @@
 /** GSM Mix Roll — operator select from Color Chart store, produce on shift SPR. */
 
 import {
+  sprCalcCbmFromDiameter,
   sprCalcNetFromGross,
   sprCalcProducedGsm,
   sprFlt,
@@ -143,6 +144,10 @@ export function mapMixRollLineFromServer(line, mixMeta = {}) {
     net_weight: line.net_weight || 0,
     gross_weight: line.gross_weight != null ? String(line.gross_weight) : "",
     planned_qty: line.planned_qty || 0,
+    custom_core_width_mm: line.custom_core_width_mm || "",
+    custom_polybag_kgs: line.custom_polybag_kgs || 0,
+    custom_diameter_inches: line.custom_diameter_inches ?? "",
+    custom_cbm_cubic_meters: line.custom_cbm_cubic_meters ?? "",
     // An empty row may already exist on an older draft SPR. It must remain
     // editable; server serializers mark persisted rows locked by default.
     row_locked: hasSavedProduction && !!line.row_locked,
@@ -154,6 +159,7 @@ export function mapMixRollLineFromServer(line, mixMeta = {}) {
 export function buildMixRollSavePayload(row) {
   const gross = sprNormalizeGrossWeightInput(row.gross_weight);
   const updated = sprRecalcRollRow({ ...row, gross_weight: String(gross), meter_roll: 0 });
+  const cbm = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
   return {
     job_id: row.job_id || "1",
     item_code: row.item_code,
@@ -169,10 +175,15 @@ export function buildMixRollSavePayload(row) {
     produced_gsm: updated.produced_gsm,
     net_weight: updated.net_weight,
     gross_weight: gross,
-    planned_qty: updated.planned_qty,
+    planned_qty: 0,
+    custom_core_width_mm: row.custom_core_width_mm,
+    custom_polybag_kgs: row.custom_polybag_kgs,
+    custom_diameter_inches: row.custom_diameter_inches,
+    custom_cbm_cubic_meters: cbm || row.custom_cbm_cubic_meters,
     party_code: row.party_code,
     row_locked: 1,
     row_ready_for_print: 1,
+    is_mix_roll_row: 1,
   };
 }
 
@@ -181,6 +192,7 @@ export function recalcMixRollRow(row) {
   const updated = sprRecalcRollRow({ ...row, gross_weight: String(gross), meter_roll: 0 });
   row.net_weight = updated.net_weight;
   row.produced_gsm = updated.produced_gsm;
-  row.planned_qty = updated.planned_qty;
+  row.planned_qty = 0;
+  row.custom_cbm_cubic_meters = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
   return row;
 }

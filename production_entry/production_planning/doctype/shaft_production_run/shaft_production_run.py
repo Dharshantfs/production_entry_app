@@ -11158,6 +11158,8 @@ def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 		"uom": _cstr(getattr(it, "uom", None) or "Kg"),
 		"custom_core_width_mm": _cstr(getattr(it, "custom_core_width_mm", None)),
 		"custom_polybag_kgs": flt(getattr(it, "custom_polybag_kgs", 0) or 0),
+		"custom_diameter_inches": flt(getattr(it, "custom_diameter_inches", 0) or 0),
+		"custom_cbm_cubic_meters": flt(getattr(it, "custom_cbm_cubic_meters", 0) or 0),
 		"job_id": _cstr(getattr(it, "job", None)),
 		"custom_no_of_shaft": cint(getattr(it, "custom_no_of_shaft", 0) or 0),
 		"spr_item_name": _cstr(getattr(it, "name", None)),
