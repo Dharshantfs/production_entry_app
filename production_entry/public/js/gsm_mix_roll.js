@@ -101,6 +101,9 @@ export function mixRollWidthOptions(mixRow) {
 }
 
 export function mapMixRollLineFromServer(line, mixMeta = {}) {
+  const hasSavedProduction =
+    sprFlt(line.produced_length_mtrs) > 0 &&
+    sprNormalizeGrossWeightInput(line.gross_weight) > 0;
   return {
     _id: `mix-${line.spr_item_name || line.batch_no || Date.now()}`,
     is_mix_roll_row: 1,
@@ -121,7 +124,10 @@ export function mapMixRollLineFromServer(line, mixMeta = {}) {
     net_weight: line.net_weight || 0,
     gross_weight: line.gross_weight != null ? String(line.gross_weight) : "",
     planned_qty: line.planned_qty || 0,
-    row_locked: !!line.row_locked,
+    // An empty row may already exist on an older draft SPR. It must remain
+    // editable; server serializers mark persisted rows locked by default.
+    row_locked: hasSavedProduction && !!line.row_locked,
+    row_ready_for_print: hasSavedProduction && !!line.row_ready_for_print,
     job_id: line.job_id || line.job || "1",
   };
 }

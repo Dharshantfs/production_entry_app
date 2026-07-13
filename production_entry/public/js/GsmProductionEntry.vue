@@ -427,21 +427,20 @@
 
         <div v-if="activeMixRoll" class="gpe-mix-roll-workspace gpe-card">
           <div class="gpe-mix-roll-workspace-head">
-            <div>
+            <div class="gpe-mix-roll-title">
               <strong>Mix Roll · {{ activeMixRoll.label }}</strong>
-              <span class="gpe-muted"> · {{ activeMixRoll.color_transition }} · {{ activeMixRoll.gsm }} GSM</span>
+              <span>{{ activeMixRoll.color_transition }} · {{ activeMixRoll.gsm }} GSM · {{ activeMixRoll.shaft }}</span>
+              <a v-if="activeMixRoll.spr_name" href="#" @click.prevent="openSpr(activeMixRoll.spr_name)">
+                {{ activeMixRoll.spr_name }}
+              </a>
             </div>
             <div class="gpe-mix-roll-workspace-actions">
               <button type="button" class="gpe-btn" :disabled="mixRollBusy || !activeMixRoll?.spr_name" @click="addMixRollRow">
                 {{ mixRollBusy ? "…" : "Add Roll Row" }}
               </button>
-              <button type="button" class="gpe-btn primary" :disabled="mixRollBusy || !canSubmitMixRoll" @click="submitMixRoll">
-                Submit Mix Roll
-              </button>
             </div>
           </div>
-          <p class="gpe-hint">No ordered length — enter produced length and weights only. SPR: {{ activeMixRoll.spr_name || "—" }}</p>
-          <div class="gpe-grid-wrap">
+          <div class="gpe-grid-wrap gpe-mix-grid-wrap">
             <table class="gpe-grid gpe-grid-entry">
               <thead>
                 <tr>
@@ -465,9 +464,10 @@
                     <input v-model="row.gross_weight" type="text" class="gpe-inp" :disabled="row.row_locked" @input="onMixRowEdit(row)" />
                   </td>
                   <td>{{ formatKg(row.planned_qty) }}</td>
-                  <td>
+                  <td class="gpe-actions">
                     <button v-if="!row.row_locked" type="button" class="gpe-btn gpe-btn-sm" @click="saveMixRollRow(row)">Save</button>
-                    <span v-else class="gpe-muted">Saved</span>
+                    <button v-else type="button" class="gpe-btn gpe-btn-sm" @click="editRow(row)">Edit</button>
+                    <button type="button" class="gpe-btn gpe-btn-sm" @click="removeMixRollRow(row)">Remove</button>
                   </td>
                 </tr>
               </tbody>
@@ -601,6 +601,12 @@
                     :title="isRowLabelReady(row) ? 'Print production label' : 'Save Row first'"
                     @click="printLabel(row)"
                   >Label</button>
+                  <button
+                    v-if="row.is_mix_roll_row"
+                    type="button"
+                    class="gpe-btn sm"
+                    @click="removeMixRollRow(row)"
+                  >Remove</button>
                 </td>
               </tr>
             </tbody>
@@ -1275,11 +1281,11 @@
           </table>
           <h4 class="gpe-submit-section-title">SPRs</h4>
           <ul class="gpe-submit-spr-list">
-            <li v-for="s in submitSprList" :key="s.pp_id">
+            <li v-for="s in allSubmitSprList" :key="s.spr_name">
               {{ s.order_code }} · {{ s.label_type || "Default" }} · {{ s.spr_name }}
             </li>
           </ul>
-          <p class="gpe-hint">Submit {{ submitConfirmRolls.length }} roll(s) across {{ submitSprList.length }} SPR(s)?</p>
+          <p class="gpe-hint">Submit {{ submitConfirmRolls.length }} roll(s) across {{ allSubmitSprList.length }} SPR(s)?</p>
           <div class="gpe-dialog-actions">
             <button type="button" class="gpe-btn" @click="closeSubmitDialog">No, stay here</button>
             <button type="button" class="gpe-btn primary" @click="confirmSubmitEntry">Yes, submit entry</button>
@@ -1517,7 +1523,6 @@ import {
   fetchGsmMixRollCandidates,
   activateGsmMixRollForSession,
   loadGsmMixRollSprRolls,
-  addGsmMixRollLine,
   saveGsmMixRollLine,
   submitGsmMixRollSpr,
   mixRollItemOptions,
@@ -3490,6 +3495,25 @@ const submitSprList = computed(() => {
   return shiftSessionSprList.value.filter((s) => ppWithRolls.has(s.pp_id));
 });
 
+const mixSubmitSprList = computed(() => {
+  const bySpr = new Map();
+  for (const row of submitConfirmRolls.value) {
+    if (!row.is_mix_roll_row || !row.spr_name) {
+      continue;
+    }
+    bySpr.set(row.spr_name, {
+      pp_id: "",
+      spr_name: row.spr_name,
+      order_code: row.party_code || activeMixRoll.value?.label || "Mix Roll",
+      label_type: "Mix Roll",
+      is_mix_roll: 1,
+    });
+  }
+  return [...bySpr.values()];
+});
+
+const allSubmitSprList = computed(() => [...submitSprList.value, ...mixSubmitSprList.value]);
+
 /** Wastage / Recycle — all session SPRs (desk SPR is source of truth for patty/recycle rows). */
 const wastageRecycleSprList = computed(() => {
   if (!shiftOpened.value) {
@@ -3597,15 +3621,6 @@ const canOpenMixingSheet = computed(
     !isMixingExcluded.value
 );
 
-const canSubmitMixRoll = computed(() => {
-  if (!activeMixRoll.value?.spr_name) {
-    return false;
-  }
-  return mixRollLines.value.some(
-    (r) => r.row_locked && sprFlt(r.net_weight) > 0 && _cstr(r.batch_no)
-  );
-});
-
 function formatMixPlanningKey(key) {
   const k = _cstr(key);
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -3649,12 +3664,63 @@ async function refreshMixRollLinesFromSpr() {
   }
   try {
     const res = await loadGsmMixRollSprRolls(activeMixRoll.value.spr_name);
-    mixRollLines.value = (res.roll_lines || []).map((line) =>
+    const rows = (res.roll_lines || []).map((line) =>
       mapMixRollLineFromServer({ ...line, spr_name: res.spr_name }, activeMixRoll.value)
     );
+    attachMixRowsToMainGrid(rows);
   } catch (e) {
     console.error(e);
   }
+}
+
+function mixRollRowKey(row) {
+  return `${_cstr(row?.spr_name)}::${_cstr(row?.spr_item_name || row?.batch_no)}`;
+}
+
+function copyMixRollValues(target, source) {
+  if (!target || !source || target === source) {
+    return target;
+  }
+  Object.assign(target, {
+    produced_length_mtrs: source.produced_length_mtrs,
+    produced_gsm: source.produced_gsm,
+    net_weight: source.net_weight,
+    gross_weight: source.gross_weight,
+    planned_qty: source.planned_qty,
+    row_locked: source.row_locked,
+    row_ready_for_print: source.row_ready_for_print,
+    spr_item_name: source.spr_item_name,
+  });
+  return target;
+}
+
+function syncMixRollRowViews(source) {
+  if (!source?.is_mix_roll_row) {
+    return;
+  }
+  const key = mixRollRowKey(source);
+  for (const row of [...mixRollLines.value, ...rollLines.value]) {
+    if (row !== source && mixRollRowKey(row) === key) {
+      copyMixRollValues(row, source);
+    }
+  }
+}
+
+function attachMixRowsToMainGrid(rows) {
+  const attached = [];
+  for (const incoming of rows || []) {
+    incoming.is_mix_roll_row = 1;
+    const key = mixRollRowKey(incoming);
+    const existing = rollLines.value.find((row) => row.is_mix_roll_row && mixRollRowKey(row) === key);
+    if (existing) {
+      Object.assign(existing, incoming);
+      attached.push(existing);
+    } else {
+      rollLines.value = sortRollLinesLifo([incoming, ...rollLines.value]);
+      attached.push(incoming);
+    }
+  }
+  mixRollLines.value = attached;
 }
 
 async function startMixRollProduction(mix) {
@@ -3673,9 +3739,10 @@ async function startMixRollProduction(mix) {
       unit: headerUnit.value || filterUnit.value,
     });
     activeMixRoll.value = { ...mix, ...(res.mix || {}), spr_name: res.spr_name };
-    mixRollLines.value = (res.roll_lines || []).map((line) =>
+    const rows = (res.roll_lines || []).map((line) =>
       mapMixRollLineFromServer({ ...line, spr_name: res.spr_name }, activeMixRoll.value)
     );
+    attachMixRowsToMainGrid(rows);
     await loadMixRollCandidates();
     frappe.show_alert({ message: __("Mix roll SPR ready: {0}", [res.spr_name]), indicator: "green" });
   } catch (e) {
@@ -3691,8 +3758,49 @@ function clearActiveMixRoll() {
   mixRollLines.value = [];
 }
 
+async function removeMixRollRow(row) {
+  if (!row?.is_mix_roll_row) {
+    return;
+  }
+  const sprName = row.spr_name || activeMixRoll.value?.spr_name;
+  const key = mixRollRowKey(row);
+  const remove = async () => {
+    mixRollBusy.value = true;
+    try {
+      if (sprName && (row.spr_item_name || row.row_locked)) {
+        await frappe.call({
+          method: "production_entry.production_planning.unified_production_entry_api.delete_gsm_roll_line",
+          args: {
+            spr_name: sprName,
+            batch_no: row.batch_no || undefined,
+            row_name: row.spr_item_name || undefined,
+          },
+        });
+      }
+      mixRollLines.value = mixRollLines.value.filter((r) => mixRollRowKey(r) !== key);
+      rollLines.value = rollLines.value.filter((r) => mixRollRowKey(r) !== key);
+      releaseBatchNo(row.batch_no);
+      syncBatchCounterFromGrid();
+      scheduleAutosave();
+      saveStatus.value = row.spr_item_name ? "Removed from SPR" : "Row removed";
+    } catch (e) {
+      console.error(e);
+      frappe.msgprint(__("Could not remove mix roll row from {0}.", [sprName || "SPR"]));
+    } finally {
+      mixRollBusy.value = false;
+    }
+  };
+  if (row.spr_item_name || row.row_locked) {
+    frappe.confirm(__("Remove this mix roll row from both grids and delete it from {0}?", [sprName]), remove);
+  } else {
+    await remove();
+  }
+}
+
 function onMixRowEdit(row) {
   recalcMixRollRow(row);
+  syncMixRollRowViews(row);
+  scheduleAutosave();
 }
 
 async function addMixRollRow() {
@@ -3738,15 +3846,18 @@ async function addMixRollRow() {
       frappe.msgprint(__("Could not assign batch number."));
       return;
     }
-    const res = await addGsmMixRollLine({
-      sprName: activeMixRoll.value.spr_name,
-      itemCode,
-      widthInch,
-      batchNo: batch.batch_no,
-      gsm: activeMixRoll.value.gsm,
-    });
     const line = mapMixRollLineFromServer(
-      { ...(res.roll_line || {}), spr_name: activeMixRoll.value.spr_name },
+      {
+        spr_name: activeMixRoll.value.spr_name,
+        item_code: itemCode,
+        width_inch: widthInch,
+        batch_no: batch.batch_no,
+        roll_no: batch.roll_no,
+        gsm: activeMixRoll.value.gsm,
+        job_id: "1",
+        row_locked: 0,
+        row_ready_for_print: 0,
+      },
       activeMixRoll.value
     );
     line.batch_no = batch.batch_no;
@@ -3755,8 +3866,11 @@ async function addMixRollRow() {
     line.gsm = activeMixRoll.value.gsm || line.gsm;
     line.width_inch = widthInch || line.width_inch;
     line.item_code = itemCode;
+    line.creation_seq = nextCreationSeq();
     mixRollLines.value = [line, ...mixRollLines.value];
+    rollLines.value = sortRollLinesLifo([line, ...rollLines.value]);
     reserveBatchNo(batch.batch_no, batch.roll_no);
+    scheduleAutosave();
   } catch (e) {
     console.error(e);
     frappe.msgprint(__("Could not add mix roll row."));
@@ -3766,7 +3880,8 @@ async function addMixRollRow() {
 }
 
 async function saveMixRollRow(row) {
-  if (!activeMixRoll.value?.spr_name) {
+  const sprName = row?.spr_name || activeMixRoll.value?.spr_name;
+  if (!sprName) {
     return;
   }
   const gross = sprNormalizeGrossWeightInput(row.gross_weight);
@@ -3786,13 +3901,14 @@ async function saveMixRollRow(row) {
   mixRollBusy.value = true;
   try {
     const payload = buildMixRollSavePayload(row);
-    payload.party_code = activeMixRoll.value.label || payload.party_code;
+    payload.party_code = activeMixRoll.value?.label || payload.party_code;
     const res = await saveGsmMixRollLine({
-      sprName: activeMixRoll.value.spr_name,
+      sprName,
       shift: shift.value,
       rollPayload: payload,
     });
     row.row_locked = 1;
+    row.row_ready_for_print = 1;
     if (res.row_name) {
       row.spr_item_name = res.row_name;
     }
@@ -3803,6 +3919,11 @@ async function saveMixRollRow(row) {
     if (saved.produced_gsm != null) {
       row.produced_gsm = saved.produced_gsm;
     }
+    if (saved.gross_weight != null && saved.gross_weight !== "") {
+      row.gross_weight = String(saved.gross_weight);
+    }
+    syncMixRollRowViews(row);
+    scheduleAutosave();
     frappe.show_alert({ message: __("Mix roll row saved"), indicator: "green" });
   } catch (e) {
     console.error(e);
@@ -3810,27 +3931,6 @@ async function saveMixRollRow(row) {
   } finally {
     mixRollBusy.value = false;
   }
-}
-
-async function submitMixRoll() {
-  if (!activeMixRoll.value?.spr_name) {
-    return;
-  }
-  frappe.confirm(__("Submit mix roll SPR {0}?", [activeMixRoll.value.spr_name]), async () => {
-    mixRollBusy.value = true;
-    try {
-      await submitGsmMixRollSpr(activeMixRoll.value.spr_name);
-      frappe.show_alert({ message: __("Mix roll submitted"), indicator: "green" });
-      clearActiveMixRoll();
-      await loadMixRollCandidates();
-      await loadShiftConsolidatedSummary();
-    } catch (e) {
-      console.error(e);
-      frappe.msgprint(__("Mix roll submit failed — check all rows have batch, length, and net weight."));
-    } finally {
-      mixRollBusy.value = false;
-    }
-  });
 }
 
 function preferredSprPickContext() {
@@ -3963,12 +4063,12 @@ const canSubmitEntry = computed(() => {
   if (!shiftOpened.value || submitInProgress.value) {
     return false;
   }
-  if (!submitSprList.value.length || !submitConfirmRolls.value.length) {
+  if (!allSubmitSprList.value.length || !submitConfirmRolls.value.length) {
     return false;
   }
   return submitConfirmRolls.value.every(
     (r) =>
-      sprNameForPp(r.pp_id) &&
+      (r.is_mix_roll_row ? r.spr_name : sprNameForPp(r.pp_id)) &&
       r.row_locked &&
       r.batch_no &&
       sprNormalizeGrossWeightInput(r.gross_weight) > 0
@@ -4351,7 +4451,12 @@ function onGrossWeightInput(row, event) {
     return;
   }
   row.gross_weight = sprSanitizeGrossWeightTyping(event?.target?.value);
-  applyRollRowRecalc(row);
+  if (row.is_mix_roll_row) {
+    recalcMixRollRow(row);
+    syncMixRollRowViews(row);
+  } else {
+    applyRollRowRecalc(row);
+  }
   scheduleAutosave();
 }
 
@@ -4359,7 +4464,12 @@ function onRowEdit(row) {
   if (row.row_locked) {
     return;
   }
-  applyRollRowRecalc(row);
+  if (row.is_mix_roll_row) {
+    recalcMixRollRow(row);
+    syncMixRollRowViews(row);
+  } else {
+    applyRollRowRecalc(row);
+  }
   scheduleAutosave();
 }
 
@@ -4624,6 +4734,8 @@ async function clearGridEntries() {
     __("Clear all roll rows from this screen? Server SPRs are kept — you can add new rows without creating SPRs again."),
     () => {
       rollLines.value = [];
+      mixRollLines.value = [];
+      activeMixRoll.value = null;
       sessionJobApiBaseline.value = {};
       forceNewSprSession.value = false;
       resetBatchSeriesCache();
@@ -4880,14 +4992,15 @@ async function submitEntry(overrides = []) {
     frappe.msgprint(__("Create SPRs, enter rolls, and Save Row on each line before submit."));
     return;
   }
-  const missingSpr = [...new Set(submitConfirmRolls.value.map((r) => r.pp_id))].filter(
+  const fabricRolls = submitConfirmRolls.value.filter((r) => !r.is_mix_roll_row);
+  const missingSpr = [...new Set(fabricRolls.map((r) => r.pp_id).filter(Boolean))].filter(
     (pp) => !sprNameForPp(pp)
   );
   if (missingSpr.length) {
     frappe.msgprint(__("Create SPRs for all orders with saved rolls first."));
     return;
   }
-  const sprNamesToSubmit = submitSprList.value.map((s) => s.spr_name).filter(Boolean);
+  const sprNamesToSubmit = allSubmitSprList.value.map((s) => s.spr_name).filter(Boolean);
   submitInProgress.value = true;
   saveStatus.value = "Submitting…";
   if (!showSubmitConfirmDialog.value) {
@@ -4896,29 +5009,44 @@ async function submitEntry(overrides = []) {
     showSubmitConfirmDialog.value = true;
   }
   try {
-    const res = await callSubmitGsm(overrides);
-    const msg = res.message || {};
-    if (msg.status === "tolerance_required") {
-      stopSubmitProgressTimer();
-      showSubmitConfirmDialog.value = false;
-      openToleranceDialog(msg.orders || []);
-      saveStatus.value = "Tolerance approval needed";
-      return;
+    let msg = { status: "ok", submitted: [], failed: [], total_kg: 0 };
+    if (submitSprList.value.length) {
+      const res = await callSubmitGsm(overrides);
+      msg = res.message || msg;
+      if (msg.status === "tolerance_required") {
+        stopSubmitProgressTimer();
+        showSubmitConfirmDialog.value = false;
+        openToleranceDialog(msg.orders || []);
+        saveStatus.value = "Tolerance approval needed";
+        return;
+      }
+      if (msg.status === "import_failed" || msg.status === "failed") {
+        const errs = (msg.failed || []).map((f) => `${f.spr_name || f.pp_id}: ${f.error}`).join("<br>");
+        submitErrorMessage.value = errs || __("Unknown error");
+        submitDialogPhase.value = "error";
+        saveStatus.value = "Submit failed";
+        return;
+      }
     }
-    if (msg.status === "import_failed" || msg.status === "failed") {
-      const errs = (msg.failed || []).map((f) => `${f.spr_name || f.pp_id}: ${f.error}`).join("<br>");
-      submitErrorMessage.value = errs || __("Unknown error");
-      submitDialogPhase.value = "error";
-      saveStatus.value = "Submit failed";
-      return;
+
+    const mixSubmitted = [];
+    const mixFailed = [];
+    for (const mixSpr of mixSubmitSprList.value) {
+      try {
+        await submitGsmMixRollSpr(mixSpr.spr_name);
+        mixSubmitted.push({ spr_name: mixSpr.spr_name, pp_id: "", is_mix_roll: 1 });
+      } catch (e) {
+        mixFailed.push({ spr_name: mixSpr.spr_name, error: _cstr(e?.message || e) });
+      }
     }
     showToleranceDialog.value = false;
-    const submitted = msg.submitted || [];
-    const partial = (msg.failed || []).length;
+    const submitted = [...(msg.submitted || []), ...mixSubmitted];
+    const failed = [...(msg.failed || []), ...mixFailed];
+    const partial = failed.length;
     if (partial) {
       frappe.msgprint({
         title: __("Partial submit"),
-        message: (msg.failed || []).map((f) => `${f.spr_name}: ${f.error}`).join("<br>"),
+        message: failed.map((f) => `${f.spr_name}: ${f.error}`).join("<br>"),
         indicator: "orange",
       });
     }
@@ -4926,6 +5054,10 @@ async function submitEntry(overrides = []) {
       markSessionSprsSubmitted(submitted);
       showSubmitSuccess(submitted, msg.total_kg);
       saveStatus.value = "Submitted";
+      if (activeMixRoll.value?.spr_name && mixSubmitted.some((s) => s.spr_name === activeMixRoll.value.spr_name)) {
+        clearActiveMixRoll();
+      }
+      await loadMixRollCandidates();
       await fetchOrders();
       return;
     }
@@ -4975,6 +5107,10 @@ function submitWithTolerance() {
 async function saveRow(row) {
   if (row?.is_wasted || row?.row_readonly) {
     frappe.msgprint(__("Wasted rolls are read-only."));
+    return;
+  }
+  if (row?.is_mix_roll_row) {
+    await saveMixRollRow(row);
     return;
   }
   if (!row?.pp_id) {
@@ -5054,6 +5190,7 @@ async function saveRow(row) {
 function editRow(row) {
   row.row_locked = 0;
   row.row_ready_for_print = 0;
+  syncMixRollRowViews(row);
   scheduleAutosave();
 }
 
@@ -5580,18 +5717,32 @@ function applyResumePayload(msg, options = {}) {
   if (Object.keys(sprMap).length) {
     sessionSprs.value = { ...sessionSprs.value, ...sprMap };
   }
-  const serverRows = (msg.roll_lines || []).map((r, idx) => ({
-    ...r,
-    gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
-    _id: r._id || `resume-${idx}-${Date.now()}`,
-    creation_seq: cint(r.creation_seq) || msg.roll_lines.length - idx,
-    is_bundle_row: !!cint(r.is_bundle_row),
-    is_wasted: !!cint(r.is_wasted),
-    row_readonly: !!cint(r.row_readonly),
-    row_locked: r.row_locked != null ? !!cint(r.row_locked) : true,
-    row_ready_for_print:
-      r.row_ready_for_print != null ? !!cint(r.row_ready_for_print) : !cint(r.is_wasted),
-  }));
+  const serverRows = (msg.roll_lines || []).map((r, idx) => {
+    const isMix = !!cint(r.is_mix_roll_row);
+    const hasMixProduction =
+      sprFlt(r.produced_length_mtrs) > 0 &&
+      sprNormalizeGrossWeightInput(r.gross_weight) > 0;
+    return {
+      ...r,
+      gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
+      _id: r._id || `resume-${idx}-${Date.now()}`,
+      creation_seq: cint(r.creation_seq) || msg.roll_lines.length - idx,
+      is_bundle_row: !!cint(r.is_bundle_row),
+      is_wasted: !!cint(r.is_wasted),
+      is_mix_roll_row: isMix,
+      row_readonly: !!cint(r.row_readonly),
+      row_locked: isMix
+        ? hasMixProduction && !!cint(r.row_locked)
+        : r.row_locked != null
+          ? !!cint(r.row_locked)
+          : true,
+      row_ready_for_print: isMix
+        ? hasMixProduction && !!cint(r.row_ready_for_print)
+        : r.row_ready_for_print != null
+          ? !!cint(r.row_ready_for_print)
+          : !cint(r.is_wasted),
+    };
+  });
   if (merge && rollLines.value.length) {
     const serverByKey = new Map();
     for (const sr of serverRows) {
@@ -6658,6 +6809,10 @@ async function removeTopRow() {
     return;
   }
   const row = rollLines.value[0];
+  if (row.is_mix_roll_row) {
+    await removeMixRollRow(row);
+    return;
+  }
   const sprName = sprNameForPp(row.pp_id);
   const wasSaved = !!(row.spr_item_name || (row.row_locked && row.batch_no));
 
@@ -7384,15 +7539,47 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .gpe-mix-roll-workspace {
-  margin-bottom: 12px;
-  padding: 12px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border-left: 4px solid #7c3aed;
 }
 .gpe-mix-roll-workspace-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.gpe-mix-roll-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.gpe-mix-roll-title strong {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+}
+.gpe-mix-roll-title span,
+.gpe-mix-roll-title a {
+  font-size: 10px;
+}
+.gpe-mix-grid-wrap {
+  max-height: 116px;
+  overflow: auto;
+}
+.gpe-mix-grid-wrap .gpe-grid th,
+.gpe-mix-grid-wrap .gpe-grid td {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  font-size: 10px;
+}
+.gpe-mix-grid-wrap .gpe-inp {
+  min-height: 24px;
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 .gpe-mix-roll-workspace-actions {
   display: flex;

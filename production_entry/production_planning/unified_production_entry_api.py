@@ -1096,7 +1096,9 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 		if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
 			continue
 		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		is_mix_roll = spr_doc_is_mix_roll(spr)
 		for line in _gsm_serialize_spr_roll_lines_for_grid(spr):
+			line["is_mix_roll_row"] = 1 if is_mix_roll else 0
 			batch_suffix = _gsm_roll_suffix_from_batch_no(_cstr(line.get("batch_no")))
 			child_idx = cint(line.get("child_idx") or 0)
 			staged.append((batch_suffix, child_idx, spr_name, pp_id, line, False))

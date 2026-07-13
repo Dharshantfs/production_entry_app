@@ -1610,10 +1610,15 @@ function formatBoardHeaderWeight(unit, whiteOnly = false) {
   return `${(rawKg / 1000).toFixed(2)} T`;
 }
 
+// Match Planning sheet precision: exact value, max 3 decimals (236.161, 237).
+function kg3(kg) {
+  return Number((Number(kg) || 0).toFixed(3));
+}
+
 function formatBoardCardMain(kg) {
   const k = Number(kg) || 0;
   if (boardUsesKgPrimaryDisplay() && k < BOARD_KG_PRIMARY_THRESHOLD) {
-    return `${k.toFixed(1)} Kg`;
+    return `${kg3(k)} Kg`;
   }
   return `${(k / 1000).toFixed(3)} T`;
 }
@@ -1623,7 +1628,7 @@ function formatBoardCardSub(kg) {
   if (boardUsesKgPrimaryDisplay() && k < BOARD_KG_PRIMARY_THRESHOLD) {
     return null;
   }
-  return `${k.toFixed(0)} Kg`;
+  return `${kg3(k)} Kg`;
 }
 
 function formatBoardFooterWeight(unit) {
@@ -2345,10 +2350,10 @@ async function loadOrders(d) {
                                  <span style="font-size: 10px; font-weight: 600; background: #f3f4f6; color: #4b5563; padding: 1px 6px; border-radius: 4px;">${item.gsm ? item.gsm + ' GSM' : 'N/A'}</span>
                             </div>
                         </div>
-                          <div style="text-align: right;"><span style="display: block; font-size: 13px; font-weight: 700; color: #0f172a;">${totalQty < 1000 ? totalQty + ' KG' : (totalQty/1000).toFixed(2) + ' T'}</span></div>
-                          <div style="text-align: right;"><span style="display: block; font-size: 12px; font-weight: 700; color: #b45309;">${producedQty.toFixed(0)}</span></div>
-                          <div style="text-align: right;"><span style="display: block; font-size: 12px; font-weight: 700; color: #2563eb;">${availableQty.toFixed(0)}</span></div>
-                            <div style="text-align: right;"><input type="number" class="pull-qty-input" data-name="${item.itemName}" data-max="${availableQty}" value="${prevQty}" style="width: 92px; text-align: right; border: 1px solid #cbd5e1; border-radius: 6px; padding: 3px 6px; color: #2563eb; font-weight: 700;" ${rowDisabled ? 'disabled' : ''} /></div>
+                          <div style="text-align: right;"><span style="display: block; font-size: 13px; font-weight: 700; color: #0f172a;">${totalQty < 1000 ? kg3(totalQty) + ' KG' : (totalQty/1000).toFixed(3) + ' T'}</span></div>
+                          <div style="text-align: right;"><span style="display: block; font-size: 12px; font-weight: 700; color: #b45309;">${kg3(producedQty)}</span></div>
+                          <div style="text-align: right;"><span style="display: block; font-size: 12px; font-weight: 700; color: #2563eb;">${kg3(availableQty)}</span></div>
+                            <div style="text-align: right;"><input type="number" class="pull-qty-input" data-name="${item.itemName}" data-max="${availableQty}" value="${kg3(prevQty)}" style="width: 92px; text-align: right; border: 1px solid #cbd5e1; border-radius: 6px; padding: 3px 6px; color: #2563eb; font-weight: 700;" ${rowDisabled ? 'disabled' : ''} /></div>
                     </div>
                     `;
                 });
@@ -2362,7 +2367,7 @@ async function loadOrders(d) {
                 <div>
                   Selected: <span id="pull-selected-count">${selectedRows.length}</span>
                   &nbsp;|&nbsp;
-                  Total: <span id="pull-selected-total">${selectedTotalKg.toFixed(0)} KG (${(selectedTotalKg / 1000).toFixed(3)} T)</span>
+                  Total: <span id="pull-selected-total">${kg3(selectedTotalKg)} KG (${(selectedTotalKg / 1000).toFixed(3)} T)</span>
                 </div>
                 <div>Filtered Orders: ${filtered.length} / ${items.length}</div>
               </div>`;
@@ -2405,7 +2410,7 @@ async function loadOrders(d) {
                 let value = parseFloat($(this).val()) || 0;
                 if (value < 0) value = 0;
                 if (value > max) value = max;
-                $(this).val(value);
+                $(this).val(kg3(value));
               }
                 updateSelection(d);
             });
@@ -2438,7 +2443,7 @@ function updateSelection(d) {
     
     d.calc_selected_items = [...hiddenSelected, ...visibleSelected];
     const totalKg = (d.calc_selected_items || []).reduce((sum, r) => sum + (parseFloat(r.qty) || 0), 0);
-    const totalText = `${totalKg.toFixed(0)} KG (${(totalKg / 1000).toFixed(3)} T)`;
+    const totalText = `${kg3(totalKg)} KG (${(totalKg / 1000).toFixed(3)} T)`;
     d.get_primary_btn().text(`Move ${d.calc_selected_items.length} to Today`);
     d.$wrapper.find('#pull-selected-total').text(totalText);
     d.$wrapper.find('#pull-selected-count').text(String(d.calc_selected_items.length));
