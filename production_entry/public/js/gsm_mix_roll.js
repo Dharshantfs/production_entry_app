@@ -120,6 +120,17 @@ export function mixRollWidthOptions(mixRow) {
   return widths.map((w) => sprFlt(w)).filter((w) => w > 0);
 }
 
+export function normalizeSpiDiameterCbm(line = {}) {
+  const dia = sprFlt(line.custom_diameter_inches ?? line.custom_diameter ?? line.diameter);
+  const cbm = sprFlt(line.custom_cbm_cubic_meters ?? line.custom_cbm ?? line.cbm);
+  return {
+    custom_diameter_inches: dia > 0 ? dia : "",
+    custom_cbm_cubic_meters: cbm > 0 ? cbm : "",
+    custom_diameter: dia > 0 ? dia : "",
+    custom_cbm: cbm > 0 ? cbm : "",
+  };
+}
+
 export function mapMixRollLineFromServer(line, mixMeta = {}) {
   const hasSavedProduction =
     sprFlt(line.produced_length_mtrs) > 0 &&
@@ -146,8 +157,7 @@ export function mapMixRollLineFromServer(line, mixMeta = {}) {
     planned_qty: line.planned_qty || 0,
     custom_core_width_mm: line.custom_core_width_mm || "",
     custom_polybag_kgs: line.custom_polybag_kgs || 0,
-    custom_diameter_inches: line.custom_diameter_inches ?? "",
-    custom_cbm_cubic_meters: line.custom_cbm_cubic_meters ?? "",
+    ...normalizeSpiDiameterCbm(line),
     // An empty row may already exist on an older draft SPR. It must remain
     // editable; server serializers mark persisted rows locked by default.
     row_locked: hasSavedProduction && !!line.row_locked,
@@ -160,6 +170,7 @@ export function buildMixRollSavePayload(row) {
   const gross = sprNormalizeGrossWeightInput(row.gross_weight);
   const updated = sprRecalcRollRow({ ...row, gross_weight: String(gross), meter_roll: 0 });
   const cbm = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
+  const dia = sprFlt(row.custom_diameter_inches);
   return {
     job_id: row.job_id || "1",
     item_code: row.item_code,
@@ -178,8 +189,10 @@ export function buildMixRollSavePayload(row) {
     planned_qty: 0,
     custom_core_width_mm: row.custom_core_width_mm,
     custom_polybag_kgs: row.custom_polybag_kgs,
-    custom_diameter_inches: row.custom_diameter_inches,
-    custom_cbm_cubic_meters: cbm || row.custom_cbm_cubic_meters,
+    custom_diameter_inches: dia,
+    custom_diameter: dia,
+    custom_cbm_cubic_meters: cbm || sprFlt(row.custom_cbm_cubic_meters),
+    custom_cbm: cbm || sprFlt(row.custom_cbm_cubic_meters),
     party_code: row.party_code,
     row_locked: 1,
     row_ready_for_print: 1,

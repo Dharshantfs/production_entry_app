@@ -10725,6 +10725,56 @@ def _gsm_find_item_row_by_batch(spr, batch_no: str):
 	return None
 
 
+def _gsm_spi_field_aliases() -> dict:
+	"""Canonical GSM keys → SPR Item field names (first match on site wins)."""
+	return {
+		"custom_diameter_inches": (
+			"custom_diameter_inches",
+			"custom_diameter",
+			"diameter",
+		),
+		"custom_cbm_cubic_meters": (
+			"custom_cbm_cubic_meters",
+			"custom_cbm",
+			"cbm",
+		),
+		"custom_polybag_kgs": ("custom_polybag_kgs", "polybag_kgs", "custom_polybag_weight"),
+		"custom_core_width_mm": ("custom_core_width_mm", "core_width"),
+	}
+
+
+def _gsm_spi_resolve_field(meta, canonical: str) -> str:
+	for name in _gsm_spi_field_aliases().get(canonical, (canonical,)):
+		if meta.has_field(name):
+			return name
+	return ""
+
+
+def _gsm_spi_get_float(row, meta, canonical: str) -> float:
+	for name in _gsm_spi_field_aliases().get(canonical, (canonical,)):
+		if not meta.has_field(name):
+			continue
+		val = getattr(row, name, None)
+		if val not in (None, ""):
+			return flt(val)
+	return 0.0
+
+
+def _gsm_spi_set_float_from_payload(row, meta, payload: dict, canonical: str) -> None:
+	field = _gsm_spi_resolve_field(meta, canonical)
+	if not field:
+		return
+	aliases = _gsm_spi_field_aliases().get(canonical, (canonical,))
+	val = None
+	for key in aliases:
+		if payload.get(key) not in (None, ""):
+			val = payload.get(key)
+			break
+	if val is None or val == "":
+		return
+	row.set(field, flt(val))
+
+
 def _gsm_resolve_core_width_for_item_row(payload: dict) -> str:
 	"""SPR Item custom_core_width_mm — Core Size name or paper-core Item link."""
 	spi_meta = frappe.get_meta("Shaft Production Run Item")
@@ -10874,9 +10924,6 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 				row.item_name = _cstr(frappe.db.get_value("Item", prod_item, "item_name") or "")
 
 	optional_map = {
-		"custom_polybag_kgs": "custom_polybag_kgs",
-		"custom_diameter_inches": "custom_diameter_inches",
-		"custom_cbm_cubic_meters": "custom_cbm_cubic_meters",
 		"custom_shift": "custom_shift",
 		"custom_no_of_shaft": "custom_no_of_shaft",
 		"no_of_shaft": "custom_no_of_shaft",
@@ -10889,12 +10936,13 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 			if dst == "custom_shift" and shift:
 				row.set(dst, _cstr(shift))
 			continue
-		if dst in ("custom_polybag_kgs", "custom_diameter_inches", "custom_cbm_cubic_meters"):
-			row.set(dst, flt(val))
-		elif dst == "custom_no_of_shaft":
+		if dst == "custom_no_of_shaft":
 			row.set(dst, cint(val) if val not in (None, "") else 0)
 		else:
 			row.set(dst, _cstr(val))
+	_gsm_spi_set_float_from_payload(row, spi_meta, payload, "custom_polybag_kgs")
+	_gsm_spi_set_float_from_payload(row, spi_meta, payload, "custom_diameter_inches")
+	_gsm_spi_set_float_from_payload(row, spi_meta, payload, "custom_cbm_cubic_meters")
 	if shift and spi_meta.has_field("custom_shift") and not _cstr(getattr(row, "custom_shift", "")):
 		row.custom_shift = _cstr(shift)
 
@@ -11137,6 +11185,9 @@ def _gsm_resolve_item_row_display_specs(row_like) -> dict:
 
 def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 	specs = _gsm_resolve_item_row_display_specs(it)
+	spi_meta = frappe.get_meta("Shaft Production Run Item")
+	core_field = _gsm_spi_resolve_field(spi_meta, "custom_core_width_mm") or "custom_core_width_mm"
+	poly_field = _gsm_spi_resolve_field(spi_meta, "custom_polybag_kgs") or "custom_polybag_kgs"
 	return {
 		"pp_id": pp_id,
 		"party_code": _cstr(getattr(it, "party_code", None) or getattr(it, "custom_order_code", None)),
@@ -11156,10 +11207,12 @@ def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 		"planned_qty": flt(getattr(it, "planned_qty", 0) or 0),
 		"work_order": _cstr(getattr(it, "work_order", None)),
 		"uom": _cstr(getattr(it, "uom", None) or "Kg"),
-		"custom_core_width_mm": _cstr(getattr(it, "custom_core_width_mm", None)),
-		"custom_polybag_kgs": flt(getattr(it, "custom_polybag_kgs", 0) or 0),
-		"custom_diameter_inches": flt(getattr(it, "custom_diameter_inches", 0) or 0),
-		"custom_cbm_cubic_meters": flt(getattr(it, "custom_cbm_cubic_meters", 0) or 0),
+		"custom_core_width_mm": _cstr(getattr(it, core_field, None)),
+		"custom_polybag_kgs": flt(getattr(it, poly_field, 0) or 0),
+		"custom_diameter_inches": _gsm_spi_get_float(it, spi_meta, "custom_diameter_inches"),
+		"custom_cbm_cubic_meters": _gsm_spi_get_float(it, spi_meta, "custom_cbm_cubic_meters"),
+		"custom_diameter": _gsm_spi_get_float(it, spi_meta, "custom_diameter_inches"),
+		"custom_cbm": _gsm_spi_get_float(it, spi_meta, "custom_cbm_cubic_meters"),
 		"job_id": _cstr(getattr(it, "job", None)),
 		"custom_no_of_shaft": cint(getattr(it, "custom_no_of_shaft", 0) or 0),
 		"spr_item_name": _cstr(getattr(it, "name", None)),

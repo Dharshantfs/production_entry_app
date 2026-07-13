@@ -1543,6 +1543,7 @@ import {
   mapMixRollLineFromServer,
   buildMixRollSavePayload,
   recalcMixRollRow,
+  normalizeSpiDiameterCbm,
 } from "./gsm_mix_roll.js";
 import {
   gsmOpenBundlePackaging,
@@ -3685,11 +3686,43 @@ async function loadMixRollCandidates() {
       filterMonth: filterMonth.value,
     });
     mixRollCandidates.value = res.mix_rolls || [];
+    await restoreActiveMixRollFromSession();
   } catch (e) {
     console.error(e);
     mixRollCandidates.value = [];
   } finally {
     mixRollLoading.value = false;
+  }
+}
+
+async function restoreActiveMixRollFromSession() {
+  if (!shiftOpened.value || activeMixRoll.value) {
+    return;
+  }
+  const mixRow = rollLines.value.find((r) => r.is_mix_roll_row && r.spr_name);
+  let mixMeta = null;
+  if (mixRow?.spr_name) {
+    mixMeta = mixRollCandidates.value.find((m) => m.spr_name === mixRow.spr_name);
+  }
+  if (!mixMeta) {
+    mixMeta = mixRollCandidates.value.find((m) => m.spr_name && !m._submitted);
+  }
+  if (!mixMeta && mixRow?.spr_name) {
+    mixMeta = {
+      spr_name: mixRow.spr_name,
+      label: mixRow.party_code || "Mix Roll",
+      gsm: mixRow.gsm,
+      color_transition: mixRow.color || "",
+      shaft: String(mixRow.width_inch || ""),
+      date_key: "",
+    };
+  }
+  if (!mixMeta?.spr_name) {
+    return;
+  }
+  activeMixRoll.value = { ...mixMeta, spr_name: mixMeta.spr_name };
+  if (!mixRollLines.value.length) {
+    await refreshMixRollLinesFromSpr();
   }
 }
 
@@ -3962,11 +3995,13 @@ async function saveMixRollRow(row) {
     if (saved.gross_weight != null && saved.gross_weight !== "") {
       row.gross_weight = String(saved.gross_weight);
     }
-    if (saved.custom_diameter_inches != null) {
-      row.custom_diameter_inches = saved.custom_diameter_inches;
-    }
-    if (saved.custom_cbm_cubic_meters != null) {
-      row.custom_cbm_cubic_meters = saved.custom_cbm_cubic_meters;
+    if (saved.custom_diameter_inches != null || saved.custom_diameter != null) {
+      const dia = normalizeSpiDiameterCbm(saved);
+      row.custom_diameter_inches = dia.custom_diameter_inches;
+      row.custom_cbm_cubic_meters = dia.custom_cbm_cubic_meters || row.custom_cbm_cubic_meters;
+    } else if (saved.custom_cbm != null || saved.custom_cbm_cubic_meters != null) {
+      const dia = normalizeSpiDiameterCbm(saved);
+      row.custom_cbm_cubic_meters = dia.custom_cbm_cubic_meters;
     }
     if (saved.custom_core_width_mm != null) {
       row.custom_core_width_mm = saved.custom_core_width_mm;
@@ -4775,7 +4810,9 @@ function buildRollPayload(row) {
     custom_core_width_mm: row.custom_core_width_mm,
     custom_polybag_kgs: row.custom_polybag_kgs,
     custom_diameter_inches: row.custom_diameter_inches,
+    custom_diameter: sprFlt(row.custom_diameter_inches),
     custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
+    custom_cbm: sprFlt(row.custom_cbm_cubic_meters),
     job_id: row.job_id || row.job || "",
     custom_no_of_shaft: resolveRowShaftNo(row),
     is_bundle_row: row.is_bundle_row ? 1 : 0,
@@ -5268,11 +5305,13 @@ async function saveRow(row) {
     if (saved.custom_no_of_shaft != null && cint(saved.custom_no_of_shaft) > 0) {
       row.custom_no_of_shaft = cint(saved.custom_no_of_shaft);
     }
-    if (saved.custom_diameter_inches != null) {
-      row.custom_diameter_inches = saved.custom_diameter_inches;
-    }
-    if (saved.custom_cbm_cubic_meters != null) {
-      row.custom_cbm_cubic_meters = saved.custom_cbm_cubic_meters;
+    if (saved.custom_diameter_inches != null || saved.custom_diameter != null) {
+      const dia = normalizeSpiDiameterCbm(saved);
+      row.custom_diameter_inches = dia.custom_diameter_inches;
+      row.custom_cbm_cubic_meters = dia.custom_cbm_cubic_meters || row.custom_cbm_cubic_meters;
+    } else if (saved.custom_cbm != null || saved.custom_cbm_cubic_meters != null) {
+      const dia = normalizeSpiDiameterCbm(saved);
+      row.custom_cbm_cubic_meters = dia.custom_cbm_cubic_meters;
     }
     if (row.is_mix_roll_row) {
       row.planned_qty = 0;
@@ -5972,6 +6011,7 @@ function applyResumePayload(msg, options = {}) {
       sprNormalizeGrossWeightInput(r.gross_weight) > 0;
     return {
       ...r,
+      ...normalizeSpiDiameterCbm(r),
       gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
       _id: r._id || `resume-${idx}-${Date.now()}`,
       creation_seq: cint(r.creation_seq) || msg.roll_lines.length - idx,
@@ -6057,6 +6097,7 @@ function applyResumePayload(msg, options = {}) {
   lastServerSyncAt.value = serverRevision || new Date().toISOString();
   scheduleAutosave();
   void backfillSessionSprLabelTypes();
+  void restoreActiveMixRollFromSession();
   return serverRows.length;
 }
 
