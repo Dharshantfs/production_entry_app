@@ -2940,6 +2940,66 @@ def _gsm_pp_wo_terminal(pp_id: str) -> bool:
 	return True
 
 
+def _gsm_manual_job_shaft_rows(pp_id: str, unit: str | None = None) -> list[dict]:
+	"""Manual jobs (created via SPR Tools) live only on the SPR, not the Production Plan.
+
+	Surface them as shaft-row dicts so they show up in the GSM job board and add-roll
+	wizard, letting the operator record production against a manual job.
+	"""
+	spr_rows = _gsm_sprs_for_pp_job_counts(pp_id, unit=unit)
+	spr_names = [_cstr(r.get("name")) for r in spr_rows if _cstr(r.get("name"))]
+	if not spr_names:
+		return []
+	meta = frappe.get_meta("Shaft Production Run Job")
+	wanted = [
+		"job_id",
+		"no_of_shafts",
+		"no_of_rolls",
+		"gsm",
+		"quality",
+		"combination",
+		"total_width",
+		"work_orders",
+		"manual_items",
+		"party_code",
+	]
+	fields = ["name", "parent", "is_manual"] + [f for f in wanted if meta.has_field(f)]
+	rows = frappe.get_all(
+		"Shaft Production Run Job",
+		filters={"parent": ["in", spr_names], "parenttype": "Shaft Production Run", "is_manual": 1},
+		fields=fields,
+		order_by="idx asc",
+	)
+	out: list[dict] = []
+	seen: set[str] = set()
+	for r in rows:
+		job_id = _cstr(r.get("job_id")).strip()
+		if not job_id or job_id in seen:
+			continue
+		seen.add(job_id)
+		work_order = _cstr(r.get("work_orders")).split(",")[0].strip()
+		item_code = _cstr(r.get("manual_items")).split(",")[0].strip()
+		item_name = frappe.db.get_value("Item", item_code, "item_name") if item_code else ""
+		out.append(
+			{
+				"job": job_id,
+				"no_of_shafts": cint(r.get("no_of_shafts") or 1),
+				"no_of_rolls": cint(r.get("no_of_rolls") or 1),
+				"gsm": cint(r.get("gsm") or 0),
+				"quality": _cstr(r.get("quality")),
+				"combination": _cstr(r.get("combination")),
+				"total_width": flt(r.get("total_width") or 0),
+				"meter_roll": 0,
+				"net_weight": 0,
+				"is_manual": True,
+				"work_order": work_order,
+				"item_code": item_code,
+				"item_name": _cstr(item_name),
+			}
+		)
+	return out
+
+
 @frappe.whitelist()
 def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 	"""GSM sidebar — per PP job shaft+roll progress, remaining, per-width caps."""
@@ -2966,6 +3026,22 @@ def get_gsm_pp_job_board(pp_ids=None, run_date=None, shift=None, unit=None):
 				unit=unit,
 				wo_terminal=wo_terminal,
 			)
+			pp_jobs.append(entry)
+			out_jobs.append(entry)
+		for man_row in _gsm_manual_job_shaft_rows(pp_id, unit=unit):
+			entry = _gsm_build_job_board_entry(
+				pp_id,
+				man_row,
+				run_date=run_date,
+				shift=shift,
+				unit=unit,
+				wo_terminal=False,
+			)
+			entry["is_manual"] = True
+			entry["work_order"] = _cstr(man_row.get("work_order"))
+			entry["item_code"] = _cstr(man_row.get("item_code"))
+			entry["item_name"] = _cstr(man_row.get("item_name"))
+			entry["quality"] = _cstr(man_row.get("quality"))
 			pp_jobs.append(entry)
 			out_jobs.append(entry)
 		by_pp[pp_id] = pp_jobs
@@ -4341,15 +4417,56 @@ def _serialize_mix_roll_candidate(date_key: str, entry: dict) -> dict:
 	}
 
 
-@frappe.whitelist()
-def get_gsm_mix_rolls_for_unit(unit, include_submitted=0):
-	"""List planner-ready mix rows for GSM operator (all Color Chart date keys, filter by unit).
+def _mix_date_key_months(date_key: str) -> set:
+	"""Return the set of 'YYYY-MM' month labels a Color Chart mix date_key covers.
 
-	Production run_date is NOT used for listing — operator picks which planned mix to run today.
+	Keys look like `day-YYYY-MM-DD`, `week-YYYY-Www` or `month-YYYY-MM` (optionally
+	suffixed with `-<PLAN>`). Weeks may straddle two calendar months, so all months
+	the week touches are returned. Unparseable keys return an empty set.
+	"""
+	import re as _re
+	from datetime import date as _date, timedelta as _timedelta
+
+	key = _cstr(date_key).strip()
+	months: set = set()
+	if not key:
+		return months
+	m = _re.match(r"^month-(\d{4})-(\d{1,2})", key)
+	if m:
+		months.add(f"{int(m.group(1)):04d}-{int(m.group(2)):02d}")
+		return months
+	m = _re.match(r"^day-(\d{4})-(\d{1,2})-(\d{1,2})", key)
+	if m:
+		months.add(f"{int(m.group(1)):04d}-{int(m.group(2)):02d}")
+		return months
+	m = _re.match(r"^week-(\d{4})-W(\d{1,2})", key)
+	if m:
+		year, week = int(m.group(1)), int(m.group(2))
+		try:
+			monday = _date.fromisocalendar(year, week, 1)
+			for i in range(7):
+				d = monday + _timedelta(days=i)
+				months.add(f"{d.year:04d}-{d.month:02d}")
+		except Exception:
+			pass
+	return months
+
+
+@frappe.whitelist()
+def get_gsm_mix_rolls_for_unit(unit, include_submitted=0, run_date=None):
+	"""List planner-ready mix rows for GSM operator, scoped to the production month + unit.
+
+	Mix rolls are shown for the month of `run_date` (defaults to today) based on the
+	planner's Color Chart date key, and only when the planning team has entered the
+	shaft/width. Operator picks which planned mix to run — the run_date itself is not
+	matched exactly, only its month.
 	"""
 	target_unit = _normalize_mix_unit(unit)
 	if not target_unit:
 		frappe.throw(_("Unit is required"))
+
+	ref = getdate(run_date) if run_date else getdate()
+	target_month = f"{ref.year:04d}-{ref.month:02d}"
 
 	out = []
 	seen = set()
@@ -4359,13 +4476,22 @@ def get_gsm_mix_rolls_for_unit(unit, include_submitted=0):
 			continue
 		if not _cstr(entry.get("item_code")).strip():
 			continue
+		# Planning team enters width in shaft details — hide rows without it.
+		if not _cstr(entry.get("shaft")).strip():
+			continue
+		# Show only this production month, based on the planned (Color Chart) date key.
+		key_months = _mix_date_key_months(date_key)
+		if not key_months or target_month not in key_months:
+			continue
 		if cint(include_submitted) == 0 and entry.get("_submitted"):
 			continue
 		dedupe = f"{date_key}::{_cstr(entry.get('mix_id')) or _mix_roll_row_key(entry)}"
 		if dedupe in seen:
 			continue
 		seen.add(dedupe)
-		out.append(_serialize_mix_roll_candidate(date_key, entry))
+		candidate = _serialize_mix_roll_candidate(date_key, entry)
+		candidate["planning_month"] = target_month
+		out.append(candidate)
 
 	out.sort(
 		key=lambda r: (
@@ -4374,7 +4500,7 @@ def get_gsm_mix_rolls_for_unit(unit, include_submitted=0):
 			_cstr(r.get("mix_row_key")),
 		)
 	)
-	return {"unit": target_unit, "mix_rolls": out}
+	return {"unit": target_unit, "month": target_month, "mix_rolls": out}
 
 
 @frappe.whitelist()

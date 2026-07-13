@@ -152,9 +152,9 @@
               {{ mixRollLoading ? "…" : "Refresh" }}
             </button>
           </div>
-          <p class="gpe-hint">Planner items from Color Chart · pick for this shift (any plan date).</p>
+          <p class="gpe-hint">Color Chart items planned this month · {{ headerUnit || filterUnit }} · width set by planning.</p>
           <div v-if="mixRollLoading" class="gpe-muted">Loading mix rolls…</div>
-          <div v-else-if="!mixRollCandidates.length" class="gpe-muted">No item-ready mix rolls for this unit.</div>
+          <div v-else-if="!mixRollCandidates.length" class="gpe-muted">No mix rolls planned this month for this unit (needs item + shaft width).</div>
           <div v-for="mix in mixRollCandidates" :key="mix.date_key + '::' + (mix.mix_id || mix.mix_row_key)" class="gpe-mix-roll-card">
             <div class="gpe-mix-roll-head">
               <strong>{{ mix.label }}</strong>
@@ -1376,6 +1376,7 @@
             <input v-model="addRollJobChoice" type="radio" :value="entry.key" />
             <span>
               {{ entry.orderCode }} · Job {{ entry.jobId || entry.job_id }} · {{ entry.gsm }} GSM
+              <strong v-if="entry.is_manual" class="gpe-picker-manual-tag"> · Manual</strong>
               <em v-if="entry.board" class="gpe-picker-sub">
                 {{ entry.board.job_shafts_produced }}/{{ entry.board.max_shafts }} shafts ·
                 {{ entry.board.job_rolls_produced }}/{{ entry.board.max_rolls }} rolls
@@ -3009,15 +3010,42 @@ const completedJobCount = computed(() =>
   completedJobOrderGroups.value.reduce((n, g) => n + g.jobs.length, 0)
 );
 
-const wizardJobChoices = computed(() =>
-  selectedEntries.value.map((entry) => {
+const wizardJobChoices = computed(() => {
+  const base = selectedEntries.value.map((entry) => {
     const jid = entry.jobId || entry.job_id;
     const boardRaw = jobBoardJobs.value.find((j) => j.pp_id === entry.ppId && String(j.job_id) === String(jid));
     const board = boardRaw ? withLocalPendingQuota(boardRaw) : null;
     const maxed = board ? !canJobAddOneMoreRoll(board) : false;
     return { ...entry, board, maxed };
-  })
-);
+  });
+  // Manual jobs (created via Tools) exist only on the SPR — surface them for the
+  // PPs already in this session so the operator can record their production.
+  const ppSet = new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean));
+  const seen = new Set(base.map((e) => e.key || entryKeyJob(e.ppId, e.jobId || e.job_id)));
+  for (const raw of jobBoardJobs.value) {
+    if (!raw.is_manual || !ppSet.has(raw.pp_id)) {
+      continue;
+    }
+    const key = entryKeyJob(raw.pp_id, raw.job_id);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const board = withLocalPendingQuota(raw);
+    base.push({
+      key,
+      ppId: raw.pp_id,
+      jobId: raw.job_id,
+      job_id: raw.job_id,
+      orderCode: raw.order_code || "",
+      gsm: raw.gsm,
+      is_manual: true,
+      board,
+      maxed: !canJobAddOneMoreRoll(board),
+    });
+  }
+  return base;
+});
 
 const wizardSelectedJob = computed(() => {
   const key = addRollJobChoice.value;
@@ -3580,8 +3608,18 @@ const canSubmitMixRoll = computed(() => {
 
 function formatMixPlanningKey(key) {
   const k = _cstr(key);
-  if (k.startsWith("day-")) {
-    return k.slice(4);
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  let m = k.match(/^month-(\d{4})-(\d{1,2})/);
+  if (m) {
+    return `${MONTHS[Number(m[2]) - 1] || m[2]} ${m[1]}`;
+  }
+  m = k.match(/^day-(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) {
+    return `${MONTHS[Number(m[2]) - 1] || m[2]} ${Number(m[3])}, ${m[1]}`;
+  }
+  m = k.match(/^week-(\d{4})-W(\d{1,2})/);
+  if (m) {
+    return `Week ${Number(m[2])} · ${m[1]}`;
   }
   return k || "—";
 }
@@ -3594,7 +3632,7 @@ async function loadMixRollCandidates() {
   }
   mixRollLoading.value = true;
   try {
-    const res = await fetchGsmMixRollCandidates(unit, 0);
+    const res = await fetchGsmMixRollCandidates(unit, 0, runDate.value || filterDate.value);
     mixRollCandidates.value = res.mix_rolls || [];
   } catch (e) {
     console.error(e);
@@ -6482,10 +6520,17 @@ async function addRollRow() {
     },
   };
   const src = line.source;
+  const isManualJob = !!job.is_manual;
   const [batchInfo, ordLenFromApi, woInfo] = await Promise.all([
     previewNextBatch(line.ppId),
-    job.meter_roll ? Promise.resolve(0) : resolveOrderLength(line, jobId),
-    resolveWorkOrder(line, jobId),
+    isManualJob || job.meter_roll ? Promise.resolve(0) : resolveOrderLength(line, jobId),
+    isManualJob
+      ? Promise.resolve({
+          work_order: job.work_order || "",
+          production_item: job.item_code || "",
+          production_item_name: job.item_name || "",
+        })
+      : resolveWorkOrder(line, jobId),
   ]);
   const ordLen = sprFlt(job.meter_roll) || sprFlt(ordLenFromApi);
   let batch = batchInfo;
@@ -7597,6 +7642,10 @@ onUnmounted(() => {
 }
 .gpe-picker-maxed-tag {
   color: #b45309;
+  font-weight: 800;
+}
+.gpe-picker-manual-tag {
+  color: #7c3aed;
   font-weight: 800;
 }
 .gpe-picker-disabled {
