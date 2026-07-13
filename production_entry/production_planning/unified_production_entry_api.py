@@ -1147,29 +1147,21 @@ def get_gsm_active_shift_resume(run_date=None, shift=None, unit=None):
 
 @frappe.whitelist()
 def get_gsm_session_full_state(unit=None):
-	"""Server-first GSM bootstrap — open shift session + rolls + job selections (cross-device recovery)."""
+	"""Server-first GSM bootstrap — open shift session + rolls + job selections (cross-device recovery).
+
+	Requires an explicit unit; never returns another unit's open session.
+	"""
 	if not _gsm_shift_session_table_exists():
 		return {"status": "no_open_session"}
 	unit = _cstr(unit).strip()
-	filters = {"status": "Open"}
-	if unit:
-		filters["custom_unit"] = unit
+	if not unit:
+		return {"status": "no_open_session"}
 	row = frappe.db.get_value(
 		_GSM_SHIFT_SESSION_DOCTYPE,
-		filters,
+		{"status": "Open", "custom_unit": unit},
 		["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status", "modified"],
 		as_dict=True,
 	)
-	if not row and unit:
-		return {"status": "no_open_session"}
-	if not row:
-		row = frappe.db.get_value(
-			_GSM_SHIFT_SESSION_DOCTYPE,
-			{"status": "Open"},
-			["name", "run_date", "shift", "custom_unit", "batch_series_prefix", "operator", "supervisor", "opened_by", "opened_at", "status", "modified"],
-			as_dict=True,
-			order_by="modified desc",
-		)
 	if not row:
 		return {"status": "no_open_session"}
 

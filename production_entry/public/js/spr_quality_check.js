@@ -18,16 +18,7 @@ function sprJobIds(doc) {
 		.filter(Boolean);
 }
 
-async function resolveJobIdForSpr(sprName, jobId) {
-	if (jobId) {
-		return jobId;
-	}
-	const res = await frappe.call({
-		method: "frappe.client.get",
-		args: { doctype: "Shaft Production Run", name: sprName },
-	});
-	const doc = res.message || {};
-	const ids = sprJobIds(doc);
+async function promptSprJobId(ids, title) {
 	if (!ids.length) {
 		return "";
 	}
@@ -46,10 +37,32 @@ async function resolveJobIdForSpr(sprName, jobId) {
 				},
 			],
 			(values) => resolve(values.job_id || ids[0]),
-			__("Quality Check — choose job"),
+			title || __("Quality Check — choose job"),
 			__("Continue")
 		);
 	});
+}
+
+async function resolveJobIdForSpr(sprName, jobId) {
+	const res = await frappe.call({
+		method: "frappe.client.get",
+		args: { doctype: "Shaft Production Run", name: sprName },
+	});
+	const doc = res.message || {};
+	const preferred = String(jobId || "").trim();
+	if (preferred && rollsForSprJob(doc, preferred).length) {
+		return preferred;
+	}
+	const rollJobIds = sprJobIdsWithRolls(doc);
+	const shaftJobIds = sprJobIds(doc);
+	const ids = rollJobIds.length ? rollJobIds : shaftJobIds;
+	if (!ids.length) {
+		return "";
+	}
+	if (preferred && ids.includes(preferred)) {
+		return preferred;
+	}
+	return promptSprJobId(ids);
 }
 
 async function loadSprDoc(sprName) {
@@ -60,9 +73,24 @@ async function loadSprDoc(sprName) {
 	return res.message || {};
 }
 
+function sprItemJobId(row) {
+	return String(row?.job || row?.job_id || "").trim();
+}
+
+function sprJobIdsMatch(a, b) {
+	const left = String(a || "").trim();
+	const right = String(b || "").trim();
+	if (!left || !right) {
+		return false;
+	}
+	return left === right;
+}
+
 function pickSprJobRow(spr, jobId) {
 	const jid = String(jobId || "").trim();
-	return (spr.shaft_jobs || []).find((j) => String(j.job_id || j.job || "").trim() === jid) || null;
+	return (
+		(spr.shaft_jobs || []).find((j) => sprJobIdsMatch(j.job_id || j.job, jid)) || null
+	);
 }
 
 function rollSuffix(row) {
@@ -76,7 +104,7 @@ function rollSuffix(row) {
 function rollsForSprJob(spr, jobId) {
 	const jid = String(jobId || "").trim();
 	return (spr.items || []).filter((row) => {
-		if (String(row.job || "").trim() !== jid) {
+		if (!sprJobIdsMatch(sprItemJobId(row), jid)) {
 			return false;
 		}
 		if (cint(row.is_wasted) || cint(row.is_bundle_row)) {
@@ -84,6 +112,23 @@ function rollsForSprJob(spr, jobId) {
 		}
 		return Boolean(String(row.batch_no || "").trim() || cint(row.roll_no));
 	});
+}
+
+function sprJobIdsWithRolls(spr) {
+	const ids = new Set();
+	for (const row of spr.items || []) {
+		if (cint(row.is_wasted) || cint(row.is_bundle_row)) {
+			continue;
+		}
+		if (!String(row.batch_no || "").trim() && !cint(row.roll_no)) {
+			continue;
+		}
+		const jid = sprItemJobId(row);
+		if (jid) {
+			ids.add(jid);
+		}
+	}
+	return [...ids];
 }
 
 async function promptRollForSprJob(spr, jobId) {

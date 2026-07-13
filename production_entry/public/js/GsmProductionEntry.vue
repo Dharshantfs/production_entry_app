@@ -33,7 +33,7 @@
       </div>
       <div class="gpe-filter">
         <label>Unit</label>
-        <template v-if="shiftOpened && headerUnit">
+        <template v-if="shiftOpened && headerUnit && !isGsmAdminUser">
           <span class="gpe-unit-locked">{{ headerUnit }} (locked)</span>
         </template>
         <select v-else v-model="filterUnit" @change="onUnitChange">
@@ -1559,7 +1559,7 @@ import {
   sprShaftNoForRollIndex,
 } from "./spr_roll_entry_utils.js";
 
-const STORAGE_KEY = "gsm_production_entry_draft_v3";
+const STORAGE_KEY = `gsm_production_entry_draft_v3_${frappe.session.user || "guest"}`;
 const BOARD_SLUG = "production-table";
 const FABRIC_UNITS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4"];
 
@@ -4409,8 +4409,7 @@ async function runQualityCheck(kind) {
     return;
   }
   const { ppId } = ctx;
-  const job = jobBoardJobs.value.find((j) => j.pp_id === ppId);
-  const jobId = job?.job_id || "";
+  const jobId = await promptQualityCheckJobId(ppId);
   if (kind === "gsm") {
     await gsmOpenGsmTesting(ppId, jobId);
   } else if (kind === "tensile") {
@@ -5493,22 +5492,154 @@ async function fetchOrders() {
   }
 }
 
+function isGsmAdminUser() {
+  return (
+    frappe.user.has_role("Administrator") ||
+    frappe.user.has_role("System Manager")
+  );
+}
+
 function onUnitChange() {
   if (shiftOpened.value && filterUnit.value !== headerUnit.value) {
+    if (isGsmAdminUser()) {
+      frappe.confirm(
+        __(
+          "Switch unit? The current shift session will be left on <b>{0}</b>. Rolls on screen will reload for <b>{1}</b>.",
+          [headerUnit.value, filterUnit.value || __("none")]
+        ),
+        () => {
+          void switchGsmUnit(filterUnit.value);
+        },
+        () => {
+          filterUnit.value = headerUnit.value;
+        }
+      );
+      return;
+    }
     frappe.msgprint(__("Close the current shift before changing unit."));
     filterUnit.value = headerUnit.value;
     return;
   }
+  void activateSelectedUnit();
+}
+
+async function switchGsmUnit(nextUnit) {
+  rollLines.value = [];
+  sessionSprs.value = {};
+  selectedEntries.value = [];
+  selectionLocked.value = false;
+  shiftResumeBanner.value = "";
+  applyShiftSessionHydration(null);
+  headerUnit.value = nextUnit || "";
+  filterUnit.value = nextUnit || "";
+  if (!nextUnit) {
+    scheduleAutosave();
+    return;
+  }
+  await activateSelectedUnit({ fromAdminSwitch: true });
+}
+
+async function activateSelectedUnit(options = {}) {
+  if (!filterUnit.value) {
+    headerUnit.value = "";
+    applyShiftSessionHydration(null);
+    shiftSessionReady.value = true;
+    return;
+  }
   headerUnit.value = filterUnit.value;
   pruneSelectedEntriesToFilter();
-  fetchMerges().then(() =>
-    Promise.all([loadQuotaForLines(), loadJobBoard()]).then(() => {
-      pruneSelectedEntriesToFilter();
-      enrichSelectedEntriesFromBoard();
-    })
-  );
-  refreshShiftSession();
+  await fetchMerges();
+  await Promise.all([loadQuotaForLines(), loadJobBoard()]);
+  pruneSelectedEntriesToFilter();
+  enrichSelectedEntriesFromBoard();
+  const resumed = await tryResumeOpenSessionForUnit({
+    quiet: !options.fromAdminSwitch,
+  });
+  if (!resumed) {
+    await refreshShiftSession();
+  }
   scheduleAutosave();
+}
+
+async function tryResumeOpenSessionForUnit(options = {}) {
+  if (!headerUnit.value) {
+    return false;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_open_gsm_shift_for_unit",
+      args: { unit: headerUnit.value },
+    });
+    const sess = res.message?.session;
+    if (!sess || sess.status !== "Open") {
+      return false;
+    }
+    const sessDate = String(sess.run_date || "").slice(0, 10);
+    const sessShift = sess.shift || shift.value;
+    const sameContext =
+      sessDate === runDate.value && sessShift === shift.value && shiftOpened.value;
+    if (sameContext && rollLines.value.length) {
+      return true;
+    }
+    if (!options.quiet && !options.fromAdminSwitch) {
+      const proceed = await new Promise((resolve) => {
+        frappe.confirm(
+          __("{0} is already open on {1} for Unit {2}. Resume that session?", [
+            sessShift,
+            sessDate,
+            headerUnit.value,
+          ]),
+          () => resolve(true),
+          () => resolve(false)
+        );
+      });
+      if (!proceed) {
+        return false;
+      }
+    }
+    runDate.value = sessDate;
+    filterDate.value = sessDate;
+    shift.value = sessShift;
+    shiftFilterDate.value = sessDate;
+    shiftFilterShift.value = sessShift;
+    return await bootstrapFromServerSession({ unit: headerUnit.value });
+  } catch (e) {
+    console.warn("resume open session for unit", e);
+    return false;
+  }
+}
+
+async function promptQualityCheckJobId(ppId) {
+  const fromGrid = [
+    ...new Set(
+      rollLines.value
+        .filter((r) => r.pp_id === ppId && !cint(r.is_wasted))
+        .map((r) => String(r.job_id || "").trim())
+        .filter(Boolean)
+    ),
+  ];
+  if (fromGrid.length === 1) {
+    return fromGrid[0];
+  }
+  if (fromGrid.length > 1) {
+    return new Promise((resolve) => {
+      frappe.prompt(
+        [
+          {
+            fieldtype: "Select",
+            fieldname: "job_id",
+            label: __("Job"),
+            options: fromGrid.map((id) => ({ value: id, label: id })),
+            reqd: 1,
+          },
+        ],
+        (values) => resolve(values.job_id || fromGrid[0]),
+        __("Quality Check — choose job"),
+        __("Continue")
+      );
+    });
+  }
+  return "";
 }
 
 function pickEmployeeLink(fieldKey, label) {
@@ -5822,11 +5953,15 @@ function peekDraftFilterDate() {
   }
 }
 
-async function bootstrapFromServerSession() {
+async function bootstrapFromServerSession(options = {}) {
+  const unit = _cstr(options.unit || filterUnit.value || headerUnit.value).trim();
+  if (!unit) {
+    return false;
+  }
   try {
     const res = await frappe.call({
       method: "production_entry.production_planning.unified_production_entry_api.get_gsm_session_full_state",
-      args: { unit: filterUnit.value || headerUnit.value || null },
+      args: { unit },
     });
     const msg = res.message || {};
     if (msg.status !== "ok") {
@@ -5835,9 +5970,9 @@ async function bootstrapFromServerSession() {
     const sess = msg.session || {};
     runDate.value = String(msg.run_date || sess.run_date || runDate.value).slice(0, 10);
     shift.value = msg.shift || sess.shift || shift.value;
-    headerUnit.value = msg.unit || sess.custom_unit || headerUnit.value;
+    headerUnit.value = msg.unit || sess.custom_unit || unit;
     filterUnit.value = headerUnit.value;
-    shiftOpened.value = true;
+    applyShiftSessionHydration(sess);
     shiftSessionReady.value = true;
     if (sess.batch_series_prefix) {
       shiftBatchPrefix.value = sess.batch_series_prefix;
@@ -7131,30 +7266,25 @@ onMounted(async () => {
   shiftFilterDate.value = runDate.value;
   shiftFilterShift.value = shift.value;
   await fetchOrders();
-  if (!filterUnit.value && unitOptions.value.length) {
-    filterUnit.value = unitOptions.value[0];
+  restoreDraft({ skipRollGrid: true });
+  if (filterUnit.value) {
     headerUnit.value = filterUnit.value;
-  }
-  shiftFilterUnit.value = filterUnit.value || headerUnit.value;
-  batchContextKey.value = currentBatchContextKey();
-
-  const booted = await bootstrapFromServerSession();
-  if (!booted) {
-    restoreDraft({ skipRollGrid: true });
-    if (filterUnit.value) {
-      headerUnit.value = filterUnit.value;
+    shiftFilterUnit.value = filterUnit.value;
+    batchContextKey.value = currentBatchContextKey();
+    const booted = await tryResumeOpenSessionForUnit({ quiet: true });
+    if (!booted) {
+      await refreshShiftSession();
+      if (shiftOpened.value && shouldResumeFromServer()) {
+        await refreshSessionFromServer({ merge: true });
+      }
+      if (shiftOpened.value) {
+        setupGsmLiveSync();
+      }
     }
-    const switched = await syncOpenShiftForUnit();
-    if (switched) {
-      await fetchOrders();
-    }
-    await refreshShiftSession();
-    if (shiftOpened.value && shouldResumeFromServer()) {
-      await refreshSessionFromServer({ merge: true });
-    }
-    if (shiftOpened.value) {
-      setupGsmLiveSync();
-    }
+  } else {
+    shiftFilterUnit.value = "";
+    batchContextKey.value = currentBatchContextKey();
+    shiftSessionReady.value = true;
   }
 });
 
