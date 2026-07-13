@@ -2628,7 +2628,8 @@ class ShaftProductionRun(Document):
 		self._validate_no_duplicate_roll_batches()
 		self._validate_produced_rows_have_batch_numbers()
 		self._validate_batch_numbers_not_on_other_sprs()
-		self._validate_no_pending_wo_width_rows()
+		if not spr_doc_is_mix_roll(self):
+			self._validate_no_pending_wo_width_rows()
 
 	def _validate_produced_rows_have_batch_numbers(self):
 		"""Every produced roll line on a batch-managed FG item must have batch_no before submit."""
@@ -10935,6 +10936,8 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 
 def _gsm_validate_roll_for_spr(spr, spr_pp_id: str, payload: dict) -> None:
 	"""Ensure GSM roll payload maps to the correct SPR production plan and work order."""
+	if spr_doc_is_mix_roll(spr):
+		return
 	spr_pp = _cstr(spr_pp_id or spr.get("production_plan")).strip()
 	payload_pp = _cstr(payload.get("pp_id")).strip()
 	if payload_pp and spr_pp and payload_pp != spr_pp:
@@ -11687,6 +11690,13 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		if cint(spr.docstatus) != 0:
 			frappe.throw(_("Cannot save roll lines to a submitted Shaft Production Run"))
 		pp_id = _cstr(spr.get("production_plan")).strip()
+		is_mix = spr_doc_is_mix_roll(spr)
+		if is_mix:
+			pp_id = ""
+			if not _cstr(roll_payload.get("job_id") or roll_payload.get("job")).strip():
+				roll_payload["job_id"] = "1"
+			roll_payload.pop("pp_id", None)
+			roll_payload.pop("work_order", None)
 		result = _gsm_upsert_roll_line_on_spr(spr, pp_id, roll_payload, shift=shift)
 		spr._validate_no_duplicate_roll_batches()
 		spr.flags._spr_incremental_roll_save = True

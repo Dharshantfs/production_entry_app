@@ -30,6 +30,7 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	resolve_label_from_planning_sheet_doc,
 	normalize_label_template_link,
 	save_gsm_roll_line_to_spr,
+	spr_doc_is_mix_roll,
 	spr_get_tolerance_violations,
 	_gsm_serialize_spr_roll_lines_for_grid,
 	_gsm_serialize_roll_waste_for_grid,
@@ -37,7 +38,8 @@ from production_entry.production_planning.doctype.shaft_production_run.shaft_pro
 	_spr_resolve_roll_line_specs_from_item_code,
 	_spr_roll_starting_for_gsm_session,
 )
-from production_entry.production_planning.scheduler_api import create_item_spr, get_current_shift
+from production_entry.production_planning.scheduler_api import create_item_spr, create_mix_spr, get_current_shift
+from production_entry.production_planning.planning_doctypes import normalize_planning_unit_for_select
 
 
 def _pick_value(row, keys, default=None):
@@ -2546,7 +2548,7 @@ def get_gsm_shift_consolidated_summary(run_date, shift, unit=None):
 				}
 				for row in by_order.values()
 			],
-			key=lambda r: _cstr(r.get("order_codes", [""])[0]),
+			key=lambda r: _cstr(next(iter(r.get("order_codes") or []), "")),
 		),
 		"by_gsm": sorted(
 			[{**row, "net_kg": round(flt(row["net_kg"]), 2)} for row in by_gsm.values()],
@@ -4203,3 +4205,325 @@ def consume_gsm_recycled_wastage(spr_name, patty_selections=None, roll_waste_row
 				spr, "custom_recycled_wastage_details", "Recycled Wastage Detail Row"
 			),
 		}
+
+
+def _mix_roll_store_table_exists() -> bool:
+	try:
+		frappe.db.sql("SELECT 1 FROM `mix_roll_store_data` LIMIT 1")
+		return True
+	except Exception:
+		return False
+
+
+def _mix_roll_row_key(m: dict) -> str:
+	return f"{_cstr(m.get('unit')).strip()}|{_cstr(m.get('color1')).strip().upper()}|{_cstr(m.get('color2')).strip().upper()}"
+
+
+def _normalize_mix_unit(unit: str) -> str:
+	u = _cstr(unit).strip()
+	if not u:
+		return ""
+	try:
+		return normalize_planning_unit_for_select(u)
+	except Exception:
+		return u
+
+
+def _iter_mix_roll_store_rows():
+	if not _mix_roll_store_table_exists():
+		return
+	for store in frappe.db.sql(
+		"SELECT date_key, data, modified FROM `mix_roll_store_data` ORDER BY modified DESC",
+		as_dict=True,
+	):
+		try:
+			entries = json.loads(store.data or "[]")
+		except Exception:
+			entries = []
+		if not isinstance(entries, list):
+			continue
+		for entry in entries:
+			if isinstance(entry, dict):
+				yield store.date_key, entry
+
+
+def _find_mix_roll_store_row(date_key: str, mix_id: str | None = None, mix_row_key: str | None = None):
+	date_key = _cstr(date_key).strip()
+	mix_id = _cstr(mix_id).strip()
+	mix_row_key = _cstr(mix_row_key).strip()
+	if not date_key:
+		return None, None
+	rows = frappe.db.sql(
+		"SELECT data FROM `mix_roll_store_data` WHERE date_key = %s", date_key
+	)
+	if not rows or not rows[0][0]:
+		return None, None
+	try:
+		entries = json.loads(rows[0][0])
+	except Exception:
+		return None, None
+	for entry in entries or []:
+		if not isinstance(entry, dict):
+			continue
+		if mix_id and _cstr(entry.get("mix_id")) == mix_id:
+			return entry, entries
+		if mix_row_key and _mix_roll_row_key(entry) == mix_row_key:
+			return entry, entries
+	return None, None
+
+
+def _sync_mix_roll_spr_name_in_store(date_key: str, mix_entry: dict, spr_name: str):
+	"""Write spr_name back to mix_roll_store_data for one row."""
+	date_key = _cstr(date_key).strip()
+	spr_name = _cstr(spr_name).strip()
+	if not date_key or not spr_name:
+		return
+	rows = frappe.db.sql("SELECT data FROM `mix_roll_store_data` WHERE date_key = %s", date_key)
+	if not rows or not rows[0][0]:
+		return
+	try:
+		entries = json.loads(rows[0][0])
+	except Exception:
+		return
+	updated = False
+	target_id = _cstr(mix_entry.get("mix_id")).strip()
+	target_key = _mix_roll_row_key(mix_entry)
+	for entry in entries or []:
+		if not isinstance(entry, dict):
+			continue
+		match = False
+		if target_id and _cstr(entry.get("mix_id")) == target_id:
+			match = True
+		elif not target_id and _mix_roll_row_key(entry) == target_key:
+			match = True
+		if match:
+			entry["spr_name"] = spr_name
+			updated = True
+			break
+	if updated:
+		frappe.db.sql(
+			"UPDATE `mix_roll_store_data` SET data = %s, modified = NOW() WHERE date_key = %s",
+			(json.dumps(entries, ensure_ascii=False), date_key),
+		)
+		frappe.db.commit()
+
+
+def _serialize_mix_roll_candidate(date_key: str, entry: dict) -> dict:
+	spr_name = _cstr(entry.get("spr_name")).strip()
+	spr_status = None
+	spr_run_date = ""
+	spr_shift = ""
+	spr_docstatus = None
+	if spr_name and frappe.db.exists("Shaft Production Run", spr_name):
+		res = frappe.db.get_value(
+			"Shaft Production Run",
+			spr_name,
+			["docstatus", "run_date", "shift", "custom_unit"],
+			as_dict=True,
+		)
+		if res:
+			spr_docstatus = cint(res.docstatus)
+			spr_run_date = _cstr(res.run_date)
+			spr_shift = _cstr(res.shift)
+			spr_status = "Submitted" if spr_docstatus == 1 else "Draft"
+	return {
+		**entry,
+		"date_key": date_key,
+		"planning_date_key": date_key,
+		"mix_row_key": _mix_roll_row_key(entry),
+		"spr_name": spr_name or "",
+		"spr_status": spr_status,
+		"spr_docstatus": spr_docstatus,
+		"spr_run_date": spr_run_date,
+		"spr_shift": spr_shift,
+		"label": _cstr(entry.get("mixName") or entry.get("mix_name") or "Mix Roll"),
+		"color_transition": f"{_cstr(entry.get('color1'))} → {_cstr(entry.get('color2'))}",
+	}
+
+
+@frappe.whitelist()
+def get_gsm_mix_rolls_for_unit(unit, include_submitted=0):
+	"""List planner-ready mix rows for GSM operator (all Color Chart date keys, filter by unit).
+
+	Production run_date is NOT used for listing — operator picks which planned mix to run today.
+	"""
+	target_unit = _normalize_mix_unit(unit)
+	if not target_unit:
+		frappe.throw(_("Unit is required"))
+
+	out = []
+	seen = set()
+	for date_key, entry in _iter_mix_roll_store_rows():
+		row_unit = _normalize_mix_unit(entry.get("unit"))
+		if row_unit != target_unit:
+			continue
+		if not _cstr(entry.get("item_code")).strip():
+			continue
+		if cint(include_submitted) == 0 and entry.get("_submitted"):
+			continue
+		dedupe = f"{date_key}::{_cstr(entry.get('mix_id')) or _mix_roll_row_key(entry)}"
+		if dedupe in seen:
+			continue
+		seen.add(dedupe)
+		out.append(_serialize_mix_roll_candidate(date_key, entry))
+
+	out.sort(
+		key=lambda r: (
+			_cstr(r.get("planning_date_key")),
+			_cstr(r.get("label")),
+			_cstr(r.get("mix_row_key")),
+		)
+	)
+	return {"unit": target_unit, "mix_rolls": out}
+
+
+@frappe.whitelist()
+def activate_gsm_mix_roll_for_session(
+	date_key,
+	mix_id=None,
+	mix_row_key=None,
+	run_date=None,
+	shift=None,
+	unit=None,
+):
+	"""Operator selects a mix row — create draft SPR or remap existing draft to this shift."""
+	date_key = _cstr(date_key).strip()
+	run_date = getdate(run_date) if run_date else getdate()
+	shift = _normalize_gsm_shift_label(shift) or get_current_shift()
+	unit = _normalize_mix_unit(unit)
+	if not date_key or not unit:
+		frappe.throw(_("Mix row date key and unit are required"))
+
+	mix_entry, _all_entries = _find_mix_roll_store_row(date_key, mix_id=mix_id, mix_row_key=mix_row_key)
+	if not mix_entry:
+		frappe.throw(_("Mix roll row not found on Color Chart store"))
+	if not _cstr(mix_entry.get("item_code")).strip():
+		frappe.throw(_("Items not created yet — planner must CREATE ITEMS on Color Chart first"))
+	if mix_entry.get("_submitted"):
+		frappe.throw(_("This mix roll is already submitted"))
+
+	spr_name = _cstr(mix_entry.get("spr_name")).strip()
+	if spr_name and frappe.db.exists("Shaft Production Run", spr_name):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if cint(spr.docstatus) == 1:
+			frappe.throw(_("Mix roll SPR {0} is already submitted").format(spr_name))
+		if cint(spr.docstatus) == 2:
+			spr_name = ""
+		else:
+			spr.run_date = run_date
+			spr.shift = shift
+			spr.custom_unit = unit
+			if not _cstr(spr.custom_order_code).strip():
+				spr.custom_order_code = _cstr(mix_entry.get("mixName") or "")
+			spr.save(ignore_permissions=True)
+			frappe.db.commit()
+
+	if not spr_name:
+		payload = dict(mix_entry)
+		payload["cl_type"] = payload.get("cl_type") or payload.get("clType")
+		spr_name = create_mix_spr(
+			date_key,
+			[payload],
+			run_date=str(run_date),
+			shift=shift,
+			unit=unit,
+		)
+		_sync_mix_roll_spr_name_in_store(date_key, mix_entry, spr_name)
+
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	rolls = _gsm_serialize_spr_roll_lines_for_grid(spr)
+	return {
+		"status": "ok",
+		"spr_name": spr_name,
+		"is_mix_roll": 1,
+		"mix": _serialize_mix_roll_candidate(date_key, mix_entry),
+		"roll_lines": rolls,
+	}
+
+
+@frappe.whitelist()
+def get_gsm_mix_roll_spr_rolls(spr_name):
+	"""Load mix-roll SPR roll lines for GSM grid."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if not spr_doc_is_mix_roll(spr):
+		frappe.throw(_("Not a mix roll Shaft Production Run"))
+	return {
+		"spr_name": spr_name,
+		"docstatus": cint(spr.docstatus),
+		"order_code": _cstr(spr.get("custom_order_code") or ""),
+		"roll_lines": _gsm_serialize_spr_roll_lines_for_grid(spr),
+	}
+
+
+@frappe.whitelist()
+def add_gsm_mix_roll_line(spr_name, item_code=None, width_inch=None, batch_no=None, gsm=None):
+	"""Add one empty mix roll line on draft mix SPR (uses build_spr_roll_result_lines_for_job)."""
+	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
+		_build_mix_roll_result_lines_for_job,
+		_gsm_serialize_item_row_for_grid,
+		_spr_operation_lock,
+	)
+
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+
+	with _spr_operation_lock(spr_name, "write", ttl_sec=120):
+		spr = frappe.get_doc("Shaft Production Run", spr_name)
+		if not spr_doc_is_mix_roll(spr):
+			frappe.throw(_("Only mix roll SPRs can use this action"))
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("Cannot add roll lines to a submitted SPR"))
+
+		job_row = (_spr_job_rows(spr) or [None])[0]
+		if not job_row:
+			frappe.throw(_("Mix roll SPR has no shaft job row"))
+
+		current = len([it for it in (spr.items or []) if _spr_is_real_roll_item_row(it)])
+		new_lines = _build_mix_roll_result_lines_for_job(
+			spr, job_row, exact_roll_lines=1, roll_start_index=current
+		)
+		if not new_lines:
+			frappe.throw(_("Could not build mix roll line"))
+
+		line = new_lines[0]
+		if item_code:
+			line["item_code"] = _cstr(item_code).strip()
+		if width_inch:
+			line["width_inch"] = flt(width_inch)
+		if gsm:
+			line["gsm"] = cint(gsm)
+		if batch_no:
+			line["batch_no"] = _cstr(batch_no).strip()
+		line["meter_roll"] = 0
+		line["party_code"] = _cstr(spr.get("custom_order_code") or "")
+
+		spr.append("items", line)
+		spr.flags._spr_incremental_roll_save = True
+		spr.save(ignore_permissions=True)
+
+		added = spr.items[-1]
+		return {
+			"status": "ok",
+			"spr_name": spr_name,
+			"roll_line": _gsm_serialize_item_row_for_grid(added, ""),
+			"row_name": _cstr(getattr(added, "name", "")),
+		}
+
+
+@frappe.whitelist()
+def submit_gsm_mix_roll_spr(spr_name):
+	"""Submit mix-roll SPR — Material Receipt path (no WO / Manufacture)."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not frappe.db.exists("Shaft Production Run", spr_name):
+		frappe.throw(_("Shaft Production Run not found"))
+	spr = frappe.get_doc("Shaft Production Run", spr_name)
+	if not spr_doc_is_mix_roll(spr):
+		frappe.throw(_("Use fabric submit for non-mix SPRs"))
+	if cint(spr.docstatus) != 0:
+		frappe.throw(_("SPR is already submitted"))
+	spr.submit()
+	return {"status": "ok", "spr_name": spr_name, "docstatus": cint(spr.docstatus)}

@@ -28506,21 +28506,22 @@ def create_mix_item(quality, cl_type, gsm, shaft, unit=None):
     return items_details
 
 @frappe.whitelist()
-def create_mix_spr(date_key, mix_data):
+def create_mix_spr(date_key, mix_data, run_date=None, shift=None, unit=None):
     """Create a Shaft Production Run for mix rolls and return its name."""
     if isinstance(mix_data, str):
         mix_data = json.loads(mix_data)
 
     doc = frappe.new_doc("Shaft Production Run")
-    doc.run_date = frappe.utils.today()
-    doc.shift = get_current_shift()
+    doc.run_date = getdate(run_date) if run_date else frappe.utils.today()
+    doc.shift = _cstr(shift).strip() or get_current_shift()
     doc.is_mix_roll = 1
     doc.status = "Draft"
 
-    first_unit = None
+    first_unit = _cstr(unit).strip() or None
     if mix_data and len(mix_data) > 0:
         doc.custom_order_code = mix_data[0].get("mixName")
-        first_unit = mix_data[0].get("unit")
+        if not first_unit:
+            first_unit = mix_data[0].get("unit")
 
     if first_unit:
         ensure_planning_line_unit_docfield_options()
@@ -28561,7 +28562,7 @@ def create_mix_spr(date_key, mix_data):
             or mix.get("length")
             or mix.get("meters_per_roll")
         )
-        row.meter_roll_mtrs = flt(raw_meter) if raw_meter else 800
+        row.meter_roll_mtrs = flt(raw_meter) if raw_meter else 0
         row.no_of_shafts = len(widths) if widths else 1
         row.no_of_rolls = 1
         row.total_weight = flt(mix.get("kg"))
