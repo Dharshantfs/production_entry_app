@@ -1847,6 +1847,23 @@ function currentBatchContextKey() {
   return `${runDate.value}|${shift.value}|${headerUnit.value}`;
 }
 
+function clearGsmUnitContextState() {
+  selectedEntries.value = [];
+  selectionLocked.value = false;
+  shiftResumeBanner.value = "";
+  if (!shiftOpened.value) {
+    rollLines.value = [];
+    sessionSprs.value = {};
+    sessionJobApiBaseline.value = {};
+    forceNewSprSession.value = false;
+    resetBatchSeriesCache();
+  }
+}
+
+function gsmContextKeyChanged(prevKey, nextKey) {
+  return Boolean(prevKey && nextKey && prevKey !== nextKey);
+}
+
 function resetBatchSeriesCache() {
   seriesPrefix.value = "";
   maxRollSuffix.value = 0;
@@ -4273,6 +4290,16 @@ function clearSelection() {
 }
 
 async function openShaftDetails() {
+  const unit = headerUnit.value || filterUnit.value;
+  if (!unit) {
+    frappe.msgprint(__("Select a unit first."));
+    return;
+  }
+  if (!shiftOpened.value && selectionLocked.value && batchContextKey.value !== currentBatchContextKey()) {
+    clearGsmUnitContextState();
+    frappe.msgprint(__("Job selection was from another unit/shift — select jobs again for {0}.", [unit]));
+    return;
+  }
   const ppIds = [...new Set(selectedEntries.value.map((e) => e.ppId).filter(Boolean))];
   if (!ppIds.length) {
     frappe.msgprint(__("Select orders first."));
@@ -5524,29 +5551,39 @@ function onUnitChange() {
 }
 
 async function switchGsmUnit(nextUnit) {
-  rollLines.value = [];
-  sessionSprs.value = {};
-  selectedEntries.value = [];
-  selectionLocked.value = false;
-  shiftResumeBanner.value = "";
+  clearGsmUnitContextState();
   applyShiftSessionHydration(null);
   headerUnit.value = nextUnit || "";
   filterUnit.value = nextUnit || "";
+  batchContextKey.value = nextUnit ? currentBatchContextKey() : "";
   if (!nextUnit) {
     scheduleAutosave();
     return;
   }
-  await activateSelectedUnit({ fromAdminSwitch: true });
+  await activateSelectedUnit({ fromAdminSwitch: true, resumingSession: false });
 }
 
 async function activateSelectedUnit(options = {}) {
+  const prevUnit = headerUnit.value;
+  const prevKey = batchContextKey.value || currentBatchContextKey();
+
   if (!filterUnit.value) {
+    clearGsmUnitContextState();
     headerUnit.value = "";
     applyShiftSessionHydration(null);
     shiftSessionReady.value = true;
+    batchContextKey.value = "";
     return;
   }
+
   headerUnit.value = filterUnit.value;
+  const newKey = currentBatchContextKey();
+  const unitChanged = Boolean(prevUnit && prevUnit !== filterUnit.value);
+  const contextChanged = gsmContextKeyChanged(prevKey, newKey);
+  if ((unitChanged || contextChanged) && !shiftOpened.value && !options.resumingSession) {
+    clearGsmUnitContextState();
+  }
+  batchContextKey.value = newKey;
   pruneSelectedEntriesToFilter();
   await fetchMerges();
   await Promise.all([loadQuotaForLines(), loadJobBoard()]);
@@ -7119,64 +7156,71 @@ function restoreDraft(options = {}) {
     if (d.shift) {
       shift.value = d.shift;
     }
-    if (d.headerUnit) {
-      headerUnit.value = d.headerUnit;
-      filterUnit.value = d.filterUnit || d.headerUnit;
-    }
     if (d.filterDate) {
       filterDate.value = d.filterDate;
     }
-    if (d.selectedEntries?.length) {
-      selectedEntries.value = d.selectedEntries;
-    } else if (d.selectedLineIds?.length) {
-      const pd = d.filterDate || filterDate.value;
-      selectedEntries.value = d.selectedLineIds.map((id) => ({
-        key: entryKey(pd, id),
-        lineId: id,
-        plannedDate: pd,
-        ppId: "",
-        orderCode: "",
-        quality: "",
-        color: "",
-        gsm: 0,
-        width_inch: 0,
-        widthLabel: "",
-        dayTargetKg: 0,
-        sourceSnapshot: {},
-      }));
-    } else {
-      selectedEntries.value = [];
-    }
-    selectionLocked.value = !!d.selectionLocked;
-    if (!skipRollGrid) {
-      rollLines.value = sortRollLinesLifo(
-        (d.rollLines || []).map((r) => ({
-          ...r,
-          gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
-          row_locked: !!r.row_locked,
-          row_ready_for_print: !!r.row_ready_for_print,
-        }))
-      );
+    const draftUnit = _cstr(d.headerUnit || d.filterUnit || "");
+    const draftCtxKey =
+      d.batchContextKey ||
+      (draftUnit ? `${d.runDate || runDate.value}|${d.shift || shift.value}|${draftUnit}` : "");
+    if (draftUnit && draftCtxKey) {
+      headerUnit.value = draftUnit;
+      filterUnit.value = d.filterUnit || draftUnit;
     }
     const ctxKey = currentBatchContextKey();
-    if (d.batchContextKey && d.batchContextKey === ctxKey) {
+    const draftMatchesContext = Boolean(draftCtxKey && draftCtxKey === ctxKey);
+    if (draftMatchesContext) {
+      if (d.selectedEntries?.length) {
+        selectedEntries.value = d.selectedEntries;
+      } else if (d.selectedLineIds?.length) {
+        const pd = d.filterDate || filterDate.value;
+        selectedEntries.value = d.selectedLineIds.map((id) => ({
+          key: entryKey(pd, id),
+          lineId: id,
+          plannedDate: pd,
+          ppId: "",
+          orderCode: "",
+          quality: "",
+          color: "",
+          gsm: 0,
+          width_inch: 0,
+          widthLabel: "",
+          dayTargetKg: 0,
+          sourceSnapshot: {},
+        }));
+      } else {
+        selectedEntries.value = [];
+      }
+      selectionLocked.value = !!d.selectionLocked;
       seriesPrefix.value = d.seriesPrefix || "";
       maxRollSuffix.value = d.maxRollSuffix || 0;
-    } else if (!skipRollGrid && !shiftOpened.value) {
-      resetBatchSeriesCache();
-      rollLines.value = [];
-      sessionSprs.value = {};
+      if (!skipRollGrid) {
+        rollLines.value = sortRollLinesLifo(
+          (d.rollLines || []).map((r) => ({
+            ...r,
+            gross_weight: r.gross_weight != null && r.gross_weight !== "" ? String(r.gross_weight) : "",
+            row_locked: !!r.row_locked,
+            row_ready_for_print: !!r.row_ready_for_print,
+          }))
+        );
+        sessionSprs.value = d.sessionSprs || {};
+      }
+    } else {
       selectedEntries.value = [];
       selectionLocked.value = false;
+      headerUnit.value = "";
+      filterUnit.value = "";
+      if (!skipRollGrid) {
+        rollLines.value = [];
+        sessionSprs.value = {};
+      }
+      resetBatchSeriesCache();
     }
     batchContextKey.value = ctxKey;
-    if (!skipRollGrid) {
-      sessionSprs.value = d.sessionSprs || {};
-    }
     void backfillSessionSprLabelTypes();
     syncCreationSeqFromGrid();
     syncBatchCounterFromGrid();
-    saveStatus.value = "Draft restored";
+    saveStatus.value = draftMatchesContext ? "Draft restored" : "Draft unit context reset";
   } catch (e) {
     console.warn("draft restore failed", e);
   }
@@ -7242,12 +7286,10 @@ watch([shiftOpened, runDate], () => {
 
 watch([runDate, shift, headerUnit], () => {
   const key = currentBatchContextKey();
-  if (batchContextKey.value && batchContextKey.value !== key) {
+  if (gsmContextKeyChanged(batchContextKey.value, key)) {
     resetBatchSeriesCache();
     if (!shiftOpened.value) {
-      sessionSprs.value = {};
-      sessionJobApiBaseline.value = {};
-      forceNewSprSession.value = false;
+      clearGsmUnitContextState();
     }
   }
   batchContextKey.value = key;
