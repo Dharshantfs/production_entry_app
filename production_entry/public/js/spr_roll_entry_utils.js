@@ -166,6 +166,16 @@ export function sprCalcNetFromGross(row) {
 	return sprRoundNetWeightKg(netVal);
 }
 
+/** SPR desk Client Script "cbm calculation" parity: (π × width × diameter) / 144 */
+export function sprCalcCbmFromDiameter(widthInch, diameterInches) {
+	const w = sprFlt(widthInch);
+	const d = sprFlt(diameterInches);
+	if (w <= 0 || d <= 0) {
+		return 0;
+	}
+	return Math.round(((3.14159 * w * d) / 144) * 10000) / 10000;
+}
+
 export function sprCalcProducedGsm(row) {
 	const gw = sprNormalizeGrossWeightInput(row?.gross_weight);
 	let nw = sprFlt(row?.net_weight);

@@ -53,7 +53,7 @@
       <aside class="gpe-sidebar gpe-card">
         <h3>Orders &amp; Jobs</h3>
         <p class="gpe-hint">PP shaft jobs. Confirm selection, then add roll rows.</p>
-        <div v-if="selectionLocked && selectedEntries.length" class="gpe-session-panel">
+        <div v-if="shiftOpened && selectionLocked && selectedEntries.length" class="gpe-session-panel">
           <div class="gpe-session-panel-head">Locked session · {{ selectedEntries.length }} job(s)</div>
           <div v-for="e in selectedEntries" :key="e.key" class="gpe-session-entry">
             <strong>{{ e.orderCode }}</strong>
@@ -507,6 +507,8 @@
                 <th>Core</th>
                 <th class="gpe-num">Core Base Wt (Kg)</th>
                 <th>Polybag</th>
+                <th class="gpe-num">Diameter</th>
+                <th class="gpe-num">CBM</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -581,6 +583,18 @@
                     @input="onPolybagInput(row)"
                   />
                 </td>
+                <td class="gpe-num">
+                  <input
+                    v-model.number="row.custom_diameter_inches"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    class="gpe-inp gpe-inp-narrow"
+                    :disabled="row.row_locked || row.is_bundle_row"
+                    @input="onDiameterInput(row)"
+                  />
+                </td>
+                <td class="gpe-num">{{ formatCbm(row.custom_cbm_cubic_meters) }}</td>
                 <td class="gpe-actions">
                   <button
                     v-if="!row.row_locked"
@@ -1545,6 +1559,7 @@ import {
   openSprForm,
 } from "./spr_gsm_tools.js";
 import {
+  sprCalcCbmFromDiameter,
   sprCalcNetFromGross,
   sprCalcProducedGsm,
   sprComputePlannedQtyKg,
@@ -2671,6 +2686,11 @@ function formatKg(v) {
   return sprFormatKg(v);
 }
 
+function formatCbm(v) {
+  const n = sprFlt(v);
+  return n > 0 ? n.toFixed(4) : "—";
+}
+
 function coreBaseWeightForRow(row) {
   return sprCoreBaseWeightKgs(row?.custom_core_width_mm, coreWidthOptions.value);
 }
@@ -2711,11 +2731,20 @@ function itemRemainingKg(item) {
 }
 
 function isFabricUnit(unit) {
-  const u = (unit || "").trim();
+  const u = normalizeGsmUnit(unit);
   if (!u || u.toUpperCase().includes("UNASSIGNED")) {
     return false;
   }
   return FABRIC_UNITS.includes(u);
+}
+
+function normalizeGsmUnit(unit) {
+  const u = _cstr(unit).trim();
+  const m = u.match(/unit\s*(\d+)/i);
+  if (m) {
+    return `Unit ${m[1]}`;
+  }
+  return u;
 }
 
 function buildRollQuotaDisplay(lineId) {
@@ -2835,12 +2864,6 @@ function rowMatchesFilterDate(row) {
   if (!pd) {
     return false;
   }
-  if (shiftOpened.value && sessionPpIds().has(row.pp_id)) {
-    const sessionDates = sessionPlannedDates();
-    if (sessionDates.includes(pd)) {
-      return true;
-    }
-  }
   if (viewScope.value === "daily") {
     return pd === ordersBrowseDate();
   }
@@ -2853,9 +2876,11 @@ function rowMatchesFilterDate(row) {
 
 const filteredPpSubmittedRows = computed(() => {
   let rows = ppSubmittedRows.value;
-  const unit = shiftOpened.value ? headerUnit.value || filterUnit.value : filterUnit.value;
+  const unit = normalizeGsmUnit(
+    shiftOpened.value ? headerUnit.value || filterUnit.value : filterUnit.value
+  );
   if (unit) {
-    rows = rows.filter((r) => r.unit === unit);
+    rows = rows.filter((r) => normalizeGsmUnit(r.unit) === unit);
   }
   rows = rows.filter((r) => rowMatchesFilterDate(r));
   return rows;
@@ -2865,28 +2890,7 @@ const filteredPpIdSet = computed(
   () => new Set(filteredPpSubmittedRows.value.map((r) => r.pp_id).filter(Boolean))
 );
 
-const sidebarAllowedPpIds = computed(() => {
-  const ids = new Set(filteredPpIdSet.value);
-  if (!shiftOpened.value) {
-    return ids;
-  }
-  for (const entry of selectedEntries.value) {
-    if (entry.ppId) {
-      ids.add(entry.ppId);
-    }
-  }
-  for (const row of rollLines.value) {
-    if (row.pp_id) {
-      ids.add(row.pp_id);
-    }
-  }
-  for (const job of jobBoardJobs.value) {
-    if (job.pp_id) {
-      ids.add(job.pp_id);
-    }
-  }
-  return ids;
-});
+const sidebarAllowedPpIds = computed(() => filteredPpIdSet.value);
 
 const mergedItemIds = computed(() => {
   const s = new Set();
@@ -3543,22 +3547,31 @@ const wastageRecycleSprList = computed(() => {
 const sessionSprList = shiftSessionSprList;
 
 function pruneSelectedEntriesToFilter() {
-  if (shiftOpened.value) {
-    return;
-  }
   const allowedPpIds = filteredPpIdSet.value;
-  if (!selectedEntries.value.length || !allowedPpIds.size) {
+  if (!selectedEntries.value.length) {
     return;
   }
-  const next = selectedEntries.value.filter((e) => allowedPpIds.has(e.ppId));
+  const browseDate = ordersBrowseDate();
+  const next = selectedEntries.value.filter((e) => {
+    if (!e.ppId || !allowedPpIds.has(e.ppId)) {
+      return false;
+    }
+    if (viewScope.value === "daily") {
+      const pd = String(e.plannedDate || browseDate).slice(0, 10);
+      return pd === browseDate;
+    }
+    return true;
+  });
   if (next.length === selectedEntries.value.length) {
     return;
   }
   selectedEntries.value = next;
   if (!next.length) {
     selectionLocked.value = false;
-    rollLines.value = [];
-    sessionSprs.value = {};
+    if (!shiftOpened.value) {
+      rollLines.value = [];
+      sessionSprs.value = {};
+    }
   }
   scheduleAutosave();
 }
@@ -3664,7 +3677,12 @@ async function loadMixRollCandidates() {
   }
   mixRollLoading.value = true;
   try {
-    const res = await fetchGsmMixRollCandidates(unit, 0, runDate.value || filterDate.value);
+    const res = await fetchGsmMixRollCandidates(unit, 0, {
+      plannedDate: ordersBrowseDate(),
+      viewScope: viewScope.value,
+      filterWeek: filterWeek.value,
+      filterMonth: filterMonth.value,
+    });
     mixRollCandidates.value = res.mix_rolls || [];
   } catch (e) {
     console.error(e);
@@ -4470,6 +4488,15 @@ function applyRollRowRecalc(row) {
   row.net_weight = updated.net_weight;
   row.produced_gsm = updated.produced_gsm;
   row.planned_qty = updated.planned_qty;
+  row.custom_cbm_cubic_meters = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
+}
+
+function onDiameterInput(row) {
+  if (row.row_locked) {
+    return;
+  }
+  row.custom_cbm_cubic_meters = sprCalcCbmFromDiameter(row.width_inch, row.custom_diameter_inches);
+  scheduleAutosave();
 }
 
 function onGrossWeightInput(row, event) {
@@ -5450,8 +5477,11 @@ function enrichSelectedEntriesFromBoard() {
   }
 }
 
-async function fetchColorChartForDate(date) {
-  const args = { ...buildFetchArgs(), date };
+async function fetchColorChartForDate(overrideDate = null) {
+  const args = { ...buildFetchArgs() };
+  if (viewScope.value === "daily") {
+    args.date = overrideDate || ordersBrowseDate();
+  }
   const r = await frappe.call({
     method: "production_entry.production_planning.scheduler_api.get_color_chart_data",
     args,
@@ -5501,10 +5531,7 @@ async function fetchOrders() {
   try {
     rawOrders.value = await fetchColorChartForDate(ordersBrowseDate());
     await fetchPpOrdersSupplement();
-    if (!filterUnit.value && unitOptions.value.length) {
-      filterUnit.value = unitOptions.value[0];
-      headerUnit.value = filterUnit.value;
-    } else if (!filterUnit.value && headerUnit.value) {
+    if (!filterUnit.value && headerUnit.value) {
       filterUnit.value = headerUnit.value;
     }
     await fetchSessionSupplementalOrders();
@@ -5719,6 +5746,8 @@ function applyShiftSessionHydration(session) {
     supervisor.value = "";
     shiftBatchPrefix.value = "";
     shiftResumeBanner.value = "";
+    selectedEntries.value = [];
+    selectionLocked.value = false;
     stopShiftReminderTimers();
   }
 }
@@ -5942,13 +5971,15 @@ function applyResumePayload(msg, options = {}) {
     rollLines.value = sortRollLinesLifo(serverRows);
   }
   rebuildSelectedEntriesFromResume(msg.job_selections || [], { replaceAll: !merge });
-  if (msg.selection_locked != null) {
-    selectionLocked.value = !!cint(msg.selection_locked);
-  } else if (!merge && ((msg.roll_lines || []).length || Object.keys(sprMap).length)) {
-    selectionLocked.value = true;
-  }
-  if (!merge && (selectionLocked.value || (msg.job_selections || []).length)) {
-    recordJobApiBaselines(jobBoardJobs.value);
+  if (shiftOpened.value) {
+    if (msg.selection_locked != null) {
+      selectionLocked.value = !!cint(msg.selection_locked);
+    } else if (!merge && ((msg.roll_lines || []).length || Object.keys(sprMap).length)) {
+      selectionLocked.value = true;
+    }
+    if (!merge && (selectionLocked.value || (msg.job_selections || []).length)) {
+      recordJobApiBaselines(jobBoardJobs.value);
+    }
   }
   if (msg.session?.operator) {
     operator.value = msg.session.operator;
@@ -7119,13 +7150,15 @@ function persistDraft() {
       supervisor: supervisor.value,
       filterUnit: filterUnit.value,
       filterDate: filterDate.value,
-      selectedEntries: selectedEntries.value,
-      selectionLocked: selectionLocked.value,
       seriesPrefix: seriesPrefix.value,
       maxRollSuffix: maxRollSuffix.value,
       creationSeq: creationSeq.value,
       batchContextKey: currentBatchContextKey(),
     };
+    if (shiftOpened.value) {
+      payload.selectedEntries = selectedEntries.value;
+      payload.selectionLocked = selectionLocked.value;
+    }
     if (!shiftOpened.value) {
       payload.rollLines = rollLines.value;
       payload.sessionSprs = sessionSprs.value;
@@ -7170,31 +7203,36 @@ function restoreDraft(options = {}) {
     const ctxKey = currentBatchContextKey();
     const draftMatchesContext = Boolean(draftCtxKey && draftCtxKey === ctxKey);
     if (draftMatchesContext) {
-      if (d.selectedEntries?.length) {
-        selectedEntries.value = d.selectedEntries;
-      } else if (d.selectedLineIds?.length) {
-        const pd = d.filterDate || filterDate.value;
-        selectedEntries.value = d.selectedLineIds.map((id) => ({
-          key: entryKey(pd, id),
-          lineId: id,
-          plannedDate: pd,
-          ppId: "",
-          orderCode: "",
-          quality: "",
-          color: "",
-          gsm: 0,
-          width_inch: 0,
-          widthLabel: "",
-          dayTargetKg: 0,
-          sourceSnapshot: {},
-        }));
+      if (shiftOpened.value) {
+        if (d.selectedEntries?.length) {
+          selectedEntries.value = d.selectedEntries;
+        } else if (d.selectedLineIds?.length) {
+          const pd = d.filterDate || filterDate.value;
+          selectedEntries.value = d.selectedLineIds.map((id) => ({
+            key: entryKey(pd, id),
+            lineId: id,
+            plannedDate: pd,
+            ppId: "",
+            orderCode: "",
+            quality: "",
+            color: "",
+            gsm: 0,
+            width_inch: 0,
+            widthLabel: "",
+            dayTargetKg: 0,
+            sourceSnapshot: {},
+          }));
+        } else {
+          selectedEntries.value = [];
+        }
+        selectionLocked.value = !!d.selectionLocked;
       } else {
         selectedEntries.value = [];
+        selectionLocked.value = false;
       }
-      selectionLocked.value = !!d.selectionLocked;
       seriesPrefix.value = d.seriesPrefix || "";
       maxRollSuffix.value = d.maxRollSuffix || 0;
-      if (!skipRollGrid) {
+      if (!skipRollGrid && !shiftOpened.value) {
         rollLines.value = sortRollLinesLifo(
           (d.rollLines || []).map((r) => ({
             ...r,
@@ -7278,6 +7316,12 @@ async function ensureSidebarForOpenShift() {
   await loadMixRollCandidates();
 }
 
+watch([filterDate, filterUnit, filterWeek, filterMonth, viewScope, shiftOpened], () => {
+  if (shiftOpened.value && (headerUnit.value || filterUnit.value)) {
+    void loadMixRollCandidates();
+  }
+});
+
 watch([shiftOpened, runDate], () => {
   if (shiftOpened.value && runDate.value) {
     ensureSidebarForOpenShift();
@@ -7313,15 +7357,13 @@ onMounted(async () => {
     headerUnit.value = filterUnit.value;
     shiftFilterUnit.value = filterUnit.value;
     batchContextKey.value = currentBatchContextKey();
-    const booted = await tryResumeOpenSessionForUnit({ quiet: true });
-    if (!booted) {
-      await refreshShiftSession();
-      if (shiftOpened.value && shouldResumeFromServer()) {
-        await refreshSessionFromServer({ merge: true });
-      }
-      if (shiftOpened.value) {
-        setupGsmLiveSync();
-      }
+    await refreshShiftSession();
+    if (shiftOpened.value && shouldResumeFromServer()) {
+      await refreshSessionFromServer({ merge: true });
+    }
+    if (shiftOpened.value) {
+      setupGsmLiveSync();
+      await loadMixRollCandidates();
     }
   } else {
     shiftFilterUnit.value = "";
@@ -7343,7 +7385,7 @@ onUnmounted(() => {
 <style scoped>
 .gpe-root {
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  font-size: 15px;
+  font-size: 16px;
   color: #0f172a;
   padding: 10px 12px;
   background: linear-gradient(160deg, #f1f5f9 0%, #e2e8f0 100%);
@@ -7786,7 +7828,7 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 .gpe-order-code {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 800;
   color: #0f172a;
   letter-spacing: -0.02em;
@@ -7863,13 +7905,13 @@ onUnmounted(() => {
 }
 .gpe-job-title {
   font-weight: 800;
-  font-size: 15px;
+  font-size: 16px;
   color: #0f172a;
   letter-spacing: -0.01em;
 }
 .gpe-job-gsm {
   font-weight: 800;
-  font-size: 13px;
+  font-size: 14px;
   color: #1d4ed8;
   background: #eff6ff;
   border: 1px solid #bfdbfe;
@@ -8505,16 +8547,17 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .gpe-kpi-label {
-  font-size: 10px;
+  font-size: 11px;
   color: #64748b;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  font-weight: 700;
 }
 .gpe-kpi-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: #64748b;
 }
 .gpe-shift-consolidated {
@@ -8675,11 +8718,11 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .gpe-metrics-compact .gpe-metric {
-  padding: 6px 8px;
-  font-size: 13px;
+  padding: 7px 10px;
+  font-size: 14px;
 }
 .gpe-metrics-compact .gpe-metric strong {
-  font-size: 20px;
+  font-size: 22px;
 }
 .gpe-gsm-legend {
   flex-shrink: 0;
@@ -8877,16 +8920,16 @@ onUnmounted(() => {
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 17px;
+  font-size: 18px;
 }
 .gpe-grid-entry th,
 .gpe-grid-entry td {
   border-bottom: 1px solid #f1f5f9;
-  padding: 8px 10px;
+  padding: 9px 11px;
   white-space: nowrap;
 }
 .gpe-grid-entry tbody td {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 600;
 }
 .gpe-grid-entry td.gpe-num,
@@ -8898,8 +8941,8 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 2;
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 800;
 }
 .gpe-sticky-col {
   position: sticky;
@@ -8967,15 +9010,15 @@ onUnmounted(() => {
 }
 .gpe-inp {
   width: 88px;
-  min-height: 42px;
+  min-height: 44px;
   padding: 8px 10px;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
-  font-size: 16px;
+  font-size: 17px;
 }
 .gpe-grid-entry .gpe-inp {
-  min-height: 42px;
-  font-size: 16px;
+  min-height: 44px;
+  font-size: 17px;
 }
 .gpe-grid-entry .gpe-btn.sm {
   font-size: 13px;

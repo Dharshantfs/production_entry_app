@@ -751,6 +751,11 @@ def close_gsm_shift_session(run_date=None, shift=None, unit=None):
 		doc.zero_production_close = 1 if zero_prod else 0
 	doc.status = "Closed"
 	doc.closed_at = now_datetime()
+	meta = frappe.get_meta(_GSM_SHIFT_SESSION_DOCTYPE)
+	if meta.has_field("locked_jobs"):
+		doc.locked_jobs = []
+	if meta.has_field("selection_locked"):
+		doc.selection_locked = 0
 	doc.save(ignore_permissions=True)
 	removed_sprs = []
 	if zero_prod:
@@ -798,7 +803,7 @@ def get_open_gsm_shift_for_unit(unit=None):
 def get_gsm_pp_orders_for_date(planned_date=None, unit=None):
 	"""PP-submitted fabric rows for GSM sidebar — supplements color chart when planned_date was missing."""
 	planned_date = getdate(planned_date) if planned_date else None
-	unit = _cstr(unit).strip()
+	unit = _normalize_mix_unit(unit) if unit else ""
 	if not planned_date:
 		return []
 	try:
@@ -817,7 +822,7 @@ def get_gsm_pp_orders_for_date(planned_date=None, unit=None):
 	for r in rows:
 		if cint(r.get("pp_docstatus") or 0) != 1:
 			continue
-		row_unit = _cstr(r.get("unit") or "").strip()
+		row_unit = _normalize_mix_unit(r.get("unit") or "")
 		if unit and row_unit and row_unit != unit:
 			continue
 		pp_id = _cstr(r.get("pp_id") or "").strip()
@@ -4415,8 +4420,9 @@ def _mix_date_key_months(date_key: str) -> set:
 	"""Return the set of 'YYYY-MM' month labels a Color Chart mix date_key covers.
 
 	Keys look like `day-YYYY-MM-DD`, `week-YYYY-Www` or `month-YYYY-MM` (optionally
-	suffixed with `-<PLAN>`). Weeks may straddle two calendar months, so all months
-	the week touches are returned. Unparseable keys return an empty set.
+	suffixed with `-<PLAN>`). Legacy keys `YYYY-Www` and `YYYY-MM-DD` are also
+	supported. Weeks may straddle two calendar months, so all months the week
+	touches are returned. Unparseable keys return an empty set.
 	"""
 	import re as _re
 	from datetime import date as _date, timedelta as _timedelta
@@ -4425,6 +4431,16 @@ def _mix_date_key_months(date_key: str) -> set:
 	months: set = set()
 	if not key:
 		return months
+
+	def _add_week_months(year: int, week: int) -> None:
+		try:
+			monday = _date.fromisocalendar(year, week, 1)
+			for i in range(7):
+				d = monday + _timedelta(days=i)
+				months.add(f"{d.year:04d}-{d.month:02d}")
+		except Exception:
+			pass
+
 	m = _re.match(r"^month-(\d{4})-(\d{1,2})", key)
 	if m:
 		months.add(f"{int(m.group(1)):04d}-{int(m.group(2)):02d}")
@@ -4433,34 +4449,80 @@ def _mix_date_key_months(date_key: str) -> set:
 	if m:
 		months.add(f"{int(m.group(1)):04d}-{int(m.group(2)):02d}")
 		return months
-	m = _re.match(r"^week-(\d{4})-W(\d{1,2})", key)
+	m = _re.match(r"^week-(\d{4})-W(\d{1,2})", key, _re.IGNORECASE)
 	if m:
-		year, week = int(m.group(1)), int(m.group(2))
-		try:
-			monday = _date.fromisocalendar(year, week, 1)
-			for i in range(7):
-				d = monday + _timedelta(days=i)
-				months.add(f"{d.year:04d}-{d.month:02d}")
-		except Exception:
-			pass
+		_add_week_months(int(m.group(1)), int(m.group(2)))
+		return months
+	m = _re.match(r"^(\d{4})-W(\d{1,2})", key, _re.IGNORECASE)
+	if m:
+		_add_week_months(int(m.group(1)), int(m.group(2)))
+		return months
+	m = _re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", key)
+	if m:
+		months.add(f"{int(m.group(1)):04d}-{int(m.group(2)):02d}")
+	return months
+
+
+def _gsm_browse_scope_months(
+	planned_date=None,
+	view_scope=None,
+	filter_week=None,
+	filter_month=None,
+	run_date=None,
+) -> set:
+	"""Calendar months covered by GSM browse filters (Planned Date / week / month)."""
+	import re as _re
+
+	months: set = set()
+	scope = _cstr(view_scope or "daily").strip().lower()
+	if scope == "monthly" and filter_month:
+		m = _re.match(r"^(\d{4})-(\d{1,2})", _cstr(filter_month).strip())
+		if m:
+			months.add(f"{int(m.group(1)):04d}-{int(m.group(2)):02d}")
+	elif scope == "weekly" and filter_week:
+		week_key = _cstr(filter_week).strip()
+		if week_key and not week_key.lower().startswith("week-"):
+			week_key = f"week-{week_key}"
+		months |= _mix_date_key_months(week_key)
+	elif planned_date:
+		d = getdate(planned_date)
+		months.add(f"{d.year:04d}-{d.month:02d}")
+	elif run_date:
+		d = getdate(run_date)
+		months.add(f"{d.year:04d}-{d.month:02d}")
 	return months
 
 
 @frappe.whitelist()
-def get_gsm_mix_rolls_for_unit(unit, include_submitted=0, run_date=None):
-	"""List planner-ready mix rows for GSM operator, scoped to the production month + unit.
+def get_gsm_mix_rolls_for_unit(
+	unit,
+	include_submitted=0,
+	run_date=None,
+	planned_date=None,
+	view_scope=None,
+	filter_week=None,
+	filter_month=None,
+):
+	"""List planner-ready mix rows for GSM operator, scoped to browse month + unit.
 
-	Mix rolls are shown for the month of `run_date` (defaults to today) based on the
-	planner's Color Chart date key, and only when the planning team has entered the
-	shaft/width. Operator picks which planned mix to run — the run_date itself is not
-	matched exactly, only its month.
+	Mix rolls match the GSM browse filters (Planned Date / week / month), not the
+	production run_date month. Rows require planner item + shaft/width on Color Chart.
 	"""
 	target_unit = _normalize_mix_unit(unit)
 	if not target_unit:
 		frappe.throw(_("Unit is required"))
 
-	ref = getdate(run_date) if run_date else getdate()
-	target_month = f"{ref.year:04d}-{ref.month:02d}"
+	scope_months = _gsm_browse_scope_months(
+		planned_date=planned_date,
+		view_scope=view_scope,
+		filter_week=filter_week,
+		filter_month=filter_month,
+		run_date=run_date,
+	)
+	if not scope_months:
+		ref = getdate(run_date) if run_date else getdate()
+		scope_months = {f"{ref.year:04d}-{ref.month:02d}"}
+	target_month = sorted(scope_months)[0]
 
 	out = []
 	seen = set()
@@ -4473,9 +4535,9 @@ def get_gsm_mix_rolls_for_unit(unit, include_submitted=0, run_date=None):
 		# Planning team enters width in shaft details — hide rows without it.
 		if not _cstr(entry.get("shaft")).strip():
 			continue
-		# Show only this production month, based on the planned (Color Chart) date key.
+		# Show only browse scope month(s), based on the planned (Color Chart) date key.
 		key_months = _mix_date_key_months(date_key)
-		if not key_months or target_month not in key_months:
+		if not key_months or not (key_months & scope_months):
 			continue
 		if cint(include_submitted) == 0 and entry.get("_submitted"):
 			continue
@@ -4484,7 +4546,8 @@ def get_gsm_mix_rolls_for_unit(unit, include_submitted=0, run_date=None):
 			continue
 		seen.add(dedupe)
 		candidate = _serialize_mix_roll_candidate(date_key, entry)
-		candidate["planning_month"] = target_month
+		overlap = sorted(key_months & scope_months)
+		candidate["planning_month"] = overlap[0] if overlap else target_month
 		out.append(candidate)
 
 	out.sort(
@@ -4494,7 +4557,7 @@ def get_gsm_mix_rolls_for_unit(unit, include_submitted=0, run_date=None):
 			_cstr(r.get("mix_row_key")),
 		)
 	)
-	return {"unit": target_unit, "month": target_month, "mix_rolls": out}
+	return {"unit": target_unit, "month": target_month, "months": sorted(scope_months), "mix_rolls": out}
 
 
 @frappe.whitelist()

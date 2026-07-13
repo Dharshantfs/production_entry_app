@@ -8,10 +8,29 @@ import {
   sprRecalcRollRow,
 } from "./spr_roll_entry_utils.js";
 
-export async function fetchGsmMixRollCandidates(unit, includeSubmitted = 0, runDate = null) {
+export async function fetchGsmMixRollCandidates(unit, includeSubmitted = 0, browse = {}) {
+  const args = {
+    unit,
+    include_submitted: includeSubmitted ? 1 : 0,
+  };
+  if (browse.plannedDate) {
+    args.planned_date = browse.plannedDate;
+  }
+  if (browse.viewScope) {
+    args.view_scope = browse.viewScope;
+  }
+  if (browse.filterWeek) {
+    args.filter_week = browse.filterWeek;
+  }
+  if (browse.filterMonth) {
+    args.filter_month = browse.filterMonth;
+  }
+  if (browse.runDate) {
+    args.run_date = browse.runDate;
+  }
   const res = await frappe.call({
     method: "production_entry.production_planning.unified_production_entry_api.get_gsm_mix_rolls_for_unit",
-    args: { unit, include_submitted: includeSubmitted ? 1 : 0, run_date: runDate || undefined },
+    args,
   });
   return res.message || { mix_rolls: [], unit };
 }
