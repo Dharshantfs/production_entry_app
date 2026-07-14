@@ -3419,11 +3419,12 @@ def submit_gsm_production_entry(
 def gsm_apply_bundle_packaging(
 	shaft_production_run,
 	job_id,
-	width_inch,
-	no_of_packaging,
-	whole_gross_kg,
+	width_inch=None,
+	no_of_packaging=None,
+	whole_gross_kg=None,
 	produced_length_mtrs=None,
 	pp_id=None,
+	width_mix=None,
 ):
 	"""GSM Tools → Bundle packaging (fresh rolls + bundle sticker on SPR)."""
 	from production_entry.production_planning.doctype.shaft_production_run.shaft_production_run import (
@@ -3433,11 +3434,12 @@ def gsm_apply_bundle_packaging(
 	return _gsm_bundle(
 		shaft_production_run,
 		job_id,
-		width_inch,
-		no_of_packaging,
-		whole_gross_kg,
+		width_inch=width_inch,
+		no_of_packaging=no_of_packaging,
+		whole_gross_kg=whole_gross_kg,
 		produced_length_mtrs=produced_length_mtrs,
 		pp_id=pp_id,
+		width_mix=width_mix,
 	)
 
 
@@ -4706,7 +4708,45 @@ def submit_gsm_mix_roll_spr(spr_name):
 	spr = frappe.get_doc("Shaft Production Run", spr_name)
 	if not spr_doc_is_mix_roll(spr):
 		frappe.throw(_("Use fabric submit for non-mix SPRs"))
-	if cint(spr.docstatus) != 0:
-		frappe.throw(_("SPR is already submitted"))
-	spr.submit()
-	return {"status": "ok", "spr_name": spr_name, "docstatus": cint(spr.docstatus)}
+	already = cint(spr.docstatus) == 1
+	if not already:
+		if cint(spr.docstatus) != 0:
+			frappe.throw(_("SPR cannot be submitted from status {0}").format(spr.docstatus))
+		spr.submit()
+	_mark_mix_roll_store_submitted_for_spr(spr_name)
+	return {
+		"status": "ok",
+		"spr_name": spr_name,
+		"docstatus": 1,
+		"already_submitted": 1 if already else 0,
+	}
+
+
+def _mark_mix_roll_store_submitted_for_spr(spr_name: str) -> None:
+	"""Flag Color Chart mix_roll_store_data rows that point at this SPR as submitted."""
+	spr_name = _cstr(spr_name).strip()
+	if not spr_name or not _mix_roll_store_table_exists():
+		return
+	rows = frappe.db.sql("SELECT date_key, data FROM `mix_roll_store_data`")
+	for date_key, raw in rows or []:
+		try:
+			entries = json.loads(raw) if raw else []
+		except Exception:
+			continue
+		if not isinstance(entries, list):
+			continue
+		updated = False
+		for entry in entries:
+			if not isinstance(entry, dict):
+				continue
+			if _cstr(entry.get("spr_name")).strip() != spr_name:
+				continue
+			entry["_submitted"] = 1
+			entry["spr_name"] = spr_name
+			updated = True
+		if updated:
+			frappe.db.sql(
+				"UPDATE `mix_roll_store_data` SET data = %s, modified = NOW() WHERE date_key = %s",
+				(json.dumps(entries, ensure_ascii=False), date_key),
+			)
+	frappe.db.commit()

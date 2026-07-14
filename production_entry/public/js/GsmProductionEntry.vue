@@ -174,7 +174,7 @@
               @click="startMixRollProduction(mix)"
             >{{ mix.spr_name ? "Continue" : "Start production" }}</button>
           </div>
-          <div v-if="activeMixRoll" class="gpe-mix-active-banner">
+          <div v-if="shiftOpened && activeMixRoll" class="gpe-mix-active-banner">
             Active: <strong>{{ activeMixRoll.label }}</strong>
             <button type="button" class="gpe-link-btn" @click="clearActiveMixRoll">Clear</button>
           </div>
@@ -394,8 +394,8 @@
             <button
               type="button"
               class="gpe-btn gpe-btn-warn"
-              :disabled="!rollLines.length && !sessionSprList.length"
-              title="Clear grid for another entry same date/shift — then Create SPRs again"
+              :disabled="!rollLines.length && !sessionSprList.length && !activeMixRoll && !mixRollLines.length"
+              title="Clear grid and mix roll workspace — server SPRs are kept"
               @click="clearGridEntries"
             >Clear Entries</button>
           </div>
@@ -425,7 +425,7 @@
           </div>
         </div>
 
-        <div v-if="activeMixRoll" class="gpe-mix-roll-workspace gpe-card">
+        <div v-if="shiftOpened && activeMixRoll" class="gpe-mix-roll-workspace gpe-card">
           <div class="gpe-mix-roll-workspace-head">
             <div class="gpe-mix-roll-title">
               <strong>Mix Roll · {{ activeMixRoll.label }}</strong>
@@ -3695,6 +3695,28 @@ async function loadMixRollCandidates() {
   }
 }
 
+async function isMixSprDraft(sprName) {
+  const name = _cstr(sprName);
+  if (!name) {
+    return false;
+  }
+  const fromCandidates = mixRollCandidates.value.find((m) => m.spr_name === name);
+  if (fromCandidates) {
+    if (cint(fromCandidates.spr_docstatus) === 1 || fromCandidates._submitted) {
+      return false;
+    }
+    if (fromCandidates.spr_docstatus === 0 || fromCandidates.spr_status === "Draft") {
+      return true;
+    }
+  }
+  try {
+    const r = await frappe.db.get_value("Shaft Production Run", name, "docstatus");
+    return cint(r?.message?.docstatus) === 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function restoreActiveMixRollFromSession() {
   if (!shiftOpened.value || activeMixRoll.value) {
     return;
@@ -3705,7 +3727,9 @@ async function restoreActiveMixRollFromSession() {
     mixMeta = mixRollCandidates.value.find((m) => m.spr_name === mixRow.spr_name);
   }
   if (!mixMeta) {
-    mixMeta = mixRollCandidates.value.find((m) => m.spr_name && !m._submitted);
+    mixMeta = mixRollCandidates.value.find(
+      (m) => m.spr_name && !m._submitted && cint(m.spr_docstatus) !== 1
+    );
   }
   if (!mixMeta && mixRow?.spr_name) {
     mixMeta = {
@@ -3718,6 +3742,14 @@ async function restoreActiveMixRollFromSession() {
     };
   }
   if (!mixMeta?.spr_name) {
+    return;
+  }
+  if (!(await isMixSprDraft(mixMeta.spr_name))) {
+    // Submitted mix SPR — drop orphan mix rows from this shift grid and do not reopen workspace.
+    rollLines.value = rollLines.value.filter(
+      (r) => !(r.is_mix_roll_row && r.spr_name === mixMeta.spr_name)
+    );
+    mixRollLines.value = mixRollLines.value.filter((r) => r.spr_name !== mixMeta.spr_name);
     return;
   }
   activeMixRoll.value = { ...mixMeta, spr_name: mixMeta.spr_name };
@@ -4851,11 +4883,11 @@ function buildSubmitRollsPayload() {
 }
 
 async function clearGridEntries() {
-  if (!rollLines.value.length && !sessionSprList.value.length) {
+  if (!rollLines.value.length && !sessionSprList.value.length && !activeMixRoll.value && !mixRollLines.value.length) {
     return;
   }
   frappe.confirm(
-    __("Clear all roll rows from this screen? Server SPRs are kept — you can add new rows without creating SPRs again."),
+    __("Clear all roll rows and mix roll workspace from this screen? Server SPRs are kept — you can add new rows without creating SPRs again."),
     () => {
       rollLines.value = [];
       mixRollLines.value = [];
@@ -4868,7 +4900,7 @@ async function clearGridEntries() {
       }
       saveStatus.value = "Cleared — add new roll rows";
       scheduleAutosave();
-      frappe.show_alert({ message: __("Grid cleared"), indicator: "blue" });
+      frappe.show_alert({ message: __("Grid and mix roll cleared"), indicator: "blue" });
     }
   );
 }
@@ -5014,17 +5046,26 @@ function closeSubmitDialog() {
   submitErrorMessage.value = "";
 }
 
-async function pollGsmSubmitRecovery(sprNames) {
+async function pollGsmSubmitRecovery(sprNames, options = {}) {
   const names = (sprNames || []).filter(Boolean);
   if (!names.length) {
     return false;
   }
-  for (let i = 0; i < 24; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+  const maxAttempts = cint(options.maxAttempts) || 24;
+  const delayMs = cint(options.delayMs) || 5000;
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0 || options.delayFirst) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
     let allSubmitted = true;
     for (const name of names) {
-      const r = await frappe.db.get_value("Shaft Production Run", name, "docstatus");
-      if (cint(r?.message?.docstatus) !== 1) {
+      try {
+        const r = await frappe.db.get_value("Shaft Production Run", name, "docstatus");
+        if (cint(r?.message?.docstatus) !== 1) {
+          allSubmitted = false;
+          break;
+        }
+      } catch (e) {
         allSubmitted = false;
         break;
       }
@@ -5034,6 +5075,11 @@ async function pollGsmSubmitRecovery(sprNames) {
     }
   }
   return false;
+}
+
+function mixSubmitErrorLooksAlreadySubmitted(err) {
+  const msg = _cstr(err).toLowerCase();
+  return msg.includes("already submitted") || msg.includes("cannot submit");
 }
 
 function showSubmitSuccess(submitted, totalKg) {
@@ -5160,12 +5206,46 @@ async function submitEntry(overrides = []) {
 
     const mixSubmitted = [];
     const mixFailed = [];
+    const mixNames = mixSubmitSprList.value.map((s) => s.spr_name).filter(Boolean);
     for (const mixSpr of mixSubmitSprList.value) {
       try {
         await submitGsmMixRollSpr(mixSpr.spr_name);
         mixSubmitted.push({ spr_name: mixSpr.spr_name, pp_id: "", is_mix_roll: 1 });
       } catch (e) {
-        mixFailed.push({ spr_name: mixSpr.spr_name, error: _cstr(e?.message || e) });
+        const errMsg = _cstr(e?.message || e);
+        if (mixSubmitErrorLooksAlreadySubmitted(errMsg)) {
+          mixSubmitted.push({ spr_name: mixSpr.spr_name, pp_id: "", is_mix_roll: 1, recovered: 1 });
+        } else {
+          mixFailed.push({ spr_name: mixSpr.spr_name, error: errMsg });
+        }
+      }
+    }
+    // 502 / gateway: server may have submitted — poll remaining failures.
+    if (mixFailed.length) {
+      const recoverNames = mixFailed.map((f) => f.spr_name);
+      const recovered = await pollGsmSubmitRecovery(recoverNames, { maxAttempts: 12, delayMs: 3000, delayFirst: true });
+      if (recovered) {
+        for (const name of recoverNames) {
+          mixSubmitted.push({ spr_name: name, pp_id: "", is_mix_roll: 1, recovered: 1 });
+        }
+        mixFailed.length = 0;
+      } else {
+        // Partial poll: move any that are already submitted out of failed.
+        const stillFailed = [];
+        for (const f of mixFailed) {
+          try {
+            const r = await frappe.db.get_value("Shaft Production Run", f.spr_name, "docstatus");
+            if (cint(r?.message?.docstatus) === 1) {
+              mixSubmitted.push({ spr_name: f.spr_name, pp_id: "", is_mix_roll: 1, recovered: 1 });
+            } else {
+              stillFailed.push(f);
+            }
+          } catch (e) {
+            stillFailed.push(f);
+          }
+        }
+        mixFailed.length = 0;
+        mixFailed.push(...stillFailed);
       }
     }
     showToleranceDialog.value = false;
@@ -5183,8 +5263,16 @@ async function submitEntry(overrides = []) {
       markSessionSprsSubmitted(submitted);
       showSubmitSuccess(submitted, msg.total_kg);
       saveStatus.value = "Submitted";
-      if (activeMixRoll.value?.spr_name && mixSubmitted.some((s) => s.spr_name === activeMixRoll.value.spr_name)) {
+      const submittedMixNames = new Set(mixSubmitted.map((s) => s.spr_name));
+      if (activeMixRoll.value?.spr_name && submittedMixNames.has(activeMixRoll.value.spr_name)) {
         clearActiveMixRoll();
+      }
+      // Drop mix rows for submitted mix SPRs from the main grid.
+      if (submittedMixNames.size) {
+        rollLines.value = rollLines.value.filter(
+          (r) => !(r.is_mix_roll_row && submittedMixNames.has(r.spr_name))
+        );
+        mixRollLines.value = [];
       }
       await loadMixRollCandidates();
       await fetchOrders();
@@ -5195,7 +5283,7 @@ async function submitEntry(overrides = []) {
     submitDialogPhase.value = "error";
   } catch (e) {
     console.error(e);
-    const recovered = await pollGsmSubmitRecovery(sprNamesToSubmit);
+    const recovered = await pollGsmSubmitRecovery(sprNamesToSubmit, { delayFirst: true });
     if (recovered) {
       markSessionSprsSubmitted(sprNamesToSubmit.map((sn) => ({ spr_name: sn })));
       showSubmitSuccess(
@@ -5203,6 +5291,8 @@ async function submitEntry(overrides = []) {
         metrics.value.totalNet
       );
       saveStatus.value = "Submitted";
+      clearActiveMixRoll();
+      await loadMixRollCandidates();
       await fetchOrders();
       return;
     }
@@ -6399,6 +6489,9 @@ function clearGsmAfterClose() {
   selectionLocked.value = false;
   selectedEntries.value = [];
   rollLines.value = [];
+  mixRollLines.value = [];
+  activeMixRoll.value = null;
+  mixRollCandidates.value = [];
   sessionSprs.value = {};
   sessionJobApiBaseline.value = {};
   operator.value = "";

@@ -208,10 +208,11 @@ export function openSprBundlePackagingDialog(opts) {
 							".spr-bundle-width-wrap{margin:8px 0 12px;}" +
 							".spr-bundle-width-wrap label{font-weight:600;font-size:12px;color:#334155;display:block;margin-bottom:4px;}" +
 							".spr-bundle-width-select{font-size:15px;font-weight:600;min-height:38px;width:100%;}" +
+							".spr-bundle-qty-inp{width:72px;min-height:34px;font-size:14px;font-weight:600;}" +
 							"</style>" +
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
-								"Step 1: pick Job ID. Step 2: pick width for that segment (combination widths and WO items are shown below). Same single-roll gross applies to all roll lines for that job and width. Sticker width = selected width × number of packaging."
+								"Pick Job, then enter rolls per width (one width or several). Whole gross is split equally for one width, or by width share for multi-width. Net = gross − core per roll width. Sticker shows e.g. 2 * 30 + 2 * 32 Inches."
 							) +
 							"</p>",
 					},
@@ -233,9 +234,13 @@ export function openSprBundlePackagingDialog(opts) {
 						options:
 							'<div class="spr-bundle-width-wrap">' +
 							"<label>" +
-							__("Width / segment (Inches) - pick one row from the table above") +
+							__("Rolls per width (leave blank / 0 to skip a width)") +
 							"</label>" +
-							'<select class="form-control spr-bundle-width-select">' +
+							'<div class="spr-bundle-width-qty-table"></div>' +
+							'<div class="text-muted small" style="margin-top:6px;">' +
+							__("Legacy single pick (optional if qty table empty):") +
+							"</div>" +
+							'<select class="form-control spr-bundle-width-select" style="margin-top:4px;">' +
 							'<option value="">' +
 							__("Select width") +
 							"</option>" +
@@ -249,8 +254,8 @@ export function openSprBundlePackagingDialog(opts) {
 					{
 						fieldname: "no_of_packaging",
 						fieldtype: "Int",
-						label: __("Number of packaging"),
-						reqd: 1,
+						label: __("Number of packaging (single-width fallback)"),
+						reqd: 0,
 						default: 1,
 					},
 					{
@@ -269,6 +274,7 @@ export function openSprBundlePackagingDialog(opts) {
 				primary_action_label: __("Apply"),
 				primary_action(values) {
 					const jp = _bpResolveJob(values.job_pick, jobById, jobByLabel);
+					const mix = _bpCollectWidthMix(d);
 					const w = _bpGetWidth(d);
 					const n = _bpCint(values.no_of_packaging);
 					const whole = _bpFlt(values.whole_gross_kg);
@@ -277,12 +283,27 @@ export function openSprBundlePackagingDialog(opts) {
 						frappe.msgprint(__("Select a job."));
 						return;
 					}
-					if (w <= 0) {
-						frappe.msgprint(__("Select a width."));
-						return;
+					let widthMix = mix;
+					let widthInch = w;
+					let packCount = n;
+					if (widthMix.length) {
+						packCount = widthMix.reduce((s, m) => s + m.rolls, 0);
+						widthInch = widthMix.length === 1 ? widthMix[0].width_inch : 0;
+					} else {
+						if (w <= 0) {
+							frappe.msgprint(__("Enter rolls per width, or select a width and packaging count."));
+							return;
+						}
+						if (n < 1) {
+							frappe.msgprint(__("Enter a valid packaging count."));
+							return;
+						}
+						widthMix = [{ width_inch: w, rolls: n }];
+						packCount = n;
+						widthInch = w;
 					}
-					if (n < 1 || whole <= 0) {
-						frappe.msgprint(__("Enter a valid packaging count and whole gross weight."));
+					if (packCount < 1 || whole <= 0) {
+						frappe.msgprint(__("Enter a valid roll count and whole gross weight."));
 						return;
 					}
 					if (producedLength <= 0) {
@@ -297,20 +318,27 @@ export function openSprBundlePackagingDialog(opts) {
 						? {
 								shaft_production_run: sprName,
 								job_id: jp.job_id,
-								width_inch: w,
-								no_of_packaging: n,
+								width_inch: widthInch || undefined,
+								no_of_packaging: packCount,
 								whole_gross_kg: whole,
 								produced_length_mtrs: producedLength,
 								pp_id: ppId || undefined,
+								width_mix: JSON.stringify(widthMix),
 						  }
 						: {
 								shaft_production_run: sprName,
 								job_id: jp.job_id,
-								width_inch: w,
-								no_of_packaging: n,
+								width_inch: widthInch || widthMix[0].width_inch,
+								no_of_packaging: packCount,
 								whole_gross_kg: whole,
 								produced_length_mtrs: producedLength,
 						  };
+					if (!gsmMode && widthMix.length > 1) {
+						frappe.msgprint(
+							__("Desk SPR pack currently applies one width at a time. Use GSM Bundle packaging for multi-width, or apply each width separately.")
+						);
+						return;
+					}
 					frappe.call({
 						method: applyMethod,
 						args: applyArgs,
@@ -351,6 +379,62 @@ export function openSprBundlePackagingDialog(opts) {
 					});
 				},
 			});
+
+			function _bpCollectWidthMix(dialog) {
+				const mix = [];
+				dialog.$wrapper.find("input.spr-bundle-qty-inp").each(function () {
+					const w = _bpFlt($(this).attr("data-width"));
+					const n = _bpCint($(this).val());
+					if (w > 0 && n > 0) {
+						mix.push({ width_inch: w, rolls: n });
+					}
+				});
+				return mix;
+			}
+
+			function _bpRenderWidthQtyTable(dialog, widthValues) {
+				const $wrap = dialog.$wrapper.find(".spr-bundle-width-qty-table");
+				if (!$wrap.length) {
+					return;
+				}
+				const widths = [];
+				const seen = new Set();
+				(widthValues || []).forEach((v) => {
+					const fw = _bpFlt(v);
+					if (fw <= 0) {
+						return;
+					}
+					const key = String(Math.round(fw * 1000) / 1000);
+					if (seen.has(key)) {
+						return;
+					}
+					seen.add(key);
+					widths.push(fw);
+				});
+				widths.sort((a, b) => a - b);
+				if (!widths.length) {
+					$wrap.html('<p class="text-muted small">' + __("No widths for this job.") + "</p>");
+					return;
+				}
+				let html =
+					'<table class="table table-bordered table-condensed spr-bundle-seg-table"><thead><tr><th>' +
+					__("Width") +
+					"</th><th>" +
+					__("Rolls") +
+					"</th></tr></thead><tbody>";
+				widths.forEach((w) => {
+					const lbl = _bpFormatWidthLabel(w);
+					html +=
+						"<tr><td><strong>" +
+						lbl +
+						'"</strong></td><td><input type="number" min="0" step="1" class="form-control spr-bundle-qty-inp" data-width="' +
+						lbl +
+						'" value="0" /></td></tr>';
+				});
+				html += "</tbody></table>";
+				$wrap.html(html);
+				$wrap.find("input.spr-bundle-qty-inp").on("change input", recalc);
+			}
 
 			function applySegsToDialog(jp, segs) {
 				const det = d.$wrapper.find(".spr-bundle-job-detail");
@@ -415,6 +499,7 @@ export function openSprBundlePackagingDialog(opts) {
 				}
 				function finishWidthSelect() {
 					const labels = _bpSetWidthOptions(d, widthOpts);
+					_bpRenderWidthQtyTable(d, widthOpts);
 					if (!labels.length) {
 						frappe.msgprint(__("No width options for this job. Check combination / roll lines."));
 					}
@@ -472,6 +557,7 @@ export function openSprBundlePackagingDialog(opts) {
 
 			function recalc() {
 				const jp = _bpResolveJob(d.get_value("job_pick"), jobById, jobByLabel);
+				const mix = _bpCollectWidthMix(d);
 				const wsel = _bpGetWidth(d);
 				const n = _bpCint(d.get_value("no_of_packaging"));
 				const whole = _bpFlt(d.get_value("whole_gross_kg"));
@@ -479,12 +565,30 @@ export function openSprBundlePackagingDialog(opts) {
 				if (!jp || !el.length) {
 					return;
 				}
-				const single = n > 0 ? whole / n : 0;
-				const tw = _bpFlt(wsel) * n;
+				let planMix = mix.slice();
+				if (!planMix.length && wsel > 0 && n > 0) {
+					planMix = [{ width_inch: wsel, rolls: n }];
+				}
+				const totalRolls = planMix.reduce((s, m) => s + m.rolls, 0);
+				if (!totalRolls || whole <= 0) {
+					el.html(__("Enter rolls per width and whole gross to preview split."));
+					return;
+				}
+				const multi = planMix.length > 1;
+				const totalW = planMix.reduce((s, m) => s + m.width_inch * m.rolls, 0);
+				const parts = planMix.map((m) => {
+					const share = multi
+						? (whole * (m.width_inch * m.rolls)) / totalW
+						: whole;
+					const each = share / m.rolls;
+					return m.rolls + "×" + _bpFormatWidthLabel(m.width_inch) + '" ≈ ' + each.toFixed(2) + " Kg/roll";
+				});
+				const comb = planMix.map((m) => m.rolls + " * " + _bpFormatWidthLabel(m.width_inch)).join(" + ") + " Inches";
 				el.html(
-					__("Single gross: {0} Kg - Sticker width (selected width x pkg): {1} Inches", [
-						single.toFixed(2),
-						tw.toFixed(2),
+					__("Preview: {0} roll(s). {1}. Sticker: {2}. Net uses core per width after Apply.", [
+						String(totalRolls),
+						parts.join(" · "),
+						comb,
 					])
 				);
 			}

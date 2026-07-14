@@ -11227,14 +11227,24 @@ def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 def _gsm_serialize_bundle_sticker_for_grid(spr, sticker, pp_id: str) -> dict:
 	children = _gsm_bundle_child_items_for_sticker(spr, sticker)
 	pack_count = cint(getattr(sticker, "rolls_per_bundle", 0)) or len(children)
+	comb = _cstr(getattr(sticker, "combination", ""))
 	seg_w = _gsm_segment_width_from_bundle_sticker(sticker, pack_count)
 	if not seg_w and children:
 		seg_w = flt(getattr(children[0], "width_inch", 0))
 	first = children[0] if children else None
 	first_specs = _gsm_resolve_item_row_display_specs(first) if first else {"quality": "", "color": "", "gsm": 0}
-	width_label = (
-		f'{_bp_format_width_label_static(seg_w)}" ({pack_count} rolls)' if seg_w and pack_count else ""
-	)
+	# Multi-width stickers use "2 * 30 + 2 * 32 Inches" — prefer that as label.
+	is_multi_comb = "+" in comb
+	if is_multi_comb and comb:
+		width_label = f"{comb} ({pack_count} rolls)" if pack_count else comb
+	elif seg_w and pack_count:
+		width_label = f'{_bp_format_width_label_static(seg_w)}" ({pack_count} rolls)'
+	else:
+		width_label = comb or ""
+	# Prefer sticker sum of child nets (set at apply); do not recompute from one width.
+	bundle_net = flt(getattr(sticker, "sticker_bundle_weight", 0) or 0)
+	if bundle_net <= 0 and children:
+		bundle_net = round(sum(flt(getattr(c, "net_weight", 0) or 0) for c in children), 2)
 	return {
 		"pp_id": pp_id,
 		"party_code": _cstr(
@@ -11245,18 +11255,18 @@ def _gsm_serialize_bundle_sticker_for_grid(spr, sticker, pp_id: str) -> dict:
 		"quality": first_specs["quality"] or _cstr(getattr(first, "quality", None) if first else ""),
 		"color": first_specs["color"] or _cstr(getattr(first, "color", None) if first else ""),
 		"gsm": first_specs["gsm"] or cint(getattr(first, "gsm", 0) if first else 0),
-		"width_inch": seg_w,
+		"width_inch": 0 if is_multi_comb else seg_w,
 		"width_label": width_label,
 		"pack_count": pack_count,
-		"segment_width": seg_w,
+		"segment_width": 0 if is_multi_comb else seg_w,
 		"batch_no": _cstr(getattr(sticker, "batch_no", "")),
 		"roll_no": "",
 		"roll_numbers": _cstr(getattr(sticker, "roll_numbers", "")),
-		"combination": _cstr(getattr(sticker, "combination", "")),
+		"combination": comb,
 		"meter_roll": flt(getattr(first, "meter_roll", 0) if first else 0),
 		"produced_length_mtrs": flt(getattr(sticker, "produced_length_mtrs", 0) or 0),
 		"produced_gsm": flt(getattr(first, "produced_gsm", 0) if first else 0),
-		"net_weight": flt(getattr(sticker, "sticker_bundle_weight", 0) or 0),
+		"net_weight": bundle_net,
 		"gross_weight": flt(getattr(sticker, "sticker_bundle_gross_weight_kg", 0) or 0),
 		"planned_qty": flt(getattr(first, "planned_qty", 0) if first else 0),
 		"work_order": _cstr(getattr(first, "work_order", None) if first else ""),
@@ -15853,6 +15863,86 @@ def spr_apply_bundle_packaging_for_job_width(
 	}
 
 
+def _bp_format_width_label_static(w):
+	fw = flt(w)
+	if fw <= 0:
+		return ""
+	return str(int(round(fw))) if abs(fw - round(fw)) < 0.001 else f"{fw:.1f}"
+
+
+def _spr_parse_bundle_width_mix(width_mix=None, width_inch=None, no_of_packaging=None) -> list[dict]:
+	"""Normalize width mix: [{width_inch, rolls}, ...]. Single-width falls back to width_inch + count."""
+	mix = []
+	if width_mix:
+		raw = width_mix
+		if isinstance(raw, str):
+			try:
+				raw = json.loads(raw)
+			except Exception:
+				raw = []
+		if isinstance(raw, dict):
+			raw = raw.get("widths") or raw.get("width_mix") or []
+		for row in raw or []:
+			if not isinstance(row, dict):
+				continue
+			w = flt(row.get("width_inch") or row.get("width") or 0)
+			n = cint(row.get("rolls") or row.get("qty") or row.get("count") or 0)
+			if w > 0 and n > 0:
+				mix.append({"width_inch": w, "rolls": n})
+	if not mix:
+		w = flt(width_inch)
+		n = cint(no_of_packaging)
+		if w > 0 and n > 0:
+			mix.append({"width_inch": w, "rolls": n})
+	if not mix:
+		frappe.throw(_("Select at least one width with roll quantity"))
+	return mix
+
+
+def _spr_allocate_bundle_roll_grosses(whole_gross_kg: float, mix: list[dict]) -> list[dict]:
+	"""Assign gross to each roll. Multi-width: share proportional to width. Single: equal split."""
+	whole = flt(whole_gross_kg)
+	slots = []
+	for entry in mix:
+		w = flt(entry.get("width_inch"))
+		n = cint(entry.get("rolls"))
+		for _ in range(n):
+			slots.append(w)
+	if not slots:
+		frappe.throw(_("No rolls to package"))
+	total_w = sum(slots)
+	plan = []
+	if len(set(round(s, 4) for s in slots)) == 1:
+		# Single width — equal split (shop-floor parity)
+		each = round(whole / float(len(slots)), 2)
+		assigned = 0.0
+		for i, w in enumerate(slots):
+			g = each if i < len(slots) - 1 else round(whole - assigned, 2)
+			assigned += g
+			plan.append({"width_inch": w, "gross_weight": g})
+		return plan
+	# Multi-width — proportional to width
+	assigned = 0.0
+	for i, w in enumerate(slots):
+		if i < len(slots) - 1:
+			g = round(whole * (w / total_w), 2)
+			assigned += g
+		else:
+			g = round(whole - assigned, 2)
+		plan.append({"width_inch": w, "gross_weight": g})
+	return plan
+
+
+def _spr_bundle_combination_label(mix: list[dict]) -> str:
+	parts = []
+	for entry in mix:
+		w = flt(entry.get("width_inch"))
+		n = cint(entry.get("rolls"))
+		if w > 0 and n > 0:
+			parts.append(f"{n} * {_bp_format_width_label_static(w)}")
+	return " + ".join(parts) + " Inches" if parts else ""
+
+
 def _spr_append_bundle_sticker_row(
 	spr,
 	job_id,
@@ -15864,6 +15954,7 @@ def _spr_append_bundle_sticker_row(
 	total_width_inch,
 	bundle_net,
 	selected_items,
+	combination=None,
 ):
 	"""Append one Bundle Stickers child row from packed roll lines."""
 	bundle_batch_no = ""
@@ -15882,7 +15973,7 @@ def _spr_append_bundle_sticker_row(
 		elif bn and "/" in bn:
 			roll_numbers_list.append(bn.rsplit("/", 1)[1])
 	roll_numbers_str = ", ".join(roll_numbers_list)
-	comb_calculated = f"{no_of_packaging} * {width_inch} Inches"
+	comb_calculated = _cstr(combination).strip() or f"{no_of_packaging} * {width_inch} Inches"
 	if bundle_batch_no:
 		bundle_batch_no = _spr_next_bundle_batch_no(spr, bundle_batch_no)
 	bs = {
@@ -15912,20 +16003,22 @@ def _spr_append_bundle_sticker_row(
 def gsm_apply_bundle_packaging(
 	shaft_production_run,
 	job_id,
-	width_inch,
-	no_of_packaging,
-	whole_gross_kg,
+	width_inch=None,
+	no_of_packaging=None,
+	whole_gross_kg=None,
 	produced_length_mtrs=None,
 	pp_id=None,
+	width_mix=None,
 ):
-	"""GSM bundle flow: create N fresh roll lines + Bundle Stickers row (no pre-existing rolls required)."""
+	"""GSM bundle flow: create N fresh roll lines + Bundle Stickers (single or multi width)."""
 	_spr_require_saved(shaft_production_run)
 	job_id = _cstr(job_id).strip()
-	width_inch = flt(width_inch)
-	no_of_packaging = cint(no_of_packaging)
 	whole_gross_kg = flt(whole_gross_kg)
 	produced_length_mtrs = flt(produced_length_mtrs)
 	pp_id = _cstr(pp_id).strip()
+	mix = _spr_parse_bundle_width_mix(width_mix, width_inch, no_of_packaging)
+	no_of_packaging = sum(cint(m.get("rolls")) for m in mix)
+	primary_width = flt(mix[0].get("width_inch")) if len(mix) == 1 else 0.0
 
 	if no_of_packaging < 1:
 		frappe.throw(_("Number of packaging must be at least 1"))
@@ -15935,8 +16028,11 @@ def gsm_apply_bundle_packaging(
 		frappe.throw(_("Produced length must be greater than zero"))
 	if not job_id:
 		frappe.throw(_("Select a job from Available Jobs"))
-	if width_inch <= 0:
-		frappe.throw(_("Select a width (in)"))
+
+	roll_gross_plan = _spr_allocate_bundle_roll_grosses(whole_gross_kg, mix)
+	comb_label = _spr_bundle_combination_label(mix)
+	total_width_inch = round(sum(flt(p.get("width_inch")) for p in roll_gross_plan), 4)
+	avg_single_gross = round(whole_gross_kg / float(no_of_packaging), 2) if no_of_packaging else 0
 
 	with _spr_operation_lock(shaft_production_run, "write", ttl_sec=180):
 		spr = frappe.get_doc("Shaft Production Run", shaft_production_run)
@@ -15963,8 +16059,19 @@ def gsm_apply_bundle_packaging(
 		if len(line_dicts) < no_of_packaging:
 			frappe.throw(_("Could not build {0} roll line(s) for job {1}").format(no_of_packaging, job_id))
 
-		for ld in line_dicts:
-			ld["width_inch"] = width_inch
+		# Ensure mixed widths still share one FG item when template codes differ by width resolve.
+		item_codes = {
+			_cstr(ld.get("item_code")).strip()
+			for ld in line_dicts
+			if _cstr(ld.get("item_code")).strip()
+		}
+		if len(item_codes) > 1:
+			frappe.throw(
+				_(
+					"Bundle packaging requires one item code across rolls. "
+					"This job would create mixed items ({0}). Pack each width separately or fix the job WO."
+				).format(", ".join(sorted(item_codes)))
+			)
 
 		client_max_roll = _spr_max_roll_suffix_for_job(spr, job_id)
 		batch_rows = _get_next_spr_batch_numbers_unlocked(
@@ -15977,21 +16084,21 @@ def gsm_apply_bundle_packaging(
 			client_series_prefix=_spr_existing_series_prefix_for_job(spr, job_id) or None,
 		)
 
-		single_gross = round(whole_gross_kg / float(no_of_packaging), 2)
-		total_width_inch = round(width_inch * float(no_of_packaging), 4)
 		item_meta = frappe.get_meta("Shaft Production Run Item")
 		can_set_net = item_meta.has_field("net_weight")
 		can_set_len = item_meta.has_field("produced_length_mtrs")
-
-		item_meta_spi = frappe.get_meta("Shaft Production Run Item")
+		item_meta_spi = item_meta
 		selected = []
 		for idx, ld in enumerate(line_dicts):
+			plan = roll_gross_plan[idx] if idx < len(roll_gross_plan) else roll_gross_plan[-1]
+			w = flt(plan.get("width_inch"))
+			g = flt(plan.get("gross_weight"))
 			row = spr.append("items", {})
 			for key, val in (ld or {}).items():
 				if val in (None, "") or not item_meta_spi.has_field(key):
 					continue
 				row.set(key, val)
-			row.width_inch = width_inch
+			row.width_inch = w
 			row.job = job_id
 			if idx < len(batch_rows or []):
 				br = batch_rows[idx] or {}
@@ -15999,11 +16106,11 @@ def gsm_apply_bundle_packaging(
 					row.batch_no = br.get("batch_no")
 				if br.get("roll_no") is not None:
 					row.roll_no = br.get("roll_no")
-			row.gross_weight = single_gross
+			row.gross_weight = g
 			if can_set_len:
 				row.produced_length_mtrs = produced_length_mtrs
 			if can_set_net:
-				row.net_weight = _spr_calc_net_weight_from_gross_for_bundle(row, single_gross)
+				row.net_weight = _spr_calc_net_weight_from_gross_for_bundle(row, g)
 			if item_meta.has_field("custom_produced_length_mtrs"):
 				row.custom_produced_length_mtrs = produced_length_mtrs
 			selected.append(row)
@@ -16012,14 +16119,15 @@ def gsm_apply_bundle_packaging(
 		bundle_batch_no, roll_numbers_str, comb_calculated = _spr_append_bundle_sticker_row(
 			spr,
 			job_id,
-			width_inch,
+			primary_width or flt(selected[0].width_inch if selected else 0),
 			no_of_packaging,
 			whole_gross_kg,
 			produced_length_mtrs,
-			single_gross,
+			avg_single_gross,
 			total_width_inch,
 			bundle_net,
 			selected,
+			combination=comb_label,
 		)
 
 		spr._validate_no_duplicate_roll_batches()
@@ -16033,7 +16141,12 @@ def gsm_apply_bundle_packaging(
 				pp_doc.get("custom_party_code") or pp_doc.get("custom_order_code") or ""
 			)
 
-		width_label = f'{_bp_format_width_label_static(width_inch)}" ({no_of_packaging} rolls)'
+		if len(mix) == 1:
+			width_label = f'{_bp_format_width_label_static(mix[0]["width_inch"])}" ({no_of_packaging} rolls)'
+			segment_width = flt(mix[0]["width_inch"])
+		else:
+			width_label = comb_calculated
+			segment_width = 0
 		child_batches = [_cstr(getattr(it, "batch_no", "")) for it in selected if _cstr(getattr(it, "batch_no", ""))]
 
 		return {
@@ -16041,7 +16154,7 @@ def gsm_apply_bundle_packaging(
 			"spr_name": spr.name,
 			"pp_id": pp_resolved,
 			"updated_rolls": len(selected),
-			"single_roll_gross_kg": single_gross,
+			"single_roll_gross_kg": avg_single_gross,
 			"total_width_inch": total_width_inch,
 			"sticker_bundle_weight_kg": bundle_net,
 			"whole_gross_kg": round(whole_gross_kg, 2),
@@ -16050,11 +16163,12 @@ def gsm_apply_bundle_packaging(
 			"combination": comb_calculated,
 			"width_label": width_label,
 			"job_id": job_id,
-			"segment_width": width_inch,
+			"segment_width": segment_width,
 			"pack_count": no_of_packaging,
 			"produced_length_mtrs": produced_length_mtrs,
 			"child_roll_batches": child_batches,
 			"child_spr_item_names": [_cstr(getattr(it, "name", "")) for it in selected],
+			"width_mix": mix,
 			"order_code": order_code,
 			"quality": _cstr(getattr(selected[0], "quality", "") if selected else ""),
 			"color": _cstr(getattr(selected[0], "color", "") if selected else ""),
@@ -16064,13 +16178,6 @@ def gsm_apply_bundle_packaging(
 			"work_order": _cstr(getattr(selected[0], "work_order", "") if selected else ""),
 			"uom": _cstr(getattr(selected[0], "uom", "Kg") if selected else "Kg"),
 		}
-
-
-def _bp_format_width_label_static(w):
-	fw = flt(w)
-	if fw <= 0:
-		return ""
-	return str(int(round(fw))) if abs(fw - round(fw)) < 0.001 else f"{fw:.1f}"
 
 
 @frappe.whitelist()
