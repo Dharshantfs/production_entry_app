@@ -61,6 +61,12 @@ export function normalizeMaintenanceUnit(raw) {
   if (u.includes("OYANGC700BAGMAKINGLINE") && u.includes("L2")) return "TTT- L2 - OYANG C700 BAG MAKING LINE";
   if (u.includes("OYANGC900BAGMAKINGLINE") && u.includes("L3")) return "TTT- L3 - OYANG C900 BAG MAKING LINE";
 
+  // Fabric pool: Workstation "UNASSIGNED" === Kanban column "Mixed" (UI label Unassigned).
+  // Must run after process-specific UNASSIGNED * MACHINE checks above.
+  if (u === "UNASSIGNED" || u === "MIXED") return "Mixed";
+  const low = s.toLowerCase();
+  if (low === "unassigned" || low === "mixed") return "Mixed";
+
   return s;
 }
 

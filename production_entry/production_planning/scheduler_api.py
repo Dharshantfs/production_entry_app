@@ -24539,52 +24539,49 @@ def _confirm_kanban_company_priority(company_name):
 
 
 def _get_confirm_orders_unit_options_list():
-    """All Workstation names for the Confirm Orders unit filter (fabric + process machines)."""
-    units = set()
-    try:
-        for name in frappe.get_all("Workstation", pluck="name", order_by="name", limit_page_length=0) or []:
-            if name and str(name).strip():
-                units.add(str(name).strip())
-    except Exception:
-        pass
-    try:
-        from production_entry.production_planning.planning_doctypes import planning_line_unit_option_lines
+	"""Exact Workstation names only — no hardcoded Unit 1/UNIT 1 catalogue or planning distincts."""
+	units = []
+	seen = set()
+	try:
+		for name in frappe.get_all("Workstation", pluck="name", order_by="name", limit_page_length=0) or []:
+			label = str(name or "").strip()
+			if not label or label in seen:
+				continue
+			seen.add(label)
+			units.append(label)
+	except Exception:
+		pass
 
-        for line in planning_line_unit_option_lines() or []:
-            if line and str(line).strip():
-                units.add(str(line).strip())
-    except Exception:
-        pass
-    if frappe.db.has_column("Sales Order", "custom_production_status"):
-        try:
-            for row in frappe.db.sql(
-                """
-                SELECT DISTINCT NULLIF(TRIM(i.unit), '') AS unit
-                FROM `tabPlanning Table` i
-                JOIN `tabPlanning sheet` p ON i.parent = p.name
-                JOIN `tabSales Order` so ON so.name = p.sales_order
-                WHERE p.docstatus < 2
-                  AND so.custom_production_status = 'Confirmed'
-                  AND IFNULL(i.unit, '') != ''
-                """,
-                as_dict=True,
-            ):
-                u = (row.get("unit") or "").strip()
-                if u:
-                    units.add(u)
-        except Exception:
-            pass
+	# When Production Board Access limits units, keep only workstations in that scope.
+	try:
+		from production_entry.production_planning.board_access import assert_unit_allowed, get_user_board_scope
 
-    def _sort_key(label):
-        s = (label or "").strip()
-        low = s.lower()
-        if low.startswith("unit ") and low[5:6].isdigit():
-            return (0, int(low[5]), low)
-        if low == "unassigned":
-            return (1, 0, low)
-        return (2, 0, low)
+		scope = get_user_board_scope()
+		if scope and not scope.get("unlimited") and (scope.get("allowed_units") or []):
+			filtered = []
+			for u in units:
+				try:
+					assert_unit_allowed(u, scope=scope)
+					filtered.append(u)
+				except Exception:
+					continue
+			units = filtered
+	except Exception:
+		pass
 
-    return sorted(units, key=_sort_key)
+	def _sort_key(label):
+		s = (label or "").strip()
+		low = s.lower()
+		su = low.replace(" ", "").replace("_", "")
+		if low.startswith("unit ") and len(low) > 5 and low[5:6].isdigit():
+			return (0, int(low[5]), low)
+		if su.startswith("unit") and len(su) > 4 and su[4:5].isdigit():
+			return (0, int(su[4]), low)
+		if su in ("unassigned", "mixed"):
+			return (1, 0, low)
+		return (2, 0, low)
+
+	return sorted(units, key=_sort_key)
 
 
 def _confirm_orders_date_filter_sql(has_custom_planned_date, order_date=None, start_date=None, end_date=None):

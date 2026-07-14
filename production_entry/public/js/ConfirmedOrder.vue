@@ -266,7 +266,7 @@ async function fetchData() {
     });
     const msg = r.message || {};
     cards.value = msg.companies || [];
-    if (Array.isArray(msg.unitOptions) && msg.unitOptions.length) {
+    if (Array.isArray(msg.unitOptions)) {
       unitOptions.value = msg.unitOptions;
     }
   } catch (e) {
@@ -282,7 +282,7 @@ async function loadUnitOptions() {
     const r = await frappe.call({
       method: "production_entry.production_planning.scheduler_api.get_confirm_orders_unit_options",
     });
-    if (Array.isArray(r.message) && r.message.length) {
+    if (Array.isArray(r.message)) {
       unitOptions.value = r.message;
     }
   } catch (e) {

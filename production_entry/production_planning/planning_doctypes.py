@@ -299,7 +299,11 @@ def maintenance_unit_match_values(raw_unit):
 	canon_resolved = normalize_planning_unit_for_select(resolved or s)
 	if canon_resolved:
 		out.add(canon_resolved)
-	su = s.upper().replace(" ", "")
+	# Fabric unassigned: Workstation/DB = UNASSIGNED; Production Board Kanban column = Mixed.
+	su = s.upper().replace(" ", "").replace("_", "")
+	if canon_resolved == "UNASSIGNED" or su in ("UNASSIGNED", "MIXED"):
+		out.add("UNASSIGNED")
+		out.add("Mixed")
 	for ws in frappe.get_all("Workstation", pluck="name", limit_page_length=0) or []:
 		w = str(ws or "").strip()
 		if not w:

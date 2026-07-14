@@ -372,13 +372,23 @@ def _resolve_allowed_unit_labels(raw: str) -> list[str]:
 	seen: set[str] = set()
 	for v in maintenance_unit_match_values(raw):
 		canon = normalize_planning_unit_for_select(v)
-		if canon and canon not in seen:
-			seen.add(canon)
-			out.append(canon)
+		labels = []
+		if canon:
+			labels.append(canon)
+		# Kanban fabric board uses Mixed for Workstation UNASSIGNED.
+		if canon == "UNASSIGNED" or str(v or "").strip().upper().replace(" ", "") in ("UNASSIGNED", "MIXED"):
+			labels.append("Mixed")
+			labels.append("UNASSIGNED")
+		for label in labels:
+			if label and label not in seen:
+				seen.add(label)
+				out.append(label)
 	if not out:
 		fallback = normalize_planning_unit_for_select(raw) or (raw or "").strip()
 		if fallback:
 			out.append(fallback)
+			if fallback == "UNASSIGNED":
+				out.append("Mixed")
 	return out
 
 
