@@ -1,7 +1,7 @@
 import json
 import math
 import re
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
 
 import frappe
@@ -6129,18 +6129,6 @@ class ShaftProductionRun(Document):
 					)
 				used_roll_names[row_name] = sticker.get("idx")
 
-			work_orders = {_cstr(r.get("work_order") or r.get("wo_id")) for r in source_rows}
-			work_orders.discard("")
-			item_codes = {_cstr(r.get("item_code")) for r in source_rows}
-			item_codes.discard("")
-			if len(work_orders) > 1 or len(item_codes) > 1:
-				frappe.throw(
-					_("Bundle Sticker row {0} mixes Work Orders or items. Pack one Work Order/item per bundle.").format(
-						cint(sticker.get("idx") or 0) or "?"
-					),
-					title=_("Invalid bundle"),
-				)
-
 			source_net = flt(sum(self._row_fg_qty(r) for r in source_rows), 2)
 			source_gross = flt(sum(flt(r.get("gross_weight")) for r in source_rows), 2)
 			bundle_net = flt(sticker.get("sticker_bundle_weight") or source_net, 2)
@@ -6162,28 +6150,52 @@ class ShaftProductionRun(Document):
 					title=_("Bundle weight mismatch"),
 				)
 
-			plans.append(
-				{
-					"source_rows": source_rows,
-					"source_names": {_cstr(r.get("name")) for r in source_rows},
-					"first_idx": min([cint(r.get("idx") or 0) for r in source_rows] or [0]),
-					"work_order": next(iter(work_orders), ""),
-					"item_code": next(iter(item_codes), ""),
-					"batch_no": self._bundle_batch_id(sticker, roll_numbers),
-					"net_weight": bundle_net,
-					"gross_weight": flt(sticker.get("sticker_bundle_gross_weight_kg") or source_gross, 2),
-					"produced_length_mtrs": flt(
-						sticker.get("produced_length_mtrs")
-						or sticker.get("custom_produced_length_mtrs")
-						or 0
-					),
-					"roll_numbers": ", ".join(roll_numbers),
-					"order_code": source_order_code,
-					"party_code": source_order_code,
-					"custom_party_code_text": source_order_code,
-					"bundle_sticker_idx": sticker.get("idx"),
-				}
+			# Combo stickers (e.g. 30"+33") may span different WO/items — one FG plan per WO/item.
+			grouped = OrderedDict()
+			for r in source_rows:
+				wo_key = _cstr(r.get("work_order") or r.get("wo_id"))
+				ic_key = _cstr(r.get("item_code"))
+				grouped.setdefault((wo_key, ic_key), []).append(r)
+
+			sticker_gross = flt(sticker.get("sticker_bundle_gross_weight_kg") or source_gross, 2)
+			produced_len = flt(
+				sticker.get("produced_length_mtrs")
+				or sticker.get("custom_produced_length_mtrs")
+				or 0
 			)
+			multi_item = len(grouped) > 1
+			for (work_order, item_code), group_rows in grouped.items():
+				group_roll_nos = []
+				for r in group_rows:
+					rn = cint(r.get("roll_no") or 0)
+					if rn > 0:
+						group_roll_nos.append(str(rn))
+					else:
+						bn = _cstr(r.get("batch_no"))
+						if bn and "-" in bn:
+							group_roll_nos.append(bn.rsplit("-", 1)[-1])
+				group_net = flt(sum(self._row_fg_qty(r) for r in group_rows), 2)
+				group_gross = flt(sum(flt(r.get("gross_weight")) for r in group_rows), 2)
+				plans.append(
+					{
+						"source_rows": group_rows,
+						"source_names": {_cstr(r.get("name")) for r in group_rows},
+						"first_idx": min([cint(r.get("idx") or 0) for r in group_rows] or [0]),
+						"work_order": work_order,
+						"item_code": item_code,
+						"batch_no": self._bundle_batch_id(
+							sticker, group_roll_nos if multi_item else roll_numbers
+						),
+						"net_weight": group_net if multi_item else bundle_net,
+						"gross_weight": group_gross if multi_item else sticker_gross,
+						"produced_length_mtrs": produced_len,
+						"roll_numbers": ", ".join(group_roll_nos if multi_item else roll_numbers),
+						"order_code": source_order_code,
+						"party_code": source_order_code,
+						"custom_party_code_text": source_order_code,
+						"bundle_sticker_idx": sticker.get("idx"),
+					}
+				)
 		return plans
 
 	def _fg_posting_units_for_rows(self, spr_rows: list, wo_doc) -> list:
@@ -12257,6 +12269,7 @@ def _spr_bundle_job_segments_detail(spr_doc, sj) -> list[dict]:
 		nk = weights[i] if i < len(weights) else None
 		item_code = ""
 		item_name = ""
+		matched_wo = ""
 		for wo in wos:
 			won = _cstr(wo.get("name"))
 			if not won:
@@ -12268,6 +12281,7 @@ def _spr_bundle_job_segments_detail(spr_doc, sj) -> list[dict]:
 			if abs(flt(w_item) - w_seg) <= 0.75:
 				item_code = _cstr(ic)
 				item_name = _cstr(frappe.db.get_value("Item", ic, "item_name") or "")
+				matched_wo = won
 				break
 		out.append(
 			{
@@ -12275,8 +12289,65 @@ def _spr_bundle_job_segments_detail(spr_doc, sj) -> list[dict]:
 				"net_kg_per_shaft": round(flt(nk), 3) if nk is not None else None,
 				"item_code": item_code,
 				"item_name": item_name,
+				"work_order": matched_wo,
 			}
 		)
+	return out
+
+
+def _spr_bundle_wo_for_width(spr_doc, sj, width_inch) -> dict | None:
+	"""Resolve Work Order dict ({name}) for a combination segment width."""
+	wx = flt(width_inch)
+	if wx <= 0 or not sj:
+		return None
+	for seg in _spr_bundle_job_segments_detail(spr_doc, sj):
+		if abs(flt(seg.get("width_inch")) - wx) > 0.75:
+			continue
+		won = _cstr(seg.get("work_order"))
+		if won:
+			return {"name": won}
+		ic = _cstr(seg.get("item_code"))
+		if not ic:
+			continue
+		pp_name = get_pp_from_spr(spr_doc.name)
+		for wo in _get_work_orders_for_spr_job(pp_name, spr_doc, sj):
+			won2 = _cstr(wo.get("name"))
+			if not won2:
+				continue
+			if _cstr(frappe.db.get_value("Work Order", won2, "production_item")) == ic:
+				return wo
+	pp_name = get_pp_from_spr(spr_doc.name)
+	for wo in _get_work_orders_for_spr_job(pp_name, spr_doc, sj):
+		won = _cstr(wo.get("name"))
+		if not won:
+			continue
+		ic = frappe.db.get_value("Work Order", won, "production_item")
+		if not ic:
+			continue
+		_g, w_item = parse_item_code(ic)
+		if abs(flt(w_item) - wx) <= 0.75:
+			return wo
+	return None
+
+
+def _spr_bundle_line_dicts_for_width_mix(spr_doc, sj, job_id, roll_gross_plan: list[dict]) -> list[dict]:
+	"""One SPR item template per planned roll, with WO/item matching that roll's width."""
+	pp_name = get_pp_from_spr(spr_doc.name)
+	comb = getattr(sj, "combination", None) or ""
+	out: list[dict] = []
+	for plan in roll_gross_plan or []:
+		w = flt(plan.get("width_inch"))
+		wo = _spr_bundle_wo_for_width(spr_doc, sj, w)
+		if not wo:
+			frappe.throw(
+				_("No Work Order / item for width {0}\". Fix Available Jobs WO mapping.").format(
+					_bp_format_width_label_static(w) if w else "?"
+				)
+			)
+		row = _spr_item_line_from_wo(pp_name, job_id, comb, 0.0, wo)
+		row["width_inch"] = w
+		row["job"] = job_id
+		out.append(row)
 	return out
 
 
@@ -16051,27 +16122,11 @@ def gsm_apply_bundle_packaging(
 		if max_job_rolls > 0 and current_rolls + no_of_packaging > max_job_rolls:
 			_spr_throw_roll_quota_exceeded(job_id, max_job_rolls, current_rolls)
 
-		line_dicts = build_spr_roll_result_lines_for_job(
-			shaft_production_run=shaft_production_run,
-			job_id=job_id,
-			exact_roll_lines=no_of_packaging,
-		)
+		# Build one template per roll from the chosen width(s) — never cycle mix widths
+		# (combo jobs like 30+33 have different WO/item per width; single-width pack uses only that WO).
+		line_dicts = _spr_bundle_line_dicts_for_width_mix(spr, sj, job_id, roll_gross_plan)
 		if len(line_dicts) < no_of_packaging:
 			frappe.throw(_("Could not build {0} roll line(s) for job {1}").format(no_of_packaging, job_id))
-
-		# Ensure mixed widths still share one FG item when template codes differ by width resolve.
-		item_codes = {
-			_cstr(ld.get("item_code")).strip()
-			for ld in line_dicts
-			if _cstr(ld.get("item_code")).strip()
-		}
-		if len(item_codes) > 1:
-			frappe.throw(
-				_(
-					"Bundle packaging requires one item code across rolls. "
-					"This job would create mixed items ({0}). Pack each width separately or fix the job WO."
-				).format(", ".join(sorted(item_codes)))
-			)
 
 		client_max_roll = _spr_max_roll_suffix_for_job(spr, job_id)
 		batch_rows = _get_next_spr_batch_numbers_unlocked(

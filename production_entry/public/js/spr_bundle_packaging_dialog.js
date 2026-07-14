@@ -212,7 +212,7 @@ export function openSprBundlePackagingDialog(opts) {
 							"</style>" +
 							'<p class="text-muted small" style="margin-bottom:10px;">' +
 							__(
-								"Pick Job, then enter rolls per width (one width or several). Whole gross is split equally for one width, or by width share for multi-width. Net = gross − core per roll width. Sticker shows e.g. 2 * 30 + 2 * 32 Inches."
+								"Choose Single width (one size) or Multi width (combo e.g. 30+33 on one sticker). Enter whole gross and length, then Apply."
 							) +
 							"</p>",
 					},
@@ -229,22 +229,37 @@ export function openSprBundlePackagingDialog(opts) {
 						options: '<div class="spr-bundle-job-detail text-muted small"></div>',
 					},
 					{
+						fieldname: "pack_mode",
+						fieldtype: "Select",
+						label: __("Packaging mode"),
+						options: ["Single width", "Multi width"].join("\n"),
+						default: "Single width",
+						reqd: 1,
+					},
+					{
 						fieldname: "bundle_width_wrap",
 						fieldtype: "HTML",
 						options:
 							'<div class="spr-bundle-width-wrap">' +
+							'<div class="spr-bundle-single-only">' +
 							"<label>" +
-							__("Rolls per width (leave blank / 0 to skip a width)") +
+							__("Width") +
 							"</label>" +
-							'<div class="spr-bundle-width-qty-table"></div>' +
-							'<div class="text-muted small" style="margin-top:6px;">' +
-							__("Legacy single pick (optional if qty table empty):") +
-							"</div>" +
-							'<select class="form-control spr-bundle-width-select" style="margin-top:4px;">' +
+							'<select class="form-control spr-bundle-width-select">' +
 							'<option value="">' +
 							__("Select width") +
 							"</option>" +
-							"</select></div>",
+							"</select></div>" +
+							'<div class="spr-bundle-multi-only" style="display:none;margin-top:8px;">' +
+							"<label>" +
+							__("Rolls per width (same count = one combo packaging set)") +
+							"</label>" +
+							'<div class="spr-bundle-width-qty-table"></div>' +
+							'<p class="text-muted small" style="margin-top:6px;">' +
+							__(
+								"Example: 30\"=3 and 33\"=3 → sticker 3 * 30 + 3 * 33 Inches (3 packaging sets)."
+							) +
+							"</p></div></div>",
 					},
 					{
 						fieldname: "calc_html",
@@ -254,7 +269,7 @@ export function openSprBundlePackagingDialog(opts) {
 					{
 						fieldname: "no_of_packaging",
 						fieldtype: "Int",
-						label: __("Number of packaging (single-width fallback)"),
+						label: __("Number of packaging"),
 						reqd: 0,
 						default: 1,
 					},
@@ -274,6 +289,8 @@ export function openSprBundlePackagingDialog(opts) {
 				primary_action_label: __("Apply"),
 				primary_action(values) {
 					const jp = _bpResolveJob(values.job_pick, jobById, jobByLabel);
+					const mode = String(values.pack_mode || "Single width");
+					const isMulti = mode.indexOf("Multi") === 0;
 					const mix = _bpCollectWidthMix(d);
 					const w = _bpGetWidth(d);
 					const n = _bpCint(values.no_of_packaging);
@@ -283,15 +300,22 @@ export function openSprBundlePackagingDialog(opts) {
 						frappe.msgprint(__("Select a job."));
 						return;
 					}
-					let widthMix = mix;
-					let widthInch = w;
-					let packCount = n;
-					if (widthMix.length) {
+					let widthMix = [];
+					let widthInch = 0;
+					let packCount = 0;
+					if (isMulti) {
+						if (mix.length < 2) {
+							frappe.msgprint(
+								__("Multi width needs rolls on at least 2 widths (e.g. 30 and 33).")
+							);
+							return;
+						}
+						widthMix = mix;
 						packCount = widthMix.reduce((s, m) => s + m.rolls, 0);
-						widthInch = widthMix.length === 1 ? widthMix[0].width_inch : 0;
+						widthInch = 0;
 					} else {
 						if (w <= 0) {
-							frappe.msgprint(__("Enter rolls per width, or select a width and packaging count."));
+							frappe.msgprint(__("Select a width."));
 							return;
 						}
 						if (n < 1) {
@@ -379,6 +403,19 @@ export function openSprBundlePackagingDialog(opts) {
 					});
 				},
 			});
+
+			function _bpIsMultiMode() {
+				const mode = String(d.get_value("pack_mode") || "Single width");
+				return mode.indexOf("Multi") === 0;
+			}
+
+			function _bpApplyPackModeVisibility() {
+				const multi = _bpIsMultiMode();
+				d.$wrapper.find(".spr-bundle-single-only").toggle(!multi);
+				d.$wrapper.find(".spr-bundle-multi-only").toggle(multi);
+				d.set_df_property("no_of_packaging", "hidden", multi ? 1 : 0);
+				recalc();
+			}
 
 			function _bpCollectWidthMix(dialog) {
 				const mix = [];
@@ -557,6 +594,7 @@ export function openSprBundlePackagingDialog(opts) {
 
 			function recalc() {
 				const jp = _bpResolveJob(d.get_value("job_pick"), jobById, jobByLabel);
+				const multi = _bpIsMultiMode();
 				const mix = _bpCollectWidthMix(d);
 				const wsel = _bpGetWidth(d);
 				const n = _bpCint(d.get_value("no_of_packaging"));
@@ -565,19 +603,25 @@ export function openSprBundlePackagingDialog(opts) {
 				if (!jp || !el.length) {
 					return;
 				}
-				let planMix = mix.slice();
-				if (!planMix.length && wsel > 0 && n > 0) {
+				let planMix = [];
+				if (multi) {
+					planMix = mix.slice();
+				} else if (wsel > 0 && n > 0) {
 					planMix = [{ width_inch: wsel, rolls: n }];
 				}
 				const totalRolls = planMix.reduce((s, m) => s + m.rolls, 0);
 				if (!totalRolls || whole <= 0) {
-					el.html(__("Enter rolls per width and whole gross to preview split."));
+					el.html(
+						multi
+							? __("Enter rolls for each width and whole gross to preview.")
+							: __("Select width, packaging count, and whole gross to preview.")
+					);
 					return;
 				}
-				const multi = planMix.length > 1;
+				const isMultiPlan = planMix.length > 1;
 				const totalW = planMix.reduce((s, m) => s + m.width_inch * m.rolls, 0);
 				const parts = planMix.map((m) => {
-					const share = multi
+					const share = isMultiPlan
 						? (whole * (m.width_inch * m.rolls)) / totalW
 						: whole;
 					const each = share / m.rolls;
@@ -603,6 +647,7 @@ export function openSprBundlePackagingDialog(opts) {
 				d.set_value("job_pick", firstLbl);
 			}
 			setTimeout(() => {
+				_bpApplyPackModeVisibility();
 				refreshWidthOptions();
 				recalc();
 			}, 50);
@@ -614,6 +659,11 @@ export function openSprBundlePackagingDialog(opts) {
 					}
 					refreshWidthOptions();
 					recalc();
+				});
+			}
+			if (d.fields_dict.pack_mode && d.fields_dict.pack_mode.$input) {
+				d.fields_dict.pack_mode.$input.on("change", () => {
+					_bpApplyPackModeVisibility();
 				});
 			}
 			_bpWidthSelectEl(d).on("change input", recalc);
