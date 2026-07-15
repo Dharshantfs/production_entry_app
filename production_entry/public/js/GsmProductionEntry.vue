@@ -380,7 +380,7 @@
         </div>
 
         <div class="gpe-create-spr-row" v-if="shiftOpened && selectionLocked && selectedEntries.length">
-          <div class="gpe-create-spr-row-right">
+          <div class="gpe-create-spr-row-left">
             <button v-if="needsCreateSprs && !mixSprReady" type="button" class="gpe-btn primary gpe-btn-create-spr" :disabled="!canCreateSprs" @click="createSprs">
               Create SPR
             </button>
@@ -396,14 +396,13 @@
               class="gpe-btn warn"
               @click="openManualJobForAllMaxed"
             >All jobs at max — Manual Job</button>
-            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow || addRollInProgress || !sprCreatedForSession" :title="addRollDisabledHint" @click="guardedAddRollRow">
+            <button v-else type="button" class="gpe-btn primary" :title="addRollDisabledHint" @click="guardedAddRollRow">
               {{ addRollInProgress ? "Adding…" : "Add Roll Row" }}
             </button>
-            <button type="button" class="gpe-btn" :disabled="!rollLines.length || !sprCreatedForSession" @click="guardedRemoveTopRow">Remove Top Row</button>
+            <button type="button" class="gpe-btn" @click="guardedRemoveTopRow">Remove Top Row</button>
             <button
               type="button"
               class="gpe-btn gpe-btn-warn"
-              :disabled="(!rollLines.length && !sessionSprList.length && !activeMixRoll && !mixRollLines.length) || !sprCreatedForSession"
               title="Clear grid and mix roll workspace — server SPRs are kept"
               @click="guardedClearEntries"
             >Clear Entries</button>
@@ -414,7 +413,7 @@
               <button
                 type="button"
                 class="gpe-btn"
-                :disabled="!toolsEnabled || !sprCreatedForSession"
+                :disabled="!toolsEnabled"
                 :title="toolsHint"
                 @click="guardedToolsToggle"
               >Tools ▾</button>
@@ -427,8 +426,8 @@
                 <button type="button" @click="runTool('fixshaft')">Fix Shaft Numbers</button>
               </div>
             </div>
-            <button type="button" class="gpe-btn" :disabled="!selectedEntries.length || !sprCreatedForSession" @click="guardedShaftDetails">Shaft Details</button>
-            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry || !sprCreatedForSession" @click="guardedSubmitEntry">Submit Entry</button>
+            <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="guardedShaftDetails">Shaft Details</button>
+            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="guardedSubmitEntry">Submit Entry</button>
           </div>
         </div>
 
@@ -6980,27 +6979,29 @@ function _sprNotCreatedMsg(action) {
 }
 
 function guardedAddRollRow() {
-  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Add Roll Row")); return; }
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Add Roll Row"); return; }
+  if (!canAddRow.value || addRollInProgress.value) return;
   addRollRow();
 }
 function guardedRemoveTopRow() {
-  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Remove Top Row")); return; }
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Remove Top Row"); return; }
+  if (!rollLines.value.length) return;
   removeTopRow();
 }
 function guardedClearEntries() {
-  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Clear Entries")); return; }
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Clear Entries"); return; }
   clearGridEntries();
 }
 function guardedToolsToggle() {
-  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Tools")); return; }
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Tools"); return; }
   toolsMenuOpen.value = !toolsMenuOpen.value;
 }
 function guardedShaftDetails() {
-  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Shaft Details")); return; }
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Shaft Details"); return; }
   openShaftDetails();
 }
 function guardedSubmitEntry() {
-  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Submit Entry")); return; }
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Submit Entry"); return; }
   openSubmitConfirmDialog();
 }
 
@@ -9046,13 +9047,12 @@ onUnmounted(() => {
 .gpe-metric.grey { background: #cbd5e1; color: #334155; }
 .gpe-create-spr-row {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: center;
   padding: 6px 0;
   margin-bottom: 2px;
-  border-bottom: 1px dashed #e2e8f0;
 }
-.gpe-create-spr-row-right {
+.gpe-create-spr-row-left {
   display: flex;
   align-items: center;
   gap: 8px;
