@@ -25,7 +25,9 @@
   "freeze_gsm_submit",
   "freeze_gsm_tools",
   "freeze_gsm_summary",
-  "freeze_gsm_shift_entries"
+  "freeze_gsm_shift_entries",
+  "freeze_gsm_clear_entries",
+  "freeze_gsm_prev_shift"
  ],
  "fields": [
   {
@@ -164,6 +166,18 @@
    "fieldname": "freeze_gsm_shift_entries",
    "fieldtype": "Check",
    "label": "Shift Entries Tab"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_gsm_clear_entries",
+   "fieldtype": "Check",
+   "label": "Clear Entries"
+  },
+  {
+   "default": "0",
+   "fieldname": "freeze_gsm_prev_shift",
+   "fieldtype": "Check",
+   "label": "Prev Shift Tab"
   }
  ],
  "istable": 1,

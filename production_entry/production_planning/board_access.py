@@ -277,6 +277,8 @@ def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
 					"gsm_tools": bool(cint(getattr(row, "freeze_gsm_tools", 0))),
 					"gsm_summary": bool(cint(getattr(row, "freeze_gsm_summary", 0))),
 					"gsm_shift_entries": bool(cint(getattr(row, "freeze_gsm_shift_entries", 0))),
+					"gsm_clear_entries": bool(cint(getattr(row, "freeze_gsm_clear_entries", 0))),
+					"gsm_prev_shift": bool(cint(getattr(row, "freeze_gsm_prev_shift", 0))),
 				})
 			return result
 	return {}

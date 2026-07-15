@@ -14,7 +14,7 @@
       <button type="button" :class="{ active: pageTab === 'entry' }" @click="pageTab = 'entry'">Entry</button>
       <button v-if="!freezeGsmSummary" type="button" :class="{ active: pageTab === 'summary' }" @click="pageTab = 'summary'">Summary</button>
       <button v-if="!freezeGsmShiftEntries" type="button" :class="{ active: pageTab === 'shift' }" @click="openShiftTab">Shift Entries</button>
-      <button v-if="shiftOpened" type="button" :class="{ active: pageTab === 'prevshift' }" @click="openPrevShiftTab">Prev Shift</button>
+      <button v-if="shiftOpened && !freezeGsmPrevShift" type="button" :class="{ active: pageTab === 'prevshift' }" @click="openPrevShiftTab">Prev Shift</button>
     </div>
 
     <div v-if="pageTab !== 'shift' && pageTab !== 'prevshift'" class="gpe-filters gpe-card">
@@ -414,6 +414,7 @@
               type="button"
               class="gpe-btn gpe-btn-warn"
               title="Clear grid and mix roll workspace — server SPRs are kept"
+              :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_clear_entries')"
               @click="guardedClearEntries"
             >Clear Entries</button>
           </div>
@@ -3170,19 +3171,17 @@ function buildLineFromItem(item) {
 }
 
 const unitOptions = computed(() => {
+  const pool = gsmUnitFilterState.value.pool;
+  if (pool && pool.length) {
+    return pool.filter((u) => isFabricUnit(u));
+  }
   const s = new Set();
   ppSubmittedRows.value.forEach((r) => {
     if (r.unit && isFabricUnit(r.unit)) {
       s.add(r.unit);
     }
   });
-  let opts = FABRIC_UNITS.filter((u) => s.has(u));
-  const pool = gsmUnitFilterState.value.pool;
-  if (pool && pool.length) {
-    const poolSet = new Set(pool.map((u) => u.toLowerCase()));
-    opts = opts.filter((u) => poolSet.has(u.toLowerCase()));
-  }
-  return opts;
+  return FABRIC_UNITS.filter((u) => s.has(u));
 });
 
 const fabricUnitOptions = computed(() => unitOptions.value);
@@ -3195,6 +3194,8 @@ const freezeGsmSubmit = computed(() => isBoardActionFrozen(gsmBoardAccess.value,
 const freezeGsmTools = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_tools"));
 const freezeGsmSummary = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_summary"));
 const freezeGsmShiftEntries = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_shift_entries"));
+const freezeGsmClearEntries = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_clear_entries"));
+const freezeGsmPrevShift = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_prev_shift"));
 
 const jobOrderGroups = computed(() => {
   const map = new Map();
@@ -7261,6 +7262,7 @@ function guardedRemoveTopRow() {
   removeTopRow();
 }
 function guardedClearEntries() {
+  if (freezeGsmClearEntries.value) { frappe.msgprint(__("Clear Entries is disabled for your access.")); return; }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Clear Entries"); return; }
   clearGridEntries();
 }
@@ -8281,25 +8283,32 @@ onUnmounted(() => {
   margin-bottom: 4px;
 }
 .gpe-mix-roll-card {
-  border: 1px solid #e2e8f0;
+  border: 1px solid #cbd5e1;
   border-radius: 10px;
-  padding: 10px;
-  margin-bottom: 8px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
   background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
 .gpe-mix-roll-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+.gpe-mix-roll-head strong {
+  font-size: 14px;
+  color: #1e293b;
 }
 .gpe-mix-roll-meta {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 11px;
-  color: #475569;
-  margin-bottom: 8px;
+  gap: 4px;
+  font-size: 13px;
+  color: #334155;
+  margin-bottom: 10px;
+  line-height: 1.4;
 }
 .gpe-mix-active-banner {
   margin-top: 8px;
