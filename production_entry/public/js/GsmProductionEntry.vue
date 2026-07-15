@@ -379,6 +379,15 @@
           <div class="gpe-metric grey">Rolls<br /><strong>{{ sessionRollCount }}</strong></div>
         </div>
 
+        <div class="gpe-create-spr-row" v-if="shiftOpened && selectionLocked && selectedEntries.length">
+          <div class="gpe-create-spr-row-right">
+            <button v-if="needsCreateSprs && !mixSprReady" type="button" class="gpe-btn primary gpe-btn-create-spr" :disabled="!canCreateSprs" @click="createSprs">
+              Create SPR
+            </button>
+            <span v-else class="gpe-spr-ready-badge" title="Draft SPRs exist for selected orders or active mix roll">SPRs ready ✓</span>
+          </div>
+        </div>
+
         <div class="gpe-toolbar">
           <div class="gpe-toolbar-left">
             <button
@@ -387,16 +396,16 @@
               class="gpe-btn warn"
               @click="openManualJobForAllMaxed"
             >All jobs at max — Manual Job</button>
-            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow || addRollInProgress" :title="addRollDisabledHint" @click="addRollRow">
+            <button v-else type="button" class="gpe-btn primary" :disabled="!canAddRow || addRollInProgress || !sprCreatedForSession" :title="addRollDisabledHint" @click="guardedAddRollRow">
               {{ addRollInProgress ? "Adding…" : "Add Roll Row" }}
             </button>
-            <button type="button" class="gpe-btn" :disabled="!rollLines.length" @click="removeTopRow">Remove Top Row</button>
+            <button type="button" class="gpe-btn" :disabled="!rollLines.length || !sprCreatedForSession" @click="guardedRemoveTopRow">Remove Top Row</button>
             <button
               type="button"
               class="gpe-btn gpe-btn-warn"
-              :disabled="!rollLines.length && !sessionSprList.length && !activeMixRoll && !mixRollLines.length"
+              :disabled="(!rollLines.length && !sessionSprList.length && !activeMixRoll && !mixRollLines.length) || !sprCreatedForSession"
               title="Clear grid and mix roll workspace — server SPRs are kept"
-              @click="clearGridEntries"
+              @click="guardedClearEntries"
             >Clear Entries</button>
           </div>
           <span class="gpe-save-status">{{ saveStatus }}</span>
@@ -405,9 +414,9 @@
               <button
                 type="button"
                 class="gpe-btn"
-                :disabled="!toolsEnabled"
+                :disabled="!toolsEnabled || !sprCreatedForSession"
                 :title="toolsHint"
-                @click="toolsMenuOpen = !toolsMenuOpen"
+                @click="guardedToolsToggle"
               >Tools ▾</button>
               <div v-if="toolsMenuOpen && toolsEnabled" class="gpe-tools-menu">
                 <button type="button" @click="runTool('manual')">SPR — Manual job</button>
@@ -418,10 +427,8 @@
                 <button type="button" @click="runTool('fixshaft')">Fix Shaft Numbers</button>
               </div>
             </div>
-            <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="openShaftDetails">Shaft Details</button>
-            <button v-if="needsCreateSprs && !mixSprReady" type="button" class="gpe-btn" :disabled="!canCreateSprs" @click="createSprs">Create SPRs</button>
-            <span v-else class="gpe-spr-ready-badge" title="Draft SPRs exist for selected orders or active mix roll">SPRs ready</span>
-            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="openSubmitConfirmDialog">Submit Entry</button>
+            <button type="button" class="gpe-btn" :disabled="!selectedEntries.length || !sprCreatedForSession" @click="guardedShaftDetails">Shaft Details</button>
+            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry || !sprCreatedForSession" @click="guardedSubmitEntry">Submit Entry</button>
           </div>
         </div>
 
@@ -3502,6 +3509,11 @@ const selectedSessionSprList = computed(() => {
       pp_id: ppId,
       ...sessionSprs.value[ppId],
     }));
+});
+
+const sprCreatedForSession = computed(() => {
+  if (activeMixRoll.value) return mixSprReady.value;
+  return selectedSessionSprList.value.length > 0;
 });
 
 /** SPRs that will be submitted — at least one saved roll in the grid for that pp_id. */
@@ -6963,6 +6975,35 @@ function proceedAddRollWizard() {
   }
 }
 
+function _sprNotCreatedMsg(action) {
+  frappe.msgprint(__("First click Create SPR, then click {0}.", [action]));
+}
+
+function guardedAddRollRow() {
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Add Roll Row")); return; }
+  addRollRow();
+}
+function guardedRemoveTopRow() {
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Remove Top Row")); return; }
+  removeTopRow();
+}
+function guardedClearEntries() {
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Clear Entries")); return; }
+  clearGridEntries();
+}
+function guardedToolsToggle() {
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Tools")); return; }
+  toolsMenuOpen.value = !toolsMenuOpen.value;
+}
+function guardedShaftDetails() {
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Shaft Details")); return; }
+  openShaftDetails();
+}
+function guardedSubmitEntry() {
+  if (!sprCreatedForSession.value) { _sprNotCreatedMsg(__("Submit Entry")); return; }
+  openSubmitConfirmDialog();
+}
+
 async function addRollRow() {
   if (addRollInProgress.value) {
     return;
@@ -9003,6 +9044,24 @@ onUnmounted(() => {
 .gpe-metric.green { background: #86efac; color: #14532d; }
 .gpe-metric.orange { background: #fdba74; color: #9a3412; }
 .gpe-metric.grey { background: #cbd5e1; color: #334155; }
+.gpe-create-spr-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 6px 0;
+  margin-bottom: 2px;
+  border-bottom: 1px dashed #e2e8f0;
+}
+.gpe-create-spr-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gpe-btn-create-spr {
+  font-weight: 700;
+  font-size: 14px;
+  padding: 7px 18px;
+}
 .gpe-toolbar {
   display: flex;
   flex-wrap: wrap;
