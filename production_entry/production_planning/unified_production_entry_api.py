@@ -668,7 +668,7 @@ def open_gsm_shift_session(
 			"status": "Open",
 			"opened_by": frappe.session.user,
 			"opened_at": now_datetime(),
-			"is_reopen": 1 if (closed_prior or batch_reused) else 0,
+			"is_reopen": 1 if prior_had_production else 0,
 			"reopen_reason": reopen_reason if prior_had_production else "",
 			"reopen_remarks": reopen_remarks if prior_had_production else "",
 			"previous_session": (
