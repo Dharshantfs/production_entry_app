@@ -1,19 +1,25 @@
 <template>
   <div class="gpe-root">
+    <div v-if="pageLoadError" class="gpe-load-error gpe-card">
+      <h3>Failed to load page data</h3>
+      <p>There was a network or server error. Please check your connection and try again.</p>
+      <button type="button" class="gpe-btn primary" @click="retryPageLoad">Retry</button>
+    </div>
+    <template v-else>
     <div class="gpe-info-strip">
       Create SPRs for selected orders, enter rolls, Save Row saves to server. Submit Entry pushes to SPR and submits.
     </div>
 
     <div class="gpe-page-tabs">
       <button type="button" :class="{ active: pageTab === 'entry' }" @click="pageTab = 'entry'">Entry</button>
-      <button type="button" :class="{ active: pageTab === 'summary' }" @click="pageTab = 'summary'">Summary</button>
-      <button type="button" :class="{ active: pageTab === 'shift' }" @click="openShiftTab">Shift Entries</button>
+      <button v-if="!freezeGsmSummary" type="button" :class="{ active: pageTab === 'summary' }" @click="pageTab = 'summary'">Summary</button>
+      <button v-if="!freezeGsmShiftEntries" type="button" :class="{ active: pageTab === 'shift' }" @click="openShiftTab">Shift Entries</button>
     </div>
 
     <div v-if="pageTab !== 'shift'" class="gpe-filters gpe-card">
       <div class="gpe-filter">
         <label>View</label>
-        <select v-model="viewScope" @change="fetchOrders">
+        <select v-model="viewScope" @change="fetchOrders" :disabled="freezeGsmDate">
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
@@ -21,22 +27,25 @@
       </div>
       <div class="gpe-filter" v-if="viewScope === 'daily'">
         <label>Planned Date</label>
-        <input type="date" v-model="filterDate" @change="fetchOrders" />
+        <input type="date" v-model="filterDate" @change="fetchOrders" :disabled="freezeGsmDate" />
       </div>
       <div class="gpe-filter" v-else-if="viewScope === 'weekly'">
         <label>Week</label>
-        <input type="week" v-model="filterWeek" @change="fetchOrders" />
+        <input type="week" v-model="filterWeek" @change="fetchOrders" :disabled="freezeGsmDate" />
       </div>
       <div class="gpe-filter" v-else>
         <label>Month</label>
-        <input type="month" v-model="filterMonth" @change="fetchOrders" />
+        <input type="month" v-model="filterMonth" @change="fetchOrders" :disabled="freezeGsmDate" />
       </div>
       <div class="gpe-filter">
         <label>Unit</label>
-        <template v-if="shiftOpened && headerUnit && !isGsmAdminUser">
+        <template v-if="gsmUnitFilterState.unitLocked && gsmUnitFilterState.pool && gsmUnitFilterState.pool.length === 1">
+          <span class="gpe-unit-locked">{{ gsmUnitFilterState.pool[0] }} (assigned)</span>
+        </template>
+        <template v-else-if="shiftOpened && headerUnit && !isGsmAdminUser">
           <span class="gpe-unit-locked">{{ headerUnit }} (locked)</span>
         </template>
-        <select v-else v-model="filterUnit" @change="onUnitChange">
+        <select v-else v-model="filterUnit" @change="onUnitChange" :disabled="freezeGsmUnit">
           <option value="">Select unit</option>
           <option v-for="u in unitOptions" :key="u" :value="u">{{ u }}</option>
         </select>
@@ -396,7 +405,7 @@
               class="gpe-btn warn"
               @click="openManualJobForAllMaxed"
             >All jobs at max — Manual Job</button>
-            <button v-else type="button" class="gpe-btn primary" :title="addRollDisabledHint" @click="guardedAddRollRow">
+            <button v-else type="button" class="gpe-btn primary" :title="addRollDisabledHint" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_add_row')" @click="guardedAddRollRow">
               {{ addRollInProgress ? "Adding…" : "Add Roll Row" }}
             </button>
             <button type="button" class="gpe-btn" @click="guardedRemoveTopRow">Remove Top Row</button>
@@ -415,6 +424,7 @@
                 class="gpe-btn"
                 :disabled="!toolsEnabled"
                 :title="toolsHint"
+                :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_tools')"
                 @click="guardedToolsToggle"
               >Tools ▾</button>
               <div v-if="toolsMenuOpen && toolsEnabled" class="gpe-tools-menu">
@@ -426,8 +436,39 @@
                 <button type="button" @click="runTool('fixshaft')">Fix Shaft Numbers</button>
               </div>
             </div>
+            <button v-if="shiftOpened" type="button" class="gpe-btn" @click="togglePrevShiftPanel">{{ prevShiftPanelOpen ? '✕ Prev Shift' : '◀ Prev Shift' }}</button>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="guardedShaftDetails">Shaft Details</button>
-            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" @click="guardedSubmitEntry">Submit Entry</button>
+            <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_submit')" @click="guardedSubmitEntry">Submit Entry</button>
+          </div>
+        </div>
+
+        <!-- Previous Shift Entries (read-only) -->
+        <div v-if="prevShiftPanelOpen" class="gpe-prev-shift-panel gpe-card">
+          <div class="gpe-prev-shift-header">
+            <strong>Previous Shift Entries</strong>
+            <span class="gpe-muted">{{ prevShiftLabel }} — Read Only</span>
+            <button type="button" class="gpe-btn gpe-btn-sm" @click="loadPrevShiftEntries">Refresh</button>
+          </div>
+          <div v-if="prevShiftLoading" class="gpe-muted">Loading previous shift entries…</div>
+          <div v-else-if="!prevShiftEntries.length" class="gpe-muted" style="padding:12px 0;">No entries found for previous shift.</div>
+          <div v-else class="gpe-prev-shift-table-wrap">
+            <table class="gpe-grid-table gpe-prev-shift-table">
+              <thead>
+                <tr>
+                  <th>SPR</th><th>Order Code</th><th>Rolls</th><th>Net (Kgs)</th><th>Gross (Kgs)</th><th>Operator</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="entry in prevShiftEntries" :key="entry.spr_name">
+                  <td><a href="#" @click.prevent="openSpr(entry.spr_name)">{{ entry.spr_name }}</a></td>
+                  <td>{{ (entry.order_codes || []).join(', ') }}</td>
+                  <td>{{ entry.roll_count }}</td>
+                  <td>{{ sprFormatKg(entry.total_net_kg) }}</td>
+                  <td>{{ sprFormatKg(entry.total_gross_kg) }}</td>
+                  <td>{{ entry.operator || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -1527,6 +1568,7 @@
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -1580,8 +1622,15 @@ import {
   sprShaftNoForRollIndex,
 } from "./spr_roll_entry_utils.js";
 
+import {
+  applyBoardAccessUnitScope,
+  isBoardActionFrozen,
+  boardActionFrozenStyle,
+} from "./board_access_ui.js";
+
 const STORAGE_KEY = `gsm_production_entry_draft_v3_${frappe.session.user || "guest"}`;
 const BOARD_SLUG = "production-table";
+const GSM_BOARD_SLUG = "gsm-production-entry";
 const FABRIC_UNITS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4"];
 
 const viewScope = ref("daily");
@@ -1594,6 +1643,10 @@ const loadingOrders = ref(false);
 const rawOrders = ref([]);
 const merges = ref([]);
 const quotaByLineId = ref({});
+
+const gsmBoardAccess = ref({ unlimited: true, allowed_units: [], loaded: false, permitted: true, frozen_actions: {} });
+const gsmUnitFilterState = ref({ pool: null, showUnitFilter: true, unitLocked: false });
+const pageLoadError = ref(false);
 
 const pageTab = ref("entry");
 const runDate = ref(frappe.datetime.get_today());
@@ -1989,6 +2042,9 @@ const shiftFilterUnit = ref("");
 const shiftEntries = ref([]);
 const shiftEntriesView = ref("spr");
 const shiftConsolidated = ref(null);
+const prevShiftPanelOpen = ref(false);
+const prevShiftEntries = ref([]);
+const prevShiftLoading = ref(false);
 const mixRollCandidates = ref([]);
 const mixRollLoading = ref(false);
 const mixRollBusy = ref(false);
@@ -2972,10 +3028,25 @@ const unitOptions = computed(() => {
       s.add(r.unit);
     }
   });
-  return FABRIC_UNITS.filter((u) => s.has(u));
+  let opts = FABRIC_UNITS.filter((u) => s.has(u));
+  const pool = gsmUnitFilterState.value.pool;
+  if (pool && pool.length) {
+    const poolSet = new Set(pool.map((u) => u.toLowerCase()));
+    opts = opts.filter((u) => poolSet.has(u.toLowerCase()));
+  }
+  return opts;
 });
 
 const fabricUnitOptions = computed(() => unitOptions.value);
+
+const freezeGsmUnit = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_unit"));
+const freezeGsmDate = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_date"));
+const freezeGsmShift = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_shift"));
+const freezeGsmAddRow = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_add_row"));
+const freezeGsmSubmit = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_submit"));
+const freezeGsmTools = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_tools"));
+const freezeGsmSummary = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_summary"));
+const freezeGsmShiftEntries = computed(() => isBoardActionFrozen(gsmBoardAccess.value, "gsm_shift_entries"));
 
 const jobOrderGroups = computed(() => {
   const map = new Map();
@@ -6645,6 +6716,58 @@ async function loadCurrentShift() {
   }
 }
 
+async function loadGsmBoardAccess() {
+  try {
+    const r = await frappe.call({
+      method: "production_entry.production_planning.board_access.get_production_board_user_context",
+      args: { board_slug: GSM_BOARD_SLUG },
+    });
+    const scope = (r && r.message) || { unlimited: true, allowed_units: [], permitted: true };
+    gsmBoardAccess.value = { ...scope, loaded: true };
+    if (!scope || scope.unlimited) {
+      gsmUnitFilterState.value = { pool: null, showUnitFilter: true, unitLocked: false };
+    } else {
+      gsmUnitFilterState.value = applyBoardAccessUnitScope(scope, filterUnit, FABRIC_UNITS);
+    }
+  } catch (e) {
+    console.warn("gsm board access", e);
+    gsmBoardAccess.value = { unlimited: true, allowed_units: [], loaded: true, permitted: true, frozen_actions: {} };
+    gsmUnitFilterState.value = { pool: null, showUnitFilter: true, unitLocked: false };
+  }
+}
+
+async function retryPageLoad() {
+  pageLoadError.value = false;
+  try {
+    await Promise.all([loadCurrentShift(), loadGsmBoardAccess()]);
+    await loadCoreWidthOptions();
+    shiftFilterDate.value = runDate.value;
+    shiftFilterShift.value = shift.value;
+    await fetchOrders();
+    restoreDraft({ skipRollGrid: true });
+    if (filterUnit.value) {
+      headerUnit.value = filterUnit.value;
+      shiftFilterUnit.value = filterUnit.value;
+      batchContextKey.value = currentBatchContextKey();
+      await refreshShiftSession();
+      if (shiftOpened.value && shouldResumeFromServer()) {
+        await refreshSessionFromServer({ merge: true });
+      }
+      if (shiftOpened.value) {
+        setupGsmLiveSync();
+        await loadMixRollCandidates();
+      }
+    } else {
+      shiftFilterUnit.value = "";
+      batchContextKey.value = currentBatchContextKey();
+      shiftSessionReady.value = true;
+    }
+  } catch (e) {
+    console.error("GSM page retry load error", e);
+    pageLoadError.value = true;
+  }
+}
+
 async function fetchQuotaForLine(line) {
   try {
     const src = line.source;
@@ -6979,6 +7102,7 @@ function _sprNotCreatedMsg(action) {
 }
 
 function guardedAddRollRow() {
+  if (freezeGsmAddRow.value) { frappe.msgprint(__("Add Roll Row is disabled for your access.")); return; }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Add Roll Row"); return; }
   if (!canAddRow.value || addRollInProgress.value) return;
   addRollRow();
@@ -6993,6 +7117,7 @@ function guardedClearEntries() {
   clearGridEntries();
 }
 function guardedToolsToggle() {
+  if (freezeGsmTools.value) { frappe.msgprint(__("Tools menu is disabled for your access.")); return; }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Tools"); return; }
   toolsMenuOpen.value = !toolsMenuOpen.value;
 }
@@ -7001,6 +7126,7 @@ function guardedShaftDetails() {
   openShaftDetails();
 }
 function guardedSubmitEntry() {
+  if (freezeGsmSubmit.value) { frappe.msgprint(__("Submit Entry is disabled for your access.")); return; }
   if (!sprCreatedForSession.value) { _sprNotCreatedMsg("Submit Entry"); return; }
   openSubmitConfirmDialog();
 }
@@ -7368,6 +7494,54 @@ async function loadShiftEntries() {
   }
 }
 
+const prevShiftLabel = computed(() => {
+  if (shift.value === "Night Shift") {
+    return `Day Shift · ${runDate.value}`;
+  }
+  const d = new Date(runDate.value);
+  d.setDate(d.getDate() - 1);
+  const prev = d.toISOString().slice(0, 10);
+  return `Night Shift · ${prev}`;
+});
+
+function prevShiftParams() {
+  if (shift.value === "Night Shift") {
+    return { run_date: runDate.value, shift: "Day Shift" };
+  }
+  const d = new Date(runDate.value);
+  d.setDate(d.getDate() - 1);
+  const prev = d.toISOString().slice(0, 10);
+  return { run_date: prev, shift: "Night Shift" };
+}
+
+function togglePrevShiftPanel() {
+  prevShiftPanelOpen.value = !prevShiftPanelOpen.value;
+  if (prevShiftPanelOpen.value && !prevShiftEntries.value.length) {
+    loadPrevShiftEntries();
+  }
+}
+
+async function loadPrevShiftEntries() {
+  prevShiftLoading.value = true;
+  try {
+    const params = prevShiftParams();
+    const r = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_submitted_entries",
+      args: {
+        run_date: params.run_date,
+        shift: params.shift,
+        unit: headerUnit.value || undefined,
+      },
+    });
+    prevShiftEntries.value = r.message || [];
+  } catch (e) {
+    console.error("prev shift load error", e);
+    frappe.msgprint("Failed to load previous shift entries.");
+  } finally {
+    prevShiftLoading.value = false;
+  }
+}
+
 function persistDraft() {
   try {
     const payload = {
@@ -7575,28 +7749,34 @@ watch([runDate, shift, headerUnit], () => {
 watch([runDate, shift, operator, supervisor], () => scheduleAutosave());
 
 onMounted(async () => {
-  await loadCurrentShift();
-  await loadCoreWidthOptions();
-  shiftFilterDate.value = runDate.value;
-  shiftFilterShift.value = shift.value;
-  await fetchOrders();
-  restoreDraft({ skipRollGrid: true });
-  if (filterUnit.value) {
-    headerUnit.value = filterUnit.value;
-    shiftFilterUnit.value = filterUnit.value;
-    batchContextKey.value = currentBatchContextKey();
-    await refreshShiftSession();
-    if (shiftOpened.value && shouldResumeFromServer()) {
-      await refreshSessionFromServer({ merge: true });
+  pageLoadError.value = false;
+  try {
+    await Promise.all([loadCurrentShift(), loadGsmBoardAccess()]);
+    await loadCoreWidthOptions();
+    shiftFilterDate.value = runDate.value;
+    shiftFilterShift.value = shift.value;
+    await fetchOrders();
+    restoreDraft({ skipRollGrid: true });
+    if (filterUnit.value) {
+      headerUnit.value = filterUnit.value;
+      shiftFilterUnit.value = filterUnit.value;
+      batchContextKey.value = currentBatchContextKey();
+      await refreshShiftSession();
+      if (shiftOpened.value && shouldResumeFromServer()) {
+        await refreshSessionFromServer({ merge: true });
+      }
+      if (shiftOpened.value) {
+        setupGsmLiveSync();
+        await loadMixRollCandidates();
+      }
+    } else {
+      shiftFilterUnit.value = "";
+      batchContextKey.value = currentBatchContextKey();
+      shiftSessionReady.value = true;
     }
-    if (shiftOpened.value) {
-      setupGsmLiveSync();
-      await loadMixRollCandidates();
-    }
-  } else {
-    shiftFilterUnit.value = "";
-    batchContextKey.value = currentBatchContextKey();
-    shiftSessionReady.value = true;
+  } catch (e) {
+    console.error("GSM page load error", e);
+    pageLoadError.value = true;
   }
 });
 
@@ -9045,6 +9225,48 @@ onUnmounted(() => {
 .gpe-metric.green { background: #86efac; color: #14532d; }
 .gpe-metric.orange { background: #fdba74; color: #9a3412; }
 .gpe-metric.grey { background: #cbd5e1; color: #334155; }
+.gpe-load-error {
+  text-align: center;
+  padding: 40px 20px;
+  margin: 20px 0;
+  border: 1px solid #fed7d7;
+  background: #fff5f5;
+  border-radius: 8px;
+}
+.gpe-load-error h3 {
+  color: #c53030;
+  margin-bottom: 8px;
+}
+.gpe-load-error p {
+  color: #742a2a;
+  margin-bottom: 16px;
+}
+.gpe-prev-shift-panel {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f7fafc;
+}
+.gpe-prev-shift-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.gpe-prev-shift-table-wrap {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.gpe-prev-shift-table {
+  width: 100%;
+  font-size: 12px;
+}
+.gpe-prev-shift-table th {
+  background: #edf2f7;
+  position: sticky;
+  top: 0;
+}
 .gpe-create-spr-row {
   display: flex;
   justify-content: flex-start;

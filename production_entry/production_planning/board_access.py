@@ -33,6 +33,7 @@ BOARD_SLUGS = (
 	"color-chart",
 	"confirm-orders",
 	"planning",
+	"gsm-production-entry",
 )
 
 # Boards shown in Production Board Access picker (table pages inherit via alias — do not list here).
@@ -52,6 +53,7 @@ BOARD_PICKER_SLUGS = (
 	"logistics-kanban",
 	"despatch-approval-dashboard",
 	"transfer-approval-dashboard",
+	"gsm-production-entry",
 )
 
 BOARD_PICKER_LABELS = {
@@ -70,6 +72,7 @@ BOARD_PICKER_LABELS = {
 	"logistics-kanban": "Logistics Kanban",
 	"despatch-approval-dashboard": "Despatch Approval",
 	"transfer-approval-dashboard": "Transfer Approval",
+	"gsm-production-entry": "GSM Production Entry",
 }
 
 # Table / companion pages — access granted automatically when matching board is allowed.
@@ -254,7 +257,7 @@ def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
 		if not row_slug:
 			continue
 		if requested & _equivalent_board_slugs(row_slug):
-			return {
+			result = {
 				"maintenance": bool(cint(getattr(row, "freeze_maintenance", 0))),
 				"transfer": bool(cint(getattr(row, "freeze_transfer", 0))),
 				"despatch": bool(cint(getattr(row, "freeze_despatch", 0))),
@@ -264,6 +267,18 @@ def _frozen_actions_for_board(access_name: str, board_slug: str) -> dict:
 				"merge": bool(cint(getattr(row, "freeze_merge", 0))),
 				"reorder": bool(cint(getattr(row, "freeze_reorder", 0))),
 			}
+			if _normalize_board_slug(board_slug) == "gsm-production-entry":
+				result.update({
+					"gsm_unit": bool(cint(getattr(row, "freeze_gsm_unit", 0))),
+					"gsm_date": bool(cint(getattr(row, "freeze_gsm_date", 0))),
+					"gsm_shift": bool(cint(getattr(row, "freeze_gsm_shift", 0))),
+					"gsm_add_row": bool(cint(getattr(row, "freeze_gsm_add_row", 0))),
+					"gsm_submit": bool(cint(getattr(row, "freeze_gsm_submit", 0))),
+					"gsm_tools": bool(cint(getattr(row, "freeze_gsm_tools", 0))),
+					"gsm_summary": bool(cint(getattr(row, "freeze_gsm_summary", 0))),
+					"gsm_shift_entries": bool(cint(getattr(row, "freeze_gsm_shift_entries", 0))),
+				})
+			return result
 	return {}
 
 
