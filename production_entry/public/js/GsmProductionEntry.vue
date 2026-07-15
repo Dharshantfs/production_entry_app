@@ -14,9 +14,10 @@
       <button type="button" :class="{ active: pageTab === 'entry' }" @click="pageTab = 'entry'">Entry</button>
       <button v-if="!freezeGsmSummary" type="button" :class="{ active: pageTab === 'summary' }" @click="pageTab = 'summary'">Summary</button>
       <button v-if="!freezeGsmShiftEntries" type="button" :class="{ active: pageTab === 'shift' }" @click="openShiftTab">Shift Entries</button>
+      <button v-if="shiftOpened" type="button" :class="{ active: pageTab === 'prevshift' }" @click="openPrevShiftTab">Prev Shift</button>
     </div>
 
-    <div v-if="pageTab !== 'shift'" class="gpe-filters gpe-card">
+    <div v-if="pageTab !== 'shift' && pageTab !== 'prevshift'" class="gpe-filters gpe-card">
       <div class="gpe-filter">
         <label>View</label>
         <select v-model="viewScope" @change="fetchOrders" :disabled="freezeGsmDate">
@@ -436,39 +437,8 @@
                 <button type="button" @click="runTool('fixshaft')">Fix Shaft Numbers</button>
               </div>
             </div>
-            <button v-if="shiftOpened" type="button" class="gpe-btn" @click="togglePrevShiftPanel">{{ prevShiftPanelOpen ? '✕ Prev Shift' : '◀ Prev Shift' }}</button>
             <button type="button" class="gpe-btn" :disabled="!selectedEntries.length" @click="guardedShaftDetails">Shaft Details</button>
             <button type="button" class="gpe-btn primary" :disabled="!canSubmitEntry" :style="boardActionFrozenStyle(gsmBoardAccess, 'gsm_submit')" @click="guardedSubmitEntry">Submit Entry</button>
-          </div>
-        </div>
-
-        <!-- Previous Shift Entries (read-only) -->
-        <div v-if="prevShiftPanelOpen" class="gpe-prev-shift-panel gpe-card">
-          <div class="gpe-prev-shift-header">
-            <strong>Previous Shift Entries</strong>
-            <span class="gpe-muted">{{ prevShiftLabel }} — Read Only</span>
-            <button type="button" class="gpe-btn gpe-btn-sm" @click="loadPrevShiftEntries">Refresh</button>
-          </div>
-          <div v-if="prevShiftLoading" class="gpe-muted">Loading previous shift entries…</div>
-          <div v-else-if="!prevShiftEntries.length" class="gpe-muted" style="padding:12px 0;">No entries found for previous shift.</div>
-          <div v-else class="gpe-prev-shift-table-wrap">
-            <table class="gpe-grid-table gpe-prev-shift-table">
-              <thead>
-                <tr>
-                  <th>SPR</th><th>Order Code</th><th>Rolls</th><th>Net (Kgs)</th><th>Gross (Kgs)</th><th>Operator</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="entry in prevShiftEntries" :key="entry.spr_name">
-                  <td><a href="#" @click.prevent="openSpr(entry.spr_name)">{{ entry.spr_name }}</a></td>
-                  <td>{{ (entry.order_codes || []).join(', ') }}</td>
-                  <td>{{ entry.roll_count }}</td>
-                  <td>{{ sprFormatKg(entry.total_net_kg) }}</td>
-                  <td>{{ sprFormatKg(entry.total_gross_kg) }}</td>
-                  <td>{{ entry.operator || '—' }}</td>
-                </tr>
-              </tbody>
-            </table>
           </div>
         </div>
 
@@ -1223,6 +1193,185 @@
           </table>
         </div>
         <div v-else class="gpe-shift-detail gpe-card gpe-muted">Select an entry to view rolls.</div>
+      </div>
+    </div>
+
+    <!-- Prev Shift tab (full shift-wise consolidated view, read-only) -->
+    <div v-show="pageTab === 'prevshift'" class="gpe-shift-layout">
+      <div class="gpe-shift-filters gpe-card">
+        <span class="gpe-shift-filter-title">Previous Shift</span>
+        <span class="gpe-prev-shift-badge">{{ prevShiftLabel }} — Read Only</span>
+        <button type="button" class="gpe-btn primary" @click="loadPrevShiftConsolidated">Refresh</button>
+      </div>
+
+      <div v-if="prevShiftLoading" class="gpe-muted gpe-card">Loading previous shift data…</div>
+      <div v-else-if="!prevShiftConsolidated?.totals?.spr_count" class="gpe-empty-state gpe-card">
+        <h3>No production for previous shift</h3>
+        <p>{{ prevShiftLabel }}</p>
+      </div>
+      <div v-else class="gpe-shift-consolidated">
+        <div class="gpe-shift-kpi-grid gpe-card gpe-board-animate">
+          <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 0ms">
+            <span class="gpe-kpi-label">Session</span>
+            <span :class="['gpe-chip', shiftSessionStatusClass(prevShiftConsolidated.session_status)]">
+              {{ prevShiftConsolidated.session_status }}
+            </span>
+          </div>
+          <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 60ms">
+            <span class="gpe-kpi-label">SPRs</span>
+            <strong>{{ prevShiftConsolidated.totals.submitted_spr_count }} submitted</strong>
+            <span v-if="prevShiftConsolidated.totals.draft_spr_count" class="gpe-kpi-sub">
+              · {{ prevShiftConsolidated.totals.draft_spr_count }} draft
+            </span>
+          </div>
+          <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 120ms">
+            <span class="gpe-kpi-label">Rolls</span>
+            <strong>{{ prevShiftConsolidated.totals.roll_count }}</strong>
+          </div>
+          <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 180ms">
+            <span class="gpe-kpi-label">Net Kg</span>
+            <strong>{{ formatKg(prevShiftConsolidated.totals.net_kg) }}</strong>
+          </div>
+          <div class="gpe-kpi gpe-board-card" style="--gpe-delay: 240ms">
+            <span class="gpe-kpi-label">Gross Kg</span>
+            <strong>{{ formatKg(prevShiftConsolidated.totals.gross_kg) }}</strong>
+          </div>
+        </div>
+        <div class="gpe-summary-panels gpe-shift-summary-cards gpe-board-animate">
+          <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 80ms">
+            <h4>By Order</h4>
+            <div class="gpe-table-wrap">
+            <table>
+              <thead>
+                <tr><th>Order</th><th>Status</th><th>Rolls</th><th>Net Kg</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in prevShiftConsolidated.by_order" :key="row.order_codes?.join('-') || row.spr_name">
+                  <td>{{ row.order_codes?.join(", ") || "—" }}</td>
+                  <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
+                  <td>{{ row.rolls }}</td>
+                  <td>{{ formatKg(row.net_kg) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+          <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 160ms">
+            <h4>By GSM</h4>
+            <div class="gpe-table-wrap">
+            <table>
+              <thead>
+                <tr><th>GSM</th><th>Rolls</th><th>Net Kg</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in prevShiftConsolidated.by_gsm" :key="row.gsm">
+                  <td>{{ row.gsm }}</td>
+                  <td>{{ row.rolls }}</td>
+                  <td>{{ formatKg(row.net_kg) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+          <div class="gpe-panel gpe-card gpe-board-card" style="--gpe-delay: 240ms">
+            <h4>By Batch Series</h4>
+            <div class="gpe-table-wrap">
+            <table>
+              <thead>
+                <tr><th>Batch</th><th>Rolls</th><th>Net Kg</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in prevShiftConsolidated.by_batch_series" :key="row.batch_series">
+                  <td>{{ row.batch_series }}</td>
+                  <td>{{ row.rolls }}</td>
+                  <td>{{ formatKg(row.net_kg) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+        <div class="gpe-panel wide gpe-card gpe-board-card">
+          <h4>All SPRs (submitted + draft)</h4>
+          <div class="gpe-table-wrap">
+          <table>
+            <thead>
+              <tr><th>SPR</th><th>Status</th><th>Orders</th><th>Rolls</th><th>Net Kg</th><th>Operator</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="spr in prevShiftConsolidated.spr_list" :key="spr.spr_name">
+                <td><a href="#" @click.prevent="openSpr(spr.spr_name)">{{ spr.spr_name }}</a></td>
+                <td><span :class="['gpe-chip', sprStatusChipClass(spr.spr_status)]">{{ spr.spr_status }}</span></td>
+                <td>{{ spr.order_codes?.join(", ") || "—" }}</td>
+                <td>{{ spr.roll_count }}</td>
+                <td>{{ formatKg(spr.total_net_kg) }}</td>
+                <td>{{ spr.operator || "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+        <div class="gpe-shift-roll-section gpe-card">
+          <div class="gpe-shift-roll-head">
+            <h4>Shift roll entries</h4>
+            <span class="gpe-roll-count-badge">{{ shiftRollLines(prevShiftConsolidated).length }} rolls</span>
+            <span v-if="prevShiftConsolidated.roll_lines_truncated" class="gpe-muted gpe-trunc-hint">First 500 rows shown</span>
+          </div>
+          <div class="gpe-grid-wrap gpe-grid-wrap-shift">
+            <table class="gpe-grid gpe-grid-entry gpe-grid-readonly">
+              <thead>
+                <tr>
+                  <th class="gpe-sticky-col gpe-sticky-0">#</th>
+                  <th class="gpe-sticky-col gpe-sticky-1">Order</th>
+                  <th class="gpe-num">Job</th>
+                  <th>Quality</th>
+                  <th>Color</th>
+                  <th class="gpe-num">GSM</th>
+                  <th class="gpe-num">Width</th>
+                  <th class="gpe-num">Ord MTR</th>
+                  <th class="gpe-num">Prod MTR</th>
+                  <th>Prod GSM</th>
+                  <th>Batch</th>
+                  <th>Net</th>
+                  <th>Gross</th>
+                  <th>Planned</th>
+                  <th>SPR</th>
+                  <th>Status</th>
+                  <th>WO</th>
+                  <th>Core</th>
+                  <th class="gpe-num">Core Base Wt (Kg)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(row, sidx) in shiftRollLines(prevShiftConsolidated)"
+                  :key="(row.batch_no || '') + '-prev-' + sidx"
+                  :class="rowBandClass(row)"
+                >
+                  <td class="gpe-sticky-col gpe-sticky-0">{{ shiftRollLines(prevShiftConsolidated).length - sidx }}</td>
+                  <td class="gpe-sticky-col gpe-sticky-1">{{ row.party_code || "—" }}</td>
+                  <td class="gpe-num">{{ row.job_id || "—" }}</td>
+                  <td>{{ row.quality || "—" }}</td>
+                  <td>{{ row.color || "—" }}</td>
+                  <td class="gpe-num">{{ row.gsm }}</td>
+                  <td class="gpe-num">{{ widthDisplay(row) }}</td>
+                  <td class="gpe-num">{{ row.meter_roll }}</td>
+                  <td class="gpe-num">{{ row.produced_length_mtrs }}</td>
+                  <td>{{ row.produced_gsm }}</td>
+                  <td>{{ row.batch_no }}</td>
+                  <td>{{ formatKg(row.net_weight) }}</td>
+                  <td>{{ formatKg(sprNormalizeGrossWeightInput(row.gross_weight)) }}</td>
+                  <td>{{ formatKg(row.planned_qty) }}</td>
+                  <td><a href="#" @click.prevent="openSpr(row.spr_name)">{{ row.spr_name }}</a></td>
+                  <td><span :class="['gpe-chip', sprStatusChipClass(row.spr_status)]">{{ row.spr_status }}</span></td>
+                  <td>{{ row.work_order || "—" }}</td>
+                  <td>{{ row.custom_core_width_mm || "—" }}</td>
+                  <td class="gpe-num">{{ coreBaseWeightDisplay(row) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2042,8 +2191,7 @@ const shiftFilterUnit = ref("");
 const shiftEntries = ref([]);
 const shiftEntriesView = ref("spr");
 const shiftConsolidated = ref(null);
-const prevShiftPanelOpen = ref(false);
-const prevShiftEntries = ref([]);
+const prevShiftConsolidated = ref(null);
 const prevShiftLoading = ref(false);
 const mixRollCandidates = ref([]);
 const mixRollLoading = ref(false);
@@ -7514,29 +7662,29 @@ function prevShiftParams() {
   return { run_date: prev, shift: "Night Shift" };
 }
 
-function togglePrevShiftPanel() {
-  prevShiftPanelOpen.value = !prevShiftPanelOpen.value;
-  if (prevShiftPanelOpen.value && !prevShiftEntries.value.length) {
-    loadPrevShiftEntries();
+function openPrevShiftTab() {
+  pageTab.value = "prevshift";
+  if (!prevShiftConsolidated.value) {
+    loadPrevShiftConsolidated();
   }
 }
 
-async function loadPrevShiftEntries() {
+async function loadPrevShiftConsolidated() {
   prevShiftLoading.value = true;
   try {
     const params = prevShiftParams();
     const r = await frappe.call({
-      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_submitted_entries",
+      method: "production_entry.production_planning.unified_production_entry_api.get_gsm_shift_consolidated_summary",
       args: {
         run_date: params.run_date,
         shift: params.shift,
         unit: headerUnit.value || undefined,
       },
     });
-    prevShiftEntries.value = r.message || [];
+    prevShiftConsolidated.value = r.message || null;
   } catch (e) {
     console.error("prev shift load error", e);
-    frappe.msgprint("Failed to load previous shift entries.");
+    frappe.msgprint("Failed to load previous shift data.");
   } finally {
     prevShiftLoading.value = false;
   }
@@ -9241,31 +9389,13 @@ onUnmounted(() => {
   color: #742a2a;
   margin-bottom: 16px;
 }
-.gpe-prev-shift-panel {
-  margin-bottom: 12px;
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f7fafc;
-}
-.gpe-prev-shift-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-.gpe-prev-shift-table-wrap {
-  max-height: 300px;
-  overflow-y: auto;
-}
-.gpe-prev-shift-table {
-  width: 100%;
-  font-size: 12px;
-}
-.gpe-prev-shift-table th {
+.gpe-prev-shift-badge {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4a5568;
   background: #edf2f7;
-  position: sticky;
-  top: 0;
+  padding: 4px 10px;
+  border-radius: 4px;
 }
 .gpe-create-spr-row {
   display: flex;
