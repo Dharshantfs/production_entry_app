@@ -618,7 +618,7 @@
                     v-model="row.custom_bay"
                     class="gpe-inp gpe-bay-select"
                     :disabled="row.row_locked || row.is_bundle_row || row.is_wasted"
-                    :title="row.custom_bay || __('Select bay')"
+                    :title="row.custom_bay || 'Select bay'"
                   >
                     <option value="">—</option>
                     <option v-for="b in bayOptions" :key="b.name" :value="b.name">
