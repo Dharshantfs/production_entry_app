@@ -6715,6 +6715,7 @@ async function refreshShiftSession() {
     if (session && session.status === "Open" && shouldResumeFromServer()) {
       await resumeActiveShiftFromServer({ quiet: true });
     }
+    await loadBayOptions();
   } catch (e) {
     console.warn("shift session", e);
     applyShiftSessionHydration(null);
@@ -6759,6 +6760,7 @@ async function startShift() {
       resetBatchSeriesForShiftOpen();
     }
     await loadShiftStatusForDate();
+    await loadBayOptions();
     scheduleAutosave();
     showShiftOpenDialog.value = false;
     shiftReopenReason.value = "";
