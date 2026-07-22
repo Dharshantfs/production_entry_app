@@ -304,7 +304,8 @@ function reloadBatches() {
         }
       : {
           spr_name: row.spr_name,
-          item_code: row._isSprGroup ? "" : row.item_code,
+          // Do not pass planning item_code — SPR rolls often use a different item than the PT row
+          item_code: "",
           party_code: row.party_code,
           from_company: fromCompany.value,
         };

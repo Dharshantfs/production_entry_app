@@ -846,26 +846,39 @@ def _primary_submitted_spr_for_batch(spr_name, batch_no=""):
 
 
 @frappe.whitelist()
-def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, from_company=None):
-	"""Batches produced on one or more submitted SPRs (CSV spr_name supported)."""
+def get_spr_produced_batches(
+	spr_name=None,
+	item_code=None,
+	party_code=None,
+	from_company=None,
+	exclude_transferred=1,
+):
+	"""Batches produced on one or more submitted SPRs (CSV spr_name supported).
+
+	exclude_transferred: when truthy, hide batches already on a non-rejected Transfer Approval.
+	Despatch should pass 0 — FG can still be despatched even if a prior transfer request existed.
+	"""
 	spr_ids = _resolve_submitted_spr_ids(spr_name)
 	if not spr_ids:
 		return []
 
 	ic_filter = _cstr(item_code)
 	pc_filter = _cstr(party_code)
+	skip_transferred = cint(exclude_transferred) == 1
 	batches = []
 	seen = set()
-	existing_transferred = frappe.db.sql(
-		"""
-		select tl.batch_no
-		from `tabTransfer Approval Line` tl
-		inner join `tabTransfer Approval` ta on ta.name = tl.parent
-		where ta.status != 'Rejected' and tl.batch_no is not null
-		""",
-		as_dict=1,
-	)
-	transferred_batches = {r.batch_no for r in existing_transferred}
+	transferred_batches = set()
+	if skip_transferred:
+		existing_transferred = frappe.db.sql(
+			"""
+			select tl.batch_no
+			from `tabTransfer Approval Line` tl
+			inner join `tabTransfer Approval` ta on ta.name = tl.parent
+			where ta.status != 'Rejected' and ifnull(tl.batch_no, '') != ''
+			""",
+			as_dict=1,
+		)
+		transferred_batches = {_cstr(r.batch_no) for r in existing_transferred if _cstr(r.batch_no)}
 
 	def _add_batch(batch_no, qty, row=None, warehouse=None):
 		bn = _cstr(batch_no)
@@ -879,10 +892,16 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 			)[0][0]
 			or 0
 		)
+		# ERPNext v15: batch may live only on Serial and Batch Bundle entries
+		if stock_qty <= 0:
+			stock_qty = _batch_qty_from_serial_batch_bundle(bn)
 
 		q = flt(qty or 0)
 		if q <= 0:
 			q = stock_qty
+		if q <= 0:
+			# Still surface the roll — logistics can adjust qty; Batch master may show qty
+			q = flt(frappe.db.get_value("Batch", bn, "batch_qty") or 0) or 1.0
 
 		seen.add(bn)
 		batches.append(
@@ -892,6 +911,7 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 				"item_name": (row or {}).get("item_name")
 				or (frappe.db.get_value("Item", ic_filter, "item_name") if ic_filter else ""),
 				"qty": q,
+				"available_qty": q,
 				"party_code": (row or {}).get("party_code") or pc_filter,
 				"work_order": (row or {}).get("work_order"),
 				"warehouse": warehouse,
@@ -899,6 +919,7 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 		)
 
 	item_fields = _spr_item_query_fields("party_code", "work_order")
+	spr_item_codes = set()
 	for sn in spr_ids:
 		for row in frappe.get_all(
 			"Shaft Production Run Item",
@@ -906,16 +927,18 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 			fields=item_fields,
 			order_by="idx asc",
 			limit_page_length=0,
+			ignore_permissions=True,
 		):
+			ic = _cstr(row.get("item_code"))
+			if ic:
+				spr_item_codes.add(ic)
 			bn = _cstr(row.get("batch_no"))
 			if not bn or bn in seen:
 				continue
 
-			# Exact batch on the roll grid
 			_add_batch(bn, row.get("net_weight") or row.get("gross_weight") or 0, row)
 
-			# Split children (e.g. parent JS-01052611 → JS-01052611/1)
-			# Skip when bn already looks like a split (contains /N)
+			# Parent prefix → split children (JS-01052611 → JS-01052611/1)
 			if "/" not in bn:
 				split_bns = frappe.db.sql(
 					"""
@@ -928,11 +951,37 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 				)
 				for sb in split_bns:
 					_add_batch(sb.batch_no, 0, row)
+				# Batch master split ids (SLE may omit batch_no on v15 bundles)
+				try:
+					for brow in frappe.db.sql(
+						"""
+						select name, ifnull(batch_id, name) as batch_id, item
+						from `tabBatch`
+						where (name like %s or ifnull(batch_id, '') like %s)
+						  and ifnull(disabled, 0) = 0
+						limit 200
+						""",
+						(bn + "/%", bn + "/%"),
+						as_dict=1,
+					) or []:
+						_add_batch(
+							brow.batch_id or brow.name,
+							0,
+							{
+								"item_code": brow.item or (row or {}).get("item_code"),
+								"item_name": (row or {}).get("item_name"),
+								"party_code": (row or {}).get("party_code"),
+								"work_order": (row or {}).get("work_order"),
+							},
+						)
+				except Exception:
+					pass
 
 	if batches:
 		return batches
 
 	# Fallback: manufacture Stock Entries / SLE linked to any of the SPRs
+	# Prefer SPR line item codes over planning-row item_code (often differs).
 	se_meta = frappe.get_meta("Stock Entry")
 	se_link_field = ""
 	if se_meta.has_field("shaft_production_run"):
@@ -940,42 +989,147 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 	elif frappe.db.has_column("Stock Entry", "custom_spr_reference"):
 		se_link_field = "custom_spr_reference"
 	else:
-		return []
+		se_link_field = ""
 
-	se_names = frappe.get_all(
-		"Stock Entry",
-		filters={"docstatus": 1, se_link_field: ["in", spr_ids]},
-		pluck="name",
-		limit_page_length=200,
-	) or []
+	se_names = []
+	if se_link_field:
+		se_names = frappe.get_all(
+			"Stock Entry",
+			filters={"docstatus": 1, se_link_field: ["in", spr_ids]},
+			pluck="name",
+			limit_page_length=200,
+			ignore_permissions=True,
+		) or []
+
+	# Also Manufacture SEs via Work Orders on the SPR (link field often blank)
 	if not se_names:
-		return []
-	sle_filters = {
-		"voucher_type": "Stock Entry",
-		"voucher_no": ["in", se_names],
-		"actual_qty": [">", 0],
-	}
-	if ic_filter:
-		sle_filters["item_code"] = ic_filter
-	for sle in frappe.get_all(
-		"Stock Ledger Entry",
-		filters=sle_filters,
-		fields=["batch_no", "item_code", "actual_qty", "warehouse"],
-		order_by="posting_date asc, posting_time asc, creation asc",
-		limit_page_length=1000,
-	):
-		if not _cstr(sle.get("batch_no")):
-			continue
-		_add_batch(
-			sle.get("batch_no"),
-			sle.get("actual_qty"),
-			{
-				"item_code": sle.get("item_code"),
-				"item_name": frappe.db.get_value("Item", sle.get("item_code"), "item_name"),
-			},
-			sle.get("warehouse"),
-		)
+		wo_set = set()
+		for sn in spr_ids:
+			for wo in frappe.get_all(
+				"Shaft Production Run Item",
+				filters={"parent": sn},
+				pluck="work_order",
+				limit_page_length=0,
+				ignore_permissions=True,
+			) or []:
+				if _cstr(wo):
+					wo_set.add(_cstr(wo))
+		if wo_set and frappe.db.has_column("Stock Entry", "work_order"):
+			se_names = frappe.get_all(
+				"Stock Entry",
+				filters={
+					"docstatus": 1,
+					"work_order": ["in", list(wo_set)],
+					"purpose": "Manufacture",
+				},
+				pluck="name",
+				limit_page_length=200,
+				ignore_permissions=True,
+			) or []
+
+	def _pull_sle(item_codes=None):
+		if not se_names:
+			return
+		sle_filters = {
+			"voucher_type": "Stock Entry",
+			"voucher_no": ["in", se_names],
+			"actual_qty": [">", 0],
+		}
+		codes = [c for c in (item_codes or []) if c]
+		if codes:
+			sle_filters["item_code"] = ["in", codes]
+		for sle in frappe.get_all(
+			"Stock Ledger Entry",
+			filters=sle_filters,
+			fields=["batch_no", "item_code", "actual_qty", "warehouse"],
+			order_by="posting_date asc, posting_time asc, creation asc",
+			limit_page_length=1000,
+			ignore_permissions=True,
+		):
+			if not _cstr(sle.get("batch_no")):
+				continue
+			_add_batch(
+				sle.get("batch_no"),
+				sle.get("actual_qty"),
+				{
+					"item_code": sle.get("item_code"),
+					"item_name": frappe.db.get_value("Item", sle.get("item_code"), "item_name"),
+				},
+				sle.get("warehouse"),
+			)
+
+	# 1) SPR item codes  2) planning item  3) no item filter
+	if spr_item_codes:
+		_pull_sle(list(spr_item_codes))
+	if not batches and ic_filter:
+		_pull_sle([ic_filter])
+	if not batches:
+		_pull_sle(None)
+
+	# Despatch-only last resort: active Batch masters for SPR item codes
+	if not batches and spr_item_codes and not skip_transferred:
+		for ic in spr_item_codes:
+			for brow in frappe.get_all(
+				"Batch",
+				filters={"item": ic, "disabled": 0},
+				fields=["name", "batch_id", "item", "batch_qty"],
+				order_by="creation desc",
+				limit_page_length=200,
+				ignore_permissions=True,
+			) or []:
+				bn = _cstr(brow.batch_id or brow.name)
+				if not bn:
+					continue
+				stock_qty = flt(
+					frappe.db.sql(
+						"select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0",
+						bn,
+					)[0][0]
+					or 0
+				)
+				if stock_qty <= 0:
+					stock_qty = _batch_qty_from_serial_batch_bundle(bn)
+				qty = stock_qty or flt(brow.batch_qty) or 0
+				if qty <= 0:
+					continue
+				_add_batch(
+					bn,
+					qty,
+					{
+						"item_code": brow.item or ic,
+						"item_name": frappe.db.get_value("Item", ic, "item_name") or "",
+					},
+				)
+
 	return batches
+
+
+def _batch_qty_from_serial_batch_bundle(batch_no: str) -> float:
+	"""Sum qty from Serial and Batch Entry when SLE.batch_no is blank (ERPNext v15)."""
+	bn = _cstr(batch_no)
+	if not bn or not frappe.db.exists("DocType", "Serial and Batch Entry"):
+		return 0.0
+	try:
+		meta = frappe.get_meta("Serial and Batch Entry")
+		batch_field = next((fn for fn in ("batch_no", "batch", "batch_id") if meta.has_field(fn)), "")
+		if not batch_field:
+			return 0.0
+		qty_field = "qty" if meta.has_field("qty") else ("stock_qty" if meta.has_field("stock_qty") else "")
+		if not qty_field:
+			return 0.0
+		return flt(
+			frappe.db.sql(
+				f"""
+				select sum(ifnull(`{qty_field}`, 0))
+				from `tabSerial and Batch Entry`
+				where ifnull(`{batch_field}`, '') = %s
+				""",
+				bn,
+			)[0][0]
+			or 0
+		)
+	except Exception:
+		return 0.0
 
 
 def _user_can_approve_transfer():

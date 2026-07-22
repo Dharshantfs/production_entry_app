@@ -554,8 +554,33 @@ def get_despatch_eligible_rows(
 
 @frappe.whitelist()
 def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, from_company=None):
-	"""Produced batches from submitted SPR(s) — supports multi-SPR CSV on planning rows."""
-	batches = get_spr_produced_batches(spr_name, item_code, party_code, from_company) or []
+	"""Produced batches from submitted SPR(s) for despatch.
+
+	Does not hide batches that appear on Transfer Approvals — despatch is independent.
+	Also ignores planning-row item_code for SPR roll lookup (FG code often differs from SPR item).
+	"""
+	batches = (
+		get_spr_produced_batches(
+			spr_name=spr_name,
+			item_code="",  # use SPR line items / manufacture fallbacks, not planning FG code
+			party_code=party_code,
+			from_company=from_company,
+			exclude_transferred=0,
+		)
+		or []
+	)
+	# If still empty and caller sent an item_code, try stock for that item as soft fallback
+	if not batches and _cstr(item_code):
+		batches = (
+			get_spr_produced_batches(
+				spr_name=spr_name,
+				item_code=item_code,
+				party_code=party_code,
+				from_company=from_company,
+				exclude_transferred=0,
+			)
+			or []
+		)
 	reserved = _batches_reserved_on_despatch()
 	if not reserved:
 		return batches
