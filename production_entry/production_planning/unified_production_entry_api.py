@@ -3195,7 +3195,8 @@ def get_warehouse_bays_for_unit(unit=None):
 	"""Bay names for Production Session unit — Warehouse Bay.description like 'UNIT N%'.
 
 	Additive helper only. Returns [] if DocType missing or unit blank.
-	Does not modify Warehouse Bay / Batch / SPR data.
+	Reads with ignore_permissions — Warehouse Bay is often restricted to WMS roles,
+	but Production Session needs the list for Unit 1–4 operators.
 	"""
 	raw = _cstr(unit).strip()
 	if not raw:
@@ -3206,25 +3207,32 @@ def get_warehouse_bays_for_unit(unit=None):
 	# "Unit 1" / "UNIT 1" / "unit-1" → "UNIT 1"
 	norm = raw.upper().replace("-", " ").replace("_", " ")
 	norm = " ".join(norm.split())
-	if not norm.startswith("UNIT"):
-		# e.g. bare "1" unlikely; still try UNIT prefix for "Unit 1" already handled
-		pass
-	# Ensure "UNIT 1" form
 	parts = norm.split()
 	if len(parts) >= 2 and parts[0] == "UNIT" and parts[1].isdigit():
 		token = f"UNIT {parts[1]}"
+	elif parts and parts[0].isdigit():
+		token = f"UNIT {parts[0]}"
 	elif norm.startswith("UNIT ") and len(norm) > 5:
-		token = norm
+		token = f"UNIT {parts[1]}" if len(parts) >= 2 and parts[1].isdigit() else norm
 	else:
 		token = norm
 
+	# Match "UNIT 1 | Rack …" (starts with) or contains "UNIT 1 |"
+	like_prefix = f"{token}%"
+	like_pipe = f"%{token} |%"
 	try:
-		rows = frappe.get_all(
-			"Warehouse Bay",
-			filters={"description": ["like", f"{token}%"]},
-			fields=["name", "bay_name", "description"],
-			order_by="bay_name asc",
-			limit_page_length=500,
+		rows = frappe.db.sql(
+			"""
+			select name, bay_name, description
+			from `tabWarehouse Bay`
+			where ifnull(description, '') like %s
+			   or ifnull(description, '') like %s
+			   or upper(ifnull(description, '')) like %s
+			order by bay_name asc
+			limit 500
+			""",
+			(like_prefix, like_pipe, f"%{token}%"),
+			as_dict=1,
 		) or []
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "get_warehouse_bays_for_unit")
@@ -3233,6 +3241,10 @@ def get_warehouse_bays_for_unit(unit=None):
 	out = []
 	seen = set()
 	for r in rows:
+		desc = _cstr(r.get("description")).upper()
+		# Prefer rows that actually belong to this unit token
+		if token not in desc and not desc.startswith(token):
+			continue
 		bn = _cstr(r.get("bay_name") or r.get("name"))
 		if not bn or bn in seen:
 			continue

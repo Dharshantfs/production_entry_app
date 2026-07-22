@@ -618,9 +618,10 @@
                     v-model="row.custom_bay"
                     class="gpe-inp gpe-bay-select"
                     :disabled="row.row_locked || row.is_bundle_row || row.is_wasted"
-                    :title="row.custom_bay || 'Select bay'"
+                    :title="row.custom_bay || (bayOptions.length ? 'Select bay' : 'No bays for this unit')"
+                    @focus="onBaySelectFocus"
                   >
-                    <option value="">—</option>
+                    <option value="">{{ bayOptions.length ? "—" : "No bays" }}</option>
                     <option v-for="b in bayOptions" :key="b.name" :value="b.name">
                       {{ b.bay_name || b.name }}
                     </option>
@@ -6010,6 +6011,12 @@ async function loadBayOptions() {
   }
 }
 
+function onBaySelectFocus() {
+  if (!bayOptions.value.length) {
+    void loadBayOptions();
+  }
+}
+
 function onUnitChange() {
   if (shiftOpened.value && filterUnit.value !== headerUnit.value) {
     if (isGsmAdminUser()) {
@@ -6527,6 +6534,7 @@ async function bootstrapFromServerSession(options = {}) {
     }
     setupGsmLiveSync();
     await loadMixRollCandidates();
+    await loadBayOptions();
     return true;
   } catch (e) {
     console.warn("bootstrap session", e);
