@@ -3191,6 +3191,63 @@ def save_gsm_roll_line(spr_name, roll_payload, shift=None):
 
 
 @frappe.whitelist()
+def get_warehouse_bays_for_unit(unit=None):
+	"""Bay names for Production Session unit — Warehouse Bay.description like 'UNIT N%'.
+
+	Additive helper only. Returns [] if DocType missing or unit blank.
+	Does not modify Warehouse Bay / Batch / SPR data.
+	"""
+	raw = _cstr(unit).strip()
+	if not raw:
+		return []
+	if not frappe.db.exists("DocType", "Warehouse Bay"):
+		return []
+
+	# "Unit 1" / "UNIT 1" / "unit-1" → "UNIT 1"
+	norm = raw.upper().replace("-", " ").replace("_", " ")
+	norm = " ".join(norm.split())
+	if not norm.startswith("UNIT"):
+		# e.g. bare "1" unlikely; still try UNIT prefix for "Unit 1" already handled
+		pass
+	# Ensure "UNIT 1" form
+	parts = norm.split()
+	if len(parts) >= 2 and parts[0] == "UNIT" and parts[1].isdigit():
+		token = f"UNIT {parts[1]}"
+	elif norm.startswith("UNIT ") and len(norm) > 5:
+		token = norm
+	else:
+		token = norm
+
+	try:
+		rows = frappe.get_all(
+			"Warehouse Bay",
+			filters={"description": ["like", f"{token}%"]},
+			fields=["name", "bay_name", "description"],
+			order_by="bay_name asc",
+			limit_page_length=500,
+		) or []
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "get_warehouse_bays_for_unit")
+		return []
+
+	out = []
+	seen = set()
+	for r in rows:
+		bn = _cstr(r.get("bay_name") or r.get("name"))
+		if not bn or bn in seen:
+			continue
+		seen.add(bn)
+		out.append(
+			{
+				"name": _cstr(r.get("name") or bn),
+				"bay_name": bn,
+				"description": _cstr(r.get("description")),
+			}
+		)
+	return out
+
+
+@frappe.whitelist()
 def delete_gsm_roll_line(spr_name, batch_no=None, row_name=None):
 	"""GSM Remove Row — delete one saved roll line from draft SPR."""
 	return delete_gsm_roll_line_from_spr(spr_name, batch_no=batch_no, row_name=row_name)

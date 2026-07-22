@@ -1350,6 +1350,11 @@ def _batch_fields_from_spr_row(batch_meta, spr_row, is_bag_spr: bool = False) ->
 		out["custom_meter"] = flt(meter_from_spr)
 	if batch_meta.has_field("custom_cbm") and _spr_row_get(spr_row, "custom_cbm") is not None:
 		out["custom_cbm"] = flt(_spr_row_get(spr_row, "custom_cbm"))
+	# Additive: mirror SPR Item bay → Batch.custom_bay (field already on Batch from WMS)
+	if batch_meta.has_field("custom_bay"):
+		bay = _cstr(_spr_row_get(spr_row, "custom_bay"))
+		if bay:
+			out["custom_bay"] = bay
 
 	def _set_first_batch_field(candidates: tuple[str, ...], value, label_tokens: tuple[str, ...] = ()):
 		if value in (None, ""):
@@ -3529,6 +3534,11 @@ class ShaftProductionRun(Document):
 				data["custom_shift"] = row.custom_shift
 			if batch_meta.has_field("custom_party_code_text") and row.get("custom_party_code_text"):
 				data["custom_party_code_text"] = row.custom_party_code_text
+			# Additive: bay from SPR roll line → Batch (only set when present)
+			if batch_meta.has_field("custom_bay"):
+				bay = _cstr(row.get("custom_bay"))
+				if bay:
+					data["custom_bay"] = bay
 			if not data:
 				continue
 			try:
@@ -10955,6 +10965,11 @@ def _gsm_apply_payload_to_item_row(row, payload: dict, job_id: str, shift=None, 
 	_gsm_spi_set_float_from_payload(row, spi_meta, payload, "custom_polybag_kgs")
 	_gsm_spi_set_float_from_payload(row, spi_meta, payload, "custom_diameter_inches")
 	_gsm_spi_set_float_from_payload(row, spi_meta, payload, "custom_cbm_cubic_meters")
+	# Additive: Bay (Warehouse Bay link) — only when field exists
+	if spi_meta.has_field("custom_bay"):
+		bay_val = payload.get("custom_bay")
+		if bay_val is not None:
+			row.set("custom_bay", _cstr(bay_val))
 	if shift and spi_meta.has_field("custom_shift") and not _cstr(getattr(row, "custom_shift", "")):
 		row.custom_shift = _cstr(shift)
 
@@ -11225,6 +11240,7 @@ def _gsm_serialize_item_row_for_grid(it, pp_id: str) -> dict:
 		"custom_cbm_cubic_meters": _gsm_spi_get_float(it, spi_meta, "custom_cbm_cubic_meters"),
 		"custom_diameter": _gsm_spi_get_float(it, spi_meta, "custom_diameter_inches"),
 		"custom_cbm": _gsm_spi_get_float(it, spi_meta, "custom_cbm_cubic_meters"),
+		"custom_bay": _cstr(getattr(it, "custom_bay", None)) if spi_meta.has_field("custom_bay") else "",
 		"job_id": _cstr(getattr(it, "job", None)),
 		"custom_no_of_shaft": cint(getattr(it, "custom_no_of_shaft", 0) or 0),
 		"spr_item_name": _cstr(getattr(it, "name", None)),
@@ -11778,6 +11794,11 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		spr._validate_no_duplicate_roll_batches()
 		spr.flags._spr_incremental_roll_save = True
 		spr.save()
+		# Additive: push bay to Batch immediately on Save Row (Batch.custom_bay already exists)
+		try:
+			_gsm_sync_single_roll_bay_to_batch(spr, roll_payload)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"GSM bay→Batch sync:{spr_name}")
 		result.update(
 			{
 				"status": "ok",
@@ -11788,6 +11809,25 @@ def save_gsm_roll_line_to_spr(spr_name, roll_payload, shift=None):
 		)
 		_gsm_publish_session_update(spr)
 		return result
+
+
+def _gsm_sync_single_roll_bay_to_batch(spr, roll_payload: dict) -> None:
+	"""Set Batch.custom_bay from roll payload when both field and bay value exist."""
+	if not frappe.get_meta("Batch").has_field("custom_bay"):
+		return
+	bay = _cstr((roll_payload or {}).get("custom_bay"))
+	bn = _cstr((roll_payload or {}).get("batch_no"))
+	if not bay or not bn:
+		return
+	ic = _cstr((roll_payload or {}).get("item_code"))
+	batch_name = bn if frappe.db.exists("Batch", bn) else ""
+	if not batch_name and ic:
+		batch_name = frappe.db.get_value("Batch", {"batch_id": bn, "item": ic}, "name") or ""
+	if not batch_name:
+		batch_name = frappe.db.get_value("Batch", {"batch_id": bn}, "name") or ""
+	if not batch_name or not frappe.db.exists("Batch", batch_name):
+		return
+	frappe.db.set_value("Batch", batch_name, "custom_bay", bay, update_modified=False)
 
 
 @frappe.whitelist()

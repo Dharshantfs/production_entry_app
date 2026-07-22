@@ -526,6 +526,7 @@
                 <th>Polybag</th>
                 <th class="gpe-num">Diameter</th>
                 <th class="gpe-num">CBM</th>
+                <th>Bay</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -612,6 +613,19 @@
                   />
                 </td>
                 <td class="gpe-num">{{ formatCbm(row.custom_cbm_cubic_meters) }}</td>
+                <td>
+                  <select
+                    v-model="row.custom_bay"
+                    class="gpe-inp gpe-bay-select"
+                    :disabled="row.row_locked || row.is_bundle_row || row.is_wasted"
+                    :title="row.custom_bay || __('Select bay')"
+                  >
+                    <option value="">—</option>
+                    <option v-for="b in bayOptions" :key="b.name" :value="b.name">
+                      {{ b.bay_name || b.name }}
+                    </option>
+                  </select>
+                </td>
                 <td class="gpe-actions">
                   <button
                     v-if="!row.row_locked"
@@ -1804,6 +1818,8 @@ const shift = ref("Day Shift");
 const headerUnit = ref("");
 const operator = ref("");
 const supervisor = ref("");
+/** Warehouse Bay options for current session unit (additive Bay column). */
+const bayOptions = ref([]);
 
 const rollLines = ref([]);
 const selectedEntries = ref([]);
@@ -2075,6 +2091,7 @@ function clearGsmUnitContextState() {
   selectedEntries.value = [];
   selectionLocked.value = false;
   shiftResumeBanner.value = "";
+  bayOptions.value = [];
   if (!shiftOpened.value) {
     rollLines.value = [];
     sessionSprs.value = {};
@@ -5076,6 +5093,7 @@ function buildRollPayload(row) {
     custom_diameter: sprFlt(row.custom_diameter_inches),
     custom_cbm_cubic_meters: row.custom_cbm_cubic_meters,
     custom_cbm: sprFlt(row.custom_cbm_cubic_meters),
+    custom_bay: row.custom_bay || "",
     job_id: row.job_id || row.job || "",
     custom_no_of_shaft: resolveRowShaftNo(row),
     is_bundle_row: row.is_bundle_row ? 1 : 0,
@@ -5634,6 +5652,9 @@ async function saveRow(row) {
       const dia = normalizeSpiDiameterCbm(saved);
       row.custom_cbm_cubic_meters = dia.custom_cbm_cubic_meters;
     }
+    if (saved.custom_bay != null) {
+      row.custom_bay = saved.custom_bay || "";
+    }
     if (row.is_mix_roll_row) {
       row.planned_qty = 0;
       syncMixRollRowViews(row);
@@ -5964,6 +5985,31 @@ function isGsmAdminUser() {
   );
 }
 
+async function loadBayOptions() {
+  const unit = (headerUnit.value || filterUnit.value || "").trim();
+  if (!unit) {
+    bayOptions.value = [];
+    return;
+  }
+  try {
+    const res = await frappe.call({
+      method: "production_entry.production_planning.unified_production_entry_api.get_warehouse_bays_for_unit",
+      args: { unit },
+    });
+    const list = Array.isArray(res.message) ? res.message : [];
+    bayOptions.value = list;
+    const allowed = new Set(list.map((b) => b.name || b.bay_name).filter(Boolean));
+    for (const row of rollLines.value) {
+      if (row.custom_bay && allowed.size && !allowed.has(row.custom_bay)) {
+        row.custom_bay = "";
+      }
+    }
+  } catch (e) {
+    console.warn("loadBayOptions", e);
+    bayOptions.value = [];
+  }
+}
+
 function onUnitChange() {
   if (shiftOpened.value && filterUnit.value !== headerUnit.value) {
     if (isGsmAdminUser()) {
@@ -6033,6 +6079,7 @@ async function activateSelectedUnit(options = {}) {
   if (!resumed) {
     await refreshShiftSession();
   }
+  await loadBayOptions();
   scheduleAutosave();
 }
 
@@ -7433,6 +7480,7 @@ async function addRollRow() {
     custom_polybag_kgs: extras.custom_polybag_kgs || 0,
     custom_diameter_inches: "",
     custom_cbm_cubic_meters: "",
+    custom_bay: "",
     work_order: woInfo?.work_order || "",
     job_id: jobId,
     custom_no_of_shaft: currentShaftNoForJob(job),
@@ -9627,6 +9675,13 @@ onUnmounted(() => {
 .gpe-grid-entry .gpe-inp {
   min-height: 46px;
   font-size: 18px;
+}
+.gpe-grid-entry .gpe-bay-select {
+  width: 118px;
+  min-width: 100px;
+  max-width: 160px;
+  min-height: 46px;
+  font-size: 14px;
 }
 .gpe-grid-entry .gpe-btn.sm {
   font-size: 13px;
