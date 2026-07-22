@@ -20,6 +20,7 @@ from production_entry.production_planning.transfer_logistics import (
 	_cstr,
 	_chart_fetch_kwargs,
 	_parse_chart_rows,
+	_primary_submitted_spr_for_batch,
 	_row_matches_filters,
 	_transfer_date_in_scope,
 	_transfer_row_unit_is_unassigned,
@@ -553,8 +554,12 @@ def get_despatch_eligible_rows(
 
 @frappe.whitelist()
 def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, from_company=None):
-	"""Produced batches from submitted SPR (same as transfer)."""
-	return get_spr_produced_batches(spr_name, item_code, party_code, from_company)
+	"""Produced batches from submitted SPR(s) — supports multi-SPR CSV on planning rows."""
+	batches = get_spr_produced_batches(spr_name, item_code, party_code, from_company) or []
+	reserved = _batches_reserved_on_despatch()
+	if not reserved:
+		return batches
+	return [b for b in batches if _cstr(b.get("batch_no")) not in reserved]
 
 
 @frappe.whitelist()
@@ -632,8 +637,8 @@ def create_despatch_approval_request(from_company=None, lines=None):
 		bn = _cstr(line.get("batch_no"))
 		if not bn:
 			frappe.throw(_("Batch is required for each line."))
-		spr = _cstr(line.get("spr_name"))
-		if spr and cint(frappe.db.get_value("Shaft Production Run", spr, "docstatus") or 0) != 1:
+		spr = _primary_submitted_spr_for_batch(line.get("spr_name"), bn)
+		if line.get("spr_name") and not spr:
 			frappe.throw(_("SPR not submitted for row {0}.").format(ptr or bn))
 		qty = flt(line.get("qty") or 0)
 		nw = flt(line.get("net_weight") or qty)

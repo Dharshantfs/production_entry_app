@@ -12,6 +12,7 @@ from frappe.utils import cint, flt, getdate, now_datetime
 
 from production_entry.production_planning.scheduler_api import (
 	PLANNING_MOVEMENT_TYPE_FIELD,
+	_expand_spr_name_tokens,
 	_psi_order_sheet_field,
 	_row_order_sheet_pp,
 	get_color_chart_data,
@@ -811,47 +812,85 @@ def get_transfer_eligible_rows(
 	return out
 
 
+def _resolve_submitted_spr_ids(spr_name):
+	"""Planning rows often store comma/semicolon multi-SPR CSV — expand to submitted SPR ids."""
+	tokens = _expand_spr_name_tokens(spr_name)
+	if not tokens:
+		return []
+	valid = []
+	for sn in tokens:
+		if not frappe.db.exists("Shaft Production Run", sn):
+			continue
+		if cint(frappe.db.get_value("Shaft Production Run", sn, "docstatus") or 0) != 1:
+			continue
+		valid.append(sn)
+	if valid:
+		return valid
+	# Single draft SPR → keep previous throw behaviour for callers that expect it
+	if len(tokens) == 1 and frappe.db.exists("Shaft Production Run", tokens[0]):
+		frappe.throw(_("SPR {0} must be submitted before transfer.").format(tokens[0]))
+	return []
+
+
+def _primary_submitted_spr_for_batch(spr_name, batch_no=""):
+	"""Pick one submitted SPR id from CSV; prefer the SPR that owns the batch."""
+	spr_ids = _resolve_submitted_spr_ids(spr_name)
+	if not spr_ids:
+		return ""
+	bn = _cstr(batch_no)
+	if bn:
+		for sn in spr_ids:
+			if frappe.db.exists("Shaft Production Run Item", {"parent": sn, "batch_no": bn}):
+				return sn
+	return spr_ids[0]
+
+
 @frappe.whitelist()
 def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, from_company=None):
-	sn = _cstr(spr_name)
-	if not sn or not frappe.db.exists("Shaft Production Run", sn):
+	"""Batches produced on one or more submitted SPRs (CSV spr_name supported)."""
+	spr_ids = _resolve_submitted_spr_ids(spr_name)
+	if not spr_ids:
 		return []
-	if cint(frappe.db.get_value("Shaft Production Run", sn, "docstatus") or 0) != 1:
-		frappe.throw(_("SPR {0} must be submitted before transfer.").format(sn))
+
 	ic_filter = _cstr(item_code)
 	pc_filter = _cstr(party_code)
-	fc = _cstr(from_company)
 	batches = []
 	seen = set()
-	existing_transferred = frappe.db.sql("""
-		select tl.batch_no 
+	existing_transferred = frappe.db.sql(
+		"""
+		select tl.batch_no
 		from `tabTransfer Approval Line` tl
 		inner join `tabTransfer Approval` ta on ta.name = tl.parent
 		where ta.status != 'Rejected' and tl.batch_no is not null
-	""", as_dict=1)
+		""",
+		as_dict=1,
+	)
 	transferred_batches = {r.batch_no for r in existing_transferred}
-	
-	wh_list = []
-	if fc:
-		wh_list = frappe.get_all("Warehouse", filters={"company": fc}, pluck="name")
 
 	def _add_batch(batch_no, qty, row=None, warehouse=None):
 		bn = _cstr(batch_no)
 		if not bn or bn in seen or bn in transferred_batches:
 			return
-			
-		stock_qty = flt(frappe.db.sql("select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0", bn)[0][0] or 0)
-			
+
+		stock_qty = flt(
+			frappe.db.sql(
+				"select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0",
+				bn,
+			)[0][0]
+			or 0
+		)
+
 		q = flt(qty or 0)
 		if q <= 0:
 			q = stock_qty
-			
+
 		seen.add(bn)
 		batches.append(
 			{
 				"batch_no": bn,
 				"item_code": (row or {}).get("item_code") or ic_filter,
-				"item_name": (row or {}).get("item_name") or (frappe.db.get_value("Item", ic_filter, "item_name") if ic_filter else ""),
+				"item_name": (row or {}).get("item_name")
+				or (frappe.db.get_value("Item", ic_filter, "item_name") if ic_filter else ""),
 				"qty": q,
 				"party_code": (row or {}).get("party_code") or pc_filter,
 				"work_order": (row or {}).get("work_order"),
@@ -859,43 +898,56 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 			}
 		)
 
-	for row in frappe.get_all(
-		"Shaft Production Run Item",
-		filters={"parent": sn},
-		fields=_spr_item_query_fields("party_code", "work_order"),
-		order_by="idx asc",
-		limit_page_length=0,
-	):
-		bn = _cstr(row.get("batch_no"))
-		if not bn or bn in seen:
-			continue
-		
-		# Original exact batch
-		_add_batch(bn, row.get("net_weight") or row.get("gross_weight") or 0, row)
-		
-		# Check for split batches (e.g. JS-01052611/1)
-		split_bns = frappe.db.sql("""
-			select distinct batch_no
-			from `tabStock Ledger Entry`
-			where batch_no like %s and is_cancelled=0
-		""", (bn + "/%",), as_dict=1)
-		for sb in split_bns:
-			_add_batch(sb.batch_no, 0, row)
-			
+	item_fields = _spr_item_query_fields("party_code", "work_order")
+	for sn in spr_ids:
+		for row in frappe.get_all(
+			"Shaft Production Run Item",
+			filters={"parent": sn},
+			fields=item_fields,
+			order_by="idx asc",
+			limit_page_length=0,
+		):
+			bn = _cstr(row.get("batch_no"))
+			if not bn or bn in seen:
+				continue
+
+			# Exact batch on the roll grid
+			_add_batch(bn, row.get("net_weight") or row.get("gross_weight") or 0, row)
+
+			# Split children (e.g. parent JS-01052611 → JS-01052611/1)
+			# Skip when bn already looks like a split (contains /N)
+			if "/" not in bn:
+				split_bns = frappe.db.sql(
+					"""
+					select distinct batch_no
+					from `tabStock Ledger Entry`
+					where batch_no like %s and is_cancelled=0
+					""",
+					(bn + "/%",),
+					as_dict=1,
+				)
+				for sb in split_bns:
+					_add_batch(sb.batch_no, 0, row)
+
 	if batches:
 		return batches
 
-	# Some submitted SPRs create stock/batches but the roll grid has no batch_no.
-	# Fall back to linked Manufacture Stock Entries / Stock Ledger quantities.
-	se_filters = {"docstatus": 1}
+	# Fallback: manufacture Stock Entries / SLE linked to any of the SPRs
 	se_meta = frappe.get_meta("Stock Entry")
+	se_link_field = ""
 	if se_meta.has_field("shaft_production_run"):
-		se_filters["shaft_production_run"] = sn
+		se_link_field = "shaft_production_run"
 	elif frappe.db.has_column("Stock Entry", "custom_spr_reference"):
-		se_filters["custom_spr_reference"] = sn
+		se_link_field = "custom_spr_reference"
 	else:
 		return []
-	se_names = frappe.get_all("Stock Entry", filters=se_filters, pluck="name", limit_page_length=100) or []
+
+	se_names = frappe.get_all(
+		"Stock Entry",
+		filters={"docstatus": 1, se_link_field: ["in", spr_ids]},
+		pluck="name",
+		limit_page_length=200,
+	) or []
 	if not se_names:
 		return []
 	sle_filters = {
@@ -910,14 +962,17 @@ def get_spr_produced_batches(spr_name=None, item_code=None, party_code=None, fro
 		filters=sle_filters,
 		fields=["batch_no", "item_code", "actual_qty", "warehouse"],
 		order_by="posting_date asc, posting_time asc, creation asc",
-		limit_page_length=500,
+		limit_page_length=1000,
 	):
 		if not _cstr(sle.get("batch_no")):
 			continue
 		_add_batch(
 			sle.get("batch_no"),
 			sle.get("actual_qty"),
-			{"item_code": sle.get("item_code"), "item_name": frappe.db.get_value("Item", sle.get("item_code"), "item_name")},
+			{
+				"item_code": sle.get("item_code"),
+				"item_name": frappe.db.get_value("Item", sle.get("item_code"), "item_name"),
+			},
 			sle.get("warehouse"),
 		)
 	return batches
@@ -1151,19 +1206,24 @@ def _transferred_batch_set(batch_nos: list) -> set:
 
 
 def _get_spr_produced_batches_fast(spr_name: str, from_company: str = "") -> list:
-	"""Transfer dialog batches — bulk SLE + filtered transferred set."""
-	sn = _cstr(spr_name)
-	if not sn:
+	"""Transfer dialog batches — bulk SLE + filtered transferred set. Supports multi-SPR CSV."""
+	spr_ids = _resolve_submitted_spr_ids(spr_name)
+	if not spr_ids:
 		return []
 	ic_filter = ""
 	pc_filter = ""
-	rows = frappe.get_all(
-		"Shaft Production Run Item",
-		filters={"parent": sn},
-		fields=_spr_item_query_fields("party_code", "work_order"),
-		order_by="idx asc",
-		limit_page_length=0,
-	) or []
+	rows = []
+	for sn in spr_ids:
+		rows.extend(
+			frappe.get_all(
+				"Shaft Production Run Item",
+				filters={"parent": sn},
+				fields=_spr_item_query_fields("party_code", "work_order"),
+				order_by="idx asc",
+				limit_page_length=0,
+			)
+			or []
+		)
 	batch_nos = [_cstr(r.get("batch_no")).strip() for r in rows if _cstr(r.get("batch_no")).strip()]
 	if not batch_nos:
 		return []
@@ -1461,12 +1521,12 @@ def create_transfer_approval_request(
 			else ""
 		)
 		current_status = _resolved_planning_row_transfer_status(ptr, current_status)
-		spr = _cstr(line.get("spr_name"))
-		if not spr or cint(frappe.db.get_value("Shaft Production Run", spr, "docstatus") or 0) != 1:
-			frappe.throw(_("SPR not done for row {0}. Cannot request transfer.").format(ptr))
 		bn = _cstr(line.get("batch_no"))
 		if not bn:
 			frappe.throw(_("Batch is required for each line."))
+		spr = _primary_submitted_spr_for_batch(line.get("spr_name"), bn)
+		if not spr:
+			frappe.throw(_("SPR not done for row {0}. Cannot request transfer.").format(ptr))
 		qty = flt(line.get("qty") or 0)
 		if qty <= 0:
 			qty = 1.0
