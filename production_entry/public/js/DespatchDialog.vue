@@ -54,12 +54,19 @@
               <td>{{ row.spr_name || "—" }}</td>
               <td><span :class="statusClass(row)">{{ statusLabel(row) }}</span></td>
               <td class="tl-batch-cell">
-                <template v-if="isSelected(row) && row.can_despatch">
-                  <button type="button" class="cc-clear-btn" @click="openBatchPicker(row)">
-                    {{ batchPickerOpenFor === rowSelectionId(row) ? "Edit batches" : "Select batches" }}
+                <template v-if="row.can_despatch">
+                  <button type="button" class="cc-clear-btn" @click="ensureSelectAndOpenBatches(row)">
+                    {{
+                      isSelected(row) && batchSummary(row)
+                        ? "Edit batches"
+                        : isSelected(row)
+                          ? "Select batches"
+                          : "Select batches"
+                    }}
                   </button>
                   <div v-if="batchSummary(row)" class="tl-batch-summary">{{ batchSummary(row) }}</div>
                 </template>
+                <span v-else class="tl-muted">{{ row.despatch_block_reason || "—" }}</span>
               </td>
             </tr>
           </tbody>
@@ -91,7 +98,11 @@
           </div>
         </div>
         <p v-if="batchLoading" class="tl-muted">Loading batches…</p>
-        <p v-else-if="!batchOptions.length" class="tl-block">No batches available.</p>
+        <p v-else-if="!batchOptions.length" class="tl-block">
+          No batches available on this SPR.
+          <span v-if="batchEmptyHint" class="tl-muted"><br />{{ batchEmptyHint }}</span>
+          Try <strong>Other batches</strong>, or open the SPR and confirm Batch No is filled on produced rolls.
+        </p>
         <div v-else class="tl-batch-table-wrap">
           <table class="tl-batch-table">
             <thead>
@@ -166,6 +177,7 @@ const batchPickerRow = ref(null);
 const batchOptions = ref([]);
 const batchLoading = ref(false);
 const batchSource = ref("spr");
+const batchEmptyHint = ref("");
 
 const displayRows = computed(() => groupRowsBySpr(rows.value));
 
@@ -245,7 +257,20 @@ function openBatchPicker(row) {
   batchPickerRow.value = row;
   batchPickerOpenFor.value = rowSelectionId(row);
   batchSource.value = "spr";
+  batchEmptyHint.value = "";
   reloadBatches();
+}
+
+function ensureSelectAndOpenBatches(row) {
+  if (!row.can_despatch) {
+    frappe.msgprint(row.despatch_block_reason || "Cannot despatch this row.");
+    return;
+  }
+  const id = rowSelectionId(row);
+  if (!selection.value[id]) {
+    selection.value = { ...selection.value, [id]: { row, batches: [] } };
+  }
+  openBatchPicker(row);
 }
 
 function reloadBatches() {
@@ -253,6 +278,7 @@ function reloadBatches() {
   if (!row) return;
   batchLoading.value = true;
   batchOptions.value = [];
+  batchEmptyHint.value = "";
   const existing = selection.value[rowSelectionId(row)]?.batches || [];
   const existingMap = {};
   existing.forEach((b) => {
@@ -287,6 +313,9 @@ function reloadBatches() {
       });
       applyLoadedBatches(merged, row, existingMap);
       batchLoading.value = false;
+      if (!merged.length) {
+        batchEmptyHint.value = `No stock batches for items: ${itemCodes.join(", ")}`;
+      }
     });
     return;
   }
@@ -298,14 +327,13 @@ function reloadBatches() {
   const args =
     batchSource.value === "other"
       ? {
-          item_code: row.item_code,
+          item_code: row._isSprGroup ? (row.item_codes || [])[0] || row.item_code : row.item_code,
           from_company: fromCompany.value,
           party_code: row.party_code,
         }
       : {
           spr_name: row.spr_name,
-          // Do not pass planning item_code — SPR rolls often use a different item than the PT row
-          item_code: "",
+          item_code: row._isSprGroup ? "" : row.item_code || "",
           party_code: row.party_code,
           from_company: fromCompany.value,
         };
@@ -313,11 +341,23 @@ function reloadBatches() {
     method,
     args,
     callback: (r) => {
-      applyLoadedBatches(r.message || [], row, existingMap);
+      const batches = r.message || [];
+      applyLoadedBatches(batches, row, existingMap);
       batchLoading.value = false;
+      if (!batches.length) {
+        batchEmptyHint.value = row.spr_name
+          ? `Checked ${row.spr_name} for item ${row.item_code || "—"} / order ${row.party_code || "—"}.`
+          : "";
+      }
     },
-    error: () => {
+    error: (err) => {
       batchLoading.value = false;
+      batchEmptyHint.value = (err && err.message) || "Server error while loading batches.";
+      frappe.msgprint({
+        title: "Batch load failed",
+        indicator: "red",
+        message: batchEmptyHint.value,
+      });
     },
   });
 }

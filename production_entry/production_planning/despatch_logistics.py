@@ -21,6 +21,7 @@ from production_entry.production_planning.transfer_logistics import (
 	_chart_fetch_kwargs,
 	_parse_chart_rows,
 	_primary_submitted_spr_for_batch,
+	_resolve_submitted_spr_ids,
 	_row_matches_filters,
 	_transfer_date_in_scope,
 	_transfer_row_unit_is_unassigned,
@@ -554,37 +555,146 @@ def get_despatch_eligible_rows(
 
 @frappe.whitelist()
 def get_despatch_spr_batches(spr_name=None, item_code=None, party_code=None, from_company=None):
-	"""Produced batches from submitted SPR(s) for despatch.
+	"""Batches from SPR produced rolls for despatch (direct SPR Item read first).
 
-	Does not hide batches that appear on Transfer Approvals — despatch is independent.
-	Also ignores planning-row item_code for SPR roll lookup (FG code often differs from SPR item).
+	Planning rows and SPR rolls for the same order often share the same item_code
+	(e.g. F26187 / 1001030010241015). We read `tabShaft Production Run Item` directly
+	so transfer-approval filters / item mismatches cannot hide valid rolls.
 	"""
-	batches = (
+	spr_ids = _resolve_submitted_spr_ids(spr_name)
+	if not spr_ids:
+		return []
+
+	pc = _cstr(party_code)
+	ic = _cstr(item_code)
+	reserved = _batches_reserved_on_despatch()
+	seen = set()
+	out = []
+
+	def _append(bn, row_ic, row_name, qty, row_pc="", warehouse=""):
+		bn = _cstr(bn)
+		if not bn or bn in seen or bn in reserved:
+			return
+		seen.add(bn)
+		q = flt(qty or 0)
+		if q <= 0:
+			q = flt(
+				frappe.db.sql(
+					"select sum(actual_qty) from `tabStock Ledger Entry` where batch_no=%s and is_cancelled=0",
+					bn,
+				)[0][0]
+				or 0
+			)
+		if q <= 0:
+			q = flt(frappe.db.get_value("Batch", bn, "batch_qty") or 0) or 1.0
+		out.append(
+			{
+				"batch_no": bn,
+				"item_code": _cstr(row_ic) or ic,
+				"item_name": _cstr(row_name)
+				or (frappe.db.get_value("Item", _cstr(row_ic) or ic, "item_name") if (_cstr(row_ic) or ic) else ""),
+				"qty": q,
+				"available_qty": q,
+				"net_weight": q,
+				"party_code": _cstr(row_pc) or pc,
+				"warehouse": warehouse or "",
+				"source": "spr_item",
+			}
+		)
+
+	placeholders = ", ".join(["%s"] * len(spr_ids))
+	has_roll = frappe.db.has_column("Shaft Production Run Item", "roll_no")
+	roll_col = ", roll_no" if has_roll else ""
+	rows = frappe.db.sql(
+		f"""
+		select parent, idx, batch_no, item_code, item_name, net_weight, gross_weight,
+		       party_code, work_order{roll_col}
+		from `tabShaft Production Run Item`
+		where parent in ({placeholders})
+		order by parent asc, idx asc
+		""",
+		tuple(spr_ids),
+		as_dict=1,
+	) or []
+
+	def _row_batch(r):
+		bn = _cstr(r.get("batch_no"))
+		if bn:
+			return bn
+		if has_roll:
+			return _cstr(r.get("roll_no"))
+		return ""
+
+	# Match order code when provided; otherwise all rolls with a batch
+	matched = []
+	rest = []
+	for r in rows:
+		bn = _row_batch(r)
+		if not bn:
+			continue
+		if pc and _cstr(r.get("party_code")) and _cstr(r.get("party_code")) != pc:
+			rest.append((bn, r))
+		else:
+			matched.append((bn, r))
+
+	candidates = matched if matched else rest
+
+	# Prefer same item_code when provided
+	if ic:
+		same_item = [(bn, r) for bn, r in candidates if not _cstr(r.get("item_code")) or _cstr(r.get("item_code")) == ic]
+		if same_item:
+			candidates = same_item
+
+	for bn, r in candidates:
+		_append(
+			bn,
+			r.get("item_code"),
+			r.get("item_name"),
+			r.get("net_weight") or r.get("gross_weight") or 0,
+			r.get("party_code"),
+		)
+
+	if out:
+		return out
+
+	# Shared helper (manufacture SE / Batch masters) — never exclude transferred for despatch
+	fallback = (
 		get_spr_produced_batches(
 			spr_name=spr_name,
-			item_code="",  # use SPR line items / manufacture fallbacks, not planning FG code
-			party_code=party_code,
+			item_code=ic or "",
+			party_code=pc,
 			from_company=from_company,
 			exclude_transferred=0,
 		)
 		or []
 	)
-	# If still empty and caller sent an item_code, try stock for that item as soft fallback
-	if not batches and _cstr(item_code):
-		batches = (
-			get_spr_produced_batches(
-				spr_name=spr_name,
-				item_code=item_code,
-				party_code=party_code,
-				from_company=from_company,
-				exclude_transferred=0,
-			)
-			or []
+	for b in fallback:
+		_append(
+			b.get("batch_no"),
+			b.get("item_code"),
+			b.get("item_name"),
+			b.get("qty") or b.get("available_qty") or 0,
+			b.get("party_code"),
+			b.get("warehouse"),
 		)
-	reserved = _batches_reserved_on_despatch()
-	if not reserved:
-		return batches
-	return [b for b in batches if _cstr(b.get("batch_no")) not in reserved]
+	if out:
+		return out
+
+	# Stock for item codes on this SPR (covers rolls with blank batch_no but Batch stock exists)
+	spr_items = sorted({_cstr(r.get("item_code")) for r in rows if _cstr(r.get("item_code"))})
+	if ic and ic not in spr_items:
+		spr_items.append(ic)
+	for spr_ic in spr_items:
+		for b in get_despatch_other_batches(spr_ic, from_company, pc) or []:
+			_append(
+				b.get("batch_no"),
+				b.get("item_code") or spr_ic,
+				b.get("item_name"),
+				b.get("available_qty") or b.get("qty") or 0,
+				pc,
+				b.get("warehouse"),
+			)
+	return out
 
 
 @frappe.whitelist()
