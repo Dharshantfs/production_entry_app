@@ -165,9 +165,30 @@ const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_dis
 
 frappe.ui.form.on('Clubbing Sheet', {
     refresh: function (frm) {
-        frm.add_custom_button(__('Get Sales Orders'), function () {
-            frm.trigger('get_sales_orders_dialog');
-        });
+        // Always open the Quality/Color/GSM picker (wins over old site Client Script).
+        const open_picker = function () {
+            frm.trigger('jsb_pick_despatch_planning_rows');
+        };
+        const bind_buttons = function () {
+            try {
+                frm.remove_custom_button(__('Get Sales Orders'));
+                frm.remove_custom_button(__('Get Planning Items'));
+            } catch (e) { /* ignore */ }
+            frm.add_custom_button(__('Get Planning Items'), open_picker);
+            frm.add_custom_button(__('Get Sales Orders'), open_picker);
+            // Force event map to app dialog even if site Client Script redefined it
+            if (frm.events) {
+                frm.events.get_sales_orders_dialog = frm.events.jsb_pick_despatch_planning_rows;
+                frm.events.get_sales_orders = open_picker;
+            }
+            if (frm.cscript) {
+                frm.cscript.get_sales_orders_dialog = frm.events.jsb_pick_despatch_planning_rows;
+                frm.cscript.get_sales_orders = open_picker;
+            }
+        };
+        bind_buttons();
+        setTimeout(bind_buttons, 0);
+        setTimeout(bind_buttons, 400);
 
         if (!frm.doc.__islocal && frm.doc.docstatus === 0) {
             frm.add_custom_button(__('Submit'), function () {
@@ -233,7 +254,11 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     get_sales_orders: function (frm) {
-        frm.trigger('get_sales_orders_dialog');
+        frm.trigger('jsb_pick_despatch_planning_rows');
+    },
+
+    get_sales_orders_dialog: function (frm) {
+        frm.trigger('jsb_pick_despatch_planning_rows');
     },
 
     show_load_type_indicator: function (frm) {
@@ -341,10 +366,10 @@ frappe.ui.form.on('Clubbing Sheet', {
         frm.trigger('calculate_loading_sequence');
     },
 
-    get_sales_orders_dialog: function (frm) {
+    jsb_pick_despatch_planning_rows: function (frm) {
         let d = new frappe.ui.Dialog({
             title: __('Select Planning Despatch Rows'),
-            size: 'large',
+            size: 'extra-large',
             fields: [
                 { fieldtype: 'Section Break', label: __('Filters') },
                 { fieldtype: 'Date', fieldname: 'planned_date', label: __('Planned Date'), reqd: 0 },
@@ -401,7 +426,7 @@ frappe.ui.form.on('Clubbing Sheet', {
             let s_party = (d.get_value('search_party') || '').toLowerCase();
 
             let filtered = orders.filter(o =>
-                (!s_order || (o.name || '').toLowerCase().includes(s_order) || (o.party_code || '').toLowerCase().includes(s_order) || (o.sales_order || '').toLowerCase().includes(s_order) || (o.planning_sheet || '').toLowerCase().includes(s_order)) &&
+                (!s_order || (o.name || '').toLowerCase().includes(s_order) || (o.party_code || '').toLowerCase().includes(s_order) || (o.sales_order || '').toLowerCase().includes(s_order) || (o.planning_sheet || '').toLowerCase().includes(s_order) || (o.item_code || '').toLowerCase().includes(s_order) || (o.quality || '').toLowerCase().includes(s_order) || (o.color || '').toLowerCase().includes(s_order)) &&
                 (!s_cust || (o.customer || '').toLowerCase().includes(s_cust) || (o.customer_name || '').toLowerCase().includes(s_cust)) &&
                 (!s_city || (o.city || '').toLowerCase().includes(s_city)) &&
                 (!s_party || (o.custom_party_code || o.party_code || '').toLowerCase().includes(s_party))
@@ -414,6 +439,7 @@ frappe.ui.form.on('Clubbing Sheet', {
                         <tr class="text-muted small uppercase">
                             <th style="width: 36px; text-align: center;"><input type="checkbox" class="so-select-all"></th>
                             <th>${__('Order')}</th>
+                            <th>${__('Item')}</th>
                             <th>${__('Quality')}</th>
                             <th>${__('Color')}</th>
                             <th>${__('GSM')}</th>
@@ -423,14 +449,15 @@ frappe.ui.form.on('Clubbing Sheet', {
                         </tr>
                     </thead>
                     <tbody>
-                        ${filtered.length === 0 ? `<tr><td colspan="8" class="text-center text-muted">${__('No Despatch planning rows')}</td></tr>` :
+                        ${filtered.length === 0 ? `<tr><td colspan="9" class="text-center text-muted">${__('No Despatch planning rows')}</td></tr>` :
                 filtered.map(o => `
                             <tr>
                                 <td style="text-align: center;"><input type="checkbox" class="so-checkbox" data-name="${frappe.utils.escape_html(o.name)}" ${selected_orders.has(o.name) ? 'checked' : ''}></td>
                                 <td><b>${frappe.utils.escape_html(o.party_code || o.name)}</b><br><span class="text-muted small">${frappe.utils.escape_html(o.sales_order || '')}</span><br><span class="text-muted small">${frappe.utils.escape_html(o.planning_sheet || '')}</span></td>
-                                <td>${frappe.utils.escape_html(o.quality || '')}</td>
-                                <td>${frappe.utils.escape_html(o.color || '')}</td>
-                                <td>${o.gsm || ''}</td>
+                                <td><span class="text-muted small">${frappe.utils.escape_html(o.item_code || '')}</span></td>
+                                <td><b>${frappe.utils.escape_html(o.quality || '—')}</b></td>
+                                <td><b>${frappe.utils.escape_html(o.color || '—')}</b></td>
+                                <td><b>${o.gsm || '—'}</b></td>
                                 <td>${frappe.utils.escape_html(o.planned_date || '')}</td>
                                 <td><span class="label label-blue">${frappe.utils.escape_html(o.city || '')}</span></td>
                                 <td class="text-right">${o.total_qty || 0}<br><span class="text-muted small">${o.no_of_rolls || 0} rolls</span></td>
