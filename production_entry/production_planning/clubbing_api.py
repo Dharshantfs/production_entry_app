@@ -91,11 +91,24 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 	color_col = _pt_col_expr(["color", "colour", "custom_color"], "color")
 	gsm_col = _pt_col_expr(["gsm", "custom_gsm"], "gsm", "0")
 	width_col = _pt_col_expr(
-		["width_inch", "width", "custom_width_inch", "size_inch"],
+		[
+			"width_inch",
+			"width",
+			"custom_width_inch",
+			"size_inch",
+			"width_in_inches",
+			"custom_width_in_inches",
+			"size",
+			"custom_size",
+		],
 		"width_inch",
 		"0",
 	)
-	width_mm_col = _pt_col_expr(["width_mm", "custom_width_mm"], "width_mm", "0")
+	width_mm_col = _pt_col_expr(
+		["width_mm", "custom_width_mm", "width_in_mm"],
+		"width_mm",
+		"0",
+	)
 
 	rows = frappe.db.sql(
 		f"""
@@ -178,10 +191,26 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 
 		weight = flt(r.total_weight)
 		width_inch = flt(r.get("width_inch"))
+		# Data fields may store "16" or "16\"" — coerce
+		if width_inch <= 0:
+			raw_w = _cstr(r.get("width_inch"))
+			if raw_w:
+				try:
+					width_inch = flt("".join(ch for ch in raw_w if ch.isdigit() or ch == "."))
+				except Exception:
+					width_inch = 0
 		if width_inch <= 0:
 			wmm = flt(r.get("width_mm"))
 			if wmm > 0:
 				width_inch = round(wmm / 25.4, 2)
+		if width_inch <= 0:
+			# Fallback: last 3 digits of item code as width*10 (e.g. …160 → 16.0")
+			ic = _cstr(r.item_code)
+			digits = "".join(ch for ch in ic if ch.isdigit())
+			if len(digits) >= 3:
+				code = cint(digits[-3:])
+				if 20 <= code <= 500:
+					width_inch = round(code / 10.0, 2)
 		out.append(
 			{
 				"name": _cstr(r.planning_table_row),
