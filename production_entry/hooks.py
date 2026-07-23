@@ -64,6 +64,7 @@ doctype_js = {
     "Stock Entry": "public/js/stock_entry_transfer.js",
     "Delivery Note": "public/js/delivery_note_despatch.js",
     "Production Board Access": "public/js/production_board_access.js",
+    "Clubbing Sheet": "public/js/clubbing_sheet.js",
 }
 doctype_list_js = {
 	"Transfer Approval": "public/js/transfer_approval_list.js",
@@ -170,6 +171,9 @@ doc_events = {
     },
     "Design Master": _DESIGN_MASTER_HOOKS,
     "DESIGN MASTER": _DESIGN_MASTER_HOOKS,
+    "Clubbing Sheet": {
+        "before_submit": "production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_before_submit",
+    },
 }
 
 # Scheduled Tasks

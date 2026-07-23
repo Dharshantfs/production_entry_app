@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Clubbing Sheet helpers (Planning-first order list + Madurai distances).
+"""Clubbing Sheet APIs — Planning Table Despatch rows + Madurai distances.
 
-Used by site Clubbing Sheet Client Script via:
-  production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing
-  production_entry.production_planning.clubbing_api.get_distances_from_madurai
-
-Avoids Frappe Server Script RestrictedPython limits (no frappe.parse_json).
+City comes from Sales Order shipping Address only (backend).
+Order list comes from Planning sheet / Planning Table (movement Despatch).
 """
 
 from __future__ import annotations
@@ -15,62 +12,98 @@ import json
 import frappe
 import requests
 from frappe import _
-from frappe.utils import cint, cstr, flt
+from frappe.utils import cint, cstr, flt, getdate
 
 
 def _cstr(v):
 	return cstr(v or "").strip()
 
 
-@frappe.whitelist()
-def get_planning_orders_for_clubbing():
-	"""List Planning sheet orders that have Despatch movement rows, not already clubbed.
+def _planned_date_expr():
+	"""Prefer custom_item_planned_date, else planned_date."""
+	has_custom = frappe.db.has_column("Planning Table", "custom_item_planned_date")
+	has_planned = frappe.db.has_column("Planning Table", "planned_date")
+	if has_custom and has_planned:
+		return "coalesce(nullif(pt.custom_item_planned_date, ''), pt.planned_date)"
+	if has_custom:
+		return "pt.custom_item_planned_date"
+	if has_planned:
+		return "pt.planned_date"
+	return "null"
 
-	Returns one row per Planning sheet (order), with:
-	- party_code / sales_order from Planning sheet (SO is shown for reference + city)
-	- city from Sales Order shipping Address
-	- weight / rolls summed from Planning Table Despatch lines
+
+@frappe.whitelist()
+def get_planning_orders_for_clubbing(party_code=None, planned_date=None, customer=None, city=None):
+	"""List Planning Table rows with movement Despatch for Clubbing Get Orders.
+
+	One row per Planning Table line (user picks which planned-date items to club).
+	City is joined from Sales Order → Address (not from Planning).
 	"""
+	pc_filter = _cstr(party_code).lower()
+	pd_filter = _cstr(planned_date)
+	cu_filter = _cstr(customer).lower()
+	city_filter = _cstr(city).lower()
+
+	assigned_ptr = set()
 	assigned_so = set()
 	assigned_party = set()
+	has_csi_ptr = frappe.db.exists("DocType", "Clubbing Sheet Item") and frappe.db.has_column(
+		"Clubbing Sheet Item", "custom_planning_table_row"
+	)
 	if frappe.db.exists("DocType", "Clubbing Sheet Item"):
+		cols = ["sales_order", "party_code"]
+		if has_csi_ptr:
+			cols.append("custom_planning_table_row")
+		col_sql = ", ".join(cols)
 		for r in frappe.db.sql(
-			"""
-			select distinct sales_order, party_code
+			f"""
+			select {col_sql}
 			from `tabClubbing Sheet Item`
 			where ifnull(docstatus, 0) < 2
 			""",
 			as_dict=True,
 		) or []:
-			if r.sales_order:
-				assigned_so.add(_cstr(r.sales_order))
-			if r.party_code:
-				assigned_party.add(_cstr(r.party_code).upper())
+			ptr = _cstr(r.get("custom_planning_table_row")) if has_csi_ptr else ""
+			if ptr:
+				assigned_ptr.add(ptr)
+			elif not has_csi_ptr:
+				# Legacy sheets without PT link — block whole SO/party
+				if r.sales_order:
+					assigned_so.add(_cstr(r.sales_order))
+				if r.party_code:
+					assigned_party.add(_cstr(r.party_code).upper())
 
-	# Planning sheet + Despatch Planning Table only
+	pdate_sql = _planned_date_expr()
+	club_col = (
+		"ifnull(pt.custom_clubbing_sheet, '') as custom_clubbing_sheet"
+		if frappe.db.has_column("Planning Table", "custom_clubbing_sheet")
+		else "'' as custom_clubbing_sheet"
+	)
+
 	rows = frappe.db.sql(
-		"""
+		f"""
 		select
+			pt.name as planning_table_row,
 			ps.name as planning_sheet,
 			ps.party_code,
 			ps.customer,
 			coalesce(c.customer_name, ps.customer) as customer_name,
 			ps.sales_order,
-			ps.total_weight as sheet_total_weight,
-			ps.total_quantity as sheet_total_quantity,
 			ps.planning_status,
-			sum(ifnull(pt.no_of_rolls, 0)) as no_of_rolls,
-			sum(ifnull(pt.total_weight, 0)) as pt_weight,
-			count(pt.name) as despatch_line_count
-		from `tabPlanning sheet` ps
-		inner join `tabPlanning Table` pt on pt.parent = ps.name
+			pt.item_code,
+			ifnull(pt.no_of_rolls, 0) as no_of_rolls,
+			ifnull(pt.total_weight, 0) as total_weight,
+			ifnull(pt.custom_movement_type, '') as movement_type,
+			{pdate_sql} as planned_date,
+			{club_col}
+		from `tabPlanning Table` pt
+		inner join `tabPlanning sheet` ps on ps.name = pt.parent
 		left join `tabCustomer` c on c.name = ps.customer
 		where ifnull(ps.docstatus, 0) < 2
 		  and ifnull(ps.planning_status, '') != 'Cancelled'
 		  and ifnull(pt.custom_movement_type, '') = 'Despatch'
-		group by ps.name
-		order by ps.modified desc
-		limit 2000
+		order by ps.party_code asc, planned_date asc, pt.idx asc
+		limit 5000
 		""",
 		as_dict=True,
 	)
@@ -91,48 +124,55 @@ def get_planning_orders_for_clubbing():
 		for a in addrs or []:
 			city_by_so[_cstr(a.so_name)] = _cstr(a.city)
 
-	# Skip already stamped with a club (if column exists)
-	has_club_col = frappe.db.has_column("Planning Table", "custom_clubbing_sheet")
-
 	out = []
 	for r in rows:
 		so = _cstr(r.sales_order)
 		party = _cstr(r.party_code)
+		ptr = _cstr(r.planning_table_row)
+		if ptr and ptr in assigned_ptr:
+			continue
 		if so and so in assigned_so:
 			continue
 		if party and party.upper() in assigned_party:
 			continue
-		if has_club_col:
-			already = frappe.db.sql(
-				"""
-				select 1 from `tabPlanning Table`
-				where parent = %s
-				  and ifnull(custom_movement_type, '') = 'Despatch'
-				  and ifnull(custom_clubbing_sheet, '') != ''
-				limit 1
-				""",
-				r.planning_sheet,
-			)
-			if already:
-				continue
+		if _cstr(r.custom_clubbing_sheet):
+			continue
 
-		weight = flt(r.pt_weight) or flt(r.sheet_total_weight) or flt(r.sheet_total_quantity)
-		name = so or party or r.planning_sheet
+		row_city = city_by_so.get(so, "")
+		if pc_filter and pc_filter not in party.lower() and pc_filter not in so.lower() and pc_filter not in _cstr(r.planning_sheet).lower():
+			continue
+		if cu_filter:
+			blob = f"{_cstr(r.customer)} {_cstr(r.customer_name)}".lower()
+			if cu_filter not in blob:
+				continue
+		if city_filter and city_filter not in row_city.lower():
+			continue
+		if pd_filter:
+			row_pd = _cstr(r.planned_date)
+			if not row_pd or _cstr(getdate(row_pd)) != _cstr(getdate(pd_filter)):
+				# also allow YYYY-MM-DD string compare
+				if row_pd[:10] != pd_filter[:10]:
+					continue
+
+		weight = flt(r.total_weight)
 		out.append(
 			{
-				"name": name,
-				"planning_sheet": r.planning_sheet,
+				"name": _cstr(r.planning_table_row),
+				"planning_table_row": _cstr(r.planning_table_row),
+				"planning_sheet": _cstr(r.planning_sheet),
 				"party_code": party,
 				"customer": _cstr(r.customer),
 				"customer_name": _cstr(r.customer_name or r.customer),
 				"sales_order": so,
-				"city": city_by_so.get(so, ""),
+				"city": row_city,
 				"custom_party_code": party,
+				"item_code": _cstr(r.item_code),
+				"planned_date": _cstr(r.planned_date)[:10] if r.planned_date else "",
 				"total_qty": weight,
 				"no_of_rolls": flt(r.no_of_rolls),
 				"weight_kgs": weight,
-				"despatch_line_count": cint(r.despatch_line_count),
-				"source": "planning_sheet",
+				"movement_type": "Despatch",
+				"source": "planning_table",
 			}
 		)
 
@@ -140,38 +180,111 @@ def get_planning_orders_for_clubbing():
 
 
 def _google_api_key():
+	"""Read key from JSB Integrations (Password-safe) or site_config."""
 	key = ""
 	if frappe.db.exists("DocType", "JSB Integrations"):
-		key = frappe.db.get_single_value("JSB Integrations", "google_api_key") or ""
-		if not key:
+		# Try common Password field names
+		for fieldname in ("google_api_key", "google_maps_api_key", "routes_api_key"):
 			try:
-				key = frappe.utils.password.get_decrypted_password(
-					"JSB Integrations", "JSB Integrations", "google_api_key"
-				) or ""
+				key = (
+					frappe.utils.password.get_decrypted_password(
+						"JSB Integrations", "JSB Integrations", fieldname=fieldname
+					)
+					or ""
+				)
 			except Exception:
 				key = ""
+			if key:
+				break
+		if not key:
+			for fieldname in ("google_api_key", "google_maps_api_key", "routes_api_key"):
+				try:
+					key = frappe.db.get_single_value("JSB Integrations", fieldname) or ""
+				except Exception:
+					key = ""
+				if key:
+					break
 	if not key:
-		key = frappe.conf.get("google_maps_api_key") or ""
+		key = frappe.conf.get("google_maps_api_key") or frappe.conf.get("google_api_key") or ""
 	return _cstr(key)
+
+
+# Hardcoded Madurai road distances (km) — used when Google key fails
+MADURAI_DISTANCES = {
+	"Madurai": 0,
+	"Melur": 30,
+	"Usilampatti": 45,
+	"Manamadurai": 60,
+	"Sivaganga": 55,
+	"Dindigul": 65,
+	"Virudhunagar": 65,
+	"Theni": 70,
+	"Srivilliputhur": 75,
+	"Aruppukottai": 80,
+	"Sivakasi": 80,
+	"Karaikudi": 95,
+	"Karur": 140,
+	"Tiruchirappalli": 135,
+	"Trichy": 135,
+	"Tirunelveli": 155,
+	"Thoothukudi": 160,
+	"Tuticorin": 160,
+	"Coimbatore": 210,
+	"Tirupur": 215,
+	"Ernakulam": 220,
+	"Kochi": 220,
+	"Cochin": 220,
+	"Salem": 220,
+	"Erode": 240,
+	"Thrissur": 280,
+	"Thiruvananthapuram": 290,
+	"Trivandrum": 290,
+	"Mysuru": 370,
+	"Mysore": 370,
+	"Hosur": 385,
+	"Pondicherry": 395,
+	"Puducherry": 395,
+	"Bengaluru": 445,
+	"Bangalore": 445,
+	"Chennai": 455,
+	"Mangaluru": 490,
+	"Mangalore": 490,
+	"Guntur": 650,
+	"Vijayawada": 680,
+	"Hyderabad": 770,
+	"Pune": 1250,
+	"Mumbai": 1450,
+}
+
+
+def _fallback_distance(city):
+	if not city:
+		return 0
+	if city in MADURAI_DISTANCES:
+		return MADURAI_DISTANCES[city]
+	lower = city.lower()
+	for k, v in MADURAI_DISTANCES.items():
+		if k.lower() == lower or lower in k.lower() or k.lower() in lower:
+			return v
+	return 0
 
 
 @frappe.whitelist()
 def get_distances_from_madurai(cities=None):
-	"""Return {city: km} from Madurai via Google Routes API. Key from JSB Integrations."""
+	"""Return {city: km}. Uses Google Routes if key works; else hardcoded map (no throw)."""
 	if isinstance(cities, str):
 		try:
 			cities = json.loads(cities)
 		except Exception:
 			cities = [cities] if cities else []
-	if not cities:
-		cities = []
-	cities = [_cstr(c) for c in cities if _cstr(c)]
+	cities = [_cstr(c) for c in (cities or []) if _cstr(c)]
 	if not cities:
 		return {}
 
+	fallback = {c: _fallback_distance(c) for c in cities}
 	key = _google_api_key()
 	if not key:
-		frappe.throw(_("Set Google API Key in JSB Integrations"))
+		return fallback
 
 	body = {
 		"origins": [{"waypoint": {"address": "Madurai, Tamil Nadu, India"}}],
@@ -188,19 +301,22 @@ def get_distances_from_madurai(cities=None):
 
 	try:
 		resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=20)
-	except Exception as e:
-		frappe.throw(_("Routes API call failed: {0}").format(cstr(e)))
+		if resp.status_code != 200:
+			frappe.log_error(
+				f"Routes API {resp.status_code}: {(resp.text or '')[:500]}",
+				"get_distances_from_madurai",
+			)
+			return fallback
+		data = resp.json()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "get_distances_from_madurai")
+		return fallback
 
-	if resp.status_code != 200:
-		frappe.throw(_("Routes API HTTP {0}: {1}").format(resp.status_code, (resp.text or "")[:200]))
-
-	data = resp.json()
-	distance_map = {}
+	distance_map = dict(fallback)
 	if isinstance(data, list):
 		for el in data:
 			idx = el.get("destinationIndex")
 			meters = el.get("distanceMeters")
 			if idx is not None and meters is not None and idx < len(cities):
 				distance_map[cities[idx]] = int(round(flt(meters) / 1000.0))
-
 	return distance_map

@@ -1,0 +1,115 @@
+# Clubbing Sheet — App-owned scripts (disable site Client / Server)
+
+The Clubbing Sheet form now loads from the app:
+
+- **Client JS:** `production_entry/public/js/clubbing_sheet.js` (via `hooks.py` → `doctype_js`)
+- **Before Submit stamp:** `production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_before_submit`
+- **APIs:**
+  - `production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing`
+  - `production_entry.production_planning.clubbing_api.get_distances_from_madurai`
+
+## What Get Orders returns
+
+- Source: **Planning Table** rows where **Movement Type = Despatch**
+- City: Sales Order → Shipping Address (backend only)
+- Optional filter: **Planned Date** (plus Order / Customer / City / Party)
+- Each selected row stores `custom_planning_table_row` + `custom_planning_sheet` on Clubbing Sheet Item
+- On submit: stamps `custom_clubbing_sheet`, `custom_loading_sequence`, `custom_club_load_order` on matching Planning Table / Planning sheet Item
+
+## Site steps (after pull + migrate)
+
+1. **Disable** site **Client Script** on DocType `Clubbing Sheet` (the old paste script).
+3. **Disable** site **Server Scripts**:
+   - API: `get_planning_orders_for_clubbing`
+   - API: `get_distances_from_madurai`
+   - **Before Submit** `clubbing_sheet_bf_submit` (or any Clubbing Sheet Before Submit stamp script)
+
+   If you must keep a site Before Submit script temporarily, replace its body with
+   [`PASTE_clubbing_on_submit_server_script.py`](./PASTE_clubbing_on_submit_server_script.py)
+   (uses `frappe.get_meta(...).has_field` — **never** `frappe.db.has_column`, which crashes safe_exec).
+
+   Preferred: disable the site script; the app hook stamps on submit.
+3. Keep any **Before Save** validation scripts you still want (route conflict, etc.) if they are not duplicated in the app JS.
+4. Run:
+
+```bash
+bench --site <site> migrate
+bench build --app production_entry
+bench --site <site> clear-cache
+```
+
+5. Hard-refresh the Clubbing Sheet form (Ctrl+Shift+R).
+
+## Distance / Google Routes
+
+`get_distances_from_madurai` reads the API key from **JSB Integrations** (`google_api_key` Password field preferred).  
+If the key is missing or Google returns **400 invalid**, distances fall back to the hardcoded Madurai map — clubbing still works.
+
+---
+
+## Create a new Google Maps / Routes API key
+
+Use this when Error Log shows `Routes API 400: API key not valid`.
+
+### 1. Google Cloud project
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/)
+2. Create or select a project (e.g. `jsb-erp-routes`)
+3. Enable **billing** on the project (Routes API requires it)
+
+### 2. Enable APIs
+
+In **APIs & Services → Library**, enable:
+
+- **Routes API** (required — used by `computeRouteMatrix`)
+- Optionally **Maps JavaScript API** / **Geocoding API** if you use maps elsewhere
+
+Do **not** rely on the old Distance Matrix API alone; this app calls:
+
+`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix`
+
+### 3. Create the key
+
+1. **APIs & Services → Credentials → Create credentials → API key**
+2. Copy the key
+3. Click **Restrict key**:
+   - **Application restrictions:** prefer **IP addresses** of your ERP server (or None while testing)
+   - **API restrictions:** select **Routes API** only
+4. Save
+
+### 4. Store in ERP (JSB Integrations)
+
+1. Desk → **JSB Integrations** (Single)
+2. Set **Google API Key** / `google_api_key` (Password field)
+3. Save
+4. `bench --site <site> clear-cache`
+
+Optional fallback in `site_config.json`:
+
+```json
+{
+  "google_maps_api_key": "YOUR_KEY_HERE"
+}
+```
+
+### 5. Verify
+
+From Desk console or a Server Script test call:
+
+```python
+from production_entry.production_planning.clubbing_api import get_distances_from_madurai
+print(get_distances_from_madurai(["Erode", "Karaikudi"]))
+```
+
+- If Google works: km values from Routes
+- If key still invalid: fallback km from Madurai map (check Error Log for `get_distances_from_madurai`)
+
+### Common mistakes
+
+| Issue | Fix |
+| --- | --- |
+| Key from Maps JS only, Routes not enabled | Enable **Routes API** |
+| Billing not enabled | Enable Cloud billing |
+| Wrong key pasted / truncated | Re-copy full key into JSB Integrations |
+| Key restricted to HTTP referrer only | Use **IP** restriction for server-side calls, or unrestricted while testing |
+| Old Distance Matrix key reused | Create a new key with **Routes API** allowed |
