@@ -32,6 +32,14 @@ def _planned_date_expr():
 	return "null"
 
 
+def _pt_col_expr(candidates, alias, default="''"):
+	"""First existing Planning Table column as SQL expr."""
+	for col in candidates:
+		if frappe.db.has_column("Planning Table", col):
+			return f"ifnull(pt.{col}, {default}) as {alias}"
+	return f"{default} as {alias}"
+
+
 @frappe.whitelist()
 def get_planning_orders_for_clubbing(party_code=None, planned_date=None, customer=None, city=None):
 	"""List Planning Table rows with movement Despatch for Clubbing Get Orders.
@@ -79,6 +87,9 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 		if frappe.db.has_column("Planning Table", "custom_clubbing_sheet")
 		else "'' as custom_clubbing_sheet"
 	)
+	quality_col = _pt_col_expr(["quality", "custom_quality"], "quality")
+	color_col = _pt_col_expr(["color", "colour", "custom_color"], "color")
+	gsm_col = _pt_col_expr(["gsm", "custom_gsm"], "gsm", "0")
 
 	rows = frappe.db.sql(
 		f"""
@@ -95,6 +106,9 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 			ifnull(pt.total_weight, 0) as total_weight,
 			ifnull(pt.custom_movement_type, '') as movement_type,
 			{pdate_sql} as planned_date,
+			{quality_col},
+			{color_col},
+			{gsm_col},
 			{club_col}
 		from `tabPlanning Table` pt
 		inner join `tabPlanning sheet` ps on ps.name = pt.parent
@@ -167,6 +181,9 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 				"city": row_city,
 				"custom_party_code": party,
 				"item_code": _cstr(r.item_code),
+				"quality": _cstr(r.get("quality")),
+				"color": _cstr(r.get("color")),
+				"gsm": flt(r.get("gsm")),
 				"planned_date": _cstr(r.planned_date)[:10] if r.planned_date else "",
 				"total_qty": weight,
 				"no_of_rolls": flt(r.no_of_rolls),

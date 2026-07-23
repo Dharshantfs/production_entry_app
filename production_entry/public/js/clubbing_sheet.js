@@ -408,26 +408,30 @@ frappe.ui.form.on('Clubbing Sheet', {
             );
 
             let html = `
-                <div style="max-height: 400px; overflow-y: auto;">
-                <table class="table table-bordered table-condensed table-hover">
+                <div style="max-height: 420px; overflow-y: auto;">
+                <table class="table table-bordered table-condensed table-hover" style="font-size: 12px;">
                     <thead>
                         <tr class="text-muted small uppercase">
-                            <th style="width: 40px; text-align: center;"><input type="checkbox" class="so-select-all"></th>
+                            <th style="width: 36px; text-align: center;"><input type="checkbox" class="so-select-all"></th>
                             <th>${__('Order')}</th>
+                            <th>${__('Quality')}</th>
+                            <th>${__('Color')}</th>
+                            <th>${__('GSM')}</th>
                             <th>${__('Planned')}</th>
-                            <th>${__('Customer')}</th>
                             <th>${__('City')}</th>
                             <th class="text-right">${__('Wt / Rolls')}</th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${filtered.length === 0 ? `<tr><td colspan="6" class="text-center text-muted">${__('No Despatch planning rows (set Planned Date / filters)')}</td></tr>` :
+                        ${filtered.length === 0 ? `<tr><td colspan="8" class="text-center text-muted">${__('No Despatch planning rows')}</td></tr>` :
                 filtered.map(o => `
                             <tr>
                                 <td style="text-align: center;"><input type="checkbox" class="so-checkbox" data-name="${frappe.utils.escape_html(o.name)}" ${selected_orders.has(o.name) ? 'checked' : ''}></td>
                                 <td><b>${frappe.utils.escape_html(o.party_code || o.name)}</b><br><span class="text-muted small">${frappe.utils.escape_html(o.sales_order || '')}</span><br><span class="text-muted small">${frappe.utils.escape_html(o.planning_sheet || '')}</span></td>
+                                <td>${frappe.utils.escape_html(o.quality || '')}</td>
+                                <td>${frappe.utils.escape_html(o.color || '')}</td>
+                                <td>${o.gsm || ''}</td>
                                 <td>${frappe.utils.escape_html(o.planned_date || '')}</td>
-                                <td>${frappe.utils.escape_html(o.customer_name || o.customer || '')}</td>
                                 <td><span class="label label-blue">${frappe.utils.escape_html(o.city || '')}</span></td>
                                 <td class="text-right">${o.total_qty || 0}<br><span class="text-muted small">${o.no_of_rolls || 0} rolls</span></td>
                             </tr>
@@ -472,13 +476,15 @@ frappe.ui.form.on('Clubbing Sheet', {
             freeze: true,
             callback: function (r) {
                 let all = r.message || [];
+                // Match ONLY by Planning Table row name (checkbox data-name) — never SO/party.
                 let picked = all.filter(o =>
                     selections.includes(o.name) ||
-                    selections.includes(o.planning_table_row) ||
-                    selections.includes(o.sales_order) ||
-                    selections.includes(o.party_code) ||
-                    selections.includes(o.planning_sheet)
+                    selections.includes(o.planning_table_row)
                 );
+                if (!picked.length) {
+                    frappe.msgprint(__('No matching Planning Table rows for selection.'));
+                    return;
+                }
 
                 let item_meta = frappe.get_meta('Clubbing Sheet Item') || {};
                 let has_field = (fn) => !!(item_meta.fields || []).find(f => f.fieldname === fn);
@@ -494,16 +500,23 @@ frappe.ui.form.on('Clubbing Sheet', {
                     rd.weight_kgs = flt(so.weight_kgs || so.total_qty);
                     rd.no_of_rolls = flt(so.no_of_rolls);
                     rd.party_location = so.city || "";
-                    if (has_field('custom_planning_table_row')) {
-                        rd.custom_planning_table_row = so.planning_table_row || so.name || "";
-                    } else if (has_field('planning_table_row')) {
+                    // Always keep PT link for precise stamp (even if field not in meta yet)
+                    rd.custom_planning_table_row = so.planning_table_row || so.name || "";
+                    rd.custom_planning_sheet = so.planning_sheet || "";
+                    if (has_field('planning_table_row')) {
                         rd.planning_table_row = so.planning_table_row || so.name || "";
                     }
-                    if (has_field('custom_planning_sheet')) {
-                        rd.custom_planning_sheet = so.planning_sheet || "";
-                    } else if (has_field('planning_sheet')) {
+                    if (has_field('planning_sheet')) {
                         rd.planning_sheet = so.planning_sheet || "";
                     }
+                    if (has_field('quality')) rd.quality = so.quality || "";
+                    if (has_field('color')) rd.color = so.color || "";
+                    if (has_field('gsm')) rd.gsm = so.gsm || 0;
+                    if (has_field('custom_quality')) rd.custom_quality = so.quality || "";
+                    if (has_field('custom_color')) rd.custom_color = so.color || "";
+                    if (has_field('custom_gsm')) rd.custom_gsm = so.gsm || 0;
+                    if (has_field('planned_date')) rd.planned_date = so.planned_date || "";
+                    if (has_field('custom_planned_date')) rd.custom_planned_date = so.planned_date || "";
                     rows.push(rd);
                 });
                 frm.refresh_field('items');

@@ -30,6 +30,15 @@ The Clubbing Sheet form now loads from the app:
 
    Preferred: disable the site script; the app hook stamps on submit.
 3. Keep any **Before Save** validation scripts you still want (route conflict, etc.) if they are not duplicated in the app JS.
+4. After cancel of a Clubbing Sheet, Planning stamps clear automatically (`on_cancel`).  
+   For already-cancelled sheets that still show on Planning, run in Desk console:
+
+```python
+frappe.call(
+  "production_entry.production_planning.clubbing_sheet_hooks.clear_planning_stamps_for_club",
+  clubbing_sheet="CLB-00029-1"
+)
+```
 4. Run:
 
 ```bash

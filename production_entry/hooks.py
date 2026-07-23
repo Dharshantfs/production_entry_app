@@ -173,6 +173,7 @@ doc_events = {
     "DESIGN MASTER": _DESIGN_MASTER_HOOKS,
     "Clubbing Sheet": {
         "before_submit": "production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_before_submit",
+        "on_cancel": "production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_on_cancel",
     },
 }
 
