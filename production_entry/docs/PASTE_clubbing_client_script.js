@@ -165,28 +165,37 @@ const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_dis
 
 frappe.ui.form.on('Clubbing Sheet', {
     refresh: function (frm) {
-        // Single button only — avoids duplicate "Get Sales Orders" + "Get Planning Items"
+        // Kill site Client Script handlers that open a 2nd / old dialog.
         const open_picker = function () {
             frm.trigger('jsb_pick_despatch_planning_rows');
         };
-        const bind_buttons = function () {
+        const wipe_old_handlers = function () {
+            try {
+                if (frm.script_manager && frm.script_manager.events) {
+                    frm.script_manager.events.get_sales_orders_dialog = [open_picker];
+                    frm.script_manager.events.get_sales_orders = [open_picker];
+                    // keep refresh handlers, but strip duplicate Get Sales Orders buttons below
+                }
+            } catch (e) { /* ignore */ }
             try {
                 frm.remove_custom_button(__('Get Sales Orders'));
                 frm.remove_custom_button(__('Get Planning Items'));
-            } catch (e) { /* ignore */ }
+            } catch (e2) { /* ignore */ }
             frm.add_custom_button(__('Get Planning Items'), open_picker);
             if (frm.events) {
-                frm.events.get_sales_orders_dialog = frm.events.jsb_pick_despatch_planning_rows;
+                frm.events.get_sales_orders_dialog = open_picker;
                 frm.events.get_sales_orders = open_picker;
             }
             if (frm.cscript) {
-                frm.cscript.get_sales_orders_dialog = frm.events.jsb_pick_despatch_planning_rows;
+                frm.cscript.get_sales_orders_dialog = open_picker;
                 frm.cscript.get_sales_orders = open_picker;
             }
         };
-        bind_buttons();
-        setTimeout(bind_buttons, 0);
-        setTimeout(bind_buttons, 400);
+        wipe_old_handlers();
+        setTimeout(wipe_old_handlers, 0);
+        setTimeout(wipe_old_handlers, 250);
+        setTimeout(wipe_old_handlers, 800);
+        setTimeout(wipe_old_handlers, 1500);
 
         if (!frm.doc.__islocal && frm.doc.docstatus === 0) {
             frm.add_custom_button(__('Submit'), function () {
@@ -365,6 +374,10 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     jsb_pick_despatch_planning_rows: function (frm) {
+        if (frm._jsb_club_picker_open) {
+            return;
+        }
+        frm._jsb_club_picker_open = true;
         let d = new frappe.ui.Dialog({
             title: __('Select Planning Despatch Rows'),
             size: 'extra-large',
@@ -526,6 +539,9 @@ frappe.ui.form.on('Clubbing Sheet', {
         }
         load_orders();
         d.show();
+        d.$wrapper.on('hidden.bs.modal', function () {
+            frm._jsb_club_picker_open = false;
+        });
     },
 
     process_selections: function (frm, selections, planned_date) {

@@ -283,30 +283,21 @@
                       :placeholder="clubScanPlaceholder(da)"
                       :disabled="!!da.has_draft_dns || da.card_status === 'Draft DN' || da.scan_complete"
                       autocomplete="off"
-                      @input="clubScanInput[da.name] = $event.target.value"
+                      inputmode="none"
+                      @input="onClubScanTyped(da, $event)"
                       @keydown.enter.prevent="submitClubScan(da)"
-                      @focus="activeClubScanDa = da.name"
                     />
                     <button
                       type="button"
                       class="lk-dn-btn lk-dn-btn-scan"
                       :disabled="!!da.has_draft_dns || da.card_status === 'Draft DN' || da.scan_complete"
-                      @click="submitClubScan(da)"
+                      @click="openClubBarcodeScanner(da)"
                     >
-                      Scan
-                    </button>
-                    <button
-                      type="button"
-                      class="lk-dn-btn lk-dn-btn-cam"
-                      :disabled="!!da.has_draft_dns || da.card_status === 'Draft DN' || da.scan_complete"
-                      title="Open camera barcode scanner"
-                      @click="openClubCameraScan(da)"
-                    >
-                      Camera
+                      Scan barcode
                     </button>
                   </div>
                   <div v-if="da.clubbing_sheet && !da.scan_complete" class="lk-club-scan-hint" @click.stop>
-                    USB barcode gun: click the box, then scan. Or use Camera.
+                    Tap <b>Scan barcode</b> for camera (same as Delivery Note). USB gun: scan into the box — auto-adds.
                   </div>
                   <div class="lk-club-actions" @click.stop>
                     <button
@@ -426,6 +417,7 @@ const filterOrderCode = ref("");
 const filterClubbingSheet = ref("");
 const clubScanInput = ref({});
 const clubScanRefs = {};
+const clubScanTypedTimers = {};
 const activeClubScanDa = ref("");
 const companies = ref([]);
 const fromCompany = ref("Jayashree Spun Bond - 1ZT");
@@ -902,11 +894,7 @@ function focusClubScanInput(da) {
 async function submitClubScan(da, forcedBarcode) {
   const bc = (forcedBarcode || clubScanInput.value[da.name] || "").trim();
   if (!bc) {
-    focusClubScanInput(da);
-    frappe.show_alert({
-      message: __("Focus the scan box, then use barcode gun — or tap Camera."),
-      indicator: "orange",
-    });
+    openClubBarcodeScanner(da);
     return;
   }
   try {
@@ -925,132 +913,44 @@ async function submitClubScan(da, forcedBarcode) {
   }
 }
 
-async function openClubCameraScan(da) {
-  if (typeof window.BarcodeDetector !== "function") {
-    frappe.msgprint({
-      title: __("Camera scan"),
-      message: __(
-        "This browser has no built-in barcode camera (use Chrome/Edge on HTTPS). You can still focus the scan box and use a USB barcode reader — it types the batch and presses Enter."
-      ),
-      indicator: "orange",
-    });
+function onClubScanTyped(da, ev) {
+  const v = (ev?.target?.value || "").trim();
+  clubScanInput.value = { ...clubScanInput.value, [da.name]: ev?.target?.value || "" };
+  // USB guns type fast then Enter; also auto-submit if value looks like a finished batch id
+  if (!v) return;
+  clearTimeout(clubScanTypedTimers[da.name]);
+  clubScanTypedTimers[da.name] = setTimeout(() => {
+    const cur = (clubScanInput.value[da.name] || "").trim();
+    // Only auto-fire if unchanged for 120ms and looks like a batch (has / or long enough)
+    if (cur && cur === v && (cur.includes("/") || cur.length >= 8)) {
+      submitClubScan(da, cur);
+    }
+  }, 120);
+}
+
+function openClubBarcodeScanner(da) {
+  // Same engine as Delivery Note "Scan QRCode" (html5-qrcode via frappe.ui.Scanner)
+  if (typeof frappe.ui.Scanner !== "function") {
+    frappe.msgprint(__("Scanner not loaded. Hard-refresh the page, or use the USB barcode gun in the scan box."));
     focusClubScanInput(da);
     return;
   }
-
-  let stream = null;
-  let detector = null;
-  let timer = null;
-  let closed = false;
-
-  const dlg = new frappe.ui.Dialog({
-    title: __("Scan batch camera"),
-    fields: [
-      {
-        fieldtype: "HTML",
-        fieldname: "cam",
-        options: `
-          <div style="display:flex;flex-direction:column;gap:10px;align-items:center;">
-            <video id="jsb-club-cam-video" autoplay playsinline muted
-              style="width:100%;max-width:420px;border-radius:12px;border:2px solid #0ea5e9;background:#0f172a;min-height:240px;"></video>
-            <div style="font-size:12px;color:#475569;text-align:center;">
-              Point at batch barcode. USB reader also works in the field below.
-            </div>
-            <input id="jsb-club-cam-manual" type="text" class="form-control"
-              placeholder="${frappe.utils.escape_html(clubScanPlaceholder(da))}"
-              style="max-width:420px;border-radius:10px;border:1.5px solid #94a3b8;" />
-          </div>
-        `,
+  try {
+    // eslint-disable-next-line no-new
+    new frappe.ui.Scanner({
+      dialog: true,
+      multiple: true,
+      on_scan(data) {
+        const code = String(data?.decodedText || data?.result?.text || data || "").trim();
+        if (code) {
+          submitClubScan(da, code);
+        }
       },
-    ],
-    primary_action_label: __("Use typed code"),
-    primary_action() {
-      const v = (document.getElementById("jsb-club-cam-manual")?.value || "").trim();
-      if (!v) {
-        frappe.show_alert({ message: __("No barcode yet"), indicator: "orange" });
-        return;
-      }
-      closeCam();
-      dlg.hide();
-      submitClubScan(da, v);
-    },
-    secondary_action_label: __("Close"),
-    secondary_action() {
-      closeCam();
-      dlg.hide();
-    },
-  });
-
-  function closeCam() {
-    closed = true;
-    if (timer) clearInterval(timer);
-    timer = null;
-    if (stream) {
-      stream.getTracks().forEach((t) => t.stop());
-      stream = null;
-    }
-  }
-
-  dlg.$wrapper.on("hidden.bs.modal", closeCam);
-  dlg.show();
-
-  try {
-    detector = new window.BarcodeDetector({
-      formats: ["code_128", "code_39", "ean_13", "ean_8", "qr_code", "upc_a", "upc_e"],
     });
   } catch (e) {
-    detector = new window.BarcodeDetector();
-  }
-
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
-      audio: false,
-    });
-  } catch (e) {
-    closeCam();
-    dlg.hide();
-    frappe.msgprint(__("Camera permission denied. Allow camera, or use USB barcode reader in the scan box."));
+    frappe.msgprint(e?.message || String(e) || __("Could not open camera scanner."));
     focusClubScanInput(da);
-    return;
   }
-
-  const video = document.getElementById("jsb-club-cam-video");
-  const manual = document.getElementById("jsb-club-cam-manual");
-  if (video) {
-    video.srcObject = stream;
-    await video.play().catch(() => {});
-  }
-  if (manual) {
-    manual.focus();
-    manual.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") {
-        ev.preventDefault();
-        const v = (manual.value || "").trim();
-        if (!v) return;
-        closeCam();
-        dlg.hide();
-        submitClubScan(da, v);
-      }
-    });
-  }
-
-  let last = "";
-  timer = setInterval(async () => {
-    if (closed || !video || video.readyState < 2) return;
-    try {
-      const codes = await detector.detect(video);
-      if (!codes?.length) return;
-      const raw = (codes[0].rawValue || "").trim();
-      if (!raw || raw === last) return;
-      last = raw;
-      closeCam();
-      dlg.hide();
-      await submitClubScan(da, raw);
-    } catch (e) {
-      /* keep polling */
-    }
-  }, 450);
 }
 
 async function createClubDraftDns(da) {
@@ -1788,6 +1688,13 @@ watch([despatchArrangementLocked, approvedArrangementLocked, mode], () => {
 .lk-dn-btn-cam {
   background: #0ea5e9 !important;
   border-color: #0284c7 !important;
+}
+.lk-dn-btn-scan {
+  background: #0f172a !important;
+  border-color: #0f172a !important;
+  color: #fff !important;
+  font-weight: 700;
+  min-width: 120px;
 }
 .lk-club-scan-input {
   flex: 1;
