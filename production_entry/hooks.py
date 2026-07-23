@@ -20,7 +20,10 @@ app_include_css = [
 	"/assets/production_entry/css/production_learning.css",
 	"/assets/production_entry/css/logistics_transfer_dialog.css",
 ]
-app_include_js = "scheduler.bundle.js"
+app_include_js = [
+	"scheduler.bundle.js",
+	"/assets/production_entry/js/clubbing_sheet_form.js",
+]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/production_entry/css/production_entry.css"

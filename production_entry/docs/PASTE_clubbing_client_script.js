@@ -162,45 +162,72 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260723d';
+window.JSB_CLUB_PICKER_VER = 'v20260723e';
 
 function jsb_club_bind_picker_button(frm) {
 	const openOnce = function () {
 		jsb_club_open_despatch_picker(frm);
 	};
-	try {
-		frm.remove_custom_button(__('Get Sales Orders'));
-		frm.remove_custom_button(__('Get Planning Items'));
-	} catch (e) { /* ignore */ }
-	// Hide DocType Button fields that still say Get Sales Orders
+	// Keep the DocType form button "Get Sales Orders" visible — users click that.
 	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fn) {
 		if (frm.fields_dict && frm.fields_dict[fn]) {
-			frm.set_df_property(fn, 'hidden', 1);
+			frm.set_df_property(fn, 'hidden', 0);
 		}
 	});
+	try {
+		frm.remove_custom_button(__('Get Planning Items'));
+	} catch (e) { /* ignore */ }
 	frm.add_custom_button(__('Get Planning Items'), openOnce);
-	// DocType may still fire get_sales_orders — only that path opens picker.
-	// get_sales_orders_dialog must stay empty to stop double dialogs.
+
+	// Wire BOTH event names (DocType Button may use either) — lock stops double dialog.
 	if (frm.script_manager && frm.script_manager.events) {
 		frm.script_manager.events.get_sales_orders = [openOnce];
-		frm.script_manager.events.get_sales_orders_dialog = [];
+		frm.script_manager.events.get_sales_orders_dialog = [openOnce];
 	}
 	if (frm.events) {
 		frm.events.get_sales_orders = openOnce;
-		frm.events.get_sales_orders_dialog = function () { /* no-op: prevents 2nd dialog */ };
+		frm.events.get_sales_orders_dialog = openOnce;
 	}
 	if (frm.cscript) {
 		frm.cscript.get_sales_orders = openOnce;
-		frm.cscript.get_sales_orders_dialog = function () { /* no-op */ };
+		frm.cscript.get_sales_orders_dialog = openOnce;
 	}
+
+	// Extra: hard-bind click on the form Button field (Frappe Button)
+	try {
+		const fld = frm.get_field('get_sales_orders');
+		if (fld) {
+			const $btn = fld.$input || (fld.$wrapper && fld.$wrapper.find('button, .btn'));
+			if ($btn && $btn.length) {
+				$btn.off('click.jsbclub').on('click.jsbclub', function (e) {
+					e.preventDefault();
+					e.stopImmediatePropagation();
+					openOnce();
+				});
+			}
+		}
+	} catch (e2) { /* ignore */ }
 }
 
 function jsb_club_open_despatch_picker(frm) {
+	if (!frm) {
+		return;
+	}
 	if (window._jsb_club_picker_lock) {
 		return;
 	}
 	window._jsb_club_picker_lock = true;
-	frm.trigger('jsb_pick_despatch_planning_rows');
+	// Safety unlock if dialog fails to open
+	setTimeout(function () {
+		if (window._jsb_club_picker_lock) {
+			window._jsb_club_picker_lock = false;
+		}
+	}, 2500);
+	if (typeof window._jsb_club_picker_impl === 'function') {
+		window._jsb_club_picker_impl(frm);
+	} else {
+		frm.trigger('jsb_pick_despatch_planning_rows');
+	}
 }
 
 frappe.ui.form.on('Clubbing Sheet', {
@@ -277,7 +304,7 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     get_sales_orders_dialog: function (frm) {
-        // Intentionally empty — opening here caused DOUBLE dialog with get_sales_orders.
+        jsb_club_open_despatch_picker(frm);
     },
 
     show_load_type_indicator: function (frm) {
@@ -386,6 +413,12 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 
     jsb_pick_despatch_planning_rows: function (frm) {
+        window._jsb_club_picker_impl(frm);
+    },
+});
+
+// Actual dialog — also exposed so Get Sales Orders works even if trigger chain is empty
+window._jsb_club_picker_impl = function (frm) {
         let d = new frappe.ui.Dialog({
             title: __('Select Planning Despatch Rows') + ' · ' + (window.JSB_CLUB_PICKER_VER || ''),
             size: 'extra-large',
@@ -413,7 +446,11 @@ frappe.ui.form.on('Clubbing Sheet', {
                     return;
                 }
                 d.hide();
-                frm.events.process_selections(frm, selected, d.get_value('planned_date'));
+                if (frm.events && typeof frm.events.process_selections === 'function') {
+                    frm.events.process_selections(frm, selected, d.get_value('planned_date'));
+                } else {
+                    frappe.msgprint(__('Could not add items — reload the page (Ctrl+Shift+R).'));
+                }
             }
         });
 
@@ -551,8 +588,9 @@ frappe.ui.form.on('Clubbing Sheet', {
             window._jsb_club_picker_lock = false;
             frm._jsb_club_picker_open = false;
         });
-    },
+};
 
+frappe.ui.form.on('Clubbing Sheet', {
     process_selections: function (frm, selections, planned_date) {
         frappe.call({
             method: PLANNING_ORDERS_API,
