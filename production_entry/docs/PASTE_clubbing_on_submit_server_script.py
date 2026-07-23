@@ -1,14 +1,14 @@
-﻿# Clubbing Sheet — Before Submit Server Script (paste on site ONLY if you keep site scripts)
+﻿# LEGACY — do not use on site if production_entry is installed.
 #
-# Script Type: DocType Event
-# Reference Document Type: Clubbing Sheet
-# DocType Event: Before Submit
-# Enabled: Yes
+# App hook (preferred):
+#   hooks.py → doc_events["Clubbing Sheet"]["before_submit"]
+#   → production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_before_submit
 #
-# Prefer disabling this and using the app hook instead:
-#   production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_before_submit
+# On site: DISABLE Server Script "clubbing sheet bf submit" (or clubbing_sheet_bf_submit).
+# Then: bench migrate && bench build --app production_entry && bench --site <site> clear-cache
 #
-# IMPORTANT: Do NOT use frappe.db.has_column — it is blocked in Server Script safe_exec.
+# If you must keep a site script, rename helpers (no leading "_") — safe_exec blocks "_has_field".
+# Prefer the app hook instead.
 
 if not (doc.trip_id or "").strip():
 	frappe.throw("Please enter a Trip ID before submitting the Clubbing Sheet.")
@@ -17,19 +17,19 @@ if not doc.get("items"):
 	frappe.throw("Please add at least one item before submitting.")
 
 
-def _has_field(doctype, fieldname):
+def has_field(doctype, fieldname):
 	try:
 		return bool(frappe.get_meta(doctype).has_field(fieldname))
 	except Exception:
 		return False
 
 
-has_pt_club = _has_field("Planning Table", "custom_clubbing_sheet")
-has_psi_club = _has_field("Planning sheet Item", "custom_clubbing_sheet")
-has_pt_seq = _has_field("Planning Table", "custom_loading_sequence")
-has_pt_ord = _has_field("Planning Table", "custom_club_load_order")
-has_psi_seq = _has_field("Planning sheet Item", "custom_loading_sequence")
-has_psi_ord = _has_field("Planning sheet Item", "custom_club_load_order")
+has_pt_club = has_field("Planning Table", "custom_clubbing_sheet")
+has_psi_club = has_field("Planning sheet Item", "custom_clubbing_sheet")
+has_pt_seq = has_field("Planning Table", "custom_loading_sequence")
+has_pt_ord = has_field("Planning Table", "custom_club_load_order")
+has_psi_seq = has_field("Planning sheet Item", "custom_loading_sequence")
+has_psi_ord = has_field("Planning sheet Item", "custom_club_load_order")
 
 if not has_pt_club and not has_psi_club:
 	frappe.msgprint(
@@ -43,18 +43,16 @@ else:
 		so = (item.sales_order or "").strip()
 		seq = (item.loading_sequence or "").strip()
 		load_order = int(item.idx or 0)
-		ptr = (
+		ptr = str(
 			getattr(item, "custom_planning_table_row", None)
 			or getattr(item, "planning_table_row", None)
 			or ""
-		)
-		ptr = str(ptr).strip()
-		planning_sheet = (
+		).strip()
+		planning_sheet = str(
 			getattr(item, "custom_planning_sheet", None)
 			or getattr(item, "planning_sheet", None)
 			or ""
-		)
-		planning_sheet = str(planning_sheet).strip()
+		).strip()
 
 		pt_rows = []
 		if ptr:
