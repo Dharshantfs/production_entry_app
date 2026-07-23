@@ -49,6 +49,38 @@ bench --site <site> clear-cache
 
 5. Hard-refresh the Clubbing Sheet form (Ctrl+Shift+R).
 
+## Get Orders columns
+
+Dialog shows: **Order | Item | Quality | Color | GSM | Inch | Planned | City | Wt/Rolls**  
+(from Planning Table Despatch rows; city from SO shipping address).
+
+## Route belts — how to fetch on route basis
+
+Client already has `ROUTE_BELTS` (Madurai → city chains). Today:
+
+| Step | Behaviour |
+| --- | --- |
+| Pick orders | Filter by **City** (type a city name, e.g. `Erode`) |
+| After pick | Loading sequence sorts by belt / distance |
+| Before Save (site) | Route conflict if cities are not on one belt |
+
+**Recommended route fetch (next):**
+
+1. Add filter **Route belt** dropdown built from `ROUTE_BELTS` labels (e.g. “Madurai → Karur → Coimbatore”).
+2. On select, expand belt cities → pass as multi-city filter to API (or client-filter `o.city` in belt).
+3. Only show Despatch PT rows whose SO city is in that belt.
+4. Keep override checkbox **Ignore Route Conflict** for exceptions.
+
+Until that lands: type a **City** in the filter (or one city of the belt) and select matching rows manually.
+
+## Despatch club scan (barcode + camera)
+
+On Logistics Kanban club card:
+
+- **USB / Bluetooth barcode reader:** click the scan box, then scan — reader types batch + Enter → marks `custom_scanned`.
+- **Camera:** tap **Camera** (Chrome/Edge + HTTPS + camera permission) → points at barcode → auto-submits.
+- Empty Scan click no longer hard-blocks with only “Scan a batch barcode”; it focuses the box and shows a short tip.
+
 ## Distance / Google Routes
 
 `get_distances_from_madurai` reads the API key from **JSB Integrations** (`google_api_key` Password field preferred).  

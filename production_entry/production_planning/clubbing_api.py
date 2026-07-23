@@ -90,6 +90,12 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 	quality_col = _pt_col_expr(["quality", "custom_quality"], "quality")
 	color_col = _pt_col_expr(["color", "colour", "custom_color"], "color")
 	gsm_col = _pt_col_expr(["gsm", "custom_gsm"], "gsm", "0")
+	width_col = _pt_col_expr(
+		["width_inch", "width", "custom_width_inch", "size_inch"],
+		"width_inch",
+		"0",
+	)
+	width_mm_col = _pt_col_expr(["width_mm", "custom_width_mm"], "width_mm", "0")
 
 	rows = frappe.db.sql(
 		f"""
@@ -109,6 +115,8 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 			{quality_col},
 			{color_col},
 			{gsm_col},
+			{width_col},
+			{width_mm_col},
 			{club_col}
 		from `tabPlanning Table` pt
 		inner join `tabPlanning sheet` ps on ps.name = pt.parent
@@ -169,6 +177,11 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 					continue
 
 		weight = flt(r.total_weight)
+		width_inch = flt(r.get("width_inch"))
+		if width_inch <= 0:
+			wmm = flt(r.get("width_mm"))
+			if wmm > 0:
+				width_inch = round(wmm / 25.4, 2)
 		out.append(
 			{
 				"name": _cstr(r.planning_table_row),
@@ -184,6 +197,8 @@ def get_planning_orders_for_clubbing(party_code=None, planned_date=None, custome
 				"quality": _cstr(r.get("quality")),
 				"color": _cstr(r.get("color")),
 				"gsm": flt(r.get("gsm")),
+				"width_inch": width_inch,
+				"inch": width_inch,
 				"planned_date": _cstr(r.planned_date)[:10] if r.planned_date else "",
 				"total_qty": weight,
 				"no_of_rolls": flt(r.no_of_rolls),

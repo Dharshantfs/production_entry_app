@@ -165,7 +165,7 @@ const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_dis
 
 frappe.ui.form.on('Clubbing Sheet', {
     refresh: function (frm) {
-        // Always open the Quality/Color/GSM picker (wins over old site Client Script).
+        // Single button only — avoids duplicate "Get Sales Orders" + "Get Planning Items"
         const open_picker = function () {
             frm.trigger('jsb_pick_despatch_planning_rows');
         };
@@ -175,8 +175,6 @@ frappe.ui.form.on('Clubbing Sheet', {
                 frm.remove_custom_button(__('Get Planning Items'));
             } catch (e) { /* ignore */ }
             frm.add_custom_button(__('Get Planning Items'), open_picker);
-            frm.add_custom_button(__('Get Sales Orders'), open_picker);
-            // Force event map to app dialog even if site Client Script redefined it
             if (frm.events) {
                 frm.events.get_sales_orders_dialog = frm.events.jsb_pick_despatch_planning_rows;
                 frm.events.get_sales_orders = open_picker;
@@ -378,7 +376,7 @@ frappe.ui.form.on('Clubbing Sheet', {
                 { fieldtype: 'Section Break' },
                 { fieldtype: 'Data', fieldname: 'search_customer', label: __('Customer'), onchange: () => refresh_list() },
                 { fieldtype: 'Column Break' },
-                { fieldtype: 'Data', fieldname: 'search_city', label: __('City'), onchange: () => refresh_list() },
+                { fieldtype: 'Data', fieldname: 'search_city', label: __('City / Route'), onchange: () => refresh_list() },
                 { fieldtype: 'Section Break' },
                 { fieldtype: 'Data', fieldname: 'search_party', label: __('Party Code'), onchange: () => refresh_list() },
                 { fieldtype: 'Column Break' },
@@ -397,6 +395,32 @@ frappe.ui.form.on('Clubbing Sheet', {
                 frm.events.process_selections(frm, selected, d.get_value('planned_date'));
             }
         });
+
+        d.$wrapper.addClass('jsb-club-picker');
+        if (!document.getElementById('jsb-club-picker-css')) {
+            let style = document.createElement('style');
+            style.id = 'jsb-club-picker-css';
+            style.textContent = `
+                .jsb-club-picker .modal-content { border-radius: 14px; border: 1px solid #cbd5e1; box-shadow: 0 18px 50px rgba(15,23,42,.18); overflow: hidden; }
+                .jsb-club-picker .modal-header { background: linear-gradient(180deg,#0f172a,#1e293b); color: #fff; border-bottom: none; padding: 14px 18px; }
+                .jsb-club-picker .modal-title { color: #fff !important; font-weight: 700; letter-spacing: .02em; }
+                .jsb-club-picker .modal-header .btn-modal-close { color: #fff; opacity: .85; }
+                .jsb-club-picker .modal-body { background: #f8fafc; padding: 14px 16px 8px; }
+                .jsb-club-picker .form-control { border: 1.5px solid #94a3b8; border-radius: 10px; background: #fff; min-height: 34px; }
+                .jsb-club-picker .form-control:focus { border-color: #0284c7; box-shadow: 0 0 0 3px rgba(2,132,199,.18); }
+                .jsb-club-picker .btn[data-fieldname="btn_reload"] { border-radius: 10px !important; border: 1.5px solid #0ea5e9 !important; background: #e0f2fe !important; color: #0369a1 !important; font-weight: 700 !important; padding: 6px 14px !important; }
+                .jsb-club-picker .modal-footer .btn-primary { border-radius: 10px !important; border: none !important; background: #0f172a !important; font-weight: 700 !important; padding: 8px 18px !important; }
+                .jsb-club-picker-wrap { max-height: 440px; overflow: auto; border: 1.5px solid #94a3b8; border-radius: 12px; background: #fff; }
+                .jsb-club-picker-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+                .jsb-club-picker-table thead th { position: sticky; top: 0; z-index: 1; background: #0f172a; color: #e2e8f0; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; padding: 10px 8px; border-bottom: 1px solid #334155; white-space: nowrap; }
+                .jsb-club-picker-table tbody td { padding: 9px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
+                .jsb-club-picker-table tbody tr:hover { background: #f0f9ff; }
+                .jsb-club-picker-table .jsb-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-weight: 700; font-size: 11px; }
+                .jsb-club-picker-table .jsb-attr { font-weight: 700; color: #0f172a; }
+                .jsb-club-picker-hint { margin: 0 0 10px; color: #475569; font-size: 12px; }
+            `;
+            document.head.appendChild(style);
+        }
 
         let orders = [];
         let selected_orders = new Set();
@@ -432,34 +456,42 @@ frappe.ui.form.on('Clubbing Sheet', {
                 (!s_party || (o.custom_party_code || o.party_code || '').toLowerCase().includes(s_party))
             );
 
+            let inchVal = (o) => {
+                let v = flt(o.width_inch || o.inch || 0);
+                return v > 0 ? v : '—';
+            };
+
             let html = `
-                <div style="max-height: 420px; overflow-y: auto;">
-                <table class="table table-bordered table-condensed table-hover" style="font-size: 12px;">
+                <p class="jsb-club-picker-hint">${__('Tick the exact Planning lines to club — Quality / Color / GSM / Inch identify each item.')}</p>
+                <div class="jsb-club-picker-wrap">
+                <table class="jsb-club-picker-table">
                     <thead>
-                        <tr class="text-muted small uppercase">
+                        <tr>
                             <th style="width: 36px; text-align: center;"><input type="checkbox" class="so-select-all"></th>
                             <th>${__('Order')}</th>
                             <th>${__('Item')}</th>
                             <th>${__('Quality')}</th>
                             <th>${__('Color')}</th>
                             <th>${__('GSM')}</th>
+                            <th>${__('Inch')}</th>
                             <th>${__('Planned')}</th>
                             <th>${__('City')}</th>
                             <th class="text-right">${__('Wt / Rolls')}</th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${filtered.length === 0 ? `<tr><td colspan="9" class="text-center text-muted">${__('No Despatch planning rows')}</td></tr>` :
+                        ${filtered.length === 0 ? `<tr><td colspan="10" class="text-center text-muted" style="padding:24px;">${__('No Despatch planning rows')}</td></tr>` :
                 filtered.map(o => `
                             <tr>
                                 <td style="text-align: center;"><input type="checkbox" class="so-checkbox" data-name="${frappe.utils.escape_html(o.name)}" ${selected_orders.has(o.name) ? 'checked' : ''}></td>
-                                <td><b>${frappe.utils.escape_html(o.party_code || o.name)}</b><br><span class="text-muted small">${frappe.utils.escape_html(o.sales_order || '')}</span><br><span class="text-muted small">${frappe.utils.escape_html(o.planning_sheet || '')}</span></td>
+                                <td><b>${frappe.utils.escape_html(o.party_code || o.sales_order || o.name)}</b><br><span class="text-muted small">${frappe.utils.escape_html(o.sales_order || '')}</span><br><span class="text-muted small">${frappe.utils.escape_html(o.planning_sheet || '')}</span></td>
                                 <td><span class="text-muted small">${frappe.utils.escape_html(o.item_code || '')}</span></td>
-                                <td><b>${frappe.utils.escape_html(o.quality || '—')}</b></td>
-                                <td><b>${frappe.utils.escape_html(o.color || '—')}</b></td>
-                                <td><b>${o.gsm || '—'}</b></td>
+                                <td class="jsb-attr">${frappe.utils.escape_html(o.quality || '—')}</td>
+                                <td class="jsb-attr">${frappe.utils.escape_html(o.color || '—')}</td>
+                                <td class="jsb-attr">${o.gsm || '—'}</td>
+                                <td class="jsb-attr">${inchVal(o)}</td>
                                 <td>${frappe.utils.escape_html(o.planned_date || '')}</td>
-                                <td><span class="label label-blue">${frappe.utils.escape_html(o.city || '')}</span></td>
+                                <td><span class="jsb-pill">${frappe.utils.escape_html(o.city || '—')}</span></td>
                                 <td class="text-right">${o.total_qty || 0}<br><span class="text-muted small">${o.no_of_rolls || 0} rolls</span></td>
                             </tr>
                         `).join('')}
@@ -544,6 +576,8 @@ frappe.ui.form.on('Clubbing Sheet', {
                     if (has_field('custom_gsm')) rd.custom_gsm = so.gsm || 0;
                     if (has_field('planned_date')) rd.planned_date = so.planned_date || "";
                     if (has_field('custom_planned_date')) rd.custom_planned_date = so.planned_date || "";
+                    if (has_field('width_inch')) rd.width_inch = so.width_inch || so.inch || 0;
+                    if (has_field('custom_width_inch')) rd.custom_width_inch = so.width_inch || so.inch || 0;
                     rows.push(rd);
                 });
                 frm.refresh_field('items');
