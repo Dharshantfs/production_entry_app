@@ -7,10 +7,16 @@
         <button type="button" class="tl-close" @click="close">✕</button>
       </div>
       <div class="tl-filters">
+        <input v-model="dlgClub" type="text" placeholder="Filter Clubbing Sheet ID" @keydown.enter.prevent="applyClubFilter" />
         <input v-model="dlgParty" type="text" placeholder="Filter order code" />
         <input v-model="dlgCustomer" type="text" placeholder="Filter customer" />
+        <button type="button" class="cc-clear-btn" :disabled="loading" @click="applyClubFilter">Apply club</button>
+        <button type="button" class="cc-clear-btn" :disabled="loading || !hasSelection" @click="clearSelection">Clear selection</button>
         <button type="button" class="cc-clear-btn" :disabled="loading" @click="loadRows">Refresh list</button>
       </div>
+      <p v-if="dlgClub.trim()" class="tl-muted tl-club-hint">
+        Apply club pre-selects ready rows — uncheck any order you want to leave out before submitting.
+      </p>
       <div class="tl-company-row">
         <label>From company</label>
         <select v-model="fromCompany" class="tl-select">
@@ -27,6 +33,7 @@
           <thead>
             <tr>
               <th></th>
+              <th>Clubbing Sheet ID</th>
               <th>Order Code</th>
               <th>Customer</th>
               <th>Item</th>
@@ -40,11 +47,12 @@
               <td>
                 <input
                   type="checkbox"
-                  :disabled="!row.can_despatch"
+                  :disabled="!isSelected(row) && !row.can_despatch"
                   :checked="isSelected(row)"
                   @change="toggleRow(row, $event)"
                 />
               </td>
+              <td>{{ row.clubbing_sheet || "—" }}</td>
               <td>{{ row.party_code }}</td>
               <td>{{ row.customer_name }}</td>
               <td>
@@ -171,6 +179,7 @@ const companies = ref([]);
 const fromCompany = ref("");
 const dlgParty = ref("");
 const dlgCustomer = ref("");
+const dlgClub = ref("");
 const selection = ref({});
 const batchPickerOpenFor = ref("");
 const batchPickerRow = ref(null);
@@ -184,9 +193,11 @@ const displayRows = computed(() => groupRowsBySpr(rows.value));
 const filteredRows = computed(() => {
   const pc = (dlgParty.value || "").trim().toLowerCase();
   const cu = (dlgCustomer.value || "").trim().toLowerCase();
+  const club = (dlgClub.value || "").trim().toLowerCase();
   return displayRows.value.filter((r) => {
     if (pc && !(r.party_code || "").toLowerCase().includes(pc)) return false;
     if (cu && !(r.customer_name || "").toLowerCase().includes(cu)) return false;
+    if (club && !(r.clubbing_sheet || "").toLowerCase().includes(club)) return false;
     return true;
   });
 });
@@ -202,6 +213,8 @@ const canSubmit = computed(() => {
   if (!entries.length) return false;
   return entries.every((s) => Array.isArray(s.batches) && s.batches.length > 0);
 });
+
+const hasSelection = computed(() => Object.keys(selection.value || {}).length > 0);
 
 function ltn(v) {
   const n = parseFloat(v);
@@ -238,6 +251,7 @@ function statusClass(row) {
 
 function toggleRow(row, ev) {
   const id = rowSelectionId(row);
+  // Always allow unselect (not locked by Apply club)
   if (!ev.target.checked) {
     const next = { ...selection.value };
     delete next[id];
@@ -251,6 +265,11 @@ function toggleRow(row, ev) {
     return;
   }
   selection.value = { ...selection.value, [id]: { row, batches: selection.value[id]?.batches || [] } };
+}
+
+function clearSelection() {
+  selection.value = {};
+  closeBatchPicker();
 }
 
 function openBatchPicker(row) {
@@ -413,9 +432,10 @@ function close() {
   emit("update:modelValue", false);
 }
 
-function loadRows() {
+function loadRows(opts = {}) {
   loading.value = true;
   const ctx = props.filterContext || {};
+  const autoClub = opts.autoSelectClub ? (dlgClub.value || "").trim() : "";
   frappe.call({
     method: `${API}.get_despatch_eligible_rows`,
     args: {
@@ -428,16 +448,47 @@ function loadRows() {
       unit: ctx.unit || "",
       party_code: dlgParty.value || ctx.party_code || "",
       customer: dlgCustomer.value || ctx.customer || "",
+      clubbing_sheet: dlgClub.value || "",
       from_company: fromCompany.value,
     },
     callback: (r) => {
       rows.value = r.message || [];
       loading.value = false;
+      if (autoClub) autoSelectForClub(autoClub);
     },
     error: () => {
       loading.value = false;
     },
   });
+}
+
+function autoSelectForClub(club) {
+  const clubLc = (club || "").trim().toLowerCase();
+  if (!clubLc) return;
+  // Fresh starting set for this club — user may uncheck any order afterward
+  const next = {};
+  groupRowsBySpr(rows.value).forEach((row) => {
+    if (!row.can_despatch) return;
+    if (!(row.clubbing_sheet || "").toLowerCase().includes(clubLc)) return;
+    const id = rowSelectionId(row);
+    const prevBatches = selection.value[id]?.batches || [];
+    next[id] = { row, batches: prevBatches };
+  });
+  selection.value = next;
+  const n = Object.keys(next).length;
+  if (n) {
+    frappe.show_alert({
+      message: __(
+        "Pre-selected {0} row(s) for club {1}. Uncheck any order to leave it out, then pick batches.",
+        [String(n), club]
+      ),
+      indicator: "blue",
+    });
+  }
+}
+
+function applyClubFilter() {
+  loadRows({ autoSelectClub: true });
 }
 
 function submit() {
@@ -486,6 +537,7 @@ watch(
     const ctx = props.filterContext || {};
     dlgParty.value = props.prefill?.party_code || ctx.party_code || "";
     dlgCustomer.value = props.prefill?.customer || ctx.customer || "";
+    dlgClub.value = props.prefill?.clubbing_sheet || "";
     fromCompany.value = props.prefill?.from_company || "";
     loadCompanies();
     loadRows();

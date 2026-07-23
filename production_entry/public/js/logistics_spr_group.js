@@ -45,6 +45,12 @@ export function groupRowsBySpr(rawRows) {
 		const blockedDespatch = members.find((m) => !m.can_despatch);
 		const despatchStatus =
 			members.map((m) => String(m.despatch_status || "").trim()).find(Boolean) || "";
+		const clubbingSheet =
+			members.map((m) => String(m.clubbing_sheet || "").trim()).find(Boolean) || lead.clubbing_sheet || "";
+		const loadingSequence =
+			members.map((m) => String(m.loading_sequence || "").trim()).find(Boolean) || lead.loading_sequence || "";
+		const clubLoadOrder =
+			members.map((m) => Number(m.club_load_order) || 0).find((n) => n > 0) || lead.club_load_order || 0;
 		out.push({
 			...lead,
 			_isSprGroup: true,
@@ -57,6 +63,9 @@ export function groupRowsBySpr(rawRows) {
 			can_transfer: canTransfer,
 			can_despatch: canDespatch,
 			despatch_status: despatchStatus,
+			clubbing_sheet: clubbingSheet,
+			loading_sequence: loadingSequence,
+			club_load_order: clubLoadOrder,
 			transfer_block_reason: blockedTransfer?.transfer_block_reason || "",
 			despatch_block_reason:
 				blockedDespatch?.despatch_block_reason || blockedDespatch?.despatch_status || despatchStatus || "",
@@ -99,6 +108,9 @@ export function buildLogisticsSubmitLines(selection, mode) {
 				net_weight: b.net_weight || b.qty,
 				qty: Math.max(parseFloat(b.qty) || 0, 1),
 				uom: "Kg",
+				clubbing_sheet: member.clubbing_sheet || groupRow.clubbing_sheet || "",
+				loading_sequence: member.loading_sequence || groupRow.loading_sequence || "",
+				club_load_order: member.club_load_order || groupRow.club_load_order || 0,
 			});
 		});
 	});

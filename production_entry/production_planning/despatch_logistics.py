@@ -149,6 +149,66 @@ def _despatch_status_blocks_request(status):
 	return False
 
 
+def _has_pt_club_fields():
+	return frappe.db.has_column("Planning Table", "custom_clubbing_sheet")
+
+
+def _has_da_club_field():
+	return frappe.db.has_column("Despatch Approval", "custom_clubbing_sheet")
+
+
+def _has_dal_scan_field():
+	return frappe.db.has_column("Despatch Approval Line", "custom_scanned")
+
+
+def _club_fields_for_ptrs(ptrs):
+	"""Map Planning Table name → clubbing_sheet / loading_sequence / load_order."""
+	names = [_cstr(p) for p in (ptrs or []) if _cstr(p) and not _cstr(p).startswith("sprgrp:")]
+	out = {}
+	if not names or not _has_pt_club_fields():
+		return out
+	placeholders = ", ".join(["%s"] * len(names))
+	cols = ["name", "custom_clubbing_sheet"]
+	if frappe.db.has_column("Planning Table", "custom_loading_sequence"):
+		cols.append("custom_loading_sequence")
+	if frappe.db.has_column("Planning Table", "custom_club_load_order"):
+		cols.append("custom_club_load_order")
+	rows = frappe.db.sql(
+		f"select {', '.join(cols)} from `tabPlanning Table` where name in ({placeholders})",
+		tuple(names),
+		as_dict=True,
+	)
+	for r in rows or []:
+		out[_cstr(r.name)] = {
+			"clubbing_sheet": _cstr(r.get("custom_clubbing_sheet")),
+			"loading_sequence": _cstr(r.get("custom_loading_sequence")),
+			"club_load_order": cint(r.get("custom_club_load_order") or 0),
+		}
+	return out
+
+
+def _parse_delivery_notes_json(raw):
+	try:
+		arr = json.loads(raw) if isinstance(raw, str) else (raw or [])
+		if isinstance(arr, list):
+			return [_cstr(x) for x in arr if _cstr(x)]
+	except Exception:
+		pass
+	return []
+
+
+def _save_delivery_notes_json(da_name, names):
+	if not frappe.db.has_column("Despatch Approval", "custom_delivery_notes"):
+		return
+	frappe.db.set_value(
+		"Despatch Approval",
+		da_name,
+		"custom_delivery_notes",
+		json.dumps([_cstr(n) for n in (names or []) if _cstr(n)]),
+		update_modified=False,
+	)
+
+
 def _sync_psi_despatch_fields(pt_name, updates):
 	if not updates or not frappe.db.table_exists("Planning sheet Item"):
 		return
@@ -390,6 +450,10 @@ def get_despatch_company_cards(
 		approval_fields = ["name", "status", "delivery_note", "modified", "creation"]
 		if qf:
 			approval_fields.append(qf)
+		if _has_da_club_field():
+			approval_fields.append("custom_clubbing_sheet")
+		if frappe.db.has_column("Despatch Approval", "custom_delivery_notes"):
+			approval_fields.append("custom_delivery_notes")
 		approvals = frappe.get_all(
 			"Despatch Approval",
 			filters=filters,
@@ -402,16 +466,26 @@ def get_despatch_company_cards(
 			despatch_date = _cstr(da.get("modified") or da.get("creation"))[:10]
 			if not _transfer_date_in_scope(despatch_date, view_scope, date, week, month):
 				continue
+			line_fields = ["party_code", "customer_name", "item_code", "qty", "batch_no", "name"]
+			if frappe.db.has_column("Despatch Approval Line", "custom_loading_sequence"):
+				line_fields.append("custom_loading_sequence")
+			if frappe.db.has_column("Despatch Approval Line", "custom_club_load_order"):
+				line_fields.append("custom_club_load_order")
+			if _has_dal_scan_field():
+				line_fields.append("custom_scanned")
 			lines = frappe.get_all(
 				"Despatch Approval Line",
 				filters={"parent": da.name},
-				fields=["party_code", "customer_name", "item_code", "qty", "batch_no"],
-				limit_page_length=200,
+				fields=line_fields,
+				limit_page_length=500,
 			)
 			codes = []
 			customers = []
 			items = set()
 			batches = set()
+			order_map = {}
+			scanned_total = 0
+			line_total = 0
 			for ln in lines:
 				pc = _cstr(ln.get("party_code"))
 				if pc and pc not in codes:
@@ -425,28 +499,85 @@ def get_despatch_company_cards(
 				bn = _cstr(ln.get("batch_no"))
 				if bn:
 					batches.add(bn)
+				line_total += 1
+				scanned = cint(ln.get("custom_scanned") or 0)
+				if scanned:
+					scanned_total += 1
+				if pc:
+					om = order_map.setdefault(
+						pc,
+						{
+							"party_code": pc,
+							"customer_name": cn,
+							"loading_sequence": _cstr(ln.get("custom_loading_sequence")),
+							"club_load_order": cint(ln.get("custom_club_load_order") or 0),
+							"total": 0,
+							"scanned": 0,
+						},
+					)
+					om["total"] += 1
+					om["scanned"] += scanned
+					if not om["loading_sequence"]:
+						om["loading_sequence"] = _cstr(ln.get("custom_loading_sequence"))
+					if not om["club_load_order"]:
+						om["club_load_order"] = cint(ln.get("custom_club_load_order") or 0)
+					if cn and not om["customer_name"]:
+						om["customer_name"] = cn
 			if oc and not any(oc in _cstr(x).lower() for x in codes):
 				continue
 			total_qty = round(sum(flt(ln.get("qty")) for ln in lines), 3)
 			dn_name = _cstr(da.delivery_note)
+			dn_list = _parse_delivery_notes_json(da.get("custom_delivery_notes"))
+			if dn_name and dn_name not in dn_list:
+				dn_list = [dn_name] + dn_list
 			dn_docstatus = 0
-			if dn_name and frappe.db.exists("Delivery Note", dn_name):
+			all_submitted = True
+			any_draft = False
+			if dn_list:
+				for dn in dn_list:
+					if frappe.db.exists("Delivery Note", dn):
+						ds = cint(frappe.db.get_value("Delivery Note", dn, "docstatus") or 0)
+						if ds >= 1:
+							dn_docstatus = max(dn_docstatus, 1)
+						else:
+							all_submitted = False
+							any_draft = True
+					else:
+						all_submitted = False
+			elif dn_name and frappe.db.exists("Delivery Note", dn_name):
 				dn_docstatus = cint(frappe.db.get_value("Delivery Note", dn_name, "docstatus") or 0)
+				all_submitted = dn_docstatus >= 1
+				any_draft = dn_docstatus == 0
+			else:
+				all_submitted = False
+
 			roll_count = len(batches) or len(lines)
 			item_count = len(items) or len(lines)
 			card_status = da.status
-			if da.status == "Approved" and dn_docstatus >= 1:
+			if da.status == "Approved" and all_submitted and (dn_list or dn_name):
 				card_status = "Despatched"
-			elif da.status == "Approved" and dn_name and dn_docstatus == 0:
+			elif da.status == "Approved" and (any_draft or (dn_name and dn_docstatus == 0)):
 				card_status = "Draft DN"
 			queue_idx = cint(da.get(qf) or 0) if qf else 0
+			club_orders = sorted(
+				order_map.values(),
+				key=lambda o: (cint(o.get("club_load_order") or 0) or 9999, _cstr(o.get("party_code"))),
+			)
+			scan_complete = line_total > 0 and scanned_total >= line_total
+			# Non-club approvals: treat scan as complete so Create DN stays available
+			club_id = _cstr(da.get("custom_clubbing_sheet")) if _has_da_club_field() else ""
+			if not club_id:
+				scan_complete = True
 			enriched.append(
 				{
 					"name": da.name,
 					"status": da.status,
 					"card_status": card_status,
 					"delivery_note": dn_name,
+					"delivery_notes": dn_list,
 					"dn_docstatus": dn_docstatus,
+					"all_dns_submitted": bool(dn_list and all_submitted),
+					"has_draft_dns": bool(any_draft or (dn_list and not all_submitted)),
 					"roll_count": roll_count,
 					"item_count": item_count,
 					"line_count": len(lines),
@@ -456,6 +587,11 @@ def get_despatch_company_cards(
 					"creation": da.creation,
 					"despatch_date": despatch_date,
 					"queue_idx": queue_idx,
+					"clubbing_sheet": club_id,
+					"club_orders": club_orders,
+					"scanned_total": scanned_total,
+					"scan_line_total": line_total,
+					"scan_complete": scan_complete,
 				}
 			)
 		pending = [a for a in enriched if a["status"] in ("Pending Approval", "Draft")]
@@ -495,6 +631,7 @@ def get_despatch_eligible_rows(
 	customer=None,
 	from_company=None,
 	board_slug=None,
+	clubbing_sheet=None,
 ):
 	"""Planning rows with movement Despatch and submitted SPR."""
 	kwargs = _chart_fetch_kwargs(
@@ -508,6 +645,7 @@ def get_despatch_eligible_rows(
 		frappe.log_error(frappe.get_traceback(), "get_despatch_eligible_rows")
 		raw = []
 	rows = _parse_chart_rows(raw)
+	club_filter = _cstr(clubbing_sheet).strip().lower()
 	out = []
 	for r in rows:
 		mt = normalize_movement_type(r.get("movement_type"))
@@ -548,9 +686,23 @@ def get_despatch_eligible_rows(
 				"despatch_block_reason": block,
 				"despatch_status": despatch_status,
 				"movement_type": mt,
+				"clubbing_sheet": "",
+				"loading_sequence": "",
+				"club_load_order": 0,
 			}
 		)
-	return out
+
+	club_map = _club_fields_for_ptrs([o["planning_table_row"] for o in out])
+	filtered = []
+	for o in out:
+		info = club_map.get(_cstr(o["planning_table_row"])) or {}
+		o["clubbing_sheet"] = info.get("clubbing_sheet") or ""
+		o["loading_sequence"] = info.get("loading_sequence") or ""
+		o["club_load_order"] = cint(info.get("club_load_order") or 0)
+		if club_filter and club_filter not in _cstr(o["clubbing_sheet"]).lower():
+			continue
+		filtered.append(o)
+	return filtered
 
 
 @frappe.whitelist()
@@ -759,6 +911,7 @@ def create_despatch_approval_request(from_company=None, lines=None):
 	doc.status = "Pending Approval"
 	doc.requested_by = frappe.session.user
 
+	club_ids = set()
 	for line in parsed:
 		ptr = _cstr(line.get("planning_table_row"))
 		if ptr and not ptr.startswith("sprgrp:"):
@@ -779,22 +932,40 @@ def create_despatch_approval_request(from_company=None, lines=None):
 		nw = flt(line.get("net_weight") or qty)
 		if qty <= 0:
 			qty = nw or 1.0
-		doc.append(
-			"lines",
-			{
-				"planning_table_row": ptr,
-				"planning_sheet": line.get("planning_sheet"),
-				"party_code": line.get("party_code"),
-				"customer_name": line.get("customer_name"),
-				"item_code": line.get("item_code"),
-				"unit": line.get("unit"),
-				"spr_name": spr,
-				"batch_no": bn,
-				"net_weight": nw,
-				"qty": qty,
-				"uom": line.get("uom") or "Kg",
-			},
-		)
+
+		club = _cstr(line.get("clubbing_sheet") or line.get("custom_clubbing_sheet"))
+		seq = _cstr(line.get("loading_sequence") or line.get("custom_loading_sequence"))
+		load_order = cint(line.get("club_load_order") or line.get("custom_club_load_order") or 0)
+		if not club and ptr and not ptr.startswith("sprgrp:") and _has_pt_club_fields():
+			info = _club_fields_for_ptrs([ptr]).get(ptr) or {}
+			club = info.get("clubbing_sheet") or ""
+			seq = seq or info.get("loading_sequence") or ""
+			load_order = load_order or cint(info.get("club_load_order") or 0)
+		if club:
+			club_ids.add(club)
+
+		row = {
+			"planning_table_row": ptr,
+			"planning_sheet": line.get("planning_sheet"),
+			"party_code": line.get("party_code"),
+			"customer_name": line.get("customer_name"),
+			"item_code": line.get("item_code"),
+			"unit": line.get("unit"),
+			"spr_name": spr,
+			"batch_no": bn,
+			"net_weight": nw,
+			"qty": qty,
+			"uom": line.get("uom") or "Kg",
+		}
+		if frappe.db.has_column("Despatch Approval Line", "custom_loading_sequence"):
+			row["custom_loading_sequence"] = seq
+		if frappe.db.has_column("Despatch Approval Line", "custom_club_load_order"):
+			row["custom_club_load_order"] = load_order
+		doc.append("lines", row)
+
+	if _has_da_club_field() and len(club_ids) == 1:
+		doc.custom_clubbing_sheet = next(iter(club_ids))
+
 	doc.insert(ignore_permissions=True)
 	_stamp_planning_rows_for_despatch_request(doc.name)
 	frappe.db.commit()
@@ -1148,3 +1319,219 @@ def link_delivery_note_to_despatch(despatch_approval=None, delivery_note=None):
 def create_delivery_note_from_despatch_approval(name=None):
 	"""Legacy alias — opens existing DN or returns unsaved doc (no auto-insert)."""
 	return prepare_delivery_note_from_despatch_approval(name)
+
+
+@frappe.whitelist()
+def get_despatch_approval_club_detail(name=None):
+	"""Club scan progress for one Despatch Approval."""
+	if not name or not frappe.db.exists("Despatch Approval", name):
+		frappe.throw(_("Despatch Approval not found."))
+	da = frappe.get_doc("Despatch Approval", name)
+	club = _cstr(getattr(da, "custom_clubbing_sheet", None) or "")
+	orders = {}
+	scanned_total = 0
+	line_total = 0
+	for ln in da.lines or []:
+		pc = _cstr(ln.party_code) or _("(no order)")
+		om = orders.setdefault(
+			pc,
+			{
+				"party_code": pc,
+				"customer_name": _cstr(ln.customer_name),
+				"loading_sequence": _cstr(getattr(ln, "custom_loading_sequence", None) or ""),
+				"club_load_order": cint(getattr(ln, "custom_club_load_order", None) or 0),
+				"total": 0,
+				"scanned": 0,
+				"batches": [],
+			},
+		)
+		line_total += 1
+		sc = cint(getattr(ln, "custom_scanned", None) or 0)
+		if sc:
+			scanned_total += 1
+			om["scanned"] += 1
+		om["total"] += 1
+		om["batches"].append(
+			{
+				"line_name": ln.name,
+				"batch_no": _cstr(ln.batch_no),
+				"scanned": sc,
+				"qty": flt(ln.qty),
+			}
+		)
+		if not om["loading_sequence"]:
+			om["loading_sequence"] = _cstr(getattr(ln, "custom_loading_sequence", None) or "")
+		if not om["club_load_order"]:
+			om["club_load_order"] = cint(getattr(ln, "custom_club_load_order", None) or 0)
+
+	club_orders = sorted(
+		orders.values(),
+		key=lambda o: (cint(o.get("club_load_order") or 0) or 9999, _cstr(o.get("party_code"))),
+	)
+	# Active = first incomplete order
+	active = ""
+	for o in club_orders:
+		if cint(o.get("scanned") or 0) < cint(o.get("total") or 0):
+			active = o["party_code"]
+			break
+
+	dn_list = _parse_delivery_notes_json(getattr(da, "custom_delivery_notes", None) or "")
+	if da.delivery_note and da.delivery_note not in dn_list:
+		dn_list = [da.delivery_note] + dn_list
+
+	return {
+		"ok": True,
+		"name": da.name,
+		"status": da.status,
+		"clubbing_sheet": club,
+		"club_orders": club_orders,
+		"active_party_code": active,
+		"scanned_total": scanned_total,
+		"scan_line_total": line_total,
+		"scan_complete": line_total > 0 and scanned_total >= line_total,
+		"delivery_notes": dn_list,
+		"delivery_note": da.delivery_note,
+	}
+
+
+@frappe.whitelist()
+def record_despatch_club_scan(name=None, barcode=None):
+	"""Mark one approved batch as scanned (order-by-order for club cards)."""
+	if not name or not frappe.db.exists("Despatch Approval", name):
+		frappe.throw(_("Despatch Approval not found."))
+	bc = _cstr(barcode).strip()
+	if not bc:
+		frappe.throw(_("Scan a batch barcode."))
+	if not _has_dal_scan_field():
+		frappe.throw(_("Scan field missing — run bench migrate (custom_scanned)."))
+
+	da = frappe.get_doc("Despatch Approval", name)
+	if da.status != "Approved":
+		frappe.throw(_("Despatch must be Approved before scanning."))
+
+	# Determine active order (first incomplete by load order)
+	orders = {}
+	for ln in da.lines or []:
+		pc = _cstr(ln.party_code) or ""
+		om = orders.setdefault(
+			pc,
+			{"load_order": cint(getattr(ln, "custom_club_load_order", None) or 0), "lines": []},
+		)
+		om["lines"].append(ln)
+		if not om["load_order"]:
+			om["load_order"] = cint(getattr(ln, "custom_club_load_order", None) or 0)
+
+	ordered_pcs = sorted(orders.keys(), key=lambda p: (orders[p]["load_order"] or 9999, p))
+	active_pc = None
+	for pc in ordered_pcs:
+		lines = orders[pc]["lines"]
+		if any(not cint(getattr(ln, "custom_scanned", None) or 0) for ln in lines):
+			active_pc = pc
+			break
+	if active_pc is None:
+		return {"ok": True, "already_complete": True, "message": _("All rolls already scanned.")}
+
+	match = None
+	for ln in orders[active_pc]["lines"]:
+		if _cstr(ln.batch_no) == bc:
+			match = ln
+			break
+	if not match:
+		# Wrong order / unknown batch
+		for ln in da.lines or []:
+			if _cstr(ln.batch_no) == bc:
+				frappe.throw(
+					_("Batch {0} belongs to order {1}. Finish order {2} first.").format(
+						bc, _cstr(ln.party_code), active_pc or "—"
+					)
+				)
+		frappe.throw(_("Batch {0} is not on this despatch approval.").format(bc))
+
+	if cint(getattr(match, "custom_scanned", None) or 0):
+		return {
+			"ok": True,
+			"duplicate": True,
+			"batch_no": bc,
+			"party_code": active_pc,
+			"message": _("Already scanned."),
+		}
+
+	match.custom_scanned = 1
+	da.save(ignore_permissions=True)
+	frappe.db.commit()
+	detail = get_despatch_approval_club_detail(name)
+	detail["batch_no"] = bc
+	detail["party_code"] = active_pc
+	detail["message"] = _("Scanned {0} for order {1}").format(bc, active_pc)
+	return detail
+
+
+@frappe.whitelist()
+def create_draft_delivery_notes_from_despatch(name=None):
+	"""Create draft Delivery Notes (one per order). Club cards require full scan first."""
+	if not name or not frappe.db.exists("Despatch Approval", name):
+		frappe.throw(_("Despatch Approval not found."))
+	da = frappe.get_doc("Despatch Approval", name)
+	if da.status != "Approved":
+		frappe.throw(_("Despatch must be approved before creating Delivery Notes."))
+
+	existing = _parse_delivery_notes_json(getattr(da, "custom_delivery_notes", None) or "")
+	if da.delivery_note and da.delivery_note not in existing:
+		existing = [da.delivery_note] + existing
+	if existing:
+		return {"ok": True, "mode": "existing", "delivery_notes": existing}
+
+	club = _cstr(getattr(da, "custom_clubbing_sheet", None) or "")
+	if club and _has_dal_scan_field():
+		unscanned = [ln for ln in (da.lines or []) if not cint(getattr(ln, "custom_scanned", None) or 0)]
+		if unscanned:
+			frappe.throw(_("Scan all rolls before creating Delivery Notes ({0} remaining).").format(len(unscanned)))
+
+	from production_entry.production_planning.despatch_delivery import (
+		create_draft_delivery_notes_by_order,
+	)
+
+	names = create_draft_delivery_notes_by_order(da)
+	if not names:
+		frappe.throw(_("No Delivery Notes created."))
+
+	_save_delivery_notes_json(da.name, names)
+	frappe.db.set_value("Despatch Approval", da.name, "delivery_note", names[0], update_modified=True)
+	frappe.db.commit()
+	return {"ok": True, "mode": "created", "delivery_notes": names}
+
+
+@frappe.whitelist()
+def submit_delivery_notes_from_despatch(name=None):
+	"""Submit draft Delivery Notes linked to this Despatch Approval."""
+	if not name or not frappe.db.exists("Despatch Approval", name):
+		frappe.throw(_("Despatch Approval not found."))
+	da = frappe.get_doc("Despatch Approval", name)
+	dn_list = _parse_delivery_notes_json(getattr(da, "custom_delivery_notes", None) or "")
+	if da.delivery_note and da.delivery_note not in dn_list:
+		dn_list = [da.delivery_note] + dn_list
+	if not dn_list:
+		frappe.throw(_("Create Delivery Notes first."))
+
+	submitted = []
+	for dn_name in dn_list:
+		if not frappe.db.exists("Delivery Note", dn_name):
+			continue
+		dn = frappe.get_doc("Delivery Note", dn_name)
+		if dn.docstatus == 0:
+			dn.submit()
+			submitted.append(dn_name)
+		elif dn.docstatus == 1:
+			submitted.append(dn_name)
+
+	frappe.db.commit()
+	# Refresh planning despatch status via existing path if any
+	try:
+		for ln in da.lines or []:
+			ptr = _cstr(ln.planning_table_row)
+			if ptr:
+				update_planning_row_despatch_status(ptr)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "submit_delivery_notes_from_despatch status")
+
+	return {"ok": True, "delivery_notes": dn_list, "submitted": submitted}

@@ -10,8 +10,12 @@ from frappe.utils import flt, getdate
 from production_entry.production_planning.despatch_logistics import _cstr, _fg_warehouse_for_company, _resolve_customer
 
 
-def build_delivery_note_from_despatch(despatch_approval):
-	"""Build Delivery Note doc (not saved) from approved despatch lines."""
+def build_delivery_note_from_despatch(despatch_approval, party_code=None):
+	"""Build Delivery Note doc (not saved) from approved despatch lines.
+
+	If party_code is set (including empty string), only matching order lines are included.
+	If party_code is None, all lines are included (legacy single-DN path).
+	"""
 	da = despatch_approval
 	if isinstance(da, str):
 		da = frappe.get_doc("Despatch Approval", da)
@@ -23,8 +27,18 @@ def build_delivery_note_from_despatch(despatch_approval):
 	if not wh:
 		frappe.throw(_("No finished-goods warehouse configured for {0}.").format(fc))
 
-	customer = ""
+	use_filter = party_code is not None
+	pc_filter = _cstr(party_code) if use_filter else None
+	lines = []
 	for ln in da.lines or []:
+		if use_filter and _cstr(ln.party_code) != pc_filter:
+			continue
+		lines.append(ln)
+	if not lines:
+		frappe.throw(_("No despatch lines for order {0}.").format(pc_filter if use_filter else "—"))
+
+	customer = ""
+	for ln in lines:
 		customer = _resolve_customer(ln.customer_name)
 		if customer:
 			break
@@ -38,7 +52,7 @@ def build_delivery_note_from_despatch(despatch_approval):
 	dn.posting_date = getdate()
 	dn.set_warehouse = wh
 
-	for ln in da.lines or []:
+	for ln in lines:
 		qty = flt(ln.qty) or flt(ln.net_weight)
 		if qty <= 0:
 			continue
@@ -58,6 +72,29 @@ def build_delivery_note_from_despatch(despatch_approval):
 	if not dn.items:
 		frappe.throw(_("No delivery lines to create."))
 	return dn
+
+
+def create_draft_delivery_notes_by_order(despatch_approval):
+	"""Insert one draft Delivery Note per distinct party_code on the approval."""
+	da = despatch_approval
+	if isinstance(da, str):
+		da = frappe.get_doc("Despatch Approval", da)
+
+	order_keys = []
+	seen = set()
+	for ln in da.lines or []:
+		pc = _cstr(ln.party_code)
+		if pc in seen:
+			continue
+		seen.add(pc)
+		order_keys.append(pc)
+
+	names = []
+	for pc in order_keys:
+		dn = build_delivery_note_from_despatch(da, party_code=pc)
+		dn.insert(ignore_permissions=True)
+		names.append(dn.name)
+	return names
 
 
 def make_delivery_note_from_despatch(despatch_approval):

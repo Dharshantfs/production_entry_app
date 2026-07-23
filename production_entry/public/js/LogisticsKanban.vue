@@ -65,6 +65,15 @@
         class="lk-input-text"
         @keyup.enter="loadCards"
       />
+      <label v-if="mode === 'despatch'">Clubbing Sheet</label>
+      <input
+        v-if="mode === 'despatch'"
+        v-model="filterClubbingSheet"
+        type="text"
+        placeholder="Filter by club ID…"
+        class="lk-input-text"
+        @keyup.enter="loadDespatchCards"
+      />
       <button type="button" class="cc-clear-btn" @click="loadCards">Apply</button>
     </div>
 
@@ -226,48 +235,138 @@
                 :key="'a-' + da.name"
                 class="lk-da-card"
                 :data-approval-name="da.name"
-                :class="despatchCardClass(da)"
+                :class="[despatchCardClass(da), { 'is-club': !!da.clubbing_sheet }]"
                 @click.stop="openDespatchApproval(da.name)"
               >
                 <div class="lk-da-top">
                   <span v-if="!approvedArrangementLocked" class="lk-drag-grip lk-drag-grip-approved" title="Drag to reorder">⋮⋮</span>
                   <span class="lk-da-badge">{{ despatchCardBadge(da) }}</span>
-                  <span class="lk-da-id">{{ da.name }}</span>
+                  <span class="lk-da-id">{{ da.clubbing_sheet || da.name }}</span>
                 </div>
-                <div class="lk-da-grid">
-                  <div class="lk-da-row">
-                    <span class="lk-da-label">Order code</span>
-                    <span class="lk-da-val">{{ da.order_codes_label || "—" }}</span>
+
+                <template v-if="da.clubbing_sheet">
+                  <div class="lk-da-grid">
+                    <div class="lk-da-row">
+                      <span class="lk-da-label">Approval</span>
+                      <span class="lk-da-val">{{ da.name }}</span>
+                    </div>
+                    <div class="lk-da-row">
+                      <span class="lk-da-label">Orders</span>
+                      <span class="lk-da-val">{{ da.order_codes_label || "—" }}</span>
+                    </div>
+                    <div class="lk-da-row">
+                      <span class="lk-da-label">Scan</span>
+                      <span class="lk-da-val">{{ da.scanned_total || 0 }} / {{ da.scan_line_total || 0 }}</span>
+                    </div>
                   </div>
-                  <div class="lk-da-row">
-                    <span class="lk-da-label">Customer</span>
-                    <span class="lk-da-val">{{ da.customers_label || "—" }}</span>
+                  <div class="lk-club-orders" @click.stop>
+                    <div
+                      v-for="ord in da.club_orders || []"
+                      :key="ord.party_code"
+                      class="lk-club-order"
+                      :class="{
+                        'is-active': clubActiveOrder(da) === ord.party_code,
+                        'is-done': (ord.scanned || 0) >= (ord.total || 0) && (ord.total || 0) > 0,
+                      }"
+                    >
+                      <span class="lk-club-seq">{{ ord.loading_sequence || "—" }}</span>
+                      <span class="lk-club-pc">{{ ord.party_code }}</span>
+                      <span class="lk-club-prog">{{ ord.scanned || 0 }}/{{ ord.total || 0 }}</span>
+                    </div>
                   </div>
-                  <div class="lk-da-row">
-                    <span class="lk-da-label">Items / Rolls</span>
-                    <span class="lk-da-val">{{ da.item_count || 0 }} · {{ da.roll_count || 0 }} rolls</span>
+                  <div v-if="da.dn_docstatus < 1 && !da.all_dns_submitted" class="lk-club-scan" @click.stop>
+                    <input
+                      :value="clubScanInput[da.name] || ''"
+                      type="text"
+                      class="lk-input-text lk-club-scan-input"
+                      :placeholder="clubScanPlaceholder(da)"
+                      :disabled="!!da.has_draft_dns || da.card_status === 'Draft DN'"
+                      @input="clubScanInput[da.name] = $event.target.value"
+                      @keydown.enter.prevent="submitClubScan(da)"
+                    />
+                    <button
+                      type="button"
+                      class="lk-dn-btn lk-dn-btn-scan"
+                      :disabled="!!da.has_draft_dns || da.card_status === 'Draft DN'"
+                      @click="submitClubScan(da)"
+                    >
+                      Scan
+                    </button>
                   </div>
-                  <div class="lk-da-row">
-                    <span class="lk-da-label">Qty</span>
-                    <span class="lk-da-val">{{ da.qty_total || 0 }} Kg</span>
+                  <div class="lk-club-actions" @click.stop>
+                    <button
+                      v-if="!da.has_draft_dns && !da.delivery_notes?.length && da.dn_docstatus < 1"
+                      type="button"
+                      class="lk-dn-btn"
+                      :disabled="!da.scan_complete"
+                      @click="createClubDraftDns(da)"
+                    >
+                      Create Delivery Notes
+                    </button>
+                    <button
+                      v-else-if="da.has_draft_dns || (da.delivery_notes?.length && !da.all_dns_submitted)"
+                      type="button"
+                      class="lk-dn-btn"
+                      @click="submitClubDns(da)"
+                    >
+                      Submit Delivery Notes
+                    </button>
+                    <button
+                      v-else
+                      type="button"
+                      class="lk-dn-btn lk-dn-btn-done"
+                      @click="openDeliveryNote(da)"
+                    >
+                      Despatched — Open DN
+                    </button>
+                    <div v-if="da.delivery_notes?.length" class="lk-club-dn-list">
+                      <a
+                        v-for="dn in da.delivery_notes"
+                        :key="dn"
+                        href="#"
+                        class="lk-club-dn-link"
+                        @click.prevent="openDnForm(dn)"
+                      >{{ dn }}</a>
+                    </div>
                   </div>
-                </div>
-                <button
-                  v-if="da.dn_docstatus < 1"
-                  type="button"
-                  class="lk-dn-btn"
-                  @click.stop="openDeliveryNote(da)"
-                >
-                  {{ despatchDnButtonLabel(da) }}
-                </button>
-                <button
-                  v-else
-                  type="button"
-                  class="lk-dn-btn lk-dn-btn-done"
-                  @click.stop="openDeliveryNote(da)"
-                >
-                  Despatched — Open DN
-                </button>
+                </template>
+
+                <template v-else>
+                  <div class="lk-da-grid">
+                    <div class="lk-da-row">
+                      <span class="lk-da-label">Order code</span>
+                      <span class="lk-da-val">{{ da.order_codes_label || "—" }}</span>
+                    </div>
+                    <div class="lk-da-row">
+                      <span class="lk-da-label">Customer</span>
+                      <span class="lk-da-val">{{ da.customers_label || "—" }}</span>
+                    </div>
+                    <div class="lk-da-row">
+                      <span class="lk-da-label">Items / Rolls</span>
+                      <span class="lk-da-val">{{ da.item_count || 0 }} · {{ da.roll_count || 0 }} rolls</span>
+                    </div>
+                    <div class="lk-da-row">
+                      <span class="lk-da-label">Qty</span>
+                      <span class="lk-da-val">{{ da.qty_total || 0 }} Kg</span>
+                    </div>
+                  </div>
+                  <button
+                    v-if="da.dn_docstatus < 1"
+                    type="button"
+                    class="lk-dn-btn"
+                    @click.stop="openDeliveryNote(da)"
+                  >
+                    {{ despatchDnButtonLabel(da) }}
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="lk-dn-btn lk-dn-btn-done"
+                    @click.stop="openDeliveryNote(da)"
+                  >
+                    Despatched — Open DN
+                  </button>
+                </template>
               </div>
             </div>
           </div>
@@ -309,6 +408,8 @@ const filterDate = ref(frappe.datetime.get_today());
 const filterWeek = ref("");
 const filterMonth = ref("");
 const filterOrderCode = ref("");
+const filterClubbingSheet = ref("");
+const clubScanInput = ref({});
 const companies = ref([]);
 const fromCompany = ref("Jayashree Spun Bond - 1ZT");
 const destinationCards = ref([]);
@@ -531,8 +632,12 @@ function pendingListFor(card) {
 
 function approvedListFor(card) {
   const list = approvedOrderByCompany.value[card.company];
-  if (Array.isArray(list) && list.length) return list;
-  return card.approved_approvals || [];
+  let rows = Array.isArray(list) && list.length ? list : card.approved_approvals || [];
+  const club = (filterClubbingSheet.value || "").trim().toLowerCase();
+  if (club) {
+    rows = rows.filter((a) => (a.clubbing_sheet || "").toLowerCase().includes(club));
+  }
+  return rows;
 }
 
 function reorderCardsFromDom(container, card, scope) {
@@ -736,26 +841,102 @@ function openDespatchApproval(name) {
 }
 
 function despatchCardBadge(da) {
-  if (da.dn_docstatus >= 1 || da.card_status === "Despatched") return "Despatched";
-  if (da.delivery_note || da.card_status === "Draft DN") return "Draft DN";
+  if (da.all_dns_submitted || da.dn_docstatus >= 1 || da.card_status === "Despatched") return "Despatched";
+  if (da.has_draft_dns || da.delivery_note || da.card_status === "Draft DN") return "Draft DN";
+  if (da.clubbing_sheet && !da.scan_complete) return "Scan load";
   return "Approved";
 }
 
 function despatchCardClass(da) {
-  if (da.dn_docstatus >= 1) return "is-despatched";
-  if (da.delivery_note) return "is-draft-dn";
+  if (da.all_dns_submitted || da.dn_docstatus >= 1) return "is-despatched";
+  if (da.has_draft_dns || da.delivery_note) return "is-draft-dn";
   return "is-done";
 }
 
 function despatchDnButtonLabel(da) {
-  if (da.delivery_note) return __("Open Draft DN");
+  if (da.delivery_note || (da.delivery_notes && da.delivery_notes.length)) return __("Open Draft DN");
   return __("Create Delivery Note");
+}
+
+function clubActiveOrder(da) {
+  const orders = da.club_orders || [];
+  for (const o of orders) {
+    if ((o.scanned || 0) < (o.total || 0)) return o.party_code;
+  }
+  return "";
+}
+
+function clubScanPlaceholder(da) {
+  const pc = clubActiveOrder(da);
+  return pc ? __("Scan batch for {0}…", [pc]) : __("All rolls scanned");
+}
+
+async function submitClubScan(da) {
+  const bc = (clubScanInput.value[da.name] || "").trim();
+  if (!bc) {
+    frappe.msgprint(__("Scan a batch barcode."));
+    return;
+  }
+  try {
+    const r = await frappe.call({
+      method: `${DESPATCH_API}.record_despatch_club_scan`,
+      args: { name: da.name, barcode: bc },
+    });
+    const msg = r.message || {};
+    clubScanInput.value = { ...clubScanInput.value, [da.name]: "" };
+    frappe.show_alert({ message: msg.message || __("Scanned"), indicator: "green" });
+    await loadDespatchCards();
+  } catch (e) {
+    frappe.msgprint(e?.message || String(e));
+  }
+}
+
+async function createClubDraftDns(da) {
+  try {
+    const r = await frappe.call({
+      method: `${DESPATCH_API}.create_draft_delivery_notes_from_despatch`,
+      args: { name: da.name },
+      freeze: true,
+      freeze_message: __("Creating Delivery Notes…"),
+    });
+    const notes = r.message?.delivery_notes || [];
+    frappe.show_alert({
+      message: __("Created {0} draft DN(s)", [String(notes.length)]),
+      indicator: "green",
+    });
+    await loadDespatchCards();
+  } catch (e) {
+    frappe.msgprint(e?.message || String(e));
+  }
+}
+
+async function submitClubDns(da) {
+  try {
+    const r = await frappe.call({
+      method: `${DESPATCH_API}.submit_delivery_notes_from_despatch`,
+      args: { name: da.name },
+      freeze: true,
+      freeze_message: __("Submitting Delivery Notes…"),
+    });
+    frappe.show_alert({
+      message: __("Submitted {0} DN(s)", [String((r.message?.submitted || []).length)]),
+      indicator: "green",
+    });
+    await loadDespatchCards();
+  } catch (e) {
+    frappe.msgprint(e?.message || String(e));
+  }
+}
+
+function openDnForm(dn) {
+  if (dn) frappe.set_route("Form", "Delivery Note", dn);
 }
 
 async function openDeliveryNote(da) {
   if (!da?.name) return;
-  if (da.delivery_note) {
-    frappe.set_route("Form", "Delivery Note", da.delivery_note);
+  const first = (da.delivery_notes && da.delivery_notes[0]) || da.delivery_note;
+  if (first) {
+    frappe.set_route("Form", "Delivery Note", first);
     return;
   }
   try {
@@ -788,7 +969,7 @@ function reloadBoard() {
 }
 
 watch(fromCompany, reloadBoard);
-watch([viewScope, filterDate, filterWeek, filterMonth, filterOrderCode], reloadBoard);
+watch([viewScope, filterDate, filterWeek, filterMonth, filterOrderCode, filterClubbingSheet], reloadBoard);
 
 onMounted(() => {
   initWeekMonth();
@@ -1395,6 +1576,72 @@ watch([despatchArrangementLocked, approvedArrangementLocked, mode], () => {
 }
 .lk-dn-btn-done:hover {
   background: #075985;
+}
+.lk-da-card.is-club {
+  border-color: #0ea5e9;
+  background: linear-gradient(180deg, #f0f9ff 0%, #fff 48%);
+}
+.lk-club-orders {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.lk-club-order {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  font-size: 12px;
+}
+.lk-club-order.is-active {
+  border-color: #0ea5e9;
+  background: #e0f2fe;
+  font-weight: 700;
+}
+.lk-club-order.is-done {
+  opacity: 0.75;
+  background: #ecfdf5;
+  border-color: #86efac;
+}
+.lk-club-seq {
+  color: #0369a1;
+  font-weight: 700;
+}
+.lk-club-scan {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+.lk-club-scan-input {
+  flex: 1;
+}
+.lk-dn-btn-scan {
+  background: #0284c7;
+}
+.lk-dn-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.lk-club-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.lk-club-dn-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lk-club-dn-link {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0369a1;
 }
 .lk-history-go {
   font-size: 12px;
