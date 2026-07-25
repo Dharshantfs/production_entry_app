@@ -162,7 +162,7 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260725b';
+window.JSB_CLUB_PICKER_VER = 'v20260725c';
 
 /** Add selected Planning rows into Clubbing Sheet items. Defined early so old Client Scripts can call it. */
 window._jsb_club_process_selections = function (frm, selections, orders_cache) {
@@ -211,6 +211,8 @@ window._jsb_club_process_selections = function (frm, selections, orders_cache) {
 			rows.push(rd);
 		});
 		frm.refresh_field('items');
+		frm.doc.total_weight = rows.reduce((s, r) => s + flt(r.weight_kgs), 0);
+		frm.refresh_field('total_weight');
 
 		let cities = [...new Set(rows.map(r => r.party_location).filter(Boolean))];
 
@@ -269,17 +271,22 @@ function jsb_club_wire_process_selections(frm) {
 }
 
 function jsb_club_bind_picker_button(frm) {
-	const openOnce = function () {
+	const openOnce = function (e) {
+		if (e && e.preventDefault) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+		}
 		try {
 			jsb_club_open_despatch_picker(frm);
 		} catch (err) {
 			console.error('[Clubbing] open picker failed', err);
 			frappe.msgprint(__('Could not open order picker: {0}', [err.message || String(err)]));
 		}
+		return false;
 	};
 	jsb_club_wire_process_selections(frm);
 
-	// Keep the DocType form button "Get Sales Orders" visible — users click that.
+	// One form button only — hide duplicate toolbar button that caused double popup
 	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fn) {
 		if (frm.fields_dict && frm.fields_dict[fn]) {
 			frm.set_df_property(fn, 'hidden', 0);
@@ -288,9 +295,7 @@ function jsb_club_bind_picker_button(frm) {
 	try {
 		frm.remove_custom_button(__('Get Planning Items'));
 	} catch (e) { /* ignore */ }
-	frm.add_custom_button(__('Get Planning Items'), openOnce);
 
-	// Wire BOTH event names (DocType Button may use either).
 	if (frm.script_manager && frm.script_manager.events) {
 		frm.script_manager.events.get_sales_orders = [openOnce];
 		frm.script_manager.events.get_sales_orders_dialog = [openOnce];
@@ -303,46 +308,37 @@ function jsb_club_bind_picker_button(frm) {
 		frm.cscript.get_sales_orders_dialog = openOnce;
 	}
 
-	// Hard-bind click on form Button fields (do not stopImmediatePropagation —
-	// that can block Frappe's own Button trigger when both are needed).
 	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fname) {
 		try {
 			const fld = frm.get_field(fname);
 			if (!fld || !fld.$wrapper) return;
 			const $btn = fld.$wrapper.find('button, .btn').first();
 			if (!$btn.length) return;
-			$btn.off('click.jsbclub').on('click.jsbclub', function (e) {
-				e.preventDefault();
-				openOnce();
-			});
+			$btn.off('click.jsbclub').on('click.jsbclub', openOnce);
 		} catch (e2) { /* ignore */ }
 	});
 }
 
 function jsb_club_open_despatch_picker(frm) {
-	if (!frm) {
+	if (!frm) return;
+
+	// Hard single-open: if dialog already up, focus it — never open a second
+	if (window._jsb_club_dialog && window._jsb_club_dialog.$wrapper && window._jsb_club_dialog.$wrapper.is(':visible')) {
 		return;
 	}
-	// Debounce: Button click + frm.trigger can fire twice in one click
 	const now = Date.now();
-	if (window._jsb_club_picker_last && (now - window._jsb_club_picker_last) < 900) {
+	if (window._jsb_club_picker_last && (now - window._jsb_club_picker_last) < 1200) {
 		return;
 	}
 	window._jsb_club_picker_last = now;
-	window._jsb_club_picker_lock = true;
-	setTimeout(function () {
-		window._jsb_club_picker_lock = false;
-	}, 4000);
 
-	if (typeof window._jsb_club_picker_impl === 'function') {
-		window._jsb_club_picker_impl(frm);
+	if (typeof window._jsb_club_picker_impl !== 'function') {
+		frappe.msgprint(__(
+			'Clubbing picker missing. Paste latest PASTE_clubbing_client_script.js into Client Script and Save.'
+		));
 		return;
 	}
-	window._jsb_club_picker_lock = false;
-	frappe.msgprint(__(
-		'Clubbing picker script not loaded. Enable Client Script "Clubbing Sheet" ' +
-		'(paste PASTE_clubbing_client_script.js) or run: bench build --app production_entry'
-	));
+	window._jsb_club_picker_impl(frm);
 }
 
 frappe.ui.form.on('Clubbing Sheet', {
@@ -534,6 +530,14 @@ frappe.ui.form.on('Clubbing Sheet', {
 
 // Actual dialog — also exposed so Get Sales Orders works even if trigger chain is empty
 window._jsb_club_picker_impl = function (frm) {
+        // Never stack two dialogs (app JS + Client Script both calling open)
+        if (window._jsb_club_dialog && window._jsb_club_dialog.$wrapper && window._jsb_club_dialog.$wrapper.is(':visible')) {
+            return;
+        }
+        try {
+            $('.modal.jsb-club-picker, .jsb-club-picker').closest('.modal').modal('hide');
+        } catch (e0) { /* ignore */ }
+
         let d = new frappe.ui.Dialog({
             title: __('Select Planning Despatch Rows') + ' · ' + (window.JSB_CLUB_PICKER_VER || ''),
             size: 'extra-large',
@@ -561,14 +565,9 @@ window._jsb_club_picker_impl = function (frm) {
                     return;
                 }
                 d.hide();
+                window._jsb_club_dialog = null;
                 try {
-                    if (typeof window._jsb_club_process_selections === 'function') {
-                        window._jsb_club_process_selections(frm, selected, orders);
-                    } else if (frm.events && typeof frm.events.process_selections === 'function') {
-                        frm.events.process_selections(frm, selected, d.get_value('planned_date'));
-                    } else {
-                        frappe.msgprint(__('Add-items helper missing. Disable Clubbing Sheet Client Script, then Ctrl+Shift+R.'));
-                    }
+                    window._jsb_club_process_selections(frm, selected, orders);
                 } catch (err) {
                     console.error('[Clubbing] Get Items failed', err);
                     frappe.msgprint(__('Could not add items: {0}', [err.message || String(err)]));
@@ -576,6 +575,7 @@ window._jsb_club_picker_impl = function (frm) {
             }
         });
 
+        window._jsb_club_dialog = d;
         d.$wrapper.addClass('jsb-club-picker');
         if (!document.getElementById('jsb-club-picker-css')) {
             let style = document.createElement('style');
@@ -642,7 +642,7 @@ window._jsb_club_picker_impl = function (frm) {
             };
 
             let html = `
-                <p class="jsb-club-picker-hint">${__('Quality · Color · GSM · Width(Inch) — tick the exact Planning lines.')} <span class="text-muted">(${window.JSB_CLUB_PICKER_VER || ''})</span></p>
+                <p class="jsb-club-picker-hint">${__('Quality · Color · GSM · Width(Inch) — tick the exact Planning lines.')} <b>${window.JSB_CLUB_PICKER_VER || ''}</b></p>
                 <div class="jsb-club-picker-wrap">
                 <table class="jsb-club-picker-table">
                     <thead>
@@ -707,6 +707,7 @@ window._jsb_club_picker_impl = function (frm) {
         load_orders();
         d.show();
         d.$wrapper.on('hidden.bs.modal', function () {
+            window._jsb_club_dialog = null;
             window._jsb_club_picker_lock = false;
             frm._jsb_club_picker_open = false;
         });
