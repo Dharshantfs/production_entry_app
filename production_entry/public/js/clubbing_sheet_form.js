@@ -446,11 +446,7 @@ window._jsb_club_picker_impl = function (frm) {
                     return;
                 }
                 d.hide();
-                if (frm.events && typeof frm.events.process_selections === 'function') {
-                    frm.events.process_selections(frm, selected, d.get_value('planned_date'));
-                } else {
-                    frappe.msgprint(__('Could not add items — reload the page (Ctrl+Shift+R).'));
-                }
+                window._jsb_club_process_selections(frm, selected, orders);
             }
         });
 
@@ -590,16 +586,11 @@ window._jsb_club_picker_impl = function (frm) {
         });
 };
 
-frappe.ui.form.on('Clubbing Sheet', {
-    process_selections: function (frm, selections, planned_date) {
-        frappe.call({
-            method: PLANNING_ORDERS_API,
-            args: { planned_date: planned_date || '' },
-            freeze: true,
-            callback: function (r) {
-                let all = r.message || [];
-                // Match ONLY by Planning Table row name (checkbox data-name) — never SO/party.
-                let picked = all.filter(o =>
+};
+
+window._jsb_club_process_selections = function (frm, selections, orders_cache) {
+        const apply_picked = function (all) {
+                let picked = (all || []).filter(o =>
                     selections.includes(o.name) ||
                     selections.includes(o.planning_table_row)
                 );
@@ -622,7 +613,6 @@ frappe.ui.form.on('Clubbing Sheet', {
                     rd.weight_kgs = flt(so.weight_kgs || so.total_qty);
                     rd.no_of_rolls = flt(so.no_of_rolls);
                     rd.party_location = so.city || "";
-                    // Always keep PT link for precise stamp (even if field not in meta yet)
                     rd.custom_planning_table_row = so.planning_table_row || so.name || "";
                     rd.custom_planning_sheet = so.planning_sheet || "";
                     if (has_field('planning_table_row')) {
@@ -671,8 +661,25 @@ frappe.ui.form.on('Clubbing Sheet', {
                         applyAndSave(fallback);
                     }
                 });
+        };
+
+        if (orders_cache && orders_cache.length) {
+            apply_picked(orders_cache);
+            return;
+        }
+
+        frappe.call({
+            method: PLANNING_ORDERS_API,
+            freeze: true,
+            callback: function (r) {
+                apply_picked(r.message || []);
             }
         });
+};
+
+frappe.ui.form.on('Clubbing Sheet', {
+    process_selections: function (frm, selections, planned_date) {
+        window._jsb_club_process_selections(frm, selections, null);
     },
 
     total_weight: function (frm) {
