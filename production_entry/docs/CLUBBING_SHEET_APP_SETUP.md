@@ -18,18 +18,24 @@ The Clubbing Sheet form now loads from the app:
 
 ## Site steps (after pull + migrate)
 
-1. **Disable** site **Client Script** on DocType `Clubbing Sheet` (the old paste script).
-3. **Disable** site **Server Scripts**:
+1. **Disable** site **Client Script** on DocType `Clubbing Sheet` (the old paste script). ✅
+2. **Disable** site **Server Scripts** after app deploy:
    - API: `get_planning_orders_for_clubbing`
    - API: `get_distances_from_madurai`
-   - **Before Submit** `clubbing_sheet_bf_submit` (or any Clubbing Sheet Before Submit stamp script)
+   - **Before Submit** stamp script (app hook owns this)
+   - **Before Save** (optional once app is updated — see below)
 
    If you must keep a site Before Submit script temporarily, replace its body with
    [`PASTE_clubbing_on_submit_server_script.py`](./PASTE_clubbing_on_submit_server_script.py)
    (uses `frappe.get_meta(...).has_field` — **never** `frappe.db.has_column`, which crashes safe_exec).
 
-   Preferred: disable the site script; the app hook stamps on submit.
-3. Keep any **Before Save** validation scripts you still want (route conflict, etc.) if they are not duplicated in the app JS.
+3. **Before Save:** App hook is
+   `production_entry.production_planning.clubbing_sheet_hooks.clubbing_sheet_before_save`
+   (customer fix, total weight, load type, route belt, distances, loading sequence).
+
+   Until that deploy lands, keep the site Before Save Enabled using
+   [`PASTE_clubbing_before_save_server_script.py`](./PASTE_clubbing_before_save_server_script.py).
+   After deploy + migrate/clear-cache: **Disable** the site Before Save so logic runs once.
 4. After cancel of a Clubbing Sheet, Planning stamps clear automatically (`on_cancel`).  
    For already-cancelled sheets that still show on Planning, run in Desk console:
 

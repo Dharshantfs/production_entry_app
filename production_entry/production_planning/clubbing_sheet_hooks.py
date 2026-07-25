@@ -1,10 +1,264 @@
 # -*- coding: utf-8 -*-
-"""Clubbing Sheet document hooks — stamp / clear Planning Table club fields."""
+"""Clubbing Sheet document hooks — before_save validation + stamp / clear Planning."""
 
 from __future__ import annotations
 
 import frappe
 from frappe.utils import cint, cstr, flt
+
+# Shared Madurai → destination belts (lowercase city names).
+ROUTE_BELTS = [
+	["madurai", "virudhunagar", "sivakasi", "tuticorin", "thoothukudi"],
+	["madurai", "karur", "coimbatore"],
+	["madurai", "karur", "erode", "salem"],
+	["madurai", "dindigul", "karur", "salem"],
+	["madurai", "pondicherry", "puducherry", "vellore", "kanchipuram", "chennai"],
+	["madurai", "trivandrum", "thiruvananthapuram", "changanacherry"],
+	["madurai", "kollam", "kayankulam", "pathanamthitta", "kottayam"],
+	["madurai", "coimbatore", "palakkad", "trissur", "thrissur", "ernakulam"],
+	[
+		"madurai", "coimbatore", "pallakad", "trissur", "thrissur", "malappuram",
+		"kozhikode", "calicut", "mahe", "kannur", "kasargod", "mangaluru",
+		"mangalore", "uduppi", "udupi",
+	],
+	["madurai", "mysore", "mysuru", "hassan", "shimoga", "dawangeree", "davangere"],
+	["madurai", "salem", "hosur", "bangalore", "bengaluru", "dawangeree", "davangere"],
+	["madurai", "mysore", "mysuru", "bangalore", "bengaluru"],
+	["madurai", "bangalore", "bengaluru", "tumkur", "hospet", "hospete", "koppal"],
+	["madurai", "ananthapur", "kurnool", "hyderabad", "karimnagar"],
+	["madurai", "ananthapur", "kurnool", "hyderabad", "nizambad"],
+	["madurai", "kurnool", "hyderabad", "warangal"],
+	["madurai", "vizag", "bhuvaneswar", "bhubaneswar", "cuttack"],
+	["madurai", "brahmbur", "berhampur", "bhubaneswar", "cuttack"],
+	["madurai", "guntur", "vijayawada", "kakinada"],
+	["madurai", "kakinada", "vizag"],
+	["madurai", "kuppam", "palamaner", "bangalore", "bengaluru"],
+	["madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura"],
+	["madurai", "bangalore", "bengaluru", "belgaum", "goa"],
+	[
+		"madurai", "bangalore", "bengaluru", "hospete", "hospet", "vijayapura",
+		"satara", "pune", "mumbai",
+	],
+]
+
+MADURAI_DISTANCES = {
+	"Madurai": 0, "Melur": 30, "Usilampatti": 45, "Manamadurai": 60,
+	"Sivaganga": 55, "Dindigul": 65, "Virudhunagar": 65, "Theni": 70,
+	"Srivilliputhur": 75, "Aruppukottai": 80, "Sivakasi": 80,
+	"Periyakulam": 85, "Tiruppathur": 90, "Oddanchatram": 95, "Sattur": 95,
+	"Cumbum": 90, "Pudukkottai": 100, "Rajapalayam": 100,
+	"Paramakudi": 130, "Kovilpatti": 130, "Palani": 120, "Ramanathapuram": 115,
+	"Kodaikanal": 115, "Thenkasi": 115, "Tenkasi": 115, "Courtallam": 120,
+	"Sankarankoil": 125, "Kumily": 130, "Gudalur": 130, "Munnar": 140,
+	"Idukki": 145, "Karur": 140, "Tiruchirappalli": 135, "Trichy": 135,
+	"Tirunelveli": 155, "Thoothukudi": 160, "Tuticorin": 160, "Perambalur": 160,
+	"Ariyalur": 175, "Thanjavur": 175, "Pollachi": 180, "Kottayam": 185,
+	"Namakkal": 200, "Alappuzha": 200, "Alleppey": 200, "Thodupuzha": 205,
+	"Padmanabhapuram": 205, "Coimbatore": 210, "Tirupur": 215, "Kumbakonam": 215,
+	"Ernakulam": 220, "Kochi": 220, "Cochin": 220, "Salem": 220,
+	"Nagercoil": 230, "Erode": 240, "Muvattupuzha": 235, "Muvuttupuzha": 235,
+	"Pala": 195, "Changanacherry": 195, "Pathanamthitta": 215,
+	"Kollam": 250, "Quilon": 250, "Palakkad": 250, "Mayiladuthurai": 250,
+	"Kanyakumari": 250, "Nilgiris": 265, "Ooty": 265, "Nagapattinam": 280,
+	"Thrissur": 280, "Thiruvananthapuram": 290, "Trivandrum": 290,
+	"Malappuram": 320, "Dharmapuri": 320, "Wayanad": 345, "Cuddalore": 365,
+	"Kozhikode": 360, "Calicut": 360, "Villupuram": 370, "Mysuru": 370,
+	"Mysore": 370, "Chamarajanagar": 390, "Mandya": 390, "Hosur": 385,
+	"Pondicherry": 395, "Puducherry": 395, "Hassan": 395,
+	"Tiruvannamalai": 400, "Virajpet": 405, "Kanchipuram": 440, "Vellore": 410,
+	"Chengalpattu": 420, "Ramanagara": 420, "Kodagu": 420, "Madikeri": 420,
+	"Kannur": 430, "Cannanore": 430, "Kolar": 430, "Bengaluru": 445,
+	"Bangalore": 445, "Chikmagalur": 450, "Chennai": 455, "Tumkur": 475,
+	"Puttur": 480, "Kasaragod": 490, "Mangaluru": 490, "Mangalore": 490,
+	"Shimoga": 485, "Davangere": 510, "Nellore": 520, "Udupi": 530,
+	"Tirupati": 530, "Hubli": 600, "Dharwad": 610, "Guntur": 650,
+	"Vijayawada": 680, "Hyderabad": 770, "Warangal": 850, "Vizag": 970,
+	"Berhampur": 1520, "Brahmapur": 1520, "Bhubaneswar": 1650,
+	"Cuttack": 1680, "Puri": 1700, "Sambalpur": 1800, "Rourkela": 1850,
+	"Krishnagiri": 355, "Pune": 1250, "Mumbai": 1450, "Chittoor": 480,
+	"Karaikudi": 95,
+}
+
+
+def clubbing_sheet_before_save(doc, method=None):
+	"""Customer fix, total weight, load type, route belt, distance, loading sequence."""
+	_fix_customers_from_so(doc)
+	_set_total_weight(doc)
+	_set_load_type(doc)
+	_validate_route_belt(doc)
+	_set_distances_and_loading_sequence(doc)
+	# Avoid noisy link validation when customer display names are off
+	doc.flags.ignore_links = True
+
+
+def _fix_customers_from_so(doc):
+	for item in doc.get("items") or []:
+		so = cstr(item.get("sales_order") or "").strip()
+		if not so:
+			continue
+		correct = frappe.db.get_value("Sales Order", so, "customer")
+		if correct:
+			item.customer = correct
+
+
+def _set_total_weight(doc):
+	total = 0.0
+	for item in doc.get("items") or []:
+		total += flt(item.get("weight_kgs"))
+	doc.total_weight = total
+
+
+def _set_load_type(doc):
+	items = doc.get("items") or []
+	if not items:
+		doc.load_type = ""
+		return
+
+	customer_weights = {}
+	for item in items:
+		cust = cstr(item.get("customer") or "").strip()
+		if not cust:
+			continue
+		customer_weights[cust] = customer_weights.get(cust, 0) + flt(item.get("weight_kgs"))
+
+	customers = list(customer_weights.keys())
+	full_load_customers = [c for c in customers if customer_weights[c] >= 5000]
+
+	if full_load_customers:
+		if len(customers) > 1:
+			frappe.throw(
+				frappe._(
+					"Customer {0} has a total weight of {1} kgs (>= 5000 kgs). "
+					"Orders >= 5000 kgs must be clubbed separately as a Full Load."
+				).format(full_load_customers[0], customer_weights[full_load_customers[0]])
+			)
+		doc.load_type = "Full Load"
+	elif customers:
+		doc.load_type = "Part Load"
+	else:
+		doc.load_type = ""
+
+
+def _city_in_belt(city, belt):
+	city = cstr(city or "").strip().lower()
+	if not city:
+		return False
+	for bc in belt:
+		if city == bc or city in bc or bc in city:
+			return True
+	return False
+
+
+def _selected_cities(doc):
+	out = []
+	for item in doc.get("items") or []:
+		c = cstr(item.get("party_location") or "").strip().lower()
+		if c and c not in out:
+			out.append(c)
+	return out
+
+
+def _validate_route_belt(doc):
+	items = doc.get("items") or []
+	if len(items) < 2:
+		return
+	selected = _selected_cities(doc)
+	if not selected:
+		return
+	is_valid = any(all(_city_in_belt(city, belt) for city in selected) for belt in ROUTE_BELTS)
+	if not is_valid and not doc.get("ignore_route_conflict"):
+		frappe.throw(
+			frappe._(
+				"Route conflict detected! The selected cities do not fall together "
+				"on any single established forward route/belt. Please verify or create separate Clubbing Sheets."
+			)
+		)
+
+
+def _lookup_distance(city):
+	city = cstr(city or "").strip()
+	if not city:
+		return 0
+	if city in MADURAI_DISTANCES:
+		return MADURAI_DISTANCES[city]
+	lower = city.lower()
+	for key, dist in MADURAI_DISTANCES.items():
+		if key.lower() == lower:
+			return dist
+	for key, dist in MADURAI_DISTANCES.items():
+		if lower in key.lower() or key.lower() in lower:
+			return dist
+	return 0
+
+
+def _pick_active_belt(selected_cities):
+	all_belt_cities = []
+	for belt in ROUTE_BELTS:
+		for bc in belt:
+			if bc not in all_belt_cities:
+				all_belt_cities.append(bc)
+
+	known = []
+	for city in selected_cities:
+		if any(_city_in_belt(city, [bc]) for bc in all_belt_cities) and city not in known:
+			known.append(city)
+
+	for belt in ROUTE_BELTS:
+		if known and all(_city_in_belt(city, belt) for city in known):
+			return list(belt)
+
+	best, max_matches = [], 0
+	for belt in ROUTE_BELTS:
+		matches = sum(1 for city in known if _city_in_belt(city, belt))
+		if matches > max_matches:
+			max_matches = matches
+			best = list(belt)
+	return best
+
+
+def _set_distances_and_loading_sequence(doc):
+	items = doc.get("items") or []
+	if not items:
+		return
+
+	for item in items:
+		if not flt(item.get("distance_from_madurai")):
+			item.distance_from_madurai = _lookup_distance(item.get("party_location"))
+
+	active_belt = _pick_active_belt(_selected_cities(doc))
+
+	sortable = []
+	for item in items:
+		city_lower = cstr(item.get("party_location") or "").lower()
+		priority = 0
+		sort_val = flt(item.get("distance_from_madurai"))
+		if active_belt:
+			for idx, bc in enumerate(active_belt):
+				if city_lower == bc or city_lower in bc or bc in city_lower:
+					priority = 1
+					sort_val = idx
+					break
+		sortable.append([priority, sort_val, item])
+
+	# Farther / higher belt index first → Inside
+	sortable.sort(key=lambda row: (-row[0], -row[1]))
+
+	if cstr(doc.get("load_type")) == "Full Load":
+		for item in items:
+			item.loading_sequence = "Full Load"
+		return
+
+	n = len(sortable)
+	if n == 1:
+		sortable[0][2].loading_sequence = "Full Load"
+	elif n == 2:
+		sortable[0][2].loading_sequence = "Inside"
+		sortable[1][2].loading_sequence = "Outside"
+	elif n > 2:
+		sortable[0][2].loading_sequence = "Inside"
+		sortable[n - 1][2].loading_sequence = "Outside"
+		for k in range(1, n - 1):
+			sortable[k][2].loading_sequence = "Center {0}".format(k)
 
 
 def clubbing_sheet_before_submit(doc, method=None):
