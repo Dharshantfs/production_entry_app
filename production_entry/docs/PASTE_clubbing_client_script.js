@@ -586,8 +586,6 @@ window._jsb_club_picker_impl = function (frm) {
         });
 };
 
-};
-
 window._jsb_club_process_selections = function (frm, selections, orders_cache) {
         const apply_picked = function (all) {
                 let picked = (all || []).filter(o =>
