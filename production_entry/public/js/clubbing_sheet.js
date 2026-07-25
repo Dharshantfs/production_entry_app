@@ -162,12 +162,118 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260723e';
+window.JSB_CLUB_PICKER_VER = 'v20260725a';
+
+/** Add selected Planning rows into Clubbing Sheet items. Defined early so old Client Scripts can call it. */
+window._jsb_club_process_selections = function (frm, selections, orders_cache) {
+	const apply_picked = function (all) {
+		let picked = (all || []).filter(o =>
+			selections.includes(o.name) ||
+			selections.includes(o.planning_table_row)
+		);
+		if (!picked.length) {
+			frappe.msgprint(__('No matching Planning Table rows for selection.'));
+			return;
+		}
+
+		let item_meta = frappe.get_meta('Clubbing Sheet Item') || {};
+		let has_field = (fn) => !!(item_meta.fields || []).find(f => f.fieldname === fn);
+
+		let rows = [];
+		picked.forEach(so => {
+			let row = frm.add_child('items');
+			let rd = locals[row.doctype][row.name];
+			rd.customer = so.customer;
+			rd.customer_name = so.customer_name || so.customer;
+			rd.sales_order = so.sales_order || '';
+			rd.party_code = so.party_code || so.custom_party_code || '';
+			rd.weight_kgs = flt(so.weight_kgs || so.total_qty);
+			rd.no_of_rolls = flt(so.no_of_rolls);
+			rd.party_location = so.city || '';
+			rd.custom_planning_table_row = so.planning_table_row || so.name || '';
+			rd.custom_planning_sheet = so.planning_sheet || '';
+			if (has_field('planning_table_row')) {
+				rd.planning_table_row = so.planning_table_row || so.name || '';
+			}
+			if (has_field('planning_sheet')) {
+				rd.planning_sheet = so.planning_sheet || '';
+			}
+			if (has_field('quality')) rd.quality = so.quality || '';
+			if (has_field('color')) rd.color = so.color || '';
+			if (has_field('gsm')) rd.gsm = so.gsm || 0;
+			if (has_field('custom_quality')) rd.custom_quality = so.quality || '';
+			if (has_field('custom_color')) rd.custom_color = so.color || '';
+			if (has_field('custom_gsm')) rd.custom_gsm = so.gsm || 0;
+			if (has_field('planned_date')) rd.planned_date = so.planned_date || '';
+			if (has_field('custom_planned_date')) rd.custom_planned_date = so.planned_date || '';
+			if (has_field('width_inch')) rd.width_inch = so.width_inch || so.inch || 0;
+			if (has_field('custom_width_inch')) rd.custom_width_inch = so.width_inch || so.inch || 0;
+			rows.push(rd);
+		});
+		frm.refresh_field('items');
+
+		let cities = [...new Set(rows.map(r => r.party_location).filter(Boolean))];
+
+		function applyAndSave(distanceMap) {
+			rows.forEach(row => {
+				let dist = distanceMap[row.party_location];
+				row.distance_from_madurai = dist !== undefined ? dist : get_distance_from_madurai(row.party_location);
+			});
+			frm.trigger('recalculate_load_type');
+			frm.refresh_field('items');
+		}
+
+		if (!cities.length) {
+			frm.trigger('recalculate_load_type');
+			return;
+		}
+
+		frappe.call({
+			method: DISTANCES_API,
+			args: { cities: cities },
+			callback: (res) => applyAndSave(res.message || {}),
+			error: () => {
+				let fallback = {};
+				cities.forEach(c => fallback[c] = get_distance_from_madurai(c));
+				applyAndSave(fallback);
+			}
+		});
+	};
+
+	if (orders_cache && orders_cache.length) {
+		apply_picked(orders_cache);
+		return;
+	}
+
+	frappe.call({
+		method: PLANNING_ORDERS_API,
+		freeze: true,
+		callback: function (r) {
+			apply_picked(r.message || []);
+		}
+	});
+};
+
+function jsb_club_wire_process_selections(frm) {
+	const handler = function (frm2, selections, planned_date) {
+		window._jsb_club_process_selections(frm2 || frm, selections, null);
+	};
+	if (frm.script_manager && frm.script_manager.events) {
+		frm.script_manager.events.process_selections = [handler];
+	}
+	if (!frm.events) frm.events = {};
+	frm.events.process_selections = handler;
+	if (frm.cscript) {
+		frm.cscript.process_selections = handler;
+	}
+}
 
 function jsb_club_bind_picker_button(frm) {
 	const openOnce = function () {
 		jsb_club_open_despatch_picker(frm);
 	};
+	jsb_club_wire_process_selections(frm);
+
 	// Keep the DocType form button "Get Sales Orders" visible — users click that.
 	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fn) {
 		if (frm.fields_dict && frm.fields_dict[fn]) {
@@ -446,7 +552,18 @@ window._jsb_club_picker_impl = function (frm) {
                     return;
                 }
                 d.hide();
-                window._jsb_club_process_selections(frm, selected, orders);
+                try {
+                    if (typeof window._jsb_club_process_selections === 'function') {
+                        window._jsb_club_process_selections(frm, selected, orders);
+                    } else if (frm.events && typeof frm.events.process_selections === 'function') {
+                        frm.events.process_selections(frm, selected, d.get_value('planned_date'));
+                    } else {
+                        frappe.msgprint(__('Add-items helper missing. Disable Clubbing Sheet Client Script, then Ctrl+Shift+R.'));
+                    }
+                } catch (err) {
+                    console.error('[Clubbing] Get Items failed', err);
+                    frappe.msgprint(__('Could not add items: {0}', [err.message || String(err)]));
+                }
             }
         });
 
@@ -583,95 +700,6 @@ window._jsb_club_picker_impl = function (frm) {
         d.$wrapper.on('hidden.bs.modal', function () {
             window._jsb_club_picker_lock = false;
             frm._jsb_club_picker_open = false;
-        });
-};
-
-window._jsb_club_process_selections = function (frm, selections, orders_cache) {
-        const apply_picked = function (all) {
-                let picked = (all || []).filter(o =>
-                    selections.includes(o.name) ||
-                    selections.includes(o.planning_table_row)
-                );
-                if (!picked.length) {
-                    frappe.msgprint(__('No matching Planning Table rows for selection.'));
-                    return;
-                }
-
-                let item_meta = frappe.get_meta('Clubbing Sheet Item') || {};
-                let has_field = (fn) => !!(item_meta.fields || []).find(f => f.fieldname === fn);
-
-                let rows = [];
-                picked.forEach(so => {
-                    let row = frm.add_child('items');
-                    let rd = locals[row.doctype][row.name];
-                    rd.customer = so.customer;
-                    rd.customer_name = so.customer_name || so.customer;
-                    rd.sales_order = so.sales_order || "";
-                    rd.party_code = so.party_code || so.custom_party_code || "";
-                    rd.weight_kgs = flt(so.weight_kgs || so.total_qty);
-                    rd.no_of_rolls = flt(so.no_of_rolls);
-                    rd.party_location = so.city || "";
-                    rd.custom_planning_table_row = so.planning_table_row || so.name || "";
-                    rd.custom_planning_sheet = so.planning_sheet || "";
-                    if (has_field('planning_table_row')) {
-                        rd.planning_table_row = so.planning_table_row || so.name || "";
-                    }
-                    if (has_field('planning_sheet')) {
-                        rd.planning_sheet = so.planning_sheet || "";
-                    }
-                    if (has_field('quality')) rd.quality = so.quality || "";
-                    if (has_field('color')) rd.color = so.color || "";
-                    if (has_field('gsm')) rd.gsm = so.gsm || 0;
-                    if (has_field('custom_quality')) rd.custom_quality = so.quality || "";
-                    if (has_field('custom_color')) rd.custom_color = so.color || "";
-                    if (has_field('custom_gsm')) rd.custom_gsm = so.gsm || 0;
-                    if (has_field('planned_date')) rd.planned_date = so.planned_date || "";
-                    if (has_field('custom_planned_date')) rd.custom_planned_date = so.planned_date || "";
-                    if (has_field('width_inch')) rd.width_inch = so.width_inch || so.inch || 0;
-                    if (has_field('custom_width_inch')) rd.custom_width_inch = so.width_inch || so.inch || 0;
-                    rows.push(rd);
-                });
-                frm.refresh_field('items');
-
-                let cities = [...new Set(rows.map(r => r.party_location).filter(Boolean))];
-
-                function applyAndSave(distanceMap) {
-                    rows.forEach(row => {
-                        let dist = distanceMap[row.party_location];
-                        row.distance_from_madurai = dist !== undefined ? dist : get_distance_from_madurai(row.party_location);
-                    });
-                    frm.trigger('recalculate_load_type');
-                    frm.refresh_field('items');
-                }
-
-                if (!cities.length) {
-                    frm.trigger('recalculate_load_type');
-                    return;
-                }
-
-                frappe.call({
-                    method: DISTANCES_API,
-                    args: { cities: cities },
-                    callback: (res) => applyAndSave(res.message || {}),
-                    error: () => {
-                        let fallback = {};
-                        cities.forEach(c => fallback[c] = get_distance_from_madurai(c));
-                        applyAndSave(fallback);
-                    }
-                });
-        };
-
-        if (orders_cache && orders_cache.length) {
-            apply_picked(orders_cache);
-            return;
-        }
-
-        frappe.call({
-            method: PLANNING_ORDERS_API,
-            freeze: true,
-            callback: function (r) {
-                apply_picked(r.message || []);
-            }
         });
 };
 
