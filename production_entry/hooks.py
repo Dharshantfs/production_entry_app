@@ -22,6 +22,9 @@ app_include_css = [
 ]
 app_include_js = [
 	"scheduler.bundle.js",
+	# Clubbing Sheet is a site Custom DocType — doctype_js alone is unreliable on Frappe Cloud.
+	# Load once via desk include; JS guards against double-register.
+	"/assets/production_entry/js/clubbing_sheet_form.js",
 ]
 
 # include js, css files in header of web template

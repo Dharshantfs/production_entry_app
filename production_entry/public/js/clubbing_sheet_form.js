@@ -162,7 +162,12 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260727a';
+window.JSB_CLUB_PICKER_VER = 'v20260727b';
+// Prevent double frappe.ui.form.on when app_include + doctype_js both load this file
+if (window.__JSB_CLUB_SHEET_JS__ === window.JSB_CLUB_PICKER_VER) {
+	/* already registered for this version */
+} else {
+window.__JSB_CLUB_SHEET_JS__ = window.JSB_CLUB_PICKER_VER;
 
 /** Add selected Planning rows into Clubbing Sheet items. Defined early so old Client Scripts can call it. */
 window._jsb_club_process_selections = function (frm, selections, orders_cache) {
@@ -284,8 +289,12 @@ function jsb_club_wire_process_selections(frm) {
 }
 
 function jsb_club_bind_picker_button(frm) {
+	// Clear stuck lock from a previous failed open
+	window._jsb_club_picker_lock = false;
+
 	const openOnce = function (e) {
-		if (e && e.preventDefault) {
+		// DOM click passes Event; frm.trigger passes frm — only stop DOM bubbling
+		if (e && typeof e.preventDefault === 'function') {
 			e.preventDefault();
 			e.stopImmediatePropagation();
 		}
@@ -299,7 +308,6 @@ function jsb_club_bind_picker_button(frm) {
 	};
 	jsb_club_wire_process_selections(frm);
 
-	// One form button only — hide duplicate toolbar button that caused double popup
 	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fn) {
 		if (frm.fields_dict && frm.fields_dict[fn]) {
 			frm.set_df_property(fn, 'hidden', 0);
@@ -308,6 +316,11 @@ function jsb_club_bind_picker_button(frm) {
 	try {
 		frm.remove_custom_button(__('Get Planning Items'));
 	} catch (e) { /* ignore */ }
+	try {
+		frm.remove_custom_button(__('Get Sales Orders'));
+	} catch (e3) { /* ignore */ }
+	// Reliable toolbar button (Custom DocType form Button can fail to trigger)
+	frm.add_custom_button(__('Get Sales Orders'), openOnce);
 
 	if (frm.script_manager && frm.script_manager.events) {
 		frm.script_manager.events.get_sales_orders = [openOnce];
@@ -923,3 +936,5 @@ frappe.ui.form.on('Clubbing Sheet Item', {
         frm.trigger('recalculate_load_type');
     }
 });
+
+} // end __JSB_CLUB_SHEET_JS__ version guard
