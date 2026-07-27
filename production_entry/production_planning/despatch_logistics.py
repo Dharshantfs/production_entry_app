@@ -162,7 +162,7 @@ def _has_dal_scan_field():
 
 
 def _club_fields_for_ptrs(ptrs):
-	"""Map Planning Table name → clubbing_sheet / loading_sequence / load_order."""
+	"""Map Planning Table name → clubbing_sheet / loading_sequence / load_order / despatch_customer."""
 	names = [_cstr(p) for p in (ptrs or []) if _cstr(p) and not _cstr(p).startswith("sprgrp:")]
 	out = {}
 	if not names or not _has_pt_club_fields():
@@ -173,6 +173,10 @@ def _club_fields_for_ptrs(ptrs):
 		cols.append("custom_loading_sequence")
 	if frappe.db.has_column("Planning Table", "custom_club_load_order"):
 		cols.append("custom_club_load_order")
+	if frappe.db.has_column("Planning Table", "custom_despatch_customer"):
+		cols.append("custom_despatch_customer")
+	if frappe.db.has_column("Planning Table", "custom_despatch_sales_order"):
+		cols.append("custom_despatch_sales_order")
 	rows = frappe.db.sql(
 		f"select {', '.join(cols)} from `tabPlanning Table` where name in ({placeholders})",
 		tuple(names),
@@ -183,6 +187,8 @@ def _club_fields_for_ptrs(ptrs):
 			"clubbing_sheet": _cstr(r.get("custom_clubbing_sheet")),
 			"loading_sequence": _cstr(r.get("custom_loading_sequence")),
 			"club_load_order": cint(r.get("custom_club_load_order") or 0),
+			"despatch_customer": _cstr(r.get("custom_despatch_customer")),
+			"despatch_sales_order": _cstr(r.get("custom_despatch_sales_order")),
 		}
 	return out
 
@@ -699,6 +705,12 @@ def get_despatch_eligible_rows(
 		o["clubbing_sheet"] = info.get("clubbing_sheet") or ""
 		o["loading_sequence"] = info.get("loading_sequence") or ""
 		o["club_load_order"] = cint(info.get("club_load_order") or 0)
+		o["despatch_customer"] = info.get("despatch_customer") or ""
+		o["despatch_sales_order"] = info.get("despatch_sales_order") or ""
+		# Prefer Despatch Customer display for logistics / DN grouping
+		if o["despatch_customer"]:
+			disp = frappe.db.get_value("Customer", o["despatch_customer"], "customer_name")
+			o["customer_name"] = disp or o["despatch_customer"]
 		if club_filter and club_filter not in _cstr(o["clubbing_sheet"]).lower():
 			continue
 		filtered.append(o)
@@ -961,6 +973,19 @@ def create_despatch_approval_request(from_company=None, lines=None):
 			row["custom_loading_sequence"] = seq
 		if frappe.db.has_column("Despatch Approval Line", "custom_club_load_order"):
 			row["custom_club_load_order"] = load_order
+		dc = _cstr(line.get("despatch_customer") or line.get("custom_despatch_customer"))
+		dso = _cstr(line.get("despatch_sales_order") or line.get("custom_despatch_sales_order"))
+		if not dc and ptr and not ptr.startswith("sprgrp:") and _has_pt_club_fields():
+			info = _club_fields_for_ptrs([ptr]).get(ptr) or {}
+			dc = info.get("despatch_customer") or ""
+			dso = dso or info.get("despatch_sales_order") or ""
+		if frappe.db.has_column("Despatch Approval Line", "custom_despatch_customer"):
+			row["custom_despatch_customer"] = dc
+		if frappe.db.has_column("Despatch Approval Line", "custom_despatch_sales_order"):
+			row["custom_despatch_sales_order"] = dso
+		if dc:
+			disp = frappe.db.get_value("Customer", dc, "customer_name")
+			row["customer_name"] = disp or dc
 		doc.append("lines", row)
 
 	if _has_da_club_field() and len(club_ids) == 1:

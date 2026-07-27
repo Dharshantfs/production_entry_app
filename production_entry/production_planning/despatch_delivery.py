@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Delivery Note creation from Despatch Approval."""
+"""Delivery Note creation from Despatch Approval.
+
+DN.customer = Despatch Customer (override).
+against_sales_order is set only when that customer matches the Planning SO
+(or an explicit Despatch Sales Order is set) — avoids SO qty conflict on
+emergency reallocation (e.g. Dharshan plan → Gowtham DN).
+"""
 
 from __future__ import annotations
 
@@ -10,11 +16,142 @@ from frappe.utils import flt, getdate
 from production_entry.production_planning.despatch_logistics import _cstr, _fg_warehouse_for_company, _resolve_customer
 
 
-def build_delivery_note_from_despatch(despatch_approval, party_code=None):
+def _line_get(ln, key, default=""):
+	if isinstance(ln, dict):
+		return ln.get(key, default)
+	return getattr(ln, key, default)
+
+
+def _line_despatch_customer(ln):
+	"""Customer id for DN — prefer custom_despatch_customer, else resolve customer_name."""
+	dc = _cstr(_line_get(ln, "custom_despatch_customer") or _line_get(ln, "despatch_customer"))
+	if dc and frappe.db.exists("Customer", dc):
+		return dc
+	return _resolve_customer(_line_get(ln, "customer_name")) or ""
+
+
+def _planning_sales_order(ln):
+	"""Order-giver SO from Planning sheet / line (audit source)."""
+	so = _cstr(_line_get(ln, "sales_order"))
+	if so:
+		return so
+	ps = _cstr(_line_get(ln, "planning_sheet"))
+	if ps and frappe.db.exists("Planning sheet", ps):
+		return _cstr(frappe.db.get_value("Planning sheet", ps, "sales_order"))
+	pc = _cstr(_line_get(ln, "party_code"))
+	if pc:
+		found = frappe.db.get_value("Planning sheet", {"party_code": pc}, "sales_order")
+		return _cstr(found)
+	return ""
+
+
+def _resolve_against_sales_order(ln, despatch_customer):
+	"""Link SO only when it belongs to Despatch Customer (or explicit override)."""
+	override = _cstr(
+		_line_get(ln, "custom_despatch_sales_order") or _line_get(ln, "despatch_sales_order")
+	)
+	if override and frappe.db.exists("Sales Order", override):
+		return override
+
+	so = _planning_sales_order(ln)
+	if not so or not despatch_customer:
+		return ""
+	so_cust = _cstr(frappe.db.get_value("Sales Order", so, "customer"))
+	if so_cust and so_cust == _cstr(despatch_customer):
+		return so
+	return ""
+
+
+def _apply_dn_addresses(dn, customer, sales_order=None):
+	"""Prefill billing/shipping from linked SO, else Customer defaults."""
+	ship = bill = ""
+	if sales_order and frappe.db.exists("Sales Order", sales_order):
+		row = frappe.db.get_value(
+			"Sales Order",
+			sales_order,
+			["shipping_address_name", "customer_address"],
+			as_dict=True,
+		)
+		if row:
+			ship = _cstr(row.shipping_address_name)
+			bill = _cstr(row.customer_address)
+
+	if not ship or not bill:
+		# Dynamic Link Customer → Address
+		addrs = frappe.db.sql(
+			"""
+			select parent, ifnull(is_shipping_address, 0) as is_ship,
+			       ifnull(is_primary_address, 0) as is_primary
+			from `tabDynamic Link`
+			where link_doctype = 'Customer' and link_name = %s
+			  and parenttype = 'Address'
+			""",
+			customer,
+			as_dict=True,
+		) or []
+		# Prefer Address flags when columns exist
+		for a in addrs:
+			aname = _cstr(a.parent)
+			if not aname:
+				continue
+			flags = {}
+			if frappe.db.has_column("Address", "is_shipping_address"):
+				flags["ship"] = cint_safe(frappe.db.get_value("Address", aname, "is_shipping_address"))
+			if frappe.db.has_column("Address", "is_primary_address"):
+				flags["primary"] = cint_safe(frappe.db.get_value("Address", aname, "is_primary_address"))
+			if not ship and flags.get("ship"):
+				ship = aname
+			if not bill and flags.get("primary"):
+				bill = aname
+		if not ship and addrs:
+			ship = _cstr(addrs[0].parent)
+		if not bill and addrs:
+			bill = _cstr(addrs[0].parent)
+
+	if ship and hasattr(dn, "shipping_address_name"):
+		dn.shipping_address_name = ship
+	if bill and hasattr(dn, "customer_address"):
+		dn.customer_address = bill
+
+
+def cint_safe(v):
+	try:
+		return int(v or 0)
+	except Exception:
+		return 0
+
+
+def _match_so_detail(sales_order, item_code, qty):
+	"""Best-effort SO Item name for against_sales_order_item / so_detail."""
+	if not sales_order or not item_code:
+		return ""
+	rows = frappe.db.sql(
+		"""
+		select name, qty, delivered_qty
+		from `tabSales Order Item`
+		where parent = %s and item_code = %s
+		order by idx asc
+		""",
+		(sales_order, item_code),
+		as_dict=True,
+	) or []
+	if len(rows) == 1:
+		return rows[0].name
+	# Prefer line with remaining qty covering this delivery
+	need = flt(qty)
+	for r in rows:
+		remaining = flt(r.qty) - flt(r.delivered_qty)
+		if remaining + 0.01 >= need:
+			return r.name
+	return rows[0].name if rows else ""
+
+
+def build_delivery_note_from_despatch(despatch_approval, party_code=None, despatch_customer=None):
 	"""Build Delivery Note doc (not saved) from approved despatch lines.
 
-	If party_code is set (including empty string), only matching order lines are included.
-	If party_code is None, all lines are included (legacy single-DN path).
+	Filters:
+	- party_code is not None → only that Order Code
+	- despatch_customer is not None → only that Despatch Customer
 	"""
 	da = despatch_approval
 	if isinstance(da, str):
@@ -27,23 +164,39 @@ def build_delivery_note_from_despatch(despatch_approval, party_code=None):
 	if not wh:
 		frappe.throw(_("No finished-goods warehouse configured for {0}.").format(fc))
 
-	use_filter = party_code is not None
-	pc_filter = _cstr(party_code) if use_filter else None
+	use_pc = party_code is not None
+	pc_filter = _cstr(party_code) if use_pc else None
+	use_dc = despatch_customer is not None
+	dc_filter = _cstr(despatch_customer) if use_dc else None
+
 	lines = []
 	for ln in da.lines or []:
-		if use_filter and _cstr(ln.party_code) != pc_filter:
+		if use_pc and _cstr(_line_get(ln, "party_code")) != pc_filter:
+			continue
+		if use_dc and _line_despatch_customer(ln) != dc_filter:
 			continue
 		lines.append(ln)
 	if not lines:
-		frappe.throw(_("No despatch lines for order {0}.").format(pc_filter if use_filter else "—"))
+		frappe.throw(
+			_("No despatch lines for order {0} / customer {1}.").format(
+				pc_filter if use_pc else "—", dc_filter if use_dc else "—"
+			)
+		)
 
 	customer = ""
 	for ln in lines:
-		customer = _resolve_customer(ln.customer_name)
+		customer = _line_despatch_customer(ln)
 		if customer:
 			break
 	if not customer:
-		frappe.throw(_("Could not resolve Customer from despatch lines. Link a valid customer name."))
+		frappe.throw(_("Could not resolve Despatch Customer from despatch lines."))
+
+	# Resolve SO once from first matching line (conditional)
+	against_so = ""
+	for ln in lines:
+		against_so = _resolve_against_sales_order(ln, customer)
+		if against_so:
+			break
 
 	dn = frappe.new_doc("Delivery Note")
 	dn.company = fc
@@ -51,22 +204,35 @@ def build_delivery_note_from_despatch(despatch_approval, party_code=None):
 	dn.set_posting_time = 1
 	dn.posting_date = getdate()
 	dn.set_warehouse = wh
+	_apply_dn_addresses(dn, customer, against_so)
 
 	for ln in lines:
-		qty = flt(ln.qty) or flt(ln.net_weight)
+		qty = flt(_line_get(ln, "qty")) or flt(_line_get(ln, "net_weight"))
 		if qty <= 0:
 			continue
+		item_code = _line_get(ln, "item_code")
+		so_for_line = _resolve_against_sales_order(ln, customer)
 		row = {
-			"item_code": ln.item_code,
+			"item_code": item_code,
 			"qty": qty,
-			"uom": ln.uom or frappe.db.get_value("Item", ln.item_code, "stock_uom") or "Kg",
+			"uom": _line_get(ln, "uom")
+			or frappe.db.get_value("Item", item_code, "stock_uom")
+			or "Kg",
 			"warehouse": wh,
-			"against_sales_order": "",
+			"against_sales_order": so_for_line,
 		}
-		if ln.batch_no and frappe.db.get_value("Item", ln.item_code, "has_batch_no"):
-			row["batch_no"] = ln.batch_no
+		so_detail = _match_so_detail(so_for_line, item_code, qty) if so_for_line else ""
+		if so_detail:
+			if frappe.db.has_column("Delivery Note Item", "so_detail"):
+				row["so_detail"] = so_detail
+			if frappe.db.has_column("Delivery Note Item", "against_sales_order_item"):
+				row["against_sales_order_item"] = so_detail
+
+		bn = _cstr(_line_get(ln, "batch_no"))
+		if bn and frappe.db.get_value("Item", item_code, "has_batch_no"):
+			row["batch_no"] = bn
 		if frappe.db.has_column("Delivery Note Item", "use_serial_batch_fields"):
-			row["use_serial_batch_fields"] = 1 if ln.batch_no else 0
+			row["use_serial_batch_fields"] = 1 if bn else 0
 		dn.append("items", row)
 
 	if not dn.items:
@@ -75,7 +241,7 @@ def build_delivery_note_from_despatch(despatch_approval, party_code=None):
 
 
 def create_draft_delivery_notes_by_order(despatch_approval):
-	"""Insert one draft Delivery Note per distinct party_code on the approval."""
+	"""Insert one draft DN per (despatch_customer, party_code)."""
 	da = despatch_approval
 	if isinstance(da, str):
 		da = frappe.get_doc("Despatch Approval", da)
@@ -83,15 +249,17 @@ def create_draft_delivery_notes_by_order(despatch_approval):
 	order_keys = []
 	seen = set()
 	for ln in da.lines or []:
-		pc = _cstr(ln.party_code)
-		if pc in seen:
+		pc = _cstr(_line_get(ln, "party_code"))
+		dc = _line_despatch_customer(ln)
+		key = (dc, pc)
+		if key in seen:
 			continue
-		seen.add(pc)
-		order_keys.append(pc)
+		seen.add(key)
+		order_keys.append(key)
 
 	names = []
-	for pc in order_keys:
-		dn = build_delivery_note_from_despatch(da, party_code=pc)
+	for dc, pc in order_keys:
+		dn = build_delivery_note_from_despatch(da, party_code=pc, despatch_customer=dc)
 		dn.insert(ignore_permissions=True)
 		names.append(dn.name)
 	return names

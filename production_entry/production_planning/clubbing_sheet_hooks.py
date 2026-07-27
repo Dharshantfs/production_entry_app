@@ -83,12 +83,34 @@ MADURAI_DISTANCES = {
 def clubbing_sheet_before_save(doc, method=None):
 	"""Customer fix, total weight, load type, route belt, distance, loading sequence."""
 	_fix_customers_from_so(doc)
+	_default_despatch_customer(doc)
 	_set_total_weight(doc)
 	_set_load_type(doc)
 	_validate_route_belt(doc)
 	_set_distances_and_loading_sequence(doc)
 	# Avoid noisy link validation when customer display names are off
 	doc.flags.ignore_links = True
+
+
+def _default_despatch_customer(doc):
+	"""Fill Despatch Customer from Planning/SO customer when blank."""
+	for item in doc.get("items") or []:
+		dc = cstr(item.get("custom_despatch_customer") or item.get("despatch_customer") or "").strip()
+		if dc:
+			continue
+		fallback = cstr(item.get("customer") or "").strip()
+		if not fallback:
+			continue
+		# Prefer Customer link id; if display name, resolve
+		if frappe.db.exists("Customer", fallback):
+			item.custom_despatch_customer = fallback
+		else:
+			found = frappe.db.get_value("Customer", {"customer_name": fallback}, "name")
+			if found:
+				item.custom_despatch_customer = found
+			elif frappe.get_meta("Clubbing Sheet Item").has_field("custom_despatch_customer"):
+				# leave blank if cannot resolve
+				pass
 
 
 def _fix_customers_from_so(doc):
@@ -292,7 +314,17 @@ def clubbing_sheet_before_submit(doc, method=None):
 			continue
 
 		for m in matches:
-			_stamp_pt(m.pt_name, doc.name, seq, load_order, has_pt_club)
+			_stamp_pt(
+				m.pt_name,
+				doc.name,
+				seq,
+				load_order,
+				has_pt_club,
+				despatch_customer=cstr(item.get("custom_despatch_customer") or item.get("despatch_customer") or "").strip(),
+				despatch_sales_order=cstr(
+					item.get("custom_despatch_sales_order") or item.get("despatch_sales_order") or ""
+				).strip(),
+			)
 			if has_psi_club:
 				_stamp_psi_matching_pt(m.pt_name, m.parent, doc.name, seq, load_order)
 
@@ -341,6 +373,10 @@ def _clear_stamps_for_club(club_name):
 				vals["custom_loading_sequence"] = ""
 			if frappe.db.has_column(dt, "custom_club_load_order"):
 				vals["custom_club_load_order"] = 0
+			if frappe.db.has_column(dt, "custom_despatch_customer"):
+				vals["custom_despatch_customer"] = ""
+			if frappe.db.has_column(dt, "custom_despatch_sales_order"):
+				vals["custom_despatch_sales_order"] = ""
 			frappe.db.set_value(dt, r.name, vals, update_modified=False)
 			cleared += 1
 	return cleared
@@ -412,7 +448,7 @@ def _resolve_pt_rows_for_item(item, club_name=""):
 	return []
 
 
-def _stamp_pt(pt_name, club_name, seq, load_order, has_pt_club):
+def _stamp_pt(pt_name, club_name, seq, load_order, has_pt_club, despatch_customer="", despatch_sales_order=""):
 	if not has_pt_club:
 		return
 	vals = {"custom_clubbing_sheet": club_name}
@@ -420,6 +456,10 @@ def _stamp_pt(pt_name, club_name, seq, load_order, has_pt_club):
 		vals["custom_loading_sequence"] = seq
 	if frappe.db.has_column("Planning Table", "custom_club_load_order"):
 		vals["custom_club_load_order"] = load_order
+	if despatch_customer and frappe.db.has_column("Planning Table", "custom_despatch_customer"):
+		vals["custom_despatch_customer"] = despatch_customer
+	if frappe.db.has_column("Planning Table", "custom_despatch_sales_order"):
+		vals["custom_despatch_sales_order"] = despatch_sales_order or ""
 	frappe.db.set_value("Planning Table", pt_name, vals, update_modified=False)
 
 

@@ -10,11 +10,25 @@ The Clubbing Sheet form now loads from the app:
 
 ## What Get Orders returns
 
-- Source: **Planning Table** rows where **Movement Type = Despatch**
+- Source: **Planning Table** (board / Planned items) where **Movement Type = Despatch** — **not** Planning Sheet Items
 - City: Sales Order → Shipping Address (backend only)
 - Optional filter: **Planned Date** (plus Order / Customer / City / Party)
 - Each selected row stores `custom_planning_table_row` + `custom_planning_sheet` on Clubbing Sheet Item
-- On submit: stamps `custom_clubbing_sheet`, `custom_loading_sequence`, `custom_club_load_order` on matching Planning Table / Planning sheet Item
+- **Despatch Customer** (`custom_despatch_customer`) defaults from Planning/SO customer — editable for emergency reallocation (e.g. ship Gowtham from Dharshan’s plan)
+- Optional **Despatch Sales Order** — only if the new customer has their own SO; otherwise leave blank
+- On submit: stamps `custom_clubbing_sheet`, loading sequence, **and Despatch Customer** on the **same** Planning Table rows (order-giver plan). Gowtham does **not** need a Planning Sheet — Club ID stays on produced rows; Logistics filters by Club ID
+
+## Despatch Customer → DN (Accounts)
+
+| Step | Who | What |
+|------|-----|------|
+| Clubbing | Planner | Set Despatch Customer (default = Planning customer; change if needed) |
+| Submit Clubbing | System | Stamp Club ID + Despatch Customer on Planning Table |
+| Logistics | DN team | Scan by Club ID → Create Draft DN |
+| Draft DN | System | `customer` = Despatch Customer; `against_sales_order` **only if** that customer matches Planning SO (or Despatch Sales Order set) |
+| Draft DN | Accounts | Button **Accounts → Billing & Address** to change bill-to / shipping / billing address |
+
+Split 500/500 to two customers: use **two Clubbing item rows** (same Order Code OK, different Despatch Customer) → two draft DNs.
 
 ## Site steps (after pull + migrate)
 

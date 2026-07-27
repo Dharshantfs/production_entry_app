@@ -111,6 +111,8 @@ export function buildLogisticsSubmitLines(selection, mode) {
 				clubbing_sheet: member.clubbing_sheet || groupRow.clubbing_sheet || "",
 				loading_sequence: member.loading_sequence || groupRow.loading_sequence || "",
 				club_load_order: member.club_load_order || groupRow.club_load_order || 0,
+				despatch_customer: member.despatch_customer || groupRow.despatch_customer || "",
+				despatch_sales_order: member.despatch_sales_order || groupRow.despatch_sales_order || "",
 			});
 		});
 	});

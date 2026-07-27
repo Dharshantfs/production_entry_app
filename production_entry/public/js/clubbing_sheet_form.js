@@ -162,7 +162,7 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260725c';
+window.JSB_CLUB_PICKER_VER = 'v20260727a';
 
 /** Add selected Planning rows into Clubbing Sheet items. Defined early so old Client Scripts can call it. */
 window._jsb_club_process_selections = function (frm, selections, orders_cache) {
@@ -192,6 +192,19 @@ window._jsb_club_process_selections = function (frm, selections, orders_cache) {
 			rd.party_location = so.city || '';
 			rd.custom_planning_table_row = so.planning_table_row || so.name || '';
 			rd.custom_planning_sheet = so.planning_sheet || '';
+			// Despatch Customer defaults from Planning/SO customer — editable for emergency reallocation
+			if (has_field('custom_despatch_customer')) {
+				rd.custom_despatch_customer = so.customer || '';
+			}
+			if (has_field('despatch_customer')) {
+				rd.despatch_customer = so.customer || '';
+			}
+			if (has_field('custom_despatch_sales_order')) {
+				rd.custom_despatch_sales_order = '';
+			}
+			if (has_field('despatch_sales_order')) {
+				rd.despatch_sales_order = '';
+			}
 			if (has_field('planning_table_row')) {
 				rd.planning_table_row = so.planning_table_row || so.name || '';
 			}
@@ -822,6 +835,23 @@ frappe.ui.form.on('Clubbing Sheet', {
 });
 
 frappe.ui.form.on('Clubbing Sheet Item', {
+    form_render(frm, cdt, cdn) {
+        let grid = frm.get_field('items') && frm.get_field('items').grid;
+        if (!grid) return;
+        grid.get_field('custom_despatch_sales_order') &&
+            frm.set_query('custom_despatch_sales_order', 'items', function (doc, cdt2, cdn2) {
+                let row = locals[cdt2][cdn2];
+                let cust = row.custom_despatch_customer || row.despatch_customer;
+                if (!cust) return {};
+                return { filters: { customer: cust, docstatus: 1 } };
+            });
+    },
+
+    custom_despatch_customer(frm, cdt, cdn) {
+        // Clear override SO when despatch customer changes
+        frappe.model.set_value(cdt, cdn, 'custom_despatch_sales_order', '');
+    },
+
     view_rolls: function (frm, cdt, cdn) {
         let row = locals[cdt][cdn];
         let order_code = row.party_code || row.order_code || row.sales_order;
