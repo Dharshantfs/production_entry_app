@@ -162,11 +162,8 @@ function get_distance_from_madurai(city) {
 
 const PLANNING_ORDERS_API = 'production_entry.production_planning.clubbing_api.get_planning_orders_for_clubbing';
 const DISTANCES_API = 'production_entry.production_planning.clubbing_api.get_distances_from_madurai';
-window.JSB_CLUB_PICKER_VER = 'v20260727b';
-// Prevent double frappe.ui.form.on when app_include + doctype_js both load this file
-if (window.__JSB_CLUB_SHEET_JS__ === window.JSB_CLUB_PICKER_VER) {
-	/* already registered for this version */
-} else {
+window.JSB_CLUB_PICKER_VER = 'v20260727c';
+// Always refresh helpers even if form.on already registered (old Client Script may open picker)
 window.__JSB_CLUB_SHEET_JS__ = window.JSB_CLUB_PICKER_VER;
 
 /** Add selected Planning rows into Clubbing Sheet items. Defined early so old Client Scripts can call it. */
@@ -278,6 +275,7 @@ function jsb_club_wire_process_selections(frm) {
 	const handler = function (frm2, selections, planned_date) {
 		window._jsb_club_process_selections(frm2 || frm, selections, null);
 	};
+	if (!frm) return;
 	if (frm.script_manager && frm.script_manager.events) {
 		frm.script_manager.events.process_selections = [handler];
 	}
@@ -286,6 +284,8 @@ function jsb_club_wire_process_selections(frm) {
 	if (frm.cscript) {
 		frm.cscript.process_selections = handler;
 	}
+	// Also keep a global pointer old Client Scripts can call
+	window._jsb_club_frm = frm;
 }
 
 function jsb_club_bind_picker_button(frm) {
@@ -377,8 +377,14 @@ function jsb_club_open_despatch_picker(frm) {
 frappe.ui.form.on('Clubbing Sheet', {
     refresh: function (frm) {
         jsb_club_bind_picker_button(frm);
-        // One delayed rebind in case DocType custom buttons render late
-        setTimeout(function () { jsb_club_bind_picker_button(frm); }, 300);
+        // Rebind several times so we win over any old Enabled Client Script on the site
+        [200, 500, 1000, 2000].forEach(function (ms) {
+            setTimeout(function () {
+                if (cur_frm && cur_frm === frm) {
+                    jsb_club_bind_picker_button(frm);
+                }
+            }, ms);
+        });
 
         if (!frm.doc.__islocal && frm.doc.docstatus === 0) {
             frm.add_custom_button(__('Submit'), function () {
@@ -599,8 +605,18 @@ window._jsb_club_picker_impl = function (frm) {
                 }
                 d.hide();
                 window._jsb_club_dialog = null;
+                // Always prefer direct helper — never depend on frm.events (old Client Scripts break that)
                 try {
-                    window._jsb_club_process_selections(frm, selected, orders);
+                    if (typeof window._jsb_club_process_selections === 'function') {
+                        window._jsb_club_process_selections(frm, selected, orders);
+                    } else {
+                        jsb_club_wire_process_selections(frm);
+                        if (frm.events && typeof frm.events.process_selections === 'function') {
+                            frm.events.process_selections(frm, selected, d.get_value('planned_date'));
+                        } else {
+                            frappe.msgprint(__('Add-items helper missing. Disable Clubbing Sheet Client Script, hard refresh, retry.'));
+                        }
+                    }
                 } catch (err) {
                     console.error('[Clubbing] Get Items failed', err);
                     frappe.msgprint(__('Could not add items: {0}', [err.message || String(err)]));
@@ -936,5 +952,3 @@ frappe.ui.form.on('Clubbing Sheet Item', {
         frm.trigger('recalculate_load_type');
     }
 });
-
-} // end __JSB_CLUB_SHEET_JS__ version guard
