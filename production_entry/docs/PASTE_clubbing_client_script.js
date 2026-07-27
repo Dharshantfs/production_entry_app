@@ -1,7 +1,4 @@
-﻿/**
- * PASTE into Desk → Client Script → DocType: Clubbing Sheet → Enabled: Yes
- * REPLACE entire script. Confirm picker title ends with v20260727a.
- */function show_rolls_dialog_JSB(frm, args) {
+function show_rolls_dialog_JSB(frm, args) {
     let rolls = args.rolls;
     let so_name = args.sales_order;
 
@@ -195,7 +192,7 @@ window._jsb_club_process_selections = function (frm, selections, orders_cache) {
 			rd.party_location = so.city || '';
 			rd.custom_planning_table_row = so.planning_table_row || so.name || '';
 			rd.custom_planning_sheet = so.planning_sheet || '';
-			// Despatch Customer defaults from Planning/SO customer â€” editable for emergency reallocation
+			// Despatch Customer defaults from Planning/SO customer — editable for emergency reallocation
 			if (has_field('custom_despatch_customer')) {
 				rd.custom_despatch_customer = so.customer || '';
 			}
@@ -302,7 +299,7 @@ function jsb_club_bind_picker_button(frm) {
 	};
 	jsb_club_wire_process_selections(frm);
 
-	// One form button only â€” hide duplicate toolbar button that caused double popup
+	// One form button only — hide duplicate toolbar button that caused double popup
 	['get_sales_orders', 'get_sales_orders_dialog'].forEach(function (fn) {
 		if (frm.fields_dict && frm.fields_dict[fn]) {
 			frm.set_df_property(fn, 'hidden', 0);
@@ -338,20 +335,27 @@ function jsb_club_bind_picker_button(frm) {
 function jsb_club_open_despatch_picker(frm) {
 	if (!frm) return;
 
-	// Hard single-open: if dialog already up, focus it â€” never open a second
+	// Hard single-open: if dialog already up, focus it — never open a second
 	if (window._jsb_club_dialog && window._jsb_club_dialog.$wrapper && window._jsb_club_dialog.$wrapper.is(':visible')) {
 		return;
 	}
+	if (window._jsb_club_picker_lock) return;
 	const now = Date.now();
 	if (window._jsb_club_picker_last && (now - window._jsb_club_picker_last) < 1200) {
 		return;
 	}
 	window._jsb_club_picker_last = now;
+	window._jsb_club_picker_lock = true;
+	// Safety unlock if modal close handler doesn't fire (network lag, etc.)
+	setTimeout(function () {
+		window._jsb_club_picker_lock = false;
+	}, 15000);
 
 	if (typeof window._jsb_club_picker_impl !== 'function') {
 		frappe.msgprint(__(
 			'Clubbing picker missing. Paste latest PASTE_clubbing_client_script.js into Client Script and Save.'
 		));
+		window._jsb_club_picker_lock = false;
 		return;
 	}
 	window._jsb_club_picker_impl(frm);
@@ -470,13 +474,13 @@ frappe.ui.form.on('Clubbing Sheet', {
         }
 
         if (!is_valid && !frm.doc.ignore_route_conflict) {
-            frm.set_intro(__("ROUTE CONFLICT â€” cities do not fall on one forward route/belt. Check Ignore Route Conflict to override."), "red");
+            frm.set_intro(__("ROUTE CONFLICT — cities do not fall on one forward route/belt. Check Ignore Route Conflict to override."), "red");
         } else if (full_load_customers.length > 0 && customers.length > 1) {
-            frm.set_intro(__("FULL LOAD VIOLATION â€” Customer {0} has {1} kgs (>= 5000). Must be dedicated vehicle.", [full_load_customers[0], customer_weights[full_load_customers[0]]]), "red");
+            frm.set_intro(__("FULL LOAD VIOLATION — Customer {0} has {1} kgs (>= 5000). Must be dedicated vehicle.", [full_load_customers[0], customer_weights[full_load_customers[0]]]), "red");
         } else if (frm.doc.load_type === "Full Load") {
-            frm.set_intro(__("Full Load â€” dedicated vehicle."), "blue");
+            frm.set_intro(__("Full Load — dedicated vehicle."), "blue");
         } else if (frm.doc.load_type === "Part Load") {
-            frm.set_intro(customers.length > 1 ? __("Part Load â€” multiple orders clubbed.") : __("Part Load â€” needs clubbing."), "orange");
+            frm.set_intro(customers.length > 1 ? __("Part Load — multiple orders clubbed.") : __("Part Load — needs clubbing."), "orange");
         }
     },
 
@@ -544,7 +548,7 @@ frappe.ui.form.on('Clubbing Sheet', {
     },
 });
 
-// Actual dialog â€” also exposed so Get Sales Orders works even if trigger chain is empty
+// Actual dialog — also exposed so Get Sales Orders works even if trigger chain is empty
 window._jsb_club_picker_impl = function (frm) {
         // Never stack two dialogs (app JS + Client Script both calling open)
         if (window._jsb_club_dialog && window._jsb_club_dialog.$wrapper && window._jsb_club_dialog.$wrapper.is(':visible')) {
@@ -555,7 +559,7 @@ window._jsb_club_picker_impl = function (frm) {
         } catch (e0) { /* ignore */ }
 
         let d = new frappe.ui.Dialog({
-            title: __('Select Planning Despatch Rows') + ' Â· ' + (window.JSB_CLUB_PICKER_VER || ''),
+            title: __('Select Planning Despatch Rows') + ' · ' + (window.JSB_CLUB_PICKER_VER || ''),
             size: 'extra-large',
             fields: [
                 { fieldtype: 'Section Break', label: __('Filters') },
@@ -654,11 +658,11 @@ window._jsb_club_picker_impl = function (frm) {
 
             let inchVal = (o) => {
                 let v = flt(o.width_inch || o.inch || 0);
-                return v > 0 ? v : 'â€”';
+                return v > 0 ? v : '—';
             };
 
             let html = `
-                <p class="jsb-club-picker-hint">${__('Quality Â· Color Â· GSM Â· Width(Inch) â€” tick the exact Planning lines.')} <b>${window.JSB_CLUB_PICKER_VER || ''}</b></p>
+                <p class="jsb-club-picker-hint">${__('Quality · Color · GSM · Width(Inch) — tick the exact Planning lines.')} <b>${window.JSB_CLUB_PICKER_VER || ''}</b></p>
                 <div class="jsb-club-picker-wrap">
                 <table class="jsb-club-picker-table">
                     <thead>
@@ -682,12 +686,12 @@ window._jsb_club_picker_impl = function (frm) {
                                 <td style="text-align: center;"><input type="checkbox" class="so-checkbox" data-name="${frappe.utils.escape_html(o.name)}" ${selected_orders.has(o.name) ? 'checked' : ''}></td>
                                 <td><b>${frappe.utils.escape_html(o.party_code || o.sales_order || o.name)}</b><br><span class="text-muted small">${frappe.utils.escape_html(o.sales_order || '')}</span><br><span class="text-muted small">${frappe.utils.escape_html(o.planning_sheet || '')}</span></td>
                                 <td><span class="text-muted small">${frappe.utils.escape_html(o.item_code || '')}</span></td>
-                                <td class="jsb-attr">${frappe.utils.escape_html(o.quality || 'â€”')}</td>
-                                <td class="jsb-attr">${frappe.utils.escape_html(o.color || 'â€”')}</td>
-                                <td class="jsb-attr">${o.gsm || 'â€”'}</td>
+                                <td class="jsb-attr">${frappe.utils.escape_html(o.quality || '—')}</td>
+                                <td class="jsb-attr">${frappe.utils.escape_html(o.color || '—')}</td>
+                                <td class="jsb-attr">${o.gsm || '—'}</td>
                                 <td class="jsb-attr">${inchVal(o)}</td>
                                 <td>${frappe.utils.escape_html(o.planned_date || '')}</td>
-                                <td><span class="jsb-pill">${frappe.utils.escape_html(o.city || 'â€”')}</span></td>
+                                <td><span class="jsb-pill">${frappe.utils.escape_html(o.city || '—')}</span></td>
                                 <td class="text-right">${o.total_qty || 0}<br><span class="text-muted small">${o.no_of_rolls || 0} rolls</span></td>
                             </tr>
                         `).join('')}
@@ -824,10 +828,12 @@ frappe.ui.form.on('Clubbing Sheet', {
             } else {
                 items[0].loading_sequence = 'Inside';
                 items[n - 1].loading_sequence = 'Outside';
-                let center_num = 1;
+                // Truck supports only 4 slots: Inside, Center 1, Center 2, Outside.
+                let middleCount = n - 2; // items between first and last
+                let center1Count = Math.ceil(middleCount / 2);
                 for (let i = 1; i < n - 1; i++) {
-                    items[i].loading_sequence = 'Center ' + center_num;
-                    center_num++;
+                    // i = 1..(n-2) maps to middle index = i-1
+                    items[i].loading_sequence = (i - 1) < center1Count ? 'Center 1' : 'Center 2';
                 }
             }
         }
@@ -917,4 +923,3 @@ frappe.ui.form.on('Clubbing Sheet Item', {
         frm.trigger('recalculate_load_type');
     }
 });
-

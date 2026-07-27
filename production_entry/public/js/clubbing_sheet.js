@@ -339,16 +339,23 @@ function jsb_club_open_despatch_picker(frm) {
 	if (window._jsb_club_dialog && window._jsb_club_dialog.$wrapper && window._jsb_club_dialog.$wrapper.is(':visible')) {
 		return;
 	}
+	if (window._jsb_club_picker_lock) return;
 	const now = Date.now();
 	if (window._jsb_club_picker_last && (now - window._jsb_club_picker_last) < 1200) {
 		return;
 	}
 	window._jsb_club_picker_last = now;
+	window._jsb_club_picker_lock = true;
+	// Safety unlock if modal close handler doesn't fire (network lag, etc.)
+	setTimeout(function () {
+		window._jsb_club_picker_lock = false;
+	}, 15000);
 
 	if (typeof window._jsb_club_picker_impl !== 'function') {
 		frappe.msgprint(__(
 			'Clubbing picker missing. Paste latest PASTE_clubbing_client_script.js into Client Script and Save.'
 		));
+		window._jsb_club_picker_lock = false;
 		return;
 	}
 	window._jsb_club_picker_impl(frm);
@@ -821,10 +828,12 @@ frappe.ui.form.on('Clubbing Sheet', {
             } else {
                 items[0].loading_sequence = 'Inside';
                 items[n - 1].loading_sequence = 'Outside';
-                let center_num = 1;
+                // Truck supports only 4 slots: Inside, Center 1, Center 2, Outside.
+                let middleCount = n - 2; // items between first and last
+                let center1Count = Math.ceil(middleCount / 2);
                 for (let i = 1; i < n - 1; i++) {
-                    items[i].loading_sequence = 'Center ' + center_num;
-                    center_num++;
+                    // i = 1..(n-2) maps to middle index = i-1
+                    items[i].loading_sequence = (i - 1) < center1Count ? 'Center 1' : 'Center 2';
                 }
             }
         }
