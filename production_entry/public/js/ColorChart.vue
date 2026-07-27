@@ -864,13 +864,12 @@ const selectedPlanLabel = computed(() => {
 
 function isRowAlreadyPushed(d) {
     const c = (d.color || '').toUpperCase().trim();
-    const isWhite = ["WHITE", "BRIGHT WHITE", "SUNSHINE WHITE", "MILKY WHITE", "SUPER WHITE", "BLEACH WHITE", "BLEACH WHITE 1.0", "BLEACH WHITE 2.0"].includes(c);
+    const isWhite = isExcludedWhite(d.color || c);
     if (isWhite) return true;
 
     // Align with push_items_to_pb: sheet-level custom_pb_plan_name is copied onto every row
     // in the API and must NOT mean "already pushed". Only item-level planned_date does.
-    const planned = String(d.plannedDate || d.planned_date || "").trim();
-    return !!planned;
+    return isColorChartItemPushed(d, false);
 }
 
 function stripPlanPrefix(name) {
@@ -1178,7 +1177,7 @@ const matrixData = computed(() => {
                     totalItems++;
                     // Non-white: only "pushed" if it has plannedDate (manually pushed from Color Chart)
                     // White: always considered "on the board" (auto-placed)
-                    let pushedForThisItem = isItemWhite ? true : (!!(m.plannedDate || m.planned_date) && String(m.plannedDate || m.planned_date).trim() !== "");
+                    let pushedForThisItem = isColorChartItemPushed(m, isItemWhite);
 
                     if (pushedForThisItem) {
                         anyPushed = true;
@@ -1300,6 +1299,23 @@ function isExcludedWhite(color) {
     // Keep Ivory/Cream explicitly
     if (cUpper.includes("IVORY") || cUpper.includes("CREAM") || cUpper.includes("OFF WHITE")) return false;
     return EXCLUDED_WHITES.some(ex => cUpper.includes(ex));
+}
+
+/** Non-white: pushed only with real Planning Table planned_date (not ordered_date fallback). */
+function isColorChartItemPushed(item, isItemWhite) {
+    if (isItemWhite) return true;
+    const planned = String(item.plannedDate || item.planned_date || "").trim();
+    if (!planned) return false;
+    const orderDate = String(item.orderDate || item.ordered_date || "").trim().slice(0, 10);
+    const plannedNorm = planned.slice(0, 10);
+    const hintDate = String(
+        item.custom_item_planned_date || item.customItemPlannedDate || ""
+    ).trim();
+    // Guard stale API: ordered_date copied into plannedDate is not a push
+    if (plannedNorm && orderDate && plannedNorm === orderDate && !hintDate) {
+        return false;
+    }
+    return true;
 }
 
 // As per user request: "APART FROM THIS U CAN BRING ALL COLOR IVORY"
@@ -4702,6 +4718,7 @@ async function fetchData() {
             orderDate: d.orderDate || d.ordered_date || "",
             // Production Board status (snake_case -> camelCase)
             plannedDate: d.plannedDate || d.planned_date || "",
+            customItemPlannedDate: d.custom_item_planned_date || d.customItemPlannedDate || "",
             // Ensure stable keys even if backend varies
             partyCode: d.partyCode || d.party_code || "",
             partyName: d.party_name || d.partyName || "",

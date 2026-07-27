@@ -22755,9 +22755,13 @@ def _get_color_chart_data_impl(
                 "",
                 None,
             ):
-                row_planned_date = str(
-                    item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or ""
-                )
+                if is_white:
+                    row_planned_date = str(
+                        item_pdate or sheet.get("custom_planned_date") or sheet.ordered_date or ""
+                    )
+                else:
+                    # Colors: only explicit push (Planning Table.planned_date) counts as pushed
+                    row_planned_date = str(item_pdate or "")
 
             row_gsm = item.get("gsm") or ""
             if _item_process_prefix(_ic_row) in BOPP_BOX_BAG_PROCESS_CODES:
